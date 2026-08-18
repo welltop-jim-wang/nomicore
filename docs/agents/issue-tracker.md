@@ -13,6 +13,10 @@ Issues and specs for this repo live as GitHub issues. Use the `gh` CLI for all o
 
 Infer the repo from `git remote -v` — `gh` does this automatically when run inside a clone.
 
+## Ticket Parent convention (MABF issue-runner)
+
+Ticket issues created by `/to-tickets` **must declare a `## Parent` section pointing at the active integration PR** (currently `PR #2`). The MABF issue-runner reads this section **at dispatch time** to decide the base branch (`## Branch` > `## Parent` > default `main`) — omitting it silently targets `main`, which bypasses the integration chain. Spec/PRD issues are review artifacts and must NOT carry `ready-for-agent` (see `.dsh/skills/to-spec/SKILL.md`); only ticket issues are agent-grabbable.
+
 ## Pull requests as a triage surface
 
 **PRs as a request surface: no.** _(Set to `yes` if this repo treats external PRs as feature requests; `/triage` reads this flag.)_
