@@ -1,7 +1,7 @@
 # 1. VFSL 作为 schema 的单一真相源
 
 日期：2025-08-18
-状态：已接受
+状态：提议中（待 grill-with-docs 讨论后随 PRD 定稿）
 
 ## 背景
 
@@ -31,4 +31,4 @@
 
 ## 实施
 
-首个落地模块是 `packages/vfsl`（Phase 0 POC → Phase 1 contract 包）：parser → 求值器 → 路径索引 → `validateSnapshot` → JSDoc 抽取。测试 fixture 取设计文档 §4 的 `vfs3.assets` 示例，负例取 §7 的三个拒绝用例。yjs-server 接入（统一写入管线、DocScope、迁移）在 Phase 2 落入 `apps/`。
+首个落地模块是 `packages/vfsl`（Phase 0 POC → Phase 1 contract 包）：parser → 求值器 → 路径索引 → `validateSnapshot` → JSDoc 抽取。测试 fixture 取设计文档 §4 的 `vfs3.assets` 示例，负例取 §7 的三个拒绝用例。yjs-server 接入（统一写入管线、DocScope、迁移）在 Phase 2 落入 `apps/`。当前仓库仅保留包骨架，实现顺序与契约以 PRD 及其拆解的 issues 为准。
