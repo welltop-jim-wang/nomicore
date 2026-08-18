@@ -20,6 +20,7 @@ _Avoid_: schema 注册表（`SCHEMA_REGISTRY` 是被替换的旧机制）
 
 **标记类型（marker types）**:
 `YMap` / `YArray` / `YPlainArray` / `YLeaf` / `YXmlFragment` / `Pattern`；tsc 视角恒等别名，引擎视角是 Yjs 物化语义标记。
+_Avoid_: `YLEaf`、`yleaf` 等变体拼写——大小写是契约的一部分
 
 **结构树（structure tree）**:
 Yjs 物化语义（kind / storage / opaque），供路径下钻守卫；与值语义正交。
@@ -38,7 +39,7 @@ _Avoid_: resolveChild 三级前缀匹配（被替换的旧机制）
 单字段 patch 也在最近结构边界合并当前值后按完整子 schema 校验——判别联合只有看到判别字段才知道按哪个变体验。
 
 **语义层（semantic layer）**:
-JSDoc 首行自由文本 + `@tag` 半结构化标签；机器标签解析失败必须拒绝 schema。
+JSDoc 首行自由文本 + `@tag` 半结构化标签；全部为文档性质，未识别仅 warn（无机器标签）。
 
 **零写入（zero-write）**:
 校验失败 → 400 且文档不变；所有写入口走同一条管线。
