@@ -29,6 +29,18 @@ export interface Token {
   code?: string;
   /** error 记号：人类可读消息（无前缀，前缀由 errors.ts 构造） */
   message?: string;
+  /** 文档注释侧通道（§3.2）：紧邻其前的全部 doc 注释（按出现序；忽略型注释不
+   * 占位、不中断累积）。加法字段，无 doc 时缺省。 */
+  leadDocs?: DocLead[];
+}
+
+/** 文档注释载荷（tokenizer 内部，不构成公共契约）：原文 + E305 锚点（注释起始）。 */
+export interface DocLead {
+  /** 原文：doc 起始界定符之后、终结界定符之前的逐字文本（含内部星号、缩进、换行、@tag 行）。 */
+  body: string;
+  /** E305 锚点：注释起始 `/*` 的行列（规格 §4 总表 E305 行「注释起始」）。 */
+  line: number;
+  column: number;
 }
 
 /** 单字符标点全集（§4.2）：v1 全量，为 #6~#9 铺路。 */
@@ -57,8 +69,20 @@ export function tokenize(text: string): Token[] {
     i = 1;
   }
 
+  // §3.2：连续 doc 注释的待挂靠缓冲（忽略型注释 / 空白不触碰、不中断累积）
+  let pending: DocLead[] = [];
+
+  /** 产出记号：携带待挂靠 doc（§3.2 侧通道挂靠点——所有真实记号含 error/eof）。 */
+  const emit = (t: Token): void => {
+    if (pending.length > 0) {
+      t.leadDocs = pending;
+      pending = [];
+    }
+    tokens.push(t);
+  };
+
   const fail = (code: string, message: string, atLine: number, atColumn: number): void => {
-    tokens.push({ kind: 'error', value: '', code, message, line: atLine, column: atColumn });
+    emit({ kind: 'error', value: '', code, message, line: atLine, column: atColumn });
   };
 
   scan: while (i < text.length) {
@@ -105,16 +129,19 @@ export function tokenize(text: string): Token[] {
         continue;
       }
       if (next === '*') {
-        // 块 / 文档注释本切片均按忽略型 trivia（区分留给 JSDoc issue，§4.4）；
-        // 未闭合 → E203（锚起始 `/*`）。`*/` 首现即闭合（不嵌套）。
+        // 块 / 文档注释分类（§3.1）：未闭合 → E203（锚起始 `/*`）。`*/` 首现即
+        // 闭合（不嵌套）。分类在找到终结符之后进行——未闭合路径与 E203 完全不变。
         const startLine = line;
         const startCol = column;
+        const open = i; // `/*` 起始码元下标（分类与 body 切片用）
         i += 2;
         column += 2;
         let closed = false;
+        let close = 0; // 终结 `*/` 的 `*` 码元下标
         while (i < text.length) {
           const c = text[i];
           if (c === '*' && text[i + 1] === '/') {
+            close = i;
             i += 2;
             column += 2;
             closed = true;
@@ -142,6 +169,12 @@ export function tokenize(text: string): Token[] {
           fail('203', '块注释未闭合', startLine, startCol);
           break scan;
         }
+        // 分类（规格 §5 忽略与捕获边界）：`/**/`（空内容）与 `/***/`（单星内容）
+        // 是块注释明文特例；其余 `/** … */` 是文档注释——`/**` 与终结 `*/` 之间的
+        // 逐字文本（text.slice，码元级）入 pending，行列锚注释起始。
+        if (text[open + 2] === '*' && close !== open + 2 && close !== open + 3) {
+          pending.push({ body: text.slice(open + 3, close), line: startLine, column: startCol });
+        }
         continue;
       }
       fail('100', `未知记号: '/'`, line, column);
@@ -160,7 +193,7 @@ export function tokenize(text: string): Token[] {
         i += c > 0xffff ? 2 : 1;
         column += 1;
       }
-      tokens.push({ kind: 'ident', value, line: startLine, column: startCol });
+      emit({ kind: 'ident', value, line: startLine, column: startCol });
       continue;
     }
 
@@ -177,7 +210,7 @@ export function tokenize(text: string): Token[] {
         column += 1;
       }
       // 记号值 = 双精度数值（超域为 Infinity，parser 判 E100，§7.3）
-      tokens.push({ kind: 'number', value: raw, num: Number(raw), line: startLine, column: startCol });
+      emit({ kind: 'number', value: raw, num: Number(raw), line: startLine, column: startCol });
       continue;
     }
 
@@ -228,13 +261,13 @@ export function tokenize(text: string): Token[] {
         fail('201', '字符串字面量未闭合', startLine, startCol);
         break scan;
       }
-      tokens.push({ kind: 'string', value, line: startLine, column: startCol });
+      emit({ kind: 'string', value, line: startLine, column: startCol });
       continue;
     }
 
     // —— 单字符标点 ——
     if (PUNCT.has(ch)) {
-      tokens.push({ kind: 'punct', value: ch, line, column });
+      emit({ kind: 'punct', value: ch, line, column });
       i += 1;
       column += 1;
       continue;
@@ -246,7 +279,8 @@ export function tokenize(text: string): Token[] {
   }
 
   // EOF 记号位置 = 扫描结束位（空文本为 (1,1)，保证 ≥1）；错误后亦追加，parser 在
-  // error 记号即败，EOF 仅为边界提供 ≥1 的锚位。
-  tokens.push({ kind: 'eof', value: '', line, column });
+  // error 记号即败，EOF 仅为边界提供 ≥1 的锚位。EOF 接收文本尾部仍 pending 的 doc
+  // （模块末尾悬空的载体，§2.2）。
+  emit({ kind: 'eof', value: '', line, column });
   return tokens;
 }

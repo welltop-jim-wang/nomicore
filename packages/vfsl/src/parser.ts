@@ -6,17 +6,21 @@
  * 接缝，§3.3）。「文本序首个错误胜出」由「单向左到右消费记号流 + 任何位置读到
  * error 记号即以该码失败」构造达成（§4.1）。
  *
- * 资源界（§15.2）：`parseObjectType` 是唯一使 parseTypeExpr 递归的入口，模块内
- * 常量 `MAX_OBJECT_DEPTH = 100`（当前嵌套深度：入口 +1、正常出口 -1，§10.7 权威
- * 读法）守卫递归栈与序列化两个资源界；超限 → E100 资源上限口径，锚预算耗尽处
- * `{` 记号。v1 生命周期内不得调升/调降（行为稳定承诺）。
+ * 资源界（#5 §15.2 → #7 R2 §4.6）：使 parseTypeExpr 递归的入口有两个——
+ * parseObjectType（`{`）与 parseIdentType 的 marker 分支（五标记 `<`）——共用统一
+ * 类型嵌套深度预算 `MAX_TYPE_DEPTH = 100`（原 MAX_OBJECT_DEPTH 更名，值与 v1 承诺
+ * 不变；当前嵌套深度：入口 +1、正常出口 -1，§10.7 权威读法）守卫递归栈与序列化
+ * 两个资源界；联合成员在 while 循环内逐个解析即返回不叠栈、字面量/原始/ref 是
+ * 叶子、generic-diag 平衡扫描是循环；超限 → E100 资源上限口径，锚预算耗尽处构造
+ * 起点记号（`{` / 标记 Ident）。v1 生命周期内不得调升/调降（行为稳定承诺）。
  */
 import { ErrCode, makeIssue } from './errors.js';
-import type { Token } from './tokenizer.js';
+import type { DocLead, Token } from './tokenizer.js';
 import type { VfslIssue } from './ir.js';
 
-/** 当前嵌套深度预算（§15.2；不导出、不进公共面，变更须回总控走设计修订）。 */
-const MAX_OBJECT_DEPTH = 100;
+/** 类型嵌套深度预算（§4.6；统一计数器：对象 `{` 与 marker `<` 两个递归入口共用；
+ * 不导出、不进公共面，变更须回总控走设计修订）。 */
+const MAX_TYPE_DEPTH = 100;
 
 export interface Pos {
   line: number;
@@ -30,13 +34,17 @@ export type AstType =
   | { kind: 'ref'; name: string; pos: Pos } // TypeRef（E301/E106 锚点）
   | { kind: 'generic-diag'; name: string; namePos: Pos; ltPos: Pos } // 判定顺序第 6 条延迟构造（§5.4）
   | { kind: 'object'; fields: AstField[]; pos: Pos }
-  | { kind: 'union'; members: AstType[]; pos: Pos };
+  | { kind: 'union'; members: AstType[]; pos: Pos }
+  // 标记类型（EBNF Marker 产生式，§4.3）：pos 保留——#6 的 E304 锚点是「标记记号」
+  | { kind: 'marker'; name: 'YMap' | 'YArray' | 'YPlainArray' | 'YLeaf' | 'YXmlFragment'; type: AstType; pos: Pos; docs: string[] };
 
 export interface AstField {
   name: string;
   namePos: Pos;
   optional: boolean;
   type: AstType;
+  /** 挂载的文档注释原文（M2 回收；无 doc 时为空数组）。 */
+  docs: string[];
 }
 
 export interface AstAlias {
@@ -45,6 +53,8 @@ export interface AstAlias {
   namePos: Pos;
   type: AstType;
   declIndex: number;
+  /** 挂载的文档注释原文（M1 回收；无 doc 时为空数组）。 */
+  docs: string[];
 }
 
 /** 语法相位内部异常（§3.3）：`parseVfsl` 顶层 catch 转为 { ok: false }。 */
@@ -78,31 +88,63 @@ function nodePos(t: AstType): Pos {
   return t.kind === 'generic-diag' ? t.namePos : t.pos;
 }
 
-export function parseModule(tokens: Token[]): AstAlias[] {
+/** parseModule 内部返回结构（§4.4，不构成公共契约）：dangling 只保留 E305 锚点行列。 */
+interface ParseResult {
+  aliases: AstAlias[];
+  dangling: Array<{ line: number; column: number }>;
+}
+
+export function parseModule(tokens: Token[]): ParseResult {
   return new Parser(tokens).parseModule();
 }
 
 class Parser {
   private index = 0;
-  /** 当前对象嵌套深度（§10.7 权威读法：当前嵌套深度，非累计进入数）。 */
+  /** 当前类型嵌套深度（对象 `{` 与 marker 实参共用，§4.6；权威读法：当前嵌套深度，非累计进入数）。 */
   private depth = 0;
+  /** E305 候选（DocLead 自带锚点行列，§4.2 集中式记账）。 */
+  private dangling: DocLead[] = [];
+  /** 最近一次 next() 记入 dangling 的条数（claimDocs 的回收窗口，每次消费重置）。 */
+  private depositedByLast = 0;
+  /** 已回收上树条数（docTotal 不变量核对用，§4.5）。 */
+  private claimed = 0;
+  /** 全量记号携带的 doc 总数（构造时一次算好；§4.5 会计基准）。 */
+  private readonly docTotal: number;
 
-  constructor(private readonly tokens: Token[]) {}
+  constructor(private readonly tokens: Token[]) {
+    this.docTotal = tokens.reduce((n, t) => n + (t.leadDocs?.length ?? 0), 0);
+  }
 
   /** 前瞻（offset 0 起）。不抛错——仅「读取并消费」才在 error 记号上失败。 */
   private peek(offset = 0): Token | undefined {
     return this.tokens[this.index + offset];
   }
 
-  /** 读取并消费下一记号；任何位置读到 error 记号即以该码失败（§4.1 普适规则）。 */
+  /** 读取并消费下一记号；任何位置读到 error 记号即以该码失败（§4.1 普适规则）。
+   * 集中式记账（§4.2【R2 · SA2 #3】）：除 error 记号外，消费记号携带的 leadDocs
+   * 一律并入 dangling（默认悬空候选）；挂载锚位随后经 claimDocs() 回收。 */
   private next(): Token | undefined {
     const t = this.tokens[this.index];
     if (t === undefined) return undefined;
     this.index += 1;
     if (t.kind === 'error') {
-      throw this.errFromToken(t);
+      throw this.errFromToken(t); // 读到即抛、不记账（§4.5：该路径不变量不运行）
+    }
+    this.depositedByLast = t.leadDocs?.length ?? 0;
+    if (t.leadDocs !== undefined) {
+      this.dangling.push(...t.leadDocs);
     }
     return t;
+  }
+
+  /** 挂载锚位专用（§4.2）：回收「刚消费记号」存入 dangling 的 leadDocs（取 body 数组）。
+   * 同步性约束：必须在锚位记号被 next() 消费之后、任何下一次 next() 之前调用；
+   * 全 parser 恰三个调用点（M1/M2/M3）。 */
+  private claimDocs(): string[] {
+    const n = this.depositedByLast;
+    this.depositedByLast = 0;
+    this.claimed += n;
+    return this.dangling.splice(this.dangling.length - n, n).map((d) => d.body);
   }
 
   private peekPunct(value: string): boolean {
@@ -140,15 +182,24 @@ class Parser {
   }
 
   // —— 模块层（判定顺序第 1 条：前导 interface → E105）——
-  parseModule(): AstAlias[] {
+  parseModule(): ParseResult {
     const aliases: AstAlias[] = [];
     for (;;) {
       const tok = this.peek();
-      if (tok === undefined || tok.kind === 'eof') break;
+      if (tok === undefined || tok.kind === 'eof') {
+        // EOF 位（§4.2）：EOF 是正常返回路径上唯一不经 next() 消费的记号——显式
+        // 记账（模块末尾悬空 doc 的载体；SA6 用例 4 / 空模块仅一条 doc）
+        if (tok !== undefined && tok.kind === 'eof' && tok.leadDocs !== undefined) {
+          this.dangling.push(...tok.leadDocs);
+        }
+        break;
+      }
       if (tok.kind === 'error') throw this.errFromToken(tok);
       if (tok.kind === 'ident' && tok.value === 'type') {
         this.next();
-        aliases.push(this.parseTypeAlias(aliases.length));
+        // M1（§4.2）：模块层声明起点回收——紧跟消费，同步性约束内
+        const docs = this.claimDocs();
+        aliases.push(this.parseTypeAlias(aliases.length, docs));
         continue;
       }
       if (tok.kind === 'ident' && tok.value === 'interface') {
@@ -156,11 +207,16 @@ class Parser {
       }
       throw this.err(ErrCode.E100, `模块层意外记号: ${this.tokenDesc(tok)}`, tok);
     }
-    return aliases;
+    // docTotal 不变量（§4.5）：任何一条 doc 既未挂载也未记悬空 → 构造性排除的
+    // 缺陷（静默丢失不可能）；throw 普通 Error → index.ts 顶层兜底 → E100 内部错误
+    if (this.claimed + this.dangling.length !== this.docTotal) {
+      throw new Error('internal: doc 记账不平衡');
+    }
+    return { aliases, dangling: this.dangling.map((d) => ({ line: d.line, column: d.column })) };
   }
 
   // —— 类型别名（判定顺序第 2/7 条）——
-  private parseTypeAlias(declIndex: number): AstAlias {
+  private parseTypeAlias(declIndex: number, docs: string[]): AstAlias {
     const nameTok = this.next();
     if (nameTok === undefined || nameTok.kind !== 'ident') {
       throw this.err(ErrCode.E100, `期望别名声明名，实际 ${this.tokenDesc(nameTok)}`, nameTok);
@@ -180,7 +236,7 @@ class Parser {
     if (term === undefined || !(term.kind === 'punct' && term.value === ';')) {
       throw this.err(ErrCode.E100, `别名缺少终止分号 ';'（注记 4），实际 ${this.tokenDesc(term)}`, term);
     }
-    return { kind: 'alias', name: nameTok.value, namePos: posOf(nameTok), type, declIndex };
+    return { kind: 'alias', name: nameTok.value, namePos: posOf(nameTok), type, declIndex, docs };
   }
 
   // —— 类型表达式 = 联合（注记 2：允许前导 '|'）——
@@ -285,9 +341,44 @@ class Parser {
     if (v === 'any') {
       throw this.err(ErrCode.E101, 'any 类型被禁止（判定顺序第 5 条）', tok);
     }
-    if (v === 'Record' || MARKER_NAMES.has(v)) {
+    if (MARKER_NAMES.has(v)) {
       if (this.peekPunct('<')) {
-        // 切片外 v1 合法构造（§8）：Record<K,V> / YMap<…> 等，拒绝而非假接受
+        // 标记类型（EBNF Marker 产生式，§4.3）：实参接受完整 TypeExpr（形状约束
+        // E304 留 #6）。M3 回收（同步性——parsePrimaryType 的 case 'ident' 直通本
+        // 函数，中间零次 next()，depositedByLast 未被重置）；统一深度预算守卫（§4.6）。
+        const docs = this.claimDocs();
+        this.depth += 1;
+        if (this.depth > MAX_TYPE_DEPTH) {
+          // 锚预算耗尽处的标记 Ident 记号（与「锚预算耗尽处 `{`」同构，§4.6）
+          throw this.err(
+            ErrCode.E100,
+            `嵌套深度超过实现上限 ${MAX_TYPE_DEPTH}（实现资源上限，非方言判定；该文本可从 v1 文法推导）`,
+            tok,
+          );
+        }
+        try {
+          this.next(); // 消费 '<'
+          const arg = this.parseTypeExpr();
+          const gt = this.next();
+          if (gt === undefined || !(gt.kind === 'punct' && gt.value === '>')) {
+            throw this.err(ErrCode.E100, `标记实参缺右尖括号 '>'`, gt);
+          }
+          return {
+            kind: 'marker',
+            name: v as 'YMap' | 'YArray' | 'YPlainArray' | 'YLeaf' | 'YXmlFragment',
+            type: arg,
+            pos: posOf(tok),
+            docs,
+          };
+        } finally {
+          this.depth -= 1; // 正常出口深度回退（parseObjectType 同款）
+        }
+      }
+      throw this.err(ErrCode.E100, `裸引用保留名: ${v}（判定顺序第 7 条）`, tok);
+    }
+    if (v === 'Record') {
+      if (this.peekPunct('<')) {
+        // 切片外 v1 合法构造（§8）：Record<K,V> 拒绝而非假接受（#6 领地）
         throw this.err(ErrCode.E100, `${v}<…> 属 v1 合法构造、本切片未实现（待后续 issue 落地）`, tok);
       }
       throw this.err(ErrCode.E100, `裸引用保留名: ${v}（判定顺序第 7 条）`, tok);
@@ -343,11 +434,11 @@ class Parser {
   // —— 封闭对象字面量（注记 3；判定顺序第 4 条：字段名位 '[' → E104）——
   private parseObjectType(openTok: Token): AstType {
     this.depth += 1;
-    if (this.depth > MAX_OBJECT_DEPTH) {
-      // 【R2 · SA2 #1】深度预算：第 101 层 '{' 被读到 → E100 资源上限口径（§15.2）
+    if (this.depth > MAX_TYPE_DEPTH) {
+      // 深度预算（§4.6）：第 101 层 '{' 被读到 → E100 资源上限口径（锚预算耗尽处）
       throw this.err(
         ErrCode.E100,
-        `嵌套深度超过实现上限 ${MAX_OBJECT_DEPTH}（实现资源上限，非方言判定；该文本可从 v1 文法推导）`,
+        `嵌套深度超过实现上限 ${MAX_TYPE_DEPTH}（实现资源上限，非方言判定；该文本可从 v1 文法推导）`,
         openTok,
       );
     }
@@ -359,6 +450,8 @@ class Parser {
       }
       for (;;) {
         const nameTok = this.next();
+        // M2（§4.2）：属性声明起点回收——紧跟消费，同步性约束内
+        const docs = this.claimDocs();
         if (nameTok === undefined) {
           throw this.err(ErrCode.E100, '期望字段名，实际文件末尾', nameTok);
         }
@@ -383,7 +476,7 @@ class Parser {
         }
         this.next(); // 消费 ':'
         const type = this.parseTypeExpr();
-        fields.push({ name: nameTok.value, namePos: posOf(nameTok), optional, type });
+        fields.push({ name: nameTok.value, namePos: posOf(nameTok), optional, type, docs });
         const sep = this.next();
         if (sep === undefined) {
           throw this.err(ErrCode.E100, '期望字段分隔符，实际文件末尾', sep);
