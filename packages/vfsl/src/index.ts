@@ -7,7 +7,7 @@
  * 预算 + 语义相位迭代 DFS + 顶层兜底 catch 三层达成）。
  *
  * 编排：tokenize → parse（语法相位，失败以 VfslSyntaxError 内部异常承载）→
- * analyze（语义相位，E301/E302/E106/E308 + min-position 聚合 + AST → IR）。
+ * analyze（语义相位，E301/E302/E305/E106/E308 + min-position 聚合 + AST → IR）。
  * 公共面只导出 `parseVfsl` 与 §7.1 类型；tokenizer/parser/semantic 内部件不导出
  * （内部结构非公共契约）。
  */
@@ -31,8 +31,8 @@ export type {
 export function parseVfsl(text: string): ParseVfslResult {
   try {
     const tokens = tokenize(text);
-    const aliases = parseModule(tokens);
-    return analyze(aliases);
+    const { aliases, dangling } = parseModule(tokens);
+    return analyze(aliases, dangling);
   } catch (err) {
     if (err instanceof VfslSyntaxError) {
       return { ok: false, issues: [err.issue] };

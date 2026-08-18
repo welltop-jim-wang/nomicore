@@ -1,7 +1,9 @@
 /**
  * 引用 / 语义层（设计 §6）：仅当模块全量解析成功才进入。
  *
- * 四项检查全量收集、不做短路（§6.1）：
+ * 五项检查全量收集、不做短路（§6.1）：
+ * - E305 悬空文档注释：doc 挂靠的记号非声明性起点（M1/M2/M3 三锚位之外）→ 候选，
+ *   锚注释起始（由 tokenizer 的 DocLead 自带）；严格相邻语义——不相邻即不再挂载；
  * - E302 重复声明：按名分组，每个第二次及以后的出现产出 issue（锚声明名记号）；
  * - E301 未知名引用：声明集合 = 全模块全部声明名的并集（前向引用天然合法）；
  * - E106 引用图成环：迭代三色 DFS（显式栈，别名链深度对调用栈免疫，§15.3）；
@@ -27,18 +29,36 @@ interface RefOccurrence {
   pos: Pos;
 }
 
-/** 深度优先遍历 AST（E301 / E106 边收集 / generic-diag 终判 / E308 共用）。 */
+/** 深度优先遍历 AST（E301 / E106 边收集 / generic-diag 终判 / E308 共用；
+ * marker 实参穿透——其内 ref 进 E301/E106、对象进 E308，§6.1.2）。 */
 function walk(t: AstType, visit: (t: AstType) => void): void {
   visit(t);
   if (t.kind === 'object') {
     for (const f of t.fields) walk(f.type, visit);
   } else if (t.kind === 'union') {
     for (const m of t.members) walk(m, visit);
+  } else if (t.kind === 'marker') {
+    walk(t.type, visit);
   }
 }
 
-export function analyze(aliases: AstAlias[]): ParseVfslResult {
+export function analyze(aliases: AstAlias[], dangling: Array<{ line: number; column: number }>): ParseVfslResult {
   const candidates: Candidate[] = [];
+
+  // E305：悬空文档注释（§6.1）——每条 dangling 一个候选，锚注释起始（DocLead 自带）
+  for (const d of dangling) {
+    candidates.push(
+      candidate(
+        makeIssue(
+          ErrCode.E305,
+          '悬空文档注释：未紧邻可挂载的声明性节点（类型别名 / 属性 / 标记类型），且不相邻即不再挂载',
+          d.line,
+          d.column,
+        ),
+        ErrCode.E305,
+      ),
+    );
+  }
 
   // 声明名集合（并集；前向引用合法，规格 §4「别名解析与声明顺序无关」）
   const declared = new Set(aliases.map((a) => a.name));
@@ -149,7 +169,7 @@ function candidate(issue: VfslIssue, code: string): Candidate {
 function toIR(aliases: AstAlias[]): VfslModule {
   return {
     kind: 'vfsl-module',
-    aliases: aliases.map((a) => ({ kind: 'alias', name: a.name, type: toIRType(a.type) })),
+    aliases: aliases.map((a) => ({ kind: 'alias', name: a.name, docs: a.docs, type: toIRType(a.type) })),
   };
 }
 
@@ -168,11 +188,14 @@ function toIRType(t: AstType): VfslType {
           kind: 'field',
           name: f.name,
           optional: f.optional,
+          docs: f.docs,
           type: toIRType(f.type),
         })),
       };
     case 'union':
       return { kind: 'union', members: t.members.map(toIRType) };
+    case 'marker':
+      return { kind: 'marker', name: t.name, docs: t.docs, type: toIRType(t.type) };
     case 'generic-diag':
       // 不变量（§5.4）：generic-diag 必产语义相位 issue，不可能到达此处；命中即实现缺陷
       throw new Error('internal: generic-diag 必产语义相位 issue，不应到达 IR 转换');

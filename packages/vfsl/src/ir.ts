@@ -22,6 +22,8 @@ export interface VfslModule {
 export interface VfslAlias {
   kind: 'alias';
   name: string;
+  /** 文档注释原文数组（连续 doc 按出现序；无 doc 时为空数组——必填，§7.2）。 */
+  docs: string[];
   type: VfslType;
 }
 
@@ -30,6 +32,8 @@ export interface VfslField {
   name: string;
   /** 必填（exactOptionalPropertyTypes 下不用 `optional?: boolean`）。 */
   optional: boolean;
+  /** 文档注释原文数组（连续 doc 按出现序；无 doc 时为空数组——必填，§7.2）。 */
+  docs: string[];
   type: VfslType;
 }
 
@@ -38,7 +42,10 @@ export type VfslType =
   | { kind: 'literal'; value: string | number } // JSON 天然区分 "80" 与 80
   | { kind: 'ref'; name: string }
   | { kind: 'object'; fields: VfslField[] }
-  | { kind: 'union'; members: VfslType[] };
+  | { kind: 'union'; members: VfslType[] }
+  // 标记类型（EBNF Marker 产生式五选一）：name 保留源拼写（大小写是契约），
+  // docs 挂标记记号处；形状约束（E304）留 #6，本切片接受任意 TypeExpr 实参。
+  | { kind: 'marker'; name: 'YMap' | 'YArray' | 'YPlainArray' | 'YLeaf' | 'YXmlFragment'; docs: string[]; type: VfslType };
 
 export type ParseVfslResult =
   | { ok: true; module: VfslModule }
