@@ -1,2 +1,20 @@
 # DSH (DeepSeek Harness) project-local skills and config
 .dsh/
+
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Build output
+dist/
+*.tsbuildinfo
+
+# Test coverage
+coverage/
+
+# Environment
+.env
+.env.*
+
+# OS
+.DS_Store
