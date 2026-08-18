@@ -1,34 +1,22 @@
-# 1. VFSL 作为 schema 的单一真相源
+# 0001: VFSL 文本是 schema 的唯一真相源，只存在于文档与测试中
 
-日期：2025-08-18
-状态：提议中（待 grill-with-docs 讨论后随 PRD 定稿）
+---
+status: proposed（重写稿，2025-08-18 grill 轮次定稿方向，细节待确认）
+---
 
-## 背景
+旧体系的三问题（表达力有限、校验绕行、双份真相不自包含）根源是 schema 是代码而非数据。决策：schema 用 VFSL（受限 TypeScript 子集 + 标记类型）+ JSDoc 语义标签描述，以信封 `{ lang, version, id, text }` 作为数据存进 doc 的 `__schema__`；解释行为由信封自述的方言版本决定，方言只增不改，未知方言 loud-fail 只读。
 
-旧 yjs-server 的 schema 体系（`apps/yjs-server/src/api.ts` 的 `PathSchemaNode` + 手写 `ValueShape` 校验器 + `SCHEMA_REGISTRY`）存在三个问题：
+**本仓库是纯引擎仓库：代码库不含 schema 文本（测试 fixture 除外）。** VFSL 文本只作为运行时数据存在于文档的 `__schema__` 中；设计文档中"前端/服务端 import 同一文本"的双消费者机制不采用——没有作为类型源的 schema 源文件，也没有任何形式的 codegen。schema 的创建与升级只能通过运行时管理操作完成。
 
-1. **表达力有限**：无 refine / regex / 数值范围 / union / discriminated union / strict；不变量（如 name 禁含 `.` 或 `|`）硬编码在 handler，同一契约三处真相；读回数据全是 `Record<string, unknown>`。
-2. **校验困难**：值校验只在 REST PATCH 一个入口，WS 同步与 bootstrap 绕开；没有整文档校验函数；错误是单条拼接字符串。
-3. **双份真相 + 不自包含**：手写 shape 与 contract 包 zod 定义并存；schema 是代码而非数据，旧 snapshot 无法用今天的代码解释，前端必须对齐 contract 包版本。
+语义层的机器标签集收敛为 `@ref`（必须可解析到目标，否则 schema 注册被拒）；`@invariant` 随 authority 一并移除（ADR-0002）；其余标签（`@format` / `@role` / `@example` / `@values` / `@unit` / `@since` / `@deprecated` / `@entity` / `@key`）为文档性质，未识别仅 warn。
 
-## 决策
+## Considered Options
 
-采用 **VFSL**：一段受限 TypeScript 子集文本 + 5 个标记类型（`YMap` / `YArray` / `YPlainArray` / `YLeaf` / `YXmlFragment`，外加 `Pattern`）作为 schema 的单一真相源，语义层用标准化 JSDoc 标签写在文本里。
+- **双消费者机制**（schema 文本作为 .ts 源文件入仓，tsc 检查 + 部署期读取写入 `__schema__`）——被否决：代码库会出现与文档并存的 schema 副本，"schema 是数据、随文档走"的立论就破了。
+- **字符串常量导出 / `.vfsl` 文件 + 生成 wrapper**——被否决：前者内容不受类型检查且仍是仓内文本，后者是 codegen。
 
-1. 该文本同时是合法 TypeScript（编译期类型源）与解释器输入（运行期结构/值语义源）——零 codegen、零双份真相；
-2. schema 作为数据存进 doc 的 `__schema__` 信封（`{ lang, version, id, text }`），命名空间自包含；
-3. 一切派生物从文本生成：TS 类型、结构树（Yjs 物化）、路径→子 schema 索引、整文档校验器 `validateSnapshot`、AI namespace card；
-4. 稳定性由**方言冻结**保证：引擎对历史方言语义只增不改，未知方言 loud-fail 只读；多方言并存靠 namespace 作用域绑定（DocScope），不靠进程级全局变量；
-5. 编译期路径投影（`@nomicore/vfsl-protocol`）是文本的**受检镜像**：由生成器产出、CI 校验，不参与运行时判定、不承担权威。
+## Consequences
 
-被否决的备选（详见设计文档 §14 对照表）：全 zod 代码模块（不自包含，恰是要解决的问题）、JSON Schema（书写体验差，留作可选导出格式）、Avro IDL（无 pattern/range）、CUE（引入 Go/WASM 运行时）。
-
-## 后果
-
-**正面**：单一真相消灭手写/生成漂移；旧 doc 永远可解释（方言 additive）；判别联合、键约束、封闭对象成为内建约束而非硬编码；错误结构化并回带语义，对人 debug 与 AI 修复都更友好。
-
-**负面**：需要自维护一个 TS 子集 parser 与求值器（子集刻意收窄以控制成本）；运行期多一层文本解释（按内容哈希缓存缓解）；schema 作者须遵守子集边界（越界即报错，不做猜测）。
-
-## 实施
-
-首个落地模块是 `packages/vfsl`（Phase 0 POC → Phase 1 contract 包）：parser → 求值器 → 路径索引 → `validateSnapshot` → JSDoc 抽取。测试 fixture 取设计文档 §4 的 `vfs3.assets` 示例，负例取 §7 的三个拒绝用例。yjs-server 接入（统一写入管线、DocScope、迁移）在 Phase 2 落入 `apps/`。当前仓库仅保留包骨架，实现顺序与契约以 PRD 及其拆解的 issues 为准。
+- 设计文档 §8 的编译期类型投影整体出范围（2025-08-18 决策）：仓库没有 schema 文本可镜像，`vfsl-protocol` 包已移除。"坏数据进不来"由运行时校验兑付，"坏代码写不出来"不再作为目标。
+- 引擎必须在运行时解析任意合法方言文本，性能依赖按内容哈希的编译缓存。
+- schema 演进是运行时管理操作（入口形式待定），仓库 git 历史不记录 schema 变更——变更历史在 Yjs update WAL 里，与数据同源。

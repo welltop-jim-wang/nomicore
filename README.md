@@ -9,9 +9,8 @@
 ```
 nomicore/
 ├── packages/
-│   ├── vfsl/               # VFSL 核心包（骨架）：信封 / parser / 求值器 / 路径索引 / validateSnapshot / JSDoc 抽取
-│   └── vfsl-protocol/      # §8 编译期路径投影协议（骨架）：路径 → 值类型的受检镜像
-├── apps/                   # Phase 2 起接入（预留，见 apps/README.md）
+│   └── vfsl/               # VFSL 引擎（骨架）：信封 / parser / 求值器 / 路径索引 / validateSnapshot / JSDoc 抽取
+├── apps/                   # 新 yjs-server 服务端（预留，见 apps/README.md）
 ├── CONTEXT.md              # 领域术语表
 └── docs/adr/               # 架构决策记录
 ```
@@ -22,14 +21,13 @@ nomicore/
 | 包 | 职责 | 对应设计文档 |
 |-|-|-|
 | `@nomicore/vfsl` | VFSL 解释器与派生产物：结构树 / 值 schema / 路径索引 / `validateSnapshot` | §3–§7、§9、§11、§12 |
-| `@nomicore/vfsl-protocol` | 路径 → 值类型的编译期投影（`PathAt` / `PathValue` / `VfslPathMap` 增广） | §8 |
-| `apps/yjs-server`（预留） | 统一写入管线（REST + WS）、DocScope 方言路由、迁移流程 | §7、§10、§11 |
+| `apps/yjs-server`（预留） | 新 yjs-server：schema 数据面（校验 + 存储 + 同步 + namespace 生命周期） | §7、§10、§11 |
 
 ## 实施阶段（设计文档 §15）
 
 1. **Phase 0 · POC**（当前）：parser + 标记类型 + 求值器 + `validateSnapshot` + vfs3.assets 演示测试；
 2. **Phase 1 · contract 包**：VFSL 编译器与派生产物（类型 / 结构树 / 子 schema 索引）；
-3. **Phase 2 · yjs-server 接入**：统一校验管线 + 类型化视图层；
+3. **Phase 2 · yjs-server**：schema 数据面服务端（namespace 生命周期、统一写入管线、同步协议）；
 4. **Phase 3 · 数据化**：`__schema__` 写入 doc、方言版本、迁移流程；
 5. **Phase 4 · AI 友好**：语义标签 + namespace card + 探针测试。
 
