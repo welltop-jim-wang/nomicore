@@ -1,0 +1,9 @@
+{
+  "name": "nomicore-workspace",
+  "private": true,
+  "description": "nomicore monorepo — [PRD] VFSL v1 方言定义与 Parser (Issue #3)",
+  "scripts": {
+    "test": "pnpm --filter @nomicore/vfsl run build && pnpm --filter @nomicore/vfsl exec vitest run",
+    "test:vfsl": "pnpm --filter @nomicore/vfsl run build && pnpm --filter @nomicore/vfsl exec vitest run"
+  }
+}

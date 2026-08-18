@@ -1,2 +1,11 @@
 # DSH (DeepSeek Harness) project-local skills and config
 .dsh/
+
+# MABF harness state (per-run logs/meta)
+.mabf-bg/
+
+# Node
+node_modules/
+dist/
+coverage/
+*.log

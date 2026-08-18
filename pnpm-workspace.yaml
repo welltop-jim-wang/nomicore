@@ -1,0 +1,5 @@
+# pnpm workspace — 仅声明包目录；不添加任何非标准字段（如 allowBuilds）
+packages:
+  - packages/*
+allowBuilds:
+  esbuild: true

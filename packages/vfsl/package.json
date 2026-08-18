@@ -1,0 +1,26 @@
+{
+  "name": "@nomicore/vfsl",
+  "version": "0.1.1",
+  "description": "VFSL v1 方言 parser：schema 文本 → 可序列化 IR 或结构化错误（零运行时依赖）",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@nomicore/vfsl": "workspace:*",
+    "typescript": "^5.5.4",
+    "vitest": "^3.2.4"
+  }
+}

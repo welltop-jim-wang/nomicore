@@ -1,0 +1,16 @@
+// vfs3.assets — 设计文档 §4 正例 fixture（§4 原文不在本仓库，按冻结的 v1 方言重构）
+// 物化语义标记：YMap / YArray / YPlainArray / YLeaf / YXmlFragment；字符串键约束用 string & Pattern
+/** 资产的根类型：vfs3.assets 命名空间的顶层结构 */
+type Asset = {
+  /** 资产唯一标识，禁止含 . 与 | 字符 */
+  name: string & Pattern<"^[a-z0-9][a-z0-9-]*$">;
+  /** 资产类别，用于判别 */
+  kind: "file" | "dir";
+  /** 物化元数据 */
+  meta: YMap<{ created: number; updated?: number }>;
+  tags: YArray<string>;
+  raw: YPlainArray<number>;
+  leaf: YLeaf;
+  xml: YXmlFragment;
+  owner?: string;
+}
