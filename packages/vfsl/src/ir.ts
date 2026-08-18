@@ -38,7 +38,16 @@ export type VfslType =
   | { kind: 'literal'; value: string | number } // JSON 天然区分 "80" 与 80
   | { kind: 'ref'; name: string }
   | { kind: 'object'; fields: VfslField[] }
-  | { kind: 'union'; members: VfslType[] };
+  | { kind: 'union'; members: VfslType[] }
+  | { kind: 'array'; element: VfslType } // T[]（#6）
+  | { kind: 'record'; key: VfslType; value: VfslType } // Record<K, V>，键约束原样入 IR（#6）
+  | {
+      // 标记类型及其包裹目标（不折叠，AC1 可区分性锚）（#6）
+      kind: 'marker';
+      marker: 'YMap' | 'YArray' | 'YPlainArray' | 'YLeaf' | 'YXmlFragment';
+      arg: VfslType;
+    }
+  | { kind: 'pattern'; regex: string }; // string & Pattern<"正则"> 解码后原文（#6）
 
 export type ParseVfslResult =
   | { ok: true; module: VfslModule }

@@ -1,7 +1,7 @@
 /**
  * 引用 / 语义层（设计 §6）：仅当模块全量解析成功才进入。
  *
- * 四项检查全量收集、不做短路（§6.1）：
+ * 既有四项检查全量收集、不做短路（§6.1）：
  * - E302 重复声明：按名分组，每个第二次及以后的出现产出 issue（锚声明名记号）；
  * - E301 未知名引用：声明集合 = 全模块全部声明名的并集（前向引用天然合法）；
  * - E106 引用图成环：迭代三色 DFS（显式栈，别名链深度对调用栈免疫，§15.3）；
@@ -9,12 +9,19 @@
  *   SA2 #5）；消息携带环路径（A → B → A）；
  * - E308 对象字段重名：逐 ObjectType（含嵌套、联合成员内的对象）。
  *
+ * 本切片新增（§5.7）：shapes.ts 的 E304 / E306 / E307 / E309 候选并入同一候选池。
+ * walk 下降集扩展（§9-10）：object.fields / union.members / array.element /
+ * record.key 与 value / marker.arg；pattern 无子节点；generic-diag 无子节点但
+ * 必须被 visit（终判候选靠它——嵌在 marker 实参 / record 键 / 联合成员任何深度的
+ * generic-diag 都要走终判分支）。
+ *
  * 聚合（§6.2）：candidates 按 (line, column, 错误码数值) 取最小 → 恰 1 条。
  * 位置并列在实际文法中不可构造，码号序仅为确定性兜底。candidates 为空 →
  * AST → IR（剥离 pos、坍缩单成员联合；generic-diag 不可能出现——必产 issue）。
  */
 import { ErrCode, makeIssue } from './errors.js';
 import type { AstAlias, AstType, Pos } from './parser.js';
+import { collectShapeCandidates } from './shapes.js';
 import type { ParseVfslResult, VfslIssue, VfslModule, VfslType } from './ir.js';
 
 interface Candidate {
@@ -30,10 +37,25 @@ interface RefOccurrence {
 /** 深度优先遍历 AST（E301 / E106 边收集 / generic-diag 终判 / E308 共用）。 */
 function walk(t: AstType, visit: (t: AstType) => void): void {
   visit(t);
-  if (t.kind === 'object') {
-    for (const f of t.fields) walk(f.type, visit);
-  } else if (t.kind === 'union') {
-    for (const m of t.members) walk(m, visit);
+  switch (t.kind) {
+    case 'object':
+      for (const f of t.fields) walk(f.type, visit);
+      break;
+    case 'union':
+      for (const m of t.members) walk(m, visit);
+      break;
+    case 'array':
+      walk(t.element, visit);
+      break;
+    case 'record':
+      walk(t.key, visit);
+      walk(t.value, visit);
+      break;
+    case 'marker':
+      walk(t.arg, visit);
+      break;
+    default:
+      break; // primitive / literal / ref / pattern / generic-diag（无子节点）
   }
 }
 
@@ -130,6 +152,11 @@ export function analyze(aliases: AstAlias[]): ParseVfslResult {
     }
   }
 
+  // 形状体系候选（E304/E306/E307/E309，§5.7）：与既有候选同池聚合，min-position 裁定
+  for (const c of collectShapeCandidates(aliases)) {
+    candidates.push(c);
+  }
+
   if (candidates.length === 0) {
     return { ok: true, module: toIR(aliases) };
   }
@@ -173,6 +200,14 @@ function toIRType(t: AstType): VfslType {
       };
     case 'union':
       return { kind: 'union', members: t.members.map(toIRType) };
+    case 'array':
+      return { kind: 'array', element: toIRType(t.element) };
+    case 'record':
+      return { kind: 'record', key: toIRType(t.key), value: toIRType(t.value) };
+    case 'marker':
+      return { kind: 'marker', marker: t.marker, arg: toIRType(t.arg) };
+    case 'pattern':
+      return { kind: 'pattern', regex: t.regex };
     case 'generic-diag':
       // 不变量（§5.4）：generic-diag 必产语义相位 issue，不可能到达此处；命中即实现缺陷
       throw new Error('internal: generic-diag 必产语义相位 issue，不应到达 IR 转换');
