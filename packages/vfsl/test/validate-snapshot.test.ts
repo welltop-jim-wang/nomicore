@@ -419,8 +419,11 @@ describe('validateSnapshot — 联合：any-of 接受 / 判别式缓存透明 / 
 });
 
 describe('validateSnapshot — YPlainArray 纯值上下文嵌套 JSON', () => {
+  // 测试文本修正（设计 §11.1，SA2 #2 授权）：原文本 `YPlainArray<{…}[]>` 派生为双重
+  // 数组，两条断言在忠实实现下均不可满足——按 §11.1 定稿去掉多余一层 `[]`，
+  // 断言逻辑零改动；双重数组语义由下一用例锁定。
   it('AC：纯值上下文嵌套 JSON——元素为对象时按封闭对象校验（含下钻路径）', () => {
-    const derived = evaluateModule('type ROOT = { items: YPlainArray<{ name: string; count: number }[]> };');
+    const derived = evaluateModule('type ROOT = { items: YPlainArray<{ name: string; count: number }> };');
     expect(validateSnapshot(derived, { items: [{ name: 'a', count: 1 }] }).ok).toBe(true);
     expect(validateSnapshot(derived, { items: [] }).ok).toBe(true);
     const bad = validateSnapshot(derived, { items: [{ name: 'a', count: 'x' }] });
@@ -431,6 +434,15 @@ describe('validateSnapshot — YPlainArray 纯值上下文嵌套 JSON', () => {
       expect(p![0]).toBe('items'); // ["items", <元素段>, "count"]
       expect(p!.length).toBe(3);
     }
+  });
+
+  // 双重数组锁例（设计 §11.1-2）：`YPlainArray<T[]>` 忠实解释 = 元素是 `T[]`（#20 冻结
+  // 映射 `YPlainArray<T> → { kind:'array', element: valueOf(T) }`，此处 T 本身又是一层
+  // array）。禁止任何「拍平兜底」（§11.1-3 负面清单）。
+  it('AC：双重数组忠实解释——YPlainArray<{…}[]> 元素为数组（#20 映射锁例）', () => {
+    const derived = evaluateModule('type ROOT = { items: YPlainArray<{ name: string; count: number }[]> };');
+    expect(validateSnapshot(derived, { items: [[{ name: 'a', count: 1 }]] }).ok).toBe(true); // 元素是 {…}[]
+    expect(validateSnapshot(derived, { items: [{ name: 'a', count: 1 }] }).ok).toBe(false); // 单层对象不是数组
   });
 
   it('AC：纯值上下文混合联合合法——标量与对象成员并存，任一命中即接受', () => {
