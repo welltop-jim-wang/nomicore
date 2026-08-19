@@ -83,17 +83,17 @@ describe('R3 R-1 — 注释内星面字符列计数按码点（SA4 REJECT R-1 �
 
 describe('R3 R-2 — 重复声明引用图边取全部声明体并集（SA4 REJECT R-2 回归）', () => {
   it('自环版：`type A = { a: A }; type A = string;` 前体自环回边 min-position 胜出 → E106@(1,15)', () => {
-    const issue = expectSingleIssue(parseVfsl('type A = { a: A }; type A = string;'));
+    const issue = expectSingleIssue(parseVfsl('type A = { a: A }; type A = string;\ntype ROOT = {};'));
     expectIssueAt(issue, '106', 1, 15);
   });
 
   it('互环版：`type A = { b: B };\\ntype B = { a: A };\\ntype A = string;` 并集回边 min-position 胜出 → E106@(2,15)', () => {
-    const issue = expectSingleIssue(parseVfsl('type A = { b: B };\ntype B = { a: A };\ntype A = string;'));
+    const issue = expectSingleIssue(parseVfsl('type A = { b: B };\ntype B = { a: A };\ntype A = string;\ntype ROOT = {};'));
     expectIssueAt(issue, '106', 2, 15);
   });
 
   it('单声明自环对照：`type A = { a: A };` → E106@(1,15)，排除「实现没有 E106」的替代解释', () => {
-    const issue = expectSingleIssue(parseVfsl('type A = { a: A };'));
+    const issue = expectSingleIssue(parseVfsl('type A = { a: A };\ntype ROOT = {};'));
     expectIssueAt(issue, '106', 1, 15);
   });
 });

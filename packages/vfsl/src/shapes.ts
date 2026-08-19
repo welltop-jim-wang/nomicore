@@ -1,6 +1,6 @@
 /**
- * 形状体系（设计 §5）：别名解析后的物化形状类别（Cls 六值）+ 四个新错误码
- * E304 / E306 / E307 / E309 的候选收集。
+ * 形状体系（设计 §5）：别名解析后的物化形状类别（Cls 六值）+ 六个错误码
+ * E304 / E306 / E307 / E309（#6）+ E310 / E311（#19 ROOT 完整性）的候选收集。
  *
  * - computeCls：迭代 Tarjan SCC 分解 + SCC 弹出即求值（§5.2 R4）——环 SCC 全成员
  *   取切环合成均匀值（表值与声明序/起点序无关）；分量池 = 顶层分量（§8-19 R5 钉死：
@@ -13,6 +13,9 @@
  *   最外层引入引用记号）。
  * - 桶级扫描：E309（§5.6 R4）——六值 Cls → 规格三分类桶（bucket(map)=bucket(container)），
  *   mixed 成员本身即异类锚；首成员不确定 → 整联合不裁决，中位不确定成员透明跳过。
+ * - 命名空间根完整性（#19，spec §3）：E310 缺 ROOT（锚模块起始 1:1 硬编码）；
+ *   E311 ROOT 非 map 形（锚类型表达式起点记号）——clsOf 一次查询，cycle/unknown
+ *   不裁决（身份归还 E106/E301/终判通道，闭环证明见 #19 设计 §5）。
  *
  * 全部图遍历迭代实现（#5 §15.3 纪律）；「不裁决」类（'unknown'/'cycle'/⊥）的错误
  * 身份归还 E301 / E106 / 终判通道（§5.2/§5.4 闭环证明），无静默 ok:true 路径。
@@ -654,5 +657,27 @@ export function collectShapeCandidates(aliases: AstAlias[]): ShapeCandidate[] {
   for (const r of recordNodes) checkE306(r, strCls, declared, add);
   for (const p of plainArrayNodes) pvCheck(p.arg, containsSync, declared, add);
   for (const u of unionNodes) checkE309(u, cls, declared, add);
+
+  // —— 命名空间根完整性（#19，spec §3「命名空间根」：E310/E311）——
+  // E310：缺 ROOT（锚模块起始 1:1，硬编码——与声明位置、前导 trivia、BOM 无关；
+  // 空文本无记号可锚亦成立）。declared 含 ROOT（含重复声明）即满足存在性——
+  // 重复走既有 E302，不产 E310（semantic.ts:86-93）。
+  if (!declared.has('ROOT')) {
+    add(ErrCode.E310, '缺少 ROOT 别名: 模块未声明名为 ROOT 的命名空间根（大小写是契约，ROOT 固定物化为 Y.Map）', 1, 1);
+  } else {
+    // E311：ROOT 非 map 形，锚 ROOT 的类型表达式起点记号（nodePos）。逐声明体检查
+    // （E302 多体场景每体独立裁决，各自入池由 min-position 裁定）。
+    // cycle/unknown 不裁决——错误身份归还 E106/E301/终判通道（E304/E309 同纪律，
+    // 闭环证明见 #19 设计 §5），无静默 ok:true 路径。
+    for (const a of aliases) {
+      if (a.name !== 'ROOT') continue;
+      const c = clsOf(a.type, cls, declared);
+      if (c === 'cycle' || c === 'unknown') continue;
+      if (c !== 'map') {
+        const p = nodePos(a.type);
+        add(ErrCode.E311, `ROOT 别名非 map 形: ROOT 固定物化为 Y.Map，仅接受裸对象 / YMap / Record / 全 map 形联合（解析后形状: ${c}）`, p.line, p.column);
+      }
+    }
+  }
   return candidates;
 }
