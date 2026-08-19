@@ -43,9 +43,18 @@ export type VfslType =
   | { kind: 'ref'; name: string }
   | { kind: 'object'; fields: VfslField[] }
   | { kind: 'union'; members: VfslType[] }
-  // 标记类型（EBNF Marker 产生式五选一）：name 保留源拼写（大小写是契约），
-  // docs 挂标记记号处；形状约束（E304）留 #6，本切片接受任意 TypeExpr 实参。
-  | { kind: 'marker'; name: 'YMap' | 'YArray' | 'YPlainArray' | 'YLeaf' | 'YXmlFragment'; docs: string[]; type: VfslType };
+  | { kind: 'array'; element: VfslType } // T[]（#6）
+  | { kind: 'record'; key: VfslType; value: VfslType } // Record<K, V>，键约束原样入 IR（#6）
+  | {
+      // 标记类型及其包裹目标（不折叠，AC1 可区分性锚）（#6）；marker 保留源拼写
+      // （大小写是契约）；docs 挂标记记号处（#7 JSDoc 三锚位之一；无 doc 为空数组，
+      // 必填——与 alias/field 的 §7.2 约定同构）。
+      kind: 'marker';
+      marker: 'YMap' | 'YArray' | 'YPlainArray' | 'YLeaf' | 'YXmlFragment';
+      arg: VfslType;
+      docs: string[];
+    }
+  | { kind: 'pattern'; regex: string }; // string & Pattern<"正则"> 解码后原文（#6）
 
 export type ParseVfslResult =
   | { ok: true; module: VfslModule }
