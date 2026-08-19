@@ -15,7 +15,7 @@ Infer the repo from `git remote -v` — `gh` does this automatically when run in
 
 ## Ticket Parent convention (MABF issue-runner)
 
-Ticket issues created by `/to-tickets` **must declare a `## Parent` section pointing at the active integration PR** (currently `PR #2`). The MABF issue-runner reads this section **at dispatch time** to decide the base branch (`## Branch` > `## Parent` > default `main`) — omitting it silently targets `main`, which bypasses the integration chain. Spec/PRD issues are review artifacts and must NOT carry `ready-for-agent` (see `.dsh/skills/to-spec/SKILL.md`); only ticket issues are agent-grabbable.
+Ticket issues created by `/to-tickets` must declare a `## Parent` section **when an integration PR is active** for the current phase. The MABF issue-runner reads this section **at dispatch time** to decide the base branch (`## Branch` > `## Parent` > default `main`). Phase 0–1 的集成 PR #2 已合入 main（2026-08-19）；自 Phase 0b 起 ticket 直接以 `main` 为基（不声明 Parent），除非该阶段另行指定集成 PR。 Spec/PRD issues are review artifacts and must NOT carry `ready-for-agent` (see `.dsh/skills/to-spec/SKILL.md`); only ticket issues are agent-grabbable.
 
 ## Pull requests as a triage surface
 

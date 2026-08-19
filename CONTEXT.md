@@ -41,7 +41,7 @@ _Avoid_: resolveChild 三级前缀匹配（被替换的旧机制）
 _Avoid_: 编译器（compiler）——该词留给「文本 → IR → 派生 schema」的组合入口（Phase 1 contract 包）
 
 **派生 schema（derived schema）**:
-求值器的产出：结构树、值 schema、路径索引的打包；与 IR 同纪律——纯数据、可 JSON 序列化、可内容哈希。
+求值器的产出：结构树、值 schema、路径索引的打包；与 IR 同纪律——纯数据、可 JSON 序列化、可内容哈希；别名按名引用（`ref`）保留，不内联展开（ADR-0003 §4）。
 _Avoid_: 编译产物、DerivedSchema（英文代号）
 
 **整文档校验（validateSnapshot）**:
