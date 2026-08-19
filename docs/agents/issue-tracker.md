@@ -15,7 +15,7 @@ Infer the repo from `git remote -v` — `gh` does this automatically when run in
 
 ## Ticket Parent convention (MABF issue-runner)
 
-Ticket issues created by `/to-tickets` must declare a `## Parent` section **when an integration PR is active** for the current phase. The MABF issue-runner reads this section **at dispatch time** to decide the base branch (`## Branch` > `## Parent` > default `main`). Phase 0–1 的集成 PR #2 已合入 main（2026-08-19）；自 Phase 0b 起 ticket 直接以 `main` 为基（不声明 Parent），除非该阶段另行指定集成 PR。 Spec/PRD issues are review artifacts and must NOT carry `ready-for-agent` (see `.dsh/skills/to-spec/SKILL.md`); only ticket issues are agent-grabbable.
+Ticket issues created by `/to-tickets` must declare a `## Parent` section **when an integration PR is active** for the current phase. The MABF issue-runner reads this section **at dispatch time** to decide the base branch (`## Branch` > `## Parent` > default `main`). 每个 Phase 默认立一个集成 PR：该阶段的设计文档 PR（ADR/规格修订）不直接合 main，转任集成 PR，ticket 一律挂其下，实现与设计同支累积，阶段收官时人工合并——避免「规格已改、实现未跟」的中间态污染 main。Phase 0–1 的集成 PR #2 已合入 main（2026-08-19）；**Phase 0b 的集成 PR 为 #17**（ADR 0003 + ROOT 规格修订 + 实现同支累积）。 Spec/PRD issues are review artifacts and must NOT carry `ready-for-agent` (see `.dsh/skills/to-spec/SKILL.md`); only ticket issues are agent-grabbable.
 
 ## Pull requests as a triage surface
 
