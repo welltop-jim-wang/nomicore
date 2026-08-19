@@ -140,21 +140,21 @@ describe('parseVfsl — 词法相位错误（E201~E203）', () => {
 
 describe('parseVfsl — 引用 / 语义相位错误（E301~E303、E106）', () => {
   it('E301：未知名引用，锚引用记号', () => {
-    const issue = expectSingleIssue(parseVfsl('type A = Foo;'));
+    const issue = expectSingleIssue(parseVfsl('type A = Foo;\ntype ROOT = {};'));
     expectCode(issue, '301');
     expect(issue.line).toBe(1);
     expect(issue.column).toBe(10);
   });
 
   it('E301：多行文本中行列基准 1 起、\\n 为行分隔（§4）', () => {
-    const issue = expectSingleIssue(parseVfsl('type A = string;\n\ntype B = Foo;'));
+    const issue = expectSingleIssue(parseVfsl('type A = string;\n\ntype B = Foo;\ntype ROOT = {};'));
     expectCode(issue, '301');
     expect(issue.line).toBe(3);
     expect(issue.column).toBe(10);
   });
 
   it('E302：类型别名重复声明，锚重复的声明名', () => {
-    const issue = expectSingleIssue(parseVfsl('type A = string; type A = number;'));
+    const issue = expectSingleIssue(parseVfsl('type A = string; type A = number;\ntype ROOT = {};'));
     expectCode(issue, '302');
     expect(issue.line).toBe(1);
     expect(issue.column).toBe(23);
@@ -168,14 +168,14 @@ describe('parseVfsl — 引用 / 语义相位错误（E301~E303、E106）', () =
   });
 
   it('E106：自引用成环，锚再入引用记号', () => {
-    const issue = expectSingleIssue(parseVfsl('type A = { x: A };'));
+    const issue = expectSingleIssue(parseVfsl('type A = { x: A };\ntype ROOT = {};'));
     expectCode(issue, '106');
     expect(issue.line).toBe(1);
     expect(issue.column).toBe(15);
   });
 
   it('E106：互引用成环（A→B→A），锚再入引用记号', () => {
-    const issue = expectSingleIssue(parseVfsl('type A = { b: B };\ntype B = { a: A };'));
+    const issue = expectSingleIssue(parseVfsl('type A = { b: B };\ntype B = { a: A };\ntype ROOT = {};'));
     expectCode(issue, '106');
     expect(issue.line).toBe(2);
     expect(issue.column).toBe(15);

@@ -59,6 +59,7 @@ describe('SA7 补充 — 资源界 / 必终止 / 声明序不变性（设计 §1
       lines.push(`type A${i} = A${i - 1};`);
     }
     lines.push('type R = Record<A20000, string>;');
+    lines.push('type ROOT = {};'); // #19：ROOT 在场消 E310，断言意图不变
     const result = parseVfsl(lines.join('\n'));
     expect(result.ok).toBe(true);
     if (result.ok) {
@@ -75,7 +76,8 @@ describe('SA7 补充 — 资源界 / 必终止 / 声明序不变性（设计 §1
     }
     lines.push('type B40 = string;');
     lines.push('type R = Record<B0, string>;');
-    expect(lines).toHaveLength(82); // 设计 §11.3 登记口径：2k+2 行
+    lines.push('type ROOT = {};');
+    expect(lines).toHaveLength(83); // 设计 §11.3 登记口径：2k+2+ROOT 行（#19 对齐口径：2k+2 声明行 + 1 根行）
     const issue = expectSingleIssue(parseVfsl(lines.join('\n')));
     // min-position 胜出锚 = B0 的第二条声明（strCls(B0)=true → 无 E306 竞争）
     expectIssueAt(issue, '302', 2, 6);
@@ -89,6 +91,7 @@ describe('SA7 补充 — 资源界 / 必终止 / 声明序不变性（设计 §1
     }
     lines.push('type B21 = string;');
     lines.push('type R = Record<B0, string>;');
+    lines.push('type ROOT = {};');
     const started = Date.now();
     const issue = expectSingleIssue(parseVfsl(lines.join('\n')));
     expect(Date.now() - started).toBeLessThan(1000);
@@ -96,8 +99,8 @@ describe('SA7 补充 — 资源界 / 必终止 / 声明序不变性（设计 §1
   });
 
   it('T-R3-2：声明序不变性——2/3 行互换后两模块同报 E304@YMap@(1,10)', () => {
-    const moduleA = 'type X = YMap<T>;\ntype T = U1;\ntype U1 = T | number;';
-    const moduleB = 'type X = YMap<T>;\ntype U1 = T | number;\ntype T = U1;';
+    const moduleA = 'type X = YMap<T>;\ntype T = U1;\ntype U1 = T | number;\ntype ROOT = {};';
+    const moduleB = 'type X = YMap<T>;\ntype U1 = T | number;\ntype T = U1;\ntype ROOT = {};';
     const issueA = expectSingleIssue(parseVfsl(moduleA));
     const issueB = expectSingleIssue(parseVfsl(moduleB));
     expectIssueAt(issueA, '304', 1, 10);
@@ -107,13 +110,13 @@ describe('SA7 补充 — 资源界 / 必终止 / 声明序不变性（设计 §1
   });
 
   it('T-R4-1：容器介导环 → 错误身份归还 E106@A@(2,15)，不误报 E304@YMap（顶层分解分辨位）', () => {
-    const issue = expectSingleIssue(parseVfsl('type T = YMap<A>;\ntype A = { x: A | number };'));
+    const issue = expectSingleIssue(parseVfsl('type T = YMap<A>;\ntype A = { x: A | number };\ntype ROOT = {};'));
     expectIssueAt(issue, '106', 2, 15);
   });
 
   it('T-R4-2：容器介导环 + 环外嵌套 ref（D 不入分量池）→ E106@A@(2,15)', () => {
     const issue = expectSingleIssue(
-      parseVfsl('type T = YMap<A>;\ntype A = { x: A | D };\ntype D = number;'),
+      parseVfsl('type T = YMap<A>;\ntype A = { x: A | D };\ntype D = number;\ntype ROOT = {};'),
     );
     expectIssueAt(issue, '106', 2, 15);
   });
@@ -149,15 +152,18 @@ const TOKENS = [
   '@semantic', '中', '\n', ' ', ' ', '\n',
 ];
 
-/** 合法 fixture 池（变异源）：覆盖六标记 / Record / 交叉 / 嵌套 / 前向引用。 */
+/** 合法 fixture 池（变异源）：覆盖六标记 / Record / 交叉 / 嵌套 / 前向引用。
+ *  #19 勘误（SA2 LOW-1）：第 1~5 条完整 fixture（含 ROOT）确定性 ok:true（≥5 次，
+ *  保证下方 okTrue > 0 不依赖种子）；第 6 条引用未声明 M → E301、第 7 条
+ *  YPlainArray<A>（A 含 YMap）→ E307，整条为 ok:false，贡献 ok:false 支路。 */
 const FIXTURES = [
-  'type A = YMap<{ x: string }>; type B = YArray<number>;',
-  'type A = YPlainArray<YLeaf<string>>; type C = string[];',
-  'type AssetId = string & Pattern<"^[A-Za-z0-9_\\\\-]{1,64}$">;\ntype R = Record<AssetId, number>;',
-  'type R = Record<string, number>; type P = Record<string & Pattern<"\\\\d+">, string>;',
-  'type Inner = { x: YLeaf<string> };\ntype M = YMap<Record<string, YLeaf<Inner>>>;',
-  'type Doc = YXmlFragment<{ assets: Record<string, M>; notes?: YLeaf<string> }>;',
-  'type A = YMap<{ x: string }>;\ntype B = YPlainArray<A>;',
+  'type A = YMap<{ x: string }>; type B = YArray<number>;\ntype ROOT = {};',
+  'type A = YPlainArray<YLeaf<string>>; type C = string[];\ntype ROOT = {};',
+  'type AssetId = string & Pattern<"^[A-Za-z0-9_\\\\-]{1,64}$">;\ntype R = Record<AssetId, number>;\ntype ROOT = {};',
+  'type R = Record<string, number>; type P = Record<string & Pattern<"\\\\d+">, string>;\ntype ROOT = {};',
+  'type Inner = { x: YLeaf<string> };\ntype M = YMap<Record<string, YLeaf<Inner>>>;\ntype ROOT = {};',
+  'type Doc = YXmlFragment<{ assets: Record<string, M>; notes?: YLeaf<string> }>;\ntype ROOT = {};',
+  'type A = YMap<{ x: string }>;\ntype B = YPlainArray<A>;\ntype ROOT = {};',
 ];
 
 /** 单输入契约自检：不抛异常 + 二态 union + 冻结字段形状 + 兜底通道未被触达。 */
@@ -210,7 +216,10 @@ describe('SA7 补充 — fuzz 烟雾（SA4 动态审核重点 #3：不抛异常 
       for (let t = 0; t < length; t += 1) {
         parts.push(pickFrom(TOKENS, rand));
       }
-      if (assertParseContract(parts.join(''))) okTrue += 1;
+      // #19：固定后缀 `type ROOT = {};`——TOKENS 字母表无 ROOT 记号，缺后缀时纯随机
+      // 汤不可能再产出 ok:true（E310 落地后），双支路断言必红；加后缀后空汤
+      // （length===0，固定种子下 26 次）确定性触达 ok:true 支路。
+      if (assertParseContract(parts.join('') + '\ntype ROOT = {};')) okTrue += 1;
       else okFalse += 1;
     }
     // 两侧支路（ok:true / ok:false）均须被真实触达，防「全落一侧」的空转烟雾

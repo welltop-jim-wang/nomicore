@@ -68,7 +68,7 @@ describe('parseVfsl — /** */ 文档注释原文捕获与挂载（issue #7）',
   const DOC_ASSET_2 = ' 资产 ID：键约束由 Pattern 定义，禁 "." 与 "|"';
 
   it('连续两条 doc 逐字保留（含换行/内部 */缩进/@tag 行）、按出现顺序同挂 AssetId，不挂到相邻别名', () => {
-    const text = `/**${DOC_ASSET_1}*/\n\n/**${DOC_ASSET_2}*/\ntype AssetId = string;\ntype Other = number;`;
+    const text = `/**${DOC_ASSET_1}*/\n\n/**${DOC_ASSET_2}*/\ntype AssetId = string;\ntype Other = number;\ntype ROOT = {};`;
     const module = expectOk(parseVfsl(text));
     expectJsonRoundTrip(module);
 
@@ -93,7 +93,7 @@ describe('parseVfsl — /** */ 文档注释原文捕获与挂载（issue #7）',
   const DOC_FIELD = ' @semantic 可选说明字段 ';
 
   it('属性位：/** @semantic 可选说明字段 */ 逐字挂到字段 notes，不挂到同对象其他字段', () => {
-    const text = `type AssetsDoc = {\n  /**${DOC_FIELD}*/\n  notes?: string;\n  keywords: string;\n};`;
+    const text = `type AssetsDoc = {\n  /**${DOC_FIELD}*/\n  notes?: string;\n  keywords: string;\n};\ntype ROOT = {};`;
     const module = expectOk(parseVfsl(text));
     expectJsonRoundTrip(module);
 
@@ -107,7 +107,7 @@ describe('parseVfsl — /** */ 文档注释原文捕获与挂载（issue #7）',
   const DOC_MARKER = ' 审计信息：所有写入留痕 ';
 
   it('标记类型位：doc 挂到 Marker 记号处（YMap 正例，挂载在类型子树内而非别名声明处）', () => {
-    const text = `type Audit = /**${DOC_MARKER}*/ YMap<{ createdBy: string; }>;`;
+    const text = `type Audit = /**${DOC_MARKER}*/ YMap<{ createdBy: string; }>;\ntype ROOT = {};`;
     const module = expectOk(parseVfsl(text));
     expectJsonRoundTrip(module);
 
@@ -119,7 +119,7 @@ describe('parseVfsl — /** */ 文档注释原文捕获与挂载（issue #7）',
   });
 
   it('悬空文档注释（doc 后直到模块末尾无可挂载节点）→ VFSL-E305，锚注释起始（§5 挂载规则）', () => {
-    const result = parseVfsl('type A = string;\n/** 悬空文档注释 */');
+    const result = parseVfsl('type A = string; type ROOT = {};\n/** 悬空文档注释 */');
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.issues).toHaveLength(1);
@@ -133,22 +133,22 @@ describe('parseVfsl — /** */ 文档注释原文捕获与挂载（issue #7）',
 
   it('忽略型注释（// 与 /* */）出现在 doc 与目标节点之间不破坏相邻挂载（§5 挂载规则 ∩ AC2）', () => {
     const doc = ' 前导文档 ';
-    const text = `/**${doc}*/ // 行注释\n/* 块注释 */ type A = string;`;
+    const text = `/**${doc}*/ // 行注释\n/* 块注释 */ type A = string;\ntype ROOT = {};`;
     const module = expectOk(parseVfsl(text));
     expect(JSON.stringify(aliasNode(module, 'A'))).toContain(doc);
   });
 
   it('`//` 与 `/* */` 不影响解析结果：有无比对 IR 一致（AC2）', () => {
-    const plain = expectOk(parseVfsl('type A = string;\ntype B = { x: number };'));
+    const plain = expectOk(parseVfsl('type A = string;\ntype B = { x: number };\ntype ROOT = {};'));
     const withComments = expectOk(
-      parseVfsl('// 行注释\n/* 块注释 */ type A = string; /* 尾部块 */\ntype B = { /* 字段间 */ x: number }; // 行尾'),
+      parseVfsl('// 行注释\n/* 块注释 */ type A = string; /* 尾部块 */\ntype B = { /* 字段间 */ x: number }; // 行尾\ntype ROOT = {};'),
     );
     expect(withComments).toEqual(plain);
   });
 
   it('特例 `/**/` 与 `/***/` 是块注释而非文档注释：有无比对 IR 一致（§5 忽略与捕获边界）', () => {
-    const plain = expectOk(parseVfsl('type A = string;'));
-    const edge = expectOk(parseVfsl('/**/ type A = string; /***/'));
+    const plain = expectOk(parseVfsl('type A = string;\ntype ROOT = {};'));
+    const edge = expectOk(parseVfsl('/**/ type A = string; /***/\ntype ROOT = {};'));
     expect(edge).toEqual(plain);
   });
 });

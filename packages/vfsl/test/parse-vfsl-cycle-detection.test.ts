@@ -115,62 +115,63 @@ function fieldNode(
 
 describe('AC1 — 自引用别名被拒，错误含行列（issue #9 / spec §4）', () => {
   it('容器包裹自引用（spec §4 明示形态）：type A = { x: A[] }; → E106，锚再入引用记号', () => {
-    const issue = expectSingleIssue(parseVfsl('type A = { x: A[] };'));
+    const issue = expectSingleIssue(parseVfsl('type A = { x: A[] };\ntype ROOT = {};'));
     expectIssueAt(issue, '106', 1, 15);
   });
 
   it('多行对象自引用：锚再入引用记号的行列（line 2, column 6）', () => {
-    const issue = expectSingleIssue(parseVfsl('type A = {\n  x: A;\n};'));
+    const issue = expectSingleIssue(parseVfsl('type A = {\n  x: A;\n};\ntype ROOT = {};'));
     expectIssueAt(issue, '106', 2, 6);
   });
 
   it('标记实参自引用：type A = YArray<A>; → E106（引用边来自 Marker 实参）', () => {
-    const issue = expectSingleIssue(parseVfsl('type A = YArray<A>;'));
+    const issue = expectSingleIssue(parseVfsl('type A = YArray<A>;\ntype ROOT = {};'));
     expectIssueAt(issue, '106', 1, 17);
   });
 });
 
 describe('AC2 — 互引用环（A→B→A）被拒（issue #9 / spec §4）', () => {
   it('经标记传递的两节点环 → E106，锚再入引用记号，消息含环路径 A → B → A', () => {
-    const issue = expectSingleIssue(parseVfsl('type A = YArray<B>;\ntype B = YMap<{ a: A }>;'));
+    const issue = expectSingleIssue(parseVfsl('type A = YArray<B>;\ntype B = YMap<{ a: A }>;\ntype ROOT = {};'));
     expectIssueAt(issue, '106', 2, 20);
     // §4：消息携带环路径（如 `A → B → A`）
     expect(issue.message).toContain('A → B → A');
   });
 
   it('三节点环（A→B→C→A）→ E106，消息含完整环路径 A → B → C → A', () => {
-    const issue = expectSingleIssue(parseVfsl('type A = { b: B };\ntype B = { c: C };\ntype C = { a: A };'));
+    const issue = expectSingleIssue(parseVfsl('type A = { b: B };\ntype B = { c: C };\ntype C = { a: A };\ntype ROOT = {};'));
     expectIssueAt(issue, '106', 3, 15);
     expect(issue.message).toContain('A → B → C → A');
   });
 
   it('边界：纯别名链环（无容器包裹）type A = B; type B = A; → E106', () => {
-    const issue = expectSingleIssue(parseVfsl('type A = B;\ntype B = A;'));
+    const issue = expectSingleIssue(parseVfsl('type A = B;\ntype B = A;\ntype ROOT = {};'));
     expectIssueAt(issue, '106', 2, 10);
     expect(issue.message).toContain('A → B → A');
   });
 
   it('经 Record 值位成环（A→B→A）→ E106，锚再入引用记号', () => {
-    const issue = expectSingleIssue(parseVfsl('type A = Record<string, B>;\ntype B = { a: A };'));
+    const issue = expectSingleIssue(parseVfsl('type A = Record<string, B>;\ntype B = { a: A };\ntype ROOT = {};'));
     expectIssueAt(issue, '106', 2, 15);
     expect(issue.message).toContain('A → B → A');
   });
 
   it('Record 键位自引用环：type A = Record<A, string>; → E106（边源 = Record 键），锚再入引用记号 (1,17)，消息含 A → A', () => {
-    const issue = expectSingleIssue(parseVfsl('type A = Record<A, string>;'));
+    const issue = expectSingleIssue(parseVfsl('type A = Record<A, string>;\ntype ROOT = {};'));
     expectIssueAt(issue, '106', 1, 17);
     expect(issue.message).toContain('A → A');
   });
 
   it('联合成员位互引用环：type A = { x: B }; type B = A | { y: string }; → E106（边源 = 联合成员），锚再入引用记号 (2,10)，消息含 A → B → A', () => {
-    const issue = expectSingleIssue(parseVfsl('type A = { x: B };\ntype B = A | { y: string };'));
+    const issue = expectSingleIssue(parseVfsl('type A = { x: B };\ntype B = A | { y: string };\ntype ROOT = {};'));
     expectIssueAt(issue, '106', 2, 10);
     expect(issue.message).toContain('A → B → A');
   });
 });
 
 describe('AC3 — vfs3.assets fixture 全量解析为完整 IR，JSDoc 原文挂载正确（issue #9 / spec §10 ∩ §5）', () => {
-  // §10 附录 fixture 逐字复刻（含 Pattern 实参反斜杠双写 `\\-`，§2 注记 6）
+  // §10 附录 fixture 逐字复刻（含 Pattern 实参反斜杠双写 `\\-`，§2 注记 6；#19 修订版：
+  // 根为 ROOT=YMap，YXmlFragment 降位至 text.body——canonical 同源 parse-vfsl-root-convention）
   const fixture = `
 /** vfs3.assets — 依据 issue #9 描述还原（原设计文档缺位） */
 
@@ -186,14 +187,14 @@ type Audit = YMap<{
 /** 资产实体：按 kind 判别的封闭联合 */
 type AssetEntity =
   | { kind: "image"; url: YLeaf<string>; width: YLeaf<number>; height: YLeaf<number>; audit: Audit }
-  | { kind: "text"; body: YLeaf<string>; audit: Audit }
+  | { kind: "text"; body: YXmlFragment<{ paragraphs: YArray<YLeaf<string>> }>; audit: Audit }
   | { kind: "file"; name: YLeaf<string>; size: YLeaf<number>; tags: YArray<YLeaf<string>>; audit: Audit };
 
 /** 附件：与 Yjs 同步无关的纯值数组 */
 type Attachments = YPlainArray<YLeaf<string>>;
 
-/** AssetsDoc：命名空间根文档，assets 键集受 AssetId 的 Pattern 约束 */
-type AssetsDoc = YXmlFragment<{
+/** ROOT：命名空间根文档，assets 键集受 AssetId 的 Pattern 约束 */
+type ROOT = YMap<{
   assets: Record<AssetId, AssetEntity>;
   attachments: Attachments;
   audit: Audit;
@@ -209,13 +210,13 @@ type AssetsDoc = YXmlFragment<{
   const DOC_AUDIT = ' 审计信息：所有写入留痕 ';
   const DOC_ASSET_ENTITY = ' 资产实体：按 kind 判别的封闭联合 ';
   const DOC_ATTACHMENTS = ' 附件：与 Yjs 同步无关的纯值数组 ';
-  const DOC_ASSETSDOC = ' AssetsDoc：命名空间根文档，assets 键集受 AssetId 的 Pattern 约束 ';
+  const DOC_ROOT = ' ROOT：命名空间根文档，assets 键集受 AssetId 的 Pattern 约束 ';
   const DOC_NOTES = ' @semantic 可选说明字段 ';
 
   it('fixture 全量解析 ok: true，五个别名按声明顺序齐全（幸福路径）', () => {
     const module = expectOk(parseVfsl(fixture));
     const names = (module as { aliases?: { name: string }[] }).aliases?.map((a) => a.name);
-    expect(names).toEqual(['AssetId', 'Audit', 'AssetEntity', 'Attachments', 'AssetsDoc']);
+    expect(names).toEqual(['AssetId', 'Audit', 'AssetEntity', 'Attachments', 'ROOT']);
   });
 
   it('六标记全部进入 IR：Pattern / YMap / YLeaf / YArray / YPlainArray / YXmlFragment（spec §10 覆盖声明）', () => {
@@ -245,10 +246,17 @@ type AssetsDoc = YXmlFragment<{
     expect(attachmentsType.arg?.arg?.kind).toBe('primitive');
     expect(attachmentsType.arg?.arg?.name).toBe('string');
 
-    // AssetsDoc → YXmlFragment
-    const assetsDocType = aliasNode(module, 'AssetsDoc').type as { kind?: string; marker?: string };
-    expect(assetsDocType.kind).toBe('marker');
-    expect(assetsDocType.marker).toBe('YXmlFragment');
+    // ROOT → YMap（#19 修订版 §10 根形态）
+    const rootType = aliasNode(module, 'ROOT').type as { kind?: string; marker?: string };
+    expect(rootType.kind).toBe('marker');
+    expect(rootType.marker).toBe('YMap');
+    // YXmlFragment 降位至 text 成员 body（#19 修订版 §10：YXmlFragment 不透明修订）
+    const textMember = (aliasNode(module, 'AssetEntity').type as {
+      members?: { fields?: { name: string; type?: unknown }[] }[];
+    }).members?.[1];
+    const body = textMember?.fields?.find((f) => f.name === 'body')?.type as { kind?: string; marker?: string };
+    expect(body.kind).toBe('marker');
+    expect(body.marker).toBe('YXmlFragment');
 
     // YArray 出现于嵌套位：AssetEntity 的 "file" 成员 tags: YArray<YLeaf<string>>
     const fileMember = (aliasNode(module, 'AssetEntity').type as {
@@ -265,7 +273,7 @@ type AssetsDoc = YXmlFragment<{
     expect(tags.arg?.marker).toBe('YLeaf');
 
     // YLeaf 出现于嵌套位：keywords: YLeaf<string>[] 的数组元素为 YLeaf 标记
-    const keywords = fieldNode(aliasNode(module, 'AssetsDoc'), 'keywords').type as {
+    const keywords = fieldNode(aliasNode(module, 'ROOT'), 'keywords').type as {
       kind?: string;
       element?: { kind?: string; marker?: string };
     };
@@ -282,15 +290,15 @@ type AssetsDoc = YXmlFragment<{
     expect(aliasNode(module, 'Audit').docs).toEqual([DOC_AUDIT]);
     expect(aliasNode(module, 'AssetEntity').docs).toEqual([DOC_ASSET_ENTITY]);
     expect(aliasNode(module, 'Attachments').docs).toEqual([DOC_ATTACHMENTS]);
-    expect(aliasNode(module, 'AssetsDoc').docs).toEqual([DOC_ASSETSDOC]);
+    expect(aliasNode(module, 'ROOT').docs).toEqual([DOC_ROOT]);
 
     // 属性锚位：/** @semantic 可选说明字段 */ 逐字挂到字段 notes（docs 非空），
     // 同对象其他字段不泄漏（docs 为空数组——#7 §7.2 必填契约）
-    const notes = fieldNode(aliasNode(module, 'AssetsDoc'), 'notes');
+    const notes = fieldNode(aliasNode(module, 'ROOT'), 'notes');
     expect(notes.docs).toEqual([DOC_NOTES]);
     expect(notes.optional).toBe(true);
     for (const other of ['assets', 'attachments', 'audit', 'keywords']) {
-      expect(fieldNode(aliasNode(module, 'AssetsDoc'), other).docs).toEqual([]);
+      expect(fieldNode(aliasNode(module, 'ROOT'), other).docs).toEqual([]);
     }
   });
 
@@ -311,7 +319,7 @@ type AssetsDoc = YXmlFragment<{
     expect(kinds).toEqual(['image', 'text', 'file']);
 
     // assets: Record<AssetId, AssetEntity> —— 键/值经别名引用进 IR（键约束未折叠）
-    const assets = fieldNode(aliasNode(module, 'AssetsDoc'), 'assets').type as {
+    const assets = fieldNode(aliasNode(module, 'ROOT'), 'assets').type as {
       kind?: string;
       key?: { kind?: string; name?: string };
       value?: { kind?: string; name?: string };
@@ -338,14 +346,14 @@ type Audit = YMap<{
 /** 资产实体：按 kind 判别的封闭联合 */
 type AssetEntity =
   | { kind: "image"; url: YLeaf<string>; width: YLeaf<number>; height: YLeaf<number>; audit: Audit }
-  | { kind: "text"; body: YLeaf<string>; audit: Audit }
+  | { kind: "text"; body: YXmlFragment<{ paragraphs: YArray<YLeaf<string>> }>; audit: Audit }
   | { kind: "file"; name: YLeaf<string>; size: YLeaf<number>; tags: YArray<YLeaf<string>>; audit: Audit };
 
 /** 附件：与 Yjs 同步无关的纯值数组 */
 type Attachments = YPlainArray<YLeaf<string>>;
 
-/** AssetsDoc：命名空间根文档，assets 键集受 AssetId 的 Pattern 约束 */
-type AssetsDoc = YXmlFragment<{
+/** ROOT：命名空间根文档，assets 键集受 AssetId 的 Pattern 约束 */
+type ROOT = YMap<{
   assets: Record<AssetId, AssetEntity>;
   attachments: Attachments;
   audit: Audit;
@@ -376,6 +384,7 @@ type AssetsDoc = YXmlFragment<{
       '  plain: YPlainArray<{ a: string }>;',
       '}>;',
       'type Root = { first: Nested; second?: P[]; third: "x" | "y" };',
+      'type ROOT = {};',
     ].join('\n');
     const module = expectOk(parseVfsl(text));
     expectJsonRoundTrip(module);

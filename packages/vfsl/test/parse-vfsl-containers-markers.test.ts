@@ -102,96 +102,96 @@ function jsonContainsString(value: unknown, target: string): boolean {
 
 describe('issue #6 — 正例：六标记 / 容器 / 交叉解析进 IR（AC1·AC2·AC3 幸福路径）', () => {
   it('YMap 正例解析进 IR，且与裸对象类型可区分（标记不被折叠）', () => {
-    const module = expectOk(parseVfsl('type A = YMap<{ x: string }>;'));
+    const module = expectOk(parseVfsl('type A = YMap<{ x: string }>;\ntype ROOT = {};'));
     expectJsonRoundTrip(module);
     expect(JSON.stringify(module)).toContain('A');
-    expectDistinct('type A = YMap<{ x: string }>;', 'type A = { x: string };');
+    expectDistinct('type A = YMap<{ x: string }>;\ntype ROOT = {};', 'type A = { x: string };\ntype ROOT = {};');
   });
 
   it('YArray 正例解析进 IR，且与裸标量可区分', () => {
-    const module = expectOk(parseVfsl('type A = YArray<string>;'));
+    const module = expectOk(parseVfsl('type A = YArray<string>;\ntype ROOT = {};'));
     expectJsonRoundTrip(module);
     expect(JSON.stringify(module)).toContain('A');
-    expectDistinct('type A = YArray<string>;', 'type A = string;');
+    expectDistinct('type A = YArray<string>;\ntype ROOT = {};', 'type A = string;\ntype ROOT = {};');
   });
 
   it('YPlainArray 正例解析进 IR（子树纯值上下文：YLeaf 允许）', () => {
-    const module = expectOk(parseVfsl('type A = YPlainArray<YLeaf<string>>;'));
+    const module = expectOk(parseVfsl('type A = YPlainArray<YLeaf<string>>;\ntype ROOT = {};'));
     expectJsonRoundTrip(module);
     expect(JSON.stringify(module)).toContain('A');
-    expectDistinct('type A = YPlainArray<number>;', 'type A = number;');
+    expectDistinct('type A = YPlainArray<number>;\ntype ROOT = {};', 'type A = number;\ntype ROOT = {};');
   });
 
   it('YLeaf 正例解析进 IR，且与裸标量可区分', () => {
-    const module = expectOk(parseVfsl('type A = YLeaf<string>;'));
+    const module = expectOk(parseVfsl('type A = YLeaf<string>;\ntype ROOT = {};'));
     expectJsonRoundTrip(module);
     expect(JSON.stringify(module)).toContain('A');
-    expectDistinct('type A = YLeaf<string>;', 'type A = string;');
+    expectDistinct('type A = YLeaf<string>;\ntype ROOT = {};', 'type A = string;\ntype ROOT = {};');
   });
 
   it('YXmlFragment 正例解析进 IR（保留名，只识别、不做结构解释），且与裸对象可区分', () => {
-    const module = expectOk(parseVfsl('type A = YXmlFragment<{ title: string }>;'));
+    const module = expectOk(parseVfsl('type A = YXmlFragment<{ title: string }>;\ntype ROOT = {};'));
     expectJsonRoundTrip(module);
     expect(JSON.stringify(module)).toContain('A');
     expectDistinct(
-      'type A = YXmlFragment<{ title: string }>;',
-      'type A = { title: string };',
+      'type A = YXmlFragment<{ title: string }>;\ntype ROOT = {};',
+      'type A = { title: string };\ntype ROOT = {};',
     );
   });
 
   it('Pattern 正例：string & Pattern<"正则"> 解析进 IR，正则原文入 IR（AC3 唯一交叉正例）', () => {
-    const module = expectOk(parseVfsl('type A = string & Pattern<"^[a-z]+$">;'));
+    const module = expectOk(parseVfsl('type A = string & Pattern<"^[a-z]+$">;\ntype ROOT = {};'));
     expectJsonRoundTrip(module);
     const serialized = JSON.stringify(module);
     expect(serialized).toContain('A');
     // Pattern 键约束进入 IR：正则实参解码后文本必须在 IR 中（AC2 键约束入 IR）
     expect(serialized).toContain('^[a-z]+$');
-    expectDistinct('type A = string & Pattern<"^[a-z]+$">;', 'type A = string;');
+    expectDistinct('type A = string & Pattern<"^[a-z]+$">;\ntype ROOT = {};', 'type A = string;\ntype ROOT = {};');
   });
 
   it('T[] 数组后缀正例解析进 IR（ArrayType），且与裸标量可区分', () => {
-    const module = expectOk(parseVfsl('type A = string[];'));
+    const module = expectOk(parseVfsl('type A = string[];\ntype ROOT = {};'));
     expectJsonRoundTrip(module);
     expect(JSON.stringify(module)).toContain('A');
-    expectDistinct('type A = string[];', 'type A = string;');
+    expectDistinct('type A = string[];\ntype ROOT = {};', 'type A = string;\ntype ROOT = {};');
   });
 
   it('Record 正例解析进 IR（RecordType），且与裸值类型可区分', () => {
-    const module = expectOk(parseVfsl('type A = Record<string, number>;'));
+    const module = expectOk(parseVfsl('type A = Record<string, number>;\ntype ROOT = {};'));
     expectJsonRoundTrip(module);
     expect(JSON.stringify(module)).toContain('A');
-    expectDistinct('type A = Record<string, number>;', 'type A = number;');
+    expectDistinct('type A = Record<string, number>;\ntype ROOT = {};', 'type A = number;\ntype ROOT = {};');
   });
 
   it('Record 键类型解析进 IR：键为 Pattern 约束别名（经别名链）与裸 string 键可区分（AC2）', () => {
-    const text = 'type AssetId = string & Pattern<"^[a-z]+$">;\ntype A = Record<AssetId, number>;';
+    const text = 'type AssetId = string & Pattern<"^[a-z]+$">;\ntype A = Record<AssetId, number>;\ntype ROOT = {};';
     const module = expectOk(parseVfsl(text));
     expectJsonRoundTrip(module);
     expect(JSON.stringify(module)).toContain('AssetId');
     // Pattern 键约束进入 IR（解码后正则原文）
     expect(jsonContainsString(module, '^[a-z]+$')).toBe(true);
     // 键类型（约束别名 vs 裸 string）不同 → IR 必须不同
-    expectDistinct(text, 'type A = Record<string, number>;');
+    expectDistinct(text, 'type A = Record<string, number>;\ntype ROOT = {};');
   });
 
   it('Record 键直接为 string & Pattern<…>（E306 的 string 形）正例解析进 IR（AC2 直接形态）', () => {
-    const module = expectOk(parseVfsl('type A = Record<string & Pattern<"^[a-z]+$">, number>;'));
+    const module = expectOk(parseVfsl('type A = Record<string & Pattern<"^[a-z]+$">, number>;\ntype ROOT = {};'));
     expectJsonRoundTrip(module);
     expect(JSON.stringify(module)).toContain('A');
   });
 
   it('标记嵌套（AC1）：YMap 包 Record 包 YLeaf，最内层实参进入 IR', () => {
-    const text = 'type A = YMap<Record<string, YLeaf<string>>>;';
+    const text = 'type A = YMap<Record<string, YLeaf<string>>>;\ntype ROOT = {};';
     const module = expectOk(parseVfsl(text));
     expectJsonRoundTrip(module);
     expect(JSON.stringify(module)).toContain('A');
     // 嵌套包裹目标逐层进入 IR：最内层 YLeaf 实参不同 → 整体 IR 必须不同
-    expectDistinct(text, 'type A = YMap<Record<string, YLeaf<number>>>;');
+    expectDistinct(text, 'type A = YMap<Record<string, YLeaf<number>>>;\ntype ROOT = {};');
   });
 
   it('YArray 任意实参：嵌套 YArray 与标量联合均正例', () => {
-    expectOk(parseVfsl('type A = YArray<YArray<string>>;'));
-    expectOk(parseVfsl('type A = YArray<string | number>;'));
+    expectOk(parseVfsl('type A = YArray<YArray<string>>;\ntype ROOT = {};'));
+    expectOk(parseVfsl('type A = YArray<string | number>;\ntype ROOT = {};'));
   });
 
   it('spec §10 vfs3.assets 全量 fixture 端到端解析（六标记全出现 + 嵌套 + Record + T[] + ?:）', () => {
@@ -210,14 +210,14 @@ type Audit = YMap<{
 /** 资产实体：按 kind 判别的封闭联合 */
 type AssetEntity =
   | { kind: "image"; url: YLeaf<string>; width: YLeaf<number>; height: YLeaf<number>; audit: Audit }
-  | { kind: "text"; body: YLeaf<string>; audit: Audit }
+  | { kind: "text"; body: YXmlFragment<{ paragraphs: YArray<YLeaf<string>> }>; audit: Audit }
   | { kind: "file"; name: YLeaf<string>; size: YLeaf<number>; tags: YArray<YLeaf<string>>; audit: Audit };
 
 /** 附件：与 Yjs 同步无关的纯值数组 */
 type Attachments = YPlainArray<YLeaf<string>>;
 
-/** AssetsDoc：命名空间根文档，assets 键集受 AssetId 的 Pattern 约束 */
-type AssetsDoc = YXmlFragment<{
+/** ROOT：命名空间根文档，assets 键集受 AssetId 的 Pattern 约束 */
+type ROOT = YMap<{
   assets: Record<AssetId, AssetEntity>;
   attachments: Attachments;
   audit: Audit;
@@ -229,7 +229,7 @@ type AssetsDoc = YXmlFragment<{
     const module = expectOk(parseVfsl(fixture));
     expectJsonRoundTrip(module);
     const serialized = JSON.stringify(module);
-    for (const name of ['AssetId', 'Audit', 'AssetEntity', 'Attachments', 'AssetsDoc']) {
+    for (const name of ['AssetId', 'Audit', 'AssetEntity', 'Attachments', 'ROOT']) {
       expect(serialized).toContain(name);
     }
     // Pattern 键约束进入 IR：双写反斜杠解码后的正则原文（§2 注记 6）
@@ -239,47 +239,47 @@ type AssetsDoc = YXmlFragment<{
 
 describe('issue #6 — 反例：标记实参形状 / Record 键 / 纯值上下文 / 混合联合（红灯）', () => {
   it('E304：YMap 实参非对象形（标量），锚标记记号', () => {
-    const issue = expectSingleIssue(parseVfsl('type A = YMap<string>;'));
+    const issue = expectSingleIssue(parseVfsl('type A = YMap<string>;\ntype ROOT = {};'));
     expectIssueAt(issue, '304', 1, 10);
   });
 
   it('E304：YLeaf 实参容器形（对象），锚标记记号', () => {
-    const issue = expectSingleIssue(parseVfsl('type A = YLeaf<{ x: string }>;'));
+    const issue = expectSingleIssue(parseVfsl('type A = YLeaf<{ x: string }>;\ntype ROOT = {};'));
     expectIssueAt(issue, '304', 1, 10);
   });
 
   it('E304：YXmlFragment 实参非对象形（标量），锚标记记号', () => {
-    const issue = expectSingleIssue(parseVfsl('type A = YXmlFragment<number>;'));
+    const issue = expectSingleIssue(parseVfsl('type A = YXmlFragment<number>;\ntype ROOT = {};'));
     expectIssueAt(issue, '304', 1, 10);
   });
 
   it('E304 沿别名链判定：YLeaf 实参为解析到对象形的别名，锚标记记号', () => {
-    const issue = expectSingleIssue(parseVfsl('type B = { x: number };\ntype A = YLeaf<B>;'));
+    const issue = expectSingleIssue(parseVfsl('type B = { x: number };\ntype A = YLeaf<B>;\ntype ROOT = {};'));
     expectIssueAt(issue, '304', 2, 10);
   });
 
   it('E306：Record 键类型非 string 形（number），锚键类型起点', () => {
-    const issue = expectSingleIssue(parseVfsl('type R = Record<number, string>;'));
+    const issue = expectSingleIssue(parseVfsl('type R = Record<number, string>;\ntype ROOT = {};'));
     expectIssueAt(issue, '306', 1, 17);
   });
 
   it('E306 沿别名链判定：键为解析到 number 形的别名，锚键类型起点', () => {
-    const issue = expectSingleIssue(parseVfsl('type B = number;\ntype R = Record<B, string>;'));
+    const issue = expectSingleIssue(parseVfsl('type B = number;\ntype R = Record<B, string>;\ntype ROOT = {};'));
     expectIssueAt(issue, '306', 2, 17);
   });
 
   it('E307：同步标记直接位于纯值上下文（YPlainArray 子树），锚标记记号', () => {
-    const issue = expectSingleIssue(parseVfsl('type A = YPlainArray<YMap<{ x: string }>>;'));
+    const issue = expectSingleIssue(parseVfsl('type A = YPlainArray<YMap<{ x: string }>>;\ntype ROOT = {};'));
     expectIssueAt(issue, '307', 1, 22);
   });
 
   it('E307 经别名间接引入纯值上下文，锚引入别名的引用记号', () => {
-    const issue = expectSingleIssue(parseVfsl('type A = YMap<{ x: string }>;\ntype B = YPlainArray<A>;'));
+    const issue = expectSingleIssue(parseVfsl('type A = YMap<{ x: string }>;\ntype B = YPlainArray<A>;\ntype ROOT = {};'));
     expectIssueAt(issue, '307', 2, 22);
   });
 
   it('E309：同步物化上下文混合联合（容器形与标量形并存），锚首个异类成员起点', () => {
-    const issue = expectSingleIssue(parseVfsl('type T = { x: { a: string } | number };'));
+    const issue = expectSingleIssue(parseVfsl('type T = { x: { a: string } | number };\ntype ROOT = {};'));
     expectIssueAt(issue, '309', 1, 31);
   });
 });
@@ -306,11 +306,11 @@ describe('issue #6 — 交叉类型契约（AC3：string & Pattern<"…"> 是唯
   });
 
   it('§9.1：Pattern 实参解码后非合法正则不在方言层校验 → ok: true', () => {
-    expectOk(parseVfsl('type A = string & Pattern<"[">;'));
+    expectOk(parseVfsl('type A = string & Pattern<"[">;\ntype ROOT = {};'));
   });
 
   it('§2 注记 6：正则实参反斜杠双写（\\d），解码后单反斜杠原文进 IR', () => {
-    const module = expectOk(parseVfsl('type A = string & Pattern<"\\\\d+">;'));
+    const module = expectOk(parseVfsl('type A = string & Pattern<"\\\\d+">;\ntype ROOT = {};'));
     expectJsonRoundTrip(module);
     expect(jsonContainsString(module, '\\d+')).toBe(true);
   });
@@ -318,18 +318,18 @@ describe('issue #6 — 交叉类型契约（AC3：string & Pattern<"…"> 是唯
 
 describe('issue #6 — 大小写契约（AC4：变体拼写不是合法标记，按未知名报错）', () => {
   it('精确拼写 YMap 合法；同构文本 ymap 变体按未知名 E301（§6）', () => {
-    expectOk(parseVfsl('type A = YMap<{ x: string }>;'));
-    const issue = expectSingleIssue(parseVfsl('type A = ymap<{ x: string }>;'));
+    expectOk(parseVfsl('type A = YMap<{ x: string }>;\ntype ROOT = {};'));
+    const issue = expectSingleIssue(parseVfsl('type A = ymap<{ x: string }>;\ntype ROOT = {};'));
     expectIssueAt(issue, '301', 1, 10);
   });
 
   it('YLEaf 变体（大小写错误）按未知名 E301，锚引用记号', () => {
-    const issue = expectSingleIssue(parseVfsl('type A = YLEaf<string>;'));
+    const issue = expectSingleIssue(parseVfsl('type A = YLEaf<string>;\ntype ROOT = {};'));
     expectIssueAt(issue, '301', 1, 10);
   });
 
   it('§6：变体拼写可声明为普通别名（不进入保留名），声明后引用合法', () => {
-    const module = expectOk(parseVfsl('type yleaf = string;\ntype A = yleaf;'));
+    const module = expectOk(parseVfsl('type yleaf = string;\ntype A = yleaf;\ntype ROOT = {};'));
     expectJsonRoundTrip(module);
     const serialized = JSON.stringify(module);
     expect(serialized).toContain('yleaf');
