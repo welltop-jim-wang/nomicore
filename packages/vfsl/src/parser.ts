@@ -6,28 +6,32 @@
  * 接缝，§3.3）。「文本序首个错误胜出」由「单向左到右消费记号流 + 任何位置读到
  * error 记号即以该码失败」构造达成（§4.1）。
  *
- * 资源界（#5 §15.2 → #7 R2 §4.6）：使 parseTypeExpr 递归的入口有两个——
- * parseObjectType（`{`）与 parseIdentType 的 marker 分支（五标记 `<`）——共用统一
- * 类型嵌套深度预算 `MAX_TYPE_DEPTH = 100`（原 MAX_OBJECT_DEPTH 更名，值与 v1 承诺
- * 不变；当前嵌套深度：入口 +1、正常出口 -1，§10.7 权威读法）守卫递归栈与序列化
- * 两个资源界；联合成员在 while 循环内逐个解析即返回不叠栈、字面量/原始/ref 是
- * 叶子、generic-diag 平衡扫描是循环；超限 → E100 资源上限口径，锚预算耗尽处构造
- * 起点记号（`{` / 标记 Ident）。v1 生命周期内不得调升/调降（行为稳定承诺）。
+ * 资源界（#5 §15.2 → #7 R2 §4.6 → #6 §4.6 统一）：使 parseTypeExpr 递归的入口有
+ * 三个——parseObjectType（`{`）/ parseMarkerType（五标记 `<`）/ parseRecordType
+ * （`Record<`）——共用统一类型嵌套深度预算 `MAX_TYPE_NESTING = 100`（#7 曾更名
+ * MAX_TYPE_DEPTH，#6 统一现名，值与 v1 承诺不变；当前嵌套深度：入口 +1、正常出口
+ * -1，§10.7 权威读法）守卫递归栈与序列化两个资源界；`[]` 后缀串的第 k 个 `[`
+ * 检查 `depth + k > MAX`（AST/IR 深度维度）；超限 → E100 资源上限口径，锚预算
+ * 耗尽处容器构造起始记号（`{` / 标记名 / `Record` / 该 `[`）。
+ * v1 生命周期内不得调升/调降（行为稳定承诺）。
  */
 import { ErrCode, makeIssue } from './errors.js';
 import type { DocLead, Token } from './tokenizer.js';
 import type { VfslIssue } from './ir.js';
 
-/** 类型嵌套深度预算（§4.6；统一计数器：对象 `{` 与 marker `<` 两个递归入口共用；
- * 不导出、不进公共面，变更须回总控走设计修订）。 */
-const MAX_TYPE_DEPTH = 100;
+/** 类型嵌套深度预算（§4.6；统一计数器：对象 `{`、marker `<`、`Record<` 三个递归
+ * 入口共用 + `[]` 后缀串按 depth+k 计；不导出、不进公共面，变更须回总控走设计修订）。 */
+const MAX_TYPE_NESTING = 100;
 
 export interface Pos {
   line: number;
   column: number;
 }
 
-/** 内部 AST（带位置，不导出为契约；锚点为 #6~#9 的 E304/E309 预留）。 */
+/** 六标记的标准拼写（规格 §6 大小写契约）。 */
+export type MarkerName = 'YMap' | 'YArray' | 'YPlainArray' | 'YLeaf' | 'YXmlFragment';
+
+/** 内部 AST（带位置，不导出为契约；锚点为 E304/E306/E307/E309 预留）。 */
 export type AstType =
   | { kind: 'primitive'; name: 'string' | 'number' | 'boolean' | 'null' | 'unknown'; pos: Pos }
   | { kind: 'literal'; value: string | number; pos: Pos }
@@ -35,8 +39,12 @@ export type AstType =
   | { kind: 'generic-diag'; name: string; namePos: Pos; ltPos: Pos } // 判定顺序第 6 条延迟构造（§5.4）
   | { kind: 'object'; fields: AstField[]; pos: Pos }
   | { kind: 'union'; members: AstType[]; pos: Pos }
-  // 标记类型（EBNF Marker 产生式，§4.3）：pos 保留——#6 的 E304 锚点是「标记记号」
-  | { kind: 'marker'; name: 'YMap' | 'YArray' | 'YPlainArray' | 'YLeaf' | 'YXmlFragment'; type: AstType; pos: Pos; docs: string[] };
+  | { kind: 'array'; element: AstType; pos: Pos } // T[]；pos = 构造起始（primary 起点）
+  | { kind: 'record'; key: AstType; value: AstType; pos: Pos } // pos = 'Record' 记号
+  // 标记类型（EBNF Marker 产生式，§4.3）：pos 保留——E304 锚点是「标记记号」；
+  // docs 为 #7 JSDoc 挂载（M3 回收；无 doc 时为空数组，必填）
+  | { kind: 'marker'; marker: MarkerName; arg: AstType; pos: Pos; docs: string[] }
+  | { kind: 'pattern'; regex: string; pos: Pos }; // pos = 'string' 记号（PatternType 构造起点）
 
 export interface AstField {
   name: string;
@@ -260,36 +268,41 @@ class Parser {
     return { kind: 'union', members, pos: nodePos(members[0]!) };
   }
 
-  // —— 后缀类型（完整 v1 的 ArrayType 位：`[]` 属切片外构造，拒绝）——
+  // —— 后缀类型（ArrayType 位：`[]` 正常消费为 array 节点，§4.2）——
   private parsePostfixType(): AstType {
-    const t = this.parsePrimaryType();
+    let t = this.parsePrimaryType();
+    let k = 0;
     while (this.peekPunct('[')) {
-      // 不消费循环——首个错误即败；锚 '[' 记号（§8：v1 合法、本切片未实现）
-      throw this.err(ErrCode.E100, '数组类型后缀 [] 属 v1 合法构造、本切片未实现（待后续 issue 落地）', this.peek());
+      k += 1;
+      // 预算守卫（§4.6）：`[]` 循环不叠解析栈，但 array 节点链按 AST/IR 深度计费
+      if (this.depth + k > MAX_TYPE_NESTING) {
+        throw this.err(
+          ErrCode.E100,
+          `嵌套深度超过实现上限 ${MAX_TYPE_NESTING}（实现资源上限，非方言判定；该文本可从 v1 文法推导）`,
+          this.peek(),
+        );
+      }
+      this.next(); // 消费 '['
+      const close = this.next();
+      if (close === undefined || !(close.kind === 'punct' && close.value === ']')) {
+        throw this.err(ErrCode.E100, `期望 ']'，实际 ${this.tokenDesc(close)}`, close);
+      }
+      t = { kind: 'array', element: t, pos: nodePos(t) };
     }
     this.dispatchContinuation(t);
     return t;
   }
 
   /**
-   * 类型表达式的续位分派（§5.2）：'&' 族四案例（【R2 · SA2 #6】）与 'extends'
-   * （判定顺序第 3 条）。'&' 未冻结角落的确定性选择已登记（§5.5）。
+   * 类型表达式的续位分派（§4.2/§4.3）：'&' 族与 'extends'（判定顺序第 3 条）。
+   * PatternType 已前移至主层识别（§2.3 注记 1 的必然性论证）——到达此处时 prev
+   * 恒非 primitive-string（string&…已在主层消化或抛错），残留 '&' 一律 E100 锚
+   * '&' 记号（含 pattern 后第二段 '&'，即多段交叉）。
    */
   private dispatchContinuation(prev: AstType): void {
     const tok = this.peek();
     if (tok === undefined) return;
     if (tok.kind === 'punct' && tok.value === '&') {
-      const isString = prev.kind === 'primitive' && prev.name === 'string';
-      if (isString) {
-        const p1 = this.peek(1);
-        if (p1 !== undefined && p1.kind === 'ident' && p1.value === 'Pattern') {
-          const p2 = this.peek(2);
-          if (p2 !== undefined && p2.kind === 'punct' && p2.value === '<') {
-            throw this.err(ErrCode.E100, 'string & Pattern<…> 属 v1 合法构造、本切片未实现（待后续 issue 落地）', tok);
-          }
-          throw this.err(ErrCode.E100, 'Pattern 脱离 string & Pattern<…> 语境（判定顺序第 7 条）', p1);
-        }
-      }
       throw this.err(ErrCode.E100, '交叉类型仅允许 string & Pattern<…>', tok);
     }
     if (tok.kind === 'ident' && tok.value === 'extends') {
@@ -341,45 +354,15 @@ class Parser {
     if (v === 'any') {
       throw this.err(ErrCode.E101, 'any 类型被禁止（判定顺序第 5 条）', tok);
     }
-    if (MARKER_NAMES.has(v)) {
+    if (v === 'Record') {
       if (this.peekPunct('<')) {
-        // 标记类型（EBNF Marker 产生式，§4.3）：实参接受完整 TypeExpr（形状约束
-        // E304 留 #6）。M3 回收（同步性——parsePrimaryType 的 case 'ident' 直通本
-        // 函数，中间零次 next()，depositedByLast 未被重置）；统一深度预算守卫（§4.6）。
-        const docs = this.claimDocs();
-        this.depth += 1;
-        if (this.depth > MAX_TYPE_DEPTH) {
-          // 锚预算耗尽处的标记 Ident 记号（与「锚预算耗尽处 `{`」同构，§4.6）
-          throw this.err(
-            ErrCode.E100,
-            `嵌套深度超过实现上限 ${MAX_TYPE_DEPTH}（实现资源上限，非方言判定；该文本可从 v1 文法推导）`,
-            tok,
-          );
-        }
-        try {
-          this.next(); // 消费 '<'
-          const arg = this.parseTypeExpr();
-          const gt = this.next();
-          if (gt === undefined || !(gt.kind === 'punct' && gt.value === '>')) {
-            throw this.err(ErrCode.E100, `标记实参缺右尖括号 '>'`, gt);
-          }
-          return {
-            kind: 'marker',
-            name: v as 'YMap' | 'YArray' | 'YPlainArray' | 'YLeaf' | 'YXmlFragment',
-            type: arg,
-            pos: posOf(tok),
-            docs,
-          };
-        } finally {
-          this.depth -= 1; // 正常出口深度回退（parseObjectType 同款）
-        }
+        return this.parseRecordType(tok); // ★ 完整解析（原 E100「本切片未实现」分支删除）
       }
       throw this.err(ErrCode.E100, `裸引用保留名: ${v}（判定顺序第 7 条）`, tok);
     }
-    if (v === 'Record') {
+    if (MARKER_NAMES.has(v)) {
       if (this.peekPunct('<')) {
-        // 切片外 v1 合法构造（§8）：Record<K,V> 拒绝而非假接受（#6 领地）
-        throw this.err(ErrCode.E100, `${v}<…> 属 v1 合法构造、本切片未实现（待后续 issue 落地）`, tok);
+        return this.parseMarkerType(tok); // ★ 完整解析（docs 挂载随 #7 JSDoc M3 回收）
       }
       throw this.err(ErrCode.E100, `裸引用保留名: ${v}（判定顺序第 7 条）`, tok);
     }
@@ -390,6 +373,19 @@ class Parser {
       throw this.err(ErrCode.E100, `保留名出现在类型位置: ${v}（判定顺序第 7 条）`, tok);
     }
     if (PRIMITIVE_NAMES.has(v)) {
+      if (v === 'string' && this.peekPunct('&')) {
+        // ★ PatternType 主层识别（§2.3）：'[]' 后缀必须作用于整个 PatternType
+        // （注记 1：`string & Pattern<"a">[]` 是「约束字符串的数组」）
+        const p1 = this.peek(1);
+        if (p1 !== undefined && p1.kind === 'ident' && p1.value === 'Pattern') {
+          const p2 = this.peek(2);
+          if (p2 !== undefined && p2.kind === 'punct' && p2.value === '<') {
+            return this.parsePatternType(tok);
+          }
+          throw this.err(ErrCode.E100, 'Pattern 脱离 string & Pattern<…> 语境（判定顺序第 7 条）', p1);
+        }
+        throw this.err(ErrCode.E100, '交叉类型仅允许 string & Pattern<…>', this.peek());
+      }
       if (this.peekPunct('<')) {
         // 保留名后随 '<'（判定顺序第 7 条）：锚该原始类型名记号，非 '<'
         throw this.err(ErrCode.E100, `保留名后随 '<': ${v}<…>（判定顺序第 7 条）`, tok);
@@ -401,6 +397,78 @@ class Parser {
       return this.parseGenericDiag(tok);
     }
     return { kind: 'ref', name: v, pos: posOf(tok) };
+  }
+
+  // —— Record<K, V>（已确认 'Record' + peek '<'；锚 tok = 'Record' 记号）——
+  private parseRecordType(tok: Token): AstType {
+    this.depth += 1;
+    if (this.depth > MAX_TYPE_NESTING) {
+      throw this.err(
+        ErrCode.E100,
+        `嵌套深度超过实现上限 ${MAX_TYPE_NESTING}（实现资源上限，非方言判定；该文本可从 v1 文法推导）`,
+        tok,
+      );
+    }
+    try {
+      this.next(); // 消费 '<'
+      const key = this.parseTypeExpr(); // 键是完整 TypeExpr（EBNF）
+      const comma = this.next();
+      if (comma === undefined || !(comma.kind === 'punct' && comma.value === ',')) {
+        throw this.err(ErrCode.E100, `期望 ','，实际 ${this.tokenDesc(comma)}`, comma);
+      }
+      const value = this.parseTypeExpr();
+      const close = this.next();
+      if (close === undefined || !(close.kind === 'punct' && close.value === '>')) {
+        throw this.err(ErrCode.E100, `期望 '>'，实际 ${this.tokenDesc(close)}`, close);
+      }
+      return { kind: 'record', key, value, pos: posOf(tok) };
+    } finally {
+      this.depth -= 1;
+    }
+  }
+
+  // —— 标记类型（已确认标记拼写 + peek '<'；锚 tok = 标记名记号）——
+  private parseMarkerType(tok: Token): AstType {
+    // M3 回收（#7 §4.2 同步性——parseIdentType 由 parsePrimaryType 的 case 'ident'
+    // 直通，中间零次 next()，depositedByLast 未被重置；docs 挂标记记号处，三锚位之一）
+    const docs = this.claimDocs();
+    this.depth += 1;
+    if (this.depth > MAX_TYPE_NESTING) {
+      throw this.err(
+        ErrCode.E100,
+        `嵌套深度超过实现上限 ${MAX_TYPE_NESTING}（实现资源上限，非方言判定；该文本可从 v1 文法推导）`,
+        tok,
+      );
+    }
+    try {
+      this.next(); // 消费 '<'
+      const arg = this.parseTypeExpr(); // 任意 TypeExpr（YArray/YPlainArray 无形状约束）
+      const close = this.next();
+      if (close === undefined || !(close.kind === 'punct' && close.value === '>')) {
+        throw this.err(ErrCode.E100, `期望 '>'，实际 ${this.tokenDesc(close)}`, close);
+      }
+      return { kind: 'marker', marker: tok.value as MarkerName, arg, pos: posOf(tok), docs };
+    } finally {
+      this.depth -= 1;
+    }
+  }
+
+  // —— PatternType（已消费 'string'，确认 & Pattern <；§4.3）——
+  private parsePatternType(strTok: Token): AstType {
+    this.next(); // 消费 '&'
+    this.next(); // 消费 'Pattern'
+    this.next(); // 消费 '<'
+    const arg = this.next();
+    if (arg === undefined || arg.kind !== 'string') {
+      // 实参非字符串字面量（含 number / EOF）→ E100 锚该实参记号（登记 §8-8）
+      throw this.err(ErrCode.E100, 'Pattern 实参须为字符串字面量', arg);
+    }
+    const close = this.next();
+    if (close === undefined || !(close.kind === 'punct' && close.value === '>')) {
+      throw this.err(ErrCode.E100, `期望 '>'，实际 ${this.tokenDesc(close)}`, close);
+    }
+    // regex = tokenizer 已按注记 6 解码的文本（\"→"、\\→\）；合法性不在方言层校验（§9.1）
+    return { kind: 'pattern', regex: arg.value, pos: posOf(strTok) };
   }
 
   /**
@@ -434,11 +502,11 @@ class Parser {
   // —— 封闭对象字面量（注记 3；判定顺序第 4 条：字段名位 '[' → E104）——
   private parseObjectType(openTok: Token): AstType {
     this.depth += 1;
-    if (this.depth > MAX_TYPE_DEPTH) {
+    if (this.depth > MAX_TYPE_NESTING) {
       // 深度预算（§4.6）：第 101 层 '{' 被读到 → E100 资源上限口径（锚预算耗尽处）
       throw this.err(
         ErrCode.E100,
-        `嵌套深度超过实现上限 ${MAX_TYPE_DEPTH}（实现资源上限，非方言判定；该文本可从 v1 文法推导）`,
+        `嵌套深度超过实现上限 ${MAX_TYPE_NESTING}（实现资源上限，非方言判定；该文本可从 v1 文法推导）`,
         openTok,
       );
     }
