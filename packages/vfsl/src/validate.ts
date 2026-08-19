@@ -130,7 +130,7 @@ function resolveValues(t: ValueSchema, ctx: Ctx): ValueSchema {
     }
     if (inFlight.has(node.name)) throw new InternalError(`值树引用环: ${node.name}`);
     inFlight.add(node.name);
-    const next = ctx.values[node.name];
+    const next = Object.hasOwn(ctx.values, node.name) ? ctx.values[node.name] : undefined; // own 守卫：手造 ref 名命中原型链继承名 → 未声明 loud E100（SA4 F2）
     if (next === undefined) throw new InternalError(`值树未声明别名: ${node.name}`);
     ctx.refMemo.set(node, next);
     node = next;
@@ -397,8 +397,9 @@ function validateUnion(node: Extract<ValueSchema, { kind: 'union' }>, value: unk
   // —— 段 0（可选快速路径）：判别式缓存跳转——仅加速静默接受，不改变任何输出 ——
   if (node.discriminator !== undefined && isPlainObject(value)) {
     const raw = (value as Record<string, unknown>)[node.discriminator.field];
-    if (raw !== undefined) {
-      const hit = node.discriminator.byValue[String(raw)];
+    if (typeof raw === 'string' || typeof raw === 'number' || typeof raw === 'boolean') { // 判别键仅三类字面量（String() 永不抛）；own 守卫防原型链继承名命中（SA4 F1）
+      const key = String(raw);
+      const hit = Object.hasOwn(node.discriminator.byValue, key) ? node.discriminator.byValue[key] : undefined;
       if (hit !== undefined && countIssues(members[hit]!, value, ctx) === 0) {
         return; // 命中且零 issue：接受，零输出（与全扫描输出全等）
       }
