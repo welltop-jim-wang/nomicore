@@ -32,6 +32,14 @@ Yjs 物化语义（kind / storage / opaque），供路径下钻守卫；与值�
 路径 → 子 schema 的下钻索引，键匹配（exact / pattern）为标准能力。
 _Avoid_: resolveChild 三级前缀匹配（被替换的旧机制）
 
+**求值器（evaluator）**:
+把解析后的模块（IR）求解为派生 schema 的步骤；输入已是合法模块，解析层诊断在此前全部收口。
+_Avoid_: 编译器（compiler）——该词留给「文本 → IR → 派生 schema」的组合入口（Phase 1 contract 包）
+
+**派生 schema（derived schema）**:
+求值器的产出：结构树、值 schema、路径索引的打包；与 IR 同纪律——纯数据、可 JSON 序列化、可内容哈希。
+_Avoid_: 编译产物、DerivedSchema（英文代号）
+
 **整文档校验（validateSnapshot）**:
 对整份快照跑一次完整校验；快照加载、迁移后体检、测试、管理端点共用的单一入口。
 
