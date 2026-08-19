@@ -17,8 +17,8 @@
  */
 import { makeIssue, ErrCode } from './errors.js';
 import type { VfslModule, VfslType, VfslField } from './ir.js';
-import { buildResolver, typeCls, InternalError } from './resolve.js';
-import type { Resolver, Cls } from './resolve.js';
+import { buildResolver, InternalError } from './resolve.js';
+import type { Resolver } from './resolve.js';
 import type {
   DerivedSchema,
   Discriminator,
@@ -58,7 +58,19 @@ export function evaluate(module: VfslModule): EvaluateResult {
     index['ROOT'] = { match: 'exact', node: rootNode };
     const values: Record<string, ValueSchema> = {};
     for (const a of module.aliases) values[a.name] = valueOf(a.type, ctx);
-    return { ok: true, derived: { aliases, structure: rootNode, values, index } };
+    const docs = collectDocs(module); // 新增：独立一遍，位于 try 内（异常 → E100）
+    return {
+      ok: true,
+      derived: {
+        aliases,
+        structure: rootNode,
+        values,
+        index,
+        aliasDocs: docs.aliasDocs,
+        fieldDocs: docs.fieldDocs,
+        markerDocs: docs.markerDocs,
+      },
+    };
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err);
     return { ok: false, issues: [makeIssue(ErrCode.E100, `内部错误（意外异常）: ${detail}`, 1, 1)] };
@@ -103,7 +115,7 @@ function structureOf(t: VfslType, ctx: Ctx, path: string | null): StructureNode 
 
     case 'union': {
       // 规则 3：全标量联合 → 原生叶子（成员细节入值 schema 枚举，两树正交）。
-      if (typeCls(t, ctx.R.cls, ctx.R.bodies) === 'scalar') return { kind: 'leaf' };
+      if (ctx.R.typeCls(t) === 'scalar') return { kind: 'leaf' };
       // 分支列表（any-of）：先建 members，后条件附加判别式（缓存仅附加，§5.2）。
       const members = t.members.map((m) => structureOf(m, ctx, null)); // §7.2 union 停——成员不立行
       return unionNode(members, t, ctx);
@@ -137,7 +149,7 @@ function materializeMapForm(arg: VfslType, ctx: Ctx, path: string | null): Struc
     case 'union': {
       // 决策 F1 透传，成员物化、结构形 ref 成员保持 ref 终态（§4.2 解析点②）。
       // E304 保证实参 map 形——全标量联合属非 map 形，手造 IR 落入 loud 边界（§9 I4）。
-      if (typeCls(r, ctx.R.cls, ctx.R.bodies) === 'scalar') {
+      if (ctx.R.typeCls(r) === 'scalar') {
         throw new InternalError('E304 不变量: YMap 实参非 map 形（全标量联合）');
       }
       const members = r.members.map((m) => structureOf(m, ctx, null)); // §7.2 union 停——成员不立行
@@ -319,4 +331,71 @@ function keyPatternOf(keyType: VfslType, ctx: Ctx): string | undefined {
   if (r.kind === 'pattern') return r.regex;
   if (r.kind === 'primitive' && r.name === 'string') return undefined; // 无约束键 → 省略键
   throw new InternalError(`E306 不变量: Record 键非 string 形（${r.kind}）`);
+}
+
+// —— docs 三表收集（ADR 0005 §3 落地；IR 全子树一遍遍历，ref 终态不展开）——
+
+interface DocsTables {
+  aliasDocs: Record<string, string[]>;
+  fieldDocs: Record<string, string[]>;
+  markerDocs: Record<string, string[]>;
+}
+
+/** 手造 IR loud 边界守卫（§3.4）：三锚统一写入入口——缺失/非数组抛 TypeError（→ E100），禁止静默规范化。 */
+function put(table: Record<string, string[]>, key: string, docs: string[]): void {
+  if (!Array.isArray(docs)) throw new TypeError(`docs 槽缺失或非数组（手造 IR）：${key}`);
+  table[key] = docs; // 单值位：逐字引用（§4.2 纯度注）
+}
+
+/** §3.3 同路径嵌套标记按源序串联（守卫同 §3.4）。 */
+function appendDocs(table: Record<string, string[]>, key: string, docs: string[]): void {
+  if (!Array.isArray(docs)) throw new TypeError(`docs 槽缺失或非数组（手造 IR）：${key}`);
+  table[key] = [...(table[key] ?? []), ...docs];
+}
+
+function collectDocs(module: VfslModule): DocsTables {
+  const tables: DocsTables = { aliasDocs: {}, fieldDocs: {}, markerDocs: {} };
+  for (const a of module.aliases) {
+    put(tables.aliasDocs, a.name, a.docs); // 声明序 → 表插入序（确定性，同 aliases 表）
+    walkDocs(a.type, a.name, tables);
+  }
+  return tables;
+}
+
+/** §3.2 路径文法：每别名树一遍遍历；ref 终态不穿越（ADR 0003 §4）。 */
+function walkDocs(t: VfslType, path: string, tables: DocsTables): void {
+  switch (t.kind) {
+    case 'ref':
+    case 'primitive':
+    case 'literal':
+    case 'pattern':
+      return; // 终态
+    case 'object':
+      for (const f of t.fields) {
+        const p = `${path}.${f.name}`;
+        put(tables.fieldDocs, p, f.docs); // 三锚统一守卫入口（§3.4）
+        walkDocs(f.type, p, tables);
+      }
+      return;
+    case 'union':
+      t.members.forEach((m, i) => walkDocs(m, `${path}.<member ${i}>`, tables));
+      return;
+    case 'array':
+      walkDocs(t.element, `${path}.<item>`, tables);
+      return;
+    case 'record': {
+      const p = `${path}.<key>`; // 合成字段：IR record 无 docs 槽 → 恒空数组
+      put(tables.fieldDocs, p, []); // 字面量 [] 恒过守卫；走统一入口保持同形
+      walkDocs(t.key, p, tables);
+      walkDocs(t.value, p, tables);
+      return;
+    }
+    case 'marker': {
+      appendDocs(tables.markerDocs, path, t.docs); // §3.3 串联（守卫同 §3.4）
+      // YMap/YXmlFragment/YLeaf 实参透明；YArray/YPlainArray 实参入 '<item>' 段
+      const argPath = t.marker === 'YArray' || t.marker === 'YPlainArray' ? `${path}.<item>` : path;
+      walkDocs(t.arg, argPath, tables);
+      return;
+    }
+  }
 }
