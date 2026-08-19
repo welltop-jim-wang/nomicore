@@ -2,7 +2,7 @@
 
 - **Worktree**: `/home/wangjian/nomicore-fix-issue-21`（branch `fix/issue-21-on-adr-union-representation`，stacked on `40c1be0`）
 - **任务类型**: 功能开发（Feature）
-- **修订轮次**: R1（2026-08-19，首版）
+- **修订轮次**: R2（2026-08-20，SA2 reject 后修订）。R1 基线：commit `3e9a045`（2026-08-19 首版）。R2 输入：SA2 攻击评审 `wiki/raw/task_vfsl-validate-snapshot_sa2_review.md`（verdict: reject，9 项发现）——逐项处置见 §16 回应表；R2 实质改动集中在 §3.4/§5.7（新增）、§6（引擎重设计）、§7/§11（放宽与测试缺陷处置）
 - **输入契约**: `wiki/raw/task_vfsl-validate-snapshot.md`（简报，含 SA6 红灯记录）+ `packages/vfsl/test/validate-snapshot.test.ts`（SA6 红灯，33 条 / 9 describe，commit `f9e4790`）+ `docs/adr/0003-evaluator-derived-schema.md`（四决策，不得违反）+ `docs/vfsl/v1-spec.md` §3/§9/§10 + `wiki/raw/task_vfsl-evaluator_design.md`（#20 前票设计——值 schema 形状、byValue 消费纪律、派生物不可变契约的直接上游）
 - **现状基线**: `pnpm vitest run packages/vfsl/test/validate-snapshot.test.ts` → 33 failed | 253 passed（32 条 `TypeError: validateSnapshot is not a function` + 1 条 typeof 断言）；`pnpm typecheck` → TS2305（缺公共导出）+ 15 条 TS7006 级联
 - **术语**: 以 `CONTEXT.md` 词汇表为准（整文档校验 validateSnapshot / 派生 schema / 值 schema / 判别联合 / 封闭对象 / 零写入）
@@ -46,10 +46,10 @@
 |---|---|---|---|
 | O1 | 数组下标段的数字/字符串表示 | **number**（元素下标原生数字；JSON 往返不变形；path 类型 `Array<string \| number>` 直接收纳；Record 键恒 string——'0'（键）与 0（下标）在各自上下文无歧义） | §9 |
 | O2 | 截断标记措辞 | `校验问题超出 100 条上限，输出已截断（truncated）：另有 ${N} 处问题未报告`——含「截断」「truncated」双信号（测试 /截断\|truncat/i 双保险），path 为 `[]`；N 为精确溢出计数（收集达 100 后继续遍历仅计数，§8） | §8 |
-| O3 | ReDoS 防护机制 | **包内受限回溯匹配器**（pattern.ts：正则 → 字节码 → 显式回溯栈执行 + 步数预算），彻底不用原生 `RegExp.test` 做匹配——零运行时依赖纪律保持，且预算按构造覆盖一切模式（含多项式炸弹），非「静态风险分析 + 原生兜底」的不完备防护 | §6 |
+| O3 | ReDoS 防护机制 | **包内 NFA 子集模拟匹配器**（pattern.ts：正则 → 无捕获字节码 → 状态集宽度优先模拟；R2 重设计，弃 R1 回溯执行器），彻底不用原生 `RegExp.test` 做匹配——零运行时依赖纪律保持；子集内模式**多项式完成（§6.4 定理）**，挂死结构性不可能；步数预算退居规模护栏（钳制「合法但病态」的 \|prog\|×len 乘积）。代价：反向引用收窄出子集（§6.2.1，fixture/红灯零自伤） | §6 |
 | O4 | 失败距离度量 | **成员校验的 issue 计数**（把快照值对成员做完整校验，产生的原子 issue 数即距离；非对象值对对象成员 = 1）。两个红灯锚点校准：fixture `{kind:"video"}` → image 5 / text 3 / file 5 → 报 2/3；平局例两成员各 2 → 按声明序报 1/2 | §5.4 |
-| O5 | 联合「命中成员」语义（本设计补立） | **候选过滤 + 零 issue 接受 + 最小距离报告**三段算法（§5.2）。纯 any-of（∀成员 issue>0 → 全拒）与 fixture 7 条精确计数测试冲突——kind 命中的成员必须**下钻报字段级错误**而非联合级汇总；候选 = 无「硬矛盾」的成员 | §5 |
-| O6 | 非法正则暴露（spec §9.1 委托） | `Pattern<"[">` 类非法正则、匹配器子集外构造、步数预算耗尽均**loud issue**（ok:false + 具名 message + path），不静默、不误报「不匹配」 | §6.5 |
+| O5 | 联合「命中成员」语义（本设计补立） | **候选过滤 + 零 issue 接受 + 最小距离报告**三段算法（§5.2）。纯 any-of（∀成员 issue>0 → 全拒）与 fixture 7 条精确计数测试冲突——kind 命中的成员必须**下钻报字段级错误**而非联合级汇总；候选 = 无「硬矛盾」的成员。**R2 增补资源完备性**：(解析后节点, 值) 记忆化 + 全局工作预算双保险（§3.4/§5.7，兑现 ADR 0003 §4 消费者预算委托） | §5 |
+| O6 | 非法正则暴露（spec §9.1 委托） | **使用时暴露**（R2 定稿）：`Pattern<"[">` 类非法正则、子集外构造、程序规模超限、匹配步数预算耗尽，均在该校验位**被到达时**（含 Record keyPattern 的逐键判定）loud issue（ok:false + 具名 message + path）；未到达的位（optional 缺席 / 空 Record / 空数组元素）不编译不暴露 → `ok:true` 为冻结语义。急切编译不可取：pattern 节点经别名共享，issue path 无唯一定位 | §6.5 |
 
 ---
 
@@ -77,7 +77,7 @@ export function validateSnapshot(derived: DerivedSchema, snapshot: unknown): Val
 ```
 
 - **同步、纯函数、不抛错**：无 IO / 时钟 / 随机 / 全局可变状态；同输入两次调用输出全等（`toEqual` 断言）；**不修改 `derived` 与 `snapshot`**（纯数据只读遍历——测试以 `JSON.stringify(derived)` 前后相等锚定）。结果为纯 JSON 值（plain object / array / string / number），`JSON.parse(JSON.stringify(result))` 往返全等。
-- **编译一次、校验多次**：`derived` 是可复用输入；一切 per-call 中间态（正则编译缓存、ref 解析 memo、issue 收集器）都是**调用局部**对象——不落模块级缓存，天然免跨调用污染与并发干涉。
+- **编译一次、校验多次**：`derived` 是可复用输入；一切 per-call 中间态（正则编译缓存、ref 解析 memo、count/contra 记忆化、工作账本、issue 收集器——§3.4）都是**调用局部**对象——不落模块级缓存，天然免跨调用污染与并发干涉。
 - **崩溃边界**：任何内部异常（含手造/篡改派生物导致的引用环、未知名、深嵌套栈溢出 RangeError）经顶层 catch 收编为 `{ ok:false, issues:[{ message: 'VFSL-E100: 内部错误（意外异常）: <detail>', path: [] }] }`——`detail = err instanceof Error ? err.message : String(err)`（instanceof 守卫镜像 index.ts:46 / evaluate.ts 同款）；E100 冻结前缀经模板字面量直书（ValidateIssue 不经 `makeIssue`——那会引入 line/column 字段，形状不符）。
 - **前置条件（公共契约 JSDoc 写明）**：`derived` 须为 `evaluate` 的 `ok:true` 产物。篡改数据（删判别式键是测试合法操作——缓存非契约；但造环/删别名属手造垃圾）落入 loud E100 边界，不静默产出 ok:true。
 - **`ok:true` 恰含 ok 键**：`{ ok: true }` 字面量返回，无其余字段（`Object.keys` 断言锚点）；`ok:false` 恰含 `ok` + `issues`，issue 恰含 `message` + `path` 且按键序构造。
@@ -113,17 +113,22 @@ resolveValues(t: ValueSchema, values): ValueSchema   // 迭代 while 循环
 ```
 function validateSnapshot(derived, snapshot): ValidateResult {
   try {
-    const ctx = { values: derived.values, regexCache: Map<string, CompiledPattern>, issues: [], overflow: 0 }   # 全部调用局部
+    const ctx = { values: derived.values, regexCache: Map<string, CompiledPattern>,
+                  work: 0, charge(n=1){…§3.4…}, countMemo, contraMemo,          # R2：资源账本 + 记忆化（全部调用局部）
+                  issues: [], overflow: 0 }
     const root = resolveValues(requireKey(derived.values, 'ROOT'), derived.values)   # ROOT 缺席 → InternalError → E100
     validateValue(root, snapshot, [], ctx)                                            # path 起点 = []
     if (ctx.overflow > 0) ctx.issues.push(marker(ctx.overflow))                       # §8：溢出精确计数
     return ctx.issues.length === 0 ? { ok: true } : { ok: false, issues: ctx.issues }
-  } catch (err) { …崩溃边界 §2.2… }
+  } catch (err) {
+    if (err instanceof WorkBudgetExceeded) → 返回 §3.4 的预算耗尽 issue（区别于 E100）
+    …其余异常走崩溃边界 §2.2…
+  }
 }
 ```
 
 - `emit(message, path, ctx)`：issue 收集的唯一通道——`ctx.issues.length < 100` 时 push（path 数组**冻结副本**：`[...path]`，防上游复用变长数组污染已收集 issue）；否则 `ctx.overflow += 1`。§8 详述。
-- 递归深度：沿值树嵌套受解析层 `MAX_TYPE_NESTING = 100` 约束；沿快照嵌套受运行时栈限制——超深快照的 RangeError 由崩溃边界收编（§10 R3），可观测、不伪装成功。
+- 递归深度：值树**类型表达式**嵌套受解析层 `MAX_TYPE_NESTING = 100` 约束，但 ref 链可组合出远超 100 的**解析后**深度（别名逐层引用不增加表达式嵌套，§3.1 的迭代解析无栈增长、主校验递归沿解析后结构走）；沿快照嵌套另受运行时栈限制——两类超深的 RangeError 均由崩溃边界收编（§10 R3），可观测、不伪装成功（R2 修正论证句：R3 兜底的成立不依赖「嵌套 ≤ 100」这一不确前提）。
 
 ### 3.3 jsonTypeOf（诊断用的运行时类型名）
 
@@ -135,6 +140,46 @@ jsonTypeOf(v): 'null' | v === null
 ```
 
 快照契约是 JSON 值域；非 JSON 运行时值按结构落到类型不匹配诊断（期望侧永远是 JSON 类型名），不静默接受。
+
+### 3.4 调用局部资源账本：全局工作预算 + (节点, 值) 记忆化（R2 新增，SA2 #1）
+
+ctx 扩展两项（均调用局部，随调用销毁——纯函数契约不破）：
+
+```
+ctx.work: number                         # 全局工作计数（每次 validateSnapshot 调用从 0 起）
+ctx.WORK_LIMIT = 16_000_000              # 冻结（标定依据见 §5.7-3）
+ctx.charge(n = 1):                       # 唯一计费通道
+    work += n
+    if work > WORK_LIMIT → throw WorkBudgetExceeded(work)   # 调用级终态，非 E100
+
+ctx.countMemo:  Map<ValueSchema, Map<unknown, number>>   # countIssues 结果记忆化
+ctx.contraMemo: Map<ValueSchema, Map<unknown, boolean>>  # contradicts 结果记忆化（同键异桶）
+# 键结构：外键 = 解析后值树节点对象（引用同一性）；内键 = 快照值（对象按引用同一性，
+# 原始值按 SameValueZero 值等价——校验结果只依赖值内容，两类键均可靠）
+```
+
+**计费规则（冻结）**：
+
+| 计费点 | 单价 |
+|---|---|
+| `validateValue` / `countIssues` / `contradicts` 每次进入（**含 memo 命中**——查询本身是工作） | 1 |
+| NFA 模拟每步（闭包访问 / 转移；pattern.ts 经 charge 钩子回写 ctx——依赖注入，无模块级状态） | 1 |
+| 正则编译一次 | 编译产物指令数 |
+
+`WorkBudgetExceeded` 的消费（与 E100 同为调用级终态，但**可区分**）：
+
+```
+catch WorkBudgetExceeded(w):
+    return { ok: false, issues: [{ message:
+        `校验工作预算耗尽（全局已执行 ${w} 工作单位，上限 16000000）：无法在预算内完成整份校验`,
+        path: [] }] }
+```
+
+- **fail-closed**：无法在预算内证明合法即不放行——与 §6.5 匹配预算耗尽同立场（诚实边界，非误报「不匹配」）；
+- **三重可区分**：含「校验工作预算」——区别于 E100（前缀 `VFSL-E100: 内部错误（意外异常）`）、区别于单次 Pattern 预算（`Pattern 匹配步数预算耗尽`，携带单匹配的输入长度/预算上下文）；
+- **不与 100 条上限交互**：直接返回单 issue（同 E100 处置），不进 emit 通道、不产生截断标记。
+
+**记忆化容量上界**：`countMemo` / `contraMemo` 各 65_536 条，超出**清空重建**——记忆化是性能优化、非正确性依赖（清空只损失命中率，时间界交还全局预算兜底）；封顶避免「条目数无界先于预算爆内存」（条目为键引用 + number/boolean，65_536 条 ≈ MB 级封顶）。
 
 ---
 
@@ -148,7 +193,7 @@ jsonTypeOf(v): 'null' | v === null
 | `{kind:'scalar', type:'null'}` | `value === null` | 同上（期望 null） |
 | `{kind:'scalar', type:'unknown'}` | **恒接受**（含对象/数组/null/undefined） | — |
 | `{kind:'enum', values}` | 类型形与字面量类别一致（string 字面量要 string、number 字面量要 number）且严格相等 ∈ values | `值不在枚举内：期望 ${values.map(String).join(' \| ')}，实际 ${jsonTypeOf(value)} ${preview(value)}` |
-| `{kind:'pattern', regex}` | value 为 string 且 §6 匹配器判定 match | 非 string → 类型不匹配（期望 string）；不匹配 → `不匹配 Pattern 正则 /${regex}/`；编译失败/预算耗尽 → §6.5 专用消息 |
+| `{kind:'pattern', regex}` | value 为 string 且 §6 匹配器判定 match（**使用时暴露**：到达本行才编译——§6.5 定稿） | 非 string → 类型不匹配（期望 string）；不匹配 → `不匹配 Pattern 正则 /${regex}/`；编译失败/规模超限/预算耗尽 → §6.5 专用消息 |
 | `{kind:'optional', value}` | **不出现在本层分发**——仅对象字段位的包装，由 object 行解包（§4.1） | — |
 | `{kind:'object', fields, keyPattern?}` | §4.1 封闭对象 / Record 两形态 | 见 §4.1 |
 | `{kind:'array', element}` | `Array.isArray` 否则报；否则逐下标 `validateValue(element, value[i], [...path, i], ctx)`（i 为 **number** 段，O1） | 非数组 → `类型不匹配：期望数组，实际 ${jsonTypeOf(value)}` |
@@ -206,6 +251,7 @@ validateRecord(keyPattern?, slotSchema, value, path):
 
 ```
 validateUnion(node, value, path, ctx):
+  # 计费声明：本伪代码内一切 countIssues / contradicts / dive 调用经 ctx.charge 计费（§3.4），不逐行重复
   members = node.members.map(resolveValues)                    # ref 成员先解析（红灯 describe「ref 成员按名解析后逐成员尝试」）
 
   # —— 段 0（可选快速路径）：判别式缓存跳转——仅加速静默接受，不改变任何输出
@@ -215,11 +261,11 @@ validateUnion(node, value, path, ctx):
           if countIssues(members[i], value) === 0 → return      # 命中且零 issue：接受，零输出（与全扫描输出全等）
           # 命中但有 issue → 落入下方完整流程（输出与无缓存路径全等）
 
-  # —— 段 1：候选过滤（硬矛盾判定，§5.3）——
+  # —— 段 1：候选过滤（硬矛盾判定，§5.3；contraMemo 记忆化）——
   candidates = [i for i in 0..N-1 if !contradicts(value, members[i])]
 
   # —— 段 2：接受扫描——候选按声明序逐个 countIssues，首个零 issue → 接受（零输出）
-  distances = members.map(m => countIssues(m, value))          # 顺带产出距离（O4）
+  distances = members.map(m => countIssues(m, value))          # 顺带产出距离（O4）；countMemo 记忆化
   if 存在候选 i 使 distances[i] === 0 → return                  # any-of 接受：至少一个成员零 issue
 
   # —— 段 3：报告——
@@ -232,7 +278,7 @@ validateUnion(node, value, path, ctx):
       dive(members[winner], value, path)                       # 汇总 + 下钻双输出（§5.1 两类红灯锚点）
 ```
 
-- `countIssues(m, value)`：以**计数 sink** 跑完整校验（不 emit，只累加）——距离 = issue 计数（O4），嵌套递归照常。零 issue 判定可短路（首个 issue 即返回 ≥1）。
+- `countIssues(m, value)`：以**计数 sink** 跑完整校验（不 emit，只累加）——距离 = issue 计数（O4），嵌套递归照常（嵌套联合的汇总与下钻各计 1）。**精确计数、不短路**（R2：R1 的「首个 issue 即返回 ≥1」短路删除——短路产出的非精确值会污染 argmin 的平局比较；重复查询的防护由 countMemo 承担：同键命中 O(1)，比短路更强且不失真）。以 (解析后节点, 值) 为键记忆化（§3.4）。
 - `dive(m, value, path)`：以**发射 sink** 对成员跑完整校验，相对路径 re-base 到联合值 path（`['assets','img1']` + `['url']` → `['assets','img1','url']`）。
 - 段 3 两个分支的输出集合：候选存在 → 仅 winner 字段级 issue（7 条计数锚点：img1 恰 3 条，无汇总混入）；候选为空 → 汇总 + winner 字段级 issue（`{kind:'video'}` 红灯锚定 `some(联合成员 2/3)`，`kind:'video'`+字段齐备例锚定 path `['assets','img1','kind']`——两类断言各取所需）。
 
@@ -278,9 +324,27 @@ validateUnion(node, value, path, ctx):
 - byValue 键消费纪律（#20 设计 §5.2 R2 交接）：跳转键 = `String(运行时值)`，同键化后查表，**不从键反推字面量类型**。类型欺骗防御：运行时值 `'1'`（string）对字面量 `1`（number）时 `String('1') === '1'` 命中 byValue，但段 0 的零 issue 验证中枚举成员资格 `'1' ∈ [1]` 严格相等为 false → 成员有 issue → 回落完整流程（且 `'1'` 对该成员构成 §5.3 枚举矛盾被段 1 排除）——**跳转永远被同一零 issue 验证门控，不可能错接受**；
 - 红灯 `stripDiscriminators`（对派生物数据删 `discriminator` 键）两路径对匹配/no-match 快照输出全等：`toEqual` 深比较，含 issues 数组序——遍历序与距离计算不感知缓存 ✓。
 
+### 5.7 资源完备性：消费者预算与记忆化（R2 新增——兑现 ADR 0003 §4 的明文委托）
+
+> ADR 0003 §4 原文：「派生物大小恒为 O（文本规模）；菱形引用链（`A1={l:A2,r:A2}; …`）的全展开爆炸（2^N）只在枚举型消费时发生——**枚举预算是消费者策略，不进引擎契约**。」
+
+validateSnapshot 正是该条款点名的「枚举型消费者」——本节就是那份被委托的消费者策略。R1 的缺口：§3.1 的 memo 只覆盖 ref→目标的**解析**，不覆盖 (节点, 值) 的**校验结果**重复计算。攻击构造（SA2 P6 探针实测合法，全标量联合、每别名语法深度 2、`MAX_TYPE_NESTING=100` 完全不设防）：
+
+```
+type U0 = string;  type V0 = number;
+type U1 = U0 | V0;  type V1 = U0 | V0;   …  type Uk = U_{k-1} | V_{k-1};  type ROOT = { m: U40 };
+```
+
+值树 `values['U_k'] = union{[ref U_{k-1}, ref V_{k-1}]}` → `countIssues(U_k, v)` 调 `countIssues(U_{k-1}, v) + countIssues(V_{k-1}, v)`，而 `U_{k-1}` 被 `U_k` 与 `V_k` 各调一次 → T(k) = 2·T(k−1)，k=40 ≈ 10^12 次成员扫描——同步挂死，且 R1 的步数预算只在 Pattern 引擎内部，对此零拦截。**R2 策略 = 记忆化（治 ADR 点名的菱形类）+ 全局工作预算（构造性兜底一切）**，覆盖性论证四层：
+
+1. **菱形类（ADR 点名类）被键结构消灭**：爆炸源是「同一 (解析后节点, 值) 对被重复求值」。`values` 别名表使同名 ref 解析到**同一节点对象**（derived.ts 不可变契约：index 条目与树内节点同引用是显式设计选择），§3.1 的 resolveValues memo 保证解析结果同一性 → countMemo 外键（节点对象）恰好与爆炸源重合。菱形链 U_k 的 distinct (节点, 值) 对总数 = O(k)——记忆化后从 2^k 坍缩为线性。这不是「实测快」，是**键身份与爆炸源结构性重合**。
+2. **非共享深乘积类被构造性兜底**：嵌套联合 × 多成员 × 多值位置可造出 distinct 对数量本身巨大的合法 schema（无共享子图可命中）——多项式但乘积可巨大。全局工作预算按**执行计费**（§3.4 计费点全覆盖 validateValue/countIssues/contradicts/模拟步/编译），16M 上限硬封顶任意调用的总工作量，超限 loud fail-closed。对照 §6.1 否决「静态风险分析」的判据（「漏报即挂死，防护承诺破产」）：计费式预算**无识别面即无漏报面**——构造性成立。
+3. **合法调用不触发的包络**（16M 的标定依据）：fixture 级调用 ≈ 10^2~10^3 工作单位；150 元素截断红灯 ≈ 300；带 Pattern 的常规快照 ≤ 10^4（含 NFA 模拟步）；合法包络距上限 3~5 个数量级。触发的只剩两类应当拒绝的输入：对抗性 schema（菱形/深乘积——R1 下挂死数小时，R2 下预算内 loud 返回）与规模病态快照（≈ 16M 单位 ≈ 数十万节点访问级）。
+4. **内存上界**：memo 容量 65_536 条封顶（§3.4）+ NFA 模拟活内存 O(\|prog\|)（§6.3）+ emit 侧 issue 物化 ≤ 101 条 → 调用级内存 ≈ O(派生物规模 + 快照遍历栈 + MB 级账本)，无 GB 面（R1 的捕获副本回溯栈已随 §6.3 引擎重设计整体消除——SA2 #6 的 OOM 绕过路径不复存在）。
+
 ---
 
-## §6. Pattern 执行引擎：包内受限回溯匹配器（`src/pattern.ts`，O3 定稿）
+## §6. Pattern 执行引擎：包内 NFA 子集模拟匹配器（`src/pattern.ts`，O3 定稿；R2 重设计）
 
 ### 6.1 为什么不用原生 `RegExp.test`
 
@@ -288,67 +352,97 @@ validateUnion(node, value, path, ctx):
 |---|---|---|
 | 原生 RegExp 直接匹配 | **否决** | 同步单线程下无法中断运行中的原生匹配——worker/超时/watchdog 三条路都破坏同步纯函数签名或引入运行时依赖；且 ReDoS 红灯 `(a+)+$ × 'a'*32+'!'` 正是原生引擎的指数回溯死局 |
 | 原生 + 静态风险分析分流（安全走原生、危险走受限引擎） | **否决** | 静态分析不完备是定理级困难（覆盖重叠交替、多项式炸弹 `a*a*a*a*b` × 兆级输入均漏报）——漏报即挂死，防护承诺破产 |
-| **包内受限回溯匹配器（本设计）** | **采纳** | 步数预算**按构造覆盖一切模式/输入对**（含多项式炸弹）；零运行时依赖（包内纯 TS）；同步；确定性（不依赖引擎实现差异）；`packages/vfsl/package.json` 零 runtime deps 纪律保持 |
+| **包内 NFA 子集模拟匹配器（本设计，R2）** | **采纳** | 子集内模式**多项式完成（§6.4 定理）**——挂死结构性不可能，防护不依赖「标定恰好覆盖」；零运行时依赖（包内纯 TS）；同步；确定性（不依赖引擎实现差异）；`packages/vfsl/package.json` 零 runtime deps 纪律保持。步数预算退居**规模护栏**（钳制「合法但病态」的 \|prog\|×len 乘积，§6.4）。代价：反向引用收窄出子集（§6.2.1——fixture 与红灯全部 Pattern 实核零反向引用，无自伤） |
 
-### 6.2 支持的语法子集（冻结；「ECMAScript RegExp（无标志）」的实用子集，Annex B 宽松解析）
+### 6.2 支持的语法子集（冻结；「ECMAScript RegExp（无标志）」的实用子集，Annex B 宽松解析；R2 逐类完备枚举）
 
-| 类别 | 支持项 |
+**语义基线**：按 UTF-16 码元模拟（与无 `u` 标志的 ECMAScript 一致——代理对是两个码元，`.` 匹配单个码元）。
+
+| 类别 | 支持项（冻结枚举） |
 |---|---|
-| 字面量 | 普通字符、转义 `\\ \. \* \+ \? \( \) \[ \] \{ \} \| \^ \$ \/ \n \r \t \f \v \0`、`\xHH`、`\uHHHH` |
-| `.` | 除行终止符（LF/CR/LS/PS）外任意字符（无 s 标志语义） |
-| 字符类 | `[...]` / `[^...]`：字符、区间 `a-z`、类内转义、类内 `\d \D \s \S \w \W`（`[` 在类内为字面量等 Annex B 宽松规则） |
-| 预定义类 | `\d \D \s \S \w \W` |
-| 断言 | `^`（串首）、`$`（串尾——无 m 标志，不匹配尾换行前）、`\b \B`（词边界） |
-| 分组 | 捕获 `(…)`、非捕获 `(?:…)` |
-| 量词 | `* + ? {n} {n,} {n,m}` + 惰性后缀 `?`；`{` 不构成量词时按字面量（Annex B） |
-| 反向引用 | `\1` ~ `\9` |
-| 前瞻 | `(?=…)` `(?!…)` |
+| 字面量 | 普通字符；类外语法字符转义 `\\ \. \* \+ \? \( \) \[ \] \{ \} \| \^ \$ \/`（均按该字符字面量）；控制转义 `\n \r \t \f \v \0`；`\cX`（X ∈ A-Za-z，控制字符；`\c` 后非字母 → 编译失败 loud）；`\xHH`（两位十六进制）；`\uHHHH`（四位十六进制；`\u` 后非四位十六进制 → 按类外 IdentityEscape 字面量 `u`，其后 `{…}` 按 Annex B 非量词字面量） |
+| **类外 IdentityEscape（Annex B 宽松立场，R2 定稿）** | `\` + 任意非保留前缀字符 → 按该字符**字面量**（`\q`→`q`、`\-`→`-`、`\e`→`e`——与 ECMAScript 无标志行为一致，避免大量 JS 合法模式被 loud 拒）。保留前缀冻结清单：`c d D s S w W b B x u` + 数字 `0-9` + `f n r t v` + 上行已列语法字符 + `/`；保留前缀后跟非完整形（如 `\x` 后非两位十六进制）→ 编译失败 loud |
+| `.` | 除行终止符（LF U+000A / CR U+000D / LS U+2028 / PS U+2029）外任意 UTF-16 码元（无 s 标志语义） |
+| 字符类 | `[...]` / `[^...]`（编译期求补）；字符；区间 `a-z`（端点可为类内转义）；**类内转义全集（R2 枚举）**：`\\` `\]` `\^` `\-`、类内 `\b`（= U+0008 退格——与类外「词边界」义不同，ECMAScript 同款区分）、`\d \D \s \S \w \W`、`\n \r \t \f \v \0`、`\cX`、`\xHH`、`\uHHHH`；`[` 在类内为字面量（Annex B）；类内 IdentityEscape：`\` + 非保留前缀 → 字面量；**类内 `\` + 数字 → 编译失败 loud**（Annex B legacy 八进制不进子集——显式收窄，枚举在案） |
+| 预定义类 | `\d \D \s \S \w \W`（类内类外同语义；`\D \S \W` 为补类，编译期展开） |
+| 断言 | `^`（串首：pos === 0）、`$`（串尾：pos === len——无 m 标志，**不**匹配尾换行前）、`\b \B`（词边界：prev/next 码元的 `\w` 性，越界视为非词字符——caret 语义） |
+| 分组 | `(…)` 捕获形 / `(?:…)` 非捕获——编译时**一律不分配捕获槽**（布尔 test 语义；两形按相同 NFA 结构编译） |
+| 量词 | `* + ? {n} {n,} {n,m}` + 惰性后缀 `?`；`{` 不构成量词时按字面量（Annex B）；**惰性/贪婪编译同形**（优先序只影响捕获选择与匹配位置，不影响「是否存在匹配」——布尔语义下等价） |
+| 前瞻 | `(?=…)` `(?!…)`——子模拟求值（§6.3），**零回写**：JS `(?=(a))` 的持久化捕获只影响 `$1` 读取面，本引擎无捕获读取，布尔 test 语义与 ECMAScript 等价（#9-b 成文） |
+| 反向引用 | **不支持（R2 收窄）**：`\1` ~ `\9` → 子集外构造 loud 拒绝——理由见 §6.2.1 |
 
-### 6.3 编译与执行（字节码 + 显式回溯栈——无递归，栈深 O(1)）
+**fixture 自伤核对（#3 修订要求的验收）**：fixture AssetId 解码后正则 `^[A-Za-z0-9_\-]{1,64}$` 的 `\-` 落在类内转义全集内（上行）→ 编译通过；`^[a-z]{2,4}$`、`(a+)+$`（红灯）均在子集内。R1 清单缺 `\-` 将使 fixture Record 键 Pattern 全部编译失败、约 15 条测试连环红——已修复。
+
+### 6.2.1 反向引用收窄的决策记录（R2）
+
+R1 字节码回溯引擎为容纳 `\1`~`\9` 需要「捕获副本快照栈」——SA2 #6 指出其内存无界（OOM 绕过 E100），且反向引用使 (pc,pos) 状态记忆化不健全（匹配结果依赖捕获向量，键不再充分）；NFA 子集模拟天然无法表达反向引用（非正则语言）。三难（无界内存 / 记忆化失效 / 无法 NFA 化）的并集都指向同一根源：**反向引用是回溯引擎才消得起的奢侈**。处置：收窄出子集，loud 可诊断（`不支持的构造：反向引用`）。自伤核查：红灯与 fixture 全部 Pattern（test.ts:50/328/352——AssetId、`^[a-z]{2,4}$`、`(a+)+$`）零反向引用（实核）。子集边界原则（SA2 #3）：**可以窄，必须枚举完备、无 fixture 自伤**。
+
+### 6.3 编译与执行（无捕获字节码 + NFA 子集模拟——无回溯栈、无递归、活内存 O(|prog|)）
 
 ```
-compile(regex): { program, nSlots }     # 调用局部缓存：Map<regex 字符串, Compiled>（同一次 validateSnapshot 内复用）
-  语法分析 → AST → 字节码线性程序：
-    Char(c) | Class(setId) | Any | AssertStart | AssertEnd | AssertWordB(pos)
-    Save(slot)                    # 捕获组边界记录（运行期数组，回溯点快照恢复）
-    Jmp(x) | Split(x, y)          # Split 贪婪：先 x 后 y；惰性量词交换优先序
-    Backref(n) | Look(neg, subPc) # 前瞻：当前位起子程序独立回溯栈尝试，消费零字符
-    Match
-  程序规模上限 10_000 指令——`{2,}` 大边界展开（如 {1,100000}）超限 → 编译失败（§6.5 预算类消息）
+compile(regex): { program, size }     # ctx.regexCache 调用局部缓存（键 = regex 字符串）；编译按产物指令数计入全局工作预算
+  语法分析（§6.2 子集 + Annex B 立场）→ AST → 线性程序：
+    Char(cp) | Class(setId) | Any | AssertStart | AssertEnd | AssertWordB(neg)
+    Jmp(x) | Split(x, y) | Look(neg, sub) | Match
+  无 Save / 无 Backref / 无捕获槽（§6.2 分组行）；Split 无优先序标注（布尔语义不需要）
+  程序规模上限 10_000 指令——{n,m} 大边界展开（如 {1,100000}）超限 → 编译失败（§6.5 编译期规模消息）
 
-match(regex, input): boolean        # test 语义：非锚定搜索 = 起点 0..len 逐起点尝试，共享同一总步数预算
-  budget = min(2_000_000, max(4_096, 64 × input.length + 1_024))     # 冻结常数（§6.4）
-  显式回溯栈：压入 (pc, pos, captures 副本)——无函数递归，输入任意长无栈溢出
-  每条指令 dispatch 前 steps++；steps > budget → throw BudgetExceeded（→ §6.5 issue，非静默）
+match(regex, input): boolean          # test 语义：非锚定搜索（存在任一起点的前缀匹配即 true）
+  budget = min(4_000_000, max(8_192, 1_024 × len + 16_384))     # 冻结（§6.4 重标定）
+  NFA 子集模拟（宽度优先，逐消费轮推进）：
+    S = closure({start})              # ε 闭包：追随 Jmp/Split；AssertStart/End/WordB 按 pos 谓词过滤；
+                                      #   Look(neg, sub) → 从 pos 起**锚定**子模拟（无重播种，共享 budget 与 charge）→ 布尔取反/保留
+                                      #   闭包内以 pc 去重——每状态每轮至多入闭包一次：
+                                      #   = 空宽度循环的结构性终止守卫（#4-a：'(a?)*' 的空迭代在闭包内被去重拦停，不再无限压栈）
+    if S 含 Match → true              # 空串匹配于此判定（如 'a?' × ''）
+    for pos = 0 .. len-1:
+        S = closure( step(S, input[pos]) ∪ {start} )   # 逐起点重播种 = 非锚定搜索；本轮闭包在 pos+1 处求值
+        if S 含 Match → true
+    终轮：closure(S)（在 pos = len 处）中 AssertEnd 通过且含 Match → true；否则 false
+  每次闭包访问/转移计 1 步；steps > budget → throw BudgetExceeded（→ §6.5，非静默）
+  步数经 charge 钩子同步计入全局工作预算（§3.4）
 ```
 
-### 6.4 步数预算公式（冻结）与标定
+- **状态集即已访集**（#4-b 的等价物，更强形态）：闭包按 pc 去重使「同一 (pc, pos) 的重复探索」结构性不存在——回溯引擎需要专门记忆化的地方，模拟器的数据结构天然就是记忆化。
+- **活内存**：当前/下一状态集 + 闭包暂存 ≤ 3 × \|prog\| 槽，外加编译期类集合（\|prog\| 级）——无回溯栈、无捕获副本、无随步数增长的分配（#6 的内存上界即此：R1 的 `(pc,pos,captures 副本)` 栈已整体消除，OOM 绕过 E100 的路径不复存在）。
 
-`budget = min(2_000_000, max(4_096, 64 × len + 1_024))`
+### 6.4 完成性定理与预算重标定（R2 重写——标定推演升级为结构性定理）
 
-| 输入长度 | 预算 | 标定场景 |
-|---|---|---|
-| 33（ReDoS 红灯 `'a'*32+'!'`） | 4_096 | `(a+)+$` 指数回溯（真值 2^31 步）在数千步内耗尽预算 → 立即返回预算耗尽 issue——微秒级返回，5s 超时余量四个数量级 ✓ |
-| ≤ 64（常规键/短值） | 4_096~5_120 | 锚定模式线性匹配 O(len × 模式长)，远低于预算——fixture AssetId 键、`^[a-z]{2,4}$` 等全部常规路径零预算压力 |
-| 1 MB（病态大值） | 2_000_000 | 上限钳制单次匹配耗时 ≈ 数十毫秒量级；合法锚定长串线性匹配 O(len) ≈ 百万步级可容纳；病态模式被钳制兜住 |
+**定理（子集内模式多项式完成）**：任意 §6.2 子集内模式 P（\|prog\| = m）× 输入 s（len），模拟步数
+`steps ≤ (len + 2) × m × f`（f = 闭包平均扇出，≤ 3；前瞻子模拟同定理递归，嵌套深度 ≤ 模式括号深度，编译期有界）。
+证明骨架：位置单调推进（每轮消费恰 1 码元，len + 2 轮含初态与终轮）；每轮闭包是对有限状态集的单调不动点——pc 去重使每状态每轮至多处理一次、每次处理触发 ≤ f 条转移。∎
 
-预算**应用于整次 match 调用**（全部起点共享），非单起点——非锚定模式的长输入搜索不放大预算。
+**推论**：挂死在子集内**结构性不可能**（不依赖标定恰好覆盖）；空宽度循环被闭包去重拦停（`(a?)*b` × `'b'` → 迭代空匹配在闭包内终止 → `'b'` 命中 → **true**，与 ECMAScript `(a?)*b`.test('b') === true 一致）；小输入合法值不再因探索量超预算被误拒（`(a+)+b` × `'a'*20+'c'+'a'*5+'b'`：steps ≈ 8 × 29 × 3 ≈ 700，start 21 命中 → **true**——R1 回溯引擎在 start 0 烧 2^19 分区 > 预算 4096 必误拒，R2 修复）。
 
-### 6.5 三类 loud 失败（O6：spec §9.1 委托的暴露时点，全部 ok:false + path 定位）
+**预算重定位**：`budget = min(4_000_000, max(8_192, 1_024 × len + 16_384))`——从 R1 的「唯一防挂死线」降级为**规模护栏**：钳制「合法但规模病态」的 m × len 乘积与常数因子。耗尽 ⟹ 该乘积超出包络（定理保证子集内语义本可完成）→ loud fail-closed，消息明示「无法判定」，不冒充「不匹配」。系数标定自洽性：定理界 `m × (len+2) × f ≤ budget` 在 **m ≤ 340** 时对任意 len（钳制值内）恒成立——斜率 340 × 3 = 1_020 < 1_024（系数），截距余量 16_384 − 340 × 2 × 3 = 14_344 步；锚定线性模式（有效 f ≈ 1）实际容纳 m 至 ~1_024——与下表包络行相容。
+
+| 输入长度 | 预算 | 类目（R2 补全 R1 缺位的第三类目，#4） | 标定 |
+|---|---|---|---|
+| 33（ReDoS 红灯 `'a'*32+'!'`） | 8_192 | 病态回溯炸弹（回溯引擎下 2^31 步） | steps ≈ 8 × 35 × 3 ≈ 840 → 多项式完成，**真值判定「不匹配」** → `不匹配 Pattern 正则` issue → `ok:false` ✓ |
+| 27（`(a+)+b` × `'a'*20+'c'+'a'*5+'b'`，SA2 #4-b 探针） | 8_192 | **非锚定 × 中庸模式 × 结构化不匹配前缀**（R1 缺位类目——回溯引擎在此误拒合法值） | steps ≈ 700 → 完成，start 21 命中 → **`ok:true`** ✓ |
+| ≤ 64（AssetId 键、短枚举串） | 8_192 ~ 81_920 | 锚定线性 | AssetId（m ≈ 135：`{1,64}` 展开）× 64 码元键 ≈ 135 × 66 × 3 ≈ 2.7 × 10^4 < 81_920 ✓ 余量 ~3× |
+| ~2.5 KB（长值 × 中等程序，包络边界） | ~2.6M | 合法包络上限（定理界下） | m ≤ ~340 × len ≤ 2560：340 × 2562 × 3 ≈ 2.61M ≤ 2.64M——**预算包络（保守定理界 f=3）= m ≤ ~340 且 len ≤ ~2.5K**；锚定线性模式（有效 f ≈ 1）容纳 m 至 ~1_024；schema 校验的 Pattern 用途（键/ID/短枚举串）深藏包络内，长自由文本应由 YXmlFragment/结构承载（fixture 分工示范：body = xml、id/name = pattern） |
+| 16 KB ~ 1 MB（病态大值） | 4M（钳制值） | 合法但规模病态 | m × len 乘积超包络 → 预算耗尽 loud（fail-closed、可诊断、不误报「不匹配」）；单次匹配最坏 ~4M 步 ≈ 数十毫秒，钳制上限 |
+
+### 6.5 四类 loud 失败（O6：**使用时暴露**语义，R2 定稿；全部 ok:false + path 定位）
+
+**使用时暴露（暴露时点的冻结读法）**：spec §9.1 把非法正则的暴露时点委托给语义层（validateSnapshot）；本设计在层内进一步定稿为「**该校验位被到达时**」——`validateValue` 抵达 pattern 节点（含 §4.1 Record keyPattern 的逐键判定）即编译并按需判定。**未到达的位不编译不暴露**：`Pattern<"[">` 挂在 optional 缺席字段 / 空 Record（无键）/ 空数组（无元素）上 → `ok:true`——这是冻结语义而非静默降级（该正则从未被要求执行任何判定；急切编译不可取：pattern 节点经别名共享，issue path 无唯一定位——同一模式可同时是多个字段/Record 键位的来源）。
 
 | 触发 | 消息（冻结） |
 |---|---|
 | 语法非法（如 `Pattern<"[">`——spec §9.1 明文该暴露点属 validateSnapshot） | `Pattern 正则无法编译：/${regex}/（${detail}）` |
-| 子集外构造（`(?<=` `(?<!` `(?<name>` `\k<` `\p{` `\P{` 内联标志 `(?i` 等） | `Pattern 正则含匹配器不支持的构造：${construct}（子集清单见设计 §6.2）` |
-| 步数预算耗尽 | `Pattern 匹配步数预算耗尽（输入长度 ${n}，预算 ${budget}）：无法在预算内判定匹配性` |
+| 子集外构造（`(?<=` `(?<!` `(?<name>` `\k<` `\p{` `\P{` 内联标志 `(?i`、**反向引用 `\1`~`\9`（R2 收窄）**、类内 `\`+数字 等） | `Pattern 正则含匹配器不支持的构造：${construct}（子集清单见设计 §6.2）` |
+| **编译期程序规模超限**（{n,m} 展开超 10_000 指令——R2 单列：编译期无输入上下文，消息不携带输入长度/预算参数，#9-a） | `Pattern 正则程序规模超限：/${regex}/ 编译产物超过 10000 指令（量词展开 ${copies} 份）` |
+| 匹配步数预算耗尽（运行期，携带单匹配上下文） | `Pattern 匹配步数预算耗尽（输入长度 ${n}，预算 ${budget}）：无法在预算内判定匹配性` |
 
-预算耗尽的语义立场（诚实边界，非误报）：**不宣称「不匹配」**——消息明示「无法判定」；ok:false 与「写入被拒」的零写入语义一致（无法证明合法即不放行，fail-closed）。ReDoS 红灯仅锚定 `ok:false` ✓。
+预算耗尽的语义立场（诚实边界，非误报）：**不宣称「不匹配」**——消息明示「无法判定」；ok:false 与「写入被拒」的零写入语义一致（无法证明合法即不放行，fail-closed）。ReDoS 红灯仅锚定 `ok:false` ✓。全局工作预算耗尽（§3.4）是第五类同级边界（消息含「校验工作预算」，调用级）。
 
-### 6.6 红灯对账
+### 6.6 红灯对账（R2 重新对账——ReDoS 行为路径变更）
 
-- `(a+)+$` × 33 字符：段 0 编译 ✓（嵌套量词在子集内）→ 执行耗尽 4_096 步 → 预算耗尽 issue → `ok:false` ✓，毫秒级返回 ✓；
-- `^[a-z]{2,4}$`：'ab'/'abcd' 线性匹配 ✓；'AB' 不匹配 issue path `['name']` ✓；
-- fixture AssetId `^[A-Za-z0-9_\\-]{1,64}$`：合法键匹配、`abc.123` 拒绝（Record 键 Pattern，§4.1）✓。
+- `(a+)+$` × 33 字符：编译 ✓（无反向引用、嵌套量词在子集内）→ 模拟 ~840 步**多项式完成** → 真值 = 不匹配（`'!'` 挡在 `$` 前）→ issue `不匹配 Pattern 正则 /(a+)+$/` → `ok:false` ✓ 微秒级返回 ✓。**R2 修订记录**：R1 对账的「执行耗尽 4_096 步 → 预算耗尽 issue」路径作废——新引擎下预算不触发，正确路径是完成后的真值判定；对抗性不变（朴素回溯引擎该输入需 2^31 步，本引擎 840 步，八个数量级差），红灯断言（仅 `ok:false`）两路径下均绿，修复与验收兼容；
+- `^[a-z]{2,4}$`：'ab'/'abcd' 匹配 ✓；'AB' 不匹配 issue path `['name']` ✓；
+- fixture AssetId `^[A-Za-z0-9_\\-]{1,64}$`：`\-` 在类内转义全集内 → 编译 ✓（§6.2 fixture 自伤核对）；合法键匹配、`abc.123` 拒绝（Record 键 Pattern，§4.1）✓；
+- SA2 §5 探针预期（设计面成文，供复审验证）：`(a?)*b` / `(a*)*b` × `'b'` → `ok:true`（空迭代闭包去重）；`(?:(a)(b)(c)(d)(e))*z` × 长 'abcde'×n + 不匹配尾 → 多项式完成正常返回（无回溯栈即无 OOM 面）。
 
 ---
 
@@ -356,20 +450,24 @@ match(regex, input): boolean        # test 语义：非锚定搜索 = 起点 0..
 
 票 B（#20）映射执行（ADR 0003 §5 + #20 设计 §6）：JSON 快照中该位为 **XML 字符串**（与 `Y.XmlFragment.toJSON()` 投影一致），运行时校验仅要求**良构**——实参字段不进结构树、不参与校验（不透明语义）。
 
-零依赖良构检查器（**片段语义——允许多顶层元素森林**，`<p>a</p><p>b</p>` 合法）：
+零依赖良构检查器（**片段语义——多顶层元素森林 + 顶层字符数据均合法**，R2 放宽，SA2 #7）：
+
+**R2 放宽记录**：R1 的「顶层非空白文本 → false（片段是元素序列）」论断不实——`Y.XmlFragment` 的子节点可含顶层 `Y.XmlText`，其 `toJSON()` 投影是**顶层纯文本**（body `'hello world'`）或**文本与元素混合**（`'hi <b>b</b>'`），均为合法 Yjs 投影；R1 已采纳多根森林、独禁顶层文本，是对「良构片段」语义的半途而废（外部实体的片段语义本就容纳多根与顶层字符数据）。按 R1 自设的「与 `Y.XmlFragment.toJSON()` 投影一致」口径反向校准：顶层文本必须放行，否则合法快照被误拒。放宽后规则统一为「仅要求标签栈平衡与良构结构」。
 
 ```
 wellFormedXml(s): boolean    # 单遍扫描 + 显式标签栈（无递归）
   跳过：<?…?> 处理指令 | <!--…--> 注释（未闭合 → false）| <![CDATA[…]]>（未闭合 → false）
-  顶层纯空白文本允许；顶层非空白文本 → false（片段是元素序列）
+  顶层文本：允许（任意内容，含纯文本 'hello world' 与混合 'hi <b>b</b>'——R2 放宽，见上）
   元素：< name attr* (/ > | > 子内容 </ name >)
-    name：[A-Za-z_:][A-Za-z0-9_.:-]*；attr：name S* '=' S* ("…" | '…')——引号强制，未引 → false
+    name：[A-Za-z_:][A-Za-z0-9_.:-]*；attr：name S* '=' S* ("…" | '…')
+    引号强制，未引 → false；**属性值为原子单元**：从开引号扫描到配对闭引号（另一引号字符不闭合），
+    引号内一切字符（含 '<' 与 '>'）为字面量——`<p title="a>b">` 良构 ✓（R2 成文，SA2 #7）；未闭引号 → false
   文本中裸 '<' 后非合法标签起点 → false；实体宽松（接受裸 & 与未声明实体——Y 投影侧已转义，宽松度冻结）
   <!DOCTYPE → false（片段投影不携带，按不支持处理）
   终态：标签栈空 且 扫描至串尾
 ```
 
-红灯对账：`'<p>hello <b>world</b></p>'` 良构 ✓；`'<p>unclosed'` 栈非空 → 拒绝，path `['assets','text1','body']` ✓；`body: 42` 非字符串 → 类型不匹配 ✓。
+红灯对账：`'<p>hello <b>world</b></p>'` 良构 ✓；`'<p>unclosed'` 栈非空 → 拒绝，path `['assets','text1','body']` ✓；`body: 42` 非字符串 → 类型不匹配 ✓。放宽面（红灯未覆盖，SA2 §5 探针预期）：`'hello world'` / `'hi <b>b</b>'` → 良构 `ok:true`；`'<p title="a>b">x</p>'` → 良构（属性原子扫描）。
 
 ---
 
@@ -384,8 +482,8 @@ emit(message, path):
 ```
 
 - **不提前终止**：达 100 条后遍历继续（计数态）——全收集语义的本意是诊断完备，提前终止使「另有 N 处」不可知；遍历成本与合法快照的完整校验同阶（O(快照规模)，本就是每次调用的固有成本），上界不因收集策略变化。
-- **计数态下的距离计算不受影响**：`countIssues` 用独立计数 sink，与 emit 通道正交（§5.2 段 2 在计数态照常产出精确距离）。
-- Pattern 步数预算等资源界在计数态照常生效（每模式应用独立预算）——计数态不放大资源消耗。
+- **计数态下的距离计算不受影响**：`countIssues` 用独立计数 sink，与 emit 通道正交（§5.2 段 2 在计数态照常产出精确距离；countMemo 命中使计数态的重复距离查询 O(1)）。
+- 资源界在计数态照常生效：单次 Pattern 匹配预算（每模式应用独立）与**全局工作预算**（countIssues 是计费点，§3.4）在计数态照常计费——计数态不放大资源消耗。
 
 ### 8.2 截断标记（唯一追加点：主流程末尾）
 
@@ -414,8 +512,9 @@ if overflow > 0:
 
 ### 9.2 遍历序冻结（输出确定性）
 
-- 封闭对象：必填缺失（字段声明序）→ 未知键（快照键插入序）→ 在场字段（字段声明序）；
-- Record：键按快照插入序，逐键（键 Pattern → 值下钻）；
+- 封闭对象：必填缺失（字段声明序）→ 未知键（快照键枚举序）→ 在场字段（字段声明序）；
+- 「快照键枚举序」的精确读法（R2 修正，#9-c）：ES 对象枚举序对**整数形态键**（canonical numeric string，如 `'0'` `'42'`）按数值升序**先行**，其余字符串键按插入序——「快照键插入序」的说法对整数形态键不确切；两序均为引擎确定行为，输出确定性不受影响（`Object.keys` 语义冻结依赖）；
+- Record：键按快照键枚举序（同上精确读法），逐键（键 Pattern → 值下钻）；
 - 数组：下标升序；
 - 联合：候选/成员按声明序；距离平局取声明序在前者；
 - 同一快照两次调用 / JSON 往返后的派生物 → 输出逐字节全等（红灯 `toEqual` 锚点）。
@@ -432,7 +531,7 @@ if overflow > 0:
 | I4 | Pattern regex 为 string | 恒真（派生物类型契约） | 非法正则**不是**不变量违反——是 spec §9.1 显式委托本层暴露的数据问题 → 专用 issue（§6.5），非 E100 |
 | R1 | 快照含非 JSON 运行时值（undefined/function/…） | 快照契约外，但运行期可发生 | present() 语义处理 undefined；其余按结构落到类型不匹配诊断（§3.3）——可观测拒绝，不静默 |
 | R2 | 手造/篡改派生物（环、缺名、垃圾形状） | 契约外输入 | 一律 loud E100（parseVfsl/evaluate 同款崩溃边界），绝不 ok:true 伪装 |
-| R3 | 超深快照递归栈溢出（RangeError） | 资源边界（合法但病态的数据） | 崩溃边界收编为 E100 issue——可观测、不伪装成功；深度受值树 ≤100 嵌套 + 运行栈双向约束，JSON.parse 自身的解析深度先于本层成为瓶颈 |
+| R3 | 超深快照递归栈溢出（RangeError） | 资源边界（合法但病态的数据） | 崩溃边界收编为 E100 issue——可观测、不伪装成功；深度仅受运行时栈约束（R2 修正：值树**解析后**深度无 ≤100 上界——ref 链可组合更深，§3.2；类型表达式层的 `MAX_TYPE_NESTING=100` 不约束解析后结构），JSON.parse 自身的解析深度通常先于本层成为瓶颈——但兜底不依赖该经验排序 |
 
 判定依据（SKILL 立法）：I1~I3 在功能完备系统里应恒真 → 不设计降级，设计报警；I4/R1/R2/R3 是真实的异常/边界路径 → 显式诊断而非吞没。**全程无一处 `if (!x) return fallback` 式静默降级。**
 
@@ -440,15 +539,15 @@ if overflow > 0:
 
 ---
 
-## §11. 红灯测试逐条对账（33 条 → 设计章节映射）
+## §11. 红灯测试逐条对账（33 条 → 设计章节映射；§11.1 处置落地后为 34 条面）
 
 | describe（条数） | 设计依据 | 关键锚点核对 |
 |---|---|---|
 | 接缝：签名、结果形状与 JSON 往返（8） | §2 | `{ok:true}` 恰含 ok 键 ✓；issue 恰含 message+path ✓；JSON 往返 ✓；纯函数 + 派生物不 Mutation ✓（§10 末段）；编译一次校验多次 ✓（调用局部态）；JSON 往返派生物输出全等 ✓（§9.2 确定性）；非对象顶层（null/42/'str'/true/[]）→ object/union ROOT 类型不匹配或无候选 → ok:false ✓ |
-| 结构校验：封闭对象 / 必填缺失 / leaf·plain 不下钻（6） | §4 / §4.1 | ROOT 层未知键 `['extraKey']` ✓；联合命中成员内未知键 `['assets','img1','unexpected']` ✓（段 2 接受 image 后下钻，封闭语义照常）；恰 4 条一次报全 ✓；optional 缺席合法 ✓；leaf 收对象 → `['notes']`、数组元素对象 → `['keywords',1]` 长度 2 ✓；plain 收非数组对象 → `['attachments']` ✓ |
+| 结构校验：封闭对象 / 必填缺失 / leaf·plain 不下钻（6） | §4 / §4.1 | ROOT 层未知键 `['extraKey']` ✓；联合命中成员内未知键 `['assets','img1','unexpected']` ✓（实际流程：段 0 命中 kind:image 但 countIssues>0 → 段 1 候选过滤 `{image}` → **段 3 候选分支 dive**（§5.2 唯一权威），封闭语义照常——R2 修正措辞，消除与 §5.2「接受 = 零输出」的走样空间，#8）；恰 4 条一次报全 ✓；optional 缺席合法 ✓；leaf 收对象 → `['notes']`、数组元素对象 → `['keywords',1]` 长度 2 ✓；plain 收非数组对象 → `['attachments']` ✓ |
 | 值校验：原始类型 / 字面量枚举 / optional / Pattern（6） | §4 / §6 | 五原始类型各自认领、unknown 全收、恰 4 条 ✓；枚举 `kind:'video'` → 候选空 → 汇总+下钻含 `['assets','img1','kind']` ✓；端口枚举 80/443 vs 8080 → `['port']` ✓（值树折叠为 enum 节点，§4）；Pattern 匹配/不匹配 ✓；Record 键 Pattern `abc.123` 拒绝 ✓；ReDoS 预算耗尽 → ok:false 毫秒级 ✓（§6.4/6.6） |
 | 联合：any-of / 判别式缓存透明 / no-match 最小距离（6） | §5 | 三 kind 各自命中（缓存跳转 + 无缓存扫描双路）✓；ref 成员联合（无判别式缓存）逐成员尝试 ✓（§3.1 解析 + 段 1/2）；stripDiscriminators 两路径匹配输出全等 ✓（§5.6）；no-match 输出全等 ✓；`{kind:'video'}` → 距离 5/3/5 → `联合成员 2/3` ✓（§5.4 校准）；平局 `{x:42}` → 双矛盾候选空 → 距离 2/2 → `联合成员 1/2` ✓ |
-| YPlainArray 纯值上下文嵌套 JSON（2） | §4 array 行 | 嵌套封闭对象 `['items',0,'count']` 长 3 ✓；混合联合 `string \| {a:number}`：'s' 与 {a:1} 各命中 ✓、{b:1} 候选下钻报未知键 ✓、42 无候选汇总 ✓ |
+| YPlainArray 纯值上下文嵌套 JSON（2） | §4 array 行 + **§11.1（测试缺陷处置）** | **首条用例为 SA6 测试文本缺陷**（SA2 #2：`YPlainArray<{…}[]>` 派生为双重数组，两条断言均不可满足）——处置定稿见 §11.1：修正文本为 `YPlainArray<{…}>`（断言不动）后，嵌套封闭对象 `['items',0,'count']` 长 3 ✓；补双重数组锁例（`[[{…}]]` → ok:true / `[{…}]` → ok:false）钉死 #20 映射 ✓；混合联合 `string \| {a:number}`：'s' 与 {a:1} 各命中 ✓、{b:1} 候选下钻报未知键 ✓、42 无候选汇总 ✓ |
 | YXmlFragment（1） | §7 | 良构通过 / `<p>unclosed` 拒绝 `['assets','text1','body']` / 非字符串拒绝 ✓ |
 | path 段数组：Record 键特殊字符零转义（1） | §4.1 / §9.1 | `['m','a.b|c[d]','v']` 等三键整段相等、恰 3 条 ✓ |
 | 全收集 + 100 上限 + 截断标记（1） | §8 | 150 错 → 101 条、`issues[100]` 标记匹配 /截断\|truncat/i、path 数组 ✓ |
@@ -456,15 +555,31 @@ if overflow > 0:
 
 **typecheck**：公共导出落地后 TS2305 消除、15 条 TS7006 级联随 `any` 传播链断开自消（§2.3）。
 
+### 11.1 红灯测试缺陷处置：首条 YPlainArray 用例（R2 新增，SA2 #2 CRITICAL 定稿）
+
+**事实链（设计期核对，非转述）**：
+
+- 红灯测试 `packages/vfsl/test/validate-snapshot.test.ts:422-434`：文本 `type ROOT = { items: YPlainArray<{ name: string; count: number }[]> };`，断言 `{items:[{name:'a',count:1}]}` → `ok:true`、`{items:[]}` → `ok:true`、坏例存在长 3 且以 `count` 结尾的 path；
+- #20 冻结映射（`evaluate.ts` marker 分支）：`YPlainArray<T>` → `{kind:'array', element: valueOf(T)}`；此处 `T = {…}[]` 本身又是一层 array → 派生树 = **双重数组** `array(array(object))`（SA2 探针 P1 实测同果）；
+- 忠实解释该值树（§1.2 核心决策）：`items[0] = {…}` 对内层 array 节点报「类型不匹配：期望数组，实际 object」→ `ok:false`、path `['items',0]` 长 2——**两条断言（ok:true / 长 3 path）在忠实实现下均不可满足**。R1 §11 该行对账「✓」失实（SA1 未做派生树核对）。
+
+**判定**：SA6 测试文本缺陷——`[…]` 多写了一层数组；用例意图是「元素为封闭对象」（断言与描述均按单层数组写），正确文本应为 `YPlainArray<{ name: string; count: number }>`。
+
+**处置（三步，授权链完整，SA3/SA4 锚点）**：
+
+1. **授权修正测试文本**：`YPlainArray<{ name: string; count: number }[]>` → `YPlainArray<{ name: string; count: number }>`，**断言逻辑零改动**（两处 `ok:true` + 长 3 path 三处断言全保留）。授权依据：§13 ALLOW LIST 该测试文件条目的「仅允许测试基础设施级修正且须在 PR 说明」条款 + SA2 R2 #2 修订要求显式授权 + 本节定稿；PR 说明须引用本节。
+2. **补双重数组正例（把 #20 映射钉进测试面）**：同 describe 追加一条 `it`——文本 `YPlainArray<{ name: string; count: number }[]>`：× `{items:[[{name:'a',count:1}]]}` → `ok:true`（双重数组忠实解释：元素是 `{…}[]`）；× `{items:[{name:'a',count:1}]}` → `ok:false`（单层对象不是数组）。堵死「拍平兜底」的转绿路径。
+3. **禁止 SA3 兜底拍平（负面清单，SA4 静态评审锚点）**：不得为让原文本转绿而做以下任一——(a) `YPlainArray` 实参自动解一层 `[…]`（改派生映射的忠实解释）；(b) array 节点对「期望数组收到对象」宽容放行；(c) validate.ts 内任何「双重数组 + 单元素」特判。双重数组本身就是 `YPlainArray<T[]>` 的正确语义（元素是 `T[]`）——任何拍平都是静默破坏 #20 已冻结的派生语义。
+
 ---
 
 ## §12. 实现文件与版本
 
 | 文件 | 动作 | 内容（预估行数） |
 |---|---|---|
-| `packages/vfsl/src/pattern.ts` | 新建 | §6 受限回溯匹配器：编译（AST → 字节码，程序规模上限）+ 执行（显式回溯栈 + 步数预算）+ 三类 loud 失败（~350 行） |
-| `packages/vfsl/src/xml.ts` | 新建 | §7 良构检查器：单遍扫描 + 标签栈（~90 行） |
-| `packages/vfsl/src/validate.ts` | 新建 | §3 解析器/主流程 + §4 全景表 + §5 联合三段 + §8 收集器 + ValidateIssue/ValidateResult 类型（~300 行） |
+| `packages/vfsl/src/pattern.ts` | 新建 | §6 NFA 子集模拟匹配器：Annex B 解析（含 §6.2 类内/类外转义全集与 IdentityEscape 立场）+ 编译（无捕获字节码 + 程序规模上限 + 类集合）+ 模拟（闭包/重播种/前瞻子模拟 + 步数预算 + charge 钩子）+ 四类 loud 失败（~450 行；R2 重估：转义全集枚举与模拟器取代回溯栈后较 R1 估的 ~350 行增） |
+| `packages/vfsl/src/xml.ts` | 新建 | §7 良构检查器：单遍扫描 + 标签栈 + 属性原子扫描（~90 行） |
+| `packages/vfsl/src/validate.ts` | 新建 | §3 解析器/主流程/资源账本（charge + 双记忆化 + WorkBudgetExceeded）+ §4 全景表 + §5 联合三段（含 §5.7 资源完备性落点）+ §8 收集器 + ValidateIssue/ValidateResult 类型（~380 行） |
 | `packages/vfsl/src/index.ts` | 修改 | `export { validateSnapshot } from './validate.js'` + `export type { ValidateIssue, ValidateResult }` + 头注释第三公共导出段（≤ 12 行） |
 | `packages/vfsl/package.json` | 修改 | `version: 0.1.5 → 0.1.6`（Hard Gate #9） |
 
@@ -476,11 +591,11 @@ if overflow > 0:
 
 ### ALLOW LIST
 - `packages/vfsl/src/validate.ts` — 新建，校验核心（§3~§5、§8；ValidateIssue/ValidateResult 类型随此文件定义）
-- `packages/vfsl/src/pattern.ts` — 新建，受限回溯匹配器（§6，ReDoS 防护定稿的落地位）
+- `packages/vfsl/src/pattern.ts` — 新建，NFA 子集模拟匹配器（§6，ReDoS 防护定稿的落地位；R2 引擎重设计）
 - `packages/vfsl/src/xml.ts` — 新建，XML 良构检查器（§7）
 - `packages/vfsl/src/index.ts` — 修改，第三公共导出 `validateSnapshot` + 类型 re-export + 头注释（≤ 12 行）
 - `packages/vfsl/package.json` — 修改，版本 0.1.5 → 0.1.6（1 行）
-- `packages/vfsl/test/validate-snapshot.test.ts` — `[SA6 owned]` 红灯验收测试（已存在，SA6 Phase 1 交付，commit f9e4790）。SA3 不得改断言逻辑；仅允许测试基础设施级修正且须在 PR 说明
+- `packages/vfsl/test/validate-snapshot.test.ts` — `[SA6 owned]` 红灯验收测试（已存在，SA6 Phase 1 交付，commit f9e4790）。SA3 不得改断言逻辑；仅允许测试基础设施级修正且须在 PR 说明。**R2 修订追加（SA2 #2 授权扩展，原 DENY 无此文件、ALLOW 原条目内扩权）**：(1) §11.1 定稿的首条 YPlainArray 用例测试文本修正（`[…]` → `YPlainArray<{…}>`，断言零改动）；(2) 同 describe 追加双重数组锁例一条（§11.1-2）。两处改动均须在 PR 说明引用 §11.1；其余 31 条断言逻辑仍不得触碰
 
 ### DENY LIST
 - `packages/vfsl/src/parser.ts` / `tokenizer.ts` / `semantic.ts` / `shapes.ts` — 解析层已冻结，本任务零改动（validateSnapshot 只消费派生物）
@@ -496,9 +611,9 @@ if overflow > 0:
 
 | 假设 | 依据类型 | 依据内容（具体引用） | 风险等级 |
 |---|---|---|---|
-| YXmlFragment 的 JSON 快照值为 XML 字符串、校验仅要求良构 | 设计文档引用（ADR，仓内权威） | `docs/adr/0003-evaluator-derived-schema.md` §5：「JSON 快照中其值为 XML 字符串（与 `Y.XmlFragment.toJSON()` 投影一致），运行时校验仅要求良构 XML」；前票设计 `wiki/raw/task_vfsl-evaluator_design.md` §6 YXmlFragment 行同源（值树 `{kind:'xml'}`）。**本票按简报指派执行票 B 映射，不新立协议** | 低（ADR 冻结文） |
+| YXmlFragment 的 JSON 快照值为 XML 字符串、校验仅要求良构 | 设计文档引用（ADR，仓内权威） | `docs/adr/0003-evaluator-derived-schema.md` §5：「JSON 快照中其值为 XML 字符串（与 `Y.XmlFragment.toJSON()` 投影一致），运行时校验仅要求良构 XML」；前票设计 `wiki/raw/task_vfsl-evaluator_design.md` §6 YXmlFragment 行同源（值树 `{kind:'xml'}`）。**本票按简报指派执行票 B 映射，不新立协议**。「良构」的 R2 读法 = 标签栈平衡 + 良构结构（多根森林 + 顶层文本均合法，§7 放宽记录——放宽方向是安全方向，不依赖任何外部投影断言） | 低（ADR 冻结文） |
 | Pattern 按「ECMAScript RegExp（无标志）解释」，其合法性暴露时点在 validateSnapshot | 规格引用 | `docs/vfsl/v1-spec.md` §3 Pattern 节 + §9.1：「实参解码后是否为合法正则不在方言层校验……非法正则的暴露时点属语义层（validateSnapshot）」。§6.2 子集为该语义的实用子集——子集外构造 loud 拒绝（§6.5）是开放点 O3「ReDoS 防护 vs 零运行时依赖」的定稿权衡，简报明文授权 SA1 定稿 | 中（子集边界是本设计新立的冻结项，SA2 主场） |
-| ReDoS 对抗用例的朴素 RegExp 行为（`(a+)+$` × 'a'*32+'!' 指数回溯远超 5s） | 现有测试引用 | `packages/vfsl/test/validate-snapshot.test.ts`「Pattern ReDoS 对抗」用例注释（SA6 Phase 1 已 commit f9e4790）；预算公式标定推演见 §6.4（4_096 步上限 vs 真值 2^31 回溯步，四个数量级余量） | 低 |
+| ReDoS 对抗用例的朴素 RegExp 行为（`(a+)+$` × 'a'*32+'!' 指数回溯远超 5s） | 现有测试引用 | `packages/vfsl/test/validate-snapshot.test.ts`「Pattern ReDoS 对抗」用例注释（SA6 Phase 1 已 commit f9e4790）；R2 行为路径：NFA 模拟 ~840 步多项式完成并真值判定「不匹配」（§6.4 定理 + §6.6 重新对账）——对抗性改为「朴素引擎 2^31 步 vs 本引擎 840 步」的结构性差距，不再依赖「预算恰好先耗尽」的标定巧合 | 低 |
 | vitest 默认单测试 5s 超时作为对抗兜底 | 现有测试引用 | 同上用例注释「vitest 默认 5s 超时兜底」；vitest 3.x 默认 testTimeout=5000（devDependencies `vitest: ^3.2.4`，package.json） | 低 |
 | 派生物为纯数据（JSON 可序列化、无行列）——消费侧不做形状防御的前提 | 现有测试 + 前票设计引用 | `derived.ts` 头注释纪律段；红灯「JSON 往返后的派生物校验结果全等」用例（clone 后校验）已锚定该前提 | 低 |
 
@@ -517,10 +632,40 @@ if overflow > 0:
 
 ---
 
-## 附：SA3 实现指令排序（防走样）
+## §16. SA2 R2 评审逐条回应（9 项发现 → 修订映射）
 
-1. **§5.2 是联合的唯一权威伪代码**——三段算法任何「简化」（如取消候选过滤、no-match 只报汇总不下钻、候选分支也加汇总）必红至少一条联合或 7 计数锚点（§5.1 张力表已推演）；
-2. §4 全景表的消息格式逐字实现（含中文标点）——`联合成员 ${i}/${N}` 与截断标记的 `/截断|truncat/i` 信号是断言锚；
-3. §6 匹配器的运行路径**完全不出现原生 RegExp 构造**——值匹配走自研字节码执行器，正则合法性判定同样由自研编译器给出（`new RegExp(...)` 连编译探测也不用，杜绝引擎间行为差异）；
+| # | 要求（SA2 评审 §1/§2） | 是否落实 | 修订位置 | 修订内容摘要 |
+|---|---|---|---|---|
+| 1 | CRITICAL：联合扫描消费侧预算（记忆化 + 全局预算双保险 + 覆盖性论证，兑现 ADR 0003 §4 委托） | ✅ | §3.4（新）、§5.2、§5.7（新）、§8.1 | (解析后节点, 值) 双记忆化（countMemo/contraMemo，外键节点对象与爆炸源结构性重合）+ 全局工作预算 16M（charge 计费全覆盖 + WorkBudgetExceeded loud、三重可区分）；§5.7 四层覆盖性论证（菱形类键重合消灭 / 非共享乘积构造性兜底 / 合法包络 3~5 数量级余量 / 内存封顶）；ADR §4 原文引用逐句兑现；countIssues 短路删除（精确计数保 argmin 平局正确） |
+| 2 | CRITICAL：显式定稿首条 YPlainArray 红灯的测试缺陷处置（授权改文本、断言不动 + 补双重数组正例 + 禁拍平） | ✅ | §11.1（新）、§11 表、§13 ALLOW LIST | 判定测试文本缺陷（事实链三段：文本/派生树双重数组/两条断言不可满足，R1 对账失实自认）；三步处置：授权改文本 `YPlainArray<{…}>`（断言零改动，PR 说明引用 §11.1）+ 补 `[[{…}]]` 锁例 + SA3 拍平负面清单三条（SA4 锚点） |
+| 3 | HIGH：类内转义全集枚举 + 类外 IdentityEscape 立场定稿 | ✅ | §6.2（重写）、§6.2.1 | 类内转义全集枚举（`\\` `\]` `\^` `\-`、类内 `\b`=U+0008、预定义类、`\cX`/`\xHH`/`\uHHHH`、类内 IdentityEscape、类内 `\`+数字 loud 拒）；类外 IdentityEscape Annex B 宽松立场定稿（保留前缀冻结清单）；fixture `\-` 编译通路显式自伤核对 |
+| 4 | HIGH：空迭代守卫 + (pc,pos) 记忆化 + §6.4 重标定 + ReDoS 红灯重新对账 | ✅ | §6.3（引擎重设计）、§6.4（定理化重标定）、§6.6 | 字节码回溯引擎 → **NFA 子集模拟**：闭包 pc 去重 = 空迭代结构性守卫（`(a?)*b`×`'b'` → true）；状态集 = 已访集等价物（更强形态）；完成性定理取代标定推演；§6.4 补 R1 缺位类目「非锚定×中庸×结构化不匹配前缀」（`(a+)+b`×27c → ok:true）；ReDoS 重新对账：多项式完成 → 真值不匹配 → ok:false ✓（R1「预算耗尽」路径作废，红灯断言兼容） |
+| 5 | MEDIUM：O6 改「使用时暴露」 | ✅ | §1.3 O6 行、§6.5 引言 | 定稿使用时暴露：校验位被到达才编译判定；optional 缺席/空 Record/空数组 → ok:true 为冻结语义（非静默降级——该正则从未被要求执行判定）；急切编译否决理由成文（别名共享 path 无唯一定位） |
+| 6 | MEDIUM：回溯栈 undo-log / 内存上界论证 | ✅ | §6.3 末条、§5.7-4 | 比 undo-log 更强的处置：回溯执行器与捕获副本栈**整体消除**（引擎重设计）；活内存 O(\|prog\|)（状态集 ≤ 3×\|prog\| 槽 + 编译期类集合）；memo 65_536 条封顶 ≈ MB 级——OOM 绕过 E100 的路径不复存在 |
+| 7 | MEDIUM：XML 顶层文本放宽或给权威依据 | ✅ | §7（R2 放宽记录 + 规则） | 放宽路线（SA2 预授权：给不出权威依据即放宽）：顶层文本（纯/混合）合法，规则统一为「标签栈平衡 + 良构结构」，与多根森林片段语义一致化；依据 = R1 自设的「与 toJSON() 投影一致」口径反向校准（顶层 Y.XmlText 投影是合法快照）；属性值引号内原子扫描成文（`<p title="a>b">` 良构） |
+| 8 | MEDIUM：§11 措辞对齐 §5.2 | ✅ | §11 结构校验行 | 「段 2 接受 image 后下钻」→「段 0 命中但 issue>0 → 段 1 候选过滤 → **段 3 候选分支 dive**」——与 §5.2 唯一权威一致，走样素材清除 |
+| 9 | LOW：文档级五项 | ✅ | §6.5（规模消息单列）、§6.2 前瞻行、§9.2、§3.2、§12 | (a) 编译期程序规模超限消息独立成行（不携带运行期上下文）；(b) 前瞻零回写在布尔 test 语义下与 JS 等价（成文于 §6.2）；(c) 「快照键插入序」→「快照键枚举序」精确读法（整数形态键数值升序先行，确定性无碍）；(d) 值树解析后深度可超 100（ref 链组合），R3 兜底论证句修正（不再依赖不确前提）；(e) pattern.ts ~450 / validate.ts ~380 行重估 |
+
+**修订无效模式自检（SKILL「承认但不改」禁令）**：#1~#4 均为设计实质改动（新伪代码/新引擎/新章节），非旁注承认；#5~#8 均改写了对应章节的行为语义或措辞载体；#9 五项全部落在具体行。无「未来优化建议」型修订。
+
+## §17. R2 修订记录（commit 摘要）
+
+- **§3.4（新）**：调用局部资源账本——charge 计费通道、WORK_LIMIT 16M、countMemo/contraMemo（65_536 条封顶清空重建）、WorkBudgetExceeded 消费路径（三重可区分）。
+- **§5.2/§5.7（改/新）**：三段算法接入记忆化与计费；countIssues 短路删除（精确计数）；资源完备性四层覆盖性论证，兑现 ADR 0003 §4 消费者预算委托（菱形构造 U_k 攻击场景坍缩为线性）。
+- **§6（重设计）**：回溯字节码引擎 → NFA 子集模拟（无捕获/无回溯栈/无 Backref）：§6.2 转义全集枚举 + IdentityEscape 立场 + 反向引用收窄（§6.2.1 决策记录）；§6.3 编译/模拟规格；§6.4 完成性定理 + 预算重标定（`min(4M, max(8192, 1024·len+16384))`，防挂死线降级为规模护栏，包络声明与定理界自洽）；§6.5 四类 loud 失败 + 使用时暴露定稿；§6.6 ReDoS 重新对账（真值判定路径）。
+- **§7（放宽）**：XML 顶层文本合法化 + 属性值原子扫描。
+- **§11/§11.1（改/新）**：联合行措辞对齐 §5.2；YPlainArray 测试缺陷三步处置（改文本/补锁例/禁拍平清单）。
+- **§9.2/§12/§13/§14（文档级）**：键序精确读法、行数重估、ALLOW LIST 授权扩展（SA2 #2）、协议假设表两行更新。
+- **不变项**：接缝形状（§2）、全景表与消息格式（§4）、联合语义主体（§5.2 三段算法结构）、截断语义（§8）、path 规则（§9.1）、loud 边界表（§10）、版本 bump（0.1.6）——SA2 攻击后仍屹立六项（评审 §6）对应的设计面全部保留。
+
+---
+
+## 附：SA3 实现指令排序（防走样；R2 增补 3/6/7 三条）
+
+1. **§5.2 是联合的唯一权威伪代码**——三段算法任何「简化」（如取消候选过滤、no-match 只报汇总不下钻、候选分支也加汇总）必红至少一条联合或 7 计数锚点（§5.1 张力表已推演）；**§5.7 资源完备性三件套（charge 计费 + 双记忆化 + WorkBudgetExceeded）不得省略**——省略则菱形联合挂死（§5.7 攻击构造），且无任何测试外的防护兜底；
+2. §4 全景表的消息格式逐字实现（含中文标点）——`联合成员 ${i}/${N}`、截断标记的 `/截断|truncat/i`、预算耗尽消息的「校验工作预算 / Pattern 匹配步数预算耗尽」措辞是断言与可区分性锚；
+3. §6 匹配器 = **NFA 子集模拟**：无捕获槽、无回溯栈、无 Backref 指令；运行路径**完全不出现原生 RegExp 构造**（`new RegExp(...)` 连编译探测也不用，杜绝引擎间行为差异）；反向引用 `\1`~`\9` 按子集外构造 loud 拒（§6.2.1）——**不得**为兼容而加回捕获/回溯；
 4. path 段：数组下标 number、键 string、ROOT `[]`；emit 时冻结副本；
-5. DENY LIST 文件零触碰；改码后 `pnpm test`（286 条全绿）+ `pnpm typecheck`（零红）+ package.json bump 三件套缺一不可。
+5. DENY LIST 文件零触碰；`packages/vfsl/test/validate-snapshot.test.ts` 仅限 §13 R2 授权的两处改动（§11.1）；改码后 `pnpm test`（286 条全绿 + §11.1 修正/新增后 34 条面）+ `pnpm typecheck`（零红）+ package.json bump 三件套缺一不可；
+6. **禁止拍平兜底**（§11.1-3 负面清单）：不得改 `YPlainArray` 实参的忠实解释、不得对 array 节点宽容放行、不得做双重数组特判——测试转绿的唯一合法路径是 §11.1 的文本修正；
+7. **countIssues 精确计数不短路**（§5.2）——短路值污染 argmin 平局比较；重复查询防护由 countMemo 承担。
