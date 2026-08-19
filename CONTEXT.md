@@ -19,7 +19,7 @@ _Avoid_: PathSchemaNode DSL、schema DSL
 _Avoid_: schema 注册表（`SCHEMA_REGISTRY` 是被替换的旧机制）
 
 **ROOT**:
-命名空间根别名的保留名（大小写是契约）：每个模块必须恰好声明一个容器形的 `type ROOT = …`；其标记/默认规则决定文档根的物化，Yjs 映射为 doc 根 `get*`('ROOT')。其余无人引用的别名是惰性积木，不进数据面。
+命名空间根别名的保留名（大小写是契约）：每个模块必须恰好声明一个 map 形的 `type ROOT = …`（裸对象 / `YMap` / `Record`），ROOT 固定物化为 Y.Map，Yjs 映射为 doc 根 `getMap('ROOT')`。其余无人引用的别名是惰性积木，不进数据面。
 _Avoid_: 隐式根、汇点推导（被否决的根指定方案，ADR-0003）
 
 **标记类型（marker types）**:

@@ -228,11 +228,12 @@ type D = true | false;             // VFSL-E301：true/false 未声明（布尔�
 
 | Yjs 物化含义 | 写入粒度 | PATCH 可否下钻 |
 | --- | --- | --- |
-| 物化为 `Y.XmlFragment`：子节点（文本 / 元素）可区分的结构容器 | 子节点级 | 可下钻 |
+| 物化为 `Y.XmlFragment`：**不透明** XML 内容（XML 文本/元素结构不进结构树） | 整体级（整体替换） | 不可下钻 |
 
-实参为对象形（形状约束表，违反 → VFSL-E304）。实参字段与 XML 结构（元素 /
-属性 / 子节点）的**语义映射属语义层（求值器）职责**，方言层不冻结；方言层仅
-冻结对象形约束（E304）与字段上的注释挂载规则（§5）。
+实参为对象形（形状约束表，违反 → VFSL-E304）。**不透明语义**：实参字段为文档
+性质，不定义字段与 XML 结构（元素 / 属性 / 子节点）的映射，路径下钻守卫视其为
+终态节点；JSON 快照中其值为 XML **字符串**（与 `Y.XmlFragment.toJSON()` 投影
+一致），运行时校验仅要求该字符串为良构 XML。字段上的注释挂载规则（§5）不变。
 
 ### Pattern
 
@@ -247,18 +248,17 @@ type D = true | false;             // VFSL-E301：true/false 未声明（布尔�
 ### 命名空间根（ROOT 约定）
 
 每个模块必须恰好声明一个名为 `ROOT` 的别名（大小写是契约；`root` / `Root` 不
-算），它描述文档根的形状：
+算），它描述文档根的形状。**ROOT 固定物化为 Y.Map**——不接受其他根类型：
 
 - 缺失 → VFSL-E310（锚模块起始）；
 - 重复声明 → VFSL-E302（重复声明名的既有语义）；
-- 非容器形 → VFSL-E311：标量形（原始类型 / 全标量联合 / `YLeaf` / `YPlainArray` /
-  `Pattern`）无法物化为 doc 根共享类型；形状按三分类经别名解析后判定，锚 ROOT
-  的类型表达式起点记号。
+- 非 map 形 → VFSL-E311：仅接受裸对象（默认物化即 YMap）/ 显式 `YMap` / `Record`
+  / 全 map 形联合（clsOf = map，三分类经别名解析后判定）；标量形（原始类型 /
+  全标量联合 / `YLeaf` / `YPlainArray` / `Pattern`）与 `YArray` / `YXmlFragment`
+  一律拒绝；锚 ROOT 的类型表达式起点记号。
 
-`ROOT` 的标记（或裸对象 / 裸数组的默认规则）决定文档根的物化；Yjs 映射为 doc 根
-的 `getMap / getArray / getXmlFragment('ROOT')`。`ROOT` 可被其他别名引用（既当根
-又当积木，合法）。其余无人引用的别名是**惰性积木**：合法、不进数据面、不参与
-物化。
+Yjs 映射为 doc 根的 `getMap('ROOT')`。`ROOT` 可被其他别名引用（既当根又当积木，
+合法）。其余无人引用的别名是**惰性积木**：合法、不进数据面、不参与物化。
 
 ## 4. 禁止清单与错误语义
 
@@ -375,7 +375,7 @@ E301 / E304 / E306 / E307 / E309 / E310 / E311（全部引用 / 语义层错误�
 | VFSL-E308 | 对象字段重名 | 重复字段名 |
 | VFSL-E309 | 混合联合：同步物化上下文中联合成员标量形与容器形并存（别名解析后判定；纯值上下文不适用） | 首个与首成员形状类别不同的成员起点记号 |
 | VFSL-E310 | 缺少 ROOT 别名：模块未声明名为 `ROOT` 的命名空间根别名（见 §3「命名空间根」） | 模块起始（1:1） |
-| VFSL-E311 | ROOT 别名非容器形：标量形无法物化为 doc 根共享类型（三分类经别名解析后判定） | ROOT 的类型表达式起点记号 |
+| VFSL-E311 | ROOT 别名非 map 形：ROOT 固定物化为 Y.Map——仅接受裸对象 / `YMap` / `Record` / 全 map 形联合（三分类经别名解析后判定）；标量形与 `YArray` / `YXmlFragment` 拒绝 | ROOT 的类型表达式起点记号 |
 
 保留名集合：`type`、`Record`、`Pattern`、`string`、`number`、`boolean`、`null`、
 `unknown`、`any`、`extends`、`interface`、`YMap`、`YArray`、`YPlainArray`、
@@ -508,14 +508,14 @@ type Audit = YMap<{
 /** 资产实体：按 kind 判别的封闭联合 */
 type AssetEntity =
   | { kind: "image"; url: YLeaf<string>; width: YLeaf<number>; height: YLeaf<number>; audit: Audit }
-  | { kind: "text"; body: YLeaf<string>; audit: Audit }
+  | { kind: "text"; body: YXmlFragment<{ paragraphs: YArray<YLeaf<string>> }>; audit: Audit }
   | { kind: "file"; name: YLeaf<string>; size: YLeaf<number>; tags: YArray<YLeaf<string>>; audit: Audit };
 
 /** 附件：与 Yjs 同步无关的纯值数组 */
 type Attachments = YPlainArray<YLeaf<string>>;
 
 /** ROOT：命名空间根文档，assets 键集受 AssetId 的 Pattern 约束 */
-type ROOT = YXmlFragment<{
+type ROOT = YMap<{
   assets: Record<AssetId, AssetEntity>;
   attachments: Attachments;
   audit: Audit;
@@ -525,9 +525,10 @@ type ROOT = YXmlFragment<{
 }>;
 ```
 
-fixture 构造覆盖：六标记全部出现；`AssetId`（Pattern 键约束）、`Audit`、判别联合
+fixture 构造覆盖：六标记全部出现（`YXmlFragment` 位于 `AssetEntity` 的 text 成员
+`body` 字段——不透明语义的演示位）；`AssetId`（Pattern 键约束）、`Audit`、判别联合
 `AssetEntity`（字面量联合成员 `"image"` / `"text"` / `"file"`，全部容器形成员——
-按 §3 三分类物化为多态 Y.Map，非混合联合）、`ROOT`；
+按 §3 三分类物化为多态 Y.Map，非混合联合）、`ROOT`（YMap，ROOT 约定的正例形态）；
 `?:` 可选属性（`notes?`）、`T[]`（`keywords`）、`Record<`（`assets`）、
 `string & Pattern<`（`AssetId`）、文档注释原文（含 `@tag`）。该文本**除词法
 trivia（空白与注释，注记 9）外**按 §2 文法完全可推导，语义检查（§3~§5）全部

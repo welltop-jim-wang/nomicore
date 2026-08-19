@@ -15,7 +15,7 @@ Phase 0b 求值器把 IR 求解为派生 schema（结构树 + 值 schema + 路�
 
 ### 2. 根指定：显式 ROOT 别名约定
 
-每个模块必须恰好声明一个名为 `ROOT` 的别名（大小写是契约，`root` / `Root` 不算），且必须容器形（三分类 ∈ {map, container}）。检查位于 **parseVfsl 语义相位**——E310（缺 ROOT，锚模块起始）/ E311（ROOT 非容器形，锚 ROOT 类型表达式起点）；行列锚定只有解析层做得到（IR 无行列是内容哈希纪律）。`ROOT` 的标记或默认规则决定文档根的物化；Yjs 映射为 `doc.get*('ROOT')`。`ROOT` 可被其他别名引用（既当根又当积木，合法）；其余无人引用的别名是惰性积木——合法、不进数据面。
+每个模块必须恰好声明一个名为 `ROOT` 的别名（大小写是契约，`root` / `Root` 不算），且必须 **map 形**（clsOf = map：裸对象 / `YMap` / `Record` / 全 map 形联合）——ROOT 固定物化为 Y.Map，`YArray` / `YXmlFragment` 与标量形一律拒绝。检查位于 **parseVfsl 语义相位**——E310（缺 ROOT，锚模块起始）/ E311（ROOT 非 map 形，锚 ROOT 类型表达式起点）；行列锚定只有解析层做得到（IR 无行列是内容哈希纪律）。Yjs 映射为 `doc.getMap('ROOT')`。`ROOT` 可被其他别名引用（既当根又当积木，合法）；其余无人引用的别名是惰性积木——合法、不进数据面。
 
 ### 3. 联合表示：分支列表为基础，判别式索引为派生缓存
 
@@ -24,8 +24,11 @@ Phase 0b 求值器把 IR 求解为派生 schema（结构树 + 值 schema + 路�
 - no-match 诊断：报**失败距离最小**的成员（平局按声明序），消息标注「联合成员 i/N」相对定位。
 
 ### 4. 别名引用表示：按名引用（不内联展开）
-
 派生 schema 照搬 IR 的模块形状：别名表 + ref 节点 `{ kind: 'ref'; name }`；引用**不内联展开**，解析动作由包内共享解析器完成（复用 shapes.ts 的 clsOf/memo 模式）。派生物大小恒为 O（文本规模）；菱形引用链（`A1={l:A2,r:A2}; …`）的全展开爆炸（2^N）只在枚举型消费时发生——枚举预算是消费者策略，不进引擎契约。终止性由 E106 保证（无环 ⇒ ref 链有限步落地）。
+
+### 5. YXmlFragment 不透明语义
+
+`xml-fragment` 是结构树的**终态节点**：无 children、路径下钻守卫到此为止；JSON 快照中其值为 XML 字符串（与 `Y.XmlFragment.toJSON()` 投影一致），运行时校验仅要求良构 XML。不定义实参字段与 XML 结构的映射——实参字段为文档性质。由此 fixture 修订：ROOT 从 `YXmlFragment` 改为 `YMap`（ROOT 固定 Y.Map 的直接推论），`YXmlFragment` 降为 text 成员 `body` 字段的演示位。
 
 ## 被否方案
 
