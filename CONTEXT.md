@@ -18,6 +18,10 @@ _Avoid_: PathSchemaNode DSL、schema DSL
 一个 Y.Doc 连同自带的 `__schema__` 与数据；schema 随数据走，不依赖代码模块。
 _Avoid_: schema 注册表（`SCHEMA_REGISTRY` 是被替换的旧机制）
 
+**ROOT**:
+命名空间根别名的保留名（大小写是契约）：每个模块必须恰好声明一个容器形的 `type ROOT = …`；其标记/默认规则决定文档根的物化，Yjs 映射为 doc 根 `get*`('ROOT')。其余无人引用的别名是惰性积木，不进数据面。
+_Avoid_: 隐式根、汇点推导（被否决的根指定方案，ADR-0003）
+
 **标记类型（marker types）**:
 `YMap` / `YArray` / `YPlainArray` / `YLeaf` / `YXmlFragment` / `Pattern`；tsc 视角恒等别名，引擎视角是 Yjs 物化语义标记。
 _Avoid_: `YLEaf`、`yleaf` 等变体拼写——大小写是契约的一部分
@@ -31,6 +35,14 @@ Yjs 物化语义（kind / storage / opaque），供路径下钻守卫；与值�
 **路径索引（path index）**:
 路径 → 子 schema 的下钻索引，键匹配（exact / pattern）为标准能力。
 _Avoid_: resolveChild 三级前缀匹配（被替换的旧机制）
+
+**求值器（evaluator）**:
+把解析后的模块（IR）求解为派生 schema 的步骤；可失败（结果联合）——方言合法性与 ROOT 完整性在解析层已收口，求值期失败为资源预算等模式预留。
+_Avoid_: 编译器（compiler）——该词留给「文本 → IR → 派生 schema」的组合入口（Phase 1 contract 包）
+
+**派生 schema（derived schema）**:
+求值器的产出：结构树、值 schema、路径索引的打包；与 IR 同纪律——纯数据、可 JSON 序列化、可内容哈希。
+_Avoid_: 编译产物、DerivedSchema（英文代号）
 
 **整文档校验（validateSnapshot）**:
 对整份快照跑一次完整校验；快照加载、迁移后体检、测试、管理端点共用的单一入口。

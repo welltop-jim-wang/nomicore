@@ -197,7 +197,7 @@ type D = true | false;             // VFSL-E301：true/false 未声明（布尔�
 `YMap<T>` 的 T 为对象形（形状约束表）；T 为**对象形联合**时，键空间为各成员
 字段键集之**并集**（封闭）——未被任何成员声明的键不属于该联合的键空间；写入值
 与命中成员的字段匹配校验属语义层（validateSnapshot），方言层仅冻结键空间的
-并集封闭。裸对象类型的默认物化即 YMap；根别名的标记决定文档根的物化。
+并集封闭。裸对象类型的默认物化即 YMap；根别名 `ROOT`（见「命名空间根」）的标记决定文档根的物化。
 
 ### YArray
 
@@ -244,6 +244,22 @@ type D = true | false;             // VFSL-E301：true/false 未声明（布尔�
 不由方言隐含（须如附录 fixture 显式书写 `^` / `$`）。实参解码后是否为合法正则
 **不在方言层校验**（见 §9）。
 
+### 命名空间根（ROOT 约定）
+
+每个模块必须恰好声明一个名为 `ROOT` 的别名（大小写是契约；`root` / `Root` 不
+算），它描述文档根的形状：
+
+- 缺失 → VFSL-E310（锚模块起始）；
+- 重复声明 → VFSL-E302（重复声明名的既有语义）；
+- 非容器形 → VFSL-E311：标量形（原始类型 / 全标量联合 / `YLeaf` / `YPlainArray` /
+  `Pattern`）无法物化为 doc 根共享类型；形状按三分类经别名解析后判定，锚 ROOT
+  的类型表达式起点记号。
+
+`ROOT` 的标记（或裸对象 / 裸数组的默认规则）决定文档根的物化；Yjs 映射为 doc 根
+的 `getMap / getArray / getXmlFragment('ROOT')`。`ROOT` 可被其他别名引用（既当根
+又当积木，合法）。其余无人引用的别名是**惰性积木**：合法、不进数据面、不参与
+物化。
+
 ## 4. 禁止清单与错误语义
 
 ### 结构化错误模型
@@ -253,8 +269,8 @@ type D = true | false;             // VFSL-E301：true/false 未声明（布尔�
 为 `\n`（`\r\n` 中的 `\r` 不占列）。issues 数组的精确字段形状由 parser 公共接缝
 （PRD #3）冻结；本规格冻结错误身份与定位锚。
 
-错误码共 **19 个**，三层分野：语法 E100~E106（E100 为越界语法 catch-all）、
-词法 E201~E203、引用 / 语义 E301~E309。
+错误码共 **21 个**，三层分野：语法 E100~E106（E100 为越界语法 catch-all）、
+词法 E201~E203、引用 / 语义 E301~E311。
 
 **错误码传递通道**：issues 数组的字段形状由 PRD #3 冻结为
 `{ message, line, column }`（无独立 code 字段，本规格不增改该公共接缝）。错误码
@@ -269,7 +285,7 @@ issue #5 起的测试应以前缀为断言锚（断言前缀格式而非消息�
 报告**分相位**：词法 / 语法相位（E100~E105、E201~E203，含按「错误判定顺序」映射
 出的专属码，以及第 7 条在声明名位映射出的 E303）在**遇到处即时失败并即报**；
 仅当模块**全量解析成功**，才进入引用 / 语义相位（E106 引用图成环与
-E301 / E302 / E304~E309），相位内取**文本位置最前**的一处。同一记号命中多个条件
+E301 / E302 / E304~E311），相位内取**文本位置最前**的一处。同一记号命中多个条件
 时按「错误判定顺序」的优先级取一（该特征分派亦在词法 / 语法相位内）。错误恢复
 与多错误报告留给未来版本只增引入（issues 的数组形状已为此预留）。
 
@@ -326,7 +342,7 @@ E101~E105 对应的构造在 §2 文法下**不可推导**（形式上会落入 
 模块全量解析后进行——**别名解析与声明顺序无关**（前向引用
 `type A = B; type B = string;` 合法），「未声明」=
 模块内不存在该名的 TypeAlias 声明。该解析时机条款同样适用于
-E301 / E304 / E306 / E307 / E309（全部引用 / 语义层错误）。
+E301 / E304 / E306 / E307 / E309 / E310 / E311（全部引用 / 语义层错误）。
 
 ### 递归与循环引用检测
 
@@ -358,6 +374,8 @@ E301 / E304 / E306 / E307 / E309（全部引用 / 语义层错误）。
 | VFSL-E307 | 同步标记位于纯值上下文（YPlainArray 子树内，含经别名间接引入） | 标记记号；经别名引入时为引入别名的引用记号 |
 | VFSL-E308 | 对象字段重名 | 重复字段名 |
 | VFSL-E309 | 混合联合：同步物化上下文中联合成员标量形与容器形并存（别名解析后判定；纯值上下文不适用） | 首个与首成员形状类别不同的成员起点记号 |
+| VFSL-E310 | 缺少 ROOT 别名：模块未声明名为 `ROOT` 的命名空间根别名（见 §3「命名空间根」） | 模块起始（1:1） |
+| VFSL-E311 | ROOT 别名非容器形：标量形无法物化为 doc 根共享类型（三分类经别名解析后判定） | ROOT 的类型表达式起点记号 |
 
 保留名集合：`type`、`Record`、`Pattern`、`string`、`number`、`boolean`、`null`、
 `unknown`、`any`、`extends`、`interface`、`YMap`、`YArray`、`YPlainArray`、
@@ -402,8 +420,8 @@ VFSL-E203。
 | `/** 审计信息：… */` | 类型别名 `Audit` |
 | `/** 资产实体：… */` | 类型别名 `AssetEntity` |
 | `/** 附件：… */` | 类型别名 `Attachments` |
-| `/** AssetsDoc：… */` | 类型别名 `AssetsDoc` |
-| `/** @semantic 可选说明字段 */` | 属性 `notes?`（`AssetsDoc` 对象内） |
+| `/** ROOT：… */` | 类型别名 `ROOT` |
+| `/** @semantic 可选说明字段 */` | 属性 `notes?`（`ROOT` 对象内） |
 
 ## 6. 大小写契约
 
@@ -496,8 +514,8 @@ type AssetEntity =
 /** 附件：与 Yjs 同步无关的纯值数组 */
 type Attachments = YPlainArray<YLeaf<string>>;
 
-/** AssetsDoc：命名空间根文档，assets 键集受 AssetId 的 Pattern 约束 */
-type AssetsDoc = YXmlFragment<{
+/** ROOT：命名空间根文档，assets 键集受 AssetId 的 Pattern 约束 */
+type ROOT = YXmlFragment<{
   assets: Record<AssetId, AssetEntity>;
   attachments: Attachments;
   audit: Audit;
@@ -509,7 +527,7 @@ type AssetsDoc = YXmlFragment<{
 
 fixture 构造覆盖：六标记全部出现；`AssetId`（Pattern 键约束）、`Audit`、判别联合
 `AssetEntity`（字面量联合成员 `"image"` / `"text"` / `"file"`，全部容器形成员——
-按 §3 三分类物化为多态 Y.Map，非混合联合）、`AssetsDoc`；
+按 §3 三分类物化为多态 Y.Map，非混合联合）、`ROOT`；
 `?:` 可选属性（`notes?`）、`T[]`（`keywords`）、`Record<`（`assets`）、
 `string & Pattern<`（`AssetId`）、文档注释原文（含 `@tag`）。该文本**除词法
 trivia（空白与注释，注记 9）外**按 §2 文法完全可推导，语义检查（§3~§5）全部
