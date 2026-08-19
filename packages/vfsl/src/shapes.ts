@@ -543,7 +543,7 @@ function pvCheck(
   }
 }
 
-// —— 四个新错误码的候选收集（§5.3~§5.6）——
+// —— 六个错误码的候选收集（E304/E306/E307/E309 见 §5.3~§5.6；E310/E311 为 #19 ROOT 完整性）——
 
 /** E304：标记实参形状（锚 = 标记名记号；一律经 clsOf）。 */
 function checkE304(
@@ -607,6 +607,38 @@ function checkE309(
   }
 }
 
+/** E310：缺 ROOT（锚模块起始 1:1，硬编码——与声明位置、前导 trivia、BOM 无关；
+ * 空文本无记号可锚亦成立）。declared 含 ROOT（含重复声明）即满足存在性——
+ * 重复走既有 E302，不产 E310（semantic.ts:86-93）。 */
+function checkE310(
+  declared: Set<string>,
+  add: (code: string, message: string, line: number, column: number) => void,
+): void {
+  if (!declared.has('ROOT')) {
+    add(ErrCode.E310, '缺少 ROOT 别名: 模块未声明名为 ROOT 的命名空间根（大小写是契约，ROOT 固定物化为 Y.Map）', 1, 1);
+  }
+}
+
+/** E311：ROOT 非 map 形，锚 ROOT 的类型表达式起点记号（nodePos）。逐声明体检查
+ * （E302 多体场景每体独立裁决，各自入池由 min-position 裁定）。
+ * cycle/unknown 不裁决——错误身份归还 E106/E301/终判通道（E304/E309 同纪律，
+ * 闭环证明见 #19 设计 §5），无静默 ok:true 路径。 */
+function checkE311(
+  rootBodies: AstType[],
+  cls: Map<string, Cls>,
+  declared: Set<string>,
+  add: (code: string, message: string, line: number, column: number) => void,
+): void {
+  for (const body of rootBodies) {
+    const c = clsOf(body, cls, declared);
+    if (c === 'cycle' || c === 'unknown') continue;
+    if (c !== 'map') {
+      const p = nodePos(body);
+      add(ErrCode.E311, `ROOT 别名非 map 形: ROOT 固定物化为 Y.Map，仅接受裸对象 / YMap / Record / 全 map 形联合（解析后形状: ${c}）`, p.line, p.column);
+    }
+  }
+}
+
 // —— 入口：模块级候选收集（semantic.ts 聚合时调用）——
 
 export function collectShapeCandidates(aliases: AstAlias[]): ShapeCandidate[] {
@@ -659,25 +691,7 @@ export function collectShapeCandidates(aliases: AstAlias[]): ShapeCandidate[] {
   for (const u of unionNodes) checkE309(u, cls, declared, add);
 
   // —— 命名空间根完整性（#19，spec §3「命名空间根」：E310/E311）——
-  // E310：缺 ROOT（锚模块起始 1:1，硬编码——与声明位置、前导 trivia、BOM 无关；
-  // 空文本无记号可锚亦成立）。declared 含 ROOT（含重复声明）即满足存在性——
-  // 重复走既有 E302，不产 E310（semantic.ts:86-93）。
-  if (!declared.has('ROOT')) {
-    add(ErrCode.E310, '缺少 ROOT 别名: 模块未声明名为 ROOT 的命名空间根（大小写是契约，ROOT 固定物化为 Y.Map）', 1, 1);
-  } else {
-    // E311：ROOT 非 map 形，锚 ROOT 的类型表达式起点记号（nodePos）。逐声明体检查
-    // （E302 多体场景每体独立裁决，各自入池由 min-position 裁定）。
-    // cycle/unknown 不裁决——错误身份归还 E106/E301/终判通道（E304/E309 同纪律，
-    // 闭环证明见 #19 设计 §5），无静默 ok:true 路径。
-    for (const a of aliases) {
-      if (a.name !== 'ROOT') continue;
-      const c = clsOf(a.type, cls, declared);
-      if (c === 'cycle' || c === 'unknown') continue;
-      if (c !== 'map') {
-        const p = nodePos(a.type);
-        add(ErrCode.E311, `ROOT 别名非 map 形: ROOT 固定物化为 Y.Map，仅接受裸对象 / YMap / Record / 全 map 形联合（解析后形状: ${c}）`, p.line, p.column);
-      }
-    }
-  }
+  checkE310(declared, add);
+  checkE311(bodiesByName.get('ROOT') ?? [], cls, declared, add);
   return candidates;
 }

@@ -189,6 +189,18 @@ describe('parseVfsl — 命名空间根：E310/E311 与既有 E30x 的候选池 
     const issue = expectSingleIssue(parseVfsl('type ROOT = Foo;'));
     expectIssueAt(issue, '301', 1, 13);
   });
+
+  it('回归：E305 与 E310 同锚 (1,1) 并列 → 码号序兜底裁定（305<310，E305 胜）', () => {
+    // 语义相位 min-position 聚合的位置并列分支（spec §4 码号序为确定性兜底）：
+    // 悬空 doc 注释锚注释起始 (1,1)，缺 ROOT 锚模块起始 (1,1)，两者并列。
+    const issue = expectSingleIssue(parseVfsl('/** 悬空注释，且无 ROOT */'));
+    expectIssueAt(issue, '305', 1, 1);
+  });
+
+  it('回归：注释被空行推出 (1,1) 后 E310 位置更前 → E310 胜（反方向锁定）', () => {
+    const issue = expectSingleIssue(parseVfsl('\n\n/** 空行前移 */'));
+    expectIssueAt(issue, '310', 1, 1);
+  });
 });
 
 describe('parseVfsl — 命名空间根：正例全形态（ok: true 契约锚）', () => {
