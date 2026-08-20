@@ -21,6 +21,7 @@ import type {
   ValueSchema,
 } from '@nomicore/vfsl';
 import { buildHeader } from './header.js';
+import { PROTOCOL_EXPORT_NAMES, PROTOCOL_IMPORT_LINE } from './protocol-surface.js';
 import { projectValue } from './valuetype.js';
 import { tsdocLines } from './docs.js';
 
@@ -36,7 +37,7 @@ export class UnsupportedRootShapeError extends Error {
   constructor(shape: string) {
     super(
       `ROOT 形态不支持（F2 仅支持封闭 map 形：裸对象/YMap；得到 ${shape}）` +
-        '——Record/联合形 ROOT 需协议层顶层动态键/成员并集语义，由总控开后续票登记',
+        '——Record/联合形 ROOT 需协议层顶层动态键/成员并集语义，见 #44',
     );
     this.name = 'UnsupportedRootShapeError';
     this.shape = shape;
@@ -47,7 +48,7 @@ export class UnsupportedRootShapeError extends Error {
  * ref→ROOT 拦截（§3.4 R3 处置段 (a) 案，总控定夺）：ROOT 仅作入口根、不作引用目标——
  * 三检查点任一抵达 ROOT（值侧 ref 目标 / kindOf 链解析 / 段② 走查）→ 命名化 loud throw
  * （与 §3.2.1 同构；CLI 顶层 catch → 结构化 stderr + exit 2）。被引用 ROOT 的协议层
- * 扩展由总控开后续票登记。
+ * 扩展见 #44。
  */
 export class UnsupportedRootReferenceError extends Error {
   readonly path: string;
@@ -55,7 +56,7 @@ export class UnsupportedRootReferenceError extends Error {
   constructor(path: string) {
     super(
       `ROOT 不可被引用（F2 仅支持 ROOT 作入口根——顶层键 = ROOT 的字段；引用位 ${path} 抵达 ROOT）` +
-        '——被引用 ROOT 需协议层引用目标语义，由总控开后续票登记',
+        '——被引用 ROOT 需协议层引用目标语义，见 #44',
     );
     this.name = 'UnsupportedRootReferenceError';
     this.path = path;
@@ -73,10 +74,37 @@ export class UnsupportedUnionKindError extends Error {
   constructor(kinds: string[]) {
     super(
       `联合成员结构 kind 异形（F2 仅支持全员同形联合；得到 ${kinds.join(' | ')}）` +
-        '——异形联合需协议层 PathKind 联合语义，由总控开后续票登记',
+        '——异形联合需协议层 PathKind 联合语义，见 #44',
     );
     this.name = 'UnsupportedUnionKindError';
     this.kinds = kinds;
+  }
+}
+
+/**
+ * 别名 × 协议导出名碰撞（§4，N3 守卫，issue #45）：段② 发射前置检查命中——领域别名
+ * 与 `@nomicore/vfsl-protocol` 导出面（12 名冻结名单，protocol-surface.ts）同名。
+ * 生成物以模块增广方式接线协议：文件作用域内 import 绑定 `PathSchema` 与本地同名 export
+ * 同声明空间冲突（TS2440）；段③ 增广体内别名名解析优先命中被增广模块的导出——泛型名 →
+ * 生成物编译错误（TS2314），非泛型名 → 编译干净但静默绑定协议类型、路径投影语义损坏。
+ * 故全量拦截、响亮失败（独立错误码，CLI 顶层 catch → 结构化 stderr + exit 2），
+ * 指引领域作者重命名别名（协议名冻结于 ADR-0004，领域别名是自由变量）。
+ */
+export class AliasProtocolExportCollisionError extends Error {
+  /** 独立错误码（AC-3）：生成器发射层命名空间（与 parse 层 `VFSL-E<nnn>`、接缝层三码互斥）。 */
+  readonly code = 'alias-protocol-export-collision';
+  /** 全部碰撞别名（声明序，确定性）。 */
+  readonly aliases: readonly string[];
+
+  constructor(aliases: readonly string[]) {
+    super(
+      `领域别名与协议导出名碰撞：${aliases.map((a) => `'${a}'`).join('、')}` +
+        '——生成物以模块增广方式接线协议，增广体内别名名会解析到协议导出' +
+        '（泛型名 → 生成物编译错误；非泛型名 → 静默绑定协议类型、路径投影语义损坏）；' +
+        `'@nomicore/vfsl-protocol' 的导出名不得作领域别名，请重命名领域别名`,
+    );
+    this.name = 'AliasProtocolExportCollisionError';
+    this.aliases = aliases;
   }
 }
 
@@ -87,6 +115,17 @@ interface EmitTables {
   aliasDocs: Record<string, string[]>;
   fieldDocs: Record<string, string[]>;
   markerDocs: Record<string, string[]>;
+}
+
+/**
+ * N3（§4）：段② 发射前置守卫。别名名 × 协议导出面（12 名冻结名单）碰撞 → 命名化响亮失败，
+ * 先于一切发射（失败零产出）。ROOT 不在协议导出面（ROOT 是 ADR-0003 根别名约定、非别名侧
+ * 可声明名），集合成员测试天然排除，无需特判。不重复检查 parse 层保留名（RESERVED_NAMES
+ * 16 名已在解析层拒收，parser.ts E303——单一真相，发射层不二次裁决）。
+ */
+function assertNoProtocolNameCollision(aliases: Record<string, StructureNode>): void {
+  const collisions = Object.keys(aliases).filter((name) => PROTOCOL_EXPORT_NAMES.has(name));
+  if (collisions.length > 0) throw new AliasProtocolExportCollisionError(collisions);
 }
 
 /**
@@ -119,26 +158,36 @@ export function generateProjection(derived: DerivedSchema, opts?: GenerateProjec
     throw desync(root, rootValue, 'ROOT');
   }
 
-  const lines: string[] = [];
-  lines.push(buildHeader(opts?.sourceText));
-  lines.push('');
-  // 段② 具名别名声明（声明序 = aliases 键序；ROOT 除外；未引用的别名也发射）
+  // N3 守卫（§4）：段② 发射前置检查——别名名 × 协议导出面碰撞 → 命名化响亮失败
+  assertNoProtocolNameCollision(derived.aliases);
+
+  // 段② 具名别名声明（声明序 = aliases 键序；ROOT 除外；未引用的别名也发射【既有行为不变】）
+  const aliasLines: string[] = [];
   for (const name of Object.keys(derived.aliases)) {
     if (name === 'ROOT') continue;
-    lines.push(emitAlias(name, tables));
+    aliasLines.push(emitAlias(name, tables));
   }
-  lines.push('');
-  // 段③ 增广载体（D5：顶层键 = ROOT 的字段，路径无 ROOT 前缀）
-  lines.push(`declare module '@nomicore/vfsl-protocol' {`);
+
+  // 段③ 增广载体（D5：顶层键 = ROOT 的字段，路径无 ROOT 前缀【逐行搬移，逻辑不变】）
+  const augmentationLines: string[] = [];
+  augmentationLines.push(`declare module '@nomicore/vfsl-protocol' {`);
   const rootDoc = tsdocLines(derived.aliasDocs['ROOT'], '  ');
-  if (rootDoc !== '') lines.push(rootDoc);
-  lines.push('  interface VfslPathMap {');
+  if (rootDoc !== '') augmentationLines.push(rootDoc);
+  augmentationLines.push('  interface VfslPathMap {');
   for (const field of root.fields) {
-    lines.push(emitInterfaceMember(field, rootValue, tables));
+    augmentationLines.push(emitInterfaceMember(field, rootValue, tables));
   }
-  lines.push('  }');
-  lines.push('}');
-  return `${lines.join('\n')}\n`;
+  augmentationLines.push('  }');
+  augmentationLines.push('}');
+
+  // §3.1 布局冻结：头注 / import 行 / 段② / 段③，相邻非空段恰一空行（段②空时连空行消失）
+  const sections = [
+    [buildHeader(opts?.sourceText)],
+    [PROTOCOL_IMPORT_LINE],
+    aliasLines,
+    augmentationLines,
+  ].filter((section) => section.length > 0);
+  return `${sections.map((section) => section.join('\n')).join('\n\n')}\n`;
 }
 
 // ---------------------------------------------------------------------------
