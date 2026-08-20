@@ -37,3 +37,9 @@ jobs:
 
       - name: Test
         run: pnpm test
+
+      # AC5（ADR 0005）：全领域脚手架解析 + 信封校验——显式步骤使校验在工作流文件里
+      # 评审可见；--passWithNoTests=false 防测试文件被删后静默假绿（vitest.config 默认 true）。
+      # TODO(#27)：domains/ 首领域由票 G 种植后，本步骤从 vacuous pass 转为实质校验。
+      - name: Domain scaffolds check
+        run: pnpm exec vitest run packages/vfsl/test/domains-scaffold.test.ts --passWithNoTests=false
