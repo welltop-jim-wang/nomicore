@@ -101,3 +101,4 @@ pnpm exec vitest run  # 180 个测试
 CI：Node 20 / 24 矩阵（`.github/workflows/ci.yml`）。
 
 Ticket 经 [MABF 流水线](docs/agents/issue-tracker.md)自动执行：SA6 红灯测试 → SA1 设计 → SA2 攻击评审 → SA3 实现 → SA4 静态 / SA7 动态双清 → PR → 绿 CI 合入集成分支。各阶段产物存于 `wiki/raw/`。
+MABF dispatch channel verified: 2026-08-21

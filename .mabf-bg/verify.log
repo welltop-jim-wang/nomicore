@@ -1,0 +1,60 @@
+Scope: all 2 workspace projects
+Lockfile is up to date, resolution step is skipped
+Progress: resolved 1, reused 0, downloaded 0, added 0
+Packages: +52
+++++++++++++++++++++++++++++++++++++++++++++++++++++
+Progress: resolved 52, reused 52, downloaded 0, added 52, done
+
+devDependencies:
++ typescript 5.9.3
++ vitest 3.2.7
+
+╭ Warning ─────────────────────────────────────────────────────────────────────╮
+│                                                                              │
+│   Ignored build scripts: esbuild@0.28.2.                                     │
+│   Run "pnpm approve-builds" to pick which dependencies should be allowed     │
+│   to run scripts.                                                            │
+│                                                                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+Done in 379ms using pnpm v10.28.2
+
+> nomicore@0.1.0 typecheck /home/wangjian/nomicore-fix-issue-47
+> tsc -p packages/vfsl/tsconfig.json
+
+typecheck_exit=0
+
+> nomicore@0.1.0 test /home/wangjian/nomicore-fix-issue-47
+> vitest run
+
+
+ RUN  v3.2.7 /home/wangjian/nomicore-fix-issue-47
+
+ ✓ packages/vfsl/test/parse-vfsl-forbidden-matrix.test.ts (79 tests) 58ms
+ ✓ packages/vfsl/test/evaluate-derived-schema.test.ts (37 tests) 62ms
+ ✓ packages/vfsl/test/validate-snapshot.test.ts (35 tests) 89ms
+ ✓ packages/vfsl/test/evaluate-derived-docs-audit.test.ts (15 tests) 27ms
+ ✓ packages/vfsl/test/parse-vfsl-cycle-detection.test.ts (16 tests) 29ms
+ ✓ packages/vfsl/test/parse-vfsl-containers-markers.test.ts (33 tests) 39ms
+ ✓ packages/vfsl/test/parse-vfsl-root-convention.test.ts (36 tests) 23ms
+ ✓ packages/vfsl/test/vfsl-assets-fullchain-e2e.test.ts (16 tests) 57ms
+ ✓ packages/vfsl/test/parse-vfsl-jsdoc.test.ts (7 tests) 13ms
+ ✓ packages/vfsl/test/evaluate-derived-docs-typecls.test.ts (8 tests) 25ms
+ ✓ packages/vfsl/test/parse-vfsl-errors.test.ts (19 tests) 39ms
+ ✓ packages/vfsl/test/parse-vfsl.test.ts (11 tests) 15ms
+ ✓ packages/vfsl/test/parse-vfsl-sa7-supplementary.test.ts (8 tests) 1305ms
+   ✓ SA7 补充 — 资源界 / 必终止 / 声明序不变性（设计 §11 SA7 动态验证位） > T-l：20k 裸引用链 + Record 键 → ok:true（栈安全回归，无 RangeError、无挂起）  553ms
+   ✓ SA7 补充 — fuzz 烟雾（SA4 动态审核重点 #3：不抛异常 / 二态 union / 兜底通道不可达） > 记号汤：3000 组种子随机输入全部落契约内  351ms
+   ✓ SA7 补充 — fuzz 烟雾（SA4 动态审核重点 #3：不抛异常 / 二态 union / 兜底通道不可达） > fixture 变异/截断：3000 组 + 全前缀截断全部落契约内  383ms
+ ✓ packages/vfsl/test/parse-vfsl-r3-regression.test.ts (7 tests) 14ms
+ ✓ packages/vfsl/test/validate-snapshot-sa7.test.ts (14 tests) 12844ms
+   ✓ SA7 补充：全局工作预算 WorkBudgetExceeded（设计 §3.4——首次动态触发的持久锚定） > 预算内照常完成（WORK_LIMIT 是上界不是配额）：100k 键 × 120 成员联合 → 101 条截断输出  1472ms
+   ✓ SA7 补充：全局工作预算 WorkBudgetExceeded（设计 §3.4——首次动态触发的持久锚定） > 超预算 loud fail-closed：900k 键 × 120 成员联合（≈2.2×10⁸ 单位 > 2×10⁸）→ 单条预算耗尽 issue  10260ms
+   ✓ SA7 补充：崩溃边界 E100 收编（设计 §10 R3——RangeError 触发面） > 深 ref 链（解析后深度 3×10⁴，表达式嵌套每层=2）× 等深快照 → RangeError 收编为单条 E100  374ms
+   ✓ SA7 补充：SA2 R2-1 前瞻攻击构造回归锚（设计 §6.4 包络表 202 行） > lookMemo 稀疏物化：200 条空前瞻 × 10⁷ 码元 → 4M 钳制 loud，无 GB 级内存面（毫秒级返回）  394ms
+
+ Test Files  15 passed (15)
+      Tests  341 passed (341)
+   Start at  03:05:58
+   Duration  14.75s (transform 445ms, setup 0ms, collect 1.38s, tests 14.64s, environment 2ms, prepare 1.16s)
+
+test_exit=0
