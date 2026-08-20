@@ -1,0 +1,281 @@
+Testing types with tsc and vue-tsc is an experimental feature.
+Breaking changes might not follow SemVer, please pin Vitest's version when using it.
+
+ RUN  v3.2.7 /home/wangjian/nomicore-fix-issue-45
+
+ ❯ packages/vfsl-codegen/test/generate-protocol-import.test.ts (5 tests | 5 failed) 895ms
+   × AC-1/AC-2 — 生成器对任意域恒定发射协议 import 行（文案锚，含零别名域） > 具名别名域：生成物首非注释行 = import type { PathSchema } from '@nomicore/vfsl-protocol'; 11ms
+     → expected 'export type Box = { \'n\': PathSchema…' to be 'import type { PathSchema } from \'@no…' // Object.is equality
+   × AC-1/AC-2 — 生成器对任意域恒定发射协议 import 行（文案锚，含零别名域） > 零别名域（aliases 仅 ROOT）：同样恒定发射 import 行（N2 script 退化双愈锚） 1ms
+     → expected 'declare module \'@nomicore/vfsl-proto…' to be 'import type { PathSchema } from \'@no…' // Object.is equality
+   × AC-1/AC-2 — 生成器对任意域恒定发射协议 import 行（文案锚，含零别名域） > import 行全文恰好一条（任意域不重复、不缺失） 3ms
+     → expected [] to have a length of 1 but got +0
+   × AC-1 — 生成物原样（孤立 program）tsc --noEmit 可编译（编译级锚） > 具名别名域生成物孤立编译零诊断（N1：TS2304/TS2664 治愈锚） 547ms
+     → /tmp/vfsl-codegen-tsc-dqVFiv/generated.ts:8 TS2304 Cannot find name 'PathSchema'.
+/tmp/vfsl-codegen-tsc-dqVFiv/generated.ts:10 TS2664 Invalid module name in augmentation, module '@nomicore/vfsl-protocol' cannot be found.
+/tmp/vfsl-codegen-tsc-dqVFiv/generated.ts:13 TS2304 Cannot find name 'PathSchema'.
+/tmp/vfsl-codegen-tsc-dqVFiv/generated.ts:14 TS2304 Cannot find name 'PathSchema'.: expected [ { …(8) }, { …(8) }, { …(8) }, …(1) ] to have a length of +0 but got 4
+   × AC-1 — 生成物原样（孤立 program）tsc --noEmit 可编译（编译级锚） > 零别名域生成物 + 协议消费方同 program 编译零诊断（N2：script 遮蔽治愈锚——消费方不被毒化） 332ms
+     → /tmp/vfsl-codegen-tsc-UjDwH1/consumer.ts:1 TS2305 Module '"@nomicore/vfsl-protocol"' has no exported member 'PathAt'.
+/tmp/vfsl-codegen-tsc-UjDwH1/consumer.ts:1 TS2305 Module '"@nomicore/vfsl-protocol"' has no exported member 'VfslKind'.
+/tmp/vfsl-codegen-tsc-UjDwH1/generated.ts:11 TS2304 Cannot find name 'PathSchema'.: expected [ { …(8) }, { …(8) }, { …(8) } ] to have a length of +0 but got 3
+ ❯ packages/vfsl-codegen/test/generate-alias-collision-guard.test.ts (4 tests | 4 failed) 421ms
+   × AC-3 — 领域别名 × 协议导出名碰撞 → generateProjection 响亮失败（生成器级，非静默产出） > 协议导出面实测 12 名逐一作碰撞别名 → 生成器抛错（不静默产出不可编译生成物） 14ms
+     → 以下协议导出名碰撞后生成器未抛错（静默产出）：VfslKind, PathSchema, UnknownPath, RootSchema, PathAt, VfslValueOf, PathValue, PathKind, PathPatchValue, PathElementValue, VfslTypedAccess, VfslPathMap: expected [ 'VfslKind', 'PathSchema', …(10) ] to have a length of +0 but got 12
+   × AC-3 — 领域别名 × 协议导出名碰撞 → generateProjection 响亮失败（生成器级，非静默产出） > 碰撞错误携带独立错误码：code 为字符串且不属于既有 schema-source 错误码（非归并、非泛化） 1ms
+     → expected null not to be null
+   × AC-3 — 领域别名 × 协议导出名碰撞 → generateProjection 响亮失败（生成器级，非静默产出） > 碰撞错误消息指明碰撞别名（诊断可定位，非静默） 1ms
+     → expected null to be an instance of Error
+   × AC-3 — CLI 端到端：碰撞域响亮失败（exit 2 + 结构化 stderr，非 exit 0 静默产出） > pnpm generate 对碰撞域 → exit 2，stderr 含独立错误码与碰撞别名 405ms
+     → exit 应为 2（硬错误通道），实际 0；stderr: : expected +0 to be 2 // Object.is equality
+ ❯ packages/vfsl-codegen/test/generate-error-message-tail.test.ts (4 tests | 4 failed) 437ms
+   × AC-4 — emitter 三处错误消息尾串「见 #44」（生成器级） > UnsupportedRootShapeError：消息尾串 = 见 #44 10ms
+     → expected false to be true // Object.is equality
+   × AC-4 — emitter 三处错误消息尾串「见 #44」（生成器级） > UnsupportedRootReferenceError：消息尾串 = 见 #44 2ms
+     → expected false to be true // Object.is equality
+   × AC-4 — emitter 三处错误消息尾串「见 #44」（生成器级） > UnsupportedUnionKindError：消息尾串 = 见 #44 2ms
+     → expected false to be true // Object.is equality
+   × AC-4 — CLI 端到端：错误消息尾串经结构化 stderr 可见（exit 2） > 异形 ROOT 域经 pnpm generate → exit 2 且 stderr 消息尾串 = 见 #44 422ms
+     → expected false to be true // Object.is equality
+
+⎯⎯⎯⎯⎯⎯ Failed Tests 13 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  packages/vfsl-codegen/test/generate-alias-collision-guard.test.ts > AC-3 — 领域别名 × 协议导出名碰撞 → generateProjection 响亮失败（生成器级，非静默产出） > 协议导出面实测 12 名逐一作碰撞别名 → 生成器抛错（不静默产出不可编译生成物）
+AssertionError: 以下协议导出名碰撞后生成器未抛错（静默产出）：VfslKind, PathSchema, UnknownPath, RootSchema, PathAt, VfslValueOf, PathValue, PathKind, PathPatchValue, PathElementValue, VfslTypedAccess, VfslPathMap: expected [ 'VfslKind', 'PathSchema', …(10) ] to have a length of +0 but got 12
+
+- Expected
++ Received
+
+- 0
++ 12
+
+ ❯ packages/vfsl-codegen/test/generate-alias-collision-guard.test.ts:75:67
+     73|       if (err === null) silent.push(name);
+     74|     }
+     75|     expect(silent, `以下协议导出名碰撞后生成器未抛错（静默产出）：${silent.join(', ')}`).toHa…
+       |                                                                   ^
+     76|   });
+     77| 
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/13]⎯
+
+ FAIL  packages/vfsl-codegen/test/generate-alias-collision-guard.test.ts > AC-3 — 领域别名 × 协议导出名碰撞 → generateProjection 响亮失败（生成器级，非静默产出） > 碰撞错误携带独立错误码：code 为字符串且不属于既有 schema-source 错误码（非归并、非泛化）
+AssertionError: expected null not to be null
+ ❯ packages/vfsl-codegen/test/generate-alias-collision-guard.test.ts:80:21
+     78|   it('碰撞错误携带独立错误码：code 为字符串且不属于既有 schema-source 错误码（非归并、非泛化）', () => {
+     79|     const { err } = captureCollisionError('PathSchema');
+     80|     expect(err).not.toBeNull();
+       |                     ^
+     81|     const code = (err as { code?: unknown }).code;
+     82|     expect(typeof code).toBe('string');
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/13]⎯
+
+ FAIL  packages/vfsl-codegen/test/generate-alias-collision-guard.test.ts > AC-3 — 领域别名 × 协议导出名碰撞 → generateProjection 响亮失败（生成器级，非静默产出） > 碰撞错误消息指明碰撞别名（诊断可定位，非静默）
+AssertionError: expected null to be an instance of Error
+ ❯ packages/vfsl-codegen/test/generate-alias-collision-guard.test.ts:90:17
+     88|     const name = 'PathSchema';
+     89|     const { err } = captureCollisionError(name);
+     90|     expect(err).toBeInstanceOf(Error);
+       |                 ^
+     91|     expect((err as Error).message).toContain(name);
+     92|   });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/13]⎯
+
+ FAIL  packages/vfsl-codegen/test/generate-alias-collision-guard.test.ts > AC-3 — CLI 端到端：碰撞域响亮失败（exit 2 + 结构化 stderr，非 exit 0 静默产出） > pnpm generate 对碰撞域 → exit 2，stderr 含独立错误码与碰撞别名
+AssertionError: exit 应为 2（硬错误通道），实际 0；stderr: : expected +0 to be 2 // Object.is equality
+
+- Expected
++ Received
+
+- 2
++ 0
+
+ ❯ packages/vfsl-codegen/test/generate-alias-collision-guard.test.ts:107:83
+    105|     const r = spawnSync('pnpm', ['generate', '--domains', dir], { cwd:…
+    106|     const stderr = r.stderr ?? '';
+    107|     expect(r.status, `exit 应为 2（硬错误通道），实际 ${String(r.status)}；stderr: …
+       |                                                                                   ^
+    108|     // CLI 顶层 catch 对带 code 的错误打印 `[<code>]` 前缀（cli.ts printStructured…
+    109|     expect(stderr).toMatch(/\[[A-Za-z0-9_-]+\]/);
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[4/13]⎯
+
+ FAIL  packages/vfsl-codegen/test/generate-error-message-tail.test.ts > AC-4 — emitter 三处错误消息尾串「见 #44」（生成器级） > UnsupportedRootShapeError：消息尾串 = 见 #44
+AssertionError: expected false to be true // Object.is equality
+
+- Expected
++ Received
+
+- true
++ false
+
+ ❯ packages/vfsl-codegen/test/generate-error-message-tail.test.ts:70:40
+     68|     const err = captureError(ROOT_SHAPE_FIXTURE);
+     69|     expect(err.name).toBe('UnsupportedRootShapeError');
+     70|     expect(err.message.endsWith(TAIL)).toBe(true);
+       |                                        ^
+     71|   });
+     72| 
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[5/13]⎯
+
+ FAIL  packages/vfsl-codegen/test/generate-error-message-tail.test.ts > AC-4 — emitter 三处错误消息尾串「见 #44」（生成器级） > UnsupportedRootReferenceError：消息尾串 = 见 #44
+AssertionError: expected false to be true // Object.is equality
+
+- Expected
++ Received
+
+- true
++ false
+
+ ❯ packages/vfsl-codegen/test/generate-error-message-tail.test.ts:76:40
+     74|     const err = captureError(ROOT_REF_FIXTURE);
+     75|     expect(err.name).toBe('UnsupportedRootReferenceError');
+     76|     expect(err.message.endsWith(TAIL)).toBe(true);
+       |                                        ^
+     77|   });
+     78| 
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[6/13]⎯
+
+ FAIL  packages/vfsl-codegen/test/generate-error-message-tail.test.ts > AC-4 — emitter 三处错误消息尾串「见 #44」（生成器级） > UnsupportedUnionKindError：消息尾串 = 见 #44
+AssertionError: expected false to be true // Object.is equality
+
+- Expected
++ Received
+
+- true
++ false
+
+ ❯ packages/vfsl-codegen/test/generate-error-message-tail.test.ts:82:40
+     80|     const err = captureError(UNION_KIND_FIXTURE);
+     81|     expect(err.name).toBe('UnsupportedUnionKindError');
+     82|     expect(err.message.endsWith(TAIL)).toBe(true);
+       |                                        ^
+     83|   });
+     84| });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[7/13]⎯
+
+ FAIL  packages/vfsl-codegen/test/generate-error-message-tail.test.ts > AC-4 — CLI 端到端：错误消息尾串经结构化 stderr 可见（exit 2） > 异形 ROOT 域经 pnpm generate → exit 2 且 stderr 消息尾串 = 见 #44
+AssertionError: expected false to be true // Object.is equality
+
+- Expected
++ Received
+
+- true
++ false
+
+ ❯ packages/vfsl-codegen/test/generate-error-message-tail.test.ts:99:42
+     97|     const stderr = r.stderr ?? '';
+     98|     expect(r.status, `exit 应为 2（硬错误通道），实际 ${String(r.status)}；stderr: …
+     99|     expect(stderr.trim().endsWith(TAIL)).toBe(true);
+       |                                          ^
+    100|   });
+    101| });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[8/13]⎯
+
+ FAIL  packages/vfsl-codegen/test/generate-protocol-import.test.ts > AC-1/AC-2 — 生成器对任意域恒定发射协议 import 行（文案锚，含零别名域） > 具名别名域：生成物首非注释行 = import type { PathSchema } from '@nomicore/vfsl-protocol';
+AssertionError: expected 'export type Box = { \'n\': PathSchema…' to be 'import type { PathSchema } from \'@no…' // Object.is equality
+
+Expected: "import type { PathSchema } from '@nomicore/vfsl-protocol';"
+Received: "export type Box = { 'n': PathSchema<number, 'leaf'> };"
+
+ ❯ packages/vfsl-codegen/test/generate-protocol-import.test.ts:90:32
+     88|     const out = generateProjection(derive(ALIAS_FIXTURE), { sourceText…
+     89|     expect(typeof out).toBe('string');
+     90|     expect(firstCodeLine(out)).toBe(IMPORT_LINE);
+       |                                ^
+     91|   });
+     92| 
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[9/13]⎯
+
+ FAIL  packages/vfsl-codegen/test/generate-protocol-import.test.ts > AC-1/AC-2 — 生成器对任意域恒定发射协议 import 行（文案锚，含零别名域） > 零别名域（aliases 仅 ROOT）：同样恒定发射 import 行（N2 script 退化双愈锚）
+AssertionError: expected 'declare module \'@nomicore/vfsl-proto…' to be 'import type { PathSchema } from \'@no…' // Object.is equality
+
+Expected: "import type { PathSchema } from '@nomicore/vfsl-protocol';"
+Received: "declare module '@nomicore/vfsl-protocol' {"
+
+ ❯ packages/vfsl-codegen/test/generate-protocol-import.test.ts:96:32
+     94|     const out = generateProjection(derive(ZERO_ALIAS_FIXTURE), { sourc…
+     95|     expect(typeof out).toBe('string');
+     96|     expect(firstCodeLine(out)).toBe(IMPORT_LINE);
+       |                                ^
+     97|   });
+     98| 
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[10/13]⎯
+
+ FAIL  packages/vfsl-codegen/test/generate-protocol-import.test.ts > AC-1/AC-2 — 生成器对任意域恒定发射协议 import 行（文案锚，含零别名域） > import 行全文恰好一条（任意域不重复、不缺失）
+AssertionError: expected [] to have a length of 1 but got +0
+
+- Expected
++ Received
+
+- 1
++ 0
+
+ ❯ packages/vfsl-codegen/test/generate-protocol-import.test.ts:103:23
+    101|       const out = generateProjection(derive(fx), { sourceText: fx });
+    102|       const matches = out.match(/^import type \{ PathSchema \} from '@…
+    103|       expect(matches).toHaveLength(1);
+       |                       ^
+    104|     }
+    105|   });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[11/13]⎯
+
+ FAIL  packages/vfsl-codegen/test/generate-protocol-import.test.ts > AC-1 — 生成物原样（孤立 program）tsc --noEmit 可编译（编译级锚） > 具名别名域生成物孤立编译零诊断（N1：TS2304/TS2664 治愈锚）
+AssertionError: /tmp/vfsl-codegen-tsc-dqVFiv/generated.ts:8 TS2304 Cannot find name 'PathSchema'.
+/tmp/vfsl-codegen-tsc-dqVFiv/generated.ts:10 TS2664 Invalid module name in augmentation, module '@nomicore/vfsl-protocol' cannot be found.
+/tmp/vfsl-codegen-tsc-dqVFiv/generated.ts:13 TS2304 Cannot find name 'PathSchema'.
+/tmp/vfsl-codegen-tsc-dqVFiv/generated.ts:14 TS2304 Cannot find name 'PathSchema'.: expected [ { …(8) }, { …(8) }, { …(8) }, …(1) ] to have a length of +0 but got 4
+
+- Expected
++ Received
+
+- 0
++ 4
+
+ ❯ packages/vfsl-codegen/test/generate-protocol-import.test.ts:113:59
+    111|     const { diagnostics, cleanup } = compileInTempDir([{ name: 'genera…
+    112|     try {
+    113|       expect(diagnostics, formatDiagnostics(diagnostics)).toHaveLength…
+       |                                                           ^
+    114|     } finally {
+    115|       cleanup();
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[12/13]⎯
+
+ FAIL  packages/vfsl-codegen/test/generate-protocol-import.test.ts > AC-1 — 生成物原样（孤立 program）tsc --noEmit 可编译（编译级锚） > 零别名域生成物 + 协议消费方同 program 编译零诊断（N2：script 遮蔽治愈锚——消费方不被毒化）
+AssertionError: /tmp/vfsl-codegen-tsc-UjDwH1/consumer.ts:1 TS2305 Module '"@nomicore/vfsl-protocol"' has no exported member 'PathAt'.
+/tmp/vfsl-codegen-tsc-UjDwH1/consumer.ts:1 TS2305 Module '"@nomicore/vfsl-protocol"' has no exported member 'VfslKind'.
+/tmp/vfsl-codegen-tsc-UjDwH1/generated.ts:11 TS2304 Cannot find name 'PathSchema'.: expected [ { …(8) }, { …(8) }, { …(8) } ] to have a length of +0 but got 3
+
+- Expected
++ Received
+
+- 0
++ 3
+
+ ❯ packages/vfsl-codegen/test/generate-protocol-import.test.ts:126:59
+    124|     ]);
+    125|     try {
+    126|       expect(diagnostics, formatDiagnostics(diagnostics)).toHaveLength…
+       |                                                           ^
+    127|     } finally {
+    128|       cleanup();
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[13/13]⎯
+
+
+ Test Files  3 failed (3)
+      Tests  13 failed (13)
+Type Errors  no errors
+   Start at  02:55:07
+   Duration  3.54s (transform 196ms, setup 0ms, collect 1.25s, tests 1.75s, environment 0ms, prepare 184ms)
+
