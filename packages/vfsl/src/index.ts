@@ -15,6 +15,9 @@
  *   ——整份 JSON 快照校验（issue #21 设计 §2/§3）：值 schema 树解释器，全收集
  *   （上限 100 条 + 截断标记）；Pattern 走包内 NFA 子集模拟（ReDoS 防护，零运行时
  *   依赖）；同步、纯函数、不抛错（崩溃边界同款 E100）。
+ * - SchemaSource 接缝（issue #25 / ADR 0005 §1/§2）：`FileSchemaSource` 阶段态仓内
+ *   文件源（读 Node fs——引擎包内**唯一**环境绑定面，浏览器/edge 不可用；DocSchemaSource
+ *   终态另议）、`assertVfslDialect` 方言断言、`SchemaSourceError` 结构化错误。
  *
  * 编排：tokenize → parse（语法相位，失败以 VfslSyntaxError 内部异常承载）→
  * analyze（语义相位，E301/E302/E305/E106/E308 + min-position 聚合 + AST → IR）→
