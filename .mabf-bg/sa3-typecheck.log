@@ -1,0 +1,6 @@
+
+> nomicore@0.1.0 typecheck /home/wangjian/nomicore-fix-issue-26
+> tsc -p packages/vfsl/tsconfig.json && tsc -p packages/vfsl-protocol/tsconfig.json && tsc -p packages/vfsl-codegen/tsconfig.json
+
+packages/vfsl-codegen/src/emitter.ts(170,26): error TS2693: 'number' only refers to a type, but is being used as a value here.
+ ELIFECYCLE  Command failed with exit code 2.

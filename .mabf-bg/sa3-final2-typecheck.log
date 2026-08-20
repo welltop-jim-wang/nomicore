@@ -1,0 +1,4 @@
+
+> nomicore@0.1.0 typecheck /home/wangjian/nomicore-fix-issue-26
+> tsc -p packages/vfsl/tsconfig.json && tsc -p packages/vfsl-protocol/tsconfig.json && tsc -p packages/vfsl-codegen/tsconfig.json
+

@@ -1,0 +1,20 @@
+Testing types with tsc and vue-tsc is an experimental feature.
+Breaking changes might not follow SemVer, please pin Vitest's version when using it.
+
+ RUN  v3.2.7 /home/wangjian/nomicore-fix-issue-26
+
+ ✓  TS  packages/vfsl-codegen/test/generate-discriminated-narrow.test-d.ts (6 tests)
+ ✓ packages/vfsl-codegen/test/generate-cli-check.test.ts (3 tests) 2872ms
+   ✓ AC4 — pnpm generate 存在且幂等（全量重新生成 + 写盘） > pnpm generate 命令存在且成功退出（退出码 0）——被测 CLI 存在的事实锚点  718ms
+   ✓ AC4 — generate --check 对过期生成物退出非零，对新鲜生成物退出 0 > generate 后再 --check → diff 为空 → 退出 0（新鲜生成物）  1136ms
+   ✓ AC4 — generate --check 对过期生成物退出非零，对新鲜生成物退出 0 > 源漂移后 --check → 退出非零（源改动 → 重新生成后 diff 非空）  1015ms
+ ✓ packages/vfsl-codegen/test/generate-mapping-table.test.ts (12 tests) 18ms
+ ✓ packages/vfsl-codegen/test/generate-discriminated-emission.test.ts (6 tests) 12ms
+
+ Test Files  4 passed (4)
+      Tests  27 passed (27)
+Type Errors  no errors
+   Start at  21:42:29
+   Duration  3.79s (transform 221ms, setup 0ms, collect 340ms, tests 2.90s, environment 0ms, prepare 192ms, typecheck 1.64s)
+
+SA6_R5_BASELINE_EXIT=0

@@ -103,3 +103,50 @@ describe('§3.2.1 — ROOT 形态范围限界（R4/C：设计文本升为契约�
     expect(() => generateProjection(result.derived)).toThrow(/ROOT 形态不支持/);
   });
 });
+
+describe('§3.4 R3 — ref→ROOT 命名化 loud 拒绝（R5/D：裁决 (a)）', () => {
+  it('ROOT 被引用时：generateProjection 抛 UnsupportedRootReferenceError（消息前缀：ROOT 不可被引用）', () => {
+    // ADR 0003 §2「ROOT 可被其他别名引用」（六形态合法）；总控定夺 (a) 案（R3 定稿 §3.4 处置段）：
+    // 引用链（值侧 ref 目标 / kindOf 链 / 段② 走查）任一抵达 ROOT → 命名化 loud throw——
+    // 与 §3.2.1 Record/联合 ROOT 限界同一诚实策略（协议层扩展前响亮拒绝优于静默破碎
+    // 或破例具名 ROOT，保 D5「顶层键 = ROOT 字段」单一载体语义）
+    const FIXTURE = `type ROOT = YMap<{ a: YLeaf<string> }>; type Node = YMap<{ r: ROOT }>;`;
+    const parsed = parseVfsl(FIXTURE);
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) throw new Error(`parseVfsl 失败：${JSON.stringify(parsed.issues)}`);
+    const result = evaluate(parsed.module);
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(`evaluate 失败：${JSON.stringify(result.issues)}`);
+    // (a) 案：UnsupportedRootReferenceError 消息前缀契约（命名化错误，CLI → exit 2）
+    expect(() => generateProjection(result.derived)).toThrow(/ROOT 不可被引用/);
+  });
+});
+
+describe('§3.2 union 行 — 联合 kind 同形裁决（R5/F）', () => {
+  it('同形联合（array|array）→ 联合 kind 精确 \'array\'（成员 = 去外壳的 Record<`${number}`, …>）', () => {
+    const FIXTURE = `type ROOT = YMap<{ u: YArray<YLeaf<string>> | YArray<YLeaf<number>> }>;`;
+    const parsed = parseVfsl(FIXTURE);
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) throw new Error(`parseVfsl 失败：${JSON.stringify(parsed.issues)}`);
+    const result = evaluate(parsed.module);
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(`evaluate 失败：${JSON.stringify(result.issues)}`);
+    const out = generateProjection(result.derived, { sourceText: FIXTURE });
+    expect(typeof out).toBe('string');
+    // 联合 kind 裁决：成员结构 kind 全员 array → 尾参 'array'（禁止默认 'map'）
+    expect(out).toMatch(/u\s*:\s*PathSchema<Record<`\$\{number}`,\s*PathSchema<string,\s*'leaf'>\s*>\s*\|\s*Record<`\$\{number}`,\s*PathSchema<number,\s*'leaf'>\s*>,\s*'array'>/);
+  });
+
+  it('异形联合（map 别名 | array 别名）→ 抛 UnsupportedUnionKindError（消息前缀：联合成员结构 kind 异形）', () => {
+    // E309 只拒标量×容器；map×array 混合合法存在（实测：两侧 union 成员 = ref A/ref B，
+    // kindOf(A)='map'、kindOf(B)='array'）→ 命名化 loud 拒绝，禁止默认 'map'（§3.2 union 行）
+    const FIXTURE = `type A = YMap<{ x: YLeaf<string> }>; type B = YArray<YLeaf<number>>; type ROOT = YMap<{ u: A | B }>;`;
+    const parsed = parseVfsl(FIXTURE);
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) throw new Error(`parseVfsl 失败：${JSON.stringify(parsed.issues)}`);
+    const result = evaluate(parsed.module);
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(`evaluate 失败：${JSON.stringify(result.issues)}`);
+    expect(() => generateProjection(result.derived)).toThrow(/联合成员结构 kind 异形/);
+  });
+});

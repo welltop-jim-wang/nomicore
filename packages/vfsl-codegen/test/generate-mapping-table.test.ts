@@ -176,3 +176,29 @@ describe('AC2 — docs 三槽 → 生成 TSDoc', () => {
     expect(opens).toBeLessThanOrEqual(closes);
   });
 });
+
+describe('§3.2 规则 1 — optional 字段剥壳（R5/E）', () => {
+  it('optional 字段：不抛（无假 desync）+ 键后单 ? + 规则 0 穿透 optional 包装命中 ref', () => {
+    // 规则 1：map 字段成员位的 optional 包装在 emitNode 之前剥壳；可选性以键后 `?` 表达
+    // （权威源 = 结构侧 MapField.optional，禁止双侧各判一次 → 双 `?`「title??:」非法 TS）
+    const FIXTURE = `type ROOT = YMap<{ title?: YLeaf<string>; meta?: Meta }>; type Meta = YMap<{ m: YLeaf<number> }>;`;
+    const parsed = parseVfsl(FIXTURE);
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) throw new Error(`parseVfsl 失败：${JSON.stringify(parsed.issues)}`);
+    const result = evaluate(parsed.module);
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(`evaluate 失败：${JSON.stringify(result.issues)}`);
+    // 无假 desync（剥壳后 (leaf, scalar) / (已解析 map, ref) 均为合法配对）
+    let out = '';
+    expect(() => {
+      out = generateProjection(result.derived, { sourceText: FIXTURE });
+    }).not.toThrow();
+    expect(typeof out).toBe('string');
+    // 键后单 ?（接口成员位，§3.5）
+    expect(out).toMatch(/title\?:\s*PathSchema<string,\s*'leaf'>/);
+    // 禁双 ?（双侧各判一次的病征）
+    expect(out).not.toMatch(/title\?\?/);
+    // 规则 0 穿透 optional 包装：meta 值侧 opt(ref Meta) 剥壳后 → 别名引用
+    expect(out).toMatch(/meta\?:\s*PathSchema<Meta,\s*'map'>/);
+  });
+});
