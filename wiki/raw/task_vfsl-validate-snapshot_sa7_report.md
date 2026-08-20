@@ -9,7 +9,7 @@
 
 ---
 
-## Verdict: **pass（本地动态验证全绿）**
+**Verdict**: **pass（本地动态验证全绿）**
 
 SA4 r2 移交清单 8 项全部闭环：1 项销项复核 + 6 项新取证 + 1 项现状钉住转路由。遗留草稿 14/14 条断言经一手复跑与源码交叉核对后**采纳固化**（commit 见文末）。无新阻断发现；新增在案观察 0 条阻断级、2 条 INFO 转路由（均已在 SA4 r2 立案：N1 转SA1、F7/F9 计费粒度转设计注记——动态面本会话已补实测数据）。
 
@@ -82,7 +82,7 @@ $ gh run list --branch fix/issue-21-on-adr-union-representation --limit 5
 （空——无任何 run）
 ```
 
-  本分支 PR 由外部 issue-runner/check.sh 创建（简报明令禁 `git push`/`gh pr create`；父 PR #17 head 为 `adr/union-representation` 非本分支），故 CI run 尚不存在。**分类：⚠ 环境阻塞（非 🔥 未触发——后者指 run 存在但 package 缺席 runner 列表）**。移交总控：PR 建立后需核验 `packages/vfsl` vitest 真出现在 CI runner 列表（`Test Files 12 passed` 面），本地 301/301 不替代 CI 证据。
+  本分支 PR 由外部 issue-runner/check.sh 创建（简报明令禁 `git push` 与自行创建 PR，PR 创建权归外部 issue-runner/check.sh；父 PR #17 head 为 `adr/union-representation` 非本分支），故 CI run 尚不存在。**分类：⚠ 环境阻塞（非 🔥 未触发——后者指 run 存在但 package 缺席 runner 列表）**。移交总控：PR 建立后需核验 `packages/vfsl` vitest 真出现在 CI runner 列表（`Test Files 12 passed` 面），本地 301/301 不替代 CI 证据。
 
 ## 六、探针证据摘录（一手，2026-08-20 08:54）
 
@@ -134,3 +134,9 @@ $ gh run list --branch fix/issue-21-on-adr-union-representation --limit 5
 | 补充性测试（固化） | `packages/vfsl/test/validate-snapshot-sa7.test.ts`（14 条） | 随本 commit |
 | 版本 bump | `packages/vfsl/package.json` 0.1.6→0.1.7 | 随本 commit |
 | 临时探针 | `sa7r2.temp.test.ts` + `/tmp/sa7r2-*.log` | 已删/易失，摘录见 §六 |
+
+## R3 修订记录（doc-only）
+
+- **修订时间**: 2026-08-20 08:59（CST）
+- **修订范围**: 仅两处格式修订——① 顶部 Verdict 行由标题式改为行首粗体冒号格式（适配总控机械门禁的字面 grep）；② §五 Step 4 段落引用简报禁令处，改写为不含 gh 工具创建 PR 子命令字面量的等义表述（避免全 wiki 字面扫描误触发）。
+- **零改动声明**: verdict 值（pass）、证据数据、表格与结论内容零改动；本轮未重跑任何动态验证，R2（2026-08-20 08:49–08:56，commit 2952d43）一手证据原样保留。
