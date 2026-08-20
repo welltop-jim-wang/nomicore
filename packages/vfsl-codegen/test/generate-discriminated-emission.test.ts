@@ -150,3 +150,24 @@ describe('§3.2 union 行 — 联合 kind 同形裁决（R5/F）', () => {
     expect(() => generateProjection(result.derived)).toThrow(/联合成员结构 kind 异形/);
   });
 });
+
+describe('§3.2 规则 0 / §3.4 kindOf — 联合别名按名引用位的同形裁决（R6：SA2 R3-3 契约升锚）', () => {
+  it('同形联合（array|array）别名 U 的按名引用位 → PathSchema<U, \'array\'>（kindOf 同形裁决，禁默认 \'map\'）', () => {
+    // SA2 R3-3 裁定（kindof.mjs 探针实锤）：008e34c 的 kindOfAlias 终点 kindLiteral 把 union
+    // 无条件映射 'map'（emitter.ts L286-290 `case 'map': case 'union': return 'map'`）→
+    // 现实现发射 `u: PathSchema<U, 'map'>`（同形 array 联合别名引用位 kind 误标）。
+    // 设计 §3.2 规则 0 / §3.4 kindOf 映射：union → 同形裁决（成员结构 kind 全员 array → 'array'），
+    // 禁止无条件默认 'map'——PathKind/序列编辑 API（appendToArray 等 'array' 门禁）依赖此 kind。
+    const FIXTURE = `type U = YArray<YLeaf<string>> | YArray<YLeaf<number>>; type ROOT = YMap<{ u: U }>;`;
+    const parsed = parseVfsl(FIXTURE);
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) throw new Error(`parseVfsl 失败：${JSON.stringify(parsed.issues)}`);
+    const result = evaluate(parsed.module);
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(`evaluate 失败：${JSON.stringify(result.issues)}`);
+    const out = generateProjection(result.derived, { sourceText: FIXTURE });
+    expect(typeof out).toBe('string');
+    // 规则 0 位（值侧 ref U）：引用位 kindOf 走同形裁决 → 'array'（非 'map'）
+    expect(out).toMatch(/u\s*:\s*PathSchema<U,\s*'array'>/);
+  });
+});

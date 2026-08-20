@@ -36,7 +36,7 @@ export class UnsupportedRootShapeError extends Error {
   constructor(shape: string) {
     super(
       `ROOT 形态不支持（F2 仅支持封闭 map 形：裸对象/YMap；得到 ${shape}）` +
-        '——Record/联合形 ROOT 需协议层顶层动态键/成员并集语义，见后续票',
+        '——Record/联合形 ROOT 需协议层顶层动态键/成员并集语义，由总控开后续票登记',
     );
     this.name = 'UnsupportedRootShapeError';
     this.shape = shape;
@@ -44,7 +44,26 @@ export class UnsupportedRootShapeError extends Error {
 }
 
 /**
- * 异形联合成员（R2.6 残留 2 处置，注释级决策）：联合成员结构 kind 无诚实单值
+ * ref→ROOT 拦截（§3.4 R3 处置段 (a) 案，总控定夺）：ROOT 仅作入口根、不作引用目标——
+ * 三检查点任一抵达 ROOT（值侧 ref 目标 / kindOf 链解析 / 段② 走查）→ 命名化 loud throw
+ * （与 §3.2.1 同构；CLI 顶层 catch → 结构化 stderr + exit 2）。被引用 ROOT 的协议层
+ * 扩展由总控开后续票登记。
+ */
+export class UnsupportedRootReferenceError extends Error {
+  readonly path: string;
+
+  constructor(path: string) {
+    super(
+      `ROOT 不可被引用（F2 仅支持 ROOT 作入口根——顶层键 = ROOT 的字段；引用位 ${path} 抵达 ROOT）` +
+        '——被引用 ROOT 需协议层引用目标语义，由总控开后续票登记',
+    );
+    this.name = 'UnsupportedRootReferenceError';
+    this.path = path;
+  }
+}
+
+/**
+ * 异形联合成员（§3.2 union 行，R3/SA2 R2-3）：联合成员结构 kind 无诚实单值
  * （VfslKind 五值词汇表无联合 kind）——禁止默认 'map' 误标（PathKind/序列编辑 API
  * 门禁失真），命名化响亮拒绝（CLI → exit 2 + 登记后续票）。
  */
@@ -53,7 +72,8 @@ export class UnsupportedUnionKindError extends Error {
 
   constructor(kinds: string[]) {
     super(
-      `联合成员结构 kind 异形（${kinds.join(' | ')}），无诚实单值——异形联合暂不支持（见后续票）`,
+      `联合成员结构 kind 异形（F2 仅支持全员同形联合；得到 ${kinds.join(' | ')}）` +
+        '——异形联合需协议层 PathKind 联合语义，由总控开后续票登记',
     );
     this.name = 'UnsupportedUnionKindError';
     this.kinds = kinds;
@@ -132,7 +152,7 @@ function emitAlias(name: string, tables: EmitTables): string {
   const head = doc === '' ? '' : `${doc}\n`;
   if (node.kind === 'union' && value.kind === 'union') {
     // 判别联合（§3.8）：成员声明序、成员互异；外壳 kind = 成员同形 kind（map 形 → 'map'）
-    const common = unionKind(node, tables);
+    const common = unionKind(node, tables, name);
     const members = emitUnionBodyMembers(node, value, name, tables, '', common);
     return `${head}export type ${name} =\n  | ${members.join('\n  | ')};`;
   }
@@ -162,17 +182,19 @@ function emitNode(node: StructureNode, value: ValueSchema, path: string, tables:
   const doc = tsdocLines(tables.markerDocs[path], '');
   const kind =
     value.kind === 'ref'
-      ? kindOfAlias(value.name, tables)
+      ? kindOfAlias(value.name, tables, path)
       : node.kind === 'union'
-        ? unionKind(node, tables)
-        : kindLiteral(node, tables);
+        ? unionKind(node, tables, path)
+        : kindLiteral(node, tables, path);
   const inner = emitInner(node, value, path, tables, indent);
   return `${doc === '' ? '' : `${doc} `}PathSchema<${inner}, '${kind}'>`;
 }
 
 function emitInner(node: StructureNode, value: ValueSchema, path: string, tables: EmitTables, indent: string): string {
-  // 规则 0：值侧 ref 优先——引用位内容 = 别名名（外壳 kind 由 kindOfAlias 定，见 emitNode）
+  // 规则 0：值侧 ref 优先——引用位内容 = 别名名（外壳 kind 由 kindOfAlias 定，见 emitNode）。
+  // 检查点①/③（§3.4 R3）：值侧 ref 目标为 ROOT（含段② 直引形态 `X = ROOT`）→ 响亮拒绝
   if (value.kind === 'ref') {
+    if (value.name === 'ROOT') throw new UnsupportedRootReferenceError(path);
     return value.name;
   }
   switch (node.kind) {
@@ -200,8 +222,8 @@ function emitInner(node: StructureNode, value: ValueSchema, path: string, tables
     }
     case 'union': {
       if (value.kind !== 'union') throw desync(node, value, path);
-      // R2.6 残留 2（注释级决策）：成员结构 kind 全员同形 → 该 kind；异形 → 响亮拒绝
-      const common = unionKind(node, tables);
+      // §3.2 union 行（R3）：成员结构 kind 全员同形 → 该 kind；异形 → 响亮拒绝
+      const common = unionKind(node, tables, path);
       return emitUnionBodyMembers(node, value, path, tables, indent, common).join(' | ');
     }
     case 'leaf': {
@@ -273,21 +295,29 @@ function emitUnionBodyMembers(
 // 辅助
 // ---------------------------------------------------------------------------
 
-/** kindOf（规则 0）：沿 aliases 表取别名结构节点 kind；条目为 ref 则沿链解析，遇环 throw。 */
-function kindOfAlias(name: string, tables: EmitTables, stack: readonly string[] = []): string {
+/**
+ * kindOf（规则 0）：沿 aliases 表取别名结构节点 kind；条目为 ref 则沿链解析，遇环 throw
+ * （纵深防御，正常输入不可达——E106 已在解析层拒绝一切别名环）。
+ * 检查点②（§3.4 R3）：kindOf 链解析抵达 ROOT → UnsupportedRootReferenceError。
+ */
+function kindOfAlias(name: string, tables: EmitTables, path: string, stack: readonly string[] = []): string {
+  if (name === 'ROOT') throw new UnsupportedRootReferenceError(path);
   if (stack.includes(name)) throw new Error(`ref cycle at alias '${name}'`);
   const node = tables.aliases[name];
   if (node === undefined) throw new Error(`unknown alias '${name}'`);
-  if (node.kind === 'ref') return kindOfAlias(node.name, tables, [...stack, name]);
-  return kindLiteral(node, tables);
+  if (node.kind === 'ref') return kindOfAlias(node.name, tables, path, [...stack, name]);
+  return kindLiteral(node, tables, path);
 }
 
-/** 结构节点 kind → 外壳 kind（map/union → 'map'；其余同名）。 */
-function kindLiteral(node: StructureNode, tables: EmitTables): string {
+/** 结构节点 kind → 外壳 kind（map → 'map'；union → 同形裁决〔R3，SA2 R2-3〕；其余同名）。 */
+function kindLiteral(node: StructureNode, tables: EmitTables, path: string): string {
   switch (node.kind) {
     case 'map':
-    case 'union':
       return 'map';
+    case 'union':
+      // 规则 0/§3.4 kindOf 引用位同形裁决：成员结构 kind 全员同形 → 该 kind；
+      // 异形 → UnsupportedUnionKindError——禁止默认 'map'（PathKind 门禁失真）
+      return unionKind(node, tables, path);
     case 'array':
       return 'array';
     case 'plain':
@@ -298,24 +328,24 @@ function kindLiteral(node: StructureNode, tables: EmitTables): string {
       return 'xml-fragment';
     case 'ref':
       // 值侧非 ref 时结构侧为 ref 是两树失配（值侧永不解析）；防御路径仍走别名链
-      return kindOfAlias(node.name, tables);
+      return kindOfAlias(node.name, tables, path);
     case 'root':
       throw new Error('root 节点仅能出现在入口');
   }
 }
 
 /** 成员结构 kind（ref 成员沿别名链取 kind——`A | B` 别名混合联合的同形判定基础）。 */
-function structureKind(node: StructureNode, tables: EmitTables): string {
-  return node.kind === 'ref' ? kindOfAlias(node.name, tables) : kindLiteral(node, tables);
+function structureKind(node: StructureNode, tables: EmitTables, path: string): string {
+  return node.kind === 'ref' ? kindOfAlias(node.name, tables, path) : kindLiteral(node, tables, path);
 }
 
 /**
- * R2.6 残留 2（注释级决策）：联合成员结构 kind 全员同形 → 该 kind（VfslKind 五值词汇表
- * 无联合 kind，同形才存在诚实单值）；异形 → UnsupportedUnionKindError 响亮拒绝——
- * 禁止对异形联合默认 'map'（PathKind/序列编辑 API 门禁失真）。
+ * §3.2 union 行同形裁决（R3，SA2 R2-3）：联合成员结构 kind 全员同形 → 该 kind
+ * （VfslKind 五值词汇表无联合 kind，同形才存在诚实单值）；异形 → UnsupportedUnionKindError
+ * 响亮拒绝——禁止对异形联合默认 'map'（PathKind/序列编辑 API 门禁失真）。
  */
-function unionKind(node: Extract<StructureNode, { kind: 'union' }>, tables: EmitTables): string {
-  const kinds = node.members.map((m) => structureKind(m, tables));
+function unionKind(node: Extract<StructureNode, { kind: 'union' }>, tables: EmitTables, path: string): string {
+  const kinds = node.members.map((m) => structureKind(m, tables, path));
   const first = kinds[0];
   if (first === undefined || kinds.some((k) => k !== first)) {
     throw new UnsupportedUnionKindError(kinds);
