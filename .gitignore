@@ -1,6 +1,10 @@
 # DSH (DeepSeek Harness) project-local skills and config
 .dsh/
 
+# MABF scheduler workspace files (must not enter branch commits; design §12 DENY LIST)
+TASK.md
+.mabf-bg/
+
 # Dependencies
 node_modules/
 .pnpm-store/
