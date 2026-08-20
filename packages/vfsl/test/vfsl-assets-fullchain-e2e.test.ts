@@ -116,8 +116,10 @@ function chainDerived(): { module: VfslModule; derived: DerivedSchema } {
   return { module: parsed.module, derived: evaluated.derived };
 }
 
-/** 非法快照矩阵公共断言：ok:false 且 issues 含指定 path 段数组。 */
-function expectIssueAt(result: ValidateResult, path: Array<string | number>): ValidateResult {
+/** 非法快照矩阵公共断言：ok:false 且 issues 含指定 path 段数组。
+ * 命名辨析：本助手是 validate 语义（ValidateResult + path 段数组），与既有 parse 语义
+ * 助手 expectIssueAt(issue, code, line, column) 同名不同契约——故改名防误用。 */
+function expectValidateIssueAt(result: ValidateResult, path: Array<string | number>): ValidateResult {
   expect(result.ok).toBe(false);
   if (!result.ok) {
     expect(result.issues.map((i) => i.path)).toContainEqual(path);
@@ -226,14 +228,14 @@ describe('vfs3.assets 全链路 — AC4：非法快照矩阵（八面，issue �
     const { derived } = chainDerived();
     const snap = validSnapshot();
     snap.extraKey = 1;
-    expectIssueAt(validateSnapshot(derived, snap), ['extraKey']);
+    expectValidateIssueAt(validateSnapshot(derived, snap), ['extraKey']);
   });
 
   it('AC4-2 必填缺失：ROOT.attachments 缺省报告，path 精确', () => {
     const { derived } = chainDerived();
     const snap = validSnapshot();
     delete snap.attachments;
-    expectIssueAt(validateSnapshot(derived, snap), ['attachments']);
+    expectValidateIssueAt(validateSnapshot(derived, snap), ['attachments']);
   });
 
   it('AC4-3 值类型错：image 资产 url 收到 number（下钻至 Record 值位成员内字段），path 精确', () => {
@@ -242,7 +244,7 @@ describe('vfs3.assets 全链路 — AC4：非法快照矩阵（八面，issue �
     (snap.assets as Record<string, unknown>).img1 = {
       kind: 'image', url: 42, width: 800, height: 600, audit: clone(AUDIT),
     };
-    expectIssueAt(validateSnapshot(derived, snap), ['assets', 'img1', 'url']);
+    expectValidateIssueAt(validateSnapshot(derived, snap), ['assets', 'img1', 'url']);
   });
 
   it('AC4-4 AssetId Pattern 键违例：assets 键含 "." 拒绝，path 含违例键段', () => {
@@ -251,7 +253,7 @@ describe('vfs3.assets 全链路 — AC4：非法快照矩阵（八面，issue �
     (snap.assets as Record<string, unknown>)['abc.123'] = {
       kind: 'image', url: 'u', width: 1, height: 1, audit: clone(AUDIT),
     };
-    expectIssueAt(validateSnapshot(derived, snap), ['assets', 'abc.123']);
+    expectValidateIssueAt(validateSnapshot(derived, snap), ['assets', 'abc.123']);
   });
 
   it('AC4-5 联合 no-match：kind 枚举外值（缺其余字段）触发「联合成员 i/N」相对定位（text 成员失败距离最小），path 精确', () => {
@@ -270,7 +272,7 @@ describe('vfs3.assets 全链路 — AC4：非法快照矩阵（八面，issue �
     const { derived } = chainDerived();
     const snap = validSnapshot();
     snap.attachments = ['note.txt', 42];
-    expectIssueAt(validateSnapshot(derived, snap), ['attachments', 1]);
+    expectValidateIssueAt(validateSnapshot(derived, snap), ['attachments', 1]);
   });
 
   it('AC4-7 XML 非良构字符串：text 资产 body 未闭合标签拒绝（ADR 0003 §5 仅要求良构），path 精确', () => {
@@ -279,7 +281,7 @@ describe('vfs3.assets 全链路 — AC4：非法快照矩阵（八面，issue �
     (snap.assets as Record<string, unknown>).text1 = {
       kind: 'text', body: '<p>unclosed', audit: clone(AUDIT),
     };
-    expectIssueAt(validateSnapshot(derived, snap), ['assets', 'text1', 'body']);
+    expectValidateIssueAt(validateSnapshot(derived, snap), ['assets', 'text1', 'body']);
   });
 
   it('AC4-8 kind 枚举外值：判别值不在 {image,text,file}，其余字段齐全仍拒绝（失败距离最小成员定位 1/3），path 精确', () => {
