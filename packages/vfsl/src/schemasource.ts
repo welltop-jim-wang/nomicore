@@ -199,6 +199,11 @@ const DIRECTIVE_RE = /^\s*\/\/\s*@(\w+)\s*:\s*([^:]*?)\s*$/;
 const LINE_COMMENT_RE = /^\s*\/\//;
 const BLOCK_COMMENT_RE = /^\s*\/\*/;
 
+/** 行内最后一个块注释闭合符之后是否残留非空白内容（有 → 该行是「块注释闭合 + 同行代码」，按首行代码处理）。 */
+function hasCodeAfterBlockClose(line: string): boolean {
+  return /\S/.test(line.slice(line.lastIndexOf('*/') + 2));
+}
+
 interface HeaderParse {
   /** 三键中「值非空」的解析结果（空值 = 缺失，不入表；重复键取首个出现值）。 */
   directives: Map<string, string>;
@@ -211,8 +216,9 @@ interface HeaderParse {
  * 块注释（以 `/*` 起始、跨行闭合的整体跳过）」组成的极大前缀内识别指令；遇首行代码
  * 即停（代码行之后的 `// @id:` 不
  * 识别——防模块正文散文注释劫持身份声明）。块注释整体跳过，内部各行一律不计为指令
- * （防散文示例里的 `// @id:` 被误读）；BOM（ECMAScript `\s` 含 U+FEFF）与 CRLF（尾 `\r`
- * 被 `\s*$` 吸收）天然容忍。
+ * （防散文示例里的 `// @id:` 被误读）；块注释闭合之后若同行残留非空白内容
+ * （单行块注释、跨行闭合行皆然）→ 该行按首行代码处理，前导区终止。BOM
+ * （ECMAScript `\s` 含 U+FEFF）与 CRLF（尾 `\r` 被 `\s*$` 吸收）天然容忍。
  */
 function parseHeaderDirectives(text: string): HeaderParse {
   const directives = new Map<string, string>();
@@ -222,6 +228,9 @@ function parseHeaderDirectives(text: string): HeaderParse {
     if (inBlockComment) {
       if (line.includes('*/')) {
         inBlockComment = false;
+        if (hasCodeAfterBlockClose(line)) {
+          break; // 闭合符之后同行残留代码 → 首行代码，头部区结束
+        }
       }
       continue;
     }
@@ -229,7 +238,11 @@ function parseHeaderDirectives(text: string): HeaderParse {
       continue; // 空行 = trivia
     }
     if (BLOCK_COMMENT_RE.test(line)) {
-      if (!line.includes('*/')) {
+      if (line.includes('*/')) {
+        if (hasCodeAfterBlockClose(line)) {
+          break; // 行内闭合后残留代码 → 首行代码，头部区结束
+        }
+      } else {
         inBlockComment = true; // 跨行块注释：余下行全部跳过直至闭合
       }
       continue;
