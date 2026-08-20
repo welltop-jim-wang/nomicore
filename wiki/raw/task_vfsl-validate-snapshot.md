@@ -3,7 +3,7 @@
 - **任务类型**: 功能开发（Feature）
 - **Worktree**: /home/wangjian/nomicore-fix-issue-21
 - **Branch**: fix/issue-21-on-adr-union-representation
-- **Parent PR**: #17（stacked，base 由外部 check.sh 推导，禁止自行 gh pr create）
+- **Parent PR**: #17（stacked，base 由外部 check.sh 推导，禁止自行创建 PR）
 - **Blocked by**: #20 —— 已合入（HEAD `40c1be0` 已含 evaluate 第二公共导出与派生 schema）
 
 ## 背景与术语
@@ -51,7 +51,7 @@
 - 测试跑法：`pnpm test`（vitest run，仓库根）；类型检查 `pnpm typecheck`。无 scripts/test-lock.sh。
 - 修改 `packages/vfsl` 后必须 bump 其 `package.json` patch 版本（Hard Gate #9）。
 - 所有产出沉淀到 `wiki/raw/task_vfsl-validate-snapshot*.md`；SA 修完红/绿后立即 commit（防 supervisor 剪枝丢工作）。
-- 禁止 `git push` / `gh pr create`（PR 由外部 issue-runner/check.sh 负责）。
+- 禁止 `git push` 与自行创建 PR（PR 由外部 issue-runner/check.sh 负责）。
 
 ---
 
