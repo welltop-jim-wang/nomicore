@@ -1,0 +1,33 @@
+// @lang: vfsl
+// @id: vfs3-assets@1
+// @version: 1
+
+/** vfs3.assets — 依据 issue #9 描述还原（原设计文档缺位） */
+
+/** 资产 ID：键约束由 Pattern 定义，禁 "." 与 "|" */
+type AssetId = string & Pattern<"^[A-Za-z0-9_\\-]{1,64}$">;
+
+/** 审计信息：所有写入留痕 */
+type Audit = YMap<{
+  createdBy: YLeaf<string>;
+  createdAt: YLeaf<number>;
+}>;
+
+/** 资产实体：按 kind 判别的封闭联合 */
+type AssetEntity =
+  | { kind: "image"; url: YLeaf<string>; width: YLeaf<number>; height: YLeaf<number>; audit: Audit }
+  | { kind: "text"; body: YXmlFragment<{ paragraphs: YArray<YLeaf<string>> }>; audit: Audit }
+  | { kind: "file"; name: YLeaf<string>; size: YLeaf<number>; tags: YArray<YLeaf<string>>; audit: Audit };
+
+/** 附件：与 Yjs 同步无关的纯值数组 */
+type Attachments = YPlainArray<YLeaf<string>>;
+
+/** ROOT：命名空间根文档，assets 键集受 AssetId 的 Pattern 约束 */
+type ROOT = YMap<{
+  assets: Record<AssetId, AssetEntity>;
+  attachments: Attachments;
+  audit: Audit;
+  /** @semantic 可选说明字段 */
+  notes?: YLeaf<string>;
+  keywords: YLeaf<string>[];
+}>;

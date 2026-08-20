@@ -18,6 +18,21 @@ importers:
         specifier: ^3.2.4
         version: 3.2.7(@types/node@20.19.43)(tsx@4.23.12)
 
+  domains/vfs3-assets:
+    devDependencies:
+      '@nomicore/vfsl':
+        specifier: workspace:*
+        version: link:../../packages/vfsl
+      '@nomicore/vfsl-protocol':
+        specifier: workspace:*
+        version: link:../../packages/vfsl-protocol
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: ^3.2.4
+        version: 3.2.7(@types/node@20.19.43)(tsx@4.23.12)
+
   packages/vfsl:
     devDependencies:
       '@types/node':
