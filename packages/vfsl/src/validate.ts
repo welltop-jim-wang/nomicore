@@ -423,7 +423,11 @@ function validateUnion(node: Extract<ValueSchema, { kind: 'union' }>, value: unk
   // —— 段 3：报告——
   if (candidates.length > 0) {
     const winner = argmin(candidates, distances);
-    dive(members[winner]!, value, path, ctx); // 候选分支：仅字段级 issue，无汇总混入（7 计数锚点）
+    // 候选分支：下钻报字段级 issue，消息带「联合成员 i/N」相对定位（ADR 0003 §3 字面；
+    // 前缀不改变 issue 计数——7 计数锚点不受影响）
+    const label = `联合成员 ${winner + 1}/${N}：`;
+    const annotated: Ctx = { ...ctx, emit: (p, fn) => ctx.emit(p, () => label + fn()) };
+    dive(members[winner]!, value, path, annotated);
   } else {
     const winner = argmin(range(N), distances);
     ctx.emit([...path], () => `不匹配任何联合成员（any-of 全拒绝）：失败距离最小的成员为联合成员 ${winner + 1}/${N}（距离 ${distances[winner]}）`);

@@ -416,6 +416,18 @@ describe('validateSnapshot — 联合：any-of 接受 / 判别式缓存透明 / 
       expect(result.issues.some((i) => i.message.includes('联合成员 1/2'))).toBe(true);
     }
   });
+
+  it('AC：候选分支 dive 的字段级 issue 带「联合成员 i/N」相对定位（ADR 0003 §3 字面）', () => {
+    // kind 命中 image（text 被判别值硬矛盾过滤）→ 候选分支下钻，width 类型错
+    const derived = evaluateModule('type ROOT = { m: { kind: "image"; width: number } | { kind: "text"; body: string } };');
+    const result = validateSnapshot(derived, { m: { kind: 'image', width: 'x' } });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.issues).toHaveLength(1);
+      expect(result.issues[0]!.message).toContain('联合成员 1/2：');
+      expect(result.issues[0]!.path).toEqual(['m', 'width']);
+    }
+  });
 });
 
 describe('validateSnapshot — YPlainArray 纯值上下文嵌套 JSON', () => {
