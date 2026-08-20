@@ -54,6 +54,16 @@ export { evaluate } from './evaluate.js';
 export { validateSnapshot } from './validate.js';
 export type { ValidateIssue, ValidateResult } from './validate.js';
 
+// issue #25 / F1：SchemaSource 接缝（ADR 0005 §1/§2）——FileSchemaSource 阶段态仓内文件源、
+// 方言断言助手与接缝层结构化错误；消费方（F2 生成器 / G dogfood / CI）经接缝取文本。
+export { FileSchemaSource, assertVfslDialect, SchemaSourceError } from './schemasource.js';
+export type {
+  SchemaSource,
+  SchemaEnvelope,
+  SchemaSourceErrorCode,
+  DialectAssertionInput,
+} from './schemasource.js';
+
 /**
  * PRD #3 冻结的公共接缝：解析 VFSL v1 文本（本切片构造子集）。
  */
