@@ -52,6 +52,40 @@
 - **§1.6 契约改动连锁**：N/A——既有包零文件改动（无既有函数签名/throw 契约变化）；根 scripts 纯增量；vitest typecheck 重指的共存安全经 SA2 §7.3 审计 + 本轮 408 全绿复证。
 - **基线复跑**（独立后台进程，`.mabf-bg` 外独立日志）：`pnpm test` → **24 文件/408 测试全绿 + Type Errors no errors（exit 0）**；`pnpm typecheck` 三包 exit 0；`pnpm generate --check --allow-empty-domains` exit 0——与总控亲验基线（orch-r2-accept-{test,tsc,gen}.log）逐字一致。
 
+### 1.4 vitest 触发性自检（HG14 补充轮，总控路由）
+
+**触发条件成立**：本任务新增 `*.test.ts` 文件（SA6 四契约文件：3 运行时 + 1 typecheck 型）→ 强制门禁。
+
+- **机制**：根 `vitest.config.ts` 单一命令面——include `packages/*/test/**/*.test.ts`（运行时）+ typecheck include `packages/*/test/**/*.test-d.ts`（tsconfig 指向 `./tsconfig.typecheck.json`，include `packages/*/src/**` + `packages/*/test/**`）——`packages/*` glob 自动覆盖新包，无需逐包接线；仓库无其他 vitest 调用点（无 --filter 作用域裁剪面）。
+- **实际执行证据（CI 黑洞排除）**：本报告 T1 基线复跑日志逐文件分解 = **vfsl 17 + vfsl-codegen 4 + vfsl-protocol 3 = 24**，与盘上测试文件清单**逐文件 1:1**（vfsl 17 运行时 / vfsl-protocol 1 运行时 + 2 type-d / vfsl-codegen 3 运行时 + 1 type-d）——type-d 文件经 typecheck 通道计入 Test Files，零测试文件未被执行；`Test Files 24 passed (24)` + `Type Errors no errors`。与总控亲验日志（orch-r2-accept-test.log）及 SA7 报告 §vitest 触发证据一致。
+- **CI 接线**：`.github/workflows/ci.yml` matrix `node: [20, 24]` 两 job 均执行 `Test → pnpm test`（无 continue-on-error、无路径过滤）→ 两 node 版本下三包测试全部实际运行。
+- **E2E spec 门禁（§1.3）**：N/A——本任务零 `*.spec.ts` 改动。
+
+**结论：`all-vitest-packages-triggered`** ——三个 workspace 包（vfsl / vfsl-protocol / vfsl-codegen）的 vitest 测试在本任务落地后全部实际执行，未发现 CI 黑洞；无需 REJECT。
+
+### 1.5 协议假设审查（HG15 补充轮，总控路由）
+
+**触发条件成立**：设计含 `§10 协议假设依据 (Protocol Assumption Evidence)` 章节（12 行假设表，依据类型/命令/结果齐备）→ 强制抽查。无「应该/通常/预计」类无据推断（SA2 R1 已核，本轮复查维持）。逐行状态：
+
+| §10 行 | 假设 | 本轮状态 | 证据 |
+|---|---|---|---|
+| 1 | vitest typecheck 仅对 tsconfig 项目内文件真实编译（空转绿机制） | **本轮复核成立**（结构+执行级） | typecheck.tsconfig 已重指 `./tsconfig.typecheck.json`（include 覆盖 codegen test-d）；T1 中 codegen type-d 计入 24 Test Files 且 typecheck 真耗时 1.59s；注入错误行为级验证沿用 SA2 V3/V4 实证 |
+| 2 | codegen test-d 的 `@nomicore/vfsl-protocol` 导入无链接不可解析（TS2307） | **本轮复核成立**（正向） | `packages/vfsl-codegen/node_modules/@nomicore/vfsl-protocol` 软链在位 + T2 三包 tsc exit 0；负向（无链接→TS2307）沿用 SA2 探针 B |
+| 3 | tsx 可执行 `.js` 后缀 TS 相对导入 + 仓内 vfsl 真源 | **本轮复核成立** | CLI 全链（T3 + P1–P10）经 `pnpm generate`→tsx 跑通，`@nomicore/vfsl` 经包名导入加载且 evaluate 执行成功 |
+| 4 | pnpm workspace:* 软链 + tsx 经软链/exports 解析 TS 入口 | **本轮复核成立** | 软链清单实证（`@nomicore/vfsl`→`../../../vfsl` 等）+ 上述 CLI 全链即为经软链解析的端到端运行 |
+| 5 | pnpm 将脚本名后参数转发给脚本本体 | **本轮复核成立** | `--domains/--check/--allow-empty-domains/--bogus` 经 pnpm 转达 cli.ts（P 系日志可见转发后完整命令行 `tsx …/cli.ts --check --domains …`） |
+| 6 | pnpm 向调用方传播脚本退出码 | **本轮复核成立** | P1a=2 / P5=2 / P6=1 / P8=2 / P9b=2 均经 ELIFECYCLE 如实上浮（spawnSync 侧同理由 SA6 CLI 测试覆盖） |
+| 7 | 合并 typecheck program 的多文件 declare module 增广合并不破坏既有 test-d | **本轮复核成立**（行为级） | T1 408 全绿含 vfsl-protocol 3 个 test-d（LocalEmptyMap/projection）零回归 |
+| 8 | tsx 在 node 20 可用（CI matrix 下界） | 沿用 SA2 复验结论 | 本轮环境 node 24；node 20 端到端由 CI matrix 承接（SA7 watch-item 1） |
+| 9 | 发射格式 v3 满足全部可满足断言 | **本轮复核成立** | 408 全绿 = mapping/emission 全部文案断言对 generateProjection 真实输出通过（含 R4/A/F/R6 增补锚点） |
+| 10 | 两树不对称：五类 (已解析结构, 值 ref) 配对真实存在 | **本轮复核成立** | 套件 leafRef/metaRef/byId 断言 + 探针 E（别名链 kindOf）亲证 |
+| 11 | ROOT 形态结构形状（Record→map{<key>}、联合→union） | **本轮复核成立** | 探针 F（Record ROOT→UnsupportedRootShapeError）+ C 块（联合 ROOT toThrow） |
+| 12 | ref→ROOT 六形态合法触发面（+第 7 形态补遗） | **本轮复核成立** | D 块（字段位）+ 探针 K（第 7 形态联合成员位→检查点②）+ P5（CLI 层 exit 2 + stderr 前缀） |
+
+**附**（源自 §2/§8 而非 §10 行的协议级假设）：@types/node 显式化消除隐性传递依赖（SA2 #5 红线）——**本轮复核成立**：包内仅 src 的 program `tsc --noEmit` exit 0（见 §二·1 决定性探针）。
+
+**结论：`protocol-assumption` 全数有据**——12 行假设中 11 行本轮独立复核成立、1 行（node 20）沿用 SA2 复验结论并由 CI matrix 承接端到端；未发现 `unverified-protocol-assumption` 或 `protocol-assumption-mismatch`，无 REJECT 依据。
+
 ## 四、边界攻击记录（红队探针，全部 /tmp 沙箱 + 临时目录）
 
 | 探针 | 输入 | 结果 | 判定 |
