@@ -86,8 +86,12 @@ async function checkFreshness(outputs: ProjectionOutput[], root: string): Promis
     let disk: string | null = null;
     try {
       disk = await readFile(o.outPath, 'utf8');
-    } catch {
-      disk = null; // 缺失（含 ENOENT）→ stale
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+        disk = null; // 缺失 → stale
+      } else {
+        throw err; // EACCES 等真实 I/O 错误 → exit 2 通道（头注约定），不得吞成「缺失」
+      }
     }
     if (disk === null) {
       problems.push(`生成物缺失：${o.outPath}`);

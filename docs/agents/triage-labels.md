@@ -12,4 +12,19 @@ The skills speak in terms of five canonical triage roles. This file maps those r
 
 When a skill mentions a role (e.g. "apply the AFK-ready triage label"), use the corresponding label string from this table.
 
+## Task-type labels (orthogonal to triage roles)
+
+| Task type | Label | Meaning |
+| --------- | ----- | ------- |
+| bug       | `bug` | Fix a defect / restore broken behaviour |
+| feature   | `feature` | Add new capability |
+| refactor  | `refactor` | Restructure without behaviour change |
+
+- Every agent-grabbable ticket gets **exactly one** task-type label.
+- A ticket that belongs to none of the three (research, docs, discussion, ...)
+  gets **no task-type label**, and its body omits the `## Task Type` section —
+  the orchestrator judges the type itself.
+- Never invent additional task-type labels.
+
 Edit the right-hand column to match whatever vocabulary you actually use.
+

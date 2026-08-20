@@ -20,7 +20,7 @@
  */
 import { describe, expect, it } from 'vitest';
 /** @nomicore/vfsl 既有包（前置依赖，svc 绿）：相对导入避免依赖 workspace 软链（新包未接线）。 */
-import { parseVfsl, evaluate } from '../../vfsl/src/index.js';
+import { parseVfsl, evaluate } from '@nomicore/vfsl';
 /** 被测导出尚不存在 → module-not-found → 整文件红灯（真红根因，非语法/转译错误）。 */
 import { generateProjection } from '@nomicore/vfsl-codegen';
 
@@ -36,7 +36,7 @@ type Entity =
   | { kind: "text"; richBody: YLeaf<string>; title: YLeaf<string> };
 `;
 
-function evaluateFixture(): import('../../vfsl/src/index.js').DerivedSchema {
+function evaluateFixture(): import('@nomicore/vfsl').DerivedSchema {
   const parsed = parseVfsl(FIXTURE);
   expect(parsed.ok).toBe(true);
   if (!parsed.ok) throw new Error(`parseVfsl 失败：${JSON.stringify(parsed.issues)}`);
