@@ -73,7 +73,7 @@ describe('E101 — any 类型禁止矩阵（v1-spec §4 判定顺序第 5 条，
   });
 
   it('E101-01-pos 最接近合法写法 unknown（原始类型 §2）→ ok', () => {
-    expectOk(parseVfsl('type T = unknown;'), 1);
+    expectOk(parseVfsl('type T = unknown;\ntype ROOT = {};'), 2);
   });
 
   it('E101-02-neg 对象字段嵌套位 any → E101 锚 1:15', () => {
@@ -81,7 +81,7 @@ describe('E101 — any 类型禁止矩阵（v1-spec §4 判定顺序第 5 条，
   });
 
   it('E101-02-pos 字段嵌套位 unknown → ok', () => {
-    expectOk(parseVfsl('type T = { a: unknown };'), 1);
+    expectOk(parseVfsl('type T = { a: unknown };\ntype ROOT = {};'), 2);
   });
 
   it('E101-03-neg 数组元素位 any（any[]）→ E101 锚 1:10', () => {
@@ -89,7 +89,7 @@ describe('E101 — any 类型禁止矩阵（v1-spec §4 判定顺序第 5 条，
   });
 
   it('E101-03-pos 数组元素位 unknown → ok', () => {
-    expectOk(parseVfsl('type T = unknown[];'), 1);
+    expectOk(parseVfsl('type T = unknown[];\ntype ROOT = {};'), 2);
   });
 
   it('E101-04-neg 联合成员位 any → E101 锚 1:19', () => {
@@ -97,7 +97,7 @@ describe('E101 — any 类型禁止矩阵（v1-spec §4 判定顺序第 5 条，
   });
 
   it('E101-04-pos 联合成员位 unknown → ok', () => {
-    expectOk(parseVfsl('type T = string | unknown;'), 1);
+    expectOk(parseVfsl('type T = string | unknown;\ntype ROOT = {};'), 2);
   });
 
   it('E101-05-neg 标记实参位 any（YLeaf<any>）→ E101 锚 1:16', () => {
@@ -105,7 +105,7 @@ describe('E101 — any 类型禁止矩阵（v1-spec §4 判定顺序第 5 条，
   });
 
   it('E101-05-pos 标记实参位 unknown（YLeaf 允许 unknown，§3 形状约束表）→ ok', () => {
-    expectOk(parseVfsl('type T = YLeaf<unknown>;'), 1);
+    expectOk(parseVfsl('type T = YLeaf<unknown>;\ntype ROOT = {};'), 2);
   });
 
   it('E101-06-neg Record 值位 any → E101 锚 1:25', () => {
@@ -113,15 +113,15 @@ describe('E101 — any 类型禁止矩阵（v1-spec §4 判定顺序第 5 条，
   });
 
   it('E101-06-pos Record 值位 unknown → ok', () => {
-    expectOk(parseVfsl('type T = Record<string, unknown>;'), 1);
+    expectOk(parseVfsl('type T = Record<string, unknown>;\ntype ROOT = {};'), 2);
   });
 
   it('E101-07-neg 大小写变体 Any 非保留名（§4/§6 大小写敏感）→ E301 锚 1:10，非 E101', () => {
-    expectAnchored(expectSingleIssue(parseVfsl('type T = Any;')), '301', 1, 10);
+    expectAnchored(expectSingleIssue(parseVfsl('type T = Any;\ntype ROOT = {};')), '301', 1, 10);
   });
 
   it('E101-07-pos Any 可声明为普通别名并引用 → ok', () => {
-    expectOk(parseVfsl('type Any = string; type T = Any;'), 2);
+    expectOk(parseVfsl('type Any = string; type T = Any;\ntype ROOT = {};'), 3);
   });
 
   it('E101-08-neg 纯值上下文内 any（YPlainArray 实参位同样类型位置）→ E101 锚 1:22', () => {
@@ -129,7 +129,7 @@ describe('E101 — any 类型禁止矩阵（v1-spec §4 判定顺序第 5 条，
   });
 
   it('E101-08-pos 纯值上下文内 unknown → ok', () => {
-    expectOk(parseVfsl('type T = YPlainArray<unknown>;'), 1);
+    expectOk(parseVfsl('type T = YPlainArray<unknown>;\ntype ROOT = {};'), 2);
   });
 });
 
@@ -143,7 +143,7 @@ describe('E102 — 自定义泛型禁止矩阵（v1-spec §4 判定顺序第 2/6
   });
 
   it('E102-01-pos 最接近合法写法：去掉参数表的普通别名 → ok', () => {
-    expectOk(parseVfsl('type Box = { value: string };'), 1);
+    expectOk(parseVfsl('type Box = { value: string };\ntype ROOT = {};'), 2);
   });
 
   it('E102-02-neg 多参数泛型声明 → E102 锚 1:10', () => {
@@ -151,7 +151,7 @@ describe('E102 — 自定义泛型禁止矩阵（v1-spec §4 判定顺序第 2/6
   });
 
   it('E102-02-pos 多字段普通别名 → ok', () => {
-    expectOk(parseVfsl('type Pair = { k: string; v: number };'), 1);
+    expectOk(parseVfsl('type Pair = { k: string; v: number };\ntype ROOT = {};'), 2);
   });
 
   it('E102-03-neg 带约束泛型声明（<T extends string>，位置最前者为 < → E102 优先于 E103）→ E102 锚 1:9', () => {
@@ -159,7 +159,7 @@ describe('E102 — 自定义泛型禁止矩阵（v1-spec §4 判定顺序第 2/6
   });
 
   it('E102-03-pos 约束语义的直接表达：string 形别名 → ok', () => {
-    expectOk(parseVfsl('type Box = { value: string };'), 1);
+    expectOk(parseVfsl('type Box = { value: string };\ntype ROOT = {};'), 2);
   });
 
   it('E102-04-neg 带默认值泛型声明（<K = string, V = number>）→ E102 锚 1:10', () => {
@@ -167,7 +167,7 @@ describe('E102 — 自定义泛型禁止矩阵（v1-spec §4 判定顺序第 2/6
   });
 
   it('E102-04-pos 默认值语义的直接表达：字段引用已声明别名 → ok', () => {
-    expectOk(parseVfsl('type K = string; type V = number; type Pair = { k: K; v: V };'), 3);
+    expectOk(parseVfsl('type K = string; type V = number; type Pair = { k: K; v: V };\ntype ROOT = {};'), 4);
   });
 
   it('E102-05-neg 声明名与 < 间有空白（trivia 不影响判定）→ E102 锚 1:10', () => {
@@ -175,28 +175,28 @@ describe('E102 — 自定义泛型禁止矩阵（v1-spec §4 判定顺序第 2/6
   });
 
   it('E102-05-pos 空白形态的合法版本（声明名后为 =）→ ok', () => {
-    expectOk(parseVfsl('type Box = { value: string };'), 1);
+    expectOk(parseVfsl('type Box = { value: string };\ntype ROOT = {};'), 2);
   });
 
   it('E102-06-neg 类型位置泛型调用且名未声明（第 6 条终判）→ E301 锚引用记号 1:10', () => {
-    expectAnchored(expectSingleIssue(parseVfsl('type T = Foo<Bar>;')), '301', 1, 10);
+    expectAnchored(expectSingleIssue(parseVfsl('type T = Foo<Bar>;\ntype ROOT = {};')), '301', 1, 10);
   });
 
   it('E102-06-pos 声明后裸引用（Foo 已声明的最接近合法写法）→ ok', () => {
-    expectOk(parseVfsl('type Foo = string; type T = Foo;'), 2);
+    expectOk(parseVfsl('type Foo = string; type T = Foo;\ntype ROOT = {};'), 3);
   });
 
   it('E102-09-neg 裸引用未声明名（无实参）→ E301 锚引用记号 1:10', () => {
     // 对照格：证明 E301 拒的是「未声明」而非「实参调用形态」；配对正例即 E102-06-pos
-    expectAnchored(expectSingleIssue(parseVfsl('type T = Foo;')), '301', 1, 10);
+    expectAnchored(expectSingleIssue(parseVfsl('type T = Foo;\ntype ROOT = {};')), '301', 1, 10);
   });
 
   it('E102-07-neg 类型位置泛型调用且名已声明（第 6 条终判）→ E100 锚 < 1:43', () => {
-    expectAnchored(expectSingleIssue(parseVfsl('type Box = { value: string }; type T = Box<string>;')), '100', 1, 43);
+    expectAnchored(expectSingleIssue(parseVfsl('type Box = { value: string }; type T = Box<string>;\ntype ROOT = {};')), '100', 1, 43);
   });
 
   it('E102-07-pos 已声明别名不带实参的裸引用 → ok', () => {
-    expectOk(parseVfsl('type Box = { value: string }; type T = Box;'), 2);
+    expectOk(parseVfsl('type Box = { value: string }; type T = Box;\ntype ROOT = {};'), 3);
   });
 
   it('E102-08-neg 声明名与 < 跨行（trivia 剥离后判定不变）→ E102 锚 2:1', () => {
@@ -204,7 +204,7 @@ describe('E102 — 自定义泛型禁止矩阵（v1-spec §4 判定顺序第 2/6
   });
 
   it('E102-08-pos 跨行形态的合法版本（= 在次行）→ ok', () => {
-    expectOk(parseVfsl('type Box\n= { value: string };'), 1);
+    expectOk(parseVfsl('type Box\n= { value: string };\ntype ROOT = {};'), 2);
   });
 });
 
@@ -217,7 +217,7 @@ describe('E103 — 条件类型禁止矩阵（v1-spec §4 判定顺序第 3 条�
   });
 
   it('E103-01-pos 最接近合法写法：条件拆为显式联合 → ok', () => {
-    expectOk(parseVfsl('type C = string; type D = number; type T = C | D;'), 3);
+    expectOk(parseVfsl('type C = string; type D = number; type T = C | D;\ntype ROOT = {};'), 4);
   });
 
   it('E103-02-neg 对象字段嵌套位条件类型 → E103 锚 1:17', () => {
@@ -225,7 +225,7 @@ describe('E103 — 条件类型禁止矩阵（v1-spec §4 判定顺序第 3 条�
   });
 
   it('E103-02-pos 字段嵌套位显式联合 → ok', () => {
-    expectOk(parseVfsl('type C = string; type D = number; type T = { a: C | D };'), 3);
+    expectOk(parseVfsl('type C = string; type D = number; type T = { a: C | D };\ntype ROOT = {};'), 4);
   });
 
   it('E103-03-neg 条件类型带数组后缀（extends 处即报）→ E103 锚 1:12', () => {
@@ -233,7 +233,7 @@ describe('E103 — 条件类型禁止矩阵（v1-spec §4 判定顺序第 3 条�
   });
 
   it('E103-03-pos 数组形态的显式联合（C[] | D[]）→ ok', () => {
-    expectOk(parseVfsl('type C = string; type D = number; type T = C[] | D[];'), 3);
+    expectOk(parseVfsl('type C = string; type D = number; type T = C[] | D[];\ntype ROOT = {};'), 4);
   });
 
   it('E103-04-neg 联合成员位条件类型 → E103 锚 1:21', () => {
@@ -241,7 +241,7 @@ describe('E103 — 条件类型禁止矩阵（v1-spec §4 判定顺序第 3 条�
   });
 
   it('E103-04-pos 联合成员位显式联合 → ok', () => {
-    expectOk(parseVfsl('type C = string; type D = number; type T = string | C | D;'), 3);
+    expectOk(parseVfsl('type C = string; type D = number; type T = string | C | D;\ntype ROOT = {};'), 4);
   });
 
   it('E103-05-neg 标记实参位条件类型（YArray<...>）→ E103 锚 1:19', () => {
@@ -249,7 +249,7 @@ describe('E103 — 条件类型禁止矩阵（v1-spec §4 判定顺序第 3 条�
   });
 
   it('E103-05-pos 标记实参位显式联合 → ok', () => {
-    expectOk(parseVfsl('type C = string; type D = number; type T = YArray<C | D>;'), 3);
+    expectOk(parseVfsl('type C = string; type D = number; type T = YArray<C | D>;\ntype ROOT = {};'), 4);
   });
 
   it('E103-06-neg Record 值位条件类型 → E103 锚 1:27', () => {
@@ -257,7 +257,7 @@ describe('E103 — 条件类型禁止矩阵（v1-spec §4 判定顺序第 3 条�
   });
 
   it('E103-06-pos Record 值位显式联合 → ok', () => {
-    expectOk(parseVfsl('type C = string; type D = number; type T = Record<string, C | D>;'), 3);
+    expectOk(parseVfsl('type C = string; type D = number; type T = Record<string, C | D>;\ntype ROOT = {};'), 4);
   });
 
   it('E103-07-neg PatternType 之后的联合成员位条件类型 → E103 锚 1:36', () => {
@@ -265,7 +265,7 @@ describe('E103 — 条件类型禁止矩阵（v1-spec §4 判定顺序第 3 条�
   });
 
   it('E103-07-pos PatternType 与显式联合并存 → ok', () => {
-    expectOk(parseVfsl('type C = string; type D = number; type T = string & Pattern<"a"> | C | D;'), 3);
+    expectOk(parseVfsl('type C = string; type D = number; type T = string & Pattern<"a"> | C | D;\ntype ROOT = {};'), 4);
   });
 
   it('E103-08-neg 类型位置首记号即 extends → E103 锚 1:10', () => {
@@ -273,7 +273,7 @@ describe('E103 — 条件类型禁止矩阵（v1-spec §4 判定顺序第 3 条�
   });
 
   it('E103-08-pos 最接近合法写法（原始类型）→ ok', () => {
-    expectOk(parseVfsl('type T = string;'), 1);
+    expectOk(parseVfsl('type T = string;\ntype ROOT = {};'), 2);
   });
 });
 
@@ -287,7 +287,7 @@ describe('E104 — mapped type 禁止矩阵（v1-spec §4 判定顺序第 4 条�
   });
 
   it('E104-01-pos 最接近合法写法：Record 键值映射 → ok', () => {
-    expectOk(parseVfsl('type V = string; type T = Record<string, V>;'), 2);
+    expectOk(parseVfsl('type V = string; type T = Record<string, V>;\ntype ROOT = {};'), 3);
   });
 
   it('E104-02-neg 嵌套对象内 mapped type → E104 锚 1:17', () => {
@@ -295,7 +295,7 @@ describe('E104 — mapped type 禁止矩阵（v1-spec §4 判定顺序第 4 条�
   });
 
   it('E104-02-pos 嵌套对象内 Record → ok', () => {
-    expectOk(parseVfsl('type V = string; type T = { a: Record<string, V> };'), 2);
+    expectOk(parseVfsl('type V = string; type T = { a: Record<string, V> };\ntype ROOT = {};'), 3);
   });
 
   it('E104-03-neg 混普通字段对象内 mapped type → E104 锚 1:23', () => {
@@ -303,7 +303,7 @@ describe('E104 — mapped type 禁止矩阵（v1-spec §4 判定顺序第 4 条�
   });
 
   it('E104-03-pos 混普通字段对象（去掉 mapped 部分）→ ok', () => {
-    expectOk(parseVfsl('type V = string; type T = { a: string; extra: V };'), 2);
+    expectOk(parseVfsl('type V = string; type T = { a: string; extra: V };\ntype ROOT = {};'), 3);
   });
 
   it('E104-04-neg 标记实参内 mapped type（YMap<{...}>）→ E104 锚 1:17', () => {
@@ -311,7 +311,7 @@ describe('E104 — mapped type 禁止矩阵（v1-spec §4 判定顺序第 4 条�
   });
 
   it('E104-04-pos 标记实参内普通对象字段 → ok', () => {
-    expectOk(parseVfsl('type V = string; type T = YMap<{ key: V }>;'), 2);
+    expectOk(parseVfsl('type V = string; type T = YMap<{ key: V }>;\ntype ROOT = {};'), 3);
   });
 
   it('E104-05-neg 对象数组元素位 mapped type（{...}[]）→ E104 锚对象内 [ 1:12', () => {
@@ -319,7 +319,7 @@ describe('E104 — mapped type 禁止矩阵（v1-spec §4 判定顺序第 4 条�
   });
 
   it('E104-05-pos 对象数组元素位 Record → ok', () => {
-    expectOk(parseVfsl('type V = string; type T = Record<string, V>[];'), 2);
+    expectOk(parseVfsl('type V = string; type T = Record<string, V>[];\ntype ROOT = {};'), 3);
   });
 
   it('E104-06-neg readonly 修饰符形态（[ 不在字段名 Ident 期望位，判定顺序第 4 条不命中）→ E100 锚 [ 1:21', () => {
@@ -327,7 +327,7 @@ describe('E104 — mapped type 禁止矩阵（v1-spec §4 判定顺序第 4 条�
   });
 
   it('E104-06-pos readonly 作普通字段名合法（readonly 非保留名）→ ok', () => {
-    expectOk(parseVfsl('type T = { readonly: string };'), 1);
+    expectOk(parseVfsl('type T = { readonly: string };\ntype ROOT = {};'), 2);
   });
 
   it('E104-07-neg 标记实参内多层嵌套对象中的 mapped type → E104 锚 1:22', () => {
@@ -335,7 +335,7 @@ describe('E104 — mapped type 禁止矩阵（v1-spec §4 判定顺序第 4 条�
   });
 
   it('E104-07-pos 嵌套对象内 Record 替代 → ok', () => {
-    expectOk(parseVfsl('type V = string; type T = YMap<{ a: Record<string, V> }>;'), 2);
+    expectOk(parseVfsl('type V = string; type T = YMap<{ a: Record<string, V> }>;\ntype ROOT = {};'), 3);
   });
 
   it('E104-08-neg 联合成员内对象 mapped type → E104 锚 1:12', () => {
@@ -343,7 +343,7 @@ describe('E104 — mapped type 禁止矩阵（v1-spec §4 判定顺序第 4 条�
   });
 
   it('E104-08-pos 联合成员内对象（普通字段）→ ok', () => {
-    expectOk(parseVfsl('type V = string; type T = { key: V } | { x: string };'), 2);
+    expectOk(parseVfsl('type V = string; type T = { key: V } | { x: string };\ntype ROOT = {};'), 3);
   });
 });
 
@@ -357,7 +357,7 @@ describe('E105 — interface 声明族禁止矩阵（v1-spec §4 判定顺序第
   });
 
   it('E105-01-pos 最接近合法写法：空对象 type 别名 → ok', () => {
-    expectOk(parseVfsl('type A = {};'), 1);
+    expectOk(parseVfsl('type A = {};\ntype ROOT = {};'), 2);
   });
 
   it('E105-02-neg 带 extends 形态 → E105 锚 1:1', () => {
@@ -365,7 +365,7 @@ describe('E105 — interface 声明族禁止矩阵（v1-spec §4 判定顺序第
   });
 
   it('E105-02-pos extends B 的直接表达：type 别名引用 B → ok', () => {
-    expectOk(parseVfsl('type B = string; type A = B;'), 2);
+    expectOk(parseVfsl('type B = string; type A = B;\ntype ROOT = {};'), 3);
   });
 
   it('E105-03-neg 多继承形态（extends B, C）→ E105 锚 1:1', () => {
@@ -373,7 +373,7 @@ describe('E105 — interface 声明族禁止矩阵（v1-spec §4 判定顺序第
   });
 
   it('E105-03-pos 多继承合并成员的直接表达：对象字面量合并字段 → ok', () => {
-    expectOk(parseVfsl('type B = string; type C = number; type A = { b: B; c: C };'), 3);
+    expectOk(parseVfsl('type B = string; type C = number; type A = { b: B; c: C };\ntype ROOT = {};'), 4);
   });
 
   it('E105-04-neg 混模块：合法别名后遇 interface → E105 锚 2:1', () => {
@@ -381,7 +381,7 @@ describe('E105 — interface 声明族禁止矩阵（v1-spec §4 判定顺序第
   });
 
   it('E105-04-pos 混模块的合法版本（全部 type 别名）→ ok', () => {
-    expectOk(parseVfsl('type A = string; type B = {};'), 2);
+    expectOk(parseVfsl('type A = string; type B = {};\ntype ROOT = {};'), 3);
   });
 
   it('E105-05-neg 类型位置遇 interface（对象字段类型位）→ E105 锚 1:15', () => {
@@ -389,7 +389,7 @@ describe('E105 — interface 声明族禁止矩阵（v1-spec §4 判定顺序第
   });
 
   it('E105-05-pos 类型位置引用已声明对象别名 → ok', () => {
-    expectOk(parseVfsl('type B = {}; type T = { a: B };'), 2);
+    expectOk(parseVfsl('type B = {}; type T = { a: B };\ntype ROOT = {};'), 3);
   });
 
   it('E105-06-neg 带成员方法形态（整族冻结，内部形状无关）→ E105 锚 1:1', () => {
@@ -397,14 +397,14 @@ describe('E105 — interface 声明族禁止矩阵（v1-spec §4 判定顺序第
   });
 
   it('E105-06-pos 成员表达为对象字段 → ok', () => {
-    expectOk(parseVfsl('type A = { foo: string };'), 1);
+    expectOk(parseVfsl('type A = { foo: string };\ntype ROOT = {};'), 2);
   });
 
   it('E105-07-neg 大小写变体 Interface 非保留名（§4/§6 大小写敏感）→ E301 锚 1:10，非 E105', () => {
-    expectAnchored(expectSingleIssue(parseVfsl('type T = Interface;')), '301', 1, 10);
+    expectAnchored(expectSingleIssue(parseVfsl('type T = Interface;\ntype ROOT = {};')), '301', 1, 10);
   });
 
   it('E105-07-pos Interface 可声明为普通别名并引用 → ok', () => {
-    expectOk(parseVfsl('type Interface = string; type T = Interface;'), 2);
+    expectOk(parseVfsl('type Interface = string; type T = Interface;\ntype ROOT = {};'), 3);
   });
 });

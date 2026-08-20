@@ -38,6 +38,7 @@ type Server = {
   meta: unknown;
   info: { label: string };
 };
+type ROOT = {};
 `.trim();
 
 const FIXTURE_ALIASES = [
@@ -81,22 +82,40 @@ describe('parseVfsl — 幸福路径：迷你 fixture 全量解析', () => {
     }
   });
 
-  it('空文本合法：产出空模块（注记 4）', () => {
-    const module = expectOk(parseVfsl(''));
-    expect(module).toBeTypeOf('object');
-    expectJsonRoundTrip(module);
+  it('空文本：语法层容忍空模块（不报 E100/E203），语义相位要求 ROOT → VFSL-E310@1:1', () => {
+    const result = parseVfsl('');
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.issues).toHaveLength(1);
+      const issue = result.issues[0];
+      expect(issue?.message).toMatch(/^VFSL-E310: /);
+      expect(issue?.line).toBe(1);
+      expect(issue?.column).toBe(1);
+    }
   });
 
-  it('纯空白文本合法：产出空模块', () => {
-    const module = expectOk(parseVfsl(' \n\t  '));
-    expect(module).toBeTypeOf('object');
-    expectJsonRoundTrip(module);
+  it('纯空白文本：语法层容忍空模块，语义相位要求 ROOT → VFSL-E310@1:1', () => {
+    const result = parseVfsl(' \n\t  ');
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.issues).toHaveLength(1);
+      const issue = result.issues[0];
+      expect(issue?.message).toMatch(/^VFSL-E310: /);
+      expect(issue?.line).toBe(1);
+      expect(issue?.column).toBe(1);
+    }
   });
 
-  it('仅注释文本合法：产出空模块（注释是词法级 trivia）', () => {
-    const module = expectOk(parseVfsl('// 只有一行注释，没有别名'));
-    expect(module).toBeTypeOf('object');
-    expectJsonRoundTrip(module);
+  it('仅注释文本：语法层容忍空模块（注释是词法级 trivia），语义相位要求 ROOT → VFSL-E310@1:1', () => {
+    const result = parseVfsl('// 只有一行注释，没有别名');
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.issues).toHaveLength(1);
+      const issue = result.issues[0];
+      expect(issue?.message).toMatch(/^VFSL-E310: /);
+      expect(issue?.line).toBe(1);
+      expect(issue?.column).toBe(1);
+    }
   });
 
   it('行注释与块注释作为 trivia 出现在任意记号边界，不影响解析', () => {
@@ -104,6 +123,7 @@ describe('parseVfsl — 幸福路径：迷你 fixture 全量解析', () => {
 // 前导行注释
 type A = string; /* 尾部块注释 */
 /* 块注释 */ type B = { x: number }; // 行尾注释
+type ROOT = {};
 `;
     const module = expectOk(parseVfsl(text));
     expect(JSON.stringify(module)).toContain('A');
@@ -111,35 +131,35 @@ type A = string; /* 尾部块注释 */
   });
 
   it('对象字段分隔符 ; 与 , 等价，允许混合与尾分隔符（注记 3）', () => {
-    const module = expectOk(parseVfsl('type T = { a: string, b?: number; };'));
+    const module = expectOk(parseVfsl('type T = { a: string, b?: number; };\ntype ROOT = {};'));
     expect(JSON.stringify(module)).toContain('T');
   });
 
   it('空对象字面量合法（注记 3）', () => {
-    const module = expectOk(parseVfsl('type T = {};'));
+    const module = expectOk(parseVfsl('type T = {};\ntype ROOT = {};'));
     expect(JSON.stringify(module)).toContain('T');
   });
 
   it('联合允许 TS 风格前导 |（注记 2）', () => {
-    const module = expectOk(parseVfsl('type T = | "a" | "b";'));
+    const module = expectOk(parseVfsl('type T = | "a" | "b";\ntype ROOT = {};'));
     expect(JSON.stringify(module)).toContain('T');
   });
 
   it('前向引用合法：别名解析与声明顺序无关（§4 引用解析时机）', () => {
-    const module = expectOk(parseVfsl('type A = B; type B = string;'));
+    const module = expectOk(parseVfsl('type A = B; type B = string;\ntype ROOT = {};'));
     const serialized = JSON.stringify(module);
     expect(serialized).toContain('A');
     expect(serialized).toContain('B');
   });
 
   it('UTF-8 BOM 剥离且不报错，BOM 不占列（§9.2）', () => {
-    const module = expectOk(parseVfsl('\uFEFFtype A = string;'));
+    const module = expectOk(parseVfsl('\uFEFFtype A = string;\ntype ROOT = {};'));
     expect(JSON.stringify(module)).toContain('A');
   });
 
   it('任意位置空白不参与语法推导（注记 9）：紧凑写法与分散写法均可解析', () => {
-    const compact = expectOk(parseVfsl('type T={a:string,b?:number};'));
-    const spread = expectOk(parseVfsl('type T = {\n  a: string;\n  b?: number;\n};'));
+    const compact = expectOk(parseVfsl('type T={a:string,b?:number};\ntype ROOT = {};'));
+    const spread = expectOk(parseVfsl('type T = {\n  a: string;\n  b?: number;\n};\ntype ROOT = {};'));
     expect(JSON.stringify(compact)).toContain('T');
     expect(JSON.stringify(spread)).toContain('T');
   });

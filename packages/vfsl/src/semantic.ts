@@ -11,14 +11,16 @@
  *   SA2 #5）；消息携带环路径（A → B → A）；
  * - E308 对象字段重名：逐 ObjectType（含嵌套、联合成员内的对象）。
  *
- * 本切片新增（§5.7）：shapes.ts 的 E304 / E306 / E307 / E309 候选并入同一候选池。
+ * 本切片新增（§5.7）：shapes.ts 的 E304 / E306 / E307 / E309 / E310 / E311 候选并入
+ * 同一候选池（E310/E311 随 #19 ROOT 完整性经 shapes 并入）。
  * walk 下降集扩展（§9-10）：object.fields / union.members / array.element /
  * record.key 与 value / marker.arg；pattern 无子节点；generic-diag 无子节点但
  * 必须被 visit（终判候选靠它——嵌在 marker 实参 / record 键 / 联合成员任何深度的
  * generic-diag 都要走终判分支）。
  *
  * 聚合（§6.2）：candidates 按 (line, column, 错误码数值) 取最小 → 恰 1 条。
- * 位置并列在实际文法中不可构造，码号序仅为确定性兜底。candidates 为空 →
+ * 位置并列唯一构造位：模块起始悬空文档注释 × 缺 ROOT（E305@1:1 vs E310@1:1，
+ * 码号 305<310，§4.1 R-A）——码号序其余场景仅为确定性兜底。candidates 为空 →
  * AST → IR（剥离 pos、坍缩单成员联合；generic-diag 不可能出现——必产 issue）。
  */
 import { ErrCode, makeIssue } from './errors.js';
