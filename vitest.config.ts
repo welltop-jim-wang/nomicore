@@ -7,7 +7,7 @@ export default defineConfig({
     typecheck: {
       enabled: true,
       include: ['packages/*/test/**/*.test-d.ts'],
-      tsconfig: './packages/vfsl-protocol/tsconfig.json',
+      tsconfig: './tsconfig.typecheck.json',
     },
   },
 });

@@ -43,3 +43,13 @@ jobs:
       # TODO(#27)：domains/ 首领域由票 G 种植后，本步骤从 vacuous pass 转为实质校验。
       - name: Domain scaffolds check
         run: pnpm exec vitest run packages/vfsl/test/domains-scaffold.test.ts --passWithNoTests=false
+
+      # AC4（ADR 0005 §4）：全量重新生成 → 与仓内生成物逐字节 diff。
+      # 源漂移（schema 改了没重新生成）与生成器漂移（codegen 逻辑变了）双抓——
+      # 纯哈希比对抓不到后者，故必须全量重生成再 diff。
+      # --allow-empty-domains：F2 阶段 domains/ 尚无领域（G 票 #27 职责）的显式阶段门——
+      # 零领域集是 vacuous pass 而非静默通过；G 落地时移除本 flag，届时零集重新
+      # 变为响亮失败（防 domains/ 被误删/改名后的回归掩蔽）。
+      # TODO(#27)：G 票种植首领域后移除 --allow-empty-domains。
+      - name: Generated projection freshness (regen-diff)
+        run: pnpm generate --check --allow-empty-domains
