@@ -2,14 +2,16 @@
  * 包内共享解析器（ADR 0003 §4「解析动作由包内共享解析器完成」；issue #20）。
  *
  * 求值期一切「沿别名链取最终形状」的动作集中于此模块（内部件，不进公共面；
- * 后续 validateSnapshot 票复用）。三个能力（设计 §3.1）：
+ * 后续 validateSnapshot 票复用）。四个能力（设计 §3.1）：
  *
  * （1）bodies: Map<string, VfslType>——别名名 → 身体（module.aliases 一次展开；
  *      E302 保证合法模块名唯一；手造 IR 重名 → throw Internal，不静默覆盖）；
  * （2）resolveChain(t)——迭代循环沿 ref 链走到非 ref；重入（环）→ throw Internal
  *      （E106 不变量）；名缺席 → throw Internal（E301 不变量）；
  * （3）computeCls——名字级 memo 帧栈迭代（memo-on-completion；E106 保证纯 DAG），
- *      Cls = 'scalar' | 'map' | 'container'（IR 侧三桶折叠）。
+ *      Cls = 'scalar' | 'map' | 'container'（IR 侧三桶折叠）；
+ * （4）typeCls(t)——任意类型 Cls 查询（ref 查表 / union 折叠 / 其余 localCls），
+ *      以 Resolver 方法形态暴露（issue #29 收敛，沿 resolveChain 先例）。
  *
  * 一切 Internal 均属 loud 边界：顶层 catch 收编为 E100（设计 §9），无静默降级。
  */
@@ -32,6 +34,8 @@ export interface Resolver {
   cls: Map<string, Cls>;
   /** 沿 ref 链迭代取终形（重入/缺席 → Internal；undefined → TypeError）。 */
   resolveChain(t: VfslType | undefined): VfslType;
+  /** 任意类型查询 Cls（ref 查表；union 折叠；其余 localCls）——方法形态（issue #29 收敛）。 */
+  typeCls(t: VfslType): Cls;
 }
 
 export function buildResolver(module: VfslModule): Resolver {
@@ -46,10 +50,12 @@ export function buildResolver(module: VfslModule): Resolver {
     seen.add(a.name);
     bodies.set(a.name, a.type);
   }
+  const cls = computeCls(bodies);
   return {
     bodies,
-    cls: computeCls(bodies),
+    cls,
     resolveChain: (t) => resolveChain(t, bodies),
+    typeCls: (t) => typeCls(t, cls, bodies), // 闭包委托（沿 resolveChain 先例）
   };
 }
 
@@ -125,8 +131,8 @@ function fold(values: Cls[]): Cls {
   throw new InternalError('E309 不变量: 混合联合（标量形与容器形并存）');
 }
 
-/** 任意类型查询 Cls（ref 查表；union 折叠；其余 localCls）。 */
-export function typeCls(t: VfslType, cls: Map<string, Cls>, bodies: Map<string, VfslType>): Cls {
+/** 任意类型查询 Cls（ref 查表；union 折叠；其余 localCls）——Resolver.typeCls 的闭包委托目标。 */
+function typeCls(t: VfslType, cls: Map<string, Cls>, bodies: Map<string, VfslType>): Cls {
   switch (t.kind) {
     case 'ref': {
       if (!bodies.has(t.name)) {

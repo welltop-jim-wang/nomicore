@@ -75,6 +75,12 @@ export interface DerivedSchema {
   values: Record<string, ValueSchema>;
   /** ROOT 起 '.' 连接的语法路径 → 条目。 */
   index: Record<string, IndexEntry>;
+  /** 别名级文档注释原文（每别名一项，含 ROOT；VfslAlias.docs 逐字继承；无 doc 为空数组）。 */
+  aliasDocs: Record<string, string[]>;
+  /** 字段级文档注释原文：字段语法路径（§3 路径文法；'<member N>'/'<key>'/'<item>' 为合成段）→ VfslField.docs 逐字继承。 */
+  fieldDocs: Record<string, string[]>;
+  /** 标记级文档注释原文：标记所处语法路径 → marker.docs 逐字继承；同路径嵌套标记按源序串联（§3.3）。 */
+  markerDocs: Record<string, string[]>;
 }
 
 export type EvaluateResult =
