@@ -1,7 +1,3 @@
-# MABF Task: vfsl-protocol 类型协议包：编译期路径投影机制
-
-## Issue #24
-
 ## Parent
 
 PR #23
@@ -26,23 +22,3 @@ PR #23
 ## Blocked by
 
 None - can start immediately
-
-## Referenced Documents
-
-
-
-## Working Directory
-
-/home/wangjian/nomicore-fix-issue-24
-
-## Review Feedback (from closed PRs)
-
-
-
-## Issue Comments (decisions & context)
-
-
-
-## Branch
-
-fix/issue-24-on-adr-vfsl-protocol

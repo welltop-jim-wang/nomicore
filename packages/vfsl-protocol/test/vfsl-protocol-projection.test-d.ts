@@ -11,12 +11,6 @@
  *   （自我反转断言：该行被错误放行时，本测试反而失败）。
  * - D5：`VfslPathMap` 顶层键 = ROOT 的字段（路径无 `ROOT` 前缀）；`kindOf([])` → `'map'`。
  *
- * ⚠️ 运行验证延期（如实标注）：
- *   本会话所在主机命令执行能力不可用（沙箱后端缺失，bash 一律被拒），本文件**未在本轮实际执行**。
- *   `package` 尚不存在 → 本文件任何对 `@nomicore/vfsl-protocol` 的 import 都会抛出
- *   TS2307/TS7016（module not found），使整个编译单元红灯。这是预期的红灯锚点；
- *   红灯运行验证延期到具备命令执行能力的会话补跑（`pnpm vitest --typecheck`）。
- *
  * ── 编码假设（按 TASK.md / ADR 0004 最字面读法书写；SA1 设计以此为锚对账）──
  * 1. 载体 `PathSchema<Value, Kind>`：Kind 取 kind 词汇表 `'map' | 'array' | 'xml-fragment' | 'leaf' | 'plain'`；
  *    Value 为该节点投影到运行时的值类型（map 节点的 Value 为该节点的 `Record<字段, 子表>`）。
