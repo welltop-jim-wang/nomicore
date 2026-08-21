@@ -12,6 +12,8 @@ import {
 } from './index.js'
 
 const HANDLE_OWNER = new WeakMap<MemoryDocHandle, MemoryPersistence>()
+const TEST_FACTORY = Symbol('MemoryPersistence test factory')
+const RELEASE = new WeakMap<MemoryPersistence, (handle: MemoryDocHandle) => void>()
 
 export interface MemoryPersistenceOptions {
   readonly schedule?: Partial<PersistenceSchedule>
@@ -57,7 +59,7 @@ class MemoryDocHandle implements DocHandle {
   async release(): Promise<void> {
     if (this.released) return
     this.released = true
-    this.persistence.releaseFromHandle(this)
+    RELEASE.get(this.persistence)!(this)
   }
 
   get isReleased(): boolean { return this.released }
@@ -79,6 +81,7 @@ export class MemoryPersistence implements DocPersistence {
   constructor(private readonly options: MemoryPersistenceOptions = {}) {
     this.schedule = resolvePersistenceSchedule(options.schedule)
     this.timer = options.timer ?? systemPersistenceTimer
+    RELEASE.set(this, (handle) => this.releaseHandle(handle))
   }
 
   getStatus(): MemoryPersistenceStatus { return this.status }
@@ -110,17 +113,6 @@ export class MemoryPersistence implements DocPersistence {
     this.scheduleFlush(entry)
   }
 
-  /** Internal testing seam: establishes a document through the public save path. */
-  async _createForTest(user: User, docId: string): Promise<DocHandle> {
-    this.assertWritable()
-    const key = toKey(user, docId)
-    let entry = this.entries.get(key)
-    if (!entry) {
-      entry = this.createEntry(user, docId, key, new Y.Doc())
-      this.entries.set(key, entry)
-    }
-    return this.issueHandle(entry)
-  }
 
   /** Cordis owns service registration cleanup; this effect closes only adapter resources. */
   apply(ctx: Context): void {
@@ -156,8 +148,19 @@ export class MemoryPersistence implements DocPersistence {
     await Promise.allSettled([...this.inFlight])
   }
 
-  /** Internal handle callback; not exported from the package surface. */
-  releaseFromHandle(handle: MemoryDocHandle): void {
+
+  [TEST_FACTORY](user: User, docId: string): DocHandle {
+    this.assertWritable()
+    const key = toKey(user, docId)
+    let entry = this.entries.get(key)
+    if (!entry) {
+      entry = this.createEntry(user, docId, key, new Y.Doc())
+      this.entries.set(key, entry)
+    }
+    return this.issueHandle(entry)
+  }
+
+  private releaseHandle(handle: MemoryDocHandle): void {
     const entry = this.entries.get(handle.entryKey)
     if (!entry) return
     entry.handles.delete(handle)
@@ -326,3 +329,16 @@ export function createMemoryPersistencePlugin(options: MemoryPersistenceOptions 
 }
 
 function toKey(user: User, docId: string): string { return `${user.userId}\u0000${docId}` }
+
+/**
+ * Test-only helper export. It lives on the module's non-package export path
+ * (`@nomicore/persistence/src/memory.js`) and is deliberately absent from
+ * `@nomicore/persistence` public exports.
+ */
+export function createMemoryHandleForTest(
+  persistence: MemoryPersistence,
+  user: User,
+  docId: string,
+): DocHandle {
+  return persistence[TEST_FACTORY](user, docId)
+}
