@@ -50,6 +50,10 @@ export interface PersistenceSchedule {
   readonly maxDirtyMs: number
 }
 
+/**
+ * Adapter-injectable clock and timer scheduler. Tests provide a fake
+ * implementation and deterministically advance it instead of sleeping.
+ */
 export interface PersistenceTimer {
   readonly now: () => number
   readonly setTimeout: (callback: () => void, delayMs: number) => unknown
@@ -90,8 +94,9 @@ declare module '@deepseek-ai/cordis' {
 /**
  * Register an adapter in the current Cordis fiber.
  *
- * `ctx.provide()` is the real Cordis registration API. Its returned disposer is
- * owned by the current fiber, so stop/reload removes the service automatically.
+ * `ctx.provide()` is the real Cordis registration API. Cordis owns the
+ * resulting effect lifecycle; callers must not separately re-register or
+ * independently manage the returned disposer.
  */
 export function provideDocPersistence(ctx: Context, persistence: DocPersistence): () => void {
   return ctx.provide(DOC_PERSISTENCE_SERVICE, persistence)
@@ -109,3 +114,9 @@ export function requireDocPersistence(ctx: Context): DocPersistence {
   }
   return persistence
 }
+
+export type {
+  DocPersistenceContractFactory,
+  DocPersistenceContractFixture,
+} from './testing.js'
+export { describeDocPersistenceContract } from './testing.js'
