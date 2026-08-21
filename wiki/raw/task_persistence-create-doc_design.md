@@ -2,9 +2,12 @@
 
 - Worktree: `/home/wangjian/nomicore-fix-issue-64`（分支 `fix/issue-64-on-adr-server-design`，base `adr/server-design`）
 - 任务类型: 功能开发（Phase 2 架构设计）
-- 修订: R3（2026-08-21）——SA2 R2 节窄幅 reject：R2-1 门禁（claim 结算机制唯一化 + U8 不变式）
-  + R2-2（可达性归因补全）/ R2-3（TS 草图自洽）全部处置，回应见 §17 R3 节；R1 六点已经 SA2 R2 节
-  核验为全部封死；SA8 设计后复审 verdict=clear（备注 2 已随 R2 #2② 落实）。前一版：R2（SA2 R1 六攻击点全处置）
+- 修订: R4（2026-08-21，Phase 3 SA4 reject 回流）——R1 HIGH（sharedSnapshots 跨 store 泄漏）
+  裁决选 **(a)**：SA6 修订用例 4 门控为透传写 + §5.3 per-instance 草图恢复 + 新设 §5.3.1
+  （IO-1/2/3 隔离铁律 + SA7 复跑清单）；R2 MEDIUM：§14 补 `package.json` 版本 bump 台账。回应见
+  §17 R4 节。历史：R3（SA2 窄幅三项）← R2（SA2 R1 六点）← R1；SA4 对核心交付物
+  （lifecycle core / owner 迁移 / U1–U8 / §12 逐字落地）静态质量认可，驳回范围仅 memory.ts IO
+  wiring 与文件清单台账
 - 验收基准: SA6 红灯套件 `describeDocCreateContract`（`packages/persistence/src/testing.ts`）+ 既有 25 条绿灯（零回归红线）
 - ADR 基准: `docs/adr/0006-server-persistence-docstore.md`（含下述 C1/C2 已放行演进）+ ADR-0001/0002/0003（边界条款，no-conflict）
 
@@ -76,7 +79,7 @@ max-dirty 5s 内部调度 + 内部 retry」「单飞 flush + generation 保序�
 |---|---|---|
 | `src/index.ts` | `DocHandle{user}`、`DocPersistence{loadDoc,saveDoc}`、schedule/timer contracts、Cordis 注册 | 改：owner 迁移 + `createDoc` 入接口 + `DocDuplicateError` 导出（§9/§10） |
 | `src/memory.ts` | `MemoryPersistence` 单体：entries/loading 两个 Map、flush 调度（debounce/max-dirty/retry/generation）、eviction、epoch/dispose、`MemoryDocHandle` + WeakMap 身份 | **拆**：状态机整体移入 `src/lifecycle.ts`，memory.ts 瘦壳化（§5） |
-| `src/testing.ts` | SA6 已完成：`describeDocCreateContract`（10 用例）、`DocCreateContractFixture`、`TestTimer`、`DocStoreHooks`、`withTimeout`；lease 套件已迁移 `createHandle(owner, docId)` | 不再改动（SA6 owned，已完成） |
+| `src/testing.ts` | SA6 已完成：`describeDocCreateContract`（10 用例）、`DocCreateContractFixture`、`TestTimer`、`DocStoreHooks`、`withTimeout`；lease 套件已迁移 `createHandle(owner, docId)` | R4 裁决（§5.3.1）：SA6 修订用例 4 写门控为透传写（唯一授权改动，~4 行） |
 | `test/memory-persistence.test.ts` | SA6 已完成：接入 createDoc 套件 + lease 套件 seeding 走 createDoc；19 条既有测试用 `createMemoryHandleForTest`（行为不变） | 不再改动（SA6 owned，已完成） |
 | `test/persistence-contract.test.ts` | SA6 已完成 owner 迁移 + createDoc 模块契约测试；但 `stubPersistence()` 未实现 `createDoc` | SA3 机械补 stub（§16 caller 清单；接口加宽后 typecheck 必需） |
 | `test/memory-testkit.ts` | 包装 `createMemoryHandleForTest(persistence, user, docId)` | 参数名 `user → owner`（机械改名） |
@@ -271,7 +274,7 @@ degraded——写入本身成功，degraded 是 flush 失败语义，不得滥�
 | 1 | owner lease + 首快照先提交 | empty →(create) 存在性读 undefined → claim → `Y.encodeStateAsUpdate(doc)` 直写 → live(clean) → handle；无 timer；fresh 实例 read → 快照 → 还原可见 |
 | 2 | saveDoc 仅登记 dirty | create 后 entry clean；saveDoc → dirtyGen=1 → debounce 500ms → flush 写 1 次（§11 不变量） |
 | 3 | duplicate 双路径不覆盖 | cache：live → 立即拒；store：fresh 实例 empty → 存在性读返回快照 → 拒（不写）；内容保持 winner |
-| 4 | 并发 create 恰一成功 | 双方并入同一存在性读（`startedBy:'create'`）；read=undefined 后 FIFO 微任务序先到者 claim → **creating**；后到者见 creating → 在 io.write 前拒 → `enteredWrites === 1` |
+| 4 | 并发 create 恰一成功 | 双方并入同一存在性读（`startedBy:'create'`）；read=undefined 后 FIFO 微任务序先到者 claim → **creating**；后到者见 creating → 在 io.write 前拒 → `enteredWrites === 1`。R4：fixture 门控改透传写（§5.3.1）后，尾随 fresh 断言经**真实 store** 验证 winner 提交（U1 保真），不再依赖 adapter 镜像 |
 | 5 | pending load 不返回 null | load 发起 reading → create supersede（不发/不等 read）→ 写成功 → 收尾块**同步采纳**（`settleOnce(entry)`，§4.3 规则 1）→ waiter 立即拿 entry；`releaseRead(undefined)` 后 driver 仅观测（无事）；签发复验通过 → `loaded.doc === created.doc` |
 | 6 | 初始写失败零残留 | claim → io.write 抛 `io down` → 回滚 cell → empty、无 entry、无 timer（不进 scheduleRetry）、doc 未销毁；同 key 再 create：empty → 读 undefined → 成功，`doc` 同一实例 |
 | 7 | A/B 隔离 + 未知 null | `toKey(userId, docId)` 分区；carol 的读 undefined → completion=null |
@@ -357,12 +360,15 @@ export class MemoryPersistence implements DocPersistence {
       // 与现状 writeSnapshot/restoreEntry 的读写字节序严格一致（微任务预算，§11）
       // R3（SA2 R2-3）：async 化以匹配 PersistenceIO.read 的 Promise 返回类型（无 hook 时裸值
       // 也可返回）。read 侧的额外一跳不违反 §11 同深约束——该约束的适用范围 = write/flush 链。
+      // R4 读权威（IO-2，与 base restoreEntry 逐字同构）：`??` 在 Promise 对象层短路——hook 存在
+      // 时 hook 是唯一读权威（hook 返回 undefined = store 无此 key），镜像仅供无 hook 实例。
       read: async (key, signal) => options.readSnapshot?.(key, signal) ?? snapshots.get(key)?.snapshot,
       write: async (key, snapshot, signal) => {
         if (options.writeSnapshot) await options.writeSnapshot(key, snapshot, signal)
         if (signal.aborted) return        // R2 #4：替代被拆掉的 isCurrent(epoch) 守卫——abort 后不得
                                           // 复活 dispose 已 clear() 的私有存储（提交段原子性，§5.2）
-        snapshots.set(key, { snapshot: snapshot.slice() })
+        snapshots.set(key, { snapshot: snapshot.slice() })   // R4 IO-1：本 map 为构造器闭包内的
+                                          // 实例私有镜像（base 同款；对 hooked 实例为不可读副产物）
       },
     }, { schedule: options.schedule, timer: options.timer })   // 显式投影，不透传 IO 字段
     this.core = core
@@ -370,7 +376,10 @@ export class MemoryPersistence implements DocPersistence {
   loadDoc(owner, docId) { return this.core.loadDoc(owner, docId) }
   createDoc(owner, docId, doc) { return this.core.createDoc(owner, docId, doc) }
   saveDoc(handle) { return this.core.saveDoc(handle) }   // 身份校验随 handle 类一起在 core
-  dispose() { return this.core.dispose() }
+  // R4（SA4 R1）：恢复 base 的 snapshots.clear() 语义——core.dispose() 先 await allSettled(inFlight)
+  // 收束在飞 I/O（aborted 守卫已杜绝 dispose 后的镜像写入），再清空实例私有镜像：已 dispose 实例
+  // 的数据不可被任何后续实例复活（ADR-0006 工厂/实例模型条款）。
+  async dispose() { await this.core.dispose(); snapshots.clear() }
   getStatus(): MemoryPersistenceStatus { return this.core.getStatus() }
   apply(ctx: Context) { /* 原样 */ }
   [TEST_FACTORY](owner, docId) { return this.core.seedForTest(owner, docId) }
@@ -406,6 +415,71 @@ export type MemoryPersistenceStatus = PersistenceStatus   // 公共别名保持�
    - `writeSnapshot` 拆解落点：hook 调用留在 IO 闭包；`isCurrent(epoch)` 守卫由 seam 的
      `signal.aborted` 承诺替代（§5.2，memory 侧即闭包内的 aborted 早退）；`snapshots.set` 落 IO
      闭包（aborted 守卫之后）；`status = 'ready'` 落 core flush 成功路径（`isCurrent` 守卫之后）。
+
+### 5.3.1 store 隔离铁律与 fixture 修订裁决（R4，SA4 R1 回流）
+
+> 背景：SA3 在冻结设计 + 冻结套件 + 冻结 options 形状下，为让 SA6 用例 4（`testing.ts:327-330`
+> 丢弃型写门控 + `:352-356` fresh 实例断言）通过，引入了模块级 `sharedSnapshots`——被 SA4 复现为
+> 公共 API 上的跨 store 数据泄漏（adapter B 经全新空 storeB 读到 adapter A 的内容）、假
+> `DOC_DUPLICATE`、以及 base `dispose→snapshots.clear()` 语义丢失（ADR-0006 工厂/实例模型违约）。
+
+**IO 隔离不变式（adapter 级，SA3 重接线硬约束）**：
+
+- **IO-1 实例私有镜像**：memory.ts（及一切 adapter 实现）**禁止模块级可变状态**——fallback 镜像
+  是构造器闭包内的实例私有 Map，仅含**本实例** `io.write` 提交的内容；跨实例可见性的唯一通道 =
+  外部 hooks 背后的 store。对 hooked 实例，镜像是不可读副产物（base 同款行为，逐字保留）。
+- **IO-2 hook = 唯一读权威（短路语义）**：`options.readSnapshot?.(key, signal) ?? mirror.get(...)` 的
+  `??` 在 **Promise 对象层**短路（与 base `restoreEntry` 逐字同构）——hook 存在时镜像**永不**被求
+  值，hook 返回 undefined 就是「store 无此 key」→ null。**禁止** SA3 式 `external ?? fallback` 的
+  await 后回退（把镜像当跨实例兜底 = 伪隔离，R1 泄漏的机制根因）。
+- **IO-3 dispose 清理**：`MemoryPersistence.dispose()` = `await core.dispose(); snapshots.clear()`——
+  恢复 base 的 `snapshots.clear()` 语义；顺序保证无竞态（core.dispose 先 `allSettled(inFlight)` 收束
+  在飞 I/O，aborted 守卫已杜绝 dispose 后的镜像写入）。
+
+**裁决：选 (a)——SA6 修订用例 4 门控为透传写，§5.3 草图按 R3 原样恢复（per-instance）。**
+
+理由（相对 (b) store 作用域共享机制）：
+
+1. **(b) 在冻结 fixture 下不可实现**：fixture（`memory-persistence.test.ts:88-101`）向每个实例传的是
+   **per-instance 包装闭包**（`readSnapshot: (key, signal) => store.read(key, signal)`——`makeFresh`
+   每次新建闭包），adapter 永远看不到闭包背后的 `store` 对象身份；任何「按 store 身份键控的注册表」
+   都要求 fixture 额外传入 store 令牌/注册表（新 options 面）——**同样要改 SA6 的 fixture**。两路都
+   要改 fixture 时，(a) 改动最小（一处门控）。
+2. **(a) 修复的是 fixture 自身缺陷**：`DocStoreHooks.write(key, snapshot, signal)` 的契约是「写」；
+   丢弃型门控把「时序门控」与「说谎写」混同——一个 resolve 成功却不落 payload 的写 seam，使
+   `:352-356` 的 fresh 断言只能锚定 adapter 内部镜像这一**实现副产物**而非契约。透传门控后该断言
+   锚定**真实提交点**（U1：create 成功 ⇒ io.write 已成功 ⇒ store 已有内容），恰是 #58 temp→rename
+   提交点语义所需的保真度。
+3. **语义锚定影响评估**（指令要求）：「create 取得创建权后 load 不得错误返回 null」的锚定用例是
+   **用例 5（不动）**——该锚定不受影响；用例 4 锚定的是 create/create 排他与「提交内容 = winner
+   内容」，透传后**保留且增强**（改为经真实 store 验证）；`enteredWrites === 1`、恰一胜者、loser
+   不被销毁等断言全部不变。
+
+**SA6 修订规格（用例 4 门控，遵循同文件用例 6 的 `originalWrite` 惯用法）**：
+
+```ts
+const originalWrite = store.write                      // 替换前捕获（用例 6 同款 idiom）
+store.write = async (key, snapshot, signal) => {
+  enteredWrites += 1
+  await gate
+  await originalWrite(key, snapshot, signal)           // 透传真实写：gate 只门控时序，不吞 payload
+}
+```
+
+其余用例不动（用例 5 的 `store.write = async () => {}` 无 fresh 读断言、不依赖镜像可见性，保持
+现状）。建议（SA6 自行决定是否采纳）：补一条「两个 hooks 实例指向不同 store 互不可见」的稳定
+契约用例，把 IO-1/IO-2 从实现约束升格为套件锚定。
+
+**R4 回归验证点（SA7 复跑清单）**：
+
+1. SA4 泄漏复现脚本回归：adapter A（hooks→storeA）create+dispose → adapter B（hooks→全新空
+   storeB）：`loadDoc → null`、`createDoc → 成功`（当前实现：泄漏内容 / 假 DOC_DUPLICATE → 红）。
+2. 用例 4（透传门控版）全绿：`enteredWrites === 1`、恰一胜者、fresh 实例经**真实 store** 读得
+   winner 内容。
+3. IO-3 dispose 清理：无 hooks 实例 create → flush → dispose → 同进程新无 hooks 实例 `loadDoc →
+   null`（镜像不复活）。
+4. 既有 491 绿零回归（含 :307-309/:471/:492 三条 status 锚定）+ SA2 R3 动点清单（R2-1 活性钉、
+   5a–5d、U7、lost-update/integrity console spy）。
 
 ### 5.4 与 P3 #58 的依赖顺序（Coordination 节落地）
 
@@ -662,7 +736,9 @@ load 侧失败路径（R2 #3 补行）：
 abort()`；对每个 live entry：clearTimers + handles.clear + doc.destroy；cells.clear；`await
 Promise.allSettled(inFlight)`。pending read driver / create continuation 在其驱动 Promise settle 后
 由 `isCurrent` 检查以 disposed 错误收束——不提前 reject waiter（延续现行「continuation 驱动结算」
-模型，既有 4 条 dispose 竞态测试的断言路径不变）。
+模型，既有 4 条 dispose 竞态测试的断言路径不变）。**adapter 侧（R4 IO-3）**：`MemoryPersistence.
+dispose()` 在 `await core.dispose()` 之后清空实例私有镜像（恢复 base `snapshots.clear()` 语义——
+aborted 守卫已杜绝 dispose 后写入，清理无竞态；见 §5.3.1）。
 
 **不变式汇总**（SA4 静态评审锚点）：
 - U1 create 成功 ⇒ resolve 前 io.write 已成功且 epoch 当前（用例 1/10）。
@@ -824,10 +900,14 @@ lifecycle core（MemoryPersistence 与 FilePersistence 共用，不得复制状�
   （~2 行，无逻辑）
 - `docs/adr/0006-server-persistence-docstore.md` — 修改，追加 §12 修订节草案（conflict_report
   §结论 2 / dispatch 放行要求的落地）
-- `packages/persistence/src/testing.ts` — `[SA6 owned]` **已完成**（红灯 harness），SA3 不再改动；
-  列于此仅为 SA4 的 base→HEAD diff 对账
+- `packages/persistence/src/testing.ts` — `[SA6 owned]` **已完成**（红灯 harness）；**R4 追加授权**：
+  SA6 按裁决 (a) 修订用例 4 写门控为透传写（§5.3.1 规格，~4 行——`originalWrite` 捕获 + gate 后
+  透传，遵循同文件用例 6 惯用法；其余用例断言不动）；对账说明见 §5.3.1
 - `packages/persistence/test/memory-persistence.test.ts` — `[SA6 owned]` **已完成**（红灯测试），
   SA3 不再改动；对账同上
+- `packages/persistence/package.json` — **R4 追加**（SA4 R2）：SA3 已按总控 dispatch row 10 指令
+  落地版本 bump `0.1.0 → 0.1.1`（硬门禁 9：改过代码的模块必须 bump 版本号），该指令晚于设计 R3
+  冻结（21:53 > 21:49）故 ALLOW LIST 当时未同步；不要求回滚（总控明令在先），本行补台账自洽
 - MABF 流程工件（对账项，非代码）：`wiki/raw/task_persistence-create-doc*.md`、`TASK.md`、
   `.mabf-bg/*`（若派发系统产生）——均为门禁/简报/设计/评审记录
 
@@ -838,8 +918,9 @@ lifecycle core（MemoryPersistence 与 FilePersistence 共用，不得复制状�
 - `packages/vfsl/**`、`packages/vfsl-protocol/**`、`packages/vfsl-codegen/**`、`domains/**` — 与
   持久化 seam 无交集（ADR-0004/0005 领地）
 - `vitest.config.ts`、根 `package.json`、`tsconfig.base.json`、`tsconfig.typecheck.json`、
-  `packages/persistence/{package.json,tsconfig.json}` — 无新增测试包/端口/编译配置需求（SA6 已
-  确认 `scripts/test-lock.sh` 不存在）
+  `packages/persistence/tsconfig.json` — 无新增测试包/端口/编译配置需求（SA6 已
+  确认 `scripts/test-lock.sh` 不存在）。`packages/persistence/package.json` 原在此列，R4 因
+  总控 dispatch row 10 的版本 bump 指令移入 ALLOW（见上），DENY 解除依据 = SA4 R2 处置意见
 - `packages/persistence/src/index.ts` 既有公共符号的行为契约（`DEFAULT_PERSISTENCE_SCHEDULE`、
   `PersistenceTimer`/`systemPersistenceTimer`、`resolvePersistenceSchedule`、
   `provideDocPersistence`/`requireDocPersistence`、`DOC_PERSISTENCE_SERVICE`）— 签名与语义冻结，
@@ -913,7 +994,7 @@ git grep -rn "nomicore/persistence" -- '*.ts' '*.json' # 外部消费 = 0
 
 ---
 
-## §17. SA2 反馈逐条回应（R2 + R3 修订）
+## §17. 反馈逐条回应（R2/R3 = SA2；R4 = SA4 回流）
 
 > 被回应评审：`wiki/raw/task_persistence-create-doc_sa2_review.md`（verdict=reject，6 攻击点）。
 > 修法核心：采纳机制重构为「create 胜出收尾块同步采纳（提前采纳）」——同时消解 #1 的三个派生
@@ -940,11 +1021,26 @@ git grep -rn "nomicore/persistence" -- '*.ts' '*.json' # 外部消费 = 0
 R3 修订范围声明：仅动 §4.3 / §5.3 / §6 / §7（防死锁段与 loadDoc 签名）/ §8（U8）/ §13 / §17 与文档头
 修订标记，其余章节未触碰——与 SA2「增量重审」预期对齐（R2 已核验结论不重开）。
 
-**一致性自检（R3 后全文重跑）**：supersede/采纳/复验/证据路由/claim 结算 五组术语全文表述一致
+### R4 回应（2026-08-21，Phase 3 SA4 静态验尸 reject 回流：R1 HIGH + R2 MEDIUM）
+
+| 要求 | 是否落实 | 修订位置 | 修订内容摘要 |
+|------|:--:|------|------|
+| R4-1（=SA4 R1，HIGH）memory.ts 模块级 sharedSnapshots 跨 store 泄漏 / 假 DOC_DUPLICATE / dispose 清理语义丢失；裁决 (a) 或 (b) | ✅ **选 (a)** | §5.3.1（新设小节：IO-1/IO-2/IO-3 隔离铁律 + 裁决与理由 + SA6 门控修订规格 + SA7 复跑清单）、§5.3 草图（dispose 行改 `await core.dispose(); snapshots.clear()`；read 注记短路读权威；write 注记实例私有镜像）、§4.4 用例 4 行（fresh 断言改经真实 store）、§8 dispose 段（adapter 侧 IO-3）、§2/§14 对应行注记 | **裁决 (a)：SA6 把用例 4 门控改为「计数→await gate→透传真实写」（originalWrite 惯用法，~4 行），§5.3 per-instance 草图原样恢复。理由：(b) 在冻结 fixture 下不可实现——fixture 传给每个实例的是 per-instance 包装闭包，adapter 看不到 store 对象身份，任何 store 作用域注册表都要求 fixture 传新参数（同样要改 SA6）；两路都改 fixture 时 (a) 最小且修复的是 fixture 真缺陷（丢弃型门控把时序门控与说谎写混同，fresh 断言原本只能锚定 adapter 镜像副产物而非契约）。语义锚定影响评估：load-不返回-null 锚定 = 用例 5（不动）；用例 4 锚定（create/create 排他 + 提交内容=winner）保留且增强（经真实 store 验证 U1）。隔离恢复三重保障：IO-1 禁模块级状态（实例私有镜像）+ IO-2 hook 唯一读权威（`??` Promise 层短路，与 base 逐字同构，禁 await 后回退）+ IO-3 dispose 清镜像（base `snapshots.clear()` 语义恢复，无竞态：core.dispose 先收束 inFlight + aborted 守卫杜绝后续写入）。SA7 复跑四点见 §5.3.1 |
+| R4-2（=SA4 R2，MEDIUM 台账）`packages/persistence/package.json` 版本 bump 击穿 §14 DENY LIST | ✅ | §14 ALLOW LIST（追加一行：version `0.1.0 → 0.1.1`，依据 = 总控 dispatch row 10 指令〔硬门禁 9：改过代码的模块必须 bump〕，21:53 晚于设计 R3 冻结 21:49 故未同步；SA4 明示不要求回滚——总控明令在先）；§14 DENY LIST（该文件移出，`tsconfig.json` 保留，解除依据 = SA4 R2 处置意见） | 纯台账自洽修订：actual−allow 差集归零；立法「只增不删」以「DENY 解除 + 注明依据」形式记录（SA4 处置意见背书），历史不重写 |
+
+R4 修订范围声明：仅动 §2（一行注记）/ §4.4（用例 4 行）/ §5.3（草图 dispose+注记）/ §5.3.1（新设）/
+§8（dispose 段一句）/ §14（ALLOW+1、DENY 注记）/ §17（本节）/ 文档头修订标记——驳回范围（SA4 明示
+仅 memory.ts IO wiring 与文件清单台账）之外的核心交付物（lifecycle.ts 状态机、owner 迁移、U1–U8、
+§12 ADR 落地）未触碰。
+
+**流转建议（供总控）**：选 (a) → 先派 SA6 修订用例 4 门控（§5.3.1 规格，红灯/绿灯基线随之重跑
+对账），再派 SA3 按 §5.3/§5.3.1 重接线（删模块级 map → per-instance + IO-1/2/3 + dispose 清理），
+SA4 复审 R1、SA7 按 §5.3.1 复跑四点。
+
+**一致性自检（R4 后全文重跑）**：supersede/采纳/复验/证据路由/claim 结算 五组术语全文表述一致
 （「采纳」恒指收尾块 `settleOnce`；「证据路由/fallback」恒指 create-失败分支的 `routeEvidence`，
-其可达前提含「未复得 cell 所有权」）。自检过程中发现并修复一处 R2 初稿缺陷：分支 B（create 失败）
-若在失败回滚恢复 `reading(同 ticket)` 后无条件走 routeEvidence，会经 resolveLoad await 本 driver
-自己的 completion 构成自环死锁——已以**所有权复验**（复得 → ownerRoute）修复，§7 代码与防死锁
-自证段落现逐字一致。§4.3 与 §7 伪代码对齐；§0/§12 的「绝不覆盖」恒为限定式（duplicate 判定
-路径）；I2/I5/I6 与 U3/U6/U7 交叉引用闭合；§4.4 新增 5a–5d 与 SA2 红线测试 1–4 一一对应。
-R2 修订未触碰 ALLOW/DENY LIST（文件范围不变，立法「只增不删」满足——无新增文件需求）。
+其可达前提含「未复得 cell 所有权」）。R2 自检发现的分支 B 自环死锁已以所有权复验修复（§7 代码与
+防死锁自证段逐字一致）。§4.3 与 §7 伪代码对齐；§0/§12 的「绝不覆盖」恒为限定式（duplicate 判定
+路径）；I2/I5/I6 与 U3/U6/U8 交叉引用闭合；§4.4 用例 5a–5d 与 SA2 红线测试 1–4 一一对应；R4 新增
+IO-1/IO-2/IO-3 与 §5.3 草图、§8 dispose 段、§5.3.1 验证清单交叉闭合；§2/§14 对用例 4 修订授权与
+package.json 台账的注记一致。ALLOW LIST 修订遵循「只增 + 注明依据 + DENY 解除留痕」（R2–R4 无删减）。

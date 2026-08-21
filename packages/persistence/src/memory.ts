@@ -26,45 +26,32 @@ export type MemoryPersistenceStatus = PersistenceStatus
 interface StoredSnapshot { readonly snapshot: Uint8Array }
 
 /**
- * The process-shared snapshot store of the reference adapter.
+ * In-memory reference adapter with cancellable I/O and a separate snapshot store.
  *
- * Adapters whose I/O is wired to an external store (I/O hooks present) mirror
- * every successful write here, and read hooks first, falling back to this
- * store. A second adapter instance over the same external store therefore sees
- * committed snapshots even while the external write is replaced by a gate (the
- * shared createDoc contract anchors this: a create's initial commit must be
- * readable by a fresh instance over the same store). Instances without hooks
- * keep an isolated private store.
+ * Isolation rules (R4, design §5.3.1): the snapshot mirror is instance-private
+ * (IO-1 — no module-level mutable state); when a read hook is wired it is the
+ * sole read authority, and the `??` short-circuit means the mirror is never
+ * evaluated for hooked instances (IO-2); dispose clears the instance mirror
+ * after the core has settled all in-flight I/O (IO-3).
  */
-const sharedSnapshots = new Map<string, StoredSnapshot>()
-
-/** In-memory reference adapter with cancellable I/O and a separate snapshot store. */
 export class MemoryPersistence implements DocPersistence {
   private readonly core: PersistenceLifecycle
+  private readonly snapshots = new Map<string, StoredSnapshot>()
 
   constructor(private readonly options: MemoryPersistenceOptions = {}) {
-    const snapshots = (options.readSnapshot !== undefined || options.writeSnapshot !== undefined)
-      ? sharedSnapshots
-      : new Map<string, StoredSnapshot>()
     const core = new PersistenceLifecycle(
       {
-        // Byte-order identical to the pre-core restore/flush paths; the commit
-        // segment (snapshot set) sits after the aborted-signal guard. The
-        // fallback snapshot is captured at read-issue time: a read issued
-        // before a create must not observe the create's own later mirror
-        // write, while a fresh instance's read (issued after the commit) sees
-        // it even when the external write was gated (shared createDoc
-        // contract: committed snapshots are readable through a fresh instance
-        // over the same store).
-        read: async (key, signal) => {
-          const fallback = snapshots.get(key)?.snapshot
-          const external = await options.readSnapshot?.(key, signal)
-          return external ?? fallback
-        },
+        // Byte-order and await-depth identical to the pre-core restore/flush
+        // paths; the commit segment (mirror set) sits after the aborted-signal
+        // guard. Read is verbatim-isomorphic with base restoreEntry: the `??`
+        // short-circuits at the Promise-object level, so a wired read hook is
+        // the only read authority and the mirror is never consulted for
+        // hooked instances.
+        read: async (key, signal) => options.readSnapshot?.(key, signal) ?? this.snapshots.get(key)?.snapshot,
         write: async (key, snapshot, signal) => {
           if (options.writeSnapshot) await options.writeSnapshot(key, snapshot, signal)
           if (signal.aborted) return
-          snapshots.set(key, { snapshot: snapshot.slice() })
+          this.snapshots.set(key, { snapshot: snapshot.slice() })
         },
       },
       {
@@ -97,8 +84,15 @@ export class MemoryPersistence implements DocPersistence {
     }, 'memory-persistence: service')
   }
 
-  dispose(): Promise<void> {
-    return this.core.dispose()
+  /**
+   * Settle all in-flight I/O through the core first (the aborted-signal guard
+   * already prevents any mirror write after dispose), then clear the instance
+   * mirror: a disposed instance's data must never be resurrected by a later
+   * instance (ADR-0006 factory/instance model).
+   */
+  async dispose(): Promise<void> {
+    await this.core.dispose()
+    this.snapshots.clear()
   }
 
   [TEST_FACTORY](owner: User, docId: string): DocHandle {

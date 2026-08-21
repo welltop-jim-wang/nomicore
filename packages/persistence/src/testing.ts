@@ -324,9 +324,11 @@ export function describeDocCreateContract(
       let enteredWrites = 0
       let releaseWrites: (() => void) | undefined
       const gate = new Promise<void>((resolve) => { releaseWrites = resolve })
-      store.write = async () => {
+      const originalWrite = store.write
+      store.write = async (key, snapshot, signal) => {
         enteredWrites += 1
         await gate
+        await originalWrite(key, snapshot, signal) // 透传真实写：gate 只门控时序，不吞 payload
       }
 
       const pending = Promise.allSettled([

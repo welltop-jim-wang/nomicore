@@ -18,4 +18,9 @@
 | 7 | 21:36 | SA2 | Phase 2 设计攻击评审 R2 | 21:45 | SA1 R2 已处置全部 6 攻击点（另自检修复 1 处自环死锁）；续传原 SA2 会话重审 |
 | 8 | 21:46 | SA1 | Phase 2 设计修订 R3（窄幅） | 21:49 | SA2 R2 verdict=reject 窄幅：仅 R2-1 门禁（claim 结算双重表述/失败路径漏结算→waiter 挂起）+R2-2+R2-3；续传原 SA1 会话 |
 | 9 | 21:50 | SA2 | Phase 2 设计攻击评审 R3（增量） | 21:52 | SA1 R3 已处置 R2-1/2/3（claim 结算唯一化+U8 不变式）；续传原 SA2 会话增量重审 |
-| 10 | 21:53 | SA3 | Phase 3 TDD 实现 R1 | (pending) | 设计三轮评审闭环 pass；SA3 按 R3 设计实现，目标红灯变绿（含 §12 ADR 修订节逐字落地与版本 bump） |
+| 10 | 21:53 | SA3 | Phase 3 TDD 实现 R1 | 22:14 | 设计三轮评审闭环 pass；SA3 按 R3 设计实现，目标红灯变绿（含 §12 ADR 修订节逐字落地与版本 bump） |
+| 11 | 22:16 | 总控 | Phase 3 红灯变绿亲验 | 22:17 | 后台独立跑 pnpm typecheck(4包 exit 0)+pnpm test(32文件491测试全绿,14红灯全绿零回归) exit=0，证据 .mabf-bg/sa3-verify-issue64.log |
+| 12 | 22:18 | SA4 | Phase 3 静态验尸 R1 | 22:33 | 测试全绿达评审门槛；锚点：§5.3 纪律5 改写点对账/U1–U8 落实/§12 ADR 逐字落地/SA3 明示的共享存储偏差/版本 bump |
+| 13 | 22:34 | SA1 | Phase 3 回流：§5.3 窄幅修订 R4 | 22:43 | SA4 R1 verdict=reject 窄幅：R1 跨 store 泄漏（模块级 sharedSnapshots 作用域过宽，复现证实；case4 锚定与 per-instance 草图互斥需裁决）+R2 文件清单台账（package.json bump 为总控指令，需 ALLOW 注明）；续传原 SA1 会话 |
+| 14 | 22:45 | SA6 | Phase 3 回流：用例 4 门控透传化 | 22:46 | SA1 R4 裁决选 (a)：修订 testing.ts 用例 4 写门控为「计数→await gate→透传真实写」（~4 行，用例 6 originalWrite 惯用法），恢复 per-instance 设计前提；续传原 SA6 会话 |
+| 15 | 22:47 | SA3 | Phase 3 TDD 实现 R2（泄漏修复重接线） | (pending) | SA6 透传门控已落（39/39 绿）；SA3 按 R4 §5.3.1 删模块级 sharedSnapshots、IO-1/2/3 重接线、dispose 清理恢复 |

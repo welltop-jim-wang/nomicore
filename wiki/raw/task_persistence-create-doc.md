@@ -108,6 +108,43 @@ interface DocCreateContractFixture {
 4. createDoc 在 cache miss 时必须查 store（fresh 实例 duplicate 用例锚定），claim 与 commit 之间不得让并发 load 落到 null
 5. FilePersistence（#58 rebase 后）必须接入同一 `describeDocCreateContract`（fixture 提供真实 FS rootDir 下的 `makeFresh`/`dispose`）；temp→rename 提交点与遗留 `.tmp` 清理由 #58 的 FilePersistence 专测另行锚定
 
+### R4 修订注记（2026-08-21，SA4 reject 回流 · 设计 R4 裁决选 (a)）
+
+- **授权范围**：仅用例 4（`lets exactly one concurrent create win...`）写门控一处，按设计
+  `task_persistence-create-doc_design.md` §5.3.1「SA6 修订规格」逐字修订（~4 行）；其余用例与
+  fixture 未动。
+- **修订内容**（`packages/persistence/src/testing.ts`，用例 4）：丢弃型门控
+  `store.write = async () => { enteredWrites += 1; await gate }` → 透传写门控：
+
+  ```ts
+  const originalWrite = store.write
+  store.write = async (key, snapshot, signal) => {
+    enteredWrites += 1
+    await gate
+    await originalWrite(key, snapshot, signal) // 透传真实写：gate 只门控时序，不吞 payload
+  }
+  ```
+
+  保留 `enteredWrites` 计数与门控时序语义（`enteredWrites === 1`、恰一胜者、loser 不被销毁等断言
+  全部不变）；gate 放行后经 `originalWrite` 真实落盘——尾随 fresh 断言改为锚定**真实 store** 中的
+  winner 提交（U1 保真，设计 §4.4 用例 4 行注记），不再依赖 adapter 镜像副产物。
+- **修订后对账结果（2026-08-21 22:46 实跑，当前实现 = commit `081a3b3`）**：
+
+  ```
+  Test Files  2 passed (2)
+       Tests  39 passed (39)
+  Type Errors  no errors
+  ```
+
+  - `memory-persistence.test.ts` 32 条全绿 + `persistence-contract.test.ts` 7 条全绿，exit 0；
+    用例 4 单独 `-t "exactly one concurrent create"` 复跑 1 passed（31 skipped）
+  - `tsc -p packages/persistence/tsconfig.json` exit 0
+  - 结论：修订未改变绿灯基线（39/39 仍全绿），用例 4 相关断言行为不变——门控只修 fixture 的
+    「说谎写」缺陷，不透传时不落 payload 的旧路径在当前实现下经 adapter 镜像侥幸通过，
+    透传后经真实 store 验证通过；SA3 随后按 §5.3/§5.3.1 重接线（IO-1/2/3）后该用例仍须全绿
+    （§5.3.1 R4 回归验证点 2）
+- 设计建议的「两个 hooks 实例指向不同 store 互不可见」新增用例**未采纳**（总控授权仅限用例 4 修订）
+
 ## Out of scope
 
 - accessor/ACL/sharing/auth
