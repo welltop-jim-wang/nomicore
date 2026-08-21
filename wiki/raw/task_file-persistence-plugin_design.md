@@ -1,6 +1,6 @@
 # SA1 架构设计 — FilePersistence Cordis 插件：用户分区、缓存与崩溃恢复（Issue #58, P3）
 
-> 阶段：Phase 2 架构设计（R1 修订版——落实 SA2 评审 5 项修订要求，见文末「SA2 反馈逐条回应」；架构决策 A–F 未变）
+> 阶段：Phase 2 架构设计（R2 文档债修订——落实 SA4 静态验尸回流件 F-1/F-2，见文末「SA4 回流文档债回应」；R1 的 SA2 5 项修订与架构决策 A–F 均未变）
 > 任务简报：`wiki/raw/task_file-persistence-plugin.md`
 > ADR 约束基准：`wiki/raw/task_file-persistence-plugin_relevant_decisions.md`（ADR-0006 为核心 ADR，条款全部为直接约束）
 > 红灯锚点：`packages/persistence/test/file-persistence.test.ts`（SA6 已锚定，EXIT=1；`Test Files 1 failed | 32 passed`，其余 480 用例全绿）
@@ -575,7 +575,11 @@ export {
    - **无测试钉死的缝隙（R1 补录，SA2 #3）**：memory 桥接 `readCommittedSnapshot` 的 `??` 回落语义（回调同步返回 undefined → 回落内部 map；async 回调解析 undefined → 不回落）**没有任何 P2 用例覆盖**（grep 证实 5 处 `readSnapshot` 测试用法均返回实值或显式 settle）。若搬迁时表达式形态漂移（如改为先 await 再 `??`），480 绿灯不会变色而行为已变。迁移护栏 = §4.2 内的精确语义注释；**SA4 静态核对项：实现必须保留与 `memory.ts:171` 逐字同构的表达式形态，且注释与实现一致**。
 2. **memory 公共面零变化**：`MemoryPersistenceOptions`（含 readSnapshot/writeSnapshot 的 `(key, signal)` 签名）、四个导出名、`createMemoryHandleForTest` 同步签名——`test/memory-persistence.test.ts`、`test/memory-testkit.ts`、`test/persistence-contract.test.ts` 无一字需改。
 3. **epoch 语义保持**：map 写入移入 `onSnapshotCommitted` 后仍处于 epoch 防护之后（等价原 `writeSnapshot` 内部 callback→epoch→map.set 的次序），dispose 迟到完成不复活状态。
-4. **循环依赖形态不变**（R1 改写论据，SA2 #5）：`index.ts ⇄ memory.ts` 的 ESM 循环今天为绿；`index.ts ⇄ file.ts`/`lifecycle.ts` 是同构扩展。TDZ 安全的真实依据**不是**「值导入均为函数声明」（R0 此说为事实错误——`systemPersistenceTimer` 是 `export const` 对象字面量，`src/index.ts:63`，存在 TDZ），而是：① `lifecycle.ts`/`file.ts` 的模块顶层**从不读取**这些循环导入的绑定，全部访问都推迟到 `PersistenceLifecycleCore` 子类**构造函数体执行时**——此时两条循环边的模块顶层求值均已完毕、绑定已初始化；② `index ⇄ memory` 循环（memory.ts:3-12 同样值导入含 `systemPersistenceTimer`）在 P2 全绿是该论断的运行先例。
+4. **循环依赖与入口次序不变式**（R2 勘误，SA4 F-1 实测证伪 R1 论据之一半）：值环为 `lifecycle.ts --值导入(provideDocPersistence/resolvePersistenceSchedule/systemPersistenceTimer)--> index.ts --re-export--> memory.ts/file.ts --extends 值--> lifecycle.ts`。
+   - **入口次序不变式（唯一正确论据）**：模块求值起点**经过 `src/index.js`**（直接导入，或任何先于深路径模块传递导入它）时循环安全——index.js 会先于 memory/file 的 `extends` 求值前完成 `lifecycle.ts` 类声明；且该方向上 `lifecycle.ts`/`memory.ts` 的模块顶层不读取 index.js 的值绑定（构造函数体才读，`systemPersistenceTimer` 为 `export const`、`src/index.ts:63`，存在 TDZ 也只在构造期已初始化后访问）。R0「值导入均为函数声明」与 R1「file.ts 顶层从不读取循环绑定」均为事实错误——**`class FilePersistence extends PersistenceLifecycleCore` 的 extends 子句本身就是模块体求值期的值读取**（adapter→lifecycle.js 方向）；lifecycle.ts→index.js 方向的「顶层不读」论据仍成立。`index ⇄ memory` 循环 P2 全绿是 index-first 方向的运行先例。
+   - **已知限制披露（MEDIUM，非阻断）**：若消费者**不经 index.js** 直接深导入 `src/memory.js` / `src/file.js` / `src/lifecycle.js`，将触发模块初始化期 `TypeError: Class extends value undefined is not a constructor or null`（SA4 vitest 探针实测：仅 memory.js 入口崩于 file.ts:33、仅 file.js/lifecycle.js 入口崩于 memory.ts:24 extends；index-first 全部正常，含全部 493 用例）。半径评估：① 包 `exports` map 仅暴露 `.`——包外深导入被 Node `ERR_PACKAGE_PATH_NOT_EXPORTED` 直接拒绝（包外不可达）；② 包内全部测试与公共入口均 index-first；③ 失败模式是导入期响亮崩溃（fail-fast），无静默错行为。P2 无此雷（原为 `implements DocPersistence`，类型擦除、无运行时 extends）——系决策 A 继承式内核新引入，由设计伪代码决定、非实现偏差。
+   - **入口纪律（包内消费者与 SA7 须遵守）**：任何深路径消费者必须先（直接或传递）导入 `src/index.js`；动态验证脚本见 `Class extends value undefined` 即入口次序问题，**不是**实现缺陷（SA4 §8.4 已列为动态审核重点）。
+   - **加固候选（follow-up，非本任务范围）**：把 `provideDocPersistence`/`resolvePersistenceSchedule`/`systemPersistenceTimer`/`DOC_PERSISTENCE_SERVICE` 下沉为无环叶子模块，`index.ts` 纯 re-export 保持 P1 公共面不变——可根除入口次序依赖，另立任务评估。
 5. **类型门禁**：`pnpm typecheck` 与 `vitest run --typecheck`（`tsconfig.typecheck.json` 含 `packages/*/test/**`）对全包生效；伪代码按 strict/`exactOptionalPropertyTypes`（R1：`PersistenceCoreOptions` 桥接字段显式 `| undefined`，消除 SA2 #2 实测的 TS2379）/`noImplicitOverride`（子类覆写必须 `override`）/`verbatimModuleSyntax`（type-only import）书写。
 
 ## §7. 协议假设依据 (Protocol Assumption Evidence)
@@ -594,8 +598,9 @@ export {
 | P8 | vitest `--typecheck` 会因任一测试文件 import 缺失模块而失败（收集期） | 现有测试引用 + 源码引用 | SA6 红灯记录：`TypeCheckError: Cannot find module '../src/file.js'`（file-persistence.test.ts:33）；`tsconfig.typecheck.json` include `packages/*/test/**/*.ts`；`vitest.config.ts:7-11` | 无 |
 | P9 | `Y.encodeStateAsUpdate`/`applyUpdate` 往返保留嵌套 Y.Map/Y.Text 与标量 | 现有测试引用 | SA6 用例 2（`file-persistence.test.ts:153-186`）全量断言 SCHEMA/META/ROOT 含 `Y.Text('line one')`、嵌套 `Y.Map`——验收即证据；P2 memory 快照路径同函数已绿 | 无 |
 | P10 | `mkdir(userDir, {recursive:true})` 幂等，existing 非错误；同进程并发调用安全 | 官方文档引用 | Node docs `fsPromises.mkdir`：recursive true 时已存在不报 EEXIST（`MakeDirectoryOptions.recursive`：`Indicates whether parent folders should be created`；docs: “Calling fs.mkdir() when a path … exists results in an error only when recursive is false”）；本设计内同 doc 的 mkdir 不并发（单飞），跨 doc 并发幂等 | 低 |
+| P11 | 包内 ESM 值环的求值安全性依赖**入口次序**：index-first 正常；深路径直入（不经 index.js）在模块初始化期崩溃 | 设计期实测（SA4 静态验尸探针） | SA4 vitest 探针（同 worktree，跑毕即删）：仅 `../src/memory.js` 入口 → `file.ts:33` `TypeError: Class extends value undefined`；仅 `../src/file.js` 或 `../src/lifecycle.js` 入口 → `memory.ts:24` 同错；`../src/index.js` 在前 → 全部正常（493 用例 + CI）。机制与入口纪律见 §6.4-4 | 低（包 `exports` 仅暴露 `.`，包外深导入被 `ERR_PACKAGE_PATH_NOT_EXPORTED` 拒绝；失败为响亮 crash） |
 
-无其他协议级假设：本设计不涉及网络端口、跨进程锁、第三方服务。
+除上表外无其他协议级假设：本设计不涉及网络端口、跨进程锁、第三方服务。P11 为 R2 补录（SA4 F-1 要求把入口次序不变式显式入档）。
 
 ## §8. 契约改动连锁审计 (Contract Change Caller Audit)
 
@@ -638,6 +643,7 @@ export {
 - `packages/persistence/src/memory.ts` — 修改（344 → ~120 行），瘦身为内核子类，公共面逐字不变（§4.2）
 - `packages/persistence/src/index.ts` — 修改（+6 行），追加 file 四个 re-export（§4.4）
 - `packages/persistence/test/file-persistence.test.ts` — `[SA6 owned]` SA6 红灯验收测试（已存在于工作区）。SA3 不改断言逻辑；仅当测试基础设施故障（hook/fixture 隔离等）才允许最小修复并注明原因
+- `packages/persistence/package.json` — 修改（**R2 追认**，SA4 F-2 / 硬门禁 9）：仅 `"version"` 一行 `0.1.0` → `0.1.1`（本任务新增 4 个公共导出属行为变更，HG9「行为变更包 patch bump」为总控级立法、高于设计文件清单；SA4 实测 diff 恰 1 行、结构性字段零改动，裁定合规，先例 `task_vfsl-codegen-hardening_sa4_review.md`）
 
 ### DENY LIST
 
@@ -645,7 +651,7 @@ export {
 - `packages/persistence/test/memory-persistence.test.ts` — P2 既有测试，本任务必须保持全绿，不得修改
 - `packages/persistence/test/persistence-contract.test.ts` — P1 契约测试，不动
 - `packages/persistence/test/memory-testkit.ts` — P2 testkit，签名依赖，不动
-- `packages/persistence/package.json` — 无新依赖（`node:fs/promises`/`node:path` 为内建，yjs/cordis/@types/node 已有）
+- `packages/persistence/package.json` 的**结构性字段**（`dependencies`/`devDependencies`/`exports`/`scripts`/`type` 等）— 不动（依赖确无新增：`node:fs/promises`/`node:path` 为内建，yjs/cordis/@types/node 已有）；唯一例外为 `version` patch 位，经 HG9 授权移入 ALLOW（R2 收窄原 DENY 措辞——原「无新依赖」表述与真实意图不符，见 SA4 §2.2）
 - `packages/persistence/tsconfig.json`、根 `vitest.config.ts`、根 `tsconfig.*.json` — 构建配置不动
 - `packages/vfsl/**`、`packages/vfsl-protocol/**`、`packages/vfsl-codegen/**`、`domains/**`、`apps/**` — 与持久化 Adapter 无关
 - `docs/adr/**` — ADR 为已接受立法，本任务只实现不修改
@@ -669,4 +675,15 @@ export {
 | R2: `PersistenceCoreOptions.schedule/timer` 加 `\| undefined` 消除 TS2379 | ✅ | §4.1 `PersistenceCoreOptions`（§4.2/§4.3 的 `super({...})` 桥接随动生效）；§4.1 引言、§6.5 勘误注记 | 两字段改为 `readonly schedule?: Partial<PersistenceSchedule> \| undefined`、`readonly timer?: PersistenceTimer \| undefined`，附注释说明 exactOptionalPropertyTypes 下读取可选属性得 `\| undefined`、赋给不带 `\| undefined` 的可选字段即 TS2379（引 SA2 typescript@5.9.3 实测）；§4.1 引言与 §6.5 的「伪代码已按约束书写」自述同步勘误 |
 | R3: 改正「回调优先（即使其返回 undefined）」反义注释；§6 标注该缝隙无测试钉死 | ✅ | §4.2 `readCommittedSnapshot` 注释；§6.1 新增子项 | 注释重写为探针验证的三分支精确语义（无回调→读 map；同步返回 undefined→**回落 map**；async 回调→`??` 作用于 non-nullish Promise 对象**不回落**，解析 undefined 按 miss 处理——node 探针输出已引注释内）；§6.1 新增「无测试钉死的缝隙」子项：声明 5 处 readSnapshot 测试无一覆盖回落语义、表达式形态漂移时 480 绿灯不变色、迁移护栏 = 注释 + SA4 静态核对项（实现须与 memory.ts:171 逐字同构） |
 | R4: 补披露 degraded 适配器全局语义（跨用户半径 + 无关 flush 成功即恢复 ready） | ✅ | §4.5 矩阵 flush 行加指引 + 矩阵后新增「degraded 的适配器全局语义」段；§4.6 并发表新增一行 | 披露三要点：降级半径 = 整个适配器实例（跨用户跨 namespace，P2 `:285` 钉死，FilePersistence 使其跨用户分区生效）；恢复条件 = 任一 flush 成功（无条件 `status='ready'`，失败 doc 仍 dirty-retry 中、事务由其自身 retry 兜底）；与 ADR「namespace 进入 degraded」措辞的解释关系（P2 适配器单状态为 v1 已接受简化，逐字继承，按 namespace 细分留 v2） |
-| R5: 改正「值导入均为函数声明」论据；§4.5 sweep 行补 POSIX 平台限定 | ✅ | §6.4 改写；§4.5 矩阵 sweep 行 | §6.4 改写为准确论据：`systemPersistenceTimer` 为 `export const`（index.ts:63，存在 TDZ，R0「函数声明」为事实错误），TDZ 安全来自「模块顶层从不读取循环导入绑定、仅在子类构造函数体执行时访问（此时两条循环边顶层求值完毕）」+ `index⇄memory` 同构循环 P2 全绿先例；§4.5 sweep 行补平台限定（信号闭合论证依赖 POSIX 本地文件系统 unlink/create 同权限语义，与 §7 P1 同款平台假设；NFS root-squash 等远端语义下不保证） |
+| R5: 改正「值导入均为函数声明」论据；§4.5 sweep 行补 POSIX 平台限定 | ✅ | §6.4 改写；§4.5 矩阵 sweep 行 | §6.4 改写为准确论据：`systemPersistenceTimer` 为 `export const`（index.ts:63，存在 TDZ，R0「函数声明」为事实错误），TDZ 安全来自「模块顶层从不读取循环导入绑定、仅在子类构造函数体执行时访问（此时两条循环边顶层求值完毕）」+ `index⇄memory` 同构循环 P2 全绿先例**（R2 注：本行所述论据的 adapter→lifecycle.js 方向后经 SA4 F-1 实测证伪并再勘误，现行论据见 §6.4-4「入口次序不变式」）**；§4.5 sweep 行补平台限定（信号闭合论证依赖 POSIX 本地文件系统 unlink/create 同权限语义，与 §7 P1 同款平台假设；NFS root-squash 等远端语义下不保证） |
+
+## SA4 回流文档债回应（R2）
+
+静态验尸报告：`wiki/raw/task_file-persistence-plugin_sa4_review.md`（verdict = pass，commit `359a030`；§6.4-① R1 论据被 SA4 探针证伪一半 + HG9 版本 bump 需设计追认，两项文档债回流）。
+
+| # | 要求 | 是否落实 | 修订位置 | 修订内容摘要 |
+|---|------|:--:|------|------|
+| F-1 | §6.4-① 勘误：R1「file.ts 模块顶层从不读取循环绑定」被实测证伪（深路径入口 `TypeError: Class extends value undefined`）；补入口次序不变式与已知限制披露 | ✅ | §6.4-4 整节重写；§7 新增 P11 | 论据替换为**入口次序不变式**（index-first 求值安全 + 该方向顶层不读/构造期读的完整机制）；明确指出 `class X extends PersistenceLifecycleCore` 的 extends 子句即模块体求值期值读取（R1 对 adapter→lifecycle.js 方向错误、lifecycle→index 方向仍成立）；披露已知限制（三深路径入口崩溃点引 SA4 实测表、包外不可达依据 `exports` map、fail-fast、P2 无此雷系决策 A 新引入）；写入口纪律（深路径消费者必须 index-first；SA7 见 `Class extends value undefined` 勿误报）；登记加固候选（值导入下沉无环叶子模块，follow-up 另立任务）；P11 把入口次序行为入档协议假设（依据 = SA4 探针实测） |
+| F-2 | §9 ALLOW LIST 增补 package.json version 行（HG9 高于设计 DENY）；DENY 措辞收窄 | ✅ | §9 ALLOW LIST 新增一条；DENY LIST 对应条目改写 | ALLOW 增 `packages/persistence/package.json`（R2 追认，标注仅 `"version"` 0.1.0→0.1.1 一行、HG9 依据、SA4 实测 diff 恰 1 行 + 先例）；DENY 收窄为「结构性字段不动」并显式注明 version patch 位例外已移入 ALLOW（原「无新依赖」措辞与真实意图不符，按 SA4 §2.2 澄清） |
+
+**注**：本节为 SA4 回流件登记，不触发 SA2 反馈修订协议的修订计数；架构决策 A–F、R1 的 5 项修订内容均未变更。SA7 动态验证探针请遵守 §6.4-4 入口纪律（index-first 导入）。
