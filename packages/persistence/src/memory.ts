@@ -11,12 +11,12 @@ import {
   type User,
 } from './index.js'
 
+const HANDLE_OWNER = new WeakMap<MemoryDocHandle, MemoryPersistence>()
+
 export interface MemoryPersistenceOptions {
   readonly schedule?: Partial<PersistenceSchedule>
   readonly timer?: PersistenceTimer
-  /** Test seam used to force asynchronous snapshot-write failures. */
   readonly writeSnapshot?: (key: string, snapshot: Uint8Array) => Promise<void> | void
-  /** Test seam used to observe restore coalescing. */
   readonly readSnapshot?: (key: string) => Promise<Uint8Array | undefined> | Uint8Array | undefined
 }
 
@@ -45,17 +45,19 @@ export class MemoryDocHandle implements DocHandle {
   private released = false
 
   constructor(
-    private readonly owner: MemoryPersistence,
+    private readonly persistence: MemoryPersistence,
     public readonly user: User,
     public readonly docId: string,
     public readonly doc: Y.Doc,
     readonly entryKey: string,
-  ) {}
+  ) {
+    HANDLE_OWNER.set(this, persistence)
+  }
 
   async release(): Promise<void> {
     if (this.released) return
     this.released = true
-    this.owner.release(this)
+    this.persistence.release(this)
   }
 
   get isReleased(): boolean {
@@ -63,10 +65,7 @@ export class MemoryDocHandle implements DocHandle {
   }
 }
 
-/**
- * In-memory reference adapter. The live cache and durable snapshots are kept
- * separately so an idle entry can be evicted without losing persisted state.
- */
+/** In-memory reference adapter with an independent cache and snapshot store. */
 export class MemoryPersistence implements DocPersistence {
   private readonly schedule: PersistenceSchedule
   private readonly timer: PersistenceTimer
@@ -74,7 +73,8 @@ export class MemoryPersistence implements DocPersistence {
   private readonly entries = new Map<string, Entry>()
   private readonly loading = new Map<string, Promise<Entry | null>>()
   private status: MemoryPersistenceStatus = 'ready'
-  private disposed = false
+  private closed = false
+  private epoch = 0
 
   constructor(private readonly options: MemoryPersistenceOptions = {}) {
     this.schedule = resolvePersistenceSchedule(options.schedule)
@@ -86,13 +86,14 @@ export class MemoryPersistence implements DocPersistence {
   }
 
   async loadDoc(user: User, docId: string): Promise<DocHandle | null> {
-    this.assertUsable()
+    this.assertReadable()
     const key = toKey(user, docId)
     let entry = this.entries.get(key)
     if (!entry) {
       let pending = this.loading.get(key)
       if (!pending) {
-        pending = this.restoreEntry(user, docId, key)
+        const epoch = this.epoch
+        pending = this.restoreEntry(user, docId, key, epoch)
         this.loading.set(key, pending)
         void pending.then(
           () => this.loading.delete(key),
@@ -100,13 +101,14 @@ export class MemoryPersistence implements DocPersistence {
         )
       }
       entry = (await pending) ?? undefined
+      this.assertReadable()
     }
     return entry ? this.issueHandle(entry) : null
   }
 
-  /** Test-only creation seam: production callers create a Y.Doc then save it. */
+  /** Test-only creation seam; the public persistence contract stays unchanged. */
   async createHandle(user: User, docId: string): Promise<DocHandle> {
-    this.assertUsable()
+    this.assertWritable()
     const key = toKey(user, docId)
     let entry = this.entries.get(key)
     if (!entry) {
@@ -117,35 +119,31 @@ export class MemoryPersistence implements DocPersistence {
   }
 
   async saveDoc(handle: DocHandle): Promise<void> {
-    this.assertUsable()
+    this.assertWritable()
     const owned = this.assertOwnedHandle(handle)
     const entry = this.entries.get(owned.entryKey)
-    if (!entry || !entry.handles.has(owned)) {
-      throw new Error('foreign or released DocHandle')
-    }
+    if (!entry || !entry.handles.has(owned)) throw new Error('foreign or released DocHandle')
     entry.dirtyGeneration += 1
     this.scheduleFlush(entry)
   }
 
-  /** Register the service in Cordis and arrange adapter disposal on unload. */
+  /** Cordis owns service cleanup; this cleanup only closes adapter resources. */
   apply(ctx: Context): void {
     ctx.effect(() => {
-      const disposeService = provideDocPersistence(ctx, this)
-      return () => {
-        void disposeService()
-        this.dispose()
-      }
+      provideDocPersistence(ctx, this)
+      return () => this.dispose()
     }, 'memory-persistence: service')
   }
 
   dispose(): void {
-    if (this.disposed) return
-    this.disposed = true
+    if (this.closed) return
+    this.closed = true
+    this.epoch += 1
     this.status = 'disposed'
     for (const entry of this.entries.values()) {
       this.clearTimers(entry)
-      entry.doc.destroy()
       entry.handles.clear()
+      entry.doc.destroy()
     }
     this.entries.clear()
     this.loading.clear()
@@ -159,8 +157,9 @@ export class MemoryPersistence implements DocPersistence {
     this.maybeEvict(entry)
   }
 
-  private async restoreEntry(user: User, docId: string, key: string): Promise<Entry | null> {
+  private async restoreEntry(user: User, docId: string, key: string, epoch: number): Promise<Entry | null> {
     const snapshot = await (this.options.readSnapshot?.(key) ?? this.snapshots.get(key)?.snapshot)
+    if (!this.isCurrent(epoch)) return null
     if (!snapshot) return null
     const doc = new Y.Doc()
     Y.applyUpdate(doc, snapshot)
@@ -168,6 +167,10 @@ export class MemoryPersistence implements DocPersistence {
     if (metaDocId !== docId) {
       doc.destroy()
       throw new Error(`persisted META.docId ${String(metaDocId)} does not match requested docId ${docId}`)
+    }
+    if (!this.isCurrent(epoch)) {
+      doc.destroy()
+      return null
     }
     const entry = this.createEntry(user, docId, key, doc)
     this.entries.set(key, entry)
@@ -195,57 +198,70 @@ export class MemoryPersistence implements DocPersistence {
   }
 
   private scheduleFlush(entry: Entry): void {
-    if (entry.flushing) return
-    if (!entry.maxDirtyTimer) {
-      entry.maxDirtyTimer = this.timer.setTimeout(() => this.requestFlush(entry), this.schedule.maxDirtyMs)
+    if (entry.flushing || this.closed) return
+    if (entry.maxDirtyTimer === undefined) {
+      entry.maxDirtyTimer = this.timer.setTimeout(() => this.onMaxDirty(entry), this.schedule.maxDirtyMs)
     }
-    if (entry.debounceTimer) this.timer.clearTimeout(entry.debounceTimer)
-    entry.debounceTimer = this.timer.setTimeout(() => this.requestFlush(entry), this.schedule.debounceMs)
+    if (entry.debounceTimer !== undefined) this.timer.clearTimeout(entry.debounceTimer)
+    entry.debounceTimer = this.timer.setTimeout(() => this.onDebounce(entry), this.schedule.debounceMs)
   }
 
-  private requestFlush(entry: Entry): void {
+  private onDebounce(entry: Entry): void {
     entry.debounceTimer = undefined
-    entry.maxDirtyTimer = undefined
-    if (entry.flushing) return
-    void this.flush(entry)
+    this.cancelMaxDirty(entry)
+    this.startFlush(entry)
   }
 
-  private async flush(entry: Entry): Promise<void> {
-    if (entry.flushing || entry.savedGeneration === entry.dirtyGeneration || this.disposed) return
+  private onMaxDirty(entry: Entry): void {
+    entry.maxDirtyTimer = undefined
+    this.cancelDebounce(entry)
+    this.startFlush(entry)
+  }
+
+  private startFlush(entry: Entry): void {
+    if (entry.flushing || this.closed) return
+    void this.flush(entry, this.epoch)
+  }
+
+  private async flush(entry: Entry, epoch: number): Promise<void> {
+    if (entry.flushing || entry.savedGeneration === entry.dirtyGeneration || !this.isCurrent(epoch)) return
     entry.flushing = true
     const generation = entry.dirtyGeneration
     const snapshot = Y.encodeStateAsUpdate(entry.doc)
     try {
-      await this.writeSnapshot(entry.key, snapshot)
+      await this.writeSnapshot(entry.key, snapshot, epoch)
+      if (!this.isCurrent(epoch)) return
       entry.savedGeneration = generation
       entry.retryDelayMs = this.schedule.debounceMs || 1
       if (entry.savedGeneration !== entry.dirtyGeneration) this.scheduleFlush(entry)
-      else this.maybeEvict(entry)
-    } catch {
+    } catch (error) {
+      if (!this.isCurrent(epoch)) return
       this.status = 'persistence-degraded'
       this.scheduleRetry(entry)
     } finally {
+      if (!this.isCurrent(epoch)) return
       entry.flushing = false
-      if (entry.savedGeneration !== entry.dirtyGeneration && !entry.debounceTimer && !entry.maxDirtyTimer && !entry.retryTimer) {
+      if (entry.savedGeneration !== entry.dirtyGeneration && entry.debounceTimer === undefined && entry.maxDirtyTimer === undefined && entry.retryTimer === undefined) {
         this.scheduleFlush(entry)
       }
       this.maybeEvict(entry)
     }
   }
 
-  private async writeSnapshot(key: string, snapshot: Uint8Array): Promise<void> {
+  private async writeSnapshot(key: string, snapshot: Uint8Array, epoch: number): Promise<void> {
     if (this.options.writeSnapshot) await this.options.writeSnapshot(key, snapshot)
+    if (!this.isCurrent(epoch)) return
     this.snapshots.set(key, { snapshot: snapshot.slice() })
     this.status = 'ready'
   }
 
   private scheduleRetry(entry: Entry): void {
-    if (entry.retryTimer) return
+    if (entry.retryTimer !== undefined || this.closed) return
     const delay = entry.retryDelayMs
     entry.retryDelayMs = Math.min(Math.max(delay * 2, 1), this.schedule.maxDirtyMs)
     entry.retryTimer = this.timer.setTimeout(() => {
       entry.retryTimer = undefined
-      void this.flush(entry)
+      this.startFlush(entry)
     }, delay)
   }
 
@@ -256,25 +272,43 @@ export class MemoryPersistence implements DocPersistence {
     entry.doc.destroy()
   }
 
-  private clearTimers(entry: Entry): void {
-    for (const timer of [entry.debounceTimer, entry.maxDirtyTimer, entry.retryTimer]) {
-      if (timer !== undefined) this.timer.clearTimeout(timer)
-    }
+  private cancelDebounce(entry: Entry): void {
+    if (entry.debounceTimer !== undefined) this.timer.clearTimeout(entry.debounceTimer)
     entry.debounceTimer = undefined
+  }
+
+  private cancelMaxDirty(entry: Entry): void {
+    if (entry.maxDirtyTimer !== undefined) this.timer.clearTimeout(entry.maxDirtyTimer)
     entry.maxDirtyTimer = undefined
+  }
+
+  private clearTimers(entry: Entry): void {
+    this.cancelDebounce(entry)
+    this.cancelMaxDirty(entry)
+    if (entry.retryTimer !== undefined) this.timer.clearTimeout(entry.retryTimer)
     entry.retryTimer = undefined
   }
 
   private assertOwnedHandle(handle: DocHandle): MemoryDocHandle {
-    if (!(handle instanceof MemoryDocHandle) || handle['owner'] !== this || handle.isReleased) {
+    if (!(handle instanceof MemoryDocHandle) || HANDLE_OWNER.get(handle) !== this || handle.isReleased) {
       throw new Error('foreign or released DocHandle')
     }
     return handle
   }
 
-  private assertUsable(): void {
-    if (this.disposed) throw new Error('MemoryPersistence is disposed')
-    if (this.status === 'persistence-degraded') throw new Error('persistence-degraded: writes are rejected until retry succeeds')
+  private assertReadable(): void {
+    if (this.closed) throw new Error('MemoryPersistence is disposed')
+  }
+
+  private assertWritable(): void {
+    this.assertReadable()
+    if (this.status === 'persistence-degraded') {
+      throw new Error('persistence-degraded: writes are rejected until retry succeeds')
+    }
+  }
+
+  private isCurrent(epoch: number): boolean {
+    return !this.closed && this.epoch === epoch
   }
 }
 
@@ -284,9 +318,15 @@ export function createMemoryPersistence(options: MemoryPersistenceOptions = {}):
 
 /** Cordis plugin factory; each invocation owns an isolated adapter instance. */
 export function createMemoryPersistencePlugin(options: MemoryPersistenceOptions = {}) {
+  let instance: MemoryPersistence | undefined
   return {
     apply(ctx: Context) {
-      createMemoryPersistence(options).apply(ctx)
+      instance = createMemoryPersistence(options)
+      instance.apply(ctx)
+    },
+    /** Test/host diagnostic hook; undefined until the plugin has applied. */
+    get instance(): MemoryPersistence | undefined {
+      return instance
     },
   }
 }

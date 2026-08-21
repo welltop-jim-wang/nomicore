@@ -1,3 +1,4 @@
+import { Context } from '@deepseek-ai/cordis'
 import { describe, expect, it } from 'vitest'
 import * as Y from 'yjs'
 import {
@@ -11,11 +12,13 @@ import {
 interface FakeTimer extends PersistenceTimer {
   advanceBy(milliseconds: number): Promise<void>
   pending(): number
+  cleared(): readonly number[]
 }
 
 function createFakeTimer(): FakeTimer {
   let now = 0
   let nextId = 0
+  const cleared: number[] = []
   const timers = new Map<number, { at: number, callback: () => void }>()
   return {
     now: () => now,
@@ -25,7 +28,9 @@ function createFakeTimer(): FakeTimer {
       return id
     },
     clearTimeout(timer) {
-      timers.delete(timer as number)
+      const id = timer as number
+      cleared.push(id)
+      timers.delete(id)
     },
     async advanceBy(milliseconds) {
       const deadline = now + milliseconds
@@ -46,6 +51,7 @@ function createFakeTimer(): FakeTimer {
       await Promise.resolve()
     },
     pending: () => timers.size,
+    cleared: () => cleared,
   }
 }
 
@@ -127,6 +133,40 @@ describe('MemoryPersistence', () => {
     expect(writes).toBe(2)
   })
 
+  it('cancels the paired timer when debounce fires, so its old max-dirty callback cannot flush again', async () => {
+    const timer = createFakeTimer()
+    let writes = 0
+    const persistence = createMemoryPersistence({ timer, async writeSnapshot() { writes += 1 } })
+    const handle = await persistence.createHandle({ userId: 'alice' }, 'doc1')
+    handle.doc.getMap('META').set('docId', 'doc1')
+
+    await persistence.saveDoc(handle)
+    await timer.advanceBy(500)
+    expect(writes).toBe(1)
+    expect(timer.cleared()).toHaveLength(1)
+    await timer.advanceBy(4_500)
+    expect(writes).toBe(1)
+  })
+
+  it('cancels the paired timer when max-dirty fires, so its old debounce callback cannot flush again', async () => {
+    const timer = createFakeTimer()
+    let writes = 0
+    const persistence = createMemoryPersistence({
+      timer,
+      schedule: { debounceMs: 10_000, maxDirtyMs: 5_000 },
+      async writeSnapshot() { writes += 1 },
+    })
+    const handle = await persistence.createHandle({ userId: 'alice' }, 'doc1')
+    handle.doc.getMap('META').set('docId', 'doc1')
+
+    await persistence.saveDoc(handle)
+    await timer.advanceBy(5_000)
+    expect(writes).toBe(1)
+    expect(timer.cleared()).toHaveLength(1)
+    await timer.advanceBy(5_000)
+    expect(writes).toBe(1)
+  })
+
   it('keeps a dirty generation written during an in-flight flush', async () => {
     const timer = createFakeTimer()
     let finishFirst: (() => void) | undefined
@@ -147,13 +187,16 @@ describe('MemoryPersistence', () => {
     handle.doc.getMap('ROOT').set('later', true)
     await persistence.saveDoc(handle)
     finishFirst!()
-    await new Promise((resolve) => setImmediate(resolve))
+    await Promise.resolve()
+    await Promise.resolve()
+    await Promise.resolve()
     await timer.advanceBy(500)
-    await new Promise((resolve) => setImmediate(resolve))
+    await Promise.resolve()
+    await Promise.resolve()
     expect(writes).toBe(2)
   })
 
-  it('degrades on write failure, rejects writes, then restores readiness after retry', async () => {
+  it('degrades to read-only, preserves the live document, then restores writes after retry', async () => {
     const timer = createFakeTimer()
     let failures = 1
     const persistence = createMemoryPersistence({
@@ -165,16 +208,25 @@ describe('MemoryPersistence', () => {
         }
       },
     })
-    const handle = await persistence.createHandle({ userId: 'alice' }, 'doc1')
+    const user = { userId: 'alice' }
+    const handle = await persistence.createHandle(user, 'doc1')
     handle.doc.getMap('META').set('docId', 'doc1')
+    handle.doc.getMap('ROOT').set('readable', 'yes')
     await persistence.saveDoc(handle)
     await timer.advanceBy(500)
     expect(persistence.getStatus()).toBe('persistence-degraded')
+    expect(handle.doc.getMap('ROOT').get('readable')).toBe('yes')
+
+    const second = await persistence.loadDoc(user, 'doc1')
+    expect(second).not.toBeNull()
+    expect(second!.doc).toBe(handle.doc)
+    expect(second!.doc.getMap('ROOT').get('readable')).toBe('yes')
     await expect(persistence.saveDoc(handle)).rejects.toThrow(/persistence-degraded/)
+    await expect(persistence.createHandle(user, 'other')).rejects.toThrow(/persistence-degraded/)
 
     await timer.advanceBy(500)
     expect(persistence.getStatus()).toBe('ready')
-    await expect(persistence.saveDoc(handle)).resolves.toBeUndefined()
+    await expect(persistence.saveDoc(second!)).resolves.toBeUndefined()
   })
 
   it('evicts only after the final release and successful flush, restoring equivalent content into a new document', async () => {
@@ -209,6 +261,58 @@ describe('MemoryPersistence', () => {
     const badUpdate = Y.encodeStateAsUpdate(bad)
     const corrupt = createMemoryPersistence({ timer, async readSnapshot() { return badUpdate } })
     await expect(corrupt.loadDoc(alice, 'doc1')).rejects.toThrow(/META\.docId.*doc1/)
+  })
+
+  it('does not revive cache state when dispose happens during restore', async () => {
+    const timer = createFakeTimer()
+    let resolveRead: ((snapshot: Uint8Array | undefined) => void) | undefined
+    const persisted = docWithMeta('doc1')
+    const persistence = createMemoryPersistence({
+      timer,
+      readSnapshot: () => new Promise((resolve) => { resolveRead = resolve }),
+    })
+
+    const loading = persistence.loadDoc({ userId: 'alice' }, 'doc1')
+    persistence.dispose()
+    resolveRead!(Y.encodeStateAsUpdate(persisted))
+    await expect(loading).rejects.toThrow(/disposed/)
+    expect(timer.pending()).toBe(0)
+    await expect(persistence.loadDoc({ userId: 'alice' }, 'doc1')).rejects.toThrow(/disposed/)
+  })
+
+  it('does not revive state or timers when dispose happens during flush', async () => {
+    const timer = createFakeTimer()
+    let resolveWrite: (() => void) | undefined
+    const persistence = createMemoryPersistence({
+      timer,
+      writeSnapshot: () => new Promise<void>((resolve) => { resolveWrite = resolve }),
+    })
+    const handle = await persistence.createHandle({ userId: 'alice' }, 'doc1')
+    handle.doc.getMap('META').set('docId', 'doc1')
+    await persistence.saveDoc(handle)
+    await timer.advanceBy(500)
+
+    persistence.dispose()
+    resolveWrite!()
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(timer.pending()).toBe(0)
+    expect(persistence.getStatus()).toBe('disposed')
+    await expect(persistence.saveDoc(handle)).rejects.toThrow(/disposed/)
+  })
+
+  it('lets Cordis unregister the service once and makes adapter cleanup idempotent', async () => {
+    const timer = createFakeTimer()
+    const persistence = createMemoryPersistence({ timer })
+    const ctx = new Context()
+    persistence.apply(ctx)
+    expect(ctx.get('docPersistence')).toBe(persistence)
+
+    await ctx.fiber.dispose()
+    expect(ctx.get('docPersistence')).toBeUndefined()
+    expect(persistence.getStatus()).toBe('disposed')
+    persistence.dispose()
+    expect(persistence.getStatus()).toBe('disposed')
   })
 
   it('disposes caches and pending timers', async () => {
