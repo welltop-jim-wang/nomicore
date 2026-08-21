@@ -26,7 +26,15 @@ interface DocPersistence {
 - **创建 = 首个 saveDoc**：loadDoc 不存在返回 null，调用方自建 Y.Doc 写入初始内容后 saveDoc 即完成创建（无独立 createDoc）；
 - **evict 纯手动**：驱逐策略（连接归零、空闲计时）属上层，本层只提供能力；
 - **v1 不提供 list**：per-user 枚举用到再补；
-- **user 仅作分区键**：本层不鉴权；存储按用户分区（如 `data/users/{userId}/{docId}.wal`）。
+- **user 仅作分区键**：本层不鉴权；存储按用户分区（如 `data/users/{userId}/{docId}.snapshot`）。
+
+### v1 持久化格式：全量快照原子覆盖（2026-08-21，owner 决策）
+
+v1 的 `saveDoc` 直接以 `Y.encodeStateAsUpdate(doc)` 编码**完整 Y.Doc 状态**，使用临时文件 + 原子 rename 覆盖该 doc 的单个 snapshot 文件。`loadDoc` 读取该 snapshot 并 `Y.applyUpdate` 还原 Y.Doc。
+
+- 选择简单、可审计、单文件恢复；沿用旧 yjs-server 已验证的 temp+rename 模式；
+- 不引入 WAL、增量水位、帧格式、压缩调度或坏帧截断的实现复杂度；
+- 代价已知：每次 save 的 CPU/IO 与文档全量大小成正比；规模优化（增量 WAL + 周期快照）留 v2，以不改变 `DocPersistence` Interface 的 Adapter 内部替换实现。
 
 **doc 内容布局（三条目）**：
 
@@ -71,7 +79,7 @@ NomicoreServer 与 DSH 均以 **Cordis** 为宿主内核；持久层先作为宿
 ## 后果
 
 - v1 限制：单进程（无文件锁）、load 全量入内存；
-- WAL 帧格式（length+crc、坏帧截断、Yjs 重放幂等）退为实现细节，不进 API；
+- WAL 帧格式（length+crc、坏帧截断、Yjs 重放幂等）不进入 v1；作为 v2 增量持久化 Adapter 的内部实现候选，不进 API；
 - 与 DocScope（schema 编译产物缓存，H3）正交汇合：loadDoc → 读 SCHEMA → DocScope.getCompiled → 可校验；
 - 事务原子性由 Y.transact（单 update 单元）保证，store 无需多写事务。
 
