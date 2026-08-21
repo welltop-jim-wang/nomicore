@@ -34,9 +34,18 @@ interface DocPersistence {
 - **save 失败按 doc 只读降级，保留内存事务**：已校验并提交的事务立即进入 live Y.Doc 并正常同步；持久化是内部异步行为，失败不向触发该事务的客户端追溯报错、不通用回滚。失败后 namespace 进入 `persistence-degraded`，保留读/查询与已同步状态，拒绝**后续** REST/WS 写入；失败事务保留在同一 live Y.Doc 中，由持久层内部 retry 持久化，retry 成功后才恢复可写；不关闭整个 server。
 - **release = 不再使用通知**：调用方在短 scope 的 finally 中调用 handle.release()；持久层在引用归零、缓存/脏状态/空闲策略满足后才真正释放实例，调用方不直接控制释放时刻；
 - **v1 不提供 list**：per-user 枚举用到再补；
-- **user 仅作分区键**：本层不鉴权；存储按用户分区（如 `data/users/{userId}/{docId}.snapshot`）。
+- **user 仅作分区键**：本层不鉴权；userId 与 namespaceId 均由 NomicoreServer 分配，作为受控安全路径段使用（不允许特殊字符/路径分隔符）。存储按用户分区，namespaceId 在用户目录内唯一。
 
-### v1 持久化格式：全量快照原子覆盖（2026-08-21，owner 决策）
+### v1 磁盘布局与持久化格式：全量快照原子覆盖（2026-08-21，owner 决策）
+
+```text
+{rootDir}/                    # FilePersistence 插件配置
+  users/
+    {userId}/                 # NomicoreServer 分配的安全目录名
+      {namespaceId}.snapshot  # 用户目录内唯一的 namespace 快照
+```
+
+`META.docId` 必须等于请求的 namespaceId；不一致视为持久化损坏并响亮失败。`owner` 仍不写入 META（用户归属由目录分区承载）。文件扩展名与安全 id 的精确正则在 namespace 生命周期（D-D）讨论中冻结。
 
 持久层内部的 flush 在触发时以 `Y.encodeStateAsUpdate(doc)` 编码**完整 Y.Doc 状态**，使用临时文件 + 原子 rename 覆盖该 doc 的单个 snapshot 文件。`loadDoc` 读取该 snapshot 并 `Y.applyUpdate` 还原 Y.Doc。
 
