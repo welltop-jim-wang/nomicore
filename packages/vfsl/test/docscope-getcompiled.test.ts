@@ -53,6 +53,14 @@
  *   基准矛盾：任何实现无法同时满足 kind:'envelope'/ENV-4 与 toEqual(h1.issues)）；
  *   AC1.2 改用专属 TEXT_HIT、AC5 改用专属 TEXT_RETRY（模块级缓存跨 it 存续，共享
  *   TEXT_A 会被前序用例缓存成热条目，命中计数断言与失败注入不可达）；
+ * - 2026-08-21 R2 修订（验收测试 fixture 修订轮，总控亲验 + SA3 上报：11/13 绿，
+ *   剩余 2 红为该文件自身 mock 卫生缺陷，任何正确实现下均红——AC1.3 单独跑绿、
+ *   全文件跑红 = 顺序依赖）：两处 fixture 级最小修正，AC 覆盖语义不变——
+ *   D1：AC1.2 一次性失败武装在收尾处显式消费并复位（缓存命中路径不调用 evaluate，
+ *   武装从不被消费而泄漏进 AC1.3 的 freshDerived 直调 → expect(e.ok).toBe(true) 红）；
+ *   D2：AC5「重试重算」计数断言移至 freshDerived 对照直调之前（freshDerived 直调
+ *   evaluate 计 1 次，原位置恒 3≠2 红），末段「命中不再触发 evaluate」计数相应调为 3
+ *   并注释 freshDerived 的一次直调；
  * - Phase 2（SA3 实现后）：用例转绿，作为 #54 的验收锚。
  */
 import { readFileSync } from 'node:fs';
@@ -231,6 +239,13 @@ describe('getCompiled — AC1 同文本同一对象引用（缓存命中可证�
     expect(hit.derived).toBe(first.derived);
     // 命中不触发 evaluate（spy 计数不增）——引用同一之外的「缓存命中可证」
     expect(evaluateMock).toHaveBeenCalledTimes(1);
+    // 收尾卫生（R2 D1 修正）：缓存命中路径不调用 evaluate，上述一次性失败武装
+    // 从未被消费，会泄漏进后续用例——AC1.3 的 freshDerived 直调 evaluate 时误吞该
+    // 武装返回 ok:false，其 expect(e.ok).toBe(true) 恒红（AC1.3 单独跑绿、全文件跑红
+    // = 顺序依赖）。此处显式消费剩余武装（结果弃置，仅清队列）并清空调用史，
+    // 消除跨用例状态泄漏。
+    evaluateMock(); // 消费剩余的一次性失败武装（结果弃置）
+    evaluateMock.mockClear();
   });
 
   it('信封形式与文本形式（同一文本）→ 同一缓存项（键 = 文本内容哈希，非信封载体）', async () => {
@@ -376,14 +391,20 @@ describe('getCompiled — AC5 evaluate 失败不污染缓存（可重试语义�
     expect(joined).toContain('求值期失败模式（测试注入）');
     // 可重试语义：同文本再次调用（evaluate 恢复正常）→ 真实重新求值，不再失败
     const retried = expectOk(await compiledOf(envelopeOf(TEXT_RETRY)));
-    expect(retried.derived).toEqual(freshDerived(TEXT_RETRY));
+    // 「重试重算发生」计数断言（R2 D2 修正）：须置于下方 freshDerived 对照直调
+    // 之前——freshDerived 会直接调用 evaluate（对照基准，非 getCompiled 路径），
+    // 若在其之后再断言，恒为 3≠2 而红：第一次失败 + 重试重算 = 2
     expect(evaluateMock).toHaveBeenCalledTimes(2); // 第一次失败 + 重试重算
+    expect(retried.derived).toEqual(freshDerived(TEXT_RETRY));
     // 重试成功后缓存持有好条目：第三次同引用且不再触发 evaluate
     const third = expectOk(await compiledOf(envelopeOf(TEXT_RETRY)));
     expect(third).toBe(retried);
     expect(third.module).toBe(retried.module);
     expect(third.derived).toBe(retried.derived);
-    expect(evaluateMock).toHaveBeenCalledTimes(2);
+    // 命中不再触发 evaluate：计数保持 3 = 2 次 getCompiled 求值（第一次失败 +
+    // 重试重算）+ freshDerived 对照直调 1 次（不计入 getCompiled 求值行为——
+    // 若命中路径重算，此处将 >3）
+    expect(evaluateMock).toHaveBeenCalledTimes(3);
   });
 });
 

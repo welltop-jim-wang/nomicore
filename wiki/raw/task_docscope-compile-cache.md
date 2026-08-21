@@ -43,6 +43,10 @@
   3. **AC5**：改用专属 fixture `TEXT_RETRY = 'type ROOT = { retry: number; };'`。同根因：`TEXT_A` 已被前序用例缓存，注入失败后调用直接命中 ok 条目，`expectRejected` 恒红。
   - 其余 10 用例对 TEXT_A/TEXT_B 冷热均通过（SA1 §11.4 逐用例模拟），无需改动。
   - 修正后红灯复验（2026-08-21，同命令）：仍 **12 failed | 1 passed（13）**，12 条全部 `getCompiled is not a function`（构造性红灯不变）；`tsc` 仅剩预期缺失导出错误。
+- 修正记录（2026-08-21 R2，验收测试 fixture 修订轮——SA3 实现后 11/13 绿，剩余 2 红经总控亲验（后台全量 553/555，`.mabf-bg/ctrl-verify.log`）与 SA3 上报一致，确认为测试文件自身 mock 卫生缺陷：任何正确实现下均红，AC1.3 单独跑绿、全文件跑红 = 顺序依赖。SA6 已执行，仅 2 处 fixture 级改动 + 头部状态演进注释，AC 覆盖语义不变）：
+  1. **D1（AC1.2 武装泄漏 → AC1.3 红）**：AC1.2 的一次性 `mockImplementationOnce` 失败注入，因缓存命中路径不调用 evaluate 而从不被消费，泄漏进 AC1.3 的 `freshDerived` 直调 evaluate（:177 `expect(e.ok).toBe(true)` 红）。修正：AC1.2 收尾处显式消费剩余武装（结果弃置，仅清队列）并 `mockClear()` 复位——消除跨用例状态泄漏；「命中不重算」规范证明保留（:233 调用计数断言）。
+  2. **D2（AC5 计数恒 3）**：:379 `freshDerived(TEXT_RETRY)` 自身直调 evaluate（第 3 次调用），:380 `toHaveBeenCalledTimes(2)` 恒红。修正：「重试重算发生」计数断言（第一次失败 + 重试重算 = 2）移至 freshDerived 对照直调之前；末段「命中不再触发 evaluate」计数相应调整为 3，注释说明 freshDerived 的一次直调不计入 getCompiled 求值行为（若命中路径重算将 >3）。
+  - 修正后复验（2026-08-21 R2，`pnpm exec vitest run packages/vfsl/test/docscope-getcompiled.test.ts`，`.mabf-bg/sa6-r2.log`）：**13 passed (13)**，Test Files 1 passed，Type Errors 无，exit 0。
 
 ## 上下文指针
 
