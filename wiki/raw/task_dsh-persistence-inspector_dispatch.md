@@ -34,3 +34,4 @@ branch: fix/issue-59-on-adr-server-design（base: adr/server-design）
 | 23 | 03:30 | SA3 | Phase 3 实现轮（F-FILE） | 03:37 | SA2 R3 pass，设计 R3 定稿；SA3 按 §6.2 两阶段结算协议修 probe.ts + 落盘 SA7 锚（续传 cba9640d） |
 | 24 | 03:39 | SA4 | Phase 3 静态验尸 R2 | 03:44 | F-FILE 修复入库（980c5a2），总控亲跑全绿+60 CLI 跑 0 异常；SA4 复审谓词形态与时钟排空（续传 21a6f56a） |
 | 25 | 03:44 | SA7 | Phase 3 动态验证 R2 | 03:49 | SA4 R2 verdict: pass；SA7 复跑闭环（52 跑批次 + file n=2 + 锚稳定）（续传 c3040bd8） |
+| 26 | 03:51 | 总控 | Phase 3.5 AC 门禁 | 03:51 | AC 8/8 全 ✅（证据逐条挂测试/CLI/SA 报告），无需追加派发；F-REJECT-LEAK 立跟进项 |
