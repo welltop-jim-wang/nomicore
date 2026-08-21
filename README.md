@@ -56,13 +56,13 @@ parseVfsl('type A = any;');
 | 别名引用 | 前向引用合法；声明顺序无关 | `ref` |
 | JSDoc 原文 | `/** … */` 挂别名 / 属性 / 标记三锚位；不相邻即悬空（E305） | `docs: string[]` |
 
-**诊断覆盖**：19 个错误码全量落地——词法（E201–E203）、语法（E100–E106）、语义（E301–E309，含环检测 E106、字段重名 E308、形状分类 E304/E306/E307/E309）。单错误模型：全部候选按 `(line, column, code)` 取最小，恰返回 1 条。
+**诊断覆盖**：21 个错误码全量落地——词法（E201–E203）、语法（E100–E106）、语义（E301–E311，含环检测 E106、字段重名 E308、ROOT 完整性 E310/E311）。单错误模型：全部候选按 `(line, column, code)` 取最小，恰返回 1 条。
 
-**尚未包含**（见路线图）：求值器、`validateSnapshot`、`SCHEMA` 信封、路径索引、yjs 服务端。本版本是纯解析层——文本进，IR 或诊断出，不触碰 yjs。
+**当前引擎能力**：`parseVfsl`（文本→IR）、`evaluate`（IR→派生 schema）、`validateSnapshot`（整份 JSON 快照校验）、`parseSchemaEnvelope`（`SCHEMA` 信封形状与方言路由）。尚未包含 NomicoreServer、Y.Doc 持久化与实时同步。
 
 ## 设计不变量
 
-- **单一公共接缝**：`parseVfsl(text)` 是唯一导出函数；tokenizer / parser / semantic / shapes 均为内部件，结构不构成契约。
+- **显式公共接缝**：`parseVfsl` / `evaluate` / `validateSnapshot` / `parseSchemaEnvelope` 各自冻结入参、结果联合与错误域；tokenizer / parser / semantic / shapes 等内部件不构成契约。
 - **不抛错承诺**：任何输入的错误只经返回值传递；顶层兜底把意外异常转化为结构化 E100（命中即实现缺陷，不得视为通过）。
 - **IR 可序列化**：纯数据、无环（环被 E106 显式拒绝）、值域在 JSON 表达力内——编译缓存与跨版本消费的前提。
 - **方言冻结**：v1 按[规格](docs/vfsl/v1-spec.md)冻结，后续只做加法；未知方言在读取侧响亮失败，不静默降级。

@@ -8,8 +8,8 @@
  *
  * 领地划分（设计 §1.2 错误通道三分）：
  * - 方言层：`VfslIssue`，前缀 `VFSL-E<码>:`（errors.ts 21 码冻结注册表），管文本是否合法方言；
- * - 信封层（本模块）：`VfslIssue` 同形状，前缀 `VFSL-ENV-E<码>:` + 坐标哨兵 0/0，管这份
- *   数据是不是它自称的 schema、方言认不认识——**不复用** errors.ts 注册表；
+ * - 信封层（本模块）：独立 `SchemaEnvelopeIssue`，前缀 `VFSL-ENV-E<码>:`，管这份
+ *   数据是不是它自称的 schema、方言认不认识——**不复用** `VfslIssue`/errors.ts 注册表；
  * - 接缝层：`SchemaSourceError`（throw），管这份来源能不能交出信封。
  *
  * 本模块只含纯校验件；编排（形状 → 方言 → 文本透传）在 index.ts。设计 §3/§4/§6 为规则
@@ -28,17 +28,34 @@ export const EnvelopeErrCode = {
   ENV_100: '100',  // 崩溃边界（意外异常——对齐 parseVfsl E100 兜底口径）
 } as const;
 
+export type SchemaEnvelopeIssueCode = (typeof EnvelopeErrCode)[keyof typeof EnvelopeErrCode];
+
+/** 信封自身的错误域：没有文本行列；readOnly 仅在未知方言时为 true。 */
+export interface SchemaEnvelopeIssue {
+  code: SchemaEnvelopeIssueCode;
+  message: string;
+  readOnly: boolean;
+}
+
+/** 统一 issues 数组的 discriminated union：既可统一遍历，又不混淆信封与 VFSL 文本错误。 */
+export type SchemaParseIssue =
+  | { kind: 'envelope'; issue: SchemaEnvelopeIssue }
+  | { kind: 'vfsl'; issue: VfslIssue };
+
 /**
- * 信封层 issue 构造——**唯一构造点**（设计 R2 #1 冻结）：冻结前缀 `VFSL-ENV-E<码>: ` +
- * 坐标哨兵 0/0（设计 §6.2）+ **单行结构性保证**：正文先经 sanitizeEnvelopeMessage，
+ * 信封层 issue 构造——**唯一构造点**：冻结前缀 `VFSL-ENV-E<码>: ` + 单行结构性保证。
  * 任何动态值（ENV-4 内嵌 assertVfslDialect 原消息、ENV-100 内嵌 err.message）都无法
- * 令 message 出现行终止符，从而无法伪造行首 `VFSL-E<码>:` 的文本通道行（设计 §6.1）。
+ * 令 message 出现行终止符，从而无法伪造行首 `VFSL-E<码>:` 的文本通道行。
  */
-export function makeEnvelopeIssue(code: string, message: string): VfslIssue {
+export function makeEnvelopeIssue(
+  code: SchemaEnvelopeIssueCode,
+  message: string,
+  readOnly = false,
+): SchemaEnvelopeIssue {
   return {
+    code,
     message: `VFSL-ENV-E${code}: ${sanitizeEnvelopeMessage(message)}`,
-    line: 0,
-    column: 0,
+    readOnly,
   };
 }
 
@@ -70,7 +87,7 @@ const ENVELOPE_KEYS = [
 
 export type EnvelopeShapeResult =
   | { ok: true; envelope: SchemaEnvelope }
-  | { ok: false; issues: VfslIssue[] };
+  | { ok: false; issues: SchemaEnvelopeIssue[] };
 
 /**
  * §3 形状校验：输入门（ENV-1 早出单条）→ 四键 own-key + typeof 扫描（ENV-2/ENV-3
@@ -124,7 +141,7 @@ export function validateEnvelopeShape(input: unknown): EnvelopeShapeResult {
     }
   }
   if (missing.length > 0 || typeErrors.length > 0) {
-    const issues: VfslIssue[] = [];
+    const issues: SchemaEnvelopeIssue[] = [];
     if (missing.length > 0) {
       issues.push(
         makeEnvelopeIssue(
@@ -160,7 +177,7 @@ export function validateEnvelopeShape(input: unknown): EnvelopeShapeResult {
  * （落 §5 顶层崩溃边界 ENV-100）。重写判定会分叉决策点——未来 v2 方言只增不改时漏改
  * 一处即静默错误解释。
  */
-export function dialectIssueOrNull(envelope: SchemaEnvelope): VfslIssue | null {
+export function dialectIssueOrNull(envelope: SchemaEnvelope): SchemaEnvelopeIssue | null {
   try {
     assertVfslDialect(envelope);
     return null;
@@ -169,6 +186,7 @@ export function dialectIssueOrNull(envelope: SchemaEnvelope): VfslIssue | null {
       return makeEnvelopeIssue(
         EnvelopeErrCode.ENV_4,
         `未知方言（只读 loud-fail，不解释 text）: ${err.message}`,
+        true,
       );
     }
     throw err;
@@ -185,7 +203,7 @@ export function dialectIssueOrNull(envelope: SchemaEnvelope): VfslIssue | null {
  * 包 try/catch 守卫，二次异常降为确定性占位正文（含 thrown 值 typeof），仍经
  * makeEnvelopeIssue 单行净化——崩溃边界在任何对抗输入下都产出结构化 ENV-100。
  */
-export function envelopeCrashIssue(err: unknown): VfslIssue {
+export function envelopeCrashIssue(err: unknown): SchemaEnvelopeIssue {
   const detail = crashDetail(err);
   return makeEnvelopeIssue(EnvelopeErrCode.ENV_100, `内部错误（意外异常）: ${detail}`);
 }
@@ -206,4 +224,4 @@ function crashDetail(err: unknown): string {
 /** 公共接缝返回形状（index.ts 经此 re-export）。 */
 export type ParseSchemaEnvelopeResult =
   | { ok: true; envelope: SchemaEnvelope; module: VfslModule }
-  | { ok: false; issues: VfslIssue[] };
+  | { ok: false; issues: SchemaParseIssue[] };

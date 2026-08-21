@@ -27,7 +27,7 @@
  *   全红（构造性红灯，同 schemasource-seam.test.ts 先例）；
  * - Phase 2（SA3 实现 cb7a2c7 后）：12 条用例转绿；SA4 R1 reject F1（envelope.ts
  *   `envelopeCrashIssue` 的 `String(err)` 在 catch 内二次可抛）→ 追加本文件末 F1 回归锚
- *   （对抗 getter/Proxy 抛不可字符串化值 → 不外抛 + VFSL-ENV-E100 @ 0/0），修复前必红。
+ *   （对抗 getter/Proxy 抛不可字符串化值 → 不外抛 + kind:envelope / ENV-100），修复前必红。
  * 断言全部锚定公共入口的运行时行为，不触碰任何内部实现。
  */
 import { describe, expect, it } from 'vitest';
@@ -41,17 +41,27 @@ interface SchemaEnvelope {
   text: string;
 }
 
-/** PRD #3 冻结的 VfslIssue 形状。 */
+/** PRD #3 冻结的 VFSL 文本错误形状。 */
 interface VfslIssue {
   message: string;
   line: number;
   column: number;
 }
 
-/** 任务简报冻结的公共接缝返回形状。 */
+interface SchemaEnvelopeIssue {
+  code: string;
+  message: string;
+  readOnly: boolean;
+}
+
+type SchemaParseIssue =
+  | { kind: 'envelope'; issue: SchemaEnvelopeIssue }
+  | { kind: 'vfsl'; issue: VfslIssue };
+
+/** 公共接缝返回形状：统一数组 + discriminant，不混淆信封与文本错误域。 */
 type ParseSchemaEnvelopeResult =
   | { ok: true; envelope: SchemaEnvelope; module: { kind: 'vfsl-module'; aliases: unknown[] } }
-  | { ok: false; issues: VfslIssue[] };
+  | { ok: false; issues: SchemaParseIssue[] };
 
 /** 合法文本（ROOT 必须 map 形，E311）。 */
 const VALID_TEXT = 'type ROOT = {};';
@@ -61,22 +71,36 @@ const VALID_TEXT_2 = 'type ROOT = { a: string; };';
 const BAD_TEXT = 'type ROOT = {\n  a: string,\n  b?: ;\n};';
 
 /**
- * 结构化拒绝断言（AC2/AC6 共用）：`{ok:false, issues}`，issues 非空、
- * 每条均为 `{message:string, line:number, column:number}`，且 message 不落入
- * parseVfsl 的 VFSL-E 码空间（AC6——独立前缀或明确区分机制的行为锚）。
+ * 信封层结构化拒绝断言（AC2/AC6）：统一数组中的每条 entry 均以
+ * `kind:'envelope'` 区分，内部 issue 有 code/message/readOnly 且没有文本行列。
  */
-function expectRejected(result: unknown): { issues: VfslIssue[] } {
-  const r = result as { ok: false; issues: VfslIssue[] };
+function expectEnvelopeRejected(result: unknown): { issues: Array<Extract<SchemaParseIssue, { kind: 'envelope' }>> } {
+  const r = result as { ok: false; issues: SchemaParseIssue[] };
   expect(r.ok).toBe(false);
   expect(Array.isArray(r.issues)).toBe(true);
   expect(r.issues.length).toBeGreaterThan(0);
-  for (const issue of r.issues) {
-    expect(typeof issue.message).toBe('string');
-    expect(typeof issue.line).toBe('number');
-    expect(typeof issue.column).toBe('number');
-    expect(issue.message).not.toMatch(/^VFSL-E\d+:/);
+  for (const entry of r.issues) {
+    expect(entry.kind).toBe('envelope');
+    if (entry.kind !== 'envelope') throw new Error('期望 envelope issue');
+    expect(typeof entry.issue.code).toBe('string');
+    expect(typeof entry.issue.message).toBe('string');
+    expect(typeof entry.issue.readOnly).toBe('boolean');
+    expect(entry.issue.message).not.toMatch(/^VFSL-E\d+:/);
+    expect(entry.issue).not.toHaveProperty('line');
+    expect(entry.issue).not.toHaveProperty('column');
   }
-  return r;
+  return r as { issues: Array<Extract<SchemaParseIssue, { kind: 'envelope' }>> };
+}
+
+function expectVfslRejected(result: unknown): { issues: Array<Extract<SchemaParseIssue, { kind: 'vfsl' }>> } {
+  const r = result as { ok: false; issues: SchemaParseIssue[] };
+  expect(r.ok).toBe(false);
+  expect(r.issues.length).toBeGreaterThan(0);
+  for (const entry of r.issues) {
+    expect(entry.kind).toBe('vfsl');
+    if (entry.kind !== 'vfsl') throw new Error('期望 vfsl issue');
+  }
+  return r as { issues: Array<Extract<SchemaParseIssue, { kind: 'vfsl' }>> };
 }
 
 /** 摘除单键（AC2 缺键用例构造）。 */
@@ -154,7 +178,7 @@ describe('parseSchemaEnvelope — AC1 接缝形状（同步、纯函数、不抛
       expect(() => {
         result = parseSchemaEnvelope(input);
       }).not.toThrow();
-      expectRejected(result);
+      expectEnvelopeRejected(result);
     }
   });
 });
@@ -170,7 +194,7 @@ describe('parseSchemaEnvelope — AC2 信封形状负例', () => {
       omit(base, 'text'),
     ];
     for (const input of missing) {
-      expectRejected(callEnvelope(input));
+      expectEnvelopeRejected(callEnvelope(input));
     }
   });
 
@@ -182,7 +206,7 @@ describe('parseSchemaEnvelope — AC2 信封形状负例', () => {
       { lang: 'vfsl', version: 1, id: 42, text: VALID_TEXT },
     ];
     for (const input of cases) {
-      expectRejected(callEnvelope(input));
+      expectEnvelopeRejected(callEnvelope(input));
     }
   });
 
@@ -215,9 +239,10 @@ describe('parseSchemaEnvelope — AC3 方言断言（未知方言只读 loud-fai
     for (const input of cases) {
       const result = callEnvelope(input);
       expect(result.ok).toBe(false);
-      const { issues } = expectRejected(result);
-      // 身份可区分「未知方言」：消息指向方言身份（lang/version），而非文本内容
-      const joined = issues.map((i) => i.message).join('\n');
+      const { issues } = expectEnvelopeRejected(result);
+      // 身份可区分「未知方言」：envelope discriminant + readOnly=true + 方言消息
+      const joined = issues.map((i) => i.issue.message).join('\n');
+      expect(issues.every((i) => i.issue.readOnly)).toBe(true);
       expect(joined).toMatch(/方言|dialect/i);
     }
   });
@@ -226,17 +251,17 @@ describe('parseSchemaEnvelope — AC3 方言断言（未知方言只读 loud-fai
     const dialectBad = { lang: 'other', version: 1, id: 'x', text: BAD_TEXT };
     // 方言拒绝：结构化、指向方言层、不落入 VFSL-E 码空间
     const d = callEnvelope(dialectBad);
-    const dIssues = expectRejected(d);
-    const joinedD = dIssues.issues.map((i) => i.message).join('\n');
+    const dIssues = expectEnvelopeRejected(d);
+    const joinedD = dIssues.issues.map((i) => i.issue.message).join('\n');
+    expect(dIssues.issues.every((i) => i.issue.readOnly)).toBe(true);
     expect(joinedD).toMatch(/方言|dialect/i);
     expect(joinedD).not.toMatch(/^VFSL-E\d+:/m);
-    // 对照：同文本 + vfsl@1 → 文本错误原样透传（VFSL-E 码）
+    // 对照：同文本 + vfsl@1 → kind:vfsl 包装；内部原始 issue 原样保留
     const t = callEnvelope({ lang: 'vfsl', version: 1, id: 'x', text: BAD_TEXT });
-    expect(t.ok).toBe(false);
-    const tIssues = (t as { ok: false; issues: VfslIssue[] }).issues;
-    expect(tIssues).toEqual(parseVfslIssues(BAD_TEXT));
+    const tIssues = expectVfslRejected(t);
+    expect(tIssues.issues.map((i) => i.issue)).toEqual(parseVfslIssues(BAD_TEXT));
     // 两通道可区分：方言拒绝 ≠ 文本错误
-    expect(dIssues.issues).not.toEqual(tIssues);
+    expect(dIssues.issues).not.toEqual(tIssues.issues);
   });
 });
 
@@ -252,12 +277,10 @@ describe('parseSchemaEnvelope — AC4 合法信封透传（parseVfsl ok/issues �
 
   it('ok:false 透传：文本语法错误 issues 与 parseVfsl 完全一致（VFSL-E100 @ line 3, column 7）', () => {
     const result = callEnvelope({ lang: 'vfsl', version: 1, id: 'x', text: BAD_TEXT });
-    expect(result.ok).toBe(false);
-    if (!result.ok) {
-      expect(result.issues).toEqual(parseVfslIssues(BAD_TEXT));
-      expect(result.issues[0]!).toMatchObject({ line: 3, column: 7 });
-      expect(result.issues[0]!.message).toMatch(/^VFSL-E\d+:/);
-    }
+    const rejected = expectVfslRejected(result);
+    expect(rejected.issues.map((i) => i.issue)).toEqual(parseVfslIssues(BAD_TEXT));
+    expect(rejected.issues[0]!.issue).toMatchObject({ line: 3, column: 7 });
+    expect(rejected.issues[0]!.issue.message).toMatch(/^VFSL-E\d+:/);
   });
 });
 
@@ -301,19 +324,17 @@ describe('parseSchemaEnvelope — AC6 错误码空间独立（不与 VFSL-E 混�
       { lang: 'other', version: 1, id: 'x', text: VALID_TEXT },
     ];
     for (const input of rejections) {
-      expectRejected(callEnvelope(input));
+      expectEnvelopeRejected(callEnvelope(input));
     }
     // 对照：文本错误透传保留 parseVfsl 的 VFSL-E 码（两通道并存且可区分）
     const textErr = callEnvelope({ lang: 'vfsl', version: 1, id: 'x', text: BAD_TEXT });
-    expect(textErr.ok).toBe(false);
-    if (!textErr.ok) {
-      expect(textErr.issues[0]!.message).toMatch(/^VFSL-E\d+:/);
-    }
+    const vfsl = expectVfslRejected(textErr);
+    expect(vfsl.issues[0]!.issue.message).toMatch(/^VFSL-E\d+:/);
   });
 });
 
 describe('parseSchemaEnvelope — F1 回归锚：对抗 getter/Proxy 抛不可字符串化值（SA4 R1 reject F1）', () => {
-  it('thrown 值不可字符串化（Object.create(null) / {toString:42} / Proxy get trap）→ 不外抛，{ok:false} + VFSL-ENV-E100 @ 0/0 恒单行', () => {
+  it('thrown 值不可字符串化（Object.create(null) / {toString:42} / Proxy get trap）→ 不外抛，kind:envelope + ENV-100 恒单行', () => {
     // 设计 §7 边界表承诺：对抗 getter/Proxy 抛异常 → 顶层 catch → ENV-100，绝不外抛。
     // 当前实现 envelope.ts envelopeCrashIssue 的 `String(err)` 在 catch 内二次抛出
     // （TypeError: Cannot convert object to primitive value）→ 本条在修复前必须红。
@@ -351,14 +372,12 @@ describe('parseSchemaEnvelope — F1 回归锚：对抗 getter/Proxy 抛不可�
       expect(() => {
         result = parseSchemaEnvelope(input);
       }).not.toThrow();
-      expect(result).toHaveProperty('ok', false);
-      const r = result as { ok: false; issues: VfslIssue[] };
-      expect(r.issues.length).toBeGreaterThan(0);
-      const issue = r.issues[0]!;
+      const r = expectEnvelopeRejected(result);
+      const issue = r.issues[0]!.issue;
+      expect(issue.code).toBe('100');
+      expect(issue.readOnly).toBe(false);
       expect(issue.message).toMatch(/^VFSL-ENV-E100:/);
       expect(issue.message).not.toMatch(/^VFSL-E\d+:/); // 不落入文本语法错误码空间
-      expect(issue.line).toBe(0); // 坐标哨兵：崩溃边界无行列
-      expect(issue.column).toBe(0);
       expect(issue.message).not.toMatch(/\n/); // 恒单行：detail 经 sanitizer 单行化
     }
   });
