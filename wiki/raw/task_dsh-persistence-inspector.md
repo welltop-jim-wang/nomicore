@@ -98,3 +98,32 @@ pnpm exec vitest run packages/persistence/test/core-dsh-boundary.test.ts
 ```
 
 红灯结论：**功能确实不存在，非伪红**。修绿路径 = SA1 设计 + SA3 实现第 2 节契约面。`pnpm-lock.yaml` 已随新包 manifest 更新（SA6 执行 `pnpm install` 产物）。
+
+## 5. R1 修订记录（2026-08-22，SA1 设计 §9 阻塞项，总控协调）
+
+> 背景：SA1 设计 §9 在**已实现且全绿**的 P3 `FilePersistence` 上以 SA6 逐字复刻的 FakeTimer 实测，证明 `packages/dsh-persistence/test/dsh-profile-acceptance.test.ts` 两处断言在**正确实现**下不可满足（原型 V4/V5/V6，§13 P5/P6/P7）。按简报 §2「SA6 固定，改动须与 SA6 协调」条款由总控协调 SA6 修订。**断言目标值一字未改，仅修测试时序基础设施。**
+
+### R1-1 缺陷 1：AC4 file service 级用例（`AC4（service 级）：file profile 写路径被阻塞…`）
+
+- **问题**：`saveDoc` → `advanceBy(debounceMs)` → **立即**断言 `getStatus()==='persistence-degraded'`。FakeTimer 的 `advanceBy` 只排空微任务；flush 的 `fsp.mkdir/writeFile/rename` 在 libuv 线程池结算，实测需 ~5 轮 `setImmediate` 才 degraded（复刻输出：`T+0 advance 返回后立刻 getStatus: ready`）。恢复侧 `toBe('ready')` 同理。
+- **不可满足性**：任何正确实现都无法让真实文件 I/O 在纯微任务排空内完成——除非改 P3 生产代码（DENY + 语义错误）或包装 timer（外部 flush 协调器，违反 ADR）。
+- **修订**：该用例两处 `advanceBy` 之后、`getStatus` 断言之前插入 `await settleRealIo()`（新增测试助手：12 轮 `setImmediate` 轮转，注释引用 SA1 §9）。降级/恢复断言目标值、注入手法（普通文件占据用户目录路径）不变。
+
+### R1-2 缺陷 2：AC6 dispose 用例（`AC6：dispose 后无 timer/监听器/文件句柄/Y.Doc cache/.tmp 残留…`）
+
+- **问题**：`createDoc` → `ROOT.rev=1` → `saveDoc` → `pending()>0` → **立即** `dispose()` → reload 断言 `rev===1`。内核 dispose 语义 = 清计时器 + abort I/O + 销毁 doc，**不 flush 未决脏数据**（`lifecycle.ts` dispose 与 `maybeEvict` clean 前置）；复刻输出：`AC6 reload rev = undefined`。
+- **不可满足性**：profile 无法替调用方推进其传入的 timer（外部 flush 协调）；改内核 dispose 加 flush-dirty 语义 = 改 P3 行为契约（DENY + 冲击既有 P3 套件）。
+- **修订**：`dispose()` 之前插入 `await timer.advanceBy(debounceMs)` + `await settleRealIo()`（让 debounce flush 提交 rev=1 并真实结算，原型 V6 已验证）。用例其余断言（pending=0、doc destroyed、service undefined、status disposed、无 .tmp、无 fd 残留、reload 新实例）全部不受影响。
+
+### R1-3 修订后红灯仍成立（2026-08-22 实跑）
+
+```bash
+pnpm exec vitest run packages/dsh-persistence/test/dsh-profile-acceptance.test.ts
+#   → Test Files 1 failed（收集期 Failed to load url ../src/index.js——功能模块仍不存在；
+#     修订后的 10 个用例随文件整体红灯，与 R0 相同，真红非伪红）
+pnpm exec vitest run --reporter=basic   # 全量复跑
+#   → Test Files 2 failed | 37 passed (39)；Tests 6 failed | 517 passed (523)；退出码 1
+#     格局与 R0 完全一致：仅两个红灯文件失败，既有 37 文件 + 绿色守卫全绿
+```
+
+其余用例（AC1 memory/file、AC2/AC3/AC4 probe 级、AC4 memory service 级、CLI 全部、绿色守卫）经 SA1 §9 盘点 + §13 原型实证可满足，零改动。`dsh-probe-cli.test.ts` 与 `core-dsh-boundary.test.ts` 本轮未触碰。

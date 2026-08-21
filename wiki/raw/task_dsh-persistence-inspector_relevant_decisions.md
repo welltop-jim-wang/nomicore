@@ -140,3 +140,15 @@ Y.Doc
 - `ROOT`：「命名空间根别名的保留名（大小写是契约）：每个模块必须恰好声明一个 map 形的 `type ROOT = …`（裸对象 / `YMap` / `Record`），ROOT 固定物化为 Y.Map，Yjs 映射为 doc 根 `getMap('ROOT')`。」
 - `方言（dialect）`：「`lang + version` 决定的 VFSL 语法子集与语义规格；一经发布冻结，引擎只增不改，未知方言 loud-fail 只读。」
 - `作用域绑定（DocScope）`：「每个命名空间绑定自己的方言解释器、规则集与编译缓存；多方言并存不需要进程级“当前版本”。」
+
+## 设计后复审追加（Phase 2，2026-08-22）
+
+> 来源：SA1 设计 `wiki/raw/task_dsh-persistence-inspector_design.md`（§4 决策 A–I / §9）。**非 ADR**——以下为 ADR-0006 框架内的设计级决策点，经 SA8 复审确认与 ADR 一致（见 `task_dsh-persistence-inspector_design_conflict_report.md`，Verdict: clear）；摘录供 SA2 评审 / SA3 实现对齐，不构成 ADR 约束。
+
+- **观察纪律（决策 A/I）**：探针不包装、不装饰 `DocPersistence` service——`ctx.get(DOC_PERSISTENCE_SERVICE)` 与 `profile.persistence` 恒为同一插件实例；无强制 flush API / 代理拦截（`src/index.ts` 以外的公共导出新增在 DENY LIST 护栏中显式排除）。
+- **双通道观察（决策 B）**：memory 通道经 `memoryIo.writeSnapshot` 公开 dev/test 注入缝（简报 §2 明文认可）注入同步纯观察钩子；file 通道走「受控时钟边界 + 提交态快照文件外部观察（`Y.applyUpdate` 解码）+ `getStatus()`」，**不给 `FilePersistenceOptions` 加 I/O 注入缝**（不改 P3 公共面）。
+- **自持模型（决策 C）**：generation = 探针自数成功 saveDoc（镜像「每次 saveDoc 递增 dirtyGeneration」）；refs = per-key handle 记账；evict 观察走 yjs 公共 `doc.on('destroyed')` 事件——不解析 core 内部状态。
+- **时钟契约（决策 D）**：`ProbeClock extends PersistenceTimer` 且必须可推进（`advanceBy`）；传入不可推进 timer → loud `TypeError`。探针只推进时钟触发内部调度，不设外部 flush 协调器。
+- **事件面语义（决策 H）**：每次 flush 尝试（含 retry 重试）各发一条 `flush { generation, ok }`；`createDoc` 初始提交（create-commit 直写）**不算 flush 事件**；retry 与首发同 generation。
+- **dispose 顺序（决策 F）**：adapter `dispose()` 先、Cordis `fiber.dispose()` 后，幂等；探针 teardown 先拆 `destroyed` 监听再 `profile.dispose()`。
+- **SA6 测试修订 R1（§9，已按简报 §2「改动须与 SA6 协调」条款经总控协调落盘）**：`dsh-profile-acceptance.test.ts` 两处仅修时序基础设施——AC4-file 两处 `getStatus()` 断言前插 `settleRealIo()`（真实事件循环轮转，libuv I/O 结算）；AC6 在 `dispose()` 前插 `advanceBy(debounceMs)+settleRealIo()`（让 debounce 内部调度自然提交）。**断言目标值一字未改**；SA8 裁决：no-conflict（被修正的两个时序假设非 ADR 条款，修订后测试仍逐字验证 ADR-0006 degraded/dispose/reload 语义）。
