@@ -1,9 +1,10 @@
 # SA2 攻击评审报告
 
-**Date**: 2026-08-22
+**Date**: 2026-08-22（R0 首轮） / 2026-08-22（R1 复审，见文末）
 **Reviewer**: SA2（Wallfacer，全新视角，未携带 SA1 协商上下文）
-**评审对象**: `wiki/raw/task_dsh-persistence-inspector_design.md`（SA1 R0）
-**Verdict**: **reject**（1 CRITICAL + 1 HIGH 必须修订设计；3 MEDIUM/LOW 随修订一并落实）
+**评审对象**: `wiki/raw/task_dsh-persistence-inspector_design.md`（SA1 R0 → R1）
+**Verdict (R0)**: **reject**（1 CRITICAL + 1 HIGH 必须修订设计；3 MEDIUM/LOW 随修订一并落实）
+**Verdict (R1 复审，最终)**: **pass** —— 攻击点 1–7 全部落实且实证可复核；缺陷 3 修法 B 经 SA2 独立重跑验证可满足，SA6 R2 已按配方落盘（工作区未提交态，真红保持）。详见文末「R1 复审节」。
 
 > 评审方法：以真实 P1–P3 代码（HEAD 工作区）为基准逐条核对设计断言，独立运行原型脚本
 > 验证内核时序语义（脚本位于 /tmp，已删除，工作区零污染）；ADR 约束基准取自

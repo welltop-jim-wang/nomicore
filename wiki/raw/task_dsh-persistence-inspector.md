@@ -127,3 +127,30 @@ pnpm exec vitest run --reporter=basic   # 全量复跑
 ```
 
 其余用例（AC1 memory/file、AC2/AC3/AC4 probe 级、AC4 memory service 级、CLI 全部、绿色守卫）经 SA1 §9 盘点 + §13 原型实证可满足，零改动。`dsh-probe-cli.test.ts` 与 `core-dsh-boundary.test.ts` 本轮未触碰。
+
+## 6. R2 修订记录（2026-08-22，SA1 设计 §9 缺陷 3，总控协调）
+
+> 背景：SA2 攻击点 1 揭出，SA1 独立复核成立并补齐实证（V8 证伪 / P14 配方验证）。按简报 §2「SA6 固定，改动须与 SA6 协调」条款由总控协调 SA6 R2 修订。**断言目标值一字未改，仅调整断言序 + 新增反黑帽守卫。**
+
+### R2-1 缺陷 3：AC1 memory service 级用例——release 后 loadDoc 同实例断言与内核驱逐语义冲突
+
+- **问题（原断言链 129–132 行）**：`createDoc`（**无 saveDoc**，entry 处于 `savedGeneration(0)===dirtyGeneration(0)` 的 clean 态）→ `await handle.release()` → `loadDoc` → `expect(loaded!.doc).toBe(doc)`。内核 `maybeEvict`（lifecycle.ts:463-469）三前置全过 → **同步驱逐并 `doc.destroy()`**（销毁调用方传入的 doc 实例）；随后 `loadDoc` 走 store 路径从 mirror 还原**新 Y.Doc 实例**（V8 实测：`release 后 doc.isDestroyed: true`、`loaded.doc===doc: false`）。
+- **这是 P2/P3 既定契约而非巧合**：P2 内核测试 `memory-persistence.test.ts:366` 明文 `expect(restored!.doc).not.toBe(oldDoc)`；ADR-0006「引用归零仅使缓存项成为可驱逐候选……仅在保存成功、缓存/空闲策略满足后才真正释放实例」与 AC5 正依赖同一语义——原断言与 AC2/AC5/AC6 语义锚点互相矛盾。
+- **不可满足性证明（实现侧无解）**：让 `loaded.doc === doc` 成立只有两条邪路——profile 偷持 phantom handle 抑制驱逐（打翻 AC2/AC5/AC6 与 ADR 驱逐条款）、或改内核 `maybeEvict` 对 clean 态不驱逐（推翻 P2 契约 + Y.Doc cache 永不释放）。均属 §9 已排除黑帽。
+- **修订（修法 B，R1 选定 ✅）**：`loadDoc` 前移到 `release` 之前（cache-hit 路径，同 live 实例），断言集原样保留，新增三守卫：
+  1. `expect(loaded!.doc).toBe(doc)` —— 断言目标值**原样**（cache-hit 下共享 live Y.Doc，ADR「共享 doc、独立 handle」）；
+  2. `expect(loaded).not.toBe(handle)` —— 独立 lease（ADR「每次 load 返回独立 DocHandle/lease」）；
+  3. 双 release 后 `expect(doc.isDestroyed).toBe(true)` + `expect(timer.pending()).toBe(0)` —— **反黑帽守卫**：phantom-handle 抑制驱逐的邪路在此立即爆红。
+  - 选 B 论证（SA1 §9）：断言语义零反转；「共享 doc、独立 handle」cache-hit 语义在 service 级无其他用例覆盖（AC2 只经探针事件间接覆盖），驱逐/新实例语义已被 AC2/AC5/AC6 三方锚定；P14 实测修法 B 全断言可满足。
+- **其余用例零触碰**：AC1 file / AC3 file / AC4 两 service 级 / probe 级全部 / CLI 全部 / 绿色守卫均已有证据（P8/P15/P16 等）。
+
+### R2-2 修订后红灯仍成立（2026-08-22 实跑）
+
+```bash
+pnpm exec vitest run packages/dsh-persistence/test/dsh-profile-acceptance.test.ts
+#   → Test Files 1 failed（收集期 Error: Cannot find module '../src/index.js'——功能模块仍不存在；
+#     修订后的 10 个用例随文件整体红灯，与 R0/R1 相同，真红非伪红）
+pnpm exec vitest run --reporter=basic   # 全量复跑
+#   → Test Files 2 failed | 37 passed (39)；Tests 6 failed | 517 passed (523)；退出码 1
+#     格局与 R0/R1 完全一致：仅两个红灯文件失败，既有 37 文件 + 绿色守卫全绿
+```

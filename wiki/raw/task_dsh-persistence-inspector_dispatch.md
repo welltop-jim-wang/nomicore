@@ -17,5 +17,6 @@ branch: fix/issue-59-on-adr-server-design（base: adr/server-design）
 | 6 | 01:09 | SA6 | Phase 2 测试修订轮 | 01:12 | SA1 §9 实证两条红灯断言不可满足，按已验证配方修测试时序（续传 42b9f16e，断言值不变） |
 | 7 | 01:13 | SA2 | Phase 2 攻击评审 | 01:25 | SA8 设计复审 clear，进入全维度破壁评审 |
 | 8 | 01:25 | SA1 | Phase 2 设计修订 R1 | 01:39 | SA2 R0 verdict: reject（1 CRITICAL：AC1-memory 第三不可满足断言漏报；1 HIGH：证据覆盖不闭合），按评审修订设计（续传 5510de55） |
-| 9 | 01:41 | SA6 | Phase 2 测试修订轮 R2 | (pending) | SA1 R1 §9 缺陷 3：AC1-memory 同实例断言不可满足，按修法 B（load 前置 cache-hit）修订（续传 42b9f16e） |
-| 10 | 01:41 | SA2 | Phase 2 攻击评审 R1 | (pending) | SA1 R1 已逐条落实 reject 项，复审聚焦 §9 缺陷 3 配方与 §13 补据（续传 3bf4e43d） |
+| 9 | 01:41 | SA6 | Phase 2 测试修订轮 R2 | 01:41 | SA1 R1 §9 缺陷 3：AC1-memory 同实例断言不可满足，按修法 B（load 前置 cache-hit）修订（续传 42b9f16e） |
+| 10 | 01:41 | SA2 | Phase 2 攻击评审 R1 | 01:44 | SA1 R1 已逐条落实 reject 项，复审聚焦 §9 缺陷 3 配方与 §13 补据（续传 3bf4e43d） |
+| 11 | 01:44 | SA3 | Phase 3 TDD 实现 | (pending) | 设计定稿（SA2 R1 pass）+ 红灯契约就位（缺陷 1-3 全落盘），进入编码，目标红灯变绿 |

@@ -22,6 +22,12 @@
  * getStatus 断言前插入 settleRealIo()（真实文件 I/O 在 libuv 结算，FakeTimer 只排空微任务）；
  * AC6 用例 dispose 前插入 advanceBy(debounceMs)+settleRealIo()（内核 dispose 不 flush 未决
  * 脏数据）。仅修测试时序基础设施，断言目标值一字未改；修订后本文件仍整体红灯。
+ *
+ * R2 修订（2026-08-22，SA1 设计 §9 缺陷 3，总控协调）：AC1-memory 用例按修法 B 修订——
+ * loadDoc 前移到 release 之前（cache-hit 路径），断言目标值 `loaded!.doc === doc` 原样；
+ * 新增独立 lease 断言与反黑帽守卫（双 release 后 doc.isDestroyed===true、timer.pending()===0）。
+ * 原因：clean entry 在最后一个 release 时被内核 maybeEvict 同步驱逐并销毁 doc（ADR-0006
+ * 驱逐条款），release 后的 loadDoc 必还原新实例，原断言序不可满足（SA2 攻击点 1，实证 P13）。
  */
 import { describe, expect, it } from 'vitest'
 import * as fs from 'node:fs'
@@ -116,7 +122,8 @@ const settleRealIo = async (rounds = 12): Promise<void> => {
 
 describe('DSH persistence profile（AC1：薄宿主，双 Adapter 同一 contracts）', () => {
   it('memory adapter：profile 提供真实 MemoryPersistence 服务，createDoc→loadDoc→saveDoc 往返可用', async () => {
-    const profile = createDshPersistenceProfile({ adapter: 'memory', timer: createFakeTimer() })
+    const timer = createFakeTimer()
+    const profile = createDshPersistenceProfile({ adapter: 'memory', timer })
     try {
       expect(profile.ctx.get(DOC_PERSISTENCE_SERVICE)).toBe(profile.persistence)
       expect(profile.persistence).toBeInstanceOf(MemoryPersistence)
@@ -126,11 +133,21 @@ describe('DSH persistence profile（AC1：薄宿主，双 Adapter 同一 contrac
       expect(handle.doc).toBe(doc)
       expect(handle.owner).toBe(owner)
       expect(handle.docId).toBe('doc-alpha')
-      await handle.release()
+      // R2（SA1 §9 缺陷 3 修法 B）：loadDoc 前移到 release 之前——本用例无 saveDoc，
+      // entry 处于 clean 态，内核 maybeEvict 在最后一个 release 时同步驱逐并销毁 doc
+      // （ADR-0006 驱逐条款），release 后的 loadDoc 必走 store 还原出**新实例**；
+      // 只有 cache-hit 路径保证「共享 doc、独立 handle」的同一 live Y.Doc 断言成立。
       const loaded = await profile.persistence.loadDoc(owner, 'doc-alpha')
       expect(loaded).not.toBeNull()
       expect(loaded!.doc).toBe(doc)
+      // 独立 lease：与 createDoc 返回的 handle 不同（ADR「每次 load 返回独立 DocHandle/lease」）
+      expect(loaded).not.toBe(handle)
       await loaded!.release()
+      await handle.release()
+      // 反黑帽守卫：双 release 后无 phantom handle 抑制驱逐——doc 已被内核销毁、
+      // 无残留计时器（若 profile 偷持 handle 或绕过驱逐，此处立即爆红）
+      expect(doc.isDestroyed).toBe(true)
+      expect(timer.pending()).toBe(0)
     } finally {
       await profile.dispose()
     }
