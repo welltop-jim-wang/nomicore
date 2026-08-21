@@ -59,10 +59,9 @@ interface MigratedPathMap {
   assets: PathSchema<Record<string, PathSchema<MigratedAssetEntity, 'map'>>, 'map'>;
   attachments: PathSchema<string[], 'plain'>;
   audit: PathSchema<Audit, 'map'>;
-  // ⚠️ 可选成员以「必填 + undefined 并」形态镜像（SA6 实测：VfslPathMap 含可选成员时
-  // 协议 MemberKeys 的 Record<infer K, unknown> 推断整体坍缩为 never——全表 fail-closed；
-  // 该协议级缺陷已上报，见 wiki/raw/task_vfsl-domains-assets-dogfood.md SA6 记录）。
-  notes: PathSchema<string, 'leaf'> | undefined;
+  // 可选成员按修复后语法直写 `notes?:`（vfsl-protocol 可选成员坍缩修复随本 PR 落地：
+  // Record-infer → 同态 keyof，可选 `?` 修饰符保留——旧「必填 + undefined 并」绕行形态退役）。
+  notes?: PathSchema<string, 'leaf'>;
   keywords: PathSchema<Record<`${number}`, PathSchema<string, 'leaf'>>, 'array'>;
 }
 
