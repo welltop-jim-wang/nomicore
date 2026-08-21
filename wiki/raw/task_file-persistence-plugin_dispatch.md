@@ -14,3 +14,6 @@
 | 7 | 18:18 | SA2 | Phase 2 设计复审 R2 | 18:21 | SA1 R1 修订交付，send_message 续传 SA2 原会话复审。R2 verdict: pass（5/5 修订经独立验证闭合） |
 | — | 18:22 | 总控 | 决策记录 | — | SA2 R1 附 5 条红灯测试构想：经裁决不发起 SA6 R2——既有 SA6 测试已逐条覆盖 9 项 AC，5 条构想属加固候选非 AC；其中「残留钉死/degraded 半径/sweep 信号链」已由设计 E.1/§4.5 文档化披露，转 SA4/SA7 核对项 |
 | 8 | 18:23 | SA3 | Phase 3 TDD 实现 | 18:25 | SA2 R2 pass，设计定稿，派 SA3 实现使红灯变绿。commit 359a030：lifecycle.ts 内核抽取 + file.ts 适配器 + memory 瘦身 + bump 0.1.1；自报 pnpm test 493 passed / EXIT=0，待总控亲跑复核 |
+| — | 18:27 | 总控 | Phase 3 亲跑验收 | 18:27 | pnpm typecheck EXIT=0；pnpm test：Test Files 33 passed / Tests 493 passed / Type Errors no errors / TEST_EXIT=0（.mabf-bg/sa3-verify.log）。红灯确认变绿 |
+| 9 | 18:28 | SA4 | Phase 3 静态验尸 | 18:45 | 测试已绿，派 SA4 红队审查。首回合空交付，send_message 续传后交付。verdict: pass（F-1 MEDIUM 非阻断：深路径入口 TDZ 崩溃，包外不可达；回流 SA1 文档勘误 ×2） |
+| 10 | 18:47 | SA7 | Phase 3 动态验证 | (pending) | SA4 pass，派 SA7 动态验证（含 SA4 §8 六项动态清单） |
