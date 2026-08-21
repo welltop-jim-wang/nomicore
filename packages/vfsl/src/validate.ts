@@ -631,7 +631,7 @@ function interpret(values: Record<string, ValueSchema>, root: ValueSchema | unde
 }
 
 /**
- * 第三公共导出（issue #21）：整份 JSON 快照校验——值 schema 树解释器。
+ * 公共导出（issue #21）：整份 JSON 快照校验——值 schema 树解释器。
  *
  * 同步、纯函数、不抛错；不修改 `derived` 与 `snapshot`（纯数据只读遍历）；结果纯
  * JSON 值（JSON 往返全等）；编译一次、校验多次（一切中间态调用局部，不落模块级
