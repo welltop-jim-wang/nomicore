@@ -6,7 +6,7 @@
  * 启动期 I/O。
  *
  * 退出码语义（§5.4）：写盘成功 0；--check 新鲜 0 / 过期、缺失、孤儿 1；
- * 零领域集（无 --allow-empty-domains）2；硬错误（SchemaSourceError / ENOTDIR /
+ * 零领域集 2；硬错误（SchemaSourceError / ENOTDIR /
  * EACCES / parse/evaluate 失败 / UnsupportedRootShapeError / idBase 约定破坏 /
  * 同目录多 id）→ 顶层 catch 结构化 stderr + 2。
  */
@@ -19,7 +19,6 @@ import type { ProjectionOutput } from './collect.js';
 interface CliArgs {
   domains: string;
   check: boolean;
-  allowEmptyDomains: boolean;
 }
 
 class CliUsageError extends Error {
@@ -29,15 +28,13 @@ class CliUsageError extends Error {
   }
 }
 
-/** 参数解析先行（启动精简）：--domains <root>（默认 cwd）/ --check / --allow-empty-domains。 */
+/** 参数解析先行（启动精简）：--domains <root>（默认 cwd）/ --check。 */
 function parseArgs(argv: string[]): CliArgs {
-  const args: CliArgs = { domains: process.cwd(), check: false, allowEmptyDomains: false };
+  const args: CliArgs = { domains: process.cwd(), check: false };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i] as string;
     if (a === '--check') {
       args.check = true;
-    } else if (a === '--allow-empty-domains') {
-      args.allowEmptyDomains = true;
     } else if (a === '--domains') {
       const v = argv[i + 1];
       if (v === undefined) {
@@ -58,13 +55,11 @@ async function main(): Promise<number> {
   const args = parseArgs(process.argv.slice(2));
   const outputs = await collectProjections(args.domains);
 
-  // 空领域集阶段门（§5.5，R2/SA2 #4）：F1 将 domains/ 缺失（ENOENT）设计为合法空集——
-  // 「G 尚未落地」与「--domains 路径打错」在接缝层不可区分，无 flag 一律响亮 exit 2。
+  // 零领域集一律响亮失败（G 已落地，阶段门随 #27 移除——domains/ 被误删/改名时
+  // 不允许静默 vacuous pass 掩蔽回归；--allow-empty-domains 同步退役）。
   if (outputs.length === 0) {
-    if (args.allowEmptyDomains) return 0;
     process.stderr.write(
-      'vfsl-codegen: 零领域集：domains/ 不存在或为空——若 G 尚未落地属预期，请加 --allow-empty-domains；' +
-        '若非预期请检查 --domains 路径\n',
+      'vfsl-codegen: 零领域集：domains/ 不存在或为空——请检查 --domains 路径或领域布局（domains/<domain>/schema.vfsl）\n',
     );
     return 2;
   }

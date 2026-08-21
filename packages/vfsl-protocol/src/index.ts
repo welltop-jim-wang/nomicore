@@ -23,8 +23,10 @@ export interface UnknownPath<Path extends readonly unknown[]> {
 /** 根的抽象表示：把 PathMap 整表当作一个 'map' 节点（V = Map 自身，不展开子级）。（A.4） */
 export type RootSchema<M> = PathSchema<M, 'map'>;
 
-/** 键空间并集：对 union V 逐成员分发取各成员 keyof 再并集（≠ keyof(union)=交集）。（A.4.1，不导出） */
-type MemberKeys<V> = V extends Record<infer Key, unknown> ? Key : never;
+/** 键空间并集：distributive keyof——对 union V 逐成员分发取 keyof 再并集（≠ keyof(union)=交集）。
+ *  （A.4.1，不导出）禁用 Record<infer Key, unknown> 同态推断：含可选成员的表上 Key 坍缩 never
+ *  → 全表 fail-closed（#27 dogfood 实测）；keyof 对可选/交叉/联合形态均稳定。 */
+type MemberKeys<V> = V extends unknown ? keyof V : never;
 
 /** 成员独有键取键：逐成员分发，有该键者取 V[Seg]、缺键者补 undefined，各分支并集——读投影 T|undefined 唯一来源。（A.4.1，不导出） */
 type MemberLookup<V, Seg> = V extends unknown
@@ -60,8 +62,8 @@ export type PathAt<M, Path extends readonly unknown[]> = PathAtImpl<RootSchema<M
 export type VfslValueOf<T> =
   T extends PathSchema<infer V, infer K>
     ? K extends 'map' | 'array'
-      ? (V extends Record<infer Key, unknown>
-          ? { [K2 in Key]: VfslValueOf<V[K2]> }   // 递归展开映射/数组元素子树
+      ? (V extends object
+          ? { [K2 in keyof V]: VfslValueOf<V[K2]> }   // 递归展开映射/数组元素子树（同态 keyof：可选成员保 `?`，免 Record-infer 坍缩，见 MemberKeys 注）
           : V)
       : V                                        // leaf/plain/xml-fragment 直取
     : T;
@@ -85,8 +87,8 @@ export type PathPatchValue<Node> =
 /** 写投影递归展开：map/array 逐子节点剥回；leaf/plain/xml-fragment 直取。（A.6，不导出） */
 type PathPatchUnwrap<V, K> =
   K extends 'map' | 'array'
-    ? (V extends Record<infer Key, unknown>
-        ? { [K2 in Key]: PathPatchValue<V[K2]> }
+    ? (V extends object
+        ? { [K2 in keyof V]: PathPatchValue<V[K2]> }   // 同态 keyof：可选成员保 `?`，免 Record-infer 坍缩，见 MemberKeys 注
         : V)
     : V;
 

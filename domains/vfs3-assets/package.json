@@ -1,0 +1,13 @@
+{
+  "name": "@nomicore/vfs3-assets",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": { ".": "./index.ts" },
+  "devDependencies": {
+    "@nomicore/vfsl": "workspace:*",
+    "@nomicore/vfsl-protocol": "workspace:*",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4"
+  }
+}
