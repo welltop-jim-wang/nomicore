@@ -1,10 +1,9 @@
 # SA1 架构设计 — FilePersistence Cordis 插件：用户分区、缓存与崩溃恢复（Issue #58, P3）
 
-> 阶段：Phase 2 架构设计（R2 文档债修订——落实 SA4 静态验尸回流件 F-1/F-2，见文末「SA4 回流文档债回应」；R1 的 SA2 5 项修订与架构决策 A–F 均未变）
-> 任务简报：`wiki/raw/task_file-persistence-plugin.md`
+> 阶段：**R3 发布后修订轮**（PR #66 owner review 反馈 #2/#3/#4/#5 的设计定点修订，逐条回应见文末「Owner Review 反馈逐条回应（R3）」；R2 的 SA4 回流件、R1 的 SA2 5 项修订与架构决策 A–F 中未被 R3 显式改写的部分继续有效）
+> 任务简报：`wiki/raw/task_file-persistence-plugin.md`；修订轮简报：`wiki/raw/task_file-persistence-plugin_revision.md`（owner 反馈全文 + 总控逐条研判）
 > ADR 约束基准：`wiki/raw/task_file-persistence-plugin_relevant_decisions.md`（ADR-0006 为核心 ADR，条款全部为直接约束）
-> 红灯锚点：`packages/persistence/test/file-persistence.test.ts`（SA6 已锚定，EXIT=1；`Test Files 1 failed | 32 passed`，其余 480 用例全绿）
-> 基线：`adr/server-design` ← `fix/issue-58-on-adr-server-design`（P2 已随 653af45 / 37561ac 落地）
+> 实现基线：PR #66 已落地——R0–R2 所设计的 `src/lifecycle.ts` / `src/file.ts` / `src/memory.ts` / `src/index.ts` 均已在分支 `fix/issue-58-on-adr-server-design` 上；R3 以该已实现状态为起点做定点改造（owner 反馈 #1 的 `.mabf-bg/**` 清理是 SA3 机械操作，不属设计范围）
 > worktree：`/home/wangjian/nomicore-fix-issue-58`
 
 ---
@@ -28,7 +27,7 @@
 
 | 资产 | 位置 | 状态 | 本任务处置 |
 |---|---|---|---|
-| `DocPersistence`/`DocHandle`/`User` 契约、schedule 默认值、`PersistenceTimer`、Cordis service 注册 | `src/index.ts` | P1 已锁定，SA6 契约测试绿色 | 仅追加 4 个 re-export（§4.4），既有导出一个不动 |
+| `DocPersistence`/`DocHandle`/`User` 契约、schedule 默认值、`PersistenceTimer`、Cordis service 注册 | `src/index.ts` | P1 已锁定，SA6 契约测试绿色 | R0 计划：仅追加 4 个 re-export；**R3 修订（owner #2）：P1 契约面整体逐字迁 `src/contract.ts`，index.ts 纯聚合（§4.4），公共导出面逐字不变** |
 | 共享契约套件 `describeDocPersistenceContract` | `src/testing.ts` | P1 落地 | **不动**；SA6 已用它接线 FilePersistence |
 | lifecycle core（Entry/DocHandle/handle 归属 WeakMap/并发合流 loading/调度/单飞 flush/generation/degraded-retry/evict/dispose-epoch） | `src/memory.ts`（`MemoryPersistence` 私有内嵌） | P2 落地，测试全绿 | **整体搬迁**至新 `src/lifecycle.ts`，`memory.ts` 瘦身为子类（§4.1–4.2） |
 | `MemoryPersistenceOptions.readSnapshot/writeSnapshot` 注入式 I/O 缝 | `src/memory.ts` | P2 落地（仅测试使用） | 签名逐字保持；经 adapter 桥接到新内核缝（§4.2） |
@@ -67,17 +66,17 @@ SA6 简报附录已锚定公共契约：`FilePersistence`、`createFilePersisten
 
 ### 决策 E：遗留 `.tmp` 的清扫时机——load 路径惰性清扫（含 ENOENT 分支），不做启动全树扫描
 
-ADR-0006：「启动发现遗留 `.tmp` 时一律忽略并删除」。本设计落地为：**`loadDoc` cache-miss 的还原路径中，无论 `.snapshot` 命中与否，一律 best-effort 删除该 namespace 的 `.tmp`**。理由：
+ADR-0006：「启动发现遗留 `.tmp` 时一律忽略并删除」。本设计落地为：**`loadDoc` cache-miss 的还原路径中，无论 `.snapshot` 命中与否，一律删除该 namespace 的 `.tmp`**（R3：仅 ENOENT 静默、其余删除失败响亮上抛，见理由 4）。理由：
 
 1. 「忽略」是无条件的（`.tmp` 永不被读取）——本设计在所有路径上满足；
 2. **启动全树清扫破坏 HMR/reload 下的单写者前提**（R1 重写论据，SA2 #1）：ADR-0006 插件条款明文「插件采用工厂/实例模型……以支持测试隔离、不同 rootDir 与 HMR/reload」。HMR 场景中新旧实例可能短暂共存且共享同一 rootDir：新实例的启动清扫会 unlink 旧活跃实例**在途 flush** 的 `.tmp`，旧实例随后 `rename(tmp, snapshot)` 得到 ENOENT → 按异常路径进入 `persistence-degraded` → 活链路上的 WS/REST 写被拒——一次卫生清扫把健康的写路径打挂。惰性清扫不存在该竞态：单实例内 cache-miss ⇒ 该 namespace 无 Entry ⇒ 无在途 flush（`maybeEvict` 以 `!flushing` 为前置，Entry 驱逐必晚于 flush 完成），清扫不可能与自身 flush 相碰（SA2 复审已独立论证此点并列入「攻击后确认无漏洞的面」）；
 3. 惰性清扫被 SA6 两个用例精确钉死：tmp-only → load 返回 null 且 tmp 被删；snapshot+tmp → snapshot 胜出且 tmp 被删。**清扫的真实覆盖面 = 重启后再次被 `loadDoc` 访问的 namespace**（见决策 E.1 残留披露）；flush 的 `writeFile(tmp, flag 'w')` 对遗留 tmp 的截断**没有边际覆盖**——生产路径再次 flush 某 namespace 前必先经 `loadDoc` 取得 handle，而 loadDoc 已先行清扫，截断只是同一条清扫面的重复表述（R1 勘误：R0 的「清扫面自然闭合」为错误论证）；
-4. 删除失败（如用户目录只读）**不阻断 load**：`.tmp` 是惰性无害文件，读权限与删权限可能不一致；同一磁盘状况会在下一次 flush 的 `writeFile` 上**响亮**浮出（degraded→retry），不会静默丢失信号（该论证的 POSIX 平台限定见 §4.5 矩阵对应行）。
+4. 删除失败仅 `ENOENT` 静默（≡ 无遗留可删，`force:true` 下 Node 直接 resolve）；其余删除失败（EACCES/EPERM/EIO…）**向上抛、`loadDoc` 响亮拒绝**（R3 修订，owner 反馈 #4）。ADR-0006「发现遗留 `.tmp` 时一律忽略并删除」中的删除是该条款的**义务**而非 best-effort：只读 workload（load-only、此后永不 flush）不会再有后续 flush 来暴露同一磁盘故障，吞掉即等于信号永久丢失——R0「删除失败不阻断 load、下次 flush 响亮浮出」的信号闭合论证只覆盖写 workload，且其 POSIX unlink/writeFile 同权限假设 R1 就已披露为平台限定。owner 裁定采纳推荐方案（仅 ENOENT 静默、其余响亮拒绝），**不修改 ADR**（「忽略内容并删除」语义不变，本项是错误处理收紧）。测试锚点：非 ENOENT 删除失败 → `loadDoc` rejects 且原 errno 保留（SA7 动态测试重写，§5a）。
 
 #### 决策 E.1：ADR 解释与残留披露（解释性偏离，供 owner 复核；R1 新增，SA2 #1）
 
 - **解释性偏离**：ADR-0006 文本是「**启动**发现遗留 `.tmp` 时一律忽略并删除」；本设计把「删除」的时点解释为「该 namespace 被 `loadDoc` 时」（「忽略」仍无条件立即满足——`.tmp` 在任何路径上永不被读取）。依据：① 任务简报验收条款本身即 load 时点表述（「load 只认 `.snapshot`；遗留 `.tmp` 一律忽略并删除」被 SA6 锚定到 loadDoc 用例，见简报映射表）；② 启动清扫存在理由 2 的 HMR 单写者竞态。该偏离为**解释性、非机制性**，记录于此供 owner / ADR 维护者复核。
-- **残留集合**：设崩溃瞬间在途 flush 的 namespace 集合为 S。重启后残留 `.tmp` 仅在对应 namespace 再次 `loadDoc` 时被删除；S 中**从未再被访问**的子集，其 `.tmp` 将**永久滞留**——体积为快照级（≈ 该 doc 全量 `encodeStateAsUpdate` 字节数），跨多次崩溃单调只增不减，上界 ≈ namespace 数 × 各自快照大小。滞留 tmp 对运行时无影响（永不被读、不阻塞任何读写路径），但会误导运维（看似 pending 写入）。
+- **残留集合**：设崩溃瞬间在途 flush 的 namespace 集合为 S。重启后残留 `.tmp` 仅在对应 namespace 再次 `loadDoc` 时被删除；S 中**从未再被访问**的子集，其 `.tmp` 将**永久滞留**——体积为快照级（≈ 该 doc 全量 `encodeStateAsUpdate` 字节数），跨多次崩溃单调只增不减，上界 ≈ namespace 数 × 各自快照大小。滞留 tmp 对运行时无影响（永不被读；健康盘上不阻塞任何读写路径——残留 tmp 在该 namespace 下次 `loadDoc` 时即访问即清。唯一例外：R3 理由 4 收紧后，若该次删除遭遇**非 ENOENT** 失败，此 namespace 的 `loadDoc` 响亮拒绝，即使 `.snapshot` 完整可读——此耦合由重写后的 SA7 test 1 钉死，见 §5a），但会误导运维（看似 pending 写入）。
 - **回收途径**：v1 不内置（启动清扫即理由 2 的竞态来源）；运维侧离线清理（停机后 `find {rootDir}/users -name '*.snapshot.tmp' -delete`）或 v2 引入带 `apply()` 时机 + `track()` + epoch 防护的单写者启动清扫。若 owner 判定 v1 必须启动期全量卫生清扫，须另行评估上述方案并显式接受 HMR 竞态风险——SA2 评审与本设计均不推荐。
 
 ### 决策 F：不引入 fsync / 文件锁 / 目录预热，全部沿用 ADR-0006 v1 边界
@@ -86,6 +85,37 @@ ADR-0006：「启动发现遗留 `.tmp` 时一律忽略并删除」。本设计�
 - 单进程假设，跨实例指向同一 rootDir 属调用方错误，v1 不做文件锁（ADR「v1 限制：单进程（无文件锁）」）——SA6 只钉死**不同** rootDir 互不影响；
 - `users/{userId}` 目录在**首次 flush 时** `mkdir recursive` 惰性创建；load 路径只读（除 tmp 清扫的 unlink），不创建任何目录——「load miss 不留痕迹」。
 
+### 决策 G（R3，owner #2）：抽取 `src/contract.ts` 依赖叶子模块，根除 barrel 循环与入口次序 TDZ
+
+PR #66 落地后的依赖图存在值环：`lifecycle.ts` 值导入 `provideDocPersistence`/`resolvePersistenceSchedule`/`systemPersistenceTimer` 自 barrel `index.ts`，而 `index.ts` re-export `memory.ts`/`file.ts`（二者的 `extends PersistenceLifecycleCore` 子句在模块体求值期读取 lifecycle 的值绑定）。SA4 F-1 探针已实测：不经 `index.js` 的深路径直入在模块初始化期崩于 `TypeError: Class extends value undefined`（TDZ）；SA7 动态测试被迫以「先导入 index.js」的 workaround 规避——导入顺序成为隐藏契约（owner 反馈 #2 判定 HIGH）。
+
+修法（owner 给定目标依赖图，本设计逐边落地）：P1 契约面整体自 `index.ts` **逐字搬迁**至新叶子模块 `src/contract.ts`——`User` / `DocHandle` / `DocPersistence` / `DOC_PERSISTENCE_SERVICE` / `DEFAULT_PERSISTENCE_SCHEDULE` / `PersistenceSchedule` / `PersistenceTimer` / `systemPersistenceTimer` / `resolvePersistenceSchedule` / `provideDocPersistence` / `requireDocPersistence` + Cordis `Context` 模块增强（`declare module`）。contract.ts 仅依赖 cordis / yjs 的 **type-only** 导入（运行时零 import），是真正的依赖叶子。目标图（= owner 反馈原文给定）：
+
+```text
+contract.ts  →（外部 type-only；运行时零 import）
+lifecycle.ts → contract.js
+memory.ts    → contract.js + lifecycle.js
+file.ts      → contract.js + lifecycle.js
+testing.ts   → contract.js（type-only）
+index.ts     → contract.js + testing.js + memory.js + file.js（纯聚合 re-export，零定义）
+```
+
+无环 ⇒ 任意入口次序安全 ⇒ 深路径直入 `src/file.js` / `src/memory.ts` / `src/lifecycle.ts` 不再有 TDZ；P1 遗留的 `index ⇄ memory` 类型环亦随 memory.ts 改指 contract 而消失。R2 §6.4-4 的「入口次序纪律」「已知限制披露」「加固候选（follow-up 另立任务）」三条**全部作废**——加固候选由本轮直接完成。回归锚点：新建 `test/module-graph-regression.test.ts`（仅深路径导入三个 src 模块并构造实例 + 静态守卫「src 内除 index.ts 外不得出现 `./index.js` 反向导入」），SA7 动态测试头部的导入顺序 workaround 与先导 index 导入同步删除。
+
+### 决策 H（R3，owner #3）：degraded/retry 下沉为 `CoreEntry` 级，对齐 ADR-0006 namespace 语义
+
+R0–R2 内核逐字继承 P2 的**适配器单状态** `status`：任一 doc flush 失败 → 整个适配器拒绝全部写入；任一无关 doc flush 成功 → 整体翻回 `ready`；失败 doc 可能在自身 retry 成功前被错误恢复为可写。owner 反馈 #3 引 ADR-0006 原文「失败后 **namespace** 进入 `persistence-degraded`……该 namespace retry 成功后恢复可写」判定当前实现偏离 ADR：降级半径与恢复半径都应是 entry（namespace = `(user, docId)`）级。R1 §4.5「degraded 的适配器全局语义」中「逐字继承、按 namespace 细分留待 v2 评估」的立场被 owner 推翻——本轮直接落实。机制（伪代码见 §4.1）：
+
+1. `CoreEntry` 新增 `degraded: boolean`（初值 false）；flush 失败置 `entry.degraded = true` 并按既有指数退避 scheduleRetry；**retry 成功仅清该 entry 的 degraded**。不变式：`degraded ⇒ dirty`（flush 只在 `savedGeneration < dirtyGeneration` 时启动，失败必留 dirty），故 degraded entry 永不满足 `maybeEvict` 的 clean 前置、永不蒸发，degraded 标志不会随驱逐泄漏。
+2. `saveDoc(handle)` 的 degraded 门禁改为**该 handle 所属 entry** 的检查（错误消息逐字保留 `'persistence-degraded: writes are rejected until retry succeeds'`）；别处降级不影响非 degraded entry 的写入。检查次序随之下沉到 ownership 解析之后（disposed → identity → foreign/released → entry degraded），见 §8 契约审计。
+3. test 工厂（`CORE_TEST_FACTORY`）：命中**已存在且 degraded** 的 entry 时拒绝（与 saveDoc 同门禁同消息）；新建 entry 恒允许（fresh entry 无 degraded 历史）——P2 `memory-persistence.test.ts:285` 反向冻结了旧全局半径（degraded 期间新建 `'other'` 被拒），该断言随本决策翻转为「允许」（owner 授权改测试，§9 ALLOW LIST 扩展）。
+4. `getStatus()` 语义改为**聚合视图**（公共类型 `PersistenceStatus` / `FilePersistenceStatus` / `MemoryPersistenceStatus` 字面量不变）：`disposed`（closed）＞ 任一 entry degraded → `'persistence-degraded'` ＞ `'ready'`；`status` 存储字段删除，按 `entries` 现算。单 entry 场景与旧行为可观察等价（P2 `:277/:288/:315/:325` 保持原绿），同时保住适配器级可观测性——宿主从一个方法即可看出「本实例当前存在降级 namespace」。
+5. 恢复半径修正（owner 覆盖点 3）：无关 doc 的 flush 成功不再触碰失败 entry 的 degraded——旧实现「任一成功即全局 ready、失败 doc 可能被错误恢复可写」的窗口消除；owner 4 条最低覆盖（Bob/doc1 只拒自己 / Alice/doc2 照常读写 / Alice 成功不得恢复 Bob / Bob 自身 retry 成功才恢复）由重写后的 SA7 动态测试逐条钉死（§5a）。
+
+### 决策 I（R3，owner #5）：同 rootDir 单活跃实例所有权写入 Interface/配置注释
+
+Issue 只要求不同实例可指向不同 rootDir；ADR-0006 v1 单进程无文件锁，多实例同目录并发安全**本轮不实现**。但固定 `.snapshot.tmp` 文件名使两个同 rootDir 活跃实例之间存在删除/rename 竞态——该约束必须显式写进代码注释而非只留在 wiki。落点：`FilePersistenceOptions.rootDir` JSDoc 写入完整所有权声明（owner 原文「同一 rootDir 同时只能由一个活跃 FilePersistence 实例拥有；HMR 必须等待旧实例 dispose/drain 后再加载新实例」的英文等价文案，见 §4.3.1）；`FilePersistence` 类 JSDoc 与 `createFilePersistencePlugin` JSDoc 各留一行交叉引用。决策 F 的「多实例同 rootDir 属调用方错误，显式不处理」**行为**不变——本决策只把契约写进代码面。
+
 ---
 
 ## §4. 详细设计
@@ -93,6 +123,8 @@ ADR-0006：「启动发现遗留 `.tmp` 时一律忽略并删除」。本设计�
 ### §4.1 新建 `src/lifecycle.ts` —— 共享 lifecycle 内核（包内内部模块）
 
 **搬迁原则**：除决策 B/C 列明的缝改造外，代码从 `memory.ts` **逐字搬迁**。搬迁不改行为，是 480 个既有用例保持全绿的结构性保证。TS 配置为 `strict + exactOptionalPropertyTypes + noImplicitOverride + verbatimModuleSyntax`（`tsconfig.base.json`），伪代码按此约束书写（R1 勘误：`PersistenceCoreOptions` 两个桥接字段显式标注 `| undefined`，消除 SA2 #2 实测的 TS2379）。
+
+**R3 增补（owner #2/#3）**：以下伪代码反映 PR #66 已落地基线之上的定点改造——① import 源自 `./index.js` 切至 `./contract.js`（决策 G）；② `CoreEntry` 新增 `degraded`、`status` 存储字段删除、`getStatus()` 改聚合现算（决策 H）；③ `saveDoc`/`CORE_TEST_FACTORY` 的 degraded 门禁 entry 化（决策 H）。除标注 `← R3` 的行外与分支现行代码逐字一致。
 
 ```ts
 // src/lifecycle.ts — internal shared lifecycle core (NOT re-exported from index.ts)
@@ -104,7 +136,7 @@ import {
   systemPersistenceTimer,
   type DocHandle, type DocPersistence,
   type PersistenceSchedule, type PersistenceTimer, type User,
-} from './index.js'
+} from './contract.js'   // ← R3（owner #2）：依赖叶子模块，禁止再 import barrel index.js
 
 export type PersistenceStatus = 'ready' | 'persistence-degraded' | 'disposed'
 
@@ -129,6 +161,7 @@ interface CoreEntry {                       // == 现 memory.ts Entry，逐字
   readonly key: string; readonly user: User; readonly docId: string
   readonly doc: Y.Doc; readonly handles: Set<CoreDocHandle>
   dirtyGeneration: number; savedGeneration: number; flushing: boolean; retryDelayMs: number
+  degraded: boolean                        // ← R3（owner #3）：namespace 级降级标志（决策 H）
   debounceTimer?: unknown; maxDirtyTimer?: unknown; retryTimer?: unknown
 }
 
@@ -157,7 +190,7 @@ export abstract class PersistenceLifecycleCore implements DocPersistence {
   protected readonly loading = new Map<string, Promise<CoreEntry | null>>()
   private readonly inFlight = new Set<Promise<unknown>>()
   private readonly abortController = new AbortController()
-  protected status: PersistenceStatus = 'ready'
+  // ← R3（owner #3）：`status` 存储字段删除；getStatus() 按 closed/entries 现算聚合视图
   private closed = false
   private epoch = 0
 
@@ -167,21 +200,32 @@ export abstract class PersistenceLifecycleCore implements DocPersistence {
     RELEASE.set(this, (handle) => this.releaseHandle(handle))
   }
 
-  getStatus(): PersistenceStatus { return this.status }
+  /** Aggregate view: disposed > any degraded entry > ready. Type literal unchanged. */
+  getStatus(): PersistenceStatus {                 // ← R3：聚合现算（决策 H 第 4 点）
+    if (this.closed) return 'disposed'
+    for (const entry of this.entries.values()) {
+      if (entry.degraded) return 'persistence-degraded'
+    }
+    return 'ready'
+  }
 
   async loadDoc(user: User, docId: string): Promise<DocHandle | null> {
-    this.assertReadable()
-    this.validateIdentity(user, docId)                 // ← 决策 C 新增（默认 no-op）
+    this.assertReadable()                          // 读路径不设 degraded 门禁（ADR：保留读/查询）
+    this.validateIdentity(user, docId)
     // ……与现 memory.ts loadDoc 完全一致：entries 命中 → 发 handle；
     // 未命中 → loading 合流（单 loading Promise，所有并发 load await 同一还原），
     // restoreEntry 成功建 Entry，null 则返回 null。
   }
 
   async saveDoc(handle: DocHandle): Promise<void> {
-    this.assertWritable()
-    this.validateIdentity(handle.user, handle.docId)   // ← 决策 C 新增（防御纵深，成本一次正则）
-    // ……与现 memory.ts saveDoc 完全一致：assertOwnedHandle（foreign/released → loud throw
-    // 'foreign or released DocHandle'）→ dirtyGeneration += 1 → scheduleFlush。
+    this.assertReadable()                          // ← R3：disposed 仍最先拒绝
+    this.validateIdentity(handle.user, handle.docId)
+    const owned = this.assertOwnedHandle(handle)
+    const entry = this.entries.get(owned.entryKey)
+    if (!entry || !entry.handles.has(owned)) throw new Error('foreign or released DocHandle')
+    this.assertEntryWritable(entry)                // ← R3（owner #3）：仅检查本 handle 的 entry
+    entry.dirtyGeneration += 1
+    this.scheduleFlush(entry)
   }
 
   /** Cordis owns service registration cleanup; this effect closes only adapter resources. */
@@ -194,14 +238,23 @@ export abstract class PersistenceLifecycleCore implements DocPersistence {
 
   async dispose(): Promise<void> {
     // ……与现 memory.ts dispose 完全一致：幂等（closed → 仅 allSettled(inFlight)）；
-    // 同步段：closed=true、epoch+=1、status='disposed'、abortController.abort()、
+    // 同步段：closed=true、epoch+=1、abortController.abort()、
     // 逐 entry clearTimers + handles.clear + doc.destroy、entries/loading 清空，
     // 然后调用 this.disposeAdapterState()（← 新增受保护钩子，见下），最后 await allSettled(inFlight)。
+    // ← R3：删除 `status='disposed'` 赋值行——closed 字段即驱动聚合 getStatus() 返回 'disposed'。
   }
 
   [CORE_TEST_FACTORY](user: User, docId: string): DocHandle {
-    // == 现 memory.ts [TEST_FACTORY]：assertWritable → validateIdentity（← 新增）→
-    // 命中 Entry 或新建 Entry(new Y.Doc()) → issueHandle。同步。
+    this.assertReadable()
+    this.validateIdentity(user, docId)          // ← 决策 C（默认 no-op）
+    const key = toPersistenceKey(user, docId)
+    let entry = this.entries.get(key)
+    if (!entry) {
+      entry = this.createEntry(user, docId, key, new Y.Doc())  // 新建 entry 恒允许（fresh 无 degraded 历史）
+      this.entries.set(key, entry)
+    }
+    this.assertEntryWritable(entry)             // ← R3（owner #3）：命中已存在且 degraded 的 entry 才拒绝
+    return this.issueHandle(entry)              // 同步。
   }
 
   // ---- adapter seams -------------------------------------------------------
@@ -215,7 +268,7 @@ export abstract class PersistenceLifecycleCore implements DocPersistence {
   protected abstract writeCommittedSnapshot(
     user: User, docId: string, snapshot: Uint8Array, signal: AbortSignal,
   ): Promise<void>
-  /** Called by the core AFTER the epoch guard, before status='ready'. */
+  /** Called by the core AFTER the epoch guard, before the entry is marked clean (R3: entry.degraded=false). */
   protected onSnapshotCommitted(user: User, docId: string, snapshot: Uint8Array): void { void user; void docId; void snapshot }
   /** Synchronous adapter-resource release inside dispose's teardown section. */
   protected disposeAdapterState(): void {}
@@ -224,7 +277,14 @@ export abstract class PersistenceLifecycleCore implements DocPersistence {
   // releaseHandle / restoreEntry / createEntry / issueHandle / scheduleFlush /
   // onDebounce / onMaxDirty / startFlush / flush / scheduleRetry / maybeEvict /
   // cancelDebounce / cancelMaxDirty / clearTimers / track / assertOwnedHandle /
-  // assertReadable / assertWritable / isCurrent
+  // assertReadable / isCurrent
+  // R3 两处随动（owner #3）：
+  //   createEntry 初始化列表追加 `degraded: false`；
+  //   assertWritable() 删除，替换为 assertEntryWritable(entry: CoreEntry)：
+  //     private assertEntryWritable(entry: CoreEntry): void {
+  //       if (entry.degraded) throw new Error('persistence-degraded: writes are rejected until retry succeeds')
+  //     }
+  //   （消息与旧 assertWritable 逐字相同——既有 /persistence-degraded/ 断言全部保持绿。）
 }
 
 export function toPersistenceKey(user: User, docId: string): string {
@@ -232,7 +292,7 @@ export function toPersistenceKey(user: User, docId: string): string {
 }
 ```
 
-**`flush` 的两处结构性改动**（搬迁中唯一触及 I/O 缝的地方，行为不变）：
+**`flush` 的改动**（R0 两处 I/O 缝改动 + R3 两处 degraded entry 化，其余逐字）：
 
 ```ts
 private async flush(entry: CoreEntry, epoch: number): Promise<void> {
@@ -246,14 +306,15 @@ private async flush(entry: CoreEntry, epoch: number): Promise<void> {
     this.onSnapshotCommitted(entry.user, entry.docId, snapshot)  // memory: 写内部 map；file: 无操作
     entry.savedGeneration = generation
     entry.retryDelayMs = this.schedule.debounceMs || 1
-    this.status = 'ready'                                   // 退避成功后恢复可写
+    entry.degraded = false                                  // ← R3（owner #3）：仅恢复本 entry（决策 H 第 5 点）
   } catch {
     if (!this.isCurrent(epoch)) return
-    this.status = 'persistence-degraded'
+    entry.degraded = true                                   // ← R3（owner #3）：仅降级本 entry
     this.scheduleRetry(entry)
   } finally {
     // ……与现 memory.ts 完全一致：flushing 释放锁后，若 flush 期间有新 saveDoc
     //（dirtyGeneration 更大）且无 retry 挂起，则重排下一轮 debounce；maybeEvict。
+    // 注：degraded entry 必 dirty（savedGeneration < dirtyGeneration），maybeEvict 永不驱逐之。
   }
 }
 ```
@@ -289,6 +350,8 @@ import {
   PersistenceLifecycleCore, CORE_TEST_FACTORY, toPersistenceKey,
   type PersistenceStatus,
 } from './lifecycle.js'
+// R3（owner #2）：type-only 导入源 `./index.js` → `./contract.js`：
+// import type { DocHandle, PersistenceSchedule, PersistenceTimer, User } from './contract.js'
 
 export interface MemoryPersistenceOptions { /* 逐字保持，含 readSnapshot/writeSnapshot 的 (key, signal) 签名 */ }
 export type MemoryPersistenceStatus = PersistenceStatus
@@ -347,7 +410,7 @@ export class MemoryPersistence extends PersistenceLifecycleCore {
 |---|---|
 | `MemoryPersistenceOptions` / `MemoryPersistenceStatus` / `StoredSnapshot` + `snapshots` map / `createMemoryPersistence` / `createMemoryPersistencePlugin` / `createMemoryHandleForTest` | 留在 `memory.ts` |
 | `Entry` → `CoreEntry`；`MemoryDocHandle` → `CoreDocHandle`；`HANDLE_OWNER`/`RELEASE`/`TEST_FACTORY` → `CORE_TEST_FACTORY`；`toKey` → `toPersistenceKey` | `lifecycle.ts` |
-| `loadDoc`/`saveDoc`/`apply`/`dispose`/`getStatus`/`[TEST_FACTORY]`/`releaseHandle`/`restoreEntry`/`createEntry`/`issueHandle`/`scheduleFlush`/`onDebounce`/`onMaxDirty`/`startFlush`/`flush`/`scheduleRetry`/`maybeEvict`/`cancelDebounce`/`cancelMaxDirty`/`clearTimers`/`track`/`assertOwnedHandle`/`assertReadable`/`assertWritable`/`isCurrent` | `lifecycle.ts`（逐字，仅 §4.1 标注的 4 处缝改动） |
+| `loadDoc`/`saveDoc`/`apply`/`dispose`/`getStatus`/`[TEST_FACTORY]`/`releaseHandle`/`restoreEntry`/`createEntry`/`issueHandle`/`scheduleFlush`/`onDebounce`/`onMaxDirty`/`startFlush`/`flush`/`scheduleRetry`/`maybeEvict`/`cancelDebounce`/`cancelMaxDirty`/`clearTimers`/`track`/`assertOwnedHandle`/`assertReadable`/`assertWritable`/`isCurrent` | `lifecycle.ts`（逐字，仅 §4.1 标注的 4 处缝改动；**R3 随动**：`assertWritable` 在搬迁后形态中已替换为 `assertEntryWritable`、`getStatus` 改聚合现算、`saveDoc`/`[CORE_TEST_FACTORY]` 门禁 entry 化、`createEntry` 增 `degraded: false`——见 §4.1「R3 两处随动」注记与决策 H） |
 | 私有 `writeSnapshot(key, snapshot, epoch)` | **消解**：拆为 `writeCommittedSnapshot`（纯 I/O）+ 内核 epoch 检查 + `onSnapshotCommitted`（map 写入） |
 
 ### §4.3 新建 `src/file.ts` —— FilePersistence 适配器
@@ -359,15 +422,31 @@ import * as fsp from 'node:fs/promises'
 import * as path from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import { CORE_TEST_FACTORY, PersistenceLifecycleCore, type PersistenceStatus } from './lifecycle.js'
-import type { DocHandle, PersistenceSchedule, PersistenceTimer, User } from './index.js'
+// R3（owner #2）：type-only 导入源 `./index.js` → `./contract.js`（禁止反向 import barrel）：
+import type { DocHandle, PersistenceSchedule, PersistenceTimer, User } from './contract.js'
 
 export interface FilePersistenceOptions {
-  /** Directory root; each plugin instance owns its own layout below {rootDir}/users/. */
+  /**
+   * Directory root; each plugin instance owns its own layout below {rootDir}/users/.
+   *
+   * Single-writer ownership (ADR-0006 v1: single process, no file locking):
+   * a given rootDir may be owned by AT MOST ONE active FilePersistence
+   * instance at a time. Two live instances sharing one rootDir race on the
+   * fixed `{namespaceId}.snapshot.tmp` name (unlink/rename interleaving) and
+   * are a caller error, not handled in v1. Under HMR/reload, the previous
+   * instance must be fully disposed — dispose() drains all in-flight
+   * flushes — before a new instance over the same rootDir is loaded.
+   */
   readonly rootDir: string
   readonly schedule?: Partial<PersistenceSchedule>
   readonly timer?: PersistenceTimer
 }
 
+/**
+ * Aggregate view (R3, owner #3): 'disposed' after dispose; 'persistence-degraded'
+ * while ANY cached (user, docId) entry is degraded; otherwise 'ready'.
+ * Write rejection itself is entry-scoped — see PersistenceLifecycleCore.saveDoc.
+ */
 export type FilePersistenceStatus = PersistenceStatus   // 'ready' | 'persistence-degraded' | 'disposed'
 
 /** ADR-0006 shared safe grammar for userId and namespaceId (also used by REST path/WS room/META). */
@@ -383,6 +462,13 @@ interface SnapshotPaths {
 #### §4.3.2 类主体
 
 ```ts
+/**
+ * Filesystem adapter on the DocPersistence seam (ADR-0006 v1 disk contract).
+ *
+ * Ownership: at most ONE active FilePersistence instance per rootDir at any
+ * time (see FilePersistenceOptions.rootDir); HMR must dispose/drain the old
+ * instance before loading a new one over the same rootDir.   ← R3（owner #5）
+ */
 export class FilePersistence extends PersistenceLifecycleCore {
   constructor(private readonly options: FilePersistenceOptions) {
     super({ name: 'FilePersistence', schedule: options.schedule, timer: options.timer })
@@ -429,7 +515,7 @@ export class FilePersistence extends PersistenceLifecycleCore {
     // rename 成功即本次 flush 完成（ADR-0006：v1 无 fsync）。
     // dispose 竞态说明：throwIfAborted 与 rename 之间存在极窄窗口——abort 恰好落其间时
     // rename 仍可能提交一个“有效旧状态”快照。这不是损坏（tmp+rename 只会安装一致状态），
-    // 且内核 epoch 防护保证迟到的结果不会推进 savedGeneration/status。接受并记录。
+    // 且内核 epoch 防护保证迟到的结果不会推进 savedGeneration/degraded（R3：status 字段已并入 entry）。接受并记录。
   }
 
   // ---- 路径与安全 ----------------------------------------------------------
@@ -441,9 +527,11 @@ export class FilePersistence extends PersistenceLifecycleCore {
   }
 
   private async sweepLeftoverTmp(tmpPath: string): Promise<void> {
-    // best-effort by contract：惰性 .tmp 无害（永不被读），删除失败不得阻断读已提交快照；
-    // 同一磁盘状况会在下一次 flush 的 writeFile 上响亮浮出（degraded→retry），信号不丢失。
-    await fsp.rm(tmpPath, { force: true }).catch(() => undefined)
+    // R3（owner #4）：ADR-0006 规定遗留 .tmp「一律忽略并删除」——删除是义务而非 best-effort。
+    // 仅 ENOENT 静默（force:true 下 Node 直接 resolve，≡ 无遗留可删）；其余失败
+    // （EACCES/EPERM/EIO/…）原样上抛：loadDoc 响亮拒绝、errno 保留——只读 workload
+    // 也必须在 load 时点看到磁盘故障，而非指望一次可能永不发生的 flush。
+    await fsp.rm(tmpPath, { force: true })
   }
 }
 
@@ -468,7 +556,10 @@ function isErrnoException(error: unknown): error is NodeJS.ErrnoException {
 #### §4.3.3 Cordis 插件工厂（工厂/实例模型，镜像 memory 惯例）
 
 ```ts
-/** Cordis plugin factory; each invocation owns an isolated adapter instance. */
+/**
+ * Cordis plugin factory; each invocation owns an isolated adapter instance.
+ * One active instance per rootDir — see FilePersistenceOptions.rootDir (R3, owner #5).
+ */
 export function createFilePersistencePlugin(options: FilePersistenceOptions) {
   let instance: FilePersistence | undefined
   return {
@@ -498,9 +589,36 @@ export async function createFileHandleForTest(
 }
 ```
 
-### §4.4 `src/index.ts` 导出追加（唯一既有文件改动）
+### §4.4 `src/index.ts` 纯聚合化 + `src/testing.ts` 导入随动（R3，owner #2）
 
 ```ts
+// src/index.ts — R3：纯聚合 re-export。零定义、零包内 import 之外的语句；
+// P1 契约面（types / defaults / provide / require / Context 模块增强）已逐字迁至 ./contract.js。
+export {
+  DEFAULT_PERSISTENCE_SCHEDULE,
+  DOC_PERSISTENCE_SERVICE,
+  provideDocPersistence,
+  requireDocPersistence,
+  resolvePersistenceSchedule,
+  systemPersistenceTimer,
+  type DocHandle,
+  type DocPersistence,
+  type PersistenceSchedule,
+  type PersistenceTimer,
+  type User,
+} from './contract.js'
+export type {
+  DocPersistenceContractFactory,
+  DocPersistenceContractFixture,
+} from './testing.js'
+export { describeDocPersistenceContract } from './testing.js'
+export {
+  MemoryPersistence,
+  createMemoryPersistence,
+  createMemoryPersistencePlugin,
+  type MemoryPersistenceOptions,
+  type MemoryPersistenceStatus,
+} from './memory.js'
 export {
   FilePersistence,
   createFilePersistencePlugin,
@@ -509,7 +627,9 @@ export {
 } from './file.js'
 ```
 
-既有 memory 导出与全部契约类型逐字不动。`src/lifecycle.ts` **不**经 index.ts 导出（内部模块）。
+- **公共面逐字等价**：`@nomicore/persistence` 的全部导出名（P1 契约面 11 名 + Context 模块增强 + testing 3 名 + memory 5 名 + file 4 名）与 R3 之前完全一致，仅来源从「index.ts 内定义」变为「contract.ts 定义 + index.ts re-export」——`persistence-contract.test.ts`（import 全部 P1 名）零改动保持绿。Context 模块增强随 contract.ts 进入程序（index → contract 必然加载），消费路径不变。
+- **配套（`src/testing.ts`，原 DENY，本节授权移入 ALLOW，见 §9）**：其 type-only 导入 `from './index.js'` → `from './contract.js'`——owner #2 的「内部实现模块不得反向 import barrel」对 src 全模块生效，testing.ts 经 index re-export，属内部实现模块；纯类型切换、零行为变化。
+- `src/lifecycle.ts` / `src/contract.ts` 均**不**经 index.ts 导出（包内内部模块）。
 
 ### §4.5 错误处理矩阵（拒绝虚假降级）
 
@@ -520,17 +640,19 @@ export {
 | `.snapshot` 字节非合法 Yjs update（含 0 字节） | 存储损坏 | `Y.applyUpdate` throw（实测：`Unexpected end of array` / `Invalid typed array length`，均可捕获）→ loadDoc 响亮拒绝 | §7 设计期实测；与本设计"`.snapshot` 即提交态"不变式一致——只有外部篡改能造出此态 |
 | `readFile` ENOENT | 正常 miss | 返回 undefined → loadDoc 返回 null；仍清扫 tmp | ADR-0006 创建=首个 saveDoc |
 | `readFile` 非 ENOENT 错误（EACCES 等） | 异常路径 | **向上抛**（loadDoc 拒绝）；不静默吞 | 磁盘故障必须可见 |
-| flush 链路任何一步失败（mkdir/writeFile/rename，如 ENOSPC/EACCES） | 异常路径 | 内核 degraded：状态 `persistence-degraded`、拒绝后续 saveDoc/创建、保留内存事务、指数退避重试至成功恢复 `ready`——**降级半径为整个适配器实例，见矩阵下方「degraded 全局语义」** | ADR-0006 save 失败降级条款；内核逐字继承 |
-| tmp 清扫失败（如目录只读） | 可恢复惰性 | **best-effort 吞掉**（`.tmp` 无害且永不被读）；同一磁盘状况在下次 flush 响亮浮出。**平台限定（R1，SA2 #5）**：该信号闭合论证依赖「unlink 与 writeFile 同需目录 w+x」的 POSIX 本地文件系统语义（与 §7 P1 同款平台假设）；NFS root-squash 等远端语义可能分离 unlink/create 权限，届时吞掉清扫失败不再保证信号浮出 | §3 决策 E 第 4 条 |
+| flush 链路任何一步失败（mkdir/writeFile/rename，如 ENOSPC/EACCES） | 异常路径 | 内核 degraded：该 entry 置 `persistence-degraded`、**仅拒绝该 `(user, docId)` entry** 的后续 saveDoc/命中该 entry 的创建、保留内存事务、指数退避重试至成功后**仅恢复该 entry**——**降级半径 = entry（namespace）级，见矩阵下方「degraded 的 entry 级语义（R3）」** | ADR-0006「失败后 namespace 进入 persistence-degraded……retry 成功后恢复可写」；决策 H（owner #3） |
+| tmp 清扫 ENOENT（无遗留 tmp） | 正常 | 静默视为已清扫（`rm force:true` 下 Node 直接 resolve，不产生错误） | §7 P4 实测；owner #4 推荐方案 |
+| tmp 清扫非 ENOENT 失败（EACCES/EPERM/EIO…） | 异常路径 | **向上抛**（`sweepLeftoverTmp` 不再 catch，原 errno 透传）→ `loadDoc` 响亮拒绝；只读 workload 在 load 时点即见磁盘故障 | ADR-0006「一律忽略并删除」的删除义务；owner #4；不修改 ADR |
 | 空/非字符串 rootDir | 配置缺陷 | 构造期 **TypeError** | loud fail |
-| disposed 后调用任何入口 | 生命周期 | **throw `/disposed/`**；saveDoc 在 degraded 下 throw `/persistence-degraded/` | SA6 dispose 用例；内核逐字 |
+| disposed 后调用任何入口 | 生命周期 | **throw `/disposed/`**；saveDoc / test 工厂命中 degraded entry 时 throw `/persistence-degraded/`（entry 级） | SA6 dispose 用例；内核逐字 + R3 决策 H |
 | foreign/released handle 传入 saveDoc | 身份伪造 | **throw `foreign or released DocHandle`** | ADR-0006 引用计数+身份校验；契约套件 |
 
-**degraded 的适配器全局语义（P2 继承行为披露，R1 新增，SA2 #4）**：
+**degraded 的 entry 级语义（R3 修订，owner #3；全文替换 R1 的「适配器全局语义」披露）**：
 
-- **降级半径 = 整个适配器实例，而非单个 namespace**。任一 namespace 的一次 flush 失败（ENOSPC/EACCES 等）即把实例整体置为 `persistence-degraded`，**跨用户、跨 namespace** 拒绝所有 `saveDoc` 与创建路径（P2 已钉死：`test/memory-persistence.test.ts:285` 断言 doc1 降级期间另一 doc `'other'` 的创建路径同样被拒）。FilePersistence 使该半径跨**用户分区**生效——任一用户的一个 namespace flush 失败即拒绝全部用户的写（ENOSPC 场景下语义合理：磁盘满是整盘事件；EACCES 场景下偏保守但安全——v1 接受）。
-- **恢复条件 = 任一 flush 成功，不必然是失败的那个**。内核成功路径无条件执行 `this.status = 'ready'`：无关 doc 的 flush 成功即可把状态翻回 `ready`，此时失败 doc 可能仍在 dirty 退避重试中，写已重新被接受——该 doc 的内存事务不丢、由其自身 retry 兜底（dirtyGeneration 保序保证不误标已保存）。
-- **与 ADR-0006 措辞的解释关系**：ADR 文本是「失败后 **namespace** 进入 `persistence-degraded`」；P2 内核实现为**适配器单状态**（v1 已接受的简化）。本设计逐字继承该行为——改动它等于修改 P2 已被测试钉死的行为，超出本任务边界；按 namespace 细分降级状态留待 v2 评估（需内核状态机改造，另立任务）。
+- **降级半径 = 单个 `(user, docId)` entry（namespace），跨用户不传染**。任一 namespace 的一次 flush 失败（ENOSPC/EACCES 等）仅置该 entry 的 `degraded=true`，只拒绝**该 entry** 的 `saveDoc` 与命中该 entry 的 test 工厂调用；其他 entry（同用户其他 doc、其他用户全部 doc）与新建 entry 照常可写。R1 披露的旧全局半径（P2 `memory-persistence.test.ts:285` 曾钉死「doc1 降级期间新建 `'other'` 被拒」）被 owner 判定为偏离 ADR-0006 的错误行为，该断言随 R3 翻转为「允许」（owner 授权改测试，见 §9）。
+- **恢复条件 = 该 entry 自身的 retry 成功**。flush 成功路径仅执行 `entry.degraded = false`；无关 doc 的 flush 成功不再触碰失败 entry——旧实现「任一成功即全局翻回 `ready`、失败 doc 可能被错误恢复可写」的窗口消除。失败 entry 的内存事务由其自身退避 retry 兜底（dirtyGeneration 保序保证不误标已保存），degraded entry 永不满足 evict 的 clean 前置（`degraded ⇒ dirty` 不变式），降级标志不会随驱逐泄漏。
+- **`getStatus()` = 聚合视图，类型不变**：`disposed` ＞ 任一 entry degraded → `'persistence-degraded'` ＞ `'ready'`。单 entry 场景与旧行为可观察等价（P2 `:277/:288/:315/:325` 原绿保持）；多 entry 场景下它是「本实例当前是否存在降级 namespace」的适配器级可观测信号，**不再**是写入门禁的依据（门禁在 entry 级）。
+- **与 ADR-0006 的关系**：由「解释性偏离（适配器单状态简化）」修正为**逐字对齐**——ADR「失败后 namespace 进入 `persistence-degraded`」「该 namespace retry 成功后恢复可写」均按字面落地。owner 4 条最低覆盖（只拒自己 / 他人可读写 / 他人成功不得恢复我 / 自身 retry 成功才恢复）由重写后的 SA7 动态测试逐条钉死（§5a）。
 
 ### §4.6 并发与时序（全部由内核继承，file 侧零新增并发代码）
 
@@ -543,11 +665,11 @@ export {
 | 同实例 flush 与 load 并发 | flush 进行中 entry 必在缓存（evict 仅在 flush 完成且 clean 后）→ load 走 cache hit，不触盘 | 内核 maybeEvict 前置条件 |
 | 多实例不同 rootDir | 实例状态完全隔离（无共享可变全局；WeakMap 以实例为键） | SA6 双实例用例 |
 | 多实例同 rootDir | v1 单进程无文件锁，属调用方错误，显式不处理 | ADR-0006 v1 限制 |
-| 任一 flush 失败 → 全适配器 degraded；无关 doc 的 flush 成功 → 翻回 `ready` | 内核单 `status` 字段（适配器全局，跨用户跨 namespace；失败 doc 仍 dirty-retry 中，内存事务由其自身 retry 兜底）——完整披露见 §4.5「degraded 全局语义」 | P2 继承（`memory-persistence.test.ts:285` 钉死） |
+| 任一 flush 失败 → 仅该 entry degraded；无关 doc 的 flush 成功不恢复它；该 entry 自身 retry 成功才恢复 | `CoreEntry.degraded` 标志（entry 级；失败 entry 持续退避 retry，`degraded ⇒ dirty` 不变式保证永不蒸发）——完整语义见 §4.5「degraded 的 entry 级语义（R3）」 | 决策 H（owner #3）；SA7 动态测试重写后 4 覆盖点钉死 |
 
 ### §4.7 dispose 语义（验收：取消 timer、处理在途、拒绝后续、幂等）
 
-内核 dispose（逐字继承）：同步段清空全部计时器（fake timer 下 `pending() === 0`）、abort I/O、销毁缓存 Y.Doc、`status='disposed'`、调用 `disposeAdapterState()`（file 侧无持久句柄——fsPromises 无状态调用，无 fd 需要关），随后 `await allSettled(inFlight)` 等待在途还原/flush 结算。重复 dispose 幂等。dispose 时 pending 未触发的 flush **不落任何字节**（计时器被清 → flush 从未启动 → mkdir 也不会发生——SA6 用例断言 rootDir 无文件）。Cordis 路径：fiber dispose → effect 清理 → `instance.dispose()` + 服务注销（memory 侧同模式已被 `unloads one Cordis service exactly once` 用例钉死）。
+内核 dispose（逐字继承，R3 随动一处）：同步段清空全部计时器（fake timer 下 `pending() === 0`）、abort I/O、销毁缓存 Y.Doc、`closed=true`（R3：原 `status='disposed'` 赋值行删除，closed 即驱动聚合 `getStatus()==='disposed'`）、调用 `disposeAdapterState()`（file 侧无持久句柄——fsPromises 无状态调用，无 fd 需要关），随后 `await allSettled(inFlight)` 等待在途还原/flush 结算。重复 dispose 幂等。dispose 时 pending 未触发的 flush **不落任何字节**（计时器被清 → flush 从未启动 → mkdir 也不会发生——SA6 用例断言 rootDir 无文件）。Cordis 路径：fiber dispose → effect 清理 → `instance.dispose()` + 服务注销（memory 侧同模式已被 `unloads one Cordis service exactly once` 用例钉死）。
 
 ---
 
@@ -569,17 +691,37 @@ export {
 
 收集期失败（`Cannot find module '../src/file.js'`、缺失导出）由 §4.3/§4.4 的存在性直接消除。
 
-## §6. 全局兼容保障（480 既有用例必须保持全绿）
+**R3 注记**：上表 SA6 用例（`file-persistence.test.ts`）**零改动**——该套件无 degraded 半径断言（仅 `:317` ready / `:338` `:362` disposed 的 getStatus，聚合语义下不变），tmp 清扫两用例均走可写/ENOENT 路径（新语义下同样通过）。
 
-1. **搬迁不变式**：`lifecycle.ts` 除 §4.1 标注的 4 处缝改动（`validateIdentity`×2、I/O 三参化、`onSnapshotCommitted`/`disposeAdapterState` 钩子）外逐字搬迁；错误消息逐字保留（`/disposed/`、`/persistence-degraded/`、`/META\.docId/`、`foreign or released DocHandle`）。
+### §5a. R3 测试面变更（owner 反馈驱动，SA3 落实）
+
+| 文件 | 变更 | 锚定内容 |
+|---|---|---|
+| `test/file-persistence-sa7-dynamic.test.ts` | **重写**（owner #2/#3/#4） | ① 头部「Module-entry discipline」workaround 注释与「先导入 index.js」次序约束**删除**（拆环后任意次序安全）；② test 1 重写为「非 ENOENT 清扫失败响亮拒绝」：r-x 分区下 `loadDoc` rejects（errno 保留）、tmp 原地保留；chmod 恢复后 load 成功且 tmp 被清——ENOENT/正常删除路径仍由 SA6 用例覆盖；③ test 2 按 owner 4 条最低覆盖重写为 entry 级语义：Bob/doc1 flush 失败 → 仅 Bob/doc1 的 saveDoc 与命中该 entry 的工厂被拒（`/persistence-degraded/`）；Alice/doc2 的 saveDoc、以及 CAROL 全新 doc 的工厂调用照常成功（旧断言「新建被拒」反向翻转）；Alice flush 成功落盘后 Bob 仍被拒、聚合 getStatus 仍 `persistence-degraded`；chmod 治愈磁盘后触发 Bob 自身 retry → 聚合 `ready`、Bob saveDoc 恢复；④ test 3（per-(user,docId) 清扫键控）行为不变，保留 |
+| `test/memory-persistence.test.ts` | **单断言块翻转**（owner #3） | `:285` `createMemoryHandleForTest(persistence, user, 'other')` 从 `rejects.toThrow(/persistence-degraded/)` 翻转为 resolves，并补一行 `saveDoc(other)` 成功断言（非 degraded entry 可写）；该 it 块内随动释放 `other` handle。其余 P2 用例零改动（单 entry degraded × 2 的 `:277/:288/:315/:325` 在聚合 getStatus 下原绿保持） |
+| `test/module-graph-regression.test.ts` | **新建**（owner #2） | ① 仅深路径导入（零 index.js 依赖）：`import * as fileModule from '../src/file.js'` / memory / lifecycle，断言 `FilePersistence`/`createFilePersistencePlugin`/`MemoryPersistence`/`PersistenceLifecycleCore` 均为 function 且能直接 `new FilePersistence(...)` → `getStatus()==='ready'` → dispose（vitest 每文件独立模块注册表，真实求值深入口）；② 静态守卫：读 `src/*.ts` 源文本，断言除 `index.ts` 外无任何 `./index.js` 反向导入（owner「内部实现模块不得反向 import barrel」的 CI 化）；匹配粒度 = **import/export 语句级**——`import … from './index.js'` / `export … from './index.js'` / 动态 `import('./index.js')` 三种形式逐语句匹配，注释或字符串字面量中出现 `./index.js` 不误伤、动态导入不漏检（SA2 R3 LOW-④） |
+| `test/file-persistence.test.ts`（SA6） | **零改动** | 见上方 R3 注记 |
+
+### §5b. R3 后预期测试基线
+
+worktree 根 `pnpm test` + `pnpm typecheck` 全绿：33 个既有测试文件（含零改动的 SA6 `file-persistence.test.ts` 与仅 `:285` 翻转的 P2 memory 套件）全部通过 + 重写后的 SA7 动态套件通过 + 新增 `module-graph-regression.test.ts` 通过（合计 35 个测试文件 = 30 .test.ts + 5 .test-d.ts——SA4 R2 INFO 实测校正，本设计原估「34」为计数偏差）。失败时按 §10 第 6 步定位顺序排查，禁止为转绿弱化断言。
+
+## §6. 全局兼容保障（480 既有用例必须保持全绿；R3 唯一例外 = P2 `:285` 断言块经 owner #3 授权翻转，见 §5a）
+
+1. **搬迁不变式（R0 基线 + R3 增补）**：`lifecycle.ts` 除 §4.1 标注的缝改动外逐字搬迁；错误消息逐字保留（`/disposed/`、`/persistence-degraded/`、`/META\.docId/`、`foreign or released DocHandle`）。**R3 在已落地基线上追加 4 处定点改动**（owner 授权）：import 源切 `./contract.js`、`CoreEntry.degraded` + flush 读写该标志、`status` 字段删除与 `getStatus()` 聚合现算、`assertWritable()` → `assertEntryWritable(entry)`（saveDoc/工厂门禁下沉至 entry 级，检查次序移到 ownership 之后）。除这 4 处外其余逐字；受影响测试面见 §5a。
    - **无测试钉死的缝隙（R1 补录，SA2 #3）**：memory 桥接 `readCommittedSnapshot` 的 `??` 回落语义（回调同步返回 undefined → 回落内部 map；async 回调解析 undefined → 不回落）**没有任何 P2 用例覆盖**（grep 证实 5 处 `readSnapshot` 测试用法均返回实值或显式 settle）。若搬迁时表达式形态漂移（如改为先 await 再 `??`），480 绿灯不会变色而行为已变。迁移护栏 = §4.2 内的精确语义注释；**SA4 静态核对项：实现必须保留与 `memory.ts:171` 逐字同构的表达式形态，且注释与实现一致**。
-2. **memory 公共面零变化**：`MemoryPersistenceOptions`（含 readSnapshot/writeSnapshot 的 `(key, signal)` 签名）、四个导出名、`createMemoryHandleForTest` 同步签名——`test/memory-persistence.test.ts`、`test/memory-testkit.ts`、`test/persistence-contract.test.ts` 无一字需改。
+2. **memory 公共面零变化**：`MemoryPersistenceOptions`（含 readSnapshot/writeSnapshot 的 `(key, signal)` 签名）、四个导出名、`createMemoryHandleForTest` 同步签名——`test/memory-persistence.test.ts`、`test/memory-testkit.ts`、`test/persistence-contract.test.ts` 仅 §5a 列明的 `:285` 断言块翻转，其余无一字需改。**行为变化披露**：MemoryPersistence 的 degraded 半径随共享内核同步 entry 化（§4.5），这是 owner #3 对 ADR 语义的裁定，对两个 Adapter 一致生效。
 3. **epoch 语义保持**：map 写入移入 `onSnapshotCommitted` 后仍处于 epoch 防护之后（等价原 `writeSnapshot` 内部 callback→epoch→map.set 的次序），dispose 迟到完成不复活状态。
-4. **循环依赖与入口次序不变式**（R2 勘误，SA4 F-1 实测证伪 R1 论据之一半）：值环为 `lifecycle.ts --值导入(provideDocPersistence/resolvePersistenceSchedule/systemPersistenceTimer)--> index.ts --re-export--> memory.ts/file.ts --extends 值--> lifecycle.ts`。
-   - **入口次序不变式（唯一正确论据）**：模块求值起点**经过 `src/index.js`**（直接导入，或任何先于深路径模块传递导入它）时循环安全——index.js 会先于 memory/file 的 `extends` 求值前完成 `lifecycle.ts` 类声明；且该方向上 `lifecycle.ts`/`memory.ts` 的模块顶层不读取 index.js 的值绑定（构造函数体才读，`systemPersistenceTimer` 为 `export const`、`src/index.ts:63`，存在 TDZ 也只在构造期已初始化后访问）。R0「值导入均为函数声明」与 R1「file.ts 顶层从不读取循环绑定」均为事实错误——**`class FilePersistence extends PersistenceLifecycleCore` 的 extends 子句本身就是模块体求值期的值读取**（adapter→lifecycle.js 方向）；lifecycle.ts→index.js 方向的「顶层不读」论据仍成立。`index ⇄ memory` 循环 P2 全绿是 index-first 方向的运行先例。
-   - **已知限制披露（MEDIUM，非阻断）**：若消费者**不经 index.js** 直接深导入 `src/memory.js` / `src/file.js` / `src/lifecycle.js`，将触发模块初始化期 `TypeError: Class extends value undefined is not a constructor or null`（SA4 vitest 探针实测：仅 memory.js 入口崩于 file.ts:33、仅 file.js/lifecycle.js 入口崩于 memory.ts:24 extends；index-first 全部正常，含全部 493 用例）。半径评估：① 包 `exports` map 仅暴露 `.`——包外深导入被 Node `ERR_PACKAGE_PATH_NOT_EXPORTED` 直接拒绝（包外不可达）；② 包内全部测试与公共入口均 index-first；③ 失败模式是导入期响亮崩溃（fail-fast），无静默错行为。P2 无此雷（原为 `implements DocPersistence`，类型擦除、无运行时 extends）——系决策 A 继承式内核新引入，由设计伪代码决定、非实现偏差。
-   - **入口纪律（包内消费者与 SA7 须遵守）**：任何深路径消费者必须先（直接或传递）导入 `src/index.js`；动态验证脚本见 `Class extends value undefined` 即入口次序问题，**不是**实现缺陷（SA4 §8.4 已列为动态审核重点）。
-   - **加固候选（follow-up，非本任务范围）**：把 `provideDocPersistence`/`resolvePersistenceSchedule`/`systemPersistenceTimer`/`DOC_PERSISTENCE_SERVICE` 下沉为无环叶子模块，`index.ts` 纯 re-export 保持 P1 公共面不变——可根除入口次序依赖，另立任务评估。
+4. **模块图无环不变式（R3 全文重写，owner #2；R2 的入口次序论据、已知限制披露、入口纪律、加固候选四条全部作废）**：R2 记录的值环 `lifecycle.ts --值导入--> index.ts --re-export--> memory.ts/file.ts --extends 值--> lifecycle.ts` 及深路径 TDZ 崩溃（SA4 F-1 探针：仅 memory.js 入口崩于 file.ts:33、仅 file.js/lifecycle.js 入口崩于 memory.ts:24）已被决策 G 根除——P1 契约面下沉 `src/contract.ts`（叶子），四个 src 模块全部改指 contract，index.ts 纯聚合。新图为无环 DAG：
+
+   ```text
+   contract.ts（叶子，外部 type-only） ← lifecycle.ts ← memory.ts / file.ts ← index.ts（聚合）
+                                        ← testing.ts（type-only）
+   ```
+
+   - **任意入口次序安全**：深路径直入 `src/file.js` / `src/memory.js` / `src/lifecycle.js` 不再依赖「先导入 index.js」的隐藏契约；P1 遗留的 `index ⇄ memory` 环（memory.ts 原本 type-import index）同步消失。
+   - **回归双锚点**（§5a）：`test/module-graph-regression.test.ts` 以「零 index 依赖的纯深导入 + 实例构造」验证运行时安全，以「src 源文本静态守卫（除 index.ts 外无 `./index.js` 反向导入）」防止环回潮；SA7 动态测试头部的入口纪律注释与先导 index 导入一并删除。
+   - **兼容半径**：包公共导出面逐字不变（§4.4）；`package.json` `exports` map 仍只暴露 `.`，`src/contract.ts` 与 `src/lifecycle.ts` 同为包内内部模块、不经 index 导出。
 5. **类型门禁**：`pnpm typecheck` 与 `vitest run --typecheck`（`tsconfig.typecheck.json` 含 `packages/*/test/**`）对全包生效；伪代码按 strict/`exactOptionalPropertyTypes`（R1：`PersistenceCoreOptions` 桥接字段显式 `| undefined`，消除 SA2 #2 实测的 TS2379）/`noImplicitOverride`（子类覆写必须 `override`）/`verbatimModuleSyntax`（type-only import）书写。
 
 ## §7. 协议假设依据 (Protocol Assumption Evidence)
@@ -591,20 +733,53 @@ export {
 | P1 | `fsPromises.rename(tmp, snapshot)` 可覆盖 chmod 444 的已提交文件（只需父目录写权限） | 设计期实测 + 源码引用 | 实测脚本（/tmp，mkdtemp）：writeFile snap 'gen1' → chmodSync 0444 → writeFile tmp 'gen2' → `await fsp.rename(tmp, snap)` **成功**，读到 'gen2'，tmp 不存在。`@types/node` `rename(oldPath, newPath): Promise<void>`（无 options 参数）。POSIX rename(2) 权限检查作用于两个父目录 | 低（Linux CI；SA6 用例 8 本身即平台行为锚点） |
 | P2 | `fsp.writeFile`/`fsp.readFile` options 支持 `signal`（TS 类型层面） | 源码引用 + 设计期实测 | `node_modules/@types/node/fs/promises.d.ts:1024` writeFile options `= ObjectEncodingOptions & {mode/flag/flush} & Abortable`；`:1121` readFile options `{encoding?: null, flag?} & Abortable → Promise<NonSharedBuffer>`。实测 `{signal}` 传入被接受；abort 后 writeFile 以 AbortError 拒绝 | 无 |
 | P3 | `mkdir` options（`MakeDirectoryOptions = {recursive?, mode?}`）**无** `signal`；`rm`（`RmOptions = {force?, maxRetries?, recursive?, retryDelay?}`）**无** `signal` | 源码引用 | `node_modules/@types/node/fs.d.ts:1666`（MakeDirectoryOptions）、`:1620`（RmOptions）。运行时虽忽略多余属性（实测 mkdir `{recursive,signal}` 不报错），但 strict TS 对象字面量多余属性检查会拒绝 → 设计采用**不传 signal + `signal.throwIfAborted()` 手工防护** | 无（已在 §4.3.2 编码） |
-| P4 | 缺失文件 `readFile` → `error.code === 'ENOENT'`；`rm(path, {force:true})` 对缺失路径 resolve | 设计期实测 | 实测输出：`readFile missing -> ENOENT`；`rm force on missing tmp: resolves OK`；`rename missing src -> ENOENT` | 无 |
+| P4 | 缺失文件 `readFile` → `error.code === 'ENOENT'`；`rm(path, {force:true})` 对缺失路径 resolve；r-x 目录下 `rm` 以 EACCES 拒绝 | 设计期实测 + 现有测试引用 | 实测输出：`readFile missing -> ENOENT`；`rm force on missing tmp: resolves OK`；`rename missing src -> ENOENT`。EACCES：PR #66 SA7 动态测试 test 1 实测（chmod 555 userDir → rm tmp 以 EACCES 拒绝，旧实现吞掉、tmp 保留），R3 起为响亮上抛的语义基础 | 无 |
 | P5 | abort 中断 writeFile 以 AbortError 拒绝（dispose 等待在途 I/O 结算的前提） | 设计期实测 | 实测：`aborted writeFile: rejected AbortError` | 无 |
 | P6 | `Y.applyUpdate` 对垃圾/空字节抛可捕获错误（损坏快照 → loadDoc 响亮拒绝，而非静默空 doc） | 设计期实测 | 实测（ESM, yjs 13.6.30）：`garbage: THROWS -> Invalid typed array length`；`empty: THROWS -> Unexpected end of array` | 无 |
 | P7 | Cordis `ctx.effect` + `ctx.provide` + fiber dispose 注销服务且仅一次 | 现有测试引用 | `test/memory-persistence.test.ts:476` `unloads one Cordis service exactly once across repeated fiber disposal`（同 `apply` 模式在 P2 已绿）；`src/index.ts:101` provideDocPersistence 即 `ctx.provide` | 无 |
 | P8 | vitest `--typecheck` 会因任一测试文件 import 缺失模块而失败（收集期） | 现有测试引用 + 源码引用 | SA6 红灯记录：`TypeCheckError: Cannot find module '../src/file.js'`（file-persistence.test.ts:33）；`tsconfig.typecheck.json` include `packages/*/test/**/*.ts`；`vitest.config.ts:7-11` | 无 |
 | P9 | `Y.encodeStateAsUpdate`/`applyUpdate` 往返保留嵌套 Y.Map/Y.Text 与标量 | 现有测试引用 | SA6 用例 2（`file-persistence.test.ts:153-186`）全量断言 SCHEMA/META/ROOT 含 `Y.Text('line one')`、嵌套 `Y.Map`——验收即证据；P2 memory 快照路径同函数已绿 | 无 |
 | P10 | `mkdir(userDir, {recursive:true})` 幂等，existing 非错误；同进程并发调用安全 | 官方文档引用 | Node docs `fsPromises.mkdir`：recursive true 时已存在不报 EEXIST（`MakeDirectoryOptions.recursive`：`Indicates whether parent folders should be created`；docs: “Calling fs.mkdir() when a path … exists results in an error only when recursive is false”）；本设计内同 doc 的 mkdir 不并发（单飞），跨 doc 并发幂等 | 低 |
-| P11 | 包内 ESM 值环的求值安全性依赖**入口次序**：index-first 正常；深路径直入（不经 index.js）在模块初始化期崩溃 | 设计期实测（SA4 静态验尸探针） | SA4 vitest 探针（同 worktree，跑毕即删）：仅 `../src/memory.js` 入口 → `file.ts:33` `TypeError: Class extends value undefined`；仅 `../src/file.js` 或 `../src/lifecycle.js` 入口 → `memory.ts:24` 同错；`../src/index.js` 在前 → 全部正常（493 用例 + CI）。机制与入口纪律见 §6.4-4 | 低（包 `exports` 仅暴露 `.`，包外深导入被 `ERR_PACKAGE_PATH_NOT_EXPORTED` 拒绝；失败为响亮 crash） |
+| P11 | ~~包内 ESM 值环的求值安全性依赖**入口次序**~~ **（R3 作废：值环已被决策 G 根除，本行保留为根因历史记录）** | 设计期实测（SA4 静态验尸探针） | SA4 vitest 探针（同 worktree，跑毕即删）：仅 `../src/memory.js` 入口 → `file.ts:33` `TypeError: Class extends value undefined`；仅 `../src/file.js` 或 `../src/lifecycle.js` 入口 → `memory.ts:24` 同错；`../src/index.js` 在前 → 全部正常。该探针同时是 P12 根因证据（循环 = TDZ 根因） | 已消除 |
+| P12 | 模块图为无环 DAG：`contract.ts`（叶子）← `lifecycle.ts` ← `memory.ts`/`file.ts` ← `index.ts`（聚合）+ `testing.ts`（type-only）；任意入口次序、含深路径直入，均无模块初始化期 TDZ | owner 指定目标图 + SA4 探针根因证据 + 回归测试前瞻锚点 | ① owner 反馈 #2 给定目标依赖图（本设计 §3 决策 G 逐边落地，五条边与 owner 原文一致）；② SA4 F-1 探针（P11）证明循环是该 TDZ 的根因——环解除后崩溃条件不复存在；③ `test/module-graph-regression.test.ts` 深导入构造实例 + 静态反向导入守卫为 CI 前瞻锚点（vitest 每文件独立模块注册表，深入口被真实求值） | 低（结构性；唯一残留假设是「type-only 导入在运行时被擦除」，由 `verbatimModuleSyntax` + 既有 493 用例绿灯背书） |
 
-除上表外无其他协议级假设：本设计不涉及网络端口、跨进程锁、第三方服务。P11 为 R2 补录（SA4 F-1 要求把入口次序不变式显式入档）。
+除上表外无其他协议级假设：本设计不涉及网络端口、跨进程锁、第三方服务。P11 为 R2 补录、R3 作废（根因记录）；P12 为 R3 补录（owner #2）。
 
 ## §8. 契约改动连锁审计 (Contract Change Caller Audit)
 
-**结论：无公共契约改动。** 本设计仅涉及 [内部重构（私有成员搬迁）+ 新增类/导出（纯增量）]，不改变任何既有函数的签名、返回类型、throw 行为或时序。逐项声明：
+**R0 结论（历史，已被 R3 部分取代）：无公共签名级契约改动。** R3 修订（owner #3/#4）引入**行为契约改动**——签名与返回类型不变，但 throw 半径与可观察状态语义变化。全部改动与 caller 处置如下。
+
+### R3 改动函数（行为契约）
+
+| 函数/成员 | 文件 | 改动前契约 | 改动后契约 |
+|---|---|---|---|
+| `saveDoc(handle)` degraded 门禁 | `src/lifecycle.ts` | 适配器全局：任一 doc flush 失败 → **所有** saveDoc throw `/persistence-degraded/`（检查先于 identity/ownership） | entry 级：仅 handle 所属 entry degraded 时 throw（消息逐字不变）；检查次序移至 ownership 之后（disposed → identity → foreign/released → degraded） |
+| `saveDoc(handle)` tmp 清扫联动 | `src/file.ts` `sweepLeftoverTmp` | 清扫失败全量吞掉 | 非 ENOENT 清扫失败上抛 → `loadDoc` rejects（errno 保留）；ENOENT 仍静默 |
+| `getStatus()` | `src/lifecycle.ts` | 存储字段（单状态） | 聚合现算（disposed ＞ 任一 entry degraded ＞ ready）；返回类型不变 |
+| `[CORE_TEST_FACTORY]` 创建路径 | `src/lifecycle.ts` | 适配器 degraded → 新建也被拒 | 仅命中已存在且 degraded 的 entry 被拒；新建恒允许（disposed 仍拒） |
+
+### Caller 清单（全量；grep 证实包外零消费者）
+
+| Caller | 文件:行号 | 是否 await | 直接 try/catch | 顶层 catch-all | 处置方案 |
+|---|---|---|---|---|---|
+| P2 同 entry degraded 拒绝 | `test/memory-persistence.test.ts:284`、`:322` | await | expect 捕获 | N/A | 行为不变（同 entry 拒绝），**不改** |
+| P2 新建路径（全局半径冻结） | `test/memory-persistence.test.ts:285` | await | expect 捕获 | N/A | **断言翻转**：rejects → resolves + saveDoc 成功（owner #3 授权，§5a） |
+| P2 单 entry getStatus ×2 组 | `:277/:288`、`:315/:325` | 同步 | 直接断言 | N/A | 聚合语义下可观察等价，**不改** |
+| P2 dispose getStatus ×5 | `:423/:451/:472/:494/:509` | 同步 | 直接断言 | N/A | closed 驱动，**不改** |
+| SA6 file 套件 | `test/file-persistence.test.ts`（saveDoc ×多处、getStatus `:317/:338/:362`） | await/同步 | expect | N/A | 健康路径 + ready/disposed，**不改** |
+| P1 契约套件 | `src/testing.ts`（saveDoc 健康路径） | await | expect | N/A | 不涉 degraded，**不改** |
+| P1 契约测试 | `test/persistence-contract.test.ts`（provide/require/resolve，无 saveDoc/getStatus degraded 用法） | — | — | — | **不改** |
+| SA7 动态测试 | `test/file-persistence-sa7-dynamic.test.ts:118-184`（旧全局半径 + 吞掉 tmp 反向冻结） | await | expect | N/A | **整体重写**（§5a） |
+| 包外（apps/其他 packages） | 无 | — | — | — | grep 证实零引用，无涟漪面 |
+
+### 风险评估
+
+- **检查次序变化的暴露面**：degraded 期间传入 foreign/released handle 现在先报 `foreign or released DocHandle` 而非 `persistence-degraded`——全部既有断言（P2 :284/:322、SA7 重写版）传的是合法 owned handle，无测试依赖旧次序。
+- **caller 遗漏的代价**：包外零消费者 + 测试面全列于上表；未来宿主（NomicoreServer）接入时以聚合 getStatus 做可观测、以 saveDoc 的 entry 级 throw 做写入门禁，二者语义已在 §4.5 定档。
+
+### R0 既有声明（继续有效的部分）
+
+**签名级无契约改动**：本设计不改变任何既有函数的签名、返回类型或时序；新增类/导出为纯增量（下表）。
 
 ### 改动函数（内部搬迁，非公共契约）
 
@@ -645,23 +820,40 @@ export {
 - `packages/persistence/test/file-persistence.test.ts` — `[SA6 owned]` SA6 红灯验收测试（已存在于工作区）。SA3 不改断言逻辑；仅当测试基础设施故障（hook/fixture 隔离等）才允许最小修复并注明原因
 - `packages/persistence/package.json` — 修改（**R2 追认**，SA4 F-2 / 硬门禁 9）：仅 `"version"` 一行 `0.1.0` → `0.1.1`（本任务新增 4 个公共导出属行为变更，HG9「行为变更包 patch bump」为总控级立法、高于设计文件清单；SA4 实测 diff 恰 1 行、结构性字段零改动，裁定合规，先例 `task_vfsl-codegen-hardening_sa4_review.md`）
 
-### DENY LIST
+### ALLOW LIST（R3 修订追加——owner review #2/#3/#4/#5 授权；只增不删）
 
-- `packages/persistence/src/testing.ts` — P1 共享契约套件，双 Adapter 复用的基座，不动
-- `packages/persistence/test/memory-persistence.test.ts` — P2 既有测试，本任务必须保持全绿，不得修改
-- `packages/persistence/test/persistence-contract.test.ts` — P1 契约测试，不动
-- `packages/persistence/test/memory-testkit.ts` — P2 testkit，签名依赖，不动
-- `packages/persistence/package.json` 的**结构性字段**（`dependencies`/`devDependencies`/`exports`/`scripts`/`type` 等）— 不动（依赖确无新增：`node:fs/promises`/`node:path` 为内建，yjs/cordis/@types/node 已有）；唯一例外为 `version` patch 位，经 HG9 授权移入 ALLOW（R2 收窄原 DENY 措辞——原「无新依赖」表述与真实意图不符，见 SA4 §2.2）
+- `packages/persistence/src/contract.ts` — **新建**（~120 行，P1 契约面 11 名 + Context 模块增强自 index.ts 逐字搬迁），依赖叶子模块拆 barrel 循环（owner #2，决策 G / §4.4）
+- `packages/persistence/src/index.ts` — 修改（范围更新）：P1 契约面迁出后**纯聚合 re-export 化**（§4.4；R0 条目的「追加 4 个 re-export」已被本形态包含）
+- `packages/persistence/src/lifecycle.ts` — 修改（范围更新）：import 源切 `./contract.js` + degraded entry 化（CoreEntry.degraded / getStatus 聚合 / assertEntryWritable，决策 H / §4.1）
+- `packages/persistence/src/memory.ts` — 修改（范围更新）：type-only import 源 `./index.js` → `./contract.js`（owner #2）
+- `packages/persistence/src/file.ts` — 修改（范围更新）：import 源切 contract + `sweepLeftoverTmp` 去掉 catch（owner #4）+ rootDir/类/工厂三处所有权 JSDoc（owner #5，决策 I）
+- `packages/persistence/src/testing.ts` — 修改（**原 DENY 解除**）：仅 type-only import 源 `./index.js` → `./contract.js` 一行——owner #2「内部实现模块不得反向 import barrel」对 src 全模块生效；纯类型切换、零行为变化（§4.4 配套）
+- `packages/persistence/test/memory-persistence.test.ts` — 修改（**原 DENY 解除，限定单一断言块**）：仅 `:285` 所在 it 块内断言翻转（新建路径 rejects → resolves + saveDoc 成功）及随动释放；owner #3 判定原断言反向冻结错误语义；该文件其余用例零改动（§5a）
+- `packages/persistence/test/file-persistence-sa7-dynamic.test.ts` — 重写：test 1 非 ENOENT 清扫响亮（owner #4）+ test 2 entry 级 degraded owner 4 覆盖点（owner #3）+ 头部导入顺序 workaround 删除（owner #2）；test 3 保留（§5a）
+- `packages/persistence/test/module-graph-regression.test.ts` — **新建**：深路径直导入 adapter 构造实例无 TDZ + src 反向 barrel 导入静态守卫（owner #2，§5a）
+- `packages/persistence/package.json` — 修改（R3 追加）：`"version"` `0.1.1` → `0.1.2`（degraded 半径 + tmp 清扫语义属行为变更，HG9 patch bump；结构性字段仍不动）
+
+### DENY LIST（R3 收窄：testing.ts 与 memory-persistence.test.ts 的受限例外已显式移入上方 ALLOW，措辞随动）
+
+- `packages/persistence/src/testing.ts` 的**其余一切内容**（契约套件逻辑/fixture 形态/断言）— P1 共享契约基座；R3 仅授权 import 源一行切换（见 ALLOW）
+- `packages/persistence/test/memory-persistence.test.ts` 的**其余用例与断言** — P2 既有测试；R3 仅授权 `:285` 断言块的语义翻转（owner #3），其余必须原绿
+- `packages/persistence/test/persistence-contract.test.ts` — P1 契约测试，不动（R3 公共面逐字等价，无需改动）
+- `packages/persistence/test/memory-testkit.ts` — P2 testkit，签名依赖，不动（其深导入 `../src/memory.js` 在无环图下天然安全）
+- `packages/persistence/test/file-persistence.test.ts` — `[SA6 owned]` R3 零改动（§5a 注记）；SA3 不得为转绿改其断言
+- `packages/persistence/package.json` 的**结构性字段**（`dependencies`/`devDependencies`/`exports`/`scripts`/`type` 等）— 不动（依赖确无新增：`node:fs/promises`/`node:path` 为内建，yjs/cordis/@types/node 已有）；`version` patch 位例外经 HG9 授权移入 ALLOW（R2 收窄措辞；R3 追加 `0.1.1 → 0.1.2`）
 - `packages/persistence/tsconfig.json`、根 `vitest.config.ts`、根 `tsconfig.*.json` — 构建配置不动
 - `packages/vfsl/**`、`packages/vfsl-protocol/**`、`packages/vfsl-codegen/**`、`domains/**`、`apps/**` — 与持久化 Adapter 无关
-- `docs/adr/**` — ADR 为已接受立法，本任务只实现不修改
+- `docs/adr/**` — ADR 为已接受立法；R3 明确**不修改 ADR**（owner #4 采纳推荐方案，属错误处理收紧而非 ADR 变更）
+- `.mabf-bg/**`、`TASK.md` — 仓库 DENY（owner #1；本就不得进入提交，SA3 机械清理项）
 
-## §10. 实现顺序与验证计划（给 SA3）
+## §10. 实现顺序与验证计划（R3 修订版，给 SA3；R0 三步——lifecycle 抽取 / file 适配 / 全量验证——已随 PR #66 完成，为历史记录）
 
-1. **抽取**：新建 `src/lifecycle.ts`（§4.1），`memory.ts` 同步瘦身为子类（§4.2）→ `pnpm --filter @nomicore/persistence test` 确认 memory/contract 套件全绿（此步不动 file 任何代码，红灯仍应仅为 file 用例）。
-2. **适配**：新建 `src/file.ts`（§4.3）→ `src/index.ts` 追加导出（§4.4）。
-3. **验证**：worktree 根 `pnpm typecheck`（tsc 全包）+ `pnpm test`（`vitest run --typecheck`）→ 预期 `Test Files 33 passed`（480 既有 + file 红灯转绿），EXIT=0。
-4. 若出现用例失败：优先怀疑 §4.1 缝改动的次序语义（epoch/onSnapshotCommitted）与 §4.3 的 ENOENT-仍清扫分支；对照 §5 映射表逐用例定位。禁止为转绿修改 SA6 断言。
+1. **拆环（原子重构，零行为变化）**：新建 `src/contract.ts`（P1 契约面逐字搬迁，§4.4）；`index.ts` 改纯聚合；`lifecycle.ts`/`memory.ts`/`file.ts`/`testing.ts` 的 import 源切 `./contract.js` → 仓库根 `pnpm test`：全部既有用例应保持绿（此步不触任何语义；若变红即拆环不彻底，回头查漏改的 import）。注：`@nomicore/persistence` 包无 scripts 段，`pnpm --filter` 形式不可执行，验证一律走根 `pnpm test` / `pnpm typecheck`（SA2 R3 LOW-②）。
+2. **degraded entry 化**：`lifecycle.ts` 按决策 H 改造（`CoreEntry.degraded` / flush 读写该标志 / `getStatus()` 聚合现算 / `status` 字段与 `assertWritable` 删除 / `assertEntryWritable` 门禁下沉）；同步翻转 P2 `memory-persistence.test.ts:285` 断言块；重写 SA7 动态测试 test 2（owner 4 覆盖点，§5a）。
+3. **tmp 清扫收紧**：`sweepLeftoverTmp` 去掉 `.catch(() => undefined)`（决策 E 理由 4 / §4.3.2）；重写 SA7 动态测试 test 1（非 ENOENT 响亮拒绝 + 治愈后恢复，§5a）。
+4. **注释与回归**：`rootDir`/类/工厂三处所有权 JSDoc（决策 I 文案见 §4.3.1/§4.3.2/§4.3.3）；新建 `test/module-graph-regression.test.ts`；删除 SA7 文件头部「Module-entry discipline」注释与先导 index 导入 workaround。
+5. **收尾**：`package.json` `"version"` `0.1.1` → `0.1.2`（HG9）；worktree 根 `pnpm typecheck` + `pnpm test`（预期全绿，基线见 §5b）；push 前 `git ls-tree -r HEAD --name-only | grep -E '^\.mabf-bg/|TASK\.md'` 必须为空（owner 复审门禁 1；`.mabf-bg/**` 删除属 owner #1，SA3 机械清理）。修订轮允许 `git push origin HEAD` 更新 PR #66，**严禁提交 `.mabf-bg/**`**。
+6. **失败定位优先级**：§4.1 缝改动的门禁次序（degraded 检查在 ownership 之后）＞ §4.3.2 sweep 上抛路径（区分 readFile 错误与 rm 错误）＞ 模块图（先跑 module-graph-regression 排除环回潮）＞ 其余对照 §5/§5a 映射表逐用例定位。禁止为转绿弱化或删除 §5a 列明的任何断言。
 
 ---
 
@@ -686,4 +878,19 @@ export {
 | F-1 | §6.4-① 勘误：R1「file.ts 模块顶层从不读取循环绑定」被实测证伪（深路径入口 `TypeError: Class extends value undefined`）；补入口次序不变式与已知限制披露 | ✅ | §6.4-4 整节重写；§7 新增 P11 | 论据替换为**入口次序不变式**（index-first 求值安全 + 该方向顶层不读/构造期读的完整机制）；明确指出 `class X extends PersistenceLifecycleCore` 的 extends 子句即模块体求值期值读取（R1 对 adapter→lifecycle.js 方向错误、lifecycle→index 方向仍成立）；披露已知限制（三深路径入口崩溃点引 SA4 实测表、包外不可达依据 `exports` map、fail-fast、P2 无此雷系决策 A 新引入）；写入口纪律（深路径消费者必须 index-first；SA7 见 `Class extends value undefined` 勿误报）；登记加固候选（值导入下沉无环叶子模块，follow-up 另立任务）；P11 把入口次序行为入档协议假设（依据 = SA4 探针实测） |
 | F-2 | §9 ALLOW LIST 增补 package.json version 行（HG9 高于设计 DENY）；DENY 措辞收窄 | ✅ | §9 ALLOW LIST 新增一条；DENY LIST 对应条目改写 | ALLOW 增 `packages/persistence/package.json`（R2 追认，标注仅 `"version"` 0.1.0→0.1.1 一行、HG9 依据、SA4 实测 diff 恰 1 行 + 先例）；DENY 收窄为「结构性字段不动」并显式注明 version patch 位例外已移入 ALLOW（原「无新依赖」措辞与真实意图不符，按 SA4 §2.2 澄清） |
 
-**注**：本节为 SA4 回流件登记，不触发 SA2 反馈修订协议的修订计数；架构决策 A–F、R1 的 5 项修订内容均未变更。SA7 动态验证探针请遵守 §6.4-4 入口纪律（index-first 导入）。
+**注**：本节为 SA4 回流件登记，不触发 SA2 反馈修订协议的修订计数；架构决策 A–F、R1 的 5 项修订内容均未变更。~~SA7 动态验证探针请遵守 §6.4-4 入口纪律（index-first 导入）~~ **（R3 作废：入口纪律随 barrel 循环根除而取消，见 §6.4-4 重写与决策 G）**。
+
+---
+
+## Owner Review 反馈逐条回应（R3，PR #66）
+
+评审来源：`wiki/raw/task_file-persistence-plugin_revision.md`（owner review 全文 + 总控逐条研判）。SA1 设计范围 = #2/#3/#4/#5；#1（`.mabf-bg/**` 删除）路由 SA3，不在设计范围。
+
+| # | 级别 | 要求 | 是否落实 | 修订位置 | 修订内容摘要 |
+|---|------|------|:--:|------|------|
+| 2 | HIGH | 抽 `contract.ts` 依赖叶子模块（User/DocHandle/DocPersistence/schedule types+defaults/provideDocPersistence），目标依赖图五边；内部模块不得反向 import barrel；删测试导入顺序 workaround；加「直接导入 adapter 无 TDZ」回归 | ✅ | §3 决策 G；§4.1/§4.2/§4.3.1 import 源；§4.4（index 纯聚合 + testing.ts 随动）；§5a（SA7 workaround 删除 + `module-graph-regression.test.ts` 新建）；§6.4 重写；§7 P11 作废/P12 补录；§9 ALLOW 扩展 | P1 契约面 11 名 + Context 增强逐字迁 `src/contract.ts`（运行时零依赖叶子）；依赖图按 owner 原文五边落地（lifecycle/memory/file/testing 全部改指 contract，index 纯聚合零定义）；回归双锚点 = 深导入构造实例（运行时）+ src 反向 barrel 导入静态守卫（CI 化）；R2 的入口次序纪律/已知限制/加固候选三条全部作废——加固候选由本轮直接完成 |
+| 3 | HIGH | degraded/retry 下沉 `CoreEntry` 级：saveDoc 仅查本 entry、retry 仅恢复本 entry；重写反向冻结全局降级的 SA7 动态测试；至少覆盖 owner 4 条 | ✅ | §3 决策 H（5 点机制）；§4.1 伪代码（CoreEntry.degraded / saveDoc 门禁 / 工厂门禁 / getStatus 聚合 / flush 两处）；§4.5 矩阵 +「degraded 的 entry 级语义」全文替换；§4.6 并发表；§5a（SA7 test 2 重写 4 覆盖点 + P2 :285 翻转）；§8 行为契约 caller 审计；§9 ALLOW（memory-persistence.test.ts 受限解除） | `degraded` 归入 CoreEntry（`degraded ⇒ dirty` 不变式保证永不蒸发）；错误消息逐字保留；getStatus 改聚合视图（类型不变，单 entry 场景与旧行为可观察等价，P2 :277/:288/:315/:325 原绿）；P2 :285 全局半径断言经 owner 授权翻转为「新建允许 + 可写」；owner 4 条覆盖点逐条映射到重写后的 SA7 test 2（含 chmod 治愈后自身 retry 恢复） |
+| 4 | MEDIUM | `.tmp` 删除仅 ENOENT 静默、其余响亮拒绝（推荐方案，不改 ADR）；补非 ENOENT 删除失败测试 | ✅ | §3 决策 E 理由 4 重写；§4.3.2 `sweepLeftoverTmp` 去掉 catch；§4.5 矩阵 tmp 行拆两行；§5a（SA7 test 1 重写：EACCES → loadDoc rejects、errno 保留、tmp 原地；治愈后 load 成功且 tmp 被清）；§7 P4 补 EACCES 证据；§9 DENY 明确「不修改 ADR」 | 采纳 owner 推荐方案：`rm force:true` 保留（ENOENT 由 Node 静默），删掉 `.catch(() => undefined)`，非 ENOENT 原样上抛至 loadDoc 响亮拒绝；只读 workload 在 load 时点即见磁盘故障；ADR「忽略内容并删除」语义不变，零 ADR 改动 |
+| 5 | 澄清 | Interface/配置注释写明同 rootDir 单活跃实例所有权 + HMR dispose/drain 约束（本轮不实现多实例并发安全） | ✅ | §3 决策 I；§4.3.1 `rootDir` JSDoc 完整英文文案（single-writer ownership + HMR dispose/drain）+ `FilePersistenceStatus` 聚合语义注释；§4.3.2 类 JSDoc 交叉引用；§4.3.3 工厂 JSDoc 交叉引用 | owner 原文语义逐点落入三处代码注释（选项为主、类/工厂一行交叉引用）；决策 F「调用方错误、显式不处理」行为不变，仅把契约写进代码面 |
+
+**R3 自检**：全文搜索旧语义残留——`assertWritable`（§4.1 成员表已替换为 assertEntryWritable）、`this.status`（§4.1/§4.3.1 已全部改为 entry.degraded / 聚合现算）、「best-effort 吞掉」（§4.5 矩阵 tmp 行已拆分为 ENOENT 静默 + 非 ENOENT 响亮）、「适配器全局/降级半径为整个适配器实例」（§4.5/§4.6 已替换为 entry 级；仅 R1 历史表格与 §8 改动前契约列保留旧表述作为对照记录）、「入口次序纪律」（§6.4 重写 + §7 P11 作废标记）。架构决策 A–F 未被推翻（F 增补注释义务），新增 G/H/I。
