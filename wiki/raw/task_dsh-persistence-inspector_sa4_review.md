@@ -1,10 +1,11 @@
 # SA4 静态验尸报告
 
-**Date**: 2026-08-22（R0 首轮） / 2026-08-22（R1 复审，见文末「R1 复审节」）
+**Date**: 2026-08-22（R0 首轮） / 2026-08-22（R1 复审） / 2026-08-22（R2 复审，见文末「R2 复审节」）
 **Reviewer**: SA4（Red Team，静态验尸；实现后红队审查）
-**评审对象**: SA1 设计 R1 定稿（`task_dsh-persistence-inspector_design.md`）、SA2 评审（R0 reject → R1 pass）、实现 diff（`git log 217d8a4..eded79f` + 全部新增文件，merge-base `origin/adr/server-design` = 2aa22f4 与简报基线一致）；R1 复审对象为修复 commit `d734352`
+**评审对象**: SA1 设计 R1 定稿（`task_dsh-persistence-inspector_design.md`）、SA2 评审（R0 reject → R1 pass）、实现 diff（`git log 217d8a4..eded79f` + 全部新增文件，merge-base `origin/adr/server-design` = 2aa22f4 与简报基线一致）；R1 复审对象为修复 commit `d734352`；R2 复审对象为 SA7 F-FILE 回流修复 commit `980c5a2`（设计 R3 版 §6.2/§6.3）
 **Verdict (R0)**: **reject**（1 项 P1：探针 evict 事件重复发射，污染 AC8 record 交付物；其余 8 项全 pass。修复面收敛在 `packages/dsh-persistence/src/probe.ts` 单函数 ~3 行，回流目标 SA3）
-**Verdict (R1 复审，最终)**: **pass** —— F1/F2 修复经 SA4 独立复跑 3 组 CLI + AC2 用例实证闭环；SA6 R5 精确计数锚构成有效回归锚（缺陷态红值 3/5/30 与 R0 验尸证据逐项吻合）。详见文末「R1 复审节」。
+**Verdict (R1 复审)**: **pass** —— F1/F2 修复经 SA4 独立复跑 3 组 CLI + AC2 用例实证闭环；SA6 R5 精确计数锚构成有效回归锚（缺陷态红值 3/5/30 与 R0 验尸证据逐项吻合）。详见「R1 复审节」。
+**Verdict (R2 复审，最终)**: **pass** —— R3 两阶段结算协议（W + A-arming/A-evict/基线修正）逐腿照设计落地（R2 错误公式未复现）；自建时钟 advanceBy 纯微任务排空；file n=0/1/2 独立复跑 8 跑 + SA7 锚 2/2 全绿、组内逐字节一致（含 R2 公式下不可实现的 n=2 中间失败腿）。详见文末「R2 复审节」。
 
 ---
 
@@ -195,3 +196,84 @@ R5 在 AC2 用例追加三条精确计数断言，SA4 以「缺陷态必红 / �
 - SA6 R5 精确计数锚经双态核算构成有效回归锚，本缺陷类不会再以「绿但错」形态漏网。
 - R0 动态审核重点第 1 条（F1 修复回归）已由本轮闭环，SA7 仅需接续第 2–5 条（失败 record 纯度、CLI 退出码矩阵、并发余量、CI 环境 yjs 一致性）。
 - SA7 可进入动态验证。
+
+---
+
+# R2 复审节（2026-08-22）
+
+**复审对象**：SA7 F-FILE 回流修复 commit `980c5a2`（R3 两阶段结算协议），范围 `packages/dsh-persistence/src/clock.ts` + `src/probe.ts` + `test/dsh-file-probe-determinism.test.ts`（SA7 回归锚随修复入库）；`980c5a2..HEAD`（6079901 docs）对 `packages/` 零追加改动（SA4 核实空 diff）。
+**复审范围（按总控指令）**：① 谓词形态专项（联言基线是否照 R3 修订版落地——R2 错误公式的注入点）；② 自建时钟 advanceBy 纯微任务排空（SA2 R3 观察项）；③ SA7 锚与修复后行为一致性；④ R1 动态清单未闭环项处置。R0/R1 已通过项不重开。
+**前置阅读**：设计 R3 版 §6.2（含「R2 错误公式」保留标注）+ §6.3 + SA2 R3 复核节（四腿算术实证 P24）——已读，作为下表比对基准。
+
+## 1. ① 谓词形态专项核对 —— ✅ 四腿全部照 R3 修订版落地，R2 错误公式零残留
+
+| 窗口腿 | 设计 R3 要求 | 实现（probe.ts 当前态） | 判定 |
+|---|---|---|---|
+| **A-arming** | base = **saveDoc 调用前**同步快照；紧随其后置 saveDoc（放置规则 1）；等待期不推时钟 | `saveAndEmit`：`const base = adapter==='file' ? filePendingCount() : 0`（saveDoc 前）→ `await svc.saveDoc` → dirty → `waitFor(() => filePendingCount() > base)`；函数体内无 advance | ✅ |
+| **首次失败腿**（n≥1） | 主信号 status 翻转；可选 pending 联言 **base=advanceBy 返回瞬间**（=0；R2 错误公式 base=advance 前=2 → 恒假） | `advanceBy(…) → const baseAdvance = filePendingCount()`（**advanceBy 返回瞬间、settle 前**拍照）→ `waitFor(degraded && filePendingCount() > baseAdvance)` | ✅ 联言 + 正确基线；错误公式未复现 |
+| **中间失败腿**（n≥2） | 唯一信号 `pending > baseAdvance`（status 不翻转；base 同上；R2 下 base=1 → `1>1` 恒假、该腿不可实现） | `advanceBy(delay) → baseAdvance 快照 → waitFor(pending > baseAdvance)`（修复前为无基线的 `pending>0`） | ✅ 带基线形态；file n=2 实测通过（见 §4） |
+| **恢复腿** | **禁止 pending 联言**（恢复不重排 → pending=0 → 联言恒假必超时，P24） | `waitFor(() => status==='ready' && readSnapshotRev(…)===1)` 单联言，无 pending（且把 R1 的两个串行 waitFor 合一，语义等强） | ✅ |
+| **A-evict** | 末次 release 后 `waitFor(evictSeen)`；refs>0 中间 release 不等；等待期不推时钟（evict 与 release 同刻） | `releaseAndEmit`：`emit release → await handle.release() → if (adapter==='file' && refs===0) waitFor(evictSeen.has(key))`；evictSeen 由唯一去重监听（F1 修复）填充 | ✅ |
+| **W 降级** | 只证「字节已提交」，不证记账 | `observeFlush` file 分支 = status ready + 快照 rev 解码比对；flush 事件在 W 通过后发（t=now()，时钟未动） | ✅ |
+| **h4 reload 顺序** | A-evict 通过后才 loadDoc（否则拿到未驱逐旧 live doc） | S1：`releaseAndEmit(h3)`（内含 A-evict）→ `loadAndEmit(h4)` | ✅ |
+| **前置规则 2**（净零武装） | 每脏写窗口恰一次 saveDoc 后必 advance | S1 g1/g2、S4 g1/恢复后 g2 全部「一写一推」；S4 降级期拒绝证明的 saveDoc 不经 saveAndEmit（拒绝不武装） | ✅ |
+| **§6.3 pending 守卫** | file 通道缺 pending 启动即 loud TypeError（memory 不要求） | `probe.ts:79-81` 保持；`ProbeClock.pending()` 已入接口契约 | ✅ |
+| **memory 零触碰** | 通道不受协议影响 | A-arming/A-evict/联言全部 `adapter==='file'` 分支；实测 memory n=1 events=32、evict 恰 4 条不变 | ✅ |
+
+**附核**：F2 修复（R1）在 980c5a2 后保持原形态（`.then(()=>false,()=>true)` + `if(!rejected) throw`，:436-445）；失败 reason 全落 §6.2 封闭词表（新增 A-arming/A-evict 超时均用 `file-settle-timeout:{docId}:g{n}`）。
+
+## 2. ② 自建时钟 advanceBy 纯微任务排空 —— ✅（SA2 R3 观察项闭合）
+
+`clock.ts:50-65`：`advanceBy` 内仅 `await settle(3)`（3 × `Promise.resolve()` 微任务），**无 setImmediate/setTimeout/任何宏任务**；到期计时器在回调执行前 `timers.delete(id)`（「已触发已删除不计」语义与 SA6 FakeTimer test:88/98 同款）；`pending() = timers.size`。§6.3 接口契约（`pending(): number` + 语义注释 + 纯微任务纪律注记）全部落地。若未来有人向 advanceBy 加宏任务排空，baseAdvance 快照语义即破坏——注释已钉死该纪律，且 SA7 锚（events=28 精确计数）会以超时/计数漂移形态间接爆红。
+
+## 3. ③ SA7 锚与修复后行为一致性 —— ✅
+
+- 锚（`dsh-file-probe-determinism.test.ts`）钉死值：尾行 `events=28`、`flush doc-degraded generation=2 ok=true t=2008`、`release doc-degraded refs=0 t=2009`、`evict doc-degraded t=2009`、无 `probe-failed`——与 SA4 本轮实测 file n=0 record **逐项吻合**（见 §4），也与 R0/R1 名义基线一致（F-FILE 是对 28 这一钉死值的间歇破坏，锚把它的两个症状形态——events=27 静默失真 / exit 1 超时——都变成必红）。
+- 锚覆盖两形态：进程内 `runPersistenceProbe` 3 连跑逐字节一致 + CLI 2 连跑（独立 rootDir）stdout 逐字节一致——正对 SA7 揭示的「SA6 CLI 测试双跑同形态 flake → 相等性成立」结构性失明（与 SA6 R5 同款精确计数哲学，断言全部运行时行为，无源码 grep）。
+- 触发链：文件落在 `packages/dsh-persistence/test/` → vitest include `packages/*/test/**/*.test.ts`（R0 ①已核）→ CI `pnpm test` 覆盖。全量 40 文件/535 测试与此锚 +2 一致。
+- SA4 本环境单跑锚文件：1 file / 2 tests passed，0 type errors。
+
+## 4. SA4 独立复跑证据（2026-08-22，独立进程）
+
+```bash
+cd /home/wangjian/nomicore-fix-issue-59
+# file n=0 ×5（各自全新 rootDir）：
+pnpm exec tsx packages/dsh-persistence/src/cli.ts --adapter file --rootDir <fresh>   ×5
+#   → 5/5 exit 0；全部「probe ok=true events=28」；md5 汇总 sort -u | wc -l = 1（逐字节一致）
+#     F-FILE 两症状（events=27 / exit 1 超时）零再现
+# file n=1：→ exit 0；events=32；flush g1 ok=false t=1508 → recovered t=2008（首次失败腿联言可过）
+# file n=2 ×2：→ 双跑 exit 0；events=34；两条同 generation=1 ok=false @1508/2008 +
+#   recovered @3008；双跑 diff IDENTICAL —— ★R2 错误公式下「不可实现」的中间失败腿
+#   在带 baseAdvance 基线下确定性恢复（判别力直接实证）
+# memory n=1：→ exit 0；events=32；evict 恰 4 条（doc-alpha 1002/1003/1005 各 1 + doc-degraded 2509）
+#   —— memory 通道零回归
+# SA7 锚：pnpm exec vitest run …/dsh-file-probe-determinism.test.ts → 2 passed, 0 type errors
+```
+
+（与总控亲跑 n=0/1/2 × 20 各组、锚 10 连跑、全量 535/535 相互印证。）
+
+## 5. ④ R1 动态清单未闭环项处置 —— 引用前论，无新变化
+
+| R1 清单项 | 处置 | 依据 |
+|---|---|---|
+| 2. 失败 record 纯度 | ✅ 已闭环（引用 SA7 报告） | SA7 双证据：自发失败（run14 `file-settle-timeout:doc-degraded:g2`）+ 强制注入（`scenario-error:S4-degradation`）——reason 均落封闭词表、无 spurious evict、零环境痕迹、exit 1；R2 协议未改失败出口形态，无新变化 |
+| 3. CLI 退出码矩阵 | ✅ 已闭环（引用 SA7 报告） | SA7：7 类用法/参数错误 exit 2、领域失败 exit 1、成功 exit 0——0/1/2 纪律完整；本轮修复未触 cli.ts |
+| 4. 并发余量 | ✅ 已闭环（引用 SA7 报告，16×） | R2 协议新增的真实等待均在 5s deadline 内轮询，未引入新的并行面 |
+| 5. yjs 跨版本 | ✅ 已闭环（引用 SA7 报告；node 20 由 CI 矩阵覆盖） | 本轮未触 yjs 交互面 |
+| 1. F1 修复回归 | file 半边本轮闭环（memory 半边 R1 已闭环） | §4：file n=0 events=28 精确命中、t=2008/2009 钉死值在案 |
+
+## 6. 新观察项（INFO，非阻塞，供未来场景编辑参考）
+
+- **evictSeen 以 (owner,docId) 为键的实例混同**：同一 key 先后驱逐两个实例（S1 的 d1→d2）时，后一次 A-evict 等待可能被陈旧条目即刻放行。当前场景**零影响**：唯一受影响的 h4（d2）release 属 clean 路径（无脏写），`maybeEvict` 同步执行、evict 事件仍同步落 record；下游无任何依赖 d2 驱逐时序的动作（S2 起换分区）。与 R2-2a「净零武装」同族：**未来场景编辑若引入「同 key 重载后再 release 且下游依赖其驱逐」，evictSeen 须改为按实例或等待前清除**——建议 SA1 在设计 §6.2 前置规则中随下次修订顺带留档（非本轮必改）。
+- **F-REJECT-LEAK（LOW）遗留**：设计 §11 已立档归属内核 read-ticket 链（`file.ts:96` `rm force` 只容忍 ENOENT），DENY 区不越权、探针侧未放大，建议总控立 P3 跟进项——SA4 认同该处置（不影响 record/退出码，SA7 双证据在案）。
+- **SA7 复跑义务**：按 SA2 R3 闭环路径（SA4 复审 → SA7 复跑 52 跑 + file n=2 批次）。SA4 本轮已先行给出 11 跑独立一致证据（5×n0 + 1×n1 + 2×n2 + 锚 2 用例进程内 3+2 跑）+ 总控亲跑 60 跑；SA7 的正式复跑仍按闭环路径执行。
+
+## 7. R2 复审最终裁决
+
+**pass**。
+
+- R3 两阶段结算协议逐腿照设计落地：A-arming（saveDoc 前基线）、首次失败腿（联言 + advanceBy 返回瞬间基线）、中间失败腿（带基线唯一信号——R2 公式下不可实现、现 n=2 双跑确定性通过）、恢复腿（联言删除）、A-evict（evictSeen 记账证明）——缺陷注入点（R2 错误公式）零残留；W/A 职责分离与 F1 修复（去重监听）正确咬合。
+- 自建时钟纯微任务纪律落地并被注释钉死；SA7 锚精确命中修复后行为且双形态覆盖，CI 触发链在案。
+- SA4 独立复跑 8 跑 CLI + 锚测试全绿、组内逐字节一致；memory 通道零回归；F1/F2 前修复保持。
+- 遗留：F-REJECT-LEAK（LOW，P3 跟进项，总控裁决）+ 两条 INFO 观察项（evictSeen 实例混同的未然约束、SA7 正式复跑）——均不阻塞。
+- SA7 按闭环路径复跑通过后，本任务 Phase 3 静态侧全链闭环。
