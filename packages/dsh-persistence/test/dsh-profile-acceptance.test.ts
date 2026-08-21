@@ -28,6 +28,12 @@
  * 新增独立 lease 断言与反黑帽守卫（双 release 后 doc.isDestroyed===true、timer.pending()===0）。
  * 原因：clean entry 在最后一个 release 时被内核 maybeEvict 同步驱逐并销毁 doc（ADR-0006
  * 驱逐条款），release 后的 loadDoc 必还原新实例，原断言序不可满足（SA2 攻击点 1，实证 P13）。
+ *
+ * R3 修订（2026-08-22，总控协调，SA1 设计 §11 风险预警落盘）：R1 引入的固定轮数
+ * settleRealIo(12) 在本机不足以等完真实文件 I/O（SA3 实测：裸 mkdir→writeFile→rename 链
+ * 需 10~103 轮 setImmediate，内核 retry 恢复链 14~40 轮；plugin 级复刻同样失败，与实现无关）。
+ * AC4-file 恢复侧与 AC6 dispose 前的 settleRealIo() 已替换为 deadline 式 waitFor（轮询
+ * getStatus()==='ready' / 快照提交态，真实时间上限 5s，无固定轮数校准）；断言目标值一字未改。
  */
 import { describe, expect, it } from 'vitest'
 import * as fs from 'node:fs'
@@ -117,6 +123,23 @@ function threeEntryDoc(docId: string): Y.Doc {
 const settleRealIo = async (rounds = 12): Promise<void> => {
   for (let index = 0; index < rounds; index += 1) {
     await new Promise((resolve) => setImmediate(resolve))
+  }
+}
+
+/**
+ * deadline 式真实等待（R3 修订，SA1 设计 §11 风险预警落盘）。
+ *
+ * 固定轮数 settleRealIo(12) 在本机不足以等完 FilePersistence 的 mkdir→writeFile→rename
+ * 链（SA3 实测：裸链 10~103 轮 setImmediate，内核 retry 恢复链 14~40 轮；plugin 级复刻
+ * 同样失败，确认与实现无关）。本助手以真实 setTimeout 轮询谓词直到成立或真实时间上限
+ * （默认 5s）耗尽——只等「状态/快照达预期」，不做固定轮数校准。轮询不推进虚拟时钟。
+ */
+const waitFor = async (predicate: () => boolean, what: string, timeoutMs = 5_000): Promise<void> => {
+  const deadline = Date.now() + timeoutMs
+  for (;;) {
+    if (predicate()) return
+    if (Date.now() >= deadline) throw new Error(`timed out waiting for ${what} (${timeoutMs}ms)`)
+    await new Promise((resolve) => setTimeout(resolve, 25))
   }
 }
 
@@ -390,8 +413,9 @@ describe('save 失败降级与 dispose 卫生（AC4/AC6）', () => {
       await expect(profile.persistence.saveDoc(handle)).rejects.toThrow(/persistence-degraded/)
       fs.rmSync(path.join(rootDir, 'users', 'user-a'), { force: true })
       await timer.advanceBy(DEFAULT_PERSISTENCE_SCHEDULE.debounceMs)
-      // R1：同理，retry flush 的 mkdir/writeFile/rename 需真实结算后才能观察到 recovered
-      await settleRealIo()
+      // R3（SA1 §11 风险预警）：retry flush 的 mkdir→writeFile→rename 链在本机需 14~40 轮
+      // setImmediate，固定 12 轮 settleRealIo 不足——改为 deadline 式等待真实结算（上限 5s）
+      await waitFor(() => profile.getStatus() === 'ready', 'file retry flush to recover (status ready)')
       expect(profile.getStatus()).toBe('ready')
       await expect(profile.persistence.saveDoc(handle)).resolves.toBeUndefined()
       await timer.advanceBy(DEFAULT_PERSISTENCE_SCHEDULE.debounceMs)
@@ -413,9 +437,22 @@ describe('save 失败降级与 dispose 卫生（AC4/AC6）', () => {
     expect(timer.pending()).toBeGreaterThan(0)
 
     // R1（SA1 §9 缺陷 2）：内核 dispose 清计时器但不 flush 未决脏数据——必须先推进
-    // debounce 调度让 rev=1 提交落盘并真实结算，reload 才能读到 rev===1
+    // debounce 调度让 rev=1 提交落盘，reload 才能读到 rev===1
     await timer.advanceBy(DEFAULT_PERSISTENCE_SCHEDULE.debounceMs)
-    await settleRealIo()
+    // R3（SA1 §11 风险预警）：固定 12 轮 settleRealIo 在本机不足以等完 mkdir→writeFile→
+    // rename 链（实测 10~103 轮）——改为 deadline 式等待「快照已提交」：.tmp 消失且
+    // .snapshot 解码出 rev===1（rename 完成即提交态），上限 5s
+    await waitFor(
+      () => {
+        const snapshotPath = path.join(rootDir, 'users', 'user-a', 'doc-1.snapshot')
+        if (fs.existsSync(`${snapshotPath}.tmp`)) return false
+        if (!fs.existsSync(snapshotPath)) return false
+        const scratch = new Y.Doc()
+        Y.applyUpdate(scratch, fs.readFileSync(snapshotPath))
+        return scratch.getMap('ROOT').get('rev') === 1
+      },
+      'AC6 flush commit: rev=1 snapshot with no .tmp residue',
+    )
 
     await profile.dispose()
     expect(timer.pending()).toBe(0)
