@@ -5,6 +5,7 @@
 **验证对象**: worktree HEAD `66ce567`（SA3 实现 `217d8a4` + F1/F2 修复 `d734352` + SA4 R1 复审 pass `66ce567`；merge-base `origin/adr/server-design` = `2aa22f4` 与简报一致）
 **SA7 Verdict**: **fail-needs-fix** —— 1 项 P1（file 通道探针 record 非确定性，违反 AC8「同参两跑逐字节一致」）；1 项 LOW（外部 `.tmp` 占位失败注入下 unhandled promise rejection 泄漏）；其余 SA4 动态审核清单项全部通过。SA6 红灯验收面全绿（40/40 文件、535/535 测试）。
 **Verdict (R2 复跑，最终)**: **pass** —— F-FILE 修复（commit `980c5a2`，设计 R3 两阶段结算协议）经 ①–⑤ 全项闭环复跑实证：file n=0/n=1 各 52 跑 + n=2 30 跑共 134 同参跑 **0 异常、三批组内各单一 sha256**（R0 基线 52 跑 2 异常）；memory 哈希与 R0 完全一致（零副作用）；SA7 锚 6 连跑 12/12 稳定绿；全量 40 文件 / 535 测试全绿。详见文末「R2 复跑节」。
+**Verdict (R2 复跑，最终)**: **pass** —— F-FILE 修复闭环（详见 R2 复跑节）
 **环境**: node v24.13.0（本机主版本）/ pnpm 10.28.2 / yjs 13.6.32（lockfile 单版本解析，实测 `packages/dsh-persistence/node_modules/yjs` = 13.6.32）。本任务无端口/常驻服务依赖（vitest + tsx CLI 均不绑端口），无需 fuser 清场。
 
 ---
@@ -268,3 +269,5 @@ Test Files  40 passed (40)   Tests 535 passed (535)   Type Errors no errors   �
 - SA4 R2 复审 pass + SA7 复跑 ①–⑤ 全过 → 动态验证链闭环，本任务 SA7 无未决 REJECT 项。
 - 遗留（不阻塞，均已在位处置）：F-REJECT-LEAK（LOW）按设计 R2「连带修订与处置」建议由总控立 P3 跟进项单独裁决（`file.ts:96` 属 DENY 区）；node 20 CI 矩阵面维持 R0「CI 侧动态确认阻塞于未 push」措辞原样（push/CI 由 runner 负责，不属于本阶段）。
 - R0 记录（含全部量化证据与复现命令）原样保留于上文，供回归对照。
+
+**Verdict**: **pass** —— R2 复跑最终（F-FILE 修复闭环；详见 R0/R2 各节）

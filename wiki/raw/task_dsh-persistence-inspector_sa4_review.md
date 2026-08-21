@@ -277,3 +277,5 @@ pnpm exec tsx packages/dsh-persistence/src/cli.ts --adapter file --rootDir <fres
 - SA4 独立复跑 8 跑 CLI + 锚测试全绿、组内逐字节一致；memory 通道零回归；F1/F2 前修复保持。
 - 遗留：F-REJECT-LEAK（LOW，P3 跟进项，总控裁决）+ 两条 INFO 观察项（evictSeen 实例混同的未然约束、SA7 正式复跑）——均不阻塞。
 - SA7 按闭环路径复跑通过后，本任务 Phase 3 静态侧全链闭环。
+
+**Verdict**: **pass** —— R2 复审最终（F-FILE 修复闭环；详见 R0/R1/R2 各节）
