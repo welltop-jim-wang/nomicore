@@ -84,3 +84,102 @@ grep -n "not.toBe(oldDoc)" packages/persistence/test/memory-persistence.test.ts
 2. **HIGH（攻击点 2）**：「逐项可满足」结论与证据覆盖面不闭合，盘点表须逐行挂证据。
 
 SA1 修订上述两点（附攻击点 3–7 的低成本澄清）后提交 R1 复审；复审聚焦 §9 缺陷 3 的修复配方与 §13 补据，其余架构不再重开。`pass` 后仍须 SA4/SA7 对实现与活链路验证，本 pass 不替代。
+
+---
+
+# R1 复审节（2026-08-22）
+
+**复审对象**：`task_dsh-persistence-inspector_design.md`（SA1 R1 修订轮）
+**复审范围**：按 R0 裁决约定——聚焦 §9 缺陷 3 修复配方与 §13 补据（P13–P18），架构决策 A–I 不重开（R0 已攻击确认维持）。
+**复审方法**：设计文本逐条核对 + SA2 独立重跑关键配方（真实 `MemoryPersistence` + 逐字复刻 SA6 FakeTimer，脚本位于 /tmp 已删除，工作区零污染）+ 落盘 diff 核对。
+
+## R1 攻击点落实复核表
+
+| R0 攻击点 | 修订落点 | SA2 复核结论 |
+|---|---|---|
+| 1（CRITICAL）AC1-memory 第三缺陷 | §9 缺陷 3（新增，含源码级不可满足证明 + 黑帽双路排除 + 修法 A/B 论证选 B）；§13 P13/P14；§10/§12/决策 I 联动更新 | ✅ 落实。修法 B 配方 **SA2 独立重跑全部断言可满足**（见下「专项复核」）；SA6 R2 已按配方落盘（工作区未提交 diff 与配方逐行一致：load 前置、`toBe(doc)` 断言目标值原样、`not.toBe(handle)` 独立 lease、双 release 后 `isDestroyed===true` + `pending()===0` 反黑帽守卫、timer 提升为变量） |
+| 2（HIGH）盘点表逐行挂证据 | §9 盘点表重写（8 行全挂 §13 编号，无「未验证」行）；§13 P15（AC4-service-memory 2-hop 精确核算）/P16（探针全场景 × 逐字 FakeTimer）；盘点纪律条款（SA4 检查项） | ✅ 落实。SA2 独立重跑 P15 场景逐字复现（见验证证据 ②）；P16/P17 引用输出与内核源码核对一致（退避翻倍 lifecycle.ts:456/383：500→1000→2000 cap 5000，P17 时间戳 1504/2004/3004 恰为该序列） |
+| 3（MEDIUM）saveCounters 递增点 | 决策 C 重写（「仅在 resolve 之后 +1，reject 一律不计」）；§6.1 伪代码 then/catch 分流；§8 generation 语义补则（retry 成功 flush 与首发失败同代；`dirty g=n+1` 必在 `recovered` 后） | ✅ 落实。立法明确无歧义；P16 输出含 `dirty generation=2` 在 `recovered` 之后的锚（即 R0 红线测试 #3 的断言形态） |
+| 4（MEDIUM）`failFirstFlushes>1` 欠定 | §5 S4 通用退避循环（探针自持退避镜像：初值 debounceMs，失败后 ×2 cap maxDirtyMs，镜像 lifecycle.ts:456）；n=1/2/3 序列展开 | ✅ 落实。循环终止条件正确（注入耗尽且 ready）；探针退避镜像与内核 `scheduleRetry` 的捕获-后翻倍时序一致（SA2 源码推演核对）；n=2 实测 P17 |
+| 5（LOW）探针未显式走 Cordis | 决策 A 新增段：`const svc = requireDocPersistence(profile.ctx)`，全部调用经 `svc`，`svc === profile.persistence` 开场自检（不一致 → `probe-failed:service-identity`） | ✅ 落实 |
+| 6（LOW）probe-failed reason 词表 | §6.2 封闭词表（6 模式，带 {docId}/{generation}/{step} 占位）；§8「无环境痕迹」禁令对成败 record 一律适用；原始错误走 stderr 永不进 record | ✅ 落实 |
+| 7（INFO）「8 微任务」转述失真 | §6.3 勘误（testkit 每轮 3 微任务，testing.ts:126/129）；自建时钟排空数为自选参数，结算兜底 = settle(32) + file 真实等待 | ✅ 落实（SA2 已核 testing.ts:126/129 确为 3 次/轮） |
+| （SA1 自查新增）R0 §7 伪代码 `memoryIo` 嵌套透传错误 | §7 伪代码勘误（展平 + `exactOptionalPropertyTypes` 条件展开）；§11 风险新行；§13 P18 | ✅ 属实且重要——**SA2 独立重跑复现**：嵌套传法 hook 触发 0 次（静默忽略），展平后 2 次（create-commit + flush）；`tsconfig.base.json` 确有 `exactOptionalPropertyTypes: true`，条件展开必要性成立 |
+
+## §9 缺陷 3 修复配方专项复核（复审核心）
+
+**修法 B 选择论证审查**——三点论证均成立且 SA2 认可取舍：
+
+1. **断言语义零反转**：原断言 `expect(loaded!.doc).toBe(doc)` 的意图（同一 live Y.Doc）在 cache-hit 路径下为真，目标值逐字保留；修法 A 需把断言方向反转为 `not.toBe`，改动面更大。✓
+2. **覆盖净增益**：「共享 doc、独立 handle」cache-hit 语义在 service 级此前无直接覆盖（AC2 仅经探针事件间接覆盖）；驱逐/新实例语义已被 AC2（`instanceCounts.size>=2`）、AC5、AC6（reload `not.toBe`）三方锚定，修法 A 属重复覆盖。✓
+3. **反黑帽守卫原生嵌入**：尾部 `isDestroyed===true` + `pending()===0` 使 phantom-handle 邪路（R0 攻击点 1 指出的黑帽）立即爆红——把 R0 的「堵死黑帽」要求变成了测试自身的常驻断言。✓
+
+**SA2 独立重跑（真实内核 + 逐字 SA6 FakeTimer）**——R2 落盘版 AC1-memory 全序列逐断言验证：
+
+| 断言 | 结果 |
+|---|---|
+| `handle.doc === doc` / `owner` / `docId` | true / true / 'doc-alpha' ✓ |
+| `loaded !== null` | true ✓ |
+| **`loaded.doc === doc`（cache-hit，R0 不可满足项）** | **true ✓** |
+| `loaded !== handle`（独立 lease） | true ✓ |
+| 双 release 后 `doc.isDestroyed === true`（反黑帽） | true ✓ |
+| `timer.pending() === 0`（反黑帽） | true ✓ |
+
+**落盘核对**：工作区 `dsh-profile-acceptance.test.ts` 的 R2 diff 与 §9 修法 B 配方逐行一致；简报 §6「R2 修订记录」留痕完整（含修订后红灯仍成立的实跑证据）；红态复核（SA2 本轮实跑）仍为收集期 `Cannot find module '../src/index.js'` 真红。
+
+## §13 P13–P18 补据复核
+
+| 证据 | SA2 复核方式 | 结论 |
+|---|---|---|
+| P13（AC1-memory 证伪） | R0 轮 SA2 亲自实测（结果逐项一致：`isDestroyed: true` / `loaded.doc===doc: false`）+ P2 锚点 `memory-persistence.test.ts:366` 已核 | ✅ 可信 |
+| P14（修法 B 可满足） | **本轮 SA2 独立重跑**（见上表） | ✅ 成立 |
+| P15（AC4-service-memory 2-hop） | **本轮 SA2 独立重跑**：逐字 SA6 hook（`async () => { writes+=1; if(writes===2) throw }`）+ 逐字 FakeTimer，`advanceBy` 后**立即** `persistence-degraded` ✓ → 拒绝 ✓ → retry advance 后**立即** `ready` ✓ → resolve ✓（writes=3） | ✅ 成立（R0 由 SA2 推演代补的作业已由 SA1 以实测补齐且吻合） |
+| P16（探针全场景 n=1） | 引用输出与内核源码行为核对一致；`dirty generation=2` 在 `recovered` 后的锚直接支撑攻击点 3 立法 | ✅ 形式与机制可信；绝对刻度（1504 vs §5 表 1508）差异已在 P16 声明为原型场景压缩，AC 断言不含绝对刻度（仅 `>=500` 与排序），无影响。建议 SA4 对真实实现重跑（红转绿即天然复核） |
+| P17（n=2 退避循环） | 时间戳序列（+500/+1000/+2000）与内核退避源码（lifecycle.ts:383 初值、456 捕获-后翻倍 cap 5000）精确吻合 | ✅ 同上 |
+| P18（memoryIo 展平） | **本轮 SA2 独立重跑复现**（嵌套 0 次 / 展平 2 次）+ `memory.ts:15-22` 源码 + `exactOptionalPropertyTypes: true` 已核 | ✅ 成立，R0 伪代码错误确认已修正 |
+
+## 剩余观察项（非阻塞，不构成 reject 依据）
+
+1. **（LOW，状态行滞后）**设计文档头部（第 9 行）、§9 缺陷 3 标题、§12 ALLOW 注记仍写「待总控协调 SA6 R2」——但 R2 修订**已在工作区落盘**（未提交 diff + 简报 §6 留痕）。属状态描述滞后于事实的一行文字，建议提交前同步为「已落盘（R2）」；不影响设计内容正确性。
+2. **（INFO）**SA3 实现须照 §7 **R1 修订版**伪代码（memoryIo 展平 + 条件展开）执行，R0 版伪代码已作废——P18 已立法，此处仅作交接提醒。
+3. **（INFO）**P16/P17 为设计期原型输出（脚本已删），SA4 活链路验证时以真实实现的红转绿与 AC8 双跑逐字节一致为最终闭环。
+
+## R1 复审验证证据（SA2 实跑，2026-08-22）
+
+```bash
+# ① 修法 B 全序列 + P15 + P18（真实 MemoryPersistence + 逐字 SA6 FakeTimer；脚本 /tmp/sa2-r1/verify.mjs，已删）
+cd /home/wangjian/nomicore-fix-issue-59 && pnpm exec tsx /tmp/sa2-r1/verify.mjs
+#   → ① handle.doc===doc: true | loaded.doc===doc: true（R0 不可满足项现可满足）
+#        loaded!==handle: true | 双release后 isDestroyed: true | pending: 0
+#   → ② P15：首次 advance 后【立即】getStatus: persistence-degraded ✓
+#        saveDoc 拒绝 ✓: persistence-degraded: writes are rejected until retry succeeds
+#        retry advance 后【立即】getStatus: ready ✓ | 恢复可写 resolve ✓（writes = 3）
+#   → ③ P18：嵌套 memoryIo 下 hook 触发次数: 0（静默忽略）| 展平后: 2（create-commit + flush）
+
+# ② R2 落盘 diff 与配方一致性 + 流程留痕
+git -C /home/wangjian/nomicore-fix-issue-59 diff HEAD -- packages/dsh-persistence/test/dsh-profile-acceptance.test.ts
+#   → AC1-memory 用例：loadDoc 前移 + not.toBe(handle) + isDestroyed/pending 守卫 + timer 提升；
+#     `expect(loaded!.doc).toBe(doc)` 断言目标值原样（diff 上下文逐字核对）
+git -C /home/wangjian/nomicore-fix-issue-59 diff HEAD -- wiki/raw/task_dsh-persistence-inspector.md
+#   → §6 R2 修订记录完整留痕（含修订后红灯仍成立实跑）
+git -C /home/wangjian/nomicore-fix-issue-59 log --oneline -5
+#   → 657b877（缺陷 1/2 SA6 R1 落盘）在案；R2 为工作区未提交态
+
+# ③ R2 落盘后红态复核（真红非伪红）
+cd /home/wangjian/nomicore-fix-issue-59 && pnpm exec vitest run \
+  packages/dsh-persistence/test/dsh-profile-acceptance.test.ts --reporter=basic
+#   → Test Files 1 failed（收集期 Cannot find module '../src/index.js'；修订后 10 用例随文件整体红灯）
+
+# ④ 佐证静态核对
+grep -n '"exactOptionalPropertyTypes"' tsconfig.base.json        # → 9: true
+grep -n "not.toBe(oldDoc)" packages/persistence/test/memory-persistence.test.ts  # → 366（P2 契约锚点）
+```
+
+## R1 复审最终裁决
+
+**pass**。
+
+- R0 全部 7 个攻击点已落实，关键项（修法 B、P15、P18）经 SA2 独立重跑验证；SA1 自查新增的 P18（memoryIo 展平）是真实且必要的修正，避免了 SA3 照 R0 伪代码实现出「注入缝静默失效」的缺陷。
+- §9 盘点表逐行挂证据的纪律已建立；缺陷 3 修法 B 配方经独立验证可满足，SA6 R2 已按配方落盘且真红保持。
+- 剩余事项均为非阻塞观察项：设计状态行与已落盘 R2 的一行同步（观察项 1）、SA3 照 §7 修订版伪代码实现的交接提醒（观察项 2）。
+- **边界重申**：本 pass 仅表示设计通过攻击评审；实现正确性（红转绿、AC8 双跑逐字节一致、P16/P17 在真实实现上闭环）仍由 SA4/SA7 对实现与活链路验证，不因此免除。

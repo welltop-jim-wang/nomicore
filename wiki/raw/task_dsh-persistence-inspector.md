@@ -154,3 +154,36 @@ pnpm exec vitest run --reporter=basic   # 全量复跑
 #   → Test Files 2 failed | 37 passed (39)；Tests 6 failed | 517 passed (523)；退出码 1
 #     格局与 R0/R1 完全一致：仅两个红灯文件失败，既有 37 文件 + 绿色守卫全绿
 ```
+
+## 7. R3 修订记录（2026-08-22，总控协调，SA1 设计 §11 风险预警落盘）
+
+> 背景：SA3 实现完成，但 R1 引入的固定轮数 `settleRealIo()`（12 轮 setImmediate）在本机不足以等完真实文件 I/O——SA3 实测：裸 mkdir→writeFile→rename 链需 10~103 轮，内核 retry 恢复链需 14~40 轮；plugin 级复刻（不经任何 dsh 代码）同样失败，确认与实现无关。SA1 设计 §11 已预警此风险（设计探针用 deadline 式 `waitFor` 5s 上限规避）。**断言目标值一字未改，仅换等待基础设施。**
+
+### R3-1 改了什么（`packages/dsh-persistence/test/dsh-profile-acceptance.test.ts`）
+
+1. 新增 deadline 式等待助手 `waitFor(predicate, what, timeoutMs=5_000)`：真实 `setTimeout` 轮询（25ms 间隔）谓词直到成立或真实时间上限耗尽，超时 loud throw；不推进虚拟时钟，无固定轮数校准。
+2. **AC4-file 恢复侧**：`fs.rmSync(blocker)` → `advanceBy(debounceMs)` 之后，原 `await settleRealIo()` 替换为 `await waitFor(() => profile.getStatus() === 'ready', ...)`，随后 `expect(profile.getStatus()).toBe('ready')` 断言目标值原样。
+3. **AC6 dispose 前**：`advanceBy(debounceMs)` 之后，原 `await settleRealIo()` 替换为 `await waitFor(快照提交态)`——谓词 = `.snapshot.tmp` 不存在 且 `.snapshot` 解码出 `ROOT.rev===1`（rename 完成即 ADR-0006 提交态），随后 `dispose()` → 既有全部断言原样（.tmp 残留、fd、reload rev===1 等）。
+4. **AC4-file 降级侧等其余已绿位置保持不动**（指令授权实测判断）：降级侧为单跳错误路径（mkdir EEXIST → 1 次 libuv 回调），12 轮 setImmediate 充裕；修订后连跑 5 次全绿（见 R3-3），维持现状不引入多余改动。
+
+### R3-2 为什么
+
+固定轮数校准是机器/负载相关的时间假设：libuv 线程池结算轮次随系统负载波动（实测 10~103 轮），任何固定轮数都存在慢机/CI 波动下不足的风险；deadline 式等待锚定的是「状态/快照达预期」这一语义目标（SA1 §6.2 `waitFor` 5s 上限同款设计），与断言目标值解耦，慢机只多等、不误报。
+
+### R3-3 实测证据（2026-08-22，修订前后各跑单文件）
+
+```bash
+# 修订前（SA3 实现已就位，R1 settleRealIo(12) 不足）：
+pnpm exec vitest run packages/dsh-persistence/test/dsh-profile-acceptance.test.ts
+#   → Test Files 1 failed; Tests 2 failed | 8 passed (10)
+#     × AC4（service 级）file：expected 'persistence-degraded' to be 'ready'（:395 恢复侧断言）
+#     × AC6：expected [ Array(1) ] to deeply equal []（:436 .tmp 残留——flush 未及 rename，
+#       reload rev===1 同因未提交）
+# 修订后：
+pnpm exec vitest run packages/dsh-persistence/test/dsh-profile-acceptance.test.ts
+#   → Test Files 1 passed; Tests 10 passed (10)   ← 两条目标用例在 SA3 当前实现下转绿
+# 稳定性（降级侧保留固定轮数 settleRealIo 的实测判断依据）：连跑 5 次 → 10 passed ×5，无波动
+# 全量复跑：pnpm exec vitest run --reporter=basic（结果见下）
+```
+
+> 若修订后两条目标用例仍红 → 说明是实现缺陷（非测试时序），按总控指令立即回报，不以改断言迁就实现；本轮实测已转绿，无此情况。
