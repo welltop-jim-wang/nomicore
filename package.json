@@ -8,12 +8,14 @@
     "node": ">=20"
   },
   "scripts": {
-    "test": "vitest run",
+    "test": "vitest run --typecheck",
     "test:watch": "vitest",
-    "typecheck": "tsc -p packages/vfsl/tsconfig.json"
+    "typecheck": "tsc -p packages/vfsl/tsconfig.json && tsc -p packages/vfsl-protocol/tsconfig.json && tsc -p packages/vfsl-codegen/tsconfig.json",
+    "generate": "tsx packages/vfsl-codegen/src/cli.ts"
   },
   "devDependencies": {
     "typescript": "^5.9.3",
-    "vitest": "^3.2.4"
+    "vitest": "^3.2.4",
+    "tsx": "^4"
   }
 }

@@ -37,3 +37,15 @@ jobs:
 
       - name: Test
         run: pnpm test
+
+      # AC5（ADR 0005）：全领域脚手架解析 + 信封校验——显式步骤使校验在工作流文件里
+      # 评审可见；--passWithNoTests=false 防测试文件被删后静默假绿（vitest.config 默认 true）。
+      - name: Domain scaffolds check
+        run: pnpm exec vitest run packages/vfsl/test/domains-scaffold.test.ts --passWithNoTests=false
+
+      # AC4（ADR 0005 §4）：全量重新生成 → 与仓内生成物逐字节 diff。
+      # 源漂移（schema 改了没重新生成）与生成器漂移（codegen 逻辑变了）双抓——
+      # 纯哈希比对抓不到后者，故必须全量重生成再 diff。
+      # 零领域集 = 响亮失败（exit 2，cli.ts §5.5）：防 domains/ 被误删/改名后的回归掩蔽。
+      - name: Generated projection freshness (regen-diff)
+        run: pnpm generate --check
