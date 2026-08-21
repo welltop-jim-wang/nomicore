@@ -23,4 +23,10 @@
 | 12 | 22:18 | SA4 | Phase 3 静态验尸 R1 | 22:33 | 测试全绿达评审门槛；锚点：§5.3 纪律5 改写点对账/U1–U8 落实/§12 ADR 逐字落地/SA3 明示的共享存储偏差/版本 bump |
 | 13 | 22:34 | SA1 | Phase 3 回流：§5.3 窄幅修订 R4 | 22:43 | SA4 R1 verdict=reject 窄幅：R1 跨 store 泄漏（模块级 sharedSnapshots 作用域过宽，复现证实；case4 锚定与 per-instance 草图互斥需裁决）+R2 文件清单台账（package.json bump 为总控指令，需 ALLOW 注明）；续传原 SA1 会话 |
 | 14 | 22:45 | SA6 | Phase 3 回流：用例 4 门控透传化 | 22:46 | SA1 R4 裁决选 (a)：修订 testing.ts 用例 4 写门控为「计数→await gate→透传真实写」（~4 行，用例 6 originalWrite 惯用法），恢复 per-instance 设计前提；续传原 SA6 会话 |
-| 15 | 22:47 | SA3 | Phase 3 TDD 实现 R2（泄漏修复重接线） | (pending) | SA6 透传门控已落（39/39 绿）；SA3 按 R4 §5.3.1 删模块级 sharedSnapshots、IO-1/2/3 重接线、dispose 清理恢复 |
+| 15 | 22:47 | SA3 | Phase 3 TDD 实现 R2（泄漏修复重接线） | 22:50 | SA6 透传门控已落（39/39 绿）；SA3 按 R4 §5.3.1 删模块级 sharedSnapshots、IO-1/2/3 重接线、dispose 清理恢复 |
+| 16 | 22:51 | 总控 | Phase 3 R2 修复后亲验 | 22:52 | 后台独立跑 typecheck(exit 0)+pnpm test(491/491 全绿) exit=0，证据 .mabf-bg/sa3-r2-verify.log |
+| 17 | 22:52 | SA4 | Phase 3 静态验尸 R2（复审）verdict: pass | 22:56 | R1 修复已亲验全绿；续传原 SA4 会话复审 R1 泄漏修复+R2 台账落实，核验通过项不回炉 |
+| 18 | 22:56 | SA7 | Phase 3 动态验证 verdict: pass | 23:24 | SA4 R2 pass；按设计 R4 §5.3.1 四点复跑清单 + SA2 R3 动点（红线 1-4/5a-5d、R2-1 活性钉、U7 守卫、console.error spy）动态验证 |
+| 19 | 23:26 | 总控 | Phase 3.5 AC 逐条确认门禁 | 23:30 | 评审双清达成（SA4 R2 pass + SA7 pass）；对照简报 13 条 Required semantics 逐条核对写 ac_checklist |
+| 20 | 23:28 | 总控 | Phase 4 硬门禁自检 | 23:37 | HG12 verdict 真实性 ✓（SA4/SA7 dispatch 与文件均 pass）；HG13 无 spec N/A；HG15 关键词 3 ≤3 N/A；HG16 无 PR 痕迹/base 已设 ✓；HG14 SA4 缺字面哨兵 → 续传补录中；最终亲验 499/499+typecheck exit 0 |
+| 21 | 23:30 | 总控 | Phase 4 收尾固化 | 23:41 | 全部硬门禁通过（HG14 经 SA4 R3 补录满足）；最终 commit（sa7 补充测试+wiki 档案）+ REPORT.md + .mabf-done |
