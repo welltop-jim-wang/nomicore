@@ -1,12 +1,12 @@
 # SA1 架构设计 — DSH 持久化开发 profile 与 inspector 探针（Issue #59, P4）
 
-> 阶段：Phase 2 架构设计（**R1 修订轮**：SA2 攻击评审 reject 后逐条落实攻击点 1–7；R0 架构决策 A–I 经攻击确认维持，修订明细见文末「SA2 反馈逐条回应」）
+> 阶段：Phase 2 架构设计（**R2 修订轮**：SA7 动态验证 fail-needs-fix 回流——F-FILE 证伪 R0/R1 §6.2 file 通道结算谓词，本轮重定义两阶段结算协议；R1 攻击点 1–7 与 R0 决策 A–I 中未被 R2 显式改写的部分继续有效）
 > 任务简报：`wiki/raw/task_dsh-persistence-inspector.md`（含 SA6 Phase 1 验收锚定 §1–§4，契约面以简报 §2/§3 为准）
 > ADR 约束基准：`wiki/raw/task_dsh-persistence-inspector_relevant_decisions.md`（ADR-0006 含 2026-08-21 修订节为直接治理 ADR；冲突门禁结论提示 1–5 全部落实，见 §10 映射表）
-> 评审链：SA2 R0 评审 `task_dsh-persistence-inspector_sa2_review.md`（reject，攻击点 1–7）；SA8 设计后复审 `task_dsh-persistence-inspector_design_conflict_report.md`（clear，含 §9 缺陷 1/2 测试修订的 no-conflict 专项裁决）
-> 实现基线：P1–P3 已合入（HEAD 2aa22f4 / PR #66）——`packages/persistence` 提供 `PersistenceLifecycle` 共享内核 + `MemoryPersistence` / `FilePersistence` 双 Adapter，全绿。SA6 测试文件已含缺陷 1/2 的 R1 时序修订（commit 657b877，§9 状态已更新）。
+> 评审链：SA2 R0 评审（reject→R1 落实）；SA8 设计后复审（clear）；SA4 R1 复审（pass）；**SA7 动态验证 fail-needs-fix→R2 回流（`task_dsh-persistence-inspector_sa7_report.md`）**
+> 实现基线：P1–P3 已合入（2aa22f4）；SA3 实现 + F1/F2 修复 + SA4 pass + SA6 R1–R5 测试修订均已落盘（HEAD 66ce567 系）；SA6 三缺陷（§9）全部协调落盘。R2 焦点 = file 通道结算谓词重定义（§6.2）。
 > worktree：`/home/wangjian/nomicore-fix-issue-59`
-> ⚠️ **本文档包含三条 SA6 红灯测试不可满足断言的实证与修复配方（§9）：缺陷 1/2 已协调落盘；缺陷 3（AC1-memory，SA2 攻击点 1）待总控协调 SA6 R2 修订，属本设计剩余阻塞项。**
+> ⚠️ **R2 阻塞项：SA7 F-FILE（P1）——R0/R1 §6.2 的 file 通道结算谓词（隐含「磁盘提交态可见 ⟺ 内核 flush 记账完成」）被 52 跑实证证伪（症状 A 静默丢 evict / 症状 B file-settle-timeout，各 1/52）。本轮已重定义为两阶段结算协议（§6.2；P19–P23 实证），待 SA3 落地 + SA4 复审 + SA7 复跑闭环。**
 
 ---
 
@@ -127,7 +127,7 @@ memory 钩子的 per-key 写计数：第 1 次 = `createDoc` 初始提交（ADR�
 
 ## §5. 探针固定场景脚本与虚拟时间线
 
-场景顺序固定（记录确定性的前提）：**S1 主链路（user-a/doc-alpha）→ S2 隔离（user-b/doc-alpha）→ S3 异常输入（duplicate / meta-mismatch）→ S4 降级（user-a/doc-degraded，仅 `failFirstFlushes ≥ 1`）**。S1 必须最先（AC2 `releases[0].refs > 0` 要求首个 release 出自多 handle 场景）。
+场景顺序固定（记录确定性的前提）：**S1 主链路（user-a/doc-alpha）→ S2 隔离（user-b/doc-alpha）→ S3 异常输入（duplicate / meta-mismatch）→ S4 doc-degraded 生命周期**。S1 必须最先（AC2 `releases[0].refs > 0` 要求首个 release 出自多 handle 场景）。**（R2 对齐实现与锚）S4 恒跑**（SA3 实现已被 SA4/SA6 R5/SA7 锚定为 n=0 时 events=28，含 S4 基本生命周期 create→save→flush×2→release→evict）；**降级腿（注入/拒绝/退避重试/恢复）仅在 `failFirstFlushes ≥ 1` 时执行**——比简报 §3 场景 4 的「仅 memory」表述覆盖更宽（file 降级腿经外科式注入支持，V7/P9），已由 SA7 锚背书。下表为 n=1 的完整形态；n=0 时 S4 仅剩 1008/1508(g1 ok)/2008(g2 ok)/2009 四行（见 §5 推演段与锚定 record）。
 
 默认调度（debounce=500，maxDirty=5000）下的精确时间线（memory；file 同刻度，仅观察手段不同）：
 
@@ -180,6 +180,8 @@ n=1 退避序列 = [500]，还原上表（失败 1508 → 成功 2008）；n=2 =
 - AC4：[failedFlush 1508, degraded 1508, rejected 1508, okFlush 2008, recovered 2008] 升序 ✓；record 四个标记 ✓。
 - AC5：release→refs 归零→内部决定 evict（`maybeEvict` clean 前置）→ reload 新实例（store 还原）——时间线 1002 行完整覆盖 ✓。
 - AC8（CLI）：stdout = 记录（仅虚拟 t、无 rootDir）→ 同参两跑逐字节一致 ✓；file 跑落盘 `users/{user-a,user-b}/doc-alpha.snapshot`（create-commit 即落盘，原型 V5 已证 existsSync 在 advance 后成立）✓。
+  - **（R2 勘误）**上句「file 双跑逐字节一致」曾被 SA7 动态证伪（P19：52 跑 2 异常——原 §6.2 谓词竞争；SA6 CLI 用例因「双跑同形态 flake → 相等性成立」结构性失明未捕获）。R2 两阶段结算协议（§6.2）修复后恢复成立：原型实证 60 跑逐字节一致（P23）+ 并发 50 跑 3 次自然窗口命中全吸收零失真（P22）+ 确定性窗口（延迟钩子）下旧协议破碎/新协议完整吸收（P20/P21）。SA7 回归锚（`dsh-file-probe-determinism.test.ts`，events=28/`t=2008`/`t=2009` 精确钉死）为该承诺的持续守卫。
+- **（R2）协议不变性**：§6.2 两阶段结算协议**不新增事件、不移动虚拟刻度**（A-arming/A-evict 的虚拟刻度不变式证明见 §6.2），§5 全部钉死值（含 n=0 的 events=28）逐字保持；协议的存在只体现在 file 通道等待的真实时间内，对 record 完全不可见。
 
 ## §6. 观测通道设计
 
@@ -227,35 +229,73 @@ const memoryIo = {
 
 微任务深度核算（SA6 FakeTimer 每 callback 只排空 2 个微任务的约束下）：flush 链 = `callback → flush() 同步段 → await io.write → await hook(同步) → mirror set → write resolve → flush 恢复`，共 ≤2-3 hop；探针在 advanceBy 后再 `settle(32)`，后续 saveDoc/观察必然看到已结算的内核状态。**逐字 SA6 FakeTimer 下的探针骨架全场景（S1/S3/S4，n=1 与 n=2）已实测通过**（§13 P16/P17）；AC4-service-memory（无探针 settle 兜底、断言紧跟 `advanceBy`）的精确深度核算与实测见 §13 P15。
 
-### §6.2 file 通道（外部提交态观察 + 真实等待）
+### §6.2 file 通道（外部提交态观察 + 真实等待 + **R2 两阶段结算协议**）
+
+> **（R2，SA7 F-FILE 回流）R0/R1 本节的原结算谓词被动态验证证伪**，本小节整体重写。被证伪的假设与机理（SA7 52 跑实证，2 异常，§13 P19）：
+>
+> - 原谓词：`waitFor(() => getStatus()==='ready' && 快照 rev 达标)`，隐含「磁盘提交态可见 ⟺ 内核 flush 记账完成」。
+> - 事实：`fs.readFileSync` 直读磁盘在 `rename(2)` 落盘即见新内容；而内核记账（`savedGeneration` 赋值 → `flushing=false` → `maybeEvict`，lifecycle.ts:431→:440→:449）在 `io.write` promise 的续体内，须经**线程池 → 事件循环交接**（poll 交付 + 微任务）才执行。两事件之间存在可观察窗口（加载态下 ~4%/跑）。
+> - 症状 B：谓词提前通过 → 探针推进虚拟时钟 → 下一个 save 的 debounce 到期时 `startFlush` 被 `entry.flushing` 单飞锁早退（lifecycle.ts:419→:400）→ g1 记账 finally 把 flush **重排到已推进后的虚拟时钟**（now+debounce）→ 探针不再推进 → 5s 超时（`file-settle-timeout`，exit 1）。
+> - 症状 A：谓词提前通过 → release 时 `maybeEvict` 因 `flushing=true` 前置不过 → 不驱逐 → 记账回调 finally 虽会 destroy，但探针 teardown 已先拆 destroyed 监听 → evict 事件静默丢失（events=27、exit 0、ok=true——**下游无法察觉的 record 失真**）。
+> - memory 通道不受影响（同步注入缝，无 libuv 交接；SA7 20 跑哈希唯一）。
+
+**R2 结算协议：把「flush 结算」拆成两个独立条件，全部用内核公共面可观察信号证明——**
+
+**条件 W（write-settle，磁盘提交态可见）**：同原谓词（status + 快照 rev 解码比对）。它只证明「这次 flush 的字节已提交」，**不再**被当作记账完成的证据。
+
+**条件 A（accounting-settle，记账完成证明）**——依据内核两条不变式（源码级，DENY 区零改动）：
+
+- **原子性引理**：`flush()` 的记账（try 尾的 `savedGeneration/degraded` 赋值、catch 的 `degraded+scheduleRetry`、finally 的 `flushing=false`/重排/`maybeEvict`）在 `io.write` promise 结算后的**同一个同步续体**内执行（lifecycle.ts:423-451，try 尾/catch→finally 之间无 await）。任何宏任务观察者（探针的轮询定时器）要么完全在记账前、要么完全在记账后看到状态——**不存在「degraded 已见而记账未完」的外部视角**。推论 ①：失败腿 `waitFor(status==='persistence-degraded')` 与恢复腿 `waitFor(status==='ready')` 本身**就是**记账完成证明（状态翻转只发生在记账块内）；推论 ②：成功腿 status 恒为 'ready'，无判别力——竞争恰好只存在于「成功 flush + 后续还有动作」的腿上。
+- **武装不变式**：`scheduleFlush`（lifecycle.ts:399-404）以 `if (entry.flushing || closed) return` 早退——**它成功武装计时器 ⟺ 当时 `flushing === false` ⟺ 前一次 flush 的 finally 已执行**（`flushing=false` 只在 finally 赋值）。
+
+由此定义两种 A 形态（互斥，按窗口后续动作选择）：
+
+**A-arming（窗口后还有脏写）**——arm 紧随其后置 saveDoc，advance 仅在 armed 之后：
 
 ```ts
-// file 模式下每次 advanceBy 后的结算协议（伪代码）
-async function settleFileIo(expect: { status?: PersistenceStatus, snapshot?: { docId: string, rootRev: unknown } }): Promise<void> {
-  await waitFor(() => {
-    if (expect.status && profile.getStatus() !== expect.status) return false
-    if (expect.snapshot) {
-      const bytes = readSnapshotFile(rootDir, owner, expect.snapshot.docId)   // fs.readFileSync，ENOENT → undefined
-      if (bytes === undefined) return false
-      const scratch = new Y.Doc(); Y.applyUpdate(scratch, bytes)              // 解码提交态
-      if (scratch.getMap('ROOT').get('rev') !== expect.snapshot.rootRev) return false
-    }
-    return true
-  }, { timeoutMs: 5_000 })   // 真实 setTimeout 轮询；超时 → probeFailed（ok=false，loud）
-}
-
-// 失败注入（外科式）：mkdir users/<owner>/doc-degraded.snapshot.tmp（目录）
-// → 在途 flush 的 writeFile(tmp) 得 EISDIR → degraded（原型 V7）
-// 解除：rm 该目录 → advance(retryDelay) → waitFor(ready + 快照 rev 达预期) → recovered
+const base = pendingCount()            // 探针时钟内省（SA6 FakeTimer/自建时钟均带 pending()）
+await svc.saveDoc(handle)              // 脏写（resolve 后才计 generation，决策 C）
+emit dirty { generation }
+await waitFor(() => pendingCount() > base, FILE_WAIT_MS, `file-settle-timeout:${docId}:g${gen}`)
+//   ↑ 通过 ⟺ scheduleFlush 已武装 ⟺ flushing=false ⟺ 前次 flush 记账完成（武装不变式）
+await clock.advanceBy(debounceMs); await settle()
+await waitFor(() => status==='ready' && readRev(docId) === expect, …)   // 条件 W
+emit flush { generation, ok: true }
 ```
 
-flush 事件归属（file 无钩子）：场景脚本每步只驱动一个 doc 的调度窗口，advance 前登记「本窗口预期 flush 的 key+generation」，settle 成功即发 `flush{gen, ok:true}`，`waitFor(status=degraded)` 成立即发 `flush{gen, ok=false}` + `degraded`。retry 窗口同理（同 generation）。
+**虚拟刻度不变式（时间线不漂移的证明）**：探针在「脏 saveDoc → 武装确认」之间**绝不推进虚拟时钟**。若记账滞后（竞争命中），finally 的重排 `scheduleFlush` 以当前虚拟 now（未动）武装 `now+debounce`；若记账已先行，saveDoc 自身武装的也是 `now+debounce`——**两种路径落到同一个虚拟到期刻**。故 §5 钉死时间线与 SA7 锚（events=28、`t=2008`、`t=2009`）逐字保持，且 A-arming 等待本身不产生事件、不进入 record（AC8 双跑逐字节一致恢复）。
+
+**A-evict（窗口后是末次 release）**——evict 事件即记账证明：
+
+```ts
+emit release { refs: 0 }               // 先发（决策 G：相邻 release 间 1-tick 推进保持）
+await handle.release()                 // 若记账已完成：maybeEvict 同步驱逐 → destroyed 监听同刻发 evict
+await waitFor(() => evictSeen.has(docKey), FILE_WAIT_MS, `file-settle-timeout:${docId}:g${gen}`)
+//   ↑ maybeEvict 只在记账 finally（或 clean 的 release 路径）执行——延迟 evict ⟹ finally 已运行；
+//     同刻不变式：等待期间虚拟时钟不推进 → evict t 与 release t 同刻（§5 钉死 1002/2009 保持）
+```
+
+refs>0 的中间 release 无需等待：`maybeEvict` 的 `handles.size>0` 前置使 release 行为与 flushing 状态无关，且 release 间 1-tick 推进无计时器可弹。
+
+**顺序规则（实现纪律，防误用）**：A-arming 必须紧随其后置 saveDoc，**不得**做成独立的 post-advance 等待——无后续脏写的窗口在记账完成后没有任何计时器武装，孤立的 `pending>base` 等待必然超时（R2 原型实测定位，§13 P23）。
+
+**失败注入（不变，V7/P9）**：外科式 `mkdir users/<owner>/doc-degraded.snapshot.tmp` → 在途 flush 的 `writeFile(tmp)` 得 EISDIR → degraded。失败/恢复腿的结算谓词按原子性引理推论 ① 保持 status 翻转语义（可叠加 `pending>base` 联言作纵深防御）；中间失败腿的「下一次 retry 已排」等待（`pending>base`，base 取 advance 前）语义不变且因原子性引理天然安全。
+
+**R2 修复后的完整窗口协议（file 通道每一步）**：
+
+| 场景步 | 协议 |
+|---|---|
+| 脏写→flush→（后续还有脏写） | saveDoc → **A-arming** → advance → **W** → flush 事件 |
+| flush→末次 release | **W** → flush 事件 → releases（中间无等待）→ 末次 release → **A-evict** |
+| 重载验新实例（S1 h4） | A-evict 通过后才 `loadDoc`（保证 cache miss → 新实例，否则会拿到未驱逐的旧 live doc） |
+| S4 失败腿（n≥1） | advance → waitFor(status degraded [&& pending>base]) → flush ok=false + degraded（原子性引理①） |
+| S4 恢复腿 | unblock → advance(delay) → waitFor(status ready && rev 达标) → flush ok=true + recovered（原子性引理①） |
 
 **（R1，攻击点 6）`probe-failed` reason 封闭词表**：`waitFor` 超时与场景异常的 reason **不得**内插 `err.message`（EISDIR/ENOENT 等系统文本含绝对路径）或 rootDir——失败 record 与成功 record 同受 §8「无环境痕迹」禁令约束。reason 取自封闭枚举：
 
 | reason 模式 | 触发 |
 |---|---|
-| `file-settle-timeout:{docId}:g{generation}` | file 通道 waitFor 5s 真实超时（status 或快照期望未达成） |
+| `file-settle-timeout:{docId}:g{generation}` | file 通道任一结算等待（W/A-arming/A-evict）5s 真实超时 |
 | `status-divergence:{docId}` | 事件推断的 degraded/recovered 与 `getStatus()` 互检不一致 |
 | `scenario-error:{step}` | 场景步骤抛出非预期异常（step ∈ S1-create/S1-flush/…/S4-recover 等固定步名） |
 | `service-identity` | `requireDocPersistence(profile.ctx) !== profile.persistence`（决策 A 自检） |
@@ -264,7 +304,7 @@ flush 事件归属（file 无钩子）：场景脚本每步只驱动一个 doc �
 
 原始错误对象走结构化出口（CLI stderr / `runPersistenceProbe` 的 console.error + `ok:false`），**永不进入 record**。
 
-**真实性边界声明**：file 通道的 flush 观察是「调度边界 + 提交态效果」级（观察到的是每次 flush 的最终结果，而非写调用本身）；memory 通道是写调用级。两级粒度都以公共语义为准（`.snapshot` 是唯一提交态），记录格式相同，不影响任何 AC 断言（两通道的事件 t 同刻度）。
+**真实性边界声明**：file 通道的 flush 观察是「调度边界 + 提交态效果」级（观察到的是每次 flush 的最终结果，而非写调用本身）；memory 通道是写调用级。两级粒度都以公共语义为准（`.snapshot` 是唯一提交态），记录格式相同，不影响任何 AC 断言（两通道的事件 t 同刻度）。R2 协议不改变这一粒度声明，只把「结算完成」的判据从磁盘可见升级为记账完成的可证信号。
 
 ### §6.3 时钟模块
 
@@ -451,20 +491,22 @@ pnpm exec tsx packages/dsh-persistence/src/cli.ts --adapter <memory|file> [--roo
     ```
   - **选 B 的论证**：① **断言语义零反转**——原断言 `toBe(doc)` 的意图（同一 live 实例）在 cache-hit 路径下为真，原样保留；修法 A 则把断言方向反转（`not.toBe`），改动更大。② **覆盖净增益**——「共享 doc、独立 handle」的 cache-hit 语义在 service 级目前**无任何其他用例覆盖**（AC2 只经探针事件间接覆盖）；驱逐/新实例语义已被 AC2（`instanceCounts.size>=2`）、AC5、AC6（reload `not.toBe`）三方锚定，修法 A 只会造成重复覆盖并丢失 cache-hit 断言。③ **反黑帽守卫原生嵌入**——尾部 `isDestroyed`/`pending()===0` 两断言使 phantom-handle 黑帽立即爆红。修法 B 的可满足性已实测（§13 P14：cache-hit `toBe(doc)` ✓、独立 handle ✓、双 release 后 `isDestroyed` ✓、`pending===0` ✓）。
 
-### 其余 SA6 用例可满足性盘点（R1：逐行挂证据编号）
+### 其余 SA6 用例可满足性盘点（R1 逐行挂证据；R2 修订两行）
 
 | 用例 | 结论 | 证据（§13） |
 |---|---|---|
-| AC1 memory（service 级） | ⛔ **不可满足（缺陷 3，待协调）**；修法 B 落盘后 ✓ | P13（证伪）+ P14（修法 B 配方验证） |
+| AC1 memory（service 级） | ✓（缺陷 3 修法 B **已落盘**，SA6 R2；当前全绿——SA7 40/40 文件、535/535 测试） | P13（证伪）+ P14（修法 B 配方验证）+ SA7 Step1 全绿 |
 | AC1 file / AC3 file（service 级） | ✓ 可满足（existsSync 由 create-commit 落盘保证，loads 走 live cache） | P8 |
 | AC2/AC3/AC4 probe 级（memory + SA6 FakeTimer） | ✓ 可满足（逐字 FakeTimer + settle(32) 协议下 S1/S3/S4 全事件序列实测与 §5 时间线一致） | P16（+P3 机制级） |
 | AC4 service 级 memory（memoryIo 注入） | ✓ 可满足（**精确深度核算**：async hook 失败链 = hook(无 await, 同步 throw→rejected promise) → memory-write await 恢复 hop1 → flush await 恢复 hop2 → `degraded=true`，恰在 SA6 FakeTimer 每 callback 2 微任务 + 收尾 2 微任务之内；恢复链同为 2 hop。逐字复刻实测：advance 后**立即** `persistence-degraded` ✓ → saveDoc 拒绝 ✓ → retry advance 后立即 `ready` ✓ → 恢复可写 resolve ✓） | P15 |
 | AC4 service 级 file（修复后） | ✓ 可满足（`settleRealIo` 已落盘；真实结算后 degraded→拒绝→解除→ready 序列实测通过） | P5（T+2 证 degraded 需要 setImmediate 轮转）+ P9（解除→恢复）+ 落盘核验 |
 | AC6（修复后） | ✓ 可满足（advance+settle 已落盘；`rev===1` 配方实测通过，其余断言 P8 逐项通过） | P7（配方）+ P6（原始证伪）+ 落盘核验 |
-| CLI 全部 7 用例 | ✓ 可满足（子进程内探针自建时钟（排空深度 ≥ FakeTimer）+ settle(32) + file 真实等待；记录无环境痕迹；同参两跑确定性 = 固定场景序 + 封闭词表） | P16（机制同源，自建时钟排空更深）+ P11（tsx CLI 先例）+ P12（vitest 解析） |
+| CLI 全部 7 用例 | **（R2 修订）用例本身 ✓（当前绿）；但其守护目标「file 双跑逐字节一致」曾被 SA7 证伪**（P19：症状下双跑同形态 flake → 相等性成立而失明——非用例可满足性问题，是判别力问题）。R2 协议修复后确定性恢复；持续守卫由 SA7 锚 `dsh-file-probe-determinism.test.ts`（精确 events=28 + 三跑逐字节一致）承担，不依赖 CLI 用例的相等性抽查 | P19（证伪与机理）+ P22/P23（R2 修复实证）+ P11/P12 |
 | core-dsh-boundary 绿色守卫 | ✓ 保持绿色（本设计零触碰 `packages/persistence`） | P2 + P12（当前绿色事实） |
 
 **（R1，攻击点 2）盘点纪律**：上表每行必须挂 §13 证据编号；本轮无「未验证」行。后续修订若新增无证据结论，必须显式标注「未验证 + 风险等级」——SA4 静态门禁可将「§9 行 ↔ §13 行可对号」列为检查项（SA2 红线测试 #2）。
+
+**（R2）SA7 动态验证结论对照**：SA6 红灯验收面全绿（40/40、535/535）；F1 evict 去重回归 ✓；失败 record 纯度 ✓（封闭词表生效）；CLI 退出码矩阵 ✓（0/1/2）；并发余量 ✓（16×）；yjs destroyed 跨 node 版本一致 ✓（24/25.6.0，node 20 待 CI）。**唯一 fail-needs-fix = F-FILE（P1）**，即 §6.2 R2 重写对象；F-REJECT-LEAK（LOW）处置见 §11。
 
 ## §10. AC 与冲突门禁提示映射表
 
@@ -497,7 +539,9 @@ pnpm exec tsx packages/dsh-persistence/src/cli.ts --adapter <memory|file> [--roo
 | `plugin.instance` 非空断言 | apply 同步建实例（P2/P3 工厂实现事实）；设计在 apply 后立刻 `instanceof` 自检，null → throw（loud） |
 | **（R1 新增）`memoryIo` 透传形状错误**：直接把 `memoryIo` 对象传给 `createMemoryPersistencePlugin` 会被 `MemoryPersistenceOptions` 静默忽略（注入缝是顶层 `writeSnapshot`/`readSnapshot` 字段） | profile 展平透传（§7 伪代码勘误）；原型反证见 §13 P18（嵌套传法实测 hook 从不触发）；`exactOptionalPropertyTypes: true` 下条件展开，不传 `undefined` 键 |
 | root package.json `typecheck` 脚本需纳入新包 | 追加 `&& tsc -p packages/dsh-persistence/tsconfig.json`（CI `pnpm typecheck` 覆盖新包；ALLOW LIST 内） |
-| 双跑记录不一致 | 记录只含虚拟 t + 固定场景序 + 固定发号 + `probe-failed` 封闭词表；Map 遍历序由排序规范消解；n=2 两跑确定性已实测（P17） |
+| 双跑记录不一致 | 记录只含虚拟 t + 固定场景序 + 固定发号 + `probe-failed` 封闭词表；Map 遍历序由排序规范消解；**R2：file 通道 libuv 交接竞争（P19）已由两阶段结算协议封死（P22/P23）**；SA7 锚持续守卫 |
+| **（R2，SA7 F-FILE）file 通道「磁盘可见 ≠ 记账完成」竞争**：`fs.readFileSync` 可早于线程池→事件循环交接看到提交态 → 提前 advance 撞单飞锁重排（症状 B）/ release 早于 `maybeEvict` + teardown 拆监听（症状 A 静默失真） | §6.2 R2 两阶段结算协议：条件 W（磁盘）+ 条件 A（A-arming 武装不变式 / A-evict 记账 finally 信号 / 原子性引理 status 翻转），全部内核公共面信号，DENY 零改动；虚拟刻度不变式保证 §5 钉死值不漂移；实证 P20（旧协议在确定性窗口下破碎）→ P21/P22/P23（新协议全吸收 + 双跑逐字节一致） |
+| **（R2，SA7 F-REJECT-LEAK，LOW）**外部预阻塞 `.tmp` 下 `file.ts:96` 的 `fsp.rm(tmp, {force:true})` 对目录抛 EISDIR，某条 read-ticket promise 链泄漏 unhandled rejection 到进程层（不影响 record/退出码，SA7 双证据实测） | 归属分析：泄漏点在内核 read-ticket 记账链（`packages/persistence`，DENY 区）——`force` 只容忍 ENOENT 是否应扩展容忍 EISDIR 属 P3 行为策略，本设计**不越权处置**；探针侧自身 await 均已 catch（step catch → ProbeFailure），未放大泄漏。建议总控将其立为 P3 跟进项单独裁决（若需改 `file.ts` 即 DENY 例外）；探针的注入时序（`ensureBlocked` 在 create 之后）不命中该路径 |
 
 ## §12. 文件清单（File Scope）
 
@@ -511,7 +555,8 @@ pnpm exec tsx packages/dsh-persistence/src/cli.ts --adapter <memory|file> [--roo
 - `packages/dsh-persistence/src/cli.ts` — 新建，AC8 命令入口（§8，~100 行）
 - `packages/dsh-persistence/src/index.ts` — 新建，聚合导出（§7，~40 行）
 - `packages/dsh-persistence/tsconfig.json` — 新建，镜像 `packages/persistence/tsconfig.json`（include src+test）
-- `packages/dsh-persistence/test/dsh-profile-acceptance.test.ts` — `[SA6 owned]` **须与 SA6 协调**的测试修订：缺陷 1/2 时序修复**已落盘**（commit 657b877）；**R1 修订追加**：缺陷 3（AC1-memory 修法 B，§9）待 SA6 R2 落盘——改动限于 loadDoc 位置调整 + 两条反黑帽守卫断言，`toBe(doc)` 断言目标值不变。SA3 仅可落协调后的最小修复，不得改断言值
+- `packages/dsh-persistence/test/dsh-file-probe-determinism.test.ts` — `[SA7 owned]` **R2 修订追加**：SA7 动态验证落盘的回归锚（file 通道确定性：精确 events=28 + 三跑/双 CLI 逐字节一致）；本任务 SA1/SA3 不改其断言，修复后必须稳定绿
+- `packages/dsh-persistence/test/dsh-profile-acceptance.test.ts` — `[SA6 owned]` **须与 SA6 协调**的测试修订：缺陷 1/2 时序修复**已落盘**（commit 657b877）；**R1 修订追加**：缺陷 3（AC1-memory 修法 B，§9）待 SA6 R2 落盘——改动限于 loadDoc 位置调整 + 两条反黑帽守卫断言，`toBe(doc)` 断言目标值不变。SA3 仅可落协调后的最小修复，不得改断言值。**R2 状态更新：缺陷 3 修法 B 已由 SA6 R2 落盘（测试内 R2 注释），当前全绿**
 - `packages/dsh-persistence/test/dsh-probe-cli.test.ts` — `[SA6 owned]` 无需改动（§9 盘点可满足）；列入 ALLOW 仅为覆盖其在 diff 中的存在（SA6 已创建）
 - `packages/dsh-persistence/package.json` — SA6 脚手架已就绪（`dsh:probe` 已锚定）；预期零改动，列入以覆盖 diff
 - `packages/persistence/test/core-dsh-boundary.test.ts` — `[SA6 owned]` SA6 新建的 AC7 绿色守卫（Phase 1 交付，已在工作区）；本任务零改动，列入以覆盖 diff，保持绿色
@@ -552,6 +597,11 @@ pnpm exec tsx packages/dsh-persistence/src/cli.ts --adapter <memory|file> [--roo
 | P16 | **（R1）探针骨架全场景（S1/S3/S4, n=1）在逐字 SA6 FakeTimer + settle(32) 协议下通过**：事件**相对时序**与 §5 钉死一致（fail@+500 → rejected 同刻 → retry 成功@+1000 → recovered 同刻 → 之后才 dirty g2；原型骨架场景间隔较 §5 表压缩，绝对刻度是实现细节，record 确定性只依赖固定场景序）；且 `saveCounters` 仅 resolve 递增（retry 成功渲染 `generation=1 ok=true`，`dirty generation=2` 在 `recovered` 之后）——攻击点 3 的记录语义锚 | 设计期实测验证 | R1 原型 V11 n=1 输出（节选）：`flush doc-alpha generation=1 ok=true t=500` / `flush doc-alpha generation=2 ok=true t=1000` / `release refs=2/1/0 t=1000/1001/1002` / `load 重载新实例=true rev=2 t=1003` / `duplicate code=DOC_DUPLICATE instanceof=true` / `meta-mismatch /META\.docId/=true` / `flush doc-degraded generation=1 ok=false t=1504` + `degraded` + `write-rejected` 同刻 / `flush doc-degraded generation=1 ok=true t=2004` + `recovered` 同刻 / `dirty doc-degraded generation=2 t=2004`（在 recovered 之后 ✓）/ `flush doc-degraded generation=2 ok=true t=2504` | 低 |
 | P17 | **（R1）`failFirstFlushes=2` 通用退避循环**：探针自持退避镜像（500→1000，cap 5000）推进下，两条同 generation=1 的 `ok=false` 落在 +500/+1000 虚拟刻，成功落 +2000；任意 n 的 record 确定（攻击点 4） | 设计期实测验证 | R1 原型 V11 n=2 输出（节选）：`flush doc-degraded generation=1 ok=false t=1504` → `degraded t=1504` → `write-rejected t=1504` → `flush doc-degraded generation=1 ok=false t=2004` → `degraded t=2004` → `flush doc-degraded generation=1 ok=true t=3004` → `recovered t=3004` → `dirty generation=2 t=3004` → `flush generation=2 ok=true t=3504` | 低 |
 | P18 | **（R1）`memoryIo` 展平事实**：`MemoryPersistenceOptions` 的注入缝是顶层 `writeSnapshot`/`readSnapshot` 字段；把 DSH 形状的 `memoryIo` 对象直接传给插件工厂会被静默忽略（R0 §7 伪代码的错误，已勘误） | 源码引用 + 设计期实测验证 | `packages/persistence/src/memory.ts:15-22`（`MemoryPersistenceOptions` 无 `memoryIo` 字段，`writeSnapshot`/`readSnapshot` 顶层）；R1 原型反证：嵌套传法实测 `writes=0`（hook 从不触发、saveDoc 直通、无 flush 事件），展平后 V10/V11 全链路通过 | 低（已勘误，实现照 §7 修订版伪代码） |
+| P19 | **（R2）SA7 F-FILE 证伪**：file 通道结算谓词「磁盘提交态可见 ⟺ 内核 flush 记账完成」为假——`fs.readFileSync` 直读在 rename 落盘即见新内容，记账须经线程池→事件循环交接；52 跑 2 异常：症状 A（events=27、exit 0、evict 静默丢失——teardown 先拆监听）×1、症状 B（`file-settle-timeout:doc-degraded:g2`、exit 1——单飞锁早退 + flush 重排到无人推进的虚拟时钟）×1；memory 通道 20 跑 sha256 唯一不受影响 | SA7 动态验证（52 跑量化） | `task_dsh-persistence-inspector_sa7_report.md` F-FILE 节（命令 + 输出存档 /tmp/sa7-probe/*）；根因源码级定位 lifecycle.ts:431→:440→:449（记账）/ :419→:400（单飞锁早退）/ :444-447（重排） | **高（已由 R2 协议修复）** |
+| P20 | **（R2）旧协议在确定性窗口下必然破碎**：memory 通道注入 30ms 真实延迟的 writeSnapshot 钩子 =「flush 事件已可观察 / io.write 记账未完成」的确定性窗口——旧协议（微任务排空 settle）下 advance 落在未武装的 debounce 上，flush 永不发生、evict 永不出现（`timeout:old-evict`）= 症状 B 机理的受控复现 | 设计期实测验证（R2 原型，真实 `MemoryPersistence`） | 原型输出：`旧协议（settle 排空）结果：✗ 破碎（timeout:old-evict）`；机理逐行吻合 lifecycle.ts:400（scheduleFlush 早退）+ :444-447（记账 finally 重排到虚拟时钟） | 低 |
+| P21 | **（R2）新协议（A-arming/A-evict）在同一确定性窗口下完整吸收**：延迟 30ms 钩子下场景全链路完成，evict 落在钉死刻度 t=1002；插桩验证窗口内 `saveDoc → scheduleFlush 早退 → pending=0` → 30ms 后记账完成 → finally 武装 `pending=2` → advance 触发 flush g2 → release → evict | 设计期实测验证（R2 原型） | 原型输出：`新协议（arming/evict 等待）结果：["dirty g1","flush g1 observed","dirty g2","flush g2 observed","evict a1 t=1002"] —— 窗口被吸收 ✓`；分步插桩：`saveDoc g2 done（dirty g2）| pending = 0（flushing=true → scheduleFlush 早退）` → `arming 等待结束 | elapsed = 30 ms | pending = 2` | 低 |
+| P22 | **（R2）file 通道并发竞争压测**：双探针同进程并发 × 1ms 高频轮询 × 25 对 = 50 跑，自然命中「磁盘先于记账」窗口 3 次，全部被新协议吸收（A-arming/A-evict 等待后继续），事件序不一致 0、失败 0 | 设计期实测验证（R2 原型，真实 `FilePersistence`） | 原型输出：`并发压测：50 跑 | 窗口命中 3 | 事件序不一致 0 | 失败 0 → 并发竞争下 0 失真 ✓` | 低 |
+| P23 | **（R2）file 通道新协议确定性**：单进程连跑 60 次（每次全新 rootDir），record 逐字节一致（0 不一致），事件序与 §5/SA7 锚定形态逐行相同（含 `flush … g2 … t=2008`、`evict … t=2009`）；另实证顺序规则：孤立的 post-advance `pending>base` 等待（无后续脏写）在记账后无人武装，必然超时——A-arming 必须紧随后置 saveDoc | 设计期实测验证（R2 原型） | 原型输出：`60 跑完成（2692ms）：不一致 0 次 → 新协议下逐字节一致 ✓`；顺序规则反例：`新协议（arming/evict 等待）结果：✗ timeout:arming`（arming 被误置于 advance 之后）→ 修正放置后 P21 通过 | 低 |
 
 ## §14. 契约改动连锁审计 (Contract Change Caller Audit)
 
@@ -572,4 +622,42 @@ pnpm exec tsx packages/dsh-persistence/src/cli.ts --adapter <memory|file> [--roo
 
 ---
 
-**SA1 结论（R1）**：设计就绪。核心交付为薄装配 profile + 黑盒探针双通道观察（§4–§8），架构决策 A–I 经 SA2 攻击确认维持。SA6 契约面可满足性盘点已逐行挂证据（§9）：**缺陷 1/2 已协调落盘（commit 657b877）；唯一剩余阻塞项为缺陷 3（AC1-memory，修法 B，§9）——须总控协调 SA6 R2 按已验证配方修订**（load 前置 + 两条反黑帽守卫，`toBe(doc)` 断言目标值不变）。R1 修订全部附设计期实测证据（§13 P13–P18），SA1 仍未改动任何生产/测试文件。
+**SA1 结论（R1）**：设计就绪。核心交付为薄装配 profile + 黑盒探针双通道观察（§4–§8），架构决策 A–I 经 SA2 攻击确认维持。SA6 契约面可满足性盘点已逐行挂证据（§9）：缺陷 1/2 已协调落盘（commit 657b877）；缺陷 3（AC1-memory，修法 B）**已由 SA6 R2 落盘、当前全绿**。R1 修订全部附设计期实测证据（§13 P13–P18），SA1 仍未改动任何生产/测试文件。
+
+---
+
+## R2 修订说明（SA7 动态验证 fail-needs-fix 回流，2026-08-22）
+
+### 回流背景与判据变化
+
+SA7 以 52 跑量化数据证伪了 R0/R1 §6.2 file 通道结算谓词的隐含假设（「磁盘提交态可见 ⟺ 内核 flush 记账完成」），产生症状 A（静默 record 失真：evict 丢失、events=27、exit 0——**下游无法察觉**，最危险形态）与症状 B（响亮超时 exit 1）。归属判定为**设计级假设缺陷**（SA3 实现忠实于设计），回流 SA1。
+
+### R2 核心修订：§6.2 两阶段结算协议（ DENY 与 AC8 承诺全部保持）
+
+1. **拆条件**：flush 结算 = 条件 W（磁盘提交态可见，原谓词）+ 条件 A（内核记账完成证明，新增）。W 不再单独作为推进/释放依据。
+2. **条件 A 的三条内核公共面信号**（依据两条源码级不变式，`packages/persistence` 零改动）：
+   - **原子性引理**：flush 记账（savedGeneration/degraded 赋值、catch 的 scheduleRetry、finally 的 flushing=false/重排/maybeEvict）是 `io.write` 结算后的单个同步续体——宏任务观察者所见状态翻转（degraded↔ready）必伴随记账完成 → 失败/恢复腿的 status 谓词本就是正确判据（R0/R1 这两条腿碰巧正确，错误只在成功腿）；
+   - **A-arming**（成功腿 + 后续脏写）：`saveDoc → waitFor(pending > baseline) → advance`——武装不变式（`scheduleFlush` 仅在 `flushing=false` 时武装，而 `flushing=false` 只在记账 finally 赋值）使「已武装 ⟺ 前次记账完成」成为状态蕴含而非时序猜测；
+   - **A-evict**（成功腿 + 末次 release）：`release → waitFor(evict 事件)`——maybeEvict 只在记账 finally（或 clean release 路径）执行，延迟 evict ⟹ finally 已运行；同时堵死症状 A 的监听拆除竞态（teardown 必然晚于 A-evict 通过）。
+3. **虚拟刻度不变式**（时间线不漂移的证明）：探针在「脏 saveDoc → 武装确认」间绝不推进虚拟时钟 → 记账滞后的 finally 重排与 saveDoc 直武装落到**同一虚拟到期刻** → §5 全部钉死值与 SA7 锚（events=28、t=2008/2009）逐字保持；协议不产生事件、对 record 不可见 → AC8 双跑逐字节一致恢复。
+4. **顺序规则**（实现纪律）：A-arming 必须紧随后置 saveDoc；孤立的 post-advance `pending>base` 等待在无后续脏写的窗口必然超时（R2 原型反例实测，P23）。
+5. **SA7 候选方向的取舍**：候选 ①（契约面加 in-flight/pending 观察口）被否——需改 `DocPersistence` 公共契约（连锁审计半径大，且 `pending()` 时钟内省已够用）；候选 ②（谓词升级为可证的记账完成）即本方案——语义谓词而非 deadline/固定轮数（SA7 明示的 R3/R4 教训）。
+
+### R2 实证链（§13 P19–P23）
+
+| 编号 | 结论 |
+|---|---|
+| P19 | SA7 52 跑量化证伪（症状 A/B 机理与源码定位，直接引用） |
+| P20 | 旧协议在**确定性窗口**（memory 延迟 30ms 钩子）下必然破碎（症状 B 受控复现） |
+| P21 | 新协议同一窗口下完整吸收（evict 落钉死刻度 t=1002；30ms 记账滞后 → finally 武装 → advance → flush） |
+| P22 | file 并发 50 跑 ×1ms 轮询：自然命中 3 次窗口，全吸收、零失真、零失败 |
+| P23 | file 新协议 60 跑逐字节一致（锚定形态逐行相同）+ 顺序规则反例（孤立 arming 超时） |
+
+### 连带修订与处置
+
+- §5：S4 恒跑对齐（n=0 基本生命周期 = events=28 锚；降级腿仅 n≥1）+ 协议不变性声明；§8/§9/§11 对应更新（AC8 勘误、盘点表 CLI 行修订、风险表两行新增）；§12 ALLOW 追加 `[SA7 owned]` 回归锚。
+- **F-REJECT-LEAK（LOW）处置**：归属内核 read-ticket 链（`file.ts:96` `rm force` 只容忍 ENOENT），DENY 区不越权；探针侧 await 均已 catch、未放大；建议总控立 P3 跟进项单独裁决（改 `file.ts` 即 DENY 例外）。
+- **SA3 落地范围**：仅 `packages/dsh-persistence/src/probe.ts`（§6.2 协议：observeFlush 拆两条件 + S1/S4 窗口接线 + A-arming 基线 + evictSeen 等待 + 顺序规则），ALLOW 既有条目覆盖；SA7 锚（`dsh-file-probe-determinism.test.ts`）不改，修复后应稳定绿。
+- **闭环路径**：SA3 落地 → SA4 复审（重点：协议接线的窗口覆盖完备性，S1/S2/S4 每个 advance/release 前均有条件 A 证明）→ SA7 复跑（52 跑 0 异常 + 锚稳定绿）。
+
+**SA1 结论（R2）**：§6.2 谓词缺陷已修复且实证闭环（P19 证伪 → P20 机理复现 → P21/P22/P23 吸收与确定性）；DENY、AC8、§5 钉死时间线、封闭词表全部保持。设计就绪，待 SA3 落地。
