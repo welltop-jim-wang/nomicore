@@ -214,3 +214,39 @@ pnpm exec vitest run --reporter=basic
 ```
 
 > 修订由 SA3 落盘 commit——SA6 只改测试与简报，未 commit。
+
+## 9. R5 修订记录（2026-08-22，总控协调，SA4 验尸 F1 回归锚）
+
+> 背景：SA4 静态验尸发现实现缺陷 **F1（P1，REJECT）**——`probe.ts` `watchEvict` 对同一 doc 的每次 handle 获取各注册一个 `'destroyed'` 监听（S1 中 d1 共享给 h1/h2/h3 → 3 个监听），内核一次 `destroy()` 回调全部监听 → 一次驱逐发 3 条 evict（实测 t=1002 ×3，events=34/30 而非设计钉死值 32/28）。SA6 AC2 原有 `>=`/`find`/`every` 型断言对该缺陷**结构性失明**（测试全绿但 record 失真，AC8 交付物语义污染）。SA3 并行修复（`watchEvict` 开头 `if (destroyedListeners.has(doc)) return` 去重，~3 行）。
+
+### R5-1 改了什么（`packages/dsh-persistence/test/dsh-profile-acceptance.test.ts` 的 AC2 用例）
+
+在既有 evict 断言后补三组精确计数断言（具体形态按简报 §2/§3 契约与设计 §5 时间线；AC2 场景 = memory + `failFirstFlushes=0`，S4 降级注入不跑但 doc-degraded 建档照跑，时间线 S1 15 + S2 4 + S3 2 + S4 7 = **28 条**）：
+
+1. `expect(evicts.filter((event) => event.t === 1002)).toHaveLength(1)` —— d1 **一次销毁恰 1 条 evict**（F1 缺陷的直接定位点：缺陷下为 3 条）；
+2. `expect(evicts.length).toBe(3)` —— doc-alpha evict 恰 3 条（设计 §5 钉死 `evicts = [1002, 1003, 1005]`，d1/d2/d3 各一次销毁；缺陷下为 5 条）；
+3. `expect(events.length).toBe(28)` —— 总事件恰 28（§5 时间线 n=0 推演 + CLI 实测 `probe ok=true events=28` 双向钉死；缺陷下为 30）。
+
+文件头追加 R5 追溯注记。其余用例零触碰。
+
+### R5-2 为什么
+
+F1 使「一次驱逐 = 一条事件」（决策 C：驱逐即销毁，销毁即事件）的 record 语义失真，且现有宽松断言无法证伪——精确计数断言把该缺陷钉进回归锚：缺陷实现下 3/5/30 立即爆红，修复后回到 1/3/28。
+
+### R5-3 实测证据（2026-08-22；**观察状态：SA3 修复已在工作区落盘 → 断言绿**）
+
+```bash
+# 运行态基线（CLI 实测，修复后）：
+pnpm exec tsx packages/dsh-persistence/src/cli.ts --adapter memory
+#   → evict doc-alpha t=1002 / t=1003 / t=1005 各 1 条；probe ok=true events=28
+pnpm exec tsx packages/dsh-persistence/src/cli.ts --adapter memory --fail-first-flushes 1
+#   → doc-alpha evict 计数 3；probe ok=true events=32（设计 §5 n=1 钉死值）
+# 修订后单文件：
+pnpm exec vitest run packages/dsh-persistence/test/dsh-profile-acceptance.test.ts
+#   → Test Files 1 passed; Tests 10 passed (10)   ← 新断言在修复后实现上绿
+# 全量复跑：
+pnpm exec vitest run --reporter=basic
+#   → Test Files 39 passed (39)；Tests 533 passed (533)；退出码 0
+```
+
+> 诚实声明：运行修订后的断言时，SA3 的 F1 修复（probe.ts:209 去重守卫）已在工作区生效，故观察到**绿**（1/3/28）。缺陷实现下的红态（3/5/30）由 SA4 验尸证据（`evict doc-alpha t=1002` ×3、events=34/30）与本断言构造共同锚定——若修复被回退，本测试即爆红。若断言设计有误（如总事件数钉错），修复后应红——本轮实测绿且与 CLI 基线一致，判定断言正确。

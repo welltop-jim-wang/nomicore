@@ -23,5 +23,6 @@ branch: fix/issue-59-on-adr-server-design（base: adr/server-design）
 | 12 | 02:04 | SA6 | Phase 3 测试修订轮 R3 | 02:07 | SA3 实现完成但 AC4-file/AC6 两条红：实证为 settleRealIo 固定轮数不足的测试时序缺陷（断言值不变，续传 42b9f16e） |
 | 13 | 02:12 | SA6 | Phase 3 测试修订轮 R4 | 02:14 | SA3 实测 AC4-file 降级侧 settleRealIo 隔离 1/8 flake，同模式 deadline 化（续传 42b9f16e） |
 | 14 | 02:16 | SA4 | Phase 3 静态验尸 | 02:25 | 红灯已绿（总控亲跑 533/533 + typecheck 0），进入实现红队审查 |
-| 15 | 02:26 | SA3 | Phase 3 修复轮 | (pending) | SA4 verdict: reject（F1 P1：watchEvict 重复注册致 evict×3 污染 record），回流 SA3 修 probe.ts（续传 cba9640d） |
-| 16 | 02:26 | SA6 | Phase 3 测试修订轮 R5 | (pending) | SA4 建议：AC2 补 evict 精确计数断言堵死 >= 型断言结构性失明（续传 42b9f16e） |
+| 15 | 02:26 | SA3 | Phase 3 修复轮 | 02:31 | SA4 verdict: reject（F1 P1：watchEvict 重复注册致 evict×3 污染 record），回流 SA3 修 probe.ts（续传 cba9640d） |
+| 16 | 02:26 | SA6 | Phase 3 测试修订轮 R5 | 02:30 | SA4 建议：AC2 补 evict 精确计数断言堵死 >= 型断言结构性失明（续传 42b9f16e） |
+| 17 | 02:31 | SA4 | Phase 3 静态验尸 R1 | (pending) | F1/F2 修复 + R5 回归锚已入库（d734352），SA4 复审闭环（续传 21a6f56a） |
