@@ -31,4 +31,5 @@ branch: fix/issue-59-on-adr-server-design（base: adr/server-design）
 | 20 | 03:12 | SA2 | Phase 2 攻击评审 R2 | 03:21 | SA1 R2 §6.2 两阶段结算协议属实质架构变更，聚焦复审（续传 3bf4e43d） |
 | 21 | 03:22 | SA1 | Phase 2 设计修订 R3 | 03:25 | SA2 R2 verdict: reject（窄幅——§6.2 骨架成立，pending 联言基线公式实证缺陷 + file n≥2 信号缺失），修订限 §6.2 基线语义（续传 5510de55） |
 | 22 | 03:26 | SA2 | Phase 2 攻击评审 R3 | 03:30 | SA1 R3 落实 R2-1/R2-2/R2-3，SA2 窄幅复核 §6.2/§6.3/P24（续传 3bf4e43d） |
-| 23 | 03:30 | SA3 | Phase 3 实现轮（F-FILE） | (pending) | SA2 R3 pass，设计 R3 定稿；SA3 按 §6.2 两阶段结算协议修 probe.ts + 落盘 SA7 锚（续传 cba9640d） |
+| 23 | 03:30 | SA3 | Phase 3 实现轮（F-FILE） | 03:37 | SA2 R3 pass，设计 R3 定稿；SA3 按 §6.2 两阶段结算协议修 probe.ts + 落盘 SA7 锚（续传 cba9640d） |
+| 24 | 03:39 | SA4 | Phase 3 静态验尸 R2 | (pending) | F-FILE 修复入库（980c5a2），总控亲跑全绿+60 CLI 跑 0 异常；SA4 复审谓词形态与时钟排空（续传 21a6f56a） |
