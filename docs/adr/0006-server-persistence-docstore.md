@@ -22,9 +22,9 @@ interface DocPersistence {
 ```
 
 - **身份保证**：同一 `(user, docId)` 恒返回同一 Y.Doc 实例——sync 接入、写入管线、REST 共享权威实例，这是正确性前提而非优化；
-- **显式 saveDoc**：写入管线在「校验 → 事务 → 提交」的提交点显式落盘（否决隐式插桩：迁移等管理操作需要控制落盘时机）；
+- **显式 saveDoc，调度与请求解耦**：saveDoc 是持久化协调器显式调用的操作，但可由定时器/脏状态策略触发，不构成某一次 REST/WS 写入请求的同步提交承诺（否决隐式插桩：迁移等管理操作需要控制落盘时机）；
 - **创建 = 首个 saveDoc**：loadDoc 不存在返回 null，调用方自建 Y.Doc 写入初始内容后 saveDoc 即完成创建（无独立 createDoc）；
-- **save 失败按 doc 只读降级，保留内存事务**：saveDoc 失败使 namespace 进入 `persistence-degraded`，拒绝后续 REST/WS 写入、保留读/查询能力；失败事务保留在同一 live Y.Doc 中，由后台 retry 持久化，retry 成功后才恢复可写；不关闭整个 server、不通用回滚。失败事务的对外广播/可见性由后续写入管线决策定义；
+- **save 失败按 doc 只读降级，保留内存事务**：已校验并提交的事务立即进入 live Y.Doc 并正常同步；save 是内部异步行为，失败不向触发该事务的客户端追溯报错、不通用回滚。失败后 namespace 进入 `persistence-degraded`，保留读/查询与已同步状态，拒绝**后续** REST/WS 写入；失败事务保留在同一 live Y.Doc 中，由后台 retry 持久化，retry 成功后才恢复可写；不关闭整个 server。
 - **evict 纯手动**：驱逐策略（连接归零、空闲计时）属上层，本层只提供能力；
 - **v1 不提供 list**：per-user 枚举用到再补；
 - **user 仅作分区键**：本层不鉴权；存储按用户分区（如 `data/users/{userId}/{docId}.snapshot`）。
