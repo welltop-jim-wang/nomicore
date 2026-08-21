@@ -33,6 +33,8 @@ interface DocPersistence {
 v1 的 `saveDoc` 直接以 `Y.encodeStateAsUpdate(doc)` 编码**完整 Y.Doc 状态**，使用临时文件 + 原子 rename 覆盖该 doc 的单个 snapshot 文件。`loadDoc` 读取该 snapshot 并 `Y.applyUpdate` 还原 Y.Doc。
 
 - 选择简单、可审计、单文件恢复；沿用旧 yjs-server 已验证的 temp+rename 模式；
+- **rename 成功即返回**：v1 不对每次 save 做 file/directory fsync，`saveDoc` 不承诺掉电级持久性；
+- 数据保障不依赖单机 fsync：需要更强保证时，以副本、异机复制、备份/恢复演练等**冗余机制**提供，另行设计；
 - 不引入 WAL、增量水位、帧格式、压缩调度或坏帧截断的实现复杂度；
 - 代价已知：每次 save 的 CPU/IO 与文档全量大小成正比；规模优化（增量 WAL + 周期快照）留 v2，以不改变 `DocPersistence` Interface 的 Adapter 内部替换实现。
 
