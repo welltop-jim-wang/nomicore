@@ -1,7 +1,8 @@
 # SA4 静态验尸报告 — parseSchemaEnvelope（Issue #52 / H1）
 
-**Date**: 2026-08-21
-**Verdict**: **reject**（单项缺陷 F1，局部修复即可；架构免复审）
+**Date**: 2026-08-21（R1 首轮）；同日 R2 复审（追加节见文末）
+**Verdict（当前，R2）**: **pass**
+**Verdict（R1 历史）**: reject（单项缺陷 F1——ENV-100 崩溃边界 detail 计算在 catch 内二次可抛；已由 SA3 commit `14f56f0` 修复 + SA6 第 13 条回归锚钉死，R2 复审通过，见文末 R2 节）
 
 **被审对象**：SA3 实现 commit `cb7a2c7`（`packages/vfsl/src/envelope.ts` 187 行新增、`packages/vfsl/src/index.ts` +34 行、`packages/vfsl/package.json` 版本 bump、SA6 测试文件随 commit）。
 **对照基准**：SA1 设计 R2（`wiki/raw/task_vfsl-schema-envelope_design.md`，SA2 verdict pass）。
@@ -177,3 +178,63 @@ function crashDetail(err: unknown): string {
 ## 结论
 
 SA3 实现质量总体高：设计十二用例机制映射逐条兑现、R2 #1 单行 sanitizer 与伪造向量消除实测成立、边界矩阵 14/15 组按设计落地、scope 干净、CI 接线自动成立、全量 31/464 独立复绿。**唯一但必须修复的缺陷 F1**：ENV-100 崩溃边界的 detail 计算在 catch 块内二次可抛，使「绝不外抛」的成文承诺在对抗输入上失效——这正是本接缝被立项来接住的输入类别，且修复成本 ~3 行。**Verdict: reject**——SA3 修复 `envelopeCrashIssue` 守卫 + SA6 补 1 条对抗红灯锚后，SA4 仅就该点复审。
+
+---
+---
+
+# R2 复审（2026-08-21）
+
+**Verdict: pass**
+
+**被审对象**：SA3 F1 修复 commit `14f56f0`（`envelope.ts` `crashDetail` 守卫 + SA6 追加 F1 回归锚）。复审范围按 R1 既定：仅 F1 修复点 + SA6 红灯锚；R1 其余章节结论维持不变。
+**复审方法**：不采信总控转述——修复 diff 逐行核对 + 穷尽攻击向量独立进程实跑（`/tmp/sa4-r2-f1-reverify.ts`，tsx，含 R1 全部实锤/理论向量 + 新增向量，13/13）+ 全量 typecheck/vitest 独立复跑。
+
+## 1. 修复点核验 — ✅ 通过
+
+`envelope.ts` diff 逐行核对：`envelopeCrashIssue` 的 detail 计算拆为模块内部 `crashDetail(err)`，原表达式（`err instanceof Error ? err.message : String(err)`）整体包进 try/catch，二次异常降为确定性占位正文 `不可字符串化的异常值（${typeof err}）`，仍经 `makeEnvelopeIssue`（唯一构造点 + 单行 sanitizer，链路不变）。静态审查确认：
+
+- **守卫覆盖完备**：`instanceof`（V6：Proxy getPrototypeOf trap 使运算自身抛）、`err.message`（V5：原型伪装 Error 的 message getter 抛）、`String(err)`（V1/V2/V3/V4/V7：ToPrimitive 全路径）三步任一抛出均被捕获；
+- **占位正文自身不可抛**：`typeof err` 恒不抛（非属性访问），模板无动态值注入，sanitizer 对其幂等（无行终止符）；
+- **不吞正常路径**（P2）：普通 Error 的原 message 保留；原始值 thrown（V8：string）经 `String()` 直通保留；
+- **修复半径**：仅 `envelope.ts` 单函数 +22 行（含注释），`makeEnvelopeIssue`/sanitizer/形状校验/方言路由/编排零触碰。
+
+## 2. 穷尽攻击向量复验 — ✅ 13/13 全过（独立进程实跑）
+
+| 向量 | 来源 | 结果 |
+|---|---|---|
+| V1 getter 抛 `Object.create(null)` | R1 实锤 A1 | PASS：不抛 + `VFSL-ENV-E100:` @ 0/0 恒单行 |
+| V2 getter 抛 `{toString:42}` | R1 实锤 A2 | PASS |
+| V3 Proxy `getOwnPropertyDescriptor` trap 抛（`Object.hasOwn` 注入点） | R1 实锤 A5 | PASS |
+| V4 Proxy `get` trap 抛（属性读取注入点） | SA6 锚第三向量同源 | PASS |
+| V5 原型伪装 Error + throwing message getter | R1 理论向量① | PASS（instanceof 真 → message getter 抛 → 守卫收编） |
+| V6 Proxy 包裹 Error + `getPrototypeOf` trap 抛（instanceof 自身抛） | R1 理论向量② | PASS |
+| V7 `Symbol.toPrimitive` 抛 | **R2 新增向量** | PASS |
+| V8 thrown string 原始值 | 对照 | PASS（detail 直通不丢） |
+| P1–P3 占位正文结构性质 / 普通 Error 不误吞 / 多行 err.message 仍单行化 | 对照（R1 A4/B3 不回归） | PASS |
+| S1/S2 hostile lang 伪造单行化 / 合法信封恰四键回显 | R1 B1/C8/D2 抽复验 | PASS |
+
+占位正文实测形态（P1，结构性质断言、不锁定措辞）：`VFSL-ENV-E100: 内部错误（意外异常）: 不可字符串化的异常值（object）`。
+
+## 3. SA6 第 13 条回归锚核验 — ✅ 通过
+
+- **断言质量**：全部为经公共入口 `../src/index.js` 的运行时行为断言（`not.toThrow` + `ok:false` + `^VFSL-ENV-E100:` 前缀 + `not.toMatch(/^VFSL-E\d+:/)` + 哨兵 0/0 + 无换行）；无源码 grep 断言反模式（§1.7 禁令合规）；未锁定兜底正文措辞（锚契约不锚实现，允许后续演化）✓；
+- **向量覆盖**：getter 抛 `Object.create(null)` / `{toString:42}` / Proxy get trap 三向量，与 R1 §F1 复现证据同源 ✓；
+- **红灯真实性有据**：任务简报 SA6 追加节记录修复前实跑 `Tests 1 failed | 12 passed (13)`，失败根因 `TypeError: Cannot convert object to primitive value` 与 R1 §F1 取证逐字一致——修复前必红、修复后转绿，锚有判别力 ✓；
+- **原 12 用例零触碰**：`git diff cb7a2c7..14f56f0` 测试文件删除行仅为过时头注释叙事（「当前状态」段落），断言逻辑零改动——SA6 owned 纪律（ALLOW LIST「断言逻辑禁改」）合规 ✓。
+
+## 4. Scope / 存量复验 — ✅ 通过
+
+- `14f56f0` 触界：`envelope.ts`（ALLOW）+ 测试文件（SA6 回流授权）+ 4 个 wiki 档案（白名单）；DENY/BLACKLIST 零命中；全分支 vs base 的 DENY 复核仍为空；
+- R1 Housekeeping 项已解决：`.mabf-bg/verify-sa3.log` 不再 staged（当前 git status 仅 dispatch.md 修改，白名单内）✓；
+- 全量独立复跑：`pnpm typecheck` → TYPECHECK_OK（0 错）；`pnpm test` → **Test Files 31 passed (31) / Tests 465 passed (465) / Type Errors no errors / exit 0**，汇总行亲见 `parse-schema-envelope.test.ts (13 tests)` 执行——R1 基线 464 + 1 新锚，存量零回归 ✓。
+
+## 5. 动态审核重点（交 SA7，R2 修订）
+
+R1 三条中第 1 条（F1 修复后回归）静态+实跑双确认已闭环，**从 SA7 清单撤销**；保留：
+
+1. **CI 触发证据**：从 `gh run view --log` 摘录 `parse-schema-envelope.test.ts (13 tests)` 执行行（§1.4 静态接线的动态确认）；
+2. **超长 text 透传冒烟**：合法信封数 MB 级 text 走 parseSchemaEnvelope，确认仍受 parseVfsl 既有三层防护约束、ENV 侧引用直通无额外内存放大。
+
+## R2 结论
+
+**Verdict: pass。** F1 修复与 R1 处方逐字对应且经穷尽向量实跑验证（含 R1 全部理论向量与新增 Symbol.toPrimitive 向量，13/13）；守卫不吞正常路径、不触碰既有通道；SA6 回归锚断言质量合规且修复前红灯有据；scope 干净、全量 31/465 独立复绿零回归。R1 其余章节（设计一致性、Scope Guard、§1.4 vitest 触发性、协议假设、码空间判别、边界矩阵、过度设计）结论维持。**SA7 可进入动态验证**（清单见 §5，两条）。

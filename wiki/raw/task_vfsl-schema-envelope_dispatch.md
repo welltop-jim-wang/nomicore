@@ -14,4 +14,8 @@
 | 8 | 15:08 | SA3 | Phase 3 编码实现 | 15:13 | SA2 R2 pass 设计定稿，派 SA3 TDD 实现使红灯转绿 |
 | 9 | 15:14 | SA4 | Phase 3 静态验尸 | 15:23 | 总控亲跑验证 exit 0（31 文件 464 用例全绿），派 SA4 红队审查 |
 | 10 | 15:23 | SA6 | Phase 3 回流-红灯锚 | 15:26 | SA4 R1 reject（F1：envelopeCrashIssue String(err) 二次抛出逃逸）；SA6 先补对抗 getter 红灯锚 |
-| 11 | 15:26 | SA3 | Phase 3 回流-修复 F1 | (pending) | SA6 红灯锚就位（13 用例 1 红），SA3 修 envelopeCrashIssue 守卫 |
+| 11 | 15:26 | SA3 | Phase 3 回流-修复 F1 | 15:28 | SA6 红灯锚就位（13 用例 1 红），SA3 修 envelopeCrashIssue 守卫 |
+| 12 | 15:29 | SA4 | Phase 3 静态验尸 R2 | 15:33 | 总控亲跑验证 exit 0（465 全绿），SA4 复审 F1 修复点 |
+| 13 | 15:33 | SA7 | Phase 3 动态验证 | 15:41 | SA4 R2 pass，派 SA7 实跑活链路验证 |
+| 14 | 15:42 | 总控 | Phase 3.5 AC 门禁 | 15:42 | AC 6/6 全 ✅（task_vfsl-schema-envelope_ac_checklist.md），无 ❌ 无追加派发 |
+| 15 | 15:42 | 总控 | Phase 4 收尾固化 | (pending) | 双清达成（SA4 R2 pass + SA7 pass），一致性校验 + HG 自检 + commit + REPORT + .mabf-done |
