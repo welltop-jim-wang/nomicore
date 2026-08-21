@@ -57,6 +57,16 @@ export { evaluate } from './evaluate.js';
 export { validateSnapshot } from './validate.js';
 export type { ValidateIssue, ValidateResult } from './validate.js';
 
+// issue #53 / H2：路径级写入校验——validatePatch（替换语义）+ 数组三操作
+// （append/insert/delete，ADR 0004 D1 词表的运行时判定面）。同步、纯函数、不抛错；
+// 结构守卫 + 最近结构边界重建整值校验（与 validateSnapshot 共用解释器）。
+export {
+  validatePatch,
+  validateAppendToArray,
+  validateInsertIntoArray,
+  validateDeleteFromArray,
+} from './validate-patch.js';
+
 // issue #25 / F1：SchemaSource 接缝（ADR 0005 §1/§2）——FileSchemaSource 阶段态仓内文件源、
 // 方言断言助手与接缝层结构化错误；消费方（F2 生成器 / G dogfood / CI）经接缝取文本。
 export { FileSchemaSource, assertVfslDialect, SchemaSourceError } from './schemasource.js';
