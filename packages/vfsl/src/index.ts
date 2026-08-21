@@ -107,6 +107,10 @@ export type {
  * PRD #3 冻结的公共接缝：解析 VFSL v1 文本（本切片构造子集）。
  */
 export function parseVfsl(text: string): ParseVfslResult {
+  return parseVfslImplementation(text);
+}
+
+function parseVfslImplementation(text: string): ParseVfslResult {
   try {
     const tokens = tokenize(text);
     const { aliases, dangling } = parseModule(tokens);
@@ -164,7 +168,7 @@ export function parseSchemaEnvelope(input: unknown): ParseSchemaEnvelopeResult {
 // —— issue #54 / H3：DocScope 编译缓存门面（getCompiled）——
 
 /**
- * getCompiled ok 分支：缓存共享的编译缓存条目对（module/derived 双产出）。二者与
+ * getCompiled ok 分支：缓存共享的 IR + 派生 schema 条目。二者与
  * 返回容器均为深冻结对象（§D4.3）——消费者不得变异共享引用；ESM 严格模式下
  * 变异尝试抛 TypeError（loud，非静默降级）。
  */
@@ -192,6 +196,14 @@ export type GetCompiledResult =
  * 做 unknown 姿态校验——`getCompiled(42)`/`null`/函数 → ENV-1（§6）。
  */
 export function getCompiled(input: unknown): GetCompiledResult {
+  return getCompiledWith(input, parseVfslImplementation);
+}
+
+/** @internal 包内测试接缝：直接证明缓存命中不会再次解析；package exports 不暴露子路径。 */
+export function getCompiledWith(
+  input: unknown,
+  parse: (text: string) => ParseVfslResult,
+): GetCompiledResult {
   // 全函数体顶层崩溃边界（R2/A2 · D11——与 parseSchemaEnvelope 同结构）：正常路径
   // 无可抛点（parseVfsl/evaluate 各有自身 catch；sha256Hex 纯循环；deepFreeze 递归
   // 深度被 MAX_TYPE_NESTING=100 结构性封顶——SA2 已核查），此 catch 收编的是
@@ -221,7 +233,7 @@ export function getCompiled(input: unknown): GetCompiledResult {
     }
 
     // ③ miss → 一次 parseVfsl + evaluate（简报：「同一文本一次 parseVfsl + evaluate」）
-    const parsed = parseVfsl(text);
+    const parsed = parse(text);
     if (!parsed.ok) {
       return { ok: false, issues: vfslIssues(parsed.issues) }; // 不落缓存（幂等重拒，可重试）
     }
@@ -241,7 +253,7 @@ export function getCompiled(input: unknown): GetCompiledResult {
 
 /**
  * v1 无淘汰论证（简报明文策略）：进程内命名空间数有界（每 Y.Doc 恰一份 SCHEMA
- * 信封，yjs-server 进程承载的活文档集有限），条目 = 纯数据编译缓存条目（O(文本
+ * 信封，yjs-server 进程承载的活文档集有限），条目 = 纯数据 IR + 派生 schema（O(文本
  * 规模)，ADR-0003 §4），总量 ≈ 活命名空间数 × 单文本规模——有界。淘汰（LRU/
  * 弱引用/per-DocScope 生命周期）留 v2（§12 checklist）：届时引入 DocScope 实例
  * 工厂，本函数退化为默认实例薄壳，公共契约不变。
@@ -251,7 +263,7 @@ const compiledCache = new Map<string, CompiledOk>();
 /**
  * 深冻结（D4.3）：递归冻结纯数据产物（含数组与嵌套对象）；WeakSet 防御环（IR/派生物
  * 按契约为无环 DAG，防御性收口而非预期路径）；幂等（重复访问已冻对象即返回）。
- * 只冻 getCompiled 入册的编译缓存条目（容器 + module + derived 引用图，一次 O(条目
+ * 只冻 getCompiled 入册的 DocScope 缓存条目（容器 + IR + 派生 schema 引用图，一次 O(条目
  * 规模)，被命中摊薄）；evaluate 接缝本体的直接输出不冻结——求值器设计 §8.3 的 v1
  * 不冻结决策在其自身辖域内原样有效，本助手只是其逃逸条款「共享引用升格突变后果
  * 时再评估」的域内执行。

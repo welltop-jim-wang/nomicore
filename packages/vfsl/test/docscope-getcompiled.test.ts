@@ -78,39 +78,19 @@
  */
 import { readFileSync } from 'node:fs';
 import { describe, expect, it, vi } from 'vitest';
-import { evaluate, getCompiled, parseSchemaEnvelope, parseVfsl } from '../src/index.js';
+import { evaluate, getCompiled, getCompiledWith, parseSchemaEnvelope, parseVfsl } from '../src/index.js';
+import type {
+  CompiledOk,
+  GetCompiledResult,
+  SchemaParseIssue,
+  VfslModule,
+} from '../src/index.js';
 
 /** 求值接缝包裹（唯一 mock 面）：默认透传真实 evaluate，测试注入一次性失败。 */
 vi.mock('../src/evaluate.js', async (importOriginal) => {
   const mod = (await importOriginal()) as typeof import('../src/evaluate.js');
   return { ...mod, evaluate: vi.fn(mod.evaluate) };
 });
-
-/** PRD #3 / ADR 0003 冻结的文本错误形状（evaluate 失败通道同款）。 */
-interface VfslIssue {
-  message: string;
-  line: number;
-  column: number;
-}
-
-/** H1 信封层 issue（未知方言拒绝的身份锚：code '4' / readOnly）。 */
-interface SchemaEnvelopeIssue {
-  code: string;
-  message: string;
-  readOnly: boolean;
-}
-
-type SchemaParseIssue =
-  | { kind: 'envelope'; issue: SchemaEnvelopeIssue }
-  | { kind: 'vfsl'; issue: VfslIssue };
-
-/** getCompiled 可观察结果形状（不预锁失败 issue 的具体包装——各通道断言各自收窄）。 */
-interface CompiledOk {
-  ok: true;
-  module: { kind: 'vfsl-module'; aliases: unknown[] };
-  derived: unknown;
-}
-type CompiledResult = CompiledOk | { ok: false; issues: unknown[] };
 
 // ---------------------------------------------------------------------------
 // fixtures（已用当前引擎逐条自检：全部 parse ok、evaluate ok）
@@ -147,29 +127,22 @@ function envelopeOf(text: string, over: Partial<{ lang: string; version: number;
  * 签名一致）。同步/async 不预锁：thenable 统一 await，非 thenable 原样返回——
  * await 保持对象引用同一性，AC1 的引用断言在两种形态下均成立。
  */
-async function compiledOf(input: unknown): Promise<CompiledResult> {
-  const r = getCompiled(input) as unknown;
-  if (
-    r !== null &&
-    typeof r === 'object' &&
-    typeof (r as { then?: unknown }).then === 'function'
-  ) {
-    return (await r) as CompiledResult;
-  }
-  return r as CompiledResult;
+async function compiledOf(input: unknown): Promise<GetCompiledResult> {
+  return await getCompiled(input);
 }
 
 /** 断言拒绝并返回 issues（ok:false + 非空 issues）。 */
-function expectRejected(r: CompiledResult): { issues: unknown[] } {
+function expectRejected(r: GetCompiledResult): Extract<GetCompiledResult, { ok: false }> {
   expect(r.ok).toBe(false);
-  const issues = (r as { ok: false; issues: unknown[] }).issues;
-  expect(Array.isArray(issues)).toBe(true);
-  expect(issues.length).toBeGreaterThan(0);
-  return { issues };
+  if (r.ok) {
+    throw new Error('fixture 应为 ok:false');
+  }
+  expect(r.issues.length).toBeGreaterThan(0);
+  return r;
 }
 
 /** 断言 ok 并返回收窄结果。 */
-function expectOk(r: CompiledResult): CompiledOk {
+function expectOk(r: GetCompiledResult): CompiledOk {
   expect(r.ok).toBe(true);
   if (!r.ok) {
     throw new Error(`fixture 应为 ok:true: ${JSON.stringify(r.issues)}`);
@@ -178,7 +151,7 @@ function expectOk(r: CompiledResult): CompiledOk {
 }
 
 /** 断言文本合法并返回 module（fixture 自检 + 缓存产物对照）。 */
-function parseVfslOk(text: string): { kind: 'vfsl-module'; aliases: unknown[] } {
+function parseVfslOk(text: string): VfslModule {
   const r = parseVfsl(text);
   expect(r.ok).toBe(true);
   if (!r.ok) {
@@ -233,6 +206,18 @@ describe('getCompiled — AC1 同文本同一对象引用（缓存命中可证�
     expect(r1.module).toEqual(parseVfslOk(TEXT_A));
     // 纯数据纪律（ADR-0003）：派生物可 JSON 序列化往返
     expect(JSON.parse(JSON.stringify(r1.derived))).toEqual(r1.derived);
+  });
+
+  it('缓存命中不重新解析：同文本第二次调用跳过 parser 并返回同一引用', () => {
+    const text = 'type ROOT = { parseOnce: boolean; };';
+    const parse = vi.fn(parseVfsl);
+
+    const first = expectOk(getCompiledWith(text, parse));
+    const second = expectOk(getCompiledWith(text, parse));
+
+    expect(second).toBe(first);
+    expect(parse).toHaveBeenCalledTimes(1);
+    expect(parse).toHaveBeenCalledWith(text);
   });
 
   it('缓存命中不重算：注入 evaluate 失败后，同文本再次调用仍 ok、同引用，且 evaluate 未被再次调用', async () => {
