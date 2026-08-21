@@ -2,7 +2,8 @@
  * 校验核心（issue #21 设计 §3~§5/§8~§10）：值 schema 树解释器——整份 JSON 快照校验。
  *
  * validateSnapshot 是值 schema（`derived.values`）的解释器；结构树（aliases /
- * structure / index）**零消费**（设计 §1.2——两树正交，读取即设计违约，SA4 静态锚点）。
+ * structure / index）**本文件内零消费**（两树正交纪律；结构树的首消费者为本票
+ * validate-patch.ts——validate.ts 头注随票收窄，正交纪律不变，读取即设计违约）。
  *
  * 架构要点（设计 §2/§3/§5/§8，SA3 防走样附录 1~10 逐条兑现）：
  * - 同步、纯函数、不抛错：一切 per-call 中间态（ref 解析 memo、正则编译缓存、
@@ -35,7 +36,8 @@ import {
 import type { CompiledPattern } from './pattern.js';
 import { wellFormedXml } from './xml.js';
 import type { DerivedSchema, Discriminator, ValueField, ValueSchema } from './derived.js';
-import { InternalError } from './resolve.js';
+import { InternalError, walkRefChain } from './resolve.js';
+import type { RefChainLens } from './resolve.js';
 
 /** 校验 issue：message + path 段数组（不复用 VfslIssue——无行列；段数组零转义）。 */
 export interface ValidateIssue {
@@ -117,25 +119,22 @@ function createCtx(values: Record<string, ValueSchema>): Ctx {
   return ctx;
 }
 
-// —— §3.1 值树 ref 解析器（迭代 while 循环；in-flight 环检测；菱形链只解析一次）——
+// —— §3.1 值树 ref 解析器（共享核心 walkRefChain 的值树透镜实例；迭代 while 循环；
+//     in-flight 环检测；菱形链只解析一次——memo 按 next-hop 语义，与 #31 现状逐位一致）——
+
+/** 值树透镜（查表带 own 守卫：手造 ref 名命中原型链继承名 → 未声明 loud E100，SA4 F2）。 */
+function valueLens(ctx: Ctx): RefChainLens<ValueSchema> {
+  return {
+    isRef: (n): n is Extract<ValueSchema, { kind: 'ref' }> => n.kind === 'ref',
+    nameOf: (n) => (n as Extract<ValueSchema, { kind: 'ref' }>).name,
+    lookup: (name) => (Object.hasOwn(ctx.values, name) ? ctx.values[name] : undefined),
+    cycleError: (name) => new InternalError(`值树引用环: ${name}`),
+    missingError: (name) => new InternalError(`值树未声明别名: ${name}`),
+  };
+}
 
 function resolveValues(t: ValueSchema, ctx: Ctx): ValueSchema {
-  const inFlight = new Set<string>();
-  let node: ValueSchema = t;
-  while (node.kind === 'ref') {
-    const hit = ctx.refMemo.get(node);
-    if (hit !== undefined) {
-      node = hit;
-      continue;
-    }
-    if (inFlight.has(node.name)) throw new InternalError(`值树引用环: ${node.name}`);
-    inFlight.add(node.name);
-    const next = Object.hasOwn(ctx.values, node.name) ? ctx.values[node.name] : undefined; // own 守卫：手造 ref 名命中原型链继承名 → 未声明 loud E100（SA4 F2）
-    if (next === undefined) throw new InternalError(`值树未声明别名: ${node.name}`);
-    ctx.refMemo.set(node, next);
-    node = next;
-  }
-  return node;
+  return walkRefChain(t, valueLens(ctx), ctx.refMemo);
 }
 
 // —— §3.3 运行时类型名（诊断用）——
@@ -589,21 +588,18 @@ function validateObject(
 // —— §2 公共接缝 ——
 
 /**
- * 第三公共导出（issue #21）：整份 JSON 快照校验——值 schema 树解释器。
+ * 共享解释器主体（issue #53 抽取）：validateSnapshot 与 validateSubtree 的单一
+ * 来源——联合三段算法、判别式缓存透明、全收集（100 条 + 截断标记）、2×10⁸ 工作
+ * 预算、E100 崩溃边界全部在此，两个入口逐字共享。
  *
- * 同步、纯函数、不抛错；不修改 `derived` 与 `snapshot`（纯数据只读遍历）；结果纯
- * JSON 值（JSON 往返全等）；编译一次、校验多次（一切中间态调用局部，不落模块级
- * 缓存）。前置条件：`derived` 须为 `evaluate` 的 ok:true 产物；篡改数据（删判别式
- * 键是测试合法操作——缓存非契约；造环/删别名属手造垃圾）落入 loud E100 边界，
- * 不静默产出 ok:true。
+ * 同步、纯函数、不抛错；不修改 `values` 与 `value`（纯数据只读遍历）；结果纯
+ * JSON 值（JSON 往返全等）；一切中间态调用局部，不落模块级缓存。
  */
-export function validateSnapshot(derived: DerivedSchema, snapshot: unknown): ValidateResult {
+function interpret(values: Record<string, ValueSchema>, root: ValueSchema | undefined, value: unknown): ValidateResult {
   try {
-    const ctx = createCtx(derived.values);
-    const rootType = ctx.values['ROOT'];
-    if (rootType === undefined) throw new InternalError('值树缺少 ROOT 别名');
-    const root = resolveValues(rootType, ctx);
-    validateValue(root, snapshot, [], ctx); // path 起点 = []
+    if (root === undefined) throw new InternalError('值树缺少 ROOT 别名');
+    const ctx = createCtx(values);
+    validateValue(root, value, [], ctx); // path 起点 = []
     if (ctx.overflow > 0) {
       // 截断标记（§8.2 唯一追加点）：恰在真实 issue 数 > 100 时出现（=100 无标记）
       ctx.issues.push({
@@ -632,4 +628,26 @@ export function validateSnapshot(derived: DerivedSchema, snapshot: unknown): Val
       issues: [{ message: `VFSL-E100: 内部错误（意外异常）: ${detail}`, path: [] }],
     };
   }
+}
+
+/**
+ * 公共导出（issue #21）：整份 JSON 快照校验——值 schema 树解释器。
+ *
+ * 同步、纯函数、不抛错；不修改 `derived` 与 `snapshot`（纯数据只读遍历）；结果纯
+ * JSON 值（JSON 往返全等）；编译一次、校验多次（一切中间态调用局部，不落模块级
+ * 缓存）。前置条件：`derived` 须为 `evaluate` 的 ok:true 产物；篡改数据（删判别式
+ * 键是测试合法操作——缓存非契约；造环/删别名属手造垃圾）落入 loud E100 边界，
+ * 不静默产出 ok:true。
+ */
+export function validateSnapshot(derived: DerivedSchema, snapshot: unknown): ValidateResult {
+  return interpret(derived.values, derived.values['ROOT'], snapshot);
+}
+
+/**
+ * 内部件（不进公共面）：子树校验——validatePatch 值校验段的单一来源（issue #53）。
+ * issue path 相对于子树根（[] 起步）；上限/预算/E100 与 validateSnapshot 同一实现。
+ * 唯一 caller = validate-patch.ts。
+ */
+export function validateSubtree(values: Record<string, ValueSchema>, node: ValueSchema, value: unknown): ValidateResult {
+  return interpret(values, node, value);
 }

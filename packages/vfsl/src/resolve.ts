@@ -13,6 +13,11 @@
  * （4）typeCls(t)——任意类型 Cls 查询（ref 查表 / union 折叠 / 其余 localCls），
  *      以 Resolver 方法形态暴露（issue #29 收敛，沿 resolveChain 先例）。
  *
+ * 共享解析核心（issue #53 收敛，ADR 0003 §4）：while 循环算法全仓恰一份——
+ * `walkRefChain<T>`（本文件）+ 三个参数化透镜（IR 透镜 = resolveChain 内部委托；
+ * 值树透镜 = validate.ts resolveValues 内部委托；结构树透镜 = validate-patch.ts
+ * 新增）。报错文案经各透镜工厂逐字节还原；memo 语义按 next-hop（可选）。
+ *
  * 一切 Internal 均属 loud 边界：顶层 catch 收编为 E100（设计 §9），无静默降级。
  */
 import type { VfslModule, VfslType } from './ir.js';
@@ -60,6 +65,48 @@ export function buildResolver(module: VfslModule): Resolver {
 }
 
 /**
+ * ref 链解析透镜（ADR 0003 §4「解析动作由包内共享解析器完成」的参数化实例）。
+ * 三个类型域（IR / 值树 / 结构树）各提供一个透镜：报错文案经透镜工厂逐字节
+ * 还原（IR 侧无冒号、值树/结构树侧带冒号）；查表责任在调用方（own 守卫 / Map.get）。
+ */
+export interface RefChainLens<T> {
+  isRef(node: T): boolean;
+  /** 仅在 isRef 为真时被调用。 */
+  nameOf(node: T): string;
+  lookup(name: string): T | undefined;
+  cycleError(name: string): Error;
+  missingError(name: string): Error;
+}
+
+/**
+ * 包内共享解析核心（ADR 0003 §4；issue #53 收敛 resolve 双份——全仓 while 循环
+ * 算法恰一份）：迭代沿 ref 链走到非 ref。环 → lens.cycleError（loud）；未知名 →
+ * lens.missingError（loud）；memo（可选）按 next-hop 语义逐访问节点读写——与
+ * #31 resolveValues 现状逐位一致。ref 链任意长度无栈增长。
+ */
+export function walkRefChain<T>(node: T, lens: RefChainLens<T>, memo?: Map<T, T>): T {
+  const inFlight = new Set<string>();
+  let cur = node;
+  while (lens.isRef(cur)) {
+    if (memo !== undefined) {
+      const hit = memo.get(cur);
+      if (hit !== undefined) {
+        cur = hit;
+        continue;
+      }
+    }
+    const name = lens.nameOf(cur);
+    if (inFlight.has(name)) throw lens.cycleError(name);
+    inFlight.add(name);
+    const next = lens.lookup(name);
+    if (next === undefined) throw lens.missingError(name);
+    if (memo !== undefined) memo.set(cur, next);
+    cur = next;
+  }
+  return cur;
+}
+
+/**
  * 迭代沿 ref 链走到非 ref 类型（ref 链任意长度无栈增长，设计 §4.3）。
  * 重入（环，E106 不变量）→ Internal；名缺席（E301 不变量）→ Internal；
  * undefined（手造 IR 缺 ROOT）→ TypeError——均由顶层 catch 收编为 E100。
@@ -68,20 +115,13 @@ function resolveChain(t: VfslType | undefined, bodies: Map<string, VfslType>): V
   if (t === undefined) {
     throw new TypeError('resolveChain: 空类型（手造 IR：ROOT 缺席）');
   }
-  const inFlight = new Set<string>();
-  let cur = t;
-  while (cur.kind === 'ref') {
-    if (inFlight.has(cur.name)) {
-      throw new InternalError(`引用环: ${cur.name}`);
-    }
-    inFlight.add(cur.name);
-    const next = bodies.get(cur.name);
-    if (next === undefined) {
-      throw new InternalError(`未声明别名 ${cur.name}`);
-    }
-    cur = next;
-  }
-  return cur;
+  return walkRefChain(t, {
+    isRef: (n): n is Extract<VfslType, { kind: 'ref' }> => n.kind === 'ref',
+    nameOf: (n) => (n as Extract<VfslType, { kind: 'ref' }>).name,
+    lookup: (name) => bodies.get(name),
+    cycleError: (name) => new InternalError(`引用环: ${name}`),
+    missingError: (name) => new InternalError(`未声明别名 ${name}`),
+  });
 }
 
 /**
