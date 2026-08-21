@@ -4,7 +4,7 @@
 
 [yjs-server Namespace Schema 自描述体系](https://welltop.feishu.cn/docx/MvtJdEr84ojlRTxbmsWcqHD8npg)的落地仓库：一次完整重写，而非对现有 yjs-server 的修补。
 
-核心思想：一段 **VFSL 文本**（受限 TypeScript 子集 + 标记类型 + JSDoc）作为 schema 的**单一真相源**，作为数据存进 doc 的 `__schema__` 信封——派生 TS 类型、结构树、路径校验器、整文档校验器与 AI 说明，命名空间随数据走、不依赖代码模块。
+核心思想：一段 **VFSL 文本**（受限 TypeScript 子集 + 标记类型 + JSDoc）作为 schema 的**单一真相源**，作为数据存进 doc 的 `SCHEMA` 信封——派生 TS 类型、结构树、路径校验器、整文档校验器与 AI 说明，命名空间随数据走、不依赖代码模块。
 
 ## 这个版本能做什么（v0.1.3）
 
@@ -58,7 +58,7 @@ parseVfsl('type A = any;');
 
 **诊断覆盖**：19 个错误码全量落地——词法（E201–E203）、语法（E100–E106）、语义（E301–E309，含环检测 E106、字段重名 E308、形状分类 E304/E306/E307/E309）。单错误模型：全部候选按 `(line, column, code)` 取最小，恰返回 1 条。
 
-**尚未包含**（见路线图）：求值器、`validateSnapshot`、`__schema__` 信封、路径索引、yjs 服务端。本版本是纯解析层——文本进，IR 或诊断出，不触碰 yjs。
+**尚未包含**（见路线图）：求值器、`validateSnapshot`、`SCHEMA` 信封、路径索引、yjs 服务端。本版本是纯解析层——文本进，IR 或诊断出，不触碰 yjs。
 
 ## 设计不变量
 
@@ -66,7 +66,7 @@ parseVfsl('type A = any;');
 - **不抛错承诺**：任何输入的错误只经返回值传递；顶层兜底把意外异常转化为结构化 E100（命中即实现缺陷，不得视为通过）。
 - **IR 可序列化**：纯数据、无环（环被 E106 显式拒绝）、值域在 JSON 表达力内——编译缓存与跨版本消费的前提。
 - **方言冻结**：v1 按[规格](docs/vfsl/v1-spec.md)冻结，后续只做加法；未知方言在读取侧响亮失败，不静默降级。
-- **仓库不含 schema 文本**（测试除外）：运行时真相是 doc 里 `__schema__` 的数据，不是代码库里的 `.vfsl` 文件。
+- **仓库不含 schema 文本**（测试除外）：运行时真相是 doc 里 `SCHEMA` 的数据，不是代码库里的 `.vfsl` 文件。
 - **零写入**：所有校验在事务前完成，失败 400 且文档不变（服务端落地时的承诺，解析层先行兑现其判定部分）。
 - **单一真相**：禁止在代码里另立 schema 副本（手写 ValueShape / 平行的 zod 定义）；派生物全部从 VFSL 文本来。
 - **零运行时依赖**：`@nomicore/vfsl` 只依赖 Node 标准库。
@@ -87,7 +87,7 @@ nomicore/
 ## 路线图
 
 1. ~~Phase 0a · parser 切片~~ ✅ v0.1.3：v1 方言全量解析（issues #5–#9，180 个测试）
-2. **Phase 0b · 引擎补全**：求值器 / 路径索引 / `validateSnapshot` / `__schema__` 信封
+2. **Phase 0b · 引擎补全**：求值器 / 路径索引 / `validateSnapshot` / `SCHEMA` 信封
 3. **Phase 2 · yjs-server**：schema 数据面服务端（namespace 生命周期、统一写入管线、同步协议）——两个开放问题见 PRD #3（写入强制级别、API 面拆分）
 
 ## 开发
