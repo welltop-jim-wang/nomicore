@@ -1,12 +1,12 @@
 # SA1 架构设计 — DSH 持久化开发 profile 与 inspector 探针（Issue #59, P4）
 
-> 阶段：Phase 2 架构设计（**R2 修订轮**：SA7 动态验证 fail-needs-fix 回流——F-FILE 证伪 R0/R1 §6.2 file 通道结算谓词，本轮重定义两阶段结算协议；R1 攻击点 1–7 与 R0 决策 A–I 中未被 R2 显式改写的部分继续有效）
+> 阶段：Phase 2 架构设计（**R3 修订轮（窄幅）**：SA2 R2 评审 reject（窄幅）——协议骨架经源码级复核+独立原型确认成立、不重开；本轮仅修 §6.2 pending 联言基线公式（R2-1）+ 顺序规则前置（R2-2）+ ProbeClock.pending() 声明（R2-2b）+ 单降级源前置（R2-3）。R2 的两阶段结算协议与 R1/R0 未被触及部分继续有效）
 > 任务简报：`wiki/raw/task_dsh-persistence-inspector.md`（含 SA6 Phase 1 验收锚定 §1–§4，契约面以简报 §2/§3 为准）
 > ADR 约束基准：`wiki/raw/task_dsh-persistence-inspector_relevant_decisions.md`（ADR-0006 含 2026-08-21 修订节为直接治理 ADR；冲突门禁结论提示 1–5 全部落实，见 §10 映射表）
 > 评审链：SA2 R0 评审（reject→R1 落实）；SA8 设计后复审（clear）；SA4 R1 复审（pass）；**SA7 动态验证 fail-needs-fix→R2 回流（`task_dsh-persistence-inspector_sa7_report.md`）**
 > 实现基线：P1–P3 已合入（2aa22f4）；SA3 实现 + F1/F2 修复 + SA4 pass + SA6 R1–R5 测试修订均已落盘（HEAD 66ce567 系）；SA6 三缺陷（§9）全部协调落盘。R2 焦点 = file 通道结算谓词重定义（§6.2）。
 > worktree：`/home/wangjian/nomicore-fix-issue-59`
-> ⚠️ **R2 阻塞项：SA7 F-FILE（P1）——R0/R1 §6.2 的 file 通道结算谓词（隐含「磁盘提交态可见 ⟺ 内核 flush 记账完成」）被 52 跑实证证伪（症状 A 静默丢 evict / 症状 B file-settle-timeout，各 1/52）。本轮已重定义为两阶段结算协议（§6.2；P19–P23 实证），待 SA3 落地 + SA4 复审 + SA7 复跑闭环。**
+> ⚠️ **R3 阻塞解除条件：SA2 R2 攻击点 R2-1/R2-2/R2-3 已全部落实（§6.2/§6.3/§13 P24）；SA7 F-FILE（P1）的修复仍待 SA3 按 R3 版 §6.2 落地 + SA4 复审（专项核对谓词形态——联言基线是本缺陷注入点）+ SA7 复跑（52 跑 + 建议补 file n=2 批次，当前锚只覆盖 n=0/1）。**
 
 ---
 
@@ -253,7 +253,9 @@ const memoryIo = {
 **A-arming（窗口后还有脏写）**——arm 紧随其后置 saveDoc，advance 仅在 armed 之后：
 
 ```ts
-const base = pendingCount()            // 探针时钟内省（SA6 FakeTimer/自建时钟均带 pending()）
+const base = pendingCount()            // ★（R3，R2-1）A-arming 基线 = saveDoc 调用前的同步快照（本形态原已正确）：
+                                        //   saveDoc 无 await 段——非 flushing 时同步武装 debounce+maxDirty 两计时器，
+                                        //   flushing 时由记账 finally 武装——两路径 pending 均净增 ≥1，`>base` 恒可达
 await svc.saveDoc(handle)              // 脏写（resolve 后才计 generation，决策 C）
 emit dirty { generation }
 await waitFor(() => pendingCount() > base, FILE_WAIT_MS, `file-settle-timeout:${docId}:g${gen}`)
@@ -277,19 +279,30 @@ await waitFor(() => evictSeen.has(docKey), FILE_WAIT_MS, `file-settle-timeout:${
 
 refs>0 的中间 release 无需等待：`maybeEvict` 的 `handles.size>0` 前置使 release 行为与 flushing 状态无关，且 release 间 1-tick 推进无计时器可弹。
 
-**顺序规则（实现纪律，防误用）**：A-arming 必须紧随其后置 saveDoc，**不得**做成独立的 post-advance 等待——无后续脏写的窗口在记账完成后没有任何计时器武装，孤立的 `pending>base` 等待必然超时（R2 原型实测定位，§13 P23）。
+**顺序规则与前置条件（实现纪律，防误用；R3 补 R2-2 前置）**：
 
-**失败注入（不变，V7/P9）**：外科式 `mkdir users/<owner>/doc-degraded.snapshot.tmp` → 在途 flush 的 `writeFile(tmp)` 得 EISDIR → degraded。失败/恢复腿的结算谓词按原子性引理推论 ① 保持 status 翻转语义（可叠加 `pending>base` 联言作纵深防御）；中间失败腿的「下一次 retry 已排」等待（`pending>base`，base 取 advance 前）语义不变且因原子性引理天然安全。
+1. **放置规则**：A-arming 必须紧随其后置 saveDoc，**不得**做成独立的 post-advance 等待——无后续脏写的窗口在记账完成后没有任何计时器武装，孤立的 `pending>base` 等待必然超时（R2 原型实测定位，§13 P23；SA2 R2 原型 B 恢复腿复证 pending=0）。
+2. **（R3，R2-2a）净零武装前置**：A-arming 基线期间该 doc **无既存未决 debounce/maxDirty 计时器对**——即**每脏写窗口恰一次 saveDoc 后必 advance 到 flush**。反例边界：同一 doc 在一个 debounce 窗口内二次 saveDoc 时，`scheduleFlush` 对已存在的 debounce 计时器 clear+set **净零**、maxDirty 已存在不新增（lifecycle.ts:401-403）→ pending 不增 → A-arming 超时。当前场景 S1/S4 均满足（每窗口一写一推）；**未来场景编辑（如「连续两次标脏验证 debounce 合并」）须先为 A-arming 更换信号**（如 per-doc 计数观察口），不得沿用 pending 基线。
+3. **（R3，R2-2b）时钟内省契约**：`pending()` 语义见 §6.3 ProbeClock 声明（**已触发已删除的计时器不计**——SA6 FakeTimer 与自建时钟同语义，是本节全部基线算术成立的前提）。
 
-**R2 修复后的完整窗口协议（file 通道每一步）**：
+**失败注入（不变，V7/P9）与降级腿基线（R3，R2-1 修正）**：外科式 `mkdir users/<owner>/doc-degraded.snapshot.tmp` → 在途 flush 的 `writeFile(tmp)` 得 EISDIR → degraded。降级腿的结算判据按「**触发动作返回点的同步基线**」统一：
+
+- **首次失败腿（n≥1）**：主信号 = `waitFor(status === 'persistence-degraded')`（原子性引理推论 ①，翻转即记账完成，**完备**）。若实现选择叠加 `pending` 联言作纵深防御，**base 必须取 `advanceBy` 返回瞬间**——advance 已同步消耗到期的 debounce+maxDirty（base=0），记账完成后仅剩 retry 计时器（pending=1 → `1>0` ✓）。R2 原文「base 取 advance 前」是**错误公式**：base=2（debounce+maxDirty）→ 记账后 pending=1 → `1>2` 恒假——照字面落地 file n=1 **每跑必超时（确定红，非 flaky）**（SA2 R2 原型 B 三组算术实证，§13 P24）。
+- **中间失败腿（n≥2，状态不翻转——status 持续 degraded，无翻转信号）**：信号 = `waitFor(pending > base)`，**base 同样取 `advanceBy` 返回瞬间**（advance 已消耗上一支 retry 计时器 → base=0；记账 catch 重排下一支 retry → pending=1 → `1>0` ✓）。R2 原文「base 取 advance 前」在此同样恒假（base=1 → `1>1`）——**file 通道 n≥2 中间失败腿将无任何可用信号**，是对「任意 n 确定」承诺（R1 攻击点 4）在 file 通道上的回归。修正后该腿恢复正确信号。
+- **恢复腿**：**删除 `pending` 联言，只用 `waitFor(status === 'ready' && rev 达标)`**——status 翻转依原子性引理已是完备记账证明；且恢复时 `saved===dirty`，记账 finally **不重排任何计时器**（lifecycle.ts:444 条件不满足）→ 记账后 pending=0，任何 `pending>base` 联言**恒假必超时**（SA2 原型 B：`恢复后 pending = 0`）。
+
+**R2 修复后的完整窗口协议（file 通道每一步；R3 已按 R2-1 修正基线）**：
 
 | 场景步 | 协议 |
 |---|---|
-| 脏写→flush→（后续还有脏写） | saveDoc → **A-arming** → advance → **W** → flush 事件 |
+| 脏写→flush→（后续还有脏写） | saveDoc → **A-arming**（base=saveDoc 前快照）→ advance → **W** → flush 事件 |
 | flush→末次 release | **W** → flush 事件 → releases（中间无等待）→ 末次 release → **A-evict** |
 | 重载验新实例（S1 h4） | A-evict 通过后才 `loadDoc`（保证 cache miss → 新实例，否则会拿到未驱逐的旧 live doc） |
-| S4 失败腿（n≥1） | advance → waitFor(status degraded [&& pending>base]) → flush ok=false + degraded（原子性引理①） |
-| S4 恢复腿 | unblock → advance(delay) → waitFor(status ready && rev 达标) → flush ok=true + recovered（原子性引理①） |
+| S4 首次失败腿（n≥1） | advance → waitFor(status degraded [&& pending>baseAdvance])（baseAdvance=advanceBy 返回瞬间，=0）→ flush ok=false + degraded（原子性引理①） |
+| S4 中间失败腿（n≥2） | advance → waitFor(pending > baseAdvance)（baseAdvance=advanceBy 返回瞬间）→ flush ok=false + degraded（retry 重排即记账完成，状态无翻转故以此为唯一信号） |
+| S4 恢复腿 | unblock → advance(delay) → waitFor(status ready && rev 达标)（**禁止叠加 pending 联言**——恢复后 pending=0，联言恒假，P24）→ flush ok=true + recovered（原子性引理①） |
+
+**（R3，R2-3）status 谓词的实例级前置声明**：`getStatus()` 是**实例级**信号（任一 cell degraded 即整体 degraded）——失败/恢复腿的翻转谓词隐含前置「**当前唯一 degraded 源是本 doc** + **降级窗口串行**」。当前场景恒成立：S4 是唯一降级源、探针全程持 handle、窗口串行执行、degraded entry 不可能被驱逐清空（`maybeEvict` 的 `saved!==dirty` 前置保证 degraded ⇒ dirty ⇒ 不驱逐）。**未来扩展警示**：多 doc 并行降级场景会使翻转谓词失真（A 的降级掩盖 B 的恢复）——届时需 per-doc 状态信号，属内核公共面演进，须另行 ADR/设计评审，不得在本协议内静默修补。
 
 **（R1，攻击点 6）`probe-failed` reason 封闭词表**：`waitFor` 超时与场景异常的 reason **不得**内插 `err.message`（EISDIR/ENOENT 等系统文本含绝对路径）或 rootDir——失败 record 与成功 record 同受 §8「无环境痕迹」禁令约束。reason 取自封闭枚举：
 
@@ -309,7 +322,14 @@ refs>0 的中间 release 无需等待：`maybeEvict` 的 `handles.size>0` 前置
 ### §6.3 时钟模块
 
 ```ts
-export interface ProbeClock extends PersistenceTimer { advanceBy(milliseconds: number): Promise<void> }
+// （R3，R2-2b）pending() 是 A-arming / advance 驱动腿依赖的时钟内省面（§6.2 基线算术的前提）：
+// 返回当前已武装、未到期的计时器个数；**已触发已删除的计时器不计**（触发即从登记表移除）。
+// SA6 FakeTimer（timers Map 触发即 delete）与自建时钟必须同语义——否则 §6.2 的
+// 「advanceBy 返回瞬间 base=0（到期计时器已同步消耗）」基线算术不成立。
+export interface ProbeClock extends PersistenceTimer {
+  advanceBy(milliseconds: number): Promise<void>
+  pending(): number
+}
 
 export function createDeterministicClock(): ProbeClock {
   // 机制与 persistence testkit createTestTimer 同族（testing.ts:100-132）：到期序触发回调，
@@ -317,11 +337,12 @@ export function createDeterministicClock(): ProbeClock {
   // （R1，攻击点 7 勘误：testkit 实际每轮排空 3 个微任务（testing.ts:126/129），R0 误写为 8；
   //   自建时钟的每轮排空数是探针自选实现参数，真正的结算兜底不依赖它——
   //   探针在每个 advanceBy 之后统一 settle(32)，file 模式另有真实等待（§6.2）。）
+  // pending() 语义：武装未到期计数；advanceBy 触发回调前先从登记表移除该计时器（已触发已删除不计）。
 }
 async function settle(ticks = 32): Promise<void> { for (let i = 0; i < ticks; i++) await Promise.resolve() }
 ```
 
-调用方传入的 timer 缺 `advanceBy` → `TypeError`（决策 D）。
+调用方传入的 timer 缺 `advanceBy` → `TypeError`（决策 D）；**（R3）adapter 为 file 时还要求 `pending` 可内省**（缺 → 启动即 `TypeError`，同 loud-reject 语义——无内省则 §6.2 基线协议不可实现；memory 通道不依赖 pending，不作要求）。
 
 ## §7. 模块设计与公共面
 
@@ -602,6 +623,7 @@ pnpm exec tsx packages/dsh-persistence/src/cli.ts --adapter <memory|file> [--roo
 | P21 | **（R2）新协议（A-arming/A-evict）在同一确定性窗口下完整吸收**：延迟 30ms 钩子下场景全链路完成，evict 落在钉死刻度 t=1002；插桩验证窗口内 `saveDoc → scheduleFlush 早退 → pending=0` → 30ms 后记账完成 → finally 武装 `pending=2` → advance 触发 flush g2 → release → evict | 设计期实测验证（R2 原型） | 原型输出：`新协议（arming/evict 等待）结果：["dirty g1","flush g1 observed","dirty g2","flush g2 observed","evict a1 t=1002"] —— 窗口被吸收 ✓`；分步插桩：`saveDoc g2 done（dirty g2）| pending = 0（flushing=true → scheduleFlush 早退）` → `arming 等待结束 | elapsed = 30 ms | pending = 2` | 低 |
 | P22 | **（R2）file 通道并发竞争压测**：双探针同进程并发 × 1ms 高频轮询 × 25 对 = 50 跑，自然命中「磁盘先于记账」窗口 3 次，全部被新协议吸收（A-arming/A-evict 等待后继续），事件序不一致 0、失败 0 | 设计期实测验证（R2 原型，真实 `FilePersistence`） | 原型输出：`并发压测：50 跑 | 窗口命中 3 | 事件序不一致 0 | 失败 0 → 并发竞争下 0 失真 ✓` | 低 |
 | P23 | **（R2）file 通道新协议确定性**：单进程连跑 60 次（每次全新 rootDir），record 逐字节一致（0 不一致），事件序与 §5/SA7 锚定形态逐行相同（含 `flush … g2 … t=2008`、`evict … t=2009`）；另实证顺序规则：孤立的 post-advance `pending>base` 等待（无后续脏写）在记账后无人武装，必然超时——A-arming 必须紧随后置 saveDoc | 设计期实测验证（R2 原型） | 原型输出：`60 跑完成（2692ms）：不一致 0 次 → 新协议下逐字节一致 ✓`；顺序规则反例：`新协议（arming/evict 等待）结果：✗ timeout:arming`（arming 被误置于 advance 之后）→ 修正放置后 P21 通过 | 低 |
+| P24 | **（R3）pending 联言基线公式算术（R2-1 缺陷实证）**：真实 `FilePersistence` + `.tmp` 目录阻塞 + 逐字 FakeTimer 下三组实测——① `saveDoc 后 pending = 2 \| 首次失败记账后 pending = 1`（debounce+maxDirty 已消耗，仅剩 retry）；② 「base 取 advance 前」: base=1 → `pending>base = false`（恒假 = 等待必超时）vs「base 取 advance 后（=0）」: `pending(1)>0 = true`（正确信号）；③ `恢复后 pending = 0`（saved===dirty → finally 不重排 → 恢复腿挂 pending 联言必超时）。推论：R2 原基线公式照字面落地则 file n=1 每跑必红（确定红）、n≥2 中间失败腿无信号；R3 修正（触发动作返回点同步基线 + 恢复腿删联言）后两组算术均恢复可达 | SA2 R2 评审原型 B（引用） | `task_dsh-persistence-inspector_sa2_review.md` R2 评审节 §五②（`pnpm exec tsx /tmp/sa2-r2/baseline.mjs`，脚本已删，SA2 工作区零污染）；与 lifecycle.ts:401-403（净零武装）/ :436-437（catch 重排 retry）/ :444（恢复不重排）逐行对账 | 低（公式已修正） |
 
 ## §14. 契约改动连锁审计 (Contract Change Caller Audit)
 
@@ -661,3 +683,27 @@ SA7 以 52 跑量化数据证伪了 R0/R1 §6.2 file 通道结算谓词的隐含
 - **闭环路径**：SA3 落地 → SA4 复审（重点：协议接线的窗口覆盖完备性，S1/S2/S4 每个 advance/release 前均有条件 A 证明）→ SA7 复跑（52 跑 0 异常 + 锚稳定绿）。
 
 **SA1 结论（R2）**：§6.2 谓词缺陷已修复且实证闭环（P19 证伪 → P20 机理复现 → P21/P22/P23 吸收与确定性）；DENY、AC8、§5 钉死时间线、封闭词表全部保持。设计就绪，待 SA3 落地。
+
+---
+
+## R3 修订说明（SA2 R2 评审 reject 窄幅回流，2026-08-22）
+
+### 修订范围（按总控指令：协议骨架不重开）
+
+仅 §6.2 基线语义与前置声明 + §6.3 接口一行 + §13 一行实证；协议骨架（条件 W/A 拆分、原子性引理、武装不变式、A-evict、虚拟刻度不变式、窗口表结构）、§5 钉死值、§8/§9/§11/§12 均不动（SA2 R2 评审节三「正面确认」清单）。
+
+### SA2 R2 攻击点逐条回应
+
+| 攻击点 | 是否落实 | 修订位置 | 修订内容摘要 |
+|---|---|---|---|
+| R2-1（HIGH）：pending 联言基线公式两处实证缺陷（失败/恢复腿联言恒假 → file n=1 确定红；n≥2 中间失败腿无信号） | ✅ | §6.2「失败注入与降级腿基线（R3，R2-1 修正）」+ 窗口表两行 + A-arming 伪代码注释 + §13 P24 | 统一「触发动作返回点的同步基线」：A-arming 保持 base=saveDoc 前快照（原已正确，注释补两路径算术）；首次失败腿联言（可选）base=advanceBy 返回瞬间（=0，debounce+maxDirty 已同步消耗）；中间失败腿（n≥2，状态无翻转）信号 = pending > baseAdvance（同基线；恢复「任意 n 确定」在 file 通道的承诺）；恢复腿**删除联言**（status 翻转依原子性引理已是完备证明；恢复后 pending=0，联言恒假——SA2 原型 B 实证引用为 P24）。R2 原错误公式以「错误公式」标注保留于文中供 SA4 对照，防 SA3 照旧实现 |
+| R2-2（MEDIUM）：净零武装边界与 pending() 接口面未声明 | ✅ | §6.2 顺序规则前置 2/3（新增）；§6.3 ProbeClock | 前置声明：A-arming 基线期间该 doc 无既存未决 debounce/maxDirty 计时器对（每脏写窗口恰一次 saveDoc；反例 = 同窗口二次 saveDoc 的 clear+set 净零 → pending 不增 → 超时；未来连续标脏场景须先换信号）；ProbeClock 补 `pending(): number` 声明 + 语义注记（已触发已删除不计；SA6 FakeTimer 与自建时钟同语义——基线算术前提）+ file 通道缺 pending 启动即 loud TypeError（memory 不依赖不作要求，与 SA3 现实现 guard 一致） |
+| R2-3（LOW）：status 谓词实例级语义前置未声明 | ✅ | §6.2 窗口表后新增前置段 | 声明「当前唯一 degraded 源是本 doc + 降级窗口串行」为翻转谓词前置（当前恒成立：S4 唯一降级源、全程持 handle、degraded ⇒ dirty ⇒ 不驱逐）；多 doc 并行降级的未来扩展会使谓词失真，届时需 per-doc 状态（内核公共面演进，另行 ADR/设计评审，不得静默修补） |
+
+### 与 SA2 红线测试思路的对应（供 SA4/SA7 参考）
+
+- 红线 #1①（file n=1 ≥20 跑 events=32 无超时）：R3 修正后成立的前提正是基线公式——若 SA3 照 R2 原文实现联言，第一跑即确定红（P24 算术）；
+- 红线 #1②（file n=2 CLI：两条同代 ok=false @t=1508/2008 + recovered@3008 + 双跑一致）：当前锚未覆盖 file n≥2，**建议 SA7 复跑补该批次**（R3 修正恢复的回归口）；
+- 红线 #1③（恢复腿 pending===0 专项 + 谓词形态文本断言）：SA4 复审专项核对项（谓词形态 = 本缺陷注入点）。
+
+**SA1 结论（R3）**：R2-1/R2-2/R2-3 全部落实，修订面严格限于指令范围；两阶段结算协议骨架维持 SA2 确认形态。设计就绪，交 SA2 窄幅复核（预期仅审 §6.2/§6.3/§13 P24）。
