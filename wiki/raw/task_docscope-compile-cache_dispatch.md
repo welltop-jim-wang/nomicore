@@ -20,4 +20,6 @@
 | 13 | 18:36 | SA6 | Phase 3 事后审查轮（并行总控派发） | ~18:44 | 并行总控就 commit 归属争议路由 SA6 逐行审查 R2/R2.1 改动。裁定：三处缺陷为真、修正方向正确、AC 覆盖不变（记录见测试头注与简报） |
 | 14 | 18:36 | 总控(并行) | Phase 3 验收复验 | ~18:44 | 并行总控亲跑 pnpm test 全量复验（.mabf-bg/ctrl-full-verify.log）——与本总控 ctrl-verify3（555/555 exit 0）结论一致 |
 | 15 | 18:46 | SA7 | Phase 3 动态验证 | 18:54 | pass —— SA4 pass 后动态验证：交错稳定 7/7、无漂移、成本/内存量级健康；CI 触发证据环境阻塞待 push 后由 runner 补验（补验命令与 blob 哈希锚定已固化于 sa7_report.md，verdict: pass） |
-| 16 | 18:56 | 总控 | Phase 3.5 AC 门禁 | (pending) | SA4+SA7 双清达成；对照 TASK.md 六条 AC 逐条核证，写 ac_checklist |
+| 16 | 18:56 | 总控 | Phase 3.5 AC 门禁 | 18:58 | SA4+SA7 双清达成；对照 TASK.md 六条 AC 逐条核证，写 ac_checklist |
+| 17 | 18:58-19:00 | 总控 | Phase 4 收尾固化 | 19:00 | 六条 AC 全 ✅；总控亲跑最终验证 555/555 + typecheck exit 0（.mabf-bg/ctrl-final.log）；本地 commit 74ddece（代码+全部 wiki+验证日志，未 push）；REPORT.md（三行）与 .mabf-done（run_id）已封口 |
+| 18 | 19:02 | 总控 | 单写者协议（Runner 指令） | 19:02 | mkdir .mabf-bg/ctrl-coord.lock 抢锁成功（holder=本续跑总控会话）；grep 确认 SA7 仅一行在途记录（本会话 18:46 所派，pass，无并行 SA7）；对方自 18:44 后无 dispatch 活动；本会话为唯一写者，完成事务维持 19:00 封口状态有效 |
