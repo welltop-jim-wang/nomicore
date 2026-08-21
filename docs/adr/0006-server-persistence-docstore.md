@@ -1,4 +1,4 @@
-# ADR 0006：NomicoreServer 持久层——DocStore 接口与 doc 三条目内容布局
+# ADR 0006：Cordis 持久化插件——DocPersistence 接口与 doc 三条目内容布局
 
 日期：2026-08-21
 状态：已接受（Phase 2 server 架构讨论，D-B 持久层决策）
@@ -14,7 +14,7 @@ NomicoreServer 需要持久层。初稿方案（store 只认 opaque Uint8Array �
 ```ts
 interface User { userId: string }
 
-interface DocStore {
+interface DocPersistence {
   loadDoc(user: User, docId: string): Promise<Y.Doc | null>;
   saveDoc(user: User, doc: Y.Doc): Promise<void>;
   evict(user: User, doc: Y.Doc): Promise<void>;
@@ -41,6 +41,27 @@ Y.Doc
 - `owner` 暂不入 META（归属先存于 store 分区路径，避免将来跨用户共享时语义尴尬）；
 - META/SCHEMA 作为 ROOT 的兄弟条目，天然在 validateSnapshot/validatePatch 的校验面之外（校验只作用 ROOT 子树）。
 
+## Cordis 插件化修订（2026-08-21，owner 决策）
+
+NomicoreServer 与 DSH 均以 **Cordis** 为宿主内核；持久层先作为宿主无关的 Cordis 插件在 DSH 中开发、调试和验证，之后由 NomicoreServer 加载同一插件实现——不为 server 重写第二份持久化逻辑。
+
+### 核心 seam 与 Adapter
+
+- `DocPersistence` 是 Cordis service Interface；插件通过 Cordis 提供/注入该 service；
+- `MemoryPersistence` 与 `FilePersistence` 是两个真实 Adapter（两个 Adapter 证明 seam 不是假想抽象）；
+- 插件实现只依赖 Cordis、Yjs 与持久化 contracts，**不得 import DSH 或 NomicoreServer app**；
+- DSH 与 NomicoreServer 都只是 Cordis Host：前者装调试/inspector 插件，后者只装生产插件集合；
+- 插件采用工厂/实例模型而非全局单例，以支持测试隔离、不同 rootDir 与 HMR/reload；
+- dispose 时释放文件句柄、后台任务和 Y.Doc 缓存；宿主负责按依赖逆序停止插件。
+
+### 实施顺序
+
+1. persistence contracts + Cordis service 注册；
+2. MemoryPersistence 插件 + contract tests；
+3. FilePersistence 插件（用户分区、缓存身份、显式 save、手动 evict、恢复与崩溃测试）；
+4. DSH 开发 profile + inspector 探针；
+5. 上述插件在 DSH 调通后才启动 NomicoreServer 极薄 Cordis Host。
+
 ## 被否方案
 
 - **opaque 字节接口**：持久层只认 Uint8Array——同步 diff、GC、缓存管理全部不可行（owner 裁决）；
@@ -51,7 +72,7 @@ Y.Doc
 
 - v1 限制：单进程（无文件锁）、load 全量入内存；
 - WAL 帧格式（length+crc、坏帧截断、Yjs 重放幂等）退为实现细节，不进 API；
-- 与 DocScope（schema 编译产物缓存，H3）正交汇合：getDoc → 读 SCHEMA → DocScope.getCompiled → 可校验；
+- 与 DocScope（schema 编译产物缓存，H3）正交汇合：loadDoc → 读 SCHEMA → DocScope.getCompiled → 可校验；
 - 事务原子性由 Y.transact（单 update 单元）保证，store 无需多写事务。
 
 ## 关联
