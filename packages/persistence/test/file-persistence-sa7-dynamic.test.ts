@@ -173,6 +173,7 @@ describe('FilePersistence SA7 dynamic verification', () => {
         'alice flush lands on disk',
       )
       await expect(persistence.saveDoc(bobHandle)).rejects.toThrow(/persistence-degraded/)
+      expect(persistence.getStatus()).toBe('persistence-degraded')
       expect(fs.existsSync(path.join(bobDir, 'doomed.snapshot'))).toBe(false) // bob never committed
 
       // Coverage 4: heal the disk, then fire Bob's own retry — only its own

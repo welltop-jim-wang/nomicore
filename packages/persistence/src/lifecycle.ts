@@ -110,7 +110,6 @@ export class PersistenceLifecycle {
   private readonly cells = new Map<string, Cell>()
   private readonly inFlight = new Set<Promise<unknown>>()
   private readonly abortController = new AbortController()
-  private status: PersistenceStatus = 'ready'
   private closed = false
   private epoch = 0
 
@@ -123,7 +122,13 @@ export class PersistenceLifecycle {
     RELEASE.set(this, (handle) => this.releaseHandle(handle))
   }
 
-  getStatus(): PersistenceStatus { return this.status }
+  getStatus(): PersistenceStatus {
+    if (this.closed) return 'disposed'
+    for (const cell of this.cells.values()) {
+      if (cell.state === 'live' && cell.entry.degraded) return 'persistence-degraded'
+    }
+    return 'ready'
+  }
 
   async loadDoc(owner: User, docId: string): Promise<DocHandle | null> {
     this.assertReadable()
@@ -227,7 +232,6 @@ export class PersistenceLifecycle {
     }
     this.closed = true
     this.epoch += 1
-    this.status = 'disposed'
     this.abortController.abort()
     for (const cell of this.cells.values()) {
       if (cell.state === 'live') {
@@ -427,11 +431,9 @@ export class PersistenceLifecycle {
       entry.savedGeneration = generation
       entry.retryDelayMs = this.schedule.debounceMs || 1
       entry.degraded = false
-      this.status = 'ready'
     } catch {
       if (!this.isCurrent(epoch)) return
       entry.degraded = true
-      this.status = 'persistence-degraded'
       this.scheduleRetry(entry)
     } finally {
       if (!this.isCurrent(epoch)) return
