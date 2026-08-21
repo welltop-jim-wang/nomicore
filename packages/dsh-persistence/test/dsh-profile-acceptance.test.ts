@@ -34,6 +34,11 @@
  * 需 10~103 轮 setImmediate，内核 retry 恢复链 14~40 轮；plugin 级复刻同样失败，与实现无关）。
  * AC4-file 恢复侧与 AC6 dispose 前的 settleRealIo() 已替换为 deadline 式 waitFor（轮询
  * getStatus()==='ready' / 快照提交态，真实时间上限 5s，无固定轮数校准）；断言目标值一字未改。
+ *
+ * R4 修订（2026-08-22，总控协调，与 R3 同模式）：AC4-file 降级侧首个断言前的 settleRealIo()
+ * 在本机隔离运行约 1/8 偶发 flake（SA3 实测 expected 'persistence-degraded', received
+ * 'ready'）——按 R3 同款替换为 waitFor(getStatus()==='persistence-degraded')，断言目标值不变；
+ * settleRealIo 助手已无调用点，连同固定轮数校准一并移除（waitFor 为唯一等待基础设施）。
  */
 import { describe, expect, it } from 'vitest'
 import * as fs from 'node:fs'
@@ -113,26 +118,13 @@ function threeEntryDoc(docId: string): Y.Doc {
 }
 
 /**
- * 真实文件 I/O 结算等待（R1 修订，SA1 设计 §9 缺陷 1/2 修复配方）。
+ * deadline 式真实等待（R3 修订，SA1 设计 §11 风险预警落盘；R4 起为唯一等待基础设施，
+ * 固定轮数 settleRealIo 已全面移除——见文件头修订史）。
  *
- * FakeTimer 的 advanceBy 只排空微任务；FilePersistence 的 fsp.mkdir/writeFile/rename 在
- * libuv 线程池结算，需真实事件循环轮转（实测约 5 轮 setImmediate）才能观察到 flush 结果。
- * 本助手在断言 getStatus() 之前轮转事件循环，让真实 I/O 落地——只修时序基础设施，
- * 断言目标值一字不改。
- */
-const settleRealIo = async (rounds = 12): Promise<void> => {
-  for (let index = 0; index < rounds; index += 1) {
-    await new Promise((resolve) => setImmediate(resolve))
-  }
-}
-
-/**
- * deadline 式真实等待（R3 修订，SA1 设计 §11 风险预警落盘）。
- *
- * 固定轮数 settleRealIo(12) 在本机不足以等完 FilePersistence 的 mkdir→writeFile→rename
- * 链（SA3 实测：裸链 10~103 轮 setImmediate，内核 retry 恢复链 14~40 轮；plugin 级复刻
- * 同样失败，确认与实现无关）。本助手以真实 setTimeout 轮询谓词直到成立或真实时间上限
- * （默认 5s）耗尽——只等「状态/快照达预期」，不做固定轮数校准。轮询不推进虚拟时钟。
+ * 真实文件 I/O（fsp.mkdir/writeFile/rename）在 libuv 线程池结算，轮次随负载波动
+ * （SA3 实测：裸链 10~103 轮 setImmediate，retry 恢复链 14~40 轮），任何固定轮数都
+ * 存在慢机/CI 波动下不足的风险。本助手以真实 setTimeout 轮询谓词直到成立或真实时间
+ * 上限（默认 5s）耗尽——只等「状态/快照达预期」，不做固定轮数校准。轮询不推进虚拟时钟。
  */
 const waitFor = async (predicate: () => boolean, what: string, timeoutMs = 5_000): Promise<void> => {
   const deadline = Date.now() + timeoutMs
@@ -406,9 +398,10 @@ describe('save 失败降级与 dispose 卫生（AC4/AC6）', () => {
       fs.writeFileSync(path.join(rootDir, 'users', 'user-a'), 'blocker')
       await profile.persistence.saveDoc(handle)
       await timer.advanceBy(DEFAULT_PERSISTENCE_SCHEDULE.debounceMs)
-      // R1（SA1 §9 缺陷 1）：真实文件 I/O 在 libuv 结算，FakeTimer 只排空微任务——
-      // 必须先轮转事件循环让 flush 的 mkdir 失败落地，getStatus 才能观察到 degraded
-      await settleRealIo()
+      // R4（总控协调）：固定轮数 settleRealIo 在本机隔离运行约 1/8 偶发 flake（SA3 实测
+      // expected 'persistence-degraded', received 'ready'）——与 R3 同模式改为 deadline 式
+      // waitFor（上限 5s），断言目标值不变
+      await waitFor(() => profile.getStatus() === 'persistence-degraded', 'file flush failure to degrade (status persistence-degraded)')
       expect(profile.getStatus()).toBe('persistence-degraded')
       await expect(profile.persistence.saveDoc(handle)).rejects.toThrow(/persistence-degraded/)
       fs.rmSync(path.join(rootDir, 'users', 'user-a'), { force: true })
