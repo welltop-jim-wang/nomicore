@@ -1,11 +1,12 @@
 # SA2 攻击评审报告
 
-**Date**: 2026-08-22（R0 首轮） / 2026-08-22（R1 复审） / 2026-08-22（R2 评审，见文末）
+**Date**: 2026-08-22（R0 首轮） / 2026-08-22（R1 复审） / 2026-08-22（R2 评审） / 2026-08-22（R3 复核，见文末）
 **Reviewer**: SA2（Wallfacer，全新视角，未携带 SA1 协商上下文）
-**评审对象**: `wiki/raw/task_dsh-persistence-inspector_design.md`（SA1 R0 → R1 → R2）
+**评审对象**: `wiki/raw/task_dsh-persistence-inspector_design.md`（SA1 R0 → R1 → R2 → R3）
 **Verdict (R0)**: **reject**（1 CRITICAL + 1 HIGH 必须修订设计；3 MEDIUM/LOW 随修订一并落实）
 **Verdict (R1 复审)**: **pass** —— 攻击点 1–7 全部落实且实证可复核；缺陷 3 修法 B 经 SA2 独立重跑验证可满足，SA6 R2 已按配方落盘（工作区未提交态，真红保持）。详见「R1 复审节」。
-**Verdict (R2 评审，最终)**: **reject（窄幅）** —— §6.2 两阶段结算协议的**骨架经源码级复核与 SA2 独立原型确认成立**（原子性引理 / 武装不变式 / A-evict 信号 / 虚拟刻度不变式全部为真），但 §6.2 的 **pending 联言基线公式有实证缺陷**（照字面落地必红 + file n≥2 信号缺失），须一段修正后方可放行 SA3。修订范围仅限 §6.2 基线语义与前置声明，协议骨架不再重开。详见文末「R2 评审节」。
+**Verdict (R2 评审)**: **reject（窄幅）** —— §6.2 两阶段结算协议的**骨架经源码级复核与 SA2 独立原型确认成立**（原子性引理 / 武装不变式 / A-evict 信号 / 虚拟刻度不变式全部为真），但 §6.2 的 **pending 联言基线公式有实证缺陷**（照字面落地必红 + file n≥2 信号缺失），须一段修正后方可放行 SA3。修订范围仅限 §6.2 基线语义与前置声明，协议骨架不再重开。详见「R2 评审节」。
+**Verdict (R3 复核，最终)**: **pass** —— R2-1/R2-2/R2-3 全部落实；修订后基线算术经 SA2 端到端原型（真实 FilePersistence + 逐字 FakeTimer，**file n=2 全序列**）在四条窗口腿上全部恒可达、无新反例；修订面严格限于 §6.2/§6.3/§13 P24。详见文末「R3 复核节」。
 
 > 评审方法：以真实 P1–P3 代码（HEAD 工作区）为基准逐条核对设计断言，独立运行原型脚本
 > 验证内核时序语义（脚本位于 /tmp，已删除，工作区零污染）；ADR 约束基准取自
@@ -257,3 +258,75 @@ sed -n '399,404p;419,451p;463,469p' packages/persistence/src/lifecycle.ts
 - **必须修订（放行 SA3 前）**：攻击点 R2-1（HIGH）——§6.2 两处 `pending>base` 基线公式按字面落地必红（失败/恢复腿联言恒假、file n≥2 中间失败腿无信号），统一修正为「触发动作返回点同步基线 + 恢复腿删联言」；R2-2（MEDIUM）——A-arming 净零武装前置 + `ProbeClock.pending()` 接口与语义声明；R2-3（LOW）——status 谓词单降级源前置声明。
 - **修订范围**：仅 §6.2 一节内的基线定义/前置声明 + §6.3 接口补一行 + §13 补一行实证；协议骨架、窗口表、§5 钉死值、§8/§9/§11/§12 均不须动。修订后 SA2 复核仅限该节，预期直接 pass。
 - **闭环提醒**：R2-1 修正后 SA4 复审须专项核对 SA3 落地的谓词形态（联言是否照字面实现——这是本缺陷的注入点）；SA7 复跑除 52 跑外建议补 file n=2 批次（当前锚只覆盖 n=0/1，见红线测试 #1②）。
+
+---
+
+# R3 复核节（2026-08-22）
+
+**复核对象**：`task_dsh-persistence-inspector_design.md` R3 修订轮（窄幅：§6.2 基线语义 / §6.3 pending() 声明 / §13 P24）
+**复核范围（按总控指令）**：仅审修订后 §6.2 的基线算术在所有窗口腿（A-arming / 首次失败 / 中间失败 / 恢复）上**恒可达、无新反例**；协议骨架不重开。
+**复核方法**：R3 文本逐条对账 + SA2 端到端原型（真实 `FilePersistence` + 逐字 SA6 FakeTimer，**file n=2 全序列**——R2 下不可实现的形态）+ 既有测试面兼容性核查。
+
+## 一、R2 攻击点落实复核
+
+| R2 攻击点 | 修订落点 | SA2 复核结论 |
+|---|---|---|
+| R2-1（HIGH）基线公式两处恒假 | §6.2「失败注入与降级腿基线（R3，R2-1 修正）」+ 窗口表三行 + A-arming 伪代码注释；§13 P24 | ✅ 统一「触发动作返回点的同步基线」：A-arming 保持 base=saveDoc 前快照（注释补两路径「净增 ≥1」算术——非 flushing 同步武装 +2；flushing 由 finally 重排 +2，且**新 saveDoc 已先行递增 dirtyGeneration 保证 `saved!==dirty` 恒成立、finally 必重排**，SA2 源码推演确认）；首次失败腿可选联言 base=advanceBy 返回瞬间（debounce 触发即删 + maxDirty 被 onDebounce 取消 → base=0）；中间失败腿信号 `pending > baseAdvance`（同基线）；恢复腿**删除联言**（saved===dirty 不重排 → pending=0 恒假）。**R2 错误公式以「错误公式」标注保留于文中供 SA4 对照**——防 SA3 照旧实现的正确处置 |
+| R2-2（MEDIUM）净零武装前置 + pending() 接口面 | §6.2 顺序规则 2/3；§6.3 ProbeClock | ✅ 前置声明含反例边界与未来换信号指引；`pending(): number` 声明 + 语义钉死（**已触发已删除不计**，SA6 FakeTimer 与自建时钟同语义——经查 SA6 FakeTimer 确为触发即删，test:88/98）；file 通道缺 `pending` 启动即 loud TypeError（memory 不依赖不作要求）——**兼容性核查**：唯一 file 模式探针调用（SA7 锚 `dsh-file-probe-determinism.test.ts:73`）不传 timer → 自建时钟自带 pending → 守卫零破坏 |
+| R2-3（LOW）status 谓词实例级前置 | §6.2 窗口表后新增段 | ✅ 「唯一 degraded 源 + 降级窗口串行」前置声明，含 degraded⇒dirty⇒不驱逐论证与多 doc 并行降级的未来扩展警示（另行 ADR，不静默修补） |
+| §13 P24 证据 | P24 行 | ✅ 引用 SA2 R2 原型 B 的命令与三组算术，归属准确；与 lifecycle.ts:401-403（净零武装）/ :436-437（catch 重排 retry）/ :444（恢复不重排）逐行对账无误 |
+| 修订面纪律 | R3 修订说明 | ✅ 仅 §6.2/§6.3/§13 P24 + 回应表；骨架、§5 钉死值、§8/§9/§11/§12 未动（对照 R2 评审节三「正面确认」清单逐项不变） |
+
+## 二、四腿基线算术的恒可达性实证（SA2 端到端原型，file n=2 全序列）
+
+真实 `FilePersistence` + `.tmp` 目录阻塞 + 逐字 SA6 FakeTimer，按 R3 修订版协议逐腿驱动（此前 R2 下 n=2 的中间失败腿**不可实现**，本跑即为其恢复的直接证据）：
+
+| 腿 | 协议（R3 版） | 实测 | 判定 |
+|---|---|---|---|
+| 腿 0 前置 | saveDoc → 同步武装 | pending=2（debounce+maxDirty） | ✓ |
+| **腿 2 首次失败**（n≥1） | advance → waitFor(status degraded && pending>baseAdvance)，baseAdvance=advanceBy 返回瞬间 | t=500，baseAdvance=**0**，记账后 pending=1 → `1>0` **true** | ✓ 恒可达（主信号 status 翻转同腿实测 degraded ✓） |
+| 腿 2+ 拒绝证明 | saveDoc → write-rejected | 拒绝 ✓ | ✓ |
+| **腿 3 中间失败**（n≥2） | advance → waitFor(pending > baseAdvance)（status 无翻转，唯一信号） | t=1000，baseAdvance=**0**，记账后 pending=1 → `1>0` **true**（R2 原公式 base=advance前=1 → `1>1` 恒假，对照成立） | ✓ **file n≥2 恢复可实现** |
+| **腿 4 恢复** | unblock → advance(1000) → waitFor(status ready && rev)（**无联言**） | t=2000，status=ready、rev=1 ✓，记账后 pending=**0**（恢复不重排——若 R2 联言残留则此处必超时） | ✓ |
+| **腿 1 A-arming**（恢复后脏写） | base=saveDoc 前快照(0) → saveDoc → waitFor(pending>0) → advance → W | arming 即时通过（记账已证 → 同步武装）→ flush g2 落 **t=2500**（=2000+500 钉死刻）→ W rev=2 ✓ | ✓ |
+| A-evict（附带） | release → waitFor(evict) | evict 与 release 同刻 t=2500，等待期间虚拟时钟零移动 | ✓ |
+
+虚拟刻度全序列（500/1000/2000/2500/2500）与内核退避算术（500→1000 翻倍、恢复后 debounce 复位）逐项吻合；n≥3 由同构算术归纳（每轮 advance 消耗一支 retry、catch 重排下一支，baseAdvance 恒 0）。
+
+## 三、新反例搜寻（SA2 自攻）
+
+- **「记账在 advanceBy 返回前完成」假想敌**：若成立，baseAdvance 快照将错过武装（base=1、记账后仍 1 → 腿 2 联言失效）。**不成立**：file 通道真实 I/O 必经宏任务结算，advanceBy 只排空微任务（SA6 FakeTimer 逐字语义 + §6.3 自建时钟「排空若干微任务」）——前提被 §6.3 时钟纪律覆盖。**观察项（INFO，非阻塞）**：SA4 复核应确认 SA3 自建时钟的 `advanceBy` 不含任何宏任务排空（setImmediate/setTimeout）——若有人加宏任务排空，baseAdvance 快照点语义被破坏（这是 R3 基线唯一隐含的时钟实现纪律，建议 SA4 列为核对项）。
+- **外来计时器污染基线**：S1–S3 全部 doc 在 S4 前已驱逐（clearTimers）或无计时器（S2 无 saveDoc、S3 被拒前置），S4 窗口 pending 只含 doc-degraded 自身——baseAdvance=0 精确。规则 2 前置已约束本 doc 侧。✓ 无反例。
+- **A-arming「净增 ≥1」边界**：前置规则 2 排除净零形态；外来计数只抬 base 不阻碍 +2。✓。
+- **恢复腿与 A-arming 的衔接**：恢复记账由 status 翻转证明完成 → 后续 saveDoc 必走同步武装路径（无 Path B 竞争）——腿 1 实测 arming 0ms 即时通过。✓。
+
+## 四、R3 复核验证证据（SA2 实跑，2026-08-22）
+
+```bash
+# ① 端到端四腿原型（真实 FilePersistence + 逐字 FakeTimer，file n=2；脚本 /tmp/sa2-r3/e2e.mjs，已删）
+cd /home/wangjian/nomicore-fix-issue-59 && pnpm exec tsx /tmp/sa2-r3/e2e.mjs
+#   → [腿0] saveDoc 后 pending = 2
+#     [腿2 首次失败] t=500 baseAdvance=0 status=persistence-degraded pending=1 → 联言 1 > 0 = true ✓
+#     [腿2+] saveDoc 拒绝 ✓
+#     [腿3 中间失败] t=1000 baseAdvance=0 pending=1 → 1 > 0 = true ✓（R2 原公式 base=1 → 1>1 恒假，对照）
+#     [腿4 恢复] t=2000 status=ready rev=1 pending=0（=0 期望，恢复不重排；联言已删）✓
+#     [腿1 A-arming+W] arming 等待 0ms → flush g2 落 t=2500 rev=2 ✓
+#     [A-evict] release t=2500 → evict 同刻=true（虚拟时钟零移动）✓
+#     === 四腿基线全部恒可达，file n=2 端到端通过 ===
+
+# ② 兼容性核查（pending 结构守卫不破坏既有测试）
+grep -rn "runPersistenceProbe(" packages/dsh-persistence/test/
+#   → memory×3（SA6，传 FakeTimer——memory 不要求 pending）；file×1（SA7 锚:73，不传 timer → 自建时钟自带 pending）
+grep -n "timers.delete" packages/dsh-persistence/test/dsh-profile-acceptance.test.ts
+#   → 88/98（FakeTimer 触发即删——§6.3 所引语义属实）
+```
+
+## 五、R3 复核最终裁决
+
+**pass**。
+
+- R2-1/R2-2/R2-3 全部落实且算术正确：修订后基线（「触发动作返回点的同步基线」+ 恢复腿删联言）经 SA2 端到端原型在**全部四条窗口腿**上恒可达，其中包括 R2 下不可实现的 **file n=2 中间失败腿**（`baseAdvance=0 → 1>0` 实测真）——「任意 n 确定」承诺在 file 通道恢复。恢复腿 pending=0 实测再证删联言的必要性。
+- 修订面严格限于指令范围（§6.2/§6.3/§13 P24），协议骨架、§5 钉死值、窗口表结构维持 SA2 R2 确认形态；R2 错误公式以「错误公式」标注保留供 SA4 对照，处置得当。
+- 新反例搜寻无命中；唯一新观察项（INFO）：SA4 复核应确认自建时钟 `advanceBy` 不含宏任务排空（R3 基线隐含的时钟实现纪律）。
+- **闭环路径（设计侧已无阻塞）**：SA3 按 R3 版 §6.2 落地 → SA4 复审（专项：谓词形态 = 联言基线是否照 R3 修订版实现 + 自建时钟 advanceBy 纯微任务排空）→ SA7 复跑（52 跑 + **补 file n=2 批次**——R2/R3 修复的回归口，当前锚未覆盖）。
+- **边界重申**：本 pass 仅覆盖设计文本的 R3 修订面；F-REJECT-LEAK（LOW，内核侧）仍待总控立 P3 跟进项裁决，实现与活链路验证由 SA4/SA7 承担。
