@@ -130,9 +130,17 @@ export class MemoryPersistence implements DocPersistence {
     }, 'memory-persistence: service')
   }
 
-  /** Abort all adapter I/O, clear timers/caches, and consume every pending rejection. */
-  dispose(): void {
-    if (this.closed) return
+  /**
+   * Abort I/O, clear local resources, then await every tracked operation.
+   * Adapter I/O implementations must honor the supplied AbortSignal; this makes
+   * plugin unload wait for all restore/flush work to settle without real-time
+   * polling or a hidden timeout policy.
+   */
+  async dispose(): Promise<void> {
+    if (this.closed) {
+      await Promise.allSettled([...this.inFlight])
+      return
+    }
     this.closed = true
     this.epoch += 1
     this.status = 'disposed'
@@ -145,7 +153,7 @@ export class MemoryPersistence implements DocPersistence {
     this.entries.clear()
     this.loading.clear()
     this.snapshots.clear()
-    for (const pending of this.inFlight) void pending.catch(() => {})
+    await Promise.allSettled([...this.inFlight])
   }
 
   /** Internal handle callback; not exported from the package surface. */
@@ -220,7 +228,6 @@ export class MemoryPersistence implements DocPersistence {
       if (!this.isCurrent(epoch)) return
       entry.savedGeneration = generation
       entry.retryDelayMs = this.schedule.debounceMs || 1
-      if (entry.savedGeneration !== entry.dirtyGeneration) this.scheduleFlush(entry)
     } catch {
       if (!this.isCurrent(epoch)) return
       this.status = 'persistence-degraded'
@@ -228,7 +235,14 @@ export class MemoryPersistence implements DocPersistence {
     } finally {
       if (!this.isCurrent(epoch)) return
       entry.flushing = false
-      if (entry.savedGeneration !== entry.dirtyGeneration && entry.debounceTimer === undefined && entry.maxDirtyTimer === undefined && entry.retryTimer === undefined) this.scheduleFlush(entry)
+      // A save during the previous flush belongs to a fresh dirty window. The
+      // old generation's timers have already fired/cancelled, so schedule the
+      // next debounce only after the single-flight lock is released.
+      if (entry.savedGeneration !== entry.dirtyGeneration && entry.retryTimer === undefined) {
+        this.cancelDebounce(entry)
+        this.cancelMaxDirty(entry)
+        this.scheduleFlush(entry)
+      }
       this.maybeEvict(entry)
     }
   }

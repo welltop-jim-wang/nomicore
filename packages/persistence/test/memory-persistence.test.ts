@@ -196,6 +196,43 @@ describe('MemoryPersistence', () => {
     expect(writes).toBe(2)
   })
 
+  it('does not let a generation-one timer flush or confirm generation two while its flush is in flight', async () => {
+    const timer = createFakeTimer()
+    let finishFirst: (() => void) | undefined
+    const snapshots: Uint8Array[] = []
+    const persistence = createMemoryPersistence({
+      timer,
+      writeSnapshot: async (_key, snapshot) => {
+        snapshots.push(snapshot)
+        if (snapshots.length === 1) await new Promise<void>((resolve) => { finishFirst = resolve })
+      },
+    })
+    const handle = await persistence._createForTest({ userId: 'alice' }, 'doc1')
+    handle.doc.getMap('META').set('docId', 'doc1')
+    handle.doc.getMap('ROOT').set('generation', 1)
+    await persistence.saveDoc(handle)
+    await timer.advanceBy(500)
+    expect(snapshots).toHaveLength(1)
+
+    handle.doc.getMap('ROOT').set('generation', 2)
+    await persistence.saveDoc(handle)
+    // Both original timers have already been consumed/cancelled by the first
+    // debounce; advancing past the old max-dirty deadline must not start g2.
+    await timer.advanceBy(10_000)
+    expect(snapshots).toHaveLength(1)
+
+    finishFirst!()
+    for (let index = 0; index < 10; index += 1) await Promise.resolve()
+    await timer.advanceBy(499)
+    expect(snapshots).toHaveLength(1)
+    await timer.advanceBy(1)
+    expect(snapshots).toHaveLength(2)
+
+    const restored = new Y.Doc()
+    Y.applyUpdate(restored, snapshots[1]!)
+    expect(restored.getMap('ROOT').get('generation')).toBe(2)
+  })
+
   it('degrades to read-only, preserves the live document, then restores writes after retry', async () => {
     const timer = createFakeTimer()
     let failures = 1
@@ -227,6 +264,43 @@ describe('MemoryPersistence', () => {
     await timer.advanceBy(500)
     expect(persistence.getStatus()).toBe('ready')
     await expect(persistence.saveDoc(second!)).resolves.toBeUndefined()
+  })
+
+  it('restores a persisted snapshot while degraded, keeps writes rejected, then restores writes after retry', async () => {
+    const timer = createFakeTimer()
+    const user = { userId: 'alice' }
+    const snapshotDoc = docWithMeta('doc1')
+    snapshotDoc.getMap('ROOT').set('fromSnapshot', 'readable')
+    const snapshot = Y.encodeStateAsUpdate(snapshotDoc)
+    let failures = 1
+    const persistence = createMemoryPersistence({
+      timer,
+      readSnapshot: async () => snapshot,
+      async writeSnapshot() {
+        if (failures > 0) {
+          failures -= 1
+          throw new Error('write unavailable')
+        }
+      },
+    })
+
+    const loaded = await persistence.loadDoc(user, 'doc1')
+    expect(loaded).not.toBeNull()
+    expect(loaded!.doc.getMap('ROOT').get('fromSnapshot')).toBe('readable')
+    await persistence.saveDoc(loaded!)
+    await timer.advanceBy(500)
+    expect(persistence.getStatus()).toBe('persistence-degraded')
+
+    // Force a cache miss while retaining the test-supplied durable snapshot.
+    await loaded!.release()
+    const restored = await persistence.loadDoc(user, 'doc1')
+    expect(restored).not.toBeNull()
+    expect(restored!.doc.getMap('ROOT').get('fromSnapshot')).toBe('readable')
+    await expect(persistence.saveDoc(restored!)).rejects.toThrow(/persistence-degraded/)
+
+    await timer.advanceBy(500)
+    expect(persistence.getStatus()).toBe('ready')
+    await expect(persistence.saveDoc(restored!)).resolves.toBeUndefined()
   })
 
   it('evicts only after the final release and successful flush, restoring equivalent content into a new document', async () => {
@@ -263,6 +337,28 @@ describe('MemoryPersistence', () => {
     await expect(corrupt.loadDoc(alice, 'doc1')).rejects.toThrow(/META\.docId.*doc1/)
   })
 
+  it('waits for an aborted restore rejection without reviving cache or leaking a rejection', async () => {
+    const timer = createFakeTimer()
+    let rejectRead: ((reason: Error) => void) | undefined
+    let observedAbort = false
+    const persistence = createMemoryPersistence({
+      timer,
+      readSnapshot: (_key, signal) => new Promise((_, reject) => {
+        signal.addEventListener('abort', () => { observedAbort = true })
+        rejectRead = reject
+      }),
+    })
+
+    const loading = persistence.loadDoc({ userId: 'alice' }, 'doc1')
+    const closing = persistence.dispose()
+    expect(observedAbort).toBe(true)
+    rejectRead!(new Error('restore aborted'))
+    await closing
+    await expect(loading).rejects.toThrow(/restore aborted|disposed/)
+    await expect(persistence.loadDoc({ userId: 'alice' }, 'doc1')).rejects.toThrow(/disposed/)
+    expect(timer.pending()).toBe(0)
+  })
+
   it('does not revive cache state when dispose happens during restore', async () => {
     const timer = createFakeTimer()
     let resolveRead: ((snapshot: Uint8Array | undefined) => void) | undefined
@@ -278,6 +374,59 @@ describe('MemoryPersistence', () => {
     await expect(loading).rejects.toThrow(/disposed/)
     expect(timer.pending()).toBe(0)
     await expect(persistence.loadDoc({ userId: 'alice' }, 'doc1')).rejects.toThrow(/disposed/)
+  })
+
+  it('waits for an aborted flush rejection without reviving state or timers', async () => {
+    const timer = createFakeTimer()
+    let rejectWrite: ((reason: Error) => void) | undefined
+    let observedAbort = false
+    const persistence = createMemoryPersistence({
+      timer,
+      writeSnapshot: (_key, _snapshot, signal) => new Promise((_, reject) => {
+        signal.addEventListener('abort', () => { observedAbort = true })
+        rejectWrite = reject
+      }),
+    })
+    const handle = await persistence._createForTest({ userId: 'alice' }, 'doc1')
+    handle.doc.getMap('META').set('docId', 'doc1')
+    await persistence.saveDoc(handle)
+    await timer.advanceBy(500)
+
+    const closing = persistence.dispose()
+    expect(observedAbort).toBe(true)
+    rejectWrite!(new Error('flush aborted'))
+    await closing
+    expect(timer.pending()).toBe(0)
+    expect(persistence.getStatus()).toBe('disposed')
+  })
+
+  it('waits for a never-settling writer to settle through AbortSignal before dispose resolves', async () => {
+    const timer = createFakeTimer()
+    let abortWriter: (() => void) | undefined
+    const persistence = createMemoryPersistence({
+      timer,
+      writeSnapshot: (_key, _snapshot, signal) => new Promise<void>((resolve) => {
+        // This simulates I/O that would otherwise never settle. The documented
+        // adapter contract is to settle promptly when its signal is aborted.
+        signal.addEventListener('abort', () => {
+          abortWriter = resolve
+        })
+      }),
+    })
+    const handle = await persistence._createForTest({ userId: 'alice' }, 'doc1')
+    handle.doc.getMap('META').set('docId', 'doc1')
+    await persistence.saveDoc(handle)
+    await timer.advanceBy(500)
+
+    let disposed = false
+    const closing = persistence.dispose().then(() => { disposed = true })
+    await Promise.resolve()
+    expect(disposed).toBe(false)
+    abortWriter!()
+    await closing
+    expect(disposed).toBe(true)
+    expect(persistence.getStatus()).toBe('disposed')
+    expect(timer.pending()).toBe(0)
   })
 
   it('does not revive state or timers when dispose happens during flush', async () => {
@@ -301,18 +450,27 @@ describe('MemoryPersistence', () => {
     await expect(persistence.saveDoc(handle)).rejects.toThrow(/disposed/)
   })
 
-  it('lets Cordis unregister the service once and makes adapter cleanup idempotent', async () => {
+  it('unloads one Cordis service exactly once across repeated fiber disposal', async () => {
     const timer = createFakeTimer()
     const persistence = createMemoryPersistence({ timer })
     const ctx = new Context()
+    let serviceEvents = 0
+    ctx.on('internal/service', (name, value) => {
+      if (name === 'docPersistence' && value === undefined) serviceEvents += 1
+    })
+
     persistence.apply(ctx)
     expect(ctx.get('docPersistence')).toBe(persistence)
 
-    await ctx.fiber.dispose()
+    const firstUnload = ctx.fiber.dispose()
+    const repeatedUnload = ctx.fiber.dispose()
+    await Promise.all([firstUnload, repeatedUnload])
+
+    expect(serviceEvents).toBe(1)
     expect(ctx.get('docPersistence')).toBeUndefined()
     expect(persistence.getStatus()).toBe('disposed')
-    persistence.dispose()
-    expect(persistence.getStatus()).toBe('disposed')
+    await persistence.dispose()
+    expect(serviceEvents).toBe(1)
   })
 
   it('disposes caches and pending timers', async () => {
