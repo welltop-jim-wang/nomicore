@@ -55,19 +55,19 @@ export class FilePersistence implements DocPersistence {
 
   getStatus(): FilePersistenceStatus { return this.core.getStatus() }
 
-  loadDoc(owner: User, docId: string): Promise<DocHandle | null> {
+  async loadDoc(owner: User, docId: string): Promise<DocHandle | null> {
     this.validateIdentity(owner, docId)
-    return this.core.loadDoc(owner, docId)
+    return await this.core.loadDoc(owner, docId)
   }
 
-  createDoc(owner: User, docId: string, doc: import('yjs').Doc): Promise<DocHandle> {
+  async createDoc(owner: User, docId: string, doc: import('yjs').Doc): Promise<DocHandle> {
     this.validateIdentity(owner, docId)
-    return this.core.createDoc(owner, docId, doc)
+    return await this.core.createDoc(owner, docId, doc)
   }
 
-  saveDoc(handle: DocHandle): Promise<void> {
+  async saveDoc(handle: DocHandle): Promise<void> {
     this.validateIdentity(handle.owner, handle.docId)
-    return this.core.saveDoc(handle)
+    await this.core.saveDoc(handle)
   }
 
   apply(ctx: Context): void {

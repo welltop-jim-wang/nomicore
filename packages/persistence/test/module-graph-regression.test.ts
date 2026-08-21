@@ -48,7 +48,7 @@ describe('module graph regression (R3, owner #2)', () => {
     expect(typeof fileModule.createFilePersistencePlugin).toBe('function')
     expect(typeof memoryModule.MemoryPersistence).toBe('function')
     expect(typeof memoryModule.createMemoryPersistence).toBe('function')
-    expect(typeof lifecycleModule.PersistenceLifecycleCore).toBe('function')
+    expect(typeof lifecycleModule.PersistenceLifecycle).toBe('function')
 
     const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nomicore-module-graph-'))
     try {

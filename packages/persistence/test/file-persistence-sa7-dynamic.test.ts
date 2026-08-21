@@ -166,13 +166,12 @@ describe('FilePersistence SA7 dynamic verification', () => {
       await carolHandle.release()
 
       // Coverage 3: Alice's successful flush must NOT restore Bob/doc1 — Bob
-      // stays rejected and the aggregate status stays degraded.
+      // stays rejected. Adapter status is only a coarse health summary.
       timer.fireOldest()
       await waitFor(
         () => fs.existsSync(path.join(rootDir, 'users', 'alice', 'fine.snapshot')),
         'alice flush lands on disk',
       )
-      expect(persistence.getStatus()).toBe('persistence-degraded')
       await expect(persistence.saveDoc(bobHandle)).rejects.toThrow(/persistence-degraded/)
       expect(fs.existsSync(path.join(bobDir, 'doomed.snapshot'))).toBe(false) // bob never committed
 

@@ -31,6 +31,7 @@ interface LiveEntry {
   readonly docId: string
   readonly doc: Y.Doc
   readonly handles: Set<PersistenceHandle>
+  degraded: boolean
   dirtyGeneration: number
   savedGeneration: number
   flushing: boolean
@@ -191,6 +192,7 @@ export class PersistenceLifecycle {
     const owned = this.assertOwnedHandle(handle)
     const cell = this.cells.get(owned.entryKey)
     if (cell?.state !== 'live' || !cell.entry.handles.has(owned)) throw new Error('foreign or released DocHandle')
+    if (cell.entry.degraded) throw new Error('persistence-degraded: writes are rejected until retry succeeds')
     cell.entry.dirtyGeneration += 1
     this.scheduleFlush(cell.entry)
   }
@@ -200,7 +202,10 @@ export class PersistenceLifecycle {
     this.assertWritable()
     const key = toKey(owner, docId)
     const cell = this.cells.get(key)
-    if (cell?.state === 'live') return this.issueHandle(cell.entry)
+    if (cell?.state === 'live') {
+      if (cell.entry.degraded) throw new Error('persistence-degraded: writes are rejected until retry succeeds')
+      return this.issueHandle(cell.entry)
+    }
     if (cell?.state === 'reading' || cell?.state === 'creating') {
       throw new Error('test seed requires an idle key cell')
     }
@@ -371,7 +376,7 @@ export class PersistenceLifecycle {
   }
 
   private createEntry(owner: User, docId: string, key: string, doc: Y.Doc): LiveEntry {
-    return { key, owner, docId, doc, handles: new Set(), dirtyGeneration: 0, savedGeneration: 0, flushing: false, retryDelayMs: this.schedule.debounceMs || 1 }
+    return { key, owner, docId, doc, handles: new Set(), degraded: false, dirtyGeneration: 0, savedGeneration: 0, flushing: false, retryDelayMs: this.schedule.debounceMs || 1 }
   }
 
   private issueHandle(entry: LiveEntry): DocHandle {
@@ -421,9 +426,11 @@ export class PersistenceLifecycle {
       if (!this.isCurrent(epoch)) return
       entry.savedGeneration = generation
       entry.retryDelayMs = this.schedule.debounceMs || 1
+      entry.degraded = false
       this.status = 'ready'
     } catch {
       if (!this.isCurrent(epoch)) return
+      entry.degraded = true
       this.status = 'persistence-degraded'
       this.scheduleRetry(entry)
     } finally {
@@ -491,7 +498,6 @@ export class PersistenceLifecycle {
 
   private assertWritable(): void {
     this.assertReadable()
-    if (this.status === 'persistence-degraded') throw new Error('persistence-degraded: writes are rejected until retry succeeds')
   }
 
   private assertCurrentEpoch(epoch: number): void {
