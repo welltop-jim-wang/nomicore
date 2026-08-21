@@ -1,6 +1,6 @@
 /**
- * @nomicore/vfsl —— VFSL 核心包公共入口（issue #5：parser 最小端到端；issue #20：
- * 第二公共导出 `evaluate`；issue #21：第三公共导出 `validateSnapshot`）。
+ * @nomicore/vfsl —— VFSL 核心包公共入口（issue #5：parser；issue #20：evaluate；
+ * issue #21：validateSnapshot；issue #53：validatePatch + 数组写入校验）。
  *
  * 公共接缝（PRD #3 + ADR 0003 冻结）：
  * - `parseVfsl(text)` → `{ ok: true; module } | { ok: false; issues }`——同步、
@@ -18,19 +18,20 @@
  * - `parseSchemaEnvelope(input)` → `{ ok: true; envelope; module } | { ok: false;
  *   issues: SchemaParseIssue[] }`——信封解析与方言路由（issue #52 / H1）：issues 是
  *   discriminated union（`kind:'envelope'` 独立信封错误域 / `kind:'vfsl'` 原文本错误）；
- *   形状校验 → 方言断言 → parseVfsl(text)；同步、纯函数、不抛错。
+ *   形状校验 → 方言断言 → parseVfsl(text)；同步、纯函数、不抛错；
+ * - `validatePatch` 与数组写入校验（issue #53）：结构守卫 + 最近结构边界重建，
+ *   复用 validateSnapshot 的值 schema 解释器；同步、纯函数、不抛错；
  * - SchemaSource 接缝（issue #25 / ADR 0005 §1/§2）：`FileSchemaSource` 阶段态仓内
  *   文件源（读 Node fs——引擎包内**唯一**环境绑定面，浏览器/edge 不可用；DocSchemaSource
  *   终态另议）、`assertVfslDialect` 方言断言、`SchemaSourceError` 结构化错误。
  *
  * 编排：tokenize → parse（语法相位，失败以 VfslSyntaxError 内部异常承载）→
  * analyze（语义相位，E301/E302/E305/E106/E308 + min-position 聚合 + AST → IR）→
- * evaluate（求值相位，纯函数 IR → 派生物）→ validateSnapshot（校验相位，值 schema
- * 解释器，派生物纯数据只读消费）。
- * 公共面只导出 `parseVfsl` / `evaluate` / `validateSnapshot` / `parseSchemaEnvelope`
- * 与 §7.1 + ADR 0003 类型；
- * tokenizer/parser/semantic/evaluate/validate/pattern/xml/envelope 内部件不导出
- * （内部结构非公共契约）。
+ * evaluate（求值相位，纯函数 IR → 派生物）→ validateSnapshot / validatePatch
+ * （校验相位，共用值 schema 解释器，派生物纯数据只读消费）。
+ * 公共面导出上述解析/求值/信封路由/全量与增量校验接缝、数组写入校验、
+ * SchemaSource 接缝，以及 §7.1 + ADR 0003 类型；tokenizer/parser/semantic/evaluate/
+ * validate/pattern/xml/envelope 等内部实现不导出（内部结构非公共契约）。
  */
 import { tokenize } from './tokenizer.js';
 import { parseModule, VfslSyntaxError } from './parser.js';
@@ -63,6 +64,16 @@ export { evaluate } from './evaluate.js';
 
 export { validateSnapshot } from './validate.js';
 export type { ValidateIssue, ValidateResult } from './validate.js';
+
+// issue #53 / H2：路径级写入校验——validatePatch（替换语义）+ 数组三操作
+// （append/insert/delete，ADR 0004 D1 词表的运行时判定面）。同步、纯函数、不抛错；
+// 结构守卫 + 最近结构边界重建整值校验（与 validateSnapshot 共用解释器）。
+export {
+  validatePatch,
+  validateAppendToArray,
+  validateInsertIntoArray,
+  validateDeleteFromArray,
+} from './validate-patch.js';
 
 // issue #25 / F1：SchemaSource 接缝（ADR 0005 §1/§2）——FileSchemaSource 阶段态仓内文件源、
 // 方言断言助手与接缝层结构化错误；消费方（F2 生成器 / G dogfood / CI）经接缝取文本。
