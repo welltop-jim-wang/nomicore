@@ -15,4 +15,5 @@ branch: fix/issue-59-on-adr-server-design（base: adr/server-design）
 | 4 | 00:46 | SA1 | Phase 2 设计 | 01:07 | SA6 红灯已锚定（2 红文件/既有 37 文件全绿），进入架构设计 |
 | 5 | 01:09 | SA8 | Phase 2 设计复审 | 01:12 | SA1 R0 设计落盘，设计与 ADR 决策一致性复审（续传 acc2e15b） |
 | 6 | 01:09 | SA6 | Phase 2 测试修订轮 | 01:12 | SA1 §9 实证两条红灯断言不可满足，按已验证配方修测试时序（续传 42b9f16e，断言值不变） |
-| 7 | 01:13 | SA2 | Phase 2 攻击评审 | (pending) | SA8 设计复审 clear，进入全维度破壁评审 |
+| 7 | 01:13 | SA2 | Phase 2 攻击评审 | 01:25 | SA8 设计复审 clear，进入全维度破壁评审 |
+| 8 | 01:25 | SA1 | Phase 2 设计修订 R1 | (pending) | SA2 R0 verdict: reject（1 CRITICAL：AC1-memory 第三不可满足断言漏报；1 HIGH：证据覆盖不闭合），按评审修订设计（续传 5510de55） |
