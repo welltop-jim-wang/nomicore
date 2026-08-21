@@ -13,4 +13,4 @@
 | 6 | 18:12 | SA1 | Phase 2 设计修订 R1 | 18:15 | SA2 R1 reject，send_message 续传 SA1 原会话按 5 项修订清单定点修订。5/5 落实，架构决策 A–F 未动 |
 | 7 | 18:18 | SA2 | Phase 2 设计复审 R2 | 18:21 | SA1 R1 修订交付，send_message 续传 SA2 原会话复审。R2 verdict: pass（5/5 修订经独立验证闭合） |
 | — | 18:22 | 总控 | 决策记录 | — | SA2 R1 附 5 条红灯测试构想：经裁决不发起 SA6 R2——既有 SA6 测试已逐条覆盖 9 项 AC，5 条构想属加固候选非 AC；其中「残留钉死/degraded 半径/sweep 信号链」已由设计 E.1/§4.5 文档化披露，转 SA4/SA7 核对项 |
-| 8 | 18:23 | SA3 | Phase 3 TDD 实现 | (pending) | SA2 R2 pass，设计定稿，派 SA3 实现使红灯变绿 |
+| 8 | 18:23 | SA3 | Phase 3 TDD 实现 | 18:25 | SA2 R2 pass，设计定稿，派 SA3 实现使红灯变绿。commit 359a030：lifecycle.ts 内核抽取 + file.ts 适配器 + memory 瘦身 + bump 0.1.1；自报 pnpm test 493 passed / EXIT=0，待总控亲跑复核 |
