@@ -4,6 +4,7 @@
 **Verifier**: SA7（Dynamic Verifier；独立进程实跑，无 ACP session 内阻塞）
 **验证对象**: worktree HEAD `66ce567`（SA3 实现 `217d8a4` + F1/F2 修复 `d734352` + SA4 R1 复审 pass `66ce567`；merge-base `origin/adr/server-design` = `2aa22f4` 与简报一致）
 **SA7 Verdict**: **fail-needs-fix** —— 1 项 P1（file 通道探针 record 非确定性，违反 AC8「同参两跑逐字节一致」）；1 项 LOW（外部 `.tmp` 占位失败注入下 unhandled promise rejection 泄漏）；其余 SA4 动态审核清单项全部通过。SA6 红灯验收面全绿（40/40 文件、535/535 测试）。
+**Verdict (R2 复跑，最终)**: **pass** —— F-FILE 修复（commit `980c5a2`，设计 R3 两阶段结算协议）经 ①–⑤ 全项闭环复跑实证：file n=0/n=1 各 52 跑 + n=2 30 跑共 134 同参跑 **0 异常、三批组内各单一 sha256**（R0 基线 52 跑 2 异常）；memory 哈希与 R0 完全一致（零副作用）；SA7 锚 6 连跑 12/12 稳定绿；全量 40 文件 / 535 测试全绿。详见文末「R2 复跑节」。
 **环境**: node v24.13.0（本机主版本）/ pnpm 10.28.2 / yjs 13.6.32（lockfile 单版本解析，实测 `packages/dsh-persistence/node_modules/yjs` = 13.6.32）。本任务无端口/常驻服务依赖（vitest + tsx CLI 均不绑端口），无需 fuser 清场。
 
 ---
@@ -189,3 +190,81 @@ Type Errors  no errors          ← typecheck 通道同步绿（tsc -p packages/
 **fail-needs-fix** → 回流路径：总控协调 **SA1**（§6.2 file 通道结算谓词假设修订 + 修复方案定案）→ **SA3**（probe.ts 落地，`packages/persistence` DENY 维持）→ SA4 复审 → SA7 复跑本报告复现命令（52 跑 0 异常 + 双跑一致）+ 新锚稳定绿即可闭环。F-REJECT-LEAK（LOW）可随修复顺手定位（若泄漏点在内核 read-ticket 链则需总控单独裁决 DENY 例外）。
 
 其余方面（SA6 验收面、F1 修复回归、失败 record 纯度、退出码矩阵、并发余量、yjs 跨版本、vitest 触发）全部通过；SA7 未修改任何生产代码，仅新增上述测试文件与本报告。
+
+---
+
+# R2 复跑节（2026-08-22，F-FILE 修复闭环复跑）
+
+**复跑对象**：修复 commit `980c5a2`（fix(dsh-persistence): R3 two-stage settle protocol for file channel）——改动严格限于 `packages/dsh-persistence/src/probe.ts` + `src/clock.ts`（SA4 R2 复审已核 scope）；SA1 设计 R2/R3 修订、SA2 R3 pass、SA4 R2 复审 **pass**（Verdict (R2 复审，最终)，sa4_review.md 第 8 行）。**SA7 锚未被改动**（`git diff 980c5a2 HEAD -- …dsh-file-probe-determinism.test.ts` = 空；该文件仅 `980c5a2` 一个 commit 触及——入库）。
+**复跑范围**：总控指令 ①–⑤（对齐 R0 量化基线 + SA2 红线 #1② 回归口）。全部独立进程实跑；环境同 R0（node 24.13.0 / pnpm 10.28.2 / yjs 13.6.32）。
+
+## ① file n=0 / n=1 各 52 跑同参批次（对齐 R0 基线）—— ✅ 0 异常 + 组内逐字节一致
+
+```bash
+# 每跑全新 mkdtemp rootDir；判异常条件 = rc≠0 ∨ 尾行≠期望 ∨ stderr 非空（兼测泄漏噪声）
+pnpm exec tsx packages/dsh-persistence/src/cli.ts --adapter file --rootDir <fresh> ×52
+#   → BATCH file-n0: runs=52 anomalies=0 unique_hashes=1（尾行恒 probe ok=true events=28）
+pnpm exec tsx …/cli.ts --adapter file --rootDir <fresh> --fail-first-flushes 1 ×52
+#   → BATCH file-n1: runs=52 anomalies=0 unique_hashes=1（尾行恒 probe ok=true events=32）
+```
+
+- R0 基线（52 跑 2 异常：症状 A events=27 ×1、症状 B file-settle-timeout exit 1 ×1）→ **R2 0 异常**；两症状均未复现。
+- 每批 52 跑 stdout sha256 **单一值** = 组内逐字节一致（AC8 恢复）；stderr 全空（无 F-REJECT-LEAK 形态噪声）。
+
+## ② file n=2 批次（SA2/SA4 指出的回归口，红线 #1②）—— ✅ 30 跑 0 异常 + 内容逐行吻合
+
+```bash
+pnpm exec tsx …/cli.ts --adapter file --rootDir <fresh> --fail-first-flushes 2 ×30
+#   → BATCH file-n2: runs=30 anomalies=0 unique_hashes=1（尾行恒 probe ok=true events=34）
+```
+
+record 逐行断言（首跑全文 + 30 跑哈希唯一共同锚定）：
+
+```text
+flush doc-degraded generation=1 ok=false t=1508   ← 同代失败 #1（退避 500ms）
+degraded doc-degraded t=1508
+write-rejected doc-degraded t=1508
+flush doc-degraded generation=1 ok=false t=2008   ← 同代失败 #2（退避 1000ms，翻倍规则）
+degraded doc-degraded t=2008                      ← §5「每次失败尝试各发一条 degraded」
+flush doc-degraded generation=1 ok=true t=3008    ← 同代 retry 成功（成功在 +4000 前沿）
+recovered doc-degraded t=3008
+flush doc-degraded generation=2 ok=true t=3508    ← dirty g2 在 recovered 之后（决策 C）
+release doc-degraded refs=0 t=3509
+evict doc-degraded t=3509                         ← R0 症状 A 缺失的正是该行形态
+probe ok=true events=34                           ← = S1 15 + S2 4 + S3 2 + S4 13（n=2）
+```
+
+退避序列 1508→2008→3008（500/1000，镜像内核 retryDelayMs 翻倍）逐刻度吻合；两条失败 flush 同 generation=1（§8 generation 补则）✓。
+
+## ③ SA7 锚多连跑 —— ✅ 6 连跑稳定绿
+
+`pnpm exec vitest run packages/dsh-persistence/test/dsh-file-probe-determinism.test.ts --reporter=basic` ×6 → 每轮 **Test Files 1 passed (1) / Tests 2 passed (2)**（合计 12/12 用例、每轮含进程内 3 跑 + CLI 2 跑 file 探针）；R0「间歇红预期」消失，锚转入确定性绿态。
+
+## ④ memory 通道回归 —— ✅ 哈希唯一且与 R0 完全一致
+
+```bash
+--adapter memory ×10            → unique=1  hash=83bd630de0af…93384（= R0 值）
+--adapter memory --fail-first-flushes 1 ×10 → unique=1  hash=219aef5f9acd…43e2b8（= R0 值）
+```
+
+修复对 memory 通道 record **零副作用**（逐字节不变），与「协议不产生事件、对 record 不可见」的设计承诺一致。
+
+## ⑤ 全量 pnpm test —— ✅ 40 文件 / 535 测试全绿
+
+```text
+Test Files  40 passed (40)   Tests 535 passed (535)   Type Errors no errors   退出码 0
+```
+
+（与 R0 落盘锚后的计数一致：34 既有 .test.ts + 1 SA7 锚 + 5 .test-d.ts = 40；分包清单核对表见 R0「vitest 触发证据」节，仍一一对应。）
+
+## 修复实现核对（diff 层面，SA7 独立比对 66ce567..980c5a2）
+
+- `clock.ts`：`pending()` 升入 `ProbeClock` 接口 + 语义注记（已触发已删除不计——基线算术前提）；`advanceBy` 纯微任务排空声明（不得含宏任务，保「返回瞬间 = 同步基线」快照语义）。
+- `probe.ts`：`observeFlush` 降级为**条件 W**（磁盘提交态可见，仅证字节已提交）；**A-arming**（`saveAndEmit` 内 base=saveDoc 前快照，等待期间不推进虚拟时钟）；**A-evict**（`releaseAndEmit` refs=0 时等 `evictSeen`——maybeEvict 只在记账 finally/clean release 执行 ⟹ evict 观测即记账证明，同时闭合症状 A 的拆监听竞态）；失败/中间失败腿 base=**advanceBy 返回瞬间**（R2-1 修正公式，R2 错误公式未复现）；恢复腿**无 pending 联言**（原子性引理下 status 翻转即完备证明）。与设计 R3 §6.2 逐点吻合。
+
+## R2 复跑最终裁决：**pass**
+
+- F-FILE（R0 唯一 P1）实证闭环：134 同参 file 跑（n=0×52 / n=1×52 / n=2×30）**0 异常、三批各单一哈希**，对照 R0 基线 52 跑 2 异常；两症状形态（events=27 静默 / settle-timeout exit 1）均未复现；n=2 回归口（SA2 红线 #1②）补齐且逐行吻合。
+- SA4 R2 复审 pass + SA7 复跑 ①–⑤ 全过 → 动态验证链闭环，本任务 SA7 无未决 REJECT 项。
+- 遗留（不阻塞，均已在位处置）：F-REJECT-LEAK（LOW）按设计 R2「连带修订与处置」建议由总控立 P3 跟进项单独裁决（`file.ts:96` 属 DENY 区）；node 20 CI 矩阵面维持 R0「CI 侧动态确认阻塞于未 push」措辞原样（push/CI 由 runner 负责，不属于本阶段）。
+- R0 记录（含全部量化证据与复现命令）原样保留于上文，供回归对照。
