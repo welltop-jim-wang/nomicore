@@ -5,6 +5,7 @@
 - 红灯契约：`packages/vfsl/test/validate-patch.test.ts`（SA6，36 用例，全红根因 = 四函数未导出）。SA6 四条设计备注（命名契约 / insert 上界自由 / 守卫 path 取完整尝试路径 / 值校验 path 取绝对路径）全部吸收进下文决策表。
 - SA8 前置观察落实：观察②（xml-fragment 终态位补入拒绝矩阵）→ §3.2 拒绝矩阵含 xml-fragment 行；观察③（不得改动派生 schema 公共形状）→ 本设计对 `DerivedSchema` **只读消费**，零形状变更（§8.3）。
 - **R2 修订（2026-08-21，落实 SA2 R1 全部攻击点 F1–F7）**：F1 值树游标 ref 归一化（HIGH）、F2 base 段检查改「形态 + 在场」两段式——消除 spread 塌缩静默 ok:true（MEDIUM）、F3 节点集身份去重与工作量界 O(L×N)（MEDIUM）、F4–F6 消息取序/非 Array 目标行/E100 path 冻结（LOW）、F7 计数勘误。修订均为定点条款（R2 冻结①–④ + 矩阵行 11/12 + D13–D18），**架构骨架（两段正交 / 一算法三透镜 / interpret() 抽取 / D1–D12 / SA8 已裁决项）不回退**；逐条回应见文末表。
+- **R3 修订（2026-08-21，SA4 静态验尸 pass 后 F-1 回流裁定 + §1 版本注记，纯文档）**：① **F-1 裁定——子树解释器内部 E100 的 issue path = 边界前缀**（非 `[]`，作为后续票契约）：D5/D18 交叠收窄见 D18 R3 注与 §3.6 总表；② `packages/vfsl/package.json` 版本 bump 注记（0.1.8 → 0.1.9，SA3 commit `0bfdaed` 已落）：公共面新增四导出 = minor bump，补入 §8 ALLOW LIST。
 
 ---
 
@@ -195,7 +196,7 @@ guardWalk(derived, base, path, op):
   3. sub = validateSubtree(derived.values, boundaryValueNode, rebuilt) // validate.ts 新内部导出，§4.2
   4. sub.ok === true → { ok: true }
      否则 → { ok: false, issues: sub.issues.map(rebase) }
-     rebase(issue) = { message 不动, path: boundaryPrefix ++ issue.path }（含截断标记）
+     rebase(issue) = { message 不动, path: boundaryPrefix ++ issue.path }（含截断标记与子树内部 E100——R3 裁定见 D18）
 ```
 
 - **单一来源**：`validateSubtree` 与 `validateSnapshot` 走**同一个** `interpret()` 主体（§4.2 抽取）——联合三段算法、判别式缓存透明性（ADR 0003 §3）、no-match「失败距离最小成员 + 联合成员 i/N」、全收集、100 条上限 + 截断标记、2×10⁸ 工作预算、E100 崩溃边界**逐字共享**。AC3#2/AC5 的全等断言因此由构造保证：子树校验的 issue 与整快照校验对同重建值的 issue 是同一台机器在同一相对根上的输出，patch 侧只做路径前缀拼接。
@@ -237,7 +238,7 @@ rebuildOp(v0, relPath, op, payload):
 | insert/delete 的 `index` 非有限整数 | 拒绝（issue path = 完整尝试路径） | `数组下标无效：须为整数，收到 <实况>` |
 | `derived.structure` 非 root 形 / `derived.values['ROOT']` 缺席 / 两树形状分歧（R2 冻结①归一化后游标非 object\|array） | InternalError → **E100**（手造派生物，loud 崩溃边界，与 validateSnapshot 同款；**issue path = `[]`**，F6 冻结） | `VFSL-E100: 内部错误（意外异常）: …` |
 
-**R2 冻结（F6）——issue path 取值总表**：守卫拒绝（矩阵行 1–12）= 完整尝试路径；规整拒绝 = 完整尝试路径（path 本身非法时 = `[]`）；**E100（含 InternalError 类规整与顶层 catch 收编的一切异常）= `[]`**——与 validateSnapshot 的 E100 path 取值同款，SA3/SA7 无自由发挥空间。
+**R2 冻结（F6）——issue path 取值总表（R3 收窄版）**：守卫拒绝（矩阵行 1–12）= 完整尝试路径；规整拒绝 = 完整尝试路径（path 本身非法时 = `[]`）；**E100 分两域**——validatePatch **自身顶层** E100（规整 InternalError + 守卫/重建/顶层 catch 收编的一切异常）= `[]`（与 validateSnapshot 同款）；**子树内部** E100（validateSubtree 的 interpret catch 产物，仅篡改派生物可达）经均匀 rebase = **边界前缀**（R3/F-1 裁定，见 D18）。SA3/SA7 无自由发挥空间。
 
 守卫/重建/解释器全程包在顶层 try/catch：任何内部异常（篡改派生物的环、未知名、深嵌套栈溢出）收编为单条 E100 结果——「拒绝虚假降级」红线的落点：这里不存在静默 ok:true 路径，一切异常都变 loud 的 ok:false。
 
@@ -351,7 +352,7 @@ export function walkRefChain<T>(node: T, lens: RefChainLens<T>, memo?: Map<T, T>
 | D15（R2/F3） | 节点集去重 | S/S' 恒为对象身份去重 Set；union 递归展开带每步 visited；总界 O(路径长 × 结构树节点数) | 公共 API DoS 面封顶；无去重的 O(M^L) 列表式实现禁止 |
 | D16（R2/F4） | 混合候选消息取序 | S' 为空时按 leaf > plain > xml-fragment > array > map 取第一命中形态；接受候选恒同形态（map 收 string/array 收 number 互斥）→ 检查归属无歧义 | E309 允许 map\|array 混合联合；SA3/SA7 输出确定性锚 |
 | D17（R2/F5） | 三操作非 Array 目标 | 目标缺失或当前值非 Array → 矩阵行 12：path = 完整目标路径，消息 `目标数组缺失或当前值不是数组：实际 <jsonTypeOf>…` | SA2 指出 R1 矩阵无此行，SA3 自由发挥面清零 |
-| D18（R2/F6） | E100 / 规整 issue path | E100 = `[]`（与 validateSnapshot 同款）；规整拒绝 = 完整尝试路径（path 非法时 `[]`）；守卫拒绝 = 完整尝试路径 | SA3/SA7 无自由发挥空间 |
+| D18（R2/F6；R3 收窄） | E100 / 规整 issue path | validatePatch 顶层 E100 = `[]`（与 validateSnapshot 同款）；**子树内部 E100 = 边界前缀**（R3/F-1 裁定：值校验段产物按 D5 绝对路径纪律统一 rebase，与截断标记同族——ValidateIssue 无 code 字段，强改 `[]` 需按 message 前缀嗅探特判，脆弱且损诊断信息）；规整拒绝 = 完整尝试路径（path 非法时 `[]`）；守卫拒绝 = 完整尝试路径 | SA4 F-1 回流裁定（后续票契约）；SA3/SA7 无自由发挥空间 |
 
 ---
 
@@ -391,6 +392,7 @@ export function walkRefChain<T>(node: T, lens: RefChainLens<T>, memo?: Map<T, T>
 - `packages/vfsl/src/resolve.ts` — **修改**（净 ~+50 行）：新增 `RefChainLens<T>` 接口 + `walkRefChain<T>` 泛型核心（包内导出，不进公共面）；`resolveChain` 内部委托、签名与报错不变。
 - `packages/vfsl/src/index.ts` — **修改**（~+15 行）：追加四函数导出与 JSDoc（公共接缝说明）。
 - `packages/vfsl/test/validate-patch.test.ts` — `[SA6 owned]` 验收红灯测试（已存在）。SA1/SA3 不改断言；仅允许 SA3 修测试基础设施级问题（如 import 路径），断言逻辑冻结。
+- `packages/vfsl/package.json` — **修改（R3 追加，SA4 §1 建议回填）**：version bump `0.1.8 → 0.1.9`（SA3 commit `0bfdaed` 已落）。依据：公共面新增四导出 = minor bump（仓内 0.1.x 节奏；Hard Gate #9——src 有改动必须 bump，历票「无 src 改动豁免」的反向触发）。仅 version 字段一行，exports/scripts 零改动。
 
 ### DENY LIST
 
@@ -433,3 +435,10 @@ export function walkRefChain<T>(node: T, lens: RefChainLens<T>, memo?: Map<T, T>
 | F6 (LOW)：E100 issue path 未冻结 | ✅ | §3.6 R2 冻结 / D18 | 冻结总表：E100 = `[]`（与 validateSnapshot 同款）；规整拒绝 = 完整尝试路径（path 非法时 `[]`）；守卫拒绝 = 完整尝试路径 |
 | F7 (LOW)：计数漂移 | ✅ | §4.2 / §7.1 / §10 | validate-snapshot-sa7 10→**14** 例（65 例绿基座）；resolveChain 调用点 7→**5** 处（行 57/91/106/143/330；typeCls 2 处另注） |
 | 观察项（不计 severity）：validate.ts 头注「结构树零消费」语义收窄 | ✅ | §8 ALLOW validate.ts 条目④ | 头注措辞随票更新为「validate.ts 文件内零消费」，防 SA4 全仓 grep 静态锚点误伤 validate-patch.ts 合法消费 |
+
+### R3 追加（SA4 静态验尸 pass 后回流，2026-08-21）
+
+| 要求 | 是否落实 | 修订位置 | 修订内容摘要 |
+|------|:--:|------|------|
+| SA4 F-1 (LOW)：子树解释器内部 E100 实际取边界前缀 vs D18 冻结 `[]`——D5/D18 交叠未裁定 | ✅（裁定） | D18（R3 收窄）/ §3.6 总表（R3 收窄版）/ §3.4 步骤 4 / 头注 | **裁定：边界前缀**。理由：① D5 绝对路径纪律本就覆盖值校验段一切产物（子树内部 E100 与截断标记同族，均匀 rebase 单规则）；② ValidateIssue 无 code 字段，强改 `[]` 需按 message 前缀嗅探特判——脆弱且损诊断信息（边界前缀定位哪个子树校验爆炸）；③ D18 的 `[]` 收窄为 validatePatch 自身顶层 E100（该域语义不变）。作为后续票契约；仅篡改派生物可达，SA3 零改码（实现 `validate-patch.ts:558` 均匀 map 已是该行为） |
+| SA4 §1 建议：package.json version bump 设计注记 | ✅ | §8 ALLOW（R3 追加条目）/ 头注 | `packages/vfsl/package.json` 0.1.8 → 0.1.9（SA3 commit `0bfdaed` 已落）回填 ALLOW LIST：公共面新增四导出 = minor bump，Hard Gate #9 触发（src 有改动必 bump）；仅 version 一行 |
