@@ -45,9 +45,9 @@ interface DocPersistence {
       {namespaceId}.snapshot  # 用户目录内唯一的 namespace 快照
 ```
 
-`META.docId` 必须等于请求的 namespaceId；不一致视为持久化损坏并响亮失败。`owner` 仍不写入 META（用户归属由目录分区承载）。文件扩展名与安全 id 的精确正则在 namespace 生命周期（D-D）讨论中冻结。
+`META.docId` 必须等于请求的 namespaceId；不一致视为持久化损坏并响亮失败。`owner` 仍不写入 META（用户归属由目录分区承载）。userId 与 namespaceId 共用安全文法 `^[a-z][a-z0-9-]{0,62}$`：同一标识可直接用于目录、REST path、WS room 与 META，无需额外编码/hash/转义。
 
-持久层内部的 flush 在触发时以 `Y.encodeStateAsUpdate(doc)` 编码**完整 Y.Doc 状态**，使用临时文件 + 原子 rename 覆盖该 doc 的单个 snapshot 文件。`loadDoc` 读取该 snapshot 并 `Y.applyUpdate` 还原 Y.Doc。
+持久层内部的 flush 在触发时以 `Y.encodeStateAsUpdate(doc)` 编码**完整 Y.Doc 状态**，写入 `{namespaceId}.snapshot.tmp` 后以原子 rename 覆盖 `{namespaceId}.snapshot`。`loadDoc` 只读取 `.snapshot` 并 `Y.applyUpdate` 还原 Y.Doc；启动发现遗留 `.tmp` 时一律忽略并删除——`.tmp` 可能半写入，只有 `.snapshot` 是提交态。
 
 - 选择简单、可审计、单文件恢复；沿用旧 yjs-server 已验证的 temp+rename 模式；
 - **rename 成功即完成一次 flush**：v1 不对每次 flush 做 file/directory fsync，`saveDoc` 本身也不承诺掉电级持久性；
