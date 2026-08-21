@@ -4,10 +4,14 @@ import * as Y from 'yjs'
 import {
   MemoryPersistence,
   createMemoryPersistence,
-  describeDocPersistenceContract,
   type PersistenceTimer,
   type User,
 } from '../src/index.js'
+import {
+  createDocStore,
+  describeDocCreateContract,
+  describeDocPersistenceContract,
+} from '../src/testing.js'
 import { createMemoryHandleForTest } from './memory-testkit.js'
 
 interface FakeTimer extends PersistenceTimer {
@@ -75,11 +79,30 @@ describeDocPersistenceContract(async () => {
   const persistence = createMemoryPersistence({ timer })
   return {
     persistence,
-    async createHandle(user, docId) {
-      const handle = await createMemoryHandleForTest(persistence, user, docId)
-      handle.doc.getMap('META').set('docId', docId)
-      return handle
+    async createHandle(owner, docId) {
+      return persistence.createDoc(owner, docId, docWithMeta(docId))
     },
+  }
+})
+
+describeDocCreateContract(async () => {
+  const timer = createFakeTimer()
+  const store = createDocStore()
+  const persistence = createMemoryPersistence({
+    timer,
+    readSnapshot: (key, signal) => store.read(key, signal),
+    writeSnapshot: (key, snapshot, signal) => store.write(key, snapshot, signal),
+  })
+  return {
+    persistence,
+    timer,
+    store,
+    makeFresh: () => createMemoryPersistence({
+      timer: createFakeTimer(),
+      readSnapshot: (key, signal) => store.read(key, signal),
+      writeSnapshot: (key, snapshot, signal) => store.write(key, snapshot, signal),
+    }),
+    dispose: () => persistence.dispose(),
   }
 })
 

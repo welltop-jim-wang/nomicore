@@ -110,3 +110,56 @@ NomicoreServer 与 DSH 均以 **Cordis** 为宿主内核；持久层先作为宿
 
 - ADR 0001（自包含、变更历史与数据同源）、ADR 0003（ROOT 约定）、设计文档 §10（作用域隔离）、§11（schema 变更管理操作）
 - 旧 yjs-server 借鉴清单：fs 原子写（temp+rename）、flush/cleanup 调度经验（归属上层 cron 而非 store）
+
+### createDoc 与 owner 语义修订（2026-08-21，issue #64；演进经 owner 裁决放行）
+
+本节修订上方两处早期决策条款，取代关系如下；未提及的条款维持原文效力。
+
+**1. 创建语义（取代「创建 = 首个 saveDoc（无独立 createDoc）」）**：`DocPersistence` 提供
+`createDoc(owner, docId, doc): Promise<DocHandle>`，对 `(owner.userId, docId)` 排他创建：
+
+- cache/store 已存在或并发创建 → 拒绝 `DocDuplicateError`（稳定错误码 `DOC_DUPLICATE`）；
+  **在 duplicate 判定路径上绝不覆盖已提交内容**——cache 命中即拒、store 存在性读见快照即拒、
+  并发 claim 即拒，三条判定都在进入写路径之前；并发 create 恰好一个成功，落败者在进入写路径前被拒；
+- 创建成功前初始完整 snapshot 已提交（`Y.encodeStateAsUpdate(doc)` 直写；FilePersistence 以
+  temp→rename 完成为提交点；不新增 fsync 保证）；成功签发有效 lease 且 `handle.doc === doc`，
+  持久层接管该 doc 生命周期（eviction/dispose 时销毁）；
+- 失败时不返回 handle、不缓存、不销毁传入 doc，所有权仍归调用方；原始 I/O 错误原样上抛；
+- create/create 与 create/load 共享 per-key coordination；若同 key 的 load 已在读取 store，
+  create 必须等待该 read 的存在性证据：读到 snapshot 则拒绝 `DocDuplicateError`，读到 missing
+  才能进入写路径。pending load 按自己的 read 结果完成；实现不得以 supersede 或事后告警替代
+  duplicate 判定，更不得覆盖已提交 snapshot；
+- 持久层仍仅校验 `META.docId === docId`，不校验 VFSL/ROOT/createdAt；`saveDoc` 的
+  「脏通知 + 内部调度」语义不变，首个 saveDoc 仍是合法写入路径。
+
+**2. 接口契约（取代本文上方接口代码块的 `DocHandle.user` 与二方法签名）**：
+
+```ts
+interface User { userId: string }
+
+interface DocHandle {
+  readonly owner: User;   // 文档的存储所有者（分区键），非当前访问者
+  readonly docId: string;
+  readonly doc: Y.Doc;
+  release(): Promise<void>;
+}
+
+interface DocPersistence {
+  createDoc(owner: User, docId: string, doc: Y.Doc): Promise<DocHandle>;
+  loadDoc(owner: User, docId: string): Promise<DocHandle | null>;
+  saveDoc(handle: DocHandle): Promise<void>;
+}
+```
+
+`owner` 仅作分区键，本层不鉴权（与「user 仅作分区键」条款同义，术语对齐）；访问者授权
+不进入 Persistence Interface。内部 Entry、契约测试与文档随接口统一 owner 语义。
+
+**3. 实施注记**：create/load 同键协调与 flush 调度收敛为 adapter 共享的 persistence
+lifecycle core（MemoryPersistence 与 FilePersistence 共用，不得复制状态机）；两 Adapter
+必须通过同一组 createDoc shared contract tests。
+
+**4. supersede 裁决撤销（2026-08-21，PR #67 review 修订）**：此前 task archive 中关于
+create supersede pending load、early adoption 与 lost-update 事后告警的设计/测试记录已被撤销，
+不构成当前契约。它允许在 read 尚未返回时写入，无法满足「store 已存在则拒绝且不覆盖」；当前
+语义以本节第 1 条的等待 read 证据规则为准。跨 Adapter 实例的原子 create-if-absent 仍需由
+后续 FilePersistence 工作在 store seam 落实，不能由单实例内存协调替代。

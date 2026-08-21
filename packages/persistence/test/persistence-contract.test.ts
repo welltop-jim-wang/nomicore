@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import * as Y from 'yjs'
 import {
   DEFAULT_PERSISTENCE_SCHEDULE,
+  createMemoryPersistence,
   systemPersistenceTimer,
   provideDocPersistence,
   requireDocPersistence,
@@ -13,12 +14,15 @@ import {
   type User,
 } from '../src/index.js'
 
-const user: User = { userId: 'alice' }
+const owner: User = { userId: 'alice' }
 
 function stubPersistence(): DocPersistence {
   return {
     async loadDoc(): Promise<DocHandle | null> {
       return null
+    },
+    async createDoc(): Promise<DocHandle> {
+      throw new Error('stub persistence does not implement createDoc')
     },
     async saveDoc(): Promise<void> {},
   }
@@ -116,7 +120,7 @@ describe('persistence contracts', () => {
   it('keeps the public handle contract tied to Y.Doc without exposing cache controls', async () => {
     const doc = new Y.Doc()
     const handle: DocHandle = {
-      user,
+      owner,
       docId: 'draft',
       doc,
       async release() {},
@@ -126,5 +130,11 @@ describe('persistence contracts', () => {
     await expect(handle.release()).resolves.toBeUndefined()
     expect('evict' in handle).toBe(false)
     expect('list' in handle).toBe(false)
+  })
+
+  it('exposes createDoc on adapter instances (issue-64 createDoc contract)', () => {
+    const persistence = createMemoryPersistence()
+    const seam = persistence as unknown as { createDoc?: unknown }
+    expect(typeof seam.createDoc).toBe('function')
   })
 })
