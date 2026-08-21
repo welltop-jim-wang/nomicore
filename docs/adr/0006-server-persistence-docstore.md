@@ -110,3 +110,53 @@ NomicoreServer 与 DSH 均以 **Cordis** 为宿主内核；持久层先作为宿
 
 - ADR 0001（自包含、变更历史与数据同源）、ADR 0003（ROOT 约定）、设计文档 §10（作用域隔离）、§11（schema 变更管理操作）
 - 旧 yjs-server 借鉴清单：fs 原子写（temp+rename）、flush/cleanup 调度经验（归属上层 cron 而非 store）
+
+### createDoc 与 owner 语义修订（2026-08-21，issue #64；演进经 owner 裁决放行）
+
+本节修订上方两处早期决策条款，取代关系如下；未提及的条款维持原文效力。
+
+**1. 创建语义（取代「创建 = 首个 saveDoc（无独立 createDoc）」）**：`DocPersistence` 提供
+`createDoc(owner, docId, doc): Promise<DocHandle>`，对 `(owner.userId, docId)` 排他创建：
+
+- cache/store 已存在或并发创建 → 拒绝 `DocDuplicateError`（稳定错误码 `DOC_DUPLICATE`）；
+  **在 duplicate 判定路径上绝不覆盖已提交内容**——cache 命中即拒、store 存在性读见快照即拒、
+  并发 claim 即拒，三条判定都在进入写路径之前；并发 create 恰好一个成功，落败者在进入写路径前被拒；
+- 创建成功前初始完整 snapshot 已提交（`Y.encodeStateAsUpdate(doc)` 直写；FilePersistence 以
+  temp→rename 完成为提交点；不新增 fsync 保证）；成功签发有效 lease 且 `handle.doc === doc`，
+  持久层接管该 doc 生命周期（eviction/dispose 时销毁）；
+- 失败时不返回 handle、不缓存、不销毁传入 doc，所有权仍归调用方；原始 I/O 错误原样上抛；
+- create/create 与 create/load 共享 per-key coordination；create 对同 key in-flight load
+  **胜出（supersede）**：取得创建权后在创建收尾块内同步采纳被取代的 load——pending load 不得
+  返回 null，而是共享 created live entry；此后对该 key 的重读必得 create 提交内容（不得假 null、
+  不得复活被覆盖的旧内容、不得向已驱逐实例签发 lease）。**已知代价：该窗口内 create 可覆盖既有
+  提交**（读未返回使 duplicate 判定不可见）——loud 告警（lost-update）是**事后检测而非防护**，
+  覆盖被取代读晚到返回既有快照的全部路径；规范调用方模式为先 create、duplicate 再 load，
+  不应对同 key 并发 load+create；单实例内该窗口仅由上述调用方竞态触发；
+- 持久层仍仅校验 `META.docId === docId`，不校验 VFSL/ROOT/createdAt；`saveDoc` 的
+  「脏通知 + 内部调度」语义不变，首个 saveDoc 仍是合法写入路径。
+
+**2. 接口契约（取代本文上方接口代码块的 `DocHandle.user` 与二方法签名）**：
+
+```ts
+interface User { userId: string }
+
+interface DocHandle {
+  readonly owner: User;   // 文档的存储所有者（分区键），非当前访问者
+  readonly docId: string;
+  readonly doc: Y.Doc;
+  release(): Promise<void>;
+}
+
+interface DocPersistence {
+  createDoc(owner: User, docId: string, doc: Y.Doc): Promise<DocHandle>;
+  loadDoc(owner: User, docId: string): Promise<DocHandle | null>;
+  saveDoc(handle: DocHandle): Promise<void>;
+}
+```
+
+`owner` 仅作分区键，本层不鉴权（与「user 仅作分区键」条款同义，术语对齐）；访问者授权
+不进入 Persistence Interface。内部 Entry、契约测试与文档随接口统一 owner 语义。
+
+**3. 实施注记**：create/load 同键协调与 flush 调度收敛为 adapter 共享的 persistence
+lifecycle core（MemoryPersistence 与 FilePersistence 共用，不得复制状态机）；两 Adapter
+必须通过同一组 createDoc shared contract tests。

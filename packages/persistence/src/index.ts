@@ -10,11 +10,12 @@ export interface User {
  * A short-lived, adapter-owned lease of a live document.
  *
  * Every successful `loadDoc()` returns a new handle. Handles for the same
- * `(userId, docId)` may share their `doc`, but they never share lease identity.
- * Call `release()` from the caller's `finally`; it is idempotent.
+ * `(owner.userId, docId)` may share their `doc`, but they never share lease
+ * identity. Call `release()` from the caller's `finally`; it is idempotent.
  */
 export interface DocHandle {
-  readonly user: User
+  /** The storage owner of this document (partition key), not the current accessor. */
+  readonly owner: User
   readonly docId: string
   readonly doc: Y.Doc
   release(): Promise<void>
@@ -28,8 +29,27 @@ export interface DocHandle {
  * that they did not issue, as well as handles that have already been released.
  */
 export interface DocPersistence {
-  loadDoc(user: User, docId: string): Promise<DocHandle | null>
+  /**
+   * Exclusively create `doc` for `(owner.userId, docId)`. The initial full
+   * snapshot is committed before the returned handle resolves; on failure no
+   * handle is returned, nothing is cached, and the caller's doc is not
+   * destroyed — ownership stays with the caller.
+   */
+  createDoc(owner: User, docId: string, doc: Y.Doc): Promise<DocHandle>
+  loadDoc(owner: User, docId: string): Promise<DocHandle | null>
   saveDoc(handle: DocHandle): Promise<void>
+}
+
+/**
+ * Stable duplicate-creation error. Callers branch on `instanceof` or on the
+ * `code` property without parsing `message`.
+ */
+export class DocDuplicateError extends Error {
+  readonly code: 'DOC_DUPLICATE' = 'DOC_DUPLICATE'
+  constructor(message = 'createDoc duplicate: the (owner, docId) already exists') {
+    super(message)
+    this.name = 'DocDuplicateError'
+  }
 }
 
 /** Cordis label for the host-wide persistence service. */
