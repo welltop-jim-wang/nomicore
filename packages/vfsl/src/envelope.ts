@@ -194,6 +194,32 @@ export function dialectIssueOrNull(envelope: SchemaEnvelope): SchemaEnvelopeIssu
 }
 
 /**
+ * H1 编排前缀（形状 → 方言）单点（issue #54 / H3，D5）：validateEnvelopeShape
+ * （ENV-1/2/3）→ dialectIssueOrNull（ENV-4）→ 成功交回**恰四键回显信封**（含 text）。
+ * parseSchemaEnvelope（index.ts）与 getCompiled 编译缓存前探共用——校验决策点
+ * 单源，信封命中路径得以免重复 parseVfsl（ADR-0001「性能依赖编译缓存」）。
+ * 纯函数；可能因对抗 getter/Proxy 抛出（由各公共入口的崩溃边界收编 ENV-100）。
+ */
+export function envelopeTextGate(
+  input: unknown,
+): { ok: true; envelope: SchemaEnvelope } | { ok: false; issues: SchemaParseIssue[] } {
+  const shape = validateEnvelopeShape(input); // ENV-1 / ENV-2+3（单读物化）
+  if (!shape.ok) {
+    return { ok: false, issues: shape.issues.map((issue) => ({ kind: 'envelope' as const, issue })) };
+  }
+  const dialect = dialectIssueOrNull(shape.envelope); // ENV-4（assertVfslDialect 单点复用）
+  if (dialect !== null) {
+    return { ok: false, issues: [{ kind: 'envelope', issue: dialect }] };
+  }
+  return { ok: true, envelope: shape.envelope };
+}
+
+/** kind:'vfsl' 包装单点（原 index.ts 内联 map 提出共用，语义零变）。 */
+export function vfslIssues(issues: VfslIssue[]): SchemaParseIssue[] {
+  return issues.map((issue) => ({ kind: 'vfsl' as const, issue }));
+}
+
+/**
  * §6.1 崩溃边界 issue（顶层 catch 收编用；detail 经唯一构造点 sanitizer 单行化）。
  *
  * F1 修复（SA4 R1 reject）：detail 计算自身可抛——对抗 getter/Proxy 可抛出**不可
