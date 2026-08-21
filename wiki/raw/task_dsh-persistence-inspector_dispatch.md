@@ -28,4 +28,5 @@ branch: fix/issue-59-on-adr-server-design（base: adr/server-design）
 | 17 | 02:31 | SA4 | Phase 3 静态验尸 R1 | 02:35 | F1/F2 修复 + R5 回归锚已入库（d734352），SA4 复审闭环（续传 21a6f56a） |
 | 18 | 02:34 | SA7 | Phase 3 动态验证 | 02:47 | SA4 R1 verdict: pass，进入动态验证活链路 |
 | 19 | 02:49 | SA1 | Phase 2 设计修订 R2 | 03:11 | SA7 verdict: fail-needs-fix（file 通道 record 非确定性，根因为设计 §6.2 结算谓词假设被证伪——设计级缺陷），回流 SA1 修订（续传 5510de55） |
-| 20 | 03:12 | SA2 | Phase 2 攻击评审 R2 | (pending) | SA1 R2 §6.2 两阶段结算协议属实质架构变更，聚焦复审（续传 3bf4e43d） |
+| 20 | 03:12 | SA2 | Phase 2 攻击评审 R2 | 03:21 | SA1 R2 §6.2 两阶段结算协议属实质架构变更，聚焦复审（续传 3bf4e43d） |
+| 21 | 03:22 | SA1 | Phase 2 设计修订 R3 | (pending) | SA2 R2 verdict: reject（窄幅——§6.2 骨架成立，pending 联言基线公式实证缺陷 + file n≥2 信号缺失），修订限 §6.2 基线语义（续传 5510de55） |
