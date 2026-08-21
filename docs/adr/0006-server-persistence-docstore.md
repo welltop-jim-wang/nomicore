@@ -22,19 +22,19 @@ interface DocPersistence {
 ```
 
 - **身份保证**：同一 `(user, docId)` 恒返回同一 Y.Doc 实例——sync 接入、写入管线、REST 共享权威实例，这是正确性前提而非优化；
-- **显式 saveDoc，调度与请求解耦**：saveDoc 是持久化协调器显式调用的操作，但可由定时器/脏状态策略触发，不构成某一次 REST/WS 写入请求的同步提交承诺（否决隐式插桩：迁移等管理操作需要控制落盘时机）；
-- **创建 = 首个 saveDoc**：loadDoc 不存在返回 null，调用方自建 Y.Doc 写入初始内容后 saveDoc 即完成创建（无独立 createDoc）；
-- **save 失败按 doc 只读降级，保留内存事务**：已校验并提交的事务立即进入 live Y.Doc 并正常同步；save 是内部异步行为，失败不向触发该事务的客户端追溯报错、不通用回滚。失败后 namespace 进入 `persistence-degraded`，保留读/查询与已同步状态，拒绝**后续** REST/WS 写入；失败事务保留在同一 live Y.Doc 中，由后台 retry 持久化，retry 成功后才恢复可写；不关闭整个 server。
-- **evict 纯手动**：驱逐策略（连接归零、空闲计时）属上层，本层只提供能力；
+- **saveDoc = 脏状态通知，不是同步落盘**：Doc 每次发生变更后，调用方调用 saveDoc 通知持久层；持久层内部按自身调度策略决定何时真正写回磁盘。saveDoc 返回仅表示脏状态已登记，不构成该次写入已落盘的承诺；
+- **创建 = 首个 saveDoc**：loadDoc 不存在返回 null，调用方自建 Y.Doc 写入初始内容后首次 saveDoc 即完成创建（无独立 createDoc）；
+- **save 失败按 doc 只读降级，保留内存事务**：已校验并提交的事务立即进入 live Y.Doc 并正常同步；持久化是内部异步行为，失败不向触发该事务的客户端追溯报错、不通用回滚。失败后 namespace 进入 `persistence-degraded`，保留读/查询与已同步状态，拒绝**后续** REST/WS 写入；失败事务保留在同一 live Y.Doc 中，由持久层内部 retry 持久化，retry 成功后才恢复可写；不关闭整个 server。
+- **evict = 不再使用通知**：调用方不再使用 doc 时调用 evict；持久层内部按缓存/脏状态/空闲策略决定何时真正释放实例，调用方不直接控制释放时刻；
 - **v1 不提供 list**：per-user 枚举用到再补；
 - **user 仅作分区键**：本层不鉴权；存储按用户分区（如 `data/users/{userId}/{docId}.snapshot`）。
 
 ### v1 持久化格式：全量快照原子覆盖（2026-08-21，owner 决策）
 
-v1 的 `saveDoc` 直接以 `Y.encodeStateAsUpdate(doc)` 编码**完整 Y.Doc 状态**，使用临时文件 + 原子 rename 覆盖该 doc 的单个 snapshot 文件。`loadDoc` 读取该 snapshot 并 `Y.applyUpdate` 还原 Y.Doc。
+持久层内部的 flush 在触发时以 `Y.encodeStateAsUpdate(doc)` 编码**完整 Y.Doc 状态**，使用临时文件 + 原子 rename 覆盖该 doc 的单个 snapshot 文件。`loadDoc` 读取该 snapshot 并 `Y.applyUpdate` 还原 Y.Doc。
 
 - 选择简单、可审计、单文件恢复；沿用旧 yjs-server 已验证的 temp+rename 模式；
-- **rename 成功即返回**：v1 不对每次 save 做 file/directory fsync，`saveDoc` 不承诺掉电级持久性；
+- **rename 成功即完成一次 flush**：v1 不对每次 flush 做 file/directory fsync，`saveDoc` 本身也不承诺掉电级持久性；
 - 数据保障不依赖单机 fsync：需要更强保证时，以副本、异机复制、备份/恢复演练等**冗余机制**提供，另行设计；
 - 不引入 WAL、增量水位、帧格式、压缩调度或坏帧截断的实现复杂度；
 - 代价已知：每次 save 的 CPU/IO 与文档全量大小成正比；规模优化（增量 WAL + 周期快照）留 v2，以不改变 `DocPersistence` Interface 的 Adapter 内部替换实现。
