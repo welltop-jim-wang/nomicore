@@ -19,3 +19,5 @@
 | 13 | 15:33 | SA7 | Phase 3 动态验证 | 15:41 | SA4 R2 pass，派 SA7 实跑活链路验证 |
 | 14 | 15:42 | 总控 | Phase 3.5 AC 门禁 | 15:42 | AC 6/6 全 ✅（task_vfsl-schema-envelope_ac_checklist.md），无 ❌ 无追加派发 |
 | 15 | 15:42 | 总控 | Phase 4 收尾固化 | (pending) | 双清达成（SA4 R2 pass + SA7 pass），一致性校验 + HG 自检 + commit + REPORT + .mabf-done |
+| 16 | 15:31 | SA4 | Phase 3 R2 | 15:31 | pass — verdict: pass（sa4_review.md R2 节 Verdict: pass，与文件逐字一致） |
+| 17 | 15:39 | SA7 | Phase 3 | 15:41 | pass — verdict: pass（sa7_report.md Verdict: pass，与文件逐字一致） |
