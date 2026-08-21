@@ -120,3 +120,10 @@ export type {
   DocPersistenceContractFixture,
 } from './testing.js'
 export { describeDocPersistenceContract } from './testing.js'
+export {
+  MemoryPersistence,
+  createMemoryPersistence,
+  createMemoryPersistencePlugin,
+  type MemoryPersistenceOptions,
+  type MemoryPersistenceStatus,
+} from './memory.js'
