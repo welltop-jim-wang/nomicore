@@ -62,7 +62,7 @@ function docWithMeta(docId: string): Y.Doc {
 }
 
 async function createAndSave(persistence: MemoryPersistence, user: User, docId: string): Promise<Y.Doc> {
-  const handle = await persistence.createHandle(user, docId)
+  const handle = await persistence._createForTest(user, docId)
   handle.doc.getMap('META').set('docId', docId)
   await persistence.saveDoc(handle)
   await handle.release()
@@ -75,7 +75,7 @@ describeDocPersistenceContract(async () => {
   return {
     persistence,
     async createHandle(user, docId) {
-      const handle = await persistence.createHandle(user, docId)
+      const handle = await persistence._createForTest(user, docId)
       handle.doc.getMap('META').set('docId', docId)
       return handle
     },
@@ -114,7 +114,7 @@ describe('MemoryPersistence', () => {
       timer,
       async writeSnapshot() { writes += 1 },
     })
-    const handle = await persistence.createHandle({ userId: 'alice' }, 'doc1')
+    const handle = await persistence._createForTest({ userId: 'alice' }, 'doc1')
     handle.doc.getMap('META').set('docId', 'doc1')
 
     await persistence.saveDoc(handle)
@@ -137,7 +137,7 @@ describe('MemoryPersistence', () => {
     const timer = createFakeTimer()
     let writes = 0
     const persistence = createMemoryPersistence({ timer, async writeSnapshot() { writes += 1 } })
-    const handle = await persistence.createHandle({ userId: 'alice' }, 'doc1')
+    const handle = await persistence._createForTest({ userId: 'alice' }, 'doc1')
     handle.doc.getMap('META').set('docId', 'doc1')
 
     await persistence.saveDoc(handle)
@@ -156,7 +156,7 @@ describe('MemoryPersistence', () => {
       schedule: { debounceMs: 10_000, maxDirtyMs: 5_000 },
       async writeSnapshot() { writes += 1 },
     })
-    const handle = await persistence.createHandle({ userId: 'alice' }, 'doc1')
+    const handle = await persistence._createForTest({ userId: 'alice' }, 'doc1')
     handle.doc.getMap('META').set('docId', 'doc1')
 
     await persistence.saveDoc(handle)
@@ -178,7 +178,7 @@ describe('MemoryPersistence', () => {
         if (writes === 1) await new Promise<void>((resolve) => { finishFirst = resolve })
       },
     })
-    const handle = await persistence.createHandle({ userId: 'alice' }, 'doc1')
+    const handle = await persistence._createForTest({ userId: 'alice' }, 'doc1')
     handle.doc.getMap('META').set('docId', 'doc1')
     await persistence.saveDoc(handle)
     await timer.advanceBy(500)
@@ -209,7 +209,7 @@ describe('MemoryPersistence', () => {
       },
     })
     const user = { userId: 'alice' }
-    const handle = await persistence.createHandle(user, 'doc1')
+    const handle = await persistence._createForTest(user, 'doc1')
     handle.doc.getMap('META').set('docId', 'doc1')
     handle.doc.getMap('ROOT').set('readable', 'yes')
     await persistence.saveDoc(handle)
@@ -222,7 +222,7 @@ describe('MemoryPersistence', () => {
     expect(second!.doc).toBe(handle.doc)
     expect(second!.doc.getMap('ROOT').get('readable')).toBe('yes')
     await expect(persistence.saveDoc(handle)).rejects.toThrow(/persistence-degraded/)
-    await expect(persistence.createHandle(user, 'other')).rejects.toThrow(/persistence-degraded/)
+    await expect(persistence._createForTest(user, 'other')).rejects.toThrow(/persistence-degraded/)
 
     await timer.advanceBy(500)
     expect(persistence.getStatus()).toBe('ready')
@@ -233,7 +233,7 @@ describe('MemoryPersistence', () => {
     const timer = createFakeTimer()
     const persistence = createMemoryPersistence({ timer })
     const user = { userId: 'alice' }
-    const seed = await persistence.createHandle(user, 'doc1')
+    const seed = await persistence._createForTest(user, 'doc1')
     const oldDoc = seed.doc
     oldDoc.getMap('META').set('docId', 'doc1')
     oldDoc.getMap('ROOT').set('value', 'persist me')
@@ -287,7 +287,7 @@ describe('MemoryPersistence', () => {
       timer,
       writeSnapshot: () => new Promise<void>((resolve) => { resolveWrite = resolve }),
     })
-    const handle = await persistence.createHandle({ userId: 'alice' }, 'doc1')
+    const handle = await persistence._createForTest({ userId: 'alice' }, 'doc1')
     handle.doc.getMap('META').set('docId', 'doc1')
     await persistence.saveDoc(handle)
     await timer.advanceBy(500)
@@ -318,7 +318,7 @@ describe('MemoryPersistence', () => {
   it('disposes caches and pending timers', async () => {
     const timer = createFakeTimer()
     const persistence = createMemoryPersistence({ timer })
-    const handle = await persistence.createHandle({ userId: 'alice' }, 'doc1')
+    const handle = await persistence._createForTest({ userId: 'alice' }, 'doc1')
     handle.doc.getMap('META').set('docId', 'doc1')
     await persistence.saveDoc(handle)
     expect(timer.pending()).toBeGreaterThan(0)

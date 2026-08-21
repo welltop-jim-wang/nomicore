@@ -121,7 +121,6 @@ export type {
 } from './testing.js'
 export { describeDocPersistenceContract } from './testing.js'
 export {
-  MemoryDocHandle,
   MemoryPersistence,
   createMemoryPersistence,
   createMemoryPersistencePlugin,

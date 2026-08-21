@@ -16,8 +16,10 @@ const HANDLE_OWNER = new WeakMap<MemoryDocHandle, MemoryPersistence>()
 export interface MemoryPersistenceOptions {
   readonly schedule?: Partial<PersistenceSchedule>
   readonly timer?: PersistenceTimer
-  readonly writeSnapshot?: (key: string, snapshot: Uint8Array) => Promise<void> | void
-  readonly readSnapshot?: (key: string) => Promise<Uint8Array | undefined> | Uint8Array | undefined
+  /** Implementations must honor `signal` to make in-flight I/O cancellable. */
+  readonly writeSnapshot?: (key: string, snapshot: Uint8Array, signal: AbortSignal) => Promise<void> | void
+  /** Implementations must honor `signal` to make in-flight I/O cancellable. */
+  readonly readSnapshot?: (key: string, signal: AbortSignal) => Promise<Uint8Array | undefined> | Uint8Array | undefined
 }
 
 export type MemoryPersistenceStatus = 'ready' | 'persistence-degraded' | 'disposed'
@@ -37,11 +39,9 @@ interface Entry {
   retryTimer?: unknown
 }
 
-interface StoredSnapshot {
-  readonly snapshot: Uint8Array
-}
+interface StoredSnapshot { readonly snapshot: Uint8Array }
 
-export class MemoryDocHandle implements DocHandle {
+class MemoryDocHandle implements DocHandle {
   private released = false
 
   constructor(
@@ -57,21 +57,21 @@ export class MemoryDocHandle implements DocHandle {
   async release(): Promise<void> {
     if (this.released) return
     this.released = true
-    this.persistence.release(this)
+    this.persistence.releaseFromHandle(this)
   }
 
-  get isReleased(): boolean {
-    return this.released
-  }
+  get isReleased(): boolean { return this.released }
 }
 
-/** In-memory reference adapter with an independent cache and snapshot store. */
+/** In-memory reference adapter with cancellable I/O and a separate snapshot store. */
 export class MemoryPersistence implements DocPersistence {
   private readonly schedule: PersistenceSchedule
   private readonly timer: PersistenceTimer
   private readonly snapshots = new Map<string, StoredSnapshot>()
   private readonly entries = new Map<string, Entry>()
   private readonly loading = new Map<string, Promise<Entry | null>>()
+  private readonly inFlight = new Set<Promise<unknown>>()
+  private readonly abortController = new AbortController()
   private status: MemoryPersistenceStatus = 'ready'
   private closed = false
   private epoch = 0
@@ -81,9 +81,7 @@ export class MemoryPersistence implements DocPersistence {
     this.timer = options.timer ?? systemPersistenceTimer
   }
 
-  getStatus(): MemoryPersistenceStatus {
-    return this.status
-  }
+  getStatus(): MemoryPersistenceStatus { return this.status }
 
   async loadDoc(user: User, docId: string): Promise<DocHandle | null> {
     this.assertReadable()
@@ -93,29 +91,14 @@ export class MemoryPersistence implements DocPersistence {
       let pending = this.loading.get(key)
       if (!pending) {
         const epoch = this.epoch
-        pending = this.restoreEntry(user, docId, key, epoch)
+        pending = this.track(this.restoreEntry(user, docId, key, epoch))
         this.loading.set(key, pending)
-        void pending.then(
-          () => this.loading.delete(key),
-          () => this.loading.delete(key),
-        )
+        void pending.then(() => this.loading.delete(key), () => this.loading.delete(key))
       }
       entry = (await pending) ?? undefined
       this.assertReadable()
     }
     return entry ? this.issueHandle(entry) : null
-  }
-
-  /** Test-only creation seam; the public persistence contract stays unchanged. */
-  async createHandle(user: User, docId: string): Promise<DocHandle> {
-    this.assertWritable()
-    const key = toKey(user, docId)
-    let entry = this.entries.get(key)
-    if (!entry) {
-      entry = this.createEntry(user, docId, key, new Y.Doc())
-      this.entries.set(key, entry)
-    }
-    return this.issueHandle(entry)
   }
 
   async saveDoc(handle: DocHandle): Promise<void> {
@@ -127,7 +110,19 @@ export class MemoryPersistence implements DocPersistence {
     this.scheduleFlush(entry)
   }
 
-  /** Cordis owns service cleanup; this cleanup only closes adapter resources. */
+  /** Internal testing seam: establishes a document through the public save path. */
+  async _createForTest(user: User, docId: string): Promise<DocHandle> {
+    this.assertWritable()
+    const key = toKey(user, docId)
+    let entry = this.entries.get(key)
+    if (!entry) {
+      entry = this.createEntry(user, docId, key, new Y.Doc())
+      this.entries.set(key, entry)
+    }
+    return this.issueHandle(entry)
+  }
+
+  /** Cordis owns service registration cleanup; this effect closes only adapter resources. */
   apply(ctx: Context): void {
     ctx.effect(() => {
       provideDocPersistence(ctx, this)
@@ -135,11 +130,13 @@ export class MemoryPersistence implements DocPersistence {
     }, 'memory-persistence: service')
   }
 
+  /** Abort all adapter I/O, clear timers/caches, and consume every pending rejection. */
   dispose(): void {
     if (this.closed) return
     this.closed = true
     this.epoch += 1
     this.status = 'disposed'
+    this.abortController.abort()
     for (const entry of this.entries.values()) {
       this.clearTimers(entry)
       entry.handles.clear()
@@ -148,9 +145,11 @@ export class MemoryPersistence implements DocPersistence {
     this.entries.clear()
     this.loading.clear()
     this.snapshots.clear()
+    for (const pending of this.inFlight) void pending.catch(() => {})
   }
 
-  release(handle: MemoryDocHandle): void {
+  /** Internal handle callback; not exported from the package surface. */
+  releaseFromHandle(handle: MemoryDocHandle): void {
     const entry = this.entries.get(handle.entryKey)
     if (!entry) return
     entry.handles.delete(handle)
@@ -158,7 +157,7 @@ export class MemoryPersistence implements DocPersistence {
   }
 
   private async restoreEntry(user: User, docId: string, key: string, epoch: number): Promise<Entry | null> {
-    const snapshot = await (this.options.readSnapshot?.(key) ?? this.snapshots.get(key)?.snapshot)
+    const snapshot = await (this.options.readSnapshot?.(key, this.abortController.signal) ?? this.snapshots.get(key)?.snapshot)
     if (!this.isCurrent(epoch)) return null
     if (!snapshot) return null
     const doc = new Y.Doc()
@@ -178,20 +177,10 @@ export class MemoryPersistence implements DocPersistence {
   }
 
   private createEntry(user: User, docId: string, key: string, doc: Y.Doc): Entry {
-    return {
-      key,
-      user,
-      docId,
-      doc,
-      handles: new Set(),
-      dirtyGeneration: 0,
-      savedGeneration: 0,
-      flushing: false,
-      retryDelayMs: this.schedule.debounceMs || 1,
-    }
+    return { key, user, docId, doc, handles: new Set(), dirtyGeneration: 0, savedGeneration: 0, flushing: false, retryDelayMs: this.schedule.debounceMs || 1 }
   }
 
-  private issueHandle(entry: Entry): MemoryDocHandle {
+  private issueHandle(entry: Entry): DocHandle {
     const handle = new MemoryDocHandle(this, entry.user, entry.docId, entry.doc, entry.key)
     entry.handles.add(handle)
     return handle
@@ -199,9 +188,7 @@ export class MemoryPersistence implements DocPersistence {
 
   private scheduleFlush(entry: Entry): void {
     if (entry.flushing || this.closed) return
-    if (entry.maxDirtyTimer === undefined) {
-      entry.maxDirtyTimer = this.timer.setTimeout(() => this.onMaxDirty(entry), this.schedule.maxDirtyMs)
-    }
+    if (entry.maxDirtyTimer === undefined) entry.maxDirtyTimer = this.timer.setTimeout(() => this.onMaxDirty(entry), this.schedule.maxDirtyMs)
     if (entry.debounceTimer !== undefined) this.timer.clearTimeout(entry.debounceTimer)
     entry.debounceTimer = this.timer.setTimeout(() => this.onDebounce(entry), this.schedule.debounceMs)
   }
@@ -220,7 +207,7 @@ export class MemoryPersistence implements DocPersistence {
 
   private startFlush(entry: Entry): void {
     if (entry.flushing || this.closed) return
-    void this.flush(entry, this.epoch)
+    void this.track(this.flush(entry, this.epoch)).catch(() => {})
   }
 
   private async flush(entry: Entry, epoch: number): Promise<void> {
@@ -234,22 +221,20 @@ export class MemoryPersistence implements DocPersistence {
       entry.savedGeneration = generation
       entry.retryDelayMs = this.schedule.debounceMs || 1
       if (entry.savedGeneration !== entry.dirtyGeneration) this.scheduleFlush(entry)
-    } catch (error) {
+    } catch {
       if (!this.isCurrent(epoch)) return
       this.status = 'persistence-degraded'
       this.scheduleRetry(entry)
     } finally {
       if (!this.isCurrent(epoch)) return
       entry.flushing = false
-      if (entry.savedGeneration !== entry.dirtyGeneration && entry.debounceTimer === undefined && entry.maxDirtyTimer === undefined && entry.retryTimer === undefined) {
-        this.scheduleFlush(entry)
-      }
+      if (entry.savedGeneration !== entry.dirtyGeneration && entry.debounceTimer === undefined && entry.maxDirtyTimer === undefined && entry.retryTimer === undefined) this.scheduleFlush(entry)
       this.maybeEvict(entry)
     }
   }
 
   private async writeSnapshot(key: string, snapshot: Uint8Array, epoch: number): Promise<void> {
-    if (this.options.writeSnapshot) await this.options.writeSnapshot(key, snapshot)
+    if (this.options.writeSnapshot) await this.options.writeSnapshot(key, snapshot, this.abortController.signal)
     if (!this.isCurrent(epoch)) return
     this.snapshots.set(key, { snapshot: snapshot.slice() })
     this.status = 'ready'
@@ -289,27 +274,25 @@ export class MemoryPersistence implements DocPersistence {
     entry.retryTimer = undefined
   }
 
+  private track<T>(promise: Promise<T>): Promise<T> {
+    this.inFlight.add(promise)
+    void promise.then(() => this.inFlight.delete(promise), () => this.inFlight.delete(promise))
+    return promise
+  }
+
   private assertOwnedHandle(handle: DocHandle): MemoryDocHandle {
-    if (!(handle instanceof MemoryDocHandle) || HANDLE_OWNER.get(handle) !== this || handle.isReleased) {
-      throw new Error('foreign or released DocHandle')
-    }
+    if (!(handle instanceof MemoryDocHandle) || HANDLE_OWNER.get(handle) !== this || handle.isReleased) throw new Error('foreign or released DocHandle')
     return handle
   }
 
-  private assertReadable(): void {
-    if (this.closed) throw new Error('MemoryPersistence is disposed')
-  }
+  private assertReadable(): void { if (this.closed) throw new Error('MemoryPersistence is disposed') }
 
   private assertWritable(): void {
     this.assertReadable()
-    if (this.status === 'persistence-degraded') {
-      throw new Error('persistence-degraded: writes are rejected until retry succeeds')
-    }
+    if (this.status === 'persistence-degraded') throw new Error('persistence-degraded: writes are rejected until retry succeeds')
   }
 
-  private isCurrent(epoch: number): boolean {
-    return !this.closed && this.epoch === epoch
-  }
+  private isCurrent(epoch: number): boolean { return !this.closed && this.epoch === epoch }
 }
 
 export function createMemoryPersistence(options: MemoryPersistenceOptions = {}): MemoryPersistence {
@@ -324,13 +307,8 @@ export function createMemoryPersistencePlugin(options: MemoryPersistenceOptions 
       instance = createMemoryPersistence(options)
       instance.apply(ctx)
     },
-    /** Test/host diagnostic hook; undefined until the plugin has applied. */
-    get instance(): MemoryPersistence | undefined {
-      return instance
-    },
+    get instance(): MemoryPersistence | undefined { return instance },
   }
 }
 
-function toKey(user: User, docId: string): string {
-  return `${user.userId}\u0000${docId}`
-}
+function toKey(user: User, docId: string): string { return `${user.userId}\u0000${docId}` }
