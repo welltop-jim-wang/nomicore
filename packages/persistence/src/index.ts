@@ -20,3 +20,9 @@ export {
   type MemoryPersistenceOptions,
   type MemoryPersistenceStatus,
 } from './memory.js'
+export {
+  FilePersistence,
+  createFilePersistencePlugin,
+  type FilePersistenceOptions,
+  type FilePersistenceStatus,
+} from './file.js'
