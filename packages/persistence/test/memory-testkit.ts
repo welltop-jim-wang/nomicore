@@ -1,4 +1,4 @@
-import type { DocHandle, User } from '../src/index.js'
+import type { DocHandle, User } from '../src/contract.js'
 import { createMemoryHandleForTest as create } from '../src/memory.js'
 import type { MemoryPersistence } from '../src/memory.js'
 

@@ -125,13 +125,10 @@ NomicoreServer 与 DSH 均以 **Cordis** 为宿主内核；持久层先作为宿
   temp→rename 完成为提交点；不新增 fsync 保证）；成功签发有效 lease 且 `handle.doc === doc`，
   持久层接管该 doc 生命周期（eviction/dispose 时销毁）；
 - 失败时不返回 handle、不缓存、不销毁传入 doc，所有权仍归调用方；原始 I/O 错误原样上抛；
-- create/create 与 create/load 共享 per-key coordination；create 对同 key in-flight load
-  **胜出（supersede）**：取得创建权后在创建收尾块内同步采纳被取代的 load——pending load 不得
-  返回 null，而是共享 created live entry；此后对该 key 的重读必得 create 提交内容（不得假 null、
-  不得复活被覆盖的旧内容、不得向已驱逐实例签发 lease）。**已知代价：该窗口内 create 可覆盖既有
-  提交**（读未返回使 duplicate 判定不可见）——loud 告警（lost-update）是**事后检测而非防护**，
-  覆盖被取代读晚到返回既有快照的全部路径；规范调用方模式为先 create、duplicate 再 load，
-  不应对同 key 并发 load+create；单实例内该窗口仅由上述调用方竞态触发；
+- create/create 与 create/load 共享 per-key coordination；若同 key 的 load 已在读取 store，
+  create 必须等待该 read 的存在性证据：读到 snapshot 则拒绝 `DocDuplicateError`，读到 missing
+  才能进入写路径。pending load 按自己的 read 结果完成；实现不得以 supersede 或事后告警替代
+  duplicate 判定，更不得覆盖已提交 snapshot；
 - 持久层仍仅校验 `META.docId === docId`，不校验 VFSL/ROOT/createdAt；`saveDoc` 的
   「脏通知 + 内部调度」语义不变，首个 saveDoc 仍是合法写入路径。
 
@@ -160,3 +157,9 @@ interface DocPersistence {
 **3. 实施注记**：create/load 同键协调与 flush 调度收敛为 adapter 共享的 persistence
 lifecycle core（MemoryPersistence 与 FilePersistence 共用，不得复制状态机）；两 Adapter
 必须通过同一组 createDoc shared contract tests。
+
+**4. supersede 裁决撤销（2026-08-21，PR #67 review 修订）**：此前 task archive 中关于
+create supersede pending load、early adoption 与 lost-update 事后告警的设计/测试记录已被撤销，
+不构成当前契约。它允许在 read 尚未返回时写入，无法满足「store 已存在则拒绝且不覆盖」；当前
+语义以本节第 1 条的等待 read 证据规则为准。跨 Adapter 实例的原子 create-if-absent 仍需由
+后续 FilePersistence 工作在 store seam 落实，不能由单实例内存协调替代。

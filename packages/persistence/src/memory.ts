@@ -8,7 +8,7 @@ import {
   type PersistenceSchedule,
   type PersistenceTimer,
   type User,
-} from './index.js'
+} from './contract.js'
 
 const TEST_FACTORY = Symbol('MemoryPersistence test factory')
 

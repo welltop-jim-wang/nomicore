@@ -194,4 +194,3 @@ R2 初稿缺陷（分支 B 失败后无条件 routeEvidence → resolveLoad 见�
 1. R3 设计全文关键段精读（§6 L418-504、§7 L506-637、§8 L639-681、§4.3 L240-265、§13 L793-805、§5.3 L347-368、§17 R3 节）。
 2. grep 复核：`claimResolve` 在规范性伪代码零残留（仅 §17 历史引文）；`claim.promise` 赋值仅 §6 L458（占位）与 L492（派生式）两处；`await claim.promise`/`await cell.claim.promise` 仍为 §7 L547/L568 两处（U8 所指点位准确）。
 3. 范围抽检：§4.1/§12/§14/§15 与 R2 基线逐字一致（关键锚点行 grep 对照）；git status 确认无代码/测试文件新改动。
-

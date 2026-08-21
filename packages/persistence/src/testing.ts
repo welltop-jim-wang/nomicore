@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import * as Y from 'yjs'
-import type { DocHandle, DocPersistence, PersistenceTimer, User } from './index.js'
+import type { DocHandle, DocPersistence, PersistenceTimer, User } from './contract.js'
 
 /**
  * The factory shape shared by every persistence adapter's contract test.
@@ -217,7 +217,7 @@ async function rejectionOf<T>(promise: Promise<T>): Promise<unknown> {
  */
 async function assertDuplicateError(reason: unknown): Promise<void> {
   expect(reason).toMatchObject({ code: 'DOC_DUPLICATE' })
-  const mod = await import('./index.js') as { DocDuplicateError?: new (message?: string) => Error }
+  const mod = await import('./contract.js') as { DocDuplicateError?: new (message?: string) => Error }
   if (mod.DocDuplicateError !== undefined) {
     expect(reason).toBeInstanceOf(mod.DocDuplicateError)
   }
@@ -359,12 +359,13 @@ export function describeDocCreateContract(
       await fixture.dispose()
     })
 
-    it('does not return null for a load that is still pending when create wins the key', async () => {
+    it('waits for a pending load before create and rejects when its read finds committed content', async () => {
       const fixture = await factory()
       const { persistence, store } = fixture
       const owner: User = { userId: 'alice' }
       const docId = 'create-load-doc'
-      const doc = docWithMeta(docId, 'from-create')
+      const persisted = docWithMeta(docId, 'already-committed')
+      const persistedSnapshot = Y.encodeStateAsUpdate(persisted)
 
       let readStarted: (() => void) | undefined
       let releaseRead: ((value: Uint8Array | undefined) => void) | undefined
@@ -377,16 +378,14 @@ export function describeDocCreateContract(
       const loading = persistence.loadDoc(owner, docId)
       await withTimeout(readStartedPromise, 2_000, 'load to start its restore read')
 
-      store.write = async () => {}
-      const created = await persistence.createDoc(owner, docId, doc)
-      releaseRead!(undefined)
+      const creating = persistence.createDoc(owner, docId, docWithMeta(docId, 'must-not-overwrite'))
+      releaseRead!(persistedSnapshot)
 
-      const loaded = await withTimeout(loading, 2_000, 'load pending while create won the key')
+      const loaded = await withTimeout(loading, 2_000, 'pending load to restore committed content')
       expect(loaded).not.toBeNull()
-      expect(loaded!.doc).toBe(created.doc)
-      expect(loaded!.owner).toBe(owner)
+      expect(loaded!.doc.getMap('ROOT').get('who')).toBe('already-committed')
+      await assertDuplicateError(await rejectionOf(creating))
 
-      await created.release()
       await loaded!.release()
       await fixture.dispose()
     })

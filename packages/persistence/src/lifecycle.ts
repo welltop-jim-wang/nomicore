@@ -7,7 +7,7 @@ import {
   type PersistenceSchedule,
   type PersistenceTimer,
   type User,
-} from './index.js'
+} from './contract.js'
 
 /**
  * The adapter I/O seam shared by every persistence adapter.
@@ -58,24 +58,16 @@ interface ReadTicket {
   readonly completion: Promise<LiveEntry | null>
   readonly settleOnce: (value: LiveEntry | null) => void
   readonly rejectOnce: (err: unknown) => void
-  /** Back-reference filled synchronously when a create supersedes this read. */
-  supersededBy: CreateClaim | undefined
-  /** Set in the create's completion block, before the claim settles. */
-  adoptedByCreate: boolean
-  adoptedEntry: LiveEntry | undefined
-  /** `rawPromise` settled flag (no promise-state introspection needed). */
-  rawSettled: boolean
 }
 
 interface CreateClaim {
   /** Settles exactly once on both outcomes of the create operation (U8). */
   promise: Promise<void>
-  supersededRead: ReadTicket | undefined
 }
 
 type Cell =
   | { state: 'reading'; read: ReadTicket }
-  | { state: 'creating'; claim: CreateClaim; supersededRead: ReadTicket | undefined }
+  | { state: 'creating'; claim: CreateClaim }
   | { state: 'live'; entry: LiveEntry }
 
 const HANDLE_OWNER = new WeakMap<PersistenceHandle, PersistenceLifecycle>()
@@ -145,25 +137,19 @@ export class PersistenceLifecycle {
     this.validateCreateDoc(doc, docId)
     const key = toKey(owner, docId)
     const epoch = this.epoch
-    let supersededRead: ReadTicket | undefined
-
     // ---- claim acquisition ----
     acquire: while (true) {
       const cell = this.cells.get(key)
       if (cell?.state === 'live') throw this.duplicateError(owner, key)
       if (cell?.state === 'creating') throw this.duplicateError(owner, key)
       if (cell?.state === 'reading') {
-        if (cell.read.startedBy === 'create') {
-          // Join the existing existence check; never issue a second read.
-          const raw = await cell.read.rawPromise
-          this.assertCurrentEpoch(epoch)
-          if (raw !== undefined) throw this.duplicateError(owner, key)
-          continue acquire
-        }
-        // Supersede the load-started read: do not wait for it, do not re-read,
-        // do not delete it (the load waiter still relies on it on rollback).
-        supersededRead = cell.read
-        break acquire
+        // A pending load may reveal an already committed snapshot. Wait for the
+        // evidence before creating: createDoc must never overwrite a document
+        // merely because its existence read was late.
+        const raw = await cell.read.rawPromise
+        this.assertCurrentEpoch(epoch)
+        if (raw !== undefined) throw this.duplicateError(owner, key)
+        continue acquire
       }
       // Empty: this create must probe the store itself.
       const read = this.startReadTicket(key, owner, docId, 'create', epoch)
@@ -176,9 +162,8 @@ export class PersistenceLifecycle {
     }
 
     // ---- perform create (the cell is creating before any write) ----
-    const claim: CreateClaim = { promise: undefined!, supersededRead }
-    if (supersededRead !== undefined) supersededRead.supersededBy = claim
-    this.cells.set(key, { state: 'creating', claim, supersededRead })
+    const claim: CreateClaim = { promise: undefined! }
+    this.cells.set(key, { state: 'creating', claim })
     const op = this.track((async () => {
       try {
         const snapshot = Y.encodeStateAsUpdate(doc)
@@ -186,24 +171,11 @@ export class PersistenceLifecycle {
         this.assertCurrentEpoch(epoch)
         const entry = this.createEntry(owner, docId, key, doc)
         this.cells.set(key, { state: 'live', entry })
-        // Adopt the superseded read in the same synchronous block: the load
-        // waiter immediately gets the created live entry (I5).
-        if (supersededRead !== undefined && !supersededRead.adoptedByCreate) {
-          supersededRead.adoptedByCreate = true
-          supersededRead.adoptedEntry = entry
-          supersededRead.settleOnce(entry)
-        }
         return this.issueHandle(entry)
       } catch (err) {
         const cur = this.cells.get(key)
         if (cur?.state === 'creating' && cur.claim === claim) {
-          if (supersededRead !== undefined && !supersededRead.rawSettled) {
-            // The superseded driver is still parked at its read: hand the cell
-            // back so it can route its own evidence on settle.
-            this.cells.set(key, { state: 'reading', read: supersededRead })
-          } else {
-            this.cells.delete(key)
-          }
+          this.cells.delete(key)
         }
         throw err
       }
@@ -335,23 +307,11 @@ export class PersistenceLifecycle {
         settled = true
         completionReject(err)
       },
-      supersededBy: undefined,
-      adoptedByCreate: false,
-      adoptedEntry: undefined,
-      rawSettled: false,
     }
-    void rawPromise.then(
-      () => { read.rawSettled = true },
-      () => { read.rawSettled = true },
-    )
     return read
   }
 
-  /**
-   * The single driver per read ticket. After the read settles, exactly one of
-   * adopted / superseded / plain holds; the superseded branch re-validates cell
-   * ownership before routing evidence (never awaits its own completion).
-   */
+  /** The single driver per read ticket, which exclusively routes its evidence. */
   private async driveLoadRead(key: string, owner: User, docId: string, read: ReadTicket, epoch: number): Promise<LiveEntry | null> {
     let snapshot: Uint8Array | undefined | ReadError
     try {
@@ -359,33 +319,11 @@ export class PersistenceLifecycle {
     } catch (err) {
       snapshot = new ReadError(err)
     }
-
-    if (read.adoptedByCreate) {
-      this.observeLateReadOutcome(key, snapshot)
-      return read.adoptedEntry!
-    }
-
-    const claim = read.supersededBy
-    if (claim !== undefined) {
-      await claim.promise
-      if (read.adoptedByCreate) {
-        this.observeLateReadOutcome(key, snapshot)
-        return read.adoptedEntry!
-      }
-      // The create failed. If the rollback handed the cell back to this
-      // ticket, route as its owner; otherwise fall back to the evidence.
-      const cell = this.cells.get(key)
-      if (cell?.state === 'reading' && cell.read === read) {
-        return this.ownerRoute(key, owner, docId, snapshot, epoch)
-      }
-      return this.routeEvidence(key, owner, docId, snapshot, epoch)
-    }
-
-    return this.ownerRoute(key, owner, docId, snapshot, epoch)
+    return this.routeOwnedRead(key, owner, docId, snapshot, epoch)
   }
 
   /** Classic owner routing; the caller holds the reading cell with this ticket. */
-  private async ownerRoute(key: string, owner: User, docId: string, snapshot: Uint8Array | undefined | ReadError, epoch: number): Promise<LiveEntry | null> {
+  private async routeOwnedRead(key: string, owner: User, docId: string, snapshot: Uint8Array | undefined | ReadError, epoch: number): Promise<LiveEntry | null> {
     if (!this.isCurrent(epoch)) {
       this.cells.delete(key)
       throw new Error('persistence is disposed')
@@ -408,29 +346,6 @@ export class PersistenceLifecycle {
     }
     this.cells.set(key, { state: 'live', entry })
     return entry
-  }
-
-  /** Create-failure evidence fallback, reachable only when this ticket no longer owns the cell. */
-  private async routeEvidence(key: string, owner: User, docId: string, snapshot: Uint8Array | undefined | ReadError, epoch: number): Promise<LiveEntry | null> {
-    if (!this.isCurrent(epoch)) throw new Error('persistence is disposed')
-    if (snapshot instanceof ReadError) throw snapshot.err
-    if (snapshot === undefined) return null
-    const entry = this.restoreAndValidate(snapshot, owner, docId, key)
-    if (this.cells.get(key) === undefined) {
-      this.cells.set(key, { state: 'live', entry })
-      return entry
-    }
-    entry.doc.destroy()
-    return this.resolveLoad(key, epoch, owner, docId)
-  }
-
-  /** Late outcome of a superseded read: observation only, never routed (I5). */
-  private observeLateReadOutcome(key: string, snapshot: Uint8Array | undefined | ReadError): void {
-    if (snapshot instanceof Uint8Array) {
-      console.error('[persistence] lost-update anomaly: createDoc superseded a pending load whose store read returned a pre-existing snapshot', { key })
-    } else if (snapshot instanceof ReadError) {
-      console.warn('[persistence] superseded store read failed after createDoc won the key; ignoring stale read error', { key })
-    }
   }
 
   private validateCreateDoc(doc: Y.Doc, docId: string): void {
@@ -586,4 +501,4 @@ export class PersistenceLifecycle {
   private isCurrent(epoch: number): boolean { return !this.closed && this.epoch === epoch }
 }
 
-function toKey(user: User, docId: string): string { return `${user.userId}\u0000${docId}` }
+function toKey(owner: User, docId: string): string { return `${owner.userId}\u0000${docId}` }

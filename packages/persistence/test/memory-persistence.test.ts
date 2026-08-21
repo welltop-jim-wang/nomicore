@@ -4,11 +4,14 @@ import * as Y from 'yjs'
 import {
   MemoryPersistence,
   createMemoryPersistence,
-  describeDocPersistenceContract,
   type PersistenceTimer,
   type User,
 } from '../src/index.js'
-import { createDocStore, describeDocCreateContract } from '../src/testing.js'
+import {
+  createDocStore,
+  describeDocCreateContract,
+  describeDocPersistenceContract,
+} from '../src/testing.js'
 import { createMemoryHandleForTest } from './memory-testkit.js'
 
 interface FakeTimer extends PersistenceTimer {
