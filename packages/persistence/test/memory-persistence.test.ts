@@ -108,6 +108,28 @@ describe('MemoryPersistence', () => {
     expect(first!.doc).toBe(second!.doc)
   })
 
+  it('rejects a foreign handle from another MemoryPersistence instance', async () => {
+    const timer = createFakeTimer()
+    const user = { userId: 'alice' }
+    const first = createMemoryPersistence({ timer })
+    const second = createMemoryPersistence({ timer })
+    const handle = await createMemoryHandleForTest(first, user, 'doc1')
+    handle.doc.getMap('META').set('docId', 'doc1')
+
+    await expect(second.saveDoc(handle)).rejects.toThrow(/foreign or released DocHandle/)
+    await expect(first.saveDoc(handle)).resolves.toBeUndefined()
+  })
+
+  it('rejects a released handle even when its original adapter is still live', async () => {
+    const timer = createFakeTimer()
+    const persistence = createMemoryPersistence({ timer })
+    const handle = await createMemoryHandleForTest(persistence, { userId: 'alice' }, 'doc1')
+    handle.doc.getMap('META').set('docId', 'doc1')
+
+    await handle.release()
+    await expect(persistence.saveDoc(handle)).rejects.toThrow(/foreign or released DocHandle/)
+  })
+
   it('marks dirty asynchronously with debounce and max-dirty deadlines', async () => {
     const timer = createFakeTimer()
     let writes = 0
