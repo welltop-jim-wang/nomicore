@@ -1,9 +1,10 @@
 # SA4 静态验尸报告
 
-**Date**: 2026-08-22
+**Date**: 2026-08-22（R0 首轮） / 2026-08-22（R1 复审，见文末「R1 复审节」）
 **Reviewer**: SA4（Red Team，静态验尸；实现后红队审查）
-**评审对象**: SA1 设计 R1 定稿（`task_dsh-persistence-inspector_design.md`）、SA2 评审（R0 reject → R1 pass）、实现 diff（`git log 217d8a4..eded79f` + 全部新增文件，merge-base `origin/adr/server-design` = 2aa22f4 与简报基线一致）
-**Verdict**: **reject**（1 项 P1：探针 evict 事件重复发射，污染 AC8 record 交付物；其余 8 项全 pass。修复面收敛在 `packages/dsh-persistence/src/probe.ts` 单函数 ~3 行，回流目标 SA3）
+**评审对象**: SA1 设计 R1 定稿（`task_dsh-persistence-inspector_design.md`）、SA2 评审（R0 reject → R1 pass）、实现 diff（`git log 217d8a4..eded79f` + 全部新增文件，merge-base `origin/adr/server-design` = 2aa22f4 与简报基线一致）；R1 复审对象为修复 commit `d734352`
+**Verdict (R0)**: **reject**（1 项 P1：探针 evict 事件重复发射，污染 AC8 record 交付物；其余 8 项全 pass。修复面收敛在 `packages/dsh-persistence/src/probe.ts` 单函数 ~3 行，回流目标 SA3）
+**Verdict (R1 复审，最终)**: **pass** —— F1/F2 修复经 SA4 独立复跑 3 组 CLI + AC2 用例实证闭环；SA6 R5 精确计数锚构成有效回归锚（缺陷态红值 3/5/30 与 R0 验尸证据逐项吻合）。详见文末「R1 复审节」。
 
 ---
 
@@ -133,3 +134,64 @@ grep -n "include" vitest.config.ts                   # → packages/*/test/**/*.
 ## 裁决
 
 **reject** → 回流 **SA3**：修复 `probe.ts:202-206` `watchEvict` 重复注册（每 doc 实例一监听），顺手可修 F2（哨兵吞没）。修复不触碰 SA6 测试与 `packages/persistence`（DENY 维持）；修后 SA4 复跑本报告「验证证据」节三条 CLI 命令核对 events 计数与单条 evict 即可闭环。设计（SA1）与测试契约面（SA6）无需改动；建议（非阻塞）总控协调 SA6 在 AC2 补精确 evict 计数断言，堵死 `>=` 断言的结构性失明。
+
+---
+
+# R1 复审节（2026-08-22）
+
+**复审对象**：修复 commit `d734352`（fix(dsh-persistence): SA4 F1 watchEvict per-doc dedup + F2 sentinel; SA6 R5 evict exact-count anchors），范围 `packages/dsh-persistence/src/probe.ts` + `test/dsh-profile-acceptance.test.ts` 两文件；`d734352..HEAD`（b24e374）对该包零追加改动（SA4 核实 diff 为空）。
+**复审范围**：R0 裁决约定的闭环动作——F1/F2 修复核对 + 3 组 CLI 复跑 + R5 回归锚有效性判定。R0 已通过项（Scope/vitest 触发性/协议假设/版本纪律/§9↔§13 对号等）不重开。
+**复审方法**：修复 diff 逐行核对 + SA4 独立进程复跑 3 组 CLI（memory n=1 / memory n=2 / file×2 双 rootDir）+ AC2 用例单跑 + R5 锚点与 R0 缺陷态证据的判别力核算。
+
+## 1. 修复核对（diff 逐行）
+
+- **F1（P1）**：`watchEvict` 开头 `if (destroyedListeners.has(doc)) return` —— 与 R0 修复配方逐字一致（每 doc 实例恰一监听）。`destroyedListeners` Map 恒存唯一已注册监听 → teardown `off` 语义同步修复，R0 指出的失败路径 spurious evict 次生污染随根因一并消除。修复仅 1 处早退 + 注释，无契约面改动、无额外抽象。
+- **F2（LOW）**：S4 降级期 saveDoc 改为 `.then(() => false, () => true)` 判定 + `if (!rejected) throw`——哨兵不再被吞，内核回归为「degraded 仍接受写」时 loud 失败（scenario-error），与 S3 handler 风格一致。**残留（INFO，非阻塞）**：任意 rejection（不论原因）均记 `write-rejected`；意外原因的拒绝（如 foreign handle）理论上会被误记——h6 在该点有效且状态自检先行，纯理论面，且属「内核拒绝方向」与 R0 所指「内核接受方向」掩蔽互为对偶，风险量级远低。
+- **Scope**：两文件均在 §12 ALLOW LIST 内；`packages/persistence`、SA6 其余测试、CI 配置零触碰。
+
+## 2. 复跑证据（SA4 实跑，2026-08-22，独立进程）
+
+```bash
+cd /home/wangjian/nomicore-fix-issue-59
+# ① memory n=1：
+pnpm exec tsx packages/dsh-persistence/src/cli.ts --adapter memory --fail-first-flushes 1
+#   → 退出 0；「probe ok=true events=32」（R0 缺陷态 34）；evict 行恰 4 条：
+#     doc-alpha t=1002/1003/1005 各恰 1 条 + doc-degraded t=2509；t=1002 单条 ✓
+#     全 record 与设计 §5 时间线逐行逐刻度吻合（0/500/1000/1001/1002/1003/1004/1005/
+#     1006/1007/1008/1508/2008/2508/2509）
+# ② memory n=2：
+pnpm exec tsx packages/dsh-persistence/src/cli.ts --adapter memory --fail-first-flushes 2
+#   → 退出 0；events=34（= S1 15 + S2 4 + S3 2 + S4 13，n=2 退避 500→1000→2000 保持 P17 逐刻度）
+# ③ file 双 rootDir：
+pnpm exec tsx packages/dsh-persistence/src/cli.ts --adapter file --rootDir <A>   (+ <B>)
+#   → 双跑均退出 0；events=28（R0 缺陷态 30）；diff 两跑 stdout → IDENTICAL；
+#     grep rootDir 绝对路径 → 0 命中；grep "tmp" → 0 命中（零环境痕迹维持）
+# ④ R5 锚点所在用例（SA6 FakeTimer 路径，区别于 CLI 自建时钟）：
+pnpm exec vitest run packages/dsh-persistence/test/dsh-profile-acceptance.test.ts --reporter=basic
+#   → Test Files 1 passed; Tests 10 passed (10); Type Errors 0
+```
+
+①②③④ 全部命中预期，无一项回归。
+
+## 3. R5 回归锚有效性判定（✅ 有效）
+
+R5 在 AC2 用例追加三条精确计数断言，SA4 以「缺陷态必红 / 修复态必绿」双态判别力核算：
+
+| R5 断言 | 修复态实测 | F1 缺陷态（R0 验尸证据） | 判别力 |
+|---|---|---|---|
+| `evicts.filter(e => e.t === 1002)).toHaveLength(1)` | 1 ✓（① 单条） | **3**（R0 record t=1002 连续 3 行） | 必红 ✓ |
+| `evicts.length).toBe(3)`（doc-alpha） | 3 ✓（1002/1003/1005） | **5**（3+1+1） | 必红 ✓ |
+| `events.length).toBe(28)`（memory n=0） | 28 ✓（④ 用例内） | **30**（R0 file n=0 record `events=30`，memory n=0 同事件模型） | 必红 ✓ |
+
+- R5 注释所载缺陷态红值「3/5/30」与 R0 验尸证据**逐项吻合**（非臆造）；三条断言均为运行时行为断言（事件数组计数），非源码 grep，符合 §1.7 纪律。
+- 锚点算术自洽：28 = S1 15 + S2 4 + S3 2 + S4 7（n=0），与设计 §5 时间线事件数推演一致；断言把「驱逐即销毁，销毁即事件」从设计文字钉进了回归锚——R0 指出的 `>=`/`find`/`every` 结构性失明就此关闭。
+- 精确计数的固有代价（场景演化需同步更新锚点）已在 R5 注释中留了推演式，属可接受的锚点维护成本。
+
+## 4. R1 复审最终裁决
+
+**pass**。
+
+- F1（R0 唯一 REJECT 项）修复实证闭环：events 34→32 / 30→28、t=1002 恰单条 evict、时间线回归设计 §5 逐刻度吻合；F2 同 commit 修复且方向正确（残留仅 INFO 级理论面）。
+- SA6 R5 精确计数锚经双态核算构成有效回归锚，本缺陷类不会再以「绿但错」形态漏网。
+- R0 动态审核重点第 1 条（F1 修复回归）已由本轮闭环，SA7 仅需接续第 2–5 条（失败 record 纯度、CLI 退出码矩阵、并发余量、CI 环境 yjs 一致性）。
+- SA7 可进入动态验证。
