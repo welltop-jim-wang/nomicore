@@ -1,0 +1,6 @@
+
+> nomicore@0.1.0 typecheck /home/wangjian/nomicore-fix-issue-54
+> tsc -p packages/vfsl/tsconfig.json && tsc -p packages/vfsl-protocol/tsconfig.json && tsc -p packages/vfsl-codegen/tsconfig.json
+
+FULL_TSC_EXIT=0
+SA3_TSC_DONE

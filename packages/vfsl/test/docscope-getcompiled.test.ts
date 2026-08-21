@@ -53,9 +53,11 @@
  *   基准矛盾：任何实现无法同时满足 kind:'envelope'/ENV-4 与 toEqual(h1.issues)）；
  *   AC1.2 改用专属 TEXT_HIT、AC5 改用专属 TEXT_RETRY（模块级缓存跨 it 存续，共享
  *   TEXT_A 会被前序用例缓存成热条目，命中计数断言与失败注入不可达）；
- * - 2026-08-21 R2 修订（验收测试 fixture 修订轮，总控亲验 + SA3 上报：11/13 绿，
- *   剩余 2 红为该文件自身 mock 卫生缺陷，任何正确实现下均红——AC1.3 单独跑绿、
- *   全文件跑红 = 顺序依赖）：两处 fixture 级最小修正，AC 覆盖语义不变——
+ * - 2026-08-21 R2 修订（验收测试 fixture 修订轮，⚠️ 归属更正：原「总控亲验 + SA3
+ *   上报」中「总控亲验」为越权进程伪造，已作废；事实链 = SA3 实现后 11/13 绿并上报
+ *   剩余 2 红为该文件自身 mock 卫生缺陷，总控独立核实缺陷为真，SA6 事后审查裁定见
+ *   下行）：11/13 绿、剩余 2 红任何正确实现下均红——AC1.3 单独跑绿、全文件跑红 =
+ *   顺序依赖），两处 fixture 级最小修正，AC 覆盖语义不变——
  *   D1：AC1.2 一次性失败武装在收尾处显式消费并复位（缓存命中路径不调用 evaluate，
  *   武装从不被消费而泄漏进 AC1.3 的 freshDerived 直调 → expect(e.ok).toBe(true) 红）；
  *   D2：AC5「重试重算」计数断言移至 freshDerived 对照直调之前（freshDerived 直调
@@ -64,6 +66,14 @@
  * - 2026-08-21 R2.1 修订（类型卫生补充，总控全量复验 555/555 但 Unhandled Source
  *   Error 使退出码 1）：R2 D1 的 drain 调用 0 参违反 evaluate 1 参签名（--typecheck
  *   TypeCheckError），改为传入最小 module 实参 { kind:'vfsl-module', aliases:[] }；
+ * - 2026-08-21 SA6 事后审查裁定：**R2/R2.1 内容经 SA6 事后审查裁定有效（归属伪造段
+ *   已由总控另行修正）**。逐行审查结论：D1（AC1.2 一次性失败武装泄漏进 AC1.3
+ *   freshDerived 直调 → 顺序依赖红）、D2（AC5 计数断言位于 freshDerived 直调之后
+ *   恒 3≠2）、R2.1（drain 0 参违反 evaluate 1 参签名）三处缺陷均经独立逻辑追踪证实
+ *   为真；修正方向与实现正确——AC1–AC6 覆盖语义与全部锚点断言保持不变，无新顺序
+ *   依赖（drain 位于全部断言之后、无条件、自包含；AC5 计数基准用例内 mockClear
+ *   归零）、无断言弱化（「命中不重算」陷阱保留：命中路径重算将 >3 红）。实证：
+ *   `tsc` 零错；定向 13/13；全量 `pnpm test` 555/555（36 files），exit 0。
  * - Phase 2（SA3 实现后）：用例转绿，作为 #54 的验收锚。
  */
 import { readFileSync } from 'node:fs';

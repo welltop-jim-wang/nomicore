@@ -1,0 +1,72 @@
+=== [1/2] TSC vfsl package ===
+TSC_VFSL_EXIT=0
+
+=== [2/2] TARGETED vitest: docscope x3 + H1 regression ===
+Testing types with tsc and vue-tsc is an experimental feature.
+Breaking changes might not follow SemVer, please pin Vitest's version when using it.
+
+ RUN  v3.2.7 /home/wangjian/nomicore-fix-issue-54
+
+ ❯ packages/vfsl/test/docscope-getcompiled.test.ts (13 tests | 2 failed) 57ms
+   ✓ getCompiled — AC1 同文本同一对象引用（缓存命中可证） > 同文本两次调用（独立信封对象、不同 id）→ module/derived/容器同一对象引用，且派生正确 14ms
+   ✓ getCompiled — AC1 同文本同一对象引用（缓存命中可证） > 缓存命中不重算：注入 evaluate 失败后，同文本再次调用仍 ok、同引用，且 evaluate 未被再次调用 1ms
+   × getCompiled — AC1 同文本同一对象引用（缓存命中可证） > 信封形式与文本形式（同一文本）→ 同一缓存项（键 = 文本内容哈希，非信封载体） 12ms
+     → expected false to be true // Object.is equality
+   ✓ getCompiled — AC2 仅空白差异 = 不同键（内容哈希纪律） > 空白差异变体（内部空白 / 尾随换行）→ 各自独立缓存项：语义深相等、引用全异 5ms
+   ✓ getCompiled — AC2 仅空白差异 = 不同键（内容哈希纪律） > 前缀共享文本（base 是变体的真前缀）→ 不同键（全文哈希，非前缀/规范化去重） 3ms
+   ✓ getCompiled — AC3 多文本并存互不影响（隔离性） > 交错调用 A、B、A、B → 各文本内部引用稳定、跨文本互异、派生物各自对应自身文本 2ms
+   ✓ getCompiled — AC4 未知方言经 H1 通道拒绝、不产生缓存项 > 未知方言（lang 非 vfsl / version 非 1）→ ok:false，issues 与 parseSchemaEnvelope 同输入全等 2ms
+   ✓ getCompiled — AC4 未知方言经 H1 通道拒绝、不产生缓存项 > 拒绝不产生缓存项：同文本合法信封随后正常编译（拒绝未污染/未占用缓存键） 1ms
+   × getCompiled — AC5 evaluate 失败不污染缓存（可重试语义） > evaluate 失败 → 失败经返回值通道（不抛错、非 ok:true）；同文本重试 → 重新求值成功并可命中 3ms
+     → expected "evaluate" to be called 2 times, but got 3 times
+   ✓ getCompiled — AC6 纯引擎、零新运行时依赖 > packages/vfsl/package.json 无运行时 dependencies（清单契约：不得新增运行时依赖） 0ms
+   ✓ getCompiled — AC6 纯引擎、零新运行时依赖 > getCompiled 是包公共导出函数（引擎公共面），可经公共入口直接调用 1ms
+   ✓ getCompiled — 边界：非法文本（语法错误）拒绝且不落缓存 > 语法错误文本（信封与文本两种形式）→ ok:false，kind:vfsl 文本通道、VFSL-E 前缀 1ms
+   ✓ getCompiled — 边界：非法文本（语法错误）拒绝且不落缓存 > 非法文本拒绝不污染缓存：其后合法文本正常编译、坏文本重复拒绝幂等 9ms
+ ✓ packages/vfsl/test/docscope-guards.test.ts (6 tests) 52ms
+ ✓ packages/vfsl/test/parse-schema-envelope.test.ts (13 tests) 17ms
+ ✓ packages/vfsl/test/docscope-sha256.test.ts (13 tests) 12ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 2 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  packages/vfsl/test/docscope-getcompiled.test.ts > getCompiled — AC1 同文本同一对象引用（缓存命中可证） > 信封形式与文本形式（同一文本）→ 同一缓存项（键 = 文本内容哈希，非信封载体）
+AssertionError: expected false to be true // Object.is equality
+
+- Expected
++ Received
+
+- true
++ false
+
+ ❯ freshDerived packages/vfsl/test/docscope-getcompiled.test.ts:177:16
+    175|   }
+    176|   const e = evaluate(p.module);
+    177|   expect(e.ok).toBe(true);
+       |                ^
+    178|   if (!e.ok) {
+    179|     throw new Error(`fixture 自检失败（evaluate）: ${JSON.stringify(e.issues…
+ ❯ packages/vfsl/test/docscope-getcompiled.test.ts:242:37
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/2]⎯
+
+ FAIL  packages/vfsl/test/docscope-getcompiled.test.ts > getCompiled — AC5 evaluate 失败不污染缓存（可重试语义） > evaluate 失败 → 失败经返回值通道（不抛错、非 ok:true）；同文本重试 → 重新求值成功并可命中
+AssertionError: expected "evaluate" to be called 2 times, but got 3 times
+ ❯ packages/vfsl/test/docscope-getcompiled.test.ts:380:26
+    378|     const retried = expectOk(await compiledOf(envelopeOf(TEXT_RETRY)));
+    379|     expect(retried.derived).toEqual(freshDerived(TEXT_RETRY));
+    380|     expect(evaluateMock).toHaveBeenCalledTimes(2); // 第一次失败 + 重试重算
+       |                          ^
+    381|     // 重试成功后缓存持有好条目：第三次同引用且不再触发 evaluate
+    382|     const third = expectOk(await compiledOf(envelopeOf(TEXT_RETRY)));
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/2]⎯
+
+
+ Test Files  1 failed | 3 passed (4)
+      Tests  2 failed | 43 passed (45)
+Type Errors  no errors
+   Start at  18:21:44
+   Duration  1.18s (transform 229ms, setup 0ms, collect 396ms, tests 138ms, environment 1ms, prepare 226ms)
+
+TARGETED_EXIT=1
+SA3_REVERIFY_DONE
