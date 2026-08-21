@@ -61,6 +61,9 @@
  *   D2：AC5「重试重算」计数断言移至 freshDerived 对照直调之前（freshDerived 直调
  *   evaluate 计 1 次，原位置恒 3≠2 红），末段「命中不再触发 evaluate」计数相应调为 3
  *   并注释 freshDerived 的一次直调；
+ * - 2026-08-21 R2.1 修订（类型卫生补充，总控全量复验 555/555 但 Unhandled Source
+ *   Error 使退出码 1）：R2 D1 的 drain 调用 0 参违反 evaluate 1 参签名（--typecheck
+ *   TypeCheckError），改为传入最小 module 实参 { kind:'vfsl-module', aliases:[] }；
  * - Phase 2（SA3 实现后）：用例转绿，作为 #54 的验收锚。
  */
 import { readFileSync } from 'node:fs';
@@ -244,7 +247,9 @@ describe('getCompiled — AC1 同文本同一对象引用（缓存命中可证�
     // 武装返回 ok:false，其 expect(e.ok).toBe(true) 恒红（AC1.3 单独跑绿、全文件跑红
     // = 顺序依赖）。此处显式消费剩余武装（结果弃置，仅清队列）并清空调用史，
     // 消除跨用例状态泄漏。
-    evaluateMock(); // 消费剩余的一次性失败武装（结果弃置）
+    // 注（R2.1）：drain 调用须满足 evaluate 的 1 参签名（`VfslModule`），故传最小
+    // module 实参——绿色场景下该调用消费的是武装实现（返回弃置），不触真实求值。
+    evaluateMock({ kind: 'vfsl-module', aliases: [] }); // 消费剩余的一次性失败武装（结果弃置）
     evaluateMock.mockClear();
   });
 

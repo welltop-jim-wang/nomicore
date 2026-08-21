@@ -47,6 +47,8 @@
   1. **D1（AC1.2 武装泄漏 → AC1.3 红）**：AC1.2 的一次性 `mockImplementationOnce` 失败注入，因缓存命中路径不调用 evaluate 而从不被消费，泄漏进 AC1.3 的 `freshDerived` 直调 evaluate（:177 `expect(e.ok).toBe(true)` 红）。修正：AC1.2 收尾处显式消费剩余武装（结果弃置，仅清队列）并 `mockClear()` 复位——消除跨用例状态泄漏；「命中不重算」规范证明保留（:233 调用计数断言）。
   2. **D2（AC5 计数恒 3）**：:379 `freshDerived(TEXT_RETRY)` 自身直调 evaluate（第 3 次调用），:380 `toHaveBeenCalledTimes(2)` 恒红。修正：「重试重算发生」计数断言（第一次失败 + 重试重算 = 2）移至 freshDerived 对照直调之前；末段「命中不再触发 evaluate」计数相应调整为 3，注释说明 freshDerived 的一次直调不计入 getCompiled 求值行为（若命中路径重算将 >3）。
   - 修正后复验（2026-08-21 R2，`pnpm exec vitest run packages/vfsl/test/docscope-getcompiled.test.ts`，`.mabf-bg/sa6-r2.log`）：**13 passed (13)**，Test Files 1 passed，Type Errors 无，exit 0。
+- 修正记录（2026-08-21 R2.1，类型卫生补充——总控全量复验（`.mabf-bg/ctrl-verify2.log`）：测试 **555/555 全过**，但 vitest 捕获 1 个 Unhandled Source Error 使退出码 1，不算绿）：R2 D1 的 drain 调用 `evaluateMock()` 以 0 参调用，违反 `evaluate(module: VfslModule)` 的 1 参签名，`--typecheck` 报 `TypeCheckError: Expected 1 arguments, but got 0`（:247）。修正：drain 调用传入满足签名的最小 module 实参 `{ kind: 'vfsl-module', aliases: [] }`（绿色场景下该调用消费的是武装实现、返回弃置，不触真实求值）；仅 1 处改动，语义不变。
+  - 修正后复验（2026-08-21 R2.1，全量 `pnpm test` = `vitest run --typecheck`，`.mabf-bg/sa6-r2.1.log`）：**555/555 全过**，Type Errors 无，Errors 0，exit 0。
 
 ## 上下文指针
 
