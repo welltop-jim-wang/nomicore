@@ -305,7 +305,12 @@ describe('MemoryPersistence', () => {
     expect(second!.doc).toBe(handle.doc)
     expect(second!.doc.getMap('ROOT').get('readable')).toBe('yes')
     await expect(persistence.saveDoc(handle)).rejects.toThrow(/persistence-degraded/)
-    await expect(createMemoryHandleForTest(persistence, user, 'other')).rejects.toThrow(/persistence-degraded/)
+    // R3 (owner #3): degraded radius is entry-scoped (ADR-0006 namespace
+    // semantics) — a fresh entry has no degraded history, so creating and
+    // writing 'other' is allowed while doc1 stays degraded.
+    const other = await createMemoryHandleForTest(persistence, user, 'other')
+    await expect(persistence.saveDoc(other)).resolves.toBeUndefined()
+    await other.release()
 
     await timer.advanceBy(500)
     expect(persistence.getStatus()).toBe('ready')

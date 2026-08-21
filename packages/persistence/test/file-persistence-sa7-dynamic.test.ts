@@ -1,40 +1,33 @@
 /**
  * SA7 dynamic verification tests (Phase 3, issue #58) — permanent supplements.
+ * R3 revision per PR #66 owner review #2/#3/#4.
  *
- * These pin the three runtime behaviors from the SA4 dynamic-audit list
- * (wiki/raw/task_file-persistence-plugin_sa4_review.md §8) that the SA6
- * acceptance suite does not already pin:
+ *   test 1 — leftover-tmp sweep is loud: a non-ENOENT unlink failure (EACCES
+ *        partition) rejects loadDoc with the original errno preserved and
+ *        leaves the tmp in place; after the partition heals, load succeeds and
+ *        the tmp is swept. ADR-0006 "ignore and delete": the delete is an
+ *        obligation, not best-effort (ENOENT stays silent; the normal/ENOENT
+ *        sweep paths are already pinned by the SA6 suite).
+ *   test 2 — degraded/recovery is entry-scoped (ADR-0006 namespace semantics):
+ *        a failed flush degrades ONLY its own (user, docId) entry; unrelated
+ *        entries stay readable and writable; an unrelated successful flush
+ *        does NOT restore the failed entry; only the failed entry's own retry
+ *        success restores it.
+ *   test 3 — leftover-tmp sweeping is keyed per (user, docId): loading d1
+ *        removes only d1's tmp; an unrelated d2 leftover is never touched
+ *        (no tree walk).
  *
- *   §8.1 sweep signal chain end-to-end — a leftover .tmp whose unlink fails
- *        (EACCES partition) neither blocks load nor silently disappears: the
- *        same disk condition resurfaces loudly on the next flush as
- *        `persistence-degraded`, closing the best-effort swallow's signal loop.
- *   §8.2 degraded radius — a failed flush for one user rejects writes for
- *        every other user on the same adapter instance (saveDoc AND the
- *        test-factory creation path); any single successful flush restores
- *        `ready` for everyone while the failed doc keeps backing off (its
- *        retry re-degrades the adapter).
- *   §8.3 leftover-tmp sweeping is keyed per (user, docId) — loading d1 removes
- *        only d1's tmp; an unrelated d2 leftover is never touched (no tree walk).
- *
- * Module-entry discipline (SA4 §8.4 / finding F-1): this file imports
- * ../src/index.js BEFORE the deep ../src/file.js path. A deep-path consumer
- * that skips index.js hits a module-cycle TDZ ("Class extends value
- * undefined"), which is a documented entry-order constraint, NOT an
- * implementation defect.
+ * No index.ts barrel import and no entry-order discipline are needed: the R3
+ * module graph is acyclic (contract.ts is the dependency leaf), so these deep
+ * imports evaluate safely in any order (see module-graph-regression.test.ts).
  */
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 import { afterAll, describe, expect, it } from 'vitest'
 import * as Y from 'yjs'
-import {
-  FilePersistence,
-  type PersistenceSchedule,
-  type PersistenceTimer,
-  type User,
-} from '../src/index.js'
-import { createFileHandleForTest } from '../src/file.js'
+import { FilePersistence, createFileHandleForTest } from '../src/file.js'
+import type { PersistenceSchedule, PersistenceTimer, User } from '../src/contract.js'
 
 const TEST_SCHEDULE: Partial<PersistenceSchedule> = { debounceMs: 10, maxDirtyMs: 50 }
 
@@ -61,10 +54,10 @@ afterAll(() => {
 })
 
 /**
- * Deterministic manual timer (SA4 §8.2 needs a flush ordering that real timers
- * cannot guarantee): nothing fires until the test fires the oldest scheduled
- * callback. Insertion order stands in for clock order; firing either the
- * debounce or the max-dirty trigger of an entry reaches the same startFlush.
+ * Deterministic manual timer: nothing fires until the test fires the oldest
+ * scheduled callback. Insertion order stands in for clock order; firing either
+ * the debounce or the max-dirty trigger of an entry reaches the same
+ * startFlush.
  */
 class ManualTimer implements PersistenceTimer {
   private nextId = 0
@@ -87,7 +80,7 @@ class ManualTimer implements PersistenceTimer {
 }
 
 describe('FilePersistence SA7 dynamic verification', () => {
-  it('sweep signal chain: an unremovable leftover tmp does not block load, and the same disk condition resurfaces as persistence-degraded on the next flush', async () => {
+  it('non-ENOENT tmp sweep failure is loud: loadDoc rejects with the errno preserved, then heals after chmod', async () => {
     const rootDir = makeRootDir()
     const userDir = path.join(rootDir, 'users', 'alice')
     const snapshotPath = path.join(userDir, 'd1.snapshot')
@@ -105,35 +98,32 @@ describe('FilePersistence SA7 dynamic verification', () => {
     expect(fs.existsSync(snapshotPath)).toBe(true)
     fs.writeFileSync(tmpPath, 'crash-leftover')
 
-    // r-x partition: reads still work; unlink/write fail with EACCES.
+    // r-x partition: readFile still works, but unlink fails with EACCES.
     fs.chmodSync(userDir, 0o555)
     try {
       const persistence = new FilePersistence({ rootDir, schedule: TEST_SCHEDULE })
 
-      // (a) load succeeds; the swallowed unlink failure leaves the tmp in place
-      const loaded = await persistence.loadDoc(ALICE, 'd1')
-      expect(loaded).not.toBeNull()
-      expect(loaded!.doc.getMap('ROOT').get('v')).toBe('committed')
-      expect(fs.existsSync(tmpPath)).toBe(true) // unlink attempted, EACCES swallowed — not silent success
-      expect(persistence.getStatus()).toBe('ready')
-
-      // (b) save is accepted now; the swallowed disk condition resurfaces loudly
-      loaded!.doc.getMap('ROOT').set('v', 'dirty')
-      await persistence.saveDoc(loaded!)
-      await sleep(250) // debounce 10ms fires; flush writeFile hits the same EACCES
-      expect(persistence.getStatus()).toBe('persistence-degraded')
-      expect(fs.existsSync(snapshotPath)).toBe(true) // old committed state intact
-      await expect(persistence.saveDoc(loaded!)).rejects.toThrow(/persistence-degraded/)
-
-      await loaded!.release()
+      // The sweep's unlink failure must surface loudly at load time with the
+      // original errno — even though the committed snapshot is fully readable.
+      await expect(persistence.loadDoc(ALICE, 'd1')).rejects.toMatchObject({ code: 'EACCES' })
+      expect(fs.existsSync(tmpPath)).toBe(true) // failed unlink left the tmp in place
       await persistence.dispose()
-      expect(persistence.getStatus()).toBe('disposed')
     } finally {
       fs.chmodSync(userDir, 0o755)
     }
+
+    // Healed partition: load succeeds and the leftover tmp is swept.
+    const persistence = new FilePersistence({ rootDir, schedule: TEST_SCHEDULE })
+    const loaded = await persistence.loadDoc(ALICE, 'd1')
+    expect(loaded).not.toBeNull()
+    expect(loaded!.doc.getMap('ROOT').get('v')).toBe('committed')
+    expect(fs.existsSync(tmpPath)).toBe(false) // swept after the healed load
+
+    await loaded!.release()
+    await persistence.dispose()
   })
 
-  it('degraded radius spans users; any successful flush restores ready for everyone while the failed doc keeps backing off', async () => {
+  it('degraded/recovery is entry-scoped: only the failed (user, docId) is rejected, unrelated docs stay writable, and only its own retry restores it', async () => {
     const rootDir = makeRootDir()
     const bobDir = path.join(rootDir, 'users', 'bob')
     fs.mkdirSync(bobDir, { recursive: true })
@@ -154,34 +144,48 @@ describe('FilePersistence SA7 dynamic verification', () => {
       await persistence.saveDoc(aliceHandle)
       expect(timer.pending).toBeGreaterThan(0) // flush triggers parked; nothing fired yet
 
-      // Fire only bob's flush trigger → EACCES → the whole adapter degrades.
+      // Fire only bob's flush trigger → EACCES → only bob's entry degrades.
       timer.fireOldest()
       await waitFor(
         () => persistence.getStatus() === 'persistence-degraded',
-        'bob flush failure degrades the whole adapter',
+        'bob flush failure degrades the adapter',
       )
 
-      // Radius: another user's saveDoc AND the creation path are both rejected.
-      await expect(persistence.saveDoc(aliceHandle)).rejects.toThrow(/persistence-degraded/)
-      await expect(createFileHandleForTest(persistence, CAROL, 'newdoc')).rejects.toThrow(/persistence-degraded/)
+      // Coverage 1: only Bob/doc1 is rejected — saveDoc and the creation path
+      // hitting the same degraded entry both fail loudly.
+      await expect(persistence.saveDoc(bobHandle)).rejects.toThrow(/persistence-degraded/)
+      await expect(createFileHandleForTest(persistence, BOB, 'doomed')).rejects.toThrow(/persistence-degraded/)
 
-      // Alice's own (healthy partition) flush restores writable status for all.
+      // Coverage 2: Alice/doc2 stays readable and writable; CAROL's fresh doc
+      // creation is also allowed (a new entry has no degraded history).
+      const aliceReload = await persistence.loadDoc(ALICE, 'fine')
+      expect(aliceReload).not.toBeNull()
+      expect(aliceReload!.doc).toBe(aliceHandle.doc)
+      await expect(persistence.saveDoc(aliceHandle)).resolves.toBeUndefined()
+      const carolHandle = await createFileHandleForTest(persistence, CAROL, 'newdoc')
+      await carolHandle.release()
+
+      // Coverage 3: Alice's successful flush must NOT restore Bob/doc1 — Bob
+      // stays rejected and the aggregate status stays degraded.
       timer.fireOldest()
       await waitFor(
-        () => persistence.getStatus() === 'ready',
-        'unrelated successful flush restores ready',
+        () => fs.existsSync(path.join(rootDir, 'users', 'alice', 'fine.snapshot')),
+        'alice flush lands on disk',
       )
-      expect(fs.existsSync(path.join(rootDir, 'users', 'alice', 'fine.snapshot'))).toBe(true)
+      expect(persistence.getStatus()).toBe('persistence-degraded')
+      await expect(persistence.saveDoc(bobHandle)).rejects.toThrow(/persistence-degraded/)
       expect(fs.existsSync(path.join(bobDir, 'doomed.snapshot'))).toBe(false) // bob never committed
 
-      // Bob was parked in retry backoff the whole time: firing his retry
-      // re-attempts the doomed flush and re-degrades the adapter.
+      // Coverage 4: heal the disk, then fire Bob's own retry — only its own
+      // retry success restores writability for the entry.
+      fs.chmodSync(bobDir, 0o755)
       timer.fireOldest()
       await waitFor(
-        () => persistence.getStatus() === 'persistence-degraded',
-        'bob retry re-degrades — backoff machinery alive',
+        () => fs.existsSync(path.join(bobDir, 'doomed.snapshot')),
+        'bob retry commits after healing',
       )
-      expect(fs.existsSync(path.join(bobDir, 'doomed.snapshot'))).toBe(false)
+      expect(persistence.getStatus()).toBe('ready')
+      await expect(persistence.saveDoc(bobHandle)).resolves.toBeUndefined()
 
       await bobHandle.release()
       await aliceHandle.release()
