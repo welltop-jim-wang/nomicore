@@ -18,3 +18,4 @@
 | 9 | 18:28 | SA4 | Phase 3 静态验尸 | 18:45 | 测试已绿，派 SA4 红队审查。首回合空交付，send_message 续传后交付。verdict: pass（F-1 MEDIUM 非阻断：深路径入口 TDZ 崩溃，包外不可达；回流 SA1 文档勘误 ×2） |
 | 10 | 18:47 | SA7 | Phase 3 动态验证 | 18:55 | SA4 pass，派 SA7 动态验证（含 SA4 §8 六项动态清单）。verdict: pass（六项全过；新增永久测试 file-persistence-sa7-dynamic.test.ts 3 用例；最终 34 files / 496 passed / EXIT=0） |
 | — | 18:56 | SA1 | 文档债回流（非流水线轮） | 18:53 | SA4 F-1/F-2 回流：设计 §6.4-4 勘误 + §9 ALLOW 追认 package.json version 行；仅改设计文档（commit 见 git log） |
+| — | 18:58 | 总控 | Phase 3.5 AC 门禁 | 18:58 | 9/9 AC 全部 ✅（task_file-persistence-plugin_ac_checklist.md），无需追加修订轮，进入 Phase 4 |
