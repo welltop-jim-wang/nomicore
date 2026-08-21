@@ -98,6 +98,9 @@ export async function runPersistenceProbe(options: ProbeRunOptions): Promise<Pro
   const heldByKey = new Map<string, number>()
   const docInstances = new WeakMap<Y.Doc, string>()
   const destroyedListeners = new Map<Y.Doc, () => void>()
+  /** （R3 §6.2 A-evict）已观测到驱逐的 key 集合：`maybeEvict` 只在内核记账 finally 或
+   *  clean release 路径执行 → evict 被观测 ⟺ 记账已运行。 */
+  const evictSeen = new Set<string>()
   let handleCounter = 0
   let instanceCounter = 0
   let flushFailuresLeft = failFirstFlushes
@@ -207,7 +210,11 @@ export async function runPersistenceProbe(options: ProbeRunOptions): Promise<Pro
       // 的 teardown off 语义随之正确（Map 中始终是唯一已注册监听，失败路径 dispose 不再混入
       // spurious evict）。
       if (destroyedListeners.has(doc)) return
-      const listener = (): void => { emit({ type: 'evict', owner, docId, t: now() }) }
+      const key = toProbeKey(owner, docId)
+      const listener = (): void => {
+        evictSeen.add(key) // A-evict 记账证明信号（§6.2）
+        emit({ type: 'evict', owner, docId, t: now() })
+      }
       ;(doc as DocWithEvictEvent).on('destroyed', listener)
       destroyedListeners.set(doc, listener)
     }
@@ -234,9 +241,22 @@ export async function runPersistenceProbe(options: ProbeRunOptions): Promise<Pro
     const saveAndEmit = async (handle: DocHandle, docId: string): Promise<void> => {
       const owner = handle.owner.userId
       const key = toProbeKey(owner, docId)
+      // R3 §6.2 A-arming：base = saveDoc 调用前的同步快照（saveDoc 无 await 段——非 flushing
+      // 时同步武装 debounce+maxDirty；flushing 时由前次 flush 的记账 finally 重排武装——
+      // 两路径 pending 均净增 ≥1，`> base` 恒可达）。前置（R2-2a）：每脏写窗口恰一次 saveDoc。
+      const base = adapter === 'file' ? filePendingCount() : 0
       await svc.saveDoc(handle) // 拒绝（write-rejected 之外的意外失败）→ 场景 loud 失败
       savedByKey.set(key, (savedByKey.get(key) ?? 0) + 1) // ★ resolve 后才计数（决策 C）
       emit({ type: 'dirty', owner, docId, generation: savedByKey.get(key)!, t: now() })
+      if (adapter === 'file') {
+        // 通过 ⟺ scheduleFlush 已武装 ⟺ flushing=false ⟺ 前次 flush 记账完成（武装不变式）。
+        // 等待期间**不推进虚拟时钟**（虚拟刻度不变式：两路径都武装在同一 now+debounce）。
+        await waitFor(
+          () => filePendingCount() > base,
+          FILE_WAIT_MS,
+          `file-settle-timeout:${docId}:g${savedByKey.get(key)!}`,
+        )
+      }
     }
 
     const releaseAndEmit = async (handle: DocHandle, docId: string): Promise<void> => {
@@ -248,6 +268,16 @@ export async function runPersistenceProbe(options: ProbeRunOptions): Promise<Pro
       // 记录序 = release → evict（决策 G：相邻 release 之间由调用方推进 1-tick）。
       emit({ type: 'release', owner, docId, refs, t: now() })
       await handle.release()
+      if (adapter === 'file' && refs === 0) {
+        // R3 §6.2 A-evict：maybeEvict 只在记账 finally（或 clean 的 release 路径）执行——
+        // evict 被观测 ⟹ 记账已运行（症状 A 的「release 早于 maybeEvict + teardown 拆监听」
+        // 竞态被闭合）。等待期间虚拟时钟不推进 → evict 与 release 同刻（§5 钉死）。
+        await waitFor(
+          () => evictSeen.has(key),
+          FILE_WAIT_MS,
+          `file-settle-timeout:${docId}:g${savedByKey.get(key) ?? 0}`,
+        )
+      }
     }
 
     const emitObserved = (owner: User, docId: string, doc: Y.Doc): void => {
@@ -263,7 +293,12 @@ export async function runPersistenceProbe(options: ProbeRunOptions): Promise<Pro
       emit({ type: 'observed', owner: owner.userId, docId, metaDocId, entries: [...ordered, ...extras], rootKeys, t: now() })
     }
 
-    /** flush 观察（决策 B/H）：memory 钩子已同步发事件，此处自检；file 真实等待提交态。 */
+    /**
+     * flush 观察：memory 钩子已同步发事件，此处自检。
+     * file = **条件 W（write-settle，R3 §6.2）**：status + 磁盘快照 rev 解码比对，只证明
+     * 「这次 flush 的字节已提交」，不再作为记账完成证据——记账完成由 A-arming / A-evict /
+     * status 翻转（原子性引理）证明（SA7 F-FILE：磁盘可见可早于线程池→事件循环交接）。
+     */
     const observeFlush = async (
       owner: string,
       docId: string,
@@ -378,10 +413,16 @@ export async function runPersistenceProbe(options: ProbeRunOptions): Promise<Pro
         // 尝试 #1：注入失败（memory 钩子 throw / file .tmp 目录阻塞 → EISDIR）
         if (adapter === 'file') ensureBlocked('user-a', 'doc-degraded')
         await clock.advanceBy(schedule.debounceMs || 1)
+        // ★ R3（R2-1）：advance 驱动腿基线取 advanceBy 返回瞬间——到期 debounce/maxDirty
+        //   已被同步消耗（base=0）；记账完成后仅剩 retry 计时器（pending=1 → 1>0 ✓）。
+        //   取「advance 前」是错误公式（base=2 → 1>2 恒假，file n=1 必超时，P24）。
+        const baseAdvance = adapter === 'file' ? filePendingCount() : 0
         await settle()
         if (adapter === 'file') {
+          // 原子性引理推论①：degraded 翻转只发生在记账块内（与 scheduleRetry 同一同步续体）
+          // → status 翻转即记账完成证明；pending>base 为同刻可证的纵深防御。
           await waitFor(
-            () => profile!.getStatus() === 'persistence-degraded',
+            () => profile!.getStatus() === 'persistence-degraded' && filePendingCount() > baseAdvance,
             FILE_WAIT_MS,
             'file-settle-timeout:doc-degraded:g1',
           )
@@ -409,10 +450,14 @@ export async function runPersistenceProbe(options: ProbeRunOptions): Promise<Pro
         while (left > 0) {
           if (adapter === 'file') ensureBlocked('user-a', 'doc-degraded')
           await clock.advanceBy(delay)
+          // ★ R3（R2-1）：base 取 advanceBy 返回瞬间——上一支 retry 已被 advance 消耗（base=0），
+          //   记账 catch 重排下一支 retry（pending=1 → 1>0 ✓）。取 advance 前 base=1 → 1>1 恒假，
+          //   file n≥2 中间失败腿将无任何可用信号（对「任意 n 确定」承诺的回归）。
+          const baseAdvance = adapter === 'file' ? filePendingCount() : 0
           await settle()
           if (adapter === 'file') {
-            // 失败已结算 ⟺ 内核已排下一个 retry 计时器（pending>0）
-            await waitFor(() => filePendingCount() > 0, FILE_WAIT_MS, 'file-settle-timeout:doc-degraded:g1')
+            // 状态不翻转（持续 degraded）→ 唯一信号 = retry 重排（记账完成）
+            await waitFor(() => filePendingCount() > baseAdvance, FILE_WAIT_MS, 'file-settle-timeout:doc-degraded:g1')
             emit({ type: 'flush', owner: 'user-a', docId: 'doc-degraded', generation: 1, ok: false, t: now() })
             emit({ type: 'degraded', owner: 'user-a', docId: 'doc-degraded', t: now() })
           } else {
@@ -427,8 +472,14 @@ export async function runPersistenceProbe(options: ProbeRunOptions): Promise<Pro
         await clock.advanceBy(delay)
         await settle()
         if (adapter === 'file') {
-          await waitFor(() => profile!.getStatus() === 'ready', FILE_WAIT_MS, 'file-settle-timeout:doc-degraded:g1')
-          await waitFor(() => readSnapshotRev('user-a', 'doc-degraded') === 1, FILE_WAIT_MS, 'file-settle-timeout:doc-degraded:g1')
+          // ★ R3（R2-1）恢复腿：**禁止叠加 pending 联言**——status 翻转依原子性引理已是完备
+          //   记账证明；且恢复时 saved===dirty，记账 finally 不重排任何计时器 → 记账后 pending=0，
+          //   任何 pending>base 联言恒假必超时（SA2 原型 B 实测：恢复后 pending=0）。
+          await waitFor(
+            () => profile!.getStatus() === 'ready' && readSnapshotRev('user-a', 'doc-degraded') === 1,
+            FILE_WAIT_MS,
+            'file-settle-timeout:doc-degraded:g1',
+          )
           emit({ type: 'flush', owner: 'user-a', docId: 'doc-degraded', generation: 1, ok: true, t: now() })
           emit({ type: 'recovered', owner: 'user-a', docId: 'doc-degraded', t: now() })
         } else {
