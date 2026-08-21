@@ -31,3 +31,26 @@
 | 16 | 20:59 | SA7 | 发布后修订轮 动态复查 | 21:09 | SA4 pass，派 SA7（subagent c23478ec）活链路复查：entry 级 degraded 4 条语义实测 / 深导入无 TDZ 探针 / tmp 非 ENOENT chmod 触发有效性 / SA4 移交 4 项动态重点，产出 sa7_report_r2.md。verdict: pass（4 组退化突变逐一击穿对应断言证非永真；深导入三入口探针全绿 + 突变 E 双锚点有牙齿；uid 1000 实测 EACCES errno 全保留；全量 35/499/双 EXIT=0 复核一致；探针零残留；移交条件：push 后 runner 复核 6c895fb CI Node 20/24 双档绿） |
 | — | 21:12 | 总控 | 评审双清 + 门禁自检 | 21:15 | SA4 r2 pass × SA7 r2 pass 双清达成。HG12 verdict 真实性：dispatch #15/#16 与 sa4_review_r2/sa7_report_r2 文件 verdict 一字一致（pass↔pass）✓；HG13 无 spec N/A；HG14 原轮已闭环、修订轮新增测试落 packages/persistence/test 由 ci.yml 根 pnpm test include 覆盖（SA7 静态确认 + 突变实证触发）✓；HG15 设计 §7 在案、P12 语义经 SA7 OS 探针实证 ✓；HG16 无偷跑 PR、mabf.branch/base-branch 齐 ✓。owner 门禁：#1 HEAD 树 CLEAN（净 PR diff 的 3 个 .mabf-bg 条目全为删除方向——base 分支经 issue #45 ad8c1bd 继承的 DENY LIST 债，本分支顺带清除）；#2-#6 经 SA2/SA4 静态 + SA7 动态逐条实证；#7 本地双 EXIT=0，CI 双档为 push 后 runner 复核项（SA7 移交条件） |
 | — | 21:16 | 总控 | 收尾：wiki 入库 + push | 21:17 | 评审双清 + 门禁自检全过后：wiki 6 文件入库 commit 44a944f；git push origin HEAD 成功（e8e4fb8..44a944f，PR #66 已更新至 44a944f = 实现 6c895fb + 档案 44a944f）。移交 runner：复核 44a944f 上 CI test (20)/(24) 双档绿（SA7 verdict 附条件） |
+
+---
+
+## 平行会话对账（run issue-58-rev-1787312499，下称 R1 会话）
+
+**由来**：owner review 反馈经 runner 同时触发两个总控会话——上方 #11–16 行的 run issue-58-rev-1787312820（中断会话的 supervisor 恢复续跑，已 push 至 `443afcd` 并在 issue #58 发布完成声明）与本 R1 会话（runner 以 `task_file-persistence-plugin_rev1.md` 简报恢复派发）。两会话互不知晓，平行执行同一修订轮，**独立收敛到语义等价的实现**（拆环 contract.ts 叶子模块 / entry 级 degraded / tmp 非 ENOENT 响亮 / rootDir 所有权注释）。
+
+**R1 会话执行摘要**（全部完成于本地链 `5906ad3`+`c481ac8`，未 push，已 stand down）：
+
+| # | 派发时间 | SA | 阶段 | 完成时间 | 决策逻辑 |
+|---|---------|-----|------|---------|---------|
+| R1-§A | 20:49 | 总控 | .mabf-bg PR diff 清零 | 20:49 | 按 rev1 简报 §A：git rm --cached baseline.log/final-verify.log + checkout base 恢复 sa3-verify.log（本地链视角 diff 清零） |
+| R1-1 | 20:50 | SA1 | 设计修订 | 21:09 | 决策 G 拆环 / H entry 级 degraded / E§4 改写 / F 追加（R3 版设计 883 行，与本链设计同构） |
+| R1-2 | 21:10 | SA3 | 实现 | 21:19 | commit 5906ad3：contract.ts 抽叶 + entry degraded + tmp 包装响亮 + module-graph.test.ts + bump 0.1.2 |
+| R1-3 | 21:23 | 总控 | 亲跑验收 | 21:23 | 35 files / 499 passed / 双 EXIT=0（.mabf-bg/r1-verify.log） |
+| R1-4 | 21:23 | SA4 | 静态复查 | 21:30 | verdict: pass（sa4_review_r1.md；复审门禁 7/7 于本地链） |
+| R1-5 | 21:30 | SA7 | 动态验证 | 21:41 | verdict: pass（sa7_report_r1.md）——**动态比对时发现远端双生链 443afcd**，移交总控裁决 |
+
+**两链实质差异**（SA7 R1 逐门比对，详见 sa7_report_r1.md）：仅 tmp 清扫错误的呈现——本链 `443afcd` 原样透传 errno，R1 本地链 `5906ad3` 包装 tmpPath+errno+cause；两者均满足 owner 推荐方案「仅 ENOENT 静默，其余响亮」。测试锚点命名（module-graph-regression vs module-graph）与注释措辞有差异，无语义影响。
+
+**门禁 #1 两种读法裁决**：rev1 简报 §A 主张字面读法（PR diff 零触碰 `.mabf-bg` 路径，base 遗留 3 文件另案处理）；本链（run ...2820，上方 21:12 行已披露）主张意图读法（净 diff 的 3 个 `.mabf-bg` 条目全为删除方向，HEAD 树 CLEAN）。**R1 会话裁决：采纳意图读法，本链代码不做任何改动**——① owner BLOCKER 原文为「删除全部 `.mabf-bg/**`」，本链完整满足（含 base 经 issue #45 继承的 DENY LIST 债）；② 字面「修正」（恢复 base 遗留文件）会把运行时产物重新带回分支树，并使 issue #58 已发布的「HEAD 树 CLEAN」声明失效，适得其反；③ 该选择已在 PR wiki 向 owner 披露，最终裁量归 owner 复审。
+
+**终审证据**（R1 会话对本链 `443afcd` 实测）：gate2 `grep -rn "from './index" packages/persistence/src/` 零命中；gate3 module-graph-regression 3 用例（深导入运行时锚 + 语句级静态守卫）；gate4/5 lifecycle.ts entry 级 degraded + sa7-dynamic bob/alice/carol 场景在案；gate6 sweep 非 ENOENT 原样响亮；gate7 总控亲跑 35 files / 499 passed / Type Errors none / 双 EXIT=0（.mabf-bg/final-tree-verify.log）+ CI run 32486106443 Node 20/24 双档绿。本 commit 仅入库 R1 会话档案（rev1 简报 / sa4_review_r1 / sa7_report_r1 / 本对账记录），零代码改动、零 `.mabf-bg`/`TASK.md` 触碰。
