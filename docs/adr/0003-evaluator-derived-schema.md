@@ -9,9 +9,9 @@ Phase 0b 求值器把 IR 求解为派生 schema（结构树 + 值 schema + 路�
 
 ## 决策
 
-### 1. evaluate 接缝：第二公共导出，可失败
+### 1. evaluate 接缝：公共导出，可失败
 
-新增公共导出 `evaluate(module: VfslModule) → { ok: true; derived } | { ok: false; issues }`。派生 schema 延续 IR 全部纪律：纯数据、可 JSON 序列化、可内容哈希、不携带行列位置。可失败是前向兼容设计：调用方从第一天写 ok 检查，将来引入求值期失败模式（如展开资源预算）不构成破坏。PRD #3「唯一公共测试接缝」措辞相应修订为两个公共观察点（`parseVfsl` 与 `evaluate` 的入参/出参）。
+新增公共导出 `evaluate(module: VfslModule) → { ok: true; derived } | { ok: false; issues }`。派生 schema 延续 IR 全部纪律：纯数据、可 JSON 序列化、可内容哈希、不携带行列位置。可失败是前向兼容设计：调用方从第一天写 ok 检查，将来引入求值期失败模式（如展开资源预算）不构成破坏。PRD #3「唯一公共测试接缝」的早期措辞废止；`parseVfsl` / `evaluate` / `validateSnapshot` / `validatePatch` 及数组写入校验入口均以各自 Interface 作为公共观察点，不再使用易失效的序号描述。
 
 ### 2. 根指定：显式 ROOT 别名约定
 

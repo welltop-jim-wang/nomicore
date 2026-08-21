@@ -4,15 +4,15 @@
 status: accepted（2026-08-19 修订：目标态/阶段态二分，§8 投影回到范围内，见文末修订节）
 ---
 
-旧体系的三问题（表达力有限、校验绕行、双份真相不自包含）根源是 schema 是代码而非数据。决策：schema 用 VFSL（受限 TypeScript 子集 + 标记类型）+ JSDoc 语义标签描述，以信封 `{ lang, version, id, text }` 作为数据存进 doc 的 `__schema__`；解释行为由信封自述的方言版本决定，方言只增不改，未知方言 loud-fail 只读。
+旧体系的三问题（表达力有限、校验绕行、双份真相不自包含）根源是 schema 是代码而非数据。决策：schema 用 VFSL（受限 TypeScript 子集 + 标记类型）+ JSDoc 语义标签描述，以信封 `{ lang, version, id, text }` 作为数据存进 doc 的 `SCHEMA`；解释行为由信封自述的方言版本决定，方言只增不改，未知方言 loud-fail 只读。
 
-**本仓库是纯引擎仓库：代码库不含 schema 文本（测试 fixture 除外）。** VFSL 文本只作为运行时数据存在于文档的 `__schema__` 中；设计文档中"前端/服务端 import 同一文本"的双消费者机制不采用——没有作为类型源的 schema 源文件，也没有任何形式的 codegen。schema 的创建与升级只能通过运行时管理操作完成。
+**本仓库是纯引擎仓库：代码库不含 schema 文本（测试 fixture 除外）。** VFSL 文本只作为运行时数据存在于文档的 `SCHEMA` 中；设计文档中"前端/服务端 import 同一文本"的双消费者机制不采用——没有作为类型源的 schema 源文件，也没有任何形式的 codegen。schema 的创建与升级只能通过运行时管理操作完成。
 
 语义层**不设机器标签**：`@ref` 与 `@invariant` 均移除（2025-08-18 决策）——`@invariant` 随 authority 一并移除（ADR-0002）；`@ref` 的注册时解析检查与运行时跨命名空间校验都不做。全部 JSDoc 标签（`@format` / `@role` / `@example` / `@values` / `@unit` / `@since` / `@deprecated` / `@entity` / `@key`）为文档性质，未识别仅 warn；语义层的价值收敛为 AI/人类可读说明与校验错误信息回带语义。
 
 ## Considered Options
 
-- **双消费者机制**（schema 文本作为 .ts 源文件入仓，tsc 检查 + 部署期读取写入 `__schema__`）——被否决：代码库会出现与文档并存的 schema 副本，"schema 是数据、随文档走"的立论就破了。
+- **双消费者机制**（schema 文本作为 .ts 源文件入仓，tsc 检查 + 部署期读取写入 `SCHEMA`）——被否决：代码库会出现与文档并存的 schema 副本，"schema 是数据、随文档走"的立论就破了。
 - **字符串常量导出 / `.vfsl` 文件 + 生成 wrapper**——被否决：前者内容不受类型检查且仍是仓内文本，后者是 codegen。
 
 ## Consequences
@@ -26,8 +26,12 @@ status: accepted（2026-08-19 修订：目标态/阶段态二分，§8 投影回
 
 **目标态/阶段态二分**（owner 决策）：
 
-- **目标态不变**：nomicore 支持任意运行时 schema，不预设 schema——权威源永远是 doc 的 `__schema__`，引擎必须在运行时解析任意合法方言文本；
+- **目标态不变**：nomicore 支持任意运行时 schema，不预设 schema——权威源永远是 doc 的 `SCHEMA`，引擎必须在运行时解析任意合法方言文本；
 - **阶段态放行**：体系未完全建立之前，允许仓内放置 schema 文件作为**开发脚手架**完成阶段性开发（类型投影、演示、联调）；
-- **脚手架纪律**：一切脚手架消费方必须经 **SchemaSource 接缝**取文本（阶段实现 = 仓内文件源），不得直接读文件——终态切换为 DocSchemaSource（从 server/`__schema__` 拉取）时零消费方改动。脚手架不能长成承重墙；
+- **脚手架纪律**：一切脚手架消费方必须经 **SchemaSource 接缝**取文本（阶段实现 = 仓内文件源），不得直接读文件——终态切换为 DocSchemaSource（从 server/`SCHEMA` 拉取）时零消费方改动。脚手架不能长成承重墙；
 - **§8 编译期类型投影回到范围内**：生成器 + CI 新鲜度校验；投影不参与运行时判定、不承担权威（§8 原纪律保留）。“坏代码写不出来”重新成为目标（编译期护栏），与运行时校验的“坏数据进不来”两层分工；
 - 本 ADR 的其余条款（无机器标签、方言冻结、编译缓存、演进为运行时管理操作）不变。
+
+### 命名修订（2026-08-21，owner 决策）
+
+信封在 doc 中的键名由 `__schema__` 改为 **`SCHEMA`**——与 `ROOT` 保持统一命名（doc 顶层两个具名条目：`SCHEMA` 信封 + `ROOT` 数据）。信封内部结构 `{lang, version, id, text}` 不变；设计文档（Feishu）中的 `__schema__` 表述以本修订为准。

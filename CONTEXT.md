@@ -1,6 +1,6 @@
 # nomicore
 
-全新 yjs-server 的重写仓库：以 VFSL（受限 TypeScript 子集 + JSDoc 语义标签）作为 namespace schema 的单一真相源，schema 作为数据存进 doc 的 `__schema__`，命名空间自包含、跨版本可解释。设计文档：[yjs-server Namespace Schema 自描述体系设计方案](https://welltop.feishu.cn/docx/MvtJdEr84ojlRTxbmsWcqHD8npg)。
+全新 yjs-server 的重写仓库：以 VFSL（受限 TypeScript 子集 + JSDoc 语义标签）作为 namespace schema 的单一真相源，schema 作为数据存进 doc 的 `SCHEMA`，命名空间自包含、跨版本可解释。设计文档：[yjs-server Namespace Schema 自描述体系设计方案](https://welltop.feishu.cn/docx/MvtJdEr84ojlRTxbmsWcqHD8npg)。
 
 ## Language
 
@@ -12,10 +12,10 @@ _Avoid_: PathSchemaNode DSL、schema DSL
 `lang + version` 决定的 VFSL 语法子集与语义规格；一经发布冻结，引擎只增不改，未知方言 loud-fail 只读。
 
 **信封（envelope）**:
-`__schema__` 里的 `{ lang, version, id, text }`；单字符串值，原子替换、可哈希、可 diff。
+`SCHEMA` 键（doc 顶层具名条目，原 `__schema__`——与 ROOT 统一命名）里的 `{ lang, version, id, text }`；单字符串值，原子替换、可哈希、可 diff。
 
 **命名空间（namespace）**:
-一个 Y.Doc 连同自带的 `__schema__` 与数据；schema 随数据走，不依赖代码模块。
+一个 Y.Doc 连同自带的 `SCHEMA` 信封与数据；schema 随数据走，不依赖代码模块。
 _Avoid_: schema 注册表（`SCHEMA_REGISTRY` 是被替换的旧机制）
 
 **ROOT**:
