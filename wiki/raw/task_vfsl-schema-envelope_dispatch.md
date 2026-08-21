@@ -11,4 +11,7 @@
 | 5 | 14:48 | SA2 | Phase 2 设计评审 | 14:57 | SA8 设计复审 clear，派 SA2 全维度攻击评审 |
 | 6 | 14:57 | SA1 | Phase 2 设计 R2 | 15:03 | SA2 R1 reject（2 MINOR：动态值转义 + 证据数字口径），SA1 同会话修订出 R2 |
 | 7 | 15:03 | SA2 | Phase 2 设计评审 R2 | 15:08 | SA1 R2 已落实两项 MINOR，SA2 同会话复审 |
-| 8 | 15:08 | SA3 | Phase 3 编码实现 | (pending) | SA2 R2 pass 设计定稿，派 SA3 TDD 实现使红灯转绿 |
+| 8 | 15:08 | SA3 | Phase 3 编码实现 | 15:13 | SA2 R2 pass 设计定稿，派 SA3 TDD 实现使红灯转绿 |
+| 9 | 15:14 | SA4 | Phase 3 静态验尸 | 15:23 | 总控亲跑验证 exit 0（31 文件 464 用例全绿），派 SA4 红队审查 |
+| 10 | 15:23 | SA6 | Phase 3 回流-红灯锚 | 15:26 | SA4 R1 reject（F1：envelopeCrashIssue String(err) 二次抛出逃逸）；SA6 先补对抗 getter 红灯锚 |
+| 11 | 15:26 | SA3 | Phase 3 回流-修复 F1 | (pending) | SA6 红灯锚就位（13 用例 1 红），SA3 修 envelopeCrashIssue 守卫 |

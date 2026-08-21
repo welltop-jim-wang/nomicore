@@ -22,10 +22,13 @@
  * - AC6 信封/方言错误码不落入 parseVfsl 的 VFSL-E 码空间（可区分机制），文本错误
  *   透传仍保留 VFSL-E 前缀——两通道并存且可区分。
  *
- * 本文件当前状态：`parseSchemaEnvelope` 尚不存在 → 静态 import 在模块加载期即失败
- * （"does not provide an export named 'parseSchemaEnvelope'"）→ 整个文件必然全红
- * （构造性红灯，同 schemasource-seam.test.ts 先例）；SA3 实现公共导出后，逐条断言
- * 即成为唯一行为锚点。断言全部锚定公共入口的运行时行为，不触碰任何内部实现。
+ * 本文件状态演进：
+ * - Phase 1（验收锚定）：`parseSchemaEnvelope` 尚不存在 → 静态 import 失败，12 条用例
+ *   全红（构造性红灯，同 schemasource-seam.test.ts 先例）；
+ * - Phase 2（SA3 实现 cb7a2c7 后）：12 条用例转绿；SA4 R1 reject F1（envelope.ts
+ *   `envelopeCrashIssue` 的 `String(err)` 在 catch 内二次可抛）→ 追加本文件末 F1 回归锚
+ *   （对抗 getter/Proxy 抛不可字符串化值 → 不外抛 + VFSL-ENV-E100 @ 0/0），修复前必红。
+ * 断言全部锚定公共入口的运行时行为，不触碰任何内部实现。
  */
 import { describe, expect, it } from 'vitest';
 import { parseSchemaEnvelope, parseVfsl } from '../src/index.js';
@@ -305,6 +308,58 @@ describe('parseSchemaEnvelope — AC6 错误码空间独立（不与 VFSL-E 混�
     expect(textErr.ok).toBe(false);
     if (!textErr.ok) {
       expect(textErr.issues[0]!.message).toMatch(/^VFSL-E\d+:/);
+    }
+  });
+});
+
+describe('parseSchemaEnvelope — F1 回归锚：对抗 getter/Proxy 抛不可字符串化值（SA4 R1 reject F1）', () => {
+  it('thrown 值不可字符串化（Object.create(null) / {toString:42} / Proxy get trap）→ 不外抛，{ok:false} + VFSL-ENV-E100 @ 0/0 恒单行', () => {
+    // 设计 §7 边界表承诺：对抗 getter/Proxy 抛异常 → 顶层 catch → ENV-100，绝不外抛。
+    // 当前实现 envelope.ts envelopeCrashIssue 的 `String(err)` 在 catch 内二次抛出
+    // （TypeError: Cannot convert object to primitive value）→ 本条在修复前必须红。
+    const hostile: unknown[] = [
+      // SA4 最小复现：getter 抛 Object.create(null)（无 toString/valueOf）
+      {
+        get lang() {
+          throw Object.create(null);
+        },
+        version: 1,
+        id: 'x',
+        text: VALID_TEXT,
+      },
+      // {toString:42}：toString 非函数 → ToPrimitive 抛 TypeError
+      {
+        get lang() {
+          throw { toString: 42 };
+        },
+        version: 1,
+        id: 'x',
+        text: VALID_TEXT,
+      },
+      // Proxy get trap 抛不可字符串化值（属性读取路径注入点，SA4 A5 同源）
+      new Proxy(
+        { lang: 'vfsl', version: 1, id: 'x', text: VALID_TEXT },
+        {
+          get: () => {
+            throw Object.create(null);
+          },
+        },
+      ),
+    ];
+    for (const input of hostile) {
+      let result: unknown;
+      expect(() => {
+        result = parseSchemaEnvelope(input);
+      }).not.toThrow();
+      expect(result).toHaveProperty('ok', false);
+      const r = result as { ok: false; issues: VfslIssue[] };
+      expect(r.issues.length).toBeGreaterThan(0);
+      const issue = r.issues[0]!;
+      expect(issue.message).toMatch(/^VFSL-ENV-E100:/);
+      expect(issue.message).not.toMatch(/^VFSL-E\d+:/); // 不落入文本语法错误码空间
+      expect(issue.line).toBe(0); // 坐标哨兵：崩溃边界无行列
+      expect(issue.column).toBe(0);
+      expect(issue.message).not.toMatch(/\n/); // 恒单行：detail 经 sanitizer 单行化
     }
   });
 });

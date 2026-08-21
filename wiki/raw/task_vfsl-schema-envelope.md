@@ -55,3 +55,19 @@ None - can start immediately
 - 附注：`pnpm typecheck`（`tsc -p packages/vfsl/tsconfig.json`）当前唯一新增错误为 TS2724「index.js 无 parseSchemaEnvelope 导出」——测试文件其余部分类型干净，SA3 补导出后即消。
 - 测试策略变更：无（未新增测试包/端口依赖，`scripts/test-lock.sh` 不存在、无需更新）。
 
+### SA6 追加：F1 回归红灯锚（SA4 R1 reject 回流，2026-08-21）
+
+**背景**：SA3 实现（cb7a2c7）后原 12 条用例转绿；SA4 R1 reject F1——`packages/vfsl/src/envelope.ts:179` `envelopeCrashIssue` 的 `String(err)` 在顶层 catch 内二次可抛（不可字符串化 thrown 值 → `TypeError: Cannot convert object to primitive value` 逃逸），击穿「不抛错」契约。SA4 回流目标：SA6 补 1 条对抗红灯锚。
+
+**新增用例**（文件末尾新 describe「F1 回归锚」，用例数 12 → 13）：
+- 三向量循环：getter 抛 `Object.create(null)`（SA4 最小复现）、getter 抛 `{toString:42}`、Proxy get trap 抛 `Object.create(null)`（属性读取路径注入点）
+- 断言：`parseSchemaEnvelope` 不外抛；`{ok:false}`；首条 issue = `VFSL-ENV-E100:` 前缀（`not.toMatch(/^VFSL-E\d+:/)` 双保险）、坐标哨兵 line 0 / column 0、message 恒单行（无真实换行）
+- 锚定设计 §7 边界表「对抗 getter/Proxy 抛异常 → 顶层 catch → ENV-100（不外抛）」成文承诺；未锁定修复措辞（不断言兜底正文文本）
+
+**红灯运行证据（修复前实跑）**：
+- 命令：`pnpm exec vitest run packages/vfsl/test/parse-schema-envelope.test.ts`（后台独立进程，日志 `/tmp/sa6-f1-red.log`）
+- 结果：**Tests 1 failed | 12 passed (13) / Test Files 1 failed (1) / Type Errors no errors / exit 1**——新用例红、原 12 用例保持绿 ✓
+- 红灯根因（真实、与 SA4 §F1 取证一致）：`AssertionError: expected [Function] to not throw an error but 'TypeError: Cannot convert object to primitive value' was thrown`（envelope.ts:179 `String(err)` 二次抛出逃逸）
+- `tsc -p packages/vfsl/tsconfig.json` 0 错（新用例类型干净，无需 SA3 处理）
+- 测试策略变更：无（纯新增断言，无新依赖/端口）
+

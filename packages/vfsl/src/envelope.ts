@@ -175,10 +175,32 @@ export function dialectIssueOrNull(envelope: SchemaEnvelope): VfslIssue | null {
   }
 }
 
-/** §6.1 崩溃边界 issue（顶层 catch 收编用；detail 经唯一构造点 sanitizer 单行化）。 */
+/**
+ * §6.1 崩溃边界 issue（顶层 catch 收编用；detail 经唯一构造点 sanitizer 单行化）。
+ *
+ * F1 修复（SA4 R1 reject）：detail 计算自身可抛——对抗 getter/Proxy 可抛出**不可
+ * 字符串化**的 thrown 值（`Object.create(null)`、`{toString:42}` 等），`instanceof`
+ * / `err.message` / `String(err)`（ToPrimitive → toString）在 catch 块内部二次抛出，
+ * 无外层守卫即逃逸出 parseSchemaEnvelope，击穿「绝不外抛」契约。修复：detail 计算
+ * 包 try/catch 守卫，二次异常降为确定性占位正文（含 thrown 值 typeof），仍经
+ * makeEnvelopeIssue 单行净化——崩溃边界在任何对抗输入下都产出结构化 ENV-100。
+ */
 export function envelopeCrashIssue(err: unknown): VfslIssue {
-  const detail = err instanceof Error ? err.message : String(err);
+  const detail = crashDetail(err);
   return makeEnvelopeIssue(EnvelopeErrCode.ENV_100, `内部错误（意外异常）: ${detail}`);
+}
+
+/**
+ * 崩溃 detail 计算守卫（F1 修复，模块内部）：`instanceof`/`err.message`/`String(err)`
+ * 任一步抛（原型伪装 Error 的 message getter、不可字符串化 thrown 值）→ 确定性占位
+ * 正文。占位正文静态可判定（无动态值），sanitizer 单行化对其恒为幂等。
+ */
+function crashDetail(err: unknown): string {
+  try {
+    return err instanceof Error ? err.message : String(err);
+  } catch {
+    return `不可字符串化的异常值（${typeof err}）`;
+  }
 }
 
 /** 公共接缝返回形状（index.ts 经此 re-export）。 */
