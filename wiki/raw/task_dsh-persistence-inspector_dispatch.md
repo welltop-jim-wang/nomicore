@@ -21,3 +21,5 @@ branch: fix/issue-59-on-adr-server-design（base: adr/server-design）
 | 10 | 01:41 | SA2 | Phase 2 攻击评审 R1 | 01:44 | SA1 R1 已逐条落实 reject 项，复审聚焦 §9 缺陷 3 配方与 §13 补据（续传 3bf4e43d） |
 | 11 | 01:44 | SA3 | Phase 3 TDD 实现 | 02:11 | 设计定稿（SA2 R1 pass）+ 红灯契约就位（缺陷 1-3 全落盘），进入编码，目标红灯变绿 |
 | 12 | 02:04 | SA6 | Phase 3 测试修订轮 R3 | 02:07 | SA3 实现完成但 AC4-file/AC6 两条红：实证为 settleRealIo 固定轮数不足的测试时序缺陷（断言值不变，续传 42b9f16e） |
+| 13 | 02:12 | SA6 | Phase 3 测试修订轮 R4 | 02:14 | SA3 实测 AC4-file 降级侧 settleRealIo 隔离 1/8 flake，同模式 deadline 化（续传 42b9f16e） |
+| 14 | 02:16 | SA4 | Phase 3 静态验尸 | (pending) | 红灯已绿（总控亲跑 533/533 + typecheck 0），进入实现红队审查 |

@@ -187,3 +187,30 @@ pnpm exec vitest run packages/dsh-persistence/test/dsh-profile-acceptance.test.t
 ```
 
 > 若修订后两条目标用例仍红 → 说明是实现缺陷（非测试时序），按总控指令立即回报，不以改断言迁就实现；本轮实测已转绿，无此情况。
+
+## 8. R4 修订记录（2026-08-22，总控协调，与 R3 同模式）
+
+> 背景：R3 后 AC4-file 降级侧仍保留一处固定轮数 `settleRealIo(12)`（R3 实测 5 连跑稳定），但 SA3 后续隔离运行实测该处约 **1/8 偶发 flake**（`expected 'persistence-degraded', received 'ready'`）——再次印证固定轮数校准是负载相关的时间假设。**断言目标值不变，仅把该处替换为 R3 同款 deadline 式 waitFor。**
+
+### R4-1 改了什么（`packages/dsh-persistence/test/dsh-profile-acceptance.test.ts`）
+
+1. **AC4-file 降级侧**（原 :411-412）：`advanceBy(debounceMs)` 后 `await settleRealIo()` 替换为 `await waitFor(() => profile.getStatus() === 'persistence-degraded', ...)`（真实时间上限 5s），随后 `expect(profile.getStatus()).toBe('persistence-degraded')` 断言目标值原样。
+2. **固定轮数校准全面移除**：`settleRealIo` 助手自此零调用点，连同定义一并删除；`waitFor` 成为本文件唯一真实等待基础设施（文件头修订史 + 助手注释同步更新）。
+3. 文件头追加 R4 追溯注记。
+
+### R4-2 为什么
+
+降级侧虽是单跳错误路径（mkdir EEXIST），但 libuv 线程池回调在隔离运行下仍可能被事件循环调度推迟超过 12 轮 setImmediate（实测约 1/8 概率）；deadline 式等待锚定「状态达预期」语义（`getStatus()==='persistence-degraded'`），慢机只多等、不误报，与 R3 同模式（SA1 §6.2/§11 设计同款）。
+
+### R4-3 实测证据（2026-08-22）
+
+```bash
+# 隔离连跑 AC4-file 用例 10 次（修订后）：
+for i in $(seq 1 10); do pnpm exec vitest run packages/dsh-persistence/test/dsh-profile-acceptance.test.ts -t "AC4（service 级）：file profile 写路径被阻塞" --reporter=basic; done
+#   → Tests 1 passed | 9 skipped × 10 连跑，0 flake
+# 全量复跑：
+pnpm exec vitest run --reporter=basic
+#   → Test Files 39 passed (39)；Tests 533 passed (533)；退出码 0
+```
+
+> 修订由 SA3 落盘 commit——SA6 只改测试与简报，未 commit。
