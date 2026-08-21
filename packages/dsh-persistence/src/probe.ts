@@ -200,6 +200,13 @@ export async function runPersistenceProbe(options: ProbeRunOptions): Promise<Pro
     }
 
     const watchEvict = (doc: Y.Doc, owner: string, docId: string): void => {
+      // F1（SA4 reject）：同一 doc 实例只注册一个 'destroyed' 监听——S1 中 d1 经
+      // create h1 + load h2/h3 共享同一 live Y.Doc，若每 handle 各注册一次，内核一次
+      // destroy() 会回调全部监听 → 一次驱逐发 N 条 evict（实测 t=1002 处 3×，events=34
+      // 而非设计 §5 钉死的 32）。去重后「驱逐即销毁，销毁即事件」= 一条；同时 destroyedListeners
+      // 的 teardown off 语义随之正确（Map 中始终是唯一已注册监听，失败路径 dispose 不再混入
+      // spurious evict）。
+      if (destroyedListeners.has(doc)) return
       const listener = (): void => { emit({ type: 'evict', owner, docId, t: now() }) }
       ;(doc as DocWithEvictEvent).on('destroyed', listener)
       destroyedListeners.set(doc, listener)
@@ -384,14 +391,17 @@ export async function runPersistenceProbe(options: ProbeRunOptions): Promise<Pro
           throw new ProbeFailure('status-divergence:doc-degraded')
         }
 
-        // degraded 拒绝后续写（提示 4：经 saveDoc 拒绝路径观察）
-        try {
-          await svc.saveDoc(h6)
+        // degraded 拒绝后续写（提示 4：经 saveDoc 拒绝路径观察）。
+        // F2（SA4 LOW）：哨兵不得被同一 catch 吞掉——若内核回归为 degraded 仍接受写，
+        // 此处必须 loud 失败（scenario-error）而非记一条假 write-rejected（与 S3 处理一致）。
+        const rejected = await svc.saveDoc(h6).then(
+          () => false,
+          () => true,
+        )
+        if (!rejected) {
           throw new Error('saveDoc unexpectedly accepted while persistence-degraded')
-        } catch (error) {
-          if (error instanceof ProbeFailure || error instanceof ProbeTimeoutError) throw error
-          emit({ type: 'write-rejected', owner: 'user-a', docId: 'doc-degraded', t: now() })
         }
+        emit({ type: 'write-rejected', owner: 'user-a', docId: 'doc-degraded', t: now() })
 
         // 内部退避 retry 通用循环（§5：镜像内核 retryDelayMs 初值 debounceMs，失败后 ×2 cap maxDirtyMs）
         let delay = schedule.debounceMs || 1

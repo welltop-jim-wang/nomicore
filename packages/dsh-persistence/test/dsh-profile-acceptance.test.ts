@@ -39,6 +39,11 @@
  * 在本机隔离运行约 1/8 偶发 flake（SA3 实测 expected 'persistence-degraded', received
  * 'ready'）——按 R3 同款替换为 waitFor(getStatus()==='persistence-degraded')，断言目标值不变；
  * settleRealIo 助手已无调用点，连同固定轮数校准一并移除（waitFor 为唯一等待基础设施）。
+ *
+ * R5 修订（2026-08-22，总控协调，SA4 验尸 F1 回归锚）：AC2 用例补精确计数断言——d1 一次
+ * 销毁恰 1 条 evict（t=1002）、doc-alpha evict 恰 3 条（设计 §5 evicts=[1002,1003,1005]）、
+ * 总事件恰 28（memory failFirstFlushes=0 时间线）。F1 缺陷（watchEvict 每 handle 重复注册
+ * destroyed 监听）下为 3/5/30，断言立即爆红；原 >=/find/every 型断言对该缺陷结构性失明。
  */
 import { describe, expect, it } from 'vitest'
 import * as fs from 'node:fs'
@@ -233,6 +238,16 @@ describe('inspector 探针（AC2/AC3/AC5：受控时钟下的可观察记录）'
     expect(evicts.length).toBeGreaterThanOrEqual(2)
     // 首次 release 后（refs>0）不得立即 evict；evict 只出现在 refs 归零之后
     expect(evicts.every((event) => event.t > releases[0]!.t)).toBe(true)
+
+    // R5（SA4 验尸 F1 回归锚）：精确计数——「驱逐即销毁，销毁即事件」= 一次销毁恰一条 evict。
+    // F1 缺陷（probe.ts watchEvict 每 handle 重复注册 destroyed 监听，2026-08-22 SA4 验尸
+    // REJECT）下 d1 一次销毁发 3 条 evict（t=1002 ×3 → doc-alpha 共 5 条、总事件 30），
+    // 下方精确断言立即爆红；SA3 去重修复后回到设计 §5 钉死值：
+    //   doc-alpha evicts = [1002, 1003, 1005]（d1/d2/d3 各一次销毁，恰 3 条）
+    //   总事件 28（memory failFirstFlushes=0 时间线：S1 15 + S2 4 + S3 2 + S4 7）
+    expect(evicts.filter((event) => event.t === 1002)).toHaveLength(1)
+    expect(evicts.length).toBe(3)
+    expect(events.length).toBe(28)
 
     // 文本记录与事件同源：关键链路标记完整
     expect(result.record).toContain('create user-a/doc-alpha')
