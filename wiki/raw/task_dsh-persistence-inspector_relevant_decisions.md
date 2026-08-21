@@ -49,6 +49,7 @@ interface DocPersistence {
 - 「持久层仍仅校验 `META.docId === docId`，不校验 VFSL/ROOT/createdAt；`saveDoc` 的「脏通知 + 内部调度」语义不变，首个 saveDoc 仍是合法写入路径。」
 - 「create/load 同键协调与 flush 调度收敛为 adapter 共享的 persistence lifecycle core（MemoryPersistence 与 FilePersistence 共用，不得复制状态机）；两 Adapter 必须通过同一组 createDoc shared contract tests。」
 - 修订节声明：「本节修订上方两处早期决策条款，取代关系如下；未提及的条款维持原文效力。」（被取代的早期条款：「创建 = 首个 saveDoc：loadDoc 不存在返回 null，调用方自建 Y.Doc 写入初始内容后以有效 handle 首次 saveDoc 即完成创建（无独立 createDoc）」——**该旧条款不再构成约束**）
+- 修订节 4「supersede 裁决撤销」（2026-08-21，PR #67 review 修订）：「此前 task archive 中关于 create supersede pending load、early adoption 与 lost-update 事后告警的设计/测试记录已被撤销，不构成当前契约。」「当前语义以本节第 1 条的等待 read 证据规则为准。跨 Adapter 实例的原子 create-if-absent 仍需由后续 FilePersistence 工作在 store seam 落实，不能由单实例内存协调替代。」——SA1/SA3 不得从 task archive 复活已撤销的 supersede / early-adoption / 事后告警设计。
 
 #### handle / lease 语义（正文决策条款，未被修订节触及）
 
@@ -129,7 +130,8 @@ Y.Doc
 
 ### ADR-0002 / ADR-0004 / ADR-0005
 
-- 与本任务无直接约束关联：ADR-0002（authority 出范围）——任务不触及 authority；ADR-0004/0005（类型投影与生成管线）——不在本任务改动面。盘点结论见冲突报告。
+- ADR-0002（accepted）：边界约束——inspector/探针不得引入 authority 语义。原文摘录：「旧系统既有的 authority 规则体系（`__authority__` manifest：enum / range / conditional / state-machine）**完全排除在范围外，不保留接口**——统一写入管线收敛为"结构 → 值 → 单事务提交"三步。」
+- ADR-0004 / ADR-0005（accepted）：与本任务无直接约束关联——类型投影与生成管线不在本任务改动面；若 DSH profile/inspector 需要持久化类型，来源是持久化 contracts 包本身（ADR-0006「插件实现只依赖 Cordis、Yjs 与持久化 contracts，**不得 import DSH 或 NomicoreServer app**」），不触发 SchemaSource / CI 新鲜度纪律。盘点结论见冲突报告。
 
 ## CONTEXT.md 相关术语与惯例
 

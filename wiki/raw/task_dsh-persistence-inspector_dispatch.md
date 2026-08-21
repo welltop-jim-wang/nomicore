@@ -11,4 +11,5 @@ branch: fix/issue-59-on-adr-server-design（base: adr/server-design）
 | 1 | 00:26 | SA8 | Phase 0 前置冲突门禁 | (lost) | 任何任务类型先过冲突门禁：任务简报 vs ADR 全集 + CONTEXT.md |
 | - | 00:27 | 总控 | 恢复接续 | 00:27 | daemon 重启导致前一会话丢失；#1 SA8 无任何产出落盘（relevant_decisions/conflict_report 均不存在），判定交付丢失，重派 SA8；其余阶段均未开始 |
 | 2 | 00:27 | SA8 | Phase 0 前置冲突门禁（重派） | 00:31 | #1 产出丢失，重新唤起 SA8 前置门禁；实际由唯一运行实例 acc2e15b 交付，verdict: clear |
-| 3 | 00:32 | SA6 | Phase 1 验收锚定 | (pending) | 功能开发：先锚定验收测试（红灯契约），再设计编码 |
+| 3 | 00:32 | SA6 | Phase 1 验收锚定 | 00:46 | 功能开发：先锚定验收测试（红灯契约），再设计编码 |
+| 4 | 00:46 | SA1 | Phase 2 设计 | (pending) | SA6 红灯已锚定（2 红文件/既有 37 文件全绿），进入架构设计 |
