@@ -14,3 +14,23 @@
 | AC6 | 行为测试覆盖结构错位、Record、union/ref、plain 与 XML | ✅ | 40 用例 / 4 文件全部行为断言（无源码 grep，SA4 §1.7）：结构错位（map/array/plain/leaf 双向 + ROOT 异型）、Record（动态键逐键 + F-1 `__proto__` 键空间 2 用例）、union/ref（判别式成员选择 + ref 深路径 + Record 形成员仲裁 8 用例）、plain（值域违规 9 用例：bigint/undefined/Date/function/symbol 内嵌）、XML（语义等价组） | 无需处理 |
 
 **结论：6/6 全部 ✅，无需派发修订 SA。进入 Phase 4 收尾固化。**
+
+---
+
+## 发布后修订轮 AC 补核（2026-08-22 14:58，run_id: issue-73-rev-1787378789）
+
+- 检查人：总控（本轮会话）· 基线：HEAD = f8f2ddd（PR #81 owner review P1 修复）
+- AC 来源：PR #81 owner review「必补回归测试」8 条（修订轮验收基准）
+
+| AC# | 描述 | 状态 | 证据 | 处理 |
+|---|---|---|---|---|
+| R-1 | leaf 位置的 `NaN` 拒绝 | ✅ | SA6 `extract-nonfinite-number.test.ts` 用例（owner schema 逐字 `{ n: YLeaf<number> }` + `set('n', NaN)`）；SA7 §2-A 探针 verbatim：`ok:false` 单 issue / `path=["n"]` / `actual="non-finite number"` | 无需处理 |
+| R-2 | plain object 内的 `Infinity` 拒绝 | ✅ | SA6 用例（`YPlainArray<{ x: number }>` + `[{x:1},{x:Infinity}]`）；SA7 §2-B #2：`path=["arr"]` + message 含 `内部位置 [1].x` | 无需处理 |
+| R-3 | plain array 内的 `-Infinity` 拒绝 | ✅ | SA6 用例（`YPlainArray<number>` + `[1,-Infinity]`）；SA7 §2-B #3：`path=["arr"]` + message 含 `内部位置 [1]` | 无需处理 |
+| R-4 | 均返回 `ok:false`、fail-fast 单 issue | ✅ | SA6 helper 内建（ok:false + issues.length===1 + 四字段 + 非 internal 双守卫）；SA7 §2-B #4 多违规 `[1,2,∞,NaN,-∞,3]` → 单 issue 首违规 `[2]` | 无需处理 |
+| R-5 | `expected === 'plain value'` | ✅ | SA6 全失败例精确断言；SA7 §2-B #5 逐例复核 | 无需处理 |
+| R-6 | `actual === 'non-finite number'`（冻结词） | ✅ | SA6 测试 docblock 冻结 + 备选词否决（'NaN'/'number'/'Infinity'）；设计 D9②/§10 六词登记；SA4 R3 维度 3 三处口径一致复核 | 无需处理 |
+| R-7 | issue path 锚定 schema 声明节点 | ✅ | SA6 断言 `['n']`/`['arr']`（内部位置线只进 message，bigint D2 先例同构）；SA7 §2-B #7 `JSON.stringify(path)` 深等 | 无需处理 |
+| R-8 | 有限 number 正向对照 + 快照 JSON 往返全等 | ✅ | SA6 正向对照 2 用例（`{n:42,arr:[1,2,3]}` + `0`/`-0`/`0.1` 边界；-0 JSON 规范边界 docblock 登记）；SA7 §2-B #8 往返全等实测；SA4 探针 MAX_VALUE/MIN_VALUE/MAX_SAFE_INTEGER 零误伤 | 无需处理 |
+
+**结论：8/8 全部 ✅；另 owner 要求的验证链（doc-runtime 针对性测试 48/48、全量 pnpm test 52 文件/717 用例、pnpm typecheck 6 包、CI Node 20/24 触发证据）全部由总控亲验 + SA4/SA7 独立复跑确认。修订轮门禁收口。**

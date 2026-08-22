@@ -287,3 +287,76 @@ $ pnpm typecheck → 六包串联（含 doc-runtime）| EXIT=0          （/tmp/
 - **动态审核重点更新（交 SA7）**：R1 清单第 1 项**已闭合**（本轮代验，SA7 免做）；第 2–5 项仍有效（跨端组合只读性 / 大文档性能面 / Node 20 矩阵证据摘录 / B17 E100 message 可排障性——SA7 按 CI run log 摘录 doc-runtime 四文件的 vitest 触发证据即可）。
 
 **Verdict: pass** —— F-1 修复面复审通过；SA7 可进入动态验证。
+
+---
+
+## 修订轮 R3 评审（2026-08-22，PR #81 review P1，commit f8f2ddd）
+
+**Date**: 2026-08-22
+**Verdict**: **reject**（单项 REJECT 级发现 F-R3-1：`packages/doc-runtime/package.json` 位于设计 §11 DENY LIST（「不改」），本轮 version bump 0.1.0→0.1.1 修改了该 DENY 文件而 R2.3 设计回写未修订 §11——scope 治理门禁未走完。**修复代码本身零缺陷：全部 8 个技术维度通过、29/29 对抗探针全绿、三线基线独立复现一致；回流目标 = SA1 一行级 §11 touch-up，SA3 零返工，复审仅需针对该设计 diff**）
+
+**被审对象**: commit f8f2ddd（fix(doc-runtime): reject non-finite numbers in plain value domain）7 文件——`extract.ts`（number 拆支 + docblock）、`package.json`（0.1.0→0.1.1）、`extract-nonfinite-number.test.ts`（新增 8 用例）、wiki 四件（SA5 报告 / 设计 R2.3 / 简报锚记录 / dispatch log）。
+**审查范围**: 发布后修订轮（owner review P1）修复面全维度静态验尸 + 对抗探针 + 基线独立复现；R1/R2 已裁决项不重开。
+
+### 门禁与维度逐项结论
+
+| # | 维度 | 结果 | 证据 |
+|---|---|---|---|
+| 1 | 修复正确性（伪代码一致性） | ✅ | 设计 §4.6 R2.3 伪代码（:444-452）与实现 `extract.ts:262-269` **逐语句逐字一致**（仅注释排版差异）：`typeof v === 'number'` 拆支 → `!Number.isFinite(v)` → `plainDomainIssue(path, loc, 'non-finite number')`，有限 number 直通；null/string/boolean 维持直通、bigint 分支原位未动；`carrier.ts`/`index.ts` 在 f8f2ddd **零改动**（`git diff f8f2ddd^..f8f2ddd --name-only` 计 0）——D1 两层判定不变式保持 |
+| 2 | 修复完备性（单点论证复核） | ✅ | SA5 §5 论证独立复核成立：doc-runtime src 内 `typeof v === 'number'` 仅 carrier.ts:32（粗判层，职责正确）与 extract.ts:262（修复位）；`Number.isFinite` 全包仅 extract.ts:263——**无绕过 copyPlainValue 的 number 通路**（快照值终态仅 xml-fragment `toString()`（字符串，:136）与 leaf/plain 共用细判入口 :141 两条；map/array/Record/union/trialMember 中间构造值全部来自 walk 递归）。嵌套递归 loc/path 纪律正确（探针 C4-C7） |
+| 3 | 申报词一致性 | ✅ | `'non-finite number'` 三处同口径：实现 `extract.ts:264` + 文件头 docblock（:12-14）与 copyPlainValue docblock（:256-259）可达性清单；设计 D9②（:34 第六词登记）+ §10 R2/#4 登记块（:677「六词均可达」）+ §4.8 行（:539）+ B18（:619）+ R2.3 回应表；测试 docblock（:16-24 冻结声明 + 备选词否决）。`expected` 恒 `'plain value'`（探针全例复核） |
+| 4 | 版本 bump | ✅（实质）/ ❌（治理，见 F-R3-1） | `package.json` version 0.1.1 实核；bump 依据 = SA5 §6 影响面表 + 仓内惯例（vfsl 0.2.0@f07462d、persistence 0.1.2 先例）——但设计 §11 未同步（F-R3-1） |
+| 5 | 1.4 vitest 触发性 | ✅ | 根 `vitest.config.ts` include `packages/*/test/**/*.test.ts` 收编新文件（本轮实跑 `✓ extract-nonfinite-number.test.ts (8 tests)`，52 文件含之）；CI `ci.yml:39` `pnpm test` 根 vitest 无 --filter 排除；typecheck 链 6 包含 doc-runtime（`ci.yml:36`）。无 CI 改动需要（与 DENY「ci.yml 零改动」一致） |
+| 6 | scope 比对 | ❌ F-R3-1 | 7 文件中 6 件在辖：`extract.ts`（ALLOW）、新测试文件（ALLOW R2.3 追加 :705）、wiki 四件（task_*/bug-* 白名单 + 设计自身）；**`packages/doc-runtime/package.json` 在 §11 DENY LIST（:717「不改」）而 R2.3 回写未解除/登记**——唯一阻塞项。BLACKLIST（package-lock/yarn.lock/.DS_Store/TASK.md/*.bak/.mabf/REPORT）零命中；4 份既有冻结测试文件零触碰 |
+| 7 | 对抗探针（29/29 PASS，tsx 独立进程，scratch 已清理） | ✅ | 正向：-0/MAX_VALUE/MIN_VALUE/MAX_SAFE_INTEGER/0.1/42 直通 + JSON 往返 OK（-0 往返签名丢失属 JSON 规范行为，仅内存级 Object.is 断言——SA6 docblock 已登记该边界）；负向：**运行期溢出 1e308\*10、MAX_VALUE\*2、0/0、Infinity-Infinity、Number("x")、Math.sqrt(-1)** 六种非字面量产生路径全拒（path ['n'] / expected 'plain value' / actual 'non-finite number'）；位置面：Record 值位 ['bad']、union 成员位 ['u','a']、嵌套 Record ['m','k','x']、数组套数组 loc [1][1]、深层对象 loc .a.b.c 全锚定正确；fail-fast 单 issue 首违规即止（[1,2,∞,NaN,-∞,3] → 单 issue loc [2]）；跨端：Infinity/运行期溢出/plain 子树 -Infinity 经 encode→apply 后远端全拒；零误伤：string "NaN"/"Infinity"、boolean、null 直通不变，bigint 仍报 'bigint'、undefined 数组元素仍报 'undefined'；**D1 复证：错位位（Y.Array/Y.Map 位放 NaN）actual 恒 'plain value' 五值词汇表**（探针 F1/F2） |
+| 8 | 测试质量（§1.7）+ 红灯真实性 | ✅ | 新文件 8 用例零 readFileSync、`toContain` 仅作用于 issue.message 运行时输出；断言全部锚公共接缝。**红灯真实性独立复验**：暂换修复前实现（8869ade）→ 新文件 **6 failed / 2 passed（EXIT=1）**，与 SA6 记录逐字一致（行为级红：`expected true to be false`，非构造性红）；还原零残留（sha1 前后一致 7982a84d，`git status` 清洁）。owner 8 条必补逐条映射：#1 leaf NaN / #2 object Infinity（message 含 内部位置 [1].x）/ #3 array -Infinity / #4 helper 内建 ok:false+单 issue+四字段+非 internal 双守卫 / #5-6 词断言 / #7 path 锚 ['n']/['arr'] / #8 正向对照+往返全等（+0/-0/0.1 边界加固 + 三值分列 + 跨端加固） |
+| — | 契约涟漪（§1.6） | ✅ 无 | `copyPlainValue` 为私有函数；公共接缝 `extractYjsSnapshot` 类型签名/结果联合零变化（行为变化即修复目的）；全仓 caller = index.ts re-export + 测试（vfsl validate.ts:640 为注释文字引用），无涟漪面 |
+| — | 基线独立复现 | ✅ | doc-runtime 包 5 文件/48 用例 EXIT=0；全量 `pnpm test` 52 文件/717 用例/Type Errors no errors EXIT=0；`pnpm typecheck` 6 包串联 EXIT=0——与总控亲验（.mabf-bg/ctl-verify.log）逐位一致（/tmp/sa4-r3-{docrt,full,tc}.log） |
+| — | 过度设计 | ✅ | 修复半径 = 拆支 5 行 + docblock 2 处 + 版本 1 行，与根因（单分支缺值域守卫）同阶；无投机抽象 |
+
+### 发现清单
+
+#### F-R3-1【REJECT · scope-governance】DENY 文件被修改而 §11 未同步修订
+
+- **事实**：`packages/doc-runtime/package.json` 列于设计 §11 **DENY LIST**（:717「SA6 脚手架已满足全部需求（deps/exports/scripts），不改」）；commit f8f2ddd 修改其 version 字段（0.1.0→0.1.1）；**R2.3 设计回写未修订 §11**（DENY 项未加注、ALLOW 未登记版本 bump 例外；设计全文 grep「0.1.1/版本/bump」零命中）——§11 记录与分支现实自相矛盾。
+- **bump 本身有据**：SA5 §6 影响面表明列「是（版本）0.1.0→0.1.1（patch）」+ dispatch R4 指令「bump 0.1.1」+ 仓内惯例（版本随实质变更 commit 同步）。缺的不是行为，是**设计治理闭环**：设计自身的 pnpm-lock DENY 项示范了正规出口（「若实现期确需变更，必须回总控显式扩展本清单」）——package.json 未走同等扩展。
+- **流程根因**：dispatch R3 给 SA1 的派遣词仅含「D9② 申报词登记 + §4.6 伪代码缺口」两项，**漏派 §11/version 项**（SA5 §6 列了、派遣词没带）——构成缺口在总控派遣，非 SA1/SA3 执行走样。
+- **判 reject 依据**：skill §1.1 硬门禁对 DENY 文件零豁免；R1 F-5 先例已对本文件的 DENY 出现做过登记（当时以「SA6 脚手架首次落仓、内容逐字段一致」豁免——该理由本轮**不适用**：这是对已跟踪文件的内容修改）。若放行，DENY 门禁将退化为「dispatch 提过即可绕过」。
+- **回流（半径一行级）**：**SA1** 设计 §11 touch-up——DENY 项改注（如「deps/exports/scripts 不改；version 随实质变更 commit 同步 bump——R2.3: 0.1.0→0.1.1，SA5 §6/仓内惯例」）或等效 ALLOW 例外登记，并在 R2.3 回应表补一行；**SA3 零返工**（代码与 commit 不需任何改动）；**SA4 复审**仅针对该设计 diff（分钟级）。总控后续派遣请携带 §11 项。
+
+#### 登记（非阻塞）
+
+- **N-R3-1（边界注记）**：`-0` 是有限值故直通（owner 立法形态 = 仅 `Number.isFinite` 守卫，正确执行）；`JSON.stringify(-0)==='0'` 使严格 Object.is 意义上往返不恒等——SA6 测试 docblock 已显式登记该边界（-0 仅内存级 Object.is 断言），owner 必补 #8 的「往返全等」以有限值常规域解读成立。如 owner 未来要求 -0 域断言属新立法，非本轮缺陷。
+- **N-R3-2（正向记录）**：R2.3 设计回写质量高——D9②/§10「六词均可达」/§4.6 伪代码逐字同步/§4.8 行/B18/§11 测试收编/R2.3 回应表 + 自检五处口径一致（grep 11 处分布逐条核符），历史评审记录（R1/R2/R2.1/R2.2）零改写。
+
+### 动态审核重点（交 SA7）
+
+1. R1/R2 清单第 2–5 项仍有效（跨端组合只读性 / 大文档性能面 / Node 20 矩阵 / B17 E100 message）。
+2. 本轮新增：CI run log 摘录 `extract-nonfinite-number.test.ts` 的 vitest 触发证据（Node 20/24 双矩阵）——静态面已由本轮实跑确认（本地 48/48），SA7 补 CI 侧证据即可。
+3. F-R3-1 修复（§11 touch-up）为纯文档，无动态面。
+
+**Verdict: reject** —— 唯一阻塞项 F-R3-1（§11 DENY 治理未闭环），代码修复面全维度通过（探针 29/29、红灯真实性 6R/2G 复验、三线基线一致）；SA1 一行级 touch-up 后即转 pass。
+
+---
+
+## 修订轮 R3.1 复审（2026-08-22，F-R3-1 闭环验证，SA1 设计 §11 touch-up）
+
+**Date**: 2026-08-22
+**Verdict（R3.1，取代 R3）**: **pass**
+**复审范围**: 仅 F-R3-1 回流产物——设计文档工作区 diff（`git diff --unified=0` 实核**恰 2 hunk**，均在 `wiki/raw/task_doc-runtime-extract-yjs-snapshot_design.md`）；R3 已裁决的技术维度（探针/基线/词表/触发链）不重开。
+
+### 逐项核验
+
+| 检查项 | 结果 | 证据 |
+|---|---|---|
+| Hunk 1（§11 DENY :717）改注内容 | ✅ 兑现 R3 回流处方 | DENY 项由「不改」改注为「**deps/exports/scripts 不改** + **version 字段例外**（R2.3/SA4 R3 F-R3-1 改注）：随实质变更 commit 同步 bump——本轮 0.1.0→0.1.1」——与 R3 F-R3-1 回流指令逐点对应（守卫保留 + 例外登记 + 出处 SA5 §6/仓内惯例三先例 + hard gate） |
+| Hunk 2（R2.3 回应表 :773 表尾追加行） | ✅ | 四列结构（要求/是否落实/修订位置/摘要）与表头一致，落位在「owner 必补 8 条」行后、「R2.3 自检」段前（表成员正确）；显式引用 F-R3-1 为回流来源并如实转录 R3「修复代码零缺陷、SA3 零返工」判定 |
+| 治理与实况一致性 | ✅ | `package.json` 实况 `version: 0.1.1`（grep 实核）；f8f2ddd 中该文件 diff **仅 version 单行**（-0.1.0/+0.1.1）——「deps/exports/scripts 不改」守卫声明与 commit 实况吻合，无虚假承诺 |
+| 历史零改写 | ✅ | `git diff --unified=0` 全量仅 :717 改注 + :773 追加两处；R1/R2/R2.1/R2.2/R2.3 既有文本零触碰 |
+| SA3 返工面 | ✅ 零 | 本轮 touch-up 仅 wiki 单文件，无业务代码/测试/package.json 改动 |
+
+### F-R3-1 闭合判定
+
+DENY 治理矛盾消除：§11 记录与分支现实（package.json 已 bump 0.1.1）一致化，version 例外经显式登记 + 出处留痕 + 回应表审计行三重闭环；DENY 门禁实质（deps/exports/scripts 守卫）未削弱——「dispatch 提过即可绕过」的先例风险未成立。R3 全部技术面判定（8 维度通过 / 探针 29/29 / 红灯真实性 6R/2G / 三线基线一致）维持有效。
+
+**Verdict: pass** —— F-R3-1 闭环确认；PR #81 owner review P1 修复链（f8f2ddd + 本 touch-up）静态面收口，SA7 可进入动态验证（R3 动态审核重点清单仍适用：R1/R2 第 2–5 项 + 新测试文件 CI Node 20/24 触发证据摘录）。

@@ -52,4 +52,13 @@ runner 在 daemon 重启后**同时存在两个总控会话**调度同一 worktr
 | R1 | 14:12 | SA5 | 修订轮 Phase 0 故障分析复现 | 14:17 | owner P1 反馈确定性复现+根因定位+修复点唯一性论证（subagent df797344） |
 | R2 | 14:18 | SA6 | 修订轮 Phase 1 红灯回归锚定 | 14:21 | SA5 复现成功+单点论证；按 owner 8 条必补要求写红灯测试（新文件 extract-nonfinite-number.test.ts），并行 SA1 设计回写（文件不相交） |
 | R3 | 14:18 | SA1 | 修订轮 设计文档回写 | 14:26 | 修复形态由 owner review 立法冻结，无需新设计轮；SA1 仅回写 D9② 申报词登记（第六词 non-finite number）+ §4.6 伪代码缺口（SA5 §6/§8 已给出精确位置） |
-| R4 | 14:27 | SA3 | 修订轮 Phase 3 TDD 修复 | (pending) | 红灯 6/8 真实红已锚定+设计已回写；按 owner 冻结形态修复 extract.ts:259 + docblock + bump 0.1.1，绿灯后 commit+push（含 wiki 产物，严禁 .mabf-bg/REPORT.md/.mabf-done） |
+| R4 | 14:27 | SA3 | 修订轮 Phase 3 TDD 修复 | 14:30 | 红灯 6/8 真实红已锚定+设计已回写；按 owner 冻结形态修复 extract.ts:259 + docblock + bump 0.1.1，绿灯后 commit+push（含 wiki 产物，严禁 .mabf-bg/REPORT.md/.mabf-done） |
+| R4v | 14:34 | 总控亲验 | 修订轮 Phase 3 绿灯复核 | 14:36 | 独立后台进程三件套：doc-runtime 48/48、根 pnpm test 52 文件/717 用例全绿、pnpm typecheck 6 包通过（.mabf-bg/ctl-verify.log，EXIT 全 0）→ 达评审条件 |
+| R5 | 14:36 | SA4 | 修订轮 Phase 3 静态验尸 R3 | 14:41 | 红灯已亲验转绿；审查 commit f8f2ddd 对照设计 §4.6 R2.3/owner 8 条 + 版本 bump + 1.4 vitest 触发性自检（新增 .test.ts） |
+| R5x | 14:41 | SA4 | R3 verdict | 14:41 | **reject**——唯一阻塞 F-R3-1（scope 治理）：package.json 在设计 §11 DENY LIST，version bump 未同步 §11；修复代码 8 维度全过、29/29 探针绿。缺口在总控 R3 派遣词漏带 §11/version 项 |
+| R6 | 14:43 | SA1 | 修订轮 设计 §11 touch-up | 14:45 | send_message 续传 SA1 原会话（93cba17a）：DENY 项改注 version 随实质变更 bump 例外（0.1.0→0.1.1）+ R2.3 回应表补行；SA3 零返工 |
+| R7 | 14:46 | SA4 | 修订轮 Phase 3 复审 R3.1 | 14:48 | send_message 续传 SA4 原会话（d407b972）：仅复审设计 §11 diff（F-R3-1 闭环），分钟级 |
+| R7x | 14:48 | SA4 | R3.1 verdict | 14:48 | **pass**——F-R3-1 闭环（§11 改注+回应表审计行+实况 0.1.1 三重一致）；R3 技术面 8 维度维持有效；静态面收口 |
+| R8 | 14:49 | SA7 | 修订轮 Phase 4 动态验证 | 14:56 | SA4 双清其一达成；动态验证修复活链路 + owner 8 条端到端 + CI Node 20/24 新测试触发证据（SA4 动态审核重点清单） |
+| R8x | 14:56 | SA7 | R3 verdict | 14:56 | **pass**——owner 8 条端到端全过、36 探针全 PASS、52/717+typecheck 双 EXIT=0、Node20 docker 48/48、CI run 32557115782 双矩阵触发证据收口（all-vitest-packages-triggered） |
+| R9 | 14:58 | 总控 | 修订轮 Phase 3.5 AC 补核 | 14:59 | owner 必补 8 条逐条核对 8/8 ✅（ac_checklist 修订轮段）；验证链全绿 |

@@ -714,7 +714,7 @@ function renderPath(path: Array<string | number>): string {
 - `.github/workflows/ci.yml` — node 20/24 matrix 与 pnpm test/typecheck 已覆盖新包（§7 S3），零改动
 - `vitest.config.ts` — include 模式已覆盖（§7 S1），零改动
 - `pnpm-lock.yaml` — SA6 已登记 importer（S4）；本设计零依赖变更。若实现期确需变更，必须回总控按 SA2 攻击点显式扩展本清单
-- `packages/doc-runtime/package.json` — SA6 脚手架已满足全部需求（deps/exports/scripts），不改
+- `packages/doc-runtime/package.json` — deps/exports/scripts 不改（SA6 脚手架已满足全部需求）；**version 字段例外（R2.3/SA4 R3 F-R3-1 改注）**：随实质变更 commit 同步 bump——本轮行为修复 **0.1.0→0.1.1**（依据：SA5 §6 影响面表 + 仓内惯例「版本随实质变更 commit 同步 bump」——vfsl 0.2.0 @ f07462d / persistence 0.1.2 / vfsl-codegen 0.1.1 先例 + hard gate 版本门禁）
 - `CONTEXT.md`、`docs/adr/**` — 决议与术语文本非本任务产出
 
 ## 附：设计自检（SKILL 一致性要求，R2 复检 + R2.1/R2.2 增补）
@@ -770,5 +770,6 @@ function renderPath(path: Array<string | number>): string {
 | D9② 可达组与 §10 R2/#4 登记块增报第六词 `'non-finite number'`（「五词均可达」→ 六词） | ✅ | D9 决策行 + §10 登记块 | 第六词登记：可达性（SA5 复现实证）、风格与 `'non-plain object'` 同构（non- 否定短语、小写空格分隔稳定词；备选 `'NaN'`/`'number'`/`'Infinity'` 否决——SA5 §8）、owner review 指令即 B17「扩词需正当收益」裁量基准下的正当性依据；D9 理由栏补「无信号击穿 INV-1、修复形态 owner 立法冻结」 |
 | §4.8 可达性表 / §6 行为表（B12-B13 邻域）补行 | ✅ | §4.8 表（bigint 行后）+ §6 B18（表尾追加，编号顺延不重排） | 可达路径（三值 × leaf 直存 / object 值 / array 元素 + E1 跨端）与 fail-fast 行为（expected `'plain value'` / actual `'non-finite number'` / path 锚定声明节点、loc 内部位置线进 message 不进 path）；B18 判例与 B12/B13 同族（可达脏数据 loud、禁静默变形），并注明有限 number 正向对照不受影响 |
 | owner 必补回归测试 8 条（辖 SA6，设计侧登记锚点与文件名） | ✅（登记） | §11 ALLOW（R2.3 追加） | 新红灯文件 `extract-nonfinite-number.test.ts`（`[SA6 owned]`）入 ALLOW——owner 8 条断言锚点以 SA5 报告 §7 建议为准（三值×三位置 / ok:false 单 issue / expected/actual 词 / path 锚定 / 有限 number 正向对照 + JSON 往返）；实现侧同步项（SA3）：extract.ts number 拆支一行级 + docblock 可达性清单补行 |
+| §11 DENY 项 `packages/doc-runtime/package.json` 与本轮 version bump 同步（SA4 R3 评审 F-R3-1 唯一阻塞项回流，2026-08-22 追加） | ✅ | §11 DENY LIST | 原判「不改」改注为「deps/exports/scripts 不改 + **version 字段随实质变更 commit 同步 bump（R2.3 登记 0.1.0→0.1.1）**」——依据 SA5 §6 影响面表 / 仓内 bump 惯例（vfsl 0.2.0 @ f07462d、persistence 0.1.2、vfsl-codegen 0.1.1）/ hard gate 版本门禁；消除 DENY 治理与实况（package.json 已 bump 至 0.1.1）的自相矛盾——修复代码本身零缺陷（SA4 R3 判定），SA3 零返工 |
 
 **R2.3 自检**：number 拆支后 **§4.6 伪代码 / docblock、§4.8 可达性行、D9②、§10 登记块、§6 B18 五处口径一致**（词恒 `'non-finite number'`、expected 恒 `'plain value'`、path 锚定声明节点 + loc 进 message 不进 path）；粗判层 carrierOf（§4.1）对 number 恒 `'plain value'` **零变更**——D1 两层判定不变式保持（结构错位位 actual 恒五值词汇表，细粒度拒绝归细判层，bigint 先例同构；SA5 §5 已论证 extract.ts:259 是全库唯一放行点、单点修复完整覆盖）；有限 number 正向对照面（整数/0/-0/小数）不受影响（SA5 复现 [5]）；SA6 冻结 21 用例与既有 4 份测试文件断言零冲突（均未锚定 number 相关 actual——SA5 §8 逐处核对）；§11 ALLOW 只增不删；历史评审记录（R2 回应表 / R2.1 / R2.2 节）零改写。
