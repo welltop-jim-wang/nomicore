@@ -21,6 +21,6 @@ task_type: refactor（深度重构）
 | 12 | 10:45 | SA7 | Phase 3/4 动态验证 | 10:57 | pass — SA4 pass 后动态验证活链路；探针 29/29 红转绿双 leg、G3b 669/669、node20 容器 CI 仿真全步骤 exit 0；真实 CI run 证据按权责边界移交 runner（verdict 与 sa7_report.md 一致） |
 | 13 | 10:58 | SA4 | Phase 3 修订轮（补法定章节） | 11:00 | pass — HG14 自检发现 sa4_review 缺「1.4 vitest 触发性自检」法定章节；续传 082fe8ca 补节（9 文件逐条核对，结论 all-vitest-packages-triggered），verdict 不变 |
 | 14 | 11:02 | 总控 | Phase 3.5 AC 门禁 | 11:03 | 4/4 AC ✅（ac_checklist.md 落盘）；HG13 不触发（无 .spec.ts）/ HG14 双端齐备 / HG15 不触发（协议关键词 1<3）；无回流条目 |
-| 15 | 11:04 | 总控 | Phase 4 收尾固化 | (pending) | HG12 verdict 双清自检通过（SA4×2 pass / SA7 pass，与文件真实 verdict 一致）；HG16 通过（本任务无 gh pr create 痕迹、无 open PR、base-branch 已设）；HG13/14/15 见行 14；本地验证复跑 669/669 + typecheck exit 0；wiki 全量随本行一并 commit |
+| 15 | 11:04 | 总控 | Phase 4 收尾固化 | 11:06 | HG12 verdict 双清自检通过（SA4×2 pass / SA7 pass，与文件真实 verdict 一致）；HG16 通过（本任务无 gh pr create 痕迹、无 open PR、base-branch 已设）；HG13/14/15 见行 14；本地验证复跑 669/669 + typecheck exit 0；wiki 全量随 commit 06d6796+402ccb5 入库；REPORT.md status: complete + .mabf-done（run_id issue-71-1787361468-158976）已写，完成事务封口移交 issue-runner |
 
 > 恢复注记：daemon 重启造成双会话并行（本恢复会话 + 前序会话残留），双方 SA6 产出已经去重定稿、结论一致（见简报「去重取舍」）。自本行起由本恢复会话单线推进，若检出并行会话新写入即停线核查。
