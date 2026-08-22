@@ -2,7 +2,7 @@
 
 - **任务类型**：Bug 修复（owner Review 定性 P1 正确性缺陷；经 SA5 核实在现行结构系统内**结构性不可达**，修订定性 = **行为不变的防御性语义硬化**）
 - **worktree**：`/home/wangjian/nomicore-fix-issue-75`（branch `fix/issue-75-on-docs-doc-runtime-validation`，run_id `issue-75-rev-1787397220`）
-- **授权链**：rev1 简报 `task_read-logical-value-at-path_rev1.md`（owner Review 全文 + AC-R1..R5）→ SA8 修订轮冲突门禁 `clear`（`task_read-logical-value-at-path_rev1_conflict_report.md`，注记 1–5）→ SA5 故障分析 `20260822-bug-read-logical-value-union-arbitration.md`（结论 (a)/(b)/(c)/(d)）→ SA6 rev1 契约测试 18 绿灯锁入库（`read-logical-value-at-path-rev1-union-arbitration.test.ts`，commit `23851e1`）→ 本设计
+- **授权链**：rev1 简报 `task_read-logical-value-at-path_rev1.md`（owner Review 全文 + AC-R1..R5）→ SA8 修订轮冲突门禁 `clear`（`task_read-logical-value-at-path_rev1_conflict_report.md`，注记 1–5）→ SA5 故障分析 `20260822-bug-read-logical-value-union-arbitration.md`（结论 (a)/(b)/(c)/(d)）→ SA6 rev1 契约测试 18 绿灯锁入库（`read-logical-value-at-path-rev1-union-arbitration.test.ts`，commit `23851e1`）→ 本设计 → SA2 R1 攻击评审 **pass**（`task_read-logical-value-at-path_rev1_sa2_review.md`：核心论证独立重推全部成立、66 例实测全绿；勘误 #1/#2 + 建议 #3/#4/#5 已回流本修订，见文末「SA2 反馈逐条回应」）
 - **修订基底**：首轮设计 `task_read-logical-value-at-path_design.md`（D1–D15 / INV-1..11 / C1-C2-C3 分类 / 文件清单**全部继续有效**）。本文件是**增量修订**：只修订受影响条款（§附 A 条款对照表），不重述未变内容；与首轮冲突处以本文件为准。
 
 ---
@@ -19,7 +19,7 @@
 4. **D13 重述**：memo 值域两态→三态后健全性不变、多项式上界不变（SA8 注记 4）；
 5. **公共契约冻结**：签名、两态结果联合、AC3 缺键形态（value 键显式存在）原样——SA6 首轮 20+12 例与 rev1 18 例绿灯锁在硬化后必须保持全绿（AC-R4/AC-R5）。
 
-**为什么必须修一个不可达的缺陷**（SA2 预攻，§1.3 详述）：现行安全性完全寄托于四个结构性事实的合取（live 导航确定性 / 段消耗无跳跃 / 三源缺席皆 live 事实 / E309+yjs undefined 约束）——它们是结构系统的**偶发属性**，不是类型保证；E309 放宽、新增节点 kind、yjs API 演进任一都可能静默打开可达面。硬化把安全性从「事实依赖」升级为「构造保证」，且是 ADR-0003「路径存在性为任一成员出现即存在」在读取维度的逐字兑付（SA8 对照 #2/#3：收紧而非推翻）。
+**为什么必须修一个不可达的缺陷**（§1.3 详述；SA2 R1 勘误 #1 措辞收敛）：现行安全性完全寄托于结构性事实的合取（live 导航确定性 / 段消耗无跳跃 / 三源缺席皆 live 事实 / E309 与 yjs undefined 等事实前提）——它们是结构系统的**偶发属性**，不是类型保证；其中**唯有「新增带异构段消耗的节点 kind」**（破坏归谬第 2 步「段消耗无跳跃」）能真正静默打开可达面，E309 与 yjs-undefined 两项即使放宽，归谬第 1/4 步仍封锁竞争（SA2 R1 攻击点 #1 独立推演，见 §1.3）——它们是三源枚举与终点快照论证的**事实前提**，而非威胁向量。硬化把安全性从「事实依赖」升级为「构造保证」，且是 ADR-0003「路径存在性为任一成员出现即存在」在读取维度的逐字兑付（SA8 对照 #2/#3：收紧而非推翻）。
 
 ### 决策增量总表
 
@@ -62,7 +62,7 @@ SA5 四步归谬（24 项断言矩阵 + E309/yjs-undefined 探针实证支撑）
 ### 1.3 为什么必须修（不可达 ≠ 不修）
 
 1. **契约义务**：owner Review「Request changes」是 PR #83 合并阻塞项；AC-R1/R2 明文要求三态与 value-first——本设计是该修订的建筑蓝本；
-2. **安全性寄托于偶发事实的合取**：四步归谬的每一步都依赖现行结构系统的具体属性（段消耗模型、缺席三源的读取方式、E309 禁令、yjs undefined 约束）。这些是**实现现状**而非**类型不变量**——未来任何一项演化（放宽 E309、新增带异构段消耗的节点 kind、yjs 允许 undefined 元素）都会**静默**打开可达面，且无任何测试能报警（竞争类 fixture 结构性不可构造，SA5 (c) 表）。硬化后，「missing 不胜出」成为构造保证，与上述事实解耦；
+2. **安全性寄托于偶发事实的合取**：四步归谬依赖现行结构系统的具体属性（段消耗模型、缺席三源的读取方式，以及 E309 禁令与 yjs undefined 约束等事实前提）。这些是**实现现状**而非**类型不变量**。其中**唯有「新增带异构段消耗的节点 kind」**（使某成员能少耗/多耗段抵达终点，破坏归谬第 2 步「段消耗无跳跃」）会**静默**打开可达面，且无任何测试能报警（竞争类 fixture 在现行结构系统内不可构造，SA5 (c) 表）；**E309 与 yjs-undefined 两项对归谬鲁棒**（SA2 R1 攻击点 #1 独立推演）：(a) 放宽 E309 后，标量成员在有剩余段时走 M10 终态下钻 reject、零剩余段时走终点 walkUnion，均不经中段仲裁，中段 missing 三源不变，第 1/4 步（live 导航确定性、同深度同 live）不受成员形状同构性影响；(b) yjs 允许 undefined 数组元素时，现行 read.ts:340-341 对界内元素不查 undefined、直接下钻，下一深度 `carrierOf(undefined)` ≠ 期望载体 → **reject 而非 missing**，不构成「前序 missing 遮蔽后序 value」的前提；即便其抵达终点（walk 对 undefined 输入 mismatch → reject），归谬第 1 步保证全体成员同见同一 undefined live，后序成员仍无法产出 value。故 E309/yjs-undefined 的准确定位是：**三源枚举与终点快照论证（INV-12）的事实前提**，放宽它们动摇的是论证的表述基础而非竞争不可达性本身。硬化后，「missing 不胜出」成为构造保证，与上述全部事实解耦；
 3. **策略与文档语义的一致性**：ADR-0003「路径存在性为**任一成员出现即存在**」——若某后序成员能产出值而前序成员缺席短路返回 undefined，即违反该条款。现行代码对该条款的遵守是「侥幸」（靠不可达），修订使其成为「构造性遵守」（SA8 对照 #2：「收紧而非推翻」）；
 4. **语义缝隙是真实文档债**：mixed missing+reject 优先级未定义、INV-7「可产出」歧义、swap 不变式范围未成文——三者均为 owner 修订建议明文要求的成文项（AC-R3）；
 5. **成本近零**：单文件 ~50 行、公共契约零变化、合法输入行为零变化（定理 + 18 绿灯锁护栏）。
@@ -171,6 +171,8 @@ function navigate(node, live, segs, i, resolveS, fullPath, memo): NavOutcome {
 | 3. 所有**可行**成员均只能得到 missing → `ok:true, value:undefined` | 循环耗尽且 `sawMissing` → `{kind:'missing'}` → 顶层映射 `{ ok: true, value: undefined }`（value 键显式构造，FC-3） | ✅（「可行成员」形式化见 §3.3） |
 | 4. 全部成员 reject → `PATH_NOT_ALLOWED` | 循环耗尽且无 missing → `{kind:'reject'}` → `notAllowed(...)` | ✅ |
 
+**嵌套 union 位**（SA2 R1 建议 #5 采纳成文）：成员经 ref → union 或直接嵌套时，D17 语义经 `resolveLive` 递归**自然传播**——子 union 先按同规则聚合出自身的三态结局，该结局作为成员结局参与外层记账（子 union 聚合 missing → 外层记 `sawMissing` 并继续试探后序成员；子 union 聚合 value → 即外层首 value 胜出；子 union 聚合 reject → 外层视该成员为 reject）。无专门条款、无双重仲裁——每层 union 只消费成员的最终三态，与成员是原子形态还是嵌套联合无关。
+
 **顶层三态→两态映射**（`readLogicalValueAtPath` 尾部，rev1）：
 
 ```ts
@@ -252,7 +254,7 @@ function navigate(node, live, segs, i, resolveS, fullPath, memo): NavOutcome {
 | 总上界 | **O(触及节点数 × 路径长 × 成员扇出)** | **O(触及节点数 × 路径长 × 成员扇出)**（同式） |
 | 「首 ok = missing」场景 | 立即短路，后序成员零试探 | 后序成员继续试探——合法输入上**必然空手**（归谬第 4 步：后续成员不可能产出 value，至多再记 missing/reject），每次试探 O(1) memo 命中摊销 |
 
-试探集扩大只影响**常数因子**（原本被 missing 短路跳过的后序成员现在被试探，但每个 (节点, live, i) 至多计算一次），不改变渐近界。**SUP-2 护栏（22 层重叠联合 + 末段全拒/required 缺席路径 <2s）维持有效**：该构造的最坏路径本就不含 missing 短路受益（成员全 reject/required-reject），value-first 下试探集与原最坏情形相同。ADR-0007「普通读取成本与目标 path 子树规模相关」条款继续满足。
+试探集扩大只影响**常数因子**（原本被 missing 短路跳过的后序成员现在被试探，但每个 (节点, live, i) 至多计算一次），不改变渐近界。**SUP-2 护栏（26 层重叠联合 + 末段全拒/required 缺席路径 <2s，`CHAIN_DEPTH = 26`，SA2 R1 勘误 #2 校正）维持有效**：该构造的最坏路径本就不含 missing 短路受益（成员全 reject/required-reject），value-first 下试探集与原最坏情形相同（SA2 R1 逐例核实）。**护栏缺口注记（SA2 R1 攻击点 #3）**：value-first 真正的**新增**成本面——「中段 missing 后继续试探整棵后序成员子树」——在 SUP-2 fixture（全字段 required）上不存在，其渐近安全由 memo 摊销论证保证（上表）而非护栏锚定；补锚方案见 §4 可选锚点 H-a（26 层链 × 中段 optional 缺席 <2s），SA4/SA7 裁量落地。ADR-0007「普通读取成本与目标 path 子树规模相关」条款继续满足。
 
 ### 3.5 观测等价定理与硬化风险清单（SA5 (b)4）
 
@@ -295,7 +297,10 @@ SA6 rev1 契约测试（18 例，已入库 commit `23851e1`，全部绿灯行为
 | R4 全体可行成员合法缺席 | 4 | 全 missing → `{ok:true, value:undefined}`（value 键显式存在断言）；**含 mixed missing+reject → missing 胜** | §3.2 规则 3 + §3.3.2 mixed 裁决 | 规则 3 的直接锚；mixed 裁决与 SA5 实证 5a/5c 一致 |
 | R5 swap 限域（终点=叶子/标量） | 4 | 两序派生物同 live 同路径结果 `toEqual` 逐字一致 | §3.3.3 swap 限域 | 终点=叶子时 value-first 与首 ok 胜同取首真值（定理 Case 1） |
 
-**AC-R4 判定**：owner 五类要求全部落测——前三类按 SA5 (c) 降级为绿灯行为锁（竞争在结构系统内不可构造红灯，**不得虚构 fixture、不得放宽结构系统**——SA5 Fix direction 明文 + SA8 注记 1），第四/五类直接落测/限域落测。可选补充锚点（SA4/SA7 裁量，SA3 不编写）：mixed 反序（reject 先、missing 后：`{bar: YLeaf} \| {foo?: YLeaf}` + live `{}` 读 `['x','foo']` → undefined）——落点文件见 §7 ALLOW 可选项。
+**AC-R4 判定**：owner 五类要求全部落测——前三类按 SA5 (c) 降级为绿灯行为锁（竞争在结构系统内不可构造红灯，**不得虚构 fixture、不得放宽结构系统**——SA5 Fix direction 明文 + SA8 注记 1），第四/五类直接落测/限域落测。**可选补充锚点**（SA4/SA7 裁量、SA2 R1 建议 #3/#4 采纳，SA3 不编写；落点文件见 §8.1 可选项）：
+
+- **H-a 新增成本面护栏**（SA2 攻击点 #3）：26 层链 × **中段 optional 缺席**路径——fixture 将 SUP-2 链式形状外层字段改 optional（`{ x?: L2; t1: YLeaf } | { x: L2; t2: YLeaf }` 递归 26 层），live 构造至中段缺 `x`，读深层路径 → 断言 `ok:true, value:undefined` 且耗时 <2s。红灯触发条件：实现丢失 memo 或 value-first 试探未摊销（指数回潮）——直接锚定 H-1/§3.4 渐近界声明（该成本面在 SUP-2 全 required fixture 上不存在）；
+- **H-b mixed 反序锚**（SA2 攻击点 #4，建议优先纳入）：`type U = { bar: YLeaf<string> } | { foo?: YLeaf<string> }` + live `x = Y.Map({})` 读 `['x','foo']` → 断言 `ok:true` + value 键显式存在且 undefined（reject 先、missing 后仍 missing 胜）。对「循环遇 reject 提前终止」类实现漂移提供第二锚（R4-3 已锁第一锚：「见 reject 即整体 reject」在 R4-3 转红）；对「首 missing 即返回」错误（恰为现行 bug 行为）两序均无检测力——这不是缺口，是观测等价的必然（SA5 (c) 成文降级）。
 
 **AC-R5 判定**：首轮 `read-logical-value-at-path.test.ts`（20 例）+ `-supplementary.test.ts`（12 it，SA5 实测口径 48/48 含 it.each 展开）+ extract 5 文件基线——由观测等价定理（§3.5）保证零回归；SUP-1 XML 情形走终点 `walkUnion`（提交层仲裁），不经中段 union 循环，且成员 0 以真实 value（XML 串）胜出的机制在 value-first 下不变（SA8 对照 #7）。**全绿护栏 = 等价定理的行为锚**：任一用例转红即为定理被实证推翻，必须按真实状态上报而非调测试迁就实现。
 
@@ -331,7 +336,7 @@ SA6 rev1 契约测试（18 例，已入库 commit `23851e1`，全部绿灯行为
 | Caller | 文件:行号 | 是否 await | 直接 try/catch | 顶层 catch-all | 处置方案 |
 |---|---|---|---|---|---|
 | `NavOutcome` 消费者 | 仅 `read.ts` 内部（`navigate` L304-357 / `resolveLive` L277-291 / `readLogicalValueAtPath` L79） | 同步 | —（包内） | 顶层 try/catch（D11） | 三处消费点随本设计同步改写（§3.2）；包外零消费者（模块私有类型，未导出） |
-| `readLogicalValueAtPath` 存量 caller | SA6 三测试文件：`read-logical-value-at-path.test.ts` / `-supplementary.test.ts` / `-rev1-union-arbitration.test.ts`（`grep -rn "readLogicalValueAtPath" packages/ apps/` 仅命中测试与 index.ts 转出口） | 否（同步） | 测试内 `expect` | — | 行为零变化（定理），66 例绿灯锁即回归护栏；无 caller 侧改动义务 |
+| `readLogicalValueAtPath` 存量 caller | SA6 三测试文件：`read-logical-value-at-path.test.ts` / `-supplementary.test.ts` / `-rev1-union-arbitration.test.ts`（`grep -rn "readLogicalValueAtPath" packages/ apps/` 命中 8 文件：src 三文件（read.ts 本体 / index.ts 转出口 / **extract.ts JSDoc 提及**）+ 测试四文件（含 test-d）+ **vfsl/index.ts 注释提及**——后两处为 JSDoc/注释级提及**非调用**，SA2 R1 实测澄清） | 否（同步） | 测试内 `expect` | — | 行为零变化（定理），66 例绿灯锁即回归护栏；无 caller 侧改动义务 |
 | `walk`/`makeRefResolver` 包内消费者 | `read.ts` L24 import、L306/L51 消费 | 同步 | 顶层 catch | ✅ | 消费方式零改动（终点委托形态不变） |
 
 **风险评估**：改动半径 = 包内私有类型的值域 + 三处包内消费点；公共 API 面零变化；不存在 return→throw / 同步→异步 / nullable→non-null 类 rippling。
@@ -358,7 +363,7 @@ SA6 rev1 契约测试（18 例，已入库 commit `23851e1`，全部绿灯行为
 - `packages/doc-runtime/src/read.ts` — 修改（~50 行 delta）：`NavOutcome` 三态化（D16）+ `navigate` 十处结局编码改写 + union 分支 value-first 仲裁（D17）+ 顶层三态→两态映射 + JSDoc（§3.1/§3.2）
 - `packages/doc-runtime/package.json` — 修改（1 行）：version patch bump `0.1.2 → 0.1.3`（流水线硬门禁 #9：改过代码的模块必须 bump；#72/#73/#75 首轮发版惯例；仅 version 字段）
 - `packages/doc-runtime/test/read-logical-value-at-path-rev1-union-arbitration.test.ts` — `[SA6 owned]` 已入库 18 绿灯行为锁（commit `23851e1`）。SA3 不得改断言逻辑；仅允许测试基础设施级修复
-- `packages/doc-runtime/test/read-logical-value-at-path-rev1-hardening.test.ts` — 新建（**可选**，SA4/SA7 裁量按 §4 可选锚点落地：mixed 反序绿灯锁；SA3 不编写测试）
+- `packages/doc-runtime/test/read-logical-value-at-path-rev1-hardening.test.ts` — 新建（**可选**，SA4/SA7 裁量按 §4 可选锚点落地：H-a 新增成本面护栏（26 层链 × 中段 optional 缺席 <2s）+ H-b mixed 反序绿灯锁（建议优先纳入）；SA3 不编写测试）
 
 ### 8.2 ALLOW LIST（PR #83 首轮已落地面——本轮零新改动，仅供 origin/main 基线对账）
 
