@@ -103,7 +103,7 @@ function walk(
           if (v === undefined) continue;
           const r = walk(first.node, v, [...path, key], resolve);
           if (r.kind === 'issue') return r; // fail-fast（INV-3）
-          out[key] = r.snapshot;
+          putSnapshotKey(out, key, r.snapshot); // R2.2/F-1（D13/B16）：安全写入——Record 动态键可达 '__proto__'
         }
         return { kind: 'value', snapshot: out };
       }
@@ -114,7 +114,7 @@ function walk(
         if (v === undefined) continue;
         const r = walk(f.node, v, [...path, f.name], resolve);
         if (r.kind === 'issue') return r; // 首字段错位即止（INV-3）
-        out[f.name] = r.snapshot;
+        putSnapshotKey(out, f.name, r.snapshot); // R2.2/F-1（D13）：统一安全写入——parser 拒绝 '__proto__' 字段名，此处为防御纵深
       }
       return { kind: 'value', snapshot: out };
     }
@@ -207,7 +207,7 @@ function trialMember(
       }
       const r = walk(f.node, v, [...path, f.name], resolve);
       if (r.kind === 'issue') return { accept: false, issue: r.issue }; // 成员内 fail-fast
-      out[f.name] = r.snapshot;
+      putSnapshotKey(out, f.name, r.snapshot); // R2.2/F-1（D13）：统一安全写入——trialMember 成员快照同纪律
     }
     if (softReject) return { accept: false };
     return { accept: true, snapshot: out };
@@ -312,6 +312,20 @@ function plainDomainIssue(path: Array<string | number>, loc: string, word: strin
       actual: word,
     },
   };
+}
+
+/**
+ * R2.2/F-1（SA4 A-4 实测回流）：快照 map 的一切键写入一律经本助手（defineProperty，
+ * 四描述符与 §4.6 plain 值写入同款）——禁赋值式（D13/B16）。机理：`out['__proto__'] = v`
+ * 命中 `Object.prototype.__proto__` accessor——标量值被 setter 静默忽略（键丢失）；对象值
+ * 把 out 原型劫持为该快照对象（键丢失 + JSON 序列化后数据整体蒸发）。可达向量：Record
+ * 动态键来自 live 数据（`ymap.set('__proto__', v)` 公共 API 直接可达，keyPattern 零消费
+ * 是 D4/B5 明文），快照静默缺键后下游 validateLogicalSnapshot 永远无法发现——端到端
+ * 零信号的静默数据丢失（与 B13/B15 同判例的伪降级）。封闭 map 字段名虽被 parser 拒绝
+ * （SA4 C 探针：`{ __proto__: string }` parse FAIL），仍统一纪律作防御纵深。
+ */
+function putSnapshotKey(out: Record<string, unknown>, key: string, value: unknown): void {
+  Object.defineProperty(out, key, { value, writable: true, enumerable: true, configurable: true });
 }
 
 /** 载体错位 issue 构造（message 措辞自由域，F7 仅要求非空；模板统一便于日志检索）。 */
