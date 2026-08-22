@@ -31,4 +31,5 @@ runner 在 daemon 重启后**同时存在两个总控会话**调度同一 worktr
 | 14 | 13:01 | SA3 | Phase 3 TDD 实现 | 13:09 | 设计定稿 + 38 用例红灯（总控 13:01 亲验 EXIT=1）→ SA3 交付 commit 079e957；总控亲验：pnpm test 50 files/707 tests 全过 + 根 typecheck 6 包通过，EXIT=0 |
 | 15 | 13:11 | SA4 | Phase 3 静态验尸 R1 | 13:20 | SA4 R1 verdict: reject——仅 F-1（Record 动态键 __proto__ 静默丢键/原型劫持，设计规格空洞所致）；D9 家族与 R-2 改判均裁决接受；门禁 1.4/1.5 通过 |
 | 16 | 13:22 | SA1 | Phase 3 设计 touch-up | 13:26 | F-1 责任在设计伪代码（SA3 忠实实现）：SA1 补快照 map 安全写入纪律 + B16 + §4.4 回写 + F-2 文档回写 |
-| 17 | 13:22 | SA6 | Phase 3 回归红灯锚 | (pending) | F-1 修复前两用例须先红（真实红=复现 F-1），SA3 修复后转绿 |
+| 17 | 13:22 | SA6 | Phase 3 回归红灯锚 | 13:28 | 两用例真实红复现 F-1（own 键蒸发+原型劫持，断言失败 EXIT=1）→ SA3 修复后转绿 |
+| 18 | 13:29 | SA3 | Phase 3 F-1 修复 | (pending) | 按 D13/B16 以 putSnapshotKey 安全写入修复 Record 分支（extract.ts:106，:117/:210 统一纵深），两用例转绿 + 38 用例零回归 |

@@ -174,3 +174,48 @@ path 精确 / expected / actual，红线 5 防省略字段违约）+ `expected/a
   无需其他改动；两份文件与冻结 21 用例同构红灯，SA3 建立 src 后一并转绿。
 - SA4：D9 家族偏离裁决（§10 R2/#4 登记块）的验证面现已由本增补锚定（actual 词与四字段
   形状的直接断言）。
+
+---
+
+# SA6 F-1 回归红灯锚记录（R2.2 追加，2026-08-22 13:2x）
+
+落位依据：SA4 R1 评审（verdict: reject）唯一阻塞项 F-1——Record 动态键 `'__proto__'` 在
+`ok:true` 下被快照静默丢失/原型劫持（extract.ts:104-106 赋值式写入）；设计 R2.2
+（commit 7646f06）D13/B16 落文 putSnapshotKey 修复纪律，§11 备位本回归锚文件。
+
+## 产出
+
+- `packages/doc-runtime/test/extract-record-keyspace.test.ts` — **2 条用例**（SA4 建议的
+  标量 + 嵌套 map 值两场景），三断言组全覆盖：
+  - ① Record 形 ROOT（`Record<string, YLeaf<string>>`）live own 键 `'__proto__'`（标量）
+    → ok:true 且 own 属性保留键与值（Object.hasOwn / Object.keys / 索引读取 / JSON 往返）；
+  - ② 嵌套 map 值场景（`{ m: Record<string, { x: YLeaf<string> }> }` + live m 含
+    `'__proto__'` → Y.Map 对象值）→ snapshot own keys 含 `'__proto__'` +
+    `Object.getPrototypeOf(snapshot.m) === Object.prototype`（原型未被劫持）+
+    JSON.stringify 往返含该键。
+- 断言全部锚公共接缝可观测输出（hasOwn/getPrototypeOf/keys/JSON 往返），不断言内部实现；
+  未改动 src/ 与既有三份测试文件。
+
+## 红灯证据（F-1 真实红——断言失败，非模块缺失；commit 079e957 实测）
+
+```
+pnpm exec vitest run packages/doc-runtime/test/extract-record-keyspace.test.ts --passWithNoTests=false
+Test Files  1 failed (1)      Tests  2 failed (2)      EXIT=1
+
+× ① AssertionError: expected false to be true（Object.is equality）
+  → expect(Object.hasOwn(snapshot, '__proto__')).toBe(true)  [extract-record-keyspace.test.ts:74]
+  实际：ok:true；live ROOT keys=["normal","__proto__"]；snapshot own keys=["normal"]；
+  snapshot['__proto__'] 读到原型链（Object.prototype）；JSON 往返 {"normal":"v1"}（键蒸发）
+× ② AssertionError: expected false to be true（Object.is equality）
+  → expect(Object.hasOwn(sm, '__proto__')).toBe(true)  [extract-record-keyspace.test.ts:102]
+  实际：ok:true；live m keys=["__proto__","normal"]；snapshot.m own keys=["normal"]；
+  Object.getPrototypeOf(sm) !== Object.prototype（原型被劫持为嵌套快照对象）；
+  JSON 往返 {"m":{"normal":{"x":"n"}}}（'__proto__' 数据蒸发）
+```
+
+- 类型清洁：新文件 tsc 零错误（模块已存在，无 TS2307）。
+- 全包状态：`vitest run packages/doc-runtime/test` → 3 份既有文件 38 用例全绿，本文件
+  2 用例红（F-1 缺陷）——回归锚为当前唯一红点。
+- 修复后转绿预期：SA3 按 D13/B16 以 putSnapshotKey（defineProperty 四描述符）替换
+  extract.ts Record 分支赋值式写入（修复半径一行级，:117/:210 统一为防御纵深）→ 本文件
+  两用例转绿，既有 38 用例零回归。
