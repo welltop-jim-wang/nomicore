@@ -38,6 +38,11 @@ jobs:
       - name: Test
         run: pnpm test
 
+      # Issue #56: make the persistence contract's Cordis service registration,
+      # schedule defaults, and clock seam independently visible in CI.
+      - name: Persistence contracts
+        run: pnpm exec vitest run packages/persistence/test/persistence-contract.test.ts --typecheck --passWithNoTests=false
+
       # AC5（ADR 0005）：全领域脚手架解析 + 信封校验——显式步骤使校验在工作流文件里
       # 评审可见；--passWithNoTests=false 防测试文件被删后静默假绿（vitest.config 默认 true）。
       - name: Domain scaffolds check
