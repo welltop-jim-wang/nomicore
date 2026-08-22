@@ -58,11 +58,11 @@ parseVfsl('type A = any;');
 
 **诊断覆盖**：21 个错误码全量落地——词法（E201–E203）、语法（E100–E106）、语义（E301–E311，含环检测 E106、字段重名 E308、ROOT 完整性 E310/E311）。单错误模型：全部候选按 `(line, column, code)` 取最小，恰返回 1 条。
 
-**当前引擎能力**：`parseVfsl`（文本→IR）、`evaluate`（IR→派生 schema）、`validateSnapshot`（整份 JSON 快照校验）、`parseSchemaEnvelope`（`SCHEMA` 信封形状与方言路由）。尚未包含 NomicoreServer、Y.Doc 持久化与实时同步。
+**当前引擎能力**：`parseVfsl`（文本→IR）、`evaluate`（IR→派生 schema）、`validateLogicalSnapshot`（逻辑快照校验：普通 JSON logical ROOT snapshot，不接受 live Yjs 载体）、`parseSchemaEnvelope`（`SCHEMA` 信封形状与方言路由）。尚未包含 NomicoreServer、Y.Doc 持久化与实时同步。
 
 ## 设计不变量
 
-- **显式公共接缝**：`parseVfsl` / `evaluate` / `validateSnapshot` / `parseSchemaEnvelope` 各自冻结入参、结果联合与错误域；tokenizer / parser / semantic / shapes 等内部件不构成契约。
+- **显式公共接缝**：`parseVfsl` / `evaluate` / `validateLogicalSnapshot` / `parseSchemaEnvelope` 各自冻结入参、结果联合与错误域；tokenizer / parser / semantic / shapes 等内部件不构成契约。
 - **不抛错承诺**：任何输入的错误只经返回值传递；顶层兜底把意外异常转化为结构化 E100（命中即实现缺陷，不得视为通过）。
 - **IR 可序列化**：纯数据、无环（环被 E106 显式拒绝）、值域在 JSON 表达力内——编译缓存与跨版本消费的前提。
 - **方言冻结**：v1 按[规格](docs/vfsl/v1-spec.md)冻结，后续只做加法；未知方言在读取侧响亮失败，不静默降级。
@@ -87,7 +87,7 @@ nomicore/
 ## 路线图
 
 1. ~~Phase 0a · parser 切片~~ ✅ v0.1.3：v1 方言全量解析（issues #5–#9，180 个测试）
-2. **Phase 0b · 引擎补全**：求值器 / 路径索引 / `validateSnapshot` / `SCHEMA` 信封
+2. **Phase 0b · 引擎补全**：求值器 / 路径索引 / `validateLogicalSnapshot` / `SCHEMA` 信封
 3. **Phase 2 · yjs-server**：schema 数据面服务端（namespace 生命周期、统一写入管线、同步协议）——两个开放问题见 PRD #3（写入强制级别、API 面拆分）
 
 ## 开发

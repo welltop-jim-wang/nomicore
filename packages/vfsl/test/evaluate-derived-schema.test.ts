@@ -590,7 +590,7 @@ describe('evaluate — 路径索引：可查、ref 穿透、Record 键模式', (
 });
 
 describe('evaluate — no-match 诊断接缝（ADR 0003 §3：失败距离最小成员 + 「联合成员 i/N」）', () => {
-  it('AC：联合成员按声明序编号且完整保留（诊断生成所需数据预置；计算属 validateSnapshot 消费）', () => {
+  it('AC：联合成员按声明序编号且完整保留（诊断生成所需数据预置；计算属 validateLogicalSnapshot 消费）', () => {
     const derived = evaluateModule(FIXTURE);
     const entity = derived.aliases['AssetEntity']!; // fixture 保证声明
     if (entity.kind !== 'union') throw new Error(`期望 union 节点，实际 ${entity.kind}`);

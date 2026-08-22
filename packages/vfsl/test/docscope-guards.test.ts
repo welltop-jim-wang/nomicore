@@ -8,7 +8,7 @@
  * SA2 R2-N2 实现提示）。
  */
 import { describe, expect, it } from 'vitest';
-import { evaluate, getCompiled, parseVfsl, validatePatch, validateSnapshot } from '../src/index.js';
+import { evaluate, getCompiled, parseVfsl, validatePatch, validateLogicalSnapshot } from '../src/index.js';
 import type { DerivedSchema } from '../src/index.js';
 
 // RT-2（SA2 A2）：getCompiled 崩溃边界结构性承诺——任意输入（含对抗面）永不 throw，
@@ -85,11 +85,11 @@ describe('getCompiled — 冻结条目 × 校验接缝等价（D4.3 / SA2 N1）'
     return cached.derived;
   }
 
-  it('validateSnapshot(缓存条目.derived) ≡ validateSnapshot(新鲜 derived)（ok 与拒绝两分支）', () => {
+  it('validateLogicalSnapshot(缓存条目.derived) ≡ validateLogicalSnapshot(新鲜 derived)（ok 与拒绝两分支）', () => {
     const cached = cachedDerived();
     const fresh = freshDerived();
     for (const snap of [SNAPSHOT_OK, SNAPSHOT_BAD]) {
-      expect(validateSnapshot(cached, snap)).toEqual(validateSnapshot(fresh, snap));
+      expect(validateLogicalSnapshot(cached, snap)).toEqual(validateLogicalSnapshot(fresh, snap));
     }
   });
 
