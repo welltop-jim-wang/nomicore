@@ -1,6 +1,6 @@
 /**
  * @nomicore/vfsl —— VFSL 核心包公共入口（issue #5：parser；issue #20：evaluate；
- * issue #21：validateSnapshot；issue #53：validatePatch + 数组写入校验）。
+ * issue #21（#71 更名）：validateLogicalSnapshot；issue #53：validatePatch + 数组写入校验）。
  *
  * 公共接缝（PRD #3 + ADR 0003 冻结）：
  * - `parseVfsl(text)` → `{ ok: true; module } | { ok: false; issues }`——同步、
@@ -11,16 +11,17 @@
  *   公共导出（ADR 0003 §1）：IR → 派生 schema（结构树 + 值 schema + 路径索引 +
  *   别名表），纯数据、可 JSON 序列化、无行列；同步、纯函数、不抛错（崩溃边界
  *   与 parseVfsl 同款 E100）；
- * - `validateSnapshot(derived, snapshot)` → `{ ok: true } | { ok: false, issues }`
- *   ——整份 JSON 快照校验（issue #21 设计 §2/§3）：值 schema 树解释器，全收集
- *   （上限 100 条 + 截断标记）；Pattern 走包内 NFA 子集模拟（ReDoS 防护，零运行时
- *   依赖）；同步、纯函数、不抛错（崩溃边界同款 E100）。
+ * - `validateLogicalSnapshot(derived, snapshot)` → `{ ok: true } | { ok: false, issues }`
+ *   ——逻辑快照校验（issue #21 设计 §2/§3；issue #71 / ADR-0007 更名）：值 schema
+ *   树解释器，输入为普通 JSON logical ROOT snapshot（不接受 Y.Doc/Y.Map/Y.Array
+ *   等 live Yjs 载体）；全收集（上限 100 条 + 截断标记）；Pattern 走包内 NFA 子集
+ *   模拟（ReDoS 防护，零运行时依赖）；同步、纯函数、不抛错（崩溃边界同款 E100）。
  * - `parseSchemaEnvelope(input)` → `{ ok: true; envelope; module } | { ok: false;
  *   issues: SchemaParseIssue[] }`——信封解析与方言路由（issue #52 / H1）：issues 是
  *   discriminated union（`kind:'envelope'` 独立信封错误域 / `kind:'vfsl'` 原文本错误）；
  *   形状校验 → 方言断言 → parseVfsl(text)；同步、纯函数、不抛错；
  * - `validatePatch` 与数组写入校验（issue #53）：结构守卫 + 最近结构边界重建，
- *   复用 validateSnapshot 的值 schema 解释器；同步、纯函数、不抛错；
+ *   复用 validateLogicalSnapshot 的值 schema 解释器；同步、纯函数、不抛错；
  * - `getCompiled(input)` → `{ ok: true; module; derived } | { ok: false; issues:
  *   SchemaParseIssue[] }`——DocScope 编译缓存门面（issue #54 / H3）：信封或文本 →
  *   按**文本内容哈希**（sha-256，包内纯 TS 单射字节化）查进程级缓存，命中零
@@ -32,7 +33,7 @@
  *
  * 编排：tokenize → parse（语法相位，失败以 VfslSyntaxError 内部异常承载）→
  * analyze（语义相位，E301/E302/E305/E106/E308 + min-position 聚合 + AST → IR）→
- * evaluate（求值相位，纯函数 IR → 派生物）→ validateSnapshot / validatePatch
+ * evaluate（求值相位，纯函数 IR → 派生物）→ validateLogicalSnapshot / validatePatch
  * （校验相位，共用值 schema 解释器，派生物纯数据只读消费）。
  * 公共面导出上述解析/求值/信封路由/全量与增量校验接缝、数组写入校验、
  * SchemaSource 接缝，以及 §7.1 + ADR 0003 类型；tokenizer/parser/semantic/evaluate/
@@ -70,12 +71,12 @@ export type {
 
 export { evaluate };
 
-export { validateSnapshot } from './validate.js';
+export { validateLogicalSnapshot } from './validate.js';
 export type { ValidateIssue, ValidateResult } from './validate.js';
 
 // issue #53 / H2：路径级写入校验——validatePatch（替换语义）+ 数组三操作
 // （append/insert/delete，ADR 0004 D1 词表的运行时判定面）。同步、纯函数、不抛错；
-// 结构守卫 + 最近结构边界重建整值校验（与 validateSnapshot 共用解释器）。
+// 结构守卫 + 最近结构边界重建整值校验（与 validateLogicalSnapshot 共用解释器）。
 export {
   validatePatch,
   validateAppendToArray,

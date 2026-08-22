@@ -17,7 +17,7 @@ TypeScript 的一个冻结子集书写，用标记类型表达 Yjs 物化语义�
 出范围（out of scope）：
 
 - parser 实现与 IR 具体形状——公共接缝 `parseVfsl(text)` → `{ ok: true, module }` 或 `{ ok: false, issues }`（PRD #3 冻结）；
-- 求值器（结构树 / 值 schema 派生）、路径索引、`validateSnapshot`、编译缓存；
+- 求值器（结构树 / 值 schema 派生）、路径索引、`validateLogicalSnapshot`、编译缓存；
 - 信封解析与方言路由（未知方言 loud-fail 只读）；
 - JSDoc 标签的结构化解析（语义层任务；本方言无机器标签——ADR-0001 主题）；
 - yjs-server 服务端（WS/REST、存储、同步协议、namespace 生命周期与创建事务）；
@@ -196,7 +196,7 @@ type D = true | false;             // VFSL-E301：true/false 未声明（布尔�
 
 `YMap<T>` 的 T 为对象形（形状约束表）；T 为**对象形联合**时，键空间为各成员
 字段键集之**并集**（封闭）——未被任何成员声明的键不属于该联合的键空间；写入值
-与命中成员的字段匹配校验属语义层（validateSnapshot），方言层仅冻结键空间的
+与命中成员的字段匹配校验属语义层（validateLogicalSnapshot），方言层仅冻结键空间的
 并集封闭。裸对象类型的默认物化即 YMap；根别名 `ROOT`（见「命名空间根」）的标记决定文档根的物化。
 
 ### YArray
@@ -477,7 +477,7 @@ v1 冻结后的演进规则：**只增不改**。
 
 1. **Pattern 实参的正则合法性**：方言层不校验实参解码后是否为合法 ECMAScript
    正则——`type T = string & Pattern<"[">;` 通过词法 / 语法 / 形状全部检查，
-   `ok: true`；非法正则的暴露时点属语义层（validateSnapshot）。
+   `ok: true`；非法正则的暴露时点属语义层（validateLogicalSnapshot）。
 2. **UTF-8 BOM**：text 经 UTF-8 解码后的首个字符若为 U+FEFF（BOM），parser 须
    剥离且不报错；行列基准自 BOM 之后的首个字符起算（BOM 不占 line 1 的任何
    列，不计入 column）。

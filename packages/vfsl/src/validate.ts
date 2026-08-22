@@ -1,7 +1,7 @@
 /**
  * 校验核心（issue #21 设计 §3~§5/§8~§10）：值 schema 树解释器——整份 JSON 快照校验。
  *
- * validateSnapshot 是值 schema（`derived.values`）的解释器；结构树（aliases /
+ * validateLogicalSnapshot 是值 schema（`derived.values`）的解释器；结构树（aliases /
  * structure / index）**本文件内零消费**（两树正交纪律；结构树的首消费者为本票
  * validate-patch.ts——validate.ts 头注随票收窄，正交纪律不变，读取即设计违约）。
  *
@@ -67,7 +67,7 @@ class WorkBudgetExceeded extends Error {
 
 type Sink = (path: Array<string | number>, makeMessage: () => string) => void;
 
-/** 调用局部上下文（一次 validateSnapshot 调用的全部中间态；随调用销毁——纯函数契约）。 */
+/** 调用局部上下文（一次 validateLogicalSnapshot 调用的全部中间态；随调用销毁——纯函数契约）。 */
 interface Ctx {
   values: Record<string, ValueSchema>;
   /** ref 节点 → 解析目标（迭代解析 memo；对象引用做键）。 */
@@ -588,7 +588,7 @@ function validateObject(
 // —— §2 公共接缝 ——
 
 /**
- * 共享解释器主体（issue #53 抽取）：validateSnapshot 与 validateSubtree 的单一
+ * 共享解释器主体（issue #53 抽取）：validateLogicalSnapshot 与 validateSubtree 的单一
  * 来源——联合三段算法、判别式缓存透明、全收集（100 条 + 截断标记）、2×10⁸ 工作
  * 预算、E100 崩溃边界全部在此，两个入口逐字共享。
  *
@@ -631,7 +631,14 @@ function interpret(values: Record<string, ValueSchema>, root: ValueSchema | unde
 }
 
 /**
- * 公共导出（issue #21）：整份 JSON 快照校验——值 schema 树解释器。
+ * 公共导出（issue #21；issue #71 / ADR-0007 更名）：逻辑快照校验——值 schema 树
+ * 解释器，对整份快照跑一遍。
+ *
+ * 载体边界（issue #71 / ADR-0007）：输入 `snapshot` 是普通 JSON **logical ROOT
+ * snapshot**（ROOT 命名空间的完整逻辑值，纯 JSON 数据）；**不接受** Y.Doc /
+ * Y.Map / Y.Array 等 live Yjs 载体，也**不验证** Yjs 载体形态——载体结构校验属
+ * ADR-0007 的 Yjs Runtime 层（extractYjsSnapshot / materializeRoot 域），与逻辑
+ * 值语义正交。不保留兼容 alias。
  *
  * 同步、纯函数、不抛错；不修改 `derived` 与 `snapshot`（纯数据只读遍历）；结果纯
  * JSON 值（JSON 往返全等）；编译一次、校验多次（一切中间态调用局部，不落模块级
@@ -639,13 +646,13 @@ function interpret(values: Record<string, ValueSchema>, root: ValueSchema | unde
  * 键是测试合法操作——缓存非契约；造环/删别名属手造垃圾）落入 loud E100 边界，
  * 不静默产出 ok:true。
  */
-export function validateSnapshot(derived: DerivedSchema, snapshot: unknown): ValidateResult {
+export function validateLogicalSnapshot(derived: DerivedSchema, snapshot: unknown): ValidateResult {
   return interpret(derived.values, derived.values['ROOT'], snapshot);
 }
 
 /**
  * 内部件（不进公共面）：子树校验——validatePatch 值校验段的单一来源（issue #53）。
- * issue path 相对于子树根（[] 起步）；上限/预算/E100 与 validateSnapshot 同一实现。
+ * issue path 相对于子树根（[] 起步）；上限/预算/E100 与 validateLogicalSnapshot 同一实现。
  * 唯一 caller = validate-patch.ts。
  */
 export function validateSubtree(values: Record<string, ValueSchema>, node: ValueSchema, value: unknown): ValidateResult {

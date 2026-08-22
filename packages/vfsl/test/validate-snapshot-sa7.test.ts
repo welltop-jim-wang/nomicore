@@ -5,7 +5,7 @@
  * 说明：不触碰 SA6 冻结的 validate-snapshot.test.ts（设计 §13）；本文件为 SA7 新增补充面。
  */
 import { describe, expect, it } from 'vitest';
-import { parseVfsl, evaluate, validateSnapshot } from '../src/index.js';
+import { parseVfsl, evaluate, validateLogicalSnapshot } from '../src/index.js';
 import type { DerivedSchema } from '../src/index.js';
 
 function ev(text: string): DerivedSchema {
@@ -17,7 +17,7 @@ function ev(text: string): DerivedSchema {
 }
 
 function firstIssue(text: string, snap: Record<string, unknown>): { message: string; path: Array<string | number> } {
-  const r = validateSnapshot(ev(text), snap);
+  const r = validateLogicalSnapshot(ev(text), snap);
   if (r.ok) throw new Error('expected ok:false');
   return r.issues[0]!;
 }
@@ -53,9 +53,9 @@ describe('SA7 补充：四类 pattern loud 消息逐一触发（设计 §6.5；�
   }, 10_000);
 
   it('使用时暴露对照：非法正则挂 optional 缺席 / 空 Record / 空数组 → 不编译不暴露 ok:true（冻结语义）', () => {
-    expect(validateSnapshot(ev('type ROOT = { s?: string & Pattern<"["> };'), {}).ok).toBe(true);
-    expect(validateSnapshot(ev('type ROOT = { m: Record<string, string & Pattern<"[">> };'), { m: {} }).ok).toBe(true);
-    expect(validateSnapshot(ev('type Id = string & Pattern<"[">;\ntype ROOT = { a: Id[] };'), { a: [] }).ok).toBe(true);
+    expect(validateLogicalSnapshot(ev('type ROOT = { s?: string & Pattern<"["> };'), {}).ok).toBe(true);
+    expect(validateLogicalSnapshot(ev('type ROOT = { m: Record<string, string & Pattern<"[">> };'), { m: {} }).ok).toBe(true);
+    expect(validateLogicalSnapshot(ev('type Id = string & Pattern<"[">;\ntype ROOT = { a: Id[] };'), { a: [] }).ok).toBe(true);
   });
 });
 
@@ -73,7 +73,7 @@ describe('SA7 补充：全局工作预算 WorkBudgetExceeded（设计 §3.4—�
 
   it('预算内照常完成（WORK_LIMIT 是上界不是配额）：100k 键 × 120 成员联合 → 101 条截断输出', () => {
     const d = ev(wideUnionSchema(120));
-    const r = validateSnapshot(d, bigRecord(100_000));
+    const r = validateLogicalSnapshot(d, bigRecord(100_000));
     expect(r.ok).toBe(false);
     if (!r.ok) {
       expect(r.issues).toHaveLength(101);
@@ -83,7 +83,7 @@ describe('SA7 补充：全局工作预算 WorkBudgetExceeded（设计 §3.4—�
 
   it('超预算 loud fail-closed：900k 键 × 120 成员联合（≈2.2×10⁸ 单位 > 2×10⁸）→ 单条预算耗尽 issue', () => {
     const d = ev(wideUnionSchema(120));
-    const r = validateSnapshot(d, bigRecord(900_000));
+    const r = validateLogicalSnapshot(d, bigRecord(900_000));
     expect(r.ok).toBe(false);
     if (!r.ok) {
       expect(r.issues).toHaveLength(1); // 不进 emit 通道、无截断标记
@@ -105,7 +105,7 @@ describe('SA7 补充：崩溃边界 E100 收编（设计 §10 R3——RangeError
     text += 'type ROOT = A30000;';
     let snap: unknown = { x: 's' };
     for (let i = 0; i < 30_000; i++) snap = { x: snap };
-    const r = validateSnapshot(ev(text), snap);
+    const r = validateLogicalSnapshot(ev(text), snap);
     expect(r.ok).toBe(false);
     if (!r.ok) {
       expect(r.issues).toHaveLength(1);
@@ -121,7 +121,7 @@ describe('SA7 补充：memo 65,536 封顶清空重建后正确性（设计 §3.4
     const inner: Record<string, unknown> = {};
     for (let i = 0; i < 69_800; i++) inner['k' + i] = i; // 合法 number，全 distinct → memo miss
     for (let i = 0; i < 200; i++) inner['bad' + i] = {}; // 每键汇总+下钻 2 issue → 溢出
-    const r = validateSnapshot(d, { m: inner });
+    const r = validateLogicalSnapshot(d, { m: inner });
     expect(r.ok).toBe(false);
     if (!r.ok) {
       expect(r.issues).toHaveLength(101);
@@ -133,12 +133,12 @@ describe('SA7 补充：memo 65,536 封顶清空重建后正确性（设计 §3.4
 describe('SA7 补充：SA2 R2-1 前瞻攻击构造回归锚（设计 §6.4 包络表 202 行）', () => {
   it('(?=.*;)z × 202 码元（包络内）→ 完成且真值匹配 ok:true', () => {
     const d = ev('type ROOT = { name: string & Pattern<"(?=.*;)z"> };');
-    expect(validateSnapshot(d, { name: 'x'.repeat(200) + 'z' + ';' }).ok).toBe(true);
+    expect(validateLogicalSnapshot(d, { name: 'x'.repeat(200) + 'z' + ';' }).ok).toBe(true);
   }, 10_000);
 
   it('lookMemo 稀疏物化：200 条空前瞻 × 10⁷ 码元 → 4M 钳制 loud，无 GB 级内存面（毫秒级返回）', () => {
     const d = ev('type ROOT = { v: string & Pattern<"' + '(?=)'.repeat(200) + 'z"> };');
-    const r = validateSnapshot(d, { v: 'a'.repeat(10_000_000) });
+    const r = validateLogicalSnapshot(d, { v: 'a'.repeat(10_000_000) });
     expect(r.ok).toBe(false);
     if (!r.ok) {
       expect(r.issues[0]!.message).toBe('Pattern 匹配步数预算耗尽（输入长度 10000000，预算 4000000）：无法在预算内判定匹配性');

@@ -3,7 +3,7 @@
  *
  * 契约来源（任务简报验收标准 + ADR 0003 + 规格 §10）：
  * - AC1：全链路正例——同一段 §10 fixture 文本驱动三层：parseVfsl → ok；
- *   evaluate(module) → ok；validateSnapshot(derived, 完整合法快照) → ok:true。
+ *   evaluate(module) → ok；validateLogicalSnapshot(derived, 完整合法快照) → ok:true。
  *   快照须覆盖 image/text/file 三类资产 + audit + attachments + notes + keywords 全字段；
  * - AC2：派生 schema 关键节点断言——ROOT map 形态（root 包裹 map，字段声明序 +
  *   optional 精确）、assets Record 键模式（index pattern 条目 + 解码后 AssetId 正则）、
@@ -21,15 +21,15 @@
  *   validate 三层串联，锚定三层协同的验收契约（任何一层回归即红灯）。
  *
  * 断言纪律：全部锚定公共接缝的**可观测输出**（parse/evaluate 结果形状、派生 schema
- * 数据形状、validateSnapshot 的 issue 与 path 段数组），不读取源码、不 grep 文本形状。
+ * 数据形状、validateLogicalSnapshot 的 issue 与 path 段数组），不读取源码、不 grep 文本形状。
  *
  * 红灯现状（Phase 1 实测）：三层实现已合入（parse #9 / evaluate #28 / docs #30 /
- * validateSnapshot #21），本文件为收官编排验收锚；若串联暴露实现缺口（如某 facet
+ * validateLogicalSnapshot #21），本文件为收官编排验收锚；若串联暴露实现缺口（如某 facet
  * 的 issue path 不精确、节点形态偏离 ADR 0003），相应断言保持红色，实测证据以
  * wiki/raw/task_vfsl-assets-fullchain-e2e.md 记录为准。
  */
 import { describe, expect, it } from 'vitest';
-import { parseVfsl, evaluate, validateSnapshot } from '../src/index.js';
+import { parseVfsl, evaluate, validateLogicalSnapshot } from '../src/index.js';
 import type { DerivedSchema, StructureNode, ValidateResult, VfslModule } from '../src/index.js';
 
 // —— 规格 §10 vfs3.assets 参考 fixture（AC5：与 §10 逐字对齐；TS 转义后与 §10 原文一致）——
@@ -99,7 +99,7 @@ function validSnapshot(): Record<string, unknown> {
 /**
  * 全链路编排核心：同一段 §10 文本驱动三层——parseVfsl → evaluate → derived。
  * 每层断言 ok:true（分层失败即红灯锚点），返回 module 与 derived 供后续断言消费
- * （evaluate 消费 parse 的 module、validateSnapshot 消费 evaluate 的 derived——
+ * （evaluate 消费 parse 的 module、validateLogicalSnapshot 消费 evaluate 的 derived——
  * 同一文本、逐层传递，非各自独立构造）。
  */
 function chainDerived(): { module: VfslModule; derived: DerivedSchema } {
@@ -129,8 +129,8 @@ function expectValidateIssueAt(result: ValidateResult, path: Array<string | numb
 
 // —— 测试 ——
 
-describe('vfs3.assets 全链路 — AC1：同一 §10 文本驱动 parse → evaluate → validateSnapshot', () => {
-  it('AC1：全链路正例——parse ok → evaluate ok → 完整合法快照 validateSnapshot ok:true（显式逐层串联）', () => {
+describe('vfs3.assets 全链路 — AC1：同一 §10 文本驱动 parse → evaluate → validateLogicalSnapshot', () => {
+  it('AC1：全链路正例——parse ok → evaluate ok → 完整合法快照 validateLogicalSnapshot ok:true（显式逐层串联）', () => {
     // 第 1 层：解析（同一段文本）
     const parsed = parseVfsl(FIXTURE);
     expect(parsed.ok).toBe(true);
@@ -140,7 +140,7 @@ describe('vfs3.assets 全链路 — AC1：同一 §10 文本驱动 parse → eva
     expect(evaluated.ok).toBe(true);
     if (!evaluated.ok) throw new Error(`evaluate 失败（不应发生）：${JSON.stringify(evaluated.issues)}`);
     // 第 3 层：整文档校验（消费第 2 层的 derived）
-    const result = validateSnapshot(evaluated.derived, validSnapshot());
+    const result = validateLogicalSnapshot(evaluated.derived, validSnapshot());
     expect(result).toEqual({ ok: true });
   });
 
@@ -150,7 +150,7 @@ describe('vfs3.assets 全链路 — AC1：同一 §10 文本驱动 parse → eva
     // 全字段在场性先验：三类资产齐备、audit/attachments/keywords/notes 全覆盖
     expect(Object.keys(snap.assets as Record<string, unknown>)).toEqual(['img1', 'text1', 'file1']);
     expect(Object.keys(snap)).toEqual(['assets', 'attachments', 'audit', 'keywords', 'notes']);
-    expect(validateSnapshot(derived, snap)).toEqual({ ok: true });
+    expect(validateLogicalSnapshot(derived, snap)).toEqual({ ok: true });
   });
 });
 
@@ -228,14 +228,14 @@ describe('vfs3.assets 全链路 — AC4：非法快照矩阵（八面，issue �
     const { derived } = chainDerived();
     const snap = validSnapshot();
     snap.extraKey = 1;
-    expectValidateIssueAt(validateSnapshot(derived, snap), ['extraKey']);
+    expectValidateIssueAt(validateLogicalSnapshot(derived, snap), ['extraKey']);
   });
 
   it('AC4-2 必填缺失：ROOT.attachments 缺省报告，path 精确', () => {
     const { derived } = chainDerived();
     const snap = validSnapshot();
     delete snap.attachments;
-    expectValidateIssueAt(validateSnapshot(derived, snap), ['attachments']);
+    expectValidateIssueAt(validateLogicalSnapshot(derived, snap), ['attachments']);
   });
 
   it('AC4-3 值类型错：image 资产 url 收到 number（下钻至 Record 值位成员内字段），path 精确', () => {
@@ -244,7 +244,7 @@ describe('vfs3.assets 全链路 — AC4：非法快照矩阵（八面，issue �
     (snap.assets as Record<string, unknown>).img1 = {
       kind: 'image', url: 42, width: 800, height: 600, audit: clone(AUDIT),
     };
-    expectValidateIssueAt(validateSnapshot(derived, snap), ['assets', 'img1', 'url']);
+    expectValidateIssueAt(validateLogicalSnapshot(derived, snap), ['assets', 'img1', 'url']);
   });
 
   it('AC4-4 AssetId Pattern 键违例：assets 键含 "." 拒绝，path 含违例键段', () => {
@@ -253,14 +253,14 @@ describe('vfs3.assets 全链路 — AC4：非法快照矩阵（八面，issue �
     (snap.assets as Record<string, unknown>)['abc.123'] = {
       kind: 'image', url: 'u', width: 1, height: 1, audit: clone(AUDIT),
     };
-    expectValidateIssueAt(validateSnapshot(derived, snap), ['assets', 'abc.123']);
+    expectValidateIssueAt(validateLogicalSnapshot(derived, snap), ['assets', 'abc.123']);
   });
 
   it('AC4-5 联合 no-match：kind 枚举外值（缺其余字段）触发「联合成员 i/N」相对定位（text 成员失败距离最小），path 精确', () => {
     const { derived } = chainDerived();
     const snap = validSnapshot();
     (snap.assets as Record<string, unknown>).img1 = { kind: 'video' }; // 三成员均不匹配
-    const result = validateSnapshot(derived, snap);
+    const result = validateLogicalSnapshot(derived, snap);
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.issues.some((i) => i.message.includes('联合成员 2/3'))).toBe(true);
@@ -272,7 +272,7 @@ describe('vfs3.assets 全链路 — AC4：非法快照矩阵（八面，issue �
     const { derived } = chainDerived();
     const snap = validSnapshot();
     snap.attachments = ['note.txt', 42];
-    expectValidateIssueAt(validateSnapshot(derived, snap), ['attachments', 1]);
+    expectValidateIssueAt(validateLogicalSnapshot(derived, snap), ['attachments', 1]);
   });
 
   it('AC4-7 XML 非良构字符串：text 资产 body 未闭合标签拒绝（ADR 0003 §5 仅要求良构），path 精确', () => {
@@ -281,7 +281,7 @@ describe('vfs3.assets 全链路 — AC4：非法快照矩阵（八面，issue �
     (snap.assets as Record<string, unknown>).text1 = {
       kind: 'text', body: '<p>unclosed', audit: clone(AUDIT),
     };
-    expectValidateIssueAt(validateSnapshot(derived, snap), ['assets', 'text1', 'body']);
+    expectValidateIssueAt(validateLogicalSnapshot(derived, snap), ['assets', 'text1', 'body']);
   });
 
   it('AC4-8 kind 枚举外值：判别值不在 {image,text,file}，其余字段齐全仍拒绝（失败距离最小成员定位 1/3），path 精确', () => {
@@ -290,7 +290,7 @@ describe('vfs3.assets 全链路 — AC4：非法快照矩阵（八面，issue �
     (snap.assets as Record<string, unknown>).img1 = {
       kind: 'video', url: 'u', width: 1, height: 1, audit: clone(AUDIT), // 仅 kind 一项不匹配 image 成员
     };
-    const result = validateSnapshot(derived, snap);
+    const result = validateLogicalSnapshot(derived, snap);
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.issues.some((i) => i.message.includes('联合成员 1/3'))).toBe(true);
