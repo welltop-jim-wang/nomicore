@@ -15,7 +15,8 @@
  *   顶层崩溃边界绝不外抛（D11，对齐 extract INV-6）；
  * - per-call 局部 memo（D13）：Phase A 键 (resolve 后节点引用, i)、Phase B 键 (节点引用,
  *   live 引用, i)，把重叠联合最坏 2^n 回溯折叠为多项式；patternCache 同为 per-call
- *   局部（R6/INV-11，模块级零可变态）。
+ *   局部（R6/INV-11，模块级零可变态）；
+ * - rev2（issue #75, PR #83）：union 三态仲裁抽取为包内纯函数 arbitrateUnion（D19/D20，§3.1.2/§3.2.1），行为零改动（D17 四规则逐字保持）。
  */
 import type * as Y from 'yjs';
 import type { DerivedSchema, StructureNode, ValueField, ValueSchema } from '@nomicore/vfsl';
@@ -260,15 +261,68 @@ function keyAllowed(regex: string, key: string, pc: Map<string, CompiledPattern>
 
 /**
  * 活导航三态结局（rev1/D16，AC-R1；owner 建议形态逐字采纳；包内私有类型——
- * 公共结果联合冻结为两态，missing/reject 不得泄漏（INV-14，SA8 注记 3））：
+ * 公共结果联合冻结为两态，missing/reject 不得泄漏（INV-14，SA8 注记 3）：
+ * rev2/D19 注记：INV-14 约束单位 = 包边界（不经 index.ts 转出口）；本类型自 rev2 起
+ * 做模块级 export，供同包测试 deep import（SA8 注记 R2-1 批准的破例）——包外零消费授权。
  * - value  = 实际产出：路径耗尽处 walk 快照（恒非 undefined，见完备性论证）或中段不下钻场景不产此态；
  * - missing = 合法缺席：且仅由三源产生（Record 缺键 / optional 缺席 / 非负整数越界，D8 三源）；
  * - reject = 本分支拒绝：段型不符 / 载体错位 / required 缺席 / 成员无此字段 / 终点 walk issue。
  */
-type NavOutcome =
+export type NavOutcome =
   | { kind: 'value'; value: unknown }
   | { kind: 'missing' }
   | { kind: 'reject' };
+
+/**
+ * union 三态仲裁纯函数（rev2/D19，AC-R2-1；owner 第二轮 Review 建议形态逐字采纳）。
+ * 包内可测试 seam：模块级导出、不经 index.ts 转出口（INV-14 判据 = 包边界；
+ * 先例 extract.ts walk/makeRefResolver）；deep import 仅为同包测试破例，包外零消费授权。
+ *
+ * 契约 = D17 四规则逐字保持（rev1 §3.2）+ INV-7 精确化惰性（AC-R2-1 尾句）：
+ * 1. 声明序逐个拉动 outcomes（for-of，一次恰拉一个，不预取）；
+ * 2. 首个 kind:'value' 立即原样返回——此后序成员【不再拉动】（短路惰性；
+ *    禁一切预先构造数组的物化形态——禁形清单与静态验尸口径见设计 §3.2.3，函数注释
+ *    不含禁形字面量以保证验尸命令零自命中；物化即破坏短路，rev2 纯测试行 2 拉动断言锚死）；
+ * 3. missing 只记账（sawMissing）不返回；reject 跳过——两者均继续后序成员；
+ * 4. 迭代耗尽：sawMissing → { kind:'missing' }（D17 规则 3 + mixed 优先级
+ *    value > missing > reject，rev1 §3.3.2）；否则 → { kind:'reject' }（规则 4）。
+ *    空 iterable → reject（与 rev1 空成员 union 行为逐字一致：循环零次、sawMissing=false）。
+ *
+ * 纯函数纪律（INV-15）：零 doc 访问、零 memo 访问、零模块级状态、零可变捕获——
+ * 一切输入经 outcomes 流入；value 结局按引用原样返回（同 rev1 `return r`，不改写不复制）。
+ * 异常语义：不捕获不转换——源 iterable（generator 内 resolveLive）throw 时沿 for-of
+ * 原样上浮（E100 域传播路径与 rev1 内联循环逐点相同，§3.2.3）。
+ */
+export function arbitrateUnion(outcomes: Iterable<NavOutcome>): NavOutcome {
+  let sawMissing = false;
+  for (const o of outcomes) {
+    if (o.kind === 'value') return o; // D17 规则 1：首个真实 value 胜出（短路——后序零拉动）
+    if (o.kind === 'missing') sawMissing = true; // D17 规则 2：missing 不胜出、继续后序成员
+  }
+  return sawMissing ? { kind: 'missing' } : { kind: 'reject' }; // 规则 3/4 + mixed 优先级
+}
+
+/**
+ * union 成员结局惰性序列（rev2/D20；包内私有，不导出）。
+ * generator：每次 next() 恰按声明序试探一个成员（触发一次 resolveLive）——
+ * 消费端（arbitrateUnion）首 value 返回即关闭序列，后序成员【零试探】（INV-7 精确化）。
+ * ⛔ 禁物化（normative，D20）：本函数与 union 分支调用点禁止一切预先构造数组的形态
+ * （禁形清单与静态验尸四命令见设计 §3.2.3；函数注释不含禁形字面量与本函数标识符，
+ * 保证验尸命令零自命中）。
+ */
+function* memberOutcomes(
+  node: Extract<StructureNode, { kind: 'union' }>,
+  live: unknown,
+  segs: readonly (string | number)[],
+  i: number,
+  resolveS: (node: StructureNode) => StructureNode,
+  fullPath: readonly (string | number)[],
+  memo: Map<StructureNode, Map<unknown, Map<number, NavOutcome>>>,
+): Generator<NavOutcome, void, unknown> {
+  for (const m of node.members) { // 声明序（INV-7，零改动）
+    yield resolveLive(m, live, segs, i, resolveS, fullPath, memo);
+  }
+}
 
 /**
  * R2/D13：入口/出口为 memo 挂点（键 = resolve 后节点引用 + live 引用 + 深度 i；健全性
@@ -349,14 +403,9 @@ function navigate(
       return resolveLive(node.element, ya.get(seg), segs, i + 1, resolveS, fullPath, memo);
     }
     case 'union': {
-      // rev1/D17：value-first 仲裁（AC-R2 四规则；INV-7 精确化——声明序迭代不变）
-      let sawMissing = false;
-      for (const m of node.members) { // 声明序（INV-7，零改动）
-        const r = resolveLive(m, live, segs, i, resolveS, fullPath, memo);
-        if (r.kind === 'value') return r; // 规则 1：首个真实 value 胜出
-        if (r.kind === 'missing') sawMissing = true; // 规则 2：missing 不胜出，继续后序成员
-      }
-      return sawMissing ? { kind: 'missing' } : { kind: 'reject' }; // 规则 3/4 + mixed 优先级（§3.3）
+      // rev2/D19+D20：仲裁经包内纯函数 seam（AC-R2-1）；成员试探为惰性 generator——
+      // 首个真实 value 胜出时后序成员零试探（INV-7 精确化 / SA8 注记 R2-2）
+      return arbitrateUnion(memberOutcomes(node, live, segs, i, resolveS, fullPath, memo));
     }
     case 'leaf':
     case 'plain':
