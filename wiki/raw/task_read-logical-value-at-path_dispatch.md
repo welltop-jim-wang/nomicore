@@ -36,4 +36,5 @@ base: docs/doc-runtime-validation
 | R2 | 19:25 | SA5 | Phase 0 故障分析复现（修订轮） | 19:31 | Bug 修复先复现：核实 owner 最小反例可达性（SA8 注记 1 实证不复现，疑似防御性硬化） |
 | R3 | 19:34 | SA6 | Phase 0 红灯契约锚定（修订轮） | 19:38 | SA5 证实缺陷不可达=防御性硬化；SA6 按可构造性表落 owner 五类回归测试（三组绿灯锁+论证、两组直测），不虚构 fixture |
 | R3v | 19:39 | 总控 | Phase 0 锚定验证（daemon 重启恢复后亲跑） | 19:41 | 亲跑 rev1 测试文件+基线：62/66 绿；R5 四例红——根因为 fixture 缺陷（assertSwapInvariant 同一 Y 类型实例集成进两个 doc，Yjs 禁止二次集成），非行为断言红；R1-R4 行为锁全绿 |
-| R4 | 19:42 | SA6 | Phase 0 R2 fixture 修复（修订轮） | (pending) | SA6 原会话随 daemon 重启消亡（不可续传），新派会话修复 assertSwapInvariant 单实例复用缺陷并自验全绿 |
+| R4 | 19:42 | SA6 | Phase 0 R2 fixture 修复（修订轮） | 19:44 | SA6 原会话随 daemon 重启消亡（不可续传），新派会话修复 assertSwapInvariant 单实例复用缺陷并自验全绿 |
+| R5 | 19:45 | SA1 | Phase 2 架构设计（修订轮） | (pending) | 契约测试全绿入库（23851e1）；SA1 按 AC-R1/R2/R3 设计 NavOutcome 三态 + value-first 仲裁 + 优先级成文 |
