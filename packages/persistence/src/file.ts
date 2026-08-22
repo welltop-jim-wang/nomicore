@@ -93,7 +93,7 @@ export class FilePersistence implements DocPersistence {
     } catch (error) {
       if (!isErrnoException(error) || error.code !== 'ENOENT') throw error
     }
-    await fsp.rm(tmpPath, { force: true })
+    await fsp.rm(tmpPath, { force: true, recursive: true })
     return snapshot
   }
 
