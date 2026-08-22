@@ -16,6 +16,11 @@ task_type: refactor（深度重构）
 | 7 | 10:18 | SA1 | Phase 2 设计修订 R2 | 10:24 | SA2 reject 回合；续传同一 SA1 会话 f8a290e2 按攻击点 1–4 修订（scratch 豁免裁决 D10+G1 白名单化 D11、§4.2(b) 整 bullet 替换+锚文本纪律 D13、G3a 探针显式单跑 D12、§1 命令修正）；§9 逐条落实，无「承认但不改」 |
 | 8 | 10:25 | SA2 | Phase 2 R2 复审 | 10:29 | R2 修订落点收敛复审；续传同一 SA2 会话 4807b77d；R2 verdict: pass（四落点全部实证通过，附非阻塞编辑更正 R2-N1：§8「9→17」→「9→16」） |
 | 9 | 10:30 | SA1 | Phase 2 编辑更正 R2-N1 | 10:31 | 转达 SA2 非阻塞更正：§8 步骤 1 行号笔误单字符修正，不涉决策；续传 f8a290e2；已落盘（9→16） |
-| 10 | 10:31 | SA3 | Phase 3 TDD 实现 | (pending) | 设计 pass 定稿；SA3 按 design §8 八步执行更名迁移，红灯 29/29 转绿 + G1/G2/G3a/G3b 四门全过 |
+| 10 | 10:31 | SA3 | Phase 3 TDD 实现 | 10:35 | 设计 pass 定稿；SA3 按 design §8 八步执行更名迁移；commit 06d6796（24 文件 +1571/−153，未 push）；总控独立复验四门全过：G1 零输出/G2 零命中/G3a 29 passed/G3b 669 passed+typecheck exit 0 |
+| 11 | 10:38 | SA4 | Phase 3 静态验尸 | 10:44 | pass — 红灯已变绿进入评审；SA4 红队审查 commit 06d6796；机械等价证明（9 文件反向更名后与基线逐字节相等）、四门独立重跑全绿、scope ⊆ ALLOW LIST（verdict 与 sa4_review.md 一致） |
+| 12 | 10:45 | SA7 | Phase 3/4 动态验证 | 10:57 | pass — SA4 pass 后动态验证活链路；探针 29/29 红转绿双 leg、G3b 669/669、node20 容器 CI 仿真全步骤 exit 0；真实 CI run 证据按权责边界移交 runner（verdict 与 sa7_report.md 一致） |
+| 13 | 10:58 | SA4 | Phase 3 修订轮（补法定章节） | 11:00 | pass — HG14 自检发现 sa4_review 缺「1.4 vitest 触发性自检」法定章节；续传 082fe8ca 补节（9 文件逐条核对，结论 all-vitest-packages-triggered），verdict 不变 |
+| 14 | 11:02 | 总控 | Phase 3.5 AC 门禁 | 11:03 | 4/4 AC ✅（ac_checklist.md 落盘）；HG13 不触发（无 .spec.ts）/ HG14 双端齐备 / HG15 不触发（协议关键词 1<3）；无回流条目 |
+| 15 | 11:04 | 总控 | Phase 4 收尾固化 | (pending) | HG12 verdict 双清自检通过（SA4×2 pass / SA7 pass，与文件真实 verdict 一致）；HG16 通过（本任务无 gh pr create 痕迹、无 open PR、base-branch 已设）；HG13/14/15 见行 14；本地验证复跑 669/669 + typecheck exit 0；wiki 全量随本行一并 commit |
 
 > 恢复注记：daemon 重启造成双会话并行（本恢复会话 + 前序会话残留），双方 SA6 产出已经去重定稿、结论一致（见简报「去重取舍」）。自本行起由本恢复会话单线推进，若检出并行会话新写入即停线核查。
