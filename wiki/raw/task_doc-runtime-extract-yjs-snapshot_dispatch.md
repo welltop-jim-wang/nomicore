@@ -32,4 +32,5 @@ runner 在 daemon 重启后**同时存在两个总控会话**调度同一 worktr
 | 15 | 13:11 | SA4 | Phase 3 静态验尸 R1 | 13:20 | SA4 R1 verdict: reject——仅 F-1（Record 动态键 __proto__ 静默丢键/原型劫持，设计规格空洞所致）；D9 家族与 R-2 改判均裁决接受；门禁 1.4/1.5 通过 |
 | 16 | 13:22 | SA1 | Phase 3 设计 touch-up | 13:26 | F-1 责任在设计伪代码（SA3 忠实实现）：SA1 补快照 map 安全写入纪律 + B16 + §4.4 回写 + F-2 文档回写 |
 | 17 | 13:22 | SA6 | Phase 3 回归红灯锚 | 13:28 | 两用例真实红复现 F-1（own 键蒸发+原型劫持，断言失败 EXIT=1）→ SA3 修复后转绿 |
-| 18 | 13:29 | SA3 | Phase 3 F-1 修复 | (pending) | 按 D13/B16 以 putSnapshotKey 安全写入修复 Record 分支（extract.ts:106，:117/:210 统一纵深），两用例转绿 + 38 用例零回归 |
+| 18 | 13:29 | SA3 | Phase 3 F-1 修复 | 13:32 | 按 D13/B16 以 putSnapshotKey 安全写入修复 Record 分支（extract.ts:106，:117/:210 统一纵深），两用例转绿 + 38 用例零回归 |
+| 19 | 13:33 | SA4 | Phase 3 复审 R2 | (pending) | F-1 修复总控亲验转绿（51 files/709 tests EXIT=0），SA4 复审仅需针对 F-1 修复面 |
