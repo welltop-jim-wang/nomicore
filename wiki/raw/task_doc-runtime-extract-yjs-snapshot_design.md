@@ -30,11 +30,12 @@
 | D5 | union 试验语义：**第一步成员根载体前置判定**（R2/#5）→ Record 形成员特例（试验 = 直接 walk，键集即在场集，R2/#1）→ 封闭 map 形字段声明序扫描（缺必填置软标记）；三结局（接受 / 真 issue / 软拒），首个接受者胜；全拒 → 首个真 issue；全软拒 → 回退成员 0 | any-of（ADR-0003）+ 提取期容忍缺失（D4）的合取必然产物：缺失容忍使成员选择欠定，必须确定性仲裁；前置判定杜绝「live 非 Y.Map 时调 map API → TypeError → E100」与「全可选成员裸接受」两个病态（SA2 #5）；Record 的 `'<key>'` 是**字面段名**（evaluate.ts:107 `optional:false`），按缺必填字面实现会恒软拒 Record 成员（SA2 B-3 实证反例）；全软拒回退保证「结构不裁决时不吞掉逻辑校验素材」 | **判别式主选（被否——核心论证见 §4.5.3）**：kind 值属值语义（leaf 节点不携带字面量），判别式主选使 `node.discriminator` 缺失/存在改变可观测输出，直接违反 ADR-0003 判别式缓存条款；**无前置判定的字段序直扫（R1 原案，被否——SA2 #5：载体病态两例）** |
 | D6 | 快照 plain 值 = **显式深拷贝 + JSON 值域断言 + 原型守卫 + own-key 安全写入**（R2/#3/#8：普通对象仅 `proto === Object.prototype \|\| null` 放行，Date/类实例 → 真 issue；键一律 defineProperty 写入，`__proto__` own-key 不落原型） | 实测 P15/P15b：yjs 对 plain 值 `get()` 返回原引用（含嵌套），浅引用即快照泄漏 live 状态（AC4 解耦红灯）；P22：plain 数组可内嵌 Y.Map；C1/C2：Date 可存可读且 `Object.keys` 投影为 `{}`——静默投影 = 数据语义蒸发的伪降级；Q3/Q4：defineProperty own-key + JSON 往返无损 | 直接引用（解耦红灯）；`structuredClone`（Y 类型抛 DataCloneError 且不区分错位类型）；`JSON.parse(JSON.stringify())`（undefined→null 静默规范化，违 loud 纪律）；Date 静默投影 `{}`（R1 原案隐含行为——SA2 #3 伪降级否决） |
 | D7 | XML 快照值 = `Y.XmlFragment.toString()` | 实测 P6/P6b：与 `toJSON()` 投影一致输出 `<p>Hello <b>world</b></p>`；属性保留（P21）；ADR-0003「JSON 快照中其值为 XML 字符串（与 Y.XmlFragment.toJSON() 投影一致）」 | 自研 XML 序列化器（重复造 yjs 已有投影；语义等价锚只要求结构与文本一致，yjs 投影天然满足） |
-| D8 | 结构树 ref 解析：包内迭代链走查（`derived.aliases`）+ inFlight 环守卫 + 每调用 memo | ADR-0003「ref 不内联展开，解析动作由共享解析器完成」——但 vfsl 的 resolve.ts 是包内部件（index.ts 不导出），doc-runtime 只能基于公共数据 `derived.aliases` 自建同款 while 循环（镜像 walkRefChain 语义） | 给 vfsl 公共面新增解析器导出（本任务不许动 vfsl，AC1）；递归无环守卫（手造派生物成环 → 栈溢出绕过崩溃边界的可观测性） |
+| D8 | 结构树 ref 解析：包内迭代链走查（`derived.aliases`）+ **inFlight 环守卫先于 memo 命中**（R2.2/F-2 回写 SA3 实现序）+ 每调用 memo | ADR-0003「ref 不内联展开，解析动作由共享解析器完成」——但 vfsl 的 resolve.ts 是包内部件（index.ts 不导出），doc-runtime 只能基于公共数据 `derived.aliases` 自建同款 while 循环；**守卫前置修复 memo-first 序的手造环死循环**（SA4 A-3：A→B→A / 自引均 0ms 终止）——合法输入两序逐位一致，纯防御加固 | 给 vfsl 公共面新增解析器导出（本任务不许动 vfsl，AC1）；递归无环守卫（手造派生物成环 → 栈溢出绕过崩溃边界的可观测性）；**memo-first 守卫序（R1/R2 原案——SA4 F-2 证伪：手造环 + memo 场景死循环，已被 R2.2 回写）** |
 | D9 | **词汇表偏离家族统一申报（R2/#4 收编 SA8 note-5 裁决；R2.1/R-2 改判 function/symbol 归组）**：① E100 崩溃边界 `expected/actual = 'internal'`；② plain 域违规 issue：`expected` 恒词汇表内 `'plain value'`，`actual` 用申报词——可达：`'bigint'`（A1/D2/E1）/ `'undefined'`（D1 数组元素）/ `'non-plain object'`（C1 Date/类实例，message 附 constructor 名）/ **`'function'` / `'symbol'`（N1–N3 plain 子树内嵌路由可达；直接位 A2/A3 set 期即抛不可达——R2.1 改判入可达组）**。全部偏离报 SA4 复核（§10 登记） | 不抛错纪律（与 vfsl 三接缝同源）要求 catch-all 必须产出四字段 issue；SA6 冻结词汇表辖域 = 结构错位（expected 侧保持纯净），actual 侧扩展是**真实可观测输出**，按「设计如需偏离必须显式说明并由 SA4 复核」纪律必须申报——R1 只申报 'internal' 而 §4.6 散落代码注释零申报属同仓两种纪律（SA2 #4）；R2 原按「直接位不可达」把 function/symbol 归防御组，SA2 复审 N1–N3 实证内嵌可达、其词为可达可观测输出——改判入可达组（机制行为不变：尾分支真 issue + 词已申报） | expected/actual 用词汇表值冒充（不诚实）；省略字段（违约四字段形状）；不申报（SA8 note-5 明示否决）；function/symbol 维持「不可达防御」归类（R2 原案——SA2 N1–N3 证伪，可达输出必须入申报组） |
 | D10 | 提取器**零消费** `derived.values` / `derived.index` / `derived.aliasDocs` 等值域与文档域 | 两树正交纪律（镜像 validate.ts:4-6「结构树本文件零消费」的对称声明：extract 是结构树的第一个消费者，值域零消费）；SCHEMA/META 零接触（AC「只读取固定 ROOT」） | 借值树做成员选择（越域 + 引入 D5 已否决的判别式问题） |
 | D11 | v1 无显式工作预算，论证 + 登记为已知界 | 遍历深度 ≤ 结构树深度 ≤ `MAX_TYPE_NESTING = 100`（vfsl parser.ts:24）；union 试验成本受 fail-fast 与接受短路约束（§8 分析）；validateLogicalSnapshot 拥有 2×10⁸ 预算先例但那是全收集语义的需求，fail-fast 单 issue 快路径无对应攻击面 | 引入 WORK_LIMIT（无锚定攻击面；增加一个 SA6 未冻结的失败形态） |
 | D12 | `WalkResult` 恒**两结局**（`value \| issue`）——R1 的 `'undetermined'` 第三结局**删除**（R2/#7）：walkUnion 出口 3（全软拒回退）内联消化为 value/issue，永不向上传播（§4.5.4 终止论证） | R1 自己论证了 undetermined 永不逃逸 walkUnion 却保留三结局 + map/array 通路四个防御分支——规格噪音诱导 SA3 实现并测试「永不发生」的分支（SA2 #7）；删除后类型即不变式 | 保留三结局 + 三处「不可达防御」标注（SA2 给出的另一选项——不如直接删除：类型系统替注释承担不变式） |
+| D13 | **快照 map 构造统一安全写入纪律（R2.2/F-1）**：一切写快照对象的键（Record 动态键、封闭 map 字段、trialMember 成员快照）一律 `putSnapshotKey`（defineProperty 四描述符，与 §4.6 plain 值写入同款）——**禁赋值式** | SA4 A-4 实测：`out['__proto__'] = v` 命中原型 accessor——标量值键静默丢失、对象值原型劫持 + JSON 蒸发；Record 键来自 live 数据（`ymap.set('__proto__',v)` 公共 API 可达，keyPattern 零消费为 D4/B5 明文），快照缺键后 validateLogicalSnapshot 永难发现——端到端零信号静默丢失（B13/B15 同判例伪降级）；封闭字段名虽被 parser 拒绝（SA4 C 探针），统一纪律作防御纵深 | 赋值式写入 + 仅 Record 分支局部修（R1/R2 原案——SA4 F-1 证伪）；仅信任 parser 保护（防御单层，且 trialMember 侧构造同款赋值需人肉保持同步） |
 
 ---
 
@@ -244,7 +245,7 @@ type WalkResult =
 |---|---|---|---|---|
 | `root{node}` | `'Y.Map'`（恒定，§4.2） | `probeRoot(doc)` | 递归 `node`，path 起点 `[]` | 探针异型 → 单 issue `path: []`（F5）；不外抛 |
 | `map{fields}`（封闭对象） | `'Y.Map'` | `carrierOf` | 新建 `{}`；**按字段声明序**遍历（§4.9）：字段缺席（`!has \|\| get()===undefined`）→ 跳过（D4）；在场 → 递归，段 = 字段名（string） | 非 `'Y.Map'` → 单 issue；**不下钻**（INV-3，AC3「错误节点不继续下钻」） |
-| `map{fields}`（Record 形态：单一字段名 `'<key>'`） | `'Y.Map'` | `carrierOf` | 新建 `{}`；**按 `ymap.keys()` 插入序**（§4.9）遍历动态键：值 `undefined` → 跳过（D4）；否则递归 `'<key>'` 字段节点，段 = 动态键（string） | 同上；`keyPattern` **零消费**（ADR-0002：值语义） |
+| `map{fields}`（Record 形态：单一字段名 `'<key>'`） | `'Y.Map'` | `carrierOf` | 新建 `{}`；**按 `ymap.keys()` 插入序**（§4.9）遍历动态键：值 `undefined` → 跳过（D4）；否则递归 `'<key>'` 字段节点，段 = 动态键（string）；**键经 `putSnapshotKey` 安全写入（D13/B16，R2.2/F-1）** | 同上；`keyPattern` **零消费**（ADR-0002：值语义） |
 | `array{element}` | `'Y.Array'` | `carrierOf` | 新建 `[]`；按下标 `0..len-1` 递归 element 节点，段 = 下标（number，ADR-0007） | 非 `'Y.Array'`（含 plain JS 数组——错位方向一）→ 单 issue，不下钻 |
 | `xml-fragment` | `'Y.XmlFragment'` | `carrierOf` | `live.toString()`（D7：XML 字符串投影；属性保留、自闭合渲染为 `<x></x>`） | 非 `'Y.XmlFragment'`（含 plain XML 字符串——方向：expected Y.XmlFragment/actual plain value）→ 单 issue |
 | `leaf` | `'plain value'` | `carrierOf` | `copyPlainValue(live, path, '')`（§4.6 深拷贝 + 值域断言；标量/对象/数组皆可——值类型裁决属逻辑域） | 任一 Yjs 类型 → 单 issue（actual = 各自类型名，含 'Y.Text'）——错位方向二 |
@@ -268,7 +269,7 @@ function walk(node: StructureNode, live: unknown, path: Array<string | number>):
           if (v === undefined) continue;                            // D4：undefined 视同缺席
           const r = walk(resolveStructureRef(slot), v, [...path, key]); // slot 恒非 ref（求值期已解析，§1.2）——resolveStructureRef 为幂等透传
           if (r.kind === 'issue') return r;                         // fail-fast（INV-3）
-          out[key] = r.snapshot;
+          putSnapshotKey(out, key, r.snapshot);                     // R2.2/F-1：安全写入（D13/B16）——Record 动态键可达 '__proto__'
         }
         return { kind: 'value', snapshot: out };
       }
@@ -277,7 +278,7 @@ function walk(node: StructureNode, live: unknown, path: Array<string | number>):
         if (!((live as Y.Map<unknown>).has(f.name) && v !== undefined)) continue; // D4
         const r = walk(f.node, v, [...path, f.name]);
         if (r.kind === 'issue') return r;                           // fail-fast：首字段错位即止（INV-3）
-        out[f.name] = r.snapshot;
+        putSnapshotKey(out, f.name, r.snapshot);                    // R2.2/F-1：统一安全写入（D13）——parser 拒绝 '__proto__' 字段名（SA4 C 探针），此处为防御纵深
       }
       return { kind: 'value', snapshot: out };
     }
@@ -315,11 +316,26 @@ function mismatch(path, expected, live): WalkResult {
   if (actual === null) throw new UnreachableCarrier();              // → 崩溃边界（D1/D9①）
   return { kind: 'issue', issue: makeIssue(path, expected, actual) }; // §4.7 message 模板
 }
+
+/**
+ * R2.2/F-1（SA4 A-4 实测回流）：快照 map 的一切键写入一律经本助手（defineProperty，
+ * 四描述符与 §4.6 plain 值写入同款）——禁赋值式。机理：`out['__proto__'] = v` 命中
+ * `Object.prototype.__proto__` accessor——标量值被 setter 静默忽略（键丢失）；对象值
+ * 把 out 原型劫持为该快照对象（键丢失 + JSON 序列化后数据整体蒸发）。可达向量：Record
+ * 动态键来自 live 数据（`ymap.set('__proto__', v)` 公共 API 直接可达，keyPattern 零
+ * 消费是 D4/B5 明文），快照静默缺键后下游 validateLogicalSnapshot 永远无法发现——
+ * 端到端零信号的静默数据丢失（与 B13/B15 同判例的伪降级）。封闭 map 字段名虽被
+ * parser 拒绝（SA4 C 探针：`{ __proto__: string }` parse FAIL——`_` 非法标识符起始、
+ * 字符串字面量字段名拒绝），仍统一纪律作防御纵深（trialMember 的成员快照构造同款）。
+ */
+function putSnapshotKey(out: Record<string, unknown>, key: string, value: unknown): void {
+  Object.defineProperty(out, key, { value, writable: true, enumerable: true, configurable: true });
+}
 ```
 
 > Record 通路中 `resolveStructureRef(slot)` 的幂等透传说明：求值器解析点③（evaluate.ts:102-114）已把 Record 值位物化为**非 ref 节点**（如 fixture 的 union 节点），但同一 walker 也服务 array element / union member 等可携带 ref 的位置——统一在递归入口解析（walk 的 `case 'ref'` + 各调用点对子节点直接传原节点）即可，上表两处 `resolveStructureRef` 调用仅为显式化，等价于直接 `walk(slot, …)`。
 
-### 4.4 结构树 ref 解析（D8）
+### 4.4 结构树 ref 解析（D8——R2.2/F-2 回写：环守卫先于 memo 命中）
 
 ```ts
 /** 每调用局部 memo（对象引用为键——派生物节点共享引用的 O(1) 复用）。 */
@@ -329,9 +345,9 @@ function makeRefResolver(derived: DerivedSchema) {
     const inFlight = new Set<string>();
     let cur: StructureNode = node;
     while (cur.kind === 'ref') {
+      if (inFlight.has(cur.name)) throw new StructureRefCycle(cur.name);   // → E100；R2.2/F-2：守卫先于 memo（见下）
       const hit = memo.get(cur);
       if (hit !== undefined) { cur = hit; continue; }
-      if (inFlight.has(cur.name)) throw new StructureRefCycle(cur.name);   // → E100
       inFlight.add(cur.name);
       const next = derived.aliases[cur.name];   // Object.hasOwn 语义：undefined = 未声明
       if (next === undefined) throw new StructureRefMissing(cur.name);     // → E100
@@ -343,8 +359,9 @@ function makeRefResolver(derived: DerivedSchema) {
 }
 ```
 
-- 镜像 vfsl `resolve.ts` `walkRefChain` 的迭代 while + inFlight 环检测 + next-hop memo 语义（该函数为 vfsl 包内部件，公共面不导出——本包基于公共数据 `derived.aliases` 自建同款，ADR-0003「解析动作由共享解析器完成」的域内重述）。
-- 两个 throw 只被**手造/篡改派生物**触达（合法 derived 经 E106/E301 保证无环、有名）——被顶层崩溃边界收编为 `DOCRT-E100`（§4.8），不静默产出垃圾快照（对齐 evaluate.ts 手造 IR loud 边界先例）。
+- **守卫顺序（R2.2/F-2，SA3 实现的正向偏离回流）**：环守卫 `inFlight.has` 必须在 memo 命中检查**之前**。R1/R2 伪代码原为 memo-first 序——该序下手造环 A→B→A 首轮把 `memo[A]=B、memo[B]=A` 写入后，后续迭代全部命中 memo、永不触达 inFlight 检查 → **死循环**（迭代 while 无栈增长，RangeError 兜底也不触发）；守卫前置使环在 memo 命中前即被拦截（SA4 A-3 探针 E100-2/E100-8：A→B→A 与自引 A→A 均 0ms 终止并返回结构化 `DOCRT-E100: 结构 ref 环`）。合法 derived（E106 保证无环）下两序行为逐位一致（无环链上 inFlight 检查恒 false）——守卫前置是纯防御加固，零可观测行为差异（合法输入面）。
+- 镜像关系修正：本解析器仍沿用 vfsl `resolve.ts` `walkRefChain` 的迭代 while + inFlight 环检测 + next-hop memo 三要素（该函数为 vfsl 包内部件，公共面不导出——本包基于公共数据 `derived.aliases` 自建同款，ADR-0003「解析动作由共享解析器完成」的域内重述），但**守卫顺序与 walkRefChain（memo-first）不同**——walkRefChain 同患手造环 + memo 死循环（对其合法输入不可达，纯手造 IR 面），属 vfsl 辖域缺陷，**登记为后续票观察项（SA4 F-2 处置意见），本任务不动 vfsl（DENY）**。
+- 两个 throw 只被**手造/篡改派生物**触达（合法 derived 经 E106/E301 保证无环、有名；SA2 R2 复审附录 C 实测 E106 在 parse 层即拒绝互引/自引联合与自引 map 字段一切名级环）——被顶层崩溃边界收编为 `DOCRT-E100`（§4.8），不静默产出垃圾快照（对齐 evaluate.ts 手造 IR loud 边界先例）。
 
 ### 4.5 union 试验语义（D5——本设计最核心的裁决）
 
@@ -589,6 +606,8 @@ function renderPath(path: Array<string | number>): string {
 | B13 | **Date/RegExp/类实例落 plain 位**（R2/#3 新增） | 原型守卫 → 真 issue（actual='non-plain object'，message 附 constructor 名）——**禁静默投影 `{}`** | C1/C2 实测：`Object.keys(Date)=[]` 直扫产出 ok:true `{}` = 时间戳语义蒸发的**伪降级**（SKILL 立法典型样例——正常写入流程 materializeRoot 未建，出现即脏数据，应 loud）；与 B7 undefined 数组元素纪律一致 |
 | B14 | **union 成员根载体错位 / Record 形成员**（R2/#1/#5 新增） | 前置载体判定 → 拒 + 真 issue；Record 形试验 = 直接 walk | 前者杜绝 TypeError→E100 误分类（载体错位是用户可见数据问题，非内部错误）；后者纠正「`'<key>'` 字面段名被当缺席字段」的 any-of 违约——两处都是把**可达输入从错误语义域归位到正确语义域**，非新增降级 |
 | B15 | own `'__proto__'` 键混入 plain 对象（R2/#8 新增） | defineProperty 写键，own 属性逐位保留 | Q3/Q4 实测：赋值式写入触发原型 setter（键静默丢失/原型污染）——静默丢失键正是 B13 同款的投影蒸发；JSON 往返无损实证 |
+| B16 | **Record 动态键 `'__proto__'`（R2.2/F-1 新增，SA4 A-4 实测回流）** | 一切写快照对象的键经 `putSnapshotKey`（defineProperty）安全写入——own 键保真、原型不可劫持（D13）；SA3 修复半径 = extract.ts Record 分支一行级（封闭 map/trialMember 分支统一为防御纵深，行为不变）；SA6 回归锚 = 标量 + 嵌套 map 两用例（own 键保留 + JSON 往返含该键 + 快照原型仍 `Object.prototype`） | `ymap.set('__proto__', v)` 公共 API 直接可达（keyPattern 零消费为 D4/B5 明文）——赋值式下标量值键静默丢失、对象值原型劫持，且 validateLogicalSnapshot 只看快照**永难发现**（端到端零信号静默丢失，B13/B15 同判例伪降级）；与 §4.6 plain 值 own `__proto__` 纪律（B15）同源对齐——同文件两分支纪律必须一致（SA4 D 对照探针铁证） |
+| B17 | **plain 对象 throwing getter（R2.2 登记，SA4 F-3）** | 维持 E100 归类（裁量）：`set('g', { get x(){ throw } }` 存原引用成功，copyPlainValue 读 `v[k]` 触发 getter throw → 顶层 catch → E100 结构化返回（message 含原异常文案，可排障） | 响亮（ok:false）不静默；该值形需原型合法对象内嵌 throwing accessor——本地可达但极罕见，远窄于 F-1/B13 的日常脏数据面；为此扩申报词（D9② 再增一词）收益近零、申报面扩大——维持 'internal' 归类，SA7 动态面已由 SA4 A-3 E100-7 探针代验（「boom」message 可排障） |
 
 ## §7. 包集成（AC5 落位）与验收映射
 
@@ -632,6 +651,7 @@ function renderPath(path: Array<string | number>): string {
 | C1/C2（SA2） | Date 可存可读、`Object.keys` 投影为空 | SA2 实测 | `get Date instanceof => Date`；`Object.keys(date-value) => []`——#3 原型守卫的伪降级证据 | 中（→ 补充测试文件锚定） |
 | D1/D2/E1（SA2） | plain 数组内 undefined/bigint 可达；bigint 跨端同步后仍 bigint | SA2 实测 | `set [undefined] => ok`、`set [10n] => ok / typeof => bigint`、`bigint after sync typeof => bigint`——D9② 'undefined'/'bigint' 申报词的可达性依据 | 中（→ 补充测试文件锚定） |
 | E2（SA2） | Date 跨端退化为 plain Object | SA2 实测 | `date after sync ctor => Object`（与 Q5b 互证） | 低 |
+| SA4 A-1~A-5（R2.2 引入） | §9 现行命令 verbatim 重跑一致；E100 崩溃边界 8 探针（含 F-2 环守卫重排后 A→B→A / 自引均 0ms 终止）；**F-1 复现（Record 动态键 `'__proto__'`：A 标量静默丢失 / B 对象原型劫持 / C 封闭字段名 parse FAIL / D 对照 plain 值 own 键保留——两分支纪律矛盾铁证）**；Y.Array undefined 全写入路由写期抛；全量 707 tests / 6 包 typecheck 通过 | SA4 静态验尸实测（`task_doc-runtime-extract-yjs-snapshot_sa4_review.md` 附录 A，tsx 驱动真实实现 commit 079e957） | F-1 为 R2.2/D13/B16 修复纪律的直接依据；F-2 为 §4.4 守卫顺序回写的直接依据 | 低（SA4 复审仅需针对 F-1 修复面） |
 | N1–N4（SA2 复审 + SA1 R2.1 复现） | function/symbol 可经 plain 容器内嵌进入 doc：set 成功、读回原类型、encode 不抛；**直接位 set 期即抛（对照）** | SA2 复审实测 + SA1 R2.1 独立复现 | SA2 N1–N3：`set('a',[()=>1])` / `set('b',{k:()=>2})` / `set('c',[Symbol()])` 全 ok、`typeof get` → function/symbol、encodeStateAsUpdate 不抛（wire 投影 null，本地存活窗口完整）。SA1 复现（`cd packages/doc-runtime && node -e "import('yjs').then((Y)=>{…})"` namespace 变体）：N1 `[fn]` ok（same ref true）/ N2 `{k:fn}` ok / N3 `[Symbol]` ok / N4 encode ok / 对照 `set('d',fn)` THROW "Unexpected content type"——R-2 改判（§4.6/§4.8/D9②/§6 B9）的直接依据 | 中（内嵌路由行为面 → 补充测试文件锚定：`set('a',[fn])` → ok:false 单 issue、actual='function'、非 'internal'，§11） |
 | B-3 t1/t2/t3（SA2） | Record 形 union 成员 schema 合法可求值；`'<key>'` 字面名对象语法不可声明 | SA2 实测（tsx 求值器） | `type ROOT = Record<string, YLeaf<string>> | { b: YArray<…> }` evaluate ok，structure.node = union[map{'<key>'}, map{b}]；`type ROOT = { "<key>": string }` parse error——#1 Record 特例的触发前提与无碰撞实证 | 低 |
 | S1 | 测试自动入 CI | 源码引用 | `vitest.config.ts:6` include `packages/*/test/**/*.test.ts` | 低 |
@@ -672,6 +692,7 @@ function renderPath(path: Array<string | number>): string {
 - `packages/doc-runtime/test/extract-yjs-snapshot.test.ts` — `[SA6 owned]` 冻结验收测试（21 用例）。SA3 仅可改测试基础设施（hook/fixture 隔离），**禁改断言逻辑**；当前测试无需任何改动即可驱动本设计
 - `packages/doc-runtime/test/extract-plain-domain.test.ts` — `[SA6 owned / R2 追加（SA2 红线 2/3/5；R2.1/R-2 追加锚点）]` **可选增补**：plain 值域违规行为面（bigint 直存与跨端 E1、Date/类实例原型守卫、undefined 数组元素、**function/symbol plain 子树内嵌路由（N1–N3：`set('a',[fn])` → ok:false 单 issue、actual='function'、非 'internal'）**、词表四字段形状）——断言锚定公共接缝（`actual !== 'internal'` 防 E100 误分类回归）；由总控决定走 SA6 增补流程，若落位则受本 ALLOW 管辖，SA3 禁改断言
 - `packages/doc-runtime/test/extract-union-trial.test.ts` — `[SA6 owned / R2 追加（SA2 红线 1/4）]` **可选增补**：union 试验语义行为面（Record 形成员接受、成员根载体前置判定、Record/对象成员声明序仲裁）——同上管辖
+- `packages/doc-runtime/test/extract-record-keyspace.test.ts` — `[SA6 owned / R2.2 追加（SA4 F-1 回归锚）]` **增补**：Record 动态键 `'__proto__'` 标量值与嵌套 map 值两用例——断言 own 键保留 + `JSON.parse(JSON.stringify(s))` 往返含该键 + 快照对象原型仍为 `Object.prototype`（D13/B16 防回归；冻结 21 + 增补 16 均未覆盖该面）
 - `wiki/raw/task_doc-runtime-extract-yjs-snapshot_design.md` — 本设计文档（SA1 产出）
 
 ### DENY LIST
@@ -686,9 +707,9 @@ function renderPath(path: Array<string | number>): string {
 - `packages/doc-runtime/package.json` — SA6 脚手架已满足全部需求（deps/exports/scripts），不改
 - `CONTEXT.md`、`docs/adr/**` — 决议与术语文本非本任务产出
 
-## 附：设计自检（SKILL 一致性要求，R2 复检 + R2.1 增补）
+## 附：设计自检（SKILL 一致性要求，R2 复检 + R2.1/R2.2 增补）
 
-- **自相矛盾扫描**：「判别式」——决策表 D5、§4.5.3、§6 B11 三处均表述为「不读取/死数据」，无一处使用判别式参与选择 ✓；「深拷贝/原型守卫」——D6/§4.6/INV-1/INV-2/B13 表述一致（R1 的「Date 走 object 分支」隐含行为已随 #3 修订消除）✓；「缺失不报」——D4/§4.3 全景表/§6 B3-B5/§5 用例推演一致，且 §4.5.1 明确「Record 形成员无缺失概念」不与 D4 冲突（Record 键集即在场集）✓；「词汇表」——F4 与 §4.1（粗判恒五值）/§4.6（细判 D9② 申报词）/§4.8（可达性实证口径）/D9 家族申报/§10 登记五处口径一致，**R2.1 后 function/symbol 五处统一为「内嵌可达→真 issue、直接位不可达→E100」（B9 限定直接位）** ✓；「undetermined」——已从 WalkResult 删除（D12），全文检索仅在 §4.3 引言（说明删除事实）与 §4.5.4（论证）出现，无残留规格引用 ✓。
+- **自相矛盾扫描**：「判别式」——决策表 D5、§4.5.3、§6 B11 三处均表述为「不读取/死数据」，无一处使用判别式参与选择 ✓；「深拷贝/原型守卫」——D6/§4.6/INV-1/INV-2/B13 表述一致（R1 的「Date 走 object 分支」隐含行为已随 #3 修订消除）✓；「快照写入纪律」——**R2.2 后 D13/§4.3 伪代码（putSnapshotKey×2）/§4.6（plain 值 defineProperty）/B15/B16 五处统一为 defineProperty 安全写入**，无赋值式残留 ✓；「ref 守卫序」——**R2.2 后 D8/§4.4 伪代码/叙述三处统一为守卫先于 memo**，memo-first 仅存于被否方案栏与历史叙述 ✓；「缺失不报」——D4/§4.3 全景表/§6 B3-B5/§5 用例推演一致，且 §4.5.1 明确「Record 形成员无缺失概念」不与 D4 冲突（Record 键集即在场集）✓；「词汇表」——F4 与 §4.1（粗判恒五值）/§4.6（细判 D9② 申报词）/§4.8（可达性实证口径）/D9 家族申报/§10 登记五处口径一致，R2.1 后 function/symbol 五处统一为「内嵌可达→真 issue、直接位不可达→E100」（B9 限定直接位）✓；「undetermined」——已从 WalkResult 删除（D12），全文检索仅在 §4.3 引言（说明删除事实）与 §4.5.4（论证）出现，无残留规格引用 ✓。
 - **死引用扫描**：`resolveStructureRef`（§4.3）与 `makeRefResolver`（§4.4）为同一机制的两面，§4.3 表后注释已显式对齐 ✓；R1 的 `undeterminedFallback` 四处调用已随 #7 删除，全文无残留 ✓；`isPlainObjectShallow`（R1 §4.1）已随 #2 两层判定重写删除，全文无残留 ✓。
 - **断层扫描**：公共接缝（§3.1/§4.7）与 SA6 测试 import（:61 `../src/index.js`）与 package.json exports（`"." → "./src/index.ts"`）三点一线 ✓；tsconfig/根 typecheck/CI 链路（§7）闭合 ✓；§4.5.1 前置判定/Record 特例与 §5 union 各行推演已同步（R2 同步注记）✓；§4.6 copyPlainValue 签名（新增 loc 参数）与 §4.3 leaf/plain 调用点（`copyPlainValue(live, path, '')`）一致 ✓。
 - **SA2 攻击面预判更新**：R1 预判三点均未被 SA2 实际攻击（被攻击的是 R1 未预判的 plain 域可达性与 Record 试验空洞）；R2 新增预判——① D9② 申报词的取舍（'non-plain object' 单词 vs constructor 名进 actual——已裁 actual 稳定词 + message 携带 constructor 名，SA4 复核点）；② 补充测试文件是否落位（总控决策，ALLOW 已备）；③ §4.5.1 前置判定对「成员为 union 嵌套 map」的复合形态（resolve 后 map → 前置判定；resolve 后 union → 直接 walk 由内层 walkUnion 自裁——§4.5.1 第二步分流已覆盖）。
@@ -718,3 +739,13 @@ function renderPath(path: Array<string | number>): string {
 | R-2：function/symbol 可达性改判——直接位不可达（A2/A3）仍成立，plain 子树内嵌可达（SA2 新探针 N1–N3），三处标注从「不可达防御」改「内嵌可达→真 issue」（机制行为不变：尾分支真 issue + 词已申报） | ✅ | §4.1 carrierOf docblock + §4.6 docblock 与尾分支注释 + §4.8 可达性行（拆为内嵌可达真 issue / 直接位不可达 E100 两行）+ D9②（'function'/'symbol' 改判入可达组）+ §6 B9（限定「直接位」，内嵌归 B7）+ §10 登记块（五词均可达）+ §9 新增 N1–N4 证据行（SA2 复审 + SA1 R2.1 独立复现互证：N1 `[fn]` same-ref / N2 `{k:fn}` / N3 `[Symbol]` / N4 encode ok / 对照直接位 THROW）+ §11 补充测试文件锚点（`set('a',[fn])` → actual='function' 非 'internal'） | 标注层改判完成；伪代码、词汇表、E100 边界机制零变更 |
 
 **R2.1 自检**：`({default:Y})` 解构在**可执行命令文本**中零残留（仅存于 R-1 历史记录行；Q1 行同患同修并实跑验证）；「不可达防御 + function/symbol」的**规格性**表述零残留——余下命中均为历史记录（R2 回应表 #4 行）、被否方案栏（D9 第三列）或改判叙述本身，B9 已限定「直接位」、D9② 已入可达组、§4.1/§4.6/§4.8/§10/§11 口径一致；§9 新命令（P2/P3/Q1）均以 namespace 变体 verbatim 实跑验证、输出与记载逐行一致（P3 记载已按实跑校准）；SA2 R2 复审 pass 辖域未越（零机制变更承诺兑现）。
+
+### R2.2 规格修复 touch-up（SA4 R1 reject 回流——F-1 规格空洞 + F-2 正向偏离回写，2026-08-22）
+
+| 要求（SA4 #） | 责任判定 | 是否落实 | 修订位置 | 修订内容摘要 |
+|------|---|:--:|------|------|
+| F-1：快照 map 构造安全写入纪律落文（Record 分支及一切动态键写快照处一律 defineProperty/安全写入，与 §4.6 B15 plain 值 own `__proto__` 纪律同源对齐） | 设计规格空洞（SA3 忠实实现，非其偏离） | ✅ | §4.3 伪代码（Record 分支与封闭 map 分支 `out[...] = ` 赋值式 → `putSnapshotKey(out, key, value)`）+ 新增 `putSnapshotKey` 助手（defineProperty 四描述符，附机理注释：原型 accessor 静默丢键/原型劫持/JSON 蒸发 + 可达性论证 + SA4 C 探针 parser 保护 + D 对照矛盾铁证）+ D13 新决策行（统一纪律：Record 动态键、封闭 map 字段、trialMember 成员快照全覆盖；封闭字段名统一为防御纵深）+ B16 边界条目（含 SA3 修复半径一行级、SA6 回归锚两用例、validateLogicalSnapshot 永难发现的端到端零信号论证）+ §4.3 全景表 Record 行标注 + §11 追加 SA6 回归锚文件（extract-record-keyspace.test.ts） | 修复纪律从 plain 值域（§4.6/B15）扩展至快照 map 构造全域；对 SA3 的修复指令收敛为 extract.ts Record 分支一行级（:117/:210 统一为防御纵深，行为不变）；对 SA6 的锚指令 = own 键保留 + JSON 往返 + 原型未劫持三断言 |
+| F-2：§4.4 伪代码与叙述对齐 SA3 实现（ref 环守卫 inFlight 重排到 memo 命中检查之前），登记该差异（含 vfsl walkRefChain 同患、后续票观察、本任务不动 vfsl） | SA3 正向偏离（修复设计伪代码与 vfsl walkRefChain 的手造环+memo 死循环） | ✅ | §4.4 标题与伪代码（守卫 `inFlight.has` 移至 memo.get 之前，注释标注 R2.2/F-2）+ 叙述两条新增：「守卫顺序」条（memo-first 死循环机理 + SA4 A-3 E100-2/E100-8 探针 0ms 终止证据 + 合法输入两序逐位一致论证）与「镜像关系修正」条（三要素仍镜像 walkRefChain，守卫序不同；vfsl walkRefChain 同患登记为后续票观察项，DENY 不动）+ D8 决策行更新（守卫先于 memo + 被否方案栏记录 memo-first 原案证伪）+ E106 parse 层环拒绝引证（SA2 附录 C）补入 throw 可达性条 | 文档与实现对齐；差异登记完成（vfsl 缺陷出辖域留观） |
+| F-3（SA4 回流指令 ④，顺手裁量登记） | 非阻塞登记项 | ✅（裁量：维持 E100 归类） | B17 边界条目 | plain 对象 throwing getter → E100（message 含原异常文案可排障）；扩词收益近零、申报面扩大——维持 'internal'，SA4 A-3 E100-7 已代验动态面 |
+
+**R2.2 自检**：§4.3 伪代码中快照 map 写入点检索——Record 分支与封闭 map 分支均已 `putSnapshotKey`（trialMember 无独立赋值伪代码，其成员快照构造经 D13 纪律声明覆盖），`out[...] =` 赋值式残留仅在 §4.6 plain 值 `out` 构造的 defineProperty 上下文（该处本就是安全写入）；§4.4 守卫序与 SA3 实现一致（inFlight.has → memo.get → add/lookup/set）；D8/D13/B16/B17/§9 SA4 行/§11 回归锚文件六处口径一致；F-1 属**规格修复**（写入纪律统一，非纯文字 touch-up），F-2 属文档对齐（实现侧零变更）——两者均已如实标注。
