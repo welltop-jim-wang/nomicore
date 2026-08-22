@@ -36,3 +36,20 @@ runner 在 daemon 重启后**同时存在两个总控会话**调度同一 worktr
 | 19 | 13:33 | SA4 | Phase 3 复审 R2 | 13:37 | F-1 修复总控亲验转绿；SA4 R2 verdict: pass（修复面 6 探针全绿、锚真实红复验、基线独立复现一致） |
 | 20 | 13:38 | SA7 | Phase 4 动态验证 | 13:45 | SA7 verdict: pass（23 探针全 PASS、Node20 docker 复验 40/40、vitest 触发证据 all-triggered、基线独立复跑双 EXIT=0） |
 | 21 | 13:46 | 总控 | Phase 3.5 AC 门禁 | 13:47 | AC 6/6 全 ✅（ac_checklist.md），无需修订 SA，进入收尾 |
+
+---
+
+# 发布后修订轮（2026-08-22 14:10，run_id: issue-73-rev-1787378789）
+
+**触发**：PR #81 owner review 反馈——P1：`copyPlainValue()`（packages/doc-runtime/src/extract.ts:258-260）将非有限 number（NaN/Infinity/-Infinity）当作合法 JSON snapshot 值返回，序列化静默 null 化。
+
+**类型自判**：Bug 修复（owner 给出确定性复现 + 最小修复形态）。
+
+**工作流构造依据（裁剪）**：SA5（复现/根因实证）→ SA6（红灯回归锚定，owner 8 条必补要求）→ SA3（修复+版本 bump+commit/push）→ SA4（静态验尸）→ SA7（动态验证）。裁剪 SA1/SA2：修复形态由 owner review 直接立法（`Number.isFinite` 守卫 + 冻结申报词 'non-finite number'），无架构决策空间；裁剪 SA8 复审：本轮为 owner 明确指令的直接执行，原轮 SA8 前置/设计后复审均 clear，本轮不引入新 ADR 面相。评审双清（SA4+SA7）不裁剪。
+
+| # | 派发时间 | SA | 阶段 | 完成时间 | 决策逻辑 |
+|---|---------|-----|------|---------|---------|
+| R1 | 14:12 | SA5 | 修订轮 Phase 0 故障分析复现 | 14:17 | owner P1 反馈确定性复现+根因定位+修复点唯一性论证（subagent df797344） |
+| R2 | 14:18 | SA6 | 修订轮 Phase 1 红灯回归锚定 | 14:21 | SA5 复现成功+单点论证；按 owner 8 条必补要求写红灯测试（新文件 extract-nonfinite-number.test.ts），并行 SA1 设计回写（文件不相交） |
+| R3 | 14:18 | SA1 | 修订轮 设计文档回写 | 14:26 | 修复形态由 owner review 立法冻结，无需新设计轮；SA1 仅回写 D9② 申报词登记（第六词 non-finite number）+ §4.6 伪代码缺口（SA5 §6/§8 已给出精确位置） |
+| R4 | 14:27 | SA3 | 修订轮 Phase 3 TDD 修复 | (pending) | 红灯 6/8 真实红已锚定+设计已回写；按 owner 冻结形态修复 extract.ts:259 + docblock + bump 0.1.1，绿灯后 commit+push（含 wiki 产物，严禁 .mabf-bg/REPORT.md/.mabf-done） |

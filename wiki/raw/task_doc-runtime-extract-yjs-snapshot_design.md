@@ -31,7 +31,7 @@
 | D6 | 快照 plain 值 = **显式深拷贝 + JSON 值域断言 + 原型守卫 + own-key 安全写入**（R2/#3/#8：普通对象仅 `proto === Object.prototype \|\| null` 放行，Date/类实例 → 真 issue；键一律 defineProperty 写入，`__proto__` own-key 不落原型） | 实测 P15/P15b：yjs 对 plain 值 `get()` 返回原引用（含嵌套），浅引用即快照泄漏 live 状态（AC4 解耦红灯）；P22：plain 数组可内嵌 Y.Map；C1/C2：Date 可存可读且 `Object.keys` 投影为 `{}`——静默投影 = 数据语义蒸发的伪降级；Q3/Q4：defineProperty own-key + JSON 往返无损 | 直接引用（解耦红灯）；`structuredClone`（Y 类型抛 DataCloneError 且不区分错位类型）；`JSON.parse(JSON.stringify())`（undefined→null 静默规范化，违 loud 纪律）；Date 静默投影 `{}`（R1 原案隐含行为——SA2 #3 伪降级否决） |
 | D7 | XML 快照值 = `Y.XmlFragment.toString()` | 实测 P6/P6b：与 `toJSON()` 投影一致输出 `<p>Hello <b>world</b></p>`；属性保留（P21）；ADR-0003「JSON 快照中其值为 XML 字符串（与 Y.XmlFragment.toJSON() 投影一致）」 | 自研 XML 序列化器（重复造 yjs 已有投影；语义等价锚只要求结构与文本一致，yjs 投影天然满足） |
 | D8 | 结构树 ref 解析：包内迭代链走查（`derived.aliases`）+ **inFlight 环守卫先于 memo 命中**（R2.2/F-2 回写 SA3 实现序）+ 每调用 memo | ADR-0003「ref 不内联展开，解析动作由共享解析器完成」——但 vfsl 的 resolve.ts 是包内部件（index.ts 不导出），doc-runtime 只能基于公共数据 `derived.aliases` 自建同款 while 循环；**守卫前置修复 memo-first 序的手造环死循环**（SA4 A-3：A→B→A / 自引均 0ms 终止）——合法输入两序逐位一致，纯防御加固 | 给 vfsl 公共面新增解析器导出（本任务不许动 vfsl，AC1）；递归无环守卫（手造派生物成环 → 栈溢出绕过崩溃边界的可观测性）；**memo-first 守卫序（R1/R2 原案——SA4 F-2 证伪：手造环 + memo 场景死循环，已被 R2.2 回写）** |
-| D9 | **词汇表偏离家族统一申报（R2/#4 收编 SA8 note-5 裁决；R2.1/R-2 改判 function/symbol 归组）**：① E100 崩溃边界 `expected/actual = 'internal'`；② plain 域违规 issue：`expected` 恒词汇表内 `'plain value'`，`actual` 用申报词——可达：`'bigint'`（A1/D2/E1）/ `'undefined'`（D1 数组元素）/ `'non-plain object'`（C1 Date/类实例，message 附 constructor 名）/ **`'function'` / `'symbol'`（N1–N3 plain 子树内嵌路由可达；直接位 A2/A3 set 期即抛不可达——R2.1 改判入可达组）**。全部偏离报 SA4 复核（§10 登记） | 不抛错纪律（与 vfsl 三接缝同源）要求 catch-all 必须产出四字段 issue；SA6 冻结词汇表辖域 = 结构错位（expected 侧保持纯净），actual 侧扩展是**真实可观测输出**，按「设计如需偏离必须显式说明并由 SA4 复核」纪律必须申报——R1 只申报 'internal' 而 §4.6 散落代码注释零申报属同仓两种纪律（SA2 #4）；R2 原按「直接位不可达」把 function/symbol 归防御组，SA2 复审 N1–N3 实证内嵌可达、其词为可达可观测输出——改判入可达组（机制行为不变：尾分支真 issue + 词已申报） | expected/actual 用词汇表值冒充（不诚实）；省略字段（违约四字段形状）；不申报（SA8 note-5 明示否决）；function/symbol 维持「不可达防御」归类（R2 原案——SA2 N1–N3 证伪，可达输出必须入申报组） |
+| D9 | **词汇表偏离家族统一申报（R2/#4 收编 SA8 note-5 裁决；R2.1/R-2 改判 function/symbol 归组；R2.3 增报第六词 'non-finite number'）**：① E100 崩溃边界 `expected/actual = 'internal'`；② plain 域违规 issue：`expected` 恒词汇表内 `'plain value'`，`actual` 用申报词——可达：`'bigint'`（A1/D2/E1）/ `'undefined'`（D1 数组元素）/ `'non-plain object'`（C1 Date/类实例，message 附 constructor 名）/ **`'function'` / `'symbol'`（N1–N3 plain 子树内嵌路由可达；直接位 A2/A3 set 期即抛不可达——R2.1 改判入可达组）** / **`'non-finite number'`（NaN/±Infinity：leaf 直存 / plain object 值 / plain array 元素 / 跨端 E1 均可达——SA5 §2 复现 [1]–[4]；风格与 `'non-plain object'` 同构（non- 否定短语、小写空格分隔稳定词）；owner review P1 修复指令即 B17「扩词需正当收益」裁量基准下的正当性依据——R2.3 增报）**。全部偏离报 SA4 复核（§10 登记） | 不抛错纪律（与 vfsl 三接缝同源）要求 catch-all 必须产出四字段 issue；SA6 冻结词汇表辖域 = 结构错位（expected 侧保持纯净），actual 侧扩展是**真实可观测输出**，按「设计如需偏离必须显式说明并由 SA4 复核」纪律必须申报——R1 只申报 'internal' 而 §4.6 散落代码注释零申报属同仓两种纪律（SA2 #4）；R2 原按「直接位不可达」把 function/symbol 归防御组，SA2 复审 N1–N3 实证内嵌可达、其词为可达可观测输出——改判入可达组（机制行为不变：尾分支真 issue + 词已申报）；R2.3 增报第六词 `'non-finite number'`——非有限值穿透即 `JSON.stringify` 静默 null 化、无信号击穿 INV-1（B12/B13 同判例伪降级），修复形态由 owner 立法冻结（number 拆支 + `Number.isFinite` 守卫） | expected/actual 用词汇表值冒充（不诚实）；省略字段（违约四字段形状）；不申报（SA8 note-5 明示否决）；function/symbol 维持「不可达防御」归类（R2 原案——SA2 N1–N3 证伪，可达输出必须入申报组） |
 | D10 | 提取器**零消费** `derived.values` / `derived.index` / `derived.aliasDocs` 等值域与文档域 | 两树正交纪律（镜像 validate.ts:4-6「结构树本文件零消费」的对称声明：extract 是结构树的第一个消费者，值域零消费）；SCHEMA/META 零接触（AC「只读取固定 ROOT」） | 借值树做成员选择（越域 + 引入 D5 已否决的判别式问题） |
 | D11 | v1 无显式工作预算，论证 + 登记为已知界 | 遍历深度 ≤ 结构树深度 ≤ `MAX_TYPE_NESTING = 100`（vfsl parser.ts:24）；union 试验成本受 fail-fast 与接受短路约束（§8 分析）；validateLogicalSnapshot 拥有 2×10⁸ 预算先例但那是全收集语义的需求，fail-fast 单 issue 快路径无对应攻击面 | 引入 WORK_LIMIT（无锚定攻击面；增加一个 SA6 未冻结的失败形态） |
 | D12 | `WalkResult` 恒**两结局**（`value \| issue`）——R1 的 `'undetermined'` 第三结局**删除**（R2/#7）：walkUnion 出口 3（全软拒回退）内联消化为 value/issue，永不向上传播（§4.5.4 终止论证） | R1 自己论证了 undetermined 永不逃逸 walkUnion 却保留三结局 + map/array 通路四个防御分支——规格噪音诱导 SA3 实现并测试「永不发生」的分支（SA2 #7）；删除后类型即不变式 | 保留三结局 + 三处「不可达防御」标注（SA2 给出的另一选项——不如直接删除：类型系统替注释承担不变式） |
@@ -423,7 +423,7 @@ function walkUnion(node, live, path): WalkResult {   // 恒两结局（D12）
 
 walkUnion 的三个出口全部返回 `WalkResult`（value/issue）——**不存在第三种向上返回值**：出口 3 的回退 `walk(members[0])` 本身是普通提交提取，返回两结局。递归终止论证：回退目标是 resolve 后的成员节点，成员经 ref 解析构成的图无环（合法 derived 由 E106 保证；手造环在 §4.4 解析器 inFlight 检测即抛 → E100），故「union → 其成员 0 →（若为 union）→ 其成员 0 → …」的回退链严格沿无环成员图下降，有限步内落到非 union 节点终止。R1 的 `WalkResult` 第三结局 `'undetermined'` 与 map/array 通路四处 `undeterminedFallback` 防御分支已**全部删除**（D12）：类型即不变式——SA3 无法实现、也无法测试一个「永不发生」的分支。
 
-### 4.6 plain 值深拷贝与 JSON 值域断言（D6——R2/#2/#3/#8 重写）
+### 4.6 plain 值深拷贝与 JSON 值域断言（D6——R2/#2/#3/#8 重写；R2.3 number 拆支：PR #81 owner review P1）
 
 ```ts
 /**
@@ -431,6 +431,8 @@ walkUnion 的三个出口全部返回 `WalkResult`（value/issue）——**不�
  * actual 为 D9② 申报词；loc = 违规内部位置线，进 message 不进 path——R2/#8 锚定精度）。
  * 各分支可达性（SA2 附录 B-2 实证）：
  * - bigint        可达（A1 直存 / D2 数组内嵌 / E1 跨端同步后仍 bigint）
+ * - non-finite num 可达（SA5 §2 复现 [1]–[4]，PR #81 review P1：NaN/±Infinity 于 leaf 直存、
+ *   plain object 值、plain array 元素、跨端 E1 encode→apply 后远端读回仍 number——R2.3 拆支）
  * - undefined     可达（D1 plain 数组内元素；对象键 undefined 走省略不报）
  * - non-plain obj 可达（C1 Date/类实例——本地视角；跨端退化为真 plain {}，见文末注）
  * - function/symbol 直接位不可达（A2/A3：set 期即抛 "Unexpected content type"）；
@@ -439,8 +441,13 @@ walkUnion 的三个出口全部返回 `WalkResult`（value/issue）——**不�
  * - Y 类型内嵌    可达（P22：yjs 允许 set('a', [new Y.Map()])）——actual = 词汇表载体名（nested 再分类）
  */
 function copyPlainValue(v: unknown, path: Array<string | number>, loc: string): WalkResult {
-  if (v === null || typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean')
-    return { kind: 'value', snapshot: v };              // JSON 标量直通（bigint 不在此列——typeof 'bigint'）
+  if (typeof v === 'number') {                          // number 拆支（R2.3：PR #81 owner review P1）
+    if (!Number.isFinite(v))                            // NaN/Infinity/-Infinity：IEEE-754 全域 ⊄ JSON 数值域（RFC 8259 §6）
+      return plainDomainIssue(path, loc, 'non-finite number'); // JSON.stringify 静默 null 化——loud 拒绝（D9② 第六词）
+    return { kind: 'value', snapshot: v };              // 有限 number 直通（0/-0/小数正向对照不受影响——SA5 复现 [5]）
+  }
+  if (v === null || typeof v === 'string' || typeof v === 'boolean')
+    return { kind: 'value', snapshot: v };              // JSON 标量直通（bigint 不在此列——typeof 'bigint'；number 已上拆支——R2.3）
   const nested = carrierOf(v);                          // 嵌套位置再分类（顶层调用方已保证 'plain value'）
   if (nested !== null && nested !== 'plain value')
     return plainDomainIssue(path, loc, nested);         // Y 类型内嵌（P22 可达）→ actual = 词汇表载体名（'Y.Map' 等）
@@ -529,6 +536,7 @@ function renderPath(path: Array<string | number>): string {
 | ref 解析：缺名 / 环 | 仅手造/篡改 derived（合法 derived 经 E301/E106 保证） | 与 evaluate.ts 手造 IR loud 边界同款 |
 | `derived.structure.kind !== 'root'` | 仅手造/篡改 derived | 同上（§4.7 形状守卫） |
 | **bigint 落 leaf/plain 位（含 plain 数组内嵌）** | **可达**（A1 直存、D2 数组内嵌、E1 跨端同步后仍 bigint） | **真 issue**（copyPlainValue，actual='bigint'，D9②）——绝不 E100：公开可达的用户脏数据不得上报「内部错误」误导排障 |
+| **非有限 number（NaN/±Infinity）落 number 位（leaf 直存 / plain object 值 / plain array 元素）**（R2.3 新增——PR #81 owner review P1） | **可达**（SA5 §2 复现 [1]–[4]：三值 leaf 直存 / plain object 值 `{x:Infinity}` / plain array 元素 `[1,-Infinity]` 当前全部 ok:true 进快照；E1 跨端 encodeStateAsUpdate→applyUpdate 后远端读回仍 `number NaN`——脏数据不局限本地写入端，与 bigint 跨端同构） | **真 issue**（copyPlainValue number 拆支，actual='non-finite number'，D9② 第六词）——绝不 ok:true：JSON 数值域（RFC 8259 §6）不含 IEEE-754 非有限值，`JSON.stringify` 静默 null 化无信号击穿 INV-1 |
 | **Date/类实例落 plain 位** | **可达**（C1：本地 `get()` 读回实例；跨端退化见 §4.6 注） | **真 issue**（原型守卫，actual='non-plain object' + constructor 名） |
 | **plain 数组内 undefined 元素** | **可达**（D1） | 真 issue（actual='undefined'） |
 | **Y 类型内嵌 plain 子树** | **可达**（P22） | 真 issue（actual=词汇表载体名，§4.6 nested 再分类） |
@@ -608,6 +616,7 @@ function renderPath(path: Array<string | number>): string {
 | B15 | own `'__proto__'` 键混入 plain 对象（R2/#8 新增） | defineProperty 写键，own 属性逐位保留 | Q3/Q4 实测：赋值式写入触发原型 setter（键静默丢失/原型污染）——静默丢失键正是 B13 同款的投影蒸发；JSON 往返无损实证 |
 | B16 | **Record 动态键 `'__proto__'`（R2.2/F-1 新增，SA4 A-4 实测回流）** | 一切写快照对象的键经 `putSnapshotKey`（defineProperty）安全写入——own 键保真、原型不可劫持（D13）；SA3 修复半径 = extract.ts Record 分支一行级（封闭 map/trialMember 分支统一为防御纵深，行为不变）；SA6 回归锚 = 标量 + 嵌套 map 两用例（own 键保留 + JSON 往返含该键 + 快照原型仍 `Object.prototype`） | `ymap.set('__proto__', v)` 公共 API 直接可达（keyPattern 零消费为 D4/B5 明文）——赋值式下标量值键静默丢失、对象值原型劫持，且 validateLogicalSnapshot 只看快照**永难发现**（端到端零信号静默丢失，B13/B15 同判例伪降级）；与 §4.6 plain 值 own `__proto__` 纪律（B15）同源对齐——同文件两分支纪律必须一致（SA4 D 对照探针铁证） |
 | B17 | **plain 对象 throwing getter（R2.2 登记，SA4 F-3）** | 维持 E100 归类（裁量）：`set('g', { get x(){ throw } }` 存原引用成功，copyPlainValue 读 `v[k]` 触发 getter throw → 顶层 catch → E100 结构化返回（message 含原异常文案，可排障） | 响亮（ok:false）不静默；该值形需原型合法对象内嵌 throwing accessor——本地可达但极罕见，远窄于 F-1/B13 的日常脏数据面；为此扩申报词（D9② 再增一词）收益近零、申报面扩大——维持 'internal' 归类，SA7 动态面已由 SA4 A-3 E100-7 探针代验（「boom」message 可排障） |
+| B18 | **非有限 number（NaN/±Infinity）混入 number 位**（R2.3 新增——PR #81 owner review P1；可达位置：leaf 直存 / plain object 值 / plain array 元素 / Record 值 / union 成员内） | number 拆支：仅 `Number.isFinite(v)` 直通，否则真 issue（expected `'plain value'` / actual `'non-finite number'`——D9② 第六词，风格与 `'non-plain object'` 同构 non- 否定短语；path 锚定声明节点、loc 内部位置线进 message 不进 path——B7/R2/#8 纪律同款）；有限 number（整数/0/-0/小数）正向对照不受影响；修复形态由 owner 立法冻结（拆支 + 守卫 + 申报词 + 必补回归 8 条） | owner review 实测：三值全部 ok:true 进快照、`JSON.stringify` 后**无信号变 `null`**——INV-1「JSON 往返全等」静默击穿，B12/B13 同判例伪降级（可达脏数据必须 loud，禁静默变形）；owner review 指令即 B17「扩词需正当收益」裁量基准下的正当性依据（SA5 §8 申报词核对：备选 `'NaN'`/`'number'`/`'Infinity'` 均否决） |
 
 ## §7. 包集成（AC5 落位）与验收映射
 
@@ -665,7 +674,7 @@ function renderPath(path: Array<string | number>): string {
 
 **无契约改动**：本设计仅涉及**新建**函数（`extractYjsSnapshot`，新包新文件）与新包脚手架（tsconfig）。不修改任何既有函数的签名、返回形状、throw 行为、同步性、可空性——既有五个包的源码零触碰（§11 文件清单 DENY 全覆盖）。既有 caller 集合（全仓对该设计对象的调用）= ∅（新接缝，SA6 测试是其第一个消费者，且测试已冻结）。
 
-> **R2/#4 登记（SA8 note-5 裁决落实；R2.1/R-2 同步改判）**：本设计对 SA6 冻结契约 F4（expected/actual 五值词汇表）存在**一处已申报的扩展面**——`ExtractIssue.actual` 在 plain 域违规路径可取 D9② 申报词（`'bigint'` / `'undefined'` / `'non-plain object'` / `'function'` / `'symbol'` 五词均**可达**：前三者 A1/D1/C1，后两者 N1–N3 plain 子树内嵌路由——R2.1 改判）与 E100 路径的 `'internal'`（D9①）；`expected` 侧恒词汇表内值（plain 域违规 = `'plain value'`）。该扩展不触碰 SA6 21 用例的任何断言（用例未锚定这些值），但属「设计偏离冻结契约必须显式说明并由 SA4 复核」的辖域——SA4 Phase 3 请对本节 + D9 一并裁决。SA6 冻结测试文件**不因此改动**。
+> **R2/#4 登记（SA8 note-5 裁决落实；R2.1/R-2 同步改判；R2.3 增报第六词——PR #81 owner review P1）**：本设计对 SA6 冻结契约 F4（expected/actual 五值词汇表）存在**一处已申报的扩展面**——`ExtractIssue.actual` 在 plain 域违规路径可取 D9② 申报词（`'bigint'` / `'undefined'` / `'non-plain object'` / `'function'` / `'symbol'` / `'non-finite number'` **六词均可达**：前三者 A1/D1/C1，第四五者 N1–N3 plain 子树内嵌路由——R2.1 改判；第六者 NaN/±Infinity 于 leaf 直存 / plain object 值 / plain array 元素 / 跨端 E1 均可达——SA5 §2 复现 [1]–[4] 实证，R2.3 增报）与 E100 路径的 `'internal'`（D9①）；`expected` 侧恒词汇表内值（plain 域违规 = `'plain value'`）。第六词风格与 `'non-plain object'` 同构（non- 否定短语；备选 `'NaN'`/`'number'`/`'Infinity'` 否决理由见 SA5 §8），owner review 指令即 B17「扩词需正当收益」裁量基准下的正当性依据（B18）。该扩展不触碰 SA6 21 用例与既有 4 份测试文件的任何断言（均未锚定 number 相关 actual——SA5 §8 核对），但属「设计偏离冻结契约必须显式说明并由 SA4 复核」的辖域——SA4 Phase 3 请对本节 + D9 一并裁决。SA6 冻结测试文件**不因此改动**（第六词回归锚由新文件 `extract-nonfinite-number.test.ts` 承担，§11 R2.3 追加）。
 
 ### 改动函数
 
@@ -693,6 +702,7 @@ function renderPath(path: Array<string | number>): string {
 - `packages/doc-runtime/test/extract-plain-domain.test.ts` — `[SA6 owned / R2 追加（SA2 红线 2/3/5；R2.1/R-2 追加锚点）]` **可选增补**：plain 值域违规行为面（bigint 直存与跨端 E1、Date/类实例原型守卫、undefined 数组元素、**function/symbol plain 子树内嵌路由（N1–N3：`set('a',[fn])` → ok:false 单 issue、actual='function'、非 'internal'）**、词表四字段形状）——断言锚定公共接缝（`actual !== 'internal'` 防 E100 误分类回归）；由总控决定走 SA6 增补流程，若落位则受本 ALLOW 管辖，SA3 禁改断言
 - `packages/doc-runtime/test/extract-union-trial.test.ts` — `[SA6 owned / R2 追加（SA2 红线 1/4）]` **可选增补**：union 试验语义行为面（Record 形成员接受、成员根载体前置判定、Record/对象成员声明序仲裁）——同上管辖
 - `packages/doc-runtime/test/extract-record-keyspace.test.ts` — `[SA6 owned / R2.2 追加（SA4 F-1 回归锚）]` **增补**：Record 动态键 `'__proto__'` 标量值与嵌套 map 值两用例——断言 own 键保留 + `JSON.parse(JSON.stringify(s))` 往返含该键 + 快照对象原型仍为 `Object.prototype`（D13/B16 防回归；冻结 21 + 增补 16 均未覆盖该面）
+- `packages/doc-runtime/test/extract-nonfinite-number.test.ts` — `[SA6 owned / R2.3 追加（PR #81 owner review P1 回归锚）]` **增补**：非有限 number 行为面——owner 必补 8 条（leaf 位 `NaN` / plain object 内 `Infinity` / plain array 内 `-Infinity` 均 ok:false + fail-fast 单 issue、expected `'plain value'` / actual `'non-finite number'`、path 锚定对应 schema 声明节点、有限 number 正向对照 + 快照 JSON 往返全等；锚点建议见 SA5 报告 §7，断言 helper 复用 extract-plain-domain.test.ts 的 expectFailIssue——四字段形状完整 + 非 `'internal'` 双守卫）
 - `wiki/raw/task_doc-runtime-extract-yjs-snapshot_design.md` — 本设计文档（SA1 产出）
 
 ### DENY LIST
@@ -749,3 +759,16 @@ function renderPath(path: Array<string | number>): string {
 | F-3（SA4 回流指令 ④，顺手裁量登记） | 非阻塞登记项 | ✅（裁量：维持 E100 归类） | B17 边界条目 | plain 对象 throwing getter → E100（message 含原异常文案可排障）；扩词收益近零、申报面扩大——维持 'internal'，SA4 A-3 E100-7 已代验动态面 |
 
 **R2.2 自检**：§4.3 伪代码中快照 map 写入点检索——Record 分支与封闭 map 分支均已 `putSnapshotKey`（trialMember 无独立赋值伪代码，其成员快照构造经 D13 纪律声明覆盖），`out[...] =` 赋值式残留仅在 §4.6 plain 值 `out` 构造的 defineProperty 上下文（该处本就是安全写入）；§4.4 守卫序与 SA3 实现一致（inFlight.has → memo.get → add/lookup/set）；D8/D13/B16/B17/§9 SA4 行/§11 回归锚文件六处口径一致；F-1 属**规格修复**（写入纪律统一，非纯文字 touch-up），F-2 属文档对齐（实现侧零变更）——两者均已如实标注。
+
+### R2.3 发布后修订轮回写：PR #81 review P1——非有限 number 守卫（2026-08-22）
+
+> **2026-08-22 修订轮回写：PR #81 review P1**。触发：PR #81 owner review P1——`copyPlainValue()`（实现 `packages/doc-runtime/src/extract.ts:258-260`）对全部 `number` 直通放行，NaN/Infinity/-Infinity 进入 ok:true 快照、`JSON.stringify` 后无信号变 `null`。SA5 故障分析（`wiki/raw/20260822-bug-doc-runtime-extract-yjs-snapshot.md`）确认根因是**本设计 §4.6 伪代码的同名标量直通缺口被 SA3 忠实实现**（引入 commit 079e957，设计层缺口传导，非实现走样）。修复形态由 owner 立法冻结：number 拆支 + `Number.isFinite` 守卫 + 新申报词 `'non-finite number'` + 必补回归测试 8 条。本轮仅设计文档回写（§4.6 / D9② / §10 / §4.8 / §6 B18 / §11 六处），非新设计轮——机制面唯一变更点是 copyPlainValue 首分支拆支，粗判层（carrierOf / §4.1）、union 试验（§4.5）、崩溃边界（§4.7/§4.8 E100 面）全部零变更。
+
+| 要求（owner P1 / 回写指令） | 是否落实 | 修订位置 | 修订内容摘要 |
+|------|:--:|------|------|
+| §4.6 伪代码 number 从标量直通分支拆出：仅 `Number.isFinite(v)` 直通，否则 `plainDomainIssue(path, loc, 'non-finite number')` | ✅ | §4.6 伪代码（原 :442-443 首分支） | 首分支改为 number 专项：`!Number.isFinite(v)` → plainDomainIssue（loc 位置线 / 四字段形状 / path 锚定全部继承既有构造器）；null/string/boolean 维持原直通分支（bigint 后置分支不变）；docblock 可达性清单补 non-finite number 行（leaf 直存 / plain object 值 / plain array 元素 / 跨端 E1 均可达——SA5 §2 复现 [1]–[4]）；节标题标注 R2.3 |
+| D9② 可达组与 §10 R2/#4 登记块增报第六词 `'non-finite number'`（「五词均可达」→ 六词） | ✅ | D9 决策行 + §10 登记块 | 第六词登记：可达性（SA5 复现实证）、风格与 `'non-plain object'` 同构（non- 否定短语、小写空格分隔稳定词；备选 `'NaN'`/`'number'`/`'Infinity'` 否决——SA5 §8）、owner review 指令即 B17「扩词需正当收益」裁量基准下的正当性依据；D9 理由栏补「无信号击穿 INV-1、修复形态 owner 立法冻结」 |
+| §4.8 可达性表 / §6 行为表（B12-B13 邻域）补行 | ✅ | §4.8 表（bigint 行后）+ §6 B18（表尾追加，编号顺延不重排） | 可达路径（三值 × leaf 直存 / object 值 / array 元素 + E1 跨端）与 fail-fast 行为（expected `'plain value'` / actual `'non-finite number'` / path 锚定声明节点、loc 内部位置线进 message 不进 path）；B18 判例与 B12/B13 同族（可达脏数据 loud、禁静默变形），并注明有限 number 正向对照不受影响 |
+| owner 必补回归测试 8 条（辖 SA6，设计侧登记锚点与文件名） | ✅（登记） | §11 ALLOW（R2.3 追加） | 新红灯文件 `extract-nonfinite-number.test.ts`（`[SA6 owned]`）入 ALLOW——owner 8 条断言锚点以 SA5 报告 §7 建议为准（三值×三位置 / ok:false 单 issue / expected/actual 词 / path 锚定 / 有限 number 正向对照 + JSON 往返）；实现侧同步项（SA3）：extract.ts number 拆支一行级 + docblock 可达性清单补行 |
+
+**R2.3 自检**：number 拆支后 **§4.6 伪代码 / docblock、§4.8 可达性行、D9②、§10 登记块、§6 B18 五处口径一致**（词恒 `'non-finite number'`、expected 恒 `'plain value'`、path 锚定声明节点 + loc 进 message 不进 path）；粗判层 carrierOf（§4.1）对 number 恒 `'plain value'` **零变更**——D1 两层判定不变式保持（结构错位位 actual 恒五值词汇表，细粒度拒绝归细判层，bigint 先例同构；SA5 §5 已论证 extract.ts:259 是全库唯一放行点、单点修复完整覆盖）；有限 number 正向对照面（整数/0/-0/小数）不受影响（SA5 复现 [5]）；SA6 冻结 21 用例与既有 4 份测试文件断言零冲突（均未锚定 number 相关 actual——SA5 §8 逐处核对）；§11 ALLOW 只增不删；历史评审记录（R2 回应表 / R2.1 / R2.2 节）零改写。

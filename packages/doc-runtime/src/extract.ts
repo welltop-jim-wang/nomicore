@@ -9,7 +9,9 @@
  *   （R2/#5）；Record 形成员试验 = 直接 walk（R2/#1）；三结局（接受/真 issue/软拒），
  *   首个接受者胜，全拒报声明序首真 issue，全软拒回退成员 0 提交提取；
  * - plain 值深拷贝 + JSON 值域断言（§4.6）：原型守卫（Date/类实例 → 真 issue）、
- *   bigint/数组内 undefined/function/symbol 内嵌 → 真 issue（D9② 申报词）、
+ *   bigint/数组内 undefined/function/symbol/non-finite number 内嵌 → 真 issue（D9② 申报词；
+ *   non-finite number：leaf 直存 / plain object 值 / plain array 元素 / 跨端 E1 均可达——
+ *   SA5 §2 复现 [1]–[4]，R2.3 拆支）、
  *   own '__proto__' 键经 defineProperty 安全写入（R2/#8）——snapshot 无 Yjs 泄漏（INV-1/2）；
  * - 崩溃边界（§4.8）：全函数体顶层 try/catch → DOCRT-E100 结构化返回，绝不外抛（INV-6）。
  */
@@ -251,13 +253,19 @@ function makeRefResolver(derived: DerivedSchema): (node: StructureNode) => Struc
 /**
  * plain 值深拷贝到纯 JSON 域（§4.6）：非 JSON 值 → 真 issue（expected 恒 'plain value'；
  * actual 为 D9② 申报词；违规内部位置线进 message 不进 path——锚定声明节点位）。
- * 可达性（§4.8 实证口径）：bigint（直存/数组内嵌/跨端）、undefined（数组元素）、
- * non-plain object（Date/类实例原型守卫）、function/symbol（plain 子树内嵌 N1–N3）、
- * Y 类型内嵌（P22，actual = 词汇表载体名）。
+ * 可达性（§4.8 实证口径）：bigint（直存/数组内嵌/跨端）、non-finite number（NaN/±Infinity：
+ * leaf 直存 / plain object 值 / plain array 元素 / 跨端 E1 encode→apply 后远端读回仍 number——
+ * SA5 §2 复现 [1]–[4]，R2.3 拆支）、undefined（数组元素）、non-plain object（Date/类实例原型守卫）、
+ * function/symbol（plain 子树内嵌 N1–N3）、Y 类型内嵌（P22，actual = 词汇表载体名）。
  */
 function copyPlainValue(v: unknown, path: Array<string | number>, loc: string): WalkResult {
-  if (v === null || typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') {
-    return { kind: 'value', snapshot: v }; // JSON 标量直通
+  if (typeof v === 'number') { // number 拆支（R2.3：PR #81 owner review P1）
+    if (!Number.isFinite(v)) // NaN/Infinity/-Infinity：IEEE-754 全域 ⊄ JSON 数值域（RFC 8259 §6）
+      return plainDomainIssue(path, loc, 'non-finite number'); // JSON.stringify 静默 null 化——loud 拒绝（D9② 第六词）
+    return { kind: 'value', snapshot: v }; // 有限 number 直通（0/-0/小数正向对照不受影响——SA5 复现 [5]）
+  }
+  if (v === null || typeof v === 'string' || typeof v === 'boolean') {
+    return { kind: 'value', snapshot: v }; // JSON 标量直通（bigint 不在此列——typeof 'bigint'；number 已上拆支——R2.3）
   }
   const nested = carrierOf(v); // 嵌套位置再分类（顶层调用方已保证 'plain value'）
   if (nested !== null && nested !== 'plain value') {

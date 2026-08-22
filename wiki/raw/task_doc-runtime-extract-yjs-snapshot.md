@@ -219,3 +219,60 @@ Test Files  1 failed (1)      Tests  2 failed (2)      EXIT=1
 - 修复后转绿预期：SA3 按 D13/B16 以 putSnapshotKey（defineProperty 四描述符）替换
   extract.ts Record 分支赋值式写入（修复半径一行级，:117/:210 统一为防御纵深）→ 本文件
   两用例转绿，既有 38 用例零回归。
+
+---
+
+# SA6 修订轮红灯锚记录（PR #81 owner review P1 增补，2026-08-22 14:3x）
+
+落位依据：PR #81 owner review P1（非有限 number 经 copyPlainValue 直通进 ok:true 快照，
+JSON.stringify 后静默变 null）+ SA5 报告（wiki/raw/20260822-bug-doc-runtime-extract-yjs-snapshot.md）
+§7 锚点表。修复形态由 owner 立法冻结：number 分支拆出，仅 Number.isFinite(v) 直通，
+否则 plainDomainIssue(path, loc, 'non-finite number')。
+
+## 产出
+
+- `packages/doc-runtime/test/extract-nonfinite-number.test.ts` — **8 条用例**（owner 必补 8 条
+  全覆盖 + 可选加固已采纳：三值各自独立 leaf 用例、跨端 E1 式路由）。
+- 未改动 src/ 任何文件、未改动既有 4 份测试文件；未 commit/push。
+
+## 覆盖映射（owner 8 条逐条）
+
+| # | owner 要求 | 锚点 |
+|---|---|---|
+| 1 | leaf 位 NaN | `type ROOT = { n: YLeaf<number> }` + `set('n', NaN)` → `expectFailIssue(r, ['n'], 'plain value', 'non-finite number')` |
+| 2 | plain object 内 Infinity | `{ arr: YPlainArray<{ x: number }> }` + `set('arr', [{x:1},{x:Infinity}])` → path `['arr']` + message 含 `内部位置 [1].x` |
+| 3 | plain array 内 -Infinity | `{ arr: YPlainArray<number> }` + `set('arr', [1,-Infinity])` → path `['arr']` + message 含 `内部位置 [1]` |
+| 4 | ok:false + fail-fast 单 issue | `expectFailIssue` 内建：ok===false + issues.length===1 + 四字段形状完整 + 非 'internal' 双守卫 |
+| 5 | expected === 'plain value' | helper 第三参（字符串精确断言） |
+| 6 | actual === 'non-finite number' | 冻结申报词；新文件 docblock 显式声明（沿 plain-domain :14-18 词表先例） |
+| 7 | path 锚声明节点 | `['n']` / `['arr']`；违规内部位置线只进 message 不进 path（R2/#8，与 bigint D2 同构） |
+| 8 | 有限 number 正向对照 | `{n:42, arr:[1,2,3]}` ok:true 深等 + JSON 往返全等；追加 `0`/`-0`/`0.1` 边界防误伤（-0 仅 Object.is 内存级保真——`JSON.stringify(-0)==='0'`，往返签名丢失属 JSON 规范行为，不做往返断言） |
+
+可选加固（SA5 §7 末段）已采纳：三值（NaN/±Infinity）各自独立 leaf 用例；
+跨端 `encodeStateAsUpdate`/`applyUpdate` 后远端提取 NaN → 同断言（E1 式路由，
+SA5 §2 [4] 实证可达）。
+
+## 红灯证据（实测，行为级红非构造性；日志 .mabf-bg/sa6-nonfinite-red2.log）
+
+```
+./node_modules/.bin/vitest run packages/doc-runtime/test/extract-nonfinite-number.test.ts
+Test Files  1 failed (1)      Tests  6 failed | 2 passed (8)      Type Errors  no errors      EXIT=1
+
+× leaf 位 NaN / Infinity / -Infinity → AssertionError: expected true to be false
+  （expect(result.ok).toBe(false) 失败：extract 当前返回 ok:true——缺陷实况，非语法/导入错误）
+× plain object 内 Infinity / plain array 内 -Infinity / 跨端 NaN → 同上锚点
+✓ leaf 42 + arr [1,2,3] → ok:true 往返全等；✓ 0 / -0 / 0.1 边界 → ok:true（不误伤基线）
+```
+
+- 基线复核：`vitest run` 既有 4 份测试文件 → 4 passed / **40/40 全绿**（EXIT=0），零回归
+  （.mabf-bg/sa6-baseline.log）。
+- 修复后转绿预期：SA3 按 owner 冻结形态（extract.ts number 分支拆出 + Number.isFinite
+  守卫 + plainDomainIssue(path, loc, 'non-finite number')）→ 6 条违规用例转绿、2 条正向
+  对照保持绿；词表同步登记（design D9②/§10、extract.ts docblock，SA5 §8）。
+
+## 对下游 SA 的提示
+
+- SA3：冻结词 'non-finite number' 复用既有 D9② 申报词构造器（四字段形状 / path 锚定 /
+  loc 位置线纪律继承）；carrier.ts 粗判层不得改（number 恒 'plain value' 是两层判定
+  正确行为，D1 不变式）。
+- SA4：验证面 = 本文件 8 用例（6 红 2 绿）+ docblock 词表声明与 design D9②/§10 登记块同步。
