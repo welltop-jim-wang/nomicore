@@ -100,7 +100,7 @@ D: 对照——plain 值内 own '__proto__' 键（copyPlainValue defineProperty 
 | §1.1 Scope Creep Guard | ✅ 通过 | actual（17 文件）− allow − 白名单 = ∅：src×3 / tsconfig / 根 package.json / 测试×3 全在 ALLOW；wiki/raw/task_*、pnpm-lock 白名单豁免；package.json(SA6 脚手架) 见 F-5；BLACKLIST（package-lock.json / yarn.lock / .DS_Store / TASK.md / *.bak）零命中 |
 | §1.2 设计偏离 | ⚠️ 见 F-1（继承自设计）/ F-2（正向） | 其余逐条核符（结论 1） |
 | §1.3 E2E spec 触发 | N/A | 本任务无 `*.spec.ts` |
-| §1.4 vitest 触发性 | ✅ 通过 | `vitest.config.ts` include `packages/*/test/**/*.test.ts` 覆盖三份新测试；CI `Test` step = `pnpm test`（根 vitest，无 --filter 排除）；本轮实跑确认三文件被执行（21+9+8=38 用例）；typecheck 链：根 `pnpm typecheck` 第 6 项（tsc -p doc-runtime）+ `tsconfig.typecheck.json` glob 覆盖 src/test。AC5 经「零 CI 改动」路线成立，与设计 §7 一致 |
+| 1.4 vitest 触发性自检 | ✅ 通过 | `vitest.config.ts` include `packages/*/test/**/*.test.ts` 覆盖三份新测试；CI `Test` step = `pnpm test`（根 vitest，无 --filter 排除）；本轮实跑确认三文件被执行（21+9+8=38 用例）；typecheck 链：根 `pnpm typecheck` 第 6 项（tsc -p doc-runtime）+ `tsconfig.typecheck.json` glob 覆盖 src/test。AC5 经「零 CI 改动」路线成立，与设计 §7 一致 |
 | §1.5 协议假设 | ✅ 通过 | §9 现行 R2.1 文本 P2/P3/Q1 **verbatim 重跑**逐行一致（P3 输出 `getText => ok ` 空串——与 R2.1 校准记载一致）；SA2 附录 B-1/B-2 全组探针复现（P1/P4/P15/P16/P22/P7/A1/A2/A3/C1/C1/D1/D2/E1/E2/N1–N4）；B1 需用**已挂接** Y.Array 复测方复现 THROW（游离数组 insert 不抛——fixture 纪律「先挂接再读取」的佐证，非设计依据缺陷）。无「应该/通常」类无据推断 |
 | §1.6 契约改动连锁 | ✅ 无既有契约改动 | 全仓 grep：`extractYjsSnapshot` 实际 caller = index.ts re-export + 3 测试文件（ADR 文档与 vfsl 注释为文字引用非调用）——§10「caller 集合 = 测试」属实；根 typecheck 串联为纯增量（第 6 项追加），6 包本轮全过 EXIT=0 |
 | §1.7 源码 grep 断言禁令 | ✅ 通过 | 三份测试零 `readFileSync`；唯一 `toContain` 命中为 `expect(issue.path).not.toContain('b')`（运行时 path 数组断言，非源码文本断言）；全部断言锚定公共接缝可观测输出 |
@@ -256,7 +256,7 @@ $ <还原修复版> && git diff --stat packages/doc-runtime/src/ → 无差异
 
 - 2 用例断言全部锚定公共接缝可观测输出（Object.hasOwn / Object.keys / 索引读值 / getPrototypeOf === Object.prototype / JSON.stringify 往返），与 R1 回流指令的三断言（own 键保留 + JSON 往返含键 + 原型未劫持）逐条对应，且额外锚了键值保真。
 - §1.7 合规：无 readFileSync；唯一 `toContain` 作用于 `JSON.stringify(snapshot)` 运行时输出串（非源码文本）。
-- §1.4 触发：include glob `packages/*/test/**/*.test.ts` 覆盖，本轮全量实跑确认 `✓ extract-record-keyspace.test.ts (2 tests)`（第 51 个文件）。
+- 1.4 vitest 触发性自检：include glob `packages/*/test/**/*.test.ts` 覆盖，本轮全量实跑确认 `✓ extract-record-keyspace.test.ts (2 tests)`（第 51 个文件）。
 
 ### 4. 设计 R2.2 落文（commit 7646f06）——✅ 逐条兑现，且额外收口两项 R1 遗留
 
