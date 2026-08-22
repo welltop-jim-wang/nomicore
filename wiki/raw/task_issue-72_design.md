@@ -869,6 +869,7 @@ git grep -n "\bcompileSchemaEnvelope\b" -- 'packages/**/*.ts' 'apps/**/*.ts'
 - `packages/vfsl/src/index.ts` — 修改，§2.4/§5：追加 2 个 import + `CompileSchemaEnvelopeOk`/`CompileSchemaEnvelopeResult` 类型 + `compileSchemaEnvelope` 编排（~85 行）+ 头注释公共面清单补一行；**既有导出与函数（含 getCompiled/compiledCache/deepFreeze）逐字不动**
 - `packages/vfsl/package.json` — 修改，版本 0.2.0 → 0.2.1（新增公共面 patch，沿 F1/H1 先例）；依赖零变化
 - `packages/vfsl/test/compile-schema-envelope.test.ts` — `[SA6 owned]` 验收红灯测试。SA3 **零改动**（TS2724 随导出落地自愈，§10.3；如需动仅限测试基础设施且须总控知会，断言逻辑禁改）
+- `packages/vfsl/test/compile-schema-envelope-sentinel.test.ts` — `[SA6 owned]`（**F1 登记追加**）哨兵补锚：SA2 R1 评审 M1(c)/RT 排队项的新内部测试文件承载（RT-1b round-trip 保序 / RT-1c 异序边界 / RT-2 数值闸门 / RT-3 谎报键集两向 / RT-4 不可枚举键，五锚——派发链见 dispatch 第 7/9 行），SA4 F1 闭合登记
 - `wiki/raw/task_issue-72_design.md` — 本设计文档（随分支 commit）
 
 ### DENY LIST
