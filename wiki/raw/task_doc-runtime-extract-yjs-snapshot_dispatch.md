@@ -28,4 +28,5 @@ runner 在 daemon 重启后**同时存在两个总控会话**调度同一 worktr
 | 11 | 12:41 | SA2 | Phase 2 攻击评审 R2 | 12:52 | SA1 R2 交付，SA2 R2 verdict: pass（8 攻击点核销；新发现 R-1/R-2 仅文档层不阻塞）→ 设计定稿 |
 | 12 | 12:53 | SA1 | Phase 2 文档 touch-up | 12:57 | SA2 建议①：R-1（§9 P2/P3 命令解构错）+ R-2（function/symbol 可达性标注三处改判），零机制变更，无需再开 SA2 轮次 |
 | 13 | 12:53 | SA6 | Phase 1 补充红灯测试 | 12:58 | SA2 建议②：R2 修复行为面零锚定，按 §11 ALLOW 备位增补两份补充测试（Record-union/bigint/Date/前置判定/词表），与原 21 用例并行红灯 |
-| 14 | 13:01 | SA3 | Phase 3 TDD 实现 | (pending) | 设计定稿（SA2 pass + R2.1）+ 38 用例红灯（3 文件，总控 13:01 亲验 EXIT=1）→ 派 SA3 实现转绿 |
+| 14 | 13:01 | SA3 | Phase 3 TDD 实现 | 13:09 | 设计定稿 + 38 用例红灯（总控 13:01 亲验 EXIT=1）→ SA3 交付 commit 079e957；总控亲验：pnpm test 50 files/707 tests 全过 + 根 typecheck 6 包通过，EXIT=0 |
+| 15 | 13:11 | SA4 | Phase 3 静态验尸 | (pending) | 红灯已绿（总控亲验），派 SA4 红队审查；含 D9 家族偏离 + R-2 改判裁决请求 |
