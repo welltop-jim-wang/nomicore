@@ -220,9 +220,20 @@ export function readLogicalValueAtPath(derived, doc, path): ReadLogicalValueResu
   }
 }
 
-/** 统一失败构造：path 回显整条尝试路径的**新鲜副本**（不别名调用方数组）；message 恒非空。 */
-function notAllowed(path, message): ReadLogicalValueResult {
-  return { ok: false, code: 'PATH_NOT_ALLOWED', path: [...path], message };
+/**
+ * 统一失败构造：path 回显整条尝试路径的**新鲜副本**（不别名调用方数组）；message 恒非空。
+ *
+ * SA4-F2 勘误守卫（强制）：catch 路径上 path 可能是**非数组**——JS/运行时动态调用方传入
+ * null/undefined/number 等不可展开值时，Phase A 的 `segs.length` 已抛 TypeError 进入顶层
+ * catch，此时无守卫的 `[...path]` 会在 **catch 块内部二次抛出**（TypeError: path is not
+ * iterable），逃逸公共函数，击穿 FC-1「同步、不抛错」/INV-3/D11「收编一切异常」承诺
+ * （SA4 已实测复现）。守卫将一切类型外 path 归一为 `[]`：裸 string 等可迭代类型外值
+ * （`'zz'` 曾被拆分为 `['z','z']` 回显——SA4 N2）同样归一，消除怪异回显。
+ * 实现层由 SA3 落地（一行防御，read.ts 单点）。
+ */
+function notAllowed(path: unknown, message: string): ReadLogicalValueResult {
+  const safePath: Array<string | number> = Array.isArray(path) ? [...path] : []; // SA4-F2 守卫
+  return { ok: false, code: 'PATH_NOT_ALLOWED', path: safePath, message };
 }
 ```
 
@@ -311,6 +322,8 @@ function isPathAllowed(node, vCursor, segs, i, resolveS, resolveV, pc, memo): bo
 | leaf/plain/xml-fragment | 终态，游标不再前进 | 标量联合折叠（structure leaf ↔ values enum/union）等不对称**只发生在终态**，锁步安全 |
 
 lockstep 断裂（手造派生物）→ throw → C3 崩溃边界。**实证完备性**（§1.2）：内联 Record、ref 别名 Record、ROOT 级 Record、union 成员内 Record、嵌套 Record、数组元素 Record——values 树在全部位置携带 keyPattern（valueOf 对 Record 恒物化 object+keyPattern，别名全量入 `values` 表）。
+
+**演进警戒（SA4 N3 观察项）**：`makeValuesResolver` 镜像 extract `makeRefResolver` 的「环检测 throw 前 memo 已写入」模式（`memo.set(cur, next)` 先于链终止验证）。当前该模式无挂起风险：手造派生物的环/缺名 throw 首次冒泡即终止整次调用（顶层 catch），被污染的 memo 无第二次消费机会。**约束**：后继演进不得在 read.ts 引入分支级 try/catch 消化 resolveV/resolveS 异常（如 union 试验局部回退）——那会使污染 memo 获得第二次消费机会，模式退化为无限循环挂起；若确需局部消化，必须先改造两解析器为「链验证通过后才写 memo」。
 
 **values 游标推进助手**（§4.3 伪代码中 `vChild` / `vElement` 的语义规格）：
 
@@ -508,7 +521,7 @@ export function matchPattern(compiled: CompiledPattern, input: string): boolean 
 
 ### 4.8 崩溃边界与 ROOT 探针（D11/D12）
 
-- 全函数体顶层 try/catch（§4.1 伪代码），收编：手造派生物守卫 throw、双游标 lockstep 断裂 throw、pattern 引擎 throw、probeRoot 第五类 ROOT throw、任何意外异常（含超深路径的 RangeError）→ `PATH_NOT_ALLOWED` + `DOCRT-E100` message。**绝不外抛**（FC-1；对齐 extract INV-6）；
+- 全函数体顶层 try/catch（§4.1 伪代码），收编：手造派生物守卫 throw、双游标 lockstep 断裂 throw、pattern 引擎 throw、probeRoot 第五类 ROOT throw、任何意外异常（含超深路径的 RangeError）→ `PATH_NOT_ALLOWED` + `DOCRT-E100` message。**绝不外抛**（FC-1；对齐 extract INV-6）。**SA4-F2 勘误**：崩溃边界的 catch 路径自身必须无抛点——`notAllowed` 对类型外 path（null/undefined/number 等不可展开值）以 `Array.isArray(path) ? [...path] : []` 守卫归一（§4.1），否则 catch 内 `[...path]` 二次抛出会逃逸公共函数（SA4 实测 `path=null → TypeError: path is not iterable` 外抛）；「收编一切」的承诺必须连同收编者自身一起成立；
 - `probeRoot` 四级级联（carrier.ts），**R3/D14 后置于 Phase A 之后执行**——schema 拒绝的路径不再触碰 doc（含不再触发惰性创建；被拒路径零 doc 触碰 = INV-10，§5 AC2-6「零 doc 访问」声明由此转真）：Y.Map 命中（含惰性创建，**零 update 事件，P4 实证**）→ 继续；异型（Y.Array/Y.XmlFragment/Y.Text ROOT）→ C2 整树不可读（open 期必已被拒）→ `PATH_NOT_ALLOWED`（重排后仅「路径非法**且** ROOT 异型」双坏输入的 message 措辞变化，同 code 无契约影响）；全失败 throw → C3。空 doc + 空 path：惰性空 map → walk → `{}`（AC1 用例 3）；
 - 读取零写入（INV-5）：全程只调用 `get`/`length`/`keys`/`toString` 只读 API；probeRoot 惰性创建是唯一「构造」，实测零 update 事件（carrier.ts P4）。
 
@@ -662,9 +675,11 @@ SA6 20 用例冻结不动；下表为 SA2 R1 评审「红线测试思路」节�
 ### ALLOW LIST
 
 - `packages/doc-runtime/src/read.ts` — 新建（~260 行，含 R2 memo 挂点）：`readLogicalValueAtPath` + Phase A `isPathAllowed`（含 values 双游标、values 解析器与 per-call patternCache/memoA）+ Phase B `resolveLive`（含 memoB）+ 崩溃边界
-- `packages/doc-runtime/src/index.ts` — 修改（+3 行）：转出口 `readLogicalValueAtPath` + `ReadLogicalValueResult` 类型（§3.1）
+- `packages/doc-runtime/src/index.ts` — 修改（+2 行代码 export + JSDoc 注记，SA4 N1 措辞校准）：转出口 `readLogicalValueAtPath` + `ReadLogicalValueResult` 类型（§3.1）
 - `packages/doc-runtime/src/extract.ts` — 修改（≤8 行，纯 export 增补 + JSDoc 注记，D7）：`walk` / `makeRefResolver` 包内导出，逻辑零变化
 - `packages/vfsl/src/index.ts` — 修改（≤14 行，D3 + R5）：`compilePattern` 别名导出 + `CompiledPattern` 类型导出 + `matchPattern` 双参薄包装函数（pattern.ts 本体零修改）
+- `packages/doc-runtime/package.json` — 修改（1 行，SA4-F1 勘误追加）：version patch bump（0.1.1→0.1.2）——本模块代码变更（read.ts 新建 + index/extract 导出），流水线硬门禁 #9「所有改过代码的模块必须 bump patch 版本号」+ 公共 API 面新增（readLogicalValueAtPath）遵循 #72/#73 发版惯例
+- `packages/vfsl/package.json` — 修改（1 行，SA4-F1 勘误追加）：version patch bump（0.2.1→0.2.2）——同上（公共导出 compilePattern/matchPattern/CompiledPattern）
 - `packages/doc-runtime/test/read-logical-value-at-path.test.ts` — `[SA6 owned]` 验收红灯测试（20 用例）。SA3 不得改断言逻辑；仅允许测试基础设施级修复
 - `packages/doc-runtime/test/read-logical-value-at-path.test-d.ts` — `[SA6 owned]` 类型层契约测试。同上纪律
 - `packages/doc-runtime/test/read-logical-value-at-path-supplementary.test.ts` — 新建（R1 修订追加，SA4/SA7 按 §5.1 构想落地 SUP-1–SUP-4 锚点；SA3 不编写测试）
@@ -676,18 +691,19 @@ SA6 20 用例冻结不动；下表为 SA2 R1 评审「红线测试思路」节�
 - `packages/doc-runtime/src/carrier.ts` — 只读复用（carrierOf/probeRoot），零修改
 - `packages/doc-runtime/test/extract-*.test.ts`（5 文件）— #73 回归基线，不动
 - `packages/vfsl-protocol/**`、`packages/persistence/**`、`packages/dsh-persistence/**`、`packages/vfsl-codegen/**` — 与运行时读取无交集
-- 根 `tsconfig.base.json` / `package.json` / `packages/*/tsconfig.json` / `packages/*/package.json` — 无配置需求（exports 已走 src/index.ts，tsconfig include 已覆盖 test/**）
+- 根 `tsconfig.base.json` / `package.json` / `packages/*/tsconfig.json` / `packages/*/package.json` — 无配置需求（exports 已走 src/index.ts，tsconfig include 已覆盖 test/**）。**SA4-F1 例外**：`packages/doc-runtime/package.json` 与 `packages/vfsl/package.json` 的 **version 字段 patch bump** 移入 ALLOW（发版惯例，见上）；两文件的其余字段（dependencies/scripts/exports 等）与全部其他 package.json 仍在本 DENY 封禁范围内
 
 ---
 
-## 附：设计自检（SKILL 一致性要求；R1 修订后复检）
+## 附：设计自检（SKILL 一致性要求；R1 修订 + SA4 F1/F2 勘误后复检）
 
 - **冻结契约不收窄**：FC-1..FC-6 逐条对照（§1.3/§3.1/§5）；`message?` 为纯增补且已论证（§3.1/A8）；R1–R6 全部修订不触碰公共签名与冻结联合形态（SA2 复审指引明文确认范围）；
 - **拒绝虚假降级**：C1/C2/C3 分类表（§3.2）显式穷举失败归宿；required 缺席/载体错位不静默、不冒充成功；pattern 引擎 throw 统一 C3（R4 消除三处分类漂移）；
 - **架构一致性**：与 extract 共享 walk/解析器/probeRoot/迭代序纪律（单一转换语义源）；R1 进一步把「Phase B 零 keyPattern 消费」与 extract D4/B5 纪律锁死（§4.5 反例走查）；不推翻任何 ADR；
 - **协议假设**：全部假设带源码引用或设计期实测（§9）；无 HTTP/WS/端口类假设；
 - **契约审计**：改动全部为纯增量导出 + 新函数 + 一个 4 行包装（R5）；caller 清单完备（§10）；
-- **修订一致性 grep**：`grep -n "memo\|D13\|D14\|D15\|C3\|matchPattern" wiki/raw/task_read-logical-value-at-path_design.md`——pattern throw 归属全文档统一为 C3（§3.2/§4.3/§4.7/§10 四处口径一致）；matchPattern 全部为双参形态；memo 健全性论证（§4.3）与成本表（§4.9）数值口径一致；「零 doc 访问/触碰」声明仅在 R3 重排后的语境出现（§4.8/§5 AC2-6/INV-10）。
+- **修订一致性 grep**：`grep -n "memo\|D13\|D14\|D15\|C3\|matchPattern" wiki/raw/task_read-logical-value-at-path_design.md`——pattern throw 归属全文档统一为 C3（§3.2/§4.3/§4.7/§10 四处口径一致）；matchPattern 全部为双参形态；memo 健全性论证（§4.3）与成本表（§4.9）数值口径一致；「零 doc 访问/触碰」声明仅在 R3 重排后的语境出现（§4.8/§5 AC2-6/INV-10）；
+- **SA4 勘误复检**：F1——§11 ALLOW（10 条）/DENY（6 条）与硬门禁 #9 无残留冲突（version bump 已例外放行，其余 package.json 字段仍 DENY）；F2——catch 路径无二次抛出面：`notAllowed` 守卫后（§4.1），全函数任意位置的 `[...path]`/`[...fullPath]`（§4.4 walk 调用处）即使对怪异类型外 path（非数组、非迭代 array-like 等）抛出 TypeError，也发生在 try 内 → 顶层 catch 收编 → **已守卫的 notAllowed** 构造返回——「收编者自身无抛点」闭环（grep `[...path]\|\[\.\.\.fullPath\]` 复核：文档内全部展开点均在此闭环内）。
 
 ---
 
@@ -701,3 +717,16 @@ SA6 20 用例冻结不动；下表为 SA2 R1 评审「红线测试思路」节�
 | R4（#4 MEDIUM-LOW）：pattern 引擎 throw 统一归 C3（DOCRT-E100 前缀）；§3.2 C2 行删 pattern 两项；明确 message 消费面 | ✅ | §3.2 C2 行删「pattern 预算耗尽/编译失败」、C3 行增列；§4.3 keyAllowed 注释、§4.7 消费纪律、§10 caller 表三处统一为 C3；§3.1 新增「消费面约定」（应用逻辑只依赖 code/path；message 供日志/诊断面——SA4/SA7/运维）；SUP-4 锚点（前缀稳定性） | 消除 SA2 指出的三处分类矛盾（§3.2/§4.3/§4.8） |
 | R5（#5 LOW-MEDIUM）：matchPattern 改 index.ts 内双参薄包装再导出（charge 不进公共契约） | ✅ | §4.7 导出代码块重写（compile 别名 + 类型导出 + `matchPattern(compiled, input)` 包装函数）；D3/A6 行更新；§10 改动函数表拆两行；§8 措辞更新；ALLOW LIST vfsl 条目 ≤14 行；SUP-5 锚点（tsc 签名断言） | pattern.ts 仍零修改；引擎内部 matchBudget 封顶不受影响（SA2 已核实预算是 match 内部机制） |
 | R6（#6 LOW）：patternCache 移入函数体（per-call） | ✅ | §4.1 在 readLogicalValueAtPath 函数体内创建 patternCache 并显式注释「R6：per-call 局部（禁模块级可变态）」；§4.3 keyAllowed 改为经参数接收 pc；§4.10/INV-11 模块级零可变态；SUP-6（SA4 审查项） | 消除 SA2 指出的「书写位置 = 模块顶层 vs 注释声明 per-call」矛盾 |
+
+---
+
+## SA4 静态验尸勘误（F1/F2，2026-08-22）
+
+SA4 verdict = reject 的两项阻塞均为**设计文档勘误**（核心架构经独立攻击全部站住；SA3 commit `02cb596` 已按本设计实现，勘误后 SA3 需同步一行 F2 防御）：
+
+| # | 要求 | 是否落实 | 修订位置 | 修订内容摘要 |
+|---|------|:--:|------|------|
+| F1 | `packages/*/package.json` 在 §11 DENY LIST 与流水线硬门禁 #9「改过代码的模块必须 bump patch 版本号」（#72/#73 先例）冲突——SA3 的双包 version bump（doc-runtime 0.1.1→0.1.2、vfsl 0.2.1→0.2.2）被设计误判为 scope creep | ✅ | §11 ALLOW LIST 追加两行（各 1 行 version 字段，理由 = 硬门禁 #9 + 公共 API 面新增遵循 #72/#73 发版惯例）；DENY LIST 该条目改为「version 字段 patch bump 例外移入 ALLOW，其余字段与其余 package.json 仍 DENY」 | ALLOW 只增不删纪律遵守：原有 8 条 ALLOW 全保留，新增 2 条带 SA4-F1 编号 |
+| F2 | §4.1 伪代码 `notAllowed` 的 `[...path]` 在 catch 路径上对非数组 path（null/undefined/number 等不可展开值）**二次抛出** TypeError，逃逸公共函数——SA4 实测复现 `readLogicalValueAtPath(derived, doc, null)` → `TypeError: path is not iterable` 外抛，击穿 FC-1「不抛错」/INV-3/D11。**设计遗传缺陷**（SA3 忠实照抄） | ✅ | §4.1 `notAllowed` 伪代码加 `Array.isArray(path) ? [...path] : []` 守卫（类型外 path 归一 `[]`；裸 string 的字符拆分怪异回显——SA4 N2——一并消除）+ 完整缺陷机理注记；§4.8 崩溃边界条目补「catch 路径自身必须无抛点，『收编一切』的承诺必须连同收编者自身一起成立」 | **实现层由 SA3 落地**（read.ts 单点一行防御）；SA7 动态审核第 1 项即重放 null/undefined/42 断言结构化返回无外抛 |
+
+附带收纳（SA4 观察项，非阻塞）：**N1** → §11 doc-runtime index.ts 条目措辞校准为「+2 行代码 export + JSDoc 注记」；**N3** → §4.3 新增「演进警戒」段（makeValuesResolver/makeRefResolver「环检测 throw 前 memo 已写入」模式在引入分支级 try/catch 前必须先改造为链验证后写 memo，防无限循环挂起）；N2 由 F2 守卫自然消化；N4（SUP-2 时间护栏边际）归 SA7 动态复核，无设计动作。

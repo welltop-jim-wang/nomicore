@@ -87,9 +87,20 @@ export function readLogicalValueAtPath(
   }
 }
 
-/** 统一失败构造：path 回显整条尝试路径的**新鲜副本**（不别名调用方数组）；message 恒非空。 */
-function notAllowed(path: readonly (string | number)[], message: string): ReadLogicalValueResult {
-  return { ok: false, code: 'PATH_NOT_ALLOWED', path: [...path], message };
+/**
+ * 统一失败构造：path 回显整条尝试路径的**新鲜副本**（不别名调用方数组）；message 恒非空。
+ * SA4-F2 勘误守卫（强制）：catch 路径上 path 可能是**非数组**——JS/运行时动态调用方传入
+ * null/undefined/number 等不可展开值时，Phase A 的 `segs.length` 已抛 TypeError 进入顶层
+ * catch，此时无守卫的 `[...path]` 会在 **catch 块内部二次抛出**（TypeError: path is not
+ * iterable），逃逸公共函数，击穿 FC-1「同步、不抛错」/INV-3/D11「收编一切异常」承诺
+ * （SA4 已实测复现）。守卫将一切类型外 path 归一为 `[]`：裸 string 等可迭代类型外值
+ * （`'zz'` 曾被拆分为 `['z','z']` 回显——SA4 N2）同样归一，消除怪异回显。
+ * 「收编者自身无抛点」闭环（设计勘误复检）：全函数任意 `[...path]`/`[...fullPath]`
+ * 展开点均在 try 内 → 顶层 catch → 本守卫构造返回，绝不外抛（FC-1）。
+ */
+function notAllowed(path: unknown, message: string): ReadLogicalValueResult {
+  const safePath: Array<string | number> = Array.isArray(path) ? [...path] : []; // SA4-F2 守卫
+  return { ok: false, code: 'PATH_NOT_ALLOWED', path: safePath, message };
 }
 
 // —— Phase A：纯 schema 许可判定（D1/D14，零 doc 访问）——

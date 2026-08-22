@@ -13,4 +13,7 @@ base: docs/doc-runtime-validation
 | 5 | 16:10 | SA2 | Phase 2 设计攻击评审 | 16:22 | SA8 复审 clear，进入 SA2 全维度破壁 |
 | 6 | 16:22 | SA1 | Phase 2 R2 设计修订 | 16:32 | SA2 R1 reject（无 CRITICAL）：按 R1–R6 修订设计，不触冻结契约与公共签名 |
 | 7 | 16:32 | SA2 | Phase 2 R2 快速复审 | 16:37 | SA1 R2 修订完成（703 行），复审范围仅限 R1–R6 |
-| 8 | 16:37 | SA3 | Phase 3 TDD 实现 | (pending) | SA2 R2 pass，设计定稿；SA3 实现使红灯变绿，bump doc-runtime/vfsl patch 版本 |
+| 8 | 16:37 | SA3 | Phase 3 TDD 实现 | 16:46 | SA2 R2 pass，设计定稿；SA3 实现使红灯变绿，bump doc-runtime/vfsl patch 版本 |
+| 9 | 16:46 | SA4 | Phase 3 静态验尸 | 17:00 | 总控亲跑 pnpm test 全绿（56 文件 775 用例 exit 0），代码可评审 |
+| 10 | 17:00 | SA1 | Phase 3 设计勘误 | 17:04 | SA4 reject F1/F2：修订 §11 放行版本 bump + §4.1 伪代码勘误 |
+| 11 | 17:04 | SA3 | Phase 3 R2 修复 F2 | (pending) | SA1 勘误完成（版本 bump 已 ALLOW）；SA3 落 path=null 一行守卫，保留版本号 |
