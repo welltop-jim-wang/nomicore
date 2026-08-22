@@ -94,3 +94,17 @@
 - AC-R3: 明确 required-missing / 载体错位 / 合法缺席的优先级，并与现有 extract/union 声明序规则一致（在设计文档中成文）
 - AC-R4: owner 要求的全部回归测试补齐（含数组越界场景 owner 自带保留措辞「如结构允许」）
 - AC-R5: 不回归既有测试（含 SUP-1 XML 情形）
+
+## 设计后复审追加：rev1 设计引入的决策点（SA1 产出，摘录供 SA2/SA3/SA6 复用）
+
+> SA8 设计后复审追加（裁决见 `…_rev1_design_conflict_report.md`，verdict `clear`）。只摘录设计 normative 条款，不裁决；按节号回查 `task_read-logical-value-at-path_rev1_design.md`。
+
+- **D16（§3.1）**：`NavOutcome` 三态 `{ kind:'value'; value: unknown } | { kind:'missing' } | { kind:'reject' }`——包内私有类型；公共结果联合冻结两态（INV-14）。INV-12 三态完备互斥：`kind:'value'` 的 value 恒非 undefined；missing 仅由三源（M1–M3）产生。
+- **D17（§3.2）**：union 中段 value-first 四规则——(1) 首个真实 value 胜（声明序）；(2) missing 不胜出、继续后序成员；(3) 无 value 且有 missing → missing → 顶层 `{ok:true, value:undefined}`（value 键显式构造）；(4) 全 reject → `PATH_NOT_ALLOWED`（D6 单通道）。
+- **D18（§3.3）**：成员内结局三分法 M1–M10（M1 Record 缺键 / M2 optional 缺席 / M3 非负整数越界 → **missing**；M4 required 缺席 / M5 载体错位 / M6 段型不符 / M7 封闭成员无此字段 / M8 终点 issue / M10 终态下钻 → **reject**；M9 终点快照 → **value**）；组合优先级 **value > missing > reject**；「可行成员」= 产出 value 或 missing 的成员；两层仲裁（extract `walkUnion` 提交层 INV-8 vs read `navigate` 导航层 D17）以路径耗尽为唯一接缝、同用声明序 tie-breaker。
+- **INV-7 精确化（§3.3.3，normative）**：「可产出 = 产出真实 value（`kind:'value'`）；missing 不构成胜出，仅记入可行缺席集合；value 平局按声明序取首者。提交层（extract `walkUnion`/INV-8）『首个接受者胜』语义不变。」
+- **swap 不变式限域（§3.3.3，normative）**：交换成员声明序不改变读取结果**仅当**终点为叶子/标量（含 plain 整读）；终点为 union 自身的重叠投影交换序**合法改变**结果——ADR-0003 重叠合法性 + 提交层声明序平局裁决的必然推论；实现不得对终点=union 重叠投影承诺 swap 不变。
+- **D13 重述（§3.4）**：memo 键形不变、值域扩至三态；健全性论证原样成立（键完全决定值的条件与结局编码无关）；上界 O(触及节点数 × 路径长 × 成员扇出) 同式；SUP-2 护栏维持。
+- **INV-13（§3.5）**：观测等价定理——合法输入（合法 derived × 任意 live doc、不触 E100 崩溃边界）上修订前后公共结果逐字相同；分叉面仅存于手造派生物 E100 防御域（C3，非契约面）。
+- **INV-14（§7）**：三态不泄漏——`NavOutcome` 包内私有；missing/reject 不进公共联合、不进 issues 体系；顶层映射恒收束到冻结两态（test-d 冻结形态锁）。
+- **文件面（§8）**：rev1 ALLOW = `read.ts`（~50 行）+ `packages/doc-runtime/package.json` version bump（0.1.2→0.1.3，流水线门禁 #9）+ SA6 owned 测试（已入库 `23851e1`，SA3 不得改断言）+ 可选 `-rev1-hardening.test.ts`（SA4/SA7 裁量）；DENY 含 `packages/vfsl/src/**`、extract.ts / carrier.ts / index.ts 的 rev1 新增改动、read.ts 中 Phase A 全部。
