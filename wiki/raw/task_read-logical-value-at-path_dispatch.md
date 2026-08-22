@@ -48,3 +48,25 @@ base: docs/doc-runtime-validation
 | R13 | 20:37 | SA7 | Phase 3 verdict（修订轮） | 20:37 | pass — 动态验证 verdict（与 rev1_sa7_report.md verdict 字段逐字一致；CI 触发证据环境阻塞待 runner push 后复核，本地 59/828 全绿替代） |
 | R14 | 20:40 | 总控 | Phase 3.5 AC 门禁（修订轮） | 20:40 | 5/5 AC 全部 ✅（证据见 rev1_ac_checklist），无需追加派发 |
 | R15 | 20:45 | 总控 | Phase 4 收尾固化（修订轮） | 20:46 | HG12-16 自检全过；亲跑终态 typecheck+test 59 文件 828/828 绿 exit 0；wiki 档案随 commit 入库；REPORT.md status: complete + .mabf-done 封口；修订轮允许 push，git push origin HEAD 更新 PR #83 |
+
+---
+
+## 修订轮 rev2（run_id: issue-75-rev-1787397220，PR #83 owner 第二轮 Review Request changes）
+
+**类型自判**：owner 确认 rev1 生产实现正确、无 correctness blocker；剩余问题 = R1/R2/R3 回归测试未真实执行 `missing → later value`，对 D17 value-first 核心分支缺乏变异判别力。修订手段含生产代码变更（抽取包内纯仲裁 seam）→ 判定 **深度重构**（可测性重构 + 测试硬化）。工作流（裁剪 SA5——无缺陷复现需求，owner Review 即根因分析）：SA8 前置门禁 → SA6 红灯锚定 → SA1 设计 → SA8 设计复审 → SA2 攻击评审 → SA3 实现 → 总控亲跑验收 → SA4 静态验尸 → SA7 动态验证（含 mutation proof）→ AC 门禁 → 收尾（commit + push，修订轮允许 push；严禁提交 .mabf/** 与 .mabf-bg/**）。简报：`task_read-logical-value-at-path_rev2.md`。
+
+| # | 派发时间 | SA | 阶段 | 完成时间 | 决策逻辑 |
+|---|---------|-----|------|---------|---------|
+| V1 | 22:05 | SA8 | Phase 0 前置冲突门禁（rev2） | 22:11 | owner 第二轮反馈修订任务，先过冲突门禁：包内 seam 抽取 vs INV-14 三态不泄漏 / DENY 面 / ADR 全集 |
+| V2 | 22:12 | SA6 | Phase 1 红灯锚定（rev2） | 22:19 | SA8 前置 clear（注记 R2-1/2/3 随派发转交）；SA6 锚定表驱动仲裁测试（owner 六行 + 首行继续性证明）+ R1/R2/R3 措辞勘误（AC-R2-3），本地 commit 不 push（终轮绿后总控统一 push，避免中途红态打到 PR #83） |
+| V3 | 22:20 | SA1 | Phase 2 架构设计（rev2） | 22:29 | SA6 红灯锚定入库（7f77384，六行表 + 惰性锚，红签名 arbitrateUnion 导出缺失；既有 828 零回归）；SA1 设计 seam 抽取与接线（注记 R2-1 落位成文 + R2-2 惰性攻击面） |
+| V4 | 22:30 | SA8 | Phase 2 设计后复审（rev2） | 22:34 | SA1 rev2 设计落盘（D19 seam 落位 read.ts / D20 惰性 generator 管线 / D21 mutation proof 协议）；复审设计与 ADR 决策一致性（注记 R2-1/2/3 义务履行核对） |
+| V5 | 22:35 | SA2 | Phase 2 设计攻击评审（rev2） | 22:43 | SA8 设计复审 clear（注记 D-1：重点攻击 §3.2.2/§3.2.3 惰性等价与缺口）；进入 SA2 全维度破壁 |
+| V6 | 22:44 | SA1 | Phase 2 R2 设计修订（rev2，send_message 续传） | 22:56 | SA2 R1 reject（窄域，架构本体存活）：5 项验证协议层发现（#1 禁物化静态验尸三连缺陷 / #2 M-B 矩阵行 3,6 预测勘误 / #3 还原协议假 PASS 路径 / #4 M-C 升格必做 / #5 补引 exports map 后盾）；send_message 续传同会话修订 |
+| V7 | 22:57 | SA2 | Phase 2 R2 复审（rev2，send_message 续传） | 23:01 | SA1 R2 修订落盘（451 行，5 项发现逐条落实 + 回应表）；SA2 复审仅核对 5 项 |
+| V8 | 23:02 | SA3 | Phase 3 TDD 实现（rev2） | 23:06 | SA2 R2 pass（5 项发现闭环，静态门禁四命令入 SA4 检查单）；设计定稿；SA3 逐字落 D19/D20 伪代码使红灯转绿 + bump 0.1.4，本地 commit 不 push |
+| V9 | 23:10 | SA4 | Phase 3 静态验尸（rev2） | 23:25 | 总控亲跑 pnpm typecheck + pnpm test 全绿（60 文件 834 用例 exit 0，红转绿实证）+ §3.2.3 四命令抽验通过，代码可评审 |
+| V10 | 23:26 | SA7 | Phase 3 动态验证（rev2） | 23:37 | SA4 pass（四命令复跑+阴性对照全过，1.4 vitest 触发性确认，独立复跑 61/836 绿；H-d 负锁 test-d 落地待收尾入库）；SA7 执行 mutation proof（M-A+M-C 必做，路径 P 前置已就绪） |
+| V11 | 23:25 | SA4 | Phase 3 verdict（rev2） | 23:25 | pass — rev2 终审 verdict（与 rev2_sa4_review.md 头部 Verdict 字段逐字一致） |
+| V12 | 23:37 | SA7 | Phase 3 verdict（rev2） | 23:37 | pass — 动态验证 verdict（与 rev2_sa7_report.md verdict 字段逐字一致；mutation proof M-A/M-C 必做 + M-B/M-D 裁量四体闭环，CI 触发证据待 push 后复核，本地 61/836 全绿替代） |
+| V13 | 23:45 | 总控 | Phase 3.5 AC 门禁 + Phase 4 收尾（rev2） | (pending) | AC-R2 5/5 全 ✅（rev2_ac_checklist）；HG12-16 自检全过（双清 verdict 真实一致 / HG13 N/A / HG14 SA4§1.4+SA7 触发证据在位 / HG15 设计§5+SA4§1.5 在位 / HG16 无 SA 偷开 PR）；终态亲跑 61/836 绿 exit 0；wiki 10 份 + H-d 负锁入库后 push 更新 PR #83 |
