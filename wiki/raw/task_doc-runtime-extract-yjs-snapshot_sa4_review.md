@@ -1,5 +1,7 @@
 # SA4 静态验尸报告 — extractYjsSnapshot 实现（SA3 commit 079e957）
 
+> **现行裁决：R2 Verdict: pass（2026-08-22，F-1 修复面复审通过——见文末「SA4 R2 复审」章节；R1 reject 已由修复回流 79319a4 + 设计 R2.2 + SA6 回归锚闭合）。以下为 R1 原始记录，保留不删。**
+
 **Date**: 2026-08-22
 **Verdict**: **reject**（单项 REJECT 级发现 F-1：Record 动态键 `'__proto__'` 在 `ok:true` 下静默丢失/原型劫持——设计伪代码同患，精准回流 SA1 touch-up + SA3 一行级修复 + SA6 回归锚；其余全部通过，无架构问题，不需要 needs-redesign）
 **被审对象**: `packages/doc-runtime/src/{carrier,extract,index}.ts` + `packages/doc-runtime/tsconfig.json` + 根 `package.json` typecheck 串联（commit 079e957，diff 基线 `origin/docs/doc-runtime-validation`，merge-base f07462d）
@@ -204,3 +206,84 @@ $ pnpm typecheck → vfsl && vfsl-protocol && vfsl-codegen && persistence && dsh
 | SA7 | 按「动态审核重点」清单执行（F-1 修复后第 1 项改验修复产物） | 动态面收口 |
 
 **Verdict: reject** —— 阻塞项仅 F-1 一项，修复半径一行级 + 测试锚；架构、依赖边界、门禁、词表裁决（①②均接受）全部通过。修复回流完成后 SA4 复审仅需针对 F-1 修复面。
+
+---
+
+# SA4 R2 复审 — F-1 修复面（2026-08-22）
+
+**Date**: 2026-08-22
+**Verdict（R2，取代 R1）**: **pass**
+**被审对象**: F-1 修复回流四件套——commit 79319a4（`extract.ts` putSnapshotKey + 三处替换）、设计 R2.2 落文（commit 7646f06：D13/B16 + §4.3/§4.4 回写 + F-2 守卫序登记 + B17）、SA6 回归锚 `extract-record-keyspace.test.ts`（commit 8b49798，2 用例）、基线复验（51 files/709 tests + 6 包 typecheck）。
+**审查范围**: 按本报告 R1 末回流指令，仅 F-1 修复面；R1 已裁决项（D9 家族/R-2 改判/其余门禁）不重开。
+
+## 修复面逐项核验
+
+### 1. SA3 实现（commit 79319a4）——✅ 精准兑现回流指令
+
+| 检查项 | 结果 | 证据 |
+|---|---|---|
+| 修复半径 | ✅ 生产代码仅 `extract.ts` 1 文件（+17/−3） | `git show --stat 79319a4` |
+| putSnapshotKey 助手 | ✅ defineProperty + 四描述符（value/writable/enumerable/configurable），与 §4.6 plain 值写入同款；docblock 完整记载机理（accessor 静默丢键/原型劫持/JSON 蒸发）+ 可达性 + parser 保护 + D 对照矛盾 | extract.ts:318-329 |
+| 三处替换落位 | ✅ `:106` Record 分支（F-1 唯一可达向量）；`:117` 封闭 map（防御纵深，行为不变）；`:210` trialMember（防御纵深）——即 R1 回流指令的「可选统一」全采纳 | grep 实证：**零残留赋值式快照键写入**（`out[` 模式无命中；仅余 `out.push` ×2 数组下标安全 + copyPlainValue `:294` 既有 defineProperty） |
+| 非 `__proto__` 键行为等价 | ✅ defineProperty 四描述符数据属性 ≡ 赋值式创建的属性（enumerable/writable/configurable 同形）；各分支键唯一（Y.Map 键/字段名不重复），无重定义路径；插入序保持 | 探针 F：Record 键序 `["b","a","c"]` 插入序不变 + 同输入两次提取逐字节相同（INV-8 无回归） |
+| 全量回归 | ✅ 既有 38 用例 + 全仓 709 用例零回归 | 见下「基线独立复现」 |
+
+### 2. 漏洞闭合验证（修复后实现探针重跑）——✅ 全绿
+
+```
+A（R1 红点·标量）: Record m 含 '__proto__'='v2' → ok:true | keys=["normal","__proto__"] | hasOwn=true | val='v2' | 原型完好(true)
+B（R1 红点·对象）: 嵌套 map 值 → ok:true | keys=["__proto__","normal"] | 原型未被劫持(Object.prototype) | JSON 往返含键=true | 往返值={"x":"y"}
+D（对照回归）    : plain 值 own '__proto__' 键仍保留（copyPlainValue 路径无回归）
+E1（扩展）       : Record 形 ROOT 顶层（walk Record 分支根位）→ hasOwn=true | val='top'
+E2（扩展）       : union 全软拒回退成员 0（Record 形）路径 → u keys=["__proto__"] | hasOwn=true
+F（扩展）        : 键序 ["b","a","c"] 插入序保持；同输入两次输出逐字节相同
+```
+
+E1/E2 为本轮新增探针：覆盖 Record 分支的两个间接触达路径（ROOT 直下 + union 出口 3 回退），与 A/B 同走 `:106` 修复位——全部闭合。**F-1 的三个可观测病灶（静默丢键 / 原型劫持 / JSON 蒸发）零残留。**
+
+### 3. SA6 回归锚真实性——✅ 修复前真实红（断言红，非构造性红）
+
+本轮以暂换旧实现方式独立复验（换前快照 / 跑后立即还原，`git diff` 确认零残留）：
+
+```
+$ git show 8b49798:packages/doc-runtime/src/extract.ts > <worktree>/.../extract.ts   # 修复前状态
+$ pnpm exec vitest run packages/doc-runtime/test/extract-record-keyspace.test.ts --passWithNoTests=false
+  × 标量值用例 → AssertionError: expected false to be true（Object.hasOwn 位）
+  × 嵌套 map 用例 → AssertionError: expected false to be true
+  Test Files 1 failed (1) / Tests 2 failed (2) / EXIT=1
+$ <还原修复版> && git diff --stat packages/doc-runtime/src/ → 无差异
+```
+
+- 2 用例断言全部锚定公共接缝可观测输出（Object.hasOwn / Object.keys / 索引读值 / getPrototypeOf === Object.prototype / JSON.stringify 往返），与 R1 回流指令的三断言（own 键保留 + JSON 往返含键 + 原型未劫持）逐条对应，且额外锚了键值保真。
+- §1.7 合规：无 readFileSync；唯一 `toContain` 作用于 `JSON.stringify(snapshot)` 运行时输出串（非源码文本）。
+- §1.4 触发：include glob `packages/*/test/**/*.test.ts` 覆盖，本轮全量实跑确认 `✓ extract-record-keyspace.test.ts (2 tests)`（第 51 个文件）。
+
+### 4. 设计 R2.2 落文（commit 7646f06）——✅ 逐条兑现，且额外收口两项 R1 遗留
+
+| R1 要求 | 落实 | 核验 |
+|---|---|---|
+| 快照 map 构造安全写入纪律落文 | ✅ D13 新决策行（统一纪律 + 被否方案栏记录「赋值式 + 仅 Record 局部修」原案证伪）+ B16 边界条目（含端到端零信号论证）+ §4.3 全景表 Record 行标注 + §4.3 伪代码 putSnapshotKey×2 回写 + §11 ALLOW 追加回归锚文件 | diff 逐行核对，与实现 `:106/:117` 一一对应 |
+| §4.4 守卫序回写（F-2） | ✅ 伪代码守卫移至 memo.get 之前 + 「守卫顺序」叙述条（memo-first 死循环机理 + A-3 探针证据 + 合法输入等价论证）+ D8 更新 + 「镜像关系修正」条（vfsl walkRefChain 同患登记为后续票观察，DENY 不动） | 与实现 `:232-246` 逐行一致 |
+| F-3（throwing getter）裁量 | ✅ **B17 落文：维持 E100 归类**（响亮不静默、可达面极窄、扩词收益近零；message 含原异常文案可排障） | 与 R1 F-3「不阻塞、SA1 裁量」处置一致——SA4 接受该裁量 |
+| §9 证据链 | ✅ 新增「SA4 A-1~A-5」证据行（F-1 复现/F-2 环守卫/E100 八探针/基线） | — |
+| 自检附注 | ✅ 「快照写入纪律」五处统一（D13/§4.3×2/§4.6/B15-B16）+「ref 守卫序」三处统一 | grep 复核无赋值式/旧序残留 |
+
+### 5. Scope 复核（本轮新增 4 commits）——✅ 全部在辖
+
+`01eb5d5`（wiki：R1 评审+派遣日志）/ `7646f06`（wiki：设计 R2.2+派遣）/ `8b49798`（测试锚 + wiki）/ `dc9342b`（wiki：派遣）——生产代码改动仅 79319a4 的 `extract.ts`（ALLOW）；`extract-record-keyspace.test.ts` 已由 R2.2 §11 ALLOW 显式收编（SA6 owned）；其余 wiki 均白名单。BLACKLIST 零命中。
+
+### 6. 基线独立复现——✅ 与总控亲验一致
+
+```
+$ pnpm test      → Test Files 51 passed (51) | Tests 709 passed (709) | Type Errors no errors | EXIT=0
+$ pnpm typecheck → 六包串联（含 doc-runtime）| EXIT=0          （/tmp/sa4-r2-verify.log，2026-08-22 13:34）
+```
+
+## R2 结论
+
+- **F-1 闭合确认**：唯一可达向量（Record 分支）修复 + 两处防御纵深统一 + 快照键写入面零赋值式残留；R1 三病灶（静默丢键/原型劫持/JSON 蒸发）经 6 组探针（A/B/D/E1/E2/F）零残留；INV-8 确定性与既有行为零回归（709/709）。
+- **回流四件套全部兑现**：SA3 实现（一行级 + 助手）、SA1 设计（D13/B16/B17 + §4.3/§4.4 回写）、SA6 回归锚（真实红→绿）、基线（51/709 + typecheck）。
+- R1 已裁决项（D9 家族接受 / R-2 改判接受 / 其余门禁通过）不重开、无新触发。
+- **动态审核重点更新（交 SA7）**：R1 清单第 1 项**已闭合**（本轮代验，SA7 免做）；第 2–5 项仍有效（跨端组合只读性 / 大文档性能面 / Node 20 矩阵证据摘录 / B17 E100 message 可排障性——SA7 按 CI run log 摘录 doc-runtime 四文件的 vitest 触发证据即可）。
+
+**Verdict: pass** —— F-1 修复面复审通过；SA7 可进入动态验证。
