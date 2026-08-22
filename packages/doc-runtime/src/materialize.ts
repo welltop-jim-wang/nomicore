@@ -2,10 +2,13 @@
  * @nomicore/doc-runtime — materializeRoot(derived, snapshot, doc)：验证后安全物化
  * logical ROOT 到 Yjs（ADR-0007 / issue #74）。extract 的方向反转孪生（JSON→doc，写侧）。
  *
- * 设计 §4.1–§4.8（wiki/raw/task_doc-runtime-materialize-root_design.md）：
- * - 四阶段编排（D1）：① validateLogicalSnapshot（逻辑宽域，失败 → issues 引用零损透传，
+ * 设计 §4.1–§4.8（wiki/raw/task_doc-runtime-materialize-root_design.md）+ 修订轮 rev1
+ * （wiki/raw/task_doc-runtime-materialize-root-rev1_design.md，PR #84 owner Review 闭环）：
+ * - 五阶段编排（D1+RD1）：① validateLogicalSnapshot（逻辑宽域，失败 → issues 引用零损透传，
  *   不重包装——AC-1 `toEqual` 契约）② detached 构造（结构窄域，失败 → 单 issue fail-fast）
- *   ③ probeRoot 探针 + ROOT 空置判定（复用 carrier.ts，零修改）④ 单次 doc.transact 安装。
+ *   ③ probeRoot 探针 + ROOT 空置判定（复用 carrier.ts，零修改）④ 单次 doc.transact 安装
+ *   ⑤ verifyInstall 事务后 ROOT 顶层完整性校验（rev1/RD1/INV-10：size + 逐键同一性双断言，
+ *   偏离 → throw DOCRT-E201——F11，W1 三禁：不返回 ok:false、不补偿修复、不声称已回滚）。
  *   ①②③ 共享崩溃边界（意外异常 → DOCRT-E200 单 issue）；④ 物理上位于一切 try/catch
  *   之外（INV-5）：observer 抛错 → 原样 loud 传播（AC-6），绝不吞并成伪 ok/伪回滚。
  * - 按快照键迭代（D9）：封闭 map 形快照键查不到声明字段 = 单 issue「拒绝静默丢键」；
@@ -46,7 +49,26 @@ type Path = Array<string | number>;
 type Resolver = (node: StructureNode) => StructureNode;
 
 /**
- * 唯一公共物化入口（ADR-0007）：同步、错误经返回值传递（④ 的异常是唯一例外——D1）。
+ * 唯一公共物化入口（ADR-0007）：同步、错误经返回值传递（④/⑤ 的异常是唯一例外——D1/RD1）。
+ *
+ * ⚠️ 前置条件（契约前提，R2 修订增补）：本函数的事务必须是该 Y.Doc 的**最外层事务**——
+ * 调用方不得在未闭合的 doc.transact 内调用。若被外层事务包裹，本函数事务并入外层，
+ * observer 与 update 延迟至外层 cleanup 才执行：⑤ 完整性校验将空转通过并返回 ok:true，
+ * 随后 observer 的 ROOT 删改不受检测（且返回时计划 set 尚未提交）——检测面失效。
+ *
+ * 成功语义（ok:true 的完整承诺，PR #84 owner Review 修订轮 R1 定谳 / INV-10）：
+ * 1. 全部计划 set 已在单次 Y.transact 提交（ADR-0006 单 update 单元）；
+ * 2. 本函数返回时，ROOT 顶层恰为计划键集且逐键值与安装值严格同一——在上述前置条件成立的
+ *    前提下，任何同步重入的 observer 对 ROOT 顶层的 delete / 覆写 / 插入额外键都会被
+ *    ⑤ verifyInstall 检测，检测到偏离即 throw DOCRT-E201（Runtime internal/fatal 家族：
+ *    写入已提交、不回滚、不补偿、不返回 ok:false；doc 保持 observer 留下的实际状态）。
+ *
+ * 检测面边界（明文）：⑤ 覆盖 ROOT 顶层（exact-by-construction），检测基准是**身份同一性**
+ * （===）而非语义等价——语义等价的异实例重插亦触发 E201（有意保守）。不覆盖：observer 对
+ * 已安装子树内部的嵌套就地修改、异步修改（契约时点 = 本函数返回时）、以及前置条件被破坏时
+ * 的全部 observer 反应——该面由 ADR-0007 observer 纪律治理（Yjs observer 不得向事务调用栈
+ * 抛异常；Runtime 编排边界：业务调用方不得取得可写 Yjs 引用）。observer 抛错时错误原样
+ * 传播（F10），⑤ 不运行。
  */
 export function materializeRoot(derived: DerivedSchema, snapshot: unknown, doc: Y.Doc): MaterializeResult {
   const ready = prepare(derived, snapshot, doc); // ①②③ + E200 崩溃边界（唯一 try/catch 所在）
@@ -57,7 +79,39 @@ export function materializeRoot(derived: DerivedSchema, snapshot: unknown, doc: 
   doc.transact(() => {
     for (const [key, value] of ready.entries) ready.rootMap.set(key, value);
   });
-  return { ok: true };
+  verifyInstall(ready); // ⑤ 新增（RD1/INV-10）：顶层完整性校验——只读、无副作用、不在任何
+  //                     try/catch 内；observer 抛错时（F10）④ 已 loud 传播，⑤ 不运行
+  return { ok: true }; // ok:true 语义 = INV-2 + INV-10（JSDoc 前置条件段 + 成功语义段）
+}
+
+/**
+ * ⑤ 事务后顶层完整性校验（RD1，INV-10）。双断言缺一不可（G5 实证：observer 同轮
+ * delete 计划键 + insert 额外键可保持 size 相等而同一性破坏——只查 size 会漏报）。
+ * 只读；任何偏离 → throw DOCRT-E201（W1 唯一相容形态：不返回 ok:false——事务已提交，
+ * 「失败⟹文档不变」只覆盖验证/构造失败域；不补偿修复——「不覆盖、不合并、不 fallback」；
+ * 不声称已回滚——message 明示写入已提交、doc 保持 observer 留下的实际状态）。
+ */
+function verifyInstall(ready: { rootMap: Y.Map<unknown>; entries: Array<[string, unknown]> }): void {
+  const { rootMap, entries } = ready;
+  if (rootMap.size !== entries.length) {
+    // 覆盖向量：delete 计划键（size 减）/ insert 额外键（size 增）/ 组合
+    throw new Error(
+      `DOCRT-E201: ROOT 顶层安装完整性偏离：期望 ${entries.length} 个键，事务提交后实际 ` +
+      `${rootMap.size} 个（实际键集：${JSON.stringify([...rootMap.keys()])}）——疑似 observer ` +
+      `同步重入修改 ROOT；写入已提交，不回滚、不补偿，doc 保持 observer 留下的实际状态`,
+    );
+  }
+  for (const [key, value] of entries) {
+    if (rootMap.get(key) !== value) {
+      // 覆盖向量：overwrite 计划键（值不同一）/ delete 后重插异值 / delete 单键（size 断言亦会抓，
+      // 此处兜底）。严格同一性（===）对标量（不可变）与引用类型（yjs set 按引用存储，A19/G5 实证
+      // 集成后 get 返回同一实例）均正确：同值重插（G4）不误报。
+      throw new Error(
+        `DOCRT-E201: ROOT 顶层安装完整性偏离：键 "${key}" 的值在事务提交后与安装值不同一——` +
+        `疑似 observer 覆写或删除后重插异值；写入已提交，不回滚、不补偿，doc 保持 observer 留下的实际状态`,
+      );
+    }
+  }
 }
 
 type Prepared =
