@@ -42,6 +42,13 @@ function derivedOf(text: string): DerivedSchema {
   return evaluated.derived;
 }
 
+/** 构造 live 值：Y.Map 直接量（H-c 组用；同 union-arbitration 测试文件 harness 形态）。 */
+function liveMap(entries: Record<string, unknown>): Y.Map<unknown> {
+  const m = new Y.Map<unknown>();
+  for (const [k, v] of Object.entries(entries)) m.set(k, v);
+  return m;
+}
+
 // —— H-b：mixed 反序锚（reject 先、missing 后 → missing 胜；SA2 攻击点 #4，建议优先纳入）——
 
 describe('H-b 绿灯锁：mixed missing+reject 反序（reject 先、missing 后仍 missing 胜；D17/§3.3.2）', () => {
@@ -118,5 +125,71 @@ describe('H-a 成本护栏：26 层链 × 中段 optional 缺席（value-first �
     expect(r.ok).toBe(true);
     if (!r.ok) throw new Error(`期望 ok:true，实际 code=${r.code}`);
     expect(r.value).toBe('v');
+  });
+});
+
+// —— H-c：嵌套 union 三态上浮（SA7 动态验证轮追加，2026-08-22）——
+// 背景：D17 递归聚合（子 union value/missing/reject 上浮至外层仲裁）此前仅 SA4 tsx 探针实证
+// （SA4 报告 §3「嵌套 union 5 例探针」），测试库内无 union 直接嵌 union 的行为锚。本组将探针
+// 四形态固化为绿灯锁：错误实现「子 union reject 提前终止外层循环」在 H-c-3 转红、「子 union
+// missing 覆盖外层后序 value 试探」在 H-c-3 转红、「子 union 任意结局整体 reject」在 H-c-2 转红。
+
+describe('H-c 绿灯锁：嵌套 union 三态上浮（D17 递归聚合；SA7 补充）', () => {
+  it('H-c-1 子 union 产 value → 外层首 value 胜：{a}|{a?} | {b} + live {a:"v"} 读 ["x","a"] → "v"', () => {
+    const derived = derivedOf(`
+type INNER = { a: YLeaf<string> } | { a?: YLeaf<string> };
+type OUTER = INNER | { b: YLeaf<string> };
+type ROOT = YMap<{ x: OUTER }>;
+`.trim());
+    const doc = new Y.Doc();
+    doc.getMap('ROOT').set('x', liveMap({ a: 'v' }));
+    const r = readLogicalValueAtPath(derived, doc, ['x', 'a']);
+    expect(r.ok).toBe(true);
+    if (!r.ok) throw new Error(`期望 ok:true，实际 code=${r.code}`);
+    expect(r.value).toBe('v');
+  });
+
+  it('H-c-2 子 union mixed（missing）+ 外层成员 reject → missing 上浮胜：{a?}|{q} | {b} + live {} 读 ["x","a"] → 显式 undefined（非 PATH_NOT_ALLOWED）', () => {
+    const derived = derivedOf(`
+type INNER = { a?: YLeaf<string> } | { q: YLeaf<string> };
+type OUTER = INNER | { b: YLeaf<string> };
+type ROOT = YMap<{ x: OUTER }>;
+`.trim());
+    const doc = new Y.Doc();
+    doc.getMap('ROOT').set('x', liveMap({}));
+    const r = readLogicalValueAtPath(derived, doc, ['x', 'a']);
+    expect(r.ok).toBe(true);
+    if (!r.ok) throw new Error(`期望 ok:true（子 missing 上浮胜），实际 code=${r.code}`);
+    expect(Object.prototype.hasOwnProperty.call(r, 'value')).toBe(true);
+    expect(r.value).toBeUndefined();
+  });
+
+  it('H-c-3 子 union 全 reject 不短路外层循环 → 外层后序成员 value 胜：{q}|{r} | {a} + live {a:"v"} 读 ["x","a"] → "v"', () => {
+    const derived = derivedOf(`
+type INNER2 = { q: YLeaf<string> } | { r: YLeaf<string> };
+type OUTER2 = INNER2 | { a: YLeaf<string> };
+type ROOT = YMap<{ x: OUTER2 }>;
+`.trim());
+    const doc = new Y.Doc();
+    doc.getMap('ROOT').set('x', liveMap({ a: 'v' }));
+    const r = readLogicalValueAtPath(derived, doc, ['x', 'a']);
+    expect(r.ok).toBe(true);
+    if (!r.ok) throw new Error(`期望 ok:true（后序成员 value 胜），实际 code=${r.code}`);
+    expect(r.value).toBe('v');
+  });
+
+  it('H-c-4 全员 reject（子 union 全 reject + 外层 required 缺席）→ PATH_NOT_ALLOWED：同 fixture + live {} 读 ["x","a"]', () => {
+    const derived = derivedOf(`
+type INNER2 = { q: YLeaf<string> } | { r: YLeaf<string> };
+type OUTER2 = INNER2 | { a: YLeaf<string> };
+type ROOT = YMap<{ x: OUTER2 }>;
+`.trim());
+    const doc = new Y.Doc();
+    doc.getMap('ROOT').set('x', liveMap({}));
+    const r = readLogicalValueAtPath(derived, doc, ['x', 'a']);
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error('期望 ok:false（全员 reject）');
+    expect(r.code).toBe('PATH_NOT_ALLOWED');
+    expect(r.path).toEqual(['x', 'a']);
   });
 });
