@@ -123,6 +123,38 @@ describe('FilePersistence SA7 dynamic verification', () => {
     await persistence.dispose()
   })
 
+  it('directory tmp placeholder is removed during load without an unhandled rejection, then the committed snapshot remains usable', async () => {
+    const rootDir = makeRootDir()
+    const userDir = path.join(rootDir, 'users', 'alice')
+    const snapshotPath = path.join(userDir, 'd1.snapshot')
+    const tmpPath = `${snapshotPath}.tmp`
+    fs.mkdirSync(userDir, { recursive: true })
+
+    const committed = new Y.Doc()
+    committed.getMap('META').set('docId', 'd1')
+    committed.getMap('ROOT').set('v', 'committed')
+    fs.writeFileSync(snapshotPath, Y.encodeStateAsUpdate(committed))
+    fs.mkdirSync(tmpPath)
+
+    const unhandled: unknown[] = []
+    const onUnhandled = (reason: unknown): void => { unhandled.push(reason) }
+    process.on('unhandledRejection', onUnhandled)
+    const persistence = new FilePersistence({ rootDir })
+    try {
+      const loaded = await persistence.loadDoc(ALICE, 'd1')
+      expect(loaded).not.toBeNull()
+      expect(loaded!.doc.getMap('ROOT').get('v')).toBe('committed')
+      expect(fs.existsSync(tmpPath)).toBe(false)
+      await Promise.resolve()
+      await Promise.resolve()
+      expect(unhandled).toEqual([])
+      await loaded!.release()
+    } finally {
+      process.off('unhandledRejection', onUnhandled)
+      await persistence.dispose()
+    }
+  })
+
   it('degraded/recovery is entry-scoped: only the failed (user, docId) is rejected, unrelated docs stay writable, and only its own retry restores it', async () => {
     const rootDir = makeRootDir()
     const bobDir = path.join(rootDir, 'users', 'bob')
