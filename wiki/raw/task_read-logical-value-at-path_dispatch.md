@@ -23,3 +23,17 @@ base: docs/doc-runtime-validation
 | 15 | 17:09 | SA4 | Phase 3 verdict | 17:09 | pass — R2 终审 verdict（与 sa4_review.md 头部 Verdict 字段逐字一致） |
 | 16 | 17:17 | SA7 | Phase 3 verdict | 17:17 | pass — 动态验证 verdict（与 sa7_report.md SA7 verdict 字段逐字一致；CI 触发证据环境阻塞待 runner push 后复核） |
 | 17 | 17:34 | 总控 | Phase 4 收尾固化 | 17:34 | HG12-16 自检全过；亲跑 typecheck+test 803/803 绿 exit 0；wiki 10 份入库（3 commits）；REPORT.md status: complete + .mabf-done 封口移交 issue-runner |
+
+---
+
+## 修订轮 rev1（run_id: issue-75-rev-1787397220，PR #83 owner review Request changes）
+
+**类型自判**：owner 反馈为 P1 正确性缺陷（Phase B union 仲裁以合法缺席遮蔽后序成员实际值）→ 判定 **Bug 修复**。工作流：SA8 前置门禁 → SA5 → SA6 → SA1 → SA8 设计复审 → SA2 → SA3 → 总控亲跑验收 → SA4 → SA7 → AC 门禁 → 收尾（commit + push，修订轮允许 push）。
+
+| # | 派发时间 | SA | 阶段 | 完成时间 | 决策逻辑 |
+|---|---------|-----|------|---------|---------|
+| R1 | 19:16 | SA8 | Phase 0 前置冲突门禁（修订轮） | 19:24 | owner 反馈修订任务，先过冲突门禁再审缺陷 |
+| R2 | 19:25 | SA5 | Phase 0 故障分析复现（修订轮） | 19:31 | Bug 修复先复现：核实 owner 最小反例可达性（SA8 注记 1 实证不复现，疑似防御性硬化） |
+| R3 | 19:34 | SA6 | Phase 0 红灯契约锚定（修订轮） | 19:38 | SA5 证实缺陷不可达=防御性硬化；SA6 按可构造性表落 owner 五类回归测试（三组绿灯锁+论证、两组直测），不虚构 fixture |
+| R3v | 19:39 | 总控 | Phase 0 锚定验证（daemon 重启恢复后亲跑） | 19:41 | 亲跑 rev1 测试文件+基线：62/66 绿；R5 四例红——根因为 fixture 缺陷（assertSwapInvariant 同一 Y 类型实例集成进两个 doc，Yjs 禁止二次集成），非行为断言红；R1-R4 行为锁全绿 |
+| R4 | 19:42 | SA6 | Phase 0 R2 fixture 修复（修订轮） | (pending) | SA6 原会话随 daemon 重启消亡（不可续传），新派会话修复 assertSwapInvariant 单实例复用缺陷并自验全绿 |
