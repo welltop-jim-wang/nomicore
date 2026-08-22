@@ -25,6 +25,7 @@ export const EnvelopeErrCode = {
   ENV_2: '2',      // 必需键缺失（一条列全）
   ENV_3: '3',      // 键类型错误（一条列全）
   ENV_4: '4',      // 未知方言（只读 loud-fail）
+  ENV_5: '5',      // 多余键（严格封闭：恰含四键——issue #72 compile 入口专属）
   ENV_100: '100',  // 崩溃边界（意外异常——对齐 parseVfsl E100 兜底口径）
 } as const;
 
@@ -84,6 +85,9 @@ const ENVELOPE_KEYS = [
   { key: 'id', expect: 'string' },
   { key: 'text', expect: 'string' },
 ] as const;
+
+/** 恰四键集合（由 ENVELOPE_KEYS 派生——四键契约单源，不重复手写键名；issue #72 ENV-5 用）。 */
+const ENVELOPE_KEY_SET = new Set<string>(ENVELOPE_KEYS.map((entry) => entry.key));
 
 export type EnvelopeShapeResult =
   | { ok: true; envelope: SchemaEnvelope }
@@ -208,6 +212,55 @@ export function envelopeTextGate(
     return { ok: false, issues: shape.issues.map((issue) => ({ kind: 'envelope' as const, issue })) };
   }
   const dialect = dialectIssueOrNull(shape.envelope); // ENV-4（assertVfslDialect 单点复用）
+  if (dialect !== null) {
+    return { ok: false, issues: [{ kind: 'envelope', issue: dialect }] };
+  }
+  return { ok: true, envelope: shape.envelope };
+}
+
+/**
+ * #72 严格编译前缀单点（形状 → 封闭 → 方言，设计 §3/§5）：validateEnvelopeShape 复用
+ * （ENV-1/2/3，同类聚合 + 单读物化）→ 编译入口单 issue 坍缩（首条即全部：ENV-2 优先
+ * 于 ENV-3，设计 §3.2）→ 严格封闭 ENV-5（own 字符串键恰为四键，含不可枚举；symbol
+ * 键不在数据面，设计 §3.4）→ dialectIssueOrNull 复用（ENV-4）。
+ * 与 envelopeTextGate（H1 容忍门）的差异面恰为 #72 的 AC 增量（恰四键 + 恒单条），
+ * 见设计 §3.5——两门共享底层决策点（validateEnvelopeShape + assertVfslDialect），
+ * 差异是两票各自冻结的契约而非实现漂移。
+ * 纯函数；对抗 getter/Proxy 可抛出——由公共入口（compileSchemaEnvelope）顶层崩溃
+ * 边界收编 ENV-100。
+ */
+export function envelopeStrictGate(
+  input: unknown,
+): { ok: true; envelope: SchemaEnvelope } | { ok: false; issues: SchemaParseIssue[] } {
+  // ① 形状（ENV-1 早出 / ENV-2+3 同类聚合）——复用 H1 扫描单点
+  const shape = validateEnvelopeShape(input);
+  if (!shape.ok) {
+    // ② 编译入口单 issue 坍缩：首条即全部（ENV-2 优先于 ENV-3，设计 §3.2）；类内
+    //    信息不丢——ENV-2/ENV-3 消息各自列全该类全部问题（既有聚合消息）
+    const first = shape.issues[0] as SchemaEnvelopeIssue;
+    return { ok: false, issues: [{ kind: 'envelope', issue: first }] };
+  }
+  // ③ 严格封闭（ENV-5）：own 字符串键（含不可枚举；symbol 键不在数据面，设计 §3.4）
+  //    恰为四键——形状通过后 input 必为非 null 非数组对象（ENV-1 早出保证）
+  const extra = Object.getOwnPropertyNames(input as object).filter(
+    (key) => !ENVELOPE_KEY_SET.has(key),
+  );
+  if (extra.length > 0) {
+    return {
+      ok: false,
+      issues: [
+        {
+          kind: 'envelope',
+          issue: makeEnvelopeIssue(
+            EnvelopeErrCode.ENV_5,
+            `信封多余键: ${extra.join('、')}（严格封闭：恰含 lang, version, id, text 四键）`,
+          ),
+        },
+      ],
+    };
+  }
+  // ④ 方言（ENV-4）——复用断言单点
+  const dialect = dialectIssueOrNull(shape.envelope);
   if (dialect !== null) {
     return { ok: false, issues: [{ kind: 'envelope', issue: dialect }] };
   }
