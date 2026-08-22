@@ -15,7 +15,7 @@
  *   不修改 derived 与 base；结果为纯 JSON 值。
  * - 崩溃边界：任何内部异常（手造/篡改派生物导致的环、未知名、两树分歧、深嵌套
  *   栈溢出）经顶层 catch 收编为单条 `VFSL-E100` 结果（issue path = []，与
- *   validateSnapshot 同款，F6）；不存在静默 ok:true 路径。
+ *   validateLogicalSnapshot 同款，F6）；不存在静默 ok:true 路径。
  * - 重建一律计算键展开（`{ ...o, [k]: v }`），禁 `__proto__` 字面与点赋值——
  *   patch 键 `'__proto__'` 落为自有属性而非原型设置；读取侧 Object.hasOwn 守卫。
  * - 节点集按对象身份去重（R2 冻结③）：每步 ≤ O(结构树节点数)，总界 O(路径长 × N)。
@@ -561,7 +561,7 @@ function finish(derived: DerivedSchema, boundary: Boundary, rebuilt: unknown): V
 
 // —— §3.6 输入规整与 loud 边界 ——
 
-/** 顶层崩溃边界（F6）：任何内部异常收编为单条 E100（issue path = []，与 validateSnapshot 同款）。 */
+/** 顶层崩溃边界（F6）：任何内部异常收编为单条 E100（issue path = []，与 validateLogicalSnapshot 同款）。 */
 function run(fn: () => ValidateResult): ValidateResult {
   try {
     return fn();

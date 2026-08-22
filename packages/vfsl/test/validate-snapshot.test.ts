@@ -1,8 +1,8 @@
 /**
- * SA6 红灯测试 — validateSnapshot：整份 JSON 快照校验（issue #21）。
+ * SA6 红灯测试 — validateLogicalSnapshot：整份 JSON 快照校验（issue #21）。
  *
  * 契约来源（任务简报冻结接缝 + ADR 0003 + 规格 §10 fixture）：
- * - 签名 `validateSnapshot(derived, snapshot)`：输入派生 schema（编译一次、校验
+ * - 签名 `validateLogicalSnapshot(derived, snapshot)`：输入派生 schema（编译一次、校验
  *   多次）+ 任意 JSON 值；输出 `{ ok: true } | { ok: false, issues: [{ message,
  *   path }] }`；
  * - issue 带**路径段数组**（如 `["assets","abc123","duration"]`）而非行列（不复用
@@ -19,16 +19,16 @@
  *   良构 XML；
  * - 规格 §10 fixture 的合法/非法快照各至少一例。
  *
- * 红灯现状：validateSnapshot 尚未在包公共面导出（index.ts 仅 parseVfsl / evaluate），
+ * 红灯现状：validateLogicalSnapshot 尚未在包公共面导出（index.ts 仅 parseVfsl / evaluate），
  * 全部测试当前必然失败（接缝缺失即红灯，非伪红）；SA3 实现公共导出后转绿。断言
- * 全部锚定 validateSnapshot 的可观测输出（结果形状 / issue 内容 / path 段数组），
+ * 全部锚定 validateLogicalSnapshot 的可观测输出（结果形状 / issue 内容 / path 段数组），
  * 不读取源码、不 grep 文本形状。
  */
 import { describe, expect, it } from 'vitest';
-import { parseVfsl, evaluate, validateSnapshot } from '../src/index.js';
+import { parseVfsl, evaluate, validateLogicalSnapshot } from '../src/index.js';
 import type { DerivedSchema, VfslModule } from '../src/index.js';
 
-// —— 测试契约类型（任务简报冻结的 validateSnapshot 接缝形状）——
+// —— 测试契约类型（任务简报冻结的 validateLogicalSnapshot 接缝形状）——
 
 /** issue 形状：message + path 段数组（不复用 VfslIssue——无行列；段数组零转义）。 */
 interface ValidateIssue {
@@ -103,7 +103,7 @@ function clone<T>(value: T): T {
 
 /**
  * 递归删除全部 `discriminator` 键——构造「无判别式缓存」派生物。
- * 对派生物数据（validateSnapshot 的输入）做纯数据操作，非源码断言；用于锚定
+ * 对派生物数据（validateLogicalSnapshot 的输入）做纯数据操作，非源码断言；用于锚定
  * ADR 0003 §3「缓存的缺失/存在不得改变任何可观测行为（含错误输出）」。
  */
 function stripDiscriminators<T>(value: T): T {
@@ -138,19 +138,19 @@ function validSnapshot(): Record<string, unknown> {
 
 // —— 测试 ——
 
-describe('validateSnapshot — 接缝：签名、结果形状与 JSON 往返', () => {
-  it('AC1：validateSnapshot 为包公共导出（函数）', () => {
-    expect(typeof validateSnapshot).toBe('function');
+describe('validateLogicalSnapshot — 接缝：签名、结果形状与 JSON 往返', () => {
+  it('AC1：validateLogicalSnapshot 为包公共导出（函数）', () => {
+    expect(typeof validateLogicalSnapshot).toBe('function');
   });
 
   it('AC1：合法快照 → { ok: true }（恰含 ok 键，无多余字段）', () => {
-    const result = validateSnapshot(evaluateModule(FIXTURE), validSnapshot());
+    const result = validateLogicalSnapshot(evaluateModule(FIXTURE), validSnapshot());
     expect(Object.keys(result)).toEqual(['ok']);
     expect(result).toEqual({ ok: true });
   });
 
   it('AC1：非法快照 → { ok: false, issues }——issue 恰含 message 与 path（无行列，不复用 VfslIssue）', () => {
-    const result = validateSnapshot(evaluateModule(FIXTURE), { extra: 1 });
+    const result = validateLogicalSnapshot(evaluateModule(FIXTURE), { extra: 1 });
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(Object.keys(result)).toEqual(['ok', 'issues']);
@@ -165,9 +165,9 @@ describe('validateSnapshot — 接缝：签名、结果形状与 JSON 往返', (
 
   it('AC1：结果可 JSON 序列化往返（ok 与 not-ok 两分支）', () => {
     const derived = evaluateModule(FIXTURE);
-    const okResult = validateSnapshot(derived, validSnapshot());
+    const okResult = validateLogicalSnapshot(derived, validSnapshot());
     expect(JSON.parse(JSON.stringify(okResult))).toEqual(okResult);
-    const badResult = validateSnapshot(derived, { extra: 1 });
+    const badResult = validateLogicalSnapshot(derived, { extra: 1 });
     expect(JSON.parse(JSON.stringify(badResult))).toEqual(badResult);
   });
 
@@ -175,7 +175,7 @@ describe('validateSnapshot — 接缝：签名、结果形状与 JSON 往返', (
     const derived = evaluateModule(FIXTURE);
     const snapshot = validSnapshot();
     const before = JSON.stringify(derived);
-    expect(validateSnapshot(derived, snapshot)).toEqual(validateSnapshot(derived, snapshot));
+    expect(validateLogicalSnapshot(derived, snapshot)).toEqual(validateLogicalSnapshot(derived, snapshot));
     expect(JSON.stringify(derived)).toBe(before); // 校验不得污染输入派生物
   });
 
@@ -184,29 +184,29 @@ describe('validateSnapshot — 接缝：签名、结果形状与 JSON 往返', (
     const okSnap = validSnapshot();
     const badSnap = validSnapshot();
     (badSnap as Record<string, unknown>).extra = 1;
-    expect(validateSnapshot(derived, okSnap).ok).toBe(true);
-    expect(validateSnapshot(derived, badSnap).ok).toBe(false);
-    expect(validateSnapshot(derived, okSnap).ok).toBe(true);
+    expect(validateLogicalSnapshot(derived, okSnap).ok).toBe(true);
+    expect(validateLogicalSnapshot(derived, badSnap).ok).toBe(false);
+    expect(validateLogicalSnapshot(derived, okSnap).ok).toBe(true);
   });
 
   it('AC1：派生 schema 以纯数据形态消费——JSON 往返后的派生物校验结果全等', () => {
     const derived = evaluateModule(FIXTURE);
-    expect(validateSnapshot(clone(derived), validSnapshot())).toEqual(validateSnapshot(derived, validSnapshot()));
+    expect(validateLogicalSnapshot(clone(derived), validSnapshot())).toEqual(validateLogicalSnapshot(derived, validSnapshot()));
   });
 
   it('AC1：snapshot 为任意 JSON 值——非对象顶层（null/标量/数组）均报 issue', () => {
     const derived = evaluateModule(FIXTURE);
     for (const snap of [null, 42, 'str', true, []]) {
-      expect(validateSnapshot(derived, snap).ok).toBe(false); // ROOT 固定物化为 Y.Map：非对象快照整体拒绝
+      expect(validateLogicalSnapshot(derived, snap).ok).toBe(false); // ROOT 固定物化为 Y.Map：非对象快照整体拒绝
     }
   });
 });
 
-describe('validateSnapshot — 结构校验：封闭对象 / 必填缺失 / leaf·plain 不下钻', () => {
+describe('validateLogicalSnapshot — 结构校验：封闭对象 / 必填缺失 / leaf·plain 不下钻', () => {
   it('AC：封闭对象未知键拒绝——ROOT 层未声明键报错且路径为段数组', () => {
     const snap = validSnapshot();
     snap.extraKey = 1;
-    const result = validateSnapshot(evaluateModule(FIXTURE), snap);
+    const result = validateLogicalSnapshot(evaluateModule(FIXTURE), snap);
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.issues.map((i) => i.path)).toContainEqual(['extraKey']);
@@ -223,7 +223,7 @@ describe('validateSnapshot — 结构校验：封闭对象 / 必填缺失 / leaf
       audit: clone(AUDIT),
       unexpected: true,
     };
-    const result = validateSnapshot(evaluateModule(FIXTURE), snap);
+    const result = validateLogicalSnapshot(evaluateModule(FIXTURE), snap);
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.issues.map((i) => i.path)).toContainEqual(['assets', 'img1', 'unexpected']);
@@ -231,7 +231,7 @@ describe('validateSnapshot — 结构校验：封闭对象 / 必填缺失 / leaf
   });
 
   it('AC：必填字段缺失报告 + 未知键——多错误一次报全（全收集语义）', () => {
-    const result = validateSnapshot(evaluateModule(FIXTURE), { assets: {}, unknownKey: 1 });
+    const result = validateLogicalSnapshot(evaluateModule(FIXTURE), { assets: {}, unknownKey: 1 });
     expect(result.ok).toBe(false);
     if (!result.ok) {
       const paths = result.issues.map((i) => i.path);
@@ -246,14 +246,14 @@ describe('validateSnapshot — 结构校验：封闭对象 / 必填缺失 / leaf
   it('AC：optional 字段缺失合法（notes 可缺省）', () => {
     const snap = validSnapshot();
     delete snap.notes;
-    expect(validateSnapshot(evaluateModule(FIXTURE), snap).ok).toBe(true);
+    expect(validateLogicalSnapshot(evaluateModule(FIXTURE), snap).ok).toBe(true);
   });
 
   it('AC：leaf 位置不接受下钻内容——标量字段收到对象/数组即报错', () => {
     const derived = evaluateModule(FIXTURE);
     const snapA = validSnapshot();
     snapA.notes = { deep: true }; // YLeaf<string> 位置收到对象
-    const rA = validateSnapshot(derived, snapA);
+    const rA = validateLogicalSnapshot(derived, snapA);
     expect(rA.ok).toBe(false);
     if (!rA.ok) {
       expect(rA.issues.map((i) => i.path)).toContainEqual(['notes']);
@@ -261,7 +261,7 @@ describe('validateSnapshot — 结构校验：封闭对象 / 必填缺失 / leaf
 
     const snapB = validSnapshot();
     (snapB.keywords as unknown[])[1] = { deep: true }; // YLeaf<string>[] 元素收到对象
-    const rB = validateSnapshot(derived, snapB);
+    const rB = validateLogicalSnapshot(derived, snapB);
     expect(rB.ok).toBe(false);
     if (!rB.ok) {
       const p = rB.issues.map((i) => i.path).find((path) => path[0] === 'keywords');
@@ -274,7 +274,7 @@ describe('validateSnapshot — 结构校验：封闭对象 / 必填缺失 / leaf
     const derived = evaluateModule(FIXTURE);
     const snap = validSnapshot();
     snap.attachments = { nested: true };
-    const result = validateSnapshot(derived, snap);
+    const result = validateLogicalSnapshot(derived, snap);
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.issues.map((i) => i.path)).toContainEqual(['attachments']);
@@ -282,11 +282,11 @@ describe('validateSnapshot — 结构校验：封闭对象 / 必填缺失 / leaf
   });
 });
 
-describe('validateSnapshot — 值校验：原始类型 / 字面量枚举 / optional / Pattern', () => {
+describe('validateLogicalSnapshot — 值校验：原始类型 / 字面量枚举 / optional / Pattern', () => {
   it('AC：原始类型校验——string/number/boolean/null/unknown 各自认领值域', () => {
     const derived = evaluateModule('type ROOT = { s: string; n: number; b: boolean; z: null; u: unknown };');
-    expect(validateSnapshot(derived, { s: 'x', n: 3.14, b: false, z: null, u: { anything: 1 } }).ok).toBe(true);
-    const bad = validateSnapshot(derived, { s: 42, n: '42', b: 'true', z: 'null' });
+    expect(validateLogicalSnapshot(derived, { s: 'x', n: 3.14, b: false, z: null, u: { anything: 1 } }).ok).toBe(true);
+    const bad = validateLogicalSnapshot(derived, { s: 42, n: '42', b: 'true', z: 'null' });
     expect(bad.ok).toBe(false);
     if (!bad.ok) {
       const paths = bad.issues.map((i) => i.path);
@@ -300,13 +300,13 @@ describe('validateSnapshot — 值校验：原始类型 / 字面量枚举 / opti
 
   it('AC：字面量枚举——命中成员值通过，未声明字面量拒绝', () => {
     const derived = evaluateModule(FIXTURE);
-    expect(validateSnapshot(derived, validSnapshot()).ok).toBe(true); // kind: image/text/file 均在枚举内
+    expect(validateLogicalSnapshot(derived, validSnapshot()).ok).toBe(true); // kind: image/text/file 均在枚举内
     const snap = validSnapshot();
     (snap.assets as Record<string, unknown>).img1 = {
       kind: 'video', // 不在 "image" | "text" | "file" 枚举
       url: 'u', width: 1, height: 1, audit: clone(AUDIT),
     };
-    const bad = validateSnapshot(derived, snap);
+    const bad = validateLogicalSnapshot(derived, snap);
     expect(bad.ok).toBe(false);
     if (!bad.ok) {
       expect(bad.issues.map((i) => i.path)).toContainEqual(['assets', 'img1', 'kind']);
@@ -315,9 +315,9 @@ describe('validateSnapshot — 值校验：原始类型 / 字面量枚举 / opti
 
   it('AC：字面量联合（枚举）——端口 80/443 接受，8080 拒绝', () => {
     const derived = evaluateModule('type ROOT = { port: 80 | 443 };');
-    expect(validateSnapshot(derived, { port: 80 }).ok).toBe(true);
-    expect(validateSnapshot(derived, { port: 443 }).ok).toBe(true);
-    const bad = validateSnapshot(derived, { port: 8080 });
+    expect(validateLogicalSnapshot(derived, { port: 80 }).ok).toBe(true);
+    expect(validateLogicalSnapshot(derived, { port: 443 }).ok).toBe(true);
+    const bad = validateLogicalSnapshot(derived, { port: 8080 });
     expect(bad.ok).toBe(false);
     if (!bad.ok) {
       expect(bad.issues.map((i) => i.path)).toContainEqual(['port']);
@@ -326,9 +326,9 @@ describe('validateSnapshot — 值校验：原始类型 / 字面量枚举 / opti
 
   it('AC：Pattern 正则——匹配通过、不匹配拒绝（锚定由正则显式表达）', () => {
     const derived = evaluateModule('type ROOT = { name: string & Pattern<"^[a-z]{2,4}$"> };');
-    expect(validateSnapshot(derived, { name: 'ab' }).ok).toBe(true);
-    expect(validateSnapshot(derived, { name: 'abcd' }).ok).toBe(true);
-    const bad = validateSnapshot(derived, { name: 'AB' });
+    expect(validateLogicalSnapshot(derived, { name: 'ab' }).ok).toBe(true);
+    expect(validateLogicalSnapshot(derived, { name: 'abcd' }).ok).toBe(true);
+    const bad = validateLogicalSnapshot(derived, { name: 'AB' });
     expect(bad.ok).toBe(false);
     if (!bad.ok) {
       expect(bad.issues.map((i) => i.path)).toContainEqual(['name']);
@@ -337,34 +337,34 @@ describe('validateSnapshot — 值校验：原始类型 / 字面量枚举 / opti
 
   it('AC：Record 键 Pattern——fixture AssetId 合法键通过、含 "." 键拒绝', () => {
     const derived = evaluateModule(FIXTURE);
-    expect(validateSnapshot(derived, validSnapshot()).ok).toBe(true);
+    expect(validateLogicalSnapshot(derived, validSnapshot()).ok).toBe(true);
     const snap = validSnapshot();
     (snap.assets as Record<string, unknown>)['abc.123'] = {
       kind: 'image', url: 'u', width: 1, height: 1, audit: clone(AUDIT),
     };
     // 键不满足 ^[A-Za-z0-9_\-]{1,64}$（含 "."）→ 键模式失败
-    expect(validateSnapshot(derived, snap).ok).toBe(false);
+    expect(validateLogicalSnapshot(derived, snap).ok).toBe(false);
   });
 
   it('AC：Pattern ReDoS 对抗——灾难性回溯正则对长非匹配输入不挂死（vitest 默认 5s 超时兜底）', () => {
     // 经典灾难性回溯 (a+)+$：对 'a'*32+'!' 朴素 RegExp 需指数级回溯（远超 5s）；
     // 实现须有 ReDoS 防护（安全引擎 / 输入长度上限等）——对抗成功即通过
     const derived = evaluateModule('type ROOT = { name: string & Pattern<"(a+)+$"> };');
-    const result = validateSnapshot(derived, { name: 'a'.repeat(32) + '!' });
+    const result = validateLogicalSnapshot(derived, { name: 'a'.repeat(32) + '!' });
     expect(result.ok).toBe(false); // 值确实不匹配该正则（$ 前有 '!'）
   });
 });
 
-describe('validateSnapshot — 联合：any-of 接受 / 判别式缓存透明 / no-match 最小距离', () => {
+describe('validateLogicalSnapshot — 联合：any-of 接受 / 判别式缓存透明 / no-match 最小距离', () => {
   it('AC：联合 any-of 接受语义——三种 kind 各自命中成员即接受（判别式缓存跳转路径）', () => {
     const derived = evaluateModule(FIXTURE);
-    expect(validateSnapshot(derived, validSnapshot()).ok).toBe(true); // image/text/file 三成员齐备
+    expect(validateLogicalSnapshot(derived, validSnapshot()).ok).toBe(true); // image/text/file 三成员齐备
     for (const asset of [
       { kind: 'image', url: 'u', width: 1, height: 1, audit: clone(AUDIT) },
       { kind: 'text', body: '<p>x</p>', audit: clone(AUDIT) },
       { kind: 'file', name: 'n', size: 1, tags: [], audit: clone(AUDIT) },
     ]) {
-      const single = validateSnapshot(derived, {
+      const single = validateLogicalSnapshot(derived, {
         assets: { a1: asset }, attachments: [], audit: clone(AUDIT), keywords: [],
       });
       expect(single.ok).toBe(true);
@@ -374,15 +374,15 @@ describe('validateSnapshot — 联合：any-of 接受 / 判别式缓存透明 / 
   it('AC：联合 any-of 无判别式缓存路径——ref 成员按名解析后逐成员尝试', () => {
     // A 为 ref 成员（非内联对象）→ evaluate 不附判别式缓存 → 纯「逐个尝试」路径
     const derived = evaluateModule('type A = { kind: "a"; x: string }; type ROOT = { m: A | { kind: "b"; x: string } };');
-    expect(validateSnapshot(derived, { m: { kind: 'a', x: 'ok' } }).ok).toBe(true);
-    expect(validateSnapshot(derived, { m: { kind: 'b', x: 'ok' } }).ok).toBe(true);
-    expect(validateSnapshot(derived, { m: { kind: 'c', x: 'ok' } }).ok).toBe(false);
+    expect(validateLogicalSnapshot(derived, { m: { kind: 'a', x: 'ok' } }).ok).toBe(true);
+    expect(validateLogicalSnapshot(derived, { m: { kind: 'b', x: 'ok' } }).ok).toBe(true);
+    expect(validateLogicalSnapshot(derived, { m: { kind: 'c', x: 'ok' } }).ok).toBe(false);
   });
 
   it('AC：判别式缓存透明——有/无缓存两路径对匹配快照输出全等（ADR 0003 §3）', () => {
     const derived = evaluateModule(FIXTURE);
     const withoutCache = stripDiscriminators(clone(derived));
-    expect(validateSnapshot(derived, validSnapshot())).toEqual(validateSnapshot(withoutCache, validSnapshot()));
+    expect(validateLogicalSnapshot(derived, validSnapshot())).toEqual(validateLogicalSnapshot(withoutCache, validSnapshot()));
   });
 
   it('AC：判别式缓存透明——有/无缓存两路径对 no-match 快照输出全等（含错误输出）', () => {
@@ -390,8 +390,8 @@ describe('validateSnapshot — 联合：any-of 接受 / 判别式缓存透明 / 
     const withoutCache = stripDiscriminators(clone(derived));
     const snap = validSnapshot();
     (snap.assets as Record<string, unknown>).img1 = { kind: 'video' }; // 判别值未命中缓存 → 回流同一诊断生成器
-    const withCache = validateSnapshot(derived, snap);
-    const without = validateSnapshot(withoutCache, snap);
+    const withCache = validateLogicalSnapshot(derived, snap);
+    const without = validateLogicalSnapshot(withoutCache, snap);
     expect(withCache).toEqual(without);
     expect(withCache.ok).toBe(false);
   });
@@ -400,7 +400,7 @@ describe('validateSnapshot — 联合：any-of 接受 / 判别式缓存透明 / 
     const derived = evaluateModule(FIXTURE);
     const snap = validSnapshot();
     (snap.assets as Record<string, unknown>).img1 = { kind: 'video' }; // 三成员均不匹配
-    const result = validateSnapshot(derived, snap);
+    const result = validateLogicalSnapshot(derived, snap);
     expect(result.ok).toBe(false);
     if (!result.ok) {
       // 距离：text 成员仅缺 body/audit 两字段（image 缺 4、file 缺 4）→ 报成员 2/3
@@ -410,7 +410,7 @@ describe('validateSnapshot — 联合：any-of 接受 / 判别式缓存透明 / 
 
   it('AC：no-match 平局按声明序——等距时报先声明成员', () => {
     const derived = evaluateModule('type ROOT = { m: { kind: "a"; x: string } | { kind: "b"; x: string } };');
-    const result = validateSnapshot(derived, { m: { x: 42 } }); // 两成员同样缺 kind 且 x 类型错 → 平局
+    const result = validateLogicalSnapshot(derived, { m: { x: 42 } }); // 两成员同样缺 kind 且 x 类型错 → 平局
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.issues.some((i) => i.message.includes('联合成员 1/2'))).toBe(true);
@@ -420,7 +420,7 @@ describe('validateSnapshot — 联合：any-of 接受 / 判别式缓存透明 / 
   it('AC：候选分支 dive 的字段级 issue 带「联合成员 i/N」相对定位（ADR 0003 §3 字面）', () => {
     // kind 命中 image（text 被判别值硬矛盾过滤）→ 候选分支下钻，width 类型错
     const derived = evaluateModule('type ROOT = { m: { kind: "image"; width: number } | { kind: "text"; body: string } };');
-    const result = validateSnapshot(derived, { m: { kind: 'image', width: 'x' } });
+    const result = validateLogicalSnapshot(derived, { m: { kind: 'image', width: 'x' } });
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.issues).toHaveLength(1);
@@ -430,15 +430,15 @@ describe('validateSnapshot — 联合：any-of 接受 / 判别式缓存透明 / 
   });
 });
 
-describe('validateSnapshot — YPlainArray 纯值上下文嵌套 JSON', () => {
+describe('validateLogicalSnapshot — YPlainArray 纯值上下文嵌套 JSON', () => {
   // 测试文本修正（设计 §11.1，SA2 #2 授权）：原文本 `YPlainArray<{…}[]>` 派生为双重
   // 数组，两条断言在忠实实现下均不可满足——按 §11.1 定稿去掉多余一层 `[]`，
   // 断言逻辑零改动；双重数组语义由下一用例锁定。
   it('AC：纯值上下文嵌套 JSON——元素为对象时按封闭对象校验（含下钻路径）', () => {
     const derived = evaluateModule('type ROOT = { items: YPlainArray<{ name: string; count: number }> };');
-    expect(validateSnapshot(derived, { items: [{ name: 'a', count: 1 }] }).ok).toBe(true);
-    expect(validateSnapshot(derived, { items: [] }).ok).toBe(true);
-    const bad = validateSnapshot(derived, { items: [{ name: 'a', count: 'x' }] });
+    expect(validateLogicalSnapshot(derived, { items: [{ name: 'a', count: 1 }] }).ok).toBe(true);
+    expect(validateLogicalSnapshot(derived, { items: [] }).ok).toBe(true);
+    const bad = validateLogicalSnapshot(derived, { items: [{ name: 'a', count: 'x' }] });
     expect(bad.ok).toBe(false);
     if (!bad.ok) {
       const p = bad.issues.map((i) => i.path).find((path) => path[path.length - 1] === 'count');
@@ -453,32 +453,32 @@ describe('validateSnapshot — YPlainArray 纯值上下文嵌套 JSON', () => {
   // array）。禁止任何「拍平兜底」（§11.1-3 负面清单）。
   it('AC：双重数组忠实解释——YPlainArray<{…}[]> 元素为数组（#20 映射锁例）', () => {
     const derived = evaluateModule('type ROOT = { items: YPlainArray<{ name: string; count: number }[]> };');
-    expect(validateSnapshot(derived, { items: [[{ name: 'a', count: 1 }]] }).ok).toBe(true); // 元素是 {…}[]
-    expect(validateSnapshot(derived, { items: [{ name: 'a', count: 1 }] }).ok).toBe(false); // 单层对象不是数组
+    expect(validateLogicalSnapshot(derived, { items: [[{ name: 'a', count: 1 }]] }).ok).toBe(true); // 元素是 {…}[]
+    expect(validateLogicalSnapshot(derived, { items: [{ name: 'a', count: 1 }] }).ok).toBe(false); // 单层对象不是数组
   });
 
   it('AC：纯值上下文混合联合合法——标量与对象成员并存，任一命中即接受', () => {
     const derived = evaluateModule('type ROOT = { items: YPlainArray<string | { a: number }> };');
-    expect(validateSnapshot(derived, { items: ['s', { a: 1 }] }).ok).toBe(true);
-    expect(validateSnapshot(derived, { items: [{ b: 1 }] }).ok).toBe(false); // 对象成员封闭：未知键 b 拒绝
-    expect(validateSnapshot(derived, { items: [42] }).ok).toBe(false); // 非联合成员
+    expect(validateLogicalSnapshot(derived, { items: ['s', { a: 1 }] }).ok).toBe(true);
+    expect(validateLogicalSnapshot(derived, { items: [{ b: 1 }] }).ok).toBe(false); // 对象成员封闭：未知键 b 拒绝
+    expect(validateLogicalSnapshot(derived, { items: [42] }).ok).toBe(false); // 非联合成员
   });
 });
 
-describe('validateSnapshot — YXmlFragment：XML 字符串 + 良构要求（ADR 0003 §5）', () => {
+describe('validateLogicalSnapshot — YXmlFragment：XML 字符串 + 良构要求（ADR 0003 §5）', () => {
   it('AC：快照值为 XML 字符串——良构通过、非良构拒绝、非字符串拒绝', () => {
     const derived = evaluateModule(FIXTURE);
     const okSnap = validSnapshot();
     (okSnap.assets as Record<string, unknown>).text1 = {
       kind: 'text', body: '<p>hello <b>world</b></p>', audit: clone(AUDIT),
     };
-    expect(validateSnapshot(derived, okSnap).ok).toBe(true);
+    expect(validateLogicalSnapshot(derived, okSnap).ok).toBe(true);
 
     const malformedSnap = validSnapshot();
     (malformedSnap.assets as Record<string, unknown>).text1 = {
       kind: 'text', body: '<p>unclosed', audit: clone(AUDIT),
     };
-    const malformed = validateSnapshot(derived, malformedSnap);
+    const malformed = validateLogicalSnapshot(derived, malformedSnap);
     expect(malformed.ok).toBe(false);
     if (!malformed.ok) {
       expect(malformed.issues.map((i) => i.path)).toContainEqual(['assets', 'text1', 'body']);
@@ -488,14 +488,14 @@ describe('validateSnapshot — YXmlFragment：XML 字符串 + 良构要求（ADR
     (typeSnap.assets as Record<string, unknown>).text1 = {
       kind: 'text', body: 42, audit: clone(AUDIT),
     };
-    expect(validateSnapshot(derived, typeSnap).ok).toBe(false); // 非字符串
+    expect(validateLogicalSnapshot(derived, typeSnap).ok).toBe(false); // 非字符串
   });
 });
 
-describe('validateSnapshot — path 段数组：Record 键特殊字符零转义', () => {
+describe('validateLogicalSnapshot — path 段数组：Record 键特殊字符零转义', () => {
   it('AC：含特殊字符 Record 键时段数组无歧义——整段相等、零转义', () => {
     const derived = evaluateModule('type ROOT = { m: Record<string, { v: number }> };');
-    const result = validateSnapshot(derived, {
+    const result = validateLogicalSnapshot(derived, {
       m: {
         'a.b|c[d]': { v: 'x' },
         '路径/段': { v: 'x' },
@@ -513,11 +513,11 @@ describe('validateSnapshot — path 段数组：Record 键特殊字符零转义'
   });
 });
 
-describe('validateSnapshot — 全收集 + 100 条上限 + 截断标记', () => {
+describe('validateLogicalSnapshot — 全收集 + 100 条上限 + 截断标记', () => {
   it('AC：全收集上限——100 条真实 issue + 末条截断标记', () => {
     const derived = evaluateModule('type ROOT = { items: number[] };');
     const snap = { items: Array.from({ length: 150 }, () => 'not-a-number') };
-    const result = validateSnapshot(derived, snap);
+    const result = validateLogicalSnapshot(derived, snap);
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.issues).toHaveLength(101); // 契约读法：上限 100 条真实 issue，超限末条为截断标记
@@ -529,9 +529,9 @@ describe('validateSnapshot — 全收集 + 100 条上限 + 截断标记', () => 
   });
 });
 
-describe('validateSnapshot — 规格 §10 fixture：合法 / 非法快照', () => {
+describe('validateLogicalSnapshot — 规格 §10 fixture：合法 / 非法快照', () => {
   it('AC：fixture 合法快照（六标记全出现、三成员齐备、含可选 notes）→ ok:true', () => {
-    expect(validateSnapshot(evaluateModule(FIXTURE), validSnapshot()).ok).toBe(true);
+    expect(validateLogicalSnapshot(evaluateModule(FIXTURE), validSnapshot()).ok).toBe(true);
   });
 
   it('AC：fixture 非法快照——多处独立错误一次报全（值/结构/嵌套 ref 内错误）', () => {
@@ -545,7 +545,7 @@ describe('validateSnapshot — 规格 §10 fixture：合法 / 非法快照', () 
       keywords: [true],
       notes: 42,
     };
-    const result = validateSnapshot(derived, snap);
+    const result = validateLogicalSnapshot(derived, snap);
     expect(result.ok).toBe(false);
     if (!result.ok) {
       const paths = result.issues.map((i) => i.path);
