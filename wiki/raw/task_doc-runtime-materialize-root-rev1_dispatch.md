@@ -15,4 +15,4 @@
 | 9 | 22:55 | 总控 | Phase 3 转绿亲验 | 22:57 | 后台全量 vitest --typecheck：57 文件 820 测试全过 EXIT=0（.mabf-bg/verify-rev1.log） |
 | 10 | 22:57 | SA4 | Phase 3 静态验尸 | 23:03 | pass —— 红灯变绿后红队审查通过（与 sa4_review.md Verdict: pass 一致） |
 | 11 | 23:03 | SA7 | Phase 4 动态验证 | 23:08 | pass —— 动态验证 8 探针全过 + CI 双腿 60/60+820/820（与 sa7_report.md Verdict: pass 一致） |
-| 12 | 23:11 | 总控 | Phase 3.5 AC 门禁 + Phase 4 收尾 | (pending) | RAC-1~RAC-6 全 ✅；HG#12/#13/#14/#15/#16 自检全过；wiki 入库 + push |
+| 12 | 23:11 | 总控 | Phase 3.5 AC 门禁 + Phase 4 收尾 | 23:11 | RAC-1~RAC-6 全 ✅；HG#12/#13/#14/#15/#16 自检全过；wiki 入库 + push |
