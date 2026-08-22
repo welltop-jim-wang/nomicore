@@ -15,4 +15,5 @@ base: docs/doc-runtime-validation
 | 6 | 12:19 | SA1 | Phase 2 R2 微修订 | 12:22 | send_message 续传：落实 M2（§6.3 补 tokenizer/parser 数值闸门引用 + D2 触发器登记）与 M3（§9 补 Proxy 谎报键集两向边界行）；设计 852→902 行，零决策变更 |
 | 7 | 12:19 | SA6 | Phase 2 修订轮-哨兵测试 | 12:50 | send_message 续传：排队 RT-1b/1c/RT-2/RT-3/RT-4 哨兵测试；会话上下文耗尽未产出——改排队至 SA3 转绿后以新会话派发（SA2 原文允许「不阻塞本票」） |
 | 8 | 12:51 | SA3 | Phase 3 TDD 实现 | 12:55 | 设计 R2 pass 定稿 + 红灯契约齐备；commit 7033490（fingerprint.ts 新建/envelope.ts +53/index.ts +84/package.json 0.2.0→0.2.1）；总控 12:58 亲跑全量 697/697 绿 + typecheck 0 错 |
-| 9 | 13:01 | SA6 | Phase 3 哨兵测试（新会话） | (pending) | SA2 RT 排队项落实：RT-1b/1c/RT-2/RT-3/RT-4 新文件 compile-schema-envelope-sentinel.test.ts（原会话上下文耗尽，依 SA2「不阻塞本票」改新会话补锚） |
+| 9 | 13:01 | SA6 | Phase 3 哨兵测试（新会话） | 13:04 | RT 五条 7 用例全绿（单文件 7/7，全量 704/704）；commit c459c3c；勘误：RT-3 用 ownKeys trap（Proxy 无 getOwnPropertyNames trap），已写入测试文件头 |
+| 10 | 13:06 | SA4 | Phase 3 静态验尸 | (pending) | 红灯变绿 + 哨兵锚绿，进入实现红队审查；义务含 M1(b) grep 静态门禁（两构造函数名仅许 fingerprint.ts+index.ts）与 §14 ALLOW/DENY 逐字不动项复核 |
