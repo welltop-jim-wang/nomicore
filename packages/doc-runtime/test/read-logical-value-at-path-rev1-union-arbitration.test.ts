@@ -20,12 +20,19 @@
  *
  * 红/绿定性（如实标注）：**本文件全部用例预期绿灯（行为锁）**，无一红灯——按 SA5 结论 (c)，
  * 五类要求中三类竞争（Record 缺键 vs 后序在场 / optional 缺席 vs 后序在场 / 数组越界 vs 后序
- * 可解析）在结构系统内**不可构造红灯**，降级为绿灯行为锁（两成员声明序均返回真值/正确结果，
- * 锁死未来实现把在场合键误判缺席、或 value-first 硬化引入行为偏移）；「全部可行成员合法缺席
- * → ok:true, value:undefined」直接落测；「交换声明序结果不变」限域落测（仅终点=叶子/标量的
- * 多段读）。这些绿灯锁同时是 AC-R1/AC-R2 硬化（NavOutcome 三态 + value-first 仲裁）的行为不
- * 变护栏：硬化后本文件必须保持全绿。若任一用例现测为红，即为与 SA5 论证不符的实证发现，须
- * 按真实状态上报（本文件注释不预设结果，断言即证据）。
+ * 可解析）在现行合法 schema/live 模型下**结构性不可构造**，降级为**行为一致性锁（green lock）**
+ * （两成员声明序均返回真值/正确结果，锁死未来实现把在场合键误判缺席、或 value-first 硬化引入
+ * 行为偏移）；「全部可行成员合法缺席 → ok:true, value:undefined」直接落测；「交换声明序结果
+ * 不变」限域落测（仅终点=叶子/标量的多段读）。这些绿灯锁同时是 AC-R1/AC-R2 硬化（NavOutcome
+ * 三态 + value-first 仲裁）的行为不变护栏：硬化后本文件必须保持全绿。若任一用例现测为红，即
+ * 为与 SA5 论证不符的实证发现，须按真实状态上报（本文件注释不预设结果，断言即证据）。
+ *
+ * rev2 勘误（AC-R2-3，2026-08-22 owner 第二轮 Review）：本文件 R1/R2/R3 均**不动态覆盖**
+ * `missing → later value` 执行路径（fixture 中前序成员直接产出真值/与后序同见同一缺席，
+ * 缺键分支不可达）——该类竞争场景的真实执行锚由 rev2 新增纯仲裁测试承担
+ * （read-logical-value-at-path-rev2-union-arbitration-pure.test.ts 六行表，包内
+ * `arbitrateUnion` seam 直驱，AC-R2-2）。R1/R2/R3 的定位统一改写为「现行合法 schema/live
+ * 模型下不可构造竞争场景的行为一致性锁」；本文件行为断言零改动（本次仅措辞勘误）。
  *
  * ⛔ 禁写断言（限域纪律）：**严禁对终点=union 自身的重叠成员整树投影（如 ['x']）写 swap 不变
  * 断言**——SA5 6a/6b 反例在案：`{foo:"v",bar:"w"}` 两序投影分别为 `{foo:"v",bar:"w"}` 与
@@ -86,11 +93,13 @@ function liveArray(items: unknown[]): Y.Array<unknown> {
   return a;
 }
 
-// —— R1：前序 Record 缺键 vs 后序封闭 map 字段在场（SA5 结论 (c) 行 1：结构性不可达 → 绿灯行为锁）——
+// —— R1：前序 Record 缺键 vs 后序封闭 map 字段在场（SA5 结论 (c) 行 1：现行合法 schema/live
+// 模型下不可构造竞争场景的行为一致性锁（green lock））——
 // 论证出处：SA5 Root Cause 四步归谬——Record 成员对在场键 `ymap.get('foo')` 恒得同值并直接产出，
-// 「把在场的 foo 解释为缺失键」的前提不成立（实证 1a/3b）。本组锁死：两成员声明序下在场合键必须
-// 返回真值 "v"；真缺席必须返回显式 undefined。若未来实现（含 value-first 硬化）把在场合键误判
-// 缺席或改变缺键形态，本组即转红。
+// 「把在场的 foo 解释为缺失键」的前提不成立（实证 1a/3b）；live 为 {foo:"v"} 时前序 Record 成员
+// 自身即产出真值，**不产生 missing**——不存在「前序缺键遮蔽后序真值」的竞争场景。本组锁死：
+// 两成员声明序下在场合键必须返回真值 "v"；真缺席必须返回显式 undefined。若未来实现（含
+// value-first 硬化）把在场合键误判缺席或改变缺键形态，本组即转红。
 
 const RECORD_FIRST = `
 type U = Record<string, YLeaf<string>> | { foo: YLeaf<string> };
@@ -103,8 +112,8 @@ type ROOT = YMap<{ x: U }>;
 const RECORD_FIRST_DERIVED = derivedOf(RECORD_FIRST);
 const CLOSED_FIRST_DERIVED = derivedOf(CLOSED_FIRST);
 
-describe('R1 绿灯锁：Record 缺键 vs 封闭 map 字段在场（两序均返回真值；SA5 结论 (c) 行 1）', () => {
-  it('Record 先序：live x={foo:"v"}，读 ["x","foo"] → ok:true value:"v"（owner 反例直接翻案实证）', () => {
+describe('R1 行为一致性锁：Record 缺键 vs 封闭 map 字段在场（现行合法 schema/live 模型下不可构造竞争场景；两序均返回真值；SA5 结论 (c) 行 1）', () => {
+  it('Record 先序：live x={foo:"v"}，读 ["x","foo"] → ok:true value:"v"（在场合键被前序成员直读——owner 竞争场景不可构造的行为一致性锚）', () => {
     const doc = buildXDoc(liveMap({ foo: 'v' }));
     const r = readLogicalValueAtPath(RECORD_FIRST_DERIVED, doc, ['x', 'foo']);
     expectOkValue(r);
@@ -140,9 +149,12 @@ describe('R1 绿灯锁：Record 缺键 vs 封闭 map 字段在场（两序均返
   });
 });
 
-// —— R2：前序 optional 缺席 vs 后序实际值在场（SA5 结论 (c) 行 2：结构性不可达 → 绿灯行为锁）——
+// —— R2：前序 optional 缺席 vs 后序实际值在场（SA5 结论 (c) 行 2：现行合法 schema/live 模型下
+// 不可构造竞争场景的行为一致性锁（green lock））——
 // 论证出处：optional 缺席 ⟹ `live.get('foo') === undefined` ⟹ 后序成员同见同一 live 同一缺席
-// （实证 2a-2f）——缺席是 live 数据事实，非成员形状事实。本组锁死两序在场→"v"、缺席→undefined。
+// （实证 2a-2f）——缺席是 live 数据事实，非成员形状事实；optional 字段在场时前序 optional 成员
+// 直接产出 value，**不产生 missing**——不存在「前序 optional 缺席遮蔽后序真值」的竞争场景。
+// 本组锁死两序在场→"v"、缺席→undefined。
 
 const OPTIONAL_FIRST = `
 type U = { foo?: YLeaf<string> } | { foo: YLeaf<string> };
@@ -155,7 +167,7 @@ type ROOT = YMap<{ x: U }>;
 const OPTIONAL_FIRST_DERIVED = derivedOf(OPTIONAL_FIRST);
 const REQUIRED_FIRST_DERIVED = derivedOf(REQUIRED_FIRST);
 
-describe('R2 绿灯锁：optional 缺席 vs 后序实际值在场（两序均直读在场值；SA5 结论 (c) 行 2）', () => {
+describe('R2 行为一致性锁：optional 缺席 vs 后序实际值在场（现行合法 schema/live 模型下不可构造竞争场景；两序均直读在场值；SA5 结论 (c) 行 2）', () => {
   it('optional 先序：live {foo:"v"} 读 ["x","foo"] → "v"（在场值被 optional 成员直读，不被判缺席）', () => {
     const doc = buildXDoc(liveMap({ foo: 'v' }));
     const r = readLogicalValueAtPath(OPTIONAL_FIRST_DERIVED, doc, ['x', 'foo']);
@@ -178,10 +190,12 @@ describe('R2 绿灯锁：optional 缺席 vs 后序实际值在场（两序均直
   });
 });
 
-// —— R3：前序数组越界 vs 后序可解析同一路径（SA5 结论 (c) 行 3：结构性不可达 → 绿灯行为锁）——
+// —— R3：前序数组越界 vs 后序可解析同一路径（SA5 结论 (c) 行 3：现行合法 schema/live 模型下
+// 不可构造竞争场景的行为一致性锁（green lock））——
 // 论证出处：数字段仅数组成员可接受（D9），同位数组成员读同一 live 数组的同一 `ya.length`，同界
-// 同判（实证 4a-4d）；owner 自带保留措辞「如结构系统允许」。本组用 YArray | Record 两序锁定：
-// 界内→真值、越界→显式 undefined，均与成员序无关。
+// 同判（实证 4a-4d）；index 界内时前序数组成员直接产出 value，越界时后序 Record 无法消费 number
+// 段只会 reject（owner 保留措辞「如结构系统允许」——现行结构系统不允许）。本组用 YArray | Record
+// 两序锁定：界内→真值、越界→显式 undefined，均与成员序无关。
 
 const ARRAY_FIRST = `
 type U = YArray<YLeaf<string>> | Record<string, YLeaf<string>>;
@@ -194,7 +208,7 @@ type ROOT = YMap<{ x: U }>;
 const ARRAY_FIRST_DERIVED = derivedOf(ARRAY_FIRST);
 const RECORD_FIRST_ARRAY_DERIVED = derivedOf(RECORD_FIRST_ARRAY);
 
-describe('R3 绿灯锁：数组越界 vs 后序可解析同一路径（两序同界同判；SA5 结论 (c) 行 3）', () => {
+describe('R3 行为一致性锁：数组越界 vs 后序可解析同一路径（现行合法 schema/live 模型下不可构造竞争场景；两序同界同判；SA5 结论 (c) 行 3）', () => {
   it('live x=[] 读 ["x",0] → ok:true value 键显式存在且 undefined（越界=合法缺失，两序一致）', () => {
     for (const derived of [ARRAY_FIRST_DERIVED, RECORD_FIRST_ARRAY_DERIVED]) {
       const doc = buildXDoc(liveArray([]));
