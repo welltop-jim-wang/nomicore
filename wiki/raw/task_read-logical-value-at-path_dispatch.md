@@ -69,4 +69,4 @@ base: docs/doc-runtime-validation
 | V10 | 23:26 | SA7 | Phase 3 动态验证（rev2） | 23:37 | SA4 pass（四命令复跑+阴性对照全过，1.4 vitest 触发性确认，独立复跑 61/836 绿；H-d 负锁 test-d 落地待收尾入库）；SA7 执行 mutation proof（M-A+M-C 必做，路径 P 前置已就绪） |
 | V11 | 23:25 | SA4 | Phase 3 verdict（rev2） | 23:25 | pass — rev2 终审 verdict（与 rev2_sa4_review.md 头部 Verdict 字段逐字一致） |
 | V12 | 23:37 | SA7 | Phase 3 verdict（rev2） | 23:37 | pass — 动态验证 verdict（与 rev2_sa7_report.md verdict 字段逐字一致；mutation proof M-A/M-C 必做 + M-B/M-D 裁量四体闭环，CI 触发证据待 push 后复核，本地 61/836 全绿替代） |
-| V13 | 23:45 | 总控 | Phase 3.5 AC 门禁 + Phase 4 收尾（rev2） | (pending) | AC-R2 5/5 全 ✅（rev2_ac_checklist）；HG12-16 自检全过（双清 verdict 真实一致 / HG13 N/A / HG14 SA4§1.4+SA7 触发证据在位 / HG15 设计§5+SA4§1.5 在位 / HG16 无 SA 偷开 PR）；终态亲跑 61/836 绿 exit 0；wiki 10 份 + H-d 负锁入库后 push 更新 PR #83 |
+| V13 | 23:45 | 总控 | Phase 3.5 AC 门禁 + Phase 4 收尾（rev2） | 23:48 | AC-R2 5/5 全 ✅（rev2_ac_checklist）；HG12-16 自检全过（双清 verdict 真实一致 / HG13 N/A / HG14 SA4§1.4+SA7 触发证据在位 / HG15 设计§5+SA4§1.5 在位 / HG16 无 SA 偷开 PR）；终态亲跑 61/836 绿 exit 0；wiki 10 份 + H-d 负锁入库后 push 更新 PR #83 |
