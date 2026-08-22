@@ -253,3 +253,55 @@ describe('D9 段形态边界补充锚（-0 / NaN / ±∞ / 超大整数下标）
     if (r.ok) expect(r.value).toBeUndefined();
   });
 });
+
+// —— SA7 动态验证锚（2026-08-22，SA4 R2「动态审核重点」第 1 项）——
+// F2 崩溃边界守卫回归锁：非数组 path（JS/运行时动态调用方可达面）必须结构化返回、
+// 绝不外抛（FC-1/INV-3/D11 + 设计 §4.1 SA4-F2 勘误守卫）。此前该守卫仅由 SA4
+// 运行后即删的探针验证（10 变体），已提交测试面零覆盖——本节将其钉为持久回归锚。
+
+describe('SA7 F2 守卫回归锁（非数组 path → 结构化返回，零外抛）', () => {
+  it.each([
+    ['null', null],
+    ['undefined', undefined],
+    ['number 42', 42],
+    ["string 'zz'", 'zz'],
+    ['boolean true', true],
+    ['plain object {}', {}],
+    ['array-like {length:2}', { length: 2 }],
+    ['Set', new Set(['a'])],
+    ['Map', new Map([['a', 1]])],
+    ['BigInt 1n', 1n],
+    ['function（有 length=0，穿到 Phase B 的 [...fullPath] 抛点）', () => {}],
+  ])('类型外 path（%s）→ {ok:false, code:PATH_NOT_ALLOWED, path:[]}，不外抛', (_name, badPath) => {
+    const doc = new Y.Doc();
+    doc.getMap('ROOT').set('title', 'v');
+    // 若外抛，本 it 直接失败（调用不被 try 包裹——守卫的义务就是「不抛」）
+    const r = readLogicalValueAtPath(BASIC_DERIVED, doc, badPath as unknown as readonly (string | number)[]);
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error('unreachable');
+    expect(r.code).toBe('PATH_NOT_ALLOWED');
+    expect(r.path).toEqual([]); // F2 守卫归一：一切类型外 path 回显 []
+    expect(typeof r.message).toBe('string');
+    expect(r.message).not.toBe('');
+  });
+
+  it.each([['null', null], ['undefined', undefined]])(
+    '%s（Phase A segs.length 即抛）→ catch 收编 → C3（message 以 DOCRT-E100: 开头）',
+    (_name, badPath) => {
+      const doc = new Y.Doc();
+      const r = readLogicalValueAtPath(BASIC_DERIVED, doc, badPath as unknown as readonly (string | number)[]);
+      expect(r.ok).toBe(false);
+      if (r.ok) throw new Error('unreachable');
+      expect(r.message).toMatch(/^DOCRT-E100:/);
+    },
+  );
+
+  it('合法路径对照零回归：["title"] → ok:true "v"；["nope"] → PATH_NOT_ALLOWED(["nope"])（回显保留）', () => {
+    const doc = new Y.Doc();
+    doc.getMap('ROOT').set('title', 'v');
+    const good = readLogicalValueAtPath(BASIC_DERIVED, doc, ['title']);
+    expect(good.ok).toBe(true);
+    if (good.ok) expect(good.value).toBe('v');
+    expectNotAllowed(readLogicalValueAtPath(BASIC_DERIVED, doc, ['nope']), ['nope']);
+  });
+});

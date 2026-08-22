@@ -1,7 +1,7 @@
 # SA4 静态验尸报告
 
-**Date**: 2026-08-22
-**Verdict**: reject（架构与 99% 实现通过攻击验证；2 项阻塞修复——1 项 DENY LIST 硬门禁违规 + 1 项已复现的崩溃边界击穿；均为最小修复，无需 redesign）
+**Date**: 2026-08-22（R1 轮）／ 2026-08-22（R2 复审轮，见文末）
+**Verdict**: ~~reject~~ → **pass（R2 轮终审）**——F1/F2 均按 R1 约定路径闭环验收通过；R1 其余 8 项通过项不重审（复审范围严格限定：F2 ≤4 行 diff + F1 ALLOW 修订文本）
 
 - **被审对象**：SA3 commit `02cb596`（`packages/doc-runtime/src/read.ts` 新建 347 行 + `extract.ts` 纯导出增补 + 双包 `index.ts` 导出增补 + 双包 `package.json` 版本号）
 - **基准文档**：SA1 设计 `wiki/raw/task_read-logical-value-at-path_design.md`（703 行 R1–R6 修订版）+ SA2 攻击评审/复审（R2 轮 pass）+ SA6 冻结契约 20 用例 + test-d 3 用例
@@ -106,6 +106,22 @@ $ tsx probe：readLogicalValueAtPath(derived, doc, null as any)
 
 - 新增 3 个测试文件均落 `packages/doc-runtime/test/**`，被根 `vitest.config.ts` 的 `include: packages/*/test/**/*.test.ts`（运行时）与 `typecheck.include: *.test-d.ts`（类型层）覆盖；CI `ci.yml` Test 步 `pnpm test` = `vitest run --typecheck` 直接触发；Typecheck 步含 `tsc -p packages/doc-runtime/tsconfig.json`（include `test/**`，SUP-5 的 @ts-expect-error 与 expectTypeOf 断言被 tsc 消费，exit 0 实证）。无 E2E spec。无孤儿测试。
 
+### 1.4 vitest 触发性自检（标准门禁节；R2 轮格式补齐——结论与 §八 实质核验一致）
+
+**本任务新增/改动的 `*.test.ts` / `*.test-d.ts` 清单**（`git diff --name-only 44156db HEAD`，02cb596 + 87ec9c3 两 commit；3 个全为新增，零改动既有测试文件）：
+
+| 测试文件 | 所属 workspace package | 运行时通道（vitest include） | 类型层通道 | 判定 |
+|---|---|---|---|---|
+| `packages/doc-runtime/test/read-logical-value-at-path.test.ts` | `@nomicore/doc-runtime`（packages/doc-runtime/package.json） | ✓ 匹配根 `vitest.config.ts` `include: 'packages/*/test/**/*.test.ts'` | `tsc -p packages/doc-runtime/tsconfig.json`（include `test/**`） | 触发 ✓ |
+| `packages/doc-runtime/test/read-logical-value-at-path.test-d.ts` | 同上 | N/A（类型层专用文件，按设计不进运行时 include） | ✓ 匹配 `typecheck.include: 'packages/*/test/**/*.test-d.ts'`；根 `pnpm test` = `vitest run --typecheck` + 配置 `typecheck.enabled: true` 双通道执行 | 触发 ✓ |
+| `packages/doc-runtime/test/read-logical-value-at-path-supplementary.test.ts` | 同上 | ✓ 同第一行（include 匹配） | 同上（tsc include `test/**`，SUP-5 断言被消费） | 触发 ✓ |
+
+**CI workflow 触发链**（`.github/workflows/ci.yml` 无变更需求 → **N/A**，声明如下）：本任务零 `.github/workflows/*.yml` 改动需求——根 runner 是单一 vitest 配置全局 glob（非 `pnpm --filter` 分包调度），`packages/doc-runtime` 目录天然落入 `packages/*` 通配；`ci.yml` Test 步 `pnpm test`（L39）与 Typecheck 步 `pnpm typecheck`（L36，含 `tsc -p packages/doc-runtime/tsconfig.json`）已把该包全量接通，无需也不可能要求改 workflow。
+
+**执行实证**（非仅静态匹配）：R1 全量 `vitest run packages/doc-runtime/test/ packages/vfsl/test/` 33 文件/595 用例全绿；R2 复跑 read 三文件 37/37 全绿（日志可见 `read-logical-value-at-path.test.ts (20)`、`…supplementary.test.ts (14)`、`TS read-logical-value-at-path.test-d.ts (3)` 三行执行记录）；总控全量 `pnpm test` 57 文件/789 用例 exit 0 + type errors none。三文件均在真实 runner 下执行过，无「测试存在但从未被触发」的 CI 黑洞。**后续动态佐证**（R2 轮后 SA7 依设计 §11「SA4/SA7 落地」条款向 supplementary 追加 F2 守卫持久回归锚 14 用例——含穿透 Phase B `[...fullPath]` 抛点的 function 变体）：本 SA4 复验 **28/28 全绿**（18ms + typecheck 零错误），1.4 节结论对其同样成立。
+
+**结论：`all-vitest-packages-triggered`** ✅（3/3 测试文件全通道覆盖；无 `vitest-package-not-triggered` 项）
+
 ## 九、测试质量（§1.7）——✅ 通过
 
 - SA6 双文件 + SA4 补充文件均**零** `readFileSync`/源码字符串断言；全部锚定 `readLogicalValueAtPath` / `extractYjsSnapshot` / `matchPattern` 可观测输出（行为断言、ground truth 交叉、类型投影、时间护栏）。
@@ -169,3 +185,47 @@ $ tsx probe：readLogicalValueAtPath(derived, doc, null as any)
 | scope 比对 | `git show 02cb596 --name-only` + design §11 | 仅两个 package.json 越界（F1） |
 | caller 审计 | `grep -rln readLogicalValueAtPath --include='*.ts' packages/ apps/` | 仅 src 三文件 + 测试三文件（零存量业务 caller） |
 | 预算内部性 | `sed -n '755,775p;888,912p' packages/vfsl/src/pattern.ts` | matchBudget/tick 在 match 内部；charge 仅记账（SA2 论断一手复核一致） |
+
+---
+
+# SA4 复审（R2 轮）— F1/F2 闭环验收
+
+**Date**: 2026-08-22
+**复审对象**：SA1 设计勘误（design.md 703→732 行）+ SA3 commit `87ec9c3`（read.ts F2 守卫）
+**复审范围**：严格按 R1 约定——F2 修复 diff + F1 ALLOW 修订文本；R1 其余 8 项通过项与核心架构不重审
+**Verdict: pass** ✅（两项阻塞全部按约定路径落地并经独立复验收口）
+
+## 逐项验收
+
+### F1（DENY LIST 违规 → ✅ 闭环，路径 = R1 给出的「SA1 修订设计」选项）
+
+| 检查 | 结论 | 独立核验依据 |
+|---|---|---|
+| §11 ALLOW LIST 追加 | ✅ | L681-682：双包 `package.json` 各 1 行 **version 字段 patch bump** 入 ALLOW，理由 = 发版惯例（#72/#73 先例——R1 轮本 SA4 已亲手核实 #72 commit「0.2.0→0.2.1 新增公共面 patch」先例）+ 公共 API 面新增；带 SA4-F1 编号可追溯 |
+| DENY LIST 例外雕刻精度 | ✅ | L694：例外**仅限两文件的 version 字段 patch bump**，其余字段（dependencies/scripts/exports）与全部其他 package.json 仍 DENY——最小切口，无护栏整体松动 |
+| ALLOW 只增不删纪律 | ✅ | 原 8 条 ALLOW 全保留（L729 回应表明示该纪律），纯追加 2 条 |
+| 双包 version 行合法性 | ✅ | 02cb596 的两行 version 变更随本修订转正（0.1.2 / 0.2.2 保留，87ec9c3 未再触碰） |
+
+### F2（崩溃边界击穿 → ✅ 闭环，commit `87ec9c3`）
+
+| 检查 | 结论 | 独立核验依据 |
+|---|---|---|
+| 守卫形态 | ✅ | read.ts L102：`Array.isArray(path) ? [...path] : []` 单点守卫——与 R1 处方逐字一致；参数类型放宽 `unknown`（catch 路径类型外值），返回 `safePath: Array<string \| number>` 显式标注，**公共契约类型零变化**（ReadLogicalValueResult 不动） |
+| 逃逸孔封死（动态） | ✅ | 本 SA4 独立探针（10 变体全测）：`null`/`undefined` → C3 `DOCRT-E100:` 结构化返回（Phase A TypeError 被收编、catch 内守卫生效）；`42`/`'zz'`/`symbol`/`boolean`/类数组 `{length:2}`/`Set`/`Map` → 干净 C1 拒绝且 path 归一 `[]`（R1 观察项 N2「'zz' 拆分回显」随之消化）；合法路径对照 `['title']` → `ok:true 'v'`（正常语义零回归）。**10/10 结构化返回，零外抛** |
+| 收编闭环（静态） | ✅ | read.ts 全部实际 spread 点仅 2 处：L102（守卫内，无抛点）+ L306（`[...fullPath]`，位于顶层 try 的调用链内 → 异常必入 catch → 已守卫 notAllowed）——「收编者自身无抛点」成立，与设计 L706 勘误复检声明一致 |
+| 设计勘误回写 | ✅ | design.md §4.1 勘误 + L706「SA4 勘误复检」+ L729 F2 行——伪代码缺陷已回写，后继任务不復踩 |
+| diff 纪律 | ✅ | 87ec9c3 对 read.ts 的代码改动 = 守卫 1 行 + 参数类型 1 行（余为 JSDoc），符合 R1「≤4 行 diff」复审约定；同 commit 携带的 supplementary 测试文件与本 SA4 工作树版本**逐字一致**（`git diff HEAD` 为空——SA3 未改写 SA4 测试），design.md +45 行为 F1/F2 勘误文本，均在授权范围 |
+
+## R2 独立验证证据
+
+| 验证 | 命令 | 结果 |
+|---|---|---|
+| 极端探针（10 变体） | `tsx` 探针（运行后已删）：null/undefined/42/'zz'/symbol/boolean/类数组/Set/Map/合法对照 | **10/10 结构化返回零外抛**；null/undefined → `DOCRT-E100`；其余 → C1 path=[]；对照 → ok:true |
+| spread 闭环 | `grep -n '\[\.\.\.' packages/doc-runtime/src/read.ts` | 仅 L102（守卫内）+ L306（try 链内）两处实际展开点 |
+| 测试复核 | `pnpm exec vitest run` read 三文件（test/test-d/supplementary） | 3 文件 / 37 用例全绿 + typecheck 零错误 |
+| supplementary 完整性 | `git diff HEAD -- …supplementary.test.ts` | 空 diff（提交版 = SA4 原版，未改写） |
+| 全量佐证 | 总控亲跑 `pnpm test` | exit 0：57 文件 / 789 用例 + type errors none（含 supplementary 14 用例） |
+
+## R2 轮结论
+
+**pass——静态验尸闭环。** F1 经设计修订转正（最小切口例外 + 只增不删纪律）、F2 经单行守卫封死（10 变体动态复验 + spread 点静态闭环 + 公共契约零变化），R1 全部 reject 依据消除；R1 十项审核中其余八项维持通过结论。SA7 可进入动态验证（R1「动态审核重点」5 项仍有效，其中第 1 项 F2 复验已由本轮 SA4 预完成——SA7 只需在 CI 环境重放确认）。

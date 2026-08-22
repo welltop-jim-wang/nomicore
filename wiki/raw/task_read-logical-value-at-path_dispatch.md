@@ -16,4 +16,9 @@ base: docs/doc-runtime-validation
 | 8 | 16:37 | SA3 | Phase 3 TDD 实现 | 16:46 | SA2 R2 pass，设计定稿；SA3 实现使红灯变绿，bump doc-runtime/vfsl patch 版本 |
 | 9 | 16:46 | SA4 | Phase 3 静态验尸 | 17:00 | 总控亲跑 pnpm test 全绿（56 文件 775 用例 exit 0），代码可评审 |
 | 10 | 17:00 | SA1 | Phase 3 设计勘误 | 17:04 | SA4 reject F1/F2：修订 §11 放行版本 bump + §4.1 伪代码勘误 |
-| 11 | 17:04 | SA3 | Phase 3 R2 修复 F2 | (pending) | SA1 勘误完成（版本 bump 已 ALLOW）；SA3 落 path=null 一行守卫，保留版本号 |
+| 11 | 17:04 | SA3 | Phase 3 R2 修复 F2 | 17:07 | SA1 勘误完成（版本 bump 已 ALLOW）；SA3 落 path=null 一行守卫，保留版本号 |
+| 12 | 17:07 | SA4 | Phase 3 R2 复审 | 17:09 | 总控亲跑 pnpm test 全绿（57/789 exit 0）；复审 F1/F2 闭环，范围 ≤4 行 diff |
+| 13 | 17:09 | SA7 | Phase 3 动态验证 | 17:17 | SA4 R2 pass，进入动态验证活链路 |
+| 14 | 17:19 | 总控 | Phase 3.5 AC 门禁 | 17:19 | 6/6 AC 全部 ✅（证据见 ac_checklist），无需追加派发 |
+| 15 | 17:09 | SA4 | Phase 3 verdict | 17:09 | pass — R2 终审 verdict（与 sa4_review.md 头部 Verdict 字段逐字一致） |
+| 16 | 17:17 | SA7 | Phase 3 verdict | 17:17 | pass — 动态验证 verdict（与 sa7_report.md SA7 verdict 字段逐字一致；CI 触发证据环境阻塞待 runner push 后复核） |
