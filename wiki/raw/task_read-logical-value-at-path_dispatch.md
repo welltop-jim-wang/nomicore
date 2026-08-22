@@ -40,4 +40,6 @@ base: docs/doc-runtime-validation
 | R5 | 19:45 | SA1 | Phase 2 架构设计（修订轮） | 19:51 | 契约测试全绿入库（23851e1）；SA1 按 AC-R1/R2/R3 设计 NavOutcome 三态 + value-first 仲裁 + 优先级成文 |
 | R6 | 19:52 | SA8 | Phase 2 设计后复审（修订轮） | 19:56 | SA1 rev1 设计已出入库；复审设计与 ADR 决策一致性（前置 clear 注记 1-5 义务履行核对） |
 | R7 | 19:57 | SA2 | Phase 2 设计攻击评审（修订轮） | 20:02 | SA8 设计复审 clear；进入 SA2 全维度破壁 |
-| R8 | 20:03 | SA1 | Phase 2 R2 文档勘误（修订轮） | (pending) | SA2 pass 附 2 项 MINOR 勘误（§1.3 演化例证措辞收敛、SUP-2 22→26 层）；send_message 续传同会话修正 |
+| R8 | 20:03 | SA1 | Phase 2 R2 文档勘误（修订轮） | 20:05 | SA2 pass 附 2 项 MINOR 勘误（§1.3 演化例证措辞收敛、SUP-2 22→26 层）；send_message 续传同会话修正 |
+| R9 | 20:06 | SA3 | Phase 3 TDD 实现（修订轮） | 20:11 | SA2 pass + 勘误闭环，设计定稿；SA3 落 D16/D17/D18 使 18 绿灯锁保持全绿，bump doc-runtime patch |
+| R10 | 20:15 | SA4 | Phase 3 静态验尸（修订轮） | (pending) | 总控亲跑 pnpm typecheck + pnpm test 全绿（58 文件 821 用例 exit 0），代码可评审 |
