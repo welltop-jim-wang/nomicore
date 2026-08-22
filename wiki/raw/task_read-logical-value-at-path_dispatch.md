@@ -42,4 +42,9 @@ base: docs/doc-runtime-validation
 | R7 | 19:57 | SA2 | Phase 2 设计攻击评审（修订轮） | 20:02 | SA8 设计复审 clear；进入 SA2 全维度破壁 |
 | R8 | 20:03 | SA1 | Phase 2 R2 文档勘误（修订轮） | 20:05 | SA2 pass 附 2 项 MINOR 勘误（§1.3 演化例证措辞收敛、SUP-2 22→26 层）；send_message 续传同会话修正 |
 | R9 | 20:06 | SA3 | Phase 3 TDD 实现（修订轮） | 20:11 | SA2 pass + 勘误闭环，设计定稿；SA3 落 D16/D17/D18 使 18 绿灯锁保持全绿，bump doc-runtime patch |
-| R10 | 20:15 | SA4 | Phase 3 静态验尸（修订轮） | (pending) | 总控亲跑 pnpm typecheck + pnpm test 全绿（58 文件 821 用例 exit 0），代码可评审 |
+| R10 | 20:15 | SA4 | Phase 3 静态验尸（修订轮） | 20:26 | 总控亲跑 pnpm typecheck + pnpm test 全绿（58 文件 821 用例 exit 0），代码可评审 |
+| R11 | 20:27 | SA7 | Phase 3 动态验证（修订轮） | 20:37 | SA4 pass（含 1.4 vitest 触发性自检 ok）；SA7 动态验证活链路，动态重点 4 项见 sa4_review |
+| R12 | 20:26 | SA4 | Phase 3 verdict（修订轮） | 20:26 | pass — rev1 终审 verdict（与 rev1_sa4_review.md 头部 Verdict 字段逐字一致） |
+| R13 | 20:37 | SA7 | Phase 3 verdict（修订轮） | 20:37 | pass — 动态验证 verdict（与 rev1_sa7_report.md verdict 字段逐字一致；CI 触发证据环境阻塞待 runner push 后复核，本地 59/828 全绿替代） |
+| R14 | 20:40 | 总控 | Phase 3.5 AC 门禁（修订轮） | 20:40 | 5/5 AC 全部 ✅（证据见 rev1_ac_checklist），无需追加派发 |
+| R15 | 20:45 | 总控 | Phase 4 收尾固化（修订轮） | 20:46 | HG12-16 自检全过；亲跑终态 typecheck+test 59 文件 828/828 绿 exit 0；wiki 档案随 commit 入库；REPORT.md status: complete + .mabf-done 封口；修订轮允许 push，git push origin HEAD 更新 PR #83 |
