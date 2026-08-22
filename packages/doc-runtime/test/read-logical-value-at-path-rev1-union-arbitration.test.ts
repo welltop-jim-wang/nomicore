@@ -52,11 +52,10 @@ function derivedOf(text: string): DerivedSchema {
   return evaluated.derived;
 }
 
-/** 成功读取：断言 ok:true 并返回 value。 */
-function expectOkValue(result: ReturnType<typeof readLogicalValueAtPath>): unknown {
+/** 成功读取：断言 ok:true 并把结果窄化为 ok:true 分支（asserts 签名——类型基础设施修复，rev1 入库后全仓 typecheck 暴露的预存 TS2339 收敛；断言逻辑零改动）。 */
+function expectOkValue(result: ReturnType<typeof readLogicalValueAtPath>): asserts result is { ok: true; value: unknown } {
   expect(result.ok).toBe(true);
   if (!result.ok) throw new Error(`期望 ok:true，实际 code=${result.code}（path: ${JSON.stringify(result.path)}）`);
-  return result.value;
 }
 
 /** AC3 缺键形态：ok:true 且 value 键显式存在、值为 undefined（禁省略 value 键）。 */

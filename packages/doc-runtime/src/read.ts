@@ -7,7 +7,8 @@
  *   Phase B 活数据解析 + 定点转换（复用 extract.ts walk，D7——单一转换语义源）；
  * - 导航权威 = 结构树 + ref 解析器（D2，弃用 derived.index）；Record keyPattern = values
  *   树锁步双游标 + vfsl pattern 引擎（D3，compilePattern/matchPattern 公共接缝）；
- * - union 导航 = any-of 逐成员活导航、声明序首个可产出者胜（D4）；Phase B 对 Record 键
+ * - union 导航 = any-of 逐成员活导航、声明序首个真实 value 胜（D4/rev1 D17 精确化：
+ *   missing 不胜出、仅记账继续后序成员）；Phase B 对 Record 键
  *   有意零 keyPattern 检查（D15/R1，与 extract walkUnion 零消费纪律同源）；
  * - 合法缺键（optional/Record 键/非负整数越界）= 吸收式 undefined（D8）；
  * - 失败单通道（D5/D6）：C1/C2/C3 一律 { ok:false, code:'PATH_NOT_ALLOWED', path, message? }，
@@ -74,11 +75,11 @@ export function readLogicalValueAtPath(
     if (probe.carrier !== 'Y.Map') {
       return notAllowed(path, 'ROOT 载体非 Y.Map（不变量外输入）'); // C2：整树不可读（open 期必已被拒）
     }
-    // Phase B：活数据解析 + 定点转换
+    // Phase B：活数据解析 + 定点转换（rev1：三态收束到冻结两态公共联合）
     const r = resolveLive(derived.structure.node, probe.map, path, 0, resolveS, path, memoB);
-    return r.ok
-      ? { ok: true, value: r.value } // FC-3：value 键恒显式构造
-      : notAllowed(path, '路径无法在 live 数据上解析（不变量外输入）'); // C2（Phase A 已放行，Phase B 活态拒绝）
+    if (r.kind === 'value') return { ok: true, value: r.value }; // FC-3：value 键恒显式构造
+    if (r.kind === 'missing') return { ok: true, value: undefined }; // rev1：合法缺席（FC-3 同款显式构造）
+    return notAllowed(path, '路径无法在 live 数据上解析（不变量外输入）'); // rev1：reject → C2 单通道（D6 不变）
   } catch (err) {
     // 崩溃边界（D11，对齐 extract §4.8）：一切异常（含手造派生物/lockstep 断裂/pattern 引擎
     // throw/深递归 RangeError）统一 C3，绝不外抛（FC-1）
@@ -257,8 +258,17 @@ function keyAllowed(regex: string, key: string, pc: Map<string, CompiledPattern>
 
 // —— Phase B：活数据解析 + 定点转换（T7 吸收式缺键）——
 
-/** 活导航结局：ok:false = 本分支无法解析（union 回退信号）。 */
-type NavOutcome = { ok: true; value: unknown } | { ok: false };
+/**
+ * 活导航三态结局（rev1/D16，AC-R1；owner 建议形态逐字采纳；包内私有类型——
+ * 公共结果联合冻结为两态，missing/reject 不得泄漏（INV-14，SA8 注记 3））：
+ * - value  = 实际产出：路径耗尽处 walk 快照（恒非 undefined，见完备性论证）或中段不下钻场景不产此态；
+ * - missing = 合法缺席：且仅由三源产生（Record 缺键 / optional 缺席 / 非负整数越界，D8 三源）；
+ * - reject = 本分支拒绝：段型不符 / 载体错位 / required 缺席 / 成员无此字段 / 终点 walk issue。
+ */
+type NavOutcome =
+  | { kind: 'value'; value: unknown }
+  | { kind: 'missing' }
+  | { kind: 'reject' };
 
 /**
  * R2/D13：入口/出口为 memo 挂点（键 = resolve 后节点引用 + live 引用 + 深度 i；健全性
@@ -304,54 +314,54 @@ function navigate(
   if (i === segs.length) {
     // 路径耗尽：定点转换（D7 复用 extract.ts 同一 walk——union 试验/plain 拷贝/安全写入全在闭环内）
     const r = walk(node, live, [...fullPath], resolveS);
-    return r.kind === 'issue' ? { ok: false } : { ok: true, value: r.snapshot };
+    return r.kind === 'issue' ? { kind: 'reject' } // rev1：终点 issue = reject
+                              : { kind: 'value', value: r.snapshot }; // rev1：快照恒非 undefined（INV-12）
   }
   const seg = segs[i]!;
   switch (node.kind) {
     case 'root':
       return resolveLive(node.node, live, segs, i, resolveS, fullPath, memo);
     case 'map': {
-      if (typeof seg !== 'string') return { ok: false }; // 段类型自校验（D9；§4.4 自校验义务）
-      if (carrierOf(live) !== 'Y.Map') return { ok: false }; // 沿线载体错位 → C2 / union 回退信号
+      if (typeof seg !== 'string') return { kind: 'reject' }; // rev1：段型不符（D9 自校验义务不变）
+      if (carrierOf(live) !== 'Y.Map') return { kind: 'reject' }; // rev1：载体错位（C2/成员回退）
       const ymap = live as Y.Map<unknown>;
       const first = node.fields[0]!;
       if (isRecordForm(node)) {
-        // D15/R1：pattern 许可性由 Phase A 按 any-of 键空间**并集**判定（§4.5 反例走查）；
-        // Phase B **有意零 keyPattern 检查**——与 extract walk/walkUnion 的 keyPattern 零消费
-        // 纪律同源（extract D4/B5），成员选择错位由载体/结构自校验自纠。此处照抄「本成员键空间
-        // 校验」会制造与 extractYjsSnapshot 的投影分歧，直接击穿 AC6-19 交叉实证立论前提。
+        // D15/R1 不变：Phase B 有意零 keyPattern 检查（§4.5 反例走查仍成立，本修订不触）
         const v = ymap.get(seg);
-        if (v === undefined) return { ok: true, value: undefined }; // 合法缺键：吸收式短路（D8；AC3 用例 8）
+        if (v === undefined) return { kind: 'missing' }; // rev1：Record 缺键（D8 三源之一）
         return resolveLive(first.node, v, segs, i + 1, resolveS, fullPath, memo);
       }
       const f = node.fields.find((x) => x.name === seg);
-      if (f === undefined) return { ok: false }; // 本成员无此字段（union 回退）/ 不可达（非 union 场景 Phase A 已拒）
+      if (f === undefined) return { kind: 'reject' }; // rev1：本成员无此字段（D15/D18）
       const v = ymap.get(seg);
       if (v === undefined) {
-        return f.optional ? { ok: true, value: undefined } // optional 缺席 → 吸收式 undefined（AC3 用例 7）
-          : { ok: false }; // required 缺席 → C2（不变量外；AC3 白名单不含 required）
+        return f.optional ? { kind: 'missing' } // rev1：optional 缺席（D8 三源之一）
+                          : { kind: 'reject' }; // rev1：required 缺席（C2，三分法不变）
       }
       return resolveLive(f.node, v, segs, i + 1, resolveS, fullPath, memo);
     }
     case 'array': {
-      if (typeof seg !== 'number' || !Number.isInteger(seg) || seg < 0) return { ok: false }; // 段类型自校验（D9）
-      if (carrierOf(live) !== 'Y.Array') return { ok: false };
+      if (typeof seg !== 'number' || !Number.isInteger(seg) || seg < 0) return { kind: 'reject' }; // rev1（D9）
+      if (carrierOf(live) !== 'Y.Array') return { kind: 'reject' }; // rev1
       const ya = live as Y.Array<unknown>;
-      if (seg >= ya.length) return { ok: true, value: undefined }; // 非负整数越界 = 合法缺失（注记 A；AC3 用例 9）
+      if (seg >= ya.length) return { kind: 'missing' }; // rev1：非负整数越界（D8 三源之一）
       return resolveLive(node.element, ya.get(seg), segs, i + 1, resolveS, fullPath, memo);
     }
     case 'union': {
-      // any-of 活导航（D4，§4.5）：声明序（INV-7），首个可产出者胜；全拒 → {ok:false}
-      for (const m of node.members) {
+      // rev1/D17：value-first 仲裁（AC-R2 四规则；INV-7 精确化——声明序迭代不变）
+      let sawMissing = false;
+      for (const m of node.members) { // 声明序（INV-7，零改动）
         const r = resolveLive(m, live, segs, i, resolveS, fullPath, memo);
-        if (r.ok) return r;
+        if (r.kind === 'value') return r; // 规则 1：首个真实 value 胜出
+        if (r.kind === 'missing') sawMissing = true; // 规则 2：missing 不胜出，继续后序成员
       }
-      return { ok: false };
+      return sawMissing ? { kind: 'missing' } : { kind: 'reject' }; // 规则 3/4 + mixed 优先级（§3.3）
     }
     case 'leaf':
     case 'plain':
     case 'xml-fragment':
-      return { ok: false }; // 不可达（Phase A 已拒终态下钻）——防御（C3）
+      return { kind: 'reject' }; // rev1：终态下钻（Phase A 已拒，防御）
     case 'ref':
       throw new Error('不可达：ref 应已由 resolveS 解析（手造派生物）'); // → C3 崩溃边界（防御）
   }
