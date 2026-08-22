@@ -155,7 +155,7 @@ describe('FilePersistence SA7 dynamic verification', () => {
     }
   })
 
-  it('degraded/recovery is entry-scoped: only the failed (user, docId) is rejected, unrelated docs stay writable, and only its own retry restores it', async () => {
+  it('degraded/recovery is entry-scoped: only the failed (user, docId) is degraded, unrelated docs stay writable, and only its own retry restores it', async () => {
     const rootDir = makeRootDir()
     const bobDir = path.join(rootDir, 'users', 'bob')
     fs.mkdirSync(bobDir, { recursive: true })
@@ -183,10 +183,13 @@ describe('FilePersistence SA7 dynamic verification', () => {
         'bob flush failure degrades the adapter',
       )
 
-      // Coverage 1: only Bob/doc1 is rejected — saveDoc and the creation path
-      // hitting the same degraded entry both fail loudly.
-      await expect(persistence.saveDoc(bobHandle)).rejects.toThrow(/persistence-degraded/)
-      await expect(createFileHandleForTest(persistence, BOB, 'doomed')).rejects.toThrow(/persistence-degraded/)
+      // Coverage 1: only Bob/doc1 is degraded — saveDoc registers dirty (AC5)
+      // and a twin lease on the same degraded entry still resolves (AC1).
+      expect(bobHandle.getStatus()).toBe('persistence-degraded')
+      await expect(persistence.saveDoc(bobHandle)).resolves.toBeUndefined()
+      const twin = await createFileHandleForTest(persistence, BOB, 'doomed')
+      expect(twin.getStatus()).toBe('persistence-degraded')
+      await twin.release()
 
       // Coverage 2: Alice/doc2 stays readable and writable; CAROL's fresh doc
       // creation is also allowed (a new entry has no degraded history).
@@ -198,13 +201,15 @@ describe('FilePersistence SA7 dynamic verification', () => {
       await carolHandle.release()
 
       // Coverage 3: Alice's successful flush must NOT restore Bob/doc1 — Bob
-      // stays rejected. Adapter status is only a coarse health summary.
+      // stays degraded (entry status). Adapter status is only a coarse health
+      // summary; degraded saveDoc keeps registering dirty (AC5).
       timer.fireOldest()
       await waitFor(
         () => fs.existsSync(path.join(rootDir, 'users', 'alice', 'fine.snapshot')),
         'alice flush lands on disk',
       )
-      await expect(persistence.saveDoc(bobHandle)).rejects.toThrow(/persistence-degraded/)
+      expect(bobHandle.getStatus()).toBe('persistence-degraded')
+      await expect(persistence.saveDoc(bobHandle)).resolves.toBeUndefined()
       expect(persistence.getStatus()).toBe('persistence-degraded')
       expect(fs.existsSync(path.join(bobDir, 'doomed.snapshot'))).toBe(false) // bob never committed
 
