@@ -14,4 +14,5 @@ base: docs/doc-runtime-validation
 | 5 | 12:05 | SA2 | Phase 2 攻击评审 | 12:14 | SA8 复审 clear，进入全维度破壁评审；verdict: pass（1 MAJOR 非阻塞 M1 守卫可执行化 + 2 MINOR + 2 NOTE，无 CRITICAL） |
 | 6 | 12:19 | SA1 | Phase 2 R2 微修订 | 12:22 | send_message 续传：落实 M2（§6.3 补 tokenizer/parser 数值闸门引用 + D2 触发器登记）与 M3（§9 补 Proxy 谎报键集两向边界行）；设计 852→902 行，零决策变更 |
 | 7 | 12:19 | SA6 | Phase 2 修订轮-哨兵测试 | 12:50 | send_message 续传：排队 RT-1b/1c/RT-2/RT-3/RT-4 哨兵测试；会话上下文耗尽未产出——改排队至 SA3 转绿后以新会话派发（SA2 原文允许「不阻塞本票」） |
-| 8 | 12:51 | SA3 | Phase 3 TDD 实现 | (pending) | 设计 R2 pass 定稿 + 红灯契约齐备，进入编码；硬约束含 SA2 M1(a)：fingerprint.ts 头注 D2 契约标记 |
+| 8 | 12:51 | SA3 | Phase 3 TDD 实现 | 12:55 | 设计 R2 pass 定稿 + 红灯契约齐备；commit 7033490（fingerprint.ts 新建/envelope.ts +53/index.ts +84/package.json 0.2.0→0.2.1）；总控 12:58 亲跑全量 697/697 绿 + typecheck 0 错 |
+| 9 | 13:01 | SA6 | Phase 3 哨兵测试（新会话） | (pending) | SA2 RT 排队项落实：RT-1b/1c/RT-2/RT-3/RT-4 新文件 compile-schema-envelope-sentinel.test.ts（原会话上下文耗尽，依 SA2「不阻塞本票」改新会话补锚） |
