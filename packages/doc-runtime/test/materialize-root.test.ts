@@ -173,7 +173,10 @@ describe('materializeRoot — AC-1：logical 失败保留完整 issues；materia
     const bad = { a: 123, b: 'x', extra: 1 }; // 类型错 ×2 + 未知键 ×1
     const direct = validateLogicalSnapshot(derived, bad);
     expect(direct.ok).toBe(false);
+    let directIssues: MaterializeIssue[] = [];
     if (!direct.ok) {
+      // 块内收窄提取（TS 收窄不跨块），供块外对比断言使用
+      directIssues = direct.issues;
       expect(direct.issues.length).toBeGreaterThanOrEqual(2); // 前置确认多违规
     }
     const doc = new Y.Doc();
@@ -181,7 +184,7 @@ describe('materializeRoot — AC-1：logical 失败保留完整 issues；materia
     expect(result.ok).toBe(false);
     if (!result.ok) {
       // 「保留完整 issues」：与直调 validateLogicalSnapshot 的结果逐条一致（内容 + 顺序）
-      expect(result.issues).toEqual(direct.issues);
+      expect(result.issues).toEqual(directIssues);
       expect(result.issues.length).toBeGreaterThanOrEqual(2);
       for (const issue of result.issues) {
         expect(typeof issue.message).toBe('string');
@@ -299,7 +302,10 @@ describe('materializeRoot — AC-3：detached 构造正确区分 Y.Map / Y.Array
     // doc 内容不受影响
     expect(JSON.stringify(root.get('attachments'))).toBe(JSON.stringify(['x', 'y']));
     const img1 = (root.get('assets') as Y.Map<unknown>).get('img1') as Y.Map<unknown>;
-    expect(img1.get('audit')).toEqual({ createdBy: 'alice', createdAt: 111 });
+    // 突变隔离断言：doc 侧嵌套 audit 是 Y.Map 实例（AC-3 载体断言），非 plain object——
+    // vitest toEqual 对 Y.Map vs plain object 比较 own 可枚举键（含 Y.Map 内部字段）永不相等，
+    // 故把条目投影为 plain object 后与原对象整体比较（与「突变输入快照 doc 不受影响」意图等价）。
+    expect(Object.fromEntries((img1.get('audit') as Y.Map<unknown>).entries())).toEqual({ createdBy: 'alice', createdAt: 111 });
     expect((root.get('audit') as Y.Map<unknown>).get('createdAt')).toBe(999);
   });
 });
