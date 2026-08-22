@@ -16,6 +16,10 @@ base: docs/doc-runtime-validation
 | 7 | 12:19 | SA6 | Phase 2 修订轮-哨兵测试 | 12:50 | send_message 续传：排队 RT-1b/1c/RT-2/RT-3/RT-4 哨兵测试；会话上下文耗尽未产出——改排队至 SA3 转绿后以新会话派发（SA2 原文允许「不阻塞本票」） |
 | 8 | 12:51 | SA3 | Phase 3 TDD 实现 | 12:55 | 设计 R2 pass 定稿 + 红灯契约齐备；commit 7033490（fingerprint.ts 新建/envelope.ts +53/index.ts +84/package.json 0.2.0→0.2.1）；总控 12:58 亲跑全量 697/697 绿 + typecheck 0 错 |
 | 9 | 13:01 | SA6 | Phase 3 哨兵测试（新会话） | 13:04 | RT 五条 7 用例全绿（单文件 7/7，全量 704/704）；commit c459c3c；勘误：RT-3 用 ownKeys trap（Proxy 无 getOwnPropertyNames trap），已写入测试文件头 |
-| 10 | 13:06 | SA4 | Phase 3 静态验尸 | 13:12 | 红灯变绿后进入红队审查；verdict: pass（M1(b) grep 门禁过/纯增量实证/Hard Gate #14 过；附 F1 非阻塞登记义务→SA1 补 §14 ALLOW LIST 一行） |
-| 11 | 13:15 | SA1 | Phase 3 F1 登记（续传） | (pending) | send_message 续传：§14 ALLOW LIST 只增一行登记 compile-schema-envelope-sentinel.test.ts，闭合时序性文档债 |
-| 12 | 13:15 | SA7 | Phase 3 动态验证 | (pending) | SA4 pass 后活链路验证；重点 DA-1 CI 触发证据/DA-2 node 矩阵/DA-3 ENV-5 探针/DA-4 缓存票形态假设 + Hard Gate #14 vitest 触发证据段 |
+| 10 | 13:06 | SA4 | Phase 3 静态验尸 | 13:12 | pass — 红灯变绿后进入红队审查；verdict: pass（M1(b) grep 门禁过/纯增量实证/Hard Gate #14 过；附 F1 非阻塞登记义务→SA1 补 §14 ALLOW LIST 一行） |
+| 11 | 13:15 | SA1 | Phase 3 F1 登记（续传） | 13:19 | send_message 续传：§14 ALLOW LIST 只增一行登记 compile-schema-envelope-sentinel.test.ts（902→903 行），闭合时序性文档债 |
+| 12 | 13:15 | SA7 | Phase 3 动态验证 | 13:23 | pass — SA4 pass 后活链路验证；verdict: pass（35/35 定向绿 + 704/704 全量绿 + Hard Gate #14 本地替代口径 + DA-1~DA-4 + RT 活链路交叉验证） |
+| 13 | 13:25 | 总控 | Phase 3.5 AC 门禁 | 13:27 | 对照 issue #72 六条 AC 逐条核对，全部 ✅（task_issue-72_ac_checklist.md），无 ❌ 条目 |
+| 14 | 13:30 | SA4 | Phase 4 门禁合规修订（续传） | 13:34 | HG14 立法节名缺失：续传补「1.4 vitest 触发性自检」节（结论 all-vitest-packages-triggered），verdict 维持 pass 不变（R1a） |
+| 15 | 13:30 | SA7 | Phase 4 门禁合规修订（续传） | 13:33 | HG12 grep 只认带冒号单行 verdict：文末主 verdict 落为 `**Verdict**: pass` 单行（真实 verdict 不变），tail -1 命中正确 |
+| 16 | 13:36 | 总控 | Phase 4 收尾固化 | 13:40 | HG 自检全过（HG12 双清 verdict 真实一致 / HG13 N/A 无 spec / HG14 SA4§1.4+SA7 触发证据在位 / HG15 关键词 3≤3 未触发 / HG16 无 gh pr create 无 open PR base-branch 已设）；亲跑 HEAD 全量 704/704 绿 + typecheck 0 错（.mabf-bg/final-verify.log）；wiki 全量入库；REPORT.md status: complete + .mabf-done（run_id issue-72-1787369238-3088589）封口移交 issue-runner |

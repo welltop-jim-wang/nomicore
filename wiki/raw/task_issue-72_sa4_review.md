@@ -2,6 +2,7 @@
 
 **Date**: 2026-08-22
 **Verdict**: pass（附 1 项非阻塞登记义务 F1，指派 SA1/总控；零行为级缺陷、零 DENY 接触、零回归）
+**修订**: R1a（2026-08-22，总控门禁合规修订轮）——补 Hard Gate #14 法定章节标记「1.4 vitest 触发性自检」与结论关键词 `all-vitest-packages-triggered`（2026-06-15 立法）。实质分析原报告第三节已覆盖且结论 PASS，本轮仅补法定节名与结论关键词（沿 task_rename-validate-logical-snapshot R2 同款补标先例）；Verdict 维持 pass 不变、无重审项、其余内容不动。
 
 **被审对象**：实现 commit `7033490`（feat(vfsl): compileSchemaEnvelope）+ 哨兵 commit `c459c3c`（SA6 RT 哨兵）+ `70bcc9d`（dispatch log）
 **审核基准**：`task_issue-72_design.md`（R2 定稿，§14 ALLOW/DENY LIST）、`task_issue-72_sa2_review.md`（verdict pass，M1(b) 处置义务）、`task_issue-72_relevant_decisions.md`（D1–D5 + D1 附注）、`task_issue-72.md`（SA6 验收锚定节）
@@ -100,6 +101,29 @@ packages/vfsl/src/index.ts:316:    const semanticFingerprint = semanticFingerpri
 3. 附加显式步骤（persistence 契约 / domains 脚手架 / regen-diff）与本任务无关，未受影响。
 
 **SA7 动态侧义务**：从 `gh run view --log` 摘录两新测试文件在 Test 步骤出现的证据（见 §七 DA-1）。
+
+---
+
+## 1.4 vitest 触发性自检（Hard Gate #14 法定章节，R1a 补标）
+
+> 2026-06-15 立法（issue #289 复盘）要求的标记节；实质分析 = 上文第三节（R1 原文，内容不动），本节为法定节名 + 结论关键词 + 逐文件明细。
+
+**审查对象**：本任务新增/改动的全部测试文件（`git diff --name-only f07462d HEAD | grep -E '\.test\.ts$'`，均在 `packages/vfsl/test/`、均属既有 workspace package `@nomicore/vfsl`）。
+
+**收集规则**（根 `vitest.config.ts` 实读）：`include: ['packages/*/test/**/*.test.ts', 'domains/*/test/**/*.test.ts']`。
+**CI 触发链**（`.github/workflows/ci.yml` 实读）：`test` job → `pnpm test`（L39）= `vitest run --typecheck`（无 `--filter`/包级裁剪，收集域 = include 全域）；`pnpm typecheck`（L36）含 `tsc -p packages/vfsl/tsconfig.json`；触发面 `push: main` + 全部 `pull_request`，node 20/24 矩阵。
+**本地替代口径注明**：PR push 后的 CI run 日志证据（`gh run view --log`）属 SA7 动态侧义务（DA-1）；本轮静态口径 = include/workflow 实读比对 + SA4 独立进程以**与 CI 同一入口同一 config** 本地亲跑（下表证据列）。
+
+### 逐文件核对表
+
+| # | 文件（均在 `packages/vfsl/test/`，package `@nomicore/vfsl`） | 改动 | 匹配 include | 本地亲跑证据（独立后台进程，CI 同入口） | 判定 |
+|---|---|---|---|---|---|
+| 1 | `compile-schema-envelope.test.ts` | 新增（SA6 owned 主测试，commit 7033490） | ✅ `packages/*/test/**/*.test.ts` | ✅ `✓ … (28 tests) 51ms`；全量 `pnpm test` exit 0 | 覆盖 |
+| 2 | `compile-schema-envelope-sentinel.test.ts` | 新增（SA6 RT 哨兵，commit c459c3c） | ✅ `packages/*/test/**/*.test.ts` | ✅ `✓ … (7 tests) 23ms`；全量 `pnpm test` exit 0 | 覆盖 |
+
+两文件运行计数合计 35（28+7），含于全量 704/704 绿（exit 0）。本任务无 `*.spec.ts`（§1.3 E2E spec 门不适用）；无新增 workspace package（两文件均落位既有 `@nomicore/vfsl`，根 `pnpm test` 收集域对其天然覆盖，无需 `--filter` 比对）。
+
+**结论：all-vitest-packages-triggered**（本任务全部 vitest 测试文件命中 CI 触发面，无「测试存在但从未被触发」黑洞；CI run 日志证据由 SA7 按 DA-1 补验）。
 
 ---
 
