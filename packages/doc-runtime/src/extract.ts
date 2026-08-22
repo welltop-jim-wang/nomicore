@@ -59,7 +59,7 @@ export function extractYjsSnapshot(derived: DerivedSchema, doc: Y.Doc): ExtractR
       // F5/T1/T2：yjs 异型 ROOT 原生 throw 收敛为 path [] 单 issue，绝不外抛
       return { ok: false, issues: [makeIssue([], 'Y.Map', probe.carrier)] };
     }
-    const resolve = makeRefResolver(derived); // D8：包内自建解析器（vfsl resolve 为包内部件）
+    const resolve = makeRefResolver(derived); // D8：包内共享解析器（vfsl resolve 为包内部件）
     const r = walk(derived.structure.node, probe.map, [], resolve); // root 内层节点（恒非 ref）
     if (r.kind === 'issue') {
       return { ok: false, issues: [r.issue] }; // fail-fast 单 issue（F2/INV-3）
