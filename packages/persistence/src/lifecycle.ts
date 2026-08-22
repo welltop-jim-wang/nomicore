@@ -4,6 +4,7 @@ import {
   resolvePersistenceSchedule,
   systemPersistenceTimer,
   type DocHandle,
+  type DocHandleStatus,
   type PersistenceSchedule,
   type PersistenceTimer,
   type User,
@@ -94,6 +95,10 @@ class PersistenceHandle implements DocHandle {
   }
 
   get isReleased(): boolean { return this.released }
+
+  getStatus(): DocHandleStatus {
+    return this.persistence.handleStatusOf(this)
+  }
 }
 
 /**
@@ -128,6 +133,22 @@ export class PersistenceLifecycle {
       if (cell.state === 'live' && cell.entry.degraded) return 'persistence-degraded'
     }
     return 'ready'
+  }
+
+  /** Entry-level status resolution for a handle this lifecycle issued (issue #79). */
+  handleStatusOf(handle: PersistenceHandle): DocHandleStatus {
+    if (this.closed) return 'disposed'
+    if (handle.isReleased) return 'released'
+    const cell = this.cells.get(handle.entryKey)
+    if (cell?.state !== 'live' || !cell.entry.handles.has(handle)) {
+      // Lease invariant: an unreleased handle on an open lifecycle always has
+      // a live entry that still counts it — maybeEvict requires
+      // handles.size === 0, and dispose is caught by the closed check above.
+      // Reaching this branch is an integrity bug: loud, never a silent
+      // fallback status.
+      throw new Error(`persistence integrity: unreleased handle has no live entry (${handle.entryKey})`)
+    }
+    return cell.entry.degraded ? 'persistence-degraded' : 'ready'
   }
 
   async loadDoc(owner: User, docId: string): Promise<DocHandle | null> {
@@ -197,7 +218,9 @@ export class PersistenceLifecycle {
     const owned = this.assertOwnedHandle(handle)
     const cell = this.cells.get(owned.entryKey)
     if (cell?.state !== 'live' || !cell.entry.handles.has(owned)) throw new Error('foreign or released DocHandle')
-    if (cell.entry.degraded) throw new Error('persistence-degraded: writes are rejected until retry succeeds')
+    // (issue #79) degraded is NOT a rejection reason: saveDoc is the
+    // post-mutation dirty notification. The entry's pending retry covers the
+    // new dirty generation with the full live Y.Doc.
     cell.entry.dirtyGeneration += 1
     this.scheduleFlush(cell.entry)
   }
@@ -208,7 +231,9 @@ export class PersistenceLifecycle {
     const key = toKey(owner, docId)
     const cell = this.cells.get(key)
     if (cell?.state === 'live') {
-      if (cell.entry.degraded) throw new Error('persistence-degraded: writes are rejected until retry succeeds')
+      // (issue #79) degraded is not a rejection reason on the read/lease path
+      // (ADR-0006 keeps reads while degraded): a twin lease on a degraded
+      // entry is legal and reports the entry status.
       return this.issueHandle(cell.entry)
     }
     if (cell?.state === 'reading' || cell?.state === 'creating') {
@@ -398,6 +423,14 @@ export class PersistenceLifecycle {
 
   private scheduleFlush(entry: LiveEntry): void {
     if (entry.flushing || this.closed) return
+    // Single-scheduler discipline (issue #79): while a retry timer is pending
+    // (degraded window), the retry backoff IS the flush schedule — its next
+    // flush captures the CURRENT dirtyGeneration from the full live Y.Doc, and
+    // the backoff is capped at maxDirtyMs, preserving the max-dirty attempt
+    // guarantee. Arming debounce/maxDirty here would stack a second schedule
+    // whose stale timers outlive the retry (the retry's success path sees
+    // savedGeneration === dirtyGeneration and never cancels them).
+    if (entry.retryTimer !== undefined) return
     if (entry.maxDirtyTimer === undefined) entry.maxDirtyTimer = this.timer.setTimeout(() => this.onMaxDirty(entry), this.schedule.maxDirtyMs)
     if (entry.debounceTimer !== undefined) this.timer.clearTimeout(entry.debounceTimer)
     entry.debounceTimer = this.timer.setTimeout(() => this.onDebounce(entry), this.schedule.debounceMs)

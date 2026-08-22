@@ -346,31 +346,36 @@ describe('inspector 探针（AC2/AC3/AC5：受控时钟下的可观察记录）'
 })
 
 describe('save 失败降级与 dispose 卫生（AC4/AC6）', () => {
-  it('AC4：探针记录完整——save 失败 → persistence-degraded → 后续写拒绝 → retry 成功恢复可写', async () => {
+  it('AC4：探针记录完整——save 失败 → persistence-degraded → degraded 窗口 saveDoc 登记（save-degraded）→ retry 成功恢复', async () => {
     const timer = createFakeTimer()
     const result = await runPersistenceProbe({ adapter: 'memory', timer, failFirstFlushes: 1 })
     expect(result.ok).toBe(true)
     const degraded = result.events.filter((event) => event.docId === 'doc-degraded')
     const failedFlush = degraded.find((event): event is Extract<ProbeEvent, { type: 'flush' }> => event.type === 'flush' && event.ok === false)
     const degradedEvent = degraded.find((event): event is Extract<ProbeEvent, { type: 'degraded' }> => event.type === 'degraded')
-    const rejected = degraded.find((event): event is Extract<ProbeEvent, { type: 'write-rejected' }> => event.type === 'write-rejected')
+    const saveDegraded = degraded.find((event): event is Extract<ProbeEvent, { type: 'save-degraded' }> => event.type === 'save-degraded')
     const okFlush = degraded.find((event): event is Extract<ProbeEvent, { type: 'flush' }> => event.type === 'flush' && event.ok === true)
     const recovered = degraded.find((event): event is Extract<ProbeEvent, { type: 'recovered' }> => event.type === 'recovered')
     expect(failedFlush).toBeDefined()
     expect(degradedEvent).toBeDefined()
-    expect(rejected).toBeDefined()
+    expect(saveDegraded).toBeDefined()
     expect(okFlush).toBeDefined()
     expect(recovered).toBeDefined()
-    const sequence = [failedFlush!.t, degradedEvent!.t, rejected!.t, okFlush!.t, recovered!.t]
+    const sequence = [failedFlush!.t, degradedEvent!.t, saveDegraded!.t, okFlush!.t, recovered!.t]
     expect(sequence).toEqual([...sequence].sort((left, right) => left - right))
 
     expect(result.record).toContain('flush doc-degraded generation=1 ok=false')
     expect(result.record).toContain('degraded doc-degraded')
-    expect(result.record).toContain('write-rejected doc-degraded')
+    expect(result.record).toContain('save-degraded doc-degraded')
     expect(result.record).toContain('recovered doc-degraded')
+    // retry 腿（钉死决策 C：哨兵递增 savedByKey → retry flush 记 generation=2）
+    expect(result.record).toContain('flush doc-degraded generation=2 ok=true')
+    // 恢复腿（钉死 §4.3 返回值路径 + 决策 C：saveAndEmit 记 g3、恢复 flush 记 g3）
+    expect(result.record).toContain('dirty doc-degraded generation=3')
+    expect(result.record).toContain('flush doc-degraded generation=3 ok=true')
   })
 
-  it('AC4（service 级）：memory profile 写失败一次 → persistence-degraded → saveDoc 拒绝 → retry 恢复', async () => {
+  it('AC4（service 级）：memory profile 写失败一次 → persistence-degraded → saveDoc 登记 dirty → retry 恢复', async () => {
     const timer = createFakeTimer()
     let writes = 0
     const profile = createDshPersistenceProfile({
@@ -389,7 +394,9 @@ describe('save 失败降级与 dispose 卫生（AC4/AC6）', () => {
       await profile.persistence.saveDoc(handle)
       await timer.advanceBy(DEFAULT_PERSISTENCE_SCHEDULE.debounceMs)
       expect(profile.getStatus()).toBe('persistence-degraded')
-      await expect(profile.persistence.saveDoc(handle)).rejects.toThrow(/persistence-degraded/)
+      // (issue #79 AC5) degraded is not a saveDoc rejection reason.
+      expect(handle.getStatus()).toBe('persistence-degraded')
+      await expect(profile.persistence.saveDoc(handle)).resolves.toBeUndefined()
       // retry 属持久层内部退避（首次退避 = debounceMs）
       await timer.advanceBy(DEFAULT_PERSISTENCE_SCHEDULE.debounceMs)
       expect(profile.getStatus()).toBe('ready')
@@ -401,7 +408,7 @@ describe('save 失败降级与 dispose 卫生（AC4/AC6）', () => {
     }
   })
 
-  it('AC4（service 级）：file profile 写路径被阻塞 → persistence-degraded，解除后 retry 恢复', async () => {
+  it('AC4（service 级）：file profile 写路径被阻塞 → persistence-degraded，degraded 窗口 saveDoc 登记，解除后 retry 恢复', async () => {
     const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-file-ac4-'))
     const timer = createFakeTimer()
     const profile = createDshPersistenceProfile({ adapter: 'file', rootDir, timer })
@@ -418,7 +425,9 @@ describe('save 失败降级与 dispose 卫生（AC4/AC6）', () => {
       // waitFor（上限 5s），断言目标值不变
       await waitFor(() => profile.getStatus() === 'persistence-degraded', 'file flush failure to degrade (status persistence-degraded)')
       expect(profile.getStatus()).toBe('persistence-degraded')
-      await expect(profile.persistence.saveDoc(handle)).rejects.toThrow(/persistence-degraded/)
+      // (issue #79 AC5) degraded is not a saveDoc rejection reason.
+      expect(handle.getStatus()).toBe('persistence-degraded')
+      await expect(profile.persistence.saveDoc(handle)).resolves.toBeUndefined()
       fs.rmSync(path.join(rootDir, 'users', 'user-a'), { force: true })
       await timer.advanceBy(DEFAULT_PERSISTENCE_SCHEDULE.debounceMs)
       // R3（SA1 §11 风险预警）：retry flush 的 mkdir→writeFile→rename 链在本机需 14~40 轮

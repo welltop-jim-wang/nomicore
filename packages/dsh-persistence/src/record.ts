@@ -43,8 +43,8 @@ function renderEvent(event: ProbeEvent): string {
       return `observed ${event.owner}/${event.docId} entries=${event.entries.join(',')} metaDocId=${event.metaDocId} rootKeys=${event.rootKeys.join(',')} t=${event.t}`
     case 'degraded':
       return `degraded ${event.docId} t=${event.t}`
-    case 'write-rejected':
-      return `write-rejected ${event.docId} t=${event.t}`
+    case 'save-degraded':
+      return `save-degraded ${event.docId} t=${event.t}`
     case 'recovered':
       return `recovered ${event.docId} t=${event.t}`
     case 'duplicate':
