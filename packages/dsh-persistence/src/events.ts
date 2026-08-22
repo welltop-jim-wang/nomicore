@@ -4,7 +4,7 @@ import type { PersistenceSchedule, PersistenceTimer } from '@nomicore/persistenc
  * 探针事件判别联合（与任务简报 §2 契约面逐字对齐）。
  *
  * 全部成员携带虚拟时钟刻度 `t` 与 `owner`/`docId`；调度类事件（dirty/flush/
- * release/evict/degraded/write-rejected/recovered）在记录渲染时只呈现 docId，
+ * release/evict/degraded/save-degraded/recovered）在记录渲染时只呈现 docId，
  * create/load/observed/duplicate/meta-mismatch 呈现 owner/docId 前缀（§8 规范）。
  */
 interface ProbeEventBase {
@@ -27,7 +27,7 @@ export type ProbeEvent =
       readonly rootKeys: readonly string[]
     }
   | ProbeEventBase & { readonly type: 'degraded' }
-  | ProbeEventBase & { readonly type: 'write-rejected' }
+  | ProbeEventBase & { readonly type: 'save-degraded' }
   | ProbeEventBase & { readonly type: 'recovered' }
   | ProbeEventBase & { readonly type: 'duplicate'; readonly code: string }
   | ProbeEventBase & { readonly type: 'meta-mismatch'; readonly expected: string; readonly actual: string }

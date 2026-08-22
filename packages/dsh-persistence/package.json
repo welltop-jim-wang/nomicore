@@ -1,6 +1,6 @@
 {
   "name": "@nomicore/dsh-persistence",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "type": "module",
   "description": "DSH 开发 profile + inspector 探针（ADR-0006 实施顺序 4）：以 Cordis 为宿主加载 @nomicore/persistence 的同一插件实现",

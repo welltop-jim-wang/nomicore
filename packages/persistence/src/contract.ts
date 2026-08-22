@@ -6,12 +6,26 @@ export interface User {
   readonly userId: string
 }
 
+/**
+ * Entry-level persistence status of one DocHandle lease (issue #79).
+ * Frozen vocabulary — rendered part of the ADR-0006 revision contract.
+ */
+export type DocHandleStatus = 'ready' | 'persistence-degraded' | 'released' | 'disposed'
+
 /** A short-lived, adapter-owned lease of a live document. */
 export interface DocHandle {
   /** The storage owner of this document (partition key), not the current accessor. */
   readonly owner: User
   readonly docId: string
   readonly doc: Y.Doc
+  /**
+   * Synchronous, entry-level status of THIS handle's (owner.userId, docId)
+   * entry at the instant of the call — never the adapter aggregate.
+   * Point-in-time observation only: it is not a promise that any subsequent
+   * flush will succeed (same no-durability-promise discipline as saveDoc).
+   * Precedence: disposed > released > entry state.
+   */
+  getStatus(): DocHandleStatus
   release(): Promise<void>
 }
 

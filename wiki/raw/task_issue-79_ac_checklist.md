@@ -1,0 +1,18 @@
+# AC 逐条确认门禁 — task_issue-79（Phase 3.5，2026-08-22）
+
+核对基准：`wiki/raw/task_issue-79.md`（= issue #79 body）Acceptance Criteria 9 条。
+核对人：总控；证据均经本地实跑/文件核验（SA4 静态 + SA7 动态双清已完成）。
+
+| AC# | 描述 | 状态 | 证据 | 处理 |
+|-----|------|------|------|------|
+| AC1 | `DocHandle` 提供同步、entry 级 `getStatus()`；至少可区分 `ready`、`persistence-degraded`、`released`、`disposed` | ✅ | `packages/persistence/src/contract.ts` L26-28：`DocHandleStatus` 四态词表 + `getStatus(): DocHandleStatus` 同步签名；实现 `lifecycle.ts handleStatusOf()`（优先级 disposed>released>entry，不可达分支 loud throw）；测试 `issue-79-entry-status.test.ts` L55（Memory AC1：四态全区分）、`issue-79-file-entry-status.test.ts` L79（File AC1：released/disposed 同 handle 先后断言）——SA7 全量实跑 712/712 绿含此两用例 | 已实现（SA3），双 adapter 覆盖 |
+| AC2 | 状态查询对应该 handle 的具体 `(owner, docId)` entry，不以 Adapter 聚合状态代替 | ✅ | ADR 0006 修订节 §1「恒答该 handle 自己的 (owner.userId, docId) entry 状态，不得以 Adapter 聚合状态代替」；测试 `issue-79-entry-status.test.ts` L86（AC2+AC3：adapter 聚合 `getStatus()==='persistence-degraded'` 对照下 fine entry 仍 `ready`）；SA4「读写同源（lifecycle core 单一事实源）」核验 | 已实现 |
+| AC3 | entry flush 失败后相关 handle 返回 `persistence-degraded`；无关 namespace handle 仍 `ready` | ✅ | Memory：`issue-79-entry-status.test.ts` L86（alice/doomed 降级、alice/fine ready）；File：`issue-79-file-entry-status.test.ts` L94（bob EACCES 降级、alice ready，chmod 0o500 真实文件系统注入）；SA7 动态复验 EACCES 机理（uid 1000 独立验证） | 已实现 |
+| AC4 | 该 entry 自身 retry 成功后相关 handle 恢复 `ready` | ✅ | `issue-79-entry-status.test.ts` L117（AC4：仅自身 retry 恢复，同窗口无关 flush 成功不恢复）；File 同覆盖（L94 bob retry→ready）；SA7 CLI S4 时间线实录（degraded→retry g2 落盘→recovered） | 已实现 |
+| AC5 | `saveDoc(handle)` 不再因 entry 已 degraded 而拒绝；递增 dirty generation；retry 覆盖最新完整 live Y.Doc | ✅ | `lifecycle.ts` saveDoc degraded throw 已删（git diff）；`issue-79-entry-status.test.ts` L157（AC5：degraded 下 saveDoc resolve、retry 落盘含 rev=2、新实例 load 可见）；ADR 0006 修订节 §2（degraded 不构成拒绝理由、必须递增 dirtyGeneration）；SA7 变异 Leg B（恢复 degraded 拒绝 → 4 条契约腿 + CLI 哨兵精确爆红）证明锚点判别力 | 已实现 |
+| AC6 | foreign、released、entry 身份失配和 Persistence disposed 等非 degraded 错误继续响亮拒绝 | ✅ | `issue-79-entry-status.test.ts` L292（AC6：foreign adapter / 伪造身份对象 / released / disposed 四类 `rejects.toThrow` 响亮拒绝 + released/disposed 状态断言）；lifecycle.ts 四类非 degraded 拒绝顺序经 SA2/SA4 逐行对照保持 | 已实现 |
+| AC7 | 确定性竞态测试覆盖（g1 flush 已开始 → 写前观察 ready → mutation 2 入 live Y.Doc → g1 flush 失败 → degraded 下 saveDoc 登记 → retry 成功 → 新实例 load 可见 mutation 2） | ✅ | `issue-79-entry-status.test.ts` L213（AC7：fake timer 全手动推进 + gated write 停住 gen-1 flush，8 步序列与规格逐步对应）；SA7 动态复验 + 变异 Leg A（移除 retry guard → `expected 2 to be +0` 精确爆红） | 已实现 |
+| AC8 | ADR 0006 补充职责：Runtime 负责 mutation 前 gate；`saveDoc` 是 mutation 后 dirty notification；写前状态检查不是持久化成功保证 | ✅ | `docs/adr/0006-server-persistence-docstore.md` L167 修订节「DocHandle entry status 与 saveDoc 职责修订（2026-08-22，issue #79；演进经 owner 裁决放行——issue #79 AC1/AC8 明文授权）」：§1 接口契约+「写前状态检查不是持久化成功保证」、§2「saveDoc 是 mutation 后的 dirty notification」+「拒绝面归属业务编排层（Runtime 写前 gate）」；SA4 核验与设计 §6 草案逐字一致 | 已落地 |
+| AC9 | MemoryPersistence 与 FilePersistence contract tests、全量 test/typecheck、Node 20/24 CI 通过 | ✅（本地部分；CI 执行属发布后 runner 职责） | 本地总控亲跑（后台独立进程，`.mabf-bg/phase3-verify.log`）：`pnpm typecheck` exit 0（五包 tsc 链）；`pnpm test`（vitest run --typecheck）**Test Files 51 passed (51) / Tests 712 passed (712) / Type Errors no errors**——含 persistence contract 套件（memory-persistence / file-persistence / persistence-contract 三文件 36 用例）全绿；SA4 §1.4 静态核验 CI 触发链（根 vitest.config include `packages/*/test/**` + typecheck 双通道，Node 20/24 矩阵）；Node 20/24 CI 实跑在 push/PR 后由 runner 跟踪（本地完成事务不含 CI 门槛，SA7 报告已注明） | 本地全绿；CI 移交 runner |
+
+**结论**：9/9 全部 ✅（AC9 的 CI 实跑部分按职责边界移交 issue-runner，本地可验部分全部通过），无 ❌ 条目，无需补派 SA。进入 Phase 4 收尾。

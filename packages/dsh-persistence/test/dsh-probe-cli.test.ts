@@ -8,7 +8,7 @@
  * 1. 同一命令 + 相同参数两次运行 → stdout 逐字节一致（记录不得含墙钟时间戳、rootDir 绝对路径
  *    等运行环境痕迹）；
  * 2. 记录必须覆盖 AC2/AC3/AC4 链路标记（create/dirty/flush/release/evict/observed/
- *    duplicate/meta-mismatch/degraded/write-rejected/recovered）；
+ *    duplicate/meta-mismatch/degraded/save-degraded/recovered）；
  * 3. file adapter 运行同时产生磁盘副作用（users/<user>/<doc>.snapshot），且不污染记录；
  * 4. 异常输入（file 缺 rootDir、未知 adapter）→ 非零退出 + stderr 报错。
  *
@@ -102,12 +102,12 @@ describe('DSH 探针命令（AC8：可复制的命令 + 输出记录）', () => 
     }
   })
 
-  it('AC4 完整性：--fail-first-flushes 1 使记录包含 degraded → write-rejected → recovered 完整序列', async () => {
+  it('AC4 完整性：--fail-first-flushes 1 使记录包含 degraded → save-degraded → recovered 完整序列', async () => {
     const result = await runCli(['--adapter', 'memory', '--fail-first-flushes', '1'])
     expect(result.code).toBe(0)
     expect(result.stdout).toContain('flush doc-degraded generation=1 ok=false')
     expect(result.stdout).toContain('degraded doc-degraded')
-    expect(result.stdout).toContain('write-rejected doc-degraded')
+    expect(result.stdout).toContain('save-degraded doc-degraded')
     expect(result.stdout).toContain('recovered doc-degraded')
   })
 

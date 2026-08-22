@@ -123,10 +123,12 @@ describe('persistence contracts', () => {
       owner,
       docId: 'draft',
       doc,
+      getStatus() { return 'ready' },
       async release() {},
     }
 
     expect(handle.doc).toBe(doc)
+    expect(handle.getStatus()).toBe('ready')
     await expect(handle.release()).resolves.toBeUndefined()
     expect('evict' in handle).toBe(false)
     expect('list' in handle).toBe(false)

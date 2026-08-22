@@ -304,7 +304,10 @@ describe('MemoryPersistence', () => {
     expect(second).not.toBeNull()
     expect(second!.doc).toBe(handle.doc)
     expect(second!.doc.getMap('ROOT').get('readable')).toBe('yes')
-    await expect(persistence.saveDoc(handle)).rejects.toThrow(/persistence-degraded/)
+    // (issue #79 AC5) degraded is not a saveDoc rejection reason: the entry
+    // stays degraded, saveDoc registers dirty, and retry covers the full doc.
+    expect(handle.getStatus()).toBe('persistence-degraded')
+    await expect(persistence.saveDoc(handle)).resolves.toBeUndefined()
     // R3 (owner #3): degraded radius is entry-scoped (ADR-0006 namespace
     // semantics) — a fresh entry has no degraded history, so creating and
     // writing 'other' is allowed while doc1 stays degraded.
@@ -317,7 +320,7 @@ describe('MemoryPersistence', () => {
     await expect(persistence.saveDoc(second!)).resolves.toBeUndefined()
   })
 
-  it('restores a persisted snapshot while degraded, keeps writes rejected, then restores writes after retry', async () => {
+  it('restores a persisted snapshot while degraded, registers dirty writes, then restores writes after retry', async () => {
     const timer = createFakeTimer()
     const user = { userId: 'alice' }
     const snapshotDoc = docWithMeta('doc1')
@@ -347,7 +350,10 @@ describe('MemoryPersistence', () => {
     const restored = await persistence.loadDoc(user, 'doc1')
     expect(restored).not.toBeNull()
     expect(restored!.doc.getMap('ROOT').get('fromSnapshot')).toBe('readable')
-    await expect(persistence.saveDoc(restored!)).rejects.toThrow(/persistence-degraded/)
+    // (issue #79 AC5) same reversal as above: degraded entry keeps accepting
+    // dirty registration until its own retry succeeds.
+    expect(restored!.getStatus()).toBe('persistence-degraded')
+    await expect(persistence.saveDoc(restored!)).resolves.toBeUndefined()
 
     await timer.advanceBy(500)
     expect(persistence.getStatus()).toBe('ready')
