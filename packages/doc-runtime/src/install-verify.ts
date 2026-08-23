@@ -79,12 +79,13 @@ function e201C(detail: string): Error {
 }
 
 /** E201 变体 D（校验未能运行，不代表偏离；触发类枚举 rev2 设计 §4.2 变体 D）。 */
-function e201D(detail: string): Error {
+function e201D(detail: string, cause?: unknown): Error {
   return new DocRuntimeFatalError(
     'post-commit-verification',
     true,
     `DOCRT-E201: ROOT 安装后完整性校验无法完成（${detail}）——写入已提交，不回滚、不补偿；` +
     `此形态不代表已检测到偏离，仅代表校验防线未能运行`,
+    cause === undefined ? undefined : { cause },
   );
 }
 
@@ -126,7 +127,7 @@ export function verifySnapshotIntact(derived: DerivedSchema, snapshot: unknown, 
   try {
     scratch = buildScratchInstall(derived, snapshot);
   } catch (err) {
-    throw e201D(`scratch 构造异常（触发类④）：${errDetail(err)}`);
+    throw e201D(`scratch 构造异常（触发类④）：${errDetail(err)}`, err);
   }
   if (scratch.kind === 'fail') {
     throw e201D(`scratch 构造失败（触发类④）：${scratch.issue.message}`);
@@ -141,7 +142,7 @@ export function verifySnapshotIntact(derived: DerivedSchema, snapshot: unknown, 
     exReal = extractYjsSnapshot(derived, doc);
     exScratch = extractYjsSnapshot(derived, scratch.scratchDoc);
   } catch (err) {
-    throw e201D(`提取异常（触发类④）：${errDetail(err)}`);
+    throw e201D(`提取异常（触发类④）：${errDetail(err)}`, err);
   }
   if (!exReal.ok) {
     throw e201C(`提取失败（${exReal.issues[0]?.message ?? '未知'}）——已安装子树载体与结构树不符`);
@@ -162,7 +163,7 @@ export function verifySnapshotIntact(derived: DerivedSchema, snapshot: unknown, 
     const resolve = makeRefResolver(derived);
     cmp = productEqual(derived.structure.node, exReal.snapshot, exScratch.snapshot, resolve, []);
   } catch (err) {
-    throw e201D(`产物比较异常（触发类①/②/③）：${errDetail(err)}`);
+    throw e201D(`产物比较异常（触发类①/②/③）：${errDetail(err)}`, err);
   }
   if (!cmp.equal) throw e201C(detailOf(cmp));
 }

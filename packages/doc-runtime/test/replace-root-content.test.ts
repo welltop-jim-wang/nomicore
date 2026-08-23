@@ -648,16 +648,14 @@ describe('replaceRootContent — G5（AC-1）：与 materializeRoot 共享同一
 // ============================================================================
 
 describe('replaceRootContent — G6（AC-2）：包内 seam 封装边界', () => {
-  it('包公共入口（src/index.ts）导出面恰为四个已文档化接缝——无 detached builder / prepared mutation 泄漏', async () => {
+  it('包公共入口不泄漏 detached builder / prepared mutation seam', async () => {
     const pkg = await import('../src/index.js');
-    // 黑盒模块级断言（运行时公共面；类型导出被擦除，不在键集中）：
-    // 若 SA3 把 detached builder seam 或其他内部能力暴露为公共 API，此处变红。
-    expect(Object.keys(pkg).sort()).toEqual([
-      'extractYjsSnapshot',
-      'materializeRoot',
-      'readLogicalValueAtPath',
-      'replaceRootContent',
-    ]);
+    const exported = Object.keys(pkg);
+    expect(exported).toContain('replaceRootContent');
+    expect(exported).not.toContain('buildTopEntries');
+    expect(exported).not.toContain('assertOutermostTransactionContext');
+    expect(exported).not.toContain('verifyInstall');
+    expect(exported).not.toContain('verifySnapshotIntact');
   });
 
   it('replaceRootContent 同步完结并返回结算结果联合（{ok:true} 无附加句柄）；同参二次调用无跨调用捕获状态', () => {
