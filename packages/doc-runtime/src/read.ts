@@ -125,9 +125,11 @@ export function readLogicalValueAtPath(
     if (r.kind === 'fail') return notAllowed(path, r.msg); // C3 透传
     return { ok: true, value: r.v }; // INV-R3：value 键恒显式构造（r.v 可为合法 null）
   } catch (err) {
-    // 崩溃边界 E100（D10 含 RangeError 循环引用；E22 Proxy trap throw 收编）
-    const detail = err instanceof Error ? err.message : String(err);
-    return notAllowed(path, `DOCRT-E100: 内部错误（意外异常）: ${detail}`);
+    // 崩溃边界 E100（D10 含 RangeError 循环引用；E22 Proxy trap throw 收编）。
+    // F1/P1+P9：detail 提取可能执行敌意代码（非 Error 抛出物的 hostile toString /
+    // Error 子类的 throwing message getter / instanceof 的 Proxy getPrototypeOf trap）
+    // —— 经 safeDetail 内层 try 收编（回退 'unstringifiable'），绝不二次抛（INV-R1）
+    return notAllowed(path, `DOCRT-E100: 内部错误（意外异常）: ${safeDetail(err)}`);
   }
 }
 
@@ -137,10 +139,38 @@ export function readLogicalValueAtPath(
  * 统一失败构造：path 回显整条尝试路径的**新鲜副本**（不别名调用方数组）；message 恒非空。
  * SA4-F2 勘误守卫（强制）：catch 路径上 path 可能是非数组——无守卫的 `[...path]`
  * 会在 catch 块内部二次抛出，击穿「同步不抛错」（INV-R1）；类型外输入一律归一为 []。
+ * F1/P10 延伸：path 可能是 Proxy 包装数组（Array.isArray → true 过 G0，但 spread 触发
+ * Symbol.iterator/长度读取 trap）——拷贝经 safeSpreadPath 内层 try 收编（回退 []）。
  */
 function notAllowed(path: unknown, message: string): ReadLogicalValueResult {
-  const safePath: Array<string | number> = Array.isArray(path) ? [...path] : [];
-  return { ok: false, code: 'PATH_NOT_ALLOWED', path: safePath, message };
+  return { ok: false, code: 'PATH_NOT_ALLOWED', path: safeSpreadPath(path), message };
+}
+
+/**
+ * 安全 path 拷贝（F1/P10，SA4-F2 守卫的自然延伸——已防「非数组」，再防「数组但敌意」）：
+ * Proxy 包装数组的 `[...path]` 可触发 trap 抛错；内层 try：任何异常回退 []
+ * （不外抛，INV-R1）。正常数组输入下与 `[...path]` 行为逐字节一致（回归面零）。
+ */
+function safeSpreadPath(path: unknown): Array<string | number> {
+  if (!Array.isArray(path)) return [];
+  try {
+    return [...path];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * 安全错误详情提取（F1/P1+P9）：err 是任意敌方抛出物——`err.message`（throwing
+ * getter）或 `String(err)`（hostile toString）均可抛，`instanceof` 亦可能触发 Proxy
+ * getPrototypeOf trap；内层 try：一切异常回退 'unstringifiable'（INV-R1 绝不二次抛）。
+ */
+function safeDetail(err: unknown): string {
+  try {
+    return err instanceof Error ? err.message : String(err);
+  } catch {
+    return 'unstringifiable';
+  }
 }
 
 /** 合法缺席/合法空值形态：value 键恒显式存在（FC-3/INV-R3）。 */

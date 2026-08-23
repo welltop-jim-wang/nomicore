@@ -336,6 +336,58 @@ describe('Date 原型守卫锁（nonPlainObject 家族）', () => {
   });
 });
 
+// —— 二、新增锚：敌意抛出物二次异常防护（F1/P1+P9+P10：错误通道构造零外抛）——
+
+describe('敌意抛出物二次异常防护（F1/P1+P9+P10）', () => {
+  it('P1 敌意 toString：trap 抛出非 Error 对象且 toString 再抛 → ok:false 结构化不外抛（message 回退 unstringifiable）', () => {
+    const doc = new Y.Doc();
+    const evil = { toString() { throw new Error('toString boom'); } };
+    doc.getMap('ROOT').set('p', new Proxy({ a: 1 }, { ownKeys() { throw evil; } }));
+    let r: ReadLogicalValueResult | undefined;
+    expect(() => { r = readLogicalValueAtPath(doc, ['p']); }).not.toThrow();
+    expect(r?.ok).toBe(false);
+    if (r === undefined || r.ok) throw new Error('期望结构化失败');
+    expect(r.code).toBe('PATH_NOT_ALLOWED');
+    expect(r.path).toEqual(['p']);
+    expect(r.message).toMatch(/^DOCRT-E100:/);
+    expect(r.message).toContain('unstringifiable');
+  });
+
+  it('P9 敌意 message getter：Error 实例 message 为 throwing getter → ok:false 结构化不外抛（message 回退 unstringifiable）', () => {
+    const doc = new Y.Doc();
+    const evilErr = new Error('x');
+    Object.defineProperty(evilErr, 'message', { get() { throw new Error('message-getter boom'); } });
+    doc.getMap('ROOT').set('p', new Proxy({ a: 1 }, { ownKeys() { throw evilErr; } }));
+    let r: ReadLogicalValueResult | undefined;
+    expect(() => { r = readLogicalValueAtPath(doc, ['p']); }).not.toThrow();
+    expect(r?.ok).toBe(false);
+    if (r === undefined || r.ok) throw new Error('期望结构化失败');
+    expect(r.code).toBe('PATH_NOT_ALLOWED');
+    expect(r.path).toEqual(['p']);
+    expect(r.message).toMatch(/^DOCRT-E100:/);
+    expect(r.message).toContain('unstringifiable');
+  });
+
+  it('P10 敌意 path 迭代器：Proxy 包装数组 path（Symbol.iterator get trap 抛）→ ok:false 不外抛（path 回退 []）', () => {
+    const doc = new Y.Doc();
+    doc.getMap('ROOT').set('title', 'Hello');
+    const evilPath = new Proxy(['title', 'x'], {
+      get(target, key, receiver) {
+        if (key === Symbol.iterator) throw new Error('iterator boom');
+        return Reflect.get(target, key, receiver);
+      },
+    });
+    let r: ReadLogicalValueResult | undefined;
+    expect(() => { r = readLogicalValueAtPath(doc, evilPath); }).not.toThrow();
+    expect(r?.ok).toBe(false);
+    if (r === undefined || r.ok) throw new Error('期望结构化失败');
+    expect(r.code).toBe('PATH_NOT_ALLOWED');
+    expect(r.path).toEqual([]); // 敌意迭代器 → 归一回退 []
+    expect(typeof r.message).toBe('string');
+    expect((r.message ?? '').length).toBeGreaterThan(0);
+  });
+});
+
 // —— 二、新增锚：Proxy trap-throw 收编锁（E22：traps 属调用方数据自带代码，throw → E100 不外抛）——
 
 describe('Proxy trap-throw 收编锁（E22）', () => {

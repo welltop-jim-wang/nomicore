@@ -13,4 +13,7 @@
 | 7 | 19:33 | SA2 | Phase 2 设计复审 R2 | 19:41 | SA1 R2 修订落实 8 攻击点，交回 SA2 复审；verdict=reject（单点 must-fix R2-1 移植锚自相矛盾 + LOW R2-2） |
 | 8 | 19:41 | SA1 | Phase 2 设计修订 R3 | 19:45 | SA2 R2 reject 仅余 R2-1（一行改写）+ R2-2（数字更正），SA1 修订 |
 | 9 | 19:45 | SA2 | Phase 2 设计复审 R3 | 19:48 | SA1 R3 拆自相矛盾锚为双自洽锚 + fixture 规格显式化 + 27→26 更正，交回 SA2 复审；verdict=pass（三轮收敛，设计定稿） |
-| 10 | 19:48 | SA3 | Phase 3 TDD 实现 | (pending) | SA2 R3 verdict=pass 设计定稿，SA3 按 §4 蓝本实现使红灯变绿 |
+| 10 | 19:48 | SA3 | Phase 3 TDD 实现 | 20:06 | SA2 R3 verdict=pass 设计定稿；SA3 commit 51621ca，总控亲验全量 typecheck+test 全绿（61 文件 914 例，exit 0） |
+| 11 | 20:06 | SA4 | Phase 3 静态验尸 R1 | 20:18 | 红灯已绿（总控亲验）；verdict=reject（F1 错误通道二次异常三向量 + F2 版本 bump 撞 DENY LIST） |
+| 12 | 20:18 | SA1 | Phase 3 设计修订 R4 | (pending) | SA4 F2：设计 §7 DENY 与硬门禁 9 版本 bump 冲突，SA1 修订 ALLOW 豁免 patch bump |
+| 13 | 20:18 | SA3 | Phase 3 修复 R2 | (pending) | SA4 F1：safeDetail/safeSpreadPath 内层 try + guards 敌意抛出物锚 |
