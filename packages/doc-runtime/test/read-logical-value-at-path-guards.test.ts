@@ -386,6 +386,43 @@ describe('敌意抛出物二次异常防护（F1/P1+P9+P10）', () => {
     expect(typeof r.message).toBe('string');
     expect((r.message ?? '').length).toBeGreaterThan(0);
   });
+
+  it('R2-F1a NEW1 敌意 message 数据属性：Error 实例 message 覆写为敌意对象（toString 抛）→ ok:false 不外抛（收窄回退 unstringifiable）', () => {
+    const doc = new Y.Doc();
+    // 与 P9 的 throwing getter 不同：own **数据属性**覆写——属性读不抛、内层 try 原样
+    // 放行；此前 ${safeDetail(err)} 模板插值的 ToString 发生在内层 try 之外 → 外泄。
+    // 修复后按原始 string 收窄回退 'unstringifiable'
+    const evilErr = new Error('x');
+    Object.defineProperty(evilErr, 'message', {
+      value: { toString() { throw new Error('hostile msg toString boom'); } },
+      configurable: true,
+    });
+    doc.getMap('ROOT').set('p', new Proxy({ a: 1 }, { ownKeys() { throw evilErr; } }));
+    let r: ReadLogicalValueResult | undefined;
+    expect(() => { r = readLogicalValueAtPath(doc, ['p']); }).not.toThrow();
+    expect(r?.ok).toBe(false);
+    if (r === undefined || r.ok) throw new Error('期望结构化失败');
+    expect(r.code).toBe('PATH_NOT_ALLOWED');
+    expect(r.path).toEqual(['p']);
+    expect(r.message).toMatch(/^DOCRT-E100:/);
+    expect(r.message).toContain('unstringifiable');
+  });
+
+  it('R2-F1a NEW2 敌意 message Symbol：Error 实例 message 覆写为 Symbol → ok:false 不外抛（收窄回退 unstringifiable）', () => {
+    const doc = new Y.Doc();
+    // Symbol 的模板插值 ToString 恒抛 TypeError——若不做收窄，外泄向量与 NEW1 同构
+    const evilErr = new Error('x');
+    Object.defineProperty(evilErr, 'message', { value: Symbol('hostile'), configurable: true });
+    doc.getMap('ROOT').set('p', new Proxy({ a: 1 }, { ownKeys() { throw evilErr; } }));
+    let r: ReadLogicalValueResult | undefined;
+    expect(() => { r = readLogicalValueAtPath(doc, ['p']); }).not.toThrow();
+    expect(r?.ok).toBe(false);
+    if (r === undefined || r.ok) throw new Error('期望结构化失败');
+    expect(r.code).toBe('PATH_NOT_ALLOWED');
+    expect(r.path).toEqual(['p']);
+    expect(r.message).toMatch(/^DOCRT-E100:/);
+    expect(r.message).toContain('unstringifiable');
+  });
 });
 
 // —— 二、新增锚：Proxy trap-throw 收编锁（E22：traps 属调用方数据自带代码，throw → E100 不外抛）——

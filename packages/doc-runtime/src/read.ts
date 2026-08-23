@@ -161,13 +161,18 @@ function safeSpreadPath(path: unknown): Array<string | number> {
 }
 
 /**
- * 安全错误详情提取（F1/P1+P9）：err 是任意敌方抛出物——`err.message`（throwing
- * getter）或 `String(err)`（hostile toString）均可抛，`instanceof` 亦可能触发 Proxy
- * getPrototypeOf trap；内层 try：一切异常回退 'unstringifiable'（INV-R1 绝不二次抛）。
+ * 安全错误详情提取（F1/P1+P9；R2-F1a 收窄）：err 是任意敌方抛出物——`err.message`
+ * （throwing getter）或 `String(err)`（hostile toString）均可抛，`instanceof` 亦可能
+ * 触发 Proxy getPrototypeOf trap；内层 try：一切异常回退 'unstringifiable'
+ * （INV-R1 绝不二次抛）。R2-F1a（NEW1/NEW2）：Error 子类可用 own **数据属性**把
+ * message 覆写为敌意对象/Symbol——属性读不抛、内层 try 原样放行，而调用方模板插值
+ * `${safeDetail(err)}` 的 ToString 发生在本函数返回之后（内层 try 之外）→ 必须
+ * 在返回前做原始 string 收窄（yjsWord 同款模式：typeof raw === 'string' ? raw : 回退）。
  */
 function safeDetail(err: unknown): string {
   try {
-    return err instanceof Error ? err.message : String(err);
+    const raw = err instanceof Error ? err.message : String(err);
+    return typeof raw === 'string' ? raw : 'unstringifiable';
   } catch {
     return 'unstringifiable';
   }

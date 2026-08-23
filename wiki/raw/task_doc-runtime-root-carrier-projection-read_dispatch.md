@@ -15,5 +15,8 @@
 | 9 | 19:45 | SA2 | Phase 2 设计复审 R3 | 19:48 | SA1 R3 拆自相矛盾锚为双自洽锚 + fixture 规格显式化 + 27→26 更正，交回 SA2 复审；verdict=pass（三轮收敛，设计定稿） |
 | 10 | 19:48 | SA3 | Phase 3 TDD 实现 | 20:06 | SA2 R3 verdict=pass 设计定稿；SA3 commit 51621ca，总控亲验全量 typecheck+test 全绿（61 文件 914 例，exit 0） |
 | 11 | 20:06 | SA4 | Phase 3 静态验尸 R1 | 20:18 | 红灯已绿（总控亲验）；verdict=reject（F1 错误通道二次异常三向量 + F2 版本 bump 撞 DENY LIST） |
-| 12 | 20:18 | SA1 | Phase 3 设计修订 R4 | (pending) | SA4 F2：设计 §7 DENY 与硬门禁 9 版本 bump 冲突，SA1 修订 ALLOW 豁免 patch bump |
-| 13 | 20:18 | SA3 | Phase 3 修复 R2 | (pending) | SA4 F1：safeDetail/safeSpreadPath 内层 try + guards 敌意抛出物锚 |
+| 12 | 20:18 | SA1 | Phase 3 设计修订 R4 | 20:22 | SA4 F2：设计 §7 DENY 与硬门禁 9 版本 bump 冲突，SA1 修订 ALLOW 豁免 patch bump |
+| 13 | 20:18 | SA3 | Phase 3 修复 R2 | 20:25 | SA4 F1：safeDetail/safeSpreadPath 内层 try + guards 敌意抛出物锚 |
+| 14 | 20:23 | SA4 | Phase 3 静态复审 R2 | 20:30 | F1+F2 已核销；verdict=reject（新发现 R2-F1a：safeDetail 缺 typeof string 收窄，一行修复+一锚） |
+| 15 | 20:30 | SA3 | Phase 3 修复 R3 | (pending) | SA4 R2-F1a：safeDetail 返回值 typeof raw===string 收窄 + guards 第四锚（NEW1 敌意 message 数据属性/Symbol） |
+| 16 | 20:30 | SA1 | Phase 3 设计勘误 R5 | (pending) | SA4 处置指令：蓝本 catch 行 safeDetail 伪代码同步 typeof 收窄 + D3 isPlainRecord 偏离补勘误 |

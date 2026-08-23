@@ -3,6 +3,8 @@
 > **R2 修订（2026-08-23）**：落实 SA2 R1 攻击评审（verdict=reject，见 `…_sa2_review.md`）全部 must-fix #1–#4 与 should-fix #5–#8。修订点以「R2」标注散布正文；逐条对照见文末「SA2 反馈逐条回应」表。R1 版总体架构（载体驱动重写、D2 两层分类器、D5 键空间统一、D7 拷贝器分叉、D10 崩溃边界、§6.2 删除授权链）经 SA2 认定不需返工；修订均为局部裁决与文本修正。SA2 全部实证（detached 载体行为、matchPattern 覆盖缺口、行数 1479）已经 SA1 本轮独立复测确认后再落实（探针输出见 §8 A14）。
 >
 > **R3 修订（2026-08-23）**：落实 SA2 R2 复审（reject，仅两点，见评审文末「R2 复审」节）：**R2-1**（MEDIUM must-fix）零副作用锚三重自相矛盾——按方案 (i) 改写主锚（空 doc + `[0]` 段型不符）+ 方案 (ii) 落为独立对照锚（title fixture + update 0/toJSON 前后相等），并顺带将 guards fixture 规格显式化以根除歧义；**R2-2**（LOW）vfsl/test 计数 27→26（`.test.ts` 口径；目录另有 1 个 `validate-logical-snapshot.contract.ts` 共享文件共 27 条目——口径注记一并入文，SA1 本轮 `ls`/`find` 双口径复测确认）。顺带落实 SA2 三项 INFO 建议（guards fixture 规格 / E16 destroyed doc 实测注记 / E20 跨 doc 别名注记 + detached 三形态并列锚）。SA2 R2 复审判定：R1 八点 100% 核销、R2 新机制（ProjectOutcome/detached 守卫/SUP-5 移植/Proxy 划界/G0 前缀）经二轮攻击全部成立、「其余一切无需再动」。
+>
+> **R4 修订（2026-08-23，SA4 静态验尸 F2 处置指令）**：§7 文件清单修订——`packages/doc-runtime/package.json` 从 DENY「零改动」移入 ALLOW，**仅限 patch 版本号 bump（0.1.5 → 0.1.6）**。SA3 的 bump 是履行 MABF 硬门禁 #9「所有改过代码的模块必须 bump patch 版本号」（read.ts 重写即改代码）；R1–R3 的 DENY 行原意是「零依赖改动」，未按字段粒度识别硬门禁的优先级，致 SA4 按 §1.1 判 scope 违规（F2）。依赖（vfsl/yjs/devDeps）与其他字段零改动不变，`tsconfig.json` 仍 DENY；§6.1 生产代码表同步修订。本修订为 F2 单点处置，不触设计其余任何裁决。
 
 - **Issue**: #86（welltop-jim-wang/nomicore），branch `fix/issue-86-on-docs-namespace-runtime`，base `docs/namespace-runtime`（Parent PR #85）
 - **任务类型**: 功能开发（ADR-0008「必要的底层演进」第 1 条的直接落实）
@@ -97,7 +99,7 @@ readLogicalValueAtPath(doc, path)
 
 ### D1 — 重写 read.ts 为载体驱动两阶段（导航 + 定点投影）
 
-新实现 ~280 行替换旧 417 行。文件内聚：`read.ts` 继续作为唯一公共读取实现（index.ts 导出符号名不变：`readLogicalValueAtPath` + `ReadLogicalValueResult`）。`@nomicore/vfsl` 的 import 从 read.ts 全部移除（extract/materialize 仍依赖 vfsl，package.json 不动）。
+新实现 ~280 行替换旧 417 行。文件内聚：`read.ts` 继续作为唯一公共读取实现（index.ts 导出符号名不变：`readLogicalValueAtPath` + `ReadLogicalValueResult`）。`@nomicore/vfsl` 的 import 从 read.ts 全部移除（extract/materialize 仍依赖 vfsl；package.json 依赖不动，仅 version 字段 patch bump——R4/SA4-F2，见 §6.1/§7）。
 
 ### D2 — 导航载体词汇表 `NavCarrier`（基于 carrierOf 的细分分类器）
 
@@ -432,7 +434,8 @@ putKey(out, k, v): Object.defineProperty(out, k, { value: v, writable: true, enu
 | `packages/doc-runtime/src/read.ts` | **重写**（§4；旧 Phase A/B、arbitrateUnion、memberOutcomes、NavOutcome、makeValuesResolver、keyAllowed、vChild 全部移除；`ReadLogicalValueResult` 类型逐字保留；vfsl import 清零） |
 | `packages/doc-runtime/src/index.ts` | 导出符号**不变**（`readLogicalValueAtPath` / `ReadLogicalValueResult`）；仅更新头部 JSDoc 契约注释（三参描述 → 双参载体投影描述，~10 行注释 diff） |
 | `packages/doc-runtime/src/carrier.ts` / `extract.ts` / `materialize.ts` / `resolve.ts` / `xml-parse.ts` | **零改动**（probeRoot/carrierOf 原样复用；extract 的 walk/makeRefResolver @internal 导出保留——extract 自用） |
-| `packages/doc-runtime/package.json` / `tsconfig.json` | **零改动**（vfsl 依赖保留给 extract/materialize；yjs 版本 ^13.6.30 覆盖实测所用的 13.6.32） |
+| `packages/doc-runtime/package.json` | **仅 patch 版本号 bump**（0.1.5 → 0.1.6；R4/SA4-F2 处置：MABF 硬门禁 #9——read.ts 重写即改代码，改码模块必须 bump patch，SA3 履行硬门禁）；**依赖与其他字段零改动**（vfsl 依赖保留给 extract/materialize；yjs ^13.6.30 覆盖实测所用的 13.6.32） |
+| `packages/doc-runtime/tsconfig.json` | **零改动** |
 
 ### 6.2 遗留测试处置（7 文件，1479 行；R2 #6 更正——R1 误写「2132」系把 SA6 新文件 581+72 一并计入）
 
@@ -528,6 +531,7 @@ putKey(out, k, v): Object.defineProperty(out, k, { value: v, writable: true, enu
 
 - `packages/doc-runtime/src/read.ts` — 重写，schema-independent 载体投影实现（§4 伪代码 → ~280 行；旧 Phase A/B 与 union 仲裁体系整体退役）
 - `packages/doc-runtime/src/index.ts` — 修改，仅头部 JSDoc 契约注释更新（导出符号与路径不变，~10 行注释 diff）
+- `packages/doc-runtime/package.json` — 修改，**仅限 patch 版本号 bump**（0.1.5 → 0.1.6；R4/SA4-F2 处置：MABF 硬门禁 #9「所有改过代码的模块必须 bump patch 版本号」，SA3 履行硬门禁；依赖与其他字段零改动）
 - `packages/doc-runtime/test/read-logical-value-at-path-schema-independent.test.ts` — `[SA6 owned]` 冻结验收测试，**任何 SA 不改断言逻辑**
 - `packages/doc-runtime/test/read-logical-value-at-path-schema-independent.test-d.ts` — `[SA6 owned]` 冻结类型验收测试，同上
 - `packages/doc-runtime/test/read-logical-value-at-path.test.ts` — 删除（锚定被 ADR-0008 取代的三参语义，§6.2）
@@ -544,7 +548,7 @@ putKey(out, k, v): Object.defineProperty(out, k, { value: v, writable: true, enu
 - `packages/doc-runtime/src/extract.ts` — 零改动。其 copyPlainValue 的 accessor 执行为已申报潜在缺陷（§3 D7），修复改变已交付契约可观测行为，超出本任务范围，留独立任务
 - `packages/doc-runtime/src/carrier.ts` — 零改动（probeRoot/carrierOf 原样复用，词汇表不加值）
 - `packages/doc-runtime/src/materialize.ts` / `resolve.ts` / `xml-parse.ts` — 零改动（写面/解析面与读取演进正交；materialize 不 import read.ts，实测无连锁）
-- `packages/doc-runtime/package.json` / `tsconfig.json` — 零改动（vfsl 依赖保留给 extract/materialize）
+- `packages/doc-runtime/tsconfig.json` — 零改动（R4：package.json 原与本行同列「零改动」，SA4-F2 处置后移入 ALLOW 仅限 patch bump——硬门禁 #9 优先于本行原意「零依赖改动」；「vfsl 依赖保留给 extract/materialize」的约束在 ALLOW 行中不变）
 - `packages/doc-runtime/test/extract-*.test.ts` / `materialize-*.test.ts` — 零改动（对应生产面零改动，绿灯基线）
 - `packages/vfsl/**` / `packages/vfsl-protocol/**` / `packages/vfsl-codegen/**` — 零改动（读取不再依赖 vfsl，反而解耦）。**已知注记（R2 #8）**：`packages/vfsl/src/index.ts:86` 注释宣称 matchPattern「由 doc-runtime readLogicalValueAtPath 的 Record 键许可判定」消费——本任务后该消费消失、注释将失真；DENY 维持（注释清理留独立任务），该 seam 的行为覆盖由 SUP-5 移植锚（guards）保全
 - `packages/persistence/**` / `packages/dsh-persistence/**` / `apps/**` / `domains/**` / `tests/**` — 零改动（实测无 doc-runtime 消费方，§0.4）
@@ -633,3 +637,5 @@ git grep -n "readLogicalValueAtPath\|arbitrateUnion\|NavOutcome" -- ':!wiki' ':!
 **R2 后记（2026-08-23，SA2 R1 实际攻击 vs 首轮预答对照）**：预答 1（覆盖倒退）被 #3 部分命中——SUP-5 seam 覆盖点漏判（「已有 vfsl 测试覆盖」为事实错误，已移植）；预答 3（E100 通道同形）方向成立，但 #2 detached 揭示了「通道同形却 XML 内容静默蒸发」的新静默家族（已按方案 a 封死，INV-R13）；预答 10（拷贝器分叉）获 SA2 独立复现背书（extract accessor 执行缺陷确认）；#1 哨兵碰撞与 #4 移植精度为首轮未预见的实现蓝图级缺陷。全部 8 点已落实（见「SA2 反馈逐条回应」表）——R2 修订完稿，交出控制权，等待 SA2 复审。
 
 **R3 后记（2026-08-23，SA2 R2 复审）**：R1 八点 100% 核销、R2 新机制二轮攻击全部成立；仅余 R2-1（零副作用锚三重自相矛盾——R2 修 #4 时把旧锚 `size===0` 断言与新选的 `['title','x']` 拒绝路径错误拼接，属「主动加固」再次引祸，与 R2 主动修复的 G0 前缀同源教训：**移植锚的 fixture 与断言必须整对推导，不能跨锚拼接**）与 R2-2（计数口径 27→26）。R3 按方案 (i)+(ii) 拆为两个各自自洽的独立锚 + fixture 规格显式化（根治），计数三处更正并附口径注；顺带落实三项 INFO 与 detached 三形态并列锚。——R3 修订完稿，交出控制权，等待 SA2 复审（预计放行）。
+
+**R4 后记（2026-08-23，SA4 静态验尸 F2 处置）**：SA3 的 package.json patch bump（0.1.5→0.1.6，commit 51621caf）被 SA4 按 §7 DENY 判 scope 违规（F2，reject 项）——根源是 R1 的 DENY 行把「版本号 bump」与「依赖改动」混写为整文件「零改动」，未识别 MABF 硬门禁 #9 的优先级。R4 按 SA4 处置选项一将该文件移入 ALLOW（仅限 version 字段 patch bump），依赖与其他字段仍零改动、tsconfig.json 仍 DENY。教训入库：**DENY 行需按字段粒度声明豁免（硬门禁 > 设计约束），整文件粒度的「零改动」会与仓库级强制惯例冲突**。SA4 同报告的 F1（catch 块 `String(detail)` 可被敌意 toString 击穿外抛）与 D3（isPlainRecord 判据偏离）为 SA3 侧修复项/已接受偏离，不在本 R4 单点处置范围（总控指令限定）。
