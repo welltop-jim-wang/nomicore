@@ -2,8 +2,8 @@
  * @nomicore/namespace-runtime —— Runtime 构造与七键公共面（设计 §3/§4 D1/D2/D3/D8'）。
  *
  * 构造序（D1，R2 修订落实 SA2 #3/#4——一切 throw 与一切 seam 读取均在入队前）：
- *  V1 形状守卫（loud TypeError；单读捕获全部 seam 字段为局部常量——INV-N14，N1 的
- *     「合并为一次读取」实现形态；此时零副作用）；
+ *  V1 形状守卫（loud TypeError；seam 字段全部读取限于构造栈内有限次——校验与捕获
+ *     合并、均在入队前，入队后零读取（INV-N14，SA4 N-1 精确化措辞）；此时零副作用）；
  *  V2 状态门（getStatus() ∈ {ready, persistence-degraded} 放行；released/disposed/
  *     未知值 → NamespaceRuntimeConstructionError throw——零副作用，INV-N4）；
  *  V3 所有权转移（全部在入队前求值）：身份/载体一次捕获 → state 初始化 →
@@ -69,7 +69,8 @@ export interface NamespaceRuntime {
  * 所有校验/身份捕获均前置于 enqueue，任何 throw 都在 P0 微任务启动之前）。
  */
 export function createNamespaceRuntimeWithSeam(input: NamespaceRuntimeSeamInput): NamespaceRuntime {
-  // V1 形状守卫（单读捕获——一次读取即闭包；任何不满足即 throw，此时零副作用）
+  // V1 形状守卫（seam 字段捕获为局部常量——读取均限构造栈内、入队前；任何不满足即
+  // throw，此时零副作用）
   const captured = captureSeamInput(input);
   const { handle, userId, docId, doc } = captured;
 
@@ -84,7 +85,7 @@ export function createNamespaceRuntimeWithSeam(input: NamespaceRuntimeSeamInput)
     );
   }
 
-  // V3b seam 编译步单读捕获（缺省 vfsl compileSchemaEnvelope——`??` 无隐式降级语义：
+  // V3b seam 编译步捕获（缺省 vfsl compileSchemaEnvelope——`??` 无隐式降级语义：
   //   seam 提供即注入，未提供即真实编译步）
   const compile = captured.compile ?? compileSchemaEnvelope;
 
@@ -122,8 +123,10 @@ export function createNamespaceRuntime(handle: DocHandle): NamespaceRuntime {
   return createNamespaceRuntimeWithSeam({ handle });
 }
 
-/** V1 形状守卫 + 单读捕获（INV-N14 最严实现形态：每个 seam 字段恰读一次——
- *  校验读取与捕获合并，不存在 flaky getter 二次读取面；此后 runtime 只消费局部量）。 */
+/** V1 形状守卫 + 捕获（INV-N14：seam 字段读取全部限于构造栈内有限次——V1 校验读取与
+ *  捕获合并于本函数、均在 enqueue 之前；入队后零读取（thunk/槽体/公共面只消费捕获的
+ *  局部量——flaky getter 的任何行为在构造期 throw 或已被捕获，入队后对 runtime 不可
+ *  观测）。此后 runtime 只消费局部量。 */
 function captureSeamInput(input: unknown): {
   handle: DocHandle;
   userId: string;
@@ -161,7 +164,7 @@ function captureSeamInput(input: unknown): {
   if (typeof doc !== 'object' || doc === null) {
     throw new TypeError('handle.doc 必须为对象（Y.Doc 契约）');
   }
-  // seam 可选字段（单读捕获）
+  // seam 可选字段（捕获为局部常量——读取均限构造栈内、入队前）
   let p0Gate: Promise<void> | undefined;
   if (rec.p0Gate !== undefined) {
     const g = rec.p0Gate;

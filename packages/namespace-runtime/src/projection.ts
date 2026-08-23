@@ -26,6 +26,15 @@
  *   不出现；键缺席/显式 undefined（get(k)===undefined，yjs set undefined 后
  *   has=true 但 get=undefined，实测 §12 #4）→ 键省略（不写 undefined 值键）；
  * - 投影器返回全新对象，无共享可变引用（调用方突变不污染 runtime/后续读数）。
+ *
+ * proto-key 安全写入纪律（D5 R3 touch-up，SA4 F-1）：META 深拷贝的任何键写入（顶层
+ * out 与嵌套 plain object 分支）经 putMetaKey（defineProperty 四真）——禁裸赋值
+ * `out[k] = …`。机理：裸 `out['__proto__'] = v` 命中 Object.prototype.__proto__
+ * accessor——标量值被 setter 静默忽略（键蒸发）；对象值替换 out 原型（键丢失 + 返回
+ * 对象原型被 doc 内数据劫持）。本仓已知陷阱：doc-runtime read.ts putKey（E8/E9）与
+ * extract.ts putSnapshotKey（R2.2/F-1 修复回流，注释明文「禁赋值式」）——本包重新引入
+ * 即回归。defineProperty 写入使 '__proto__' 等危险键成为 own enumerable data
+ * property（不触发原型 setter，Object.getPrototypeOf(out) 恒为 Object.prototype）。
  */
 import * as Y from 'yjs';
 import type { SchemaEnvelope } from '@nomicore/vfsl';
@@ -128,10 +137,11 @@ export function projectMetadata(doc: Y.Doc): Record<string, unknown> {
       `META 载体异型（同名条目非 Y.Map，观测异常：${err instanceof Error ? err.message : String(err)}）`,
     );
   }
-  // ③ 逐键深拷贝（值域违规 → NSRT-META-E1 loud）
+  // ③ 逐键深拷贝（值域违规 → NSRT-META-E1 loud；键写入经 putMetaKey——D5 R3
+  //    proto-key 安全写入纪律，SA4 F-1：禁裸赋值，防 '__proto__' 键丢失/原型劫持）
   const out: Record<string, unknown> = {};
   for (const k of meta.keys()) {
-    out[k] = copyMetaValue(meta.get(k), `META.${k}`);
+    putMetaKey(out, k, copyMetaValue(meta.get(k), `META.${k}`));
   }
   return out;
 }
@@ -174,12 +184,27 @@ function copyMetaValue(v: unknown, keyPath: string): unknown {
   const out: Record<string, unknown> = {};
   for (const k of Object.keys(v)) {
     const hit = readableOwnDataValue(v as Record<string, unknown>, k);
-    if (!hit.hit) {
-      continue; // accessor / non-enumerable / undefined 值 → 键省略（D4 吸收语义）
+    if (hit.kind === 'skip') {
+      continue; // accessor / non-enumerable → 键空间外（吸收，descriptor 读零执行）
     }
-    out[k] = copyMetaValue(hit.value, `${keyPath}.${k}`);
+    if (hit.kind === 'undefined') {
+      throw metaValueError(`${keyPath}.${k}`, '值域违规：undefined'); // F-2（R3 touch-up）：
+      //  与顶层 Y.Map 键/数组元素处置对齐——undefined 值不吸收，loud（NSRT-META-E1）
+    }
+    // 子键写入经 putMetaKey——D5 R3 proto-key 安全写入纪律（SA4 F-1，禁裸赋值）
+    putMetaKey(out, k, copyMetaValue(hit.value, `${keyPath}.${k}`));
   }
   return out;
+}
+
+/**
+ * META 深拷贝键写入助手（D5 R3 proto-key 安全写入纪律，SA4 F-1）：四描述符全 true——
+ * 漏传时 defineProperty 默认 writable:false, configurable:false → 事实冻结；且经
+ * defineProperty 写入 '__proto__' 自有键不触发原型 setter（E8/E9 防劫持——仓内先例
+ * doc-runtime read.ts putKey / extract.ts putSnapshotKey R2.2/F-1，禁赋值式）。
+ */
+function putMetaKey(out: object, k: string, v: unknown): void {
+  Object.defineProperty(out, k, { value: v, writable: true, enumerable: true, configurable: true });
 }
 
 function metaValueError(keyPath: string, msg: string): MetaProjectionError {
@@ -212,26 +237,29 @@ function isPlainRecord(v: object): boolean {
   return false; // 超深/循环链 → 保守 loud
 }
 
-/** plain object 键空间（沿 read.ts D5 同款）：own enumerable data property；accessor/
- *  non-enumerable/undefined 值 → 键空间外（吸收）。descriptor 读，零 accessor 执行。 */
+/** plain object 键读取（descriptor 读，零 accessor 执行）。三分结果：
+ *  - skip：缺键/原型链/non-enumerable/accessor → 键空间外（吸收，与 read.ts D5 同款）；
+ *  - undefined：own enumerable data property 值为 undefined → 值域违规（F-2，R3
+ *    touch-up：与顶层 Y.Map 键/数组元素处置对齐——不吸收，loud NSRT-META-E1）；
+ *  - ok：own enumerable data property 值 → 递归。 */
 function readableOwnDataValue(
   obj: Record<string, unknown>,
   key: string,
-): { hit: true; value: unknown } | { hit: false } {
+): { kind: 'ok'; value: unknown } | { kind: 'skip' } | { kind: 'undefined' } {
   const desc = Object.getOwnPropertyDescriptor(obj, key);
   if (desc === undefined) {
-    return { hit: false }; // 缺键 / 原型链
+    return { kind: 'skip' }; // 缺键 / 原型链
   }
   if (desc.enumerable !== true) {
-    return { hit: false }; // non-enumerable 键空间外
+    return { kind: 'skip' }; // non-enumerable 键空间外
   }
   if (desc.get !== undefined || desc.set !== undefined) {
-    return { hit: false }; // accessor：不执行、不产出
+    return { kind: 'skip' }; // accessor：不执行、不产出
   }
   if (desc.value === undefined) {
-    return { hit: false }; // 吸收（D4）
+    return { kind: 'undefined' }; // 值域违规（不吸收——F-2 与顶层/数组元素对齐）
   }
-  return { hit: true, value: desc.value };
+  return { kind: 'ok', value: desc.value };
 }
 
 /** plain array 元素读取同款 descriptor 守卫：越界 NONE（本循环不达）；在界 undefined /
