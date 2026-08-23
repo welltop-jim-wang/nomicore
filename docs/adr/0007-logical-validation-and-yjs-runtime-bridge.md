@@ -1,7 +1,7 @@
 # ADR 0007：逻辑验证与 Yjs Runtime Bridge 分层
 
 日期：2026-08-22
-状态：已接受（Phase 2 namespace runtime 前置能力）
+状态：已接受（Runtime/open/read 条款由 ADR 0008 部分取代）
 
 ## 背景
 
@@ -23,7 +23,7 @@
 
 - `extractYjsSnapshot(derived, doc)`：只读取固定 ROOT，严格验证实际 Yjs 载体并提取普通逻辑 ROOT；首个结构错误立即停止，不读取或验证 SCHEMA/META。
 - `materializeRoot(derived, snapshot, doc)`：唯一公共物化入口；内部先执行 `validateLogicalSnapshot`，再构造未集成到任何 doc 的 detached Yjs 子树，确认目标 ROOT 为空后以一次 `Y.transact` 安装。验证或构造失败时目标 doc 零写入；不覆盖、不合并、不 fallback。
-- `readLogicalValueAtPath(derived, doc, path)`：同步按路径读取，只转换目标子树；依赖 create/open/update 已建立并维持的结构不变量，普通读取不重复验证。空路径表示显式读取整个 ROOT；合法 optional/Record/数组缺失返回 `undefined`。
+- `readLogicalValueAtPath(derived, doc, path)`：本阶段冻结的 schema-aware 读取签名；已由 ADR 0008 取代为 schema-independent `readLogicalValueAtPath(doc, path)`。读取按实际载体同步投影目标子树，不重复 VFSL 编译或校验。
 - `applyValidatedMutation(derived, doc, mutation)`：同步完成当前 ROOT 结构/逻辑检查、在普通 JSON 副本中模拟 mutation、完整 ROOT 逻辑校验、detached 子树构造和单次 Yjs transaction；不公开可跨时间执行的 prepared mutation，避免 TOCTOU。
 
 路径统一为 `readonly (string | number)[]`：map/object/Record 使用 string，Y.Array 使用 number；禁止点号字符串与 JSON Pointer。leaf、plain、XML 是不可下钻终态。XML string 与 Y.XmlFragment 只承诺语义等价 round-trip，不承诺字符串逐字相同。
@@ -41,9 +41,13 @@
 
 NamespaceRuntime 将来按 namespace 串行化所有业务写入：轮到 mutation 时先检查 writable gate，同步调用 `applyValidatedMutation`，成功后立即调用 persistence `saveDoc` 标脏。业务调用方不得取得可写 Yjs 引用或绕过该入口；未来原始 Yjs update 必须另设受控验证通道。
 
-普通 open 必须依次完成 schema 编译、META 身份检查、ROOT 载体提取和逻辑校验；任一失败都不注册 Runtime，并释放底层 DocHandle。Registry 中存在的 Runtime 因而始终满足完整不变量。加载和更新负责验证，读取按 path 快速执行，不重复全树验证。
+本阶段原定普通 open 依次完成 schema 编译、META 身份检查、ROOT 载体提取和逻辑校验后才注册 Runtime；该 open/read 编排已由 ADR 0008 取代：Runtime 信任有效 DocHandle，发布前仅把 schema preparation P0 放入单一 write sequencer，发布后立即开放 schema-independent read，写入仍负责建立并维持完整不变量。
 
 底层能力各自保留领域化结果联合，不合并成巨型 issue 类型；NamespaceRuntime/Registry 再映射成稳定的 create/open/mutation 上层错误。逻辑校验保留完整 issues，Yjs 结构与路径/操作错误 fail-fast。
+
+### ADR 0008 取代范围
+
+ADR 0008 取代本文 schema-aware `readLogicalValueAtPath(derived, doc, path)` 以及“普通 open 完成 schema 编译、META 检查、ROOT 提取和 logical validation 后才注册 Runtime”的 Runtime/open/read 条款。本文关于 logical validation、detached materialization、validated mutation、零写入与 observer no-rollback 的底层决策继续有效。
 
 ## 失败边界
 

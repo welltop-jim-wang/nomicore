@@ -12,7 +12,7 @@ _Avoid_: PathSchemaNode DSL、schema DSL
 `lang + version` 决定的 VFSL 语法子集与语义规格；一经发布冻结，引擎只增不改，未知方言 loud-fail 只读。
 
 **信封（envelope）**:
-`SCHEMA` 键（doc 顶层具名条目，原 `__schema__`——与 ROOT 统一命名）里的 `{ lang, version, id, text }`；单字符串值，原子替换、可哈希、可 diff。
+顶层具名 `SCHEMA` Y.Map 中 `lang/version/id/text` 四个字符串键投影出的严格普通对象；兼容读取忽略额外键，规范写入以一次 transaction 清空并重写四键。信封可哈希、可 diff。
 
 **命名空间（namespace）**:
 一个 Y.Doc 连同自带的 `SCHEMA` 信封与数据；schema 随数据走，不依赖代码模块。
@@ -45,7 +45,7 @@ _Avoid_: 编译器（compiler）——该词留给「文本 → IR → 派生 sc
 _Avoid_: 编译产物、DerivedSchema（英文代号）
 
 **逻辑快照校验（validateLogicalSnapshot）**:
-对普通 JSON 逻辑 ROOT 快照运行完整值语义校验；不接收 Y.Doc / Y.Map / Y.Array，也不验证 Yjs 载体。创建前校验、迁移后体检、测试与管理端点共用该入口。
+对普通 JSON 逻辑 ROOT 快照运行完整值语义校验；不接收 Y.Doc / Y.Map / Y.Array，也不验证 Yjs 载体。创建前校验、写入前校验、迁移后体检、测试与管理端点共用该入口；普通 open/read 不重复校验已持久化 namespace。
 _Avoid_: validateSnapshot（容易误解为可校验 live Yjs 文档）
 
 **信封指纹（envelope fingerprint）**:
@@ -53,6 +53,20 @@ _Avoid_: validateSnapshot（容易误解为可校验 live Yjs 文档）
 
 **语义指纹（semantic fingerprint）**:
 `lang + version +` 解析后规范 IR 的语义身份；忽略空白与普通注释，保留 JSDoc、声明顺序及其他 VFSL 语义，并排除仅作谱系标签的 `id`。用于共享编译语义产物。
+
+**载体投影读取（readLogicalValueAtPath）**:
+从 live Y.Doc 的固定 ROOT 按实际 Yjs/plain 载体和路径同步投影普通逻辑值；不依赖 VFSL/派生 schema，也不重复执行结构或逻辑校验。创建与受控写入负责建立并维持数据不变量；持久化文件被其他程序错误修改不在运行时读取契约范围内。
+_Avoid_: validated read、schema-aware read（会误解为读取时重新解释或校验 VFSL）
+
+**写序列器（write sequencer）**:
+每个 NamespaceRuntime 独有的严格 FIFO：P0 与同一 namespace 的全部受控 Y.Doc 写共享顺序，前项完成 dirty notification 后下一项才执行；读取不进入该序列。
+_Avoid_: mutation queue（范围过窄，容易让 SCHEMA/META 管理写建立旁路）
+
+**P0（schema preparation）**:
+Runtime 发布前已进入写序列器队首的 schema 准备任务；只投影并编译 SCHEMA、构造 active schema tools，不读取或验证 ROOT。Runtime 发布后读取立即可用，早期写排在 P0 后。
+
+**active schema**:
+NamespaceRuntime 当前安装、供 ROOT write 使用的已编译 schema tools 及身份；SCHEMA write 的 transaction 成功后同步切换，不等同于对 live SCHEMA 的即时读取。
 
 **重建校验（rebuild validation）**:
 单字段 patch 也在最近结构边界合并当前值后按完整子 schema 校验——判别联合只有看到判别字段才知道按哪个变体验。
