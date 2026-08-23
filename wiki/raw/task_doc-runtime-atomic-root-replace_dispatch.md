@@ -20,3 +20,15 @@
 | 7 | 16:35 | SA2 | Phase 2 设计复审 R2 | 16:44 | SA1 R2 逐条落实 reject 项，同一会话续传复审 → verdict: reject（外科手术级，仅残留 R2-A1：makeIssue 归属未闭合，含快速通道条款） |
 | 8 | 16:44 | SA1 | Phase 2 设计修订 R3（外科） | 16:49 | SA2 R2 残留 R2-A1 单点，同一会话续传外科修订 |
 | 9 | 16:49 | SA2 | Phase 2 设计复审 R3（快速通道） | 16:53 | SA1 R3 闭合 R2-A1，按快速通道条款 grep 级快检 → verdict: pass（最终，设计定稿） |
+| 10 | 16:53 | SA3 | Phase 3 TDD 实现 | 17:10 | SA2 R3 pass，设计定稿；SA3 按 §12 ALLOW/DENY 与 §1.5 fixture 窗口实现，红灯变绿 |
+| 11 | 17:08 | SA4 | Phase 3 静态验尸 | 17:25 | 总控亲验红灯全绿（940/940 + tsc exit 0），代码配评审，派 SA4 → verdict: pass（8 项审核全过 + 移交清单三项全闭；F-1/F-2/F-3 非阻塞留档） |
+| 12 | 17:23 | SA7 | Phase 3 动态验证 | 17:42 | SA4 pass，派 SA7 活链路动态验证（含 F-2 复核 + SA4 动态重点 3 条） → verdict: pass（双 Node 940/940 + F-2 非本任务引入实证 + yjs 漂移抽查绿） |
+| 13 | 17:42 | 总控 | Phase 3.5 AC 门禁 | 17:42 | 评审双清达成；AC 8/8 全 ✅（证据逐条登记 ac_checklist.md），无 ❌ 条目 |
+
+## Verdict 登记（硬门禁 #12 自检锚点）
+
+| SA | 阶段 | verdict | 与 review 文件一致性 |
+|---|---|---|---|
+| SA4 | Phase 3 | pass | 与 sa4_review.md 顶部 `**Verdict**: pass` 及末节 `Verdict: pass。` 逐字一致 |
+| SA7 | Phase 3 | pass | 与 sa7_report.md 顶部 `**Verdict**: **pass**` 逐字一致 |
+| 14 | 17:45 | 总控 | Phase 4 收尾固化 | 17:45 | HG 自检全过（#12 双清 verdict 真实一致 / #13 N/A 无 spec / #14 SA4§1.4+SA7 触发证据在位 / #15 关键词 2≤3 未触发 / #16 本任务零 gh pr create 痕迹、无 open PR、base-branch=docs/namespace-runtime）；一致性校验经 SA4 机械 diff 落实；版本 0.1.5→0.1.6 |
