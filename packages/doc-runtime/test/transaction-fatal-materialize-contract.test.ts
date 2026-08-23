@@ -445,10 +445,10 @@ describe('AC-3 — 普通 logical/path/materialization 失败继续使用领域�
     expect(doc.getMap('ROOT').get('title')).toBe('existing'); // 不覆盖、不合并、不 fallback
   });
 
-  it('path 领域失败（readLogicalValueAtPath 不允许路径）→ 返回 ok:false 联合，未 throw，非 fatal 形态', () => {
-    const derived = derivedOf('type ROOT = { title: string };');
+  it('path 领域失败（标量不可下钻）→ 返回 ok:false 联合，未 throw，非 fatal 形态', () => {
     const doc = new Y.Doc();
-    const r = readLogicalValueAtPath(derived, doc, ['title', 'nested']); // leaf 不可下钻 → PATH_NOT_ALLOWED
+    doc.getMap('ROOT').set('title', 'existing');
+    const r = readLogicalValueAtPath(doc, ['title', 'nested']);
     expect(r.ok).toBe(false);
     if (!r.ok) {
       expect(r.code).toBe('PATH_NOT_ALLOWED');
