@@ -23,7 +23,10 @@ import { describe, expect, it } from 'vitest';
 import * as Y from 'yjs';
 import { evaluate, parseVfsl } from '@nomicore/vfsl';
 import type { DerivedSchema } from '@nomicore/vfsl';
-import { materializeRoot, applyValidatedMutation } from '../src/index.js';
+import { materializeRoot } from '../src/index.js';
+// applyValidatedMutation 已从公共入口收缩（owner 修改要求 1 / rev1 AC R1）：本文件经包内
+// 内部 seam 直接导入（../src/mutation.js），fatal 契约覆盖不丢（rev1 AC R2）。
+import { applyValidatedMutation } from '../src/mutation.js';
 
 function derivedOf(text: string): DerivedSchema {
   const p = parseVfsl(text);

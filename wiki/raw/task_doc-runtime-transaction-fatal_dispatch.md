@@ -23,3 +23,10 @@
 | 17 | 17:58 | SA7 | Phase 4 补充轮（verdict 行格式合规） | 18:00 | 硬门禁 #12 行首模式提取要求：文末追加裸 verdict: pass 行，非重审 |
 | 18 | 17:58 | SA4 | Phase 4 补充轮（1.4 vitest 触发性自检落文） | 18:05 | 硬门禁 #14 立法明文小节补齐，结论令牌 all-vitest-packages-triggered，非重审 |
 | 19 | 18:03 | 总控 | Phase 3.5 AC 逐条确认门禁 | 18:03 | 7/7 AC 本地完成面全部 ✅（AC-7 CI 矩阵腿按职责边界移交 runner），产出 ac_checklist.md，无需派修订轮 |
+| 20 | 21:33 | 总控 | 发布后修订轮 R1 研判 | — | runner 转达 owner PR #96 Request changes：公共 set-only applyValidatedMutation 违反 #76 四操作契约；类型自判=公共面收缩修订；裁剪 SA5/SA1/SA2/SA8（owner 方案=设计定稿，收缩与 ADR-0008 授权范围一致）；简报落盘 task_doc-runtime-transaction-fatal_rev1.md |
+| 21 | 21:34 | SA6 | 修订轮 R1 红灯锚定 | 21:40 | owner 回归要求 1 需可执行锚：公共面 guard 测试（三名目消失+保留名目在位），先红后绿 |
+| 22 | 21:42 | SA3 | 修订轮 R1 实现 | 21:48 | owner 优先方案：公共入口移除三名目+测试改走内部 seam+版本 bump，目标守卫红转绿且 fatal 覆盖零丢失 |
+| 23 | 21:52 | 总控 | 修订轮 R1 亲跑验收 | 21:52 | 后台独立进程：pnpm typecheck exit 0 + vitest run --typecheck 72 文件/974 用例全绿、Type Errors none（.mabf-bg/rev1-*.log）→ 派 SA4 |
+| 24 | 21:53 | SA4 | 修订轮 R1 静态验尸 | 22:03 (verdict: pass) | 红灯已绿+总控亲跑验收通过，审查公共面移除完整性/fatal 覆盖零丢失/守卫机制真实性 |
+| 25 | 22:05 | SA7 | 修订轮 R1 动态验证 | 22:15 (verdict: pass) | SA4 pass，实跑验证公共面移除+fatal 活链路+全量回归 |
+| 26 | 22:17 | 总控 | 修订轮 R1 AC 门禁+续传 SA3 | 22:17 | R1-R6 全 ✅（ac_checklist_rev1 落盘）；SA4/SA7 双清 pass，续传 SA3 原会话 commit+push（禁提交 .mabf/**/.mabf-bg/**/REPORT.md/.mabf-done） |

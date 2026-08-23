@@ -17,8 +17,9 @@
  *   本文件采用对冻结语义的最小直译 `{ op: 'set', path, value }`；若 SA1 设计对字段
  *   命名有不同定稿，SA1 应在设计中登记本测试的对齐方式（SA6 锚定的是契约面：
  *   fatal 形态与 committed/phase/最终状态，不是 mutation 字段名）。
- * - 本文件的 TODO 落点：applyValidatedMutation 存在且可被触发事务提交后（observer
- *   抛错）→ 全部用例转绿；不存在（当前基线）→ 全部用例红（红因见各用例注释）。
+ * - 本文件锚定 applyValidatedMutation 的 fatal 契约面（经包内 seam 载体）：载体存在且
+ *   可被触发事务提交后（observer 抛错）→ 用例对契约面（exact identity / committed /
+ *   phase / Y.Doc 最终状态）断言。
  *
  * 契约来源：
  * - docs/adr/0007：「`applyValidatedMutation(derived, doc, mutation)`：同步完成当前
@@ -33,14 +34,13 @@
  *   W1（committed:true 唯一相容形态 throw/reject）/ W2'（命名与字段面）/ W3（零写入锚 +
  *   诚实 committed）/ W4（doc-runtime 只携带事实）。
  *
- * 指示灯现状（红灯，构造性 + 行为性）：
- * - `applyValidatedMutation` 未实现/未从公共入口导出（同样适用 DocRuntimeFatalError）：
- *   本文件以动态 import 取成员，`expect(typeof applyValidatedMutation).toBe('function')`
- *   红（成员缺失 → undefined）；DocRuntimeFatalError 同理（红因：全仓 grep 0 命中）。
- * - behavior 型用例（调用 applyValidatedMutation 触发 committed fatal）在成员缺失时
- *   以 `applyValidatedMutation(...)` 抛 TypeError（not a function）红；SA3 实现后
- *   转为对 fatal 契约面（instanceof DocRuntimeFatalError / committed:true /
- *   Y.Doc 最终状态）的行为断言。
+ * 指示灯现状（rev1 公共入口收缩后）：
+ * - 公共入口已移除 `applyValidatedMutation`（owner 修改要求 1 / rev1 AC R1）；本文件改经
+ *   包内内部 seam `../src/mutation.js` 直接导入（rev1 AC R2：fatal 契约覆盖不丢）——
+ *   `expect(typeof applyValidatedMutation).toBe('function')` 对 seam 成员成立；
+ *   `DocRuntimeFatalError` 经公共入口导入（基线已导出）。
+ * - behavior 型用例（调用 applyValidatedMutation 触发 committed fatal）断言 fatal
+ *   契约面（instanceof DocRuntimeFatalError / committed:true / Y.Doc 最终状态）。
  */
 import { describe, expect, it, beforeAll } from 'vitest';
 import * as Y from 'yjs';
@@ -74,8 +74,11 @@ type ApplyValidatedMutation = (derived: DerivedSchema, doc: Y.Doc, mutation: unk
 let applyValidatedMutation: ApplyValidatedMutation | undefined;
 let fatalCtor: FatalCtor | undefined;
 beforeAll(async () => {
+  // 内部 seam 取成员：公共入口已移除 applyValidatedMutation（owner 修改要求 1 / rev1 AC R1），
+  // fatal 契约覆盖改走包内 ../src/mutation.js（rev1 AC R2，断言不弱化）。
+  const mutMod = (await import('../src/mutation.js')) as Record<string, unknown>;
+  applyValidatedMutation = mutMod['applyValidatedMutation'] as ApplyValidatedMutation | undefined;
   const mod = (await import('../src/index.js')) as Record<string, unknown>;
-  applyValidatedMutation = mod['applyValidatedMutation'] as ApplyValidatedMutation | undefined;
   fatalCtor = mod['DocRuntimeFatalError'] as FatalCtor | undefined;
 });
 
@@ -130,16 +133,16 @@ const SET_TITLE_MUTATION = { op: 'set', path: ['title'], value: 't2' } as const;
 
 // —— 用例 ——
 
-describe('applyValidatedMutation — 公共导出面（AC-6 前置：fatal 契约面的载体必须面世）', () => {
-  it('applyValidatedMutation 经包公共入口导出为函数', () => {
-    // 红因（当前基线）：@nomicore/doc-runtime 未实现/未导出 applyValidatedMutation
+describe('applyValidatedMutation — 包内 seam 载体面（AC-6 前置：fatal 契约面的载体必须面世）', () => {
+  it('applyValidatedMutation 经包内 seam（../src/mutation.js）导出为函数', () => {
+    // 载体面世：公共入口已收缩（owner 修改要求 1），内部实现经 ../src/mutation.js 供给
     expect(typeof applyValidatedMutation).toBe('function');
   });
 });
 
 describe('applyValidatedMutation — committed fatal 契约面（AC-6：exact identity / commit 状态 / Y.Doc 最终状态）', () => {
   it('mutation 事务提交后 observer 抛错 → throw DocRuntimeFatalError（与 materializeRoot 同一 branded 类）：committed:true、phase 非空、Y.Doc 保持提交后状态（不虚假回滚）', () => {
-    // 前置：applyValidatedMutation 与 DocRuntimeFatalError 必须已面世（红因①：成员缺失）
+    // 前置：applyValidatedMutation（seam）与 DocRuntimeFatalError（公共入口）必须已面世
     expect(typeof applyValidatedMutation).toBe('function');
     expect(fatalCtor).toBeTypeOf('function');
     // fixture：先经 materializeRoot 铺底合法 ROOT（独立入口，基线已实现）；**再**在 ROOT
@@ -157,8 +160,7 @@ describe('applyValidatedMutation — committed fatal 契约面（AC-6：exact id
       done = true;
       throw new Error('mutation-observer-boom');
     });
-    // 调用被测入口（红因②：当前成员缺失 → TypeError not a function；SA3 后：若 fatal
-    // 契约未实现 → 非 branded / 无 committed / 无 phase 的各断言红）
+    // 调用被测入口（seam 载体）：若 fatal 契约未实现 → 非 branded / 无 committed / 无 phase 的各断言红
     const thrown = capture(() => (applyValidatedMutation as ApplyValidatedMutation)(DERIVED_TWO, doc, SET_TITLE_MUTATION));
     expect(thrown).toBeInstanceOf(fatalCtor as FatalCtor); // exact identity：doc-runtime 公共 fatal 类
     expect(committedOf(thrown)).toBe(true); // 事务已提交：committed 诚实为 true（W3：不得降格 false）

@@ -33,8 +33,8 @@ import { describe, expect, it } from 'vitest';
 import * as Y from 'yjs';
 import type { DerivedSchema } from '@nomicore/vfsl';
 import { evaluate, parseVfsl } from '@nomicore/vfsl';
+import { applyValidatedMutation } from '../src/mutation.js'; // 内部 seam（公共入口已收缩，owner 修改要求 1 / rev1 AC R1）
 import {
-      applyValidatedMutation,
       DocRuntimeFatalError,
       materializeRoot,
       readLogicalValueAtPath,
