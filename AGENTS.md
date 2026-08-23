@@ -13,3 +13,7 @@ The five canonical triage labels: `needs-triage`, `needs-info`, `ready-for-agent
 ### Domain docs
 
 Single-context layout: root `CONTEXT.md` + `docs/adr/`. See `docs/agents/domain.md`.
+
+### Git worktrees
+
+Create all repository worktrees under the repository-local `.worktrees/` directory. Do not create routine worktrees beside the repository or under `/tmp`. See `.agents/WORKTREES.md`.
