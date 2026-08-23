@@ -61,10 +61,13 @@
  *   R1 组 E201 偏离检测用例在 SA3 实现 ⑤ 之前为**行为性红灯**（现实现④后无条件返回 ok:true）。
  * - RAC-2（RD2）：detached 构造失败（逻辑校验已通过）→ ok:false + 恰 1 issue + 0 update +
  *   state 字节不变（原子性主锚，§3.3）；10 行矩阵（unknown 位 Date/bigint/NaN/±Infinity/
- *   Y.Map/Y.Array/数组内 undefined + number 标量 NaN + XML attr-`"` 构造期拒绝）。
+ *   Y.Map/Y.Array/数组内 undefined + number 标量位 NaN）；XML attr-`"` 构造期拒绝行
+ *   （原 C-8/X-F9）已按 issue #94 AC-⑥ 删除——新契约见 test/xml-attr-quote-domain.test.ts。
  * - RAC-3（RD3）：xml-parse 表驱动 17 成功 + 8 逻辑失败；成功行断言**语义等价**（W2：
  *   测试局部 `expectXmlSemanticallyEqual` 比较器——canonical 解析 + 属性排序无关 + 引号归一
- *   + last-wins），禁逐字断言；attr 值含 `"` 为有意的 materialization 约束（C-8/X-F9 锁定）。
+ *   + last-wins），禁逐字断言。attr 值含 `"` 的「有意 materialization 约束」是 issue #94
+ *   修复对象的错误契约（C-8/X-F9），已删除；修复后属性值经投影面转义（&quot; 或按需改选
+ *   引号外壳），round-trip 语义等价契约由 xml-attr-quote-domain.test.ts 承担。
  * - RAC-4（RD4）：extractYjsSnapshot 全量语义比较（union 各 variant / Record 键集 /
  *   Y.Array 顺序 / leaf 值 / XML 语义比较器）+ 嵌套 plain 深结构 clone 隔离行为断言。
  * - RAC-5（RD5→§6）：U13 收紧——`toThrow('observer-boom')`（message 精确匹配，F10 原样传播
@@ -836,7 +839,11 @@ describe('materializeRoot — R2（rev1/RAC-2）：detached 构造失败 → ok:
     { name: 'C-5b unknown 位 Y.Array 实例（内嵌 Y 类型）', vfsl: 'type ROOT = { u: unknown };', makeSnapshot: () => ({ u: new Y.Array() }) },
     { name: 'C-6 unknown[] 数组内 undefined', vfsl: 'type ROOT = { u: unknown; arr: unknown[] };', makeSnapshot: () => ({ u: 1, arr: [undefined] }) },
     { name: 'C-7 number 标量位 NaN（typeof NaN === number 过 ①）', vfsl: 'type ROOT = { n: number };', makeSnapshot: () => ({ n: NaN }) },
-    { name: 'C-8/X-F9 XML 属性值含双引号（构造期拒绝——§4.1 定谳的有意 materialization 约束）', vfsl: 'type ROOT = { body: YXmlFragment<{ p: string }> };', makeSnapshot: () => ({ body: '<p title=\'a"b\'>x</p>' }) },
+    // C-8/X-F9（XML 属性值含双引号 → 构造期拒绝）已按 issue #94 AC-⑥ 删除/改写：该契约将
+    // 「extract 侧 yjs 零转义序列化表示缺陷」前移为输入域收窄，与 VFSL wellFormedXml 宽域
+    // 不一致（SA5 根因，见 wiki/raw/20260823-bug-xml-attr-quote-domain.md）。新契约见
+    // test/xml-attr-quote-domain.test.ts（RT-A/RT-C）：单引号属性内双引号必须
+    // materializeRoot ok:true + round-trip 语义等价。
   ];
 
   it.each(CASES)('$name：先证 validateLogicalSnapshot ok:true（构造失败支路），再证 ok:false + 恰 1 issue + 0 update + state 字节不变', ({ vfsl, makeSnapshot }) => {
@@ -871,8 +878,9 @@ describe('materializeRoot — R2（rev1/RAC-2）：detached 构造失败 → ok:
 // + extract 提取与【输入】经 expectXmlSemanticallyEqual 语义比较 + revalidate ok（AC-5 主锚）。
 // 逻辑失败行模板：direct validate ok:false 恰 1 issue → materialize ok:false 恰 1 issue
 // （引用零损透传 toEqual）+ 0 update + state 不变。
-// 构造失败行 X-F9（attr-`"` 定谳锁定）与 R2 组 C-8 同锚——设计 §4.3「与 C-8 同锚不重复
-// 实现，SA6 落一条即可」，由 C-8 承担。
+// 原构造失败行 X-F9（attr-`"` 定谳锁定，与 R2 组 C-8 同锚）已按 issue #94 AC-⑥ 删除/改写：
+// 单引号属性内双引号的「构造期拒绝」是缺陷（SA5 根因），新行为契约（materialize ok:true +
+// round-trip 语义等价 + 语义比较器含属性值实体解码）见 test/xml-attr-quote-domain.test.ts。
 
 describe('materializeRoot — R3（rev1/RAC-3）：xml-parse 表驱动（成功 17 行 + 逻辑失败 8 行）', () => {
   const dXml = derivedOf('type ROOT = { body: YXmlFragment<{ p: string }> };');

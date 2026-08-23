@@ -18,6 +18,7 @@
 import * as Y from 'yjs';
 import type { DerivedSchema, StructureNode } from '@nomicore/vfsl';
 import { carrierOf, probeRoot } from './carrier.js';
+import { xmlFragmentToString } from './xml-serialize.js'; // D7'：投影面序列化器（issue #94：属性值 `"`→`&quot;`）
 
 /** 提取 issue：fail-fast 单 issue（ADR-0007「Yjs 结构错误 fail-fast」）。 */
 export interface ExtractIssue {
@@ -135,7 +136,7 @@ export function walk(
     }
     case 'xml-fragment': {
       if (carrierOf(live) !== 'Y.XmlFragment') return mismatch(path, 'Y.XmlFragment', live);
-      return { kind: 'value', snapshot: (live as Y.XmlFragment).toString() }; // D7：XML 字符串投影
+      return { kind: 'value', snapshot: xmlFragmentToString(live as Y.XmlFragment) }; // D7'：投影面序列化器（issue #94：属性值 `"`→`&quot;`）
     }
     case 'leaf':
     case 'plain': {

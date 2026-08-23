@@ -13,8 +13,9 @@
  * 1. 文本 span 逐字保留、不解码实体——yjs XmlText.toString() 不做 XML 转义（A13/A22），
  *    解码再存储会产出非良构字符串；逐字 span 是唯一可再校验的往返策略（T11-4 实证）。
  * 2. 注释 / CDATA / 处理指令以逐字 XmlText 承载（Yjs 无对应节点类型；B3/B6 字节往返）。
- * 3. 属性值含 `"` → 响亮拒绝：yjs XmlElement.toString() 不转义属性值（A12 实证引号截断、
- *    产出非良构 XML）。其余字符（`<` `>` `&` `'`）安全（引号到引号字面量扫描）。
+ * 3. 属性值逐字存储（含单引号外壳内 `"` 字面量，与 wellFormedXml 同域）；投影面的无损
+ *    转义由 xml-serialize.ts 承担（issue #94）。其余字符（`<` `>` `&` `'`）安全（引号到
+ *    引号字面量扫描）。
  * 4. 重复属性 last-wins、自闭合/空元素输出显式闭合标签、单引号值重排为双引号、标签内
  *    空白规格化——全部是 yjs 序列化器的既定投影，往返为**语义等价**而非逐字（ADR-0007）。
  *
@@ -27,6 +28,7 @@
  * 维持 ADR-0007「语义等价」。
  */
 import * as Y from 'yjs';
+import { escapeAttrValue } from './xml-serialize.js'; // issue #94：canonical 渲染 escape 加固（xml-serialize 不 import 本文件——单向依赖无环）
 
 export type XmlParseResult =
   | { ok: true; fragment: Y.XmlFragment }
@@ -55,7 +57,8 @@ export function parseXmlToFragment(text: string): XmlParseResult {
 /**
  * canonical 语义归一化键（rev2 ⑥ 专用，模块内部件，不进公共面；设计 §4.3）：
  * 复用 scan() 中间树 → 确定性渲染——元素名原序、属性按名排序 + 重复 last-wins（scan 已按
- * 源序收集，渲染前 Map 归并）、值双引号（② 已拒属性值含 `"`，C-8/X-F9——归一化无歧义）、
+ * 源序收集，渲染前 Map 归并）、值双引号（投影面序列化器将 `"`→`&quot;` + 本渲染 escape 加固
+ * ——归一化无歧义，issue #94）、
  * 自闭合与空元素统一渲染 <n></n>、文本/注释/CDATA/PI span 逐字。同语义 ⇔ 同 canonical
  * （W3 落地件；与 SA6 语义比较器同款设计）。
  * 扫描失败（未闭合/裸 < 等）→ { ok:false, reason }——调用方（⑥）按变体 D 处置，不谎报偏离。
@@ -73,7 +76,7 @@ function renderCanonicalNode(node: XmlNode): string {
   for (const [k, v] of node.attrs) merged.set(k, v);
   const attrStr = [...merged.entries()]
     .sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0)) // 属性按名排序
-    .map(([k, v]) => ` ${k}="${v}"`) // 值双引号（② 已拒含 `"` 值——归一化无歧义）
+    .map(([k, v]) => ` ${k}="${escapeAttrValue(v)}"`) // 值双引号 + escape 加固（序列化器已转义，无裸 `"` 时恒等——归一化无歧义，issue #94）
     .join('');
   return `<${node.name}${attrStr}>${node.children.map(renderCanonicalNode).join('')}</${node.name}>`;
 }
@@ -206,10 +209,6 @@ function scan(s: string): ScanResult {
         const valueEnd = s.indexOf(quote, j + 1); // 配对闭引号（另一引号字符不闭合）
         if (valueEnd === -1) return { kind: 'err', reason: `属性值引号未闭合：${attrName}` };
         const value = s.slice(j + 1, valueEnd);
-        if (value.includes('"')) {
-          // D7 规则 3：yjs 序列化器不转义属性值（A12）——双引号值必产出不可再校验文档
-          return { kind: 'err', reason: `属性 ${attrName} 值含双引号` };
-        }
         attrs.push([attrName, value]); // 重复属性 last-wins：yjs setAttribute 覆盖（规则 4）
         j = valueEnd + 1;
       }
