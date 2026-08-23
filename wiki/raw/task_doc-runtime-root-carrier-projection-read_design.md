@@ -4,7 +4,9 @@
 >
 > **R3 修订（2026-08-23）**：落实 SA2 R2 复审（reject，仅两点，见评审文末「R2 复审」节）：**R2-1**（MEDIUM must-fix）零副作用锚三重自相矛盾——按方案 (i) 改写主锚（空 doc + `[0]` 段型不符）+ 方案 (ii) 落为独立对照锚（title fixture + update 0/toJSON 前后相等），并顺带将 guards fixture 规格显式化以根除歧义；**R2-2**（LOW）vfsl/test 计数 27→26（`.test.ts` 口径；目录另有 1 个 `validate-logical-snapshot.contract.ts` 共享文件共 27 条目——口径注记一并入文，SA1 本轮 `ls`/`find` 双口径复测确认）。顺带落实 SA2 三项 INFO 建议（guards fixture 规格 / E16 destroyed doc 实测注记 / E20 跨 doc 别名注记 + detached 三形态并列锚）。SA2 R2 复审判定：R1 八点 100% 核销、R2 新机制（ProjectOutcome/detached 守卫/SUP-5 移植/Proxy 划界/G0 前缀）经二轮攻击全部成立、「其余一切无需再动」。
 >
-> **R4 修订（2026-08-23，SA4 静态验尸 F2 处置指令）**：§7 文件清单修订——`packages/doc-runtime/package.json` 从 DENY「零改动」移入 ALLOW，**仅限 patch 版本号 bump（0.1.5 → 0.1.6）**。SA3 的 bump 是履行 MABF 硬门禁 #9「所有改过代码的模块必须 bump patch 版本号」（read.ts 重写即改代码）；R1–R3 的 DENY 行原意是「零依赖改动」，未按字段粒度识别硬门禁的优先级，致 SA4 按 §1.1 判 scope 违规（F2）。依赖（vfsl/yjs/devDeps）与其他字段零改动不变，`tsconfig.json` 仍 DENY；§6.1 生产代码表同步修订。本修订为 F2 单点处置，不触设计其余任何裁决。
+> **R4 修订（2026-08-23，SA4 静态验尸 F2 处置指令）**：§7 文件清单修订——`packages/doc-runtime/package.json` 从 DENY「零改动」移入 ALLOW，**仅限 patch 版本号 bump（0.1.5 → 0.1.6）**。SA3 的 bump 是履行 MABF 硬门禁 #9「所有改过代码的模块必须 bump patch 版本号」（read.ts 重写即改代码）；R1–R3 的 DENY 行原意是「零依赖改动」，未按字段粒度识别硬门禁的优先级，致 SA4 按 §1.1 判 scope 违规（F2）。依赖（vfsl/yjs/devDeps）与其他字段零改动不变，`tsconfig.json` 仍 DENY；§6.1 生产代码表同步修订。本修订为 F2 单点处置，不触设计其余任何裁决。（SA4 R2 复审已核销本处置，字段级比对通过。）
+>
+> **R5 修订（2026-08-23，SA4 R2 复审处置指令——设计勘误两项）**：(1) **§4 蓝本错误通道勘误**——catch 块与 notAllowed 的一切「不可信值→string/数组」转换改经 `safeDetail`/`safeSpreadPath` 助手（蓝本与 SA3 实现 5c5668f 同步）；`safeDetail` 返回前 `typeof raw === 'string'` 收窄，非原始 string（敌意 toString 对象/Symbol 数据属性——SA4 R2-F1a NEW1/NEW2 向量）一律回退 `'unstringifiable'`，防下轮照抄蓝本再犯。(2) **D2/D6 isPlainRecord 正式勘误**——plainObject 判据从 R1 字面规则 `proto ∈ {Object.prototype, null}` 更正为原型链级 isPlainRecord（SA4 R1-D3 验证「必要且安全」并接受：字面规则与冻结 AC3 fixture protoObj 三层 plain 中继链矛盾，冻结契约「不得收窄」优先；constructor 经 descriptor 读零 getter 执行、深度上限 32、超深链/跨 realm 保守 loud、链顶 null 放行）。D6/E13 表述同步。
 
 - **Issue**: #86（welltop-jim-wang/nomicore），branch `fix/issue-86-on-docs-namespace-runtime`，base `docs/namespace-runtime`（Parent PR #85）
 - **任务类型**: 功能开发（ADR-0008「必要的底层演进」第 1 条的直接落实）
@@ -113,15 +115,22 @@ readLogicalValueAtPath(doc, path)
 | `text` | `carrierOf === 'Y.Text'`（含 XmlText 子类，探针 P4） | 不可下钻 → C3 | **响亮失败**（无 toJSON/toString fallback，AC5 锚定） |
 | `unknownShared` | `carrierOf === null` 且 `v instanceof Y.AbstractType` | 不可下钻 → C3 | 响亮失败（ADR-0008「未知 Yjs shared type」） |
 | `detached` | Yjs 家族（上述四类 + AbstractType）且 `v.doc === null`（未集成 doc；R2 #2） | **响亮失败** → C3（不可借道/不可下钻） | 响亮失败（同一守卫，禁空投影） |
-| `plainObject` | `carrierOf === 'plain value'` 且非 array、`proto ∈ {Object.prototype, null}` | 键空间段下钻（D5） | copyPlainStrict 对象分支 |
+| `plainObject` | `carrierOf === 'plain value'` 且非 array、**isPlainRecord 判真**（R5 勘误，判据见下方 R5 勘误段——R1 字面规则 `proto ∈ {Object.prototype, null}` 与冻结 AC3 fixture 矛盾） | 键空间段下钻（D5） | copyPlainStrict 对象分支 |
 | `plainArray` | `Array.isArray(v)` | 严格非负整数段下钻 | copyPlainStrict 数组分支 |
 | `scalar` | `string / number / boolean / null` | **不可下钻** → C2（「标量不可作为容器」，AC2 锚定） | number 有限性细判；其余直通 |
-| `nonPlainObject` | plain value 且 `proto ∉ {Object.prototype, null}`（Date/类实例） | 不可下钻 → C3 | 响亮失败（原型守卫，extract R2/#3 同款） |
+| `nonPlainObject` | plain value 且非 array、isPlainRecord 判假（Date/类实例/超深链/跨 realm——R5） | 不可下钻 → C3 | 响亮失败（原型守卫，extract R2/#3 同族；判据见 R5 勘误段） |
 | `violation` | `bigint / function / symbol / undefined`（carrierOf null 或 bigint 分支） | 路径上出现 → C3 | copyPlainStrict 响亮失败 |
 
 `xml` 与 `text` 分开建模的原因：XmlFragment 是**合法终态**（投影产出语义字符串），Y.Text 是**词汇表外类型**（投影响亮失败）——AC5 把两者钉在不同结局上，分类器必须区分。
 
 **detached 守卫（R2，SA2 #2 方案 a 采纳）**：Yjs 家族载体（ymap/yarray/xml/text/unknownShared）在导航与投影期统一前置检测 `v.doc === null`（未集成 doc 的 detached 实例；O(1) 属性读）→ 归入 `detached` 载体类 → PATH_NOT_ALLOWED loud（message：`'detached Yjs 载体（<申报词>，未集成 doc）不可读'`）。依据（实测，§8 A14）：detached 读语义 = 空 + **每次调用触发 yjs `console.warn('Invalid access: Add Yjs type to a document before reading data.')`**；detached `Y.XmlFragment.toString()` 返回 `''`（length=1 的非空片段内容静默蒸发）；detached 写静默 no-op——放行即「ok:true 空投影 + 告警噪声」，违反 AC4「绝不静默丢弃」精神与 ok:true 路径零副作用纪律。零误伤论证：经 ROOT 探针到达的容器恒 attached（实测 `doc !== null`）；Y.Map 内 set 的 Yjs 子类型由 yjs 自动集成（attached）；**别名集成载体**（同一实例先 `root.set` 集成、再塞 plain 容器）`doc !== null`，借道读真实数据不受影响（E20）；detached 仅在「plain 容器持有的从未集成引用」上出现（公共 API 直接可达：`root.set('holder', { frag })`）。冻结 37 例无借道下钻用例，守卫零影响。
+
+**isPlainRecord 勘误（R5，SA4 R2 复审处置指令——正式回收 R1-D3 偏离，消除设计与实现字面漂移）**：R1 字面判据 `proto ∈ {Object.prototype, null}` 与冻结 AC3 fixture **直接矛盾**——fixture `protoObj = Object.create(proto)`、`proto = Object.create({inherited:'from-proto'})`（带 enumerable accessor）构成三层自定义 plain 中继链，冻结断言 `['protoObj']` → 投影 `{own:'v'}`（EXPECTED_ROOT 明文）；按字面规则 protoObj 应判 nonPlainObject → loud → 冻结测试红。SA6 冻结契约「不得收窄」优先于设计文本，实现采用**原型链级 isPlainRecord**（SA3 实现期捕获该矛盾；SA1/SA2 三轮评审均未发现；SA4 R1-D3 核验「必要且安全」并接受）。**正式判据**：
+
+- 沿原型链上溯（**深度上限 32 层**，超限保守判假 → nonPlainObject），链上每个**非 `Object.prototype`** 节点的 own `constructor` **descriptor** 必须缺失、或值为 `Object`/`undefined`，任一节点违规即判 nonPlainObject；链顶 `null` 终止放行（`Object.create(null)` 家族，E13 行为结局不变）。
+- **constructor 读取一律经 `getOwnPropertyDescriptor`**（零 getter 执行，INV-R4 完好——SA4 实测）；原型链仅用于**分类**，值读取永不走原型链（readableOwnDataValue 只读 own descriptor，INV-R5 完好）；导航与投影同一判据（INV-R11 不分裂）。
+- **保守方向**：超深链（>32 层，SA4 探针：41 层链 → loud）与跨 realm 对象（对侧 `Object.prototype` 的 constructor ≠ 本侧 `Object`）均保守 loud。
+- **行为结局对照**（SA4 实测逐项核验）：Date/类实例仍 loud（guards Date 锚绿）；三层中继 plain 链 → 投影 `{own:'v'}`、原型继承键导航 → ok:true undefined、原型 getter 键导航 → ok:true undefined（零触发）。
 
 ### D3 — segment 纪律（ADR-0007 仍生效条款的延续）
 
@@ -215,7 +224,7 @@ copyPlainStrict(v): ProjectOutcome                          // R2 #1：同款判
   undefined/function/symbol → FAIL(...)     // 函数/符号：直存位 yjs set 期即抛（探针 P16），plain 容器内嵌可达
   Yjs 家族（carrierOf 粗判命中四类或 AbstractType）→ FAIL('嵌套 Yjs shared type')  // AC4 锚定（探针 P17 引用保留可达）
   plainArray → 逐元素 readableArrayElement + 递归 copyPlainStrict（VIOLATION → FAIL）
-  plainObject→ proto 守卫（proto ∉ {Object.prototype, null} → FAIL('non-plain object')，Date/类实例）
+  plainObject→ isPlainRecord 守卫（判假 → FAIL('non-plain object')：Date/类实例/超深链/跨 realm；判据与勘误见 D2 R5 段）
                逐 Object.keys(v) 经 readableOwnDataValue（NONE → 键省略）+ 递归 copyPlainStrict
                输出键写入经 defineProperty 四真（'__proto__' 自有键安全，Y.Map 键 '__proto__' 公共 API 直接可达——探针 P7）
 ```
@@ -238,7 +247,7 @@ plain 域拷贝器**独立实现于 read.ts**，不共享 extract.ts 的 `copyPl
 ### D8 — 失败通道：单 code 多因由 + path 新鲜副本 + SA4-F2 守卫 + E100 崩溃边界
 
 - 一切预期失败统一 `{ok:false, code:'PATH_NOT_ALLOWED', path:[...整条尝试路径], message}`（SA6 冻结，fail-fast 单错、path 回显与 ExtractIssue.path 先例一致）。
-- `notAllowed(path, message)` 沿用旧实现的**新鲜副本**纪律（不别名调用方数组）与 **SA4-F2 守卫**（`Array.isArray(path) ? [...path] : []`）——catch 路径上 path 可能非数组，无守卫的展开会在 catch 块内二次抛出，击穿「同步不抛」。G0 入口对非数组 path 提前归一失败（`'zz'`/`0`/`null` → `{ok:false, path:[]}` 零外抛），与旧 supplementary F2 锁行为逐字一致（§6 移植）。
+- `notAllowed(path, message)` 沿用旧实现的**新鲜副本**纪律（不别名调用方数组）与 **SA4-F2 守卫**（R5 升级为 `safeSpreadPath` 助手：`Array.isArray` 前置 + 内层 try 包 spread、失败回退 `[]`——非数组 path 归一 `[]`，且 Proxy 包装数组的敌意 `Symbol.iterator` 抛出被内层收编，SA4 R1-F1 P10 向量；蓝本见 §4 助手区）。G0 入口对非数组 path 提前归一失败（`'zz'`/`0`/`null` → `{ok:false, path:[]}` 零外抛），与旧 supplementary F2 锁行为逐字一致（§6 移植）。
 - **message 模板**（非契约字段，统一前缀便于日志检索，F7 自由域）：
   - G0：`'DOCRT-E100: path 必须是段数组（readonly (string | number)[]）'`（R2：类型外 path = 调用方编程错误，归 internal-bug 域与崩溃边界共用前缀——与旧 F2 守卫可观测行为逐字一致，supplementary L288–297 的 message 前缀锚原样可移植）
   - C1 段纪律：`'第 i 段 <seg> 与 <载体> 载体不符（期望 <string|非负整数>）'`
@@ -339,8 +348,13 @@ export function readLogicalValueAtPath(doc: Y.Doc, path: readonly (string | numb
     if (r.kind === 'fail') return notAllowed(path, r.msg);  // C3 透传（消息由违规定位器提供）
     return { ok: true, value: r.v };                        // INV-R3：value 键恒显式构造（r.v 可为合法 null）
   } catch (err) {                                           // 崩溃边界 E100（D10 含 RangeError 循环引用）
-    const detail = err instanceof Error ? err.message : String(err);
-    return notAllowed(path, `DOCRT-E100: 内部错误（意外异常）: ${detail}`);
+    // R5（SA4 R1-F1 / R2-F1a 勘误）：catch/notAllowed 的一切「不可信值→string/数组」转换必须在
+    // 内层保护的助手内完成，且助手返回值收窄为原始 string——直接 `String(err)`/模板插值 ToString
+    // 可被敌意 toString 击穿（P1）；`err.message` 属性读可被 throwing getter 击穿（P9）；message 为
+    // 敌意对象/Symbol 数据属性时插值 ToString 逃逸（R2-F1a NEW1/NEW2）；`[...path]` 可被 Proxy
+    // 包装数组的敌意 Symbol.iterator 击穿（P10）——上述求值点若在内层 try 之外即二次抛出外泄，
+    // 击穿 INV-R1「同步不抛」。蓝本与 SA3 实现（safeDetail/safeSpreadPath）同步，防下轮照抄再犯
+    return notAllowed(path, `DOCRT-E100: 内部错误（意外异常）: ${safeDetail(err)}`);
   }
 }
 
@@ -349,7 +363,18 @@ export function readLogicalValueAtPath(doc: Y.Doc, path: readonly (string | numb
 //        ——判别联合，明文禁 null/undefined 作失败哨兵（null 是合法投影值）；导航助手 NONE/VIOLATION
 //        仅在「键空间/下标读取」层使用，与投影值域无关，不与 null 投影值混淆。
 okUndefined(): { ok: true; value: undefined }               // value 键显式存在（FC-3，expectUndefinedValue 锚定）
-notAllowed(path, msg): { ok:false, code:'PATH_NOT_ALLOWED', path: Array.isArray(path) ? [...path] : [], message: msg }
+notAllowed(path, msg): { ok:false, code:'PATH_NOT_ALLOWED', path: safeSpreadPath(path), message: msg }  // path 拷贝经 R5 助手（P10）
+safeDetail(err): string                                       // R5（SA4 R1-F1 + R2-F1a）：内层 try 包 instanceof /
+                                                              //   err.message 属性读 / String(err)，返回前
+                                                              //   `typeof raw === 'string'` 收窄——非原始 string
+                                                              //   （敌意 toString 对象 / Symbol 数据属性，R2-F1a
+                                                              //   NEW1/NEW2 向量）一律回退 'unstringifiable'；
+                                                              //   调用点模板插值因此零 ToString 逃逸（TS 的
+                                                              //   `Error.message: string` 只是类型断言，子类可用
+                                                              //   own 数据属性覆写——类型不可作运行时安全依据）
+safeSpreadPath(path): readonly (string | number)[]            // R5（SA4 R1-F1 P10）：Array.isArray 前置 + 内层 try
+                                                              //   包 spread（Proxy 包装数组的敌意 Symbol.iterator
+                                                              //   可抛），失败回退 []——notAllowed 拷贝点零二次抛
 isNonNegInt(s): typeof s === 'number' && Number.isInteger(s) && s >= 0   // -0 合法（D3，探针 C）
 
 navClassify(v): NavCarrier                                  // D2 表格机械翻译（第一层 carrierOf；第二层细分 + Yjs 家族 detached 前置判别，R2 #2）
@@ -412,7 +437,7 @@ putKey(out, k, v): Object.defineProperty(out, k, { value: v, writable: true, enu
 | E10 | plain 子图循环引用 | RangeError → E100 结构化返回（不抛出、不加 cycle 预检） | D10（通道同形论证；extract §4.8 同口径） |
 | E11 | `-0` 值 / `-0` 段 | 值：finite 直通（extract SA5 复现[5] 先例）；段：合法归一 0（探针 C） | D3 |
 | E12 | `Y.XmlHook`（extends Y.Map，探针 P5） | 归 `ymap` 载体（与 extract 既有口径一致） | yjs 原型链事实；无公共写入路径产生（构造器专用类型）；本任务不新增特判 |
-| E13 | 顶层 null-prototype 对象 | **不可达**（yjs set 顶层直接 throw，探针 G2b）；嵌套于 plain 容器内可达 → proto 守卫放行（proto===null 分支，与 extract 同款） | 探针 G2/G2b |
+| E13 | 顶层 null-prototype 对象 | **不可达**（yjs set 顶层直接 throw，探针 G2b）；嵌套于 plain 容器内可达 → isPlainRecord 放行（链顶 null 终止——R5 勘误后判据，行为结局与原设计一致） | 探针 G2/G2b |
 | E14 | plain array 带 accessor 下标（defineProperty 造） | 响亮失败（无法零副作用取值且位置不可省略） | D5 readableArrayElement（INV-R4 全局零执行优先于取值）；理论病理，经受控写入不可产生 |
 | E15 | 数字形 string 键（`'0'`）在 map/object 上 | 按普通 string 键直查，无数值隐换 | ADR-0007 路径纪律（段从不解释）；与 array 段型纪律（`['items','0']` 拒绝）互补 |
 | E16 | 垃圾 `doc`（null/非 Y.Doc） | probeRoot 内 TypeError → E100 结构化返回 | INV-R1（与现状同判；类型层已由签名拒绝）。R3 补注（SA2 INFO）：`doc.destroy()` 后 `getMap('ROOT')` 不抛、类型 `doc` 属性仍非 null、内存数据可读（SA2 实测）——detached 守卫零误伤、无外抛、行为良性；destroyed doc 属契约外输入，不新增特判 |
@@ -639,3 +664,5 @@ git grep -n "readLogicalValueAtPath\|arbitrateUnion\|NavOutcome" -- ':!wiki' ':!
 **R3 后记（2026-08-23，SA2 R2 复审）**：R1 八点 100% 核销、R2 新机制二轮攻击全部成立；仅余 R2-1（零副作用锚三重自相矛盾——R2 修 #4 时把旧锚 `size===0` 断言与新选的 `['title','x']` 拒绝路径错误拼接，属「主动加固」再次引祸，与 R2 主动修复的 G0 前缀同源教训：**移植锚的 fixture 与断言必须整对推导，不能跨锚拼接**）与 R2-2（计数口径 27→26）。R3 按方案 (i)+(ii) 拆为两个各自自洽的独立锚 + fixture 规格显式化（根治），计数三处更正并附口径注；顺带落实三项 INFO 与 detached 三形态并列锚。——R3 修订完稿，交出控制权，等待 SA2 复审（预计放行）。
 
 **R4 后记（2026-08-23，SA4 静态验尸 F2 处置）**：SA3 的 package.json patch bump（0.1.5→0.1.6，commit 51621caf）被 SA4 按 §7 DENY 判 scope 违规（F2，reject 项）——根源是 R1 的 DENY 行把「版本号 bump」与「依赖改动」混写为整文件「零改动」，未识别 MABF 硬门禁 #9 的优先级。R4 按 SA4 处置选项一将该文件移入 ALLOW（仅限 version 字段 patch bump），依赖与其他字段仍零改动、tsconfig.json 仍 DENY。教训入库：**DENY 行需按字段粒度声明豁免（硬门禁 > 设计约束），整文件粒度的「零改动」会与仓库级强制惯例冲突**。SA4 同报告的 F1（catch 块 `String(detail)` 可被敌意 toString 击穿外抛）与 D3（isPlainRecord 判据偏离）为 SA3 侧修复项/已接受偏离，不在本 R4 单点处置范围（总控指令限定）。
+
+**R5 后记（2026-08-23，SA4 R2 复审处置——两项设计勘误，抹平设计与实现字面漂移）**：(1) **错误通道蓝本**：SA4 R1-F1 三向量（敌意 toString P1 / 敌意 message getter P9 / Proxy 包装数组敌意 Symbol.iterator P10）与 R2-F1a（message 为非原始 string 数据属性 → 模板插值 ToString 逃逸 NEW1/NEW2）证明「收编者自身无抛点」必须细化到**每个不可信值的每次转换**；TS 类型断言（`Error.message: string`）不可作为运行时安全依据——safeDetail 的 `typeof raw === 'string'` 收窄与同文件 yjsWord 的既有 typeof 守卫同构；蓝本同步防下轮照抄再犯。(2) **isPlainRecord**：R1 字面判据与冻结 AC3 fixture 直接矛盾（三层 plain 中继链按字面应 loud、冻结断言投影 `{own:'v'}`）——SA1/SA2 三轮评审均未发现、SA3 实现期捕获、SA4 R1-D3 核验接受，R5 正式回收为设计判据。教训入库：**设计判据必须对冻结 fixture 逐键推演**（EXPECTED_ROOT 每个键过一遍判据即可当场暴露该矛盾）；「冻结契约优先于设计文本」是偏离裁决的基准方向。
