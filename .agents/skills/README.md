@@ -2,6 +2,8 @@
 
 Skills I use daily for code work.
 
+Repository-specific operating guidance: create Git worktrees under the repository-local `.worktrees/` directory; see [`../WORKTREES.md`](../WORKTREES.md).
+
 ## User-invoked
 
 Reachable only when you type them (Claude Code: `disable-model-invocation: true`; Codex: `policy.allow_implicit_invocation: false` in `agents/openai.yaml`).
