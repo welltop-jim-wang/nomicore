@@ -71,6 +71,16 @@
  *   + ⑤ 未改写守卫）+ `observeCalls === 1`（yjs 单事务恰一次 type-observer 回调）。
  * 测试纪律：既有 U1–U12 断言零改动；U13 仅增强；observer 一律 one-shot（G8：无 guard 重入写
  * → 引擎无限递归 RangeError）；不读源码、不 grep 实现文本（黑盒可观测输出锚定）。
+ *
+ * —— rev2（PR #84 owner Review 修订轮；简报 wiki/raw/task_doc-runtime-materialize-root-rev2.md，
+ * 决议/红线见 -rev2_relevant_decisions.md / -rev2_conflict_report.md）——
+ * - RAC-P1（P1/T-1 改造）：rev1 T-1 characterization（外层事务内调用 → 先返回 ok:true、外层
+ *   cleanup 后偏离落地且无 E201）按简报明文要求改造为**拒绝测试**：调用方在未闭合的
+ *   doc.transact 内调用 → 任何写入前 loud fail + doc 零写入（0 update、
+ *   encodeStateAsUpdate/encodeStateVector 字节不变、ROOT 空置、同步删改 observer 未触发）。
+ *   R2 批（设计 §7.1 RT-6）收紧：SA1 设计定稿后拒绝形态 = throw DOCRT-E202（§3.4 三变体
+ *   消息逐字定稿），throw 支断言正则由占位 /DOCRT-/ 收紧为 /DOCRT-E202/；返回支保留为
+ *   兼容占位（设计 §3.5 定稿 throw，返回支理论不可达）。
  */
 import { describe, expect, it } from 'vitest';
 import * as Y from 'yjs';
@@ -705,33 +715,69 @@ describe('materializeRoot — R1（rev1/RAC-1）：observer 重入不抛错（de
   });
 });
 
-describe('materializeRoot — R1（rev1/R-7）：嵌套事务边界 characterization（T-1）', () => {
-  it('调用方在未闭合外层事务内调用（契约前提破坏）→ ⑤ 空转 ok:true；外层 cleanup 后偏离落地且无 E201', () => {
-    // 契约前提（设计 §2.3 R-7 / JSDoc 前置条件段）：materializeRoot 的事务必须是 doc 的
-    // **最外层事务**——调用方不得在未闭合的 doc.transact 内调用。本用例把该边界的当前
-    // 行为固化为 characterization：外层事务包裹下 observer 延迟至外层 cleanup 才执行，
-    // ⑤ 位置双断言空转通过 → ok:true 返回 → 随后 ROOT 被删改且无 E201（N1 实测同型）。
-    // ⚠️ 若未来实现改为 loud-guard 或检测到该场景，本用例须随设计同步更新——边界变化
-    // 必须走设计评审（SA2 T-1 原文）。
+describe('materializeRoot — R2（rev2/P1）：活动外层 transaction 内调用 → loud fail + doc 零写入（T-1 拒绝测试）', () => {
+  it('调用方在未闭合 doc.transact 内调用（契约前提破坏）→ 绝不为 ok:true；0 update、state/vector 字节不变、ROOT 空置、observer 未触发', () => {
+    // rev2/P1（PR #84 owner Review / issue #74）：materializeRoot 必须在**任何写入前**检测
+    // doc 是否处于活动 transaction（rev1 JSDoc 前置条件段升格为运行时 guard，不能只靠文档
+    // 声明）。本用例由 rev1 T-1 characterization（先返回成功、后发生未检测偏离——先错行为）
+    // 改造为拒绝测试，锚定修复后的契约。
+    //
+    // 拒绝形态（SA8 重点裁决一 / W1 澄清）：guard 在写入前触发、doc 未变，throw 与 {ok:false}
+    // 两形态均与零写入纪律相容，形态与错误身份/消息归 SA1 设计定稿——本用例按「绝不为
+    // ok:true」主断言 + 占位形态断言编写（设计定稿后按设计对齐，勿阻塞 SA3 形态选择）。
+    //
+    // 零写入断言面（ADR-0006 三条目布局 / CONTEXT.md 零写入）：0 update 事件 +
+    // Y.encodeStateAsUpdate 逐字节不变 + Y.encodeStateVector 不变 + ROOT 空置 + 同步删改
+    // observer 未触发（写路径从未进入——若 guard 缺席，外层事务 cleanup 期 observer 必触发）。
     const derived = derivedOf('type ROOT = { title: string; count: number };');
     const doc = new Y.Doc();
     const root = doc.getMap('ROOT');
+    const before = stateBytes(doc);
+    const beforeVector = [...Y.encodeStateVector(doc)];
+    const events = countUpdates(doc);
+    let observeCalls = 0;
     let done = false;
     root.observe(() => {
-      if (done) return;
+      if (done) return; // one-shot（G8 纪律：无 guard 的删改重入 → 事务链无限增长 → RangeError）
       done = true;
+      observeCalls += 1; // 攻击向量（rev1 T-1 同款：外层 cleanup 期删计划键 + 插额外键）
       root.delete('title');
       root.set('extra', 'E');
     });
     let result: MaterializeResult | undefined;
+    let thrown: unknown;
     doc.transact(() => {
-      result = materializeRoot(derived, { title: 't', count: 7 }, doc);
+      try {
+        result = materializeRoot(derived, { title: 't', count: 7 }, doc);
+      } catch (err) {
+        thrown = err; // 捕捉形态以区分 throw / 返回（断言面不受调用语境影响）
+      }
     });
-    // (a) ⑤ 空转 → ok:true（N1 实测：atVerify 位置 sizeOk/identityOk 双断言通过）
-    expect(result?.ok).toBe(true);
-    // (b) 外层事务返回后偏离确已发生且无 E201（characterization：不锁「将来必抛」）
-    expect(root.get('title')).toBeUndefined();
-    expect(root.get('extra')).toBe('E');
+    // (a) 主断言：绝不为 ok:true（当前实现：内部事务并入外层 → ⑤ 空转 → ok:true → 红灯）
+    if (thrown !== undefined) {
+      // 形态断言（RT-6 收紧，设计 §7.1：E202 三变体消息已逐字定稿，SA2 #2 建议）：
+      // guard 拒绝形态定稿 throw（设计 §3.5），错误码 DOCRT-E202（窗口 A/B/C 三变体
+      // 均以 "DOCRT-E202:" 起头——E202_MSG_A/B/C，设计 §3.4 逐字定稿）
+      expect(thrown).toBeInstanceOf(Error);
+      expect((thrown as Error).message).toMatch(/DOCRT-E202/);
+    } else {
+      expect(result?.ok).not.toBe(true); // 主锚：任何形态都不得返回成功
+      expect(result?.ok).toBe(false); // 占位形态断言（返回支）：结构化失败 {ok:false, issues}
+      if (result !== undefined && !result.ok) {
+        expect(Array.isArray(result.issues)).toBe(true);
+        expect(result.issues.length).toBeGreaterThanOrEqual(1);
+      }
+    }
+    // (b) 零写入双证 + 强化锚：0 update 事件（无事务内容提交）
+    expect(events.count).toBe(0);
+    // state 逐字节不变（encodeStateAsUpdate 含删除集；encodeStateVector 为 client/clock 面）
+    expect(stateBytes(doc)).toEqual(before);
+    expect([...Y.encodeStateVector(doc)]).toEqual(beforeVector);
+    // ROOT 保持空置（无任何键落地）
+    expect(root.size).toBe(0);
+    expect([...root.keys()]).toEqual([]);
+    // 写路径从未进入：同步删改 observer 未触发（guard 缺席时外层 cleanup 期必然触发）
+    expect(observeCalls).toBe(0);
   });
 });
 
