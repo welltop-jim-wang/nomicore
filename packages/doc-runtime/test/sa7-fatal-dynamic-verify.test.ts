@@ -177,7 +177,7 @@ describe('SA7 重点 2② — 伪造 branded 经 mutation 信封/value 读取面
     }
     expect(stateBytes(doc)).toEqual(before); // 零写入（W3）
     // 落库面未被污染：cfg.level 仍为铺底值
-    const read = readLogicalValueAtPath(derived, doc, ['cfg', 'level']);
+    const read = readLogicalValueAtPath(doc, ['cfg', 'level']);
     expect(read.ok).toBe(true);
     if (read.ok) expect(read.value).toBe('seed');
   });
@@ -249,7 +249,7 @@ describe('SA7 重点 4 — (F)(G) 双读窗口：对抗 value 发散不抛 → �
     // 登记形态 (b)/(c)：ok:true → 落库值必须是投递值真实产物之一（first-read / second-read），
     // 不得是捏造值；reads ≥ 2 证明 (F) 校验与 (G) 构造两阶段均真实读取（探针有效性）
     expect(reads).toBeGreaterThanOrEqual(2);
-    const read = readLogicalValueAtPath(derived, doc, ['cfg', 'level']);
+    const read = readLogicalValueAtPath(doc, ['cfg', 'level']);
     expect(read.ok).toBe(true);
     if (read.ok) {
       expect(['first-read', 'second-read']).toContain(read.value); // 两读一致 (b) 或发散 (c)——均登记面内
