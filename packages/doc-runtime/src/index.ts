@@ -1,9 +1,10 @@
 /**
  * @nomicore/doc-runtime —— Yjs bridge public surface（ADR-0007 / ADR-0008）。
  *
- * Public value APIs intentionally remain narrow. Detached builders, transaction guards,
- * post-install verifiers, the validated-mutation entry (set-only; awaits issue #76
- * completion), and prepared mutation state stay package-internal.
+ * Public value APIs intentionally remain narrow. `readLogicalValueAtPath(doc, path)` is the
+ * schema-independent carrier projection read defined by ADR-0008. Detached builders,
+ * transaction guards, post-install verifiers, the validated-mutation entry (set-only; awaits
+ * issue #76 completion), and prepared mutation state stay package-internal.
  */
 export { extractYjsSnapshot } from './extract.js';
 export type { ExtractIssue, ExtractResult } from './extract.js';
