@@ -1,7 +1,7 @@
 # 设计文档 — @nomicore/namespace-runtime：Runtime 骨架、同步读取与队首 P0（issue #89）
 
 - 任务类型：feature（功能开发）
-- 修订史：R1 初版 → **R2 修订（落实 SA2 reject 评审 `task_namespace-runtime-skeleton-p0_sa2_review.md` 全部 7 个攻击点：#1/#2 CRITICAL、#3/#4 MEDIUM 阻断项逐条落实，#5/#6/#7 非阻断建议一并采纳；差异段标注「R2 修订」；文件范围零变化，SA6 冻结测试零触碰；逐条回应表见「SA2 反馈逐条回应」节）**
+- 修订史：R1 初版 → R2 修订（落实 SA2 reject 评审全部 7 个攻击点；差异段标注「R2 修订」）→ **R3 touch-up（2026-08-24，落实 SA4 静态验尸 F-1：D5 getMetadata 深拷贝补「proto-key 安全写入」纪律——键写入一律 defineProperty、禁裸赋值，回流 doc-runtime putKey/putSnapshotKey 先例；附 F-2 半句统一对象分支 undefined 值键处置。仅动 D5，其余章节零变化，SA6 冻结测试零触碰）**
 - 契约基准：ADR-0008（全集条款）+ ADR-0006/0007（继续有效条款）+ SA6 冻结契约（三测试文件）
 - 前置交付：#86 `readLogicalValueAtPath(doc, path)`（已合入 2d805e9）、#87 `DocRuntimeFatalError` committed-aware 契约（已合入 1543ab3）
 - 设计产出：本文件。SA3 按此实现 `packages/namespace-runtime/src/**`；SA2 评审攻击面即本文件。
@@ -219,7 +219,7 @@ projectSchemaEnvelope(doc, mode: 'public' | 'p0'):
 - version 是 number（vfsl 契约）；fixture 以 number 存入（`sc.set('version', 1)`），投影原样带出。
 - **冻结测试零影响**：三 fixture 的 SCHEMA 四键全 primitive、无缺席——值域守卫分支不可达；`toEqual(ENVELOPE_FIXTURE)` 与键集断言逐字保持。
 
-### D5 `getMetadata()`：全键深拷贝 + 载体/值域双 loud（AC4）【R2 修订】
+### D5 `getMetadata()`：全键深拷贝 + 载体/值域双 loud + proto-key 安全写入（AC4）【R2 修订 + R3 touch-up（SA4 F-1）】
 
 返回类型 `Record<string, unknown>`【R2 修订，SA2 #2：删除 nullable——载体异常不再是合法返回值】；Y.Map 存在 → 逐键深拷贝；**载体缺席/异型 → loud throw（`MetaProjectionError`，code `NSRT-META-E2`）**：
 
@@ -233,7 +233,9 @@ projectMetadata(doc):
   ② 载体异型（doc.getMap('META') throw，同名 Y.Text 等）
        → throw MetaProjectionError('NSRT-META-E2'，message 含观测到的载体异常信息)
        （异型同样过不了 createDoc 的 getMap('META').get('docId') 校验——生产不可达）
-  ③ Y.Map 存在 → 逐键深拷贝（copyMetaValue，值域违规 → NSRT-META-E1 loud throw）
+  ③ Y.Map 存在 → 逐键深拷贝（copyMetaValue，值域违规 → NSRT-META-E1 loud throw）；
+     键写入一律经 putMetaKey（defineProperty 四真，禁裸赋值——见下方 proto-key 安全写入
+     纪律，R3 touch-up，SA4 F-1）
 ```
 
 **【R2 修订，SA2 #2】为什么 META 载体异常是 loud 而 SCHEMA 载体缺席是 null——不对称的可达性依据**（同一条判据，两种可达性结论）：
@@ -255,8 +257,20 @@ copyMetaValue(v, keyPath):
   Array                          → 逐元素递归（稀疏空洞/在界 undefined → throw，位置语义
                                     与 doc-runtime read.ts D4 同款：不可省略）
   plain object                   → 原型链判据（Object.prototype/null 链尾；Date/类实例 →
-                                    throw）+ own enumerable data property 递归
+                                    throw）+ own enumerable data property 递归（descriptor 读，
+                                    与 read.ts readableOwnDataValue 同款）；值 undefined 的键
+                                    → NSRT-META-E1 throw（不吸收——与顶层/数组元素处置
+                                    对齐【R3 touch-up，SA4 F-2】）；子键写入一律经 putMetaKey
 ```
+
+**proto-key 安全写入纪律（R3 touch-up，SA4 F-1）**：深拷贝构造返回对象（顶层 `out` 与嵌套 plain object 分支）时**禁止裸赋值 `out[k] = …`**；键写入必须经安全助手：
+
+```
+putMetaKey(out, k, v):
+  Object.defineProperty(out, k, { value: v, writable: true, enumerable: true, configurable: true })
+```
+
+机理与先例（本仓已知陷阱，禁止重新引入）：裸 `out['__proto__'] = v` 命中 `Object.prototype.__proto__` accessor——**标量值被 setter 静默忽略（键蒸发）；对象值替换 `out` 的原型（键丢失 + 返回对象原型被 doc 内数据劫持）**。Y.Map 顶层键走内部 Map 存储，`'__proto__'` 可存可读（`meta.keys()` 正常产出该键）；SA4 动态实证（`task_namespace-runtime-skeleton-p0_sa4_review.md` 附录 A：P1-P6/B1/B2/C1）：createDoc 只校验 META.docId → **生产路径可达**；`encodeStateAsUpdate → applyUpdate` round-trip 后该键存活 → **持久化/跨会话可达**；下游 `String(result)` 可抛 TypeError（继承 toString 为字符串）——「深拷贝全部键」契约（ADR-0008 L31/AC4）被静默击穿。defineProperty 写入使 `'__proto__'` 等危险键成为 **own enumerable data property**（不触发原型 setter，`Object.getPrototypeOf(out)` 恒为 `Object.prototype`）。**仓内先例援引**：doc-runtime `read.ts:447-452` `putKey`（E8/E9 防劫持，四描述符全真——漏传即事实冻结）与 `extract.ts:331-336` `putSnapshotKey`（**R2.2/F-1 修复回流，与本项完全同型**——SA4 历史发现「Record 动态键 `'__proto__'` 静默丢失/原型劫持」的修复产物，注释明文「禁赋值式」）；本包 putMetaKey 即该纪律在 META 投影面的回流落地（SA3 实现侧两处 ~4 行机械替换，SA6 回归锚：顶层/嵌套 `'__proto__'` 键保真断言用 hasOwnProperty/getPrototypeOf——不用 JSON.stringify，SA2 N2 合规）。
 
 判定理由（拒绝虚假降级立法，R1 已立、R2 补齐一致性）：META 由受控创建路径保证 JSON 值域（createDoc 套件锁定 META.docId 校验；v1 无 META 写）。功能完备系统里本条件恒真 → 违规是上游 bug → loud throw（code `NSRT-META-E1`，message 含键路径与违规 typeof），**不设计静默降级/跳键**。【R2 修订，SA2 #2：R1 对「值域违规 loud」与「载体异常静默 null」用了同一条论证链却得出相反处置——R2 把载体缺席/异型并入同一 loud 纪律（`NSRT-META-E2`），一个哲学、一种标准；两个 code 并列注册于 errors.ts。】
 

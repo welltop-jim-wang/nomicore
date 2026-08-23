@@ -122,7 +122,15 @@ describe('namespace-runtime 队首 P0（AC5/AC6/AC7/AC8）', () => {
     let received: SchemaEnvelope | null = null;
     const injectedCompile = (envelope: SchemaEnvelope): CompileSchemaEnvelopeResult => {
       received = envelope;
-      return { ok: false, issues: [{ kind: 'envelope', issue: { code: 'ENV_TEST', message: 'seam rejection' } }] };
+      // 类型层放宽（R3）：'ENV_TEST' 有意越出 vfsl SchemaEnvelopeIssueCode 闭集码域——
+      // R2 #5 不透明透传契约（P0 不得按码域解释/重分类注入的 issue code，原样投影为
+      // 稳定摘要）。字面量先按 unknown 构造再单点收窄为 CompileSchemaEnvelopeResult；
+      // 运行期值形状零变化（ok:false + 单条 envelope issue），行为断言与冻结锚点不受影响。
+      const injected: unknown = {
+        ok: false,
+        issues: [{ kind: 'envelope', issue: { code: 'ENV_TEST', message: 'seam rejection' } }],
+      };
+      return injected as CompileSchemaEnvelopeResult;
     };
     const schema: Record<string, unknown> = { ...ENVELOPE_FIXTURE, extraKey: 'extra-value', extraNum: 42 };
     const { handle } = await makeHandle({ schema });

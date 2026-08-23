@@ -117,3 +117,99 @@ Tests 1002 passed (1002)` —— 全部既有 1002 用例零回归，红仅出�
 - `scripts/test-lock.sh` 在本仓不存在（根无 scripts/ 目录），本任务无新测试包/端口
   依赖（仅新增一个 workspace 包），无需更新。
 - 全量基线验证（`pnpm typecheck` + `pnpm test`）结果见 dispatch log / wiki 记录。
+
+**R3 修订记录**（2026-08-24，测试类型错误修复——SA3 实现使 17/17 行为转绿后，
+全量 `pnpm test` 暴露 2 处 Unhandled Source TypeCheckError，均在本组测试文件自身）：
+
+1. **根因**：
+   - `runtime-p0-sequencer.test.ts:125` —— 注入 compile 的返回字面量按
+     `CompileSchemaEnvelopeResult` 注解，`{ code: 'ENV_TEST' }` 越出 vfsl
+     `SchemaEnvelopeIssueCode` 闭集码域（TS2322）——注入意图即「越域异常码的不透明
+     透传」（R2 #5），字面量本身不该被闭集码域收窄；
+   - `runtime-sync-read-face.test.ts:125` —— `envelope as Record<string, unknown>`
+     对无索引签名的封闭接口（`SchemaEnvelope`）直接 cast，strict 下被拒（TS2352）。
+2. **修法（仅类型层，行为零改动）**：
+   - p0-sequencer：注入对象先按 `unknown` 字面量构造（值形状逐字段不变：ok:false +
+     单条 envelope issue），返回处单点收窄 `as CompileSchemaEnvelopeResult`——越域码
+     透传意图保留，运行期字面量逐字节不变；
+   - sync-read-face：cast 经 unknown 中转 `envelope as unknown as Record<string, unknown>`。
+   - 用例数、行为断言、冻结契约锚点全部零改动（17 个用例逐一原样）。
+3. **验证证据**（2026-08-24，独立后台进程 `setsid nohup`）：
+
+```text
+$ pnpm exec vitest run packages/namespace-runtime --typecheck --passWithNoTests=false
+Test Files  3 passed (3)
+     Tests  17 passed (17)
+Type Errors  no errors          # exit 0
+
+$ pnpm test   # CI 同命令
+Test Files  73 passed (73)
+     Tests  1019 passed (1019)  # = 既有 1002 + 本任务 17
+Type Errors  no errors          # Unhandled/FAIL/Errors 计数 0，exit 0
+```
+
+**F-1 回归锚记录**（2026-08-24，SA4 静态验尸 verdict reject 唯一阻断项 F-1 回流）：
+
+- **产出**：`packages/namespace-runtime/test/metadata-proto-key.test.ts`（新文件，4 用例；
+  未改动既有三份测试文件、未改 src/ 任何文件）。
+- **覆盖映射**（SA4 报告「回归锚（回流目标 SA6）」+ 附录 A 探针逐项对应）：
+  - 顶层标量值 `'__proto__'` 键（P3：键从深拷贝产物蒸发）→ 用例 1；
+  - 顶层对象值 `'__proto__'` 键（P5：键丢失 + 返回对象原型被 doc 内数据替换）→
+    用例 2（含深拷贝隔离复查：突变副本不影响重读）；
+  - 嵌套 plain object 的 own `'__proto__'` 键（B1/B2：嵌套层同患）→ 用例 3
+    （JSON.parse 构造 own enumerable data property；断言子副本非同一引用、
+    `Object.hasOwn(sub,'__proto__')`、`Object.getPrototypeOf(sub) === Object.prototype`）；
+  - persistence round-trip（C1：Yjs 编解码后键存活 → Runtime 投影必须保真）→ 用例 4
+    （`Y.encodeStateAsUpdate` → 新 Y.Doc `applyUpdate` → 二段 createDoc → seam 构造）。
+- **断言纪律**（SA2 N2）：全部锚公共接缝可观测输出——`Object.hasOwn`（
+  `hasOwnProperty` 会被劫持原型链污染，故用原型无关的 hasOwn）/ `Object.getPrototypeOf` /
+  `Object.keys` / 属性值 / 引用同一性；零 `JSON.stringify` 判等、零源码读取，
+  不预设实现内部（SA3 用 defineProperty 或 null-proto 容器均可）。
+- **红灯证据**（当前实现下真实行为级红，2026-08-24，独立后台进程 `setsid nohup`）：
+
+```text
+$ pnpm exec vitest run packages/namespace-runtime/test/metadata-proto-key.test.ts --typecheck --passWithNoTests=false
+ Test Files  1 failed (1)    Tests  4 failed (4)    Type Errors  no errors    # exit 1
+ 4 用例全部在首个守卫生 assert 红：AssertionError: expected false to be true
+ - 顶层标量值 __proto__ 键 → Object.hasOwn(meta,'__proto__') 实际 false（键静默蒸发）
+ - 顶层对象值 __proto__ 键 → Object.hasOwn(...) 实际 false（键丢失 + 原型被 doc 数据接管）
+ - 嵌套 own __proto__ 键   → Object.hasOwn(sub,'__proto__') 实际 false（嵌套层同患）
+ - persistence round-trip  → Object.hasOwn(...) 实际 false（编解码后键存活但投影丢失）
+
+$ pnpm exec vitest run packages/namespace-runtime --typecheck --passWithNoTests=false
+ Test Files  1 failed | 3 passed (4)    Tests  4 failed | 17 passed (21)    Type Errors  no errors
+```
+
+- **SA3 修复路径**（仅提示，测试不预设）：projection.ts:134（顶层）与 :180（嵌套对象
+  分支）键写入改经 `Object.defineProperty(out, k, { value, writable: true,
+  enumerable: true, configurable: true })`（沿 doc-runtime extract.ts putSnapshotKey
+  R2.2/F-1、read.ts putKey E8/E9 先例，禁赋值式）——对无 `'__proto__'` 键的 META 行为
+  零变化；修复后本文件 4/4 转绿，既有 17/17 保持。
+
+**R4 修订记录**（2026-08-24，回归锚 fixture 修复——SA3 commit 088a4a2 F-1 实现修复后，
+锚第 1/2/4 例仍红的根因是 SA6 fixture 的 JS 语义缺陷，非实现缺陷）：
+
+1. **根因**：`makeHandle({ __proto__: 'evil-scalar' })` / `{ __proto__: payload }`
+   对象字面量中裸写 `__proto__` 是**原型设置语法**而非 own 键——标量值整条丢弃
+   （字面量得到空对象）、对象值设置字面量自身原型；`Object.entries` 恒 []，
+   `'__proto__'` 键从未进入 Y.Map——任何正确实现都无法转绿（第 3 例经 JSON.parse
+   构造真 own 键因此自始正确并已转绿）。实证：`Object.entries({__proto__:'x'})` → `[]`、
+   `Object.entries({['__proto__']:'x'})` → `[["__proto__","x"]]` 且 own:true、
+   原型保持 Object.prototype。
+2. **修法（仅 fixture，断言零改动）**：第 1/2/4 例（含 round-trip）改用 computed key
+   `{ ['__proto__']: v }`（`CreateDataProperty` 语义：真 own enumerable data
+   property）；`makeHandle` JSDoc 补注 fixture 纪律。全部 4 用例断言逐字未动，
+   未改 src/、未改既有三份测试文件。
+3. **验证证据**（2026-08-24，独立后台进程 `setsid nohup`）：
+
+```text
+$ pnpm exec vitest run packages/namespace-runtime --typecheck --passWithNoTests=false
+ Test Files  4 passed (4)    Tests  21 passed (21)    Type Errors  no errors    # exit 0
+
+$ pnpm test   # CI 同命令
+ Test Files  74 passed (74)    Tests  1023 passed (1023)    Type Errors  no errors    # exit 0
+```
+
+4. **结论**：21/21 全绿证明 (a) 此前第 1/2/4 例的红因是 fixture 注入失败而非实现缺陷；
+   (b) SA3 的 F-1 修复（putMetaKey defineProperty 四真）经**真 own 键路径**锚定
+   （顶层标量/顶层对象/嵌套/round-trip 四变体全部经 own `'__proto__'` 键进入 doc）。

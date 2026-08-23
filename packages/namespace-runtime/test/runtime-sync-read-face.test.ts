@@ -122,7 +122,7 @@ describe('namespace-runtime 同步只读面（AC3/AC4/AC8）', () => {
     expect([...Object.keys(envelope)].sort()).toEqual(['id', 'lang', 'text', 'version']);
     // 额外键被忽略（不 coercion、不补默认值、不外泄）
     for (const extra of ['extraKey', 'extraNum', 'extraNull']) {
-      expect((envelope as Record<string, unknown>)[extra]).toBeUndefined();
+      expect((envelope as unknown as Record<string, unknown>)[extra]).toBeUndefined();
     }
     // P0 只读取标准四键：额外键存在时严格编译仍然成功 → ready
     await expect.poll(() => runtime.getStatus().schema.state, { interval: 10, timeout: 5_000 }).toBe('ready');
