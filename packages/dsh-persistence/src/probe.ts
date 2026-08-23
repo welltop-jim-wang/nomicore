@@ -238,14 +238,14 @@ export async function runPersistenceProbe(options: ProbeRunOptions): Promise<Pro
       return handle
     }
 
-    const saveAndEmit = async (handle: DocHandle, docId: string): Promise<void> => {
+    const saveAndEmit = async (handle: DocHandle, docId: string): Promise<number> => {
       const owner = handle.owner.userId
       const key = toProbeKey(owner, docId)
       // R3 §6.2 A-arming：base = saveDoc 调用前的同步快照（saveDoc 无 await 段——非 flushing
       // 时同步武装 debounce+maxDirty；flushing 时由前次 flush 的记账 finally 重排武装——
       // 两路径 pending 均净增 ≥1，`> base` 恒可达）。前置（R2-2a）：每脏写窗口恰一次 saveDoc。
       const base = adapter === 'file' ? filePendingCount() : 0
-      await svc.saveDoc(handle) // 拒绝（write-rejected 之外的意外失败）→ 场景 loud 失败
+      await svc.saveDoc(handle) // 拒绝（意外失败）→ 场景 loud 失败
       savedByKey.set(key, (savedByKey.get(key) ?? 0) + 1) // ★ resolve 后才计数（决策 C）
       emit({ type: 'dirty', owner, docId, generation: savedByKey.get(key)!, t: now() })
       if (adapter === 'file') {
@@ -257,6 +257,7 @@ export async function runPersistenceProbe(options: ProbeRunOptions): Promise<Pro
           `file-settle-timeout:${docId}:g${savedByKey.get(key)!}`,
         )
       }
+      return savedByKey.get(key)!
     }
 
     const releaseAndEmit = async (handle: DocHandle, docId: string): Promise<void> => {
@@ -432,17 +433,17 @@ export async function runPersistenceProbe(options: ProbeRunOptions): Promise<Pro
           throw new ProbeFailure('status-divergence:doc-degraded')
         }
 
-        // degraded 拒绝后续写（提示 4：经 saveDoc 拒绝路径观察）。
-        // F2（SA4 LOW）：哨兵不得被同一 catch 吞掉——若内核回归为 degraded 仍接受写，
-        // 此处必须 loud 失败（scenario-error）而非记一条假 write-rejected（与 S3 处理一致）。
-        const rejected = await svc.saveDoc(h6).then(
-          () => false,
-          () => true,
-        )
-        if (!rejected) {
-          throw new Error('saveDoc unexpectedly accepted while persistence-degraded')
+        // issue #79 契约：degraded 不再拒绝 saveDoc。观察面改为 (a) entry 级状态 +
+        // (b) degraded 窗口 saveDoc resolve（dirty 登记成功）。哨兵不得被同一 catch
+        // 吞掉：若内核回归为 degraded 拒绝 saveDoc（或 entry 状态错答），此处 loud
+        // 失败（scenario-error）而非记一条假事件（与 S3 处理一致）。
+        if (h6.getStatus() !== 'persistence-degraded') {
+          throw new ProbeFailure('status-divergence:doc-degraded')
         }
-        emit({ type: 'write-rejected', owner: 'user-a', docId: 'doc-degraded', t: now() })
+        await svc.saveDoc(h6) // degraded 窗口 dirty 登记 —— resolve 即契约；拒绝 → 冒泡为 scenario-error:S4-degradation
+        const degradedKey = toProbeKey('user-a', 'doc-degraded')
+        savedByKey.set(degradedKey, (savedByKey.get(degradedKey) ?? 0) + 1) // 决策 C：resolve 后才计数
+        emit({ type: 'save-degraded', owner: 'user-a', docId: 'doc-degraded', t: now() })
 
         // 内部退避 retry 通用循环（§5：镜像内核 retryDelayMs 初值 debounceMs，失败后 ×2 cap maxDirtyMs）
         let delay = schedule.debounceMs || 1
@@ -494,12 +495,13 @@ export async function runPersistenceProbe(options: ProbeRunOptions): Promise<Pro
         await observeFlush('user-a', 'doc-degraded', 1, { snapshotRev: 1 })
       }
 
-      // 恢复可写证明（saveDoc resolve → dirty g2 必在 recovered 之后）
+      // 恢复可写证明（saveDoc resolve → dirty 登记必在 recovered 之后；恢复腿的
+      // generation 由 saveAndEmit 返回值给出——决策 C 使 n≥1 通道哨兵已占一代）。
       degradedDoc.getMap('ROOT').set('rev', 2)
-      await saveAndEmit(h6, 'doc-degraded')
+      const recoveryGeneration = await saveAndEmit(h6, 'doc-degraded')
       await clock.advanceBy(schedule.debounceMs)
       await settle()
-      await observeFlush('user-a', 'doc-degraded', 2, { snapshotRev: 2 })
+      await observeFlush('user-a', 'doc-degraded', recoveryGeneration, { snapshotRev: 2 })
 
       await clock.advanceBy(1)
       await settle()

@@ -163,3 +163,35 @@ create supersede pending load、early adoption 与 lost-update 事后告警的�
 不构成当前契约。它允许在 read 尚未返回时写入，无法满足「store 已存在则拒绝且不覆盖」；当前
 语义以本节第 1 条的等待 read 证据规则为准。跨 Adapter 实例的原子 create-if-absent 仍需由
 后续 FilePersistence 工作在 store seam 落实，不能由单实例内存协调替代。
+
+### DocHandle entry status 与 saveDoc 职责修订（2026-08-22，issue #79；演进经 owner 裁决放行——issue #79 AC1/AC8 明文授权）
+
+本节为**增量演进**：扩展 DocHandle 接口形状（新增 `getStatus()`），并修订「save 失败按 doc 只读降级」条款中 degraded 拒绝面的归属。除下列明示条款外，未提及的条款（含「createDoc 与 owner 语义修订」节全部条款）维持原文效力。
+
+**1. 接口契约（在「createDoc 与 owner 语义修订」节的接口代码块上追加 `getStatus` 成员，其余成员不变）**：
+
+```ts
+type DocHandleStatus = 'ready' | 'persistence-degraded' | 'released' | 'disposed'
+
+interface DocHandle {
+  readonly owner: User;   // 文档的存储所有者（分区键），非当前访问者
+  readonly docId: string;
+  readonly doc: Y.Doc;
+  /** 同步返回本 handle 所属 (owner.userId, docId) entry 的持久层状态。 */
+  getStatus(): DocHandleStatus;
+  release(): Promise<void>;
+}
+```
+
+- 状态查询是 **entry 级**的：恒答该 handle 自己的 `(owner.userId, docId)` entry 状态，不得以 Adapter 聚合状态代替（Adapter 级 `getStatus` 是粗粒度健康汇总，仅供运维观测，不构成写前 gate 依据）；
+- 状态词与优先级冻结：`disposed`（签发方已 dispose）> `released`（本租约已释放）> entry 状态（`persistence-degraded`：该 entry 最近一次 flush 失败且尚未 retry 成功；`ready`：其余情形，含 flush 在途）；
+- `getStatus()` 只表示**调用瞬间**状态，不承诺后续 flush 成功——写前状态检查不是持久化成功保证（与「saveDoc 返回仅表示脏状态已登记」「rename 成功即完成一次 flush，不承诺掉电级持久性」同款无承诺纪律）。
+
+**2. saveDoc 职责（修订「saveDoc = 脏状态通知」与「save 失败按 doc 只读降级」条款的边界）**：
+
+- saveDoc 是 **mutation 后的 dirty notification**：只要租约有效（未 released、非 foreign、身份匹配、Persistence 未 disposed），saveDoc 必须递增 dirtyGeneration 并 resolve——entry 处于 `persistence-degraded` **不构成拒绝理由**；已提交进 live Y.Doc 的事务由持久层内部 retry 以完整 Y.Doc 状态最终持久化；
+- 「失败后 namespace 进入 `persistence-degraded`……拒绝**后续** REST/WS 写入」的拒绝面归属**业务编排层**：Runtime（ADR 0007 NamespaceRuntime 写前 gate）在业务 mutation 前读取 `handle.getStatus()`，已 degraded 则拒绝开始新写入（零写入：文档不变、响亮拒绝）。持久层自身仅在租约身份失效（foreign/released/身份失配）或 disposed 时响亮拒绝；
+- gate 检查通过后才转为 degraded 的 mutation 不属「后续」写入：其内存事务保留、saveDoc 正常登记、由 retry 覆盖最新完整 live Y.Doc；
+- 降级等待期内（任一可观察时刻）retry 退避即该 entry 的唯一 flush 调度源（退避上限 max-dirty 间隔；flush 记账的 catch→finally 同步续体内允许瞬态并存，无外部可观察后果），「不设外部 flush/cron 协调器」不变。
+
+**3. 实施注记**：entry 状态解析收敛于 adapter 共享的 persistence lifecycle core（两 Adapter 不得复制状态机）；MemoryPersistence 与 FilePersistence 以平行验收套件覆盖同一状态契约（`issue-79-entry-status.test.ts` / `issue-79-file-entry-status.test.ts`）。

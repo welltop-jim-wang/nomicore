@@ -9,7 +9,7 @@
  *     validateAppendToArray(derived, base, path, value) → ValidateResult
  *     validateInsertIntoArray(derived, base, path, index, value) → ValidateResult
  *     validateDeleteFromArray(derived, base, path, index) → ValidateResult
- *   `base` = 当前 ROOT 快照值（与 validateSnapshot 的 snapshot 同形状）；`path` =
+ *   `base` = 当前 ROOT 快照值（与 validateLogicalSnapshot 的 snapshot 同形状）；`path` =
  *   段数组（string | number），顶段即 ROOT 字段（不含 ROOT 前缀，ADR 0004 D5）；
  *   数组操作 `value` = 单元素值（D1 PathElementValue 的运行时面），insert/delete
  *   的 index 为显式参数。同步、纯函数、不抛错；结果纯 JSON 值。
@@ -21,28 +21,28 @@
  *      拒绝必须带精确 path（AC2）。
  *   ② 值校验：最近结构边界重建整值（base + patch 合并）整体过子 schema
  *      （CONTEXT「重建校验」）——判别联合只有看到判别字段才知道按哪个变体验；
- *      联合 no-match 复用 validateSnapshot 同一诊断生成器：报失败距离最小成员、
+ *      联合 no-match 复用 validateLogicalSnapshot 同一诊断生成器：报失败距离最小成员、
  *      消息带「联合成员 i/N」相对定位（ADR 0003 §3，AC3）；判别式缓存缺失/存在
  *      不改变可观测行为（ADR 0003 §3）。
  * - 数组合法下标替换通过；insert（含末尾 append 语义）/ delete 的元素类型校验
  *   （AC4）。
- * - 解释器单一来源：validateSnapshot 与 validatePatch 共用解释器（AC5）——可观测
- *   锚点：同重建值下 validatePatch 的 issue 与 validateSnapshot 的 issue 全等
+ * - 解释器单一来源：validateLogicalSnapshot 与 validatePatch 共用解释器（AC5）——可观测
+ *   锚点：同重建值下 validatePatch 的 issue 与 validateLogicalSnapshot 的 issue 全等
  *   （message + path），ref 链解析行为一致。
- * - 全收集 + 上限语义与 validateSnapshot 一致（AC6）：一次调用收集全部问题，上限
+ * - 全收集 + 上限语义与 validateLogicalSnapshot 一致（AC6）：一次调用收集全部问题，上限
  *   100 条真实 issue，超限末条为截断标记。
  *
  * 红灯现状：validatePatch / validateAppendToArray / validateInsertIntoArray /
  * validateDeleteFromArray 尚未实现（全仓无任何实现，仅 ADR/简报文本提及），包公共
  * 面 index.ts 无导出——本文件导入即失败，全部测试当前必然红（接缝缺失即红灯，非
  * 伪红）。断言全部锚定可观测运行时行为（结果形状 / issue 内容 / path 段数组 / 与
- * validateSnapshot 的等价性），不读取源码、不 grep 文本形状。
+ * validateLogicalSnapshot 的等价性），不读取源码、不 grep 文本形状。
  */
 import { describe, expect, it } from 'vitest';
 import {
   parseVfsl,
   evaluate,
-  validateSnapshot,
+  validateLogicalSnapshot,
   validatePatch,
   validateAppendToArray,
   validateInsertIntoArray,
@@ -322,11 +322,11 @@ describe('validatePatch — 重建语义：union 成员写入他成员字段 →
     }
   });
 
-  it('AC3：交叉写入与 validateSnapshot 同源——同重建值下 issue（message+path）与整快照校验全等（AC5 单一来源）', () => {
+  it('AC3：交叉写入与 validateLogicalSnapshot 同源——同重建值下 issue（message+path）与整快照校验全等（AC5 单一来源）', () => {
     const derived = evaluateModule(FIXTURE);
     const base = validSnapshot();
     const rebuilt = applyPath(base, ['assets', 'img1', 'body'], '<p>x</p>');
-    const viaSnapshot = validateSnapshot(derived, rebuilt);
+    const viaSnapshot = validateLogicalSnapshot(derived, rebuilt);
     expect(viaSnapshot.ok).toBe(false);
     const viaPatch = validatePatch(derived, base, ['assets', 'img1', 'body'], '<p>x</p>');
     expect(viaPatch.ok).toBe(false);
@@ -481,7 +481,7 @@ describe('validatePatch — 数组：下标替换 / insert（含末尾 append）
   });
 });
 
-describe('validatePatch — 全收集 + 上限语义与 validateSnapshot 一致（AC5/AC6）', () => {
+describe('validatePatch — 全收集 + 上限语义与 validateLogicalSnapshot 一致（AC5/AC6）', () => {
   it('AC6：全收集——一次调用收集全部独立问题（多字段错一次报全）', () => {
     const derived = evaluateModule(UNION_FIXTURE);
     const result = validatePatch(derived, { m: { kind: 'a', x: 'x' } }, ['m'], { kind: 'a', x: 42, extra: 1 });
@@ -494,7 +494,7 @@ describe('validatePatch — 全收集 + 上限语义与 validateSnapshot 一致�
     }
   });
 
-  it('AC6：上限语义——100 条真实 issue + 末条截断标记（与 validateSnapshot 同契约）', () => {
+  it('AC6：上限语义——100 条真实 issue + 末条截断标记（与 validateLogicalSnapshot 同契约）', () => {
     const derived = evaluateModule('type ROOT = { items: number[] };');
     const base = { items: Array.from({ length: 150 }, () => 'not-a-number') };
     const result = validatePatch(derived, base, ['items', 0], 0); // 重建后仍 149 个坏元素
@@ -509,11 +509,11 @@ describe('validatePatch — 全收集 + 上限语义与 validateSnapshot 一致�
     }
   });
 
-  it('AC5：解释器单一来源——非联合值校验输出与 validateSnapshot 对同重建快照的输出全等', () => {
+  it('AC5：解释器单一来源——非联合值校验输出与 validateLogicalSnapshot 对同重建快照的输出全等', () => {
     const derived = evaluateModule(GUARD_FIXTURE);
     const base = { profile: { displayName: 'jim' }, name: 'jim', items: ['a', 'b'], attachments: ['x'] };
     const rebuilt = applyPath(base, ['profile', 'displayName'], 42);
-    const viaSnapshot = validateSnapshot(derived, rebuilt);
+    const viaSnapshot = validateLogicalSnapshot(derived, rebuilt);
     expect(viaSnapshot.ok).toBe(false);
     const viaPatch = validatePatch(derived, base, ['profile', 'displayName'], 42);
     expect(viaPatch.ok).toBe(false);

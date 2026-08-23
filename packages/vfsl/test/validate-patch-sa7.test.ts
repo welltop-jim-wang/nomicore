@@ -5,7 +5,7 @@
  *
  * - D13/R2①（SA2 F1 HIGH）：值树游标归一化——mid-walk ref、optional(ref)、双层 ref 链
  *   （SA2 R2 复审明邀 fixture）、ROOT 身体 ref 的深层写入不产假 E100；与
- *   validateSnapshot 同重建值 issue 全等（AC5 同款单一来源锚）。
+ *   validateLogicalSnapshot 同重建值 issue 全等（AC5 同款单一来源锚）。
  * - D14/R2②（SA2 F2 MEDIUM）：base 段检查两段式（形态 + 在场）——垃圾基座
  *   （`{assets:42}` / `{profile:42}`）深层写 loud 拒绝（矩阵行 11），spread 塌缩
  *   静默 ok:true 路径清零。
@@ -18,17 +18,17 @@
  * - §3.3 规则 1>4：穿透 union 的数组三操作（边界=union 位，重建后下标报错）。
  * - D2/D3：insert 闭区间上界 [0,len]（>len 拒 path=path++[index]）、delete [0,len-1]。
  * - 预算穿透（SA4 动态重点#3）：WorkBudgetExceeded 经 validateSubtree 单条 issue +
- *   rebase 边界前缀（与 validateSnapshot 同一 interpret()，三重可区分措辞）。
+ *   rebase 边界前缀（与 validateLogicalSnapshot 同一 interpret()，三重可区分措辞）。
  *
  * 断言全部锚定可观测运行时行为（结果形状 / issue 内容 / path 段数组 / 等价性），
  * 不读源码、不 grep 文本形状。篡改派生物（删 ROOT / 造值树环）是测试合法操作
- * （手造垃圾 → loud E100 边界，validateSnapshot 同款契约）。
+ * （手造垃圾 → loud E100 边界，validateLogicalSnapshot 同款契约）。
  */
 import { describe, expect, it } from 'vitest';
 import {
   parseVfsl,
   evaluate,
-  validateSnapshot,
+  validateLogicalSnapshot,
   validatePatch,
   validateAppendToArray,
   validateInsertIntoArray,
@@ -51,12 +51,12 @@ function issuesOf(r: { ok: boolean; issues?: { message: string; path: Array<stri
 }
 
 describe('SA7 补充：D13/R2① 值树游标归一化（SA2 F1 HIGH——mid-walk ref 家族）', () => {
-  it('mid-walk ref 深层写 [p,d] -> ok:true（不再假 E100），坏值与 validateSnapshot 全等', () => {
+  it('mid-walk ref 深层写 [p,d] -> ok:true（不再假 E100），坏值与 validateLogicalSnapshot 全等', () => {
     const d = ev('type P = { d: string };\ntype ROOT = { p: P };');
     const base = { p: { d: 'x' } };
     expect(validatePatch(d, base, ['p', 'd'], 'y')).toEqual({ ok: true });
     const rBad = validatePatch(d, base, ['p', 'd'], 123);
-    const snap = validateSnapshot(d, { p: { d: 123 } });
+    const snap = validateLogicalSnapshot(d, { p: { d: 123 } });
     expect(rBad).toEqual(snap); // message+path 逐条全等（单一来源）
   });
 
@@ -65,7 +65,7 @@ describe('SA7 补充：D13/R2① 值树游标归一化（SA2 F1 HIGH——mid-wa
     const base = { p: { d: 'x' }, po: { d: 'old' } };
     expect(validatePatch(d, base, ['po', 'd'], 'new')).toEqual({ ok: true });
     const rBad = validatePatch(d, base, ['po', 'd'], 123);
-    const snap = validateSnapshot(d, { ...base, po: { d: 123 } });
+    const snap = validateLogicalSnapshot(d, { ...base, po: { d: 123 } });
     expect(rBad).toEqual(snap);
     // D10：optional 终段整值写（缺席基座免在场——创建语义）
     expect(validatePatch(d, { p: { d: 'x' } }, ['po'], { d: 'created' })).toEqual({ ok: true });
@@ -84,7 +84,7 @@ describe('SA7 补充：D13/R2① 值树游标归一化（SA2 F1 HIGH——mid-wa
     const d = ev('type B = { d: string };\ntype A = B;\ntype ROOT = { a: A };');
     expect(validatePatch(d, { a: { d: 'x' } }, ['a', 'd'], 'z')).toEqual({ ok: true });
     const rBad = validatePatch(d, { a: { d: 'x' } }, ['a', 'd'], null);
-    const snap = validateSnapshot(d, { a: { d: null } });
+    const snap = validateLogicalSnapshot(d, { a: { d: null } });
     expect(rBad).toEqual(snap);
   });
 

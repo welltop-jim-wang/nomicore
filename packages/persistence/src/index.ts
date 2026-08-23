@@ -7,6 +7,7 @@ export {
   resolvePersistenceSchedule,
   systemPersistenceTimer,
   type DocHandle,
+  type DocHandleStatus,
   type DocPersistence,
   type PersistenceSchedule,
   type PersistenceTimer,

@@ -1,0 +1,56 @@
+# ADR 0007：逻辑验证与 Yjs Runtime Bridge 分层
+
+日期：2026-08-22
+状态：已接受（Phase 2 namespace runtime 前置能力）
+
+## 背景
+
+创建、打开和更新 namespace 时同时涉及两类不同事实：普通 JSON 逻辑值是否符合 VFSL 值语义，以及 live Y.Doc 中 `Y.Map` / `Y.Array` / `Y.XmlFragment` / plain value 的实际载体是否符合派生结构树。现有 `validateSnapshot` 只解释 `DerivedSchema.values`，但名称容易误导为可直接校验 live Yjs 文档；若把两类校验合并，读取、物化、写入和持久化边界都会变得含混。
+
+## 决策
+
+### 逻辑层留在 `@nomicore/vfsl`
+
+- `validateSnapshot` 直接更名为 `validateLogicalSnapshot`，不保留兼容 alias；它只接受普通 JSON logical ROOT snapshot，不接受 Y.Doc/Y.Map/Y.Array。
+- 新增纯函数 `compileSchemaEnvelope(input: unknown)`：输入必须是严格封闭且恰含 `lang/version/id/text` 的信封；按 envelope、dialect、parse、evaluate、internal 分阶段返回结果联合。
+- 编译成功产物包含冻结的 envelope、IR module、DerivedSchema、`envelopeFingerprint` 与 `semanticFingerprint`。
+- 指纹使用 SHA-256、UTF-8、canonical JSON 和带版本的 domain separation（`sha256:v1:<hex>`）。envelope fingerprint 覆盖四键；semantic fingerprint 覆盖 `lang + version +` 规范 IR，忽略空白和普通注释，保留 JSDoc、声明顺序及其他 VFSL 语义，并排除谱系标签 `id`。
+- module/derived 递归深冻结后才允许未来跨 namespace 共享；本阶段不实现编译缓存，缓存生命周期留给 NamespaceRuntime/Registry。
+
+### Yjs bridge 独立为 `@nomicore/doc-runtime`
+
+`@nomicore/vfsl` 继续保持无 Yjs 依赖；持久层继续不理解 VFSL。新包 `@nomicore/doc-runtime` 依赖 `@nomicore/vfsl + yjs`，提供：
+
+- `extractYjsSnapshot(derived, doc)`：只读取固定 ROOT，严格验证实际 Yjs 载体并提取普通逻辑 ROOT；首个结构错误立即停止，不读取或验证 SCHEMA/META。
+- `materializeRoot(derived, snapshot, doc)`：唯一公共物化入口；内部先执行 `validateLogicalSnapshot`，再构造未集成到任何 doc 的 detached Yjs 子树，确认目标 ROOT 为空后以一次 `Y.transact` 安装。验证或构造失败时目标 doc 零写入；不覆盖、不合并、不 fallback。
+- `readLogicalValueAtPath(derived, doc, path)`：同步按路径读取，只转换目标子树；依赖 create/open/update 已建立并维持的结构不变量，普通读取不重复验证。空路径表示显式读取整个 ROOT；合法 optional/Record/数组缺失返回 `undefined`。
+- `applyValidatedMutation(derived, doc, mutation)`：同步完成当前 ROOT 结构/逻辑检查、在普通 JSON 副本中模拟 mutation、完整 ROOT 逻辑校验、detached 子树构造和单次 Yjs transaction；不公开可跨时间执行的 prepared mutation，避免 TOCTOU。
+
+路径统一为 `readonly (string | number)[]`：map/object/Record 使用 string，Y.Array 使用 number；禁止点号字符串与 JSON Pointer。leaf、plain、XML 是不可下钻终态。XML string 与 Y.XmlFragment 只承诺语义等价 round-trip，不承诺字符串逐字相同。
+
+首版 mutation 仅支持 `set`、`delete`、`array-insert`、`array-delete`：
+
+- `set([])` 允许整体替换 ROOT；旧 Yjs 子类型引用失效，不做 identity-preserving diff。
+- set 不自动创建中间容器；最终目标可为已有字段、缺失 optional 字段或新 Record 键。
+- delete 禁止 ROOT、required 字段和数组下标；只允许 optional 字段与 Record 动态键。
+- array insert/delete 使用严格非负整数边界，不 clamp、不接受空 insert、count=0 或越界 no-op。
+- 当前 ROOT 已损坏时普通 mutation 失败，不承担 recovery。
+- 成功只返回 `{ ok:true }`，不返回 snapshot、Yjs update 或内部类型。
+
+### Runtime 编排边界
+
+NamespaceRuntime 将来按 namespace 串行化所有业务写入：轮到 mutation 时先检查 writable gate，同步调用 `applyValidatedMutation`，成功后立即调用 persistence `saveDoc` 标脏。业务调用方不得取得可写 Yjs 引用或绕过该入口；未来原始 Yjs update 必须另设受控验证通道。
+
+普通 open 必须依次完成 schema 编译、META 身份检查、ROOT 载体提取和逻辑校验；任一失败都不注册 Runtime，并释放底层 DocHandle。Registry 中存在的 Runtime 因而始终满足完整不变量。加载和更新负责验证，读取按 path 快速执行，不重复全树验证。
+
+底层能力各自保留领域化结果联合，不合并成巨型 issue 类型；NamespaceRuntime/Registry 再映射成稳定的 create/open/mutation 上层错误。逻辑校验保留完整 issues，Yjs 结构与路径/操作错误 fail-fast。
+
+## 失败边界
+
+零写入承诺覆盖所有验证失败和 detached 构造失败。Yjs observer 不得向事务调用栈抛异常；Runtime 自有 observer 必须记录或异步上报。事务开始后若未知 observer 抛错，视为 Runtime internal/fatal，不虚假声称自动回滚，也不尝试 fallback。
+
+## 后果
+
+- namespace 创建、打开、读取和更新拥有清晰且可组合的验证链；YArray 与 plain array 的逻辑值相同，但实际 Yjs 载体仍被严格区分。
+- 普通读取成本与目标 path 子树规模相关；首版 mutation 为正确性执行完整 ROOT 提取与逻辑校验，性能优化必须在行为等价测试下后续引入。
+- Persistence 仍只管理 Y.Doc 存储、cache、flush 与 retry；VFSL 仍是纯逻辑引擎；Server/NamespaceRuntime 负责组合二者。

@@ -44,8 +44,15 @@ _Avoid_: 编译器（compiler）——该词留给「文本 → IR → 派生 sc
 求值器的产出：结构树、值 schema、路径索引的打包；与 IR 同纪律——纯数据、可 JSON 序列化、可内容哈希；别名按名引用（`ref`）保留，不内联展开（ADR-0003 §4）。
 _Avoid_: 编译产物、DerivedSchema（英文代号）
 
-**整文档校验（validateSnapshot）**:
-对整份快照跑一次完整校验；快照加载、迁移后体检、测试、管理端点共用的单一入口。
+**逻辑快照校验（validateLogicalSnapshot）**:
+对普通 JSON 逻辑 ROOT 快照运行完整值语义校验；不接收 Y.Doc / Y.Map / Y.Array，也不验证 Yjs 载体。创建前校验、迁移后体检、测试与管理端点共用该入口。
+_Avoid_: validateSnapshot（容易误解为可校验 live Yjs 文档）
+
+**信封指纹（envelope fingerprint）**:
+封闭四键 schema 信封 `{ lang, version, id, text }` 的身份；任一键变化都会改变，用于观察 namespace 当前信封是否变化。
+
+**语义指纹（semantic fingerprint）**:
+`lang + version +` 解析后规范 IR 的语义身份；忽略空白与普通注释，保留 JSDoc、声明顺序及其他 VFSL 语义，并排除仅作谱系标签的 `id`。用于共享编译语义产物。
 
 **重建校验（rebuild validation）**:
 单字段 patch 也在最近结构边界合并当前值后按完整子 schema 校验——判别联合只有看到判别字段才知道按哪个变体验。

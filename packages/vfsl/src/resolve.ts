@@ -2,7 +2,7 @@
  * 包内共享解析器（ADR 0003 §4「解析动作由包内共享解析器完成」；issue #20）。
  *
  * 求值期一切「沿别名链取最终形状」的动作集中于此模块（内部件，不进公共面；
- * 后续 validateSnapshot 票复用）。四个能力（设计 §3.1）：
+ * 后续 validateLogicalSnapshot 票复用）。四个能力（设计 §3.1）：
  *
  * （1）bodies: Map<string, VfslType>——别名名 → 身体（module.aliases 一次展开；
  *      E302 保证合法模块名唯一；手造 IR 重名 → throw Internal，不静默覆盖）；

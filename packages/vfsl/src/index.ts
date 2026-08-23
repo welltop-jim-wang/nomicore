@@ -1,6 +1,6 @@
 /**
  * @nomicore/vfsl —— VFSL 核心包公共入口（issue #5：parser；issue #20：evaluate；
- * issue #21：validateSnapshot；issue #53：validatePatch + 数组写入校验）。
+ * issue #21（#71 更名）：validateLogicalSnapshot；issue #53：validatePatch + 数组写入校验）。
  *
  * 公共接缝（PRD #3 + ADR 0003 冻结）：
  * - `parseVfsl(text)` → `{ ok: true; module } | { ok: false; issues }`——同步、
@@ -11,28 +11,35 @@
  *   公共导出（ADR 0003 §1）：IR → 派生 schema（结构树 + 值 schema + 路径索引 +
  *   别名表），纯数据、可 JSON 序列化、无行列；同步、纯函数、不抛错（崩溃边界
  *   与 parseVfsl 同款 E100）；
- * - `validateSnapshot(derived, snapshot)` → `{ ok: true } | { ok: false, issues }`
- *   ——整份 JSON 快照校验（issue #21 设计 §2/§3）：值 schema 树解释器，全收集
- *   （上限 100 条 + 截断标记）；Pattern 走包内 NFA 子集模拟（ReDoS 防护，零运行时
- *   依赖）；同步、纯函数、不抛错（崩溃边界同款 E100）。
+ * - `validateLogicalSnapshot(derived, snapshot)` → `{ ok: true } | { ok: false, issues }`
+ *   ——逻辑快照校验（issue #21 设计 §2/§3；issue #71 / ADR-0007 更名）：值 schema
+ *   树解释器，输入为普通 JSON logical ROOT snapshot（不接受 Y.Doc/Y.Map/Y.Array
+ *   等 live Yjs 载体）；全收集（上限 100 条 + 截断标记）；Pattern 走包内 NFA 子集
+ *   模拟（ReDoS 防护，零运行时依赖）；同步、纯函数、不抛错（崩溃边界同款 E100）。
  * - `parseSchemaEnvelope(input)` → `{ ok: true; envelope; module } | { ok: false;
  *   issues: SchemaParseIssue[] }`——信封解析与方言路由（issue #52 / H1）：issues 是
  *   discriminated union（`kind:'envelope'` 独立信封错误域 / `kind:'vfsl'` 原文本错误）；
  *   形状校验 → 方言断言 → parseVfsl(text)；同步、纯函数、不抛错；
  * - `validatePatch` 与数组写入校验（issue #53）：结构守卫 + 最近结构边界重建，
- *   复用 validateSnapshot 的值 schema 解释器；同步、纯函数、不抛错；
+ *   复用 validateLogicalSnapshot 的值 schema 解释器；同步、纯函数、不抛错；
  * - `getCompiled(input)` → `{ ok: true; module; derived } | { ok: false; issues:
  *   SchemaParseIssue[] }`——DocScope 编译缓存门面（issue #54 / H3）：信封或文本 →
  *   按**文本内容哈希**（sha-256，包内纯 TS 单射字节化）查进程级缓存，命中零
  *   parse/零 evaluate，未命中组合 parseVfsl + evaluate 一次、只存 ok 分支（深冻结
  *   后入册，失败可重试）；同步、纯函数、不抛错（全函数体顶层崩溃边界，ENV-100）；
+ * - `compileSchemaEnvelope(input)` → `{ ok: true; envelope; module; derived;
+ *   envelopeFingerprint; semanticFingerprint } | { ok: false; issues:
+ *   SchemaParseIssue[] }`——严格封闭编译入口（issue #72 / ADR-0007）：信封恰四键
+ *   严格封闭（ENV-5 拒多余键、envelope 阶段恒单条）→ 方言 → parseVfsl → evaluate
+ *   → 双指纹（sha256:v1:<hex>，envelope/semantic 域分离）+ 递归深冻结五件套；
+ *   同步、纯函数、无缓存（不读不写 compiledCache）、不抛错（顶层崩溃边界，ENV-100）；
  * - SchemaSource 接缝（issue #25 / ADR 0005 §1/§2）：`FileSchemaSource` 阶段态仓内
  *   文件源（读 Node fs——引擎包内**唯一**环境绑定面，浏览器/edge 不可用；DocSchemaSource
  *   终态另议）、`assertVfslDialect` 方言断言、`SchemaSourceError` 结构化错误。
  *
  * 编排：tokenize → parse（语法相位，失败以 VfslSyntaxError 内部异常承载）→
  * analyze（语义相位，E301/E302/E305/E106/E308 + min-position 聚合 + AST → IR）→
- * evaluate（求值相位，纯函数 IR → 派生物）→ validateSnapshot / validatePatch
+ * evaluate（求值相位，纯函数 IR → 派生物）→ validateLogicalSnapshot / validatePatch
  * （校验相位，共用值 schema 解释器，派生物纯数据只读消费）。
  * 公共面导出上述解析/求值/信封路由/全量与增量校验接缝、数组写入校验、
  * SchemaSource 接缝，以及 §7.1 + ADR 0003 类型；tokenizer/parser/semantic/evaluate/
@@ -43,10 +50,12 @@ import { parseModule, VfslSyntaxError } from './parser.js';
 import { analyze } from './semantic.js';
 import type { ParseVfslResult, VfslModule } from './ir.js';
 import type { DerivedSchema } from './derived.js';
-import { envelopeTextGate, vfslIssues, envelopeCrashIssue } from './envelope.js';
+import { envelopeTextGate, envelopeStrictGate, vfslIssues, envelopeCrashIssue } from './envelope.js';
 import type { ParseSchemaEnvelopeResult, SchemaParseIssue } from './envelope.js';
+import type { SchemaEnvelope } from './schemasource.js';
 import { evaluate } from './evaluate.js';
 import { sha256Hex } from './sha256.js';
+import { envelopeFingerprintOf, semanticFingerprintOf } from './fingerprint.js';
 
 export type {
   VfslIssue,
@@ -70,12 +79,24 @@ export type {
 
 export { evaluate };
 
-export { validateSnapshot } from './validate.js';
+export { validateLogicalSnapshot } from './validate.js';
 export type { ValidateIssue, ValidateResult } from './validate.js';
+
+// issue #75 / D3 + R5：受限正则引擎公共接缝（ADR-0003 Pattern 标记的唯一运行时判定引擎；
+// doc-runtime readLogicalValueAtPath 的 Record 键许可判定与 validateLogicalSnapshot 同源消费）。
+// matchPattern 为双参薄包装——charge 记账参数是 validate 内部工作预算的实现细节，不进公共契约；
+// 引擎内部 matchBudget 封顶不依赖 charge（pattern.ts 本体零修改）。
+import { match } from './pattern.js';
+import type { CompiledPattern } from './pattern.js';
+export { compile as compilePattern } from './pattern.js';
+export type { CompiledPattern } from './pattern.js';
+export function matchPattern(compiled: CompiledPattern, input: string): boolean {
+  return match(compiled, input, () => {});
+}
 
 // issue #53 / H2：路径级写入校验——validatePatch（替换语义）+ 数组三操作
 // （append/insert/delete，ADR 0004 D1 词表的运行时判定面）。同步、纯函数、不抛错；
-// 结构守卫 + 最近结构边界重建整值校验（与 validateSnapshot 共用解释器）。
+// 结构守卫 + 最近结构边界重建整值校验（与 validateLogicalSnapshot 共用解释器）。
 export {
   validatePatch,
   validateAppendToArray,
@@ -246,6 +267,80 @@ export function getCompiledWith(
     const entry: CompiledOk = { ok: true, module: parsed.module, derived: evaluated.derived };
     compiledCache.set(key, deepFreeze(entry, new WeakSet<object>()));
     return entry;
+  } catch (err) {
+    return { ok: false, issues: [{ kind: 'envelope', issue: envelopeCrashIssue(err) }] };
+  }
+}
+
+// —— issue #72 / ADR-0007：严格封闭编译入口（compileSchemaEnvelope）——
+
+/**
+ * compileSchemaEnvelope ok 分支：五件套（ADR-0007「编译成功产物包含冻结的 envelope、
+ * IR module、DerivedSchema、envelopeFingerprint 与 semanticFingerprint」）。三者深
+ * 冻结（设计 §7）；指纹格式见设计 §6（sha256:v1:<hex> 域分离）。
+ */
+export interface CompileSchemaEnvelopeOk {
+  ok: true;
+  envelope: SchemaEnvelope;      // 恰四键重建 + 冻结
+  module: VfslModule;            // parseVfsl ok 产物（IR）+ 冻结
+  derived: DerivedSchema;        // evaluate ok 产物（派生 schema）+ 冻结
+  envelopeFingerprint: string;   // sha256:v1:<hex>（设计 §6.1）
+  semanticFingerprint: string;   // sha256:v1:<hex>（设计 §6.2）
+}
+
+/** 公共返回形状：失败 issues 与 parseSchemaEnvelope/getCompiled 同域（SchemaParseIssue[]）。 */
+export type CompileSchemaEnvelopeResult =
+  | CompileSchemaEnvelopeOk
+  | { ok: false; issues: SchemaParseIssue[] };
+
+/**
+ * ADR-0007 组合入口：严格封闭信封 → envelope → dialect → parse → evaluate 五阶段
+ * 结果联合；成功返回冻结五件套；internal 崩溃边界 ENV-100 绝不外抛。
+ * 同步、纯函数、无缓存（设计 §8：不读不写 compiledCache，每次调用全新对象图）。
+ * 编排实现见设计 §5；evaluate 经本文件顶部既有 import 绑定（vi.mock 锚定的模块图边，
+ * 设计 §5.3），parse 与 getCompiled 同接缝（parseVfslImplementation）。
+ */
+export function compileSchemaEnvelope(input: unknown): CompileSchemaEnvelopeResult {
+  // 全函数体顶层崩溃边界（internal 阶段，设计 §5.1-4）：正常路径无可抛点（严格门/
+  // parse/evaluate 各有自身通道；指纹为纯读取+纯循环；deepFreeze 递归深度被
+  // MAX_TYPE_NESTING=100 结构性封顶），此 catch 收编对抗 getter/Proxy 与不可达
+  // 实现缺陷 → ENV-100 结构化返回，绝不外抛（AC2-internal 锚）。
+  try {
+    // ① envelope + ② dialect 阶段：严格编译前缀单点（ENV-1/2/3 坍缩单条 → ENV-5 → ENV-4）
+    const gate = envelopeStrictGate(input);
+    if (!gate.ok) {
+      return { ok: false, issues: gate.issues };
+    }
+    // ③ parse 阶段：与 getCompiled 同接缝（parseVfslImplementation）；原生 issues 数组
+    //    零损保留（kind:'vfsl' 包装，与 parseVfsl 同输入深相等——引用同源）
+    const parsed = parseVfslImplementation(gate.envelope.text);
+    if (!parsed.ok) {
+      return { ok: false, issues: vfslIssues(parsed.issues) };
+    }
+    // ④ evaluate 阶段：经 './evaluate.js' 公共接缝（本文件顶部既有 import 绑定——
+    //    vi.mock 锚定的模块图边，设计 §5.3）；失败原生数组零损透传（AC2-evaluate）
+    const evaluated = evaluate(parsed.module);
+    if (!evaluated.ok) {
+      return { ok: false, issues: vfslIssues(evaluated.issues) };
+    }
+    // ⑤ 双指纹（成功路径才有；冻结前计算——纯读取，字符串产物冻结无语义）
+    const envelopeFingerprint = envelopeFingerprintOf(gate.envelope);
+    const semanticFingerprint = semanticFingerprintOf(
+      gate.envelope.lang,
+      gate.envelope.version,
+      parsed.module,
+    );
+    // ⑥ 递归深冻结：一趟覆盖容器 + envelope + module + derived（设计 §7）；原地冻结
+    //    保持共享引用；每次调用全新对象图（不触碰 compiledCache，设计 §8）
+    const result: CompileSchemaEnvelopeOk = {
+      ok: true,
+      envelope: gate.envelope,
+      module: parsed.module,
+      derived: evaluated.derived,
+      envelopeFingerprint,
+      semanticFingerprint,
+    };
+    return deepFreeze(result, new WeakSet<object>());
   } catch (err) {
     return { ok: false, issues: [{ kind: 'envelope', issue: envelopeCrashIssue(err) }] };
   }
