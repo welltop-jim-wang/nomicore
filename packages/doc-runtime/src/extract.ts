@@ -83,8 +83,10 @@ export function extractYjsSnapshot(derived: DerivedSchema, doc: Y.Doc): ExtractR
 /**
  * 节点遍历（§4.3 全景表唯一分发点）：两结局（D12）。
  * 缺失检测先行（D4：get()===undefined 视同缺席）；错位即止不下钻（INV-3）。
+ * @internal 包内复用接缝（issue #75）：read.ts 的 readLogicalValueAtPath 终点转换复用本
+ * 遍历器（单一转换语义源，D7）；不经 index.ts 公共入口导出。
  */
-function walk(
+export function walk(
   node: StructureNode,
   live: unknown,
   path: Array<string | number>,
@@ -225,8 +227,10 @@ function trialMember(
  * 结构树 ref 解析（D8）：每调用局部 memo（节点引用为键，O(1) 复用）+ inFlight 环守卫。
  * 合法 derived 经 E301/E106 保证无环有名；缺名/环仅手造派生物可触达 → 抛错由顶层
  * 崩溃边界收编为 DOCRT-E100（对齐 evaluate.ts 手造 IR loud 边界）。
+ * @internal 包内复用接缝（issue #75）：read.ts 的 readLogicalValueAtPath 导航消费；
+ * 不经 index.ts 公共入口导出。
  */
-function makeRefResolver(derived: DerivedSchema): (node: StructureNode) => StructureNode {
+export function makeRefResolver(derived: DerivedSchema): (node: StructureNode) => StructureNode {
   const memo = new Map<StructureNode, StructureNode>();
   return function resolve(node: StructureNode): StructureNode {
     const inFlight = new Set<string>();
