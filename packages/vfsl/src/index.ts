@@ -82,6 +82,18 @@ export { evaluate };
 export { validateLogicalSnapshot } from './validate.js';
 export type { ValidateIssue, ValidateResult } from './validate.js';
 
+// issue #75 / D3 + R5：受限正则引擎公共接缝（ADR-0003 Pattern 标记的唯一运行时判定引擎；
+// doc-runtime readLogicalValueAtPath 的 Record 键许可判定与 validateLogicalSnapshot 同源消费）。
+// matchPattern 为双参薄包装——charge 记账参数是 validate 内部工作预算的实现细节，不进公共契约；
+// 引擎内部 matchBudget 封顶不依赖 charge（pattern.ts 本体零修改）。
+import { match } from './pattern.js';
+import type { CompiledPattern } from './pattern.js';
+export { compile as compilePattern } from './pattern.js';
+export type { CompiledPattern } from './pattern.js';
+export function matchPattern(compiled: CompiledPattern, input: string): boolean {
+  return match(compiled, input, () => {});
+}
+
 // issue #53 / H2：路径级写入校验——validatePatch（替换语义）+ 数组三操作
 // （append/insert/delete，ADR 0004 D1 词表的运行时判定面）。同步、纯函数、不抛错；
 // 结构守卫 + 最近结构边界重建整值校验（与 validateLogicalSnapshot 共用解释器）。
