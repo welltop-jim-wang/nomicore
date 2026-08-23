@@ -35,7 +35,9 @@ import * as Y from 'yjs';
 import type { DerivedSchema } from '@nomicore/vfsl';
 import { validateLogicalSnapshot } from '@nomicore/vfsl';
 import { extractYjsSnapshot } from './extract.js';
-import { assertNoActiveTransaction, buildTopEntries, verifyInstall } from './materialize.js';
+import { assertOutermostTransactionContext } from './tx-guard.js';
+import { buildTopEntries } from './detached-build.js';
+import { verifyInstall } from './install-verify.js';
 import { DerivedInvariantError, DocRuntimeFatalError, transactGuarded } from './fatal.js';
 
 /** mutation 领域 issue（ADR-0008「ROOT mutation 独立窄 issue 类型」；与 MaterializeIssue 同形不同名）。 */
@@ -68,7 +70,7 @@ export function applyValidatedMutation(
   doc: Y.Doc,
   mutation: unknown,
 ): ApplyValidatedMutationResult {
-  assertNoActiveTransaction(doc, 'applyValidatedMutation'); // ⓪ E202 裸 Error（§5 同规）——一切 catch 之外
+  assertOutermostTransactionContext(doc, 'applyValidatedMutation'); // ⓪ E202 裸 Error（§5 同规）——一切 catch 之外
   const ready = prepareMutation(derived, doc, mutation); // (A)–(G½) 写前只读+构造区（唯一 try/catch 所在）
   if (ready.kind === 'fail') return { ok: false, issues: ready.issues }; // 领域联合（ok:false）——不 throw、零写入
   // —— (H)(I) 物理位于一切 catch 之外（R3/SA2 R2-1 方案 A，对齐 materializeRoot
