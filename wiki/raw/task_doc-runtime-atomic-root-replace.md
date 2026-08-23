@@ -94,4 +94,3 @@ AC-1~AC-7 逐条（新增公共接缝 `replaceRootContent` 的行为矩阵 + 与
   issue path=[]；未闭合外层事务 → throw DOCRT-E202；yjs 实证非空 ROOT 上 clear+set 单
   事务 identity 保持 + 恰 1 update + observer 原样抛 + 值已提交 + 旧子类型引用失效；
   重入 delete 后状态面（title 已提交、count 缺席）与 G4 断言一致。
-

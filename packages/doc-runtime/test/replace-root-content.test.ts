@@ -72,7 +72,7 @@ import * as Y from 'yjs';
 import { evaluate, parseVfsl, validateLogicalSnapshot } from '@nomicore/vfsl';
 import type { DerivedSchema } from '@nomicore/vfsl';
 // 构造性红灯：replaceRootContent 尚未实现/导出（materializeRoot 为已实现对照物，仅 G5 组用）。
-import { extractYjsSnapshot, materializeRoot, replaceRootContent } from '../src/index.js';
+import { DocRuntimeFatalError, extractYjsSnapshot, materializeRoot, replaceRootContent } from '../src/index.js';
 
 // —— 测试契约类型（任务简报 AC + ADR-0008 冻结；与 materializeRoot 同形惯例）——
 
@@ -538,9 +538,18 @@ describe('replaceRootContent — G4（AC-6）：observer 边界 committed-aware 
       observeCalls += 1;
       throw new Error('observer-boom');
     });
-    // ADR-0007 失败边界：事务开始后未知 observer 抛错 → 错误 loud 传播，绝不吞并成伪
-    // ok:true / 伪「已回滚」结果（原样传播契约——异常须为 observer 原始错误）。
-    expect(() => replaceRootContent(derived, { title: 'new', count: 7 }, doc)).toThrow('observer-boom');
+    // ADR-0007/0008：observer 原始错误作为 cause 保留，并以 committed-aware fatal 交付。
+    let thrown: unknown;
+    try {
+      replaceRootContent(derived, { title: 'new', count: 7 }, doc);
+    } catch (err) {
+      thrown = err;
+    }
+    expect(thrown).toBeInstanceOf(DocRuntimeFatalError);
+    const fatal = thrown as DocRuntimeFatalError;
+    expect(fatal.committed).toBe(true);
+    expect(fatal.phase).toBe('observer-cleanup-throw');
+    expect((fatal.cause as Error).message).toBe('observer-boom');
     expect(observeCalls).toBe(1); // yjs 单事务恰一次 type-observer 回调
     // committed-aware no-rollback：写入已实际提交（update 已发出、新值已落盘），不虚假回滚
     expect(events.count).toBe(1);
@@ -562,7 +571,17 @@ describe('replaceRootContent — G4（AC-6）：observer 边界 committed-aware 
     });
     // W1 唯一相容形态：写后偏离 → throw E201 家族（不返回 ok:false——事务已提交；不补偿；
     // 不声称已回滚——doc 保持 observer 留下的实际状态）。
-    expect(() => replaceRootContent(derived, { title: 'new', count: 7 }, doc)).toThrow(/DOCRT-E201/);
+    let thrown: unknown;
+    try {
+      replaceRootContent(derived, { title: 'new', count: 7 }, doc);
+    } catch (err) {
+      thrown = err;
+    }
+    expect(thrown).toBeInstanceOf(DocRuntimeFatalError);
+    const fatal = thrown as DocRuntimeFatalError;
+    expect(fatal.message).toMatch(/DOCRT-E201/);
+    expect(fatal.committed).toBe(true);
+    expect(fatal.phase).toBe('post-commit-verification');
     expect(root.get('title')).toBe('new'); // 首事务已提交（no-rollback）
     expect(root.get('count')).toBeUndefined(); // 保持 observer 留下的实际状态（无补偿修复）
   });
