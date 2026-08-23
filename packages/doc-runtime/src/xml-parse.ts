@@ -20,6 +20,11 @@
  *
  * ⚠️ 文法镜像同步义务：本扫描器骨架镜像 vfsl `xml.ts`（后者不导出——vfsl 公共面最小化
  * 纪律），两侧字符集/惰性 span 识别必须同步演化（设计 §4.6 登记）。
+ *
+ * rev2（RD8 ⑥）：新增模块内部导出 `canonicalXmlOf`——复用阶段①扫描器中间树的
+ * **canonical 语义归一化键**（materialize ⑥ 对称重物化比较专用；不进公共面，§4.3）。
+ * W2 合规声明：canonical 化是**内部比较基准**，不构成公共逐字 round-trip 承诺；公共承诺面
+ * 维持 ADR-0007「语义等价」。
  */
 import * as Y from 'yjs';
 
@@ -45,6 +50,32 @@ export function parseXmlToFragment(text: string): XmlParseResult {
     fragment.insert(0, tree.nodes.map(assembleNode));
   }
   return { ok: true, fragment };
+}
+
+/**
+ * canonical 语义归一化键（rev2 ⑥ 专用，模块内部件，不进公共面；设计 §4.3）：
+ * 复用 scan() 中间树 → 确定性渲染——元素名原序、属性按名排序 + 重复 last-wins（scan 已按
+ * 源序收集，渲染前 Map 归并）、值双引号（② 已拒属性值含 `"`，C-8/X-F9——归一化无歧义）、
+ * 自闭合与空元素统一渲染 <n></n>、文本/注释/CDATA/PI span 逐字。同语义 ⇔ 同 canonical
+ * （W3 落地件；与 SA6 语义比较器同款设计）。
+ * 扫描失败（未闭合/裸 < 等）→ { ok:false, reason }——调用方（⑥）按变体 D 处置，不谎报偏离。
+ */
+export function canonicalXmlOf(text: string): { ok: true; canonical: string } | { ok: false; reason: string } {
+  const tree = scan(text);
+  if (tree.kind === 'err') return { ok: false, reason: tree.reason };
+  return { ok: true, canonical: tree.nodes.map(renderCanonicalNode).join('') };
+}
+
+/** 中间树节点 → canonical 文本（确定性渲染；属性排序 + last-wins，空/自闭合统一 <n></n>）。 */
+function renderCanonicalNode(node: XmlNode): string {
+  if (node.type === 'text') return node.text; // 文本/注释/CDATA/PI 一律逐字 span（规则 1/2）
+  const merged = new Map<string, string>(); // 重复属性 last-wins（源序 set 覆盖）
+  for (const [k, v] of node.attrs) merged.set(k, v);
+  const attrStr = [...merged.entries()]
+    .sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0)) // 属性按名排序
+    .map(([k, v]) => ` ${k}="${v}"`) // 值双引号（② 已拒含 `"` 值——归一化无歧义）
+    .join('');
+  return `<${node.name}${attrStr}>${node.children.map(renderCanonicalNode).join('')}</${node.name}>`;
 }
 
 /** 装配器：中间树节点 → Y.XmlElement / Y.XmlText（递归；属性源序 set，last-wins 规则 4）。 */

@@ -3,14 +3,21 @@
  * logical ROOT 到 Yjs（ADR-0007 / issue #74）。extract 的方向反转孪生（JSON→doc，写侧）。
  *
  * 设计 §4.1–§4.8（wiki/raw/task_doc-runtime-materialize-root_design.md）+ 修订轮 rev1
- * （wiki/raw/task_doc-runtime-materialize-root-rev1_design.md，PR #84 owner Review 闭环）：
- * - 五阶段编排（D1+RD1）：① validateLogicalSnapshot（逻辑宽域，失败 → issues 引用零损透传，
- *   不重包装——AC-1 `toEqual` 契约）② detached 构造（结构窄域，失败 → 单 issue fail-fast）
+ * （wiki/raw/task_doc-runtime-materialize-root-rev1_design.md，PR #84 owner Review 闭环）+
+ * 修订轮 rev2（wiki/raw/task_doc-runtime-materialize-root-rev2_design.md，RD7/RD8/RD9/RD11；
+ * SA2 R4 pass）：
+ * - 六阶段编排（D1+RD1+RD7+RD8）：⓪ 活动 transaction 语境 guard（rev2 RD7/P1——函数体
+ *   第一句、prepare 之前、一切 try/catch 之外；三窗口谓词命中 → throw DOCRT-E202，本函数
+ *   零写入）① validateLogicalSnapshot（逻辑宽域，失败 → issues 引用零损透传，不重包装——
+ *   AC-1 `toEqual` 契约）② detached 构造（结构窄域，失败 → 单 issue fail-fast）
  *   ③ probeRoot 探针 + ROOT 空置判定（复用 carrier.ts，零修改）④ 单次 doc.transact 安装
  *   ⑤ verifyInstall 事务后 ROOT 顶层完整性校验（rev1/RD1/INV-10：size + 逐键同一性双断言，
- *   偏离 → throw DOCRT-E201——F11，W1 三禁：不返回 ok:false、不补偿修复、不声称已回滚）。
- *   ①②③ 共享崩溃边界（意外异常 → DOCRT-E200 单 issue）；④ 物理上位于一切 try/catch
- *   之外（INV-5）：observer 抛错 → 原样 loud 传播（AC-6），绝不吞并成伪 ok/伪回滚。
+ *   偏离 → throw DOCRT-E201——F11，W1 三禁：不返回 ok:false、不补偿修复、不声称已回滚）
+ *   ⑥ verifySnapshotIntact 对称重物化校验（rev2 RD8/Medium 出口 1：scratch 同管线安装 +
+ *   双侧 extractYjsSnapshot + productEqual 产物比较，偏离 → throw DOCRT-E201 变体 C /
+ *   校验未能运行 → 变体 D；INV-11）。
+ *   ①②③ 共享崩溃边界（意外异常 → DOCRT-E200 单 issue）；⓪ 在其外；④⑤⑥ 物理上位于一切
+ *   try/catch 之外（INV-5）：observer 抛错 → 原样 loud 传播（AC-6），绝不吞并成伪 ok/伪回滚。
  * - 按快照键迭代（D9）：封闭 map 形快照键查不到声明字段 = 单 issue「拒绝静默丢键」；
  *   undefined 值视同缺席（present 惯例）；Record 形判定 = 单字段 '<key>'（与 extract
  *   同款约定）；键写入一律经 defineProperty（own '__proto__' 键不落原型）。
@@ -29,7 +36,9 @@ import type { DerivedSchema, StructureNode } from '@nomicore/vfsl';
 import { validateLogicalSnapshot } from '@nomicore/vfsl';
 import { carrierOf, probeRoot } from './carrier.js';
 import { makeRefResolver } from './resolve.js';
-import { parseXmlToFragment } from './xml-parse.js';
+import { canonicalXmlOf, parseXmlToFragment } from './xml-parse.js';
+import { extractYjsSnapshot } from './extract.js';
+import type { ExtractResult } from './extract.js';
 
 /** 物化 issue：与 ValidateIssue 同形（message + path 段数组）。logical 失败时数组元素即
  *  validateLogicalSnapshot 原生 issue（引用透传）；materialization 失败恒单条（fail-fast）。 */
@@ -49,28 +58,44 @@ type Path = Array<string | number>;
 type Resolver = (node: StructureNode) => StructureNode;
 
 /**
- * 唯一公共物化入口（ADR-0007）：同步、错误经返回值传递（④/⑤ 的异常是唯一例外——D1/RD1）。
+ * 唯一公共物化入口（ADR-0007）：同步、错误经返回值传递（⓪/④/⑤/⑥ 的异常是唯一例外——
+ * D1/RD1/RD7/RD8）。
  *
- * ⚠️ 前置条件（契约前提，R2 修订增补）：本函数的事务必须是该 Y.Doc 的**最外层事务**——
- * 调用方不得在未闭合的 doc.transact 内调用。若被外层事务包裹，本函数事务并入外层，
- * observer 与 update 延迟至外层 cleanup 才执行：⑤ 完整性校验将空转通过并返回 ok:true，
- * 随后 observer 的 ROOT 删改不受检测（且返回时计划 set 尚未提交）——检测面失效。
+ * ⚠️ 前置条件（**运行时强制**，rev2 RD7/P1）：本函数在入口**运行时检测**活动 transaction
+ * 语境——① 未闭合的外层 doc.transact 内（`doc._transaction` 非空）、② 事务 cleanup/observer
+ * 派发期间（`doc._transactionCleanups` 非空）——命中 → throw `DOCRT-E202`，本函数零写入；
+ * 检测不到可靠事务状态时（yjs 内部字段缺失/形态异常）fail-closed 同码拒绝。`afterAllTransactions`
+ * 回调（队列已重置）为明文放行例外。若被外层事务包裹，本函数事务并入外层，observer 与
+ * update 延迟至外层 cleanup 才执行：⑤⑥ 完整性校验将空转通过并返回 ok:true，随后 observer
+ * 的 ROOT 删改不受检测——检测面失效（owner P1 假成功链）。
  *
- * 成功语义（ok:true 的完整承诺，PR #84 owner Review 修订轮 R1 定谳 / INV-10）：
+ * 成功语义（ok:true 的完整承诺，PR #84 owner Review 修订轮 R1→R4 定谳 / INV-2 + INV-10 +
+ * INV-11）：
  * 1. 全部计划 set 已在单次 Y.transact 提交（ADR-0006 单 update 单元）；
- * 2. 本函数返回时，ROOT 顶层恰为计划键集且逐键值与安装值严格同一——在上述前置条件成立的
- *    前提下，任何同步重入的 observer 对 ROOT 顶层的 delete / 覆写 / 插入额外键都会被
- *    ⑤ verifyInstall 检测，检测到偏离即 throw DOCRT-E201（Runtime internal/fatal 家族：
- *    写入已提交、不回滚、不补偿、不返回 ok:false；doc 保持 observer 留下的实际状态）。
+ * 2. 本函数返回时，ROOT 顶层恰为计划键集且逐键值与安装值严格同一（⑤，身份级保守）；
+ * 3. **INV-11（管线产物投影等价，rev2 RD8/Medium 出口 1）**：本函数返回时
+ *    `extractYjsSnapshot(derived, doc)` 的读回投影与**同一输入经同一物化管线在一次性 doc
+ *    （零 observer）上的未修改安装读回投影**语义等价（⑥ 对称重物化：scratch 构造 + 双侧
+ *    extract + productEqual 产物比较；检测基准 = **语义等价**——XML 经 canonical 归一化，
+ *    非身份同一性）；偏离 → throw DOCRT-E201（变体 C）；scratch 构造/提取/比较异常 → throw
+ *    DOCRT-E201（变体 D——不代表已检测到偏离，仅代表校验防线未能运行）。
  *
- * 检测面边界（明文）：⑤ 覆盖 ROOT 顶层（exact-by-construction），检测基准是**身份同一性**
- * （===）而非语义等价——语义等价的异实例重插亦触发 E201（有意保守）。不覆盖：observer 对
- * 已安装子树内部的嵌套就地修改、异步修改（契约时点 = 本函数返回时）、以及前置条件被破坏时
- * 的全部 observer 反应——该面由 ADR-0007 observer 纪律治理（Yjs observer 不得向事务调用栈
- * 抛异常；Runtime 编排边界：业务调用方不得取得可写 Yjs 引用）。observer 抛错时错误原样
- * 传播（F10），⑤ 不运行。
+ * 检测面边界（明文）：⑤ 覆盖 ROOT 顶层（exact-by-construction，身份同一性 `===`，语义等价
+ * 的异实例重插亦触发 E201——有意保守，rev1 R-8 锁定）；⑥ 以**语义等价基准**覆盖嵌套子树
+ * （语义等价的嵌套重写不触发——保证对象是 logical snapshot 投影而非引用身份）；**检测基准
+ * = extract 读回输出（D4：结构树未声明的键不入 extract 投影，亦不入检测面）——observer 向
+ * 封闭子树注入未声明键不在 ⑥ 可见范围，由 ADR-0007 observer 纪律治理**。仍不覆盖：返回
+ * 时点之后的异步修改（契约时点 = 返回时）、observer 在 ④ 内抛错（F10 原样传播，⑤⑥ 不运行）、
+ * 前置条件被破坏时（⓪ 已 loud 拒绝）的全部 observer 反应。observer 抛错时错误原样传播（F10），
+ * ⑤⑥ 不运行。
+ *
+ * XML 面（rev2 RD9/Minor-1）：CDATA / 处理指令 / 注释以逐字 `Y.XmlText` span 承载，是
+ * **lexical-token（词法记号）round-trip 的载体特征**——它们作为不透明文本段往返，**不是**
+ * 结构化 XML 节点（ADR-0003 终态节点 + 不定义结构映射立场）；公共承诺面仍为 ADR-0007 语义
+ * 等价 round-trip，**不承诺字符串逐字相同**。
  */
 export function materializeRoot(derived: DerivedSchema, snapshot: unknown, doc: Y.Doc): MaterializeResult {
+  assertOutermostTransactionContext(doc); // ⓪ rev2/RD7/P1：函数体第一句、prepare 之前、try/catch 之外
   const ready = prepare(derived, snapshot, doc); // ①②③ + E200 崩溃边界（唯一 try/catch 所在）
   if (ready.kind === 'fail') return { ok: false, issues: ready.issues }; // INV-3/INV-4
   // ④ 单事务安装 —— 本函数体内没有任何 try/catch（INV-5 的结构性保证）：
@@ -81,7 +106,43 @@ export function materializeRoot(derived: DerivedSchema, snapshot: unknown, doc: 
   });
   verifyInstall(ready); // ⑤ 新增（RD1/INV-10）：顶层完整性校验——只读、无副作用、不在任何
   //                     try/catch 内；observer 抛错时（F10）④ 已 loud 传播，⑤ 不运行
-  return { ok: true }; // ok:true 语义 = INV-2 + INV-10（JSDoc 前置条件段 + 成功语义段）
+  verifySnapshotIntact(derived, snapshot, doc); // ⑥ rev2/RD8/Medium：对称重物化校验（INV-11）
+  return { ok: true }; // ok:true 语义 = INV-2 + INV-10 + INV-11
+}
+
+// —— ⓪ 活动 transaction 语境 guard（rev2 RD7 / P1）——
+
+/** E202 变体 A（窗口 A：外层 transact 未闭合）。消息逐字定稿（设计 §3.4）。 */
+const E202_MSG_A =
+  'DOCRT-E202: 在未闭合的外层 doc.transact 内调用 materializeRoot（运行时检测：doc._transaction 非空）——内部事务将并入外层、observer 延迟至外层 cleanup，成功保证与 DOCRT-E201 检测面失效；已在任何写入前拒绝，本函数零写入（doc 状态不因本调用改变）。请将调用移出外层事务回调后重试';
+/** E202 变体 B（窗口 B：cleanup/observer 派发中；末句为 wedge 诊断分支——SA2 E3/R-7）。消息逐字定稿（设计 §3.4）。 */
+const E202_MSG_B =
+  'DOCRT-E202: 在 Yjs 事务 cleanup/observer 派发期间调用 materializeRoot（运行时检测：doc._transactionCleanups 非空）——本函数安装事务的 observer 将延迟派发，成功保证与 DOCRT-E201 检测面失效；已在任何写入前拒绝，本函数零写入（doc 状态不因本调用改变）。请勿在 observer/事务事件回调内调用，移至事务外重试；若调用点确不在任何回调内：该 doc 的事务 cleanup 队列异常残留（此前 update/afterTransactionCleanup 等回调抛异常所致），事务派发机制已损坏——请勿继续复用该 doc 实例';
+/** E202 变体 C（窗口 C fall-through：不可判定 → fail-closed）。消息逐字定稿（设计 §3.4）。 */
+const E202_MSG_C =
+  'DOCRT-E202: 无法确认 doc 的事务状态（yjs 内部字段 _transaction/_transactionCleanups 缺失或形态异常，疑似 yjs 版本漂移或非 genuine Y.Doc）——按活动事务处置，已在任何写入前拒绝，本函数零写入（doc 状态不因本调用改变）。请核对 @nomicore/doc-runtime 声明的 yjs 版本兼容性（^13.6.30）';
+
+/**
+ * ⓪ 活动 transaction 语境 guard（rev2 RD7 / P1）。调用契约：materializeRoot 第一句，
+ * 任何 try/catch 之外（绝不落入 E200 崩溃边界被收敛成 ok:false）。窗口模型与字段依据见
+ * 设计 §3.1/§3.4/§9（yjs@13.6.32 源码 + 实测）。R2/#3 定稿：只读布尔谓词，无 Transaction
+ * 形态嗅探；窗口 C 为 fall-through（fail-closed）。触发即 throw DOCRT-E202（三变体逐字
+ * 消息），本函数零写入（先于 ①②③④ 一切 doc 触碰）。
+ */
+function assertOutermostTransactionContext(doc: Y.Doc): void {
+  // yjs 类型面公开声明（dist/src/utils/Doc.d.ts:49/53）：
+  //   _transaction: Transaction | null          —— null = 无未闭合 transact（嵌套归并，指针不变）
+  //   _transactionCleanups: Array<Transaction>   —— cleanup 队列（observer 派发窗口非空；链尾重置 []）
+  const tx = doc._transaction;
+  const cleanups = doc._transactionCleanups;
+  if (tx !== null && tx !== undefined) {
+    throw new Error(E202_MSG_A); // 窗口 A：外层 transact 未闭合（truthy 即命中）
+  }
+  if (Array.isArray(cleanups)) {
+    if (cleanups.length > 0) throw new Error(E202_MSG_B); // 窗口 B：cleanup/observer 派发中
+    if (tx === null) return; // 干净语境：tx===null 且队列空 —— 唯一放行口
+  }
+  throw new Error(E202_MSG_C); // 窗口 C（fall-through）：tx undefined / cleanups 非 Array → fail-closed
 }
 
 /**
@@ -114,6 +175,269 @@ function verifyInstall(ready: { rootMap: Y.Map<unknown>; entries: Array<[string,
   }
 }
 
+// —— ⑥ 对称重物化校验（rev2 RD8 / Medium 出口 1 / INV-11；R4/F-R3-1 定稿）——
+
+/** E201 变体 C（检测到偏离——对照管线读回不等）。消息措辞定稿（设计 §4.2）。 */
+function e201C(detail: string): Error {
+  return new Error(
+    `DOCRT-E201: ROOT 逻辑快照安装后语义校验偏离：${detail}——疑似 observer 修改已安装子树` +
+    `（与同一输入经同一管线的未修改安装读回不等）；写入已提交，不回滚、不补偿，doc 保持 observer 留下的实际状态`,
+  );
+}
+
+/** E201 变体 D（校验未能运行，不代表偏离；触发类枚举设计 §4.2 变体 D）。 */
+function e201D(detail: string): Error {
+  return new Error(
+    `DOCRT-E201: ROOT 安装后完整性校验无法完成（${detail}）——写入已提交，不回滚、不补偿；` +
+    `此形态不代表已检测到偏离，仅代表校验防线未能运行`,
+  );
+}
+
+/** ② 顶层 detached 构造（⑥ scratch 与 prepare 共用；rev2 RD8）：D8 解析器 + rootEntries。
+ * 环/缺名 throw → prepare 侧收编 E200；⑥ scratch 侧收编 E201 变体 D（触发类④）。 */
+function buildTopEntries(derived: DerivedSchema, snapshot: unknown):
+  | { kind: 'ok'; entries: Array<[string, unknown]> }
+  | { kind: 'issue'; issue: MaterializeIssue } {
+  if (derived.structure.kind !== 'root') {
+    // 对齐 extract/materialize B8 loud 边界（手造派生物）：prepare 侧 → E200；⑥ scratch 侧
+    // → E201 变体 D（触发类④——real 侧已过，理论不可达，防御性收敛）
+    throw new Error('derived.structure 非 root（手造派生物）');
+  }
+  const resolve = makeRefResolver(derived); // D8 共享解析器（环守卫先于 memo 命中）
+  const top = rootEntries(derived.structure.node, snapshot, resolve);
+  if (top.kind === 'issue') return { kind: 'issue', issue: top.issue };
+  return { kind: 'ok', entries: top.entries };
+}
+
+type ScratchInstall =
+  | { kind: 'ok'; scratchDoc: Y.Doc }
+  | { kind: 'fail'; issue: MaterializeIssue };
+
+/** scratch 侧构造：② 同款 build + ④ 同款单事务安装进一次性 new Y.Doc()（零 observer、
+ * 零外发事件、事务后即弃——GC 回收，detached doc 零真实 doc 副作用；yjs 类型单 doc 集成
+ * 约束 ⇒ 不能复用 real 侧 entries，必须重建）。不得递归调用 materializeRoot（会触发
+ * ⓪/⑤/⑥ 自身——设计 R4 回应表移交注意点）。 */
+function buildScratchInstall(derived: DerivedSchema, snapshot: unknown): ScratchInstall {
+  const top = buildTopEntries(derived, snapshot); // ② 同款（fresh detached 实例 + fresh resolver）
+  if (top.kind === 'issue') return { kind: 'fail', issue: top.issue };
+  const scratchDoc = new Y.Doc();
+  const rootMap = scratchDoc.getMap('ROOT');
+  scratchDoc.transact(() => {
+    for (const [key, value] of top.entries) rootMap.set(key, value); // ④ 同款单事务安装
+  });
+  return { kind: 'ok', scratchDoc };
+}
+
+/** 产物比较两结局（首个差异诊断：path + 两侧摘要 + 键集/值支区分——设计 §4.2 变体 C）。 */
+type ProductComparison =
+  | { equal: true }
+  | { equal: false; kind: 'value' | 'keyset'; path: Path; real: unknown; scratch: unknown };
+
+/**
+ * ⑥ 安装后完整逻辑快照校验（rev2 RD8 / Medium 出口 1；R4/F-R3-1 对称重物化）。
+ * 比较基准 = extract(real) ≡ extract(scratch)——scratch 是同一输入经同一物化管线在一次性
+ * doc 上的**未修改**安装；两侧构造性对称，仲裁在两侧一致（§4.2/§4.2.1 双向论证）。
+ * 写后检测面 → W1 唯一相容形态 throw（E201 变体 C=检测到偏离 / D=校验未能运行）。
+ */
+function verifySnapshotIntact(derived: DerivedSchema, snapshot: unknown, doc: Y.Doc): void {
+  // (1) scratch 侧构造/安装。构造/安装异常（throw 或 issue 返回）→ E201 变体 D（触发类④
+  //     ——理论不可达，防御性收敛；对抗 Proxy 双读使第二次 build **发散但不抛**时落在
+  //     (3) 的 C 支——R-5，loud 绝不假成功）。
+  let scratch: ScratchInstall;
+  try {
+    scratch = buildScratchInstall(derived, snapshot);
+  } catch (err) {
+    throw e201D(`scratch 构造异常（触发类④）：${errDetail(err)}`);
+  }
+  if (scratch.kind === 'fail') {
+    throw e201D(`scratch 构造失败（触发类④）：${scratch.issue.message}`);
+  }
+  // (2) 双侧提取：exReal = extractYjsSnapshot(derived, doc)（公共读入口，INV-6 不外抛）；
+  //     exScratch = extractYjsSnapshot(derived, scratchDoc)。
+  //     exReal 失败 → E201 变体 C（提取失败支——已安装子树载体被 observer 改坏）；
+  //     exScratch 失败 / 任一 throw → E201 变体 D（触发类④——理论不可达，防御性收敛）。
+  let exReal: ExtractResult;
+  let exScratch: ExtractResult;
+  try {
+    exReal = extractYjsSnapshot(derived, doc);
+    exScratch = extractYjsSnapshot(derived, scratch.scratchDoc);
+  } catch (err) {
+    throw e201D(`提取异常（触发类④）：${errDetail(err)}`);
+  }
+  if (!exReal.ok) {
+    throw e201C(`提取失败（${exReal.issues[0]?.message ?? '未知'}）——已安装子树载体与结构树不符`);
+  }
+  if (!exScratch.ok) {
+    throw e201D(`scratch 侧提取失败（触发类④）：${exScratch.issues[0]?.message ?? '未知'}`);
+  }
+  // (3) 比较：productEqual —— 两个**同管线产物**的相等判定（全键集 + 逐元素 + XML
+  //     canonical；union 角色分发 any-of）。不相等 → E201 变体 C（detail 报首个差异 path +
+  //     两侧摘要；措辞涵盖 observer 修改与输入对抗性双读发散——R-5）。比较器异常（ref
+  //     环/缺名、canonical 扫描失败、深栈溢出）→ E201 变体 D（触发类②/③/①）。
+  let cmp: ProductComparison;
+  try {
+    if (derived.structure.kind !== 'root') {
+      // 对齐 ② B8 loud 边界（real 侧 prepare 已过，理论不可达——防御性收敛归 ⑥ 变体 D）
+      throw new Error('derived.structure 非 root（手造派生物）');
+    }
+    const resolve = makeRefResolver(derived);
+    cmp = productEqual(derived.structure.node, exReal.snapshot, exScratch.snapshot, resolve, []);
+  } catch (err) {
+    throw e201D(`产物比较异常（触发类①/②/③）：${errDetail(err)}`);
+  }
+  if (!cmp.equal) throw e201C(detailOf(cmp));
+}
+
+/**
+ * productEqual —— 同管线产物相等判定（R4 新规；替代退役的三值 cmp/无损谓词）。两侧均为
+ * extract 产物（纯 JSON 逻辑快照、出自同一确定性管线），比较**可观测产物整体**——投影过滤
+ * 语义随 input-vs-product 基准一并退役（R2/R3 掩盖机理结构性不可达：无投影即无「被投影滤掉
+ * 的键」）。逐 kind 规则见设计 §4.2 表：map 全键集（undefined 值视同缺席，双侧同规）+ 逐
+ * 共有键递归（封闭 map 未声明键按值深度相等兜底——不做声明字段过滤，键集差异本身即偏离）；
+ * array 长度 + 逐元素（顺序敏感）；xml-fragment 两侧 string → canonical 语义等价
+ * （canonicalXmlOf；扫描失败 → throw → ⑥ 变体 D，不谎报偏离）；leaf/plain 深度结构相等；
+ * union 角色分发 any-of（成员仅决定子位 canonical/exact 角色，无准入游戏）；root/ref
+ * resolve 下钻（环/缺名 → throw → ⑥ 变体 D）。
+ */
+function productEqual(node: StructureNode, a: unknown, b: unknown, resolve: Resolver, path: Path): ProductComparison {
+  switch (node.kind) {
+    case 'root':
+      return productEqual(node.node, a, b, resolve, path);
+    case 'ref':
+      return productEqual(resolve(node), a, b, resolve, path); // 环/缺名 → throw → ⑥ 变体 D
+    case 'map': {
+      const ao = plainObjectOf(a);
+      const bo = plainObjectOf(b);
+      if (ao === null || bo === null) return valueDiff(path, a, b);
+      const aKeys = Object.keys(ao).filter((k) => ao[k] !== undefined); // undefined 视同缺席
+      const bKeys = Object.keys(bo).filter((k) => bo[k] !== undefined);
+      if (aKeys.length !== bKeys.length || !aKeys.every((k) => bo[k] !== undefined)) {
+        return { equal: false, kind: 'keyset', path, real: a, scratch: b }; // 键集差即偏离（D1/插入翻转）
+      }
+      const slot = recordSlotOf(node); // Record 形：单字段 '<key>'（与 extract.ts 同款约定）
+      for (const k of aKeys) {
+        const child = slot ?? declaredFieldOf(node, k);
+        let r: ProductComparison;
+        if (child === undefined) {
+          // 封闭 map 未声明键：不做声明字段过滤——按值深度相等兜底（无准入游戏），
+          // 攻击值差在任意成员下立判（Shape B 掩盖向量在方案 b 下天然 diff）
+          r = deepEqualValue(ao[k], bo[k]) ? { equal: true } : valueDiff([...path, k], ao[k], bo[k]);
+        } else {
+          r = productEqual(child, ao[k], bo[k], resolve, [...path, k]);
+        }
+        if (!r.equal) return r; // 首个差异（fail-fast 诊断）
+      }
+      return { equal: true };
+    }
+    case 'array': {
+      if (!Array.isArray(a) || !Array.isArray(b)) return valueDiff(path, a, b);
+      if (a.length !== b.length) return valueDiff(path, a, b);
+      for (let i = 0; i < a.length; i++) {
+        const r = productEqual(node.element, a[i], b[i], resolve, [...path, i]); // i = number 段
+        if (!r.equal) return r;
+      }
+      return { equal: true };
+    }
+    case 'xml-fragment': {
+      if (typeof a !== 'string' || typeof b !== 'string') return valueDiff(path, a, b);
+      const ca = canonicalXmlOf(a);
+      const cb = canonicalXmlOf(b);
+      if (!ca.ok) {
+        // canonical 扫描失败（任一侧）→ throw → ⑥ 变体 D（设计 §4.3/R2/#7：防线未运行
+        // 或 observer 注入不可扫描内容——绝不假成功；RT-5 主锚）
+        throw new Error(`XML canonical 扫描失败（${ca.reason}）`);
+      }
+      if (!cb.ok) {
+        throw new Error(`XML canonical 扫描失败（${cb.reason}）`);
+      }
+      return ca.canonical === cb.canonical ? { equal: true } : valueDiff(path, a, b);
+    }
+    case 'leaf':
+    case 'plain':
+      return deepEqualValue(a, b) ? { equal: true } : valueDiff(path, a, b);
+    case 'union': {
+      // 角色分发 any-of：按声明序取首个使 productEqual(member, a, b) 为真的成员即等价；
+      // 全拒 → 不等（成员仅决定子位 canonical/exact 角色——无准入游戏）。诚实路径两侧
+      // 同管线产物逐位一致，任意成员判定一致；攻击使产物分歧时，全键集/逐元素比较在任意
+      // 成员下都能看见键集与值差（R-8 残余仅涉 string 位 canonical 角色边角，设计 §4.2）。
+      let firstDiff: ProductComparison | undefined;
+      for (const member of node.members) {
+        const r = productEqual(resolve(member), a, b, resolve, path);
+        if (r.equal) return r;
+        if (firstDiff === undefined) firstDiff = r; // 声明序首成员差异（诊断保留）
+      }
+      return firstDiff ?? valueDiff(path, a, b);
+    }
+  }
+}
+
+/**
+ * 深度结构相等（leaf/plain 分支 + 封闭 map 未声明键兜底）：标量 `===`；plain object 全键集
+ * + 递归（undefined 值视同缺席，双侧同规）；array 逐元素。extract 产物为纯 JSON（non-finite
+ * number / undefined / bigint 等已被 extract 读侧拒绝）——`===` 即全值域判定。
+ */
+function deepEqualValue(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (Array.isArray(a) && Array.isArray(b)) {
+    if (a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i++) {
+      if (!deepEqualValue(a[i], b[i])) return false;
+    }
+    return true;
+  }
+  const ao = plainObjectOf(a);
+  const bo = plainObjectOf(b);
+  if (ao !== null && bo !== null) {
+    const aKeys = Object.keys(ao).filter((k) => ao[k] !== undefined);
+    const bKeys = Object.keys(bo).filter((k) => bo[k] !== undefined);
+    if (aKeys.length !== bKeys.length || !aKeys.every((k) => bo[k] !== undefined)) return false;
+    for (const k of aKeys) {
+      if (!deepEqualValue(ao[k], bo[k])) return false;
+    }
+    return true;
+  }
+  return false;
+}
+
+function valueDiff(path: Path, a: unknown, b: unknown): ProductComparison {
+  return { equal: false, kind: 'value', path, real: a, scratch: b };
+}
+
+/** 差异 detail（设计 §4.2 变体 C 措辞例：值支 / 键集支）。 */
+function detailOf(cmp: Extract<ProductComparison, { equal: false }>): string {
+  const p = renderPath(cmp.path);
+  const seg = cmp.path.length > 0 ? String(cmp.path[cmp.path.length - 1]) : 'ROOT';
+  if (cmp.kind === 'keyset') {
+    return `键 "${seg}" 读回键集 ${JSON.stringify(keysetOf(cmp.real))} 与对照安装读回键集 ` +
+      `${JSON.stringify(keysetOf(cmp.scratch))} 不等——疑似 observer 删除（或插入后仲裁翻转）（${p}）`;
+  }
+  return `键 "${seg}" 读回 ${summarize(cmp.real)} 与对照安装读回 ${summarize(cmp.scratch)} 不等价（${p}）`;
+}
+
+/** 键集摘要（map 分支键集支；undefined 值视同缺席）。 */
+function keysetOf(v: unknown): string[] {
+  const o = plainObjectOf(v);
+  if (o === null) return [];
+  return Object.keys(o).filter((k) => o[k] !== undefined);
+}
+
+/** 值摘要（设计 R2/#8(b)：截断 120 字符有界）。 */
+function summarize(v: unknown): string {
+  let s: string | undefined;
+  try {
+    s = JSON.stringify(v);
+  } catch {
+    s = String(v);
+  }
+  if (s === undefined) s = String(v);
+  return s.length > 120 ? `${s.slice(0, 120)}…` : s;
+}
+
+/** 错误详情（message 或 String 兜底——仅诊断文本）。 */
+function errDetail(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
 type Prepared =
   | { kind: 'ready'; rootMap: Y.Map<unknown>; entries: Array<[string, unknown]> }
   | { kind: 'fail'; issues: MaterializeIssue[] };
@@ -130,9 +454,8 @@ function prepare(derived: DerivedSchema, snapshot: unknown, doc: Y.Doc): Prepare
     if (!logical.ok) return { kind: 'fail', issues: logical.issues };
 
     // ② detached 构造（结构域窄域）：任何失败 → 单 issue（INV-3）；产物全是 detached
-    //    类型与新克隆（对 doc 零触碰）
-    const resolve = makeRefResolver(derived); // D8 共享解析器（环守卫先于 memo 命中）
-    const top = rootEntries(derived.structure.node, snapshot, resolve);
+    //    类型与新克隆（对 doc 零触碰）；与 ⑥ scratch 构造共用 buildTopEntries（rev2 RD8）
+    const top = buildTopEntries(derived, snapshot);
     if (top.kind === 'issue') return { kind: 'fail', issues: [top.issue] };
 
     // ③ ROOT 探针 + 空置判定（D3）：只读触碰 'ROOT'（INV-6）
