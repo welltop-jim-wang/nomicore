@@ -48,6 +48,12 @@ jobs:
       - name: Domain scaffolds check
         run: pnpm exec vitest run packages/vfsl/test/domains-scaffold.test.ts --passWithNoTests=false
 
+      # PR #84 owner review（issue #74 修订轮）：materializeRoot 专项存在性门禁——防测试
+      # 文件被删/改名/未收集后静默假绿（vitest.config 默认 passWithNoTests=true）；
+      # --typecheck 同步覆盖测试文件类型面（与 persistence-contract 门禁 L43-44 同款）。
+      - name: Materialize root tests
+        run: pnpm exec vitest run packages/doc-runtime/test/materialize-root.test.ts --typecheck --passWithNoTests=false
+
       # AC4（ADR 0005 §4）：全量重新生成 → 与仓内生成物逐字节 diff。
       # 源漂移（schema 改了没重新生成）与生成器漂移（codegen 逻辑变了）双抓——
       # 纯哈希比对抓不到后者，故必须全量重生成再 diff。
