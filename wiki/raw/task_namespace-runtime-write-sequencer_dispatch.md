@@ -21,3 +21,13 @@
 | 14 | 12:26 | SA7 | Phase 4 动态验证 | 12:40 verdict: pass | SA4 pass，进入动态验证（含 vitest 触发证据；O4 提醒：未跟踪测试/wiki 须随收尾 commit 入库） |
 | 15 | 12:41 | 总控 | Phase 3.5 AC 门禁 | 12:50 | SA4+SA7 双清，逐条核对 AC |
 | 16 | 12:46 | 总控 | Phase 4 收尾固化 | 12:46 | AC 10/10 ✅；HG 自检全过（#12 双清 verdict 真实一致 / #13 N/A / #14 SA4§1.3-1.4+SA7 触发证据在位 / #15 §12+SA4§1.5 齐备 / #16 零 push/PR、base-branch=docs/namespace-runtime）；总控亲跑终验 79 文件 1050/1050 绿 + typecheck 七包 exit 0（.mabf-bg/verify-final.log）；测试+wiki+完成事务随收尾 commit 入库 |
+| 17 | 15:17 | 总控 | 发布后修订轮 R1 研判 | — | runner 转达 owner PR #100 合并前修订要求（P1 fatal message 不得拼原始异常文本/cause 唯一保留；P2 fatal≠close 术语边界）；类型自判=bugfix 类修订；裁剪 SA5/SA1/SA2/SA8（owner 方案=设计定稿，与 ADR-0008 语义不冲突，ADR 冻结不动）；简报落盘 task_namespace-runtime-write-sequencer_rev1.md |
+| 18 | 15:18 | SA6 | 修订轮 R1 红灯锚定 | 15:24 | owner P1 第 4 条要求可执行回归锚（rejection 类别/cause 严格相等/message 不含 sentinel/双路径覆盖），先红后绿 |
+| 19 | 15:25 | SA3 | 修订轮 R1 实现 | —（会话中断） | SA6 红灯锚定完成（3 红 47 绿隔离确认，红点=P1 detail 泄漏 + P2 永久关闭措辞），按简报 AC 实现使红转绿；上一总控会话在交付前消亡 |
+| 20 | 15:36 | SA3 | 修订轮 R1 实现（重派） | —（派发未落地） | 无可续传会话（list_agents 为空），src 确认零改动仍为红灯态；重派 SA3 按简报 AC 实现，约束：禁 commit/push、patch bump、ADR 不动 |
+| 21 | 15:40 | SA3 | 修订轮 R1 实现（恢复轮重派） | (pending) | 恢复轮总控接续：现场确认 rev1 测试已 staged、src 零改动红灯态、list_agents 为空（#20 派发随前总控会话消亡未落地）；重派 SA3（subagent_sa3，id 6253cfc5）按简报 AC 实现 P1 detail 剔除 + P2 术语统一 + patch bump，约束：禁 commit/push、ADR 不动 |
+| 22 | 15:47 | SA3 | 修订轮 R1 实现补漏 | 15:52 | 恢复轮 R3 总控验收：rev1 三红全绿，但 SA3（#21）漏同步 sa7-dynamic 旧断言 L273 `toContain('getStatus() 抛错')`（P1 后槽内固定上下文文案亦剔除出公共 message）；派 SA3 将该断言同步为新稳定形状（NSRT-WRITE-FATAL/phase/committed + 泄漏守卫），禁改 src、禁 commit → 单文件 4/4 绿 exit 0 |
+| 23 | 15:53 | 总控 | 修订轮 R1 亲跑验收 | 15:51 | 四通道全绿：定向 nsrt 10 文件 50/50（rev1 三红转绿）/ 全量 pnpm test 80 文件 1053/1053 / pnpm typecheck 七包 / tsc 聚合通道，exit 全 0（.mabf-bg/verify-r3-nsrt.log、verify-r3-full.log、verify-rev1-tsc.log、verify-rev1-tscagg.log） |
+| 24 | 15:53 | SA4 | 修订轮 R1 静态验尸 | 16:03 verdict: pass | 验收全绿后进入静态红队：无 C/H/M 阻断，5 项 Low（L-5 回流总控：收尾 commit 严禁 add -A 扫入 .mabf-done 删除/REPORT.md/.mabf）；产物 rev1_sa4_review.md |
+| 25 | 16:04 | SA7 | 修订轮 R1 动态验证 | 16:13 verdict: pass | SA4 pass 后进入动态验证：独立复跑 50/50；探针双路径 cause 严格相等实测、message 跨进程逐字节稳定（双种子 sha 一致）、status.fatal 键集恰 {code,message}、P2 运行时取值合规；SA4 动态重点逐项刻画；产物 rev1_sa7_report.md |
+| 26 | 16:14 | 总控 | 修订轮 R1 AC 门禁 + 收尾固化 | 16:14 | AC-R1-1..R2-3 七条全过（rev1_ac_checklist.md）；SA4+SA7 双清；精确 path add 收尾 commit（禁 add -A 扫入 .mabf-done/REPORT.md/.mabf——SA4 L-5 回流）；push/PR/标签/.mabf-done 按 round 3 指令留 Host |

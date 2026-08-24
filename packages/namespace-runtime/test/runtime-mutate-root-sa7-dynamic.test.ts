@@ -16,7 +16,7 @@
  *   原样 throw（既有 #89 loud-throw 契约）、runtime.read() 保留；
  * - 重点 4（深嵌套栈溢出收编）：200,000 层嵌套数组 → snapshotter 递归 RangeError 被
  *   收编为 ok:false（MUTATION_INPUT_NOT_PLAIN_DATA）——进程不崩、fatal 不置位
- *   （写能力不永久关闭——防「深嵌套 → 永久关写」DoS）、后续有效写照常成功。
+ *   （写能力不被永久禁用——防「深嵌套 → 永久禁写」DoS）、后续有效写照常成功。
  *
  * 断言纪律：全部经公共接缝（mutateRoot/read/getStatus/update 事件计数/state 字节/
  * notifier 调用计数/Proxy 输入访问计数）观测，不读实现内部。
@@ -219,7 +219,7 @@ describe('SA7 动态验证 — SA4 重点 1：notifier 挂住双窗口', () => {
     const status = runtime.getStatus();
     expect(status.fatal).not.toBeNull();
     expect(status.fatal!.code).toBe('NSRT-FATAL-WRITE-INTERNAL');
-    expect(status.rootWrite.enabled).toBe(false); // 写能力已永久关闭（观察面诚实）
+    expect(status.rootWrite.enabled).toBe(false); // 写能力已永久禁用（观察面诚实）
 
     // 提交值保留（不虚假回滚）+ read 保留
     expect(readValue(runtime, ['n'])).toBe(9);
@@ -270,7 +270,12 @@ describe('SA7 动态验证 — SA4 重点 2（O1）：getStatus adapter 持续�
     const fatal = settled.reason as RuntimeWriteFatalError;
     expect(fatal.committed).toBe(false); // S2 检查点时尚零 doc 写——诚实 committed:false
     expect(fatal.phase).toBe('write-slot-internal'); // 稳定 phase
-    expect(fatal.message).toContain('getStatus() 抛错');
+    // P1 后公共 message 只含稳定 code/phase/committed + 固定处置说明
+    expect(fatal.message).toContain('NSRT-WRITE-FATAL');
+    expect(fatal.message).toContain('phase=write-slot-internal');
+    expect(fatal.message).toContain('committed=false');
+    expect(fatal.message).not.toContain('adapter-boom');
+    expect(fatal.message).not.toContain('getStatus() 抛错');
 
     // committed:false → 不调用 dirty notifier；零写入
     expect(notifierCalls).toBe(0);
@@ -331,7 +336,7 @@ describe('SA7 动态验证 — SA4 重点 4：200k 层深嵌套栈溢出收编',
     expect(stateBytes(doc)).toEqual(before);
     expect(notifierCalls).toBe(0);
 
-    // 防 DoS 关键断言：输入缺陷不永久关写——fatal 不置位、后续有效写照常成功
+    // 防 DoS 关键断言：输入缺陷不永久禁写——fatal 不置位、后续有效写照常成功
     const status = runtime.getStatus();
     expect(status.fatal).toBeNull();
     expect(status.rootWrite.enabled).toBe(true);

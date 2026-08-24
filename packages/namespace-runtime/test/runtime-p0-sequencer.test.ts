@@ -9,7 +9,8 @@
  *   「P0 结算后出队，只保留：preparing；ready 与 active schema tools；或 unavailable
  *   与稳定 schema issue 摘要」；「正常 compile result failure 仅使 ROOT write
  *   unavailable；SCHEMA write仍可修复。P0 抛出结果联合之外的 internal exception 则
- *   永久关闭该 Runtime 的所有写」；
+ *   触发 internal fatal：永久禁用该 Runtime 的所有写（读取保留——ADR 原措辞为
+ *   「永久关闭」，本轮统一为「永久禁用…读取保留」语义）」；
  * - docs/adr/0008「读取能力」节：「普通 open 不执行 schema、ROOT 载体或 logical
  *   validation」；「读取只观察调用瞬间已经提交的 live Y.Doc」；
  * - 任务简报 AC5/AC6/AC7/AC8。
@@ -27,7 +28,7 @@
  *   字符串、无 stack/cause）+ rootWrite.enabled false + schemaWrite.enabled true
  *   （SCHEMA write 可修复）+ 读取保留 + getActiveSchema() null；
  * - P0 internal throw（注入 compile 抛错）→ 构造不抛、fatal 槽位填稳定摘要（不含原始
- *   错误文本、无 stack/cause）、rootWrite/schemaWrite 全部永久关闭、读取保留；
+ *   错误文本、无 stack/cause）、rootWrite/schemaWrite 全部永久禁用、读取保留；
  * - 结算后 schema.state 只属 {preparing, ready, unavailable} 且收敛稳定。
  *
  * 红灯现状（构造性红灯）：@nomicore/namespace-runtime 包不存在，../src/index.js
@@ -200,7 +201,7 @@ describe('namespace-runtime 队首 P0（AC5/AC6/AC7/AC8）', () => {
     expect(runtime.getStatus().schema.issue).toEqual(issue);
   });
 
-  it('AC6：P0 internal throw（注入 compile 抛错）→ fatal 摘要稳定、全部写永久关闭、读取保留', async () => {
+  it('AC6：P0 internal throw（注入 compile 抛错）→ fatal 摘要稳定、全部写永久禁用、读取保留', async () => {
     const BOOM = 'NSRT-P0-INTERNAL-SENTINEL-9f8c21';
     const { handle } = await makeHandle();
     const runtime = createNamespaceRuntimeWithSeam({
@@ -226,7 +227,7 @@ describe('namespace-runtime 队首 P0（AC5/AC6/AC7/AC8）', () => {
     expect((fatal as unknown as Record<string, unknown>).stack).toBeUndefined();
     expect((fatal as unknown as Record<string, unknown>).cause).toBeUndefined();
 
-    // 永久关闭全部写（ROOT + SCHEMA），读取保留
+    // 永久禁用全部写（ROOT + SCHEMA），读取保留
     expect(status.rootWrite.enabled).toBe(false);
     expect(status.schemaWrite.enabled).toBe(false);
     expect(['preparing', 'ready', 'unavailable']).toContain(status.schema.state);

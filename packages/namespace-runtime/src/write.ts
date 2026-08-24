@@ -68,7 +68,7 @@ export type MutateRootResult = { ok: true } | { ok: false; issues: unknown[] };
 export async function runRootWriteSlot(env: WriteEnv, input: unknown): Promise<MutateRootResult> {
   // ── S1 lifecycle/fatal gate（零输入访问）──────────────────────────────
   if (env.state.fatal !== undefined) {
-    return disabled('fatal 已置位（internal fault 已永久关闭本 Runtime 全部写）');
+    return disabled('fatal 已置位（internal fatal 已永久禁用本 Runtime 的全部写能力，读取仍保留）');
   }
   //    [扩展位：lifecycle gate——v1 恒 'ready'，close 属后续 issue]
 
@@ -79,9 +79,9 @@ export async function runRootWriteSlot(env: WriteEnv, input: unknown): Promise<M
   } catch (err) {
     // adapter bug → 统一 fatal（committed:false——此时尚零 doc 写）；统一形状防止
     // 裸异常从结果联合之外的第二通道逃逸（与 #89 读取面「原样传播」的差异：写槽必须
-    // 经 Promise 结算，且 fatal 面要求立即永久关写）
+    // 经 Promise 结算，且 fatal 面要求立即永久禁用写能力）
     return rejectWithWriteFatal(
-      env, false, 'write-slot-internal', 'getStatus() 抛错（adapter 契约违背）', err,
+      env, false, 'write-slot-internal', err,
     );
   }
   if (handleStatus !== 'ready') {
@@ -117,9 +117,7 @@ export async function runRootWriteSlot(env: WriteEnv, input: unknown): Promise<M
     // 结构上不可达（D4：P0 是队首真实节点，写槽启动时 P0 必已 settle）——loud
     // internal fatal（拒绝虚假降级立法：出现即包缺陷，不静默跳过、不伪 ok）
     return rejectWithWriteFatal(
-      env, false, 'write-slot-internal',
-      'schemaState/activeTools 不变量破坏（ready 必含 tools；preparing 必已被 P0 settle 或 fatal）',
-      undefined,
+      env, false, 'write-slot-internal', undefined,
     );
   }
 
@@ -131,9 +129,9 @@ export async function runRootWriteSlot(env: WriteEnv, input: unknown): Promise<M
     // D5 fatal 分类（唯一 throw 通道）：doc-runtime branded 透传 committed/phase 事实；
     // 未知异常保守 committed:true（ADR「未知异常保守视为可能已提交」——过报方向强制）
     if (err instanceof DocRuntimeFatalError) {
-      return rejectWithWriteFatal(env, err.committed, err.phase, err.message, err);
+      return rejectWithWriteFatal(env, err.committed, err.phase, err);
     }
-    return rejectWithWriteFatal(env, true, 'unknown-pipeline-throw', errDetailOf(err), err);
+    return rejectWithWriteFatal(env, true, 'unknown-pipeline-throw', err);
   }
   if (!result.ok) {
     return { ok: false, issues: result.issues }; // 领域失败透传（零写入由管线承诺）
@@ -148,7 +146,7 @@ export async function runRootWriteSlot(env: WriteEnv, input: unknown): Promise<M
     throw new RuntimeWriteFatalError(
       'notify-dirty-failed',
       true,
-      writeFatalMessage('notify-dirty-failed', true, errDetailOf(err)),
+      writeFatalMessage('notify-dirty-failed', true),
       err === undefined ? undefined : { cause: err },
     );
   }
@@ -168,7 +166,7 @@ function disabled(reason: string): MutateRootResult {
   };
 }
 
-/** 永久关写（fatal 摘要稳定注册——INV-N7：code/message 恒定文案，不插值原始文本）。 */
+/** 永久禁用写能力（fatal 摘要稳定注册——INV-N7：code/message 恒定文案，不插值原始文本）。 */
 function markWriteFatal(env: WriteEnv, cause: unknown): void {
   env.state.fatal = Object.freeze({
     code: FATAL_WRITE_INTERNAL_CODE,
@@ -187,10 +185,9 @@ async function rejectWithWriteFatal(
   env: WriteEnv,
   committed: boolean,
   phase: RuntimeWriteFatalPhase,
-  detail: string,
   cause: unknown,
 ): Promise<never> {
-  markWriteFatal(env, cause ?? detail);
+  markWriteFatal(env, cause);
   if (committed) {
     try {
       await env.notifyDirty?.(); // best-effort：登记最新 live doc；挂住/失败均不掩盖原始 fatal
@@ -201,19 +198,19 @@ async function rejectWithWriteFatal(
   throw new RuntimeWriteFatalError(
     phase,
     committed,
-    writeFatalMessage(phase, committed, detail),
+    writeFatalMessage(phase, committed),
     cause === undefined ? undefined : { cause },
   );
 }
 
-/** fatal 稳定 message 模板（稳定前缀 + 「」定界证据引用原始异常文本）。 */
-function writeFatalMessage(phase: RuntimeWriteFatalPhase, committed: boolean, detail: string): string {
+/** fatal 稳定 message 模板（稳定前缀 + phase/committed 事实 + 固定处置说明；不插值任何原始异常文本）。 */
+function writeFatalMessage(phase: RuntimeWriteFatalPhase, committed: boolean): string {
   return `NSRT-WRITE-FATAL: ROOT write internal fatal（phase=${phase}, committed=${String(committed)}）；` +
-    '本 Runtime 全部写已永久关闭，读取保留；不补偿、不 fallback、不声称回滚；' +
-    `上层不得自动重试非幂等写。原始异常证据引用：「${detail}」`;
+    'internal fatal 已永久禁用本 Runtime 的全部写能力，读取仍保留；不补偿、不 fallback、不声称回滚；' +
+    '上层不得自动重试非幂等写。';
 }
 
-/** 错误详情（message 或 String 兜底——证据引用文本，非本槽自述 claims）。 */
+/** 错误详情（message 或 String 兜底——仅用于类 B issue 文案，不进入 fatal 稳定 message）。 */
 function errDetailOf(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
@@ -225,7 +222,7 @@ type SnapshotResult = { kind: 'ok'; value: unknown } | { kind: 'issue'; issue: R
 /**
  * 槽起点输入快照（D3）。整体 try/catch：敌意 getter/Proxy trap 在快照读取面抛错
  * → 类 B 分级（ok:false）——与 doc-runtime E205 哲学一致，用户数据不得升格 internal
- * fatal（防「一次敌意 value → Runtime 永久关写」DoS；SA6 冻结注释明文「输入缺陷属
+ * fatal（防「一次敌意 value → Runtime 永久禁用写能力」DoS；SA6 冻结注释明文「输入缺陷属
  * 普通领域失败」）。
  */
 function snapshotMutation(input: unknown): SnapshotResult {

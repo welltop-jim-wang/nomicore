@@ -44,10 +44,10 @@
  *   RUNTIME_WRITE_DISABLED、输入零访问（Proxy 观测）、零写入、notifier 不调用；
  * - committed:true fatal：reject 稳定 RuntimeWriteFatalError（committed:true + 稳定
  *   phase 字符串）＋ 槽内 best-effort notifyDirty 恰一次 ＋ 写入已提交事实保留（不虚假
- *   回滚）＋ 全部写永久关闭（后续队列项仍 FIFO 取得槽、零访问输入、零写入返回
+ *   回滚）＋ 全部写永久禁用（后续队列项仍 FIFO 取得槽、零访问输入、零写入返回
  *   RUNTIME_WRITE_DISABLED）＋ 读取保留；
  * - committed:false fatal：reject（committed:false + phase 字符串）、notifier 不调用、
- *   零写入、全部写永久关闭、读取保留；
+ *   零写入、全部写永久禁用、读取保留；
  * - degraded gate：不阻止 P0（schema.state 照常 ready）、不阻止 read；写被拒且零写入；
  * - 快照器拒绝非 plain data（class instance / symbol 键 / 循环引用 / 非有限 number /
  *   function）→ ok:false、零写入（输入缺陷属普通领域失败，不升格 internal fatal）；
@@ -433,7 +433,7 @@ describe('namespace-runtime 唯一 write sequencer 与 validated ROOT write（AC
     const { runtime } = readyRuntime({
       doc,
       compile: () => {
-        throw new Error(BOOM); // P0 internal fault → 永久关写（fatal）
+        throw new Error(BOOM); // P0 internal fault → 永久禁用写能力（fatal）
       },
       notifyDirty: async () => {
         notifierCalls += 1;
@@ -679,7 +679,7 @@ describe('namespace-runtime 唯一 write sequencer 与 validated ROOT write（AC
     expect(runtime.getStatus().schemaWrite.enabled).toBe(true); // SCHEMA 仍可修复
   });
 
-  it('AC9 + fatal 通道（committed:true）：observer 逃逸 → reject 稳定 RuntimeWriteFatalError；best-effort notifier；不虚假回滚；FIFO 继续；写永久关闭、读取保留', async () => {
+  it('AC9 + fatal 通道（committed:true）：observer 逃逸 → reject 稳定 RuntimeWriteFatalError；best-effort notifier；不虚假回滚；FIFO 继续；写永久禁用、读取保留', async () => {
     const doc = new Y.Doc();
     const sc = doc.getMap('SCHEMA');
     for (const [k, v] of Object.entries(ENVELOPE)) sc.set(k, v);
@@ -719,7 +719,7 @@ describe('namespace-runtime 唯一 write sequencer 与 validated ROOT write（AC
     // 不虚假回滚：事务已提交的值保留（read 观察调用瞬间已提交状态）
     expect(readValue(runtime, ['n'])).toBe(9);
 
-    // fatal 永久关闭全部写 + 稳定摘要（不含原始 Error/stack/cause）
+    // fatal 永久禁用全部写 + 稳定摘要（不含原始 Error/stack/cause）
     const status = runtime.getStatus();
     expect(status.rootWrite.enabled).toBe(false);
     expect(status.schemaWrite.enabled).toBe(false);
@@ -740,7 +740,7 @@ describe('namespace-runtime 唯一 write sequencer 与 validated ROOT write（AC
     expect(readValue(runtime, ['n'])).toBe(9); // B 零写入
   });
 
-  it('AC9 + fatal 通道（committed:false）：写前 internal 失败 → reject（committed:false）；notifier 不调用；零写入；写永久关闭、读取保留', async () => {
+  it('AC9 + fatal 通道（committed:false）：写前 internal 失败 → reject（committed:false）；notifier 不调用；零写入；写永久禁用、读取保留', async () => {
     const doc = new Y.Doc();
     const sc = doc.getMap('SCHEMA');
     for (const [k, v] of Object.entries(ENVELOPE)) sc.set(k, v);
@@ -782,7 +782,7 @@ describe('namespace-runtime 唯一 write sequencer 与 validated ROOT write（AC
     expect(updates.count).toBe(0);
     expect(stateBytes(doc)).toEqual(before);
 
-    // 全部写永久关闭 + 读取保留
+    // 全部写永久禁用 + 读取保留
     const status = runtime.getStatus();
     expect(status.rootWrite.enabled).toBe(false);
     expect(status.schemaWrite.enabled).toBe(false);

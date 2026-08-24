@@ -17,14 +17,14 @@ export const FATAL_P0_INTERNAL_CODE = 'NSRT-FATAL-P0-INTERNAL' as const;
 
 /** P0 internal fault 稳定 message（恒定文案：不含任何原始异常文本/stack/cause）。 */
 export const FATAL_P0_INTERNAL_MESSAGE =
-  'P0 schema preparation internal fault：编译通道产生结果联合之外的异常；本 Runtime 全部写已永久关闭，读取保留。' as const;
+  'P0 schema preparation internal fault：编译通道产生结果联合之外的异常；internal fatal 已永久禁用本 Runtime 的全部写能力，读取仍保留。' as const;
 
 /** 写槽 internal fault 稳定 code（D5.4：与 P0 fatal code 区分来源；status 投影可判别）。 */
 export const FATAL_WRITE_INTERNAL_CODE = 'NSRT-FATAL-WRITE-INTERNAL' as const;
 
 /** 写槽 internal fault 稳定 message（恒定文案：不含任何原始异常文本/stack/cause——INV-N7）。 */
 export const FATAL_WRITE_INTERNAL_MESSAGE =
-  'ROOT write internal fault：写管线产生结果联合之外的 internal fatal；本 Runtime 全部写已永久关闭，读取保留。' as const;
+  'ROOT write internal fault：写管线产生结果联合之外的 internal fatal；该 fatal 已永久禁用本 Runtime 的全部写能力，读取仍保留。' as const;
 
 /** ROOT 写禁用稳定码（D9）：出现在 ok:false issue.message 内（JSON.stringify 含码判定）。 */
 export const RUNTIME_WRITE_DISABLED_CODE = 'RUNTIME_WRITE_DISABLED' as const;
