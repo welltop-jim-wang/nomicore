@@ -1,5 +1,5 @@
 /**
- * @nomicore/namespace-runtime —— Runtime 构造与七键公共面（设计 §3/§4 D1/D2/D3/D8'）。
+ * @nomicore/namespace-runtime —— Runtime 构造与八键公共面（设计 §3/§4 D1/D2/D3/D6/D8'）。
  *
  * 构造序（D1，R2 修订落实 SA2 #3/#4——一切 throw 与一切 seam 读取均在入队前）：
  *  V1 形状守卫（loud TypeError；seam 字段全部读取限于构造栈内有限次——校验与捕获
@@ -8,17 +8,19 @@
  *     未知值 → NamespaceRuntimeConstructionError throw——零副作用，INV-N4）；
  *  V3 所有权转移（全部在入队前求值）：身份/载体一次捕获 → state 初始化 →
  *      env 一次成型（纯数据闭包）→ P0 入队（thunk = 纯调用 () => runP0(env)，
- *      零属性读取/零字面量构造/无可抛点）→ 七键对象构造并 freeze。
+ *      零属性读取/零字面量构造/无可抛点）→ writeEnv 一次成型（D6.2）→
+ *      八键对象构造并 freeze。
  *
  * 公共面（D2）：对象字面量 + 闭包（非 class 实例）——原型链是 Object.prototype，
  * handle/Y.Doc/sequencer/state 只存在于闭包；Object.freeze(runtime) 防属性注入。
- * 七键恰好：owner / namespaceId / read / getSchemaEnvelope / getMetadata /
- * getActiveSchema / getStatus。生产工厂 createNamespaceRuntime 保留包内，
- * index.ts 不 re-export（AC1 锁定 entry.createNamespaceRuntime === undefined）。
+ * 八键恰好：owner / namespaceId / read / getSchemaEnvelope / getMetadata /
+ * getActiveSchema / getStatus / mutateRoot（第八键 = 唯一公共 ROOT 写入口，D1）。
+ * 生产工厂 createNamespaceRuntime 保留包内，index.ts 不 re-export（AC1 锁定
+ * entry.createNamespaceRuntime === undefined）。
  *
  * 外部 release 后的行为（v1 边界，R3）：runtime 独占的是构造时取得的那份租约；
  * 调用方越过 runtime 直接 handle.release() 属调用方违约。后果仅体现为 D9 的写位
- * 瞬时观察转 false；读取面继续观察 live Y.Doc 引用（不崩、不静默换源）。
+ * 瞬时观察转 false（写槽 S2 同拒）；读取面继续观察 live Y.Doc 引用（不崩、不静默换源）。
  */
 import type * as Y from 'yjs';
 import type { DocHandle } from '@nomicore/persistence';
@@ -33,6 +35,8 @@ import { projectMetadata, projectSchemaEnvelope } from './projection.js';
 import { WriteSequencer } from './sequencer.js';
 import { buildStatus } from './status.js';
 import type { NamespaceRuntimeStatus } from './status.js';
+import { runRootWriteSlot } from './write.js';
+import type { MutateRootResult, WriteEnv } from './write.js';
 
 /** seam 输入（D8'）：包内确定性测试接缝；@internal 沿 doc-runtime getCompiledWith 先例。 */
 export interface NamespaceRuntimeSeamInput {
@@ -42,9 +46,13 @@ export interface NamespaceRuntimeSeamInput {
   readonly p0Gate?: Promise<void>;
   /** 注入编译步（缺省 vfsl compileSchemaEnvelope；抛错 = internal fault 注入）。 */
   readonly compile?: (envelope: SchemaEnvelope) => CompileSchemaEnvelopeResult;
+  /** mutation 后 dirty notification 接缝（ADR-0008 原文命名，D6.1）：构造方绑定
+   *  persistence.saveDoc(handle)；测试经 seam 注入确定性 notifier。缺省 = 未绑定
+   *  （写槽 S2 loud 拒绝——D6.4 拒绝虚假降级立法，非静默 no-op）。 */
+  readonly notifyDirty?: () => Promise<void>;
 }
 
-/** Runtime 公共形状（D2 七键协议；键集/形状即公共契约——AC2 锚定）。 */
+/** Runtime 公共形状（D2 八键协议；键集/形状即公共契约——AC2 锚定）。 */
 export interface NamespaceRuntime {
   /** 冻结的 owner 身份投影（只投影 userId）。 */
   readonly owner: Readonly<{ userId: string }>;
@@ -60,6 +68,10 @@ export interface NamespaceRuntime {
   readonly getActiveSchema: () => ActiveSchemaInfo | null;
   /** 结构化瞬时 capability status（D9；每次调用全新对象）。 */
   readonly getStatus: () => NamespaceRuntimeStatus;
+  /** 唯一公共 ROOT 写入口（D1）：同步接纳定序（FIFO 由调用顺序决定）；
+   *  不同步 throw、不同步结算——任何拒绝（gate/校验/快照）都经返回的 Promise 结算；
+   *  internal fatal 经 Promise rejection（RuntimeWriteFatalError）。 */
+  readonly mutateRoot: (mutation: unknown) => Promise<MutateRootResult>;
 }
 
 /**
@@ -95,13 +107,16 @@ export function createNamespaceRuntimeWithSeam(input: NamespaceRuntimeSeamInput)
   // V3c env 一次成型（INV-N14：纯数据闭包——thunk 内零求值面、无可抛点）
   const env: P0Env = { doc, state, p0Gate: captured.p0Gate, compile };
 
+  // V3c' writeEnv 一次成型（D6.2：写槽纯数据闭包；notifyDirty 显式 undefined 联合）
+  const writeEnv: WriteEnv = { doc, handle, state, notifyDirty: captured.notifyDirty };
+
   // V3d sequencer + P0 入队（INV-N1：return 前 P0 已是队首 pending 节点；微任务起步；
   //     thunk = 纯调用 () => runP0(env)，零属性读取/零字面量构造/无可抛点——
   //     INV-N12 的「槽体全 catch」从此是结构事实）
   const sequencer = new WriteSequencer();
   void sequencer.enqueue(() => runP0(env));
 
-  // V3e 公共面（七键闭包对象；owner/namespaceId 由 V3a 捕获局部量构造——不再解引用成员）
+  // V3e 公共面（八键闭包对象；owner/namespaceId 由 V3a 捕获局部量构造——不再解引用成员）
   const owner = Object.freeze({ userId });
   const runtime: NamespaceRuntime = {
     owner,
@@ -111,16 +126,24 @@ export function createNamespaceRuntimeWithSeam(input: NamespaceRuntimeSeamInput)
     getMetadata: () => projectMetadata(doc), // D5（深拷贝 / 载体与值域双 loud）
     getActiveSchema: () => state.activeInfo ?? null, // D8
     getStatus: () => buildStatus(handle, state), // D9（handle 仅用于 writableNow 瞬时观察）
+    mutateRoot: (mutation: unknown): Promise<MutateRootResult> =>
+      // D1：同步接纳定序（enqueue 同步拼尾）+ 槽完成信号；thunk 是纯调用——
+      // mutation 引用仅被捕获不被读取（Proxy 零触发），无可抛点（INV-W1/W14）
+      sequencer.enqueue(() => runRootWriteSlot(writeEnv, mutation)),
   };
   return Object.freeze(runtime);
 }
 
 /**
- * 生产构造器（包内，index.ts 不导出——AC1 锁定）。v1 为 seam 缺省薄壳；
- * 未来 Registry 使用（ADR-0008「生产工厂保留包内」）。@internal。
+ * 生产构造器（包内，index.ts 不导出——AC1 锁定）。D6.3：绑定义务显式化为必填参数——
+ * 未来 Registry 传 `() => persistence.saveDoc(handle)`（ADR-0008「由构造方绑定」）。
+ * @internal
  */
-export function createNamespaceRuntime(handle: DocHandle): NamespaceRuntime {
-  return createNamespaceRuntimeWithSeam({ handle });
+export function createNamespaceRuntime(
+  handle: DocHandle,
+  notifyDirty: () => Promise<void>,
+): NamespaceRuntime {
+  return createNamespaceRuntimeWithSeam({ handle, notifyDirty });
 }
 
 /** V1 形状守卫 + 捕获（INV-N14：seam 字段读取全部限于构造栈内有限次——V1 校验读取与
@@ -134,9 +157,10 @@ function captureSeamInput(input: unknown): {
   doc: Y.Doc;
   p0Gate: Promise<void> | undefined;
   compile: ((envelope: SchemaEnvelope) => CompileSchemaEnvelopeResult) | undefined;
+  notifyDirty: (() => Promise<void>) | undefined;
 } {
   if (typeof input !== 'object' || input === null) {
-    throw new TypeError('seam 输入必须是对象（{ handle, p0Gate?, compile? }）');
+    throw new TypeError('seam 输入必须是对象（{ handle, p0Gate?, compile?, notifyDirty? }）');
   }
   const rec = input as Record<string, unknown>;
   // handle 形状（防御 seam 调用方传残缺 handle——残缺任何 throw 均在入队前，INV-N4）
@@ -180,6 +204,13 @@ function captureSeamInput(input: unknown): {
     }
     compile = rec.compile as (envelope: SchemaEnvelope) => CompileSchemaEnvelopeResult;
   }
+  let notifyDirty: (() => Promise<void>) | undefined;
+  if (rec.notifyDirty !== undefined) {
+    if (typeof rec.notifyDirty !== 'function') {
+      throw new TypeError('input.notifyDirty 若提供必须是 function（persistence.saveDoc(handle) 窄接缝）');
+    }
+    notifyDirty = rec.notifyDirty as () => Promise<void>;
+  }
   return {
     handle: handle as DocHandle,
     userId: userId as string,
@@ -187,5 +218,6 @@ function captureSeamInput(input: unknown): {
     doc: doc as Y.Doc,
     p0Gate,
     compile,
+    notifyDirty,
   };
 }
