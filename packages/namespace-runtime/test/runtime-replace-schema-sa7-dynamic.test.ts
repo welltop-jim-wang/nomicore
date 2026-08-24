@@ -15,17 +15,18 @@
  * - 注入路径 β（E203）：doc 级 update observer throw → transactGuarded 包装
  *   observer-cleanup-throw committed:true → 同 fatal 走线；
  * - 注入路径 γ（E204）：seam 注入 compile 返回 ok:true 但 derived 为手造环 ref
- *   结构 → projectDeclaredRootKeys 内 makeRefResolver 环守卫 → DerivedInvariantError
+ *   结构 → buildTopEntries 内 makeRefResolver 环守卫 → DerivedInvariantError
  *   → ① catch instanceof 分支 → branded pre-commit-internal committed:false →
  *   rejection（**非** ok:false DOCRT-E200——A4 红线）；
  * - SA2 §5.1 A1 变体（独立动态确认）：注入 compile 畸形 ok:true envelope 四变体
  *   （多一键 / text 非 string / version 非 number / 缺 text 键）→ 一律
  *   schema-compile-throw fatal（committed:false、零写入、active tools 不变）；
- * - SA2 §5.2 A2 边界（独立动态确认）：顶层剥离后 read(['b'])===undefined、嵌套
- *   未声明键 loud、union 形 ROOT × 未声明键 loud（不投影）；
+ * - SA2 §5.2 A2 边界（独立动态确认，rev2 契约修订——D7 顶层投影废止）：顶层未声明
+ *   键 loud（ok:false + issue path=[<k>]）、嵌套未声明键 loud、union 形 ROOT ×
+ *   未声明键 loud（不投影）；
  * - AC9 时序实证：notifier 挂住窗口（前项 mutateRoot 占槽）内
  *   read/getSchemaEnvelope/getActiveSchema 观察旧 generation、transaction 后同步切换；
- * - SA4 §12 动态审核重点 4：⑥ verifySnapshotIntact 喂 narrowed 的对称性——嵌套
+ * - SA4 §12 动态审核重点 4：⑥ verifySnapshotIntact 喂原样 snapshot 的对称性——嵌套
  *   Y.Array 载体（a: string[]）replace-root 快乐路径双侧提取等价。
  *
  * 断言纪律：全部经公共接缝（replaceSchema/mutateRoot/read/getSchemaEnvelope/
@@ -358,7 +359,7 @@ describe('SA7 动态验证 — replaceSchema fatal 通道注入路径 γ：手�
 
     const updates = countUpdates(doc);
     const bytesBefore = stateBytes(doc);
-    // 提供 root → 走 projectDeclaredRootKeys → makeRefResolver 环守卫（A4 登记路径）
+    // 提供 root → 走 buildTopEntries → makeRefResolver 环守卫（A4 登记路径）
     const settled = await settleOf(runtime.replaceSchema({ schema: ENV2B, root: { n: 999, a: 'x' } }));
 
     // A4 红线：必须是 branded rejection（pre-commit-internal），而非 ok:false DOCRT-E200
@@ -433,10 +434,11 @@ describe('SA7 动态验证 — SA2 §5.1 A1：注入 compile 畸形 ok:true enve
   });
 });
 
-// —— SA2 §5.2 A2 边界：顶层静默剥离 × 嵌套 loud × union 不投影（独立动态确认）——
+// —— SA2 §5.2 A2 边界：顶层未声明键响亮拒绝 × 嵌套 loud × union 不投影（独立动态确认；
+//    rev2 契约修订——D7「顶层声明域投影」废止，provided root 原样封闭校验）——
 
-describe('SA7 动态验证 — SA2 §5.2 A2：顶层声明域投影边界', () => {
-  it('A2-顶层剥离：ns-2b（声明 {a,n}）× root 含未声明顶层键 b → ok:true、read(["b"])===undefined、generation 键集恰 {a,n}', async () => {
+describe('SA7 动态验证 — SA2 §5.2 A2（rev2 契约）：provided root 未声明键响亮拒绝边界', () => {
+  it('R2-1 顶层未声明键：ns-2b（声明 {a,n}）× root 含未声明顶层键 b → ok:false、issue 指向 b（path=["b"]）、0 update、0 notifier、state 字节不变、SCHEMA/ROOT/active tools 三不变', async () => {
     const doc = makeDoc();
     let notifierCalls = 0;
     const runtime = readyRuntime({
@@ -448,18 +450,37 @@ describe('SA7 动态验证 — SA2 §5.2 A2：顶层声明域投影边界', () =
     await waitReady(runtime);
 
     const updates = countUpdates(doc);
+    const bytesBefore = stateBytes(doc);
+    const rootBefore = doc.getMap('ROOT');
     const settled = await settleOf(runtime.replaceSchema({ schema: ENV2B, root: { n: 999, a: 'x', b: true } }));
 
+    // 新契约（issue #91 AC3 / ADR 0008 §SCHEMA write 第 3 条）：provided root 是完整最终
+    // logical ROOT——未声明顶层键与嵌套未知键同族响亮拒绝，绝不先剥离输入再校验
     expect(settled.kind).toBe('resolved');
     if (settled.kind !== 'resolved') return;
-    expect(settled.value).toEqual({ ok: true }); // 冻结锚 15 语义：未声明顶层键静默剥离
-    expect(updates.count).toBe(1);
-    expect(notifierCalls).toBe(1);
-    // generation 不含 b：读取 undefined + ROOT 实际键集恰声明域
-    expect(readValue(runtime, ['b'])).toBeUndefined();
-    expect([...doc.getMap('ROOT').keys()].sort()).toEqual(['a', 'n']);
-    expect(readValue(runtime, ['n'])).toBe(999);
+    expect(settled.value).toMatchObject({ ok: false });
+    // issue 明确指向未知顶层键：path 恰为 ["b"] 且 message 点名该键（验证/构造双 loud 任一）
+    const issues = issuesOf(settled.value);
+    expect(issues.length).toBeGreaterThanOrEqual(1);
+    const bIssue = issues.find((i) => i.path.length === 1 && i.path[0] === 'b');
+    expect(bIssue).toBeDefined();
+    if (bIssue === undefined) return;
+    expect(bIssue.message).toContain('"b"');
+    // 失败零写入：0 Yjs update、0 dirty notifier、state 字节不变
+    expect(updates.count).toBe(0);
+    expect(notifierCalls).toBe(0);
+    expect(stateBytes(doc)).toEqual(bytesBefore);
+    // SCHEMA / ROOT / active tools 三不变（旧 generation 继续服务）
+    expect(runtime.getSchemaEnvelope()?.id).toBe('ns-1');
+    expect(runtime.getActiveSchema()?.id).toBe('ns-1');
+    expect(doc.getMap('ROOT')).toBe(rootBefore);
+    expect([...rootBefore.keys()].sort()).toEqual(['a', 'n']);
+    expect(rootBefore.has('b')).toBe(false);
+    expect(readValue(runtime, ['n'])).toBe(1);
     expect(readValue(runtime, ['a'])).toBe('x');
+    // 普通领域失败：不升 fatal、写能力保留（非注入型）
+    expect(runtime.getStatus().fatal).toBeNull();
+    expect(runtime.getStatus().schemaWrite.enabled).toBe(true);
   });
 
   it('A2-嵌套 loud：嵌套未声明键 y → ok:false 且 issue 指明未声明键、零写入', async () => {
@@ -571,7 +592,7 @@ describe('SA7 动态验证 — AC9 时序：准备期观察旧 committed generat
   });
 });
 
-// —— SA4 §12 动态审核重点 4：⑥ verifySnapshotIntact 喂 narrowed × 嵌套 Y.Array 载体 ——
+// —— SA4 §12 动态审核重点 4：⑥ verifySnapshotIntact 喂原样 snapshot × 嵌套 Y.Array 载体 ——
 
 describe('SA7 动态验证 — ⑥ 对称性：嵌套 Y.Array 载体 replace-root 快乐路径', () => {
   it('⑥ ns-arr（a: string[]）× root {n:5,a:["x","y"]} → ok:true；真实 Y.Array 载体安装、路径下钻可读、⑥ 双侧提取等价', async () => {
@@ -591,7 +612,7 @@ describe('SA7 动态验证 — ⑥ 对称性：嵌套 Y.Array 载体 replace-roo
 
     expect(settled.kind).toBe('resolved');
     if (settled.kind !== 'resolved') return;
-    expect(settled.value).toEqual({ ok: true }); // ⑥ 喂 narrowed 后对称重物化通过
+    expect(settled.value).toEqual({ ok: true }); // ⑥ 喂原样 snapshot 后对称重物化通过
     expect(updates.count).toBe(1);
     expect(notifierCalls).toBe(1);
     // 顶层 ROOT identity 保持

@@ -73,11 +73,11 @@ export interface ReplaceSchemaInput {
    * - 提供性以**键存在性**判定：缺省 = 不修改 ROOT（也不破坏 identity）；显式传 `undefined`
    *   属非 plain 输入，被输入纪律拒绝（`MUTATION_INPUT_NOT_PLAIN_DATA`，message 携带键名，
    *   如「键 "root" 值为 undefined」）——不是「视为未提供」。
-   * - **未声明顶层键不进入新 generation**：root 先投影到 proposed schema 结构树顶层声明
-   *   键集（与 keep-root 分支对当前 ROOT 的提取投影同构），投影外顶层键被剥离且
-   *   `ok:true` 不携带任何反馈（冻结锚 15 语义；advisory 通道另立 issue，见设计 §10 R7）。
-   * - **嵌套未声明键响亮拒绝**：validateLogicalSnapshot「未知字段」/ buildTopEntries F7
-   *   双 loud 失败（`ok:false` + issues），保持仓内拒绝静默丢键纪律。
+   * - **未声明键一律响亮拒绝（顶层与嵌套同族）**：root 作为完整最终 logical ROOT
+   *   **原样**送入封闭对象校验（validateLogicalSnapshot）与 detached 构造
+   *   （buildTopEntries）——未声明顶层键与嵌套未知键同样返回 `ok:false` + 指向该键
+   *   的 issue（path=[<k>]），零写入、SCHEMA/ROOT/active tools 不变（issue #91 AC3 /
+   *   ADR 0008 §SCHEMA write 第 3 条；round 1 的顶层静默剥离契约已废止）。
    * - 读取 `issues` 元素须自行窄化（`unknown[]` 是有意为之的 R2 先例——兼容
    *   `MutationIssue[]`/`ReplaceSchemaIssue[]` 双侧赋值）：
    *   `(res.issues as Array<{ message: string; path: (string | number)[] }>)`。

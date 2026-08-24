@@ -682,7 +682,10 @@ describe('namespace-runtime replaceSchema：原子 SCHEMA replacement 与 ROOT g
       },
     });
 
-    const input = { schema: { ...ENV2 }, root: { n: 1, a: 'x', b: true } };
+    // rev2 契约（D7 投影废止）：槽起点快照的 root 必须对槽起点 schema（ns-2b，声明
+    // {a,n}）原样封闭合法——故输入初始 root 不含 b（b 是调用时 schema ns-2 才声明的键，
+    // 保留它会让新契约下的快照校验 ok:false，遮蔽「槽起点快照获胜」的测试意图）
+    const input = { schema: { ...ENV2 }, root: { n: 1, a: 'x' } };
     const p = runtime.replaceSchema(input);
     // 调用方在排队期间改动输入引用内容（合法：快照时点 = 槽开始）
     input.schema = { ...ENV2, id: 'ns-2b', text: TEXT_V2B };

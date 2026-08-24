@@ -13,10 +13,9 @@
  * gate、快照、编译路由与 active tools 生命周期。单源复用清单（ADR 演进 3「不复制
  * materialization 逻辑」落点）：`buildTopEntries`（②④⑥ 的构造同一实现）、
  * `probeRoot`、`assertOutermostTransactionContext`、`transactGuarded`、
- * `verifyInstall`、`verifySnapshotIntact`、`extractYjsSnapshot`、`makeRefResolver`
+ * `verifyInstall`、`verifySnapshotIntact`、`extractYjsSnapshot`
  * ——本 seam 不含任何第二份构造/校验规则，新增代码只有编排、SCHEMA 四键写入、⑤-S
- * （verifySchemaFourKeys）、探针（probeSchemaMap）与顶层声明域投影
- * （projectDeclaredRootKeys）。
+ * （verifySchemaFourKeys）与探针（probeSchemaMap）。
  *
  * 六阶段管线（镜像 replaceRootContent 的编排纪律）：
  *   ⓪ assertOutermostTransactionContext（函数体第一句、一切 try/catch 之外）
@@ -34,17 +33,17 @@
  *         - keep-root（未提供 root）：extractYjsSnapshot(derived, doc) →
  *           validateLogicalSnapshot(derived, ex.snapshot)——issues 透传（证明逻辑值
  *           与实际载体均已兼容；ROOT 零修改）
- *         - replace-root（提供完整 logical ROOT）：projectDeclaredRootKeys（D7 顶层
- *           声明域投影）→ validateLogicalSnapshot → buildTopEntries（detached 构造）
- *           → probeRoot（载体判定）
+ *         - replace-root（提供完整 logical ROOT）：原样 snapshot →
+ *           validateLogicalSnapshot → buildTopEntries（detached 构造）→ probeRoot
+ *           （载体判定；rev1：D7 废止，原样封闭校验）
  *   ② 单事务（transactGuarded，物理位于一切 catch 之外；observer 逃逸 → E203
  *      committed:true）：SCHEMA clear + 恰四次 set（lang/version/id/text）
  *      [+ replace-root：ROOT 原实例 clear + entries 安装]
  *   ③ ⑤-S：verifySchemaFourKeys（size===4 + 四键值与 envelope 严格同一——对称补齐
  *      ⑤ 的诚实性：observer 在事务 cleanup 派发窗口破坏 SCHEMA 四键 → E201 fatal）
  *   ④ replace-root：verifyInstall（⑤-R）+ verifySnapshotIntact（⑥，对称重物化；
- *      **必须喂投影后 snapshot**——scratch 侧 buildTopEntries 对未声明键 F7 拒绝，
- *      喂 raw 会把未声明键用例变成不可达的 E201 fatal）
+ *      喂原样 snapshot——与 ①d validate/build 同一 (derived, snapshot) 输入对，
+ *      scratch 确定性重放（rev1 单形态；旧论证随投影废止失效））
  *   ⑤ return { ok: true }
  *
  * E202 生产路径结构性不可达：本 seam 只被 sequencer 槽同步调用（槽是普通异步代码，
@@ -55,12 +54,11 @@ import * as Y from 'yjs';
 import type { DerivedSchema, SchemaEnvelope } from '@nomicore/vfsl';
 import { validateLogicalSnapshot } from '@nomicore/vfsl';
 import { probeRoot } from './carrier.js';
-import { buildTopEntries, plainObjectOf, recordSlotOf } from './detached-build.js';
+import { buildTopEntries } from './detached-build.js';
 import { extractYjsSnapshot } from './extract.js';
 import { DerivedInvariantError, DocRuntimeFatalError, transactGuarded } from './fatal.js';
 import { verifyInstall, verifySnapshotIntact } from './install-verify.js';
 import type { ReplaceIssue, ReplaceResult } from './replace.js';
-import { makeRefResolver } from './resolve.js';
 import { assertOutermostTransactionContext } from './tx-guard.js';
 
 /** SCHEMA 写槽的 ROOT 处置计划（提供性以判别式表达——不用可选字段承载，杜绝 undefined 二义）。 */
@@ -86,8 +84,8 @@ type PreparedSchemaReplace =
       schemaMap: Y.Map<unknown>;
       rootMap: Y.Map<unknown>;
       entries: Array<[string, unknown]>;
-      /** ⑤-S/⑥ 消费的投影形态（与保持 root 分支的提取投影同构——D7）。 */
-      narrowed: unknown;
+      /** ⑥ 消费的原样 provided-root snapshot（与 validate/build 同一引用——rev1 单形态纪律）。 */
+      snapshot: unknown;
     }
   | { kind: 'fail'; issues: ReplaceIssue[] };
 
@@ -125,14 +123,14 @@ export function replaceSchemaAndRoot(doc: Y.Doc, input: SchemaReplaceInput): Rep
   verifySchemaFourKeys(ready.schemaMap, input.envelope); // ③ ⑤-S（SCHEMA 恰四键写后完整性）
   if (ready.branch === 'replace-root') {
     verifyInstall({ rootMap: ready.rootMap, entries: ready.entries }); // ④ ⑤-R（共享逐字）
-    verifySnapshotIntact(input.derived, ready.narrowed, doc); // ④ ⑥（对称重物化——必须喂投影形态）
+    verifySnapshotIntact(input.derived, ready.snapshot, doc); // ④ ⑥（对称重物化——原样 snapshot）
   }
   return { ok: true }; // ⑤
 }
 
 /** ① prepare（唯一 try/catch 崩溃边界）。E204 分支镜像 replace.ts prepareReplace：
- *  DerivedInvariantError（①a 显式 sentinel / projectDeclaredRootKeys 内 makeRefResolver
- *  环/缺名 sentinel / buildTopEntries 的「ROOT 结构节点非 map 形」裸 throw 不在此列）
+ *  DerivedInvariantError（①a 显式 sentinel / buildTopEntries 内 makeRefResolver 环/缺名
+ *  sentinel / buildTopEntries 的「ROOT 结构节点非 map 形」裸 throw 不在此列）
  *  → E204 pre-commit-internal committed:false（手造派生物——合规调用者不可达）；
  *  其余一切意外异常 → E200 ok:false 单 issue（模块名制 message）。 */
 function prepareSchemaReplace(input: SchemaReplaceInput, doc: Y.Doc): PreparedSchemaReplace {
@@ -165,12 +163,12 @@ function prepareSchemaReplace(input: SchemaReplaceInput, doc: Y.Doc): PreparedSc
       if (!logical.ok) return { kind: 'fail', issues: logical.issues };
       return { kind: 'ready', branch: 'keep-root', schemaMap };
     }
-    // replace-root：完整最终 logical ROOT → 顶层声明域投影 → 逻辑校验 → detached 构造
-    // → ROOT 载体判定（概略与 keep-root 对称，验证/构造/安装/⑥ 全部消费投影形态——D7）
-    const narrowed = projectDeclaredRootKeys(input.derived, input.root.snapshot);
-    const logical = validateLogicalSnapshot(input.derived, narrowed);
-    if (!logical.ok) return { kind: 'fail', issues: logical.issues };
-    const top = buildTopEntries(input.derived, narrowed);
+    // replace-root：完整最终 logical ROOT —— 原样（不投影）逻辑校验 → detached 构造
+    // → ROOT 载体判定（rev1：D7 顶层声明域投影废止；validate/build/⑥ 三处同源同形态）
+    const snapshot = input.root.snapshot; // 原样——调用方提供的完整 ROOT
+    const logical = validateLogicalSnapshot(input.derived, snapshot);
+    if (!logical.ok) return { kind: 'fail', issues: logical.issues }; // 顶层未声明键在此响亮失败
+    const top = buildTopEntries(input.derived, snapshot);
     if (top.kind === 'issue') return { kind: 'fail', issues: [top.issue] };
     const rootProbe = probeRoot(doc);
     if (rootProbe.carrier !== 'Y.Map') {
@@ -185,7 +183,7 @@ function prepareSchemaReplace(input: SchemaReplaceInput, doc: Y.Doc): PreparedSc
       schemaMap,
       rootMap: rootProbe.map,
       entries: top.entries,
-      narrowed,
+      snapshot, // 原样携带（⑥ 消费）
     };
   } catch (err) {
     if (err instanceof DerivedInvariantError) {
@@ -294,45 +292,4 @@ function verifySchemaFourKeys(schemaMap: Y.Map<unknown>, envelope: SchemaEnvelop
       );
     }
   }
-}
-
-/**
- * D7 顶层声明域投影：provide root 时，snapshot 先投影到 proposed 结构树**顶层**声明键集。
- *
- * 裁决依据（冻结锚 15 强制——设计 §4 D7 三层论证）：
- * 1. 契约对称性：keep-root 分支的兼容性证明本来就是对「当前 ROOT 的 declared 投影」
- *    做的（extractYjsSnapshot 的 D4 纪律：缺失字段与未知键不报不进快照）；replace-root
- *    分支安装的内容同样只能是声明域内容（buildTopEntries 沿结构树构造，结构性无法
- *    持久化声明外键）——投影使两分支语义对称：**新 generation 的键集由 schema 声明域
- *    定义**。
- * 2. 非静默数据丢失：仓内 F7/（G½）纪律保护的是 **live doc 键不被无感丢弃**；此处
- *    调用方**主动整体替换** ROOT generation——旧 ROOT 的全部键本就随 clear 消亡，
- *    调用方数据中 schema 域外的部分不属于新 generation（锚 15 冻结语义）。
- * 3. 边界诚实：投影只做顶层。嵌套层未声明键仍被 validate/build 双 loud 拒绝（F7
- *    严格性保持）；union 形 root 不投影（试错语义归 build/validate，不在此层发明）。
- *
- * 公共契约面显式化（【R1.1/A2】三处同步——缺一即 A2 未修）：① ReplaceSchemaInput.root
- * JSDoc（namespace-runtime）；② 仓库根 CONTEXT.md `## Language` 术语条目「顶层声明域
- * 投影」；③ 本实现注释。（被剥离键的上报 advisory 通道另立 issue——冻结结果联合无携带位。）
- */
-function projectDeclaredRootKeys(derived: DerivedSchema, snapshot: unknown): unknown {
-  if (derived.structure.kind !== 'root') return snapshot; // 由 ①a 的 E204 路径收编
-  const resolve = makeRefResolver(derived); // 共享解析（resolve.ts——环/缺名 → DerivedInvariantError → E204）
-  const node = resolve(derived.structure.node); // root 内层（恒非 ref；手造 ref 链在此收敛）
-  if (node.kind !== 'map') return snapshot; // union/异形 root：不投影，交下游严格拒绝（D7 边界登记）
-  if (recordSlotOf(node) !== undefined) return snapshot; // 【R1.1/A6】Record 形判定消费
-  // detached-build.ts:234 的 @internal recordSlotOf（单点约定——不复制判定，杜绝漂移）
-  const obj = plainObjectOf(snapshot); // 非 plain → 原样返回，交验证/构造响亮拒绝
-  if (obj === null) return snapshot;
-  const declared = new Set(node.fields.map((f) => f.name));
-  const out: Record<string, unknown> = {};
-  for (const k of Object.keys(obj)) { // 快照键枚举序
-    if (!declared.has(k)) continue; // 未声明顶层键：不进新 generation（静默剥离——锚 15 语义）
-    const v = obj[k];
-    if (v === undefined) continue; // present 惯例（mapEntries 同款；post-snapshot 不可达，防御）
-    // defineProperty 写入纪律（extract.ts putSnapshotKey / detached-build copyJsonDomain
-    // 同款）：own '__proto__' 键不触发原型 setter、不劫持产物原型；裸赋值禁止
-    Object.defineProperty(out, k, { value: v, writable: true, enumerable: true, configurable: true });
-  }
-  return out;
 }
