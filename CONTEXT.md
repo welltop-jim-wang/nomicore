@@ -14,6 +14,10 @@ _Avoid_: PathSchemaNode DSL、schema DSL
 **信封（envelope）**:
 顶层具名 `SCHEMA` Y.Map 中 `lang/version/id/text` 四个字符串键投影出的严格普通对象；兼容读取忽略额外键，规范写入以一次 transaction 清空并重写四键。信封可哈希、可 diff。
 
+**顶层声明域投影（top-level declared projection）**:
+`replaceSchema` 提供 `root` 时，root 先投影到 proposed schema 结构树**顶层**声明键集：未声明顶层键不进入新 generation（静默剥离，与 keep-root 分支对当前 ROOT 的提取投影同构）；嵌套层未声明键保持响亮拒绝（validateLogicalSnapshot「未知字段」/ detached builder F7）。generation 的键集由 schema 声明域定义。
+_Avoid_: 宽松合并（merge）、schema 演进迁移（migration 属上层语义，非本投影）
+
 **命名空间（namespace）**:
 一个 Y.Doc 连同自带的 `SCHEMA` 信封与数据；schema 随数据走，不依赖代码模块。
 _Avoid_: schema 注册表（`SCHEMA_REGISTRY` 是被替换的旧机制）

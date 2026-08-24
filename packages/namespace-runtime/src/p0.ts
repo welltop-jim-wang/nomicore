@@ -121,8 +121,9 @@ export async function runP0(env: P0Env): Promise<void> {
   }
 }
 
-/** D7.4 unavailable issue 摘要派生规则（首条 issue，稳定映射；摘要冻结于 errors 侧）。 */
-function toIssueSummary(issue: SchemaParseIssue): { code: string; message: string } {
+/** D7.4 unavailable issue 摘要派生规则（首条 issue，稳定映射；摘要冻结于 errors 侧）。
+ *  @internal 导出（issue #91）：SCHEMA 写槽 S4' 同款码派生消费（toReplacementIssue）。 */
+export function toIssueSummary(issue: SchemaParseIssue): { code: string; message: string } {
   if (issue.kind === 'envelope') {
     // code 作不透明段透传（R2 修订，SA2 #5）：分隔符语义明确，不假设数字串——
     // vfsl 闭集码读作 SCHEMA_ENVELOPE_5/SCHEMA_ENVELOPE_100；注入 ENV_TEST 读作
@@ -138,8 +139,11 @@ function toIssueSummary(issue: SchemaParseIssue): { code: string; message: strin
   };
 }
 
-/** D8 installActive：五字段冻结身份 + 内部 tools 保留；state → 'ready'（终态锁定）。 */
-function installActive(compiled: CompileSchemaEnvelopeOk, state: RuntimeState): void {
+/** D8 installActive：五字段冻结身份 + 内部 tools 保留；state → 'ready'（终态锁定）。
+ *  @internal 导出（issue #91）：SCHEMA 写槽 S5.5 复用为「安装 active schema 单点」。
+ *  增补 `delete state.schemaIssue`（恢复卫生——P0 unavailable 摘要不残留；P0 调用点
+ *  preparing→ready 时该字段恒 undefined → no-op，零回归）。 */
+export function installActive(compiled: CompileSchemaEnvelopeOk, state: RuntimeState): void {
   const info = Object.freeze({
     lang: compiled.envelope.lang,
     version: compiled.envelope.version,
@@ -151,19 +155,37 @@ function installActive(compiled: CompileSchemaEnvelopeOk, state: RuntimeState): 
   state.activeInfo = info;
   state.activeTools = { module: compiled.module, derived: compiled.derived }; // 内部保留
   state.schemaState = 'ready';
+  delete state.schemaIssue; // unavailable 摘要不残留（status.ts 仅 unavailable 态投影，可观测面零变化）
 }
 
 /** D7 ⑤ 最小形状守卫：结果联合之外的畸形 ok:true → throw（→ ⑦ loud 分级）。
- *  逐字段判型（对象态先验后再进成员，防对 undefined/原始值取成员抛裸 TypeError）。 */
-function assertCompiledShape(compiled: CompileSchemaEnvelopeOk): void {
+ *  【R1.1/A1】检查面扩展：envelope own 键集**恰** {lang,version,id,text}（多键/缺键均拒）
+ *  + lang/id/text string + version number + **text string**（原守卫漏检 text/键集——
+ *  {…, text: 42} 或 {…, extra: 1} 曾可漏过，随后在组合 seam ①b 被降级为普通 ok:false，
+ *  构成「internal 产物劣化伪装成调用方领域失败」的分级漂移）——违规一并走 internal
+ *  fault；扩展对 P0 零回归（P0 ⑤ 违约本就 throw → ⑦ fatal；真实 vfsl 编译产物恒过：
+ *  五件套递归深冻结 + ENV-5 拒多余键。守卫唯一触发面 = 注入 seam / 未来 vfsl 回归）。
+ *  逐字段判型（对象态先验后再进成员，防对 undefined/原始值取成员抛裸 TypeError）。
+ *  @internal 导出（issue #91）：SCHEMA 写槽 S4' 消费同一守卫。 */
+export function assertCompiledShape(compiled: CompileSchemaEnvelopeOk): void {
   const c = compiled as unknown as Record<string, unknown>;
   const envelope = c.envelope;
-  const envOk =
-    typeof envelope === 'object' &&
-    envelope !== null &&
-    typeof (envelope as Record<string, unknown>).lang === 'string' &&
-    typeof (envelope as Record<string, unknown>).version === 'number' &&
-    typeof (envelope as Record<string, unknown>).id === 'string';
+  let envOk = false;
+  if (typeof envelope === 'object' && envelope !== null) {
+    const envelopeRecord = envelope as Record<string, unknown>;
+    const envKeysOk =
+      Object.keys(envelopeRecord).length === 4 &&
+      Object.prototype.hasOwnProperty.call(envelopeRecord, 'lang') &&
+      Object.prototype.hasOwnProperty.call(envelopeRecord, 'version') &&
+      Object.prototype.hasOwnProperty.call(envelopeRecord, 'id') &&
+      Object.prototype.hasOwnProperty.call(envelopeRecord, 'text');
+    envOk =
+      envKeysOk &&
+      typeof envelopeRecord.lang === 'string' &&
+      typeof envelopeRecord.version === 'number' &&
+      typeof envelopeRecord.id === 'string' &&
+      typeof envelopeRecord.text === 'string';
+  }
   const ok =
     envOk &&
     typeof c.envelopeFingerprint === 'string' &&
@@ -174,7 +196,7 @@ function assertCompiledShape(compiled: CompileSchemaEnvelopeOk): void {
     c.derived !== null;
   if (!ok) {
     throw new Error(
-      'compile 注入返回畸形 ok:true（envelope 三身份字段/双指纹/module/derived 形状缺失）——按 internal fault 分级',
+      'compile 注入返回畸形 ok:true（envelope 恰四键封闭/四值型/双指纹/module/derived 形状缺失）——按 internal fault 分级',
     );
   }
 }
