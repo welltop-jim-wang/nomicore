@@ -2,7 +2,7 @@
  * @nomicore/namespace-runtime —— 唯一 ROOT 写槽（设计 §3/§4 D2/D3/D5/D9，issue #90）。
  *
  * 槽序（ADR-0008「每个真正写任务的槽依次执行」逐位对应，INV-W2 不可重排）：
- *  S1 lifecycle/fatal gate（零输入访问；v1 仅判 fatal——close 属后续 issue 扩展位）
+ *  S1 fatal gate（零输入访问；lifecycle gate 半边已兑现于公共方法接纳层——D5.1，槽内不设）
  *  S2 writable gate + notifier 绑定检查（瞬时观察；零输入访问）
  *  S3 槽起点输入快照（本槽第一次也是唯一一次读取输入；受控 snapshotter 递归冻结）
  *  S4 执行时 active schema（不绑定调用时 generation；unavailable → 零写入 ok:false）
@@ -74,11 +74,12 @@ export type WriteSlot = 'root' | 'schema';
  * 一切异常进入返回 Promise（sequencer 链尾恒绿接线消化 reject——INV-W12）。
  */
 export async function runRootWriteSlot(env: WriteEnv, input: unknown): Promise<MutateRootResult> {
-  // ── S1 lifecycle/fatal gate（零输入访问）──────────────────────────────
+  // ── S1 fatal gate（零输入访问）───────────────────────────────────────
   if (env.state.fatal !== undefined) {
     return disabled('fatal 已置位（internal fatal 已永久禁用本 Runtime 的全部写能力，读取仍保留）');
   }
-  //    [扩展位：lifecycle gate——v1 恒 'ready'，close 属后续 issue]
+  //    [裁决标注：#92] lifecycle gate 已兑现于公共方法接纳层（runtime.ts D5.1）；槽内
+  //    不设——已接纳任务无条件排空（ADR-0008），槽内只留 fatal gate
 
   // ── S2 writable gate + notifier 绑定检查（瞬时观察；零输入访问）────────
   let handleStatus: DocHandleStatus;
