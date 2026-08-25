@@ -1,5 +1,5 @@
 /**
- * SA6 红灯验收测试 — issue #109 AC1/AC2/AC4/AC5/AC6：
+ * SA6 红灯验收测试 — issue #109 AC1/AC2/AC4/AC6：
  * NamespaceRuntime 的受限 Registry 生产构造 seam（@nomicore/namespace-runtime/internal）。
  *
  * 契约来源：
@@ -21,6 +21,8 @@
  * 断言纪律：内部 entry 的导出表以「运行时模块探测」（import 作用域的可观测键集）锚定，
  * 不读源码文本；AC5 以「仓库内生产代码谁 import 了 internal subpath」的 import 图审计
  * 实现（任务简报指定形态：白名单 = 未来 @nomicore/namespace-registry 生产代码）。
+ * （Round 2 强化后 AC5 审计迁移至 runtime-registry-internal-seam-rev1.test.ts +
+ * test/helpers/registry-seam-audit.ts。）
  *
  * 已知契约演进点（任务简报）：
  * - 存量 runtime-acceptance-exports-audit.test.ts T1.4 断言 exports 键集恰 ['.']，
@@ -29,9 +31,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import * as Y from 'yjs';
-import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
-import * as path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { readFileSync } from 'node:fs';
 import type { DocHandle, User } from '@nomicore/persistence';
 import { createMemoryPersistence } from '@nomicore/persistence';
 import type { NamespaceRuntime } from '@nomicore/namespace-runtime';
@@ -313,84 +313,3 @@ describe('AC4：factory 产出的 Runtime 保持 P0 队首/读取/写序列器/f
   });
 });
 
-describe('AC5：模块边界——internal subpath 仅允许 Registry 生产代码消费（import 图静态审计）', () => {
-  const REPO_ROOT = fileURLToPath(new URL('../../..', import.meta.url));
-  // 白名单 = ADR-0009 未来 @nomicore/namespace-registry 的生产源码（当前仓库尚无该包；
-  // 本文件不锁「当前为空集」为断言——切片 5/6 落地后审计谓词自动放行，不破坏本测试）。
-  const REGISTRY_SRC_PREFIX = 'packages/namespace-registry/src/';
-
-  function isWhitelistedConsumer(relPath: string): boolean {
-    const p = relPath.replace(/\\/g, '/');
-    return p.startsWith(REGISTRY_SRC_PREFIX);
-  }
-
-  /**
-   * 遍历仓库生产源码树（packages 下各包的 src 目录、domains 目录、apps 目录，
-   * 排除 test/tests/node_modules/docs/wiki 等），返回含 internal subpath specifier
-   * 的生产文件相对路径（import 图审计）。
-   */
-  function auditInternalSubpathImporters(): { prodFiles: number; importers: string[] } {
-    const specifier = '@nomicore/namespace-runtime/internal';
-    const importRe = new RegExp(
-      `from\\s+['"]${specifier.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}['"]|` +
-        `import\\s*\\(\\s*['"]${specifier.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}['"]\\s*\\)`,
-    );
-    const SKIP_DIRS = new Set([
-      'node_modules',
-      '.git',
-      '.mabf-bg',
-      'dist',
-      'coverage',
-      'test',
-      'tests',
-      '__tests__',
-      'docs',
-      'wiki',
-    ]);
-    const SKIP_FILES = new Set(['package.json', 'README.md']);
-    const importers: string[] = [];
-    let prodFiles = 0;
-    const walk = (dir: string): void => {
-      for (const name of readdirSync(dir)) {
-        if (SKIP_DIRS.has(name) || SKIP_FILES.has(name)) continue;
-        const full = path.join(dir, name);
-        const stat = statSync(full);
-        if (stat.isDirectory()) {
-          walk(full);
-        } else if (/\.(ts|tsx|mts|cts)$/.test(name) && !name.endsWith('.d.ts')) {
-          prodFiles += 1;
-          const content = readFileSync(full, 'utf8');
-          if (importRe.test(content)) importers.push(path.relative(REPO_ROOT, full).replace(/\\/g, '/'));
-        }
-      }
-    };
-    for (const root of ['packages', 'domains', 'apps']) {
-      const p = path.join(REPO_ROOT, root);
-      if (existsSync(p)) walk(p);
-    }
-    return { prodFiles, importers };
-  }
-
-  it('审计自身覆盖仓库生产源码树（防空扫）', () => {
-    const { prodFiles } = auditInternalSubpathImporters();
-    expect(prodFiles).toBeGreaterThan(0);
-  });
-
-  it('白名单谓词：前瞻性只放行 @nomicore/namespace-registry 生产代码', () => {
-    expect(isWhitelistedConsumer('packages/namespace-registry/src/registry.ts')).toBe(true);
-    expect(isWhitelistedConsumer('packages/namespace-registry/src/index.ts')).toBe(true);
-    expect(isWhitelistedConsumer('packages/persistence/src/index.ts')).toBe(false);
-    expect(isWhitelistedConsumer('packages/namespace-runtime/src/index.ts')).toBe(false);
-    expect(isWhitelistedConsumer('packages/namespace-runtime/src/internal.ts')).toBe(false);
-    expect(isWhitelistedConsumer('domains/vfs3-assets/src/schema.ts')).toBe(false);
-  });
-
-  it('internal subpath 的生产代码消费方 ⊆ 白名单（仅 Registry 生产代码；边界即防线）', () => {
-    const { importers } = auditInternalSubpathImporters();
-    const violating = importers.filter((p) => !isWhitelistedConsumer(p));
-    expect(
-      violating,
-      `internal subpath 只允许 Registry 生产代码消费；违规消费方：${violating.join(', ') || '(无)'}`,
-    ).toEqual([]);
-  });
-});

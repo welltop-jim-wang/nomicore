@@ -108,3 +108,22 @@
 | N6 | 存量 exports-audit 第 4 it（T1.4）键集断言 `['.']` → `['.', './internal']`，为唯一被授权的既有测试改动；「testing seam 绝不进 package entry」不变量保持（该立法源于 issue #93，非 ADR 基准） | §D-E | ADR 0009 subpath 决策（演进依据） |
 | N7 | AC5 边界实现侧三硬规则：① 生产源码零消费 internal subpath（白名单唯一前缀 `packages/namespace-registry/src/`，前瞻空集）；② internal.ts 只走相对导入 `./runtime.js`，禁止本包自引用 specifier；③ 测试目录豁免属审计设计，不得移动测试文件绕审计 | §D-F | ADR 0009「模块边界测试限制该 internal subpath 只能由 Registry 生产代码消费」 |
 | N8 | 主 entry `src/index.ts`、`src/runtime.ts`、Runtime 语义层文件（errors/p0/projection/sequencer/status/close/write/schema-write/plain-data）零改动（DENY list）；`docs/adr/**` 与 `CONTEXT.md` 亦零改动 | §6 | AC3/AC4 = ADR 0008 公共面与语义不变量、ADR 0009 主 entry 封闭 |
+
+---
+
+## 设计后复审追加（SA8，rev1 R0）——Round 2 修订轮设计引入的新决策点
+
+> 来源：`wiki/raw/task_namespace-runtime-registry-seam-rev1_design.md`（SA1 R0 初版，2026-08-25）。
+> 以下为该设计在 ADR 约束之内自行冻结的实现级决策点，供 SA2/SA3/SA4 复用；
+> 每条标注设计出处与 ADR 锚点。裁决见 `…_rev1_design_conflict_report.md`（verdict: clear）。
+
+| # | 设计决策点 | 设计出处 | ADR 锚点（依据或上界） |
+|---|---|---|---|
+| RN1 | 共享审计 helper 落位 `packages/namespace-runtime/test/helpers/registry-seam-audit.ts`；导出面恰契约三键（`RegistrySeamAuditResult` / `auditInternalSubpathImporters(roots?)` / `isWhitelistedConsumer`），内部函数一律模块私有；零 vitest 依赖（仅 node:fs/path/url + typescript devDependency） | §D-A | ADR 0009 L18 模块边界测试义务的载体；测试基础设施不入 `src/` 公共面（ADR 0008/0009 冻结面结构性保持） |
+| RN2 | 消费形态识别 = TS compiler API AST 五形态（静态 import 含副作用导入 / 再导出 / import=require / 动态 import / require CallExpression 递归）+ 扩充 E1（属性访问 callee `.require` 结尾，可逆：删一行回五形态）；`import type` 计为消费（模块图边即边界事实） | §D-B | L18 强执行化；ADR 未规定识别机制，AST 属实现自由；识别面单调收紧 |
+| RN3 | 白名单谓词三规则：`packages/namespace-registry/src/` 前缀（完整段边界）→ 段拒绝 {testing, test, __tests__, fixtures, mock}（E2 大小写不敏感，可逆）→ `*.test.*`/`*.spec.*` 文件名拒绝；`src/testing/` 属拒绝面 | §D-C | L18「只能由 Registry 生产代码消费」+ ADR 0009 §公共 Interface「测试 seam 只位于受控 testing subpath」的生产/非生产二分（testing subpath 注入替代工厂，自身不消费 internal） |
+| RN4 | walk：审计扩展名八种（.ts/.tsx/.mts/.cts/.js/.jsx/.mjs/.cjs）+ 排除 `.d.ts/.d.mts/.d.cts`；SKIP_DIRS {node_modules, .git, .mabf-bg, dist, coverage, test, tests, __tests__, docs, wiki} + SKIP_FILES {package.json, README.md}；testing/fixtures/mock **不入** SKIP_DIRS（扫描面可见、仅谓词面拒绝）；显式 roots 不做存在性过滤（ENOENT 响亮红） | §D-D | L18；扫描面/跳过集合策略属审计设计自由（fixture 隔离所需），ADR 未规定 |
+| RN5 | 旧 `runtime-registry-internal-seam.test.ts` AC5 describe 块（L316–395）整体删除（非保留委托），AC5 义务由 rev1 文件承载（严格超集：防空扫 + 真实门禁 + 谓词自检）；该文件 diff 恰四处（删块 / import 收窄 / 删 L33–34 / 头注改指向），其余 5 it 断言逐字不动 | §D-E | L18 执行连续性（义务迁移不停摆）；约束 7 存量锚点零破坏 |
+| RN6 | `packages/namespace-runtime/package.json` 唯一 diff = version 0.1.6 → 0.1.7；exports/依赖/private/type 零改动 | §D-F | 非 ADR 纪律（issue #109 硬门禁 #9），不属 ADR 裁决域 |
+| RN7 | 残差如实声明不识别：计算式说明符 / eval·Function 构造 / 经允许包的传递再导出（后者归属 Registry 包自身导出面纪律 = 切片 5/6 验收域）；不虚假宣称对抗性覆盖 | §D-B 残差 | L18 无机制强度规定；静态审计天花板如实化 |
+| RN8 | ⚠️ relPath 基准 = 相对各自扫描根；默认 roots = `REPO_ROOT/{packages,domains,apps}` → 默认门禁下 relPath 剥离 `packages/` 段，与谓词前缀 `packages/namespace-registry/src/` **基准错配**：未来真实 Registry 生产消费方将结构性误判 violator（fail-closed 假红）；fixture 探针根 `repo/` 因内含 packages 层级不受影响 | §D-A/§D-D | 与 L18 allow 路径（ADR 0009 L18 首句「Registry 通过 …internal 唯一导出的 createNamespaceRuntimeForRegistry 构造生产 Runtime」）存在**潜伏**张力——今日观察等价（生产消费面为零）、fail-closed 方向、设计声明的谓词语义本身 ADR 忠实 → 裁定 no-conflict 级非阻塞发现，路由 SA2 全维评审裁定（见 `…_rev1_design_conflict_report.md` 非阻塞发现 1） |
