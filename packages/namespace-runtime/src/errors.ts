@@ -3,8 +3,9 @@
  *
  * 约定：
  * - 构造错误（V2 状态门）与投影守卫错误（SCHEMA/META）是包内类别——index 不导出
- *   它们（公共入口只暴露 seam 构造器与类型；错误类别以稳定 code + 稳定 message
- *   供诊断，调用方按 code/message 字符串消费，不按 instanceof）。
+ *   它们（#93 rev2 收口：公共入口值导出恰 RuntimeWriteFatalError 一键 + 类型导出；
+ *   seam 与生产工厂保留 runtime.ts 模块级、不经 index；错误类别以稳定 code + 稳定
+ *   message 供诊断，调用方按 code/message 字符串消费，不按 instanceof）。
  * - fatal code 注册表：P0 internal fault 与写槽 internal fault 的唯一稳定
  *   code/文案（ADR-0008「稳定且不含原始 Error/stack」——文案恒定，不插值原始异常）。
  * - 【R2】`RuntimeWriteFatalError` + `RuntimeWriteFatalPhase` 同源声明于此并从
