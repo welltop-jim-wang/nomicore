@@ -27,6 +27,9 @@ import * as path from 'node:path'
 import { afterAll, describe, expect, it } from 'vitest'
 import * as Y from 'yjs'
 import { FilePersistence, createFileHandleForTest } from '../src/file.js'
+// §5.4.3 (issue #108): the sweep failure is now wrapped as a load operational
+// error; type-only import keeps this deep-importing test file loadable.
+import type { DocLoadOperationalError } from '../src/index.js'
 import type { PersistenceSchedule, PersistenceScheduler, User } from '../src/contract.js'
 import { createTestScheduler } from '../src/testing.js'
 
@@ -111,8 +114,15 @@ describe('FilePersistence SA7 dynamic verification', () => {
       const persistence = new FilePersistence({ rootDir, schedule: TEST_SCHEDULE, scheduler: createTestScheduler() })
 
       // The sweep's unlink failure must surface loudly at load time with the
-      // original errno — even though the committed snapshot is fully readable.
-      await expect(persistence.loadDoc(ALICE, 'd1')).rejects.toMatchObject({ code: 'EACCES' })
+      // original errno preserved on `cause` — even though the committed
+      // snapshot is fully readable. §5.4.3 (issue #108): the channel is now
+      // wrapped as DocLoadOperationalError with the errno carried on `cause`.
+      const loadErr = await persistence.loadDoc(ALICE, 'd1').then(
+        () => { throw new Error('expected loadDoc to reject') },
+        (reason: unknown) => reason,
+      )
+      expect(loadErr).toMatchObject({ code: 'DOC_LOAD_OPERATIONAL' })
+      expect((loadErr as DocLoadOperationalError).cause).toMatchObject({ code: 'EACCES' })
       expect(fs.existsSync(tmpPath)).toBe(true) // failed unlink left the tmp in place
       await persistence.dispose()
     } finally {

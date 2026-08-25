@@ -1,6 +1,6 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type * as Y from 'yjs'
-import { PersistenceLifecycle, type PersistenceStatus } from './lifecycle.js'
+import { PersistenceLifecycle, type PersistenceIO, type PersistenceStatus } from './lifecycle.js'
 import {
   provideNomicorePersistence,
   type DocHandle,
@@ -21,10 +21,27 @@ export interface MemoryPersistenceOptions {
    * Required: the adapter never provides or falls back to a system timer.
    */
   readonly scheduler: PersistenceScheduler
-  /** Implementations must honor `signal` to make in-flight I/O cancellable. */
+  /**
+   * Optional flat write hook. Contract (design §4.3.4/§3.1): a hook that has
+   * entered runs to completion — all of its own side effects — or rejects
+   * before any side effect begins; it must never reject AFTER partially
+   * committing (that is a seam violation, an adapter bug the lifecycle
+   * declares but does not defend against). Abort checks are the adapter
+   * entry gate's job (the gate sits at io.write ENTRY, before this hook):
+   * the hook may consult `signal` but is not required to.
+   */
   readonly writeSnapshot?: (key: string, snapshot: Uint8Array, signal: AbortSignal) => Promise<void> | void
   /** Implementations must honor `signal` to make in-flight I/O cancellable. */
   readonly readSnapshot?: (key: string, signal: AbortSignal) => Promise<Uint8Array | undefined> | Uint8Array | undefined
+  /**
+   * Around-seam over this adapter's real I/O (fault injection / composition).
+   * Receives the adapter's default io (Memory: entry-abort-gate → writeSnapshot
+   * hook → mirror set, per §3.5 方案 (a); File: mkdir → writeFile tmp → rename)
+   * and returns the io the lifecycle will use. The returned io MUST uphold the
+   * PersistenceIO contract: write resolves ⟺ committed; rejects leave the
+   * store unchanged; no synchronous throw.
+   */
+  readonly wrapIo?: ((io: PersistenceIO) => PersistenceIO) | undefined
 }
 
 export type MemoryPersistenceStatus = PersistenceStatus
@@ -45,26 +62,27 @@ export class MemoryPersistence implements DocPersistence {
   private readonly snapshots = new Map<string, StoredSnapshot>()
 
   constructor(private readonly options: MemoryPersistenceOptions) {
-    const core = new PersistenceLifecycle(
-      {
-        // Byte-order and await-depth identical to the pre-core restore/flush
-        // paths; the commit segment (mirror set) sits after the aborted-signal
-        // guard. Read is verbatim-isomorphic with base restoreEntry: the `??`
-        // short-circuits at the Promise-object level, so a wired read hook is
-        // the only read authority and the mirror is never consulted for
-        // hooked instances.
-        read: async (key, signal) => options.readSnapshot?.(key, signal) ?? this.snapshots.get(key)?.snapshot,
-        write: async (key, snapshot, signal) => {
-          if (options.writeSnapshot) await options.writeSnapshot(key, snapshot, signal)
-          if (signal.aborted) return
-          this.snapshots.set(key, { snapshot: snapshot.slice() })
-        },
+    const baseIo: PersistenceIO = {
+      // Byte-order and await-depth identical to the pre-core restore/flush
+      // paths; the abort gate sits at io.write ENTRY (before any hook side
+      // effect); a write that has entered runs to completion — hook side
+      // effects + mirror set — and resolving means committed (§3.5/ADR
+      // observable-channel axiom). Read is verbatim-isomorphic with base
+      // restoreEntry: the `??` short-circuits at the Promise-object level, so
+      // a wired read hook is the only read authority and the mirror is never
+      // consulted for hooked instances.
+      read: async (key, signal) => options.readSnapshot?.(key, signal) ?? this.snapshots.get(key)?.snapshot,
+      write: async (key, snapshot, signal) => {
+        signal.throwIfAborted()
+        if (options.writeSnapshot) await options.writeSnapshot(key, snapshot, signal)
+        this.snapshots.set(key, { snapshot: snapshot.slice() })
       },
-      {
-        ...(options.schedule !== undefined ? { schedule: options.schedule } : {}),
-        scheduler: options.scheduler,
-      },
-    )
+    }
+    const io = options.wrapIo !== undefined ? options.wrapIo(baseIo) : baseIo
+    const core = new PersistenceLifecycle(io, {
+      ...(options.schedule !== undefined ? { schedule: options.schedule } : {}),
+      scheduler: options.scheduler,
+    })
     this.core = core
   }
 
@@ -93,10 +111,15 @@ export class MemoryPersistence implements DocPersistence {
   }
 
   /**
-   * Settle all in-flight I/O through the core first (the aborted-signal guard
-   * already prevents any mirror write after dispose), then clear the instance
-   * mirror: a disposed instance's data must never be resurrected by a later
-   * instance (ADR-0006 factory/instance model).
+   * Settle all in-flight I/O through the core first — `core.dispose()` drains
+   * every tracked operation (each write runs inside a tracked op), so a mirror
+   * set from a write that had already entered its entry gate happens BEFORE
+   * `allSettled` returns and is cleared by the `snapshots.clear()` below —
+   * then clear the instance mirror: a disposed instance's data must never be
+   * resurrected by a later instance (ADR-0006 factory/instance model). The
+   * invariant mechanism is drain-then-clear, not an abort guard (design
+   * §4.3.2: the abort gate sits at io.write ENTRY and cannot prevent the
+   * committed mirror set of a write that was already in flight).
    */
   async dispose(): Promise<void> {
     await this.core.dispose()
@@ -113,7 +136,7 @@ export function createMemoryPersistence(options: MemoryPersistenceOptions): Memo
 }
 
 /** Cordis plugin factory; each invocation owns an isolated adapter instance. */
-export function createMemoryPersistencePlugin(options: Omit<MemoryPersistenceOptions, 'scheduler'> = {}) {
+export function createMemoryPersistencePlugin(options: Omit<MemoryPersistenceOptions, 'scheduler' | 'wrapIo'> = {}) {
   let instance: MemoryPersistence | undefined
   return {
     apply(ctx: Context) {

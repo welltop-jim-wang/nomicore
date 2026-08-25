@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import * as Y from 'yjs'
 import { createManualClock, createManualClockPlugin } from '@nomicore/clock/testing'
 import {
+  DocCreateFatalError,
   MemoryPersistence,
   createMemoryPersistence,
   type PersistenceScheduler,
@@ -11,8 +12,11 @@ import {
 import {
   createDocStore,
   createFakeTimerPlugin,
+  createPersistenceIoFaultSeam,
   describeDocCreateContract,
   describeDocPersistenceContract,
+  describePersistenceErrorContract,
+  withTimeout,
 } from '../src/testing.js'
 import { createMemoryHandleForTest } from './memory-testkit.js'
 
@@ -103,6 +107,39 @@ await describeDocCreateContract(async () => {
       readSnapshot: (key, signal) => store.read(key, signal),
       writeSnapshot: (key, snapshot, signal) => store.write(key, snapshot, signal),
     }),
+    dispose: () => persistence.dispose(),
+  }
+})
+
+// ---------------------------------------------------------------------------
+// Typed error contract (issue #108 §5.3): shared EC1–EC8 suite, Memory fixture
+// = delegation model (flat read/write hooks delegating to one shared store) +
+// the `wrapIo` fault seam. EC10 (the delegation-model committed:true
+// self-consistency anchor) is Memory-specific and lives below.
+// ---------------------------------------------------------------------------
+
+await describePersistenceErrorContract(async () => {
+  const timer = createFakeTimer()
+  const store = createDocStore()
+  const seam = createPersistenceIoFaultSeam()
+  const persistence = createMemoryPersistence({
+    scheduler: timer,
+    readSnapshot: (key, signal) => store.read(key, signal),
+    writeSnapshot: (key, snapshot, signal) => store.write(key, snapshot, signal),
+    wrapIo: seam.wrap,
+  })
+  return {
+    persistence,
+    scheduler: timer,
+    faults: seam.faults,
+    makeFresh: () => createMemoryPersistence({
+      scheduler: createFakeTimer(),
+      readSnapshot: (key, signal) => store.read(key, signal),
+      writeSnapshot: (key, snapshot, signal) => store.write(key, snapshot, signal),
+    }),
+    writeCommitted: async (owner, docId, bytes) => {
+      await store.write(`${owner.userId}\u0000${docId}`, bytes, new AbortController().signal)
+    },
     dispose: () => persistence.dispose(),
   }
 })
@@ -545,5 +582,71 @@ describe('MemoryPersistence', () => {
     expect(timer.pending()).toBe(0)
     expect(persistence.getStatus()).toBe('disposed')
     await expect(persistence.loadDoc({ userId: 'alice' }, 'doc1')).rejects.toThrow(/disposed/)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// EC10 (issue #108 §5.3, R1/A-1): delegation-model abort-during-hook ⇒
+// committed:true self-consistency anchor. Memory-specific: it drives the
+// public flat hooks directly (no wrapIo) — the hook enters the io.write entry
+// gate first, is held, dispose fires mid-hook, and the hook then completes its
+// own store write (same shape as a File rename in flight). The create must
+// report committed:true AND the read path (the shared store) must agree.
+// ---------------------------------------------------------------------------
+
+describe('MemoryPersistence delegation-model committed:true anchor (issue #108 EC10)', () => {
+  it('reports committed:true when an abort-during-hook write still commits, and the read path agrees', async () => {
+    const timer = createFakeTimer()
+    const store = createDocStore()
+    let enteredResolve: () => void = () => {}
+    const entered = new Promise<void>((resolve) => { enteredResolve = resolve })
+    let releaseWrite: () => void = () => {}
+    const gate = new Promise<void>((resolve) => { releaseWrite = resolve })
+    const persistence = createMemoryPersistence({
+      scheduler: timer,
+      readSnapshot: (key, signal) => store.read(key, signal),
+      writeSnapshot: async (key, snapshot, signal) => {
+        enteredResolve()
+        await gate
+        await store.write(key, snapshot, signal)
+      },
+    })
+    const owner: User = { userId: 'alice' }
+    const docId = 'ec10-doc'
+    const doc = docWithMeta(docId)
+    doc.getMap('ROOT').set('who', 'committed-despite-dispose')
+
+    const creating = persistence.createDoc(owner, docId, doc)
+    const creatingRejection = creating.then(
+      () => { throw new Error('expected createDoc to reject') },
+      (reason: unknown) => reason,
+    )
+    await withTimeout(entered, 2_000, 'create write to enter its hook')
+    const disposing = persistence.dispose()
+    releaseWrite()
+    await disposing
+
+    const err = await creatingRejection
+    expect(err).toBeInstanceOf(DocCreateFatalError)
+    expect((err as { phase: string }).phase).toBe('post-commit')
+    expect((err as { committed: boolean }).committed).toBe(true)
+    expect(doc.isDestroyed).toBe(false)
+    expect(timer.pending()).toBe(0)
+
+    // The read authority (the shared store) really holds the snapshot: the
+    // committed:true fact and the observable read path agree.
+    const fresh = createMemoryPersistence({
+      scheduler: createFakeTimer(),
+      readSnapshot: (key, signal) => store.read(key, signal),
+      writeSnapshot: (key, snapshot, signal) => store.write(key, snapshot, signal),
+    })
+    const loaded = await fresh.loadDoc(owner, docId)
+    expect(loaded).not.toBeNull()
+    expect(loaded!.doc.getMap('ROOT').get('who')).toBe('committed-despite-dispose')
+    await loaded!.release()
+
+    // The disposed adapter keeps its bare lifetime channels.
+    await expect(persistence.loadDoc(owner, docId)).rejects.toThrow(/disposed/)
+    await expect(persistence.createDoc(owner, docId, docWithMeta(docId))).rejects.toThrow(/disposed/)
   })
 })

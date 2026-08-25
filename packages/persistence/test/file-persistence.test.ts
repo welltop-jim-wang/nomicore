@@ -39,8 +39,10 @@ import {
 import { createFileHandleForTest } from '../src/file.js'
 import {
   createFakeTimerPlugin,
+  createPersistenceIoFaultSeam,
   createTestScheduler,
   describeDocPersistenceContract,
+  describePersistenceErrorContract,
   type TestScheduler,
 } from '../src/testing.js'
 
@@ -128,6 +130,32 @@ await describeDocPersistenceContract(async () => {
       handle.doc.getMap('META').set('docId', docId)
       return handle
     },
+  }
+})
+
+// ---------------------------------------------------------------------------
+// Typed error contract (issue #108 §5.3): shared EC1–EC8 suite, File fixture
+// anchored on the REAL filesystem commit point (mkdtemp rootDir, default io =
+// real mkdir→tmp→rename; only `wrapIo` injects faults). `writeCommitted`
+// writes the .snapshot bytes straight to disk for corruption fixtures.
+// ---------------------------------------------------------------------------
+
+await describePersistenceErrorContract(async () => {
+  const rootDir = makeRootDir()
+  const scheduler = createTestScheduler()
+  const seam = createPersistenceIoFaultSeam()
+  const persistence = new FilePersistence({ rootDir, scheduler, wrapIo: seam.wrap })
+  return {
+    persistence,
+    scheduler,
+    faults: seam.faults,
+    makeFresh: () => new FilePersistence({ rootDir, scheduler: createTestScheduler() }),
+    writeCommitted: async (owner, docId, bytes) => {
+      const userDir = path.join(rootDir, 'users', owner.userId)
+      fs.mkdirSync(userDir, { recursive: true })
+      fs.writeFileSync(path.join(userDir, `${docId}.snapshot`), bytes)
+    },
+    dispose: () => persistence.dispose(),
   }
 })
 
