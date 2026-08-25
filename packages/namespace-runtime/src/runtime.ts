@@ -137,7 +137,10 @@ export interface NamespaceRuntime {
 }
 
 /**
- * 包内确定性 seam 构造器（AC8；@internal——唯一导出构造路径，生产工厂保留包内）。
+ * 包内确定性 seam 构造器（AC8；@internal）。#93 rev2（D-1）收口：seam 与生产工厂
+ * createNamespaceRuntime 一并保留本文件模块级导出，index.ts 对二者零 re-export——
+ * 「包内」= 包内模块通道相对导入（测试经 '../src/runtime.js' 消费 seam），不经公共
+ * 入口，亦不设 ./testing 子路径 export（与 index.ts 头注公共面纪律段对齐）。
  * 全同步：V1 形状守卫 → V2 状态门 → V3 入队 + 返回（P0 经 sequencer 微任务起步，
  * 绝不在构造调用栈内同步结算——INV-N1）。构造 throw 路径零副作用（INV-N4：
  * 所有校验/身份捕获均前置于 enqueue，任何 throw 都在 P0 微任务启动之前）。
