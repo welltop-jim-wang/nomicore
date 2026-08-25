@@ -20,3 +20,5 @@ export { replaceRootContent } from './replace.js';
 export type { ReplaceIssue, ReplaceResult } from './replace.js';
 export { applyValidatedMutation } from './mutation.js';
 export type { MutationIssue, ApplyValidatedMutationResult } from './mutation.js';
+export { replaceSchemaAndRoot } from './schema-replace.js';
+export type { SchemaReplaceInput, SchemaRootPlan } from './schema-replace.js';

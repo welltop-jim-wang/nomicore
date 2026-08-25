@@ -13,8 +13,9 @@
  *
  * 公共面（D2）：对象字面量 + 闭包（非 class 实例）——原型链是 Object.prototype，
  * handle/Y.Doc/sequencer/state 只存在于闭包；Object.freeze(runtime) 防属性注入。
- * 八键恰好：owner / namespaceId / read / getSchemaEnvelope / getMetadata /
- * getActiveSchema / getStatus / mutateRoot（第八键 = 唯一公共 ROOT 写入口，D1）。
+ * 八键恰好（issue #89/#90）：owner / namespaceId / read / getSchemaEnvelope /
+ * getMetadata / getActiveSchema / getStatus / mutateRoot（第八键 = 唯一公共 ROOT 写
+ * 入口，D1）；**+第九键 replaceSchema（issue #91，唯一公共 SCHEMA 写入口）**。
  * 生产工厂 createNamespaceRuntime 保留包内，index.ts 不 re-export（AC1 锁定
  * entry.createNamespaceRuntime === undefined）。
  *
@@ -35,6 +36,8 @@ import { projectMetadata, projectSchemaEnvelope } from './projection.js';
 import { WriteSequencer } from './sequencer.js';
 import { buildStatus } from './status.js';
 import type { NamespaceRuntimeStatus } from './status.js';
+import { runSchemaWriteSlot } from './schema-write.js';
+import type { ReplaceSchemaInput, ReplaceSchemaResult, SchemaWriteEnv } from './schema-write.js';
 import { runRootWriteSlot } from './write.js';
 import type { MutateRootResult, WriteEnv } from './write.js';
 
@@ -72,6 +75,11 @@ export interface NamespaceRuntime {
    *  不同步 throw、不同步结算——任何拒绝（gate/校验/快照）都经返回的 Promise 结算；
    *  internal fatal 经 Promise rejection（RuntimeWriteFatalError）。 */
   readonly mutateRoot: (mutation: unknown) => Promise<MutateRootResult>;
+  /** 唯一公共 SCHEMA 写入口（D1，issue #91）：与 mutateRoot 共享同一严格 FIFO write
+   *  sequencer（同步接纳定序）；不依赖当前 schema 可编译（P0 unavailable 照常入槽，
+   *  成功后恢复 ROOT write）；不同步 throw/结算——一切拒绝经返回的 Promise 结算；
+   *  internal fatal 经 Promise rejection（RuntimeWriteFatalError）。 */
+  readonly replaceSchema: (input: ReplaceSchemaInput) => Promise<ReplaceSchemaResult>;
 }
 
 /**
@@ -110,6 +118,10 @@ export function createNamespaceRuntimeWithSeam(input: NamespaceRuntimeSeamInput)
   // V3c' writeEnv 一次成型（D6.2：写槽纯数据闭包；notifyDirty 显式 undefined 联合）
   const writeEnv: WriteEnv = { doc, handle, state, notifyDirty: captured.notifyDirty };
 
+  // V3c'' schemaWriteEnv 一次成型（D10 零新增注入点：同一批捕获局部量——compile 与
+  //   writeEnv 共源的既有 seam 字段同时服务 P0 与 SCHEMA 写槽）
+  const schemaWriteEnv: SchemaWriteEnv = { doc, handle, state, notifyDirty: captured.notifyDirty, compile };
+
   // V3d sequencer + P0 入队（INV-N1：return 前 P0 已是队首 pending 节点；微任务起步；
   //     thunk = 纯调用 () => runP0(env)，零属性读取/零字面量构造/无可抛点——
   //     INV-N12 的「槽体全 catch」从此是结构事实）
@@ -130,6 +142,11 @@ export function createNamespaceRuntimeWithSeam(input: NamespaceRuntimeSeamInput)
       // D1：同步接纳定序（enqueue 同步拼尾）+ 槽完成信号；thunk 是纯调用——
       // mutation 引用仅被捕获不被读取（Proxy 零触发），无可抛点（INV-W1/W14）
       sequencer.enqueue(() => runRootWriteSlot(writeEnv, mutation)),
+    replaceSchema: (input: ReplaceSchemaInput): Promise<ReplaceSchemaResult> =>
+      // D1（issue #91）：与 mutateRoot 同一 sequencer 实例——同步接纳定序、占槽互斥、
+      // S6 同槽 await notifyDirty 构成屏障（双向 FIFO 互通）；thunk 是纯调用——
+      // input 引用仅被捕获不被读取（Proxy 零触发），无可抛点
+      sequencer.enqueue(() => runSchemaWriteSlot(schemaWriteEnv, input)),
   };
   return Object.freeze(runtime);
 }

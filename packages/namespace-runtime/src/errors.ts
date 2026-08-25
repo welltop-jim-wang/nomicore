@@ -26,6 +26,14 @@ export const FATAL_WRITE_INTERNAL_CODE = 'NSRT-FATAL-WRITE-INTERNAL' as const;
 export const FATAL_WRITE_INTERNAL_MESSAGE =
   'ROOT write internal fault：写管线产生结果联合之外的 internal fatal；该 fatal 已永久禁用本 Runtime 的全部写能力，读取仍保留。' as const;
 
+/** SCHEMA 写槽 internal fault 稳定 code（D9，issue #91——append-only：与 ROOT 写槽的
+ *  NSRT-FATAL-WRITE-INTERNAL 区分来源，status.fatal 诊断不失真）。 */
+export const FATAL_SCHEMA_WRITE_INTERNAL_CODE = 'NSRT-FATAL-SCHEMA-WRITE-INTERNAL' as const;
+
+/** SCHEMA 写槽 internal fault 稳定 message（恒定文案：不含任何原始异常文本/stack/cause——INV-N7）。 */
+export const FATAL_SCHEMA_WRITE_INTERNAL_MESSAGE =
+  'SCHEMA write internal fault：写管线产生结果联合之外的 internal fatal；该 fatal 已永久禁用本 Runtime 的全部写能力，读取仍保留。' as const;
+
 /** ROOT 写禁用稳定码（D9）：出现在 ok:false issue.message 内（JSON.stringify 含码判定）。 */
 export const RUNTIME_WRITE_DISABLED_CODE = 'RUNTIME_WRITE_DISABLED' as const;
 
@@ -86,7 +94,11 @@ export type RuntimeWriteFatalPhase =
   | DocRuntimeFatalPhase // 'observer-cleanup-throw' | 'post-commit-verification' | 'pre-commit-internal'
   | 'unknown-pipeline-throw' // applyValidatedMutation 逃逸的未知异常（保守 committed:true）
   | 'notify-dirty-failed' // S6 notifier rejection（写已提交，登记通道损坏）
-  | 'write-slot-internal'; // 槽内不变量破坏（结构不可达报警）/ getStatus() adapter 违背
+  | 'write-slot-internal' // 槽内不变量破坏（结构不可达报警）/ getStatus() adapter 违背
+  | 'schema-compile-throw'; // SCHEMA write 编译通道违约（compile throw / ok:false 零 issues /
+                           // 畸形 ok:true 含 envelope 恰四键封闭/四值型违规——结构上先于一切
+                           // doc 写，committed:false）【issue #91，append-only：与
+                           // write-slot-internal 区分诊断面（D5）】
 
 /**
  * ADR-0008 原文命名的稳定 rejection 形状（D5.1）——写槽 internal fatal 的公共载体。
