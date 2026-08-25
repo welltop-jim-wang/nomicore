@@ -2,11 +2,10 @@ import * as Y from 'yjs'
 import {
   DocDuplicateError,
   resolvePersistenceSchedule,
-  systemPersistenceTimer,
   type DocHandle,
   type DocHandleStatus,
   type PersistenceSchedule,
-  type PersistenceTimer,
+  type PersistenceScheduler,
   type User,
 } from './contract.js'
 
@@ -111,7 +110,7 @@ class PersistenceHandle implements DocHandle {
  */
 export class PersistenceLifecycle {
   private readonly schedule: PersistenceSchedule
-  private readonly timer: PersistenceTimer
+  private readonly scheduler: PersistenceScheduler
   private readonly cells = new Map<string, Cell>()
   private readonly inFlight = new Set<Promise<unknown>>()
   private readonly abortController = new AbortController()
@@ -120,10 +119,10 @@ export class PersistenceLifecycle {
 
   constructor(
     private readonly io: PersistenceIO,
-    options: { schedule?: Partial<PersistenceSchedule>; timer?: PersistenceTimer } = {},
+    options: { schedule?: Partial<PersistenceSchedule> | undefined; scheduler: PersistenceScheduler },
   ) {
     this.schedule = resolvePersistenceSchedule(options.schedule)
-    this.timer = options.timer ?? systemPersistenceTimer
+    this.scheduler = options.scheduler
     RELEASE.set(this, (handle) => this.releaseHandle(handle))
   }
 
@@ -431,9 +430,9 @@ export class PersistenceLifecycle {
     // whose stale timers outlive the retry (the retry's success path sees
     // savedGeneration === dirtyGeneration and never cancels them).
     if (entry.retryTimer !== undefined) return
-    if (entry.maxDirtyTimer === undefined) entry.maxDirtyTimer = this.timer.setTimeout(() => this.onMaxDirty(entry), this.schedule.maxDirtyMs)
-    if (entry.debounceTimer !== undefined) this.timer.clearTimeout(entry.debounceTimer)
-    entry.debounceTimer = this.timer.setTimeout(() => this.onDebounce(entry), this.schedule.debounceMs)
+    if (entry.maxDirtyTimer === undefined) entry.maxDirtyTimer = this.scheduler.setTimeout(() => this.onMaxDirty(entry), this.schedule.maxDirtyMs)
+    if (entry.debounceTimer !== undefined) this.scheduler.clearTimeout(entry.debounceTimer)
+    entry.debounceTimer = this.scheduler.setTimeout(() => this.onDebounce(entry), this.schedule.debounceMs)
   }
 
   private onDebounce(entry: LiveEntry): void {
@@ -487,7 +486,7 @@ export class PersistenceLifecycle {
     if (entry.retryTimer !== undefined || this.closed) return
     const delay = entry.retryDelayMs
     entry.retryDelayMs = Math.min(Math.max(delay * 2, 1), this.schedule.maxDirtyMs)
-    entry.retryTimer = this.timer.setTimeout(() => {
+    entry.retryTimer = this.scheduler.setTimeout(() => {
       entry.retryTimer = undefined
       this.startFlush(entry)
     }, delay)
@@ -502,19 +501,19 @@ export class PersistenceLifecycle {
   }
 
   private cancelDebounce(entry: LiveEntry): void {
-    if (entry.debounceTimer !== undefined) this.timer.clearTimeout(entry.debounceTimer)
+    if (entry.debounceTimer !== undefined) this.scheduler.clearTimeout(entry.debounceTimer)
     entry.debounceTimer = undefined
   }
 
   private cancelMaxDirty(entry: LiveEntry): void {
-    if (entry.maxDirtyTimer !== undefined) this.timer.clearTimeout(entry.maxDirtyTimer)
+    if (entry.maxDirtyTimer !== undefined) this.scheduler.clearTimeout(entry.maxDirtyTimer)
     entry.maxDirtyTimer = undefined
   }
 
   private clearTimers(entry: LiveEntry): void {
     this.cancelDebounce(entry)
     this.cancelMaxDirty(entry)
-    if (entry.retryTimer !== undefined) this.timer.clearTimeout(entry.retryTimer)
+    if (entry.retryTimer !== undefined) this.scheduler.clearTimeout(entry.retryTimer)
     entry.retryTimer = undefined
   }
 

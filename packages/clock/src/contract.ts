@@ -25,7 +25,7 @@ declare module '@deepseek-ai/cordis' {
   }
 }
 
-/** 在当前 Context 发布 Clock service；返回注销函数（对齐 provideDocPersistence 模式）。 */
+/** 在当前 Context 发布 Clock service；返回注销函数（对齐 provide 型 helper 模式）。 */
 export function provideClock(ctx: Context, clock: Clock): () => void {
   return ctx.provide(CLOCK_SERVICE, clock)
 }

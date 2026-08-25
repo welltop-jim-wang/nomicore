@@ -60,6 +60,7 @@ import { describe, expect, it, beforeAll } from 'vitest';
 import * as Y from 'yjs';
 import type { DocHandle, User } from '@nomicore/persistence';
 import { createMemoryPersistence } from '@nomicore/persistence';
+import { realPersistenceScheduler } from './real-persistence-scheduler.js';
 import { compileSchemaEnvelope } from '@nomicore/vfsl';
 import type { CompileSchemaEnvelopeResult, DerivedSchema, SchemaEnvelope } from '@nomicore/vfsl';
 import { createNamespaceRuntimeWithSeam } from '../src/runtime.js';
@@ -200,6 +201,7 @@ async function makeRealHandle(opts: {
   writeSnapshot?: (key: string, snapshot: Uint8Array) => Promise<void> | void;
 } = {}): Promise<{ persistence: ReturnType<typeof createMemoryPersistence>; handle: DocHandle; doc: Y.Doc }> {
   const persistence = createMemoryPersistence({
+    scheduler: realPersistenceScheduler,
     schedule: { debounceMs: 5, maxDirtyMs: 60 },
     ...(opts.writeSnapshot !== undefined ? { writeSnapshot: opts.writeSnapshot } : {}),
   });

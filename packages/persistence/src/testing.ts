@@ -1,6 +1,12 @@
-import { describe, expect, it } from 'vitest'
+import type { Context } from '@deepseek-ai/cordis'
+import type { TimerService } from '@deepseek-ai/cordis-plugin-timer'
 import * as Y from 'yjs'
-import type { DocHandle, DocPersistence, PersistenceTimer, User } from './contract.js'
+import type { DocHandle, DocPersistence, PersistenceScheduler, User } from './contract.js'
+
+/** Lazily load Vitest so the test-support timer remains CLI-safe. */
+async function vitest(): Promise<typeof import('vitest')> {
+  return await import('vitest')
+}
 
 /**
  * The factory shape shared by every persistence adapter's contract test.
@@ -24,9 +30,10 @@ export type DocPersistenceContractFactory = () => Promise<DocPersistenceContract
  * P2 MemoryPersistence and P3 FilePersistence must invoke this suite against
  * their own factories.
  */
-export function describeDocPersistenceContract(
+export async function describeDocPersistenceContract(
   factory: DocPersistenceContractFactory,
-): void {
+): Promise<void> {
+  const { describe, expect, it } = await vitest()
   const owner: User = { userId: 'contract-user' }
   const docId = 'contract-doc'
 
@@ -90,19 +97,18 @@ export function describeDocPersistenceContract(
 // snapshots through a second adapter instance over the same store.
 // ---------------------------------------------------------------------------
 
-/** A deterministic timer facade: `advanceBy` fires due callbacks in order. */
-export interface TestTimer extends PersistenceTimer {
+/** A deterministic scheduler facade: `advanceBy` fires due callbacks in order. */
+export interface TestScheduler extends PersistenceScheduler {
   advanceBy(milliseconds: number): Promise<void>
   pending(): number
 }
 
-/** Fake-clock timer used by the shared suite (no real sleeps). */
-export function createTestTimer(): TestTimer {
+/** Fake-clock scheduler used by the shared suite (no real sleeps). */
+export function createTestScheduler(): TestScheduler {
   let now = 0
   let nextId = 0
   const timers = new Map<number, { at: number, callback: () => void }>()
   return {
-    now: () => now,
     setTimeout(callback, delayMs) {
       const id = nextId++
       timers.set(id, { at: now + delayMs, callback })
@@ -127,6 +133,52 @@ export function createTestTimer(): TestTimer {
       }
       now = deadline
       for (let index = 0; index < 3; index += 1) await Promise.resolve()
+    },
+  }
+}
+
+/**
+ * Cordis fake timer plugin for integration tests: supplies the `'timer'`
+ * service and its `ctx.timeout` mixin through the injected scheduler.
+ *
+ * `timeout` and `setTimeout` return idempotent disposers, matching Cordis'
+ * TimerService contract. The remaining TimerService operations intentionally
+ * fail because persistence exercises only one-shot scheduling.
+ */
+export function createFakeTimerPlugin(
+  timer: Pick<PersistenceScheduler, 'setTimeout' | 'clearTimeout'>,
+): { apply(ctx: Context): void } {
+  const service = {
+    timeout: (callback: () => void, delay: number): (() => void) => {
+      const id = timer.setTimeout(callback, delay)
+      let disposed = false
+      return () => {
+        if (disposed) return
+        disposed = true
+        timer.clearTimeout(id)
+      }
+    },
+    setTimeout: (callback: () => void, delay: number): (() => void) => service.timeout(callback, delay),
+    interval: (..._args: unknown[]): never => {
+      throw new TypeError('fake timer plugin does not implement interval')
+    },
+    setInterval: (..._args: unknown[]): never => {
+      throw new TypeError('fake timer plugin does not implement setInterval')
+    },
+    throttle: (..._args: unknown[]): never => {
+      throw new TypeError('fake timer plugin does not implement throttle')
+    },
+    debounce: (..._args: unknown[]): never => {
+      throw new TypeError('fake timer plugin does not implement debounce')
+    },
+  }
+  return {
+    apply(ctx: Context): void {
+      ctx.effect(() => {
+        const unregister = ctx.provide('timer', service as unknown as TimerService)
+        ctx.mixin('timer', ['timeout'])
+        return () => { unregister() }
+      }, 'fake-timer: service')
     },
   }
 }
@@ -162,7 +214,7 @@ export interface DocPersistenceWithCreate extends DocPersistence {
 
 export interface DocCreateContractFixture {
   readonly persistence: DocPersistenceWithCreate
-  readonly timer: TestTimer
+  readonly scheduler: TestScheduler
   readonly store: DocStoreHooks
   /** A second adapter over the same store with an empty cache. */
   readonly makeFresh: () => DocPersistence
@@ -216,6 +268,7 @@ async function rejectionOf<T>(promise: Promise<T>): Promise<unknown> {
  * adapter package exports it; the code is always pinned.
  */
 async function assertDuplicateError(reason: unknown): Promise<void> {
+  const { expect } = await vitest()
   expect(reason).toMatchObject({ code: 'DOC_DUPLICATE' })
   const mod = await import('./contract.js') as { DocDuplicateError?: new (message?: string) => Error }
   if (mod.DocDuplicateError !== undefined) {
@@ -227,13 +280,14 @@ async function assertDuplicateError(reason: unknown): Promise<void> {
  * Shared createDoc acceptance suite (issue-64). Runs against every adapter
  * fixture; see the suite header for the anchored semantics.
  */
-export function describeDocCreateContract(
+export async function describeDocCreateContract(
   factory: DocCreateContractFactory,
-): void {
+): Promise<void> {
+  const { describe, expect, it } = await vitest()
   describe('DocPersistence createDoc contract', () => {
     it('creates an owner lease, commits the initial snapshot before resolving, and shares the live doc with loads', async () => {
       const fixture = await factory()
-      const { persistence, timer } = fixture
+      const { persistence, scheduler } = fixture
       const owner: User = { userId: 'alice' }
       const docId = 'create-happy-doc'
       const doc = docWithMeta(docId, 'hello')
@@ -244,7 +298,7 @@ export function describeDocCreateContract(
       expect(handle.docId).toBe(docId)
       // Owner migration: the lease no longer carries a `user` field.
       expect((handle as { user?: unknown }).user).toBeUndefined()
-      expect(timer.pending()).toBe(0)
+      expect(scheduler.pending()).toBe(0)
 
       // A same-instance load shares the live document and honors the owner.
       const second = await persistence.loadDoc(owner, docId)
@@ -267,7 +321,7 @@ export function describeDocCreateContract(
 
     it('only registers dirty on saveDoc after create and flushes on the debounce deadline', async () => {
       const fixture = await factory()
-      const { persistence, timer, store } = fixture
+      const { persistence, scheduler, store } = fixture
       const owner: User = { userId: 'alice' }
       const docId = 'create-save-doc'
       const handle = await persistence.createDoc(owner, docId, docWithMeta(docId, 'v1'))
@@ -278,9 +332,9 @@ export function describeDocCreateContract(
       await persistence.saveDoc(handle)
       expect(writes).toBe(0)
 
-      await timer.advanceBy(499)
+      await scheduler.advanceBy(499)
       expect(writes).toBe(0)
-      await timer.advanceBy(1)
+      await scheduler.advanceBy(1)
       expect(writes).toBe(1)
 
       await handle.release()
@@ -392,7 +446,7 @@ export function describeDocCreateContract(
 
     it('does not cache, commit, or destroy the caller doc when the initial write fails', async () => {
       const fixture = await factory()
-      const { persistence, store, timer } = fixture
+      const { persistence, store, scheduler } = fixture
       const owner: User = { userId: 'alice' }
       const docId = 'create-fail-doc'
       const doc = docWithMeta(docId, 'never-committed')
@@ -402,7 +456,7 @@ export function describeDocCreateContract(
       const err = await rejectionOf(persistence.createDoc(owner, docId, doc))
       expect((err as { message?: string }).message).toContain('io down')
       expect(doc.isDestroyed).toBe(false)
-      expect(timer.pending()).toBe(0)
+      expect(scheduler.pending()).toBe(0)
 
       // Nothing was committed.
       const fresh = fixture.makeFresh()
@@ -525,7 +579,7 @@ export function describeDocCreateContract(
 
     it('settles an in-flight create when dispose races it, leaving no timers or hidden leases', async () => {
       const fixture = await factory()
-      const { persistence, store, timer } = fixture
+      const { persistence, store, scheduler } = fixture
       const owner: User = { userId: 'alice' }
       const docId = 'create-dispose-doc'
       const doc = docWithMeta(docId, 'x')
@@ -550,7 +604,7 @@ export function describeDocCreateContract(
       )
       expect(settlement).not.toBeInstanceOf(TestTimeoutError)
       expect(settlement).toBeInstanceOf(Error)
-      expect(timer.pending()).toBe(0)
+      expect(scheduler.pending()).toBe(0)
 
       // The adapter is closed: no hidden lease can be minted afterwards.
       await expect(persistence.loadDoc(owner, docId)).rejects.toThrow(/disposed/)

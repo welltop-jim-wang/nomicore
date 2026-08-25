@@ -33,6 +33,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import type { DocHandle, User } from '@nomicore/persistence';
 import { createMemoryPersistence, FilePersistence } from '@nomicore/persistence';
+import { realPersistenceScheduler } from './real-persistence-scheduler.js';
 import { RuntimeWriteFatalError } from '../src/index.js';
 import { createNamespaceRuntime, createNamespaceRuntimeWithSeam } from '../src/runtime.js';
 import type { NamespaceRuntime } from '../src/index.js';
@@ -97,12 +98,16 @@ function makeMemoryPair(): {
 } {
   const store = new Map<string, Uint8Array>();
   const writer = createMemoryPersistence({
+    scheduler: realPersistenceScheduler,
     schedule: { debounceMs: 5, maxDirtyMs: 60 },
     writeSnapshot: async (key, snapshot) => {
       store.set(key, snapshot.slice());
     },
   });
-  const reader = createMemoryPersistence({ readSnapshot: async (key) => store.get(key) });
+  const reader = createMemoryPersistence({
+    scheduler: realPersistenceScheduler,
+    readSnapshot: async (key) => store.get(key),
+  });
   return { writer, reader, store };
 }
 
@@ -279,10 +284,10 @@ async function withFilePair(
   }) => Promise<void>,
 ): Promise<void> {
   const rootDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'nsr-acceptance-'));
-  const writer = new FilePersistence({ rootDir, schedule: { debounceMs: 5, maxDirtyMs: 60 } });
+  const writer = new FilePersistence({ rootDir, scheduler: realPersistenceScheduler, schedule: { debounceMs: 5, maxDirtyMs: 60 } });
   const handle = await writer.createDoc(OWNER, 'ns-1', await makeDoc(ENV1));
   try {
-    await fn({ writer, handle, restart: () => new FilePersistence({ rootDir }) });
+    await fn({ writer, handle, restart: () => new FilePersistence({ rootDir, scheduler: realPersistenceScheduler }) });
   } finally {
     await writer.dispose();
     await fsp.rm(rootDir, { recursive: true, force: true });
@@ -518,9 +523,9 @@ describe('AC5（#93 rev2 追加）：D-6 pre-commit fatal 真实持久化全链�
   it('U-2 File × pre-commit fatal：同 U-1 断言面 + restart 全新实例 durable 零写入（SCHEMA 原文/ROOT 原值/META 原样）',
     async () => {
       const rootDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'nsr-acceptance-u2-'));
-      const writer = new FilePersistence({ rootDir, schedule: { debounceMs: 5, maxDirtyMs: 60 } });
+      const writer = new FilePersistence({ rootDir, scheduler: realPersistenceScheduler, schedule: { debounceMs: 5, maxDirtyMs: 60 } });
       const handle = await writer.createDoc(OWNER, 'ns-1', await makeDoc(ENV1));
-      const restart = (): FilePersistence => new FilePersistence({ rootDir });
+      const restart = (): FilePersistence => new FilePersistence({ rootDir, scheduler: realPersistenceScheduler });
       let notifierCalls = 0;
       const runtime = createNamespaceRuntimeWithSeam({
         handle,
@@ -571,9 +576,9 @@ describe('AC5（#93 rev2 追加）：D-6 pre-commit fatal 真实持久化全链�
   it('U-3 File × committed fatal（observer 逃逸，经生产工厂 createNamespaceRuntime）：rejection committed=true + best-effort saveDoc 恰一次 + restart 见提交值 + 读保留 + 后续写 DISABLED + close 照常',
     async () => {
       const rootDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'nsr-acceptance-u3-'));
-      const writer = new FilePersistence({ rootDir, schedule: { debounceMs: 5, maxDirtyMs: 60 } });
+      const writer = new FilePersistence({ rootDir, scheduler: realPersistenceScheduler, schedule: { debounceMs: 5, maxDirtyMs: 60 } });
       const handle = await writer.createDoc(OWNER, 'ns-1', await makeDoc(ENV1));
-      const restart = (): FilePersistence => new FilePersistence({ rootDir });
+      const restart = (): FilePersistence => new FilePersistence({ rootDir, scheduler: realPersistenceScheduler });
       let notifierCalls = 0;
       // 生产工厂构造（observer 逃逸是 doc 级注入，与生产构造器兼容——D-5/D-6 组合）
       const runtime = createNamespaceRuntime(handle, () => {

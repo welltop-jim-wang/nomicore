@@ -5,10 +5,11 @@ export {
   type DshPersistenceProfileOptions,
 } from './profile.js'
 export {
-  createDeterministicClock,
+  createProbeTimeline,
   settle,
   waitFor,
-  type ProbeClock,
+  type DshCordisPlugin,
+  type ProbeTimeline,
 } from './clock.js'
 export type {
   ProbeEvent,

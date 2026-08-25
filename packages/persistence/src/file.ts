@@ -2,11 +2,11 @@ import * as fsp from 'node:fs/promises'
 import * as path from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import {
-  provideDocPersistence,
+  provideNomicorePersistence,
   type DocHandle,
   type DocPersistence,
   type PersistenceSchedule,
-  type PersistenceTimer,
+  type PersistenceScheduler,
   type User,
 } from './contract.js'
 import {
@@ -14,6 +14,7 @@ import {
   type PersistenceIO,
   type PersistenceStatus,
 } from './lifecycle.js'
+import { assertPersistenceHostDependencies, createCordisPersistenceScheduler } from './service.js'
 
 export interface FilePersistenceOptions {
   /**
@@ -21,8 +22,13 @@ export interface FilePersistenceOptions {
    * rootDir at a time; HMR must dispose and drain the old instance first.
    */
   readonly rootDir: string
-  readonly schedule?: Partial<PersistenceSchedule>
-  readonly timer?: PersistenceTimer
+  readonly schedule?: Partial<PersistenceSchedule> | undefined
+  /**
+   * Adapter-owned scheduling seam, injected by the host (the production plugin
+   * path derives it from `ctx.timeout` via `createCordisPersistenceScheduler`).
+   * Required: the adapter never provides or falls back to a system timer.
+   */
+  readonly scheduler: PersistenceScheduler
 }
 
 export type FilePersistenceStatus = PersistenceStatus
@@ -49,7 +55,7 @@ export class FilePersistence implements DocPersistence {
     }
     this.core = new PersistenceLifecycle(io, {
       ...(options.schedule !== undefined ? { schedule: options.schedule } : {}),
-      ...(options.timer !== undefined ? { timer: options.timer } : {}),
+      scheduler: options.scheduler,
     })
   }
 
@@ -71,8 +77,10 @@ export class FilePersistence implements DocPersistence {
   }
 
   apply(ctx: Context): void {
+    // AC2: loud fail on missing clock/timer before ANY service is provided.
+    assertPersistenceHostDependencies(ctx)
     ctx.effect(() => {
-      provideDocPersistence(ctx, this)
+      provideNomicorePersistence(ctx, this)
       return () => this.dispose()
     }, 'file-persistence: service')
   }
@@ -137,11 +145,14 @@ function isErrnoException(error: unknown): error is NodeJS.ErrnoException {
   return error instanceof Error && typeof (error as NodeJS.ErrnoException).code === 'string'
 }
 
-export function createFilePersistencePlugin(options: FilePersistenceOptions) {
+export function createFilePersistencePlugin(options: Omit<FilePersistenceOptions, 'scheduler'>) {
   let instance: FilePersistence | undefined
   return {
     apply(ctx: Context) {
-      instance = new FilePersistence(options)
+      instance = new FilePersistence({
+        ...options,
+        scheduler: createCordisPersistenceScheduler(ctx),
+      })
       instance.apply(ctx)
     },
     get instance(): FilePersistence | undefined { return instance },

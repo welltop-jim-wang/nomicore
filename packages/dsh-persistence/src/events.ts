@@ -1,4 +1,5 @@
-import type { PersistenceSchedule, PersistenceTimer } from '@nomicore/persistence'
+import type { PersistenceSchedule } from '@nomicore/persistence'
+import type { ProbeTimeline } from './clock.js'
 
 /**
  * 探针事件判别联合（与任务简报 §2 契约面逐字对齐）。
@@ -36,7 +37,7 @@ export interface ProbeRunOptions {
   readonly adapter: 'memory' | 'file'
   readonly rootDir?: string
   readonly schedule?: Partial<PersistenceSchedule>
-  readonly timer?: PersistenceTimer
+  readonly timeline?: ProbeTimeline
   readonly failFirstFlushes?: number
 }
 

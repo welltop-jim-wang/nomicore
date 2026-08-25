@@ -26,6 +26,7 @@ import { describe, expect, it } from 'vitest';
 import * as Y from 'yjs';
 import { createMemoryPersistence } from '@nomicore/persistence';
 import type { DocHandle, User } from '@nomicore/persistence';
+import { realPersistenceScheduler } from './real-persistence-scheduler.js';
 import { createNamespaceRuntimeWithSeam } from '../src/runtime.js';
 
 const OWNER: User = { userId: 'u-alice' };
@@ -41,7 +42,7 @@ async function makeHandle(metaEntries: Record<string, unknown>): Promise<{
   handle: DocHandle;
   doc: Y.Doc;
 }> {
-  const persistence = createMemoryPersistence();
+  const persistence = createMemoryPersistence({ scheduler: realPersistenceScheduler });
   const doc = new Y.Doc();
   const sc = doc.getMap('SCHEMA');
   sc.set('lang', 'vfsl');
@@ -119,7 +120,7 @@ describe('getMetadata META __proto__ 键保真（SA4 F-1 回归锚）', () => {
     const update = Y.encodeStateAsUpdate(handle.doc);
     const restored = new Y.Doc();
     Y.applyUpdate(restored, update);
-    const persistence2 = createMemoryPersistence();
+    const persistence2 = createMemoryPersistence({ scheduler: realPersistenceScheduler });
     const restoredHandle = await persistence2.createDoc(OWNER, 'ns-1', restored);
     const runtime = createNamespaceRuntimeWithSeam({ handle: restoredHandle });
 
