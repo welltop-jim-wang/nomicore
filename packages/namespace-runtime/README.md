@@ -6,7 +6,7 @@
 
 The package entry exports the `NamespaceRuntime` interface and related result/status types. It intentionally does **not** export a production constructor, the owned `DocHandle`, the live `Y.Doc`, writable ROOT/SCHEMA/META references, the sequencer, queue state, or testing seams.
 
-Production assembly is performed by the owning server/registry layer through the package-internal factory. Tests inside this package may import the internal seam constructor directly from `src/runtime.ts`; it is not a business API.
+Production assembly is performed by the owning registry layer through the restricted `@nomicore/namespace-runtime/internal` subpath (`createNamespaceRuntimeForRegistry`, consumed only by `@nomicore/namespace-registry` production code). Tests inside this package may import the internal seam constructor directly from `src/runtime.ts`; it is not a business API.
 
 ### Reads
 
