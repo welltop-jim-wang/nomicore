@@ -42,7 +42,7 @@ describe('AC6：公共 exports 审计（模块级导出表精确性）', () => {
     }
   });
 
-  it('seam 构造器是唯一导出构造路径（值呈现 + 语义：返回十键冻结 runtime）', async () => {
+  it('seam 构造器是唯一导出构造路径（模块级值导出形状探测：两值导出均为 function；十键冻结语义由 runtime-close-lifecycle.test.ts 覆盖）', async () => {
     const entry = publicEntry as Record<string, unknown>;
     expect(typeof entry.createNamespaceRuntimeWithSeam).toBe('function');
     expect(typeof entry.RuntimeWriteFatalError).toBe('function');

@@ -16,3 +16,5 @@
 | 12 | 12:37 | SA7 | Phase 3 动态验证 | 12:46 | SA4 pass 后派 SA7 → verdict: pass（干净克隆双 Node 全绿+§5 复跑+HG#14 触发证据） |
 | 13 | 12:49 | SA4 | Phase 3 静态验尸补充（HG#14 §1.4 触发性自检） | (pending) | HG14 要求 SA4 review 含 vitest 触发性结论标记；续传同一 SA4 会话补节，不改 verdict |
 | 14 | 12:50 | 总控 | Phase 3.5 AC 逐条确认门禁 | 12:50 | 8/8 AC ✅（ac_checklist.md）：1-6 运行时锚定全绿、7 经流水线修复复核、8 本地双 Node 全绿 CI 移交 Host |
+| 15 | 12:52 | 总控 | 完工前独立代码审查（双轴并行） | (pending) | 硬门禁：engineering/code-review 双 subagent 审 73811cd...HEAD（Standards 轴+Spec 轴） |
+| 16 | 12:59 | SA6 | 审查发现修复（测试标题+wrapper） | (pending) | 双轴审查 2 项 judgement call（exports-audit 标题过度承诺、fullchain Middle Man wrapper）派 SA6 修复，断言行为不变 |

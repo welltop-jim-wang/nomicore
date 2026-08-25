@@ -97,10 +97,6 @@ function makeMemoryPair(): {
   return { writer, reader, store };
 }
 
-function toYMapValue(map: Y.Map<unknown>, key: string): unknown {
-  return map.get(key);
-}
-
 describe('AC1：真实 VFSL compiler + doc-runtime + MemoryPersistence 端到端（Runtime 全能力）', () => {
   it('全链：P0→active schema→载体投影读取→ROOT write→SCHEMA replacement→跨实例持久化→close',
     async () => {
@@ -158,9 +154,9 @@ describe('AC1：真实 VFSL compiler + doc-runtime + MemoryPersistence 端到端
         expect([...sc.keys()].sort()).toEqual(['id', 'lang', 'text', 'version']);
         expect(sc.get('id')).toBe('ns-2');
         expect(sc.get('text')).toBe(TEXT_V2);
-        expect(toYMapValue(loaded.doc.getMap('ROOT'), 'n')).toBe(10);
-        expect(toYMapValue(loaded.doc.getMap('ROOT'), 'a')).toBe('z');
-        expect(toYMapValue(loaded.doc.getMap('ROOT'), 'b')).toBe(true);
+        expect(loaded.doc.getMap('ROOT').get('n')).toBe(10);
+        expect(loaded.doc.getMap('ROOT').get('a')).toBe('z');
+        expect(loaded.doc.getMap('ROOT').get('b')).toBe(true);
         await loaded.release();
 
         // ⑥ close 全链：closed 停止公共读写接纳
