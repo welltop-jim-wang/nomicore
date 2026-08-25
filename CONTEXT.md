@@ -22,6 +22,14 @@ _Avoid_: 顶层声明域投影（round 1 自创语义，已废止）、宽松合
 一个 Y.Doc 连同自带的 `SCHEMA` 信封与数据；schema 随数据走，不依赖代码模块。
 _Avoid_: schema 注册表（`SCHEMA_REGISTRY` 是被替换的旧机制）
 
+**空闲 Runtime（idle Runtime）**:
+当前没有调用方租约、但仍由 NamespaceRegistry 暂时保留的 namespace Runtime；保留期内重新打开会复用同一 Runtime，保留期届满才关闭。fatal 或 persistence-degraded 只改变能力，不改变空闲保留语义。
+_Avoid_: 已关闭 Runtime、无人引用即可立即销毁
+
+**创建时间（createdAt）**:
+namespace 创建提交时由生命周期层生成的 UTC ISO 8601 字符串，存于 `META.createdAt`；调用方不提供，Persistence 只保存而不解释或校验。
+_Avoid_: Unix 时间戳、调用方自报创建时间
+
 **ROOT**:
 命名空间根别名的保留名（大小写是契约）：每个模块必须恰好声明一个 map 形的 `type ROOT = …`（裸对象 / `YMap` / `Record`），ROOT 固定物化为 Y.Map，Yjs 映射为 doc 根 `getMap('ROOT')`。其余无人引用的别名是惰性积木，不进数据面。
 _Avoid_: 隐式根、汇点推导（被否决的根指定方案，ADR-0003）
