@@ -36,7 +36,7 @@ import { describe, expect, it } from 'vitest';
 import * as Y from 'yjs';
 import type { DocHandle, User } from '@nomicore/persistence';
 import { createMemoryPersistence } from '@nomicore/persistence';
-import { createNamespaceRuntimeWithSeam } from '../src/index.js';
+import { createNamespaceRuntimeWithSeam } from '../src/runtime.js';
 import type { NamespaceRuntime } from '../src/index.js';
 
 const OWNER: User = { userId: 'u-alice' };

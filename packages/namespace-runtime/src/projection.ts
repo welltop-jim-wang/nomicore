@@ -14,9 +14,14 @@
  *
  * 载体处置遵循「生产不可达 → loud / 生产合法可达 → 可观测缺席信号」单一判据（R2 修订，
  * SA2 #2）：
- * - SCHEMA 载体缺席/异型 → null（经 createDoc/loadDoc 生产路径合法可达——两者均只
+ * - SCHEMA 载体缺席 → null（经 createDoc/loadDoc 生产路径合法可达——两者均只
  *   校验 META.docId，完全不触碰 SCHEMA；共享套件「Permissive: correct docId,
  *   no SCHEMA, no ROOT」显式锁定宽容）；
+ * - SCHEMA 载体异型（同名 Y.Text 等）→ 分流（rev2，评审项 6/SA8 裁决 D）：
+ *   public 模式 loud throw（SchemaProjectionError / NSRT-SCHEMA-E2——载体损坏
+ *   ≠ 缺席，静默映射 null 即虚假降级，镜像 META-E2 判据）；p0 模式 null →
+ *   compile ENV-1 收编 → 数据级 unavailable（禁 fatal——保 SCHEMA write 修复
+ *   路径；runP0 catch 对该态结构性不可达）；
  * - META 载体缺席/异型 → loud throw（NSRT-META-E2，生产路径不可达——createDoc/
  *   loadDoc 恢复均强制 getMap('META').get('docId')===docId，缺席/异型 doc 直接被拒；
  *   唯一例外是 seedForTest 测试设施）。
@@ -28,8 +33,8 @@
  * - 投影器返回全新对象，无共享可变引用（调用方突变不污染 runtime/后续读数）。
  *
  * proto-key 安全写入纪律（D5 R3 touch-up，SA4 F-1）：META 深拷贝的任何键写入（顶层
- * out 与嵌套 plain object 分支）经 putMetaKey（defineProperty 四真）——禁裸赋值
- * `out[k] = …`。机理：裸 `out['__proto__'] = v` 命中 Object.prototype.__proto__
+ * out 与嵌套 plain object 分支）经 putPlainKey（plain-data.ts，defineProperty 四真）
+ * ——禁裸赋值 `out[k] = …`。机理：裸 `out['__proto__'] = v` 命中 Object.prototype.__proto__
  * accessor——标量值被 setter 静默忽略（键蒸发）；对象值替换 out 原型（键丢失 + 返回
  * 对象原型被 doc 内数据劫持）。本仓已知陷阱：doc-runtime read.ts putKey（E8/E9）与
  * extract.ts putSnapshotKey（R2.2/F-1 修复回流，注释明文「禁赋值式」）——本包重新引入
@@ -39,6 +44,7 @@
 import * as Y from 'yjs';
 import type { SchemaEnvelope } from '@nomicore/vfsl';
 import { MetaProjectionError, SchemaProjectionError } from './errors.js';
+import { describePlainValue, isPlainRecord, ownDataFact, putPlainKey, yjsFamilyWord } from './plain-data.js';
 
 /** 投影模式：出站纪律不同，键集/缺席/异型语义相同（D4 双模式同源单点）。 */
 export type SchemaProjectionMode = 'public' | 'p0';
@@ -49,7 +55,9 @@ const SCHEMA_KEYS = ['lang', 'version', 'id', 'text'] as const;
 /**
  * SCHEMA 四键投影（D4）。三分支：
  * ① 载体缺席（share 无 'SCHEMA' 键）→ null（不惰性 getMap——零副作用）；
- * ② 载体异型（同名 Y.Text 等，getMap throw）→ null；
+ * ② 载体异型（同名 Y.Text 等，getMap throw）→ public 模式 loud throw
+ *    （SchemaProjectionError / NSRT-SCHEMA-E2——载体损坏 ≠ 缺席，禁静默 null）/ p0
+ *    模式 null（→ compile ENV-1 收编 → 数据级 unavailable，禁 fatal）；
  * ③ Y.Map 存在 → 恰四键投影。
  * 值域守卫（R2 修订，SA2 #1）：非 primitive 值 → public 模式 throw
  * （SchemaProjectionError / NSRT-SCHEMA-E1）/ p0 模式键省略；
@@ -64,12 +72,22 @@ export function projectSchemaEnvelope(
   if (!doc.share.has('SCHEMA')) {
     return null;
   }
-  // ② 载体异型：getMap('SCHEMA') 在同名 Y.Text 等条目上 throw（实测 §12 #2）→ null
+  // ② 载体异型分流（rev2/评审项 6/SA8 裁决 D）：损坏 ≠ 缺席——public 模式 loud
+  //    （镜像 projectMetadata ② 的 META-E2 形态）；p0 模式数据级 null（→ ENV-1 →
+  //    unavailable——禁 fatal，保 SCHEMA write 修复路径）
   let sc: Y.Map<unknown>;
   try {
     sc = doc.getMap('SCHEMA');
-  } catch {
-    return null;
+  } catch (err) {
+    if (mode === 'public') {
+      throw new SchemaProjectionError(
+        'NSRT-SCHEMA-E2',
+        `SCHEMA 载体异型（同名条目非 Y.Map，观测异常：` +
+          `${err instanceof Error ? err.message : String(err)}）——公共读取面拒绝把载体损坏` +
+          `静默映射为缺席 null（NSRT-SCHEMA-E2）`,
+      );
+    }
+    return null; // p0 模式：终点 unavailable（数据级），绝非 fatal
   }
   // ③ 四键投影（固定键集 + 值域守卫）
   const out: Record<string, unknown> = {};
@@ -83,6 +101,7 @@ export function projectSchemaEnvelope(
       // Y.AbstractType/类实例/可执行体——live writable 引用零出站
       if (mode === 'public') {
         throw new SchemaProjectionError(
+          'NSRT-SCHEMA-E1',
           `SCHEMA 标准键 ${k} 持有非 primitive 值（观测 typeof ${typeof v}）：` +
             '公共读取面禁止带出 live Yjs 引用（NSRT-SCHEMA-E1）',
         );
@@ -137,11 +156,11 @@ export function projectMetadata(doc: Y.Doc): Record<string, unknown> {
       `META 载体异型（同名条目非 Y.Map，观测异常：${err instanceof Error ? err.message : String(err)}）`,
     );
   }
-  // ③ 逐键深拷贝（值域违规 → NSRT-META-E1 loud；键写入经 putMetaKey——D5 R3
+  // ③ 逐键深拷贝（值域违规 → NSRT-META-E1 loud；键写入经 putPlainKey——D5 R3
   //    proto-key 安全写入纪律，SA4 F-1：禁裸赋值，防 '__proto__' 键丢失/原型劫持）
   const out: Record<string, unknown> = {};
   for (const k of meta.keys()) {
-    putMetaKey(out, k, copyMetaValue(meta.get(k), `META.${k}`));
+    putPlainKey(out, k, copyMetaValue(meta.get(k), `META.${k}`));
   }
   return out;
 }
@@ -158,13 +177,13 @@ function copyMetaValue(v: unknown, keyPath: string): unknown {
     if (Number.isFinite(v)) {
       return v;
     }
-    throw metaValueError(keyPath, `non-finite number（${describe(v)}）`);
+    throw metaValueError(keyPath, `non-finite number（${describePlainValue(v)}）`);
   }
   if (typeof v === 'bigint' || typeof v === 'undefined' || typeof v === 'function' || typeof v === 'symbol') {
     throw metaValueError(keyPath, `值域违规：${typeof v}`);
   }
   if (v instanceof Y.AbstractType) {
-    throw metaValueError(keyPath, `嵌套 Yjs shared type（${yjsWord(v)}）`); // AC4：plain 域禁嵌套 Yjs
+    throw metaValueError(keyPath, `嵌套 Yjs shared type（${yjsFamilyWord(v)}）`); // AC4：plain 域禁嵌套 Yjs
   }
   if (Array.isArray(v)) {
     const out: unknown[] = [];
@@ -179,7 +198,7 @@ function copyMetaValue(v: unknown, keyPath: string): unknown {
   }
   // typeof v === 'object'：plain 对象判据（原型链级；Date/RegExp/Map/Set/类实例 → loud）
   if (!isPlainRecord(v)) {
-    throw metaValueError(keyPath, `非 plain 原型对象（${describe(v)}）`);
+    throw metaValueError(keyPath, `非 plain 原型对象（${describePlainValue(v)}）`);
   }
   const out: Record<string, unknown> = {};
   for (const k of Object.keys(v)) {
@@ -191,53 +210,18 @@ function copyMetaValue(v: unknown, keyPath: string): unknown {
       throw metaValueError(`${keyPath}.${k}`, '值域违规：undefined'); // F-2（R3 touch-up）：
       //  与顶层 Y.Map 键/数组元素处置对齐——undefined 值不吸收，loud（NSRT-META-E1）
     }
-    // 子键写入经 putMetaKey——D5 R3 proto-key 安全写入纪律（SA4 F-1，禁裸赋值）
-    putMetaKey(out, k, copyMetaValue(hit.value, `${keyPath}.${k}`));
+    // 子键写入经 putPlainKey——D5 R3 proto-key 安全写入纪律（SA4 F-1，禁裸赋值）
+    putPlainKey(out, k, copyMetaValue(hit.value, `${keyPath}.${k}`));
   }
   return out;
-}
-
-/**
- * META 深拷贝键写入助手（D5 R3 proto-key 安全写入纪律，SA4 F-1）：四描述符全 true——
- * 漏传时 defineProperty 默认 writable:false, configurable:false → 事实冻结；且经
- * defineProperty 写入 '__proto__' 自有键不触发原型 setter（E8/E9 防劫持——仓内先例
- * doc-runtime read.ts putKey / extract.ts putSnapshotKey R2.2/F-1，禁赋值式）。
- */
-function putMetaKey(out: object, k: string, v: unknown): void {
-  Object.defineProperty(out, k, { value: v, writable: true, enumerable: true, configurable: true });
 }
 
 function metaValueError(keyPath: string, msg: string): MetaProjectionError {
   return new MetaProjectionError('NSRT-META-E1', `${keyPath} 值域违规（${msg}）`);
 }
 
-/** plain 记录判据（沿 doc-runtime read.ts isPlainRecord 先例）：沿原型链上溯（带上限
- *  防循环），链上每个非 Object.prototype 节点的 own constructor 必须缺失或为
- *  Object/undefined——Date/Map/Set/RegExp/类实例 → 非 plain。全程 descriptor 读。 */
-function isPlainRecord(v: object): boolean {
-  let cur: object | null = v;
-  for (let depth = 0; depth < 32; depth++) {
-    const proto = Object.getPrototypeOf(cur);
-    if (proto === null) {
-      return true; // Object.prototype 或 null-proto 链尾
-    }
-    if (proto !== Object.prototype) {
-      const desc = Object.getOwnPropertyDescriptor(proto, 'constructor');
-      if (desc !== undefined) {
-        if (desc.get !== undefined || desc.set !== undefined) {
-          return false;
-        }
-        if (typeof desc.value === 'function' && desc.value !== (Object as unknown)) {
-          return false;
-        }
-      }
-    }
-    cur = proto;
-  }
-  return false; // 超深/循环链 → 保守 loud
-}
-
-/** plain object 键读取（descriptor 读，零 accessor 执行）。三分结果：
+/** plain object 键读取（descriptor 读，零 accessor 执行——经 plain-data.ts ownDataFact）。
+ *  三分结果：
  *  - skip：缺键/原型链/non-enumerable/accessor → 键空间外（吸收，与 read.ts D5 同款）；
  *  - undefined：own enumerable data property 值为 undefined → 值域违规（F-2，R3
  *    touch-up：与顶层 Y.Map 键/数组元素处置对齐——不吸收，loud NSRT-META-E1）；
@@ -246,24 +230,22 @@ function readableOwnDataValue(
   obj: Record<string, unknown>,
   key: string,
 ): { kind: 'ok'; value: unknown } | { kind: 'skip' } | { kind: 'undefined' } {
-  const desc = Object.getOwnPropertyDescriptor(obj, key);
-  if (desc === undefined) {
-    return { kind: 'skip' }; // 缺键 / 原型链
+  const fact = ownDataFact(obj, key);
+  if (fact.kind === 'missing' || fact.kind === 'non-enumerable' || fact.kind === 'accessor') {
+    return { kind: 'skip' }; // 键空间外（吸收——非枚举/accessor 均不产出，descriptor 读零执行）
   }
-  if (desc.enumerable !== true) {
-    return { kind: 'skip' }; // non-enumerable 键空间外
-  }
-  if (desc.get !== undefined || desc.set !== undefined) {
-    return { kind: 'skip' }; // accessor：不执行、不产出
-  }
-  if (desc.value === undefined) {
+  if (fact.kind === 'undefined-value') {
     return { kind: 'undefined' }; // 值域违规（不吸收——F-2 与顶层/数组元素对齐）
   }
-  return { kind: 'ok', value: desc.value };
+  return { kind: 'ok', value: fact.value };
 }
 
-/** plain array 元素读取同款 descriptor 守卫：越界 NONE（本循环不达）；在界 undefined /
- *  稀疏空洞 / accessor 下标 → VIOLATION（位置语义不可省略，D4/D5，响亮失败）。 */
+/** plain array 元素读取同款 descriptor 守卫（经 plain-data.ts ownDataFact）：越界 NONE
+ *  （本循环不达）；在界 undefined / 稀疏空洞 / accessor 下标 → VIOLATION（位置语义不
+ *  可省略，D4/D5，响亮失败）。【R2——SA2 R1 #3 / R2.1】'non-enumerable'：数组元素面
+ *  现行语义是照常读值（不检查 enumerable，与对象键面的 skip 有意不同——数组元素无键
+ *  空间概念）；子情形 value===undefined（如 defineProperty(arr, i, {})）→ 维持现行
+ *  violation「数组位置 undefined 不可投影」（desc.value===undefined 检查不区分枚举性）。 */
 function readableArrayElement(
   arr: unknown[],
   i: number,
@@ -271,32 +253,23 @@ function readableArrayElement(
   if (i >= arr.length) {
     return { kind: 'violation', msg: '数组越界不可投影' };
   }
-  const desc = Object.getOwnPropertyDescriptor(arr, i);
-  if (desc === undefined) {
+  const fact = ownDataFact(arr, i);
+  if (fact.kind === 'missing') {
     return { kind: 'violation', msg: '数组位置 undefined 不可投影（稀疏空洞）' };
   }
-  if (desc.get !== undefined || desc.set !== undefined) {
+  if (fact.kind === 'accessor') {
     return { kind: 'violation', msg: '数组下标 accessor 不可读取（零副作用纪律）' };
   }
-  if (desc.value === undefined) {
+  if (fact.kind === 'undefined-value') {
     return { kind: 'violation', msg: '数组位置 undefined 不可投影' };
   }
-  return { kind: 'ok', value: desc.value };
-}
-
-/** Yjs 家族申报词（message 用）：取构造器名，兜底 Y.AbstractType。 */
-function yjsWord(v: unknown): string {
-  const ctor = (v as { constructor?: { name?: string } } | null | undefined)?.constructor?.name;
-  return typeof ctor === 'string' && ctor.length > 0 ? ctor : 'Y.AbstractType';
-}
-
-function describe(v: unknown): string {
-  if (typeof v === 'number') {
-    return String(v);
+  if (fact.kind === 'non-enumerable') {
+    // R2.1 子情形：non-enumerable ∧ value===undefined → 现行 violation 维持（不漂移
+    // 到「值域违规：undefined」——消息即断言面）
+    if (fact.value === undefined) {
+      return { kind: 'violation', msg: '数组位置 undefined 不可投影' };
+    }
+    return { kind: 'ok', value: fact.value }; // 照常读值（现行不检查 enumerable）
   }
-  if (typeof v === 'object' && v !== null) {
-    const ctor = (v as { constructor?: { name?: string } }).constructor?.name;
-    return typeof ctor === 'string' && ctor.length > 0 ? ctor : 'object';
-  }
-  return typeof v;
+  return { kind: 'ok', value: fact.value };
 }

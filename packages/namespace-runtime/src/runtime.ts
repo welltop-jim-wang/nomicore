@@ -17,8 +17,9 @@
  * getMetadata / getActiveSchema / getStatus / mutateRoot（第八键 = 唯一公共 ROOT 写
  * 入口，D1）+ replaceSchema（第九键，issue #91，唯一公共 SCHEMA 写入口）
  * **+ close（第十键，issue #92——close 生命周期：幂等、同步进 closing、队尾 barrier；
- * 详见接口 JSDoc 与 close.ts）**。read/write 接纳门（lifecycle gate）住在公共方法层
- * （D4/D5.1）：closing/closed 期 read 同步结果联合拒绝、两种写同步入队拒绝（零入队）；
+ * 详见接口 JSDoc 与 close.ts）**。read/write 与三数据投影 getter 的接纳门（lifecycle
+ * gate）住在公共方法层（D4/D5.1）：closing/closed 期 read 同步结果联合拒绝、三 getter
+ * 同步 throw RUNTIME_READ_DISABLED（D-2，#93 rev2）、两种写同步入队拒绝（零入队）；
  * 槽内不设 lifecycle gate——已接纳任务无条件排空（ADR-0008）。
  * 生产工厂 createNamespaceRuntime 保留包内，index.ts 不 re-export（AC1 锁定
  * entry.createNamespaceRuntime === undefined）。
@@ -33,7 +34,7 @@ import { readLogicalValueAtPath } from '@nomicore/doc-runtime';
 import type { ReadLogicalValueResult } from '@nomicore/doc-runtime';
 import { compileSchemaEnvelope } from '@nomicore/vfsl';
 import type { CompileSchemaEnvelopeResult, SchemaEnvelope } from '@nomicore/vfsl';
-import { NamespaceRuntimeConstructionError, RUNTIME_READ_DISABLED_CODE } from './errors.js';
+import { NamespaceRuntimeConstructionError, RUNTIME_READ_DISABLED_CODE, RuntimeReadDisabledError } from './errors.js';
 import { runP0 } from './p0.js';
 import type { ActiveSchemaInfo, P0Env, RuntimeState } from './p0.js';
 import { projectMetadata, projectSchemaEnvelope } from './projection.js';
@@ -86,11 +87,21 @@ export interface NamespaceRuntime {
    *  lifecycle≠ready 期返回 RuntimeReadDisabledResult（同步、非抛、非 Promise——
    *  D4 lifecycle gate 即时生效，不等待已接纳任务排空）。 */
   readonly read: (path: readonly (string | number)[]) => NamespaceRuntimeReadResult;
-  /** SCHEMA 四标准键投影（D4；载体缺席/异型 → null；非 primitive 值 → loud throw）。 */
+  /** SCHEMA 四标准键投影（D4；载体缺席 → null，载体异型 → loud throw NSRT-SCHEMA-E2；
+   *  非 primitive 值 → loud throw）。
+   *  lifecycle≠ready（closing/closed）期同步 throw RuntimeReadDisabledError（code
+   *  RUNTIME_READ_DISABLED，包内类）——close 停接纳覆盖全部公共数据投影；getStatus
+   *  不受影响（全生命周期观测面）。 */
   readonly getSchemaEnvelope: () => SchemaEnvelope | null;
-  /** META 全键深拷贝（D5；载体异常/值域违规 → loud throw）。 */
+  /** META 全键深拷贝（D5；载体异常/值域违规 → loud throw）。
+   *  lifecycle≠ready（closing/closed）期同步 throw RuntimeReadDisabledError（code
+   *  RUNTIME_READ_DISABLED，包内类）——close 停接纳覆盖全部公共数据投影；getStatus
+   *  不受影响（全生命周期观测面）。 */
   readonly getMetadata: () => Record<string, unknown>;
-  /** active schema 五字段身份（D8；preparing/unavailable/fatal 期 null）。 */
+  /** active schema 五字段身份（D8；preparing/unavailable/fatal 期 null）。
+   *  lifecycle≠ready（closing/closed）期同步 throw RuntimeReadDisabledError（code
+   *  RUNTIME_READ_DISABLED，包内类）——close 停接纳覆盖全部公共数据投影；getStatus
+   *  不受影响（全生命周期观测面）。 */
   readonly getActiveSchema: () => ActiveSchemaInfo | null;
   /** 结构化瞬时 capability status（D9 → D6，#92 七键；每次调用全新对象）。 */
   readonly getStatus: () => NamespaceRuntimeStatus;
@@ -192,9 +203,29 @@ export function createNamespaceRuntimeWithSeam(input: NamespaceRuntimeSeamInput)
         ? readLogicalValueAtPath(doc, path)
         : readDisabled(lifecycle, path);
     },
-    getSchemaEnvelope: () => projectSchemaEnvelope(doc, 'public'), // D4（INV-N13 守卫）
-    getMetadata: () => projectMetadata(doc), // D5（深拷贝 / 载体与值域双 loud）
-    getActiveSchema: () => state.activeInfo ?? null, // D8
+    getSchemaEnvelope: () => {
+      // D2（#93 rev2，SA8 裁决 B）：数据投影 getter 停接纳——key 仅 lifecycle（裁决 H：
+      // 绝不 keyed on fatal/schemaState）；拒绝先于触碰 live Y.Doc（INV 同 read() 分支）
+      if (state.lifecycle !== 'ready') {
+        throw new RuntimeReadDisabledError('getSchemaEnvelope', state.lifecycle);
+      }
+      return projectSchemaEnvelope(doc, 'public'); // D4（INV-N13 守卫）
+    },
+    getMetadata: () => {
+      // D2（#93 rev2，SA8 裁决 B）：同 getSchemaEnvelope——key 仅 lifecycle；拒绝先于
+      // 深拷贝递归（零触碰 live Y.Doc——F-3 原始 RangeError 不外泄的证明面）
+      if (state.lifecycle !== 'ready') {
+        throw new RuntimeReadDisabledError('getMetadata', state.lifecycle);
+      }
+      return projectMetadata(doc); // D5（深拷贝 / 载体与值域双 loud）
+    },
+    getActiveSchema: () => {
+      // D2（#93 rev2，SA8 裁决 B）：同 getSchemaEnvelope——key 仅 lifecycle；不触 doc
+      if (state.lifecycle !== 'ready') {
+        throw new RuntimeReadDisabledError('getActiveSchema', state.lifecycle);
+      }
+      return state.activeInfo ?? null; // D8（preparing/unavailable/fatal 期 null 照常）
+    },
     getStatus: () => buildStatus(handle, state), // D9 → D6（handle 仅用于 ready 期 writableNow 瞬时观察）
     mutateRoot: (mutation: unknown): Promise<MutateRootResult> => {
       // D5.1 接纳门：lifecycle≠ready 时同步零入队拒绝（INV-C3）——经返回 Promise

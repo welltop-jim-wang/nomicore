@@ -31,7 +31,8 @@
  */
 import { describe, expect, it } from 'vitest';
 import * as Y from 'yjs';
-import { createNamespaceRuntimeWithSeam, RuntimeWriteFatalError } from '../src/index.js';
+import { RuntimeWriteFatalError } from '../src/index.js';
+import { createNamespaceRuntimeWithSeam } from '../src/runtime.js';
 import type { NamespaceRuntime } from '../src/index.js';
 import type { DocHandle, User } from '@nomicore/persistence';
 import type { CompileSchemaEnvelopeResult, SchemaEnvelope } from '@nomicore/vfsl';
@@ -181,7 +182,8 @@ describe('close 生命周期（AC6/AC7）', () => {
     await waitReady(runtime);
     expect(typeof closeOf(runtime)).toBe('function');
     const closeFn = closeOf(runtime);
-    // D7 裁决（SA2 R-1 补锚）：四 getter 闭前基线捕获（post-close 继续可用 + 数据原样）
+    // 闭前基线（post-close 停接纳对照）：ready 期三数据投影 getter 正常工作——值仅作
+    // 对照说明（D-2 后 post-close 读取已停接纳，不再断言 post-close 与闭前相等）
     const envBefore = runtime.getSchemaEnvelope();
     const metaBefore = runtime.getMetadata();
     const activeBefore = runtime.getActiveSchema();
@@ -209,16 +211,30 @@ describe('close 生命周期（AC6/AC7）', () => {
     await p; // 空队列：排空即结算 → closed
     expect(statusOf(runtime).lifecycle).toBe('closed');
     expect(handleCtl.releaseCalls()).toBe(1);
-    // D7 裁决（SA2 R-1 补锚）：close 后四 getter 继续可用——三 getter 均不抛；
-    // getSchemaEnvelope 非 null 且四键原值；getMetadata 与闭前 toEqual；getActiveSchema 非 null
-    expect(() => runtime.getSchemaEnvelope()).not.toThrow();
-    expect(runtime.getSchemaEnvelope()).toEqual(envBefore);
+    // D-2（#93 rev2，SA8 裁决 B）：close 停接纳扩展至三个数据投影 getter——post-close
+    // 各 getter 同步 throw：code==='RUNTIME_READ_DISABLED'、message 含 'closed' 与各自
+    // getter 名、非 Promise（拒绝先于触碰 live Y.Doc——零投影）。闭前基线值仅作对照：
+    // envBefore 四键相等断言保留（ready 期投影正确性）；metaBefore/activeBefore 不再
+    // 断言 post-close 相等（读取已停接纳）。
     expect(envBefore).toEqual({ lang: 'vfsl', version: 1, id: 'ns-1', text: TEXT_VALID });
-    expect(() => runtime.getMetadata()).not.toThrow();
-    expect(runtime.getMetadata()).toEqual(metaBefore);
-    expect(() => runtime.getActiveSchema()).not.toThrow();
-    expect(runtime.getActiveSchema()).not.toBeNull();
-    expect(runtime.getActiveSchema()).toEqual(activeBefore);
+    for (const [getter, call] of [
+      ['getSchemaEnvelope', () => runtime.getSchemaEnvelope()],
+      ['getMetadata', () => runtime.getMetadata()],
+      ['getActiveSchema', () => runtime.getActiveSchema()],
+    ] as const) {
+      expect(call, `${getter} post-close 应同步 throw（D-2 停接纳）`).toThrow();
+      let thrown: unknown = '(no throw)';
+      try {
+        call();
+      } catch (e) {
+        thrown = e;
+      }
+      expect(thrown, `${getter} post-close 应同步 throw`).not.toBe('(no throw)');
+      expect(thrown).not.toBeInstanceOf(Promise);
+      expect((thrown as { code?: unknown }).code).toBe('RUNTIME_READ_DISABLED');
+      expect(String((thrown as { message?: unknown }).message)).toContain('closed');
+      expect(String((thrown as { message?: unknown }).message)).toContain(getter);
+    }
     // 已结算后再次 close 仍是同一 Promise 实例（AC7）
     expect(closeFn()).toBe(p);
   });
@@ -369,6 +385,107 @@ describe('close 生命周期（AC6/AC7）', () => {
     expect(second.reason).toBe(firstReason);
     expect(statusOf(runtime).close).toEqual(st.close); // 摘要跨调用稳定
   });
+
+  it('T2.2（D-2，新增）：closing 排空窗口内三数据投影 getter 同步 throw（message 含 closing）；放行排空 closed 后 throw（closed）；全窗口 getStatus 可用且 lifecycle 真话', async () => {
+    const doc = makeDoc();
+    const gate = deferred();
+    let notifierCalls = 0;
+    const { runtime, handleCtl } = readyRuntime({
+      doc,
+      notifyDirty: async () => {
+        notifierCalls += 1;
+        await gate.promise; // 写槽挂在 S6：已提交、dirty 登记挂住——closing 排空窗口
+      },
+    });
+    await waitReady(runtime);
+    const closeFn = closeOf(runtime);
+
+    // close 前已接纳的写：排队 → 提交 → 挂在 notifier 门
+    const pA = runtime.mutateRoot(SET_N(42));
+    await expect.poll(() => notifierCalls, { interval: 10, timeout: 5_000 }).toBe(1);
+    expect(doc.getMap('ROOT').get('n')).toBe(42);
+
+    const pc = closeFn();
+    expect(statusOf(runtime).lifecycle).toBe('closing');
+
+    // closing 窗口：三 getter 同步 throw（message 含 'closing'）；拒绝非 Promise
+    for (const [getter, call] of [
+      ['getSchemaEnvelope', () => runtime.getSchemaEnvelope()],
+      ['getMetadata', () => runtime.getMetadata()],
+      ['getActiveSchema', () => runtime.getActiveSchema()],
+    ] as const) {
+      expect(call, `${getter} closing 窗口应同步 throw`).toThrow();
+      let thrown: unknown = '(no throw)';
+      try {
+        call();
+      } catch (e) {
+        thrown = e;
+      }
+      expect(thrown).not.toBeInstanceOf(Promise);
+      expect((thrown as { code?: unknown }).code).toBe('RUNTIME_READ_DISABLED');
+      expect(String((thrown as { message?: unknown }).message)).toContain('closing');
+      expect(String((thrown as { message?: unknown }).message)).toContain(getter);
+    }
+    // 全窗口 getStatus 可用且 lifecycle 真话（排空观察面不被停接纳波及）
+    expect(statusOf(runtime).lifecycle).toBe('closing');
+    expect(statusOf(runtime).read.enabled).toBe(false);
+    expect(handleCtl.releaseCalls()).toBe(0); // barrier 仍在队尾（A 未结算）
+
+    // 放行排空 → closed
+    gate.resolve();
+    expect(await settleOf(pA)).toMatchObject({ kind: 'resolved', value: { ok: true } });
+    await pc;
+    expect(statusOf(runtime).lifecycle).toBe('closed');
+    expect(handleCtl.releaseCalls()).toBe(1);
+    // closed 后三 getter 同步 throw（message 含 'closed'）；getStatus 仍可用
+    for (const [getter, call] of [
+      ['getSchemaEnvelope', () => runtime.getSchemaEnvelope()],
+      ['getMetadata', () => runtime.getMetadata()],
+      ['getActiveSchema', () => runtime.getActiveSchema()],
+    ] as const) {
+      expect(call, `${getter} closed 期应同步 throw`).toThrow();
+      let thrown: unknown = '(no throw)';
+      try {
+        call();
+      } catch (e) {
+        thrown = e;
+      }
+      expect((thrown as { code?: unknown }).code).toBe('RUNTIME_READ_DISABLED');
+      expect(String((thrown as { message?: unknown }).message)).toContain('closed');
+      expect(String((thrown as { message?: unknown }).message)).toContain(getter);
+    }
+    expect(statusOf(runtime).lifecycle).toBe('closed');
+  });
+
+  it('T2.4（D-2，新增）：cyclic META 注入 + close → getMetadata() throw RUNTIME_READ_DISABLED（非原始 RangeError）——门禁先于深拷贝递归的零触碰证明', async () => {
+    const doc = makeDoc();
+    // F-3 同款 cyclic META 直注（live ContentAny 持原引用；ready 期 getMetadata 将抛
+    // 原始 RangeError——登记态，见 runtime-boundary-supplementary F-3 锚）
+    const cyc: Record<string, unknown> = { name: 'loop' };
+    cyc.self = cyc;
+    doc.getMap('META').set('cyc', cyc);
+    const { runtime, handleCtl } = readyRuntime({ doc, notifyDirty: async () => {} });
+    await waitReady(runtime);
+    const closeFn = closeOf(runtime);
+    const p = closeFn();
+    await p;
+    expect(statusOf(runtime).lifecycle).toBe('closed');
+    expect(handleCtl.releaseCalls()).toBe(1);
+
+    // D-2：closed 期门禁先于投影——收到 lifecycle 停接纳错误而非深拷贝递归的 RangeError
+    let thrown: unknown = '(no throw)';
+    try {
+      runtime.getMetadata();
+    } catch (e) {
+      thrown = e;
+    }
+    expect(thrown).not.toBe('(no throw)');
+    expect(thrown).not.toBeInstanceOf(RangeError);
+    expect(thrown).toBeInstanceOf(Error);
+    expect((thrown as { code?: unknown }).code).toBe('RUNTIME_READ_DISABLED');
+    expect(String((thrown as { message?: unknown }).message)).toContain('getMetadata');
+    expect(String((thrown as { message?: unknown }).message)).toContain('closed');
+  });
 });
 
 describe('capability status 七键与 fatal×close 交叉（AC5/AC1–AC4 交叉）', () => {
@@ -425,6 +542,15 @@ describe('capability status 七键与 fatal×close 交叉（AC5/AC1–AC4 交叉
     expect(statusOf(runtime).schemaWrite.enabled).toBe(false);
     expect(statusOf(runtime).read.enabled).toBe(true);
     expect(runtime.read(['n']).ok).toBe(true);
+    // T2.3（D-2/裁决 H 显式负向锚）：fatal 置位不改 lifecycle（仍 'ready'）→ 三数据
+    // 投影 getter 照常（不 throw——门禁 key 仅 lifecycle，绝不 keyed on fatal）：
+    // envelope/meta 照常投影；active 为 null（P0 fatal 未安装 active——「照常」= 不抛、
+    // 形状正常，非「有 active 值」）
+    expect(runtime.getSchemaEnvelope()).not.toBeNull();
+    expect(runtime.getSchemaEnvelope()!.id).toBe('ns-1');
+    expect(runtime.getMetadata().docId).toBe('ns-1');
+    expect(runtime.getActiveSchema()).toBeNull();
+    expect(statusOf(runtime).lifecycle).toBe('ready');
     const fatalBefore = statusOf(runtime).fatal as { code: string; message: string };
 
     const p = closeOf(runtime)();
@@ -435,6 +561,22 @@ describe('capability status 七键与 fatal×close 交叉（AC5/AC1–AC4 交叉
     // read 现在停了（close 后才停）
     expect(statusOf(runtime).read.enabled).toBe(false);
     expect(runtime.read(['n']).ok).toBe(false);
+    // T2.3（续）：close 后三 getter 才 throw（D-2 停接纳——fatal 期照常的反面证据）
+    for (const [getter, call] of [
+      ['getSchemaEnvelope', () => runtime.getSchemaEnvelope()],
+      ['getMetadata', () => runtime.getMetadata()],
+      ['getActiveSchema', () => runtime.getActiveSchema()],
+    ] as const) {
+      expect(call, `${getter} fatal×close 后应同步 throw`).toThrow();
+      let thrown: unknown = '(no throw)';
+      try {
+        call();
+      } catch (e) {
+        thrown = e;
+      }
+      expect((thrown as { code?: unknown }).code).toBe('RUNTIME_READ_DISABLED');
+      expect(String((thrown as { message?: unknown }).message)).toContain(getter);
+    }
     // fatal 摘要不受 close 影响（code/message 原样）
     expect(statusOf(runtime).fatal).toEqual(fatalBefore);
     expect(statusOf(runtime).close).toBeNull(); // release 成功 → 无 close issue

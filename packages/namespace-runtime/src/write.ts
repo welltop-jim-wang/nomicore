@@ -34,6 +34,7 @@ import {
 } from './errors.js';
 import type { RuntimeWriteFatalPhase } from './errors.js';
 import type { RuntimeState } from './p0.js';
+import { ownDataFact, putPlainKey } from './plain-data.js';
 
 /** 写槽运行时环境（构造栈一次成型——纯数据闭包，槽体零读 seam 输入）。 */
 export interface WriteEnv {
@@ -289,17 +290,24 @@ function copyFrozen(v: unknown, ancestors: Set<object>): unknown {
     const names = Object.getOwnPropertyNames(v).filter((k) => k !== 'length');
     const keys = Object.keys(v);
     if (names.length !== keys.length) throw new Error('数组携带非枚举 own 键');
-    // ③ descriptor 全表扫描先于任何值读取：getOwnPropertyDescriptor 是元数据读取，
-    //    不执行 getter（Proxy 侧走 getOwnPropertyDescriptor trap 而非 get trap）——
-    //    拒绝先于任何输入侧代码执行（SA2 红灯 calls === 0 的次序保证；R1 盲区 c）。
-    //    d === undefined → 稀疏空洞或原型链污染（不读原型值）。
+    // ③ descriptor 全表扫描先于任何值读取：ownDataFact 是元数据读取（同款
+    //    getOwnPropertyDescriptor 判定序列——plain-data.ts 纯提取），不执行 getter
+    //    （Proxy 侧走 getOwnPropertyDescriptor trap 而非 get trap）——拒绝先于任何
+    //    输入侧代码执行（SA2 红灯 calls === 0 的次序保证；R1 盲区 c）。
+    //    missing → 稀疏空洞或原型链污染（不读原型值）；accessor → 零执行拒绝；
+    //    non-enumerable → 防御分支（结构性不可达——② names/keys 比对先行拦截，
+    //    消息字面量沿 ② 全局拦截）；undefined-value → ③ 放行（⑤ 值读取期 throw，
+    //    两阶段消息字面量相同的次序锁定）。
     for (let i = 0; i < v.length; i++) {
-      const d = Object.getOwnPropertyDescriptor(v, String(i));
-      if (d === undefined) {
+      const fact = ownDataFact(v, String(i));
+      if (fact.kind === 'missing') {
         throw new Error(`index ${i} 无 own 属性（稀疏空洞或原型链污染——不读原型值）`);
       }
-      if (d.get !== undefined || d.set !== undefined) {
+      if (fact.kind === 'accessor') {
         throw new Error(`accessor 下标（index ${i}）`);
+      }
+      if (fact.kind === 'non-enumerable') {
+        throw new Error('数组携带非枚举 own 键');
       }
     }
     // ④ 额外 own 可枚举属性（arr.foo = 1 等）——与 ② 互补：② 拒非枚举面、④ 拒可枚举面
@@ -331,24 +339,24 @@ function copyFrozen(v: unknown, ancestors: Set<object>): unknown {
   const keys = Object.keys(obj);
   if (names.length !== keys.length) throw new Error('非枚举 own 键');
   for (const k of keys) {
-    const d = Object.getOwnPropertyDescriptor(obj, k);
-    if (d === undefined) throw new Error(`属性 "${k}" 无 own descriptor`);
-    if (d.get !== undefined || d.set !== undefined) throw new Error(`accessor 属性 "${k}"`);
+    // per-key descriptor 检查经 ownDataFact 分派（plain-data.ts；消息逐字节保留）：
+    // missing → 无 own descriptor；accessor → 零执行拒绝；non-enumerable → 防御分支
+    //（结构性不可达——names/keys 长度比对先行拦截）；undefined-value 不在此查
+    //（维持「值读取期 throw 键 "k" 值为 undefined」次序）
+    const fact = ownDataFact(obj, k);
+    if (fact.kind === 'missing') throw new Error(`属性 "${k}" 无 own descriptor`);
+    if (fact.kind === 'accessor') throw new Error(`accessor 属性 "${k}"`);
+    if (fact.kind === 'non-enumerable') throw new Error('非枚举 own 键');
   }
   ancestors.add(obj);
   const out: Record<string, unknown> = {};
   for (const k of keys) {
     const raw = (obj as Record<string, unknown>)[k];
     if (raw === undefined) throw new Error(`键 "${k}" 值为 undefined`);
-    // defineProperty 写入纪律（仓内先例 read.ts putKey / extract.ts putSnapshotKey /
-    // projection.ts putMetaKey / detached-build.ts copyJsonDomain）：'__proto__' 自有键
-    // 不触发原型 setter、不劫持产物原型；裸赋值禁止
-    Object.defineProperty(out, k, {
-      value: copyFrozen(raw, ancestors),
-      writable: true,
-      enumerable: true,
-      configurable: true,
-    });
+    // putPlainKey 写入纪律（仓内先例 read.ts putKey / extract.ts putSnapshotKey /
+    // projection.ts / detached-build.ts copyJsonDomain）：'__proto__' 自有键不触发
+    // 原型 setter、不劫持产物原型；裸赋值禁止
+    putPlainKey(out, k, copyFrozen(raw, ancestors));
   }
   ancestors.delete(obj);
   return Object.freeze(out);

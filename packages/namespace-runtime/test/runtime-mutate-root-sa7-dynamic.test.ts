@@ -24,7 +24,8 @@
 import { describe, expect, it } from 'vitest';
 import * as Y from 'yjs';
 import type { DocHandle, User } from '@nomicore/persistence';
-import { createNamespaceRuntimeWithSeam, RuntimeWriteFatalError } from '../src/index.js';
+import { RuntimeWriteFatalError } from '../src/index.js';
+import { createNamespaceRuntimeWithSeam } from '../src/runtime.js';
 import type { NamespaceRuntime, MutateRootResult } from '../src/index.js';
 
 // —— fixture（与 SA6 冻结测试同族的种子形状）——

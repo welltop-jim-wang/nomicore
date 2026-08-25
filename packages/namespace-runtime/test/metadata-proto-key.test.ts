@@ -26,7 +26,7 @@ import { describe, expect, it } from 'vitest';
 import * as Y from 'yjs';
 import { createMemoryPersistence } from '@nomicore/persistence';
 import type { DocHandle, User } from '@nomicore/persistence';
-import { createNamespaceRuntimeWithSeam } from '../src/index.js';
+import { createNamespaceRuntimeWithSeam } from '../src/runtime.js';
 
 const OWNER: User = { userId: 'u-alice' };
 const TEXT_VALID = 'type ROOT = { n: number; a: string; };';
@@ -127,5 +127,43 @@ describe('getMetadata META __proto__ 键保真（SA4 F-1 回归锚）', () => {
     expect(Object.hasOwn(meta, '__proto__')).toBe(true);
     expect(Object.getPrototypeOf(meta)).toBe(Object.prototype);
     expect(meta['__proto__']).toEqual(payload);
+  });
+
+  it('T7.2 场景①（D-7 语义锁定锚）：META 数组值 non-enumerable 下标（值 5）照常投影——数组元素面无键空间概念（R2 映射①行为证据）', async () => {
+    const { handle } = await makeHandle({ arr: [1, 2, 3] });
+    // 注入通道纪律（R2.1-C）：注入后不经 loadDoc decode——yjs ContentAny 在同一 doc
+    // 实例内本地持有原对象引用（F-3 cyclic 直注即存在性证明：decode 无法还原环；反之
+    // ContentAny 编解码会把 descriptor 标准化）。本文件 makeHandle 为真实
+    // MemoryPersistence createDoc 前 set、handle.doc 与预构建 doc 同一实例（fullchain
+    // 同实例监听先例）——直注保持原引用，勿经「另实例 loadDoc 读回」通道。
+    const arr = handle.doc.getMap('META').get('arr') as unknown[];
+    Object.defineProperty(arr, 0, { value: 5, enumerable: false });
+    const runtime = createNamespaceRuntimeWithSeam({ handle });
+
+    const meta = runtime.getMetadata();
+    // 现行语义锁定：数组元素面 non-enumerable data 下标照常读值（与对象键面 skip 有意不同）
+    expect(meta['arr']).toEqual([5, 2, 3]);
+  });
+
+  it('T7.2 场景②（R2.1-A 姊妹断言：消息锁定锚）：non-enumerable ∧ value undefined 下标 → NSRT-META-E1 + 现行 violation 消息「数组位置 undefined 不可投影」', async () => {
+    const { handle } = await makeHandle({ arr: [1, 2, 3] });
+    const arr = handle.doc.getMap('META').get('arr') as unknown[];
+    // 非枚举 ∧ 值 undefined 下标：显式给出 value:undefined + enumerable:false——
+    // 注：`Object.defineProperty(arr, 1, {})`（空描述符）对**既有**下标不生效
+    // （ES DefineProperty 对已存在可配置属性保留未提及字段），必须显式声明。
+    Object.defineProperty(arr, 1, { value: undefined, enumerable: false });
+    const runtime = createNamespaceRuntimeWithSeam({ handle });
+
+    let err: unknown = '(no throw)';
+    try {
+      runtime.getMetadata();
+    } catch (e) {
+      err = e;
+    }
+    expect(err).not.toBe('(no throw)');
+    const e = err as { code?: unknown; message?: unknown };
+    expect(e.code).toBe('NSRT-META-E1');
+    // 锁定现行 violation 消息（防 SA3 适配 ownDataFact 时漂移到「值域违规：undefined」）
+    expect(String(e.message)).toContain('数组位置 undefined 不可投影');
   });
 });

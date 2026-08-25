@@ -18,9 +18,9 @@
  * 本文件冻结的公共契约（SA3 实现的唯一行为锚点；SA1 设计不得收窄，仅可补充）：
  * - 公共入口 packages/namespace-runtime/src/index.ts（package `@nomicore/namespace-runtime`
  *   的 "." 导出）不得导出任何生产构造器（本文件锁定工厂名 createNamespaceRuntime 缺席）；
- * - 包内确定性 seam 构造器 `createNamespaceRuntimeWithSeam(input)` 从同一入口导出
- *   （@internal，沿 doc-runtime getCompiledWith 先例；测试经相对路径 ../src/index.js
- *   到达——与 doc-runtime 测试同款约定）。契约形状：
+ * - 包内确定性 seam 构造器 `createNamespaceRuntimeWithSeam(input)` 从包内
+ *   `'../src/runtime.js'` 导入（AC6 rev2：公共入口零 seam 暴露——测试经包内模块
+ *   通道相对导入，不经 index.ts；沿 doc-runtime getCompiledWith 先例）。契约形状：
  *     interface NamespaceRuntimeSeamInput {
  *       readonly handle: DocHandle;                             // 注入的独占租约
  *       readonly p0Gate?: Promise<void>;                        // P0 编译前 await 的可控门
@@ -52,7 +52,7 @@ import { describe, expect, it } from 'vitest';
 import * as Y from 'yjs';
 import { createMemoryPersistence } from '@nomicore/persistence';
 import type { DocHandle, User } from '@nomicore/persistence';
-import { createNamespaceRuntimeWithSeam } from '../src/index.js';
+import { createNamespaceRuntimeWithSeam } from '../src/runtime.js';
 import * as publicEntry from '../src/index.js';
 
 const OWNER: User = { userId: 'u-alice' };
@@ -81,10 +81,12 @@ async function makeHandle(): Promise<{
 }
 
 describe('namespace-runtime 公共面与所有权（AC1/AC2/AC7 状态形状/AC8 seam）', () => {
-  it('AC1：生产构造器不从公共 package entry 导出；包内 seam 是唯一导出构造路径', () => {
+  it('AC1：生产构造器与测试 seam 均不从公共 package entry 导出（seam 经包内模块通道消费）', () => {
     const entry = publicEntry as Record<string, unknown>;
     expect(entry.createNamespaceRuntime).toBeUndefined();
-    expect(entry.createNamespaceRuntimeWithSeam).toBeTypeOf('function');
+    // 【rev2 D-1/裁决 A】seam 一并撤出公共面：公共入口零 seam 暴露；测试消费经
+    // 包内相对路径 ../src/runtime.js —— 正值面（seam 可达构造）由本文件其余用例覆盖。
+    expect(entry.createNamespaceRuntimeWithSeam).toBeUndefined();
   });
 
   it('AC1/AC2：构造经 seam 同步成功，公开冻结 owner.userId 与 namespaceId(=docId)', async () => {
