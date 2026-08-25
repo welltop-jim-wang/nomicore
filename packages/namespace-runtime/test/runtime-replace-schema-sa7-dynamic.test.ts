@@ -370,7 +370,14 @@ describe('SA7 动态验证 — replaceSchema fatal 通道注入路径 γ：手�
     const fatal = settled.reason as RuntimeWriteFatalError;
     expect(fatal.phase).toBe('pre-commit-internal'); // E204 透传
     expect(fatal.committed).toBe(false); // 写前 internal——确定零写入
-    expect(fatal.cause).toBeInstanceOf(Error); // 原始 DerivedInvariantError 保留
+    // cause 两层结构（双轴审查 Spec LOW#1 注释精度修正——δ 同款链路对称）：
+    // RuntimeWriteFatalError.cause = 组合 seam 抛出的 DocRuntimeFatalError（E204 包装层，
+    // message 含 'DOCRT-E204'——schema-replace.ts ① catch sentinel 分支逐字节保留）；
+    // 其 .cause 才是原始 DerivedInvariantError（resolve.ts 环守卫 sentinel）。
+    expect(fatal.cause).toBeInstanceOf(Error);
+    if (fatal.cause instanceof Error) {
+      expect(fatal.cause.message).toContain('DOCRT-E204'); // 与 δ 的 DOCRT-E206 钉码对称
+    }
 
     // committed:false → 不调用 dirty notifier；零写入（字节不变）；SCHEMA/ROOT/active 均不变
     expect(notifierCalls).toBe(0);
