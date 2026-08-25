@@ -19,5 +19,12 @@
 
 | 时间 | 执行者 | 动作 | 产出 |
 |---|---|---|---|
-| round 1 | 总控（brief 授权可自行实现） | 红灯测试 + 实现 + 接线 | packages/clock |
-| round 1 | review subagent ×2（并行） | 基线→HEAD diff 双轴审查 | 待补 |
+| round 1 | 总控（brief 授权可自行实现） | 红灯测试 + 实现 + 接线 | packages/clock（commit ffb12a0） |
+| round 1 | 总控亲跑 | pnpm typecheck && pnpm test && 聚合 tsc --noEmit | exit 0（97 文件 / 1169 测试全绿，Type Errors 0） |
+| round 1 | review subagent 536331f3（Standards 轴）+ c5f3d709（Spec 轴）并行 | 基线 3451eca→HEAD(ffb12a0) diff 双轴审查 | 双轴 **NON-BLOCKING** |
+| round 1 | 总控 | Standards nit 修复：移除 requireClock 冗余 `as Clock`（对齐 persistence 模式）；复验 clock 包 | 见收尾 commit |
+
+## 双轴审查结论（round 1，commit ffb12a0）
+
+- **Standards 轴（NON-BLOCKING）**：无文档标准违例——contract/plugin/生命周期测试/静态审计/test-d 均对齐 persistence 与 namespace-runtime 事实标准；Fowler 基线仅 3 个判断项（两个 plugin 工厂同形可辩护、surface 测试复用剥离正则无共享落点、`as Clock` 冗余强转——已修）。
+- **Spec 轴（NON-BLOCKING）**：AC1–AC7 全部落实且锚点真实——AC4 loud-fail 双锚（稳定错误消息 + 无 fallback 安装 + 依赖 plugin apply 失败）；AC5 三锚（类型层 @ts-expect-error + 运行时键面 + 静态源码审计）；AC6 生命周期真锚（fiber dispose 恰一次注销、幂等）。AC2 非单调承诺属文档锚（负承诺不可行为测试）。范围纪律：未触碰 persistence/registry（#107+ 后续 ticket）。

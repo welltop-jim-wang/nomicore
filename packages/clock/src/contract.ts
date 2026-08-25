@@ -40,5 +40,5 @@ export function requireClock(ctx: Context): Clock {
   if (clock === undefined) {
     throw new Error('required Cordis service "clock" is unavailable')
   }
-  return clock as Clock
+  return clock
 }
