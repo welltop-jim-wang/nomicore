@@ -34,6 +34,7 @@ import * as Y from 'yjs';
 import { readFileSync } from 'node:fs';
 import type { DocHandle, User } from '@nomicore/persistence';
 import { createMemoryPersistence } from '@nomicore/persistence';
+import { createTestScheduler } from '@nomicore/persistence/testing';
 import type { NamespaceRuntime } from '@nomicore/namespace-runtime';
 
 const OWNER: User = { userId: 'u-alice' };
@@ -145,6 +146,7 @@ describe('AC2：factory 只接收 handle + dirty notifier——compile/p0Gate/fa
   it('附着 compile spy（调用即抛）、永不 resolve 的 p0Gate 与 fault 哨兵：P0 仍以真实 vfsl 编译结算，spy 零调用，Runtime 功能完整', async () => {
     const store = new Map<string, Uint8Array>();
     const writer = createMemoryPersistence({
+      scheduler: createTestScheduler(),
       schedule: { debounceMs: 5, maxDirtyMs: 60 },
       writeSnapshot: async (key, snapshot) => {
         store.set(key, snapshot.slice());
@@ -193,13 +195,18 @@ describe('AC2：factory 只接收 handle + dirty notifier——compile/p0Gate/fa
 describe('AC4：factory 产出的 Runtime 保持 P0 队首/读取/写序列器/fatal/status/close 全部现有语义', () => {
   it('经 internal factory 全链：P0 队首 → 立即同步读取 → FIFO 写（notifyDirty 每写恰一次、严格按序）→ status 七键/十键面 → close 幂等释放', async () => {
     const store = new Map<string, Uint8Array>();
+    const scheduler = createTestScheduler();
     const writer = createMemoryPersistence({
+      scheduler,
       schedule: { debounceMs: 5, maxDirtyMs: 60 },
       writeSnapshot: async (key, snapshot) => {
         store.set(key, snapshot.slice());
       },
     });
-    const reader = createMemoryPersistence({ readSnapshot: async (key) => store.get(key) });
+    const reader = createMemoryPersistence({
+      scheduler: createTestScheduler(),
+      readSnapshot: async (key) => store.get(key),
+    });
     const handle = await writer.createDoc(OWNER, 'ns-1', await makeDoc(ENV1));
     try {
       const entry = await loadInternalEntry(); // 【红灯】解析失败
@@ -295,9 +302,9 @@ describe('AC4：factory 产出的 Runtime 保持 P0 队首/读取/写序列器/f
       expect(st2.read.enabled).toBe(false);
       expect(st2.fatal).toBeNull();
 
-      // ⑥ 跨实例持久化证明：registry factory 路径的写真实落盘（全新 reader 空缓存读取；
-      //    等待 debounce 定时 flush——同既有持久化链测试的 sleep(100) 惯例）
-      await sleep(100);
+      // ⑥ 跨实例持久化证明：registry factory 路径的写真实落盘（全新 reader 空缓存读取）。
+      //    由显式注入的确定性 scheduler 触发 debounce flush。
+      await scheduler.advanceBy(5);
       const loaded = await reader.loadDoc(OWNER, 'ns-1');
       expect(loaded).not.toBeNull();
       if (loaded !== null) {
