@@ -52,6 +52,7 @@ import { describe, expect, it } from 'vitest';
 import * as Y from 'yjs';
 import { createMemoryPersistence } from '@nomicore/persistence';
 import type { DocHandle, User } from '@nomicore/persistence';
+import { realPersistenceScheduler } from './real-persistence-scheduler.js';
 import { createNamespaceRuntimeWithSeam } from '../src/runtime.js';
 import * as publicEntry from '../src/index.js';
 
@@ -63,7 +64,7 @@ async function makeHandle(): Promise<{
   handle: DocHandle;
   doc: Y.Doc;
 }> {
-  const persistence = createMemoryPersistence();
+  const persistence = createMemoryPersistence({ scheduler: realPersistenceScheduler });
   const doc = new Y.Doc();
   const sc = doc.getMap('SCHEMA');
   sc.set('lang', 'vfsl');

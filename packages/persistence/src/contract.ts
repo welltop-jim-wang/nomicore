@@ -29,7 +29,12 @@ export interface DocHandle {
   release(): Promise<void>
 }
 
-/** The persistence seam shared by all adapters. */
+/**
+ * The persistence seam shared by all adapters.
+ *
+ * The Cordis service name exposed by this interface is `nomicorePersistence`
+ * (`NOMICORE_PERSISTENCE_SERVICE`).
+ */
 export interface DocPersistence {
   createDoc(owner: User, docId: string, doc: Y.Doc): Promise<DocHandle>
   loadDoc(owner: User, docId: string): Promise<DocHandle | null>
@@ -45,7 +50,7 @@ export class DocDuplicateError extends Error {
   }
 }
 
-export const DOC_PERSISTENCE_SERVICE = 'docPersistence' as const
+export const NOMICORE_PERSISTENCE_SERVICE = 'nomicorePersistence' as const
 
 export interface PersistenceSchedule {
   readonly debounceMs: number
@@ -57,16 +62,15 @@ export const DEFAULT_PERSISTENCE_SCHEDULE: Readonly<PersistenceSchedule> = Objec
   maxDirtyMs: 5_000,
 })
 
-export interface PersistenceTimer {
-  readonly now: () => number
+/**
+ * The delayed-scheduling seam injected into every adapter (property-signature
+ * form so the AC4 static guard can distinguish host-global timer APIs from
+ * injected seam members). Scheduling only: wall-clock observation belongs to
+ * `ctx.clock`, never to this seam.
+ */
+export interface PersistenceScheduler {
   readonly setTimeout: (callback: () => void, delayMs: number) => unknown
-  readonly clearTimeout: (timer: unknown) => void
-}
-
-export const systemPersistenceTimer: PersistenceTimer = {
-  now: () => Date.now(),
-  setTimeout: (callback, delayMs) => globalThis.setTimeout(callback, delayMs),
-  clearTimeout: (timer) => globalThis.clearTimeout(timer as ReturnType<typeof globalThis.setTimeout>),
+  readonly clearTimeout: (handle: unknown) => void
 }
 
 export function resolvePersistenceSchedule(
@@ -88,18 +92,18 @@ export function resolvePersistenceSchedule(
 
 declare module '@deepseek-ai/cordis' {
   interface Context {
-    docPersistence: DocPersistence
+    nomicorePersistence: DocPersistence
   }
 }
 
-export function provideDocPersistence(ctx: Context, persistence: DocPersistence): () => void {
-  return ctx.provide(DOC_PERSISTENCE_SERVICE, persistence)
+export function provideNomicorePersistence(ctx: Context, persistence: DocPersistence): () => void {
+  return ctx.provide(NOMICORE_PERSISTENCE_SERVICE, persistence)
 }
 
-export function requireDocPersistence(ctx: Context): DocPersistence {
-  const persistence = ctx.get(DOC_PERSISTENCE_SERVICE)
+export function requireNomicorePersistence(ctx: Context): DocPersistence {
+  const persistence = ctx.get(NOMICORE_PERSISTENCE_SERVICE)
   if (persistence === undefined) {
-    throw new Error('required Cordis service "docPersistence" is unavailable')
+    throw new Error('required Cordis service "nomicorePersistence" is unavailable')
   }
   return persistence
 }

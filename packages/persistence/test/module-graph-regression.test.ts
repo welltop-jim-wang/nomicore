@@ -20,6 +20,7 @@ import { describe, expect, it } from 'vitest'
 import * as fileModule from '../src/file.js'
 import * as lifecycleModule from '../src/lifecycle.js'
 import * as memoryModule from '../src/memory.js'
+import { createTestScheduler } from '../src/testing.js'
 
 const srcDir = fileURLToPath(new URL('../src/', import.meta.url))
 
@@ -40,6 +41,27 @@ function hasReverseBarrelImport(source: string): boolean {
   return staticImportOrExport.test(code) || dynamicImport.test(code)
 }
 
+/**
+ * AC4 静态守卫（R1/B1）：扫描前先剥注释与字符串字面量（复用上方 COMMENTS_AND_STRINGS），
+ * 守卫目标 = **host 全局 timer API**，非任何同名调用。三条正则：
+ *  ① 裸调用（负向 lookbehind 排除 `scheduler.`/`globalThis.` 等属性调用 ——
+ *     `readonly setTimeout: (…) => unknown` 的 property-signature 成员位因
+ *     `:` 阻断 `\s*\(` 不命中，B1 教训：旧 `\b…\s*\(` 正则对本设计自身缝签名
+ *     ≥9 处误报、任何正确实现下永不绿）；
+ *  ② 显式 `globalThis.…`（旧自建 system timer 的确切形态）；
+ *  ③ `Date.now(`。
+ * 守卫自带正反样本表先证判别力，再扫七生产文件（testing.ts 豁免：`withTimeout`
+ * 是 never-settle 测试守卫，非生产调度；同时承载受控 fake Timer 测试实现）。
+ */
+const HOST_GLOBAL_TIMER_BARE = /(?<![\w$.])(?:setTimeout|setInterval|clearTimeout|clearInterval)\s*\(/
+const HOST_GLOBAL_TIMER_GLOBALTHIS = /\bglobalThis\s*\.\s*(?:setTimeout|setInterval|clearTimeout|clearInterval)\s*\(/
+const DATE_NOW = /\bDate\s*\.\s*now\s*\(/
+
+function hasHostGlobalTimerApi(source: string): boolean {
+  const code = source.replace(COMMENTS_AND_STRINGS, ' ')
+  return HOST_GLOBAL_TIMER_BARE.test(code) || HOST_GLOBAL_TIMER_GLOBALTHIS.test(code) || DATE_NOW.test(code)
+}
+
 describe('module graph regression (R3, owner #2)', () => {
   it('deep-imports each adapter/core module without the barrel: no TDZ, real instances', async () => {
     // All class/factory bindings must be defined — a residual module cycle
@@ -52,12 +74,12 @@ describe('module graph regression (R3, owner #2)', () => {
 
     const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nomicore-module-graph-'))
     try {
-      const filePersistence = new fileModule.FilePersistence({ rootDir })
+      const filePersistence = new fileModule.FilePersistence({ rootDir, scheduler: createTestScheduler() })
       expect(filePersistence.getStatus()).toBe('ready')
       await filePersistence.dispose()
       expect(filePersistence.getStatus()).toBe('disposed')
 
-      const memoryPersistence = new memoryModule.MemoryPersistence()
+      const memoryPersistence = new memoryModule.MemoryPersistence({ scheduler: createTestScheduler() })
       expect(memoryPersistence.getStatus()).toBe('ready')
       await memoryPersistence.dispose()
     } finally {
@@ -102,5 +124,44 @@ describe('module graph regression (R3, owner #2)', () => {
     for (const source of illegalSamples) {
       expect(hasReverseBarrelImport(source), `illegal sample missed: ${JSON.stringify(source)}`).toBe(true)
     }
+  })
+
+  it('AC4 static guard: discriminator samples first, then zero host-global timer API hits in production src', () => {
+    // 判别力样本表先证后扫（B1 教训：旧 `\b…\s*\(` 正则对本设计自身的 scheduler 缝
+    // 签名 ≥9 处误报、任何正确实现下永不绿）。合法样本 = 属性调用 / property-signature
+    // 成员位 / 注释或字符串内提及；非法样本 = 裸调用 / globalThis / Date.now。
+    const legalSamples = [
+      'this.scheduler.setTimeout(callback, 10)', // 属性调用：scheduler 缝
+      'timer.setTimeout(cb, 10)',
+      'readonly setTimeout: (callback: () => void, delayMs: number) => unknown', // 接口 property-signature 成员位
+      'setTimeout: (callback, delayMs) => ctx.timeout(callback, delayMs)',      // service.ts 桥接箭头形态
+      'this.scheduler.clearTimeout(handle)',
+      '// a comment mentioning setTimeout(cb, 10) is fine',
+      "const note = 'setTimeout(cb, 10) inside a string is fine'",
+      "const named = `globalThis.setTimeout(cb, 10) in a template literal`",
+    ]
+    const illegalSamples = [
+      'setTimeout(callback, 10)',
+      'globalThis.setTimeout(cb, 10)',
+      'setInterval(cb, 10)',
+      'clearTimeout(x)',
+      'globalThis.clearTimeout(x)',
+      'Date.now()',
+    ]
+    for (const source of legalSamples) {
+      expect(hasHostGlobalTimerApi(source), `legal sample flagged: ${JSON.stringify(source)}`).toBe(false)
+    }
+    for (const source of illegalSamples) {
+      expect(hasHostGlobalTimerApi(source), `illegal sample missed: ${JSON.stringify(source)}`).toBe(true)
+    }
+
+    // 生产文件（testing.ts 是受控测试 subpath，豁免其中的测试 Timer；dsh 包由
+    // probe/profile 另行锚定）。
+    const offenders: string[] = []
+    for (const fileName of ['contract.ts', 'lifecycle.ts', 'memory.ts', 'file.ts', 'index.ts', 'service.ts']) {
+      const source = fs.readFileSync(path.join(srcDir, fileName), 'utf8')
+      if (hasHostGlobalTimerApi(source)) offenders.push(fileName)
+    }
+    expect(offenders).toEqual([])
   })
 })

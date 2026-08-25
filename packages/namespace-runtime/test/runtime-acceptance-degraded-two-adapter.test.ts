@@ -31,6 +31,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import type { DocHandle, User } from '@nomicore/persistence';
 import { createMemoryPersistence, FilePersistence } from '@nomicore/persistence';
+import { realPersistenceScheduler } from './real-persistence-scheduler.js';
 import { createNamespaceRuntimeWithSeam } from '../src/runtime.js';
 import type { NamespaceRuntime } from '../src/index.js';
 
@@ -85,13 +86,17 @@ function memoryCtx(): AdapterCtx {
       const store = new Map<string, Uint8Array>();
       let failing = false;
       const writer = createMemoryPersistence({
+        scheduler: realPersistenceScheduler,
         schedule: { debounceMs: 5, maxDirtyMs: 60 },
         writeSnapshot: async (key, snapshot) => {
           if (failing) throw new Error('io down (deterministic)');
           store.set(key, snapshot.slice());
         },
       });
-      const reader = createMemoryPersistence({ readSnapshot: async (key) => store.get(key) });
+      const reader = createMemoryPersistence({
+        scheduler: realPersistenceScheduler,
+        readSnapshot: async (key) => store.get(key),
+      });
       const doc = await makeDoc();
       const handle = await writer.createDoc(OWNER, 'ns-1', doc);
       return {
@@ -124,7 +129,7 @@ function fileCtx(): AdapterCtx {
       const rootDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'nsr-degraded-'));
       const usersDir = path.join(rootDir, 'users');
       const blockerPath = usersDir;
-      const mk = () => new FilePersistence({ rootDir, schedule: { debounceMs: 5, maxDirtyMs: 60 } });
+      const mk = () => new FilePersistence({ rootDir, scheduler: realPersistenceScheduler, schedule: { debounceMs: 5, maxDirtyMs: 60 } });
       const writer = mk();
       const doc = await makeDoc();
       const handle = await writer.createDoc(OWNER, 'ns-1', doc);

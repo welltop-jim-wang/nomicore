@@ -32,6 +32,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import type { DocHandle, User } from '@nomicore/persistence';
 import { createMemoryPersistence, FilePersistence } from '@nomicore/persistence';
+import { realPersistenceScheduler } from './real-persistence-scheduler.js';
 import { createNamespaceRuntime } from '../src/runtime.js';
 import type { NamespaceRuntime } from '../src/index.js';
 
@@ -121,12 +122,16 @@ describe('D-5：生产装配——MemoryPersistence 全链（createNamespaceRunt
     async () => {
       const store = new Map<string, Uint8Array>();
       const writer = createMemoryPersistence({
+        scheduler: realPersistenceScheduler,
         schedule: { debounceMs: 5, maxDirtyMs: 60 },
         writeSnapshot: async (key, snapshot) => {
           store.set(key, snapshot.slice());
         },
       });
-      const reader = createMemoryPersistence({ readSnapshot: async (key) => store.get(key) });
+      const reader = createMemoryPersistence({
+        scheduler: realPersistenceScheduler,
+        readSnapshot: async (key) => store.get(key),
+      });
       const handle = await writer.createDoc(OWNER, 'ns-1', await makeDoc(ENV1));
       const { runtime, dirty } = await readyProductionRuntime(handle, (h) => writer.saveDoc(h));
       try {
@@ -202,9 +207,9 @@ describe('D-5：生产装配——FilePersistence 全链（真实磁盘 + crash-
   it('T5.2 六步全链（File）：P0→读取→ROOT write→SCHEMA replacement→磁盘落盘→新实例 crash-restart→close；dirty 每成功写恰 +1；post-close getSchemaEnvelope throw（D-2 红）',
     async () => {
       const rootDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'nsr-prod-assembly-'));
-      const writer = new FilePersistence({ rootDir, schedule: { debounceMs: 5, maxDirtyMs: 60 } });
+      const writer = new FilePersistence({ rootDir, scheduler: realPersistenceScheduler, schedule: { debounceMs: 5, maxDirtyMs: 60 } });
       const handle = await writer.createDoc(OWNER, 'ns-1', await makeDoc(ENV1));
-      const restart = (): FilePersistence => new FilePersistence({ rootDir });
+      const restart = (): FilePersistence => new FilePersistence({ rootDir, scheduler: realPersistenceScheduler });
       const { runtime, dirty } = await readyProductionRuntime(handle, (h) => writer.saveDoc(h));
       try {
         // ① P0 真实编译

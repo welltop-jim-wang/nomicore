@@ -8,8 +8,8 @@
 //     existing document.
 import { describe, expect, it } from 'vitest'
 import * as Y from 'yjs'
-import { createMemoryPersistence, type PersistenceTimer, type User } from '../src/index.js'
-import { createDocStore, createTestTimer, withTimeout, type DocStoreHooks } from '../src/testing.js'
+import { createMemoryPersistence, type PersistenceScheduler, type User } from '../src/index.js'
+import { createDocStore, createTestScheduler, withTimeout, type DocStoreHooks } from '../src/testing.js'
 
 function docWithMeta(docId: string, who?: string): Y.Doc {
   const doc = new Y.Doc()
@@ -19,9 +19,9 @@ function docWithMeta(docId: string, who?: string): Y.Doc {
 }
 
 /** Wires an adapter whose I/O delegates to the *current* methods of `store`. */
-function adapterOver(store: DocStoreHooks, timer?: PersistenceTimer) {
+function adapterOver(store: DocStoreHooks, scheduler: PersistenceScheduler) {
   return createMemoryPersistence({
-    ...(timer !== undefined ? { timer } : {}),
+    scheduler,
     readSnapshot: (key, signal) => store.read(key, signal),
     writeSnapshot: (key, snapshot, signal) => store.write(key, snapshot, signal),
   })
@@ -69,11 +69,11 @@ describe('SA7 dynamic verification: store isolation (SA4 R1 / IO-1..IO-3)', () =
     const storeA = createDocStore()
     const storeB = createDocStore() // brand-new and empty
 
-    const a = adapterOver(storeA)
+    const a = adapterOver(storeA, createTestScheduler())
     const handle = await a.createDoc(alice, 'doc1', docWithMeta('doc1', 'A-content'))
 
     // Live-instance isolation: B over a different store sees nothing of A.
-    const bLive = adapterOver(storeB)
+    const bLive = adapterOver(storeB, createTestScheduler())
     expect(await bLive.loadDoc(alice, 'doc1')).toBeNull()
     await bLive.dispose()
 
@@ -82,7 +82,7 @@ describe('SA7 dynamic verification: store isolation (SA4 R1 / IO-1..IO-3)', () =
 
     // SA4 R1 attack: a fresh adapter over the still-empty storeB must neither
     // read A's content nor be denied creation by a fake duplicate.
-    const b = adapterOver(storeB)
+    const b = adapterOver(storeB, createTestScheduler())
     expect(await b.loadDoc(alice, 'doc1')).toBeNull()
     const created = await b.createDoc(alice, 'doc1', docWithMeta('doc1', 'B-content'))
     expect(created.doc.getMap('ROOT').get('who')).toBe('B-content')
@@ -94,9 +94,9 @@ describe('SA7 dynamic verification: store isolation (SA4 R1 / IO-1..IO-3)', () =
   })
 
   it('clears the instance mirror on dispose so a later no-hook instance cannot resurrect it', async () => {
-    const timer = createTestTimer()
+    const scheduler = createTestScheduler()
     const alice: User = { userId: 'alice' }
-    const a = createMemoryPersistence({ timer }) // no hooks: instance-private mirror
+    const a = createMemoryPersistence({ scheduler }) // no hooks: instance-private mirror
 
     const handle = await a.createDoc(alice, 'doc1', docWithMeta('doc1', 'mirror-me'))
     // The creating instance still sees its own doc (live cell).
@@ -105,7 +105,7 @@ describe('SA7 dynamic verification: store isolation (SA4 R1 / IO-1..IO-3)', () =
     await cached!.release()
 
     // A second live no-hook instance shares no mirror with A.
-    const b = createMemoryPersistence({ timer })
+    const b = createMemoryPersistence({ scheduler })
     expect(await b.loadDoc(alice, 'doc1')).toBeNull()
     await b.dispose()
 
@@ -113,22 +113,22 @@ describe('SA7 dynamic verification: store isolation (SA4 R1 / IO-1..IO-3)', () =
     await a.dispose()
 
     // After dispose the mirror is cleared: nothing resurrects in-process.
-    const c = createMemoryPersistence({ timer })
+    const c = createMemoryPersistence({ scheduler })
     expect(await c.loadDoc(alice, 'doc1')).toBeNull()
     const recreated = await c.createDoc(alice, 'doc1', docWithMeta('doc1', 'fresh'))
     expect(recreated.doc.getMap('ROOT').get('who')).toBe('fresh')
     await recreated.release()
     await c.dispose()
-    expect(timer.pending()).toBe(0)
+    expect(scheduler.pending()).toBe(0)
   })
 })
 
 describe('SA7 dynamic verification: create/load evidence ordering', () => {
   it('waits for a pending load and rejects create when the read finds committed content', async () => {
-    const timer = createTestTimer()
+    const scheduler = createTestScheduler()
     const alice: User = { userId: 'alice' }
     const store = createDocStore()
-    const persistence = adapterOver(store, timer)
+    const persistence = adapterOver(store, scheduler)
     const gate = armReadGate(store)
     const persisted = docWithMeta('doc1', 'OLD')
 
@@ -146,6 +146,6 @@ describe('SA7 dynamic verification: create/load evidence ordering', () => {
 
     await loaded!.release()
     await persistence.dispose()
-    expect(timer.pending()).toBe(0)
+    expect(scheduler.pending()).toBe(0)
   })
 })

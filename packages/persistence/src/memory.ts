@@ -2,19 +2,25 @@ import type { Context } from '@deepseek-ai/cordis'
 import type * as Y from 'yjs'
 import { PersistenceLifecycle, type PersistenceStatus } from './lifecycle.js'
 import {
-  provideDocPersistence,
+  provideNomicorePersistence,
   type DocHandle,
   type DocPersistence,
   type PersistenceSchedule,
-  type PersistenceTimer,
+  type PersistenceScheduler,
   type User,
 } from './contract.js'
+import { assertPersistenceHostDependencies, createCordisPersistenceScheduler } from './service.js'
 
 const TEST_FACTORY = Symbol('MemoryPersistence test factory')
 
 export interface MemoryPersistenceOptions {
-  readonly schedule?: Partial<PersistenceSchedule>
-  readonly timer?: PersistenceTimer
+  readonly schedule?: Partial<PersistenceSchedule> | undefined
+  /**
+   * Adapter-owned scheduling seam, injected by the host (the production plugin
+   * path derives it from `ctx.timeout` via `createCordisPersistenceScheduler`).
+   * Required: the adapter never provides or falls back to a system timer.
+   */
+  readonly scheduler: PersistenceScheduler
   /** Implementations must honor `signal` to make in-flight I/O cancellable. */
   readonly writeSnapshot?: (key: string, snapshot: Uint8Array, signal: AbortSignal) => Promise<void> | void
   /** Implementations must honor `signal` to make in-flight I/O cancellable. */
@@ -38,7 +44,7 @@ export class MemoryPersistence implements DocPersistence {
   private readonly core: PersistenceLifecycle
   private readonly snapshots = new Map<string, StoredSnapshot>()
 
-  constructor(private readonly options: MemoryPersistenceOptions = {}) {
+  constructor(private readonly options: MemoryPersistenceOptions) {
     const core = new PersistenceLifecycle(
       {
         // Byte-order and await-depth identical to the pre-core restore/flush
@@ -56,7 +62,7 @@ export class MemoryPersistence implements DocPersistence {
       },
       {
         ...(options.schedule !== undefined ? { schedule: options.schedule } : {}),
-        ...(options.timer !== undefined ? { timer: options.timer } : {}),
+        scheduler: options.scheduler,
       },
     )
     this.core = core
@@ -78,8 +84,10 @@ export class MemoryPersistence implements DocPersistence {
 
   /** Cordis owns service registration cleanup; this effect closes only adapter resources. */
   apply(ctx: Context): void {
+    // AC2: loud fail on missing clock/timer before ANY service is provided.
+    assertPersistenceHostDependencies(ctx)
     ctx.effect(() => {
-      provideDocPersistence(ctx, this)
+      provideNomicorePersistence(ctx, this)
       return () => this.dispose()
     }, 'memory-persistence: service')
   }
@@ -100,16 +108,19 @@ export class MemoryPersistence implements DocPersistence {
   }
 }
 
-export function createMemoryPersistence(options: MemoryPersistenceOptions = {}): MemoryPersistence {
+export function createMemoryPersistence(options: MemoryPersistenceOptions): MemoryPersistence {
   return new MemoryPersistence(options)
 }
 
 /** Cordis plugin factory; each invocation owns an isolated adapter instance. */
-export function createMemoryPersistencePlugin(options: MemoryPersistenceOptions = {}) {
+export function createMemoryPersistencePlugin(options: Omit<MemoryPersistenceOptions, 'scheduler'> = {}) {
   let instance: MemoryPersistence | undefined
   return {
     apply(ctx: Context) {
-      instance = createMemoryPersistence(options)
+      instance = new MemoryPersistence({
+        ...options,
+        scheduler: createCordisPersistenceScheduler(ctx),
+      })
       instance.apply(ctx)
     },
     get instance(): MemoryPersistence | undefined { return instance },
