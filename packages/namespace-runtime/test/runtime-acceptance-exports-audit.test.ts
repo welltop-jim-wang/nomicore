@@ -53,15 +53,18 @@ describe('AC6：公共 exports 审计（模块级导出表精确性）', () => {
     expect(typeof entry.RuntimeWriteFatalError).toBe('function');
   });
 
-  it('T1.4（存量审计锚）：package.json exports 键集恰 [. ]——无 ./testing 子路径（配置审计，防未来回潮）', () => {
-    // 配置审计（package.json 是配置元数据，非被测源码文本；断言当前真实现状——首跑必绿）。
-    // 契约：D-1/裁决 A——seam 撤出以「包内模块通道（相对导入）」兑现，绝不新增 "./testing"
-    // 子路径 export（private:true 无包外消费方，子路径没有兑付对象）。
+  it('T1.4（存量审计锚）：package.json exports 键集恰 [".", "./internal"]——./internal 为 ADR-0009 冻结的 Registry 生产 seam，仍无任何测试子路径（配置审计，防回潮）', () => {
+    // 配置审计（package.json 是配置元数据，非被测源码文本）。
+    // 契约演进（issue #109）：issue #93 立法的不变量「testing seam 绝不进 package entry」保持；
+    // ADR-0009 §模块与 Cordis service（docs/adr/0009-namespace-registry-leases-and-host-lifecycle.md）
+    // 冻结新增唯一生产 subpath "./internal" → "./src/internal.ts"（Registry 专用受限构造通道，
+    // 非测试通道——p0Gate/compile/fault 注入面在 internal entry 上零暴露，见
+    // runtime-registry-internal-seam.test.ts / runtime-registry-internal-type-guard.test-d.ts）。
     const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as {
       exports?: Record<string, unknown>;
     };
     expect(pkg.exports).toBeTypeOf('object');
     const keys = Object.keys(pkg.exports as Record<string, unknown>).sort();
-    expect(keys).toEqual(['.']);
+    expect(keys).toEqual(['.', './internal']);
   });
 });
