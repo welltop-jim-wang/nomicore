@@ -1,5 +1,7 @@
 # AC 验收清单 — namespace-runtime：原子 SCHEMA replacement 与 ROOT generation（issue #91）
 
+> **SUPERSEDED（已取代）**：这是 round 1 验收记录；AC3 所述静默顶层投影已废止。当前验收结论见 `task_namespace-runtime-replace-schema-rev1_ac_checklist.md`，provided root 未声明键必须响亮失败且零写入。
+
 总控逐条核对（2026-08-24，Phase 4 收尾门禁）。证据锚：SA6 冻结测试（15+1 红灯 → 全绿）、SA7 补锚（9 用例）、总控亲跑四闸口、SA4/SA7 verdict 双 pass。
 
 | AC | 要求 | 判定 | 证据 |

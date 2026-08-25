@@ -1,5 +1,7 @@
 # SA1 设计（R1）— @nomicore/namespace-runtime：全链集成验收收口——AC7 文档词汇收口、AC6 exports 审计确认与验收锚定完整性复核（issue #93）
 
+> **SUPERSEDED（已取代）**：本 round 1 设计允许 testing seam 从 package entry 导出，该裁决已废止。当前设计见 `task_namespace-runtime-integration-acceptance-rev1_design.md`。
+
 - 任务类型：功能开发（集成验收与阶段收口）
 - 前置事实：NamespaceRuntime 全部能力已由 #86–#92 实现并合入本分支；SA6 验收测试 3 文件 8 用例**首次运行即绿**（存量能力，如实标注），全仓基线 90 files / 1101 tests + `pnpm typecheck` 七包全绿（SA6 运行记录，简报 §SA6）。
 - 本设计交付物：**纯文档收口修订清单（ADR 0008 修订节 + CONTEXT.md 词条）+ 仓库卫生收尾（`.mabf-done` 删除固化 + `.gitignore` 防复发）+ AC6 公共 exports 审计收口确认 + 验收锚定完整性复核 + SA4/SA7 可执行的静态核对协议**。零生产代码改动。

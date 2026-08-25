@@ -1,5 +1,7 @@
 # Dispatch Log — namespace-runtime：原子 SCHEMA replacement 与 ROOT generation（issue #91）
 
+> **SUPERSEDED（已取代）**：本日志记录 round 1 流程，其中 D7 顶层静默投影契约已废止。当前修订流程见 `task_namespace-runtime-replace-schema-rev1_dispatch.md`。
+
 | # | 派发时间 | SA | 阶段 | 完成时间 | 决策逻辑 |
 |---|---------|-----|------|---------|---------|
 | 1 | 19:31 | SA6 | Phase 1 验收锚定 | 19:43 | 功能开发流程起点：按简报 AC1–AC10 编写 replaceSchema 红灯验收测试，先红后绿 |

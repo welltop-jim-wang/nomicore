@@ -49,6 +49,14 @@ function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+function deferred(): { promise: Promise<void>; resolve: () => void } {
+  let resolve!: () => void;
+  const promise = new Promise<void>((r) => {
+    resolve = r;
+  });
+  return { promise, resolve };
+}
+
 function readValue(runtime: NamespaceRuntime, p: readonly (string | number)[]): unknown {
   const read = runtime.read(p);
   if (!read.ok) throw new Error(`读取应成功，实际 code=${read.code}`);
@@ -97,6 +105,84 @@ function makeMemoryPair(): {
   const reader = createMemoryPersistence({ readSnapshot: async (key) => store.get(key) });
   return { writer, reader, store };
 }
+
+describe('issue #102：P0 → ROOT → SCHEMA → ROOT → close barrier 共享单 FIFO', () => {
+  it('以受控 P0/notifier/release gate 确定性证明完整接纳顺序与逐槽执行顺序', async () => {
+    const { writer, reader } = makeMemoryPair();
+    const handle = await writer.createDoc(OWNER, 'ns-1', await makeDoc(ENV1));
+    const p0Gate = deferred();
+    const notifyGates = [deferred(), deferred(), deferred()];
+    const events: string[] = [];
+    let notifyIndex = 0;
+    const originalRelease = handle.release.bind(handle);
+    handle.release = async () => {
+      events.push('release:start');
+      await originalRelease();
+      events.push('release:end');
+    };
+    const runtime = createNamespaceRuntimeWithSeam({
+      handle,
+      p0Gate: p0Gate.promise,
+      notifyDirty: async () => {
+        const index = notifyIndex++;
+        events.push(`notify:${index + 1}:start`);
+        await notifyGates[index]!.promise;
+        await writer.saveDoc(handle);
+        events.push(`notify:${index + 1}:end`);
+      },
+    });
+
+    try {
+      // Runtime 返回时 P0 已在队首；四个后续调用在同一同步 turn 接纳。
+      const first = runtime.mutateRoot({ op: 'set', path: ['n'], value: 2 });
+      const replacement = runtime.replaceSchema({ schema: { ...ENV2 }, root: { n: 10, a: 'z', b: true } });
+      const third = runtime.mutateRoot({ op: 'set', path: ['n'], value: 30 });
+      const close = runtime.close();
+      expect(runtime.getStatus().lifecycle).toBe('closing');
+      expect(events).toEqual([]);
+
+      p0Gate.resolve();
+      await expect.poll(() => events, { interval: 5, timeout: 5_000 }).toEqual(['notify:1:start']);
+      expect(handle.doc.getMap('ROOT').get('n')).toBe(2);
+      expect(handle.doc.getMap('SCHEMA').get('id')).toBe('ns-1');
+
+      notifyGates[0]!.resolve();
+      await expect.poll(() => events, { interval: 5, timeout: 5_000 }).toEqual([
+        'notify:1:start', 'notify:1:end', 'notify:2:start',
+      ]);
+      expect(handle.doc.getMap('ROOT').get('n')).toBe(10);
+      expect(handle.doc.getMap('ROOT').get('b')).toBe(true);
+      expect(handle.doc.getMap('SCHEMA').get('id')).toBe('ns-2');
+
+      notifyGates[1]!.resolve();
+      await expect.poll(() => events, { interval: 5, timeout: 5_000 }).toEqual([
+        'notify:1:start', 'notify:1:end', 'notify:2:start', 'notify:2:end', 'notify:3:start',
+      ]);
+      expect(handle.doc.getMap('ROOT').get('n')).toBe(30);
+      expect(events).not.toContain('release:start');
+
+      notifyGates[2]!.resolve();
+      await expect(first).resolves.toEqual({ ok: true });
+      await expect(replacement).resolves.toEqual({ ok: true });
+      await expect(third).resolves.toEqual({ ok: true });
+      await expect(close).resolves.toBeUndefined();
+      expect(events).toEqual([
+        'notify:1:start', 'notify:1:end',
+        'notify:2:start', 'notify:2:end',
+        'notify:3:start', 'notify:3:end',
+        'release:start', 'release:end',
+      ]);
+      expect(runtime.getStatus().lifecycle).toBe('closed');
+    } finally {
+      p0Gate.resolve();
+      for (const gate of notifyGates) gate.resolve();
+      await runtime.close().catch(() => {});
+      await handle.release().catch(() => {});
+      await reader.dispose();
+      await writer.dispose();
+    }
+  });
+});
 
 describe('AC1：真实 VFSL compiler + doc-runtime + MemoryPersistence 端到端（Runtime 全能力）', () => {
   it('全链：P0→active schema→载体投影读取→ROOT write→SCHEMA replacement→跨实例持久化→close',

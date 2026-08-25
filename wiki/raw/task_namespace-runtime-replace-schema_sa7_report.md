@@ -1,5 +1,7 @@
 # SA7 动态验证报告 — namespace-runtime replaceSchema（issue #91 Phase 4）
 
+> **SUPERSEDED（已取代）**：本报告是 round 1 动态证据，包含随后废止的顶层静默投影契约。当前动态验证见 `task_namespace-runtime-replace-schema-rev1_sa7_report.md`。
+
 - **Date**: 2026-08-24（SA7 独立动态验证）
 - **对象**: SA3 实现（工作树未提交 diff：base `docs/namespace-runtime`@1616c28 == HEAD；`schema-write.ts` / `schema-replace.ts` 新建 + 7 文件修改 + 3 冻结测试）
 - **输入**: 任务简报（AC1–AC10 + SA6 冻结 13 契约锚）、设计 R1.1（重点 D8/A3 撕裂态、D9 末条注入路径 α/β/γ）、SA2 评审 §5 红线、SA4 验尸报告（§10 补锚配方 / §12 动态审核重点）、ADR-0008

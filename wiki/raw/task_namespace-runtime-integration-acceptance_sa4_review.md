@@ -1,5 +1,7 @@
 # SA4 静态验尸报告
 
+> **SUPERSEDED（已取代）**：本报告验证 issue #93 round 1，实现中 testing seam 曾从 package entry 导出；该结论已废止。当前复审见 `task_namespace-runtime-integration-acceptance-rev1_sa4_review.md`。
+
 **Date**: 2026-08-25
 **Verdict**: pass
 

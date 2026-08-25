@@ -1,3 +1,21 @@
-需求（issue #90）：在 NamespaceRuntime 实现唯一 write sequencer 与 validated ROOT write——mutateRoot 同步接纳严格 FIFO，槽内经 lifecycle/fatal + writable gate、递归冻结快照、执行时 active schema、applyValidatedMutation 单事务、同槽 await notifyDirty 后释放；persistence-degraded 拦写不拦读/P0；fatal 走 Promise rejection 并永久关写保读。
-改动：packages/namespace-runtime/src/write.ts（新建，S1–S7 写槽 + 受控 snapshotter + fatal 分类 + RootMutationIssue/MutateRootResult）+ runtime.ts（seam +notifyDirty?、第八键 mutateRoot）+ sequencer.ts（enqueue 泛化）+ errors.ts（RuntimeWriteFatalError/phase + 稳定码）+ index.ts（导出面）+ packages/doc-runtime/src/index.ts（恢复 applyValidatedMutation 与两类型名目导出）；测试新增 runtime-mutate-root-sequencer/persistence/snapshotter-array/sa7-dynamic 四文件 23 用例 + doc-runtime 两守卫测试翻转；版本 namespace-runtime 0.1.1、doc-runtime 0.1.8。
-验证：全量 pnpm test 79 文件 1050 用例全绿 exit 0（含真实 Persistence 跨实例集成与 degraded 全链），pnpm typecheck 七包 + tsc -p tsconfig.typecheck.json 双通道 exit 0（.mabf-bg/verify-final.log）；SA4 静态验尸 pass + SA7 动态验证 pass（wiki/raw/task_namespace-runtime-write-sequencer_*）。
+# Phase 3 最终整体审查与合并门禁（issue #102 / PR #85）
+
+## 结论
+
+PR #85 在 `origin/main`（`a78f416db697f56257e0f4bf9fead8118ba3f16c`）的 merge-base 上完成 Standards / Spec 双轴整体审查。生命周期与 capability、P0/ROOT/SCHEMA/close 单 FIFO、fatal × close、dirty notification、Memory/File Persistence、公共 exports/所有权和文档术语均有确定性测试与静态审计证据。未发现未处理的 merge blocker；PR 可合并。
+
+## 修订
+
+- 为 issue #91 round 1 中仍描述“顶层声明域投影 / 静默剥离”的历史 `wiki/raw/` 主档案增加顶部 `SUPERSEDED（已取代）` 标记，并链接 rev1 当前裁决：provided root 作为完整最终 logical ROOT 原样封闭校验，未知顶层或嵌套键均响亮失败且零写入。
+- 将本报告由过期的 issue #90 阶段报告更新为 issue #102 最终门禁报告。
+
+## 验证证据
+
+- `pnpm typecheck`
+- `pnpm test`
+- `pnpm exec tsc -p tsconfig.typecheck.json --noEmit`
+- `git merge-tree`：无冲突；GitHub PR 状态 `MERGEABLE` / `CLEAN`
+- GitHub CI：Node 20 / 24 均通过
+- 前置 issue #86–#93 均已关闭
+
+最终建议：PR #85 可合并到 `main`；NamespaceRegistry、REST/WS、authorization、raw Yjs sync 与 META 写继续留在后续独立 Phase。

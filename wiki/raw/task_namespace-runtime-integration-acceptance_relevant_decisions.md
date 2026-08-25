@@ -1,5 +1,7 @@
 # 相关决议 (Relevant Decisions) — 全链 SA 复用
 
+> **SUPERSEDED（已取代）**：本 round 1 摘录后的 AC6 判读允许 testing seam 公共导出，该结论已废止。当前决议收口见 `task_namespace-runtime-integration-acceptance-rev1_relevant_decisions.md`。
+>
 > SA8 前置门禁产出。只摘录，不裁决；引用编号与原文，需要时按编号回查 ADR 全文。
 > 被审对象：`wiki/raw/task_namespace-runtime-integration-acceptance.md`（issue #93，NamespaceRuntime 全链集成验收与阶段收口）。
 > ADR 全集 0001–0008 已逐一全文读取；CONTEXT.md 术语随附。

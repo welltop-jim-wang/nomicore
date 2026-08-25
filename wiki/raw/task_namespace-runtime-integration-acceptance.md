@@ -1,5 +1,7 @@
 # 任务简报 — namespace-runtime：全链集成验收与阶段收口（issue #93）
 
+> **SUPERSEDED（已取代）**：本文是 issue #93 round 1 档案，其中 testing seam 公共导出结论已废止。当前裁决见 `task_namespace-runtime-integration-acceptance-rev1_design.md`：seam 仅保留包内模块通道，不从 package entry 导出。
+
 - repositoryId: nomicore（GitHub: welltop-jim-wang/nomicore）
 - issue: #93
 - round: 1

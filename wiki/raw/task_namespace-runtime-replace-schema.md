@@ -1,5 +1,7 @@
 # 任务简报 — namespace-runtime：原子 SCHEMA replacement 与 ROOT generation
 
+> **SUPERSEDED（已取代）**：本文记录 issue #91 round 1 的历史方案；其中“顶层声明域投影 / 静默剥离 / `projectDeclaredRootKeys`”契约已废止。当前裁决见 `task_namespace-runtime-replace-schema-rev1.md`：provided root 必须作为完整最终 logical ROOT 原样封闭校验，任何未声明键均响亮失败且零写入。
+
 - Issue: #91 (welltop-jim-wang/nomicore)
 - run_id: issue-91-1787570858-562378
 - branch: fix/issue-91-on-docs-namespace-runtime

@@ -38,6 +38,8 @@ const OWNER: User = { userId: 'u-alice' };
 const TEXT = 'type ROOT = { n: number; a: string; };';
 const ENVELOPE = { lang: 'vfsl', version: 1, id: 'ns-1', text: TEXT } as const;
 const ROOT0 = { n: 1, a: 'x' };
+const TEXT_V2 = 'type ROOT = { n: number; a: string; b: boolean; };';
+const ENVELOPE_V2 = { lang: 'vfsl', version: 1, id: 'ns-2', text: TEXT_V2 } as const;
 
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
@@ -219,6 +221,63 @@ async function runDegradedRecoveryAcceptance(ctx: AdapterCtx): Promise<void> {
   }
 }
 
+/** issue #102 矩阵补口：与上面的 ROOT 场景互补，以 SCHEMA replacement 覆盖
+ * gate 后降级、degraded gate、recovery，以及 close barrier 后最后 generation 的持久化。 */
+async function runSchemaDegradedAndCloseGenerationAcceptance(ctx: AdapterCtx): Promise<void> {
+  const fx = await ctx.create();
+  const runtime = createNamespaceRuntimeWithSeam({ handle: fx.handle, notifyDirty: fx.save });
+  await expect.poll(() => runtime.getStatus().schema.state, { interval: 10, timeout: 5_000 }).toBe('ready');
+
+  try {
+    await fx.setFailing(true);
+    // writable gate 通过后才由异步 flush 降级：SCHEMA+ROOT 已提交且 dirty 已登记。
+    const replacement = await runtime.replaceSchema({
+      schema: { ...ENVELOPE_V2 },
+      root: { n: 20, a: 'schema', b: true },
+    });
+    expect(replacement).toEqual({ ok: true });
+    expect(runtime.getActiveSchema()?.id).toBe('ns-2');
+    expect(readValue(runtime, ['b'])).toBe(true);
+    await expect.poll(() => fx.handle.getStatus(), { interval: 10, timeout: 5_000 }).toBe('persistence-degraded');
+
+    // degraded 后的新 SCHEMA 写被 gate 拦住且不改 live generation。
+    const before = [...Y.encodeStateAsUpdate(fx.doc)];
+    const blocked = await runtime.replaceSchema({ schema: { ...ENVELOPE } });
+    expect(blocked.ok).toBe(false);
+    expect(JSON.stringify(blocked)).toContain('RUNTIME_WRITE_DISABLED');
+    expect([...Y.encodeStateAsUpdate(fx.doc)]).toEqual(before);
+
+    await fx.setFailing(false);
+    await expect.poll(() => fx.handle.getStatus(), { interval: 10, timeout: 5_000 }).toBe('ready');
+
+    // 最后一代不等待 debounce：成功 ROOT write 后立即 close，barrier 必须先排空 notifier；
+    // release 后 persistence entry 仍需 flush 到 savedGeneration === dirtyGeneration 才可淘汰。
+    expect(await runtime.mutateRoot({ op: 'set', path: ['n'], value: 99 })).toEqual({ ok: true });
+    await runtime.close();
+    expect(fx.handle.getStatus()).toBe('released');
+
+    await expect.poll(async () => {
+      const probe = await fx.loadFresh();
+      if (probe === null) return undefined;
+      const value = probe.doc.getMap('ROOT').get('n');
+      await probe.release();
+      return value;
+    }, { interval: 10, timeout: 5_000 }).toBe(99);
+    const fresh = await fx.loadFresh();
+    expect(fresh).not.toBeNull();
+    if (fresh === null) return;
+    expect(fresh.doc.getMap('SCHEMA').get('id')).toBe('ns-2');
+    expect(fresh.doc.getMap('SCHEMA').get('text')).toBe(TEXT_V2);
+    expect(fresh.doc.getMap('ROOT').get('n')).toBe(99);
+    expect(fresh.doc.getMap('ROOT').get('a')).toBe('schema');
+    expect(fresh.doc.getMap('ROOT').get('b')).toBe(true);
+    await fresh.release();
+  } finally {
+    await runtime.close().catch(() => {});
+    await fx.cleanup();
+  }
+}
+
 describe('AC4：persistence degraded/recovery 平行验收（MemoryPersistence）', () => {
   it('检查后降级竞态 → gate 拦截后续写 → retry 最终持久化最新 live doc（全新实例可见）', async () => {
     await runDegradedRecoveryAcceptance(memoryCtx());
@@ -228,5 +287,14 @@ describe('AC4：persistence degraded/recovery 平行验收（MemoryPersistence�
 describe('AC4：persistence degraded/recovery 平行验收（FilePersistence）', () => {
   it('检查后降级竞态 → gate 拦截后续写 → retry 最终持久化最新 live doc（磁盘恢复可见）', async () => {
     await runDegradedRecoveryAcceptance(fileCtx());
+  });
+});
+
+describe.each([
+  ['MemoryPersistence', memoryCtx],
+  ['FilePersistence', fileCtx],
+] as const)('issue #102：%s 的 SCHEMA degraded/recovery + close 最后一代矩阵', (_name, makeCtx) => {
+  it('SCHEMA gate 后降级仍登记 → degraded 拦后续 SCHEMA → recovery → ROOT 最后一代经 close 排空并持久化', async () => {
+    await runSchemaDegradedAndCloseGenerationAcceptance(makeCtx());
   });
 });

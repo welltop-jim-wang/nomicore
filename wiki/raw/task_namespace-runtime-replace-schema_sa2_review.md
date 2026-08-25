@@ -1,5 +1,7 @@
 # SA2 攻击评审报告 — namespace-runtime replaceSchema 设计（issue #91，SA1 R1）
 
+> **SUPERSEDED（已取代）**：本报告评审的是 round 1 设计，其顶层静默投影契约已废止。当前攻击评审见 `task_namespace-runtime-replace-schema-rev1_sa2_review.md`。
+
 - **Date**: 2026-08-24 20:18
 - **Reviewer**: SA2（Wallfacer，全新视角独立攻击）
 - **评审对象**: `wiki/raw/task_namespace-runtime-replace-schema_design.md`（639 行，D1–D10 + §11–§13）

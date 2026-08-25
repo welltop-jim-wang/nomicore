@@ -1,5 +1,7 @@
 # AC 逐条确认清单 — issue #93 namespace-runtime 全链集成验收与阶段收口
 
+> **SUPERSEDED（已取代）**：本 round 1 清单把 testing seam 公共导出判为通过，该结论已废止。当前清单见 `task_namespace-runtime-integration-acceptance-rev1_ac_checklist.md`。
+>
 > 来源：issue #93 Acceptance criteria（TASK.md 同步）。核对时间：2026-08-24（本地 12:30–12:50）。
 > 证据等级：runtime=可执行测试；static=静态审计/文档核对；ci=CI/流程证据。
 

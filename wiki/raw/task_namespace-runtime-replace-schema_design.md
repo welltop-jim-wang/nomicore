@@ -1,5 +1,7 @@
 # 设计文档 — @nomicore/namespace-runtime：原子 SCHEMA replacement 与 ROOT generation（issue #91）
 
+> **SUPERSEDED（已取代）**：本文是 round 1 历史设计；D7 / INV-S12 / 锚 15 中“顶层声明域投影”、静默剥离及 `projectDeclaredRootKeys` 已全部废止。当前设计见 `task_namespace-runtime-replace-schema-rev1_design.md`，provided root 按原样封闭校验。
+
 - Issue: #91（feature）｜branch `fix/issue-91-on-docs-namespace-runtime`｜base `docs/namespace-runtime`（HEAD 1616c28）
 - 契约源：ADR-0008（唯一行为契约源）+ SA6 冻结红灯测试（15+1 锚）+ 任务简报「关键上下文」10 条
 - 前置交付（已核实本分支 HEAD 在位）：#89 骨架/同步读取面/队首 P0（df22660）、#90 唯一 sequencer + validated ROOT write（1616c28）、#87/#88 doc-runtime fatal 契约 + replaceRootContent

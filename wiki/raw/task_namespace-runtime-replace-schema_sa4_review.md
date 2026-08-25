@@ -1,5 +1,7 @@
 # SA4 静态验尸报告 — namespace-runtime replaceSchema（issue #91 Phase 3）
 
+> **SUPERSEDED（已取代）**：本报告仅验证 round 1 实现，其中 D7 顶层静默投影随后被判定违反 ADR 0008 并已废止。当前静态复审见 `task_namespace-runtime-replace-schema-rev1_sa4_review.md`。
+
 - **Date**: 2026-08-24（SA4 独立验尸）
 - **对象**: SA3 实现（工作树未提交 diff：base `docs/namespace-runtime`@1616c28 == HEAD；新建 `schema-write.ts` / `schema-replace.ts` + 7 文件修改 + 3 冻结测试）
 - **Verdict**: **pass**（0 CRITICAL / 0 HIGH / 0 MEDIUM；3 LOW 观察项均不阻断——见 §11 分级清单）
