@@ -27,6 +27,7 @@ import * as Y from 'yjs';
 import { createNamespaceRuntimeWithSeam } from '../src/runtime.js';
 import { createMemoryPersistence } from '@nomicore/persistence';
 import type { DocHandle, User } from '@nomicore/persistence';
+import { realPersistenceScheduler } from './real-persistence-scheduler.js';
 
 const OWNER: User = { userId: 'u-alice' };
 const TEXT_VALID = 'type ROOT = { n: number; a: string; };';
@@ -53,12 +54,14 @@ describe('SA7 动态验证 — SA4 重点 3/5：真实 handle close 冒烟与 re
   it('DV-3 真实 MemoryPersistence handle：close 排空已接纳写 → release 真实生效（handle released 终态）→ Runtime closed/close 摘要 null/能力位停摆 → 跨实例 loadDoc 见该写', async () => {
     const store = new Map<string, Uint8Array>();
     const writer = createMemoryPersistence({
+      scheduler: realPersistenceScheduler,
       schedule: { debounceMs: 5, maxDirtyMs: 60 },
       writeSnapshot: async (key, snapshot) => {
         store.set(key, snapshot.slice());
       },
     });
     const reader = createMemoryPersistence({
+      scheduler: realPersistenceScheduler,
       readSnapshot: async (key) => store.get(key),
     });
     try {

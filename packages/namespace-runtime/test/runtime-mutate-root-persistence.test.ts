@@ -33,6 +33,7 @@ import { describe, expect, it } from 'vitest';
 import * as Y from 'yjs';
 import type { DocHandle, User } from '@nomicore/persistence';
 import { createMemoryPersistence } from '@nomicore/persistence';
+import { realPersistenceScheduler } from './real-persistence-scheduler.js';
 import { createNamespaceRuntimeWithSeam } from '../src/runtime.js';
 import type { NamespaceRuntime } from '../src/index.js';
 
@@ -66,6 +67,7 @@ function makePersistences(opts: {
 } {
   const store = new Map<string, Uint8Array>();
   const writer = createMemoryPersistence({
+    scheduler: realPersistenceScheduler,
     schedule: opts.schedule ?? { debounceMs: 5, maxDirtyMs: 60 },
     writeSnapshot: async (key, snapshot) => {
       if (opts.failWrite?.()) throw new Error('io down (deterministic)');
@@ -73,6 +75,7 @@ function makePersistences(opts: {
     },
   });
   const reader = createMemoryPersistence({
+    scheduler: realPersistenceScheduler,
     readSnapshot: async (key) => store.get(key),
   });
   return { writer, reader, store };

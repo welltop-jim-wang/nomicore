@@ -1,16 +1,15 @@
 export {
-  DOC_PERSISTENCE_SERVICE,
+  NOMICORE_PERSISTENCE_SERVICE,
   DEFAULT_PERSISTENCE_SCHEDULE,
   DocDuplicateError,
-  provideDocPersistence,
-  requireDocPersistence,
+  provideNomicorePersistence,
+  requireNomicorePersistence,
   resolvePersistenceSchedule,
-  systemPersistenceTimer,
   type DocHandle,
   type DocHandleStatus,
   type DocPersistence,
   type PersistenceSchedule,
-  type PersistenceTimer,
+  type PersistenceScheduler,
   type User,
 } from './contract.js'
 

@@ -38,6 +38,7 @@ import { describe, expect, it } from 'vitest';
 import * as Y from 'yjs';
 import { createMemoryPersistence } from '@nomicore/persistence';
 import type { DocHandle, User } from '@nomicore/persistence';
+import { realPersistenceScheduler } from './real-persistence-scheduler.js';
 import { compileSchemaEnvelope } from '@nomicore/vfsl';
 import type { CompileSchemaEnvelopeResult, SchemaEnvelope } from '@nomicore/vfsl';
 import { createNamespaceRuntimeWithSeam } from '../src/runtime.js';
@@ -52,7 +53,7 @@ async function makeHandle(opts: {
   rootCarrier?: 'map' | 'text';
   rootValues?: Record<string, unknown>;
 } = {}): Promise<{ persistence: ReturnType<typeof createMemoryPersistence>; handle: DocHandle; doc: Y.Doc }> {
-  const persistence = createMemoryPersistence();
+  const persistence = createMemoryPersistence({ scheduler: realPersistenceScheduler });
   const doc = new Y.Doc();
   const sc = doc.getMap('SCHEMA');
   for (const [k, v] of Object.entries(opts.schema ?? { ...ENVELOPE_FIXTURE })) {

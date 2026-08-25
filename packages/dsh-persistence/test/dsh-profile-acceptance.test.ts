@@ -44,71 +44,30 @@
  * 销毁恰 1 条 evict（t=1002）、doc-alpha evict 恰 3 条（设计 §5 evicts=[1002,1003,1005]）、
  * 总事件恰 28（memory failFirstFlushes=0 时间线）。F1 缺陷（watchEvict 每 handle 重复注册
  * destroyed 监听）下为 3/5/30，断言立即爆红；原 >=/find/every 型断言对该缺陷结构性失明。
+ *
+ * R6 修订（2026-08-25，issue #107 迁移）：本地 FakeTimer 整体替换为 createProbeTimeline()
+ * （观察与调度同一虚拟时间线：clockPlugin/timerPlugin 装配 profile；timeline 传入 probe）；
+ * 旧 service 常量 → NOMICORE_PERSISTENCE_SERVICE；新增「ProbeTimeline 确定性基线」
+ * describe（R1/B3 不变式 ③ 机械锚点 + SA2 R1 L-1 两计时器中途断言）。断言目标值一字未改。
  */
 import { describe, expect, it } from 'vitest'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 import * as Y from 'yjs'
+import { Context } from '@deepseek-ai/cordis'
 import {
   DEFAULT_PERSISTENCE_SCHEDULE,
-  DOC_PERSISTENCE_SERVICE,
+  NOMICORE_PERSISTENCE_SERVICE,
   FilePersistence,
   MemoryPersistence,
-  type PersistenceTimer,
 } from '@nomicore/persistence'
 import {
   createDshPersistenceProfile,
+  createProbeTimeline,
   runPersistenceProbe,
   type ProbeEvent,
 } from '../src/index.js'
-
-/** 受控时钟：测试与探针共用，flush/retry 全部落在虚拟时钟刻度上。 */
-interface FakeTimer extends PersistenceTimer {
-  advanceBy(milliseconds: number): Promise<void>
-  pending(): number
-  cleared(): readonly number[]
-}
-
-function createFakeTimer(): FakeTimer {
-  let now = 0
-  let nextId = 0
-  const cleared: number[] = []
-  const timers = new Map<number, { at: number, callback: () => void }>()
-  return {
-    now: () => now,
-    setTimeout(callback, delayMs) {
-      const id = nextId++
-      timers.set(id, { at: now + delayMs, callback })
-      return id
-    },
-    clearTimeout(timer) {
-      const id = timer as number
-      cleared.push(id)
-      timers.delete(id)
-    },
-    async advanceBy(milliseconds) {
-      const deadline = now + milliseconds
-      while (true) {
-        const due = [...timers.entries()]
-          .filter(([, timer]) => timer.at <= deadline)
-          .sort(([, left], [, right]) => left.at - right.at)[0]
-        if (!due) break
-        const [id, timer] = due
-        timers.delete(id)
-        now = timer.at
-        timer.callback()
-        await Promise.resolve()
-        await Promise.resolve()
-      }
-      now = deadline
-      await Promise.resolve()
-      await Promise.resolve()
-    },
-    pending: () => timers.size,
-    cleared: () => cleared,
-  }
-}
 
 /** ADR-0006 三条目内容布局：SCHEMA 信封 + META.docId + ROOT 数据根。 */
 function threeEntryDoc(docId: string): Y.Doc {
@@ -142,10 +101,10 @@ const waitFor = async (predicate: () => boolean, what: string, timeoutMs = 5_000
 
 describe('DSH persistence profile（AC1：薄宿主，双 Adapter 同一 contracts）', () => {
   it('memory adapter：profile 提供真实 MemoryPersistence 服务，createDoc→loadDoc→saveDoc 往返可用', async () => {
-    const timer = createFakeTimer()
-    const profile = createDshPersistenceProfile({ adapter: 'memory', timer })
+    const t = createProbeTimeline()
+    const profile = createDshPersistenceProfile({ adapter: 'memory', clock: t.clockPlugin, timer: t.timerPlugin })
     try {
-      expect(profile.ctx.get(DOC_PERSISTENCE_SERVICE)).toBe(profile.persistence)
+      expect(profile.ctx.get(NOMICORE_PERSISTENCE_SERVICE)).toBe(profile.persistence)
       expect(profile.persistence).toBeInstanceOf(MemoryPersistence)
       const owner = { userId: 'user-a' }
       const doc = threeEntryDoc('doc-alpha')
@@ -167,7 +126,7 @@ describe('DSH persistence profile（AC1：薄宿主，双 Adapter 同一 contrac
       // 反黑帽守卫：双 release 后无 phantom handle 抑制驱逐——doc 已被内核销毁、
       // 无残留计时器（若 profile 偷持 handle 或绕过驱逐，此处立即爆红）
       expect(doc.isDestroyed).toBe(true)
-      expect(timer.pending()).toBe(0)
+      expect(t.pending()).toBe(0)
     } finally {
       await profile.dispose()
     }
@@ -175,8 +134,8 @@ describe('DSH persistence profile（AC1：薄宿主，双 Adapter 同一 contrac
 
   it('file adapter：profile 提供真实 FilePersistence 服务，flush 后快照落盘 users/<user>/<doc>.snapshot', async () => {
     const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-file-ac1-'))
-    const timer = createFakeTimer()
-    const profile = createDshPersistenceProfile({ adapter: 'file', rootDir, timer })
+    const t = createProbeTimeline()
+    const profile = createDshPersistenceProfile({ adapter: 'file', rootDir, clock: t.clockPlugin, timer: t.timerPlugin })
     try {
       expect(profile.persistence).toBeInstanceOf(FilePersistence)
       const owner = { userId: 'user-a' }
@@ -184,7 +143,7 @@ describe('DSH persistence profile（AC1：薄宿主，双 Adapter 同一 contrac
       doc.getMap('ROOT').set('title', 'alpha')
       const handle = await profile.persistence.createDoc(owner, 'doc-1', doc)
       await profile.persistence.saveDoc(handle)
-      await timer.advanceBy(DEFAULT_PERSISTENCE_SCHEDULE.debounceMs)
+      await t.advanceBy(DEFAULT_PERSISTENCE_SCHEDULE.debounceMs)
       await handle.release()
       expect(fs.existsSync(path.join(rootDir, 'users', 'user-a', 'doc-1.snapshot'))).toBe(true)
     } finally {
@@ -200,8 +159,8 @@ describe('DSH persistence profile（AC1：薄宿主，双 Adapter 同一 contrac
 
 describe('inspector 探针（AC2/AC3/AC5：受控时钟下的可观察记录）', () => {
   it('AC2：记录完整链路 load → saveDoc 标脏 → 受控调度 flush → release；重复 load 同 doc、不同 handle；引用归零后才 evict', async () => {
-    const timer = createFakeTimer()
-    const result = await runPersistenceProbe({ adapter: 'memory', timer })
+    const t = createProbeTimeline()
+    const result = await runPersistenceProbe({ adapter: 'memory', timeline: t })
     expect(result.ok).toBe(true)
     const events = result.events
     const docAlpha = events.filter((event) => event.docId === 'doc-alpha')
@@ -257,8 +216,8 @@ describe('inspector 探针（AC2/AC3/AC5：受控时钟下的可观察记录）'
   })
 
   it('AC3：SCHEMA/META/ROOT 三条目与 META.docId 可观察；userA/doc1 与 userB/doc1 隔离；duplicate/meta-mismatch 记录完整', async () => {
-    const timer = createFakeTimer()
-    const result = await runPersistenceProbe({ adapter: 'memory', timer })
+    const t = createProbeTimeline()
+    const result = await runPersistenceProbe({ adapter: 'memory', timeline: t })
     expect(result.ok).toBe(true)
     const events = result.events
 
@@ -303,8 +262,8 @@ describe('inspector 探针（AC2/AC3/AC5：受控时钟下的可观察记录）'
 
   it('AC3（service 级）：file profile 下 user-a/doc-1 与 user-b/doc-1 快照分用户目录隔离，内容互不串扰；META.docId 校验响亮失败', async () => {
     const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-file-ac3-'))
-    const timer = createFakeTimer()
-    const profile = createDshPersistenceProfile({ adapter: 'file', rootDir, timer })
+    const t = createProbeTimeline()
+    const profile = createDshPersistenceProfile({ adapter: 'file', rootDir, clock: t.clockPlugin, timer: t.timerPlugin })
     try {
       const alice = { userId: 'user-a' }
       const bob = { userId: 'user-b' }
@@ -316,7 +275,7 @@ describe('inspector 探针（AC2/AC3/AC5：受控时钟下的可观察记录）'
       const handleB = await profile.persistence.createDoc(bob, 'doc-1', docB)
       await profile.persistence.saveDoc(handleA)
       await profile.persistence.saveDoc(handleB)
-      await timer.advanceBy(DEFAULT_PERSISTENCE_SCHEDULE.debounceMs)
+      await t.advanceBy(DEFAULT_PERSISTENCE_SCHEDULE.debounceMs)
       await handleA.release()
       await handleB.release()
 
@@ -347,8 +306,8 @@ describe('inspector 探针（AC2/AC3/AC5：受控时钟下的可观察记录）'
 
 describe('save 失败降级与 dispose 卫生（AC4/AC6）', () => {
   it('AC4：探针记录完整——save 失败 → persistence-degraded → degraded 窗口 saveDoc 登记（save-degraded）→ retry 成功恢复', async () => {
-    const timer = createFakeTimer()
-    const result = await runPersistenceProbe({ adapter: 'memory', timer, failFirstFlushes: 1 })
+    const t = createProbeTimeline()
+    const result = await runPersistenceProbe({ adapter: 'memory', timeline: t, failFirstFlushes: 1 })
     expect(result.ok).toBe(true)
     const degraded = result.events.filter((event) => event.docId === 'doc-degraded')
     const failedFlush = degraded.find((event): event is Extract<ProbeEvent, { type: 'flush' }> => event.type === 'flush' && event.ok === false)
@@ -376,11 +335,12 @@ describe('save 失败降级与 dispose 卫生（AC4/AC6）', () => {
   })
 
   it('AC4（service 级）：memory profile 写失败一次 → persistence-degraded → saveDoc 登记 dirty → retry 恢复', async () => {
-    const timer = createFakeTimer()
+    const t = createProbeTimeline()
     let writes = 0
     const profile = createDshPersistenceProfile({
       adapter: 'memory',
-      timer,
+      clock: t.clockPlugin,
+      timer: t.timerPlugin,
       memoryIo: {
         writeSnapshot: async () => {
           writes += 1
@@ -392,16 +352,16 @@ describe('save 失败降级与 dispose 卫生（AC4/AC6）', () => {
       const owner = { userId: 'user-a' }
       const handle = await profile.persistence.createDoc(owner, 'doc-degraded', threeEntryDoc('doc-degraded'))
       await profile.persistence.saveDoc(handle)
-      await timer.advanceBy(DEFAULT_PERSISTENCE_SCHEDULE.debounceMs)
+      await t.advanceBy(DEFAULT_PERSISTENCE_SCHEDULE.debounceMs)
       expect(profile.getStatus()).toBe('persistence-degraded')
       // (issue #79 AC5) degraded is not a saveDoc rejection reason.
       expect(handle.getStatus()).toBe('persistence-degraded')
       await expect(profile.persistence.saveDoc(handle)).resolves.toBeUndefined()
       // retry 属持久层内部退避（首次退避 = debounceMs）
-      await timer.advanceBy(DEFAULT_PERSISTENCE_SCHEDULE.debounceMs)
+      await t.advanceBy(DEFAULT_PERSISTENCE_SCHEDULE.debounceMs)
       expect(profile.getStatus()).toBe('ready')
       await expect(profile.persistence.saveDoc(handle)).resolves.toBeUndefined()
-      await timer.advanceBy(DEFAULT_PERSISTENCE_SCHEDULE.debounceMs)
+      await t.advanceBy(DEFAULT_PERSISTENCE_SCHEDULE.debounceMs)
       await handle.release()
     } finally {
       await profile.dispose()
@@ -410,8 +370,8 @@ describe('save 失败降级与 dispose 卫生（AC4/AC6）', () => {
 
   it('AC4（service 级）：file profile 写路径被阻塞 → persistence-degraded，degraded 窗口 saveDoc 登记，解除后 retry 恢复', async () => {
     const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-file-ac4-'))
-    const timer = createFakeTimer()
-    const profile = createDshPersistenceProfile({ adapter: 'file', rootDir, timer })
+    const t = createProbeTimeline()
+    const profile = createDshPersistenceProfile({ adapter: 'file', rootDir, clock: t.clockPlugin, timer: t.timerPlugin })
     try {
       const owner = { userId: 'user-a' }
       const handle = await profile.persistence.createDoc(owner, 'doc-1', threeEntryDoc('doc-1'))
@@ -419,7 +379,7 @@ describe('save 失败降级与 dispose 卫生（AC4/AC6）', () => {
       fs.rmSync(path.join(rootDir, 'users', 'user-a'), { recursive: true, force: true })
       fs.writeFileSync(path.join(rootDir, 'users', 'user-a'), 'blocker')
       await profile.persistence.saveDoc(handle)
-      await timer.advanceBy(DEFAULT_PERSISTENCE_SCHEDULE.debounceMs)
+      await t.advanceBy(DEFAULT_PERSISTENCE_SCHEDULE.debounceMs)
       // R4（总控协调）：固定轮数 settleRealIo 在本机隔离运行约 1/8 偶发 flake（SA3 实测
       // expected 'persistence-degraded', received 'ready'）——与 R3 同模式改为 deadline 式
       // waitFor（上限 5s），断言目标值不变
@@ -429,13 +389,13 @@ describe('save 失败降级与 dispose 卫生（AC4/AC6）', () => {
       expect(handle.getStatus()).toBe('persistence-degraded')
       await expect(profile.persistence.saveDoc(handle)).resolves.toBeUndefined()
       fs.rmSync(path.join(rootDir, 'users', 'user-a'), { force: true })
-      await timer.advanceBy(DEFAULT_PERSISTENCE_SCHEDULE.debounceMs)
+      await t.advanceBy(DEFAULT_PERSISTENCE_SCHEDULE.debounceMs)
       // R3（SA1 §11 风险预警）：retry flush 的 mkdir→writeFile→rename 链在本机需 14~40 轮
       // setImmediate，固定 12 轮 settleRealIo 不足——改为 deadline 式等待真实结算（上限 5s）
       await waitFor(() => profile.getStatus() === 'ready', 'file retry flush to recover (status ready)')
       expect(profile.getStatus()).toBe('ready')
       await expect(profile.persistence.saveDoc(handle)).resolves.toBeUndefined()
-      await timer.advanceBy(DEFAULT_PERSISTENCE_SCHEDULE.debounceMs)
+      await t.advanceBy(DEFAULT_PERSISTENCE_SCHEDULE.debounceMs)
       await handle.release()
     } finally {
       await profile.dispose()
@@ -445,17 +405,17 @@ describe('save 失败降级与 dispose 卫生（AC4/AC6）', () => {
 
   it('AC6：dispose 后无 timer/监听器/文件句柄/Y.Doc cache/.tmp 残留；reload 全新实例可读已提交快照', async () => {
     const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-file-ac6-'))
-    const timer = createFakeTimer()
-    const profile = createDshPersistenceProfile({ adapter: 'file', rootDir, timer })
+    const t = createProbeTimeline()
+    const profile = createDshPersistenceProfile({ adapter: 'file', rootDir, clock: t.clockPlugin, timer: t.timerPlugin })
     const owner = { userId: 'user-a' }
     const handle = await profile.persistence.createDoc(owner, 'doc-1', threeEntryDoc('doc-1'))
     handle.doc.getMap('ROOT').set('rev', 1)
     await profile.persistence.saveDoc(handle)
-    expect(timer.pending()).toBeGreaterThan(0)
+    expect(t.pending()).toBeGreaterThan(0)
 
     // R1（SA1 §9 缺陷 2）：内核 dispose 清计时器但不 flush 未决脏数据——必须先推进
     // debounce 调度让 rev=1 提交落盘，reload 才能读到 rev===1
-    await timer.advanceBy(DEFAULT_PERSISTENCE_SCHEDULE.debounceMs)
+    await t.advanceBy(DEFAULT_PERSISTENCE_SCHEDULE.debounceMs)
     // R3（SA1 §11 风险预警）：固定 12 轮 settleRealIo 在本机不足以等完 mkdir→writeFile→
     // rename 链（实测 10~103 轮）——改为 deadline 式等待「快照已提交」：.tmp 消失且
     // .snapshot 解码出 rev===1（rename 完成即提交态），上限 5s
@@ -472,9 +432,9 @@ describe('save 失败降级与 dispose 卫生（AC4/AC6）', () => {
     )
 
     await profile.dispose()
-    expect(timer.pending()).toBe(0)
+    expect(t.pending()).toBe(0)
     expect(handle.doc.isDestroyed).toBe(true)
-    expect(profile.ctx.get(DOC_PERSISTENCE_SERVICE)).toBeUndefined()
+    expect(profile.ctx.get(NOMICORE_PERSISTENCE_SERVICE)).toBeUndefined()
     expect(profile.getStatus()).toBe('disposed')
 
     // 无 .tmp 半写残留
@@ -502,7 +462,8 @@ describe('save 失败降级与 dispose 卫生（AC4/AC6）', () => {
     }
 
     // reload：同一 rootDir 全新 profile 读到已提交内容，且是新 Y.Doc 实例
-    const reloaded = createDshPersistenceProfile({ adapter: 'file', rootDir, timer: createFakeTimer() })
+    // （无调度需要 → 缺省 clock/timer 插件即可）
+    const reloaded = createDshPersistenceProfile({ adapter: 'file', rootDir })
     try {
       const loaded = await reloaded.persistence.loadDoc(owner, 'doc-1')
       expect(loaded).not.toBeNull()
@@ -513,5 +474,49 @@ describe('save 失败降级与 dispose 卫生（AC4/AC6）', () => {
       await reloaded.dispose()
       fs.rmSync(rootDir, { recursive: true, force: true })
     }
+  })
+})
+
+describe('ProbeTimeline 确定性基线（R1/B3 不变式 ③ 机械锚点）', () => {
+  it('advanceBy(500) 后新武装计时器以 manual.now() 为基：pending=1、advanceBy(10) 恰触发、触发时 now()===510', async () => {
+    const t = createProbeTimeline()
+    const ctx = new Context()
+    t.clockPlugin.apply(ctx)
+    t.timerPlugin.apply(ctx)
+    const observed: number[] = []
+
+    // advanceBy(500) 推进时间线到 500；此后 setTimeout 的到期基线必须 = manual.now()=500
+    // （不变式 ③：登记表与虚拟刻度由 timeline 闭包独占，fake timer 是该表的视图）。
+    await t.advanceBy(500)
+    expect(t.now()).toBe(500)
+
+    ctx.timeout(() => { observed.push(t.now()) }, 10)
+    expect(t.pending()).toBe(1)
+
+    await t.advanceBy(10)
+    expect(observed).toEqual([510]) // 恰触发该回调（若到期基线漂移到 0+10，advanceBy(500) 期间即被消耗，此处必红）
+    expect(t.now()).toBe(510)
+    expect(t.pending()).toBe(0)
+    await ctx.fiber.dispose()
+  })
+
+  it('L-1 两计时器中途断言：arm +5/+15 → advanceBy(20) → 触发时观测 now() 依次 === +5/+15', async () => {
+    const t = createProbeTimeline()
+    const ctx = new Context()
+    t.clockPlugin.apply(ctx)
+    t.timerPlugin.apply(ctx)
+    const observed: number[] = []
+
+    ctx.timeout(() => { observed.push(t.now()) }, 5)
+    ctx.timeout(() => { observed.push(t.now()) }, 15)
+    expect(t.pending()).toBe(2)
+
+    await t.advanceBy(20)
+    // 两腿中途断言（SA2 R1 L-1）：触发时刻观测刻度必须等于各自到期刻度（+5/+15）。
+    // 「manual 先 advance 再委托独立内部时钟 scheduler」的字面违规形态在此必红。
+    expect(observed).toEqual([5, 15])
+    expect(t.now()).toBe(20)
+    expect(t.pending()).toBe(0)
+    await ctx.fiber.dispose()
   })
 })

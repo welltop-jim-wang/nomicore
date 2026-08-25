@@ -4,15 +4,14 @@ import * as Y from 'yjs'
 import {
   DEFAULT_PERSISTENCE_SCHEDULE,
   createMemoryPersistence,
-  systemPersistenceTimer,
-  provideDocPersistence,
-  requireDocPersistence,
+  provideNomicorePersistence,
+  requireNomicorePersistence,
   resolvePersistenceSchedule,
   type DocHandle,
   type DocPersistence,
-  type PersistenceTimer,
   type User,
 } from '../src/index.js'
+import { createTestScheduler } from '../src/testing.js'
 
 const owner: User = { userId: 'alice' }
 
@@ -28,44 +27,6 @@ function stubPersistence(): DocPersistence {
   }
 }
 
-function createFakeTimer(): PersistenceTimer & {
-  advanceBy(milliseconds: number): void
-  pendingDelays(): readonly number[]
-} {
-  let now = 0
-  let nextId = 0
-  const timers = new Map<number, { at: number, callback: () => void }>()
-
-  return {
-    now: () => now,
-    setTimeout(callback, delayMs) {
-      const id = nextId++
-      timers.set(id, { at: now + delayMs, callback })
-      return id
-    },
-    clearTimeout(timer) {
-      timers.delete(timer as number)
-    },
-    advanceBy(milliseconds) {
-      const deadline = now + milliseconds
-      while (true) {
-        const due = [...timers.entries()]
-          .filter(([, timer]) => timer.at <= deadline)
-          .sort(([, left], [, right]) => left.at - right.at)[0]
-        if (!due) break
-        const [id, timer] = due
-        timers.delete(id)
-        now = timer.at
-        timer.callback()
-      }
-      now = deadline
-    },
-    pendingDelays() {
-      return [...timers.values()].map((timer) => timer.at - now).sort((left, right) => left - right)
-    },
-  }
-}
-
 describe('persistence contracts', () => {
   it('defines the ADR scheduling defaults and accepts deterministic overrides', () => {
     expect(DEFAULT_PERSISTENCE_SCHEDULE).toEqual({ debounceMs: 500, maxDirtyMs: 5_000 })
@@ -77,44 +38,37 @@ describe('persistence contracts', () => {
     expect(() => resolvePersistenceSchedule({ maxDirtyMs: Number.NaN })).toThrow(RangeError)
   })
 
-  it('provides a fake timer seam that tests can register, cancel, and advance without sleep', () => {
-    const timer = createFakeTimer()
+  it('provides a fake scheduler seam that tests can register, cancel, and advance without sleep', async () => {
+    const scheduler = createTestScheduler()
     const calls: string[] = []
 
-    const debounce = timer.setTimeout(() => calls.push('debounce'), DEFAULT_PERSISTENCE_SCHEDULE.debounceMs)
-    timer.setTimeout(() => calls.push('max-dirty'), DEFAULT_PERSISTENCE_SCHEDULE.maxDirtyMs)
-    timer.clearTimeout(debounce)
+    const debounce = scheduler.setTimeout(() => calls.push('debounce'), DEFAULT_PERSISTENCE_SCHEDULE.debounceMs)
+    scheduler.setTimeout(() => calls.push('max-dirty'), DEFAULT_PERSISTENCE_SCHEDULE.maxDirtyMs)
+    scheduler.clearTimeout(debounce)
 
-    expect(timer.now()).toBe(0)
-    expect(timer.pendingDelays()).toEqual([DEFAULT_PERSISTENCE_SCHEDULE.maxDirtyMs])
-    timer.advanceBy(DEFAULT_PERSISTENCE_SCHEDULE.debounceMs)
+    expect(scheduler.pending()).toBe(1)
+    await scheduler.advanceBy(DEFAULT_PERSISTENCE_SCHEDULE.debounceMs)
     expect(calls).toEqual([])
-    timer.advanceBy(DEFAULT_PERSISTENCE_SCHEDULE.maxDirtyMs - DEFAULT_PERSISTENCE_SCHEDULE.debounceMs)
+    await scheduler.advanceBy(DEFAULT_PERSISTENCE_SCHEDULE.maxDirtyMs - DEFAULT_PERSISTENCE_SCHEDULE.debounceMs)
     expect(calls).toEqual(['max-dirty'])
-    expect(timer.pendingDelays()).toEqual([])
-  })
-
-  it('exposes a real system timer only as the production default', () => {
-    expect(typeof systemPersistenceTimer.now).toBe('function')
-    expect(typeof systemPersistenceTimer.setTimeout).toBe('function')
-    expect(typeof systemPersistenceTimer.clearTimeout).toBe('function')
+    expect(scheduler.pending()).toBe(0)
   })
 
   it('registers and resolves the typed Cordis service from a bare Context', () => {
     const ctx = new Context()
     const persistence = stubPersistence()
 
-    const dispose = provideDocPersistence(ctx, persistence)
+    const dispose = provideNomicorePersistence(ctx, persistence)
 
-    expect(requireDocPersistence(ctx)).toBe(persistence)
-    expect(ctx.get('docPersistence')).toBe(persistence)
+    expect(requireNomicorePersistence(ctx)).toBe(persistence)
+    expect(ctx.get('nomicorePersistence')).toBe(persistence)
     expect(() => dispose()).not.toThrow()
   })
 
   it('loudly fails when a required persistence service is absent', () => {
     const ctx = new Context()
 
-    expect(() => requireDocPersistence(ctx)).toThrow(/required Cordis service "docPersistence" is unavailable/)
+    expect(() => requireNomicorePersistence(ctx)).toThrow(/required Cordis service "nomicorePersistence" is unavailable/)
   })
 
   it('keeps the public handle contract tied to Y.Doc without exposing cache controls', async () => {
@@ -135,7 +89,7 @@ describe('persistence contracts', () => {
   })
 
   it('exposes createDoc on adapter instances (issue-64 createDoc contract)', () => {
-    const persistence = createMemoryPersistence()
+    const persistence = createMemoryPersistence({ scheduler: createTestScheduler() })
     const seam = persistence as unknown as { createDoc?: unknown }
     expect(typeof seam.createDoc).toBe('function')
   })

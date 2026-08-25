@@ -15,7 +15,8 @@ import * as path from 'node:path'
 import { afterAll, describe, expect, it } from 'vitest'
 import * as Y from 'yjs'
 import { FilePersistence, createFileHandleForTest } from '../src/file.js'
-import type { DocHandle, PersistenceSchedule, PersistenceTimer, User } from '../src/contract.js'
+import type { DocHandle, PersistenceSchedule, PersistenceScheduler, User } from '../src/contract.js'
+import { createTestScheduler } from '../src/testing.js'
 
 type HandleStatus = 'ready' | 'persistence-degraded' | 'released' | 'disposed'
 
@@ -52,13 +53,12 @@ afterAll(() => {
 })
 
 /**
- * Deterministic manual timer: nothing fires until the test fires the oldest
+ * Deterministic manual scheduler: nothing fires until the test fires the oldest
  * scheduled callback. Insertion order stands in for clock order.
  */
-class ManualTimer implements PersistenceTimer {
+class ManualTimer implements PersistenceScheduler {
   private nextId = 0
   private readonly timers = new Map<number, () => void>()
-  now(): number { return 0 }
   setTimeout(callback: () => void): unknown {
     const id = this.nextId++
     this.timers.set(id, callback)
@@ -78,7 +78,7 @@ class ManualTimer implements PersistenceTimer {
 describe('issue-79: DocHandle entry-level status (FilePersistence)', () => {
   it('AC1: released and disposed handle status over the file adapter', async () => {
     const rootDir = makeRootDir()
-    const persistence = new FilePersistence({ rootDir, schedule: TEST_SCHEDULE })
+    const persistence = new FilePersistence({ rootDir, schedule: TEST_SCHEDULE, scheduler: createTestScheduler() })
 
     const handle = await createFileHandleForTest(persistence, ALICE, 'd1')
     handle.doc.getMap('META').set('docId', 'd1')
@@ -99,7 +99,7 @@ describe('issue-79: DocHandle entry-level status (FilePersistence)', () => {
 
     const timer = new ManualTimer()
     const persistence = new FilePersistence({
-      rootDir, timer, schedule: { debounceMs: 100, maxDirtyMs: 1000 },
+      rootDir, scheduler: timer, schedule: { debounceMs: 100, maxDirtyMs: 1000 },
     })
     try {
       const bobHandle = await createFileHandleForTest(persistence, BOB, 'doomed')
@@ -151,7 +151,7 @@ describe('issue-79: DocHandle entry-level status (FilePersistence)', () => {
       expect(timer.pending).toBe(0)
 
       // A fresh FilePersistence instance over the same rootDir sees mutation 2.
-      const fresh = new FilePersistence({ rootDir, schedule: TEST_SCHEDULE })
+      const fresh = new FilePersistence({ rootDir, schedule: TEST_SCHEDULE, scheduler: createTestScheduler() })
       const loaded = await fresh.loadDoc(BOB, 'doomed')
       expect(loaded).not.toBeNull()
       expect(loaded!.doc.getMap('ROOT').get('rev')).toBe(2)

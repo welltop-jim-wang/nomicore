@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import * as Y from 'yjs'
-import type { DocHandle, DocPersistence, PersistenceTimer, User } from './contract.js'
+import type { DocHandle, DocPersistence, PersistenceScheduler, User } from './contract.js'
 
 /**
  * The factory shape shared by every persistence adapter's contract test.
@@ -90,19 +90,18 @@ export function describeDocPersistenceContract(
 // snapshots through a second adapter instance over the same store.
 // ---------------------------------------------------------------------------
 
-/** A deterministic timer facade: `advanceBy` fires due callbacks in order. */
-export interface TestTimer extends PersistenceTimer {
+/** A deterministic scheduler facade: `advanceBy` fires due callbacks in order. */
+export interface TestScheduler extends PersistenceScheduler {
   advanceBy(milliseconds: number): Promise<void>
   pending(): number
 }
 
-/** Fake-clock timer used by the shared suite (no real sleeps). */
-export function createTestTimer(): TestTimer {
+/** Fake-clock scheduler used by the shared suite (no real sleeps). */
+export function createTestScheduler(): TestScheduler {
   let now = 0
   let nextId = 0
   const timers = new Map<number, { at: number, callback: () => void }>()
   return {
-    now: () => now,
     setTimeout(callback, delayMs) {
       const id = nextId++
       timers.set(id, { at: now + delayMs, callback })
@@ -130,6 +129,13 @@ export function createTestTimer(): TestTimer {
     },
   }
 }
+
+/**
+ * Cordis fake timer plugin：提供 `'timer'` service + mixin `ctx.timeout`，委托
+ * 注入的 fake scheduler。实现见 `./fake-timer.ts`（vitest-free——不得本模块
+ * 连带拖入 vitest，否则非 vitest 进程 import 即崩）；公共面保持不变。
+ */
+export { createFakeTimerPlugin } from './fake-timer.js'
 
 /**
  * Mutable I/O hooks shared by the adapter under test and the fresh adapter
@@ -162,7 +168,7 @@ export interface DocPersistenceWithCreate extends DocPersistence {
 
 export interface DocCreateContractFixture {
   readonly persistence: DocPersistenceWithCreate
-  readonly timer: TestTimer
+  readonly scheduler: TestScheduler
   readonly store: DocStoreHooks
   /** A second adapter over the same store with an empty cache. */
   readonly makeFresh: () => DocPersistence
@@ -233,7 +239,7 @@ export function describeDocCreateContract(
   describe('DocPersistence createDoc contract', () => {
     it('creates an owner lease, commits the initial snapshot before resolving, and shares the live doc with loads', async () => {
       const fixture = await factory()
-      const { persistence, timer } = fixture
+      const { persistence, scheduler } = fixture
       const owner: User = { userId: 'alice' }
       const docId = 'create-happy-doc'
       const doc = docWithMeta(docId, 'hello')
@@ -244,7 +250,7 @@ export function describeDocCreateContract(
       expect(handle.docId).toBe(docId)
       // Owner migration: the lease no longer carries a `user` field.
       expect((handle as { user?: unknown }).user).toBeUndefined()
-      expect(timer.pending()).toBe(0)
+      expect(scheduler.pending()).toBe(0)
 
       // A same-instance load shares the live document and honors the owner.
       const second = await persistence.loadDoc(owner, docId)
@@ -267,7 +273,7 @@ export function describeDocCreateContract(
 
     it('only registers dirty on saveDoc after create and flushes on the debounce deadline', async () => {
       const fixture = await factory()
-      const { persistence, timer, store } = fixture
+      const { persistence, scheduler, store } = fixture
       const owner: User = { userId: 'alice' }
       const docId = 'create-save-doc'
       const handle = await persistence.createDoc(owner, docId, docWithMeta(docId, 'v1'))
@@ -278,9 +284,9 @@ export function describeDocCreateContract(
       await persistence.saveDoc(handle)
       expect(writes).toBe(0)
 
-      await timer.advanceBy(499)
+      await scheduler.advanceBy(499)
       expect(writes).toBe(0)
-      await timer.advanceBy(1)
+      await scheduler.advanceBy(1)
       expect(writes).toBe(1)
 
       await handle.release()
@@ -392,7 +398,7 @@ export function describeDocCreateContract(
 
     it('does not cache, commit, or destroy the caller doc when the initial write fails', async () => {
       const fixture = await factory()
-      const { persistence, store, timer } = fixture
+      const { persistence, store, scheduler } = fixture
       const owner: User = { userId: 'alice' }
       const docId = 'create-fail-doc'
       const doc = docWithMeta(docId, 'never-committed')
@@ -402,7 +408,7 @@ export function describeDocCreateContract(
       const err = await rejectionOf(persistence.createDoc(owner, docId, doc))
       expect((err as { message?: string }).message).toContain('io down')
       expect(doc.isDestroyed).toBe(false)
-      expect(timer.pending()).toBe(0)
+      expect(scheduler.pending()).toBe(0)
 
       // Nothing was committed.
       const fresh = fixture.makeFresh()
@@ -525,7 +531,7 @@ export function describeDocCreateContract(
 
     it('settles an in-flight create when dispose races it, leaving no timers or hidden leases', async () => {
       const fixture = await factory()
-      const { persistence, store, timer } = fixture
+      const { persistence, store, scheduler } = fixture
       const owner: User = { userId: 'alice' }
       const docId = 'create-dispose-doc'
       const doc = docWithMeta(docId, 'x')
@@ -550,7 +556,7 @@ export function describeDocCreateContract(
       )
       expect(settlement).not.toBeInstanceOf(TestTimeoutError)
       expect(settlement).toBeInstanceOf(Error)
-      expect(timer.pending()).toBe(0)
+      expect(scheduler.pending()).toBe(0)
 
       // The adapter is closed: no hidden lease can be minted afterwards.
       await expect(persistence.loadDoc(owner, docId)).rejects.toThrow(/disposed/)
