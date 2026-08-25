@@ -33,6 +33,7 @@ import * as path from 'node:path';
 import type { DocHandle, User } from '@nomicore/persistence';
 import { createMemoryPersistence, FilePersistence } from '@nomicore/persistence';
 import { realPersistenceScheduler } from './real-persistence-scheduler.js';
+import { waitDurableSnapshot } from './durable-snapshot-wait.js';
 import { createNamespaceRuntime } from '../src/runtime.js';
 import type { NamespaceRuntime } from '../src/index.js';
 
@@ -237,7 +238,9 @@ describe('D-5：生产装配——FilePersistence 全链（真实磁盘 + crash-
         expect(dirty()).toBe(2);
 
         // ⑤ 全新 FilePersistence 实例（空缓存）crash-restart：磁盘完整恢复
-        await sleep(100);
+        //    （竞态守卫同 fullchain U-3：saveDoc 只是 dirty 登记，落盘是 debounce+retry
+        //    的**最终**持久化——固定 sleep 与并发 flush 写读竞态，先有界轮询再一次性断言）
+        await waitDurableSnapshot(OWNER, 'ns-1', rootDir, (doc) => doc.getMap('ROOT').get('n'), 10);
         const restarted = await restart().loadDoc(OWNER, 'ns-1');
         expect(restarted).not.toBeNull();
         if (restarted === null) return;
