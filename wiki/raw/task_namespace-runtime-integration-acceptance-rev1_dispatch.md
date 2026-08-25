@@ -12,4 +12,13 @@
 | 6 | 15:39 | SA2 | Phase 2 设计攻击评审 R2 复核 | 15:52 | 续传同一 SA2 会话 → verdict **pass**：extract/validate 双层崩溃边界独立证实（keep-root×E206=结构性空集；SA2 自我纠错登记 R1 推演链第 3 步证伪）；T3.4 改锚真实行为裁决兑付 MUST#1；#2–#6 逐条 ✅；未决顺手项 A（§7.2 映射① undefined 子情形，SA3 前须补）/B/C |
 | 7 | 15:53 | SA1 | Phase 2 设计 touch-up R2.1（SA2 R2 顺手项 A/B/C） | 15:58 | 三项落实（映射① undefined 子情形 + T7.2 姊妹断言、T3.4 深度 20_000 + timeout 30s、T7.2 注入通道注释）；设计冻结为 R2.1 |
 | 8 | 15:59 | SA6 | Phase 1 红灯锚定（T1–T7 + T3.4/T7.2 全矩阵） | 16:31 | 20 测试文件（18 改 + 2 新建）；**12 红全部契约缺失红因**（D-1×3 / D-2×5 / D-3 δ×1 / D-4×2 / D-2 生产装配×2）、绿 103/115、零回归 18+1 全绿、U-1..U-4 首跑即绿无集成缺口；伪红 1 处置（T7.2 空描述符不生效→显式 descriptor）；T3.4 偏差登记 2 处（provide-root 修复在 D=20_000 被 yjs destroy 递归溢出推翻→重锚诚实偏差锚；schema 须程序生成 20_000 非循环别名链） |
-| 9 | 16:32 | SA3 | Phase 3 TDD 实现落盘 | (pending) | 12 红灯转绿 + 零回归 + commit（7 src + CONTEXT 词条 + 20 测试 + wiki 档案；DENY 零触碰） |
+| 9 | 16:32 | SA3 | Phase 3 TDD 实现落盘 | 17:05 | 12 红灯全转绿 + 两包零回归（nsrt 22 文件 115 / doc-runtime 19 文件 291）+ typecheck 七包 exit 0 → **commit 526edc2**（35 文件；REPORT.md/.mabf-bg 未入；DENY 零触碰；过程注记：projection 残留 describe 调用点一处自修复） |
+| 10 | 17:08 | 总控亲验 | Phase 3 全仓终验首跑 | 17:10 | 后台 verify-rev1：`T=1 C=0 X=0`——typecheck/tsc 双 0；pnpm test 唯一失败 = T3.4 超时 60s（全仓并行 CPU 竞争下 20_000 层 O(n²) 构建 >60s；单文件跑过的原因 = async await 间隙定时器可触发 vs 纯同步重测试阻塞定时器） |
+| 11 | 17:12 | SA6 | T3.4 负载超时修复 | 17:21 | 续传同一 SA6 会话 → **56d38c5**：DEEP 20_000→6_000（extract 3×/clear 2.7× 边际，构建 30s→1.3s）；三级负载验证（standalone 2.86s / 四重文件并发 5.02s / 全量 pnpm test 92 文件 1118 全绿 65.97s） |
+| 12 | 17:23 | 总控亲验 | Phase 3 全仓终验复跑 | 17:26 | verify-rev1b：**`T=0 C=0 X=0`**——pnpm test 92 文件 1118 用例全绿（Type Errors no errors，66.40s）、pnpm typecheck 七包 exit 0、tsc -p tsconfig.typecheck.json --noEmit exit 0 |
+| 13 | 17:27 | SA4 | Phase 3 静态验尸 | 17:41 | verdict **pass**（无必须处置项）：D-1..D-7 逐文件逐字节符合、DENY/scope 零违规、对抗推演无旁路、§13 锚独立复跑 122 用例全绿、HG#14 §1.4 all-vitest-packages-triggered ✓；LOW×3 记录（errors.ts:6 头注过期——总控裁决随本轮收口，项 1 审计面不留钉子；另 2 项 SA6 已登记） |
+| 14 | 17:42 | SA3 | 收尾 touch-up（errors.ts:6 头注如实化） | 17:48 | **0e31b8e**（1 文件 +3/-2，注释级零行为）；nsrt 全量 22/115 exit 0 + typecheck 七包 exit 0 |
+| 15 | 17:49 | SA7 | Phase 4 动态验证 | 18:02 | verdict **pass**：干净克隆全新 install 双 Node（v24.13.0/v20.20.2）92 文件 1118 全绿 + typecheck/tsc 双 0 + ci.yml 七步对等复现双口径全 0 + 探针 a–d（生产装配 2/2、异型 4/4、U-1..U-4 7/7、T3.4 满载 6.7s 余量 9×、入口键集互证、close 停接纳互证）+ HG#14 ✓ |
+| 16 | 18:05 | 总控 | Phase 3.5 AC 门禁 | 18:05 | rev1_ac_checklist.md 落盘：评审 7 项逐条 ✅ + issue #93 AC 8/8 ✅（AC1/AC5/AC6 证据更新）+ 硬门禁终检 HG12–HG16 全过 |
+| 18 | 18:40 | 双轴独立代码审查 | Standards 轴 | 18:40 | Standards 轴：**pass**（2 minor 无 blocker/major）——独立实证两套测试重跑全绿、E206 零写入脚本实证、ownDataFact 12 情形等价、DENY 零触碰、门禁无旁路；MINOR-1 runtime.ts seam JSDoc「唯一导出构造路径」失实（随修）、MINOR-2 T3.4 栈容量敏感性（登记不回流）。双轴双 pass；审查档案 rev1_code_review.md 落盘 |
+| 19 | 18:41 | SA3 + SA6 | 审查发现随修（并行） | (pending) | SA3：runtime.ts seam JSDoc 收口 + 同类失实表述全文扫描；SA6：γ 测试 cause 注释精度 + E204 码对称钉 |
