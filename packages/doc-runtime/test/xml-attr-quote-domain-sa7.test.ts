@@ -185,16 +185,17 @@ describe('SA7 补充：转义纪律与表示漂移（设计 §5.2/§5.5）', () 
   });
 });
 
-describe('SA7 补充：读路径同域（D7 单一语义源）', () => {
-  it('S-9：readLogicalValueAtPath XML 终点与 extractYjsSnapshot 同一投影（复用同一 walk）', () => {
+describe('SA7 补充：schema-independent 读路径 XML 语义', () => {
+  it('S-9：readLogicalValueAtPath XML 终点返回实际载体的语义字符串', () => {
     const derived = D_XML();
     const doc = new Y.Doc();
     const m = materializeRoot(derived, { body: `<p title='a"b'>x</p>` }, doc);
     if (!m.ok) throw new Error('前置物化失败');
-    const r = readLogicalValueAtPath(derived, doc, ['body']);
+    const r = readLogicalValueAtPath(doc, ['body']);
     expect(r.ok).toBe(true);
-    expect((r as { ok: true; value: string }).value).toBe(extractBody(derived, doc));
-    revalidateOk(derived, (r as { ok: true; value: string }).value);
+    expect((r as { ok: true; value: string }).value).toBe(
+      (doc.getMap('ROOT').get('body') as Y.XmlFragment).toString(),
+    );
   });
 });
 
