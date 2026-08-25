@@ -149,10 +149,11 @@ function consumesInternalSpecifier(sourceText: string, fileName: string): boolea
 **明确的残差（不识别，如实声明；SA2 #7 确认此声明纪律合格）**：
 
 1. **属性访问 require**（R1 自 E1 降级登记）：callee 为属性访问的 require 调用——`module.require('…')`、`this.require('…')`、`x.require('…')`。今日零暴露（F8：生产树 `.require(` 零命中、`.cjs` 生产文件为零），且该通道只在 CJS 模块作用域可达。未来若真出现 `.cjs` 生产载体，走 **SA6 契约演进**补形态 + fixture（`bypass/carrier-module-require.cjs`）+ it（SA2 #3 给出的有锚定扩展路径）。
-2. **`require.resolve('…')`**（callee 是 PropertyAccess `require.resolve`，name ≠ `require`）：模块解析不是消费，语义上**本就不应**判消费——非缺陷，设计意图。
-3. **计算式说明符**：`import(varName)` / `require(buildPath())`——非字符串字面量首参不命中。
-4. **`eval` / `Function` 构造**内的字符串代码。
-5. **经允许包的传递再导出**（如未来 Registry 把 factory 再导出到其公共 entry）——那是 Registry 包自身导出面纪律，属切片 5/6 的验收域（SA8 届时按 ADR 0009 L18 复审）。
+2. **别名 require**（R1 补登：SA4 静态验尸非阻塞发现 #3 与 SA7 动态活探针联动确认）：先取别名再经别名调用——`const req = require; req('@nomicore/namespace-runtime/internal')`。callee 是普通 Identifier `req`（≠ `require` 精确名匹配），五形态识别结构性不命中。今日零暴露（设计期实测：生产树 `git grep -nE "=\s*require\b"` 剔除 `import x = require` / `export = require` 后零命中；`.cjs` 生产文件为零），且别名手法属有意规避而非误用——超出本轮门禁威胁模型（架构纪律防误用，非对抗性代码，SA4/SA7 共同裁定不阻塞）。未来若需覆盖，走 **SA6 契约演进**补形态 + fixture（`bypass/carrier-alias-require.cjs`）+ it（有锚定扩展路径，与条 1 同款）。
+3. **`require.resolve('…')`**（callee 是 PropertyAccess `require.resolve`，name ≠ `require`）：模块解析不是消费，语义上**本就不应**判消费——非缺陷，设计意图。
+4. **计算式说明符**：`import(varName)` / `require(buildPath())`——非字符串字面量首参不命中。
+5. **`eval` / `Function` 构造**内的字符串代码。
+6. **经允许包的传递再导出**（如未来 Registry 把 factory 再导出到其公共 entry）——那是 Registry 包自身导出面纪律，属切片 5/6 的验收域（SA8 届时按 ADR 0009 L18 复审）。
 
 静态 import 图审计的天花板即语法可静态观测的说明符边；本轮门禁目标是架构纪律（防误用），不是对抗性代码。RAC1 未要求覆盖以上形态，设计不虚假宣称覆盖（后续轮不得把残差静默当作已覆盖——SA2 #7 纪律条款）。
 
@@ -339,7 +340,7 @@ pnpm exec tsc -p tsconfig.typecheck.json --noEmit   # 聚合：rev1 的 2 条 TS
 | R9 | helper 被误当测试收集 / 漏出类型检查 | F12：vitest include `*.test.ts` 不匹配 helper；聚合 tsc include `packages/*/test/**/*.ts` 覆盖 helper——SA6 记录的 TS2307 ×2 即覆盖证据（helper 落地后消解） |
 | R10 | verbatimModuleSyntax/严格键下 helper 编译失败 | F11 先例（`import ts from 'typescript'` 现行绿于同一 tsconfig 链）；F13 类型细节（undefined 收窄/exactOptional）已在伪代码落位 |
 | R11 | SA6 资产被实现轮顺手改动（19 it 契约漂移） | rev1 测试 + fixture 树列 ALLOW 且标 `[SA6 owned]`；SA3 仅实现 helper + D-E/D-F 两处授权 diff；SA4 按 ALLOW LIST 比对 |
-| R12 | 残差漏检形态被利用（属性访问 require / 计算式说明符 / eval / 传递再导出） | §D-B 残差清单五条如实声明 + 各自归属（属性访问 require：今日零暴露，未来走 SA6 契约演进补形态+探针；传递再导出属 Registry 包导出面纪律，切片 5/6 按 L18 复审）——不虚假宣称覆盖；后续轮不得静默当作已覆盖（SA2 #7 纪律） |
+| R12 | 残差漏检形态被利用（属性访问 require / 别名 require / 计算式说明符 / eval / 传递再导出） | §D-B 残差清单六条如实声明（R1 补登第六形态前的五条 + 别名 require 补登，SA4/SA7 联动发现）+ 各自归属（属性访问/别名 require：今日零暴露，未来走 SA6 契约演进补形态+探针；传递再导出属 Registry 包导出面纪律，切片 5/6 按 L18 复审）——不虚假宣称覆盖；后续轮不得静默当作已覆盖（SA2 #7 纪律） |
 | R13 | `import type { X } from 'internal'` 被判消费（是否过严） | 判消费是设计意图：模块图边即边界事实（internal 零类型导出，类型导入本就解析失败）；与旧正则行为一致（`from '…'` 不分类型/值），零语义漂移 |
 | R14 | 版本纪律遗漏 | §D-F 单点 bump 0.1.6→0.1.7，与 helper/测试 Diff 同一提交 |
 | R15 | 条件化剪枝/方案 A 与 SA6 契约文本漂移 | §D-D RN4 知会项：行为契约不变（扫描面今日逐文件等价、relPath 仍相对各自扫描根、探针零变化），文本表述由总控知会 SA6 同步；本轮 19 it / fixture / 红灯语义零变化（SA2 结语确认） |
@@ -430,6 +431,6 @@ pnpm exec tsc -p tsconfig.typecheck.json --noEmit   # 聚合：rev1 的 2 条 TS
 | #4 裁决：E2 保留（可接受） | ✅（维持，零改动） | §D-C（E2 保留声明段） | 大小写不敏感段拒绝保持；SA2 裁决理由（确定性纯函数/单调收紧/跨平台合理/今日零影响）已并入声明；后续轮契约演进顺带补 `src/Test/case.ts` deny 锚（不强制） |
 | #5 MEDIUM：§6 增补 P7（默认门禁 allow 路径可达性） | ✅ | §6-P7 | 四重依据：方案 A 机理（F14 实测）+ fixture `repo/` 正例与真实门禁基准逐字符同构（等价性证明）+ 旧 AC5 基准同款（F5）+ 前瞻验收锚（切片 5/6 首个消费方落地当轮真实门禁 it 保持绿，§D-H） |
 | #6 LOW 非阻塞：符号链接环（断言非机制） | 登记不改 | §D-D 规则 6 | 维持 `statSync` 同旧语义（零漂移）；环防护（`lstatSync`/深度上限）按 SA2 裁定留待后续轮，本轮不阻塞 |
-| #7 LOW 确认项：残差宣称边界合格 | ✅（纪律已知悉） | §D-B 残差清单 | R1 残差清单扩至五条（含降级登记的属性访问 require）；后续轮不得把残差静默当作已覆盖；传递再导出防线在切片 5/6 Registry 包导出面验收域，届时 SA8 按 L18 复审 |
+| #7 LOW 确认项：残差宣称边界合格 | ✅（纪律已知悉） | §D-B 残差清单 | R1 残差清单扩至六条（含降级登记的属性访问 require + R1 补登的别名 require——SA4 静态验尸发现 #3 / SA7 动态活探针联动确认，今日零暴露不阻塞）；后续轮不得把残差静默当作已覆盖；传递再导出防线在切片 5/6 Registry 包导出面验收域，届时 SA8 按 L18 复审 |
 
 **R1 预置退让点更新**：R0 预置的 E1 退让点已执行（SA2 #3 裁决）；E2 保留（SA2 #4 裁决），若后续轮判定应回下界，删 `.toLowerCase()` 一处即回。R1 新增设计自由点（方案 A 顶层白名单、条件化剪枝、P7 前瞻验收锚）均零触碰 19 it 与 fixture 树（SA2 评审实测核对 + R1 复核 F14/F15 在案），红灯语义保持「helper 缺席」。

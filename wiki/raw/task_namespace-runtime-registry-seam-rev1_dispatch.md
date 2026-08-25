@@ -12,4 +12,10 @@
 | 6 | 22:05 | SA1 | Phase 2 R1 设计修订 | 22:14 | SA2 R0 verdict: reject（#1 CRITICAL relPath 基准错配 + #2/#3 HIGH）；同会话续传修订，零触碰 SA6 冻结资产 |
 | 7 | 22:14 | SA2 | Phase 2 R1 复审 | 22:18 | SA1 R1 落实全部必修项（方案 A + 条件化剪枝 + E1 删除 + P7），同会话复审 |
 | 8 | 22:18 | SA6 | Phase 2→3 契约文本同步 | 22:20 | SA2 R1 verdict: pass 的放行前置项：简报 helper 契约「目录跳过/roots 缺省」两行同步为 R1 语义（行为不变，防 SA4 假差异） |
-| 9 | 22:20 | SA3 | Phase 3 TDD 实现 | (pending) | SA2 R1 verdict: pass，设计定稿；派 SA3 实现 helper 并修绿 19 it 红灯 |
+| 9 | 22:20 | SA3 | Phase 3 TDD 实现 | 22:28 | SA2 R1 verdict: pass，设计定稿；派 SA3 实现 helper 并修绿 19 it 红灯 |
+| 10 | 22:33 | 总控 | Phase 3 红灯变绿亲验 | 22:33 | 后台独立进程：pnpm test 97 文件/1166 用例全绿（rev1 19/19 + seam 5/5）+ typecheck 7 包 + 聚合 tsc 全 exit 0（.mabf-bg/verify-r2-*.log） |
+| 11 | 22:33 | SA4 | Phase 3 静态验尸 | 22:47 | 红灯已绿（总控亲验），进入静态红队审查 |
+| 12 | 22:47 | SA7 | Phase 3 动态验证 | 22:56 | SA4 verdict: pass，进入动态活链路验证 |
+| 13 | 22:56 | 总控 | Phase 3.5 AC 逐条门禁 | 22:59 | SA4+SA7 双清（pass/pass），进入 AC 逐条确认 |
+| 14 | 22:59 | SA1 | 文档补登（SA4/SA7 联动） | 22:59 | 残差清单补登别名 require（零行为变更，SA4 发现#3 + SA7 活探针一致确认） |
+| 15 | 22:59 | 总控 | Phase 4 终验 + 收尾 commit | 23:02 | AC 3/3 ✅ + Round1 AC 回归 7/7 ✅；HG12 双清 verdict 真实一致 / HG13 N/A / HG14 / HG15 / HG16 自检全过 |
