@@ -119,7 +119,7 @@ async function seedAndFlush(
 // P1 shared contract suite, wired to the FilePersistence adapter.
 // ---------------------------------------------------------------------------
 
-describeDocPersistenceContract(async () => {
+await describeDocPersistenceContract(async () => {
   const persistence = new FilePersistence({ rootDir: makeRootDir(), scheduler: createTestScheduler() })
   return {
     persistence,

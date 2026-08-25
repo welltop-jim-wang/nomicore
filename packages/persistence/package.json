@@ -5,8 +5,7 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
-    "./testing": "./src/testing.ts",
-    "./fake-timer": "./src/fake-timer.ts"
+    "./testing": "./src/testing.ts"
   },
   "dependencies": {
     "@deepseek-ai/cordis": "^4.0.1",

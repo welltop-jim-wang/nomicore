@@ -1,6 +1,12 @@
-import { describe, expect, it } from 'vitest'
+import type { Context } from '@deepseek-ai/cordis'
+import type { TimerService } from '@deepseek-ai/cordis-plugin-timer'
 import * as Y from 'yjs'
 import type { DocHandle, DocPersistence, PersistenceScheduler, User } from './contract.js'
+
+/** Lazily load Vitest so the test-support timer remains CLI-safe. */
+async function vitest(): Promise<typeof import('vitest')> {
+  return await import('vitest')
+}
 
 /**
  * The factory shape shared by every persistence adapter's contract test.
@@ -24,9 +30,10 @@ export type DocPersistenceContractFactory = () => Promise<DocPersistenceContract
  * P2 MemoryPersistence and P3 FilePersistence must invoke this suite against
  * their own factories.
  */
-export function describeDocPersistenceContract(
+export async function describeDocPersistenceContract(
   factory: DocPersistenceContractFactory,
-): void {
+): Promise<void> {
+  const { describe, expect, it } = await vitest()
   const owner: User = { userId: 'contract-user' }
   const docId = 'contract-doc'
 
@@ -131,11 +138,50 @@ export function createTestScheduler(): TestScheduler {
 }
 
 /**
- * Cordis fake timer plugin：提供 `'timer'` service + mixin `ctx.timeout`，委托
- * 注入的 fake scheduler。实现见 `./fake-timer.ts`（vitest-free——不得本模块
- * 连带拖入 vitest，否则非 vitest 进程 import 即崩）；公共面保持不变。
+ * Cordis fake timer plugin for integration tests: supplies the `'timer'`
+ * service and its `ctx.timeout` mixin through the injected scheduler.
+ *
+ * `timeout` and `setTimeout` return idempotent disposers, matching Cordis'
+ * TimerService contract. The remaining TimerService operations intentionally
+ * fail because persistence exercises only one-shot scheduling.
  */
-export { createFakeTimerPlugin } from './fake-timer.js'
+export function createFakeTimerPlugin(
+  timer: Pick<PersistenceScheduler, 'setTimeout' | 'clearTimeout'>,
+): { apply(ctx: Context): void } {
+  const service = {
+    timeout: (callback: () => void, delay: number): (() => void) => {
+      const id = timer.setTimeout(callback, delay)
+      let disposed = false
+      return () => {
+        if (disposed) return
+        disposed = true
+        timer.clearTimeout(id)
+      }
+    },
+    setTimeout: (callback: () => void, delay: number): (() => void) => service.timeout(callback, delay),
+    interval: (..._args: unknown[]): never => {
+      throw new TypeError('fake timer plugin does not implement interval')
+    },
+    setInterval: (..._args: unknown[]): never => {
+      throw new TypeError('fake timer plugin does not implement setInterval')
+    },
+    throttle: (..._args: unknown[]): never => {
+      throw new TypeError('fake timer plugin does not implement throttle')
+    },
+    debounce: (..._args: unknown[]): never => {
+      throw new TypeError('fake timer plugin does not implement debounce')
+    },
+  }
+  return {
+    apply(ctx: Context): void {
+      ctx.effect(() => {
+        const unregister = ctx.provide('timer', service as unknown as TimerService)
+        ctx.mixin('timer', ['timeout'])
+        return () => { unregister() }
+      }, 'fake-timer: service')
+    },
+  }
+}
 
 /**
  * Mutable I/O hooks shared by the adapter under test and the fresh adapter
@@ -222,6 +268,7 @@ async function rejectionOf<T>(promise: Promise<T>): Promise<unknown> {
  * adapter package exports it; the code is always pinned.
  */
 async function assertDuplicateError(reason: unknown): Promise<void> {
+  const { expect } = await vitest()
   expect(reason).toMatchObject({ code: 'DOC_DUPLICATE' })
   const mod = await import('./contract.js') as { DocDuplicateError?: new (message?: string) => Error }
   if (mod.DocDuplicateError !== undefined) {
@@ -233,9 +280,10 @@ async function assertDuplicateError(reason: unknown): Promise<void> {
  * Shared createDoc acceptance suite (issue-64). Runs against every adapter
  * fixture; see the suite header for the anchored semantics.
  */
-export function describeDocCreateContract(
+export async function describeDocCreateContract(
   factory: DocCreateContractFactory,
-): void {
+): Promise<void> {
+  const { describe, expect, it } = await vitest()
   describe('DocPersistence createDoc contract', () => {
     it('creates an owner lease, commits the initial snapshot before resolving, and shares the live doc with loads', async () => {
       const fixture = await factory()

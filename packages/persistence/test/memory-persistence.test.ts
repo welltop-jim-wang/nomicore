@@ -75,7 +75,7 @@ async function createAndSave(persistence: MemoryPersistence, user: User, docId: 
   return handle.doc
 }
 
-describeDocPersistenceContract(async () => {
+await describeDocPersistenceContract(async () => {
   const timer = createFakeTimer()
   const persistence = createMemoryPersistence({ scheduler: timer })
   return {
@@ -86,7 +86,7 @@ describeDocPersistenceContract(async () => {
   }
 })
 
-describeDocCreateContract(async () => {
+await describeDocCreateContract(async () => {
   const timer = createFakeTimer()
   const store = createDocStore()
   const persistence = createMemoryPersistence({

@@ -51,8 +51,7 @@ function hasReverseBarrelImport(source: string): boolean {
  *  ② 显式 `globalThis.…`（旧自建 system timer 的确切形态）；
  *  ③ `Date.now(`。
  * 守卫自带正反样本表先证判别力，再扫七生产文件（testing.ts 豁免：`withTimeout`
- * 是 never-settle 测试守卫，非生产调度；fake-timer.ts 形态锁定 property-signature
- * ——method-shorthand 会被上方 ① 判为裸调用，改动即红灯）。
+ * 是 never-settle 测试守卫，非生产调度；同时承载受控 fake Timer 测试实现）。
  */
 const HOST_GLOBAL_TIMER_BARE = /(?<![\w$.])(?:setTimeout|setInterval|clearTimeout|clearInterval)\s*\(/
 const HOST_GLOBAL_TIMER_GLOBALTHIS = /\bglobalThis\s*\.\s*(?:setTimeout|setInterval|clearTimeout|clearInterval)\s*\(/
@@ -156,10 +155,10 @@ describe('module graph regression (R3, owner #2)', () => {
       expect(hasHostGlobalTimerApi(source), `illegal sample missed: ${JSON.stringify(source)}`).toBe(true)
     }
 
-    // 七生产文件（testing.ts 豁免：withTimeout 的 globalThis.setTimeout 是
-    // never-settle 测试守卫，非生产调度；dsh 包由 probe/profile 另行锚定）。
+    // 生产文件（testing.ts 是受控测试 subpath，豁免其中的测试 Timer；dsh 包由
+    // probe/profile 另行锚定）。
     const offenders: string[] = []
-    for (const fileName of ['contract.ts', 'lifecycle.ts', 'memory.ts', 'file.ts', 'index.ts', 'service.ts', 'fake-timer.ts']) {
+    for (const fileName of ['contract.ts', 'lifecycle.ts', 'memory.ts', 'file.ts', 'index.ts', 'service.ts']) {
       const source = fs.readFileSync(path.join(srcDir, fileName), 'utf8')
       if (hasHostGlobalTimerApi(source)) offenders.push(fileName)
     }

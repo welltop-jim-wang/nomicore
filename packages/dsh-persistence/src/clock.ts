@@ -1,7 +1,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import { createManualClock, createManualClockPlugin, type ManualClock } from '@nomicore/clock/testing'
 import type { PersistenceScheduler } from '@nomicore/persistence'
-import { createFakeTimerPlugin } from '@nomicore/persistence/fake-timer'
+import { createFakeTimerPlugin } from '@nomicore/persistence/testing'
 
 /** Cordis 能力插件形状（clock/timer 注入缝）。 */
 export interface DshCordisPlugin {
