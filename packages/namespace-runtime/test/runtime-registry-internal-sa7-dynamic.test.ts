@@ -25,6 +25,7 @@ import { describe, expect, it } from 'vitest';
 import * as Y from 'yjs';
 import type { DocHandle, User } from '@nomicore/persistence';
 import { createMemoryPersistence } from '@nomicore/persistence';
+import { createTestScheduler } from '@nomicore/persistence/testing';
 
 const OWNER: User = { userId: 'u-sa7' };
 
@@ -64,6 +65,7 @@ type RuntimeLike = {
 describe('SA7 动态补充：internal factory 破坏性探测（构造门透传 / 零副作用 / 无缺省绑定 / 深导入阻断）', () => {
   it('V1 形状守卫同步透传且 throw 零副作用：null handle 与非函数 notifyDirty 均 loud TypeError，同一 handle 随后仍可成功构造读写 close', async () => {
     const writer = createMemoryPersistence({
+      scheduler: createTestScheduler(),
       schedule: { debounceMs: 5, maxDirtyMs: 60 },
       writeSnapshot: async () => {},
     });
@@ -104,6 +106,7 @@ describe('SA7 动态补充：internal factory 破坏性探测（构造门透传 
 
   it('V2 状态门透传 + 独占租约不可复活：close 释放后的 released handle 经 internal factory 二次构造 → loud HANDLE_NOT_USABLE', async () => {
     const writer = createMemoryPersistence({
+      scheduler: createTestScheduler(),
       schedule: { debounceMs: 5, maxDirtyMs: 60 },
       writeSnapshot: async () => {},
     });
@@ -129,6 +132,7 @@ describe('SA7 动态补充：internal factory 破坏性探测（构造门透传 
 
   it('无缺省绑定：notifyDirty 缺席（undefined）构造可成立，但一切写 loud 拒绝（RUNTIME_WRITE_DISABLED + notifyDirty 未绑定）', async () => {
     const writer = createMemoryPersistence({
+      scheduler: createTestScheduler(),
       schedule: { debounceMs: 5, maxDirtyMs: 60 },
       writeSnapshot: async () => {},
     });
