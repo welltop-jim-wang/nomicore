@@ -710,7 +710,13 @@ describe('SA7 动态验证 — replaceSchema fatal 通道注入路径 δ：非 m
 // —— ε 路径（rev2，SA2 R1 #1.4）：真实深 doc × keep-root → 领域级 E 层吸收（T3.4）——
 
 describe('SA7 动态验证 — T3.4（rev2）：深 doc × keep-root → E 层吸收为领域失败 + 零写入 + fatal 零置位 + provide-root 修复通道开放', () => {
-  const DEEP = 20_000; // rev2 标定先例值（materialize-root-rev2:365-367：depth≥10_000 溢出确定、20_000 留 2× 余量）
+  // 深度标定（SA6 落锚实测，Node 24 / tsx 与 vitest 双重复现）：extract walk 溢出阈值
+  // ~1_800–2_000、ROOT.clear（yjs destroy 递归）溢出阈值 ~2_200，两者均 ±100 漂移；
+  // 6_000 给 extract 3× 边际、clear 2.7× 边际（远超漂移带）——两相（E 层吸收 +
+  // clear 溢出 rejection）确定性触发。负载约束：20_000 的 doc 构建 ~30s（全仓并行
+  // vitest 下 >60s 触发超时——verify-rev1 实测 60308ms），6_000 构建 standalone
+  // ~1.3s / 负载下 ~10s 量级（O(depth²) 成本降至 ~20_000 的 ~9%）。
+  const DEEP = 6_000;
 
   function deepSchemaText(): string {
     let text = '';
@@ -787,7 +793,7 @@ describe('SA7 动态验证 — T3.4（rev2）：深 doc × keep-root → E 层�
       // ── SA6 偏差锚（登记见 wiki …_sa6_anchor.md §T3.4）：同 runtime provide-root
       // 修复尝试的真实结果 ──
       // 设计 §8 T3.4 原案断言「后续 provide-root replaceSchema({schema, root: 浅完整
-      // root}) ok:true——修复通道开放」。实测（Node 24）：20_000 深嵌套 Y.Map ROOT 上
+      // root}) ok:true——修复通道开放」。实测（Node 24）：6_000 深嵌套 Y.Map ROOT 上
       // provide-root 的 doc 级 clear+install 在 `ROOT.clear()` 触发 **yjs destroy
       // 递归栈溢出**（引擎集成限制，非 Runtime 写面锁定——此处 clear 前的写位 enabled
       // 断言即证明）→ branded rejection（phase=observer-cleanup-throw, committed:true,
