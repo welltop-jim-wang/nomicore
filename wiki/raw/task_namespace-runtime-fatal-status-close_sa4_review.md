@@ -41,6 +41,18 @@
 - 契约连锁（§1.6）：`@nomicore/namespace-runtime` 包外零消费者（grep 复验）；read 联合宽化对 14 个 seam caller / 11 个 read 消费文件编译兼容（全量 typecheck 实证）；captureSeamInput 新 throw 路径零回归（8 处 fakeHandle release: grep 复验 + 其余经真实 persistence handle，全测试绿实证）；closePromise rejection 由 sequencer 链尾 noop 消化 + 调用方责任（JSDoc 文档化）。
 - 测试质量（§1.7）：两锚文件零 `readFileSync`/源码字符串断言——全部为运行时行为锚（状态机迁移、Promise 身份/结算、release 计数、Y.Doc 字节、notifier 计数）。**通过**。
 
+### 1.4 vitest 触发性自检
+
+**检查对象**：本任务涉及的 `*.test.ts` 文件——`packages/namespace-runtime/test/runtime-close-lifecycle.test.ts`（8 运行时用例）与 `packages/namespace-runtime/test/runtime-close-lifecycle-type-guard.test-d.ts`（3 类型面用例，经 `--typecheck` 通道）。
+
+**接通事实（SA4 实读复验，2026-08-25）**：
+- `vitest.config.ts:5` include `packages/*/test/**/*.test.ts` → 行为锚在收集范围；`vitest.config.ts:9` typecheck.include `packages/*/test/**/*.test-d.ts` → type-guard 锚被类型通道收集；
+- `.github/workflows/ci.yml:38-39` `Test: run: pnpm test`（= `vitest run --typecheck`，Node 20/24 matrix）→ 上述 include 配置即 CI 执行面，无 `--filter`/`--project` 收窄漏包；
+- `.github/workflows/ci.yml:35-36` `Typecheck: run: pnpm typecheck` 含 `tsc -p packages/namespace-runtime/tsconfig.json`（include `src/**`，新增 close.ts 自动入检）；
+- SA4 本地全量复跑日志实证两文件被实际执行：`runtime-close-lifecycle.test.ts (8 tests) ✓`、`...-type-guard.test-d.ts (3 tests) ✓`。
+
+**结论**：`@nomicore/namespace-runtime` 包被 vitest include 模式与 CI `pnpm test`（Node 20/24）接通，本任务全部 vitest 测试文件落在 CI 触发范围内——**verdict token: `all-vitest-packages-triggered`**（无 `vitest-package-not-triggered` 项）。附带：§1.3 E2E spec 触发性 N/A——本任务 diff 无任何 `*.spec.ts` 文件。
+
 ### INFO 级观察（不阻塞，无需处置）
 
 - 用例 5 未断言 close rejection 的 `reason.code` 字面量（`NamespaceRuntimeCloseError` 按设计不导出，分类消费走 `getStatus().close`）——与 SA6 冻结边界声明一致，非缺陷。

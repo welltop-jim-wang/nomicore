@@ -12,5 +12,7 @@
 | 6 | 09:30 | SA1 | Phase 2 设计修订轮 R1 | 09:41 | SA2 pass 附 R-2/R-3/R-4（文档/注释级）：send_message 续传 SA1 修订设计文档 |
 | 7 | 09:30 | SA6 | Phase 1 红灯修订轮 R1 | 09:41 | SA2 R-1（MEDIUM）：D7 getter post-close 行为补锚，send_message 续传 SA6 |
 | 8 | 09:41 | SA3 | Phase 3 TDD 实现 | 10:02 | 设计定稿（SA2 pass + 修订轮闭环）；派 SA3 修绿红灯 |
-| 9 | 10:02 | SA4 | Phase 3 静态验尸 | 10:14 | 总控亲跑全量 86 文件 1089 用例 exit 0 红灯变绿；派 SA4 红队审查 commit 91103db |
-| 10 | 10:14 | SA7 | Phase 3 动态验证 | (pending) | SA4 verdict=pass（含 vitest 触发性自检接通）；派 SA7 活链路审计 |
+| 9 | 10:02 | SA4 | Phase 3 静态验尸 | 10:13 verdict: pass | 总控亲跑全量 86 文件 1089 用例 exit 0 红灯变绿；派 SA4 红队审查 commit 91103db |
+| 10 | 10:14 | SA7 | Phase 3 动态验证 | 10:31 verdict: pass | SA4 verdict=pass（含 vitest 触发性自检接通）；派 SA7 活链路审计 |
+| 11 | 10:38 | 总控 | Phase 3.5 AC 门禁 | 10:38 | AC1–AC9 逐条核验 9/9 ✅（ac_checklist）；证据=锚测试用例+SA4/SA7 报告+亲跑基线 |
+| 12 | 10:38 | SA4 | Phase 3 文档合规修订轮 | 10:38 verdict: pass | HG14 法定小节「1.4 vitest 触发性自检」补记（实质结论原已在位），verdict 不变 |
