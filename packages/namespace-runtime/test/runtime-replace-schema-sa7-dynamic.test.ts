@@ -38,7 +38,8 @@ import * as Y from 'yjs';
 import type { DocHandle, User } from '@nomicore/persistence';
 import { compileSchemaEnvelope } from '@nomicore/vfsl';
 import type { CompileSchemaEnvelopeResult, DerivedSchema, SchemaEnvelope } from '@nomicore/vfsl';
-import { createNamespaceRuntimeWithSeam, RuntimeWriteFatalError } from '../src/index.js';
+import { RuntimeWriteFatalError } from '../src/index.js';
+import { createNamespaceRuntimeWithSeam } from '../src/runtime.js';
 import type { NamespaceRuntime } from '../src/index.js';
 
 // —— 契约类型（测试侧声明：replaceSchema 公共面）——
@@ -369,7 +370,14 @@ describe('SA7 动态验证 — replaceSchema fatal 通道注入路径 γ：手�
     const fatal = settled.reason as RuntimeWriteFatalError;
     expect(fatal.phase).toBe('pre-commit-internal'); // E204 透传
     expect(fatal.committed).toBe(false); // 写前 internal——确定零写入
-    expect(fatal.cause).toBeInstanceOf(Error); // 原始 DerivedInvariantError 保留
+    // cause 两层结构（双轴审查 Spec LOW#1 注释精度修正——δ 同款链路对称）：
+    // RuntimeWriteFatalError.cause = 组合 seam 抛出的 DocRuntimeFatalError（E204 包装层，
+    // message 含 'DOCRT-E204'——schema-replace.ts ① catch sentinel 分支逐字节保留）；
+    // 其 .cause 才是原始 DerivedInvariantError（resolve.ts 环守卫 sentinel）。
+    expect(fatal.cause).toBeInstanceOf(Error);
+    if (fatal.cause instanceof Error) {
+      expect(fatal.cause.message).toContain('DOCRT-E204'); // 与 δ 的 DOCRT-E206 钉码对称
+    }
 
     // committed:false → 不调用 dirty notifier；零写入（字节不变）；SCHEMA/ROOT/active 均不变
     expect(notifierCalls).toBe(0);
@@ -626,4 +634,191 @@ describe('SA7 动态验证 — ⑥ 对称性：嵌套 Y.Array 载体 replace-roo
     expect(readValue(runtime, ['n'])).toBe(5);
     expect(runtime.getActiveSchema()?.id).toBe('ns-arr');
   });
+});
+
+// —— 注入路径 δ（rev2，评审项 5/SA8 裁决 C）：provide-root × 手造派生物裸 throw → E206 ——
+
+describe('SA7 动态验证 — replaceSchema fatal 通道注入路径 δ：非 map 形 structure node 裸 throw → E206 pre-commit-internal（rev2）', () => {
+  it('δ seam 注入 compile 返回 ok:true + structure.node=42（非 map 形手造派生物）→ 现 resolved ok:false(DOCRT-E200) → 绿 rejection phase=pre-commit-internal committed=false cause 含 DOCRT-E206、零写入', async () => {
+    const doc = makeDoc();
+    let notifierCalls = 0;
+    const runtime = readyRuntime({
+      doc,
+      // P0（ns-1）真实编译；proposed（ns-2b）注入 structure.node=42 的手造派生物——
+      // assertCompiledShape 不查 structure、validateLogicalSnapshot 只读 derived.values、
+      // makeRefResolver.resolve(42) 不进 ref 循环不 throw —— 裸 throw 唯一落在
+      // buildTopEntries→rootEntries 的「ROOT 结构节点非 map 形（手造派生物）」
+      compile: dispatchCompile({
+        'ns-2b': (envelope) => {
+          const real = compileSchemaEnvelope(envelope);
+          if (!real.ok) return real;
+          const derived = {
+            ...real.derived,
+            structure: { kind: 'root', node: 42 },
+          } as unknown as DerivedSchema;
+          return { ...real, derived } as unknown as CompileSchemaEnvelopeResult;
+        },
+      }),
+      notifyDirty: async () => {
+        notifierCalls += 1;
+      },
+    });
+    await waitReady(runtime);
+
+    const updates = countUpdates(doc);
+    const bytesBefore = stateBytes(doc);
+    const settled = await settleOf(runtime.replaceSchema({ schema: ENV2B, root: { n: 999, a: 'x' } }));
+
+    // rev2 红线（评审项 5）：非 sentinel 未知异常必须 fatal 化——绝不降级为
+    // ok:false DOCRT-E200（internal 缺陷伪装成领域失败 = A4 红线同族分级漂移）。
+    // 【红灯现状】：settle resolved {ok:false, issues:[DOCRT-E200…]} → 断言失败。
+    expect(settled.kind, '应为 fatal rejection（非 ok:false domain result）').toBe('rejected');
+    if (settled.kind !== 'rejected') return;
+    expect(settled.reason).toBeInstanceOf(RuntimeWriteFatalError);
+    const fatal = settled.reason as RuntimeWriteFatalError;
+    expect(fatal.phase).toBe('pre-commit-internal'); // E206 透传
+    expect(fatal.committed).toBe(false); // 唯一事务尚未开始——确定零写入
+    expect(fatal.cause).toBeInstanceOf(Error); // 原始异常经 cause 保留
+    if (fatal.cause instanceof Error) {
+      expect(fatal.cause.message).toContain('DOCRT-E206');
+    }
+
+    // T3.2 零写入面：notifier 恰 0、0 update、字节不变、SCHEMA/ROOT/active 不变；
+    // fatal 摘要置位（SCHEMA 槽独立码）；读照常；后续两写 RUNTIME_WRITE_DISABLED
+    expect(notifierCalls).toBe(0);
+    expect(updates.count).toBe(0);
+    expect(stateBytes(doc)).toEqual(bytesBefore);
+    expect(runtime.getSchemaEnvelope()?.id).toBe('ns-1');
+    expect(runtime.getActiveSchema()?.id).toBe('ns-1');
+    expect(readValue(runtime, ['n'])).toBe(1);
+    const status = runtime.getStatus();
+    expect(status.fatal!.code).toBe(FATAL_SCHEMA_CODE);
+    expect(status.rootWrite.enabled).toBe(false);
+    expect(status.schemaWrite.enabled).toBe(false);
+    expect(status.read.enabled).toBe(true);
+
+    const bytesAfter = stateBytes(doc);
+    const followRoot = await settleOf(runtime.mutateRoot(SET_N(7)));
+    expect(followRoot.kind).toBe('resolved');
+    if (followRoot.kind === 'resolved') {
+      expect(followRoot.value).toMatchObject({ ok: false });
+      expect(hasIssueCode(followRoot.value, 'RUNTIME_WRITE_DISABLED')).toBe(true);
+    }
+    const followSchema = await settleOf(runtime.replaceSchema({ schema: ENV2B }));
+    expect(followSchema.kind).toBe('resolved');
+    if (followSchema.kind === 'resolved') {
+      expect(followSchema.value).toMatchObject({ ok: false });
+      expect(hasIssueCode(followSchema.value, 'RUNTIME_WRITE_DISABLED')).toBe(true);
+    }
+    expect(stateBytes(doc)).toEqual(bytesAfter); // 后续写零字节变化
+  });
+});
+
+// —— ε 路径（rev2，SA2 R1 #1.4）：真实深 doc × keep-root → 领域级 E 层吸收（T3.4）——
+
+describe('SA7 动态验证 — T3.4（rev2）：深 doc × keep-root → E 层吸收为领域失败 + 零写入 + fatal 零置位 + provide-root 修复通道开放', () => {
+  // 深度标定（SA6 落锚实测，Node 24 / tsx 与 vitest 双重复现）：extract walk 溢出阈值
+  // ~1_800–2_000、ROOT.clear（yjs destroy 递归）溢出阈值 ~2_200，两者均 ±100 漂移；
+  // 6_000 给 extract 3× 边际、clear 2.7× 边际（远超漂移带）——两相（E 层吸收 +
+  // clear 溢出 rejection）确定性触发。负载约束：20_000 的 doc 构建 ~30s（全仓并行
+  // vitest 下 >60s 触发超时——verify-rev1 实测 60308ms），6_000 构建 standalone
+  // ~1.3s / 负载下 ~10s 量级（O(depth²) 成本降至 ~20_000 的 ~9%）。
+  const DEEP = 6_000;
+
+  function deepSchemaText(): string {
+    let text = '';
+    for (let i = 0; i < DEEP; i++) text += `type N${i} = { n: N${i + 1} };\n`;
+    text += `type N${DEEP} = { n: number };\n`;
+    text += `type ROOT = N0;`;
+    return text;
+  }
+
+  function makeDeepDoc(): Y.Doc {
+    const doc = new Y.Doc();
+    const sc = doc.getMap('SCHEMA');
+    sc.set('lang', 'vfsl');
+    sc.set('version', 1);
+    sc.set('id', 'ns-deep');
+    sc.set('text', deepSchemaText());
+    doc.getMap('META').set('docId', 'ns-1');
+    doc.getMap('META').set('createdAt', 1_700_000_000_000);
+    // 迭代构建嵌套（构建本身零递归；extract walk 由派生结构驱动、按 doc 实深下钻）
+    let cur = doc.getMap('ROOT');
+    for (let i = 0; i < DEEP; i++) {
+      const next = new Y.Map<unknown>();
+      cur.set('n', next);
+      cur = next;
+    }
+    cur.set('n', 1);
+    cur.set('x', 'bottom');
+    doc.getMap('ROOT').set('a', 'shallow');
+    return doc;
+  }
+
+  it('深 doc × keep-root replaceSchema({schema: ENV_DEEP}) → resolved ok:false（/DOCRT-E100|VFSL-E100|校验工作预算耗尽/）+ 零写入 + fatal 零置位 + 写位未禁（运行时修复通道开放）；同 runtime provide-root 修复尝试的实测结果按 SA6 偏差锚登记（见注释）',
+    { timeout: 60_000 }, async () => {
+      const doc = makeDeepDoc();
+      let notifierCalls = 0;
+      const ENV_DEEP = { lang: 'vfsl', version: 1, id: 'ns-deep', text: deepSchemaText() } as const;
+      const runtime = readyRuntime({
+        doc,
+        notifyDirty: async () => {
+          notifierCalls += 1;
+        },
+      });
+      // 预检 fixture 可用性：P0 真实编译深 schema 结算 ready（深 schema 可编译）；
+      // 浅路径 read 照常（runtime 可用）
+      await waitReady(runtime);
+      expect(runtime.getStatus().fatal).toBeNull();
+      expect(readValue(runtime, ['a'])).toBe('shallow');
+
+      const updates = countUpdates(doc);
+      const bytesBefore = stateBytes(doc);
+      const settled = await settleOf(runtime.replaceSchema({ schema: ENV_DEEP })); // keep-root
+
+      // 领域级失败（非 fatal）：doc 源深度溢出 extract/validate 各自的全函数体崩溃边界
+      // ——哪层先吸收非契约面（断言按「任一 E 层吸收」书写）
+      expect(settled.kind).toBe('resolved');
+      if (settled.kind !== 'resolved') return;
+      expect(settled.value).toMatchObject({ ok: false });
+      const joined = issuesOf(settled.value).map((i) => i.message).join(' | ');
+      expect(joined).toMatch(/DOCRT-E100|VFSL-E100|校验工作预算耗尽/);
+
+      // 零写入 + fatal 零置位 + 写位未被禁（keep-root 失败不锁定 Runtime——修复通道
+      // 的运行时级前提；E206 不产生 = 设计 §3.2.2 修正 2/3 的行为证据）
+      expect(updates.count).toBe(0);
+      expect(stateBytes(doc)).toEqual(bytesBefore);
+      expect(notifierCalls).toBe(0);
+      const st = runtime.getStatus();
+      expect(st.fatal).toBeNull();
+      expect(st.rootWrite.enabled).toBe(true);
+      expect(st.schemaWrite.enabled).toBe(true);
+      expect(runtime.getSchemaEnvelope()?.id).toBe('ns-deep');
+      expect(runtime.getActiveSchema()?.id).toBe('ns-deep');
+      expect(readValue(runtime, ['a'])).toBe('shallow');
+
+      // ── SA6 偏差锚（登记见 wiki …_sa6_anchor.md §T3.4）：同 runtime provide-root
+      // 修复尝试的真实结果 ──
+      // 设计 §8 T3.4 原案断言「后续 provide-root replaceSchema({schema, root: 浅完整
+      // root}) ok:true——修复通道开放」。实测（Node 24）：6_000 深嵌套 Y.Map ROOT 上
+      // provide-root 的 doc 级 clear+install 在 `ROOT.clear()` 触发 **yjs destroy
+      // 递归栈溢出**（引擎集成限制，非 Runtime 写面锁定——此处 clear 前的写位 enabled
+      // 断言即证明）→ branded rejection（phase=observer-cleanup-throw, committed:true,
+      // cause=RangeError）→ 该实例 fatal。即「同 doc 原地修复」在此深度不成立；设计
+      // §3.2.3.4 的「或带外重建 doc」分支是正确形态（修复通道的语义 = keep-root 失败
+      // 不锁 Runtime + 修复尝试可发生且得到诚实结果，而非承诺任意深度原地可修）。
+      const repair = await settleOf(runtime.replaceSchema({ schema: ENV2B, root: { n: 1, a: 'x' } }));
+      expect(repair.kind).toBe('rejected');
+      if (repair.kind === 'rejected') {
+        const rfatal = repair.reason as RuntimeWriteFatalError;
+        expect(rfatal).toBeInstanceOf(RuntimeWriteFatalError);
+        expect(rfatal.phase).toBe('observer-cleanup-throw');
+        expect(rfatal.committed).toBe(true);
+        expect(rfatal.cause).toBeInstanceOf(Error);
+        if (rfatal.cause instanceof Error) {
+          expect(rfatal.cause.message).toContain('Maximum call stack size exceeded');
+        }
+      }
+      expect(runtime.getStatus().fatal?.code).toBe(FATAL_SCHEMA_CODE);
+    });
 });

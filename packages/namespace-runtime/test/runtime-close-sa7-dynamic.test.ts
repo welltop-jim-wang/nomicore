@@ -24,7 +24,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import * as Y from 'yjs';
-import { createNamespaceRuntimeWithSeam } from '../src/index.js';
+import { createNamespaceRuntimeWithSeam } from '../src/runtime.js';
 import { createMemoryPersistence } from '@nomicore/persistence';
 import type { DocHandle, User } from '@nomicore/persistence';
 

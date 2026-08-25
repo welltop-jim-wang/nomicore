@@ -19,8 +19,8 @@
  *
  * 六阶段管线（镜像 replaceRootContent 的编排纪律）：
  *   ⓪ assertOutermostTransactionContext（函数体第一句、一切 try/catch 之外）
- *   ① prepare（唯一 try/catch，崩溃边界 DOCRT-E200 模块名制；DerivedInvariantError
- *      → E204 pre-commit-internal committed:false——镜像 replace.ts prepareReplace 分支）：
+ *   ① prepare（唯一 try/catch，崩溃边界两级 fatal 制——rev2/评审项 5/SA8 裁决 C；
+ *      R2 修订作用域——SA2 R1 #1：snapshotter 前置闸只作用于 provide-root 公共面输入）：
  *      a. derived.structure.kind !== 'root' → DerivedInvariantError → E204
  *      b. envelope 形状守卫（own 键集恰 {lang,version,id,text} + 四值型）→ 违者
  *         ok:false 单 issue path=[]：【R1.1/A1】纵深防御定位——服务 doc-runtime 直接
@@ -36,6 +36,25 @@
  *         - replace-root（提供完整 logical ROOT）：原样 snapshot →
  *           validateLogicalSnapshot → buildTopEntries（detached 构造）→ probeRoot
  *           （载体判定；rev1：D7 废止，原样封闭校验）
+ *      DeriveInvariantError sentinel → E204 pre-commit-internal committed:false（不变）；
+ *      其余一切意外异常 → DOCRT-E206 pre-commit-internal committed:false（资源极限
+ *      例外已整体撤销——判别器闭环见设计 §3.2。provide-root 公共面深输入先被
+ *      snapshotter 受控快照闸拦截（MUTATION_INPUT_NOT_PLAIN_DATA——只冻结调用方
+ *      输入，不遍历 live Y.Doc）；keep-root 的 doc 源深度不受前置闸约束，但其递归
+ *      组件 extractYjsSnapshot/validateLogicalSnapshot 各自拥有全函数体崩溃边界
+ *      （DOCRT-E100 / VFSL-E100 结构化返回，绝不外抛）——真实深 doc 的溢出在到达
+ *      本 catch 之前已被吸收为领域级 ok:false，不产生本 fatal；本 catch 对 keep-root
+ *      的覆盖是纵深防御：未来新增的无边界组件逃逸异常一律按 internal fatal 分级
+ *      （保守方向的有意识选择——代价与接受面见设计 §3.2.3 决策记录）。
+ *      无 SA2 可审的确定性判别器能把「深输入递归溢出」与「内部 bug 恰抛 RangeError」
+ *      区分开（消息特征依赖 V8 实现细节、帧特征在栈溢出时不可靠、深度先验引入
+ *      溢出免疫探针+魔法阈值的新机械）——按 ADR「未知异常保守视为」撤销例外，
+ *      零写入承诺仍字面成立）。
+ *      领域失败（envelope 形状/载体探针/validate/build issues）一律 {kind:'fail'}
+ *      返回、不经 catch——E200 领域桶在本文件无合法流量，已删除（replace.ts /
+ *      materialize.ts / mutation.ts 的 E200/E205 面服务各自直接调用方，零改动）。
+ *      修复指引：疑似超深/损坏 doc 直接走 provide-root（不读旧 doc 深度），勿先试
+ *      keep-root（设计 §3.2.3 第 4 条）。
  *   ② 单事务（transactGuarded，物理位于一切 catch 之外；observer 逃逸 → E203
  *      committed:true）：SCHEMA clear + 恰四次 set（lang/version/id/text）
  *      [+ replace-root：ROOT 原实例 clear + entries 安装]
@@ -98,7 +117,8 @@ type PreparedSchemaReplace =
  * @returns `{ok:true}` 或 `{ok:false, issues}`（零写入失败面）
  * @throws `DOCRT-E202`（⓪ 前置语境命中，零写入）/ `DOCRT-E201`（③④ 写后偏离，已提交）/
  *   `DOCRT-E204`（① 写前 internal 不变量破坏——手造派生物，零写入）/
- *   `DOCRT-E203`（② observer 逃逸，已提交）
+ *   `DOCRT-E203`（② observer 逃逸，已提交）/
+ *   `DOCRT-E206`（① 写前未知内部异常——非 sentinel 的意外抛出，零写入）
  */
 export function replaceSchemaAndRoot(doc: Y.Doc, input: SchemaReplaceInput): ReplaceResult {
   assertOutermostTransactionContext(doc, 'replaceSchemaAndRoot'); // ⓪ 函数体第一句、一切 try/catch 之外
@@ -128,11 +148,14 @@ export function replaceSchemaAndRoot(doc: Y.Doc, input: SchemaReplaceInput): Rep
   return { ok: true }; // ⑤
 }
 
-/** ① prepare（唯一 try/catch 崩溃边界）。E204 分支镜像 replace.ts prepareReplace：
- *  DerivedInvariantError（①a 显式 sentinel / buildTopEntries 内 makeRefResolver 环/缺名
- *  sentinel / buildTopEntries 的「ROOT 结构节点非 map 形」裸 throw 不在此列）
- *  → E204 pre-commit-internal committed:false（手造派生物——合规调用者不可达）；
- *  其余一切意外异常 → E200 ok:false 单 issue（模块名制 message）。 */
+/** ① prepare（唯一 try/catch 崩溃边界——rev2 两级 fatal 制）。E204 分支镜像 replace.ts
+ *  prepareReplace：DerivedInvariantError（①a 显式 sentinel / buildTopEntries 内
+ *  makeRefResolver 环/缺名 sentinel / buildTopEntries 的「ROOT 结构节点非 map 形」
+ *  裸 throw 不在此列）→ E204 pre-commit-internal committed:false（手造派生物——合规
+ *  调用者不可达）；其余一切意外异常 → DOCRT-E206 pre-commit-internal committed:false
+ *  （rev2/评审项 5/SA8 裁决 C：资源极限例外整体撤销——判别器闭环论证见设计 §3.2；
+ *  E100/E200-E205 已占用，E206 为 append-only 下一空码；E200 领域桶在本文件无合法
+ *  流量，已删除）。 */
 function prepareSchemaReplace(input: SchemaReplaceInput, doc: Y.Doc): PreparedSchemaReplace {
   try {
     // ①a ROOT 结构合法性（手造派生物 loud 收编 → E204）
@@ -189,7 +212,7 @@ function prepareSchemaReplace(input: SchemaReplaceInput, doc: Y.Doc): PreparedSc
     if (err instanceof DerivedInvariantError) {
       // E204（pre-commit-internal, committed:false）——镜像 replace.ts prepareReplace
       // 的 DerivedInvariantError 分支（【R1.1/A4】：漏写本分支即把 internal 缺陷降级
-      // 为 E200 ok:false，SA4 红线）
+      // 为 ok:false，SA4 红线）
       throw new DocRuntimeFatalError(
         'pre-commit-internal',
         false,
@@ -199,11 +222,17 @@ function prepareSchemaReplace(input: SchemaReplaceInput, doc: Y.Doc): PreparedSc
         { cause: err },
       );
     }
-    // 对抗输入与资源极限仍留在领域结果联合（模块名制 message——D8）。
+    // ② 其余一切未知异常 → fatal（rev2：资源极限例外整体撤销——判别器闭环论证见设计
+    //    §3.2；DOCRT-E206 为 append-only 下一空码，E100/E200-E205 已占用）
     const detail = err instanceof Error ? err.message : String(err);
-    return { kind: 'fail', issues: [{
-      message: `DOCRT-E200: replaceSchemaAndRoot 内部错误（意外异常）: ${detail}`, path: [],
-    }] };
+    throw new DocRuntimeFatalError(
+      'pre-commit-internal', false,
+      `DOCRT-E206: replaceSchemaAndRoot 写前未知内部异常（意外抛出）：「${detail}」——` +
+        `非领域失败、非 DerivedInvariantError sentinel，按 internal fatal 分级（ADR-0008` +
+        `「未知异常保守视为」哲学；本 round 撤销资源极限例外）；唯一事务尚未开始，` +
+        `确定零写入（doc 状态不因本调用改变）；不补偿、不 fallback`,
+      { cause: err },
+    );
   }
 }
 
@@ -236,7 +265,8 @@ function envelopeShapeIssue(envelope: SchemaEnvelope): ReplaceIssue | null {
 }
 
 /** ①c SCHEMA 载体探针两结局：仅 Y.Map 可继续（缺席 → 惰性创建）；异型仅报 issue 用；
- *  四级全失败 = 公共 API 造不出的第五种 SCHEMA → 抛错归 ① 崩溃边界 DOCRT-E200。 */
+ *  四级全失败 = 公共 API 造不出的第五种 SCHEMA → 抛错归 ① 崩溃边界 DOCRT-E206
+ *  （rev2：未知异常一律 internal fatal，不再降级 E200 ok:false）。 */
 type SchemaMapProbe =
   | { carrier: 'Y.Map'; map: Y.Map<unknown> }
   | { carrier: 'Y.Array' | 'Y.XmlFragment' | 'Y.Text' };
@@ -257,7 +287,7 @@ function probeSchemaMap(doc: Y.Doc): SchemaMapProbe {
     doc.getText('SCHEMA');
     return { carrier: 'Y.Text' };
   } catch { /* 不可达态 */ }
-  throw new Error('SCHEMA 载体探针全失败（公共 API 造不出第五种 SCHEMA）'); // → ① 崩溃边界 E200
+  throw new Error('SCHEMA 载体探针全失败（公共 API 造不出第五种 SCHEMA）'); // → ① 崩溃边界 E206
 }
 
 /**

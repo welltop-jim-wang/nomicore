@@ -3,8 +3,9 @@
  *
  * 约定：
  * - 构造错误（V2 状态门）与投影守卫错误（SCHEMA/META）是包内类别——index 不导出
- *   它们（公共入口只暴露 seam 构造器与类型；错误类别以稳定 code + 稳定 message
- *   供诊断，调用方按 code/message 字符串消费，不按 instanceof）。
+ *   它们（#93 rev2 收口：公共入口值导出恰 RuntimeWriteFatalError 一键 + 类型导出；
+ *   seam 与生产工厂保留 runtime.ts 模块级、不经 index；错误类别以稳定 code + 稳定
+ *   message 供诊断，调用方按 code/message 字符串消费，不按 instanceof）。
  * - fatal code 注册表：P0 internal fault 与写槽 internal fault 的唯一稳定
  *   code/文案（ADR-0008「稳定且不含原始 Error/stack」——文案恒定，不插值原始异常）。
  * - 【R2】`RuntimeWriteFatalError` + `RuntimeWriteFatalPhase` 同源声明于此并从
@@ -48,6 +49,25 @@ export const CLOSE_RELEASE_FAILED_MESSAGE =
 /** closing/closed 期 read 停接纳稳定码（#92；与 RUNTIME_WRITE_DISABLED 对偶的 read 域码）。 */
 export const RUNTIME_READ_DISABLED_CODE = 'RUNTIME_READ_DISABLED' as const;
 
+/** closing/closed 期数据投影 getter 停接纳错误（#93 rev2，SA8 裁决 B）：同步 loud
+ *  throw 稳定码 RUNTIME_READ_DISABLED——getter 返回类型非结果联合（ADR-0008 L30-32
+ *  冻结），生命周期拒绝复用 read 域停接纳码族（L117 已注册）+ getter 域 message
+ *  文案（L119「区分域靠 message 文案，不另设新码」的码族纪律）。类不导出。 */
+export class RuntimeReadDisabledError extends Error {
+  readonly code = RUNTIME_READ_DISABLED_CODE; // 'RUNTIME_READ_DISABLED'（errors.ts 既有常量）
+
+  constructor(
+    getter: 'getSchemaEnvelope' | 'getMetadata' | 'getActiveSchema',
+    lifecycle: 'closing' | 'closed',
+  ) {
+    super(
+      `${RUNTIME_READ_DISABLED_CODE}: ${getter} 已停接纳——Runtime lifecycle 为 ${lifecycle}` +
+        '（close 已停止接纳公共数据投影读取）；本调用不触碰 live Y.Doc',
+    );
+    this.name = 'RuntimeReadDisabledError';
+  }
+}
+
 /** snapshotter 拒绝稳定码（D9）：非 plain data 输入（含数组分支四查与读取面抛错收编）。 */
 export const MUTATION_INPUT_NOT_PLAIN_DATA_CODE = 'MUTATION_INPUT_NOT_PLAIN_DATA' as const;
 
@@ -78,17 +98,23 @@ export class NamespaceRuntimeCloseError extends Error {
 }
 
 /**
- * SCHEMA 四键投影值域守卫错误（D4 ③ / INV-N13，R2 修订，SA2 #1）：
- * 公共读取面发现 SCHEMA 标准键持有非 primitive 值（object≠null/function/symbol，
- * 覆盖一切 Y.AbstractType/类实例/Uint8Array）→ loud throw——live writable Yjs 引用
- * 零出站。message 含键名与观测 typeof，绝不含值内容。
+ * SCHEMA 投影错误（D4 ③ / INV-N13，R2 修订，SA2 #1；rev2 宽化，评审项 6/SA8 裁决 D）
+ * ——两个 code 并列注册、一个哲学（镜像 MetaProjectionError E1|E2 双码先例）：
+ * - NSRT-SCHEMA-E1：SCHEMA 四键投影值域守卫——公共读取面发现 SCHEMA 标准键持有非
+ *   primitive 值（object≠null/function/symbol，覆盖一切 Y.AbstractType/类实例/
+ *   Uint8Array）→ loud throw——live writable Yjs 引用零出站。message 含键名与观测
+ *   typeof，绝不含值内容；
+ * - NSRT-SCHEMA-E2：SCHEMA 载体异型（同名条目非 Y.Map，getMap throw）→ public 模式
+ *   loud throw——载体损坏 ≠ 缺席，静默映射 null 即虚假降级（镜像 META-E2 判据）；
+ *   p0 模式返回 null（数据级收编，禁 fatal——保 SCHEMA write 修复路径）。
  */
 export class SchemaProjectionError extends Error {
-  readonly code = 'NSRT-SCHEMA-E1' as const;
+  readonly code: 'NSRT-SCHEMA-E1' | 'NSRT-SCHEMA-E2';
 
-  constructor(message: string) {
+  constructor(code: 'NSRT-SCHEMA-E1' | 'NSRT-SCHEMA-E2', message: string) {
     super(message);
     this.name = 'SchemaProjectionError';
+    this.code = code;
   }
 }
 

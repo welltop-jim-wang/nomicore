@@ -40,7 +40,7 @@ import { createMemoryPersistence } from '@nomicore/persistence';
 import type { DocHandle, User } from '@nomicore/persistence';
 import { compileSchemaEnvelope } from '@nomicore/vfsl';
 import type { CompileSchemaEnvelopeResult, SchemaEnvelope } from '@nomicore/vfsl';
-import { createNamespaceRuntimeWithSeam } from '../src/index.js';
+import { createNamespaceRuntimeWithSeam } from '../src/runtime.js';
 
 const OWNER: User = { userId: 'u-alice' };
 const TEXT_VALID = 'type ROOT = { n: number; a: string; };';

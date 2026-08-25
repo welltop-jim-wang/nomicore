@@ -42,7 +42,7 @@
 import { describe, expect, it, beforeAll } from 'vitest';
 import * as Y from 'yjs';
 import type { DocHandle, User } from '@nomicore/persistence';
-import { createNamespaceRuntimeWithSeam } from '../src/index.js';
+import { createNamespaceRuntimeWithSeam } from '../src/runtime.js';
 import type { NamespaceRuntime } from '../src/index.js';
 
 // —— 契约类型（测试侧声明）——

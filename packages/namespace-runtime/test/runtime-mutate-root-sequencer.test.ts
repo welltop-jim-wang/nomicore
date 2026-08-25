@@ -62,7 +62,7 @@ import type { DocHandle, User } from '@nomicore/persistence';
 import { createMemoryPersistence } from '@nomicore/persistence';
 import { compileSchemaEnvelope } from '@nomicore/vfsl';
 import type { CompileSchemaEnvelopeResult, DerivedSchema, SchemaEnvelope } from '@nomicore/vfsl';
-import { createNamespaceRuntimeWithSeam } from '../src/index.js';
+import { createNamespaceRuntimeWithSeam } from '../src/runtime.js';
 import type { NamespaceRuntime } from '../src/index.js';
 
 // —— 契约类型（测试侧声明：公共入口尚无 mutateRoot / RuntimeWriteFatalError 类型名目）——
