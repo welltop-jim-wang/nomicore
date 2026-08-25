@@ -4,7 +4,8 @@
  * 槽序（ADR-0008「SCHEMA write 五步」逐位对应，INV-S2 不可重排；与 ROOT 写槽共享
  * S1–S3/S6/S7 的机械与语义，差异集中在 S4/S5——「槽体分流、sequencer 共享」裁决：
  * 两类写的 S4 语义根本不同（active schema 消费 vs proposed 编译），不合并槽体）：
- *  S1 lifecycle/fatal gate（零输入访问；共享 disabled 路径）
+ *  S1 fatal gate（零输入访问；共享 disabled 路径——lifecycle gate 半边已兑现于公共
+ *     方法接纳层 runtime.ts D5.1，槽内不设——已接纳任务无条件排空，ADR-0008）
  *  S2 writable gate + notifier 绑定检查（零输入访问；共享 disabled 路径）
  *  S3 槽起点输入快照 + 输入形状检查（共享受控 snapshotter——R2 四查次序原样）
  *  S4 proposed 编译（seam 注入 compile 路由；**零读 state 的 active 域**——

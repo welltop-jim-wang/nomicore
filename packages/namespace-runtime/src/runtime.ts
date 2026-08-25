@@ -1,5 +1,5 @@
 /**
- * @nomicore/namespace-runtime —— Runtime 构造与八键公共面（设计 §3/§4 D1/D2/D3/D6/D8'）。
+ * @nomicore/namespace-runtime —— Runtime 构造与十键公共面（设计 §3/§4 D1/D2/D3/D6/D8'）。
  *
  * 构造序（D1，R2 修订落实 SA2 #3/#4——一切 throw 与一切 seam 读取均在入队前）：
  *  V1 形状守卫（loud TypeError；seam 字段全部读取限于构造栈内有限次——校验与捕获
@@ -9,13 +9,17 @@
  *  V3 所有权转移（全部在入队前求值）：身份/载体一次捕获 → state 初始化 →
  *      env 一次成型（纯数据闭包）→ P0 入队（thunk = 纯调用 () => runP0(env)，
  *      零属性读取/零字面量构造/无可抛点）→ writeEnv 一次成型（D6.2）→
- *      八键对象构造并 freeze。
+ *      十键对象构造并 freeze。
  *
  * 公共面（D2）：对象字面量 + 闭包（非 class 实例）——原型链是 Object.prototype，
  * handle/Y.Doc/sequencer/state 只存在于闭包；Object.freeze(runtime) 防属性注入。
- * 八键恰好（issue #89/#90）：owner / namespaceId / read / getSchemaEnvelope /
+ * 十键恰好（issue #89/#90/#91/#92）：owner / namespaceId / read / getSchemaEnvelope /
  * getMetadata / getActiveSchema / getStatus / mutateRoot（第八键 = 唯一公共 ROOT 写
- * 入口，D1）；**+第九键 replaceSchema（issue #91，唯一公共 SCHEMA 写入口）**。
+ * 入口，D1）+ replaceSchema（第九键，issue #91，唯一公共 SCHEMA 写入口）
+ * **+ close（第十键，issue #92——close 生命周期：幂等、同步进 closing、队尾 barrier；
+ * 详见接口 JSDoc 与 close.ts）**。read/write 接纳门（lifecycle gate）住在公共方法层
+ * （D4/D5.1）：closing/closed 期 read 同步结果联合拒绝、两种写同步入队拒绝（零入队）；
+ * 槽内不设 lifecycle gate——已接纳任务无条件排空（ADR-0008）。
  * 生产工厂 createNamespaceRuntime 保留包内，index.ts 不 re-export（AC1 锁定
  * entry.createNamespaceRuntime === undefined）。
  *
@@ -29,16 +33,19 @@ import { readLogicalValueAtPath } from '@nomicore/doc-runtime';
 import type { ReadLogicalValueResult } from '@nomicore/doc-runtime';
 import { compileSchemaEnvelope } from '@nomicore/vfsl';
 import type { CompileSchemaEnvelopeResult, SchemaEnvelope } from '@nomicore/vfsl';
-import { NamespaceRuntimeConstructionError } from './errors.js';
+import { NamespaceRuntimeConstructionError, RUNTIME_READ_DISABLED_CODE } from './errors.js';
 import { runP0 } from './p0.js';
 import type { ActiveSchemaInfo, P0Env, RuntimeState } from './p0.js';
 import { projectMetadata, projectSchemaEnvelope } from './projection.js';
 import { WriteSequencer } from './sequencer.js';
 import { buildStatus } from './status.js';
 import type { NamespaceRuntimeStatus } from './status.js';
+import { runCloseBarrier } from './close.js';
+import type { CloseEnv } from './close.js';
 import { runSchemaWriteSlot } from './schema-write.js';
 import type { ReplaceSchemaInput, ReplaceSchemaResult, SchemaWriteEnv } from './schema-write.js';
 import { runRootWriteSlot } from './write.js';
+import { disabled } from './write.js';
 import type { MutateRootResult, WriteEnv } from './write.js';
 
 /** seam 输入（D8'）：包内确定性测试接缝；@internal 沿 doc-runtime getCompiledWith 先例。 */
@@ -55,31 +62,67 @@ export interface NamespaceRuntimeSeamInput {
   readonly notifyDirty?: () => Promise<void>;
 }
 
-/** Runtime 公共形状（D2 八键协议；键集/形状即公共契约——AC2 锚定）。 */
+/** closing/closed 期 read 拒绝分支（#92）：ADR-0008 读取能力节「预期路径、载体和
+ *  lifecycle 失败使用同步结果联合」——lifecycle 失败不是路径缺陷，独立稳定码
+ *  RUNTIME_READ_DISABLED（不借用 PATH_NOT_ALLOWED 把生命周期失败伪装成路径缺陷）。 */
+export interface RuntimeReadDisabledResult {
+  readonly ok: false;
+  readonly code: 'RUNTIME_READ_DISABLED';
+  readonly path: readonly (string | number)[];
+  readonly message: string;
+}
+
+/** read 结果联合（#92 宽化）：ready 期透传 ReadLogicalValueResult 逐字节不变；
+ *  closing/closed 期返回 RuntimeReadDisabledResult 新分支（加法扩展，ok 判别兼容）。 */
+export type NamespaceRuntimeReadResult = ReadLogicalValueResult | RuntimeReadDisabledResult;
+
+/** Runtime 公共形状（D2 十键协议；键集/形状即公共契约——AC2/AC6/AC8 锚定）。 */
 export interface NamespaceRuntime {
   /** 冻结的 owner 身份投影（只投影 userId）。 */
   readonly owner: Readonly<{ userId: string }>;
   /** namespaceId（= handle.docId，string 原始值天然不可变）。 */
   readonly namespaceId: string;
-  /** 透传 readLogicalValueAtPath(doc, path) 的同步结果联合（D3 零包装）。 */
-  readonly read: (path: readonly (string | number)[]) => ReadLogicalValueResult;
+  /** 透传 readLogicalValueAtPath(doc, path) 的同步结果联合（D3 零包装，ready 期）；
+   *  lifecycle≠ready 期返回 RuntimeReadDisabledResult（同步、非抛、非 Promise——
+   *  D4 lifecycle gate 即时生效，不等待已接纳任务排空）。 */
+  readonly read: (path: readonly (string | number)[]) => NamespaceRuntimeReadResult;
   /** SCHEMA 四标准键投影（D4；载体缺席/异型 → null；非 primitive 值 → loud throw）。 */
   readonly getSchemaEnvelope: () => SchemaEnvelope | null;
   /** META 全键深拷贝（D5；载体异常/值域违规 → loud throw）。 */
   readonly getMetadata: () => Record<string, unknown>;
   /** active schema 五字段身份（D8；preparing/unavailable/fatal 期 null）。 */
   readonly getActiveSchema: () => ActiveSchemaInfo | null;
-  /** 结构化瞬时 capability status（D9；每次调用全新对象）。 */
+  /** 结构化瞬时 capability status（D9 → D6，#92 七键；每次调用全新对象）。 */
   readonly getStatus: () => NamespaceRuntimeStatus;
   /** 唯一公共 ROOT 写入口（D1）：同步接纳定序（FIFO 由调用顺序决定）；
    *  不同步 throw、不同步结算——任何拒绝（gate/校验/快照）都经返回的 Promise 结算；
-   *  internal fatal 经 Promise rejection（RuntimeWriteFatalError）。 */
+   *  internal fatal 经 Promise rejection（RuntimeWriteFatalError）。
+   *  #92 接纳门（D5.1）：lifecycle≠ready 时同步不入队、经返回 Promise 即时 settle
+   *  领域化联合（RUNTIME_WRITE_DISABLED）——零输入访问、零 doc 副作用。 */
   readonly mutateRoot: (mutation: unknown) => Promise<MutateRootResult>;
   /** 唯一公共 SCHEMA 写入口（D1，issue #91）：与 mutateRoot 共享同一严格 FIFO write
    *  sequencer（同步接纳定序）；不依赖当前 schema 可编译（P0 unavailable 照常入槽，
    *  成功后恢复 ROOT write）；不同步 throw/结算——一切拒绝经返回的 Promise 结算；
-   *  internal fatal 经 Promise rejection（RuntimeWriteFatalError）。 */
+   *  internal fatal 经 Promise rejection（RuntimeWriteFatalError）。
+   *  #92 接纳门（D5.1）：同 mutateRoot——lifecycle≠ready 时零入队即时 ok:false。 */
   readonly replaceSchema: (input: ReplaceSchemaInput) => Promise<ReplaceSchemaResult>;
+  /** 第十键（#92）：close 生命周期入口（ADR-0008「close() 幂等」）。
+   *  幂等：所有调用（并发/顺序/已结算后）返回**同一 Promise 实例**（INV-C2）——
+   *  barrier 恰入队一次、release 恰一次。
+   *  首次调用**同步**进入 'closing' 并立即停止接纳公共 read/write（read 同步结果联合
+   *  拒绝、两种写同步零入队拒绝——D4/D5.1）；close 前已接纳任务无条件排空（不取消、
+   *  不设内部 timeout）；barrier 排在队列队尾、恰调一次 handle.release()（D3）。
+   *  无论 release 成败 Runtime 都进入 'closed'；release 失败时本 Promise reject
+   *  （稳定 NamespaceRuntimeCloseError，恒定 message + cause 保留原始异常——包内类，
+   *  分类消费走 getStatus().close 摘要或 reason.code 字符串），后续调用返回同一
+   *  已结算 Promise（同 rejection 原因，INV-C5）。
+   *  【#92 / SA2 R-2】重入语义：在已接纳任务的槽体/notifier 回调内**同步**调用
+   *  close() 属 FIFO 队尾语义——barrier 排在该任务之后，良定义无害（该写照常 settle、
+   *  release 仍恰一次且晚于它）；但在 notifier 内 **await 本 close Promise 之后才
+   *  放行**将构成自等待死锁（该写等 notifier → notifier 等 barrier → barrier 等该写
+   *  settle）——close 与该写双双永挂起，属「不取消、不设内部 timeout」的契约行为，
+   *  调用方不得如此使用。 */
+  readonly close: () => Promise<void>;
 }
 
 /**
@@ -109,8 +152,9 @@ export function createNamespaceRuntimeWithSeam(input: NamespaceRuntimeSeamInput)
   //   seam 提供即注入，未提供即真实编译步）
   const compile = captured.compile ?? compileSchemaEnvelope;
 
-  // 运行态（闭包私有；唯一可变源——P0 终态迁移单点写入，读取方法零写）
-  const state: RuntimeState = { schemaState: 'preparing' };
+  // 运行态（闭包私有；唯一可变源——P0 终态迁移单点写入，读取方法零写；
+  //   #92：lifecycle 写入点仅 close() 同步段与 runCloseBarrier 两处——INV-C1）
+  const state: RuntimeState = { schemaState: 'preparing', lifecycle: 'ready' };
 
   // V3c env 一次成型（INV-N14：纯数据闭包——thunk 内零求值面、无可抛点）
   const env: P0Env = { doc, state, p0Gate: captured.p0Gate, compile };
@@ -122,31 +166,68 @@ export function createNamespaceRuntimeWithSeam(input: NamespaceRuntimeSeamInput)
   //   writeEnv 共源的既有 seam 字段同时服务 P0 与 SCHEMA 写槽）
   const schemaWriteEnv: SchemaWriteEnv = { doc, handle, state, notifyDirty: captured.notifyDirty, compile };
 
+  // V3c''' closeEnv 一次成型（D2/D3：barrier 纯数据闭包——release 槽体零读 seam 输入）
+  const closeEnv: CloseEnv = { handle, state };
+
   // V3d sequencer + P0 入队（INV-N1：return 前 P0 已是队首 pending 节点；微任务起步；
   //     thunk = 纯调用 () => runP0(env)，零属性读取/零字面量构造/无可抛点——
   //     INV-N12 的「槽体全 catch」从此是结构事实）
   const sequencer = new WriteSequencer();
   void sequencer.enqueue(() => runP0(env));
 
-  // V3e 公共面（八键闭包对象；owner/namespaceId 由 V3a 捕获局部量构造——不再解引用成员）
+  // V3d' closePromise 幂等缓存（INV-C2 的载体——并发/已结算后调用返回同一实例）
+  let closePromise: Promise<void> | undefined;
+
+  // V3e 公共面（十键闭包对象；owner/namespaceId 由 V3a 捕获局部量构造——不再解引用成员）
   const owner = Object.freeze({ userId });
   const runtime: NamespaceRuntime = {
     owner,
     namespaceId: docId,
-    read: (path) => readLogicalValueAtPath(doc, path), // D3 纯透传（INV-N10）
+    read: (path) => {
+      // D4 lifecycle gate 在透传**之前**：closing/closed 期同步结果联合拒绝（非抛、
+      // 非 Promise、零触碰 live Y.Doc——RED 锚 case 2/4 三重锁）；ready 期透传分支
+      // 逐字节不变（既有 read 锚零回归）
+      const lifecycle = state.lifecycle;
+      return lifecycle === 'ready'
+        ? readLogicalValueAtPath(doc, path)
+        : readDisabled(lifecycle, path);
+    },
     getSchemaEnvelope: () => projectSchemaEnvelope(doc, 'public'), // D4（INV-N13 守卫）
     getMetadata: () => projectMetadata(doc), // D5（深拷贝 / 载体与值域双 loud）
     getActiveSchema: () => state.activeInfo ?? null, // D8
-    getStatus: () => buildStatus(handle, state), // D9（handle 仅用于 writableNow 瞬时观察）
-    mutateRoot: (mutation: unknown): Promise<MutateRootResult> =>
+    getStatus: () => buildStatus(handle, state), // D9 → D6（handle 仅用于 ready 期 writableNow 瞬时观察）
+    mutateRoot: (mutation: unknown): Promise<MutateRootResult> => {
+      // D5.1 接纳门：lifecycle≠ready 时同步零入队拒绝（INV-C3）——经返回 Promise
+      // 即时 settle 领域化联合（不 throw、不读 mutation——Proxy 零触发、零 doc 副作用）
+      if (state.lifecycle !== 'ready') {
+        return Promise.resolve(disabled(lifecycleWriteRefusal(state.lifecycle)));
+      }
       // D1：同步接纳定序（enqueue 同步拼尾）+ 槽完成信号；thunk 是纯调用——
       // mutation 引用仅被捕获不被读取（Proxy 零触发），无可抛点（INV-W1/W14）
-      sequencer.enqueue(() => runRootWriteSlot(writeEnv, mutation)),
-    replaceSchema: (input: ReplaceSchemaInput): Promise<ReplaceSchemaResult> =>
+      return sequencer.enqueue(() => runRootWriteSlot(writeEnv, mutation));
+    },
+    replaceSchema: (input: ReplaceSchemaInput): Promise<ReplaceSchemaResult> => {
+      // D5.1 接纳门：同 mutateRoot——lifecycle≠ready 时零入队即时 ok:false
+      if (state.lifecycle !== 'ready') {
+        return Promise.resolve(disabled(lifecycleWriteRefusal(state.lifecycle)));
+      }
       // D1（issue #91）：与 mutateRoot 同一 sequencer 实例——同步接纳定序、占槽互斥、
       // S6 同槽 await notifyDirty 构成屏障（双向 FIFO 互通）；thunk 是纯调用——
       // input 引用仅被捕获不被读取（Proxy 零触发），无可抛点
-      sequencer.enqueue(() => runSchemaWriteSlot(schemaWriteEnv, input)),
+      return sequencer.enqueue(() => runSchemaWriteSlot(schemaWriteEnv, input));
+    },
+    close: (): Promise<void> => {
+      // D2：幂等（INV-C2）——已赋值（含已结算 reject）即返回同一实例，release 恰一次
+      if (closePromise !== undefined) return closePromise;
+      // 同步迁移（返回前可观测——RED 锚「close() 返回前 lifecycle==='closing'」，
+      // INV-C1）；写入点在 close() 同步段，与接纳门 check-then-enqueue 无交错（JS
+      // run-to-completion，§12 #6）
+      state.lifecycle = 'closing';
+      // 队尾 barrier（INV-C3/C4）：enqueue 经 .then 微任务排程（sequencer.ts:33-37），
+      // thunk 绝不在 close() 调用栈内同步执行；thunk 是纯调用（零读取/零构造/无可抛点）
+      closePromise = sequencer.enqueue(() => runCloseBarrier(closeEnv));
+      return closePromise;
+    },
   };
   return Object.freeze(runtime);
 }
@@ -161,6 +242,34 @@ export function createNamespaceRuntime(
   notifyDirty: () => Promise<void>,
 ): NamespaceRuntime {
   return createNamespaceRuntimeWithSeam({ handle, notifyDirty });
+}
+
+/** D4 包内 helper：closing/closed 期 read 停接纳的结果联合分支（不导出）。
+ *  message 插值仅 lifecycle 字面量（'closing'/'closed' 闭集字符串）——稳定；属 close 域
+ *  术语，与 fatal 域文案分域（INV-C10）。 */
+function readDisabled(lifecycle: 'closing' | 'closed', path: unknown): RuntimeReadDisabledResult {
+  let echo: readonly (string | number)[] = [];
+  if (Array.isArray(path)) {
+    try {
+      echo = [...path]; // 新鲜副本（不别名调用方数组——沿 notAllowed 纪律）
+    } catch {
+      echo = []; // 敌意 Proxy 数组防御（沿 read.ts safeSpreadPath 纪律）
+    }
+  }
+  return {
+    ok: false,
+    code: RUNTIME_READ_DISABLED_CODE,
+    path: echo,
+    message: `${RUNTIME_READ_DISABLED_CODE}: Runtime lifecycle 为 ${lifecycle}——` +
+      'close 已停止接纳公共读取；本调用不触碰 live Y.Doc',
+  };
+}
+
+/** D5.1 包内 helper：lifecycle≠ready 期写接纳拒绝的稳定 reason（不导出）。
+ *  同 readDisabled——插值仅 lifecycle 字面量，close 域术语（INV-C10）；
+ *  disabled() 尾注「零写入、输入零访问」如实（拒绝分支不读 mutation/input）。 */
+function lifecycleWriteRefusal(lifecycle: 'closing' | 'closed'): string {
+  return `Runtime lifecycle 为 ${lifecycle}——close 已停止接纳公共写；close 前已接纳任务仍无条件排空，本调用不入队`;
 }
 
 /** V1 形状守卫 + 捕获（INV-N14：seam 字段读取全部限于构造栈内有限次——V1 校验读取与
@@ -188,6 +297,12 @@ function captureSeamInput(input: unknown): {
   const h = handle as Record<string, unknown>;
   if (typeof h.getStatus !== 'function') {
     throw new TypeError('handle.getStatus 必须为 function（DocHandle 契约）');
+  }
+  // D10（#92）：release 成为 close barrier 的 load-bearing 依赖——契约违背（缺 release）
+  // 应在构造栈 loud 拒绝（INV-N4：一切校验前置于 enqueue、throw 路径零副作用），
+  // 而非深埋 barrier 内 TypeError
+  if (typeof h.release !== 'function') {
+    throw new TypeError('handle.release 必须为 function（DocHandle 契约）');
   }
   const owner = h.owner;
   if (typeof owner !== 'object' || owner === null) {

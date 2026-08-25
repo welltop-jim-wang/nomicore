@@ -37,6 +37,17 @@ export const FATAL_SCHEMA_WRITE_INTERNAL_MESSAGE =
 /** ROOT 写禁用稳定码（D9）：出现在 ok:false issue.message 内（JSON.stringify 含码判定）。 */
 export const RUNTIME_WRITE_DISABLED_CODE = 'RUNTIME_WRITE_DISABLED' as const;
 
+/** close barrier release 失败稳定 code（#92；NSRT-* 命名族）。 */
+export const CLOSE_RELEASE_FAILED_CODE = 'NSRT-CLOSE-RELEASE-FAILED' as const;
+
+/** close barrier release 失败稳定 message（恒定文案：不含原始异常文本/stack；close 域
+ *  术语——与 fatal 域文案分域（INV-C10））。 */
+export const CLOSE_RELEASE_FAILED_MESSAGE =
+  'close barrier 的 handle.release() 失败：Runtime 已进入 closed（生命周期不受 release 成败影响）；原始异常经 close Promise rejection 的 cause 与包内诊断锚点保留，不进 status 摘要。' as const;
+
+/** closing/closed 期 read 停接纳稳定码（#92；与 RUNTIME_WRITE_DISABLED 对偶的 read 域码）。 */
+export const RUNTIME_READ_DISABLED_CODE = 'RUNTIME_READ_DISABLED' as const;
+
 /** snapshotter 拒绝稳定码（D9）：非 plain data 输入（含数组分支四查与读取面抛错收编）。 */
 export const MUTATION_INPUT_NOT_PLAIN_DATA_CODE = 'MUTATION_INPUT_NOT_PLAIN_DATA' as const;
 
@@ -50,6 +61,19 @@ export class NamespaceRuntimeConstructionError extends Error {
   constructor(message: string) {
     super(message);
     this.name = 'NamespaceRuntimeConstructionError';
+  }
+}
+
+/**
+ * close rejection 稳定形状（#92，包内类——不导出，沿 NamespaceRuntimeConstructionError
+ * 先例：code+message 字符串消费 / getStatus().close 分类；cause 零信息损失保留原始异常）。
+ */
+export class NamespaceRuntimeCloseError extends Error {
+  readonly code = CLOSE_RELEASE_FAILED_CODE;
+
+  constructor(options?: ErrorOptions) {
+    super(CLOSE_RELEASE_FAILED_MESSAGE, options);
+    this.name = 'NamespaceRuntimeCloseError';
   }
 }
 

@@ -1,5 +1,9 @@
 /**
- * @nomicore/namespace-runtime —— 公共入口（ADR-0008 Runtime 骨架子集；issue #89 + #90）。
+ * @nomicore/namespace-runtime —— 公共入口（ADR-0008 Runtime 骨架子集；issue #89 + #90 + #91 + #92）。
+ *
+ * #92 公共面演进：Runtime 十键（+close 生命周期键）；getStatus 七键（+close 摘要键、
+ * lifecycle 三态）；read 结果联合 +RuntimeReadDisabledResult 分支（closing/closed 期
+ * 停接纳）。
  *
  * 公共面纪律（AC1/AC2/AC9 锚定）：
  * - 只导出类型 + @internal 包内确定性 seam 构造器 createNamespaceRuntimeWithSeam；
@@ -15,6 +19,8 @@ export { RuntimeWriteFatalError } from './errors.js';
 export type {
   NamespaceRuntime,
   NamespaceRuntimeSeamInput,
+  NamespaceRuntimeReadResult,
+  RuntimeReadDisabledResult,
 } from './runtime.js';
 export type { NamespaceRuntimeStatus } from './status.js';
 export type { ActiveSchemaInfo } from './p0.js';

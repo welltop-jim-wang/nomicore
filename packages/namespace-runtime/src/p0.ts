@@ -44,6 +44,14 @@ export interface RuntimeState {
   fatal?: Readonly<{ code: string; message: string }>;
   /** 包内诊断锚点（R2 修订，SA2 #6）：原始 internal 异常，不进任何公共面。 */
   fatalCause?: unknown;
+  /** 【#92】Runtime 生命周期（INV-C1）：ready→closing 仅 close() 首调用同步段写入；
+   *  closing→closed 仅 close barrier 槽体单点写入（成功/失败两路）。 */
+  lifecycle: 'ready' | 'closing' | 'closed';
+  /** 【#92】close issue 稳定摘要（仅 release 失败时注册并 Object.freeze——INV-C5）。 */
+  closeIssue?: Readonly<{ code: string; message: string }>;
+  /** 【#92】包内诊断锚点：release 失败原始异常（不进任何公共面；公共通道经 close
+   *  rejection 的 cause）。沿 fatalCause（#90 R2，SA2 #6）先例。 */
+  closeCause?: unknown;
 }
 
 /** active schema 身份投影（D8）：五键恰好；module/derived/validator 永不出现。 */
@@ -71,8 +79,8 @@ export interface P0Env {
  */
 export async function runP0(env: P0Env): Promise<void> {
   try {
-    // ① [扩展位：lifecycle/fatal gate]——P0 是队首首个任务，构造门已验 handle，
-    //    v1 无前置 fatal 可能；真实写槽将在此步检查 lifecycle/fatal（文档位）
+    // ① [裁决标注 #92] lifecycle gate 已兑现于公共方法接纳层（runtime.ts D5.1）——
+    //    槽内不设（已接纳任务无条件排空，ADR-0008）；P0 恒无前置 fatal 可能
     // ② [扩展位：写门]——P0 零 Y.Doc 写，不受 persistence-degraded 阻止（ADR-0008
     //    明文）；构造接受的 degraded handle 上 P0 照常执行
     if (env.p0Gate !== undefined) {
