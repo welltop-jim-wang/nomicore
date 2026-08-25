@@ -109,3 +109,17 @@ Runtime 实现前先完成以下 `@nomicore/doc-runtime` 契约演进：
 ## 取代关系
 
 本 ADR 取代 ADR 0007 中“普通 open 必须完成 schema 编译、META 检查、ROOT 提取和 logical validation 后才注册 Runtime”以及 schema-aware `readLogicalValueAtPath(derived, doc, path)` 的 Runtime/open/read部分。ADR 0007 关于 logical validation、detached materialization、validated mutation、零写入和 observer no-rollback 的底层决策继续有效。
+
+### 稳定码注册修订（2026-08-24，issue #93 全链集成验收收口）
+
+本节为**词汇收口注册**：为正文已裁决的行为补记公共面可观测稳定码字面量，并澄清一个跨任务已裁定的码域统一语义。三个字面量的形状与语义已在 issue #90/#92 中经 SA8 裁决并让渡——issue #92 的 SA8 设计后复审报告明文「SA6 已把三个字面量……明文让渡给 SA1，属任务内授权」，逐条登记见两任务 SA8 前置决议的「设计后复审追加」节（#92 第 3–6 条、#90 第 1 条）。本节不引入新决策；除下列明示条款外，正文其余条款维持原文效力。
+
+1. **read 停接纳稳定码 `RUNTIME_READ_DISABLED`**：`close()` 进入 `closing`/`closed` 后，公共 read 的 lifecycle 失败（正文「读取能力」节「预期路径、载体和 lifecycle 失败使用同步结果联合」）经同步结果联合返回该稳定码分支——lifecycle 失败不是路径缺陷，不借用路径失败码。
+
+2. **`RUNTIME_WRITE_DISABLED` 码域澄清**：该码是写停接纳/写禁用的统一码族，覆盖四类零写入、零输入访问的拒绝——fatal 已置位后的排队写（正文「Fatal 与失败通道」节）、写前 writable gate 拒绝（handle 状态非 ready：persistence-degraded / released / disposed 三态同拒——正文「单一 write sequencer」节 persistence-degraded 条款为直接依据，released/disposed 同属租约失效下的非 ready 拒绝）、notifyDirty 未绑定的构造方义务 loud gate、close 后 lifecycle≠ready 的接纳拒绝（正文「生命周期、状态与所有权」节「立即停止接纳公共 read 和 write」）；区分域靠 issue message 文案，不另设新码。
+
+3. **close 拒绝稳定码 `NSRT-CLOSE-RELEASE-FAILED`**：release 失败时 close Promise 的 rejection 携带该稳定码（包内 branded rejection 类，`cause` 保留原始异常；status 的 close issue 摘要同码）——正文「失败时 close Promise reject」未定 rejection 值形状，此为既定最小公共面注册。
+
+4. **术语纪律注记**：本文行文「永久关闭（写能力）」在可观测 message/status 词汇中表述为「永久禁用……读取仍保留」——避免与 close 生命周期域词（closing/closed）碰撞；该纪律由 `runtime-write-fatal-message-rev1.test.ts` 锚定。
+
+5. **注册表归属**：其余公共面可观测稳定码不逐码入本文，以包内**各稳定码定义处**的 append-only 注册表为准——错误/禁用码族在 `packages/namespace-runtime/src/errors.ts`（`MUTATION_INPUT_NOT_PLAIN_DATA`、`SCHEMA_UNAVAILABLE`、`NSRT-FATAL-P0-INTERNAL`、`NSRT-FATAL-WRITE-INTERNAL`、`NSRT-FATAL-SCHEMA-WRITE-INTERNAL`、`NSRT-SCHEMA-E1`、`NSRT-META-E1/E2`、`HANDLE_NOT_USABLE`），P0 schema issue 摘要派生码在 `packages/namespace-runtime/src/p0.ts` 的 `toIssueSummary`（`SCHEMA_TEXT_INVALID`——正文「P0 与 active schema」节「unavailable 与稳定 schema issue 摘要」的实现词汇，经 status 的 schema 摘要键可观测，亦经 replaceSchema 编译失败 issues 可观测）。`SCHEMA_ENVELOPE_<code>` 动态族是 vfsl `compileSchemaEnvelope` envelope 相位 issue code 的不透明段透传（本包不校验、不注册该码域），归属上游注册表。ADR 记录决策词汇，不复制实现注册表。
