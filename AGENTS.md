@@ -18,6 +18,10 @@ Single-context layout: root `CONTEXT.md` + `docs/adr/`. See `docs/agents/domain.
 
 Before changing files under `packages/`, `domains/`, `apps/`, or `docs/`, read the nearest nested `AGENTS.md`; it defines that module's contract boundaries and verification gates.
 
+### Schema authoring
+
+When creating or editing `domains/*/schema.vfsl`, follow `docs/vfsl/schema-authoring-guide.md` for modeling, VFSL v1 syntax, carrier selection, generation, and validation.
+
 ### Git worktrees
 
 Create all repository worktrees under the repository-local `.worktrees/` directory. Do not create routine worktrees beside the repository or under `/tmp`. See `.agents/WORKTREES.md`.
