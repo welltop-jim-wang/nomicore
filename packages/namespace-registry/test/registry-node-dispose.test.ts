@@ -14,6 +14,12 @@ import type { DocHandle, DocPersistence, User } from '@nomicore/persistence';
 import type { NamespaceLease } from '@nomicore/namespace-registry';
 import { createNamespaceRegistryForTesting } from '@nomicore/namespace-registry/testing';
 
+// #111 设计 §14：testing 工厂 Clock 必需化迁移——本文件唯一 factory 调用注入
+// 单一 manual Clock helper（固定 ms；open 路径不消费 Clock 值，零行为变化）。
+function manualClock(): { now: () => number } {
+  return { now: () => 1_700_000_123_456 };
+}
+
 const hasAsyncDisposeSymbol =
   typeof (Symbol as unknown as { asyncDispose?: unknown }).asyncDispose === 'symbol';
 
@@ -79,7 +85,7 @@ class StubPersistence implements DocPersistence {
 
 async function makeLease(): Promise<NamespaceLease> {
   const persistence = new StubPersistence();
-  const registry = createNamespaceRegistryForTesting(persistence, {});
+  const registry = createNamespaceRegistryForTesting(persistence, { clock: manualClock() });
   const result = await registry.open({ userId: 'dispose-user' }, 'dispose-ns');
   if (!result.ok) {
     throw new Error('open 应成功');

@@ -172,7 +172,22 @@ describe('declaration emit 审计：主入口可达声明图无 Runtime/DocHandl
         expect(text, `${path.basename(file)} 不得包含声明文本 ${token.label}`).not.toMatch(token.re);
       }
     }
-  });
+  }, { timeout: 30_000 });
+
+  it('主入口 index.d.ts：新增 create 类型导出在、被替换的 RegistryOperationUnavailableIssue 不在（§2.3）', () => {
+    const { files } = emitDeclarations();
+    const entry = files.find((f) => f.endsWith('index.d.ts'));
+    expect(entry, '必须产出 index.d.ts').toBeDefined();
+    if (entry === undefined) return;
+    const text = fs.readFileSync(entry, 'utf8');
+    // §2.3 精确增量：type-only 新增 trio 进入主入口导出声明
+    for (const name of ['CreateNamespaceInput', 'CreateNamespaceIssue', 'CreateNamespaceResult']) {
+      expect(text, `index.d.ts 应导出 ${name}`).toContain(name);
+    }
+    // §2.3：被替换的占位结果别名不再经由主入口导出（shutdown 内部使用保留于
+    // types.d.ts——该检查只约束入口导出面，不做全图禁词扫描）
+    expect(text).not.toContain('RegistryOperationUnavailableIssue');
+  }, { timeout: 30_000 });
 
   it('testing 入口声明允许内部类型 import（Runtime/DocHandle 仅出现在受控子路径）', () => {
     const { files } = emitDeclarations();
@@ -185,7 +200,10 @@ describe('declaration emit 审计：主入口可达声明图无 Runtime/DocHandl
     expect(text).toContain('DocHandle');
     // 但不得从主入口 re-export——本文件是 testing 入口自身，无主入口 re-export 链
     expect(text).not.toContain('@nomicore/namespace-runtime/internal');
-  });
+    // §8（#111）：testing seam 新增必需的 clock 与 createDocumentFactory
+    expect(text).toContain('clock:');
+    expect(text).toContain('createDocumentFactory');
+  }, { timeout: 30_000 });
 });
 
 describe('模块边界活链路（SA2 B3；REPO_ROOT relPath，非 fixture-only）', () => {

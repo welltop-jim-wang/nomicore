@@ -48,6 +48,12 @@ async function flushMicrotasks(times = 12): Promise<void> {
   }
 }
 
+// #111 设计 §14：testing 工厂 Clock 必需化迁移——本文件全部 factory 调用注入
+// 单一 manual Clock helper（固定 ms；open 路径不消费 Clock 值，零行为变化）。
+function manualClock(): { now: () => number } {
+  return { now: () => 1_700_000_123_456 };
+}
+
 // ── 可控 Persistence stub（deferred load gate / typed / unknown 注入）──────────
 
 interface LoadPlan {
@@ -178,6 +184,7 @@ describe('identity 分支（§4/§6.1）：最小安全规则 + 零访问', () =
     let factoryCalls = 0;
     const diagnostics: unknown[] = [];
     const registry = createNamespaceRegistryForTesting(persistence, {
+      clock: manualClock(),
       runtimeFactory: () => {
         factoryCalls += 1;
         return makeRuntime();
@@ -252,6 +259,7 @@ describe('identity 分支（§4/§6.1）：最小安全规则 + 零访问', () =
     let factoryCalls = 0;
     const diagnostics: unknown[] = [];
     const registry = createNamespaceRegistryForTesting(persistence, {
+      clock: manualClock(),
       runtimeFactory: () => {
         factoryCalls += 1;
         return makeRuntime();
@@ -274,7 +282,7 @@ describe('identity 分支（§4/§6.1）：最小安全规则 + 零访问', () =
 
   it('invalid 不 reject、不 fatal：任意无效输入都是 resolve 的窄结果', async () => {
     const persistence = new StubPersistence();
-    const registry = createNamespaceRegistryForTesting(persistence, {});
+    const registry = createNamespaceRegistryForTesting(persistence, { clock: manualClock() });
     for (const bad of [undefined, null, {}, { userId: 5 }, { userId: {} }]) {
       const result = await registry.open(bad as never, 'ns');
       expect(result.ok).toBe(false);
@@ -307,7 +315,7 @@ describe('identity 分支（§4/§6.1）：最小安全规则 + 零访问', () =
     await persistence.saveDoc(handle);
     await handle.release();
 
-    const registry = createNamespaceRegistryForTesting(persistence, {});
+    const registry = createNamespaceRegistryForTesting(persistence, { clock: manualClock() });
     const result = await registry.open(owner, docId);
     const lease = okLease(result);
     expect(lease.namespaceId).toBe(docId);
@@ -325,6 +333,7 @@ describe('singleton / 并发 / 串行（§5/§6.2-§6.3）', () => {
     persistence.queueLoad({ result: handle });
     let factoryCalls = 0;
     const registry = createNamespaceRegistryForTesting(persistence, {
+      clock: manualClock(),
       runtimeFactory: (h, notifyDirty) => {
         factoryCalls += 1;
         expect(typeof h).toBe('object');
@@ -348,7 +357,7 @@ describe('singleton / 并发 / 串行（§5/§6.2-§6.3）', () => {
     const gate1 = deferred();
     persistence.queueLoad({ gate: gate1, result: null });
     persistence.queueLoad({ result: new StubHandle({ userId: 'u' }, 'k') });
-    const registry = createNamespaceRegistryForTesting(persistence, {});
+    const registry = createNamespaceRegistryForTesting(persistence, { clock: manualClock() });
     const p1 = registry.open({ userId: 'u' }, 'k');
     await flushMicrotasks();
     const p2 = registry.open({ userId: 'u' }, 'k');
@@ -367,7 +376,7 @@ describe('singleton / 并发 / 串行（§5/§6.2-§6.3）', () => {
     const gate1 = deferred();
     persistence.queueLoad({ gate: gate1, result: new StubHandle({ userId: 'u' }, 'k1') });
     persistence.queueLoad({ result: new StubHandle({ userId: 'u' }, 'k2') });
-    const registry = createNamespaceRegistryForTesting(persistence, {});
+    const registry = createNamespaceRegistryForTesting(persistence, { clock: manualClock() });
     const p1 = registry.open({ userId: 'u' }, 'k1');
     const p2 = registry.open({ userId: 'u' }, 'k2');
     await flushMicrotasks();
@@ -385,7 +394,7 @@ describe('singleton / 并发 / 串行（§5/§6.2-§6.3）', () => {
     const persistence = new StubPersistence();
     persistence.queueLoad({ error: new Error('unknown-load-boom') });
     persistence.queueLoad({ result: new StubHandle({ userId: 'u' }, 'k') });
-    const registry = createNamespaceRegistryForTesting(persistence, {});
+    const registry = createNamespaceRegistryForTesting(persistence, { clock: manualClock() });
     const p1 = registry.open({ userId: 'u' }, 'k');
     await expect(p1).rejects.toBeInstanceOf(NamespaceRegistryFatalError);
     const r2 = await registry.open({ userId: 'u' }, 'k');
@@ -404,6 +413,7 @@ describe('carrier 清理与 ABA（§5）', () => {
     persistence.queueLoad({ error: new Error('unknown-boom') }); // k3 → fatal rejection
     const events: Array<{ type: string; keyDigest: string; generation: bigint }> = [];
     const registry = createNamespaceRegistryForTesting(persistence, {
+      clock: manualClock(),
       diagnostics: (e) => {
         events.push({ type: e.type, keyDigest: e.keyDigest, generation: e.generation });
       },
@@ -442,6 +452,7 @@ describe('carrier 清理与 ABA（§5）', () => {
     persistence.queueLoad({ result: new StubHandle({ userId: 'u' }, 'k') }); // slot2 → success
     const events: Array<{ type: string; keyDigest: string; generation: bigint }> = [];
     const registry = createNamespaceRegistryForTesting(persistence, {
+      clock: manualClock(),
       diagnostics: (e) => {
         events.push({ type: e.type, keyDigest: e.keyDigest, generation: e.generation });
       },
@@ -468,6 +479,7 @@ describe('carrier 清理与 ABA（§5）', () => {
     persistence.queueLoad({ result: null }); // 轮 2 → NOT_FOUND（新 carrier generation）
     const events: Array<{ type: string; keyDigest: string; generation: bigint }> = [];
     const registry = createNamespaceRegistryForTesting(persistence, {
+      clock: manualClock(),
       diagnostics: (e) => {
         events.push({ type: e.type, keyDigest: e.keyDigest, generation: e.generation });
       },
@@ -494,6 +506,7 @@ describe('carrier 清理与 ABA（§5）', () => {
     persistence.queueLoad({ result: firstHandle });
     let factoryCalls = 0;
     const registry = createNamespaceRegistryForTesting(persistence, {
+      clock: manualClock(),
       runtimeFactory: () => {
         factoryCalls += 1;
         return makeRuntime({ owner: { userId: 'u' }, namespaceId: 'k' });
@@ -517,7 +530,7 @@ describe('open 分支与 fatal 分类（§6.4-§6.7）', () => {
     const persistence = new StubPersistence();
     persistence.queueLoad({ result: null });
     const events: RegistryObserverEvent[] = [];
-    const registry = createNamespaceRegistryForTesting(persistence, { observer: (e) => events.push(e) });
+    const registry = createNamespaceRegistryForTesting(persistence, { clock: manualClock(), observer: (e) => events.push(e) });
     const result = await registry.open({ userId: 'u' }, 'missing');
     expect(result).toMatchObject({
       ok: false,
@@ -533,7 +546,7 @@ describe('open 分支与 fatal 分类（§6.4-§6.7）', () => {
     const typed = new DocLoadOperationalError(cause);
     persistence.queueLoad({ error: typed });
     const events: RegistryObserverEvent[] = [];
-    const registry = createNamespaceRegistryForTesting(persistence, { observer: (e) => events.push(e) });
+    const registry = createNamespaceRegistryForTesting(persistence, { clock: manualClock(), observer: (e) => events.push(e) });
     const result = await registry.open({ userId: 'u' }, 'k');
     expect(result).toMatchObject({
       ok: false,
@@ -555,7 +568,7 @@ describe('open 分支与 fatal 分类（§6.4-§6.7）', () => {
     const boom = new Error('protocol-violation');
     persistence.queueLoad({ error: boom });
     const events: RegistryObserverEvent[] = [];
-    const registry = createNamespaceRegistryForTesting(persistence, { observer: (e) => events.push(e) });
+    const registry = createNamespaceRegistryForTesting(persistence, { clock: manualClock(), observer: (e) => events.push(e) });
     const p = registry.open({ userId: 'u' }, 'k');
     await expect(p).rejects.toMatchObject({
       code: 'NAMESPACE_REGISTRY_FATAL',
@@ -589,6 +602,7 @@ describe('open 分支与 fatal 分类（§6.4-§6.7）', () => {
     const factoryCause = new Error('factory-boom');
     const events: RegistryObserverEvent[] = [];
     const registry = createNamespaceRegistryForTesting(persistence, {
+      clock: manualClock(),
       runtimeFactory: () => {
         throw factoryCause;
       },
@@ -628,6 +642,7 @@ describe('open 分支与 fatal 分类（§6.4-§6.7）', () => {
     const factoryCause = new Error('factory-boom-2');
     const events: RegistryObserverEvent[] = [];
     const registry = createNamespaceRegistryForTesting(persistence, {
+      clock: manualClock(),
       runtimeFactory: () => {
         throw factoryCause;
       },
@@ -663,6 +678,7 @@ describe('open 分支与 fatal 分类（§6.4-§6.7）', () => {
     const factoryCause = new Error('factory-boom-never-settle');
     const events: RegistryObserverEvent[] = [];
     const registry = createNamespaceRegistryForTesting(persistence, {
+      clock: manualClock(),
       runtimeFactory: () => {
         throw factoryCause;
       },
@@ -713,27 +729,18 @@ describe('open 分支与 fatal 分类（§6.4-§6.7）', () => {
     }
   });
 
-  it('getStatus 恒 running；create/shutdown resolve NAMESPACE_OPERATION_UNAVAILABLE、零 input 访问、零 Persistence 访问', async () => {
+  it('getStatus 恒 running；shutdown resolve NAMESPACE_OPERATION_UNAVAILABLE、零 Persistence 访问（create 占位断言迁往 registry-create.test.ts 真实行为）', async () => {
+    // #111（§14）：create 不再是 NAMESPACE_OPERATION_UNAVAILABLE 占位——其真实行为
+    // （identity/payload/Clock/duplicate/fatal/ordering 矩阵）由
+    // registry-create.test.ts 全量锚定；shutdown 占位断言按设计保持不动。
     const persistence = new StubPersistence();
-    let inputTrap = 0;
     const registry = createNamespaceRegistryForTesting(persistence, {
+      clock: manualClock(),
       runtimeFactory: () => {
         throw new Error('factory 不得被调用');
       },
     });
     expect(registry.getStatus()).toEqual({ state: 'running' });
-    const createResult = await registry.create({
-      get evil() {
-        inputTrap += 1;
-        return 'x';
-      },
-    });
-    expect(createResult).toEqual({
-      ok: false,
-      code: 'NAMESPACE_OPERATION_UNAVAILABLE',
-      operation: 'create',
-      message: 'NAMESPACE_OPERATION_UNAVAILABLE: 此 Registry 切片尚未实现该操作',
-    });
     const shutdownResult = await registry.shutdown();
     expect(shutdownResult).toEqual({
       ok: false,
@@ -741,7 +748,6 @@ describe('open 分支与 fatal 分类（§6.4-§6.7）', () => {
       operation: 'shutdown',
       message: 'NAMESPACE_OPERATION_UNAVAILABLE: 此 Registry 切片尚未实现该操作',
     });
-    expect(inputTrap).toBe(0); // 零 input 访问
     expect(persistence.loadCalls.length).toBe(0);
     expect(persistence.saveCalls).toBe(0);
     expect(registry.getStatus()).toEqual({ state: 'running' }); // 不改 acceptance
@@ -762,6 +768,7 @@ describe('capability：fatal/unavailable/degraded Runtime 均可 open 并透传�
     const persistence = new StubPersistence();
     persistence.queueLoad({ result: new StubHandle({ userId: 'u' }, 'k') });
     const registry = createNamespaceRegistryForTesting(persistence, {
+      clock: manualClock(),
       runtimeFactory: () => makeRuntime({ status: () => runtimeStatus, read: () => ({ ok: true, value: 'still-readable' }) }),
     });
     const result = await registry.open({ userId: 'u' }, 'k');
@@ -792,6 +799,7 @@ describe('capability：fatal/unavailable/degraded Runtime 均可 open 并透传�
     const persistence = new StubPersistence();
     persistence.queueLoad({ result: new StubHandle({ userId: 'u' }, 'k') });
     const registry = createNamespaceRegistryForTesting(persistence, {
+      clock: manualClock(),
       runtimeFactory: () => makeRuntime({ status: () => degradedStatus }),
     });
     const lease = okLease(await registry.open({ userId: 'u' }, 'k'));
@@ -811,6 +819,7 @@ describe('publish 时机：factory 返回即成功，不等待 P0（§6/AC4）',
       p0Resolved = true;
     });
     const registry = createNamespaceRegistryForTesting(persistence, {
+      clock: manualClock(),
       runtimeFactory: () =>
         makeRuntime({
           read: () => ({ ok: true, value: 'pre-p0-value' }),
@@ -849,7 +858,7 @@ describe('lease 语义（§7 逐方法表格）', () => {
   }> {
     const persistence = new StubPersistence();
     persistence.queueLoad({ result: new StubHandle({ userId: 'u-alice' }, 'ns-1') });
-    const registry = createNamespaceRegistryForTesting(persistence, {});
+    const registry = createNamespaceRegistryForTesting(persistence, { clock: manualClock() });
     const a = okLease(await registry.open({ userId: 'u-alice' }, 'ns-1'));
     const b = okLease(await registry.open({ userId: 'u-alice' }, 'ns-1'));
     return { lease: a, other: b, registry, persistence };
@@ -860,6 +869,7 @@ describe('lease 语义（§7 逐方法表格）', () => {
     persistence.queueLoad({ result: new StubHandle({ userId: 'u-alice' }, 'ns-1') });
     const runtime = makeRuntime({ owner: { userId: 'runtime-owner-marker' }, namespaceId: 'runtime-ns' });
     const registry = createNamespaceRegistryForTesting(persistence, {
+      clock: manualClock(),
       runtimeFactory: () => runtime,
     });
     const lease = okLease(await registry.open({ userId: 'u-alice' }, 'ns-1'));
@@ -905,7 +915,7 @@ describe('lease 语义（§7 逐方法表格）', () => {
         return { ok: true };
       },
     });
-    const registry = createNamespaceRegistryForTesting(persistence, { runtimeFactory: () => runtime });
+    const registry = createNamespaceRegistryForTesting(persistence, { clock: manualClock(), runtimeFactory: () => runtime });
     const lease = okLease(await registry.open({ userId: 'u' }, 'k'));
     expect(lease.read(['nope'])).toEqual({ ok: false, code: 'PATH_NOT_ALLOWED', path: ['nope'] });
     expect(lease.getSchemaEnvelope()).toBeNull();
@@ -922,6 +932,7 @@ describe('lease 语义（§7 逐方法表格）', () => {
     persistence.queueLoad({ result: new StubHandle({ userId: 'u' }, 'k') });
     const events: RegistryObserverEvent[] = [];
     const registry = createNamespaceRegistryForTesting(persistence, {
+      clock: manualClock(),
       observer: (e) => events.push(e),
     });
     const lease = okLease(await registry.open({ userId: 'u' }, 'k'));
@@ -985,7 +996,7 @@ describe('lease 语义（§7 逐方法表格）', () => {
   it('多次 open 各自独立 lease：release 一个不影响另一个', async () => {
     const persistence = new StubPersistence();
     persistence.queueLoad({ result: new StubHandle({ userId: 'u' }, 'k') });
-    const registry = createNamespaceRegistryForTesting(persistence, {});
+    const registry = createNamespaceRegistryForTesting(persistence, { clock: manualClock() });
     const r1 = okLease(await registry.open({ userId: 'u' }, 'k'));
     const r2 = okLease(await registry.open({ userId: 'u' }, 'k'));
     expect(r1).not.toBe(r2);
@@ -1000,6 +1011,7 @@ describe('lease 语义（§7 逐方法表格）', () => {
     persistence.queueLoad({ result: new StubHandle({ userId: 'u' }, 'k') });
     let settled = false;
     const registry = createNamespaceRegistryForTesting(persistence, {
+      clock: manualClock(),
       runtimeFactory: () =>
         makeRuntime({
           mutate: async () => {
@@ -1024,6 +1036,7 @@ describe('observer 隔离与公开文本零回显（§8/AC11）', () => {
     persistence.queueLoad({ error: new DocLoadOperationalError(new Error('x')) });
     persistence.queueLoad({ result: new StubHandle({ userId: 'u' }, 'k') });
     const registry = createNamespaceRegistryForTesting(persistence, {
+      clock: manualClock(),
       observer: () => {
         throw new Error('observer-isolated');
       },
@@ -1047,6 +1060,7 @@ describe('observer 隔离与公开文本零回显（§8/AC11）', () => {
     const events: RegistryObserverEvent[] = [];
     const diagnostics: unknown[] = [];
     const registry = createNamespaceRegistryForTesting(persistence, {
+      clock: manualClock(),
       observer: (e) => events.push(e),
       diagnostics: (e) => diagnostics.push(e),
     });
@@ -1081,8 +1095,9 @@ describe('observer 隔离与公开文本零回显（§8/AC11）', () => {
     } catch (e) {
       publicTexts.push(JSON.stringify(e));
     }
-    // create/shutdown
-    publicTexts.push(JSON.stringify(await registry.create({ schema: sentinelSchema, root: sentinelRoot })));
+    // create（#111：缺 owner/namespaceId → NAMESPACE_INVALID_IDENTITY 恒定 message，
+    // 零回显不变）/ shutdown（占位保持）。缺键敌意输入经 `as never`（typed 签名下）
+    publicTexts.push(JSON.stringify(await registry.create({ schema: sentinelSchema, root: sentinelRoot } as never)));
     publicTexts.push(JSON.stringify(await registry.shutdown()));
     publicTexts.push(JSON.stringify(registry.getStatus()));
     publicTexts.push(JSON.stringify(lease.getStatus()));
@@ -1124,6 +1139,7 @@ describe('observer reentrancy（SA4 非阻断建议落实）：observer 内同�
     let loadCallsAtObserverTime = -1;
     let reentrantSettledInObserverStack = true;
     const registry = createNamespaceRegistryForTesting(persistence, {
+      clock: manualClock(),
       observer: (e) => {
         if (e.type === 'open-load-failed') {
           // 同步栈内（slot1 尚未返回）：记录 load 计数并同步 reentrant open 同 key
@@ -1180,6 +1196,7 @@ describe('observer reentrancy（SA4 非阻断建议落实）：observer 内同�
     let reentrant: Promise<OpenNamespaceResult> | undefined;
     let reentrantSettledInObserverStack = true;
     const registry = createNamespaceRegistryForTesting(persistence, {
+      clock: manualClock(),
       observer: (e) => {
         if (e.type === 'lifecycle-slot-failed') {
           reentrant = registry.open({ userId: 'u' }, 'k');

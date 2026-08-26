@@ -26,3 +26,5 @@ export type {
 } from './mutation.js';
 export { replaceSchemaAndRoot } from './schema-replace.js';
 export type { SchemaReplaceInput, SchemaRootPlan } from './schema-replace.js';
+export { createInitialDocument } from './create-initial-document.js';
+export type { CreateInitialDocumentInput, CreateInitialDocumentResult } from './create-initial-document.js';
