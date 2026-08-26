@@ -94,8 +94,9 @@ nomicore/
 
 ```bash
 pnpm install --frozen-lockfile
-pnpm -r typecheck     # tsc --noEmit（严格模式）
-pnpm exec vitest run  # 180 个测试
+pnpm typecheck
+pnpm test
+./node_modules/.bin/tsc -p tsconfig.typecheck.json --noEmit
 ```
 
 CI：Node 20 / 24 矩阵（`.github/workflows/ci.yml`）。
