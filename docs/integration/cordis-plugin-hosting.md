@@ -23,6 +23,17 @@ Cordis timer ┘                         └────> namespace registry
 
 Persistence 和 Registry 启动时会检查依赖；缺少 clock、timer 或 persistence 会直接抛错，不会使用系统能力兜底。第三方业务通常只消费 `nomicoreRegistry`，不要直接持有 live `Y.Doc` 或 Persistence `DocHandle`。
 
+## 推荐加载方式
+
+第三方宿主统一使用 **Cordis 插件工厂组合加载**：在同一个 `Context` 中调用 Nomicore 公开的 `create*Plugin()` 工厂，并通过 `ctx.plugin()` 交给 Cordis 管理依赖和生命周期。当前公开集成契约不提供稳定的 Nomicore 动态 `pluginId`，也不要求宿主编写 `cordis_define` Host 代码；除非宿主平台自行把下列工厂封装成它自己的动态插件，否则不要依赖包路径扫描、内部模块或 DSH 专用 profile 作为生产加载协议。
+
+这种方式与项目的插件验收测试一致，并确保：
+
+- Clock、Timer、Persistence、Registry 按依赖顺序启动；
+- Persistence 与 Registry 服务通过公开 `require*` helper 获取；
+- Fiber 卸载时按 Cordis 依赖图排空 Registry、释放 Persistence；
+- 配置由各 `create*Plugin()` 工厂的公开 options 类型校验。
+
 ## 最小生产装配
 
 下面示例使用文件持久化。`ctx.plugin()` 返回 Fiber 生命周期句柄；`await fiber` 等待插件进入 active 或启动失败，随后才能消费该插件提供的服务。

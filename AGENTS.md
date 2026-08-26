@@ -24,7 +24,7 @@ When creating or editing `domains/*/schema.vfsl`, follow `docs/vfsl/schema-autho
 
 ### Third-party plugin hosting
 
-When integrating Nomicore into an external Cordis host, changing plugin assembly, or documenting plugin configuration and shutdown, follow `docs/integration/cordis-plugin-hosting.md` for dependency order, adapter options, Registry usage, and lifecycle teardown.
+When integrating Nomicore into an external Cordis host, changing plugin assembly, or documenting plugin configuration and shutdown, use Cordis plugin-factory composition and follow `docs/integration/cordis-plugin-hosting.md` for dependency order, adapter options, Registry usage, and lifecycle teardown; do not assume a stable dynamic pluginId or `cordis_define` contract.
 
 ### Git worktrees
 
