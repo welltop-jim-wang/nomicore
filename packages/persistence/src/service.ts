@@ -59,10 +59,19 @@ export function createCordisPersistenceScheduler(ctx: Context): PersistenceSched
  * dispose 纳入同一个**有序** effect——
  *
  *   卸载序（effect 本地 disposables 逆序串行执行）：
- *     drainStep（先执行）：await revoke() —— 撤销 nomicorePersistence（delete store →
- *                          notify → await 全部依赖 fiber 卸载完成）；finally 兜底
- *                          await adapter.dispose()（撤销链异常也不漏资源释放）；
- *     revoke（后执行）  ：runDisposable join 到同一 disposal task（no-op）。
+ *     drainStep（先执行）：await revoke() —— 撤服务（调用路径，设计 §5#5①：revoke 的
+ *                          类型签名是 `() => void`（provideNomicorePersistence 的返回
+ *                          类型），运行时实为 cordis effect wrapper——先调用、后 await
+ *                          其返回值：wrapper 调用体在未启动态 finalizeDisposal 启动处置
+ *                          任务并返回 inFlight promise，await 等的是该返回值（全程
+ *                          等待）；「delete store → notify → await 全部依赖 fiber
+ *                          卸载完成」是该处置任务**自身的执行内容**，不是 await
+ *                          revoke() 直接执行的次序；且完整 join 语义只在 runDisposable
+ *                          路径（§5#5，effectInertia 恒返 inFlight）——join 完整性由
+ *                          yield re-parent + 串行链保证，不依赖裸 await 的 join）；
+ *                          finally 兜底 await adapter.dispose()（撤销链异常也不漏资源
+ *                          释放）；
+ *     revoke（后执行）  ：runDisposable 经 effectInertia join 到同一处置任务（no-op）。
  *
  * 由此 adapter dispose（文件句柄/后台任务/Y.Doc 缓存释放）严格晚于
  * nomicorePersistence 全部依赖方（如 NamespaceRegistry plugin：其 shutdown 排空
@@ -96,6 +105,9 @@ export function bindPersistenceAdapterLifecycle(
     yield async () => {
       try {
         await revoke() // 撤服务 → 级联依赖 fiber 卸载并 settle
+        // （await revoke() = 先调用后 await 返回值：直接调用体在未启动态
+        //  finalizeDisposal 启动 disposal 并返回 inFlight——await 等的是该返回值，
+        //  全程等待；归因区分见设计 §5#5）
       } finally {
         await adapter.dispose() // 依赖方 settle 后才释放 adapter 资源；revoke 异常亦不漏
       }
