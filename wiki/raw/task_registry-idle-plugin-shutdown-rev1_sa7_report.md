@@ -156,13 +156,19 @@ handler 的 rejected Promise 触发事件）：
 
 ### 4.2 P2：idle-close observer 收编（fake timer 面由 11b/11c 覆盖；本轮补两条活链路面）
 
+> **（R2′ 修订）** 原 11d 以 60ms 真实 sleep 驱动 native 到期，违反简报「测试须确定性
+> （fake scheduler/受控 gate），禁止真实 sleep」明文约束（且头注误写 40ms）。已按
+> spec 轴终审要求**拆分**：确定性主体保留为 11d，native 到期链路单列为 11d-SMOKE
+> 显式冒烟（豁免理由随用例头注落纸；头注/代码数字一致 60ms=15ms×4）。见 §10 修订记录。
+
 - **11d（real native timer 烟囱）**：testing seam registry + **生产同款
   `createCordisRegistryScheduler(ctx)` 真实 ctx.timeout 桥**（TimerService → ctx.effect →
   native setTimeout，idleTimeoutMs=15ms）+ `runtimeFactory` 同步 throw。native timer 回调
   到期 → `beginIdleClose` 同步 throw 被收编——**进程零崩溃**（若逃逸 = uncaughtException，
   测试无法到达断言，判别器即测试自身存活）；`idle-close-failed` exact cause 恰一次；
-  entry 移除（`loadCalls===2`、新 Runtime R2）；零 unhandled rejection。含 60ms real sleep
-  （本用例唯一非确定性点，SA7-P4 烟囱先例，已注明）。
+  entry 移除（`loadCalls===2`、新 Runtime R2）；零 unhandled rejection。〔R2′ 起拆分为
+  11d（确定性，2ms）+ 11d-SMOKE（60ms 冒烟）两用例，验证意图零削减——确定性分工：
+  11b fake 全链路 / 11d 真实桥武装+确定性触发 / 11d-SMOKE native 到期交付〕
 - **11e（敌意 observer sink）**：sink 在 `idle-close-failed` 分发点同步 throw——
   `dispatchObserver` 隔离生效（`advanceBy` 正常 settle、零 unhandled、零逃逸），
   **`removeEntryAfterClose` 仍执行**（entry 移除 → 后续 open 全新 generation）——锁死
@@ -192,16 +198,18 @@ handler 的 rejected Promise 触发事件）：
 
 ## 5. SA7 补充测试（新增，唯一仓库改动）
 
-`packages/namespace-registry/test/registry-sa7-rev1.test.ts`（5 用例，全绿；命中根
+`packages/namespace-registry/test/registry-sa7-rev1.test.ts`（R2′ 修订后 **6 用例**，全绿；命中根
 vitest config include `packages/*/test/**/*.test.ts`；typecheck 随 `--typecheck` 通过；
-**零 src 改动**——`git diff HEAD --name-only -- packages/*/src/` 为空）：
+**零 src 改动**——`git diff HEAD --name-only -- packages/*/src/` 为空；**除 11d-SMOKE 外
+全部确定性、零真实 sleep**）：
 
 | 用例 | 攻击面 | 结果 |
 |---|---|---|
 | 19d | P1 floating-window（同步 throw 不居首位 + 首位 gated rejection 挂起聚合循环，跨宏任务 checkpoint） | ✓ |
 | 19d-CTRL | 探针灵敏度对照（同 turn 结构裸 reject 必检出） | ✓ |
 | R5P | **R5′ 活链路契约化**：真实 TimerService + gated drain——写 reject（cause 链终端 CordisError INACTIVE_EFFECT）/ shutdown resolve undefined / 次序契约 / dispose 恰一次 / 零 unhandled（门控拓扑全程确定性，零 real sleep） | ✓ |
-| 11d | P2 real native timer 烟囱（生产 ctx.timeout 桥 + 同步 throw 不逃出 native 回调） | ✓ |
+| 11d | P2 活链路（**确定性，2ms**）：真实 TimerService 经真实 ctx.timeout 桥武装（native setTimeout@300_000ms 测试期内必不到期）+ 回调捕获确定性手动触发——同步 throw 不逃出回调（逃逸沿测试调用栈直接失败，判别器等价）；真实 disposer 取消语义；敌意场景全断言 | ✓ |
+| 11d-SMOKE | P2 native 到期冒烟（**显式 smoke 豁免，60ms real sleep = 15ms×4，本文件唯一非确定性点**；豁免理由：native 到期→dispose→callback 链路含进程级崩溃面，无法以 fake/gate 等价复刻；确定性分工由 11b+11d 承载；SA7-P4 烟囱先例） | ✓ |
 | 11e | P2 reject 臂敌意 sink（隔离生效 + remove 仍执行） | ✓ |
 
 注：R5P 把设计 §7「R2 增补测试思路 #2」（effect-faithful 残余窗口契约化，SA3 裁量未落地）
@@ -272,9 +280,59 @@ gh pr view 126 --json headRefOid                # → head=05cc030def…（round
   对照）、P2 收编在 real native timer 与敌意 sink 下零逃逸零崩溃、P3 adapter 级次序在
   真实 cordis 4.0.1（fake 与真实 timer 双形态、重入/根拆双触发、dsh 直调双路）下恰一次
   且严格后于 registry shutdown settle。
-- 全量 typecheck + test 复现绿（1402/1402 + 0 errors），vitest 触发面两包（namespace-registry
-  12 文件 / persistence 10 文件）逐文件命中；13 AC 不回归（重点 AC9/AC10/AC11/AC12 逐名绿）。
+- 全量 typecheck + test 复现绿（1403/1403 + 0 errors，R2′ 修订后最终态；修订前 1402/1402），
+  vitest 触发面两包（namespace-registry 12 文件 / persistence 10 文件）逐文件命中；
+  13 AC 不回归（重点 AC9/AC10/AC11/AC12 逐名绿）。
 - 唯一遗留：`d183d3b` 未 push → Node 20/24 CI 矩阵无 run 可观测（环境阻塞，交总控 push 后
   收口；本地 Node 24.13.0 全绿已复现）。
 
 **Verdict: pass**
+
+---
+
+## 10. 修订记录（R2′——spec 轴终审整改，2026-08-27）
+
+**发现**（独立 spec 轴终审）：本报告原 11d 用例含 60ms 真实 sleep 驱动 native 到期
+（且文件头注误写 40ms，与代码 60ms 不一致）——违反任务简报「测试须确定性
+（fake scheduler/受控 gate），禁止真实 sleep」明文约束。
+
+**整改**（按终审给出的拆分路径，验证意图零削减）：
+
+1. **11d 重写为确定性形态**（耗时 2ms，原 sleep 版 62ms）：真实 `TimerService` 经生产同款
+   `createCordisRegistryScheduler(ctx)` 真实 ctx.timeout 桥**真实武装** native
+   setTimeout（`idleTimeoutMs=300_000` → 测试期内 native 必不到期，零真实时钟依赖）；
+   registry 的 idle 回调被透传 wrapper 捕获后**确定性手动触发**。等价性论证（已落纸于
+   用例注释）：同步 throw 的收编/逃逸语义位于 `beginIdleClose`（在回调触发者的上游），
+   与触发者无关——若收编缺失，异常沿测试调用栈传播 → 用例直接失败，与 11b 的
+   `advanceBy` 拒绝同构的判别器。附带增益：真实 disposer 取消语义（registry 的
+   clearTimeout 路径）与「武装确证」断言（`armedCallbacks.length===1`）显式入测；
+   收尾对全部曾武装的真实 native timer 显式取消（真实 disposer 幂等），事件循环零残留。
+2. **11d-SMOKE 新增为显式冒烟**：native 到期链路（native setTimeout 到期 → TimerService
+   `dispose(); callback()` → beginIdleClose 同步 throw → 进程存活）保留端到端验证——
+   用例名与头注均含「smoke 豁免」与「60ms real sleep（本文件唯一非确定性点）」，豁免
+   理由随头注落纸：该到期链路含进程级 uncaughtException 面，无法以 fake scheduler/受控
+   gate 等价复刻；确定性分工 = 11b（fake 全链路）+ 11d（真实桥武装 + 确定性触发，除
+   「native 到期」外全链路）；参照既有 SA7-P4 烟囱先例（native 到期 happy path 已锚定，
+   本冒烟补 throw 形态）。**头注/代码数字一致：60ms = idleTimeoutMs(15ms)×4 余量。**
+3. 顺手澄清：`flushMacrotasks` 的 `setTimeout(resolve, 0)` 为 0ms 定时器**轮转**
+   （宏任务 checkpoint 的 queue 语义，非墙钟等待——确定性），注释已补。
+
+**整改后复验**（全部后台独立进程 `setsid nohup`）：
+
+```bash
+# a) 文件级 verbose（逐名 + 耗时）
+pnpm exec vitest run packages/namespace-registry/test/registry-sa7-rev1.test.ts --reporter=verbose
+# → 19d ✓ 8ms / 19d-CTRL ✓ 4ms / R5P ✓ 19ms / 11d ✓ 2ms / 11d-SMOKE ✓ 62ms / 11e ✓ 1ms；
+#    Test Files 1 passed (1)；Tests 6 passed (6)；Type Errors no errors   （/tmp/sa7-rev1-r2.log）
+# b) packages/namespace-registry 全包
+pnpm exec vitest run packages/namespace-registry/test/
+# → Test Files 12 passed (12)；Tests 162 passed (162)；Type Errors no errors；NR_EXIT=0
+pnpm typecheck   # → TC_EXIT=0                                      （/tmp/sa7-nr-final.log）
+# c) 全量终态
+pnpm typecheck && pnpm test
+# → TYPECHECK_EXIT=0；Test Files 117 passed (117)；Tests 1403 passed (1403)；
+#    Type Errors no errors；VITEST_EXIT=0                            （/tmp/sa7-final-r2.log）
+```
+
+整改不触及任何断言语义面（observer exact cause 恰一次 / entry 移除 / 新 generation /
+零 unhandled / 真实桥武装），仅改变触发方式与豁免标注；**Verdict 维持 pass**。

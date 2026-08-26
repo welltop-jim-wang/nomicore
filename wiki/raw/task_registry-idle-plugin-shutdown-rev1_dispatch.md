@@ -15,3 +15,7 @@
 | 9 | 23:51 | SA4 | Phase 3 静态验尸 | 00:02 | 总控亲验红灯转绿（tc exit 0 / 1397 passed）；verdict: pass |
 | 10 | 00:02 | SA7 | Phase 4 动态验证 | 00:30 | SA4 pass；SA7 活链路验证（含 SA4 交验的 4 条动态重点，首位 R5′ 生产 timer 残余窗口证实）；verdict: pass |
 | 11 | 00:30 | 总控 | Phase 3.5 门禁自检 | - | 硬门禁 #12/#14/#15/#16 自检 + AC 逐条核对 |
+| 12 | 00:55 | 总控 | Phase 3.5 AC 门禁 | 01:10 | AC 16 行（3 问题+13 AC）全 ✅，ac_checklist 落纸；HG12/14/15/16 自检通过（HG13 N/A）；HG16 附带修正本 worktree 陈旧 mabf.branch/base-branch git config |
+| 13 | 01:10 | review×2 | 双轴终审 | 01:35 | Standards 轴 0 hard violation（4 judgement calls 非阻断）；Spec 轴 0 缺失，1 阻断项=11d 真实 sleep 违约束 + 1 注释失真；派 SA7/SA3 修订 |
+| 14 | 01:35 | SA7 | 终审修订 | (pending) | 11d 真实 60ms sleep → 确定性形态或显式 smoke 豁免 |
+| 15 | 01:35 | SA3 | 终审修订 | (pending) | service.ts helper 注释机制归因精确化（设计 R2 §5#5 两路径分写） |

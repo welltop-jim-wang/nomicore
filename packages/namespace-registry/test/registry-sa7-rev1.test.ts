@@ -20,13 +20,23 @@
  *   （registry-shutdown-settled < persistence-adapter-disposed）在真实 timer 在场下
  *   成立；adapter dispose 恰一次；零 unhandled rejection。门控拓扑使全程确定性
  *   （零 native timer 到期、零 real sleep——真实 timer 仅作为装配在场）。
- * - 11d（P2 活链路 real native timer 烟囱）：testing seam registry + 经
- *   createCordisRegistryScheduler 的**真实 ctx.timeout 桥**（native setTimeout 经
- *   TimerService/ctx.effect）+ close 同步 throw——异常不逃出 native timer 回调
- *   （若逃逸 = uncaughtException = 进程级崩溃，测试自身即判别器）；observer
- *   idle-close-failed exact cause 恰一次；entry 移除（后续 open 全新 generation）；
- *   零 unhandled rejection。含 40ms real sleep（SA7-P4 烟囱先例，本文件唯一非确定性
- *   点，已注明）。
+ * - 11d（P2 活链路，**确定性**）：testing seam registry + 经
+ *   createCordisRegistryScheduler 的**真实 ctx.timeout 桥**（TimerService/ctx.effect/
+ *   native setTimeout 真实武装；idleTimeoutMs=300_000 → 测试期内 native 必不到期，
+ *   零真实时钟依赖）+ 回调捕获后**确定性手动触发**——close 同步 throw 不逃出回调
+ *   （逃逸即沿本测试调用栈直接失败；收编/逃逸语义位于 beginIdleClose、在回调触发者
+ *   上游，与触发者无关——判别器等价）；真实 disposer 取消语义（clearTimeout 路径）；
+ *   observer idle-close-failed exact cause 恰一次；entry 移除（后续 open 全新
+ *   generation）；零 unhandled rejection。
+ * - 11d-SMOKE（P2 活链路 native 到期冒烟，**显式 smoke 豁免——本文件唯一非确定性
+ *   点：60ms real sleep**）：同拓扑但 idleTimeoutMs=15ms，native setTimeout 真实到期
+ *   触发同步 throw——异常不逃出 native timer 回调（若逃逸 = uncaughtException =
+ *   进程级崩溃，测试自身即判别器）。豁免理由：「native 到期 → TimerService
+ *   dispose() → callback() → beginIdleClose」的到期链路（含进程级崩溃面）无法以
+ *   fake scheduler/受控 gate 等价复刻，必须有真实墙钟到期；确定性分工 = 11b（fake
+ *   scheduler 全链路）+ 11d（真实桥武装 + 确定性触发，除「native 到期」外全链路），
+ *   本冒烟仅锚定 native 到期交付与 throw 形态下进程存活（SA7-P4 烟囱先例：native
+ *   到期 happy path 已锚定，本例补 throw 形态）。60ms = idleTimeoutMs(15ms)×4 余量。
  */
 import { describe, expect, it } from 'vitest';
 import * as Y from 'yjs';
@@ -35,7 +45,7 @@ import { createMemoryPersistencePlugin, provideNomicorePersistence } from '@nomi
 import { createManualClock, createManualClockPlugin } from '@nomicore/clock/testing';
 import type { NamespaceRuntime, NamespaceRuntimeStatus } from '@nomicore/namespace-runtime';
 import { NamespaceRegistryShutdownError } from '@nomicore/namespace-registry';
-import type { NamespaceLease } from '@nomicore/namespace-registry';
+import type { NamespaceLease, RegistryTimeoutScheduler } from '@nomicore/namespace-registry';
 import { createNamespaceRegistryForTesting, createRegistryTestScheduler } from '@nomicore/namespace-registry/testing';
 import { createNamespaceRegistryPlugin } from '@nomicore/namespace-registry';
 import { createCordisRegistryScheduler } from '../src/plugin.js';
@@ -69,7 +79,8 @@ async function flushMicrotasks(times = 40): Promise<void> {
 
 /** 宏任务 checkpoint 展开（P1 floating-window 判别的载荷：跨 turn 检查
  * unhandledRejection——Node 在 turn 结束的检查点对无 handler 的 rejected Promise
- * 触发事件）。 */
+ * 触发事件）。setTimeout(0) 为 0ms 定时器**轮转**（queue 语义的宏任务 checkpoint，
+ * 非真实墙钟等待——确定性，与 real sleep 无关）。 */
 async function flushMacrotasks(times = 3): Promise<void> {
   for (let i = 0; i < times; i += 1) {
     await new Promise<void>((resolve) => {
@@ -443,7 +454,95 @@ describe('SA7 rev1 补充动态（P1 floating-window / R5′ 活链路 / P2 real
     }
   });
 
-  it('11d. P2 活链路 real native timer 烟囱：经 ctx.timeout 真实桥（TimerService/ctx.effect/native setTimeout）的 idle close 同步 throw——异常不逃出 native timer 回调（进程零崩溃）；observer exact cause 恰一次；entry 移除（新 generation）；零 unhandled rejection', async () => {
+  it('11d. P2 活链路（确定性）：真实 TimerService 经 ctx.timeout 真实桥武装 idle timer（native setTimeout@300_000ms，测试期内必不到期——零真实时钟依赖）+ 确定性手动触发——同步 throw 不逃出回调；真实 disposer 取消语义；observer exact cause 恰一次；entry 移除（新 generation）；零 unhandled rejection', async () => {
+    const probe = collectUnhandledRejections();
+    try {
+      const ctx = new Context();
+      createManualClockPlugin(createManualClock(0)).apply(ctx);
+      new TimerService(ctx); // 真实 timer 服务（ctx.timeout → TimerService → ctx.effect → native setTimeout）
+      const persistence = new StubPersistence();
+      persistence.queueLoad(new StubHandle({ userId: 'u-sa7-rev1' }, 'k'));
+      persistence.queueLoad(new StubHandle({ userId: 'u-sa7-rev1' }, 'k'));
+      provideNomicorePersistence(ctx, persistence); // scheduler 桥的宿主依赖断言所需（SA7-P4 同款）
+      const syncCause = new Error('idle-close-sync-throw-11d');
+      const observer = collectObserver();
+      const runtimes: ObservableRuntime[] = [];
+      // ★ 真实桥 + 回调捕获：武装路径完全走真实 TimerService/ctx.effect/native
+      //   setTimeout（与生产 plugin 同款 wiring，idleTimeoutMs=300_000 → native 到期
+      //   在 300s 后，测试期内必不到期——确定性、零真实时钟依赖）；registry 的 idle
+      //   回调被捕获后由本测试**确定性手动触发**。同步 throw 的收编/逃逸语义位于
+      //   beginIdleClose（在回调触发者的上游），与触发者无关：若收编缺失，异常沿本
+      //   测试调用栈传播 → 本用例直接失败——与 11b 的 advanceBy 拒绝同构的判别器。
+      //   native 到期链路（含进程级崩溃面）由 11d-SMOKE 显式冒烟。
+      const bridge = createCordisRegistryScheduler(ctx);
+      const armedCallbacks: Array<() => void> = [];
+      const armedHandles: unknown[] = [];
+      const scheduler: RegistryTimeoutScheduler = {
+        setTimeout: (callback, delayMs) => {
+          const handle = bridge.setTimeout(callback, delayMs); // 真实武装（native setTimeout）
+          armedCallbacks.push(callback);
+          armedHandles.push(handle);
+          return handle;
+        },
+        clearTimeout: (handle) => {
+          bridge.clearTimeout(handle); // registry 取消路径照走真实 disposer（幂等语义）
+        },
+      };
+      const registry = createNamespaceRegistryForTesting(persistence, {
+        clock: { now: () => 1_700_000_123_456 },
+        scheduler,
+        idleTimeoutMs: 300_000,
+        runtimeFactory: () => {
+          const r = new ObservableRuntime(
+            `R${runtimes.length + 1}`,
+            'k',
+            runtimes.length === 0 ? { syncThrowWith: syncCause } : {},
+          );
+          runtimes.push(r);
+          return r;
+        },
+        observer: observer.sink,
+      });
+      const lease1 = okLease(await registry.open({ userId: 'u-sa7-rev1' }, 'k'));
+      await lease1.release(); // last lease → idle → 真实桥武装 native timer@300_000ms
+      expect(armedCallbacks.length).toBe(1); // 真实武装确证（TimerService 零 throw）
+      // ★ 确定性触发（同步调用栈 = 本测试）：同步 throw 被收编——不逃出回调。
+      armedCallbacks[0]!();
+      await flushMicrotasks();
+      expect(runtimes[0]?.closeCalls).toBe(1); // close 发起恰一次（收编后正常记账）
+      const failed = observer.events.filter((e) => e.type === 'idle-close-failed');
+      expect(failed.length).toBe(1); // exact cause 恰一次
+      if (failed[0]) {
+        expect(failed[0].cause).toBe(syncCause);
+      }
+      // entry 移除 → 后续 open 全新 generation（loadCalls 2 + 新 Runtime）。
+      const lease2 = okLease(await registry.open({ userId: 'u-sa7-rev1' }, 'k'));
+      expect(persistence.loadCalls.length).toBe(2);
+      expect(runtimes.length).toBe(2);
+      expect(lease2.read(['x'])).toEqual({ ok: true, value: 'R2' });
+      // 清扫：release → 重武装（真实桥第二枚 native timer）→ shutdown 同步取消
+      // （registry 的 clearTimeout 路径走真实 disposer）+ 关闭 R2。
+      await lease2.release();
+      expect(armedCallbacks.length).toBe(2);
+      await registry.shutdown();
+      expect(runtimes[1]?.closeCalls).toBe(1);
+      expect(registry.getStatus()).toEqual({ state: 'stopped' });
+      // 兜底清扫：对全部曾武装的真实 native timer 显式取消（首次触发的回调其 native
+      // 注册仍在——真实 disposer 幂等，双重取消无害；确保零 pending native timer、
+      // 事件循环零残留，测试出口确定性）。
+      for (const handle of armedHandles) bridge.clearTimeout(handle);
+      await ctx.fiber.dispose();
+      await flushMicrotasks();
+      await new Promise<void>((resolve) => {
+        setImmediate(resolve);
+      });
+      expect(probe.events).toEqual([]); // 零 unhandled rejection
+    } finally {
+      probe.dispose();
+    }
+  });
+
+  it('11d-SMOKE. P2 活链路 native 到期冒烟（smoke 豁免：60ms real sleep，本文件唯一非确定性点）：idleTimeoutMs=15ms 下 native setTimeout 真实到期触发同步 throw——不逃出 native timer 回调（进程零崩溃）；observer exact cause 恰一次；entry 移除（新 generation）；零 unhandled rejection', async () => {
     const probe = collectUnhandledRejections();
     try {
       const ctx = new Context();
@@ -453,13 +552,13 @@ describe('SA7 rev1 补充动态（P1 floating-window / R5′ 活链路 / P2 real
       persistence.queueLoad(new StubHandle({ userId: 'u-sa7-rev1' }, 'k'));
       persistence.queueLoad(new StubHandle({ userId: 'u-sa7-rev1' }, 'k'));
       provideNomicorePersistence(ctx, persistence); // scheduler 桥的宿主依赖断言所需（SA7-P4 同款）
-      const syncCause = new Error('idle-close-sync-throw-11d');
+      const syncCause = new Error('idle-close-sync-throw-11d-smoke');
       const observer = collectObserver();
       const runtimes: ObservableRuntime[] = [];
       const registry = createNamespaceRegistryForTesting(persistence, {
         clock: { now: () => 1_700_000_123_456 },
         // ★ 真实 ctx.timeout 桥（与生产 plugin 同款 wiring）：idle timer 经
-        //   TimerService → ctx.effect → native setTimeout 武装。
+        //   TimerService → ctx.effect → native setTimeout(15ms) 武装，并真实到期。
         scheduler: createCordisRegistryScheduler(ctx),
         idleTimeoutMs: 15, // 15ms native 窗口
         runtimeFactory: () => {
@@ -475,9 +574,12 @@ describe('SA7 rev1 补充动态（P1 floating-window / R5′ 活链路 / P2 real
       });
       const lease1 = okLease(await registry.open({ userId: 'u-sa7-rev1' }, 'k'));
       await lease1.release(); // last lease → idle → ctx.timeout(15ms) native 武装
-      // real sleep 60ms（≫ 15ms 窗口）——本用例唯一非确定性点（SA7-P4 烟囱先例）。
-      // 若同步 throw 逃出 native timer 回调 = uncaughtException = 进程崩溃，本测试
-      // 无法到达下方断言（判别器即测试自身存活）。
+      // ★ 本用例唯一非确定性点：60ms real sleep（= idleTimeoutMs 15ms × 4 余量）。
+      //   豁免理由（见文件头注）：「native 到期 → TimerService dispose() →
+      //   callback() → beginIdleClose」链路无法以 fake scheduler/受控 gate 等价复刻；
+      //   确定性分工由 11b + 11d 承载，本冒烟仅锚定 native 到期交付与 throw 形态下
+      //   进程存活（SA7-P4 烟囱先例）。若同步 throw 逃出 native timer 回调 =
+      //   uncaughtException = 进程崩溃，本测试无法到达下方断言（判别器即测试自身存活）。
       await new Promise<void>((resolve) => {
         setTimeout(resolve, 60);
       });
