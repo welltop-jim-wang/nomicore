@@ -1,7 +1,17 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type { TimerService } from '@deepseek-ai/cordis-plugin-timer'
 import * as Y from 'yjs'
-import type { DocHandle, DocPersistence, PersistenceScheduler, User } from './contract.js'
+import {
+  DocCreateFatalError,
+  DocCreateOperationalError,
+  DocDuplicateError,
+  DocLoadOperationalError,
+  type DocHandle,
+  type DocPersistence,
+  type PersistenceScheduler,
+  type User,
+} from './contract.js'
+import type { PersistenceIO } from './lifecycle.js'
 
 /** Lazily load Vitest so the test-support timer remains CLI-safe. */
 async function vitest(): Promise<typeof import('vitest')> {
@@ -248,12 +258,6 @@ function docWithMeta(docId: string, who?: string): Y.Doc {
   return doc
 }
 
-async function tick(): Promise<void> {
-  await Promise.resolve()
-  await Promise.resolve()
-  await Promise.resolve()
-}
-
 /** Capture a rejection as a value; a resolution fails the test loudly. */
 async function rejectionOf<T>(promise: Promise<T>): Promise<unknown> {
   return promise.then(
@@ -452,9 +456,16 @@ export async function describeDocCreateContract(
       const doc = docWithMeta(docId, 'never-committed')
 
       const originalWrite = store.write
-      store.write = async () => { throw new Error('io down') }
+      const ioDown = new Error('io down')
+      store.write = async () => { throw ioDown }
       const err = await rejectionOf(persistence.createDoc(owner, docId, doc))
-      expect((err as { message?: string }).message).toContain('io down')
+      // §5.4.1 (issue #108): the failure channel is now a typed operational
+      // error — the store rejection must NOT leak into the public message
+      // text, and the exact cause is preserved on `cause` (identity-stable).
+      expect(err).toBeInstanceOf(DocCreateOperationalError)
+      expect((err as { committed: boolean }).committed).toBe(false)
+      expect((err as { cause: unknown }).cause).toBe(ioDown)
+      expect((err as { message?: string }).message).not.toContain('io down')
       expect(doc.isDestroyed).toBe(false)
       expect(scheduler.pending()).toBe(0)
 
@@ -584,16 +595,25 @@ export async function describeDocCreateContract(
       const docId = 'create-dispose-doc'
       const doc = docWithMeta(docId, 'x')
 
+      // §5.4.2 (issue #108 R1/A-1): deterministic entered-gate construction —
+      // the previous abort-listener resolve hook violated the PersistenceIO
+      // contract (resolve-without-commit) and raced the adapter entry gate.
+      // The hook is now entered (entry gate passed), then explicitly rejects
+      // with a self-owned instance BEFORE any side effect, only after dispose.
+      const writeAborted = new Error('write aborted')
       let releaseWrite: (() => void) | undefined
-      store.write = (_key, _snapshot, signal) => new Promise<void>((resolve) => {
-        signal.addEventListener('abort', () => resolve())
-        releaseWrite = resolve
+      let writeEntered: (() => void) | undefined
+      const writeEnteredPromise = new Promise<void>((resolve) => { writeEntered = resolve })
+      store.write = (_key, _snapshot, _signal) => new Promise<void>((_resolve, reject) => {
+        writeEntered!()
+        releaseWrite = () => reject(writeAborted)
       })
 
       const creating = persistence.createDoc(owner, docId, doc)
-      await tick()
-      await withTimeout(fixture.dispose(), 2_000, 'dispose with an in-flight create')
-      releaseWrite?.()
+      await withTimeout(writeEnteredPromise, 2_000, 'create to enter its write')
+      const disposing = fixture.dispose()
+      releaseWrite!()
+      await disposing
 
       // The in-flight create settles with a real rejection — never with the
       // timeout guard (that would mean the promise leaked and never settled),
@@ -604,11 +624,467 @@ export async function describeDocCreateContract(
       )
       expect(settlement).not.toBeInstanceOf(TestTimeoutError)
       expect(settlement).toBeInstanceOf(Error)
+      // §5.4.2 (issue #108): the store-write abort race is a typed fatal with
+      // an authoritative committed:false and the exact self-owned cause
+      // (identity anchor; EC7's AbortError variant is the complementary one).
+      expect(settlement).toBeInstanceOf(DocCreateFatalError)
+      expect((settlement as { phase: string }).phase).toBe('store-write')
+      expect((settlement as { committed: boolean }).committed).toBe(false)
+      expect((settlement as { cause: unknown }).cause).toBe(writeAborted)
       expect(scheduler.pending()).toBe(0)
 
       // The adapter is closed: no hidden lease can be minted afterwards.
       await expect(persistence.loadDoc(owner, docId)).rejects.toThrow(/disposed/)
       await expect(persistence.createDoc(owner, docId, docWithMeta(docId, 'y'))).rejects.toThrow(/disposed/)
+    })
+  })
+}
+
+// ---------------------------------------------------------------------------
+// Typed error contract (issue #108, design §5): the load/create failure
+// classification shared by every adapter. Both fixtures drive fault injection
+// through ONE mechanism — the `wrapIo` around-seam — so the exact same
+// assertion set runs against Memory and File.
+// ---------------------------------------------------------------------------
+
+/** One armed gate: `entered` fires when the operation reached the seam; `release()` lets it proceed. */
+export interface PersistenceHold {
+  readonly entered: Promise<void>
+  release(): void
+}
+
+/** Single-shot fault injection arming slots for the next seam operation. */
+export interface PersistenceIoFaults {
+  /** Next read rejects with `reason` before touching the real io. */
+  failNextRead(reason: unknown): void
+  /** Next write rejects with `reason` before its commit segment (store unchanged). */
+  failNextWrite(reason: unknown): void
+  /** Next write suspends before its commit segment; `release()` lets the real commit run. */
+  holdNextWriteBeforeCommit(): PersistenceHold
+  /** Next write suspends AFTER the real commit; `release()` lets the write resolve. */
+  holdNextWriteAfterCommit(): PersistenceHold
+  /** Next read suspends; after `release()` returns `value` without touching the real io. */
+  holdNextReadThen(value: Uint8Array | undefined): PersistenceHold
+}
+
+/**
+ * The `wrapIo` fault seam (design §5.3). `wrap(io)` returns a PersistenceIO
+ * that both maintains the PersistenceIO contract (no synchronous throw; write
+ * resolves ⟺ committed; a pre-commit hold re-checks the signal before letting
+ * the real commit run) and exposes the fault slots above.
+ */
+export interface PersistenceIoFaultSeam {
+  readonly faults: PersistenceIoFaults
+  wrap(io: PersistenceIO): PersistenceIO
+}
+
+const NO_FAULT = Symbol('createPersistenceIoFaultSeam: no fault armed')
+
+interface ArmedHold {
+  readonly enteredResolve: () => void
+  readonly gate: Promise<void>
+  readonly release: () => void
+}
+
+function armHold(): ArmedHold & { readonly hold: PersistenceHold } {
+  let enteredResolveFn: () => void = () => {}
+  const entered = new Promise<void>((resolve) => { enteredResolveFn = resolve })
+  let releaseFn: () => void = () => {}
+  const gate = new Promise<void>((resolve) => { releaseFn = resolve })
+  return {
+    enteredResolve: enteredResolveFn,
+    gate,
+    release: releaseFn,
+    hold: { entered, release: releaseFn },
+  }
+}
+
+export function createPersistenceIoFaultSeam(): PersistenceIoFaultSeam {
+  let failRead: unknown = NO_FAULT
+  let failWrite: unknown = NO_FAULT
+  let holdRead: ArmedHold | undefined
+  let holdReadValue: Uint8Array | undefined = undefined
+  let holdWriteBeforeCommit: ArmedHold | undefined
+  let holdWriteAfterCommit: ArmedHold | undefined
+
+  const faults: PersistenceIoFaults = {
+    failNextRead(reason) { failRead = reason },
+    failNextWrite(reason) { failWrite = reason },
+    holdNextWriteBeforeCommit() {
+      const armed = armHold()
+      holdWriteBeforeCommit = armed
+      return armed.hold
+    },
+    holdNextWriteAfterCommit() {
+      const armed = armHold()
+      holdWriteAfterCommit = armed
+      return armed.hold
+    },
+    holdNextReadThen(value) {
+      const armed = armHold()
+      holdRead = armed
+      holdReadValue = value
+      return armed.hold
+    },
+  }
+
+  const wrap = (io: PersistenceIO): PersistenceIO => ({
+    async read(key, signal) {
+      const failure = failRead
+      if (failure !== NO_FAULT) {
+        failRead = NO_FAULT
+        throw failure
+      }
+      const held = holdRead
+      if (held !== undefined) {
+        holdRead = undefined
+        held.enteredResolve()
+        await held.gate
+        return holdReadValue
+      }
+      return await io.read(key, signal)
+    },
+    async write(key, snapshot, signal) {
+      const failure = failWrite
+      if (failure !== NO_FAULT) {
+        failWrite = NO_FAULT
+        throw failure
+      }
+      const before = holdWriteBeforeCommit
+      if (before !== undefined) {
+        holdWriteBeforeCommit = undefined
+        before.enteredResolve()
+        await before.gate
+        // Contract self-check: once aborted, the commit segment must not run
+        // (the wrapped inner io for Memory/File already gates its own entry,
+        // but this keeps ANY inner io within the PersistenceIO contract).
+        signal.throwIfAborted()
+        return await io.write(key, snapshot, signal)
+      }
+      await io.write(key, snapshot, signal)
+      const after = holdWriteAfterCommit
+      if (after !== undefined) {
+        holdWriteAfterCommit = undefined
+        after.enteredResolve()
+        await after.gate
+      }
+    },
+  })
+
+  return { faults, wrap }
+}
+
+/**
+ * Fixture contract for the shared typed error suite (design §5.3 + EC rows):
+ * one adapter under test wired through the fault seam, a fresh adapter over the
+ * same committed store, direct store writes for corruption fixtures, and the
+ * scheduler/dispose faces the EC assertions need.
+ */
+export interface DocPersistenceErrorContractFixture {
+  readonly persistence: DocPersistenceWithCreate
+  readonly scheduler: TestScheduler
+  readonly faults: PersistenceIoFaults
+  /** A brand-new adapter over the same committed store (empty cache). */
+  readonly makeFresh: () => DocPersistence
+  /** Writes raw snapshot bytes straight into the store (corruption fixtures). */
+  writeCommitted(owner: User, docId: string, bytes: Uint8Array): Promise<void>
+  readonly dispose: () => Promise<void>
+}
+
+export type DocPersistenceErrorContractFactory =
+  () => Promise<DocPersistenceErrorContractFixture> | DocPersistenceErrorContractFixture
+
+/**
+ * Shared typed load/create error contract (issue #108, design §5.3 EC1–EC8).
+ * Every adapter runs this exact group; fault injection goes through the
+ * fixture's `wrapIo` seam (EC10 is Memory-specific and lives in the Memory
+ * test file — its construction needs the public flat-hook surface).
+ */
+export async function describePersistenceErrorContract(
+  factory: DocPersistenceErrorContractFactory,
+): Promise<void> {
+  const { describe, expect, it } = await vitest()
+  // Typed error faces (issue #108 §5): statically imported from the module
+  // top — the classes ship with the production implementation, so this suite
+  // branches and asserts on the real exported constructors.
+
+  const SENTINEL = 'TOP-SECRET-CAUSE-TOKEN-7f3a'
+  const FAKE_PATH = '/etc/sekrit/root/users/alice'
+  const LOAD_MESSAGE = 'loadDoc operational failure: the underlying store read rejected'
+  const CREATE_OPERATIONAL_MESSAGE = 'createDoc operational failure: the store rejected before commit'
+  const CREATE_FATAL_MESSAGE = 'createDoc fatal: internal create failure'
+
+  /** N3: sensitive cause text must never reach any public error face. */
+  function assertNoSensitiveText(err: unknown): void {
+    const texts = [
+      (err as { message?: string }).message ?? '',
+      (err as { name?: string }).name ?? '',
+      String((err as { stack?: string }).stack ?? ''),
+      JSON.stringify(err),
+    ]
+    for (const text of texts) {
+      expect(text).not.toContain(SENTINEL)
+      expect(text).not.toContain(FAKE_PATH)
+    }
+  }
+
+  describe('DocPersistence typed error contract', () => {
+    it('EC1: a store read failure is a shared DocLoadOperationalError carrying the exact cause', async () => {
+      const fixture = await factory()
+      const owner: User = { userId: 'alice' }
+      const docId = 'ec1-doc'
+      const ioDown = new Error(`io down: ${SENTINEL} @ ${FAKE_PATH}`)
+      const committed = docWithMeta(docId, 'preserved')
+      await fixture.writeCommitted(owner, docId, Y.encodeStateAsUpdate(committed))
+
+      fixture.faults.failNextRead(ioDown)
+      // Both loads are started in the same tick: the first one registers the
+      // reading cell synchronously, so the second coalesces onto the same ticket.
+      const first = fixture.persistence.loadDoc(owner, docId)
+      const second = fixture.persistence.loadDoc(owner, docId)
+      const firstErr = await rejectionOf(first)
+      const secondErr = await rejectionOf(second)
+
+      expect(firstErr).toBe(secondErr)
+      expect(firstErr).toBeInstanceOf(DocLoadOperationalError)
+      expect(firstErr).toMatchObject({ code: 'DOC_LOAD_OPERATIONAL' })
+      expect((firstErr as { cause: unknown }).cause).toBe(ioDown)
+      expect((firstErr as { message: string }).message).toBe(LOAD_MESSAGE)
+      expect((firstErr as { name: string }).name).toBe('DocLoadOperationalError')
+      assertNoSensitiveText(firstErr)
+
+      // Healed: the failed ticket cleaned its reading cell, so the retry re-reads.
+      const healed = await fixture.persistence.loadDoc(owner, docId)
+      expect(healed).not.toBeNull()
+      expect(healed!.doc.getMap('ROOT').get('who')).toBe('preserved')
+      await healed!.release()
+      await fixture.dispose()
+    })
+
+    it('EC2: load corruption stays a loud bare error and is never downgraded to operational (AC6)', async () => {
+      const fixture = await factory()
+      const owner: User = { userId: 'alice' }
+      const docId = 'ec2-doc'
+      const mislabeled = new Y.Doc()
+      mislabeled.getMap('META').set('docId', 'other-doc')
+      mislabeled.getMap('ROOT').set('who', 'mislabeled')
+      await fixture.writeCommitted(owner, docId, Y.encodeStateAsUpdate(mislabeled))
+
+      const err = await rejectionOf(fixture.persistence.loadDoc(owner, docId))
+      expect((err as { message?: string }).message).toMatch(/META\.docId/)
+      expect(err).not.toBeInstanceOf(DocLoadOperationalError)
+      expect(err).not.toBeInstanceOf(DocCreateOperationalError)
+      expect(err).not.toBeInstanceOf(DocCreateFatalError)
+      await fixture.dispose()
+    })
+
+    it('EC3: a create write failure before commit is DocCreateOperationalError committed:false', async () => {
+      const fixture = await factory()
+      const owner: User = { userId: 'alice' }
+      const docId = 'ec3-doc'
+      const doc = docWithMeta(docId, 'never-committed')
+      const ioDown = new Error(`io down: ${SENTINEL} @ ${FAKE_PATH}`)
+      fixture.faults.failNextWrite(ioDown)
+
+      const err = await rejectionOf(fixture.persistence.createDoc(owner, docId, doc))
+      expect(err).toBeInstanceOf(DocCreateOperationalError)
+      expect(err).toMatchObject({ code: 'DOC_CREATE_OPERATIONAL', committed: false })
+      expect((err as { committed: boolean }).committed).toBe(false)
+      expect((err as { cause: unknown }).cause).toBe(ioDown)
+      expect((err as { message: string }).message).toBe(CREATE_OPERATIONAL_MESSAGE)
+      expect((err as { name: string }).name).toBe('DocCreateOperationalError')
+      assertNoSensitiveText(err)
+      expect(doc.isDestroyed).toBe(false)
+      expect(fixture.scheduler.pending()).toBe(0)
+
+      // Nothing was committed, and no stale claim blocks a retry with the same doc.
+      expect(await fixture.makeFresh().loadDoc(owner, docId)).toBeNull()
+      const retried = await fixture.persistence.createDoc(owner, docId, doc)
+      expect(retried.doc).toBe(doc)
+      await retried.release()
+      await fixture.dispose()
+    })
+
+    it('EC4: a create probe-read failure on a current epoch is DocCreateOperationalError committed:false', async () => {
+      const fixture = await factory()
+      const owner: User = { userId: 'alice' }
+      const docId = 'ec4-doc'
+      const doc = docWithMeta(docId, 'never-probed')
+      const ioDown = new Error(`probe read down: ${SENTINEL} @ ${FAKE_PATH}`)
+      fixture.faults.failNextRead(ioDown)
+
+      const err = await rejectionOf(fixture.persistence.createDoc(owner, docId, doc))
+      expect(err).toBeInstanceOf(DocCreateOperationalError)
+      expect(err).toMatchObject({ code: 'DOC_CREATE_OPERATIONAL', committed: false })
+      expect((err as { committed: boolean }).committed).toBe(false)
+      expect((err as { cause: unknown }).cause).toBe(ioDown)
+      expect((err as { message: string }).message).toBe(CREATE_OPERATIONAL_MESSAGE)
+      expect((err as { name: string }).name).toBe('DocCreateOperationalError')
+      assertNoSensitiveText(err)
+      expect(doc.isDestroyed).toBe(false)
+      expect(await fixture.makeFresh().loadDoc(owner, docId)).toBeNull()
+      const retried = await fixture.persistence.createDoc(owner, docId, doc)
+      expect(retried.doc).toBe(doc)
+      await retried.release()
+      await fixture.dispose()
+    })
+
+    it('EC5: a dispose after commit is DocCreateFatalError post-commit committed:true and never rolls back', async () => {
+      const fixture = await factory()
+      const owner: User = { userId: 'alice' }
+      const docId = 'ec5-doc'
+      const doc = docWithMeta(docId, 'committed-before-fatal')
+
+      const hold = fixture.faults.holdNextWriteAfterCommit()
+      const creating = fixture.persistence.createDoc(owner, docId, doc)
+      const creatingRejection = rejectionOf(creating)
+      // Early attachment with a no-op sink: if a hold-arm timeout aborts this test
+      // before the awaited rejection collection, a pre-implementation createDoc
+      // resolution must not surface as a process-level unhandled rejection.
+      void creatingRejection.catch(() => {})
+      await withTimeout(hold.entered, 2_000, 'create write to finish its commit and enter the post-commit hold')
+
+      const disposing = fixture.dispose()
+      hold.release()
+      await disposing
+
+      const err = await creatingRejection
+      expect(err).toBeInstanceOf(DocCreateFatalError)
+      expect(err).toMatchObject({ code: 'DOC_CREATE_FATAL' })
+      expect((err as { phase: string }).phase).toBe('post-commit')
+      expect((err as { committed: boolean }).committed).toBe(true)
+      expect((err as { cause: unknown }).cause).toBeInstanceOf(Error)
+      expect((err as { message: string }).message).toBe(CREATE_FATAL_MESSAGE)
+      expect((err as { name: string }).name).toBe('DocCreateFatalError')
+      // N5: the fatal never claims, promises, or performs rollback.
+      expect((err as { message: string }).message).not.toMatch(/rollback|compensat|undo/i)
+      assertNoSensitiveText(err)
+      expect(doc.isDestroyed).toBe(false)
+      expect(fixture.scheduler.pending()).toBe(0)
+
+      // The committed snapshot really is in the store: a fresh adapter reads it back.
+      const fresh = fixture.makeFresh()
+      const loaded = await fresh.loadDoc(owner, docId)
+      expect(loaded).not.toBeNull()
+      expect(loaded!.doc.getMap('ROOT').get('who')).toBe('committed-before-fatal')
+      await loaded!.release()
+      // The caller must not retry create: the retry observes DOC_DUPLICATE.
+      await expect(fresh.createDoc(owner, docId, docWithMeta(docId, 'again'))).rejects.toMatchObject({ code: 'DOC_DUPLICATE' })
+      await fixture.dispose()
+    })
+
+    it('EC6: a probe read aborted by dispose is DocCreateFatalError probe-read committed:false', async () => {
+      const fixture = await factory()
+      const owner: User = { userId: 'alice' }
+      const docId = 'ec6-doc'
+      const doc = docWithMeta(docId, 'never-probed')
+
+      const hold = fixture.faults.holdNextReadThen(undefined)
+      const creating = fixture.persistence.createDoc(owner, docId, doc)
+      const creatingRejection = rejectionOf(creating)
+      // Early attachment with a no-op sink: if a hold-arm timeout aborts this test
+      // before the awaited rejection collection, a pre-implementation createDoc
+      // resolution must not surface as a process-level unhandled rejection.
+      void creatingRejection.catch(() => {})
+      await withTimeout(hold.entered, 2_000, 'create probe read to enter the hold')
+
+      const disposing = fixture.dispose()
+      hold.release()
+      await disposing
+
+      const err = await creatingRejection
+      expect(err).toBeInstanceOf(DocCreateFatalError)
+      expect(err).toMatchObject({ code: 'DOC_CREATE_FATAL' })
+      expect((err as { phase: string }).phase).toBe('probe-read')
+      expect((err as { committed: boolean }).committed).toBe(false)
+      expect((err as { cause: unknown }).cause).toBeInstanceOf(Error)
+      expect((err as { message: string }).message).toBe(CREATE_FATAL_MESSAGE)
+      expect((err as { name: string }).name).toBe('DocCreateFatalError')
+      expect(doc.isDestroyed).toBe(false)
+      expect(fixture.scheduler.pending()).toBe(0)
+
+      // The write path never ran: the store is untouched.
+      expect(await fixture.makeFresh().loadDoc(owner, docId)).toBeNull()
+      // L0/C0 unchanged: the disposed adapter still rejects with the bare lifetime text.
+      await expect(fixture.persistence.loadDoc(owner, docId)).rejects.toThrow(/disposed/)
+      await expect(fixture.persistence.createDoc(owner, docId, docWithMeta(docId, 'y'))).rejects.toThrow(/disposed/)
+      await fixture.dispose()
+    })
+
+    it('EC7: a store write aborted by dispose is DocCreateFatalError store-write committed:false', async () => {
+      const fixture = await factory()
+      const owner: User = { userId: 'alice' }
+      const docId = 'ec7-doc'
+      const doc = docWithMeta(docId, 'never-written')
+
+      const hold = fixture.faults.holdNextWriteBeforeCommit()
+      const creating = fixture.persistence.createDoc(owner, docId, doc)
+      const creatingRejection = rejectionOf(creating)
+      // Early attachment with a no-op sink: if a hold-arm timeout aborts this test
+      // before the awaited rejection collection, a pre-implementation createDoc
+      // resolution must not surface as a process-level unhandled rejection.
+      void creatingRejection.catch(() => {})
+      await withTimeout(hold.entered, 2_000, 'create write to enter the pre-commit hold')
+
+      const disposing = fixture.dispose()
+      hold.release()
+      await disposing
+
+      const err = await creatingRejection
+      expect(err).toBeInstanceOf(DocCreateFatalError)
+      expect(err).toMatchObject({ code: 'DOC_CREATE_FATAL' })
+      expect((err as { phase: string }).phase).toBe('store-write')
+      expect((err as { committed: boolean }).committed).toBe(false)
+      expect((err as { cause: unknown }).cause).toBeInstanceOf(Error)
+      expect((err as { message: string }).message).toBe(CREATE_FATAL_MESSAGE)
+      expect((err as { name: string }).name).toBe('DocCreateFatalError')
+      expect(doc.isDestroyed).toBe(false)
+      expect(fixture.scheduler.pending()).toBe(0)
+
+      // The commit segment never ran: the store is untouched.
+      expect(await fixture.makeFresh().loadDoc(owner, docId)).toBeNull()
+      await fixture.dispose()
+    })
+
+    it('EC8: DocDuplicateError stays an independent type with its own code, never mixed with the new types', async () => {
+      const fixture = await factory()
+      const owner: User = { userId: 'alice' }
+      const docId = 'ec8-doc'
+      const first = await fixture.persistence.createDoc(owner, docId, docWithMeta(docId, 'original'))
+
+      // Cache path and store path both stay DocDuplicateError.
+      const dup = await rejectionOf(fixture.persistence.createDoc(owner, docId, docWithMeta(docId, 'challenger')))
+      expect(dup).toBeInstanceOf(DocDuplicateError)
+      expect(dup).toMatchObject({ code: 'DOC_DUPLICATE' })
+      expect(dup).not.toBeInstanceOf(DocLoadOperationalError)
+      expect(dup).not.toBeInstanceOf(DocCreateOperationalError)
+      expect(dup).not.toBeInstanceOf(DocCreateFatalError)
+
+      const fresh = fixture.makeFresh()
+      const freshDup = await rejectionOf(fresh.createDoc(owner, docId, docWithMeta(docId, 'again')))
+      expect(freshDup).toBeInstanceOf(DocDuplicateError)
+      expect(freshDup).not.toBeInstanceOf(DocLoadOperationalError)
+      expect(freshDup).not.toBeInstanceOf(DocCreateOperationalError)
+      expect(freshDup).not.toBeInstanceOf(DocCreateFatalError)
+
+      // The three new types are mutually exclusive with duplicate too, and
+      // all four codes are distinct.
+      const loadErr = new DocLoadOperationalError(new Error('x'))
+      const createErr = new DocCreateOperationalError(new Error('x'))
+      const fatalErr = new DocCreateFatalError('store-write', new Error('x'))
+      expect(loadErr).not.toBeInstanceOf(DocDuplicateError)
+      expect(createErr).not.toBeInstanceOf(DocDuplicateError)
+      expect(fatalErr).not.toBeInstanceOf(DocDuplicateError)
+      const codes = new Set([
+        (dup as { code: string }).code,
+        (loadErr as unknown as { code: string }).code,
+        (createErr as unknown as { code: string }).code,
+        (fatalErr as unknown as { code: string }).code,
+      ])
+      expect(codes.size).toBe(4)
+
+      await first.release()
+      await fixture.dispose()
     })
   })
 }

@@ -1,6 +1,9 @@
 import * as Y from 'yjs'
 import {
+  DocCreateFatalError,
+  DocCreateOperationalError,
   DocDuplicateError,
+  DocLoadOperationalError,
   resolvePersistenceSchedule,
   type DocHandle,
   type DocHandleStatus,
@@ -12,11 +15,28 @@ import {
 /**
  * The adapter I/O seam shared by every persistence adapter.
  *
- * - `write` must honor `signal`: once `signal.aborted` is set it must not
- *   execute its commit segment (MemoryPersistence: the private snapshot map
- *   set; FilePersistence: the temp→rename step). A failed `write` must leave
- *   the store unchanged.
- * - `read` must honor `signal` the same way.
+ * Observable-channel axiom (design §3.1): `committed` is judged against the
+ * store this instance's READ path trusts.
+ *
+ * - `write` resolve ⟺ the trusted store already holds this snapshot — the
+ *   commit segment has fully executed (Memory: flat-hook side effects + the
+ *   private mirror set; File: temp→rename completed). A write must never
+ *   resolve without having executed its commit segment (no silent no-op
+ *   resolve).
+ * - `write` reject ⟹ this write did not change the trusted store. Abort
+ *   semantics are carried by an ENTRY gate: once `signal.aborted` is set, the
+ *   write must not enter its pipeline at all (Memory: entry `throwIfAborted`
+ *   before any flat hook; File: entry + after-mkdir + after-writeFile gates,
+ *   all before rename). A write that has passed the entry gate runs to
+ *   completion (hook side effects + commit segment; File's rename, once
+ *   executed, completes) — completion ⇒ resolve ⇒ committed.
+ * - Seam-violation definition (an adapter bug the lifecycle declares but does
+ *   not defend against): ① a write that rejects after partially committing;
+ *   ② a synchronous throw from `read`/`write` — PersistenceIO methods must
+ *   NEVER throw synchronously: every failure goes through the returned
+ *   promise's rejection.
+ * - `read` must honor `signal` the same way: abort ⇒ rejection through the
+ *   returned promise, never a fabricated verdict, never a synchronous throw.
  */
 export interface PersistenceIO {
   read(key: string, signal: AbortSignal): Promise<Uint8Array | undefined>
@@ -172,15 +192,33 @@ export class PersistenceLifecycle {
         // A pending load may reveal an already committed snapshot. Wait for the
         // evidence before creating: createDoc must never overwrite a document
         // merely because its existence read was late.
-        const raw = await cell.read.rawPromise
-        this.assertCurrentEpoch(epoch)
+        let raw: Uint8Array | undefined
+        try {
+          raw = await cell.read.rawPromise
+          this.assertCurrentEpoch(epoch)
+        } catch (err) {
+          // R1/R2/R3 (design §2.2): probe-read failure. On a current epoch this
+          // is an operational store failure (the create wrote nothing, so
+          // committed:false is authoritative); once the lifecycle ended
+          // (dispose race) the same rejection is a probe-read fatal — AC6
+          // forbids reporting a store-health fact the lifecycle can no longer
+          // verify. The disposed-epoch Error survives as the exact `cause`.
+          throw this.classifyCreateStoreFailure('probe-read', err, epoch)
+        }
         if (raw !== undefined) throw this.duplicateError(owner, key)
         continue acquire
       }
       // Empty: this create must probe the store itself.
       const read = this.startReadTicket(key, owner, docId, 'create', epoch)
-      const raw = await read.rawPromise
-      this.assertCurrentEpoch(epoch)
+      let raw: Uint8Array | undefined
+      try {
+        raw = await read.rawPromise
+        this.assertCurrentEpoch(epoch)
+      } catch (err) {
+        // R1/R2/R3 rationale 同上（design §2.2）：probe-read 拒绝按 epoch
+        // current/stale 分类；assertCurrentEpoch 失败恒 stale ⇒ 走 fatal 分支。
+        throw this.classifyCreateStoreFailure('probe-read', err, epoch)
+      }
       if (raw !== undefined) throw this.duplicateError(owner, key)
       const now = this.cells.get(key)
       if (now === undefined) break acquire
@@ -192,12 +230,36 @@ export class PersistenceLifecycle {
     this.cells.set(key, { state: 'creating', claim })
     const op = this.track((async () => {
       try {
-        const snapshot = Y.encodeStateAsUpdate(doc)
-        await this.io.write(key, snapshot, this.abortController.signal)
-        this.assertCurrentEpoch(epoch)
-        const entry = this.createEntry(owner, docId, key, doc)
-        this.cells.set(key, { state: 'live', entry })
-        return this.issueHandle(entry)
+        // W1: pre-commit encoding — a Yjs internal failure is fatal, never
+        // downgraded to operational (AC6); nothing was written, and the
+        // committed:false fact is authoritative (the write path never ran).
+        let snapshot: Uint8Array
+        try {
+          snapshot = Y.encodeStateAsUpdate(doc)
+        } catch (err) {
+          throw new DocCreateFatalError('snapshot-encode', err)
+        }
+        // W2/W3: store-level write rejection. On a current epoch this is the
+        // store's own operational failure (committed:false per the
+        // observable-channel axiom: reject ⟹ the trusted store unchanged);
+        // once the lifecycle ended (dispose abort), the rejection means the
+        // commit segment never ran — a store-write fatal, never operational.
+        try {
+          await this.io.write(key, snapshot, this.abortController.signal)
+        } catch (err) {
+          throw this.classifyCreateStoreFailure('store-write', err, epoch)
+        }
+        // W4/W5: the commit point is crossed the moment write resolved
+        // (resolve ⟺ committed) — every failure from here on is post-commit
+        // committed:true. No rollback is claimed, promised, or performed.
+        try {
+          this.assertCurrentEpoch(epoch)
+          const entry = this.createEntry(owner, docId, key, doc)
+          this.cells.set(key, { state: 'live', entry })
+          return this.issueHandle(entry)
+        } catch (err) {
+          throw new DocCreateFatalError('post-commit', err)
+        }
       } catch (err) {
         const cur = this.cells.get(key)
         if (cur?.state === 'creating' && cur.claim === claim) {
@@ -324,6 +386,11 @@ export class PersistenceLifecycle {
       completionResolve = resolve
       completionReject = reject
     })
+    // (issue #108 §4.2.6) The create path awaits `rawPromise` directly; when a
+    // create-started read rejects with no concurrent load attached, `completion`
+    // would otherwise be a forever-unhandled rejection. Awaited consumers
+    // (concurrent loads routed through `resolveLoad`) still observe it.
+    completion.catch(() => {})
     let settled = false
     const rawPromise = this.io.read(key, this.abortController.signal)
     const read: ReadTicket = {
@@ -363,7 +430,12 @@ export class PersistenceLifecycle {
     }
     if (snapshot instanceof ReadError) {
       this.cells.delete(key)
-      throw snapshot.err
+      // L1 (design §2.1): store-level read failure on a current epoch is the
+      // one operational classification for the load path. The exact original
+      // rejection (identity-stable) is preserved on `cause`; the stable
+      // message never concatenates it. The cell cleanup above stays first, so
+      // the failed ticket self-heals on the next load.
+      throw new DocLoadOperationalError(snapshot.err)
     }
     if (snapshot === undefined) {
       this.cells.delete(key)
@@ -390,6 +462,29 @@ export class PersistenceLifecycle {
 
   private duplicateError(owner: User, key: string): DocDuplicateError {
     return new DocDuplicateError(`createDoc duplicate: owner ${owner.userId} already has this docId (${key})`)
+  }
+
+  /**
+   * The one classifier for every store-level create failure before the commit
+   * point, shared by the claim probe-read sites (R1/R2/R3) and the write
+   * segment (W2/W3). On a current epoch the store rejection is an operational
+   * failure — the create wrote nothing, so committed:false is authoritative;
+   * once the lifecycle ended (dispose race) the same rejection is a `phase`
+   * fatal — AC6 forbids reporting a store-health fact the lifecycle can no
+   * longer verify. The original failure survives as the exact `cause`. The
+   * R3 branch (assertCurrentEpoch rejection) always lands on the fatal side
+   * here: it throws only when `isCurrent(epoch)` is already false. Post-commit
+   * failures (W4/W5) never pass through this classifier: write resolved ⟹
+   * committed:true unconditionally.
+   */
+  private classifyCreateStoreFailure(
+    phase: 'probe-read' | 'store-write',
+    err: unknown,
+    epoch: number,
+  ): DocCreateOperationalError | DocCreateFatalError {
+    return this.isCurrent(epoch)
+      ? new DocCreateOperationalError(err)
+      : new DocCreateFatalError(phase, err)
   }
 
   private restoreAndValidate(snapshot: Uint8Array, owner: User, docId: string, key: string): LiveEntry {
