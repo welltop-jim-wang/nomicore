@@ -17,5 +17,8 @@
 | 11 | 00:30 | 总控 | Phase 3.5 门禁自检 | - | 硬门禁 #12/#14/#15/#16 自检 + AC 逐条核对 |
 | 12 | 00:55 | 总控 | Phase 3.5 AC 门禁 | 01:10 | AC 16 行（3 问题+13 AC）全 ✅，ac_checklist 落纸；HG12/14/15/16 自检通过（HG13 N/A）；HG16 附带修正本 worktree 陈旧 mabf.branch/base-branch git config |
 | 13 | 01:10 | review×2 | 双轴终审 | 01:35 | Standards 轴 0 hard violation（4 judgement calls 非阻断）；Spec 轴 0 缺失，1 阻断项=11d 真实 sleep 违约束 + 1 注释失真；派 SA7/SA3 修订 |
-| 14 | 01:35 | SA7 | 终审修订 | (pending) | 11d 真实 60ms sleep → 确定性形态或显式 smoke 豁免 |
-| 15 | 01:35 | SA3 | 终审修订 | (pending) | service.ts helper 注释机制归因精确化（设计 R2 §5#5 两路径分写） |
+| 14 | 01:35 | SA7 | 终审修订 | 01:58 | 11d 真实 60ms sleep → 确定性形态或显式 smoke 豁免 |
+| 15 | 01:35 | SA3 | 终审修订 | 01:47 | service.ts helper 注释机制归因精确化（设计 R2 §5#5 两路径分写） |
+| 16 | 02:05 | 总控 | 终验 | 02:12 | 亲跑全量：typecheck EXIT=0；117 文件 1403 tests 全绿、Type Errors no errors（.mabf-bg/r2-final-*.log） |
+| 17 | 02:12 | review×2 | 双轴终审 R2 | 02:35 | 增量复审：Standards 0 阻断（#1 维持 judgement call）；Spec 0 阻断（11d 确定性重写+smoke 豁免可接受、注释归因已更正）；双轴无阻断 → 进入完成事务 |
+| 18 | 02:35 | 总控 | Phase 4 收尾 | (pending) | wiki 全量入库 + REPORT.md（status: complete, round 2）；.mabf-done 由 Host 写，不 push |
