@@ -2,6 +2,24 @@
 
 本指南面向编写或修改 `domains/*/schema.vfsl` 的 agent。它把常用决策与交付步骤整理成操作指南；语法和语义的最终权威仍是 [`v1-spec.md`](./v1-spec.md)。领域词汇以根目录 [`CONTEXT.md`](../../CONTEXT.md) 为准，生成链路以 [ADR 0005](../adr/0005-projection-generation-pipeline.md) 为准。
 
+## 目录
+
+- [编写流程](#编写流程)
+  1. [先分清 SCHEMA、META 与 ROOT](#1-先分清-schemameta-与-root)
+  2. [确认领域结构](#2-确认领域结构)
+  3. [建立领域目录和 SCHEMA 身份](#3-建立领域目录和-schema-身份)
+  4. [先定义可复用别名，再定义 ROOT](#4-先定义可复用别名再定义-root)
+  5. [按写入粒度选择载体（含 Record 键约束）](#5-按写入粒度选择载体)
+  6. [表达值约束](#6-表达值约束)
+  7. [正确设计联合](#7-正确设计联合)
+  8. [把领域语义写进 schema](#8-把领域语义写进-schema)
+- [v1 语法护栏](#v1-语法护栏)
+- [校验 Schema 和 ROOT 数据](#校验-schema-和-root-数据)
+  - [直接校验一个 schema](#直接校验一个-schema)
+  - [用 schema 校验 ROOT 数据](#用-schema-校验-root-数据)
+  - [领域生成与完整验证](#领域生成与完整验证)
+- [提交前检查表](#提交前检查表)
+
 ## 编写流程
 
 ### 1. 先分清 SCHEMA、META 与 ROOT
@@ -96,6 +114,17 @@ type ROOT = YMap<{
 | 动态字符串键对象 | `Record<K, V>` | `Y.Map` | 按键写入，可下钻 |
 
 裸对象、裸数组和标量已有默认物化；显式标记适合强调结构意图。`YXmlFragment` 的对象实参只记录文档语义，不定义 XML 元素映射；逻辑值是良构 XML 字符串。
+
+`Record<K, V>` 用于动态字符串键。VFSL v1 的 K 必须是 `string`、`string & Pattern<"...">`，或解析到这两种形态的别名；字符串字面量及其联合不能直接作为 Record 键。需要限制动态键范围时，使用完整锚定的 Pattern：
+
+```vfsl
+/** 只允许 jim1 或 jim2 作为动态键；键可独立缺失 */
+type JimKey = string & Pattern<"^(jim1|jim2)$">;
+
+type JimValues = Record<JimKey, Value>;
+```
+
+也可以直接写 `Record<string & Pattern<"^(jim1|jim2)$">, Value>`。Pattern 表达的是“允许出现的键集合”，不是“所有键必须存在”：`{}`、`{ "jim1": value }` 和同时含两个键都可通过，其他键被拒绝。如果 `jim1`、`jim2` 是固定字段且需要表达必需性或各自语义，优先使用封闭对象 `{ jim1: Value; jim2: Value }`（可缺失时分别加 `?`）。
 
 `YPlainArray<T>` 的整个 T 子树是普通 JSON 值上下文。其内使用裸对象、裸数组、`Record`、标量、`YLeaf` 和 `Pattern`；同步标记 `YMap`、`YArray`、`YXmlFragment` 即使经别名间接引入也不合法。
 
