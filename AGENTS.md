@@ -22,6 +22,10 @@ Before changing files under `packages/`, `domains/`, `apps/`, or `docs/`, read t
 
 When creating or editing `domains/*/schema.vfsl`, follow `docs/vfsl/schema-authoring-guide.md` for modeling, VFSL v1 syntax, carrier selection, generation, and validation.
 
+### Third-party plugin hosting
+
+When integrating Nomicore into an external Cordis host, changing plugin assembly, or documenting plugin configuration and shutdown, follow `docs/integration/cordis-plugin-hosting.md` for dependency order, adapter options, Registry usage, and lifecycle teardown.
+
 ### Git worktrees
 
 Create all repository worktrees under the repository-local `.worktrees/` directory. Do not create routine worktrees beside the repository or under `/tmp`. See `.agents/WORKTREES.md`.

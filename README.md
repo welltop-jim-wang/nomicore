@@ -90,6 +90,10 @@ nomicore/
 2. **Phase 0b · 引擎补全**：求值器 / 路径索引 / `validateLogicalSnapshot` / `SCHEMA` 信封
 3. **Phase 2 · yjs-server**：schema 数据面服务端（namespace 生命周期、统一写入管线、同步协议）——两个开放问题见 PRD #3（写入强制级别、API 面拆分）
 
+## 第三方宿主接入
+
+Nomicore 当前可作为 Cordis 插件链挂载：Clock → Timer → Memory/File Persistence → Namespace Registry。第三方宿主的完整装配示例、配置表、数据读写和停止顺序见[第三方 Cordis 宿主接入指南](docs/integration/cordis-plugin-hosting.md)。
+
 ## 开发
 
 ```bash
