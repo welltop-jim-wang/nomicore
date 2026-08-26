@@ -2,14 +2,17 @@ import type { Context } from '@deepseek-ai/cordis'
 import type * as Y from 'yjs'
 import { PersistenceLifecycle, type PersistenceIO, type PersistenceStatus } from './lifecycle.js'
 import {
-  provideNomicorePersistence,
   type DocHandle,
   type DocPersistence,
   type PersistenceSchedule,
   type PersistenceScheduler,
   type User,
 } from './contract.js'
-import { assertPersistenceHostDependencies, createCordisPersistenceScheduler } from './service.js'
+import {
+  assertPersistenceHostDependencies,
+  bindPersistenceAdapterLifecycle,
+  createCordisPersistenceScheduler,
+} from './service.js'
 
 const TEST_FACTORY = Symbol('MemoryPersistence test factory')
 
@@ -100,14 +103,11 @@ export class MemoryPersistence implements DocPersistence {
     return this.core.saveDoc(handle)
   }
 
-  /** Cordis owns service registration cleanup; this effect closes only adapter resources. */
+  /** Ordered Cordis lifecycle (rev1 问题 3): service revocation → dependent-fiber settle → adapter dispose. */
   apply(ctx: Context): void {
     // AC2: loud fail on missing clock/timer before ANY service is provided.
     assertPersistenceHostDependencies(ctx)
-    ctx.effect(() => {
-      provideNomicorePersistence(ctx, this)
-      return () => this.dispose()
-    }, 'memory-persistence: service')
+    bindPersistenceAdapterLifecycle(ctx, this, 'memory-persistence: service')
   }
 
   /**

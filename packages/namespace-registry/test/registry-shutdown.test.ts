@@ -142,6 +142,8 @@ class StubPersistence implements DocPersistence {
 interface RuntimeClosePlan {
   gate?: Deferred;
   rejectWith?: unknown;
+  /** rev1 问题 1/2：close() 同步 throw（与 rejectWith 同为失败通道，触发面不同）。 */
+  syncThrowWith?: unknown;
 }
 
 class ObservableRuntime implements NamespaceRuntime {
@@ -192,6 +194,9 @@ class ObservableRuntime implements NamespaceRuntime {
 
   close(): Promise<void> {
     this.closeCalls += 1;
+    if (this.closePlan.syncThrowWith !== undefined) {
+      throw this.closePlan.syncThrowWith; // 同步抛错路径（rev1 问题 1 收编目标）
+    }
     if (this.closePlan.gate !== undefined) {
       return this.closePlan.gate.promise;
     }
@@ -619,6 +624,116 @@ describe('AC10（§7.17-19）：不等外部 release、复用在途 close Promis
       l2.release().catch(() => {}),
       l3.release().catch(() => {}),
     ]);
+  });
+
+  it('19b. rev1 问题 1：首个 close 同步 throw 被收编——后续 Runtime 仍全部尝试关闭、entries 清空且 getStatus 推进 stopped、错误聚合为 NamespaceRegistryShutdownError 且 failures 收录该同步 cause（与 rejection 同构）', async () => {
+    const persistence = new StubPersistence();
+    persistence.queueLoad({ result: new StubHandle({ userId: 'u-shutdown' }, 'k1') });
+    persistence.queueLoad({ result: new StubHandle({ userId: 'u-shutdown' }, 'k2') });
+    const scheduler = createRegistryTestScheduler();
+    const syncCause = new Error('shutdown-close-sync-throw-19b');
+    const runtimes = new Map<string, ObservableRuntime>();
+    const registry = createNamespaceRegistryForTesting(persistence, {
+      clock: manualClock(),
+      scheduler,
+      idleTimeoutMs: 300_000,
+      runtimeFactory: (handle) => {
+        // 首个 Runtime（k1，Map 插入序第一）close 同步 throw；k2 正常 close。
+        const closePlan: RuntimeClosePlan =
+          handle.docId === 'k1' ? { syncThrowWith: syncCause } : {};
+        const r = new ObservableRuntime(`R-${handle.docId}`, handle.docId, closePlan);
+        runtimes.set(handle.docId, r);
+        return r;
+      },
+    });
+    // 逐 key 打开（await 串行 → 插入序 k1/k2 确定；shutdown 关闭发起序 = 插入序）
+    const l1 = okLease(await registry.open({ userId: 'u-shutdown' }, 'k1'));
+    const l2 = okLease(await registry.open({ userId: 'u-shutdown' }, 'k2'));
+
+    const p = registry.shutdown();
+    const err = await p.then(
+      () => null,
+      (e: unknown) => e,
+    );
+    // ★ 判别核心 1：同步 throw 与 rejection 同构进入聚合——err 必须是聚合错误
+    //   （当前实现：runShutdown 在 close() 同步 throw 处逃逸，抛的是裸原因 → 红）。
+    expect(err).toBeInstanceOf(NamespaceRegistryShutdownError);
+    if (err instanceof NamespaceRegistryShutdownError) {
+      expect(err.failures.length).toBe(1); // 恰收录一次（不重复）
+      expect(err.failures[0]?.namespaceId).toBe('k1');
+      expect(err.failures[0]?.cause).toBe(syncCause); // exact 同步 cause
+    }
+    // ★ 判别核心 2：全部 Runtime 仍被尝试关闭（当前实现：首抛中断关闭枚举 → k2 红）。
+    expect(runtimes.get('k1')?.closeCalls).toBe(1);
+    expect(runtimes.get('k2')?.closeCalls).toBe(1);
+    // ★ 判别核心 3：entries.clear + acceptance='stopped' 恒执行（当前实现：停在 shutting-down → 红）。
+    expect(registry.getStatus()).toEqual({ state: 'stopped' });
+    await Promise.all([
+      l1.release().catch(() => {}),
+      l2.release().catch(() => {}),
+    ]);
+  });
+
+  it('19c. rev1 问题 1（R2 增补，SA2 攻击点 #4①）：多 entry 全同步 throw——failures 按 Map 插入序收录、每 cause 恰一次、全部 Runtime 均被尝试、终态 stopped、零 unhandled rejection', async () => {
+    const probe = collectUnhandledRejections();
+    try {
+      const persistence = new StubPersistence();
+      persistence.queueLoad({ result: new StubHandle({ userId: 'u-shutdown' }, 'k1') });
+      persistence.queueLoad({ result: new StubHandle({ userId: 'u-shutdown' }, 'k2') });
+      const scheduler = createRegistryTestScheduler();
+      const cause1 = new Error('shutdown-close-sync-throw-19c-k1');
+      const cause2 = new Error('shutdown-close-sync-throw-19c-k2');
+      const runtimes = new Map<string, ObservableRuntime>();
+      const registry = createNamespaceRegistryForTesting(persistence, {
+        clock: manualClock(),
+        scheduler,
+        idleTimeoutMs: 300_000,
+        runtimeFactory: (handle) => {
+          // k1/k2 均同步 throw（不同 cause 实例）：同构聚合 + 插入序 + 恰一次的多元锚
+          // （19b 只锚单 entry；合成 rejected Promise 出生即 handled 的「零 floating
+          // window」防御在任意 entries 次序下均为正确性要件——本节为多 throw 的直接观测）。
+          const closePlan: RuntimeClosePlan =
+            handle.docId === 'k1' ? { syncThrowWith: cause1 } : { syncThrowWith: cause2 };
+          const r = new ObservableRuntime(`R-${handle.docId}`, handle.docId, closePlan);
+          runtimes.set(handle.docId, r);
+          return r;
+        },
+      });
+      // 逐 key 打开（await 串行 → 插入序 k1/k2 确定；shutdown 关闭发起序 = 插入序）
+      const l1 = okLease(await registry.open({ userId: 'u-shutdown' }, 'k1'));
+      const l2 = okLease(await registry.open({ userId: 'u-shutdown' }, 'k2'));
+
+      const err = await registry.shutdown().then(
+        () => null,
+        (e: unknown) => e,
+      );
+      expect(err).toBeInstanceOf(NamespaceRegistryShutdownError);
+      if (err instanceof NamespaceRegistryShutdownError) {
+        // 每 cause 恰一次、次序 = Map 插入序（k1 先于 k2）、failures 冻结（与 19 同款）
+        expect(err.failures.length).toBe(2);
+        expect(Object.isFrozen(err.failures)).toBe(true);
+        expect(Object.isFrozen(err.failures[0])).toBe(true);
+        expect(Object.isFrozen(err.failures[1])).toBe(true);
+        expect(err.failures[0]?.namespaceId).toBe('k1');
+        expect(err.failures[0]?.cause).toBe(cause1); // exact cause（instance 级 恒等）
+        expect(err.failures[1]?.namespaceId).toBe('k2');
+        expect(err.failures[1]?.cause).toBe(cause2);
+      }
+      // 多同步 throw 下全部 Runtime 仍被尝试；失败不回滚终态
+      expect(runtimes.get('k1')?.closeCalls).toBe(1);
+      expect(runtimes.get('k2')?.closeCalls).toBe(1);
+      expect(registry.getStatus()).toEqual({ state: 'stopped' });
+      await Promise.all([
+        l1.release().catch(() => {}),
+        l2.release().catch(() => {}),
+      ]);
+      await new Promise<void>((resolve) => {
+        setImmediate(resolve);
+      });
+      expect(probe.events).toEqual([]); // 零 unhandled rejection（所有合成 rejected Promise 出生即 handled）
+    } finally {
+      probe.dispose();
+    }
   });
 });
 

@@ -162,6 +162,8 @@ interface RuntimeClosePlan {
   gate?: Deferred;
   rejectWith?: unknown;
   neverSettle?: boolean;
+  /** rev1 问题 2：close() 同步 throw（与 rejectWith 同为失败通道，触发面不同）。 */
+  syncThrowWith?: unknown;
 }
 
 class ObservableRuntime implements NamespaceRuntime {
@@ -205,6 +207,9 @@ class ObservableRuntime implements NamespaceRuntime {
 
   close(): Promise<void> {
     this.closeCalls += 1;
+    if (this.closePlan.syncThrowWith !== undefined) {
+      throw this.closePlan.syncThrowWith; // 同步抛错路径（rev1 问题 2 收编目标）
+    }
     if (this.closePlan.neverSettle) {
       return new Promise<void>(() => {});
     }
@@ -880,6 +885,120 @@ describe('AC7（§7.11-12）：idle-close failure 零 unhandled rejection、观�
         setImmediate(resolve);
       });
       expect(probe.events).toEqual([]); // 全程零 unhandled rejection（再次确认）
+    } finally {
+      probe.dispose();
+    }
+  });
+
+  it('11b. rev1 问题 2：idle close 同步 throw——异常不逃出 timer 回调；observer idle-close-failed exact cause 恰一次；entry 移除（后续 open 建立新 generation）；零 unhandled rejection', async () => {
+    const probe = collectUnhandledRejections();
+    try {
+      const persistence = new StubPersistence();
+      persistence.queueLoad({ result: new StubHandle({ userId: 'u-idle' }, 'k') });
+      persistence.queueLoad({ result: new StubHandle({ userId: 'u-idle' }, 'k') }); // 新 generation 的 load
+      const scheduler = createRegistryTestScheduler();
+      const syncCause = new Error('idle-close-sync-throw-11b');
+      const observer = collectObserver();
+      const runtimes: ObservableRuntime[] = [];
+      const registry = createNamespaceRegistryForTesting(persistence, {
+        clock: manualClock(),
+        scheduler,
+        idleTimeoutMs: 300_000,
+        runtimeFactory: () => {
+          const r = new ObservableRuntime(
+            `R${runtimes.length + 1}`,
+            'k',
+            runtimes.length === 0 ? { syncThrowWith: syncCause } : {},
+          );
+          runtimes.push(r);
+          return r;
+        },
+        observer: observer.sink,
+      });
+      const lease1 = okLease(await registry.open({ userId: 'u-idle' }, 'k'));
+      await lease1.release(); // last lease → idle 武装
+      expect(scheduler.pending()).toBe(1);
+      // ★ 判别核心 1：timer 回调内同步 throw 被收编——advanceBy 不 reject、不逃出
+      //   （当前实现：beginIdleClose 的 runtime.close() 同步 throw 逃出 timer 回调 →
+      //   advanceBy 拒绝 → 红）。
+      const advanceOutcome = await scheduler.advanceBy(300_000).then(
+        () => 'settled',
+        (e: unknown) => `rejected:${String(e)}`,
+      );
+      expect(advanceOutcome).toBe('settled');
+      await flushMicrotasks();
+      expect(runtimes[0]?.closeCalls).toBe(1);
+      // ★ 判别核心 2：observer idle-close-failed exact cause 恰一次
+      //   （当前实现：同步 throw 不产生该事件 → 红）。
+      const failed = observer.events.filter((e) => e.type === 'idle-close-failed');
+      expect(failed.length).toBe(1);
+      if (failed[0]?.type === 'idle-close-failed') {
+        expect(failed[0].cause).toBe(syncCause);
+      }
+      // ★ 判别核心 3：entry 已被移除 → 后续 open 建立全新 generation
+      //   （当前实现：entry 残留 idle（phase 未翻、closePromise 未写）→ open 复用
+      //   同一 Runtime、loadCalls 不增 → 红）。
+      const lease2 = okLease(await registry.open({ userId: 'u-idle' }, 'k'));
+      expect(persistence.loadCalls.length).toBe(2);
+      expect(runtimes.length).toBe(2);
+      expect(lease2.read(['x'])).toEqual({ ok: true, value: 'R2' });
+      await lease2.release();
+      // 收尾：R2 代际正常 idle close 结算（清扫 timer，避免测试残留武装）
+      await scheduler.advanceBy(300_000);
+      await flushMicrotasks();
+      expect(runtimes[1]?.closeCalls).toBe(1);
+      await new Promise<void>((resolve) => {
+        setImmediate(resolve);
+      });
+      expect(probe.events).toEqual([]); // 零 unhandled rejection（AC7① 同步 throw 同构）
+    } finally {
+      probe.dispose();
+    }
+  });
+
+  it('11c. rev1 问题 2（P2 防御守卫防误伤）：同步 throw 武装回调在 entry 被并发 open 激活后触发——close 零发起、open 复用同 Runtime、零 idle-close-failed 事件', async () => {
+    const probe = collectUnhandledRejections();
+    try {
+      const persistence = new StubPersistence();
+      persistence.queueLoad({ result: new StubHandle({ userId: 'u-idle' }, 'k') });
+      const adversarial = createLooseClearScheduler(); // clearTimeout = no-op（违约）
+      const observer = collectObserver();
+      const syncCause = new Error('idle-close-sync-throw-11c');
+      const runtime = new ObservableRuntime('R1', 'k', { syncThrowWith: syncCause });
+      const registry = createNamespaceRegistryForTesting(persistence, {
+        clock: manualClock(),
+        scheduler: adversarial,
+        idleTimeoutMs: 300_000,
+        runtimeFactory: () => runtime,
+        observer: observer.sink,
+      });
+      const lease1 = okLease(await registry.open({ userId: 'u-idle' }, 'k'));
+      await lease1.release(); // 武装 T1（同步 throw 计划已就位）
+      expect(adversarial.armed.length).toBe(1);
+      // 窗口内并发 open：同步取消 timer（违约 clear 无效——回调仍可被手动触发）、
+      // 复用同一 Runtime（零 loadDoc）、翻相 active（非 idle）。
+      const lease2 = okLease(await registry.open({ userId: 'u-idle' }, 'k'));
+      expect(persistence.loadCalls.length).toBe(1); // 零 loadDoc：复用同 Runtime
+      expect(lease2.read(['x'])).toEqual({ ok: true, value: 'R1' });
+      expect(adversarial.armed.length).toBe(1); // 违约束：T1 回调仍存活
+      // 手动触发旧回调：守卫链（I4 token 失配先行；phase !== 'idle' 为结构性防御）——P2
+      // 收编逻辑不得在守卫之前发起 close（防误伤）：同步 throw 计划零触发、零事件。
+      adversarial.fire(0);
+      await flushMicrotasks();
+      expect(runtime.closeCalls).toBe(0);
+      expect(observer.events.filter((e) => e.type === 'idle-close-failed')).toEqual([]);
+      // 清理：lease2 释放 → 重武装 → 手动触发 → beginIdleClose 正常路径（同步 throw
+      // 收编照常工作，与 11b 同构——11c 断言主体 = 守卫不被收编逻辑破坏）。
+      await lease2.release();
+      expect(adversarial.armed.length).toBe(1);
+      adversarial.fire(0);
+      await flushMicrotasks();
+      expect(runtime.closeCalls).toBe(1);
+      expect(observer.events.filter((e) => e.type === 'idle-close-failed').length).toBe(1);
+      await new Promise<void>((resolve) => {
+        setImmediate(resolve);
+      });
+      expect(probe.events).toEqual([]); // 全程零 unhandled rejection
     } finally {
       probe.dispose();
     }

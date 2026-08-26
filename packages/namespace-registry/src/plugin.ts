@@ -20,13 +20,25 @@
  *    任何 `ctx.timeout` 调用（新武装）抛 `INACTIVE_EFFECT`，属宿主接线违约，不在
  *    plugin 内防御（Registry shutdown 显式 clearTimeout 兜底自持 timer）。
  *
- * 2. **AC11 时序解读（R1/O1）**：「先于 Persistence dispose」= **fiber 级**保证——
- *    Registry fiber 卸载完成（含 `registry.shutdown()` settle 与 `nomicoreRegistry`
- *    service 撤销完成）先于 persistence fiber 卸载完成与 `nomicorePersistence`
- *    service 撤销完成（机制 = inject 依赖图 join，§5#5）；**adapter 级**排空次序
- *    （persistence adapter 自身 dispose 与 Registry shutdown 的并发）不在此保证内，
- *    为设计 §8 R1 残余并发声明——close 写排空撞上已销毁 handle 时进入 shutdown
- *    聚合错误（诚实、响亮、不静默），根治超出本票 DENY 边界（persistence src 不改）。
+ * 2. **AC11 时序解读（rev1 强化：adapter 级真实保证）**：「先于 Persistence dispose」
+ *    = adapter 级保证——persistence 侧共享 wiring（bindPersistenceAdapterLifecycle，
+ *    packages/persistence/src/service.ts）把 service 撤销与 adapter dispose 纳入同一
+ *    有序 effect：卸载时先撤 nomicorePersistence（delete store → notify → await
+ *    全部依赖 fiber 卸载完成），后执行 adapter dispose。因此 Registry shutdown
+ *    settle（含 handle.release 全程与 saveDoc 的 entry 断言）严格先于 persistence
+ *    adapter dispose 开始（机制 = generator effect re-parent + 逆序串行 + provide
+ *    disposer 的依赖 fiber join）；「close 撞已销毁 handle → shutdown 聚合失败」
+ *    被消灭。fiber 级保证（Registry fiber 卸载完成先于 persistence fiber 卸载完成）
+ *    仍由 inject 依赖图承载，且是 adapter 级保证的上游前提。
+ *    ⚠️ 残余窗口（R5′，生产 timer 限定）：persistence fiber 自身 UNLOADING 的 drain
+ *    窗口内，经 ctx.timeout 的新 flush/retry timer 武装抛 CordisError('INACTIVE_EFFECT')
+ *    （真实 TimerService 语义，副作用绑定调用方 fiber）→ 窗口内到达 saveDoc 的在途写
+ *    收到响亮 rejection（交付写调用方；close barrier 在写槽 settle 后照常执行，
+ *    shutdown 终态不受影响）。需要写排空完整落盘的宿主：先 settle 依赖方（await
+ *    registry shutdown / fiber 卸载）再拆 persistence fiber。fake-timer 测试 seam
+ *    不经 ctx.effect，对该窗口结构性失明。round 1 的「fiber 级限定 + adapter 级残余
+ *    并发（§8 R1）」声明废止（§8 R1 并发已根治；本窗口为 cordis fiber 状态门的
+ *    独立残余，见设计 rev1 §8 R5′）。
  *
  * 3. **fiber reload 语义**：persistence 服务替换/重启触发本 fiber 卸载+重载，每次
  *    apply 构造**全新 Registry 实例**（旧实例 shutdown、service 撤销、`instance`
@@ -146,7 +158,7 @@ export function createNamespaceRegistryPlugin(config: NamespaceRegistryPluginCon
   const idleTimeoutMs = resolvePluginIdleTimeoutMs(config); // 工厂调用期同步校验（无 ctx）
   let instance: NamespaceRegistry | undefined;
   return {
-    inject: ['clock', 'timer', 'nomicorePersistence'], // 依赖图边：AC11 时序保证的机制载体（§5#5/#8）
+    inject: ['clock', 'timer', 'nomicorePersistence'], // 依赖图边：AC11 时序保证的机制载体（§5#5/#8）；rev1：adapter 级次序另经 persistence 侧有序 disposer 兑现（设计 rev1 §2.C）
     apply(ctx: Context): void {
       assertNamespaceRegistryHostDependencies(ctx); // 形状级 loud fail（见上）
       const registry = createNamespaceRegistry(requireNomicorePersistence(ctx), {

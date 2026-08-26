@@ -457,3 +457,121 @@ describe('AC3/AC11（§7.28/28a）：timer 经 ctx.timeout 真实桥；ctx.plugi
     expect(ctx.get('nomicoreRegistry')).toBeUndefined();
   });
 });
+
+// ── rev1 问题 3（§7 测试 29）：adapter 级 dispose 次序——Registry shutdown settle 先于
+//    persistence adapter dispose（真实 MemoryPersistence + 写排空门控探针）───────────────
+
+describe('rev1 问题 3：Registry shutdown settle 严格先于 persistence adapter dispose（adapter 级）', () => {
+  it('29. 裁撤 persistence fiber 级联：gated 写排空窗口内 adapter dispose 不先于 registry-shutdown-settled；旧实例 stopped/撤销；零聚合失败、零 unhandled', async () => {
+    const probe = collectUnhandledRejections();
+    try {
+      const ctx = new Context();
+      createManualClockPlugin(createManualClock(0)).apply(ctx);
+      createFakeTimerPlugin(createRegistryTestScheduler()).apply(ctx);
+      const memoryPlugin = createMemoryPersistencePlugin();
+      const memoryFiber = ctx.plugin(memoryPlugin);
+      await memoryFiber;
+      const registryPlugin = createNamespaceRegistryPlugin({ idleTimeoutMs: 300_000 });
+      const registryFiber = ctx.plugin(registryPlugin);
+      await registryFiber;
+      const registry = requireNomicoreRegistry(ctx);
+      const adapter = memoryPlugin.instance;
+      expect(adapter).toBeDefined();
+      if (adapter === undefined) throw new Error('unreachable: memory adapter instance');
+
+      // adapter dispose 探针（effect disposer 的 `this.dispose()` 在卸载时点动态解析 →
+      // 实例级影子方法被调用；开始/完成双探针）。
+      const events: string[] = [];
+      const originalDispose = adapter.dispose.bind(adapter);
+      adapter.dispose = async () => {
+        events.push('persistence-adapter-disposed');
+        await originalDispose();
+        events.push('persistence-adapter-disposed-complete');
+      };
+      // saveDoc 门控：首个 dirty notification 挂起 → Runtime close 排空窗口确定性拉开
+      // （registry 的 notifyDirty = () => persistence.saveDoc(handle)，写槽 S6 同槽 await）。
+      const saveGate = deferred();
+      const originalSaveDoc = adapter.saveDoc.bind(adapter);
+      let gated = false;
+      adapter.saveDoc = async (handle) => {
+        if (!gated) {
+          gated = true;
+          await saveGate.promise;
+        }
+        return originalSaveDoc(handle);
+      };
+
+      const created = await registry.create({
+        owner: { userId: 'u-order' },
+        namespaceId: 'k',
+        schema: { lang: 'vfsl', version: 1, id: 'k', text: 'type ROOT = { n: number; };\n' },
+        root: { n: 42 },
+      });
+      expect(created.ok).toBe(true);
+      const lease = okLease(created);
+      expect(lease.read(['n'])).toEqual({ ok: true, value: 42 });
+      // 接受一个写（shutdown 关闭排空的对象）：写槽异步起步 → S6 挂于 gated saveDoc。
+      const writePromise = lease.mutateRoot({ op: 'set', path: ['n'], value: 43 });
+      await flushMicrotasks(30);
+      expect(gated).toBe(true); // 写槽已到 S6（排空窗口挂起中）
+
+      // 窗口拉开（沿用测试 25 手法）：先以 instame-Promise 挂接 shutdown settle 探针
+      // ——plugin disposer 内 `await registry.shutdown()` 共享同一 Promise 实例（AC12）。
+      const p = registry.shutdown();
+      let shutdownSettled = false;
+      void p.then(
+        () => {
+          shutdownSettled = true;
+          events.push('registry-shutdown-settled');
+        },
+        () => {
+          shutdownSettled = true;
+          events.push('registry-shutdown-settled');
+        },
+      );
+      await flushMicrotasks(20);
+      expect(shutdownSettled).toBe(false); // 写排空未放行：shutdown 严格挂起
+
+      // 裁撤 persistence 服务 → provider disposer → notify → registry fiber 级联卸载
+      // （卸载期间 adapter dispose 与 registry shutdown 的历史并发点——rev1 问题 3）。
+      const disposal = memoryFiber.dispose();
+      await flushMicrotasks(30);
+      // ★ 当前实现红点证据锚：shutdown 仍未 settle（写排空门控中），adapter dispose
+      //   探针却已触发——先记录事实，终值断言见下。
+      expect(shutdownSettled).toBe(false);
+
+      saveGate.resolve(); // 放行写排空 → close 结算 → shutdown settle
+      await writePromise.catch(() => {}); // 写槽自身结果非本测试契约（可能 fatal/成功均不关键）
+      await disposal; // 级联完成（registry fiber 卸载 → memory fiber 卸载完成）
+      await flushMicrotasks(30);
+
+      // ★ 判别核心：registry-shutdown-settled 必须先于 persistence-adapter-disposed
+      //   （当前实现：adapter dispose 与 registry shutdown 并发、先完成 → 红）。
+      expect(events.indexOf('registry-shutdown-settled')).toBeGreaterThanOrEqual(0);
+      expect(events.indexOf('registry-shutdown-settled')).toBeLessThan(
+        events.indexOf('persistence-adapter-disposed'),
+      );
+      // adapter dispose 恰好一次（开始/完成探针各一）。
+      expect(events.filter((e) => e === 'persistence-adapter-disposed').length).toBe(1);
+      expect(events.filter((e) => e === 'persistence-adapter-disposed-complete').length).toBe(1);
+      // 旧实例回收 + 级联终态：stopped、service/instance 撤销、registry fiber PENDING。
+      expect(registry.getStatus()).toEqual({ state: 'stopped' });
+      expect(ctx.get('nomicoreRegistry')).toBeUndefined();
+      expect(ctx.get('nomicorePersistence')).toBeUndefined();
+      expect(registryPlugin.instance).toBeUndefined();
+      expect(registryFiber.state).toBe(FIBER_STATE_PENDING);
+      // 序次契约下关闭不得撞已销毁 adapter → 无 close 失败聚合（shutdown resolve——若
+      // 聚合失败则 reject NamespaceRegistryShutdownError，红）。
+      await expect(p).resolves.toBeUndefined();
+      await lease.release().catch(() => {});
+      await ctx.fiber.dispose();
+      await flushMicrotasks();
+      await new Promise<void>((resolve) => {
+        setImmediate(resolve);
+      });
+      expect(probe.events).toEqual([]); // 零 unhandled rejection
+    } finally {
+      probe.dispose();
+    }
+  });
+});

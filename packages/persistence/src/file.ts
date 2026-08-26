@@ -2,7 +2,6 @@ import * as fsp from 'node:fs/promises'
 import * as path from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import {
-  provideNomicorePersistence,
   type DocHandle,
   type DocPersistence,
   type PersistenceSchedule,
@@ -14,7 +13,11 @@ import {
   type PersistenceIO,
   type PersistenceStatus,
 } from './lifecycle.js'
-import { assertPersistenceHostDependencies, createCordisPersistenceScheduler } from './service.js'
+import {
+  assertPersistenceHostDependencies,
+  bindPersistenceAdapterLifecycle,
+  createCordisPersistenceScheduler,
+} from './service.js'
 
 export interface FilePersistenceOptions {
   /**
@@ -89,10 +92,7 @@ export class FilePersistence implements DocPersistence {
   apply(ctx: Context): void {
     // AC2: loud fail on missing clock/timer before ANY service is provided.
     assertPersistenceHostDependencies(ctx)
-    ctx.effect(() => {
-      provideNomicorePersistence(ctx, this)
-      return () => this.dispose()
-    }, 'file-persistence: service')
+    bindPersistenceAdapterLifecycle(ctx, this, 'file-persistence: service')
   }
 
   dispose(): Promise<void> { return this.core.dispose() }

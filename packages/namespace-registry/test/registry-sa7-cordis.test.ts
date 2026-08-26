@@ -6,10 +6,13 @@
  *   timer + persistence 服务 + registry plugin；create→read→release（idle 武装）→
  *   根级 `ctx.fiber.dispose()` → idle timer 被取消（pending 0，非到期触发）、runtime
  *   close 恰一次、service/instance 回收、零 unhandled rejection 探针；
- * - SA7-P2 persistence fiber 先 dispose 的 fiber 级次序 + R1 残余并发通道：close 写
- *   排空撞「已销毁 handle」（release reject）→ shutdown 聚合错误通道真实工作
- *   （held instance 经 AC12 幂等 same-Promise 取回聚合错误；cause 链
- *   NSRT-CLOSE-RELEASE-FAILED）；
+ * - SA7-P2 persistence fiber 先 dispose 的依赖级联 + rev1 问题 3 契约（真实
+ *   MemoryPersistence adapter dispose 探针次序）：Registry shutdown settle 严格
+ *   先于 adapter dispose（adapter 级排空次序）；旧实例 stopped、service/instance
+ *   回收、registry fiber PENDING；关闭不撞「已销毁 handle」→ 无聚合失败
+ *   （round 1 的「close 撞已销毁 handle → 聚合失败」假设已移除——聚合错误通道
+ *   的 AC10 覆盖由 registry-shutdown.test.ts 15a/18/19 与 registry-plugin.test.ts
+ *   27 继续锚定）；
  * - SA7-P3 registry plugin reload：persistence 服务撤除→重提供 → 旧 Registry 实例
  *   shutdown（stopped）、fiber PENDING→重载 → 全新实例可用（service/instance 换新）；
  * - SA7-P4 烟囱用例（real native timer + real sleep，SA4 §7.2 交错证据）：真实
@@ -21,11 +24,10 @@
 import { describe, expect, it } from 'vitest';
 import * as Y from 'yjs';
 import type { DocHandle, DocPersistence, User } from '@nomicore/persistence';
-import { provideNomicorePersistence } from '@nomicore/persistence';
+import { createMemoryPersistencePlugin, provideNomicorePersistence } from '@nomicore/persistence';
 import { createFakeTimerPlugin } from '@nomicore/persistence/testing';
 import { createManualClock, createManualClockPlugin } from '@nomicore/clock/testing';
 import {
-  NamespaceRegistryShutdownError,
   createNamespaceRegistryPlugin,
   requireNomicoreRegistry,
 } from '@nomicore/namespace-registry';
@@ -42,6 +44,22 @@ async function flushMicrotasks(times = 40): Promise<void> {
   for (let i = 0; i < times; i += 1) {
     await Promise.resolve();
   }
+}
+
+interface Deferred {
+  promise: Promise<void>;
+  resolve: () => void;
+  reject: (cause: unknown) => void;
+}
+
+function deferred(): Deferred {
+  let resolve!: () => void;
+  let reject!: (cause: unknown) => void;
+  const promise = new Promise<void>((r, j) => {
+    resolve = r;
+    reject = j;
+  });
+  return { promise, resolve, reject };
 }
 
 function collectUnhandledRejections(): { readonly events: unknown[]; dispose(): void } {
@@ -185,62 +203,108 @@ describe('SA7 Cordis 组合动态（攻击面 4）', () => {
     }
   });
 
-  it('SA7-P2 persistence fiber 先 dispose（R1 残余并发通道）：close 撞已销毁 handle → 聚合错误通道真实工作（fiber 级次序保持）', async () => {
+  it('SA7-P2 persistence fiber 先 dispose（依赖级联）：Registry shutdown settle 先于 adapter dispose（真实 MemoryPersistence 探针次序）；旧实例 stopped/撤销/PENDING；无聚合失败（close 不撞已销毁 handle）', async () => {
     const probe = collectUnhandledRejections();
     try {
       const scheduler = createRegistryTestScheduler();
       const ctx = new Context();
       createManualClockPlugin(createManualClock(0)).apply(ctx);
       createFakeTimerPlugin(scheduler).apply(ctx);
-      // R1 场景：persistence adapter 已 dispose → runtime close 的 release 撞已销毁
-      // handle → close 失败 → shutdown 聚合错误（设计 §8 R1 的预期通道）。
-      const releaseCause = new Error('SA7-P2: release on disposed adapter handle');
-      const stub = new Sa7StubPersistence();
-      stub.planLoad(new Sa7StubHandle({ userId: 'u-sa7' }, 'ns-p2', { rejectWith: releaseCause }));
-      const persistenceFiber = ctx.plugin(stubPersistencePlugin(stub));
-      await persistenceFiber;
+      // rev1 问题 3：真实 MemoryPersistence（adapter dispose 可观测）+ registry plugin。
+      const memoryPlugin = createMemoryPersistencePlugin();
+      const memoryFiber = ctx.plugin(memoryPlugin);
+      await memoryFiber;
       const plugin = createNamespaceRegistryPlugin();
       const registryFiber = ctx.plugin(plugin);
       await registryFiber;
       const held = plugin.instance!;
       expect(held).toBeDefined();
-      const lease = okLease(await held.open({ userId: 'u-sa7' }, 'ns-p2'));
+      const adapter = memoryPlugin.instance!;
+      expect(adapter).toBeDefined();
 
-      // persistence fiber 先 dispose：provider disposer → notify → 依赖级联触发 registry
-      // fiber 卸载（disposer: shutdown → close → release reject）→ fiber 级先序 =
-      // registry 卸载 settle 先于 persistence dispose 完成（§5#5；probe 次序锚在
-      // SA6 测试 26，此处聚焦聚合通道）。
-      await persistenceFiber.dispose();
+      // adapter dispose 探针（effect disposer 的 `this.dispose()` 在卸载时点动态解析 →
+      // 实例级影子方法被调用；开始/完成双探针）。
+      const events: string[] = [];
+      const originalDispose = adapter.dispose.bind(adapter);
+      adapter.dispose = async () => {
+        events.push('persistence-adapter-disposed');
+        await originalDispose();
+        events.push('persistence-adapter-disposed-complete');
+      };
+      // saveDoc 门控：首个 dirty notification 挂起 → Runtime close 排空窗口确定性拉开
+      // （写槽 S6 同槽 await notifyDirty）——窗口内 adapter dispose 的位置即问题 3 契约面。
+      const saveGate = deferred();
+      const originalSaveDoc = adapter.saveDoc.bind(adapter);
+      let gated = false;
+      adapter.saveDoc = async (handle) => {
+        if (!gated) {
+          gated = true;
+          await saveGate.promise;
+        }
+        return originalSaveDoc(handle);
+      };
 
-      // 旧实例已 shutdown（聚合失败不回滚终态）。
+      const created = await held.create(CREATE_PAYLOAD('ns-p2'));
+      expect(created.ok).toBe(true);
+      const lease = okLease(created);
+      const writePromise = lease.mutateRoot({ op: 'set', path: ['n'], value: 43 });
+      await flushMicrotasks(30);
+      expect(gated).toBe(true); // 写排空窗口挂起中
+
+      // 窗口拉开（AC12 幂等 same-Promise）：先挂接 shutdown settle 探针，再裁撤
+      // persistence 服务 → provider disposer → notify → registry fiber 级联卸载。
+      const p = held.shutdown();
+      let shutdownSettled = false;
+      void p.then(
+        () => {
+          shutdownSettled = true;
+          events.push('registry-shutdown-settled');
+        },
+        () => {
+          shutdownSettled = true;
+          events.push('registry-shutdown-settled');
+        },
+      );
+      await flushMicrotasks(20);
+      expect(shutdownSettled).toBe(false); // 写排空未放行：shutdown 严格挂起
+
+      const disposal = memoryFiber.dispose();
+      await flushMicrotasks(30);
+      // ★ 当前实现红点证据锚：shutdown 仍未 settle（排空门控中）——adapter dispose 的
+      //   实际此刻位置由下方终值断言判别。
+      expect(shutdownSettled).toBe(false);
+
+      saveGate.resolve(); // 放行写排空 → close 结算 → shutdown settle → 级联完成
+      await writePromise.catch(() => {}); // 写槽自身结果非本测试契约
+      await disposal;
+      await flushMicrotasks(30);
+
+      // ★ rev1 问题 3 判别核心：registry-shutdown-settled 必须先于
+      //   persistence-adapter-disposed（当前实现：adapter dispose 并发先行 → 红）。
+      expect(events.indexOf('registry-shutdown-settled')).toBeGreaterThanOrEqual(0);
+      expect(events.indexOf('registry-shutdown-settled')).toBeLessThan(
+        events.indexOf('persistence-adapter-disposed'),
+      );
+      // adapter dispose 恰好一次（开始/完成探针各一）。
+      expect(events.filter((e) => e === 'persistence-adapter-disposed').length).toBe(1);
+      expect(events.filter((e) => e === 'persistence-adapter-disposed-complete').length).toBe(1);
+      // 旧实例回收 + 级联终态（原 fiber 级保持断言不变）。
       expect(held.getStatus()).toEqual({ state: 'stopped' });
       expect(plugin.instance).toBeUndefined();
       expect(ctx.get('nomicoreRegistry')).toBeUndefined();
+      expect(ctx.get('nomicorePersistence')).toBeUndefined();
       expect(registryFiber.state).toBe(FIBER_STATE_PENDING); // PENDING（可重载），非 DISPOSED
-
-      // ★ 聚合错误通道真实工作：held.shutdown() 幂等 same-Promise（AC12 含已 reject
-      // 实例）→ 取回依赖级联期间的聚合 rejection。
-      const err = await held.shutdown().then(
-        () => null,
-        (e: unknown) => e,
-      );
-      expect(err).toBeInstanceOf(NamespaceRegistryShutdownError);
-      if (err instanceof NamespaceRegistryShutdownError) {
-        expect(err.failures.length).toBe(1);
-        expect(err.failures[0]?.namespaceId).toBe('ns-p2');
-        // 真实 runtime close 包装语义：NSRT-CLOSE-RELEASE-FAILED + .cause 保留原始异常。
-        const failureCause = err.failures[0]?.cause;
-        expect(failureCause).toBeInstanceOf(Error);
-        expect((failureCause as { code?: unknown }).code).toBe('NSRT-CLOSE-RELEASE-FAILED');
-        expect((failureCause as { cause?: unknown }).cause).toBe(releaseCause);
-      }
-      await lease.release().catch(() => {}); // 旧 lease 幂等（回收后 release 不炸）
+      // ★「close 撞已销毁 handle → 聚合失败」旧假设移除：序次契约下关闭不撞已销毁
+      //   adapter → held.shutdown() 无聚合失败（resolve undefined；若 reject
+      //   NamespaceRegistryShutdownError 即红）。
+      await expect(held.shutdown()).resolves.toBeUndefined();
+      await lease.release().catch(() => {});
       await ctx.fiber.dispose();
       await flushMicrotasks();
       await new Promise<void>((resolve) => {
         setImmediate(resolve);
       });
-      expect(probe.events).toEqual([]); // 聚合 rejection 已被处置：零 unhandled
+      expect(probe.events).toEqual([]); // 零 unhandled rejection
     } finally {
       probe.dispose();
     }

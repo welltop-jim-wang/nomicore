@@ -628,9 +628,16 @@ export function createRegistryInternal(
     if (entries.get(entry.key) !== entry) return; // 旧 generation ABA 守卫（结构性防御）
     if (entry.phase !== 'idle') return; // 已被 open 激活 / 已 closing（结构性防御）
     entry.idleTimerHandle = undefined;
-    const closePromise = entry.runtime.close(); // ① 先取得 close Promise（同步进 closing）
-    entry.closePromise = closePromise; // ② 后写 entry（I2：closing ⟹ closePromise 定义）
-    entry.phase = 'closing'; // ③ 不可逆转换（AC5）
+    let closePromise: Promise<void>;
+    try {
+      closePromise = entry.runtime.close(); // ① close 发起（同步 throw 收编点）
+    } catch (cause) {
+      // P2：同步 throw ⟶ rejected Promise 落位——I2 许可的 closing 语义对同步 throw
+      // 同构成方；异常不逃出 timer 回调（I4 收缴先行，本函数零逃逸点）。
+      closePromise = Promise.reject(cause);
+    }
+    entry.closePromise = closePromise; // ② I2：closing ⟹ closePromise 定义（rejected 亦「落位」）
+    entry.phase = 'closing'; // ③ 不可逆翻相（AC5）
     closePromise.then(
       () => removeEntryAfterClose(entry, undefined), // ④ settle（成败皆然）→ 双守卫移除
       (cause) => {
@@ -979,9 +986,18 @@ export function createRegistryInternal(
       if (entry.closePromise !== undefined) {
         closures.push({ entry, promise: entry.closePromise }); // AC10 复用已在途 close Promise
       } else {
-        const promise = entry.runtime.close(); // shutdown 发起的 close：active/idle → closing
-        entry.closePromise = promise;
-        entry.phase = 'closing';
+        // shutdown 发起的 close：active/idle → closing（同步 throw 收编点，rev1 问题 1）
+        let promise: Promise<void>;
+        try {
+          promise = entry.runtime.close(); // 关闭发起（同步 throw 收编点）
+        } catch (cause) {
+          // P1：同步 throw 与 Promise rejection 同构——合成为 rejected Promise，
+          // 进入下方同一聚合通道（failures 收录 exact cause，恰一次）。
+          promise = Promise.reject(cause);
+          void promise.catch(() => {}); // 即刻挂接空处理：见下「零 floating window」
+        }
+        entry.closePromise = promise; // I2：closing ⟹ closePromise 定义（rejected 亦落位）
+        entry.phase = 'closing'; // 不可逆翻相（与 rejection 路径同款记账）
         closures.push({ entry, promise });
       }
     }
