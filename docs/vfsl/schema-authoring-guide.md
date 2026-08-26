@@ -4,23 +4,54 @@
 
 ## 编写流程
 
-### 1. 确认领域边界
+### 1. 先分清 SCHEMA、META 与 ROOT
 
-先阅读目标领域的需求、现有 schema、测试和导出。列出：
+一个 namespace 是同一 Y.Doc 中的三个不同关注面：
 
-- 文档根包含哪些字段；
+- `SCHEMA` 保存严格四键信封 `lang/version/id/text`；`id` 标识 schema，`version` 标识 VFSL 方言版本，`text` 就是 VFSL schema。SCHEMA 与 ROOT 数据一起持久化和迁移，namespace 因而自描述；
+- `META` 保存 namespace 生命周期元数据，例如 `createdAt`，不属于业务 ROOT；
+- `ROOT` 只保存该 schema 描述的领域数据。
+
+因此，先把候选 ROOT 字段逐一分类：它是否真的是领域数据，并且业务调用方需要读写？schema 身份、格式版本、schema 版本、迁移版本或创建时间若只是为了辨认或解释文档，应由 SCHEMA/META 承担，而不进入 ROOT。尤其不要添加 `formatVersion`、`schemaVersion`、`schemaId`、`schema` 等镜像字段；这些字段会制造两份身份来源，并可能与同一文档中的 SCHEMA 信封矛盾。
+
+错误示例：
+
+```vfsl
+type ROOT = YMap<{
+  formatVersion: YLeaf<number>;
+  items: Record<string, Item>;
+}>;
+```
+
+正确示例：
+
+```vfsl
+type ROOT = YMap<{
+  items: Record<string, Item>;
+}>;
+```
+
+这里数据所对应的 schema 身份来自同一 Y.Doc 的 SCHEMA `{ lang, version, id, text }`，不从 ROOT 推断。只有当“版本”本身是经领域确认、由业务用户读写的事实，而不是技术格式或 schema 身份时，才可使用准确的领域术语建模；不得以 `formatVersion` 作为模糊兜底。
+
+此步完成标准：ROOT 中每个字段都有明确的领域含义；没有任何字段复制 SCHEMA 身份、VFSL 方言版本或 META 生命周期事实。
+
+### 2. 确认领域结构
+
+阅读目标领域的需求、现有 schema、测试和导出。列出：
+
+- ROOT 中真正的领域字段；
 - 每个字段是同步容器还是整体值；
 - 动态键的约束；
 - 判别联合的判别字段；
 - 哪些字段可选。
 
-Schema 只表达 VFSL v1 的结构和值约束。权限、authority 规则、业务状态机、迁移流程和传输协议属于上层。此步完成标准：每个需求字段都能归入上述一种 schema 职责，超出职责的规则已留在上层设计中。
+Schema 只表达 VFSL v1 的结构和值约束。权限、authority 规则、业务状态机、迁移流程和传输协议属于上层。此步完成标准：每个 ROOT 字段都能归入上述一种 schema 职责，超出职责的规则已留在上层设计中。
 
-### 2. 建立领域目录和身份
+### 3. 建立领域目录和 SCHEMA 身份
 
 每个领域放在 `domains/<domain>/`，schema 源文件固定为 `schema.vfsl`。当前生成器要求一域一 schema，并由 schema source 提供满足 `<domain>@<digits>` 的 id；去掉版本后缀所得 id base 必须等于领域目录名，生成物固定为 `domains/<domain>/generated.ts`。
 
-现有仓库 schema 文件顶部使用以下元数据注释，新增领域沿用该布局：
+仓内文件源用以下头注释构造 SCHEMA 信封；它们是 schema 的身份与方言信息，不是 ROOT 字段：
 
 ```vfsl
 // @lang: vfsl
@@ -28,7 +59,9 @@ Schema 只表达 VFSL v1 的结构和值约束。权限、authority 规则、业
 // @version: 1
 ```
 
-### 3. 先定义可复用别名，再定义 ROOT
+`@id` 的版本后缀用于 schema 谱系；`@version` 是 VFSL 方言版本。两者都不应再以 `formatVersion` 等字段复制到 ROOT。
+
+### 4. 先定义可复用别名，再定义 ROOT
 
 VFSL v1 模块由 `type` 别名组成，每个声明必须以 `;` 结束。每个模块必须恰好有一个大写的 `ROOT`，且 ROOT 必须是 map 形：裸对象、`YMap`、`Record` 或全 map 形联合。
 
@@ -49,7 +82,7 @@ type ROOT = YMap<{
 
 别名引用必须存在且无循环；无人引用的别名不会物化进文档。
 
-### 4. 按写入粒度选择载体
+### 5. 按写入粒度选择载体
 
 载体选择决定 Yjs 物化、下钻能力和写入粒度。
 
@@ -66,7 +99,7 @@ type ROOT = YMap<{
 
 `YPlainArray<T>` 的整个 T 子树是普通 JSON 值上下文。其内使用裸对象、裸数组、`Record`、标量、`YLeaf` 和 `Pattern`；同步标记 `YMap`、`YArray`、`YXmlFragment` 即使经别名间接引入也不合法。
 
-### 5. 表达值约束
+### 6. 表达值约束
 
 VFSL v1 常用值类型：
 
@@ -87,7 +120,7 @@ type OptionalField = { description?: string };
 - 布尔值用 `boolean`，不是 `true | false`；
 - 对象默认封闭，未声明字段会被拒绝；`?` 表示字段可缺失。
 
-### 6. 正确设计联合
+### 7. 正确设计联合
 
 在同步物化上下文中，联合成员必须全部是标量形，或全部是容器形。标量和容器混合会被拒绝。
 
@@ -101,7 +134,7 @@ type Asset =
 
 联合对象的键空间是所有成员字段的并集，但具体值仍须完整匹配其中一个成员。普通 JSON 的混合形状联合仅能放在 `YPlainArray` 的纯值子树中。
 
-### 7. 写可挂载的文档注释
+### 8. 写可挂载的文档注释
 
 使用紧邻声明、字段或标记的 `/** ... */` 文档注释记录领域含义。`//` 和普通 `/* ... */` 只作说明，不进入 IR。文档注释必须能挂载到后续声明性节点；文件末尾悬空的文档注释会报错。`@tag` 在 v1 中仅作为原文保存，不产生机器语义。
 
@@ -184,10 +217,11 @@ git diff --check
 
 ## 提交前检查表
 
-- [ ] 领域目录、schema id base 和生成路径一致；
+- [ ] 领域目录、SCHEMA id base 和生成路径一致；
+- [ ] ROOT 只含领域数据，没有 `formatVersion`、`schemaVersion`、`schemaId`、`schema` 或其他 SCHEMA/META 镜像字段；
 - [ ] 模块恰有一个 map 形 `ROOT`；
 - [ ] 所有别名可解析、无重复、无循环；
-- [ ] 每个字段的载体符合所需写入粒度和下钻能力；
+- [ ] 每个字段都有明确领域含义，载体符合所需写入粒度和下钻能力；
 - [ ] `YPlainArray` 子树不含同步标记；
 - [ ] 同步上下文中的联合没有混合标量形与容器形；
 - [ ] 动态键使用 string 形 `Record` 键，Pattern 转义和锚定正确；
