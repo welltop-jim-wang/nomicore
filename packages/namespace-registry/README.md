@@ -2,6 +2,8 @@
 
 `NamespaceRegistry` is the host-level lifecycle owner for namespace runtimes. It guarantees one active runtime and one write sequencer per `(owner.userId, namespaceId)`, while independent namespace keys may progress concurrently.
 
+第三方 Cordis 宿主的完整插件装配、配置表、数据读写和停止顺序见 [`docs/integration/cordis-plugin-hosting.md`](../../docs/integration/cordis-plugin-hosting.md)。
+
 ## Public API
 
 The main entry exports `NamespaceRegistry`, `NamespaceLease`, result/status/error types, and the Cordis plugin. It does not expose a production runtime constructor, `DocHandle`, live `Y.Doc`, entry map, queue, timer handle, or testing seams.
@@ -11,6 +13,10 @@ The main entry exports `NamespaceRegistry`, `NamespaceLease`, result/status/erro
 - A lease is the caller capability for reads and controlled ROOT/SCHEMA writes. `release()` and `[Symbol.asyncDispose]()` share one idempotent operation.
 - The final released lease leaves an **idle Runtime** retained until `idleTimeoutMs`; reopen during that interval reuses it.
 - `shutdown()` synchronously stops acceptance, drains accepted lifecycle operations, cancels idle timers, closes every runtime, and aggregates close failures.
+
+## Plugin configuration
+
+`createNamespaceRegistryPlugin({ idleTimeoutMs? })` 只接受 `idleTimeoutMs`：最后一个 lease 释放后空闲 Runtime 的保留时间。默认值为 `300_000` ms；值必须是 `0..2147483647` 的有限整数，`0` 会立即安排回收。多余键或非法值会响亮拒绝。
 
 ## Cordis service
 
