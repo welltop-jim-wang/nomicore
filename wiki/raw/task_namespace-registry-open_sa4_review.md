@@ -1,8 +1,8 @@
 # SA4 静态验尸报告：Issue #110 namespace-registry open
 
-**Date**: 2026-08-26  
-**审查对象**: worktree 未提交改动（`packages/namespace-registry/**`、根 `package.json`、`packages/namespace-runtime/test/runtime-registry-internal-seam-rev1.test.ts`、锁文件及任务档案）  
-**基准**: `TASK.md` 12 条 AC、冻结设计、SA2 Round 2 conflict report、ADR-0009、Runtime/Persistence 实际接口  
+**Date**: 2026-08-26
+**审查对象**: worktree 未提交改动（`packages/namespace-registry/**`、根 `package.json`、`packages/namespace-runtime/test/runtime-registry-internal-seam-rev1.test.ts`、锁文件及任务档案）
+**基准**: `TASK.md` 12 条 AC、冻结设计、SA2 Round 2 conflict report、ADR-0009、Runtime/Persistence 实际接口
 **Verdict**: **APPROVED-WITH-CHANGES**
 
 ## 执行证据

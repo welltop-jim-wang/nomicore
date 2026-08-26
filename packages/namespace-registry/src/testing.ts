@@ -7,8 +7,8 @@
  *
  * 注入面（§8.2）：runtimeFactory 替换 Runtime 构造；observer 观察内部事件（exact
  * cause）；diagnostics 仅测试诊断事件（不可逆 keyDigest + generation，不返回或读取
- * carrier/entry map）；createDocumentFactory/scheduler 为 #111/idle 预留（never，
- * #110 不消费）。
+ * carrier/entry map）。#111/idle 的 createDocumentFactory/scheduler seam 不在本切片
+ * 预留（rev2 合并前清理）：待真实实现引入具体类型与注入路径时再加入。
  */
 import type { DocHandle, DocPersistence } from '@nomicore/persistence';
 import type { NamespaceRuntime } from '@nomicore/namespace-runtime';
@@ -22,10 +22,6 @@ export interface NamespaceRegistryTestingOverrides {
   readonly observer?: RegistryObserver;
   /** 仅测试诊断事件，不返回或读取 carrier/entry map。keyDigest 非 raw identity。 */
   readonly diagnostics?: RegistryDiagnosticsSink;
-  /** 为 #111 预留，#110 不消费。 */
-  readonly createDocumentFactory?: never;
-  /** 为 idle/#112 预留，#110 不消费。 */
-  readonly scheduler?: never;
 }
 
 /** testing 工厂：生产依赖（Runtime 构造/observer/diagnostics）全部可经 overrides 替换。 */

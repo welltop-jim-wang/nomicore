@@ -81,6 +81,19 @@ class StubHandle implements DocHandle {
   }
 }
 
+/**
+ * rev2 反馈 1 专用 handle：release() 永不 settle（既不 resolve 也不 reject）。
+ * 实现若仍以 `await releaseHandleBestEffort(...)`（内部 `await handle.release()`）
+ * 阻塞，open() 将永久挂起；配合「排空微任务 + setImmediate 宏任务后断言 settled」
+ * 手法确定性判定「未永久挂起」（红灯证据为断言失败而非框架超时）。
+ */
+class NeverSettleStubHandle extends StubHandle {
+  override release(): Promise<void> {
+    this.releaseCalls += 1;
+    return new Promise<void>(() => {}); // 永不 settle
+  }
+}
+
 class StubPersistence implements DocPersistence {
   readonly loadCalls: Array<{ owner: User; docId: string }> = [];
   saveCalls = 0;
@@ -640,6 +653,63 @@ describe('open 分支与 fatal 分类（§6.4-§6.7）', () => {
     expect(err).toBeInstanceOf(NamespaceRegistryFatalError);
     if (err instanceof NamespaceRegistryFatalError) {
       expect(err.cause).toBe(factoryCause);
+    }
+  });
+
+  it('factory throw 且 handle.release 永不 settle：open() 仍 reject 原 factory branded fatal（清理不阻塞交付）', async () => {
+    const persistence = new StubPersistence();
+    const handle = new NeverSettleStubHandle({ userId: 'u' }, 'k');
+    persistence.queueLoad({ result: handle });
+    const factoryCause = new Error('factory-boom-never-settle');
+    const events: RegistryObserverEvent[] = [];
+    const registry = createNamespaceRegistryForTesting(persistence, {
+      runtimeFactory: () => {
+        throw factoryCause;
+      },
+      observer: (e) => events.push(e),
+    });
+
+    const p = registry.open({ userId: 'u' }, 'k');
+    let settled: 'pending' | 'resolved' | 'rejected' = 'pending';
+    let outcome: unknown;
+    void p.then(
+      (v) => {
+        settled = 'resolved';
+        outcome = v;
+      },
+      (e) => {
+        settled = 'rejected';
+        outcome = e;
+      },
+    );
+
+    // 确定性判定「未永久挂起」：排空全部微任务链 + 一个 setImmediate 宏任务后
+    // 检查 settled 状态。若实现仍以 `await releaseHandleBestEffort(...)`（内部
+    // `await handle.release()`）阻塞，open() 在此刻仍是 pending——断言失败即
+    // 红灯证据（真实断言失败，不接受框架超时兜底）。
+    await flushMicrotasks(20);
+    await new Promise<void>((resolve) => {
+      setImmediate(resolve);
+    });
+
+    expect(
+      settled,
+      'handle.release() 永不 settle 时 open() 必须仍 settle 并 reject runtime-construction fatal，不得永久挂起',
+    ).not.toBe('pending');
+    expect(settled).toBe('rejected');
+    expect(outcome).toBeInstanceOf(NamespaceRegistryFatalError);
+    if (outcome instanceof NamespaceRegistryFatalError) {
+      expect(outcome.operation).toBe('open');
+      expect(outcome.phase).toBe('runtime-construction');
+      expect(outcome.committed).toBe(false);
+      expect(outcome.cause).toBe(factoryCause); // exact factory cause，未被 release 替换
+      expect(outcome.message).not.toContain('factory-boom-never-settle'); // 零回显契约
+    }
+    expect(handle.releaseCalls).toBe(1); // release 仍恰调用一次
+    const factoryEv = events.find((e) => e.type === 'open-runtime-construction-failed');
+    expect(factoryEv).toBeDefined();
+    if (factoryEv?.type === 'open-runtime-construction-failed') {
+      expect(factoryEv.cause).toBe(factoryCause);
     }
   });
 

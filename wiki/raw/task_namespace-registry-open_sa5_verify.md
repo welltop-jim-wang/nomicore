@@ -1,9 +1,9 @@
 # Issue #110 — namespace-registry `open` 独立全量验证（SA5）
 
-**Date**: 2026-08-26  
-**Worktree**: `/home/wangjian/nomicore-fix-issue-110`  
-**Branch**: `fix/issue-110-on-docs-namespace-registry`  
-**Node**: `v24.13.0`  
+**Date**: 2026-08-26
+**Worktree**: `/home/wangjian/nomicore-fix-issue-110`
+**Branch**: `fix/issue-110-on-docs-namespace-registry`
+**Node**: `v24.13.0`
 **Verdict**: **ALL-GREEN**
 
 > 本报告仅以本次 SA5 在上述 worktree 亲自执行的命令输出为依据。未修改任何生产、测试或配置文件；红灯抽查只短暂修改了 `lease.ts`，随后由备份逐字节还原，并以 Git diff 再确认。

@@ -224,7 +224,8 @@ export function createRegistryInternal(
     return Object.freeze({ ok: true as const, lease });
   }
 
-  /** 所有权回退释放（§6.7）：handle.release() 恰一次；reject 仅上报 observer，不替换主 fatal。 */
+  /** 所有权回退释放（§6.7）：handle.release() 恰一次；reject 仅上报 observer，不替换主 fatal。
+   * 调用方必须 fire-and-forget（void、不 await）：清理不得阻塞 fatal 交付（#110 R2）。 */
   async function releaseHandleBestEffort(
     handle: DocHandle,
     identity: InternalIdentity,
@@ -294,7 +295,9 @@ export function createRegistryInternal(
       runtime = factory(handle, () => persistence.saveDoc(handle));
     } catch (e) {
       // 所有权仍归调用方：handle.release() 恰一次（resolve/reject 均不替换 factory cause）。
-      await releaseHandleBestEffort(handle, identity);
+      // 清理不阻塞 fatal 交付（#110 R2）：fire-and-forget 同步发起 release、绝不 await；
+      // 浮动 Promise 由 releaseHandleBestEffort 内部 try/catch 全包，永不 unhandled rejection。
+      void releaseHandleBestEffort(handle, identity);
       dispatchObserver(observer, {
         type: 'open-runtime-construction-failed',
         identity,

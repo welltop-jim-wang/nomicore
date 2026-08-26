@@ -1,10 +1,10 @@
 # SA2 设计对抗评审：Issue #110 namespace-registry `open`
 
-**Round 2 复审**  
-**审查对象**：`wiki/raw/task_namespace-registry-open_design.md`（448 行全文，SA1 修订版）  
-**权威基准**：`TASK.md`、ADR-0009、tracking issue #104 Implementation/Testing Decisions、当前 `namespace-runtime` / `persistence` 契约。  
-**日期**：2026-08-26  
-**结论：APPROVED-WITH-CHANGES**  
+**Round 2 复审**
+**审查对象**：`wiki/raw/task_namespace-registry-open_design.md`（448 行全文，SA1 修订版）
+**权威基准**：`TASK.md`、ADR-0009、tracking issue #104 Implementation/Testing Decisions、当前 `namespace-runtime` / `persistence` 契约。
+**日期**：2026-08-26
+**结论：APPROVED-WITH-CHANGES**
 **残余阻断数：0**
 
 > 本结论仅放行设计进入实现；不替代 SA4/SA7 对实现、真实 module-boundary gate、全量 typecheck/test 与 Node 20/24 CI 的验证。
