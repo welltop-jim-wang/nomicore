@@ -20,4 +20,9 @@
 | 10 | 2026-08-26T21:00Z | 总控亲跑验收 | bash 后台 | .mabf-bg/ctrl-full-test.log / ctrl-tc.log | ✅ test 113 文件 1378/1378 exit 0（Type Errors 0）；typecheck exit 0 |
 | 11 | 2026-08-26T21:05Z | SA4 静态验尸 | subagent_sa4 (1a4b6c24) | sa4_review.md | ✅ **pass**（0H/0M/1m/4O；creep=∅；门禁独立复算一致） |
 | 12 | 2026-08-26T21:25Z | SA3 顺手修订 | send_message→SA3 | plugin.ts 删死导入 | ✅ MINOR-1 闭合 |
-| 13 | 2026-08-26T21:30Z | SA7 动态攻击验证 | subagent_sa7 (a0289f06) | sa7_report.md | 派发 |
+| 13 | 2026-08-26T21:30Z | SA7 动态攻击验证 | subagent_sa7 (a0289f06) | sa7_report.md | ✅ **pass**（变异杀伤 7/8，残 1 实证等价；14 补充用例；Node 20 容器+24 本机双绿；3 连跑确定性一致） |
+| 14 | 2026-08-27T08:05Z | 总控 AC 门禁 | 自审 | ac_checklist.md | ✅ 13/13 AC 全 ✅ |
+| 15 | 2026-08-27T08:10Z | 总控提交 | git | commit 83bd579（28 文件 +6189/−198） | ✅ |
+| 16 | 2026-08-27T08:12Z | 双轴终审 | subagent (2c7554bd Standards / 844c787e Spec) | 终审两轴 | ✅ Standards 0H/5J（全部压制/信息级）；Spec 0 missing/0 creep/0 wrong——双轴无阻断 |
+| 17 | 2026-08-27T08:30Z | 总控终验亲跑 | bash 后台 | .mabf-bg/final-test.log / final-tc.log | ✅ 116 文件 1392/1392 exit 0（TS 0）；typecheck exit 0（提交态 83bd579） |
+| 18 | 2026-08-27T08:35Z | 完成事务 | git | REPORT.md + 台账提交 | 收口 |
