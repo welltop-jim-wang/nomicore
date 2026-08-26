@@ -14,6 +14,10 @@ The five canonical triage labels: `needs-triage`, `needs-info`, `ready-for-agent
 
 Single-context layout: root `CONTEXT.md` + `docs/adr/`. See `docs/agents/domain.md`.
 
+### Module guidance
+
+Before changing files under `packages/`, `domains/`, `apps/`, or `docs/`, read the nearest nested `AGENTS.md`; it defines that module's contract boundaries and verification gates.
+
 ### Git worktrees
 
 Create all repository worktrees under the repository-local `.worktrees/` directory. Do not create routine worktrees beside the repository or under `/tmp`. See `.agents/WORKTREES.md`.
