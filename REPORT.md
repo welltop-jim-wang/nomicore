@@ -1,68 +1,111 @@
 ---
 status: complete
-run_id: issue-108-1787670535-603033
-branch: fix/issue-108-on-docs-namespace-registry
+run_id: issue-112-1787739744-862383
+branch: fix/issue-112-on-docs-namespace-registry
 round: 1
 ---
 
-# issue #108：persistence：typed load/create 错误与 committed-aware create fatal
+# namespace-registry：idle retention、Cordis plugin 与 ordered shutdown（issue #112）
 
-## 需求理解
+## 概要
 
-为 Persistence 的 `loadDoc`/`createDoc` 冻结可供 NamespaceRegistry 诚实映射的 typed operational error 与 committed-aware create fatal（ADR-0009 §Persistence 错误演进 L72–L83 的实施任务，Parent PR #105），使上层无需根据裸异常文本猜测运营失败、Adapter bug 或文档是否已经提交。基线：base `docs/namespace-registry`（ba1b6b4，经一次暂停-变基 279d3ba→ba1b6b4 纯快进，一致性已核对无影响）。阻塞依赖 #107 已 closed 并入基线。
+完成 ADR-0009 已冻结但未实现的三块能力，issue #112 全部 13 条验收标准落地：
 
-验收（AC1–AC8）：稳定 typed load operational error（cause 保留、message 不拼接 cause）；稳定 typed create operational error（`committed:false`）；committed-aware create fatal（稳定 phase + committed + cause）；duplicate 独立类型不混合；File create 提交点与 post-commit failure 分类准确、不虚假声称 rollback；unknown/internal 不降级为 operational；Memory/File 同一组错误契约 + exact cause + 敏感文本负锁测试；全量 typecheck/test 绿。
+1. **空闲保留（idle retention）**：最后一个 lease 释放后 Runtime 进入 idle 而非立即 close，
+   经注入的 `RegistryTimeoutScheduler`（生产桥 = Cordis `ctx.timeout()`）延迟
+   `idleTimeoutMs`（默认 300,000ms，校验 0..2,147,483,647 有限整数）后关闭；每次重进
+   idle 重置完整时限；idle 期 open 同步取消 timer 并复用 Runtime；timer 先触发则 entry
+   不可逆转 closing，open 等待同一 close Promise 结算后建立新 generation；timeout=0
+   仍异步调度；fatal/degraded Runtime 同语义；idle-close 失败零 unhandled rejection、
+   经内部 observer（`idle-close-failed`）上报、不污染后续 open。
+2. **通用 Cordis plugin**：新模块 `src/plugin.ts` 发布 `ctx.nomicoreRegistry` service；
+   强依赖 `clock`/`timer`/`nomicorePersistence`（inject 依赖图边 + apply 内形状断言
+   双机制，缺失 loud fail 零 fallback）；config 仅 `idleTimeoutMs` 一键，工厂调用期
+   同步校验；plugin 在一个有序 async disposer（generator effect，cordis 逆序串行语义
+   经源码核实）中先完成 Registry shutdown 再撤销 service，且经依赖图先于 Persistence
+   fiber dispose。
+3. **Host shutdown**：acceptance 三相（running→shutting-down→stopped）；首次 shutdown
+   同步段停接纳（后续 open/create 返回 `REGISTRY_NOT_ACCEPTING` 且零输入访问）+ 取消
+   全部 idle timer + 缓存 same-Promise；异步段等待全部已接纳 open/create 槽结算（不等
+   外部 lease release），复用在途 close Promise、尝试关闭全部 Runtime，close failures
+   以稳定 `NamespaceRegistryShutdownError` 聚合 reject（failures 冻结、Map 插入序、
+   结构化 {owner,namespaceId,cause}）；shutdown 与 release 均幂等 same-Promise；
+   `getStatus()` 仅表达 running/shutting-down/stopped。
 
-## 变更（commit 4ca9d5c，22 文件：src 6 + 测试 4 + wiki 流水线档案 12）
+## 变更（文件级；commit 83bd579，28 文件 +6189/−198）
 
-### 错误类型谱系（`packages/persistence/src/contract.ts`，+102，纯 additive）
+**生产代码（packages/namespace-registry/）**：
+- `src/plugin.ts`（新建 ~200 行）：NOMICORE_REGISTRY_SERVICE、Context augmentation、
+  provide/require、`assertNamespaceRegistryHostDependencies`、`createCordisRegistryScheduler`、
+  `resolvePluginIdleTimeoutMs`、`createNamespaceRegistryPlugin`（inject + 有序 disposer）、
+  `DEFAULT_IDLE_TIMEOUT_MS` re-export；头注固化宿主接线契约三条
+- `src/registry.ts`（+391/−40）：Entry 三态（active/idle/closing）+ `idleTimerHandle`
+  （删死字段 lifecycleTail）；I1-I4 不变量（I4 arm-token：回调首查
+  `entry.idleTimerHandle !== handle` 失配即 no-op）；`resolveIdleTimeoutMs` +
+  `DEFAULT_IDLE_TIMEOUT_MS` 单点；scheduler 必需形状门禁（次序在 clock 门禁后）；
+  `handleLeaseReleased`/`beginIdleClose`/`activateEntry`/`removeEntryAfterClose`；
+  runOpenSlot 三态重写（closing-wait catch-吞并继续，ADR-0009:50 直译）；runCreateSlot
+  idle 第五态 → ALREADY_EXISTS 零 Persistence；acceptance 门迁至公共入口同步段；
+  shutdown 真实化（非 async 方法保证 AC12 same-Promise；runShutdown 微任务边界保证
+  三相可观测）；getStatus 三相冻结常量
+- `src/lease.ts`（+12）：`createLeaseController` 第三参 `onReleased`（首次 release
+  同步段、observer 事件后、恰一次）
+- `src/types.ts`：删 `RegistryOperationUnavailableIssue` 占位；增 `RegistryTimeoutScheduler`、
+  `shutdown(): Promise<void>`、`NamespaceRegistryShutdownFailure`、options 增
+  `scheduler`(必需)/`idleTimeoutMs?`、5 条稳定 message 常量（单一真相源）
+- `src/errors.ts`：`NamespaceRegistryShutdownError`（恒定 message 零插值零回显）
+- `src/observer.ts`：事件七形→十形（+entry-idle/idle-arm-failed/idle-close-failed）
+- `src/testing.ts`：overrides 增 `scheduler`(必需)/`idleTimeoutMs?`；新导出
+  `createRegistryTestScheduler`（确定性 advanceBy/pending，零 native timer）
+- `src/index.ts`：主入口导出 3→9 值 + 3 类型（§2.G 冻结清单）
+- `package.json`：dependencies += `@deepseek-ai/cordis ^4.0.1`、
+  `@deepseek-ai/cordis-plugin-timer ^1.1.3`（pnpm-lock.yaml 同步刷新）
 
-- **`DocLoadOperationalError`**（code `DOC_LOAD_OPERATIONAL`）：typed load operational error；exact cause 经 own-enumerable 字段保留（identity 可 `toBe` 断言）；稳定常量 message 永不拼接 cause/identity/路径。
-- **`DocCreateOperationalError`**（code `DOC_CREATE_OPERATIONAL`）：typed create operational error；`readonly committed: false = false` 字面字段（构造点恒在提交点前）；JSDoc Boundary 段声明 AC6 以契约守恒（seam 违约=adapter bug，非伪降级）。
-- **`DocCreateFatalError`**（code `DOC_CREATE_FATAL`）：committed-aware create fatal；稳定 phase 四值 `'probe-read' | 'snapshot-encode' | 'store-write' | 'post-commit'`（Persistence 管线词汇，与 ADR-0009 Registry fatal phase 三值零词面重叠）；`committed` 由 export 的冻结映射 `DOC_CREATE_FATAL_PHASE_COMMITTED` 唯一派生（post-commit 唯一 true）；永不声称/执行 rollback。
-- **`DocDuplicateError` 逐字节不变**：独立类型、无共享基类、四 code 两两互斥（AC4）。
+**测试（49 新用例：SA6 红灯 35 + SA7 攻击 14）**：
+- 新建 `test/registry-idle.test.ts`（16）、`test/registry-shutdown.test.ts`（10）、
+  `test/registry-plugin.test.ts`（8，真实 `new Context()` 组合）、
+  `test/registry-sa7-concurrency.test.ts`（C1-C4：100 并发/50 key/shutdown 竞态/确定性
+  三轮 digest）、`test/registry-sa7-hostile.test.ts`（H1-H6：arm throw/双重 fire/observer
+  throw/never-settle/clock 回跳/getStatus 身份锚）、`test/registry-sa7-cordis.test.ts`
+  （P1-P4：根级 dispose/R1 聚合通道/reload/native timer 烟囱）
+- 迁移 `registry-open.test.ts`（32 工厂调用 + 2 处点名断言替换）、
+  `registry-create.test.ts`（47+4 + idle duplicate 行）、`registry-node-dispose.test.ts`（1）、
+  `registry-surface.test.ts`（导出 9 键 + cordis 白名单/host-global-timer 双守卫）——
+  既有断言语义零改动（SA4 逐行 diff 核实）
 
-### 分类落地（`packages/persistence/src/lifecycle.ts`，+108/−12）
+**流水线档案（wiki/raw/task_registry-idle-plugin-shutdown_*.md）**：冻结设计（SA2 R1
+REJECT→修订→R2 PASS）、SA2 评审、SA6 红灯报告、SA3 实现档案、SA4 静态验尸（pass）、
+SA7 动态验证（pass）、AC 门禁清单、dispatch 台账。
 
-- `PersistenceIO` seam 契约注释重写为观察通道公理：write resolve ⟺ 提交段已执行（禁 silent no-op resolve）；reject ⟹ 基准 store 未被本次 write 改变；seam 方法不得同步 throw。
-- load：`io.read` 拒绝（epoch current）→ `DocLoadOperationalError`（cells.delete 清理在前、exact cause、同 ticket 共享同一包装实例）；disposed 竞态/损坏校验/integrity 保持裸传（AC6）。
-- create：claim 段 probe read 与写段失败按 epoch current/stale 分类——current → operational（committed:false），stale（dispose-abort 竞态）→ fatal（绝不谎报 operational）；`Y.encodeStateAsUpdate` 失败 → fatal 'snapshot-encode'；提交点跨越后任何失败 → fatal 'post-commit' committed:true（不删 store、message 无 rollback 字样）；duplicate 判定与外层 claim 清理守卫逐字不动；分类经私有 `classifyCreateStoreFailure` 单点承载。
-- 修复潜伏 bug：`createReadTicket` 的 `completion` deferred 挂 `completion.catch(() => {})`，消除 create 起始 read ticket 拒绝时的进程级 unhandledRejection。
-- saveDoc/flush/degraded/retry/generation/evict/dispose/seedForTest **零改动**。
+## 验证（总控亲跑，后台独立进程；输出 .mabf-bg/final-test.log / final-tc.log）
 
-### Adapter 与导出（memory.ts +75/−4、file.ts +14/−1、index.ts +7）
+- 全量 `pnpm test`（Node 24.13.0，提交态 83bd579）：**Test Files 116 passed (116)；
+  Tests 1392 passed (1392)；Type Errors no errors；exit 0**（Duration 59s）
+- `pnpm typecheck`（九包 tsc 链）：**exit 0**
+- 基线对照：#112 前 110 文件 1341/1341 → 其余包与既有用例零回归
+- Node 20 实跑（SA7，docker node:20-slim v20.20.2 非 root）：全量 1390 passed +
+  2 skipped（#110 既定条件跳过）exit 0；typecheck exit 0；CI 矩阵（ci.yml node:[20,24]）
+  发布侧 run 由 Host 跟踪（本机侧双版本证据已落）
+- 确定性：namespace-registry 套件 3 连跑 canonical 输出逐字节一致；全部测试零 real
+  sleep（唯一例外 SA7-P4 烟囱用例 real native timer，文件内已注明）
+- 变异杀伤率 7/8（残 1 为 SA7 双路实证的结构等价变异，非测试盲区）
+- 双轴终审（code-review skill，e1efbbe...HEAD）：Standards 轴 0 HARD/5 JUDGEMENT
+  （全部为文档化标准压制项或信息级）；Spec 轴 0 missing/0 creep/0 wrong
 
-- **commit-fact 裁决（核心）**：Memory write 的 abort 门从「hook 后早退 resolve」移位为「io.write 入口 `throwIfAborted()`（hook 之前、无第二道门）」——「write resolved ⟺ committed」在两 Adapter 一致成立，delegation 模型的 committed:false 说谎窗口结构性消除；File 提交点（mkdir→tmp→rename，三道门全在 rename 前）逐字节不变。
-- 两 Adapter 对称 additive `wrapIo` around-seam（AC7 确定性故障注入的统一机制；默认不传=现状）；两生产插件工厂 options 收紧 `Omit<…,'scheduler'|'wrapIo'>`（测试 seam 不泄入生产签名）。
-- index.ts additive 导出：三新类型 + `type DocCreateFatalPhase` + `DOC_CREATE_FATAL_PHASE_COMMITTED` + `type PersistenceIO`；既有导出逐字不动。
+## 遗留风险
 
-### 共享错误契约测试（testing.ts +514/−18 + 4 测试文件）
-
-- `createPersistenceIoFaultSeam`（单发槽故障注入 + before/after-commit hold 门）+ `describePersistenceErrorContract` 共享套件 **EC1–EC8**，Memory/File 两 Adapter 以同一断言组（N1 类型/字段、N2 exact cause `toBe`、N3 敏感文本四面负锁 message/name/stack/JSON.stringify、N4 稳定 message 字面全等、N5 rollback 负锁+行为证伪、N6 裸传负锁）接入；**EC9**（新文件 persistence-encode-fatal.test.ts，vi.mock yjs 部分 mock 锚定 'snapshot-encode'）；**EC10**（委托模型 committed:true 公共面自洽锚）。
-- 三处预授权既有修订：'io down' 断言改锚 typed operational + cause identity；dispose-race 用例改确定性 entered 门构造并加严为 'store-write' fatal；File EACCES 用例改锚 `DOC_LOAD_OPERATIONAL` + cause errno 保真。
-
-### 契约演进说明
-
-ADR-0006 #64「原始 I/O 错误原样上抛」由 ADR-0009 §Persistence 错误演进取代（SA8 门禁裁决）：「原样」的诚实意图经 `error.cause` exact identity 载体保全（不重抛、不改写、不拼接）。
-
-## 验证（总控亲跑，后台独立进程）
-
-| 门禁 | 命令 | 结果 |
-|---|---|---|
-| 基线（变基后） | `pnpm test` / `pnpm typecheck` | 101 文件 1205 passed（exit 0）/ 八包 tsc exit 0 |
-| 红灯锚定（SA6 后） | `npx vitest run packages/persistence` | exit 1：21 failed | 73 passed（18 新用例全红+3 授权修订红，意外绿 0，既有新增失败 0）——总控复跑一致 |
-| 实现绿灯（SA3 后） | `npx vitest run packages/persistence` | exit 0：**94/94**（21 红全绿 + 73 保持，0 unhandled errors） |
-| 最终全量（amended HEAD 4ca9d5c） | `pnpm test` | exit 0：**102 文件 1223 passed / 0 failed**（Type Errors no errors） |
-| 最终类型 | `pnpm typecheck` | exit 0：八包 tsc 无错误 |
-| 双版本 | persistence 套件 Node 24 ×5 连跑 + Node 20.20.2（docker 非 root）×1 | 全 94/94、0 flake、0 unhandled；DOMException AbortError `instanceof Error` 三版本实测（20/24/18） |
-| 动态攻击（SA7） | 7 项零放弃 | EC5(File) 磁盘事实探针（hold.entered 时 .snapshot 在盘可解码→fatal committed:true→fresh 读回→重试 DOC_DUPLICATE）；dsh probe CLI 双跑逐字节一致；wrapIo 泄漏 TS2353 封死；自由攻击 4 项（300 轮 EC1 高压/单发槽语义/失败后重试 memory+真实 File IO 零残留）全未击穿 |
-
-流水线：SA8 前置门禁 clear → SA1 设计（R1.1 定稿，675 行）→ SA8 设计复审 clear → SA2 攻击评审 R1 REJECT（1 HIGH delegation 说谎窗口 + 4 MEDIUM + 3 MINOR）→ SA1 R1 闭合 8/8 → SA2 R2 PASS → SA6 红灯 21 红 → SA3 TDD 实现 → SA4 静态 pass（F-1/F-2 闭合）→ SA7 动态 pass（7 项零放弃）→ AC 门禁 8/8 ✅ → 双轴终审（Standards 5 judgement 全闭合→clean；Spec faithful 零发现）。
-
-## 遗留事项
-
-- **Node 20/24 CI 矩阵**：外层 CI 门禁（本地已双版本实测 94/94）；发布后由 ci-watch 核对。
-- **ADR-0006 交叉引用卫生**：建议后续 docs PR 给 ADR-0006 #64 补一条指向 ADR-0009 §Persistence 错误演进的交叉引用（本 issue 不改 ADR 正文，已登记设计 §7 R-5）。
-- **File 未接入 issue-64 旧 createDoc 共享套件**：预存拓扑缺口（base 即如此，非本任务回归）；错误契约面已由新共享套件双 Adapter 覆盖，建议专项任务收口（设计 §7 OQ-2）。
-- **Registry 侧映射**（typed operational → 公开 issue、duplicate → already exists、fatal committed 原样传播）：后续 Registry 实施任务消费本契约，不在本 issue 范围。
-- `REPORT.md` 遵循 #115/#116/#117 已合并 PR 既定约定随分支提交。
+- **R1（已声明，后续票）**：Cordis fiber `_unload` 对本级 disposables 并发执行，
+  依赖图只保证 Registry fiber settle 先于 Persistence fiber 卸载完成（fiber 级），
+  不保证先于 persistence adapter 内部排空——并发窗口内 runtime close 失败会进入
+  shutdown 聚合错误（诚实响亮通道，SA7-P2 动态实证该通道工作）；根治需 persistence
+  侧注册形态演进（本票 DENY 边界外，建议立后续票）
+- **R3（契约行为）**：runtime close 永不 settle 时 open/create 的 closing-wait 与
+  shutdown 随之挂起（ADR-0008「不取消、不设内部 timeout」），SA7-H4 以探针锚定
+  「等待而非崩溃」
+- **R5（v1 冻结接受）**：persistence 服务重提供触发 Registry fiber 全量重建（reload），
+  旧实例 lease 随 shutdown 失效；SA7-P3 锚定语义
+- **宿主接线契约**（plugin.ts 头注固化）：timer plugin 必须先装后停（timer⊇registry
+  生命周期）；timer 先卸则 idle 回收停摆（entry 滞留 idle 直至 open/shutdown 兜底，
+  不崩溃不泄漏）
+- CI 是否为本包新增显式 workflow 存在性步骤（对齐 persistence-contract 先例）留作
+  开放问题，当前由全量 `pnpm test` 覆盖

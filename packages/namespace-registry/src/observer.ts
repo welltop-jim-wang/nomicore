@@ -10,7 +10,10 @@
 import type { DocCreateOperationalError, DocLoadOperationalError } from '@nomicore/persistence';
 import type { InternalIdentity } from './identity.js';
 
-/** 内部 observer 事件（§8.1 冻结五形；#111 扩展为七形——设计 §8 DQ-8）。 */
+/** 内部 observer 事件（§8.1 冻结五形；#111 扩展为七形；#112 扩展为十形——设计
+ * §2.I：新增 entry-idle / idle-arm-failed / idle-close-failed 三形，全部携带受控
+ * identity + generation；shutdown 不加事件——close 失败经聚合错误交付、进度经
+ * getStatus 投影，双通道已足）。 */
 export type RegistryObserverEvent =
   | { type: 'open-load-failed'; identity: InternalIdentity; cause: DocLoadOperationalError }
   | { type: 'open-runtime-construction-failed'; identity: InternalIdentity; cause: unknown }
@@ -23,7 +26,11 @@ export type RegistryObserverEvent =
       identity: InternalIdentity;
       operation: 'open' | 'create';
       cause: unknown;
-    };
+    }
+  // —— #112 增量（§2.B/§2.I）：idle 状态机三事件 ——
+  | { type: 'entry-idle'; identity: InternalIdentity; generation: bigint }
+  | { type: 'idle-arm-failed'; identity: InternalIdentity; generation: bigint; cause: unknown }
+  | { type: 'idle-close-failed'; identity: InternalIdentity; generation: bigint; cause: unknown };
 
 /** observer 回调：同步调用；throw 由 dispatchObserver 隔离（静默丢弃）。 */
 export type RegistryObserver = (event: RegistryObserverEvent) => void;

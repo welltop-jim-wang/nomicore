@@ -1,6 +1,7 @@
 /**
  * @nomicore/namespace-registry —— 冻结公共类型与临时扩展位语义
- * （issue #110 设计 §3；issue #111 设计 §2.1/§3；ADR-0009 的 Registry/Lease 公共面）。
+ * （issue #110 设计 §3；issue #111 设计 §2.1/§3；issue #112 设计 §2.A/§2.H；
+ * ADR-0009 的 Registry/Lease 公共面）。
  *
  * 声明纪律（issue #110 设计 §2.2）：本文件是主入口可达声明图的一部分，其文本不得
  * 出现运行时对象 / 租约句柄 / 编辑器文档的命名类型标识符，也不得出现内部 subpath
@@ -12,14 +13,22 @@
  *
  * 稳定 message 单一真相源（双轴终审 Duplicated Code 收口）：每个公开 issue/error 的
  * 稳定 message 文本只在下方 const 定义一次；类型面（typeof 字面量推导）与值面
- * （registry.ts / lease.ts / identity.ts / errors.ts 引用）均由本处单点驱动。
+ * （registry.ts / lease.ts / identity.ts / errors.ts / plugin.ts 引用）均由本处单点驱动。
  * const 声明字符串自动收窄为字面量类型，无需 as const。
  *
  * #111 增量（冻结设计 §3）：CreateNamespaceInput / CreateNamespaceIssue /
  * CreateNamespaceResult 与五条 create message 常量；Clock 必需化进入
  * CreateNamespaceRegistryOptions（§2.1/§8：生产工厂构造期形状门禁，禁 Date.now
- * fallback）；RegistryOperationUnavailableIssue.operation 收窄为 'shutdown'
- * （create 不再是占位 unavailable——见 registry.ts §5 真实 create slot）。
+ * fallback）。
+ *
+ * #112 增量（冻结设计 §2.A/§2.H）：RegistryTimeoutScheduler 能力抽象（Host 无关
+ * 延迟调度注入缝，对齐 PersistenceScheduler 先例的 property-signature 形态，不共享
+ * persistence 的类型——语义边界分离）；scheduler 必需 + idleTimeoutMs 可选进入
+ * 工厂选项；shutdown() 占位签名删除（§2.H：Promise<void>，reject
+ * NamespaceRegistryShutdownError）；RegistryOperationUnavailableIssue 与
+ * NAMESPACE_OPERATION_UNAVAILABLE_MESSAGE 删除（shutdown 真实化后零消费者）；
+ * 五条新校验/聚合 message 常量（§2.A scheduler/idleTimeoutMs 二分 + §2.F 插件配置
+ * 键集 + §2.H shutdown 聚合）。
  */
 import type { Clock } from '@nomicore/clock';
 import type { ReadLogicalValueResult } from '@nomicore/doc-runtime';
@@ -43,8 +52,6 @@ export const REGISTRY_NOT_ACCEPTING_MESSAGE =
   'REGISTRY_NOT_ACCEPTING: Registry 当前不接纳 namespace 操作';
 export const NAMESPACE_LEASE_RELEASED_MESSAGE =
   'NAMESPACE_LEASE_RELEASED: 此 NamespaceLease 已 release，不能再接纳业务操作';
-export const NAMESPACE_OPERATION_UNAVAILABLE_MESSAGE =
-  'NAMESPACE_OPERATION_UNAVAILABLE: 此 Registry 切片尚未实现该操作';
 export const NAMESPACE_CREATE_INVALID_INPUT_MESSAGE =
   'NAMESPACE_CREATE_INVALID_INPUT: create 输入必须恰含 owner、namespaceId、schema 与 root';
 export const NAMESPACE_SCHEMA_INVALID_MESSAGE =
@@ -55,6 +62,17 @@ export const NAMESPACE_ALREADY_EXISTS_MESSAGE =
   'NAMESPACE_ALREADY_EXISTS: namespace 已存在，不能重复创建';
 export const NAMESPACE_CREATE_FAILED_MESSAGE =
   'NAMESPACE_CREATE_FAILED: namespace 持久化创建发生运营故障';
+// —— #112 增量（§2.A/§2.F/§2.H 冻结文本，零插值、零值回显）——
+export const NAMESPACE_REGISTRY_SCHEDULER_REQUIRED_MESSAGE =
+  'NAMESPACE_REGISTRY_SCHEDULER_REQUIRED: Registry 必须提供可调用的 setTimeout/clearTimeout 调度能力';
+export const NAMESPACE_REGISTRY_IDLE_TIMEOUT_TYPE_MESSAGE =
+  'NAMESPACE_REGISTRY_IDLE_TIMEOUT_TYPE: idleTimeoutMs 必须是 number（0..2147483647 有限整数）';
+export const NAMESPACE_REGISTRY_IDLE_TIMEOUT_RANGE_MESSAGE =
+  'NAMESPACE_REGISTRY_IDLE_TIMEOUT_RANGE: idleTimeoutMs 必须是 0..2147483647 的有限整数';
+export const NAMESPACE_REGISTRY_PLUGIN_CONFIG_MESSAGE =
+  'NAMESPACE_REGISTRY_PLUGIN_CONFIG: namespace-registry 插件配置仅接受 idleTimeoutMs 键';
+export const NAMESPACE_REGISTRY_SHUTDOWN_FAILED_MESSAGE =
+  'NAMESPACE_REGISTRY_SHUTDOWN_FAILED: Registry shutdown 期间部分 Runtime 关闭失败';
 
 /** Host 无关的命名空间归属标识：owner 是 Persistence partition key，非当前调用人。 */
 export interface NamespaceOwner {
@@ -82,7 +100,7 @@ export type NamespaceRegistryFatalPhase =
   | 'create-document-internal'
   | 'lifecycle-slot-internal';
 
-/** Registry 生命周期投影（#112 shutdown 前恒 running；本票 getStatus 恒 running）。 */
+/** Registry 生命周期投影（#112 §2.E）：恒三相（running/shutting-down/stopped）。 */
 export type NamespaceRegistryStatus =
   | Readonly<{ state: 'running' }>
   | Readonly<{ state: 'shutting-down' }>
@@ -137,12 +155,17 @@ export type OpenNamespaceResult =
   | Readonly<{ ok: true; lease: NamespaceLease }>
   | OpenNamespaceIssue;
 
-/** #112 扩展位的非 fatal 占位结果（设计 §11 裁决 1；#111 后 create 不再是占位）。 */
-export interface RegistryOperationUnavailableIssue {
-  readonly ok: false;
-  readonly code: 'NAMESPACE_OPERATION_UNAVAILABLE';
-  readonly operation: 'shutdown';
-  readonly message: typeof NAMESPACE_OPERATION_UNAVAILABLE_MESSAGE;
+/**
+ * Registry 延迟调度能力抽象（#112 设计 §2.A，裁决 A）：Host 无关注入缝——Registry
+ * 核心禁任何系统 timer 裸调用（ADR-0009 禁 fallback），空闲保留的延迟 close 全部经
+ * 本缝调度。property-signature 形态对齐 PersistenceScheduler 先例，但**不共享
+ * persistence 的类型**（语义边界分离）；handle 以 `unknown` 表达（决定权在调度器）。
+ */
+export interface RegistryTimeoutScheduler {
+  /** 调度 `callback` 在 `delayMs` 之后执行；返回可取消句柄（幂等）。 */
+  readonly setTimeout: (callback: () => void, delayMs: number) => unknown;
+  /** 取消句柄；幂等（触发后调用是无害清理）。 */
+  readonly clearTimeout: (handle: unknown) => void;
 }
 
 // —— #111 create 公共面（设计 §3 冻结类型；§14 签名替换契约）——
@@ -265,7 +288,7 @@ export interface NamespaceLease {
 }
 
 /**
- * Host 无关 Registry 主接口（设计 §3.2）：open + create 双主链，shutdown/#112 扩展位。
+ * Host 无关 Registry 主接口（设计 §3.2）：open + create 双主链 + shutdown 三相状态机。
  *
  * create 契约（§5 伪码）：运行时按 §4 DQ-1 最小 identity 接纳 → 同 key 与 open 共用
  * #110 carrier FIFO → 槽内 payload 快照 → 必需的 Clock 单次读数 → 私有 create-document
@@ -273,7 +296,11 @@ export interface NamespaceLease {
  * issue（含 duplicate 四源同码 ALREADY_EXISTS）、reject branded
  * NamespaceRegistryFatalError（internal/clock/create-document/persistence-fatal/
  * post-commit runtime-construction，committed 事实诚实）、构造期同步 TypeError
- * （Clock 形状门禁）。
+ * （Clock/scheduler 形状门禁）。
+ *
+ * #112 增量（设计 §2.D/§2.E/§2.H）：shutdown 真实化——三次调用态机
+ * （running → shutting-down → stopped）、停接纳于公共入口同步段、聚合关闭全部
+ * Runtime；失败以 `NamespaceRegistryShutdownError` reject（failures 稳定聚合）。
  */
 export interface NamespaceRegistry {
   /** 校验身份后取得或建立同 key 唯一 Runtime，并签发独立 lease；不等 P0。 */
@@ -286,20 +313,45 @@ export interface NamespaceRegistry {
    * 先例——接纳段校验一切敌意/畸形输入是运行时契约，静态类型是调用方命名形状）。
    */
   create(input: CreateNamespaceInput): Promise<CreateNamespaceResult>;
-  /** 同步 Registry 生命周期投影；本票构造后恒 running（shutdown 未实现）。 */
+  /** 同步 Registry 生命周期投影：恒三相（running/shutting-down/stopped）、恒冻结常量。 */
   getStatus(): NamespaceRegistryStatus;
-  /** #112 扩展位；本票 resolve 非 fatal NAMESPACE_OPERATION_UNAVAILABLE(shutdown)，不改变 acceptance。 */
-  shutdown(): Promise<RegistryOperationUnavailableIssue>;
+  /**
+   * Host shutdown（设计 §2.D）：首次调用的同步段即停接纳并取消全部 idle timer；
+   * 随后等待已接纳的 open/create 槽完整结算、关闭全部 Runtime（复用已在途 close
+   * Promise）、聚合 close 失败。关闭失败非空时以 `NamespaceRegistryShutdownError`
+   * reject（failures 稳定聚合、状态仍到 stopped）；否则 resolve undefined。
+   * 幂等：并发/重复调用返回 exact same Promise（含已 reject 实例）。
+   */
+  shutdown(): Promise<void>;
 }
 
 /**
- * 生产工厂选项（设计 §2.1/§8）：`clock` 为必需 capability（ADR-0009 禁静默系统时钟；
- * 缺失/null/非 object/now 非函数 → 构造期同步 TypeError
+ * shutdown 聚合失败项（设计 §2.H）：结构化携带受控 identity + exact cause——宿主
+ * 运维必需定位面；message 恒定零回显纪律不约束结构化字段与 cause（与
+ * NamespaceRegistryFatalError.cause 同款先例）。
+ */
+export interface NamespaceRegistryShutdownFailure {
+  readonly owner: Readonly<{ readonly userId: string }>;
+  readonly namespaceId: string;
+  readonly cause: unknown;
+}
+
+/**
+ * 生产工厂选项（设计 §2.1/§8；#112 §2.A）：`clock` 为必需 capability（ADR-0009 禁静默
+ * 系统时钟；缺失/null/非 object/now 非函数 → 构造期同步 TypeError
  * `NAMESPACE_REGISTRY_CLOCK_REQUIRED: Registry 必须提供可调用的 Clock.now`，
- * message 固定、零回显传入值；绝无 Date.now() fallback）。仅内部 observer seam
- * 允许经构造 options 注入；observer throw 由 Registry 隔离，不得改变公开结果。
+ * message 固定、零回显传入值；绝无 Date.now() fallback）。`scheduler` 为**必需**
+ * 延迟调度 capability（#112 裁决 A：ADR-0009 禁系统 timer fallback——release 即武装
+ * idle timer，缺省会静默掩盖 idle 行为；缺失/null/非 object/setTimeout 或 clearTimeout
+ * 非函数 → 构造期同步 TypeError，message 恒
+ * `NAMESPACE_REGISTRY_SCHEDULER_REQUIRED: …`，零回显传入值；检查顺序在 clock 门禁
+ * 之后）。`idleTimeoutMs` 可选（缺省 `DEFAULT_IDLE_TIMEOUT_MS = 300_000`；校验单点
+ * resolveIdleTimeoutMs，registry.ts 模块级导出）。仅内部 observer seam 允许经构造
+ * options 注入；observer throw 由 Registry 隔离，不得改变公开结果。
  */
 export interface CreateNamespaceRegistryOptions {
   readonly clock: Clock;
+  readonly scheduler: RegistryTimeoutScheduler;
+  readonly idleTimeoutMs?: number;
   readonly observer?: RegistryObserver;
 }

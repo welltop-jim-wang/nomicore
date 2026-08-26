@@ -11,8 +11,8 @@
  *   通道（设计 §3.2）——code 固定常量；调用方以 `instanceof` 或 `code` 判别，
  *   不要求靠 message 窄化。
  */
-import { NAMESPACE_LEASE_RELEASED_MESSAGE } from './types.js';
-import type { NamespaceRegistryFatalPhase } from './types.js';
+import { NAMESPACE_LEASE_RELEASED_MESSAGE, NAMESPACE_REGISTRY_SHUTDOWN_FAILED_MESSAGE } from './types.js';
+import type { NamespaceRegistryFatalPhase, NamespaceRegistryShutdownFailure } from './types.js';
 
 /**
  * Registry 内部故障（设计 §3.3）：operation/phase/committed 为稳定判别面；
@@ -51,5 +51,24 @@ export class NamespaceLeaseReleasedError extends Error {
   constructor() {
     super(NAMESPACE_LEASE_RELEASED_MESSAGE);
     this.name = 'NamespaceLeaseReleasedError';
+  }
+}
+
+/**
+ * Registry shutdown 聚合失败（#112 设计 §2.D/§2.H/§2.I）：部分 Runtime close 失败时
+ * shutdown Promise reject 本错误——`code`/`name` 稳定、message 为恒定常量（零插值、
+ * 零 identity/cause 回显）；`failures` 为冻结数组（逐元素 Object.freeze），顺序 =
+ * shutdown 枚举时的 entries Map 插入序（Registry 生命周期内确定）。结构化字段
+ * （owner/namespaceId）与 cause（exact 事实）是 message 级零回显纪律的显式边界
+ * （与 NamespaceRegistryFatalError.cause 同款先例），供宿主运维定位。
+ */
+export class NamespaceRegistryShutdownError extends Error {
+  readonly code = 'NAMESPACE_REGISTRY_SHUTDOWN_FAILED' as const;
+  readonly failures: ReadonlyArray<NamespaceRegistryShutdownFailure>;
+
+  constructor(failures: ReadonlyArray<NamespaceRegistryShutdownFailure>) {
+    super(NAMESPACE_REGISTRY_SHUTDOWN_FAILED_MESSAGE);
+    this.name = 'NamespaceRegistryShutdownError';
+    this.failures = failures;
   }
 }
