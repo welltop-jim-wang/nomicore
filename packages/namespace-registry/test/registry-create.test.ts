@@ -21,6 +21,10 @@
  * 测试 seam 迁移（设计 §14）：所有 createNamespaceRegistryForTesting 调用显式注入
  * manual clock helper（fixed ms + counter）。基线 testing 工厂忽略多余键 → 本文件在
  * 基线的红全部来自 create 占位行为/构造门禁缺失，而非 seam 迁移。
+ * #112 工厂 seam 迁移（冻结设计 §8 R2）：全部工厂调用与 createRegistryInternal
+ * fixture 补 `scheduler: createRegistryTestScheduler()`（必需字段）；duplicate 组
+ * 增 idle 第五态显式行（ADR-0009:68）；既有断言零改动（§2.K：active-零lease 语义
+ * 变 idle 语义，同码保持绿）。
  */
 import { describe, expect, it } from 'vitest';
 import * as Y from 'yjs';
@@ -30,7 +34,7 @@ import { compileSchemaEnvelope, validateLogicalSnapshot } from '@nomicore/vfsl';
 import type { DerivedSchema, SchemaEnvelope } from '@nomicore/vfsl';
 import { NamespaceRegistryFatalError } from '@nomicore/namespace-registry';
 import type { CreateNamespaceInput, NamespaceLease, NamespaceOwner } from '@nomicore/namespace-registry';
-import { createNamespaceRegistryForTesting } from '@nomicore/namespace-registry/testing';
+import { createNamespaceRegistryForTesting, createRegistryTestScheduler } from '@nomicore/namespace-registry/testing';
 import { createNamespaceRuntimeForRegistry } from '@nomicore/namespace-runtime/internal';
 import { createInitialDocument } from '@nomicore/doc-runtime';
 import { createRegistryInternal } from '../src/registry.js';
@@ -334,7 +338,7 @@ describe('create 成功全链（§3/§5/§6/§9）：manual Clock 精确 created
     const clock = makeManualClock(FIXED_MS);
     const { probe, restore } = installDocProbe();
     try {
-      const registry = createNamespaceRegistryForTesting(persistence, { clock });
+      const registry = createNamespaceRegistryForTesting(persistence, { clock, scheduler: createRegistryTestScheduler() });
       const result = await registry.create(makeCreateInput());
       const lease = okLease(result);
 
@@ -396,6 +400,7 @@ describe('create 成功全链（§3/§5/§6/§9）：manual Clock 精确 created
     const clock = makeManualClock(FIXED_MS);
     const registry = createNamespaceRegistryForTesting(persistence, {
       clock,
+      scheduler: createRegistryTestScheduler(),
       runtimeFactory: () => makeMarkerRuntime('MARKER_PREPARING_TRACK', 'k-ns'),
     });
     const lease = okLease(await registry.create(makeCreateInput()));
@@ -419,6 +424,7 @@ describe('create 成功全链（§3/§5/§6/§9）：manual Clock 精确 created
     let notifyDirtySeen: unknown;
     const registry = createNamespaceRegistryForTesting(persistence, {
       clock,
+      scheduler: createRegistryTestScheduler(),
       runtimeFactory: (handle, notifyDirty) => {
         factoryCalls += 1;
         handleDocSeen = (handle as { doc?: unknown }).doc;
@@ -443,7 +449,7 @@ describe('snapshot 时机（§4/§9）：排队期间突变生效、slot snapsho
     // slot1：停在 createDoc gate 后以 operational 失败收场（零 entry）——slot2 才能在
     // 同一 key 上继续；若 slot1 成功，slot2 将 ALREADY_EXISTS 而无法观察突变生效。
     persistence.queueCreate({ gate: gate1, error: new DocCreateOperationalError(new Error('slot1-fails')) });
-    const registry = createNamespaceRegistryForTesting(persistence, { clock });
+    const registry = createNamespaceRegistryForTesting(persistence, { clock, scheduler: createRegistryTestScheduler() });
 
     const input1 = makeCreateInput({ namespaceId: 'k-q', schema: { ...GOOD_ENVELOPE, text: 'type ROOT = { a: number; };\n' }, root: { a: 1 } });
     const input2 = makeCreateInput({ namespaceId: 'k-q', schema: { ...GOOD_ENVELOPE, text: 'type ROOT = { b: number; };\n' }, root: { b: 2 } });
@@ -476,7 +482,7 @@ describe('snapshot 时机（§4/§9）：排队期间突变生效、slot snapsho
     const clock = makeManualClock(FIXED_MS);
     const gate = deferred();
     persistence.queueCreate({ gate });
-    const registry = createNamespaceRegistryForTesting(persistence, { clock });
+    const registry = createNamespaceRegistryForTesting(persistence, { clock, scheduler: createRegistryTestScheduler() });
     const input = makeCreateInput({ schema: { ...GOOD_ENVELOPE, text: 'type ROOT = { n: number; };\n' }, root: { n: 1 } });
     const p = registry.create(input);
     await flushMicrotasks(); // slot 已通过 payload snapshot，停在 createDoc gate
@@ -497,7 +503,7 @@ describe('snapshot 时机（§4/§9）：排队期间突变生效、slot snapsho
     const clock = makeManualClock(FIXED_MS);
     const gate1 = deferred();
     persistence.queueCreate({ gate: gate1 });
-    const registry = createNamespaceRegistryForTesting(persistence, { clock });
+    const registry = createNamespaceRegistryForTesting(persistence, { clock, scheduler: createRegistryTestScheduler() });
 
     const ownerObj: { userId: string } = { userId: 'u-frozen' };
     const input1 = makeCreateInput({ owner: ownerObj, namespaceId: 'k-owner' });
@@ -540,7 +546,7 @@ describe('hostile input（§1/§4/§9）：Proxy trap 窄 issue + slot isolation
         throw new Error('ownKeys trap boom');
       },
     });
-    const registry = createNamespaceRegistryForTesting(persistence, { clock });
+    const registry = createNamespaceRegistryForTesting(persistence, { clock, scheduler: createRegistryTestScheduler() });
     const r1 = await registry.create(hostileInput as never);
     expect(r1).toMatchObject({ ok: false, code: 'NAMESPACE_CREATE_INVALID_INPUT' });
     expect((r1 as unknown as { message: string }).message).toBe(
@@ -571,7 +577,7 @@ describe('hostile input（§1/§4/§9）：Proxy trap 窄 issue + slot isolation
         return Reflect.getOwnPropertyDescriptor(target, prop);
       },
     });
-    const registry = createNamespaceRegistryForTesting(persistence, { clock });
+    const registry = createNamespaceRegistryForTesting(persistence, { clock, scheduler: createRegistryTestScheduler() });
     const r1 = await registry.create(hostileInput as never);
     // 接纳只经属性 GET 读取 owner/namespaceId 值；input 自身的 descriptor 元操作在
     // 槽内 payload 快照发生 → trap throw 被吸收为窄的 NAMESPACE_CREATE_INVALID_INPUT
@@ -604,7 +610,7 @@ describe('hostile input（§1/§4/§9）：Proxy trap 窄 issue + slot isolation
     ];
     const persistence = new CreateStubPersistence();
     const clock = makeManualClock(FIXED_MS);
-    const registry = createNamespaceRegistryForTesting(persistence, { clock });
+    const registry = createNamespaceRegistryForTesting(persistence, { clock, scheduler: createRegistryTestScheduler() });
     for (const proxy of proxies) {
       const r = await registry.create(makeCreateInput({ owner: proxy }));
       expect(r).toMatchObject({ ok: false, code: 'NAMESPACE_INVALID_IDENTITY', field: 'owner.userId' });
@@ -637,7 +643,7 @@ describe('hostile input（§1/§4/§9）：Proxy trap 窄 issue + slot isolation
     ];
     const persistence = new CreateStubPersistence();
     const clock = makeManualClock(FIXED_MS);
-    const registry = createNamespaceRegistryForTesting(persistence, { clock });
+    const registry = createNamespaceRegistryForTesting(persistence, { clock, scheduler: createRegistryTestScheduler() });
     for (const c of cases) {
       const r = await registry.create(c.input);
       expect(r, `${c.name} → NAMESPACE_CREATE_INVALID_INPUT`).toMatchObject({
@@ -693,6 +699,7 @@ describe('hostile input（§1/§4/§9）：Proxy trap 窄 issue + slot isolation
     let documentFactoryCalls = 0;
     const registry = createNamespaceRegistryForTesting(persistence, {
       clock,
+      scheduler: createRegistryTestScheduler(),
       // 计数 factory（若漏检则 create 会经此成功——注入不可 throw，保证失败形态
       // 是「期望 INVALID_INPUT vs 实际成功」的断言差异而非 rejection）
       createDocumentFactory: () => {
@@ -736,6 +743,7 @@ describe('hostile input（§1/§4/§9）：Proxy trap 窄 issue + slot isolation
     };
     const registry = createNamespaceRegistryForTesting(persistence, {
       clock,
+      scheduler: createRegistryTestScheduler(),
       diagnostics: (e) => diagnostics.push({ type: e.type }),
     });
     const r = await registry.create(input as never);
@@ -756,7 +764,7 @@ describe('输入形状（§4/§9 终审 D2）：五键/错名键/缺键专属锚
   it('五键（多 meta）/五键（多 createdAt）/错名键（rooot 代替 root）/缺 root（恰三键）→ 同码 + 零 Clock + 零 Persistence', async () => {
     const persistence = new CreateStubPersistence();
     const clock = makeManualClock(FIXED_MS);
-    const registry = createNamespaceRegistryForTesting(persistence, { clock });
+    const registry = createNamespaceRegistryForTesting(persistence, { clock, scheduler: createRegistryTestScheduler() });
     const base = { owner: { userId: 'u-alice' }, namespaceId: 'k-ns', schema: GOOD_ENVELOPE, root: GOOD_ROOT };
     const cases: Array<{ name: string; input: unknown }> = [
       { name: '五键（多 meta）', input: { ...base, meta: {} } },
@@ -810,6 +818,7 @@ describe('identity invalid（§4/§9）：非法 owner/namespaceId → NAMESPACE
     let factoryCalls = 0;
     const registry = createNamespaceRegistryForTesting(persistence, {
       clock,
+      scheduler: createRegistryTestScheduler(),
       runtimeFactory: () => {
         factoryCalls += 1;
         return makeMarkerRuntime('x', 'y');
@@ -846,7 +855,7 @@ describe('identity invalid（§4/§9）：非法 owner/namespaceId → NAMESPACE
         },
       },
     );
-    const registry = createNamespaceRegistryForTesting(persistence, { clock });
+    const registry = createNamespaceRegistryForTesting(persistence, { clock, scheduler: createRegistryTestScheduler() });
     const r = await registry.create(makeCreateInput({ owner: hostileOwner, namespaceId: new String('n1') as unknown as string }));
     expect(r).toMatchObject({ ok: false, code: 'NAMESPACE_INVALID_IDENTITY', field: 'namespaceId' });
     expect(ownerTrap).toBe(0); // typeof 短路在 owner 形状读取之前
@@ -865,6 +874,7 @@ describe('domain（§3/§5/§6/§9）：schema/root 失败 verbatim issues + 零
     let factoryCalls = 0;
     const registry = createNamespaceRegistryForTesting(persistence, {
       clock,
+      scheduler: createRegistryTestScheduler(),
       runtimeFactory: () => {
         factoryCalls += 1;
         return makeMarkerRuntime('x', 'y');
@@ -892,6 +902,7 @@ describe('domain（§3/§5/§6/§9）：schema/root 失败 verbatim issues + 零
     let documentFactoryCalls = 0;
     const registry = createNamespaceRegistryForTesting(persistence, {
       clock,
+      scheduler: createRegistryTestScheduler(),
       runtimeFactory: () => {
         factoryCalls += 1;
         return makeMarkerRuntime('x', 'y');
@@ -919,7 +930,7 @@ describe('domain（§3/§5/§6/§9）：schema/root 失败 verbatim issues + 零
   it('domain failures 后 green tail：同 key 后续 create 正常成功', async () => {
     const persistence = new CreateStubPersistence();
     const clock = makeManualClock(FIXED_MS);
-    const registry = createNamespaceRegistryForTesting(persistence, { clock });
+    const registry = createNamespaceRegistryForTesting(persistence, { clock, scheduler: createRegistryTestScheduler() });
     const r1 = await registry.create(makeCreateInput({ schema: BAD_ENVELOPE }));
     expect(r1).toMatchObject({ ok: false, code: 'NAMESPACE_SCHEMA_INVALID' });
     const r2 = await registry.create(makeCreateInput({ root: BAD_ROOT }));
@@ -934,7 +945,7 @@ describe('domain（§3/§5/§6/§9）：schema/root 失败 verbatim issues + 零
     const persistence = new CreateStubPersistence();
     const clock = makeManualClock(FIXED_MS);
     persistence.queueCreate({ error: new DocDuplicateError() });
-    const registry = createNamespaceRegistryForTesting(persistence, { clock });
+    const registry = createNamespaceRegistryForTesting(persistence, { clock, scheduler: createRegistryTestScheduler() });
     const invalid = await registry.create(makeCreateInput({ owner: { userId: 'bad/owner' } }));
     const inputShape = await registry.create({ owner: { userId: 'u' }, namespaceId: 'k', schema: GOOD_ENVELOPE } as never); // 缺 root
     const schemaBad = await registry.create(makeCreateInput({ schema: BAD_ENVELOPE }));
@@ -968,6 +979,7 @@ describe('Registry 自创面负锁（§3/§9：sentinel 不出现在顶层 messa
     const events: RegistryObserverEvent[] = [];
     const registry = createNamespaceRegistryForTesting(persistence, {
       clock,
+      scheduler: createRegistryTestScheduler(),
       observer: (e) => events.push(e),
     });
     // create operational（typed）→ NAMESPACE_CREATE_FAILED（顶层 message 恒定）
@@ -1020,7 +1032,7 @@ describe('duplicate 四源（§5/§9）：active / lease-zero 临时态 / 并发
   it('active entry：同 key 第二次 create → ALREADY_EXISTS，零 loadDoc、零第二次 createDoc', async () => {
     const persistence = new CreateStubPersistence();
     const clock = makeManualClock(FIXED_MS);
-    const registry = createNamespaceRegistryForTesting(persistence, { clock });
+    const registry = createNamespaceRegistryForTesting(persistence, { clock, scheduler: createRegistryTestScheduler() });
     const r1 = await registry.create(makeCreateInput());
     expect(r1.ok).toBe(true);
     const r2 = await registry.create(makeCreateInput());
@@ -1038,7 +1050,7 @@ describe('duplicate 四源（§5/§9）：active / lease-zero 临时态 / 并发
   it('lease 全释放后的临时保留态：entry 保留 → create 仍 ALREADY_EXISTS（零 loadDoc）', async () => {
     const persistence = new CreateStubPersistence();
     const clock = makeManualClock(FIXED_MS);
-    const registry = createNamespaceRegistryForTesting(persistence, { clock });
+    const registry = createNamespaceRegistryForTesting(persistence, { clock, scheduler: createRegistryTestScheduler() });
     const lease = okLease(await registry.create(makeCreateInput()));
     await lease.release();
     expect(lease.getStatus()).toMatchObject({ lease: 'released', runtime: null });
@@ -1049,6 +1061,34 @@ describe('duplicate 四源（§5/§9）：active / lease-zero 临时态 / 并发
     expect(clock.calls).toBe(1);
   });
 
+  it('idle 态（#112 第五态，ADR-0009:68 明文）：release 后 entry 已 idle 武装 → create 仍 ALREADY_EXISTS 零 Persistence；完整窗口后恢复可创建', async () => {
+    // #112 DQ-5 扩 idle 行：active（含零 lease）与 idle 同码 ALREADY_EXISTS，均零 Persistence；
+    // 既有「lease 全释放后临时保留态」用例语义从 active-零lease 变为 idle，断言同码保持绿。
+    const persistence = new CreateStubPersistence();
+    const clock = makeManualClock(FIXED_MS);
+    const scheduler = createRegistryTestScheduler();
+    const registry = createNamespaceRegistryForTesting(persistence, {
+      clock,
+      scheduler,
+      idleTimeoutMs: 300_000,
+    });
+    const lease = okLease(await registry.create(makeCreateInput()));
+    await lease.release();
+    expect(scheduler.pending()).toBe(1); // 最后 lease 释放 → idle 武装（显式 idle 行前提）
+    const r2 = await registry.create(makeCreateInput());
+    expect(r2).toMatchObject({ ok: false, code: 'NAMESPACE_ALREADY_EXISTS' });
+    expect(persistence.createCalls.length).toBe(1); // 零第二次 createDoc
+    expect(persistence.loadCalls.length).toBe(0);
+    expect(clock.calls).toBe(1); // idle duplicate 在 payload/Clock 之前
+    // 完整窗口（advanceBy）触发 idle close → entry 清理 → 同 key create 恢复可创建
+    await scheduler.advanceBy(300_000);
+    await flushMicrotasks();
+    const r3 = await registry.create(makeCreateInput());
+    expect(r3.ok).toBe(true);
+    expect(persistence.createCalls.length).toBe(2);
+    await okLease(r3).release();
+  });
+
   it('并发 FIFO：createDoc gate 固定先后手，第二个 slot 零 createDocument 调用、零 Clock 读', async () => {
     const persistence = new CreateStubPersistence();
     const clock = makeManualClock(FIXED_MS);
@@ -1057,6 +1097,7 @@ describe('duplicate 四源（§5/§9）：active / lease-zero 临时态 / 并发
     let documentFactoryCalls = 0;
     const registry = createNamespaceRegistryForTesting(persistence, {
       clock,
+      scheduler: createRegistryTestScheduler(),
       // 计数 factory：返回合法初始 doc（{ok:true}），使第一个 slot 正常成功；
       // 第二个（duplicate）slot 永不进入 createDocument 阶段。
       createDocumentFactory: () => {
@@ -1083,7 +1124,7 @@ describe('duplicate 四源（§5/§9）：active / lease-zero 临时态 / 并发
     const persistence = new CreateStubPersistence();
     const clock = makeManualClock(FIXED_MS);
     persistence.queueCreate({ error: new DocDuplicateError() });
-    const registry = createNamespaceRegistryForTesting(persistence, { clock });
+    const registry = createNamespaceRegistryForTesting(persistence, { clock, scheduler: createRegistryTestScheduler() });
     const r = await registry.create(makeCreateInput());
     expect(r).toMatchObject({ ok: false, code: 'NAMESPACE_ALREADY_EXISTS' });
     expect((r as unknown as { message: string }).message).toBe(
@@ -1102,7 +1143,7 @@ describe('persistence 映射（§7/§9 表）：operational/duplicate/fatal fals
     const typed = new DocCreateOperationalError(new Error('store-write-rejected'));
     persistence.queueCreate({ error: typed });
     const events: RegistryObserverEvent[] = [];
-    const registry = createNamespaceRegistryForTesting(persistence, { clock, observer: (e) => events.push(e) });
+    const registry = createNamespaceRegistryForTesting(persistence, { clock, scheduler: createRegistryTestScheduler(), observer: (e) => events.push(e) });
     const r = await registry.create(makeCreateInput());
     expect(r).toMatchObject({ ok: false, code: 'NAMESPACE_CREATE_FAILED' });
     expect((r as unknown as { message: string }).message).toBe(
@@ -1128,7 +1169,7 @@ describe('persistence 映射（§7/§9 表）：operational/duplicate/fatal fals
     const typed = new DocCreateFatalError('probe-read', new Error('pre-commit-store'));
     persistence.queueCreate({ error: typed });
     const events: RegistryObserverEvent[] = [];
-    const registry = createNamespaceRegistryForTesting(persistence, { clock, observer: (e) => events.push(e) });
+    const registry = createNamespaceRegistryForTesting(persistence, { clock, scheduler: createRegistryTestScheduler(), observer: (e) => events.push(e) });
     const p = registry.create(makeCreateInput());
     await expect(p).rejects.toMatchObject({
       code: 'NAMESPACE_REGISTRY_FATAL',
@@ -1161,7 +1202,7 @@ describe('persistence 映射（§7/§9 表）：operational/duplicate/fatal fals
     const clock = makeManualClock(FIXED_MS);
     const typed = new DocCreateFatalError('post-commit', new Error('post-commit-store'));
     persistence.queueCreate({ error: typed });
-    const registry = createNamespaceRegistryForTesting(persistence, { clock });
+    const registry = createNamespaceRegistryForTesting(persistence, { clock, scheduler: createRegistryTestScheduler() });
     const p = registry.create(makeCreateInput());
     await expect(p).rejects.toMatchObject({
       code: 'NAMESPACE_REGISTRY_FATAL',
@@ -1184,7 +1225,7 @@ describe('persistence 映射（§7/§9 表）：operational/duplicate/fatal fals
     const boom = new Error('unknown-adapter-breach');
     persistence.queueCreate({ error: boom });
     const events: RegistryObserverEvent[] = [];
-    const registry = createNamespaceRegistryForTesting(persistence, { clock, observer: (e) => events.push(e) });
+    const registry = createNamespaceRegistryForTesting(persistence, { clock, scheduler: createRegistryTestScheduler(), observer: (e) => events.push(e) });
     const p = registry.create(makeCreateInput());
     await expect(p).rejects.toMatchObject({
       code: 'NAMESPACE_REGISTRY_FATAL',
@@ -1207,6 +1248,7 @@ describe('persistence 映射（§7/§9 表）：operational/duplicate/fatal fals
     persistence.queueCreate({ error: new Error('unknown-boom') });
     const registry = createNamespaceRegistryForTesting(persistence, {
       clock,
+      scheduler: createRegistryTestScheduler(),
       observer: () => {
         throw new Error('observer-isolated');
       },
@@ -1225,7 +1267,7 @@ describe('persistence 映射（§7/§9 表）：operational/duplicate/fatal fals
     const persistence = new CreateStubPersistence();
     const clock = makeManualClock(FIXED_MS);
     persistence.queueCreate({ error: new DocCreateOperationalError(new Error('transient')) });
-    const registry = createNamespaceRegistryForTesting(persistence, { clock });
+    const registry = createNamespaceRegistryForTesting(persistence, { clock, scheduler: createRegistryTestScheduler() });
     const r1 = await registry.create(makeCreateInput());
     expect(r1).toMatchObject({ ok: false, code: 'NAMESPACE_CREATE_FAILED' });
     const r2 = await registry.create(makeCreateInput());
@@ -1291,6 +1333,7 @@ describe('Clock（§6/§8/§9）：构造门禁 + 非法读数 fatal false + 每
     const events: RegistryObserverEvent[] = [];
     const registry = createNamespaceRegistryForTesting(persistence, {
       clock,
+      scheduler: createRegistryTestScheduler(),
       observer: (e) => events.push(e),
     });
     const p = registry.create(makeCreateInput());
@@ -1322,7 +1365,7 @@ describe('Clock（§6/§8/§9）：构造门禁 + 非法读数 fatal false + 每
     for (const bad of badValues) {
       const persistence = new CreateStubPersistence();
       const clock = { now: () => bad };
-      const registry = createNamespaceRegistryForTesting(persistence, { clock });
+      const registry = createNamespaceRegistryForTesting(persistence, { clock, scheduler: createRegistryTestScheduler() });
       const p = registry.create(makeCreateInput());
       await expect(p, `clock.now() === ${bad}`).rejects.toMatchObject({
         operation: 'create',
@@ -1337,7 +1380,7 @@ describe('Clock（§6/§8/§9）：构造门禁 + 非法读数 fatal false + 每
   it('合法边界值 ±8.64e15 被接受；createdAt 与 toISOString 精确一致', async () => {
     const persistence = new CreateStubPersistence();
     const clock = makeManualClock(8.64e15);
-    const registry = createNamespaceRegistryForTesting(persistence, { clock });
+    const registry = createNamespaceRegistryForTesting(persistence, { clock, scheduler: createRegistryTestScheduler() });
     const lease = okLease(await registry.create(makeCreateInput()));
     expect(lease.getMetadata().createdAt).toBe(new Date(8.64e15).toISOString());
     await lease.release();
@@ -1346,7 +1389,7 @@ describe('Clock（§6/§8/§9）：构造门禁 + 非法读数 fatal false + 每
   it('Clock 恰读一次：payload 失败不读、duplicate 不读（counter 锚）', async () => {
     const persistence = new CreateStubPersistence();
     const clock = makeManualClock(FIXED_MS);
-    const registry = createNamespaceRegistryForTesting(persistence, { clock });
+    const registry = createNamespaceRegistryForTesting(persistence, { clock, scheduler: createRegistryTestScheduler() });
     // payload 失败：function root → 0 读
     await registry.create(makeCreateInput({ root: { f: () => 1 } }));
     expect(clock.calls).toBe(0);
@@ -1377,6 +1420,7 @@ describe('post-commit factory failure（§7/§9 DQ-7）：release 恰一次、�
     let factoryCalls = 0;
     const registry = createNamespaceRegistryForTesting(persistence, {
       clock,
+      scheduler: createRegistryTestScheduler(),
       runtimeFactory: (handle, notifyDirty) => {
         factoryCalls += 1;
         // 仅首次（create 路径）工厂故障；后续 open/再 create 委托真实 P0 工厂——
@@ -1436,6 +1480,7 @@ describe('post-commit factory failure（§7/§9 DQ-7）：release 恰一次、�
     const events: RegistryObserverEvent[] = [];
     const registry = createNamespaceRegistryForTesting(persistence, {
       clock,
+      scheduler: createRegistryTestScheduler(),
       runtimeFactory: () => {
         throw factoryCause;
       },
@@ -1474,6 +1519,7 @@ describe('post-commit factory failure（§7/§9 DQ-7）：release 恰一次、�
     const factoryCause = new Error('factory-boom-never-settle');
     const registry = createNamespaceRegistryForTesting(persistence, {
       clock,
+      scheduler: createRegistryTestScheduler(),
       runtimeFactory: () => {
         throw factoryCause;
       },
@@ -1519,6 +1565,7 @@ describe('ordering/concurrency（§5/§9）：create→open、open→create、ga
     let factoryCalls = 0;
     const registry = createNamespaceRegistryForTesting(persistence, {
       clock,
+      scheduler: createRegistryTestScheduler(),
       runtimeFactory: () => {
         factoryCalls += 1;
         return makeMarkerRuntime('RUNTIME_MARKER_9f', 'k-ns');
@@ -1539,7 +1586,7 @@ describe('ordering/concurrency（§5/§9）：create→open、open→create、ga
   it('open→create：独立结算（open NOT_FOUND 不毒化后续 create），再 open 复用 entry', async () => {
     const persistence = new CreateStubPersistence();
     const clock = makeManualClock(FIXED_MS);
-    const registry = createNamespaceRegistryForTesting(persistence, { clock });
+    const registry = createNamespaceRegistryForTesting(persistence, { clock, scheduler: createRegistryTestScheduler() });
     const open1 = await registry.open({ userId: 'u-alice' }, 'k-ns');
     expect(open1).toMatchObject({ ok: false, code: 'NAMESPACE_NOT_FOUND' });
     expect(persistence.loadCalls.length).toBe(1);
@@ -1558,7 +1605,7 @@ describe('ordering/concurrency（§5/§9）：create→open、open→create、ga
     const clock = makeManualClock(FIXED_MS);
     const gate = deferred();
     persistence.queueCreate({ gate });
-    const registry = createNamespaceRegistryForTesting(persistence, { clock });
+    const registry = createNamespaceRegistryForTesting(persistence, { clock, scheduler: createRegistryTestScheduler() });
     const p1 = registry.create(makeCreateInput({ namespaceId: 'k-a' }));
     await flushMicrotasks();
     expect(persistence.createCalls.map((c) => c.docId)).toEqual(['k-a']);
@@ -1581,7 +1628,7 @@ describe('ordering/concurrency（§5/§9）：create→open、open→create、ga
     const persistence = new CreateStubPersistence();
     const clock = makeManualClock(FIXED_MS);
     persistence.queueCreate({ error: new Error('create-slot-boom') });
-    const registry = createNamespaceRegistryForTesting(persistence, { clock });
+    const registry = createNamespaceRegistryForTesting(persistence, { clock, scheduler: createRegistryTestScheduler() });
     const p1 = registry.create(makeCreateInput());
     await expect(p1).rejects.toBeInstanceOf(NamespaceRegistryFatalError);
     const r2 = await registry.create(makeCreateInput());
@@ -1593,7 +1640,7 @@ describe('ordering/concurrency（§5/§9）：create→open、open→create、ga
   it('hostile slot 失败后同 key open 正常：拒绝 slot 不毒化 carrier/open 路径', async () => {
     const persistence = new CreateStubPersistence();
     const clock = makeManualClock(FIXED_MS);
-    const registry = createNamespaceRegistryForTesting(persistence, { clock });
+    const registry = createNamespaceRegistryForTesting(persistence, { clock, scheduler: createRegistryTestScheduler() });
     const r1 = await registry.create(makeCreateInput({ root: { f: () => 1 } })); // payload 拒绝
     expect(r1).toMatchObject({ ok: false, code: 'NAMESPACE_CREATE_INVALID_INPUT' });
     const r2 = await registry.open({ userId: 'u-alice' }, 'k-ns');
@@ -1630,6 +1677,7 @@ describe('closing fail-closed（R2-M1/§9）：closing + closePromise undefined 
     let documentFactoryCalls = 0;
     const internalOptions: Record<string, unknown> = {
       clock,
+      scheduler: createRegistryTestScheduler(),
       observer: (e: RegistryObserverEvent) => events.push(e),
       runtimeFactory: () => makeMarkerRuntime('x', 'y'),
       // 条件抛错：仅目标 key（k-ns，closing 态）绝不进入 createDocument 阶段；
@@ -1744,6 +1792,7 @@ describe('closing fail-closed（R2-M1/§9）：closing + closePromise undefined 
     ]);
     const registry = createRegistryInternal(persistence, {
       clock,
+      scheduler: createRegistryTestScheduler(),
       observer: (e: RegistryObserverEvent) => events.push(e),
       runtimeFactory: () => makeMarkerRuntime('x', 'y'),
       createDocumentFactory: (namespaceId: string) => {
@@ -1812,6 +1861,7 @@ describe('closing fail-closed（R2-M1/§9）：closing + closePromise undefined 
     ]);
     const registry = createRegistryInternal(persistence, {
       clock,
+      scheduler: createRegistryTestScheduler(),
       observer: (e: RegistryObserverEvent) => events.push(e),
       runtimeFactory: () => makeMarkerRuntime('x', 'y'),
       testEntries,
@@ -1860,6 +1910,7 @@ describe('closing fail-closed（R2-M1/§9）：closing + closePromise undefined 
     };
     const registry = createRegistryInternal(persistence, {
       clock,
+      scheduler: createRegistryTestScheduler(),
       testEntries,
     } as never);
     const p = registry.create(makeCreateInput());
@@ -1881,6 +1932,7 @@ describe('seam 注入（§5/§7/§9 R2-H1）：Registry 收到 input-invalid 不
     const events: RegistryObserverEvent[] = [];
     const registry = createNamespaceRegistryForTesting(persistence, {
       clock,
+      scheduler: createRegistryTestScheduler(),
       observer: (e) => events.push(e),
       createDocumentFactory: () => ({
         ok: false as const,
