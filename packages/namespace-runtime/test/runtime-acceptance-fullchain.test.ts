@@ -33,6 +33,8 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import type { DocHandle, User } from '@nomicore/persistence';
 import { createMemoryPersistence, FilePersistence } from '@nomicore/persistence';
+import { realPersistenceScheduler } from './real-persistence-scheduler.js';
+import { waitDurableSnapshot } from './durable-snapshot-wait.js';
 import { RuntimeWriteFatalError } from '../src/index.js';
 import { createNamespaceRuntime, createNamespaceRuntimeWithSeam } from '../src/runtime.js';
 import type { NamespaceRuntime } from '../src/index.js';
@@ -97,12 +99,16 @@ function makeMemoryPair(): {
 } {
   const store = new Map<string, Uint8Array>();
   const writer = createMemoryPersistence({
+    scheduler: realPersistenceScheduler,
     schedule: { debounceMs: 5, maxDirtyMs: 60 },
     writeSnapshot: async (key, snapshot) => {
       store.set(key, snapshot.slice());
     },
   });
-  const reader = createMemoryPersistence({ readSnapshot: async (key) => store.get(key) });
+  const reader = createMemoryPersistence({
+    scheduler: realPersistenceScheduler,
+    readSnapshot: async (key) => store.get(key),
+  });
   return { writer, reader, store };
 }
 
@@ -274,15 +280,17 @@ async function withFilePair(
   fn: (fx: {
     writer: FilePersistence;
     handle: DocHandle;
+    /** 测试临时根目录（shared durable-snapshot-wait 直接读 committed 文件用）。 */
+    rootDir: string;
     /** 以同一 rootDir 构造全新 FilePersistence 实例（空缓存 crash-restart 证明）。 */
     restart: () => FilePersistence;
   }) => Promise<void>,
 ): Promise<void> {
   const rootDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'nsr-acceptance-'));
-  const writer = new FilePersistence({ rootDir, schedule: { debounceMs: 5, maxDirtyMs: 60 } });
+  const writer = new FilePersistence({ rootDir, scheduler: realPersistenceScheduler, schedule: { debounceMs: 5, maxDirtyMs: 60 } });
   const handle = await writer.createDoc(OWNER, 'ns-1', await makeDoc(ENV1));
   try {
-    await fn({ writer, handle, restart: () => new FilePersistence({ rootDir }) });
+    await fn({ writer, handle, rootDir, restart: () => new FilePersistence({ rootDir, scheduler: realPersistenceScheduler }) });
   } finally {
     await writer.dispose();
     await fsp.rm(rootDir, { recursive: true, force: true });
@@ -292,7 +300,7 @@ async function withFilePair(
 describe('AC1：真实 VFSL compiler + doc-runtime + FilePersistence 端到端（Runtime 全能力）', () => {
   it('全链：P0→读取→ROOT write→SCHEMA replacement→磁盘落盘→新实例 crash-restart→close（真实文件）',
     async () => {
-      await withFilePair(async ({ writer, handle, restart }) => {
+      await withFilePair(async ({ writer, handle, rootDir, restart }) => {
         const runtime = await readyRuntime(handle, () => writer.saveDoc(handle));
         try {
           // ① P0 真实编译
@@ -308,9 +316,11 @@ describe('AC1：真实 VFSL compiler + doc-runtime + FilePersistence 端到端�
           expect(rep).toEqual({ ok: true });
           expect(runtime.getActiveSchema()?.id).toBe('ns-2');
 
-          // ④ 磁盘落盘
-          await sleep(100);
+          // ④ 磁盘落盘（竞态守卫：saveDoc 只是 dirty 登记，落盘由 debounce(5ms)+内部
+          //   retry 保证**最终**持久化——固定 sleep 与并发 flush 写读竞态（见 U-3 注释）；
+          //   先有界轮询磁盘事实，再一次性 restart 断言）
           expect(handle.getStatus()).toBe('ready');
+          await waitDurableSnapshot(OWNER, 'ns-1', rootDir, (doc) => doc.getMap('ROOT').get('n'), 10);
 
           // ⑤ 全新 FilePersistence 实例（空缓存）crash-restart：磁盘完整恢复三条目
           const restarted = await restart().loadDoc(OWNER, 'ns-1');
@@ -518,9 +528,9 @@ describe('AC5（#93 rev2 追加）：D-6 pre-commit fatal 真实持久化全链�
   it('U-2 File × pre-commit fatal：同 U-1 断言面 + restart 全新实例 durable 零写入（SCHEMA 原文/ROOT 原值/META 原样）',
     async () => {
       const rootDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'nsr-acceptance-u2-'));
-      const writer = new FilePersistence({ rootDir, schedule: { debounceMs: 5, maxDirtyMs: 60 } });
+      const writer = new FilePersistence({ rootDir, scheduler: realPersistenceScheduler, schedule: { debounceMs: 5, maxDirtyMs: 60 } });
       const handle = await writer.createDoc(OWNER, 'ns-1', await makeDoc(ENV1));
-      const restart = (): FilePersistence => new FilePersistence({ rootDir });
+      const restart = (): FilePersistence => new FilePersistence({ rootDir, scheduler: realPersistenceScheduler });
       let notifierCalls = 0;
       const runtime = createNamespaceRuntimeWithSeam({
         handle,
@@ -571,9 +581,9 @@ describe('AC5（#93 rev2 追加）：D-6 pre-commit fatal 真实持久化全链�
   it('U-3 File × committed fatal（observer 逃逸，经生产工厂 createNamespaceRuntime）：rejection committed=true + best-effort saveDoc 恰一次 + restart 见提交值 + 读保留 + 后续写 DISABLED + close 照常',
     async () => {
       const rootDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'nsr-acceptance-u3-'));
-      const writer = new FilePersistence({ rootDir, schedule: { debounceMs: 5, maxDirtyMs: 60 } });
+      const writer = new FilePersistence({ rootDir, scheduler: realPersistenceScheduler, schedule: { debounceMs: 5, maxDirtyMs: 60 } });
       const handle = await writer.createDoc(OWNER, 'ns-1', await makeDoc(ENV1));
-      const restart = (): FilePersistence => new FilePersistence({ rootDir });
+      const restart = (): FilePersistence => new FilePersistence({ rootDir, scheduler: realPersistenceScheduler });
       let notifierCalls = 0;
       // 生产工厂构造（observer 逃逸是 doc 级注入，与生产构造器兼容——D-5/D-6 组合）
       const runtime = createNamespaceRuntime(handle, () => {
@@ -604,8 +614,14 @@ describe('AC5（#93 rev2 追加）：D-6 pre-commit fatal 真实持久化全链�
         expect(JSON.stringify(blocked)).toContain('RUNTIME_WRITE_DISABLED');
         expect(readValue(runtime, ['n'])).toBe(9);
 
-        // 持久化证明：best-effort 登记的真实落盘 → restart 新实例见已提交值（不虚假回滚）
-        await sleep(100);
+        // 持久化证明：best-effort 登记的真实落盘 → restart 新实例见已提交值（不虚假回滚）。
+        // 竞态守卫（CI run 32882227927 实测根因）：saveDoc 只是 dirty 登记，落盘由
+        // debounce(5ms)+内部 retry 保证**最终**持久化（ADR-0006 无固定时限承诺）；固定
+        // sleep(100)+一次性读与并发 flush 写读竞态——reader 的 readFile 可落入 writer 的
+        // writeFile→rename 之间读到落盘前旧快照（其 tmp 清理还会使当次 rename ENOENT 转
+        // retry），重载 CI 上即「expected 1 to be 9」。先有界轮询 committed 快照文件，
+        // 再做一次性 restart 空缓存断言（此后无在途写，断言确定）。
+        await waitDurableSnapshot(OWNER, 'ns-1', rootDir, (doc) => doc.getMap('ROOT').get('n'), 9);
         const restarted = await restart().loadDoc(OWNER, 'ns-1');
         expect(restarted).not.toBeNull();
         if (restarted === null) return;

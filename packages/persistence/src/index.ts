@@ -1,18 +1,24 @@
 export {
-  DOC_PERSISTENCE_SERVICE,
+  NOMICORE_PERSISTENCE_SERVICE,
   DEFAULT_PERSISTENCE_SCHEDULE,
   DocDuplicateError,
-  provideDocPersistence,
-  requireDocPersistence,
+  DOC_CREATE_FATAL_PHASE_COMMITTED,
+  DocCreateFatalError,
+  DocCreateOperationalError,
+  DocLoadOperationalError,
+  type DocCreateFatalPhase,
+  provideNomicorePersistence,
+  requireNomicorePersistence,
   resolvePersistenceSchedule,
-  systemPersistenceTimer,
   type DocHandle,
   type DocHandleStatus,
   type DocPersistence,
   type PersistenceSchedule,
-  type PersistenceTimer,
+  type PersistenceScheduler,
   type User,
 } from './contract.js'
+
+export { type PersistenceIO } from './lifecycle.js'
 
 export {
   MemoryPersistence,

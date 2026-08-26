@@ -32,7 +32,7 @@ import { describe, expect, it } from 'vitest'
 import * as Y from 'yjs'
 import type { DocHandle, User } from '../src/contract.js'
 import { createMemoryPersistence } from '../src/index.js'
-import { createDocStore, createTestTimer, withTimeout } from '../src/testing.js'
+import { createDocStore, createTestScheduler, withTimeout } from '../src/testing.js'
 import { createMemoryHandleForTest } from './memory-testkit.js'
 
 type HandleStatus = 'ready' | 'persistence-degraded' | 'released' | 'disposed'
@@ -53,9 +53,9 @@ async function settle(turns = 12): Promise<void> {
 
 describe('issue-79: DocHandle entry-level status (MemoryPersistence)', () => {
   it('AC1: getStatus() is synchronous and distinguishes ready / persistence-degraded / released / disposed', async () => {
-    const timer = createTestTimer()
+    const timer = createTestScheduler()
     const persistence = createMemoryPersistence({
-      timer,
+      scheduler: timer,
       async writeSnapshot() { throw new Error('io down') },
     })
     const owner: User = { userId: 'alice' }
@@ -84,9 +84,9 @@ describe('issue-79: DocHandle entry-level status (MemoryPersistence)', () => {
   })
 
   it('AC2+AC3: status is entry-scoped — a degraded (owner, docId) leaves unrelated entries ready on the same adapter', async () => {
-    const timer = createTestTimer()
+    const timer = createTestScheduler()
     const persistence = createMemoryPersistence({
-      timer,
+      scheduler: timer,
       async writeSnapshot(key) {
         if (key === 'alice\u0000doomed') throw new Error('disk unavailable')
       },
@@ -115,10 +115,10 @@ describe('issue-79: DocHandle entry-level status (MemoryPersistence)', () => {
   })
 
   it('AC4: only the degraded entry own retry restores it to ready; an unrelated successful flush does not', async () => {
-    const timer = createTestTimer()
+    const timer = createTestScheduler()
     let doomedFailures = 1
     const persistence = createMemoryPersistence({
-      timer,
+      scheduler: timer,
       async writeSnapshot(key) {
         if (key === 'alice\u0000doomed' && doomedFailures > 0) {
           doomedFailures -= 1
@@ -155,12 +155,12 @@ describe('issue-79: DocHandle entry-level status (MemoryPersistence)', () => {
   })
 
   it('AC5: saveDoc while degraded registers dirty and the retry persists the latest live doc, visible to a fresh adapter', async () => {
-    const timer = createTestTimer()
+    const timer = createTestScheduler()
     const store = createDocStore()
     let ioFailures = 1
     let storeWrites = 0
     const persistence = createMemoryPersistence({
-      timer,
+      scheduler: timer,
       readSnapshot: (key, signal) => store.read(key, signal),
       writeSnapshot: async (key, snapshot, signal) => {
         if (ioFailures > 0) {
@@ -196,7 +196,7 @@ describe('issue-79: DocHandle entry-level status (MemoryPersistence)', () => {
 
     // A fresh adapter over the same store sees mutation 2.
     const fresh = createMemoryPersistence({
-      timer: createTestTimer(),
+      scheduler: createTestScheduler(),
       readSnapshot: (key, signal) => store.read(key, signal),
       writeSnapshot: (key, snapshot, signal) => store.write(key, snapshot, signal),
     })
@@ -211,7 +211,7 @@ describe('issue-79: DocHandle entry-level status (MemoryPersistence)', () => {
   })
 
   it('AC7: deterministic race — g1 flush in flight → ready → mutation 2 → g1 fails → degraded saveDoc registers → retry → fresh load sees mutation 2', async () => {
-    const timer = createTestTimer()
+    const timer = createTestScheduler()
     const store = createDocStore()
     const originalWrite = store.write
     let writes = 0
@@ -235,7 +235,7 @@ describe('issue-79: DocHandle entry-level status (MemoryPersistence)', () => {
     }
 
     const persistence = createMemoryPersistence({
-      timer,
+      scheduler: timer,
       readSnapshot: (key, signal) => store.read(key, signal),
       writeSnapshot: (key, snapshot, signal) => store.write(key, snapshot, signal),
     })
@@ -275,7 +275,7 @@ describe('issue-79: DocHandle entry-level status (MemoryPersistence)', () => {
 
     // A new Persistence instance over the same store load-sees mutation 2.
     const fresh = createMemoryPersistence({
-      timer: createTestTimer(),
+      scheduler: createTestScheduler(),
       readSnapshot: (key, signal) => store.read(key, signal),
       writeSnapshot: (key, snapshot, signal) => store.write(key, snapshot, signal),
     })
@@ -290,9 +290,9 @@ describe('issue-79: DocHandle entry-level status (MemoryPersistence)', () => {
   })
 
   it('AC6: foreign / released / identity-mismatched / disposed errors stay loud, and status still reports released/disposed', async () => {
-    const timer = createTestTimer()
-    const first = createMemoryPersistence({ timer })
-    const second = createMemoryPersistence({ timer })
+    const timer = createTestScheduler()
+    const first = createMemoryPersistence({ scheduler: timer })
+    const second = createMemoryPersistence({ scheduler: timer })
     const alice: User = { userId: 'alice' }
 
     const handle = await createMemoryHandleForTest(first, alice, 'doc1')

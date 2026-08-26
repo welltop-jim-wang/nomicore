@@ -2,11 +2,10 @@ import * as fsp from 'node:fs/promises'
 import * as path from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import {
-  provideDocPersistence,
   type DocHandle,
   type DocPersistence,
   type PersistenceSchedule,
-  type PersistenceTimer,
+  type PersistenceScheduler,
   type User,
 } from './contract.js'
 import {
@@ -14,6 +13,11 @@ import {
   type PersistenceIO,
   type PersistenceStatus,
 } from './lifecycle.js'
+import {
+  assertPersistenceHostDependencies,
+  bindPersistenceAdapterLifecycle,
+  createCordisPersistenceScheduler,
+} from './service.js'
 
 export interface FilePersistenceOptions {
   /**
@@ -21,8 +25,22 @@ export interface FilePersistenceOptions {
    * rootDir at a time; HMR must dispose and drain the old instance first.
    */
   readonly rootDir: string
-  readonly schedule?: Partial<PersistenceSchedule>
-  readonly timer?: PersistenceTimer
+  readonly schedule?: Partial<PersistenceSchedule> | undefined
+  /**
+   * Adapter-owned scheduling seam, injected by the host (the production plugin
+   * path derives it from `ctx.timeout` via `createCordisPersistenceScheduler`).
+   * Required: the adapter never provides or falls back to a system timer.
+   */
+  readonly scheduler: PersistenceScheduler
+  /**
+   * Around-seam over this adapter's real I/O (fault injection / composition).
+   * Receives the adapter's default io (Memory: entry-abort-gate → writeSnapshot
+   * hook → mirror set, per §3.5 方案 (a); File: mkdir → writeFile tmp → rename)
+   * and returns the io the lifecycle will use. The returned io MUST uphold the
+   * PersistenceIO contract: write resolves ⟺ committed; rejects leave the
+   * store unchanged; no synchronous throw.
+   */
+  readonly wrapIo?: ((io: PersistenceIO) => PersistenceIO) | undefined
 }
 
 export type FilePersistenceStatus = PersistenceStatus
@@ -43,13 +61,14 @@ export class FilePersistence implements DocPersistence {
     if (typeof options.rootDir !== 'string' || options.rootDir.length === 0) {
       throw new TypeError('FilePersistence requires a non-empty rootDir string')
     }
-    const io: PersistenceIO = {
+    const baseIo: PersistenceIO = {
       read: (key, signal) => this.readCommittedSnapshot(key, signal),
       write: (key, snapshot, signal) => this.writeCommittedSnapshot(key, snapshot, signal),
     }
+    const io = options.wrapIo !== undefined ? options.wrapIo(baseIo) : baseIo
     this.core = new PersistenceLifecycle(io, {
       ...(options.schedule !== undefined ? { schedule: options.schedule } : {}),
-      ...(options.timer !== undefined ? { timer: options.timer } : {}),
+      scheduler: options.scheduler,
     })
   }
 
@@ -71,10 +90,9 @@ export class FilePersistence implements DocPersistence {
   }
 
   apply(ctx: Context): void {
-    ctx.effect(() => {
-      provideDocPersistence(ctx, this)
-      return () => this.dispose()
-    }, 'file-persistence: service')
+    // AC2: loud fail on missing clock/timer before ANY service is provided.
+    assertPersistenceHostDependencies(ctx)
+    bindPersistenceAdapterLifecycle(ctx, this, 'file-persistence: service')
   }
 
   dispose(): Promise<void> { return this.core.dispose() }
@@ -137,11 +155,14 @@ function isErrnoException(error: unknown): error is NodeJS.ErrnoException {
   return error instanceof Error && typeof (error as NodeJS.ErrnoException).code === 'string'
 }
 
-export function createFilePersistencePlugin(options: FilePersistenceOptions) {
+export function createFilePersistencePlugin(options: Omit<FilePersistenceOptions, 'scheduler' | 'wrapIo'>) {
   let instance: FilePersistence | undefined
   return {
     apply(ctx: Context) {
-      instance = new FilePersistence(options)
+      instance = new FilePersistence({
+        ...options,
+        scheduler: createCordisPersistenceScheduler(ctx),
+      })
       instance.apply(ctx)
     },
     get instance(): FilePersistence | undefined { return instance },

@@ -3,14 +3,13 @@ import * as path from 'node:path'
 import * as Y from 'yjs'
 import {
   DocDuplicateError,
-  requireDocPersistence,
+  requireNomicorePersistence,
   resolvePersistenceSchedule,
   type DocHandle,
   type DocPersistence,
-  type PersistenceTimer,
   type User,
 } from '@nomicore/persistence'
-import { ProbeTimeoutError, createDeterministicClock, settle, waitFor, type ProbeClock } from './clock.js'
+import { ProbeTimeoutError, createProbeTimeline, settle, waitFor } from './clock.js'
 import type { ProbeEvent, ProbeRunOptions, ProbeRunResult } from './events.js'
 import { createDshPersistenceProfile, type DshPersistenceProfile } from './profile.js'
 import { renderProbeRecord } from './record.js'
@@ -67,30 +66,26 @@ type DocWithEvictEvent = Y.Doc & {
 
 /**
  * 探针入口（决策 A/B/C/D/H + §5 固定场景）：
- * 装配同一 profile → 经 Cordis 消费 `docPersistence`（identity 自检）→ 受控时钟下
- * 跑 S1 主链路 / S2 隔离 / S3 异常输入 / S4 降级 → 渲染确定性 record。
+ * 装配同一 profile → 经 Cordis 消费 `nomicorePersistence`（identity 自检）→ 受控
+ * 时间线下跑 S1 主链路 / S2 隔离 / S3 异常输入 / S4 降级 → 渲染确定性 record。
  */
 export async function runPersistenceProbe(options: ProbeRunOptions): Promise<ProbeRunResult> {
   const schedule = resolvePersistenceSchedule(options.schedule)
   const failFirstFlushes = options.failFirstFlushes ?? 0
   const adapter = options.adapter
-  const clock = resolveProbeClock(options.timer)
-  const pendingCount = (clock as ProbeClock & { pending?: () => number }).pending
-  if (adapter === 'file' && pendingCount === undefined) {
-    throw new TypeError('runPersistenceProbe with adapter "file" requires the probe deterministic clock (do not pass a custom timer for the file channel)')
-  }
+  // 裁决 6：timeline 由 probe 自建（或调用方注入）；接口本身要求 advanceBy/pending，
+  // 不可推进的输入在类型层消失（旧的 resolveProbeClock「可推进性」守卫整体删除）。
+  const timeline = options.timeline ?? createProbeTimeline()
   const rootDir = options.rootDir
   if (adapter === 'file' && rootDir === undefined) {
     throw new TypeError('adapter "file" requires a non-empty rootDir')
   }
-  // file 通道专用：上方 guard 保证 adapter==='file' 时必非空（决策 B 外部观察需要计时器内省）。
-  const filePendingCount = pendingCount ?? (() => {
-    throw new ProbeFailure('clock-not-drivable')
-  })
+  // file 通道专用：ProbeTimeline 恒可内省（旧 pendingCount 守卫消失）。
+  const filePendingCount = (): number => timeline.pending()
 
   const events: ProbeEvent[] = []
   const emit = (event: ProbeEvent): void => { events.push(event) }
-  const now = (): number => clock.now()
+  const now = (): number => timeline.now()
 
   // 自持模型（决策 C）：generation 仅在 saveDoc resolve 后递增；refs 由探针记账；
   // 实例/句柄身份由固定发号序决定。
@@ -184,10 +179,11 @@ export async function runPersistenceProbe(options: ProbeRunOptions): Promise<Pro
       adapter,
       ...(rootDir !== undefined ? { rootDir } : {}),
       ...(options.schedule !== undefined ? { schedule: options.schedule } : {}),
-      timer: clock,
+      clock: timeline.clockPlugin,
+      timer: timeline.timerPlugin,
       ...(adapter === 'memory' ? { memoryIo } : {}),
     })
-    const svc = requireDocPersistence(profile.ctx)
+    const svc = requireNomicorePersistence(profile.ctx)
     // 决策 A 自检：探针全部调用经 Cordis 消费的同一 service 实例。
     if (svc !== profile.persistence) throw new ProbeFailure('service-identity')
 
@@ -327,7 +323,7 @@ export async function runPersistenceProbe(options: ProbeRunOptions): Promise<Pro
       const h1 = await createAndEmit(USER_A, 'doc-alpha', alpha)
       alpha.getMap('ROOT').set('rev', 1)
       await saveAndEmit(h1, 'doc-alpha') // dirty g1
-      await clock.advanceBy(schedule.debounceMs)
+      await timeline.advanceBy(schedule.debounceMs)
       await settle()
       await observeFlush('user-a', 'doc-alpha', 1, { snapshotRev: 1 })
 
@@ -335,41 +331,41 @@ export async function runPersistenceProbe(options: ProbeRunOptions): Promise<Pro
       const h3 = await loadAndEmit(USER_A, 'doc-alpha')
       alpha.getMap('ROOT').set('rev', 2)
       await saveAndEmit(h1, 'doc-alpha') // dirty g2
-      await clock.advanceBy(schedule.debounceMs)
+      await timeline.advanceBy(schedule.debounceMs)
       await settle()
       await observeFlush('user-a', 'doc-alpha', 2, { snapshotRev: 2 })
 
       await releaseAndEmit(h1, 'doc-alpha') // refs 3→2
-      await clock.advanceBy(1)
+      await timeline.advanceBy(1)
       await settle()
       await releaseAndEmit(h2, 'doc-alpha') // refs 2→1
-      await clock.advanceBy(1)
+      await timeline.advanceBy(1)
       await settle()
       await releaseAndEmit(h3, 'doc-alpha') // refs 1→0 → 内核 maybeEvict → d1 destroyed
 
       // 重新 load：cache miss → store 还原 → 新 Y.Doc 实例（AC5/决策 C）
       const h4 = await loadAndEmit(USER_A, 'doc-alpha')
       emitObserved(USER_A, 'doc-alpha', h4.doc)
-      await clock.advanceBy(1)
+      await timeline.advanceBy(1)
       await settle()
       await releaseAndEmit(h4, 'doc-alpha') // evict d2
     })
 
     // ================= S2 隔离：user-b/doc-alpha =================
     await step('S2-isolation', async () => {
-      await clock.advanceBy(1)
+      await timeline.advanceBy(1)
       await settle()
       const bob = threeEntryDoc('doc-alpha')
       const h5 = await createAndEmit(USER_B, 'doc-alpha', bob)
       emitObserved(USER_B, 'doc-alpha', bob)
-      await clock.advanceBy(1)
+      await timeline.advanceBy(1)
       await settle()
       await releaseAndEmit(h5, 'doc-alpha') // evict d3
     })
 
     // ================= S3 异常输入 =================
     await step('S3-invalid-input', async () => {
-      await clock.advanceBy(1)
+      await timeline.advanceBy(1)
       await settle()
       const dupDoc = threeEntryDoc('doc-alpha')
       try {
@@ -384,7 +380,7 @@ export async function runPersistenceProbe(options: ProbeRunOptions): Promise<Pro
         }
       }
 
-      await clock.advanceBy(1)
+      await timeline.advanceBy(1)
       await settle()
       const badMeta = new Y.Doc()
       badMeta.getMap('META').set('docId', 'doc-other')
@@ -403,7 +399,7 @@ export async function runPersistenceProbe(options: ProbeRunOptions): Promise<Pro
 
     // ================= S4 降级：user-a/doc-degraded =================
     await step('S4-degradation', async () => {
-      await clock.advanceBy(1)
+      await timeline.advanceBy(1)
       await settle()
       const degradedDoc = threeEntryDoc('doc-degraded')
       const h6 = await createAndEmit(USER_A, 'doc-degraded', degradedDoc)
@@ -413,7 +409,7 @@ export async function runPersistenceProbe(options: ProbeRunOptions): Promise<Pro
       if (failFirstFlushes > 0) {
         // 尝试 #1：注入失败（memory 钩子 throw / file .tmp 目录阻塞 → EISDIR）
         if (adapter === 'file') ensureBlocked('user-a', 'doc-degraded')
-        await clock.advanceBy(schedule.debounceMs || 1)
+        await timeline.advanceBy(schedule.debounceMs || 1)
         // ★ R3（R2-1）：advance 驱动腿基线取 advanceBy 返回瞬间——到期 debounce/maxDirty
         //   已被同步消耗（base=0）；记账完成后仅剩 retry 计时器（pending=1 → 1>0 ✓）。
         //   取「advance 前」是错误公式（base=2 → 1>2 恒假，file n=1 必超时，P24）。
@@ -450,7 +446,7 @@ export async function runPersistenceProbe(options: ProbeRunOptions): Promise<Pro
         let left = failFirstFlushes - 1
         while (left > 0) {
           if (adapter === 'file') ensureBlocked('user-a', 'doc-degraded')
-          await clock.advanceBy(delay)
+          await timeline.advanceBy(delay)
           // ★ R3（R2-1）：base 取 advanceBy 返回瞬间——上一支 retry 已被 advance 消耗（base=0），
           //   记账 catch 重排下一支 retry（pending=1 → 1>0 ✓）。取 advance 前 base=1 → 1>1 恒假，
           //   file n≥2 中间失败腿将无任何可用信号（对「任意 n 确定」承诺的回归）。
@@ -470,7 +466,7 @@ export async function runPersistenceProbe(options: ProbeRunOptions): Promise<Pro
 
         // 注入耗尽后的成功 retry → recovered
         if (adapter === 'file') unblock('user-a', 'doc-degraded')
-        await clock.advanceBy(delay)
+        await timeline.advanceBy(delay)
         await settle()
         if (adapter === 'file') {
           // ★ R3（R2-1）恢复腿：**禁止叠加 pending 联言**——status 翻转依原子性引理已是完备
@@ -490,7 +486,7 @@ export async function runPersistenceProbe(options: ProbeRunOptions): Promise<Pro
           }
         }
       } else {
-        await clock.advanceBy(schedule.debounceMs)
+        await timeline.advanceBy(schedule.debounceMs)
         await settle()
         await observeFlush('user-a', 'doc-degraded', 1, { snapshotRev: 1 })
       }
@@ -499,11 +495,11 @@ export async function runPersistenceProbe(options: ProbeRunOptions): Promise<Pro
       // generation 由 saveAndEmit 返回值给出——决策 C 使 n≥1 通道哨兵已占一代）。
       degradedDoc.getMap('ROOT').set('rev', 2)
       const recoveryGeneration = await saveAndEmit(h6, 'doc-degraded')
-      await clock.advanceBy(schedule.debounceMs)
+      await timeline.advanceBy(schedule.debounceMs)
       await settle()
       await observeFlush('user-a', 'doc-degraded', recoveryGeneration, { snapshotRev: 2 })
 
-      await clock.advanceBy(1)
+      await timeline.advanceBy(1)
       await settle()
       await releaseAndEmit(h6, 'doc-degraded') // evict d4
     })
@@ -549,14 +545,4 @@ export async function runPersistenceProbe(options: ProbeRunOptions): Promise<Pro
 
 function isMetaMismatch(error: unknown): boolean {
   return error instanceof Error && /META\.docId/.test(error.message)
-}
-
-/** 决策 D：不可推进的 timer 一律 loud reject（clock-not-drivable，不产生 record）。 */
-function resolveProbeClock(timer: PersistenceTimer | undefined): ProbeClock {
-  if (timer === undefined) return createDeterministicClock()
-  const candidate = timer as ProbeClock
-  if (typeof candidate.advanceBy !== 'function') {
-    throw new TypeError('runPersistenceProbe requires a drivable clock (advanceBy); a bare PersistenceTimer cannot keep the record deterministic')
-  }
-  return candidate
 }

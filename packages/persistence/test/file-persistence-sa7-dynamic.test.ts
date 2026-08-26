@@ -27,9 +27,13 @@ import * as path from 'node:path'
 import { afterAll, describe, expect, it } from 'vitest'
 import * as Y from 'yjs'
 import { FilePersistence, createFileHandleForTest } from '../src/file.js'
-import type { PersistenceSchedule, PersistenceTimer, User } from '../src/contract.js'
+// §5.4.3 (issue #108): the sweep failure is now wrapped as a load operational
+// error; type-only import keeps this deep-importing test file loadable.
+import type { DocLoadOperationalError } from '../src/index.js'
+import type { PersistenceSchedule, PersistenceScheduler, User } from '../src/contract.js'
+import { createTestScheduler } from '../src/testing.js'
 
-const TEST_SCHEDULE: Partial<PersistenceSchedule> = { debounceMs: 10, maxDirtyMs: 50 }
+const TEST_SCHEDULE: PersistenceSchedule = { debounceMs: 10, maxDirtyMs: 50 }
 
 const ALICE: User = { userId: 'alice' }
 const BOB: User = { userId: 'bob' }
@@ -59,10 +63,9 @@ afterAll(() => {
  * the debounce or the max-dirty trigger of an entry reaches the same
  * startFlush.
  */
-class ManualTimer implements PersistenceTimer {
+class ManualTimer implements PersistenceScheduler {
   private nextId = 0
   private readonly timers = new Map<number, () => void>()
-  now(): number { return 0 }
   setTimeout(callback: () => void): unknown {
     const id = this.nextId++
     this.timers.set(id, callback)
@@ -87,13 +90,20 @@ describe('FilePersistence SA7 dynamic verification', () => {
     const tmpPath = `${snapshotPath}.tmp`
 
     // Commit a snapshot while the partition is writable.
-    const writer = new FilePersistence({ rootDir, schedule: TEST_SCHEDULE })
+    const writerScheduler = createTestScheduler()
+    const writer = new FilePersistence({ rootDir, schedule: TEST_SCHEDULE, scheduler: writerScheduler })
     const writerHandle = await createFileHandleForTest(writer, ALICE, 'd1')
     writerHandle.doc.getMap('META').set('docId', 'd1')
     writerHandle.doc.getMap('ROOT').set('v', 'committed')
     await writer.saveDoc(writerHandle)
     await writerHandle.release()
-    await sleep(250)
+    // 虚拟调度（issue #107）：advanceBy 触发 debounce + deadline 式等待真实 I/O 落盘
+    // （原真实 sleep(250) 在虚拟 scheduler 下永不触发）。
+    await writerScheduler.advanceBy(TEST_SCHEDULE.debounceMs)
+    await waitFor(
+      () => fs.existsSync(snapshotPath) && !fs.existsSync(`${snapshotPath}.tmp`),
+      'writer snapshot to commit with no .tmp residue',
+    )
     await writer.dispose()
     expect(fs.existsSync(snapshotPath)).toBe(true)
     fs.writeFileSync(tmpPath, 'crash-leftover')
@@ -101,11 +111,18 @@ describe('FilePersistence SA7 dynamic verification', () => {
     // r-x partition: readFile still works, but unlink fails with EACCES.
     fs.chmodSync(userDir, 0o555)
     try {
-      const persistence = new FilePersistence({ rootDir, schedule: TEST_SCHEDULE })
+      const persistence = new FilePersistence({ rootDir, schedule: TEST_SCHEDULE, scheduler: createTestScheduler() })
 
       // The sweep's unlink failure must surface loudly at load time with the
-      // original errno — even though the committed snapshot is fully readable.
-      await expect(persistence.loadDoc(ALICE, 'd1')).rejects.toMatchObject({ code: 'EACCES' })
+      // original errno preserved on `cause` — even though the committed
+      // snapshot is fully readable. §5.4.3 (issue #108): the channel is now
+      // wrapped as DocLoadOperationalError with the errno carried on `cause`.
+      const loadErr = await persistence.loadDoc(ALICE, 'd1').then(
+        () => { throw new Error('expected loadDoc to reject') },
+        (reason: unknown) => reason,
+      )
+      expect(loadErr).toMatchObject({ code: 'DOC_LOAD_OPERATIONAL' })
+      expect((loadErr as DocLoadOperationalError).cause).toMatchObject({ code: 'EACCES' })
       expect(fs.existsSync(tmpPath)).toBe(true) // failed unlink left the tmp in place
       await persistence.dispose()
     } finally {
@@ -113,7 +130,7 @@ describe('FilePersistence SA7 dynamic verification', () => {
     }
 
     // Healed partition: load succeeds and the leftover tmp is swept.
-    const persistence = new FilePersistence({ rootDir, schedule: TEST_SCHEDULE })
+    const persistence = new FilePersistence({ rootDir, schedule: TEST_SCHEDULE, scheduler: createTestScheduler() })
     const loaded = await persistence.loadDoc(ALICE, 'd1')
     expect(loaded).not.toBeNull()
     expect(loaded!.doc.getMap('ROOT').get('v')).toBe('committed')
@@ -139,7 +156,7 @@ describe('FilePersistence SA7 dynamic verification', () => {
     const unhandled: unknown[] = []
     const onUnhandled = (reason: unknown): void => { unhandled.push(reason) }
     process.on('unhandledRejection', onUnhandled)
-    const persistence = new FilePersistence({ rootDir })
+    const persistence = new FilePersistence({ rootDir, scheduler: createTestScheduler() })
     try {
       const loaded = await persistence.loadDoc(ALICE, 'd1')
       expect(loaded).not.toBeNull()
@@ -163,7 +180,7 @@ describe('FilePersistence SA7 dynamic verification', () => {
 
     const timer = new ManualTimer()
     const persistence = new FilePersistence({
-      rootDir, timer, schedule: { debounceMs: 100, maxDirtyMs: 1000 },
+      rootDir, scheduler: timer, schedule: { debounceMs: 100, maxDirtyMs: 1000 },
     })
     try {
       const bobHandle = await createFileHandleForTest(persistence, BOB, 'doomed')
@@ -244,7 +261,7 @@ describe('FilePersistence SA7 dynamic verification', () => {
     fs.writeFileSync(path.join(userDir, 'd1.snapshot.tmp'), 'leftover-d1')
     fs.writeFileSync(path.join(userDir, 'd2.snapshot.tmp'), 'leftover-d2')
 
-    const persistence = new FilePersistence({ rootDir })
+    const persistence = new FilePersistence({ rootDir, scheduler: createTestScheduler() })
     const d1 = await persistence.loadDoc(ALICE, 'd1')
     expect(d1).not.toBeNull()
     expect(d1!.doc.getMap('ROOT').get('v')).toBe('committed')

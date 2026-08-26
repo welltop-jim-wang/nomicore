@@ -16,7 +16,18 @@ The issue tracker and triage label vocabulary should have been provided to you. 
 
 Check with the user that these seams match their expectations.
 
-3. Write the spec using the template below, then publish it to the project issue tracker. Apply the `ready-for-agent` triage label - no need for additional triage.
+3. Write the spec using the template below, then publish it to the project issue tracker as the **tracking issue**. The tracking issue coordinates the phase and is not itself agent-grabbable: do **not** apply `ready-for-agent` to it. If it already has that label, remove it.
+
+4. Create a dedicated **base PR** for the spec's phase before implementation tickets are published:
+
+- Create a descriptive integration branch from the intended base branch (normally the latest `main`).
+- Put every durable design artifact established by the conversation on that branch: the new/updated ADRs, `CONTEXT.md` glossary changes, package/API design docs, and any other current design documentation required by the spec.
+- Do not put feature implementation in the base PR. It is the design and integration parent onto which `/to-tickets` implementation branches stack.
+- Commit and push the design branch, then open a non-draft PR. The PR body links the tracking issue but must not close it; the tracking issue remains open until the phase is complete.
+- Add or replace the tracking issue's `## Parent` section with one plain-text line in the exact form `PR #<number>（<branch>）`.
+- Keep the tracking issue free of `ready-for-agent`. Child implementation tickets created by `/to-tickets` are the agent-grabbable work and point their Parent at this base PR.
+
+5. Report the tracking issue URL, base PR URL, branch, design artifacts committed, and validation performed.
 
 <spec-template>
 

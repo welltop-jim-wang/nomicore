@@ -33,6 +33,22 @@ importers:
         specifier: ^3.2.4
         version: 3.2.7(@types/node@20.19.43)(tsx@4.23.12)
 
+  packages/clock:
+    dependencies:
+      '@deepseek-ai/cordis':
+        specifier: ^4.0.1
+        version: 4.0.1
+    devDependencies:
+      '@types/node':
+        specifier: ^20
+        version: 20.19.43
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: ^3.2.4
+        version: 3.2.7(@types/node@20.19.43)(tsx@4.23.12)
+
   packages/doc-runtime:
     dependencies:
       '@nomicore/vfsl':
@@ -57,6 +73,12 @@ importers:
       '@deepseek-ai/cordis':
         specifier: ^4.0.1
         version: 4.0.1
+      '@deepseek-ai/cordis-plugin-timer':
+        specifier: ^1.1.3
+        version: 1.1.3(@deepseek-ai/cordis@4.0.1)
+      '@nomicore/clock':
+        specifier: workspace:*
+        version: link:../clock
       '@nomicore/persistence':
         specifier: workspace:*
         version: link:../persistence
@@ -76,6 +98,43 @@ importers:
       vitest:
         specifier: ^3.2.4
         version: 3.2.7(@types/node@20.19.43)(tsx@4.23.12)
+
+  packages/namespace-registry:
+    dependencies:
+      '@deepseek-ai/cordis':
+        specifier: ^4.0.1
+        version: 4.0.1
+      '@deepseek-ai/cordis-plugin-timer':
+        specifier: ^1.1.3
+        version: 1.1.3(@deepseek-ai/cordis@4.0.1)
+      '@nomicore/clock':
+        specifier: workspace:*
+        version: link:../clock
+      '@nomicore/doc-runtime':
+        specifier: workspace:*
+        version: link:../doc-runtime
+      '@nomicore/namespace-runtime':
+        specifier: workspace:*
+        version: link:../namespace-runtime
+      '@nomicore/persistence':
+        specifier: workspace:*
+        version: link:../persistence
+      '@nomicore/vfsl':
+        specifier: workspace:*
+        version: link:../vfsl
+    devDependencies:
+      '@types/node':
+        specifier: ^20
+        version: 20.19.43
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: ^3.2.4
+        version: 3.2.7(@types/node@20.19.43)(tsx@4.23.12)
+      yjs:
+        specifier: ^13.6.30
+        version: 13.6.32
 
   packages/namespace-runtime:
     dependencies:
@@ -107,6 +166,12 @@ importers:
       '@deepseek-ai/cordis':
         specifier: ^4.0.1
         version: 4.0.1
+      '@deepseek-ai/cordis-plugin-timer':
+        specifier: ^1.1.3
+        version: 1.1.3(@deepseek-ai/cordis@4.0.1)
+      '@nomicore/clock':
+        specifier: workspace:*
+        version: link:../clock
       yjs:
         specifier: ^13.6.30
         version: 13.6.32
@@ -162,6 +227,11 @@ importers:
         version: 3.2.7(@types/node@20.19.43)(tsx@4.23.12)
 
 packages:
+
+  '@deepseek-ai/cordis-plugin-timer@1.1.3':
+    resolution: {integrity: sha512-IOkey1VNmJwYa5U8bksyMOnM7mtirqjjbWLr3xA8QybLMK0sMooG3a6iJwtvd8P3MFwo3FQibEg+JPixp37MEw==}
+    peerDependencies:
+      '@deepseek-ai/cordis': ^4.0.1
 
   '@deepseek-ai/cordis@4.0.1':
     resolution: {integrity: sha512-YBdskTU2Po1kru3GgcUWUbkTsPMA9LkSQDAY8rBkFJeajdgcQad3QPJZE26JyK99Xb6HaASvoXg2DSUTeN/0Nw==}
@@ -766,6 +836,11 @@ packages:
     engines: {node: '>=16.0.0', npm: '>=8.0.0'}
 
 snapshots:
+
+  '@deepseek-ai/cordis-plugin-timer@1.1.3(@deepseek-ai/cordis@4.0.1)':
+    dependencies:
+      '@deepseek-ai/cordis': 4.0.1
+      '@deepseek-ai/cosmokit': 1.8.2
 
   '@deepseek-ai/cordis@4.0.1':
     dependencies:

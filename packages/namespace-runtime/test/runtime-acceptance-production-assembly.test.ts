@@ -32,6 +32,8 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import type { DocHandle, User } from '@nomicore/persistence';
 import { createMemoryPersistence, FilePersistence } from '@nomicore/persistence';
+import { realPersistenceScheduler } from './real-persistence-scheduler.js';
+import { waitDurableSnapshot } from './durable-snapshot-wait.js';
 import { createNamespaceRuntime } from '../src/runtime.js';
 import type { NamespaceRuntime } from '../src/index.js';
 
@@ -121,12 +123,16 @@ describe('D-5：生产装配——MemoryPersistence 全链（createNamespaceRunt
     async () => {
       const store = new Map<string, Uint8Array>();
       const writer = createMemoryPersistence({
+        scheduler: realPersistenceScheduler,
         schedule: { debounceMs: 5, maxDirtyMs: 60 },
         writeSnapshot: async (key, snapshot) => {
           store.set(key, snapshot.slice());
         },
       });
-      const reader = createMemoryPersistence({ readSnapshot: async (key) => store.get(key) });
+      const reader = createMemoryPersistence({
+        scheduler: realPersistenceScheduler,
+        readSnapshot: async (key) => store.get(key),
+      });
       const handle = await writer.createDoc(OWNER, 'ns-1', await makeDoc(ENV1));
       const { runtime, dirty } = await readyProductionRuntime(handle, (h) => writer.saveDoc(h));
       try {
@@ -202,9 +208,9 @@ describe('D-5：生产装配——FilePersistence 全链（真实磁盘 + crash-
   it('T5.2 六步全链（File）：P0→读取→ROOT write→SCHEMA replacement→磁盘落盘→新实例 crash-restart→close；dirty 每成功写恰 +1；post-close getSchemaEnvelope throw（D-2 红）',
     async () => {
       const rootDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'nsr-prod-assembly-'));
-      const writer = new FilePersistence({ rootDir, schedule: { debounceMs: 5, maxDirtyMs: 60 } });
+      const writer = new FilePersistence({ rootDir, scheduler: realPersistenceScheduler, schedule: { debounceMs: 5, maxDirtyMs: 60 } });
       const handle = await writer.createDoc(OWNER, 'ns-1', await makeDoc(ENV1));
-      const restart = (): FilePersistence => new FilePersistence({ rootDir });
+      const restart = (): FilePersistence => new FilePersistence({ rootDir, scheduler: realPersistenceScheduler });
       const { runtime, dirty } = await readyProductionRuntime(handle, (h) => writer.saveDoc(h));
       try {
         // ① P0 真实编译
@@ -232,7 +238,9 @@ describe('D-5：生产装配——FilePersistence 全链（真实磁盘 + crash-
         expect(dirty()).toBe(2);
 
         // ⑤ 全新 FilePersistence 实例（空缓存）crash-restart：磁盘完整恢复
-        await sleep(100);
+        //    （竞态守卫同 fullchain U-3：saveDoc 只是 dirty 登记，落盘是 debounce+retry
+        //    的**最终**持久化——固定 sleep 与并发 flush 写读竞态，先有界轮询再一次性断言）
+        await waitDurableSnapshot(OWNER, 'ns-1', rootDir, (doc) => doc.getMap('ROOT').get('n'), 10);
         const restarted = await restart().loadDoc(OWNER, 'ns-1');
         expect(restarted).not.toBeNull();
         if (restarted === null) return;

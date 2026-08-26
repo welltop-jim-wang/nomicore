@@ -1,20 +1,26 @@
 import { Context } from '@deepseek-ai/cordis'
 import { describe, expect, it } from 'vitest'
 import * as Y from 'yjs'
+import { createManualClock, createManualClockPlugin } from '@nomicore/clock/testing'
 import {
+  DocCreateFatalError,
   MemoryPersistence,
   createMemoryPersistence,
-  type PersistenceTimer,
+  type PersistenceScheduler,
   type User,
 } from '../src/index.js'
 import {
   createDocStore,
+  createFakeTimerPlugin,
+  createPersistenceIoFaultSeam,
   describeDocCreateContract,
   describeDocPersistenceContract,
+  describePersistenceErrorContract,
+  withTimeout,
 } from '../src/testing.js'
 import { createMemoryHandleForTest } from './memory-testkit.js'
 
-interface FakeTimer extends PersistenceTimer {
+interface FakeTimer extends PersistenceScheduler {
   advanceBy(milliseconds: number): Promise<void>
   pending(): number
   cleared(): readonly number[]
@@ -26,7 +32,6 @@ function createFakeTimer(): FakeTimer {
   const cleared: number[] = []
   const timers = new Map<number, { at: number, callback: () => void }>()
   return {
-    now: () => now,
     setTimeout(callback, delayMs) {
       const id = nextId++
       timers.set(id, { at: now + delayMs, callback })
@@ -74,9 +79,9 @@ async function createAndSave(persistence: MemoryPersistence, user: User, docId: 
   return handle.doc
 }
 
-describeDocPersistenceContract(async () => {
+await describeDocPersistenceContract(async () => {
   const timer = createFakeTimer()
-  const persistence = createMemoryPersistence({ timer })
+  const persistence = createMemoryPersistence({ scheduler: timer })
   return {
     persistence,
     async createHandle(owner, docId) {
@@ -85,23 +90,56 @@ describeDocPersistenceContract(async () => {
   }
 })
 
-describeDocCreateContract(async () => {
+await describeDocCreateContract(async () => {
   const timer = createFakeTimer()
   const store = createDocStore()
   const persistence = createMemoryPersistence({
-    timer,
+    scheduler: timer,
     readSnapshot: (key, signal) => store.read(key, signal),
     writeSnapshot: (key, snapshot, signal) => store.write(key, snapshot, signal),
   })
   return {
     persistence,
-    timer,
+    scheduler: timer,
     store,
     makeFresh: () => createMemoryPersistence({
-      timer: createFakeTimer(),
+      scheduler: createFakeTimer(),
       readSnapshot: (key, signal) => store.read(key, signal),
       writeSnapshot: (key, snapshot, signal) => store.write(key, snapshot, signal),
     }),
+    dispose: () => persistence.dispose(),
+  }
+})
+
+// ---------------------------------------------------------------------------
+// Typed error contract (issue #108 §5.3): shared EC1–EC8 suite, Memory fixture
+// = delegation model (flat read/write hooks delegating to one shared store) +
+// the `wrapIo` fault seam. EC10 (the delegation-model committed:true
+// self-consistency anchor) is Memory-specific and lives below.
+// ---------------------------------------------------------------------------
+
+await describePersistenceErrorContract(async () => {
+  const timer = createFakeTimer()
+  const store = createDocStore()
+  const seam = createPersistenceIoFaultSeam()
+  const persistence = createMemoryPersistence({
+    scheduler: timer,
+    readSnapshot: (key, signal) => store.read(key, signal),
+    writeSnapshot: (key, snapshot, signal) => store.write(key, snapshot, signal),
+    wrapIo: seam.wrap,
+  })
+  return {
+    persistence,
+    scheduler: timer,
+    faults: seam.faults,
+    makeFresh: () => createMemoryPersistence({
+      scheduler: createFakeTimer(),
+      readSnapshot: (key, signal) => store.read(key, signal),
+      writeSnapshot: (key, snapshot, signal) => store.write(key, snapshot, signal),
+    }),
+    writeCommitted: async (owner, docId, bytes) => {
+      await store.write(`${owner.userId}\u0000${docId}`, bytes, new AbortController().signal)
+    },
     dispose: () => persistence.dispose(),
   }
 })
@@ -115,7 +153,7 @@ describe('MemoryPersistence', () => {
     const update = Y.encodeStateAsUpdate(persisted)
     let reads = 0
     const persistence = createMemoryPersistence({
-      timer,
+      scheduler: timer,
       async readSnapshot() {
         reads += 1
         await Promise.resolve()
@@ -134,8 +172,8 @@ describe('MemoryPersistence', () => {
   it('rejects a foreign handle from another MemoryPersistence instance', async () => {
     const timer = createFakeTimer()
     const user = { userId: 'alice' }
-    const first = createMemoryPersistence({ timer })
-    const second = createMemoryPersistence({ timer })
+    const first = createMemoryPersistence({ scheduler: timer })
+    const second = createMemoryPersistence({ scheduler: timer })
     const handle = await createMemoryHandleForTest(first, user, 'doc1')
     handle.doc.getMap('META').set('docId', 'doc1')
 
@@ -145,7 +183,7 @@ describe('MemoryPersistence', () => {
 
   it('rejects a released handle even when its original adapter is still live', async () => {
     const timer = createFakeTimer()
-    const persistence = createMemoryPersistence({ timer })
+    const persistence = createMemoryPersistence({ scheduler: timer })
     const handle = await createMemoryHandleForTest(persistence, { userId: 'alice' }, 'doc1')
     handle.doc.getMap('META').set('docId', 'doc1')
 
@@ -157,7 +195,7 @@ describe('MemoryPersistence', () => {
     const timer = createFakeTimer()
     let writes = 0
     const persistence = createMemoryPersistence({
-      timer,
+      scheduler: timer,
       async writeSnapshot() { writes += 1 },
     })
     const handle = await createMemoryHandleForTest(persistence, { userId: 'alice' }, 'doc1')
@@ -182,7 +220,7 @@ describe('MemoryPersistence', () => {
   it('cancels the paired timer when debounce fires, so its old max-dirty callback cannot flush again', async () => {
     const timer = createFakeTimer()
     let writes = 0
-    const persistence = createMemoryPersistence({ timer, async writeSnapshot() { writes += 1 } })
+    const persistence = createMemoryPersistence({ scheduler: timer, async writeSnapshot() { writes += 1 } })
     const handle = await createMemoryHandleForTest(persistence, { userId: 'alice' }, 'doc1')
     handle.doc.getMap('META').set('docId', 'doc1')
 
@@ -198,7 +236,7 @@ describe('MemoryPersistence', () => {
     const timer = createFakeTimer()
     let writes = 0
     const persistence = createMemoryPersistence({
-      timer,
+      scheduler: timer,
       schedule: { debounceMs: 10_000, maxDirtyMs: 5_000 },
       async writeSnapshot() { writes += 1 },
     })
@@ -218,7 +256,7 @@ describe('MemoryPersistence', () => {
     let finishFirst: (() => void) | undefined
     let writes = 0
     const persistence = createMemoryPersistence({
-      timer,
+      scheduler: timer,
       writeSnapshot: async () => {
         writes += 1
         if (writes === 1) await new Promise<void>((resolve) => { finishFirst = resolve })
@@ -247,7 +285,7 @@ describe('MemoryPersistence', () => {
     let finishFirst: (() => void) | undefined
     const snapshots: Uint8Array[] = []
     const persistence = createMemoryPersistence({
-      timer,
+      scheduler: timer,
       writeSnapshot: async (_key, snapshot) => {
         snapshots.push(snapshot)
         if (snapshots.length === 1) await new Promise<void>((resolve) => { finishFirst = resolve })
@@ -283,7 +321,7 @@ describe('MemoryPersistence', () => {
     const timer = createFakeTimer()
     let failures = 1
     const persistence = createMemoryPersistence({
-      timer,
+      scheduler: timer,
       async writeSnapshot() {
         if (failures > 0) {
           failures -= 1
@@ -328,7 +366,7 @@ describe('MemoryPersistence', () => {
     const snapshot = Y.encodeStateAsUpdate(snapshotDoc)
     let failures = 1
     const persistence = createMemoryPersistence({
-      timer,
+      scheduler: timer,
       readSnapshot: async () => snapshot,
       async writeSnapshot() {
         if (failures > 0) {
@@ -362,7 +400,7 @@ describe('MemoryPersistence', () => {
 
   it('evicts only after the final release and successful flush, restoring equivalent content into a new document', async () => {
     const timer = createFakeTimer()
-    const persistence = createMemoryPersistence({ timer })
+    const persistence = createMemoryPersistence({ scheduler: timer })
     const user = { userId: 'alice' }
     const seed = await createMemoryHandleForTest(persistence, user, 'doc1')
     const oldDoc = seed.doc
@@ -380,7 +418,7 @@ describe('MemoryPersistence', () => {
 
   it('isolates users and rejects a snapshot with mismatched META.docId', async () => {
     const timer = createFakeTimer()
-    const persistence = createMemoryPersistence({ timer })
+    const persistence = createMemoryPersistence({ scheduler: timer })
     const alice = { userId: 'alice' }
     const bob = { userId: 'bob' }
     await createAndSave(persistence, alice, 'doc1')
@@ -390,7 +428,7 @@ describe('MemoryPersistence', () => {
 
     const bad = docWithMeta('other-doc')
     const badUpdate = Y.encodeStateAsUpdate(bad)
-    const corrupt = createMemoryPersistence({ timer, async readSnapshot() { return badUpdate } })
+    const corrupt = createMemoryPersistence({ scheduler: timer, async readSnapshot() { return badUpdate } })
     await expect(corrupt.loadDoc(alice, 'doc1')).rejects.toThrow(/META\.docId.*doc1/)
   })
 
@@ -399,7 +437,7 @@ describe('MemoryPersistence', () => {
     let rejectRead: ((reason: Error) => void) | undefined
     let observedAbort = false
     const persistence = createMemoryPersistence({
-      timer,
+      scheduler: timer,
       readSnapshot: (_key, signal) => new Promise((_, reject) => {
         signal.addEventListener('abort', () => { observedAbort = true })
         rejectRead = reject
@@ -421,7 +459,7 @@ describe('MemoryPersistence', () => {
     let resolveRead: ((snapshot: Uint8Array | undefined) => void) | undefined
     const persisted = docWithMeta('doc1')
     const persistence = createMemoryPersistence({
-      timer,
+      scheduler: timer,
       readSnapshot: () => new Promise((resolve) => { resolveRead = resolve }),
     })
 
@@ -438,7 +476,7 @@ describe('MemoryPersistence', () => {
     let rejectWrite: ((reason: Error) => void) | undefined
     let observedAbort = false
     const persistence = createMemoryPersistence({
-      timer,
+      scheduler: timer,
       writeSnapshot: (_key, _snapshot, signal) => new Promise((_, reject) => {
         signal.addEventListener('abort', () => { observedAbort = true })
         rejectWrite = reject
@@ -461,7 +499,7 @@ describe('MemoryPersistence', () => {
     const timer = createFakeTimer()
     let abortWriter: (() => void) | undefined
     const persistence = createMemoryPersistence({
-      timer,
+      scheduler: timer,
       writeSnapshot: (_key, _snapshot, signal) => new Promise<void>((resolve) => {
         // This simulates I/O that would otherwise never settle. The documented
         // adapter contract is to settle promptly when its signal is aborted.
@@ -490,7 +528,7 @@ describe('MemoryPersistence', () => {
     const timer = createFakeTimer()
     let resolveWrite: (() => void) | undefined
     const persistence = createMemoryPersistence({
-      timer,
+      scheduler: timer,
       writeSnapshot: () => new Promise<void>((resolve) => { resolveWrite = resolve }),
     })
     const handle = await createMemoryHandleForTest(persistence, { userId: 'alice' }, 'doc1')
@@ -509,22 +547,24 @@ describe('MemoryPersistence', () => {
 
   it('unloads one Cordis service exactly once across repeated fiber disposal', async () => {
     const timer = createFakeTimer()
-    const persistence = createMemoryPersistence({ timer })
+    const persistence = createMemoryPersistence({ scheduler: timer })
     const ctx = new Context()
+    createManualClockPlugin(createManualClock()).apply(ctx)
+    createFakeTimerPlugin(timer).apply(ctx)
     let serviceEvents = 0
     ctx.on('internal/service', (name, value) => {
-      if (name === 'docPersistence' && value === undefined) serviceEvents += 1
+      if (name === 'nomicorePersistence' && value === undefined) serviceEvents += 1
     })
 
     persistence.apply(ctx)
-    expect(ctx.get('docPersistence')).toBe(persistence)
+    expect(ctx.get('nomicorePersistence')).toBe(persistence)
 
     const firstUnload = ctx.fiber.dispose()
     const repeatedUnload = ctx.fiber.dispose()
     await Promise.all([firstUnload, repeatedUnload])
 
     expect(serviceEvents).toBe(1)
-    expect(ctx.get('docPersistence')).toBeUndefined()
+    expect(ctx.get('nomicorePersistence')).toBeUndefined()
     expect(persistence.getStatus()).toBe('disposed')
     await persistence.dispose()
     expect(serviceEvents).toBe(1)
@@ -532,7 +572,7 @@ describe('MemoryPersistence', () => {
 
   it('disposes caches and pending timers', async () => {
     const timer = createFakeTimer()
-    const persistence = createMemoryPersistence({ timer })
+    const persistence = createMemoryPersistence({ scheduler: timer })
     const handle = await createMemoryHandleForTest(persistence, { userId: 'alice' }, 'doc1')
     handle.doc.getMap('META').set('docId', 'doc1')
     await persistence.saveDoc(handle)
@@ -542,5 +582,71 @@ describe('MemoryPersistence', () => {
     expect(timer.pending()).toBe(0)
     expect(persistence.getStatus()).toBe('disposed')
     await expect(persistence.loadDoc({ userId: 'alice' }, 'doc1')).rejects.toThrow(/disposed/)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// EC10 (issue #108 §5.3, R1/A-1): delegation-model abort-during-hook ⇒
+// committed:true self-consistency anchor. Memory-specific: it drives the
+// public flat hooks directly (no wrapIo) — the hook enters the io.write entry
+// gate first, is held, dispose fires mid-hook, and the hook then completes its
+// own store write (same shape as a File rename in flight). The create must
+// report committed:true AND the read path (the shared store) must agree.
+// ---------------------------------------------------------------------------
+
+describe('MemoryPersistence delegation-model committed:true anchor (issue #108 EC10)', () => {
+  it('reports committed:true when an abort-during-hook write still commits, and the read path agrees', async () => {
+    const timer = createFakeTimer()
+    const store = createDocStore()
+    let enteredResolve: () => void = () => {}
+    const entered = new Promise<void>((resolve) => { enteredResolve = resolve })
+    let releaseWrite: () => void = () => {}
+    const gate = new Promise<void>((resolve) => { releaseWrite = resolve })
+    const persistence = createMemoryPersistence({
+      scheduler: timer,
+      readSnapshot: (key, signal) => store.read(key, signal),
+      writeSnapshot: async (key, snapshot, signal) => {
+        enteredResolve()
+        await gate
+        await store.write(key, snapshot, signal)
+      },
+    })
+    const owner: User = { userId: 'alice' }
+    const docId = 'ec10-doc'
+    const doc = docWithMeta(docId)
+    doc.getMap('ROOT').set('who', 'committed-despite-dispose')
+
+    const creating = persistence.createDoc(owner, docId, doc)
+    const creatingRejection = creating.then(
+      () => { throw new Error('expected createDoc to reject') },
+      (reason: unknown) => reason,
+    )
+    await withTimeout(entered, 2_000, 'create write to enter its hook')
+    const disposing = persistence.dispose()
+    releaseWrite()
+    await disposing
+
+    const err = await creatingRejection
+    expect(err).toBeInstanceOf(DocCreateFatalError)
+    expect((err as { phase: string }).phase).toBe('post-commit')
+    expect((err as { committed: boolean }).committed).toBe(true)
+    expect(doc.isDestroyed).toBe(false)
+    expect(timer.pending()).toBe(0)
+
+    // The read authority (the shared store) really holds the snapshot: the
+    // committed:true fact and the observable read path agree.
+    const fresh = createMemoryPersistence({
+      scheduler: createFakeTimer(),
+      readSnapshot: (key, signal) => store.read(key, signal),
+      writeSnapshot: (key, snapshot, signal) => store.write(key, snapshot, signal),
+    })
+    const loaded = await fresh.loadDoc(owner, docId)
+    expect(loaded).not.toBeNull()
+    expect(loaded!.doc.getMap('ROOT').get('who')).toBe('committed-despite-dispose')
+    await loaded!.release()
+
+    // The disposed adapter keeps its bare lifetime channels.
+    await expect(persistence.loadDoc(owner, docId)).rejects.toThrow(/disposed/)
+    await expect(persistence.createDoc(owner, docId, docWithMeta(docId))).rejects.toThrow(/disposed/)
   })
 })

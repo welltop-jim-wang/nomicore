@@ -1,21 +1,51 @@
-# Phase 3 最终整体审查与合并门禁（issue #102 / PR #85）
+---
+status: complete
+issue: 113
+branch: fix/issue-113-on-docs-namespace-registry
+base: docs/namespace-registry
+---
 
-## 结论
+# Phase 4 NamespaceRegistry 全链验收与最终收口
 
-PR #85 在 `origin/main`（`a78f416db697f56257e0f4bf9fead8118ba3f16c`）的 merge-base 上完成 Standards / Spec 双轴整体审查。生命周期与 capability、P0/ROOT/SCHEMA/close 单 FIFO、fatal × close、dirty notification、Memory/File Persistence、公共 exports/所有权和文档术语均有确定性测试与静态审计证据。未发现未处理的 merge blocker；PR 可合并。
+## 验收结论
 
-## 修订
+Phase 4 implementation tickets #106–#112 均已关闭。MemoryPersistence 与 FilePersistence 运行同一套 Registry acceptance contract；FilePersistence 额外覆盖 dispose 后重新构造 adapter/Registry 并 reopen 已提交 namespace。真实 Cordis 组合、缺失依赖 loud fail、open/create/lease/idle/fatal/degraded/shutdown、exports/module graph 与 service/error vocabulary 由既有专项套件覆盖。
 
-- 为 issue #91 round 1 中仍描述“顶层声明域投影 / 静默剥离”的历史 `wiki/raw/` 主档案增加顶部 `SUPERSEDED（已取代）` 标记，并链接 rev1 当前裁决：provided root 作为完整最终 logical ROOT 原样封闭校验，未知顶层或嵌套键均响亮失败且零写入。
-- 将本报告由过期的 issue #90 阶段报告更新为 issue #102 最终门禁报告。
+Node 20/24 CI 矩阵执行 `registry-node-dispose.test.ts`；测试现将 `Symbol.asyncDispose` 与原生 `await using` 解析能力作为硬断言，不再条件 skip。
 
-## 验证证据
+## Standards 轴
 
-- `pnpm typecheck`
-- `pnpm test`
-- `pnpm exec tsc -p tsconfig.typecheck.json --noEmit`
-- `git merge-tree`：无冲突；GitHub PR 状态 `MERGEABLE` / `CLEAN`
-- GitHub CI：Node 20 / 24 均通过
-- 前置 issue #86–#93 均已关闭
+最终审查发现并修复：
 
-最终建议：PR #85 可合并到 `main`；NamespaceRegistry、REST/WS、authorization、raw Yjs sync 与 META 写继续留在后续独立 Phase。
+- integration diff 中的尾随空格与文件末尾空行；
+- Node dispose 验收可被 skip；
+- 缺少 Registry package README 与准确验证命令。
+
+保留的 judgement-call 风险：`registry.ts` 体量较大；Registry/Runtime plain-data snapshot 逻辑存在相似形状；create document 路径存在防御性重复校验。这些不改变 ADR 0009 行为，建议后续在独立重构票处理。
+
+`packages/dsh-persistence/src/clock.ts` 的真实时间 file-probe settle 轮询是既有 ticket 产物；它与模块规范的“注入 clocks/timers”表述存在张力，但不属于 Registry production fallback。该风险不阻断 Phase 4 合并，后续应单独收口 probe seam。
+
+## Spec 轴
+
+Issue #113 的关键缺口已补齐：
+
+- 新增 Memory/File 共用 Registry acceptance contract，并覆盖 File restart/reopen；
+- Node 20/24 `await using` 行为测试由可跳过改为硬门禁；
+- 补齐 package docs、精确命令与最终双轴结论。
+
+完整并发、idle、degraded/recovery、fatal read-only、typed load/create error、committed create fatal、ordered shutdown、failure aggregation、Cordis dependency 与 module graph 行为继续由 `packages/namespace-registry/test/`、`packages/namespace-runtime/test/` 和 `packages/persistence/test/` 的专项测试覆盖。
+
+## 验证
+
+本地 Node 24：
+
+- `pnpm typecheck`：通过；
+- `pnpm test`：通过（新增验收前 117 files / 1403 tests；新增 focused suite 2 files / 4 tests 通过）；
+- `./node_modules/.bin/tsc -p tsconfig.typecheck.json --noEmit`：通过；
+- `git diff --check origin/main` 与 working diff check：通过。
+
+Node 20/24 最终结果由 PR CI 矩阵门禁确认。
+
+## 合并建议
+
+**建议在本 PR CI 的 Node 20 与 Node 24 jobs 全绿后，将本 PR 合入 base PR #105；随后 PR #105 可合入 `main`。** 若任一 Node job 失败或出现未解决 review blocker，则暂缓 #105 合并。
