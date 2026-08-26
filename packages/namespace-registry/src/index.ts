@@ -8,7 +8,10 @@
  */
 export { createNamespaceRegistry, NamespaceRegistryFatalError, NamespaceLeaseReleasedError } from './registry.js';
 export type {
+  CreateNamespaceInput,
+  CreateNamespaceIssue,
   CreateNamespaceRegistryOptions,
+  CreateNamespaceResult,
   NamespaceLease,
   NamespaceLeaseReleasedIssue,
   NamespaceLeaseStatus,
@@ -18,5 +21,4 @@ export type {
   NamespaceRegistryStatus,
   OpenNamespaceIssue,
   OpenNamespaceResult,
-  RegistryOperationUnavailableIssue,
 } from './types.js';

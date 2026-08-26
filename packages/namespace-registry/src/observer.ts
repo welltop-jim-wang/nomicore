@@ -7,16 +7,23 @@
  * 仅供日志/metrics/trace adapter；v1 无 public subscription；所有 public
  * error/issue 文本零回显本文件事件内容。
  */
-import type { DocLoadOperationalError } from '@nomicore/persistence';
+import type { DocCreateOperationalError, DocLoadOperationalError } from '@nomicore/persistence';
 import type { InternalIdentity } from './identity.js';
 
-/** 内部 observer 事件（§8.1 冻结五形）。 */
+/** 内部 observer 事件（§8.1 冻结五形；#111 扩展为七形——设计 §8 DQ-8）。 */
 export type RegistryObserverEvent =
   | { type: 'open-load-failed'; identity: InternalIdentity; cause: DocLoadOperationalError }
   | { type: 'open-runtime-construction-failed'; identity: InternalIdentity; cause: unknown }
+  | { type: 'create-persist-failed'; identity: InternalIdentity; cause: DocCreateOperationalError }
+  | { type: 'create-runtime-construction-failed'; identity: InternalIdentity; cause: unknown }
   | { type: 'handle-release-failed'; identity: InternalIdentity; cause: unknown }
   | { type: 'lease-released'; identity: InternalIdentity; generation: bigint; remainingLeases: number }
-  | { type: 'lifecycle-slot-failed'; identity: InternalIdentity; operation: 'open'; cause: unknown };
+  | {
+      type: 'lifecycle-slot-failed';
+      identity: InternalIdentity;
+      operation: 'open' | 'create';
+      cause: unknown;
+    };
 
 /** observer 回调：同步调用；throw 由 dispatchObserver 隔离（静默丢弃）。 */
 export type RegistryObserver = (event: RegistryObserverEvent) => void;

@@ -1,6 +1,6 @@
 {
   "name": "@nomicore/namespace-registry",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "private": true,
   "type": "module",
   "exports": {
@@ -11,6 +11,7 @@
     "typecheck": "tsc -p tsconfig.json"
   },
   "dependencies": {
+    "@nomicore/clock": "workspace:*",
     "@nomicore/doc-runtime": "workspace:*",
     "@nomicore/namespace-runtime": "workspace:*",
     "@nomicore/persistence": "workspace:*",

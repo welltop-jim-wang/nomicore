@@ -101,6 +101,9 @@ importers:
 
   packages/namespace-registry:
     dependencies:
+      '@nomicore/clock':
+        specifier: workspace:*
+        version: link:../clock
       '@nomicore/doc-runtime':
         specifier: workspace:*
         version: link:../doc-runtime

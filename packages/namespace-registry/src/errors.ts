@@ -1,9 +1,12 @@
 /**
- * @nomicore/namespace-registry —— 稳定错误（issue #110 设计 §3.2/§3.3）。
+ * @nomicore/namespace-registry —— 稳定错误（issue #110 设计 §3.2/§3.3；
+ * issue #111 §7 operation/phase 词表连续性）。
  *
  * - NamespaceRegistryFatalError：仅跨出公开窄结果的异常以该 branded error reject。
  *   它保留 exact cause 供受控调用方/observer 诊断，但 stable message 不含 cause 文本
- *   （零回显）；`committed` 为本票恒 false（#111 create 后才有 committed 语义）。
+ *   （零回显）；`committed` 语义：#110 open 恒 false；#111 create 后带真实提交事实
+ *   （runtime-construction=true；DocCreateFatalError 的 committed 原样传播；
+ *   unknown/clock/create-document 按 §7 表）。
  * - NamespaceLeaseReleasedError：sync 数据投影 getter 在 released 后的唯一诚实拒绝
  *   通道（设计 §3.2）——code 固定常量；调用方以 `instanceof` 或 `code` 判别，
  *   不要求靠 message 窄化。
