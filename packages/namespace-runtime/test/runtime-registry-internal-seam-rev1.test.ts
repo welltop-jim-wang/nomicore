@@ -42,6 +42,14 @@
  *      （import = require）/ CallExpression `import('…')`（动态）；
  * 2. 既有 runtime-registry-internal-seam.test.ts 的 AC5 describe 块（316–395 行）
  *    迁移到本 helper（或删除，由本文件承载 AC5')——弱正则审计不得残留。
+ *
+ * 【issue #110 SA2-B3 追加（2026-08-26）】本文件另含 REPO_ROOT 活链路锚：RAC1
+ * 真实全仓门禁的默认 roots（单根 REPO_ROOT + 顶层白名单 {packages,domains,apps}）
+ * 必须收集到真实生产树 `packages/namespace-registry/src/registry.ts` 对 internal
+ * subpath 的消费（非 fixture-only、非真空通过），并要求 violators=[]；对应断言见
+ * 文件末 describe「RAC1 真实全仓门禁」的新增 it「REPO_ROOT relPath 活链路
+ * （issue #110 SA2 B3）：真实 registry.ts 生产 import 必须被收集」。真实 gateway
+ * 由此保持单实现（探针 fixture 与全仓门禁共用同一 helper）的语义。
  */
 import { beforeAll, describe, expect, it } from 'vitest';
 import { fileURLToPath } from 'node:url';
@@ -229,5 +237,16 @@ describe('RAC1 真实全仓门禁：审计 helper 对仓库生产代码树的既
       scan.violators,
       `internal subpath 只允许 Registry 生产代码消费；违规消费方：${scan.violators.join(', ') || '(无)'}`,
     ).toEqual([]);
+  });
+
+  it('REPO_ROOT relPath 活链路（issue #110 SA2 B3）：真实 registry.ts 生产 import 必须被收集', () => {
+    // 非 fixture-only 门禁：默认 roots（单根 REPO_ROOT + 顶层白名单）必须收集到真实
+    // 生产树 packages/namespace-registry/src/registry.ts 的 internal 消费——避免
+    // 「审计没扫到任何东西」导致的假绿（violators=[] 的真空通过）。
+    const scan = auditInternalSubpathImporters();
+    expect(
+      scan.importers,
+      'REPO_ROOT 相对路径扫描必须收集真实生产树的 internal import',
+    ).toContain('packages/namespace-registry/src/registry.ts');
   });
 });

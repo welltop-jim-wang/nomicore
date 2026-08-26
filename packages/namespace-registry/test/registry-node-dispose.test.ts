@@ -1,0 +1,108 @@
+/**
+ * SA6 红灯锚定 — issue #110：Node 20/24 对 `await using lease` 做实际 dispose
+ * （设计 §9 node 行；§7 asyncDispose 委托 release）。
+ *
+ * 条件跳过策略（仓库无既有前例，按本文件约定）：语言级 `await using` 与新生成
+ * V8 的 Symbol.asyncDispose 均以运行期探测决定是否执行——driver 经 new Function
+ * 编译（语法不可用 → 构造 throw → skip），Symbol.asyncDispose 缺失 → skip。
+ * 断言的是真实 dispose 机器语义（块退出时调用 lease 的 asyncDispose 并把 lease
+ * 置 released），非仅 type test。
+ */
+import { describe, expect, it } from 'vitest';
+import * as Y from 'yjs';
+import type { DocHandle, DocPersistence, User } from '@nomicore/persistence';
+import type { NamespaceLease } from '@nomicore/namespace-registry';
+import { createNamespaceRegistryForTesting } from '@nomicore/namespace-registry/testing';
+
+const hasAsyncDisposeSymbol =
+  typeof (Symbol as unknown as { asyncDispose?: unknown }).asyncDispose === 'symbol';
+
+/** 语言级 await using driver：new Function 编译（语法不可用 → undefined → skip）。 */
+const awaitUsingDriver: ((lease: NamespaceLease) => Promise<void>) | undefined = (() => {
+  try {
+    const fn = new Function(
+      'return async function (lease) { await using x = lease; void x; };',
+    )() as (lease: NamespaceLease) => Promise<void>;
+    return fn;
+  } catch {
+    return undefined;
+  }
+})();
+
+const awaitUsingThrowDriver: ((lease: NamespaceLease) => Promise<void>) | undefined = (() => {
+  try {
+    const fn = new Function(
+      'return async function (lease) { await using x = lease; void x; throw new Error("boom-in-block"); };',
+    )() as (lease: NamespaceLease) => Promise<void>;
+    return fn;
+  } catch {
+    return undefined;
+  }
+})();
+
+const run = (name: string, fn: () => void | Promise<void>): void => {
+  if (hasAsyncDisposeSymbol && awaitUsingDriver !== undefined && awaitUsingThrowDriver !== undefined) {
+    it(name, fn);
+  } else {
+    it.skip(name, fn);
+  }
+};
+
+class StubHandle implements DocHandle {
+  readonly doc: Y.Doc;
+  constructor(
+    readonly owner: User,
+    readonly docId: string,
+  ) {
+    this.doc = new Y.Doc();
+  }
+  getStatus(): 'ready' {
+    return 'ready';
+  }
+  release(): Promise<void> {
+    return Promise.resolve();
+  }
+}
+
+class StubPersistence implements DocPersistence {
+  private consumed = false;
+  async loadDoc(owner: User, docId: string): Promise<DocHandle | null> {
+    if (this.consumed) return null;
+    this.consumed = true;
+    return new StubHandle(owner, docId);
+  }
+  async saveDoc(): Promise<void> {}
+  async createDoc(): Promise<DocHandle> {
+    throw new Error('unused');
+  }
+}
+
+async function makeLease(): Promise<NamespaceLease> {
+  const persistence = new StubPersistence();
+  const registry = createNamespaceRegistryForTesting(persistence, {});
+  const result = await registry.open({ userId: 'dispose-user' }, 'dispose-ns');
+  if (!result.ok) {
+    throw new Error('open 应成功');
+  }
+  return result.lease;
+}
+
+describe('Node runtime：await using lease 实际 dispose（§7/§9）', () => {
+  run('await using 块正常退出 → lease 已 release（asyncDispose 委托 release）', async () => {
+    const lease = await makeLease();
+    expect(lease.getStatus()).toMatchObject({ lease: 'active' });
+    await awaitUsingDriver?.(lease);
+    // 块退出即实际调用 asyncDispose —— lease 同步失效（released）
+    expect(lease.getStatus()).toEqual({ lease: 'released', runtime: null });
+    expect(lease.read(['x'])).toMatchObject({ ok: false, code: 'NAMESPACE_LEASE_RELEASED' });
+    const again = lease.release();
+    const first = lease[Symbol.asyncDispose]!;
+    expect(again).toBe(first());
+  });
+
+  run('await using 块内 throw 也完成 dispose（异常路径不跳过释放）', async () => {
+    const lease = await makeLease();
+    await expect(awaitUsingThrowDriver?.(lease)).rejects.toThrow('boom-in-block');
+    expect(lease.getStatus()).toEqual({ lease: 'released', runtime: null });
+  });
+});
