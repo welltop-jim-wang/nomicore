@@ -2,9 +2,8 @@
  * SA6 红灯锚定 — issue #110：Node 20/24 对 `await using lease` 做实际 dispose
  * （设计 §9 node 行；§7 asyncDispose 委托 release）。
  *
- * 条件跳过策略（仓库无既有前例，按本文件约定）：语言级 `await using` 与新生成
- * V8 的 Symbol.asyncDispose 均以运行期探测决定是否执行——driver 经 new Function
- * 编译（语法不可用 → 构造 throw → skip），Symbol.asyncDispose 缺失 → skip。
+ * 语言级 `await using` 与 Symbol.asyncDispose 都是 Node 20/24 CI 的硬门禁：
+ * driver 经 new Function 编译，任一能力缺失均使测试响亮失败而不是 skip。
  * 断言的是真实 dispose 机器语义（块退出时调用 lease 的 asyncDispose 并把 lease
  * 置 released），非仅 type test。
  */
@@ -47,11 +46,12 @@ const awaitUsingThrowDriver: ((lease: NamespaceLease) => Promise<void>) | undefi
 })();
 
 const run = (name: string, fn: () => void | Promise<void>): void => {
-  if (hasAsyncDisposeSymbol && awaitUsingDriver !== undefined && awaitUsingThrowDriver !== undefined) {
-    it(name, fn);
-  } else {
-    it.skip(name, fn);
-  }
+  it(name, async () => {
+    expect(hasAsyncDisposeSymbol, 'Node must provide Symbol.asyncDispose').toBe(true);
+    expect(awaitUsingDriver, 'Node must parse await using').toBeDefined();
+    expect(awaitUsingThrowDriver, 'Node must parse await using in the throw-path driver').toBeDefined();
+    await fn();
+  });
 };
 
 class StubHandle implements DocHandle {

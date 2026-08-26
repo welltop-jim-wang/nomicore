@@ -118,7 +118,7 @@ setsid nohup npx vitest run packages/namespace-registry packages/doc-runtime; ec
 基线的 `pnpm test`（vitest --typecheck）对全仓测试文件做整程序类型检查，当前报 89 条
 TypeCheckError，全部源于**冻结设计声明的契约中间态**（SA3 实现即消失）：
 1. `'clock' does not exist in type 'NamespaceRegistryTestingOverrides'`（73 条，open 测试迁移注入 + create 测试）；
-2. `RegistryObserverEvent` 联合尚无 create 事件（16 条，`'create-persist-failed'` / 
+2. `RegistryObserverEvent` 联合尚无 create 事件（16 条，`'create-persist-failed'` /
    `'create-runtime-construction-failed'` / `operation:'create'` 判别，create 测试的 observer 断言）。
 
 这些不影响 vitest 测试结果与 exit code 语义（56 失败 = 断言失败）。实现后两者随 §8 契约落地清零。

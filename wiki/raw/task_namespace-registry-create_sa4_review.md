@@ -1,8 +1,8 @@
 # SA4 静态实现评审（Issue #111）
 
-**Worktree**: `/home/wangjian/nomicore-fix-issue-111`  
-**Baseline**: `cdcf28b`  
-**当前有效 Verdict（最新一轮）**: **pass**（R2 复审，见文末「R2 复审」节 L102 起；SA3 修订轮 R2 已闭合全部发现）  
+**Worktree**: `/home/wangjian/nomicore-fix-issue-111`
+**Baseline**: `cdcf28b`
+**当前有效 Verdict（最新一轮）**: **pass**（R2 复审，见文末「R2 复审」节 L102 起；SA3 修订轮 R2 已闭合全部发现）
 **R1 初评 Verdict（历史记录）**: **changes-required**（1 HIGH/1 MEDIUM/2 MINOR——均已闭合，详见 R2 节）
 
 ## 审核结论（R1 初评，历史记录）

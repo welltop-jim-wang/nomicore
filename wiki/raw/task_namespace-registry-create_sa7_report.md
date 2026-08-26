@@ -1,7 +1,7 @@
 # SA7 动态对抗验证报告（Issue #111）
 
-**Worktree**: `/home/wangjian/nomicore-fix-issue-111`  
-**SA4 前提**: R2 `Verdict：pass`（review L102-104）  
+**Worktree**: `/home/wangjian/nomicore-fix-issue-111`
+**SA4 前提**: R2 `Verdict：pass`（review L102-104）
 **SA7 verdict**: **found-issue / fail-needs-fix**
 
 ## 关键发现

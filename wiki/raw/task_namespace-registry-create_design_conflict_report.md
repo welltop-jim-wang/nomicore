@@ -1,7 +1,7 @@
 # Issue #111 冻结设计攻击评审（SA2）
 
-**Verdict: REJECT**（存在 HIGH）  
-**审阅对象**：`wiki/raw/task_namespace-registry-create_design.md`（368 行，已通读）  
+**Verdict: REJECT**（存在 HIGH）
+**审阅对象**：`wiki/raw/task_namespace-registry-create_design.md`（368 行，已通读）
 **权威对照**：ADR-0009、#110 冻结设计/Rev2、当前 Persistence/Runtime/doc-runtime/vfsl/Clock 源码。
 
 ## 发现清单
@@ -85,7 +85,7 @@
 
 ### R2-H1 — createInitialDocument 的公共签名无法表达 schema-invalid（HIGH）
 
-**位置**：设计 §6:170-186、§7:214-216，§8:248。  
+**位置**：设计 §6:170-186、§7:214-216，§8:248。
 **触发条件**：Registry 的 `createDocument` 先调用 `compileSchemaEnvelope(schema)`，因此 `schema-invalid` 在 Registry 私有层返回；但 `createInitialDocument` 被设计为 **doc-runtime public** API，输入 `envelope/derived/meta/root`，却只声明：`{ok:true;doc} | {ok:false;kind:'root-invalid';issues}`（§6:170-175）。现行/拟议 doc-runtime 直接调用者可以传入 malformed envelope、meta，或手造 derived；§6:188 又规定 envelope/META/derived 的 prepare 检查，其中“任一领域失败返回 result”。这与其仅允许 `root-invalid` 的 union 矛盾：envelope/meta 值失败究竟是 root-invalid、未定义 kind，还是 pre-commit fatal？
 
 **影响**：实现者会被迫把公共 seam 的调用方输入错误误分为 internal fatal，或把 schema/meta 形状错误伪装为 root-invalid；两者都使公共 API 不能可靠窄化，且 Registry 的 `mapCreateDocumentIssue` 无法根据 `kind` 做稳定映射。此为可实现性/公共契约 HIGH。
@@ -97,7 +97,7 @@
 
 ### R2-M1 — closing 的 optional closePromise 仍导致并发 create（MEDIUM）
 
-**位置**：设计 §5:112-120、§5:162-164。  
+**位置**：设计 §5:112-120、§5:162-164。
 **触发条件**：`entries.get(key)` 返回 `{phase:'closing', closePromise:undefined}`。伪码的 if 条件为 `current?.phase === 'closing' && current.closePromise !== undefined`；条件失败便越过 entry/closing gate，继续 payload/Clock/Persistence create。
 
 **影响**：虽然本切片当前 closing 不可达，#110 的 Entry 将 `closePromise?: Promise<void>` 明确建模为 optional 预留；设计不能将不满足 closePromise 的 closing 态静默当作“不存在 entry”。未来 #112 的部分状态更新、测试 seam、或 bug 可使 create 在未关闭 generation 上运行，破坏 create/open 同 key serialization/唯一 Runtime。标注“future由 #112 定义”并不能让当前伪码安全。

@@ -147,7 +147,7 @@ additive 导出：`DOC_CREATE_FATAL_PHASE_COMMITTED`、`DocCreateFatalError`、`
    requireNomicorePersistence,
 @@ -14,4 +19,6 @@ export {
  } from './contract.js'
- 
+
 +export { type PersistenceIO } from './lifecycle.js'
 +
  export {
@@ -204,7 +204,7 @@ additive 导出：`DOC_CREATE_FATAL_PHASE_COMMITTED`、`DocCreateFatalError`、`
          }
 @@ -469,4 +465,27 @@ export class PersistenceLifecycle {
    }
- 
+
 +  /** One classifier for every store-level create failure before the commit point …（含 R3 恒 stale 说明、W4/W5 不经过此分类器的说明） */
 +  private classifyCreateStoreFailure(
 +    phase: 'probe-read' | 'store-write',
@@ -237,7 +237,7 @@ additive 导出：`DOC_CREATE_FATAL_PHASE_COMMITTED`、`DocCreateFatalError`、`
 -  // Loaded lazily: the classes do not exist before the SA3 implementation, …
 -  const contractMod = (await import('./contract.js')) as unknown as { … }
 -  const DocDuplicateError = contractMod.DocDuplicateError as new (message?: string) => Error
--  const DocLoadOperationalError = contractMod.DocLoadOperationalError as … 
+-  const DocLoadOperationalError = contractMod.DocLoadOperationalError as …
 -  const DocCreateOperationalError = contractMod.DocCreateOperationalError as …
 -  const DocCreateFatalError = contractMod.DocCreateFatalError as …
 +  // Typed error faces (issue #108 §5): statically imported from the module
