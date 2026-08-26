@@ -2,7 +2,9 @@
 
 本文是第三方宿主挂载 Nomicore 插件的操作入口。架构与生命周期依据分别见 [ADR-0006](../adr/0006-server-persistence-docstore.md)、[ADR-0008](../adr/0008-namespace-runtime-read-write-capabilities-and-sequencer.md) 和 [ADR-0009](../adr/0009-namespace-registry-leases-and-host-lifecycle.md)。
 
-## 可挂载插件与依赖图
+## 范围与依赖图
+
+本文覆盖第三方生产宿主需要挂载的四类插件：Clock、Cordis Timer、Memory/File Persistence 和 Namespace Registry。`@nomicore/dsh-persistence` 的 `createDshPersistenceProfile()` 是 DSH 开发/探针装配，不是第三方生产插件；其配置以该包公开类型为准。
 
 生产宿主按以下顺序挂载：
 
@@ -23,7 +25,7 @@ Persistence 和 Registry 启动时会检查依赖；缺少 clock、timer 或 per
 
 ## 最小生产装配
 
-下面示例使用文件持久化。`ctx.plugin()` 返回 Fiber，必须等待其启动完成后再消费对应服务。
+下面示例使用文件持久化。`ctx.plugin()` 返回 Fiber 生命周期句柄；`await fiber` 等待插件进入 active 或启动失败，随后才能消费该插件提供的服务。
 
 ```ts
 import { Context } from '@deepseek-ai/cordis'
@@ -89,44 +91,15 @@ Timer 生命周期必须覆盖 Persistence 和 Registry：先挂 Timer，最后�
 
 ### Memory Persistence
 
-`createMemoryPersistencePlugin(options)` 接受：
-
-| 配置 | 类型 | 默认值 | 说明 |
-| --- | --- | --- | --- |
-| `schedule.debounceMs` | 非负有限 `number` | `500` | dirty 后的 debounce flush 延迟。 |
-| `schedule.maxDirtyMs` | 非负有限 `number` | `5000` | dirty 状态允许持续的最大时间。 |
-| `writeSnapshot` | 函数 | 无 | 可选的内存 adapter 写入 seam；主要用于组合或故障注入。 |
-| `readSnapshot` | 函数 | 无 | 可选的内存 adapter 读取 authority。 |
-
-插件路径自动从 Cordis Timer 注入 scheduler；第三方宿主不配置 `scheduler` 或 `wrapIo`。
+`createMemoryPersistencePlugin(options)` 的公开选项、默认调度值和内存快照生命周期以 [`@nomicore/persistence` README](../../packages/persistence/README.md) 与 `MemoryPersistenceOptions` 类型为准。生产插件会从 Cordis Timer 注入 scheduler；第三方宿主不传 `scheduler` 或内部 `wrapIo` seam。
 
 ### File Persistence
 
-`createFilePersistencePlugin(options)` 接受：
-
-| 配置 | 类型 | 默认值 | 说明 |
-| --- | --- | --- | --- |
-| `rootDir` | 非空 `string` | 必填 | 快照根目录；同一时刻由一个 active adapter 实例拥有。 |
-| `schedule.debounceMs` | 非负有限 `number` | `500` | dirty 后的 debounce flush 延迟。 |
-| `schedule.maxDirtyMs` | 非负有限 `number` | `5000` | dirty 状态允许持续的最大时间。 |
-
-文件布局为 `rootDir/users/<userId>/<namespaceId>.snapshot`。File adapter 要求 `owner.userId` 和 `namespaceId` 匹配：
-
-```text
-^[a-z][a-z0-9-]{0,62}$
-```
-
-HMR 或重载时，先等待旧 adapter/Fiber 完成释放，再用同一个 `rootDir` 创建新实例。
+`createFilePersistencePlugin(options)` 的 `rootDir`、调度选项、文件布局和 identity 约束以 [`@nomicore/persistence` README](../../packages/persistence/README.md)、`FilePersistenceOptions` 类型及 [ADR-0006](../adr/0006-server-persistence-docstore.md) 为准。HMR 或重载时，先等待旧 adapter/Fiber 完成释放，再以原存储配置创建新实例。
 
 ### Namespace Registry
 
-`createNamespaceRegistryPlugin(options)` 只接受：
-
-| 配置 | 类型 | 默认值 | 说明 |
-| --- | --- | --- | --- |
-| `idleTimeoutMs` | `0..2147483647` 的有限整数 | `300000` | 最后一个 lease 释放后，空闲 Runtime 的保留时间。`0` 表示进入 idle 后立即安排回收。 |
-
-多余配置键会抛出 `TypeError`，避免拼写错误被默认值掩盖。
+`createNamespaceRegistryPlugin(options)` 的唯一配置域是空闲 Runtime 保留时间；精确类型、默认值和拒绝规则以 [`@nomicore/namespace-registry` README](../../packages/namespace-registry/README.md) 与 `NamespaceRegistryPluginConfig` 类型为准。
 
 ## 创建、读取、修改和重新打开
 
@@ -177,22 +150,22 @@ await reopened.lease.release()
 
 ## 停止与重载
 
-正常停止遵循依赖的逆序：
+正常停止使用一种所有权策略，不并发触发多条拆卸链：
 
 1. 停止接纳业务请求，并等待业务持有的 lease 释放。
-2. `await registry.shutdown()`，或释放 Registry Fiber 并等待其完成。
-3. 释放 Persistence Fiber；它会先撤销服务、等待 Registry 等依赖方退出，再 dispose adapter。
-4. 最后释放承载 Clock/Timer 的 Context/Fiber。
-
-直接控制 Fiber 时可采用：
+2. 若宿主显式拥有 Registry 生命周期，调用并等待 `registry.shutdown()`。
+3. 释放 Persistence Fiber。它撤销 persistence service 后会等待依赖它的 Registry Fiber 完成卸载，再 dispose adapter。
+4. 最后释放承载 Clock/Timer 的根 Context/Fiber。
 
 ```ts
-await registryFiber.dispose()
+await registry.shutdown()
 await persistenceFiber.dispose()
 await ctx.fiber.dispose()
 ```
 
-不要在 Registry 尚未排空时先拆 Timer 或 Persistence。Registry 关闭期间已接纳的写会被排空；先拆依赖会使新 timer 武装或 handle 操作响亮失败。
+若宿主完全由 Cordis 管理生命周期，可省略显式 `registry.shutdown()`，只释放 Persistence 或根 Context，让依赖图级联卸载 Registry。不要同时手工 dispose Registry Fiber 又依赖 Persistence 撤服务触发同一卸载链。
+
+Timer 的生命周期必须覆盖整个排空过程。Registry 关闭期间已接纳的写会被排空；提前拆 Timer 会使新 timer 武装响亮失败。
 
 ## 服务发现与健康状态
 

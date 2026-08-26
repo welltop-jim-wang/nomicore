@@ -14,6 +14,10 @@ The main entry exports `NamespaceRegistry`, `NamespaceLease`, result/status/erro
 - The final released lease leaves an **idle Runtime** retained until `idleTimeoutMs`; reopen during that interval reuses it.
 - `shutdown()` synchronously stops acceptance, drains accepted lifecycle operations, cancels idle timers, closes every runtime, and aggregates close failures.
 
+## Plugin configuration
+
+`createNamespaceRegistryPlugin({ idleTimeoutMs? })` 只接受 `idleTimeoutMs`：最后一个 lease 释放后空闲 Runtime 的保留时间。默认值为 `300_000` ms；值必须是 `0..2147483647` 的有限整数，`0` 会立即安排回收。多余键或非法值会响亮拒绝。
+
 ## Cordis service
 
 `createNamespaceRegistryPlugin()` provides `ctx.nomicoreRegistry`. Startup requires all three services and fails loudly when any is absent:
