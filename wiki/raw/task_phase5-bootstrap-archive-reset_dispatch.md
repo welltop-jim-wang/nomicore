@@ -6,7 +6,7 @@
 | # | 派发时间 | SA | 阶段 | 完成时间 | 决策逻辑 |
 |---|---------|-----|------|---------|---------|
 | 1 | 派发于本轮 | SA8 | Phase 0 前置门禁 | 已完成 | 简报 vs ADR 全集 + phase-5 文档 + CONTEXT.md → **verdict: clear**（冲突 0；N-1..N-9 非阻断观察项供 SA1：expected 身份参数映射、「允许重新 bootstrap」机制、Registry 词表 append-only 授权链、受信 bootstrap 暴露面、degraded 交互、归档 tmp 与启动清理协调、Memory/File 行为等价操作化、导入后构造期复制事实必为 enabled） |
-| 2 | SA8 clear 后 | SA6 | Phase 1 验收锚定 | 已完成 | 5 红文件：52 红 + 3 保持性守卫绿 + 4 类型红（2 保持类型绿）；报告 task_phase5-bootstrap-archive-reset_sa6_red.md；临时契约名 importReplica/importDoc/ReplicationIdentityRef/8 错误 code 待 SA1 冻结 |
+| 2 | SA8 clear 后 | SA6 | Phase 1 验收锚定 | 已完成 | 5 红文件：52 红 + 3 保持性守卫绿 + 4 类型红（4 保持类型绿）；报告 task_phase5-bootstrap-archive-reset_sa6_red.md；临时契约名 importReplica/importDoc/ReplicationIdentityRef/8 错误 code 待 SA1 冻结 |
 | 3 | SA6 完成后 | 总控亲验 | Phase 1 红灯复核 | 已完成 | 独立复跑：3 红文件 52 failed \| 3 passed（exit 1，与 SA6 一致）；tsc 程序恰 4 错全在 surface 锚位；基线（git 跟踪 133 文件）1599/1599 绿 + 零类型错误 |
 | 4 | 红灯复核后 | SA1 | Phase 2 架构设计 | 已完成 | R1 设计落盘（1053 行，D-1..D-14；AC 覆盖表 6/6；SA6 临时名全部原样冻结；SA6 回流 R-1/R-2 共 ~5 行；ALLOW 11 src 文件 + DENY 清单） |
 | 5 | SA1 R1 后 | SA8 | Phase 2 设计复审 | 已完成 | 设计 vs ADR 全集逐项复审 → **verdict: clear**（冲突 0；N'-1..N'-8 非阻断：N'-1 两项沉默内裁决（强制 lease 失效/latest-wins 归档覆盖）提请知悉、N'-8 提示 SA6 回流为转绿前置） |
@@ -24,3 +24,7 @@
 | 17 | SA4 pass 后 | SA1 | 设计文档 R4 注记 | (pending) | 落实 SA4 F-1（§4.0.3 联合补注 NOT_FOUND 与 SA3 additive 调和留痕）、F-3（§4.5.6 行 9 善后列与 R3 放置点表同步）、F-4（§9 计数 16→17 复核与「七类」→6 类更正） |
 | 17 | SA4 pass 后 | SA1 | 设计文档 R4 注记 | 已完成 | 1160→1166 行：F-1 §4.0.3 联合补列 NOT_FOUND（矛盾留痕）、F-3 §4.5.6 行 9 善后归属更正、F-4 §9 计数口径注明（git-grep 域 16 / 文件系统域 17）+「七类」→「六类」、偏差 2 声称同步；设计 R4 = SA4 pass 后终态 |
 | 18 | SA4 pass 后 | SA6 | 回流档案补记 | 已完成 | sa6_red.md §8.6 记录 SA3 管道微调（import-red File 夹具 walk ENOENT 容错 6 行）+ SA4 F-2 裁决留痕；§2.1 交付物清单同步标注 |
+| 19 | SA7 pass 后 | 总控 | Phase 3.5 AC 门禁 | 已完成 | AC 6/6 ✅（task_phase5-bootstrap-archive-reset_ac_checklist.md），零回流 |
+| 20 | AC 门禁后 | 总控 | 收口提交 | 已完成 | 实现+测试+流水线档案 30 文件 commit dcda564（+7605/-14），message 引用 #133 |
+| 21 | 提交后 | 双 review subagent | Phase 4 双轴终审 | (pending) | Standards 轴 + Spec 轴并行审查 diff ebc5419..dcda564；report 落 wiki/raw/…_{standards,spec}_review.md |
+| 22 | 双轴终审后 | 总控 | Phase 4 终审裁决 + 非阻断项处置 | 已完成 | 双轴 Conclusion 均 clear。J-1/N-1（sa6_red EOF 空行致 git diff --check 报障）+ J-5a/N-4（sa6_red §8.6 计数 22/19→23/18 实测更正）+ J-5b（dispatch 第 2 行 2→4 保持类型绿）已由总控就地修复（wiki 档案面，一行级机械修正）。其余非阻断项裁决留痕：J-2（op2 命名）/J-3（注释笔误「Persistenced」）/J-4（陈旧行号自引用）= 代码注释/局部名级瑕疵，双轴一致 LOW、零行为影响，登记后续切片顺手清理；J-6（readMetaDocId getMap 在拒绝路径对调用方 doc 创建空 META 的副作用不对称）= LOW：被拒绝 doc 绝不持久化、输入为调用方持有的活对象（设计 TOCTOU 声明覆盖）、未来 WS 调用方构造的导入 doc 恒含 META——零实际危害，登记 phase-5 收口切片评估；J-7（SA6 临时 cast 冗余）有 surface 类型锚兜底；J-8（fault seam 内层非空断言假设性场景）仓内不可达；N-2（字节物化属切片 6）/N-3（observer 事件域复用）/N-5（expectedLocalIdentity 无运行时形状校验、失败安全收口）均为既定设计/规格划分留痕。 |
