@@ -402,7 +402,7 @@ function createSessionCore(
  * async——同步段无可抛点，一切可预期拒绝经 ok:false 结果结算，internal fatal 经
  * RuntimeWriteFatalError rejection（committed 诚实）。
  */
-export async function runSessionApplySlot(
+async function runSessionApplySlot(
   host: RuntimeReplicationHost,
   coreState: SessionCoreState,
   channel: SessionChannel,

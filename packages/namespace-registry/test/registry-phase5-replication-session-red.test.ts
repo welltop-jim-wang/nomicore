@@ -625,6 +625,84 @@ describe('AC-1 openReplicationSession：存在、每 Lease 至多一个、冻结
     expect(result.code).toBe('NAMESPACE_LEASE_RELEASED');
     await registry.shutdown();
   });
+
+  it('MEDIUM-1 补锚（ADR 0010 L90 既有 session 半边）：open session + 订阅 → lease.release() → session 终态 closed、apply 拒 NAMESPACE_LEASE_RELEASED、存量订阅零新投递', async () => {
+    const stub = new SessionStubPersistence();
+    const { registry } = makeRegistry(stub, { role: 'hub' });
+    const lease = okLease(await registry.create(newContractInput()));
+    await schemaReady(lease);
+    expect((await asRepLease(lease).enableReplication()).ok).toBe(true);
+    const nsId = lease.namespaceId;
+    // 同 Runtime 第二 Lease：release 后本 namespace 写面仍可用（存量订阅停投的可观测面）
+    const lease2 = okLease(await registry.open(ALICE, nsId));
+    const session = expectSession(
+      await asSessionLease(lease).openReplicationSession({ localRole: 'hub', remoteInstanceId: 'peer-a' }),
+    );
+    const events: Uint8Array[] = [];
+    session.subscribeOwnedUpdates((u) => events.push(u.slice()));
+
+    // 前置：订阅正常运行（release 前一次本地写投递恰 1 条）
+    expect((await lease2.mutateRoot({ op: 'set', path: ['n'], value: 7 }))?.ok).toBe(true);
+    await flushMicrotasks();
+    expect(events.length).toBe(1);
+
+    await lease.release(); // L90：release 同步停止 session 接纳（既有 session 半边）
+    await flushMicrotasks();
+
+    // ① 既有 session 进入终态 closed（O-9：release 同步 close 既有 session）
+    const status = session.getStatus() as { state?: string };
+    expect(status.state).toBe('closed');
+
+    // ② apply 经 released 通道拒绝（ok:false 结算 + 冻结码 NAMESPACE_LEASE_RELEASED）+ 零写入
+    const { update } = makeRemoteUpdate(stub.liveDoc(), (peer) => {
+      peer.getMap('ROOT').set('ext', 7);
+    });
+    const applied = await settleOf(session.applyRemoteUpdate(update));
+    expect(settledNonOk(applied)).toBe(true);
+    expect((settledValue(applied) as { code?: string }).code).toBe('NAMESPACE_LEASE_RELEASED');
+    expect(stub.liveDoc().getMap('ROOT').get('ext')).toBeUndefined(); // 零写入
+
+    // ③ 存量订阅零新投递（closed session 已退订——同 Runtime 后续写零投递到该订阅）
+    const before = events.length;
+    expect((await lease2.mutateRoot({ op: 'set', path: ['n'], value: 8 }))?.ok).toBe(true);
+    await flushMicrotasks();
+    expect(events.length).toBe(before);
+    await registry.shutdown();
+  });
+
+  it('LOW-1 补锚：Lease 层 open 拒绝码精确匹配 INPUT_INVALID / ROLE_MISMATCH / SESSION_EXISTS（各一条）', async () => {
+    const stub = new SessionStubPersistence();
+    const { registry } = makeRegistry(stub, { role: 'hub' });
+    const lease = okLease(await registry.create(newContractInput()));
+    await schemaReady(lease);
+    expect((await asRepLease(lease).enableReplication()).ok).toBe(true);
+
+    const expectOpenRefusal = async (options: OpenSessionOptions, code: string): Promise<void> => {
+      const r = await asSessionLease(lease).openReplicationSession(options);
+      if (r.ok) {
+        throw new Error(`期望 open 拒绝 ${code}，实际成功：${JSON.stringify(r)}`);
+      }
+      expect(r.code).toBe(code);
+    };
+
+    // ① INPUT_INVALID：畸形 options（remoteInstanceId 空串违约安全文法——敌意输入面）
+    await expectOpenRefusal(
+      { localRole: 'hub', remoteInstanceId: '' },
+      'REPLICATION_SESSION_INPUT_INVALID',
+    );
+    // ② ROLE_MISMATCH：options.localRole 与实例 role（hub）不符
+    await expectOpenRefusal({ localRole: 'peer', remoteInstanceId: 'peer-a' }, 'REPLICATION_ROLE_MISMATCH');
+    // ③ 成功 open 后：同 Lease 二次 open → SESSION_EXISTS（活跃 session 唯一性）
+    const session = expectSession(
+      await asSessionLease(lease).openReplicationSession({ localRole: 'hub', remoteInstanceId: 'peer-a' }),
+    );
+    await expectOpenRefusal(
+      { localRole: 'hub', remoteInstanceId: 'peer-b' },
+      'REPLICATION_SESSION_EXISTS',
+    );
+    expect(session.localRole).toBe('hub'); // 首 session 未被二次 open 影响
+    await registry.shutdown();
+  });
 });
 
 // ═══════════════════════════════ AC-2：窄能力六项 + 不暴露 ═══════════════════════
@@ -1067,6 +1145,7 @@ describe('AC-5 peer degraded 只允许 hub→peer trusted apply；O-5 补锚 (a)
     await schemaReady(peerLease);
     const r1 = await peerLease.replaceSchema({ schema: SCHEMA_ENVELOPE });
     expect(r1.ok).toBe(false); // 稳定角色权限错误（L118）
+    expect(JSON.stringify(r1)).toContain('REPLICATION_ROLE_PERMISSION'); // LOW-2：冻结码字面锁死（修订节 L260）
     const r2 = await peerLease.replaceSchema({ schema: SCHEMA_ENVELOPE });
     expect(r2.ok).toBe(false);
     expect(JSON.stringify(r2)).toBe(JSON.stringify(r1)); // 稳定：重复调用同形状错误

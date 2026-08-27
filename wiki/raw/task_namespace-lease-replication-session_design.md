@@ -706,7 +706,8 @@ export class ReplicationSessionClosedError extends Error { readonly code = 'REPL
 - `packages/namespace-registry/src/registry.ts` — 修改：role 读取/形状门禁 + issueLease deps.role（≤ 35 行）。
 - `packages/namespace-registry/src/testing.ts` — 修改：overrides.role 透传（≤ 10 行）。
 - `packages/namespace-registry/src/index.ts` — 修改：type-only 追加导出（≤ 12 行）。
-- `packages/namespace-runtime/test/runtime-registry-internal-seam.test.ts` — 修改：internal 值导出键集锁由 `['createNamespaceRuntimeForRegistry']` 演进为两键（沿该文件头注「精确键集断言由实现时同步演进」既定先例；约 4 行——**既有测试文件的唯一必要改动**）。
+- `packages/namespace-runtime/test/runtime-registry-internal-seam.test.ts` — 修改：internal 值导出键集锁由 `['createNamespaceRuntimeForRegistry']` 演进为两键（沿该文件头注「精确键集断言由实现时同步演进」既定先例；约 4 行）。
+- `packages/namespace-registry/test/registry-open.test.ts` — 修改：lease 对象键集锁由十二键演进为十三键（+`openReplicationSession`——§3.1 `NamespaceLease` 新成员的运行时键集投影；约 1–2 行）。【SA4 INFO-② 补录（R1.1）：该改动已由 SA3 落位并经总控按 #132 同款先例知情接受；沿 ebc5419 基线上该测试对 lease 键集锁的既有演进先例（#132 增 enableReplication/bumpReplicationEpoch 两键）】
 - `packages/namespace-runtime/test/runtime-replication-session.test.ts` — **新建 [SA3 owned]**：单包级槽级测试（fanout 隔离/origin 谓词逐项/R 门序短路/gate 访问计数/role 无关面 + **R1 新增 §9.1 T-1..T-8：Equal 双向探针/敌意子类 Promise 结算/conflicted 终态停投/close barrier 结算序与 never-reject/status 新鲜冻结/memoryCaughtUp 初值/敌意 SV 与非函数 listener/P0 preparing 期 open**），沿 `runtime-replication-write.test.ts` 先例（约 300–420 行）。
 - `packages/namespace-registry/test/registry-phase5-replication-session-red.test.ts` — `[SA6 owned]` 已存在：红灯转绿目标文件；SA3 不得改断言（本设计零改形要求，§11）。
 - `packages/namespace-registry/test/registry-phase5-replication-session-surface.test-d.ts` — `[SA6 owned]` 同上。
@@ -769,3 +770,7 @@ export class ReplicationSessionClosedError extends Error { readonly code = 'REPL
 6. **最小扩面**：不改 doc-runtime/vfsl/persistence/plugin；不改任何既有 transact origin；唯一既有测试改动 = internal 键集锁演进一行（既定先例）。
 7. **R1 修订自检（SA2 HIGH-1 修法后三处码联合一致性——SA2 probe5 验证路径）**：§3.1 公共 `ReplicationSessionApplyRefusalCode`（6 码）≡ §3.2 core `RuntimeReplicationSessionApplyRefusalCode`（R1 起并入第 6 码 `NAMESPACE_LEASE_RELEASED`，注释产出点归属 registry 包装层）⟹ §3.3 `Equal<RuntimeReplicationSessionCore, ReplicationSession>` 十键逐字段相等**可满足**（SA2 实证：6 码版 `npx tsc --noEmit --strict` exit 0，5 码版 TS2344）；全文 grep 确认无第 5 码残留表述（见 R1 修订记录）。
 8. **R1 SA6 影响**：SA2 逐条核对确认 20 行为用例 + 5 类型探针零锚挑战——本修订全部落在锚点之间的规约空隙（close 结算序/敌意子类/终态摘除/初值/新鲜度），**需 SA6 同步改测试清单仍为 §11 的「零」**；新增红灯测试（§9.1 T-1..T-8）全部落 SA3 owned `runtime-replication-session.test.ts`。
+
+---
+
+**R1.1（2026-08-28，机械补录——零设计语义变化）**：据 SA4 静态验尸 INFO-② 回流，§12 ALLOW LIST 补登记 `packages/namespace-registry/test/registry-open.test.ts` lease 键集锁 12→13 键（+`openReplicationSession`）演进条目——该改动已由 SA3 落位并经总控按 #132 同款先例知情接受、沿 ebc5419 对同一测试的演进先例；除此之外本补录不触动任何其他内容（原 internal-seam 条目内「既有测试文件的唯一必要改动」的表述自本补录起由该新增条目取代：既有测试锁演进至此共两处）。

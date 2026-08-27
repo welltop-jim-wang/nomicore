@@ -131,7 +131,7 @@ Trusted raw Yjs update 已在 sequencer 中提交并登记 dirty，但未执行�
 _Avoid_: validated replication、apply 后校验失败自动 rollback
 
 **实例角色（instance role）**:
-示例静态角色 hub/peer，经 Registry 构造 `options.role` 注入（可选、缺省 `'hub'`）；peer 实例的本地 replaceSchema/enableReplication/bumpReplicationEpoch 以稳定角色权限错误拒绝，session 的 localRole 必须等于实例角色。生产 composition root（phase-5 切片 9）必须显式传入。
+实例静态角色 hub/peer，经 Registry 构造 `options.role` 注入（可选、缺省 `'hub'`）；peer 实例的本地 replaceSchema/enableReplication/bumpReplicationEpoch 以稳定角色权限错误拒绝，session 的 localRole 必须等于实例角色。生产 composition root（phase-5 切片 9）必须显式传入。
 _Avoid_: 运行期角色切换、peer 本地修改 SCHEMA 或复制身份
 
 **authority 规则**:

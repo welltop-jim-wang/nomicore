@@ -158,3 +158,24 @@ baseline `pnpm typecheck`（10 包 tsc，仅 src）——本机实测复跑 exit
 | 全量 | `pnpm test --pool=forks --poolOptions.forks.maxForks=1 --poolOptions.forks.minForks=1 --testTimeout=60000 --hookTimeout=60000` | **Test Files 138 passed (138)；Tests 1679 passed (1679)；Type Errors: no errors**；exit 0 | `.mabf-bg/sa6-fix-full.log`（exit 0） |
 
 `git diff --check` 干净；本轮修改仅限 SA6 两个测试文件 + 本记录（`git status` 无 src/ 改动）。
+
+---
+
+# R3 补锚记录（双轴终审回流 — Spec 轴 MEDIUM-1 / LOW-1 / LOW-2）
+
+- **背景**：双轴终审 Spec 轴 pass，但登记三处测试锚完备性缺口（`wiki/raw/task_namespace-lease-replication-session_spec_review.md` §六 L73–75）。总控裁决：AC-7 明文枚举「Lease release」须有确定性契约测试；三锚对应行为已在实现中存在（静态核验正确），本轮补锚为**直接绿锚**（非红灯）。
+- **纪律**：仅追加/精化 SA6 自己的测试文件；零 src/ 改动；新锚若意外变红 = 实现缺陷需立即回报（复跑结果：三锚全部直接绿，无实现缺陷信号）。
+
+| # | 终审发现 | 锚点 | 补锚测试（AC-1 块内新增两个 it + LOW-2 精化一条断言） | 绿灯证据 |
+|---|---|---|---|---|
+| MEDIUM-1 | ADR 0010 L90「Lease release 同步停止 session 接纳」的**既有 session 半边**无 CI 锚（red 用例 3 只锚 released 后 open 通道；静态核验实现正确：lease.ts doRelease 同步 close 既有 session + wrapCore `isRevoked()` apply 拒绝） | ADR 0010 L90；修订节 L246 | 「open session + 订阅 → `lease.release()` → ① `session.getStatus().state==='closed'`；② `applyRemoteUpdate` → ok:false + `code==='NAMESPACE_LEASE_RELEASED'` + 零写入；③ 存量订阅零新投递（同 Runtime 第二 Lease 后续写不投递——closed session 已退订）」 | 单文件 22/22 绿 |
+| LOW-1 | Lease 层三个 open 拒绝码（`REPLICATION_SESSION_INPUT_INVALID` / `REPLICATION_ROLE_MISMATCH` / `REPLICATION_SESSION_EXISTS`）无直接 CI 锚（red 用例 2 三形态松锚；SA6 §6.2 声明未锚定具体码） | 修订节 L236（append-only 码注册表） | 「三个 open 拒绝码精确匹配各一条：① 畸形 options（remoteInstanceId 空串违约文法）→ INPUT_INVALID；② localRole 'peer' 与实例 role 'hub' 不符 → ROLE_MISMATCH；③ 成功 open 后二次 open → SESSION_EXISTS（首 session 不受影响）」 | 同上 |
+| LOW-2 | O-5b 锚定行为契约但未断言冻结码字面 `REPLICATION_ROLE_PERMISSION`（稳定词未被测试锁死） | 修订节 L260 | O-5b 用例 `r1.ok===false` 后追加 `expect(JSON.stringify(r1)).toContain('REPLICATION_ROLE_PERMISSION')` | 同上 |
+
+**修复后三档绿灯证据（R3）**：
+
+| 档位 | 命令 | 结果 | 日志 |
+|---|---|---|---|
+| 单文件行为 | `pnpm vitest run packages/namespace-registry/test/registry-phase5-replication-session-red.test.ts` | **22/22 绿**（20 → 22：+MEDIUM-1 +LOW-1），Type Errors: no errors，exit 0 | `.mabf-bg/sa6-r3-behavior.log`（exit 0） |
+| 类型面 | `pnpm vitest run --typecheck packages/namespace-registry/test/registry-phase5-replication-session-surface.test-d.ts packages/namespace-registry/test/registry-phase5-replication-surface.test-d.ts` | **11/11 绿**，Type Errors: no errors，exit 0 | `.mabf-bg/sa6-r3-typecheck.log`（exit 0） |
+| 全量 | `pnpm test --pool=forks --poolOptions.forks.maxForks=1 --poolOptions.forks.minForks=1 --testTimeout=60000 --hookTimeout=60000` | **Test Files 138 passed (138)；Tests 1681 passed (1681)**（1679 → 1681：+2 新用例）；Type Errors: no errors；exit 0 | `.mabf-bg/sa6-r3-full.log`（exit 0） |

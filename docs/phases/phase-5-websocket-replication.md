@@ -75,7 +75,7 @@ Peer instance × N
 **切片 3/4 落地锚定（issue #134 已接受；零改形）**：
 
 - 方法名（冻结）：`openReplicationSession(options)` + session 六能力 `encodeStateVector` / `encodeDiff` / `subscribeOwnedUpdates` / `applyRemoteUpdate` / `getStatus` / `close`；open 输入两域 `{ localRole, remoteInstanceId }`（remoteInstanceId 采用 ADR 0010 L156 instanceId 安全文法）；replicationId/replicationEpoch 由 Runtime 投影链冻结、非调用方输入。
-- 角色注入：Registry 构造 `options.role`（`'hub'|'peer'`，可选、缺省 `'hub'`；非法值构造期 TypeError）；示例与生产/testing 同形。peer 的 `replaceSchema`/`enableReplication`/`bumpReplicationEpoch` 以稳定角色权限错误拒绝（`REPLICATION_ROLE_PERMISSION`）；session `localRole` 必须等于实例 role。**切片 9 注记：生产 composition root 必须显式传 `role`（缺省 'hub' 仅零回归面，不构成生产配置）**。
+- 角色注入：Registry 构造 `options.role`（`'hub'|'peer'`，可选、缺省 `'hub'`；非法值构造期 TypeError）；生产 `CreateNamespaceRegistryOptions` 与 testing overrides 同形。peer 的 `replaceSchema`/`enableReplication`/`bumpReplicationEpoch` 以稳定角色权限错误拒绝（`REPLICATION_ROLE_PERMISSION`）；session `localRole` 必须等于实例 role。**切片 9 注记：生产 composition root 必须显式传 `role`（缺省 'hub' 仅零回归面，不构成生产配置）**。
 - Session status 词汇（冻结）：`state('open'|'closed'|'conflicted')` + `direction` + 冻结四域 + `currentEpoch` + `rootValidation('none'|'replication-unvalidated')` + `durability{memoryCaughtUp（初值 false）, diskCaughtUp:false}` + `observerFailures`；Runtime status 的 replication 域仍只含两态持久事实。
 - 受保护常量（冻结，raw caller 不可逐次自定义）：hub 侧（接收 peer→hub）`SCHEMA 全容器 + META 全键`；peer 侧（接收 hub→peer）`META 全键`，SCHEMA/ROOT 放行；peer 允许的 META 白名单**首版 = 空集**。判据 = 内容投影相等（scratch clone 预演；删后同值重写 = 内容未变 = 允许）。
 - **切片 3「needs-resync 通知」对账注记（SA8 放行条件 C-1，SA2 R1 HIGH-2）：本切片无队列 ⇒ ADR 0010 L113 唯一触发面（队列溢出）结构性不可达；needs-resync 与队列属主 = 切片 6**。
