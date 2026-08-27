@@ -1,98 +1,87 @@
 ---
 status: complete
-run_id: issue-134-1787847658-8367
-task_type: bugfix
-branch: fix/issue-134-on-docs-phase-5-websocket-replication
-round: 2
-issue: 134
-started_at: 2026-08-28T06:05:00+08:00
-finished_at: 2026-08-28T09:35:00+08:00
+run_id: issue-133-1787847735-3529662
+branch: fix/issue-133-on-docs-phase-5-websocket-replication
+round: 1
+issue: 133
 ---
 
-# issue #134 Round 2：PR #146 评审 12 项反馈修复（修订轮）
+# Phase 5: bootstrap import, archive, and guarded replica reset（issue #133）
 
 ## 概要
 
-按 PR #146 评审反馈（阻断 5 / 需明确 3 / 收口 4，共 12 项）对 round 1 交付做修订修复，
-评审合同逐字收录于 `wiki/raw/task_namespace-lease-replication-session_round2.md`。核心
-修复五件：epoch fence 前置到 bump 槽（旧 session outbound 立即停止投递）、Runtime close
-同步段终止/detach 现存 sessions、复制扇出异步化（observer 零 listener 调用 + 每 channel
-有界队列 16 + 自延伸微任务泵让步 20 + sticky `needsResync` 第 11 字段——ADR 0010 L113
-字面落地）、受保护字段规范化深比较（白名单 = Y.Map/Y.Array ∪ plain array/object）、
-lease release guaranteed cleanup（seam 抛错隔离、半释放结构性不可达）。另：committed
-精确二分（beforeTransaction 探针）、no-op 置位语义明文、plugin role 贯通（含
-createNamespaceRegistry 工厂漏转发第二根因）、AC7 竞态矩阵补齐、owned bytes 测试加严、
-两包 README、PEER_ALLOWED_META_KEYS 空占位删除。
+交付 Phase 5 切片 2+8 的本地复制生命周期（ADR 0010 §复制谱系与 epoch / §Bootstrap 与重连、
+phase-5 文档 §实施切片 2/8）：Peer 侧从可信 Hub 快照安装缺失副本的受信导入路径，与冲突
+Peer 的安全重置（关闭 Runtime generation → 归档旧持久文档 → 允许重新 bootstrap）。
 
-流水线全程（修订轮工作流）：SA8 前置门禁 **clear**（12/12 no-conflict + D-1..D-4 登记义务）
-→ SA6 红灯锚定（29 新用例：21 预期红 + 8 绿锁定）→ SA1 设计增补 → SA8 设计复审 **clear**
-（C-1'/C-2' 条件 + R-1'..R-4' 残留）→ SA2 攻击评审（R2 **reject** HIGH+MEDIUM → R2.1
-**pass** → R2.2 **pass**）→ SA3 TDD 实现（8a68d82，偏离 3 项 + 发现 2 项全部经 SA1 R2.2
-就地裁决）→ SA6 三项同步（9cfc1b6：fixture 类型面 / AC-2 ③ 时序演进 / spin 收尾）→
-总控亲验三档全绿 → SA4 静态验尸（首轮 **reject** F-1 窄门 → 回流补锚闭合 → **pass**）→
-SA7 动态验证 **PASS**（0 契约缺陷，R-1'/R-2' 满载复核闭合）→ AC-R2 门禁 **12/12** →
-双轴终审**双 pass**（Standards 0 hard/2 minor/6 info；Spec 0 缺陷/5 INFO）→
-终审非阻断项机械收口（79194dd）→ 最终验证全绿。
+- **Persistence**（packages/persistence）：`importDoc(owner, docId, doc)` 受控复制导入——
+  复用 createDoc 同一 per-key 排他 claim 管线（exclusiveCreate 抽取），duplicate 复用冻结
+  DOC_DUPLICATE 族；`archiveDoc(owner, docId, expectedReplicationIdentity)` 受身份前置条件
+  保护的归档——settle 排空（零-handle dirty entry 强制即时 flush、尊重 degraded 回退）→
+  archiving cell claim → guard-read（io.read）→ 单一身份谓词（错 id/错 epoch/缺失/损坏/
+  docId 不符统一 DOC_ARCHIVE_IDENTITY_MISMATCH）→ relocate（writeArchive→remove，提交点
+  = 归档写 resolve；remove 失败 = committed:true fatal、重试收敛）。PersistenceIO 扩展
+  optional writeArchive/remove；DocPersistence 以 optional 成员建模 + 派生 ReplicaPersistence
+  （required）+ 三处 loud capability gate（13 个既有 stub 零回归）。
+- **File/Memory 行为等价**（AC-3/AC-5）：File 归档落点 `{rootDir}/archive/users/<u>/<ns>.snapshot`
+  + tmp→rename 原子提交 + latest-wins 单槽覆盖；Memory 独立 archiveSnapshots Map 分区 +
+  deleteSnapshot hook（受钩缺删钩实例归档 loud 拒绝）。文件访问封闭在 persistence 包内。
+- **Registry**（packages/namespace-registry）：公共方法 `importReplica`（保留 Hub
+  namespaceId——非普通 create；槽内核对次序 META.docId → 复制事实两键（readReplicationFacts
+  判据族结构守卫副本）→ 才触 Persistence，拒绝零持久化写入）与 `resetReplica`（carrier
+  FIFO 串行：owner 核对零泄露 → 强制失效未决 lease（forceReleasing 旗标抑制 idle 假事件）→
+  close（I2 纪律）→ loadDoc 探针 → archiveDoc 纯传递期望身份 → key 缺席即 bootstrap 资格；
+  owner/identity race 拒绝零部分删除，stale 身份重放由归档守卫天然拒绝）。
+- **错误分类学**：Persistence +DocImportIdentityError + 归档四类 + DocArchiveFatalError
+  （三 phase 冻结 committed 映射 false/false/true）；Registry +5 message 常量与结果联合，
+  operation 词表 append-only +'reset'|'import'；稳定文案单点表，零回显纪律。
 
-## 变更（diff 4cfaffd..HEAD = 8a68d82 + 2a7117a + 9cfc1b6 + 1e2c748 + 1128ef7 + 79194dd）
+流水线全程：SA8 前置门禁 clear → SA6 验收锚定（52 红 + 3 守卫绿 + 类型锚）→ 总控亲验 →
+SA1 设计 R1 → SA8 设计复审 clear → SA2 R1 reject（BLOCKER×2：settle×dispose 挂起、claim 失败
+善后）→ SA1 R2 修订 → SA2 R2 pass → SA6 回流 R-1/R-2 + SA1 R3/R4 注记 → SA3 TDD 实现 →
+总控亲验绿灯 → SA4 静态验尸 pass（LOW2+INFO5 分流闭环）→ SA7 动态验证 pass（零缺陷）→
+AC 门禁 6/6 ✅ → 双轴终审双 clear（非阻断项总控裁决留痕并修复 3 处档案瑕疵）。
 
-- `packages/namespace-runtime/src/replication-session.ts`：SessionChannel/Sep/Fanout
-  异步化重构——observer 只做回声抑制谓词 + 容量检查（先于复制）+ `update.slice()` 入队 +
-  调度泵；自延伸微任务泵（20 让步/项、交付时刻快照、逐 listener 自捕获、最外层 catch、
-  finally 复位）；fenceStale/finalize/terminateAll/isTerminal 终态机；closedBy 记账 +
-  A1 码域精化（runtime-close → RUNTIME_WRITE_DISABLED）；protectedValueEqual/
-  deepEqualPlain/isWhitelistedValueContainer/projectOf 替换 protectedPrimitiveEqual；
-  R5 beforeTransaction 探针 committed 精确二分；status 第 11 字段 needsResync；
-  PEER_ALLOWED_META_KEYS 删除（语义冻结由 ADR 文字承载）。
-- `packages/namespace-runtime/src/replication-write.ts`：bump 槽 E5.5'（同步投影步）
-  `fenceStale(replicationId, nextEpoch)`——facts 整替之后、notifyDirty 之前；enable 槽零
-  fence（显式裁决）。
-- `packages/namespace-runtime/src/runtime.ts`：close() 同步段 lifecycle 翻转后、barrier
-  入队前 `fanout.terminateAll('runtime-close')`；构造期 fanout 前移。
-- `packages/namespace-registry/src/lease.ts`：doRelease guaranteed cleanup（① released
-  ② entry 删除 ③ releasePromise+observer 先于 ④ 幂等直调 close（`Promise.resolve(closing)
-  .catch` 原生同化 + try/catch）→ ⑤ onReleased 无条件）；Equal 锁自锁第 11 字段同步。
-- `packages/namespace-registry/src/plugin.ts`：NamespaceRegistryPluginConfig +role 键 +
-  校验序 ①形状→②键集→③role 域（NAMESPACE_REGISTRY_ROLE_INVALID）→④idleTimeoutMs +
-  apply 透传。
-- `packages/namespace-registry/src/registry.ts`：createNamespaceRegistry 工厂补转发
-  options.role（L1333-1339 展开缺 role 键的生产缺口修复）+ 跨包 Equal 双锁同步。
-- `packages/namespace-registry/src/types.ts`：PLUGIN_CONFIG 文案更新；status 类型第 11
-  字段 needsResync。
-- 测试：SA6 round-2 红套件两文件 29 用例全部转绿（runtime 17 + registry 12）；SA3 新建
-  包内套件 runtime-replication-session-round2.test.ts 25 用例（泵/队列/交付集/fence/
-  terminateAll/深比较矩阵/F-1 补锚/探针锚）；SA6 R2-10 加严 round-1 两文件（直存原始
-  callback 参数断言）+ R2.2 三项同步（fixture 类型面、AC-2 ③ flushMicrotasks 时序演进、
-  spin fixture 收尾 close——全部零断言语义变化、登记在案）。
-- 文档：ADR 0010 修订节 append-only round-2 小节（D-1..D-4 全条目：异步队列+needs-resync
-  交付集冻结、主动 fence、close 终止语义含 closedBy 码映射、深比较规则表+成本注记、
-  committed 二分+例外方向、成功接纳即置位）；phase-5 C-1 显式撤销改写 + 词汇追加；
-  CONTEXT.md needs-resync 一句；两包 README（runtime「ReplicationSession 内部宿主」8 条 +
-  Lifecycle 增补；registry Public API 5 条 + Plugin configuration）。
-- 版本：namespace-runtime 0.1.9→0.1.10；namespace-registry 0.1.5→0.1.6（恰 version 字段）。
-- wiki 归档：round-2 简报/冲突报告×2/相关决策/设计 R2.2.1（含 R2.1/R2.2/R2.2.1 修订记录）
-  /SA6 红灯报告/SA2 评审（含更正记录）/SA3 实现报告/SA4 验尸（含 F-1 追节）/SA7 动态报告
-  /AC-R2 checklist/双轴终审两份/dispatch 追加段。
+## 变更
 
-## 验证（最终档，总控亲跑）
+提交：dcda564（实现+测试+档案 30 文件 +7605/-14）+ 3e60188（终审裁决档案修正 2 文件）+
+终审报告与 REPORT 收口提交（见 HEAD）。
 
-| 验证 | 命令 | 结果 |
-|---|---|---|
-| whitespace | `git diff --check 4cfaffd..HEAD` | **exit 0** |
-| 类型 | `pnpm typecheck` | **exit 0**（`.mabf-bg/r2final-typecheck.log`） |
-| 全量测试 | `pnpm test --pool=forks --poolOptions.forks.maxForks=1 --poolOptions.forks.minForks=1 --testTimeout=60000 --hookTimeout=60000` | **141 文件 / 1735 用例全绿；Type Errors: no errors；零 TypeCheckError / 零 Unhandled；exit 0**（92.73s；`.mabf-bg/r2final-test.log`） |
+- `packages/persistence/src/`（6 文件）：contract.ts（YjsDoc/ReplicationIdentityRef/
+  ReplicaPersistence 类型 + DocPersistence optional 成员 + 6 错误类 + committed 映射常量）、
+  lifecycle.ts（exclusiveCreate 抽取 + importDoc、archiving cell 态、archiveDoc 全编排
+  含三通知点与 identity 守卫善后、seedForTest 守卫扩 archiving）、memory.ts（archiveSnapshots
+  分区 + deleteSnapshot hook + loud 配置门）、file.ts（archive/ 子树 tmp→rename + remove）、
+  index.ts（+7 值 +4 类型导出）、testing.ts（fault seam writeArchive 并入 write 槽 + remove 透传）。
+- `packages/namespace-registry/src/`（5 文件）：types.ts（+5 message 常量 + import/reset 结果
+  联合 + 接口 +2 方法）、registry.ts（importReplica/resetReplica 槽 + readImportedReplicaFacts
+  私有读取器 + forceReleasing 旗标 + capability gate + 映射矩阵）、errors.ts（operation
+  +reset/import）、observer.ts（+3 事件形）、index.ts（type-only +5）。
+- 测试（7 新文件，89 用例）：SA6 验收锚 5 文件（archive-red 23 / import-red 14 /
+  registry-red 18 / 双 surface 8 类型锚）+ SA7 动态 2 文件 24 用例（settle 活性/并发矩阵
+  ×50 轮/forceReleasing 观测/dispose 双窗口/File 崩溃恢复实机/identity 动态边界/公共面探针）。
+- 流水线档案：wiki/raw/task_phase5-bootstrap-archive-reset_{简报,conflict_report,design(R4),
+  design_conflict_report,sa2_review,sa2_review_r2,sa3_impl,sa4_review,sa6_red,sa7_report,
+  ac_checklist,standards_review,spec_review,dispatch}.md。
 
-评审 12 项逐项处置详见 `wiki/raw/task_namespace-lease-replication-session_round2_ac_checklist.md`
-（12/12 通过：阻断 5 修复+回归锚、需明确 3 项全部裁决落盘、收口 4 项完成）。
-SA7 附加实测：red #9 forks 池满载 ×3 复跑最坏 202ms<400ms；泵活链路 13/13、fence/terminate
-活链路 18/18、敌意 beforeTransaction 探针 11/11、敌意 close 六型直构 unhandledRejection
-Δ0；round-2 三文件 ×3 连跑零 flaky。
+## 验证（总控亲跑 + SA4/SA7/终审三方互证）
 
-## 遗留事项（全部登记归属，不阻断）
+| 项 | 命令 | 结果 | 证据 |
+|---|---|---|---|
+| 基线 | git 跟踪 133 测试文件全量（SA6 红文件排除） | 1599/1599 绿、零类型错误 | .mabf-bg/baseline-test.log |
+| 红灯真实 | 3 红文件 vitest run + tsc 程序 | 52 failed \| 3 passed；恰 4→3 错全在锚位 | .mabf-bg/red-verify.log / red-tsc.log |
+| 绿灯（实现后） | `pnpm typecheck`（10 包链）+ `pnpm test` | exit 0；140 文件 1687/1687 绿、零 Type Errors | .mabf-bg/green-{typecheck,test}.log |
+| 动态（SA7） | 2 新文件 3 连跑 + node 探针 + 全量 | 24/24 ×3 零 flake；探针 exit 0 零禁词；142/1711 全绿 | sa7_report.md §九 |
+| 终审（双轴亲跑） | typecheck + 全量 + 5 文件单跑 79 用例 + diff --check | exit 0 全绿；diff --check 修复后 exit 0 | standards_review.md / spec_review.md |
+| 封口终验（HEAD=3e60188） | `pnpm typecheck` + `pnpm test` + `git diff ebc5419..HEAD --check` | 见下方最终结果 | .mabf-bg/final-{typecheck,test}.log |
 
-- SA7 §十 N 级表征 4 条（跨 channel 首投递墙钟交错、Proxy 种子延迟域、RAW_UPDATE_INVALID
-  码语义面向、突发弃新计数）——设计 §18/SA7 报告登记，属知情接受。
-- Standards I-1（SessionClosedBy 'explicit-close' 死联合成员）等 info 级项记录在案。
-- needs-resync 消费面（transport reset/bootstrap 清零路径）属切片 6（ADR 0010 L151 域分界
-  维持）。
-- CI 状态不在本地完成门槛内：发布（push/PR）与 CI 观察由 Host 执行。
+## 遗留风险
+
+- **切片边界**：本票只交付本地生命周期；WS transport/ReplicationSession/wire 集成属切片 3-7
+  （importReplica 输入为 detached Y.Doc，字节物化在未来 WS 插件；observer 事件域
+  open-load-failed 复用等留痕项已在档案登记）。
+- **非阻断项**（双轴终审裁决留痕，dispatch 第 22 行）：J-2 命名/J-3 注释笔误/J-4 陈旧行号
+  自引用为注释级瑕疵；J-6 readMetaDocId 拒绝路径对调用方 doc 的空 META 创建副作用（被拒
+  doc 绝不持久化、零实际危害）——均登记 phase-5 收口切片评估。
+- **聚合 `tsc --noEmit` 与 CI**：本地 typecheck（10 包链 + tsconfig.typecheck 程序）全绿；
+  CI 观察由 Host 发布阶段执行，不属本地完成门槛。
