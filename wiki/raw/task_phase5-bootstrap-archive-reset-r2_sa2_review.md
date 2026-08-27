@@ -1,6 +1,6 @@
 # SA2 攻击评审报告 — issue #133 round=2
 
-**Date**: 2026-08-28  
+**Date**: 2026-08-28
 **Verdict**: **reject**
 
 - 评审对象：`wiki/raw/task_phase5-bootstrap-archive-reset-r2_design.md`。
@@ -65,7 +65,7 @@
 
 # SA2 R2 复审 — R2-R1 修订攻击验证
 
-**Date**: 2026-08-28  
+**Date**: 2026-08-28
 **Verdict**: **reject**
 
 本段只复审 SA1 对本报告 R1 reject 的 R2-R1 修订。R1 的五项原始问题中，closing re-evaluation、probe 分类学、敌意 expected 输入和 archive remove-failure ADR 闭环已作出实质性规格化修订；但新增 Runtime reset fence 引入一个仍未封闭的生命周期/死锁风险，不能放行。
@@ -131,7 +131,7 @@ R2 的安全目标成立需要两个同时成立的性质：
 
 # SA2 R3 复审 — R2-R2 修订攻击验证
 
-**Date**: 2026-08-28  
+**Date**: 2026-08-28
 **Verdict**: **pass**
 
 本轮复审对象为 R2-R2 修订后的同一设计。R2 的三项 reject 条件均已在机制级冻结，未发现新的可执行阻断点。

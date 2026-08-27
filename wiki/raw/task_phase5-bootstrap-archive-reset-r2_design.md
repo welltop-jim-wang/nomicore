@@ -512,4 +512,3 @@ Any caller added by implementation must be appended to this table and supply the
 | R2-1 BLOCKER：fence task 不得与 close barrier 自等待 | ✅ | §3.4、§3.5、§6、§8 | 伪码改为 fence 槽只核验+同步 arm，绝不创建/await barrier；fence task settled 后才由 lazy continuation 捕获后继 tail 创建 close barrier。给出有向依赖无环证明与 bounded-settlement 红线测试。 |
 | R2-2 HIGH：armed 后 archive typed errors 必须冻结映射 | ✅ | §3.4、§3.5.2、§5.2、§6 | `mapArmedArchiveFailure` 表冻结所有 `DOC_ARCHIVE_*`：identity/active/duplicate/operational→RESET_FAILED，fatal 保留 committed，unknown→fatal false；任何 armed 后路径禁止返回 reset identity mismatch。 |
 | R2-3 MEDIUM：internal Runtime capability 可达路径及缺失 gate | ✅ | §3.5.1、§6、§8 | 使用 Registry-only factory injection / `RuntimeForRegistry` structural capability，禁止 Runtime public barrel 或 internal-subpath import；缺失在 probe/forceRelease/close/archive 前 branded fatal false，配套 internal-surface 与旧 fake 测试。 |
-
