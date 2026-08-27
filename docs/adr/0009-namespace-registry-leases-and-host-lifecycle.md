@@ -126,3 +126,18 @@ v1不公开list、entry status、lease count、queue、timer handle、explicit e
 本ADR不取代ADR 0008的单Runtime语义，而是在其上增加多调用方、多namespace和Host生命周期。Registry open遵循ADR 0008对ADR 0007普通open条款的取代：load+Runtime构造后即可发布，不等待P0或重新验证ROOT。
 
 Phase 4使用独立integration PR。实施顺序为Clock capability、Persistence service/timer/clock与typed error演进、Runtime internal Registry factory、Registry核心/lease/idle生命周期、Cordis plugin、Memory/File/Cordis全链验收与最终整体审查。
+
+---
+
+## 修订节：issue #131（Phase 5 切片 1：Registry identity 迁移，依据 ADR 0010）
+
+日期：2026-08-27；状态：已接受（`fix/issue-131-on-docs-phase-5-websocket-replication`）
+
+本节按 ADR 0010「Namespace identity、owner 与复制范围」条款修订本 ADR 的以下决定：
+
+1. **Registry entry key 由 `(owner.userId, namespaceId)` 复合键改为仅 `namespaceId`**（ADR 0010：复制范围裁决）。`(owner.userId, namespaceId)` 长度前缀复合 key 退役；entry/carrier 均按 namespaceId 索引。open 仍在 entry 命中后、phase 分派前核对 owner：owner mismatch 统一返回既有 `NAMESPACE_NOT_FOUND`（零 loadDoc、零新 Runtime、不区分「属他人/不存在」——存在性零泄露）；entry 无而 `(ownerB, nsId)` 分区有文档时，`open(ownerB, nsId)` 走 loadDoc 正常建立（ADR 0010 合法面：Hub/Peer 同 namespaceId 不同 owner 各自副本）。
+2. **普通 create 输入从四键改为恒三键 `{owner, schema, root}`**：调用方选定 namespaceId 不再被接受——携带 `namespaceId` 键 → 接纳段同步 `NAMESPACE_CREATE_INVALID_INPUT`（零随机源消耗、零 Persistence）。namespaceId 由注入的受控 128-bit CSPRNG 生成：`randomBytes(16)` → `ns-` + 32 位小写 hex（`^ns-[0-9a-f]{32}$`，35 字符，满足 ADR 0006 共享安全文法）。
+3. **碰撞重生成重试（至多 8 次）与耗尽 fatal**：与 active/idle/closing Registry entry 或 target-owner Persistence duplicate（`DOC_DUPLICATE`）碰撞 → 换 ID 重试；总生成 ≤ 9（首生成 + 至多 8 次重试）。耗尽 → `NamespaceRegistryFatalError('create', …, committed:false)`，不再 resolve `NAMESPACE_ALREADY_EXISTS`（该 code/message 保留于公共联合与稳定 message 注册表——切片 2「复制 bootstrap 受信任导入保留 Hub namespaceId」复用）。
+4. **新稳定 phase 注册**：`namespace-id-generation` 加入 open 的 `NamespaceRegistryFatalPhase` 开放清单（覆盖随机源 throw / 形状违约 / 重试预算耗尽三类终局；随机源违约**不消耗重试预算**——能力契约缺陷不是瞬态碰撞，立即 fatal，拒绝虚假降级）。
+5. **依赖纪律扩展**：`randomBytes(length): Uint8Array` 成为 `CreateNamespaceRegistryOptions` / `NamespaceRegistryTestingOverrides` 的**必需**注入 capability——缺失/非函数 → 构造期同步 TypeError（检查顺序 clock → scheduler → idleTimeoutMs → randomBytes），**禁任何全局 crypto / Math.random fallback**。生产实现 = plugin.ts（Host-facing 适配层）桥接 `node:crypto`；Registry 核心零全局 crypto 直调。
+6. **create 管线新增实现事实**：payload 快照/Clock 单读/compile+validate 一次/create（不随重试重复）；createDoc 仅在全部准备成功后调用；重试把 attempt 追加到新候选 key 的 carrier 尾部（对任意 key 的 slot 仍严格按接纳顺序串行——同一 namespaceId 每进程至多一个 Runtime 由 carrier FIFO 结构性保证，不依赖 Persistence duplicate）；shutdown 等待已接纳 create 编排终局（含其全部跨 carrier 重试）后再关闭 Runtime。

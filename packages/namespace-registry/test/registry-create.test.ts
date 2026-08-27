@@ -36,8 +36,8 @@ import { NamespaceRegistryFatalError } from '@nomicore/namespace-registry';
 import type { CreateNamespaceInput, NamespaceLease, NamespaceOwner } from '@nomicore/namespace-registry';
 import { createNamespaceRegistryForTesting, createRegistryTestScheduler } from '@nomicore/namespace-registry/testing';
 import { createNamespaceRuntimeForRegistry } from '@nomicore/namespace-runtime/internal';
+import { NAMESPACE_ALREADY_EXISTS_MESSAGE } from '../src/types.js';
 import { createInitialDocument } from '@nomicore/doc-runtime';
-import { createRegistryInternal } from '../src/registry.js';
 import type { RegistryObserverEvent } from '../src/observer.js';
 
 // ── 确定性并发原语（禁 real sleep；沿用 registry-open.test.ts 既有原语）──────────
@@ -69,6 +69,73 @@ interface ManualClock {
   now(): number;
   readonly calls: number;
 }
+
+// ── phase-5 切片 1（ADR 0010）：受控随机源确定性 helpers（测试内定义；禁止从 src 导出）──
+// 计数源：第 n 次生成 = `ns-` + n 的 32 位小写 hex（id(n) 即期望 ID）；剧本源：按 16
+// 字节 hex 序列精确建模碰撞/重试（entry 碰撞与 DOC_DUPLICATE 重试的确定性布置）。
+
+const H1 = '00000000000000000000000000000001';
+const H2 = '00000000000000000000000000000002';
+const H3 = '00000000000000000000000000000003';
+const H4 = '00000000000000000000000000000004';
+const H5 = '00000000000000000000000000000005';
+
+function hexToBytes16(hex: string): Uint8Array {
+  if (hex.length !== 32 || !/^[0-9a-f]+$/.test(hex)) {
+    throw new Error(`fixture 脚本 hex 必须为 32 位小写 hex：${hex}`);
+  }
+  const out = new Uint8Array(16);
+  for (let i = 0; i < 16; i += 1) {
+    out[i] = Number.parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+  }
+  return out;
+}
+
+function makeCountingRandomBytes(): {
+  randomBytes: (length: number) => Uint8Array;
+  readonly consumed: number;
+  readonly id: (n: number) => string;
+} {
+  let consumed = 0;
+  return {
+    randomBytes(length: number): Uint8Array {
+      if (length !== 16) {
+        throw new Error(`受控随机源必须按 128-bit（16 字节）请求，实际请求 ${length} 字节`);
+      }
+      consumed += 1;
+      const hex = consumed.toString(16).padStart(32, '0');
+      const out = new Uint8Array(16);
+      for (let i = 0; i < 16; i += 1) {
+        out[i] = Number.parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+      }
+      return out;
+    },
+    get consumed() {
+      return consumed;
+    },
+    id: (n: number) => `ns-${n.toString(16).padStart(32, '0')}`,
+  };
+}
+
+function makeScriptedRandomBytes(hexChunks: readonly string[]): (
+  length: number
+) => Uint8Array {
+  let consumed = 0;
+  const chunks = hexChunks.map(hexToBytes16);
+  return (length: number): Uint8Array => {
+    if (length !== 16) {
+      throw new Error(`受控随机源必须按 128-bit（16 字节）请求，实际请求 ${length} 字节`);
+    }
+    const chunk = chunks[consumed];
+    if (chunk === undefined) {
+      throw new Error('受控随机源超出剧本：实现的重试次数超过契约预算');
+    }
+    consumed += 1;
+    return chunk;
+  };
+}
+
+const TEST_RANDOM_BYTES: (length: number) => Uint8Array = makeCountingRandomBytes().randomBytes;
 
 /** 固定 ms 手动 Clock（counter 锚：每通过 gate 的 slot 恰读一次）。 */
 function makeManualClock(initialMs = 0): ManualClock {
@@ -206,15 +273,17 @@ function derivedOf(envelope: SchemaEnvelope): DerivedSchema {
 /** 合法 create 输入（顶层恰四键；schema/root 传 plain object 或 frozen object）。
  * 返回面以 CreateNamespaceInput 单点断言（§3 冻结签名）：正常调用点零改动；敌意/
  * 缺键直构输入在调用点 `as never`（open 测试同款先例）。 */
+/** 合法 create 输入（顶层恰三键 {owner,schema,root}；namespaceId 由注入受控
+ * 随机源生成——调用方不再提供）；schema/root 传 plain object 或 frozen object。
+ * 返回面以 CreateNamespaceInput 单点断言（§3 冻结签名）：正常调用点零改动；敌意/
+ * 缺键直构输入在调用点 `as never`（open 测试同款先例）。 */
 function makeCreateInput(overrides: {
   owner?: NamespaceOwner | unknown;
-  namespaceId?: string | unknown;
   schema?: unknown;
   root?: unknown;
 } = {}): CreateNamespaceInput {
   return {
     owner: overrides.owner ?? { userId: 'u-alice' },
-    namespaceId: overrides.namespaceId ?? 'k-ns',
     schema: overrides.schema ?? GOOD_ENVELOPE,
     root: overrides.root ?? GOOD_ROOT,
   } as CreateNamespaceInput;
@@ -338,13 +407,15 @@ describe('create 成功全链（§3/§5/§6/§9）：manual Clock 精确 created
     const clock = makeManualClock(FIXED_MS);
     const { probe, restore } = installDocProbe();
     try {
-      const registry = createNamespaceRegistryForTesting(persistence, { clock, scheduler: createRegistryTestScheduler() });
+      const src = makeCountingRandomBytes();
+      const registry = createNamespaceRegistryForTesting(persistence, { clock, scheduler: createRegistryTestScheduler(), randomBytes: src.randomBytes });
       const result = await registry.create(makeCreateInput());
       const lease = okLease(result);
 
-      // identity 投影片面
+      // identity 投影片面（phase-5 切片 1：namespaceId 由注入受控随机源生成——第 1 次生成）
       expect(lease.owner).toEqual({ userId: 'u-alice' });
-      expect(lease.namespaceId).toBe('k-ns');
+      expect(lease.namespaceId).toBe(src.id(1));
+      expect(lease.namespaceId).toMatch(/^ns-[0-9a-f]{32}$/);
 
       // createdAt：manual Clock 固定 ms → ISO 精确字符串锚（§6 冻结 `toISOString()` 产物）
       expect(lease.getMetadata().createdAt).toBe(FIXED_ISO);
@@ -354,7 +425,7 @@ describe('create 成功全链（§3/§5/§6/§9）：manual Clock 精确 created
       expect(persistence.createCalls.length).toBe(1);
       const captured = persistence.createCalls[0]!;
       expect(captured.owner).toEqual({ userId: 'u-alice' });
-      expect(captured.docId).toBe('k-ns');
+      expect(captured.docId).toBe(src.id(1));
       const schemaMap = captured.doc.getMap('SCHEMA');
       expect(schemaMap.size).toBe(4);
       expect([...schemaMap.keys()].sort()).toEqual(['id', 'lang', 'text', 'version']);
@@ -365,7 +436,7 @@ describe('create 成功全链（§3/§5/§6/§9）：manual Clock 精确 created
       const metaMap = captured.doc.getMap('META');
       expect(metaMap.size).toBe(2);
       expect([...metaMap.keys()].sort()).toEqual(['createdAt', 'docId']);
-      expect(metaMap.get('docId')).toBe('k-ns'); // docId = namespaceId（§6）
+      expect(metaMap.get('docId')).toBe(src.id(1)); // docId = namespaceId（§6 生成 ID）
       expect(metaMap.get('createdAt')).toBe(FIXED_ISO);
       const rootMap = captured.doc.getMap('ROOT');
       expect(rootMap.get('n')).toBe(42);
@@ -401,6 +472,7 @@ describe('create 成功全链（§3/§5/§6/§9）：manual Clock 精确 created
     const registry = createNamespaceRegistryForTesting(persistence, {
       clock,
       scheduler: createRegistryTestScheduler(),
+      randomBytes: TEST_RANDOM_BYTES,
       runtimeFactory: () => makeMarkerRuntime('MARKER_PREPARING_TRACK', 'k-ns'),
     });
     const lease = okLease(await registry.create(makeCreateInput()));
@@ -425,6 +497,7 @@ describe('create 成功全链（§3/§5/§6/§9）：manual Clock 精确 created
     const registry = createNamespaceRegistryForTesting(persistence, {
       clock,
       scheduler: createRegistryTestScheduler(),
+      randomBytes: TEST_RANDOM_BYTES,
       runtimeFactory: (handle, notifyDirty) => {
         factoryCalls += 1;
         handleDocSeen = (handle as { doc?: unknown }).doc;
@@ -449,10 +522,16 @@ describe('snapshot 时机（§4/§9）：排队期间突变生效、slot snapsho
     // slot1：停在 createDoc gate 后以 operational 失败收场（零 entry）——slot2 才能在
     // 同一 key 上继续；若 slot1 成功，slot2 将 ALREADY_EXISTS 而无法观察突变生效。
     persistence.queueCreate({ gate: gate1, error: new DocCreateOperationalError(new Error('slot1-fails')) });
-    const registry = createNamespaceRegistryForTesting(persistence, { clock, scheduler: createRegistryTestScheduler() });
+    // 剧本源 [H1, H1]：两个 create 共享同一候选 ID（slot1 operational 失败零 entry →
+    // slot2 同 key 继续，FIFO 窗口保持）。
+    const registry = createNamespaceRegistryForTesting(persistence, {
+      clock,
+      scheduler: createRegistryTestScheduler(),
+      randomBytes: makeScriptedRandomBytes([H1, H1]),
+    });
 
-    const input1 = makeCreateInput({ namespaceId: 'k-q', schema: { ...GOOD_ENVELOPE, text: 'type ROOT = { a: number; };\n' }, root: { a: 1 } });
-    const input2 = makeCreateInput({ namespaceId: 'k-q', schema: { ...GOOD_ENVELOPE, text: 'type ROOT = { b: number; };\n' }, root: { b: 2 } });
+    const input1 = makeCreateInput({ schema: { ...GOOD_ENVELOPE, text: 'type ROOT = { a: number; };\n' }, root: { a: 1 } });
+    const input2 = makeCreateInput({ schema: { ...GOOD_ENVELOPE, text: 'type ROOT = { b: number; };\n' }, root: { b: 2 } });
     const p1 = registry.create(input1); // slot1 → 停在 createDoc gate
     await flushMicrotasks();
     const p2 = registry.create(input2); // slot2 排队（同 key FIFO）
@@ -474,7 +553,7 @@ describe('snapshot 时机（§4/§9）：排队期间突变生效、slot snapsho
     // slot1 收到的是它自己的原始值（未被污染）
     const doc1 = persistence.createCalls[0]!.doc;
     expect(doc1.getMap('SCHEMA').get('text')).toBe('type ROOT = { a: number; };\n');
-    await okLease(await registry.open({ userId: 'u-alice' }, 'k-q')).release();
+    await okLease(await registry.open({ userId: 'u-alice' }, `ns-${H1}`)).release();
   });
 
   it('slot snapshot 后突变的 schema/root 无效（槽内冻结）', async () => {
@@ -482,7 +561,7 @@ describe('snapshot 时机（§4/§9）：排队期间突变生效、slot snapsho
     const clock = makeManualClock(FIXED_MS);
     const gate = deferred();
     persistence.queueCreate({ gate });
-    const registry = createNamespaceRegistryForTesting(persistence, { clock, scheduler: createRegistryTestScheduler() });
+    const registry = createNamespaceRegistryForTesting(persistence, { clock, scheduler: createRegistryTestScheduler(), randomBytes: TEST_RANDOM_BYTES });
     const input = makeCreateInput({ schema: { ...GOOD_ENVELOPE, text: 'type ROOT = { n: number; };\n' }, root: { n: 1 } });
     const p = registry.create(input);
     await flushMicrotasks(); // slot 已通过 payload snapshot，停在 createDoc gate
@@ -503,15 +582,18 @@ describe('snapshot 时机（§4/§9）：排队期间突变生效、slot snapsho
     const clock = makeManualClock(FIXED_MS);
     const gate1 = deferred();
     persistence.queueCreate({ gate: gate1 });
-    const registry = createNamespaceRegistryForTesting(persistence, { clock, scheduler: createRegistryTestScheduler() });
-
+    // 剧本源 [H1, H1]：两 create 共享同一候选（同 key FIFO——接纳段冻结 owner 投影）。
+    const registry = createNamespaceRegistryForTesting(persistence, {
+      clock,
+      scheduler: createRegistryTestScheduler(),
+      randomBytes: makeScriptedRandomBytes([H1, H1, H2]),
+    });
     const ownerObj: { userId: string } = { userId: 'u-frozen' };
-    const input1 = makeCreateInput({ owner: ownerObj, namespaceId: 'k-owner' });
+    const input1 = makeCreateInput({ owner: ownerObj });
     const p1 = registry.create(input1);
     await flushMicrotasks();
     const p2 = registry.create({
       owner: ownerObj, // 同 identity 接纳（冻结投影）
-      namespaceId: 'k-owner',
       schema: GOOD_ENVELOPE,
       root: GOOD_ROOT,
     });
@@ -519,19 +601,22 @@ describe('snapshot 时机（§4/§9）：排队期间突变生效、slot snapsho
     ownerObj.userId = 'u-EVIL';
     (input1 as { owner: unknown }).owner = { userId: 'u-EVIL-2' };
     await flushMicrotasks();
-    // 若 key 被改写，slot2 将并行到达 createDoc；冻结 key 下 slot2 仍在排队
+    // 若 identity 被改写，slot2 将并行到达 createDoc；冻结 identity 下 slot2 仍在排队
     expect(persistence.createCalls.length).toBe(1);
     gate1.resolve();
     await p1;
+    // slot2（候选 H1）在 slot1 登记 entry 后命中碰撞 → 重生成 H2 成功（不再 ALREADY_EXISTS）
     const r2 = await p2;
-    expect(r2).toMatchObject({ ok: false, code: 'NAMESPACE_ALREADY_EXISTS' }); // 同 key → duplicate
-    expect(persistence.createCalls.length).toBe(1);
+    expect(r2.ok).toBe(true);
+    expect(persistence.createCalls.map((c) => c.docId)).toEqual([`ns-${H1}`, `ns-${H2}`]);
     expect(persistence.createCalls[0]!.owner).toEqual({ userId: 'u-frozen' });
-    expect(persistence.createCalls[0]!.docId).toBe('k-owner');
+    expect(persistence.createCalls[1]!.owner).toEqual({ userId: 'u-frozen' });
     // 后续（原 identity）open 命中 entry：frozen identity 建 key
-    const lease = okLease(await registry.open({ userId: 'u-frozen' }, 'k-owner'));
-    expect(persistence.loadCalls.length).toBe(0);
+    const lease = okLease(await registry.open({ userId: 'u-frozen' }, `ns-${H1}`));
+    expect(persistence.loadCalls.length).toBe(0); // entry H1 命中（frozen identity 建 key）
     await lease.release();
+    const lease2 = okLease(r2); // 重生成的 H2 lease 独立结算
+    await lease2.release();
   });
 });
 
@@ -546,11 +631,11 @@ describe('hostile input（§1/§4/§9）：Proxy trap 窄 issue + slot isolation
         throw new Error('ownKeys trap boom');
       },
     });
-    const registry = createNamespaceRegistryForTesting(persistence, { clock, scheduler: createRegistryTestScheduler() });
+    const registry = createNamespaceRegistryForTesting(persistence, { clock, scheduler: createRegistryTestScheduler(), randomBytes: TEST_RANDOM_BYTES });
     const r1 = await registry.create(hostileInput as never);
     expect(r1).toMatchObject({ ok: false, code: 'NAMESPACE_CREATE_INVALID_INPUT' });
     expect((r1 as unknown as { message: string }).message).toBe(
-      'NAMESPACE_CREATE_INVALID_INPUT: create 输入必须恰含 owner、namespaceId、schema 与 root',
+      'NAMESPACE_CREATE_INVALID_INPUT: create 输入必须恰含 owner、schema 与 root',
     );
     expect(ownKeysTrapCount).toBeGreaterThanOrEqual(1); // trap 确实执行（诚实措辞：不宣称零执行）
     // 本 slot 零副作用：Clock 未读、createDocument/Persistence 零调用
@@ -577,11 +662,11 @@ describe('hostile input（§1/§4/§9）：Proxy trap 窄 issue + slot isolation
         return Reflect.getOwnPropertyDescriptor(target, prop);
       },
     });
-    const registry = createNamespaceRegistryForTesting(persistence, { clock, scheduler: createRegistryTestScheduler() });
+    const registry = createNamespaceRegistryForTesting(persistence, { clock, scheduler: createRegistryTestScheduler(), randomBytes: TEST_RANDOM_BYTES });
     const r1 = await registry.create(hostileInput as never);
-    // 接纳只经属性 GET 读取 owner/namespaceId 值；input 自身的 descriptor 元操作在
-    // 槽内 payload 快照发生 → trap throw 被吸收为窄的 NAMESPACE_CREATE_INVALID_INPUT
-    // （identity 本身合法——owner/namespaceId 值未被 trap 改写）。
+    // phase-5 切片 1：接纳段以 descriptor-only 检查 namespaceId（键出现即拒）——Proxy 的
+    // getOwnPropertyDescriptor(nsId) trap throw 被 catch 为窄的 NAMESPACE_CREATE_INVALID_INPUT
+    // （零 getter 执行；owner/namespaceId 值永不被读取）。
     expect(r1).toMatchObject({ ok: false, code: 'NAMESPACE_CREATE_INVALID_INPUT' });
     expect(descTrap).toBeGreaterThanOrEqual(1);
     expect(clock.calls).toBe(0);
@@ -610,7 +695,7 @@ describe('hostile input（§1/§4/§9）：Proxy trap 窄 issue + slot isolation
     ];
     const persistence = new CreateStubPersistence();
     const clock = makeManualClock(FIXED_MS);
-    const registry = createNamespaceRegistryForTesting(persistence, { clock, scheduler: createRegistryTestScheduler() });
+    const registry = createNamespaceRegistryForTesting(persistence, { clock, scheduler: createRegistryTestScheduler(), randomBytes: TEST_RANDOM_BYTES });
     for (const proxy of proxies) {
       const r = await registry.create(makeCreateInput({ owner: proxy }));
       expect(r).toMatchObject({ ok: false, code: 'NAMESPACE_INVALID_IDENTITY', field: 'owner.userId' });
@@ -643,7 +728,7 @@ describe('hostile input（§1/§4/§9）：Proxy trap 窄 issue + slot isolation
     ];
     const persistence = new CreateStubPersistence();
     const clock = makeManualClock(FIXED_MS);
-    const registry = createNamespaceRegistryForTesting(persistence, { clock, scheduler: createRegistryTestScheduler() });
+    const registry = createNamespaceRegistryForTesting(persistence, { clock, scheduler: createRegistryTestScheduler(), randomBytes: TEST_RANDOM_BYTES });
     for (const c of cases) {
       const r = await registry.create(c.input);
       expect(r, `${c.name} → NAMESPACE_CREATE_INVALID_INPUT`).toMatchObject({
@@ -700,6 +785,7 @@ describe('hostile input（§1/§4/§9）：Proxy trap 窄 issue + slot isolation
     const registry = createNamespaceRegistryForTesting(persistence, {
       clock,
       scheduler: createRegistryTestScheduler(),
+      randomBytes: TEST_RANDOM_BYTES,
       // 计数 factory（若漏检则 create 会经此成功——注入不可 throw，保证失败形态
       // 是「期望 INVALID_INPUT vs 实际成功」的断言差异而非 rejection）
       createDocumentFactory: () => {
@@ -709,7 +795,7 @@ describe('hostile input（§1/§4/§9）：Proxy trap 窄 issue + slot isolation
     });
     for (const c of cases) {
       const r = await registry.create(
-        makeCreateInput({ namespaceId: `k-arr-${c.name}`, schema: ARRAY_SCHEMA, root: { n: 42, list: c.list } }),
+        makeCreateInput({ schema: ARRAY_SCHEMA, root: { n: 42, list: c.list } }),
       );
       expect(r, `${c.name} → NAMESPACE_CREATE_INVALID_INPUT`).toMatchObject({
         ok: false,
@@ -744,6 +830,7 @@ describe('hostile input（§1/§4/§9）：Proxy trap 窄 issue + slot isolation
     const registry = createNamespaceRegistryForTesting(persistence, {
       clock,
       scheduler: createRegistryTestScheduler(),
+      randomBytes: TEST_RANDOM_BYTES,
       diagnostics: (e) => diagnostics.push({ type: e.type }),
     });
     const r = await registry.create(input as never);
@@ -761,16 +848,16 @@ describe('hostile input（§1/§4/§9）：Proxy trap 窄 issue + slot isolation
 });
 
 describe('输入形状（§4/§9 终审 D2）：五键/错名键/缺键专属锚 → NAMESPACE_CREATE_INVALID_INPUT', () => {
-  it('五键（多 meta）/五键（多 createdAt）/错名键（rooot 代替 root）/缺 root（恰三键）→ 同码 + 零 Clock + 零 Persistence', async () => {
+  it('五键（多 meta）/五键（多 createdAt）/错名键（rooot 代替 root）/缺 root（恰两键）→ 同码 + 零 Clock + 零 Persistence', async () => {
     const persistence = new CreateStubPersistence();
     const clock = makeManualClock(FIXED_MS);
-    const registry = createNamespaceRegistryForTesting(persistence, { clock, scheduler: createRegistryTestScheduler() });
-    const base = { owner: { userId: 'u-alice' }, namespaceId: 'k-ns', schema: GOOD_ENVELOPE, root: GOOD_ROOT };
+    const registry = createNamespaceRegistryForTesting(persistence, { clock, scheduler: createRegistryTestScheduler(), randomBytes: TEST_RANDOM_BYTES });
+    const base = { owner: { userId: 'u-alice' }, schema: GOOD_ENVELOPE, root: GOOD_ROOT };
     const cases: Array<{ name: string; input: unknown }> = [
       { name: '五键（多 meta）', input: { ...base, meta: {} } },
       { name: '五键（多 createdAt）', input: { ...base, createdAt: '2023-11-14T22:15:23.456Z' } },
-      { name: '错名键（rooot 代替 root）', input: { owner: base.owner, namespaceId: base.namespaceId, schema: base.schema, rooot: base.root } },
-      { name: '缺 root（恰三键）', input: { owner: base.owner, namespaceId: base.namespaceId, schema: base.schema } },
+      { name: '错名键（rooot 代替 root）', input: { owner: base.owner, schema: base.schema, rooot: base.root } },
+      { name: '缺 root（恰两键）', input: { owner: base.owner, schema: base.schema } },
     ];
     for (const c of cases) {
       const r = await registry.create(c.input as never);
@@ -784,13 +871,61 @@ describe('输入形状（§4/§9 终审 D2）：五键/错名键/缺键专属锚
     expect(persistence.createCalls.length).toBe(0);
     expect(persistence.loadCalls.length).toBe(0);
   });
+
+  it('携带 namespaceId 键（原 create 文法用例：空串/点/斜杠/String 对象/number）→ 接纳段 CREATE_INVALID_INPUT，零随机源消耗、零 Clock、零 Persistence', async () => {
+    // phase-5 切片 1（ADR 0010）：namespaceId 键出现即拒（data 或 accessor 描述符一律
+    // 拒）——原「create 的 namespaceId 文法」用例全部改锚 CREATE_INVALID_INPUT；
+    // 文法的合法性面保留在 open（validateOpenIdentity 零改动，旧格式 ID 继续可 open）。
+    const persistence = new CreateStubPersistence();
+    const clock = makeManualClock(FIXED_MS);
+    let consumed = 0;
+    const counting = makeCountingRandomBytes();
+    const registry = createNamespaceRegistryForTesting(persistence, {
+      clock,
+      scheduler: createRegistryTestScheduler(),
+      randomBytes: (length: number) => {
+        consumed += 1;
+        return counting.randomBytes(length);
+      },
+    });
+    const legacyShape = (namespaceId: unknown) => ({
+      owner: { userId: 'u-alice' },
+      namespaceId,
+      schema: GOOD_ENVELOPE,
+      root: GOOD_ROOT,
+    });
+    const cases: Array<{ name: string; namespaceId: unknown }> = [
+      { name: "空串 ''", namespaceId: '' },
+      { name: "'.'", namespaceId: '.' },
+      { name: "'..'", namespaceId: '..' },
+      { name: "'x/y'", namespaceId: 'x/y' },
+      { name: "'x\\y'", namespaceId: 'x\\y' },
+      { name: 'String 对象', namespaceId: new String('y') as unknown as string },
+      { name: 'number 7', namespaceId: 7 },
+    ];
+    for (const c of cases) {
+      const r = await registry.create(legacyShape(c.namespaceId) as never);
+      expect(r, `${c.name} → NAMESPACE_CREATE_INVALID_INPUT`).toMatchObject({
+        ok: false,
+        code: 'NAMESPACE_CREATE_INVALID_INPUT',
+      });
+    }
+    expect(consumed).toBe(0); // 零随机源消耗（接纳段拒绝先于生成）
+    expect(clock.calls).toBe(0);
+    expect(persistence.createCalls.length).toBe(0);
+    expect(persistence.loadCalls.length).toBe(0);
+  });
 });
 
-describe('identity invalid（§4/§9）：非法 owner/namespaceId → NAMESPACE_INVALID_IDENTITY 零副作用', () => {
+describe('identity invalid（§4/§9）：非法 owner → NAMESPACE_INVALID_IDENTITY 零副作用；携带 namespaceId 键 → CREATE_INVALID_INPUT（ADR 0010 拒收面）', () => {
   it('identity 表：全部 resolve 窄 issue，diagnostics 无 carrier-created、零 createDoc/loadDoc/factory', async () => {
+    // phase-5 切片 1（ADR 0010）：create 不再接受调用方 namespaceId——原 namespaceId
+    // 文法用例（''/'.'/'..'/'x/y'/'String 对象'/number）迁至「输入形状」段的
+    // CREATE_INVALID_INPUT 拒收面（见下）；本表的 owner 文法面在新三键契约下保持
+    // INVALID_IDENTITY（field='owner.userId'）。
     const badCases: Array<{ input: unknown; field: 'owner.userId' | 'namespaceId' }> = [
       // 直构（`makeCreateInput` 的 `??` 会把显式 null 吞掉——攻击面必须真实到达）
-      { input: { owner: null, namespaceId: 'k-ns', schema: GOOD_ENVELOPE, root: GOOD_ROOT }, field: 'owner.userId' },
+      { input: { owner: null, schema: GOOD_ENVELOPE, root: GOOD_ROOT }, field: 'owner.userId' },
       { input: makeCreateInput({ owner: 'str' }), field: 'owner.userId' },
       { input: makeCreateInput({ owner: 42 }), field: 'owner.userId' },
       { input: makeCreateInput({ owner: [] }), field: 'owner.userId' },
@@ -804,13 +939,6 @@ describe('identity invalid（§4/§9）：非法 owner/namespaceId → NAMESPACE
       { input: makeCreateInput({ owner: { userId: 'a\u007fb' } }), field: 'owner.userId' },
       { input: makeCreateInput({ owner: { userId: 'a\u009fb' } }), field: 'owner.userId' },
       { input: makeCreateInput({ owner: { userId: new String('x') as unknown as string } }), field: 'owner.userId' },
-      { input: makeCreateInput({ namespaceId: '' }), field: 'namespaceId' },
-      { input: makeCreateInput({ namespaceId: '.' }), field: 'namespaceId' },
-      { input: makeCreateInput({ namespaceId: '..' }), field: 'namespaceId' },
-      { input: makeCreateInput({ namespaceId: 'x/y' }), field: 'namespaceId' },
-      { input: makeCreateInput({ namespaceId: 'x\\y' }), field: 'namespaceId' },
-      { input: makeCreateInput({ namespaceId: new String('y') as unknown as string }), field: 'namespaceId' },
-      { input: makeCreateInput({ owner: { userId: 'u' }, namespaceId: 7 }), field: 'namespaceId' },
     ];
     const persistence = new CreateStubPersistence();
     const clock = makeManualClock(FIXED_MS);
@@ -819,6 +947,7 @@ describe('identity invalid（§4/§9）：非法 owner/namespaceId → NAMESPACE
     const registry = createNamespaceRegistryForTesting(persistence, {
       clock,
       scheduler: createRegistryTestScheduler(),
+      randomBytes: TEST_RANDOM_BYTES,
       runtimeFactory: () => {
         factoryCalls += 1;
         return makeMarkerRuntime('x', 'y');
@@ -842,7 +971,9 @@ describe('identity invalid（§4/§9）：非法 owner/namespaceId → NAMESPACE
     expect(factoryCalls).toBe(0);
   });
 
-  it('namespaceId 非 primitive string 先短路：owner Proxy trap 零执行、零任何副作用', async () => {
+  it('携带 namespaceId 键（String 对象）先拒：owner Proxy trap 零执行、零任何副作用', async () => {
+    // phase-5 切片 1：namespaceId 键出现即拒（descriptor 检查先于 owner 形状读取）——
+    // owner 的 getPrototypeOf trap 零执行（键拒收短路）。
     const persistence = new CreateStubPersistence();
     const clock = makeManualClock(FIXED_MS);
     let ownerTrap = 0;
@@ -855,10 +986,15 @@ describe('identity invalid（§4/§9）：非法 owner/namespaceId → NAMESPACE
         },
       },
     );
-    const registry = createNamespaceRegistryForTesting(persistence, { clock, scheduler: createRegistryTestScheduler() });
-    const r = await registry.create(makeCreateInput({ owner: hostileOwner, namespaceId: new String('n1') as unknown as string }));
-    expect(r).toMatchObject({ ok: false, code: 'NAMESPACE_INVALID_IDENTITY', field: 'namespaceId' });
-    expect(ownerTrap).toBe(0); // typeof 短路在 owner 形状读取之前
+    const registry = createNamespaceRegistryForTesting(persistence, { clock, scheduler: createRegistryTestScheduler(), randomBytes: TEST_RANDOM_BYTES });
+    const r = await registry.create({
+      owner: hostileOwner,
+      namespaceId: new String('n1') as unknown as string,
+      schema: GOOD_ENVELOPE,
+      root: GOOD_ROOT,
+    } as never);
+    expect(r).toMatchObject({ ok: false, code: 'NAMESPACE_CREATE_INVALID_INPUT' });
+    expect(ownerTrap).toBe(0); // 键拒收短路在 owner 形状读取之前
     expect(clock.calls).toBe(0);
     expect(persistence.createCalls.length).toBe(0);
     expect(persistence.loadCalls.length).toBe(0);
@@ -875,6 +1011,7 @@ describe('domain（§3/§5/§6/§9）：schema/root 失败 verbatim issues + 零
     const registry = createNamespaceRegistryForTesting(persistence, {
       clock,
       scheduler: createRegistryTestScheduler(),
+      randomBytes: TEST_RANDOM_BYTES,
       runtimeFactory: () => {
         factoryCalls += 1;
         return makeMarkerRuntime('x', 'y');
@@ -903,6 +1040,7 @@ describe('domain（§3/§5/§6/§9）：schema/root 失败 verbatim issues + 零
     const registry = createNamespaceRegistryForTesting(persistence, {
       clock,
       scheduler: createRegistryTestScheduler(),
+      randomBytes: TEST_RANDOM_BYTES,
       runtimeFactory: () => {
         factoryCalls += 1;
         return makeMarkerRuntime('x', 'y');
@@ -930,7 +1068,7 @@ describe('domain（§3/§5/§6/§9）：schema/root 失败 verbatim issues + 零
   it('domain failures 后 green tail：同 key 后续 create 正常成功', async () => {
     const persistence = new CreateStubPersistence();
     const clock = makeManualClock(FIXED_MS);
-    const registry = createNamespaceRegistryForTesting(persistence, { clock, scheduler: createRegistryTestScheduler() });
+    const registry = createNamespaceRegistryForTesting(persistence, { clock, scheduler: createRegistryTestScheduler(), randomBytes: TEST_RANDOM_BYTES });
     const r1 = await registry.create(makeCreateInput({ schema: BAD_ENVELOPE }));
     expect(r1).toMatchObject({ ok: false, code: 'NAMESPACE_SCHEMA_INVALID' });
     const r2 = await registry.create(makeCreateInput({ root: BAD_ROOT }));
@@ -945,17 +1083,19 @@ describe('domain（§3/§5/§6/§9）：schema/root 失败 verbatim issues + 零
     const persistence = new CreateStubPersistence();
     const clock = makeManualClock(FIXED_MS);
     persistence.queueCreate({ error: new DocDuplicateError() });
-    const registry = createNamespaceRegistryForTesting(persistence, { clock, scheduler: createRegistryTestScheduler() });
+    const registry = createNamespaceRegistryForTesting(persistence, { clock, scheduler: createRegistryTestScheduler(), randomBytes: TEST_RANDOM_BYTES });
     const invalid = await registry.create(makeCreateInput({ owner: { userId: 'bad/owner' } }));
-    const inputShape = await registry.create({ owner: { userId: 'u' }, namespaceId: 'k', schema: GOOD_ENVELOPE } as never); // 缺 root
+    const inputShape = await registry.create({ owner: { userId: 'u' }, schema: GOOD_ENVELOPE } as never); // 缺 root（恰两键）
     const schemaBad = await registry.create(makeCreateInput({ schema: BAD_ENVELOPE }));
     const rootBad = await registry.create(makeCreateInput({ root: BAD_ROOT }));
-    const dup = await registry.create(makeCreateInput());
+    // phase-5 切片 1（ADR 0010）：普通 create 不再产出 ALREADY_EXISTS（DOC_DUPLICATE →
+    // 重试环）——注册表常量保留于 types.ts（切片 2 受信任导入路径复用），此处锚定常量
+    // 文本而非运行时产出。
     expect((invalid as unknown as { message: string }).message).toBe(
       'NAMESPACE_INVALID_IDENTITY: owner.userId 或 namespaceId 不符合安全文法',
     );
     expect((inputShape as unknown as { message: string }).message).toBe(
-      'NAMESPACE_CREATE_INVALID_INPUT: create 输入必须恰含 owner、namespaceId、schema 与 root',
+      'NAMESPACE_CREATE_INVALID_INPUT: create 输入必须恰含 owner、schema 与 root',
     );
     expect((schemaBad as unknown as { message: string }).message).toBe(
       'NAMESPACE_SCHEMA_INVALID: namespace schema 编译失败',
@@ -963,9 +1103,7 @@ describe('domain（§3/§5/§6/§9）：schema/root 失败 verbatim issues + 零
     expect((rootBad as unknown as { message: string }).message).toBe(
       'NAMESPACE_ROOT_INVALID: namespace ROOT 不符合 schema 或无法构造',
     );
-    expect((dup as unknown as { message: string }).message).toBe(
-      'NAMESPACE_ALREADY_EXISTS: namespace 已存在，不能重复创建',
-    );
+    expect(NAMESPACE_ALREADY_EXISTS_MESSAGE).toBe('NAMESPACE_ALREADY_EXISTS: namespace 已存在，不能重复创建');
   });
 });
 
@@ -977,25 +1115,28 @@ describe('Registry 自创面负锁（§3/§9：sentinel 不出现在顶层 messa
     const SENTINEL_NS = 'SENTINEL_NS_e9f1';
     const SENTINEL_CAUSE = 'SENTINEL_CAUSE_e9f1';
     const events: RegistryObserverEvent[] = [];
+    const src = makeCountingRandomBytes();
     const registry = createNamespaceRegistryForTesting(persistence, {
       clock,
       scheduler: createRegistryTestScheduler(),
+      randomBytes: src.randomBytes,
       observer: (e) => events.push(e),
     });
-    // create operational（typed）→ NAMESPACE_CREATE_FAILED（顶层 message 恒定）
+    // create operational（typed）→ NAMESPACE_CREATE_FAILED（顶层 message 恒定）；
+    // phase-5 切片 1：create 恒三键——namespaceId 由随机源生成（零调用方选值空间）。
     persistence.queueCreate({ error: new DocCreateOperationalError(new Error(SENTINEL_CAUSE)) });
-    const failed = await registry.create(makeCreateInput({ owner: { userId: SENTINEL_OWNER }, namespaceId: SENTINEL_NS }));
+    const failed = await registry.create(makeCreateInput({ owner: { userId: SENTINEL_OWNER } }));
     // fatal（unknown createDoc → lifecycle-slot-internal false）
     persistence.queueCreate({ error: new Error(SENTINEL_CAUSE) });
     const fatal = await registry
-      .create(makeCreateInput({ owner: { userId: SENTINEL_OWNER }, namespaceId: SENTINEL_NS }))
+      .create(makeCreateInput({ owner: { userId: SENTINEL_OWNER } }))
       .then(
         () => null,
         (e: unknown) => e,
       );
     // invalid identity
     const invalid = await registry.create(
-      makeCreateInput({ owner: { userId: `${SENTINEL_OWNER}/x` }, namespaceId: SENTINEL_NS }),
+      makeCreateInput({ owner: { userId: `${SENTINEL_OWNER}/x` } }),
     );
 
     const publicTexts: string[] = [];
@@ -1023,73 +1164,96 @@ describe('Registry 自创面负锁（§3/§9：sentinel 不出现在顶层 messa
     expect(fatalEv).toBeDefined();
     if (fatalEv?.type === 'lifecycle-slot-failed') {
       expect((fatalEv.cause as Error).message).toContain(SENTINEL_CAUSE);
-      expect(fatalEv.identity.namespaceId).toBe(SENTINEL_NS);
+      expect(fatalEv.identity.namespaceId).toBe(src.id(2)); // 第 2 次生成（operational 失败第 1 次后）
     }
   });
 });
 
-describe('duplicate 四源（§5/§9）：active / lease-zero 临时态 / 并发 FIFO / persisted，一律 ALREADY_EXISTS', () => {
-  it('active entry：同 key 第二次 create → ALREADY_EXISTS，零 loadDoc、零第二次 createDoc', async () => {
+describe('duplicate 四源（§5/§9；phase-5 迁移）：active / zero-lease / idle / 并发 FIFO / persisted 碰撞 → 重生成新 ID（排他性由重生成+耗尽 fatal 承载）', () => {
+  it('active entry：第二次 create 首选候选撞 active entry → 重生成新 ID 成功（colliding 候选零 Persistence、零 Clock 读）', async () => {
+    // phase-5 切片 1（ADR 0010）：entry 碰撞恒为编排循环的重试条件（排他性由「重生成 +
+    // 耗尽 fatal」承载）；active/idle/closing 一律碰撞，绝不等待 closePromise。
     const persistence = new CreateStubPersistence();
     const clock = makeManualClock(FIXED_MS);
-    const registry = createNamespaceRegistryForTesting(persistence, { clock, scheduler: createRegistryTestScheduler() });
+    const registry = createNamespaceRegistryForTesting(persistence, {
+      clock,
+      scheduler: createRegistryTestScheduler(),
+      randomBytes: makeScriptedRandomBytes([H1, H1, H2]),
+    });
     const r1 = await registry.create(makeCreateInput());
     expect(r1.ok).toBe(true);
+    const lease1 = okLease(r1);
+    expect(lease1.namespaceId).toBe(`ns-${H1}`);
     const r2 = await registry.create(makeCreateInput());
-    expect(r2).toMatchObject({ ok: false, code: 'NAMESPACE_ALREADY_EXISTS' });
-    expect((r2 as unknown as { message: string }).message).toBe(
-      'NAMESPACE_ALREADY_EXISTS: namespace 已存在，不能重复创建',
-    );
-    expect(persistence.createCalls.length).toBe(1);
+    expect(r2.ok).toBe(true);
+    const lease2 = okLease(r2);
+    expect(lease2.namespaceId).toBe(`ns-${H2}`); // H1 撞 active entry → 重生成 H2
+    expect(lease2.namespaceId).not.toBe(lease1.namespaceId);
+    expect(persistence.createCalls.map((c) => c.docId)).toEqual([`ns-${H1}`, `ns-${H2}`]);
     expect(persistence.loadCalls.length).toBe(0);
     expect(persistence.saveCalls).toBe(0);
-    expect(clock.calls).toBe(1); // 第二次 create 未读 Clock（duplicate 在 payload/Clock 前）
-    await okLease(r1).release();
+    expect(clock.calls).toBe(2); // 每次 create 单读；colliding 候选在 payload/Clock 前短路
+    await lease1.release();
+    await lease2.release();
   });
 
-  it('lease 全释放后的临时保留态：entry 保留 → create 仍 ALREADY_EXISTS（零 loadDoc）', async () => {
+  it('lease 全释放后的临时保留态：entry 保留（零 lease）→ 候选碰撞重生成新 ID 成功（零 loadDoc）', async () => {
+    // phase-5 切片 1：zero-lease 保留态（release 后、idle 武装前的同步窗口）与 idle 同占
+    // 命名空间——create 候选碰撞即重生成；零 loadDoc（entry 打击面零 Persistence）。
     const persistence = new CreateStubPersistence();
     const clock = makeManualClock(FIXED_MS);
-    const registry = createNamespaceRegistryForTesting(persistence, { clock, scheduler: createRegistryTestScheduler() });
+    const registry = createNamespaceRegistryForTesting(persistence, {
+      clock,
+      scheduler: createRegistryTestScheduler(),
+      randomBytes: makeScriptedRandomBytes([H1, H1, H2]),
+    });
     const lease = okLease(await registry.create(makeCreateInput()));
     await lease.release();
     expect(lease.getStatus()).toMatchObject({ lease: 'released', runtime: null });
     const r2 = await registry.create(makeCreateInput());
-    expect(r2).toMatchObject({ ok: false, code: 'NAMESPACE_ALREADY_EXISTS' });
-    expect(persistence.createCalls.length).toBe(1);
+    expect(r2.ok).toBe(true);
+    expect(okLease(r2).namespaceId).toBe(`ns-${H2}`);
+    expect(persistence.createCalls.map((c) => c.docId)).toEqual([`ns-${H1}`, `ns-${H2}`]);
     expect(persistence.loadCalls.length).toBe(0);
-    expect(clock.calls).toBe(1);
+    expect(clock.calls).toBe(2);
+    await okLease(r2).release();
   });
 
-  it('idle 态（#112 第五态，ADR-0009:68 明文）：release 后 entry 已 idle 武装 → create 仍 ALREADY_EXISTS 零 Persistence；完整窗口后恢复可创建', async () => {
-    // #112 DQ-5 扩 idle 行：active（含零 lease）与 idle 同码 ALREADY_EXISTS，均零 Persistence；
-    // 既有「lease 全释放后临时保留态」用例语义从 active-零lease 变为 idle，断言同码保持绿。
+  it('idle 态（#112 第五态，ADR-0009:68）：release 后 entry 已 idle 武装 → 候选碰撞重生成新 ID 成功；完整窗口后 entry 清理、再 create 新 ID 成功', async () => {
+    // #112 DQ-5 扩 idle 行：active（含零 lease）与 idle 同占命名空间；phase-5 切片 1
+    // 把「同码 ALREADY_EXISTS」迁移为「碰撞 → 重生成」，idle 依旧占位（不静默放行同 ID）。
     const persistence = new CreateStubPersistence();
     const clock = makeManualClock(FIXED_MS);
     const scheduler = createRegistryTestScheduler();
     const registry = createNamespaceRegistryForTesting(persistence, {
       clock,
       scheduler,
+      randomBytes: makeScriptedRandomBytes([H1, H1, H2, H3]),
       idleTimeoutMs: 300_000,
     });
     const lease = okLease(await registry.create(makeCreateInput()));
+    expect(lease.namespaceId).toBe(`ns-${H1}`);
     await lease.release();
     expect(scheduler.pending()).toBe(1); // 最后 lease 释放 → idle 武装（显式 idle 行前提）
     const r2 = await registry.create(makeCreateInput());
-    expect(r2).toMatchObject({ ok: false, code: 'NAMESPACE_ALREADY_EXISTS' });
-    expect(persistence.createCalls.length).toBe(1); // 零第二次 createDoc
+    expect(r2.ok).toBe(true);
+    const lease2 = okLease(r2);
+    expect(lease2.namespaceId).toBe(`ns-${H2}`); // idle entry H1 碰撞 → 重生成 H2
+    expect(persistence.createCalls.map((c) => c.docId)).toEqual([`ns-${H1}`, `ns-${H2}`]);
     expect(persistence.loadCalls.length).toBe(0);
-    expect(clock.calls).toBe(1); // idle duplicate 在 payload/Clock 之前
-    // 完整窗口（advanceBy）触发 idle close → entry 清理 → 同 key create 恢复可创建
+    expect(clock.calls).toBe(2); // 每次 create 单读；colliding 候选在 payload/Clock 前短路
+    await lease2.release();
+    // 完整窗口（advanceBy）触发 idle close → entry 清理 → 再 create 新 ID 成功（零残留）
     await scheduler.advanceBy(300_000);
     await flushMicrotasks();
     const r3 = await registry.create(makeCreateInput());
     expect(r3.ok).toBe(true);
-    expect(persistence.createCalls.length).toBe(2);
+    expect(okLease(r3).namespaceId).toBe(`ns-${H3}`);
+    expect(persistence.createCalls.length).toBe(3);
     await okLease(r3).release();
   });
 
-  it('并发 FIFO：createDoc gate 固定先后手，第二个 slot 零 createDocument 调用、零 Clock 读', async () => {
+  it('并发 FIFO：createDoc gate 固定先后手；后手候选 H1 撞登记 entry → 碰撞零 prepare、重生成 H2 成功', async () => {
     const persistence = new CreateStubPersistence();
     const clock = makeManualClock(FIXED_MS);
     const gate = deferred();
@@ -1098,8 +1262,9 @@ describe('duplicate 四源（§5/§9）：active / lease-zero 临时态 / 并发
     const registry = createNamespaceRegistryForTesting(persistence, {
       clock,
       scheduler: createRegistryTestScheduler(),
-      // 计数 factory：返回合法初始 doc（{ok:true}），使第一个 slot 正常成功；
-      // 第二个（duplicate）slot 永不进入 createDocument 阶段。
+      randomBytes: makeScriptedRandomBytes([H1, H1, H2]),
+      // 计数 factory：返回合法初始 doc（{ok:true}），使过门 attempt 正常构造；
+      // 后手 H1-attempt 在 entry 碰撞处短路（永不进入 createDocument 阶段）。
       createDocumentFactory: () => {
         documentFactoryCalls += 1;
         const doc = new Y.Doc();
@@ -1108,31 +1273,38 @@ describe('duplicate 四源（§5/§9）：active / lease-zero 临时态 / 并发
     });
     const p1 = registry.create(makeCreateInput()); // 先手：停在 createDoc gate
     await flushMicrotasks();
-    const p2 = registry.create(makeCreateInput()); // 后手：同 key FIFO 排队
+    const p2 = registry.create(makeCreateInput()); // 后手：同候选 H1 → 同 key FIFO 排队
     await flushMicrotasks();
     expect(persistence.createCalls.length).toBe(1); // 后手未并行到达 Persistence
     gate.resolve();
     await p1;
     const r2 = await p2;
-    expect(r2).toMatchObject({ ok: false, code: 'NAMESPACE_ALREADY_EXISTS' });
-    expect(persistence.createCalls.length).toBe(1);
-    expect(clock.calls).toBe(1); // 后手 duplicate 未读 Clock
-    expect(documentFactoryCalls).toBe(1); // 第二个零 createDocument 调用
+    expect(r2.ok).toBe(true); // H1 碰撞 → 重生成 H2 成功
+    expect(okLease(r2).namespaceId).toBe(`ns-${H2}`);
+    expect(persistence.createCalls.map((c) => c.docId)).toEqual([`ns-${H1}`, `ns-${H2}`]);
+    expect(clock.calls).toBe(2); // 每次 create 单读；后手 colliding 候选未读 Clock
+    expect(documentFactoryCalls).toBe(2); // 后手仅重试候选进入构造步（H1 碰撞零调用）
+    await okLease(r2).release();
   });
 
-  it('persisted DocDuplicateError：createDoc 抛 typed duplicate → ALREADY_EXISTS，零 loadDoc/零 upsert', async () => {
+  it('persisted DocDuplicateError：createDoc 抛 typed duplicate → 换 ID 重试成功（排他性由「重生成 + 耗尽 fatal」承载）', async () => {
     const persistence = new CreateStubPersistence();
     const clock = makeManualClock(FIXED_MS);
-    persistence.queueCreate({ error: new DocDuplicateError() });
-    const registry = createNamespaceRegistryForTesting(persistence, { clock, scheduler: createRegistryTestScheduler() });
+    persistence.queueCreate({ error: new DocDuplicateError() }); // 仅首个 createDoc 命中
+    const registry = createNamespaceRegistryForTesting(persistence, {
+      clock,
+      scheduler: createRegistryTestScheduler(),
+      randomBytes: makeScriptedRandomBytes([H1, H2]),
+    });
     const r = await registry.create(makeCreateInput());
-    expect(r).toMatchObject({ ok: false, code: 'NAMESPACE_ALREADY_EXISTS' });
-    expect((r as unknown as { message: string }).message).toBe(
-      'NAMESPACE_ALREADY_EXISTS: namespace 已存在，不能重复创建',
-    );
-    expect(persistence.createCalls.length).toBe(1);
+    expect(r.ok).toBe(true);
+    const lease = okLease(r);
+    expect(lease.namespaceId).toBe(`ns-${H2}`); // H1 duplicate → 重生成 H2
+    expect(persistence.createCalls.map((c) => c.docId)).toEqual([`ns-${H1}`, `ns-${H2}`]);
     expect(persistence.loadCalls.length).toBe(0);
     expect(persistence.saveCalls).toBe(0);
+    expect(clock.calls).toBe(1); // Clock 单读（一次/create，不随重试递增）
+    await lease.release();
   });
 });
 
@@ -1143,7 +1315,8 @@ describe('persistence 映射（§7/§9 表）：operational/duplicate/fatal fals
     const typed = new DocCreateOperationalError(new Error('store-write-rejected'));
     persistence.queueCreate({ error: typed });
     const events: RegistryObserverEvent[] = [];
-    const registry = createNamespaceRegistryForTesting(persistence, { clock, scheduler: createRegistryTestScheduler(), observer: (e) => events.push(e) });
+    const src = makeCountingRandomBytes();
+    const registry = createNamespaceRegistryForTesting(persistence, { clock, scheduler: createRegistryTestScheduler(), randomBytes: src.randomBytes, observer: (e) => events.push(e) });
     const r = await registry.create(makeCreateInput());
     expect(r).toMatchObject({ ok: false, code: 'NAMESPACE_CREATE_FAILED' });
     expect((r as unknown as { message: string }).message).toBe(
@@ -1156,7 +1329,7 @@ describe('persistence 映射（§7/§9 表）：operational/duplicate/fatal fals
     if (ev?.type === 'create-persist-failed') {
       expect(ev.cause).toBe(typed); // exact error（instance 级）
       expect(ev.identity.owner).toEqual({ userId: 'u-alice' });
-      expect(ev.identity.namespaceId).toBe('k-ns');
+      expect(ev.identity.namespaceId).toBe(src.id(1)); // 第 1 次生成（生成 ID——phase-5）
       expect(typeof ev.identity.key).toBe('string');
     }
     // 无其它失败事件（狭窄 issue 不发 lifecycle-slot-failed）
@@ -1169,7 +1342,7 @@ describe('persistence 映射（§7/§9 表）：operational/duplicate/fatal fals
     const typed = new DocCreateFatalError('probe-read', new Error('pre-commit-store'));
     persistence.queueCreate({ error: typed });
     const events: RegistryObserverEvent[] = [];
-    const registry = createNamespaceRegistryForTesting(persistence, { clock, scheduler: createRegistryTestScheduler(), observer: (e) => events.push(e) });
+    const registry = createNamespaceRegistryForTesting(persistence, { clock, scheduler: createRegistryTestScheduler(), randomBytes: TEST_RANDOM_BYTES, observer: (e) => events.push(e) });
     const p = registry.create(makeCreateInput());
     await expect(p).rejects.toMatchObject({
       code: 'NAMESPACE_REGISTRY_FATAL',
@@ -1202,7 +1375,7 @@ describe('persistence 映射（§7/§9 表）：operational/duplicate/fatal fals
     const clock = makeManualClock(FIXED_MS);
     const typed = new DocCreateFatalError('post-commit', new Error('post-commit-store'));
     persistence.queueCreate({ error: typed });
-    const registry = createNamespaceRegistryForTesting(persistence, { clock, scheduler: createRegistryTestScheduler() });
+    const registry = createNamespaceRegistryForTesting(persistence, { clock, scheduler: createRegistryTestScheduler(), randomBytes: TEST_RANDOM_BYTES });
     const p = registry.create(makeCreateInput());
     await expect(p).rejects.toMatchObject({
       code: 'NAMESPACE_REGISTRY_FATAL',
@@ -1225,7 +1398,7 @@ describe('persistence 映射（§7/§9 表）：operational/duplicate/fatal fals
     const boom = new Error('unknown-adapter-breach');
     persistence.queueCreate({ error: boom });
     const events: RegistryObserverEvent[] = [];
-    const registry = createNamespaceRegistryForTesting(persistence, { clock, scheduler: createRegistryTestScheduler(), observer: (e) => events.push(e) });
+    const registry = createNamespaceRegistryForTesting(persistence, { clock, scheduler: createRegistryTestScheduler(), randomBytes: TEST_RANDOM_BYTES, observer: (e) => events.push(e) });
     const p = registry.create(makeCreateInput());
     await expect(p).rejects.toMatchObject({
       code: 'NAMESPACE_REGISTRY_FATAL',
@@ -1249,6 +1422,7 @@ describe('persistence 映射（§7/§9 表）：operational/duplicate/fatal fals
     const registry = createNamespaceRegistryForTesting(persistence, {
       clock,
       scheduler: createRegistryTestScheduler(),
+      randomBytes: TEST_RANDOM_BYTES,
       observer: () => {
         throw new Error('observer-isolated');
       },
@@ -1267,7 +1441,7 @@ describe('persistence 映射（§7/§9 表）：operational/duplicate/fatal fals
     const persistence = new CreateStubPersistence();
     const clock = makeManualClock(FIXED_MS);
     persistence.queueCreate({ error: new DocCreateOperationalError(new Error('transient')) });
-    const registry = createNamespaceRegistryForTesting(persistence, { clock, scheduler: createRegistryTestScheduler() });
+    const registry = createNamespaceRegistryForTesting(persistence, { clock, scheduler: createRegistryTestScheduler(), randomBytes: TEST_RANDOM_BYTES });
     const r1 = await registry.create(makeCreateInput());
     expect(r1).toMatchObject({ ok: false, code: 'NAMESPACE_CREATE_FAILED' });
     const r2 = await registry.create(makeCreateInput());
@@ -1334,6 +1508,7 @@ describe('Clock（§6/§8/§9）：构造门禁 + 非法读数 fatal false + 每
     const registry = createNamespaceRegistryForTesting(persistence, {
       clock,
       scheduler: createRegistryTestScheduler(),
+      randomBytes: TEST_RANDOM_BYTES,
       observer: (e) => events.push(e),
     });
     const p = registry.create(makeCreateInput());
@@ -1365,7 +1540,7 @@ describe('Clock（§6/§8/§9）：构造门禁 + 非法读数 fatal false + 每
     for (const bad of badValues) {
       const persistence = new CreateStubPersistence();
       const clock = { now: () => bad };
-      const registry = createNamespaceRegistryForTesting(persistence, { clock, scheduler: createRegistryTestScheduler() });
+      const registry = createNamespaceRegistryForTesting(persistence, { clock, scheduler: createRegistryTestScheduler(), randomBytes: TEST_RANDOM_BYTES });
       const p = registry.create(makeCreateInput());
       await expect(p, `clock.now() === ${bad}`).rejects.toMatchObject({
         operation: 'create',
@@ -1380,34 +1555,38 @@ describe('Clock（§6/§8/§9）：构造门禁 + 非法读数 fatal false + 每
   it('合法边界值 ±8.64e15 被接受；createdAt 与 toISOString 精确一致', async () => {
     const persistence = new CreateStubPersistence();
     const clock = makeManualClock(8.64e15);
-    const registry = createNamespaceRegistryForTesting(persistence, { clock, scheduler: createRegistryTestScheduler() });
+    const registry = createNamespaceRegistryForTesting(persistence, { clock, scheduler: createRegistryTestScheduler(), randomBytes: TEST_RANDOM_BYTES });
     const lease = okLease(await registry.create(makeCreateInput()));
     expect(lease.getMetadata().createdAt).toBe(new Date(8.64e15).toISOString());
     await lease.release();
   });
 
-  it('Clock 恰读一次：payload 失败不读、duplicate 不读（counter 锚）', async () => {
+  it('Clock 恰读一次：payload 失败不读、entry 碰撞候选不读、DOC_DUPLICATE 重试不重复读（counter 锚）', async () => {
     const persistence = new CreateStubPersistence();
     const clock = makeManualClock(FIXED_MS);
-    const registry = createNamespaceRegistryForTesting(persistence, { clock, scheduler: createRegistryTestScheduler() });
-    // payload 失败：function root → 0 读
+    const registry = createNamespaceRegistryForTesting(persistence, {
+      clock,
+      scheduler: createRegistryTestScheduler(),
+      randomBytes: makeScriptedRandomBytes([H1, H1, H2, H3, H4]),
+    });
+    // payload 失败：function root → 0 读（生成后、快照前短路）
     await registry.create(makeCreateInput({ root: { f: () => 1 } }));
     expect(clock.calls).toBe(0);
     // 成功 create：1 读
     const lease = okLease(await registry.create(makeCreateInput()));
     expect(clock.calls).toBe(1);
-    // duplicate（active）：0 追加读
-    await registry.create(makeCreateInput());
-    expect(clock.calls).toBe(1);
-    await lease.release();
-    // lease-zero 临时态 duplicate：0 追加读
-    await registry.create(makeCreateInput());
-    expect(clock.calls).toBe(1);
-    // persisted duplicate（新 key，无 entry）：该 slot 真实走到 createDoc——Clock 在
-    // createDoc 之前读一次 → 追加 1。entry 短路 duplicate 不读 Clock 已在上面锚定。
-    persistence.queueCreate({ error: new DocDuplicateError() });
-    await registry.create(makeCreateInput({ namespaceId: 'k-persisted' }));
+    // entry 碰撞（active）：colliding 候选 0 阅读、重生成候选读 1 次 → 每次 create 单读
+    const leaseB = okLease(await registry.create(makeCreateInput()));
     expect(clock.calls).toBe(2);
+    await lease.release();
+    await leaseB.release();
+    // persisted duplicate（新候选，无 entry）：该 create 单读（Clock 在 createDoc 之前
+    // 恰 1 次——重试候选复用 preparedBox，不重复读）。
+    persistence.queueCreate({ error: new DocDuplicateError() });
+    const leaseC = okLease(await registry.create(makeCreateInput()));
+    expect(clock.calls).toBe(3);
+    expect(persistence.createCalls.map((c) => c.docId)).toEqual([`ns-${H1}`, `ns-${H2}`, `ns-${H3}`, `ns-${H4}`]);
+    await leaseC.release();
   });
 });
 
@@ -1418,9 +1597,11 @@ describe('post-commit factory failure（§7/§9 DQ-7）：release 恰一次、�
     const factoryCause = new Error('factory-boom-post-commit');
     const events: RegistryObserverEvent[] = [];
     let factoryCalls = 0;
+    const src = makeCountingRandomBytes();
     const registry = createNamespaceRegistryForTesting(persistence, {
       clock,
       scheduler: createRegistryTestScheduler(),
+      randomBytes: src.randomBytes,
       runtimeFactory: (handle, notifyDirty) => {
         factoryCalls += 1;
         // 仅首次（create 路径）工厂故障；后续 open/再 create 委托真实 P0 工厂——
@@ -1455,15 +1636,17 @@ describe('post-commit factory failure（§7/§9 DQ-7）：release 恰一次、�
       expect(factoryEv.cause).toBe(factoryCause);
     }
     expect(events.some((e) => e.type === 'handle-release-failed')).toBe(false);
-    // 文档保留：后续 open 得 lease 且内容完整（createDoc 已 committed）
-    const openLease = okLease(await registry.open({ userId: 'u-alice' }, 'k-ns'));
+    // 文档保留：后续 open 得 lease 且内容完整（createDoc 已 committed；生成 ID 经
+    // 观察者事件回读——contract 面经 lease/source id 传递）
+    const committedId = src.id(1); // 第 1 次生成即失败 create 的候选 ID（committed 文档）
+    const openLease = okLease(await registry.open({ userId: 'u-alice' }, committedId));
     expect(openLease.getMetadata().createdAt).toBe(FIXED_ISO);
     expect(openLease.read(['n'])).toEqual({ ok: true, value: 42 });
     await openLease.release();
     // 零 entry 残留：失败的 create 未建 entry——上面的 open 走了 loadDoc 恢复路径
     // （而非 entry 命中）；此后 entry 由 open 建立，再 open 复用同一 Runtime 且不再
     // loadDoc（若 create 失败留下了 entry，首次 open 会 entry 命中、loadCalls 为 0）。
-    const r3 = await registry.open({ userId: 'u-alice' }, 'k-ns');
+    const r3 = await registry.open({ userId: 'u-alice' }, committedId);
     expect(r3.ok).toBe(true);
     expect(persistence.loadCalls.length).toBe(1);
     await okLease(r3).release();
@@ -1481,6 +1664,7 @@ describe('post-commit factory failure（§7/§9 DQ-7）：release 恰一次、�
     const registry = createNamespaceRegistryForTesting(persistence, {
       clock,
       scheduler: createRegistryTestScheduler(),
+      randomBytes: TEST_RANDOM_BYTES,
       runtimeFactory: () => {
         throw factoryCause;
       },
@@ -1520,6 +1704,7 @@ describe('post-commit factory failure（§7/§9 DQ-7）：release 恰一次、�
     const registry = createNamespaceRegistryForTesting(persistence, {
       clock,
       scheduler: createRegistryTestScheduler(),
+      randomBytes: TEST_RANDOM_BYTES,
       runtimeFactory: () => {
         throw factoryCause;
       },
@@ -1562,17 +1747,19 @@ describe('ordering/concurrency（§5/§9）：create→open、open→create、ga
   it('create→open：open 不观察 transient missing；复用同一 Runtime identity（marker 断言，loadDoc 零）', async () => {
     const persistence = new CreateStubPersistence();
     const clock = makeManualClock(FIXED_MS);
+    const src = makeCountingRandomBytes();
     let factoryCalls = 0;
     const registry = createNamespaceRegistryForTesting(persistence, {
       clock,
       scheduler: createRegistryTestScheduler(),
+      randomBytes: src.randomBytes,
       runtimeFactory: () => {
         factoryCalls += 1;
         return makeMarkerRuntime('RUNTIME_MARKER_9f', 'k-ns');
       },
     });
     const lease1 = okLease(await registry.create(makeCreateInput()));
-    const lease2 = okLease(await registry.open({ userId: 'u-alice' }, 'k-ns'));
+    const lease2 = okLease(await registry.open({ userId: 'u-alice' }, src.id(1)));
     expect(factoryCalls).toBe(1); // open 复用 entry 的 Runtime（同一 identity）
     expect(lease1.read(['x'])).toEqual({ ok: true, value: 'RUNTIME_MARKER_9f' });
     expect(lease2.read(['x'])).toEqual({ ok: true, value: 'RUNTIME_MARKER_9f' });
@@ -1586,14 +1773,16 @@ describe('ordering/concurrency（§5/§9）：create→open、open→create、ga
   it('open→create：独立结算（open NOT_FOUND 不毒化后续 create），再 open 复用 entry', async () => {
     const persistence = new CreateStubPersistence();
     const clock = makeManualClock(FIXED_MS);
-    const registry = createNamespaceRegistryForTesting(persistence, { clock, scheduler: createRegistryTestScheduler() });
-    const open1 = await registry.open({ userId: 'u-alice' }, 'k-ns');
+    const src = makeCountingRandomBytes();
+    const registry = createNamespaceRegistryForTesting(persistence, { clock, scheduler: createRegistryTestScheduler(), randomBytes: src.randomBytes });
+    const open1 = await registry.open({ userId: 'u-alice' }, src.id(1));
     expect(open1).toMatchObject({ ok: false, code: 'NAMESPACE_NOT_FOUND' });
     expect(persistence.loadCalls.length).toBe(1);
     const created = await registry.create(makeCreateInput());
     expect(created.ok).toBe(true);
     const lease = okLease(created);
-    const open2 = await registry.open({ userId: 'u-alice' }, 'k-ns');
+    expect(lease.namespaceId).toBe(src.id(1));
+    const open2 = await registry.open({ userId: 'u-alice' }, src.id(1));
     expect(open2.ok).toBe(true);
     expect(persistence.loadCalls.length).toBe(1); // 复用 entry，不再 load
     await lease.release();
@@ -1605,18 +1794,19 @@ describe('ordering/concurrency（§5/§9）：create→open、open→create、ga
     const clock = makeManualClock(FIXED_MS);
     const gate = deferred();
     persistence.queueCreate({ gate });
-    const registry = createNamespaceRegistryForTesting(persistence, { clock, scheduler: createRegistryTestScheduler() });
-    const p1 = registry.create(makeCreateInput({ namespaceId: 'k-a' }));
+    const src = makeCountingRandomBytes();
+    const registry = createNamespaceRegistryForTesting(persistence, { clock, scheduler: createRegistryTestScheduler(), randomBytes: src.randomBytes });
+    const p1 = registry.create(makeCreateInput());
     await flushMicrotasks();
-    expect(persistence.createCalls.map((c) => c.docId)).toEqual(['k-a']);
-    // 同 key open：同 carrier FIFO → loadDoc 不达
-    const sameOpen = registry.open({ userId: 'u-alice' }, 'k-a');
+    expect(persistence.createCalls.map((c) => c.docId)).toEqual([src.id(1)]);
+    // 同 ID open：同 carrier FIFO → loadDoc 不达
+    const sameOpen = registry.open({ userId: 'u-alice' }, src.id(1));
     await flushMicrotasks();
     expect(persistence.loadCalls.length).toBe(0);
-    // 异 key create：并行到达 Persistence
-    const p2 = registry.create(makeCreateInput({ namespaceId: 'k-b' }));
+    // 异候选 create：不同 carrier → 并行到达 Persistence
+    const p2 = registry.create(makeCreateInput());
     await flushMicrotasks();
-    expect(persistence.createCalls.map((c) => c.docId).sort()).toEqual(['k-a', 'k-b']);
+    expect(persistence.createCalls.map((c) => c.docId).sort()).toEqual([src.id(1), src.id(2)].sort());
     gate.resolve();
     expect((await p1).ok).toBe(true);
     expect((await sameOpen).ok).toBe(true); // create 成功后 open 合法
@@ -1628,7 +1818,7 @@ describe('ordering/concurrency（§5/§9）：create→open、open→create、ga
     const persistence = new CreateStubPersistence();
     const clock = makeManualClock(FIXED_MS);
     persistence.queueCreate({ error: new Error('create-slot-boom') });
-    const registry = createNamespaceRegistryForTesting(persistence, { clock, scheduler: createRegistryTestScheduler() });
+    const registry = createNamespaceRegistryForTesting(persistence, { clock, scheduler: createRegistryTestScheduler(), randomBytes: TEST_RANDOM_BYTES });
     const p1 = registry.create(makeCreateInput());
     await expect(p1).rejects.toBeInstanceOf(NamespaceRegistryFatalError);
     const r2 = await registry.create(makeCreateInput());
@@ -1640,7 +1830,7 @@ describe('ordering/concurrency（§5/§9）：create→open、open→create、ga
   it('hostile slot 失败后同 key open 正常：拒绝 slot 不毒化 carrier/open 路径', async () => {
     const persistence = new CreateStubPersistence();
     const clock = makeManualClock(FIXED_MS);
-    const registry = createNamespaceRegistryForTesting(persistence, { clock, scheduler: createRegistryTestScheduler() });
+    const registry = createNamespaceRegistryForTesting(persistence, { clock, scheduler: createRegistryTestScheduler(), randomBytes: TEST_RANDOM_BYTES });
     const r1 = await registry.create(makeCreateInput({ root: { f: () => 1 } })); // payload 拒绝
     expect(r1).toMatchObject({ ok: false, code: 'NAMESPACE_CREATE_INVALID_INPUT' });
     const r2 = await registry.open({ userId: 'u-alice' }, 'k-ns');
@@ -1648,280 +1838,6 @@ describe('ordering/concurrency（§5/§9）：create→open、open→create、ga
     const r3 = await registry.create(makeCreateInput());
     expect(r3.ok).toBe(true);
     await okLease(r3).release();
-  });
-});
-
-describe('closing fail-closed（R2-M1/§9）：closing + closePromise undefined → lifecycle-slot-internal false fatal，零后续访问', () => {
-  it('testing-only entry fixture（any-bridge 内部 fixture）：create 不读 payload/Clock、零 Persistence、稳定 fatal+observer', async () => {
-    const persistence = new CreateStubPersistence();
-    const clock = makeManualClock(FIXED_MS);
-    const events: RegistryObserverEvent[] = [];
-    // —— any-bridge 内部 fixture（设计 §9 closing 行 + R2-M1 冲突报告）——
-    // 本切片无公开/测试 seam 可置 entry（#110 无 close 实现，phase 恒 active），按
-    // 设计 §9「testing seam 置 phase:'closing' 且 closePromise:undefined」的手法，经
-    // createRegistryInternal 的内部 options 注入受控 entry：SA3 必须在内部 options
-    // 支持 `testEntries`（testing-only entry hook；不进公共 testing 子路径导出面）——
-    // 这是被冻结的 R2-M1 fail-loud 契约。
-    const key = `7:u-alice\u00004:k-ns`;
-    const closingEntry = {
-      key,
-      generation: 99n,
-      owner: Object.freeze({ userId: 'u-alice' }),
-      namespaceId: 'k-ns',
-      runtime: undefined as never,
-      phase: 'closing' as const,
-      leases: new Set<unknown>(),
-      lifecycleTail: Promise.resolve(),
-      // closePromise 缺席（= undefined）——R2-M1 危险态
-    };
-    let documentFactoryCalls = 0;
-    const internalOptions: Record<string, unknown> = {
-      clock,
-      scheduler: createRegistryTestScheduler(),
-      observer: (e: RegistryObserverEvent) => events.push(e),
-      runtimeFactory: () => makeMarkerRuntime('x', 'y'),
-      // 条件抛错：仅目标 key（k-ns，closing 态）绝不进入 createDocument 阶段；
-      // 其余 key 走**真实创建路径**（与默认工厂同构：doc-runtime 公共 seam 构造初始
-      // 文档，含 SCHEMA/META/ROOT 安装）——k-other 健康回归必须 ok:true 且内容真实。
-      createDocumentFactory: (
-        namespaceId: string,
-        createdAt: string,
-        _schema: unknown,
-        _root: unknown,
-        compiled?: { readonly envelope: SchemaEnvelope; readonly derived: DerivedSchema },
-      ) => {
-        documentFactoryCalls += 1;
-        if (namespaceId === 'k-ns') {
-          throw new Error('closing fail-loud 不得进入 createDocument 阶段');
-        }
-        if (compiled === undefined) {
-          throw new Error('slot 路径必须携带预编译产物（create-document.ts 契约）');
-        }
-        return createInitialDocument({
-          envelope: compiled.envelope,
-          derived: compiled.derived,
-          meta: { docId: namespaceId, createdAt },
-          root: _root,
-        });
-      },
-      testEntries: new Map<string, unknown>([[key, closingEntry]]),
-    };
-    const registry = createRegistryInternal(persistence, internalOptions as never);
-
-    const p = registry.create(makeCreateInput());
-    await expect(p).rejects.toMatchObject({
-      code: 'NAMESPACE_REGISTRY_FATAL',
-      operation: 'create',
-      phase: 'lifecycle-slot-internal',
-      committed: false,
-    });
-    const err = await p.then(
-      () => null,
-      (e: unknown) => e,
-    );
-    expect(err).toBeInstanceOf(NamespaceRegistryFatalError);
-    if (err instanceof NamespaceRegistryFatalError) {
-      expect(err.cause).toBeInstanceOf(Error);
-      expect(err.message).toBe(
-        'NAMESPACE_REGISTRY_FATAL: create 在 lifecycle-slot-internal 发生内部故障（committed=false）',
-      );
-    }
-    // 零 payload/Clock/Persistence/createDocument
-    expect(clock.calls).toBe(0);
-    expect(persistence.createCalls.length).toBe(0);
-    expect(persistence.loadCalls.length).toBe(0);
-    expect(documentFactoryCalls).toBe(0);
-    // observer 上报 lifecycle-slot-failed(create) 且 cause 为内部 Error（closePromise 缺失）
-    const ev = events.find((e) => e.type === 'lifecycle-slot-failed');
-    expect(ev).toBeDefined();
-    if (ev?.type === 'lifecycle-slot-failed') {
-      expect(ev.operation).toBe('create');
-      expect(ev.identity.namespaceId).toBe('k-ns');
-      expect((ev.cause as Error).message).toContain('closePromise');
-    }
-    // 健康回归：关闭态 entry 之外的 key 正常 create 且**真实走通 create-document**（ok:true）
-    const other = await registry.create(makeCreateInput({ namespaceId: 'k-other' }));
-    expect(other.ok).toBe(true);
-    expect(documentFactoryCalls).toBe(1); // 仅 k-other 到达真实创建路径；closing 槽零调用
-    await okLease(other).release();
-  });
-
-  // —— SA4 HIGH-1 红灯（总控裁决定稿）——
-  // 语义：await closePromise 后必须 re-evaluate——只有 entries.get(key)===undefined 才
-  // 进入 payload；「resolve 后仍 closing」与「closePromise reject」都按稳定
-  // create/lifecycle-slot-internal/false observer+fatal fail-closed，绝不可继续 create。
-  //
-  // fixture 注入形态扩展（测试侧）：`testEntries` 除既有 ReadonlyMap 静态种子外，支持
-  // 种子函数 `(entries: Map<string, unknown>) => void`（收到 Registry 内部 entries map，
-  // 用于变体 C 的「resolve 后移除 entry = generation 迁移」语义；仅测试内部 seam）。
-
-  const CLOSING_KEY = `7:u-alice\u00004:k-ns`;
-
-  function makeClosingEntry(key: string, namespaceId: string, closePromise?: Promise<void>): Record<string, unknown> {
-    const base: Record<string, unknown> = {
-      key,
-      generation: 99n,
-      owner: Object.freeze({ userId: 'u-alice' }),
-      namespaceId,
-      runtime: undefined as never,
-      phase: 'closing' as const,
-      leases: new Set<unknown>(),
-      lifecycleTail: Promise.resolve(),
-    };
-    // exactOptionalPropertyTypes：无 closePromise = 键缺席（R2-M1 危险态区分）
-    return closePromise === undefined ? base : { ...base, closePromise };
-  }
-
-  type TestEntriesSeed = ReadonlyMap<string, unknown> | ((entries: Map<string, unknown>) => void);
-
-  it('HIGH-1 变体 A：deferred resolve 后 entry 仍 closing → create reject lifecycle-slot-internal false，全程零 payload/Clock/Persistence', async () => {
-    const persistence = new CreateStubPersistence();
-    const clock = makeManualClock(FIXED_MS);
-    const closeGate = deferred();
-    const events: RegistryObserverEvent[] = [];
-    let schemaTraps = 0;
-    let documentFactoryCalls = 0;
-    const hostileSchema = new Proxy({ ...GOOD_ENVELOPE } as Record<string, unknown>, {
-      get(target, prop, receiver) {
-        schemaTraps += 1;
-        return Reflect.get(target, prop, receiver);
-      },
-    });
-    const testEntries: TestEntriesSeed = new Map([
-      [CLOSING_KEY, makeClosingEntry(CLOSING_KEY, 'k-ns', closeGate.promise)],
-    ]);
-    const registry = createRegistryInternal(persistence, {
-      clock,
-      scheduler: createRegistryTestScheduler(),
-      observer: (e: RegistryObserverEvent) => events.push(e),
-      runtimeFactory: () => makeMarkerRuntime('x', 'y'),
-      createDocumentFactory: (namespaceId: string) => {
-        documentFactoryCalls += 1;
-        throw new Error(`fail-closed 不得到达 createDocument（key=${namespaceId}）`);
-      },
-      testEntries,
-    } as never);
-    const p = registry.create({
-      owner: { userId: 'u-alice' },
-      namespaceId: 'k-ns',
-      schema: hostileSchema,
-      root: GOOD_ROOT,
-    } as never);
-    await flushMicrotasks();
-    // 等待期（closePromise pending）：不读 payload/Clock、零 Persistence、零 createDocument
-    expect(clock.calls).toBe(0);
-    expect(schemaTraps).toBe(0);
-    expect(persistence.createCalls.length).toBe(0);
-    expect(documentFactoryCalls).toBe(0);
-    closeGate.resolve();
-    // 变体 A：resolve 后 entry 仍 closing → 必须 fail-closed（不得继续 create）
-    await expect(p).rejects.toMatchObject({
-      code: 'NAMESPACE_REGISTRY_FATAL',
-      operation: 'create',
-      phase: 'lifecycle-slot-internal',
-      committed: false,
-    });
-    const err = await p.then(
-      () => null,
-      (e: unknown) => e,
-    );
-    expect(err).toBeInstanceOf(NamespaceRegistryFatalError);
-    if (err instanceof NamespaceRegistryFatalError) {
-      expect(err.cause).toBeInstanceOf(Error);
-      expect(err.message).toBe(
-        'NAMESPACE_REGISTRY_FATAL: create 在 lifecycle-slot-internal 发生内部故障（committed=false）',
-      );
-    }
-    // 全程零 payload 读取 / 零 Clock 追加 / 零 Persistence / 零 createDocument
-    expect(clock.calls).toBe(0);
-    expect(schemaTraps).toBe(0);
-    expect(persistence.createCalls.length).toBe(0);
-    expect(persistence.loadCalls.length).toBe(0);
-    expect(documentFactoryCalls).toBe(0);
-    // observer lifecycle-slot-failed(create)
-    const ev = events.find((e) => e.type === 'lifecycle-slot-failed');
-    expect(ev).toBeDefined();
-    if (ev?.type === 'lifecycle-slot-failed') {
-      expect(ev.operation).toBe('create');
-      expect(ev.identity.namespaceId).toBe('k-ns');
-    }
-  });
-
-  it('HIGH-1 变体 B：closePromise reject → create 同样 fail-closed fatal（fatal 包装，cause 保留 exact）', async () => {
-    const persistence = new CreateStubPersistence();
-    const clock = makeManualClock(FIXED_MS);
-    const closeCause = new Error('close-reject-caught-e9');
-    let rejectGate!: (e: unknown) => void;
-    const closeRejected = new Promise<void>((_resolve, reject) => {
-      rejectGate = reject;
-    });
-    const events: RegistryObserverEvent[] = [];
-    const testEntries: TestEntriesSeed = new Map([
-      [CLOSING_KEY, makeClosingEntry(CLOSING_KEY, 'k-ns', closeRejected)],
-    ]);
-    const registry = createRegistryInternal(persistence, {
-      clock,
-      scheduler: createRegistryTestScheduler(),
-      observer: (e: RegistryObserverEvent) => events.push(e),
-      runtimeFactory: () => makeMarkerRuntime('x', 'y'),
-      testEntries,
-    } as never);
-    const p = registry.create(makeCreateInput());
-    await flushMicrotasks();
-    rejectGate(closeCause);
-    // close 的 rejection 不得裸传：create 的 rejection 必须是 branded fatal 包装
-    await expect(p).rejects.toMatchObject({
-      code: 'NAMESPACE_REGISTRY_FATAL',
-      operation: 'create',
-      phase: 'lifecycle-slot-internal',
-      committed: false,
-    });
-    const err = await p.then(
-      () => null,
-      (e: unknown) => e,
-    );
-    expect(err).toBeInstanceOf(NamespaceRegistryFatalError);
-    if (err instanceof NamespaceRegistryFatalError) {
-      expect(err.cause).toBe(closeCause); // exact cause 保留（fatal 包装，非裸传）
-    }
-    expect(clock.calls).toBe(0);
-    expect(persistence.createCalls.length).toBe(0);
-    expect(persistence.loadCalls.length).toBe(0);
-    const ev = events.find((e) => e.type === 'lifecycle-slot-failed');
-    expect(ev).toBeDefined();
-    if (ev?.type === 'lifecycle-slot-failed') {
-      expect(ev.operation).toBe('create');
-      expect(ev.cause).toBe(closeCause); // observer 同源 exact cause
-    }
-  });
-
-  it('HIGH-1 变体 C（对照绿锚）：resolve 后 entry 已消失（generation 迁移）→ create 正常全链成功', async () => {
-    const persistence = new CreateStubPersistence();
-    const clock = makeManualClock(FIXED_MS);
-    const closeGate = deferred();
-    let capturedEntries: Map<string, unknown> | undefined;
-    // 先注册移除 handler（先于 slot 的 await 续体入队）：resolve 时 entry 已迁移消失
-    void closeGate.promise.then(() => {
-      capturedEntries?.delete(CLOSING_KEY);
-    });
-    const testEntries: TestEntriesSeed = (entries) => {
-      capturedEntries = entries;
-      entries.set(CLOSING_KEY, makeClosingEntry(CLOSING_KEY, 'k-ns', closeGate.promise));
-    };
-    const registry = createRegistryInternal(persistence, {
-      clock,
-      scheduler: createRegistryTestScheduler(),
-      testEntries,
-    } as never);
-    const p = registry.create(makeCreateInput());
-    await flushMicrotasks(); // slot 已 await closePromise（entry 尚未移除）
-    closeGate.resolve();
-    const lease = okLease(await p); // after===undefined → 继续全链成功
-    expect(persistence.createCalls.length).toBe(1);
-    expect(clock.calls).toBe(1);
-    expect(lease.getMetadata().createdAt).toBe(FIXED_ISO);
-    expect(lease.read(['n'])).toEqual({ ok: true, value: 42 });
-    await lease.release();
   });
 });
 
@@ -1933,6 +1849,7 @@ describe('seam 注入（§5/§7/§9 R2-H1）：Registry 收到 input-invalid 不
     const registry = createNamespaceRegistryForTesting(persistence, {
       clock,
       scheduler: createRegistryTestScheduler(),
+      randomBytes: TEST_RANDOM_BYTES,
       observer: (e) => events.push(e),
       createDocumentFactory: () => ({
         ok: false as const,

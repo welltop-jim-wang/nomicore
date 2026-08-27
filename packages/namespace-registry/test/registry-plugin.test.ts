@@ -177,9 +177,10 @@ describe('AC1/AC2/AC3 组合（§7.22-24）：真实 Context 组合与配置校�
     const missing = await registry.open({ userId: 'u-compose' }, 'missing-ns');
     expect(missing).toMatchObject({ ok: false, code: 'NAMESPACE_NOT_FOUND' });
     // create：真实建立（doc 提交）→ 返回 lease；getStatus 真实三相投影
+    // phase-5 切片 1（ADR 0010）：create 恒三键——namespaceId 由 plugin 桥接的
+    // node:crypto 受控随机源生成（ns-+32hex），调用方不再提供。
     const created = await registry.create({
       owner: { userId: 'u-compose' },
-      namespaceId: 'ns-1',
       schema: { lang: 'vfsl', version: 1, id: 'ns-1', text: 'type ROOT = { n: number; };\n' },
       root: { n: 42 },
     });
@@ -503,7 +504,6 @@ describe('rev1 问题 3：Registry shutdown settle 严格先于 persistence adap
 
       const created = await registry.create({
         owner: { userId: 'u-order' },
-        namespaceId: 'k',
         schema: { lang: 'vfsl', version: 1, id: 'k', text: 'type ROOT = { n: number; };\n' },
         root: { n: 42 },
       });

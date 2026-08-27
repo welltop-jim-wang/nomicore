@@ -195,3 +195,14 @@ interface DocHandle {
 - 降级等待期内（任一可观察时刻）retry 退避即该 entry 的唯一 flush 调度源（退避上限 max-dirty 间隔；flush 记账的 catch→finally 同步续体内允许瞬态并存，无外部可观察后果），「不设外部 flush/cron 协调器」不变。
 
 **3. 实施注记**：entry 状态解析收敛于 adapter 共享的 persistence lifecycle core（两 Adapter 不得复制状态机）；MemoryPersistence 与 FilePersistence 以平行验收套件覆盖同一状态契约（`issue-79-entry-status.test.ts` / `issue-79-file-entry-status.test.ts`）。
+
+---
+
+## 对齐说明：issue #131（Phase 5 切片 1：Registry 普通 create 的 namespaceId 生成）
+
+日期：2026-08-27；状态：已接受。本说明只在语义上对齐 Registry 侧身份条款（ADR 0010），**不修改本 ADR 任何 Persistence 契约条款**：
+
+- 普通 create 的 namespaceId 由 Registry 注入的受控 128-bit CSPRNG 生成（`ns-` + 32 位小写 hex，35 字符，满足本 ADR 的共享安全文法）——仍属「系统分配、非调用方自选」，调用方不能指定；
+- Persistence 契约零变化：仍按 owner 分区、`createDoc(owner, docId, doc)` 以 `(owner.userId, docId)` 排他创建、`DOC_DUPLICATE` 信号**由 Registry 重试环消费**（语义不变、消费方反应变化——碰撞换 ID 重试）；
+- 不新增跨 owner catalog / 全局唯一约束（重申本 ADR 的 owner 分区与「无 list/catalog API」边界）；
+- Registry entry 以 namespaceId 唯一索引后，Persistence 侧 `(owner, docId)` 分区语义不受影响：不同 owner 的相同 docId 是不同持久化 entry，Registry 侧只见各自分区的文档。
