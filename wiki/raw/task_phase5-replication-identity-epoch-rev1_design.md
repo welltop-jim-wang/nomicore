@@ -41,12 +41,13 @@
 
 在 ADR 0008 的「稳定码注册修订」之后追加 `### issue #132 修订：复制保留事实投影与管理写（2026-08-27）`，包含下列规范性条款：
 
-1. **读取例外及边界**：第 14 行的“普通 open 不执行 schema、ROOT 载体或 logical validation”维持有效；但 Runtime 允许在构造、对外发布前，同步纯读 `META.replicationId` 和 `META.replicationEpoch`，仅为生成 status 的复制持久事实。明示此例外不读取 ROOT、不编译 schema、不做 logical validation、不引入通用 META validation。
-2. **两态与损坏通道**：复制投影只为 `{state:'disabled'}` 或 `{state:'enabled'; replicationId; replicationEpoch}`；真缺席为 disabled。部分存在、undefined、格式不合法、异型载体为损坏，构造拒绝；禁止在损坏文档上伪装 disabled 或自动补写新 lineage。
-3. **公共窄写方法**：将 “v1 公开两个窄方法” 替换为“基础 v1 方法为两个；经 ADR 0010 授权的复制管理例外另加 `enableReplication()` 和 `bumpReplicationEpoch()`”。四者均进入同一严格 FIFO sequencer，完整槽序不变。
-4. **status 字段**：在第 95 行 status 列举中补 `replication`，明确仅含持久 identity/epoch，不含 session、网络、队列或 sync 状态。
-5. **失败与持久化真相**：enable/bump 的成功仍只表示 commit + dirty notification 已登记，非已落盘；notify failure 的 committed facts 不回滚，fatal 之后读取与 status 保留最后已提交事实。
-6. **关联权威**：字段格式、不可变性、epoch 上限与 hub-only 管理权以 ADR 0010 为权威；ADR 0008 仅规定 Runtime 槽序、投影、构造例外和失败通道。
+1. **授权链、读取例外及闭合边界**：本增补依据 **issue #132 / PR #145 feedback 1 / owner `welltop-jim-wang` / 2026-08-27** 的明确授权。仅允许 Runtime 在构造、**对外发布前**同步读取 `META.replicationId` 和 `META.replicationEpoch`，仅为生成 status 的复制持久事实。
+2. **两态与损坏通道**：唯一允许的判定是双键均真缺席 → `{state:'disabled'}`，或双键均存在且均合规 → `{state:'enabled'; replicationId; replicationEpoch}`；部分存在、键存在而 `undefined`、格式不合法、META 异型载体均为损坏并构造拒绝，禁止伪装 disabled 或自动补写新 lineage。
+3. **原规则保持**：**除此之外，原第 14 行保持不变**：普通 open 不读取或验证 `SCHEMA`、`ROOT` 或任何 logical value，不编译 schema，不引入通用 META validation；外部持久化文件的其他错误修改仍不在本契约范围。
+4. **公共窄写方法**：将 “v1 公开两个窄方法” 替换为“基础 v1 方法为两个；经 ADR 0010 授权的复制管理例外另加 `enableReplication()` 和 `bumpReplicationEpoch()`”。四者均进入同一严格 FIFO sequencer，完整槽序不变。
+5. **status 字段**：在第 95 行 status 列举中补 `replication`，明确仅含持久 identity/epoch，不含 session、网络、队列或 sync 状态。
+6. **失败与持久化真相**：enable/bump 的成功仍只表示 commit + dirty notification 已登记，非已落盘；notify failure 的 committed facts 不回滚，fatal 之后读取与 status 保留最后已提交事实。
+7. **关联权威**：字段格式、不可变性、epoch 上限与 hub-only 管理权以 ADR 0010 为权威；ADR 0008 仅规定 Runtime 槽序、投影、构造例外和失败通道。
 
 ### §2.4 设计期证据
 
@@ -64,7 +65,7 @@
 | 文件 | 修改内容 | 依据 |
 |---|---|---|
 | `docs/adr/0008-namespace-runtime-read-write-capabilities-and-sequencer.md` | 按 §2.3 增补复制投影/构造损坏例外、两个管理写方法及 status.replication；修正“两个窄方法”和 status 枚举的过时表述 | 反馈 1、2；ADR 0010 的既有授权 |
-| `docs/phases/phase-5-websocket-replication.md` | Slice 1 从仅列字段/方法，扩充为 Runtime/Lease 的四个管理能力、两态 status、单 sequencer、损坏 open 拒绝、dirty-not-durable 和恢复要求；“必须通过的场景”第 15 项改成明确包含 File bump recovery 与 fatal committed-facts reopen/recovery | 反馈 2、3；Phase 是实施合同 |
+| `docs/phases/phase-5-websocket-replication.md` | Slice 1 单列 Runtime/Lease 基础合同（两个管理操作、两态 status、单 sequencer、损坏 open 拒绝、dirty-not-durable），并明示本 slice **不实现** session/WS/reset；场景 15 拆为 15a（FIFO、dirty-not-durable、File bump durable restart）与 15b（identity conflict/reset archive，后续切片）；fatal 只表述为 committed-state recovery，不作 durable restart 承诺 | 反馈 2、3；Phase 是实施合同 |
 
 ### §3.2 已核实而不修改的规范文档
 
@@ -106,14 +107,17 @@
 
 **文件**：`packages/namespace-registry/test/registry-phase5-replication-red.test.ts`（`[SA6 owned]`；建议紧跟既有 fatal 事实用例；本轮经 review 明示授权扩展该验收锚）。
 
-**场景**：使用现有可失败 notifier/persistence seam。创建并 enable，记录 id；在 bump 的 notifyDirty 阶段注入一次失败，断言 `RuntimeWriteFatalError` 且 `committed:true`；**不尝试在 fatal runtime 上再写**。随后通过该 persistence 的真实 snapshot/load 路径（或独立 committed seed，取决于既有 fixture 对 failed notifier 是否登记持久 snapshot 的能力）构造全新 Registry 并 `open`。
+**用例名与注释**：名称必须含 `committed-not-durable`（或 `committed-state recovery`）；注释必须声明这是 **committed-state recovery，不是 File durability recovery**。
 
-**断言要点**：
+**固定五步结构（SA2 T1，禁止用预制 epoch=2 seed 替代）**：
 
-1. failed bump rejection 是 `RuntimeWriteFatalError`、`committed:true`；fatal Runtime 读取到 `replicationId===id0`、`replicationEpoch===2`，status.fatal 非空。
-2. reopen/recovery 的新 Runtime（无旧 Runtime 的 fatal 状态）读取同一 committed document：META id 仍为 id0、epoch 为 2；status.replication 是 enabled/id0/2。
-3. reopen 后继续 `bumpReplicationEpoch()` 可成功到 epoch 3，证明 “fatal 是 Runtime generation 的写禁用，不回滚或污染已提交复制事实，也不永久毒化下一 generation”。
-4. 若当前 failure fixture 的 notifier 失败不产生可 reopen 的 persistence snapshot，测试必须使用已提交 live doc 的独立 `DocPersistence`/seed 载体来明确表达 recovery contract；不得错误宣称失败的 `notifyDirty` 已 durability-confirmed。该分支仍证明 committed META 真相，且与 ADR 0008 “committed ≠ durable” 一致。
+1. 用可失败 notifier 构造 Runtime 的**同一 live Y.Doc**；enable 成功后记录 `id0`，并在该 live doc 断言 META 为 `id0/1`。
+2. 让 bump 的 notifier reject；等待 rejection 后断言它是 `RuntimeWriteFatalError` 且 `committed===true`。仅在原 live doc 上断言 META 与 `status.replication` 均为 enabled / `id0` / epoch 2，且 `status.fatal` 非空；不在 fatal Runtime 上再写。
+3. **rejection 之后才**从这个失败 bump 已提交后的同一 live Y.Doc 制作独立 recovery seed：先断言源 META=`id0/2`，`Y.encodeStateAsUpdate(sourceDoc)`，再 `Y.applyUpdate(seedDoc, update)` clone；再次断言 seed META=`id0/2`。不得从预制 seed、失败 notifier 的 persistence，或任意其他 doc 取恢复来源。
+4. 新建仅承载该 `seedDoc` 的独立 `DocPersistence` 与新 Registry；新 Registry **只能**从该 seed `open`。断言新 generation 的 META/status 为 enabled / `id0` / 2、fatal 为空；其 bump 可成功到 epoch 3。
+5. failed notifier 所绑定 persistence **不得**被当作 durable 来源或 reopen 成功前提；若 fixture 暴露其读面，可额外观测并断言测试没有要求它含 epoch 2，且绝不以它 reopen 作为成功路径。它的状态不能升级为 durability 证据。
+
+该结构证明的因果链是“failed bump transaction 已提交的 live META → rejection 后 snapshot → recovery seed → 新 generation”，而非“某个恰好 epoch=2 的预制文档可 open”。它同时保留 ADR 0008 的事实：notifier failure 后 committed 不等于 durable。
 
 ### §4.4 更新后的 AC-6 矩阵
 
@@ -123,7 +127,7 @@
 | degraded retry 后 epoch 2 reopen | 已有 | 不要求重复 | N/A |
 | enable epoch 1 durable reopen | N/A | 已有 | N/A |
 | **bump epoch 2 durable reopen** | N/A | **新增 A** | N/A |
-| fatal committed bump 后 facts 保留，并在新 generation recovery/reopen | **新增 B（fixture/seed）** | 可由 future durability-specific test 扩展，不在本 PR 伪造 durability 保证 | **新增 B** |
+| fatal committed bump 后同一 live doc snapshot 的 facts 保留，并在新 generation committed-state recovery/open | **新增 B（同一 live doc clone seed）** | **不作 File durability 断言**；future durability-specific test 另行覆盖 | **新增 B** |
 
 ---
 
@@ -136,20 +140,29 @@
 ### §5.2 私有接口与伪代码
 
 ```ts
+type ReplicationWriteGateFailure = Readonly<{
+  readonly kind: 'gate-failure';
+  readonly result: ReplicationWriteGateRefusal;
+}>;
 type ReplicationWriteGateResult =
-  | { readonly ok: true; readonly notifyDirty: () => Promise<void> }
-  | { readonly ok: false; readonly result: EnableReplicationResult | BumpReplicationEpochResult };
+  | Readonly<{ readonly kind: 'gate-ready'; readonly notifyDirty: () => Promise<void> }>
+  | ReplicationWriteGateFailure;
 
 function runReplicationWriteGate(env: ReplicationWriteEnv): ReplicationWriteGateResult {
-  // E1：fatal 已置位 → disabled('fatal…')；零输入读取
-  // E2：getStatus throw → rejectWithWriteFatal(..., false, 'write-slot-internal', ..., 'replication')
-  //     non-ready → disabled(既有同一 message)
-  //     notifier absent → disabled(既有同一 message)
-  //     success → 捕获 notifyDirty 并返回
+  // E1：fatal 已置位 → {kind:'gate-failure', result: disabled('fatal…')}；零输入读取
+  // E2：getStatus throw → {kind:'gate-failure', result: rejectWithWriteFatal(...,
+  //     false, 'write-slot-internal', ..., 'replication')}
+  //     non-ready → 同一入口无关的 ReplicationWriteGateRefusal（既有 message）
+  //     notifier absent → 同一入口无关的 ReplicationWriteGateRefusal（既有 message）
+  //     success → 单读捕获 notifyDirty，返回 gate-ready
 }
+
+// ReplicationWriteGateRefusal 是两个现有结果联合共享的 gate 拒绝子集；helper 不把
+// EnableReplicationResult | BumpReplicationEpochResult 混成自身返回类型。每个 caller
+// 在 `gate.kind === 'gate-failure'` 时把 result 作为自己已有结果联合的共享成员直接返回。
 ```
 
-`runEnableReplicationSlot` 与 `runBumpReplicationEpochSlot` 均在自己的 E3/E4 前调用此函数；返回 `ok:false` 时直接返回 gate 的**原始结果**。不合并 E3 输入校验、E4 facts、E5 transaction、E5.5 status 同步、E6 notifier await；所以：
+`runEnableReplicationSlot` 与 `runBumpReplicationEpochSlot` 均在自己的 E3/E4 前调用此函数；`gate-failure` 时直接返回该入口既有结果联合中的共享 refusal，`gate-ready` 时才继续。helper 不读取 caller input，也不接收 input 参数。不合并 E3 输入校验、E4 facts、E5 transaction、E5.5 status 同步、E6 notifier await；所以：
 
 - FIFO 与 `WriteSequencer` 接纳顺序不变；
 - fatal/degraded/notifier/lifecycle 的 stable code/message、零输入访问和 `committed:false` 语义不变；
@@ -159,7 +172,15 @@ function runReplicationWriteGate(env: ReplicationWriteEnv): ReplicationWriteGate
 
 ### §5.3 共享 gate 测试
 
-在 `packages/namespace-runtime/test/runtime-replication-write.test.ts` 追加参数化/成对用例，分别经 enable 与 bump 验证：fatal pre-gate、degraded/non-ready、notifier absent、`getStatus` throw。断言两个入口有相同结果联合或同类 `RuntimeWriteFatalError`、零 META 改动、零 notifier 调用。该测试以行为锁定重构，而非测试私有 helper 名称。
+在 `packages/namespace-runtime/test/runtime-replication-write.test.ts` 追加参数化/成对用例，测试公共 slot 行为而非私有 helper 名称。除断言两个入口的共享拒绝/同类 `RuntimeWriteFatalError`、META 零改动外，必须使用计数或 throw seam 锁定下列**短路和访问纪律**：
+
+1. **fatal**：enable 与 bump 均不访问 `handle.getStatus()`，也不访问/调用 notifier；enable 的 hostile getter/Proxy input 同样零读取。
+2. **non-ready/degraded**：`getStatus()` 恰一次，notifier 零访问/零调用；enable hostile input 零读取，bump 无任何 input 读取面。
+3. **`getStatus` throw**：notifier 零访问/零调用；返回 branded `RuntimeWriteFatalError`，`committed:false`，而不是结果联合或裸异常；enable hostile input 仍零读取。
+4. **notifier absent**：`getStatus()` 恰一次，之后拒绝；enable input 不进入 E3，bump 保持零 input 访问。
+5. **成功路径**：`getStatus()` 恰一次；enable 仅在 gate-ready 后读取 hostile input 并进入 E3；bump 永不读取任何 input；两入口的 notifier 都仅在 E5 transaction 后恰一次调用。
+
+这些断言既防止 helper 提前触发 E3-only hostile input，也防止复制/移动 gate 时破坏 `fatal → getStatus → notifier` 的短路顺序。
 
 ---
 
@@ -169,8 +190,8 @@ function runReplicationWriteGate(env: ReplicationWriteEnv): ReplicationWriteGate
 2. **两态诚实**：status.replication 永不把合法 enabled 或 corrupt facts 伪装成 disabled；网络状态仍只属于后续 ReplicationSession。
 3. **构造拒绝零副作用**：corrupt facts 在 P0 入队前拒绝，未写 doc、未登记 dirty、未创建 Runtime public surface。
 4. **写槽同构**：enable/bump 均通过共享 E1/E2，再独立完成 E3–E7；成功含 live commit + dirty registration，不等于 durable snapshot。
-5. **fatal 真相**：post-commit notifier failure 不回滚 META；旧 generation 禁写但仍可读，新的 Runtime generation 从已恢复的 committed document 投影同一 facts。
-6. **File durability 真相**：测试先等待磁盘快照具体 epoch，才销毁 writer/restart；禁止将 `saveDoc` resolve 当作落盘。
+5. **fatal 真相**：post-commit notifier failure 不回滚 META；旧 generation 禁写但仍可读。fatal recovery 测试只可从 rejection 后对**同一 live Y.Doc**编码得到的 clone seed 构造新 generation，证明 committed-state recovery；不得将失败 notifier 的 persistence 或 reopen 当作 durability 证据。
+6. **File durability 真相**：只有 File 测试在等待磁盘快照具体 epoch 后才销毁 writer/restart；禁止将 `saveDoc` resolve 或 fatal notifier failure 当作落盘。
 
 ---
 
@@ -178,10 +199,14 @@ function runReplicationWriteGate(env: ReplicationWriteEnv): ReplicationWriteGate
 
 | 要求 | 是否落实 | 修订位置 | 修订内容摘要 |
 |---|:--:|---|---|
-| 反馈 1：构造期 V2.5 与 ADR 0008:14 冲突二选一 | ✅ | §2、§3.1；ADR 0008 ALLOW 项 | 选择保留 V2.5，明确它是 META 两保留事实的纯读、两态 status 所必需的窄例外；设计 ADR 增补文字、损坏构造拒绝语义和非回流边界。 |
-| 反馈 2：两个窄方法/status 缺 replication，枚举全部规范落点 | ✅ | §3 | 列出 ADR 0008 与 Phase 5 必改；逐份核实 ADR 0010/0006/0009、protocol、CONTEXT 不需改；明示 wiki/raw 仅历史证据。 |
-| 反馈 3：补 File bump 恢复与 fatal reopen/recovery | ✅ | §4 | 指定同一 SA6 owned AC-6 文件、具体场景、durable wait 和 reopen 断言；fatal 场景明确 committed 不等于 durable，避免虚假保证。 |
-| 反馈 4：E1/E2 gate 重复 | ✅ | §5 | 裁决提取私有共享 gate，保留所有原有通道/文本/时序，并增加双入口行为等价性测试。 |
+| Round 1 反馈 1：构造期 V2.5 与 ADR 0008:14 冲突二选一 | ✅ | §2、§3.1；ADR 0008 ALLOW 项 | 选择保留 V2.5，明确它是 META 两保留事实的纯读、两态 status 所必需的窄例外；设计 ADR 增补文字、损坏构造拒绝语义和非回流边界。 |
+| Round 1 反馈 2：两个窄方法/status 缺 replication，枚举全部规范落点 | ✅ | §3 | 列出 ADR 0008 与 Phase 5 必改；逐份核实 ADR 0010/0006/0009、protocol、CONTEXT 不需改；明示 wiki/raw 仅历史证据。 |
+| Round 1 反馈 3：补 File bump 恢复与 fatal reopen/recovery | ✅ | §4 | 指定同一 SA6 owned AC-6 文件、具体场景、durable wait 和 reopen 断言；fatal 场景明确 committed 不等于 durable，避免虚假保证。 |
+| Round 1 反馈 4：E1/E2 gate 重复 | ✅ | §5 | 裁决提取私有共享 gate，保留所有原有通道/文本/时序，并增加双入口行为等价性测试。 |
+| **SA2 R1 #1 HIGH**：fatal committed recovery seed 的因果锚定 | ✅ | §4.3、§4.4、§6-5 | 用例固定 SA2 T1 五步：rejection 后仅从 failed bump 的同一 live Y.Doc encode/clone seed，seed 前后断言 id0/2，新 Registry 仅从该 seed open；failed notifier persistence 不得作为 durable/reopen 前提；名称明确 committed-not-durable。 |
+| **SA2 R1 #2 LOW**：ADR 0008 窄例外闭合措辞与授权链 | ✅ | §2.3 | 增补明确 issue #132 / PR #145 feedback 1 / owner / 日期；仅允许双字段发布前读取与两态判别；“除此之外原第 14 行保持不变”，禁止 SCHEMA/ROOT/logical validation 与通用 META validation。 |
+| **SA2 R1 #3 LOW**：Phase 5 Slice/场景 15 分层 | ✅ | §3.1 | 明确 Slice 1 Runtime/Lease 基础合同和 session/WS/reset 非目标；第 15 项拆 15a 本 slice 的 FIFO/durability restart 与 15b 后续 conflict/reset archive；fatal 只说 committed-state recovery。 |
+| **SA2 R1 #4 LOW**：共享 gate 类型与访问纪律 | ✅ | §5.2、§5.3 | helper 改为入口无关 `ReplicationWriteGateRefusal` 形状；测试增加 fatal/non-ready/getStatus-throw/success 的访问计数、短路顺序、hostile enable input 与 bump 零输入访问边界。 |
 
 ---
 
