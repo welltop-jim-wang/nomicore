@@ -265,3 +265,39 @@ scripted 随机源 / fake scheduler / fake runtime 基建确定性表达。
 与重试跨 carrier 再接纳（§4.6 admittedCreates 等待集）；锚 B 见证 §4.2 生成违约立即
 fatal（phase='namespace-id-generation'、不耗重试预算、observer 恰一次）；锚 C 见证
 §4.3.4 carrier FIFO 结构性排他。SA4 Phase-3 按 §12.3 同表双登记核对本三锚已落盘。
+
+## 修订记录 R4（SA3 发现的 fixture 结构性缺陷，2026-08-27）
+
+**缺陷（已实证非实现缺陷）**：`makeScriptedRandomBytes` 返回的 `consumed` 是
+**getter**——`:299/:348/:421`（以及同缺陷类的 `:317/:505`）以
+`const { randomBytes, consumed } = makeScriptedRandomBytes([...])` 解构取值，getter
+只在解构瞬间读取一次，`consumed` 恒为 0。导致 `:309 toBe(1)`、`:357 toBe(3)`、
+`:440-441 toBeGreaterThanOrEqual(9)` 三断言结构性不可满足（对已落盘实现 b21de27
+实测：17/20 绿，恰此 3 例红）。
+
+**修正**（`registry-phase5-identity-red.test.ts`，断言逻辑不变，仅计数读取方式 +
+按设计 §4.3.2 严格读法收窄期望值）：
+
+1. 全部 5 处解构点改为：`const src = makeScriptedRandomBytes([...]); const { randomBytes } = src;`，
+   断言点以 `src.consumed` 惰性读取；helper JSDoc 增注「严禁解构取值」。
+2. 期望值按设计 §4.3.2 **严格读法**（总生成 = 首生成 + 8 次重试）收窄：
+   - AC-1 幸福路径：`src.consumed` 恰 1；
+   - AC-2 active 碰撞：`src.consumed` 恰 3（首建 X 一次 + 二次 create 首生成 X + 重生成 Y）；
+   - AC-2 entry 耗尽：`src.consumed` 恰 9——为此 fixture 结构性调整：entry X 改经
+     `persistence.seedDocument + registry.open` 建立（**零随机消耗**），耗尽 create 独占
+     剧本 [X×9]（恰 9 次生成）；相应断言调整：`createCalls` 恰 `[]`（纯 entry 碰撞零
+     Persistence，设计原文如此）、`constructed` 恰 `[X_ID]`（仅 open 建立 entry，耗尽
+     create 零新 Runtime）；fatal 字段断言（instance/code/operation/committed:false/
+     phase ∉ 旧三）零变化；
+   - 4 键拒绝 / owner 非法两例：`src.consumed` 恰 0（原值不变，由隐性成立变为显式断言）。
+3. 未改任何 `src/` 与其它测试文件；`persistence duplicate 耗尽` 用例的
+   `dupAttempts ∈ [9,10]` 断言不在本次缺陷面，保持不动。
+
+**修正后复跑验证**（全部独立进程）：
+
+1. `pnpm vitest run packages/namespace-registry/test/registry-phase5-identity-red.test.ts`
+   → **exit 0，20/20 通过**（对已落盘实现 commit b21de27；修正前 17/20）。
+2. `pnpm vitest run --typecheck <两个新文件>` → **exit 0，25/25 通过（20 运行时 + 5 类型），
+   Type Errors: no errors，0 unhandled source errors**——实现落位后类型锚
+   （CreateNamespaceInput 无 namespaceId / 两选项类型面含 randomBytes）同步转绿。
+3. `pnpm vitest run`（全仓）→ 日志零 FAIL/×；全部类型守卫 ✓。

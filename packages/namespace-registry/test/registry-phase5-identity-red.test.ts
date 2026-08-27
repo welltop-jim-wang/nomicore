@@ -99,7 +99,8 @@ function collectUnhandledRejections(): { readonly events: unknown[]; dispose(): 
  * 受控随机源剧本（SA6 契约面：`randomBytes(length: number): Uint8Array`）：
  * - 每次调用必须恰好请求 16 字节（128-bit CSPRNG 语义）；
  * - 超出剧本再取 → throw（把「重试预算超发」变成可观测失败）；
- * - `consumed` 观测调用次数（耗尽 fatal 的「≈8 次重试」锚）。
+ * - `consumed` 为 getter：调用方必须先取 `src` 引用、**严禁解构取值**（解构只在
+ *   瞬间读取一次，恒为 0——R4 结构性缺陷），断言点以 `src.consumed` 惰性读取。
  */
 function makeScriptedRandomBytes(hexChunks: readonly string[]): {
   randomBytes: (length: number) => Uint8Array;
@@ -296,7 +297,8 @@ const LEGACY_PHASES = ['runtime-construction', 'create-document-internal', 'life
 describe('AC-1 普通 create 生成 ns-+32hex（注入 CSPRNG），拒收调用方 namespaceId', () => {
   it('三键输入（owner/schema/root）成功：lease 投影生成 ID 与 owner，Persistence 按生成 ID 落盘，随机源恰取 128-bit 一次', async () => {
     const persistence = new Phase5StubPersistence();
-    const { randomBytes, consumed } = makeScriptedRandomBytes([X_HEX]);
+    const src = makeScriptedRandomBytes([X_HEX]); // src 先取引用：consumed 为 getter（R4）
+    const { randomBytes } = src;
     const { factory, constructed } = makeFakeRuntimeFactory();
     const registry = makeRegistry(persistence, { randomBytes, factory });
 
@@ -306,7 +308,7 @@ describe('AC-1 普通 create 生成 ns-+32hex（注入 CSPRNG），拒收调用�
     expect(lease.namespaceId).toBe(X_ID);
     expect(lease.namespaceId).toMatch(/^ns-[0-9a-f]{32}$/);
     expect(lease.owner).toEqual({ userId: 'u-alice' });
-    expect(consumed).toBe(1); // 幸福路径恰一次生成
+    expect(src.consumed).toBe(1); // 幸福路径恰一次生成（§4.3.2 严格读法）
     expect(persistence.createCalls.map((c) => c.docId)).toEqual([X_ID]);
     expect(persistence.createCalls[0]?.owner).toEqual({ userId: 'u-alice' }); // AC-5 分区键
     expect(constructed.map((r) => r.namespaceId)).toEqual([X_ID]); // Runtime 以生成 ID 构造
@@ -314,7 +316,8 @@ describe('AC-1 普通 create 生成 ns-+32hex（注入 CSPRNG），拒收调用�
 
   it('调用方选定 namespaceId 的四键输入被拒绝（NAMESPACE_CREATE_INVALID_INPUT），零随机源消耗、零 Persistence', async () => {
     const persistence = new Phase5StubPersistence();
-    const { randomBytes, consumed } = makeScriptedRandomBytes([X_HEX]);
+    const src = makeScriptedRandomBytes([X_HEX]); // src 先取引用（R4）
+    const { randomBytes } = src;
     const { factory, constructed } = makeFakeRuntimeFactory();
     const registry = makeRegistry(persistence, { randomBytes, factory });
 
@@ -322,7 +325,7 @@ describe('AC-1 普通 create 生成 ns-+32hex（注入 CSPRNG），拒收调用�
     const issue = okIssue(result);
 
     expect(issue.code).toBe('NAMESPACE_CREATE_INVALID_INPUT');
-    expect(consumed).toBe(0);
+    expect(src.consumed).toBe(0);
     expect(persistence.createCalls).toEqual([]);
     expect(constructed).toEqual([]);
   });
@@ -345,7 +348,8 @@ describe('AC-1 普通 create 生成 ns-+32hex（注入 CSPRNG），拒收调用�
 describe('AC-2 碰撞重生成（至多 8 次重试）与耗尽 committed:false Registry fatal', () => {
   it('与 active entry 碰撞 → 重生成新 ID 成功，Persistence 依次落两个 ID', async () => {
     const persistence = new Phase5StubPersistence();
-    const { randomBytes, consumed } = makeScriptedRandomBytes([X_HEX, X_HEX, Y_HEX]);
+    const src = makeScriptedRandomBytes([X_HEX, X_HEX, Y_HEX]); // src 先取引用（R4）
+    const { randomBytes } = src;
     const registry = makeRegistry(persistence, { randomBytes });
 
     const lease1 = okLease(await registry.create(newContractInput()));
@@ -354,7 +358,7 @@ describe('AC-2 碰撞重生成（至多 8 次重试）与耗尽 committed:false 
     expect(lease1.namespaceId).toBe(X_ID);
     expect(lease2.namespaceId).toBe(Y_ID); // 首次生成 X 撞 active entry → 重生成 Y
     expect(lease2.namespaceId).not.toBe(lease1.namespaceId);
-    expect(consumed).toBe(3);
+    expect(src.consumed).toBe(3); // 首建 X 一次 + 二次 create 首生成 X + 重生成 Y 一次（§4.3.2 严格读法）
     expect(persistence.createCalls.map((c) => c.docId)).toEqual([X_ID, Y_ID]);
   });
 
@@ -418,13 +422,18 @@ describe('AC-2 碰撞重生成（至多 8 次重试）与耗尽 committed:false 
 
   it('entry 碰撞重试至预算耗尽 → committed:false Registry fatal（新 phase、零重复落盘、无伪成功）', async () => {
     const persistence = new Phase5StubPersistence();
-    const { randomBytes, consumed } = makeScriptedRandomBytes([
-      X_HEX, X_HEX, X_HEX, X_HEX, X_HEX, X_HEX, X_HEX, X_HEX, X_HEX, X_HEX,
+    // R4：严格读法 fixture——entry X 经 open（零随机消耗）建立，耗尽 create 独占
+    // 剧本 [X×9]：恰 9 次生成（首生成 + 8 重试，§4.3.2）→ src.consumed 恰为 9。
+    persistence.seedDocument({ userId: 'u-alice' }, X_ID); // (owner, X) 分区已有文档
+    const src = makeScriptedRandomBytes([
+      X_HEX, X_HEX, X_HEX, X_HEX, X_HEX, X_HEX, X_HEX, X_HEX, X_HEX,
     ]);
-    const registry = makeRegistry(persistence, { randomBytes });
+    const { randomBytes } = src;
+    const { factory, constructed } = makeFakeRuntimeFactory();
+    const registry = makeRegistry(persistence, { randomBytes, factory });
 
-    const lease1 = okLease(await registry.create(newContractInput()));
-    expect(lease1.namespaceId).toBe(X_ID);
+    const openLease = okLease(await registry.open({ userId: 'u-alice' }, X_ID)); // entry X active，零随机消耗
+    expect(openLease.namespaceId).toBe(X_ID);
 
     const failure = await registry.create(newContractInput()).then(
       () => null,
@@ -436,11 +445,10 @@ describe('AC-2 碰撞重生成（至多 8 次重试）与耗尽 committed:false 
     expect(fatal.operation).toBe('create');
     expect(fatal.committed).toBe(false);
     expect(LEGACY_PHASES).not.toContain(fatal.phase); // 新注册的耗尽 phase（命名属 SA1 职权）
-    // 至多 8 次重试：总生成次数 = 1 首生成 + N 重试（N ∈ [8,9] 两个 ADR 读法均收编）
-    expect(consumed).toBeGreaterThanOrEqual(9);
-    expect(consumed).toBeLessThanOrEqual(10);
-    // 纯 entry 碰撞：第二次 create 对 Persistence 零写入
-    expect(persistence.createCalls.map((c) => c.docId)).toEqual([X_ID]);
+    expect(src.consumed).toBe(9); // 严格读法：恰 9 次生成（首生成 + 8 次重试）
+    // 纯 entry 碰撞：create 全程零 Persistence、零新 Runtime
+    expect(persistence.createCalls).toEqual([]);
+    expect(constructed.map((r) => r.namespaceId)).toEqual([X_ID]); // 仅 open 建立的 entry Runtime
   });
 
   it('Persistence duplicate 重试至预算耗尽 → 多次 createDoc 均 duplicate 后 committed:false fatal', async () => {
@@ -502,14 +510,15 @@ describe('AC-3/AC-4 entry 仅按 namespaceId 索引；open 仍校验 owner，mis
 
   it('create 仍校验 owner：非法 owner.userId → NAMESPACE_INVALID_IDENTITY（field=owner.userId，零生成、零 Persistence）', async () => {
     const persistence = new Phase5StubPersistence();
-    const { randomBytes, consumed } = makeScriptedRandomBytes([X_HEX]);
+    const src = makeScriptedRandomBytes([X_HEX]); // src 先取引用（R4）
+    const { randomBytes } = src;
     const registry = makeRegistry(persistence, { randomBytes });
 
     const result = await registry.create(newContractInput({ owner: { userId: 'bad/user' } }));
     const issue = okIssue(result);
     expect(issue.code).toBe('NAMESPACE_INVALID_IDENTITY');
     expect(issue.field).toBe('owner.userId');
-    expect(consumed).toBe(0);
+    expect(src.consumed).toBe(0);
     expect(persistence.createCalls).toEqual([]);
   });
 });

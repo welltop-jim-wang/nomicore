@@ -15,4 +15,7 @@
 | 8 | 10:05 | SA6 | Phase 1 回流修订 R2 | 10:10 | SA2 R1 CRITICAL：red.test.ts:287-288 两工厂直呼需 as never cast（类型轴矛盾），send_message 回流 |
 | 9 | 10:20 | SA2 | Phase 2 设计 R2 复审 | 10:24 | SA1 R2 四点修订落盘，send_message 回流 SA2 复审 |
 | 10 | 10:20 | SA6 | Phase 1 回流修订 R3 | 10:25 | 设计 R2 §12.3：回补锚 A/B/C（shutdown×重试、随机源运行期违约、同候选并发） |
-| 11 | 10:27 | SA3 | Phase 3 TDD 实现 | (pending) | SA2 R2 pass，设计定稿；SA3 落位设计并使 20/20 红灯转绿 + 迁移既有测试 |
+| 11 | 10:27 | SA3 | Phase 3 TDD 实现 R1 | 11:07 | SA2 R2 pass，设计定稿；SA3 落位设计并使 20/20 红灯转绿 + 迁移既有测试 |
+| 12 | 11:08 | SA6 | Phase 1 回流修订 R4 | 11:14 | SA3 发现红灯 fixture 缺陷：makeScriptedRandomBytes 的 consumed getter 被解构快照化恒 0（:299/:348/:421 三处），实现正确性已独立验证，send_message 回流 SA6 修 fixture |
+| 13 | 11:20 | 总控亲验 | Phase 3 绿灯验证 | 11:26 | 后台独立进程：tsc --noEmit exit 0；pnpm test 1427/1427 绿、0 type errors、exit 0（首次日志被污染已重跑） |
+| 14 | 11:27 | SA4 | Phase 3 静态验尸 | (pending) | 红灯 20/20 转绿 + 总控亲验全绿，派 SA4 红队审查 |
