@@ -45,4 +45,5 @@ round-1 dispatch log 见 `task_phase5-bootstrap-archive-reset_dispatch.md`（21 
 | 17 | 07:35 | 总控亲验 | Phase 3 修复后绿灯确认 | 07:38 | SA3 修复 commit 8b1398f 交付，总控后台独跑 typecheck+全量 |
 | 18 | 07:35 | SA4 | Phase 4 增量复审（8b1398f） | 07:38 | 注册总控自派增量复审：R-FIX-1 消解判定 + field 判别字变体裁决 + 测试锚强度 |
 | 19 | 07:38 | SA7 | Phase 4 动态验证 | 07:42 | SA4 双轮 pass（全量采信+增量 pass），进入动态验证；携带 SA4 §四 6 项动态审核重点 |
-| 20 | 07:42 | 总控 | Phase 3.5 AC 门禁 | (pending) | SA4/SA7 双清（增量 pass + 动态 pass），进入 R2-AC-1..6 逐条确认 |
+| 20 | 07:42 | 总控 | Phase 3.5 AC 门禁 | 07:44 | SA4/SA7 双清（增量 pass + 动态 pass），进入 R2-AC-1..6 逐条确认 |
+| 21 | 07:44 | 双轴终审 | Phase 4 终审 | (pending) | AC 6/6 ✅；按硬门禁派两个并行 review 子代理（标准轴 + 规格轴），审 6784645..HEAD 全 diff |
