@@ -82,3 +82,42 @@ preparedBox 缓存的 `schema`/`root`（registry.ts:966-971）在 `buildInitialD
 - `npx vitest run packages/namespace-registry`：Test Files 16 passed (16)，Tests 190 passed (190)，Type Errors: no errors。
 - `./node_modules/.bin/tsc -p tsconfig.typecheck.json --noEmit`：通过（README「Contract and verification」列示的第三道门禁）。
 - 全仓 `pnpm test`（`vitest run --typecheck`）：Test Files 121 passed (121)，Tests 1431 passed (1431)，Type Errors: no errors（2026-08-27 本 worktree 实测）。
+
+---
+
+## R2 复审节（修复后重审，2026-08-27）
+
+- **复审范围**：`9ec3eef..HEAD`（HEAD = `69055f7`；修复提交 `67da92d` + wiki 记录提交 `69055f7`）；整体范围仍为 `980b16a..HEAD`。
+- **复审输入**：SA3 终审修复轮 R1（commit `67da92d`）——针对本文件首轮 H-1/H-2，并顺带处理 J-1/J-2；AC 核对表校正随 `69055f7` 入库。
+
+### H-1 复核（cordis-plugin-hosting.md）——✅ 闭合
+
+- `docs/integration/cordis-plugin-hosting.md:118-121`：create 示例已三键化（删除 `namespaceId: 'notes'`），并加注释说明 ID 由注入 CSPRNG 生成（`ns-`+32 小写 hex）、调用方不得提供、经 `lease.namespaceId` 获知——与 identity.ts 接纳段（namespaceId 键出现即拒）及 registry.ts 生成编排一致。
+- `:136`（`const notesId = lease.namespaceId`）+ `:152-154`：重开改用生成 ID，注释补充 owner 核对/mismatch NOT_FOUND 零泄露——与 open 第一谓词实现（registry.ts:802-806）一致。
+- `:162`（原 :158 叙述）：已改写为「碰撞内部重生成换 ID 重试（至多 8 次）、耗尽 reject `NamespaceRegistryFatalError`（`committed:false`、`phase: 'namespace-id-generation'`）、普通 create 不再返回 `NAMESPACE_ALREADY_EXISTS`（保留公共联合供后续受信任导入切片）」——与实现（MAX_NAMESPACE_ID_RETRIES=8、耗尽 committed:false fatal、types.ts 保留注册位）逐条相符。
+
+### H-2 复核（README）——✅ 闭合
+
+- `README.md:3`：保证句改为 per `namespaceId`，并注明 ADR 0010 依据与 owner 的新角色（持久化分区属性 + 复用时核对）——准确。
+- `README.md:33-35`：§Errors 列举以 `NAMESPACE_INVALID_IDENTITY` 替换 `NAMESPACE_ALREADY_EXISTS`，并新增专段说明 ALREADY_EXISTS 的保留定位、普通 create 的内部重试/耗尽 fatal 语义、三键 CREATE_INVALID_INPUT 拒绝面与 open owner mismatch NOT_FOUND——与代码事实一致。
+- AC 核对表 AC-7 行已校正为 ⚠️→修复轨迹的诚实记录（含「首轮声称不实，特记」），结论行改为「双轴复审转 clear 后方可封口」——本轮 Standards 轴复审即该封口的本轴部分。
+
+### J-1 复核（types.ts 接口级 JSDoc）——✅ 修复准确
+
+`types.ts:307-320`：`NamespaceRegistry` 接口头部已重写——owner-only 接纳、生成编排循环（碰撞/DOC_DUPLICATE 换 ID 重试 ≤8 次、耗尽 committed:false fatal）、attempt slot 经 carrier FIFO、create-document 拆分 prepare + build、三通道列举移除 ALREADY_EXISTS、fatal phase 词表补 `namespace-id-generation`、构造门禁补 randomBytes。与方法级 JSDoc 及实现一致。
+
+### J-2 复核（identity.ts 模块头）——✅ 修复准确
+
+`identity.ts:1-26`：模块头追加 #131 增量段——key = namespaceId 本体（长度前缀复合键退役）、`validateOwnerIdentity` 抽出复用、`acceptCreateIdentity` owner-only 重写（namespaceId 键出现即拒、零随机/零 carrier/零 Persistence）；并补充 open 文法零改动、旧格式 namespaceId 继续可用的兼容注记。历史段落保留但定位清晰，无误导。
+
+### R2 只读验证（HEAD = `69055f7` 实测）
+
+- `npx vitest run packages/namespace-registry`：Test Files 16 passed (16)，Tests 190 passed (190)，Type Errors: no errors。
+- `./node_modules/.bin/tsc -p tsconfig.typecheck.json --noEmit`：通过。
+- 本轮源码改动仅注释级（identity.ts/types.ts JSDoc），行为面无变更；文档改动如上逐项核对。
+
+### 最终结论
+
+**Conclusion: clear**
+
+首轮阻断项 H-1/H-2 均已闭合并经逐行核对；J-1/J-2 顺带修复准确；J-3/J-4/J-5 维持首轮「非阻断」判定。Standards 轴（终审轴一）对 `980b16a..69055f7` 无遗留阻断项。

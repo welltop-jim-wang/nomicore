@@ -66,3 +66,34 @@
    - `docs/integration/cordis-plugin-hosting.md:117-126`（create 示例三键化，删除 `namespaceId: 'notes'`）。
 
 AC-1..AC-6 全部满足且证据充分（含独立复跑 1431/1431 全绿、零类型错误、Persistence 零改动实证）；S-1 版本 bump 为非阻断观察。文档三处修正落地后，本轴可直接转 clear，无需重跑行为面验证。
+
+---
+
+## R2 复审节（修复后重审，2026-08-27）
+
+- **复审范围**: 更新后 diff `980b16a..HEAD`，HEAD=`69055f7`；修复提交 `67da92d`（docs: 终审修复轮 R1），其后 `69055f7` 为 wiki 记录入库（含本报告 R1 版与 AC 核对表校正），零代码变更。
+- **复审动作**: `git show 67da92d` 逐行核对四处文件变更；确认 src 两文件（types.ts / identity.ts）为纯 JSDoc/模块头注释编辑、**零代码行变更**（diff 仅注释块），行为面未受影响，故不重跑行为验证（R1 已声明此约定）。
+
+### 阻断项逐处闭合核实
+
+| # | 位置 | 闭合判定 | 核实结论 |
+|---|---|---|---|
+| 1 | `packages/namespace-registry/README.md:3` | ✅ 闭合 | 核心保证句改为 per `namespaceId`：「the Registry entry key is the namespaceId alone — owner identity is a persisted partition property plus a reuse-time check」。与新契约精确一致：entry 仅按 namespaceId 索引（AC-3）、owner 为 Persistence 分区属性（AC-5）+ 复用前核对（AC-4）。 |
+| 2 | `packages/namespace-registry/README.md:33`（Errors 节） | ✅ 闭合 | 预期失败列举改为 `REGISTRY_NOT_ACCEPTING`/`NAMESPACE_NOT_FOUND`/`NAMESPACE_INVALID_IDENTITY`/typed persistence/schema/ROOT issues——全部为当前可产出码。新增限定段精确陈述：`NAMESPACE_ALREADY_EXISTS` 保留于公共 `CreateNamespaceIssue` 联合供受信任导入切片、普通 open/create 不再产出；碰撞内部重生成（entry 或持久化 duplicate → 至多 8 次重试）、耗尽 reject `committed:false` fatal（`phase: 'namespace-id-generation'`）；`NAMESPACE_CREATE_INVALID_INPUT` 覆盖三键形状（携带调用方 namespaceId 键即拒）；owner mismatch 于存活 entry → `NAMESPACE_NOT_FOUND` 零暴露。逐句与实现（MAX_NAMESPACE_ID_RETRIES=8 / throwIdGenerationFatal / acceptCreateIdentity ① / runOpenSlot 谓词）核对一致。 |
+| 3 | `docs/integration/cordis-plugin-hosting.md`（创建/重开示例外 + 叙述段） | ✅ 闭合 | create 示例三键化（`namespaceId: 'notes'` 行删除），示例头注释说明 ID 由注入受控 128-bit CSPRNG 生成（`ns-`+32 小写 hex）、调用方不得提供、经 `lease.namespaceId` 获知；连带 :150 重开凭据改 `notesId`（lease.namespaceId）并注释同 ID 复用时 owner 核对/mismatch→NOT_FOUND 零泄露；连带 :158 叙述段改为「碰撞内部重生成换 ID 重试（至多 8 次），耗尽 reject committed:false fatal（phase namespace-id-generation），普通 create 不再返回 ALREADY_EXISTS（保留联合供后续受信任导入切片）」。照抄示例在新契约下可正常运行，文案与实现精确一致。 |
+
+### 连带修复核实（零行为变更声明核验）
+
+- `src/types.ts` `NamespaceRegistry` 接口 JSDoc：去「duplicate 四源同码 ALREADY_EXISTS」旧述，create 契约补 owner-only 接纳/生成编排/耗尽 fatal 与构造门禁列 randomBytes——纯注释块 diff，语义与实现一致。
+- `src/identity.ts` 模块头：补 #131 历史表述（key=namespaceId 迁移、create 接纳 owner-only、旧格式 ID 兼容保持）——纯注释块 diff，与实现一致。
+- 两文件 diff 均不含任何可执行行变更，「零行为变更」声明成立。
+
+### R2 残留清单
+
+- 缺失/部分满足：无（AC-7 残留三处全部闭合）。
+- scope-creep：无新增（S-1 版本 bump 维持 R1 非阻断观察）。
+- 疑似错误行为：无。
+
+## 最终 Conclusion: clear
+
+R1 唯一阻断项（AC-7 面向消费者文档三处旧契约文案）经 `67da92d` 全部闭合并逐字核实与新契约精确一致；连带 src 注释修复为零行为变更。至此 AC-1..AC-7 七条全部满足，无缺失、无部分满足、无新增 scope-creep、无疑似错误行为。**本轴（Spec 终审轴二）终审通过：clear。**
