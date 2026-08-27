@@ -48,3 +48,14 @@
 
 - **无阻断遗留**。两点一致性说明：① `packages/namespace-runtime/src/types.ts` 在基线不存在（设计 §8 笔误）——fence 类型与实现以 `runtime.ts` 包内模块承载（non-enumerable 键 + 零公共导出），效果等价且无泄漏；② SA8 非阻断观察 2（internal subpath 措辞）按「不新增 subpath import、沿既有 factory 接线」理解落实。
 - 本报告只做本地 commit，**不 push**；CI/AC 门禁与双轴终审留待总控/SA7。
+
+---
+
+## R-FIX-1 修复轮（SA4 verdict pass 后；commit `4fe3a02` 之后的追加改动）
+
+- **R-FIX-1（MEDIUM-HIGH，必须修复）**：`resetReplica` 公共入口 expected 快照校验缺失（设计 §3.2「格式错误…不能误报本地 mismatch，也不能访问 Persistence」双违）。
+  - 修复：resetReplica 入口镜像 import 侧纪律——acceptance → validateOpenIdentity → `snapshotReplicationIdentityRef(expectedLocalIdentity)` → 失败即返回 `RESET_EXPECTED_IDENTITY_INVALID_ISSUE`（code = 既有 `NAMESPACE_INVALID_IDENTITY`——设计 §3.2 原文「沿既有 NAMESPACE_INVALID_IDENTITY…处理」直接命中，**零新错误码**；`field: 'expectedLocalIdentity'` 为 `InvalidIdentityIssue.field` 判别字的 additive 新成员——SA4 方案 A'：诚实描述「期望身份」输入缺陷，open/create 共享形状零破坏，已有 field 消费方（open/create/identity 测试）零影响）；`expectedOutcome.value`（冻结快照）进入 admitResetSlot——同时消除 fence 槽/archiveDoc 双读分叉 TOCTOU。入口快照点先于任何 carrier/entry/Persistence 访问（含 getter/Proxy throw 收编）。
+  - 顺带（指令第 2 条）：resetReplica 入口段过时注释（「期望身份纯传递 §4.7…」）已同步更新为 R2 现状。
+  - 测试锚（internal 测试 +3 用例）：敌意 16 形态 → `NAMESPACE_INVALID_IDENTITY` + **`stub.probeCalls` 为空（零 Persistence 触达分界锚）** + lease active/lifecycle ready/零 archive + 正确 expected 重试成功（含重试路径首次 probe 计数 ==1）；可变 expected 双读分叉攻击（接纳后改写 → 归档收到冻结样本 {ID_A,1}）→ 成功。
+- **F-1（LOW，顺带）**：`reset-archive-after-arm-failed` observer 真实派发断言——armed + `DOC_ARCHIVE_OPERATIONAL` → `NAMESPACE_RESET_FAILED` + observer 恰一次收到该事件 + cause 负载零复制身份值回显（ID_A/NS_B/u-alice 均不出现于 cause 文本）。
+- **验证**：`tsc -p tsconfig.typecheck.json --noEmit` 零错；受影响 3 文件 44 用例全绿；全量套件复跑零回归（见总控采信日志 `.mabf-bg/rfix1-full.log`——147 文件 / 1757 用例全绿）；`git diff --check` 干净。版本号同轮内不重复 bump（registry 已 0.1.6）。

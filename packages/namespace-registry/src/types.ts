@@ -126,11 +126,15 @@ export interface NamespaceOwner {
   readonly userId: string;
 }
 
-/** 无效身份窄 issue（open/create 共用；message 恒定、零回显字段值）。 */
+/** 无效身份窄 issue（open/create 共用；message 恒定、零回显字段值）。
+ *  R2 增量（R-FIX-1，设计 §3.2）：`field` 判别面向 `resetReplica` 的 expected
+ *  身份输入缺陷新增 `'expectedLocalIdentity'`（additive——共享形状零破坏；
+ *  code/message 不变：格式错误按设计 §3.2 沿既有 `NAMESPACE_INVALID_IDENTITY`
+ *  通道返回，绝无误报本地 mismatch）。 */
 export interface InvalidIdentityIssue {
   readonly ok: false;
   readonly code: 'NAMESPACE_INVALID_IDENTITY';
-  readonly field: 'owner.userId' | 'namespaceId';
+  readonly field: 'owner.userId' | 'namespaceId' | 'expectedLocalIdentity';
   readonly message: typeof NAMESPACE_INVALID_IDENTITY_MESSAGE;
 }
 

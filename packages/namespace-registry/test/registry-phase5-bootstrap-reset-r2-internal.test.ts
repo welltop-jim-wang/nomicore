@@ -95,6 +95,31 @@ function asImportRegistry(registry: NamespaceRegistry): NamespaceRegistry & Impo
   return registry as unknown as NamespaceRegistry & ImportReplicaRegistry;
 }
 
+/** 敌意 expected 形态矩阵（module 级——import 侧 C 与 reset 侧 R（R-FIX-1）共用同一
+ *  判定面：两种编排入口的 expected 快照校验必须同判据同拒绝）。 */
+const HOSTILE_INPUTS: Array<{ name: string; value: unknown }> = [
+  { name: 'null', value: null },
+  { name: 'undefined', value: undefined },
+  { name: 'array', value: [ID_A, 1] },
+  { name: 'function', value: () => ({ replicationId: ID_A, replicationEpoch: 1 }) },
+  { name: 'string', value: 'identity' },
+  { name: 'number', value: 1 },
+  { name: 'getter-throw', value: Object.defineProperty({}, 'replicationId', { get() { throw new Error('boom'); } }) },
+  { name: 'proxy-throw', value: new Proxy({ replicationId: ID_A, replicationEpoch: 1 }, { getOwnPropertyDescriptor() { throw new Error('proxy boom'); } }) },
+  { name: 'inherited', value: Object.create({ replicationId: ID_A, replicationEpoch: 1 }) },
+  { name: 'accessor-id', value: Object.defineProperty({ replicationEpoch: 1 }, 'replicationId', {
+    get() { return ID_A; },
+    enumerable: true,
+    configurable: true,
+  }) },
+  { name: 'invalid-id', value: { replicationId: 'Z'.repeat(32), replicationEpoch: 1 } },
+  { name: 'NaN-epoch', value: { replicationId: ID_A, replicationEpoch: Number.NaN } },
+  { name: 'Infinity-epoch', value: { replicationId: ID_A, replicationEpoch: Infinity } },
+  { name: 'zero-epoch', value: { replicationId: ID_A, replicationEpoch: 0 } },
+  { name: 'fractional-epoch', value: { replicationId: ID_A, replicationEpoch: 1.5 } },
+  { name: 'missing-epoch-key', value: { replicationId: ID_A } },
+];
+
 function makeCounterRandomBytes(): RegistryRandomBytes {
   let counter = 0;
   return (length: number): Uint8Array => {
@@ -434,29 +459,6 @@ describe('B：legacy fake（无 beginResetFence）→ 破坏性动作前 branded
 // ═════════════════════════ C：敌意 expected 输入矩阵（§4.2.1 零副作用） ═════════════════════════
 
 describe('C：敌意 expected → 稳定输入 issue + 零 doc 访问/零 carrier/零 entry/零 Persistence；正确重试成功', () => {
-  const HOSTILE_INPUTS: Array<{ name: string; value: unknown }> = [
-    { name: 'null', value: null },
-    { name: 'undefined', value: undefined },
-    { name: 'array', value: [ID_A, 1] },
-    { name: 'function', value: () => ({ replicationId: ID_A, replicationEpoch: 1 }) },
-    { name: 'string', value: 'identity' },
-    { name: 'number', value: 1 },
-    { name: 'getter-throw', value: Object.defineProperty({}, 'replicationId', { get() { throw new Error('boom'); } }) },
-    { name: 'proxy-throw', value: new Proxy({ replicationId: ID_A, replicationEpoch: 1 }, { getOwnPropertyDescriptor() { throw new Error('proxy boom'); } }) },
-    { name: 'inherited', value: Object.create({ replicationId: ID_A, replicationEpoch: 1 }) },
-    { name: 'accessor-id', value: Object.defineProperty({ replicationEpoch: 1 }, 'replicationId', {
-      get() { return ID_A; },
-      enumerable: true,
-      configurable: true,
-    }) },
-    { name: 'invalid-id', value: { replicationId: 'Z'.repeat(32), replicationEpoch: 1 } },
-    { name: 'NaN-epoch', value: { replicationId: ID_A, replicationEpoch: Number.NaN } },
-    { name: 'Infinity-epoch', value: { replicationId: ID_A, replicationEpoch: Infinity } },
-    { name: 'zero-epoch', value: { replicationId: ID_A, replicationEpoch: 0 } },
-    { name: 'fractional-epoch', value: { replicationId: ID_A, replicationEpoch: 1.5 } },
-    { name: 'missing-epoch-key', value: { replicationId: ID_A } },
-  ];
-
   it('全部敌意形态 → NAMESPACE_IMPORT_EXPECTED_IDENTITY_INVALID；doc.getMap 零访问、importDoc 零调用、零 entry；随后正确 expected 重试成功', async () => {
     const stub = new ScriptStub();
     const registry = makeRegistry(stub);
@@ -636,6 +638,103 @@ describe('E：probe 拒绝映射——Operational → LOAD_FAILED；Corrupt → 
     expect(leaseStatus(lease).lease).toBe('active');
     expect(leaseStatus(lease).runtime?.lifecycle).toBe('ready');
     expect(stub.archiveCalls).toEqual([]);
+    await registry.shutdown();
+  });
+});
+
+// ═════════════ R-FIX-1：resetReplica 敌意 expected 输入矩阵（设计 §3.2 入口快照） ═════════════
+
+describe('R-FIX-1：resetReplica 敌意 expected → NAMESPACE_INVALID_IDENTITY + 零 Persistence 触达；正确 expected 重试成功（零破坏）', () => {
+  it('16 形态全部拒绝于入口：probeCalls 空（零 Persistence 分界锚）、lease active/lifecycle ready/零 archive；随后正确 expected 重试成功', async () => {
+    const stub = new ScriptStub();
+    stub.seedDocument(ALICE, NS_B, makeSeedDoc(NS_B, { replicationId: ID_A, replicationEpoch: 1, root: 5 }));
+    const registry = makeRegistry(stub);
+    const lease = okLease(await registry.open(ALICE, NS_B));
+    await schemaReady(lease);
+
+    for (const hostile of HOSTILE_INPUTS) {
+      const issue = okIssue(
+        await asResetRegistry(registry).resetReplica(ALICE, NS_B, hostile.value as ReplicationIdentityRef),
+      );
+      expect(issue.code, hostile.name).toBe('NAMESPACE_INVALID_IDENTITY');
+    }
+    // 分界锚：敌意 expected 在入口被快照拒绝——零 Persistence 触达（probe 从未调用）、
+    // 零破坏（lease 原样 active、runtime ready、零 archive seam、零 close）
+    expect(stub.probeCalls).toEqual([]); // ★ 零 Persistence 触达（设计 §3.2「不能访问 Persistence」）
+    expect(stub.archiveCalls).toEqual([]);
+    expect(leaseStatus(lease).lease).toBe('active');
+    expect(leaseStatus(lease).runtime?.lifecycle).toBe('ready');
+    // key 未被毒化：同一 lease 以正确 expected 重试 → 预核对成功并经完整 reset 闭环
+    const okResult = await asResetRegistry(registry).resetReplica(ALICE, NS_B, {
+      replicationId: ID_A,
+      replicationEpoch: 1,
+    });
+    expect(okResult.ok, `重试 reset 应成功：${JSON.stringify(okResult)}`).toBe(true);
+    expect(stub.archiveCalls).toHaveLength(1);
+    expect(stub.probeCalls.length).toBe(1); // 重试才首次触达 Persistence probe
+    expect(leaseStatus(lease).lease).toBe('released'); // 重试成功路径按 armed 语义失效原 lease
+    await registry.shutdown();
+  });
+
+  it('期待身份合法但为可变对象：入口冻结快照消除双读分叉（fence 槽与 archiveDoc 样本一致）', async () => {
+    const stub = new ScriptStub();
+    stub.seedDocument(ALICE, NS_B, makeSeedDoc(NS_B, { replicationId: ID_A, replicationEpoch: 1, root: 5 }));
+    const registry = makeRegistry(stub);
+    const lease = okLease(await registry.open(ALICE, NS_B));
+    await schemaReady(lease);
+    // 可变 expected：合法读取后由测试改写（模拟双读分叉攻击）——入口快照后
+    // fence 槽与 archiveDoc 都只能看到冻结值 {ID_A, 1}
+    const mutableExpected = { replicationId: ID_A, replicationEpoch: 1 };
+    const resetP = asResetRegistry(registry).resetReplica(ALICE, NS_B, mutableExpected);
+    // 改写发生在接纳之后——冻结快照免疫
+    (mutableExpected as { replicationEpoch: number }).replicationEpoch = 999;
+    const okResult = await resetP;
+    expect(okResult.ok, `双读分叉攻击下 reset 应仍成功：${JSON.stringify(okResult)}`).toBe(true);
+    expect(stub.archiveCalls).toHaveLength(1);
+    expect((stub.archiveCalls[0] as { expected: ReplicationIdentityRef }).expected).toEqual({
+      replicationId: ID_A,
+      replicationEpoch: 1,
+    });
+    await registry.shutdown();
+  });
+});
+
+// ═════════════ F-1：reset-archive-after-arm-failed observer 派发断言（LOW 顺带） ═════════════
+
+describe('F-1：armed 后 archive 运营失败 → observer 收到 reset-archive-after-arm-failed（cause 零身份回显）', () => {
+  it('DOC_ARCHIVE_OPERATIONAL → RESET_FAILED + registryObserver 恰一次收到 reset-archive-after-arm-failed + cause/事件载荷不含身份值', async () => {
+    const stub = new ScriptStub();
+    stub.seedDocument(ALICE, NS_B, makeSeedDoc(NS_B, { replicationId: ID_A, replicationEpoch: 1, root: 5 }));
+    stub.archiveError = Object.assign(new Error('archive io down'), { code: 'DOC_ARCHIVE_OPERATIONAL' });
+    const events: Array<Record<string, unknown>> = [];
+    const registry = createNamespaceRegistryForTesting(stub, {
+      clock: { now: () => FIXED_MS },
+      scheduler: createRegistryTestScheduler(),
+      idleTimeoutMs: 25,
+      randomBytes: makeCounterRandomBytes(),
+      observer: (event: unknown) => {
+        events.push(event as Record<string, unknown>);
+      },
+    } as never);
+    const lease = okLease(await registry.open(ALICE, NS_B));
+    await schemaReady(lease);
+    const issue = okIssue(
+      await asResetRegistry(registry).resetReplica(ALICE, NS_B, {
+        replicationId: ID_A,
+        replicationEpoch: 1,
+      }),
+    );
+    expect(issue.code).toBe('NAMESPACE_RESET_FAILED');
+    const afterArm = events.filter((e) => e.type === 'reset-archive-after-arm-failed');
+    expect(afterArm).toHaveLength(1);
+    // 事件 cause 零身份回显：归档拒绝的稳定 message（cause 字段）不含复制身份
+    // 值/owner/namespaceId——设计 §3.5.2「does not include identity contents」
+    // （事件 standard 字段 identity 沿用全部 observer 事件的受控 InternalIdentity
+    // 模式，供日志关联；复制的 replicationId/epoch 值绝不出现）
+    const causeText = JSON.stringify((afterArm[0] as Record<string, unknown>).cause);
+    expect(causeText).not.toContain(ID_A);
+    expect(causeText).not.toContain(NS_B);
+    expect(causeText).not.toContain('u-alice');
     await registry.shutdown();
   });
 });

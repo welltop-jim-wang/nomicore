@@ -117,6 +117,7 @@ import {
   NAMESPACE_IMPORT_FAILED_MESSAGE,
   NAMESPACE_IMPORT_IDENTITY_MISMATCH_MESSAGE,
   NAMESPACE_IMPORT_INVALID_IDENTITY_MESSAGE,
+  NAMESPACE_INVALID_IDENTITY_MESSAGE,
   NAMESPACE_LOAD_FAILED_MESSAGE,
   NAMESPACE_NOT_FOUND_MESSAGE,
   NAMESPACE_REGISTRY_IDLE_TIMEOUT_RANGE_MESSAGE,
@@ -497,6 +498,18 @@ const IMPORT_EXPECTED_IDENTITY_INVALID_ISSUE = Object.freeze({
   ok: false as const,
   code: 'NAMESPACE_IMPORT_EXPECTED_IDENTITY_INVALID' as const,
   message: NAMESPACE_IMPORT_EXPECTED_IDENTITY_INVALID_MESSAGE,
+});
+
+/** resetReplica 入口的敌意 expected 输入窄 issue（R-FIX-1，设计 §3.2）：
+ *  格式错误 = 调用输入错误，沿既有 `NAMESPACE_INVALID_IDENTITY` 通道返回（零新
+ *  错误码）；`field: 'expectedLocalIdentity'` 显式判别是「期望身份」而非
+ *  owner/namespaceId 输入缺陷（诊断诚实）；message 恒定、零字段值回显。
+ *  **零 Persistence/carrier/entry 访问**（入口快照先于一切——分界锚）。 */
+const RESET_EXPECTED_IDENTITY_INVALID_ISSUE = Object.freeze({
+  ok: false as const,
+  code: 'NAMESPACE_INVALID_IDENTITY' as const,
+  field: 'expectedLocalIdentity' as const,
+  message: NAMESPACE_INVALID_IDENTITY_MESSAGE,
 });
 
 /** schema/root 领域失败的 verbatim issue（DQ-4：issues 完整原对象逐字透传、不深克隆；
@@ -1926,15 +1939,24 @@ export function createRegistryInternal(
       namespaceId: unknown,
       expectedLocalIdentity: unknown,
     ): Promise<ResetReplicaResult> {
-      // Phase 5（§4.8 接纳段冻结，镜像 open）：acceptance 检查 → validateOpenIdentity
-      // → carrier FIFO 接纳（与 open/create 同一串行域）；期望身份纯传递（§4.7——
-      // 不在 close 前读本地事实做预检，守卫权威 = 持久快照复制事实）。
+      // Phase 5（§4.8 接纳段冻结，镜像 open；R2 修订，R-FIX-1 / 设计 §3.2）：
+      // acceptance 检查 → validateOpenIdentity（零 entries/carriers/Persistence/
+      // Runtime 访问）→ **expected 安全快照校验**（镜像 import 侧 §4.2.1 纪律——
+      // 先于任何 carrier 入队/entry 查询/Persistence 访问，含 getter/Proxy throw
+      // 收编；格式错误 = 调用输入错误，按设计 §3.2 沿既有
+      // `NAMESPACE_INVALID_IDENTITY` 通道返回，绝不误报本地 mismatch）→ carrier
+      // FIFO 接纳。冻结快照同时消除 fence 槽/archiveDoc 对调用方对象的双读分叉
+      // （TOCTOU 免疫——与 import 侧同款）。
       if (acceptance !== 'running') return NOT_ACCEPTING_ISSUE;
       const outcome = validateOpenIdentity(owner, namespaceId);
       if (!outcome.ok) {
         return outcome.issue;
       }
-      return admitResetSlot(outcome.identity, expectedLocalIdentity as ReplicationIdentityRef);
+      const expectedOutcome = snapshotReplicationIdentityRef(expectedLocalIdentity);
+      if (!expectedOutcome.ok) {
+        return RESET_EXPECTED_IDENTITY_INVALID_ISSUE;
+      }
+      return admitResetSlot(outcome.identity, expectedOutcome.value);
     },
     getStatus(): NamespaceRegistryStatus {
       // §2.E：恒三相冻结常量投影（不暴露 entry/lease/queue/timer 任何内部计面）。
