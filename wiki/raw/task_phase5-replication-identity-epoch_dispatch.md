@@ -14,4 +14,8 @@
 | 7 | 17:32 | SA1 | Phase 2 设计 R2 修订 | 17:37 | SA2 R1 reject 五点全部实质落实（701→808 行，零架构回退），R2 落盘 |
 | 8 | 17:38 | SA2 | Phase 2 设计 R2 复审 | 17:40 | SA1 R2 七点修订逐条复核真实落实，R2 Verdict: pass |
 | 9 | 17:43 | SA3 | Phase 3 TDD 实现 R1 | (pending) | SA2 R2 pass 设计定稿，派 SA3 落位设计使 18 红转绿 |
-| 10 | 18:14 | SA6 | Phase 1 回流修订 R2 | (pending) | SA3 R1 commit 8113083 后 1472/1474：两红均 SA6-owned 锚缺陷（surface:90 联合分布式恒 never；FilePersistence 全链 harness 竞态），总控独立复跑确认（exit 1，2 failed/18 passed，签名一致），回流 SA6 修锚 |
+| 10 | 18:14 | SA6 | Phase 1 回流修订 R2 | 18:24 | SA6 修锚完成：类型锚改无分布判别 + FilePersistence 用例接入 durable-snapshot-wait（issue #108 模式）；两文件 20/20 绿、registry 目录 224/224 绿、红文件 ×2 复跑零 flake；fixture 修订已由总控 commit ec83429 |
+| 11 | 18:24 | 总控亲验 | Phase 3 绿灯验证 | 18:24 | 后台独立进程：pnpm test 125 文件 1474/1474 绿、0 type errors、exit 0（.mabf-bg/green-verify.log） |
+| 12 | 18:24 | SA4 | Phase 3 静态验尸 | 18:39 | 红灯全绿 + 总控亲验全绿，SA4 审查 diff 7425164..HEAD → verdict: pass（4 条 LOW/INFO 非阻断：L1 版本 bump 设计注记→SA1 补注，L4 载体异型可选用例→SA7） |
+| 13 | 18:40 | SA7 | Phase 3 动态验证 | (pending) | SA4 pass 双清第一清，派 SA7 动态验证（含 SA4 五条动态重点 + L4 可选用例） |
+| 14 | 18:41 | SA1 | Phase 3 设计注记 R3 | 18:46 | SA4 L1 收口：design §7 ALLOW LIST 补版本 bump 惯例注记（沿 #131 SA4 L1 先例），808→818 行 |

@@ -720,6 +720,16 @@ plugin.ts 无新 capability 桥接（randomBytes 已在 #131 桥接 node:crypto�
 - `packages/namespace-registry/src/registry.ts` — 修改，`drawReplicationId` 私有函数 + `issueLease` 接线（~30 行）
 - `packages/namespace-registry/src/index.ts` — 修改，type-only 追加导出 3 个类型（~5 行）
 
+**包版本 bump（2 文件——R3 惯例注记，SA4 静态验尸 L1 收口）**：
+
+- `packages/namespace-registry/package.json` — 修改（仅 `version` 0.1.4→0.1.5），公共面加法（Lease 两方法 + status 复制域 + 3 类型导出）随仓库硬门禁 #9 惯例 bump patch 位
+- `packages/namespace-runtime/package.json` — 修改（仅 `version` 0.1.7→0.1.8），公共面加法（Runtime 两方法 + status 第八键 + 5 类型导出）同款惯例 bump
+
+> 惯例依据：本仓跨包公共面变更 PR 均同步 bump 受影响包 patch 版本（同型先例 `7425164` /
+> `6472485` / `5db6f83`）；沿 #131（issue #132 前序切片）SA4 L1 先例以设计文档注记收口——
+> 版本号不是行为契约，属发布簿记，SA4 比对时按本注记放行（SA4 R1 verdict: pass 已确认
+> L1 非阻断）。
+
 **测试文件（8 文件，均为既有键集锁/定型 fake 的机械迁移；SA6 红灯两文件零改动列入监护）**：
 
 - `packages/namespace-registry/test/registry-phase5-replication-red.test.ts` — `[SA6 owned]` 验收红灯（14 例）。本设计四项对齐提示全部无回流——SA3 **不得**修改其断言；仅当 SA2 攻击裁决要求契约变更时经总控回流 SA6 记录后同步
