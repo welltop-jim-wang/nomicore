@@ -307,13 +307,16 @@ export interface NamespaceLease {
 /**
  * Host 无关 Registry 主接口（设计 §3.2）：open + create 双主链 + shutdown 三相状态机。
  *
- * create 契约（§5 伪码）：运行时按 §4 DQ-1 最小 identity 接纳 → 同 key 与 open 共用
- * #110 carrier FIFO → 槽内 payload 快照 → 必需的 Clock 单次读数 → 私有 create-document
+ * create 契约（§5 伪码；phase-5 切片 1 按 ADR 0010 修订）：运行时按 §4 DQ-1 最小
+ * identity 接纳（owner-only——namespaceId 由注入受控 CSPRNG 生成，调用方携带
+ * namespaceId 键即拒）→ 生成编排循环（entry 碰撞/DOC_DUPLICATE → 换 ID 重试，至多
+ * 8 次；耗尽 → committed:false fatal）→ 候选经 carrier FIFO 入 attempt slot → 槽内
+ * payload 快照 → 必需的 Clock 单次读数 → 私有 create-document（prepare + build）
  * → Persistence createDoc → 普通 P0 Runtime factory。拒绝分三通道：resolve 领域窄
- * issue（含 duplicate 四源同码 ALREADY_EXISTS）、reject branded
+ * issue（身份/输入形状/schema/root/持久化运营故障/不接纳）、reject branded
  * NamespaceRegistryFatalError（internal/clock/create-document/persistence-fatal/
- * post-commit runtime-construction，committed 事实诚实）、构造期同步 TypeError
- * （Clock/scheduler 形状门禁）。
+ * post-commit runtime-construction/namespace-id-generation，committed 事实诚实）、
+ * 构造期同步 TypeError（Clock/scheduler/randomBytes 形状门禁——ADR 0009 依赖纪律）。
  *
  * #112 增量（设计 §2.D/§2.E/§2.H）：shutdown 真实化——三次调用态机
  * （running → shutting-down → stopped）、停接纳于公共入口同步段、聚合关闭全部

@@ -1,12 +1,14 @@
 /**
  * @nomicore/namespace-registry —— 最小兼容 identity 校验（issue #110 设计 §4；
- * issue #111 设计 §4 DQ-1 —— create 最小 identity 接纳）。
+ * issue #111 设计 §4 DQ-1 —— create 最小 identity 接纳；issue #131（phase-5 切片 1，
+ * ADR 0010）——entry key 迁移为仅 namespaceId、create 接纳改 owner-only）。
  *
- * 本票没有来自 ADR/Persistence 的 canonical grammar（设计 §4 明示不得擅加 ASCII、
+ * 本包没有来自 ADR/Persistence 的 canonical grammar（设计 §4 明示不得擅加 ASCII、
  * 长度上限或首字符白名单），故最小安全规则只有：primitive non-empty string，且不含
  * Unicode C0/C1 控制字符（U+0000–U+001F、U+007F–U+009F）、`/`、`\\`，也不等于
  * `.` 或 `..`；不 trim、不 normalise、不 coerce。Unicode、长字符串、空格及其它
- * Persistence 可接受的普通 string 保持可用（§9 round-trip 兼容锚）。
+ * Persistence 可接受的普通 string 保持可用（§9 round-trip 兼容锚——open 文法零改动，
+ * 旧格式 namespaceId 如 `k-ns` 继续可 open/复用/空闲保留/shutdown）。
  *
  * “invalid 零访问”精确定义（设计 §4/§6）：invalid 时零 Registry entries/carriers map、
  * Persistence、Runtime factory/Runtime 访问；不承诺零 JavaScript Proxy/getter trap
@@ -16,6 +18,12 @@
  * null-prototype data descriptor（accessor 拒绝；#111 起 input 顶层 owner/
  * namespaceId 读取同为 descriptor-only、accessor 零执行），userId 经
  * descriptor.value 读取（不经 getter）。
+ *
+ * #131 增量：`validateOpenIdentity` 的 key = namespaceId 本体（长度前缀复合键
+ * `${userId.length}:${userId}\0${nsId.length}:${nsId}` 退役），owner 校验段抽出为
+ * `validateOwnerIdentity` 供 create 接纳复用；`acceptCreateIdentity` 重写为 owner-only
+ * ——namespaceId 键出现即 NAMESPACE_CREATE_INVALID_INPUT（key/ID 由受控随机源在槽内
+ * 生成），零随机源/零 carrier/零 Persistence 副作用。
  */
 import {
   NAMESPACE_CREATE_INVALID_INPUT_MESSAGE,
