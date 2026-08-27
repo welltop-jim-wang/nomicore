@@ -43,15 +43,20 @@ type HasBumpReplicationEpoch<T> = T extends {
 
 type HasReplicationStatus<T> = T extends { readonly replication: ReplicationStatusDomain } ? true : never;
 
-/** Lease status 联合 → active 分支的 runtime 投影（即 NamespaceRuntimeStatusProjection）
- * 必须携带复制域——经已导出的 NamespaceLeaseStatus 锚定（该投影类型本身非 index 导出）。 */
-type ActiveRuntimeHasReplication<T> = T extends {
-  lease: 'active';
-  runtime: { readonly replication: ReplicationStatusDomain };
-}
-  ? true
-  : false;
-type LeaseStatusCheck<T> = ActiveRuntimeHasReplication<T> extends true ? true : never;
+/**
+ * Lease status 联合 → active 分支的 runtime 投影（即 NamespaceRuntimeStatusProjection，
+ * 该投影类型本身非 index 导出——经已导出的 NamespaceLeaseStatus 条件推断提取）。
+ *
+ * 修订（Phase 1 回流）：原 `ActiveRuntimeHasReplication<T>` 对联合 T 分布式求值
+ * 产生 `true | false` = boolean，再 `extends true` 恒判定为 never——正确实现也
+ * 永远红。现改为两步：先以分布式推断把联合消解为单类型（active 分支 → 投影 R；
+ * released 分支 runtime:null 失配 → never，结果恰为投影类型本身），再以单层判别
+ * 锚定 `replication` 域——无分布残留，锚定语义不变（active 分支 runtime 投影必须
+ * 携带复制域）。
+ */
+type LeaseActiveRuntime<T> = T extends { readonly lease: 'active'; readonly runtime: infer R }
+  ? R
+  : never;
 
 type HasGenericMetaWrite<T> = T extends
   | { readonly setMetadata: unknown }
@@ -87,7 +92,7 @@ describe('类型面：status 复制域（AC-5）', () => {
   });
 
   it('NamespaceLeaseStatus.active.runtime（即 registry 包 Lease status 投影）暴露同款复制域', () => {
-    const projectionHasStatus: LeaseStatusCheck<NamespaceLeaseStatus> = true;
+    const projectionHasStatus: HasReplicationStatus<LeaseActiveRuntime<NamespaceLeaseStatus>> = true;
     void projectionHasStatus;
   });
 });

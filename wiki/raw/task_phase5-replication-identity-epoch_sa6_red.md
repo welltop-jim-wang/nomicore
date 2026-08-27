@@ -202,3 +202,55 @@ SA3 实现。
 - **overflow 拒绝通道**：锚定为结果面 `ok:false`（写域失败经结果联合的仓库既有
   惯例，对照 mutateRoot/replaceSchema）；若 SA1 论证走 rejection 通道，需回流修订
   本记录与对应用例（SA8 设计复审时同步确认）。
+
+## 修订记录 R1（Phase 1 回流，2026-08-27，SA3 实现落位后）
+
+**背景**：SA3 实现 commit `8113083` 落位后，总控独立复跑确认仅剩 2 红，均为
+SA6-owned 锚文件缺陷（非实现缺陷）。仅修订两个测试锚文件与本节记录，未触碰任何
+src/ 与其他测试文件。修订后两文件 **20/20 全绿**（14 运行时 + 4 类型锚 + 2 保持性
+守卫），Type Errors: no errors；另复跑 2 次红文件 14/14 稳定绿（零 flake）；
+`packages/namespace-registry/test` 全目录 19 files / 224 tests 全绿（含 SA3 新增
+测试文件），零回归。
+
+**R1-1 类型锚结构性缺陷（`registry-phase5-replication-surface.test-d.ts`）**：
+
+- 缺陷：`ActiveRuntimeHasReplication<T>` 对 `NamespaceLeaseStatus` 联合分布式求值，
+  产生 `true | false` = `boolean`；`LeaseStatusCheck<T> = boolean extends true ?
+  true : never` 恒为 `never`——任何正确实现都无法转绿（`released` 分支 `runtime:null`
+  失配所致）。
+- 修正（锚定语义不变：active 分支 runtime 投影必须携带 replication 域）：改为两步
+  无分布残留判别——
+  ```ts
+  type LeaseActiveRuntime<T> = T extends { readonly lease: 'active'; readonly runtime: infer R } ? R : never;
+  const projectionHasStatus: HasReplicationStatus<LeaseActiveRuntime<NamespaceLeaseStatus>> = true;
+  ```
+  分布式推断把联合消解为单类型（active 分支 → 投影 R；released 分支失配 → never，
+  联合吸收后恰为投影类型本身），再以既有单层 `HasReplicationStatus` 判别；基线红 /
+  实现绿翻转机制与本文件其余锚完全一致。
+
+**R1-2 FilePersistence 全链用例 harness 竞态（`registry-phase5-replication-red.test.ts`，
+修订前 3/3 确定性失败）**：
+
+- 缺陷：enable 的 saveDoc 只登记 dirty + 武装 debounce（ADR 0006）；`advanceBy(1_000)`
+  触发 flush 后真实 fs 的 writeFile→rename 在事件循环上异步进行，测试在
+  `advanceBy` 返回后立即 `shutdown() + dispose()`，dispose abort 了尚未落地的写入——
+  磁盘快照停留在 create 时刻，重启断言 `replicationId` 为 `undefined`。
+- 修正：采用仓库既有正式解法（issue #108 的
+  `packages/namespace-runtime/test/durable-snapshot-wait.ts` 模式）——**只读 import
+  该 helper**（未修改其内容），在 shutdown/dispose 之前对磁盘 committed 快照文件
+  （`rootDir/users/{userId}/{docId}.snapshot`）做有界轮询等待：
+  ```ts
+  await waitDurableSnapshot(ALICE, nsId, rootDir, (doc) => doc.getMap('META').get('replicationEpoch'), 1);
+  await waitDurableSnapshot(ALICE, nsId, rootDir, (doc) => doc.getMap('META').get('replicationId'), id0);
+  ```
+  直接文件读（不干扰 flush 写路径）；磁盘事实成立后无在途写，随后的重启断言确定，
+  真实持久化缺陷仍会被抓（超时响亮失败，断言强度不变）。
+
+**R1 复跑验证**（独立进程）：
+
+1. `pnpm vitest run --typecheck packages/namespace-registry/test/registry-phase5-replication-surface.test-d.ts packages/namespace-registry/test/registry-phase5-replication-red.test.ts`
+   → **exit 0；Tests 20 passed (20)；Type Errors: no errors**；
+2. `pnpm vitest run packages/namespace-registry/test/registry-phase5-replication-red.test.ts`
+   ×2（flake 检查）→ 两次均 exit 0、14/14 绿；
+3. `pnpm vitest run --typecheck packages/namespace-registry/test`（全目录）→ **exit 0；
+   19 files / 224 tests 全绿；Type Errors: no errors**（含 SA3 新增测试文件，零回归）。

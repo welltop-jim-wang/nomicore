@@ -14,3 +14,4 @@
 | 7 | 17:32 | SA1 | Phase 2 设计 R2 修订 | 17:37 | SA2 R1 reject 五点全部实质落实（701→808 行，零架构回退），R2 落盘 |
 | 8 | 17:38 | SA2 | Phase 2 设计 R2 复审 | 17:40 | SA1 R2 七点修订逐条复核真实落实，R2 Verdict: pass |
 | 9 | 17:43 | SA3 | Phase 3 TDD 实现 R1 | (pending) | SA2 R2 pass 设计定稿，派 SA3 落位设计使 18 红转绿 |
+| 10 | 18:14 | SA6 | Phase 1 回流修订 R2 | (pending) | SA3 R1 commit 8113083 后 1472/1474：两红均 SA6-owned 锚缺陷（surface:90 联合分布式恒 never；FilePersistence 全链 harness 竞态），总控独立复跑确认（exit 1，2 failed/18 passed，签名一致），回流 SA6 修锚 |

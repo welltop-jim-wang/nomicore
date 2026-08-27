@@ -54,6 +54,9 @@ import { createNamespaceRuntimeForRegistry } from '@nomicore/namespace-runtime/i
 import { RuntimeWriteFatalError } from '@nomicore/namespace-runtime';
 import type { NamespaceRuntime } from '@nomicore/namespace-runtime';
 import type { NamespaceLease, NamespaceRegistry, RegistryRandomBytes } from '@nomicore/namespace-registry';
+// issue #108 正式耐久等待模式（只读引用，未修改）：直接轮询磁盘 committed 快照文件，
+// 规避 FilePersistence flush 的 writeFile→rename 与 dispose abort 的已知竞态。
+import { waitDurableSnapshot } from '../../namespace-runtime/test/durable-snapshot-wait.js';
 
 // ═══════════════════════════════ 契约面本地声明 ═══════════════════════════════
 
@@ -733,7 +736,16 @@ describe('AC-6 File persistence 恢复', () => {
     expect((await asRepLease(lease).enableReplication()).ok).toBe(true);
     const id0 = repMeta(lease).replicationId;
     expect(id0).toMatch(REP_ID_PATTERN);
-    await first.scheduler.advanceBy(1_000); // flush（真实编码 + 磁盘写入）
+    // kick flush：enable 的 saveDoc 只登记 dirty + 武装 debounce（ADR 0006）；advanceBy
+    // 触发 flush 后，真实 fs 的 writeFile→rename 在事件循环上异步进行——固定 advanceBy
+    // 后立即 shutdown/dispose 会在 rename 前 abort，磁盘快照停留在 create 时刻
+    // （Phase 1 回流修订前 3/3 确定性失败：重启后 replicationId undefined）。
+    await first.scheduler.advanceBy(1_000);
+    // issue #108 正式耐久等待：有界轮询磁盘 committed 快照文件（直接读文件 + decode，
+    // 不干扰 flush 写路径），直到复制键落盘才进入 shutdown/dispose——磁盘事实成立后
+    // 无在途写，重启断言确定。
+    await waitDurableSnapshot(ALICE, nsId, rootDir, (doc) => doc.getMap('META').get('replicationEpoch'), 1);
+    await waitDurableSnapshot(ALICE, nsId, rootDir, (doc) => doc.getMap('META').get('replicationId'), id0);
     await registry1.shutdown();
     await (first.persistence as unknown as { dispose(): Promise<void> }).dispose();
 
