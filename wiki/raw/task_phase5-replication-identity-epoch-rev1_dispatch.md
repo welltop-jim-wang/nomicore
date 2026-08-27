@@ -15,4 +15,5 @@
 | 8 | 23:58 | 总控亲验 | Phase 3 绿灯验证 | 00:04 | SA3 commit ace6f83 交付，总控独立复跑全量门禁（diff --check / typecheck / test） |
 | 9 | 00:05 | SA4 | Phase 3 静态验尸 | 00:12 | 总控亲验全绿（1485/1485、typecheck 0、diff --check 0），派 SA4 审查 diff 757bcd1..ace6f83 |
 | 10 | 00:13 | SA7 | Phase 3 动态验证 | 00:25 | SA4 verdict: pass（六验尸面全清），派 SA7 实跑活链路动态验证 |
-| 11 | 00:27 | 总控 | Phase 3.5 AC 门禁 | (pending) | SA4+SA7 双清（均 pass，含变异验证与触发证据），进入 AC 逐条核对 |
+| 11 | 00:27 | 总控 | Phase 3.5 AC 门禁 | 00:31 | SA4+SA7 双清（均 pass，含变异验证与触发证据），进入 AC 逐条核对 |
+| 12 | 00:32 | 总控+双终审 | Phase 4 终审 | (pending) | AC 门禁 6/6 ✅；Standards/Spec 双轴并行终审（通用 subagent，diff 3841aff..HEAD） |
