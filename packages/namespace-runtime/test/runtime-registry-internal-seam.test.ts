@@ -115,12 +115,18 @@ describe('AC1/AC6：internal subpath 导出面（package exports 配置 + 运行
     }
   });
 
-  it('specifier 可解析，且值导出键集恰一键 createNamespaceRuntimeForRegistry（模块级运行时探测）', async () => {
-    // 【红灯】import 解析失败（exports 无 ./internal）；修绿 = 值导出恰一键
-    // createNamespaceRuntimeForRegistry（ADR-0009 冻结的 factory 名）。
+  it('specifier 可解析，且值导出键集恰两键 createNamespaceRuntimeForRegistry + openReplicationSessionCoreForRegistry（模块级运行时探测）', async () => {
+    // 【演进】issue #134（D-2）：internal 值导出由一键扩为两键——既有一键断言沿
+    // 本文件头注「精确键集断言由实现时同步演进」既定先例同步演进；键集 =
+    // ADR-0009 冻结 factory + issue #134 冻结的复制会话宿主打开面（import 图审计
+    // 白名单谓词 `packages/namespace-registry/src/` 对消费边界零改动）。
     const entry = await loadInternalEntry();
-    expect(Object.keys(entry).sort()).toEqual(['createNamespaceRuntimeForRegistry']);
+    expect(Object.keys(entry).sort()).toEqual([
+      'createNamespaceRuntimeForRegistry',
+      'openReplicationSessionCoreForRegistry',
+    ]);
     expect(typeof entry.createNamespaceRuntimeForRegistry).toBe('function');
+    expect(typeof entry.openReplicationSessionCoreForRegistry).toBe('function');
   });
 
   it('internal entry 零测试 seam 泄漏、零生产工厂别名、零运行态导出（模块级探测）', async () => {

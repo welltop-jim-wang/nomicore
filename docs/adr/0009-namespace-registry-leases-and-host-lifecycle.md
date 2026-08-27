@@ -138,3 +138,12 @@ Phase 4使用独立integration PR。实施顺序为Clock capability、Persistenc
 1. **Registry identity 修订**：本文「唯一 Runtime 与同键生命周期串行」「Create」「Persistence 错误演进」与「Fatal、错误与 observability」各节中，以 `(owner.userId, namespaceId)` 为 Registry key、由调用方传入 namespaceId、以及普通 duplicate 映射为 `NAMESPACE_ALREADY_EXISTS` 的旧条款，均由 ADR 0010 的 namespaceId-only identity 与普通 create 规则取代。owner 仍是 create/open 的必需本地属性与 Persistence 分区键；复用既有 entry 前必须核对 owner，不匹配返回 `NAMESPACE_NOT_FOUND`。
 2. **Fatal phase 修订**：`namespace-id-generation` 是 `NamespaceRegistryFatalPhase` 中属于 `create` 操作的稳定 phase，不属于 `open`；其触发条件和碰撞预算以 ADR 0010 为准。
 3. **能力与生命周期边界**：Registry 的构造能力增加必需的 `randomBytes(length): Uint8Array` 注入，生产 Host Adapter 使用 `node:crypto`，核心不得回退到全局随机源。create 的跨候选重试仍受 lifecycle carrier 串行化与 shutdown 已接纳操作屏障约束。
+
+---
+
+## 修订节：issue #134（Phase 5 切片 3/4：ReplicationSession，依据 ADR 0010 L71–90）
+
+日期：2026-08-28；状态：已接受（`fix/issue-134-on-docs-phase-5-websocket-replication`）
+
+1. **internal subpath 值导出扩为两键（§模块 L18 注记）**：`@nomicore/namespace-runtime/internal` 值导出由一键扩为两键——`createNamespaceRuntimeForRegistry`（本文 §模块 冻结 factory，不变）+ `openReplicationSessionCoreForRegistry(runtime, options)`（issue #134：复制会话宿主打开面）。消费边界不变（仍仅 Registry 生产代码，import 图审计谓词 `packages/namespace-registry/src/` 前缀零改动）；主 entry 值导出仍恰 `RuntimeWriteFatalError` 一键（runtime-acceptance-exports-audit 零改动）。
+2. **Lease 代理面与 released 通道表增补（§NamespaceLease L38 注记）**：`NamespaceLease` 增加第十四成员 `openReplicationSession(options)`（授权已在 ADR 0010「NamespaceLease 与 ReplicationSession」L73–79）。released 通道表新增一行：released lease 的 `openReplicationSession` 经返回 Promise 结算 `{ok:false, code:'NAMESPACE_LEASE_RELEASED', message: NAMESPACE_LEASE_RELEASED_MESSAGE}`（与四写同款——resolve 不 reject）。release 同步段调用既有活跃 session 的 `close()`（停接纳 + 退订 + 释放 slot；零新增方法面）；release 不追踪/取消已接纳 apply 槽（本文「release 不追踪」条款对 ReplicationSession 同样成立）。

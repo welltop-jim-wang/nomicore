@@ -3,15 +3,28 @@
  * （ADR-0009 §模块与 Cordis service；issue #109）。
  *
  * 消费边界：本 subpath 仅允许 @nomicore/namespace-registry 生产代码消费
- * （模块边界测试 import 图审计强制；当前仓库消费方为空集）。
- * 导出面纪律：值导出恰本函数一键；不导出测试 seam（createNamespaceRuntimeWithSeam
- * / NamespaceRuntimeSeamInput 保留包内模块通道，ADR-0008「测试通过包内确定性
- * seam 注入」）、不导出生产工厂别名（createNamespaceRuntime）、不导出运行态
- * 与任何类型——主 entry 的公共类型面（NamespaceRuntime 等）不在此重复。
+ * （模块边界测试 import 图审计强制；白名单谓词 = `packages/namespace-registry/src/`
+ * 前缀，零改动放行——issue #134 设计 §14）。
+ * 导出面纪律：值导出恰两键——
+ *   `createNamespaceRuntimeForRegistry`（ADR-0009 冻结 factory，issue #109）+
+ *   `openReplicationSessionCoreForRegistry`（issue #134 冻结的复制会话宿主打开面，
+ *   设计 D-2 显式裁决：import 图可见、审计谓词自动放行、公共面零污染）；
+ * 不导出测试 seam（createNamespaceRuntimeWithSeam / NamespaceRuntimeSeamInput 保留
+ * 包内模块通道，ADR-0008「测试通过包内确定性 seam 注入」）、不导出生产工厂别名
+ * （createNamespaceRuntime）、不导出运行态。
  */
 import type { DocHandle } from '@nomicore/persistence';
 import { createNamespaceRuntime } from './runtime.js';   // 相对导入，绝不走本包 subpath specifier（§D-F）
 import type { NamespaceRuntime } from './runtime.js';
+import { openReplicationSessionCoreForRegistry } from './replication-session.js';
+import type {
+  RuntimeReplicationSessionApplyRefusalCode,
+  RuntimeReplicationSessionApplyResult,
+  RuntimeReplicationSessionCore,
+  RuntimeReplicationSessionOpenResult,
+  RuntimeReplicationSessionOptions,
+  RuntimeReplicationSessionStatus,
+} from './replication-session.js';
 
 /**
  * 构造生产 NamespaceRuntime（ADR-0009 冻结名）。
@@ -30,3 +43,13 @@ export function createNamespaceRuntimeForRegistry(
 ): NamespaceRuntime {
   return createNamespaceRuntime(handle, notifyDirty);
 }
+
+export { openReplicationSessionCoreForRegistry };
+export type {
+  RuntimeReplicationSessionApplyRefusalCode,
+  RuntimeReplicationSessionApplyResult,
+  RuntimeReplicationSessionCore,
+  RuntimeReplicationSessionOpenResult,
+  RuntimeReplicationSessionOptions,
+  RuntimeReplicationSessionStatus,
+};

@@ -43,7 +43,11 @@
  * DEFAULT_IDLE_TIMEOUT_MS/resolveIdleTimeoutMs（R1/M3 单点化：运行时定义点唯一在
  * registry.ts；plugin.ts 经相对通道 import 后 re-export，index 沿 plugin 链转出）。
  */
-import { createNamespaceRuntimeForRegistry } from '@nomicore/namespace-runtime/internal';
+import { createNamespaceRuntimeForRegistry, openReplicationSessionCoreForRegistry } from '@nomicore/namespace-runtime/internal';
+import type {
+  RuntimeReplicationSessionCore,
+  RuntimeReplicationSessionStatus,
+} from '@nomicore/namespace-runtime/internal';
 import type { NamespaceRuntime } from '@nomicore/namespace-runtime';
 import {
   DocCreateFatalError,
@@ -80,6 +84,7 @@ import {
 import type {
   CreateNamespaceRegistryOptions,
   CreateNamespaceResult,
+  InstanceRole,
   NamespaceLease,
   NamespaceRegistry,
   NamespaceRegistryShutdownFailure,
@@ -87,6 +92,8 @@ import type {
   OpenNamespaceResult,
   RegistryRandomBytes,
   RegistryTimeoutScheduler,
+  ReplicationSession,
+  ReplicationSessionStatus,
 } from './types.js';
 import {
   NAMESPACE_CREATE_FAILED_MESSAGE,
@@ -95,6 +102,7 @@ import {
   NAMESPACE_REGISTRY_IDLE_TIMEOUT_RANGE_MESSAGE,
   NAMESPACE_REGISTRY_IDLE_TIMEOUT_TYPE_MESSAGE,
   NAMESPACE_REGISTRY_RANDOM_REQUIRED_MESSAGE,
+  NAMESPACE_REGISTRY_ROLE_INVALID_MESSAGE,
   NAMESPACE_REGISTRY_SCHEDULER_REQUIRED_MESSAGE,
   NAMESPACE_ROOT_INVALID_MESSAGE,
   NAMESPACE_SCHEMA_INVALID_MESSAGE,
@@ -105,6 +113,18 @@ import { NamespaceRegistryFatalError, NamespaceRegistryShutdownError } from './e
 
 // 主入口 re-export 通道（设计 §2.2 精确导出面；errors.js 为不可达声明模块，经本文件转出）。
 export { NamespaceLeaseReleasedError, NamespaceRegistryFatalError, NamespaceRegistryShutdownError } from './errors.js';
+
+// —— issue #134（O-3 新锁面机制 §3.3）：跨包类型锁面（T-1 真锁）——runtime internal 会话
+//    面 ≡ registry 公共面逐字段相等（十键 core + 十一字段 status；apply 六码联合逐字相同
+//    是相等成立的前提——SA2 R1 HIGH-1 修法）。落位本文件：registry.ts 是 internal subpath
+//    唯一生产消费者（import 图审计单消费者纪律），可合法引用其命名类型；lease.ts 的
+//    结构性描述面由 LeaseTypeAssertions 自锁（公共面 ≡ 描述面），三者转置传递封闭。——
+type Equal<A, B> = (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2
+  ? true
+  : false;
+type AssertTrue<T extends true> = T;
+type _sessionCoreAlias = AssertTrue<Equal<RuntimeReplicationSessionCore, ReplicationSession>>;
+type _sessionStatusAlias = AssertTrue<Equal<RuntimeReplicationSessionStatus, ReplicationSessionStatus>>;
 
 /**
  * 默认空闲保留时限（#112 设计 §2.A，R1/M3 单点化）：`idleTimeoutMs` 缺省值。
@@ -166,6 +186,18 @@ function assertRandomBytesShape(value: unknown): asserts value is RegistryRandom
 }
 
 /**
+ * 实例角色构造期形状门禁（issue #134 O-4）：生产/testing 工厂均同步执行；非法值（非
+ * `'hub'`/`'peer'`/undefined）→ 固定 TypeError（message 逐字、零回显传入值），禁任何
+ * 猜测默认为。**检查顺序在 clock → scheduler → idleTimeoutMs → randomBytes 之后**
+ *（既有构造门禁用例以既有四门文案断言保持——本门为第五门，零改形）。
+ */
+function assertRoleShape(value: unknown): asserts value is InstanceRole | undefined {
+  if (value !== undefined && value !== 'hub' && value !== 'peer') {
+    throw new TypeError(NAMESPACE_REGISTRY_ROLE_INVALID_MESSAGE);
+  }
+}
+
+/**
  * Registry 内部选项（testing.ts 消费；主入口不 re-export）。runtimeFactory/diagnostics
  * 仅受控注入：声明面以 any-bridge 表达（精确类型见 testing.ts 的
  * NamespaceRegistryTestingOverrides），保证主入口可达声明图不出现运行时对象与
@@ -199,6 +231,9 @@ export interface NamespaceRegistryInternalOptions {
   /** phase-5 切片 1 必需受控随机源（ADR 0009 依赖纪律/ADR 0010 身份条款）：缺失/非
    * 函数 → 构造期同步 TypeError（检查顺序在 clock → scheduler → idleTimeoutMs 之后）。 */
   readonly randomBytes: RegistryRandomBytes;
+  /** 实例静态角色（issue #134 O-4）：可选，缺省 'hub'；非法值 → 构造期同步 TypeError
+   * （检查顺序在 randomBytes 之后）。 */
+  readonly role?: InstanceRole;
   /** 测试专用 entry 注入面（仅内部 fixture；不进公共导出面）。设计 §8 冻结：Map 静态
    *  种子或种子函数二选一（SA4 HIGH-1 变体 C 的 generation 迁移语义）。 */
   readonly testEntries?: ReadonlyMap<string, any> | ((entries: Map<string, any>) => void);
@@ -488,6 +523,10 @@ export function createRegistryInternal(
   // TYPE/RANGE 二分先于随机源，使「非法 idleTimeoutMs + 缺随机源」的既有用例语义
   // 不漂移（错误二分文案稳定）。
   assertRandomBytesShape(options?.randomBytes);
+  // issue #134（O-4）：role 门禁最后——randomBytes 门禁之后（第五门；既有四门用例
+  // 文案断言零漂移）；缺省 'hub'（基线全权限等价面——由断言签名保证 hub/peer/undefined）
+  assertRoleShape(options?.role);
+  const role: InstanceRole = options?.role ?? 'hub';
   const factory: RuntimeFactory =
     options.runtimeFactory === undefined
       ? createNamespaceRuntimeForRegistry
@@ -705,6 +744,10 @@ export function createRegistryInternal(
   function issueLease(entry: Entry): Readonly<{ ok: true; lease: NamespaceLease }> {
     const lease = createLeaseController(entry, observer, () => handleLeaseReleased(entry), {
       drawReplicationId, // 闭包绑定本 Registry 的受控 randomBytes（issue #132 §4.1.2）
+      role, // 实例静态角色（issue #134 O-4：构造期已过形状门禁的闭包绑定）
+      // issue #134：复制会话宿主 seam 唯一注入点（本文件是 internal subpath 的唯一生产
+      // 消费者——import 图审计单消费者纪律）；经 deps 注入 lease controller
+      openReplicationSessionCore: openReplicationSessionCoreForRegistry,
     });
     entry.leases.add(lease);
     return Object.freeze({ ok: true as const, lease });

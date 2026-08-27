@@ -33,6 +33,7 @@ export type {
   CreateNamespaceIssue,
   CreateNamespaceRegistryOptions,
   CreateNamespaceResult,
+  InstanceRole,
   NamespaceLease,
   NamespaceLeaseBumpReplicationEpochResult,
   NamespaceLeaseEnableReplicationResult,
@@ -46,7 +47,14 @@ export type {
   NamespaceRegistryStatus,
   OpenNamespaceIssue,
   OpenNamespaceResult,
+  OpenReplicationSessionIssueCode,
+  OpenReplicationSessionOptions,
+  OpenReplicationSessionResult,
   RegistryRandomBytes,
   RegistryTimeoutScheduler,
+  ReplicationSession,
+  ReplicationSessionApplyRefusalCode,
+  ReplicationSessionApplyResult,
+  ReplicationSessionStatus,
 } from './types.js';
 export type { NamespaceRegistryPluginConfig } from './plugin.js';

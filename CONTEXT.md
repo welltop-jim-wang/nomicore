@@ -123,12 +123,16 @@ _Avoid_: 仅凭 namespaceId 判断同源、把 owner 纳入 wire identity、用 
 _Avoid_: 连接次数、自动选主 term、可回绕版本号
 
 **ReplicationSession**:
-由 NamespaceLease 打开的受信任 duplex raw Yjs 复制会话；冻结本地角色、远端实例、复制谱系与 epoch，提供 state vector、diff、owned update subscription 和进入本地唯一 write sequencer 的 trusted apply，但不暴露 live Y.Doc。Host 搭建方负责只把该高级能力交给可信 transport。
+由 NamespaceLease 打开的受信任 duplex raw Yjs 复制会话；冻结本地角色、远端实例、复制谱系与 epoch，提供 state vector（`encodeStateVector`）、diff（`encodeDiff`）、owned update subscription（`subscribeOwnedUpdates`）和进入本地唯一 write sequencer 的 trusted apply（`applyRemoteUpdate`）、独立状态（`getStatus`）与幂等 close（`close`），但不暴露 live Y.Doc。每 Lease 至多一个活跃 session；`close` 或 epoch fence 后进入终态（closed/conflicted）并释放槽位；host 负责只把该高级能力交给可信 transport。
 _Avoid_: 裸 Y.Doc WS handler、绕过本地 write sequencer 的 apply、把网络状态塞进 Runtime capability status
 
 **复制未校验（replication-unvalidated）**:
 Trusted raw Yjs update 已在 sequencer 中提交并登记 dirty，但未执行完整 VFSL ROOT 预校验的复制状态；它可能导致后续普通业务写因当前完整 ROOT 不合法而失败，不表示 transaction 可回滚或 raw update 享有 zero-write 保证。
 _Avoid_: validated replication、apply 后校验失败自动 rollback
+
+**实例角色（instance role）**:
+示例静态角色 hub/peer，经 Registry 构造 `options.role` 注入（可选、缺省 `'hub'`）；peer 实例的本地 replaceSchema/enableReplication/bumpReplicationEpoch 以稳定角色权限错误拒绝，session 的 localRole 必须等于实例角色。生产 composition root（phase-5 切片 9）必须显式传入。
+_Avoid_: 运行期角色切换、peer 本地修改 SCHEMA 或复制身份
 
 **authority 规则**:
 旧系统的 `__authority__` manifest（enum / range / conditional / state-machine 等不变式）。**本仓库范围外**（ADR-0002）。

@@ -222,3 +222,42 @@ Phase 5 首版建立：
 本 ADR 修订 ADR 0009 的 Registry identity：entry key由`(owner.userId, namespaceId)`改为仅namespaceId；owner仍是open/create的必需本地属性、Runtime/Lease投影和Persistence分区键，owner mismatch不泄露存在性。跨进程不建立全局 sequencer，而由各实例本地 sequencer和Yjs CRDT合并实现最终一致。Registry仍负责本地Runtime generation、Lease、reset/archive编排和Host生命周期。
 
 Phase 4 中列为非目标的 WS room、raw Yjs sync 和分布式部署由 Phase 5 接续；leader election、文件锁和分布式 Registry 仍不进入本阶段。交付切片见 `docs/phases/phase-5-websocket-replication.md`。
+
+---
+
+## 修订节：issue #134（ReplicationSession 落地冻结词汇，依据 phase-5 切片 3/4）
+
+日期：2026-08-28；状态：已接受（`fix/issue-134-on-docs-phase-5-websocket-replication`）
+
+本节把「NamespaceLease 与 ReplicationSession」「Trusted raw update 与现有不变量」「SCHEMA 与 META 权限」「Persistence degraded 语义」四节的落地决策与冻结词汇登记到本文（实现细节以 `packages/namespace-runtime/src/replication-session.ts`、`packages/namespace-registry/src/lease.ts` 为权威；本 ADR 为公共契约语义来源）。
+
+### ReplicationSession 打开与 apply 拒绝码注册（append-only）
+
+- `lease.openReplicationSession(options)` 返回 `Promise<OpenReplicationSessionResult>`；一切拒绝（含 released lease）经返回 Promise 的 `ok:false` 结算。拒绝码闭集：`NAMESPACE_LEASE_RELEASED`（released 通道）/ `REPLICATION_SESSION_INPUT_INVALID`（输入恰含 localRole + remoteInstanceId（`^[a-z][a-z0-9-]{0,62}$`——L156 安全文法））/ `REPLICATION_ROLE_MISMATCH`（session localRole ≠ 实例静态角色）/ `REPLICATION_SESSION_EXISTS`（每 Lease 至多一个活跃 session）/ `REPLICATION_NOT_ENABLED`（复制身份未安装——复用 issue #132 已冻结词族）/ `RUNTIME_WRITE_DISABLED`（Runtime lifecycle≠ready 或 fatal 已置位）/ `REPLICATION_SESSION_UNSUPPORTED`（Runtime 无复制会话宿主——测试替身 Runtime 或包版本错配）。
+- `session.applyRemoteUpdate(update)` 返回 `Promise<ReplicationSessionApplyResult>`；可预期拒绝（gate/scratch/fence/终态/lifecycle）全部经 `ok:false` 结算，码闭集：`NAMESPACE_LEASE_RELEASED`（lease 已 release——wrapper 前置检查唯一产出点）/ `REPLICATION_SESSION_CLOSED`（显式 close 终态）/ `REPLICATION_EPOCH_CONFLICTED`（冻结 epoch 过期，终态 conflicted）/ `REPLICATION_RAW_UPDATE_INVALID`（非 Uint8Array 或 Yjs 无法接纳）/ `REPLICATION_PROTECTED_FIELDS_CHANGED`（受保护内容变化）/ `RUNTIME_WRITE_DISABLED`（lifecycle/fatal/writable gate，含 hub degraded 拒绝）。写管线 internal fatal（getStatus adapter 违约 / apply 未知 throw / notify-dirty 失败）经 `RuntimeWriteFatalError` rejection（`committed` 诚实），slot 词 `replication-apply` → fatal 码 `NSRT-FATAL-REPLICATION-APPLY-INTERNAL`。
+
+### Session 独立状态词汇（O-11 冻结）
+
+`session.getStatus()` 每次返回全新深冻结对象，形状：`state('open'|'closed'|'conflicted')` + 冻结四域（`localRole`/`remoteInstanceId`/`replicationId`/`replicationEpoch`——open 时捕获为常量，永不随 Runtime 漂移）+ `direction('hub-to-peer'|'peer-to-hub')`（创建时派生：localRole==='peer' ⇔ hub-to-peer）+ `currentEpoch`（Runtime 投影链当前值——fence 可观测：与 `replicationEpoch` 不等即已过期）+ `rootValidation('none'|'replication-unvalidated')`（raw apply 成功后置位、生命周期内永不清除）+ `durability`（`memoryCaughtUp` **初值冻结 false**——open 时刻尚无经本 session 的 raw apply；首次 apply 成功置 true 后不回落；`diskCaughtUp: false` 字面量类型——该查询面结构性永不声称 durable）+ `observerFailures`（扇出 listener 自捕获计数；无界纯计数、不熔断不自动退订——熔断/背压属切片 6 队列属主）。Runtime status 的 `replication` 域仍只含两态持久事实（disabled | enabled），session 状态绝不入 Runtime status。
+
+### 生命周期词义（O-9 冻结）
+
+- 「每 Lease 至多一个 duplex session」= Lease 级至多一个**活跃**（`state==='open'`）session；计数在 Lease 层（同一 Runtime 被多 Lease 共享——fan-out 的结构前提）。`closed`（显式 close 或 Lease release 同步调用 `session.close()`）与 `conflicted`（epoch fence）皆终态并释放槽位；终态后同 Lease 可再 open（新 open 冻结新 epoch = 显式 reset/bootstrap 的本切片等价物）。
+- `close()`：幂等 same-promise；首次调用同步段停接纳 + 摘除扇出 channel；Promise 结算为 **barrier 语义**（resolve 时点 = 先于本次 close() 接纳的任务排空之后），**永不 reject**（恒绿空槽体）。release 不追踪已接纳 apply 槽（ADR 0009 L42 同款——照常排空）。
+- 两种终态（close 首调 / apply 槽 R2 conflicted 转换）共用同一 `fanout.detach` 摘除点：存量 listener 即刻停止投递（transport 不得据旧 session 字节继续错误同步）。
+
+### 受保护字段判据（O-12 冻结）
+
+- 判据 = **(a) 内容投影相等**：scratch clone（新 Y.Doc + `encodeStateAsUpdate` 全量装载 + 装载待审 update）上比对 SCHEMA/META 的全键值投影；原始值直比（string/number/boolean/null），非 primitive 形态（Yjs 容器/对象——契约外值域）保守判「已改变」→ 拒绝。字节级判据无良定义（encodeStateAsUpdate 非规范编码）、零操作判据需解析 update 结构且漏判「删后重写同值」——(a) 是 L105「确认 update 不改变 SCHEMA」的字面语义。
+- **判据 (a) 边界点名**：**「删后同值重写 = 内容未变 = 允许」**（内容投影相等判据的字面推论）；副作用仅为同值重写的历史膨胀（Yjs CRDT 结构增长），属可信域威胁、危害有界——后续审查者不得重开此议题视为缺陷。
+- 受保护字段集合 = **冻结常量**（raw caller 不得逐次自定义，L121）：hub 侧（接收 peer→hub）`SCHEMA 全容器 + META 全键`；peer 侧（接收 hub→peer）`META 全键`（SCHEMA/ROOT 放行——L105）；peer 允许的 META 白名单**首版 = 空集**（⟺ META 全键保护，两侧对称；L121「未决定即不可同步」保守读法，且与 L120「epoch 只经 hub 显式管理操作修改、peer 永不经 raw 获得」一致）。
+- **hub 侧全 META 保护登记**：这是对 L105 最小检查集（SCHEMA + 复制身份保留字段）的**收紧而非放宽**——docId/createdAt 是 Registry 身份元数据、本切片无任何合法 raw 路径修改非保留 META；对称谓词可测性与防篡改性均更优。peer 侧对称收窄（META 全键保护但 SCHEMA 放行）。
+- **已知成本登记**：scratch 预演 O(doc)/apply（每 apply 全量装载 + 投影比对）——本切片正确性优先；增量检查（仅比对 diff 触达容器）留作后续演进，非过早优化，不得在未评审情况下预写。
+
+### 其他冻结
+
+- **O-7**：复制身份未安装（`{state:'disabled'}`）的命名空间上 open → 稳定拒绝 `REPLICATION_NOT_ENABLED`（复用 #132 已冻结 message 族，零新词）——四域冻结（L81）前置要求 replicationId/epoch 存在，允许开将迫使 session 携带 undefined 谱系。
+- **O-4 角色注入**：实例静态角色经 Registry 构造 `options.role`（生产 `CreateNamespaceRegistryOptions` 与 testing overrides 同形）注入；可选、缺省 `'hub'`（基线全权限等价面——零回归）；非法值 → 构造期同步 TypeError（`NAMESPACE_REGISTRY_ROLE_INVALID`，检查顺序在 randomBytes 之后）。peer 的 `replaceSchema`/`enableReplication`/`bumpReplicationEpoch` 在 Lease 接纳段以稳定角色权限错误拒绝（`REPLICATION_ROLE_PERMISSION`，结果联合零改形、重复调用 JSON 逐字节相同）；session open 校验 `options.localRole === 实例 role`（不等 → `REPLICATION_ROLE_MISMATCH`）。生产 composition root（切片 9）必须显式传 role。
+- **internal seam 第二导出指针**：`@nomicore/namespace-runtime/internal` 值导出由一键扩为两键——`createNamespaceRuntimeForRegistry`（ADR 0009）+ `openReplicationSessionCoreForRegistry(runtime, options)`（本修订；消费边界不变：仅 Registry 生产代码，import 图审计谓词零改动）。Runtime 公共入口值导出仍恰一键、Runtime 十二键对象面不变、两包 `package.json` exports 键集不变。
+- **踩坑注记（SA2 R1 #13）**：**META 触碰的管理写（enable/bump）字节不得经 raw 回灌对端**——META 受保护全键检查会在 hub 侧拒绝、peer keep live docs 的 META 变化也只经控制面传播；**epoch 传播走控制面（切片 6 `IDENTITY_CHANGED`）**，不依赖 raw update 携带。
+- **degraded 矩阵**：peer `persistence-degraded` 期允许已冻结 hub→peer session 的 trusted apply（内存生效 + `saveDoc` 仍登记 + retry 落盘——L131–135），**该 bypass 只属于创建时已冻结为 hub-to-peer 的可信 session**（O-1 五条件合取：lifecycle ready ∧ fatal 未置位 ∧ direction 冻结 hub-to-peer ∧ `getStatus()==='persistence-degraded'` ∧ notifyDirty 已绑定）；hub degraded 拒 peer→hub raw apply 但保留读取/身份检查/state-vector 交换（L125–129）；notifyDirty 未绑定时任意方向（含 bypass）一律拒绝（无持久化绑定不得写——D6.4）。

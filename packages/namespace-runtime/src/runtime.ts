@@ -66,6 +66,8 @@ import type {
 import { runRootWriteSlot } from './write.js';
 import { disabled } from './write.js';
 import type { MutateRootResult, WriteEnv } from './write.js';
+import { createSessionFanout, registerReplicationHost } from './replication-session.js';
+import type { RuntimeReplicationHost } from './replication-session.js';
 
 /** seam 输入（D8'）：包内确定性测试接缝；@internal 沿 doc-runtime getCompiledWith 先例。 */
 export interface NamespaceRuntimeSeamInput {
@@ -242,6 +244,19 @@ export function createNamespaceRuntimeWithSeam(input: NamespaceRuntimeSeamInput)
   // V3d' closePromise 幂等缓存（INV-C2 的载体——并发/已结算后调用返回同一实例）
   let closePromise: Promise<void> | undefined;
 
+  // V3d'' Fanout + replication host 一次成型（issue #134 §4.1：仅依赖已捕获局部量与
+  //  sequencer——INV-N14 纪律延续；fanout 挂接无条件执行（无 session 时空集合快路径）；
+  //  每 Runtime 恰一次 doc.on('update') 监听——INV-S2）
+  const fanout = createSessionFanout(doc);
+  const replicationHost: RuntimeReplicationHost = {
+    doc,
+    handle,
+    state,
+    sequencer,
+    notifyDirty: captured.notifyDirty,
+    fanout,
+  };
+
   // V3e 公共面（十二键闭包对象；owner/namespaceId 由 V3a 捕获局部量构造——不再解引用成员）
   const owner = Object.freeze({ userId });
   const runtime: NamespaceRuntime = {
@@ -330,7 +345,12 @@ export function createNamespaceRuntimeWithSeam(input: NamespaceRuntimeSeamInput)
       return closePromise;
     },
   };
-  return Object.freeze(runtime);
+  const frozen = Object.freeze(runtime);
+  // V3f replication host 登记（SA2 R1 #15：runtime 对象构造后、返回之前——WeakMap 以
+  // 对象引用为键；不触碰 runtime 对象本身、零属性污染——Object.keys(runtime) 仍恰
+  // 十二键，runtime-registry-internal-seam.test.ts 键集锁零改动即绿）
+  registerReplicationHost(frozen, replicationHost);
+  return frozen;
 }
 
 /**
