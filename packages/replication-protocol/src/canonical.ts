@@ -56,8 +56,15 @@ export function assertU32(n: number, name: string): void {
  * 字符串 well-formed 断言（设计规则 R6，encode 侧「拒绝虚假降级」落点）：
  * TextEncoder 会把未配对代理项静默替换为 U+FFFD，破坏 canonical roundtrip，
  * 故含 lone surrogate 的字符串在 encode 侧拒绝。
+ *
+ * 首行 typeof 守卫（SA4 F2）：所有 writeVarString 调用点均经此函数——
+ * JS caller 若传 undefined/null/数字，裸 `s.length` 会抛 TypeError（未分类异常逃逸）
+ * 或让 TextEncoder 静默强转上 wire；一律先转 MALFORMED_FRAME。
  */
 export function assertWellFormedString(s: string, name: string): void {
+  if (typeof s !== 'string') {
+    throwMalformed(`${name} must be a string`);
+  }
   for (let i = 0; i < s.length; i++) {
     const c = s.charCodeAt(i);
     if (c >= 0xd800 && c <= 0xdbff) {

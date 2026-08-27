@@ -106,13 +106,13 @@ function checkConnectionNonce(nonce: Uint8Array): void {
   }
 }
 
-/** uint32 语义字段（R8：syncRoundId/ackedSequence/relatedStep1Sequence/relatedSequence）。 */
-function readU32Field(reader: CanonicalReader, name: string): number {
-  const v = reader.readVarUint32();
-  if (v > 0xffffffff) {
-    throwMalformed(`${name} must fit in uint32`);
-  }
-  return v;
+/**
+ * uint32 语义字段（R8：syncRoundId/ackedSequence/relatedStep1Sequence/relatedSequence）。
+ * 直接透传 reader.readVarUint32()——其内部已检查 ≤ 0xffffffff（canonical.ts），
+ * 无需（也不应）在此重复相同检查（SA4 F3：原重复分支为不可达死代码）。
+ */
+function readU32Field(reader: CanonicalReader): number {
+  return reader.readVarUint32();
 }
 
 // ---------------------------------------------------------------- HELLO 0x01
@@ -279,7 +279,7 @@ function decodeError(reader: CanonicalReader): ErrorMsg {
   }
   let relatedSequence: number | undefined;
   if (relatedMarker === 1) {
-    relatedSequence = readU32Field(reader, 'relatedSequence');
+    relatedSequence = readU32Field(reader);
   }
   const nsMarker = reader.readU8();
   if (nsMarker !== 0 && nsMarker !== 1) {
@@ -448,7 +448,7 @@ function encodeCloseNamespace(writer: PayloadWriter, msg: CloseNamespaceMsg): vo
 function decodeCloseOk(reader: CanonicalReader): CloseOkMsg {
   const namespaceId = reader.readVarString();
   checkNamespaceId(namespaceId);
-  return { kind: 'CLOSE_OK', namespaceId, ackedSequence: readU32Field(reader, 'ackedSequence') };
+  return { kind: 'CLOSE_OK', namespaceId, ackedSequence: readU32Field(reader) };
 }
 
 function encodeCloseOk(writer: PayloadWriter, msg: CloseOkMsg): void {
@@ -494,7 +494,7 @@ function encodeBootstrapSnapshot(writer: PayloadWriter, msg: BootstrapSnapshotMs
 function decodeBootstrapAck(reader: CanonicalReader): BootstrapAckMsg {
   const namespaceId = reader.readVarString();
   checkNamespaceId(namespaceId);
-  return { kind: 'BOOTSTRAP_ACK', namespaceId, ackedSequence: readU32Field(reader, 'ackedSequence') };
+  return { kind: 'BOOTSTRAP_ACK', namespaceId, ackedSequence: readU32Field(reader) };
 }
 
 function encodeBootstrapAck(writer: PayloadWriter, msg: BootstrapAckMsg): void {
@@ -528,7 +528,7 @@ function encodeIdentityChanged(writer: PayloadWriter, msg: IdentityChangedMsg): 
 function decodeSyncStep1(reader: CanonicalReader): SyncStep1Msg {
   const namespaceId = reader.readVarString();
   checkNamespaceId(namespaceId);
-  const syncRoundId = readU32Field(reader, 'syncRoundId');
+  const syncRoundId = readU32Field(reader);
   const stateVector = reader.readVarUint8ArrayCopy();
   return { kind: 'SYNC_STEP1', namespaceId, syncRoundId, stateVector };
 }
@@ -544,8 +544,8 @@ function encodeSyncStep1(writer: PayloadWriter, msg: SyncStep1Msg): void {
 function decodeSyncStep2(reader: CanonicalReader, limits: FieldLimits | undefined): SyncStep2Msg {
   const namespaceId = reader.readVarString();
   checkNamespaceId(namespaceId);
-  const syncRoundId = readU32Field(reader, 'syncRoundId');
-  const relatedStep1Sequence = readU32Field(reader, 'relatedStep1Sequence');
+  const syncRoundId = readU32Field(reader);
+  const relatedStep1Sequence = readU32Field(reader);
   const update = reader.readVarUint8ArrayCopy();
   const maxSyncDiff = resolveFieldLimit(limits?.maxSyncDiffBytes, 'maxSyncDiffBytes');
   if (maxSyncDiff !== undefined && update.byteLength > maxSyncDiff) {
@@ -573,8 +573,8 @@ function encodeSyncStep2(writer: PayloadWriter, msg: SyncStep2Msg, limits: Field
 function decodeSyncApplied(reader: CanonicalReader): SyncAppliedMsg {
   const namespaceId = reader.readVarString();
   checkNamespaceId(namespaceId);
-  const syncRoundId = readU32Field(reader, 'syncRoundId');
-  const ackedSequence = readU32Field(reader, 'ackedSequence');
+  const syncRoundId = readU32Field(reader);
+  const ackedSequence = readU32Field(reader);
   return { kind: 'SYNC_APPLIED', namespaceId, syncRoundId, ackedSequence };
 }
 
@@ -628,7 +628,7 @@ function encodeUpdate(writer: PayloadWriter, msg: UpdateMsg, limits: FieldLimits
 function decodeUpdateAck(reader: CanonicalReader): UpdateAckMsg {
   const namespaceId = reader.readVarString();
   checkNamespaceId(namespaceId);
-  return { kind: 'UPDATE_ACK', namespaceId, ackedSequence: readU32Field(reader, 'ackedSequence') };
+  return { kind: 'UPDATE_ACK', namespaceId, ackedSequence: readU32Field(reader) };
 }
 
 function encodeUpdateAck(writer: PayloadWriter, msg: UpdateAckMsg): void {

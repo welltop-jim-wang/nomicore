@@ -328,6 +328,48 @@ describe('ERROR 与注册表一致性（§13：fatal/retryable/scope/code 不可
       'MALFORMED_FRAME',
     );
   });
+
+  it('encode 侧 code 为 Object.prototype 继承键（toString/constructor/__proto__）→ MALFORMED_FRAME（own-key 判定，F1 防回归）', () => {
+    for (const inheritedKey of ['toString', 'constructor', '__proto__']) {
+      expectProtocolError(
+        () => encodeMessage({ kind: 'ERROR', code: inheritedKey, safeMessage: 'x' }),
+        'MALFORMED_FRAME',
+      );
+      expectProtocolError(
+        () =>
+          encodeMessage({
+            kind: 'ERROR',
+            code: inheritedKey,
+            namespaceId: NS,
+            safeMessage: 'x',
+          }),
+        'MALFORMED_FRAME',
+      );
+    }
+  });
+
+  it('decode 侧 wire code 为 Object.prototype 继承键 → MALFORMED_FRAME（F1 防回归）', () => {
+    // scope 00 + varString 'toString'（0x08 + 8 字节）+ fatal 01 + retryable 00 + related 00 + ns 00 + safeMessage
+    expectProtocolError(
+      () => decodeMessage(frame(0x04, 4, '00' + '08746f537472696e67' + '0100' + '00' + '00' + '0178')),
+      'MALFORMED_FRAME',
+    );
+  });
+
+  it('encode 侧 safeMessage 非字符串（null/数字）→ ProtocolError(MALFORMED_FRAME)，不抛未分类异常（F2 防回归）', () => {
+    expectProtocolError(
+      () => encodeMessage({ kind: 'ERROR', code: 'BAD_MAGIC', safeMessage: null as never }),
+      'MALFORMED_FRAME',
+    );
+    expectProtocolError(
+      () => encodeMessage({ kind: 'ERROR', code: 'BAD_MAGIC', safeMessage: 42 as never }),
+      'MALFORMED_FRAME',
+    );
+    expectProtocolError(
+      () => encodeMessage({ kind: 'ERROR', code: 'BAD_MAGIC', safeMessage: undefined as never }),
+      'MALFORMED_FRAME',
+    );
+  });
 });
 
 describe('配置字段级 limit（§17/§22：maxBootstrapBytes/maxSyncDiffBytes/maxUpdateBytes）', () => {

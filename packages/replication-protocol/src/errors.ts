@@ -140,12 +140,18 @@ export const NAMESPACE_ERRORS: Readonly<Record<NamespaceErrorCode, ErrorInfo>> =
 
 /**
  * 按 (scope, code) 查找注册表条目；未知 code 或跨 scope 不可见 → undefined。
+ *
+ * 成员判定用 own-key（Object.hasOwn）：注册表是普通对象字面量，裸属性索引会命中
+ * Object.prototype 继承键（'toString'/'constructor'/'__proto__' 等 ~12 个）——
+ * 那会使「未知 code → undefined」检查被绕过：encodeError 静默产出注册表外 ERROR 帧
+ * （且被自家 decoder 拒绝，encode/decode 不对称），ProtocolError 也会拿到 undefined 元数据。
+ * own-key 判定后继承键一律 undefined。
  */
 export function lookupError(scope: 'connection' | 'namespace', code: string): ErrorInfo | undefined {
   if (scope === 'connection') {
-    return CONNECTION_ERRORS[code as ConnectionErrorCode];
+    return Object.hasOwn(CONNECTION_ERRORS, code) ? CONNECTION_ERRORS[code as ConnectionErrorCode] : undefined;
   }
-  return NAMESPACE_ERRORS[code as NamespaceErrorCode];
+  return Object.hasOwn(NAMESPACE_ERRORS, code) ? NAMESPACE_ERRORS[code as NamespaceErrorCode] : undefined;
 }
 
 /**

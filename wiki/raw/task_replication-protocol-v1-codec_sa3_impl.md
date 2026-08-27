@@ -99,3 +99,52 @@ fixtures.ts:244 的 HELLO golden payloadHex 尾部版本段为 `03 01 02 03` = [
 - 实现侧全部完成且经过 golden 逐字节对齐（24/26 golden 用例直接命中；其余 2 个即缺陷 A/B）。
 - 缺陷 A/B 修复落地后（预计第 3 轮 SA6 授权），无需任何实现改动即可 9/9 全绿；届时复跑 §3.2–§3.4 即可。
 - 交付物全部位于设计 §18 ALLOW LIST；DENY LIST 零触碰；无 env-override/fallback；golden/断言未按 A/B 之外的任何方式放宽。
+
+---
+
+# 6. SA4 回流修复记录（2026-08-27，R1 回流轮）
+
+## 6.1 发现 → 修复 → 验证（F1/F2/F3，SA4 verdict=reject 窄面；总控已复核事实成立）
+
+### F1【MAJOR】lookupError 原型链继承键漏洞 —— 已修复
+- **发现**（SA4 报告 §2-F1）：`errors.ts` 的 `lookupError` 用裸属性索引 `CONNECTION_ERRORS[code as ...]` 做成员判定；`code='toString'/'constructor'/'__proto__'` 等 ~12 个 Object.prototype 继承键返回继承成员（≠undefined），绕过「未知 code → MALFORMED_FRAME」：typed caller（`ErrorMsg.code: string` 不排除这些字面量）可让 encodeError 静默产出注册表外 ERROR 帧（且被自家 decoder 拒绝 = encode/decode 不对称）；`new ProtocolError('toString')` 同根因得到 undefined 元数据。
+- **修复**（`src/errors.ts:141-156`）：lookupError 改 own-key 判定——`Object.hasOwn(CONNECTION_ERRORS, code) ? CONNECTION_ERRORS[code as ConnectionErrorCode] : undefined`（namespace 分支同款；`Object.hasOwn` 属 ES2022 lib，无需 polyfill/类型垫片）。noUncheckedIndexedAccess 下无新类型问题（映射类型字面量键 + 显式 undefined 分支）。
+- **F1 要求的全量审计结论**（src 全部注册表成员判定点）：
+  - `envelope.ts:110/152` `MESSAGE_NAMES[messageType]` —— 数值键路径：messageType 是 number（decode 侧 u8；encode 侧类型为 number），JS ToString(number) 恒为十进制字符串，Object.prototype 无任何十进制字符串继承键 → 不受原型链影响（与 SA4 §1.1 步骤 6 判定一致），不改。
+  - `payloads.ts:751` `MESSAGE_TYPES[message.kind]` —— 字面量联合键路径：仅在 `encodePayload` 的 17 个已知 kind switch 命中后才可达（未知 kind 在 switch default 已抛 UNSUPPORTED_MESSAGE_TYPE），不暴露任意字符串索引 → 不改。
+  - `ProtocolError` 构造器（errors.ts:175-178）—— 经修复后的 lookupError；'toString' 类入参两表皆无 → 兜底路径（保留原码 + connection 域 + fatal:true/retryable:'no'），不再可能拿到继承成员 ✓。
+  - `encodeError`/`decodeError`（payloads.ts）—— 均经 lookupError ✓。
+- **验证**：新增 3 个红灯锚点（见 6.2），全绿；`pnpm exec vitest run packages/replication-protocol` 139/139 通过。
+
+### F2【MINOR】assertWellFormedString 缺 typeof 守卫 —— 已修复
+- **发现**（SA4 §2-F2）：`safeMessage` 是唯一无字符串类型前置的 `writeVarString` 写入点（其余字段均有 check* helper 的 `typeof s !== 'string'`）；JS caller / JSON 反序列化传 `null/undefined/数字` → `assertWellFormedString` 的裸 `s.length` 抛 TypeError（未分类异常逃逸，违反「唯一异常类型」）或 TextEncoder 静默强转上 wire。
+- **修复**（`src/canonical.ts:60-76`）：`assertWellFormedString` 首行加 `if (typeof s !== 'string') throwMalformed(`${name} must be a string`)`——一处覆盖全部 writeVarString 调用点（PayloadWriter.writeVarString 唯一入口）。
+- **验证**：新增 3 个编码侧锚点（null/42/undefined），全绿。
+
+### F3【MINOR】readU32Field 死防御分支 —— 已修复
+- **发现**（SA4 §2-F3）：`readU32Field` 内 `v > 0xffffffff` 分支不可达（`readVarUint32` 已保证）。另 `name` 参数随之冗余。
+- **修复**（`src/payloads.ts:109-115`）：删除不可达分支（与 name 参数，10 处调用点同步简化），保留函数并注释说明「readVarUint32 已保证 ≤ 0xffffffff，无需重复检查」。
+- **验证**：tsc EXIT=0；全量测试通过，无行为变化。
+
+### F4/F5（SA4 INFO，可不修）—— 未改动
+- F4（ProtocolError 显式 scope='connection' 的回退措辞）：SA4 明示「可不修；行为本身合理」；codec 内部不可达，保持最小变更。
+- F5（encodeHello nonce undefined 前置检查冗余）：无害且错误信息更友好，保留。
+
+## 6.2 新增测试锚点（测试基础设施补充，既有断言零改动）
+
+`packages/replication-protocol/test/codec-malformed.test.ts`「ERROR 与注册表一致性」describe 内新增 3 个 `it`（共 7 个新断言）：
+1. encode 侧 `code='toString'/'constructor'/'__proto__'`（connection 与 namespace 双 scope 共 6 例）→ MALFORMED_FRAME（F1 防回归，对应 SA4 §4.2 行为实证项）；
+2. decode 侧 wire code `'toString'`（scope 00）→ MALFORMED_FRAME（F1 防回归）；
+3. encode 侧 `safeMessage=null/42/undefined`（`as never` 绕过类型）→ ProtocolError(MALFORMED_FRAME)，不抛未分类异常（F2 防回归）。
+
+## 6.3 验证结果（本回流轮，后台独立进程实测）
+
+| 命令 | 结果 |
+|---|---|
+| `pnpm exec vitest run packages/replication-protocol` | **Test Files 9 passed (9)；Tests 139 passed (139)；Type Errors: no errors；EXIT=0**（含 SA6 恢复轮 fixtures 修复后全量：此前 6 个遗留失败已清零） |
+| `pnpm run typecheck` | 全链路（10 个包，含新追加段）**EXIT=0** |
+
+## 6.4 遗留问题
+
+- 无实现侧遗留。SA4 三项（F1 MAJOR + F2/F3 MINOR）全部闭环；F4/F5 为 INFO 未动（SA4 裁定可不修）。
+- 本轮未触碰：fixtures.ts / codec-messages-golden.test.ts 的 SA6 恢复轮改动（工作区现存，待 SA6 提交）、既有断言、DENY LIST。
