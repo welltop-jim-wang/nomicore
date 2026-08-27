@@ -769,6 +769,36 @@ export function createPersistenceIoFaultSeam(): PersistenceIoFaultSeam {
         await after.gate
       }
     },
+    // Phase 5（§4.6，D-6 裁决 (b)）：归档提交写并入既有 write 故障/hold 槽——与
+    // write 完全同款（failWrite / holdWriteBeforeCommit / holdWriteAfterCommit +
+    // signal.throwIfAborted() 自检后转调内层 io）；不触碰主键存储是内层方法级承诺。
+    async writeArchive(key, snapshot, signal) {
+      const failure = failWrite
+      if (failure !== NO_FAULT) {
+        failWrite = NO_FAULT
+        throw failure
+      }
+      const before = holdWriteBeforeCommit
+      if (before !== undefined) {
+        holdWriteBeforeCommit = undefined
+        before.enteredResolve()
+        await before.gate
+        signal.throwIfAborted()
+        return await io.writeArchive!(key, snapshot, signal)
+      }
+      await io.writeArchive!(key, snapshot, signal)
+      const after = holdWriteAfterCommit
+      if (after !== undefined) {
+        holdWriteAfterCommit = undefined
+        after.enteredResolve()
+        await after.gate
+      }
+    },
+    // Phase 5（§4.6）：主键移除透传（本票不新增 remove 故障槽——无锚定需求，未来按需
+    // append）；内层缺席属 capability 违约，交由 lifecycle 入口 gate loud 拒绝。
+    async remove(key, signal) {
+      await io.remove!(key, signal)
+    },
   })
 
   return { faults, wrap }

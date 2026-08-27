@@ -50,12 +50,19 @@ import type {
 } from '@nomicore/namespace-runtime/internal';
 import type { NamespaceRuntime } from '@nomicore/namespace-runtime';
 import {
+  DocArchiveFatalError,
   DocCreateFatalError,
   DocCreateOperationalError,
   DocDuplicateError,
   DocLoadOperationalError,
 } from '@nomicore/persistence';
-import type { DocHandle, DocPersistence } from '@nomicore/persistence';
+import type {
+  DocArchiveOperationalError,
+  DocHandle,
+  DocPersistence,
+  ReplicationIdentityRef,
+  YjsDoc,
+} from '@nomicore/persistence';
 import type { Clock } from '@nomicore/clock';
 import { DocRuntimeFatalError } from '@nomicore/doc-runtime';
 import {
@@ -84,6 +91,7 @@ import {
 import type {
   CreateNamespaceRegistryOptions,
   CreateNamespaceResult,
+  ImportReplicaResult,
   InstanceRole,
   NamespaceLease,
   NamespaceRegistry,
@@ -94,9 +102,14 @@ import type {
   RegistryTimeoutScheduler,
   ReplicationSession,
   ReplicationSessionStatus,
+  ResetReplicaResult,
 } from './types.js';
 import {
+  NAMESPACE_ALREADY_EXISTS_MESSAGE,
   NAMESPACE_CREATE_FAILED_MESSAGE,
+  NAMESPACE_IMPORT_FAILED_MESSAGE,
+  NAMESPACE_IMPORT_IDENTITY_MISMATCH_MESSAGE,
+  NAMESPACE_IMPORT_INVALID_IDENTITY_MESSAGE,
   NAMESPACE_LOAD_FAILED_MESSAGE,
   NAMESPACE_NOT_FOUND_MESSAGE,
   NAMESPACE_REGISTRY_IDLE_TIMEOUT_RANGE_MESSAGE,
@@ -104,6 +117,8 @@ import {
   NAMESPACE_REGISTRY_RANDOM_REQUIRED_MESSAGE,
   NAMESPACE_REGISTRY_ROLE_INVALID_MESSAGE,
   NAMESPACE_REGISTRY_SCHEDULER_REQUIRED_MESSAGE,
+  NAMESPACE_RESET_FAILED_MESSAGE,
+  NAMESPACE_RESET_IDENTITY_MISMATCH_MESSAGE,
   NAMESPACE_ROOT_INVALID_MESSAGE,
   NAMESPACE_SCHEMA_INVALID_MESSAGE,
   REGISTRY_NOT_ACCEPTING_MESSAGE,
@@ -170,8 +185,76 @@ const MAX_NAMESPACE_ID_RETRIES = 8; // 首生成 + 至多 8 次重试 = 总生�
 // RegExp 是值导出——从 index 导出会击穿 runtime-acceptance-exports-audit.test.ts
 // 「值导出恰一键」冻结审计）；两份副本互为结构守卫（注释互相引用对方落点）：
 //   runtime 侧：packages/namespace-runtime/src/replication-write.ts REPLICATION_ID_PATTERN
+//   persistence 侧（Phase 5 归档守卫，§4.5.4）：packages/persistence/src/lifecycle.ts REPLICATION_ID_PATTERN
 const REPLICATION_ID_PATTERN = /^[0-9a-f]{32}$/;
 const REPLICATION_ID_RANDOM_BYTES = 16; // 128-bit CSPRNG（与 namespaceId 同一受控源同一契约）
+
+/**
+ * 复制事实判据的 registry 侧结构守卫副本 #1（§4.2.1）：判据逐条复刻
+ * readReplicationFacts（replication-write.ts:213-240 语义源；结构守卫副本三处
+ * 互引注释——判据语义单点、实现三副本）。导入要求 enabled：META 载体缺席 / 两键
+ * 真缺席 / 恰一键 / 键存在而值 undefined / id 格式违约 / epoch 格式违约 / 载体
+ * 异型（getMap throw 收编）→ { ok: false }。
+ */
+function readImportedReplicaFacts(
+  doc: YjsDoc,
+): { ok: true; replicationId: string; replicationEpoch: number } | { ok: false } {
+  // meta 以最小结构面读取（Y.Map 的 has/get 形状）；主入口可达声明图禁 yjs 命名类型。
+  type MetaProbe = { has(key: string): boolean; get(key: string): unknown }
+  try {
+    if (!doc.share.has('META')) return { ok: false }
+    let meta: MetaProbe
+    try {
+      meta = doc.getMap('META') as unknown as MetaProbe // 载体异型（同名 Y.Text 等）→ throw 收编
+    } catch {
+      return { ok: false }
+    }
+    const hasId = meta.has('replicationId')
+    const hasEpoch = meta.has('replicationEpoch')
+    if (!hasId && !hasEpoch) return { ok: false } // 两键真缺席（disabled 态导入被拒）
+    if (!hasId || !hasEpoch) return { ok: false } // 恰一键
+    const id = meta.get('replicationId')
+    const epoch = meta.get('replicationEpoch')
+    if (id === undefined || epoch === undefined) return { ok: false } // 显式 undefined 值
+    if (typeof id !== 'string' || !REPLICATION_ID_PATTERN.test(id)) return { ok: false }
+    if (typeof epoch !== 'number' || !Number.isSafeInteger(epoch) || epoch < 1) return { ok: false }
+    return { ok: true, replicationId: id, replicationEpoch: epoch }
+  } catch {
+    return { ok: false }
+  }
+}
+
+/** 导入文档「自称是谁」（§4.2 ②a）：META.docId 只读探测；任何异常（非 Y.Doc 形状）
+ *  收编为 undefined —— 未知身份与不符同判为 mismatch（身份锚定先于身份质量）。 */
+function readMetaDocId(doc: YjsDoc): string | undefined {
+  try {
+    const docId = doc.getMap('META').get('docId')
+    return typeof docId === 'string' ? docId : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * duck-typed 拒绝的 code 判别（§4.8.3，code-first）：persistence 契约自宣示
+ * 「callers branch on code, never message text」（contract.ts:44）——code 即契约
+ * 分支面（第三方 Adapter / SA6 stub 以 Object.assign(new Error, {code}) 抛拒绝，
+ * instanceof 判别会落入 unknown 分支而红）。真实类同时满足 instanceof（双保险）。
+ */
+function errorCodeOf(cause: unknown): string | undefined {
+  if (cause !== null && typeof cause === 'object' && typeof (cause as { code?: unknown }).code === 'string') {
+    return (cause as { code: string }).code
+  }
+  return undefined
+}
+
+/** fatal 的 committed 事实读取（§4.8.3）：duck-typed 实现的 committed 按布尔读取
+ *  原样传播（INV-12）；字段缺席/非布尔时保守 false（镜像 create unknown 分支方向）。 */
+function committedOf(cause: unknown): boolean {
+  return typeof (cause as { committed?: unknown }).committed === 'boolean'
+    ? (cause as { committed: boolean }).committed
+    : false
+}
 
 /**
  * RandomBytes 构造期形状门禁（phase-5 切片 1，ADR 0009 依赖纪律）：生产/testing 工厂
@@ -296,6 +379,44 @@ const CREATE_FAILED_ISSUE = Object.freeze({
   ok: false as const,
   code: 'NAMESPACE_CREATE_FAILED' as const,
   message: NAMESPACE_CREATE_FAILED_MESSAGE,
+});
+
+// —— Phase 5 增量（issue #133）窄 issue 常量（§4.11.2 稳定 message 单点表；冻结外层）——
+
+const ALREADY_EXISTS_ISSUE = Object.freeze({
+  ok: false as const,
+  code: 'NAMESPACE_ALREADY_EXISTS' as const,
+  message: NAMESPACE_ALREADY_EXISTS_MESSAGE,
+});
+
+const IMPORT_INVALID_IDENTITY_ISSUE = Object.freeze({
+  ok: false as const,
+  code: 'NAMESPACE_IMPORT_INVALID_IDENTITY' as const,
+  message: NAMESPACE_IMPORT_INVALID_IDENTITY_MESSAGE,
+});
+
+const IMPORT_IDENTITY_MISMATCH_ISSUE = Object.freeze({
+  ok: false as const,
+  code: 'NAMESPACE_IMPORT_IDENTITY_MISMATCH' as const,
+  message: NAMESPACE_IMPORT_IDENTITY_MISMATCH_MESSAGE,
+});
+
+const IMPORT_FAILED_ISSUE = Object.freeze({
+  ok: false as const,
+  code: 'NAMESPACE_IMPORT_FAILED' as const,
+  message: NAMESPACE_IMPORT_FAILED_MESSAGE,
+});
+
+const RESET_IDENTITY_MISMATCH_ISSUE = Object.freeze({
+  ok: false as const,
+  code: 'NAMESPACE_RESET_IDENTITY_MISMATCH' as const,
+  message: NAMESPACE_RESET_IDENTITY_MISMATCH_MESSAGE,
+});
+
+const RESET_FAILED_ISSUE = Object.freeze({
+  ok: false as const,
+  code: 'NAMESPACE_RESET_FAILED' as const,
+  message: NAMESPACE_RESET_FAILED_MESSAGE,
 });
 
 /** schema/root 领域失败的 verbatim issue（DQ-4：issues 完整原对象逐字透传、不深克隆；
@@ -559,6 +680,13 @@ export function createRegistryInternal(
   let nextCarrierGeneration = 1n;
   let acceptance: 'running' | 'shutting-down' | 'stopped' = 'running';
   let shutdownPromise: Promise<void> | undefined;
+  // —— Phase 5（§4.8.2，SA2 INFO-9 轻量抑制）——reset 槽强制失效 lease 的闭包旗标：
+  // 命中即抑制 handleLeaseReleased 的 idle 武装与 entry-idle 事件（该 entry 事实上
+  // 从未进入 idle——径直走向 closing，抑制是更诚实的观测）；`lease-released` 事件
+  // 照发（lease 失效是真实事实）。单变量旗标的跨 key 并发覆写安全性三层保证见
+  // §4.8.2（查阅窗口零 await 同步块 + 按 entry identity 判别 + 每 key carrier FIFO）；
+  // 槽以 try/finally 置位/清位。
+  let forceReleasing: Entry | undefined;
 
   // —— phase-5 切片 1（D-9）：已接纳 create 编排终局等待集（shutdown 结算屏障）——
   // 公共入口 acceptance 检查后同步注册、终局（成功/issue/fatal）后异步注销；shutdown
@@ -761,6 +889,11 @@ export function createRegistryInternal(
    * 同步失效契约零改动（released 标记与 releasePromise 缓存先于回调）。
    */
   function handleLeaseReleased(entry: Entry): void {
+    // Phase 5（§4.8.2）首语句：reset 槽强制释放期不武装 idle 也不发 entry-idle——
+    // 该 entry 从未进入 idle（径直走向 closing），抑制是更诚实的观测；判别按 entry
+    // identity（旗标失配仅退化为「不抑制」——落回 R1 原路径，正确性由 cancelIdleArm
+    // + I4 token + beginIdleClose phase 守卫兜底）。
+    if (forceReleasing === entry) return;
     // shutdown 期不武装：entry 保持 active(零 lease)，由 shutdown 步骤 2 统一关闭
     // （不存在「shutdown 后新武装的 timer」）。
     if (acceptance !== 'running') return;
@@ -839,6 +972,58 @@ export function createRegistryInternal(
    * 按 key 无条件 delete 后来建立的新 entry）。 */
   function removeEntryAfterClose(entry: Entry, _cause: unknown): void {
     removeOnlySelf(entries, entry);
+  }
+
+  /**
+   * Phase 5（§4.8.2）：强制失效 entry 的全部未决 lease——快照迭代（release 在
+   * 循环内同步移除自身），逐个调用公共 release()（同步置 released、从 entry.leases
+   * 删除、observer lease-released、onReleased 回调）。旗标以 try/finally 置位/清位
+   *（§4.8.2 查阅窗口 = 本函数同步段 + 调用方紧随的 cancelIdleArm/close 发起——
+   * 零 await，微任务不可插入）。
+   */
+  function forceReleaseOutstandingLeases(entry: Entry): void {
+    forceReleasing = entry;
+    try {
+      for (const lease of [...entry.leases]) {
+        void lease.release();
+      }
+    } finally {
+      forceReleasing = undefined;
+    }
+  }
+
+  /** Phase 5（§4.8.2）：idle 武装取消（clearTimeout + token 失配使迟爆回调 no-op）。
+   *  抑制旗标生效时此步为 no-op——旗标与取消互为冗余兜底（本槽在 release 循环后
+   *  同步调用，循环与取消之间零 await ⟹ timer 无触发窗口）。 */
+  function cancelIdleArm(entry: Entry): void {
+    if (entry.phase === 'idle' && entry.idleTimerHandle !== undefined) {
+      scheduler.clearTimeout(entry.idleTimerHandle);
+      entry.idleTimerHandle = undefined;
+    }
+  }
+
+  /**
+   * Phase 5（§4.8）：reset 发起的 close——runtime.close()（同步 throw 收编为
+   * rejected Promise）→ I2（closePromise 先赋值后翻相，镜像 beginIdleClose
+   * ①-③）→ settle 处理器 removeEntryAfterClose（先于本调用方 await 恢复执行）。
+   * 失败不额外发 idle-close-failed（该事件属 idle 状态机队列；reset 槽自身的
+   * close 失败经 lifecycle-slot-failed(reset) + fatal 上报，且 removeOnlySelf
+   * 保证失败闭环不毒化 key）。
+   */
+  function beginCloseCurrent(entry: Entry): Promise<void> {
+    let closePromise: Promise<void>;
+    try {
+      closePromise = entry.runtime.close(); // ① close 发起（同步 throw 收编点）
+    } catch (cause) {
+      closePromise = Promise.reject(cause);
+    }
+    entry.closePromise = closePromise; // ② I2：closing ⟹ closePromise 定义（rejected 亦「落位」）
+    entry.phase = 'closing'; // ③ 不可逆翻相（AC5）
+    closePromise.then(
+      () => removeEntryAfterClose(entry, undefined), // ④ settle（成败皆然）→ 双守卫移除
+      () => removeEntryAfterClose(entry, undefined),
+    );
+    return closePromise;
   }
 
   /** idle 途经 open 的激活（#112 设计 §2.B）：同步取消 timer（AC5）+ 翻相 active。
@@ -1196,6 +1381,245 @@ export function createRegistryInternal(
   }
 
   /**
+   * Phase 5（§4.2，D-2）：受信 bootstrap 导入的 carrier 接纳（机制与 open 同款——
+   * 同 key FIFO 串行 + cleanup 三条件）。
+   */
+  function admitImportSlot(identity: InternalIdentity, docRef: YjsDoc): Promise<ImportReplicaResult> {
+    const carrier = carriers.get(identity.key) ?? createCarrier(identity.key);
+    const operation = carrier.tail.then(() => runImportSlot(identity, docRef));
+    const operationGreenTail = operation.then(
+      () => undefined,
+      () => undefined,
+    );
+    carrier.tail = operationGreenTail;
+    scheduleCarrierCleanup(identity.key, carrier, operationGreenTail);
+    return operation;
+  }
+
+  /**
+   * Phase 5（§4.2，D-2）importReplica 槽（冻结核对次序——全部先于任何 Persistence
+   * 调用）：① entry 碰撞（owner 先核对——零存在性泄露）→ ②a META.docId 核对 →
+   * ②b 复制事实两键 → ③ capability gate → ④ 受控复制导入（排他创建，此后才发生
+   * ownership 转移）→ ⑤ Runtime 构造（单一构造路径，§4.12）。
+   */
+  async function runImportSlot(identity: InternalIdentity, docRef: YjsDoc): Promise<ImportReplicaResult> {
+    // ① entry 碰撞（owner 先核对——零存在性泄露，镜像 runOpenSlot:854-856 第一谓词）
+    const current = entries.get(identity.key);
+    if (current !== undefined && current.owner.userId !== identity.owner.userId) {
+      return NOT_FOUND_ISSUE; // 复用冻结常量（registry.ts:237-241）
+    }
+    if (current !== undefined) {
+      return ALREADY_EXISTS_ISSUE; // live entry 形态；active/idle/closing 一律碰撞
+    } // （镜像 runCreateAttempt ①，不等待 closePromise）
+
+    // ② 受信身份核对 ——「persistence ownership 转移之前」（AC-1；ADR 0010:65）
+    //   ②a META.docId === namespaceId（0006:50 冻结规则；先于事实核对——
+    //       「文档自称是谁」先于「文档的复制身份」）
+    if (readMetaDocId(docRef) !== identity.namespaceId) {
+      return IMPORT_IDENTITY_MISMATCH_ISSUE;
+    }
+    //   ②b 复制事实两键（readReplicationFacts 判据族复刻，§4.2.1）
+    const facts = readImportedReplicaFacts(docRef);
+    if (!facts.ok) {
+      return IMPORT_INVALID_IDENTITY_ISSUE; // 双键缺席（disabled）/ 恰一键 / undefined 值 /
+    } // 格式违约 / 载体异型 一律本码
+
+    // ③ capability gate（§4.4 放置点表：槽内同步段——acceptance/identity 检查之后、
+    // 首次 Persistence 调用之前；capability 缺席时零 Persistence 触达）
+    const importDocFn = persistence.importDoc;
+    if (typeof importDocFn !== 'function') {
+      const cause = new Error(
+        'persistence adapter 缺少复制生命周期能力（importDoc/archiveDoc）——受信导入/重置编排要求 ReplicaPersistence 级 Adapter',
+      );
+      dispatchObserver(observer, { type: 'lifecycle-slot-failed', identity, operation: 'import', cause });
+      throw new NamespaceRegistryFatalError('import', 'lifecycle-slot-internal', false, cause);
+    }
+
+    // ④ 受控复制导入（排他创建）——此后才发生 ownership 转移（§4.3 映射矩阵 + §4.8.3）
+    let handle: DocHandle;
+    try {
+      handle = await importDocFn.call(persistence, identity.owner, identity.namespaceId, docRef);
+    } catch (cause) {
+      if (cause instanceof DocDuplicateError) {
+        return ALREADY_EXISTS_ISSUE; // 排他三判定（cache/store/并发）统一已冻结词汇
+      }
+      const code = errorCodeOf(cause);
+      if (code === 'DOC_IMPORT_IDENTITY_MISMATCH') {
+        return IMPORT_IDENTITY_MISMATCH_ISSUE; // 结构性不可达的防御映射（Registry ②a 已前置核对）
+      }
+      if (cause instanceof DocCreateOperationalError || code === 'DOC_CREATE_OPERATIONAL') {
+        dispatchObserver(observer, {
+          type: 'import-persist-failed',
+          identity,
+          cause: cause as DocCreateOperationalError,
+        });
+        return IMPORT_FAILED_ISSUE;
+      }
+      if (cause instanceof DocCreateFatalError || code === 'DOC_CREATE_FATAL') {
+        dispatchObserver(observer, { type: 'lifecycle-slot-failed', identity, operation: 'import', cause });
+        throw new NamespaceRegistryFatalError(
+          'import',
+          'lifecycle-slot-internal',
+          committedOf(cause), // duck-typed fatal 的 committed 事实原样传播（INV-12）
+          cause,
+        );
+      }
+      dispatchObserver(observer, { type: 'lifecycle-slot-failed', identity, operation: 'import', cause });
+      throw new NamespaceRegistryFatalError('import', 'lifecycle-slot-internal', false, cause);
+    }
+
+    // ⑤ Runtime 构造（§4.12 单一构造路径，与 open/create 步⑤同款；§4.8.3 镜像 create
+    // DQ-7：importDoc resolve 即是 committed 事实 → factory throw 必为 committed:true
+    // ——handle best-effort release、entry 不登记、不补偿删除；后续 open 可恢复）。
+    try {
+      const runtime = factory(handle, () => persistence.saveDoc(handle));
+      const entry = makeEntry(identity, runtime);
+      entries.set(identity.key, entry);
+      return issueLease(entry);
+    } catch (cause) {
+      void releaseHandleBestEffort(handle, identity);
+      dispatchObserver(observer, { type: 'import-runtime-construction-failed', identity, cause });
+      throw new NamespaceRegistryFatalError('import', 'runtime-construction', true, cause);
+    }
+  }
+
+  /**
+   * Phase 5（§4.8，D-8）：resetReplica 的 carrier 接纳（与 open 同款串行域）。
+   */
+  function admitResetSlot(
+    identity: InternalIdentity,
+    expected: ReplicationIdentityRef,
+  ): Promise<ResetReplicaResult> {
+    const carrier = carriers.get(identity.key) ?? createCarrier(identity.key);
+    const operation = carrier.tail.then(() => runResetSlot(identity, expected));
+    const operationGreenTail = operation.then(
+      () => undefined,
+      () => undefined,
+    );
+    carrier.tail = operationGreenTail;
+    scheduleCarrierCleanup(identity.key, carrier, operationGreenTail);
+    return operation;
+  }
+
+  /**
+   * Phase 5（§4.8，D-8）resetReplica 槽（冻结次序）：① owner 核对（零存在性泄露）→
+   * capability gate（先于槽内一切持久化动作——含 ③ 的 loadDoc 探针；§4.4 放置点表）
+   * → ② 强制失效全部未决 lease + 取消 idle 武装 + close（复用 closePromise）→
+   * ③ 存在性探针（loadDoc；null → NOT_FOUND 且不触达归档 seam）→ ④ archiveDoc
+   * （期望身份纯传递——§4.7）→ ⑤ 允许 bootstrap（key 缺席即资格，无显式动作）。
+   */
+  async function runResetSlot(
+    identity: InternalIdentity,
+    expected: ReplicationIdentityRef,
+  ): Promise<ResetReplicaResult> {
+    // ① owner 核对（零存在性泄露；镜像 runOpenSlot:854-856 第一谓词）
+    const current = entries.get(identity.key);
+    if (current !== undefined && current.owner.userId !== identity.owner.userId) {
+      return NOT_FOUND_ISSUE;
+    }
+
+    // capability gate（§4.4 放置点表：槽内同步段——acceptance/identity 检查之后、
+    // 首次 Persistence 调用之前；capability 缺席时零 Persistence 触达——含 reset
+    // 的 close 段：gate 先于槽内一切持久化动作）
+    const archiveDocFn = persistence.archiveDoc;
+    if (typeof archiveDocFn !== 'function') {
+      const cause = new Error(
+        'persistence adapter 缺少复制生命周期能力（importDoc/archiveDoc）——受信导入/重置编排要求 ReplicaPersistence 级 Adapter',
+      );
+      dispatchObserver(observer, { type: 'lifecycle-slot-failed', identity, operation: 'reset', cause });
+      throw new NamespaceRegistryFatalError('reset', 'lifecycle-slot-internal', false, cause);
+    }
+
+    // ② close：关闭本地 Runtime generation（ADR 0010:57 次序第 1 步）
+    if (current !== undefined) {
+      if (current.phase === 'closing' && current.closePromise !== undefined) {
+        try {
+          await current.closePromise;
+        } catch (cause) {
+          dispatchObserver(observer, { type: 'lifecycle-slot-failed', identity, operation: 'reset', cause });
+          throw new NamespaceRegistryFatalError('reset', 'lifecycle-slot-internal', false, cause);
+        }
+      } else {
+        forceReleaseOutstandingLeases(current); // §4.8.2：快照迭代 release()（SA6 冻结观测 lease:'released'）
+        cancelIdleArm(current); // phase==='idle'（onReleased 武装后）：clearTimeout + idleTimerHandle=undefined
+        const closePromise = beginCloseCurrent(current); // runtime.close()（同步 throw → rejected Promise）
+        // I2：closing ⟹ closePromise 定义（先赋值后翻相，镜像 beginIdleClose ①-③）
+        try {
+          await closePromise; // barrier 排空已接纳写（含在途 ROOT 写的完整结算）
+        } catch (cause) {
+          // 4.8.1：close rejection = 编排内部失败 → fatal（归档未发生 ⟹ committed:false 诚实）
+          dispatchObserver(observer, { type: 'lifecycle-slot-failed', identity, operation: 'reset', cause });
+          throw new NamespaceRegistryFatalError('reset', 'lifecycle-slot-internal', false, cause);
+        }
+        // settle 处理器（closePromise.then 挂接，先于本 await 恢复执行）已 removeEntryAfterClose
+      }
+    }
+
+    // ③ 存在性探针：entry 缺席时经 loadDoc 判存在——NOT_FOUND 路径不触达归档 seam
+    // （SA6 锚 archiveCalls === []）
+    if (entries.get(identity.key) === undefined) {
+      let probe: DocHandle | null;
+      try {
+        probe = await persistence.loadDoc(identity.owner, identity.namespaceId);
+      } catch (e) {
+        if (e instanceof DocLoadOperationalError) {
+          dispatchObserver(observer, { type: 'open-load-failed', identity, cause: e });
+          return LOAD_FAILED_ISSUE;
+        }
+        dispatchObserver(observer, { type: 'lifecycle-slot-failed', identity, operation: 'reset', cause: e });
+        throw new NamespaceRegistryFatalError('reset', 'lifecycle-slot-internal', false, e);
+      }
+      if (probe === null) return NOT_FOUND_ISSUE;
+      try {
+        await probe.release(); // 干净 restore entry 同步驱逐（maybeEvict）——归档前置成立
+      } catch (e) {
+        dispatchObserver(observer, { type: 'handle-release-failed', identity, cause: e });
+      }
+    }
+
+    // ④ archive（ADR 0010:57 次序第 2 步；期望身份纯传递——§4.7；§4.8.3 映射矩阵）
+    try {
+      await archiveDocFn.call(persistence, identity.owner, identity.namespaceId, expected);
+    } catch (cause) {
+      const code = errorCodeOf(cause);
+      if (code === 'DOC_ARCHIVE_IDENTITY_MISMATCH') {
+        // 本地文档完好——零部分删除（守卫拒绝即未删；INV-6）
+        dispatchObserver(observer, { type: 'lifecycle-slot-failed', identity, operation: 'reset', cause });
+        return RESET_IDENTITY_MISMATCH_ISSUE;
+      }
+      if (code === 'DOC_ARCHIVE_DUPLICATE') {
+        return NOT_FOUND_ISSUE; // 跨实例归档竞态等：本地副本已不在 ⟹ 语义同 not-found
+      }
+      if (code === 'DOC_ARCHIVE_ACTIVE_HANDLE') {
+        // 跨 Registry/进程共享 store 的 live handle——诚实领域拒绝
+        dispatchObserver(observer, { type: 'lifecycle-slot-failed', identity, operation: 'reset', cause });
+        return RESET_FAILED_ISSUE;
+      }
+      if (code === 'DOC_ARCHIVE_OPERATIONAL') {
+        dispatchObserver(observer, { type: 'reset-archive-failed', identity, cause: cause as DocArchiveOperationalError });
+        return RESET_FAILED_ISSUE;
+      }
+      if (code === 'DOC_ARCHIVE_FATAL' || cause instanceof DocArchiveFatalError) {
+        // code-first（duck-typed Adapter 的 relocate-remove fatal 不再落入 unknown 分支
+        // 把 committed:true 改写为 false——INV-12）
+        dispatchObserver(observer, { type: 'lifecycle-slot-failed', identity, operation: 'reset', cause });
+        throw new NamespaceRegistryFatalError(
+          'reset',
+          'lifecycle-slot-internal',
+          committedOf(cause),
+          cause,
+        );
+      }
+      dispatchObserver(observer, { type: 'lifecycle-slot-failed', identity, operation: 'reset', cause });
+      throw new NamespaceRegistryFatalError('reset', 'lifecycle-slot-internal', false, cause);
+    }
+
+    // ⑤ 允许重新 bootstrap（第 3 步）：无显式动作——entry 已清 + 主键已归档 ⟹ key
+    // 缺席即资格（§4.8.5）
+    return Object.freeze({ ok: true });
+  }
+
+  /**
    * shutdown 异步段（#112 设计 §2.D 冻结次序）：
    * 1) 同步段/异步段切换先经一次微任务展开（`await Promise.resolve()`）——空 registry
    *    （零 carrier、零 entry）下设计伪码其余步骤无可 await 点，若不显式边界化，三相
@@ -1288,6 +1712,34 @@ export function createRegistryInternal(
         return admission.issue;
       }
       return orchestrateCreate(admission.owner, input);
+    },
+    async importReplica(owner: unknown, namespaceId: unknown, doc: unknown): Promise<ImportReplicaResult> {
+      // Phase 5（§4.2 接纳段冻结）：acceptance 检查（零输入访问）→
+      // validateOpenIdentity（零 entries/carriers/Persistence/Runtime 访问）→
+      // carrier FIFO 接纳——与 open/reset 同款同步段；File 侧 SAFE_PATH_SEGMENT
+      // 第二道门的编排侧对应物：invalid 身份在两层的任何一层都被拦截，且都先于
+      // 任何存储访问。
+      if (acceptance !== 'running') return NOT_ACCEPTING_ISSUE;
+      const outcome = validateOpenIdentity(owner, namespaceId);
+      if (!outcome.ok) {
+        return outcome.issue;
+      }
+      return admitImportSlot(outcome.identity, doc as YjsDoc);
+    },
+    async resetReplica(
+      owner: unknown,
+      namespaceId: unknown,
+      expectedLocalIdentity: unknown,
+    ): Promise<ResetReplicaResult> {
+      // Phase 5（§4.8 接纳段冻结，镜像 open）：acceptance 检查 → validateOpenIdentity
+      // → carrier FIFO 接纳（与 open/create 同一串行域）；期望身份纯传递（§4.7——
+      // 不在 close 前读本地事实做预检，守卫权威 = 持久快照复制事实）。
+      if (acceptance !== 'running') return NOT_ACCEPTING_ISSUE;
+      const outcome = validateOpenIdentity(owner, namespaceId);
+      if (!outcome.ok) {
+        return outcome.issue;
+      }
+      return admitResetSlot(outcome.identity, expectedLocalIdentity as ReplicationIdentityRef);
     },
     getStatus(): NamespaceRegistryStatus {
       // §2.E：恒三相冻结常量投影（不暴露 entry/lease/queue/timer 任何内部计面）。

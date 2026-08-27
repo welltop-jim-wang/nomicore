@@ -29,16 +29,153 @@ export interface DocHandle {
   release(): Promise<void>
 }
 
+/** Y.Doc 的跨包引用别名（Phase 5）：registry 主入口可达声明图禁止出现 `Y.Doc`
+ *  标识符文本（registry-surface.test.ts:42-47 冻结审计），故由本包给出中性命名别名。
+ *  类型上恒等于 Y.Doc（别名，非结构复制）。 */
+export type YjsDoc = Y.Doc
+
+/**
+ * 复制身份引用（N-1 冻结形状）：ADR 0010:46-48 冻结字段的包装。
+ *  replicationId 恒 32 位小写 hex；replicationEpoch 恒 >=1 的安全整数
+ *  （由各读取器的格式门保证——本类型自身不携带运行时校验）。
+ */
+export interface ReplicationIdentityRef {
+  readonly replicationId: string
+  readonly replicationEpoch: number
+}
+
 /**
  * The persistence seam shared by all adapters.
  *
  * The Cordis service name exposed by this interface is `nomicorePersistence`
  * (`NOMICORE_PERSISTENCE_SERVICE`).
+ *
+ * Phase 5（issue #133）扩展（设计 §4.4 optional 成员裁决）：复制导入与归档为
+ * optional 成员——13 个既有测试 stub 类与三成员字面量绿守卫在 required 形态下将
+ * 全部编译红（>10 caller 契约改动立法）；required 保证面由派生接口
+ * `ReplicaPersistence` 表达。第三方 Adapter 可不具备复制能力；复制编排方
+ * （Registry）必须 typeof 窄化并对缺席 loud 拒绝，不得静默降级（INV-13）。
  */
 export interface DocPersistence {
   createDoc(owner: User, docId: string, doc: Y.Doc): Promise<DocHandle>
   loadDoc(owner: User, docId: string): Promise<DocHandle | null>
   saveDoc(handle: DocHandle): Promise<void>
+  /**
+   * Phase 5 受控复制导入（ADR 0010:65/218）：从 detached、已由调用方核对身份的
+   * 完整 Y.Doc 排他创建持久副本。语义 = createDoc 同管线（claim 排他 / 提交点 /
+   * handle.doc === doc / 失败不接管 doc）；唯一差异 = META.docId 违约以
+   * DocImportIdentityError 稳定分类（createDoc 保持既有 bare error，零回归）。
+   *
+   * Optional 成员建模（§4.4）：Memory/File 恒提供；第三方 Adapter 可不支持——
+   * 复制编排方（Registry）必须 typeof 窄化并对缺席 loud 拒绝，不得静默降级。
+   */
+  readonly importDoc?: (owner: User, docId: string, doc: Y.Doc) => Promise<DocHandle>
+  /**
+   * Phase 5 受身份前置条件保护的归档（ADR 0010:57 / phase:63）。仅在无有效
+   * handle（且在途 dirty 已排空）时执行；身份核对以持久快照复制事实为权威。
+   * 成功 ⟹ 主键 snapshot 移入受控归档区、loadDoc → null、slot 可重建。
+   * 拒绝经 typed rejection 四分类 + committed-aware fatal（§4.5 矩阵）。
+   */
+  readonly archiveDoc?: (
+    owner: User,
+    docId: string,
+    expectedReplicationIdentity: ReplicationIdentityRef,
+  ) => Promise<Readonly<{ ok: true }>>
+}
+
+/** 具备复制生命周期能力的 Persistence 面（required 形态）：Memory/File 实现；
+ *  消费方（测试锚 / 未来 ws-replication）以此表达「必然可达」。 */
+export interface ReplicaPersistence extends DocPersistence {
+  readonly importDoc: (owner: User, docId: string, doc: Y.Doc) => Promise<DocHandle>
+  readonly archiveDoc: (
+    owner: User,
+    docId: string,
+    expectedReplicationIdentity: ReplicationIdentityRef,
+  ) => Promise<Readonly<{ ok: true }>>
+}
+
+/** 受控复制导入的身份违约（稳定分类，phase:65「identity mismatch」导入位）。
+ *  导入面唯一新增 typed 拒绝；duplicate 复用冻结 DocDuplicateError，
+ *  operational/fatal 复用冻结 create 族（§4.3 论证）。 */
+export class DocImportIdentityError extends Error {
+  readonly code: 'DOC_IMPORT_IDENTITY_MISMATCH' = 'DOC_IMPORT_IDENTITY_MISMATCH'
+  constructor(message = 'importDoc identity mismatch: doc META.docId does not match the requested docId') {
+    super(message)
+    this.name = 'DocImportIdentityError'
+  }
+}
+
+/** 归档身份前置条件拒绝（单一谓词，§4.5.4：错 id / 错 epoch / 缺失 / 损坏 /
+ *  META.docId 不符 统一归本类——SA6 边缘提示 8 裁决为 identity mismatch 族，
+ *  不另立第五类 corrupt 码）。 */
+export class DocArchiveIdentityError extends Error {
+  readonly code: 'DOC_ARCHIVE_IDENTITY_MISMATCH' = 'DOC_ARCHIVE_IDENTITY_MISMATCH'
+  constructor(message = 'archiveDoc identity mismatch: the persisted replication identity does not match the expected identity') {
+    super(message)
+    this.name = 'DocArchiveIdentityError'
+  }
+}
+
+/** 归档前置违约：key 仍持有 live handle（phase:63「仅在无有效 handle 时执行」）。 */
+export class DocArchiveActiveHandleError extends Error {
+  readonly code: 'DOC_ARCHIVE_ACTIVE_HANDLE' = 'DOC_ARCHIVE_ACTIVE_HANDLE'
+  constructor(message = 'archiveDoc rejected: the document still has live handles') {
+    super(message)
+    this.name = 'DocArchiveActiveHandleError'
+  }
+}
+
+/** 归档重复：守卫读取时主键无 committed snapshot（覆盖「已归档后二次归档」与
+ *  「从未存在」两形态——SA6 stub 同款语义）。 */
+export class DocArchiveDuplicateError extends Error {
+  readonly code: 'DOC_ARCHIVE_DUPLICATE' = 'DOC_ARCHIVE_DUPLICATE'
+  constructor(message = 'archiveDoc duplicate: no committed snapshot exists under this key') {
+    super(message)
+    this.name = 'DocArchiveDuplicateError'
+  }
+}
+
+/** 归档运营失败（guard-read / relocate-write 的 store 级拒绝；committed:false 权威——
+ *  两阶段均在提交点之前）。cause 保留 exact 原始失败；message 恒不拼接。 */
+export class DocArchiveOperationalError extends Error {
+  readonly code: 'DOC_ARCHIVE_OPERATIONAL' = 'DOC_ARCHIVE_OPERATIONAL'
+  readonly committed: false = false
+  override readonly cause: unknown
+  constructor(cause: unknown, message = 'archiveDoc operational failure: the store rejected before the archive commit') {
+    super(message)
+    this.name = 'DocArchiveOperationalError'
+    this.cause = cause
+  }
+}
+
+/** 归档 fatal phase 词表（镜像 DocCreateFatalPhase 纪律，contract.ts:115-131）。 */
+export type DocArchiveFatalPhase =
+  | 'guard-read'       // 身份核对读被生命周期终结（committed:false）
+  | 'relocate-write'   // 归档写被生命周期终结（写公理：reject ⟹ 归档区未变，committed:false）
+  | 'relocate-remove'  // 归档写已 resolve（提交点跨越）后，主键移除段失败（committed:true）
+
+/** 冻结 phase → 权威 commit 事实（relocate-remove 是唯一 true）。导出（additive），
+ *  沿 DOC_CREATE_FATAL_PHASE_COMMITTED 先例供测试/消费方锁定映射本身。 */
+export const DOC_ARCHIVE_FATAL_PHASE_COMMITTED: Readonly<Record<DocArchiveFatalPhase, boolean>> = Object.freeze({
+  'guard-read': false,
+  'relocate-write': false,
+  'relocate-remove': true,
+})
+
+export class DocArchiveFatalError extends Error {
+  readonly code: 'DOC_ARCHIVE_FATAL' = 'DOC_ARCHIVE_FATAL'
+  readonly phase: DocArchiveFatalPhase
+  /** Authoritative commit fact (derived from the frozen phase map). */
+  readonly committed: boolean
+  /** The exact original failure. Never concatenated into message. */
+  override readonly cause: unknown
+  constructor(phase: DocArchiveFatalPhase, cause: unknown, message = 'archiveDoc fatal: internal archive failure') {
+    super(message)
+    this.name = 'DocArchiveFatalError'
+    this.phase = phase
+    this.committed = DOC_ARCHIVE_FATAL_PHASE_COMMITTED[phase]
+    this.cause = cause
+  }
 }
 
 /** Stable duplicate-creation error. Callers branch on code, never message text. */
