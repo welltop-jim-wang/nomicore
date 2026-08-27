@@ -10,6 +10,6 @@
 | AC-4 | Open/create 仍校验并投影 owner；owner mismatch 返回既有 not-found 不暴露他人 namespace | ✅ | red.test.ts owner-mismatch 用例（mismatch→NAMESPACE_NOT_FOUND 常量、零 loadDoc、零新 Runtime、跨分区零暴露；非法 owner→NAMESPACE_INVALID_IDENTITY field=owner.userId）；SA7 D2 跨 owner NOT_FOUND 实测 | 无需处理 |
 | AC-5 | Persistence 继续按 owner 分区，不增加跨 owner catalog | ✅ | `git diff 980b16a..HEAD -- packages/persistence` 为空（零改动）；surface.test-d.ts 守卫（DocPersistence 无 catalog API）保持绿；SA7 D2 真实 File Persistence round-trip 按 `users/<owner>/<nsId>.snapshot` 落盘恢复 | 无需处理 |
 | AC-6 | Memory/File/Registry contract 测试覆盖 generation、retry exhaustion、owner mismatch、concurrency、shutdown、public-surface 兼容 | ✅ | red.test.ts 20 用例（含锚 A shutdown×重试、锚 B1-B3 违约 fatal、锚 C 并发）；registry-sa7-phase5-dynamic.test.ts 4 用例（D1-D4）；registry-persistence-contract / registry-surface（9/2 export 冻结）等既有套件迁移后全绿；总控亲验 pnpm test 1427/1427 + SA7 复跑 1431/1431 | 无需处理 |
-| AC-7 | ADR 0006/0009 implementation-facing docs 与 package contracts 对齐 ADR 0010 词汇 | ✅ | ADR 0009 §132 修订节（issue #131）；ADR 0006 §201 对齐说明；CONTEXT.md 113-115 行 namespaceId 词条已对齐（Avoid 含旧复合 key）；registry README/package contracts 随 b21de27 对齐（SA4 V 项核实） | 无需处理 |
+| AC-7 | ADR 0006/0009 implementation-facing docs 与 package contracts 对齐 ADR 0010 词汇 | ⚠️→修复中 | ADR 0009 §132 修订节（issue #131）；ADR 0006 §201 对齐说明；CONTEXT.md 113-115 行 namespaceId 词条已对齐。**终审发现 README:3/:33 与 cordis-plugin-hosting.md 示例三处旧契约残留（首轮核对声称「README 已对齐」不实，特记），已回流 SA3 修复，修复后复核** | SA3 终审修复轮 R1 |
 
-**结论：7/7 ✅，无 ❌ 条目，无需回流 SA。进入第四阶段收尾。**
+**结论：AC-1..AC-6 ✅；AC-7 首轮 ⚠️（README/hosting guide 三处残留，终审 blocking），SA3 修复 + 双轴复审转 clear 后方可封口。**

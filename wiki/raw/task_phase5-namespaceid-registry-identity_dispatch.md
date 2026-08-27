@@ -20,3 +20,6 @@
 | 13 | 11:20 | 总控亲验 | Phase 3 绿灯验证 | 11:26 | 后台独立进程：tsc --noEmit exit 0；pnpm test 1427/1427 绿、0 type errors、exit 0（首次日志被污染已重跑） |
 | 14 | 11:27 | SA4 | Phase 3 静态验尸 | 11:38 | pass — 红灯 20/20 转绿 + 总控亲验全绿后派 SA4 红队审查，verdict: pass（L4 操作项：R4 修正已由总控 commit b0962e9 收口）|
 | 15 | 11:40 | SA7 | Phase 3 动态验证 | 12:04 | pass — SA4 双清第一清后派 SA7；§10 五项动态重点实测全过 + 4 用例永久回归，verdict: pass |
+| 16 | 12:10 | 总控 | Phase 3.5 AC 门禁 | 12:15 | AC 逐条核对 7/7 ✅（ac_checklist.md），零回流 |
+| 17 | 12:16 | 总控+双终审 | Phase 4 终审+终验 | 12:29 | 后台终验（pnpm test + tsc）与 Standards/Spec 双轴并行终审（diff 980b16a..HEAD） |
+| 18 | 12:32 | SA3 | Phase 4 终审修复 R1 | (pending) | 双轴终审 blocking（同一 AC-7 文档残留）：README:3/:33 + cordis-plugin-hosting.md 示例四键化残留；顺带修 J-1/J-2 注释滞后 |
