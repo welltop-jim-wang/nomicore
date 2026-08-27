@@ -200,9 +200,6 @@ interface DocHandle {
 
 ## 对齐说明：issue #131（Phase 5 切片 1：Registry 普通 create 的 namespaceId 生成）
 
-日期：2026-08-27；状态：已接受。本说明只在语义上对齐 Registry 侧身份条款（ADR 0010），**不修改本 ADR 任何 Persistence 契约条款**：
+日期：2026-08-27；状态：已接受。本说明只对齐 Registry 身份演进，**不修改本 ADR 任何 Persistence 契约条款**。
 
-- 普通 create 的 namespaceId 由 Registry 注入的受控 128-bit CSPRNG 生成（`ns-` + 32 位小写 hex，35 字符，满足本 ADR 的共享安全文法）——仍属「系统分配、非调用方自选」，调用方不能指定；
-- Persistence 契约零变化：仍按 owner 分区、`createDoc(owner, docId, doc)` 以 `(owner.userId, docId)` 排他创建、`DOC_DUPLICATE` 信号**由 Registry 重试环消费**（语义不变、消费方反应变化——碰撞换 ID 重试）；
-- 不新增跨 owner catalog / 全局唯一约束（重申本 ADR 的 owner 分区与「无 list/catalog API」边界）；
-- Registry entry 以 namespaceId 唯一索引后，Persistence 侧 `(owner, docId)` 分区语义不受影响：不同 owner 的相同 docId 是不同持久化 entry，Registry 侧只见各自分区的文档。
+Namespace identity、普通 create 的 ID 生成与 Registry 碰撞处理以 [ADR 0010「Namespace identity、owner 与复制范围」](./0010-hub-peer-websocket-ydoc-replication.md#namespace-identityowner-与复制范围) 为唯一权威来源。本 ADR 仅保留 Persistence 边界：仍按 owner 分区，`createDoc(owner, docId, doc)` 仍以 `(owner.userId, docId)` 排他创建并通过 `DOC_DUPLICATE` 报告重复；不新增跨 owner catalog 或全局唯一约束。Registry 改为以 namespaceId 索引，不改变不同 owner 下相同 docId 属于不同持久化 entry 的既有语义。
