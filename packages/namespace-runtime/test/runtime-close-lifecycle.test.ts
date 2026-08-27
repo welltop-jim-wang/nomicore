@@ -151,14 +151,16 @@ async function waitReady(runtime: NamespaceRuntime): Promise<void> {
 }
 
 describe('close 生命周期（AC6/AC7）', () => {
-  it('AC6/AC8：公共面第十键 close 为 function；键集恰十键；无事件订阅键', async () => {
+  it('AC6/AC8：公共面第十二键 close 为 function；键集恰十二键；无事件订阅键', async () => {
     const { runtime } = readyRuntime({ notifyDirty: async () => {} });
     await waitReady(runtime);
     // 当前基线红：无 close 键
     expect(typeof closeOf(runtime)).toBe('function');
     const keys = Object.keys(runtime).sort();
     expect(keys).toEqual([
+      'bumpReplicationEpoch',
       'close',
+      'enableReplication',
       'getActiveSchema',
       'getMetadata',
       'getSchemaEnvelope',
@@ -489,14 +491,15 @@ describe('close 生命周期（AC6/AC7）', () => {
 });
 
 describe('capability status 七键与 fatal×close 交叉（AC5/AC1–AC4 交叉）', () => {
-  it('AC5：getStatus 七键形状——lifecycle/read/rootWrite/schemaWrite/schema/fatal/close；closed 期三能力全 false；不暴露队列长度/任务类型/sequence', async () => {
+  it('AC5：getStatus 八键形状——lifecycle/read/rootWrite/schemaWrite/schema/fatal/close/replication；closed 期三能力全 false；不暴露队列长度/任务类型/sequence', async () => {
     const { runtime } = readyRuntime({ notifyDirty: async () => {} });
-    // 当前基线红：六键无 close
+    // 当前基线红：七键无 replication
     expect(Object.keys(runtime.getStatus()).sort()).toEqual([
       'close',
       'fatal',
       'lifecycle',
       'read',
+      'replication',
       'rootWrite',
       'schema',
       'schemaWrite',

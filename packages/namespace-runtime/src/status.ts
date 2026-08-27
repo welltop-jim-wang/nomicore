@@ -1,5 +1,6 @@
 /**
- * @nomicore/namespace-runtime —— getStatus 组装（D9 → D6，#92 七键）：结构化瞬时 capability 投影。
+ * @nomicore/namespace-runtime —— getStatus 组装（D9 → D6，#92 七键，#132 第八键）：
+ * 结构化瞬时 capability 投影。
  *
  * - 每次调用构造全新对象（无共享可变引用）；
  * - lifecycle 三态真话（'ready' | 'closing' | 'closed'——INV-C1 状态机的只读投影）；
@@ -15,17 +16,22 @@
  *   （release 后 handle 处于 'released'，观察无信息增益，且隔离 adapter bug 对
  *   post-close 状态读取面的干扰）；ready 期 handle.getStatus() 自身 throw → 原样传播
  *   （adapter bug，loud——本方法契约同五方法：sync，internal bug 可抛）；
- * - 键集恰七键（lifecycle/read/rootWrite/schemaWrite/schema/fatal/close）；无
- *   queue/sequence/taskType；无数组值字段（INV-N11）；
+ * - 键集恰八键（lifecycle/read/rootWrite/schemaWrite/schema/fatal/close/replication）；
+ *   无 queue/sequence/taskType；无数组值字段（INV-N11）；
  * - schema.issue 仅在 unavailable 时存在（exactOptionalPropertyTypes：无 issue 键，
  *   不写 undefined 值键）；fatal === null 在正常路径（preparing/ready/unavailable 均
  *   null——fatal 只来自 internal fault）；close 摘要 = closeIssue ?? null（release
- *   失败后稳定 {code,message}，正常路径 null——永不输出 undefined 值键）。
+ *   失败后稳定 {code,message}，正常路径 null——永不输出 undefined 值键）；
+ * - replication（第八键，#132）：从 state 投影（构造期预投影 + 槽 E5.5 整替——INV-R5），
+ *   每次调用展开全新冻结子对象（INV-R6）；不触碰 handle/doc——closing/closed 期照常
+ *   投影最后已知事实（与 writableNow 的 ready 期短路观察互不干扰）；fatal 后已提交
+ *   事实保留（阅读面诚实）。
  */
 import type { DocHandle } from '@nomicore/persistence';
 import type { RuntimeState } from './p0.js';
+import type { NamespaceRuntimeReplicationStatus } from './replication-write.js';
 
-/** 结构化瞬时 capability status（七键协议；键集/形状即公共契约——AC5/AC7 锚定，#92）。 */
+/** 结构化瞬时 capability status（八键协议；键集/形状即公共契约——AC5/AC7 锚定，#92/#132）。 */
 export interface NamespaceRuntimeStatus {
   /** lifecycle 三态（#92：ready→closing→closed 单向状态机投影）。 */
   readonly lifecycle: 'ready' | 'closing' | 'closed';
@@ -40,6 +46,10 @@ export interface NamespaceRuntimeStatus {
   /** close issue 稳定摘要（第七键，#92）：release 失败后稳定 {code,message}（冻结跨调用
    *  同引用）；正常路径 null——不含原始 Error/stack（INV-C5/C8）。 */
   readonly close: Readonly<{ code: string; message: string }> | null;
+  /** 复制身份事实（第八键，#132）：两态联合（disabled | enabled{replicationId,replicationEpoch}）——
+   *  AC-5 判别面 = 两次读取的值比较（无 'changed' 第三态）；每次调用全新深冻结子对象，
+   *  突变不逃逸（INV-R6）。 */
+  readonly replication: NamespaceRuntimeReplicationStatus;
 }
 
 /** 组装 getStatus 产物（D9 → D6）。writableNow 瞬时观察见文件头；ready 期 throw 原样传播。 */
@@ -64,5 +74,6 @@ export function buildStatus(handle: DocHandle, state: RuntimeState): NamespaceRu
         : { state: state.schemaState },
     fatal,
     close: state.closeIssue ?? null,
+    replication: Object.freeze({ ...state.replication }), // 每次调用全新 + 深冻结子对象（INV-R6）
   };
 }

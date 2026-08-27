@@ -209,6 +209,7 @@ class ObservableRuntime implements NamespaceRuntime {
       schema: { state: 'ready' },
       fatal: null,
       close: null,
+      replication: { state: 'disabled' },
     };
   }
 
@@ -217,6 +218,14 @@ class ObservableRuntime implements NamespaceRuntime {
   }
 
   replaceSchema(): Promise<{ ok: true }> {
+    return Promise.resolve({ ok: true });
+  }
+
+  enableReplication(): Promise<{ ok: true }> {
+    return Promise.resolve({ ok: true });
+  }
+
+  bumpReplicationEpoch(): Promise<{ ok: true }> {
     return Promise.resolve({ ok: true });
   }
 

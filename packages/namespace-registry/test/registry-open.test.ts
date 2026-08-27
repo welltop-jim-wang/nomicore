@@ -167,6 +167,7 @@ const READY_STATUS: NamespaceRuntimeStatus = {
   schema: { state: 'ready' },
   fatal: null,
   close: null,
+  replication: { state: 'disabled' },
 };
 
 function makeRuntime(overrides: {
@@ -186,6 +187,8 @@ function makeRuntime(overrides: {
     getStatus: overrides.status ?? (() => READY_STATUS),
     mutateRoot: overrides.mutate ?? (async () => ({ ok: true })),
     replaceSchema: async () => ({ ok: true }),
+    enableReplication: async () => ({ ok: true }),
+    bumpReplicationEpoch: async () => ({ ok: true }),
     close: async () => {},
   };
 }
@@ -790,6 +793,7 @@ describe('capability：fatal/unavailable/degraded Runtime 均可 open 并透传�
       schema: { state: 'unavailable', issue: { code: 'RUNTIME_SCHEMA_X', message: 'schema-unavailable-msg' } },
       fatal: { code: 'RUNTIME_FATAL', message: 'fatal-msg' },
       close: null,
+      replication: { state: 'disabled' },
     };
     const persistence = new StubPersistence();
     persistence.queueLoad({ result: new StubHandle({ userId: 'u' }, 'k') });
@@ -821,6 +825,7 @@ describe('capability：fatal/unavailable/degraded Runtime 均可 open 并透传�
       schema: { state: 'ready' },
       fatal: null,
       close: null,
+      replication: { state: 'disabled' },
     };
     const persistence = new StubPersistence();
     persistence.queueLoad({ result: new StubHandle({ userId: 'u' }, 'k') });
@@ -857,6 +862,7 @@ describe('publish 时机：factory 返回即成功，不等待 P0（§6/AC4）',
             schema: { state: 'preparing' },
             fatal: null,
             close: null,
+            replication: { state: 'disabled' },
           }),
         }),
     });
@@ -890,7 +896,7 @@ describe('lease 语义（§7 逐方法表格）', () => {
     return { lease: a, other: b, registry, persistence };
   }
 
-  it('owner 为冻结独立投影；lease 冻结；十键面 + asyncDispose 键；不暴露 runtime/doc', async () => {
+  it('owner 为冻结独立投影；lease 冻结；十二键面 + asyncDispose 键；不暴露 runtime/doc', async () => {
     const persistence = new StubPersistence();
     persistence.queueLoad({ result: new StubHandle({ userId: 'u-alice' }, 'ns-1') });
     const runtime = makeRuntime({ owner: { userId: 'runtime-owner-marker' }, namespaceId: 'runtime-ns' });
@@ -906,6 +912,8 @@ describe('lease 语义（§7 逐方法表格）', () => {
     expect(lease.namespaceId).toBe('ns-1');
     expect(Object.keys(lease).sort()).toEqual(
       [
+        'bumpReplicationEpoch',
+        'enableReplication',
         'getActiveSchema',
         'getMetadata',
         'getSchemaEnvelope',

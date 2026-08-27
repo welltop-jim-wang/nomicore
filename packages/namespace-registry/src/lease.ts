@@ -1,5 +1,6 @@
 /**
- * @nomicore/namespace-registry —— lease 代理与 release（issue #110 设计 §7）。
+ * @nomicore/namespace-registry —— lease 代理与 release（issue #110 设计 §7；
+ * issue #132 增复制管理两方法）。
  *
  * Lease 在签发时创建私有 controller（released/releasePromise 闭包状态）；`owner`
  * 为冻结独立投影、`namespaceId` 写入冻结对象；不返回 entry/runtime 引用。首个
@@ -10,7 +11,15 @@
  *
  * released 逐方法通道（§7 表格）：read 同步返回 released issue；三投影 getter 同步
  * throw NamespaceLeaseReleasedError；getStatus 恒成功（released → runtime:null）；
- * 两写 resolve released issue（不 reject）。release 不追踪/取消已接纳写。
+ * 四写（mutateRoot/replaceSchema/enableReplication/bumpReplicationEpoch）resolve
+ * released issue（不 reject）。release 不追踪/取消已接纳写。
+ *
+ * #132 增量（D-7）：第 4 参 `deps.drawReplicationId`（包内签名；必选——无缺省即无
+ * 降级）——enableReplication 在 Lease 接纳段（released 检查之后）同步抽取 128-bit
+ * 复制谱系 id，作为**值输入**传给 runtime.enableReplication({ replicationId })；
+ * 随机源违约（throw/形状违约/格式违约）→ 结果面 issue
+ * （REPLICATION_RANDOM_SOURCE_INVALID，不同步 throw、不走 rejection——Lease 写操作
+ * 纪律「一切拒绝经返回的 Promise 结算」）。
  *
  * 类型面：public alias 与 Runtime 对应成员逐字段锁死（编译期 Equal 断言）——
  * 本文件位于主入口不可达声明图之外，允许引用 Runtime 命名类型作断言锚。
@@ -19,6 +28,8 @@ import { NamespaceLeaseReleasedError } from './errors.js';
 import type {
   NamespaceLease,
   NamespaceLeaseActiveSchema,
+  NamespaceLeaseBumpReplicationEpochResult,
+  NamespaceLeaseEnableReplicationResult,
   NamespaceLeaseMetadata,
   NamespaceLeaseMutateRootResult,
   NamespaceLeaseReadResult,
@@ -43,6 +54,15 @@ export interface LeaseEntryRef {
   readonly leases: Set<NamespaceLease>;
 }
 
+/**
+ * 复制谱系 id 抽取结果（#132 D-7；类型落位本文件并包内导出——registry.ts 经既有
+ * './lease.js' import 引用，单项零循环；不进主入口可达声明图）。
+ * 永不 throw（Lease 写操作纪律：一切拒绝经返回的 Promise 结算）。
+ */
+export type ReplicationIdDraw =
+  | { readonly ok: true; readonly replicationId: string }
+  | { readonly ok: false; readonly issue: { readonly message: string; readonly path: readonly [] } };
+
 /** released issue 单例（冻结；message 引用 types.ts 单一真相源常量，不插值、无 identity 回显）。 */
 const RELEASED_ISSUE: NamespaceLeaseReleasedIssue = Object.freeze({
   ok: false,
@@ -54,17 +74,22 @@ const RELEASED_ISSUE: NamespaceLeaseReleasedIssue = Object.freeze({
  * 签发 lease controller（§7）：对象冻结；owner 为独立冻结投影（不是 entry.owner
  * 引用，也不暴露 entry/runtime）。observer 经 dispatchObserver 隔离。
  *
- * #112 增量（设计 §2.B）：第三参 `onReleased?`——在**首次** release() 同步段内、
+ * #112 增量（设计 §2.B）：第三参 `onReleased`——在**首次** release() 同步段内、
  * entry.leases.delete(controller) 与 `lease-released` observer 事件**之后**调用
  * （恰一次，仅首次 release；registry 侧以 onReleased 闭包绑定 idle 武装
  * handleLeaseReleased）。release 的 same-Promise / 同步失效契约不为回调改动：
  * released 标记与 releasePromise 缓存先于回调；回调 throw 由调用方（registry
  * handleLeaseReleased 的 setTimeout try/catch）隔离，不影响 release() 结果。
+ * 无回调时传 undefined（TS 必选参数位——保持第 4 参 deps 必选无缺省，见下）。
+ *
+ * #132 增量（D-7）：第 4 参 `deps.drawReplicationId`（包内签名；**必选——无缺省即无
+ * 降级**）。
  */
 export function createLeaseController(
   entry: LeaseEntryRef,
   observer: RegistryObserver | undefined,
-  onReleased?: () => void,
+  onReleased: (() => void) | undefined,
+  deps: { readonly drawReplicationId: () => ReplicationIdDraw },
 ): NamespaceLease {
   const owner = Object.freeze({ userId: entry.owner.userId });
   const namespaceId = entry.namespaceId;
@@ -126,6 +151,21 @@ export function createLeaseController(
       if (released) return Promise.resolve(RELEASED_ISSUE);
       return entry.runtime.replaceSchema(input);
     },
+    enableReplication() {
+      // D-7/#132：released 通道与两写同款；随机源抽取在接纳段同步执行（released 后
+      // 零消耗）；违约 → 结果面 issue（绝不同步 throw、绝不 unhandled rejection——
+      // 写操作纪律「一切拒绝经返回的 Promise 结算」）
+      if (released) return Promise.resolve(RELEASED_ISSUE);
+      const drawn = deps.drawReplicationId();
+      if (!drawn.ok) {
+        return Promise.resolve({ ok: false as const, issues: [drawn.issue] });
+      }
+      return entry.runtime.enableReplication({ replicationId: drawn.replicationId });
+    },
+    bumpReplicationEpoch() {
+      if (released) return Promise.resolve(RELEASED_ISSUE);
+      return entry.runtime.bumpReplicationEpoch();
+    },
     release: doRelease,
     [ASYNC_DISPOSE]: doRelease,
   };
@@ -167,6 +207,19 @@ type _replaceResultAlias = AssertTrue<
     Awaited<ReturnType<NamespaceRuntime['replaceSchema']>> | NamespaceLeaseReleasedIssue
   >
 >;
+// —— #132 增量：复制管理结果 alias 与 Runtime 对应成员逐字段相等（形状漂移 → 编译期红）——
+type _enableReplicationResultAlias = AssertTrue<
+  Equal<
+    NamespaceLeaseEnableReplicationResult,
+    Awaited<ReturnType<NamespaceRuntime['enableReplication']>> | NamespaceLeaseReleasedIssue
+  >
+>;
+type _bumpReplicationEpochResultAlias = AssertTrue<
+  Equal<
+    NamespaceLeaseBumpReplicationEpochResult,
+    Awaited<ReturnType<NamespaceRuntime['bumpReplicationEpoch']>> | NamespaceLeaseReleasedIssue
+  >
+>;
 
 // 声明期证明（仅 typecheck 用，零运行时值）。
 export type LeaseTypeAssertions = {
@@ -178,4 +231,6 @@ export type LeaseTypeAssertions = {
   readonly mutate: _mutateAlias;
   readonly replaceInput: _replaceInputAlias;
   readonly replaceResult: _replaceResultAlias;
+  readonly enableReplication: _enableReplicationResultAlias;
+  readonly bumpReplicationEpoch: _bumpReplicationEpochResultAlias;
 };

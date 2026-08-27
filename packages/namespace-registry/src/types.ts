@@ -34,6 +34,8 @@ import type { Clock } from '@nomicore/clock';
 import type { ReadLogicalValueResult } from '@nomicore/doc-runtime';
 import type {
   ActiveSchemaInfo,
+  BumpReplicationEpochResult,
+  EnableReplicationResult,
   MutateRootResult,
   ReplaceSchemaInput,
   ReplaceSchemaResult,
@@ -76,6 +78,9 @@ export const NAMESPACE_REGISTRY_SHUTDOWN_FAILED_MESSAGE =
 // —— phase-5 切片 1 增量（ADR 0010 身份条款/ADR 0009 依赖纪律）——
 export const NAMESPACE_REGISTRY_RANDOM_REQUIRED_MESSAGE =
   'NAMESPACE_REGISTRY_RANDOM_REQUIRED: Registry 必须提供受控随机源 randomBytes(length): Uint8Array';
+// —— phase-5 复制谱系切片增量（issue #132；ADR 0010 复制谱系节/ADR 0009 依赖纪律）——
+export const REPLICATION_RANDOM_SOURCE_INVALID_MESSAGE =
+  'REPLICATION_RANDOM_SOURCE_INVALID: 受控随机源必须返回 16 字节 Uint8Array（ADR 0009 依赖纪律）——本调用零写入、零随机消耗副作用';
 
 /** Host 无关的命名空间归属标识：owner 是 Persistence partition key，非当前调用人。 */
 export interface NamespaceOwner {
@@ -115,6 +120,8 @@ export type NamespaceRegistryStatus =
 /**
  * Runtime getStatus() 返回值的结构性复制型公开 alias（设计 §3.1）：不 re-export
  * 运行时命名类型；与 runtime 包的状态形态逐字段同构（lease.ts 有编译期 Equal 断言）。
+ * issue #132 增量：+replication 复制域（与 runtime 包 NamespaceRuntimeReplicationStatus
+ * 逐字段相等——由 NamespaceLeaseReplicationStatus 结构复制型 + lease.ts Equal 断言锁死）。
  */
 export interface NamespaceRuntimeStatusProjection {
   readonly lifecycle: 'ready' | 'closing' | 'closed';
@@ -127,7 +134,17 @@ export interface NamespaceRuntimeStatusProjection {
   };
   readonly fatal: Readonly<{ code: string; message: string }> | null;
   readonly close: Readonly<{ code: string; message: string }> | null;
+  readonly replication: NamespaceLeaseReplicationStatus;
 }
+
+/**
+ * Lease status 复制域的结构复制型（§3.2 纪律：不 re-export 运行时命名类型；形状与
+ * runtime 包 NamespaceRuntimeReplicationStatus 逐字段相等，由 lease.ts Equal 断言锁死）。
+ * 两态联合（无 'unknown' 第三态——AC-5 判别面 = 两次读取的值比较）。
+ */
+export type NamespaceLeaseReplicationStatus =
+  | Readonly<{ state: 'disabled' }>
+  | Readonly<{ state: 'enabled'; replicationId: string; replicationEpoch: number }>;
 
 /** Lease 状态：active 期向 Runtime 实时委托；released 期仅 status 可观察（runtime: null）。 */
 export type NamespaceLeaseStatus =
@@ -270,6 +287,15 @@ export type NamespaceLeaseReplaceSchemaInput = ReplaceSchemaInput;
 /** lease.replaceSchema 结果 = runtime 同名结果 | released issue（Promise resolve，不 reject）。 */
 export type NamespaceLeaseReplaceSchemaResult = ReplaceSchemaResult | NamespaceLeaseReleasedIssue;
 
+/** lease.enableReplication 结果 = runtime 同名结果 | released issue（沿
+ *  NamespaceLeaseMutateRootResult 先例——Promise resolve，不 reject；随机源违约与
+ *  领域拒绝均经结果联合结算，写管线 internal fatal 经 RuntimeWriteFatalError rejection）。 */
+export type NamespaceLeaseEnableReplicationResult = EnableReplicationResult | NamespaceLeaseReleasedIssue;
+
+/** lease.bumpReplicationEpoch 结果 = runtime 同名结果 | released issue（同上）。 */
+export type NamespaceLeaseBumpReplicationEpochResult =
+  BumpReplicationEpochResult | NamespaceLeaseReleasedIssue;
+
 /**
  * asyncDispose 键（ES2023 显式资源管理）。lib ES2022 未声明 Symbol.asyncDispose，
  * 故经全局接口合并补上其 unique symbol 类型（与 lib esnext.disposable 同款声明），
@@ -300,6 +326,19 @@ export interface NamespaceLease {
   getStatus(): NamespaceLeaseStatus;
   mutateRoot(mutation: unknown): Promise<NamespaceLeaseMutateRootResult>;
   replaceSchema(input: NamespaceLeaseReplaceSchemaInput): Promise<NamespaceLeaseReplaceSchemaResult>;
+  /** Hub 显式复制管理操作（issue #132/ADR 0010 冻结名）：原子安装随机 128-bit 复制谱系
+   *  + epoch 1（经 runtime 同一 write sequencer——单槽单事务原子、dirty 恰一次）。
+   *  已启用命名空间 → 幂等 ok:true（零写入、零 dirty、身份/epoch 不变——稳定文档化
+   *  结果）。拒绝（ok:false, issues）经结果联合结算：REPLICATION_RANDOM_SOURCE_INVALID
+   *  （受控随机源违约）/ REPLICATION_INPUT_INVALID / REPLICATION_META_ABSENT /
+   *  RUNTIME_WRITE_DISABLED 系；写管线 internal fatal 经 RuntimeWriteFatalError
+   *  rejection。released → released issue（与两写同通道）。 */
+  enableReplication(): Promise<NamespaceLeaseEnableReplicationResult>;
+  /** Hub 显式提升权威代际（issue #132/ADR 0010 冻结名；身份不变——复制谱系不可变）。
+   *  overflow（epoch = Number.MAX_SAFE_INTEGER）→ ok:false 结果面拒绝、绝不回绕；
+   *  未启用 → REPLICATION_NOT_ENABLED；fatal/degraded/close → RUNTIME_WRITE_DISABLED
+   *  零写入；released → released issue。 */
+  bumpReplicationEpoch(): Promise<NamespaceLeaseBumpReplicationEpochResult>;
   release(): Promise<void>;
   readonly [ASYNC_DISPOSE]: () => Promise<void>;
 }

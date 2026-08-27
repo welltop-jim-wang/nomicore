@@ -256,9 +256,9 @@ describe('AC4：factory 产出的 Runtime 保持 P0 队首/读取/写序列器/f
       expect(notifySeq, 'notifyDirty 必须严格按写槽序（写序列器 FIFO 屏障）').toEqual([1, 2]);
       expect(readValue(runtime, ['n'])).toBe(20);
 
-      // ③ status 七键面（经 registry factory 构造路径逐键复核——AC4「保持现有语义」）
+      // ③ status 八键面（经 registry factory 构造路径逐键复核——AC4「保持现有语义」）
       const st = runtime.getStatus();
-      expect(Object.keys(st).sort()).toEqual(['close', 'fatal', 'lifecycle', 'read', 'rootWrite', 'schema', 'schemaWrite']);
+      expect(Object.keys(st).sort()).toEqual(['close', 'fatal', 'lifecycle', 'read', 'replication', 'rootWrite', 'schema', 'schemaWrite']);
       expect(st.lifecycle).toBe('ready');
       expect(st.fatal).toBeNull();
       expect(st.close).toBeNull();
@@ -266,9 +266,11 @@ describe('AC4：factory 产出的 Runtime 保持 P0 队首/读取/写序列器/f
       expect(st.rootWrite.enabled).toBe(true);
       expect(st.schemaWrite.enabled).toBe(true);
 
-      // ④ 十键公共面（对象字面量 + freeze，无 class 原型、无脚本注入键）
+      // ④ 十二键公共面（对象字面量 + freeze，无 class 原型、无脚本注入键）
       expect(Object.keys(runtime).sort()).toEqual([
+        'bumpReplicationEpoch',
         'close',
+        'enableReplication',
         'getActiveSchema',
         'getMetadata',
         'getSchemaEnvelope',

@@ -189,6 +189,7 @@ const READY_STATUS: NamespaceRuntimeStatus = {
   schema: { state: 'ready' },
   fatal: null,
   close: null,
+  replication: { state: 'disabled' },
 };
 
 interface RuntimeClosePlan {
@@ -232,6 +233,14 @@ class ObservableRuntime implements NamespaceRuntime {
   }
 
   replaceSchema(): Promise<{ ok: true }> {
+    return Promise.resolve({ ok: true });
+  }
+
+  enableReplication(): Promise<{ ok: true }> {
+    return Promise.resolve({ ok: true });
+  }
+
+  bumpReplicationEpoch(): Promise<{ ok: true }> {
     return Promise.resolve({ ok: true });
   }
 
