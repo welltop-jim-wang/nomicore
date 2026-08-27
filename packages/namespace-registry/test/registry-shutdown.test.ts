@@ -72,6 +72,34 @@ function collectUnhandledRejections(): { readonly events: unknown[]; dispose(): 
   };
 }
 
+
+// ── phase-5 切片 1（ADR 0010）：受控随机源确定性 helper（测试内定义；禁止从 src 导出）──
+// 第 n 次生成 = `ns-` + n 的 32 位小写 hex；每调用恰按 128-bit（16 字节）请求。
+
+function makeDeterministicRandomBytes(): {
+  randomBytes: (length: number) => Uint8Array;
+  readonly id: (n: number) => string;
+} {
+  let counter = 0;
+  return {
+    randomBytes(length: number): Uint8Array {
+      if (length !== 16) {
+        throw new Error(`受控随机源必须按 128-bit（16 字节）请求，实际请求 ${length} 字节`);
+      }
+      counter += 1;
+      const hex = counter.toString(16).padStart(32, '0');
+      const out = new Uint8Array(16);
+      for (let i = 0; i < 16; i += 1) {
+        out[i] = Number.parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+      }
+      return out;
+    },
+    id: (n: number) => `ns-${n.toString(16).padStart(32, '0')}`,
+  };
+}
+
+const TEST_RANDOM_BYTES: (length: number) => Uint8Array = makeDeterministicRandomBytes().randomBytes;
+
 // ── 可控 Persistence stub ──────────────────────────────────────────────────────
 
 interface LoadPlan {
@@ -278,6 +306,7 @@ describe('AC8（§7.13）：getStatus 三相投影（running → shutting-down �
     const registry = createNamespaceRegistryForTesting(persistence, {
       clock: manualClock(),
       scheduler,
+      randomBytes: TEST_RANDOM_BYTES,
       idleTimeoutMs: 300_000,
       runtimeFactory: () => runtime,
     });
@@ -316,6 +345,7 @@ describe('AC9（§7.14-16）：同步停接纳、零输入访问、等待已接�
     const registry = createNamespaceRegistryForTesting(persistence, {
       clock: manualClock(),
       scheduler,
+      randomBytes: TEST_RANDOM_BYTES,
       idleTimeoutMs: 300_000,
       runtimeFactory: () => {
         factoryCalls += 1;
@@ -374,6 +404,7 @@ describe('AC9（§7.14-16）：同步停接纳、零输入访问、等待已接�
     const registry = createNamespaceRegistryForTesting(persistence, {
       clock: manualClock(),
       scheduler,
+      randomBytes: TEST_RANDOM_BYTES,
       idleTimeoutMs: 300_000,
       runtimeFactory: (handle) => {
         const r = new ObservableRuntime(`R-${handle.docId}`, handle.docId);
@@ -413,6 +444,7 @@ describe('AC9（§7.14-16）：同步停接纳、零输入访问、等待已接�
     const registry = createNamespaceRegistryForTesting(persistence, {
       clock: manualClock(),
       scheduler: adversarial,
+      randomBytes: TEST_RANDOM_BYTES,
       idleTimeoutMs: 300_000,
       runtimeFactory: () => runtime,
       observer: observer.sink,
@@ -451,6 +483,7 @@ describe('AC9（§7.14-16）：同步停接纳、零输入访问、等待已接�
     const registry = createNamespaceRegistryForTesting(persistence, {
       clock: manualClock(),
       scheduler,
+      randomBytes: TEST_RANDOM_BYTES,
       idleTimeoutMs: 300_000,
       runtimeFactory: () => runtime,
     });
@@ -493,6 +526,7 @@ describe('AC10（§7.17-19）：不等外部 release、复用在途 close Promis
     const registry = createNamespaceRegistryForTesting(persistence, {
       clock: manualClock(),
       scheduler,
+      randomBytes: TEST_RANDOM_BYTES,
       idleTimeoutMs: 300_000,
       runtimeFactory: () => runtime,
     });
@@ -520,6 +554,7 @@ describe('AC10（§7.17-19）：不等外部 release、复用在途 close Promis
     const registry = createNamespaceRegistryForTesting(persistence, {
       clock: manualClock(),
       scheduler,
+      randomBytes: TEST_RANDOM_BYTES,
       idleTimeoutMs: 300_000,
       runtimeFactory: () => runtime,
       observer: observer.sink,
@@ -562,6 +597,7 @@ describe('AC10（§7.17-19）：不等外部 release、复用在途 close Promis
     const registry = createNamespaceRegistryForTesting(persistence, {
       clock: manualClock(),
       scheduler,
+      randomBytes: TEST_RANDOM_BYTES,
       idleTimeoutMs: 300_000,
       runtimeFactory: (handle) => {
         const closePlan: RuntimeClosePlan =
@@ -636,6 +672,7 @@ describe('AC10（§7.17-19）：不等外部 release、复用在途 close Promis
     const registry = createNamespaceRegistryForTesting(persistence, {
       clock: manualClock(),
       scheduler,
+      randomBytes: TEST_RANDOM_BYTES,
       idleTimeoutMs: 300_000,
       runtimeFactory: (handle) => {
         // 首个 Runtime（k1，Map 插入序第一）close 同步 throw；k2 正常 close。
@@ -687,6 +724,7 @@ describe('AC10（§7.17-19）：不等外部 release、复用在途 close Promis
       const registry = createNamespaceRegistryForTesting(persistence, {
         clock: manualClock(),
         scheduler,
+        randomBytes: TEST_RANDOM_BYTES,
         idleTimeoutMs: 300_000,
         runtimeFactory: (handle) => {
           // k1/k2 均同步 throw（不同 cause 实例）：同构聚合 + 插入序 + 恰一次的多元锚
@@ -747,6 +785,7 @@ describe('AC12（§7.20-21）：幂等 same-Promise（含 reject 实例）、shu
     const registry = createNamespaceRegistryForTesting(persistence, {
       clock: manualClock(),
       scheduler,
+      randomBytes: TEST_RANDOM_BYTES,
       idleTimeoutMs: 300_000,
     });
     const p1 = registry.shutdown();
@@ -765,6 +804,7 @@ describe('AC12（§7.20-21）：幂等 same-Promise（含 reject 实例）、shu
     const registry2 = createNamespaceRegistryForTesting(persistence2, {
       clock: manualClock(),
       scheduler: scheduler2,
+      randomBytes: TEST_RANDOM_BYTES,
       idleTimeoutMs: 300_000,
       runtimeFactory: () => runtime2,
     });
@@ -790,6 +830,7 @@ describe('AC12（§7.20-21）：幂等 same-Promise（含 reject 实例）、shu
     const registry = createNamespaceRegistryForTesting(persistence, {
       clock: manualClock(),
       scheduler,
+      randomBytes: TEST_RANDOM_BYTES,
       idleTimeoutMs: 300_000,
       runtimeFactory: () => {
         factoryCalls += 1;
@@ -799,12 +840,15 @@ describe('AC12（§7.20-21）：幂等 same-Promise（含 reject 实例）、shu
     await registry.shutdown();
     const openResult = await registry.open({ userId: 'u-shutdown' }, 'k');
     expect(openResult).toMatchObject({ ok: false, code: 'REGISTRY_NOT_ACCEPTING' });
+    // 豁免（设计 §7 shutdown 行）：公共入口停接纳检查先于一切输入访问——四键字面量
+    // 永不被校验，shape 无关结果；`as never` 仅消除类型面（CreateNamespaceInput 已
+    // 三键化，四键字面量在 typecheck 程序内产生 TS2353）。
     const createResult = await registry.create({
       owner: { userId: 'u-shutdown' },
       namespaceId: 'k',
       schema: { lang: 'vfsl', version: 1, id: 'k', text: 'type ROOT = { n: number; };\n' },
       root: { n: 1 },
-    });
+    } as never);
     expect(createResult).toMatchObject({ ok: false, code: 'REGISTRY_NOT_ACCEPTING' });
     expect(persistence.loadCalls.length).toBe(0);
     expect(persistence.createCalls.length).toBe(0);

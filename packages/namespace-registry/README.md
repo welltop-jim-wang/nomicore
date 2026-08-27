@@ -1,6 +1,6 @@
 # `@nomicore/namespace-registry`
 
-`NamespaceRegistry` is the host-level lifecycle owner for namespace runtimes. It guarantees one active runtime and one write sequencer per `(owner.userId, namespaceId)`, while independent namespace keys may progress concurrently.
+`NamespaceRegistry` is the host-level lifecycle owner for namespace runtimes. It guarantees one active runtime and one write sequencer per `namespaceId` (ADR 0010: the Registry entry key is the namespaceId alone — owner identity is a persisted partition property plus a reuse-time check), while independent namespace keys may progress concurrently.
 
 第三方 Cordis 宿主的完整插件装配、配置表、数据读写和停止顺序见 [`docs/integration/cordis-plugin-hosting.md`](../../docs/integration/cordis-plugin-hosting.md)。
 
@@ -30,7 +30,9 @@ No system clock or global timer fallback is used by the Registry.
 
 ## Errors
 
-Expected open/create failures use narrow result issues such as `REGISTRY_NOT_ACCEPTING`, `NAMESPACE_NOT_FOUND`, `NAMESPACE_ALREADY_EXISTS`, typed persistence failures, and schema/ROOT validation issues. Internal failures reject with `NamespaceRegistryFatalError`; shutdown close failures reject with `NamespaceRegistryShutdownError`.
+Expected open/create failures use narrow result issues such as `REGISTRY_NOT_ACCEPTING`, `NAMESPACE_NOT_FOUND`, `NAMESPACE_INVALID_IDENTITY`, typed persistence failures, and schema/ROOT validation issues. Internal failures reject with `NamespaceRegistryFatalError`; shutdown close failures reject with `NamespaceRegistryShutdownError`.
+
+`NAMESPACE_ALREADY_EXISTS` remains part of the public `CreateNamespaceIssue` union for the planned trusted-import slice, but ordinary open/create no longer produce it: ordinary create collisions are resolved internally by regeneration (entry or persisted duplicate → retry up to 8 times) and then reject a `committed:false` `NamespaceRegistryFatalError` (`phase: 'namespace-id-generation'`) on budget exhaustion. `NAMESPACE_CREATE_INVALID_INPUT` covers the three-key shape (carrying a caller-selected `namespaceId` key is rejected); `open` of an existing namespace never conflicts — an owner mismatch on a live entry returns `NAMESPACE_NOT_FOUND` with zero exposure.
 
 ## Contract and verification
 

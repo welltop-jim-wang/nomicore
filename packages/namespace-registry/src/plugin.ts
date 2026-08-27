@@ -47,13 +47,14 @@
  */
 import type { Context } from '@deepseek-ai/cordis';
 import type {} from '@deepseek-ai/cordis-plugin-timer';
+import { randomBytes as nodeRandomBytesSource } from 'node:crypto';
 import { requireClock } from '@nomicore/clock';
 import { requireNomicorePersistence } from '@nomicore/persistence';
 import {
   createNamespaceRegistry,
   resolveIdleTimeoutMs,
 } from './registry.js';
-import type { NamespaceRegistry, RegistryTimeoutScheduler } from './types.js';
+import type { NamespaceRegistry, RegistryRandomBytes, RegistryTimeoutScheduler } from './types.js';
 import { NAMESPACE_REGISTRY_PLUGIN_CONFIG_MESSAGE } from './types.js';
 
 // R1/M3 单点化：DEFAULT_IDLE_TIMEOUT_MS 唯一运行时定义点在 registry.ts（与
@@ -63,6 +64,16 @@ export { DEFAULT_IDLE_TIMEOUT_MS } from './registry.js';
 
 /** Cordis service 名（issue #104 决策冻结名）。 */
 export const NOMICORE_REGISTRY_SERVICE = 'nomicoreRegistry' as const;
+
+/**
+ * 生产受控随机源（phase-5 切片 1，ADR 0010 身份条款 + ADR 0009 依赖纪律）：Node
+ * CSPRNG 桥接。核心（registry.ts 等）零全局 crypto 直调——生产来源只在本
+ * Host-facing 适配层接线。Buffer → `new Uint8Array` 拷贝：交付精确契约类型（独立
+ * 普通 Uint8Array，防 Buffer 池化/子类语义外泄进核心；file.ts 的 node:fs 先例：
+ * Host-facing 适配层使用 Node 内建模块）。
+ */
+const productionRandomBytes: RegistryRandomBytes = (length: number): Uint8Array =>
+  new Uint8Array(nodeRandomBytesSource(length));
 
 declare module '@deepseek-ai/cordis' {
   interface Context {
@@ -164,6 +175,7 @@ export function createNamespaceRegistryPlugin(config: NamespaceRegistryPluginCon
       const registry = createNamespaceRegistry(requireNomicorePersistence(ctx), {
         clock: requireClock(ctx),
         scheduler: createCordisRegistryScheduler(ctx),
+        randomBytes: productionRandomBytes,
         idleTimeoutMs,
       });
       instance = registry;

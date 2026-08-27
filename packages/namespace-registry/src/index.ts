@@ -43,6 +43,7 @@ export type {
   NamespaceRegistryStatus,
   OpenNamespaceIssue,
   OpenNamespaceResult,
+  RegistryRandomBytes,
   RegistryTimeoutScheduler,
 } from './types.js';
 export type { NamespaceRegistryPluginConfig } from './plugin.js';

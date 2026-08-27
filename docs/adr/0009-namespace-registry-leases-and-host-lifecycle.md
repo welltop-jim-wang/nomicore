@@ -126,3 +126,15 @@ v1不公开list、entry status、lease count、queue、timer handle、explicit e
 本ADR不取代ADR 0008的单Runtime语义，而是在其上增加多调用方、多namespace和Host生命周期。Registry open遵循ADR 0008对ADR 0007普通open条款的取代：load+Runtime构造后即可发布，不等待P0或重新验证ROOT。
 
 Phase 4使用独立integration PR。实施顺序为Clock capability、Persistence service/timer/clock与typed error演进、Runtime internal Registry factory、Registry核心/lease/idle生命周期、Cordis plugin、Memory/File/Cordis全链验收与最终整体审查。
+
+---
+
+## 修订节：issue #131（Phase 5 切片 1：Registry identity 迁移，依据 ADR 0010）
+
+日期：2026-08-27；状态：已接受（`fix/issue-131-on-docs-phase-5-websocket-replication`）
+
+本节修订本文原有的复合 key 与 caller-selected namespaceId 条款；namespace identity、owner、普通 create 的 ID 生成与碰撞处理均以 [ADR 0010「Namespace identity、owner 与复制范围」](./0010-hub-peer-websocket-ydoc-replication.md#namespace-identityowner-与复制范围) 为唯一权威来源，不在本 ADR 重复定义。
+
+1. **Registry identity 修订**：本文「唯一 Runtime 与同键生命周期串行」「Create」「Persistence 错误演进」与「Fatal、错误与 observability」各节中，以 `(owner.userId, namespaceId)` 为 Registry key、由调用方传入 namespaceId、以及普通 duplicate 映射为 `NAMESPACE_ALREADY_EXISTS` 的旧条款，均由 ADR 0010 的 namespaceId-only identity 与普通 create 规则取代。owner 仍是 create/open 的必需本地属性与 Persistence 分区键；复用既有 entry 前必须核对 owner，不匹配返回 `NAMESPACE_NOT_FOUND`。
+2. **Fatal phase 修订**：`namespace-id-generation` 是 `NamespaceRegistryFatalPhase` 中属于 `create` 操作的稳定 phase，不属于 `open`；其触发条件和碰撞预算以 ADR 0010 为准。
+3. **能力与生命周期边界**：Registry 的构造能力增加必需的 `randomBytes(length): Uint8Array` 注入，生产 Host Adapter 使用 `node:crypto`，核心不得回退到全局随机源。create 的跨候选重试仍受 lifecycle carrier 串行化与 shutdown 已接纳操作屏障约束。

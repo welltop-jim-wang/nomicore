@@ -21,11 +21,11 @@
  *   （throw → handle.release() 恰一次 + observer + runtime-construction fatal）→
  *   建 entry、登记、签 lease。acceptance 检查已迁移至公共入口同步段（§2.D）；
  *   已接纳槽按自身事实结算，槽内不再检查。
- * - runCreateSlot 决策（#111 设计 §5 伪码，冻结次序；#112 增 idle 第五态分派）：
- *   active/idle entry → ALREADY_EXISTS（DQ-5 同码零 Persistence）→ closing entry
- *   （closePromise 缺失 → fail-loud fatal create/lifecycle-slot-internal/false +
- *   observer）→ payload 防御性快照（§4 第 3-4 步）→ Clock 单次读数 → 私有
- *   create-document → createDoc → factory → 建 entry、登记、签 lease。
+ * - runCreateSlot 决策（#111 设计 §5 伪码，冻结次序；#112 增 idle 第五态分派；
+ *   phase-5 切片 1 按 ADR 0010 重写为「生成编排 + attempt slot」——见下方
+ *   orchestrateCreate/runCreateAttempt 注释：入口 owner-only 接纳 → 注入受控
+ *   CSPRNG 生成 `ns-`+32hex → 每候选 attempt（entry 碰撞/DOC_DUPLICATE → 换 ID
+ *   重试，至多 8 次）→ 耗尽 committed:false fatal（phase=namespace-id-generation））。
  * - idle 状态机（#112 设计 §2.B）：最后 lease release 的同步段（handleLeaseReleased）
  *   经注入 scheduler 武装 idle timer（完整 idleTimeoutMs，AC4 重置语义；fatal/
  *   degraded Runtime 零特判）；timer 回调经 I4 arm-token 判别后 beginIdleClose
@@ -62,8 +62,13 @@ import {
   type InternalIdentity,
 } from './identity.js';
 import { createLeaseController } from './lease.js';
-import { createDocument } from './create-document.js';
-import type { CreateDocumentFactory, CreateDocumentGatewayResult } from './create-document.js';
+import {
+  buildInitialDocument,
+  prepareCreateDocument,
+  type CreateDocumentFactory,
+  type CreateDocumentGatewayResult,
+  type PreparedDocumentBundle,
+} from './create-document.js';
 import {
   dispatchDiagnostics,
   dispatchObserver,
@@ -79,15 +84,16 @@ import type {
   NamespaceRegistryShutdownFailure,
   NamespaceRegistryStatus,
   OpenNamespaceResult,
+  RegistryRandomBytes,
   RegistryTimeoutScheduler,
 } from './types.js';
 import {
-  NAMESPACE_ALREADY_EXISTS_MESSAGE,
   NAMESPACE_CREATE_FAILED_MESSAGE,
   NAMESPACE_LOAD_FAILED_MESSAGE,
   NAMESPACE_NOT_FOUND_MESSAGE,
   NAMESPACE_REGISTRY_IDLE_TIMEOUT_RANGE_MESSAGE,
   NAMESPACE_REGISTRY_IDLE_TIMEOUT_TYPE_MESSAGE,
+  NAMESPACE_REGISTRY_RANDOM_REQUIRED_MESSAGE,
   NAMESPACE_REGISTRY_SCHEDULER_REQUIRED_MESSAGE,
   NAMESPACE_ROOT_INVALID_MESSAGE,
   NAMESPACE_SCHEMA_INVALID_MESSAGE,
@@ -131,6 +137,23 @@ export function resolveIdleTimeoutMs(config: { readonly idleTimeoutMs?: number }
 /** 生产 Runtime 工厂类型（精确形状；仅 testing.ts 注入口与 registry 内部可见）。 */
 type RuntimeFactory = (handle: DocHandle, notifyDirty: () => Promise<void>) => NamespaceRuntime;
 
+// —— phase-5 切片 1（ADR 0010）：namespaceId 生成常量（核心私有，不导出）——
+const NAMESPACE_ID_RANDOM_BYTES = 16; // 128-bit CSPRNG
+const NAMESPACE_ID_PATTERN = /^ns-[0-9a-f]{32}$/; // 35 字符，满足 ADR 0006 共享安全文法
+const MAX_NAMESPACE_ID_RETRIES = 8; // 首生成 + 至多 8 次重试 = 总生成 ≤ 9
+
+/**
+ * RandomBytes 构造期形状门禁（phase-5 切片 1，ADR 0009 依赖纪律）：生产/testing 工厂
+ * 均同步执行；缺失/非函数 → 固定 `TypeError`（message 逐字、零回显传入值），禁任何
+ * 全局 crypto / Math.random fallback。**检查顺序在 clock → scheduler → idleTimeoutMs
+ * 之后**（既有构造门禁用例以 clock/scheduler/idleTimeoutMs 文案断言保持）。
+ */
+function assertRandomBytesShape(value: unknown): asserts value is RegistryRandomBytes {
+  if (typeof value !== 'function') {
+    throw new TypeError(NAMESPACE_REGISTRY_RANDOM_REQUIRED_MESSAGE);
+  }
+}
+
 /**
  * Registry 内部选项（testing.ts 消费；主入口不 re-export）。runtimeFactory/diagnostics
  * 仅受控注入：声明面以 any-bridge 表达（精确类型见 testing.ts 的
@@ -162,6 +185,9 @@ export interface NamespaceRegistryInternalOptions {
   readonly scheduler: RegistryTimeoutScheduler;
   /** #112 可选 idleTimeoutMs（缺省 DEFAULT_IDLE_TIMEOUT_MS；resolveIdleTimeoutMs 单点校验）。 */
   readonly idleTimeoutMs?: number;
+  /** phase-5 切片 1 必需受控随机源（ADR 0009 依赖纪律/ADR 0010 身份条款）：缺失/非
+   * 函数 → 构造期同步 TypeError（检查顺序在 clock → scheduler → idleTimeoutMs 之后）。 */
+  readonly randomBytes: RegistryRandomBytes;
   /** 测试专用 entry 注入面（仅内部 fixture；不进公共导出面）。设计 §8 冻结：Map 静态
    *  种子或种子函数二选一（SA4 HIGH-1 变体 C 的 generation 迁移语义）。 */
   readonly testEntries?: ReadonlyMap<string, any> | ((entries: Map<string, any>) => void);
@@ -216,12 +242,9 @@ const NOT_ACCEPTING_ISSUE = Object.freeze({
 });
 
 // —— #111 create 窄 issue 常量（§3 稳定 message 单点表；顶层恒常量，零插值）——
-
-const ALREADY_EXISTS_ISSUE = Object.freeze({
-  ok: false as const,
-  code: 'NAMESPACE_ALREADY_EXISTS' as const,
-  message: NAMESPACE_ALREADY_EXISTS_MESSAGE,
-});
+// phase-5 切片 1（ADR 0010）：ALREADY_EXISTS_ISSUE 的运行时产出点全部删除（普通 create
+// 碰撞改为重生成重试/耗尽 fatal）；NAMESPACE_ALREADY_EXISTS 的 code/message 仍保留于
+// types.ts 公共联合与注册表（切片 2 受信任导入路径复用）。
 
 const CREATE_FAILED_ISSUE = Object.freeze({
   ok: false as const,
@@ -309,15 +332,16 @@ function assertSchedulerShape(value: unknown): asserts value is RegistryTimeoutS
 }
 
 /**
- * 槽内 payload 防御性快照（设计 §4 第 3-4 步，冻结次序）：
+ * 槽内 payload 防御性快照（设计 §4 第 3-4 步，冻结次序；phase-5 切片 1：三键化）：
  * 3. 顶层读取（descriptor + ownKeys 元操作，Proxy trap throw 一律 catch 为本槽窄
- *    issue）：plain/null-prototype object、own 键集恰四个 {owner,namespaceId,schema,root}、
+ *    issue）：plain/null-prototype object、own 键集恰三个 {owner,schema,root}、
  *    各为 own data descriptor（拒 accessor）；
  * 4. 仅对 schema/root 做 cycle-safe plain-data 深克隆（数组、plain/null-prototype
  *    object、JSON scalar；拒 function/symbol/bigint/nonfinite/Date/Yjs/循环/共享引用/
  *    descriptor trap），克隆后深冻结。
  * 调用方排队时变更 payload 生效；快照成功后 compile/validate/build 只消费快照
- * （槽内冻结后变更无效）。owner/namespaceId 值在快照内不再读取（接纳段已冻结）。
+ * （槽内冻结后变更无效）。owner 值在快照内不再读取（接纳段已冻结）；namespaceId
+ * 不存在（槽内由受控随机源生成）。
  */
 type PayloadSnapshot = { readonly ok: true; readonly schema: unknown; readonly root: unknown } | { readonly ok: false };
 
@@ -327,10 +351,10 @@ function snapshotCreatePayload(inputRef: unknown): PayloadSnapshot {
     const proto = Object.getPrototypeOf(inputRef);
     if (proto !== Object.prototype && proto !== null) return { ok: false };
     const keys = Reflect.ownKeys(inputRef);
-    if (keys.length !== 4) return { ok: false };
+    if (keys.length !== 3) return { ok: false };
     for (const k of keys) {
       if (typeof k !== 'string') return { ok: false };
-      if (k !== 'owner' && k !== 'namespaceId' && k !== 'schema' && k !== 'root') return { ok: false };
+      if (k !== 'owner' && k !== 'schema' && k !== 'root') return { ok: false };
       const desc = Object.getOwnPropertyDescriptor(inputRef, k);
       if (desc === undefined || !('value' in desc) || desc.get !== undefined || desc.set !== undefined) {
         return { ok: false };
@@ -449,6 +473,10 @@ export function createRegistryInternal(
   // 用例以 { clock: {} } 断言 CLOCK 文案——scheduler 先行会改抛 SCHEDULER 文案）。
   assertSchedulerShape(options?.scheduler);
   const idleTimeoutMs = resolveIdleTimeoutMs(options);
+  // phase-5 切片 1（ADR 0009/0010）：randomBytes 门禁最后——idleTimeoutMs 的
+  // TYPE/RANGE 二分先于随机源，使「非法 idleTimeoutMs + 缺随机源」的既有用例语义
+  // 不漂移（错误二分文案稳定）。
+  assertRandomBytesShape(options?.randomBytes);
   const factory: RuntimeFactory =
     options.runtimeFactory === undefined
       ? createNamespaceRuntimeForRegistry
@@ -457,6 +485,7 @@ export function createRegistryInternal(
   const diagnostics = options.diagnostics;
   const clock: Clock = options.clock;
   const scheduler: RegistryTimeoutScheduler = options.scheduler;
+  const randomBytes: RegistryRandomBytes = options.randomBytes as RegistryRandomBytes;
   const documentFactory: CreateDocumentFactory | undefined =
     options.createDocumentFactory === undefined
       ? undefined
@@ -480,6 +509,67 @@ export function createRegistryInternal(
   let nextCarrierGeneration = 1n;
   let acceptance: 'running' | 'shutting-down' | 'stopped' = 'running';
   let shutdownPromise: Promise<void> | undefined;
+
+  // —— phase-5 切片 1（D-9）：已接纳 create 编排终局等待集（shutdown 结算屏障）——
+  // 公共入口 acceptance 检查后同步注册、终局（成功/issue/fatal）后异步注销；shutdown
+  // 同步段关门后集合只减不增——快照等待安全。tracked 恒绿尾（run 的 rejection 仍交付
+  // 原调用方；本集合零 unhandled rejection）。
+  const admittedCreates = new Set<Promise<void>>();
+
+  /**
+   * ID 生成阶段失败的一次性 fatal 发射（§4.2/§4.3.5）：observer `create-id-generation-failed`
+   * 恰一次 + branded fatal（operation='create'、phase='namespace-id-generation'、
+   * committed:false——耗尽/违约时零 createDoc 成功即零 committed 事实）。
+   */
+  function throwIdGenerationFatal(
+    owner: Readonly<{ readonly userId: string }>,
+    attempt: number,
+    cause: unknown,
+  ): never {
+    dispatchObserver(observer, { type: 'create-id-generation-failed', owner, attempt, cause });
+    throw new NamespaceRegistryFatalError('create', 'namespace-id-generation', false, cause);
+  }
+
+  /**
+   * 生成候选 namespaceId（§4.2，D-3 拒绝伪降级）：`randomBytes(16)` → `ns-`+32 位小写
+   * hex。随机源 throw / 形状违约（非 16 字节 Uint8Array）/ 编码产物违约 → **立即** fatal
+   * （**不消耗重试预算**——能力契约缺陷不是瞬态碰撞，坏源重摇 9 次仍是坏源）；
+   * 每调用恰请求 16 字节。
+   */
+  function generateNamespaceId(
+    owner: Readonly<{ readonly userId: string }>,
+    attempt: number,
+  ): string {
+    let bytes: unknown;
+    try {
+      bytes = randomBytes(NAMESPACE_ID_RANDOM_BYTES);
+    } catch (cause) {
+      throwIdGenerationFatal(owner, attempt, cause);
+    }
+    if (!(bytes instanceof Uint8Array) || bytes.length !== NAMESPACE_ID_RANDOM_BYTES) {
+      throwIdGenerationFatal(
+        owner,
+        attempt,
+        new Error('NAMESPACE_ID_RANDOM_SOURCE_INVALID: 受控随机源必须返回 16 字节 Uint8Array'),
+      );
+    }
+    let hex = '';
+    for (let i = 0; i < NAMESPACE_ID_RANDOM_BYTES; i += 1) {
+      // length===16 契约 + Uint8Array 定长语义：索引必达（noUncheckedIndexedAccess 下
+      // 显式断言——违约面已被上方形状守卫收编）。
+      hex += bytes[i]!.toString(16).padStart(2, '0'); // 恒小写 hex，零 Buffer 依赖
+    }
+    const namespaceId = `ns-${hex}`;
+    if (!NAMESPACE_ID_PATTERN.test(namespaceId)) {
+      // 编码自身产物恒真——防未来回归的结构守卫（非法 ID 结构性无法离开生成器）
+      throwIdGenerationFatal(
+        owner,
+        attempt,
+        new Error('NAMESPACE_ID_ENCODING_INVALID: 生成的 namespaceId 不符合 ns-+32hex'),
+      );
+    }
+    return namespaceId;
+  }
 
   function emitDiagnostics(event: RegistryDiagnosticsEvent): void {
     // 隔离体单点：dispatchDiagnostics（observer.ts）——sink 缺失或 throw 均 no-op。
@@ -709,6 +799,12 @@ export function createRegistryInternal(
     // acceptance 检查已迁移至公共入口同步段（§2.D）；已接纳槽按自身事实结算，此处不再检查。
     const key = identity.key;
     const current = entries.get(key);
+    // phase-5 切片 1（ADR 0010，§4.4.2）：entry 以 namespaceId 索引——复用/等待前核对
+    // owner；mismatch → 既有 NOT_FOUND 常量（零 loadDoc、零新 Runtime、不区分「属他人/
+    // 不存在」——存在性零泄露）。第一谓词：先于 phase 分派（含 closing 分支）。
+    if (current !== undefined && current.owner.userId !== identity.owner.userId) {
+      return NOT_FOUND_ISSUE;
+    }
     if (current !== undefined && current.phase === 'active') {
       return issueLease(current);
     }
@@ -725,6 +821,10 @@ export function createRegistryInternal(
         // fatal 为**有意冻结**的不对称：open 仅加载、可用性优先且 ADR 文本直译。
       }
       const recheck = entries.get(key);
+      // recheck 同谓词：新代际属他人 → 与「现在才到达」同结果（零泄露）。
+      if (recheck !== undefined && recheck.owner.userId !== identity.owner.userId) {
+        return NOT_FOUND_ISSUE;
+      }
       if (recheck !== undefined && (recheck.phase === 'active' || recheck.phase === 'idle')) {
         return issueLease(activateEntry(recheck)); // 复用（含新 generation 已 idle 再激活）
       }
@@ -774,102 +874,141 @@ export function createRegistryInternal(
     return issueLease(entry);
   }
 
-  /** 同 key 同步接纳 + FIFO 串行（#111：create/open 共用同一 carrier；§5）。 */
-  function admitCreateSlot(inputRef: unknown): Promise<CreateNamespaceResult> {
-    // §4 DQ-1：最小 identity 接纳先行——invalid 零 carrier/entries/Persistence；冻结
-    // owner 投影 + namespaceId + key（排队期间调用方改写不影响最终身份与 queue key）。
-    const outcome = acceptCreateIdentity(inputRef);
-    if (!outcome.ok) {
-      return Promise.resolve(outcome.issue);
-    }
-    const carrier = carriers.get(outcome.identity.key) ?? createCarrier(outcome.identity.key);
-    const operation = carrier.tail.then(() => runCreateSlot(outcome.identity, inputRef));
+  /**
+   * create 新主链（phase-5 切片 1，ADR 0010；§4.3）：
+   * - 公共入口同步接纳（owner-only，§4.3.1）→ 编排循环；
+   * - 编排：首生成 + 至多 8 次重试（总生成 ≤ 9）；候选 K 经该 K 的 carrier FIFO 入
+   *   attempt slot；entry 碰撞（active/idle/closing 一律碰撞——绝不等待 closePromise）
+   *   或 DOC_DUPLICATE → 换 ID 重试；耗尽/随机源违约 → committed:false fatal
+   *   （phase='namespace-id-generation'）；
+   * - 每次重试把 attempt 追加到**新候选 key** 的 carrier 尾部（C-3 重试再接纳不破坏
+   *   FIFO 语义：对任意 key K，作用于 K 的 slots 严格按接纳顺序串行——C-1 推论 1
+   *   「同 ID 每进程至多一个 Runtime」由 carrier FIFO 结构性保证）。
+   */
+
+  /** 一次/create 的准备产物（§4.5 拆分产物 + 快照/Clock；跨重试候选复用）。 */
+  interface CreatePreparedState {
+    readonly schema: unknown;
+    readonly root: unknown;
+    readonly createdAt: string;
+    readonly bundle: PreparedDocumentBundle;
+  }
+
+  function orchestrateCreate(
+    owner: Readonly<{ readonly userId: string }>,
+    inputRef: unknown,
+  ): Promise<CreateNamespaceResult> {
+    const preparedBox: { current?: CreatePreparedState } = {};
+    const run = (async (): Promise<CreateNamespaceResult> => {
+      for (let retry = 0; ; retry += 1) {
+        if (retry > MAX_NAMESPACE_ID_RETRIES) {
+          // 耗尽：已完成 MAX+1 次生成（首生成 + 至多 8 次重试）且全部撞 collisions。
+          // 任何 createDoc 成功都直接登记 entry 返回——结构性不可带 committed 事实
+          // 进耗尽分支 ⇒ committed:false 恒成立。
+          const cause = new Error(
+            `NAMESPACE_ID_RETRY_BUDGET_EXHAUSTED: 受控随机源生成与重试预算耗尽(attempts=${MAX_NAMESPACE_ID_RETRIES + 1})`,
+          );
+          throwIdGenerationFatal(owner, retry, cause);
+        }
+        const candidate = generateNamespaceId(owner, retry);
+        const outcome = await admitCreateAttempt(owner, inputRef, candidate, preparedBox);
+        if (outcome.kind === 'retry') continue; // entry 碰撞 / DOC_DUPLICATE → 换 ID
+        return outcome.result; // 成功 lease / 领域 issue / （fatal 已 throw）
+      }
+    })();
+    // 恒绿跟踪尾（§4.6 shutdown 屏障用）；run 的 rejection 仍交付原调用方（结果契约）。
+    const tracked = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    admittedCreates.add(tracked);
+    void tracked.finally(() => {
+      admittedCreates.delete(tracked);
+    });
+    return run;
+  }
+
+  type CreateAttemptOutcome =
+    | { readonly kind: 'final'; readonly result: CreateNamespaceResult }
+    | { readonly kind: 'retry' };
+
+  /** 每候选 carrier 接纳（§4.3.3）：同 key FIFO 串行 + cleanup 三条件（机制与 open 同款）。 */
+  function admitCreateAttempt(
+    owner: Readonly<{ readonly userId: string }>,
+    inputRef: unknown,
+    candidate: string,
+    preparedBox: { current?: CreatePreparedState },
+  ): Promise<CreateAttemptOutcome> {
+    const identity: InternalIdentity = { owner, namespaceId: candidate, key: candidate };
+    const carrier = carriers.get(identity.key) ?? createCarrier(identity.key);
+    const operation = carrier.tail.then(() => runCreateAttempt(identity, inputRef, preparedBox));
     const operationGreenTail = operation.then(
       () => undefined,
       () => undefined,
     );
     carrier.tail = operationGreenTail;
-    scheduleCarrierCleanup(outcome.identity.key, carrier, operationGreenTail);
+    scheduleCarrierCleanup(identity.key, carrier, operationGreenTail);
     return operation;
   }
 
   /**
-   * #111 create slot 精确伪码（§5 冻结次序）：entry/closing → payload 快照 → Clock →
-   * create-document → Persistence createDoc → Runtime factory → entry/lease。
-   * 每 slot 独立结算：失败只毒化本槽，carrier green tail 继续（§1.1/§5）。
-   * #112 增量（§2.B/§2.D）：acceptance 检查迁移至公共入口（槽内删除）；entry 分派
-   * 扩 idle 第五态（ADR-0009:68：active 与 idle 同码 ALREADY_EXISTS、零 Persistence）。
+   * create attempt slot（phase-5 切片 1 精确伪码，§4.3.3 冻结次序）：
+   * ① entry 碰撞检查（active/idle/closing 一律碰撞 → 重生成，不等待 closePromise、
+   *    不 fail-closed）→ ② 首个过门尝试的一次性准备（payload 快照 → Clock 单读 →
+   *    compile+validate）→ ③ 构造步（每候选：META.docId = 候选 ID）→ ④ Persistence
+   *    排他创建（DOC_DUPLICATE → retry；其余映射逐字保持既有 §7 表）→ ⑤ Runtime
+   *    factory + entry 登记 + lease。
+   * 每 attempt 独立结算：失败只毒化本 attempt/本 create，carrier green tail 继续。
    */
-  async function runCreateSlot(id: InternalIdentity, inputRef: unknown): Promise<CreateNamespaceResult> {
-    const key = id.key;
-    const current = entries.get(key);
-    if (current !== undefined && (current.phase === 'active' || current.phase === 'idle')) {
-      // DQ-5：active（含 lease 为零的临时保留态）与 idle（#112 第五态）同码
-      // ALREADY_EXISTS，零 Persistence、零 Clock 读（ADR-0009:68 明文）。
-      return ALREADY_EXISTS_ISSUE;
-    }
-    if (current !== undefined && current.phase === 'closing') {
-      // R2-M1 fail-closed：closing 缺少 closePromise = #110 预留危险态——fail-loud，
-      // 发生在任何 payload/Clock/Persistence 访问之前（本切片不可达；#112 统一定义）。
-      if (current.closePromise === undefined) {
-        const cause = new Error('closing entry 缺少 closePromise');
-        dispatchObserver(observer, {
-          type: 'lifecycle-slot-failed',
-          identity: id,
-          operation: 'create',
-          cause,
-        });
-        throw new NamespaceRegistryFatalError('create', 'lifecycle-slot-internal', false, cause);
-      }
-      // HIGH-1（设计 §5 补遗，冻结次序）：await closePromise 后必须三态再评估——
-      // 仅 entry 消失（generation 迁移完成）才进入 payload；await 自身 reject → 同形
-      // fail-closed fatal（cause = exact close rejection，绝不裸传）。
-      try {
-        await current.closePromise;
-      } catch (cause) {
-        dispatchObserver(observer, {
-          type: 'lifecycle-slot-failed',
-          identity: id,
-          operation: 'create',
-          cause,
-        });
-        throw new NamespaceRegistryFatalError('create', 'lifecycle-slot-internal', false, cause);
-      }
-      const after = entries.get(key);
-      if (after !== undefined && (after.phase === 'active' || after.phase === 'idle')) {
-        return ALREADY_EXISTS_ISSUE; // 新增 idle（防御可达；与 DQ-5 对齐）
-      }
-      if (after !== undefined) {
-        // await 后仍 closing：#112 统一 closing 状态机，本票不建 loop——fail-closed，
-        // 零 payload/Clock/Persistence 访问（#112 接管后置态）。
-        const cause = new Error('closing entry 在 close 后仍为 closing');
-        dispatchObserver(observer, {
-          type: 'lifecycle-slot-failed',
-          identity: id,
-          operation: 'create',
-          cause,
-        });
-        throw new NamespaceRegistryFatalError('create', 'lifecycle-slot-internal', false, cause);
-      }
-      // after===undefined 才继续（唯一放行分支）。
+  async function runCreateAttempt(
+    id: InternalIdentity,
+    inputRef: unknown,
+    preparedBox: { current?: CreatePreparedState },
+  ): Promise<CreateAttemptOutcome> {
+    // ① entry 碰撞：active / idle / closing 一律碰撞 → 重生成。不检查 closePromise、
+    // 不等待、不 fail-closed——同 key 其他 slot 都在同一 carrier FIFO 上，但 check-
+    // then-register 对同 key 是原子的（C-1：①与⑤之间只有 await createDoc 与同步 factory）。
+    if (entries.has(id.key)) {
+      return { kind: 'retry' };
     }
 
-    const payload = snapshotCreatePayload(inputRef);
-    if (!payload.ok) {
-      return CREATE_INVALID_INPUT_ISSUE;
+    // ② 首个过门尝试的一次性准备（一次/create：payload 快照 → Clock 单读 →
+    // compile+validate——不随重试重复；排队期变异语义保持）。
+    if (preparedBox.current === undefined) {
+      const payload = snapshotCreatePayload(inputRef);
+      if (!payload.ok) {
+        return { kind: 'final', result: CREATE_INVALID_INPUT_ISSUE };
+      }
+      const createdAt = readCreatedAtOrFatal(id);
+      const prepared = prepareCreateDocument(payload.schema, payload.root);
+      if (!prepared.ok) {
+        return {
+          kind: 'final',
+          result:
+            prepared.kind === 'schema-invalid'
+              ? schemaInvalidIssue(prepared.issues)
+              : rootInvalidIssue(prepared.issues),
+        };
+      }
+      preparedBox.current = {
+        schema: payload.schema,
+        root: payload.root,
+        createdAt,
+        bundle: prepared.bundle,
+      };
     }
+    const p = preparedBox.current;
 
-    // §6 DQ-3：payload 快照成功后、compile/validate 前单次读数；非法读数 fail-loud pre-commit。
-    const createdAt = readCreatedAtOrFatal(id);
-
+    // ③ 构造步（每候选：META.docId = 候选 namespaceId；testing seam 按候选调用）。
     let initial: CreateDocumentGatewayResult;
     try {
-      initial = createDocument(
+      initial = buildInitialDocument(
         documentFactory,
         id.namespaceId,
-        createdAt,
-        payload.schema,
-        payload.root,
+        p.createdAt,
+        p.schema,
+        p.root,
+        p.bundle,
       );
     } catch (cause) {
       dispatchObserver(observer, {
@@ -891,10 +1030,10 @@ export function createRegistryInternal(
     }
     if (!initial.ok) {
       if (initial.kind === 'schema-invalid') {
-        return schemaInvalidIssue(initial.issues);
+        return { kind: 'final', result: schemaInvalidIssue(initial.issues) };
       }
       if (initial.kind === 'root-invalid') {
-        return rootInvalidIssue(initial.issues);
+        return { kind: 'final', result: rootInvalidIssue(initial.issues) };
       }
       // input-invalid 结构性不可达（compile 产物恒四键正确型 + Registry 自构 META）；
       // fail-loud，禁止伪装为普通 create input issue（§6/§7）。
@@ -908,16 +1047,18 @@ export function createRegistryInternal(
       throw new NamespaceRegistryFatalError('create', 'create-document-internal', false, cause);
     }
 
+    // ④ Persistence 排他创建：DOC_DUPLICATE → retry（唯一新增 retry 源——碰撞换 ID
+    //   不是结果、是编排循环一笔）；其余映射逐字保持既有 §7 表。
     let handle: DocHandle;
     try {
       handle = await persistence.createDoc(id.owner, id.namespaceId, initial.doc);
     } catch (cause) {
       if (cause instanceof DocDuplicateError) {
-        return ALREADY_EXISTS_ISSUE; // persisted duplicate 同码（§7/§9）
+        return { kind: 'retry' };
       }
       if (cause instanceof DocCreateOperationalError) {
         dispatchObserver(observer, { type: 'create-persist-failed', identity: id, cause });
-        return CREATE_FAILED_ISSUE;
+        return { kind: 'final', result: CREATE_FAILED_ISSUE };
       }
       if (cause instanceof DocCreateFatalError) {
         dispatchObserver(observer, {
@@ -945,12 +1086,13 @@ export function createRegistryInternal(
       throw new NamespaceRegistryFatalError('create', 'lifecycle-slot-internal', false, cause);
     }
 
+    // ⑤ Runtime factory + entry 登记 + lease（既有语义逐字保持，key/namespaceId = 候选）。
     try {
       const runtime = factory(handle, () => persistence.saveDoc(handle));
       // 失败 Runtime 从未发布：entry 只在 factory 成功后登记（§7 DQ-7 结构性零 entry）。
       const entry = makeEntry(id, runtime);
-      entries.set(key, entry);
-      return issueLease(entry);
+      entries.set(id.key, entry);
+      return { kind: 'final', result: issueLease(entry) };
     } catch (cause) {
       // createDoc resolve 即是 committed 事实 → factory throw 必为 committed:true（§7 DQ-7）；
       // 所有权未转 Runtime：release 同步发起、恰一次、fire-and-forget（绝不 await——不阻塞
@@ -980,6 +1122,14 @@ export function createRegistryInternal(
   async function runShutdown(): Promise<void> {
     await Promise.resolve(); // 微任务边界：同步段（翻相 + 取消 idle timer）先交付观测面
     for (const carrier of [...carriers.values()]) await carrier.tail;
+    // phase-5 切片 1（§4.6，D-9）：等待已接纳 create 编排**终局**（含其全部跨 carrier
+    // 重试）——重试会把新 attempt admit 到新 carrier，上方 carrier 快照可能遗漏晚建
+    // carrier；admittedCreates 在公共入口同步注册、终局后异步注销（shutdown 同步段
+    // 关门后只减不增），快照等待安全。tracked 恒绿尾 → 零 unhandled rejection。
+    const pendingCreates = [...admittedCreates];
+    if (pendingCreates.length > 0) {
+      await Promise.all(pendingCreates.map((p) => p.then(() => undefined, () => undefined)));
+    }
 
     const closures: Array<{ entry: Entry; promise: Promise<void> }> = [];
     for (const entry of entries.values()) {
@@ -1039,9 +1189,13 @@ export function createRegistryInternal(
       // #112 逻辑门迁移（§2.D）：停接纳先于 acceptCreateIdentity（零 descriptor/Proxy
       // trap 执行，AC9）。公共 typed / 实现 unknown 双层签名说明见 #111 冻结文本。
       if (acceptance !== 'running') return NOT_ACCEPTING_ISSUE;
-      // §4/§5：最小 identity 接纳同步先行（零 carrier/entries/Persistence 副作用）；
-      // 通过后经 #110 同一 carrier FIFO 入槽——同 key 排他、不同 key 并行。
-      return admitCreateSlot(input);
+      // phase-5 切片 1（§4.3.1/§4.3.2）：owner-only 接纳同步先行（namespaceId 键出现
+      // 即拒 → 零随机消耗）；通过后进入生成编排（任意 ID 由受控随机源生成）。
+      const admission = acceptCreateIdentity(input);
+      if (!admission.ok) {
+        return admission.issue;
+      }
+      return orchestrateCreate(admission.owner, input);
     },
     getStatus(): NamespaceRegistryStatus {
       // §2.E：恒三相冻结常量投影（不暴露 entry/lease/queue/timer 任何内部计面）。
@@ -1073,10 +1227,11 @@ export function createRegistryInternal(
   return registry;
 }
 
-/** 生产工厂（设计 §2.1；#112 §2.A）：构造期 Clock + Scheduler 形状门禁（均必须显式
- * 提供——禁 Date.now / 系统 timer fallback；检查顺序 clock → scheduler，与
- * createRegistryInternal 内部同序）；idleTimeoutMs 可选（resolveIdleTimeoutMs 单点
- * 校验）；不接受 Runtime override；observer 经构造 options 注入。 */
+/** 生产工厂（设计 §2.1；#112 §2.A；phase-5 切片 1）：构造期 Clock + Scheduler +
+ * randomBytes 形状门禁（均必须显式提供——禁 Date.now / 系统 timer / 全局 crypto
+ * fallback；检查顺序 clock → scheduler → randomBytes，均与 createRegistryInternal
+ * 内部同序）；idleTimeoutMs 可选（resolveIdleTimeoutMs 单点校验）；不接受 Runtime
+ * override；observer 经构造 options 注入。 */
 export function createNamespaceRegistry(
   persistence: DocPersistence,
   options: CreateNamespaceRegistryOptions,
@@ -1086,6 +1241,7 @@ export function createNamespaceRegistry(
   return createRegistryInternal(persistence, {
     clock: options.clock,
     scheduler: options.scheduler,
+    randomBytes: options.randomBytes,
     ...(options.idleTimeoutMs !== undefined ? { idleTimeoutMs: options.idleTimeoutMs } : {}),
     ...(options.observer !== undefined ? { observer: options.observer } : {}),
   });

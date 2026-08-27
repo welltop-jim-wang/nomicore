@@ -30,7 +30,15 @@ export type RegistryObserverEvent =
   // —— #112 增量（§2.B/§2.I）：idle 状态机三事件 ——
   | { type: 'entry-idle'; identity: InternalIdentity; generation: bigint }
   | { type: 'idle-arm-failed'; identity: InternalIdentity; generation: bigint; cause: unknown }
-  | { type: 'idle-close-failed'; identity: InternalIdentity; generation: bigint; cause: unknown };
+  | { type: 'idle-close-failed'; identity: InternalIdentity; generation: bigint; cause: unknown }
+  // —— phase-5 切片 1 增量（ADR 0010 / §4.3.5）：create ID 生成阶段失败（随机源
+  //    throw / 形状违约 / 重试预算耗尽，各恰一次；逐次碰撞重试不发事件）——
+  | {
+      type: 'create-id-generation-failed';
+      owner: Readonly<{ readonly userId: string }>;
+      attempt: number;
+      cause: unknown;
+    };
 
 /** observer 回调：同步调用；throw 由 dispatchObserver 隔离（静默丢弃）。 */
 export type RegistryObserver = (event: RegistryObserverEvent) => void;
