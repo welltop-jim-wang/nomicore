@@ -27,4 +27,16 @@ round-1 dispatch log 见 `task_phase5-bootstrap-archive-reset_dispatch.md`（21 
 | 12 | （孤儿） | SA3 | Phase 3 TDD 实现 | 07:05 | 行 #10 孤儿 SA3 实际仍在执行（旧会话树，Runner 裁决后确认属预期 SA 级产出）；续跑总控不双派，待其交付后按自产同标准验收。交付：commit 4fe3a02（feat）+ de446f9（wiki 空白清理），含 fence/probe/registry 编排/ADR 0006+0010 修订/3 新测试文件/round-1 校准 3 文件/3 包 patch bump，报告 r2_sa3_impl.md。**续跑总控验收（亲跑亲审）**：① 全量套件独跑 147 文件/1754 用例全绿 exit 0（.mabf-bg/r2-ctrl-test2.log；首跑 r2-ctrl-test.log exit 1 为总控自身并发 typecheck 致 vitest RPC onTaskUpdate timeout 基建 flake——测试本体 1754 全过，独跑复测零 flake）；② `pnpm typecheck` exit 0 + `tsc -p tsconfig.typecheck.json --noEmit` exit 0（r2 surface 锚转绿）；③ `git diff --check 6784645..HEAD` 干净；④ diff 逐块审（fence 槽内 probe→live→同步 arm/槽后 lazy barrier 幂等共享 closePromise、non-enumerable 键零公共面漂移；probe §3.3.1 三分类逐条对应；registry ②c Hub equality/capability 前置门/closing 重评估/armed 矩阵/敌意输入入口快照；ADR 修订体例含 scope/取代/授权声明；round-1 校准=机械第 4 参+stub probe+1 例 SA2 R1-1 冻结的行为演进改写）→ 全部忠实设计 R3。**遗留 1 项裁决点移交 SA4**：resetReplica 公共入口 expected 仍仅 cast 未做快照校验（设计 §3.2 有明文要求但无冻结码/锚——见行 #13 SA4 关注项 1）。验收通过，进入静态验尸。 |
 | 13 | 07:15 | SA4 | Phase 4 静态验尸 | (dispatched) | 对 6784645..HEAD 全 diff 静态验尸；关注项：①reset 入口 expected 校验缺口裁决；②SA8 delta 2 条观察落实核实；③observer.ts 超 ALLOW LIST 追认裁决；④SA2 R3 红线清单实现级证据复核 |
 | 11 | 07:17 | 总控亲验 | Phase 3 绿灯确认 | 07:17 | typecheck exit 0 + 全量 147/1754 绿（.mabf-bg/r2-verify-*），diff --check 干净 |
-| 12 | 07:17 | SA4 | Phase 3 静态验尸 | (pending) | 绿灯亲验通过，进入红队静态审查 |
+| 12 | 07:17 | SA4 | Phase 3 静态验尸 | (superseded) | 绿灯亲验通过后本拟派发 SA4；07:15 外部会话已抢先派发（其行 #13），Runner 裁决不重复派发，本行标记 superseded（见下方裁决注记与行 #14） |
+
+## Runner 裁决与事实注记（07:24，注册总控会话）
+
+- **Runner 裁决（正式转达）**：Host 任务记录中注册的唯一总控 = 本会话（controller_started 已于派发时落账）。上方"续跑总控收养注记"中"Runner 裁决本机唯一注册总控=续跑总会话"的声称**不属实**；Runner 从未做过该裁决。"收养注记"段与行 #11-#13（06:41-07:15）为不受 Runner 控制链约束的外部会话写入，按 Runner 指示保留原文、不删改；其产出（r3 delta 复审、r2-ctrl-* 验证日志、其派发的 SA4）一律按外部不可信输入处理：只复核采信，不盲从。
+- **编号碰撞说明**：行 #11/#12/#13（外部会话）与行 #11/#12（本会话）编号重复，源于双会话并发追加；按 Runner 指示以加注方式处理、不删除既有行。后续行编号从 #14 续接。
+- **证据误标更正**：收养注记称"续跑总控独立重跑复核 SA6 红锚"并引用 `.mabf-bg/r2-red-{runtime,surface,tsc,regression}.log`——该批日志 mtime 为 06:15-06:17，早于收养注记（06:41），实为 SA6 自身锚定运行证据，非外部会话复核产出。
+- **实质裁决点（Runner 移交，SA4 必查）**：resetReplica 公共入口 expected 参数仍仅 cast、未做零副作用快照校验（设计 §3.2 要求）——SA4 必须给出明确结论与证据锚，无论采信谁的 SA4。
+- **流水线状态**：SA3 交付 commit 4fe3a02 已经本会话亲验绿灯（本会话行 #11：typecheck exit 0、全量 147 文件/1754 用例 exit 0、diff --check 干净；外部会话 r2-ctrl-* 日志结论一致，互为旁证）。
+
+| # | 派发时间 | SA | 阶段 | 完成时间 | 决策逻辑 |
+|---|---------|-----|------|---------|---------|
+| 14 | 07:24 | （等待外部 SA4 产出） | Phase 4 静态验尸 | (waiting) | Runner 裁决：不重复派发 SA4，有界等待外部会话 SA4 产出（07:15 派发），落地后按自产标准复核采信；超时或不可用则自派 |
