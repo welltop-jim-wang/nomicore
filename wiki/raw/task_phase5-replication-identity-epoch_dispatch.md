@@ -17,5 +17,6 @@
 | 10 | 18:14 | SA6 | Phase 1 回流修订 R2 | 18:24 | SA6 修锚完成：类型锚改无分布判别 + FilePersistence 用例接入 durable-snapshot-wait（issue #108 模式）；两文件 20/20 绿、registry 目录 224/224 绿、红文件 ×2 复跑零 flake；fixture 修订已由总控 commit ec83429 |
 | 11 | 18:24 | 总控亲验 | Phase 3 绿灯验证 | 18:24 | 后台独立进程：pnpm test 125 文件 1474/1474 绿、0 type errors、exit 0（.mabf-bg/green-verify.log） |
 | 12 | 18:24 | SA4 | Phase 3 静态验尸 | 18:39 | 红灯全绿 + 总控亲验全绿，SA4 审查 diff 7425164..HEAD → verdict: pass（4 条 LOW/INFO 非阻断：L1 版本 bump 设计注记→SA1 补注，L4 载体异型可选用例→SA7） |
-| 13 | 18:40 | SA7 | Phase 3 动态验证 | (pending) | SA4 pass 双清第一清，派 SA7 动态验证（含 SA4 五条动态重点 + L4 可选用例） |
+| 13 | 18:40 | SA7 | Phase 3 动态验证 | 18:58 | SA4 pass 后派 SA7；五条动态重点全核销 + 4 用例永久回归（commit c2b23ab），verdict: pass（S7-1 CI 摘录环境阻塞已登记发布阶段补证） |
 | 14 | 18:41 | SA1 | Phase 3 设计注记 R3 | 18:46 | SA4 L1 收口：design §7 ALLOW LIST 补版本 bump 惯例注记（沿 #131 SA4 L1 先例），808→818 行 |
+| 15 | 19:06 | 总控 | Phase 3.5 AC 门禁 | 19:06 | AC 逐条核对 6/6 ✅（ac_checklist.md），零回流 |
