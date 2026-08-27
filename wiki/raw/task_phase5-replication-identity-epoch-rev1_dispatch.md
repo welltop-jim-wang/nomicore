@@ -10,4 +10,5 @@
 | 3 | 23:04 | SA8 | Phase 2 设计后复审 R2 | 23:08 | R1 verdict=conflict(evolution×1)：ADR 0008 增补缺正式授权声明；总控提交 Jim review 评论（反馈1原文即二选一授权）作为裁决证据，续传同一 SA8 复审 |
 | 4 | 23:09 | SA2 | Phase 2 设计攻击评审 R1 | 23:14 | SA8 设计复审 clear（含落地条件），SA2 对 R1 设计做全维度攻击评审 |
 | 5 | 23:15 | SA1 | Phase 2 设计 R2 修订 | 23:20 | SA2 R1 reject（1 HIGH：用例B committed seed 因果锚定缺口 + 3 LOW 通过条件），续传同一 SA1 修订 |
-| 6 | 23:21 | SA2 | Phase 2 设计 R2 复审 | (pending) | SA1 R2 落实 SA2 R1 四点（257 行），续传同一 SA2 复审 |
+| 6 | 23:21 | SA2 | Phase 2 设计 R2 复审 | 23:26 | SA1 R2 落实 SA2 R1 四点（257 行），续传同一 SA2 复审 |
+| 7 | 23:27 | SA3 | Phase 3 TDD 实现 | (pending) | SA2 R2 pass 设计定稿，派 SA3 落位：ADR 0008 增补 + Phase 5 扩充 + AC-6 两用例 + 共享 gate 提取 |
