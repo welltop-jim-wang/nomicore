@@ -1,7 +1,7 @@
 # SA4 增量静态复审报告 — issue #133 round=2 R-FIX-1
 
-**Date**: 2026-08-28  
-**Review target**: commit `8b1398f` only (baseline: prior full SA4 report `task_phase5-bootstrap-archive-reset-r2_sa4_review.md`)  
+**Date**: 2026-08-28
+**Review target**: commit `8b1398f` only (baseline: prior full SA4 report `task_phase5-bootstrap-archive-reset-r2_sa4_review.md`)
 **Verdict**: pass
 
 ## 范围与方法
