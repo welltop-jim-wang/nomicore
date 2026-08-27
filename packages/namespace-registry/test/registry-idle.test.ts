@@ -214,6 +214,7 @@ const READY_STATUS: NamespaceRuntimeStatus = {
   schema: { state: 'ready' },
   fatal: null,
   close: null,
+  replication: { state: 'disabled' },
 };
 
 interface RuntimeClosePlan {
@@ -260,6 +261,14 @@ class ObservableRuntime implements NamespaceRuntime {
   }
 
   replaceSchema(): Promise<{ ok: true }> {
+    return Promise.resolve({ ok: true });
+  }
+
+  enableReplication(): Promise<{ ok: true }> {
+    return Promise.resolve({ ok: true });
+  }
+
+  bumpReplicationEpoch(): Promise<{ ok: true }> {
     return Promise.resolve({ ok: true });
   }
 
@@ -592,6 +601,7 @@ describe('AC4+AC6（§7.1-6）：idle 武装、完整时限、重进重置、arm
       schema: { state: 'unavailable', issue: { code: 'RUNTIME_SCHEMA_X', message: 'fatal-msg' } },
       fatal: { code: 'RUNTIME_FATAL', message: 'fatal-msg' },
       close: null,
+      replication: { state: 'disabled' },
     }));
     const registry = createNamespaceRegistryForTesting(persistence, {
       clock: manualClock(),
@@ -620,6 +630,7 @@ describe('AC4+AC6（§7.1-6）：idle 武装、完整时限、重进重置、arm
       schema: { state: 'ready' },
       fatal: null,
       close: null,
+      replication: { state: 'disabled' },
     }));
     const registry = createNamespaceRegistryForTesting(persistence, {
       clock: manualClock(),

@@ -35,6 +35,14 @@ export const FATAL_SCHEMA_WRITE_INTERNAL_CODE = 'NSRT-FATAL-SCHEMA-WRITE-INTERNA
 export const FATAL_SCHEMA_WRITE_INTERNAL_MESSAGE =
   'SCHEMA write internal fault：写管线产生结果联合之外的 internal fatal；该 fatal 已永久禁用本 Runtime 的全部写能力，读取仍保留。' as const;
 
+/** 复制管理写槽 internal fault 稳定 code（issue #132 D-9——append-only：与 ROOT/SCHEMA
+ *  写槽区分来源，status.fatal 诊断不失真）。 */
+export const FATAL_REPLICATION_WRITE_INTERNAL_CODE = 'NSRT-FATAL-REPLICATION-WRITE-INTERNAL' as const;
+
+/** 复制管理写槽 internal fault 稳定 message（恒定文案：不含任何原始异常文本/stack/cause——INV-N7）。 */
+export const FATAL_REPLICATION_WRITE_INTERNAL_MESSAGE =
+  'REPLICATION write internal fault：写管线产生结果联合之外的 internal fatal；该 fatal 已永久禁用本 Runtime 的全部写能力，读取仍保留。' as const;
+
 /** ROOT 写禁用稳定码（D9）：出现在 ok:false issue.message 内（JSON.stringify 含码判定）。 */
 export const RUNTIME_WRITE_DISABLED_CODE = 'RUNTIME_WRITE_DISABLED' as const;
 
@@ -135,6 +143,40 @@ export class MetaProjectionError extends Error {
     this.code = code;
   }
 }
+
+/**
+ * META 复制保留字段损坏错误（issue #132 D-3，拒绝虚假降级立法；类不导出——index 不
+ * re-export，code+message 字符串消费，沿 MetaProjectionError 先例）：
+ * - 判据：`readReplicationFacts` 以 `has()` 区分键存在/缺席——两键真缺席 → disabled；
+ *   恰一键存在、键存在而值显式 undefined（Yjs `set(k, undefined)` 后 has=true/get=
+ *   undefined 且经 round-trip 持久化存活）、格式违约（id 非 32 位小写 hex / epoch 非
+ *   ≥1 的安全整数）、载体异型 → 本类 loud——拒绝把持久化损坏静默降级为「未启用」
+ *   （静默降级将允许 enable 重新安装全新谱系，无声击穿「replicationId 是不可变复制
+ *   谱系身份」（ADR 0010））。
+ * - 通道：构造期 V2.5 = 构造 throw（零副作用，→ Registry open/create 的
+ *   runtime-construction fatal）；写槽 E4 = 槽内 internal fatal（committed:false）。
+ * - message 含违约类别与观测 typeof——不含值内容（零插值纪律）。
+ */
+export const REPLICATION_META_CORRUPT_CODE = 'NSRT-REPLICATION-META-CORRUPT' as const;
+
+export class ReplicationMetaCorruptError extends Error {
+  readonly code = REPLICATION_META_CORRUPT_CODE;
+
+  constructor(message: string, options?: ErrorOptions) {
+    super(`${REPLICATION_META_CORRUPT_CODE}: ${message}`, options);
+    this.name = 'ReplicationMetaCorruptError';
+  }
+}
+
+/** 复制管理写的结果面稳定码/文案（issue #132 §4.8 注册表；message 恒含码前缀，零值回显）。 */
+export const REPLICATION_EPOCH_OVERFLOW_MESSAGE =
+  'REPLICATION_EPOCH_OVERFLOW: epoch 已达 Number.MAX_SAFE_INTEGER，拒绝提升（不回绕）——本调用零写入';
+export const REPLICATION_NOT_ENABLED_MESSAGE =
+  'REPLICATION_NOT_ENABLED: 复制身份未安装（disabled）——先 enableReplication()；本调用零写入';
+export const REPLICATION_INPUT_INVALID_MESSAGE =
+  'REPLICATION_INPUT_INVALID: replicationId 必须为 32 位小写 hex 字符串（ADR 0010 冻结格式）——本调用零写入';
+export const REPLICATION_META_ABSENT_MESSAGE =
+  'REPLICATION_META_ABSENT: META 载体缺席，拒绝在其上安装复制身份（防产生无 docId 的 META）——生产路径不可达（仅 seedForTest 设施）；本调用零写入';
 
 /**
  * 写槽 fatal phase 取值集（D5.1，v1 冻结——一经发布只增不改不删）。

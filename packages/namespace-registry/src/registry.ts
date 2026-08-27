@@ -62,6 +62,7 @@ import {
   type InternalIdentity,
 } from './identity.js';
 import { createLeaseController } from './lease.js';
+import type { ReplicationIdDraw } from './lease.js';
 import {
   buildInitialDocument,
   prepareCreateDocument,
@@ -98,6 +99,7 @@ import {
   NAMESPACE_ROOT_INVALID_MESSAGE,
   NAMESPACE_SCHEMA_INVALID_MESSAGE,
   REGISTRY_NOT_ACCEPTING_MESSAGE,
+  REPLICATION_RANDOM_SOURCE_INVALID_MESSAGE,
 } from './types.js';
 import { NamespaceRegistryFatalError, NamespaceRegistryShutdownError } from './errors.js';
 
@@ -141,6 +143,15 @@ type RuntimeFactory = (handle: DocHandle, notifyDirty: () => Promise<void>) => N
 const NAMESPACE_ID_RANDOM_BYTES = 16; // 128-bit CSPRNG
 const NAMESPACE_ID_PATTERN = /^ns-[0-9a-f]{32}$/; // 35 字符，满足 ADR 0006 共享安全文法
 const MAX_NAMESPACE_ID_RETRIES = 8; // 首生成 + 至多 8 次重试 = 总生成 ≤ 9
+
+// —— phase-5 复制谱系切片（issue #132）：replicationId 生成常量（核心私有，不导出）——
+// 【R2 修订，SA2 #3】registry 本地结构守卫常量——沿 NAMESPACE_ID_PATTERN 本地常量先例。
+// 跨包 import 对方模块级常量不可达（registry 只能 import runtime 的 index 面，而该
+// RegExp 是值导出——从 index 导出会击穿 runtime-acceptance-exports-audit.test.ts
+// 「值导出恰一键」冻结审计）；两份副本互为结构守卫（注释互相引用对方落点）：
+//   runtime 侧：packages/namespace-runtime/src/replication-write.ts REPLICATION_ID_PATTERN
+const REPLICATION_ID_PATTERN = /^[0-9a-f]{32}$/;
+const REPLICATION_ID_RANDOM_BYTES = 16; // 128-bit CSPRNG（与 namespaceId 同一受控源同一契约）
 
 /**
  * RandomBytes 构造期形状门禁（phase-5 切片 1，ADR 0009 依赖纪律）：生产/testing 工厂
@@ -571,6 +582,42 @@ export function createRegistryInternal(
     return namespaceId;
   }
 
+  /**
+   * 抽取复制谱系 id（issue #132 §4.1.2；D-1 随机源归属 Registry 层）：与
+   * generateNamespaceId 同一受控源（构造期已门禁的 randomBytes）、同一 16 字节契约、
+   * 同一「ns-」之外的小写 hex 编码——但**独立实现、不共享**：create 路径的随机源
+   * 违约 = orchestration 级 fatal（#131 冻结行为零回归），enable 路径的随机源违约 =
+   * Lease 写操作结果联合 issue（§4.5——写操作纪律「任何拒绝经返回的 Promise 结算」）。
+   * 两者失败通道不同，共享实现会迫使其一让步；共享的只有 16 字节契约与 hex 编码形态
+   * （6 行重复是有意为之，注释互相引用）。
+   *
+   * - 永不 throw：随机源 throw 与形状违约（非 16 字节 Uint8Array）一律
+   *   { ok:false, issue: REPLICATION_RANDOM_SOURCE_INVALID_MESSAGE }；
+   * - 无重试环：replicationId 不是任何 map 的 key、无碰撞检测面（128-bit 概率唯一，
+   *   ADR 0010「namespaceId 的概率全局唯一由生成策略负责」同款论证）——重试无语义；
+   * - 结构守卫：非法产物（编码自身违约）结构性无法离开抽取器（{ok:false}）。
+   */
+  function drawReplicationId(): ReplicationIdDraw {
+    let bytes: unknown;
+    try {
+      bytes = randomBytes(REPLICATION_ID_RANDOM_BYTES);
+    } catch {
+      return { ok: false, issue: { message: REPLICATION_RANDOM_SOURCE_INVALID_MESSAGE, path: [] } };
+    }
+    if (!(bytes instanceof Uint8Array) || bytes.length !== REPLICATION_ID_RANDOM_BYTES) {
+      return { ok: false, issue: { message: REPLICATION_RANDOM_SOURCE_INVALID_MESSAGE, path: [] } };
+    }
+    let hex = '';
+    for (let i = 0; i < REPLICATION_ID_RANDOM_BYTES; i += 1) {
+      // length===16 契约 + Uint8Array 定长语义：索引必达（noUncheckedIndexedAccess 下
+      // 显式断言——违约面已被上方形状守卫收编）。
+      hex += bytes[i]!.toString(16).padStart(2, '0'); // 恒小写 hex，零 Buffer 依赖
+    }
+    return REPLICATION_ID_PATTERN.test(hex)
+      ? { ok: true, replicationId: hex } // 结构守卫：非法产物结构性无法离开抽取器
+      : { ok: false, issue: { message: REPLICATION_RANDOM_SOURCE_INVALID_MESSAGE, path: [] } };
+  }
+
   function emitDiagnostics(event: RegistryDiagnosticsEvent): void {
     // 隔离体单点：dispatchDiagnostics（observer.ts）——sink 缺失或 throw 均 no-op。
     dispatchDiagnostics(diagnostics, event);
@@ -656,7 +703,9 @@ export function createRegistryInternal(
   }
 
   function issueLease(entry: Entry): Readonly<{ ok: true; lease: NamespaceLease }> {
-    const lease = createLeaseController(entry, observer, () => handleLeaseReleased(entry));
+    const lease = createLeaseController(entry, observer, () => handleLeaseReleased(entry), {
+      drawReplicationId, // 闭包绑定本 Registry 的受控 randomBytes（issue #132 §4.1.2）
+    });
     entry.leases.add(lease);
     return Object.freeze({ ok: true as const, lease });
   }

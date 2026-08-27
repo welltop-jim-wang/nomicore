@@ -49,6 +49,14 @@ Peer instance × N
 - `META.replicationId`与`META.replicationEpoch`投影、严格格式校验和保留字段定义。
 - Hub管理操作：`enableReplication()`与`bumpReplicationEpoch()`。
 
+**Slice 1 Runtime/Lease 基础合同（本 slice 的验收锚；与 ADR 0008 issue #132 修订节、ADR 0010 一致）**：
+
+- 两个管理操作与 ROOT/SCHEMA 写共享**唯一严格 FIFO write sequencer**；enable 在单 transaction 内原子安装 identity + epoch 1；bump 单调递增、达 `MAX_SAFE_INTEGER` 拒绝提升不回绕；identity 一经安装不可改写（字段格式、不可变性、epoch 上限与 hub-only 管理权以 ADR 0010 为权威）。
+- Runtime status 新增 `replication` 域，两态投影持久事实：`{state:'disabled'}` 或 `{state:'enabled'; replicationId; replicationEpoch}`；**不含** session、网络、队列或 sync 状态（后者属 ReplicationSession，切片 3）。
+- 构造期（对外发布前）**仅**读取 `META.replicationId` / `META.replicationEpoch` 两保留字段：双键真缺席 → disabled；双键均存在且合规 → enabled；恰一键、键存在而 `undefined`、格式违约或 META 载体异型 → 构造 loud 拒绝（runtime-construction，committed:false），绝不伪装 disabled、绝不自动补写新 lineage——这是普通 open 不执行 schema / ROOT 载体 / logical validation 的窄例外（ADR 0008 issue #132 修订节）。
+- 写成功 = live commit + dirty notification 已登记，**不等于已落盘**（ADR 0006）；notify failure 后 committed facts 不回滚、fatal 后读取与 status 保留最后已提交事实；fatal 只表述为 **committed-state recovery**，不作 durable restart 承诺。
+- **本 slice 不实现** ReplicationSession、WebSocket / hub-peer 拓扑或 `resetReplica`（属切片 3–8）。
+
 ### 2. Persistence 复制导入与归档
 
 - 增加从 detached、已核对身份的完整 Y.Doc 排他创建副本的受控 seam。
@@ -160,7 +168,9 @@ terminal failure → failed
 12. bearer token、namespace authorization、权限撤销和日志脱敏；
 13. frame/update/channel/queue 上限按 channel 或连接正确隔离；
 14. hub/peer 进程重启和各自 snapshot 恢复；
-15. `enableReplication`、epoch bump、冲突与 `resetReplica` archive 流程；
+15. 复制管理写与恢复：
+    - 15a（本阶段 Runtime/Lease 基础合同）：`enableReplication` 与 epoch bump 的 FIFO 槽序、dirty-not-durable 边界（dirty 登记 ≠ 已落盘）、File bump 至 epoch 2 后以 durable snapshot 重启恢复；fatal 只验收 committed-state recovery，不作 durable restart 承诺；
+    - 15b（后续切片 3–8）：replication identity conflict 与 `resetReplica` archive 流程。
 16. 优雅停机完成已被 Runtime 接纳的 apply，不无限等待网络 ACK；
 17. 第三方 Host 可直接基于 NamespaceLease/ReplicationSession 构造可信 transport；
 18. Node 支持矩阵下所有 public types、async disposal 与 Cordis ordered shutdown 一致。
