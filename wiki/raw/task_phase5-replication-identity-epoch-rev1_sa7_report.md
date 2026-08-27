@@ -106,7 +106,7 @@ Type Errors no errors
 | `@nomicore/namespace-registry` | `✓ packages/namespace-registry/test/registry-phase5-replication-red.test.ts (16 tests)` | ✓ 本地根 runner 触发并通过 |
 | `@nomicore/namespace-runtime` | `✓ packages/namespace-runtime/test/runtime-replication-write.test.ts (14 tests)` | ✓ 本地根 runner 触发并通过 |
 
-**CI Run**：未提供 / 本 SA 不创建或等待发布后 CI。  
+**CI Run**：未提供 / 本 SA 不创建或等待发布后 CI。
 **CI verdict**：⚠ 待总控在 PR/latest CI run 完成后用 job log 补录；这不是本地动态验证失败，也不宣称 CI 已绿。
 
 ## 工作区完整性
