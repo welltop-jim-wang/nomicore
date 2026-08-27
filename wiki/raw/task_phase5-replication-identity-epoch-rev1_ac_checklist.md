@@ -3,7 +3,8 @@
 - **核对时间**: 2026-08-27（round 2）
 - **核对人**: 总控（Phase 3.5 AC 门禁）
 - **基线→HEAD**: 3841aff（round 1 封口）→ 本轮实现 commit ace6f83
-- **验证基线**: 总控亲验 `pnpm test` 全仓 126 文件 1485/1485 绿（+7 新增）、Type Errors 无（.mabf-bg/r2-ctl-test.log，exit 0）；`pnpm typecheck` 9 包 exit 0（.mabf-bg/r2-ctl-typecheck.log）；`git diff --check` exit 0
+- **验证基线**: 总控亲验 `pnpm test` 全仓 126 文件 1485/1485 绿（+7 新增）、Type Errors 无（.mabf-bg/r2-ctl-test.log，exit 0）；`pnpm typecheck` 9 包 exit 0（.mabf-bg/r2-ctl-typecheck.log）；`git diff --check` exit 0（当时检查范围：工作区/代码 diff；终审范围注记见下行）
+- **范围注记（终审 S-1 处置）**: 双轴终审发现 3841aff..HEAD 全范围 `git diff --check` 曾 exit 2（3 个 wiki 证据文件 4 处行尾双空格，由 wiki 簿记 commit 引入；代码子范围 757bcd1..ace6f83 始终 exit 0）。已由各 SA 自行纯机械剥离（零内容变更，`git show -w` 为空）并 commit；收口前总控复验 3841aff..HEAD 全范围 exit 0。封口终验口径 = 全范围（代码+wiki+docs）
 - **round 1 核对表**: `task_phase5-replication-identity-epoch_ac_checklist.md`（6/6 ✅）；本轮只对评审反馈引发的增量重新核对，未被反馈触及的 AC 沿用 round 1 证据
 - **评审反馈处置总表**: 见 `task_phase5-replication-identity-epoch-rev1_design.md` §1 与 REPORT.md
 
