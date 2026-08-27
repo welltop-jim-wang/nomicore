@@ -8,8 +8,9 @@ Phase 5 在 NamespaceRegistry 之上交付可部署的多实例 Nomicore：一�
 - ADR 0007：逻辑校验、Yjs Runtime bridge、普通业务写 zero-write 与 raw update 受控通道预留。
 - ADR 0008：单 NamespaceRuntime、唯一 write sequencer、ROOT/SCHEMA 写和 lifecycle gate。
 - ADR 0009：NamespaceRegistry、NamespaceLease、本地唯一 Runtime generation 与 Host shutdown。
-- ADR 0010：hub/peer 拓扑、复制谱系、ReplicationSession、可信 raw update、WebSocket 协议与故障语义。
-- `CONTEXT.md`：namespace、write sequencer、复制谱系、hub/peer 和复制状态词汇。
+- ADR 0010：hub/peer拓扑、namespace identity、复制谱系、ReplicationSession与可信raw update决策。
+- `docs/protocols/instance-replication-v1.md`：固定wire envelope、payload、消息/错误注册表、连接/namespace/sync状态机和恢复语义。
+- `CONTEXT.md`：namespaceId、write sequencer、复制谱系、hub/peer和复制状态词汇。
 
 本阶段接续 Phase 4 中明确排除的 WS/raw Yjs sync 和多机部署，但仍不实现分布式 Registry、文件锁或 leader election。
 
@@ -39,12 +40,14 @@ Peer instance × N
 
 按依赖顺序实施；每个切片必须先冻结窄 contract 和稳定错误，再接入下一层。
 
-### 1. 复制身份与受控随机源
+### 1. Namespace identity、复制身份与受控随机源
 
-- 为 Host 增加可测试的随机字节/ID capability，生产实现生成 128-bit 随机值；核心不得直接调用不受控全局 crypto。
-- `META.replicationId` 与 `META.replicationEpoch` 投影、严格格式校验和保留字段定义。
-- Hub 管理操作：`enableReplication()` 与 `bumpReplicationEpoch()`。
-- 旧 namespace 不在 open/连接时静默补写。
+- Registry entry key由`(owner.userId, namespaceId)`改为仅namespaceId；open/create仍接收并核对owner，owner mismatch统一not found。
+- 普通create不接受调用方namespaceId；受控128-bit CSPRNG生成`ns-`+32位小写hex，碰撞最多重试8次。
+- Persistence继续按owner分区，不增加跨owner catalog；复制内部导入保留Hub namespaceId。
+- 为Host增加可测试的随机字节/ID capability；核心不得直接调用不受控全局crypto。
+- `META.replicationId`与`META.replicationEpoch`投影、严格格式校验和保留字段定义。
+- Hub管理操作：`enableReplication()`与`bumpReplicationEpoch()`。
 
 ### 2. Persistence 复制导入与归档
 
@@ -72,21 +75,21 @@ Peer instance × N
 
 ### 5. `@nomicore/replication-protocol`
 
-- 单一二进制 envelope codec、固定 magic、严格长度检查。
-- 显式协议版本/能力协商，绝不依赖消息数值猜测。
-- 连接、channel、identity、bootstrap、sync、update、ACK、error 和 drain 消息。
-- 内层封装 `y-protocols/sync` SyncStep1/SyncStep2/Update。
-- 稳定错误码、资源上限错误与 fuzz/property tests。
-- 纯包不依赖 Cordis、WebSocket、Registry 或 Node server。
+- 严格实现`docs/protocols/instance-replication-v1.md`：20-byte大端envelope、一WS message一frame、namespaceId直接寻址、lib0 canonical payload。
+- 显式envelope/protocol版本与capability协商，绝不依赖消息数值猜测。
+- 实现append-only消息/错误注册表、direction-local sequence、专用ACK和统一ERROR。
+- 显式直接依赖并锁定兼容的`yjs`、`y-protocols`、`lib0`组合。
+- Byte-level golden、canonical roundtrip、截断/越界/尾随、版本矩阵与fuzz/property tests。
+- 纯包不依赖Cordis、WebSocket、Registry或Node server。
 
-### 6. `@nomicore/ws-replication` channel 状态机
+### 6. `@nomicore/ws-replication` namespace状态机
 
-- Peer target 的幂等 add/remove；首版仅精确 namespace key。
-- Channel authorization、identity-check、bootstrap、reconcile、live、needs-resync、conflicted、close。
-- 本地不存在时完整 snapshot bootstrap；本地同源时双向 state-vector diff。
-- identity/epoch mismatch 稳定冲突且不自动覆盖。
-- Update origin 回声抑制、ACK、广播排除来源和周期性 reconciliation。
-- Per-channel 有界发送队列；超限丢弃增量队列并重新 diff，不阻塞 Runtime sequencer。
+- Peer target为精确`{ namespaceId, localOwner }`并支持幂等add/remove；wire不传owner。
+- 实现connection、namespace与sync-round状态机及blocked/backoff/full-jitter恢复。
+- 本地不存在时单frame完整snapshot bootstrap；同源时Peer发起双向state-vector round。
+- identity/epoch mismatch稳定冲突且不自动覆盖；在线epoch bump发送IDENTITY_CHANGED fencing。
+- Origin回声抑制、专用ACK、RESYNC_REQUIRED和Hub单observer多session fan-out。
+- Per-namespace滑动窗口、有界队列、round-robin公平调度与connection control保留额度；溢出丢弃未发送增量并重新diff，不阻塞Runtime sequencer。
 
 ### 7. WebSocket 连接、认证与授权
 
@@ -119,33 +122,27 @@ Peer instance × N
 
 ## 协议与状态机验收
 
-### 连接状态
+### Connection状态
 
 ```text
-disconnected
-→ connecting
-→ authenticating
-→ ready
-→ draining
-→ closed
+stopped → disconnected → connecting → handshaking → ready → draining
+                         ↘ backoff      ↘ blocked
 ```
 
-认证失败、无共同协议版本和非法 instanceId 不做自动重试；临时网络失败才退避重连。
+临时网络错误进入full-jitter backoff；认证、版本、身份或policy永久错误进入blocked并等待配置变化。Hub入站连接只走`upgraded → handshaking → ready → draining → closed`。
 
-### Channel 状态
+### Namespace状态
 
 ```text
-requested
-→ authorized
-→ identity-check
-→ bootstrapping | reconciling
-→ live
-→ needs-resync
-→ reconciling
-→ closed
+targeted → opening → bootstrapping | reconciling → live
+                                      ↑              ↓
+                                      └─ needs-resync
+          → closing → closed
+identity/epoch mismatch → conflicted
+terminal failure → failed
 ```
 
-复制身份或 epoch 不一致进入 `conflicted`，等待配置或本地数据被显式修复。
+每轮reconciliation由Peer以syncRoundId发起，两个方向的Step2都收到SYNC_APPLIED才进入live。完整转移、timeout、ERROR终态与GOAWAY规则以protocol v1规范为准。
 
 ## 必须通过的场景
 

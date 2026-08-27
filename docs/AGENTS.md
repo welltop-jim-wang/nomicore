@@ -2,7 +2,7 @@
 
 ## Authority
 
-Root `CONTEXT.md` is the shared vocabulary. `docs/adr/` records accepted architectural decisions, `docs/vfsl/` records the language specification, and `docs/phases/` describes delivery slices. Historical `wiki/raw/` artifacts are evidence, not normative contracts.
+Root `CONTEXT.md` is the shared vocabulary. `docs/adr/` records accepted architectural decisions, `docs/protocols/` records accepted wire contracts and state machines, `docs/vfsl/` records the language specification, and `docs/phases/` describes delivery slices. Historical `wiki/raw/` artifacts are evidence, not normative contracts.
 
 ## Editing
 

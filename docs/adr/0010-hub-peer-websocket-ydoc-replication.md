@@ -23,14 +23,18 @@ ADR 0006—0009 已建立单进程内的 Persistence、唯一 NamespaceRuntime/w
 
 本地业务写成功仍只表示 live Y.Doc 已提交且本地 dirty notification 已登记；它不等待 hub、其他 peer 或本地物理 flush。复制提供最终一致，不提供线性一致、quorum durability 或远端确认承诺。
 
-### 复制范围
+### Namespace identity、owner 与复制范围
 
-同步目标是 peer 复制插件的配置或运行时参数，不写死为全量复制。Phase 5 首版只支持精确 `(owner.userId, namespaceId)` key：
+Registry entry key 修订为仅 `namespaceId`。普通 `Registry.create()` 不再接受调用方指定 namespaceId，而由注入的受控 128-bit CSPRNG 生成 `ns-` + 32 位小写 hex；撞到当前 Registry entry 或目标 Persistence duplicate 时最多重试 8 次，耗尽以 `committed:false` Registry fatal 失败。复制 bootstrap 使用内部受信任导入保留 Hub namespaceId，不是普通 create。该身份是概率全局唯一；Persistence 不维护跨 owner 全局 catalog或原子唯一约束。
 
-- `addTarget(key)` 幂等地启动或恢复 channel；
-- `removeTarget(key)` 停止同步并释放复制 lease，但保留本地持久副本；
+`owner.userId` 继续是 create/open 的重要本地属性和 Persistence 分区键，但不再参与 Registry entry key或 wire identity。普通 open仍显式接收 owner并在复用 active entry前核对；不匹配统一返回 `NAMESPACE_NOT_FOUND`。Hub 与 Peer可为同一 namespaceId使用不同 owner，owner不写入同步 META，也不上 wire。
+
+同步目标是 peer复制插件的配置或运行时参数，不写死为全量复制。Phase 5 首版 target 为精确 `{ namespaceId, localOwner }`：
+
+- `addTarget(target)` 幂等启动或恢复 namespace；
+- `removeTarget(namespaceId)` 停止同步并释放复制 lease，但保留本地持久副本；
 - 插件不持久化 target 配置，重启后的目标集合由 Host 配置负责；
-- hub 不配置 targets，而是按已认证 peer 的 channel 请求和授权按需打开 namespace。
+- Hub 不配置 targets；authorization Adapter按已认证 instance identity + namespaceId返回 denied，或返回 Hub local owner与 read/submit权限；Peer不得声明 Hub owner。
 
 声明式通配 selector 与 namespace discovery/list 留待后续，避免提前扩张 Registry/Persistence 公共面。
 
@@ -134,50 +138,17 @@ Peer namespace 处于 `persistence-degraded` 时：
 
 该 bypass 只属于创建时已冻结为 `hub-to-peer` 的可信 session，不能由普通业务写或 peer→hub update 获得。状态必须区分“内存已追上”与“磁盘未追上”，不得声称 peer 副本已经 durable。
 
-### WebSocket 复制协议
+### WebSocket 复制协议与状态机
 
-每个 peer→hub 维持一条长期 WebSocket，并通过 Nomicore 私有二进制 envelope multiplex 多个 namespace channel。外层 framing 只有一种编码，至少包含：
+每个 Peer→Hub维持一条长期 WebSocket并 multiplex多个 namespace。Wire不使用 channelId：每个 namespace-scope frame直接携带 namespaceId；同一连接内同一 namespace只允许一个生命周期，关闭后重开必须重建连接。
 
-- 固定 magic；
-- 显式协议版本和能力协商；
-- 消息类型；
-- channel ID；
-- request/connection sequence；
-- payload length。
+固定 envelope为 20-byte大端头：`NMCR` magic、envelope version、message type、flags、direction-local sequence、payload length和reserved。首版flags/reserved必须为零，一条WebSocket binary message恰好承载一个完整frame。控制payload使用显式直接依赖的lib0 canonical encoding，内层复用锁定版本的`y-protocols/sync`语义。Envelope version只决定头布局，HELLO显式协商完整protocol version与capabilities；不得按消息数值猜版本。
 
-没有共同版本时返回稳定结构化错误并关闭；不得根据消息数值范围猜测版本。Namespace channel 内层复用 `y-protocols/sync` 的 SyncStep1、SyncStep2 与 Update 语义，但不承诺兼容客户端 `y-websocket` wire endpoint。
+Bearer token在HTTP Upgrade前认证；Upgrade后Peer发送HELLO，Hub回复HELLO_ACK并绑定Peer/Hub instance identity。每方向sequence从1严格递增，不回绕；gap、repeat或错误ACK关联关闭连接。WS ping/pong负责活性，GOAWAY提供相对drain timeout。
 
-Hub 应用 peer update并完成 dirty notification 后向来源发送 ACK，并把 resulting update 排入其他 peer 的发送队列。ACK：
+Namespace依次执行OPEN与身份检查、可选单frame bootstrap、双向state-vector reconciliation、live UPDATE。每个sync round由Peer以uint32 roundId发起，双方Step2完成sequenced apply + dirty后以SYNC_APPLIED确认；两个方向均确认才进入live。UPDATE_ACK同样只表示sequenced live apply + dirty notification，不表示物理flush或其他副本确认。
 
-- 只用于在线流控、延迟观测和释放内存待确认 update；
-- 不作为业务写完成条件；
-- 不表示物理 flush 或其他副本确认；
-- 不持久化，断线后丢弃。
-
-Yjs update 的幂等性负责重复应用安全；连接内 sequence 只用于 framing、ACK 和异常检测，不建立跨重连去重表或 durable outbox。重连时 state vector 是恢复真相。
-
-连接/channel origin 用于排除直接来源回声；hub 向除来源外的其他订阅 peer 广播。Origin 只是流量优化，不能替代重连和周期性 state-vector reconciliation。
-
-### 状态机与背压
-
-连接状态至少为：
-
-```text
-disconnected → connecting → authenticating → ready → draining → closed
-```
-
-临时网络错误由 peer 指数退避并带抖动重连；认证失败、无共同版本和非法 instanceId 是非重试错误，等待配置变化。
-
-Channel 状态至少为：
-
-```text
-requested → authorized → identity-check
-          → bootstrapping | reconciling
-          → live → needs-resync → reconciling
-          → closed
-```
-
-身份或 epoch 冲突进入 `conflicted`，不自动重试。发送队列超限时丢弃该 namespace 的增量队列并进入 `needs-resync`；恢复后重新交换 state vector。不得丢弃旧 update 后假装连续，也不得让慢网络阻塞 Runtime write sequencer。
+连接与namespace状态、消息码、payload字段、错误码、timeout、close code、backpressure和完整时序以`docs/protocols/instance-replication-v1.md`为唯一wire contract。关键恢复纪律为：连接断开即close sessions/release Leases，不保留outbox；重连重新OPEN并reconcile。Per-namespace有界队列溢出时丢弃未发送增量并进入needs-resync；connection按namespace round-robin公平发送，control/ACK保留额度，网络背压不得进入Runtime sequencer。
 
 ### 认证、授权和传输安全
 
@@ -244,10 +215,10 @@ Phase 5 首版建立：
 
 ## 取代与关联
 
-本 ADR 扩展 ADR 0006 的异机冗余预留，但不改变 `saveDoc` 仅为 dirty notification、全量 snapshot 或单 rootDir owner 语义。它为 Persistence 增加复制导入与归档所需的受控能力。
+本 ADR 扩展 ADR 0006 的异机冗余预留，但不改变`saveDoc`仅为dirty notification、全量snapshot、owner目录分区或单rootDir owner语义。它为Persistence增加复制导入与归档所需的受控能力；namespaceId的概率全局唯一由生成策略负责，Persistence不增加跨owner catalog或原子唯一约束。
 
 本 ADR 对 ADR 0007/0008 的“未来 raw Yjs update 必须另设受控通道”作出决定：通道位于 NamespaceLease 的 ReplicationSession，并继续进入唯一 write sequencer；但 trusted raw update 明确不继承普通业务写的完整 VFSL zero-write 保证。
 
-本 ADR 扩展 ADR 0009 只在单 Registry 进程内保证唯一 Runtime 的边界；跨进程不建立全局 sequencer，而由各实例本地 sequencer和 Yjs CRDT 合并实现最终一致。Registry 仍负责本地 Runtime generation、Lease、reset/archive 编排和 Host 生命周期。
+本 ADR 修订 ADR 0009 的 Registry identity：entry key由`(owner.userId, namespaceId)`改为仅namespaceId；owner仍是open/create的必需本地属性、Runtime/Lease投影和Persistence分区键，owner mismatch不泄露存在性。跨进程不建立全局 sequencer，而由各实例本地 sequencer和Yjs CRDT合并实现最终一致。Registry仍负责本地Runtime generation、Lease、reset/archive编排和Host生命周期。
 
 Phase 4 中列为非目标的 WS room、raw Yjs sync 和分布式部署由 Phase 5 接续；leader election、文件锁和分布式 Registry 仍不进入本阶段。交付切片见 `docs/phases/phase-5-websocket-replication.md`。
