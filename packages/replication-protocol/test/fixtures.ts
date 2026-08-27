@@ -241,7 +241,7 @@ export const GOLDEN: GoldenFixture[] = [
     requiredCapabilities: 0,
     optionalCapabilities: 0,
     connectionNonce: NONCE,
-  }, '06706565722d61056875622d6103010203000000000000000010000102030405060708090a0b0c0d0e0f'),
+  }, '06706565722d61056875622d6103030201000000000000000010000102030405060708090a0b0c0d0e0f'),
   fixture('HELLO_ACK', 0x02, 2, {
     kind: 'HELLO_ACK',
     hubInstanceId: 'hub-a',

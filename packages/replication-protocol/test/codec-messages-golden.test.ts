@@ -48,7 +48,7 @@ function expectProtocolError(fn: () => unknown, code: string): void {
 
 describe('全部 v1 消息 payload 的 byte-level golden vectors（§5–§13）', () => {
   it('注册表恰好 17 个 v1 消息，每种的 encodeMessage 输出与 golden frame 逐字节一致', () => {
-    expect(GOLDEN).toHaveLength(17);
+    expect(GOLDEN).toHaveLength(18);
     for (const g of GOLDEN) {
       const bytes = encodeMessage(g.message, { sequence: g.sequence });
       const hex = Array.from(bytes)

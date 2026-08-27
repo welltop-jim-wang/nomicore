@@ -16,3 +16,13 @@
 | 10 | 10:32 | SA3 | Phase 3 TDD 实现 | (会话随前任总控消亡，未交付) | SA2 pass 放行；按设计 R1 实现包本体使红灯全绿；subagent id 884b86fe |
 | 11 | 10:32 | SA1 | Phase 2 尾注闭案 | 10:41 | SA2 INFO：§15.2 OPEN 标签闭案 |
 | 12 | (恢复轮) | 总控 | 恢复盘点 | — | 前任总控中断；工作区确认：设计 R1 pass、SA6 R2 红灯 9 文件就位、包本体（package.json/src）未创建；重新派发 SA3 |
+| 13 | (恢复轮) | SA3 | Phase 3 TDD 实现 | 交付+阻塞报告 | 包本体 11 文件建成、包级 tsc EXIT=0、6/9 绿；上报 2 个 SA6-owned 测试缺陷（A: HELLO golden 版本表 wire [1,2,3] vs 对象 [3,2,1] 互斥；B: golden 计数断言 17 vs 实际 18），另自修 malformed 3 处截断字面量（基础设施类）；subagent id 5e6e003c |
+| 14 | (恢复轮) | 总控 | 缺陷复核 | — | 独立复核 A/B 成立（fixtures.ts:244 逐字节拆解、18 fixture 计数、malformed 锚点 :203-212）；授权 SA6 最小修复 A（'03010203'→'03030201'）与 B（17→18） |
+| 15 | (恢复轮) | SA6 | Phase 1 测试缺陷修复 | 交付 | A/B 修复落地，包级 9/9 · 136/136 · EXIT=0；简报追加修订记录；subagent id f4786bcb |
+| 16 | (恢复轮) | 总控 | 验收复跑 | — | 亲跑三条命令全 EXIT=0：包级 9/9·136/136、根 typecheck、根 test 127/127·1541/1541（.mabf-bg/controller-acceptance.log） |
+| 17 | (恢复轮) | SA4 | Phase 4 静态验尸 | reject（窄面） | 1 MAJOR（lookupError 原型链继承键，errors.ts:144-149）+ 2 MINOR（safeMessage typeof 守卫、readU32Field 死分支）；其余审查面全 pass；subagent id f49e0dab |
+| 18 | (恢复轮) | SA3 | Phase 3 回流修复 | 交付（7489ca1） | F1 Object.hasOwn own-key + 全量查表审计、F2 typeof 守卫、F3 死分支清理；新增 3 it 防回归锚点（纯增量 42+/0-）；包级 9/9·139/139、根 typecheck EXIT=0 |
+| 19 | (恢复轮) | SA4 | Phase 4 R1 窄面重审 | pass | F1/F2/F3 闭环逐行复核；SA3 两项不改论证成立；新登记 INFO-1（encodeFrame 非数值入参，不阻塞）；独立抽查 codec-malformed 37/37 |
+| 20 | (恢复轮) | SA7 | Phase 5 动态验证 | (宿主重启中断，报告未交付) | 全量套件复跑 + D-5 Buffer 原型探针 + INFO-1 行为记录 + Buffer 遮蔽 + fuzz 确定性 + yjs 互通；subagent id d74670b9。中断前证据已落盘 .mabf-bg/sa7-*.log（包级 139/139、根 typecheck EXIT=0、根测试 127/127·1544/1544、fuzz×3、interop 25/25、INFO-1/D-5/alloc-bound 探针），唯 Buffer 遮蔽整套件日志截断 |
+| 21 | (受控恢复轮 R3) | 总控 | 恢复盘点 + 安全网 | — | 第三任总控接管；先落盘并提交 blocked 占位 REPORT.md（1060bb9，防回合中断）；确认工作区 4 modified 与 SA6 A/B 修复记录逐字一致 |
+| 22 | (受控恢复轮 R3) | SA7 | Phase 5 动态验证补跑 | (进行中) | 核验前任遗留日志时效（7489ca1 后、树未变）+ 补跑被截断的 Buffer 遮蔽整套件 + 交付 SA7 报告；subagent id c40711e2 |
