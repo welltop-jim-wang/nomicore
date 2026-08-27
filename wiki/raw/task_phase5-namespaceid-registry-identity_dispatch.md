@@ -18,5 +18,5 @@
 | 11 | 10:27 | SA3 | Phase 3 TDD 实现 R1 | 11:07 | SA2 R2 pass，设计定稿；SA3 落位设计并使 20/20 红灯转绿 + 迁移既有测试 |
 | 12 | 11:08 | SA6 | Phase 1 回流修订 R4 | 11:14 | SA3 发现红灯 fixture 缺陷：makeScriptedRandomBytes 的 consumed getter 被解构快照化恒 0（:299/:348/:421 三处），实现正确性已独立验证，send_message 回流 SA6 修 fixture |
 | 13 | 11:20 | 总控亲验 | Phase 3 绿灯验证 | 11:26 | 后台独立进程：tsc --noEmit exit 0；pnpm test 1427/1427 绿、0 type errors、exit 0（首次日志被污染已重跑） |
-| 14 | 11:27 | SA4 | Phase 3 静态验尸 | 11:38 | 红灯 20/20 转绿 + 总控亲验全绿，派 SA4 红队审查 → verdict: pass（L4 操作项：R4 修正已由总控 commit b0962e9 收口）|
-| 15 | 11:40 | SA7 | Phase 3 动态验证 | (pending) | SA4 pass 双清第一清；SA7 按 SA4 §10 五项动态重点实测 |
+| 14 | 11:27 | SA4 | Phase 3 静态验尸 | 11:38 | pass — 红灯 20/20 转绿 + 总控亲验全绿后派 SA4 红队审查，verdict: pass（L4 操作项：R4 修正已由总控 commit b0962e9 收口）|
+| 15 | 11:40 | SA7 | Phase 3 动态验证 | 12:04 | pass — SA4 双清第一清后派 SA7；§10 五项动态重点实测全过 + 4 用例永久回归，verdict: pass |

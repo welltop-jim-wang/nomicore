@@ -59,6 +59,7 @@
 - 类型面 `registry-phase5-identity-surface.test-d.ts`：命中 typecheck.include `packages/*/test/**/*.test-d.ts`（tsconfig = `tsconfig.typecheck.json`，其 include 含 `packages/*/test/**/*.ts`）✓。
 - `pnpm typecheck` 显式含 `tsc -p packages/namespace-registry/tsconfig.json`（V6 通过）✓。
 - 本任务未新增 workflow/E2E spec；**无未接通测试**。
+- **1.4 vitest 触发性自检：all-vitest-packages-triggered** —— 两个新测试文件（`registry-phase5-identity-red.test.ts`、`registry-phase5-identity-surface.test-d.ts`）所在的 workspace package `@nomicore/namespace-registry` 均被根 `vitest.config.ts` include（`packages/*/test/**/*.test.ts` + typecheck `*.test-d.ts`）与 CI `ci.yml` 的 `pnpm test`（= `vitest run --typecheck`）覆盖，无 `vitest-package-not-triggered` 项。
 
 ### 1.5 协议假设审查
 
