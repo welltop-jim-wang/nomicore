@@ -129,3 +129,32 @@ baseline `pnpm typecheck`（10 包 tsc，仅 src）——本机实测复跑 exit
 5. **observer 隔离**：fan-out observer 必须自捕获全部回调异常（T-2 和解条件）——测试以「抛错回调 + 事务仍 ok + status.fatal null + 另一 session 仍收」锚定。
 6. **每 Lease 一 session 的幂等/拒绝二选一**：测试允许两者，但「第二个独立可 apply 的 session」必须不存在。
 7. 本记录不修改任何 src/ 与既有测试文件（`git status` 仅新增测试 + wiki 记录）。
+
+---
+
+# R2 修复记录（SA3 实现落地后 回流 SA6 — 8 项测试口径缺陷修复）
+
+- **背景**：SA3 实现提交 `666f9b1`（Phase 5 切片 3/4 expose trusted ReplicationSession）后，SA6 红文件 13/20 行为绿 + 5/5 类型绿；剩余 7 行为红 + 1 类型红经 SA3 诊断（`wiki/raw/task_namespace-lease-replication-session_sa3_impl.md` §5）与总控独立复核，确认为 **SA6-owned 测试口径缺陷**（实现侧无可修面）。本轮仅修改 SA6 自己的两个测试文件；基线语义与锚定强度逐项保持。
+
+| # | 用例 | 缺陷机理 | 修复 | 修复后证据 |
+|---|---|---|---|---|
+| 1 | AC-3 FIFO（`saveEvents[0]` 绝对索引 / `length===3`） | `saveEvents` 绝对计数漏计 enable 的既有 E6 notify（#132 基线测试自身断言 enable 后 `toHaveLength(1)`——registry-phase5-replication-red.test.ts L332）；实测事件序 [enable, applyA, write, applyB] | 断言基准化：`const saveBaseline = stub.saveEvents.length`（enable 之后、session 阶段之前）→ `length === saveBaseline + 3`、按 `saveBaseline` 偏移取值（FIFO 相对序契约不变，语义未削弱） | 行为文件 20/20 绿 |
+| 2 | AC-4 hub scratch 拒 SCHEMA（`length===0`，实际 1） | 同 #1（基准 = enable 1 条） | `saveBaseline` 基准化 → `length === saveBaseline`（拒绝路径零新增——语义不变） | 同上 |
+| 3 | AC-4 hub 拒 META.replicationId（`length===0`） | 同 #1 | 同上 | 同上 |
+| 4 | AC-4 raw ROOT（`length===1` / 第二次 apply 后无断言） | 同 #1；第二次 apply 前未重新取基准 | 首次 apply：`length === saveBaseline + 1`；第二次 apply 前 `saveBaseline2 = length` → `length === saveBaseline2 + 1`（每次 apply 恰登记一次 dirty——语义不变） | 同上 |
+| 5 | AC-5 peer degraded 磁盘断言行（`diskAfter.ext===7` 实际 undefined） | MemoryPersistence 活单元缓存：同实例第二次 `loadDoc` 命中 live cell 返回旧解码 doc（lifecycle.ts L177，总控已核实）——step 4 首读句柄未 release | ① 首读后 `await diskFirst?.release()`；② step 5 改用 fixture 新方法 `freshReader()`（读取同一 store 的全新 MemoryPersistence 实例——必然重读 store）。内存/磁盘区分断言语义不变 | 同上 |
+| 6 | AC-7 epoch fencing（`length===0`，实际 2） | 基准 = enable 1 + bump 1（两者 E6 均 notify） | fence 前 `const saveBaseline = stub.saveEvents.length` → `length === saveBaseline`（fenced 零新增——语义不变） | 同上 |
+| 7 | AC-7/AC-2 File 重启（`first.persistence.dispose is not a function`） | `DocCapturingPersistence` fixture 未转发底层 `dispose`（#132 同型场景直接用 FilePersistence 实例，未包包装类） | fixture 增 `async dispose()` 透传 inner（沿本文件 `CountingDocPersistence.dispose` 先例——纯测试助手面，零业务语义） | 同上 |
+| 8 | 类型红（released lease 用例 `result.code`） | 真实类型落地后 `asSessionLease(lease)` 交集方法签名解析为真实 `OpenReplicationSessionResult`：ok:true 分支无 `code`，非窄化访问即 TS 红 | ok 判别优先：`if (result.ok) throw` 后再 `expect(result.code)`（窄化后断言；运行时行为与锚定码不变） | 类型面 5/5 绿（连同 phase5-replication-surface 共 11/11 探针绿） |
+
+**修复纪律**：仅改 `packages/namespace-registry/test/registry-phase5-replication-session-red.test.ts` 与 `registry-phase5-replication-session-surface.test-d.ts`（后者本轮零改动）；零 src/ 改动；无断言语义削弱（相对序/零新增/恰一次/内存-磁盘区分/锚定码全部保持）。
+
+**修复后三档绿灯证据**：
+
+| 档位 | 命令 | 结果 | 日志 |
+|---|---|---|---|
+| 单文件行为 | `pnpm vitest run packages/namespace-registry/test/registry-phase5-replication-session-red.test.ts` | **20/20 绿**，Type Errors: no errors，exit 0 | `.mabf-bg/sa6-fix-behavior.log`（exit 0） |
+| 类型面 | `pnpm vitest run --typecheck packages/namespace-registry/test/registry-phase5-replication-session-surface.test-d.ts packages/namespace-registry/test/registry-phase5-replication-surface.test-d.ts` | **11/11 绿**（session 5 + replication-surface 6），Type Errors: no errors，exit 0 | `.mabf-bg/sa6-fix-typecheck.log`（exit 0） |
+| 全量 | `pnpm test --pool=forks --poolOptions.forks.maxForks=1 --poolOptions.forks.minForks=1 --testTimeout=60000 --hookTimeout=60000` | **Test Files 138 passed (138)；Tests 1679 passed (1679)；Type Errors: no errors**；exit 0 | `.mabf-bg/sa6-fix-full.log`（exit 0） |
+
+`git diff --check` 干净；本轮修改仅限 SA6 两个测试文件 + 本记录（`git status` 无 src/ 改动）。

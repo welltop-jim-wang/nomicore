@@ -445,6 +445,7 @@ interface MemoryStoreFixture {
   setFailing(failing: boolean): void;
   flushAll(): Promise<void>;
   disposeReader(): Promise<void>;
+  freshReader(): DocPersistence;
 }
 
 function makeMemoryStoreFixture(): MemoryStoreFixture {
@@ -493,6 +494,13 @@ function makeMemoryStoreFixture(): MemoryStoreFixture {
     disposeReader: async () => {
       await (reader as unknown as { dispose(): Promise<void> }).dispose();
     },
+    /** 新建一个读取同一 store 的独立 reader（活单元缓存规避：第二次观测磁盘事实
+     * 前用全新实例——loadDoc 必然重新读 store，不命中 MemoryPersistence cache）。 */
+    freshReader: () =>
+      createMemoryPersistence({
+        scheduler: createTestScheduler(),
+        readSnapshot: async (key) => store.get(key),
+      }),
   };
 }
 
@@ -511,6 +519,11 @@ class DocCapturingPersistence implements DocPersistence {
   }
   async saveDoc(handle: DocHandle): Promise<void> {
     return this.inner.saveDoc(handle);
+  }
+  /** 透传底层持久层 dispose（FilePersistence 生命周期清理——沿 CountingDocPersistence 先例）。 */
+  async dispose(): Promise<void> {
+    const inner = this.inner as unknown as { dispose?: () => Promise<void> };
+    if (inner.dispose !== undefined) return inner.dispose();
   }
 }
 
@@ -605,7 +618,10 @@ describe('AC-1 openReplicationSession：存在、每 Lease 至多一个、冻结
       localRole: 'hub',
       remoteInstanceId: 'peer-a',
     });
-    expect(result.ok).toBe(false);
+    // 窄化后断言：真实类型落地后 ok:true 分支无 code——须先判别再取 code（SA3 §5 #8）。
+    if (result.ok) {
+      throw new Error(`期望 released 拒绝，实际成功：${JSON.stringify(result)}`);
+    }
     expect(result.code).toBe('NAMESPACE_LEASE_RELEASED');
     await registry.shutdown();
   });
@@ -743,6 +759,9 @@ describe('AC-3 远端 apply 进入唯一 write sequencer，槽内完成 dirty no
     );
 
     // 提交序：apply(k1=1) → 业务写(n=9) → apply(k2=2)（同一队列不同槽体——唯一 FIFO）
+    // 计数基准：enable 的 E6 槽已经 notifyDirty 一次（#132 基线语义——绝对计数以
+    // 基准化相对增量断言，FIFO 相对序即契约）。
+    const saveBaseline = stub.saveEvents.length;
     const { update: uA } = makeRemoteUpdate(stub.liveDoc(), (peer) => {
       peer.getMap('ROOT').set('k1', 1);
     });
@@ -756,18 +775,22 @@ describe('AC-3 远端 apply 进入唯一 write sequencer，槽内完成 dirty no
     const rA = await settleOf(pA);
     expect(settledOk(rA), 'apply A 必须成功结算').toBe(true);
     // dirty 先于 resolve：apply A resolve 时，该槽的 saveDoc 已发生（快照含 k1=1、业务写未至）
-    expect(stub.saveEvents.length).toBeGreaterThanOrEqual(1);
-    expect(stub.saveEvents[0]?.k1).toBe(1);
-    expect(stub.saveEvents[0]?.n).toBe(42);
+    expect(stub.saveEvents.length).toBeGreaterThanOrEqual(saveBaseline + 1);
+    expect(stub.saveEvents[saveBaseline]?.k1).toBe(1);
+    expect(stub.saveEvents[saveBaseline]?.n).toBe(42);
 
     const rW = await settleOf(pW);
     expect(settledOk(rW), '业务写必须成功结算').toBe(true);
     const rB = await settleOf(pB);
     expect(settledOk(rB), 'apply B 必须成功结算').toBe(true);
 
-    // FIFO 证据：通知序 [applyA, write, applyB]，快照逐槽累计
-    expect(stub.saveEvents.length).toBe(3);
-    const [e1, e2, e3] = [stub.saveEvents[0], stub.saveEvents[1], stub.saveEvents[2]];
+    // FIFO 证据：通知序 [applyA, write, applyB]，快照逐槽累计（相对基准三槽）
+    expect(stub.saveEvents.length).toBe(saveBaseline + 3);
+    const [e1, e2, e3] = [
+      stub.saveEvents[saveBaseline],
+      stub.saveEvents[saveBaseline + 1],
+      stub.saveEvents[saveBaseline + 2],
+    ];
     expect(e1?.k1).toBe(1);
     expect(e1?.k2).toBeUndefined();
     expect(e1?.n).toBe(42);
@@ -803,6 +826,8 @@ describe('AC-4 hub scratch-check SCHEMA/保留 META；raw ROOT 不预校验并�
 
   it('hub 对「改变 SCHEMA」的 peer update：scratch-check 拒绝（ok:false、SCHEMA/ROOT 零写入、拒绝行为稳定）', async () => {
     const { stub, registry, lease, session } = await readyHub();
+    // 计数基准：enable 的 E6 槽已 notify——拒绝路径断言「零新增」而非绝对零。
+    const saveBaseline = stub.saveEvents.length;
     const { update } = makeRemoteUpdate(stub.liveDoc(), (peer) => {
       peer.getMap('SCHEMA').set('note', 'mutated-by-peer');
     });
@@ -810,7 +835,7 @@ describe('AC-4 hub scratch-check SCHEMA/保留 META；raw ROOT 不预校验并�
     expect(settledNonOk(r1), 'SCHEMA 变更必须被 scratch-check 拒绝').toBe(true);
     expect(stub.liveDoc().getMap('SCHEMA').get('note')).toBeUndefined(); // 零写入
     expect(stub.liveDoc().getMap('ROOT').get('n')).toBe(42);
-    expect(stub.saveEvents.length).toBe(0); // 拒绝路径不登记 dirty
+    expect(stub.saveEvents.length).toBe(saveBaseline); // 拒绝路径不登记 dirty（零新增）
 
     // 再次拒绝（拒绝行为稳定、可重复）
     const r2 = await settleOf(session.applyRemoteUpdate(update));
@@ -822,6 +847,7 @@ describe('AC-4 hub scratch-check SCHEMA/保留 META；raw ROOT 不预校验并�
 
   it('hub 对「改变 META.replicationId」的 peer update：拒绝（保留字段 hub-only）；META 零写入', async () => {
     const { stub, registry, lease, session } = await readyHub();
+    const saveBaseline = stub.saveEvents.length; // 基准：enable 的 E6 已 notify
     const live = stub.liveDoc();
     const idBefore = live.getMap('META').get('replicationId');
     const epochBefore = live.getMap('META').get('replicationEpoch');
@@ -832,13 +858,15 @@ describe('AC-4 hub scratch-check SCHEMA/保留 META；raw ROOT 不预校验并�
     expect(settledNonOk(r), 'META 保留字段变更必须被拒绝').toBe(true);
     expect(live.getMap('META').get('replicationId')).toBe(idBefore); // 保留字段不变
     expect(live.getMap('META').get('replicationEpoch')).toBe(epochBefore);
-    expect(stub.saveEvents.length).toBe(0);
+    expect(stub.saveEvents.length).toBe(saveBaseline); // 拒绝零新增
     expect(repStatus(lease).replicationId).toBe(idBefore);
     await registry.shutdown();
   });
 
   it('raw ROOT update 不做 VFSL 预校验：违反 schema 类型的 update 仍被接受并标 replication-unvalidated；后续业务写被拒零写入', async () => {
     const { stub, registry, lease, session } = await readyHub();
+    // 计数基准：enable 的 E6 槽已 notify——接受路径断言「相对基准 +1」。
+    const saveBaseline = stub.saveEvents.length;
     // 违反 schema：ext 声明为 number，远端写入字符串（新键无并发冲突——确定性）
     const { update } = makeRemoteUpdate(stub.liveDoc(), (peer) => {
       peer.getMap('ROOT').set('ext', 'zzz');
@@ -847,7 +875,7 @@ describe('AC-4 hub scratch-check SCHEMA/保留 META；raw ROOT 不预校验并�
     expect(settledOk(r), 'raw update 必须被接受（无 VFSL 预校验）').toBe(true);
     expect(stub.liveDoc().getMap('ROOT').get('ext')).toBe('zzz');
     expect(JSON.stringify(session.getStatus())).toContain('replication-unvalidated');
-    expect(stub.saveEvents.length).toBe(1); // 接受路径正常登记 dirty
+    expect(stub.saveEvents.length).toBe(saveBaseline + 1); // 接受路径正常登记 dirty
 
     // 后续普通业务写：完整 ROOT 校验 → 当前 ROOT 已不符合 schema → 拒绝、零写入
     const w = await lease.mutateRoot({ op: 'set', path: ['n'], value: 9 });
@@ -856,6 +884,7 @@ describe('AC-4 hub scratch-check SCHEMA/保留 META；raw ROOT 不预校验并�
     expect(stub.liveDoc().getMap('ROOT').get('ext')).toBe('zzz');
 
     // 合法类型的 raw update 同样标记 replication-unvalidated（raw 从不执行 VFSL 预校验）
+    const saveBaseline2 = stub.saveEvents.length; // 第二次 apply 前重新取基准
     const { update: u2 } = makeRemoteUpdate(stub.liveDoc(), (peer) => {
       peer.getMap('ROOT').set('k1', 7);
     });
@@ -863,6 +892,7 @@ describe('AC-4 hub scratch-check SCHEMA/保留 META；raw ROOT 不预校验并�
     expect(settledOk(r2)).toBe(true);
     expect(stub.liveDoc().getMap('ROOT').get('k1')).toBe(7); // 新键已并入（无冲突）
     expect(JSON.stringify(session.getStatus())).toContain('replication-unvalidated');
+    expect(stub.saveEvents.length).toBe(saveBaseline2 + 1); // 第二次 apply 也恰登记一次
     await registry.shutdown();
   });
 
@@ -968,11 +998,14 @@ describe('AC-5 peer degraded 只允许 hub→peer trusted apply；O-5 补锚 (a)
     const diskFirst = await fx.reader.loadDoc(ALICE, nsId);
     expect(diskFirst?.doc.getMap('ROOT').get('ext')).toBeUndefined();
     expect(JSON.stringify(session.getStatus())).toMatch(/memory/i); // 状态区分内存面
+    await diskFirst?.release(); // 释放首读句柄（活单元缓存规避：见下）
 
     // 5) 恢复 I/O → Persistence retry 保存完整 live doc → 磁盘与内存合一（L135 retry 语义）
     fx.setFailing(false);
     await fx.flushAll();
-    const diskAfter = await fx.reader.loadDoc(ALICE, nsId);
+    // 用全新 reader 实例重新读磁盘（MemoryPersistence 活单元缓存：同实例二次
+    // loadDoc 命中 live cell 返回旧解码 doc——新实例必然走 store 读取路径）。
+    const diskAfter = await fx.freshReader().loadDoc(ALICE, nsId);
     expect(diskAfter?.doc.getMap('ROOT').get('ext')).toBe(7);
     expect(diskAfter?.doc.getMap('ROOT').get('n')).toBe(2);
     await registry.shutdown();
@@ -1184,13 +1217,15 @@ describe('AC-7 生命周期确定性契约：close / Runtime close / epoch fenci
     expect(repStatus(lease).replicationEpoch).toBe(2);
     expect(session1.replicationEpoch).toBe(1); // 冻结值不随 Runtime 漂移（L81）
 
+    // 计数基准：enable 与 bump 的 E6 槽均已 notify（两次）——fence 断言「零新增」。
+    const saveBaseline = stub.saveEvents.length;
     const { update } = makeRemoteUpdate(stub.liveDoc(), (peer) => {
       peer.getMap('ROOT').set('ext', 7);
     });
     const fenced = await settleOf(session1.applyRemoteUpdate(update));
     expect(settledNonOk(fenced), 'bump 后旧 session 的 apply 必须被 epoch gate fenced').toBe(true);
     expect(stub.liveDoc().getMap('ROOT').get('ext')).toBeUndefined(); // epoch gate 零写入
-    expect(stub.saveEvents.length).toBe(0);
+    expect(stub.saveEvents.length).toBe(saveBaseline); // fenced 零新增（无 dirty）
 
     // 新 session 冻结新 epoch → 同 update 可 apply（显式 reset/bootstrap 语义）
     const session2 = expectSession(
