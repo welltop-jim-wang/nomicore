@@ -102,5 +102,29 @@ JSDoc 首行自由文本 + `@tag` 半结构化标签；全部为文档性质，�
 **封闭对象（closed object）**:
 子集内对象类型默认封闭：未声明字段拒绝。
 
+**Hub（中心实例）**:
+静态星型复制拓扑中接受 peer WebSocket 连接、转发 Yjs updates、管理 SCHEMA 与复制身份的完整 Nomicore 实例；Hub 也是可接受本地 ROOT 业务写的副本，不是 ROOT 唯一写者，也不表示自动选举的 leader。
+_Avoid_: master、leader（会误示单写权威或选举语义）、只转发而不持有完整副本的中继
+
+**Peer（边缘实例）**:
+静态连接唯一 Hub 的完整 Nomicore 实例；使用独立 Persistence，断线时保持本地 ROOT 读写，重连后按 state vector/diff 与 Hub 双向合并。Peer 之间不直连，且不能本地修改 SCHEMA 或复制身份。
+_Avoid_: slave、follower（会误示只读或被动复制）
+
+**复制谱系（replication lineage）**:
+由 `META.replicationId` 标识的 namespace 复制身份；只有 `(owner.userId, namespaceId)`、replicationId 与 replication epoch 全部匹配的副本才允许直接执行 Yjs state-vector reconciliation。replicationId 是 128-bit 随机值的固定小写 hex，不等同于 namespaceId 或 SCHEMA 信封 `id`。
+_Avoid_: 仅凭 namespaceId 判断同源、用 SCHEMA id 充当文档实例身份
+
+**复制代际（replication epoch）**:
+`META.replicationEpoch` 中从 1 开始、只由 Hub 显式提升的安全整数；相同复制谱系但 epoch 不同的副本进入冲突状态，必须显式 reset/bootstrap，不自动覆盖或合并。
+_Avoid_: 连接次数、自动选主 term、可回绕版本号
+
+**ReplicationSession**:
+由 NamespaceLease 打开的受信任 duplex raw Yjs 复制会话；冻结本地角色、远端实例、复制谱系与 epoch，提供 state vector、diff、owned update subscription 和进入本地唯一 write sequencer 的 trusted apply，但不暴露 live Y.Doc。Host 搭建方负责只把该高级能力交给可信 transport。
+_Avoid_: 裸 Y.Doc WS handler、绕过本地 write sequencer 的 apply、把网络状态塞进 Runtime capability status
+
+**复制未校验（replication-unvalidated）**:
+Trusted raw Yjs update 已在 sequencer 中提交并登记 dirty，但未执行完整 VFSL ROOT 预校验的复制状态；它可能导致后续普通业务写因当前完整 ROOT 不合法而失败，不表示 transaction 可回滚或 raw update 享有 zero-write 保证。
+_Avoid_: validated replication、apply 后校验失败自动 rollback
+
 **authority 规则**:
 旧系统的 `__authority__` manifest（enum / range / conditional / state-machine 等不变式）。**本仓库范围外**（ADR-0002）。
