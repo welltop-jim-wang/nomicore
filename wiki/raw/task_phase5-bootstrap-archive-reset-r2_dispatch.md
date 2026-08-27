@@ -42,5 +42,6 @@ round-1 dispatch log 见 `task_phase5-bootstrap-archive-reset_dispatch.md`（21 
 | 14 | 07:24 | （等待外部 SA4 产出） | Phase 4 静态验尸 | (waiting) | Runner 裁决：不重复派发 SA4，有界等待外部会话 SA4 产出（07:15 派发），落地后按自产标准复核采信；超时或不可用则自派 |
 | 15 | 07:27 | SA4（外部产出，复核采信） | Phase 4 静态验尸 | 07:27 | 外部会话 SA4 报告（07:26 落地）经注册总控独立抽验：R-FIX-1 三项证据锚全部属实（registry.ts:1894 裸 cast vs :1875-1878 import 侧快照对照、设计 §3.2 L81 硬性禁止项原文、双读分叉读点）；审查方法与红线复核记录完备。**采信**，verdict=pass（带 1 项必须修复 R-FIX-1）。按 Runner 裁决其产出按外部输入复核采信 |
 | 16 | 07:27 | SA3 | Phase 3 修复轮（R-FIX-1 + F-1） | 07:35 | SA4 必须修复项回流：resetReplica 入口 expected 快照校验（复用 snapshotReplicationIdentityRef + 既有 INVALID_IDENTITY_ISSUE，零新冻结码）+ 敌意 16 形态测试锚（probeCalls 空分界断言）；顺带 F-1 observer 事件断言 |
-| 17 | 07:35 | 总控亲验 | Phase 3 修复后绿灯确认 | (running) | SA3 修复 commit 8b1398f 交付，总控后台独跑 typecheck+全量 |
-| 18 | 07:35 | SA4 | Phase 4 增量复审（8b1398f） | (pending) | 注册总控自派增量复审：R-FIX-1 消解判定 + field 判别字变体裁决 + 测试锚强度 |
+| 17 | 07:35 | 总控亲验 | Phase 3 修复后绿灯确认 | 07:38 | SA3 修复 commit 8b1398f 交付，总控后台独跑 typecheck+全量 |
+| 18 | 07:35 | SA4 | Phase 4 增量复审（8b1398f） | 07:38 | 注册总控自派增量复审：R-FIX-1 消解判定 + field 判别字变体裁决 + 测试锚强度 |
+| 19 | 07:38 | SA7 | Phase 4 动态验证 | (pending) | SA4 双轮 pass（全量采信+增量 pass），进入动态验证；携带 SA4 §四 6 项动态审核重点 |
