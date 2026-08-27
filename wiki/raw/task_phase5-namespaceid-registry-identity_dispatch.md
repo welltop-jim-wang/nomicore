@@ -1,0 +1,28 @@
+# Dispatch Log — Phase 5: generate namespaceId and migrate Registry identity
+
+任务类型自判：功能开发（issue label=feature，新增能力：CSPRNG namespaceId 生成 + Registry 身份迁移）。
+工作流：SA8 前置门禁 → SA6 验收锚定 → SA1 设计 → SA8 设计复审 → SA2 攻击评审 → SA3 实现 → SA4 静态验尸 → SA7 动态验证 → AC 门禁 → 收尾。
+
+| # | 派发时间 | SA | 阶段 | 完成时间 | 决策逻辑 |
+|---|---------|-----|------|---------|---------|
+| 1 | 08:15 | SA8 | Phase 0 前置门禁 | 09:08 | 功能开发，先过冲突门禁（简报 vs ADR 全集）→ verdict: clear |
+| 2 | 09:10 | SA6 | Phase 1 验收锚定 | 09:22 | 功能开发流水线，AC-1..AC-7 红灯契约先行 |
+| 3 | 09:24 | SA1 | Phase 2 架构设计 | 09:43 | SA6 红灯契约已锚定，进入设计 |
+| 4 | 09:44 | SA8 | Phase 2 设计后复审 | 09:51 | SA1 R1 设计 vs ADR 一致性复审（与 SA6 fixture 回流并行） |
+| 5 | 09:44 | SA6 | Phase 1 回流修订 | 09:46 | SA1 §6 发现红灯锚定 fixture 遗漏（AC-5 registryB 缺 randomBytes），send_message 回流 SA6 修正一行 |
+| 6 | 09:53 | SA2 | Phase 2 设计攻击评审 | 10:04 | SA8 设计复审 clear，进入全维度攻击评审 |
+| 7 | 10:05 | SA1 | Phase 2 设计 R2 修订 | 10:17 | SA2 R1 reject：§7/§11 迁移矩阵缺口（sa7-cordis 漏列等）+ §6 扩 cast 修订请求 + §6 过时条款 + MEDIUM 锚定缺口决策 |
+| 8 | 10:05 | SA6 | Phase 1 回流修订 R2 | 10:10 | SA2 R1 CRITICAL：red.test.ts:287-288 两工厂直呼需 as never cast（类型轴矛盾），send_message 回流 |
+| 9 | 10:20 | SA2 | Phase 2 设计 R2 复审 | 10:24 | SA1 R2 四点修订落盘，send_message 回流 SA2 复审 |
+| 10 | 10:20 | SA6 | Phase 1 回流修订 R3 | 10:25 | 设计 R2 §12.3：回补锚 A/B/C（shutdown×重试、随机源运行期违约、同候选并发） |
+| 11 | 10:27 | SA3 | Phase 3 TDD 实现 R1 | 11:07 | SA2 R2 pass，设计定稿；SA3 落位设计并使 20/20 红灯转绿 + 迁移既有测试 |
+| 12 | 11:08 | SA6 | Phase 1 回流修订 R4 | 11:14 | SA3 发现红灯 fixture 缺陷：makeScriptedRandomBytes 的 consumed getter 被解构快照化恒 0（:299/:348/:421 三处），实现正确性已独立验证，send_message 回流 SA6 修 fixture |
+| 13 | 11:20 | 总控亲验 | Phase 3 绿灯验证 | 11:26 | 后台独立进程：tsc --noEmit exit 0；pnpm test 1427/1427 绿、0 type errors、exit 0（首次日志被污染已重跑） |
+| 14 | 11:27 | SA4 | Phase 3 静态验尸 | 11:38 | pass — 红灯 20/20 转绿 + 总控亲验全绿后派 SA4 红队审查，verdict: pass（L4 操作项：R4 修正已由总控 commit b0962e9 收口）|
+| 15 | 11:40 | SA7 | Phase 3 动态验证 | 12:04 | pass — SA4 双清第一清后派 SA7；§10 五项动态重点实测全过 + 4 用例永久回归，verdict: pass |
+| 16 | 12:10 | 总控 | Phase 3.5 AC 门禁 | 12:15 | AC 逐条核对 7/7 ✅（ac_checklist.md），零回流 |
+| 17 | 12:16 | 总控+双终审 | Phase 4 终审+终验 | 12:29 | 后台终验（pnpm test + tsc）与 Standards/Spec 双轴并行终审（diff 980b16a..HEAD） |
+| 18 | 12:32 | SA3 | Phase 4 终审修复 R1 | (pending) | 双轴终审 blocking（同一 AC-7 文档残留）：README:3/:33 + cordis-plugin-hosting.md 示例四键化残留；顺带修 J-1/J-2 注释滞后 |
+| 19 | 12:33 | SA3 | Phase 4 终审修复 R1 | 12:39 | 双轴终审 blocking（AC-7 文档残留）→ 5 处文档/注释修复 commit 67da92d，190/190 + tsc 绿 |
+| 20 | 12:40 | 双终审 | Phase 4 复审 R2 | 12:48 | 修复后重审：Standards R2 Conclusion: clear + Spec R2 Conclusion: clear，双轴终审通过 |
+| 21 | 12:50 | 总控亲验 | Phase 4 终验封口 | 12:58 | HEAD=ee135a5 后台终验：pnpm test 121 文件 1431/1431 绿、0 type errors、exit 0；tsc --noEmit exit 0；gate 12-16 自检全过 |

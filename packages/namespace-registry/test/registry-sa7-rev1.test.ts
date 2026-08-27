@@ -92,6 +92,34 @@ async function flushMacrotasks(times = 3): Promise<void> {
   }
 }
 
+
+// ── phase-5 切片 1（ADR 0010）：受控随机源确定性 helper（测试内定义；禁止从 src 导出）──
+// 第 n 次生成 = `ns-` + n 的 32 位小写 hex；每调用恰按 128-bit（16 字节）请求。
+
+function makeDeterministicRandomBytes(): {
+  randomBytes: (length: number) => Uint8Array;
+  readonly id: (n: number) => string;
+} {
+  let counter = 0;
+  return {
+    randomBytes(length: number): Uint8Array {
+      if (length !== 16) {
+        throw new Error(`受控随机源必须按 128-bit（16 字节）请求，实际请求 ${length} 字节`);
+      }
+      counter += 1;
+      const hex = counter.toString(16).padStart(32, '0');
+      const out = new Uint8Array(16);
+      for (let i = 0; i < 16; i += 1) {
+        out[i] = Number.parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+      }
+      return out;
+    },
+    id: (n: number) => `ns-${n.toString(16).padStart(32, '0')}`,
+  };
+}
+
+const TEST_RANDOM_BYTES: (length: number) => Uint8Array = makeDeterministicRandomBytes().randomBytes;
+
 function manualClock(): { now: () => number } {
   return { now: () => 1_700_000_123_456 };
 }
@@ -259,6 +287,7 @@ describe('SA7 rev1 补充动态（P1 floating-window / R5′ 活链路 / P2 real
       const registry = createNamespaceRegistryForTesting(persistence, {
         clock: manualClock(),
         scheduler,
+        randomBytes: TEST_RANDOM_BYTES,
         idleTimeoutMs: 300_000,
         runtimeFactory: (handle) => {
           // k1 居 Map 插入序首位：close 返回 gated Promise（挂起）；
@@ -367,7 +396,6 @@ describe('SA7 rev1 补充动态（P1 floating-window / R5′ 活链路 / P2 real
 
       const created = await registry.create({
         owner: { userId: 'u-r5p' },
-        namespaceId: 'ns-r5p',
         schema: { lang: 'vfsl', version: 1, id: 'ns-r5p', text: 'type ROOT = { n: number; };\n' },
         root: { n: 42 },
       });
@@ -491,6 +519,7 @@ describe('SA7 rev1 补充动态（P1 floating-window / R5′ 活链路 / P2 real
       const registry = createNamespaceRegistryForTesting(persistence, {
         clock: { now: () => 1_700_000_123_456 },
         scheduler,
+        randomBytes: TEST_RANDOM_BYTES,
         idleTimeoutMs: 300_000,
         runtimeFactory: () => {
           const r = new ObservableRuntime(
@@ -560,6 +589,7 @@ describe('SA7 rev1 补充动态（P1 floating-window / R5′ 活链路 / P2 real
         // ★ 真实 ctx.timeout 桥（与生产 plugin 同款 wiring）：idle timer 经
         //   TimerService → ctx.effect → native setTimeout(15ms) 武装，并真实到期。
         scheduler: createCordisRegistryScheduler(ctx),
+        randomBytes: TEST_RANDOM_BYTES,
         idleTimeoutMs: 15, // 15ms native 窗口
         runtimeFactory: () => {
           const r = new ObservableRuntime(
@@ -624,6 +654,7 @@ describe('SA7 rev1 补充动态（P1 floating-window / R5′ 活链路 / P2 real
       const registry = createNamespaceRegistryForTesting(persistence, {
         clock: manualClock(),
         scheduler,
+        randomBytes: TEST_RANDOM_BYTES,
         idleTimeoutMs: 300_000,
         runtimeFactory: () => {
           const r = new ObservableRuntime(

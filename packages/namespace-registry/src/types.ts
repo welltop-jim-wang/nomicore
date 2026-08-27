@@ -53,7 +53,7 @@ export const REGISTRY_NOT_ACCEPTING_MESSAGE =
 export const NAMESPACE_LEASE_RELEASED_MESSAGE =
   'NAMESPACE_LEASE_RELEASED: 此 NamespaceLease 已 release，不能再接纳业务操作';
 export const NAMESPACE_CREATE_INVALID_INPUT_MESSAGE =
-  'NAMESPACE_CREATE_INVALID_INPUT: create 输入必须恰含 owner、namespaceId、schema 与 root';
+  'NAMESPACE_CREATE_INVALID_INPUT: create 输入必须恰含 owner、schema 与 root';
 export const NAMESPACE_SCHEMA_INVALID_MESSAGE =
   'NAMESPACE_SCHEMA_INVALID: namespace schema 编译失败';
 export const NAMESPACE_ROOT_INVALID_MESSAGE =
@@ -73,6 +73,9 @@ export const NAMESPACE_REGISTRY_PLUGIN_CONFIG_MESSAGE =
   'NAMESPACE_REGISTRY_PLUGIN_CONFIG: namespace-registry 插件配置仅接受 idleTimeoutMs 键';
 export const NAMESPACE_REGISTRY_SHUTDOWN_FAILED_MESSAGE =
   'NAMESPACE_REGISTRY_SHUTDOWN_FAILED: Registry shutdown 期间部分 Runtime 关闭失败';
+// —— phase-5 切片 1 增量（ADR 0010 身份条款/ADR 0009 依赖纪律）——
+export const NAMESPACE_REGISTRY_RANDOM_REQUIRED_MESSAGE =
+  'NAMESPACE_REGISTRY_RANDOM_REQUIRED: Registry 必须提供受控随机源 randomBytes(length): Uint8Array';
 
 /** Host 无关的命名空间归属标识：owner 是 Persistence partition key，非当前调用人。 */
 export interface NamespaceOwner {
@@ -94,11 +97,14 @@ export interface RegistryNotAcceptingIssue {
   readonly message: typeof REGISTRY_NOT_ACCEPTING_MESSAGE;
 }
 
-/** Registry 内部故障阶段词表（§3.3；#110 只用 runtime-construction / lifecycle-slot-internal）。 */
+/** Registry 内部故障阶段词表（§3.3；#110 只用 runtime-construction / lifecycle-slot-internal）。
+ * phase-5 切片 1（ADR 0010）：追加 `namespace-id-generation`——普通 create 的 ID 生成阶段
+ * （随机源 throw / 形状违约 / 重试预算耗尽）的三类终局（ADR 0009 开放清单新注册）。 */
 export type NamespaceRegistryFatalPhase =
   | 'runtime-construction'
   | 'create-document-internal'
-  | 'lifecycle-slot-internal';
+  | 'lifecycle-slot-internal'
+  | 'namespace-id-generation';
 
 /** Registry 生命周期投影（#112 §2.E）：恒三相（running/shutting-down/stopped）。 */
 export type NamespaceRegistryStatus =
@@ -171,16 +177,27 @@ export interface RegistryTimeoutScheduler {
 // —— #111 create 公共面（设计 §3 冻结类型；§14 签名替换契约）——
 
 /**
- * create 输入（设计 §3）：恒四键——owner/namespaceId 由接纳段读取冻结（§4 DQ-1：
- * 排队期间改写不影响 identity/Persistence），schema/root 在槽内做一次 cycle-safe
- * plain-data 深快照 + 深冻结（§4 第 4 步）。ROOT 是完整 logical snapshot；
- * 调用方不得携带 META/createdAt，且不得省略 root。
+ * create 输入（#111 设计 §3；phase-5 切片 1 修正：恒三键，ADR 0010「普通 create 不
+ * 再接受调用方 namespaceId」）：owner 由接纳段读取冻结（§4 DQ-1：排队期间改写不影响
+ * identity/Persistence），schema/root 在槽内做一次 cycle-safe plain-data 深快照 +
+ * 深冻结（§4 第 4 步）。namespaceId 由注入的受控 128-bit CSPRNG 生成（`ns-`+32 小写
+ * hex）；调用方携带 namespaceId 键 → NAMESPACE_CREATE_INVALID_INPUT（接纳段拒绝）。
+ * ROOT 是完整 logical snapshot；调用方不得携带 META/createdAt，且不得省略 root。
  */
 export interface CreateNamespaceInput {
   readonly owner: NamespaceOwner;
-  readonly namespaceId: string;
   readonly schema: unknown;
   readonly root: unknown;
+}
+
+/**
+ * Registry 受控随机源 capability（phase-5 切片 1；ADR 0009 依赖纪律 + ADR 0010 身份条款）。
+ * 契约：实现必须是密码学安全随机（CSPRNG）；每次调用返回**新鲜、无偏、恰 length 字节**的
+ * Uint8Array；不得是可 fallback 的全局 crypto 直调。缺失/非函数 → 构造期同步 TypeError，
+ * 绝不 fallback（禁 Math.random / crypto.getRandomValues 缺省）。
+ */
+export interface RegistryRandomBytes {
+  (length: number): Uint8Array;
 }
 
 /**
@@ -290,13 +307,16 @@ export interface NamespaceLease {
 /**
  * Host 无关 Registry 主接口（设计 §3.2）：open + create 双主链 + shutdown 三相状态机。
  *
- * create 契约（§5 伪码）：运行时按 §4 DQ-1 最小 identity 接纳 → 同 key 与 open 共用
- * #110 carrier FIFO → 槽内 payload 快照 → 必需的 Clock 单次读数 → 私有 create-document
+ * create 契约（§5 伪码；phase-5 切片 1 按 ADR 0010 修订）：运行时按 §4 DQ-1 最小
+ * identity 接纳（owner-only——namespaceId 由注入受控 CSPRNG 生成，调用方携带
+ * namespaceId 键即拒）→ 生成编排循环（entry 碰撞/DOC_DUPLICATE → 换 ID 重试，至多
+ * 8 次；耗尽 → committed:false fatal）→ 候选经 carrier FIFO 入 attempt slot → 槽内
+ * payload 快照 → 必需的 Clock 单次读数 → 私有 create-document（prepare + build）
  * → Persistence createDoc → 普通 P0 Runtime factory。拒绝分三通道：resolve 领域窄
- * issue（含 duplicate 四源同码 ALREADY_EXISTS）、reject branded
+ * issue（身份/输入形状/schema/root/持久化运营故障/不接纳）、reject branded
  * NamespaceRegistryFatalError（internal/clock/create-document/persistence-fatal/
- * post-commit runtime-construction，committed 事实诚实）、构造期同步 TypeError
- * （Clock/scheduler 形状门禁）。
+ * post-commit runtime-construction/namespace-id-generation，committed 事实诚实）、
+ * 构造期同步 TypeError（Clock/scheduler/randomBytes 形状门禁——ADR 0009 依赖纪律）。
  *
  * #112 增量（设计 §2.D/§2.E/§2.H）：shutdown 真实化——三次调用态机
  * （running → shutting-down → stopped）、停接纳于公共入口同步段、聚合关闭全部
@@ -306,8 +326,8 @@ export interface NamespaceRegistry {
   /** 校验身份后取得或建立同 key 唯一 Runtime，并签发独立 lease；不等 P0。 */
   open(owner: NamespaceOwner, namespaceId: string): Promise<OpenNamespaceResult>;
   /**
-   * #111 排他 create 主链（§3/§14 typed 签名）：恒四键输入（§4 DQ-1 最小接纳是运行时
-   * 唯一形状验收点——顶层非 object / identity 缺陷 / payload 变体 → 窄 issue），同
+   * #111 排他 create 主链（§3/§14 typed 签名；phase-5 切片 1 修正：恒三键输入——
+   * namespaceId 由注入受控 CSPRNG 生成，调用方携带 namespaceId 键即拒），同
    * key 排他（绝不 create-as-open），成功签发独立 lease（普通 P0 Runtime，不等 P0
    * 结算）。实现层签名以 unknown 表达（对齐 open 的「公共 typed / 实现 unknown」双层
    * 先例——接纳段校验一切敌意/畸形输入是运行时契约，静态类型是调用方命名形状）。
@@ -352,6 +372,10 @@ export interface NamespaceRegistryShutdownFailure {
 export interface CreateNamespaceRegistryOptions {
   readonly clock: Clock;
   readonly scheduler: RegistryTimeoutScheduler;
+  /** 受控随机源（phase-5 切片 1，ADR 0010）：普通 create 的 namespaceId 生成源；
+   * **必需**——缺失/非函数 → 构造期同步 TypeError（禁全局 crypto fallback，ADR 0009）。
+   * 契约细节见 RegistryRandomBytes。 */
+  readonly randomBytes: RegistryRandomBytes;
   readonly idleTimeoutMs?: number;
   readonly observer?: RegistryObserver;
 }

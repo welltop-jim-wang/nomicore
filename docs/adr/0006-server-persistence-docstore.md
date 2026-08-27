@@ -195,3 +195,11 @@ interface DocHandle {
 - 降级等待期内（任一可观察时刻）retry 退避即该 entry 的唯一 flush 调度源（退避上限 max-dirty 间隔；flush 记账的 catch→finally 同步续体内允许瞬态并存，无外部可观察后果），「不设外部 flush/cron 协调器」不变。
 
 **3. 实施注记**：entry 状态解析收敛于 adapter 共享的 persistence lifecycle core（两 Adapter 不得复制状态机）；MemoryPersistence 与 FilePersistence 以平行验收套件覆盖同一状态契约（`issue-79-entry-status.test.ts` / `issue-79-file-entry-status.test.ts`）。
+
+---
+
+## 对齐说明：issue #131（Phase 5 切片 1：Registry 普通 create 的 namespaceId 生成）
+
+日期：2026-08-27；状态：已接受。本说明只对齐 Registry 身份演进，**不修改本 ADR 任何 Persistence 契约条款**。
+
+Namespace identity、普通 create 的 ID 生成与 Registry 碰撞处理以 [ADR 0010「Namespace identity、owner 与复制范围」](./0010-hub-peer-websocket-ydoc-replication.md#namespace-identityowner-与复制范围) 为唯一权威来源。本 ADR 仅保留 Persistence 边界：仍按 owner 分区，`createDoc(owner, docId, doc)` 仍以 `(owner.userId, docId)` 排他创建并通过 `DOC_DUPLICATE` 报告重复；不新增跨 owner catalog 或全局唯一约束。Registry 改为以 namespaceId 索引，不改变不同 owner 下相同 docId 属于不同持久化 entry 的既有语义。
