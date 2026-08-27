@@ -10,6 +10,8 @@
  * ```
  * E1  fatal gate（零输入访问）
  * E2  writable gate + notifier 绑定检查（瞬时观察；零输入访问）
+ *     （E1/E2 于 2026-08-27 提取为私有共享 gate runReplicationWriteGate——SA2 R1 #4；
+ *      双槽共用一实现，短路顺序 / stable message / 结算通道逐字节不变，零公共面扩散）
  * E3  输入校验（enable 专属：单读捕获 + 全探测 try/catch 收编；bump 无输入）
  * E4  领域事实读取（readReplicationFacts：三出口——disabled/enabled/throw→internal fatal）
  * E5  单 Yjs transaction（本槽唯一 Y.Doc 写入口；enable 两键同事务 = 原子安装）
@@ -42,7 +44,12 @@ import {
   RuntimeWriteFatalError,
 } from './errors.js';
 import type { RuntimeState } from './p0.js';
-import { disabled, markWriteFatal, rejectWithWriteFatal, writeFatalMessage } from './write.js';
+import {
+  disabled,
+  markWriteFatal,
+  rejectWithWriteFatal,
+  writeFatalMessage,
+} from './write.js';
 
 /** 复制身份格式（ADR 0010 冻结：128-bit 随机值 = 32 位小写 hex）。
  *  **模块级值导出，index.ts 不 re-export**（runtime 公共入口值导出面恰
@@ -92,6 +99,96 @@ export interface ReplicationWriteEnv {
   readonly state: RuntimeState;
   /** dirty notification 接缝（显式 undefined 联合——沿 WriteEnv 先例）。 */
   readonly notifyDirty: (() => Promise<void>) | undefined;
+}
+
+/**
+ * 共享 gate 拒绝子集（SA2 R1 #4 / 设计 §5.2）：两入口结果联合（EnableReplicationResult /
+ * BumpReplicationEpochResult）共享的 gate 拒绝成员——disabled 结果形状 + 一条
+ * committed:false branded fatal。helper 不把两个公共结果类型混成自身返回类型。
+ * 私有：不扩公共 exports/类型面。
+ */
+type ReplicationWriteGateRefusal =
+  | Readonly<{ readonly ok: false; readonly issues: unknown[] }>
+  | RuntimeWriteFatalError;
+
+/** gate-failure 载体（tagged；`result` 是入口无关的共享拒绝值）。 */
+type ReplicationWriteGateFailure = Readonly<{
+  readonly kind: 'gate-failure';
+  readonly result: ReplicationWriteGateRefusal;
+}>;
+
+/** 共享 gate 结果：gate-ready 携带单读捕获的 notifyDirty；gate-failure 携带共享拒绝。 */
+type ReplicationWriteGateResult =
+  | Readonly<{ readonly kind: 'gate-ready'; readonly notifyDirty: () => Promise<void> }>
+  | ReplicationWriteGateFailure;
+
+/**
+ * E1/E2 共享 gate（SA2 R1 #4 裁决本 PR 提取，设计 §5.2）：fatal → `getStatus()` →
+ * notifier 绑定的短路顺序与 stable message 与既有两槽逐字节一致；零输入访问（不接收
+ * 也不读取 caller input；enable 的 E3-only 敌意输入绝不在 gate 内触发）。
+ *
+ * - E1 fatal 已置位 → disabled（结果联合共享成员；零读取 handle/notifier/input）；
+ * - E2 `getStatus()` throw → markWriteFatal + branded RuntimeWriteFatalError
+ *   （phase=write-slot-internal、committed:false——尚零 doc 写）；
+ * - E2 非 ready（persistence-degraded / released / disposed 同拒）→ disabled；
+ * - E2 notifier 未绑定 → disabled（构造方义务 loud gate）；
+ * - 全过 → gate-ready + notifyDirty 单读捕获（此后槽体零再读 env.notifyDirty 语义）。
+ *
+ * 不合并 E3 输入校验、E4 facts、E5 transaction、E5.5 status 同步、E6 notifier await——
+ * 各入口在 gate-ready 后独立完成；函数私有，仅本模块两个槽消费。
+ */
+function runReplicationWriteGate(env: ReplicationWriteEnv): ReplicationWriteGateResult {
+  // ── E1 fatal gate（零输入访问）───────────────────────────────────────
+  if (env.state.fatal !== undefined) {
+    return {
+      kind: 'gate-failure',
+      result: refusalOf('fatal 已置位（internal fatal 已永久禁用本 Runtime 的全部写能力，读取仍保留）'),
+    };
+  }
+
+  // ── E2 writable gate + notifier 绑定检查（瞬时观察；零输入访问）────────
+  let handleStatus: DocHandleStatus;
+  try {
+    handleStatus = env.handle.getStatus();
+  } catch (err) {
+    // adapter bug → 统一 fatal（committed:false——此时尚零 doc 写）
+    markWriteFatal(env, err, 'replication');
+    return {
+      kind: 'gate-failure',
+      result: new RuntimeWriteFatalError(
+        'write-slot-internal',
+        false,
+        writeFatalMessage('replication', 'write-slot-internal', false),
+        err === undefined ? undefined : { cause: err },
+      ),
+    };
+  }
+  if (handleStatus !== 'ready') {
+    return {
+      kind: 'gate-failure',
+      result: refusalOf(
+        `DocHandle 状态 ${handleStatus} 不可写（persistence-degraded 阻止全部 Y.Doc 写；released/disposed 同拒）`,
+      ),
+    };
+  }
+  if (env.notifyDirty === undefined) {
+    return {
+      kind: 'gate-failure',
+      result: refusalOf(
+        'notifyDirty 未绑定——构造方必须绑定 persistence.saveDoc(handle)（ADR-0008 窄接缝）；'
+        + '无持久化绑定的 Runtime 拒绝一切 Y.Doc 写，杜绝「提交成功但永无 dirty 登记」的静默失信',
+      ),
+    };
+  }
+  return { kind: 'gate-ready', notifyDirty: env.notifyDirty };
+}
+
+/** disabled() → 共享拒绝窄化：disabled 恒为 ok:false 分支（write.ts 冻结实现，ok:true
+ *  结构性不可达）。此 cast 仅为把 MutateRootResult 联合窄化为共享拒绝成员（拒绝子集
+ *  的 ok:false 分支不含 ok:true），零运行时分支、零 message 模板复制——stable message
+ *  单一来源仍归 write.ts disabled()。 */
+function refusalOf(reason: string): ReplicationWriteGateRefusal {
+  return disabled(reason) as ReplicationWriteGateRefusal;
 }
 
 /**
@@ -157,31 +254,17 @@ export async function runEnableReplicationSlot(
   env: ReplicationWriteEnv,
   input: unknown,
 ): Promise<EnableReplicationResult> {
-  // ── E1 fatal gate（零输入访问）───────────────────────────────────────
-  if (env.state.fatal !== undefined) {
-    return disabled('fatal 已置位（internal fatal 已永久禁用本 Runtime 的全部写能力，读取仍保留）');
+  // ── E1/E2 共享 gate（fatal → writable → notifier 绑定；零输入访问）────────
+  const gate = runReplicationWriteGate(env);
+  if (gate.kind === 'gate-failure') {
+    // 既有双通道结算不变（设计 §5.2）：disabled → 结果联合共享成员直接返回；
+    // branded fatal（write-slot-internal、committed:false，markWriteFatal 已同步
+    // 置位）→ throw 经 async promise rejection 送达——与既有
+    // `return rejectWithWriteFatal(...)` 同一错误对象、同一结算通道
+    if (gate.result instanceof RuntimeWriteFatalError) throw gate.result;
+    return gate.result;
   }
-
-  // ── E2 writable gate + notifier 绑定检查（瞬时观察；零输入访问）────────
-  let handleStatus: DocHandleStatus;
-  try {
-    handleStatus = env.handle.getStatus();
-  } catch (err) {
-    // adapter bug → 统一 fatal（committed:false——此时尚零 doc 写）
-    return rejectWithWriteFatal(env, false, 'write-slot-internal', err, 'replication');
-  }
-  if (handleStatus !== 'ready') {
-    return disabled(
-      `DocHandle 状态 ${handleStatus} 不可写（persistence-degraded 阻止全部 Y.Doc 写；released/disposed 同拒）`,
-    );
-  }
-  if (env.notifyDirty === undefined) {
-    return disabled(
-      'notifyDirty 未绑定——构造方必须绑定 persistence.saveDoc(handle)（ADR-0008 窄接缝）；'
-      + '无持久化绑定的 Runtime 拒绝一切 Y.Doc 写，杜绝「提交成功但永无 dirty 登记」的静默失信',
-    );
-  }
-  const notifyDirty = env.notifyDirty; // 单读捕获（此后不再读 env 字段语义）
+  const notifyDirty = gate.notifyDirty; // 单读捕获（gate 已捕获；此后槽体零再读 env 字段语义）
 
   // ── E3 输入校验（单读捕获 + 全探测异常收编——SA2 R1 #2 修订）───────────
   //  单读捕获 = 受控 snapshotter 纪律在不可变标量载荷上的最小实现：快照器有两职责
@@ -281,30 +364,13 @@ export async function runEnableReplicationSlot(
 export async function runBumpReplicationEpochSlot(
   env: ReplicationWriteEnv,
 ): Promise<BumpReplicationEpochResult> {
-  // ── E1 fatal gate（零输入访问）───────────────────────────────────────
-  if (env.state.fatal !== undefined) {
-    return disabled('fatal 已置位（internal fatal 已永久禁用本 Runtime 的全部写能力，读取仍保留）');
+  // ── E1/E2 共享 gate（同 enable——入口无关；bump 无输入面）───────────────
+  const gate = runReplicationWriteGate(env);
+  if (gate.kind === 'gate-failure') {
+    if (gate.result instanceof RuntimeWriteFatalError) throw gate.result;
+    return gate.result;
   }
-
-  // ── E2 writable gate + notifier 绑定检查（瞬时观察；零输入访问）────────
-  let handleStatus: DocHandleStatus;
-  try {
-    handleStatus = env.handle.getStatus();
-  } catch (err) {
-    return rejectWithWriteFatal(env, false, 'write-slot-internal', err, 'replication');
-  }
-  if (handleStatus !== 'ready') {
-    return disabled(
-      `DocHandle 状态 ${handleStatus} 不可写（persistence-degraded 阻止全部 Y.Doc 写；released/disposed 同拒）`,
-    );
-  }
-  if (env.notifyDirty === undefined) {
-    return disabled(
-      'notifyDirty 未绑定——构造方必须绑定 persistence.saveDoc(handle)（ADR-0008 窄接缝）；'
-      + '无持久化绑定的 Runtime 拒绝一切 Y.Doc 写，杜绝「提交成功但永无 dirty 登记」的静默失信',
-    );
-  }
-  const notifyDirty = env.notifyDirty; // 单读捕获
+  const notifyDirty = gate.notifyDirty; // 单读捕获
 
   // ── E4 领域事实读取（无输入——跳 E3）─────────────────────────────────
   let facts: NamespaceRuntimeReplicationStatus;

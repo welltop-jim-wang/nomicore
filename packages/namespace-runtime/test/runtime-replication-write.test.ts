@@ -19,7 +19,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import * as Y from 'yjs';
-import type { DocHandle, User } from '@nomicore/persistence';
+import type { DocHandle, DocHandleStatus, User } from '@nomicore/persistence';
 import { RuntimeWriteFatalError } from '../src/index.js';
 import type { EnableReplicationInput, NamespaceRuntime } from '../src/index.js';
 import { createNamespaceRuntimeWithSeam } from '../src/runtime.js';
@@ -340,5 +340,278 @@ describe('复制槽基本语义（runtime 侧补充锚：幂等/单调/overflow 
     expect(issuesText(rejected)).toContain('REPLICATION_EPOCH_OVERFLOW');
     expect(doc.getMap('META').get('replicationEpoch')).toBe(Number.MAX_SAFE_INTEGER); // 不回绕
     expect(doc.getMap('META').get('replicationId')).toBe(id0);
+  });
+});
+
+// ════════════════════════ 共享 gate（E1/E2）双入口等价性 ════════════════════════
+
+/**
+ * 共享 gate 专用 fixture（设计 §5.3 / SA2 R1 #4）：可控 getStatus / notifier 计数 +
+ * 通知时刻 META 快照（观察到 E5 后已提交值）。不 mock 语义——计数与状态注入仅用于
+ * 锁定访问纪律与短路顺序。
+ */
+function makeGateRuntime(
+  doc: Y.Doc,
+  opts: {
+    /** getStatus 行为（缺省恒 'ready'）；构造期/观测期计数一并计入 statusCalls。 */
+    status?: () => DocHandleStatus;
+    /** null → 不绑定 notifyDirty（notifier absent 通道）；缺省为计数 notifier。 */
+    notifyDirty?: (() => Promise<void>) | null;
+  } = {},
+): {
+  runtime: NamespaceRuntime;
+  statusCalls: () => number;
+  notifyCalls: () => number;
+  notifyMeta: () => { id: unknown; epoch: unknown };
+} {
+  let statusCount = 0;
+  let notifies = 0;
+  const seen: Array<{ id: unknown; epoch: unknown }> = [];
+  const statusFn = opts.status ?? (() => 'ready' as const);
+  const handle = {
+    owner: OWNER,
+    docId: 'ns-1',
+    doc,
+    getStatus: () => {
+      statusCount += 1;
+      return statusFn();
+    },
+    release: async () => {},
+  } as unknown as DocHandle;
+  const notifyDirty =
+    opts.notifyDirty === null
+      ? undefined
+      : async (): Promise<void> => {
+          notifies += 1;
+          const meta = doc.getMap('META');
+          seen.push({ id: meta.get('replicationId'), epoch: meta.get('replicationEpoch') });
+          if (opts.notifyDirty !== undefined && opts.notifyDirty !== null) await opts.notifyDirty();
+        };
+  const runtime = createNamespaceRuntimeWithSeam({
+    handle,
+    ...(notifyDirty === undefined ? {} : { notifyDirty }),
+  });
+  return {
+    runtime,
+    statusCalls: () => statusCount,
+    notifyCalls: () => notifies,
+    notifyMeta: () => seen[seen.length - 1] ?? { id: undefined, epoch: undefined },
+  };
+}
+
+/** hostile enable input：'replicationId' 属性读计数 + 合法值——探测 gate 是否提前触发
+ *  E3-only 输入（fatal/non-ready/throw/absent 各拒绝路径必须零读取）。 */
+function hostileInputFixture(): { input: unknown; reads: () => number } {
+  let reads = 0;
+  const proxy = new Proxy(
+    { replicationId: 'a'.repeat(32) },
+    {
+      get(target, key, receiver) {
+        if (key === 'replicationId') reads += 1;
+        return Reflect.get(target, key, receiver);
+      },
+    },
+  );
+  return { input: proxy, reads: () => reads };
+}
+
+describe('共享 gate（E1/E2）：双入口短路顺序与访问纪律（设计 §5.3 / SA2 R1 #4）', () => {
+  it('fatal 已置位：enable/bump 均零访问 getStatus、零调用 notifier；enable hostile input 零读取（E1 短路于一切）', async () => {
+    const doc = makeDoc();
+    const fx = makeGateRuntime(doc);
+    await readyOf(fx.runtime);
+
+    // 制造 fatal（E4 损坏：恰一键存在 → write-slot-internal committed:false；
+    // 该造态调用自身过 E1/E2——此后 state.fatal 置位，方可测 E1 短路）
+    doc.getMap('META').set('replicationId', 'f'.repeat(32));
+    const fatalSeed = await settleOf(enableOf(fx.runtime, { replicationId: 'd'.repeat(32) }));
+    expect(fatalSeed.kind).toBe('rejected');
+    if (fatalSeed.kind !== 'rejected') return;
+    expect((fatalSeed.reason as RuntimeWriteFatalError).committed).toBe(false);
+    expect(fx.runtime.getStatus().fatal?.code).toBe('NSRT-FATAL-REPLICATION-WRITE-INTERNAL');
+
+    // enable：E1 短路——getStatus/notifier/input 全部零接触
+    let s = fx.statusCalls();
+    let n = fx.notifyCalls();
+    const hostile = hostileInputFixture();
+    const settled = await settleOf(enableOf(fx.runtime, hostile.input));
+    expect(settled.kind).toBe('resolved');
+    if (settled.kind !== 'resolved') return;
+    const result = settled.value as { ok: boolean; issues?: unknown[] };
+    expect(result.ok).toBe(false);
+    expect(JSON.stringify(result)).toContain('RUNTIME_WRITE_DISABLED');
+    expect(hostile.reads()).toBe(0); // E3-only 输入零读取
+    expect(fx.statusCalls() - s).toBe(0); // getStatus 零访问
+    expect(fx.notifyCalls()).toBe(n); // notifier 零调用
+    expect(doc.getMap('META').has('replicationEpoch')).toBe(false); // META 零新写
+    expect(doc.getMap('META').get('replicationId')).toBe('f'.repeat(32));
+
+    // bump：同短路（无输入面）
+    s = fx.statusCalls();
+    n = fx.notifyCalls();
+    const bump = await settleOf(fx.runtime.bumpReplicationEpoch());
+    expect(bump.kind).toBe('resolved');
+    if (bump.kind !== 'resolved') return;
+    expect((bump.value as { ok: boolean }).ok).toBe(false);
+    expect(JSON.stringify(bump.value)).toContain('RUNTIME_WRITE_DISABLED');
+    expect(fx.statusCalls() - s).toBe(0);
+    expect(fx.notifyCalls()).toBe(n);
+    expect(doc.getMap('META').has('replicationEpoch')).toBe(false);
+  });
+
+  it('non-ready（persistence-degraded）：getStatus 恰一次、notifier 零访问；enable hostile input 零读取、bump 保持零输入面', async () => {
+    const doc = makeDoc();
+    const fx = makeGateRuntime(doc, { status: () => 'persistence-degraded' });
+    await readyOf(fx.runtime); // P0 与 handle 状态无关，schema 照常 ready
+
+    let s = fx.statusCalls();
+    let n = fx.notifyCalls();
+    const hostile = hostileInputFixture();
+    const settled = await settleOf(enableOf(fx.runtime, hostile.input));
+    expect(settled.kind).toBe('resolved');
+    if (settled.kind !== 'resolved') return;
+    const result = settled.value as { ok: boolean; issues?: unknown[] };
+    expect(result.ok).toBe(false);
+    expect(JSON.stringify(result)).toContain('RUNTIME_WRITE_DISABLED');
+    expect(fx.statusCalls() - s).toBe(1); // E2 恰一次瞬时观察
+    expect(fx.notifyCalls()).toBe(n); // notifier 零访问（notifier 检查在非 ready 之后短路）
+    expect(hostile.reads()).toBe(0); // 输入不进 E3
+    expect(doc.getMap('META').has('replicationId')).toBe(false);
+    expect(doc.getMap('META').has('replicationEpoch')).toBe(false);
+
+    s = fx.statusCalls();
+    n = fx.notifyCalls();
+    const bump = await settleOf(fx.runtime.bumpReplicationEpoch());
+    expect(bump.kind).toBe('resolved');
+    if (bump.kind !== 'resolved') return;
+    expect((bump.value as { ok: boolean }).ok).toBe(false);
+    expect(JSON.stringify(bump.value)).toContain('RUNTIME_WRITE_DISABLED');
+    expect(fx.statusCalls() - s).toBe(1);
+    expect(fx.notifyCalls()).toBe(n);
+    expect(doc.getMap('META').has('replicationEpoch')).toBe(false);
+  });
+
+  it('getStatus throw：enable/bump 双入口均 branded RuntimeWriteFatalError（write-slot-internal、committed:false）而非结果联合/裸异常；notifier 零访问；enable hostile input 零读取', async () => {
+    // —— enable 入口（独立 Runtime fixture）——
+    {
+      const doc = makeDoc();
+      let throwMode = false;
+      const fx = makeGateRuntime(doc, {
+        status: () => {
+          if (throwMode) throw new Error('adapter getStatus boom (deterministic)');
+          return 'ready';
+        },
+      });
+      await readyOf(fx.runtime);
+      throwMode = true; // 构造/P0 期已过——此后槽内 E2 的 getStatus 抛（adapter bug）
+
+      let s = fx.statusCalls();
+      let n = fx.notifyCalls();
+      const hostile = hostileInputFixture();
+      const settled = await settleOf(enableOf(fx.runtime, hostile.input));
+      expect(settled.kind).toBe('rejected'); // 绝不 resolve 结果联合、也绝非原始 TypeError
+      if (settled.kind !== 'rejected') return;
+      const fatal = settled.reason;
+      expect(fatal).toBeInstanceOf(RuntimeWriteFatalError);
+      const f = fatal as RuntimeWriteFatalError;
+      expect(f.phase).toBe('write-slot-internal');
+      expect(f.committed).toBe(false); // 尚零 doc 写
+      expect(hostile.reads()).toBe(0);
+      expect(fx.notifyCalls()).toBe(n); // notifier 零访问/零调用
+      expect(fx.statusCalls() - s).toBe(1); // E2 恰一次（throw 发生处）
+      expect(doc.getMap('META').has('replicationId')).toBe(false); // META 零写
+
+      // 恢复观察面（fatal 后 status 仍可读——读取保留）
+      throwMode = false;
+      expect(fx.runtime.getStatus().fatal?.code).toBe('NSRT-FATAL-REPLICATION-WRITE-INTERNAL');
+    }
+
+    // —— bump 入口（独立 Runtime fixture；bump 无输入面）——
+    {
+      const doc = makeDoc();
+      let throwMode = false;
+      const fx = makeGateRuntime(doc, {
+        status: () => {
+          if (throwMode) throw new Error('adapter getStatus boom (deterministic)');
+          return 'ready';
+        },
+      });
+      await readyOf(fx.runtime);
+      throwMode = true;
+
+      let s = fx.statusCalls();
+      let n = fx.notifyCalls();
+      const settled = await settleOf(fx.runtime.bumpReplicationEpoch());
+      expect(settled.kind).toBe('rejected');
+      if (settled.kind !== 'rejected') return;
+      expect(settled.reason).toBeInstanceOf(RuntimeWriteFatalError);
+      const f = settled.reason as RuntimeWriteFatalError;
+      expect(f.phase).toBe('write-slot-internal');
+      expect(f.committed).toBe(false);
+      expect(fx.notifyCalls()).toBe(n); // notifier 零访问/零调用
+      expect(fx.statusCalls() - s).toBe(1); // E2 恰一次（throw 发生处）
+      expect(doc.getMap('META').has('replicationEpoch')).toBe(false); // META 零写
+    }
+  });
+
+  it('notifier 未绑定：getStatus 恰一次后拒绝；enable input 不进入 E3、bump 保持零输入面', async () => {
+    const doc = makeDoc();
+    const fx = makeGateRuntime(doc, { notifyDirty: null }); // 未绑定（构造方义务 loud gate）
+    await readyOf(fx.runtime);
+
+    let s = fx.statusCalls();
+    const hostile = hostileInputFixture();
+    const settled = await settleOf(enableOf(fx.runtime, hostile.input));
+    expect(settled.kind).toBe('resolved');
+    if (settled.kind !== 'resolved') return;
+    const result = settled.value as { ok: boolean; issues?: unknown[] };
+    expect(result.ok).toBe(false);
+    expect(JSON.stringify(result)).toContain('RUNTIME_WRITE_DISABLED');
+    expect(JSON.stringify(result)).toContain('notifyDirty 未绑定');
+    expect(fx.statusCalls() - s).toBe(1); // E2 恰一次
+    expect(hostile.reads()).toBe(0); // enable input 不进 E3
+    expect(doc.getMap('META').has('replicationId')).toBe(false);
+
+    s = fx.statusCalls();
+    const bump = await settleOf(fx.runtime.bumpReplicationEpoch());
+    expect(bump.kind).toBe('resolved');
+    if (bump.kind !== 'resolved') return;
+    expect((bump.value as { ok: boolean }).ok).toBe(false);
+    expect(JSON.stringify(bump.value)).toContain('RUNTIME_WRITE_DISABLED');
+    expect(fx.statusCalls() - s).toBe(1);
+    expect(doc.getMap('META').has('replicationEpoch')).toBe(false);
+  });
+
+  it('成功路径：getStatus 恰一次；enable 仅在 gate-ready 后读取 hostile input 恰一次（进 E3）；bump 零输入面；两入口 notifier 均在 E5 后恰一次（通知时刻 META 已提交）', async () => {
+    const doc = makeDoc();
+    const fx = makeGateRuntime(doc);
+    await readyOf(fx.runtime);
+
+    let s = fx.statusCalls();
+    let n = fx.notifyCalls();
+    const hostile = hostileInputFixture();
+    const enabled = await enableOf(fx.runtime, hostile.input);
+    expect((enabled as { ok: boolean }).ok).toBe(true);
+    expect(fx.statusCalls() - s).toBe(1); // E2 恰一次
+    expect(hostile.reads()).toBe(1); // E3 单读捕获恰一次——gate 之后才读取 E3-only 输入
+    expect(fx.notifyCalls()).toBe(n + 1); // E6 恰一次
+    const id0 = doc.getMap('META').get('replicationId') as string;
+    expect(fx.notifyMeta().id).toBe(id0); // 通知时刻 META 已提交（E5 之后才通知）
+    expect(fx.notifyMeta().epoch).toBe(1);
+
+    // bump：无输入参数（零输入读取面是结构事实）；E2 恰一次、notifier 在 E5 后恰一次
+    s = fx.statusCalls();
+    n = fx.notifyCalls();
+    const bumped = await fx.runtime.bumpReplicationEpoch();
+    expect((bumped as { ok: boolean }).ok).toBe(true);
+    expect(fx.statusCalls() - s).toBe(1);
+    expect(fx.notifyCalls()).toBe(n + 1);
+    expect(fx.notifyMeta().id).toBe(id0); // 身份不变
+    expect(fx.notifyMeta().epoch).toBe(2); // bump 通知时刻已提交 epoch 2
+    expect(fx.runtime.getStatus().replication).toEqual({
+      state: 'enabled',
+      replicationId: id0,
+      replicationEpoch: 2,
+    });
   });
 });

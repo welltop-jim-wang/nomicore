@@ -706,6 +706,94 @@ describe('AC-6 close/fatal 竞态与 Memory persistence 恢复', () => {
     await registry2.shutdown();
     await (fx.reader as unknown as { dispose(): Promise<void> }).dispose();
   });
+
+  it('fatal committed-not-durable（committed-state recovery，非 File durability recovery）：bump 提交后 notify 失败 → 仅从失败 bump 的同一 live Y.Doc 编码克隆 seed 构造新 generation，facts 保留、bump 至 3；failed notifier persistence 不充当 durable/reopen 前提', async () => {
+    // 注释声明：本用例验证的是 **committed-state recovery**——failed bump transaction 的
+    // committed META facts 被正确交接到 recovery 边界（同一 live Y.Doc → clone seed →
+    // 新 generation），**不是** File durability recovery；notifier failure 后 committed
+    // ≠ durable（ADR 0008 issue #132 修订节），失败 notifier 的持久层绝不作为成功前提。
+    const stub = new StubReplicationPersistence();
+    const gate: { failing: boolean; calls: number; cause: Error } = {
+      failing: false,
+      calls: 0,
+      cause: new Error('notify channel down (deterministic)'),
+    };
+    let liveDoc: Y.Doc | undefined;
+    const registry1 = makeRegistry(stub, {
+      runtimeFactory: (handle: DocHandle): NamespaceRuntime => {
+        liveDoc = handle.doc; // 捕获 Runtime 使用的同一 live Y.Doc（V3a 同引用）
+        return createNamespaceRuntimeForRegistry(handle, () => {
+          gate.calls += 1;
+          return gate.failing ? Promise.reject(gate.cause) : Promise.resolve();
+        });
+      },
+    });
+    const lease = okLease(await registry1.create(newContractInput()));
+    await schemaReady(lease);
+    const nsId = lease.namespaceId;
+    const rep = asRepLease(lease);
+
+    // 1) 用可失败 notifier 构造的同一 live Y.Doc 上 enable 成功，记录 id0 并在该 live
+    //    doc 断言 META 为 id0/1。
+    expect((await rep.enableReplication()).ok).toBe(true);
+    expect(gate.calls).toBe(1); // enable 的 notifier 恰一次（成功槽 E6）
+    const id0 = repMeta(lease).replicationId;
+    expect(id0).toMatch(REP_ID_PATTERN);
+    expect(liveDoc, 'runtimeFactory 必须捕获与 Runtime 同一的 live Y.Doc 引用').toBeDefined();
+    const doc = liveDoc as Y.Doc;
+    expect(doc.getMap('META').get('replicationId')).toBe(id0);
+    expect(doc.getMap('META').get('replicationEpoch')).toBe(1);
+
+    // 2) bump 的 notifier reject → RuntimeWriteFatalError committed:true；仅在原 live doc
+    //    断言 META 与 status.replication 均为 enabled/id0/epoch 2 且 status.fatal 非空；
+    //    不在 fatal Runtime 上再写。
+    gate.failing = true;
+    const failure = await rep.bumpReplicationEpoch().then(
+      () => null,
+      (e: unknown) => e,
+    );
+    expect(failure, 'notify-dirty 失败必须 reject，绝不 resolve 伪成功').toBeInstanceOf(
+      RuntimeWriteFatalError,
+    );
+    const fatal = failure as RuntimeWriteFatalError;
+    expect(fatal.committed).toBe(true); // 诚实 committed 事实（写已提交、登记通道损坏）
+    expect(gate.calls).toBe(2); // bump 的 notifier 恰一次（failed 尝试已发生——committed 真相）
+    expect(doc.getMap('META').get('replicationId')).toBe(id0);
+    expect(doc.getMap('META').get('replicationEpoch')).toBe(2);
+    expect(repStatus(lease)).toEqual({ state: 'enabled', replicationId: id0, replicationEpoch: 2 });
+    expect(leaseRuntimeStatus(lease).fatal).not.toBeNull();
+
+    // 3) rejection 之后才从失败 bump 已提交后的**同一 live Y.Doc** 制作独立 recovery
+    //    seed：先断言源 META=id0/2，encodeStateAsUpdate → applyUpdate 克隆后再次断言
+    //    seed META=id0/2。不得使用预制 epoch=2 seed 或失败 notifier 的 persistence。
+    expect(doc.getMap('META').get('replicationEpoch')).toBe(2); // 源 META 断言（clone 前）
+    const update = Y.encodeStateAsUpdate(doc);
+    const seedDoc = new Y.Doc();
+    Y.applyUpdate(seedDoc, update);
+    expect(seedDoc.getMap('META').get('replicationId')).toBe(id0);
+    expect(seedDoc.getMap('META').get('replicationEpoch')).toBe(2); // seed META 断言（clone 后）
+
+    // 4) 新建仅承载该 seedDoc 的独立 DocPersistence 与新 Registry；新 Registry 只能从
+    //    该 seed open。断言新 generation 为 enabled/id0/2、fatal 为空；其 bump 成功至 3。
+    const seedPersistence = new StubReplicationPersistence();
+    seedPersistence.seedDocument(nsId, seedDoc);
+    const registry2 = makeRegistry(seedPersistence);
+    const reopened = okLease(await registry2.open(ALICE, nsId));
+    await schemaReady(reopened);
+    expect(repMeta(reopened).replicationId).toBe(id0);
+    expect(repMeta(reopened).replicationEpoch).toBe(2);
+    expect(repStatus(reopened)).toEqual({ state: 'enabled', replicationId: id0, replicationEpoch: 2 });
+    expect(leaseRuntimeStatus(reopened).fatal).toBeNull(); // 新 generation 不继承旧 fatal
+    expect((await asRepLease(reopened).bumpReplicationEpoch()).ok).toBe(true);
+    expect(repMeta(reopened).replicationEpoch).toBe(3);
+    await registry2.shutdown();
+
+    // 5) failed notifier 所绑定 persistence（registry1 stub）：其读面（loadDoc/committed
+    //    表）与 live doc 是同一对象引用而非独立 durable 记录——本用例从不以它 reopen 作为
+    //    成功路径，其状态不升级为 durability 证据（committed ≠ durable）。
+    expect(stub.loadCalls).toEqual([]);
+    expect(stub.saveEvents).toEqual([]);
+  });
 });
 
 describe('AC-6 File persistence 恢复', () => {
@@ -758,6 +846,57 @@ describe('AC-6 File persistence 恢复', () => {
     expect(repStatus(reopened).state).toBe('enabled');
     expect(repStatus(reopened).replicationId).toBe(id0);
     expect(repStatus(reopened).replicationEpoch).toBe(1);
+    await registry2.shutdown();
+    await (second.persistence as unknown as { dispose(): Promise<void> }).dispose();
+  });
+
+  it('FilePersistence bump 恢复（AC-6 矩阵补全）：enable → bump 至 2 → 双字段 waitDurableSnapshot 后 dispose → 同 rootDir 重启 open 恢复 id0/2（dirty 登记 ≠ durable）', async () => {
+    const rootDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'nomicore-replication-bump-'));
+    roots.push(rootDir);
+    const makeFile = (): { persistence: DocPersistence; scheduler: ReturnType<typeof createTestScheduler> } => {
+      const scheduler = createTestScheduler();
+      const persistence = new FilePersistence({
+        rootDir,
+        scheduler,
+        schedule: { debounceMs: 1, maxDirtyMs: 1 },
+      });
+      return { persistence, scheduler };
+    };
+
+    const first = makeFile();
+    const registry1 = makeRegistry(first.persistence);
+    const lease = okLease(await registry1.create(newContractInput()));
+    await schemaReady(lease);
+    const nsId = lease.namespaceId;
+    const rep = asRepLease(lease);
+
+    // 1) enable + bump 均为 {ok:true}；durable wait 之前 live META 已是 id0 + epoch 2
+    //    （dirty 已登记 ≠ 已落盘——落盘证据以 2) 的磁盘事实为准，不提前 dispose）
+    expect((await rep.enableReplication()).ok).toBe(true);
+    const id0 = repMeta(lease).replicationId;
+    expect(id0).toMatch(REP_ID_PATTERN);
+    expect((await rep.bumpReplicationEpoch()).ok).toBe(true);
+    expect(repMeta(lease).replicationId).toBe(id0);
+    expect(repMeta(lease).replicationEpoch).toBe(2);
+    expect(repStatus(lease)).toEqual({ state: 'enabled', replicationId: id0, replicationEpoch: 2 });
+
+    // 2) kick flush + issue #108 正式耐久等待：**双字段**磁盘证据（epoch===2 且 id===id0
+    //    同在 committed 快照）达成才 shutdown/dispose——仅 scheduler advance 或 saveDoc
+    //    resolve 不算 durable（反向控制：此处分隔 live 提交时刻与落盘时刻）。
+    await first.scheduler.advanceBy(1_000);
+    await waitDurableSnapshot(ALICE, nsId, rootDir, (doc) => doc.getMap('META').get('replicationEpoch'), 2);
+    await waitDurableSnapshot(ALICE, nsId, rootDir, (doc) => doc.getMap('META').get('replicationId'), id0);
+    await registry1.shutdown();
+    await (first.persistence as unknown as { dispose(): Promise<void> }).dispose();
+
+    // 3) 同 rootDir 全新 FilePersistence / Registry：open 恢复 committed 事实 id0/2，
+    //    status.replication 精确等于 enabled 联合（无额外键）
+    const second = makeFile();
+    const registry2 = makeRegistry(second.persistence);
+    const reopened = okLease(await registry2.open(ALICE, nsId));
+    expect(repMeta(reopened).replicationId).toBe(id0);
+    expect(repMeta(reopened).replicationEpoch).toBe(2);
+    expect(repStatus(reopened)).toEqual({ state: 'enabled', replicationId: id0, replicationEpoch: 2 });
     await registry2.shutdown();
     await (second.persistence as unknown as { dispose(): Promise<void> }).dispose();
   });
