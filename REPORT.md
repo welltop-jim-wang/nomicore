@@ -1,53 +1,79 @@
 ---
 status: complete
-run_id: issue-131-1787792522-3529662
-branch: fix/issue-131-on-docs-phase-5-websocket-replication
+run_id: issue-135-1787792421-862383
+branch: fix/issue-135-on-docs-phase-5-websocket-replication
 round: 1
+issue: 135
 ---
 
-# Phase 5: generate namespaceId and migrate Registry identity（issue #131）
+# Phase 5: implement instance replication protocol v1 codec（issue #135）
 
-## 概要（需求理解）
+## 概要
 
-将 namespaceId 变为进程内 Registry entry 的唯一身份（entry key 由 `(owner.userId, namespaceId)` 复合键迁移为仅 namespaceId），owner 保留为 create/open 的必需本地属性与 Persistence 分区键；普通 create 不再接受调用方 namespaceId，改由注入的受控 128-bit CSPRNG 生成 `ns-`+32 位小写 hex 的概率全局唯一 ID；碰撞（active/idle/closing entry 或 target-owner Persistence duplicate）重生成重试至多 8 次，耗尽以 `committed:false` Registry fatal（新 phase `namespace-id-generation`）失败。该实现票直接落在 ADR 0010「Namespace identity、owner 与复制范围」对 ADR 0009 的显式修订内（SA8 前置门禁 verdict: clear）。
+交付纯二进制包 `@nomicore/replication-protocol`（packages/replication-protocol，0.1.0，ESM only）：
+严格实现 instance-replication-v1 wire contract——20-byte 大端 NMCR envelope（一 WS message 一 frame）、
+17 种 v1 payload 的 normative 字段序与消息码、append-only 消息/错误注册表（连接 17 条 + namespace 20 条，
+scope/fatal/retryable/terminal 元数据不可变推导）、显式版本/capability 协商纯函数、malformed 输入统一
+注册表分类（ProtocolError）。纯包：无 Cordis/WebSocket/Registry/Node server/Buffer 依赖；直接依赖锁定
+yjs ^13.6.30 / y-protocols / lib0（lockfile 实定 13.6.32 / 1.0.7 / 0.2.117）。
 
-## 流水线与门禁记录
+流水线全程：SA8 前置门禁 clear → SA6 验收锚定（9 测试文件红灯）→ SA1 设计 R1 → SA2 攻击评审 pass →
+SA3 TDD 实现（4feb737）→ SA6 测试缺陷 A/B 修复（fa53d86）→ SA4 R0 reject（F1/F2/F3）→ SA3 回流（7489ca1）
+→ **SA4 R1 pass**（非阻塞 INFO-1 登记）→ **SA7 PASS** → **AC 门禁 6/6 ✅** → **双轴终审双 pass**。
+（恢复轮说明：SA7 曾两度因宿主重启/forks 多 worker 内存爆炸中断，本恢复轮在中心资源约束下收口。）
 
-- 任务类型：功能开发；流程 SA8→SA6→SA1→SA8(设计复审)→SA2→SA3→SA4→SA7→AC 门禁→双轴终审→收尾。
-- SA8 前置门禁：clear；SA8 设计复审：clear。
-- SA6 红灯锚定：20 运行时 + 5 类型锚全部基线红（真实可复现），四轮回流修正 fixture（registryB 缺随机源、as never cast、锚 A/B/C 回补、consumed getter 解构缺陷）。
-- SA1 设计 R2 经 SA2 攻击评审（R1 reject 四点 → R2 pass）定稿（D-1..D-13）。
-- SA3 实现 commit b21de27；SA4 静态验尸 pass；SA7 动态验证 pass（dispatch log verdict 与 review 文件一致，硬门禁 #12 自检通过）。
-- AC 门禁：7/7 ✅（wiki/raw/task_phase5-namespaceid-registry-identity_ac_checklist.md）。
-- 双轴终审（diff 980b16a..HEAD）：首轮 Standards/Spec 均 blocking（AC-7 消费者文档三处旧契约残留）→ SA3 修复轮 67da92d → R2 双轴均 Conclusion: clear。
+## 变更
 
-## 变更（文件级，基线 980b16a → HEAD b4ad317，共 8 commits；REPORT.md 为后续 housekeeping 入库）
+- `packages/replication-protocol/`：新包 11 源文件（envelope/canonical/payloads/messages/errors/registries
+  /negotiation/limits/constants/index + package.json/tsconfig），SA4 R0 回流修复 3 处（lookupError own-key、
+  assertWellFormedString typeof 守卫、readU32Field 死分支）+ 3 个防回归锚点。
+- `packages/replication-protocol/test/`：SA6 验收测试 9 文件（含 18 条 byte-level golden fixtures）；
+  SA6 A/B 最小修复（HELLO golden 版本表 wire `03010203`→`03030201`、golden 计数断言 17→18）。
+- 根 `package.json`：typecheck 链追加 `tsc -p packages/replication-protocol/tsconfig.json`（唯一根改动）。
+- 流水线档案：wiki/raw/task_replication-protocol-v1-codec_{design,sa2_review,sa3_impl,sa4_review,
+  sa7_report,ac_checklist,standards_review,spec_review,dispatch,...}.md。
 
-**packages/namespace-registry（0.1.3 → 0.1.4）**
-- `src/types.ts`：`RegistryRandomBytes` 必需注入键（双选项类型）、CreateNamespaceInput 三键化、新 phase/message 常量、接口级 JSDoc 更新
-- `src/identity.ts`：entry key = namespaceId 本体（复合键退役）、validateOwnerIdentity 抽出、acceptCreateIdentity owner-only（namespaceId 键出现即拒）
-- `src/registry.ts`：随机源构造门禁、ns-+32hex 生成编排（≤8 重试 / 耗尽 fatal）、attempt slot 经 carrier FIFO、open owner 核对 mismatch→NOT_FOUND、admittedCreates shutdown 屏障、ALREADY_EXISTS 产出点删除
-- `src/create-document.ts`：prepare/build 拆分；`src/observer.ts`：`create-id-generation-failed` 事件；`src/plugin.ts`：node:crypto 生产桥接；`src/testing.ts`/`src/index.ts`：注入面与类型导出
-- 测试：新增 `registry-phase5-identity-red.test.ts`（20 例）、`registry-phase5-identity-surface.test-d.ts`（5 类型锚）、`registry-sa7-phase5-dynamic.test.ts`（D1-D4）；迁移既有 11 个测试文件至三键契约（registry-create/idle/open/shutdown/node-dispose/persistence-contract/plugin/sa7-{concurrency,hostile,rev1,cordis}）
-- `README.md`：per-namespaceId 保证句与错误列举对齐
+## 验证（本恢复轮亲跑，单 worker/heap≤2GiB/显式 timeout 约束下）
 
-**文档**：`docs/adr/0009` 追加 issue #131 修订节；`docs/adr/0006` 追加对齐说明；`docs/integration/cordis-plugin-hosting.md` 示例三键化与重开/错误叙述更新；CONTEXT.md 已对齐（零改动）。
+| 项 | 命令（约束） | 结果 | 证据（.mabf-bg/） |
+|---|---|---|---|
+| 根 typecheck | `NODE_OPTIONS=--max-old-space-size=2048 pnpm typecheck`（10 包链含新包） | **EXIT=0** | final2-typecheck.log/.exit |
+| 根全量测试 | `pnpm test --pool=forks --poolOptions.forks.maxForks=1 --poolOptions.forks.minForks=1 --testTimeout=60000 --hookTimeout=60000` | **127/127 文件 · 1544/1544 测试 · Type Errors 0 · EXIT=0**（87.26s） | final3-test.log/.exit |
+| 包级套件 | `vitest run packages/replication-protocol`（含 --typecheck） | 9/9 · 139/139 · EXIT=0 | sa7-vitest-pkg.log/.exit |
+| fuzz 确定性 | 单文件 ×3 连跑 | 3× 5/5 EXIT=0，逐字一致 | sa7-fuzz-{1,2,3}.log |
+| yjs 互通 | 锁定组合真实 update/SV/snapshot 往返 | 25/25 EXIT=0 | sa7-interop.log/.exit |
+| **Buffer 遮蔽整套件** | `vitest run --config .mabf-bg/sa7-shadow.config.ts --pool=threads --poolOptions.threads.singleThread --testTimeout=60000 --hookTimeout=60000`（heap 2048） | **7/7 文件 · 127/127 · 451ms · EXIT=0** | sa7-shadow-suite6.log/.exit |
+| 遮蔽内存裁决探针 | plain node+tsx 复刻 fuzz 三循环（同种子）+ golden 变异，遮蔽下 heap 采样 | 800+800 decode Δ=0.0MB、300 roundtrip Δ=0.2MB、1220 变异 Δ=0.0MB，全断言过，EXIT=0 | sa7-shadow-node-probe.{ts,log,.exit} |
+| D-5 原型语义 | 探针 11 项（payload 原型跟随输入/自产输出恒 Uint8Array） | 11 pass / 0 fail | sa7-probe-d5.log |
+| alloc-bound | 巨大声明短 body 200k×2（帧级/payload 级） | 全部注册表分类错误，heap Δ≤1.2MB 有界 | sa7-probe-allocbound.log |
+| INFO-1 行为 | encodeFrame 非数值 messageType（'toString'/'constructor'）实测 | 产出 type=0x00 帧，decode 边界必拒 UNSUPPORTED_MESSAGE_TYPE（失败 loud） | sa7-probe-info1.log |
 
-**Persistence/namespace-runtime/doc-runtime/vfsl 等其余包：零改动**（AC-5）。
+### 资源约束合规与排障记录
 
-**wiki/raw/**：任务简报、relevant_decisions、conflict_report、design(R2)、design_conflict_report、sa2_review、sa6_red、sa4_review、sa7_report、ac_checklist、standards_review、spec_review、dispatch log 全部入库。
+- 全程 Vitest 参数兼容性先行核对（v3.2.7 `--pool/--poolOptions.{forks,threads}/{singleFork,singleThread,maxForks}/--maxWorkers/--testTimeout/--hookTimeout` 均经 `--help` 确认）。
+- forks 池 + Buffer 遮蔽下 vitest worker 堆线性增长（~17MB/s）至 2GiB OOM（fuzz/截断/golden 三文件同现，
+  117s 触顶）：经 node 探针裁决为 **vitest/tinypool forks IPC 管线对 Buffer 缺席的基础设施假象**
+  （codec 运行时 heap 全平），非产品缺陷；遮蔽验证改用 threads singleThread 一次通过。
+- threads singleThread 下根全量测试出现 1 例**与本文无关的既有测试**失败
+  （namespace-runtime runtime-replace-schema-sa7-dynamic T3.4，`expected 'resolved' to be 'rejected'`）：
+  该文件源自 PR #85，全仓无任何包依赖 @nomicore/replication-protocol（grep 零命中），今日同树内容
+  默认池两次全绿；单文件对照实验：threads 池确定性失败 / forks 池通过 → 递归深度（栈尺寸）敏感型
+  既有环境假设，非本任务回归。最终全量验证按约束采用 forks 单 worker（maxForks=1 逐文件新进程、
+  顺序执行、heap 2048、显式 timeout）→ 1544/1544 EXIT=0。
+- 宿主内存全程平稳（验证后 available 13.8GiB）。
 
-## 验证（总控亲跑，后台独立进程，日志于 .mabf-bg/）
+## 门禁结论
 
-- 终验 @ HEAD b4ad317：`pnpm test` → **Test Files 121 passed (121)，Tests 1431 passed (1431)，Type Errors: no errors，exit 0**；`npx tsc -p tsconfig.typecheck.json --noEmit` → **exit 0**
-- 红灯套件 20/20 转绿；类型锚 3 红转绿 + 2 绿守卫保持；registry-surface 9/2 export 冻结面保持
-- SA7 动态实测：真实 node:crypto 链路 `^ns-[0-9a-f]{32}$`、真实 File Persistence round-trip、CSPRNG 60k 抽样 0 重复、锚 A 真实调度 12 迭代屏障零违例；全仓 1431/1431 两次连跑
-- 首次终验日志曾被并发双跑污染（两个 vitest 进程写同一 log），已清理后单跑重验，上文数据为干净单次结果
-
-## 遗留风险（非阻断）
-
-1. `NAMESPACE_ALREADY_EXISTS` 保留在公共 issue 联合中（普通 create 不可达），留给切片 2 受信任导入使用；README 已注明定位。
-2. SA7 D3 为统计性 CSPRNG 抽样测试（60k），理论 flake ~5e-7，注释已披露（Standards J-4，双轴认可非阻断）。
-3. phase-5 切片 1 的 replicationId/replicationEpoch 与 Hub 管理操作（enableReplication/bumpReplicationEpoch）不在本任务 AC 内，属后续切片（SA8 留档观察）。
-4. ADR 0009 状态行未标注「Registry identity 条款由 ADR 0010 修订」——文档卫生项，属 owner 文档决策（SA8 留档）。
-5. SA2 R2 留档 LOW：设计 §7 普查计数标注 33 处实枚举 16 处（枚举逐行完整，以清单为准，不影响正确性）。
+- **SA4 R1：pass**（F1/F2/F3 闭环逐行复核）；登记 **INFO-1 非阻塞**：encodeFrame 非数值 messageType 入参
+  产出 type=0x00 帧，decode 边界必拒，TS 类型面不可达、非 wire 攻击面。处置：SA7 §3.3 实测记录确认，
+  建议后续切片顺手加 `typeof messageType === 'number'` 守卫（纯纵深项）。
+- **SA7：PASS**（wiki/raw/task_replication-protocol-v1-codec_sa7_report.md）。
+- **AC 门禁：6/6 ✅**（ac_checklist.md；非目标五项零越界：WS 连接/状态机、namespace 状态机、认证授权、
+  背压调度、Runtime/Registry 集成均未实现，属后续切片）。
+- **双轴终审（980b16a...HEAD diff，并行双 subagent）**：
+  - Standards 轴（standards_review.md）：**pass**，0 hard violation / 6 judgement call（Fowler smell 类，
+    最重为 payloads.ts marker/limit 校验形状各重复 6 处，建议后续提取 helper）；
+  - Spec 轴（spec_review.md）：**pass**，1 LOW（sequence 纪律以 expectedSequence seam 委托状态层，
+    与简报非目标一致；后续 ws 切片恒传 expectedSequence）+ 1 INFO（AC5 依赖锁定经 lockfile 落地）；
+    scope creep 零、实现有误零，INFO-1 独立复核同意非阻塞。
+- 两轴均无阻断问题，无需修复回流。CI 跟踪与发布（push/PR/标签/.mabf-done）移交 Host。
