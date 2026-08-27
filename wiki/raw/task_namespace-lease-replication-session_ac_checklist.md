@@ -46,3 +46,12 @@
 ## 门禁结论
 
 **AC 门禁 7/7 + O-5 补锚 2/2 全部通过；非目标零越界；公共面纪律零突破。** 进入双轴终审。
+
+## 终审后补记（2026-08-28 R3）
+
+双轴终审双 pass 后的非阻断项收口（终审报告：standards_review.md / spec_review.md）：
+- Spec MEDIUM-1（lease release→既有 session close/拒绝/停投 无 CI 锚）→ SA6 R3 补锚（red 套件 20→22 用例，直接绿）；
+- Spec LOW-1/LOW-2（三个 open 拒绝码精确匹配 + REPLICATION_ROLE_PERMISSION 冻结码字面）→ SA6 R3 同批补锚锁死；
+- Standards minor×2（死导出去 export、CONTEXT/phase-5 措辞笔误）→ SA3 R2 机械修复；
+- 终审后最终验证（HEAD 04849fe，总控亲跑）：`git diff --check` exit 0、`pnpm typecheck` exit 0、全量 `pnpm test` **138 文件 / 1681 测试 / Type Errors 0 / exit 0**（.mabf-bg/final-{typecheck,test}.log）。
+- 其余 INFO 项归属：切片 6（INSTANCE_ID_PATTERN 双副本收敛、PEER_ALLOWED_META_KEYS 启用、needs-resync 队列、scratch 演进位）、切片 9（role 显式配置）、知情接受（Equal/AssertTrue 多副本=包边界必要代价、observerFailures 无界计数=已显式登记）。

@@ -21,4 +21,5 @@
 | 15 | 08-28 04:25 | 总控 | Phase 3.5 AC 门禁 | 04:30 | SA4+SA7 双清；AC 逐条核对落盘 ac_checklist.md → **7/7 AC + 2/2 O-5 补锚通过；非目标零越界；公共面纪律零突破** |
 | 16 | 08-28 04:31 | 双轴终审 | Standards 轴 + Spec 轴 | 04:41 | 并行双 subagent 审 diff ebc5419..HEAD → **双 pass**：Standards（4b32a3bb）0 hard/2 minor/5 info；Spec（069d7455）0 CRITICAL/0 HIGH/1 MEDIUM/2 LOW/2 INFO；AC 7/7+2/2 独立抽查复核、scope creep 零、ADR 0010 四节逐条无偏差 |
 | 17 | 08-28 04:45 | 总控 | 终审非阻断项裁决 | 04:47 | Spec MEDIUM-1（release→既有 session close 无锚——AC-7 明文枚举 lease release）+ LOW-1/LOW-2（三 open 拒绝码+冻结码字面无锚）→ 回流 SA6 补锚（直接绿）；Standards minor①（死导出）+minor②（CONTEXT 笔误）→ 回流 SA3 机械修复；其余 INFO 按归属登记（切片 6/9 或知情接受） |
-| 18 | 08-28 04:48 | SA6+SA3 | 终审回流修复 | (进行中) | 续传 SA6 fb13706d 补 3 锚（MEDIUM-1/LOW-1/LOW-2）；续传 SA3 02c46f83 修 2 minor（死导出/文档笔误） |
+| 18 | 08-28 04:48 | SA6+SA3 | 终审回流修复 | 04:55 | SA6 R3 补锚 3 项（22/22 行为、11/11 类型、全量 1681 绿）；SA3 R2 修 2 minor（3 触点零行为变化，typecheck/单文件绿）；总控统一提交 04849fe |
+| 19 | 08-28 04:57 | 总控 | 最终验证 + 收尾 | 05:00 | 亲跑最终 HEAD 04849fe：`git diff --check ebc5419..HEAD` exit 0；`pnpm typecheck` exit 0；全量 `pnpm test`（forks 单 worker/timeout 60s）**138/138 文件 · 1681/1681 测试 · Type Errors 0 · exit 0**（.mabf-bg/final-{typecheck,test}.log）；写 REPORT.md complete |

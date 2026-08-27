@@ -1,79 +1,94 @@
 ---
 status: complete
-run_id: issue-135-1787792421-862383
-branch: fix/issue-135-on-docs-phase-5-websocket-replication
+run_id: issue-134-1787847658-8367
+task_type: feature
+branch: fix/issue-134-on-docs-phase-5-websocket-replication
 round: 1
-issue: 135
+issue: 134
+started_at: 2026-08-28T00:21:00+08:00
+finished_at: 2026-08-28T05:00:00+08:00
 ---
 
-# Phase 5: implement instance replication protocol v1 codec（issue #135）
+# Phase 5: expose trusted NamespaceLease ReplicationSession（issue #134）
 
 ## 概要
 
-交付纯二进制包 `@nomicore/replication-protocol`（packages/replication-protocol，0.1.0，ESM only）：
-严格实现 instance-replication-v1 wire contract——20-byte 大端 NMCR envelope（一 WS message 一 frame）、
-17 种 v1 payload 的 normative 字段序与消息码、append-only 消息/错误注册表（连接 17 条 + namespace 20 条，
-scope/fatal/retryable/terminal 元数据不可变推导）、显式版本/capability 协商纯函数、malformed 输入统一
-注册表分类（ProtocolError）。纯包：无 Cordis/WebSocket/Registry/Node server/Buffer 依赖；直接依赖锁定
-yjs ^13.6.30 / y-protocols / lib0（lockfile 实定 13.6.32 / 1.0.7 / 0.2.117）。
+交付 Phase 5 切片 3/4：`NamespaceLease.openReplicationSession(options)` 受信任 duplex 复制会话——
+可信 transport 可编码 state vector/diff、订阅 owned updates、经唯一 write sequencer 应用远端 Yjs
+update，全程不取得 live Y.Doc。会话创建时冻结 localRole/remoteInstanceId/replicationId/
+replicationEpoch；Hub 方向对 Peer update 执行 scratch clone 预检（SCHEMA 容器与 META 保留字段
+内容投影不变才放行）；Peer persistence-degraded 下仅冻结 hub-to-peer 方向 session 可内存 apply
+并继续 saveDoc 登记；单 Runtime observer 扇出不可变字节至多 session、排除源 origin、listener
+失败自捕获不影响已提交事务；raw apply 不做 VFSL 预校验、状态标记 `replication-unvalidated`。
+实例静态角色（hub/peer）经 Registry 构造注入；peer 本地 replaceSchema/enable/bump 以稳定
+REPLICATION_ROLE_PERMISSION 拒绝。
 
-流水线全程：SA8 前置门禁 clear → SA6 验收锚定（9 测试文件红灯）→ SA1 设计 R1 → SA2 攻击评审 pass →
-SA3 TDD 实现（4feb737）→ SA6 测试缺陷 A/B 修复（fa53d86）→ SA4 R0 reject（F1/F2/F3）→ SA3 回流（7489ca1）
-→ **SA4 R1 pass**（非阻塞 INFO-1 登记）→ **SA7 PASS** → **AC 门禁 6/6 ✅** → **双轴终审双 pass**。
-（恢复轮说明：SA7 曾两度因宿主重启/forks 多 worker 内存爆炸中断，本恢复轮在中心资源约束下收口。）
+流水线全程：SA8 前置门禁 **clear**（O-1..O-12 开放点）→ SA6 验收锚定（20 行为红+2 类型红）
+→ SA1 设计 R1.1（SA2 R1 reject：HIGH×2 修复）→ SA8 设计复审 clear → SA2 R2 **pass** →
+SA3 TDD 实现（666f9b1）→ SA6 R2 修复 8 项测试口径缺陷（08b49fd）→ 总控亲验三档全绿 →
+SA4 静态验尸 **pass**（0 MAJOR/0 MINOR）→ SA7 动态验证 **PASS**（0 缺陷）→
+AC 门禁 **7/7 + O-5 补锚 2/2** → 双轴终审**双 pass** → 终审非阻断项回流收口（04849fe）。
 
-## 变更
+## 变更（diff ebc5419..HEAD = 666f9b1 + 08b49fd + 04849fe）
 
-- `packages/replication-protocol/`：新包 11 源文件（envelope/canonical/payloads/messages/errors/registries
-  /negotiation/limits/constants/index + package.json/tsconfig），SA4 R0 回流修复 3 处（lookupError own-key、
-  assertWellFormedString typeof 守卫、readU32Field 死分支）+ 3 个防回归锚点。
-- `packages/replication-protocol/test/`：SA6 验收测试 9 文件（含 18 条 byte-level golden fixtures）；
-  SA6 A/B 最小修复（HELLO golden 版本表 wire `03010203`→`03030201`、golden 计数断言 17→18）。
-- 根 `package.json`：typecheck 链追加 `tsc -p packages/replication-protocol/tsconfig.json`（唯一根改动）。
-- 流水线档案：wiki/raw/task_replication-protocol-v1-codec_{design,sa2_review,sa3_impl,sa4_review,
-  sa7_report,ac_checklist,standards_review,spec_review,dispatch,...}.md。
+- `packages/namespace-runtime/src/replication-session.ts`（新，~660 行）：fanout（构造期恰一
+  doc.on('update')、origin 回声抑制、每 listener 独立副本+自捕获计数、detach 摘除）、WeakMap
+  host 登记、session core 十键六能力、apply 槽 R1–R7（fatal→身份/epoch fence→writable+
+  degraded bypass 五条件合取→scratch 判据 (a) 预演→一次 Y.applyUpdate(origin token)→R5.5 标记
+  →await notifyDirty→释槽）、open 门序。
+- `packages/namespace-runtime/src/`：runtime.ts 构造期挂接（十二键公共面不变）；internal.ts 第二
+  值导出 openReplicationSessionCoreForRegistry（Registry-only 消费边界不变）；errors.ts
+  append-only（NSRT-FATAL-REPLICATION-APPLY-INTERNAL、ReplicationSessionClosedError）；
+  write.ts WriteSlot +'replication-apply'（append-only，既有渲染逐字节不变）。**index.ts 零改动
+  （值导出仍恰一键）**。
+- `packages/namespace-registry/src/`：types.ts（ReplicationSession 结构性公共类型、open 输入/输出、
+  稳定 message 常量、CreateNamespaceRegistryOptions.role）；lease.ts（open 编排①–⑥、wrapCore
+  恰十键冻结、每 Lease 一活跃 session 计数、三 role gate、released 通道、doRelease 同步 close、
+  Equal 断言锁）；registry.ts（role 门禁第五门、deps 单点注入、跨包 Equal 真锁）；testing.ts
+  role 透传；index.ts type-only 追加（exports 不变）。
+- 测试：SA6 红转绿套件 `registry-phase5-replication-session-red.test.ts`（22 行为用例）+
+  `registry-phase5-replication-session-surface.test-d.ts`（5 探针）；SA3 包内
+  `runtime-replication-session.test.ts`（30 用例，含设计 R1 T-1..T-8）；既有
+  `runtime-registry-internal-seam.test.ts` 与 `registry-open.test.ts` 键集锁各演进一键（沿头注先例）。
+- 文档同步四件套：ADR 0010 增补节（稳定词汇注册、hub 侧 META 全键收紧登记、needs-resync 推迟
+  对账注记 C-1、判据 (a) 边界、observerFailures 显式化、回灌注记）；ADR 0009 两注记（internal
+  第二导出、Lease 面新增）；phase-5 切片 3/4 锚定 + C-1 注记；CONTEXT.md（ReplicationSession
+  词条扩写 + 新增「实例角色」词条）。
+- 流水线档案：wiki/raw/task_namespace-lease-replication-session_{,conflict_report,relevant_decisions,
+  sa6_red,design,design_conflict_report,sa2_review,sa2_review_r2,sa3_impl,sa4_review,sa7_report,
+  ac_checklist,standards_review,spec_review,dispatch}.md。
 
-## 验证（本恢复轮亲跑，单 worker/heap≤2GiB/显式 timeout 约束下）
+## 验证（总控亲跑，最终 HEAD 04849fe；forks 单 worker/heap 默认/显式 timeout 约束）
 
-| 项 | 命令（约束） | 结果 | 证据（.mabf-bg/） |
+| 项 | 命令 | 结果 | 证据（.mabf-bg/） |
 |---|---|---|---|
-| 根 typecheck | `NODE_OPTIONS=--max-old-space-size=2048 pnpm typecheck`（10 包链含新包） | **EXIT=0** | final2-typecheck.log/.exit |
-| 根全量测试 | `pnpm test --pool=forks --poolOptions.forks.maxForks=1 --poolOptions.forks.minForks=1 --testTimeout=60000 --hookTimeout=60000` | **127/127 文件 · 1544/1544 测试 · Type Errors 0 · EXIT=0**（87.26s） | final3-test.log/.exit |
-| 包级套件 | `vitest run packages/replication-protocol`（含 --typecheck） | 9/9 · 139/139 · EXIT=0 | sa7-vitest-pkg.log/.exit |
-| fuzz 确定性 | 单文件 ×3 连跑 | 3× 5/5 EXIT=0，逐字一致 | sa7-fuzz-{1,2,3}.log |
-| yjs 互通 | 锁定组合真实 update/SV/snapshot 往返 | 25/25 EXIT=0 | sa7-interop.log/.exit |
-| **Buffer 遮蔽整套件** | `vitest run --config .mabf-bg/sa7-shadow.config.ts --pool=threads --poolOptions.threads.singleThread --testTimeout=60000 --hookTimeout=60000`（heap 2048） | **7/7 文件 · 127/127 · 451ms · EXIT=0** | sa7-shadow-suite6.log/.exit |
-| 遮蔽内存裁决探针 | plain node+tsx 复刻 fuzz 三循环（同种子）+ golden 变异，遮蔽下 heap 采样 | 800+800 decode Δ=0.0MB、300 roundtrip Δ=0.2MB、1220 变异 Δ=0.0MB，全断言过，EXIT=0 | sa7-shadow-node-probe.{ts,log,.exit} |
-| D-5 原型语义 | 探针 11 项（payload 原型跟随输入/自产输出恒 Uint8Array） | 11 pass / 0 fail | sa7-probe-d5.log |
-| alloc-bound | 巨大声明短 body 200k×2（帧级/payload 级） | 全部注册表分类错误，heap Δ≤1.2MB 有界 | sa7-probe-allocbound.log |
-| INFO-1 行为 | encodeFrame 非数值 messageType（'toString'/'constructor'）实测 | 产出 type=0x00 帧，decode 边界必拒 UNSUPPORTED_MESSAGE_TYPE（失败 loud） | sa7-probe-info1.log |
+| diff 卫生 | `git diff --check ebc5419..HEAD` | **exit 0** | 终端输出 |
+| 根 typecheck | `pnpm typecheck`（10 包链） | **exit 0** | final-typecheck.log/.exit |
+| 根全量测试 | `pnpm test --pool=forks --poolOptions.forks.maxForks=1 --poolOptions.forks.minForks=1 --testTimeout=60000 --hookTimeout=60000` | **138/138 文件 · 1681/1681 测试 · Type Errors 0 · exit 0**（95s） | final-test.log/.exit |
+| 基线对照 | 同命令于 ebc5419 | 1624/1624 exit 0（零回归；+57 = 本任务新增用例） | baseline-test.log |
 
-### 资源约束合规与排障记录
-
-- 全程 Vitest 参数兼容性先行核对（v3.2.7 `--pool/--poolOptions.{forks,threads}/{singleFork,singleThread,maxForks}/--maxWorkers/--testTimeout/--hookTimeout` 均经 `--help` 确认）。
-- forks 池 + Buffer 遮蔽下 vitest worker 堆线性增长（~17MB/s）至 2GiB OOM（fuzz/截断/golden 三文件同现，
-  117s 触顶）：经 node 探针裁决为 **vitest/tinypool forks IPC 管线对 Buffer 缺席的基础设施假象**
-  （codec 运行时 heap 全平），非产品缺陷；遮蔽验证改用 threads singleThread 一次通过。
-- threads singleThread 下根全量测试出现 1 例**与本文无关的既有测试**失败
-  （namespace-runtime runtime-replace-schema-sa7-dynamic T3.4，`expected 'resolved' to be 'rejected'`）：
-  该文件源自 PR #85，全仓无任何包依赖 @nomicore/replication-protocol（grep 零命中），今日同树内容
-  默认池两次全绿；单文件对照实验：threads 池确定性失败 / forks 池通过 → 递归深度（栈尺寸）敏感型
-  既有环境假设，非本任务回归。最终全量验证按约束采用 forks 单 worker（maxForks=1 逐文件新进程、
-  顺序执行、heap 2048、显式 timeout）→ 1544/1544 EXIT=0。
-- 宿主内存全程平稳（验证后 available 13.8GiB）。
+SA7 动态验证摘要（PASS；探针全在 .mabf-bg/）：确定性三文件×3 连跑逐字一致；close barrier×停机序
+17/17；scratch O(doc) 实测 5k 键 7.8ms/50k 键 102.7ms 近线性、heap 无泄漏增长；degraded retry
+Memory+File 两路 16/16；observerFailures 3002 次投递计数精确、fatal 恒 null；Yjs 13.6.32 锚定
+19/19；敌意/变异 22/22。
 
 ## 门禁结论
 
-- **SA4 R1：pass**（F1/F2/F3 闭环逐行复核）；登记 **INFO-1 非阻塞**：encodeFrame 非数值 messageType 入参
-  产出 type=0x00 帧，decode 边界必拒，TS 类型面不可达、非 wire 攻击面。处置：SA7 §3.3 实测记录确认，
-  建议后续切片顺手加 `typeof messageType === 'number'` 守卫（纯纵深项）。
-- **SA7：PASS**（wiki/raw/task_replication-protocol-v1-codec_sa7_report.md）。
-- **AC 门禁：6/6 ✅**（ac_checklist.md；非目标五项零越界：WS 连接/状态机、namespace 状态机、认证授权、
-  背压调度、Runtime/Registry 集成均未实现，属后续切片）。
-- **双轴终审（980b16a...HEAD diff，并行双 subagent）**：
-  - Standards 轴（standards_review.md）：**pass**，0 hard violation / 6 judgement call（Fowler smell 类，
-    最重为 payloads.ts marker/limit 校验形状各重复 6 处，建议后续提取 helper）；
-  - Spec 轴（spec_review.md）：**pass**，1 LOW（sequence 纪律以 expectedSequence seam 委托状态层，
-    与简报非目标一致；后续 ws 切片恒传 expectedSequence）+ 1 INFO（AC5 依赖锁定经 lockfile 落地）；
-    scope creep 零、实现有误零，INFO-1 独立复核同意非阻塞。
-- 两轴均无阻断问题，无需修复回流。CI 跟踪与发布（push/PR/标签/.mabf-done）移交 Host。
+- SA4：pass（0 MAJOR/0 MINOR/6 INFO）；SA7：PASS（0 缺陷）。
+- AC 门禁：7/7 + O-5 补锚 2/2（ac_checklist.md）；非目标零越界（WS/状态机/认证/resetReplica/
+  transport 抽取/replication-protocol 包零改动）。
+- 双轴终审（diff ebc5419..08b49fd，并行双 subagent）：Standards **pass**（0 hard/2 minor/5 info）；
+  Spec **pass**（0 CRITICAL/0 HIGH/1 MEDIUM/2 LOW/2 INFO，AC 逐条独立抽查、scope creep 零）。
+- 终审非阻断项已全部收口：Spec MEDIUM-1/LOW-1/LOW-2 → SA6 R3 补锚（22/22 直接绿）；Standards
+  minor×2 → SA3 R2 机械修复；INFO 项归属切片 6/9 或知情接受（明细见 ac_checklist.md 终审后补记）。
+
+## 遗留风险（全部已登记归属，不阻断本切片）
+
+- `INSTANCE_ID_PATTERN` 双副本（lease.ts ↔ replication-protocol constants.ts，互指注释结构守卫）：
+  切片 6 接线时收敛为单一真相源或加跨包一致性测试（Spec INFO-1）。
+- `PEER_ALLOWED_META_KEYS` 占位常量首版空集、needs-resync 队列/背压、scratch 增量检查演进位：
+  均属切片 6（ADR 0010 增补节已对账）。
+- 实例角色缺省 'hub'（O-4 零回归唯一解）：切片 9 部署切片必须显式配置（SA8 R-1 登记）。
+- observerFailures 无界计数、scratch O(doc)/apply 成本：O-10/O-12 显式裁决并登记，演进位属切片 6。
+
+CI 跟踪与发布（push/PR/标签/.mabf-done）移交 Host。
