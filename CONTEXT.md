@@ -102,5 +102,17 @@ JSDoc 首行自由文本 + `@tag` 半结构化标签；全部为文档性质，�
 **封闭对象（closed object）**:
 子集内对象类型默认封闭：未声明字段拒绝。
 
+**namespace 诊断变更日志（namespace diagnostic change log）**:
+从 namespace 创建开始尽力记录所有变更尝试及其结构化结局的可选 observability 流；连续的 committed Yjs updates 可用于诊断性重放，但日志不参与业务提交、不承诺完整性或恢复能力。
+_Avoid_: 审计账本、WAL、event sourcing、可靠恢复日志
+
+**变更尝试（change attempt）**:
+一次可能修改 namespace 的请求及其结局；结局区分 committed、rejected 与 fatal，并标明 acceptance、capability gate、input snapshot、validation 等阶段。被拒请求也属于变更尝试，即使它从未读取输入或进入 transaction。
+_Avoid_: 仅成功事务、统一 failed 事件
+
+**诊断日志 stream generation**:
+一个 namespace 的一代独立诊断日志，包含不可变 manifest、VFSL 校验的分段 JSONL records 与可选 framed binary sidecar；冻结格式或策略改变、旧 stream 损坏或无法安全续写时建立新 generation，各 generation 不自动拼接重放。
+_Avoid_: Runtime generation、replication epoch、跨 generation 隐式连续日志
+
 **authority 规则**:
 旧系统的 `__authority__` manifest（enum / range / conditional / state-machine 等不变式）。**本仓库范围外**（ADR-0002）。
