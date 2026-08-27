@@ -56,6 +56,7 @@ import {
   type DocHandle,
   type DocPersistence,
   type MemoryPersistenceOptions,
+  type PersistedIdentityProbeResult,
   type User,
 } from '@nomicore/persistence';
 import { createTestScheduler } from '@nomicore/persistence/testing';
@@ -312,6 +313,31 @@ class StubReplicaPersistence implements DocPersistence {
     return doc === undefined ? null : this.makeHandle(owner, docId, doc);
   }
 
+  /** R2 只读 committed-identity probe（round-2 演进，设计 §3.3）：stub 的 store 即
+   *  docs map（单一 Y.Doc 对象 = live==persisted 世界）；按复制事实判据读取 META。
+   *  fixture 能力补充，非行为断言改动。 */
+  async readPersistedReplicationIdentity(
+    owner: User,
+    docId: string,
+  ): Promise<PersistedIdentityProbeResult> {
+    const doc = this.docs.get(`${owner.userId}\u0000${docId}`);
+    if (doc === undefined) return { kind: 'missing' };
+    const id = doc.getMap('META').get('replicationId');
+    const epoch = doc.getMap('META').get('replicationEpoch');
+    const ok =
+      typeof id === 'string' &&
+      /^[0-9a-f]{32}$/.test(id) &&
+      typeof epoch === 'number' &&
+      Number.isSafeInteger(epoch) &&
+      epoch >= 1;
+    return {
+      kind: 'found',
+      identity: ok
+        ? { ok: true, value: { replicationId: id as string, replicationEpoch: epoch as number } }
+        : { ok: false },
+    };
+  }
+
   async saveDoc(_handle: DocHandle): Promise<void> {}
 
   private makeHandle(owner: User, docId: string, doc: Y.Doc): DocHandle {
@@ -333,7 +359,10 @@ describe('AC-1 受信导入保留 Hub namespaceId + detached 完整 update + MET
     const registry = makeRegistry(stub);
     const hubDoc = makeSeedDoc(NS_B, { replicationId: ID_A, replicationEpoch: 1, root: 123 });
 
-    const result = await asImportRegistry(registry).importReplica(ALICE, NS_B, hubDoc);
+    const result = await asImportRegistry(registry).importReplica(ALICE, NS_B, hubDoc, {
+      replicationId: ID_A,
+      replicationEpoch: 1,
+    });
     expect(result.ok, `导入应成功：${JSON.stringify(result)}`).toBe(true);
     const lease = (result as { lease: NamespaceLease }).lease;
     await schemaReady(lease);
@@ -361,7 +390,10 @@ describe('AC-1 受信导入保留 Hub namespaceId + detached 完整 update + MET
     const registry = makeRegistry(stub);
     const plainDoc = makeSeedDoc(NS_B, { root: 1 }); // 无复制身份（disabled 态文档）
 
-    const issue = okIssue(await asImportRegistry(registry).importReplica(ALICE, NS_B, plainDoc));
+    const issue = okIssue(await asImportRegistry(registry).importReplica(ALICE, NS_B, plainDoc, {
+      replicationId: ID_A,
+      replicationEpoch: 1,
+    }));
     expect(issue.code).toBe('NAMESPACE_IMPORT_INVALID_IDENTITY');
 
     // 零持久化写入：store 无残留、loadDoc 仍 null、persistence 导入路径未被触达
@@ -375,15 +407,24 @@ describe('AC-1 受信导入保留 Hub namespaceId + detached 完整 update + MET
     const registry = makeRegistry(stub);
 
     const badId = makeSeedDoc(NS_B, { replicationId: 'z'.repeat(32), replicationEpoch: 1 });
-    expect(okIssue(await asImportRegistry(registry).importReplica(ALICE, NS_B, badId)).code)
+    expect(okIssue(await asImportRegistry(registry).importReplica(ALICE, NS_B, badId, {
+      replicationId: ID_A,
+      replicationEpoch: 1,
+    })).code)
       .toBe('NAMESPACE_IMPORT_INVALID_IDENTITY');
 
     const badEpoch = makeSeedDoc(NS_B, { replicationId: ID_A, replicationEpoch: 0 });
-    expect(okIssue(await asImportRegistry(registry).importReplica(ALICE, NS_B, badEpoch)).code)
+    expect(okIssue(await asImportRegistry(registry).importReplica(ALICE, NS_B, badEpoch, {
+      replicationId: ID_A,
+      replicationEpoch: 1,
+    })).code)
       .toBe('NAMESPACE_IMPORT_INVALID_IDENTITY');
 
     const epochType = makeSeedDoc(NS_B, { replicationId: ID_A, replicationEpoch: Number.NaN });
-    expect(okIssue(await asImportRegistry(registry).importReplica(ALICE, NS_B, epochType)).code)
+    expect(okIssue(await asImportRegistry(registry).importReplica(ALICE, NS_B, epochType, {
+      replicationId: ID_A,
+      replicationEpoch: 1,
+    })).code)
       .toBe('NAMESPACE_IMPORT_INVALID_IDENTITY');
 
     expect(stub.importCalls).toEqual([]);
@@ -400,7 +441,10 @@ describe('AC-1 受信导入保留 Hub namespaceId + detached 完整 update + MET
       replicationEpoch: 1,
     });
 
-    const issue = okIssue(await asImportRegistry(registry).importReplica(ALICE, NS_B, foreign));
+    const issue = okIssue(await asImportRegistry(registry).importReplica(ALICE, NS_B, foreign, {
+      replicationId: ID_A,
+      replicationEpoch: 1,
+    }));
     expect(issue.code).toBe('NAMESPACE_IMPORT_IDENTITY_MISMATCH');
 
     expect(stub.importCalls).toEqual([]);
@@ -415,7 +459,10 @@ describe('AC-1 受信导入保留 Hub namespaceId + detached 完整 update + MET
       replicationId: ID_A,
       replicationEpoch: 1,
       root: 123,
-    }));
+    }), {
+      replicationId: ID_A,
+      replicationEpoch: 1,
+    });
 
     const created = okLease(await registry.create(newContractInput()));
     await schemaReady(created);
@@ -447,7 +494,10 @@ describe('AC-2 bootstrap 排他创建：live entry / committed snapshot 双形�
         replicationId: ID_A,
         replicationEpoch: 1,
         root: 999,
-      })),
+      }), {
+        replicationId: ID_A,
+        replicationEpoch: 1,
+      }),
     );
     expect(issue.code).toBe('NAMESPACE_ALREADY_EXISTS');
 
@@ -473,7 +523,10 @@ describe('AC-2 bootstrap 排他创建：live entry / committed snapshot 双形�
         replicationId: ID_A,
         replicationEpoch: 1,
         root: 999,
-      })),
+      }), {
+        replicationId: ID_A,
+        replicationEpoch: 1,
+      }),
     );
     expect(issue.code).toBe('NAMESPACE_ALREADY_EXISTS');
 
@@ -492,12 +545,18 @@ describe('AC-2 bootstrap 排他创建：live entry / committed snapshot 双形�
     const doc = makeSeedDoc(NS_B, { replicationId: ID_A, replicationEpoch: 1, root: 7 });
 
     const [r1, r2] = await Promise.all([
-      asImportRegistry(registry).importReplica(ALICE, NS_B, doc),
+      asImportRegistry(registry).importReplica(ALICE, NS_B, doc, {
+        replicationId: ID_A,
+        replicationEpoch: 1,
+      }),
       asImportRegistry(registry).importReplica(ALICE, NS_B, makeSeedDoc(NS_B, {
         replicationId: ID_A,
         replicationEpoch: 1,
         root: 7,
-      })),
+      }), {
+        replicationId: ID_A,
+        replicationEpoch: 1,
+      }),
     ]);
     const results = [r1, r2];
     const oks = results.filter((r) => r.ok === true);
@@ -548,7 +607,10 @@ describe('AC-4 resetReplica 编排：close→archive→allow bootstrap；owner/i
       replicationId: ID_A,
       replicationEpoch: 2,
       root: 999,
-    }));
+    }), {
+      replicationId: ID_A,
+      replicationEpoch: 2,
+    });
     expect(imported.ok, `导入应成功：${JSON.stringify(imported)}`).toBe(true);
     const importedLease = (imported as { lease: NamespaceLease }).lease;
     await schemaReady(importedLease);
@@ -648,7 +710,11 @@ describe('AC-4 resetReplica 编排：close→archive→allow bootstrap；owner/i
     await registry.shutdown();
   });
 
-  it('并发 open + reset：串行结算无部分状态——open 或得已关闭 lease 或 NOT_FOUND；终态 open NOT_FOUND + loadDoc null', async () => {
+  it('并发 open + reset（reset 先接纳）：串行结算无部分状态——R2 冻结语义（设计 §3.4 ④ + SA2 R1-1）：无 live entry 且主键仍在 → RESET_FAILED（绝不从 persisted 事实单独归档）；open 后续恢复成功', async () => {
+    // 【round-2 行为演进（SA2 R1-1 冻结）】round-1 阶段「无 entry + 主键仍在 → 直接
+    // loadDoc 探针后归档」已被 R2 设计取代：reset 的 destructive preflight 必须基于
+    // live/persisted 双源核对；无 live generation 时不得仅凭持久化事实归档——主键
+    // 仍在 → 稳定 NAMESPACE_RESET_FAILED、主键缺失 → NAMESPACE_NOT_FOUND（零归档 seam）。
     const stub = new StubReplicaPersistence();
     stub.seedDocument(ALICE, NS_B, makeSeedDoc(NS_B, { replicationId: ID_A, replicationEpoch: 1, root: 5 }));
     const registry = makeRegistry(stub);
@@ -659,17 +725,36 @@ describe('AC-4 resetReplica 编排：close→archive→allow bootstrap；owner/i
     });
     const openP = registry.open(ALICE, NS_B);
     const [resetResult, openResult] = await Promise.all([resetP, openP]);
-    expect(resetResult.ok, `reset 应成功：${JSON.stringify(resetResult)}`).toBe(true);
+    // reset 先结算（carrier FIFO）：R2 冻结拒绝——零破坏、零归档
+    expect(okIssue(resetResult).code).toBe('NAMESPACE_RESET_FAILED');
+    expect(stub.archiveCalls).toEqual([]); // 零归档 seam（绝不从 persisted 事实单独归档）
+    // open 后结算：从持久主键恢复新 generation（无部分状态）
+    expect(openResult.ok, `open 应成功：${JSON.stringify(openResult)}`).toBe(true);
+    const restored = (openResult as { lease: NamespaceLease }).lease;
+    await schemaReady(restored);
+    expect(restored.namespaceId).toBe(NS_B);
+    expect(await stub.loadDoc(ALICE, NS_B)).not.toBeNull();
+    await registry.shutdown();
+  });
 
-    if (openResult.ok) {
-      // reset 先结算：open 在 reset 后完成 → 应见已关闭 generation（runtimes 已关、lease released）
-      expect((openResult as { lease: NamespaceLease }).lease.getStatus()).toMatchObject({ lease: 'released' });
-    } else {
-      // open 先结算：NOT_FOUND（reset 已完成归档）
-      expect((openResult as { code?: string }).code).toBe('NAMESPACE_NOT_FOUND');
-    }
-    // 无论如何：终态 = bootstrap eligibility + 持久面已归档（无部分删除）
+  it('并发 open + reset（open 先接纳）：open 得 lease → reset 对 active generation 预核对后归档成功（lease 强制失效）→ 终态 NOT_FOUND + loadDoc null', async () => {
+    const stub = new StubReplicaPersistence();
+    stub.seedDocument(ALICE, NS_B, makeSeedDoc(NS_B, { replicationId: ID_A, replicationEpoch: 1, root: 5 }));
+    const registry = makeRegistry(stub);
+
+    const openP = registry.open(ALICE, NS_B);
+    const resetP = asResetRegistry(registry).resetReplica(ALICE, NS_B, {
+      replicationId: ID_A,
+      replicationEpoch: 1,
+    });
+    const [openResult, resetResult] = await Promise.all([openP, resetP]);
+    expect(openResult.ok, `open 应成功：${JSON.stringify(openResult)}`).toBe(true);
+    expect(resetResult.ok, `reset 应成功：${JSON.stringify(resetResult)}`).toBe(true);
+    // open 先结算：open 得到的 lease 被 reset 强制失效（已关闭 generation）
+    expect((openResult as { lease: NamespaceLease }).lease.getStatus()).toMatchObject({ lease: 'released' });
+    // 终态 = bootstrap eligibility + 持久面已归档（无部分删除）
     expect(okIssue(await registry.open(ALICE, NS_B)).code).toBe('NAMESPACE_NOT_FOUND');
+    expect(stub.archives).toHaveLength(1);
     expect(await stub.loadDoc(ALICE, NS_B)).toBeNull();
     await registry.shutdown();
   });
@@ -759,7 +844,10 @@ describe('AC-6 owner 分区独立与 Memory/File 真实全链闭环', () => {
       replicationId: id0,
       replicationEpoch: 2,
       root: 888,
-    }));
+    }), {
+      replicationId: id0,
+      replicationEpoch: 2,
+    });
     expect(imported.ok, `导入应成功：${JSON.stringify(imported)}`).toBe(true);
     const importedLease = (imported as { lease: NamespaceLease }).lease;
     await schemaReady(importedLease);
@@ -812,7 +900,10 @@ describe('AC-6 owner 分区独立与 Memory/File 真实全链闭环', () => {
       replicationId: id0,
       replicationEpoch: 3,
       root: 777,
-    }));
+    }), {
+      replicationId: id0,
+      replicationEpoch: 3,
+    });
     expect(imported.ok, `导入应成功：${JSON.stringify(imported)}`).toBe(true);
     const importedLease = (imported as { lease: NamespaceLease }).lease;
     await schemaReady(importedLease);

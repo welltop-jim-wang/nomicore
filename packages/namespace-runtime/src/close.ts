@@ -19,11 +19,24 @@
 import type { DocHandle } from '@nomicore/persistence';
 import { CLOSE_RELEASE_FAILED_CODE, CLOSE_RELEASE_FAILED_MESSAGE, NamespaceRuntimeCloseError } from './errors.js';
 import type { RuntimeState } from './p0.js';
+import type { WriteSequencer } from './sequencer.js';
 
 /** barrier 运行时环境（构造栈一次成型——纯数据闭包，槽体零读 seam 输入）。 */
 export interface CloseEnv {
   readonly handle: DocHandle;
   readonly state: RuntimeState;
+}
+
+/**
+ * close barrier 的**入队封装**（R2，设计 §3.4/§3.5）：普通 `close()` 首调用与
+ * reset fence 的 lazy `startCloseAfterFence()` 共用同一入队路径——barrier 经
+ * sequencer.enqueue 挂接（必然在队尾、排空此前全部已接纳任务），FIFO/无 timeout/
+ * 已接纳任务无条件排空语义零改动。调用方的 closePromise 幂等缓存仍归 runtime.ts
+ * （单 `closePromise` 变量——fence lazy continuation 与公共 close() 共用同一实例，
+ * 保证「普通 close 返回同一 lazy-created promise」）。
+ */
+export function enqueueCloseBarrier(sequencer: WriteSequencer, env: CloseEnv): Promise<void> {
+  return sequencer.enqueue(() => runCloseBarrier(env));
 }
 
 /**

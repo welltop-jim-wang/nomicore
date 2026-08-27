@@ -55,6 +55,7 @@ type HasImportReplica<T> = T extends {
     owner: NamespaceOwner,
     namespaceId: string,
     doc: Y.Doc,
+    expectedReplicationIdentity: ReplicationIdentityRef,
   ) => Promise<Readonly<{ ok: true; lease: NamespaceLease }> | Readonly<{ ok: false; code: string }>>;
 }
   ? true
@@ -87,7 +88,7 @@ describe('类型面：NamespaceRegistry resetReplica / importReplica（AC-1/AC-2
     void anchored;
   });
 
-  it('NamespaceRegistry 暴露内部受信任 bootstrap 导入 importReplica(owner, namespaceId, doc)（临时名，待 SA1 冻结）', () => {
+  it('NamespaceRegistry 暴露内部受信任 bootstrap 导入 importReplica(owner, namespaceId, doc, expectedReplicationIdentity)（round-2 演进：第 4 参数 = Hub 广告身份，与 r2 surface 锚一致）', () => {
     const anchored: HasImportReplica<NamespaceRegistry> = true;
     void anchored;
   });

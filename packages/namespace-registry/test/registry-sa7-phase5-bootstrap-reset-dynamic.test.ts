@@ -254,7 +254,9 @@ function makeRoundFixture(opts: { observer?: unknown } = {}): RoundFixture {
   return { registry, persistence, scheduler, regScheduler, probe };
 }
 
-/** 种子：受信导入 identity 文档并发起 lease（真实 import 管线 + Runtime 构造）。 */
+/** 种子：受信导入 identity 文档并发起 lease（真实 import 管线 + Runtime 构造）。
+ *  round-2 演进（设计 §7 caller audit）：第 4 参数 = Hub 广告 expected 身份
+ *  （= 文档自身身份——本测试模型的 hub 广告与文档身份一致）。 */
 async function seedIdentityDoc(
   fx: RoundFixture,
   owner: NamespaceOwner = ALICE,
@@ -265,7 +267,10 @@ async function seedIdentityDoc(
     replicationId: ID_A,
     replicationEpoch: opts.replicationEpoch ?? 1,
     root: opts.root ?? 5,
-  })) as AnyResult | undefined);
+  }), {
+    replicationId: ID_A,
+    replicationEpoch: opts.replicationEpoch ?? 1,
+  }) as AnyResult | undefined);
   return lease;
 }
 
@@ -370,12 +375,12 @@ describe('SA7 §2 resetReplica 并发矩阵真跑（×50 轮 + 随机微任务�
 
       await yieldMicrotasks(Math.floor(rnd() * 4));
       const firstP = (importLeads
-        ? fx.registry.importReplica(ALICE, NS_B, importDoc)
+        ? fx.registry.importReplica(ALICE, NS_B, importDoc, expected)
         : fx.registry.resetReplica(ALICE, NS_B, expected)) as Promise<AnyResult | undefined>;
       await yieldMicrotasks(Math.floor(rnd() * 4));
       const secondP = (importLeads
         ? fx.registry.resetReplica(ALICE, NS_B, expected)
-        : fx.registry.importReplica(ALICE, NS_B, importDoc)) as Promise<AnyResult | undefined>;
+        : fx.registry.importReplica(ALICE, NS_B, importDoc, expected)) as Promise<AnyResult | undefined>;
 
       const [first, second] = await Promise.all([
         withTimeout(firstP, 5_000, `round ${round} first op`),

@@ -275,3 +275,17 @@ Phase 4 中列为非目标的 WS room、raw Yjs sync 和分布式部署由 Phase
 **committed 精确二分（R2-6；D-4）**：R5 以 `beforeTransaction` 探针精化 `RuntimeWriteFatalError.committed`——`txStarted === false`（探针未运行 ⇒ beforeTransaction emit 未完成 ⇒ 事务函数从未执行 ⇒ **零 mutation**）⟹ `committed:false`；`txStarted === true`（事务已开始、mutation 程度不可判）⟹ 保守 `committed:true`（ADR 0008 L84 过报方向强制）。探针槽内注册（晚于一切先注册 listener——Yjs 按注册次序同步派发）、finally 卸载（零泄漏）；fatal 码/词不变（`NSRT-FATAL-REPLICATION-APPLY-INTERNAL` + slot `'replication-apply'` + phase `'unknown-pipeline-throw'`——只精化 committed 布尔）。**例外注记（精确性条件）**：注入面 = yjs 事务钩子域；解码期异常（R4 已拦 `REPLICATION_RAW_UPDATE_INVALID`）、notifyDirty 失败（`committed:true` 既有锁定）不在判据内；复合敌意（beforeTransaction 内先变异后抛错的多个 listener）属 ADR 0007 L54 observer 契约破坏域——二分不为其承诺，**该除外情形失败方向为 under-report（`committed:false` 而可能已变异）**——比过报危险（调用方可能据此跳过 reconciliation），L84 只强制过报方向，本二分对钩子域内单点注入维持精确、对契约破坏域残余风险以方向性明文收口。
 
 **成功接纳即置位（R2-7 明文规范）**：no-op / 重复 / 空效果 update 的成功 apply（`Y.applyUpdate` 正常返回 + R6 dirty 登记完成）同样置 `rootValidation = 'replication-unvalidated'` 与 `memoryCaughtUp = true`——无「且推进文档状态」限定（依据：L241「raw apply 成功后置位」「首次 apply 成功置 true」字面；L107「该 update 仍被**接受**……标记」；CONTEXT「复制未校验」词条「已**提交**并登记 dirty」；ADR 0006 #79 L192 互证）。
+
+### issue #133 round-2 reset/import identity precondition 修订（2026-08-28，owner feedback 3 授权）
+
+本节替换「复制谱系与 epoch」节中 resetReplica 的执行次序描述（“Registry 先关闭本地 Runtime generation，再通过 Persistence 归档旧副本”）与「Bootstrap 与重连」节第 3 步的一般性身份核对（“严格核对 META 身份”），并以本条为准；本节未明示的其余 ADR 文本维持效力。
+
+**1. `resetReplica(expectedLocalIdentity)` 严格前置核对**：对 active generation，在任何 lease 强制释放、close、归档或 bootstrap 资格变更**之前**，Registry 在 Runtime 唯一 write sequencer 的 reset-fence 槽内执行「当前 live 投影 + 受信任 persisted committed-snapshot」双源核对，二者都必须是合规 enabled 复制身份且与 expected **完全一致**。任一不匹配/disabled → `NAMESPACE_RESET_IDENTITY_MISMATCH`，零破坏性动作，旧 generation/lease/runtime 保持可用；probe 损坏/abort 为 `committed:false` branded fatal；当前 epoch 内普通读失败为 `NAMESPACE_LOAD_FAILED`。已处于 closing 的 generation 由先前操作转变：本次 reset 等待其既有 closePromise 结算后**重新从 carrier 槽读取事实**，绝不把旧 Runtime 当作 live 证据；结果按「主键缺失 → `NAMESPACE_NOT_FOUND`；主键仍在 → `NAMESPACE_RESET_FAILED`；probe 错误按上述映射」分类，不调用归档。
+
+**2. 成功路径的冻结次序**：preflight 与 close admission 共享同一个 Runtime FIFO reset-fence 槽（先核对双事实，再在槽返回前同步进入 closing）；fence 槽**绝不创建或等待 close barrier**。只有槽结算后，懒 close continuation 才创建唯一的 close barrier，其 predecessor tail 在 fence 结算**之后**捕获，因此 barrier 排空「fence 前已接纳」的写（已包含在核对样本中），且不可能包含/等待 fence 任务自身——无 fence/close 自等待。此后 Persistence 归档（expected 身份守卫保留为对外部/跨实例 store 变更的纵深防御——**不是**可接受的本地迟到 mismatch 通道）→ bootstrap 资格。普通 `close()` 观察 fence-armed 状态时返回同一懒创建的 close promise，公共入口不启动第二个 barrier。
+
+**3. Bootstrap 导入绑定 Hub 广告身份**：`importReplica` 接收 Hub 广告的 expected `{replicationId, replicationEpoch}`（第 4 参数；来源必须是认证 Hub 广告的可靠绑定，绝不可用文档自身值替代）。在 `importDoc` resolve/所有权转移之前校验：detached 文档 `META.docId`、复制事实合规性、与广告身份的**完全一致**。格式合规但 lineage 或 epoch 不同 → `NAMESPACE_IMPORT_EXPECTED_IDENTITY_MISMATCH`，无自动覆盖/合并、零持久化写入、零 Registry entry 登记。expected 输入本身必须在任何文档读取/carrier 入队之前被无副作用安全快照验证。
+
+**4. dirty 事实的诚实表达**：dirty notification 不是 durable（ADR-0008）；live 已 bump、持久化仍为旧 epoch 的严格双源不一致是**有意**的拒绝条件（严格口径），本节不得被解读为「live dirty 身份已被持久化」。任何「dirty live 即 persisted」的表述均与本条冲突。
+
+**5. 归档重定位的 committed 诚实**：归档写/rename resolve = 归档提交点；随后主键移除失败由 Persistence 以 `relocate-remove` 致命（`committed:true`）传播，Registry 保留该 committed 事实并原样传播为 `NamespaceRegistryFatalError`；禁止翻译为 reset 领域不匹配或普通运营失败、禁止宣称旧主键状态未变；重试为 latest-wins 归档收敛 + 主键移除重试。reset fence **armed 之后**的每个 archive typed 拒绝按 §3.5.2 冻结矩阵分类——特别地，身份不匹配是运营 `NAMESPACE_RESET_FAILED`，**永不**是零破坏的 preflight 结果。

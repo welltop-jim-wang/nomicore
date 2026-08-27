@@ -46,7 +46,11 @@ export type RegistryObserverEvent =
   // —— Phase 5 增量（issue #133；ADR 0010 reset/archive 编排与受信 bootstrap 导入）——
   | { type: 'reset-archive-failed'; identity: InternalIdentity; cause: DocArchiveOperationalError }
   | { type: 'import-persist-failed'; identity: InternalIdentity; cause: DocCreateOperationalError }
-  | { type: 'import-runtime-construction-failed'; identity: InternalIdentity; cause: unknown };
+  | { type: 'import-runtime-construction-failed'; identity: InternalIdentity; cause: unknown }
+  // —— R2 增量（issue #133 round-2；设计 §3.5.2）：armed 后 archive 拒绝（identity/
+  //    active/duplicate/operational 分支统一注册；cause 不含复制身份内容——零泄露，
+  //    与既有 reset-archive-failed 的「仅运营失败」语义分域）——
+  | { type: 'reset-archive-after-arm-failed'; identity: InternalIdentity; cause: unknown };
 
 /** observer 回调：同步调用；throw 由 dispatchObserver 隔离（静默丢弃）。 */
 export type RegistryObserver = (event: RegistryObserverEvent) => void;

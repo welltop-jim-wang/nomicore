@@ -4,6 +4,7 @@ import { PersistenceLifecycle, type PersistenceIO, type PersistenceStatus } from
 import {
   type DocHandle,
   type DocPersistence,
+  type PersistedIdentityProbeResult,
   type PersistenceSchedule,
   type PersistenceScheduler,
   type ReplicationIdentityRef,
@@ -149,6 +150,14 @@ export class MemoryPersistence implements DocPersistence {
     expectedReplicationIdentity: ReplicationIdentityRef,
   ): Promise<Readonly<{ ok: true }>> {
     return this.core.archiveDoc(owner, docId, expectedReplicationIdentity)
+  }
+
+  /** R2 只读 committed-snapshot identity probe 委托（§3.3）：零写/零 flush/零 handle。 */
+  readPersistedReplicationIdentity(
+    owner: User,
+    docId: string,
+  ): Promise<PersistedIdentityProbeResult> {
+    return this.core.readPersistedReplicationIdentity(owner, docId)
   }
 
   saveDoc(handle: DocHandle): Promise<void> {

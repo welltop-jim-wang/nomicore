@@ -51,15 +51,20 @@ import type {
 import type { NamespaceRuntime } from '@nomicore/namespace-runtime';
 import {
   DocArchiveFatalError,
+  DocArchiveOperationalError,
   DocCreateFatalError,
   DocCreateOperationalError,
   DocDuplicateError,
   DocLoadOperationalError,
+  DocPersistedIdentityProbeCorruptError,
+  DocPersistedIdentityProbeFatalError,
+  DocPersistedIdentityProbeOperationalError,
 } from '@nomicore/persistence';
 import type {
-  DocArchiveOperationalError,
   DocHandle,
   DocPersistence,
+  PersistedIdentityProbeResult,
+  ReplicaPersistence,
   ReplicationIdentityRef,
   YjsDoc,
 } from '@nomicore/persistence';
@@ -107,6 +112,8 @@ import type {
 import {
   NAMESPACE_ALREADY_EXISTS_MESSAGE,
   NAMESPACE_CREATE_FAILED_MESSAGE,
+  NAMESPACE_IMPORT_EXPECTED_IDENTITY_INVALID_MESSAGE,
+  NAMESPACE_IMPORT_EXPECTED_IDENTITY_MISMATCH_MESSAGE,
   NAMESPACE_IMPORT_FAILED_MESSAGE,
   NAMESPACE_IMPORT_IDENTITY_MISMATCH_MESSAGE,
   NAMESPACE_IMPORT_INVALID_IDENTITY_MESSAGE,
@@ -232,6 +239,63 @@ function readMetaDocId(doc: YjsDoc): string | undefined {
     return typeof docId === 'string' ? docId : undefined
   } catch {
     return undefined
+  }
+}
+
+/**
+ * Registry 侧 Runtime 受控 reset fence 的结构复制型（设计 §3.5.1）：Registry 只经
+ * 既有 factory/注入面获得该能力——不从 Runtime 包 internal subpath 导入类型、不经
+ * Runtime public barrel。结构与 runtime 侧包内类型逐字段相同（结构赋值）。
+ */
+interface RuntimeForRegistryFence {
+  readonly beginResetFence: (
+    expected: ReplicationIdentityRef,
+    readPersisted: () => Promise<PersistedIdentityProbeResult>,
+  ) => Promise<
+    | Readonly<{ kind: 'mismatch' }>
+    | Readonly<{ kind: 'missing' }>
+    | Readonly<{ kind: 'armed'; startCloseAfterFence: () => Promise<void> }>
+  >;
+}
+
+/**
+ * Hub 广告 expected 身份的**安全快照校验**（§4.2.1 冻结伪码；敌意输入零副作用）：
+ * - 只接受非 null 普通 record（proto === Object.prototype || null）且两个字段均为
+ *   own data descriptor（accessor/缺键/继承值/数组/函数/非 object → 拒；getter/Proxy
+ *   trap throw → 收编为拒）；
+ * - replicationId：string 且 32 位小写 hex（与 REPLICATION_ID_PATTERN 同判据）；
+ *   replicationEpoch：安全整数且 >=1（拒 NaN/Infinity/0/小数/越界）；
+ * - 拒绝**任何值回显**（输入值绝不进 message/observer——零泄露）；
+ * - 产物为冻结值快照——此后槽内只消费该捕获，绝不重读调用方对象（双读分叉免疫）。
+ */
+function snapshotReplicationIdentityRef(
+  inputRef: unknown,
+): { readonly ok: true; readonly value: Readonly<ReplicationIdentityRef> } | { readonly ok: false } {
+  try {
+    if (typeof inputRef !== 'object' || inputRef === null || Array.isArray(inputRef)) {
+      return { ok: false };
+    }
+    const proto = Object.getPrototypeOf(inputRef);
+    if (proto !== Object.prototype && proto !== null) return { ok: false };
+    const record = inputRef as Record<string, unknown>;
+    const idDesc = Object.getOwnPropertyDescriptor(record, 'replicationId');
+    const epochDesc = Object.getOwnPropertyDescriptor(record, 'replicationEpoch');
+    if (
+      idDesc === undefined || !('value' in idDesc) || idDesc.get !== undefined || idDesc.set !== undefined ||
+      epochDesc === undefined || !('value' in epochDesc) || epochDesc.get !== undefined || epochDesc.set !== undefined
+    ) {
+      return { ok: false };
+    }
+    const id = idDesc.value;
+    const epoch = epochDesc.value;
+    if (typeof id !== 'string' || !REPLICATION_ID_PATTERN.test(id)) return { ok: false };
+    if (typeof epoch !== 'number' || !Number.isSafeInteger(epoch) || epoch < 1) return { ok: false };
+    return {
+      ok: true,
+      value: Object.freeze({ replicationId: id, replicationEpoch: epoch }),
+    };
+  } catch {
+    return { ok: false };
   }
 }
 
@@ -417,6 +481,22 @@ const RESET_FAILED_ISSUE = Object.freeze({
   ok: false as const,
   code: 'NAMESPACE_RESET_FAILED' as const,
   message: NAMESPACE_RESET_FAILED_MESSAGE,
+});
+
+// —— R2 增量（issue #133 round-2）窄 issue 常量（§4.2.1/§4.2 稳定 message 单点表；冻结外层）——
+
+/** META 复制事实合规但与 Hub 广告 expected 身份不一致（ownership 转移前拒绝）。 */
+const IMPORT_EXPECTED_IDENTITY_MISMATCH_ISSUE = Object.freeze({
+  ok: false as const,
+  code: 'NAMESPACE_IMPORT_EXPECTED_IDENTITY_MISMATCH' as const,
+  message: NAMESPACE_IMPORT_EXPECTED_IDENTITY_MISMATCH_MESSAGE,
+});
+
+/** expected 输入本身不合安全文法（Hub 广告身份快照校验失败）；常量 message、零值回显。 */
+const IMPORT_EXPECTED_IDENTITY_INVALID_ISSUE = Object.freeze({
+  ok: false as const,
+  code: 'NAMESPACE_IMPORT_EXPECTED_IDENTITY_INVALID' as const,
+  message: NAMESPACE_IMPORT_EXPECTED_IDENTITY_INVALID_MESSAGE,
 });
 
 /** schema/root 领域失败的 verbatim issue（DQ-4：issues 完整原对象逐字透传、不深克隆；
@@ -1002,30 +1082,6 @@ export function createRegistryInternal(
     }
   }
 
-  /**
-   * Phase 5（§4.8）：reset 发起的 close——runtime.close()（同步 throw 收编为
-   * rejected Promise）→ I2（closePromise 先赋值后翻相，镜像 beginIdleClose
-   * ①-③）→ settle 处理器 removeEntryAfterClose（先于本调用方 await 恢复执行）。
-   * 失败不额外发 idle-close-failed（该事件属 idle 状态机队列；reset 槽自身的
-   * close 失败经 lifecycle-slot-failed(reset) + fatal 上报，且 removeOnlySelf
-   * 保证失败闭环不毒化 key）。
-   */
-  function beginCloseCurrent(entry: Entry): Promise<void> {
-    let closePromise: Promise<void>;
-    try {
-      closePromise = entry.runtime.close(); // ① close 发起（同步 throw 收编点）
-    } catch (cause) {
-      closePromise = Promise.reject(cause);
-    }
-    entry.closePromise = closePromise; // ② I2：closing ⟹ closePromise 定义（rejected 亦「落位」）
-    entry.phase = 'closing'; // ③ 不可逆翻相（AC5）
-    closePromise.then(
-      () => removeEntryAfterClose(entry, undefined), // ④ settle（成败皆然）→ 双守卫移除
-      () => removeEntryAfterClose(entry, undefined),
-    );
-    return closePromise;
-  }
-
   /** idle 途经 open 的激活（#112 设计 §2.B）：同步取消 timer（AC5）+ 翻相 active。
    * 非 idle（含取消后的豁免窗口期 entry）零副作用——shutdown 没收的 entry 保持
    * 原相，由 shutdown 统一关闭。 */
@@ -1382,11 +1438,16 @@ export function createRegistryInternal(
 
   /**
    * Phase 5（§4.2，D-2）：受信 bootstrap 导入的 carrier 接纳（机制与 open 同款——
-   * 同 key FIFO 串行 + cleanup 三条件）。
+   * 同 key FIFO 串行 + cleanup 三条件）。R2：expected 已在公共入口安全快照验证，
+   * 经本通道原样传递到槽内 equality 核对（不可信输入零进入 carrier 之前的语义面）。
    */
-  function admitImportSlot(identity: InternalIdentity, docRef: YjsDoc): Promise<ImportReplicaResult> {
+  function admitImportSlot(
+    identity: InternalIdentity,
+    docRef: YjsDoc,
+    expected: ReplicationIdentityRef,
+  ): Promise<ImportReplicaResult> {
     const carrier = carriers.get(identity.key) ?? createCarrier(identity.key);
-    const operation = carrier.tail.then(() => runImportSlot(identity, docRef));
+    const operation = carrier.tail.then(() => runImportSlot(identity, docRef, expected));
     const operationGreenTail = operation.then(
       () => undefined,
       () => undefined,
@@ -1399,10 +1460,15 @@ export function createRegistryInternal(
   /**
    * Phase 5（§4.2，D-2）importReplica 槽（冻结核对次序——全部先于任何 Persistence
    * 调用）：① entry 碰撞（owner 先核对——零存在性泄露）→ ②a META.docId 核对 →
-   * ②b 复制事实两键 → ③ capability gate → ④ 受控复制导入（排他创建，此后才发生
-   * ownership 转移）→ ⑤ Runtime 构造（单一构造路径，§4.12）。
+   * ②b 复制事实两键 → ②c（R2 新增）与 Hub 广告 expected 身份【完全一致】核对 →
+   * ③ capability gate → ④ 受控复制导入（排他创建，此后才发生 ownership 转移）→
+   * ⑤ Runtime 构造（单一构造路径，§4.12）。
    */
-  async function runImportSlot(identity: InternalIdentity, docRef: YjsDoc): Promise<ImportReplicaResult> {
+  async function runImportSlot(
+    identity: InternalIdentity,
+    docRef: YjsDoc,
+    expected: ReplicationIdentityRef,
+  ): Promise<ImportReplicaResult> {
     // ① entry 碰撞（owner 先核对——零存在性泄露，镜像 runOpenSlot:854-856 第一谓词）
     const current = entries.get(identity.key);
     if (current !== undefined && current.owner.userId !== identity.owner.userId) {
@@ -1423,6 +1489,14 @@ export function createRegistryInternal(
     if (!facts.ok) {
       return IMPORT_INVALID_IDENTITY_ISSUE; // 双键缺席（disabled）/ 恰一键 / undefined 值 /
     } // 格式违约 / 载体异型 一律本码
+    //   ②c（R2 新增）Hub 广告身份【完全一致】核对（R2-AC-3/4；格式合规但 lineage 或
+    //       epoch 不符 = 冲突——绝不在冲突状态转移 ownership；零持久化写入、零 entry 登记）
+    if (
+      facts.replicationId !== expected.replicationId ||
+      facts.replicationEpoch !== expected.replicationEpoch
+    ) {
+      return IMPORT_EXPECTED_IDENTITY_MISMATCH_ISSUE;
+    }
 
     // ③ capability gate（§4.4 放置点表：槽内同步段——acceptance/identity 检查之后、
     // 首次 Persistence 调用之前；capability 缺席时零 Persistence 触达）
@@ -1502,121 +1576,231 @@ export function createRegistryInternal(
   }
 
   /**
-   * Phase 5（§4.8，D-8）resetReplica 槽（冻结次序）：① owner 核对（零存在性泄露）→
-   * capability gate（先于槽内一切持久化动作——含 ③ 的 loadDoc 探针；§4.4 放置点表）
-   * → ② 强制失效全部未决 lease + 取消 idle 武装 + close（复用 closePromise）→
-   * ③ 存在性探针（loadDoc；null → NOT_FOUND 且不触达归档 seam）→ ④ archiveDoc
-   * （期望身份纯传递——§4.7）→ ⑤ 允许 bootstrap（key 缺席即资格，无显式动作）。
+   * Phase 5（§4.8，D-8；R2 修订，设计 §3.4/§3.5）resetReplica 槽（冻结次序）：
+   * ① owner 核对（零存在性泄露）→ ② R2 capability 前置门（archive + committed
+   * probe + Runtime reset fence，先于一切 Persistence 探针/forceRelease/close
+   * admission/archive）→ ③ closing generation 重评估（await 既有 closePromise →
+   * carrier 槽重读 → 非破坏性 probe：missing→NOT_FOUND、primary 仍在→RESET_FAILED、
+   * 零 archive、绝不把旧 Runtime 当 live 证据）→ ④ 无 entry 的 probe 判别
+   * （missing→NOT_FOUND；primary 仍在→RESET_FAILED）→ ⑤ active generation 的
+   * Runtime reset-fence 槽（live/persisted 双源 strict preflight + 同步 arm
+   * closing；mismatch/missing/错误 → 零破坏拒绝/fatal）→ ⑥ armed 后破坏性段
+   * （forceRelease + cancelIdleArm + 槽外懒启动 close drain + I2 记账）→
+   * ⑦ archive（arm 后失败走 §3.5.2 mapArmedArchiveFailure 冻结矩阵——identity
+   * mismatch 等一律 RESET_FAILED/fatal，绝不返回 reset mismatch）→ ⑧ bootstrap 资格。
    */
   async function runResetSlot(
     identity: InternalIdentity,
     expected: ReplicationIdentityRef,
   ): Promise<ResetReplicaResult> {
     // ① owner 核对（零存在性泄露；镜像 runOpenSlot:854-856 第一谓词）
-    const current = entries.get(identity.key);
+    let current = entries.get(identity.key);
     if (current !== undefined && current.owner.userId !== identity.owner.userId) {
       return NOT_FOUND_ISSUE;
     }
 
-    // capability gate（§4.4 放置点表：槽内同步段——acceptance/identity 检查之后、
-    // 首次 Persistence 调用之前；capability 缺席时零 Persistence 触达——含 reset
-    // 的 close 段：gate 先于槽内一切持久化动作）
+    // ② R2 capability 前置门（设计 §3.3/§3.5.1）：先于一切 destructive action——
+    //   含 persisted probe 调用、forceRelease、close admission、archive；缺失/违约
+    //   = 实施/集成错误：loud branded fatal committed:false（恒零破坏——本门无副作用），
+    //   绝不 fallback 到 live 或 loadDoc、绝不 property-call TypeError。
     const archiveDocFn = persistence.archiveDoc;
-    if (typeof archiveDocFn !== 'function') {
+    const probeFn = (persistence as Partial<ReplicaPersistence>).readPersistedReplicationIdentity;
+    const fenceFn =
+      current === undefined
+        ? undefined
+        : (current.runtime as unknown as Partial<RuntimeForRegistryFence>).beginResetFence;
+    if (typeof archiveDocFn !== 'function' || typeof probeFn !== 'function') {
       const cause = new Error(
-        'persistence adapter 缺少复制生命周期能力（importDoc/archiveDoc）——受信导入/重置编排要求 ReplicaPersistence 级 Adapter',
+        'persistence adapter 缺少复制生命周期能力（archiveDoc/readPersistedReplicationIdentity）——严格 reset preflight 要求 ReplicaPersistence 级 Adapter',
+      );
+      dispatchObserver(observer, { type: 'lifecycle-slot-failed', identity, operation: 'reset', cause });
+      throw new NamespaceRegistryFatalError('reset', 'lifecycle-slot-internal', false, cause);
+    }
+    if (current !== undefined && typeof fenceFn !== 'function') {
+      const cause = new Error(
+        'Registry Runtime 缺少受控 reset fence capability（beginResetFence）——拒绝 reset 编排',
       );
       dispatchObserver(observer, { type: 'lifecycle-slot-failed', identity, operation: 'reset', cause });
       throw new NamespaceRegistryFatalError('reset', 'lifecycle-slot-internal', false, cause);
     }
 
-    // ② close：关闭本地 Runtime generation（ADR 0010:57 次序第 1 步）
-    if (current !== undefined) {
-      if (current.phase === 'closing' && current.closePromise !== undefined) {
-        try {
-          await current.closePromise;
-        } catch (cause) {
-          dispatchObserver(observer, { type: 'lifecycle-slot-failed', identity, operation: 'reset', cause });
-          throw new NamespaceRegistryFatalError('reset', 'lifecycle-slot-internal', false, cause);
-        }
-      } else {
-        forceReleaseOutstandingLeases(current); // §4.8.2：快照迭代 release()（SA6 冻结观测 lease:'released'）
-        cancelIdleArm(current); // phase==='idle'（onReleased 武装后）：clearTimeout + idleTimerHandle=undefined
-        const closePromise = beginCloseCurrent(current); // runtime.close()（同步 throw → rejected Promise）
-        // I2：closing ⟹ closePromise 定义（先赋值后翻相，镜像 beginIdleClose ①-③）
-        try {
-          await closePromise; // barrier 排空已接纳写（含在途 ROOT 写的完整结算）
-        } catch (cause) {
-          // 4.8.1：close rejection = 编排内部失败 → fatal（归档未发生 ⟹ committed:false 诚实）
-          dispatchObserver(observer, { type: 'lifecycle-slot-failed', identity, operation: 'reset', cause });
-          throw new NamespaceRegistryFatalError('reset', 'lifecycle-slot-internal', false, cause);
-        }
-        // settle 处理器（closePromise.then 挂接，先于本 await 恢复执行）已 removeEntryAfterClose
-      }
-    }
-
-    // ③ 存在性探针：entry 缺席时经 loadDoc 判存在——NOT_FOUND 路径不触达归档 seam
-    // （SA6 锚 archiveCalls === []）
-    if (entries.get(identity.key) === undefined) {
-      let probe: DocHandle | null;
+    // ③ closing generation（R1 修订；SA2 R1-1 冻结分支）：该 generation 已被先前
+    //    操作破坏性转变——不宣称 R2 零破坏、绝不用旧 Runtime 作 live 证据。先等待
+    //    既有 closePromise 结算，然后从 carrier 槽重读 entry；随后仅一次非破坏性
+    //    committed probe 分类：missing → NOT_FOUND；primary 仍在 → RESET_FAILED；
+    //    probe 错误 → §3.3.1 映射。**不调用 archive**。
+    if (current !== undefined && current.phase === 'closing') {
       try {
-        probe = await persistence.loadDoc(identity.owner, identity.namespaceId);
-      } catch (e) {
-        if (e instanceof DocLoadOperationalError) {
-          dispatchObserver(observer, { type: 'open-load-failed', identity, cause: e });
-          return LOAD_FAILED_ISSUE;
-        }
-        dispatchObserver(observer, { type: 'lifecycle-slot-failed', identity, operation: 'reset', cause: e });
-        throw new NamespaceRegistryFatalError('reset', 'lifecycle-slot-internal', false, e);
+        await current.closePromise!; // I2：phase==='closing' ⟹ closePromise 已定义
+      } catch (cause) {
+        throw new NamespaceRegistryFatalError('reset', 'lifecycle-slot-internal', false, cause);
       }
-      if (probe === null) return NOT_FOUND_ISSUE;
-      try {
-        await probe.release(); // 干净 restore entry 同步驱逐（maybeEvict）——归档前置成立
-      } catch (e) {
-        dispatchObserver(observer, { type: 'handle-release-failed', identity, cause: e });
+      current = entries.get(identity.key);
+      if (current !== undefined && current.owner.userId !== identity.owner.userId) {
+        return NOT_FOUND_ISSUE;
       }
-    }
-
-    // ④ archive（ADR 0010:57 次序第 2 步；期望身份纯传递——§4.7；§4.8.3 映射矩阵）
-    try {
-      await archiveDocFn.call(persistence, identity.owner, identity.namespaceId, expected);
-    } catch (cause) {
-      const code = errorCodeOf(cause);
-      if (code === 'DOC_ARCHIVE_IDENTITY_MISMATCH') {
-        // 本地文档完好——零部分删除（守卫拒绝即未删；INV-6）
-        dispatchObserver(observer, { type: 'lifecycle-slot-failed', identity, operation: 'reset', cause });
-        return RESET_IDENTITY_MISMATCH_ISSUE;
-      }
-      if (code === 'DOC_ARCHIVE_DUPLICATE') {
-        return NOT_FOUND_ISSUE; // 跨实例归档竞态等：本地副本已不在 ⟹ 语义同 not-found
-      }
-      if (code === 'DOC_ARCHIVE_ACTIVE_HANDLE') {
-        // 跨 Registry/进程共享 store 的 live handle——诚实领域拒绝
-        dispatchObserver(observer, { type: 'lifecycle-slot-failed', identity, operation: 'reset', cause });
-        return RESET_FAILED_ISSUE;
-      }
-      if (code === 'DOC_ARCHIVE_OPERATIONAL') {
-        dispatchObserver(observer, { type: 'reset-archive-failed', identity, cause: cause as DocArchiveOperationalError });
-        return RESET_FAILED_ISSUE;
-      }
-      if (code === 'DOC_ARCHIVE_FATAL' || cause instanceof DocArchiveFatalError) {
-        // code-first（duck-typed Adapter 的 relocate-remove fatal 不再落入 unknown 分支
-        // 把 committed:true 改写为 false——INV-12）
-        dispatchObserver(observer, { type: 'lifecycle-slot-failed', identity, operation: 'reset', cause });
+      if (current !== undefined && current.phase === 'closing') {
         throw new NamespaceRegistryFatalError(
           'reset',
           'lifecycle-slot-internal',
-          committedOf(cause),
-          cause,
+          false,
+          new Error('closing entry failed to settle'),
         );
       }
+      if (current !== undefined) {
+        // 防御（carrier FIFO 下结构性不可达）：close 后出现的新 generation——
+        // 不得破坏新 generation，诚实 RESET_FAILED（零破坏它）。
+        return RESET_FAILED_ISSUE;
+      }
+      try {
+        const afterClose = await readPersistedIdentity(identity);
+        return afterClose.kind === 'missing' ? NOT_FOUND_ISSUE : RESET_FAILED_ISSUE;
+      } catch (cause) {
+        return mapProbeOrFenceFailureBeforeDestruction(identity, cause);
+      }
+    }
+
+    // ④ 无 entry：非破坏性 committed probe 判别——missing → NOT_FOUND（与 open
+    //    同款零泄露）；primary 仍在（过去 close 已清 entry 等）→ RESET_FAILED。
+    if (current === undefined) {
+      try {
+        const absentProbe = await readPersistedIdentity(identity);
+        return absentProbe.kind === 'missing' ? NOT_FOUND_ISSUE : RESET_FAILED_ISSUE;
+      } catch (cause) {
+        return mapProbeOrFenceFailureBeforeDestruction(identity, cause);
+      }
+    }
+
+    // ⑤ active generation：受控 reset fence（设计 §3.4/§3.5）——唯一 write
+    //    sequencer 槽内先完成 live/persisted 双源核验，再同步 arm closing；
+    //    槽后懒启动 close barrier（无自等待）。mismatch/missing/错误均在零破坏期。
+    let fence;
+    try {
+      fence = await (current.runtime as unknown as RuntimeForRegistryFence).beginResetFence(
+        expected,
+        () => readPersistedIdentity(identity),
+      );
+    } catch (cause) {
+      return mapProbeOrFenceFailureBeforeDestruction(identity, cause);
+    }
+    if (fence.kind === 'missing') {
+      throw new NamespaceRegistryFatalError(
+        'reset',
+        'lifecycle-slot-internal',
+        false,
+        new Error('active entry 缺少 committed snapshot——持久化完整性缺陷'),
+      );
+    }
+    if (fence.kind === 'mismatch') {
+      return RESET_IDENTITY_MISMATCH_ISSUE;
+    }
+
+    // ⑥ {kind:'armed'}：唯一成功线性化点已跨过（Runtime 已同步 closing）。破坏性段：
+    //    forceRelease + cancelIdleArm + 槽外 close drain（close 前已接纳任务被排空，
+    //    此后 enable/bump 被 lifecycle gate 拒绝——无插入窗口）。
+    forceReleaseOutstandingLeases(current);
+    cancelIdleArm(current);
+    let closePromise: Promise<void>;
+    try {
+      closePromise = fence.startCloseAfterFence();
+    } catch (cause) {
+      throw new NamespaceRegistryFatalError('reset', 'lifecycle-slot-internal', false, cause);
+    }
+    if (current.closePromise === undefined) {
+      // I2 记账（镜像 beginCloseCurrent ①-③：先赋值后翻相——idle-close 竞态下
+      // beginIdleClose 已记账时跳过，同一 closePromise 复用）
+      current.closePromise = closePromise;
+      current.phase = 'closing';
+      closePromise.then(
+        () => removeEntryAfterClose(current, undefined), // ④ settle（成败皆然）→ 双守卫移除
+        () => removeEntryAfterClose(current, undefined),
+      );
+    }
+    try {
+      await closePromise;
+    } catch (cause) {
+      // close rejection = 编排内部失败 → fatal（归档未发生 ⟹ committed:false 诚实）
       dispatchObserver(observer, { type: 'lifecycle-slot-failed', identity, operation: 'reset', cause });
       throw new NamespaceRegistryFatalError('reset', 'lifecycle-slot-internal', false, cause);
     }
 
-    // ⑤ 允许重新 bootstrap（第 3 步）：无显式动作——entry 已清 + 主键已归档 ⟹ key
-    // 缺席即资格（§4.8.5）
+    // ⑦ archive（armed 后失败走 §3.5.2 冻结矩阵——identity/active/duplicate/
+    //    operational → RESET_FAILED；fatal 保留 committed 事实；unknown → fatal false；
+    //    任何 armed 后路径绝不返回 NAMESPACE_RESET_IDENTITY_MISMATCH）
+    try {
+      await archiveDocFn.call(persistence, identity.owner, identity.namespaceId, expected);
+    } catch (cause) {
+      return mapArmedArchiveFailure(identity, cause);
+    }
+
+    // ⑧ 允许重新 bootstrap（第 3 步）：无显式动作——entry 已清 + 主键已归档 ⟹ key
+    //    缺席即资格（§4.8.5）
     return Object.freeze({ ok: true });
+  }
+
+  /** R2 只读 committed-snapshot probe 闭包（§3.3/§3.3.1）：capability 门已在槽 ②
+   *  通过；typed 拒绝原样传播，由调用方 mapProbeOrFenceFailureBeforeDestruction
+   *  按冻结表分类（Registry 不解析原始 Error.message）。**call 绑定**——方法与
+   *  archiveDoc/importDoc 同款（`typeof` 窄化后经 `.call` 调用，防第三方 adapter
+   *  method 解引用丢 this）。 */
+  function readPersistedIdentity(identity: InternalIdentity): Promise<PersistedIdentityProbeResult> {
+    return (persistence as ReplicaPersistence)
+      .readPersistedReplicationIdentity
+      .call(persistence, identity.owner, identity.namespaceId);
+  }
+
+  /** probe/fence 失败（**armed 之前**）的冻结映射（设计 §3.3.1 表）：
+   *  - `DocPersistedIdentityProbeOperationalError` → NAMESPACE_LOAD_FAILED（唯一普通
+   *    运营映射；都发生在任何破坏性动作之前——零破坏）；
+   *  - corrupt/fatal/unknown → branded `NamespaceRegistryFatalError(..., false)`
+   *    （committed:false 恒真——本 seam 从不写/转移所有权，INV-12；损坏绝不被
+   *    折叠为 mismatch 或 load-failed；未知事实不发明 committed）。
+   * 返回路径 resolve 窄 issue；fatal 路径 throw（调用方 catch 语境正确传播）。 */
+  function mapProbeOrFenceFailureBeforeDestruction(
+    identity: InternalIdentity,
+    cause: unknown,
+  ): ResetReplicaResult {
+    dispatchObserver(observer, { type: 'lifecycle-slot-failed', identity, operation: 'reset', cause });
+    if (cause instanceof DocPersistedIdentityProbeOperationalError) {
+      return LOAD_FAILED_ISSUE;
+    }
+    if (
+      cause instanceof DocPersistedIdentityProbeCorruptError ||
+      cause instanceof DocPersistedIdentityProbeFatalError
+    ) {
+      throw new NamespaceRegistryFatalError('reset', 'lifecycle-slot-internal', false, cause);
+    }
+    throw new NamespaceRegistryFatalError('reset', 'lifecycle-slot-internal', false, cause);
+  }
+
+  /** armed 后 archive 失败的冻结映射（设计 §3.5.2 表）：closing 已发生——
+   *  `DOC_ARCHIVE_IDENTITY_MISMATCH` / `ACTIVE_HANDLE` / `DUPLICATE` / `OPERATIONAL`
+   *  → `NAMESPACE_RESET_FAILED`（外部/跨实例 post-fence 分歧或违约——绝不在破坏性
+   *  arm 之后报告 zero-destruction mismatch）；`DOC_ARCHIVE_FATAL` → branded fatal
+   *  且 `committedOf(cause)` 原样传播（committed 事实诚实，尤其 relocate-remove）；
+   *  unknown/adapter 违约 → fatal false（不发明 committed 证据）。 */
+  function mapArmedArchiveFailure(identity: InternalIdentity, cause: unknown): ResetReplicaResult {
+    const code = errorCodeOf(cause);
+    if (
+      code === 'DOC_ARCHIVE_IDENTITY_MISMATCH' ||
+      code === 'DOC_ARCHIVE_ACTIVE_HANDLE' ||
+      code === 'DOC_ARCHIVE_DUPLICATE' ||
+      code === 'DOC_ARCHIVE_OPERATIONAL' ||
+      cause instanceof DocArchiveOperationalError
+    ) {
+      dispatchObserver(observer, { type: 'reset-archive-after-arm-failed', identity, cause });
+      return RESET_FAILED_ISSUE;
+    }
+    dispatchObserver(observer, { type: 'lifecycle-slot-failed', identity, operation: 'reset', cause });
+    if (code === 'DOC_ARCHIVE_FATAL' || cause instanceof DocArchiveFatalError) {
+      throw new NamespaceRegistryFatalError(
+        'reset',
+        'lifecycle-slot-internal',
+        committedOf(cause), // duck-typed fatal 的 committed 事实原样传播（INV-12）
+        cause,
+      );
+    }
+    throw new NamespaceRegistryFatalError('reset', 'lifecycle-slot-internal', false, cause);
   }
 
   /**
@@ -1713,18 +1897,29 @@ export function createRegistryInternal(
       }
       return orchestrateCreate(admission.owner, input);
     },
-    async importReplica(owner: unknown, namespaceId: unknown, doc: unknown): Promise<ImportReplicaResult> {
-      // Phase 5（§4.2 接纳段冻结）：acceptance 检查（零输入访问）→
+    async importReplica(
+      owner: unknown,
+      namespaceId: unknown,
+      doc: unknown,
+      expectedReplicationIdentity: unknown,
+    ): Promise<ImportReplicaResult> {
+      // Phase 5（§4.2 接纳段冻结；R2 修订 §4.2.1）：acceptance 检查（零输入访问）→
       // validateOpenIdentity（零 entries/carriers/Persistence/Runtime 访问）→
-      // carrier FIFO 接纳——与 open/reset 同款同步段；File 侧 SAFE_PATH_SEGMENT
-      // 第二道门的编排侧对应物：invalid 身份在两层的任何一层都被拦截，且都先于
-      // 任何存储访问。
+      // **expected 安全快照验证**（先于任何 docRef 读取/carrier 创建/entry 查询/
+      // Persistence 调用——敌意 expected 零副作用：doc 零访问、zero entry、zero
+      // persistence 写入；getter/Proxy trap 收编为稳定输入 issue，message 零值回显）
+      // → carrier FIFO 接纳。File 侧 SAFE_PATH_SEGMENT 第二道门的编排侧对应物：
+      // invalid 身份在两层的任何一层都被拦截，且都先于任何存储访问。
       if (acceptance !== 'running') return NOT_ACCEPTING_ISSUE;
       const outcome = validateOpenIdentity(owner, namespaceId);
       if (!outcome.ok) {
         return outcome.issue;
       }
-      return admitImportSlot(outcome.identity, doc as YjsDoc);
+      const expectedOutcome = snapshotReplicationIdentityRef(expectedReplicationIdentity);
+      if (!expectedOutcome.ok) {
+        return IMPORT_EXPECTED_IDENTITY_INVALID_ISSUE;
+      }
+      return admitImportSlot(outcome.identity, doc as YjsDoc, expectedOutcome.value);
     },
     async resetReplica(
       owner: unknown,

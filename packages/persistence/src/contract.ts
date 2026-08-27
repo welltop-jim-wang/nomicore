@@ -45,6 +45,27 @@ export interface ReplicationIdentityRef {
 }
 
 /**
+ * 已核对复制身份的 checked 表达（R2 严格双真相源 preflight，设计 §3.2/§3.3.1）：
+ * `{ok:false}` 是「合法读取但无匹配的 enabled 复制身份」——两键缺席/恰一键/
+ * 显式 undefined/格式违约均为该分支（**不带任何字段值**，零泄露）；
+ * `{ok:true, value}` 携带已验证合规的 {replicationId, replicationEpoch}。
+ */
+export type CheckedReplicationIdentity =
+  | Readonly<{ ok: true; value: ReplicationIdentityRef }>
+  | Readonly<{ ok: false }>
+
+/**
+ * 只读 committed-snapshot identity probe 的公共可见结果（R2，设计 §3.3.1）：
+ * - `{kind:'found', identity}`：主快照存在且解码成功（id 合规）——identity 的
+ *   ok 分支表达「复制事实合规的上报」；
+ * - `{kind:'missing'}`：主快照不存在（独立于 live cell 的持久化存在性事实）。
+ * 读取失败/损坏/终结/违约经 typed rejection（不必达本联合）。
+ */
+export type PersistedIdentityProbeResult =
+  | Readonly<{ kind: 'found'; identity: CheckedReplicationIdentity }>
+  | Readonly<{ kind: 'missing' }>
+
+/**
  * The persistence seam shared by all adapters.
  *
  * The Cordis service name exposed by this interface is `nomicorePersistence`
@@ -81,6 +102,20 @@ export interface DocPersistence {
     docId: string,
     expectedReplicationIdentity: ReplicationIdentityRef,
   ) => Promise<Readonly<{ ok: true }>>
+  /**
+   * R2 只读 committed-identity probe（设计 §3.3/§3.3.1，内部 ReplicaPersistence
+   * capability；第三方 Adapter 可不具备——Registry 在任何破坏性动作前必须
+   * `typeof` 窄化并对缺席 loud 拒绝，不得 fallback 到 loadDoc/live）。
+   *
+   * 契约：读取**已提交主快照**（owner 分区 key + io.read）并在 detached 临时
+   * Y.Doc 解码；验证 META.docId === docId；按复制事实判据族读取身份。不签发
+   * handle、不建 live cell、不调用 saveDoc、不排空 dirty、不写/flush/archive。
+   * 返回/拒绝面见 PersistedIdentityProbeResult 与 probe 错误三分类。
+   */
+  readonly readPersistedReplicationIdentity?: (
+    owner: User,
+    docId: string,
+  ) => Promise<PersistedIdentityProbeResult>
 }
 
 /** 具备复制生命周期能力的 Persistence 面（required 形态）：Memory/File 实现；
@@ -92,6 +127,10 @@ export interface ReplicaPersistence extends DocPersistence {
     docId: string,
     expectedReplicationIdentity: ReplicationIdentityRef,
   ) => Promise<Readonly<{ ok: true }>>
+  readonly readPersistedReplicationIdentity: (
+    owner: User,
+    docId: string,
+  ) => Promise<PersistedIdentityProbeResult>
 }
 
 /** 受控复制导入的身份违约（稳定分类，phase:65「identity mismatch」导入位）。
@@ -184,6 +223,71 @@ export class DocDuplicateError extends Error {
   constructor(message = 'createDoc duplicate: the (owner, docId) already exists') {
     super(message)
     this.name = 'DocDuplicateError'
+  }
+}
+
+/**
+ * R2 只读 identity probe 的**运营失败**（设计 §3.3.1）：io.read 在生命周期
+ * epoch 仍然有效时拒绝——唯一普通运营映射（Registry → NAMESPACE_LOAD_FAILED）。
+ * `committed:false` 是强制性事实：本 seam 从不写入/转移所有权（INV-12）。
+ * cause 保留 exact 原始失败；message 恒为稳定常量、零 owner/identity/bytes 回显。
+ */
+export class DocPersistedIdentityProbeOperationalError extends Error {
+  readonly code: 'DOC_PERSISTED_IDENTITY_PROBE_OPERATIONAL' = 'DOC_PERSISTED_IDENTITY_PROBE_OPERATIONAL'
+  readonly committed: false = false
+  override readonly cause: unknown
+  constructor(
+    cause: unknown,
+    message = 'persisted identity probe operational failure: the trusted store read rejected',
+  ) {
+    super(message)
+    this.name = 'DocPersistedIdentityProbeOperationalError'
+    this.cause = cause
+  }
+}
+
+/**
+ * R2 只读 identity probe 的**损坏分类**（设计 §3.3.1）：快照字节无法解码为
+ * Yjs、META 载体非法、或 META.docId !== 请求 docId——主快照不可信，loud
+ * committed:false fatal（Registry 不得折叠为 mismatch 或 load-failed）。
+ */
+export class DocPersistedIdentityProbeCorruptError extends Error {
+  readonly code: 'DOC_PERSISTED_IDENTITY_PROBE_CORRUPT' = 'DOC_PERSISTED_IDENTITY_PROBE_CORRUPT'
+  readonly committed: false = false
+  override readonly cause: unknown
+  constructor(
+    cause: unknown,
+    message = 'persisted identity probe corrupt: the committed snapshot cannot be trusted',
+  ) {
+    super(message)
+    this.name = 'DocPersistedIdentityProbeCorruptError'
+    this.cause = cause
+  }
+}
+
+/** R2 只读 identity probe fatal phase 词表（镜像 DocArchiveFatalPhase 纪律）。 */
+export type DocPersistedIdentityProbeFatalPhase =
+  | 'read-aborted'        // io.read 因 dispose/epoch 终结被 abort（committed:false）
+  | 'decode'              // 生命周期终结后的解码损坏（commit 事实不可验证）
+  | 'lifecycle-disposed'  // 入口时 lifecycle 已 dispose（committed:false）
+  | 'adapter-violation'   // io.read 同步 throw（PersistenceIO 契约违约）
+
+/** R2 只读 identity probe 的**终结/违约 fatal**（设计 §3.3.1）：dispose 竞态、
+ *  契约违约等——committed:false 恒成立（本 seam 从不写/转移所有权）。 */
+export class DocPersistedIdentityProbeFatalError extends Error {
+  readonly code: 'DOC_PERSISTED_IDENTITY_PROBE_FATAL' = 'DOC_PERSISTED_IDENTITY_PROBE_FATAL'
+  readonly committed: false = false
+  readonly phase: DocPersistedIdentityProbeFatalPhase
+  override readonly cause: unknown
+  constructor(
+    phase: DocPersistedIdentityProbeFatalPhase,
+    cause: unknown,
+    message = 'persisted identity probe fatal: internal probe failure',
+  ) {
+    super(message)
+    this.name = 'DocPersistedIdentityProbeFatalError'
+    this.phase = phase
+    this.cause = cause
   }
 }
 

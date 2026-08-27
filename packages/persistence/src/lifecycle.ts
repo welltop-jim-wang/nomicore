@@ -10,9 +10,14 @@ import {
   DocDuplicateError,
   DocImportIdentityError,
   DocLoadOperationalError,
+  DocPersistedIdentityProbeCorruptError,
+  DocPersistedIdentityProbeFatalError,
+  DocPersistedIdentityProbeOperationalError,
   resolvePersistenceSchedule,
+  type CheckedReplicationIdentity,
   type DocHandle,
   type DocHandleStatus,
+  type PersistedIdentityProbeResult,
   type PersistenceSchedule,
   type PersistenceScheduler,
   type ReplicationIdentityRef,
@@ -351,6 +356,80 @@ export class PersistenceLifecycle {
     // io.writeArchive!/io.remove! 非空断言由此背书——io 构造期成型不可变）
     const key = toKey(owner, docId)
     return this.track(this.runArchiveDoc(key, owner, docId, expectedReplicationIdentity))
+  }
+
+  /**
+   * R2 只读 committed-snapshot identity probe（设计 §3.3/§3.3.1）：
+   * - 经 io.read 直读已提交主快照（owner 分区 key、abort signal 同款纪律）；
+   * - detached 临时 Y.Doc 解码 → META.docId 校验（违约 = corrupt）→ 复制事实
+   *   判据族（readPersistedReplicaFacts，判据单点同归档 verify）→ 合规返回
+   *   `{kind:'found', identity}`（identity.ok 分支与判据面一致），不合规返回
+   *   `{kind:'found', identity:{ok:false}}`（合法读取、无匹配 enabled 事实）；
+   * - 主快照缺席 → `{kind:'missing'}`；
+   * - io.read reject：epoch 仍有效 → DocPersistedIdentityProbeOperationalError
+   *   （唯一普通映射）；epoch 已终结（dispose 竞态）→ fatal('read-aborted')；
+   * - 生命周期入口已 disposed → fatal('lifecycle-disposed')；
+   * - io.read **同步 throw**（PersistenceIO 契约违约，禁同步 throw）→
+   *   fatal('adapter-violation')；
+   * - **零副作用**：不建 live cell、不签 handle、不调用 saveDoc、不排空 dirty、
+   *   不写/flush/archive/所有权转移——Registry reset preflight 的唯一持久真相源。
+   */
+  async readPersistedReplicationIdentity(
+    owner: User,
+    docId: string,
+  ): Promise<PersistedIdentityProbeResult> {
+    if (this.closed) {
+      throw new DocPersistedIdentityProbeFatalError(
+        'lifecycle-disposed',
+        new Error('persistence lifecycle is disposed'),
+      )
+    }
+    const key = toKey(owner, docId)
+    const epoch = this.epoch
+    let readPromise: Promise<Uint8Array | undefined>
+    try {
+      // 同步 throw（adapter 契约违背）与 Promise rejection 分流——契约违约 loud
+      readPromise = this.io.read(key, this.abortController.signal)
+    } catch (err) {
+      throw new DocPersistedIdentityProbeFatalError('adapter-violation', err)
+    }
+    let bytes: Uint8Array | undefined
+    try {
+      bytes = await readPromise
+    } catch (err) {
+      throw this.isCurrent(epoch)
+        ? new DocPersistedIdentityProbeOperationalError(err)
+        : new DocPersistedIdentityProbeFatalError('read-aborted', err)
+    }
+    if (bytes === undefined) return { kind: 'missing' }
+
+    const scratch = new Y.Doc()
+    try {
+      try {
+        Y.applyUpdate(scratch, bytes)
+      } catch (err) {
+        // 字节无法解码为 Yjs → 主快照不可信（loud，绝不折叠为 mismatch/load-failed）
+        throw new DocPersistedIdentityProbeCorruptError(err)
+      }
+      // META 载体异型（同名 Y.Text 等）→ getMap throw → CorruptError（设计 §3.3.1）
+      let meta: Y.Map<unknown>
+      try {
+        meta = scratch.getMap('META')
+      } catch (err) {
+        throw new DocPersistedIdentityProbeCorruptError(err)
+      }
+      const metaDocId = meta.get('docId')
+      if (metaDocId !== docId) {
+        throw new DocPersistedIdentityProbeCorruptError(new Error('META.docId mismatch'))
+      }
+      const facts = readPersistedReplicaFacts(scratch)
+      const identity: CheckedReplicationIdentity = facts.ok
+        ? { ok: true, value: { replicationId: facts.replicationId, replicationEpoch: facts.replicationEpoch } }
+        : { ok: false }
+      return { kind: 'found', identity }
+    } finally {
+      scratch.destroy()
+    }
   }
 
   /** 归档主体（§4.5.3）：settle 环 → claim 环 → op 体（guard-read/verify/relocate），

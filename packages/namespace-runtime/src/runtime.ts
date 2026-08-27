@@ -36,7 +36,7 @@
  * 瞬时观察转 false（写槽 S2 同拒）；读取面继续观察 live Y.Doc 引用（不崩、不静默换源）。
  */
 import type * as Y from 'yjs';
-import type { DocHandle } from '@nomicore/persistence';
+import type { DocHandle, ReplicationIdentityRef } from '@nomicore/persistence';
 import { readLogicalValueAtPath } from '@nomicore/doc-runtime';
 import type { ReadLogicalValueResult } from '@nomicore/doc-runtime';
 import { compileSchemaEnvelope } from '@nomicore/vfsl';
@@ -48,7 +48,7 @@ import { projectMetadata, projectSchemaEnvelope } from './projection.js';
 import { WriteSequencer } from './sequencer.js';
 import { buildStatus } from './status.js';
 import type { NamespaceRuntimeStatus } from './status.js';
-import { runCloseBarrier } from './close.js';
+import { enqueueCloseBarrier } from './close.js';
 import type { CloseEnv } from './close.js';
 import { runSchemaWriteSlot } from './schema-write.js';
 import type { ReplaceSchemaInput, ReplaceSchemaResult, SchemaWriteEnv } from './schema-write.js';
@@ -172,6 +172,120 @@ export interface NamespaceRuntime {
   readonly close: () => Promise<void>;
 }
 
+// ═══════════════════════ R2：Registry 受控 reset fence（内部 capability；包内类型） ═══════════════════════
+
+/**
+ * 已核对复制身份的 checked 表达（设计 §3.2；结构上与 persistence 测
+ * CheckedReplicationIdentity 逐字段相同——Registry 传入的读取闭包按结构赋值）。
+ * `{ok:false}` = 合法读取但无匹配 enabled 事实（不带任何字段值，零泄露）。
+ */
+type CheckedFenceIdentity =
+  | Readonly<{ ok: true; value: ReplicationIdentityRef }>
+  | Readonly<{ ok: false }>;
+
+/**
+ * fence 的 persisted 读取闭包返回面（结构上与 persistence 测
+ * PersistedIdentityProbeResult 相同；reject 面由 Registry 的 typed 错误分类学
+ * 负责——fence 任务内 `await readPersisted()` 原样传播）。
+ */
+type ResetFencePersistedProbe =
+  | Readonly<{ kind: 'found'; identity: CheckedFenceIdentity }>
+  | Readonly<{ kind: 'missing' }>;
+
+/**
+ * beginResetFence 结果（设计 §3.4/§3.5）：
+ * - `mismatch`：live/persisted 双源任一不合法或与 expected 不等——lifecycle 未动、
+ *   零破坏（调用方返回领域缺失拒绝）；
+ * - `missing`：committed snapshot 缺席（active entry 场景 = 持久化完整性缺陷，调用方
+ *   loud fatal，不得把缺失当匹配）；
+ * - `armed`：唯一成功线性化点——同一 FIFO 槽内已同步进入 closing（此后写接纳被
+ *   lifecycle gate 拒绝）。`startCloseAfterFence()` 是 **lazy** close barrier 启动器：
+ *   只能在 fence 槽结算后调用，绝不等待 fence 任务自身（无自等待证明，设计 §3.5）。
+ */
+type ResetFenceResult =
+  | Readonly<{ kind: 'mismatch' }>
+  | Readonly<{ kind: 'missing' }>
+  | Readonly<{ kind: 'armed'; startCloseAfterFence: () => Promise<void> }>;
+
+/** fence 槽内返回子集（startCloseAfterFence 只由槽后 continuation 产出——槽内
+ *  绝不创建/await close barrier；类型面同样禁止把 armed 裸结果当完整结果消费）。 */
+type ResetFenceTaskResult =
+  | Readonly<{ kind: 'mismatch' }>
+  | Readonly<{ kind: 'missing' }>
+  | Readonly<{ kind: 'armed' }>;
+
+/** 结构等值判别（设计 §3.2；actual.ok===false → 恒 false，绝不把未知当匹配）。 */
+function fenceIdentityEquals(
+  actual: CheckedFenceIdentity,
+  expected: ReplicationIdentityRef,
+): boolean {
+  return actual.ok
+    && actual.value.replicationId === expected.replicationId
+    && actual.value.replicationEpoch === expected.replicationEpoch;
+}
+
+/**
+ * Registry 受控 reset fence 的 Runtime 侧（设计 §3.4/§3.5）：唯一 write sequencer
+ * 槽内先完成双源核验，再同步进入 closing；槽后由 lazy continuation 创建 close
+ * barrier。live 身份读取自 state.replication（与 getStatus 同一真相源；构造期
+ * V2.5 预投影 + enable/bump 槽 E5.5 整替——INV-R5）。
+ */
+function createBeginResetFence(
+  sequencer: WriteSequencer,
+  state: RuntimeState,
+  lazyCloseBarrier: () => Promise<void>,
+): (
+  expected: ReplicationIdentityRef,
+  readPersisted: () => Promise<ResetFencePersistedProbe>,
+) => Promise<ResetFenceResult> {
+  return function beginResetFence(
+    expected: ReplicationIdentityRef,
+    readPersisted: () => Promise<ResetFencePersistedProbe>,
+  ): Promise<ResetFenceResult> {
+    // 防御性接纳门（内部 capability 契约违约通道，稳定 message 零身份回显）：
+    // Registry 只在 active entry 上调用本能力；lifecycle 已关闭时拒绝启动。
+    if (state.lifecycle !== 'ready') {
+      return Promise.reject(
+        new Error('beginResetFence: Runtime lifecycle 非 ready，拒绝启动 reset fence'),
+      );
+    }
+    const fenceTask = sequencer.enqueue(async (): Promise<ResetFenceTaskResult> => {
+      // ① 先取 persisted（外部 I/O）——此时 lifecycle 仍 ready：probe 失败/mismatch
+      //    均发生在零破坏阶段（设计 §3.5 (2)）
+      const persisted = await readPersisted();
+      if (persisted.kind === 'missing') return { kind: 'missing' } as const;
+      // ② live 投影：enable/bump 等此前已接纳的 mutation 必先于本 task 结算并参与
+      //    核验（同一 FIFO——「此前已接纳任务无条件排空」）；disabled 态 = {ok:false}
+      const live = state.replication;
+      const liveChecked: CheckedFenceIdentity = live.state === 'enabled'
+        ? { ok: true, value: { replicationId: live.replicationId, replicationEpoch: live.replicationEpoch } }
+        : { ok: false };
+      // ③ 严格直读：live 与 persisted 都必须与 expected 相等（任一不等/disabled → mismatch）
+      if (
+        !fenceIdentityEquals(liveChecked, expected)
+        || !fenceIdentityEquals(persisted.identity, expected)
+      ) {
+        return { kind: 'mismatch' } as const;
+      }
+      // ④ 线性化点：同步进入 closing 后本 task 返回——绝不在此创建或 await close
+      //    barrier（自等待禁律；设计 §3.5 (3)）
+      state.lifecycle = 'closing';
+      return { kind: 'armed' } as const;
+    });
+    // ⑤ 槽后 continuation：fence task 已结算、不再是 sequencer 活跃任务——唯有此刻
+    //    才允许懒创建 close barrier（predecessor tail 必然不含仍在活动的 fence 任务，
+    //    依赖图无环；设计 §3.5 (4) + 无自等待证明）
+    return fenceTask.then((result) => {
+      if (result.kind !== 'armed') return result;
+      let started: Promise<void> | undefined;
+      return {
+        kind: 'armed' as const,
+        startCloseAfterFence: () => (started ??= lazyCloseBarrier()),
+      };
+    });
+  };
+}
+
 /**
  * 包内确定性 seam 构造器（AC8；@internal）。#93 rev2（D-1）收口：seam 与生产工厂
  * createNamespaceRuntime 一并保留本文件模块级导出，index.ts 对二者零 re-export——
@@ -264,6 +378,21 @@ export function createNamespaceRuntimeWithSeam(input: NamespaceRuntimeSeamInput)
     fanout,
   };
 
+  // V3d''' close barrier 懒创建（R2，设计 §3.5 (4)）：公共 close() 首调用与 reset
+  // fence 的 startCloseAfterFence() 共用同一幂等入口——barrier 恰入队一次，
+  // 二者返回同一 Promise（普通 close 幂等 + fence-armed 后公共 close 不建第二
+  // barrier 的双重保证，SA2 R3 红线测试 2 锚）。
+  const lazyCloseBarrier = (): Promise<void> => {
+    if (closePromise !== undefined) return closePromise;
+    closePromise = enqueueCloseBarrier(sequencer, closeEnv);
+    return closePromise;
+  };
+
+  // V3d'''' 受控 reset fence（设计 §3.4/§3.5）：唯一写 sequencer 槽内双源核验 + 同步
+  // arm closing；槽后懒启动 close barrier。仅以 non-enumerable 键挂到 runtime 对象
+  // （Object.keys 十二键审计不漂移——runtime-acceptance-exports-audit /
+  // runtime-registry-internal-seam 既有锚零回归）。
+  const beginResetFence = createBeginResetFence(sequencer, state, lazyCloseBarrier);
   // V3e 公共面（十二键闭包对象；owner/namespaceId 由 V3a 捕获局部量构造——不再解引用成员）
   const owner = Object.freeze({ userId });
   const runtime: NamespaceRuntime = {
@@ -353,15 +482,24 @@ export function createNamespaceRuntimeWithSeam(input: NamespaceRuntimeSeamInput)
       // 终态，接纳层 A1 是唯一终态门，round-1 冻结不变）
       fanout.terminateAll('runtime-close');
       // 队尾 barrier（INV-C3/C4）：enqueue 经 .then 微任务排程（sequencer.ts:33-37），
-      // thunk 绝不在 close() 调用栈内同步执行；thunk 是纯调用（零读取/零构造/无可抛点）
-      closePromise = sequencer.enqueue(() => runCloseBarrier(closeEnv));
+      // thunk 绝不在 close() 调用栈内同步执行；thunk 是纯调用（零读取/零构造/无可抛点）。
+      // R2：经 lazyCloseBarrier 幂等封装（与 reset fence 共用 closePromise 实例）。
+      closePromise = lazyCloseBarrier();
       return closePromise;
     },
   };
+  // R2：受控 reset fence 以 non-enumerable 键附加（不进入公共十二键/声明图；
+  // freeze 前定义——Object.freeze 后属性不可增删的既定纪律保持）。
+  Object.defineProperty(runtime, 'beginResetFence', {
+    value: beginResetFence,
+    enumerable: false,
+    writable: false,
+    configurable: false,
+  });
   const frozen = Object.freeze(runtime);
   // V3f replication host 登记（SA2 R1 #15：runtime 对象构造后、返回之前——WeakMap 以
-  // 对象引用为键；不触碰 runtime 对象本身、零属性污染——Object.keys(runtime) 仍恰
-  // 十二键，runtime-registry-internal-seam.test.ts 键集锁零改动即绿）
+  // 对象引用为键；不触碰 runtime 对象本身、零可枚举属性污染——Object.keys(runtime)
+  // 仍恰十二键，runtime-registry-internal-seam.test.ts 键集锁零改动即绿）
   registerReplicationHost(frozen, replicationHost);
   return frozen;
 }

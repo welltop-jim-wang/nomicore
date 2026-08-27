@@ -4,6 +4,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import {
   type DocHandle,
   type DocPersistence,
+  type PersistedIdentityProbeResult,
   type PersistenceSchedule,
   type PersistenceScheduler,
   type ReplicationIdentityRef,
@@ -108,6 +109,16 @@ export class FilePersistence implements DocPersistence {
   ): Promise<Readonly<{ ok: true }>> {
     this.validateIdentity(owner, docId)
     return await this.core.archiveDoc(owner, docId, expectedReplicationIdentity)
+  }
+
+  /** R2 只读 committed-snapshot identity probe 委托（§3.3）：入口先 validateIdentity
+   *  （SAFE_PATH_SEGMENT 双段同款）；零写/零 flush/零 handle。 */
+  async readPersistedReplicationIdentity(
+    owner: User,
+    docId: string,
+  ): Promise<PersistedIdentityProbeResult> {
+    this.validateIdentity(owner, docId)
+    return await this.core.readPersistedReplicationIdentity(owner, docId)
   }
 
   async saveDoc(handle: DocHandle): Promise<void> {

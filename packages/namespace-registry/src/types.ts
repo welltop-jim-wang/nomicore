@@ -111,6 +111,12 @@ export const NAMESPACE_RESET_IDENTITY_MISMATCH_MESSAGE =
   'NAMESPACE_RESET_IDENTITY_MISMATCH: 本地副本复制身份与期望不一致，拒绝重置';
 export const NAMESPACE_RESET_FAILED_MESSAGE =
   'NAMESPACE_RESET_FAILED: namespace 重置编排发生运营故障';
+// —— R2 增量（issue #133 round-2；ADR 0010 bootstrap/reset 修订；owner feedback 2/3）——
+// 稳定 message 冻结常量（单一真相源；零插值、零 Hub 广告身份/输入回显）：
+export const NAMESPACE_IMPORT_EXPECTED_IDENTITY_MISMATCH_MESSAGE =
+  'NAMESPACE_IMPORT_EXPECTED_IDENTITY_MISMATCH: 导入文档复制身份与 Hub 广告身份不一致';
+export const NAMESPACE_IMPORT_EXPECTED_IDENTITY_INVALID_MESSAGE =
+  'NAMESPACE_IMPORT_EXPECTED_IDENTITY_INVALID: 期望复制身份（Hub 广告）不符合安全文法';
 
 /** 复制身份引用（N-1 冻结形状）：自 @nomicore/persistence 转出（类型别名）。 */
 export type { ReplicationIdentityRef };
@@ -300,6 +306,10 @@ export type CreateNamespaceResult =
  * importReplica 领域窄 issue（Phase 5；ADR 0010:28/65）：common 窄 issue
  * （InvalidIdentityIssue / RegistryNotAcceptingIssue）与导入专属拒绝
  * （ALREADY_EXISTS / INVALID_IDENTITY / IDENTITY_MISMATCH / IMPORT_FAILED）。
+ * R2 增量（append-only）：`NAMESPACE_IMPORT_EXPECTED_IDENTITY_MISMATCH`
+ * （META 复制事实合规但与 Hub 广告身份不一致——ownership 转移前拒绝）与
+ * `NAMESPACE_IMPORT_EXPECTED_IDENTITY_INVALID`（expected 输入本身不合安全文法
+ * ——与 NAMESPACE_INVALID_IDENTITY 同语义族：常量 message、零字段值回显）。
  * message 全部为不可插值常量。
  */
 export type ImportReplicaIssue =
@@ -324,6 +334,16 @@ export type ImportReplicaIssue =
       ok: false;
       code: 'NAMESPACE_IMPORT_IDENTITY_MISMATCH';
       message: typeof NAMESPACE_IMPORT_IDENTITY_MISMATCH_MESSAGE;
+    }>
+  | Readonly<{
+      ok: false;
+      code: 'NAMESPACE_IMPORT_EXPECTED_IDENTITY_MISMATCH';
+      message: typeof NAMESPACE_IMPORT_EXPECTED_IDENTITY_MISMATCH_MESSAGE;
+    }>
+  | Readonly<{
+      ok: false;
+      code: 'NAMESPACE_IMPORT_EXPECTED_IDENTITY_INVALID';
+      message: typeof NAMESPACE_IMPORT_EXPECTED_IDENTITY_INVALID_MESSAGE;
     }>
   | Readonly<{
       ok: false;
@@ -603,8 +623,13 @@ export interface NamespaceRegistry {
   /**
    * Phase 5 内部受信任 bootstrap 导入（ADR 0010:28/65；phase:62）。保留 Hub
    * namespaceId（不生成、不改写）；在 persistence ownership 转移之前严格核对
-   * META 复制身份；排他创建（live entry / committed snapshot / 并发 →
-   * NAMESPACE_ALREADY_EXISTS，绝不覆盖/合并）。
+   * META 复制身份与 **Hub 广告 expected 身份**（第 4 参数 expectedReplicationIdentity
+   * ——R2 增量，owner feedback 2；必须在任何 doc 读取/carrier 入队/Persistence 调用
+   * 之前被安全快照验证，来源只能是对认证 Hub 广告身份的可靠绑定，绝不可用文档自身
+   * 值替代）；排他创建（live entry / committed snapshot / 并发 →
+   * NAMESPACE_ALREADY_EXISTS，绝不覆盖/合并）。META 复制事实合规但与广告身份
+   * 不符 → `NAMESPACE_IMPORT_EXPECTED_IDENTITY_MISMATCH`（零持久化写入、零 entry
+   * 登记）。
    *
    * 信任模型（ADR 0010:79 同款纪律，文档化而非 capability 化）：本入口允许调用
    * 方指定 namespaceId，是「复制 bootstrap 保留 Hub 身份」的授权例外；Host
@@ -612,7 +637,12 @@ export interface NamespaceRegistry {
    * 暴露为普通客户端写入口。本入口不改变普通 create 的 owner-only 接纳与
    * CSPRNG 生成纪律（SA6 保持性守卫锚）。
    */
-  importReplica(owner: NamespaceOwner, namespaceId: string, doc: YjsDoc): Promise<ImportReplicaResult>;
+  importReplica(
+    owner: NamespaceOwner,
+    namespaceId: string,
+    doc: YjsDoc,
+    expectedReplicationIdentity: ReplicationIdentityRef,
+  ): Promise<ImportReplicaResult>;
   /**
    * Phase 5 Peer 冲突恢复编排（ADR 0010:57；phase:113）：串行化
    * close → archive → 允许 bootstrap。期望身份由调用方（复制插件）供给、
