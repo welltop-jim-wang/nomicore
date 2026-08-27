@@ -14,4 +14,5 @@
 | 7 | 23:27 | SA3 | Phase 3 TDD 实现 | 23:55 | SA2 R2 pass 设计定稿，派 SA3 落位：ADR 0008 增补 + Phase 5 扩充 + AC-6 两用例 + 共享 gate 提取 |
 | 8 | 23:58 | 总控亲验 | Phase 3 绿灯验证 | 00:04 | SA3 commit ace6f83 交付，总控独立复跑全量门禁（diff --check / typecheck / test） |
 | 9 | 00:05 | SA4 | Phase 3 静态验尸 | 00:12 | 总控亲验全绿（1485/1485、typecheck 0、diff --check 0），派 SA4 审查 diff 757bcd1..ace6f83 |
-| 10 | 00:13 | SA7 | Phase 3 动态验证 | (pending) | SA4 verdict: pass（六验尸面全清），派 SA7 实跑活链路动态验证 |
+| 10 | 00:13 | SA7 | Phase 3 动态验证 | 00:25 | SA4 verdict: pass（六验尸面全清），派 SA7 实跑活链路动态验证 |
+| 11 | 00:27 | 总控 | Phase 3.5 AC 门禁 | (pending) | SA4+SA7 双清（均 pass，含变异验证与触发证据），进入 AC 逐条核对 |
