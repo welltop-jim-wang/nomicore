@@ -47,3 +47,4 @@ round-1 dispatch log 见 `task_phase5-bootstrap-archive-reset_dispatch.md`（21 
 | 19 | 07:38 | SA7 | Phase 4 动态验证 | 07:42 | SA4 双轮 pass（全量采信+增量 pass），进入动态验证；携带 SA4 §四 6 项动态审核重点 |
 | 20 | 07:42 | 总控 | Phase 3.5 AC 门禁 | 07:44 | SA4/SA7 双清（增量 pass + 动态 pass），进入 R2-AC-1..6 逐条确认 |
 | 21 | 07:44 | 双轴终审 | Phase 4 终审 | (pending) | AC 6/6 ✅；按硬门禁派两个并行 review 子代理（标准轴 + 规格轴），审 6784645..HEAD 全 diff |
+| 22 | 07:57 | 总控 | Phase 4 终审修复（B-1） | (pending) | 规格轴 B-1 修复：sa7_report.md 行尾空白清理 + AC 表更正记录；待标准轴 verdict 后双轴复审修复增量 |

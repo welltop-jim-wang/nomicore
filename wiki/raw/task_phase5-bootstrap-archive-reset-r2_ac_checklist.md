@@ -13,3 +13,5 @@
 | R2-AC-6 | 既有 1711 基线零回归 + 新增全绿 + typecheck 零错 + diff --check 干净 | ✅ | 注册总控亲跑（后台独立进程）：`pnpm typecheck` exit 0；`pnpm test` 全量 147 文件/1757 用例全绿 exit 0（.mabf-bg/r2-fix-verify.log；1757 = 1711 基线 + 46 净增，零回归）；`git diff --check 6784645..HEAD` exit 0；SA7 复跑同结论 + 核心集 3 连跑零 flake | 总控亲验 + SA7 复证 |
 
 **门禁结论**：R2-AC-1..6 全部 ✅，无 ❌ 条目，无需追加 SA 派发。进入第四阶段收尾（双轴终审 → 封口终验 → REPORT.md）。
+
+**更正记录（双轴终审规格轴 B-1 处置）**：本表 R2-AC-6 的 `git diff --check` 证据测量于 commit 009c697（当时 exit 0）；随后 SA7 报告提交（24db0fa）重新引入 4 行行尾空白，HEAD 处实测 exit 2——规格轴终审发现属实。处置：清理 `task_phase5-bootstrap-archive-reset-r2_sa7_report.md` 行尾空白（本轮第三次同类清理，前两次 de446f9/009c697），封口终验重跑确认 exit 0（见 dispatch log 与 REPORT.md 验证节）。本更正由注册总控执行（wiki 档案域），不改变任何 AC 的实质结论。

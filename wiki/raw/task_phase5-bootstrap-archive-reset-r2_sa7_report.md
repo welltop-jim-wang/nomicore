@@ -1,8 +1,8 @@
 # SA7 动态验证报告 — issue #133 round=2
 
-**Date**: 2026-08-28  
-**Worktree**: `/home/wangjian/nomicore-fix-issue-133`  
-**Baseline**: `8b1398f`（R-FIX-1）；SA4 全量评审为 pass（带必须修复项），SA4 增量复审 `task_phase5-bootstrap-archive-reset-r2_sa4_review_incremental.md` 为 pass。  
+**Date**: 2026-08-28
+**Worktree**: `/home/wangjian/nomicore-fix-issue-133`
+**Baseline**: `8b1398f`（R-FIX-1）；SA4 全量评审为 pass（带必须修复项），SA4 增量复审 `task_phase5-bootstrap-archive-reset-r2_sa4_review_incremental.md` 为 pass。
 **Verdict**: pass
 
 ## 前置门禁
@@ -46,7 +46,7 @@
 | `@nomicore/namespace-runtime` | ✓ 触发且通过 | `runtime-phase5-reset-fence-r2.test.ts (7 tests)` |
 | `@nomicore/persistence` | ✓ 触发且通过 | R2 probe 11 + File dynamic/archive 48 tests all passed |
 
-**本地 verdict**: ✅ all-vitest-packages-triggered。  
+**本地 verdict**: ✅ all-vitest-packages-triggered。
 **CI 观察状态**: 未适用（SA7 不 push、不建 PR，未提供 CI Run URL）；不得将此记为 CI 已绿。
 
 ## E2E spec 触发证据
