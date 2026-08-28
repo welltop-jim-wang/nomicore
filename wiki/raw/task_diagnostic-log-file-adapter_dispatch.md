@@ -16,4 +16,6 @@
 | 12 | 18:46 | 总控 | 亲跑绿灯确认 | 18:46 | npx vitest run --typecheck 包级：18 文件 252 测试全绿，Type Errors 0（.mabf-bg/ctl-green.log，exit 0） |
 | 13 | 18:47 | SA4 | Phase 3 静态验尸 | (pending) | 红灯全绿已亲验，进入静态评审 |
 | 14 | 18:56 | SA4 | Phase 3 静态验尸 R1 | 19:03 | verdict=reject：R-1 frameOffset 前导零/空串未镜像（PoC 假 ok 实证）+ R-2 writer 注入门无镜像 + R-3 P_BASE64 字面量重打；全部 ≤10 行 SA3 lane 修复 |
-| 15 | 19:03 | SA3 | Phase 3 R 修复轮 | (pending) | 续传 SA3 修 R-1/R-2/R-3（25c2439e）；vfsl alternation codegen 根因另案备案（DENY LIST 外） |
+| 15 | 19:03 | SA3 | Phase 3 R 修复轮 | 19:12 | 续传 SA3 修 R-1/R-2/R-3（25c2439e）；vfsl alternation codegen 根因另案备案（DENY LIST 外） |
+| 16 | 19:13 | 总控 | 修复轮绿灯亲验 | 19:13 | 18 文件 256 测试全绿 Type Errors 0（.mabf-bg/ctl-green2.log exit 0） |
+| 17 | 19:13 | SA4 | Phase 3 静态验尸 R2 复审 | (pending) | SA3 R 修复 commit cb44bcd + 总控亲验绿，续传 SA4 复审（96bfd09d） |
