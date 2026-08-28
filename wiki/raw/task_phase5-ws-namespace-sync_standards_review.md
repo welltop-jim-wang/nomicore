@@ -7,9 +7,13 @@
 - **验收基准**：`wiki/raw/task_phase5-ws-namespace-sync_design.md`（R4.2，含 §23 R-11/R-12 登记）；**规范基准**：`CONTEXT.md`、`docs/adr/`（尤其 0010 含 #133/#134 修订节）、`AGENTS.md`、`docs/protocols/instance-replication-v1.md`。
 - **既有评审链核对**：SA2 R3 pass / SA4 R3 pass / SA7 R2 pass（本轴不重复其三轴覆盖面，仅在其未覆盖的规范/可维护性面独立取证）。
 
-**Verdict**: **has-blocking-findings**（1 条硬性违规 B-1：设计 §22 验收命令 `git diff --check` 未通过——单字节化妆品级，修复成本一行；其余全部为 non-blocking 判断性意见）。规范主体面（包形态、术语、测试纪律、timer 纪律、错误码闭集、零回显、接线）**全部通过**。
+**Verdict（当前，R2 复审）**: **clear** —— R1 唯一阻塞项 B-1（EOF 空行 / `git diff --check` exit 2）已消解并经本轴复核通过；R1 后新增 delta（Spec B-1/B-2 竞态簇修复 + SA4 R4-1~3 / SA7 D2 回流修复，commits `0336dce`/`0324d8f`/`6ab9e32`/`12258c2` 等）经全轴复扫**零新增规范违规**。证据与发现详见文末「R2 复审节（diff range `ff50d47..51bcbd5`）」。
+
+**R1 Verdict（历史，保留）**: **has-blocking-findings**（1 条硬性违规 B-1：设计 §22 验收命令 `git diff --check` 未通过——单字节化妆品级，修复成本一行；其余全部为 non-blocking 判断性意见）。规范主体面（包形态、术语、测试纪律、timer 纪律、错误码闭集、零回显、接线）**全部通过**。
 
 ---
+
+## R1 正文（历史，原样保留）
 
 ## 一、独立复跑验证（本轴亲跑，非转述）
 
@@ -145,3 +149,58 @@
 ---
 
 *本评审只写本文件；未改动任何其他文件。审查证据均可经第一节命令复现。*
+
+---
+
+# R2 复审节（2026-08-30，同会话复审轮）
+
+- **审查 diff range（逐字）**：`ff50d47..51bcbd5`（`git diff ff50d47..51bcbd5`）。
+- **R1→R2 delta（`f557b68..51bcbd5`）**：`0336dce`（双轴终审回流红灯锚定 + G-1 EOF 修复）→ `0324d8f`（Spec B-1/B-2 竞态簇修复）→ `d112647`/`3e1c5f7`（wiki）→ `6ab9e32`（SA4 R4-1 红锚 + 设计 R-13 登记）→ `12258c2`（SA4 R4-1/R4-2/R4-3 代际守卫接线补全）→ `f49f12d`/`51bcbd5`（wiki）。代码面净变更：`peer-connection.ts` +16/−少量、`peer-namespace.ts` +141/−少量、`test/harness.ts` +10；新增测试 `ws-replication-spec-b1-b2-red.test.ts`（228 行/5 IT）、`ws-replication-sa4-r4-1-red.test.ts`（73 行/1 IT）、`ws-replication-sa7-dynamic.test.ts` +118（2 IT）；`ws-replication-r3-r4-regressions.test.ts` −1 行（B-1 修复）。
+- **既有评审链核对（R2 时点）**：SA2 R3 pass / SA4 **R5** pass / SA7 **R4** pass / Spec 轴 R1 阻塞项已修复。
+
+## R2-一、独立复跑验证（本轴亲跑）
+
+| 命令 | 结果 |
+|---|---|
+| `git diff --check ff50d47..51bcbd5` | ✅ **exit 0**（零诊断）——**R1 B-1 消解确认**；新测试文件尾字节抽样 `29 3b 0a`（`);\n`），与仓库单换行尾规范一致 |
+| `pnpm exec vitest run packages/ws-replication` | ✅ 12 文件 / **82** 测试全绿（R1 为 10/74；含 9 条类型测试），exit 0 |
+| `pnpm typecheck`（根枚举） | ✅ exit 0 |
+| native timer / sleep 扫描（src+test，`setTimeout(|setInterval(|setImmediate(|Date.now|performance.now|Atomics`） | ✅ 零命中（仅注入 `ReplicationTimer` 接口类型声明） |
+| CONTEXT.md avoid 清单扫描（src+test） | ✅ 零命中 |
+| 源码 grep / fs 断言扫描（`node:fs|readFileSync`） | ✅ 零命中 |
+| diff 范围 vs 设计 §21 ALLOW/DENY LIST | ✅ 仍仅触 `packages/ws-replication/**` 与 `wiki/raw/task_phase5-ws-namespace-sync*` 族（DENY 零触碰；根 package.json/pnpm-lock 本轮无新改动） |
+
+## R2-二、新增 delta 逐面审查（Spec B-1/B-2 簇 + SA4 R4 / SA7 D2 回流修复）
+
+1. **`peer-connection.ts`**：连接代际计数 `connectionEpochValue`（每次 `dialNow` +1）+ host 回调 `connectionEpoch()`（:44-46/:78/:168）；`sendControl` 增加 ready 状态门（:394-396，B-2e 放大器——重建期零出站，注释引 §4.1/§13.4）；HELLO 经 `this.outbound.sendControl` 直发绕门（:187-193，握手帧不适用 ready 门，注释成文）；`requestRebuild` 通知全部控制器 `onConnectionLost()`（:490-497，§4.3 L228 字面落实）。**风格/注释/溯源与既有纪律一致**；无新 timer、无新错误码、无契约面变动（`PeerNamespaceHost` 为包内私有接口，§2 冻结公共面零触碰 ✅）。
+2. **`peer-namespace.ts`**（+141）：代际守卫在五个异步续体一致接线（`startOpen` 导入/session-open/`openSessionAndStartRound`/`tryOpenReplicationSession`/`onBootstrapSnapshot` 导入续体/`applyStep2`/`applyRemoteUpdate` 结篡点），入口捕获 epoch、await 后比对；B-2d 投影先行（`onConnectionLost`/`onConnectionFatal` 先 `setState('disconnected')` 再异步 cleanup）；R4-2 `unsubscribe` 入口捕获 + 当前句柄判别（迟到 cleanup 不误杀新 session listener）；`isConnectionDead()`/`releaseLeaseOrNoop()` 辅助方法命名与注释规范；§13.4 迟到纪律注释逐点溯源（B-2a~e / R4-1~3）。**零新增防御面缺口**；`catch (err)` 未用绑定等 R1 化妆品项原样存续（见 R2-四）。
+3. **`test/harness.ts`**：新增 `loadGate` 单次门闩（B-2c 竞态锚）——与既有 `saveGate`/`importHold` 同形同注释，消费登记模式一致；仅基建增量，零断言改动 ✅。
+4. **设计文档**：`design.md` 仅追加 2 行（§23 R-13 登记行 + 文末 R4-4 回应行）——append-only 登记纪律遵守 ✅。
+5. **新增/增补测试三文件**：头部 provenance 文档（红锚来源、机制、转绿条件）与家族惯例一致；真实 yjs/Registry/Runtime + fake-duplex + 门闩 + `collectUnhandledRejections` 探针；断言全部落在 wire 帧/错误码/状态投影/收敛数据上；确定性 staging（carrier FIFO 结构性论证写入注释）。
+
+## R2-三、R2 发现（分节）
+
+### 硬性违规（blocking）
+
+**无。** R1 B-1 已消解（R2-一表第一行）；delta 全轴复扫未见新增硬性违规。
+
+### 判断性意见（non-blocking，R2 新增）
+
+- **N-9（术语近邻观察，非违规）**：新引入「连接代际 / `connectionEpoch`」（peer-connection.ts:44、peer-namespace.ts 多处）与 CONTEXT.md 冻结词「**复制代际**（replication epoch）」词根相邻。核实：CONTEXT《复制代际》词条的 avoid 为「连接次数、自动选主 term、可回绕版本号」——禁止的是把*复制代际*误作连接计数；本实现对**另一概念**（每连接生命周期计数）使用限定词「连接代际」且字段恒为 `connectionEpoch*` 限定形，注释明确区分（不与 `replicationEpoch` 混用，avoid 清单零命中）。判定：不构成术语违规；登记为观察项——后续文档/切片引用时须保持「连接代际」全称限定，不得缩写为「代际/epoch」裸词。
+- **N-10（化妆品）**：`ws-replication-spec-b1-b2-red.test.ts:52` 的 `import { decodeMessage }` 位于文件中段（函数定义之后）——ESM 合法（hoisted）但与全仓「import 集中顶部」惯例不一致；建议顺手移至顶部 import 块。
+
+### R1 意见存续确认（非新增，仍 non-blocking）
+
+R1 的 N-1（死代码簇：含 `HANDSHAKE_OR_READY` peer-connection.ts:30、`LifecycleQueue` 零实例化等 10 条）/ N-2（ACK 计时不逐笔重置）/ N-3（入站字段限额只覆盖 UPDATE）/ N-4（error-mapping 读法偏差登记）/ N-5（格式簇）/ N-6（512 跳延迟环）/ N-7（lib0/y-protocols 未用直依）/ N-8（GOAWAY timer 句柄未登记）**全部原样存续**——本轮修复聚焦 Spec/SA4/SA7 阻塞簇，未宣称覆盖本轴 R1 意见，存续不构成新问题；处置建议不变（切片 7/9/10 或下一修订轮顺手收口）。
+
+### 已知登记项（R2 时点）
+
+R-11 / R-12 维持 R1 排除结论不变。**R-13（本轮新增登记，design §23）**：`sendControl` ready 门抑制握手期合法 connection ERROR 帧（SA4 R4-4 nano；close code 仍正确送达，危害限诊断面；切片 7 精确化为 epoch 门判据或 connection ERROR 豁免）——与 R-11/R-12 同款「演进位登记」性质，按同一约定**排除出违规清单**。
+
+## R2-四、R2 最终结论
+
+**Verdict（R2）: clear。**
+
+依据：R1 唯一阻塞项 B-1 消解并经 `git diff --check ff50d47..51bcbd5` exit 0 复核；R1→R2 delta（代际守卫/投影先行/unsubscribe 守卫/sendControl 门/loadGate/R-13 登记/三个测试文件）经仓库惯例、CONTEXT 术语、测试纪律、timer 与生命周期、错误分类学、可维护性六面复扫**零新增违规**；包级 82 测试 + 类型测试 + 根 typecheck 全绿；diff 范围仍守 §21 ALLOW/DENY。R1 的 N-1–N-8 与 R2 新增 N-9/N-10 均为 non-blocking，随切片 7/9/10 或下一修订轮收口，不阻塞本切片完工终审。
+
+*R2 复审同样只写本文件；未改动任何其他文件。全部证据可经 R2-一表命令复现。*

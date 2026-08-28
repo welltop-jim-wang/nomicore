@@ -98,3 +98,48 @@ AC 清单 7/7 ✅ 的**断言证据逐条抽查属实**（§1 表内行号），
 - 设计/协议符合面：主干逐项符合（§2 契约面逐字段、§4.1 序列纪律 ADR 字面、§10.5 同连接恢复、§11 三层映射、§12 三层检测+one-shot、§13 七行矩阵、§16 timer 清单均落实）。
 - 阻塞项：**B-1**（onRoundSettled 无守卫 → removeTarget×reconcile 竞态永久假活）、**B-2 簇**（§13.4「连接已断」半句未实现 → 五组迟到续体竞态，最重者为 AC6 重连修复承诺在在途 apply 跨重连时不成立）、**G-1**（`git diff --check` exit 2，一行可修）。
 - 建议流转：B-1/B-2 回流实现侧修复 + SA6 补红灯（N-12③）；G-1 一行修复；N-1..N-12 按判断性意见登记或顺手收口后，本轴可复审转 clear。
+
+---
+
+# R2 复审节（同会话第二轮，2026-08-30）
+
+- **审查 diff range（逐字）：`ff50d47..51bcbd5`**（`git diff ff50d47..51bcbd5`；R1→R2 增量 `f557b68..51bcbd5` = 红锚 0336dce/6ab9e32 + 修复 0324d8f/12258c2 + wiki 过程文档；增量 src 仅 `peer-connection.ts` +16/−2、`peer-namespace.ts` 约 +120/−21，测试 +2 新文件/+2 追加/−1 EOF 行，全在 ALLOW）
+- 方法：R1 结论对未变更文件继续有效；本轮 = R1 基线 + delta 逐行精读（src delta 全部、新增/变更测试全部、harness delta）+ 红锚断言真实性逐条核验 + 新机制（connectionEpoch 代际守卫 / 投影先行 / sendControl ready 门 / cleanup 当前身份守卫）偏离扫描。静态复审，未重跑测试（绿灯引 SA4 R5 / SA7 R4 / 总控 verify5 三方一致记录：包级 12 文件/82 IT、全仓 165 文件/1953 IT、typecheck、diff-check 全绿）。
+
+## R2.1 R1 阻塞项逐条消解核验
+
+| R1 项 | 修复形态（代码核验，行号为当前版本） | 红锚（断言真实性核验） | 结论 |
+|---|---|---|---|
+| **B-1** onRoundSettled 无守卫 | `peer-namespace.ts:615-624`：`state !== 'reconciling'` → 只清 reconcile timer、零迁移（注释明引 §5.1 L250/§13.4）——closing/终态/断开期迟到结算不再复活 live | `ws-replication-spec-b1-b2-red.test.ts:58-93`：saveGate 悬挂本端 Step2 apply + `waitHubSent('SYNC_APPLIED')` 锁定对端 Applied 已收 + removeTarget + `dropNextHubFrame('CLOSE_OK')`（消除随机序，收口只走 closeTimeout）→ 释 gate → 断言 closed 达成、closePromise 结算、**re-add 后 dialCount 增加**并回 live——断言确为「不复活 + 收口 + re-add 非 no-op」语义本体 | ✅ 消解 |
+| **B-2a** 导入终态不回收 lease | `:349-357`：迟到判别（isConnectionDead ∨ epoch 漂移）→ `releaseLeaseOrNoop(importResult.lease)`（§8 L361 字面落实），零 wire 零迁移 | 无公共观测面（Registry 无 lease 列表 API，简报已记录理由）→ SA7 R3 终态变体动态闭项 `ws-replication-sa7-dynamic.test.ts` B2a IT：导入悬挂 + removeTarget 至 closed → 冻结 wire 快照 → 释导入 → 断言**双向零新帧、零 BOOTSTRAP_ACK、零 ERROR、投影恒 closed** + re-add 重建后写双向收敛（回收未损伤持久化面）+ 零 unhandled rejection | ✅ 消解 |
+| **B-2b** 导入迟到遇 disconnected 假迁移 | 同上判别面 + `:368-372` 发 BOOTSTRAP_ACK 前二次 epoch 兜底——不再 setState('reconciling')/发迟到控制帧；重连由 openActiveTargets 重 OPEN（已导入副本走 mode1 reconcile） | 同文件 `:95-115`：importHold 悬挂于 bootstrapping → 断线 → disconnected → 释导入 → 重连 → 断言 **OPEN_NAMESPACE 恰 2**（重 OPEN 发生）+ 收敛 live | ✅ 消解 |
+| **B-2c** startOpen 迟到续体 | `:143` 入口捕获 epoch；registry.open await 后 `:154-160` 判别 → 迟到交付 lease 即释、**不覆盖 this.lease、不发 OPEN**；getStatus 后 `:187-193` 同款判别 + lease 回收 | 同文件 `:117-141`：harness 新增 loadGate 单次门闩卡住 registry.open → 断线 → 重连（Registry carrier FIFO 排队 #2）→ 释门闩 → 断言 **OPEN 恰 1**（迟到续体零 wire）+ 收敛 live | ✅ 消解 |
+| **B-2d** 在途 apply 跨重连 | 三件套：① 投影先行——`onConnectionLost/onConnectionFatal`（`:563-584`）同步置 'disconnected'、cleanup 异步（openActiveTargets 不再跳过滞留 'live'）；② `applyRemoteUpdate:754` 与 `applyStep2:727` 入口捕获 epoch，迟到 ACK/Applied 零 wire；③ `closeSessionAndRelease:891-910` 当前身份守卫（`this.session===session && this.lease===lease` 才 teardown 通道级状态；unsubscribe 入口捕获 + 双重身份判别——SA4 R4-2/SA7 D2 修复面） | 同文件 `:143-168`：saveGate 悬挂 hub→peer UPDATE apply → 断线 → 25ms 快速重连 → 断言 **OPEN×2**（re-OPEN 发生）→ 释 gate → 断言收敛 **live + hub/peer n=1**（迟到 ACK 不再误 failed）——AC6 重连修复承诺在竞态下成立；+ SA7 D2 IT：live 后 writePeer → 当前连接 UPDATE ≥1 + 双向收敛（新 listener 未被误杀） | ✅ 消解 |
+| **B-2e** rebuild 不投影 disconnected | `peer-connection.ts:490-494`：requestRebuild 通知全部控制器 `onConnectionLost()`（§4.3 L228 字面落实）+ `:396` sendControl ready 状态门（迟到帧不落新连接 handshaking 窗口） | 同文件 `:170-227`：双 namespace 装配 → A remove→closed→re-add 触发重建 → 断言**全 wire OPEN 恰 4**（A×2 + **B×2**——兄弟 ns 重 OPEN）+ B 后续写后 B 恒 live（非误 failed） | ✅ 消解 |
+| **G-1** EOF 空行 | r3-r4-regressions.test.ts −1 行；本轮实测 `git diff --check ff50d47..51bcbd5` **exit 0** | —（门禁项） | ✅ 消解 |
+
+**B-1/B-2 七项（含 SA4 R4-1/R4-2/R4-3 同族回流）全部治本消解**：修复为机制级（代际判别 + 投影先行 + 当前身份守卫），非断言迁就；6 条新红锚全部为行为级断言（wire 帧计数/状态投影/收敛数据/错误码，零源码 grep），并经 SA4 R5 同源复现与 SA7 R4 三连跑独立转绿。
+
+## R2.2 delta 偏离扫描（新机制专项）
+
+- **connectionEpoch 机制**：私有于包内 `PeerNamespaceHost`（公共契约面零触碰，api.test-d.ts 无 delta）✓；`dialNow`（peer-connection.ts:169）唯一递增点 ✓；全部 await 续体（registry.open / getStatus / importReplica / openReplicationSession / apply×2 / openSessionAndStartRound）判别完备（SA4 R5 逐点核对，本复审抽核一致）。
+- **sendControl ready 门**：HELLO 握手帧正确绕行（`peer-connection.ts:188` 直发 outbound）✓；副作用「握手期 connection ERROR 被抑制」已由 SA4 R4-4 登记为设计 **R-13**（设计 §23 新增行；切片 7 精确化：epoch 判据或 connection 级 ERROR 豁免）——本复审同意该定级（nano，诊断面弱化、close code 仍正确），不另立发现。
+- **投影先行**：'disconnected' 期 onOwnedUpdate 不投递（AC6「断线写零 UPDATE」锚保持）✓；removeTarget 的 'disconnected' 行即时结算 + 残留 cleanup 后台静默回收——与设计 §13.1 该行「lease/session 若残留则走静默回收」字面一致 ✓（R1 形态下该行仅在 cleanup 完成后可达；R2 形态更贴设计文本）。cleanup 双链（closeMemo/cleanupTail）并发下的 lease 双释放可能性为 R1 既有形态，且 Registry `lease.release` same-Promise 幂等 + `onReleased` 恰一次（lease.ts:202-218）→ 良性，不立发现。
+- **re-add while 'disconnected' 组合复验**：'disconnected' 投影与连接 ready 结构性不共存（openActiveTargets 在 ready 同步段即收编全部 disconnected+active 控制器）→「re-add 后无人重 OPEN」窗口不存在 ✓（排除一疑似缺口）。
+- 冻结测试零断言改动（delta 中既有测试文件仅 r3-r4 的 EOF 一行删除 + sa7-dynamic 纯追加）✓；harness 变更仅新增 loadGate 门闩（测试基建 hook，SA3 许可面）✓；wiki 变更均为过程文档 ✓。
+
+## R2.3 新增判断性意见（NON-BLOCKING，delta 暴露的残余面）
+
+- **N2-1（MINOR）round 引擎迟到续体缺 round 代际判别**：`round-engine.ts:188-195` `applyStep2Safely` 续体无条件写当前 `this.state.remoteDiffAppliedLocally`——「reconciling 期断线 + 本端 Step2(r1) apply 悬挂 + 悬挂跨重连 + startRound(r2) 已 resetState」时，r1 的迟到结算把 r2 的 flag 置位；此后 hub 的 SYNC_APPLIED(r2) 到达即 settle → **live 投影可能早于本端 r2 diff apply 完成一个窗口**。数据面零损失（r2 diff 随后照常 apply，CRDT 合并收敛；§9.2 帧入口的 roundId/relatedStep1Sequence 校验不受污染——wire 有序保证 hub SYNC_APPLIED(r2) 必在其 Step2(r2) 之后到达，r2 apply 已入 sequencer 排队）；后果为瞬态提前 live，自愈。当前测试矩阵未覆盖「reconciling 态断线 + 跨重连悬挂」组合（B-1 红锚断线后不重连；B-2d/D2 红锚断线于 live 态）。建议：`applyStep2Safely` 启动时捕获 `currentRound`、续体比对后再置位（与 connectionEpoch 同模式）。
+- **N2-2（MINOR）身份守卫跳过 teardown 的残留面**：`closeSessionAndRelease` 当前身份守卫失配时整体跳过 watchdog/round/channel teardown——旧连接 channel 的陈旧 inFlight/zombie 集合带入新生命周期；陈旧 in-flight 永无 ACK → ack timer 触发一次 needs-resync → 多余一个恢复 round（数据安全、带宽代价；watchdog 经回调探测当前 session、round 由 startRound 重置，均不自伤）。可达性需旧 cleanup 屏障跨越完整重连 + 重 OPEN（病态持久化悬挂域）。建议：守卫失配分支补「round 未 running 时补 teardown round/channel」或登记演进位。
+
+## R2.4 全轴复验结论
+
+- 7 AC / What-to-build：维持 R1「完整交付」结论；本轮新增 8 IT（5 Spec 红锚 + 1 SA4 红锚 + 2 SA7 闭项/红锚）进一步补强 AC6（重连修复竞态面）与 AC7（故障清理竞态面）断言证据——AC 映射充分性较 R1 提升。
+- 设计/协议符合性：R1 符合面全部维持；§13.4「已终局/连接已断」半句现已完整实现；§4.3 L228、§5.1 L250、§8 L361 字面均落实。
+- scope creep：delta 零公共面扩张、零非目标夹带 ✓。
+- R1 非阻塞意见处置：N-4/N-5/N-6/N-7/N-8/N-10 维持 open（登记/演进位面，不阻塞）；N-1..N-3、N-9、N-11、N-12 维持 R1 记录；sendControl 门的副作用角已由 R-13 登记覆盖。
+
+## R2.5 R2 最终结论
+
+**clear**——R1 全部阻塞项（B-1、B-2a~e、G-1）治本消解且红锚真实充分；delta 扫描无新阻塞发现，仅两条 MINOR 判断性意见（N2-1/N2-2，均窄窗口、数据安全、自愈，建议登记或随切片 7 顺手收口）。本节结论取代 R1 §8 的 has-blocking-findings 作为本轴当前有效结论。
