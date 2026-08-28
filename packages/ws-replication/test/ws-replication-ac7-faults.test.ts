@@ -131,8 +131,9 @@ describe('AC7：fake-duplex 确定性故障注入', () => {
     expect(run.rootValue('peer', 'extra')).toBe(88);
     // dirty 登记仍在（ADR 0010：不得绕过 saveDoc）
     expect(run.saveEvents('peer')).toBe(before + 1);
-    // ACK 照发
-    expect(run.hubFrames('UPDATE_ACK')).toHaveLength(1);
+    // ACK 照发——UPDATE_ACK 是 peer 对 hub→peer UPDATE 的应答（peer→hub 方向，
+    // 原断言误查 hubFrames（hub→peer 方向）恒空）
+    expect(run.peerFrames('UPDATE_ACK')).toHaveLength(1);
   });
 
   it('cleanup 竞态：removeTarget 与在途 apply 并发——已接纳 apply 无条件完成，CLOSE_OK 只在 apply settle 后', async () => {

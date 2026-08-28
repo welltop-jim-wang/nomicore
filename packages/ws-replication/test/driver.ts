@@ -212,6 +212,13 @@ export class Run {
     };
   }
 
+  /** 跨方向统一发送时序（全部连接按连接序拼接；含被丢帧）。 */
+  timeline(): ReadonlyArray<Readonly<{ direction: 'peer-to-hub' | 'hub-to-peer'; bytes: Uint8Array }>> {
+    const out: Array<Readonly<{ direction: 'peer-to-hub' | 'hub-to-peer'; bytes: Uint8Array }>> = [];
+    for (const wire of this.wires) out.push(...wire.timeline);
+    return out;
+  }
+
   peerFrames(kind: DecodedMessage['message']['kind']): DecodedMessage[] {
     return this.frames().peerToHub.filter((f) => f.message.kind === kind);
   }

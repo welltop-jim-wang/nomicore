@@ -563,6 +563,9 @@ export interface Wire {
   /** 到达对端（未被丢弃）的帧，按到达序。 */
   readonly peerToHub: Uint8Array[];
   readonly hubToPeer: Uint8Array[];
+  /** 跨方向统一发送时间序（每帧发送时刻，含被丢帧——drop 判定前记录；
+   *  用于「谁先发出」的跨方向时序断言——两方向数组索引不可比）。 */
+  readonly timeline: ReadonlyArray<Readonly<{ direction: 'peer-to-hub' | 'hub-to-peer'; bytes: Uint8Array }>>;
   /** 被故障注入丢弃的帧（发送方已发出、未到达对端）。 */
   readonly droppedPeerToHub: Uint8Array[];
   readonly droppedHubToPeer: Uint8Array[];
@@ -583,6 +586,7 @@ export function makeWire(): Wire {
   const pair = { left: makeEnd(leftEnd, rightEnd), right: makeEnd(rightEnd, leftEnd) };
   const peerToHub: Uint8Array[] = [];
   const hubToPeer: Uint8Array[] = [];
+  const timeline: Array<Readonly<{ direction: 'peer-to-hub' | 'hub-to-peer'; bytes: Uint8Array }>> = [];
   const droppedPeerToHub: Uint8Array[] = [];
   const droppedHubToPeer: Uint8Array[] = [];
   let dropPeer: ((bytes: Uint8Array) => boolean) | undefined;
@@ -592,6 +596,7 @@ export function makeWire(): Wire {
 
   const peerEnd: DuplexTransport = {
     send(bytes) {
+      timeline.push({ direction: 'peer-to-hub', bytes: bytes.slice() });
       if (dropPeer !== undefined && dropPeer(bytes)) {
         dropPeer = undefined;
         droppedPeerToHub.push(bytes.slice());
@@ -618,6 +623,7 @@ export function makeWire(): Wire {
   };
   const hubEnd: DuplexTransport = {
     send(bytes) {
+      timeline.push({ direction: 'hub-to-peer', bytes: bytes.slice() });
       if (dropHub !== undefined && dropHub(bytes)) {
         dropHub = undefined;
         droppedHubToPeer.push(bytes.slice());
@@ -647,6 +653,7 @@ export function makeWire(): Wire {
     hubEnd,
     peerToHub,
     hubToPeer,
+    timeline,
     droppedPeerToHub,
     droppedHubToPeer,
     dropNextPeerToHub(pred) {

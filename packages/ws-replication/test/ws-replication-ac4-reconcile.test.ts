@@ -59,7 +59,17 @@ describe('AC4：双向 reconciliation 与 SYNC_APPLIED 门禁', () => {
     const kindsH = h2p.map((f) => f.message.kind);
     expect(kindsP.indexOf('SYNC_STEP1')).toBeLessThan(kindsP.indexOf('SYNC_STEP2'));
     expect(kindsH.indexOf('SYNC_STEP1')).toBeLessThan(kindsH.indexOf('SYNC_STEP2'));
-    expect(kindsP.indexOf('SYNC_STEP1')).toBeLessThan(kindsH.indexOf('SYNC_STEP1'));
+    // 「Peer Step1 先于 Hub Step1」用跨方向统一发送时序表达（§9.1：round 由 Peer 隐式
+    // 开始、Hub 收有效新 round 后才发自己的 Step1）——两方向数组的 indexOf 不可比
+    // （对称协议下各自 index 恒相等，2 < 2 恒假）。
+    const timeline = run.timeline().map((t) => ({
+      direction: t.direction,
+      kind: decodeMessage(t.bytes).message.kind,
+    }));
+    const peerStep1At = timeline.findIndex((t) => t.direction === 'peer-to-hub' && t.kind === 'SYNC_STEP1');
+    const hubStep1At = timeline.findIndex((t) => t.direction === 'hub-to-peer' && t.kind === 'SYNC_STEP1');
+    expect(peerStep1At, 'peer 的 Step1 必须已发出').toBeGreaterThanOrEqual(0);
+    expect(hubStep1At).toBeGreaterThan(peerStep1At);
 
     const peerStep1 = asMsg<SyncStep1Msg>(run.peerFrames('SYNC_STEP1')[0], 'SYNC_STEP1');
     const hubStep1 = asMsg<SyncStep1Msg>(run.hubFrames('SYNC_STEP1')[0], 'SYNC_STEP1');
@@ -119,6 +129,11 @@ describe('AC4：双向 reconciliation 与 SYNC_APPLIED 门禁', () => {
     run.peerNode.persistence.importHold = deferred();
     run.peer.start();
     await run.waitConnection('ready');
+    // 注入前提：OPEN 必须已在途、hub 通道已建立（OPEN 经 async registry.open 决定
+    // hasLocalReplica——ready 后立即注入会让 STEP2 先于 OPEN 到达 hub（无通道 →
+    // NAMESPACE_STATE_VIOLATION，§6 无通道统一码），而非 §9.2 的「round 前 Step2」）。
+    // 以 OPEN_OK 可见为通道建立信号；importHold 已挂 → peer 冻结 bootstrapping。
+    await run.waitHubSent('OPEN_OK', 1);
     // 冻结在 bootstrap 导入期；注入 STEP2（无对应 Step1）
     run.injectPeer({
       kind: 'SYNC_STEP2',

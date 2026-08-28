@@ -190,3 +190,32 @@ EXIT=1
 **类型干净性复核**：新增文件 + driver 探针后 `/tmp/wsstub` 契约 stub + 路径映射 `tsc -p /tmp/wsstub/tsconfig.json` → exit 0（8 个 .ts/.test-d.ts 零错误）。
 
 **禁则核对**：新文件全部断言为 wire 帧（序列/帧数/编码码）/持久化内容（rootValue/metaValue）/状态投影（getNamespaceState/getConnectionState）/未处理 rejection 事件——零源码 grep；零 real sleep（fake scheduler + 微任务 + 门闩）；`scripts/test-lock.sh` 不存在无需维护。
+
+### SA6 对齐记录（Phase 3，2026-08-30 · 7 条残余红灯逐条仲裁与修订）
+
+> 背景：SA3 实现落地（commit 24642a9），`packages/ws-replication` 60/67 绿；剩余 7 条红灯 SA3 逐条举证为测试侧缺陷（实现零断言改动）。SA6 以测试所有者身份逐条对照设计 R4 定稿仲裁：**7 条全部裁定为测试缺陷并修订**（无实现缺陷退回项）；修订后独立进程复跑 67/67 全绿。
+
+| # | 用例 | 裁决 | 原断言 → 新断言 | 覆盖等价性论证 |
+|---|---|---|---|---|
+| 1 | AC4 幸福路径（ac4:62） | 测试缺陷（跨方向数组索引恒等不可满足） | `kindsP.indexOf(STEP1) < kindsH.indexOf(STEP1)`（对称协议下两侧各自 index 恒 2，2<2 恒假）→ 跨方向统一发送时序：`run.timeline()`（harness Wire 新增 timeline——发送时刻逐帧记录、含被丢帧；driver Run.timeline() 按连接序拼接）中 `hub→peer STEP1 的时序位 > peer→hub STEP1 的时序位` | 「Peer Step1 先于 Hub Step1」（§9.1：round 由 Peer 隐式开始、Hub 收有效新 round 后才发自己的 Step1）语义原样保留，改以可比较的跨方向时间序表达——比原断言更强（同一时钟序下可严格断言先后）；顺带锚定「peer 的 Step1 必然已发出」（findIndex ≥ 0 守卫） |
+| 2 | AC4 错序（round 前 STEP2） | 测试缺陷（注入前提未满足：peer OPEN 经 async registry.open 未发出，注入帧先到 hub 无通道 → §6 无通道统一码） | 注入前补 `await run.waitHubSent('OPEN_OK', 1)`（通道建立信号；importHold 已挂 → peer 冻结 bootstrapping）——原断言不变（SYNC_STATE_VIOLATION + hub STEP1 帧数 0 + 释放后 failed） | 注入语义（§9.2「round 建立前 STEP2」→ SYNC_STATE_VIOLATION）与错误码期望原样保留，仅把「通道已建立」前置条件显式化——原断言意图（§9.2 矩阵）正是 SYNC_STATE_VIOLATION，修正后可达 |
+| 3 | AC7 degraded（peer 侧） | 测试缺陷（方向写反） | `run.hubFrames('UPDATE_ACK')`（hub→peer 方向——peer 对 hub 的 ACK 永不在此方向）→ `run.peerFrames('UPDATE_ACK')`（peer→hub） | 「ACK 照发」是可观察行为本身（AC7 冻结锚：peer degraded 下 hub→peer 内存 apply + saveDoc 登记 + ACK 照发）——方向修正后断言同一语义，无覆盖变化；SA3 实测 peerToHub 恰 1 帧 ACK 与修订一致 |
+| 4 | R3 ①（5000ms 超时） | 测试缺陷（writeHub 经 hub 同一 write sequencer，await 排在 saveGate 挂起槽之后 → 死锁） | `await run.writeHub({extra:5})` → `const hubWrite = run.writeHub(...)`（仅发起，操作已入 sequencer 队）→ 释放 gate → `await hubWrite` | 语义不变且更精确：hub 新写仍产生 fan-out UPDATE，且在 peer 的 needs-resync/reconciling 恢复窗口到达/入队（§10.1 hub 镜像条款）→ §11.3 状态门收窄（恢复期照常 apply+ACK、零 NAMESPACE_STATE_VIOLATION）正是该测试的锚定对象；其余断言（live、extra 5 双侧收敛、UPDATE_ACK≥1、零 unhandled）原样 |
+| 5 | R3 ③（n=19 vs 实测 n=20） | **测试缺陷（设计候选文本排布假设；实现按语义必然排布）**：设计 §5.3 丢弃安全性论证（任何被丢弃的增量都已提交本地 Y.Doc；下一 round 的 encodeDiff(对端 sv) 必然包含它）⇒ hub 收敛 n=20 是语义必然；「n=19」需「恢复 round 编码早于第 20 笔写提交」的额外排布，设计未钉死时刻表（§12 预算论证只钉 watchdog 探测窗口、§10.2 只钉溢出判据） | `expect(run.rootValue('hub','n')).toBe(19)` → `toBe(20)`；peer 本地 n=20 保留；注释记录裁决依据 | 机制语义（RESYNC×1 / roundId=2 / UPDATE<20 / needs-resync → 同连接新 round 收敛）全部原样；「无数据丢失」以最强形式表达（hub=20=全收敛，恰是 §5.3 论证的落点）；实测该语义下 20 笔写全数经 diff 收敛 |
+| 6 | R3 ⑦（CLOSE 序列 5 vs 9） | 测试缺陷（注释序列清单遗漏 bootstrap round 帧占 seq 3–6） | `expect(closes[0].sequence).toBe(5)` → 动态 `toBe(run.frames().peerToHub.length)` + 注释真实序列清单（HELLO1/OPEN2/BOOTSTRAP_ACK3/STEP1 4/STEP2 5/APPLIED 6/UPDATE7/UPDATE8/CLOSE9） | 核心语义「交付序 == 序列序（到达序严格 +1）」「CLOSE 序列=帧实际出队发送时刻分配」原样保留；动态断言使测试不再依赖具体帧数排布假设（同一语义对 bootstrap 与直接 reconcile 路径均成立）；`seqs == [1..n]` 断言不变 |
+| 7 | R3 ⑧a（5000ms 超时，同 4） | 测试缺陷（bumpHubEpoch 经 hub 同一 write sequencer，await 排在挂起槽之后 → 死锁） | `await run.bumpHubEpoch()` → `const bumpP = run.bumpHubEpoch()`（发起即入队）→ 释放 gate → `await bumpP` | fence × 恢复 round 语义不变；修订后队列序为 [n:1 apply(挂)→bump 槽→r2 hub-apply]，bump 槽确定性先于 r2 的 hub apply 执行 → session fence 后 r2 apply 命中围栏判别（§11.1 R4 扩域）→ one-shot——比修订前的时序撞大运更确定；断言集（IDENTITY_CHANGED 恰 1 / 恰 conflicted / 零 INTERNAL_ERROR / 零 uncaught）原样 |
+
+**基建改动（测试侧，零语义影响）**：harness `Wire` 新增 `timeline`（跨方向统一发送时序，逐帧记录含被丢帧——drop 判定前记录）；driver `Run.timeline()` 按连接序拼接（重连聚合）。
+
+**绿灯再验证**（独立进程，`pnpm exec vitest run packages/ws-replication`，/tmp/sa6-phase3-r2.log 与复跑 /tmp/sa6-phase3-r3.log，均 exit=0）：
+
+```
+Test Files  8 passed (8)
+Tests       67 passed (67)
+Type Errors no errors
+EXIT=0
+```
+
+（修订前基线 /tmp/sa6-phase3-run.log：8 文件 3 失败 5 通过、67 测试 7 失败 60 通过——7 条失败与上述仲裁逐条对应。）
+
+**类型干净性**：修订后 /tmp/wsstub 契约 stub + 路径映射 `tsc -p /tmp/wsstub/tsconfig.json` → exit 0。**范围说明**：SA6 只跑 `packages/ws-replication` 包范围；全仓 `pnpm test` 零回归确认由总控亲跑（简报另述）。

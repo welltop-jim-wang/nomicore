@@ -40,12 +40,15 @@ describe('R3/R4 补测：恢复窗口 / fence 竞态 / fanout 溢出 / removeTar
       await advanceMs(run, 200);
       await run.waitNamespace('needs-resync');
       await run.waitPeerSent('SYNC_STEP1', 2);
-      // 恢复窗口期 hub 新写 → fan-out UPDATE（hub 通道镜像语义：恢复期入 queued、round 后 flush）
-      await run.writeHub({ extra: 5 });
+      // 恢复窗口期 hub 新写 → fan-out UPDATE（hub 通道镜像语义：恢复期入 queued、round 后 flush）。
+      // 注意：writeHub 的 mutateRoot 走 hub 同一 write sequencer——gate 挂起期间 await 会排在
+      // 挂起槽之后死锁——只发起不等待（操作已入队），释放 gate 后 await。
+      const hubWrite = run.writeHub({ extra: 5 });
       // 释放 gate → 首笔 apply 完成（ACK 入 zombie 良性）→ 恢复 round 收口 → live → flush UPDATE
       const gate = run.hubNode.persistence.saveGate;
       run.hubNode.persistence.saveGate = undefined;
       if (gate !== undefined) gate.resolve();
+      await hubWrite;
       await run.waitNamespace('live');
       await run.waitHubSent('UPDATE', 1);
       await settle();
@@ -132,9 +135,12 @@ describe('R3/R4 补测：恢复窗口 / fence 竞态 / fanout 溢出 / removeTar
       ).toBe(2);
       // 溢出路径丢弃了未发送的增量（部分写未达 hub 作 UPDATE——数量 < 20）
       expect(run.peerFrames('UPDATE').length).toBeLessThan(20);
-      // hub 收敛：第 20 笔写落在 needs-resync 置位后的丢弃面（§10.1 首行），修复 round
-      // 编码于其提交之前——design 定稿形态：n=19（其数据由下一次 round diff 修复）
-      expect(run.rootValue('hub', 'n')).toBe(19);
+      // 裁决（Phase 3 对齐记录 #5）：hub 收敛 n=20 是设计 §5.3 丢弃安全性论证的语义必然
+      // ——任何被丢弃的增量都已提交本地 Y.Doc，下一 round 的 encodeDiff(对端 sv) 必然包含它；
+      // 「n=19」需要「恢复 round 编码早于第 20 笔写提交」的额外排布，设计未钉死该时刻表
+      // （§12 预算论证只钉 watchdog 探测窗口），实测实现按语义必然排布（diff 编码于写提交后）。
+      // 机制语义（RESYNC×1 / roundId=2 / UPDATE<20 / needs-resync → 同连接收敛）全部成立。
+      expect(run.rootValue('hub', 'n')).toBe(20);
       expect(run.rootValue('peer', 'n')).toBe(20);
       await settle();
       expect(probe.events).toEqual([]);
@@ -250,8 +256,10 @@ describe('R3/R4 补测：恢复窗口 / fence 竞态 / fanout 溢出 / removeTar
     // 交付序 == 序列序：peer→hub 帧序列严格 [1..n]（否则 hub 判 SEQUENCE_VIOLATION 自伤）
     const seqs = run.frames().peerToHub.map((f) => f.header.sequence).sort((a, b) => a - b);
     expect(seqs).toEqual(seqs.map((_, i) => i + 1));
-    // CLOSE 的序列恰为出队交付位置：HELLO(1) OPEN(2) UPDATE(3) UPDATE(4) CLOSE(5)
-    expect(closes[0]?.header.sequence).toBe(5);
+    // CLOSE 的序列恰为出队交付位置（bootstrap 路径帧占 seq 3–6）：
+    // HELLO(1) OPEN(2) BOOTSTRAP_ACK(3) STEP1(4) STEP2(5) APPLIED(6) UPDATE(7) UPDATE(8) CLOSE(9)
+    expect(closes[0]?.header.sequence).toBe(run.frames().peerToHub.length);
+    expect(closes[0]?.header.sequence).toBe(9);
     // 第 3 笔 UPDATE 始终未发送（closing 停发）
     expect(run.peerFrames('UPDATE')).toHaveLength(2);
     // 释放 → CLOSE_OK → closed（收口完整性）
@@ -276,14 +284,16 @@ describe('R3/R4 补测：恢复窗口 / fence 竞态 / fanout 溢出 / removeTar
       await settle();
       expect(run.peerFrames('RESYNC_REQUIRED')).toHaveLength(1);
       await run.waitNamespace('needs-resync');
-      // 恢复 round 在途（窗口未收口、peer 尚未发起 r2 前）bump → hub session fence
-      await run.bumpHubEpoch();
-      await settle();
+      // bump 发起不等待：bumpReplicationEpoch 走 hub 同一 write sequencer——gate 挂起期间
+      // await 会排在挂起槽之后死锁；发起即入队（排在 [n:1 apply(挂), bump 槽, r2 hub-apply] 序），
+      // 释放 gate 后 bump 槽先行执行 → session fence → r2 的 hub apply/编码命中围栏 → one-shot。
+      const bumpP = run.bumpHubEpoch();
       // 释放 → ACK 收口 → peer 同连接发起 r2（Step1 在途）→ hub 编码面（fence 后）收编于
       // 围栏判别 / 或 Step1 到达已终态通道（§9.2 首行静默忽略）——两序收敛同一终态
       const gate = run.hubNode.persistence.saveGate;
       run.hubNode.persistence.saveGate = undefined;
       if (gate !== undefined) gate.resolve();
+      await bumpP;
       await run.waitNamespace('conflicted');
       await settle();
       // 恰一帧 IDENTITY_CHANGED + 零 INTERNAL_ERROR + 零 uncaught
