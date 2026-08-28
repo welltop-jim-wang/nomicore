@@ -18,4 +18,7 @@
 | 2026-08-28T07:20Z | 总控 | — | 修复设计文档 4 处 13B 残留措辞；commit ae3aeec（47 文件 +6514） | done |
 | 2026-08-28T07:25Z | 双轴终审 | 2×subagent 并行 | standards 轴 + spec 轴（基线 6de2f1d→HEAD ae3aeec；engineering/code-review skill 在本 runtime 不可用，按其立法意图执行双轴独立审查） | done（双轴均 pass-with-issues，0 blocker；std 4 concern+14 nano，spec 3 concern+4 nano） |
 | 2026-08-28T07:50Z | 总控 | — | R5 勘误批：C-3 再裁决（presence 严格⇔预算截断，R4 条款撤销）+ 7 项修复裁定；设计文档已注记 | done |
-| 2026-08-28T07:52Z | SA3+SA6 | 并行 | R5 修复（实现 8 项+nano；测试 7 项） | dispatched |
+| 2026-08-28T07:52Z | SA3+SA6 | 并行 | R5 修复（实现 8 项+nano；测试 7 项） | done（聚焦 164/164、typecheck 0、全仓 130 文件 1569 测试全绿） |
+| 2026-08-28T08:05Z | 总控 | — | commit 687aa94（R5 勘误批，22 文件） | done |
+| 2026-08-28T08:10Z | 双轴复审 | 2×subagent 并行 | R5 聚焦复审 | done（**双轴均 pass**，0 残留阻断） |
+| 2026-08-28T08:15Z | 总控 | — | REPORT.md（status: complete）+ commit 66f5192；工作树干净；流水线收口 | done |
