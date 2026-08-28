@@ -1,7 +1,7 @@
 # SA4 静态验尸报告 — `@nomicore/ws-replication`（issue #136 切片 6，Phase 3）
 
-**Date**: 2026-08-30（R1）/ 2026-08-30（R2 复审）/ 2026-08-30（R3 窄幅增量，见文末「SA4 R3 复审节——SA7 D1/N1 回流修复」）
-**Verdict（当前，R3）**: **pass** —— R2 pass 判定经 SA7 动态验证 D1/N1 回流修复（f175e3e）核验后**维持有效**：D1 watchdog 空闲节奏治本（清守卫 + 重武装前置，零泄漏/零死 timer 论证成立）、N1 HELLO timer 解除到位；复跑包级 10 文件/74 IT、全量 163 文件/1945 IT、typecheck 全绿。**R1 正文（verdict: reject）原样保留于下**，R2/R3 复审节在文末。
+**Date**: 2026-08-30（R1 / R2 复审 / R3 窄幅增量 / R4 增量——Spec 终审 B-1/B-2 回流修复核对，见文末「SA4 R4 复审节」）
+**Verdict（当前，R4）**: **reject（窄幅）** —— 0324d8f 的 B-1/B-2 五主窗口修复到位、五红灯锚定全绿、评审对象全仓零回归，但 connectionEpoch 代际守卫**接线不完备**：导入/session-open 续体（R4-1：良性断线 → ns 永久 failed + 先于新 OPEN 的垃圾控制帧，执行证据）与 cleanup unsubscribe 归属（R4-2：新连接上行静默死亡，执行证据 + SA7 并行轮独立佐证）两条同族窗口残留；修复机械（两处 epoch 扩接 + unsubscribe 归属修正）。**R1（reject）/R2（pass）/R3（pass）各节原样保留于下/文末。**
 
 **R1 Verdict（历史，保留）**: **reject**（3 条已获执行证据的设计偏离，修复面窄、方向明确；无需 needs-redesign——架构本身成立）
 
@@ -186,3 +186,53 @@ F1/F2/F3 修复均为**机制删除或通路接通**（宽赦整删、豁免整�
 ## 结论
 
 D1 修复是**次序敏感的单点机制修复**（清守卫 + 重武装前置），非行为面扩张；W1 红锚（修复前实测红：第二边界零探测、IDENTITY_CHANGED=0）转绿 + 零泄漏/边沿记忆/teardown 计面断言全过；N1 到位。全仓零回归（163/1945 + typecheck）。**本 delta Verdict: pass** —— SA7 fail-needs-fix 的回流闭合，R2 pass 判定在 D1/N1 修复后维持有效，可进入收口（SA7 报告的 R2 动态复核由总控另行派发）。
+
+---
+
+# SA4 R4 复审节 —— Spec 终审 B-1/B-2 回流修复（0324d8f）增量核对（2026-08-30，同会话第四轮）
+
+**Verdict（本 delta）: reject** —— B-1/B-2 五个主窗口修复到位且红灯锚定全绿，但 **connectionEpoch 代际守卫不完备**：两处同族迟到续体窗口未接判别（附执行证据），其中一处已由并行 SA7 动态轮独立佐证。修复面机械（扩两处 epoch 捕获 + unsubscribe 归属修正），不触及架构。
+
+- **被审 delta**: `60fbf41..3e1c5f7`（2a34d4a 双轴终审 R1 / 0336dce SA6 五条红灯 + G-1 / 0324d8f SA3 R4 修复 / 3e1c5f7 docs）——src 3 文件（peer-connection +16、peer-namespace +106/−28、harness +11/−2）+ 测试 + wiki，全在 ALLOW LIST；`git diff --check` **clean（G-1 ✓）**；`pnpm typecheck` exit 0。
+- **复跑**：包级 12 文件中**仅 1 失败 = 并行 SA7 动态轮的在途诊断文件 `sa7r3-diag.test.ts`（未提交、其 D2 假设测试，预期红——见下 R4-2 佐证）**；其余 11 文件 / 80 IT 全绿（冻结 + SA4 红锚 + Spec 五红锚 + SA7 dynamic 已提交版）。全量 `pnpm test`：165 文件 1952 IT 中 1 failed（同一 SA7 在途文件）/ 1951 passed——**评审对象 delta 零失败**（与总控 verify4 一致；多出的 1 IT 来自 SA7 在途修改的 dynamic 文件，非本 delta）。
+
+## 一、修复正面核验
+
+| 项 | 核验 | 判定 |
+|---|---|---|
+| B-1 `onRoundSettled` 状态守卫（peer-namespace:604-610） | `state !== 'reconciling'` → 仅 `clearTimer('reconcile')` 返回——closing（§5.1 唯一出口 CLOSE_OK/closeTimeout→closed）、终态（不复活）、disconnected（零迁移）全兜住；live 重复结算本就由 engine `settled` 幂等 | ✅ 治本（红灯锚 1 过） |
+| B-2a/b 导入迟到静默回收（:338-344） | `isConnectionDead()` → `releaseLeaseOrNoop(importResult.lease)` + 零 wire 零迁移（§8 L361 字面）；重连 `openActiveTargets` 重 OPEN → 已导入副本 → reconcile | ✅（红灯锚 2 过）——**但见 R4-1：判别面不完备** |
+| B-2c startOpen 迟到（:143/:152-158/:182-188） | epoch 捕获 + 两个 await 边界判别 + lease 静默回收、不覆盖 `this.lease`；重连单 OPEN | ✅（红灯锚 3 过） |
+| B-2d 投影先行（:557-569） | `onConnectionLost/onConnectionFatal` 同步 `setState('disconnected')` 后异步 cleanup——`openActiveTargets` 不再跳过滞留 live；cleanup 卡 session.close 屏障不再阻塞投影 | ✅ 概念正确（红灯锚 4 过） |
+| B-2d ACK/Applied 代际守卫（:714/:741-753） | `applyStep2`/`applyRemoteUpdate` 捕获 epoch，resolve 后 `connectionEpoch() !== epoch` → 不发 SYNC_APPLIED/UPDATE_ACK | ✅（旧连接迟到 ACK 不落新连接） |
+| B-2d cleanup 当前身份守卫（:888-896） | `this.session === session && this.lease === lease` 才 teardown 通道级状态（watchdog/round/channel）；旧 lease 恒 release | ✅ 概念正确——**但 unsubscribe 在守卫外（R4-2）** |
+| B-2e rebuild 全控制器通知（peer-connection:490-493）+ sendControl ready 门（:396）+ HELLO 直发例外（:188） | §4.3 L228「重建期间所有 ns 投影 disconnected」字面达成；迟到控制器帧不再落入新连接 handshaking 窗口；HELLO 经 `this.outbound.sendControl` 直发绕过状态门（握手期合法发送） | ✅（红灯锚 5 过；门的副作用见 R4-4） |
+
+## 二、阻塞项（执行证据）
+
+### R4-1（MAJOR）epoch 守卫不完备：导入/session-open 续体未接判别 —— 良性断线致 ns 永久 failed + wire 垃圾帧
+
+- **静态**：`connectionEpoch` 判别只接在 startOpen（:143）与 apply ACK 面（:714/:741）。`onBootstrapSnapshot` 的导入续体（:320-370，`importReplica` await + `tryOpenReplicationSession` await 后仅 `isConnectionDead()`）与 `openSessionAndStartRound`（:253-260，入口检查在 await **之前**，`openReplicationSession` await 后仅 `isConnectionDead()`）**均未捕获/比对 epoch**。`isConnectionDead()` = 终态 ∨ `'disconnected'`——一旦新生命周期离开 disconnected 停留域（`'opening'`），迟到续体照常推进。
+- **可达性（确定性，无需慢盘假设）**：Registry 每 namespace carrier FIFO 串行化——断线重连后新生命周期的 `registry.open` **排队挂在停泊的导入 #1 之后** → 释放门闩时 state 恒为 `'opening'`（结构性可达，非时序巧合）。
+- **执行证据（临时复现，跑毕即删，/tmp/sa4-r4-diag.log）**：bootstrap 导入悬挂（importHold）→ `closePeerSide(1006)` → backoff 重连 ready（state `opening`）→ 释放门闩 → **终态 `failed`**；wire #2 实测 `peer→hub: HELLO:1, BOOTSTRAP_ACK:2, SYNC_STEP1:3, OPEN_NAMESPACE:4`、`hub→peer: HELLO_ACK:1, ERROR:2, ERROR:3(NAMESPACE_STATE_VIOLATION ×2), OPEN_OK:4`——**旧连接的迟到续体在新生命周期 OPEN 之前发出 BOOTSTRAP_ACK+STEP1** → hub 无通道 → 2× NAMESPACE_STATE_VIOLATION → ns 永久 failed。一次良性 socket blip（或 §14.1 重建）期间导入在途即触发；违 §13.4「连接已断」半句（本 commit 自称完整实现的语义）与 §13.3 重连修复承诺。
+- **处置（回流 SA3/SA6）**：两处续体入口捕获 `connectionEpoch()`，每个 await 后 `isConnectionDead() || epoch !== 当前` → 交付物静默回收（lease release / session close）+ 零 wire 零迁移；SA6 补红灯（blip×导入在途 → 重连 → 释放 → 断言 live + 单 OPEN + 零 NAMESPACE_STATE_VIOLATION——注意 staging：释放时 state 为 `opening`，非 `live`）。
+
+### R4-2（MAJOR）`closeSessionAndRelease` 的 unsubscribe 在当前身份守卫之外 —— 旧 cleanup 误杀新 session listener，新连接上行静默死亡
+
+- **静态**（peer-namespace:884-887）：`this.unsubscribe()` 无条件执行，位于 `this.session === session && this.lease === lease` 守卫（:888）**之前**且未在入口捕获——旧 cleanup 停泊于旧 `session.close()` 屏障（在途 apply 排空前不 resolve）期间，新生命周期已 `subscribe()` 登记新 listener；旧 cleanup 恢复后误调新 listener 的退订函数。
+- **执行证据（临时复现，跑毕即删，/tmp/sa4-r4-c.log）**：hub→peer UPDATE 的 apply 悬挂（saveGate）→ 断线（投影先行）→ 重连（新 session + subscribe，round 因每-ns write sequencer 排在悬挂 apply 后）→ 释放 gate → round 收口 **live** → `writePeer({ext:9})` → **`UPDATE 帧 p2h = 0`、hub ext=undefined（peer ext=9）**——新连接上行静默死亡，零 wire 信号，state 恒 live（F1 类静默发散）。
+- **独立佐证**：并行 SA7 动态轮在途诊断 `sa7r3-diag.test.ts`（D2 hypothesis「late cleanup unsubscribe kills NEW session listener」）实测红——两轴独立收敛同一缺陷。
+- **处置（回流 SA3）**：`unsubscribe` 与 `session`/`lease` 同批入口捕获，仅退订自有 listener（移入同一当前身份条件）；SA6 补红灯（跨重连在途 apply → 恢复 live → peer 写收敛 hub + UPDATE ≥1）。
+
+## 三、次要发现
+
+| # | 发现 | 处置 |
+|---|---|---|
+| R4-3（MINOR） | `openSessionAndStartRound` 续体（`openReplicationSession` await 后）无 epoch 判别——与 R4-1 同族但窗口窄（该 seam 无持久化门闩，需事件循环滞涨跨完整重连） | 随 R4-1 一并修（同一 epoch 模式） |
+| R4-4（nano） | sendControl 的 ready 门（peer-connection:396）以 connState 为判据，**抑制了当前连接握手期合法的 connection ERROR 帧**（`connectionFatal` 在 handshaking 态 → best-effort ERROR 不再发出，§4.1「framing 仍可信时 best-effort 发 connection ERROR」弱化；close code 仍正确送达） | 精确化：门按 epoch（帧属当前连接）而非 connState 判定，或对 connection 级 ERROR 豁免；登记切片 7 顺手 |
+
+## 四、R4 裁决
+
+B-1/B-2 修复架构方向正确（代际判别 + 投影先行 + 当前身份 cleanup 守卫），五个主窗口红灯锚定全过、全仓零回归（评审对象 164 文件 1951 IT 全绿 + typecheck + diff-check）；但代际守卫的**接线不完备**留下两条同族窗口（R4-1/R4-2），均已由执行证据坐实且其一获 SA7 并行动态轮独立佐证——分别产生「良性断线 → ns 永久 failed + 先于 OPEN 的垃圾控制帧」与「恢复后上行静默死亡（零信号发散）」，恰为 B-2 簇要关闭的 §13.4「连接已断」语义在姊妹路径上的残留。修复机械（两处 epoch 扩接 + unsubscribe 归属），不动架构与契约面。
+
+**本 delta Verdict: reject —— SA3 修复 R4-1/R4-2（R4-3 随修、R4-4 登记切片 7）+ SA6 补两条红灯后提交 SA4 R5 增量复审。**

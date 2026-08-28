@@ -43,3 +43,5 @@ run_id: issue-136-1787888033-8367 / round: 1 / branch: fix/issue-136-on-docs-pha
 | 36 | 19:36 | 总控亲验 | Phase 3.75 绿灯四验 | 19:36 | pnpm typecheck + pnpm test + git diff --check：164 文件 1950 测试全绿、零类型错误、exit 0 |
 | 37 | 19:36 | SA4 | Phase 3 复审 R4 | (pending) | B-1/B-2 delta 静态增量核对（与 SA7 并行） |
 | 38 | 19:36 | SA7 | Phase 3 动态复验 R3 | (pending) | B-1/B-2 五条红锚转绿复验 + 全量回归（与 SA4 并行） |
+| 39 | 19:55 | SA6 | Phase 3 回流红灯 R3 | (pending) | SA4 R4-1 补红灯（staging：释放时 state='opening'——carrier FIFO 结构性时序）；R4-2/D2 红锚 SA7 已落 |
+| 40 | 19:55 | SA1 | Phase 3 登记 | (pending) | SA4 R4-4（sendControl ready 门抑制握手期 best-effort ERROR）登记 §23 → 切片 7 |
