@@ -486,8 +486,10 @@ export type ReplicationSessionApplyResult =
 /** session 独立状态查询面（O-11 冻结词汇；Runtime status 的 replication 域仍只含两态
  *  持久事实——T-4：session 状态绝不入 Runtime status）。 */
 export interface ReplicationSessionStatus {
-  /** session 终态机：open → closed（显式 close 或 Lease release）| conflicted（epoch fence，稳定）。 */
+  /** session 终态机：open → closed（显式 close、Lease release 或 Runtime close）| conflicted（epoch fence，稳定）。 */
   readonly state: 'open' | 'closed' | 'conflicted';
+  /** closed 的来源；仅 state==='closed' 时存在。Runtime reset/close 必须投影 runtime-close。 */
+  readonly closedBy?: 'explicit-close' | 'runtime-close';
   readonly localRole: InstanceRole;
   /** 创建时派生冻结：localRole==='peer' ⇔ 'hub-to-peer'（星型拓扑下 peer 的唯一对端是 hub）。 */
   readonly direction: 'hub-to-peer' | 'peer-to-hub';

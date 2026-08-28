@@ -1709,13 +1709,16 @@ export function createRegistryInternal(
     }
 
     // ⑥ {kind:'armed'}：唯一成功线性化点已跨过（Runtime 已同步 closing）。破坏性段：
-    //    forceRelease + cancelIdleArm + 槽外 close drain（close 前已接纳任务被排空，
+    //    cancelIdleArm + 槽外 close admission（先终止 sessions）+ forceRelease + drain
+    //    （close 前已接纳任务被排空，
     //    此后 enable/bump 被 lifecycle gate 拒绝——无插入窗口）。
-    forceReleaseOutstandingLeases(current);
     cancelIdleArm(current);
     let closePromise: Promise<void>;
     try {
+      // Runtime close admission 先终止/detach ReplicationSession，再由 lease release 的
+      // guaranteed-cleanup close() 幂等观察终态；避免 release 先把来源记为 explicit-close。
       closePromise = fence.startCloseAfterFence();
+      forceReleaseOutstandingLeases(current);
     } catch (cause) {
       throw new NamespaceRegistryFatalError('reset', 'lifecycle-slot-internal', false, cause);
     }

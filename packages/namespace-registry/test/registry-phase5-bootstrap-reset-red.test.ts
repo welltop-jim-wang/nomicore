@@ -242,8 +242,24 @@ function leaseMeta(lease: NamespaceLease): Record<string, unknown> {
 interface ReplicationManagementLease {
   readonly enableReplication: () => Promise<Readonly<{ ok: boolean }>>;
 }
+interface ReplicationSessionLike {
+  getStatus(): Readonly<{ state: string; closedBy?: string }>;
+}
+interface SessionLeaseExt {
+  readonly openReplicationSession: (options: {
+    readonly localRole: 'hub' | 'peer';
+    readonly remoteInstanceId: string;
+  }) => Promise<Readonly<{
+    ok: boolean;
+    session?: ReplicationSessionLike;
+    code?: string;
+  }>>;
+}
 function asRepLease(lease: NamespaceLease): NamespaceLease & ReplicationManagementLease {
   return lease as unknown as NamespaceLease & ReplicationManagementLease;
+}
+function asSessionLease(lease: NamespaceLease): NamespaceLease & SessionLeaseExt {
+  return lease as unknown as NamespaceLease & SessionLeaseExt;
 }
 
 // 基线上 resetReplica/importReplica 不存在 → 一切调用抛 TypeError: … is not a function（红）。
@@ -828,11 +844,23 @@ describe('AC-6 owner 分区独立与 Memory/File 真实全链闭环', () => {
     expect(persisted.getMap('META').get('replicationId')).toBe(id0);
     persisted.destroy();
 
+    // Registry 公共 seam 回归：reset 驱动的 Runtime close 必须与普通 close 同样终止
+    // 已打开的 ReplicationSession，不能让旧 generation 在 archive/bootstrap 后仍 attached。
+    const openedSession = await asSessionLease(lease).openReplicationSession({
+      localRole: 'hub',
+      remoteInstanceId: 'peer-reset-regression',
+    });
+    expect(openedSession.ok, `session 应成功打开：${JSON.stringify(openedSession)}`).toBe(true);
+    if (!openedSession.ok || openedSession.session === undefined) throw new Error('unreachable');
+    const session = openedSession.session;
+    expect(session.getStatus().state).toBe('open');
+
     const reset = await asResetRegistry(registry).resetReplica(ALICE, nsId, {
       replicationId: id0,
       replicationEpoch: 1,
     });
     expect(reset.ok, `reset 应成功：${JSON.stringify(reset)}`).toBe(true);
+    expect(session.getStatus()).toMatchObject({ state: 'closed', closedBy: 'runtime-close' });
     // bootstrap eligibility：持久层主键已移除（真实 Memory archive）、open NOT_FOUND
     expect(store.has(`${ALICE.userId}\u0000${nsId}`)).toBe(false);
     expect(await writer.loadDoc(ALICE, nsId)).toBeNull();

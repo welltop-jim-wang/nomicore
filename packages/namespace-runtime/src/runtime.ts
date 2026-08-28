@@ -233,7 +233,7 @@ function fenceIdentityEquals(
 function createBeginResetFence(
   sequencer: WriteSequencer,
   state: RuntimeState,
-  lazyCloseBarrier: () => Promise<void>,
+  closeAfterFence: () => Promise<void>,
 ): (
   expected: ReplicationIdentityRef,
   readPersisted: () => Promise<ResetFencePersistedProbe>,
@@ -280,7 +280,7 @@ function createBeginResetFence(
       let started: Promise<void> | undefined;
       return {
         kind: 'armed' as const,
-        startCloseAfterFence: () => (started ??= lazyCloseBarrier()),
+        startCloseAfterFence: () => (started ??= closeAfterFence()),
       };
     });
   };
@@ -388,11 +388,19 @@ export function createNamespaceRuntimeWithSeam(input: NamespaceRuntimeSeamInput)
     return closePromise;
   };
 
-  // V3d'''' 受控 reset fence（设计 §3.4/§3.5）：唯一写 sequencer 槽内双源核验 + 同步
-  // arm closing；槽后懒启动 close barrier。仅以 non-enumerable 键挂到 runtime 对象
+  // V3d'''' reset/普通 close 共用关闭 admission：终止现存 ReplicationSession 后再创建
+  // 唯一 close barrier。reset fence 已在槽内同步 arm closing，因此这里只补齐普通 close
+  // 同款 session 终止语义；terminateAll 幂等，保证两条入口汇合时零重复副作用。
+  const closeAfterFence = (): Promise<void> => {
+    fanout.terminateAll('runtime-close');
+    return lazyCloseBarrier();
+  };
+
+  // V3d''''' 受控 reset fence（设计 §3.4/§3.5）：唯一写 sequencer 槽内双源核验 + 同步
+  // arm closing；槽后懒启动共享关闭 admission。仅以 non-enumerable 键挂到 runtime 对象
   // （Object.keys 十二键审计不漂移——runtime-acceptance-exports-audit /
   // runtime-registry-internal-seam 既有锚零回归）。
-  const beginResetFence = createBeginResetFence(sequencer, state, lazyCloseBarrier);
+  const beginResetFence = createBeginResetFence(sequencer, state, closeAfterFence);
   // V3e 公共面（十二键闭包对象；owner/namespaceId 由 V3a 捕获局部量构造——不再解引用成员）
   const owner = Object.freeze({ userId });
   const runtime: NamespaceRuntime = {
@@ -475,16 +483,10 @@ export function createNamespaceRuntimeWithSeam(input: NamespaceRuntimeSeamInput)
       // INV-C1）；写入点在 close() 同步段，与接纳门 check-then-enqueue 无交错（JS
       // run-to-completion，§12 #6）
       state.lifecycle = 'closing';
-      // R2-2（issue #134 round 2，§3.1）：同步段终止/detach 全部现存 sessions（close
-      // 生命周期事件的 session 面等价物——ADR 0008 L93「立即停止接纳公共 read 和
-      // write」；顺序冻结：lifecycle 翻转之后、barrier 入队之前，同一同步段原子；
-      // conflicted 终态不降级；已接纳 apply 槽照常排空——apply 槽体内不检查 session
-      // 终态，接纳层 A1 是唯一终态门，round-1 冻结不变）
-      fanout.terminateAll('runtime-close');
-      // 队尾 barrier（INV-C3/C4）：enqueue 经 .then 微任务排程（sequencer.ts:33-37），
-      // thunk 绝不在 close() 调用栈内同步执行；thunk 是纯调用（零读取/零构造/无可抛点）。
-      // R2：经 lazyCloseBarrier 幂等封装（与 reset fence 共用 closePromise 实例）。
-      closePromise = lazyCloseBarrier();
+      // R2-2（issue #134 round 2，§3.1）：共享关闭 admission 同步终止/detach 全部
+      // 现存 sessions，再创建队尾 barrier；reset fence 也走同一入口，避免归档/bootstrap
+      // 后旧 session 仍 attached。conflicted 终态不降级；已接纳 apply 槽照常排空。
+      closePromise = closeAfterFence();
       return closePromise;
     },
   };
