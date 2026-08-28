@@ -251,15 +251,21 @@ export class PeerNamespaceController {
   }
 
   private async openSessionAndStartRound(): Promise<void> {
-    if (this.state !== 'opening') return; // 迟到结果纪律（§13.4）
-    const opened = await this.tryOpenReplicationSession();
+    const epoch = this.host.connectionEpoch();
+    const opened = await this.tryOpenReplicationSession(epoch);
     if (!opened) return;
+    if (this.isConnectionDead() || this.host.connectionEpoch() !== epoch) {
+      // R4-3：续体内 epoch 判别——open 在途期断开/重建（state 已离开 disconnected 停留
+      // 域时 isConnectionDead 失效）→ 零 wire、零状态机迁移（重连流程接管；session 已
+      // 由 tryOpenReplicationSession 静默回收）
+      return;
+    }
     this.setState('reconciling');
     this.armTimer('reconcile');
     this.startRound();
   }
 
-  private async tryOpenReplicationSession(): Promise<boolean> {
+  private async tryOpenReplicationSession(epoch: number): Promise<boolean> {
     if (this.lease === undefined) return false;
     let result: Awaited<ReturnType<NamespaceLease['openReplicationSession']>>;
     try {
@@ -268,16 +274,17 @@ export class PeerNamespaceController {
         remoteInstanceId: this.host.hubInstanceId,
       });
     } catch {
-      if (!this.isTerminal()) this.finalize('failed');
+      if (!this.isConnectionDead()) this.finalize('failed');
       return false;
     }
     if (!result.ok) {
       if (!this.isConnectionDead()) this.finalize('failed');
       return false;
     }
-    if (this.isConnectionDead()) {
-      // §13.4「连接已断」：session 开于在途期（B-2b）——静默回收（session.close），
-      // 零 wire、零状态机迁移
+    if (this.isConnectionDead() || this.host.connectionEpoch() !== epoch) {
+      // §13.4「连接已断/已重建」：session 开于在途期（R4-1/R4-3）——静默回收
+      // （session.close），零 wire、零状态机迁移（state 离开 disconnected 停留域后
+      // 由 epoch 比对兜底——Registry carrier FIFO 使释放时 state 恒 'opening'）
       void result.session.close().catch(() => undefined);
       return false;
     }
@@ -320,6 +327,10 @@ export class PeerNamespaceController {
       return;
     }
     void (async () => {
+      // R4-1：入口捕获 connectionEpoch——导入续体跨重连的迟到判别（isConnectionDead
+      // 在 state 离开 disconnected 停留域（'opening'）后失效，必须 epoch 比对；
+      // Registry 每-ns carrier FIFO 使释放门闩时 state 恒 'opening'——结构性可达）
+      const epoch = this.host.connectionEpoch();
       let importResult: Awaited<ReturnType<NamespaceRegistry['importReplica']>>;
       try {
         importResult = await this.host.registry.importReplica(
@@ -329,17 +340,19 @@ export class PeerNamespaceController {
           { replicationId: message.replicationId, replicationEpoch: message.replicationEpoch },
         );
       } catch {
-        if (!this.isTerminal()) {
+        if (!this.isConnectionDead()) {
           this.sendNsError('INTERNAL_ERROR');
           this.finalize('failed');
         }
         return;
       }
-      if (this.isConnectionDead()) {
-        // B-2a/B-2b：§13.4「已终局/连接已断」——导入迟到一律静默回收：lease 立即
-        // release（§8 L361「仅做 lease/session 静默回收」）；零 wire、零状态机迁移
-        // （不 setState('reconciling')——重连后由 openActiveTargets 重 OPEN；本地副本
-        // 已导入 → 按 §5.2 重新判定走 reconcile）
+      if (this.isConnectionDead() || this.host.connectionEpoch() !== epoch) {
+        // B-2a/B-2b/R4-1：§13.4「已终局/连接已断/已重建」——导入迟到一律静默回收：
+        // lease 立即 release（§8 L361「仅做 lease/session 静默回收」）；零 wire、零状态机
+        // 迁移（不 setState('reconciling')、不发 BOOTSTRAP_ACK/STEP1——否则旧续体的
+        // 垃圾控制帧先于新 OPEN 落新连接 → hub 无通道 → NAMESPACE_STATE_VIOLATION ×2
+        // → ns 永久 failed；重连后由 openActiveTargets 重 OPEN，本地副本已导入 →
+        // 按 §5.2 重新判定走 reconcile）
         if (importResult.ok) this.releaseLeaseOrNoop(importResult.lease);
         return;
       }
@@ -349,12 +362,12 @@ export class PeerNamespaceController {
         return;
       }
       this.lease = importResult.lease;
-      const opened = await this.tryOpenReplicationSession();
+      const opened = await this.tryOpenReplicationSession(epoch);
       if (!opened) return;
       this.clearTimer('bootstrap');
-      if (this.isConnectionDead()) {
-        // B-2b 兜底：断开与「导入+session 开」交错竞态的子窗口（B-2a 回收面）——
-        // session 已开于在途期（tryOpen 已回滚）或此后终局；cleanup 收口，零 ACK
+      if (this.isConnectionDead() || this.host.connectionEpoch() !== epoch) {
+        // B-2b 兜底/R4-1：断开与「导入+session 开」交错竞态的子窗口——session 已开于
+        // 在途期（tryOpen 已回滚）或此后终局；cleanup 收口，零 ACK
         return;
       }
       this.sendChecked({
@@ -878,18 +891,22 @@ export class PeerNamespaceController {
   private async closeSessionAndRelease(): Promise<void> {
     const session = this.session;
     const lease = this.lease;
+    const unsubscribe = this.unsubscribe;
     if (session !== undefined) {
       await session.close();
-    }
-    if (this.unsubscribe !== undefined) {
-      this.unsubscribe();
-      this.unsubscribe = undefined;
     }
     if (this.session === session && this.lease === lease) {
       // B-2d：仅当本 cleanup 持有的是**当前** session/lease 才收口通道级状态——
       // 迟到 cleanup（旧连接 session，跨重连在途 apply 场景）不得摧毁新连接的
       // round/session/频道状态（否则新 round 被 teardown → 旧 Applied(roundId=0)
       // 落到新连接 → hub SYNC_STATE_VIOLATION → 误 failed；AC6 重连修复承诺失效）
+      // R4-2：unsubscribe 同批归属——仅退订**本 cleanup 捕获的** listener 句柄
+      //（入口捕获；迟到 cleanup 误调新 session 的退订函数 → 新连接 listener 被移除
+      // → 上行静默死亡：live 后本地写零 UPDATE 帧、hub 永不收敛，零 wire 信号）
+      if (this.unsubscribe === unsubscribe && unsubscribe !== undefined) {
+        unsubscribe();
+        this.unsubscribe = undefined;
+      }
       this.session = undefined;
       this.lease = undefined;
       this.watchdog.teardown();
