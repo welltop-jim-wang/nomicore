@@ -43,4 +43,5 @@
 | 22c | 00:44 | SA3 | Phase 4 回流修复 M-1 | 00:49 | commit 81a6863（3 文件 +3/−3，comment-only 零行为变更；23→29 码计数三处闭合；314/314 绿 + 0 type errors + diff-check 干净；报告追加 §8）|
 | 23 | 00:50 | 终审双轴 | Phase 4 前置复审（R 轮） | (pending) | 修复-重复规则：两轴对更新后 diff（fde8034..81a6863）delta 复审（续传 f54265b3 / daa99ea2）|
 | 23c | 00:50 | 终审双轴 | Phase 4 前置复审（R 轮） | 00:59 | standards=pass（M-1 三处闭合经独立枚举 29 码实证、零行为变更、314/314 绿）+ spec=pass（delta 纯注释、规格结论不受影响、门槛复跑全过）——双轴当前生效 verdict 均 pass |
-| 24 | 01:00 | 总控 | Phase 4 收尾：最终整合验收 | (pending) | 双轴终审闭环；跑最终全量验收（81a6863 + 工作区 SA7 测试文件 = 待提交内容全集；覆盖条件：M-1 commit 后尚无全仓证据）|
+| 24 | 01:00 | 总控 | Phase 4 收尾：最终整合验收 | 01:04 | 双轴终审闭环；跑最终全量验收（81a6863 + 工作区 SA7 测试文件 = 待提交内容全集；覆盖条件：M-1 commit 后尚无全仓证据）|
+| 25 | 01:05 | 总控 | Phase 4 收尾固化 | 01:07 | 硬门禁 12/13/14/15/16 自检全过（13 N/A）；最终验收 exit=0（138 文件/1719 测试绿、typecheck 0，ctl-final-r2.log）；commit 7aab48e（SA7 域测试 9 用例 + R2 全流程档案 14 件 + 族 A 章 superseded 横幅）——闭合 I-3/INFO-1；REPORT.md 覆写 status:complete；HEAD=7aab48e，未 push（发布归 Host）|
