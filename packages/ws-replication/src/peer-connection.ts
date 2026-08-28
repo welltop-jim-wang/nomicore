@@ -560,6 +560,14 @@ class PeerConnectionImpl implements PeerReplication {
     this.clearReset();
     this.clearBackoff();
     this.setState('blocked');
+    // R4（SA4）：blocked 也是连接收口——§3.5 teardown 行：checkpoint 清 + 逐 ns
+    // onDataShed（A7 记账闭环；GOAWAY SHUTTING_DOWN 不关 socket——残留排队数据帧
+    // 不得继续派发向已宣布停机的 hub；controller 已投影 disconnected，dispose 的
+    // onDataShed → declareLocalResync 经 sendControl 非 ready 门 → 零出站帧，无噪声）
+    if (this.outbound !== undefined) {
+      this.outbound.dispose();
+      this.outbound = undefined;
+    }
     for (const controller of this.controllers.values()) {
       controller.onConnectionFatal();
     }

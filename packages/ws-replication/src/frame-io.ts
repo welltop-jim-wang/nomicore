@@ -119,11 +119,13 @@ export class OutboundQueue {
     return this.lastSeq;
   }
 
-  /** 入队控制帧并立即排空（控制恒先于 data；序列在出队时分配）。返回本帧序列。 */
+  /** 入队控制帧并立即排空（控制恒先于 data；序列在出队时分配）。返回**本帧自身**序列
+   *  ——控制队列 FIFO，本帧必为本批最后发出的控制帧；drain 返回「最后发出的控制帧序」
+   *  （数据帧随后派发会使 `lastSeq` 被污染——R1 修复：G2.1/G2.2 关联基准只认控制帧
+   *  自身序，不与数据帧派发序混同）。 */
   sendControl(message: ReplicationMessage): number {
     this.controlQueue.push(message);
-    this.drain();
-    return this.lastSeq;
+    return this.drain();
   }
 
   /** 立即发送一条 data 帧（ConnectionSender 出队点）；返回分配的帧序。 */
@@ -131,12 +133,14 @@ export class OutboundQueue {
     return this.emitOne(message, 'data');
   }
 
-  /** 排空控制队列（收窄为 control-only——data 调度已移入 ConnectionSender，§6.4）。 */
-  drain(): void {
+  /** 排空控制队列（data 调度由 ConnectionSender 负责）。返回本批最后一个控制帧序列。 */
+  drain(): number {
+    let lastControlSeq = 0;
     while (this.controlQueue.length > 0) {
       const item = this.controlQueue.shift()!;
-      this.emitOne(item, 'control');
+      lastControlSeq = this.emitOne(item, 'control');
     }
+    return lastControlSeq;
   }
 
   /** 清空队列（连接收口防御）。 */

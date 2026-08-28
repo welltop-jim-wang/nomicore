@@ -83,6 +83,9 @@ export class PeerNamespaceController {
   };
   private cleanupTail: Promise<void> = Promise.resolve();
   private closeMemo: Memoized | undefined;
+  /** R3（SA4）：close 承诺的事件驱动结算器——settleCloseMemo 触发前 removeTarget 的
+   *  promise 保持 pending（零轮询环；AC3b closeSettled===false 锚语义）。 */
+  private closeSettleResolve: (() => void) | undefined;
 
   readonly round: RoundEngine;
   readonly channel: UpdateChannel;
@@ -572,15 +575,34 @@ export class PeerNamespaceController {
 
   private ensureCloseMemo(): Promise<void> {
     if (this.closeMemo === undefined) {
+      // R3（SA4）：memo body 只做 drain + cleanup——**零轮询环**（G5.2：生产代码不得为
+      // 测试可观测性引入魔法常数延迟环）；收口完成由 onCloseOk（关联 CLOSE_OK）/
+      // onTimerFired('close')（closeTimeout）/onCloseRequest 完成段的 settleCloseMemo()
+      // 事件驱动——settle 显式 resolve 装饰 promise（close 状态未收口前 removeTarget
+      // 承诺保持 pending；closeTimeout 兜底保证必有结算点）。
+      // gate 在 memo 创建时**同步登记**（executor 仅在其后 await）：settle
+      // （CLOSE_OK 早到/closeTimeout/断线）与登记之间零竞态窗口，无不死锁。
+      const gate = new Promise<void>((resolve) => {
+        this.closeSettleResolve = resolve;
+      });
       this.closeMemo = new Memoized(async () => {
         await this.drainPendingApplies();
         await this.closeSessionAndRelease();
+        await gate;
       });
     }
     return this.closeMemo.get();
   }
 
   private settleCloseMemo(): void {
+    // R3（SA4）：事件驱动结算——settle 由状态迁移点（CLOSE_OK/closeTimeout/CLOSE 请求
+    // 完成段/终局收口）触发；无装饰 promise 挂起时退回既有 trivial-memo 合流。
+    if (this.closeSettleResolve !== undefined) {
+      const resolve = this.closeSettleResolve;
+      this.closeSettleResolve = undefined;
+      resolve();
+      return;
+    }
     if (this.closeMemo === undefined) {
       this.closeMemo = new Memoized(async () => undefined);
     }
@@ -593,6 +615,7 @@ export class PeerNamespaceController {
     if (this.state === 'closed' || this.state === 'conflicted') return; // 终态保持
     if (this.state === 'closing') {
       this.setState('disconnected');
+      this.settleCloseMemo(); // R3：断线 = 关闭承诺兑现（无 CLOSE_OK/closeTimeout 可等）
       return;
     }
     if (this.state === 'failed') {
@@ -608,6 +631,9 @@ export class PeerNamespaceController {
   /** 连接 blocked（fatal）：活跃态投影 disconnected。 */
   onConnectionFatal(): void {
     if (this.isTerminal()) return;
+    if (this.state === 'closing') {
+      this.settleCloseMemo(); // R3：blocked = 关闭承诺兑现（同步投影先行）
+    }
     this.setState('disconnected');
     void this.cleanupResources();
   }
@@ -617,6 +643,7 @@ export class PeerNamespaceController {
     this.intent = 'removed';
     if (!this.isTerminal()) {
       this.setState('closed');
+      this.settleCloseMemo(); // R3：stop = 关闭承诺兑现
     }
     return this.cleanupResources();
   }
@@ -881,7 +908,9 @@ export class PeerNamespaceController {
     }
     this.clearAllTimers();
     this.setState(state);
-    if (state === 'closed') this.settleCloseMemo();
+    // E5 终局收口（SA2 R3 / §3.8 裁决 3）：failed/conflicted 也是收口终态——closeMemo
+    // 的事件驱动结算不区分终态种类，一律 settle（AC3b/⑤c/⑤d 回归面已核查为零）。
+    this.settleCloseMemo();
     void this.cleanupResources();
   }
 
