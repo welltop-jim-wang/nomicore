@@ -1,7 +1,7 @@
 # SA4 静态验尸报告 — `@nomicore/ws-replication`（issue #136 切片 6，Phase 3）
 
-**Date**: 2026-08-30（R1 / R2 复审 / R3 窄幅增量 / R4 增量——Spec 终审 B-1/B-2 回流修复核对，见文末「SA4 R4 复审节」）
-**Verdict（当前，R4）**: **reject（窄幅）** —— 0324d8f 的 B-1/B-2 五主窗口修复到位、五红灯锚定全绿、评审对象全仓零回归，但 connectionEpoch 代际守卫**接线不完备**：导入/session-open 续体（R4-1：良性断线 → ns 永久 failed + 先于新 OPEN 的垃圾控制帧，执行证据）与 cleanup unsubscribe 归属（R4-2：新连接上行静默死亡，执行证据 + SA7 并行轮独立佐证）两条同族窗口残留；修复机械（两处 epoch 扩接 + unsubscribe 归属修正）。**R1（reject）/R2（pass）/R3（pass）各节原样保留于下/文末。**
+**Date**: 2026-08-30（R1 / R2 / R3 / R4 复审 / R5 增量——R4-1/R4-2/R4-3 回流修复核对，见文末「SA4 R5 复审节」）
+**Verdict（当前，R5）**: **pass** —— R4 reject 的三条回流项（12258c2：导入/session-open 续体 epoch 判别补全 + unsubscribe 句柄归属收进身份守卫）全部治本：R4 两条执行证据同源复现翻绿、SA6 R4-1 与 SA7 D2 红灯独立转绿、全量 165 文件/1953 IT + typecheck + diff-check 全绿；唯一残留（onCloseRequest CLOSE_OK epoch）v1 结构性不可达，登记切片 9。**审查链闭环：R1 reject → R2 pass → R3 pass → R4 reject → R5 pass（14 项自有发现全部收口）。R1–R4 各节原样保留于下/文末。**
 
 **R1 Verdict（历史，保留）**: **reject**（3 条已获执行证据的设计偏离，修复面窄、方向明确；无需 needs-redesign——架构本身成立）
 
@@ -236,3 +236,33 @@ D1 修复是**次序敏感的单点机制修复**（清守卫 + 重武装前置�
 B-1/B-2 修复架构方向正确（代际判别 + 投影先行 + 当前身份 cleanup 守卫），五个主窗口红灯锚定全过、全仓零回归（评审对象 164 文件 1951 IT 全绿 + typecheck + diff-check）；但代际守卫的**接线不完备**留下两条同族窗口（R4-1/R4-2），均已由执行证据坐实且其一获 SA7 并行动态轮独立佐证——分别产生「良性断线 → ns 永久 failed + 先于 OPEN 的垃圾控制帧」与「恢复后上行静默死亡（零信号发散）」，恰为 B-2 簇要关闭的 §13.4「连接已断」语义在姊妹路径上的残留。修复机械（两处 epoch 扩接 + unsubscribe 归属），不动架构与契约面。
 
 **本 delta Verdict: reject —— SA3 修复 R4-1/R4-2（R4-3 随修、R4-4 登记切片 7）+ SA6 补两条红灯后提交 SA4 R5 增量复审。**
+
+---
+
+# SA4 R5 复审节 —— R4-1/R4-2/R4-3 回流修复（12258c2）窄幅增量核对（2026-08-30，同会话第五轮）
+
+**Verdict（本 delta）: pass** —— 代际守卫接线补全到位（全部 await 点判别完备）、unsubscribe 句柄捕获归属正确、零新增面；R4 两条执行证据以同源复现套件复跑全部翻绿 + SA6/SA7 红灯锚定转绿；全量 165 文件 / 1953 IT + typecheck + diff-check 全绿（与 verify5 逐值一致）。
+
+- **被审 delta**: `3e1c5f7..f49f12d`（6ab9e32 SA6 R4-1 红灯 + 设计 R-13 登记 / 12258c2 SA3 R5 修复 / f49f12d docs）——src **仅 peer-namespace.ts +38/−21** + 测试 + wiki，全在 ALLOW；`connectionEpoch` 不在冻结公共契约（`PeerNamespaceHost` 包内私有接口，api.test-d 零触碰）✓。
+- **复跑（独立进程）**：R4 同源证据套件（临时文件，跑毕即删）→ **2/2 翻绿**：R4-A（迟到导入续体 → 静默回收、新生命周期收敛 live、wire 零 NAMESPACE_STATE_VIOLATION——R4 实测为 2×violation + failed）；R4-C（跨重连 cleanup 后 `writePeer` → hub 收敛 ext=9 + UPDATE ≥1——R4 实测 0 帧、hub undefined）。包级 12 文件 / 82 IT 全绿（含 SA6 `ws-replication-sa4-r4-1-red` 与 SA7 `D2` 红灯转绿）；全量 `pnpm test` 165 文件 / 1953 IT 全绿 exit 0；typecheck exit 0；`git diff --check` clean。
+
+## 一、修复逐点核验
+
+| 点 | 核验 | 判定 |
+|---|---|---|
+| **R4-1 导入续体 epoch**（:330-383） | 续体入口捕获 `connectionEpoch`；`importReplica` await 后 `isConnectionDead() ∨ epoch !== 当前` → **交付 lease 静默回收**（releaseLeaseOrNoop——赋值前路径）+ 零 wire 零迁移；`tryOpenReplicationSession(epoch)` await 后同判据 → 零 BOOTSTRAP_ACK/零 setState（赋值后路径的 lease 由连接丢失 cleanup 的**局部捕获 release** 兜底——`closeSessionAndRelease` 尾部按捕获局部量恒 release，已核无泄漏路径：赋值前后两路径回收责任划分闭合） | ✅ 治本（垃圾控制帧面消除——同源复现 R4-A 翻绿） |
+| **R4-3 openSessionAndStartRound epoch**（:253-266） | 入口捕获；`tryOpen` await 后判别 → 零 wire 零迁移（session 已由 tryOpen 内部判别静默回收）；原 await 前的 `state !== 'opening'` 入口检查移除——入口唯一来源 `onOpenOk` 自带同款门，等价无损失 | ✅ |
+| **tryOpenReplicationSession(epoch)**（:268-292） | 形参化 epoch；`openReplicationSession` await 后 `dead ∨ epoch` → `result.session.close()` 静默回收 + return false；catch/!ok 路径的 finalize 判据同步从 isTerminal 升级为 isConnectionDead（断开域零假 failed）；调用点恰 2 处（:255/:365）均传各自续体捕获的 epoch | ✅ |
+| **R4-2 unsubscribe 句柄归属**（:891-910） | 入口捕获 `const unsubscribe = this.unsubscribe`；退订块**移入**当前身份守卫内且叠加 `this.unsubscribe === unsubscribe` 双重身份判别——迟到 cleanup（守卫外）既不触碰新 listener 也不清空 `this.unsubscribe`；`unsubscribe === undefined` 时跳过 ✓。边界穷举：迟到 cleanup（新 session 已开）→ 守卫失败 → 不退订 ✓；正常 cleanup → 三重身份一致 → 退订自有 ✓；同 session 不存在二次 subscribe（subscribe 每 session 恰一次）→ 无假阴性窗口 | ✅ 治本（同源复现 R4-C 翻绿；SA7 D2 红灯转绿独立佐证） |
+| **epoch 判别完备性（全部 await 点清点）** | startOpen（2 处）✓ / openSessionAndStartRound ✓ / tryOpen ✓ / 导入续体（2 处）✓ / applyRemoteUpdate + applyStep2（R2/R4 已接）✓ / closeSessionAndRelease（身份守卫）✓ / removeTarget memo（cleanup 后零 wire）✓。**唯一残留**：`onCloseRequest` 的 CLOSE_OK 在 drain+cleanup await 后无 epoch 判别——但 v1 中 CLOSE_NAMESPACE 仅 peer 发送（grep 实证 src 唯一发送点 peer-namespace:522），hub 从不发送 → 该路径仅可达于注入/敌意帧，**v1 结构性不可达**；登记切片 9（hub 主动 close 编排落地时补 epoch 判别） | ✅（残留登记，不阻塞） |
+| **零新增面** | 单文件 +38/−21；零公共契约/零 wire 码/零配置变更；无新导出；行为面只收窄（迟到续体零 wire）不扩张 | ✅ |
+
+## 二、登记项核对
+
+- **R-13**（6ab9e32 → 设计 §23）：SA4 R4-4（sendControl ready 门抑制握手期 connection ERROR 帧）已登记为 R-13，含「门不可简单删（服务 B-2e 重建语义）+ 切片 7 精确化（epoch 判据或 connection ERROR 豁免）」——与 SA4 R4 原建议一致 ✓。
+
+## 三、R5 裁决
+
+R4-1/R4-2/R4-3 修复为**守卫接线补全**（机制本身 R4 已立，本轮把 epoch 判别接到导入/session-open 两族续体的每个 await 点、把 unsubscribe 归属收进身份守卫），无行为扩张；R4 的两条执行证据在逐字同源复现下全部翻绿，SA6 R4-1 红灯与 SA7 D2 红灯独立转绿，全仓零回归（165/1953 + typecheck + diff-check，与 verify5 一致）。唯一残留（onCloseRequest CLOSE_OK epoch）v1 结构性不可达，已登记切片 9。
+
+**本 delta Verdict: pass** —— R4 reject 回流闭合；连同 R2/R3 各 pass，本切片 SA4 审查链（R1 reject → R2 pass → R3 pass → R4 reject → R5 pass）对全部 14 项自有发现（F1-F9、D1/N1 核验、R4-1..4）形成闭环，可进入收口（Standards 轴意见与 SA7 动态终验由总控另行统筹）。

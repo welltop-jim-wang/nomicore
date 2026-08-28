@@ -1,7 +1,9 @@
 # SA7 动态验证报告 — `@nomicore/ws-replication`（issue #136 切片 6，Phase 3）
 
-**Date**: 2026-08-30（R1）/ 2026-08-30（R2 复验轮）/ 2026-08-30（R3 复验轮，见文末「SA7 R3 复验节——Spec B-1/B-2 修复复验 + D2 发现」）
-**Verdict（当前，R3）**: **fail-needs-fix** —— R3 复验：SA6 五条 Spec 红锚（B-1/B-2b/c/d/e）全部转绿、B-2a 闭项探针绿、全仓零意外回归、typecheck/diff-check 全绿；**但动态风险扫描在 B-2d 修复面上发现残留缺陷 D2（MAJOR）**：迟到 cleanup 的 `unsubscribe` 步骤位于「当前 session/lease 判别」守卫之外——跨重连在途 apply 场景下误退订**新** session 的 owned-updates listener → peer→hub live 更新静默停摆（实测 live 后 peer 本地写零 UPDATE 帧、hub 永久缺失，3/3 确定性；红锚已落 `ws-replication-sa7-dynamic.test.ts` D2 IT）。修复面窄（单方法内句柄捕获/守卫内移），无需 redesign。**R2 pass 与 R1 fail-needs-fix 历史原样保留于下**。
+**Date**: 2026-08-30（R1）/ R2 / R3 复验轮 / 2026-08-30（R4 复验轮，见文末「SA7 R4 复验节——D2/R4-1 修复复验 + 终局裁决」）
+**Verdict（终局，R4）**: **pass** —— R3 的 D2（迟到 cleanup 误退订新 session listener）与并行 SA4 轮的 R4-1/R4-3（代际守卫接线不完备）已由 SA3 R5（commit `12258c2`，仅 `peer-namespace.ts` +38/−21）治本修复：**D2 红锚全链转绿**（跨重连在途 apply → live → writePeer → UPDATE ≥1 + hub 收敛；3/3 确定性）、**R4-1 红锚转绿**（迟到导入零 wire、新 OPEN 先行、零 NAMESPACE_STATE_VIOLATION、收敛 live）；修复形态动态风险扫描无新增风险（epoch 守卫捕获点与最终检查间无 await 翻转窗口、isConnectionDead/epoch 双守卫互补；unsubscribe 句柄语义矩阵全边闭合）；全仓 165 文件 / 1953 测试 + typecheck/diff-check 复跑全绿（与总控亲跑逐值一致）。R3/R2/R1 历史 verdict 原样保留于下。
+
+**R3 Verdict（历史，保留）**: **fail-needs-fix** —— R3 复验：SA6 五条 Spec 红锚（B-1/B-2b/c/d/e）全部转绿、B-2a 闭项探针绿、全仓零意外回归、typecheck/diff-check 全绿；**但动态风险扫描在 B-2d 修复面上发现残留缺陷 D2（MAJOR）**：迟到 cleanup 的 `unsubscribe` 步骤位于「当前 session/lease 判别」守卫之外——跨重连在途 apply 场景下误退订**新** session 的 owned-updates listener → peer→hub live 更新静默停摆（实测 live 后 peer 本地写零 UPDATE 帧、hub 永久缺失，3/3 确定性；红锚已落 `ws-replication-sa7-dynamic.test.ts` D2 IT）。修复面窄（单方法内句柄捕获/守卫内移），无需 redesign。
 
 **R2 Verdict（历史，保留）**: **pass** —— R1 的 D1（watchdog 空闲探测一次性）与 N1（hub hello timer 未 clear）已由 SA3 R3（commit `f175e3e`）治本修复：W1 红锚转绿且全链闭合（armed / ackTimeoutMs 边界节奏 / 重武装 / busy 隔离对照 / 边沿记忆 / teardown 零泄漏）；全仓 163 文件 / 1945 测试 + typecheck 复跑全绿（与总控亲跑逐值一致）；修复形态（重武装先于 probe）经 timer 计量轨迹动态证明无新增风险。R1 fail-needs-fix 依据全部消解。
 
@@ -292,3 +294,72 @@ HELLO 在 `dialNow()` 经 `outbound.sendControl` 直发（绕过 ready 门）—
 | 6 | D2 定向诊断（临时套件，跑毕已删；3/3 复现） | `peerExt=5 / wire2PeerUpdates=0 / hubExt 缺失`，wire2 p2h 帧序终于 SYNC_APPLIED——live UPDATE 通道静默死亡实证 |
 | 7 | `git show 0324d8f --stat / -- src` | 3 文件 +105/−28；修复形态与 commit message 一致（epoch 守卫/投影先行/当前判别/sendControl 门逐点核对） |
 | 8 | `git status --short` | 本轮仅 `M ws-replication-sa7-dynamic.test.ts` + 本报告（sa4_review.md 属并行 SA4 复核者） |
+
+---
+
+# SA7 R4 复验节 —— D2/R4-1 修复复验 + 终局裁决（2026-08-30，同会话第四轮）
+
+**Verdict: pass** —— D2 与 R4-1 治本修复，红锚全链转绿（确定性 3/3），风险扫描无新增面，全仓零回归。
+
+- **被验增量**: `d112647..f49f12d`（6ab9e32 SA4 R4-1 红锚 + R-13 登记 / 12258c2 SA3 R5 修复——仅 `peer-namespace.ts` +38/−21 / d112647·f49f12d 记录）。
+- **修复形态核对（源码级）**: (a) **R4-2/D2**——`closeSessionAndRelease` 入口捕获 `unsubscribe` 句柄，退订/清空移入「`this.session === session && this.lease === lease`」当前身份守卫块内、且加 `this.unsubscribe === 捕获值` 双确认（迟到 cleanup 不再触碰新 listener）；(b) **R4-1/R4-3**——导入续体（`onBootstrapSnapshot` async 入口）与 `openSessionAndStartRound` 均捕获 `connectionEpoch`，`importReplica`/`openReplicationSession` 每个 await 之后按「`isConnectionDead() ∨ epoch !== 当前`」判别：迟到交付物静默回收（lease/session）、零 wire、零状态机迁移（不发迟到 BOOTSTRAP_ACK/STEP1）。
+
+## 一、复验任务 1 —— D2 红锚全链转绿确认
+
+独立进程 `pnpm exec vitest run packages/ws-replication/test/ws-replication-sa7-dynamic.test.ts`（/tmp/sa7r4-file.log，exit 0）：**6/6 通过**——D2 IT 全链闭合：跨重连在途 apply（saveGate 悬挂）→ 断线 → backoff 25ms 重连 → re-OPEN ×2 → 释放 gate → round 收口 **live** → **writePeer(ext=5) → 当前连接 UPDATE ≥1 + hub `ext=5` + peer `ext=5` 双向收敛**（R1 红锚位「`expected 0 to be ≥ 1`」翻绿）——新 session listener 存活、上行通道畅通。`-t "D2"` 三连跑 3/3 绿（确定性）。
+
+## 二、复验任务 2 —— R4-1 红锚转绿确认
+
+独立进程 `pnpm exec vitest run packages/ws-replication/test/ws-replication-sa4-r4-1-red.test.ts`（/tmp/sa7r4-r41.log，exit 0）：**1/1 通过**——三锚全绿：① 双向零 `NAMESPACE_STATE_VIOLATION`（旧续体 BOOTSTRAP_ACK/STEP1 不再落新连接）；② wire2 首个非握手帧 = `OPEN_NAMESPACE`（迟到续体零 wire、新 OPEN 先行）；③ 收敛 `live` + hub/peer `n=42`（R4-1 场景的原「ns 永久 failed」面消除）。结构性 staging（Registry 每-ns carrier FIFO → 释放门闩时 state 恒 'opening'——isConnectionDead 失效域）经 epoch 比对兜底后闭环。
+
+## 三、复验任务 3 —— 修复形态动态风险扫描
+
+### 风险面 A：epoch 守卫翻转面 —— ✅ 无翻转窗口/无误压制
+
+- **捕获点→最终检查间无翻转窗口**：导入续体「tryOpen 后 epoch 检查 → sendChecked(BOOTSTRAP_ACK)」与 `openSessionAndStartRound`「epoch 检查 → setState('reconciling')/startRound」均为同步段（无 await）——检查通过后至帧发出/round 启动之间连接代际不可能翻转；round 内帧另有 B-2d 的 applyStep2/applyRemoteUpdate epoch 守卫 + sendControl ready 门双层兜底。
+- **无误压制**：epoch 仅 `dialNow()` +1（拨号 ⇔ 旧连接已死）——续体 epoch ≠ 当前 ⇔ 跨代 ⇔ 迟到（§13.4），抑制恒正确；死亡→拨号之间的 backoff 窗由 `isConnectionDead()`（投影先行保证即时 'disconnected'）覆盖——双守卫互补、无公共失效域（R4-1 红锚即专测 'opening' 停留域的 epoch 兜底面）。
+- 同连接恢复 round（§10.5，不拨号）epoch 稳定——W2 绿（本轮 6/6 内）佐证。
+
+### 风险面 B：unsubscribe 守卫句柄语义 —— ✅ 语义矩阵全边闭合
+
+| 场景 | 捕获值 vs 当前值 | 行为 | 动态/代码证据 |
+|---|---|---|---|
+| 正常收口（无重连穿插） | 三者同（session/lease/unsubscribe） | 退订捕获句柄 + 清空 + teardown ——正常 unsubscribe 功能无损 | B2a 探针（本轮 6/6 内）：re-add → live → writePeer 收敛 = 正常路径退订后新 listener 全功能 |
+| 迟到 cleanup（跨重连在途 apply，D2 场景） | session/lease 失配 → 外层守卫 false | **不退订任何句柄**（新 listener 保全）；旧 lease 照常 release | D2 锚转绿（3/3）——live 后 writePeer UPDATE ≥1 + hub 收敛 |
+| 捕获时 undefined、await 期间新订阅 | `undefined !== undefined` → false | 不误杀新 listener | 代码级（`unsubscribe !== undefined` 条件）+ 全量绿 |
+| 内层 `this.unsubscribe === 捕获值` 条件 | 外层失配时恒不到达 | 冗余但安全（unsubscribe 替换必然伴随 session 替换） | 代码级 |
+| 旧 listener（U1）滞留 | 迟到路径不退订 U1 | U1 挂在已 close 的 S1 上——session.close() 内部回收，无泄漏面 | registry session close 语义（§13.2 barrier） |
+
+### 其他
+
+- 修复仅触 `peer-namespace.ts` 单文件 +38/−21，零契约/wire 行为面变化（无新帧、无码变更）。
+- hub 侧不受影响（per-connection 实例，无跨代共享控制器——R3 节结论维持）。
+
+## 四、复验任务 4 —— 全量动态回归
+
+| 命令（独立进程） | 结果 | 日志 |
+|---|---|---|
+| `pnpm exec vitest run packages/ws-replication` | **12 文件 / 82 测试全绿，Type Errors no errors，exit 0**（含 SA7 6 IT〔W1/W2/G1/G2/B2a/D2 全绿〕、Spec B-1/B-2 5 IT、SA4 R4-1 1 IT、F1-F3 3 IT、冻结 67 IT） | /tmp/sa7r4-pkg.log |
+| `pnpm test`（全仓） | **165 文件 / 1953 测试全绿，Type Errors no errors，exit 0——与总控亲跑逐值一致**（R3 基线 164/1952 上 +1 文件〔R4-1 锚〕+1 IT，D2 锚转绿） | /tmp/sa7r4-full.log |
+| `pnpm typecheck && git diff --check` | **exit 0** | /tmp/sa7r4-tc.log |
+
+## 五、R4 裁决
+
+- D2/R4-1/R4-3 修复均为**根因消除**：unsubscribe 收进当前身份守卫（非「重订阅补偿」类补丁）、epoch 判别补全到每个 await 续体（结构性 'opening' 失效域闭环）——R3 红锚同源场景翻绿（3/3 确定性），R4-1 三锚全绿。
+- SA7 四轮累计发现（D1 watchdog 节奏 / N1 hello timer / D2 unsubscribe 误杀）全部治本闭合；SA4/Spec 各红锚链（F1-F3、B-1/B-2、R4-1）在 SA7 会话内逐轮复验转绿。
+- 范围守卫：本轮零代码改动（`git status` 干净——R3 产物已随前序 commit 入仓；本轮仅更新本报告）。CI 触发证据维持环境阻塞登记（分支未推送/无 PR，非 fail 因素）。
+
+**Verdict: pass** —— SA7 动态验证四轮闭合。可进总控收口流程（push/PR 后补 CI `gh run view --log` 摘录）。
+
+## R4 验证证据总表
+
+| # | 命令（独立进程，setsid nohup） | 结果 |
+|---|---|---|
+| 1 | `pnpm exec vitest run packages/ws-replication/test/ws-replication-sa4-r4-1-red.test.ts` | 1/1 通过（三锚全绿），exit 0（/tmp/sa7r4-r41.log） |
+| 2 | `pnpm exec vitest run packages/ws-replication/test/ws-replication-sa7-dynamic.test.ts` | 6/6 通过（含 D2 全链转绿），exit 0（/tmp/sa7r4-file.log） |
+| 3 | 同上 `-t "D2"` ×3 | 3/3 通过——D2 转绿确定性 |
+| 4 | `pnpm exec vitest run packages/ws-replication` | 12 文件 / 82 测试全绿，Type Errors no errors，exit 0（/tmp/sa7r4-pkg.log） |
+| 5 | `pnpm test`（全仓） | 165 文件 / 1953 测试全绿，Type Errors no errors，exit 0——与总控亲跑逐值一致（/tmp/sa7r4-full.log） |
+| 6 | `pnpm typecheck && git diff --check` | exit 0（/tmp/sa7r4-tc.log） |
+| 7 | `git show 12258c2 --stat / -- src` | 单文件 +38/−21；修复形态与 commit message 逐点一致（epoch 捕获/续体判别/unsubscribe 守卫内移） |
+| 8 | `git status --short` | 干净（本轮仅更新本报告） |
