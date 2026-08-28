@@ -25,6 +25,7 @@ import { crc32cHex } from '../src/crc32c.js'
 import { baseEmission } from './helpers/base.js'
 import {
   eventsOfType,
+  eventsOfTypeRaw,
   makeFileLog,
   makeTempRoot,
   patternedBytes,
@@ -254,12 +255,14 @@ describe('AC5 observer 故障隔离（存储故障事件经 observer 上报；ob
 })
 
 describe('ADR 0012 验收门槛 10：manifest envelope/schema fingerprint 不匹配 → 新建 generation、旧 manifest 不改', () => {
-  it('resume 到指纹不符的旧 stream → 新 streamId、旧 manifest 字节恒等、旧 segments 零写入、current.json 指向新 stream', () => {
+  it('resume 到指纹不符的旧 stream → stream-generation-rotated{stream-incompatible} + 新 streamId、旧 manifest 字节恒等、旧 segments 零写入、current.json 指向新 stream', () => {
     const root = freshRoot()
     const ns = 'ns-mismatch'
     const oldStream = 'log-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
 
-    // 旧 generation：合法 manifest + 一条旧记录（envelope text 被篡改 → 指纹不匹配）
+    // 旧 generation：合法 manifest + 一条旧记录（envelope text 被篡改 → 指纹不匹配；
+    // #153 R1（SA2 #2）归因钉死：14 键篡改指纹 → stream-incompatible（manifest 门 incompatible
+    // 判定先于 17 键要求），**不是** legacy-manifest）
     writeStreamFixture(root, ns, oldStream, {
       manifest: {
         format: 'ndcl-manifest',
@@ -281,11 +284,18 @@ describe('ADR 0012 验收门槛 10：manifest envelope/schema fingerprint 不匹
     })
     const oldManifestBefore = readFileSync(streamPaths(root, ns, oldStream).manifestPath)
 
-    // 打开：fingerprint 不匹配 → 新建 generation
+    // 打开：fingerprint 不匹配 → rotate（事件通道从 stream-init-failed/manifest-mismatch
+    // 迁移到 stream-generation-rotated{cause:'stream-incompatible'}，§11.3）
     const { log, events } = makeFileLog({ rootDir: root, namespaceId: ns, resumeStreamId: oldStream, updateCapture: true })
     expect(log.streamId).not.toBe(oldStream)
     expect(log.streamId).toMatch(/^log-[0-9a-f]{32}$/)
-    expect(eventsOfType(events, 'stream-init-failed').some((e) => e.reason === 'manifest-mismatch')).toBe(true)
+    const rotated = eventsOfTypeRaw(events, 'stream-generation-rotated')
+    expect(rotated).toHaveLength(1)
+    expect(rotated[0]).toMatchObject({ type: 'stream-generation-rotated', cause: 'stream-incompatible' })
+    // #153：init-failed 仅保留给 disabled 终态（invalid-namespace-id/invalid-stream-id/
+    // locator-ambiguous/invalid-roll-targets）——本路径不得再发 init-failed
+    expect(eventsOfTypeRaw(events, 'stream-init-failed')).toHaveLength(0)
+    expect(eventsOfTypeRaw(events, 'stream-tail-repaired')).toHaveLength(0)
 
     // 旧 manifest 字节恒等（不改写旧 manifest）
     expect(readFileSync(streamPaths(root, ns, oldStream).manifestPath).equals(oldManifestBefore)).toBe(true)

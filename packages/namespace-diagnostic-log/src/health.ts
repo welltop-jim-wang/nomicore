@@ -8,6 +8,7 @@
  */
 import type { Operation } from './vocabulary.js'
 import type { RECORD_SCHEMA_ID } from './schema.js'
+import type { ResumeRepairKind, RotateCause } from './reader.js'
 
 /** observer 接口（同步；可能 throw——必须经 safeNotify 调用）。 */
 export interface DiagnosticLogHealthObserver {
@@ -58,7 +59,7 @@ export type DiagnosticLogHealthEvent =
   | {
       type: 'stream-init-failed'
       code: 'LOG_STREAM_INIT_FAILED'
-      reason: 'invalid-namespace-id' | 'invalid-stream-id' | 'manifest-mismatch' | 'manifest-missing'
+      reason: 'invalid-namespace-id' | 'invalid-stream-id' | 'locator-ambiguous' | 'invalid-roll-targets'
     }
   | {
       type: 'storage-validation-failed'
@@ -80,6 +81,18 @@ export type DiagnosticLogHealthEvent =
       code: string
     }
   | { type: 'stream-exhausted' }
+  | {
+      /** #153（ADR 0012 §打开与尾部恢复「自动修复通过 observer 上报」）：可证明尾部修复。 */
+      type: 'stream-tail-repaired'
+      repair: ResumeRepairKind
+      /** 截断字节数（计数，非 label）。 */
+      truncatedBytes: number
+    }
+  | {
+      /** #153：rotate 决策的诚实可观测（旧 stream 保持只读、未改写）。 */
+      type: 'stream-generation-rotated'
+      cause: RotateCause
+    }
 
 /** 事件对象深冻结（设计 §8.2；事件构造后冻结，防 observer 侧变异）。 */
 export function freezeEvent(event: DiagnosticLogHealthEvent): DiagnosticLogHealthEvent {

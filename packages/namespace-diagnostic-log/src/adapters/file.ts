@@ -21,7 +21,17 @@
  *   storage 门 → 落盘（BIN-first）；构造级 crash 包络与 FILE_INTERNAL 直通接缝
  *   （不分配 sequence、不触碰 exhausted 门闩）同 round 1。
  */
-import { appendFileSync, mkdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
+import {
+  appendFileSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  renameSync,
+  statSync,
+  truncateSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs'
 import { join } from 'node:path'
 import { validateLogicalSnapshot } from '@nomicore/vfsl'
 import { buildInlineCarrier } from '../carrier.js'
@@ -32,7 +42,9 @@ import type { DiagnosticEmitterConfig, DiagnosticSemanticRecord, EmissionResult,
 import { decodeFrame, encodeFrame, frameCrcOf } from '../frame.js'
 import { defaultFallbackLog, makeEventNotifier } from '../health.js'
 import type { DiagnosticLogHealthObserver } from '../health.js'
-import { isSafeNamespaceId, isSafeStreamId, streamLayoutPaths } from '../paths.js'
+import { isSafeNamespaceId, isSafeStreamId, segmentFilePaths, streamLayoutPaths } from '../paths.js'
+import { analyzeStreamForResume } from '../reader.js'
+import type { ResumeRepair } from '../reader.js'
 import { createDiagnosticChangeEmitter } from '../pipeline.js'
 import type { AttemptRecord, AttemptResult, DiagnosticChangeRecord, GenesisBaselineRecord, UpdateCarrier } from '../record.js'
 import { RECORD_SCHEMA_ENVELOPE, RECORD_SCHEMA_ID, getRecordSchemaCompilation } from '../schema.js'
@@ -64,6 +76,12 @@ export interface FileDiagnosticLogConfig {
   payloadMaxBytes?: number | undefined
   /** inline/sidecar 分界（≤ 内联，> sidecar），默认 4096（冻结进 manifest `inlineUpdateMaxBytes`）。 */
   inlineUpdateMaxBytes?: number | undefined
+  /** #153 roll：JSONL segment 字节 target，默认 64 MiB（冻结进 manifest `targetJsonlSegmentBytes`）。 */
+  targetJsonlSegmentBytes?: number | undefined
+  /** #153 roll：BIN segment 字节 target，默认 256 MiB（冻结进 manifest `targetBinSegmentBytes`）。 */
+  targetBinSegmentBytes?: number | undefined
+  /** #153 roll：segment record 数 target，默认 100,000（冻结进 manifest `targetRecordsPerSegment`）。 */
+  targetRecordsPerSegment?: number | undefined
   /** 健康观察者（#148 同一接缝；同步、可能 throw——safeNotify 隔离）。 */
   observer?: DiagnosticLogHealthObserver | undefined
   /** observer 故障 fallback logger（默认 console.error；§8.3 可注入）。 */
@@ -146,7 +164,7 @@ function carrierFrom(record: DiagnosticChangeRecord): UpdateCarrier | null {
   return null
 }
 
-/** manifest（§2.2 恰 14 键；创建后不可变——只经 `'wx'` 写一次）。 */
+/** manifest（§2.2 恰 14 键 + #153 三 roll target = 17 键；创建后不可变——只经 `'wx'` 写一次）。 */
 function buildManifest(
   id: string,
   namespaceId: string,
@@ -156,6 +174,9 @@ function buildManifest(
   inputPolicy: string,
   inlineUpdateMaxBytes: number,
   lineBudgetBytes: number,
+  targetJsonlSegmentBytes: number,
+  targetBinSegmentBytes: number,
+  targetRecordsPerSegment: number,
 ): Record<string, unknown> {
   return {
     format: 'ndcl-manifest',
@@ -172,38 +193,73 @@ function buildManifest(
     inputCapturePolicy: inputPolicy,
     inlineUpdateMaxBytes,
     jsonlLineLimitBytes: lineBudgetBytes,
+    targetJsonlSegmentBytes,
+    targetBinSegmentBytes,
+    targetRecordsPerSegment,
   }
 }
 
-/** resume 旧 manifest 的指纹匹配检查（§3.1 ③④；只读，绝不写旧 stream 目录）。 */
-function readResumeManifest(path: string, frozenFingerprint: string): 'missing' | 'mismatch' | 'match' {
-  let raw: string
+/** #153 roll target 值域（§8.1 loud 配置门：非整数 / <1 / >2^53-1 / NaN / ∞ → 非法）。 */
+function isRollTargetValue(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 1
+}
+
+/** 8 位十进制 segment 名 +1（'99999999' 的下一名无 8 位表示——溢出由 beforeCommit 判段耗尽）。 */
+function nextSegmentName(segment: string): string {
+  return (BigInt(segment) + 1n).toString().padStart(8, '0')
+}
+
+/** 构造期同步 IO 的 locator 解析（§3.1 三分支；只在构造路径调用、write-slot 外）。 */
+function resolveResumeCandidate(
+  rootDir: string,
+  namespaceId: string,
+  resumeStreamId: string | undefined,
+): { kind: 'explicit'; streamId: string } | { kind: 'locator'; streamId: string } | { kind: 'recovered'; streamId: string } | { kind: 'fresh' } | { kind: 'ambiguous' } {
+  // ① 显式处置优先（Host 明示的 resume 目标；不做任何静默回退）
+  if (resumeStreamId !== undefined) return { kind: 'explicit', streamId: resumeStreamId }
+  const base = streamLayoutPaths(rootDir, namespaceId, 'log-' + '0'.repeat(32))
+  // ② locator 可用性（current.json 只保存 format/version/streamId——可重建 locator 而非完整性证明）
+  let locator: { format: unknown; version: unknown; streamId: unknown } | null = null
   try {
-    raw = readFileSync(path, 'utf8')
+    const parsed: unknown = JSON.parse(readFileSync(base.currentPath, 'utf8'))
+    if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      locator = parsed as { format: unknown; version: unknown; streamId: unknown }
+    }
   } catch {
-    return 'missing'
+    locator = null // 缺失/不可读/解析失败 → 不可用
   }
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(raw)
-  } catch {
-    return 'mismatch'
-  }
-  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return 'mismatch'
-  const m = parsed as Record<string, unknown>
-  if (m.format !== 'ndcl-manifest' || m.version !== 1) return 'mismatch'
-  const schema = m.schema as Record<string, unknown> | null
-  if (schema === null || typeof schema !== 'object' || Array.isArray(schema)) return 'mismatch'
   if (
-    schema.lang !== RECORD_SCHEMA_ENVELOPE.lang ||
-    schema.version !== RECORD_SCHEMA_ENVELOPE.version ||
-    schema.id !== RECORD_SCHEMA_ENVELOPE.id ||
-    schema.text !== RECORD_SCHEMA_ENVELOPE.text
+    locator !== null &&
+    locator.format === 'ndcl-current' &&
+    locator.version === 1 &&
+    typeof locator.streamId === 'string' &&
+    isSafeStreamId(locator.streamId)
   ) {
-    return 'mismatch'
+    const targetManifest = streamLayoutPaths(rootDir, namespaceId, locator.streamId).manifestPath
+    try {
+      if (statSync(targetManifest).isFile()) return { kind: 'locator', streamId: locator.streamId }
+    } catch {
+      // 目标 manifest 不存在（stream 目录缺失/未创建）→ 先落 ③ 重扫
+    }
   }
-  if (m.schemaFingerprint !== frozenFingerprint) return 'mismatch'
-  return 'match'
+  // ③ manifests 扫描（确定性恢复；候选 = 目录名过 streamId 文法 且 manifest.json 存在）
+  let candidates: string[] = []
+  try {
+    for (const entry of readdirSync(base.streamsDir)) {
+      if (!isSafeStreamId(entry)) continue
+      try {
+        if (statSync(join(base.streamsDir, entry, 'manifest.json')).isFile()) candidates.push(entry)
+      } catch {
+        // 非候选（manifest 缺失/不可读）
+      }
+    }
+  } catch {
+    candidates = [] // streams/ 不存在 → 零候选（首次启用）
+  }
+  candidates.sort()
+  if (candidates.length === 0) return { kind: 'fresh' }
+  if (candidates.length === 1) return { kind: 'recovered', streamId: candidates[0]! }
+  return { kind: 'ambiguous' }
 }
 
 /**
@@ -223,6 +279,9 @@ export function createFileLog(config: FileDiagnosticLogConfig, options: FileLogO
   const lineBudgetBytes = config.lineBudgetBytes ?? 1024 * 1024
   const payloadMaxBytes = Math.min(config.payloadMaxBytes ?? 64 * 1024 * 1024, 0xffffffff)
   const inlineUpdateMaxBytes = config.inlineUpdateMaxBytes ?? 4096
+  const targetJsonlSegmentBytes = config.targetJsonlSegmentBytes ?? 67108864
+  const targetBinSegmentBytes = config.targetBinSegmentBytes ?? 268435456
+  const targetRecordsPerSegment = config.targetRecordsPerSegment ?? 100000
   const clock = config.clock ?? { now: () => Date.now() }
   const namespaceId = config.namespaceId
 
@@ -231,6 +290,11 @@ export function createFileLog(config: FileDiagnosticLogConfig, options: FileLogO
   let jsonlPath: string | null = null
   let binPath: string | null = null
   let segmentsDir: string | null = null
+  /** #153 滚动状态（§6.2；内存计数——offset 恒 fresh-stat，计数器仅软阈值非对称 D4）。 */
+  let currentSegment: string | null = null
+  let segJsonlBytes = 0
+  let segBinBytes = 0
+  let segRecords = 0
   let envelopeFingerprint = ''
   /** 已确认提交的连续前缀末尾（R2 设计 §3.2：仅 confirmed success / ambiguous reservation 写入）。 */
   let lastCommittedSequence: string | null = options.presetLastSequence ?? null
@@ -249,9 +313,11 @@ export function createFileLog(config: FileDiagnosticLogConfig, options: FileLogO
     return lastCommittedSequence === null ? '1' : nextDecimal(lastCommittedSequence)
   }
 
-  /** confirmed JSONL success（§3.3）：提交点推进；UINT64_MAX → 恰一次 stream-exhausted。 */
-  function commitConfirmed(sequence: string): void {
+  /** confirmed JSONL success（§3.3）：提交点推进 + 滚动计数器推进（§6.2）；UINT64_MAX → 恰一次 stream-exhausted。 */
+  function commitConfirmed(sequence: string, lineBytes: number): void {
     lastCommittedSequence = sequence
+    segJsonlBytes += lineBytes
+    segRecords += 1
     if (sequence === UINT64_MAX) {
       exhaustedLatch = true
       notify({ type: 'stream-exhausted' })
@@ -306,7 +372,7 @@ export function createFileLog(config: FileDiagnosticLogConfig, options: FileLogO
       carrier: {
         storage: 'sidecar',
         format: 'yjs-update-v1',
-        segment: '00000001',
+        segment: currentSegment ?? '00000001',
         frameOffset: String(offset),
         payloadLength: bytes.byteLength,
         crc32c: crc32cHex(bytes),
@@ -519,9 +585,37 @@ export function createFileLog(config: FileDiagnosticLogConfig, options: FileLogO
     return { definitive: code === 'EISDIR' || code === 'EACCES' || code === 'ENOENT', code }
   }
 
-  /** 提交钩子（emission 路径：confirmed 推进 / ambiguous reservation；注入路径：不推进）。 */
+  /**
+   * 滚动判定（§6.2 唯一新增调用点；仅在 emission/genesis 提交分支、candidateSequence 之前）。
+   * 三计数器任一达到 target → 推进 currentSegment、重派生路径、清零计数器；
+   * '99999999' 溢出 → 段耗尽路径（§7）：恰一次 stream-exhausted + 返回 false（触发 record 丢弃）。
+   * 返回 false 时调用方不得提交。
+   */
+  function beforeCommit(): boolean {
+    if (currentSegment === null) return true
+    const reached =
+      segJsonlBytes >= targetJsonlSegmentBytes || segBinBytes >= targetBinSegmentBytes || segRecords >= targetRecordsPerSegment
+    if (!reached) return true
+    if (currentSegment === '99999999') {
+      exhaustedLatch = true
+      notify({ type: 'stream-exhausted' })
+      return false
+    }
+    currentSegment = nextSegmentName(currentSegment)
+    const paths = segmentFilePaths(segmentsDir!, currentSegment)
+    jsonlPath = paths.jsonlPath
+    binPath = paths.binPath
+    segJsonlBytes = 0
+    segBinBytes = 0
+    segRecords = 0
+    return true
+  }
+
+  /**
+   * 提交钩子（emission 路径：confirmed 推进 / ambiguous reservation；注入路径：不推进）。
+   */
   interface CommitHooks {
-    onConfirmed(sequence: string): void
+    onConfirmed(sequence: string, lineBytes: number): void
     onAmbiguous(sequence: string, stage: 'bin' | 'jsonl', code: string): void
   }
 
@@ -557,6 +651,7 @@ export function createFileLog(config: FileDiagnosticLogConfig, options: FileLogO
       }
       try {
         appendFileSync(binPath, frame)
+        segBinBytes += frame.byteLength // 物理字节如实计数（含后续 JSONL definitive 失败留下的 orphan）
       } catch (err) {
         const failure = classifyAppendFailure(err)
         if (failure.definitive) {
@@ -581,18 +676,64 @@ export function createFileLog(config: FileDiagnosticLogConfig, options: FileLogO
       hooks.onAmbiguous(record.sequence, 'jsonl', failure.code) // write 期失败：不能证明零字节
       return
     }
-    hooks.onConfirmed(record.sequence)
+    hooks.onConfirmed(record.sequence, utf8Length(line))
   }
 
   /**
    * emission 提交入口（R2 设计 §3.2：candidate 只在准备门全过后取得并即刻物化进
    * JSONL record 与（若 sidecar）frame；confirmed/ambiguous 才写入 lastCommittedSequence）。
    */
+  /** 滚动后重投影（§6.4）：sidecar carrier 的 segment/frameOffset 以滚定后的当前 segment 为准。
+   *  projectCarrier 在准备门阶段以滚动前状态规划（fresh-stat），滚动发生后必须重取——
+   *  offset 恒 fresh-stat（正确性关键），segment 取 currentSegment（§6.4 替换 '00000001' 硬编码）。 */
+  function reprojectSidecarCarrier(
+    record: DiagnosticChangeRecord,
+    segment: string,
+    frameOffset: string,
+  ): DiagnosticChangeRecord {
+    const withCarrier = (update: UpdateCarrier): UpdateCarrier =>
+      update.storage === 'sidecar' ? { ...update, segment, frameOffset } : update
+    if (record.recordKind === 'genesis-baseline') {
+      const g = record as GenesisBaselineRecord
+      return { ...g, update: withCarrier(g.update) }
+    }
+    const a = record as AttemptRecord
+    const result = a.result
+    if (result.kind === 'committed' && result.effect === 'update') {
+      return { ...a, result: { ...result, update: withCarrier(result.update) } }
+    }
+    if (result.kind === 'fatal' && 'effect' in result && result.effect === 'update') {
+      return { ...a, result: { ...result, update: withCarrier(result.update) } }
+    }
+    return record
+  }
+
   function commitPrepared(prepared: PreparedRecord, operation: Operation | undefined): void {
+    if (!beforeCommit()) return // 段耗尽：触发 record 丢弃（事件已发）
     const candidate = candidateSequence()
-    const record = { ...prepared.record, sequence: candidate } as DiagnosticChangeRecord
-    commitRecord(record, prepared.payload, operation, {
-      onConfirmed: (sequence) => commitConfirmed(sequence),
+    let record = { ...prepared.record, sequence: candidate } as DiagnosticChangeRecord
+    let payload = prepared.payload
+    if (payload !== undefined) {
+      const carrier = carrierFrom(record)
+      if (carrier !== null && carrier.storage === 'sidecar') {
+        // 滚动后重投影（§6.4）：帧写当前 bin（binPath 已随滚动重派生）、carrier 同段 fresh-stat
+        let offset: number
+        try {
+          offset = planFrameOffset()
+        } catch (err) {
+          // offset 规划行：stat throw → storage-write-failed{stage:'bin'} + 丢弃（candidate 未消费）
+          notify(
+            operation === undefined
+              ? { type: 'storage-write-failed', stage: 'bin', code: errnoOf(err) }
+              : { type: 'storage-write-failed', stage: 'bin', code: errnoOf(err), operation },
+          )
+          return
+        }
+        record = reprojectSidecarCarrier(record, currentSegment!, String(offset))
+      }
+    }
+    commitRecord(record, payload, operation, {
+      onConfirmed: (sequence, lineBytes) => commitConfirmed(sequence, lineBytes),
       onAmbiguous: (sequence, stage, code) => commitAmbiguous(sequence, stage, code, operation),
     })
   }
@@ -680,7 +821,8 @@ export function createFileLog(config: FileDiagnosticLogConfig, options: FileLogO
     commitPrepared(prepared, undefined)
   }
 
-  /** 新 generation 建立（§3.1 ⑤；segments → manifest('wx') → genesis → current.json）。 */
+  /** 新 generation 建立（§3.1 ⑤；segments → manifest('wx') → genesis → current.json；#153 §8.3 增量：
+   *  manifest 17 键、段态清零——currentSegment='00000001'、三计数器 0、lastCommitted=preset??null）。 */
   function initializeGeneration(id: string): 'ok' | 'collision' | 'disabled' {
     const paths = streamLayoutPaths(config.rootDir, namespaceId, id)
     try {
@@ -698,6 +840,9 @@ export function createFileLog(config: FileDiagnosticLogConfig, options: FileLogO
       inputPolicy,
       inlineUpdateMaxBytes,
       lineBudgetBytes,
+      targetJsonlSegmentBytes,
+      targetBinSegmentBytes,
+      targetRecordsPerSegment,
     )
     try {
       writeFileSync(paths.manifestPath, JSON.stringify(manifest), { flag: 'wx' })
@@ -710,6 +855,11 @@ export function createFileLog(config: FileDiagnosticLogConfig, options: FileLogO
     binPath = paths.binPath
     segmentsDir = paths.segmentsDir
     currentStreamId = id
+    currentSegment = '00000001'
+    segJsonlBytes = 0
+    segBinBytes = 0
+    segRecords = 0
+    lastCommittedSequence = options.presetLastSequence ?? null
     if (config.genesisUpdateBytes !== undefined) {
       runGenesis(id)
     }
@@ -733,6 +883,47 @@ export function createFileLog(config: FileDiagnosticLogConfig, options: FileLogO
     }
   }
 
+  /** 新 generation 装配（§8.1：'wx' EEXIST 碰撞重试 ≤ 8；耗尽 → disabled + EEXIST 事件）。 */
+  function initNewGeneration(): void {
+    let outcome = initializeGeneration(currentStreamId!)
+    let retries = 0
+    while (outcome === 'collision' && retries < 8) {
+      currentStreamId = 'log-' + bytesToHex(randomSource.randomBytes(16))
+      retries += 1
+      outcome = initializeGeneration(currentStreamId!)
+    }
+    if (outcome === 'collision') {
+      mode = 'disabled'
+      notify({ type: 'storage-write-failed', stage: 'manifest', code: 'EEXIST' })
+    } else if (outcome === 'disabled') {
+      mode = 'disabled'
+    } else {
+      // genesis 期间 ambiguous 密封（构造期 commitAmbiguous）不得被 'ready' 覆盖
+      mode = sealed ? 'failed' : 'ready'
+    }
+  }
+
+  /**
+   * 修复应用（§5.5；顺序 C1 在前、C2/C3 在后——分析输出序）。
+   * truncateSync 失败 → notify(stream-generation-rotated{cause:'repair-io-failure'}) + false；
+   * 调用方收到 false 走 rotate 新 generation（已成功的修复保留、其事件保留——截断只删
+   * §5.2 证明无引用字节，无历史改写）。
+   */
+  function applyRepairs(repairs: ResumeRepair[]): boolean {
+    for (const repair of repairs) {
+      const sp = segmentFilePaths(segmentsDir!, repair.segment)
+      const target = repair.kind === 'jsonl-incomplete-line' ? sp.jsonlPath : sp.binPath
+      try {
+        truncateSync(target, repair.truncateToBytes)
+      } catch {
+        notify({ type: 'stream-generation-rotated', cause: 'repair-io-failure' })
+        return false
+      }
+      notify({ type: 'stream-tail-repaired', repair: repair.kind, truncatedBytes: repair.truncatedBytes })
+    }
+    return true
+  }
+
   try {
     currentStreamId = 'log-' + bytesToHex(randomSource.randomBytes(16))
     if (!isSafeNamespaceId(namespaceId)) {
@@ -741,6 +932,14 @@ export function createFileLog(config: FileDiagnosticLogConfig, options: FileLogO
     } else if (config.resumeStreamId !== undefined && !isSafeStreamId(config.resumeStreamId)) {
       mode = 'disabled'
       notify({ type: 'stream-init-failed', code: 'LOG_STREAM_INIT_FAILED', reason: 'invalid-stream-id' })
+    } else if (
+      !isRollTargetValue(config.targetJsonlSegmentBytes ?? 67108864) ||
+      !isRollTargetValue(config.targetBinSegmentBytes ?? 268435456) ||
+      !isRollTargetValue(config.targetRecordsPerSegment ?? 100000)
+    ) {
+      // §8.1 loud 配置门（绝不静默钳制）：非法 roll targets → disabled + invalid-roll-targets
+      mode = 'disabled'
+      notify({ type: 'stream-init-failed', code: 'LOG_STREAM_INIT_FAILED', reason: 'invalid-roll-targets' })
     } else {
       const compiled = getRecordSchemaCompilation()
       if (!compiled.ok) {
@@ -748,32 +947,57 @@ export function createFileLog(config: FileDiagnosticLogConfig, options: FileLogO
         notify({ type: 'schema-compile-failed', schemaId: RECORD_SCHEMA_ID, issueCount: compiled.issues.length })
       } else {
         envelopeFingerprint = compiled.envelopeFingerprint
-        if (config.resumeStreamId !== undefined) {
-          const resumePath = streamLayoutPaths(config.rootDir, namespaceId, config.resumeStreamId).manifestPath
-          const signal = readResumeManifest(resumePath, envelopeFingerprint)
-          if (signal === 'missing') {
-            notify({ type: 'stream-init-failed', code: 'LOG_STREAM_INIT_FAILED', reason: 'manifest-missing' })
-          } else if (signal === 'mismatch') {
-            notify({ type: 'stream-init-failed', code: 'LOG_STREAM_INIT_FAILED', reason: 'manifest-mismatch' })
-          }
-          // match → 静默（总控 G1 裁决；#152 无续写能力——恒新建 generation）
-        }
-        // —— 新 generation（'wx' EEXIST 碰撞重试 ≤ 8；耗尽 → disabled + EEXIST 事件）——
-        let outcome = initializeGeneration(currentStreamId)
-        let retries = 0
-        while (outcome === 'collision' && retries < 8) {
-          currentStreamId = 'log-' + bytesToHex(randomSource.randomBytes(16))
-          retries += 1
-          outcome = initializeGeneration(currentStreamId)
-        }
-        if (outcome === 'collision') {
+        const cand = resolveResumeCandidate(config.rootDir, namespaceId, config.resumeStreamId)
+        if (cand.kind === 'fresh') {
+          initNewGeneration()
+        } else if (cand.kind === 'ambiguous') {
+          // §3.2：不创建任何新 stream、不写任何文件（含 current.json）；emitter 照常构造（J6）
           mode = 'disabled'
-          notify({ type: 'storage-write-failed', stage: 'manifest', code: 'EEXIST' })
-        } else if (outcome === 'disabled') {
-          mode = 'disabled'
+          notify({ type: 'stream-init-failed', code: 'LOG_STREAM_INIT_FAILED', reason: 'locator-ambiguous' })
         } else {
-          // genesis 期间 ambiguous 密封（构造期 commitAmbiguous）不得被 'ready' 覆盖
-          mode = sealed ? 'failed' : 'ready'
+          const analysis = analyzeStreamForResume({
+            rootDir: config.rootDir,
+            namespaceId,
+            streamId: cand.streamId,
+            resolved: {
+              updateCapture,
+              inputPolicy,
+              inlineUpdateMaxBytes,
+              lineBudgetBytes,
+              targetJsonlSegmentBytes,
+              targetBinSegmentBytes,
+              targetRecordsPerSegment,
+            },
+          })
+          if (analysis.verdict === 'rotate') {
+            // rotate 路径：事件先于新 generation 初始化发出（因果序）；旧 stream 保持只读、未改写
+            notify({ type: 'stream-generation-rotated', cause: analysis.cause })
+            initNewGeneration()
+          } else {
+            // §6.3 种子：currentStreamId = cand.streamId；resume 不写 genesis（genesisUpdateBytes 忽略）
+            const paths = streamLayoutPaths(config.rootDir, namespaceId, cand.streamId)
+            segmentsDir = paths.segmentsDir
+            if (!applyRepairs(analysis.repairs)) {
+              initNewGeneration() // repair-io-failure：已成功的修复保留 → rotate 新 generation
+            } else {
+              currentStreamId = cand.streamId
+              currentSegment = analysis.resume.currentSegment
+              segJsonlBytes = analysis.resume.jsonlBytes
+              segBinBytes = analysis.resume.binBytes
+              segRecords = analysis.resume.records
+              lastCommittedSequence = analysis.resume.lastCommittedSequence
+              const sp = segmentFilePaths(segmentsDir, currentSegment)
+              jsonlPath = sp.jsonlPath
+              binPath = sp.binPath
+              if (analysis.resume.exhaustedAtOpen !== null) {
+                exhaustedLatch = true
+                notify({ type: 'stream-exhausted' })
+              }
+              writeCurrent(paths.namespaceDir, paths.currentPath, cand.streamId)
+              // 构造期 genesis 不存在于 resume 路径；sealed 恒 false，保留防御位
+              mode = sealed ? 'failed' : 'ready'
+            }
+          }
         }
       }
     }
