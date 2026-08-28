@@ -117,6 +117,10 @@ export const NAMESPACE_IMPORT_EXPECTED_IDENTITY_MISMATCH_MESSAGE =
   'NAMESPACE_IMPORT_EXPECTED_IDENTITY_MISMATCH: 导入文档复制身份与 Hub 广告身份不一致';
 export const NAMESPACE_IMPORT_EXPECTED_IDENTITY_INVALID_MESSAGE =
   'NAMESPACE_IMPORT_EXPECTED_IDENTITY_INVALID: 期望复制身份（Hub 广告）不符合安全文法';
+// R4 微修订（方案 B，§3.6.1 R4-D2）：resetReplica expected 输入缺陷专属常量——镜像
+// import 侧先例（单一真相源；零插值、零本地复制身份/输入值回显）。
+export const NAMESPACE_RESET_EXPECTED_IDENTITY_INVALID_MESSAGE =
+  'NAMESPACE_RESET_EXPECTED_IDENTITY_INVALID: 期望本地复制身份（reset expectedLocalIdentity）不符合安全文法';
 
 /** 复制身份引用（N-1 冻结形状）：自 @nomicore/persistence 转出（类型别名）。 */
 export type { ReplicationIdentityRef };
@@ -126,15 +130,11 @@ export interface NamespaceOwner {
   readonly userId: string;
 }
 
-/** 无效身份窄 issue（open/create 共用；message 恒定、零回显字段值）。
- *  R2 增量（R-FIX-1，设计 §3.2）：`field` 判别面向 `resetReplica` 的 expected
- *  身份输入缺陷新增 `'expectedLocalIdentity'`（additive——共享形状零破坏；
- *  code/message 不变：格式错误按设计 §3.2 沿既有 `NAMESPACE_INVALID_IDENTITY`
- *  通道返回，绝无误报本地 mismatch）。 */
+/** 无效身份窄 issue（open/create 共用；message 恒定、零回显字段值）。 */
 export interface InvalidIdentityIssue {
   readonly ok: false;
   readonly code: 'NAMESPACE_INVALID_IDENTITY';
-  readonly field: 'owner.userId' | 'namespaceId' | 'expectedLocalIdentity';
+  readonly field: 'owner.userId' | 'namespaceId';
   readonly message: typeof NAMESPACE_INVALID_IDENTITY_MESSAGE;
 }
 
@@ -363,6 +363,10 @@ export type ImportReplicaResult =
 /**
  * resetReplica 领域窄 issue（Phase 5；ADR 0010:57）：common 窄 issue 与编排专属
  * 拒绝（NOT_FOUND / RESET_IDENTITY_MISMATCH / RESET_FAILED / LOAD_FAILED）。
+ * R4 微修订（append-only，方案 B §3.6.1 R4-D2/D3）：
+ * `NAMESPACE_RESET_EXPECTED_IDENTITY_INVALID`（expectedLocalIdentity 参数本身
+ * 不符安全文法——入口快照校验失败即拒绝；零 Persistence/probe 触达、零载体/
+ * entry 访问；无 field 成员（判别完全由 code 承载）；常量 message、零值回显）。
  * 内部故障经 branded NamespaceRegistryFatalError reject。
  */
 export type ResetReplicaIssue =
@@ -387,6 +391,11 @@ export type ResetReplicaIssue =
       ok: false;
       code: 'NAMESPACE_LOAD_FAILED';
       message: typeof NAMESPACE_LOAD_FAILED_MESSAGE;
+    }>
+  | Readonly<{
+      ok: false;
+      code: 'NAMESPACE_RESET_EXPECTED_IDENTITY_INVALID';
+      message: typeof NAMESPACE_RESET_EXPECTED_IDENTITY_INVALID_MESSAGE;
     }>;
 
 /** resetReplica 结果联合：成功为窄 {ok:true}（key 缺席即 bootstrap 资格，无显式标记）。 */

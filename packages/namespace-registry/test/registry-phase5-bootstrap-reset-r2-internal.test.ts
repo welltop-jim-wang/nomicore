@@ -47,6 +47,7 @@ import type {
   NamespaceRegistryFatalError,
   RegistryRandomBytes,
 } from '@nomicore/namespace-registry';
+import { NAMESPACE_RESET_EXPECTED_IDENTITY_INVALID_MESSAGE } from '../src/types.js';
 
 const SCHEMA_ENVELOPE = Object.freeze({
   lang: 'vfsl',
@@ -305,10 +306,14 @@ function makeRegistry(
   } as never);
 }
 
-function okIssue(result: unknown): { ok: false; code: string | undefined } {
-  const r = result as { ok?: boolean; code?: string };
+function okIssue(result: unknown): {
+  ok: false;
+  code: string | undefined;
+  message: string | undefined;
+} {
+  const r = result as { ok?: boolean; code?: string; message?: string };
   expect(r.ok, `期望领域拒绝，实际：${JSON.stringify(result)}`).toBe(false);
-  return { ok: false, code: r.code };
+  return { ok: false, code: r.code, message: r.message };
 }
 
 function okLease(result: unknown): NamespaceLease {
@@ -644,7 +649,7 @@ describe('E：probe 拒绝映射——Operational → LOAD_FAILED；Corrupt → 
 
 // ═════════════ R-FIX-1：resetReplica 敌意 expected 输入矩阵（设计 §3.2 入口快照） ═════════════
 
-describe('R-FIX-1：resetReplica 敌意 expected → NAMESPACE_INVALID_IDENTITY + 零 Persistence 触达；正确 expected 重试成功（零破坏）', () => {
+describe('R-FIX-1：resetReplica 敌意 expected → NAMESPACE_RESET_EXPECTED_IDENTITY_INVALID + 零 Persistence 触达；正确 expected 重试成功（零破坏）', () => {
   it('16 形态全部拒绝于入口：probeCalls 空（零 Persistence 分界锚）、lease active/lifecycle ready/零 archive；随后正确 expected 重试成功', async () => {
     const stub = new ScriptStub();
     stub.seedDocument(ALICE, NS_B, makeSeedDoc(NS_B, { replicationId: ID_A, replicationEpoch: 1, root: 5 }));
@@ -656,8 +661,19 @@ describe('R-FIX-1：resetReplica 敌意 expected → NAMESPACE_INVALID_IDENTITY 
       const issue = okIssue(
         await asResetRegistry(registry).resetReplica(ALICE, NS_B, hostile.value as ReplicationIdentityRef),
       );
-      expect(issue.code, hostile.name).toBe('NAMESPACE_INVALID_IDENTITY');
+      // 完整形状深等（设计 §3.6.3 冻结口径）：同锁 code + 导入的导出常量 message +
+      // 无 field 成员（toEqual 对完整对象字面量递归结构相等，任何多出的已定义属性
+      // 含 field 都会失败）——禁止降级为单属性 code 断言（SA2 delta 议题 3 锚强度缺口）。
+      expect(issue, hostile.name).toEqual({
+        ok: false,
+        code: 'NAMESPACE_RESET_EXPECTED_IDENTITY_INVALID',
+        message: NAMESPACE_RESET_EXPECTED_IDENTITY_INVALID_MESSAGE,
+      });
     }
+    // 常量文本锁（§3.6.3 第 1 条）：防冻结 message 被静默改写（导入值漂移时文本锁兜底）。
+    expect(NAMESPACE_RESET_EXPECTED_IDENTITY_INVALID_MESSAGE).toBe(
+      'NAMESPACE_RESET_EXPECTED_IDENTITY_INVALID: 期望本地复制身份（reset expectedLocalIdentity）不符合安全文法',
+    );
     // 分界锚：敌意 expected 在入口被快照拒绝——零 Persistence 触达（probe 从未调用）、
     // 零破坏（lease 原样 active、runtime ready、零 archive seam、零 close）
     expect(stub.probeCalls).toEqual([]); // ★ 零 Persistence 触达（设计 §3.2「不能访问 Persistence」）
@@ -702,7 +718,7 @@ describe('R-FIX-1：resetReplica 敌意 expected → NAMESPACE_INVALID_IDENTITY 
 // ═════════════ F-1：reset-archive-after-arm-failed observer 派发断言（LOW 顺带） ═════════════
 
 describe('F-1：armed 后 archive 运营失败 → observer 收到 reset-archive-after-arm-failed（cause 零身份回显）', () => {
-  it('DOC_ARCHIVE_OPERATIONAL → RESET_FAILED + registryObserver 恰一次收到 reset-archive-after-arm-failed + cause/事件载荷不含身份值', async () => {
+  it('DOC_ARCHIVE_OPERATIONAL → RESET_FAILED + registryObserver 恰一次收到 reset-archive-after-arm-failed + cause 零身份值回显', async () => {
     const stub = new ScriptStub();
     stub.seedDocument(ALICE, NS_B, makeSeedDoc(NS_B, { replicationId: ID_A, replicationEpoch: 1, root: 5 }));
     stub.archiveError = Object.assign(new Error('archive io down'), { code: 'DOC_ARCHIVE_OPERATIONAL' });

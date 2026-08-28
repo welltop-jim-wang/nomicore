@@ -27,9 +27,13 @@
  */
 import { describe, it } from 'vitest';
 import type {
+  CreateNamespaceIssue,
+  ImportReplicaIssue,
   NamespaceOwner,
   NamespaceRegistry,
+  OpenNamespaceIssue,
   ReplicationIdentityRef,
+  ResetReplicaIssue,
 } from '@nomicore/namespace-registry';
 import type { YjsDoc } from '@nomicore/persistence';
 
@@ -65,5 +69,53 @@ describe('类型面：resetReplica 公共签名保持 round-1 冻结形状（R2-
   it('resetReplica(owner, namespaceId, expectedLocalIdentity) 三参数形状不漂移', () => {
     const guarded: HasResetReplicaSignature<NamespaceRegistry> = true;
     void guarded;
+  });
+});
+
+// ═════════════ 公共类型保持锚（设计 §3.6.3 第 3 条；SA2 delta §5 第 2 条红线） ═════════════
+
+/**
+ * R4 方案 B 冻结（§3.6.1 R4-D1）：`InvalidIdentityIssue.field` 回退为 round-1
+ * 二元联合 `'owner.userId' | 'namespaceId'`（撤销 R-FIX-1 变体的第三成员
+ * `'expectedLocalIdentity'`——该扩宽未经 SA1 设计授权）。`InvalidIdentityIssue`
+ * 未按名导出——一律经公开 issue 别名 `Extract` 断言；四个共享该成员的公开
+ * 联合（Open/Create/Import/Reset）必须同判恒等（任一漂移 → 编译期红）。
+ */
+type Equal<A, B> = (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2 ? true : never;
+
+type InvalidIdentityFieldVia<IssueUnion> =
+  Extract<IssueUnion, { code: 'NAMESPACE_INVALID_IDENTITY' }> extends { readonly field: infer F }
+    ? F
+    : never;
+
+/** R4-D2/D3：`ResetReplicaIssue` append-only 新码成员可达（非永不）。 */
+type HasResetExpectedIdentityInvalid<IssueUnion> =
+  Extract<IssueUnion, { code: 'NAMESPACE_RESET_EXPECTED_IDENTITY_INVALID' }> extends never ? never : true;
+
+/** R4-D3：新码成员无 `field` 键（判别完全由 code 承载——镜像 import 侧无 field 先例）。 */
+type ResetExpectedIdentityInvalidHasNoField<IssueUnion> =
+  'field' extends keyof Extract<IssueUnion, { code: 'NAMESPACE_RESET_EXPECTED_IDENTITY_INVALID' }>
+    ? never
+    : true;
+
+describe('类型面：InvalidIdentityIssue.field 保持 round-1 二元联合（R4 方案 B 回退锚）', () => {
+  it('OpenNamespaceIssue / CreateNamespaceIssue / ImportReplicaIssue / ResetReplicaIssue 四联合同判 field = owner.userId | namespaceId', () => {
+    const openInvalidField: Equal<InvalidIdentityFieldVia<OpenNamespaceIssue>, 'owner.userId' | 'namespaceId'> = true;
+    void openInvalidField;
+    const createInvalidField: Equal<InvalidIdentityFieldVia<CreateNamespaceIssue>, 'owner.userId' | 'namespaceId'> = true;
+    void createInvalidField;
+    const importInvalidField: Equal<InvalidIdentityFieldVia<ImportReplicaIssue>, 'owner.userId' | 'namespaceId'> = true;
+    void importInvalidField;
+    const resetInvalidField: Equal<InvalidIdentityFieldVia<ResetReplicaIssue>, 'owner.userId' | 'namespaceId'> = true;
+    void resetInvalidField;
+  });
+});
+
+describe('类型面：ResetReplicaIssue 含 NAMESPACE_RESET_EXPECTED_IDENTITY_INVALID 成员（R4-D2/D3 可达锚）', () => {
+  it('reset 新码成员经公开联合可达（非永不）且无 field 键，expected 输入缺陷有专属结果通道', () => {
+    const hasResetExpectedIdentityInvalid: HasResetExpectedIdentityInvalid<ResetReplicaIssue> = true;
+    void hasResetExpectedIdentityInvalid;
+    const noField: ResetExpectedIdentityInvalidHasNoField<ResetReplicaIssue> = true;
+    void noField;
   });
 });
