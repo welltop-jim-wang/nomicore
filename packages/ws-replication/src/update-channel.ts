@@ -67,7 +67,11 @@ export class UpdateChannel {
   deliver(bytes: Uint8Array, mode: 'live' | 'deferred'): void {
     if (this.needsResync) return; // §10.1 首行：溢出/恢复声明后丢弃（round 修复）
     if (mode === 'live') {
-      if (this.inFlight.size < this.host.limits.maxInFlightUpdates && this.host.dataGateOpen()) {
+      // F1（SA4 修复，2026-08-29）：闸门检查**先行**——dataGateOpen 非纯读（暂停段
+      // 撤压时 observeWater → resume → 同步 drainData 重入消费窗口空位）；闸门先求值
+      // 完成后窗口检查读的是 drain 后真值，直发条件（窗口有空位 ∧ 闸门开）在发送
+      // 时刻成立（协议 §10.2 / 设计 §4.1）。
+      if (this.host.dataGateOpen() && this.inFlight.size < this.host.limits.maxInFlightUpdates) {
         this.sendAndRegister(bytes);
         return;
       }
