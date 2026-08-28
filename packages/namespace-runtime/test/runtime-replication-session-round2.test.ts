@@ -21,9 +21,9 @@
  * createSessionFanout + SessionChannel（§15.2「直构 fanout + channel」——设计
  * R2.1 / SA2 #4 声明的包内直接构造面；行为级锚经真实 core 链路。
  *
- * ⚠️ 可选锚登记：R2.1 / SA2 #5 的 hostile-catch→unhandledRejection 计数锚属
- * registry 侧 lease.ts 注入域（runtime 包测试依赖方向禁止 import registry——round-1
- * 头注同款），本文件不落位；由 registry 侧（SA6 或后续包内锚）承接。
+ * ⚠️ 可选锚登记：R2.1 / SA2 #5 的 hostile-catch→unhandledRejection 计数锚按设计 R2.2
+ * 另核 2 终态裁决——SA7 动态验证可选直构承接（不入仓，已实测六型敌意
+ * unhandledRejection Δ0）。
  */
 import { describe, expect, it } from 'vitest';
 import * as Y from 'yjs';

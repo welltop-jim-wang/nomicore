@@ -160,7 +160,7 @@ function resolvePluginIdleTimeoutMs(config: NamespaceRegistryPluginConfig): numb
   if (keys.some((k) => k !== 'idleTimeoutMs' && k !== 'role')) {
     throw new TypeError(NAMESPACE_REGISTRY_PLUGIN_CONFIG_MESSAGE);
   }
-  const role = config.role; // 单读捕获（校验序 ③——此后 apply 闭包零再校验；plain config 面）
+  const role = config.role; // 校验序 ③ 的读取（工厂同步段内——校验一读；apply 闭包零再校验、零再读 config）
   if (role !== undefined && role !== 'hub' && role !== 'peer') {
     throw new TypeError(NAMESPACE_REGISTRY_ROLE_INVALID_MESSAGE);
   }
@@ -177,8 +177,8 @@ function resolvePluginIdleTimeoutMs(config: NamespaceRegistryPluginConfig): numb
  */
 export function createNamespaceRegistryPlugin(config: NamespaceRegistryPluginConfig = {}) {
   const idleTimeoutMs = resolvePluginIdleTimeoutMs(config); // 工厂调用期同步校验（无 ctx）
-  // role 单读捕获（R2-8：校验序已在 resolvePluginIdleTimeoutMs 完成——undefined|'hub'|'peer'；
-  // 闭包绑定——apply 期零再校验、零再读 config）
+  // role 工厂同步段内捕获（R2-8：校验在 resolvePluginIdleTimeoutMs 内一读、此处绑定一读
+  // '?? 'hub''——两读均在 apply 前；apply 期零再读 config、零再校验）
   const role = config.role ?? 'hub';
   let instance: NamespaceRegistry | undefined;
   return {
