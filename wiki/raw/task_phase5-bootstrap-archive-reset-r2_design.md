@@ -31,8 +31,8 @@
 | R2-D1 | reset 使用严格直读：live 与 persisted 都必须在非破坏性 preflight 中等于 expected；任一不等/disabled 返回既有 `NAMESPACE_RESET_IDENTITY_MISMATCH`，零 forceRelease/close/archive。损坏或 probe abort 是 loud fatal，非 mismatch。 |
 | R2-D2 | persisted 读取通过 Persistence 内部 `readPersistedReplicationIdentity(owner, namespaceId)` trusted-snapshot probe 实现（不是 cache-hit `loadDoc`）；不签 handle、不调用 `saveDoc`、不得 advance scheduler、不得等待/触发 flush。 |
 | R2-D3 | live identity 由 current active Runtime 的受控 reset-fence 槽读取；只接受 `{state:'enabled', replicationId, replicationEpoch}`。disabled 不匹配；异常状态不降级为 persisted-only。 |
-| R2-D4（R1 修订） | reset 成功路径冻结为：owner → capability → closing re-evaluation → Runtime **reset-fence 槽内** live/persisted preflight + close admission → forceRelease/cancel idle/close drain → archive → bootstrap eligibility。fence slot 是线性化点，拒绝在其前发生，ADR-0010 旧 close-first 描述被正式修订取代。 |
-| R2-D4a（R1 新增） | Runtime 增加最窄 internal `beginResetFence(expected, readPersisted)` capability：同一 Runtime FIFO 槽内先完成双源核验，再同步转换为 closing/停止新公共 write 接纳；已在该槽之前接纳的 enable/bump 必先结算并参与核验，之后写被 close lifecycle gate 拒绝。 |
+| R2-D4（R1/R2 修订） | reset 成功路径冻结为：owner → capability → closing re-evaluation → Runtime **reset-fence 槽内** live/persisted preflight + synchronous closing arm → fence task 结算后 close drain → archive → bootstrap eligibility。fence slot 是线性化点；close barrier 不得包含/等待当前 fence task。 |
+| R2-D4a（R1/R2 新增） | Runtime 增加最窄 internal `beginResetFence(expected, readPersisted)` capability：同一 Runtime FIFO 槽内先完成双源核验，再同步转换为 closing；槽后 lazy continuation 才创建 close barrier。已在槽之前接纳的 enable/bump 必先结算并参与核验，之后写被 close lifecycle gate 拒绝。 |
 | R2-D5 | `importReplica(owner, namespaceId, doc, expectedReplicationIdentity)` 为公共 API；在 round-1 既有 `docId`、格式/在场性谓词之后、capability/`importDoc` 之前做 exact equality；错误码冻结为 `NAMESPACE_IMPORT_EXPECTED_IDENTITY_MISMATCH`。 |
 | R2-D6 | 不将 Hub 广告 equality 下沉为 Persistence 的通用 importDoc 契约：ownership transfer 之前由 Registry 受信 bootstrap 编排验证；Persistence 仍只验证 `META.docId`，保持 ADR-0006 的层次边界。 |
 | R2-D7 | ADR-0006/0010 追加明确 scope/取代条款的修订段；未明示条款继续有效。 |
@@ -57,7 +57,7 @@ live identity == expected  AND  persisted committed snapshot identity == expecte
 
 因此 SA6 的竞态 B 保持“拒绝 + 零破坏”断言，**不回流改为成功断言**。
 
-### 3.2 identity 判定函数
+### 3.2 identity 判定函数与 reset 输入分类取代关系
 
 新增 Registry 私有纯函数（不导出）：
 
@@ -77,8 +77,8 @@ function identityEquals(
 ```
 
 - **live**：从当前 entry Runtime 的 `getStatus().replication` 映射为上述 checked type。`disabled` → `{ok:false}`；有 enabled 但值不合规是 Runtime 已应在构造期拒绝的 integrity bug，必须 throw Registry fatal，不能被转换成“匹配”。
-- **persisted**：从下节冻结的 trusted committed-snapshot probe 所解码的 detached snapshot，按现有 `readImportedReplicaFacts` 同一判据族读取 META：双键均在且格式合规才 ok；双键缺失、单键、显式 undefined、异型 META、非法 ID/epoch 均为 `{ok:false}`，最终映射 reset mismatch，避免泄露值。
-- expected 参数仍按既有 `ReplicationIdentityRef` 形状；实现应在公共入口的 identity validation 后验证 expected 的字段格式。格式错误是调用输入错误（沿既有 `NAMESPACE_INVALID_IDENTITY`/内部 API 前置约定处理），不能误报本地 mismatch，也不能访问 Persistence。
+- **persisted**：从 §3.3 的 trusted committed-snapshot probe 所解码的 detached snapshot，按现有 `readImportedReplicaFacts` 同一判据族读取 META：双键均在且格式合规才 ok；双键缺失、单键、显式 undefined、异型 META、非法 ID/epoch 均为 `{ok:false}`，最终映射 reset mismatch，避免泄露值。
+- expected 参数安全快照/格式验证由 §3.6（R4）权威规定。此前“沿既有 `NAMESPACE_INVALID_IDENTITY` 语义处理 reset expected 格式错误”的模糊表述**作废**；它不得解释为扩宽 `InvalidIdentityIssue.field`。
 
 ### 3.3 persisted probe seam 与正确性
 
@@ -196,8 +196,6 @@ async function runResetSlot(identity, expected): Promise<ResetReplicaResult> {
     current = entries.get(identity.key);
     if (current !== undefined && current.owner.userId !== identity.owner.userId) return NOT_FOUND_ISSUE;
     if (current?.phase === 'closing') throw resetFatalFalse(new Error('closing entry failed to settle'));
-    // no current entry after an earlier close: this request may not claim AC zero-destruction.
-    // It must not archive merely from persisted facts; return RESET_FAILED if primary exists, NOT_FOUND if absent.
     try {
       const afterClose = await readPersisted(identity.owner, identity.namespaceId);
       if (afterClose.kind === 'missing') return NOT_FOUND_ISSUE;
@@ -211,7 +209,6 @@ async function runResetSlot(identity, expected): Promise<ResetReplicaResult> {
     } catch (cause) { return mapProbeOrFenceFailureBeforeDestruction(cause); }
   }
 
-  // R1-C: exact active generation fence; live/persisted sampling and close admission share Runtime FIFO.
   let fence;
   try {
     fence = await current.runtime.beginResetFence(expected, () =>
@@ -222,10 +219,6 @@ async function runResetSlot(identity, expected): Promise<ResetReplicaResult> {
   if (fence.kind === 'missing') throw resetFatalFalse(new Error('active entry missing committed snapshot'));
   if (fence.kind === 'mismatch') return RESET_IDENTITY_MISMATCH_ISSUE;
 
-  // Only {kind:'armed'} has synchronously crossed the close admission point.
-  // The fence task has already settled; now (and never inside it) start the close barrier.
-  // Existing leases are invalidated before drain; mutations admitted before fence were checked,
-  // and later mutations were rejected by the synchronous closing gate.
   forceReleaseOutstandingLeases(current);
   cancelIdleArm(current);
   let closePromise: Promise<void>;
@@ -291,6 +284,96 @@ The observer records a distinct `reset-archive-after-arm-failed` event with stab
 - `archiveDoc` settles dirty state only after fence arm. Hence SA6 dirty race A/B mismatch still performs no forced flush; matching reset can legitimately close and settle.
 - This adds a narrow `packages/namespace-runtime/src/{runtime.ts,close.ts,types.ts}` internal/reset capability implementation but does not expose any general META read/write API or alter ordinary sequencer semantics.
 
+### 3.6（R4 修订）reset expectedLocalIdentity 专属输入分类学（方案 B）
+
+> **R4 取代关系**：本节取代本设计此前针对 `resetReplica` 的 expected 输入格式失败“沿既有 `NAMESPACE_INVALID_IDENTITY` 语义处理”的任何表述。它不改变 owner/namespace identity 的既有语义，也不改变合法 expected 后的严格双源 mismatch 语义。
+
+#### 3.6.1 公开类型与稳定词汇冻结
+
+`InvalidIdentityIssue` 恢复并永久保持 round-1 冻结的二元 shape：
+
+```ts
+export interface InvalidIdentityIssue {
+  readonly ok: false;
+  readonly code: 'NAMESPACE_INVALID_IDENTITY';
+  readonly field: 'owner.userId' | 'namespaceId';
+  readonly message: typeof NAMESPACE_INVALID_IDENTITY_MESSAGE;
+}
+```
+
+不得把 `'expectedLocalIdentity'` 加入该共享 `field` 联合。该接口经 `OpenNamespaceIssue`、`CreateNamespaceIssue`、`ImportReplicaIssue`、`ResetReplicaIssue` 到达公共声明图；R4 对它是**回退到既有冻结形状**，不是一次可被“当前无 consumer”豁免的公共契约扩宽。
+
+新增仅属于 `ResetReplicaIssue` 的 append-only 成员，**无 `field`**：
+
+```ts
+export const NAMESPACE_RESET_EXPECTED_IDENTITY_INVALID_MESSAGE =
+  'NAMESPACE_RESET_EXPECTED_IDENTITY_INVALID: 期望本地复制身份（reset expectedLocalIdentity）不符合安全文法';
+
+type ResetExpectedIdentityInvalidIssue = Readonly<{
+  ok: false;
+  code: 'NAMESPACE_RESET_EXPECTED_IDENTITY_INVALID';
+  message: typeof NAMESPACE_RESET_EXPECTED_IDENTITY_INVALID_MESSAGE;
+}>;
+
+export type ResetReplicaIssue =
+  | InvalidIdentityIssue
+  | RegistryNotAcceptingIssue
+  | /* existing reset issue members */
+  | ResetExpectedIdentityInvalidIssue;
+```
+
+该常量是 `types.ts` 中单一真相源；零插值、零 expected/owner/namespace/actual identity 值回显。它不经 Registry 主入口新增值导出；既有 `ResetReplicaIssue`/`ResetReplicaResult` type alias 已从公开入口可达，故 append-only member 自动随 result alias 可见。包内测试若需锁 message 常量，使用既有先例的相对 `../src/types.js` 导入，不扩大 barrel。
+
+#### 3.6.2 三码边界与入口次序
+
+| 结果 code | 唯一触发条件 | Persistence / carrier / doc 行为 |
+|---|---|---|
+| `NAMESPACE_INVALID_IDENTITY` | owner 或 namespaceId 未通过既有 `validateOpenIdentity` | 零 expected snapshot、零 carrier、零 entry、零 Persistence/doc；field 仅为 `owner.userId` 或 `namespaceId` |
+| `NAMESPACE_RESET_EXPECTED_IDENTITY_INVALID` | owner/namespace 已合法，但 `snapshotReplicationIdentityRef(expectedLocalIdentity)` 失败（null/undefined/array/function/getter 或 Proxy throw/继承属性/非严格对象/非法 ID/非法 epoch） | 零 carrier、零 entry、零 Runtime fence、零 persisted probe、零 archive、零 doc 触达 |
+| `NAMESPACE_RESET_IDENTITY_MISMATCH` | expected 合法但 live 或 persisted 任一 `identityEquals` 为 false（含该侧 disabled、身份不合规、值不等） | 经 active Runtime fence 的已核验结果；仍在 forceRelease/close/archive 前拒绝、零破坏 |
+
+公共入口的冻结次序不变：
+
+```ts
+function resetReplica(owner: unknown, namespaceId: unknown, expectedLocalIdentity: unknown) {
+  if (acceptance !== 'running') return Promise.resolve(NOT_ACCEPTING_ISSUE);
+  const outcome = validateOpenIdentity(owner, namespaceId);
+  if (!outcome.ok) return Promise.resolve(outcome.issue);
+
+  const snapshot = snapshotReplicationIdentityRef(expectedLocalIdentity);
+  if (!snapshot.ok) return Promise.resolve(RESET_EXPECTED_IDENTITY_INVALID_ISSUE);
+
+  return admitResetSlot(outcome.identity, snapshot.value);
+}
+```
+
+此处 `snapshotReplicationIdentityRef` 继续负责收编 getter/Proxy trap，产生只包含 primitives 的冻结 snapshot；它必须在任何 carrier 创建、entry 查询、Runtime capability/probe、Persistence、archive 或 doc 读取之前完成。正确 expected 的后续重试仍按既有路径第一次调用 probe，不被失败调用污染。
+
+#### 3.6.3 测试锚与标准轴清理授权
+
+R4 测试锚（不得用仅 code 的弱断言替代）：
+
+1. R-FIX-1 的 16 个 hostile expected 形态逐项对返回值做完整 `toEqual`：
+   ```ts
+   {
+     ok: false,
+     code: 'NAMESPACE_RESET_EXPECTED_IDENTITY_INVALID',
+     message: NAMESPACE_RESET_EXPECTED_IDENTITY_INVALID_MESSAGE,
+   }
+   ```
+   完整深等同时保证没有遗留/新增 `field`。每形态保留 `probeCalls=[]`、`archiveCalls=[]`、原 lease `active`、Runtime `ready`/可读和正确 expected 后重试成功（首次 probe 计数为 1）。
+2. 保留 mutable expected 的 TOCTOU 冻结样本：调用后改写原对象，成功 archive/fence 使用调用时 `{replicationId, replicationEpoch}` primitive snapshot。
+3. 追加 `*.test-d.ts` 公开 alias 类型锚：
+   - `Extract<OpenNamespaceIssue, {code:'NAMESPACE_INVALID_IDENTITY'}>['field']` 与同一模式的 `CreateNamespaceIssue`、`ImportReplicaIssue`、`ResetReplicaIssue` 均严格等于 `'owner.userId' | 'namespaceId'`；
+   - `Extract<ResetReplicaIssue, {code:'NAMESPACE_RESET_EXPECTED_IDENTITY_INVALID'}>` 非 `never`，且其 keys 不含 `field`。
+4. owner/namespace 各自非法的既有锚保持旧 `NAMESPACE_INVALID_IDENTITY`、旧 message 与正确二元 field，防专属 reset code 劫持上游 identity 分类。
+5. F-1 observer 用例的 `it` 标题/说明改为**“cause 零身份值回显”**；只验证 cause 不含 `ID_A`/namespace/owner 等敏感值。事件标准 `identity` 字段及断言体不改，不误称整个 event payload 不含受控 identity。
+
+R4 同轮标准轴（非阻断、不得扩大语义）授权：
+
+- **F-2**：`packages/namespace-registry/src/registry.ts` 中悬空 `beginCloseCurrent` 注释引用改为现行 fence/lazy-close 实现名称；只修注释，不改变 close 行为。
+- **F-4**：`packages/namespace-registry/test/registry-phase5-bootstrap-reset-r2-red.test.ts` 头注中“`NAMESPACE_IMPORT_EXPECTED_IDENTITY_MISMATCH` 临时拼写，待 SA1 冻结”更新为“已由 R2/R3 设计冻结”；不改测试断言或行为。
+
 ---
 
 ## §4 importReplica：Hub advertisement binding
@@ -313,20 +396,9 @@ Add a stable Registry message constant and union member:
 ```ts
 export const NAMESPACE_IMPORT_EXPECTED_IDENTITY_MISMATCH_MESSAGE =
   'NAMESPACE_IMPORT_EXPECTED_IDENTITY_MISMATCH: 导入文档复制身份与 Hub 广告身份不一致';
-
-// ImportReplicaIssue append-only member
-{ ok: false; code: 'NAMESPACE_IMPORT_EXPECTED_IDENTITY_MISMATCH';
-  message: typeof NAMESPACE_IMPORT_EXPECTED_IDENTITY_MISMATCH_MESSAGE }
 ```
 
-Message contains no actual identity, owner, namespaceId, or input echo. Existing meanings stay disjoint:
-
-| Code | Meaning |
-|---|---|
-| `NAMESPACE_IMPORT_IDENTITY_MISMATCH` | `META.docId !== namespaceId` |
-| `NAMESPACE_IMPORT_INVALID_IDENTITY` | META replication facts absent/malformed/disabled |
-| `NAMESPACE_IMPORT_EXPECTED_IDENTITY_MISMATCH` | facts are valid/enabled but exact `{id, epoch}` differs from Hub advertisement |
-| `NAMESPACE_IMPORT_FAILED` | Persistence operational failure after preflight |
+Existing meanings stay disjoint: `NAMESPACE_IMPORT_IDENTITY_MISMATCH` is docId mismatch; `NAMESPACE_IMPORT_INVALID_IDENTITY` is invalid/disabled document facts; `NAMESPACE_IMPORT_EXPECTED_IDENTITY_MISMATCH` is valid facts different from the expected Hub advertisement.
 
 ### 4.2 Frozen import order
 
@@ -345,11 +417,6 @@ async function runImportSlot(identity, docRef, expected): Promise<ImportReplicaR
   // ④ persistence.importDoc(...): first ownership transfer
   // ⑤ Runtime factory → entry → lease
 }
-
-// Public entry is a separate function: retain existing
-// acceptance → validateOpenIdentity ordering; validate `expected`
-// structurally before carrier admission, then call:
-// admitImportSlot(outcome.identity, doc as YjsDoc, expected as ReplicationIdentityRef);
 ```
 
 ### 4.2.1 R1 补充：敌意 expected 输入的公共入口冻结
@@ -363,22 +430,12 @@ function importReplica(owner: unknown, namespaceId: unknown, docRef: unknown, ex
   if (!outcome.ok) return Promise.resolve(outcome.issue);
 
   const expectedOutcome = snapshotReplicationIdentityRef(expected);
-  // accepts only a non-null ordinary record with own data properties replicationId/replicationEpoch;
-  // rejects arrays, functions, null, Proxy/getter throw, inherited values, extra exotic prototype,
-  // undefined, non-string/invalid id, unsafe/non-integer/<1 epoch.
-  // Getter/proxy exceptions are caught and normalized; no input value enters message/observer.
   if (!expectedOutcome.ok) return Promise.resolve(INVALID_EXPECTED_REPLICATION_IDENTITY_ISSUE);
-
-  // `expectedOutcome.value` is a frozen primitive snapshot; only now admit carrier.
   return admitImportSlot(outcome.identity, docRef as YjsDoc, expectedOutcome.value);
 }
 ```
 
-`INVALID_EXPECTED_REPLICATION_IDENTITY_ISSUE` is an append-only stable input issue under `NAMESPACE_INVALID_IDENTITY` semantics (constant message, no field value echo). It is deliberately distinct from a correctly shaped Hub advertisement that does not equal document META. Required hostile-input tests pass `null`, `undefined`, array, function, getter-throw record, Proxy-throw record, inherited properties, invalid id, `NaN`, `Infinity`, `0`, and fractional epoch; each asserts zero `docRef.getMap`/META access, zero carrier/entry mutation, zero `importDoc` call/store write, and a subsequent valid request succeeds.
-
-Predicate ordering is now frozen: acceptance → owner/namespace validation → safe expected snapshot → carrier slot owner collision → docId → factual validity → Hub equality → capability → transfer. Thus equality mismatch produces zero `importDoc` call, zero store write, zero entry registration, and a later correct retry is unpoisoned.
-
-No `importDoc` expected-identity parameter is added: persistence is intentionally unaware of Hub advertisements and must not become an authorization/replication policy engine. The Registry pre-transfer equality predicate is the ownership gate required by AC-3; `importDoc` retains round-1 `META.docId` recheck as TOCTOU defence.
+Hostile expected tests pass null/undefined/array/function/getter-throw/Proxy-throw/inherited/invalid scalar forms and assert zero doc/carrier/entry/Persistence access. Predicate ordering is acceptance → owner/namespace validation → safe expected snapshot → carrier slot owner collision → docId → factual validity → Hub equality → capability → transfer.
 
 ---
 
@@ -388,21 +445,21 @@ No `importDoc` expected-identity parameter is added: persistence is intentionall
 
 Append a section titled **“复制导入、归档与只读身份探针修订（issue #133 round-2；owner feedback 3 授权）”** with this normative structure:
 
-1. Opening scope: “本节为增量演进，修订上方与 Phase 5 import/archive 生命周期有关的接口空白；除下列明示条款外，所有既有条款（尤其 owner 分区、`saveDoc` dirty notification、全量 snapshot、主 snapshot temp→rename、`META.docId`）维持效力。”
-2. `importDoc(owner, docId, doc)` is an exclusive-create capability: duplicate never overwrites, success commits full snapshot then issues handle/ownership, it validates `META.docId` only. Hub advertisement equality is explicitly **caller/Registry precondition before ownership transfer**, not general Persistence semantic validation.
-3. `archiveDoc(owner, docId, expected)` is permitted only after no active handles; it settles preexisting dirty state, guard-reads persisted identity, then writes a full archive snapshot and removes primary. Identity mismatch/active/duplicate/operational/fatal classification and committed-aware relocation meaning are retained from round-1.
-4. File archive layout is `{rootDir}/archive/users/{userId}/{docId}.snapshot`, tmp at the corresponding archive path; archive write resolves only after tmp→rename, then primary removal follows. Archive tmp is never committed; same slot is latest-wins. Memory provides behaviourally equivalent separate archive storage. **Commit boundary is the archive rename/write resolve**: if primary removal then rejects, archive bytes are already committed and `archiveDoc` must reject `DocArchiveFatalError('relocate-remove')` with `committed:true`; it must not report operational, identity mismatch, or duplicate. Registry propagates this as `NamespaceRegistryFatalError(..., committed:true)` rather than `RESET_FAILED`. Retry is convergence-only: it re-reads/guards the still-present primary and overwrites the same latest-wins archive slot, then retries removal; it never claims the primary remained the sole committed state.
-5. A Persistence-internal read-only committed-identity probe is allowed for Registry reset preflight. It reads the trusted primary snapshot only, applies existing `META.docId`/replication-format validation, performs no handle issuance, mutation, dirty registration, flush, archive, or ownership transfer. I/O failure remains loud/typed; it is not a live-state fallback.
+1. Incremental scope, preserving owner partitioning, dirty notification, full snapshots, temp→rename and `META.docId` clauses unless explicitly revised.
+2. `importDoc` is exclusive create, validates `META.docId` only; Hub advertisement equality is a Registry pre-transfer precondition.
+3. `archiveDoc` settles dirty state, guard-reads persisted identity, writes archive then removes primary; classifications retain round-1 semantics.
+4. Archive write/rename resolve is the commit boundary. Primary-remove failure is `DocArchiveFatalError('relocate-remove')` with `committed:true`; it is not operational/identity mismatch/duplicate. Registry preserves committed truth; retry re-guards primary, latest-wins overwrites archive slot, then retries removal.
+5. Internal committed-identity probe reads trusted primary only, has no handle/mutation/dirty/flush/archive/ownership side effect, and failures are loud/typed.
 
 ### 5.2 `docs/adr/0010-hub-peer-websocket-ydoc-replication.md` 追加节
 
-Append **“issue #133 round-2 reset/import identity precondition 修订（owner feedback 3 授权）”**, explicitly saying it replaces the conflicting portions of the old line-57 reset ordering and line-65 generic bootstrap verification, while untouched ADR text remains effective:
+Append **“issue #133 round-2 reset/import identity precondition 修订（owner feedback 3 授权）”** with explicit replacement scope:
 
-1. `resetReplica(expectedLocalIdentity)` strict preflight: for an active generation, before any lease force release, close, archive, or bootstrap eligibility change, Registry executes current live projection + trusted persisted snapshot comparison in the Runtime FIFO reset-fence slot; both must be valid enabled identity and exactly equal expected. Valid mismatch rejects `NAMESPACE_RESET_IDENTITY_MISMATCH` with zero destructive action and keeps old generation/lease/runtime usable; probe corruption/abort is committed:false fatal, and ordinary current-epoch read failure is `NAMESPACE_LOAD_FAILED`. A pre-existing closing generation is awaited/re-evaluated and never treated as a new preflight success.
-2. On successful preflight only: the preflight and close admission share one Runtime FIFO reset-fence slot; it verifies both facts then synchronously enters closing before the slot returns. The fence slot never creates/awaits a close barrier. Only after it settles does a lazy close continuation create the single close barrier with a predecessor tail captured after fence settlement; it drains only writes admitted before the fence (already represented in the check) → Persistence archive guarded by expected identity → bootstrap eligibility. This has no fence/close self-wait. Archive’s post-close guard remains defence in depth for external/cross-instance store changes, not an acceptable local late-mismatch path.
-3. Bootstrap import accepts Hub-advertised expected identity. Detached document `META.docId`, replication fact validity, and exact equality with the advertisement are checked before `importDoc` resolves/transfers ownership. Valid-but-different lineage/epoch rejects; no automatic overwrite/merge, no persistence write, no Registry entry.
-4. The revision must state dirty notification is not durable and strict dual-source mismatch is intentional; it must not state that a live dirty identity is persisted.
-5. Archive relocation is normative: archive write/rename resolve is the archive commit point; a later primary-remove failure is propagated by Persistence as `relocate-remove` fatal `committed:true`, and Registry preserves that committed truth in its fatal propagation. The ADR must forbid translating it to reset domain mismatch/ordinary failure or claiming the old primary-only state is unchanged; retry uses latest-wins archive convergence plus primary removal. After reset fence arm, every archive typed rejection is classified by §3.5.2, and in particular identity mismatch is an operational `NAMESPACE_RESET_FAILED`, never a zero-destruction preflight result.
+1. Active reset preflight runs live + persisted comparison inside Runtime FIFO reset-fence; valid mismatch is zero destructive `NAMESPACE_RESET_IDENTITY_MISMATCH`; corruption/abort is fatal and ordinary current-epoch read failure is `NAMESPACE_LOAD_FAILED`; pre-existing closing generation is re-evaluated and never a new preflight success.
+2. Matching fence synchronously arms closing, settles, then lazy close continuation creates its barrier; no barrier waits for its own fence task. FIFO pre-fence writes are represented in the check, later writes are lifecycle-gated.
+3. Bootstrap import validates docId, replication fact validity and exact Hub advertisement equality before ownership transfer.
+4. dirty notification remains non-durable; strict dual source mismatch is intentional.
+5. After fence arm archive typed errors use §3.5.2: identity mismatch is `NAMESPACE_RESET_FAILED`, never a zero-destruction preflight result; fatal propagation preserves committed truth.
 
 ---
 
@@ -410,55 +467,27 @@ Append **“issue #133 round-2 reset/import identity precondition 修订（owner
 
 | AC | Implementation/test proof |
 |---|---|
-| R2-AC-1 | SA6 runtime cases for lineage mismatch, epoch mismatch, disabled live state; assert active lease/ready Runtime/readability/no archive call after return. |
-| R2-AC-2 | SA6 true Memory races: expected old vs live new, and expected live new vs persisted old. Both reject under R2-D1; bytes remain epoch 1 and no forced flush. |
-| R2-AC-3/4 | SA6 lineage/epoch mismatch plus real Memory retry case; equality check precedes capability/importDoc and proves zero write/entry. |
-| R2-AC-5 | ADR-0006 and ADR-0010 append-only normative revisions in §5 form. |
-| R2-AC-6 | Existing suite stays green; type anchor verifies 4-argument import and 3-argument reset. No test assertion weakening. |
+| R2-AC-1/2 | SA6 dirty races plus Runtime fence interleaving; mismatch/failure before arm preserves lease/runtime/store. |
+| R2-AC-3/4 | Hub expected identity equality before import ownership; hostile expected tests prove zero entry/write. |
+| R2-AC-5 | ADR append-only normative revisions above. |
+| R2-AC-6 | Existing suite green, type anchors and R4 public-field preservation anchor green. |
 
-Required test additions/updates beyond SA6 anchors:
-
-- Probe seam tests: cache/live dirty epoch differs from store epoch; prove probe returns store epoch without `writeSnapshot`, scheduler advancement, `saveDoc`, or archive.
-- Probe I/O failure and malformed stored identity tests: inject read reject, missing primary, Yjs decode failure, malformed META/docId, replication facts invalid, dispose abort and adapter violation; verify the exact §3.3.1 mapping, stable no-echo error, `committed:false`, and destructive counters remain zero.
-- Closing test: hold a pre-existing closePromise, enqueue reset after it, then release; assert carrier re-evaluation, no use of old Runtime, no archive call, and only `NOT_FOUND` (missing primary) or `RESET_FAILED`/fatal per §3.4 matrix.
-- Fence interleaving + no-self-wait test: hold reset inside the Runtime FIFO just before fence execution; enqueue `bumpReplicationEpoch()` before it and prove mismatch before force-release; then arm fence and attempt bump after it, proving the lifecycle gate rejects it. For matching reset, instrument fence task and lazy close continuation: assert fence task resolves before close barrier is created, predecessor tail excludes that task, and both `resetReplica` and concurrent `shutdown()` settle within bounded fake-scheduler/microtask turns. This covers the formerly unsafe post-preflight FIFO write and self-wait deadlock.
-- Existing reset success test remains: matching live+persisted expected completes fence/close/archive then allows import.
-- Hostile expected test matrix: null/undefined/array/function/getter-throw/Proxy-throw/inherited/invalid scalar forms must produce input rejection before `doc.getMap`, carrier, entry, or Persistence access; a correct retry succeeds.
-- Armed archive typed-error matrix test: after matching fence arm inject each `DOC_ARCHIVE_*` rejection. Assert identity/active-handle/duplicate/operational → `NAMESPACE_RESET_FAILED`; fatal preserves `committedOf`; unknown → fatal false; no path returns `NAMESPACE_RESET_IDENTITY_MISMATCH`.
-- Archive remove-failure test: make archive write resolve then primary remove reject; assert Persistence and Registry fatal both `committed:true`, not a reset domain issue; retry follows latest-wins convergence.
-- Missing Runtime capability test: use legacy fake with no `beginResetFence`; assert pre-destructive stable Registry fatal false, no TypeError/no probe/no force-release/no close/no archive; internal-surface test proves public Runtime barrel and Registry declaration graph unchanged.
-- API type test asserts expected fourth parameter and all import callers pass the authenticated Hub-advertisement-derived value.
+Required tests include probe taxonomy, closing re-evaluation, no-self-wait fence, armed archive typed errors, missing Runtime fence capability, hostile import expected, and the R4 hostile reset expected/type-anchor/F-1 cases in §3.6.3.
 
 ---
 
 ## §7 契约改动连锁审计 (Contract Change Caller Audit)
 
-### 改动函数
-
 | Function | File | Before | After |
 |---|---|---|---|
-| `NamespaceRegistry.importReplica` | `packages/namespace-registry/src/types.ts` | 3 args, no external binding | 4 args; required Hub expected identity; new domain rejection union member |
+| `NamespaceRegistry.importReplica` | `packages/namespace-registry/src/types.ts` | 3 args | 4 args with Hub expected identity |
+| `NamespaceRegistry.resetReplica` result union | `packages/namespace-registry/src/types.ts` | no dedicated expected-input issue | R4 append-only `NAMESPACE_RESET_EXPECTED_IDENTITY_INVALID`; shared `InvalidIdentityIssue.field` restored to two fields |
 
-### Caller inventory
-
-Current repository production caller search finds no application/WS caller: the method is a Phase 5 public integration point. Direct current callers are round-1/R2 test fixtures and future slice integration only. R1 audit requires the implementation-time grep below to be attached to SA3/SA4 evidence; every discovered caller must pass a validated, authenticated Hub-advertisement snapshot rather than any document-derived value.
-
-| Caller | File | await | direct try/catch | top-level catch-all | Disposition |
-|---|---|---:|---:|---:|---|
-| Registry method implementation | `packages/namespace-registry/src/registry.ts:~1670-1685` | N/A | internally maps errors | carrier green tail | signature and new pre-transfer branch updated |
-| R2 runtime anchors | `packages/namespace-registry/test/registry-phase5-bootstrap-reset-r2-red.test.ts:547,571,603,619,647` | yes | test assertion | vitest | add fourth expected argument already anchored |
-| R2 type anchor | `packages/namespace-registry/test/registry-phase5-bootstrap-reset-r2-surface.test-d.ts:37-45` | N/A | N/A | vitest typecheck | 4-tuple locks declaration |
-| Future Hub/WS bootstrap (slices 3–7) | not yet implemented | must await | must map returned domain union | host channel boundary | integration note: derive expected only from authenticated Hub advertisement; never omit/substitute document values |
-
-No existing function changes return-to-throw behavior. `resetReplica` remains three arguments and existing result union semantics; only its internal ordering changes. The internal persistence probe is additive and used by `runResetSlot` only.
-
-Caller audit method for SA3/SA4:
+Caller inventory: no production Hub/WS caller exists yet; R2 test callers must pass fourth import argument. `resetReplica` remains three arguments. Future Hub bootstrap must await and use authenticated Hub advertisement; reset caller must handle the new append-only domain issue by code. All actual callers are audited with:
 
 ```bash
-git grep -n "\bimportReplica\s*(" -- 'packages/**/*.ts' 'apps/**/*.ts'
+git grep -n "\bimportReplica\s*(\|\bresetReplica\s*(" -- 'packages/**/*.ts' 'apps/**/*.ts'
 ```
-
-Any caller added by implementation must be appended to this table and supply the fourth argument.
 
 ---
 
@@ -466,49 +495,55 @@ Any caller added by implementation must be appended to this table and supply the
 
 ### ALLOW LIST
 
-- `packages/namespace-registry/src/registry.ts` — 修改；R2-D1..D5 reset preflight, pre-destructive Runtime capability gate, no-self-wait fence/close orchestration, closing re-evaluation, armed archive matrix, and import fourth-argument equality (~200 lines).
-- `packages/namespace-registry/src/types.ts` — 修改；append-only import expected-mismatch/input issue/result and four-parameter interface (~35 lines).
-- `packages/namespace-registry/src/index.ts` — 修改；type-only export of any added public issue/message type if barrel requires it (~5 lines).
-- `packages/persistence/src/contract.ts` — 修改；additive `ReplicaPersistence` read-only committed identity probe capability and typed operational/corrupt/fatal taxonomy (~55 lines).
-- `packages/persistence/src/lifecycle.ts` — 修改；trusted-store no-write identity probe implementation and §3.3.1 typed failure mapping (~100 lines).
-- `packages/persistence/src/memory.ts` — 修改；expose Memory adapter’s lifecycle-backed read-only probe (~20 lines).
-- `packages/persistence/src/file.ts` — 修改；expose File adapter’s lifecycle-backed read-only probe (~20 lines).
-- `packages/persistence/src/index.ts` — 修改；export necessary additive type without changing existing contracts (~5 lines).
-- `packages/persistence/src/testing.ts` — 修改；extend test adapter/wrapper capability plumbing for the probe and archive-remove fault injection without adding writes (~40 lines).
-- `packages/namespace-runtime/src/runtime.ts` — 修改，**SA2 R1 #2 / R2 #1 解除原 DENY**；新增仅供 Registry 受控调用的 Runtime FIFO `beginResetFence`，槽内核验/同步 arm，槽后懒启动 close continuation，禁止 self-wait (~115 lines).
-- `packages/namespace-runtime/src/close.ts` — 修改，**SA2 R1 #2 / R2 #1 解除原 DENY**；复用 close barrier，支持 fenced closing 的槽后 barrier 创建，明确 predecessor 排除已结算 fence，不改排空/无 timeout 语义 (~55 lines).
-- `packages/namespace-runtime/src/types.ts` — 修改，**SA2 R1 #2 / R2 #3 解除原 DENY**；仅 Registry-internal capability typing，禁止经公共 barrel 暴露 (~30 lines).
-- `packages/namespace-registry/test/registry-phase5-bootstrap-reset-r2-red.test.ts` — `[SA6 owned]` 修改；retain strict race assertions and add/adjust probe seam coverage, never weaken behavior assertions.
-- `packages/namespace-registry/test/registry-phase5-bootstrap-reset-r2-surface.test-d.ts` — `[SA6 owned]` 修改 only if public type export path demands it; preserve 4-argument/3-argument anchors.
-- `packages/persistence/test/persistence-phase5-bootstrap-reset-r2.test.ts` — 新建；committed-snapshot probe purity/error taxonomy and archive remove-fatal tests.
-- `packages/namespace-runtime/test/runtime-phase5-reset-fence-r2.test.ts` — 新建；SA2 R1 #2 / R2 #1 Runtime FIFO interleaving, no-self-wait, close-admission and public-surface tests.
-- `packages/namespace-registry/test/registry-phase5-bootstrap-reset-r2-internal.test.ts` — 新建；SA2 R2 #2/#3 armed archive error matrix and missing internal Runtime capability loud-gate tests.
-- `docs/adr/0006-server-persistence-docstore.md` — 修改；append normative revision specified in §5.1.
-- `docs/adr/0010-hub-peer-websocket-ydoc-replication.md` — 修改；append normative revision specified in §5.2.
+- `packages/namespace-registry/src/registry.ts` — 修改；reset preflight/fence/import logic；**R4** 专属 expected issue 返回常量替换及 F-2 注释修正（~210 lines total).
+- `packages/namespace-registry/src/types.ts` — 修改；R2 result/message types；**R4** restore `InvalidIdentityIssue.field` binary union and append reset-only issue/message (~50 lines total).
+- `packages/namespace-registry/src/index.ts` — 修改；仅既有 type export 对齐，R4 不新增值 export (~5 lines).
+- `packages/persistence/src/contract.ts` — 修改；probe capability and taxonomy (~55 lines).
+- `packages/persistence/src/lifecycle.ts` — 修改；no-write probe implementation (~100 lines).
+- `packages/persistence/src/memory.ts` — 修改；probe wiring (~20 lines).
+- `packages/persistence/src/file.ts` — 修改；probe wiring (~20 lines).
+- `packages/persistence/src/index.ts` — 修改；additive probe type export (~5 lines).
+- `packages/persistence/src/testing.ts` — 修改；probe/archive fault plumbing (~40 lines).
+- `packages/namespace-runtime/src/runtime.ts` — 修改；R1/R2 fence implementation (~115 lines).
+- `packages/namespace-runtime/src/close.ts` — 修改；fenced lazy close barrier (~55 lines).
+- `packages/namespace-runtime/src/types.ts` — 修改；Registry-internal capability typing (~30 lines).
+- `packages/namespace-registry/test/registry-phase5-bootstrap-reset-r2-red.test.ts` — `[SA6 owned]` 修改；R4 F-4 stale header wording only; no assertion weakening.
+- `packages/namespace-registry/test/registry-phase5-bootstrap-reset-r2-surface.test-d.ts` — `[SA6 owned]` 修改；R4 public alias field-union and reset-special-issue type anchors.
+- `packages/namespace-registry/test/registry-phase5-bootstrap-reset-r2-internal.test.ts` — 修改；R4 16 hostile expected complete issue assertions, no-side-effects/retry/TOCTOU and F-1 title correction.
+- `packages/persistence/test/persistence-phase5-bootstrap-reset-r2.test.ts` — 新建；probe/archive fatal tests.
+- `packages/namespace-runtime/test/runtime-phase5-reset-fence-r2.test.ts` — 新建；fence/no-self-wait tests.
+- `docs/adr/0006-server-persistence-docstore.md` — 修改；append normative revision.
+- `docs/adr/0010-hub-peer-websocket-ydoc-replication.md` — 修改；append normative revision.
 
 ### DENY LIST
 
-- `packages/namespace-runtime/src/replication-write.ts` — 复制身份 mutation 既有实现，本修订不动；其 enable/bump 仅通过新增 Runtime internal fence 与 close lifecycle gate 受控。
-- `packages/namespace-runtime/src/**` — 除 ALLOW LIST 中 SA2 R1 #2 明示的 `runtime.ts`、`close.ts`、`types.ts` 外均不动；不新增公共 META/API 面。
-- `packages/replication-protocol/**` — no wire protocol change in this slice.
-- `packages/ws-replication/**` — future integration caller only; not implemented by this revision.
-- `apps/yjs-server/**` — composition root/transport outside scope.
-- `packages/namespace-registry/src/lease.ts` — no lease API or lifecycle mechanic change; reset only changes admission ordering.
-- `docs/phases/phase-5-websocket-replication.md` — phase roadmap is not the normative target of feedback 3.
+- `packages/namespace-runtime/src/replication-write.ts` — existing identity mutation semantics unchanged.
+- `packages/namespace-runtime/src/**` — except ALLOW runtime.ts/close.ts/types.ts; no public META/API expansion.
+- `packages/replication-protocol/**` — no wire protocol work.
+- `packages/ws-replication/**` — future integration only.
+- `apps/yjs-server/**` — composition/transport outside scope.
+- `packages/namespace-registry/src/lease.ts` — lease public API unchanged.
+- `docs/phases/phase-5-websocket-replication.md` — roadmap not normative target.
 
 ## §9 协议假设依据 (Protocol Assumption Evidence)
 
-无协议级假设：本设计涉及进程内 TypeScript API、Registry/Persistence lifecycle 和 ADR 文本；不假设 HTTP/WS status、端口、服务启动时序或跨进程协议行为。
+无 HTTP/WS/端口/跨进程协议假设。本设计只涉及进程内 Registry/Persistence/Runtime FIFO；其 close-fence ordering 已由 §3.4/§3.5 明确伪码与无环证明冻结。
 
 ## SA2 反馈逐条回应
 
 | 要求 | 是否落实 | 修订位置 | 修订内容摘要 |
 |---|:--:|---|---|
-| R1-1 CRITICAL：closing generation 必须等待 close 后重新求值，不能用旧 current/仅 persisted 成功或归档 | ✅ | §3.4、§3.5、§6 | 伪码改为 await exact closePromise → carrier slot re-read → missing=NOT_FOUND、primary 仍在=RESET_FAILED、错误按 probe matrix；明确零 archive、永不把 closing Runtime 当 live evidence。 |
-| R1-2 HIGH：preflight 与 Runtime FIFO identity write 的线性化 fence | ✅ | §2 R2-D4/D4a、§3.4、§3.5、§6、§8 | 删除旧“late mismatch 可接受”方案；新增 Runtime FIFO `beginResetFence`，在同槽内先核验再同步 arm closing。SA2 要求的 runtime 文件已显式解除 DENY、加入 ALLOW 与竞态测试。 |
-| R1-3 HIGH：probe typed taxonomy、corruption/abort/dispose mapping、INV-12/零泄露 | ✅ | §3.3.1、§3.4、§6、§8 | 冻结 operational/corrupt/fatal 三类与结果表：仅正常 read reject→LOAD_FAILED；损坏/abort/adapter violation→committed:false fatal；格式不合规但可读→mismatch；全路径零破坏、稳定无回显。 |
-| R1-4 MEDIUM：敌意 expected 的安全验证及零副作用 | ✅ | §4.2.1、§6、§7、§8 | 公共入口伪码在 doc/carrier/entry/Persistence 前 snapshot 验证 expected；收编 getter/Proxy throw，明确输入 issue、测试矩阵和 future authenticated-advertisement caller discipline。 |
-| R1-5 MEDIUM：archive rename/remove failure 的 ADR committed:true 闭环 | ✅ | §5.1、§5.2、§6 | ADR 文案要求明确 archive write 是提交点、remove failure=relocate-remove committed:true fatal、Registry 原样传播、latest-wins convergence retry，禁止伪装为领域 reset failure。 |
-| R2-1 BLOCKER：fence task 不得与 close barrier 自等待 | ✅ | §3.4、§3.5、§6、§8 | 伪码改为 fence 槽只核验+同步 arm，绝不创建/await barrier；fence task settled 后才由 lazy continuation 捕获后继 tail 创建 close barrier。给出有向依赖无环证明与 bounded-settlement 红线测试。 |
-| R2-2 HIGH：armed 后 archive typed errors 必须冻结映射 | ✅ | §3.4、§3.5.2、§5.2、§6 | `mapArmedArchiveFailure` 表冻结所有 `DOC_ARCHIVE_*`：identity/active/duplicate/operational→RESET_FAILED，fatal 保留 committed，unknown→fatal false；任何 armed 后路径禁止返回 reset identity mismatch。 |
-| R2-3 MEDIUM：internal Runtime capability 可达路径及缺失 gate | ✅ | §3.5.1、§6、§8 | 使用 Registry-only factory injection / `RuntimeForRegistry` structural capability，禁止 Runtime public barrel 或 internal-subpath import；缺失在 probe/forceRelease/close/archive 前 branded fatal false，配套 internal-surface 与旧 fake 测试。 |
+| R1-1 closing generation | ✅ | §3.4 | await close → slot re-read → no archive matrix |
+| R1-2 FIFO fence | ✅ | §2、§3.4/§3.5 | FIFO preflight/closing linearization |
+| R1-3 probe taxonomy | ✅ | §3.3.1 | typed taxonomy and committed:false mapping |
+| R1-4 hostile import expected | ✅ | §4.2.1 | snapshot before document/carrier/Persistence |
+| R1-5 archive committed true | ✅ | §5 | archive remove-failure norm |
+| R2-1 no self-wait | ✅ | §3.4/§3.5 | fence settles before lazy barrier creation |
+| R2-2 armed archive mapping | ✅ | §3.5.2 | armed-only typed mapping |
+| R2-3 Runtime capability gate | ✅ | §3.5.1 | factory-injected internal capability, loud missing gate |
+| Delta D-1 | ✅ | §3.2、§3.6.1、§8 | restore shared field binary union; reset-only append-only issue |
+| Delta D-2 | ✅ | §3.6.1/§3.6.2 | dedicated truthful code/message, no field |
+| Delta D-3 | ✅ | §3.6.3、§8 | 16 complete issue assertions and public alias type anchors |
+| Delta D-4 | ✅ | §3.6.3、§8 | F-1 title narrowed to cause-only identity-value non-echo |
+| R4-F1 | ✅ | §3.6.2 | exact approved wording: live **or** persisted any `identityEquals` false triggers mismatch |
+| R4-F2 | ✅ | §3.6.3 | no inaccurate delta subsection citation retained |
