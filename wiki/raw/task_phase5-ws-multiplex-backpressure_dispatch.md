@@ -25,4 +25,6 @@
 | 15 | 00:33 | SA7 | Phase 4 动态验证 | 01:33 | SA4 pass，派 SA7 动态验证；verdict: pass（D1–D5 全绿 + 四红锚复证 + 84/84 两轮 + tsc exit 0；新增 7 IT commit 98ffafc；CI log 摘录因 push 禁令登记为发布后可得；N1/N2 非阻断留痕） |
 | 16 | 01:33 | 总控 | Phase 3.5 AC 逐条门禁 | 01:35 | SA4+SA7 双清，总控按 issue AC 逐条核对证据（不重复执行套件）；AC-1~AC-7 全部 ✅，产出 ac_checklist.md；wiki 任务档案 commit 179495b |
 | 17 | 01:35 | Review×2 | Phase 5 双轴终审（Standards ∥ Spec） | Standards 02:01 / Spec 02:06 | 硬门禁 #4：engineering/code-review skill，两个并行独立 review subagent（generic subagent 同模型路由），diff 6f2676f..179495b；Standards verdict: blocking-findings（恰 1 阻断 B1：onGoaway blocked 直达路径缺 sender teardown + 7 非阻断）；Spec verdict: clear（AC 逐条 ✅，3 非阻断留痕） |
-| 18 | 02:06 | SA3 ∥ SA1 | Phase 5 终审修复轮 | SA1 02:08 / SA3 (pending) | repair-and-repeat：B1 代码修复（SA3：一行 teardown + D5 变体用例）∥ 设计 §8 表述对齐（SA1，R4 落文 4 处：blocked 双入口 teardown 义务 + B-2 墓碑边界 + B-8 N-2/N-3 登记 + §4.5 注记 a 指针） |
+| 18 | 02:06 | SA3 ∥ SA1 | Phase 5 终审修复轮 | SA1 02:08 / SA3 02:09 | repair-and-repeat：B1 代码修复（SA3：一行 teardown + D5 变体用例，commit 622c291，85/85×2 + tsc exit 0 + 红绿对照真回归锚；姊妹面排查零额外改动）∥ 设计 §8 表述对齐（SA1，R4 落文 4 处）；wiki 档案 commit a32eb1e |
+| 19 | 02:09 | Review×2 | Phase 5 双轴终审 R2（更新 diff） | Standards 02:18 / Spec 02:20 | B1 修复落盘，双轴复终审 6f2676f..a32eb1e（修复 delta 聚焦 + 全范围无回归确认），续传原 review 会话；Standards R2 verdict: clear（B1 三重证据核销，仓根 1965 测试全绿）；Spec R2 verdict: clear（B1 与设计 §8 R4 逐字一致、N-2/N-3 转录无失真、85/85 独立复跑零回归；新增信息级留痕 N-4）——双轴终审闭环 |
+| 20 | 02:20 | 总控 | Phase 5 收尾固化 | (pending) | 双轴 clear + SA4 pass + SA7 pass + AC 7/7 ✅，执行硬门禁自检（#12 verdict 真实性/#14 vitest 触发性/#15 协议假设）、终 commit、写 REPORT.md |

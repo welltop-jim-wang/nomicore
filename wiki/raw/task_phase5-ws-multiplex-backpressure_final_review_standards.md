@@ -1,11 +1,11 @@
 # Final Review — Standards 轴（issue #137 连接级有界公平背压）
 
-- **审查对象**: `git diff 6f2676f..179495b`（worktree `/home/wangjian/nomicore-fix-issue-137`，branch `fix/issue-137-on-docs-phase-5-websocket-replication`）
+- **审查对象**: R1：`git diff 6f2676f..179495b`；R2 复终审：`git diff 6f2676f..a32eb1e`（+commit 622c291 B1 修复、+a32eb1e 档案/设计 R4 对齐）。worktree `/home/wangjian/nomicore-fix-issue-137`，branch `fix/issue-137-on-docs-phase-5-websocket-replication`
 - **轴职责**: 仓库工程约定 / 生命周期·防御式模式 / 测试要求 / 文档要求 / 可维护性。硬违规与非阻断判断分列。
 - **审查方式**: 全量 diff 逐行读 + 改动后全文上下文复核 + 档案交叉核对 + 独立复跑（不复读 SA 退出码）。
 - **独立性**: 本轴不与 Spec 轴交换上下文。
 
-## Verdict: **blocking-findings**
+## R1 Verdict: **blocking-findings**（已被修复轮处置；最终结论见文末 R2 段）
 
 恰 1 项阻断发现（B1：teardown 矩阵缺口——GOAWAY 分类 blocked 直达路径未 teardown ConnectionSender，poll timer 泄漏面与设计 §8 成文声称不符）。四条硬门禁全部通过；另登记 7 条非阻断判断（N1–N7）。
 
@@ -93,3 +93,40 @@
 - 复跑环境：worktree HEAD=179495b（+dispatch.md 在途编辑，不影响代码）；Node/pnpm 仓内固定工具链。
 - 命令留痕：`tsc -p packages/ws-replication/tsconfig.json`（exit 0）；`vitest run`（167/1964 全绿，66.6s）；`vitest run packages/ws-replication`（14/93 全绿）；diff 全量模式扫描（timer/console/clamp/only-skip/fs 访问）。
 - 本轴未修改任何代码/测试文件；未执行 push/PR。
+
+---
+
+# R2 复终审（repair-and-repeat；2026-08-29，更新 diff `6f2676f..a32eb1e`）
+
+## R2 Verdict: **clear**
+
+R1 唯一阻断项 B1 已按修复建议精确核销，修复面外零回归、零新伤；四条硬门禁复扫维持通过；R1 非阻断 N1–N7 维持留痕（修复轮未触及，无加重无缓解——均为 nit/备查级，不阻塞合并）。
+
+## R2.1 B1 修复正确性核销（逐项对照 R1 要求）
+
+| R1 要求 | 落实 | 证据 |
+|---|---|---|
+| `onGoaway` blocked 直达分支补 `sender?.teardown()`（setState 前，与姊妹路径同型） | ✅ | `peer-connection.ts:370-375`：+5 行（4 行注释带 B1 出处 + 一行 `this.sender?.teardown();`），置于 `setState('blocked')` 之前——与 `enterBlocked`（:567）/`scheduleDrainClose`（:391）/`stop`（:107）同型 |
+| D5 变体动态回归锚 | ✅ | `ws-replication-sa7-issue137-dynamic.test.ts:576-624`（+52 行）：暂停段 poll 武装（pending 严格 +1）→ 注入 GOAWAY(SERVER_SHUTTING_DOWN) → **主锚 pending 恰回退 1**（poll 已清）+ blocked 无重拨编排（60s fake 推进仍 blocked、wire 冻结、计面不增）+ 零 unhandled rejection；fake scheduler/门闩纪律与 D5 同款，零 real sleep、零源码 grep |
+| 红绿对照真实性 | ✅ | `.mabf-bg/sa3-r137-b1-red.log` 实测：修复前形态该用例红（`AssertionError: expected 3 to be 2`，断言行 :609 = pending 未回落——与泄漏机理逐点吻合）；`.mabf-bg/sa3-r137-b1-vitest.exit`/`vitest2.exit` EXIT=0 ×2、`-tsc.exit` EXIT=0 落盘在位 |
+| 设计 §8 成文对齐 | ✅ | design.md R4（a32eb1e）：§8 矩阵 blocked 行明示**双入口 teardown 义务**（enterBlocked + onGoaway 直达分支）；§4.5 注记 a 加 B-8 指针；§15 B-2 补墓碑边界（SA7 N2 回流）、新增 B-8 行（Spec 轴 N-2/N-3 回流登记）；文末 R4 修订记录 4 处落文自查闭合 |
+
+**姊妹面排查独立复核**：`setState('blocked')` 全 src 恰 2 处（`peer-connection.ts:375` onGoaway——现已有 teardown；`:571` enterBlocked——teardown 在 :567）；hub 无 blocked 态且四路 teardown（R1 已核）。**teardown 矩阵至此完备**，R1 B1 的泄漏路径（blocked 后 onClose 早退 :502 不再清理）因 sender 已在分类前收口而闭消。
+
+## R2.2 修复面外零回归 / 零新伤（本轴独立复跑，非复读）
+
+- 修复 diff 面：`peer-connection.ts` +5/−0、`ws-replication-sa7-issue137-dynamic.test.ts` +52/−0，**零删除零既有行改动**；设计/档案纯增改（design +30/−2、dispatch 步骤 18 补记、两轴报告入库）；src 其余文件逐字节未动。
+- 本轴复跑：`tsc` exit 0；`vitest run packages/ws-replication` **14 文件 / 94 测试全绿**（R1 93 + 新增 D5 变体 1）；仓根 `vitest run` **167 文件 / 1965 测试全绿、Type Errors 零**（R1 1964 + 1）。
+- 硬门禁复扫：修复新增行零裸 timer/零 console/零 clamp/零 `.only/.skip`；新增测试为确定性 fake-time 断言。
+- R1 报告本体（95 行）经 a32eb1e 逐字节入库，未被改写。
+
+## R2.3 非阻断留痕结转
+
+N1（peer `?? true` 缺注释）/ N2（hub 构造期回调引用未赋值 sender）/ N3（backpressure 头注口径）/ N4（测试冗余双重断言）/ N5（版本 patch 递增备查）/ N6（#136 遗留死 re-export）/ N7（dispatch log 在途编辑——R2 时点为步骤 19 pending 登记，预期随 R2 产物入库）——**全部维持 R1 判断，不阻塞合并**。另注：design R4 文本引用的 `:362-371` 为发现时（修复前）行锚，修复后分支实位于 `:369-376`——历史锚点表述，非文档缺陷。
+
+## R2 结论
+
+**Standards 轴对更新后 diff `6f2676f..a32eb1e` 判 clear**：B1 修复正确且证据真实（红绿对照 + 落盘退出码 + 本轴独立复跑三重吻合），teardown 矩阵完备性达成设计 §8 R4 成文声称，修复面外零回归。N1–N7 留痕随档案结转，不阻塞。
+
+- R2 留痕：worktree HEAD=a32eb1e（+dispatch.md 在途编辑）；命令 `tsc`（exit 0）/ `vitest run packages/ws-replication`（14/94 绿）/ `vitest run`（167/1965 绿）；B1 证据文件 `.mabf-bg/sa3-r137-b1-{red.log,vitest.exit,vitest2.exit,tsc.exit}` 实地核验。
+- 本轴 R2 轮未修改任何代码/测试文件；未执行 push/PR。

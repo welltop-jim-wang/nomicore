@@ -10,6 +10,8 @@
 
 ## Verdict: **clear**（无阻断发现；3 条非阻断留痕，见 §5）
 
+> **R2 复终审（2026-08-29，更新后 diff `6f2676f..a32eb1e`）：Verdict: clear** —— 见 §7；R1 三条非阻断留痕维持，R2 新增 1 条信息级留痕 N-4。
+
 ---
 
 ## 1. AC-1~AC-7 逐条比对
@@ -66,3 +68,44 @@
 ## 6. 结论
 
 diff `6f2676f..179495b` 对 issue #137 的 AC-1~AC-7 **完整覆盖、无部分实现、无语义偏差**；范围恰好落在设计 §14 ALLOW LIST 内（唯一偏差为已登记的 package.json 版本行文档债）；DENY 面与三条红线（已绿域零重做 / 两级队列属主不混同 / 不提前提取 transport seam）全部保持；wire contract 语义（序列单点、ACK 守恒、needs-resync 状态机、CONNECTION_BACKPRESSURE 分类失败）逐项复核正确；AC 核对表证据真实成立（含本轴独立复跑 84/84 + tsc 退出码核验）。**Verdict: clear**，非阻断留痕 N-1/N-2/N-3 如上。
+
+---
+
+## 7. R2 复终审（repair-and-repeat：Standards 轴 B1 修复后）
+
+- 触发：Standards 轴 R1 verdict blocking-findings（恰 1 阻断 B1：onGoaway blocked 直达路径缺 sender teardown）→ 修复轮（SA3 代码 + SA1 设计 R4 对齐）→ 本轴按 repair-and-repeat 纪律对更新后 diff 复终审。
+- **更新后 diff range（逐字）：`6f2676f..a32eb1e`**；新增 delta = `179495b..a32eb1e`：commit `622c291`（B1 修复：peer-connection.ts +5 / sa7 测试 +52）+ commit `a32eb1e`（wiki 档案：设计 R4 +30、dispatch 封口、两轴终审报告入库）。
+- 方法：聚焦新增 delta 精读 + 全范围无回归确认；**本轴独立复跑** `pnpm exec vitest run packages/ws-replication --no-typecheck` → **13 文件 85 IT 全绿，exit 0**（2026-08-29 02:14 本 worktree 实跑；85 = R1 基线 84 + D5 变体 1），与 SA3 证据声明吻合。
+
+### 7.1 B1 修复核验（622c291）
+
+- **与设计 §8（R4 对齐后 739 行）teardown 矩阵一致性**：✅ 修复在 onGoaway `SERVER_SHUTTING_DOWN`/`REAUTH_REQUIRED` 直达分支 `setState('blocked')` 前补 `this.sender?.teardown()`（`peer-connection.ts:374-375`），与 §8 R4 成文的「blocked 两个入口均承担 teardown 义务」（① `enterBlocked()` :562；② onGoaway 直达分支——不经 enterBlocked）逐字对应；与同 handler 内 `scheduleDrainClose` 路径（:391）同型。（注：§8 行引用 :362-371 为修复前 blob 行号的缺口定位描述，修复后分支位于 :369-376——设计 R4 修订记录已明示「SA3 并行补实现」，引用指向缺口而非修复后位置，非失真。）
+- **行为面不变性（仅资源清理，无超范围变化）**：✅ 逐行核验——blocked 分类语义不变（`setState('blocked')` 原样，无重拨编排，#136 G2 分类语义保持；`setState` 为裸 setter 无副作用）；wire 零变化（teardown 不发射任何帧）；协议状态机/close code/错误分类零触碰；效果仅为 poll timer 清除 + wheel/reserve 复位。修复前泄漏机理（poll 回调在 `tornDown=false ∧ paused=true` 下于 stale 高压 getter 上 1s 周期无限重武装，`backpressure.ts:196-200`）由 teardown 的 `tornDown=true` + `clearPoll` 闭合；红绿对照证据真实（`.mabf-bg/sa3-r137-b1-red.log`：未修复时 D5 变体 1 failed/7 skipped）。
+- **D5 变体用例断言与 AC/协议语义一致性**：✅ —— GOAWAY(SERVER_SHUTTING_DOWN) → blocked 符合 §15.1/#136 分类；注入帧取 hub 方向下一期望序列（wire 纪律正确，不引入 SEQUENCE_VIOLATION 干扰）；`drainTimeoutMs: 0` 在 blocked 直达分支不被消费（仅 scheduleDrainClose 使用），语义自洽；主锚 `pending 恰回退 1` 锚定 poll 清除；`advanceBy(60s)` 后保持 blocked（无重拨编排）+ pending 不增长（零重武装）+ peerToHub wire 冻结 + 零 unhandled rejection——全部与 AC-6 timer 纪律（注入 scheduler、零 native timer）一致。
+
+### 7.2 设计 R4 核验（a32eb1e；4 处落文 + 修订记录，diff 证实纯文本对齐、零架构/行为变更）
+
+- **§8 blocked 双入口 teardown 义务**：与修复后实现一致（见 7.1）✓。
+- **§15 B-2 补入（SA7 N2 回流——F4 round-repair 墓碑边界运维指导）**：运维登记类文本，无行为面含义；内容与 SA7 报告 N2 一致（被弃超限项为同链后续 delta 的 left-origin；修复 diff 含墓碑内容、`maxUpdateBytes < 单笔真实增量（含墓碑）` 时修复自身超限；指导 `maxUpdateBytes ≥ 单笔真实增量（含墓碑）`），落在协议 §17「配置保证单笔必可发送」既定边界内 ✓。
+- **§15 B-8（本轴 R1 留痕 N-2/N-3 回流）转述保真核验**：✅ 无失真——
+  - N-2 转述：「实现仅判 `queued.length > 0`（差『inFlight 空位』合取项）……前置③先于闸门检查⑤自限 false……零水位读取/零发射/零副作用，行为与 §6.2 文本逐语义等价（纯形式差）」——与本报告 §5 N-2 逐字吻合 ✓；
+  - N-3 转述：「双读闸门微窗口（闸门检查 → tryEmitData 再观察，其间 resume-drain 同步发射可把真实 bufferedAmount 推过 highWater；真实 WS 可达、fake 静态值不可达）——实现为 F4 丢弃（seq=0、不置 needs-resync）而注记 a 建模为『过冲 ≤1 帧/方向（发出）』」——与本报告 §5 N-3 逐字吻合 ✓；处置（下轮修订二选一：对齐措辞 / 接受「丢弃」为定案）合理；
+  - §4.5 注记 a 已加 B-8 指针（R4 注），「过冲 vs 丢弃」关系显式化，无残留自相矛盾 ✓。
+- **dispatch log 增量**：R1 两轴 verdict 与本轴留痕数量的转述（Standards blocking-findings 恰 B1 / Spec clear + 3 非阻断）准确 ✓。
+
+### 7.3 证据与无回归确认
+
+| 项 | 结果 |
+|---|---|
+| SA3 证据 | `.mabf-bg/sa3-r137-b1-vitest.exit` / `-vitest2.exit` / `-tsc.exit` 均 EXIT=0 ✓（文件存在、内容核实） |
+| 本轴独立复跑 | 13 文件 **85/85** 全绿，exit 0（02:14 实跑）——R1 84 IT 基线 + D5 变体 1 IT，零回归 |
+| diff 面 | 新增 delta 仅触及 `peer-connection.ts`（+5，ALLOW LIST 内）与 sa7 测试文件（+52，新增用例非改动既有断言）；DENY 面零触碰保持；wiki 档案面为流程产物 |
+| 红线保持 | R0-1 已绿域零重做 / R0-2 两级队列属主 / R0-3 无 transport seam 提取——修复轮零触及 |
+
+### 7.4 R2 新增留痕（非阻断）
+
+- **N-4（LOW·信息级）**：teardown 后 `dataGateOpen()`/`armPoll()` 无 `tornDown` 守卫——post-blocked 的 live 交付在 stale 高压 getter 下可触发一次 `enterPause` + 武装**单发** poll（`backpressure.ts:96-98,177-181,192-201`）。有界性论证：回调 `tornDown` 早退（:196）零副作用零重武装；`enterPause` 的 paused 守卫（:177-178）使重复交付不再叠臂——全程至多一次单发 fire，非泄漏、无 wire/AC 影响；D5 变体的 `pending ≤ pausedPending` 断言对该面天然耐受。设计 §8 防御声称「teardown 后 pollHandle 恒 undefined」在「teardown 后仍有闸门读取」形态下严格说来仅结论成立（零副作用/不重武装）而路径描述不周延。建议（可选，下轮修订）：`dataGateOpen`/`armPoll` 加 tornDown 早退，或 §8 防御注记补一句路径豁免。**不阻断**。
+
+### 7.5 R2 结论
+
+R1 三条非阻断留痕（N-1 package.json 文档债 / N-2 onAck 形式差 / N-3 双读闸门边界）**维持**——其中 N-2/N-3 已被设计 R4 §15 B-8 无失真收纳为下轮修订输入，非阻断定性不变。B1 修复正确、最小、与设计 §8 R4 矩阵一致，D5 变体断言与 AC/协议语义一致，SA3 证据真实，本轴独立复跑 85/85 零回归。**R2 Verdict: clear。**
