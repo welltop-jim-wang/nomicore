@@ -142,7 +142,7 @@ blocked 路径未实现。有界、无状态破坏（A7 记账仍闭环），但
 
 ## 三、Hard Gates 结论
 
-### Hard Gate #14 — vitest 触发性自检：**PASS**
+### 1.4 vitest 触发性自检（Hard Gate #14）：**PASS**
 
 - 本任务涉及 `*.test.ts`：`test/ws-replication-sa6-hardening-g1-g2-red.test.ts`、
   `test/ws-replication-sa6-hardening-g3-g4-red.test.ts`（新增），`test/driver.ts`、
@@ -373,3 +373,5 @@ tsx /tmp/sa4-repro/e5-verify.mts         # closing 期终局 → closeMemo 有�
 **R2 Verdict: pass**——R1 报告四项阻断项（R1/R2/R3/R4）全部闭合且证据齐备；裁决 3 产物（E5 子句 +
 一行接线 + 测试⑦豁免）与 SA2 R3 放行路径逐字一致；§二非阻断处置到位。SA7 可进入动态验证
 （重点清单：R1 报告 §六 1-5 + 本轮 O1 的 E5 运行时锚）。
+
+**Verdict**: **pass**
