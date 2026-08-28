@@ -46,7 +46,7 @@ feature（功能开发）
 
 ## SA6 Phase 1 验收锚定（红灯测试）— 2026-08-28
 
-> 附：`task_diagnostic-log-file-adapter_sa6_red.md` 为同内容详细版存档（本简报为唯一权威记录）。
+> 附：本简报以下「SA6 Phase 1 验收锚定（红灯测试）」节（含五测试文件 + 两 helper 的契约要点）为唯一权威记录（N-6 勘误：原「`task_diagnostic-log-file-adapter_sa6_red.md` 为同内容详细版存档」为死引用——该文件不在树，详细版即本锚定节自身）。
 
 ### 1. SA6 定义的 File adapter 公共契约（SA1 设计/SA3 实现必须满足；分歧走总控裁决）
 

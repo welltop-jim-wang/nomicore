@@ -29,6 +29,9 @@ import type { FileDiagnosticLog, FileDiagnosticLogConfig } from '../../src/index
 import { createFileDiagnosticLog } from '../../src/index.js'
 import { createEventCollectingObserver } from '../../src/testing.js'
 import { OBSERVED_AT } from './base.js'
+// 事件窄化单源：复用 base.ts 的 eventsOfType（同签名；file.ts 单向 import base.ts，无循环——
+// N-7 去重：删除本地重复实现）
+export { eventsOfType } from './base.js'
 // frame 基架与本模块解耦（零缺失接缝依赖，可独立自检）——见 frame.ts 头注
 export {
   FRAME_HEADER_BYTES,
@@ -124,14 +127,6 @@ export function makeFileLog(config: Partial<FileDiagnosticLogConfig> = {}): Asse
   const observer = createEventCollectingObserver()
   const log = createFileDiagnosticLog({ observer, ...config } as FileDiagnosticLogConfig)
   return { log, events: observer.events, observer }
-}
-
-/** 事件窄化（reuse base.ts 语义的本地副本——避免 helper 间彼此 import 循环）。 */
-export function eventsOfType<T extends DiagnosticLogHealthEvent['type']>(
-  events: readonly DiagnosticLogHealthEvent[],
-  type: T,
-): Extract<DiagnosticLogHealthEvent, { type: T }>[] {
-  return events.filter((e): e is Extract<DiagnosticLogHealthEvent, { type: T }> => e.type === type)
 }
 
 /** 标准 manifest（SA6 契约键集；ADR 0012「至少保存」逐项）。 */

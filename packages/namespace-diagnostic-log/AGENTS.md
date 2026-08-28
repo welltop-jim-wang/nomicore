@@ -34,8 +34,10 @@
   - `node:crypto` / `Buffer` 仅出现于 `src/digest.ts` 与 `src/carrier.ts`——
     （#152 扩展）Buffer 在 carrier.ts 收口 Base64 编解码两侧
     （`buildInlineCarrier` / `decodeBase64Strict`），reader/storage-gate 不得自起炉灶；
-  - `node:fs` / `node:path` 仅出现于 `src/adapters/file.ts` 与 `src/reader.ts`——
+  - `node:fs` 仅出现于 `src/adapters/file.ts` 与 `src/reader.ts`——
     本包唯一 IO 面（File adapter；Node 内置模块，零新增依赖）；
+    `node:path` 出现于 `src/adapters/file.ts`、`src/reader.ts` 与 `src/paths.ts`
+    （后者仅 `join`——布局路径派生；终审 N-1 勘误声明：R2 声明漏列 paths.ts）；
   - 其余模块纯 TS（TextEncoder 全局可用，字节计量不引 Buffer）。
 - 不依赖 yjs / clock / registry / persistence；只依赖 `@nomicore/vfsl`
   （compileSchemaEnvelope / validateLogicalSnapshot）。
@@ -52,4 +54,6 @@
   并视为 schema 版本变更（id 升 `@2`、新 stream generation、旧 stream 只读）。
 - 观察者事件只允许低基数白名单字段（§8.2）：type/reason/stage/field/fromPolicy/
   recordKind/operation/schemaId/schemaFingerprint/issuePaths/projectedRecordBytes/
-  queueDepth/issueCount——禁原 record/input/Base64/update bytes/message/stack。
+  queueDepth/issueCount/code（storage-validation-failed 与 storage-write-failed 的
+  code 字段——固定词表或稳定 errno；#152 新事件成员形状一致）——
+  禁原 record/input/Base64/update bytes/message/stack。

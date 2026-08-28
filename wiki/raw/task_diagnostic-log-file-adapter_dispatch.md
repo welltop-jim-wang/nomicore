@@ -21,3 +21,7 @@
 | 17 | 19:13 | SA4 | Phase 3 静态验尸 R2 复审 | 19:19 | SA3 R 修复 commit cb44bcd + 总控亲验绿，续传 SA4 复审（96bfd09d） |
 | 18 | 19:19 | SA7 | Phase 3 动态验证 | 19:31 | SA4 生效 verdict=pass，评审双清还差 SA7 动态验证 |
 | 19 | 19:30 | 总控 | Phase 3.5 AC 门禁 | 19:30 | AC1-AC5 全 ✅（证据入 ac_checklist.md），进入双轴终审 |
+| 20 | 19:31 | 终审 Standards 轴 | Phase 4 前置 | 19:47 | 双轴终审并行（generic subagent，同模型路由；diff 7ceede1..HEAD）standards=d3e46a53 |
+| 21 | 19:31 | 终审 Spec 轴 | Phase 4 前置 | 19:52 | 双轴终审并行 spec=39053a1b |
+| 22 | 19:52 | 总控 | 终审裁决 G11-G13 | 19:52 | 双轴均 pass-with-issues 零阻断；F-1 裁必修复、F-3 背书登记、F-4 登记为已知限制 |
+| 23 | 19:52 | SA3 | 终审回流修复轮 | (pending) | F-1 修复 + N-3/N-4 测试锚定 + N-1/F-2/N-2/N-5/N-6/N-7 文档与重复收口（续传 25c2439e） |

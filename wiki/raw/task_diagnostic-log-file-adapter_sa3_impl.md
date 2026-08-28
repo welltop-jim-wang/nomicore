@@ -103,3 +103,37 @@ SA4 实证根因 = `packages/vfsl/src/pattern.ts` alternation codegen 的 `jmp` 
 $ npx tsc -p packages/namespace-diagnostic-log/tsconfig.json   # 0 errors
 $ npx vitest run --typecheck packages/namespace-diagnostic-log  # 全部通过（含 +4 条 R 修复轮锚定）；Type Errors: no errors
 ```
+
+---
+
+# 终审回流修复轮（2026-08-28；双轴终审（standards/spec review）pass-with-issues 的闭合清单；总控 G13 裁决必修 + 锚定补全 + 文档同步）
+
+## 代码修复（G13 裁决必修）
+
+- **spec F-1（genesis exhausted 门闩缺失）**：`src/adapters/file.ts` `runGenesis` 补上与 attempt 路径同一门闩语义——genesis 的 `allocate()` 产出 `UINT64_MAX` 即置 `exhaustedLatch` + 恰一次 `notify({type:'stream-exhausted'})`（置于守卫检查之前——J9「分配完成即触发，无论该 record 后续守卫/门/落盘成败」）；该 genesis record 照常走门与落盘，此后 append/注入静默丢弃。修复前：预置 max−1 + genesis 时门闩不置，下一条 emit 会 `nextDecimal(UINT64_MAX)` = '18446744073709551616'（超域）并落盘。
+
+## 测试锚定补全（+3 条；追加至 `test/file-adapter-r2-supplemental.test.ts`）
+
+- **F-1/G13**：预置 UINT64_MAX−1 + genesis（32B inline）→ genesis 落盘 sequence=UINT64_MAX + 恰一次 `stream-exhausted` + 后续 emit 丢弃零落盘（唯一 record 仍是 genesis——p 上无超域 sequence）→ reader 对 genesis ok；
+- **N-3**：`lineBudgetBytes:512` + `inputPolicy:'full'` + 4 KiB snapshot → `input-degraded{fromPolicy:'full'}` 恰一次 + 落盘 record 携带 `input:{capture:'digest', degraded:'projected-input-too-large', digest:64hex}` + reader ok（file adapter 的 line 预算降级分支锚定）；
+- **N-4**：敌意 `namespaceId ('../evil')` / `streamId ('not-a-stream-id')` 入参 + **不存在的 rootDir** → corrupt + `locator-invalid` + manifest null + records []（rootDir 不存在即证伪「fs 先行」——若 fs 先行码会是 manifest-invalid；零 fs 触达）。
+
+## 文档/声明同步（一行级 × 4）
+
+- **N-1/F-2（node:path 声明勘误）**：`src/paths.ts` 头注（纯 TS → 唯一环境依赖 node:path `join`、零 node:fs）、包 `AGENTS.md` 环境绑定面（node:fs 限 file/reader；node:path 列 file/reader/paths 三模块、标注终审 N-1 勘误）、设计 §1.5 表（新增 paths.ts 行 + R3 勘误标注——R2 的「其余新模块零环境绑定」误列，更正为「其余新模块（frame/storage-gate）零环境绑定」）；
+- **N-2**：`AGENTS.md` 事件低基数百名单补 `code` 字段（storage-validation-failed / storage-write-failed 的固定词表或稳定 errno；与 #152 新事件成员形状一致）；
+- **N-5**：`file.ts:58` 注释「毫秒级守卫」笔误 → 「守卫取 min(配置值, 0xFFFFFFFF)」；
+- **N-6**：任务简报 `wiki/raw/task_diagnostic-log-file-adapter.md` :49 死引用（`task_diagnostic-log-file-adapter_sa6_red.md` 不在树）→ 改为指向简报自身 SA6 锚定节（N-6 勘误标注）；
+- **N-7**：`test/helpers/file.ts` 删除与 `base.ts:96` 逐字重复的 `eventsOfType` 本地实现 → `export { eventsOfType } from './base.js'`（file.ts 已单向 import base.ts，无循环）。
+
+## 验证（2026-08-28 于本 worktree）
+
+```bash
+$ npx tsc -p packages/namespace-diagnostic-log/tsconfig.json   # 0 errors
+$ npx vitest run --typecheck packages/namespace-diagnostic-log  # 全部通过（+3 条终审锚定）；Type Errors: no errors
+```
+
+## 备注
+
+- 本修复轮未触碰 DENY LIST；`packages/vfsl/**` 上游 alternation 缺陷仍归另立上游票。
+- 终审遗留 N-2（frameOffset 镜像折入原语）按交付说明归 #153 建议，本票不做。

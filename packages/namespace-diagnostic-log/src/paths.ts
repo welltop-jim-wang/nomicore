@@ -1,5 +1,7 @@
 /**
- * 路径安全文法 + 布局路径派生（设计 §2.6；writer/reader 共享；纯 TS、零环境绑定）。
+ * 路径安全文法 + 布局路径派生（设计 §2.6；writer/reader 共享；纯 TS——唯一环境
+ * 依赖：`node:path` 的 `join`（布局路径派生，终审 N-1 勘误：与 AGENTS.md/设计 §1.5
+ * 的绑定面声明同步——paths.ts 实属 node:path 绑定面；零 node:fs）。
  *
  * 权限：namespaceId 违规 → 日志不启用（`stream-init-failed/invalid-namespace-id`）、
  * 零 fs 触达——**不编码、不 hash、不替换字符静默另存**（ADR 0012 明文）。

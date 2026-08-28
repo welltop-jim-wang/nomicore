@@ -125,7 +125,8 @@ interface FileDiagnosticLog {
 |---|---|---|
 | `src/digest.ts`、`src/carrier.ts` | node:crypto / Buffer（不变） | #148 冻结 |
 | `src/carrier.ts`（扩展） | Buffer Base64 **decode**（新增 `decodeBase64Strict`） | Base64 编解码双侧收口在同一模块，reader/storage-gate 不得自起炉灶 |
-| `src/adapters/file.ts`、`src/reader.ts` | node:fs / node:path | 唯一 IO 面；其余新模块（frame/paths/storage-gate）零环境绑定（纯 TS） |
+| `src/adapters/file.ts`、`src/reader.ts` | node:fs / node:path | 唯一 fs IO 面 |
+| `src/paths.ts` | **node:path**（仅 `join`——布局路径派生） | **R3 勘误（终审 N-1）**：R2 声明误列「其余新模块（frame/paths/storage-gate）零环境绑定」——paths.ts 实际 import `node:path`（仅 `join`、零 node:fs）；更正为三模块绑定声明；其余新模块（frame/storage-gate）零环境绑定（纯 TS） |
 
 `packages/namespace-diagnostic-log/AGENTS.md` Boundaries 段相应改写为三行绑定面声明（列入 §12 ALLOW LIST）。`node:fs`/`node:path` 是 Node 内置模块——**零新增依赖**，`pnpm-lock.yaml` 与包 `package.json` 均不动（SA6 约束 §5.5「无新增依赖」达成）。
 
@@ -860,3 +861,11 @@ R1 初版交付时无 SA2 评审反馈（占位），本表自 R2 起逐条填�
 2. ADR 0012「丢弃并上报」是无条件行为要求——(a) 缓期在已确认缺口下属隐匿，否；
 3. (b) 扩 `record-dropped.reason` 需为 exhausted 伪造 projectedRecordBytes/queueDepth 两必填字段，语义扭曲，否；(c) 独立成员零字段、低基数（每 stream 恰一次）、满足 §8.2 白名单纪律；
 4. 契约审计（§14）已证联合只增不改零破坏；SA6 红灯测试不触及该成员（物理不可达路径，仅 testing 预置接缝可触达，可在实现期补一条转换测试）。
+
+## 总控裁决（2026-08-28，双轴终审回流——§11 追加）
+
+| # | 裁决 | 理由 |
+|---|---|---|
+| G11（spec F-3） | **背书现状**：`StrictRecordRead` 不携带 `recordKind` | SA6 锚定形状对 invalid-json 行本不可满足（JSON 不可解析时无 recordKind 可言）；实现取舍合理，属流程漏登记而非缺陷。以此裁决回写补登记 |
+| G12（spec F-4） | **不增加数值配置校验**，登记为已知限制 | 误配置非静默：NaN lineBudgetBytes 冻结进 manifest 后自家 reader 判 manifest-invalid，可诊断；ADR 0012 未要求配置校验。录入 REPORT 遗留风险 |
+| G13（spec F-1） | **必须修复**（非登记）：genesis 路径消耗 UINT64_MAX 必须触发 exhausted 门闩与恰一次 `stream-exhausted` | J9 裁决的精神是「exhausted 必上报」；留一条 testing 接缝可达的静默超域落盘路径与该裁决矛盾。4 行最小修在 SA3 lane |

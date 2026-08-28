@@ -12,6 +12,7 @@
  * - R2-1：预置接缝 loud 校验（≥ UINT64_MAX / 前导零 / 非十进制 → throw；'0' 合法）。
  */
 import { existsSync, mkdirSync, readFileSync, rmdirSync, rmSync, truncateSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { crc32cHex } from '../src/crc32c.js'
 import { UINT64_MAX } from '../src/adapters/memory.js'
@@ -372,6 +373,85 @@ describe('R 修复轮（SA4 R1 reject 落地）：P_DECIMAL 镜像第二消费�
       code: 'vfsl-invalid',
     })
     expect(existsSync(streamPaths(root, 'ns-r2-inject-off', log.streamId).jsonlPath)).toBe(false)
+  })
+})
+
+describe('终审回流修复轮（总控 G13 / standards N-3/N-4）：genesis exhausted 门闩与补锚', () => {
+  it('F-1/G13：预置 UINT64_MAX−1 + genesisUpdateBytes → genesis 分配产出 UINT64_MAX 即恰一次 stream-exhausted；genesis 照常落盘；后续 emit 丢弃零落盘（绝不落盘超域 sequence）', () => {
+    const root = freshRoot()
+    const observer = createEventCollectingObserver()
+    const genesis = patternedBytes(32)
+    const log = createFileDiagnosticLogPresetSequence(
+      { rootDir: root, namespaceId: 'ns-r2-genesis-exh', updateCapture: true, genesisUpdateBytes: genesis, observer },
+      '18446744073709551614',
+    )
+    const p = streamPaths(root, 'ns-r2-genesis-exh', log.streamId)
+
+    let records = readJsonl(p.jsonlPath)
+    expect(records).toHaveLength(1) // genesis 照常落盘（UINT64_MAX 是合法 sequence）
+    expect(records[0]!.recordKind).toBe('genesis-baseline')
+    expect(records[0]!.sequence).toBe(UINT64_MAX)
+    expect(eventsOfType(observer.events, 'stream-exhausted')).toHaveLength(1) // 转换恰一次
+
+    // 转换后：后续 emit 静默丢弃——绝不落盘超域 sequence（修复前：genesis 不置闩 →
+    // 下一条 nextDecimal(UINT64_MAX) = '18446744073709551616' 会落盘）
+    log.emitter.emit(baseEmission({ result: { kind: 'committed', effect: 'update', updateBytes: patternedBytes(10) } }))
+    records = readJsonl(p.jsonlPath)
+    expect(records).toHaveLength(1)
+    expect(records[0]!.sequence).toBe(UINT64_MAX)
+    expect(eventsOfType(observer.events, 'stream-exhausted')).toHaveLength(1)
+
+    const read = readStreamStrict({ rootDir: root, namespaceId: 'ns-r2-genesis-exh', streamId: log.streamId })
+    expect(read.status).toBe('ok')
+    expect(read.records[0]!.ok).toBe(true)
+  })
+
+  it('N-3：小 lineBudgetBytes + full 大 input → 降级 digest+degraded + input-degraded 事件 + reader ok', () => {
+    const root = freshRoot()
+    const { log, events } = makeFileLog({
+      rootDir: root,
+      namespaceId: 'ns-r2-degrade',
+      updateCapture: true,
+      inputPolicy: 'full',
+      lineBudgetBytes: 512,
+    })
+    log.emitter.emit(
+      baseEmission({
+        result: { kind: 'committed', effect: 'noop' },
+        input: { snapshot: 'x'.repeat(4096) },
+      }),
+    )
+
+    const degraded = eventsOfType(events, 'input-degraded')
+    expect(degraded).toHaveLength(1)
+    expect(degraded[0]).toMatchObject({ type: 'input-degraded', fromPolicy: 'full' })
+
+    const records = readJsonl(streamPaths(root, 'ns-r2-degrade', log.streamId).jsonlPath)
+    expect(records).toHaveLength(1) // 降级后落盘（先降级后丢弃纪律）
+    const input = records[0]!.input as { capture: string; digest: string; degraded?: string }
+    expect(input.capture).toBe('digest')
+    expect(input.degraded).toBe('projected-input-too-large')
+    expect(input.digest).toMatch(/^[0-9a-f]{64}$/)
+
+    const read = readStreamStrict({ rootDir: root, namespaceId: 'ns-r2-degrade', streamId: log.streamId })
+    expect(read.status).toBe('ok')
+    expect(read.records[0]!.ok).toBe(true)
+  })
+
+  it('N-4：敌意 namespaceId/streamId 入参 → corrupt + locator-invalid + 零 fs 触达（不存在的 rootDir 证伪 fs 先行）', () => {
+    const rootDir = join(freshRoot(), 'does-not-exist')
+    for (const [namespaceId, streamId] of [
+      ['../evil', 'log-11111111111111111111111111111111'],
+      ['ns-ok', 'not-a-stream-id'],
+    ] as const) {
+      const read = readStreamStrict({ rootDir, namespaceId, streamId })
+      expect(read.status).toBe('corrupt')
+      expect(issueCodes(read.issues)).toContain('locator-invalid')
+      expect(read.manifest).toBeNull()
+      expect(read.records).toHaveLength(0)
+      // 零 fs 触达：若 fs 先行（ENOENT），码会是 manifest-invalid 而非 locator-invalid——
+      // 本断言即证伪；readStreamStrict 亦不抛
+    }
   })
 })
 

@@ -55,7 +55,7 @@ export interface FileDiagnosticLogConfig {
   updateCapture?: boolean | undefined
   /** 最终 JSONL line 紧凑 JSON UTF-8 字节硬上限（不含结尾 `\n`），默认 1 MiB。 */
   lineBudgetBytes?: number | undefined
-  /** 单 update payload 硬上限（毫秒级守卫取 min(配置值, 0xFFFFFFFF)），默认 64 MiB。 */
+  /** 单 update payload 硬上限（守卫取 min(配置值, 0xFFFFFFFF)），默认 64 MiB。 */
   payloadMaxBytes?: number | undefined
   /** inline/sidecar 分界（≤ 内联，> sidecar），默认 4096（冻结进 manifest `inlineUpdateMaxBytes`）。 */
   inlineUpdateMaxBytes?: number | undefined
@@ -546,6 +546,14 @@ export function createFileLog(config: FileDiagnosticLogConfig, options: FileLogO
     const bytes = config.genesisUpdateBytes
     if (bytes === undefined) return
     const sequence = allocate() // 新 stream 即 '1'（预置接缝下与 attempt 路径一致推进）
+    if (sequence === UINT64_MAX) {
+      // —— exhausted 转换时刻（总控 J9 裁决 + 终审 G13 裁决）：与 attempt 路径同一门闩
+      //    语义——genesis 的 sequence 分配产出 UINT64_MAX 即触发恰一次
+      //    `stream-exhausted`；该 genesis record 照常继续走门与落盘，此后进入 exhausted
+      //    （后续 append/注入静默丢弃，绝不落盘超域 sequence）。 ——
+      exhaustedLatch = true
+      notify({ type: 'stream-exhausted' })
+    }
     if (bytes.length === 0) return // 守卫跳过：不写记录、不发事件（§11-G10 豁免备案）
     if (bytes.length > payloadMaxBytes) return
     const projected = projectCarrier(bytes)
