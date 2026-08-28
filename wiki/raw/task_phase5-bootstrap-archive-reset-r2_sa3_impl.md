@@ -64,26 +64,42 @@
 
 ## R4 微调段（SA2 delta reject → SA1 R4 微设计 → SA2 复审 pass 后的方案 B 落地）
 
-本轮**只替换分类学落位**（R-FIX-1 行为修复的入口次序/零副作用纪律/测试行为锚主体全部保留），逐字按设计 §3.6（R4 微修订）冻结词汇落地。
+### 审计采信（SA3 对外部候选实现的独立复核）
+
+外部会话在 commit `1aa1994` 落地的方案 B 候选实现（registry.ts / types.ts / internal 测试 / surface test-d 4 文件 + 本记录段）经 SA3 对照设计 §3.6（R4 冻结）**逐块审计**结果：
+
+| hunk | 审计结论 | 说明 |
+|---|---|---|
+| types.ts：`InvalidIdentityIssue.field` 回退二元 | ✅ 采信 | 与 §3.6.1 逐字一致（撤销 `'expectedLocalIdentity'` 第三成员） |
+| types.ts：`NAMESPACE_RESET_EXPECTED_IDENTITY_INVALID_MESSAGE` | ✅ 采信 | 常量文本与 §3.6.1 逐字一致；单一真相源；未进 barrel 值导出 |
+| types.ts：`ResetReplicaIssue` append-only 无 field 成员 | ✅ 采信 | code/message 与 §3.6.1 一致 |
+| registry.ts：`RESET_EXPECTED_IDENTITY_INVALID_ISSUE` 新码常量 + 入口次序 | ✅ 采信 | 入口次序 = §3.6.2 冻结序（acceptance → validateOpenIdentity → 快照 → 专属 issue → admitResetSlot(snapshot.value)）；零 carrier/entry/probe/archive 触达；快照消除双读分叉 |
+| internal 测试：16 形态**完整 toEqual 深等**（code + 导入常量 message + 无 field）+ 常量文本锁 | ✅ 采信并**加强** | §3.6.3 第 1 条「每形态保留 probeCalls=[]/archiveCalls=[]/lease active/Runtime ready」——SA3 将零触达/零破坏断言**逐形态移入循环内**（原为循环后汇总断言；逻辑等价但文字更忠实于冻结规格） |
+| internal 测试：`okIssue` 观测面扩展携带 message | ✅ 采信 | 既有 `.code` 消费方零影响（additive） |
+| internal 测试：F-1 标题收窄「cause 零身份值回显」 | ✅ 采信 | 断言体保持 cause-scoped（与 §3.6.3 第 5 条一致，不误称整个 event payload 无受控 identity） |
+| surface test-d：四 alias field 恒等 + 新码可达无 field 键 | ✅ 采信 | 与 §3.6.3 第 3 条一致（`Equal` 编译期恒等；`InvalidIdentityIssue` 未按名导出，经公开联合 `Extract`） |
+| SA3 追加（本轮） | ① §3.6.2 边界行为锚：resetReplica 的 owner/namespace 非法仍返回上游 `NAMESPACE_INVALID_IDENTITY` + 正确二元 field（专属 reset 码不劫持上游身份分类，零触达）；② 标准轴 F-2（registry.ts `beginCloseCurrent` 悬空注释引用 → 现行 fence/lazy-close 名称）；③ 标准轴 F-4（r2-red 头注/标题 SA6 期「临时拼写，待 SA1 冻结」→ 已冻结现状措辞，行为断言零改动） | 设计 §3.6.3 第 4 条 + §3.6.3 标准轴授权 |
 
 ### 改动点（与 R4-D1..D3、D-3/D-4 逐条映射）
 
 | 文件 | 改动 | 映射 |
 |---|---|---|
 | `packages/namespace-registry/src/types.ts` | ① `InvalidIdentityIssue.field` 回退为 round-1 冻结二元联合 `'owner.userId' \| 'namespaceId'`（删除 `'expectedLocalIdentity'` 第三成员；docstring 恢复「open/create 共用」原文）；② 冻结常量区新增 `NAMESPACE_RESET_EXPECTED_IDENTITY_INVALID_MESSAGE`（文本逐字 `'NAMESPACE_RESET_EXPECTED_IDENTITY_INVALID: 期望本地复制身份（reset expectedLocalIdentity）不符合安全文法'`，落位镜像 import 侧常量的 R2 增量块尾）；③ `ResetReplicaIssue` append-only 追加 `{ok:false; code:'NAMESPACE_RESET_EXPECTED_IDENTITY_INVALID'; message:typeof …}` 成员（**无 field**），docstring 注明触发条件/零 Persistence 触达/零值回显 | **R4-D1**（field 回退，撤销未经授权的第三成员）+ **R4-D2**（新码+专用常量）+ **R4-D3**（append-only 无 field 成员） |
-| `packages/namespace-registry/src/registry.ts` | ① `RESET_EXPECTED_IDENTITY_INVALID_ISSUE` 冻结常量形状替换：`ok:false / code:'NAMESPACE_RESET_EXPECTED_IDENTITY_INVALID' / message:NAMESPACE_RESET_EXPECTED_IDENTITY_INVALID_MESSAGE`（无 field）；② import：新增 `NAMESPACE_RESET_EXPECTED_IDENTITY_INVALID_MESSAGE`、删除不再被引用的 `NAMESPACE_INVALID_IDENTITY_MESSAGE`；③ 入口次序零改动（仅快照失败返回常量），入口注释「沿既有 `NAMESPACE_INVALID_IDENTITY` 通道」表述改为新码专属通道 | **R4-D2**（词汇替换）+ 设计 §3.6.2（入口次序不变 + 三码不重合） |
-| `packages/namespace-registry/test/registry-phase5-bootstrap-reset-r2-internal.test.ts` | ① 敌意 16 形态断言由 `expect(issue.code).toBe('NAMESPACE_INVALID_IDENTITY')` 升级为**完整形状深等** `toEqual({ok:false, code:'NAMESPACE_RESET_EXPECTED_IDENTITY_INVALID', message:NAMESPACE_RESET_EXPECTED_IDENTITY_INVALID_MESSAGE})`（message 从 `../src/types.js` 导入，按 `registry-create.test.ts` 既有先例；单条断言同锁 code+常量 message+无 field）；② 补常量文本字面量锁断言；③ describe 标题旧码替换为新码；④ F-1 `it` 标题收窄为「cause 零身份值回显」（断言体零改动）；⑤ `okIssue` 观测面扩展携带 `message`（既有 `.code` 消费方零影响）；⑥ 全部既有行为锚保留：probeCalls=[]、archiveCalls=[]、lease active、lifecycle ready、正确 expected 重试成功且首次 probe 恰 1、TOCTOU 冻结样本、observer 恰一次 | **D-3**（16 形态深等 + 常量文本锁，禁降级单属性断言）+ **D-4**（F-1 标题收窄） |
+| `packages/namespace-registry/src/registry.ts` | ① `RESET_EXPECTED_IDENTITY_INVALID_ISSUE` 冻结常量形状替换：`ok:false / code:'NAMESPACE_RESET_EXPECTED_IDENTITY_INVALID' / message:NAMESPACE_RESET_EXPECTED_IDENTITY_INVALID_MESSAGE`（无 field）；② import：新增 `NAMESPACE_RESET_EXPECTED_IDENTITY_INVALID_MESSAGE`、删除不再被引用的 `NAMESPACE_INVALID_IDENTITY_MESSAGE`；③ 入口次序零改动（仅快照失败返回常量），入口注释「沿既有 `NAMESPACE_INVALID_IDENTITY` 通道」表述改为新码专属通道；④ **标准轴 F-2**：`beginCloseCurrent` 悬空注释引用改为现行实现名（`beginIdleClose` I2 记账 + `fence.startCloseAfterFence()` 懒创建 close barrier、closePromise 幂等缓存共用）——注释-only | **R4-D2**（词汇替换）+ 设计 §3.6.2（入口次序不变 + 三码不重合）+ **F-2** |
+| `packages/namespace-registry/test/registry-phase5-bootstrap-reset-r2-internal.test.ts` | ① 敌意 16 形态断言由 `expect(issue.code).toBe('NAMESPACE_INVALID_IDENTITY')` 升级为**完整形状深等** `toEqual({ok:false, code:'NAMESPACE_RESET_EXPECTED_IDENTITY_INVALID', message:NAMESPACE_RESET_EXPECTED_IDENTITY_INVALID_MESSAGE})`（message 从 `../src/types.js` 导入，按 `registry-create.test.ts` 既有先例；单条断言同锁 code+常量 message+无 field），且 **probeCalls=[]/archiveCalls=[]/lease active/lifecycle ready 逐形态断言**（§3.6.3 第 1 条）；② 补常量文本字面量锁断言；③ describe 标题旧码替换为新码；④ F-1 `it` 标题收窄为「cause 零身份值回显」（断言体零改动）；⑤ `okIssue` 观测面扩展携带 `message`（既有 `.code` 消费方零影响）；⑥ 全部既有行为锚保留：正确 expected 重试成功且首次 probe 恰 1、TOCTOU 冻结样本、observer 恰一次；⑦ **SA3 追加**：owner/namespace 非法 → 上游 `NAMESPACE_INVALID_IDENTITY` + 二元 field 行为锚 | **D-3**（16 形态深等 + 常量文本锁，禁降级单属性断言）+ **D-4**（F-1 标题收窄）+ §3.6.3 第 4 条 |
 | `packages/namespace-registry/test/registry-phase5-bootstrap-reset-r2-surface.test-d.ts` | 公共类型保持锚：`Extract<OpenNamespaceIssue/CreateNamespaceIssue/ImportReplicaIssue/ResetReplicaIssue, {code:'NAMESPACE_INVALID_IDENTITY'}>['field']` 恒等 `'owner.userId' \| 'namespaceId'`（`Equal` 编译期恒等，经公开 result alias——`InvalidIdentityIssue` 未按名导出）；`Extract<ResetReplicaIssue, {code:'NAMESPACE_RESET_EXPECTED_IDENTITY_INVALID'}>` 非 never **且 keys 不含 `field`**；既有 4 参数 import / 3 参数 reset 签名锚零改动 | **D-1**（公共声明图回退的可观测保证）+ **R4-D3**（新码成员无 field 的可达断言） |
+| `packages/namespace-registry/test/registry-phase5-bootstrap-reset-r2-red.test.ts` | **标准轴 F-4**：头注/契约声明段/describe 标题/`it` 标题的 SA6 期「临时拼写/临时签名，待 SA1 冻结」措辞更新为「已由 R2/R3 设计冻结」现状；**行为断言零改动** | 设计 §3.6.3 F-4 |
 | 禁止改动 | `index.ts`（零 barrel 变化——`ResetReplicaIssue`/`ResetReplicaResult` 已在 type 白名单，append-only 成员自然可达；message 常量与 import 侧同纪律不进 barrel）、observer.ts、persistence/runtime 任何文件、ADR、round-1 测试 | 设计 §8 R4 注记（负向声明） |
 
-### 验证命令与结果
+### 验证命令与结果（SA3 亲跑，全量）
 
-1. `npx vitest run packages/namespace-registry/test/registry-phase5-bootstrap-reset-r2-internal.test.ts packages/namespace-registry/test/registry-phase5-bootstrap-reset-r2-red.test.ts --pool=forks --poolOptions.forks.maxForks=1 --poolOptions.forks.minForks=1 --testTimeout=60000 --hookTimeout=60000` → **exit 0**；2 文件 / 25 用例全绿（internal 15 + red 10），Type Errors 无。
-2. `npx vitest run --typecheck packages/namespace-registry/test/registry-phase5-bootstrap-reset-r2-surface.test-d.ts` → **exit 0**；4 用例全绿，Type Errors 无。
-3. `pnpm typecheck` → 见下方结果（全仓类型检查）。
+1. `npx tsc -p tsconfig.typecheck.json --noEmit` → **exit 0**（含 surface test-d 类型锚）。
+2. `npx vitest run` 全量 → **exit 0；147 文件 / 1760 用例全绿**（1757 基线 + R4 新增 3：internal 新增 owner/namespace 边界锚 1 项 + surface 类型锚 2 项；`Type Errors: no errors`；`.mabf-bg/r4-full.log`）。
+3. `git diff --check` 干净；版本号同轮不重复 bump（registry 已 0.1.6）。
 
 ### 说明
 
 - 涉及一次中间失败已消除：首版 16 形态深等因 `okIssue` 观测面只回传 `code`（剥离 `message`）而失败——已按「观测面携带 message」修正（设计 §3.6.3「禁止复制字面量/禁降级单属性断言」口径下该失败是断言强度的预期体现，非实现缺陷）；首版 surface `field` 锚以 `['field']` 索引泛型 `Extract` 结果触发 TS 泛型延迟求值错误——改为条件类型 `extends { readonly field: infer F }` 形式，语义等价。
-- **工作区并发事件（重要，供总控知悉）**：本任务执行期间，共享仓库 HEAD 由 `f2ae9c9` 前进至 `4bd1c62`（controller adjudication + SA2 delta/standards 档案）与 `9ca1d21`（dispatch SA1 R4 micro-design，均为 docs 提交），其间一次工作区重置将上一轮未提交的 SA1 R4 设计文本（wiki §3.6）与首版实现改动一并清除；本报告基于任务简报全文 + 会话早期读取的 §3.6 权威文本（与 reset 后 SA1 重写的 §3.6 内容一致）重新落地并复验通过。当前 `wiki/raw/task_phase5-bootstrap-archive-reset-r2_design.md` 工作区已有 SA1 重写中的 R4 修订内容（未提交）。
-- 按任务指令**不做 commit**，留待总控收口统一提交。
+- **工作区并发事件（重要，供总控知悉）**：外部会话执行期间共享仓库 HEAD 不断前进（docs 提交与最终实现提交 `1aa1994`），其间发生过一次工作区重置事件（清除未提交的 SA1 R4 设计文本与首版实现）；外部候选最终以 commit `1aa1994` 落盘，SA3 接手时工作区干净、候选即 HEAD——审计即针对该 commit 内容（与任务简报「未提交候选」描述的状态差异已在审计结论中覆盖）。
+- **SA3 最终落盘**：外部候选逐块审计后**全部采信**（无偏离项）；SA3 追加项为 §3.6.3 第 1 条逐形态断言加强、§3.6.3 第 4 条边界行为锚、标准轴 F-2/F-4；最终由 SA3 提交（工作区仅含 SA3 复核后文件）。
+

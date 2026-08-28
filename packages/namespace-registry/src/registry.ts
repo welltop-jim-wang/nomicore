@@ -1720,8 +1720,11 @@ export function createRegistryInternal(
       throw new NamespaceRegistryFatalError('reset', 'lifecycle-slot-internal', false, cause);
     }
     if (current.closePromise === undefined) {
-      // I2 记账（镜像 beginCloseCurrent ①-③：先赋值后翻相——idle-close 竞态下
-      // beginIdleClose 已记账时跳过，同一 closePromise 复用）
+      // I2 记账（镜像 beginIdleClose ①-③：先赋值后翻相——closing ⟹ closePromise
+      // 已定义；本槽经 `fence.startCloseAfterFence()` 懒创建 close barrier（与公共
+      // close() 共用 runtime 侧同一 closePromise 幂等缓存——普通 close 不建第二
+      // barrier），idle-close 竞态下 beginIdleClose 已记账时跳过，同一 closePromise
+      // 复用）
       current.closePromise = closePromise;
       current.phase = 'closing';
       closePromise.then(

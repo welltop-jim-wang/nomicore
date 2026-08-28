@@ -47,7 +47,10 @@ import type {
   NamespaceRegistryFatalError,
   RegistryRandomBytes,
 } from '@nomicore/namespace-registry';
-import { NAMESPACE_RESET_EXPECTED_IDENTITY_INVALID_MESSAGE } from '../src/types.js';
+import {
+  NAMESPACE_INVALID_IDENTITY_MESSAGE,
+  NAMESPACE_RESET_EXPECTED_IDENTITY_INVALID_MESSAGE,
+} from '../src/types.js';
 
 const SCHEMA_ENVELOPE = Object.freeze({
   lang: 'vfsl',
@@ -669,12 +672,18 @@ describe('R-FIX-1：resetReplica 敌意 expected → NAMESPACE_RESET_EXPECTED_ID
         code: 'NAMESPACE_RESET_EXPECTED_IDENTITY_INVALID',
         message: NAMESPACE_RESET_EXPECTED_IDENTITY_INVALID_MESSAGE,
       });
+      // 逐形态零破坏/零触达断言（§3.6.3 第 1 条「每形态保留…」）：每个敌意形态
+      // 后 probeCalls/archiveCalls 均保持空、原 lease 仍 active、Runtime 仍 ready。
+      expect(stub.probeCalls, hostile.name).toEqual([]); // ★ 每形态零 Persistence 触达
+      expect(stub.archiveCalls, hostile.name).toEqual([]);
+      expect(leaseStatus(lease).lease, hostile.name).toBe('active');
+      expect(leaseStatus(lease).runtime?.lifecycle, hostile.name).toBe('ready');
     }
     // 常量文本锁（§3.6.3 第 1 条）：防冻结 message 被静默改写（导入值漂移时文本锁兜底）。
     expect(NAMESPACE_RESET_EXPECTED_IDENTITY_INVALID_MESSAGE).toBe(
       'NAMESPACE_RESET_EXPECTED_IDENTITY_INVALID: 期望本地复制身份（reset expectedLocalIdentity）不符合安全文法',
     );
-    // 分界锚：敌意 expected 在入口被快照拒绝——零 Persistence 触达（probe 从未调用）、
+    // 汇总分界锚：16 形态全部入口拒绝——零 Persistence 触达（probe 从未调用）、
     // 零破坏（lease 原样 active、runtime ready、零 archive seam、零 close）
     expect(stub.probeCalls).toEqual([]); // ★ 零 Persistence 触达（设计 §3.2「不能访问 Persistence」）
     expect(stub.archiveCalls).toEqual([]);
@@ -711,6 +720,40 @@ describe('R-FIX-1：resetReplica 敌意 expected → NAMESPACE_RESET_EXPECTED_ID
       replicationId: ID_A,
       replicationEpoch: 1,
     });
+    await registry.shutdown();
+  });
+
+  it('owner/namespace 身份非法仍是上游 NAMESPACE_INVALID_IDENTITY + 二元 field（专属 reset 码不得劫持上游身份分类）', async () => {
+    const stub = new ScriptStub();
+    stub.seedDocument(ALICE, NS_B, makeSeedDoc(NS_B, { replicationId: ID_A, replicationEpoch: 1, root: 5 }));
+    const registry = makeRegistry(stub);
+    const lease = okLease(await registry.open(ALICE, NS_B));
+    await schemaReady(lease);
+
+    const badOwner = await asResetRegistry(registry).resetReplica(null as never, NS_B, {
+      replicationId: ID_A,
+      replicationEpoch: 1,
+    });
+    expect(badOwner).toEqual({
+      ok: false,
+      code: 'NAMESPACE_INVALID_IDENTITY',
+      field: 'owner.userId',
+      message: NAMESPACE_INVALID_IDENTITY_MESSAGE,
+    });
+    const badNs = await asResetRegistry(registry).resetReplica(ALICE, 'bad/ns', {
+      replicationId: ID_A,
+      replicationEpoch: 1,
+    });
+    expect(badNs).toEqual({
+      ok: false,
+      code: 'NAMESPACE_INVALID_IDENTITY',
+      field: 'namespaceId',
+      message: NAMESPACE_INVALID_IDENTITY_MESSAGE,
+    });
+    // 上游拒绝零触达（进入 expected 快照之前即返回）
+    expect(stub.probeCalls).toEqual([]);
+    expect(stub.archiveCalls).toEqual([]);
+    expect(leaseStatus(lease).lease).toBe('active');
     await registry.shutdown();
   });
 });

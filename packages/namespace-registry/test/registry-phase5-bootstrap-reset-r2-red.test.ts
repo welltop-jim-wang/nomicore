@@ -4,20 +4,20 @@
  *
  * - R2-AC-1（反馈 1）：`resetReplica` 在**任何破坏性动作**（forceRelease / close /
  *   archive）之前，先将 live（Runtime/META 当前值）与 persisted replication
- *   identity 对 `expectedLocalIdentity` 做可靠核对；不匹配 → 领域拒绝（临时拼写
- *   `NAMESPACE_RESET_IDENTITY_MISMATCH`，round-1 已冻结词汇），且当前
+ *   identity 对 `expectedLocalIdentity` 做可靠核对；不匹配 → 领域拒绝（词汇
+ *   `NAMESPACE_RESET_IDENTITY_MISMATCH`，round-1 已冻结），且当前
  *   generation/lease/runtime **完全保持可用（零破坏）**。
  * - R2-AC-2（反馈 1 竞态）：dirty identity/epoch（已 enableReplication /
  *   bumpReplicationEpoch 但尚未 flush、持久化仍为旧 identity）场景下 reset 不得
  *   关闭或归档错误 generation；身份核对必须读取正确的真相源（live vs persisted
- *   的核对口径以本锚 + 报告注释为基线，最终判定规则以 SA1 设计冻结为准）。
- * - R2-AC-3/4（反馈 2）：bootstrap/import 路径（临时契约名 `importReplica`，
- *   **round-2 新增第 4 参数 expectedReplicationIdentity——临时签名，待 SA1 冻结；
+ *   的核对口径以本锚 + 报告注释为基线，判定规则已由 SA1 R2/R3 设计冻结）。
+ * - R2-AC-3/4（反馈 2）：bootstrap/import 路径（契约名 `importReplica`，
+ *   **round-2 新增第 4 参数 expectedReplicationIdentity——已由 R2/R3 设计冻结；
  *   沿用 round-1 SA6 回流惯例**）在 persistence ownership 转移（importDoc
  *   resolve）之前校验 META 复制事实与 Hub 广告 expected `{replicationId,
  *   replicationEpoch}` **完全一致**（不止格式校验）：格式正确但 lineage 错误或
- *   epoch 不符 → 拒绝（临时拼写 `NAMESPACE_IMPORT_EXPECTED_IDENTITY_MISMATCH`，
- *   待 SA1 冻结），且**零持久化写入、零 entry 登记**。
+ *   epoch 不符 → 拒绝（词汇 `NAMESPACE_IMPORT_EXPECTED_IDENTITY_MISMATCH`，
+ *   已由 R2/R3 设计冻结），且**零持久化写入、零 entry 登记**。
  *
  * 红灯机制（HEAD = round-1 close-out 6784645，SA3 已落地 round-1 全部 52 红用例）：
  * - reset 前置核对缺失：当前 `runResetSlot` 先 forceRelease + close（破坏
@@ -31,18 +31,18 @@
  * MemoryPersistence（hook store 字节级）；stub 仅作持久化 seam 编排观测（真实
  * 调用面）；fake scheduler 脚本化驱动（零 real sleep）；零源码 grep 断言。
  *
- * 临时契约声明（全部显式标记「临时，待 SA1 冻结」）：
+ * 契约冻结声明（SA6 期「临时，待 SA1 冻结」措辞已按 R2/R3 设计冻结现状更新；
+ * 行为断言零改动）：
  * - `importReplica(owner, namespaceId, doc, expectedReplicationIdentity)` ——
- *   **round-2 临时签名**（第 4 参数 = Hub 广告 expected 身份）；若 SA1 冻结为
- *   其它绑定机制（如 registry 构造期绑定），本文件调用面按 round-1 回流惯例校准，
- *   行为断言（拒绝码/零写入/零 entry）不变；
- * - `NAMESPACE_IMPORT_EXPECTED_IDENTITY_MISMATCH` —— **round-2 临时拼写**（与
+ *   **round-2 冻结签名**（第 4 参数 = Hub 广告 expected 身份）；调用面按
+ *   round-1 回流惯例校准，行为断言（拒绝码/零写入/零 entry）不变；
+ * - `NAMESPACE_IMPORT_EXPECTED_IDENTITY_MISMATCH` —— **round-2 冻结拼写**（与
  *   round-1 的 NAMESPACE_IMPORT_IDENTITY_MISMATCH（META.docId ≠ namespaceId）
  *   语义区分：本码特指「格式合规但与 Hub 广告身份不一致」）；
  * - 核对口径：R2-AC-1 按简报原文「live/persisted 均与 expected 做可靠核对；
  *   任一不匹配 → 拒绝 + 零破坏」锚定（严格口径；其中「live 不匹配」用例两种口径
  *   下均拒绝，鲁棒；「仅 persisted 不匹配」用例为严格口径专属，见报告 §4 flag）；
- * - `ReplicationIdentityRef` 临时形状 `{ replicationId; replicationEpoch }`
+ * - `ReplicationIdentityRef` 形状 `{ replicationId; replicationEpoch }`
  *   （round-1 已冻结形状，沿用户）。
  */
 import { describe, expect, it } from 'vitest';
@@ -68,9 +68,9 @@ import type {
   RegistryRandomBytes,
 } from '@nomicore/namespace-registry';
 
-// ═══════════════════════════════ 契约面本地声明（临时名/临时形状/临时签名，待 SA1 冻结） ═══════════════
+// ═══════════════════════════════ 契约面本地声明（冻结名/冻结形状/冻结签名；与公共类型面结构一致） ═══════════════
 
-/** 复制身份引用（临时形状：round-1 已冻结字段包装——N-1 待 SA1 定义）。 */
+/** 复制身份引用（冻结形状：与公共 ReplicationIdentityRef 逐字段一致——round-1 字段包装）。 */
 interface ReplicationIdentityRef {
   readonly replicationId: string;
   readonly replicationEpoch: number;
@@ -88,7 +88,7 @@ interface ResetReplicaRegistry {
   >;
 }
 
-/** 内部受信任 bootstrap 导入面（临时名 importReplica + **round-2 临时第 4 参数**）。 */
+/** 内部受信任 bootstrap 导入面（冻结名 importReplica + **round-2 冻结第 4 参数**）。 */
 interface ImportReplicaRegistry {
   readonly importReplica: (
     owner: NamespaceOwner,
@@ -564,7 +564,7 @@ describe('R2-AC-2 dirty identity/epoch 竞态（真实 MemoryPersistence）：re
 // ═══════════════════════════════ R2-AC-3/4：import 绑定 Hub 广告身份 ═══════════════════
 
 describe('R2-AC-3/4 importReplica 绑定 Hub 广告 expected {replicationId, replicationEpoch}：格式正确但身份不符 → 拒绝 + 零持久化写入 + 零 entry 登记', () => {
-  it('META 格式正确但 replicationId（lineage）≠ Hub 广告 expected → NAMESPACE_IMPORT_EXPECTED_IDENTITY_MISMATCH（临时拼写）+ 零持久化写入 + 零 entry 登记', async () => {
+  it('META 格式正确但 replicationId（lineage）≠ Hub 广告 expected → NAMESPACE_IMPORT_EXPECTED_IDENTITY_MISMATCH（已冻结拼写）+ 零持久化写入 + 零 entry 登记', async () => {
     const stub = new StubReplicaPersistence();
     const registry = makeRegistry(stub);
     // 文档身份：ID_B/1（格式完全合规——32 小写 hex / 从 1 起安全整数）
