@@ -72,7 +72,7 @@ export const NAMESPACE_REGISTRY_IDLE_TIMEOUT_TYPE_MESSAGE =
 export const NAMESPACE_REGISTRY_IDLE_TIMEOUT_RANGE_MESSAGE =
   'NAMESPACE_REGISTRY_IDLE_TIMEOUT_RANGE: idleTimeoutMs 必须是 0..2147483647 的有限整数';
 export const NAMESPACE_REGISTRY_PLUGIN_CONFIG_MESSAGE =
-  'NAMESPACE_REGISTRY_PLUGIN_CONFIG: namespace-registry 插件配置仅接受 idleTimeoutMs 键';
+  'NAMESPACE_REGISTRY_PLUGIN_CONFIG: namespace-registry 插件配置仅接受 idleTimeoutMs 与 role 键';
 export const NAMESPACE_REGISTRY_SHUTDOWN_FAILED_MESSAGE =
   'NAMESPACE_REGISTRY_SHUTDOWN_FAILED: Registry shutdown 期间部分 Runtime 关闭失败';
 // —— phase-5 切片 1 增量（ADR 0010 身份条款/ADR 0009 依赖纪律）——
@@ -81,6 +81,22 @@ export const NAMESPACE_REGISTRY_RANDOM_REQUIRED_MESSAGE =
 // —— phase-5 复制谱系切片增量（issue #132；ADR 0010 复制谱系节/ADR 0009 依赖纪律）——
 export const REPLICATION_RANDOM_SOURCE_INVALID_MESSAGE =
   'REPLICATION_RANDOM_SOURCE_INVALID: 受控随机源必须返回 16 字节 Uint8Array（ADR 0009 依赖纪律）——本调用零写入、零随机消耗副作用';
+// —— phase-5 ReplicationSession 切片增量（issue #134；ADR 0010 §NamespaceLease 与
+//    ReplicationSession / §SCHEMA 与 META 权限；O-4 角色注入；稳定 message 单一真相源）——
+export const NAMESPACE_REGISTRY_ROLE_INVALID_MESSAGE =
+  'NAMESPACE_REGISTRY_ROLE_INVALID: Registry 实例角色 role 必须是 "hub" 或 "peer"';
+export const REPLICATION_SESSION_INPUT_INVALID_MESSAGE =
+  'REPLICATION_SESSION_INPUT_INVALID: openReplicationSession 输入必须恰含 localRole（"hub"|"peer"）与 remoteInstanceId（^[a-z][a-z0-9-]{0,62}$）';
+export const REPLICATION_ROLE_MISMATCH_MESSAGE =
+  'REPLICATION_ROLE_MISMATCH: options.localRole 与实例静态角色不一致（session 的 localRole 必须等于 Registry 构造时注入的 role）——本调用零写入';
+export const REPLICATION_SESSION_EXISTS_MESSAGE =
+  'REPLICATION_SESSION_EXISTS: 此 Lease 已有一个活跃 ReplicationSession（每 Lease 首版最多一个 duplex session；close 或终态后槽位释放方可再开）——本调用零写入';
+export const REPLICATION_ROLE_PERMISSION_MESSAGE =
+  'REPLICATION_ROLE_PERMISSION: peer 实例无权本地修改 SCHEMA 或复制保留字段（ADR 0010：SCHEMA 与复制身份 hub-only）——本调用零写入';
+// 【注记】open 结果面的 `REPLICATION_NOT_ENABLED`（O-7）/ `RUNTIME_WRITE_DISABLED` 码族
+// message 复用 runtime 侧 #132/errors.ts 既有冻结词（replication-session.ts 单点产出，
+// Lease 编排经 internal seam 原样透传——沿 REPLICATION_ID_PATTERN 双副本先例的结构
+// 守卫在两处互相引用；本文件不持第三副本）。
 
 /** Host 无关的命名空间归属标识：owner 是 Persistence partition key，非当前调用人。 */
 export interface NamespaceOwner {
@@ -296,6 +312,118 @@ export type NamespaceLeaseEnableReplicationResult = EnableReplicationResult | Na
 export type NamespaceLeaseBumpReplicationEpochResult =
   BumpReplicationEpochResult | NamespaceLeaseReleasedIssue;
 
+// —— phase-5 ReplicationSession 公共面（issue #134；ADR 0010 L71–90 / L81–88 / L105 / L115–121；
+//    全部纯结构性——零 Runtime 命名类型、零内部 subpath 字面量、零 Y.Doc/DocHandle/sequencer
+//    引用；形状与 runtime 包 internal 面逐字段相等，由 lease.ts Equal 断言锁死）——
+
+/** 实例静态角色（ADR 0010 静态星型拓扑；O-4 注入点：Registry 构造 options.role）。
+ *  缺省 'hub'（基线全权限等价面——零回归）。 */
+export type InstanceRole = 'hub' | 'peer';
+
+/** openReplicationSession 输入（ADR 0010 L81 冻结四域中的两域为调用方输入；
+ *  replicationId/replicationEpoch 由 Runtime 投影链冻结，非调用方输入——SA8 T-6/O-7）。 */
+export interface OpenReplicationSessionOptions {
+  readonly localRole: InstanceRole;
+  /** 远端实例标识；采纳 ADR 0010 L156 instanceId 安全文法（切片 6/7 wire 身份先行词）。 */
+  readonly remoteInstanceId: string;
+}
+
+/** open 拒绝码闭集（append-only）。 */
+export type OpenReplicationSessionIssueCode =
+  | 'NAMESPACE_LEASE_RELEASED'        // released lease 通道（冻结码）
+  | 'REPLICATION_SESSION_INPUT_INVALID'
+  | 'REPLICATION_ROLE_MISMATCH'
+  | 'REPLICATION_SESSION_EXISTS'
+  | 'REPLICATION_NOT_ENABLED'         // #132 已冻结族的新结果面用法（O-7）
+  | 'RUNTIME_WRITE_DISABLED'          // 既有码族（lifecycle≠ready / fatal 已置位）
+  | 'REPLICATION_SESSION_UNSUPPORTED';
+
+/** open 结果联合：一切拒绝（含 released）经返回 Promise 的 ok:false 结算（O-3 通道表）。 */
+export type OpenReplicationSessionResult =
+  | Readonly<{ ok: true; session: ReplicationSession }>
+  | Readonly<{ ok: false; code: OpenReplicationSessionIssueCode; message: string }>;
+
+/** apply 拒绝码闭集（append-only；fatal 经 RuntimeWriteFatalError rejection，不入本联合）。
+ *  【SA2 R1 HIGH-1】与 runtime 侧 core 联合逐字相同（六码）——Equal 十键逐字段相等前提。 */
+export type ReplicationSessionApplyRefusalCode =
+  | 'NAMESPACE_LEASE_RELEASED'        // lease 已 release（会话吊销；唯一产出点 = 包装层 revoked 前置检查）
+  | 'REPLICATION_SESSION_CLOSED'      // 显式 close 终态
+  | 'REPLICATION_EPOCH_CONFLICTED'    // 冻结 epoch 过期（终态 conflicted）
+  | 'REPLICATION_RAW_UPDATE_INVALID'  // 非 Uint8Array / scratch 预演无法接纳
+  | 'REPLICATION_PROTECTED_FIELDS_CHANGED'
+  | 'RUNTIME_WRITE_DISABLED';         // lifecycle / fatal / writable gate（含 hub-degraded）
+
+export type ReplicationSessionApplyResult =
+  | Readonly<{ ok: true }>
+  | Readonly<{ ok: false; code: ReplicationSessionApplyRefusalCode; message: string }>;
+
+/** session 独立状态查询面（O-11 冻结词汇；Runtime status 的 replication 域仍只含两态
+ *  持久事实——T-4：session 状态绝不入 Runtime status）。 */
+export interface ReplicationSessionStatus {
+  /** session 终态机：open → closed（显式 close 或 Lease release）| conflicted（epoch fence，稳定）。 */
+  readonly state: 'open' | 'closed' | 'conflicted';
+  readonly localRole: InstanceRole;
+  /** 创建时派生冻结：localRole==='peer' ⇔ 'hub-to-peer'（星型拓扑下 peer 的唯一对端是 hub）。 */
+  readonly direction: 'hub-to-peer' | 'peer-to-hub';
+  readonly remoteInstanceId: string;
+  readonly replicationId: string;
+  /** 冻结值——永不随 Runtime bump 漂移（ADR 0010 L81；SA6 用例 17 锚）。 */
+  readonly replicationEpoch: number;
+  /** Runtime 投影链当前 epoch（fence 可观测：currentEpoch !== replicationEpoch ⟹ 已过期）。 */
+  readonly currentEpoch: number;
+  /** raw apply 成功后置位、session 生命周期内永不清除（session 无法证明 ROOT 重新合法——只置不清是诚实方向）。 */
+  readonly rootValidation: 'none' | 'replication-unvalidated';
+  /** ADR 0010 L139：必须区分「内存已追上」与「磁盘未追上」，不得声称 durable。
+   *  memoryCaughtUp 初值冻结为 false（open 时刻尚无经本 session 的 raw apply——SA2 R1 #7），
+   *  首次 apply 槽 R5.5 置 true 后不回落；diskCaughtUp 为字面量 false 类型——本查询面
+   *  结构性永不声称磁盘已追上（durable 证据通道在本切片不存在；Persistence retry 落盘
+   *  不由 session 观测）。 */
+  readonly durability: Readonly<{ readonly memoryCaughtUp: boolean; readonly diskCaughtUp: false }>;
+  /** 扇出 listener 抛错的自捕获计数（ADR 0007 L54「记录」面；不 fatal、不断扇出）。 */
+  readonly observerFailures: number;
+  /** fanout 投递队列溢出标记（F-1：status 第 11 字段；初值 false、**sticky**——置位后
+   *  session 生命周期内永不清除；清零路径 = transport reset/bootstrap 后 open 新
+   *  session。标记后投递行为不变（继续投递——标记是观测信号不是行为切换），transport
+   *  观测后自行决策 reset/bootstrap（切片 6 消费）。 */
+  readonly needsResync: boolean;
+}
+
+/** ReplicationSession 公共窄能力面（ADR 0010 L81–88 六项 + 冻结四域；恰十键）。 */
+export interface ReplicationSession {
+  readonly localRole: InstanceRole;
+  readonly remoteInstanceId: string;
+  readonly replicationId: string;
+  readonly replicationEpoch: number;
+  /** 反射 live doc 真实状态向量（与 Y.encodeStateVector(doc) 逐字节一致）。终态 session
+   *  同步 throw ReplicationSessionClosedError（code REPLICATION_SESSION_CLOSED——沿
+   *  getter 域 throw 先例）。 */
+  encodeStateVector(): Uint8Array;
+  /** 按远端 state vector 编码 diff（Y.encodeStateAsUpdate(doc, sv)）。终态同上。
+   *  畸形 state vector（无法被 lib0/yjs 解码）→ 照实抛 Yjs 原生错误——**可信域契约**
+   *  （调用方为 Host 组装的可信 transport；本方法为同步编码面，不经结果联合包装）。 */
+  encodeDiff(remoteStateVector: Uint8Array): Uint8Array;
+  /** 订阅 owned 本地 updates：每投递独立 Uint8Array 副本；本 session apply 的源 origin
+   *  被排除（回声抑制）；返回退订函数。终态 session 退化为永不投递的 no-op 订阅。
+   *  listener 非函数 → 订阅时同步 TypeError（形状门禁）；listener 运行期 throw 由扇出层
+   *  自捕获计数，不熔断。 */
+  subscribeOwnedUpdates(listener: (update: Uint8Array) => void): () => void;
+  /** trusted raw apply：进入唯一 write sequencer，槽内完成 dirty notification 后 resolve；
+   *  一切拒绝经返回 Promise 的 ok:false 结果结算（含敌意 Uint8Array 子类——陷阱安全
+   *  拷贝 `new Uint8Array(update)`，绝不用 update.slice()）；internal fatal 经
+   *  RuntimeWriteFatalError rejection。 */
+  applyRemoteUpdate(update: Uint8Array): Promise<ReplicationSessionApplyResult>;
+  /** 独立复制状态（全生命周期可观测——沿 lease.getStatus 先例，不在停接纳范围）。
+   *  每次调用返回**全新深冻结对象**（state/currentEpoch/rootValidation/observerFailures/
+   *  durability 均为时变域——共享可变产物会污染后续读数）。 */
+  getStatus(): Readonly<ReplicationSessionStatus>;
+  /** 幂等 close：所有调用返回同一 Promise 实例；首次调用**同步段**标记终态 + 摘除扇出
+   *  channel（停接纳即时生效）；Promise 结算语义冻结为 **barrier 语义**：resolve 时点 =
+   *  先于本次 close() 接纳的全部任务（含在途 apply 槽）经唯一 write sequencer 排空之后；
+   *  **close() 永不 reject**（barrier 为恒绿空槽体，结构性无 reject 面）。后接纳的
+   *  apply 在接纳层被拒，不入队。 */
+  close(): Promise<void>;
+}
+
 /**
  * asyncDispose 键（ES2023 显式资源管理）。lib ES2022 未声明 Symbol.asyncDispose，
  * 故经全局接口合并补上其 unique symbol 类型（与 lib esnext.disposable 同款声明），
@@ -339,6 +467,13 @@ export interface NamespaceLease {
    *  未启用 → REPLICATION_NOT_ENABLED；fatal/degraded/close → RUNTIME_WRITE_DISABLED
    *  零写入；released → released issue。 */
   bumpReplicationEpoch(): Promise<NamespaceLeaseBumpReplicationEpochResult>;
+  /** ADR 0010 L73–79：受信任 duplex raw 复制会话入口。raw replication 绕过 VFSL 业务
+   *  校验（ADR 0010 L94 明示例外）——Host 搭建方负责只把 Lease 交给可信代码。
+   *  拒绝全部经返回 Promise 的 ok:false 结果结算（released / 输入形状 / role 不匹配 /
+   *  已有活跃 session / 复制未启用 / Runtime lifecycle 或 fatal / 宿主缺席）。 */
+  openReplicationSession(
+    options: OpenReplicationSessionOptions,
+  ): Promise<OpenReplicationSessionResult>;
   release(): Promise<void>;
   readonly [ASYNC_DISPOSE]: () => Promise<void>;
 }
@@ -417,4 +552,9 @@ export interface CreateNamespaceRegistryOptions {
   readonly randomBytes: RegistryRandomBytes;
   readonly idleTimeoutMs?: number;
   readonly observer?: RegistryObserver;
+  /** 实例静态角色（ADR 0010 静态星型拓扑）。可选，缺省 'hub'（基线全权限等价面——零
+   *  回归）；提供非法值 → 构造期同步 TypeError（NAMESPACE_REGISTRY_ROLE_INVALID，
+   *  检查顺序在 randomBytes 之后）。生产 composition root（phase-5 切片 9）必须显式
+   *  传入。 */
+  readonly role?: InstanceRole;
 }

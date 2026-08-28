@@ -17,6 +17,8 @@
  * E5  单 Yjs transaction（本槽唯一 Y.Doc 写入口；enable 两键同事务 = 原子安装）
  * E5.5 复制事实同步整替（transaction 返回后、await notifyDirty 之前——镜像 SCHEMA
  *     槽 S5.5 installActive 时序：notifier 挂起窗口内 status 已可观测提交事实）
+ *     【R2-1 增补】bump 槽于本步追加 fenceStale（主动 fence 旧 epoch sessions——
+ *     §2.1；enable 槽不 fence——显式裁决）
  * E6  同槽 await notifyDirty（完成信号 = live commit + dirty 登记两者）
  * E7  槽释放（promise settle；sequencer 自动放行下一项）
  * ```
@@ -44,6 +46,7 @@ import {
   RuntimeWriteFatalError,
 } from './errors.js';
 import type { RuntimeState } from './p0.js';
+import type { SessionFanout } from './replication-session.js';
 import {
   disabled,
   markWriteFatal,
@@ -99,6 +102,9 @@ export interface ReplicationWriteEnv {
   readonly state: RuntimeState;
   /** dirty notification 接缝（显式 undefined 联合——沿 WriteEnv 先例）。 */
   readonly notifyDirty: (() => Promise<void>) | undefined;
+  /** 会话扇出器（issue #134 round 2 R2-1：bump 槽 E5.5 同步投影步主动 fence——
+   *  runtime.ts 构造序同批捕获局部量，INV-N14 纪律延续）。 */
+  readonly fanout: SessionFanout;
 }
 
 /**
@@ -407,6 +413,14 @@ export async function runBumpReplicationEpochSlot(
     replicationId: facts.replicationId,
     replicationEpoch: nextEpoch,
   });
+  // ── E5.5' R2-1：bump 槽同步投影步主动 fence（transaction 返回后、await notifyDirty
+  //    之前——ADR 0008 #132 L134 槽序「同步投影」步的落点，零新增 sequencer 机制）。
+  //    nextEpoch 为全新值 ⇒ 全部现存 channel（全部冻结旧 epoch）被 fence——conflicted
+  //    终态 + 摘除 + 未投递排队项取消（F-3：bump 自身 META 写零投递给旧 session）。
+  //    **enable 槽不 fence**（显式裁决，§2.1）：open 门序要求 facts enabled ⇒ disabled
+  //    文档结构性不可能持有 session；已启用文档的 enable 为幂等零写，其 E5 事务（首装
+  //    谱系）发生时 fanout channel 集合必空。SA3 不得在 enable 槽加 fence 调用。──
+  env.fanout.fenceStale(facts.replicationId, nextEpoch);
 
   // ── E6 同槽 await notifyDirty ──────────────────────────────────────
   try {

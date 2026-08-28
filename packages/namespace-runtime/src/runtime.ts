@@ -66,6 +66,8 @@ import type {
 import { runRootWriteSlot } from './write.js';
 import { disabled } from './write.js';
 import type { MutateRootResult, WriteEnv } from './write.js';
+import { createSessionFanout, registerReplicationHost } from './replication-session.js';
+import type { RuntimeReplicationHost } from './replication-session.js';
 
 /** seam 输入（D8'）：包内确定性测试接缝；@internal 沿 doc-runtime getCompiledWith 先例。 */
 export interface NamespaceRuntimeSeamInput {
@@ -229,9 +231,18 @@ export function createNamespaceRuntimeWithSeam(input: NamespaceRuntimeSeamInput)
   // V3c''' closeEnv 一次成型（D2/D3：barrier 纯数据闭包——release 槽体零读 seam 输入）
   const closeEnv: CloseEnv = { handle, state };
 
-  // V3c'''' replicationWriteEnv 一次成型（#132：复制写槽纯数据闭包——与 writeEnv
-  //   同一批捕获局部量（doc/handle/state/notifyDirty），零新增注入点）
-  const replicationWriteEnv: ReplicationWriteEnv = { doc, handle, state, notifyDirty: captured.notifyDirty };
+  // V3c'''' Fanout + replicationWriteEnv 一次成型（#132 + issue #134：fanout 先于
+  //   replicationWriteEnv——bump 槽 E5.5 fenceStale 经 env.fanout 消费同一局部量
+  //  （INV-N14 纪律延续：同批捕获局部量、零新增注入点）；fanout 挂接无条件执行
+  //  （无 session 时空集合快路径）；每 Runtime 恰一次 doc.on('update') 监听——INV-S2）
+  const fanout = createSessionFanout(doc);
+  const replicationWriteEnv: ReplicationWriteEnv = {
+    doc,
+    handle,
+    state,
+    notifyDirty: captured.notifyDirty,
+    fanout,
+  };
 
   // V3d sequencer + P0 入队（INV-N1：return 前 P0 已是队首 pending 节点；微任务起步；
   //     thunk = 纯调用 () => runP0(env)，零属性读取/零字面量构造/无可抛点——
@@ -241,6 +252,17 @@ export function createNamespaceRuntimeWithSeam(input: NamespaceRuntimeSeamInput)
 
   // V3d' closePromise 幂等缓存（INV-C2 的载体——并发/已结算后调用返回同一实例）
   let closePromise: Promise<void> | undefined;
+
+  // V3d'' replication host 一次成型（issue #134 §4.1：仅依赖已捕获局部量与 sequencer
+  //   ——INV-N14 纪律延续；fanout 已在 V3c'''' 创建——同一局部量）
+  const replicationHost: RuntimeReplicationHost = {
+    doc,
+    handle,
+    state,
+    sequencer,
+    notifyDirty: captured.notifyDirty,
+    fanout,
+  };
 
   // V3e 公共面（十二键闭包对象；owner/namespaceId 由 V3a 捕获局部量构造——不再解引用成员）
   const owner = Object.freeze({ userId });
@@ -324,13 +346,24 @@ export function createNamespaceRuntimeWithSeam(input: NamespaceRuntimeSeamInput)
       // INV-C1）；写入点在 close() 同步段，与接纳门 check-then-enqueue 无交错（JS
       // run-to-completion，§12 #6）
       state.lifecycle = 'closing';
+      // R2-2（issue #134 round 2，§3.1）：同步段终止/detach 全部现存 sessions（close
+      // 生命周期事件的 session 面等价物——ADR 0008 L93「立即停止接纳公共 read 和
+      // write」；顺序冻结：lifecycle 翻转之后、barrier 入队之前，同一同步段原子；
+      // conflicted 终态不降级；已接纳 apply 槽照常排空——apply 槽体内不检查 session
+      // 终态，接纳层 A1 是唯一终态门，round-1 冻结不变）
+      fanout.terminateAll('runtime-close');
       // 队尾 barrier（INV-C3/C4）：enqueue 经 .then 微任务排程（sequencer.ts:33-37），
       // thunk 绝不在 close() 调用栈内同步执行；thunk 是纯调用（零读取/零构造/无可抛点）
       closePromise = sequencer.enqueue(() => runCloseBarrier(closeEnv));
       return closePromise;
     },
   };
-  return Object.freeze(runtime);
+  const frozen = Object.freeze(runtime);
+  // V3f replication host 登记（SA2 R1 #15：runtime 对象构造后、返回之前——WeakMap 以
+  // 对象引用为键；不触碰 runtime 对象本身、零属性污染——Object.keys(runtime) 仍恰
+  // 十二键，runtime-registry-internal-seam.test.ts 键集锁零改动即绿）
+  registerReplicationHost(frozen, replicationHost);
+  return frozen;
 }
 
 /**

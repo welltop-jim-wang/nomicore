@@ -1,79 +1,98 @@
 ---
 status: complete
-run_id: issue-135-1787792421-862383
-branch: fix/issue-135-on-docs-phase-5-websocket-replication
-round: 1
-issue: 135
+run_id: issue-134-1787847658-8367
+task_type: bugfix
+branch: fix/issue-134-on-docs-phase-5-websocket-replication
+round: 2
+issue: 134
+started_at: 2026-08-28T06:05:00+08:00
+finished_at: 2026-08-28T09:35:00+08:00
 ---
 
-# Phase 5: implement instance replication protocol v1 codec（issue #135）
+# issue #134 Round 2：PR #146 评审 12 项反馈修复（修订轮）
 
 ## 概要
 
-交付纯二进制包 `@nomicore/replication-protocol`（packages/replication-protocol，0.1.0，ESM only）：
-严格实现 instance-replication-v1 wire contract——20-byte 大端 NMCR envelope（一 WS message 一 frame）、
-17 种 v1 payload 的 normative 字段序与消息码、append-only 消息/错误注册表（连接 17 条 + namespace 20 条，
-scope/fatal/retryable/terminal 元数据不可变推导）、显式版本/capability 协商纯函数、malformed 输入统一
-注册表分类（ProtocolError）。纯包：无 Cordis/WebSocket/Registry/Node server/Buffer 依赖；直接依赖锁定
-yjs ^13.6.30 / y-protocols / lib0（lockfile 实定 13.6.32 / 1.0.7 / 0.2.117）。
+按 PR #146 评审反馈（阻断 5 / 需明确 3 / 收口 4，共 12 项）对 round 1 交付做修订修复，
+评审合同逐字收录于 `wiki/raw/task_namespace-lease-replication-session_round2.md`。核心
+修复五件：epoch fence 前置到 bump 槽（旧 session outbound 立即停止投递）、Runtime close
+同步段终止/detach 现存 sessions、复制扇出异步化（observer 零 listener 调用 + 每 channel
+有界队列 16 + 自延伸微任务泵让步 20 + sticky `needsResync` 第 11 字段——ADR 0010 L113
+字面落地）、受保护字段规范化深比较（白名单 = Y.Map/Y.Array ∪ plain array/object）、
+lease release guaranteed cleanup（seam 抛错隔离、半释放结构性不可达）。另：committed
+精确二分（beforeTransaction 探针）、no-op 置位语义明文、plugin role 贯通（含
+createNamespaceRegistry 工厂漏转发第二根因）、AC7 竞态矩阵补齐、owned bytes 测试加严、
+两包 README、PEER_ALLOWED_META_KEYS 空占位删除。
 
-流水线全程：SA8 前置门禁 clear → SA6 验收锚定（9 测试文件红灯）→ SA1 设计 R1 → SA2 攻击评审 pass →
-SA3 TDD 实现（4feb737）→ SA6 测试缺陷 A/B 修复（fa53d86）→ SA4 R0 reject（F1/F2/F3）→ SA3 回流（7489ca1）
-→ **SA4 R1 pass**（非阻塞 INFO-1 登记）→ **SA7 PASS** → **AC 门禁 6/6 ✅** → **双轴终审双 pass**。
-（恢复轮说明：SA7 曾两度因宿主重启/forks 多 worker 内存爆炸中断，本恢复轮在中心资源约束下收口。）
+流水线全程（修订轮工作流）：SA8 前置门禁 **clear**（12/12 no-conflict + D-1..D-4 登记义务）
+→ SA6 红灯锚定（29 新用例：21 预期红 + 8 绿锁定）→ SA1 设计增补 → SA8 设计复审 **clear**
+（C-1'/C-2' 条件 + R-1'..R-4' 残留）→ SA2 攻击评审（R2 **reject** HIGH+MEDIUM → R2.1
+**pass** → R2.2 **pass**）→ SA3 TDD 实现（8a68d82，偏离 3 项 + 发现 2 项全部经 SA1 R2.2
+就地裁决）→ SA6 三项同步（9cfc1b6：fixture 类型面 / AC-2 ③ 时序演进 / spin 收尾）→
+总控亲验三档全绿 → SA4 静态验尸（首轮 **reject** F-1 窄门 → 回流补锚闭合 → **pass**）→
+SA7 动态验证 **PASS**（0 契约缺陷，R-1'/R-2' 满载复核闭合）→ AC-R2 门禁 **12/12** →
+双轴终审**双 pass**（Standards 0 hard/2 minor/6 info；Spec 0 缺陷/5 INFO）→
+终审非阻断项机械收口（79194dd）→ 最终验证全绿。
 
-## 变更
+## 变更（diff 4cfaffd..HEAD = 8a68d82 + 2a7117a + 9cfc1b6 + 1e2c748 + 1128ef7 + 79194dd）
 
-- `packages/replication-protocol/`：新包 11 源文件（envelope/canonical/payloads/messages/errors/registries
-  /negotiation/limits/constants/index + package.json/tsconfig），SA4 R0 回流修复 3 处（lookupError own-key、
-  assertWellFormedString typeof 守卫、readU32Field 死分支）+ 3 个防回归锚点。
-- `packages/replication-protocol/test/`：SA6 验收测试 9 文件（含 18 条 byte-level golden fixtures）；
-  SA6 A/B 最小修复（HELLO golden 版本表 wire `03010203`→`03030201`、golden 计数断言 17→18）。
-- 根 `package.json`：typecheck 链追加 `tsc -p packages/replication-protocol/tsconfig.json`（唯一根改动）。
-- 流水线档案：wiki/raw/task_replication-protocol-v1-codec_{design,sa2_review,sa3_impl,sa4_review,
-  sa7_report,ac_checklist,standards_review,spec_review,dispatch,...}.md。
+- `packages/namespace-runtime/src/replication-session.ts`：SessionChannel/Sep/Fanout
+  异步化重构——observer 只做回声抑制谓词 + 容量检查（先于复制）+ `update.slice()` 入队 +
+  调度泵；自延伸微任务泵（20 让步/项、交付时刻快照、逐 listener 自捕获、最外层 catch、
+  finally 复位）；fenceStale/finalize/terminateAll/isTerminal 终态机；closedBy 记账 +
+  A1 码域精化（runtime-close → RUNTIME_WRITE_DISABLED）；protectedValueEqual/
+  deepEqualPlain/isWhitelistedValueContainer/projectOf 替换 protectedPrimitiveEqual；
+  R5 beforeTransaction 探针 committed 精确二分；status 第 11 字段 needsResync；
+  PEER_ALLOWED_META_KEYS 删除（语义冻结由 ADR 文字承载）。
+- `packages/namespace-runtime/src/replication-write.ts`：bump 槽 E5.5'（同步投影步）
+  `fenceStale(replicationId, nextEpoch)`——facts 整替之后、notifyDirty 之前；enable 槽零
+  fence（显式裁决）。
+- `packages/namespace-runtime/src/runtime.ts`：close() 同步段 lifecycle 翻转后、barrier
+  入队前 `fanout.terminateAll('runtime-close')`；构造期 fanout 前移。
+- `packages/namespace-registry/src/lease.ts`：doRelease guaranteed cleanup（① released
+  ② entry 删除 ③ releasePromise+observer 先于 ④ 幂等直调 close（`Promise.resolve(closing)
+  .catch` 原生同化 + try/catch）→ ⑤ onReleased 无条件）；Equal 锁自锁第 11 字段同步。
+- `packages/namespace-registry/src/plugin.ts`：NamespaceRegistryPluginConfig +role 键 +
+  校验序 ①形状→②键集→③role 域（NAMESPACE_REGISTRY_ROLE_INVALID）→④idleTimeoutMs +
+  apply 透传。
+- `packages/namespace-registry/src/registry.ts`：createNamespaceRegistry 工厂补转发
+  options.role（L1333-1339 展开缺 role 键的生产缺口修复）+ 跨包 Equal 双锁同步。
+- `packages/namespace-registry/src/types.ts`：PLUGIN_CONFIG 文案更新；status 类型第 11
+  字段 needsResync。
+- 测试：SA6 round-2 红套件两文件 29 用例全部转绿（runtime 17 + registry 12）；SA3 新建
+  包内套件 runtime-replication-session-round2.test.ts 25 用例（泵/队列/交付集/fence/
+  terminateAll/深比较矩阵/F-1 补锚/探针锚）；SA6 R2-10 加严 round-1 两文件（直存原始
+  callback 参数断言）+ R2.2 三项同步（fixture 类型面、AC-2 ③ flushMicrotasks 时序演进、
+  spin fixture 收尾 close——全部零断言语义变化、登记在案）。
+- 文档：ADR 0010 修订节 append-only round-2 小节（D-1..D-4 全条目：异步队列+needs-resync
+  交付集冻结、主动 fence、close 终止语义含 closedBy 码映射、深比较规则表+成本注记、
+  committed 二分+例外方向、成功接纳即置位）；phase-5 C-1 显式撤销改写 + 词汇追加；
+  CONTEXT.md needs-resync 一句；两包 README（runtime「ReplicationSession 内部宿主」8 条 +
+  Lifecycle 增补；registry Public API 5 条 + Plugin configuration）。
+- 版本：namespace-runtime 0.1.9→0.1.10；namespace-registry 0.1.5→0.1.6（恰 version 字段）。
+- wiki 归档：round-2 简报/冲突报告×2/相关决策/设计 R2.2.1（含 R2.1/R2.2/R2.2.1 修订记录）
+  /SA6 红灯报告/SA2 评审（含更正记录）/SA3 实现报告/SA4 验尸（含 F-1 追节）/SA7 动态报告
+  /AC-R2 checklist/双轴终审两份/dispatch 追加段。
 
-## 验证（本恢复轮亲跑，单 worker/heap≤2GiB/显式 timeout 约束下）
+## 验证（最终档，总控亲跑）
 
-| 项 | 命令（约束） | 结果 | 证据（.mabf-bg/） |
-|---|---|---|---|
-| 根 typecheck | `NODE_OPTIONS=--max-old-space-size=2048 pnpm typecheck`（10 包链含新包） | **EXIT=0** | final2-typecheck.log/.exit |
-| 根全量测试 | `pnpm test --pool=forks --poolOptions.forks.maxForks=1 --poolOptions.forks.minForks=1 --testTimeout=60000 --hookTimeout=60000` | **127/127 文件 · 1544/1544 测试 · Type Errors 0 · EXIT=0**（87.26s） | final3-test.log/.exit |
-| 包级套件 | `vitest run packages/replication-protocol`（含 --typecheck） | 9/9 · 139/139 · EXIT=0 | sa7-vitest-pkg.log/.exit |
-| fuzz 确定性 | 单文件 ×3 连跑 | 3× 5/5 EXIT=0，逐字一致 | sa7-fuzz-{1,2,3}.log |
-| yjs 互通 | 锁定组合真实 update/SV/snapshot 往返 | 25/25 EXIT=0 | sa7-interop.log/.exit |
-| **Buffer 遮蔽整套件** | `vitest run --config .mabf-bg/sa7-shadow.config.ts --pool=threads --poolOptions.threads.singleThread --testTimeout=60000 --hookTimeout=60000`（heap 2048） | **7/7 文件 · 127/127 · 451ms · EXIT=0** | sa7-shadow-suite6.log/.exit |
-| 遮蔽内存裁决探针 | plain node+tsx 复刻 fuzz 三循环（同种子）+ golden 变异，遮蔽下 heap 采样 | 800+800 decode Δ=0.0MB、300 roundtrip Δ=0.2MB、1220 变异 Δ=0.0MB，全断言过，EXIT=0 | sa7-shadow-node-probe.{ts,log,.exit} |
-| D-5 原型语义 | 探针 11 项（payload 原型跟随输入/自产输出恒 Uint8Array） | 11 pass / 0 fail | sa7-probe-d5.log |
-| alloc-bound | 巨大声明短 body 200k×2（帧级/payload 级） | 全部注册表分类错误，heap Δ≤1.2MB 有界 | sa7-probe-allocbound.log |
-| INFO-1 行为 | encodeFrame 非数值 messageType（'toString'/'constructor'）实测 | 产出 type=0x00 帧，decode 边界必拒 UNSUPPORTED_MESSAGE_TYPE（失败 loud） | sa7-probe-info1.log |
+| 验证 | 命令 | 结果 |
+|---|---|---|
+| whitespace | `git diff --check 4cfaffd..HEAD` | **exit 0** |
+| 类型 | `pnpm typecheck` | **exit 0**（`.mabf-bg/r2final-typecheck.log`） |
+| 全量测试 | `pnpm test --pool=forks --poolOptions.forks.maxForks=1 --poolOptions.forks.minForks=1 --testTimeout=60000 --hookTimeout=60000` | **141 文件 / 1735 用例全绿；Type Errors: no errors；零 TypeCheckError / 零 Unhandled；exit 0**（92.73s；`.mabf-bg/r2final-test.log`） |
 
-### 资源约束合规与排障记录
+评审 12 项逐项处置详见 `wiki/raw/task_namespace-lease-replication-session_round2_ac_checklist.md`
+（12/12 通过：阻断 5 修复+回归锚、需明确 3 项全部裁决落盘、收口 4 项完成）。
+SA7 附加实测：red #9 forks 池满载 ×3 复跑最坏 202ms<400ms；泵活链路 13/13、fence/terminate
+活链路 18/18、敌意 beforeTransaction 探针 11/11、敌意 close 六型直构 unhandledRejection
+Δ0；round-2 三文件 ×3 连跑零 flaky。
 
-- 全程 Vitest 参数兼容性先行核对（v3.2.7 `--pool/--poolOptions.{forks,threads}/{singleFork,singleThread,maxForks}/--maxWorkers/--testTimeout/--hookTimeout` 均经 `--help` 确认）。
-- forks 池 + Buffer 遮蔽下 vitest worker 堆线性增长（~17MB/s）至 2GiB OOM（fuzz/截断/golden 三文件同现，
-  117s 触顶）：经 node 探针裁决为 **vitest/tinypool forks IPC 管线对 Buffer 缺席的基础设施假象**
-  （codec 运行时 heap 全平），非产品缺陷；遮蔽验证改用 threads singleThread 一次通过。
-- threads singleThread 下根全量测试出现 1 例**与本文无关的既有测试**失败
-  （namespace-runtime runtime-replace-schema-sa7-dynamic T3.4，`expected 'resolved' to be 'rejected'`）：
-  该文件源自 PR #85，全仓无任何包依赖 @nomicore/replication-protocol（grep 零命中），今日同树内容
-  默认池两次全绿；单文件对照实验：threads 池确定性失败 / forks 池通过 → 递归深度（栈尺寸）敏感型
-  既有环境假设，非本任务回归。最终全量验证按约束采用 forks 单 worker（maxForks=1 逐文件新进程、
-  顺序执行、heap 2048、显式 timeout）→ 1544/1544 EXIT=0。
-- 宿主内存全程平稳（验证后 available 13.8GiB）。
+## 遗留事项（全部登记归属，不阻断）
 
-## 门禁结论
-
-- **SA4 R1：pass**（F1/F2/F3 闭环逐行复核）；登记 **INFO-1 非阻塞**：encodeFrame 非数值 messageType 入参
-  产出 type=0x00 帧，decode 边界必拒，TS 类型面不可达、非 wire 攻击面。处置：SA7 §3.3 实测记录确认，
-  建议后续切片顺手加 `typeof messageType === 'number'` 守卫（纯纵深项）。
-- **SA7：PASS**（wiki/raw/task_replication-protocol-v1-codec_sa7_report.md）。
-- **AC 门禁：6/6 ✅**（ac_checklist.md；非目标五项零越界：WS 连接/状态机、namespace 状态机、认证授权、
-  背压调度、Runtime/Registry 集成均未实现，属后续切片）。
-- **双轴终审（980b16a...HEAD diff，并行双 subagent）**：
-  - Standards 轴（standards_review.md）：**pass**，0 hard violation / 6 judgement call（Fowler smell 类，
-    最重为 payloads.ts marker/limit 校验形状各重复 6 处，建议后续提取 helper）；
-  - Spec 轴（spec_review.md）：**pass**，1 LOW（sequence 纪律以 expectedSequence seam 委托状态层，
-    与简报非目标一致；后续 ws 切片恒传 expectedSequence）+ 1 INFO（AC5 依赖锁定经 lockfile 落地）；
-    scope creep 零、实现有误零，INFO-1 独立复核同意非阻塞。
-- 两轴均无阻断问题，无需修复回流。CI 跟踪与发布（push/PR/标签/.mabf-done）移交 Host。
+- SA7 §十 N 级表征 4 条（跨 channel 首投递墙钟交错、Proxy 种子延迟域、RAW_UPDATE_INVALID
+  码语义面向、突发弃新计数）——设计 §18/SA7 报告登记，属知情接受。
+- Standards I-1（SessionClosedBy 'explicit-close' 死联合成员）等 info 级项记录在案。
+- needs-resync 消费面（transport reset/bootstrap 清零路径）属切片 6（ADR 0010 L151 域分界
+  维持）。
+- CI 状态不在本地完成门槛内：发布（push/PR）与 CI 观察由 Host 执行。

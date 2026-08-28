@@ -222,3 +222,56 @@ Phase 5 首版建立：
 本 ADR 修订 ADR 0009 的 Registry identity：entry key由`(owner.userId, namespaceId)`改为仅namespaceId；owner仍是open/create的必需本地属性、Runtime/Lease投影和Persistence分区键，owner mismatch不泄露存在性。跨进程不建立全局 sequencer，而由各实例本地 sequencer和Yjs CRDT合并实现最终一致。Registry仍负责本地Runtime generation、Lease、reset/archive编排和Host生命周期。
 
 Phase 4 中列为非目标的 WS room、raw Yjs sync 和分布式部署由 Phase 5 接续；leader election、文件锁和分布式 Registry 仍不进入本阶段。交付切片见 `docs/phases/phase-5-websocket-replication.md`。
+
+---
+
+## 修订节：issue #134（ReplicationSession 落地冻结词汇，依据 phase-5 切片 3/4）
+
+日期：2026-08-28；状态：已接受（`fix/issue-134-on-docs-phase-5-websocket-replication`）
+
+本节把「NamespaceLease 与 ReplicationSession」「Trusted raw update 与现有不变量」「SCHEMA 与 META 权限」「Persistence degraded 语义」四节的落地决策与冻结词汇登记到本文（实现细节以 `packages/namespace-runtime/src/replication-session.ts`、`packages/namespace-registry/src/lease.ts` 为权威；本 ADR 为公共契约语义来源）。
+
+### ReplicationSession 打开与 apply 拒绝码注册（append-only）
+
+- `lease.openReplicationSession(options)` 返回 `Promise<OpenReplicationSessionResult>`；一切拒绝（含 released lease）经返回 Promise 的 `ok:false` 结算。拒绝码闭集：`NAMESPACE_LEASE_RELEASED`（released 通道）/ `REPLICATION_SESSION_INPUT_INVALID`（输入恰含 localRole + remoteInstanceId（`^[a-z][a-z0-9-]{0,62}$`——L156 安全文法））/ `REPLICATION_ROLE_MISMATCH`（session localRole ≠ 实例静态角色）/ `REPLICATION_SESSION_EXISTS`（每 Lease 至多一个活跃 session）/ `REPLICATION_NOT_ENABLED`（复制身份未安装——复用 issue #132 已冻结词族）/ `RUNTIME_WRITE_DISABLED`（Runtime lifecycle≠ready 或 fatal 已置位）/ `REPLICATION_SESSION_UNSUPPORTED`（Runtime 无复制会话宿主——测试替身 Runtime 或包版本错配）。
+- `session.applyRemoteUpdate(update)` 返回 `Promise<ReplicationSessionApplyResult>`；可预期拒绝（gate/scratch/fence/终态/lifecycle）全部经 `ok:false` 结算，码闭集：`NAMESPACE_LEASE_RELEASED`（lease 已 release——wrapper 前置检查唯一产出点）/ `REPLICATION_SESSION_CLOSED`（显式 close 终态）/ `REPLICATION_EPOCH_CONFLICTED`（冻结 epoch 过期，终态 conflicted）/ `REPLICATION_RAW_UPDATE_INVALID`（非 Uint8Array 或 Yjs 无法接纳）/ `REPLICATION_PROTECTED_FIELDS_CHANGED`（受保护内容变化）/ `RUNTIME_WRITE_DISABLED`（lifecycle/fatal/writable gate，含 hub degraded 拒绝）。写管线 internal fatal（getStatus adapter 违约 / apply 未知 throw / notify-dirty 失败）经 `RuntimeWriteFatalError` rejection（`committed` 诚实），slot 词 `replication-apply` → fatal 码 `NSRT-FATAL-REPLICATION-APPLY-INTERNAL`。
+
+### Session 独立状态词汇（O-11 冻结）
+
+`session.getStatus()` 每次返回全新深冻结对象，形状：`state('open'|'closed'|'conflicted')` + 冻结四域（`localRole`/`remoteInstanceId`/`replicationId`/`replicationEpoch`——open 时捕获为常量，永不随 Runtime 漂移）+ `direction('hub-to-peer'|'peer-to-hub')`（创建时派生：localRole==='peer' ⇔ hub-to-peer）+ `currentEpoch`（Runtime 投影链当前值——fence 可观测：与 `replicationEpoch` 不等即已过期）+ `rootValidation('none'|'replication-unvalidated')`（raw apply 成功后置位、生命周期内永不清除）+ `durability`（`memoryCaughtUp` **初值冻结 false**——open 时刻尚无经本 session 的 raw apply；首次 apply 成功置 true 后不回落；`diskCaughtUp: false` 字面量类型——该查询面结构性永不声称 durable）+ `observerFailures`（扇出 listener 自捕获计数；无界纯计数、不熔断不自动退订——熔断/背压属切片 6 队列属主）。Runtime status 的 `replication` 域仍只含两态持久事实（disabled | enabled），session 状态绝不入 Runtime status。
+
+### 生命周期词义（O-9 冻结）
+
+- 「每 Lease 至多一个 duplex session」= Lease 级至多一个**活跃**（`state==='open'`）session；计数在 Lease 层（同一 Runtime 被多 Lease 共享——fan-out 的结构前提）。`closed`（显式 close 或 Lease release 同步调用 `session.close()`）与 `conflicted`（epoch fence）皆终态并释放槽位；终态后同 Lease 可再 open（新 open 冻结新 epoch = 显式 reset/bootstrap 的本切片等价物）。
+- `close()`：幂等 same-promise；首次调用同步段停接纳 + 摘除扇出 channel；Promise 结算为 **barrier 语义**（resolve 时点 = 先于本次 close() 接纳的任务排空之后），**永不 reject**（恒绿空槽体）。release 不追踪已接纳 apply 槽（ADR 0009 L42 同款——照常排空）。
+- 两种终态（close 首调 / apply 槽 R2 conflicted 转换）共用同一 `fanout.detach` 摘除点：存量 listener 即刻停止投递（transport 不得据旧 session 字节继续错误同步）。
+
+### 受保护字段判据（O-12 冻结）
+
+- 判据 = **(a) 内容投影相等**：scratch clone（新 Y.Doc + `encodeStateAsUpdate` 全量装载 + 装载待审 update）上比对 SCHEMA/META 的全键值投影；原始值直比（string/number/boolean/null），非 primitive 形态（Yjs 容器/对象——契约外值域）保守判「已改变」→ 拒绝。字节级判据无良定义（encodeStateAsUpdate 非规范编码）、零操作判据需解析 update 结构且漏判「删后重写同值」——(a) 是 L105「确认 update 不改变 SCHEMA」的字面语义。
+- **判据 (a) 边界点名**：**「删后同值重写 = 内容未变 = 允许」**（内容投影相等判据的字面推论）；副作用仅为同值重写的历史膨胀（Yjs CRDT 结构增长），属可信域威胁、危害有界——后续审查者不得重开此议题视为缺陷。
+- 受保护字段集合 = **冻结常量**（raw caller 不得逐次自定义，L121）：hub 侧（接收 peer→hub）`SCHEMA 全容器 + META 全键`；peer 侧（接收 hub→peer）`META 全键`（SCHEMA/ROOT 放行——L105）；peer 允许的 META 白名单**首版 = 空集**（⟺ META 全键保护，两侧对称；L121「未决定即不可同步」保守读法，且与 L120「epoch 只经 hub 显式管理操作修改、peer 永不经 raw 获得」一致）。
+- **hub 侧全 META 保护登记**：这是对 L105 最小检查集（SCHEMA + 复制身份保留字段）的**收紧而非放宽**——docId/createdAt 是 Registry 身份元数据、本切片无任何合法 raw 路径修改非保留 META；对称谓词可测性与防篡改性均更优。peer 侧对称收窄（META 全键保护但 SCHEMA 放行）。
+- **已知成本登记**：scratch 预演 O(doc)/apply（每 apply 全量装载 + 投影比对）——本切片正确性优先；增量检查（仅比对 diff 触达容器）留作后续演进，非过早优化，不得在未评审情况下预写。
+
+### 其他冻结
+
+- **O-7**：复制身份未安装（`{state:'disabled'}`）的命名空间上 open → 稳定拒绝 `REPLICATION_NOT_ENABLED`（复用 #132 已冻结 message 族，零新词）——四域冻结（L81）前置要求 replicationId/epoch 存在，允许开将迫使 session 携带 undefined 谱系。
+- **O-4 角色注入**：实例静态角色经 Registry 构造 `options.role`（生产 `CreateNamespaceRegistryOptions` 与 testing overrides 同形）注入；可选、缺省 `'hub'`（基线全权限等价面——零回归）；非法值 → 构造期同步 TypeError（`NAMESPACE_REGISTRY_ROLE_INVALID`，检查顺序在 randomBytes 之后）。peer 的 `replaceSchema`/`enableReplication`/`bumpReplicationEpoch` 在 Lease 接纳段以稳定角色权限错误拒绝（`REPLICATION_ROLE_PERMISSION`，结果联合零改形、重复调用 JSON 逐字节相同）；session open 校验 `options.localRole === 实例 role`（不等 → `REPLICATION_ROLE_MISMATCH`）。生产 composition root（切片 9）必须显式传 role。
+- **internal seam 第二导出指针**：`@nomicore/namespace-runtime/internal` 值导出由一键扩为两键——`createNamespaceRuntimeForRegistry`（ADR 0009）+ `openReplicationSessionCoreForRegistry(runtime, options)`（本修订；消费边界不变：仅 Registry 生产代码，import 图审计谓词零改动）。Runtime 公共入口值导出仍恰一键、Runtime 十二键对象面不变、两包 `package.json` exports 键集不变。
+- **踩坑注记（SA2 R1 #13）**：**META 触碰的管理写（enable/bump）字节不得经 raw 回灌对端**——META 受保护全键检查会在 hub 侧拒绝、peer keep live docs 的 META 变化也只经控制面传播；**epoch 传播走控制面（切片 6 `IDENTITY_CHANGED`）**，不依赖 raw update 携带。
+- **degraded 矩阵**：peer `persistence-degraded` 期允许已冻结 hub→peer session 的 trusted apply（内存生效 + `saveDoc` 仍登记 + retry 落盘——L131–135），**该 bypass 只属于创建时已冻结为 hub-to-peer 的可信 session**（O-1 五条件合取：lifecycle ready ∧ fatal 未置位 ∧ direction 冻结 hub-to-peer ∧ `getStatus()==='persistence-degraded'` ∧ notifyDirty 已绑定）；hub degraded 拒 peer→hub raw apply 但保留读取/身份检查/state-vector 交换（L125–129）；notifyDirty 未绑定时任意方向（含 bypass）一律拒绝（无持久化绑定不得写——D6.4）。
+
+### issue #134 round 2 修订（PR #146 评审 12 项闭环——append-only；依据 `task_namespace-lease-replication-session_round2_design.md` R2.2.1）
+
+**fanout 投递异步化（R2-3；D-1——撤销 round-1「本切片无队列 ⇒ L113 不可达」读法）**：observer（`doc.on('update')`）内只做回声抑制谓词 → 容量检查 → **owned bytes 复制**（`update.slice()`——ADR 0010 六步之 4「产出」的同步面）→ 入队 → 调度泵；**listener 调用全部移出 transaction 栈**（慢 listener 零阻塞事务返回/sequencer 槽）。投递经**每 session 有界异步队列**（容量 **16** 冻结常量 `FANOUT_CHANNEL_QUEUE_CAPACITY`——不可配置）+ **自延伸微任务泵**（每项投递前让步 **20** 次——双向 load-bearing：公平性下界与 flushMicrotasks 预算上界，合法区间 [16,24]）。**队列溢出 → 丢弃新项（保序：已入队最旧项保留）+ 置 `status.needsResync`（第 11 字段，sticky——置位后 session 生命周期内永不清除；清零路径 = transport reset/bootstrap 后 open 新 session；标记后投递行为不变——标记是观测信号不是行为切换；transport 观测后自行决策 reset/bootstrap）**——L113「只把 channel 标记为 needs-resync，不得阻塞 write sequencer」自「结构性不可达」读法改为**字面实现**；L241「熔断/背压属切片 6 队列属主」**收窄**为「WS 发送队列/连接级背压（正文 L151 域）」——投递队列（runtime 内、session 域）属本切片。`observerFailures` 计数语义不变（无界纯计数、不熔断不自动退订）；**两级副本**（observer 入队复制 + 每 listener 每投递 `item.slice()`）为正确性优先的有意成本（性能注记：每 apply 每受保护 META 键 `toJSON()` 递归投影 ×2 + 键集 sort——O(META 体量)/次，scratch 全量 clone 为既有成本、深比较为新增）；**交付集语义冻结句（R2.1 / SA2 #1）**：「投递交付集 = **交付时刻** listener 快照（**at-least-once**）——晚订阅者可收到订阅前入队项；跨退订重订可重复交付；重复交付由 Yjs `Y.applyUpdate` 幂等吸收（CRDT 重复应用零效果）」。
+
+**bump 槽边界主动 fence（R2-1；D-2a）**：bump 槽 **E5.5**（ADR 0008 #132 L134 槽序「同步投影」步——transaction 返回后、`await notifyDirty` 前）经 `fanout.fenceStale(replicationId, nextEpoch)` 主动 fence：凡 channel 冻结 `(replicationId, replicationEpoch)` 与传入不等（身份不等或 epoch 落后）→ `finalize('conflicted')`——**conflicted 终态 + `fanout.detach` 摘除点 + 未投递排队项取消**（bump 自身 META 写于 E5 已入队、被本步取消 ⇒ **bump 写零投递给旧 session**——F-3 词义）；与 apply 槽 R2 的被动 fence **共用同一 finalize（零新增终态语义）**；fence 后旧 session `getStatus().state === 'conflicted'`、`currentEpoch` 反映新值、冻结 `replicationEpoch` 不漂移；终态释放 Lease session 槽位——**同 Lease 可再 open 新 epoch session**（显式 reset/bootstrap 的等价物；L245 词义不污染）。**enable 槽不 fence**（显式裁决：enable 的 E5 发生时 fanout channel 集合必空——open 门序要求 facts enabled）。
+
+**Runtime close 终止 sessions（R2-2；D-2b）**：Runtime `close()` 同步段（`lifecycle` 翻转后、barrier 入队前——同一同步段原子）经 `fanout.terminateAll('runtime-close')` 逐 channel `finalize('closed', 'runtime-close')`——**终态 `closed` + 排队项取消**；内部记账 `closedBy: 'runtime-close'`（**不进 status 形状**——A1 拒绝码映射专用）；conflicted 终态不降级。**已接纳 apply 槽无条件排空**（barrier 队尾——ADR 0008 L93/L179 锚；apply 槽体内不检查 session 终态，接纳层 A1 是唯一终态门）。其后 apply 拒绝映射：**`RUNTIME_WRITE_DISABLED`**（#93 修订节第 (4) 类「close 后 lifecycle≠ready 的接纳拒绝」域——session 级 closed 只是派生事实；显式 close 保持 `REPLICATION_SESSION_CLOSED`）。`encodeStateVector`/`encodeDiff` 终态**确定同步 throw `ReplicationSessionClosedError`**（round-1「best-effort 不承诺」措辞收窄——终态纪律统一）。Runtime close 后 session 再 `close()`：经既有幂等路径（terminal ≠ open ⇒ 跳过标记 + 惰性恒绿 barrier + same-promise 缓存，永不 reject——INV-S11 延续）。
+
+**受保护字段判据细化——结构值规范化深比较（R2-4；D-3，SA8 路径 (a)）**：`protectedPrimitiveEqual` 对一切非 primitive 恒判「已改变」对 ADR 0008 L31 合法值域（JSON-compatible plain value，含 object/array）产生 false positive——修订为**规范化深比较**（判据名不变：内容投影相等）：primitive 直比（**SameValue**——NaN=NaN、-0≠0，round-1 语义延续）；容器白名单（**(B) 保守白名单**，R2.1 / SA2 #2）＝ **Y.Map / Y.Array**（**显式构造容器**——调用方以 `new Y.Map()` / `new Y.Array()` 显式构造的本地容器形态；经 `toJSON()` 递归投影参与比较）**与 plain array / plain object**（yjs 13.6.32 实测：`Y.Map.set` 对 plain 值经 lib0 writeAny 原样存储、round-trip 后仍为 plain——**L31 值域的实际本地存储形态**；原型必须为 Object.prototype/null，排除 Date/Map/Set 等非 plain 实例）——深比较规则冻结：**键序无关**（plain object 键集排序后逐键）、**数组有序**递归、空值/primitive SameValue；**契约外容器（Y.Text/Y.XmlText 等一切 `instanceof Y.AbstractType` 且非白名单）保守判「已改变」——虽同型等内容未变亦拒**（round-1 姿势连续；合法写路径结构性不可达，仅种子/直构面）；**跨形态分叉拒**（单侧白名单即拒——如 live Y.Text vs update plain 'abc'）；**白名单容器内嵌套契约外子值随投影参与比较**（`toJSON` 已摊平——投影相等即放行，表征归一化边界：与「删后同值重写」同族）；**META 值域零收窄**（深比较只在受保护字段投影比对域内执行——L31 整体值域不变）；「删后同值重写 = 内容未变 = 允许」在结构值下同样成立（不变）。
+
+**committed 精确二分（R2-6；D-4）**：R5 以 `beforeTransaction` 探针精化 `RuntimeWriteFatalError.committed`——`txStarted === false`（探针未运行 ⇒ beforeTransaction emit 未完成 ⇒ 事务函数从未执行 ⇒ **零 mutation**）⟹ `committed:false`；`txStarted === true`（事务已开始、mutation 程度不可判）⟹ 保守 `committed:true`（ADR 0008 L84 过报方向强制）。探针槽内注册（晚于一切先注册 listener——Yjs 按注册次序同步派发）、finally 卸载（零泄漏）；fatal 码/词不变（`NSRT-FATAL-REPLICATION-APPLY-INTERNAL` + slot `'replication-apply'` + phase `'unknown-pipeline-throw'`——只精化 committed 布尔）。**例外注记（精确性条件）**：注入面 = yjs 事务钩子域；解码期异常（R4 已拦 `REPLICATION_RAW_UPDATE_INVALID`）、notifyDirty 失败（`committed:true` 既有锁定）不在判据内；复合敌意（beforeTransaction 内先变异后抛错的多个 listener）属 ADR 0007 L54 observer 契约破坏域——二分不为其承诺，**该除外情形失败方向为 under-report（`committed:false` 而可能已变异）**——比过报危险（调用方可能据此跳过 reconciliation），L84 只强制过报方向，本二分对钩子域内单点注入维持精确、对契约破坏域残余风险以方向性明文收口。
+
+**成功接纳即置位（R2-7 明文规范）**：no-op / 重复 / 空效果 update 的成功 apply（`Y.applyUpdate` 正常返回 + R6 dirty 登记完成）同样置 `rootValidation = 'replication-unvalidated'` 与 `memoryCaughtUp = true`——无「且推进文档状态」限定（依据：L241「raw apply 成功后置位」「首次 apply 成功置 true」字面；L107「该 update 仍被**接受**……标记」；CONTEXT「复制未校验」词条「已**提交**并登记 dirty」；ADR 0006 #79 L192 互证）。

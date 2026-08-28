@@ -237,7 +237,7 @@ describe('AC1/AC2/AC3 组合（§7.22-24）：真实 Context 组合与配置校�
       'NAMESPACE_REGISTRY_IDLE_TIMEOUT_TYPE: idleTimeoutMs 必须是 number（0..2147483647 有限整数）',
     );
     expect(() => createNamespaceRegistryPlugin({ foo: 1 } as never)).toThrow(
-      'NAMESPACE_REGISTRY_PLUGIN_CONFIG: namespace-registry 插件配置仅接受 idleTimeoutMs 键',
+      'NAMESPACE_REGISTRY_PLUGIN_CONFIG: namespace-registry 插件配置仅接受 idleTimeoutMs 与 role 键',
     );
     // RangeError = 数值域（§2.A 二分）
     for (const bad of [-1, 1.5, Number.NaN, 2_147_483_648]) {

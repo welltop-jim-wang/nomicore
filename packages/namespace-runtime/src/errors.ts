@@ -178,6 +178,42 @@ export const REPLICATION_INPUT_INVALID_MESSAGE =
 export const REPLICATION_META_ABSENT_MESSAGE =
   'REPLICATION_META_ABSENT: META 载体缺席，拒绝在其上安装复制身份（防产生无 docId 的 META）——生产路径不可达（仅 seedForTest 设施）；本调用零写入';
 
+// —— issue #134（Phase 5 切片 3/4）：ReplicationSession 会话 apply 域（append-only）——
+/** 会话 apply 写槽 internal fault 稳定 code（D-11——append-only：与 ROOT/SCHEMA/REPLICATION
+ *  管理写槽区分来源——apply fatal 与管理写 fatal 分码防诊断失真；status.fatal 可判别）。 */
+export const FATAL_REPLICATION_APPLY_WRITE_INTERNAL_CODE = 'NSRT-FATAL-REPLICATION-APPLY-INTERNAL' as const;
+
+/** 会话 apply 写槽 internal fault 稳定 message（恒定文案：不含任何原始异常文本/stack/cause——INV-N7）。 */
+export const FATAL_REPLICATION_APPLY_WRITE_INTERNAL_MESSAGE =
+  'REPLICATION apply internal fault：会话 apply 管线产生结果联合之外的 internal fatal；该 fatal 已永久禁用本 Runtime 的全部写能力，读取仍保留。' as const;
+
+/** 终态 session 的同步能力拒绝码（getter/编码域 throw 通道——沿 RuntimeReadDisabledError
+ *  先例；类不导出 index，code+message 字符串消费）。 */
+export const REPLICATION_SESSION_CLOSED_CODE = 'REPLICATION_SESSION_CLOSED' as const;
+
+/** session 域拒绝 message（§6.2 冻结文案，单一真相源：apply 结果面与 SV/diff throw 共用）。 */
+export const REPLICATION_SESSION_CLOSED_MESSAGE =
+  'REPLICATION_SESSION_CLOSED: 此 ReplicationSession 已关闭（close 或 Lease release），不再接纳会话操作——本调用零写入' as const;
+export const REPLICATION_EPOCH_CONFLICTED_MESSAGE =
+  'REPLICATION_EPOCH_CONFLICTED: 复制代际已提升，本 session 冻结的 replicationEpoch 已过期（须以新 epoch 显式重建 session 或 reset/bootstrap）——本调用零写入' as const;
+export const REPLICATION_RAW_UPDATE_INVALID_MESSAGE =
+  'REPLICATION_RAW_UPDATE_INVALID: raw update 非 Uint8Array 或无法被 Yjs 接纳（scratch clone 预演失败）——本调用零写入' as const;
+export const REPLICATION_PROTECTED_FIELDS_CHANGED_MESSAGE =
+  'REPLICATION_PROTECTED_FIELDS_CHANGED: raw update 改变了受保护内容（SCHEMA 容器或 META 字段；受保护集合为冻结常量，raw caller 不得逐次自定义）——本调用零写入' as const;
+export const REPLICATION_SESSION_UNSUPPORTED_MESSAGE =
+  'REPLICATION_SESSION_UNSUPPORTED: Runtime 未提供复制会话宿主（测试替身 Runtime 或包版本错配）——显式能力缺席拒绝，本调用零写入' as const;
+
+/** 终态 session 的同步能力拒绝（getter/编码域 throw 通道——沿 RuntimeReadDisabledError
+ *  先例；类不导出 index，code+message 字符串消费）。 */
+export class ReplicationSessionClosedError extends Error {
+  readonly code = REPLICATION_SESSION_CLOSED_CODE;
+
+  constructor() {
+    super(REPLICATION_SESSION_CLOSED_MESSAGE);
+    this.name = 'ReplicationSessionClosedError';
+  }
+}
+
 /**
  * 写槽 fatal phase 取值集（D5.1，v1 冻结——一经发布只增不改不删）。
  * doc-runtime 三相位（DocRuntimeFatalPhase 冻结表）透传 + Runtime 侧三相位注册。

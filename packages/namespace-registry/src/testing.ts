@@ -21,7 +21,12 @@ import type { NamespaceRuntime } from '@nomicore/namespace-runtime';
 import { createRegistryInternal } from './registry.js';
 import type { RegistryDiagnosticsSink, RegistryObserver } from './observer.js';
 import type { CreateDocumentGatewayResult } from './create-document.js';
-import type { NamespaceRegistry, RegistryRandomBytes, RegistryTimeoutScheduler } from './types.js';
+import type {
+  InstanceRole,
+  NamespaceRegistry,
+  RegistryRandomBytes,
+  RegistryTimeoutScheduler,
+} from './types.js';
 
 /** 受控依赖替换（§8.2 冻结面；#111 增量 clock/createDocumentFactory；#112 增量
  * scheduler/idleTimeoutMs；phase-5 切片 1 增量 randomBytes（必需）；diagnostics
@@ -48,6 +53,9 @@ export interface NamespaceRegistryTestingOverrides {
   /** 必需受控随机源（phase-5 切片 1；同生产门禁——缺失/非函数 → 构造期同步固定
    * TypeError，禁全局 crypto fallback）。 */
   readonly randomBytes: RegistryRandomBytes;
+  /** 实例静态角色（issue #134 O-4；同生产同形——可选，缺省 'hub'；非法值 → 构造期
+   * 同步固定 TypeError，检查顺序与生产一致（randomBytes 之后）。 */
+  readonly role?: InstanceRole;
 }
 
 /**
@@ -115,6 +123,7 @@ export function createNamespaceRegistryForTesting(
     scheduler: RegistryTimeoutScheduler;
     randomBytes: RegistryRandomBytes;
     idleTimeoutMs?: number;
+    role?: InstanceRole;
     createDocumentFactory?: (
       namespaceId: string,
       createdAt: string,
@@ -140,6 +149,9 @@ export function createNamespaceRegistryForTesting(
   }
   if (overrides?.idleTimeoutMs !== undefined) {
     internal.idleTimeoutMs = overrides.idleTimeoutMs;
+  }
+  if (overrides?.role !== undefined) {
+    internal.role = overrides.role;
   }
   return createRegistryInternal(persistence, internal);
 }

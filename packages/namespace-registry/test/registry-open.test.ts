@@ -920,6 +920,7 @@ describe('lease 语义（§7 逐方法表格）', () => {
         'getStatus',
         'mutateRoot',
         'namespaceId',
+        'openReplicationSession',
         'owner',
         'read',
         'release',

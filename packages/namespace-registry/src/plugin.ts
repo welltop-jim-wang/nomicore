@@ -54,8 +54,8 @@ import {
   createNamespaceRegistry,
   resolveIdleTimeoutMs,
 } from './registry.js';
-import type { NamespaceRegistry, RegistryRandomBytes, RegistryTimeoutScheduler } from './types.js';
-import { NAMESPACE_REGISTRY_PLUGIN_CONFIG_MESSAGE } from './types.js';
+import type { NamespaceRegistry, RegistryRandomBytes, RegistryTimeoutScheduler, InstanceRole } from './types.js';
+import { NAMESPACE_REGISTRY_PLUGIN_CONFIG_MESSAGE, NAMESPACE_REGISTRY_ROLE_INVALID_MESSAGE } from './types.js';
 
 // R1/M3 单点化：DEFAULT_IDLE_TIMEOUT_MS 唯一运行时定义点在 registry.ts（与
 // resolveIdleTimeoutMs 同居）；本文件仅 re-export，index.ts 沿本文件链转出——
@@ -95,9 +95,12 @@ export function requireNomicoreRegistry(ctx: Context): NamespaceRegistry {
   return registry;
 }
 
-/** 插件配置（AC2）：唯一配置键 `idleTimeoutMs`（多余键 loud 拒绝）。 */
+/** 插件配置（AC2）：`{ idleTimeoutMs?, role? }`——`role` 为 phase-5 切片 9 义务提前
+ * 履行（R2-8：缺省 'hub'；非法值 loud 拒绝）。 */
 export interface NamespaceRegistryPluginConfig {
   readonly idleTimeoutMs?: number;
+  /** 实例静态角色（ADR 0010 静态星型拓扑；缺省 'hub'——基线全权限等价面，零回归）。 */
+  readonly role?: InstanceRole;
 }
 
 /**
@@ -141,18 +144,25 @@ export function createCordisRegistryScheduler(ctx: Context): RegistryTimeoutSche
 
 /**
  * 插件 config 校验（AC2）：工厂调用期同步 loud（对齐 `resolvePersistenceSchedule`
- * 先例；不声明 cordis Config schema，零新依赖）。仅接受 `{ idleTimeoutMs? }` 单键
- * ——恒 'idleTimeoutMs' 子集；多余键 TypeError（拒绝静默忽略拼错键——默认 5 分钟将
- * 掩盖错误）；数值域校验复用核心单点 resolveIdleTimeoutMs（§2.A：类型/域二分 +
- * 默认值）。
+ * 先例；不声明 cordis Config schema，零新依赖）。仅接受 `{ idleTimeoutMs?, role? }`
+ * 键集（R2-8：恒 'idleTimeoutMs'/'role' 子集）；多余键 TypeError（拒绝静默忽略拼错
+ * 键——默认 5 分钟将掩盖错误）。校验序冻结（§9.1）：① 对象形状（非 object/null/
+ * array → PLUGIN_CONFIG TypeError）→ ② 键集 ⊆ {idleTimeoutMs, role} → ③ role 值域
+ * （非 `undefined|'hub'|'peer'` → TypeError NAMESPACE_REGISTRY_ROLE_INVALID——
+ * 复用 types.ts 既有 const，O-4 既有词汇域，非键集误报）→ ④ idleTimeoutMs 经
+ * resolveIdleTimeoutMs 单点（既有 TYPE/RANGE 二分不变）。
  */
 function resolvePluginIdleTimeoutMs(config: NamespaceRegistryPluginConfig): number {
   if (typeof config !== 'object' || config === null || Array.isArray(config)) {
     throw new TypeError(NAMESPACE_REGISTRY_PLUGIN_CONFIG_MESSAGE);
   }
   const keys = Object.keys(config);
-  if (keys.some((k) => k !== 'idleTimeoutMs')) {
+  if (keys.some((k) => k !== 'idleTimeoutMs' && k !== 'role')) {
     throw new TypeError(NAMESPACE_REGISTRY_PLUGIN_CONFIG_MESSAGE);
+  }
+  const role = config.role; // 校验序 ③ 的读取（工厂同步段内——校验一读；apply 闭包零再校验、零再读 config）
+  if (role !== undefined && role !== 'hub' && role !== 'peer') {
+    throw new TypeError(NAMESPACE_REGISTRY_ROLE_INVALID_MESSAGE);
   }
   return resolveIdleTimeoutMs(config);
 }
@@ -167,6 +177,9 @@ function resolvePluginIdleTimeoutMs(config: NamespaceRegistryPluginConfig): numb
  */
 export function createNamespaceRegistryPlugin(config: NamespaceRegistryPluginConfig = {}) {
   const idleTimeoutMs = resolvePluginIdleTimeoutMs(config); // 工厂调用期同步校验（无 ctx）
+  // role 工厂同步段内捕获（R2-8：校验在 resolvePluginIdleTimeoutMs 内一读、此处绑定一读
+  // '?? 'hub''——两读均在 apply 前；apply 期零再读 config、零再校验）
+  const role = config.role ?? 'hub';
   let instance: NamespaceRegistry | undefined;
   return {
     inject: ['clock', 'timer', 'nomicorePersistence'], // 依赖图边：AC11 时序保证的机制载体（§5#5/#8）；rev1：adapter 级次序另经 persistence 侧有序 disposer 兑现（设计 rev1 §2.C）
@@ -177,6 +190,7 @@ export function createNamespaceRegistryPlugin(config: NamespaceRegistryPluginCon
         scheduler: createCordisRegistryScheduler(ctx),
         randomBytes: productionRandomBytes,
         idleTimeoutMs,
+        role, // R2-8 贯通：plugin config → 生产工厂 → registry 静态角色（切片 9 义务提前履行）
       });
       instance = registry;
       let revokeService: (() => void) | undefined;
