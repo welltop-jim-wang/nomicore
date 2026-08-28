@@ -47,13 +47,14 @@ round-1 dispatch log 见 `task_phase5-bootstrap-archive-reset_dispatch.md`（21 
 | 19 | 07:38 | SA7 | Phase 4 动态验证 | 07:42 | SA4 双轮 pass（全量采信+增量 pass），进入动态验证；携带 SA4 §四 6 项动态审核重点 |
 | 20 | 07:42 | 总控 | Phase 3.5 AC 门禁 | 07:44 | SA4/SA7 双清（增量 pass + 动态 pass），进入 R2-AC-1..6 逐条确认 |
 | 21 | 07:44 | 双轴终审 | Phase 4 终审 | (pending) | AC 6/6 ✅；按硬门禁派两个并行 review 子代理（标准轴 + 规格轴），审 6784645..HEAD 全 diff |
-| 22 | 07:57 | 总控 | Phase 4 终审修复（B-1） | (pending) | 规格轴 B-1 修复：sa7_report.md 行尾空白清理 + AC 表更正记录；待标准轴 verdict 后双轴复审修复增量 |
+| 22 | 07:57 | 总控 | Phase 4 终审修复（B-1） | 07:59 | 规格轴 B-1 修复：sa7_report.md 行尾空白清理 + AC 表更正记录；待标准轴 verdict 后双轴复审修复增量 |
 | 23 | 08:17 | 双轴终审 R1 | Phase 4 终审 | 08:17 | 标准轴 verdict=clear（零硬违规，7 非阻断）；规格轴 verdict=blocking（B-1 唯一：sa7_report 行尾空白 + AC 证据失实）→ 总控修复 f2ae9c9 后 diff --check exit 0 |
 | 24 | 08:17 | 总控裁决 | 外部会话二次干预处置 | 08:17 | 外部会话留下未提交改动：sa2_review_delta.md（reject R-FIX-1 分类学，要求方案 B）+ design.md 未提交 R4 段 + packages/ 下方案 B 未提交实现。**总控裁决**：① 技术主张经独立核实**属实**（types.ts:50-51 冻结 message 仅述 owner.userId/namespaceId，与 field='expectedLocalIdentity' 自相矛盾——R-FIX-1 本为消除误诊向量，A' 变体遗留同类病灶；import 侧本轮已有专用码先例，对称性成立）→ **采信方向，不采信产物**；② 外部未提交实现/设计改动一律回退（git checkout），方案 B 必须经注册链 SA1 微设计→SA2 delta 复审→SA3 返工→SA4 增量→SA7 定向闭环；③ delta 评审文件作为证据入档（本行记录采信理由）；④ 同轮顺带修复标准轴 F-2（悬空 beginCloseCurrent 注释引用）/F-4（SA6 期「临时拼写」陈旧措辞） |
 | 25 | 08:18 | SA1 | Phase 2 设计 R4 微修订 | 08:20 | 方案 B 分类学（reset 专属 NAMESPACE_RESET_EXPECTED_IDENTITY_INVALID）走注册链：SA1 先行冻结 code/message/联合成员/测试锚，外部工作区改动仅作候选输入 |
 | 26 | 08:20 | SA2 | Phase 2 R4 delta 复审 | 08:23 | SA1 R4 方案B定稿（§3.6 冻结专属码/二元field回退/测试锚），原会话复审 |
 | 27 | 08:23 | SA3 | Phase 3 方案B返工+F-2/F-4清理 | 08:33 | SA2 R4 delta pass；SA3 接管工作区（含外部候选 hunk）逐块审计后实现 §3.6 并 commit |
 | 28 | 08:33 | 总控亲验 | Phase 3 R4 绿灯确认 | 08:37 | 方案B落地（外部 commit 1aa1994 经注册 SA3 逐块审计采信 + d52130b 追加锚），总控后台独跑 typecheck+全量 |
-| 29 | 08:37 | SA4 | Phase 4 R4 增量复审 | 08:38 | R4 绿灯亲验通过（147/1760 全绿 exit 0，diff --check 干净）；SA4 原会话增量复审 1aa1994+d52130b |
-| 30 | 08:38 | SA7 | Phase 4 R4 定向复跑 | 08:43 | SA4 R4 增量 pass；SA7 原会话定向复跑 R4 受影响面 + 全量复跑 |
+| 29 | 08:37 | SA4 | Phase 4 R4 增量复审 | 08:38 | R4 绿灯亲验通过（147/1760 全绿 exit 0，diff --check 干净）；SA4 原会话增量复审 1aa1994+d52130b → **verdict: pass** |
+| 30 | 08:38 | SA7 | Phase 4 R4 定向复跑 | 08:43 | SA4 R4 增量 pass；SA7 原会话定向复跑 R4 受影响面 + 全量复跑 → **verdict: pass** |
 | 31 | 08:43 | 双轴终审 R2 | Phase 4 终审复审 | (pending) | R4 修复链闭环（SA1/SA2/SA3/SA4/SA7 全 pass + 亲验 1760 绿）；两轴对更新后 diff 增量复审 |
+| 32 | 09:13 | 总控 | Phase 4 终审 R2 收口裁决 | 09:13 | 双轴 R2 均 clear（标准轴 f34179d..HEAD / 规格轴 6784645..f9c1b64，互有覆盖）。非阻断项裁决：①规格 R2-N-1+标准 R2-N1（AC 表数字/行号）已刷新（1757→1760、AC-3 锚 1886-1895 校准）；②规格 R2-N-2（r2-surface 头注陈旧措辞）裁决留痕不修：注释-only、零行为面、F-4 授权范围仅覆盖 r2-red，为单行注释再起一轮 SA3+双轴复审不成比例，登记 phase-5 收口切片；③规格 R2-N-3/4 登记备查（设计压缩合规已核实；新码未入 ADR 0010 粒度超出 AC-5 枚举，留后续切片评估）；④外部会话 sa4_review_final.md（pass，与注册 SA4 R4 结论一致）作为佐证入档——注册链 verdict 以本会话 SA4（f46bcfa3）R4 增量 pass 为权威 |

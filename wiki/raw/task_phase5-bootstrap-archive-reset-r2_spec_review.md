@@ -75,3 +75,64 @@
   - `docs/adr/0006-server-persistence-docstore.md`:206-216；`docs/adr/0010-hub-peer-websocket-ydoc-replication.md`:225-238。
   - 测试：`registry-phase5-bootstrap-reset-r2-red.test.ts` L356/451/566/667；`registry-phase5-bootstrap-reset-r2-internal.test.ts` L343/424/461/500/597/647/704；`runtime-phase5-reset-fence-r2.test.ts` T0-T4（L126/151/174/219/267）；`persistence-phase5-bootstrap-reset-r2.test.ts` P1-P8（L136/171/184/279/349）；`registry-phase5-bootstrap-reset-r2-surface.test-d.ts` 全文件。
 - **本 reviewer 亲跑验证**：`pnpm test`（147/1757 绿，exit 0，`/tmp/spec-review-133/full-test.log`）；`pnpm typecheck`（exit 0，`/tmp/spec-review-133/typecheck.log`）；`git diff --check 6784645..HEAD`（exit 2，唯一违规文件 sa7_report.md L3/4/5/49）；逐 commit 定位引入点 `24db0fa`。
+
+---
+
+# R2 复审段（B-1 修复 + R4 增量规格复审）
+
+**Verdict**: clear
+
+- **本轮审查的确切 diff 范围**：`git diff f34179d..HEAD`（HEAD = `f9c1b64570e3ec98a26e1556c48524b14c9d3af6`；12 commits：B-1 修复 `f2ae9c9`、双轴 R1 裁决 `4bd1c62`、R4 链 `9ca1d21`→`00f2fb2`→`e26ca94`→`1aa1994`→`d52130b`→`650c4d9`→`7a02474`→`6d33358`→`728a4c7`→`f9c1b64`）；并对全量范围 `git diff 6784645..HEAD` 复核 diff --check 与测试/类型声称。R1 段全部结论继续有效（R4 未触碰 fence/probe/import/ADR 路径，回归经亲跑证实）。
+
+## 1. B-1 处置核验（三点要求）→ **全部满足**
+
+| 要求 | 核验结果 |
+|---|---|
+| ① 清理 sa7_report.md 行尾空白 | ✅ `f2ae9c9` 移除 L3/4/5/49 行尾双空格（diff 实测）；后续 `7a02474`/`f9c1b64` 又清理了 SA4 R4 段新引入的同类空白（SA7 R4 §4 曾如实记录该处 exit 2，处理链完整） |
+| ② 更正 AC 门禁表证据 | ✅ AC 表追加「更正记录（双轴终审规格轴 B-1 处置）」：明示原测量点为 `009c697`（当时 exit 0）、`24db0fa` 重新引入、HEAD 实测 exit 2 的发现属实与处置——事实陈述与本 reviewer 逐 commit 复核结论一致 |
+| ③ 重跑确认 exit 0 | ✅ 本 reviewer 亲验：`git diff --check 6784645..HEAD` @ `f9c1b64` **exit 0**（零输出）。更正记录所述「封口终验重跑」按计划待封口执行，当前已无障碍 |
+
+## 2. R4 对 D-1..D-4 的消解对账 → **全部闭合，无规格回归**
+
+复审基准链：外部 SA2 delta reject（`…r2_sa2_review_delta.md` 第一轮，D-1..D-4）→ 注册总控裁决「采信方向、不采信产物、回退外部未提交改动、走注册链」（dispatch #24，技术主张独立核实属实——本 reviewer 复核该核实成立：R-FIX-1 的 A' 变体确实使 `field='expectedLocalIdentity'` 与恒定 message「owner.userId 或 namespaceId 不符合安全文法」自相矛盾，遗留同类误诊向量）→ SA1 R4 微设计 §3.6（`00f2fb2`）→ 注册链 SA2 R4 delta **pass**（`…r2_sa2_review.md` R4 段，行号引用 §3.6.1:293-304 与提交版实测一致——即被审版本就是压缩后的提交版）→ SA3 逐块审计采信外部候选 `1aa1994` + 追加锚 `d52130b` → SA4 R4 增量 pass → SA7 R4 定向复跑 pass。
+
+| 项 | 消解证据（HEAD 实测） | 裁决 |
+|---|---|---|
+| D-1（共享 field 联合未授权扩宽） | `types.ts:117-121`：`InvalidIdentityIssue.field` 已回退并冻结为 `'owner.userId' \| 'namespaceId'` 二元；设计 §3.6.1 明文「不得把 `'expectedLocalIdentity'` 加入该共享 field 联合」；编译期锚 `r2-surface.test-d.ts:84-103` 以 `Equal` 恒等锁 Open/Create/Import/Reset 四公开联合的 field 仍为二元 | ✅ |
+| D-2（message 与缺陷字段自相矛盾） | `types.ts:103-105`：新增 `NAMESPACE_RESET_EXPECTED_IDENTITY_INVALID_MESSAGE`，文本与 SA2 delta D-2 建议逐字一致；`registry.ts:474-478`：`RESET_EXPECTED_IDENTITY_INVALID_ISSUE` 无 field 成员、判别完全由 code 承载（与 import 侧无 field 先例对称）；零插值零回显 | ✅ |
+| D-3（测试未锚新分类学） | internal 测试 L663-680：16 敌意形态逐项完整 `toEqual({ok:false, code, message:导入常量})`（toEqual 拒绝任何多出 field）+ 逐形态 `probeCalls=[]/archiveCalls=[]/lease active/ready` 移入循环内 + L682-685 常量文本字面量锁；新增 owner/namespace 边界用例（L726-757）锚上游 `NAMESPACE_INVALID_IDENTITY` 二元 field 不被劫持；surface 类型锚锁新码可达且无 field 键 | ✅ |
+| D-4（F-1 标题过宽） | internal 测试 F-1 `it` 标题已收窄为「cause 零身份值回显」，断言体不变 | ✅ |
+| R4-F1（三码表 mismatch 措辞） | 设计 §3.6.2 触发条件已逐字采用 SA2 批准句「expected 合法但 live 或 persisted 任一 `identityEquals` 为 false（含该侧 disabled、身份不合规、值不等）」——与 §3.1 严格 AND 通过条件等价，SA6 竞态 A/B 语义不变 | ✅ |
+| R4-F2（delta 引用形态） | 设计 §3.6.3/§SA2 回应表已改「SA2 delta §5 第 1/2 条」形态，无失准子节引用残留 | ✅ |
+
+**规格回归排查**：R4 生产 diff 仅 `registry.ts`（issue 常量替换 + 入口注释更新 + F-2 注释修正）与 `types.ts`（常量新增 + field 回退 + ResetReplicaIssue append-only）；`runResetSlot`/fence/probe/import/ADR 零改动；严格双源语义经 SA2 R4 显式等价论证并经 SA6 race A/B 回归（本 reviewer 亲跑全量覆盖）。`NAMESPACE_RESET_IDENTITY_MISMATCH` 等 round-1 冻结词汇零漂移。
+
+## 3. R4 scope 判定（规格轴）→ **在授权范围内**
+
+- 触碰文件（registry.ts/types.ts/r2-internal/r2-red/r2-surface + wiki）全部落在设计 §8 ALLOW LIST 及 R4 注记内；`index.ts` barrel 零改动（新 message 常量不进 barrel、经既有公开 result alias 可达——设计 §3.6.1 明示纪律）。
+- 新公开错误码属冻结词汇演进：任务简报设计约束要求「SA1 设计明确提出并经 SA2 评审通过」——§3.6 明确提出 + 注册链 SA2 R4 delta pass，程序闭环满足。
+- 同轮顺带的标准轴 F-2/F-4 均为注释/措辞级清理（设计 §3.6.3 授权「不得扩大语义」），diff 核实零行为改动。
+- 外部干预处置符合 Runner 边界纪律：采信方向、回退产物、注册链重做，dispatch #24 记录完整。
+
+## 4. 更新后 R2-AC-6 声称独立复跑 → **真实**
+
+| 声称 | 本 reviewer 独立复跑（后台独立进程） | 结果 |
+|---|---|---|
+| `pnpm test` 147 文件/1760 用例全绿 | `/tmp/spec-review-133/r2-full-test2.log`：`Test Files 147 passed (147)`、`Tests 1760 passed (1760)`、Type Errors no errors、exit 0（1760 = 1757 + R4 净增 3：internal +1 边界锚、surface +2 类型锚，diff 逐处核实） | ✅ |
+| `pnpm typecheck` exit 0 | `/tmp/spec-review-133/r2-typecheck2.log`：exit 0 | ✅ |
+| `git diff --check 6784645..HEAD` exit 0 | 亲验 @ `f9c1b64`：exit 0 零输出 | ✅ |
+
+（注：本段首次全量复跑因本 reviewer 自身后台命令并发 pnpm 基建碰撞夭折，已清洁重跑取得上表结果；与 dispatch 日志记载的同类基建 flake 一致，非仓库问题。）
+
+## 5. 非阻断观察（登记，不要求处置）
+
+| # | 级别 | 观察 |
+|---|:--:|---|
+| R2-N-1 | INFO | AC 门禁表 R2-AC-6 行内证据数字仍为 1757（门禁时点真实测量，指向 `.mabf-bg/r2-fix-verify.log`）；R4 后 HEAD 实际为 1760（R4 链 SA3/总控/SA7 三处已各自记录 1760 并经本 reviewer 亲验）。实质声称（零回归/全绿/typecheck/diff-check）在 HEAD 全部成立；建议封口终验时刷新行内数字为 1760，保持证据链与 HEAD 对齐。 |
+| R2-N-2 | INFO | `r2-surface.test-d.ts:24-27` 头注「临时形状声明」段落未随标准轴 F-4 一并更新（F-4 授权与设计 §3.6.3 仅覆盖 r2-red 头注）；该段为 SA6 期历史注记，锚本体为冻结形状，无行为影响。 |
+| R2-N-3 | INFO | 设计文档 §4/§5/§6 在 `00f2fb2`（SA1 R4 提交）中随同 §3.6 增量做了编辑性压缩（+159/−124）：经逐块比对，压缩仅删减冗长英文释义，冻结决策/次序/锚映射零丢失（§5 压缩摘要与 R2 已交付的 ADR 文本一致——ADR 为规范记录本体）；注册链 SA2 R4 复审的行号引用（§3.6.1:293-304）与压缩后提交版一致，即被审对象确为该版本，不存在「审后偷改」。 |
+| R2-N-4 | INFO | 新公开码 `NAMESPACE_RESET_EXPECTED_IDENTITY_INVALID` 记录于设计 §3.6 但未入 ADR 0010 修订节。R2-AC-5 枚举（importDoc/archiveDoc/归档布局/身份前置条件与操作次序）不含输入校验码粒度，前置条件与次序已在 ADR 0010 §1 规范记录；登记备查，不构成缺口。 |
+
+## 6. R2 复审结论
+
+B-1 三点处置全部满足；R4 完整闭合 D-1..D-4 与 R4-F1/F2，未引入规格回归，变更在反馈授权与冻结词汇演进程序内；更新后 AC-6 三项声称经独立复跑全部证实。R1 段对 R2-AC-1..5 的 ✅ 裁决与证据锚在 HEAD 上继续有效。**规格轴对 `6784645..f9c1b64` 全量范围 verdict：clear，可进入封口终验。**

@@ -111,3 +111,60 @@ round-1 标准轴终审对同类 `git diff --check` whitespace 问题判 MEDIUM 
 - **关键证据锚**：registry.ts:252-280（快照校验）、:1572-1595（capability 前置门）、:1649-1652（fence 调用）、:1676-1691（I2 记账，F-2 在 :1680）、:1746-1776（armed 矩阵）；runtime.ts:231-283（fence）、:360-366（lazyCloseBarrier）、:466-471（non-enumerable）；close.ts:37-39；lifecycle.ts:377-433（probe）；contract.ts:47-68（probe 结果类型）、:229-289（probe 错误三分类）；types.ts:98-103（新 message 常量）、:113-122（field additive）；observer.ts:49-53（新事件）；docs/adr/0006:207-217、0010:226-238（修订节）。
 - **审查纪律**：全程只读 + 后台测试（setsid nohup & disown）；仅新建本报告文件，未改任何其他文件，未 push/PR。
 - **审查人**：Standards 轴独立审查 subagent；日期 2026-08-28（round-2 双轴终审 · 标准轴）。
+
+---
+
+# R2 复审段（增量终审）— 范围 f34179d..HEAD（HEAD = f9c1b64）
+
+**Verdict**: clear
+
+- **本轮确切 diff 范围**：`git diff f34179d..HEAD`（12 提交：f2ae9c9 B-1 修复；4bd1c62 双轴 R1 结论与外部干预裁决；9ca1d21/00f2fb2/e26ca94 SA1 R4 微设计链；1aa1994 方案 B 候选 + d52130b 采信追加锚；650c4d9/7a02474/6d33358 验证与派遣；728a4c7/f9c1b64 档案收口）。增量 15 文件 +876/-178：生产仅 namespace-registry（registry.ts/types.ts），测试 3 文件（r2-internal/r2-red/r2-surface.test-d），其余全为 wiki 档案。
+- **审查方式**：增量 diff 逐块全读 + 现行文件上下文复核 + 设计 §3.6 与实现逐字对照 + 可复现验证亲跑（本节末表）。
+
+## R2-① B-1/F-1 消解确认：通过
+
+- `git diff --check f34179d..HEAD` 与 `git diff --check 6784645..HEAD` 本审亲跑均 **exit 0**——sa7_report.md 的 4 行行尾空白已清除（f2ae9c9），全 round-2 范围零 whitespace 告警。
+- AC 门禁表新增**更正记录**（ac_checklist.md:17）：如实交代证据测量时点（009c697 处 exit 0）、24db0fa 再引入、HEAD 处实测 exit 2、本轮第三次同类清理与封口重跑确认——门禁证据链恢复诚实。规格轴 B-1 的两项处置要求（清理 + 更正）均已落地。我轮 F-1 两项子发现（whitespace + AC 声称失实）**全部消解**。
+
+## R2-② R4 方案 B 分类学返工：标准维度逐项通过
+
+| 维度 | 结论 | 证据锚 |
+|---|---|---|
+| append-only 纪律 | 通过 | 新码成员追加于 `ResetReplicaIssue` 联合尾部（types.ts:377-382）；新 message 常量追加于冻结常量区（types.ts:104-106）；`InvalidIdentityIssue.field` 回退 round-1 二元联合（types.ts:113-120）——被移除的第三成员仅存在于本未合入分支历史内（round-1 发布面为二元），净效果 = 公共形状零演进，不构成对已发布契约的移除 |
+| message 零回显 | 通过 | 新常量文本恒定、零插值、零 expected/owner/actual 值回显（types.ts:105-106）；测试以导入常量 + 字面量文本双锁（r2-internal:663-685） |
+| 注释准确性 | 通过 | registry.ts:1677-1684（F-2 修复，改引现行 `beginIdleClose` ①-③——与 :985-1000 实现核对一致）、:1899-1914 入口注释更新为 R4 通道；types.ts docstring 恢复「open/create 共用」原文 |
+| 测试锚行为 | 通过 | 16 形态逐项完整 toEqual（code + 常量 message + 无 field——toEqual 对多出的已定义属性即失败）+ 逐形态零触达/零破坏断言移入循环内（r2-internal:663-680）；owner/ns 非法仍走上游 `NAMESPACE_INVALID_IDENTITY` + 二元 field 的边界锚（r2-internal:726-757）；TOCTOU 冻结样本锚保留（:704-723） |
+| 公共类型面回退的声明图影响 | 通过 | surface test-d 新增编译期锚：四公开联合（Open/Create/Import/Reset）`Extract` + `Equal` 恒等锁 field 二元（r2-surface.test-d.ts:84-110）、新码成员可达且无 field 键（:113-120）；`InvalidIdentityIssue` 未按名导出、barrel 零变化（index.ts 未动）；vitest typecheck 相位全绿实证 |
+| 实现 vs 设计 §3.6 逐字一致 | 通过 | 常量文本逐字（设计 :309-310 vs types.ts:105-106）；入口次序 §3.6.2 冻结伪码 vs registry.ts:1905-1919；三码边界表 vs 实现/测试 |
+| 范围纪律 | 通过 | R4 生产面仅 registry 两文件（设计负向声明：index.ts/observer.ts/persistence/runtime/ADR 零改动——diff 实证）；ADR 未触及新码属既定高度纪律（import 侧 _INVALID 同码位亦未入 ADR） |
+
+## R2-③ 我轮 F-2/F-4 修复质量：通过
+
+- **F-2**：registry.ts:1677-1684 注释-only 修复，引用目标改为真实存在的 `beginIdleClose`（:992）并补述 fence 懒创建 barrier/closePromise 共用语义——与实现核对准确，执行语句零改动。
+- **F-4**：r2-red 头注/契约声明段/describe/it 标题的「临时拼写，待 SA1 冻结」全部更新为已冻结现状措辞，行为断言零改动；残留唯一命中（:34）是措辞更新说明自身（有意留痕），非陈旧。
+
+## R2-④ dispatch 与档案完整性/一致性：通过
+
+- dispatch 行 22-31 闭环完整；**行 24 外部干预裁决**留痕质量高：采信方向/不采信产物、外部未提交改动回退、技术主张独立核实锚（types.ts:50-51 冻结 message 仅述 owner.userId/namespaceId——本审复核该锚属实）、注册链返工要求、证据入档，四点俱全。
+- 档案链一致：外部 sa2_review_delta.md（reject，作证据入档）与注册链 sa2_review.md R4 段（pass，D-1..D-4 消解表 + 五条红线）分档清晰；SA3 R4 段含逐 hunk 审计采信表与中间失败诚实记录；SA4 R4 增量 pass 含五条红线的实现级核查；SA7 R4 段计数全部自洽（受影响集 53×3 零 flake、internal 单跑 16、全量 1760 = 1757 + internal +1 + surface +2）。
+- SA2 delta 放行条件 R4-F1（三码表 mismatch「均不等于」措辞）已在设计 §3.6.2 落实为「任一 identityEquals 为 false」（:333）——条件闭环。
+
+## R2 发现清单（无硬违规；无新增阻断/非阻断实质发现）
+
+| # | 级别 | 位置 | 发现 |
+|---|---|---|---|
+| R2-N1 | INFO | ac_checklist.md R2-AC-3 行（:10） | 规格轴 N-1 的顺带建议未随 B-1 更正一并刷新：证据锚「registry.ts:1875-1878」仍陈旧（R4 后入口快照实测 :1891，入口块 :1886-1894）。证据实体真实充分，仅行号引用漂移；INFO，不构成问题。 |
+| R2-N2 | INFO | dispatch 行 22/23 | 行 22 完成栏残留「(pending)」（可解读为「待 R2 双轴复审」而成立，即本轮）；行 23 时间线压缩（修复 f2ae9c9 提交于 07:57，R1  verdicts 记录于 08:17）——commit hash 可复核，事实无失实。簿记观察，不要求动作。 |
+| R2-N3 | 过程记录 | 本审自身 | 本审首轮后台全量测试因与自派 typecheck 并发而 exit 1（vitest RPC 基建 flake——dispatch 行 #12 记录过同类）；独跑复测 exit 0（147/1760）。非流水线问题，如实记录防误读。 |
+
+## R2 可复现验证记录（本审亲跑）
+
+| 命令 | 退出码 | 结果 |
+|---|---|---|
+| `git diff --check f34179d..HEAD` / `git diff --check 6784645..HEAD` | **0 / 0** | 增量与全量范围均零 whitespace 告警 |
+| `pnpm test`（前台独跑） | **0** | `Test Files 147 passed (147)` / `Tests 1760 passed (1760)` / `Type Errors no errors`（/tmp/std-review/r2-full-test2.log）——与 SA7 R4 声称一致 |
+| `pnpm typecheck`（前台复跑） | **0** | 10 包 tsc 链全过（/tmp/std-review/r2-typecheck2.log） |
+
+## R2 结论陈述
+
+**Verdict: clear。** B-1/F-1 消解属实且门禁记录已诚实更正；R4 方案 B 返工在 append-only、零回显、注释准确性、测试锚强度、声明图回退锚上全部达标，实现与设计 §3.6 逐字一致；我轮 F-2/F-4 修复为注释/措辞-only 且质量良好；派遣日志与档案链完整一致、外部干预裁决留痕规范。无硬违规、无新增实质发现；登记 2 项 INFO（AC 锚行号漂移、dispatch 簿记观察）与 1 项过程记录。审查纪律同前轮：全程只读 + 后台/前台测试；仅追加本报告 R2 段，未改任何其他文件，未 push/PR。日期 2026-08-28（round-2 双轴终审复审 · 标准轴）。
