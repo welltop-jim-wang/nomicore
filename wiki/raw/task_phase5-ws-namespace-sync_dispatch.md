@@ -24,3 +24,4 @@ run_id: issue-136-1787888033-8367 / round: 1 / branch: fix/issue-136-on-docs-pha
 | 17 | 15:50 | SA6 | Phase 3 测试对齐 R2 | (pending) | 7 条残余红灯仲裁：SA3 举证（unsatisfiable 断言/方向错误/时序竞态）→ SA6 对照设计定稿逐条裁决修订 |
 | 18 | 16:13 | 总控亲验 | Phase 3 绿灯验证 | 16:13 | pnpm typecheck + pnpm test 后台亲跑：161 文件 1938 测试全绿、零类型错误、exit 0；发现 CI 门禁枚举遗漏（根 typecheck 脚本未列 ws-replication）→ 转 SA3 接线 |
 | 19 | 16:13 | SA3 | Phase 3 CI 接线修订 | (pending) | 总控裁决（设计 DENY 覆盖，证据：根 typecheck 为显式枚举非通配）：根 package.json typecheck 脚本追加 ws-replication |
+| 20 | 16:18 | SA4 | Phase 3 静态验尸 | (pending) | 绿灯已亲验（161 文件 1938 测试）+ SA6 对齐已入库（4333593）→ 红队审查 |
