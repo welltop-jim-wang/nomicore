@@ -1,7 +1,8 @@
 # SA4 静态验尸报告 — File diagnostic-log adapter（issue #152）
 
-**Date**: 2026-08-28
-**Verdict**: **reject**（1 × REJECT 级实现缺口 R-1 + 2 × MINOR；修复全部在 SA3 lane 内，约 ≤10 行，无需 needs-redesign）
+**Date**: 2026-08-28（R1）· 2026-08-28（R2 复审，追加于文末）
+**Verdict**: R1 轮 **reject**（§二/§三）→ **R2 复审轮 pass**（commit `cb44bcd`，见文末「SA4 R2 复审轮」；**当前生效 verdict = pass**）
+**R1 摘要**：1 × REJECT 级实现缺口 R-1（P_DECIMAL 镜像漏 frameOffset 消费面 → strict reader 假 ok，PoC 实证）+ R-2（writer 注入门未镜像，sequence '01' 落盘零事件）+ R-3（carrier.ts P_BASE64 字面量脱离单源）——R2 轮全部消除并经独立重跑实证（PoC A/B/C 对照 + R-3 等价性 20 探针 + 4 条新锚定测试逐名触发）
 
 **被审对象**：基线 `7ceede1` → HEAD（`56ed694` + `0ec62e9`）；设计 R2（含总控 §11 六项裁决 + J9 裁决）；SA2 R2 pass（附 R2-1 强制项）。
 **审查方法**：全新视角静态审读全部新增/修改源码 + 运行时实证（VFSL 引擎行为探针、4 个 PoC 直打 `readStreamStrict`/`injectFinalRecordFile`、全量测试复跑）。全部结论附可复现命令与实测输出，非纸面推断。
