@@ -190,7 +190,7 @@ describe('Spec 回流红灯：B-1 removeTarget×reconcile / B-2 迟到续体竞�
       dial: (): DuplexTransport => {
         const wire = makeWire();
         wires.push(wire);
-        hub.accept(wire.hubEnd);
+        hub.accept(wire.hubEnd, { peerInstanceId: PEER_INSTANCE });
         return wire.peerEnd;
       },
       timer: peerNode.scheduler,

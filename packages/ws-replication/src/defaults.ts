@@ -27,7 +27,9 @@ export const DEFAULT_REPLICATION_LIMITS: Readonly<ReplicationLimits> = Object.fr
   controlReserveBytes: 64 * 1024,
 });
 
-/** 冻结默认 timeouts（§2 注释值；与 harness CONTRACT_TIMEOUTS 逐值一致）。 */
+/** 冻结默认 timeouts（§2 注释值；与 harness CONTRACT_TIMEOUTS 逐值一致）。
+ *  pingIntervalMs/pongTimeoutMs 为工程缺省（协议 §18 只列配置项、ADR-0010 L165 只要求
+ *  「安全默认值」，均无数值规定——选型依据 §5.1；切片 9 可覆盖）。 */
 export const DEFAULT_REPLICATION_TIMEOUTS: Readonly<ReplicationTimeouts> = Object.freeze({
   helloTimeoutMs: 10_000,
   openTimeoutMs: 5_000,
@@ -35,6 +37,8 @@ export const DEFAULT_REPLICATION_TIMEOUTS: Readonly<ReplicationTimeouts> = Objec
   reconcileTimeoutMs: 10_000,
   closeTimeoutMs: 5_000,
   ackTimeoutMs: 10_000,
+  pingIntervalMs: 30_000,
+  pongTimeoutMs: 10_000,
 });
 
 /** 冻结默认 backoff（§2 注释值；与 harness CONTRACT_BACKOFF 逐值一致）。 */
@@ -52,7 +56,8 @@ export function resolveLimits(partial: Readonly<Partial<ReplicationLimits>> | un
 export function resolveTimeouts(
   partial: Readonly<Partial<ReplicationTimeouts>> | undefined,
 ): ResolvedTimeouts {
-  return { ...DEFAULT_REPLICATION_TIMEOUTS, ...(partial ?? {}) };
+  // DEFAULT 含 ping/pong 缺省（必填值）——合并结果对 ResolvedTimeouts 恒满足
+  return { ...DEFAULT_REPLICATION_TIMEOUTS, ...(partial ?? {}) } as ResolvedTimeouts;
 }
 
 export function resolveBackoff(

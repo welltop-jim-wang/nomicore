@@ -392,6 +392,21 @@ export class Run {
 
 // ═══════════════════════════ 组装与启动 ═══════════════════════════
 
+/** §5.2：测试可观测性延迟（常数移入测试侧，归其所属——生产代码零 512 环循环）。
+ *  保持既有时序：ACK-timeout 恢复/重建经 512 跳微任务链后启动（> settle(300)
+ *  且 < settleUntil(3000) 预算）——needs-resync 投影先可观测，随后同连接恢复。 */
+const TEST_DEFER = (task: () => void): void => {
+  let hops = 0;
+  const step = (): void => {
+    queueMicrotask(() => {
+      hops += 1;
+      if (hops >= 512) task();
+      else step();
+    });
+  };
+  step();
+};
+
 export async function boot(opts: BootOptions = {}): Promise<Run> {
   const hubNode = makeNode('hub');
   const peerNode = makeNode('peer');
@@ -428,7 +443,7 @@ export async function boot(opts: BootOptions = {}): Promise<Run> {
     dialCount += 1;
     const wire = makeWire();
     wires.push(wire);
-    hub.accept(wire.hubEnd);
+    hub.accept(wire.hubEnd, { peerInstanceId: PEER_INSTANCE });
     return wire.peerEnd;
   };
 
@@ -439,6 +454,7 @@ export async function boot(opts: BootOptions = {}): Promise<Run> {
     dial,
     timer: peerNode.scheduler,
     targets: [{ namespaceId: nsId, localOwner: PEER_OWNER }],
+    deferTask: TEST_DEFER, // §5.2：测试侧拥有可观测性时序（生产缺省单微任务）
     ...(opts.limits !== undefined ? { limits: opts.limits } : {}),
     ...(opts.timeouts !== undefined ? { timeouts: opts.timeouts } : {}),
     ...(opts.backoff !== undefined ? { backoff: opts.backoff } : {}),
@@ -585,11 +601,12 @@ export async function bootFanout(opts: BootOptions = {}): Promise<FanoutRun> {
       dial: () => {
         const wire = makeWire();
         wireRef.current = wire;
-        hub.accept(wire.hubEnd);
+        hub.accept(wire.hubEnd, { peerInstanceId: PEER_INSTANCE });
         return wire.peerEnd;
       },
       timer: peerNode.scheduler,
       targets: [{ namespaceId: nsId, localOwner: PEER_OWNER }],
+      deferTask: TEST_DEFER, // §5.2：测试侧拥有可观测性时序
     });
     return {
       peer,
