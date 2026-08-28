@@ -1,0 +1,23 @@
+# Dispatch Log — Phase 5: synchronize one namespace over WebSocket（issue #136）
+
+任务类型：功能开发（feature）。工作流：SA8 前置门禁 → SA6 验收锚定 → SA1 设计 → SA8 设计复审 → SA2 评审 → SA3 实现 → SA4 静态验尸 → SA7 动态验证 → AC 门禁 → 双轴终审 → 收尾。
+run_id: issue-136-1787888033-8367 / round: 1 / branch: fix/issue-136-on-docs-phase-5-websocket-replication
+
+| # | 派发时间 | SA | 阶段 | 完成时间 | 决策逻辑 |
+|---|---------|-----|------|---------|---------|
+| 1 | 11:37 | SA8 | Phase 0 前置门禁 | 11:43 verdict: clear | 任何任务先过冲突门禁；任务简报 vs ADR 全集 + CONTEXT.md |
+| 2 | 11:44 | SA6 | Phase 1 验收锚定 | 12:11 verdict: red-anchored | 功能开发：SA8 clear 后先锚定验收红灯测试（issue AC + Phase5 规格 §必须通过的场景） |
+| 3 | 12:19 | SA1 | Phase 2 架构设计 | 12:55 产出 design.md（767 行） | 红灯已锚定（36 条 it 覆盖 7 AC，全因包未实现而红）；进入设计 |
+| 4 | 12:58 | SA8 | Phase 2 设计复审 | 13:06 verdict: conflict（2 evolution CP，0 hard-violation） | 设计与 ADR 决策一致性复审（前置门禁 clear 后的第二道冲突门禁） |
+| 5 | 13:08 | 总控裁决 | Phase 2 冲突处置 | 13:08 | CP-1/CP-2 均为测试算术驱动的 ADR 字面偏离；采 ADR-literal 回归路径（无需 Jim 裁决即可消解冲突）：SA1 改设计 + SA6 对齐测试 + SA8 复审 |
+| 6 | 13:08 | SA1 | Phase 2 设计修订 R2 | 13:17 R2 落地（CP-1/CP-2 均回 ADR 字面，§18.11 测试对齐清单 7 条） | 续传同一 SA1 会话：CP-1 序列跳跃→fatal close（ADR 0010 L147 字面）；CP-2 溢出→同连接新 round（§9.4/§17 默认拓扑）；列出 SA6 测试对齐清单 |
+| 7 | 13:21 | SA6 | Phase 2 测试对齐 | 13:33 完成（7 条全落地，红灯保持模块缺失，类型干净） | 续传同一 SA6 会话：按设计 §18.11 清单修订冻结测试并保持红灯 |
+| 8 | 13:21 | SA8 | Phase 2 设计 R2 复审 | 13:35 verdict: clear（CP 消解，0 新冲突，O-7 编辑性观察转 SA1） | 续传同一 SA8 会话：复审 R2 设计 CP-1/CP-2 消解 |
+| 9 | 13:26 | SA1 | Phase 2 O-7 措辞澄清 | 13:30 R2.1 落地（§6 方向纪律重写，零行为变更） | SA8 R2 观察项 O-7：§6 OPEN_NAMESPACE 错向措辞歧义，SA3 实现前澄清 |
+| 10 | 13:30 | SA2 | Phase 2 设计攻击评审 | 13:48 verdict: reject（3C+4M+6m，设计文本级修订面） | SA8 R2 clear + O-7 澄清后进入全维度攻击评审 |
+| 11 | 13:48 | SA1 | Phase 2 设计修订 R3 | (pending) | SA2 reject → SA1 按 review 修订（同一 SA1 会话续传） |
+| 12 | 13:58 | SA2 | Phase 2 重审 R2 | (pending) | SA1 R3 收口后同一 SA2 会话重审 |
+| 13 | 14:09 | SA1 | Phase 2 设计修订 R4 | 14:15 R4 落地（N-1/N-2+nano×3 全收口，890→915 行） | 窄幅 reject：仅 N-1（encode* 同步 throw 围栏判别扩域）+N-2（peer 对称 watchdog 一句话）增补 |
+| 14 | 14:15 | SA2 | Phase 2 重审 R3 | 14:22 verdict: pass（21 攻击点全闭环） | 窄幅核对 N-1/N-2 增补条款（SA2 承诺仅核对增补即可放行） |
+| 15 | 14:22 | SA6 | Phase 2.5 新红灯补测 | (pending) | 设计 §18.11 R3/R4 追加 8 项新 IT（状态门/终结器/watchdog/序列分配点等锚定），SA3 实现前补红 |
+| 16 | 14:32 | SA3 | Phase 3 TDD 实现 | (pending) | 设计定稿（SA2 pass）+全量红灯锚定 → SA3 建包实现至绿灯 |
