@@ -30,4 +30,5 @@ run_id: issue-136-1787888033-8367 / round: 1 / branch: fix/issue-136-on-docs-pha
 | 23 | 16:52 | SA3 | Phase 3 修复轮 R2 | 17:12 commit ade002c：F1-F7 全修，69/70 绿（余 1 条 AC7 degraded 推进形态与 F2 无条件 timer 冲突，SA4 F2 注记指引转 SA6） | SA4 回流：F1/F2/F3（阻塞）+F4/F5/F7（顺手）对 SA6 新红灯实现；设计 R4.2 hub 分支澄清已就位 |
 | 24 | 17:12 | SA6 | Phase 3 回流对齐 R2 | 17:20 完成（advanceMs 25s→200 backoff 段推进，断言集零改动，70/70 两轮全绿） | AC7 degraded（hub 侧）25s 推进形态调整（SA4 F2 注记：调推进量非删兜底；SA3 实证等价形态已达标） |
 | 25 | 17:22 | 总控亲验 | Phase 3 绿灯复验 | 17:22 | pnpm typecheck + pnpm test 后台亲跑：162 文件 1941 测试全绿、零类型错误、exit 0 |
-| 26 | 17:22 | SA4 | Phase 3 复审 R2 | (pending) | 修复已亲验全绿 → SA4 增量复审（F1/F2/F3+F4/F5/F7 四处核对 + F8 勘误确认 + 复跑全量） |
+| 26 | 17:22 | SA4 | Phase 3 复审 R2 | 17:33 verdict: pass（F1-F7 治本，红→绿双侧佐证，全量复跑一致） | 修复已亲验全绿 → SA4 增量复审（F1/F2/F3+F4/F5/F7 四处核对 + F8 勘误确认 + 复跑全量） |
+| 27 | 17:33 | SA7 | Phase 3 动态验证 | (pending) | SA4 pass 后动态验证（重点：#3 hub watchdog 空闲节奏、#4 R-11 背压、#5 R-12 GOAWAY 维持；#1/#2 建议项） |

@@ -1,7 +1,9 @@
 # SA4 静态验尸报告 — `@nomicore/ws-replication`（issue #136 切片 6，Phase 3）
 
-**Date**: 2026-08-30
-**Verdict**: **reject**（3 条已获执行证据的设计偏离，修复面窄、方向明确；无需 needs-redesign——架构本身成立）
+**Date**: 2026-08-30（R1）/ 2026-08-30（R2 复审，见文末「SA4 R2 复审节——回流修复增量核对 + 全量复跑」）
+**Verdict（当前，R2）**: **pass** —— R1 三条阻塞项 F1/F2/F3 及次要项 F4/F5/F7 全部治本修复并经执行证据复核翻绿；F8 勘误与 F6/F9 登记落实；全量复跑 162 文件 / 1941 测试 + typecheck 全绿。**R1 正文（verdict: reject）原样保留于下**。
+
+**R1 Verdict（历史，保留）**: **reject**（3 条已获执行证据的设计偏离，修复面窄、方向明确；无需 needs-redesign——架构本身成立）
 
 - **被审实现**: `packages/ws-replication`（commit 24642a9 实现 + 0cd1ae6 CI 接线 + 4333593 SA6 测试对齐；基线 `ff50d47..HEAD`，36 文件 +9019/−1）
 - **设计定稿**: `task_phase5-ws-namespace-sync_design.md`（R4，915 行）+ `task_phase5-ws-namespace-sync_relevant_decisions.md`
@@ -111,3 +113,47 @@
 实现主体质量高：设计 R4 的全部关键机制（四分类状态门、one-shot 终结器、三层检测面 + 边沿触发、encode* 同步 throw 收编、双侧 watchdog、七行 removeTarget 矩阵、blocked 重建裁决、dequeue 序列分配、I-3 ACK 时序、I-2 脱敏）逐条与源码事实精确对齐，67 项冻结验收全绿。但 **F3 是对总控 CP-1 裁决（ADR 0010 L147 序列纪律字面）的实现侧旁路，且注释自认是为迁就测试 seam**；**F1 打破最终一致性承诺且零信号（静默失败立法红线）**；**F2 抽掉了设计规定的两条超时兜底**。三者均已由执行证据坐实（非纸面推断），修复面均为局部（一处宽赦分支删除 + hub 两处补发 RESYNC + 两处 timer 无条件武装）+ 测试侧配套（SA6 seam 序列记账修复 + 两条新红灯），不触及架构与契约面。
 
 **Verdict: reject —— SA3 修复 F1/F2/F3（F4–F7 顺手、F8 由 SA1 补勘误、F9 登记）后提交 SA4 复审（增量核对上述四处 + 复跑全量）。**
+
+---
+
+# SA4 R2 复审节 —— 回流修复增量核对 + 全量复跑（2026-08-30，同会话第二轮）
+
+**Verdict: pass** —— R1 全部回流项治本落地，零新增阻塞；红灯锚定链（红→绿）双侧独立佐证；全量复跑与总控 verify2 一致。
+
+- **被审增量**: `3f083db..HEAD`（c1ec56c SA6 红灯+seam+勘误 / ade002c SA3 R2 修复 / fa6d61c+3a18dfa 记录与测试对齐）——6 src + 4 test（新增 `ws-replication-sa4-f1-f2-f3-red.test.ts`）+ 4 wiki，全部落在 ALLOW LIST（`packages/ws-replication/**`、SA6-owned test、wiki 白名单）；零根配置新增改动、BLACKLIST 零命中。
+- **全量复跑（独立进程）**: `pnpm test` → **162 文件 / 1941 测试全绿，Type Errors no errors，exit 0**（/tmp/sa4-r2-full3.log，与总控 verify2 逐值一致）；`pnpm typecheck` → **exit 0**（/tmp/sa4-r2-tc.log）；`pnpm exec vitest run packages/ws-replication` → 9 文件 / 70 测试全绿（/tmp/sa4-r2-pkg.log，含临时复验文件时 74 it）。
+
+## 一、阻塞项修复逐条核对（对照 R1 执行证据）
+
+| # | 修复核验（代码 diff + 静态 grep + 执行证据） | 治本判定 |
+|---|---|---|
+| **F3（CRITICAL）closing 序列宽赦** | `peer-connection.ts` 宽赦分支**整块删除**——`decodeFrame` import、`anyNamespaceClosing()` 辅助均移除（grep 零残留）；两连接唯一入站 decode 点（peer:211 / hub:170）均严格 `expectedSequence: this.expectedSeq` → codec 对 gap/repeat/回退一律 `SEQUENCE_VIOLATION` fatal（ADR 0010 L147 字面 / §4.1/§18.8 CP-1 定案恢复）。**执行证据翻绿**：R1 复现 R-A（closing 窗口注入 `sequence=1` 重复帧）→ 现 `blocked` + ns `disconnected`；对照 R-B（非 closing 同帧）维持 `blocked`——严格路径全时段无豁免。SA6 配套到位：`injectPeer/injectHub` 增显式 `{sequence}` + 静默期不变量文档化；⑤d 改无撞号形态（saveGate 保持悬挂 → hub 方向零出站 → 注入合法序列 → closeTimeout 本地收口），R3/#5d 语义断言全保留并新增 `CLOSE_OK×0`——覆盖等价成立 | ✅ 治本（删除而非收窄；生产码不再为测试 seam 让步） |
+| **F1（MAJOR）hub 溢出零声明** | `hub-namespace.ts` 新增 `declareHubResync()`：**两个溢出面统一**（`onLocalResyncEdge`〔§10.2 channel live 溢出〕+ `onWatchdogEdge('needsResync')`〔§12 session 边沿〕）→ 发 `RESYNC_REQUIRED{reasonCode:'send-queue-overflow'}` + 置 needs-resync + 等 peer round；记忆化 `resyncDeclared`（一恢复周期恰一帧），`onRoundSettled` 进 live 时重置；quiet 态守卫；hub 收 peer 的 RESYNC（§10.6）仍不自声明（对端已声明，正确）；deferred 溢出仍走 `pendingResync`（§10.1 镜像条款，正确不声明）。设计 R4.2 §12 hub 分支「**声明 + 等待**」定案与之逐句对齐（明文「hub 侧不存在只等待零声明分支」）。**执行证据翻绿**：R1 复现 R-D（cap=1 + 悬挂 peer saveGate + hub 两笔写）→ 现 `RESYNC_REQUIRED` 恰 1 帧 + 释放 gate 后 `n/extra` 双侧收敛 + 回 `live`（R1 为 0 帧永久发散） | ✅ 治本（与协议 §9.4「任一端可声明」的恢复通路接通；SA6 F1 红灯同场景锚定） |
+| **F2（MAJOR）everBeenLive 豁免** | `peer-namespace.ts`：`everBeenLive` 字段**整删**，四处 `armTimer('open'/'reconcile')` 无条件化（:142/:243/:334/:612）——grep 零残留，与 §5.1/§16/§9.3 无条件武装逐条对齐。**执行证据翻绿**：R1 复现 R-C（重连 + authorize 悬挂 + `openTimeoutMs=100`）→ `advanceMs(400)` 段内即收口 `failed`（R1 同场景 10× 时长仍 `'opening'`）。配套测试对齐合规：AC7 degraded(hub) 恢复段 `advanceMs(25_000)→(200)`——diff 实测**仅 1 行功能改动 + 注释，断言集 10 条零改动**（`git diff` 核实）；这正是 R1 F2 处置建议「调整 timer 值或测试推进量，不是删兜底」的执行（原 25s 大步推进在无条件武装后会误触 open@5s——测试形态缺陷，非兜底缺陷） | ✅ 治本（豁免机制删除，非调参掩盖） |
+
+## 二、次要项与登记项核对
+
+| # | 核验 | 判定 |
+|---|---|---|
+| F4 | `update-channel.ts:116` `sendAndRegister` 增 `if (seq <= 0) return;`——超限丢弃/连接收口的返回 0 不再登记 `inFlight`（幽灵 seq 0 消除；flushQueued 同路径覆盖） | ✅ |
+| F5 | `frame-io.ts` 新增 `OutboundExhaustedError` + `onSequenceExhausted` 回调；双侧连接层（peer-connection/hub-connection）实现 §4.1 R3/#11 响亮收口：best-effort connection ERROR（`CONNECTION_POLICY_VIOLATION`）+ `close(1008)`，peer → `blocked`、hub → `closed`+cleanup；控制器 `sendChecked` 对无 `.code` 的该错误静默返回 0（不叠加 namespace ERROR，连接已收口）——符合设计「响亮收口」 | ✅（nano-note 见下） |
+| F7 | `oneShotTerminal` 防御分支：identity 异读/disabled → `sendNsError('INTERNAL_ERROR')` + `finalize('failed')`——§12.2「防御：disabled/异读 → INTERNAL_ERROR 收口」对齐 | ✅ |
+| F8 | 设计 R4.1：§21 ALLOW LIST 追认根 `package.json`（附总控裁决依据 + 0cd1ae6 + CI 门禁锚 ci.yml L36-40）；DENY 行同步收窄（根 package.json 移出，其余根配置仍 DENY）；**P-12 整行重写为双路径分述**（vitest 通配 ✓ / typecheck 逐包枚举须追加）——与 R1 F8 的实证（枚举性质 + CI 黑洞风险 + 改后 exit 0）完全一致 | ✅ 落实 |
+| F6/F9 | 设计 §23 新增 **R-11**（§4.4 水位/round-robin/CONNECTION_BACKPRESSURE 半残 + UPDATE 门序角落差异 → 切片 7）与 **R-12**（GOAWAY SERVER_RESTARTING 未停新 OPEN/round → 切片 9），均注明 SA4 判不阻塞的理由与 SA7 动态审核重点编号 | ✅ 登记 |
+
+**F5 nano-note（不阻塞，登记观察）**：(a) 耗尽 ERROR 帧以 `sequence: 0xffffffff` 发送——该序列已被最后一帧合法帧占用，接收端将判 repeat fatal（与紧随的 close(1008) 意图一致，best-effort 语义可接受）；(b) `OutboundExhaustedError` 在个别连接层未包裹调用点（peer `withController`/`onRemoteOpen` 的直发 sendControl、hub `onHello` 的 HELLO_ACK）理论穿透——前者需「先耗尽 2^32 帧再收到无通道帧」、后者 HELLO_ACK 恒为 seq 1，均处于 §4.1 自述「实践不可达」面，且主收口（ERROR+close）先于 throw 执行。登记供切片 7 顺手包裹，不影响本轮。
+
+## 三、红灯锚定链复核（红→绿双侧佐证）
+
+- **红侧**：SA6 红灯文件（3 it）于 c1ec56c（fix 前）独立进程实测 `3 failed | 67 passed`（简报记录 /tmp/sa6-f1f2f3-run.log），三个红锚与 SA4 R1 执行证据逐条同构（F1=R-D 零帧 / F2=R-C 停留 opening / F3=R-A 恒 ready）。
+- **绿侧**：本轮 SA4 以 **R1 同源复现套件**（逐字同场景同断言）在修复后复跑 → **4/4 通过**（R-A/R-C/R-D 翻绿 + R-B 对照维持绿；/tmp/sa4-r2-rv.log，临时文件跑毕即删，worktree 干净）。R-C 复验首跑的「`waitNamespace('opening')` 预算耗尽、当前 failed」恰为修复生效的直接观测（openTimeout 在 400ms 推进段内 fire）——调整观测点后 4/4。
+- **全量**：`pnpm test` 162/162 文件、1941/1941 测试、零 Type Errors、exit 0（与总控 verify2 逐值一致）；`pnpm typecheck` exit 0。
+
+## 四、新偏离扫描（R2 增量）
+
+- 修复未引入新设计偏离：F1 的声明点严格限定「本端溢出两面」（§10.6 接收面与 §10.1 deferred 面均不自声明）；F2 的无条件武装未产生新 wire 行为；F3 删除后 hub 侧本就严格（R1 已核）；F5 收口路径与 §4.1 nano-note 2 的保守选择（1008/blocked）一致。
+- 范围守卫：R2 delta 全部在 ALLOW LIST 内；`git status` 干净（除本报告）。
+
+## 五、R2 裁决
+
+F1/F2/F3 修复均为**机制删除或通路接通**（宽赦整删、豁免整删、声明统一入口），非表面补丁——R1 三条执行证据在同源复现下全部翻绿，对照路径维持，红灯锚定链闭合，全仓零回归。F4/F5/F7 到位，F8 勘误与 F6/F9 登记落实。**Verdict: pass**——SA7 可进入动态验证（重点见 R1「动态审核重点」节，状态更新：#1/#2 已有静态+确定性测试覆盖、动态复核降级为建议项，#3/#4/#5 维持）。
