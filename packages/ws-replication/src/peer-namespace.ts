@@ -41,6 +41,8 @@ export interface PeerNamespaceHost {
   sendControl(message: ReplicationMessage): number;
   /** 本端连接致命（ACK_STATE_VIOLATION 等）：connection ERROR + close + blocked。 */
   connectionFatal(code: string, wsCloseCode?: number): void;
+  /** 连接代际（每次拨号 +1）：异步续体以此判别「连接已断/已重建」的迟到性（§13.4）。 */
+  connectionEpoch(): number;
 }
 
 type TimerKind = 'open' | 'bootstrap' | 'reconcile' | 'close';
@@ -138,6 +140,7 @@ export class PeerNamespaceController {
 
   startOpen(): void {
     if (this.intent !== 'active' || this.state !== 'targeted') return;
+    const epoch = this.host.connectionEpoch();
     this.setState('opening');
     this.armTimer('open');
     void (async () => {
@@ -145,10 +148,15 @@ export class PeerNamespaceController {
       try {
         result = await this.host.registry.open(this.target.localOwner, this.namespaceId);
       } catch (err) {
-        if (!this.isTerminal()) this.finalize('failed');
+        if (!this.isConnectionDead()) this.finalize('failed');
         return;
       }
-      if (this.isTerminal()) return; // §13.4：零 wire、零迁移
+      if (this.isConnectionDead() || this.host.connectionEpoch() !== epoch) {
+        // B-2c：§13.4「连接已断/已重建」——迟到续体零 wire；若 registry.open 已交付
+        // lease，静默回收（不覆盖 this.lease——旧 lease 归属当前/下次连接流程）
+        this.releaseLeaseOrNoop(result.ok ? result.lease : undefined);
+        return;
+      }
       if (!result.ok) {
         if (result.code === 'NAMESPACE_NOT_FOUND') {
           this.openDeclaredLocal = false;
@@ -171,10 +179,17 @@ export class PeerNamespaceController {
         if (status.runtime === null) throw new Error('lease released during open');
         replication = status.runtime.replication;
       } catch (err) {
+        this.releaseLeaseOrNoop(this.lease);
+        this.lease = undefined;
         this.finalize('failed');
         return;
       }
-      if (this.isTerminal()) return;
+      if (this.isConnectionDead() || this.host.connectionEpoch() !== epoch) {
+        // B-2c：迟到（断开/重建窗口）——零 wire、零迁移；lease 静默回收
+        this.releaseLeaseOrNoop(this.lease);
+        this.lease = undefined;
+        return;
+      }
       if (replication.state !== 'enabled') {
         // 本地响亮终局（零 wire 帧；不虚假降级为 bootstrap——ADR 0010）
         this.finalize('failed');
@@ -256,9 +271,14 @@ export class PeerNamespaceController {
       if (!this.isTerminal()) this.finalize('failed');
       return false;
     }
-    if (this.isTerminal()) return false; // §13.4
     if (!result.ok) {
-      if (!this.isTerminal()) this.finalize('failed');
+      if (!this.isConnectionDead()) this.finalize('failed');
+      return false;
+    }
+    if (this.isConnectionDead()) {
+      // §13.4「连接已断」：session 开于在途期（B-2b）——静默回收（session.close），
+      // 零 wire、零状态机迁移
+      void result.session.close().catch(() => undefined);
       return false;
     }
     this.session = result.session;
@@ -315,7 +335,14 @@ export class PeerNamespaceController {
         }
         return;
       }
-      if (this.isTerminal()) return; // §13.4：零 wire、静默回收
+      if (this.isConnectionDead()) {
+        // B-2a/B-2b：§13.4「已终局/连接已断」——导入迟到一律静默回收：lease 立即
+        // release（§8 L361「仅做 lease/session 静默回收」）；零 wire、零状态机迁移
+        // （不 setState('reconciling')——重连后由 openActiveTargets 重 OPEN；本地副本
+        // 已导入 → 按 §5.2 重新判定走 reconcile）
+        if (importResult.ok) this.releaseLeaseOrNoop(importResult.lease);
+        return;
+      }
       if (!importResult.ok) {
         this.sendNsError('BOOTSTRAP_FAILED');
         this.finalize('failed');
@@ -325,6 +352,11 @@ export class PeerNamespaceController {
       const opened = await this.tryOpenReplicationSession();
       if (!opened) return;
       this.clearTimer('bootstrap');
+      if (this.isConnectionDead()) {
+        // B-2b 兜底：断开与「导入+session 开」交错竞态的子窗口（B-2a 回收面）——
+        // session 已开于在途期（tryOpen 已回滚）或此后终局；cleanup 收口，零 ACK
+        return;
+      }
       this.sendChecked({
         kind: 'BOOTSTRAP_ACK',
         namespaceId: this.namespaceId,
@@ -525,17 +557,17 @@ export class PeerNamespaceController {
       this.setState('disconnected');
       return;
     }
-    void this.cleanupResources().then(() => {
-      if (!this.isTerminal()) this.setState('disconnected');
-    });
+    // B-2d：投影先行——cleanup 卡 session.close 屏障（在途 apply 未排空）不得让投影
+    // 滞留 live（重连 openActiveTargets 会跳过 live → 永不重 OPEN）；资源收口异步进行
+    this.setState('disconnected');
+    void this.cleanupResources();
   }
 
   /** 连接 blocked（fatal）：活跃态投影 disconnected。 */
   onConnectionFatal(): void {
     if (this.isTerminal()) return;
-    void this.cleanupResources().then(() => {
-      if (!this.isTerminal()) this.setState('disconnected');
-    });
+    this.setState('disconnected');
+    void this.cleanupResources();
   }
 
   /** stop()：一律收口为 closed（本地，零 wire）。 */
@@ -569,6 +601,13 @@ export class PeerNamespaceController {
 
   private onRoundSettled(): void {
     this.clearTimer('reconcile');
+    if (this.state !== 'reconciling') {
+      // B-1：removeTarget×reconcile 竞态——closing/终态/断开期间迟到的 round 结算
+      // 只清 reconcile timer（§5.1 closing 唯一出口 CLOSE_OK/closeTimeout → closed）；
+      // §13.4 终态不复活、零状态机迁移——不得 setState('live') 复活被收口（否则
+      // CLOSE_OK/close timer 均因仅认 'closing' 而失效，target 永久假活）
+      return;
+    }
     if (this.pendingResync) {
       this.pendingResync = false;
       this.round.markLive();
@@ -672,9 +711,11 @@ export class PeerNamespaceController {
   }
 
   private async applyStep2(update: Uint8Array, step2Sequence: number): Promise<'ok' | 'aborted'> {
+    const epoch = this.host.connectionEpoch();
     const outcome = await this.applyRemoteUpdate(update, step2Sequence, true);
-    if (outcome === 'ok') {
-      // §9.1.4：apply 成功 → 发 SYNC_APPLIED（ackedSequence = 收到的 Step2 帧序）
+    if (outcome === 'ok' && this.host.connectionEpoch() === epoch) {
+      // §9.1.4：apply 成功 → 发 SYNC_APPLIED（ackedSequence = 收到的 Step2 帧序）；
+      // B-2d：连接已重建 → 旧 round 的 Applied 不发（迟到的控制帧不得落新连接）
       this.sendChecked({
         kind: 'SYNC_APPLIED',
         namespaceId: this.namespaceId,
@@ -683,7 +724,7 @@ export class PeerNamespaceController {
       });
       return 'ok';
     }
-    return 'aborted';
+    return outcome === 'ok' ? 'ok' : 'aborted';
   }
 
   /** 统一 apply 管线（§11.1/§11.3 镜像：UPDATE / Step2 diff）。 */
@@ -697,6 +738,7 @@ export class PeerNamespaceController {
       if (!this.isTerminal()) this.finalize('failed');
       return 'failed';
     }
+    const epoch = this.host.connectionEpoch(); // B-2d：代际捕获——旧连接的迟到 ACK 不得落新连接
     const pending = session.applyRemoteUpdate(update);
     this.pendingApplies.add(pending);
     try {
@@ -708,7 +750,9 @@ export class PeerNamespaceController {
         return 'failed';
       }
       if (isStep2) return 'ok'; // SYNC_APPLIED 由 applyStep2 发送（§9.1.4）
-      if (this.isQuietState()) return 'ok'; // closing/终态：ACK 不再发出
+      if (this.isQuietState() || this.host.connectionEpoch() !== epoch) {
+        return 'ok'; // closing/终态 或 连接已重建（§13.4 迟到纪律）：ACK 不再发出
+      }
       this.sendChecked({
         kind: 'UPDATE_ACK',
         namespaceId: this.namespaceId,
@@ -799,6 +843,18 @@ export class PeerNamespaceController {
     return this.state === 'closed' || this.state === 'conflicted' || this.state === 'failed';
   }
 
+  /** §13.4「已终局/连接已断」完整语义：终态 + disconnected 投影均属迟到收口域。 */
+  private isConnectionDead(): boolean {
+    return this.isTerminal() || this.state === 'disconnected';
+  }
+
+  /** 迟到续体的静默回收（§8 L361：仅 lease/session 静默回收，零 wire、零迁移）。 */
+  private releaseLeaseOrNoop(lease: NamespaceLease | undefined): void {
+    if (lease !== undefined) {
+      void lease.release().catch(() => undefined);
+    }
+  }
+
   private isQuietState(): boolean {
     return (
       this.state === 'closing' ||
@@ -821,6 +877,7 @@ export class PeerNamespaceController {
 
   private async closeSessionAndRelease(): Promise<void> {
     const session = this.session;
+    const lease = this.lease;
     if (session !== undefined) {
       await session.close();
     }
@@ -828,12 +885,17 @@ export class PeerNamespaceController {
       this.unsubscribe();
       this.unsubscribe = undefined;
     }
-    const lease = this.lease;
-    this.lease = undefined;
-    this.session = undefined;
-    this.watchdog.teardown();
-    this.round.teardown();
-    this.channel.teardown();
+    if (this.session === session && this.lease === lease) {
+      // B-2d：仅当本 cleanup 持有的是**当前** session/lease 才收口通道级状态——
+      // 迟到 cleanup（旧连接 session，跨重连在途 apply 场景）不得摧毁新连接的
+      // round/session/频道状态（否则新 round 被 teardown → 旧 Applied(roundId=0)
+      // 落到新连接 → hub SYNC_STATE_VIOLATION → 误 failed；AC6 重连修复承诺失效）
+      this.session = undefined;
+      this.lease = undefined;
+      this.watchdog.teardown();
+      this.round.teardown();
+      this.channel.teardown();
+    }
     if (lease !== undefined) {
       await lease.release().catch(() => undefined);
     }

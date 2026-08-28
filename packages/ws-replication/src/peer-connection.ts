@@ -41,6 +41,9 @@ class PeerConnectionImpl implements PeerReplication {
   private readonly controllers = new Map<string, PeerNamespaceController>();
 
   private connStateValue: PeerConnectionState = 'stopped';
+  /** 连接代际：每次 dialNow +1——控制器异步续体（startOpen/导入/apply）以此判别
+   *  迟到性（§13.4「连接已断」：代理期零 wire、零状态机迁移）。 */
+  private connectionEpochValue = 0;
   private transport: DuplexTransport | undefined;
   private outbound: OutboundQueue | undefined;
   private expectedSeq = 1;
@@ -72,6 +75,7 @@ class PeerConnectionImpl implements PeerReplication {
       hubInstanceId: options.hubInstanceId,
       sendControl: (message) => this.sendControl(message),
       connectionFatal: (code, wsCloseCode) => this.connectionFatal(code, wsCloseCode ?? 1002),
+      connectionEpoch: () => this.connectionEpochValue,
     };
     for (const target of options.targets ?? []) {
       this.addTarget(target);
@@ -161,6 +165,7 @@ class PeerConnectionImpl implements PeerReplication {
   private dialNow(): void {
     if (this.stopping) return;
     this.clearBackoff();
+    this.connectionEpochValue += 1;
     this.setState('connecting');
     let transport: DuplexTransport;
     try {
@@ -179,7 +184,8 @@ class PeerConnectionImpl implements PeerReplication {
     );
     this.expectedSeq = 1;
     this.nonce = this.makeNonce();
-    this.sendControl({
+    // HELLO 是连接自身握手帧：直发（sendControl 的 ready 状态门不适用于握手期发送）
+    this.outbound.sendControl({
       kind: 'HELLO',
       peerInstanceId: this.options.instanceId,
       expectedHubInstanceId: this.options.hubInstanceId,
@@ -385,6 +391,9 @@ class PeerConnectionImpl implements PeerReplication {
 
   private sendControl(message: ReplicationMessage): number {
     if (this.outbound === undefined) return 0;
+    // B-2e 放大器：连接状态门——控制器帧只在连接 ready 时发送；重建/断开/重连的
+    // pending 期零出站（迟到帧落在新连接 handshaking 窗口会触发 HELLO_REQUIRED fatal）。
+    if (this.connStateValue !== 'ready') return 0;
     return this.outbound.sendControl(message);
   }
 
@@ -478,6 +487,11 @@ class PeerConnectionImpl implements PeerReplication {
     this.clearReset();
     this.clearBackoff();
     this.setState('disconnected');
+    // B-2e：§4.3 L228「重建期间所有 namespace 投影 disconnected」——通知全部目标
+    // 控制器（兄弟活跃 ns 立即投影、由其清理；重连后 openActiveTargets 统一重 OPEN）
+    for (const controller of this.controllers.values()) {
+      controller.onConnectionLost();
+    }
     const transport = this.transport;
     if (transport !== undefined && !transport.closed) {
       transport.close(1000, 'replication-rebuild');

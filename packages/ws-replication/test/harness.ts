@@ -335,9 +335,10 @@ export class StubPersistence implements DocPersistence {
   importHold: Deferred | undefined;
   /** 单次门闩：下一次 loadDoc 挂起（B-2c startOpen 迟到续体竞态锚——registry.open 在途）。 */
   loadGate: Deferred | undefined;
-  /** 单次门闩消费登记：同一门闩只挂起一次（第二次 saveDoc/importDoc 不被重复卡死）。 */
+  /** 单次门闩消费登记：同一门闩只挂起一次（第二次 saveDoc/importDoc/loadDoc 不被重复卡死）。 */
   private saveGateSeen: Deferred | undefined;
   private importHoldSeen: Deferred | undefined;
+  private loadGateSeen: Deferred | undefined;
   readonly archived: Array<Readonly<{ docId: string; userId: string }>> = [];
   private saveSeq = 0;
 
@@ -378,10 +379,10 @@ export class StubPersistence implements DocPersistence {
   }
 
   async loadDoc(owner: User, docId: string): Promise<DocHandle | null> {
-    if (this.loadGate !== undefined) {
-      const gate = this.loadGate;
-      this.loadGate = undefined;
-      await gate.promise;
+    if (this.loadGate !== undefined && this.loadGateSeen !== this.loadGate) {
+      // 单次门闩：保持可读（测试侧经同一引用释放）；同一门闩只挂起一次。
+      this.loadGateSeen = this.loadGate;
+      await this.loadGate.promise;
     }
     const stored = this.docs.get(keyOf(owner, docId));
     return stored === undefined || stored.archived ? null : this.makeHandle(stored);
