@@ -100,8 +100,8 @@ git diff --check 4fe3a02 8b1398f
 
 # R4 增量静态复审 — 方案 B 分类学返工
 
-**Date**: 2026-08-28  
-**Review target**: `git diff 8b1398f..HEAD -- packages/`（实施 commits `1aa1994`、`d52130b`）；设计 §3.6 与 SA2 R4 delta 复审段。  
+**Date**: 2026-08-28
+**Review target**: `git diff 8b1398f..HEAD -- packages/`（实施 commits `1aa1994`、`d52130b`）；设计 §3.6 与 SA2 R4 delta 复审段。
 
 ## 审核结论
 
