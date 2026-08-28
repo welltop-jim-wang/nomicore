@@ -151,4 +151,8 @@ setsid nohup bash -c 'cd /home/wangjian/nomicore-fix-issue-133 && pnpm vitest ru
 
 沿用前轮动态重点：fence probe 挂起 × idle-close、fence 后 arm 前 mutation 到真实 archive guard 的端到端分类；R4 分类学本身未引入新的运行时协议风险。
 
+## 1.5 协议假设审查
+
+已核实设计 §9 的声明属实：R4 增量 diff 不含 HTTP/WS 端点、status 约定、端口、进程时序或第三方库行为等协议级假设。fence/FIFO 次序仅为进程内并发伪码，已由设计 §3.4/§3.5 的无环顺序证明覆盖。`protocol-assumption: none-found`。
+
 **Verdict**: pass
