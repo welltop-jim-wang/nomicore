@@ -147,3 +147,47 @@ $ git diff 7ceede1..HEAD
 代码主体在仓库约定、测试质量、生命周期防御、模块边界四面均达到发布水准；SA4/SA7 的 pass 结论经本轴独立复核与实测复跑（包 256/256、全仓 1661/1661、HEAD 含 e311326）确认成立。**零硬违规**；10 项非阻塞发现中 N-1（环境绑定面声明）、N-2（事件白名单声明）、N-3（降级分支测试锚定）建议随 R 修复轮闭合（合计约 1 行 AGENTS.md + 1 行设计措辞 + 1 条测试用例 + 3 字注释删除），N-4/N-5/N-6/N-7 为顺手级，N-8/N-9/N-10 为记录级。
 
 **Verdict: pass-with-issues**（不阻塞发布；建议 R 轮闭合 N-1/N-2/N-3 后归档）。
+
+---
+
+# R 轮复审（repair-and-repeat；fix commit `0bbb17a`，2026-08-28）
+
+**Verdict: pass**（N-1..N-7 逐项真实闭合；spec 轴 F-1/G13 必修项修复正确且带差分锚定；未发现新问题；记录级 N-8 随 N-3 消解，N-9/N-10 无需行动）
+
+**复审范围**：`git diff 7ceede1..HEAD`（HEAD = `a811f06`；增量 = `0bbb17a` 修复轮 + `a811f06` dispatch 归档）。关键行为独立重跑实证，不采信修复方自述。
+
+## R.1 逐项闭合核验（N-1..N-7）
+
+| 项 | 修复落点 | 复审证据 | 判定 |
+|---|---|---|---|
+| N-1（node:path 绑定面声明） | 三处同步：`paths.ts:1-4` 头注勘误、包 `AGENTS.md:37-40`（node:fs 两模块 / node:path 三模块含 paths.ts 仅 join）、设计 §1.5 表拆行 + R3 勘误注 | 实测 grep 复核：`node:fs` 仍仅在 file.ts/reader.ts；`node:path` 在三模块的声明与事实一致；frame/storage-gate 零绑定声明保持真 | ✅ 闭合（修法即建议原文） |
+| N-2（事件白名单缺 code） | 包 `AGENTS.md:56-59` 白名单补 `code`（附「固定词表或稳定 errno」限定） | 与 health.ts 三新成员形状逐字对合；禁入项（record/input/Base64/message/stack）原文保留 | ✅ 闭合 |
+| N-3（降级分支零锚定） | `file-adapter-r2-supplemental.test.ts:404-431` 新增「小 lineBudgetBytes + full 大 input」用例 | 事件源唯一性实证：`grep input-degraded src/` 仅 memory.ts:274 与 **file.ts:397** 两出口，测试走 file log → 锚定的恰是 N-3 flagged 分支；断言含事件形状 + 落盘 degraded digest 形 + reader ok 三要素 | ✅ 闭合（真锚定，非 vacuous） |
+| N-4（locator-invalid 零锚定） | 同上文件 `:433-449` 新增敌意入参两例 | 「不存在的 rootDir」设计使 fs 先行会产生 manifest-invalid 而非 locator-invalid——断言构成证伪性区分；23 码词表现全部有锚 | ✅ 闭合 |
+| N-5（「毫秒级守卫」笔误） | `file.ts:58` 删三字 | diff 逐字核对 | ✅ 闭合 |
+| N-6（sa6_red.md 死引用） | 简报 `:49` 改为自指 + N-6 勘误注 | 树内不再引用不存在文件 | ✅ 闭合 |
+| N-7（eventsOfType 双份） | `helpers/file.ts:32-34` 去重为 `export { eventsOfType } from './base.js'`；不实注释删除 | base.ts:96 单源保留；layout/mismatch 等消费方经 re-export 不受影响（typecheck 0 errors 佐证）；新注释「单向 import 无循环」与事实一致 | ✅ 闭合 |
+| N-8（J10 互指未落地） | 无独立修复（原定「随 N-3 消解」） | N-3 闭合后 file 侧 line 预算门两分支（降级 + 丢弃）均有锚，J10 防漂移承诺实质达成 | ✅ 消解 |
+| N-9 / N-10（过程记录） | 无需行动 | spec 轴 S-1 同款备案已归档（spec_review.md:118）；dispatch log 第 20-23 行已入档 | ✅ 记录级，维持 |
+
+## R.2 修复轮引入的新代码审查（F-1/G13 genesis exhausted 门闩）
+
+- **修法正确性**：`file.ts:549-556` 在 `runGenesis` 的 `allocate()` 之后、守卫之前置闩 + 恰一次 `stream-exhausted`——与 append 面（`:506-510`）逐字同构，符合 J9「转换时刻 = 产出 UINT64_MAX 的分配完成，无论后续守卫/门/落盘成败」与 G13「必须修复」裁决；genesis record 照常走门落盘（UINT64_MAX 合法 sequence），此后 append/注入经既有 `exhaustedLatch` 首行分支静默丢弃（`:502/:532`），语义闭环。
+- **差分锚定实证**：新用例（`r2-supplemental:379-402`）断言 genesis 落盘 sequence = UINT64_MAX + 恰一次事件 + 后续 emit 零落盘。修复前行为推定成立：`nextDecimal`（memory.ts:36-47）对 UINT64_MAX 全 9 进位后 `unshift('1')` → 产出超域串 `'18446744073709551616'`，且修复前 runGenesis 不置闩 → 下一条 emit 必落盘第二条（`toHaveLength(1)` 必败）——该测试在未修复代码上不可能通过。
+- **一致性核对**：与 G2（分配即消耗）、G10（守卫跳过不发事件——stream-exhausted 是域转换事件而非守卫事件，正交无冲突）、R2-1（预置接缝拒 ≥ max，max-1 为最高合法预置）均无抵触；碰撞重试路径在 manifest 'wx' 失败前不跑 genesis，lastSequence 不被空耗。
+- **副作用面**：新增代码 4 行 + 注释，零新 import、零新环境绑定、零事件词表扩（复用 J9 既有成员）；DENY 面零触碰。
+
+## R.3 复跑证据（本评审独立进程，node v24.13.0，HEAD = a811f06）
+
+```text
+$ npx vitest run --typecheck packages/namespace-diagnostic-log
+ Test Files 18 passed (18) / Tests 259 passed (259)（256 + 3 终审锚定）/ Type Errors no errors / exit 0
+$ npx vitest run   # 全仓
+ Test Files 136 passed (136) / Tests 1664 passed (1664)（1661 + 3）/ Type Errors no errors / exit 0
+```
+
+worktree `git status` 干净（修复与台账均已入 commit）；本报告 R1 版已随 `0bbb17a` 归档入树。
+
+## R.4 R 轮结论
+
+R1 的 7 项修复对象全部真实闭合（逐项实测，非采信自述）；F-1/G13 必修项的修法与 J9 裁决语义精确对合并带差分锚定；未引入新问题（scope、绑定面、事件纪律、门序逐项核）。**Standards 轴 R 轮 verdict: pass**——本票在 standards 轴已无可发布阻断项与待闭合项。

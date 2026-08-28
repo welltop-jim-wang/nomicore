@@ -171,3 +171,53 @@ emission sidecar 路径：`appendFileSync(binPath, frame)` 成功后才 `appendF
 4. 四项发现（F-1/F-2/F-3 MINOR、F-4 INFO）均不触及 AC 与生产可达路径：F-1 为 testing 接缝组合边缘的 ADR exhausted 条款偏差（PoC 实证，建议 4 行最小修或裁决登记）；F-2 为边界声明与代码的一行级不一致；F-3 为公共契约字段的流程性漏登记（现状工程合理）；S-1/S-2/S-3 均已备案/裁决。
 
 **回流建议（交总控裁量，不阻断发布）**：F-1 补 genesis 路径 exhausted 转换块或裁决不补；F-2 修正 AGENTS.md/design §1.5 声明；F-3 裁决 `StrictRecordRead.recordKind` 现状并回写 §11；F-4 记入 backlog。
+
+---
+
+# R 轮（修复后复审，repair-and-repeat）— 2026-08-28
+
+- **复审范围**：更新后 diff `git diff 7ceede1..HEAD`（HEAD = `a811f06`；修复轮 = `0bbb17a`「genesis exhausted latch + final review closure (G13 F-1, standards N-1..N-7)」+ `a811f06` wiki 派遣日志归档）。修复轮代码面：`src/adapters/file.ts`（+8/−1）、`src/paths.ts`（头注）、`AGENTS.md`（绑定面 + 白名单）、`test/file-adapter-r2-supplemental.test.ts`（+80，3 条新锚定）、`test/helpers/file.ts`（N-7 去重）+ wiki（设计 §1.5 R3 勘误行 + §11 追加 G11/G12/G13 裁决表、SA3 修复轮报告、简报 N-6 勘误）。
+- **R 轮 Verdict**：**pass**（F-1/F-2/F-3/F-4 全部按裁决闭合，独立实证；无新问题引入；附 1 条非阻塞残余注记）
+
+## R.1 F-1（G13 必修）修复正确闭合 —— PoC 原场景重跑实证 ✅
+
+修复内容（`file.ts:549-556`）：`runGenesis` 在 `allocate()` 后、守卫检查**之前**补 `sequence === UINT64_MAX` 转换块——置 `exhaustedLatch` + 恰一次 `notify({type:'stream-exhausted'})`，genesis record 照常走门落盘，此后 append/注入静默丢弃。放置点正确（J9「分配完成即触发，无论该 record 后续守卫/门/落盘成败」——先于守卫即覆盖「守卫跳过也消耗 UINT64_MAX」形态）；与 attempt 路径同一门闩语义，无第二套逻辑。
+
+本评审 R1 的 PoC（`/tmp/spec-poc2.ts`，未改一行）原样重跑，前后对照：
+
+| PoC 场景 | R1（修复前实测） | R 轮（修复后实测，HEAD `a811f06`） | 判定 |
+|---|---|---|---|
+| A：预置 max−1 + genesis，再 inline emit | genesis 后零事件；2^64 超域 sequence **落盘**、零事件 | genesis 后恰一次 `stream-exhausted`；JSONL 仅 `[UINT64_MAX]`；`2^64 落盘 = false` | ✅ 闭合 |
+| B：同预置，sidecar emit | 写帧自检兜住但码值误导（`crc-mismatch`），门闩不置 | 门闩已置 → 静默丢弃、零误导事件（J9「此后静默」正语义） | ✅ 闭合且语义净化 |
+| C：无 genesis 对照（既有锚定路径） | 恰一次 `stream-exhausted` + 后续静默 | 逐字同前 | ✅ 零回归 |
+
+新增锚定测试（r2-supplemental.test.ts:380-406）与 PoC 同构且为**差分锚定**（断言 genesis=UINT64_MAX 落盘 + 事件恰一次 + 后续 emit 零落盘 + reader ok——在未修复代码上「后续 emit」会落 2^64 而使 `toHaveLength(1)` 失败），非 vacuous。
+
+## R.2 F-2（N-1）声明同步属实 ✅（附 1 条残余注记）
+
+三处同步逐一核验：
+1. `paths.ts:1-4` 头注改为「唯一环境依赖：`node:path` 的 `join`……零 node:fs」——属实（`:12` import 唯一）✅；
+2. `AGENTS.md:37-39` 拆分声明：`node:fs` 限 file.ts/reader.ts（唯一 IO 面）、`node:path` 列 file/reader/**paths** 三模块并标注 N-1 勘误——与 grep 实证（`node:fs` = file.ts+reader.ts；`node:path` = file.ts+reader.ts+paths.ts）一致 ✅；
+3. 设计 §1.5 表新增 paths.ts 独立行 + R3 勘误标注（R2 的「paths 零环境绑定」误列已明文更正）✅。
+
+**残余注记（INFO，非阻塞）**：设计 §1.1 模块清单注释行（:41「paths.ts……纯 TS」）与依赖图行（:57「paths.ts……零包内依赖（叶子）」——后者本即与 §10-J12「paths.ts 复用 schema-patterns 常量」相抵，R1 已指出）未在本轮同步。规范性声明面（§1.5 表 + AGENTS.md + 模块头注）已全部属实，§1.1 两处为注释级松散措辞，留待下次文档触碰时顺带即可。
+
+## R.3 F-3（G11）/ F-4（G12）裁决回写核验 ✅
+
+设计文末新增「总控裁决（2026-08-28，双轴终审回流——§11 追加）」表：G11 背书 `StrictRecordRead` 不携带 `recordKind` 现状（流程漏登记补登记，理由与 R1 缓冲事实一致）；G12 数值配置校验不增加、登记已知限制（入 REPORT 遗留风险）；G13 F-1 必修。F-3/F-4 按裁决闭合，无需代码变更 ✅。
+
+## R.4 修复有无引入新问题 → 未发现 ✅
+
+- **门闩语义全路径核对**：构造期置闩后 `mode='ready'` 正常完成；`appendSemantic`（file.ts:502）与 `appendFinal`（:532，注入路径）首行均检查 `exhaustedLatch` → 静默丢弃；「无分配即无转换」（注入不触发新事件）与「转换后一律丢弃」两纪律同时保持 ✅。
+- **测试增量质量**：N-3（file adapter line 预算降级分支首锚定：512B 预算 + full 4KiB input → `input-degraded{fromPolicy:'full'}` + 落盘 digest 降级形 + reader ok）、N-4（不存在 rootDir 证伪 fs 先行——`locator-invalid` ≠ `manifest-invalid` 的零 fs 触达证明）均为真实行为断言、非 vacuous ✅。
+- **N-7 去重等价性**：`helpers/base.ts:96` 与被删本地副本逐字同签名同实现；file.ts 本已单向 import base.ts（OBSERVED_AT），无循环 ✅。
+- **AGENTS.md 白名单补 `code`**（N-2）：与已交付事件形状（stream-init-failed.code / storage-*.code）一致，文档追认真实行为 ✅。注释笔误修复（N-5）、死引用修复（N-6）均为 wiki/注释级 ✅。
+- **DENY 清单**：本轮 diff 对冻结面/vfsl/lockfile/package.json 仍全空 ✅。
+
+## R.5 独立复跑
+
+`npx vitest run --typecheck packages/namespace-diagnostic-log`（HEAD `a811f06`，node v24.13.0）：**18 文件 259 passed（256+3 新锚定），Type Errors 0，exit 0**——与总控亲验声明一致。
+
+## R 轮结论
+
+R1 全部 4 项发现按总控 G11/G12/G13 裁决闭合（F-1 必修已修且 PoC 级实证、F-2 声明已同步、F-3/F-4 裁决回写）；3 条新锚定真实差分触发；259 全绿零回归；无新问题。**当前生效 verdict：pass**（残余：设计 §1.1 两处注释级措辞未同步——INFO，不阻塞）。

@@ -27,3 +27,6 @@
 | 23 | 19:52 | SA3 | 终审回流修复轮 | 20:01 | F-1 修复 + N-3/N-4 测试锚定 + N-1/F-2/N-2/N-5/N-6/N-7 文档与重复收口（续传 25c2439e） |
 | 24 | 20:03 | 总控 | 修复轮绿灯亲验 | 20:03 | 18 文件 259 测试全绿 Type Errors 0（ctl-green3.log exit 0） |
 | 25 | 20:03 | 终审双轴 | 修复后复审（diff 更新至 0bbb17a） | (pending) | 修复-重复规则：两轴对更新后 diff 复审（续传 d3e46a53 / 39053a1b） |
+| 26 | 20:10 | 双轴终审 R 轮 | Phase 4 前置复审 | 20:10 | standards=pass（N-1..N-7 闭合）+ spec=pass（F-1 PoC 级闭合），两轴当前生效 verdict 均 pass |
+| 27 | 20:10 | SA4 | Phase 3 最终 verdict 登记 | 20:10 | pass |（sa4_review.md 生效 verdict=pass，与本行一致；含 1.4 vitest 触发性自检 marker）
+| 28 | 20:10 | SA7 | Phase 3 最终 verdict 登记 | 20:10 | pass |（sa7_report.md verdict=pass，与本行一致；含 all-vitest-packages-triggered）

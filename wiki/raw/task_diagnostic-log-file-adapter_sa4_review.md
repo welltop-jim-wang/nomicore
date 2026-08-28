@@ -15,7 +15,7 @@
 |---|---|---|
 | §1.1 Scope Creep Guard | ✅ 干净 | actual 18 文件全部落在 ALLOW LIST / SA6 测试域 / wiki 白名单；DENY LIST（schema.ts、memory.ts、pipeline.ts、emission.ts、record.ts、schema-patterns.ts、crc32c.ts、digest.ts、package.json、pnpm-lock.yaml、packages/vfsl/**）逐一 diff 为空；BLACKLIST（package-lock.json/yarn.lock/TASK.md/*.bak/.DS_Store）零命中。SA6 owned 文件仅两处改动：`file-adapter-genesis-results.test.ts:90` 与总控勘误裁决逐字一致（`expect(result.kind).toBe(idx === 1 ? 'fatal' : 'committed')`，commit 0ec62e9）；`test/helpers/file.ts` 为红灯日志自锚定的两处 TypeCheckError 基础设施修复（值导入 + Partial 装配 seam），非断言逻辑 |
 | §1.3 E2E spec 触发性 | N/A | 本票无 `*.spec.ts` |
-| §1.4 vitest 触发性 | ✅ 接通 | 根 `pnpm test` = `vitest run --typecheck`，`vitest.config.ts` include `packages/*/test/**/*.test.ts` 覆盖本包全部 7 个 file-adapter 测试文件；CI（`.github/workflows/ci.yml`）node 20/24 矩阵均执行；`pnpm typecheck` 含本包 tsconfig |
+| §1.4 vitest 触发性 | ✅ 接通 | 根 `pnpm test` = `vitest run --typecheck`，`vitest.config.ts` include `packages/*/test/**/*.test.ts` 覆盖本包全部 7 个 file-adapter 测试文件；CI（`.github/workflows/ci.yml`）node 20/24 矩阵执行；`pnpm typecheck` 含本包 tsconfig。**1.4 vitest 触发性自检：all-vitest-packages-triggered（根 pnpm test include 覆盖本包全部 file-adapter 测试文件；CI node 20/24 矩阵执行）** |
 | §1.5 协议假设复核 | ✅ 属实 | §13 全部假设复验：`statSync(目录).size=4096/isFile=false/不抛`、`statSync(缺失,{throwIfNoEntry:false})=undefined`（本 worktree node -e 实测）；appendFileSync 创建语义 / `'wx'` EEXIST / EISDIR / rename 均被绿测试锚定。**但 §13 漏登一条被设计实际依赖的引擎行为假设——见 R-1（VFSL Pattern alternation 语义）** |
 | §1.6 契约改动连锁 | ✅ 零改动 | index.ts/testing.ts/health.ts/carrier.ts 全部只增不改；无既有 export 的 throw/return 契约变化；包外零消费者（设计 §14 审计复核属实） |
 | §1.7 源码 GREP 断言禁令 | ✅ 干净 | 4 个测试文件的 `readFileSync` 全部读**数据产物**（manifest/bin/jsonl/fixture），`toMatch/toContain` 全部断言运行时值（streamId 形状、base64 输出、issue code），无「读 .ts 源码做字符串断言」反模式 |
