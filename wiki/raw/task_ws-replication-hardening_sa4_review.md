@@ -255,3 +255,121 @@ N1/N2 回流 SA1 修文（设计修订注记 + ALLOW LIST 补条目），不阻�
 - 关键行号（本轮 worktree 实测）：frame-io.ts:145-149/195-229/203-205、hub-namespace.ts:407-414/532-536/
   687-689/775-791、peer-namespace.ts:541-546/565-580/752-754/386-390、peer-connection.ts:552-563/577-587/
   626-633、hub-connection.ts:78-95/249-258/439-441。
+
+---
+
+# SA4 R2 复验段（回流 commit 3e7df32 + 设计 addendum 75e5af7）
+
+**Date**: 2026-08-29
+**R2 Verdict**: **pass**
+**复验对象**: commit `3e7df32`（066d01f 之上的回流修复）+ 设计 addendum（`75e5af7`：§3.8 裁决 3、§5.2 偏离声明、§10 补列）
+**复验范围**: R1 报告 §五 固定面 + 总控追加项（E5 加验 / 裁决 3 产物 / §二处置复核）
+**基线复测**（本轮独立实测）: `vitest run packages/ws-replication` → **14 files / 103 tests 全绿 +
+Type Errors none + `git diff --check` 干净**（SA3/SA6 复测结论独立复核一致）。
+
+## R2-1 R1（sendControl 返回值污染）：✅ 修复闭合
+
+- **修复形态**（frame-io.ts:144-235）：`drain()` 返回 `lastControlSeq`（本批最后发出的**控制帧**序列，
+  0=无控制帧；三个早退点均带值返回）；`sendControl` 返回 `this.drain()`。控制队列 FIFO + 本帧必为
+  本批最后控制帧 → 返回值恒为本控制帧自身序号，数据帧随后派发不再参与。
+- **原复现脚本重跑**（同一脚本、真实类）：
+  - `/tmp/sa4-repro/repro2-realshape.ts`（真实接线形态：dropData 后无帧窗口满的 ns 挡游标 + 兄弟 ns
+    交付 + 控制发送）→ `sendControl(BOOTSTRAP_SNAPSHOT)` 返回 **2**，wire 增量
+    `[seq2=WIRE(快照), seq3=WIRE(Y2 数据帧)]`——返回值 = 快照帧自身序 ✓（R1 轮为 3）；
+  - `/tmp/sa4-repro/repro.ts`（三 ns 形态）→ 返回 **2** = 控制帧自身序 ✓（R1 轮为 3）。
+- **嵌套 drain 安全性推演**：数据循环 catch 的 `onDataShed → declareLocalResync → sendControl(RESYNC)`
+  与 `onControlExhausted → connectionFatal → sendControl(ERROR)` 构成嵌套 drain——内层返回内层控制帧
+  自身序（其返回值无人消费）、外层 `lastControlSeq` 不受内层影响，双向均正确。
+- **drain() 签名 void→number 连锁**：全仓 `.drain(` 调用点仅 frame-io 内部三处（sendControl 消费返回值、
+  enqueueData/runCheckpoint 忽略）——零外部 caller，公共导出面（index.ts）不含 OutboundQueue，无涟漪。
+- **G2.1/G2.2 关联完整性**：修复落在共享 `OutboundQueue` 单点，hub `startBootstrap`
+  （hub-connection.sendControlChecked → outbound.sendControl）与 peer `removeTarget`
+  （peer-connection.sendControl → outbound.sendControl）两条消费链同享修复；`bootstrapSnapshotSeq`/
+  `closeNamespaceSeq` 与 wire 实序恒等 → 合法 BOOTSTRAP_ACK/CLOSE_OK 不再可能被误杀。
+
+## R2-2 R2（package.json 版本行）：✅ 处置闭合
+
+- 设计 §10 新增包清单条目：`packages/ws-replication/package.json` **仅限 version patch bump 一行**，
+  理由 = 硬门禁 #9（改码模块必须 bump）；ALLOW 只增不删纪律下的显式扩展。
+- 实测边界：`git diff base HEAD -- package.json` 恰一行（`0.1.0→0.1.1`），无其他字段；
+  `3e7df32` 之后生产文件零改动（`git diff 3e7df32 HEAD -- packages/` 为空）——豁免范围与实际改动严格一致。
+
+## R2-3 R3（ensureCloseMemo 事件驱动化）：✅ 修复闭合（含裁决 3 产物核验）
+
+- **3000 跳轮询环已删除**（peer-namespace.ts:567-585）：memo body = drain + cleanup + `await gate`
+  （装饰 promise，创建时同步登记 resolve——settle 与登记零竞态窗口，SA2 R3 §三已审查成立）。
+- **事件源接线**（E1–E5 封闭集逐一核实现码）：
+  E1 `onCloseOk`（关联通过）✓、E2 `onTimerFired('close')` ✓、E3 `onConnectionLost`/`onConnectionFatal`/
+  `onConnectionStopped` 三入口（closing 分支均 settle）✓、E4 `onCloseRequest` 完成段 ✓、
+  E5 `finalize` **无条件** settle（原 `if (state === 'closed')` 已删）✓。
+- **封闭性静态核查**：离开 'closing' 或落入终态的全部路径必经上述五类之一；保持 'closing' 的路径
+  （`onIdentityChanged`/`onErrorFrame` 的 closing 早退）closeTimeout 仍在挂 → E2 有界兜底；
+  `clearAllTimers` 仅出现于 finalize（E5 同点 settle）——**无孤儿悬挂路径**。
+- **E5 路径加验**（SA2 R3 放行路径明示「建议 SA4 复验时加验」；本轮以真实
+  `PeerNamespaceController` + stub host 单元级驱动，`/tmp/sa4-repro/e5-verify.mts`）：
+
+  ```
+  removeTarget（live→closing）→ CLOSE_NAMESPACE 已发、closeP pending（无事件不结算 ✓ 事件驱动语义）
+  E5 触发：closing 期迟到 OPEN_OK → finalize('failed')（clearAllTimers 已清 closeTimeout）
+  → 状态 failed 且 closeP 于 50 微任务内结算——零 timer 推进、零 CLOSE_OK
+  EXIT=0（PASS：E5 是该路径唯一结算点，无条件 settleCloseMemo 接线有效）
+  ```
+
+- **裁决 3 产物核验**：设计 §3.8 裁决 3（E1–E5 + ADR-0008 L93「drain 段 vs 握手等待段」分层 + 选型 (A)）
+  与 SA2 R3「修复与本节要求逐字一致时无需再轮 SA2」的放行路径相符——E5 子句已入设计（§12 L313 依据）、
+  finalize 一行已落码，逐字一致 ✓。
+- **测试⑦豁免边界**：改动两 hunk 均落在用例⑦区间（L241-276）内；全部 `expect` 断言行零触碰
+  （CLOSE×1 / 序列严格 [1..9] / CLOSE seq=9 / UPDATE×2 / CLOSE_OK×1 原样），仅 await 点发起/结算分离
+  + `await closeP` 一行——与 §10「仅用例⑦、断言面冻结」豁免授权严格一致；其余用例（①-⑥/⑧*）零触碰
+  （git diff 全量核verify）。
+- **回归面**：AC3b（E2 路径，`closeSettled === false` 锚语义保持）绿 ✓；r3-r4 ①-⑥/⑧*（⑤c/⑤d 终局语义）
+  绿 ✓；⑦ 新构造绿 ✓（E1 事件结算）。
+
+## R2-4 R4（enterBlocked dispose）：✅ 修复闭合
+
+- peer-connection.ts:584-591：`enterBlocked` 在 setState('blocked') 后、控制器循环前
+  `outbound.dispose() + outbound = undefined`——checkpoint timer 清 + 逐 ns onDataShed（A7 记账闭环）；
+  dispose 期间 connState 已 'blocked' → `onDataShed → declareLocalResync → sendControl` 经非 ready 门
+  零出站帧（注释自证与实测一致）；后续 `dialNow` 的 `outbound !== undefined` 守卫跳过重复 dispose ✓；
+  `stop()` 的 undefined 守卫同样安全 ✓。GOAWAY-blocked（socket 保持开放）下残留排队 UPDATE 不再外发。
+
+## R2-5 §二非阻断发现处置复核
+
+| # | R1 定性 | 处置 | R2 状态 |
+|---|---|---|---|
+| N1 requestRebuild 裸 queueMicrotask | 必要偏离，回流 SA1 修文 | 设计 §5.2 新增「实现偏离声明（SA4 R1 N1 追认，SA3 代码不改）」——动机（spec-b1 B-1 锚）+ 生产等价性论证齐备 | ✅ 闭合 |
+| N2 src/liveness.ts 漏列 ALLOW LIST | SA1 文档缺口 | §10 补条目（含 54 行落点与授权出处）+ §8 更新为 12 文件口径 | ✅ 闭合 |
+| N3 公平性 cursor-skip | 动态审核重点 | 维持 SA7 动态项（本轮无代码变化） | ⏳ 交 SA7 |
+| N4 liveness pong 无代际关联 | 动态审核重点 | 维持 SA7 动态项 | ⏳ 交 SA7 |
+| N5 CLOSE_OK 方向纪律不对称 | 仅记录（既有行为） | 无变化（如需对称收紧另开票） | 📝 记录 |
+
+## R2-6 残余观察（非阻断，本轮新增）
+
+1. **O1**：SA2 R3「建议红灯锚（随 E5 定案补发 SA6）」——closing drain 期 bump → 终态 + `removeTarget`
+   有限结算的 E5 行为锚**未随本轮交付**（SA6 执行包仅含⑦豁免）。SA2 标注为「建议」非门禁；本轮已以
+   真实类单元级加验覆盖该行为面（R2-3）。建议 SA7 动态验证清单并入此项（或 SA6 后续锚包补发）。
+2. **O2**：closeMemo 跨 close 周期复用（re-add 后二次 removeTarget 返回**已结算**的旧 memo → promise
+   即刻 resolve，先于新 close 完成）。与 066d01f 及 PR #160 基线逐字同形（`ensureCloseMemo` 的
+   memo 复用语义），**非 R3 引入**；状态机本身正确（closing/CLOSE_OK/timeout 照常），仅二次关闭的
+   promise 语义偏弱。信息性记录，不建议本轮处理。
+3. **O3**：`enterBlocked` 后 `peer.sendData` 在 `outbound === undefined` 分支静默返回（不经 onDataShed）——
+   结构性不可达（blocked 后控制器已投影 disconnected，`onOwnedUpdate` 不再 deliver），与 R1 轮判定一致；
+   随 R4 dispose 的引入该分支从「非 ready 门」变为「无队列门」，行为面等价（零 handoff）。信息性记录。
+
+## R2-7 复验命令与证据汇总
+
+```bash
+# 基线（独立进程）
+./node_modules/.bin/vitest run packages/ws-replication   # 14 files / 103 passed / Type Errors none
+./node_modules/.bin/vitest run --typecheck packages/ws-replication  # 同上
+git diff --check origin/docs/phase-5-websocket-replication HEAD     # 干净
+# R1 修复复验（/tmp 独立脚本，真实类）
+tsx /tmp/sa4-repro/repro2-realshape.ts   # sendControl 返回 2 = 控制帧自身序（EXIT=0）
+tsx /tmp/sa4-repro/repro.ts              # 同（EXIT=0）
+# E5 加验（真实 PeerNamespaceController + stub host）
+tsx /tmp/sa4-repro/e5-verify.mts         # closing 期终局 → closeMemo 有限结算（EXIT=0）
+```
+
+**R2 Verdict: pass**——R1 报告四项阻断项（R1/R2/R3/R4）全部闭合且证据齐备；裁决 3 产物（E5 子句 +
+一行接线 + 测试⑦豁免）与 SA2 R3 放行路径逐字一致；§二非阻断处置到位。SA7 可进入动态验证
+（重点清单：R1 报告 §六 1-5 + 本轮 O1 的 E5 运行时锚）。
