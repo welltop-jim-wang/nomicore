@@ -155,7 +155,7 @@ Conclusion: clear
 
 | 命令 | 结果 |
 |---|---|
-| `gh issue view 133 --repo welltop-jim-wang/nomicore --json title,body,comments` | 原文取证（本报告 §首）；comments=[] | 
+| `gh issue view 133 --repo welltop-jim-wang/nomicore --json title,body,comments` | 原文取证（本报告 §首）；comments=[] |
 | `npx vitest run --typecheck packages/namespace-registry/test/registry-phase5-bootstrap-reset-red.test.ts` | **18 passed (18) / Type Errors: no errors / exit 0**（AC-1 :331、AC-4 :521、AC-6 :681-840 抽样全覆盖） |
 | `npx vitest run --typecheck packages/persistence/test/persistence-phase5-import-red.test.ts packages/persistence/test/persistence-phase5-archive-red.test.ts` | **37 passed (37) / no type errors / exit 0**（AC-2/AC-3/AC-5/AC-6 persistence 面） |
 | `npx vitest run --typecheck <两份 surface test-d>` | **8 passed (8) / exit 0**（类型面锚 + 禁词面绿守卫） |
