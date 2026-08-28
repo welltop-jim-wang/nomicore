@@ -20,6 +20,9 @@
  *   committedUpdateCapture=true——冻结比对 §4.2 的一致面）。
  * - 多 segment fixture 的 roll targets 按夹具语义显式给定（闭段 roll-target 核查 §9.3
  *   要求闭段至少一维达标——夹具 targets 与构造 config 必须一致）。
+ * - 运行身份前提（EACCES 注入族）：root 可读/写 chmod 000 文件——§13.32b 的 chmod 000
+ *   EACCES 注入在 uid===0 环境 skip（`it.skipIf(isRoot)`；与 file-adapter-sa7-repair-io.test.ts
+ *   同款护栏约定）；SA7 §1.2 实证本机/CI runner 均非 root（潜伏可移植性缺口，非现患）。
  */
 import { chmodSync, mkdirSync, readFileSync, readdirSync, renameSync, rmdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -71,6 +74,9 @@ const FRAME_BYTES = FRAME_HEADER_BYTES + SIDE_PAYLOAD // 4122
 const FX = 'log-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
 const FX2 = 'log-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
 
+/** 运行身份（N1 护栏）：EACCES 注入（chmod 000）只在非 root 下成立——root 可读 000 文件。 */
+const isRoot = typeof process.getuid === 'function' && process.getuid() === 0
+
 /** 全部文件的确定性枚举（歧义/零写入断言用）。 */
 function countFilesRecursive(dir: string): number {
   let count = 0
@@ -116,24 +122,6 @@ function makeRollFileLog(config: Partial<FileDiagnosticLogConfig> & RollConfigKe
 /** resume 构造的默认模板（17 键 fixture 的冻结面一致参数）。 */
 function makeResumeLog(root: string, ns: string, extra: Partial<FileDiagnosticLogConfig> & RollConfigKeys = {}): AssembledFileLog {
   return makeRollFileLog({ rootDir: root, namespaceId: ns, ...extra })
-}
-
-/** 合法单 segment 记录主线（rec1 起、默认 targets；装配成 healthy stream 的基模）。 */
-function rotatedProof(
-  b: AssembledFileLog,
-  streamFixture: string,
-  root: string,
-  ns: string,
-  cause: string,
-): void {
-  const rotated = eventsOfTypeRaw(b.events, 'stream-generation-rotated')
-  expect(rotated).toHaveLength(1)
-  expect(rotated[0]).toMatchObject({ type: 'stream-generation-rotated', cause })
-  expect(b.log.streamId).not.toBe(streamFixture)
-  expect(b.log.streamId).toMatch(/^log-[0-9a-f]{32}$/)
-  // current.json 指向新 stream（rotate 后 initNewGeneration 的 locator 愈合）
-  const current = readJson<Record<string, unknown>>(streamPaths(root, ns, b.log.streamId).currentPath)
-  expect(current.streamId).toBe(b.log.streamId)
 }
 
 // ============================================================================
@@ -1171,7 +1159,7 @@ describe('§13.31–33 R1 新增锚：链中 orphan 生命周期 / 不可读≠�
     expect(statSync(p.jsonlPath).isDirectory()).toBe(true)
   })
 
-  it('§13.32b [红灯] SegMax .bin chmod 000（不可读、无引用）→ 保守 stream-corrupt rotate（不跳过续写）', () => {
+  it.skipIf(isRoot)('§13.32b [红灯] SegMax .bin chmod 000（不可读、无引用）→ 保守 stream-corrupt rotate（不跳过续写）', () => {
     const root = freshRoot()
     const ns = 'ns-r1-32b'
     writeStreamFixture(root, ns, FX, {

@@ -1,9 +1,18 @@
 /**
- * File diagnostic-log adapter（设计 §3/§4——issue #152；ADR 0012 §File adapter）。
+ * File diagnostic-log adapter（设计 §3/§4——issue #152；#153 §3/§5.5/§6/§7/§8；
+ * ADR 0012 §File adapter）。
  *
  * 契约摘要：
  * - 构造即建三件套：segments/（recursive mkdir）→ manifest.json（'wx' 不可变创建，
- *   恰 14 键）→ genesis（尽力）→ current.json（temp + rename 原子替换）；
+ *   17 键 = 恰 14 键 + #153 三 roll target）→ genesis（尽力）→ current.json（temp + rename 原子替换）；
+ * - #153 构造期 reopen：locator 确定性三分支（显式 resumeStreamId > 可用 current.json >
+ *   恰一候选扫描恢复；≥2 候选 → disabled + locator-ambiguous，绝不猜测）→ 健康证明
+ *   （analyzeStreamForResume）通过则续写（lastCommittedSequence 续接 + 三类可证明尾部
+ *   修复逐次上报 stream-tail-repaired；全有或全无），失败则确定性 rotate
+ *   （stream-generation-rotated{cause:…} + 新 generation 承接，旧流只读字节恒等）；
+ * - #153 segment group 滚动：三 roll target 任一达到「当前用量 ≥ target」→ 下一记录前
+ *   滚入下一 8 位编号 segment（JSONL/BIN 成对、惰性创建、无关闭标记文件）；
+ *   99999999 溢出 = exhausted disabled + 恰一次 stream-exhausted，绝不新建 generation；
  * - 同步落盘：每 record 独立 open-append-close（`appendFileSync`），无队列、无
  *   batch、无 fsync、无常驻 fd（§4.3/J2；EISDIR 占位恢复语义的必要条件；
  *   R2 ADR-0012 amendment 把有界同步 append 显性化为首切片决策，write-slot 外接线
@@ -62,7 +71,8 @@ export interface FileDiagnosticLogConfig {
   namespaceId: string
   /** 提供 → 新 stream 先尽力写 genesis-baseline（sequence 1，§4.2）。 */
   genesisUpdateBytes?: Uint8Array | undefined
-  /** 提供 → manifest 指纹匹配检查（§3.4；#152 无续写能力——四分支全落新建 generation）。 */
+  /** 提供 → 显式续写目标（§3.1 ①）：构造期健康证明通过 → 从 lastCommittedSequence 续写；
+   *  证明失败 → 确定性 rotate（`stream-generation-rotated{cause:…}`），绝不静默回退 locator。 */
   resumeStreamId?: string | undefined
   /** 输入捕获策略，默认 'digest'（emitter 管线配置；冻结进 manifest `inputCapturePolicy`）。 */
   inputPolicy?: 'none' | 'digest' | 'redacted' | 'full' | undefined
