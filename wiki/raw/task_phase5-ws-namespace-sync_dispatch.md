@@ -32,4 +32,7 @@ run_id: issue-136-1787888033-8367 / round: 1 / branch: fix/issue-136-on-docs-pha
 | 25 | 17:22 | 总控亲验 | Phase 3 绿灯复验 | 17:22 | pnpm typecheck + pnpm test 后台亲跑：162 文件 1941 测试全绿、零类型错误、exit 0 |
 | 26 | 17:22 | SA4 | Phase 3 复审 R2 | 17:33 verdict: pass（F1-F7 治本，红→绿双侧佐证，全量复跑一致） | 修复已亲验全绿 → SA4 增量复审（F1/F2/F3+F4/F5/F7 四处核对 + F8 勘误确认 + 复跑全量） |
 | 27 | 17:33 | SA7 | Phase 3 动态验证 | (pending) | SA4 pass 后动态验证（重点：#3 hub watchdog 空闲节奏、#4 R-11 背压、#5 R-12 GOAWAY 维持；#1/#2 建议项） |
-| 28 | 17:56 | SA3 | Phase 3 修复轮 R3 | (pending) | SA7 回流：D1（fence-watchdog startIdle 重武装）+N1（hello timer clear）对红锚 W1 修复 |
+| 28 | 17:56 | SA3 | Phase 3 修复轮 R3 | 18:03 commit f175e3e（D1 重武装+N1 timer clear，74/74 包级绿） | SA7 回流：D1（fence-watchdog startIdle 重武装）+N1（hello timer clear）对红锚 W1 修复 |
+| 29 | 18:05 | 总控亲验 | Phase 3 绿灯三验 | 18:05 | pnpm typecheck + pnpm test：163 文件 1945 测试全绿、零类型错误、exit 0 |
+| 30 | 18:05 | SA4 | Phase 3 复审 R3 | (pending) | D1/N1 修复增量静态核对（与 SA7 复验并行，delta 仅 2 src 文件） |
+| 31 | 18:05 | SA7 | Phase 3 动态复验 R2 | (pending) | D1 修复后 W1 红锚转绿复验 + 全量回归（与 SA4 并行） |
