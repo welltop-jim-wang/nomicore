@@ -19,4 +19,5 @@
 | 15 | 19:03 | SA3 | Phase 3 R 修复轮 | 19:12 | 续传 SA3 修 R-1/R-2/R-3（25c2439e）；vfsl alternation codegen 根因另案备案（DENY LIST 外） |
 | 16 | 19:13 | 总控 | 修复轮绿灯亲验 | 19:13 | 18 文件 256 测试全绿 Type Errors 0（.mabf-bg/ctl-green2.log exit 0） |
 | 17 | 19:13 | SA4 | Phase 3 静态验尸 R2 复审 | 19:19 | SA3 R 修复 commit cb44bcd + 总控亲验绿，续传 SA4 复审（96bfd09d） |
-| 18 | 19:19 | SA7 | Phase 3 动态验证 | (pending) | SA4 生效 verdict=pass，评审双清还差 SA7 动态验证 |
+| 18 | 19:19 | SA7 | Phase 3 动态验证 | 19:31 | SA4 生效 verdict=pass，评审双清还差 SA7 动态验证 |
+| 19 | 19:30 | 总控 | Phase 3.5 AC 门禁 | 19:30 | AC1-AC5 全 ✅（证据入 ac_checklist.md），进入双轴终审 |
