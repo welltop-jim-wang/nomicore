@@ -214,6 +214,9 @@ class HubConnectionImpl implements HubConnection {
     }
     this.peerInstanceId = message.peerInstanceId;
     this.state = 'ready';
+    // N1：§16 行 1「HELLO_ACK 解除」——HELLO 握手完成的同步段解除 hello timer
+    //（原实现永不 clear：每连接多挂一个 helloTimeoutMs 空 timer）。
+    this.hub.timer.clearTimeout(this.helloHandle);
     const connectionId = `${this.hub.instanceId}-conn-${this.connId}`;
     this.sendControlChecked({
       kind: 'HELLO_ACK',

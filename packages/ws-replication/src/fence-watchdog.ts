@@ -47,15 +47,21 @@ export class FenceWatchdog {
     }
   }
 
-  /** 启动空闲探测节奏（每 ackTimeoutMs；双侧对称）。 */
+  /** 启动空闲探测节奏（每 ackTimeoutMs；双侧对称）。
+   *  D1 修复（SA7）：到期回调内先清 `idleArmed` 再探测——否则递归 `startIdle()` 被
+   *  `if (this.idleArmed) return` 守卫挡死，idle 探测一次性、节奏死亡（§16「每
+   *  ackTimeoutMs 探测 + 重武装」违约；生产空闲期 fence/needsResync 检出延迟无上界）。
+   *  重武装先于 probe：probe 触发的终局（one-shot 终结器 → cleanup → watchdog.teardown）
+   *  恰好清除本回调新武装的下一周期 timer——零泄漏。 */
   startIdle(): void {
     if (this.idleArmed) return;
     this.idleArmed = true;
     this.idleHandle = this.host.armTimer(() => {
       this.idleHandle = undefined;
+      this.idleArmed = false; // D1：清守卫——允许下一周期重武装
+      this.startIdle(); // 重武装（新 timer；probe 触发的 teardown 会清除它）
       this.probe();
       this.onEvent();
-      this.startIdle();
     }, this.host.idleProbeMs);
   }
 
