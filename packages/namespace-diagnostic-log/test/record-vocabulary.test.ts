@@ -20,7 +20,7 @@ describe('§1.3/§2.6 语义 emitter → sink 面（semantic record 形状，AC1
     emitter.emit(
       baseEmission({
         input: { snapshot: { a: 1 } },
-        issues: { items: [{ message: 'm1', path: ['p'] }] },
+        issues: [{ message: 'm1', path: ['p'] }],
         result: { kind: 'committed', effect: 'update', updateBytes: new TextEncoder().encode('123456789') },
       }),
     )
@@ -238,6 +238,8 @@ describe('§9.1 intake 结构校验违规 → emission-dropped（§4.2 表）', 
     ['code 含空白（违 StableCode Pattern）', { code: 'bad code!' }],
     ['source.remoteInstanceId 含换行', { source: { kind: 'replication', direction: 'hub-to-peer', remoteInstanceId: 'r\n1' } }],
     ['source 形状缺 remoteInstanceId', { source: { kind: 'replication', direction: 'peer-to-hub' } }],
+    ['R5/C-S3 source 带多余键（local+extra）', { source: { kind: 'local', extra: 1 } }],
+    ['R5/C-S3 source 带多余键（replication+junk）', { source: { kind: 'replication', direction: 'hub-to-peer', remoteInstanceId: 'r1', junk: 1 } }],
   ]
 
   it.each(violations)('%s → emission 被丢弃，emit 不 throw，无 record 入队', (_name, overrides) => {
@@ -247,6 +249,8 @@ describe('§9.1 intake 结构校验违规 → emission-dropped（§4.2 表）', 
     const dropped = eventsOfType(events, 'emission-dropped')
     expect(dropped.length).toBeGreaterThanOrEqual(1)
     expect(dropped[0]).toMatchObject({ type: 'emission-dropped', reason: 'emission-shape' })
+    // R5/C-S3：结构违规只走 intake 丢弃——绝不产生 writer-bug 信号
+    expect(eventsOfType(events, 'vfsl-validation-failed')).toHaveLength(0)
     expect(log.stats().accepted).toBe(0)
   })
 

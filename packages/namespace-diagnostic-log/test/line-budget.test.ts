@@ -36,7 +36,7 @@ describe('§9.5 降级路径：full 超预算 → digest + degraded（§4.1 步�
 
   it('redacted 超预算同降级（fromPolicy=redacted）——键重型输入：键在 redacted 下保留（R3 修订断言修正）', () => {
     // redacted 收缩叶值（→«redacted»，12B/叶）但**键名保留**：数千键对象 redacted 投影后
-    // 仍远超 lineBudgetBytes（红action 收缩会让 {data:'x'×2000} 只余 ~441B、永不超预算）
+    // 仍远超 lineBudgetBytes（redacted 收缩叶值会让 {data:'x'×2000} 只余 ~441B、永不超预算）
     const snapshot: Record<string, number> = Object.fromEntries(
       Array.from({ length: 2000 }, (_, i) => [`key${i}`, i]),
     )
@@ -57,7 +57,7 @@ describe('§9.5 丢弃路径：digest-only 仍超限（§4.1 步骤 4b）', () =
   it('小预算下 digest-only record 超限 → 丢弃 + record-dropped/line-budget-exceeded + 队列无此 record', () => {
     const { log, events } = makeLog({ lineBudgetBytes: 350 })
     // issues message 300B + 基础字段 → record 必超 350B
-    log.emitter.emit(baseEmission({ issues: { items: [{ message: 'm'.repeat(300), path: [] }] } }))
+    log.emitter.emit(baseEmission({ issues: [{ message: 'm'.repeat(300), path: [] }] }))
     expect(log.records()).toHaveLength(0)
     const dropped = eventsOfType(events, 'record-dropped').filter((e) => e.reason === 'line-budget-exceeded')
     expect(dropped).toHaveLength(1)
@@ -71,7 +71,7 @@ describe('§9.5 丢弃路径：digest-only 仍超限（§4.1 步骤 4b）', () =
 
   it('被丢弃 record 消耗 sequence：下一接纳 record 出现诚实的 gap（§4.3）', () => {
     const { log } = makeLog({ lineBudgetBytes: 350 })
-    log.emitter.emit(baseEmission({ issues: { items: [{ message: 'm'.repeat(300), path: [] }] } }))
+    log.emitter.emit(baseEmission({ issues: [{ message: 'm'.repeat(300), path: [] }] }))
     log.emitter.emit(baseEmission())
     const records = log.records()
     expect(records).toHaveLength(1)

@@ -29,11 +29,6 @@ export type EmissionInput =
   | { status: 'unsafe-input' }
   | { snapshot: unknown }
 
-/** issues 投影输入：原始统一投影输入容器（预算在管线内施加，§6.2）。 */
-export interface IssuesInput {
-  items: DiagnosticIssue[]
-}
-
 /** producer → emitter 的语义 emission（设计 §2.6）。 */
 export interface NamespaceDiagnosticChangeEmission {
   operation: Operation
@@ -48,7 +43,9 @@ export interface NamespaceDiagnosticChangeEmission {
   code?: string
   sourcePhase?: string
   sourceModule?: SourceModule
-  issues?: IssuesInput
+  /** issues 原始输入：裸数组 DiagnosticIssue[]（设计 §2.6 形状；预算在管线内施加，
+   *  管线内部投影为 IssuesProjection——R5/std C-S2）。 */
+  issues?: DiagnosticIssue[]
   input?: EmissionInput
   result: EmissionResult
 }

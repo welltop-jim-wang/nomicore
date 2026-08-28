@@ -13,7 +13,7 @@
 import { describe, expect, it } from 'vitest'
 import { createHash } from 'node:crypto'
 import { jcs, sha256Hex } from '../src/testing.js'
-import { assertAttempt, baseEmission, makeLog } from './helpers/base.js'
+import { assertAttempt, baseEmission, eventsOfType, makeLog } from './helpers/base.js'
 import { expectTwin } from './helpers/twin.js'
 
 const digestOf = (text: string): string =>
@@ -223,6 +223,62 @@ describe('§9.3 快照契约违反与零重读（§5.4）', () => {
     const { log } = makeLog({ inputPolicy: 'digest' })
     log.emitter.emit(baseEmission({ input: { snapshot } }))
     expect(assertAttempt(log.records()[0]!).input).toMatchObject({ capture: 'digest' })
+    expect(touches).toBe(1)
+  })
+})
+
+
+describe('R5/std C-2：emission.input 为 primitive（非 EmissionInput 形状）→ intake 拒绝（§4.2 行 1）', () => {
+  it.each([42, 'x', true])('input=%j → emission-dropped + 不 throw + 无 pipeline-crashed + sequence 不消耗', (primitive) => {
+    const { log, events } = makeLog({ inputPolicy: 'digest' })
+    expect(() => log.emitter.emit(baseEmission({ input: primitive }))).not.toThrow()
+    expect(log.records()).toHaveLength(0)
+    expect(eventsOfType(events, 'emission-dropped').length).toBeGreaterThanOrEqual(1)
+    expect(eventsOfType(events, 'pipeline-crashed')).toHaveLength(0)
+    // sequence 不消耗：后续合法 emission 仍是 '1'（intake 在 adapter 之前，§4.1 步骤 1）
+    log.emitter.emit(baseEmission())
+    expect(assertAttempt(log.records()[0]!).sequence).toBe('1')
+  })
+})
+
+describe('R5/std C-3：快照含非 plain 对象（Date/Map/Uint8Array 嵌套在普通对象里）→ unavailable（plainness 守卫）', () => {
+  it.each([
+    ['Date', () => ({ d: new Date(0) })],
+    ['Map', () => ({ m: new Map([['a', 1]]) })],
+    ['Uint8Array', () => ({ b: new Uint8Array([1, 2]) })],
+  ])('%s 嵌套对象 → capture:unavailable + input-projection-failed 事件', (_name, makeSnapshot) => {
+    const { log, events } = makeLog({ inputPolicy: 'digest' })
+    expect(() => log.emitter.emit(baseEmission({ input: { snapshot: makeSnapshot() } }))).not.toThrow()
+    expect(assertAttempt(log.records()[0]!).input).toEqual({ capture: 'unavailable' })
+    expect(eventsOfType(events, 'input-projection-failed')).toHaveLength(1)
+  })
+
+  it('full 策略下同守卫：不得嵌入 typed array / 非 plain 对象（不得出现 capture:full）', () => {
+    for (const makeSnapshot of [
+      () => ({ b: new Uint8Array([1, 2]) }),
+      () => ({ d: new Date(0) }),
+      () => ({ m: new Map([['a', 1]]) }),
+    ]) {
+      const { log } = makeLog({ inputPolicy: 'full' })
+      log.emitter.emit(baseEmission({ input: { snapshot: makeSnapshot() } }))
+      expect(assertAttempt(log.records()[0]!).input).toEqual({ capture: 'unavailable' })
+    }
+  })
+
+  it('plainness 判定后不重读：同一属性 getter 只触达一次（§5.4 零重读纪律）', () => {
+    let touches = 0
+    const snapshot = new Proxy(
+      { d: new Date(0) },
+      {
+        get(target, key, receiver) {
+          if (key === 'd') touches++
+          return Reflect.get(target, key, receiver)
+        },
+      },
+    )
+    const { log } = makeLog({ inputPolicy: 'digest' })
+    log.emitter.emit(baseEmission({ input: { snapshot } }))
+    expect(assertAttempt(log.records()[0]!).input).toEqual({ capture: 'unavailable' })
     expect(touches).toBe(1)
   })
 })

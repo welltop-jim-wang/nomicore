@@ -94,13 +94,18 @@ function isValidItem(item: unknown): item is DiagnosticIssue {
 /**
  * 原始 issue 输入 → IssuesProjection（策略投影 + 预算截断；§6.2）。
  *
+ * 输入形状（R5/std C-S2）：裸数组 `DiagnosticIssue[]`（设计 §2.6）；非数组输入视为
+ * 畸形容器 → 丢弃全部 issues + enrichment-field-dropped/issues（恰一次）。
+ *
  * 规则：畸形条目整条丢弃（originalCount 只计有效）；非法段（NaN/±Infinity/
  * undefined——稀疏数组 hole 读出 undefined 同判）整条丢弃并上报
  * enrichment-field-dropped/issues（恰一次）；number 段 -0 归一为 +0；
- * truncated/originalCount 为 presence 语义（仅截断发生时出现）。
+ * truncated/originalCount 为 presence 语义且**严格 ⇔ 预算截断**（R5 再裁决——
+ * 条目畸形丢弃不置位，只经健康事件上报；预算截断＝条数 >1000 或 message/path/code
+ * 截断，两键同现同缺）。
  *
  * @param onDropped 条目丢弃回调（恰一次）
- * @returns undefined ⇔ issues 未提供（record 不含 issues 字段）
+ * @returns undefined ⇔ issues 未提供/容器畸形（record 不含 issues 字段）
  */
 export function projectIssues(
   raw: unknown,
@@ -109,13 +114,11 @@ export function projectIssues(
 ): IssuesProjection | undefined {
   if (policy === 'none') return { policy: 'none', items: [] }
   if (raw === undefined || raw === null) return undefined
-  // 输入容器形状：{ items: DiagnosticIssue[] }
-  const container = raw as Record<string, unknown>
-  const items = Array.isArray(raw) ? undefined : container.items
-  if (!Array.isArray(items)) {
+  if (!Array.isArray(raw)) {
     onDropped()
     return undefined
   }
+  const items: unknown[] = raw
 
   const valid: DiagnosticIssue[] = []
   let droppedAny = false
@@ -139,30 +142,30 @@ export function projectIssues(
   let truncated = false
   const projected: DiagnosticIssue[] = []
   for (const issue of valid.slice(0, 1000)) {
+    // path 预算与策略无关（R5/std C-S1）：前 256 段；string 段 1KiB 截断
+    const path: Array<string | number> = issue.path
+      .slice(0, 256)
+      .map((segment) => (typeof segment === 'string' ? truncateUtf8(segment, 1024) : segment))
+    if (issue.path.length > 256 || path.length !== issue.path.length) truncated = true
+    for (let i = 0; i < Math.min(issue.path.length, 256); i++) {
+      const before = issue.path[i]
+      const after = path[i]
+      if (typeof before === 'string' && typeof after === 'string' && after !== before) truncated = true
+    }
     if (policy === 'redacted') {
-      // 脱敏策略：message→«redacted»；code/path 保留（稳定码低敏；§6.2）
+      // 脱敏策略（策略差异仅内容处理）：message→«redacted»；code 保留（稳定码低敏）
       projected.push({
         ...(issue.code !== undefined ? { code: issue.code } : {}),
         message: '«redacted»',
-        path: issue.path,
+        path,
       })
       continue
     }
     // full：逐字段确定性截断（code 256B / message 4096B / string 段 1024B）
     const code = issue.code === undefined ? undefined : truncateUtf8(issue.code, 256)
     const message = truncateUtf8(issue.message, 4096)
-    const path: Array<string | number> = issue.path
-      .slice(0, 256)
-      .map((segment) => (typeof segment === 'string' ? truncateUtf8(segment, 1024) : segment))
     if (issue.code !== undefined && code !== issue.code) truncated = true
     if (message !== issue.message) truncated = true
-    if (issue.path.length > 256 || issue.path.length !== path.length) truncated = true
-    // string 段截断探测
-    for (let i = 0; i < Math.min(issue.path.length, 256); i++) {
-      const before = issue.path[i]
-      const after = path[i]
-      if (typeof before === 'string' && typeof after === 'string' && after !== before) truncated = true
-    }
     projected.push({
       ...(code !== undefined ? { code } : {}),
       message,
@@ -171,10 +174,8 @@ export function projectIssues(
   }
   if (valid.length > 1000) truncated = true
 
-  // R4/C-3 presence 不变式：truncated 与 originalCount 两键同现同缺
-  // （truncated ⇔ 预算截断或条目丢弃发生过；originalCount 记录截断/丢弃前的有效条目数
-  // ——只计有效，§4.2）
+  // R5 再裁决 presence：严格 ⇔ 预算截断（两键同现同缺；畸形条目丢弃不置位）
   const base: IssuesProjection = { policy, items: projected }
-  if (truncated || droppedAny) return { ...base, truncated: true, originalCount: valid.length }
+  if (truncated) return { ...base, truncated: true, originalCount: valid.length }
   return base
 }

@@ -48,13 +48,15 @@ export interface DiagnosticIssue {
   path: Array<string | number>
 }
 
-/** issues 投影容器（policy 标明投影策略，防误认脱敏内容为原始 issue，ADR 0011 §数据保护）。 */
+/** issues 投影容器（policy 标明投影策略，防误认脱敏内容为原始 issue，ADR 0011 §数据保护）。
+ *  truncated/originalCount 为 presence 语义且严格 ⇔ 预算截断（R5 再裁决：条数 >1000
+ *  或 message/path/code 截断——两键同现同缺；畸形条目丢弃不置位，只经健康事件上报）。 */
 export interface IssuesProjection {
   policy: 'none' | 'full' | 'redacted'
   items: DiagnosticIssue[]
   /** presence ⇔ 发生过预算截断（§6.2）。 */
   truncated?: boolean
-  /** 截断前的有效条数（presence 语义）。 */
+  /** 截断前的有效条数（presence 语义，与 truncated 同现同缺）。 */
   originalCount?: number
 }
 
@@ -130,10 +132,3 @@ export interface GenesisBaselineRecord {
 
 /** 两族 record 封闭联合（schema ROOT 的 TS 孪生）。 */
 export type DiagnosticChangeRecord = AttemptRecord | GenesisBaselineRecord
-
-/** update-omitted 稳定 reason 受控词表（v1 三值；设计 §2.1/R2/A-c2）。 */
-export const UPDATE_OMITTED_REASONS: ReadonlySet<string> = new Set([
-  'payload-too-large',
-  'update-capture-disabled',
-  'empty-update',
-])

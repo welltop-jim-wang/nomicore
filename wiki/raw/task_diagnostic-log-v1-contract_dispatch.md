@@ -14,4 +14,8 @@
 | 2026-08-28T06:05Z | SA4 | subagent_sa4 (GLM) | 代码审查 | done（pass 无 blocker；5 concern 类型面/记账口径 + 5 nano） |
 | 2026-08-28T06:40Z | 总控 | — | R4 勘误批：C-1/C-2 实现对齐冻结设计、C-3 presence 不变式、C-4 marker 精确 14B、C-5 operation 可选化；设计文档已注记 | done |
 | 2026-08-28T06:42Z | SA3+SA6 | 并行 | R4 对齐（实现 6 项 + 测试 4 项） | done（聚焦 152/152、typecheck 0、全仓 130 文件 1557 测试全绿） |
-| 2026-08-28T06:55Z | SA7 | subagent_sa7 (GLM) | 验收：AC checklist + 独立复跑 + 指纹复现 + 性能量级 | dispatched |
+| 2026-08-28T06:55Z | SA7 | subagent_sa7 (GLM) | 验收：AC checklist + 独立复跑 + 指纹复现 + 性能量级 | done（pass；5 AC 全 pass；指纹复现；p50 2.80ms/p95 4.13ms） |
+| 2026-08-28T07:20Z | 总控 | — | 修复设计文档 4 处 13B 残留措辞；commit ae3aeec（47 文件 +6514） | done |
+| 2026-08-28T07:25Z | 双轴终审 | 2×subagent 并行 | standards 轴 + spec 轴（基线 6de2f1d→HEAD ae3aeec；engineering/code-review skill 在本 runtime 不可用，按其立法意图执行双轴独立审查） | done（双轴均 pass-with-issues，0 blocker；std 4 concern+14 nano，spec 3 concern+4 nano） |
+| 2026-08-28T07:50Z | 总控 | — | R5 勘误批：C-3 再裁决（presence 严格⇔预算截断，R4 条款撤销）+ 7 项修复裁定；设计文档已注记 | done |
+| 2026-08-28T07:52Z | SA3+SA6 | 并行 | R5 修复（实现 8 项+nano；测试 7 项） | dispatched |

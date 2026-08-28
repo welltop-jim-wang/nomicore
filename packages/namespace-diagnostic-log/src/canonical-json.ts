@@ -75,6 +75,11 @@ export function jcs(value: unknown, budget?: TraversalBudget): string {
     return '[' + parts.join(',') + ']'
   }
   if (typeof value === 'object') {
+    // R5/std C-3 plainness 守卫：对象值必须 plain（原型为 Object.prototype 或 null）；
+    // Date/Map/Set/typed array 等非 plain 值 → 快照契约违反（§5.4 清单增补——
+    // 同时封死 full 捕获内嵌 typed array 的冻结漏洞；full 捕获因 digest 先行（jcs 先于
+    // 嵌入）被同一守卫覆盖）
+    assertPlainObject(value)
     const record = value as Record<string, unknown>
     const keys = Object.keys(record).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))
     const parts: string[] = []
@@ -83,4 +88,12 @@ export function jcs(value: unknown, budget?: TraversalBudget): string {
   }
   // undefined / symbol / bigint / function —— 非 JSON 值
   throw new SnapshotContractViolation(`非 JSON 值：${typeof value}`)
+}
+
+/** plainness 守卫（原型为 Object.prototype 或 null；R5/std C-3）。 */
+export function assertPlainObject(value: object): void {
+  const proto = Object.getPrototypeOf(value)
+  if (proto !== Object.prototype && proto !== null) {
+    throw new SnapshotContractViolation('非 plain 对象（原型非 Object.prototype/null）')
+  }
 }

@@ -3,7 +3,7 @@
 - worktree: `/home/wangjian/nomicore-fix-issue-148`
 - branch: `fix/issue-148-on-docs-namespace-diagnostic-change-log`
 - 规格冻结源：ADR 0011（`docs/adr/0011-best-effort-namespace-diagnostic-change-log.md`）、ADR 0012（`docs/adr/0012-vfsl-validated-jsonl-and-framed-sidecar-change-log.md`）、`CONTEXT.md` namespace 诊断变更日志词条（L105–L115）
-- 状态：R4（SA4 审查后总控勘误批：C-1 事件类型面恢复 §8.1 判别联合 [SA3 实现对齐，非设计变更]；C-2 records() 恢复 `readonly DiagnosticChangeRecord[]` [实现对齐]；C-3 originalCount/truncated 同现同缺 [§6.2 已注]；C-4 marker 精确 14B [§6.1 已勘]；C-5 两事件成员 operation 可选化 [§8.1 已注]；nano-2 AGENTS.md 措辞、nano-4 testing.ts 文档注记随实现轮修复）。历史：R3 updateBytes 复制隔离（§2.6）；R2 SA2 反馈十条；总控 §11 六项裁决维持生效。
+- 状态：R5（双轴终审后总控勘误批：①C-3 再裁决——truncated/originalCount presence **严格 ⇔ 预算截断**（冻结 schema JSDoc 原文「仅在实际发生预算截断时出现」为准，R4 的「丢弃也置位」条款撤销；畸形条目丢弃只经 enrichment-field-dropped/issues 健康事件上报，record 不携带）；②§5.4 快照契约违反清单增补「非 plain 对象（Date/Map/Set/typed array 等，原型非 Object.prototype/null）」——JCS 与 redacted 遍历均以 SnapshotContractViolation 拒止 → capture:'unavailable'，同时封死 full 捕获内嵌 typed array 的冻结漏洞；③intake 增补：input 非对象（primitive）→ emission-dropped（结构违规，不进 `in` 运算）；source 封闭键校验（多余键 → emission-dropped，不得漏到 VFSL 门误报 writer bug）；④issues 投影预算全策略一致（redacted 同样施加 path 256 段/1KiB 段预算，仅 message/code 内容处理不同）；⑤emission `issues?: DiagnosticIssue[]` 数组形状以 §2.6 为准（实现曾偏离为 {items} 且未披露，R5 对齐）。历史：R4 SA4 勘误批；R3 updateBytes 复制隔离（§2.6）；R2 SA2 反馈十条；总控 §11 六项裁决维持生效。
 
 **总控 §11 裁决（2026-08-28）**：G1 ✅ 规范句为准（crc32c 双 carrier 必备）；G2 ✅ 批准 recordKind 二族联合（ADR 0012 要求 genesis baseline 但未定义形状，本设计是唯一诚实表达；风险已入 §10-J1，#152 评审复核）；G3 ✅ 批准（v1 存储不出现 result:'unknown'，与两 ADR 自洽）；G4 ✅ 批准（事件只带 issuePaths）；G5 ✅ 批准（工具实现策略）；G6 ✅ 批准（attemptId 超集 Pattern）。六项裁决全部生效，SA2 评审应攻击设计本身而非重审已裁决项。
 
@@ -847,7 +847,7 @@ projectIssues(raw, policy):
     code     : policy=redacted ? 保留（稳定码低敏） : code 截断至 256 字节（truncateUtf8，judgement §10-J8）
     message  : policy=redacted ? "«redacted»" : truncateUtf8(message, 4096)
     path     : 前 256 段；string 段 truncateUtf8(seg, 1024)；number 段（有限、已归一 -0）原样
-  truncated = (valid.length > 1000) or 任一条目发生 message/path/code 截断 or 有畸形条目被丢弃（R4/C-3：畸形丢弃同样使投影有损，truncated 与 originalCount 必须同现同缺——presence 不变式恢复为「截断或有损丢弃 ⇔ 两键同时出现」，与 §3.3 冻结 schema JSDoc 的成对 presence 口径一致；originalCount 只计有效条目）
+  truncated = (valid.length > 1000) or 任一条目发生 message/path/code 截断（R5 再裁决：presence 严格 ⇔ 预算截断——与冻结 schema JSDoc「仅在实际发生预算截断时出现」逐字一致；R4 曾把畸形条目丢弃纳入置位条件，因与冻结文本冲突撤销。畸形丢弃只经 enrichment-field-dropped/issues 健康事件上报，record 不携带 truncated/originalCount）
   return { policy, items, ...(truncated ? { truncated: true, originalCount } : {}) }
 ```
 

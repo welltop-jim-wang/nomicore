@@ -49,9 +49,12 @@ export function nextDecimal(s: string): string {
   return digits.join('')
 }
 
-/** 紧凑 JSON 的 UTF-8 字节长（§5.5 measure；不含结尾 \n；TextEncoder——Buffer 不进本模块）。 */
+/** 紧凑 JSON 的 UTF-8 字节长（§5.5 measure；不含结尾 \n；TextEncoder——Buffer 不进本模块）。
+ *  TextEncoder 实例为模块级单例（无状态、可共享——R5 nano）。 */
+const TEXT_ENCODER = new TextEncoder()
+
 function utf8Length(text: string): number {
-  return new TextEncoder().encode(text).length
+  return TEXT_ENCODER.encode(text).length
 }
 
 function measure(record: unknown): number {

@@ -25,6 +25,11 @@ export { jsonLiteralBytes, truncateUtf8, TRUNCATION_MARKER } from './projection/
  * @example 32B 输入：streamId 取前 16B、attemptId 取后 16B。
  */
 export function createDeterministicRandomSource(bytes: Uint8Array): RandomSource {
+  if (bytes.length === 0) {
+    // R5 nano：空字节序列是测试装配错误——loud 抛错（静默全零序列会掩盖 streamId/
+    // attemptId 确定性的误用）
+    throw new Error('createDeterministicRandomSource: 字节序列为空（测试装配错误）')
+  }
   let cursor = 0
   return {
     randomBytes(n: number): Uint8Array {

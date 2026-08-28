@@ -9,7 +9,7 @@
  *   遍历失败/非 JSON 值/稀疏 hole/节点护栏超限 → capture:'unavailable' +
  *   input-projection-failed，不重读、不重试。
  */
-import { createTraversalBudget, jcs, SnapshotContractViolation, type TraversalBudget } from '../canonical-json.js'
+import { assertPlainObject, createTraversalBudget, jcs, SnapshotContractViolation, type TraversalBudget } from '../canonical-json.js'
 import { digestOfCanonical } from '../digest.js'
 import type { InputCapture } from '../record.js'
 import type { EmissionInput } from '../emission.js'
@@ -35,6 +35,9 @@ function redactValue(value: unknown, budget: TraversalBudget): unknown {
     return out
   }
   if (typeof value === 'object') {
+    // R5/std C-3 plainness 守卫（与 jcs 同）：非 plain 对象（Date/Map/Set/typed array
+    // 等）→ 快照契约违反 → capture:'unavailable'（§5.4 既有路径）
+    assertPlainObject(value)
     const record = value as Record<string, unknown>
     const out: Record<string, unknown> = {}
     for (const key of Object.keys(record)) out[key] = redactValue(record[key], budget)
@@ -53,6 +56,12 @@ export function projectInput(
   onFailure: () => void,
 ): InputCapture {
   if (input === undefined) return { capture: 'none' }
+  // R5/std C-2 防御：非对象输入（primitive/null/数组）不得进入 `in` 运算——
+  // 结构违规（pipeline intake 已前置 emission-dropped；此处为第二层防线）
+  if (typeof input !== 'object' || Array.isArray(input) || input === null) {
+    onFailure()
+    return { capture: 'unavailable' }
+  }
   const record = input as Record<string, unknown>
   if ('status' in record) {
     // 事实优先于策略（§5.1 决策表四列皆同）

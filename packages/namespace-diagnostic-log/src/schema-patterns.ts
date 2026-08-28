@@ -37,16 +37,8 @@ export const P_SEGMENT = '^[0-9]{8}$'
 export const P_BASE64 =
   '^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=|[A-Za-z0-9+/]{4})$'
 
-/** 编译期锚定的本机 RegExp 副本（intake 结构校验用；与 VFSL Pattern 同源常量）。
- *  注意：P_BASE64 的 intake 副本对空串返回 false（RFC 4648 尾部组强制非空）——
- *  0 字节 update 在 physicalize 前置守卫即转 update-omitted/empty-update，空 Base64
- *  永不进入 record（设计 §7.4 / R2/D-c1）。 */
-export const RE_STREAM_ID = new RegExp(P_STREAM_ID)
-export const RE_DECIMAL = new RegExp(P_DECIMAL)
+/** intake 本机 RegExp 副本（与 VFSL Pattern 同源常量；仅 intake 结构校验实际使用
+ *  的三枚——其余 Pattern 只在 schema 文本与 VFSL 引擎侧生效，不留死导出——R5 nano）。 */
 export const RE_BOUNDED_STR = new RegExp(P_BOUNDED_STR)
 export const RE_ISO_MS = new RegExp(P_ISO_MS)
 export const RE_STABLE_CODE = new RegExp(P_STABLE_CODE)
-export const RE_CRC32C_HEX = new RegExp(P_CRC32C_HEX)
-export const RE_SHA256_HEX = new RegExp(P_SHA256_HEX)
-export const RE_SEGMENT = new RegExp(P_SEGMENT)
-export const RE_BASE64 = new RegExp(P_BASE64)

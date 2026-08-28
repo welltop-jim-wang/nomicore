@@ -9,7 +9,6 @@
 import { describe, expect, it } from 'vitest'
 import { assertAttempt, attemptRecords, baseEmission, eventsOfType, makeLog } from './helpers/base.js'
 import { expectTwin } from './helpers/twin.js'
-import type { DiagnosticChangeRecord } from '../src/index.js'
 
 describe('§9.7 容量饱和：drop newest（AC5）', () => {
   it('capacity=3 + 6 条 emission：前 3 条按序保留，后 3 条 drop newest，事件与 stats 对账', () => {
@@ -48,7 +47,7 @@ describe('§9.7 容量饱和：drop newest（AC5）', () => {
     expect(records).toHaveLength(1)
     // 队列里只有真实 record，没有 health/status/drop 伪 record
     for (const r of records) {
-      const attempt = assertAttempt(r as DiagnosticChangeRecord)
+      const attempt = assertAttempt(r)
       expect(attempt.result).toBeDefined()
     }
   })

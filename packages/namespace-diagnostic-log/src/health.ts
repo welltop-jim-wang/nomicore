@@ -57,7 +57,7 @@ export type DiagnosticLogHealthEvent =
   | { type: 'schema-compile-failed'; schemaId: typeof RECORD_SCHEMA_ID; issueCount: number }
 
 /** 事件对象深冻结（设计 §8.2；事件构造后冻结，防 observer 侧变异）。 */
-export function freezeEvent(event: DiagnosticLogHealthEvent | Record<string, unknown>): DiagnosticLogHealthEvent {
+export function freezeEvent(event: DiagnosticLogHealthEvent): DiagnosticLogHealthEvent {
   const frozen = Object.freeze(
     Object.fromEntries(
       Object.entries(event).map(([k, v]) => [k, Array.isArray(v) ? Object.freeze([...v]) : v]),
@@ -98,13 +98,13 @@ export function safeNotify(
 }
 
 /** 健康事件通知（构造后冻结 + safeNotify；设计 §8）。
- *  参数取 Record 形状——事件对象在构造点以对象字面量组装（判别联合的窄化由
- *  构造点自证；白名单键集纪律 §8.2 不变）。 */
+ *  参数为判别联合 typed 字面量——构造点编译期检查恢复（R5/std C-1：不得以 Record
+ *  中间体绕过成员形状；每个构造点直接构造对应成员）。 */
 export function makeEventNotifier(
   observer: DiagnosticLogHealthObserver | undefined,
   fallbackLog: (line: string) => void,
-): (event: Record<string, unknown>) => void {
-  return (event: Record<string, unknown>): void => {
+): (event: DiagnosticLogHealthEvent) => void {
+  return (event: DiagnosticLogHealthEvent): void => {
     safeNotify(observer, freezeEvent(event), fallbackLog)
   }
 }

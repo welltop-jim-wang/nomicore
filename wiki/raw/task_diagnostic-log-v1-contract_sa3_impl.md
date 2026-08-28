@@ -167,3 +167,34 @@ Type Errors  no errors
 
 验证：src-only tsc exit 0（测试侧窄化适配归 SA6，未跑全量）；探针确认 marker 14B、
 presence 两键同现、input-degraded 事件携带 operation。
+
+## 9. R5 勘误批落实（总控 R5 · 双轴终审）
+
+1. **std C-1** health.ts `makeEventNotifier` 参数恢复 `DiagnosticLogHealthEvent`
+   判别联合——各构造点直接构造对应成员 typed 字面量（编译期检查恢复；不再经
+   `Record<string, unknown>` 中间体）。
+2. **std C-2** intake 增补：`emission.input` 非对象（primitive/null/数组，含显式
+   null）→ emission-dropped（结构违规层；不进 `in` 运算，不再冒泡 pipeline-crashed）；
+   projectInput 内保留第二层防线（unavailable + input-projection-failed）。
+3. **std C-3** JCS 遍历与 redacted 遍历均加 plainness 守卫（原型 Object.prototype 或
+   null；Date/Map/Set/Uint8Array 等 → SnapshotContractViolation → unavailable +
+   input-projection-failed）；full 捕获因 digest 先行（jcs 先于嵌入）被同一守卫覆盖
+   （注释已写明）。
+4. **R5/C-3 再裁决** presence 严格 ⇔ 预算截断：畸形条目丢弃不再置位
+   truncated/originalCount（只经 enrichment-field-dropped/issues 上报）；预算截断
+   （>1000 条或 message/path/code 截断）两键同现；record.ts IssuesProjection 头注同步。
+5. **spec C-S1** redacted 策略同样施加 path 预算（前 256 段、string 段 1KiB 截断，
+   truncated 联动）；仅 message→«redacted»/code 保留为策略差异。已验证 redacted+301
+   段 → 256 + truncated。
+6. **spec C-S2** emission `issues` 形状对齐设计 §2.6 —— `DiagnosticIssue[]` 裸数组
+   （IssuesInput 容器删除）；管线内部投影为 IssuesProjection；非数组输入视为畸形容器
+   → 全部丢弃 + enrichment-field-dropped/issues。
+7. **spec C-S3** source 封闭键校验：local 仅 kind 键、replication 仅
+   kind/direction/remoteInstanceId；多余键 → emission-dropped（不泄漏到 VFSL 门）。
+8. **nano**：AGENTS.md「契约契约测试」错字修正；memory.ts `TextEncoder` 提为模块级
+   单例；testing.ts createDeterministicRandomSource 空字节序列 loud 抛错；移除死导出
+   UPDATE_OMITTED_REASONS 与未使用的 RE_*（保留 intake 实际使用的三枚）。
+
+验证：src-only tsc exit 0；tsx 探针确认——primitive input 五例全 emission-dropped、
+Map/Uint8Array 快照 → unavailable、source 多余键 → emission-dropped、redacted 301 段
+→ 256+truncated、畸形条目不置位 presence、{items} 旧容器 → enrichment-field-dropped。

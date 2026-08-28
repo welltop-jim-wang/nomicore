@@ -130,3 +130,19 @@ SA3 同步实现侧 2 项小改（intake 复制 + testing.ts 导出 `crc32cHex`�
 | C-4 | `test/issues-projection.test.ts` | `jsonLiteralBytes(TRUNCATION_MARKER)` KAT 13 → **14**；依赖 marker 预留的预算算术同步 14B 基准：多字节骑界用例 4083→4082（`'a'.repeat(4082)+MARKER`，总 4096）、string 段注释 1011→1010、code 截断注释 243→242、小预算注释 13B→14B（budget=12 仍 throw：12 < 14） | R4/C-4 marker 勘误（SA3 实现按 14B） |
 
 验证状态：SA6 已按总控指令**不跑全量**（SA3 src 已同步落地，SA6 仅做了 `tsc --noEmit` 轻量预检：无测试文件语法错误）；绿灯验证由总控统一执行（`npx vitest run --typecheck packages/namespace-diagnostic-log` 预期 0 退出）。
+
+## 7. R5 修订节（总控 R5 双轴终审勘误批 · 7 项测试对齐，配合 SA3 实现修复）
+
+背景：R4 之后 SA3 实现继续对齐（判别联合构造点、plainness 守卫、intake 形状校验、redacted path 预算、issues 数组形状、source 封闭键）。SA6 侧仅改 test/**，追加以下修订与新用例：
+
+| # | 文件 | 修订内容 |
+|---|---|---|
+| R5/C-3 | `test/issues-projection.test.ts` | **presence 回摆**：R4 改过的三处畸形丢弃用例（缺 message/path 非数组；NaN/±Infinity 段级；undefined 段）断言再次回摆为「`truncated` 与 `originalCount` **两键均缺席**」（`'truncated' in proj === false` + `'originalCount' in proj === false`）；enrichment-field-dropped/issues 事件断言保留。预算截断用例（1001 条、4097B message、C-S1）保持两键同现断言不变。依据：R5 再裁决 presence 严格 ⇔ 预算截断（与冻结 schema JSDoc 逐字一致），畸形丢弃只经事件上报 |
+| std C-2 | `test/input-capture.test.ts` | 新 describe：`emission.input` 为 primitive（42 / 'x' / true，`it.each` 逐值）→ emission-dropped 事件 + 不 throw + **无 pipeline-crashed 事件** + sequence 不消耗（后续合法 emission 仍 sequence '1'） |
+| std C-3 | `test/input-capture.test.ts` | 新 describe：快照含非 plain 对象（Date / Map / Uint8Array 嵌套在普通对象里，逐类）→ capture:'unavailable' + input-projection-failed 事件；full 策略下同守卫（不得嵌入 typed array）；plainness 判定后不重读（同一属性 getter 只触达一次探针） |
+| spec C-S1 | `test/issues-projection.test.ts` | 新用例：redacted 策略下 path 301 段（首段 1025B string）→ 截断到 256 段 + string 段 ≤1024B + message 仍为 «redacted» + truncated/originalCount 同现 |
+| spec C-S2 | `test/issues-projection.test.ts` | 新 describe：emission.issues 按设计 §2.6 传 **DiagnosticIssue[] 裸数组** → record.issues.items 逐条对应、保序、policy 自标、无截断无丢弃两键缺席（防「数组被静默丢弃」回归）。**既有全部 emission 内 `issues: { items: [...] }` 传法同步改为裸数组**（issues-projection 全部 project() 调用、line-budget 两处、record-vocabulary standalone emitter 一处） |
+| spec C-S3 | `test/record-vocabulary.test.ts` | violations 表增两行：source 带多余键（`{kind:'local', extra:1}` / `{kind:'replication', direction:'hub-to-peer', remoteInstanceId:'r1', junk:1}`）→ emission-dropped；it.each 增补「**无 vfsl-validation-failed 事件**」断言（结构违规只走 intake，绝不产生 writer-bug 信号） |
+| nano | `test/line-budget.test.ts` / `test/memory-adapter.test.ts` | 注释错字「红action」→「redacted」；删除 `assertAttempt(r as DiagnosticChangeRecord)` 冗余 cast（r 已是记录联合元素） |
+
+验证状态：SA6 已按总控指令**不跑全量**；仅做 `tsc --noEmit` 轻量预检（无语法错误，且修复了 C-S1 插入位置造成的 describe 闭合问题——已验）。绿灯验证由总控统一执行（`npx vitest run --typecheck packages/namespace-diagnostic-log` 预期 0 退出）。

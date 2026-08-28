@@ -10,6 +10,7 @@
  */
 import { bytesToHex, cryptoRandomBytes } from './digest.js'
 import { defaultFallbackLog, makeEventNotifier } from './health.js'
+import type { DiagnosticLogHealthEvent } from './health.js'
 import type {
   DiagnosticEmitterConfig,
   DiagnosticSemanticRecord,
@@ -57,8 +58,6 @@ function safeOperationOf(value: unknown): Operation | undefined {
   return undefined
 }
 
-
-
 /** intake 结构校验（§4.1 步骤 1 / §4.2 表——词表/形状/observedAt/attemptId/code Pattern）。 */
 function intakeValid(emission: NamespaceDiagnosticChangeEmission): boolean {
   const e = emission as unknown as Record<string, unknown>
@@ -78,9 +77,24 @@ function intakeValid(emission: NamespaceDiagnosticChangeEmission): boolean {
     if (!isSourceModule(e.sourceModule)) return false
   }
   if (!isLogSource(e.source)) return false
-  // source.remoteInstanceId：有界无换行（§6.3 结构性——违规丢 emission）
+  // source 封闭键校验（R5/std C-S3）：local 仅 kind 键；replication 仅
+  // kind/direction/remoteInstanceId——多余键 → emission-dropped（producer 结构违规，
+  // 不得漏到 VFSL 门误报 writer bug）
   const source = e.source as Record<string, unknown>
-  if (source.kind === 'replication' && !RE_BOUNDED_STR.test(source.remoteInstanceId as string)) return false
+  const sourceKeys = Object.keys(source)
+  if (source.kind === 'local' && (sourceKeys.length !== 1 || sourceKeys[0] !== 'kind')) return false
+  if (source.kind === 'replication') {
+    for (const key of sourceKeys) {
+      if (key !== 'kind' && key !== 'direction' && key !== 'remoteInstanceId') return false
+    }
+    // remoteInstanceId：有界无换行（§6.3 结构性——违规丢 emission）
+    if (!RE_BOUNDED_STR.test(source.remoteInstanceId as string)) return false
+  }
+  // input 非对象（primitive/null/数组——含显式 null）→ 结构违规（R5/std C-2：
+  // 不得进入 `in` 运算冒泡成 pipeline-crashed 丢整条 record；null 为明确违规形状）
+  if (e.input !== undefined) {
+    if (e.input === null || typeof e.input !== 'object' || Array.isArray(e.input)) return false
+  }
   return resultShapeValid(e.result)
 }
 
@@ -149,7 +163,7 @@ function defaultRandomSource(): RandomSource {
 function cleanContext(
   context: unknown,
   operation: Operation,
-  notify: (event: Record<string, unknown>) => void,
+  notify: (event: DiagnosticLogHealthEvent) => void,
 ): LogContext | undefined {
   if (context === undefined || context === null) return undefined
   if (typeof context !== 'object' || Array.isArray(context)) {
@@ -193,7 +207,7 @@ function cleanContext(
 function buildSemanticRecord(
   emission: NamespaceDiagnosticChangeEmission,
   config: DiagnosticEmitterConfig,
-  notify: (event: Record<string, unknown>) => void,
+  notify: (event: DiagnosticLogHealthEvent) => void,
 ): DiagnosticSemanticRecord | null {
   const operation = emission.operation
 
@@ -211,7 +225,8 @@ function buildSemanticRecord(
     notify({ type: 'input-projection-failed', operation })
   })
 
-  // —— 步骤 4：issues 投影 ——
+  // —— 步骤 4：issues 投影（emission.issues 为裸数组 DiagnosticIssue[]——设计
+  // §2.6 R5/std C-S2 形状；管线内部投影为 IssuesProjection）——
   let issues: IssuesProjection | undefined
   if (emission.issues !== undefined && emission.issues !== null) {
     issues = projectIssues(emission.issues, config.issuesPolicy, () => {

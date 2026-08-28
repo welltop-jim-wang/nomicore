@@ -5,7 +5,7 @@
 - `wiki/raw/task_diagnostic-log-v1-contract_design.md`（R2 唯一权威——§1 模块定位 /
   §3 冻结 schema / §4 管线失败隔离 / §5 输入捕获 / §6 投影 / §7 adapter / §8 健康面 /
   §12 文件清单）；
-- 契约契约测试 `test/**`（SA6 owned——红灯契约即行为规格；改实现不改测试断言）。
+- 契约测试 `test/**`（SA6 owned——红灯契约即行为规格；改实现不改测试断言）。
 
 ## Contract
 
