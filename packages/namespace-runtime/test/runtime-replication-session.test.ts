@@ -187,6 +187,7 @@ type PublicCoreShape = {
 
 type PublicStatusShape = {
   readonly state: 'open' | 'closed' | 'conflicted';
+  readonly closedBy?: 'explicit-close' | 'runtime-close';
   readonly localRole: 'hub' | 'peer';
   readonly direction: 'hub-to-peer' | 'peer-to-hub';
   readonly remoteInstanceId: string;

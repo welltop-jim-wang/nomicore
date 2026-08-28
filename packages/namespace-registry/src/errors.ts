@@ -20,13 +20,16 @@ import type { NamespaceRegistryFatalPhase, NamespaceRegistryShutdownFailure } fr
  */
 export class NamespaceRegistryFatalError extends Error {
   readonly code = 'NAMESPACE_REGISTRY_FATAL' as const;
-  readonly operation: 'open' | 'create' | 'shutdown';
+  // Phase 5（issue #133；ADR 0010:222 授权 append-only）：+ 'reset' | 'import'
+  // ——reset/archive 编排与受信 bootstrap 导入的内部故障通道（word 表既有三值
+  // 语义不变，沿 #131 namespace-id-generation phase 增补先例）。
+  readonly operation: 'open' | 'create' | 'shutdown' | 'reset' | 'import';
   readonly phase: NamespaceRegistryFatalPhase;
   readonly committed: boolean;
   override readonly cause: unknown;
 
   constructor(
-    operation: 'open' | 'create' | 'shutdown',
+    operation: 'open' | 'create' | 'shutdown' | 'reset' | 'import',
     phase: NamespaceRegistryFatalPhase,
     committed: boolean,
     cause: unknown,

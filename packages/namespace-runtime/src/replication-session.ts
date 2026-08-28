@@ -84,8 +84,10 @@ export type RuntimeReplicationSessionApplyResult =
  *  持久事实——T-4）。与 registry 侧 ReplicationSessionStatus 逐字段同构（lease.ts
  *  Equal 断言锁死）。 */
 export interface RuntimeReplicationSessionStatus {
-  /** session 终态机：open → closed（显式 close 或 Lease release）| conflicted（epoch fence，稳定）。 */
+  /** session 终态机：open → closed（显式 close、Lease release 或 Runtime close）| conflicted（epoch fence，稳定）。 */
   readonly state: 'open' | 'closed' | 'conflicted';
+  /** closed 的来源；仅 state==='closed' 时存在。Runtime reset/close 必须投影 runtime-close。 */
+  readonly closedBy?: 'explicit-close' | 'runtime-close';
   readonly localRole: 'hub' | 'peer';
   /** 创建时派生冻结：localRole==='peer' ⇔ 'hub-to-peer'（星型拓扑下 peer 的唯一对端是 hub）。 */
   readonly direction: 'hub-to-peer' | 'peer-to-hub';
@@ -507,6 +509,7 @@ function createSessionCore(
       const currentEpoch = factsNow.state === 'enabled' ? factsNow.replicationEpoch : replicationEpoch;
       return Object.freeze({
         state: coreState.terminal,
+        ...(coreState.terminal === 'closed' ? { closedBy: closedBy ?? 'explicit-close' } : {}),
         localRole,
         direction,
         remoteInstanceId,

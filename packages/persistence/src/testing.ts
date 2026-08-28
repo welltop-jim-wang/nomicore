@@ -665,6 +665,9 @@ export interface PersistenceIoFaults {
   holdNextWriteAfterCommit(): PersistenceHold
   /** Next read suspends; after `release()` returns `value` without touching the real io. */
   holdNextReadThen(value: Uint8Array | undefined): PersistenceHold
+  /** Next primary-remove rejects with `reason`（R2：归档 remove 段故障注入——归档
+   *  提交点已跨过后失败 → relocate-remove committed:true 路径）。 */
+  failNextRemove(reason: unknown): void
 }
 
 /**
@@ -702,6 +705,7 @@ function armHold(): ArmedHold & { readonly hold: PersistenceHold } {
 export function createPersistenceIoFaultSeam(): PersistenceIoFaultSeam {
   let failRead: unknown = NO_FAULT
   let failWrite: unknown = NO_FAULT
+  let failRemove: unknown = NO_FAULT
   let holdRead: ArmedHold | undefined
   let holdReadValue: Uint8Array | undefined = undefined
   let holdWriteBeforeCommit: ArmedHold | undefined
@@ -710,6 +714,7 @@ export function createPersistenceIoFaultSeam(): PersistenceIoFaultSeam {
   const faults: PersistenceIoFaults = {
     failNextRead(reason) { failRead = reason },
     failNextWrite(reason) { failWrite = reason },
+    failNextRemove(reason) { failRemove = reason },
     holdNextWriteBeforeCommit() {
       const armed = armHold()
       holdWriteBeforeCommit = armed
@@ -768,6 +773,41 @@ export function createPersistenceIoFaultSeam(): PersistenceIoFaultSeam {
         after.enteredResolve()
         await after.gate
       }
+    },
+    // Phase 5（§4.6，D-6 裁决 (b)）：归档提交写并入既有 write 故障/hold 槽——与
+    // write 完全同款（failWrite / holdWriteBeforeCommit / holdWriteAfterCommit +
+    // signal.throwIfAborted() 自检后转调内层 io）；不触碰主键存储是内层方法级承诺。
+    async writeArchive(key, snapshot, signal) {
+      const failure = failWrite
+      if (failure !== NO_FAULT) {
+        failWrite = NO_FAULT
+        throw failure
+      }
+      const before = holdWriteBeforeCommit
+      if (before !== undefined) {
+        holdWriteBeforeCommit = undefined
+        before.enteredResolve()
+        await before.gate
+        signal.throwIfAborted()
+        return await io.writeArchive!(key, snapshot, signal)
+      }
+      await io.writeArchive!(key, snapshot, signal)
+      const after = holdWriteAfterCommit
+      if (after !== undefined) {
+        holdWriteAfterCommit = undefined
+        after.enteredResolve()
+        await after.gate
+      }
+    },
+    // Phase 5（§4.6）：主键移除（R2 增加 remove 故障槽——归档 remove 段
+    // committed:true 路径的确定性故障注入面；半途 hold 不设——移除段无提交段语义）。
+    async remove(key, signal) {
+      const failure = failRemove
+      if (failure !== NO_FAULT) {
+        failRemove = NO_FAULT
+        throw failure
+      }
+      await io.remove!(key, signal)
     },
   })
 

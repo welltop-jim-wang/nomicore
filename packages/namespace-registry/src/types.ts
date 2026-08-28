@@ -41,6 +41,7 @@ import type {
   ReplaceSchemaResult,
   RuntimeReadDisabledResult,
 } from '@nomicore/namespace-runtime';
+import type { ReplicationIdentityRef, YjsDoc } from '@nomicore/persistence';
 import type { SchemaEnvelope } from '@nomicore/vfsl';
 import type { RegistryObserver } from './observer.js';
 
@@ -97,6 +98,32 @@ export const REPLICATION_ROLE_PERMISSION_MESSAGE =
 // message 复用 runtime 侧 #132/errors.ts 既有冻结词（replication-session.ts 单点产出，
 // Lease 编排经 internal seam 原样透传——沿 REPLICATION_ID_PATTERN 双副本先例的结构
 // 守卫在两处互相引用；本文件不持第三副本）。
+
+// —— Phase 5 增量（issue #133；ADR 0010 bootstrap/reset 编排；phase:62-65/113）——
+// 稳定 message 冻结常量（单一真相源；零插值、零 identity/输入回显）：
+export const NAMESPACE_IMPORT_INVALID_IDENTITY_MESSAGE =
+  'NAMESPACE_IMPORT_INVALID_IDENTITY: 导入文档缺少合规的复制身份（replicationId/replicationEpoch）';
+export const NAMESPACE_IMPORT_IDENTITY_MISMATCH_MESSAGE =
+  'NAMESPACE_IMPORT_IDENTITY_MISMATCH: 导入文档 META.docId 与请求 namespaceId 不一致';
+export const NAMESPACE_IMPORT_FAILED_MESSAGE =
+  'NAMESPACE_IMPORT_FAILED: namespace 受信导入发生运营故障';
+export const NAMESPACE_RESET_IDENTITY_MISMATCH_MESSAGE =
+  'NAMESPACE_RESET_IDENTITY_MISMATCH: 本地副本复制身份与期望不一致，拒绝重置';
+export const NAMESPACE_RESET_FAILED_MESSAGE =
+  'NAMESPACE_RESET_FAILED: namespace 重置编排发生运营故障';
+// —— R2 增量（issue #133 round-2；ADR 0010 bootstrap/reset 修订；owner feedback 2/3）——
+// 稳定 message 冻结常量（单一真相源；零插值、零 Hub 广告身份/输入回显）：
+export const NAMESPACE_IMPORT_EXPECTED_IDENTITY_MISMATCH_MESSAGE =
+  'NAMESPACE_IMPORT_EXPECTED_IDENTITY_MISMATCH: 导入文档复制身份与 Hub 广告身份不一致';
+export const NAMESPACE_IMPORT_EXPECTED_IDENTITY_INVALID_MESSAGE =
+  'NAMESPACE_IMPORT_EXPECTED_IDENTITY_INVALID: 期望复制身份（Hub 广告）不符合安全文法';
+// R4 微修订（方案 B，§3.6.1 R4-D2）：resetReplica expected 输入缺陷专属常量——镜像
+// import 侧先例（单一真相源；零插值、零本地复制身份/输入值回显）。
+export const NAMESPACE_RESET_EXPECTED_IDENTITY_INVALID_MESSAGE =
+  'NAMESPACE_RESET_EXPECTED_IDENTITY_INVALID: 期望本地复制身份（reset expectedLocalIdentity）不符合安全文法';
+
+/** 复制身份引用（N-1 冻结形状）：自 @nomicore/persistence 转出（类型别名）。 */
+export type { ReplicationIdentityRef };
 
 /** Host 无关的命名空间归属标识：owner 是 Persistence partition key，非当前调用人。 */
 export interface NamespaceOwner {
@@ -277,6 +304,105 @@ export type CreateNamespaceResult =
   | Readonly<{ ok: true; lease: NamespaceLease }>
   | CreateNamespaceIssue;
 
+// —— Phase 5 增量的窄结果联合（issue #133；ADR 0010 bootstrap/reset；仿 create 窄结果先例）——
+
+/**
+ * importReplica 领域窄 issue（Phase 5；ADR 0010:28/65）：common 窄 issue
+ * （InvalidIdentityIssue / RegistryNotAcceptingIssue）与导入专属拒绝
+ * （ALREADY_EXISTS / INVALID_IDENTITY / IDENTITY_MISMATCH / IMPORT_FAILED）。
+ * R2 增量（append-only）：`NAMESPACE_IMPORT_EXPECTED_IDENTITY_MISMATCH`
+ * （META 复制事实合规但与 Hub 广告身份不一致——ownership 转移前拒绝）与
+ * `NAMESPACE_IMPORT_EXPECTED_IDENTITY_INVALID`（expected 输入本身不合安全文法
+ * ——与 NAMESPACE_INVALID_IDENTITY 同语义族：常量 message、零字段值回显）。
+ * message 全部为不可插值常量。
+ */
+export type ImportReplicaIssue =
+  | InvalidIdentityIssue
+  | RegistryNotAcceptingIssue
+  | Readonly<{
+      ok: false;
+      code: 'NAMESPACE_NOT_FOUND';
+      message: typeof NAMESPACE_NOT_FOUND_MESSAGE;
+    }>
+  | Readonly<{
+      ok: false;
+      code: 'NAMESPACE_ALREADY_EXISTS';
+      message: typeof NAMESPACE_ALREADY_EXISTS_MESSAGE;
+    }>
+  | Readonly<{
+      ok: false;
+      code: 'NAMESPACE_IMPORT_INVALID_IDENTITY';
+      message: typeof NAMESPACE_IMPORT_INVALID_IDENTITY_MESSAGE;
+    }>
+  | Readonly<{
+      ok: false;
+      code: 'NAMESPACE_IMPORT_IDENTITY_MISMATCH';
+      message: typeof NAMESPACE_IMPORT_IDENTITY_MISMATCH_MESSAGE;
+    }>
+  | Readonly<{
+      ok: false;
+      code: 'NAMESPACE_IMPORT_EXPECTED_IDENTITY_MISMATCH';
+      message: typeof NAMESPACE_IMPORT_EXPECTED_IDENTITY_MISMATCH_MESSAGE;
+    }>
+  | Readonly<{
+      ok: false;
+      code: 'NAMESPACE_IMPORT_EXPECTED_IDENTITY_INVALID';
+      message: typeof NAMESPACE_IMPORT_EXPECTED_IDENTITY_INVALID_MESSAGE;
+    }>
+  | Readonly<{
+      ok: false;
+      code: 'NAMESPACE_IMPORT_FAILED';
+      message: typeof NAMESPACE_IMPORT_FAILED_MESSAGE;
+    }>;
+
+/** importReplica 结果联合：成功携带 lease（bootstrap 后的本地 generation 独占面）。 */
+export type ImportReplicaResult =
+  | Readonly<{ ok: true; lease: NamespaceLease }>
+  | ImportReplicaIssue;
+
+/**
+ * resetReplica 领域窄 issue（Phase 5；ADR 0010:57）：common 窄 issue 与编排专属
+ * 拒绝（NOT_FOUND / RESET_IDENTITY_MISMATCH / RESET_FAILED / LOAD_FAILED）。
+ * R4 微修订（append-only，方案 B §3.6.1 R4-D2/D3）：
+ * `NAMESPACE_RESET_EXPECTED_IDENTITY_INVALID`（expectedLocalIdentity 参数本身
+ * 不符安全文法——入口快照校验失败即拒绝；零 Persistence/probe 触达、零载体/
+ * entry 访问；无 field 成员（判别完全由 code 承载）；常量 message、零值回显）。
+ * 内部故障经 branded NamespaceRegistryFatalError reject。
+ */
+export type ResetReplicaIssue =
+  | InvalidIdentityIssue
+  | RegistryNotAcceptingIssue
+  | Readonly<{
+      ok: false;
+      code: 'NAMESPACE_NOT_FOUND';
+      message: typeof NAMESPACE_NOT_FOUND_MESSAGE;
+    }>
+  | Readonly<{
+      ok: false;
+      code: 'NAMESPACE_RESET_IDENTITY_MISMATCH';
+      message: typeof NAMESPACE_RESET_IDENTITY_MISMATCH_MESSAGE;
+    }>
+  | Readonly<{
+      ok: false;
+      code: 'NAMESPACE_RESET_FAILED';
+      message: typeof NAMESPACE_RESET_FAILED_MESSAGE;
+    }>
+  | Readonly<{
+      ok: false;
+      code: 'NAMESPACE_LOAD_FAILED';
+      message: typeof NAMESPACE_LOAD_FAILED_MESSAGE;
+    }>
+  | Readonly<{
+      ok: false;
+      code: 'NAMESPACE_RESET_EXPECTED_IDENTITY_INVALID';
+      message: typeof NAMESPACE_RESET_EXPECTED_IDENTITY_INVALID_MESSAGE;
+    }>;
+
+/** resetReplica 结果联合：成功为窄 {ok:true}（key 缺席即 bootstrap 资格，无显式标记）。 */
+export type ResetReplicaResult =
+  | Readonly<{ ok: true }>
+  | ResetReplicaIssue;
+
 // —— Lease 代理能力的公开 alias（§3.2）：结构性表达 Runtime 能力，不转导 Runtime 名称 ——
 
 /** lease.read 结果 = runtime read 正常联合 | released issue。 */
@@ -360,8 +486,10 @@ export type ReplicationSessionApplyResult =
 /** session 独立状态查询面（O-11 冻结词汇；Runtime status 的 replication 域仍只含两态
  *  持久事实——T-4：session 状态绝不入 Runtime status）。 */
 export interface ReplicationSessionStatus {
-  /** session 终态机：open → closed（显式 close 或 Lease release）| conflicted（epoch fence，稳定）。 */
+  /** session 终态机：open → closed（显式 close、Lease release 或 Runtime close）| conflicted（epoch fence，稳定）。 */
   readonly state: 'open' | 'closed' | 'conflicted';
+  /** closed 的来源；仅 state==='closed' 时存在。Runtime reset/close 必须投影 runtime-close。 */
+  readonly closedBy?: 'explicit-close' | 'runtime-close';
   readonly localRole: InstanceRole;
   /** 创建时派生冻结：localRole==='peer' ⇔ 'hub-to-peer'（星型拓扑下 peer 的唯一对端是 hub）。 */
   readonly direction: 'hub-to-peer' | 'peer-to-hub';
@@ -507,6 +635,41 @@ export interface NamespaceRegistry {
    * 先例——接纳段校验一切敌意/畸形输入是运行时契约，静态类型是调用方命名形状）。
    */
   create(input: CreateNamespaceInput): Promise<CreateNamespaceResult>;
+  /**
+   * Phase 5 内部受信任 bootstrap 导入（ADR 0010:28/65；phase:62）。保留 Hub
+   * namespaceId（不生成、不改写）；在 persistence ownership 转移之前严格核对
+   * META 复制身份与 **Hub 广告 expected 身份**（第 4 参数 expectedReplicationIdentity
+   * ——R2 增量，owner feedback 2；必须在任何 doc 读取/carrier 入队/Persistence 调用
+   * 之前被安全快照验证，来源只能是对认证 Hub 广告身份的可靠绑定，绝不可用文档自身
+   * 值替代）；排他创建（live entry / committed snapshot / 并发 →
+   * NAMESPACE_ALREADY_EXISTS，绝不覆盖/合并）。META 复制事实合规但与广告身份
+   * 不符 → `NAMESPACE_IMPORT_EXPECTED_IDENTITY_MISMATCH`（零持久化写入、零 entry
+   * 登记）。
+   *
+   * 信任模型（ADR 0010:79 同款纪律，文档化而非 capability 化）：本入口允许调用
+   * 方指定 namespaceId，是「复制 bootstrap 保留 Hub 身份」的授权例外；Host
+   * 搭建方负责只把 Registry（及本方法可达面）交给可信复制编排代码，不得把它
+   * 暴露为普通客户端写入口。本入口不改变普通 create 的 owner-only 接纳与
+   * CSPRNG 生成纪律（SA6 保持性守卫锚）。
+   */
+  importReplica(
+    owner: NamespaceOwner,
+    namespaceId: string,
+    doc: YjsDoc,
+    expectedReplicationIdentity: ReplicationIdentityRef,
+  ): Promise<ImportReplicaResult>;
+  /**
+   * Phase 5 Peer 冲突恢复编排（ADR 0010:57；phase:113）：串行化
+   * close → archive → 允许 bootstrap。期望身份由调用方（复制插件）供给、
+   * 纯传递给 Persistence 归档守卫（§4.7）；owner/identity race → 稳定拒绝且
+   * 零部分删除。成功 ⟹ 该 key 的全部未决 lease 已失效、本地副本已归档、
+   * 随后 importReplica 可成功（bootstrap 资格 = key 缺席，无显式标记）。
+   */
+  resetReplica(
+    owner: NamespaceOwner,
+    namespaceId: string,
+    expectedLocalIdentity: ReplicationIdentityRef,
+  ): Promise<ResetReplicaResult>;
   /** 同步 Registry 生命周期投影：恒三相（running/shutting-down/stopped）、恒冻结常量。 */
   getStatus(): NamespaceRegistryStatus;
   /**
