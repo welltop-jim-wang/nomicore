@@ -64,8 +64,12 @@ export type DiagnosticLogHealthEvent =
       type: 'storage-validation-failed'
       recordKind: 'attempt' | 'genesis-baseline'
       operation?: Operation
-      /** code ∈ { base64-invalid | base64-length-mismatch | crc-mismatch | stream-mismatch | frame-missing }
-       *  （前四值 SA6 锚定；frame-missing 总控 G3 裁决扩值——注入 sidecar 引用帧缺失的 loud 拒绝）。 */
+      /** code ∈ { base64-invalid | base64-length-mismatch | crc-mismatch | stream-mismatch
+       *  | frame-missing | vfsl-invalid }
+       *  （前四值 SA6 锚定；frame-missing 总控 G3 裁决扩值（复用 reader 词表既有稳定码）——
+       *  注入 sidecar 引用帧缺失的 loud 拒绝；vfsl-invalid 为 R 修复轮（SA4 R1 R-2）第 6 值——
+       *  P_DECIMAL 字面镜像违规（注入 sequence/frameOffset 前导零/空串/非十进制）的 loud 拒绝，
+       *  同 G3「复用 reader issue 词表既有稳定码」原则，零新码）。 */
       code: string
     }
   | {

@@ -173,4 +173,75 @@ DIVERGENCES: 8
 
 ---
 
-**结论**：架构、门序、事件纪律、降级设计、测试绿灯与 CI 接线全部成立；唯一实质缺口是总控指定审查项第三问的答案——**有未补面（FrameOffset），且已实证造成 strict reader 假 ok**。按最小变更原则，SA3 以 ≤10 行完成 R-1/R-2/R-3（+ 建议的 `isCanonicalDecimal` 收口）后本票即可转 pass；vfsl 引擎 alternation 缺陷请总控另立上游票。
+**结论（R1 轮）**：架构、门序、事件纪律、降级设计、测试绿灯与 CI 接线全部成立；唯一实质缺口是总控指定审查项第三问的答案——**有未补面（FrameOffset），且已实证造成 strict reader 假 ok**。按最小变更原则，SA3 以 ≤10 行完成 R-1/R-2/R-3（+ 建议的 `isCanonicalDecimal` 收口）后本票即可转 pass；vfsl 引擎 alternation 缺陷请总控另立上游票。
+
+---
+
+# SA4 R2 复审轮（fix commit `cb44bcd`，2026-08-28）
+
+**Verdict**: **pass**（R1 三项回流全部消除并经独立实证；无新问题引入；附 2 条非阻塞 backlog 备注）
+
+**复审范围**：仅 R1 修订点（cb44bcd 对 `0ec62e9` 的 diff：src 5 文件 + supplemental 测试 +74 行 + wiki）；关键行为全部独立重跑实证，不采信 SA3/总控自述（总控亲验 256 绿为背景，本报告自带证据链）。
+
+## 1. 修复与 R1 建议的对合（修法是否符合建议 → **完全符合**）
+
+| R1 要求 | cb44bcd 落地 | 判定 |
+|---|---|---|
+| R-1：reader 对 `carrier.frameOffset` 做同款 P_DECIMAL 镜像（同层同码 vfsl-invalid） | `reader.ts:320` `checkSidecar` 入口 `if (!isCanonicalDecimal(carrier.frameOffset)) return 'vfsl-invalid'`——**先镜像后解析**，非规范字面在 `BigInt()` 之前被拒 → R1 动态项 D1（Node 20/24 `BigInt('')` 行为分歧）**由构造消除**（字符串不再到达解析层） | ✅ |
+| R-2：writer 注入门同镜像（sequence + frameOffset） | `file.ts:435/:442`（VFSL 门后、storage 门前）：违规 → `storage-validation-failed{code:'vfsl-invalid'}` + return 零落盘 | ✅ |
+| R-3：carrier.ts 改 import 冻结常量 | `RE_P_BASE64 = new RegExp(P_BASE64)` 单源；删除两枚字面量 | ✅ |
+| R1 附带建议「提为局部小函数 `isCanonicalDecimal` 三处共用，消除第三份重复」 | `storage-gate.ts:26` 导出 `isCanonicalDecimal`（`value !== '' && RE_P_DECIMAL.test(value)`，冻结常量 import）；**四个消费面全部收口**——reader sequence（:372）、reader frameOffset（:320）、writer 注入门（:435/:442）、preset seam（testing.ts:112） | ✅ 建议被采纳 |
+
+**修法增量裁决复核**（cb44bcd 自行引入、R1 未逐字规定的两点）：
+
+- `storage-validation-failed.code` 增第 6 值 `'vfsl-invalid'`：类型为开放 `string`、按 G3「复用 reader 词表既有稳定码」同原则、且总控在修复轮指令中已明确该形状（"违规 → storage-validation-failed{code:'vfsl-invalid'} + 零落盘"）——**合规**。语义归属也正确（P_DECIMAL 字面违规在 reader 词表中即 vfsl-invalid）。遗留一行 cosmetics：`health.ts:63` 注释仍写 5 值集（见 backlog N-1）。
+- reader 侧镜像置于 `reference-invalid` 之前：字面形状先于物理交叉，与 §7.3「逻辑形状先于物理交叉」的层序一致；既有 252 条测试零回归（suite 全绿）。
+
+## 2. PoC 消除实证（同一脚本对照，2026-08-28 于本 worktree）
+
+R1 的 `/tmp/sa4-poc-frameoffset.ts` **原样重跑**（未改一行），前后对照：
+
+| PoC | R1（修复前） | R2（修复后，实测输出） | 判定 |
+|---|---|---|---|
+| A：`frameOffset:"0125"`（前帧 '0' 规范） | `status ok`，零 issue，records ok=[true,true] | `status = corrupt \| issues = ["vfsl-invalid"] \| records ok = [ true, false ]`（规范首帧不受连带） | ✅ 消除 |
+| B：`frameOffset:""` | `status ok`（Node 24；Node 20 预期兜底 wipe） | `status = corrupt \| issues = ["vfsl-invalid"] \| records = 1, manifest 展示`（record 级归因，非兜底全灭） | ✅ 消除 |
+| C：inject `sequence:"01"` | 违规 record 落盘、零事件；reader corrupt | `jsonl 存在 = false`（零落盘）`+ 事件 = ["storage-validation-failed/vfsl-invalid"] + reader ok/0 records` | ✅ 消除 |
+| C′（新增变体）：inject sidecar `frameOffset:"01"` | —（R1 未单测；修复前预期 frame-missing 码落拒绝） | `jsonl 存在 = false + 事件 = ["storage-validation-failed/vfsl-invalid"]`（字面门先于帧存在性交叉） | ✅ 行为正确 |
+| D：inline base64 `"AB==ABCD"` | corrupt + `base64-invalid` | 未变（本轮未触碰该路径） | ✅ 持续正确 |
+| 回归：规范注入（sequence '1'/inline） | 落盘 + reader ok | `jsonl 存在 = true + 事件 = [] + reader ok + 首行 sequence = 1` | ✅ 无假阳性 |
+
+**R-3 等价性实证**：旧实现（双字面量正则）与新实现（P_BASE64 镜像）对 20 输入探针集（`''`/`'AB=='`/内部 padding×3/`'AB='`/`'A'`/`'AAA='`/`'AAAA'`/`'AAAA='`/`'=AAA'`/空白/`'ABCD==='`/合法组）**逐输入一致，DIFF = 0**——删除的快速前置正则本就是 P_BASE64 的弱化子集，语义零漂移。
+
+## 3. 新锚定测试真实触发性（非 vacuous）
+
+```text
+$ npx vitest run packages/namespace-diagnostic-log/test/file-adapter-r2-supplemental.test.ts -t "R 修复轮" --reporter=verbose
+ ✓ … > R-1a：frameOffset "0125"（前导零）→ corrupt + record 级 vfsl-invalid（不再判 ok）
+ ✓ … > R-1b：frameOffset ""（空串）→ corrupt + record 级 vfsl-invalid（不依赖 BigInt("") 行为分歧）
+ ✓ … > R-2a：注入 sequence "01" → storage-validation-failed/vfsl-invalid + 零落盘
+ ✓ … > R-2b：注入 sidecar frameOffset "01"（前导零）→ storage-validation-failed/vfsl-invalid + 零落盘
+      Tests  4 passed | 15 skipped (19)
+```
+
+四条测试**逐名执行且通过**；且其 fixture 形状与 R1 PoC 完全同构——R1 已实测同输入在修复前产出相反结局（A/B：status ok；C：落盘+零事件）→ 全部为**差分锚定**，不可能在未修复代码上通过（R-2b 的码值断言 `vfsl-invalid` 对修复前的 `frame-missing` 拒绝同样差分）。断言均为运行时行为（status/issue code/事件形状/文件存在性），无源码 grep 断言。
+
+## 4. 修复有无引入新问题 → **未发现**
+
+- **Scope**：cb44bcd 触及 src 5 文件全在 ALLOW LIST；supplemental 测试为本就由 SA3 落地维护的 R2 补充文件（设计 §9 R2 映射授权），追加而非改既有断言；wiki 白名单；DENY LIST 零触碰——**vfsl 引擎保持原样**（复跑 `/tmp/sa4-rootcause.ts`：`engine(/^(a|b)$/,"ab")=true` 仍在——正确的消费者侧定位，根因归上游票）。
+- **依赖方向**：新增边 `storage-gate → schema-patterns`、`carrier → schema-patterns` 均指向零依赖叶子，DAG 无环（§1.1 纪律保持）。
+- **emission 路径零扰动**：镜像门对 emission 不可达（sequence 恒 `allocate()`/`nextDecimal` 规范、frameOffset 恒 `String(offset)` 规范）——由既有 252 条测试全绿背书。
+- **reader 层序**：frameOffset 镜像先于 `reference-invalid`/`frame-missing`——同违规双因时取字面码，与 §7.3 层序一致；expectedOffset 状态机不受影响（失败不推进，原有语义）。
+- **测试复跑（独立进程，本轮）**：包 `vitest run --typecheck packages/namespace-diagnostic-log` → **18 文件 256 passed，Type Errors 0，exit 0**；全仓 `vitest run` → **136 文件 1661 passed，exit 0**——与总控亲验一致，R1 的 252/1657 基线 +4 条新锚定全绿零回归。
+
+## 5. 非阻塞 backlog 备注（交 SA3/总控裁量，不影响 verdict）
+
+| # | 备注 | 建议 |
+|---|---|---|
+| N-1 | `health.ts` `storage-validation-failed` 成员的 code 注释仍写 5 值集（`base64-invalid \| … \| frame-missing`），实际已含总控修复轮批准的第 6 值 `vfsl-invalid` | 一行注释同步（cosmetics；类型为开放 string，无行为影响） |
+| N-2 | frameOffset 规范性检查位于两个 `validateSidecarFrame` **调用点**（reader/writer）而非原语内部——#153「打开与尾部恢复」新增调用点时须记得携带镜像 | #153 开工时把字符串形 frameOffset 与镜像复核折入 `validateSidecarFrame` 第 0 步（签名收字符串），使不可遗忘 |
+
+## 6. R2 轮结论
+
+R1 的 REJECT 项 R-1（strict reader 假 ok）与 MINOR 项 R-2/R-3 全部按建议消除，且修复方式在两处**优于**建议的字面（先镜像后解析根除 Node 版本分歧；四处消费面收口单函数）；4 条新锚定真实差分触发；包/全仓/类型三面独立复跑全绿；DENY 面与 vfsl 引擎零触碰（根因正确归位上游票）。
+
+**Verdict: pass**（SA7 可进入动态验证；R1 动态项 D1 已由「先镜像后解析」构造性关闭，D2/D3 及修复后 CI 侧回归证据仍按 R1 §五交 SA7）。
