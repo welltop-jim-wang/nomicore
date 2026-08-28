@@ -176,6 +176,8 @@ frame-version-unknown / frame-payload-type-unknown / frame-flags-nonzero / frame
 
 共 5 个 `.test.ts` + 2 个共享 helper；**测试总数变 17 文件（+5）**，包内既有 12 文件 165 测试不受影响。
 
+**勘误记录（2026-08-28 总控 R 裁决，Phase 3 回流）**：`file-adapter-genesis-results.test.ts`「committed+update（inline）与 fatal+true+update（inline）两载体分支」用例先前对循环两条记录无条件断言 `expect(result.kind).toBe('committed')`——原断言为 **SA6 笔误**：idx=1 为 fatal+committed:true 分支，冻结契约（src/record.ts AttemptResult：`committed` 键仅 fatal 结局携带、kind 保留 `'fatal'`；#148 record-vocabulary.test.ts 同语义）与之矛盾；任何正确实现都不可能满足。已修订为 `expect(result.kind).toBe(idx === 1 ? 'fatal' : 'committed')`，该用例其余断言不变；语义以冻结词表为准。
+
 ### 4. 红灯验证证据
 
 - 命令（唯一，后台独立进程）：`npx vitest run --typecheck packages/namespace-diagnostic-log`

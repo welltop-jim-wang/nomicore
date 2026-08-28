@@ -87,7 +87,9 @@ describe('ADR 0012 验收门槛 4：全部 result 判别分支落盘且通过冻
     const records = jsonlOf(log)
     for (const [idx, bytes] of [[0, a], [1, b]] as const) {
       const result = records[idx]!.result as { kind: string; committed?: boolean; effect: string; update: Record<string, unknown> }
-      expect(result.kind).toBe('committed')
+      // 勘误（2026-08-28 总控 R 裁决）：idx=1 为 fatal+committed:true 分支——kind 必须按索引区分
+      //（冻结契约 src/record.ts AttemptResult：`committed` 键仅 fatal 结局携带，kind 保留 'fatal'）
+      expect(result.kind).toBe(idx === 1 ? 'fatal' : 'committed')
       if (idx === 1) expect(result.committed).toBe(true)
       expect(result.effect).toBe('update')
       expect(result.update.storage).toBe('inline')
