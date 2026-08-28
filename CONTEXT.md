@@ -64,7 +64,11 @@ _Avoid_: validateSnapshot（容易误解为可校验 live Yjs 文档）
 封闭四键 schema 信封 `{ lang, version, id, text }` 的身份；任一键变化都会改变，用于观察 namespace 当前信封是否变化。
 
 **语义指纹（semantic fingerprint）**:
-`lang + version +` 解析后规范 IR 的语义身份；忽略空白与普通注释，保留 JSDoc、声明顺序及其他 VFSL 语义，并排除仅作谱系标签的 `id`。用于共享编译语义产物。
+`lang + version +` 解析后规范 IR 的语义身份；忽略空白与普通注释，保留 JSDoc、声明顺序及其他 VFSL 语义，并排除信封字段 `id`。用于共享编译语义产物。
+
+**内容寻址 schema ID（content-addressed schema ID）**:
+新 REST create 从 semantic fingerprint 的完整 256-bit SHA-256 digest 确定性派生的 schema 内容身份；v1 canonical 形式为 `sc1-` + 52 位小写 RFC 4648 Base32（无 padding）。空白与普通注释不改变 ID，JSDoc 与其他 VFSL 语义变化会改变 ID；不承担业务名称或独立谱系职责，业务含义写入 VFSL JSDoc。旧式 SCHEMA id 继续兼容，但任何 `sc1-` id 都必须与同信封 text 的 semantic fingerprint 精确匹配。
+_Avoid_: schema 业务名称、手工版本标签、截断 digest、把 namespaceId 或 replicationId 当作 schema ID
 
 **载体投影读取（readLogicalValueAtPath）**:
 从 live Y.Doc 的固定 ROOT 按实际 Yjs/plain 载体和路径同步投影普通逻辑值；不依赖 VFSL/派生 schema，也不重复执行结构或逻辑校验。创建与受控写入负责建立并维持数据不变量；持久化文件被其他程序错误修改不在运行时读取契约范围内。
