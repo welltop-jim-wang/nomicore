@@ -3,9 +3,14 @@
  * （§4.3/§4.4/§14）。目标级状态机见 peer-namespace.ts。
  */
 import type { DuplexTransport } from './types.js';
-import type { ReplicationMessage } from '@nomicore/replication-protocol';
-import { decodeInbound, OutboundQueue, connectionErrorFrame, namespaceErrorFrame } from './frame-io.js';
-import { decodeFrame } from '@nomicore/replication-protocol';
+import { encodeMessage, type ReplicationMessage } from '@nomicore/replication-protocol';
+import {
+  codecFieldLimits,
+  decodeInbound,
+  OutboundQueue,
+  connectionErrorFrame,
+  namespaceErrorFrame,
+} from './frame-io.js';
 import { PeerNamespaceController, type PeerNamespaceHost } from './peer-namespace.js';
 import type { NamespaceRegistry } from '@nomicore/namespace-registry';
 import type {
@@ -170,6 +175,7 @@ class PeerConnectionImpl implements PeerReplication {
         if (!this.transportClosed()) transport.send(bytes);
       },
       this.limits,
+      () => this.onSequenceExhausted(transport),
     );
     this.expectedSeq = 1;
     this.nonce = this.makeNonce();
@@ -206,28 +212,10 @@ class PeerConnectionImpl implements PeerReplication {
         maxFrameBytes: this.limits.maxFrameBytes,
       });
     } catch (err) {
+      // §4.1/§18.8（ADR 0010 L147 字面）：入站帧 sequence ≠ 期望值——无论 gap、repeat
+      // 或回退——一律 SEQUENCE_VIOLATION connection fatal（1002 → blocked）。无任何
+      // closing/终态豁免（F3 修复：SA6 seam 已支持显式 sequence + 静默期不变量）。
       const code = (err as { code?: string }).code ?? 'MALFORMED_FRAME';
-      // 收口优先（§13.4）：namespace 已在 closing 时，测试 seam 注入帧可能与出站序列
-      // 计数器重叠造成 repeat——接受该 terminal 帧推进收口，不因序列伪影升级断连。
-      if (code === 'SEQUENCE_VIOLATION' && this.anyNamespaceClosing()) {
-        try {
-          const frame = decodeFrame(bytes, {});
-          // eslint-disable-next-line @typescript-eslint/no-unused-vars
-          void frame;
-          this.expectedSeq = frame.header.sequence + 1;
-          const relaxed = decodeInbound(bytes, {
-            expectedSequence: frame.header.sequence,
-            maxFrameBytes: this.limits.maxFrameBytes,
-          });
-          const message = relaxed.message;
-          if (relaxed.header.sequence === frame.header.sequence) {
-            this.dispatchReady(message, relaxed.header.sequence);
-          }
-        } catch {
-          this.connectionFatal(code, 1002);
-        }
-        return;
-      }
       this.connectionFatal(code, code === 'INSTANCE_IDENTITY_MISMATCH' || code === 'CONNECTION_POLICY_VIOLATION' || code === 'FRAME_TOO_LARGE' ? (code === 'FRAME_TOO_LARGE' ? 1009 : 1008) : 1002);
       return;
     }
@@ -370,13 +358,6 @@ class PeerConnectionImpl implements PeerReplication {
     }, this.goawayDrainMs);
   }
 
-  private anyNamespaceClosing(): boolean {
-    for (const controller of this.controllers.values()) {
-      if (controller.state === 'closing') return true;
-    }
-    return false;
-  }
-
   private withController(namespaceId: string, fn: (c: PeerNamespaceController) => void): void {
     const controller = this.controllers.get(namespaceId);
     if (controller === undefined) {
@@ -409,6 +390,27 @@ class PeerConnectionImpl implements PeerReplication {
 
   private transportClosed(): boolean {
     return this.transport?.closed ?? true;
+  }
+
+  /** §4.1 R3/#11：出站 uint32 耗尽 → best-effort connection ERROR + close(1008) →
+   *  blocked（绕过出站队列直发——队列已耗尽；ERR0R 帧以最后合法序列 0xffffffff 发送）。 */
+  private onSequenceExhausted(transport: DuplexTransport): void {
+    if (transport.closed) return;
+    try {
+      transport.send(
+        encodeMessage(connectionErrorFrame('CONNECTION_POLICY_VIOLATION'), {
+          sequence: 0xffffffff,
+          maxFrameBytes: this.limits.maxFrameBytes,
+          limits: codecFieldLimits(this.limits),
+        }),
+      );
+    } catch {
+      // best-effort；framing 已不可信
+    }
+    if (!transport.closed) {
+      transport.close(1008, 'sequence-exhausted');
+    }
+    this.enterBlocked();
   }
 
   // ─────────────────────────────── 失败/关闭分类 ───────────────────────────────

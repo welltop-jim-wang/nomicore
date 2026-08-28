@@ -73,6 +73,7 @@ export class HubNamespaceChannel {
   private openInFlight = false;
   private pendingApplies = new Set<Promise<unknown>>();
   private pendingResync = false;
+  private resyncDeclared = false;
   private identityChangedSent = false;
   private timers: Record<TimerKind, unknown | undefined> = {
     bootstrap: undefined,
@@ -562,9 +563,10 @@ this.startBootstrap(hubIdentity);
       this.oneShotTerminal();
       return;
     }
-    // session 层溢出边沿（hub 侧，多 peer fan-out 方向 → §10.6 语义）：丢弃 + 等 peer round
+    // session 层溢出边沿（hub 侧，多 peer fan-out 方向）：§12 R4.2 定案——“hub 命中 =
+    // 声明 RESYNC_REQUIRED + 等待”（hub 的声明是 peer 发起恢复 round 的唯一通路，§9.4）
     this.channel.markSessionResyncEdge();
-    if (!this.isQuietState()) this.setState('needs-resync');
+    this.declareHubResync();
   }
 
   /** §12.2 one-shot 终结器（帧处理钩子与 watchdog 探测合流点；记忆化保证恰一帧）。 */
@@ -590,12 +592,32 @@ this.startBootstrap(hubIdentity);
         replicationId: identity.replicationId,
         replicationEpoch: identity.replicationEpoch,
       });
+      this.finalize('conflicted');
+      return;
     }
-    this.finalize('conflicted');
+    // §12.2 防御分支（理论不可达——bump 槽 E5.5 已同步整替）：disabled/异读 →
+    // INTERNAL_ERROR 收口（F7 对齐；不产生 IDENTITY_CHANGED 假码）
+    this.sendNsError('INTERNAL_ERROR');
+    this.finalize('failed');
   }
 
   private onLocalResyncEdge(): void {
-    // hub 侧 update-channel 溢出声明：停发 + 等待 peer 新 round（不自己声明 RESYNC 帧）
+    // hub 侧 update-channel 本地排队溢出（§10.2 判据）：§10.2/§18.4「hub 溢出同机制声明」
+    // + §12 R4.2 定案——声明 RESYNC_REQUIRED + 等待 peer 新 round
+    this.declareHubResync();
+  }
+
+  /** hub 溢出面统一声明（§10.2/§12 R4.2）：发 RESYNC_REQUIRED（一次/恢复周期，记忆化）
+   *  → 置 needs-resync → 等待 peer 新 round（round 恒由 peer 发起，§10.5/§10.6）。 */
+  private declareHubResync(): void {
+    if (this.isQuietState()) return;
+    if (this.resyncDeclared) return;
+    this.resyncDeclared = true;
+    this.sendChecked({
+      kind: 'RESYNC_REQUIRED',
+      namespaceId: this.namespaceId,
+      reasonCode: 'send-queue-overflow',
+    });
     if (!this.isQuietState()) this.setState('needs-resync');
   }
 
@@ -709,6 +731,7 @@ this.startBootstrap(hubIdentity);
     if (!this.isTerminal()) {
       this.setState('live');
       this.channel.resetForLive();
+      this.resyncDeclared = false; // 恢复周期完成：恢复声明记忆化清零
     }
     this.watchdog.onEvent();
   }

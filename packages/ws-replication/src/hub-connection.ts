@@ -3,8 +3,7 @@
  * （§4.2/§6/§15.2）。per-(connection, namespace) 通道见 hub-namespace.ts。
  */
 import type { DuplexTransport } from './types.js';
-import type { ReplicationMessage } from '@nomicore/replication-protocol';
-import { selectProtocolVersion } from '@nomicore/replication-protocol';
+import { encodeMessage, selectProtocolVersion, type ReplicationMessage } from '@nomicore/replication-protocol';
 import {
   decodeInbound,
   namespaceFieldViolation,
@@ -126,6 +125,7 @@ class HubConnectionImpl implements HubConnection {
         if (!transport.closed) transport.send(bytes);
       },
       hub.limits,
+      () => this.onSequenceExhausted(transport),
     );
     this.channelHost = {
       limits: hub.limits,
@@ -356,6 +356,29 @@ class HubConnectionImpl implements HubConnection {
 
   private sendControlChecked(message: ReplicationMessage): number {
     return this.outbound.sendControl(message);
+  }
+
+  /** §4.1 R3/#11：出站 uint32 耗尽（实践不可达）→ best-effort connection ERROR +
+   *  close(1008)（绕过出站队列直发——队列已耗尽；ERROR 帧以最后合法序列发送）。 */
+  private onSequenceExhausted(transport: DuplexTransport): void {
+    if (transport.closed) return;
+    try {
+      transport.send(
+        encodeMessage(connectionErrorFrame('CONNECTION_POLICY_VIOLATION'), {
+          sequence: 0xffffffff,
+          maxFrameBytes: this.hub.limits.maxFrameBytes,
+          limits: codecFieldLimits(this.hub.limits),
+        }),
+      );
+    } catch {
+      // best-effort；framing 已不可信
+    }
+    if (!transport.closed) {
+      transport.close(1008, 'sequence-exhausted');
+    }
+    this.closedFlag = true;
+    this.state = 'closed';
+    void this.cleanupAll();
   }
 }
 

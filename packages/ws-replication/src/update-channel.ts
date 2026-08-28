@@ -113,6 +113,7 @@ export class UpdateChannel {
 
   private sendAndRegister(bytes: Uint8Array): void {
     const seq = this.host.sendUpdateFrame(bytes);
+    if (seq <= 0) return; // F4：发送侧未出队（超限丢弃/连接已收口）→ 零 in-flight 幽灵登记
     this.inFlight.set(seq, bytes);
     this.armAckTimer();
   }

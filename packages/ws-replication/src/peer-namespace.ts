@@ -64,9 +64,6 @@ export class PeerNamespaceController {
   private pendingApplies = new Set<Promise<unknown>>();
   private pendingResync = false;
   private resyncDeclared = false;
-  /** 到达过 live（重连/恢复 round 的 reconcile 计时豁免——§13.3 重连修复语义；
-   *  初始回合仍受 §9.3 reconcile timeout 锚约束）。 */
-  private everBeenLive = false;
   private timers: Record<TimerKind, unknown | undefined> = {
     open: undefined,
     bootstrap: undefined,
@@ -142,7 +139,7 @@ export class PeerNamespaceController {
   startOpen(): void {
     if (this.intent !== 'active' || this.state !== 'targeted') return;
     this.setState('opening');
-    if (!this.everBeenLive) this.armTimer('open');
+    this.armTimer('open');
     void (async () => {
       let result: Awaited<ReturnType<NamespaceRegistry['open']>>;
       try {
@@ -243,7 +240,7 @@ export class PeerNamespaceController {
     const opened = await this.tryOpenReplicationSession();
     if (!opened) return;
     this.setState('reconciling');
-    if (!this.everBeenLive) this.armTimer('reconcile');
+    this.armTimer('reconcile');
     this.startRound();
   }
 
@@ -334,7 +331,7 @@ export class PeerNamespaceController {
         ackedSequence: message.sequence,
       });
       this.setState('reconciling');
-      if (!this.everBeenLive) this.armTimer('reconcile');
+      this.armTimer('reconcile');
       this.startRound();
     })();
   }
@@ -572,7 +569,6 @@ export class PeerNamespaceController {
 
   private onRoundSettled(): void {
     this.clearTimer('reconcile');
-    this.everBeenLive = true;
     if (this.pendingResync) {
       this.pendingResync = false;
       this.round.markLive();
@@ -613,7 +609,7 @@ export class PeerNamespaceController {
     if (this.channel.inFlightCount > 0) return; // §9.4：窗口收口后
     if (this.round.running) return;
     this.setState('reconciling');
-    if (!this.everBeenLive) this.armTimer('reconcile');
+    this.armTimer('reconcile');
     this.startRound();
   }
 

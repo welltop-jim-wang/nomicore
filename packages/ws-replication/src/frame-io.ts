@@ -84,6 +84,17 @@ export function namespaceFieldViolation(
   }
 }
 
+/** 出站 uint32 耗尽（§4.1 R3/#11 响亮收口钩子；实践不可达，防御面补齐）。
+ *  connection 级收口（ERROR + close 1008）由 OutboundQueue.onSequenceExhausted 回调执行；
+ *  本错误无 `.code`——调用方（控制器 sendChecked）按「非命名空间编码错」静默返回 0，
+ *  不再叠加 namespace ERROR（连接已收口）。 */
+export class OutboundExhaustedError extends Error {
+  constructor() {
+    super('outbound sequence reached 0xffffffff; connection must be closed');
+    this.name = 'OutboundExhaustedError';
+  }
+}
+
 /** 单方向出站队列：控制帧恒先；序列号在 dequeue 发送时单点分配（R3/#7）。 */
 export class OutboundQueue {
   private lastSeq = 0;
@@ -95,6 +106,7 @@ export class OutboundQueue {
   constructor(
     private readonly emitRaw: (bytes: Uint8Array, sequence: number) => void,
     private readonly limits: ResolvedLimits,
+    private readonly onSequenceExhausted: () => void = () => undefined,
   ) {}
 
   get lastSequence(): number {
@@ -160,11 +172,10 @@ export class OutboundQueue {
 
   private emitOne(message: ReplicationMessage): number {
     if (this.lastSeq >= 0xffffffff) {
-      // 出站 uint32 耗尽（实践不可达）：不回绕、不静默错序——响亮收口。
-      // 连接层捕获该错误并 close(1008)。
-      throw new Error(
-        'WIRE_SEQUENCE_EXHAUSTED: outbound sequence reached 0xffffffff; connection must be closed',
-      );
+      // 出站 uint32 耗尽（实践不可达）：不回绕、不静默错序——响亮收口（§4.1 R3/#11）：
+      // 触发连接层 best-effort connection ERROR + close(1008)；本出队不再发送。
+      this.onSequenceExhausted();
+      throw new OutboundExhaustedError();
     }
     const sequence = this.lastSeq + 1;
     const bytes = encodeMessage(message, {
