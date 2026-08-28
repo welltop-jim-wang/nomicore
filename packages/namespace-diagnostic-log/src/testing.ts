@@ -4,12 +4,15 @@
  * 本模块只服务测试（对齐 `@nomicore/clock/testing` 先例）——非生产路径；生产
  * 构造器的内部函数化（createMemoryLog options）是本子路径注入接缝的实现基础。
  */
-import { INTERNAL, createMemoryLog, nextDecimal } from './adapters/memory.js'
+import { FILE_INTERNAL, createFileLog } from './adapters/file.js'
+import type { FileDiagnosticLog, FileDiagnosticLogConfig, FileLogInternals } from './adapters/file.js'
+import { INTERNAL, createMemoryLog, nextDecimal, UINT64_MAX } from './adapters/memory.js'
 import type { BoundedMemoryDiagnosticLog, DiagnosticLogConfig } from './adapters/memory.js'
 import type { RandomSource } from './emission.js'
 import type { DiagnosticLogHealthEvent, DiagnosticLogHealthObserver } from './health.js'
 import type { DiagnosticChangeRecord } from './record.js'
 import type { MemoryLogInternals } from './adapters/memory.js'
+import { isCanonicalDecimal } from './storage-gate.js'
 
 export { nextDecimal }
 export { jcs, SnapshotContractViolation } from './canonical-json.js'
@@ -80,4 +83,36 @@ export function createBoundedMemoryDiagnosticLogPresetSequence(
   lastSequence: string,
 ): BoundedMemoryDiagnosticLog {
   return createMemoryLog(config, { presetLastSequence: lastSequence })
+}
+
+/**
+ * File adapter 直通接缝（§6.3；#148 injectFinalRecord 的 File 版）：
+ * 手工构造最终 record → storage projection 后半段（line 预算门 → VFSL 门 →
+ * storage 门 → 落盘）。不分配 sequence、不推进 lastSequence、不触碰 exhausted 门闩
+ * （无分配即无转换）；mode ≠ ready（disabled/failed/exhausted）→ 静默丢弃。
+ */
+export function injectFinalRecordFile(log: FileDiagnosticLog, record: DiagnosticChangeRecord): void {
+  const internals = (log as unknown as { [FILE_INTERNAL]?: FileLogInternals })[FILE_INTERNAL]
+  if (internals === undefined) throw new Error('injectFinalRecordFile: 非本包构造的 log 实例')
+  internals.appendFinal(record)
+}
+
+/**
+ * File adapter sequence 预置工厂（§6.3；exhausted 转换的 testing 接缝）。
+ *
+ * R2-1（SA2 实现期强制）：预置入参 loud 校验——须匹配 P_DECIMAL **且**小于
+ * UINT64_MAX（`nextDecimal` 对超域串静默进位 + `setBigUint64` 静默 mask；
+ * 预置 max 本身会使门闩检查失效——装配错误 loud 化，`createDeterministicRandomSource`
+ * 空字节序列 loud throw 的同型先例）。违规 throw。
+ */
+export function createFileDiagnosticLogPresetSequence(
+  config: FileDiagnosticLogConfig,
+  lastSequence: string,
+): FileDiagnosticLog {
+  if (!isCanonicalDecimal(lastSequence) || BigInt(lastSequence) >= BigInt(UINT64_MAX)) {
+    throw new Error(
+      `createFileDiagnosticLogPresetSequence: lastSequence 非法（须为无前导零十进制且 < ${UINT64_MAX}）：${lastSequence}`,
+    )
+  }
+  return createFileLog(config, { presetLastSequence: lastSequence })
 }

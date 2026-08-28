@@ -241,6 +241,16 @@ BIN-first 避免完整 JSONL 引用尚不存在的 frame，但崩溃可能留下
 
 默认周期 batch flush，不逐条 fsync；真正 fsync 可配置且默认关闭。write/flush完成不构成掉电持久性承诺。flush失败只改变日志健康，不影响业务。shutdown可best-effort drain，但不得无限等待日志 sink或阻塞Registry/Persistence停止。
 
+#### Amendment — File adapter first slice（2026-08-28，issue #152 round 2）
+
+本 ADR 上文「日志 adapter 提供有界、non-blocking emitter，内部每个 stream 同时最多一个逻辑 writer queue」及「默认周期 batch flush，不逐条 fsync；真正 fsync 可配置且默认关闭」两句，**在首切片 File adapter 的当前实现范围内被以下条款取代**：
+
+每个 `emit` 在调用栈内执行至多一条 final JSONL record 的有界同步 append；若其携带 sidecar，则额外执行至多一帧 BIN append，顺序为 BIN-first。该首切片不维护 writer queue、不做 batch flush、不提供 fsync 开关，也不保持常驻 file descriptor。同步 append 完成不构成 fsync 或掉电持久性承诺。
+
+此处「有界」仅指 adapter 主动处理的数据量与操作数量受配置 payload/line limits 和单-record/单-frame 范围限制；它**不**表示底层文件系统延迟有时间上界，亦不表示 `emit` 可在任意调用点不阻塞。**任何将 File adapter 的 `emit` 接入 namespace 生命周期的调用点，必须位于 NamespaceRuntime write sequencer slot 之外，或在该 slot 已释放之后；不得在 slot 内执行同步 File adapter `emit`。** 不满足该条件的接线为不合规，必须由 #149–#151/#155 或后续接线票修复后方可启用。本首切片 `emit` 保持 `void`、non-throwing、不得返回 durability promise，并以 catch-and-health-report 处理 adapter 故障（ADR 0011 emitter seam 不变）。
+
+queue/batch 是目标演进形态而非与首切片并列的当前要求：未来切片可在不改变 emitter 公共 seam、record schema、manifest policy 或上述 write-slot 隔离条件的前提下，以每 stream 至多一个逻辑 writer queue 替换同步 append，并采用有界队列、drop/health 语义和周期 batch flush；该切片须另行定义 close/shutdown、flush、队列满与 fsync 配置语义。**retention、queue 容量、batch/flush 策略、fd cache 与 metrics sampling 可动态调整**的既有条款对首切片继续成立（首切片未提供即可调整项，仅指未来切片）。
+
 ### Segment rolling 与耗尽
 
 JSONL/BIN作为一个segment group成对滚动，默认targets为：
@@ -318,6 +328,10 @@ replay不暴露live Y.Doc，只返回owned snapshot bytes与结构化报告：
 - **让manifest schema决定writer规则**：损坏或篡改manifest可改变运行时行为；writer只信任内建冻结schema。
 - **跨记录hash chain或签名**：会暗示防篡改审计与完整性保证，不符合best-effort定位。
 - **每条fsync或业务await日志append**：把observability延迟/故障引入业务提交路径。
+- **在不修订 ADR 的前提下把同步 append 称为现行 queue/batch 的实现细节**：文本会同时要求 queue/batch 和无 queue/batch，无法审计。
+- **允许同步 File adapter `emit` 在 namespace write slot 内执行**：慢文件系统仍可无限延长业务写槽，直接违反 ADR 0011/0008 的业务隔离。
+- **把「有界」解释成对磁盘 latency 的承诺**：文件系统延迟不可由 payload/line budget 限定。
+- **现在直接实现异步 queue/batch 以回避文本修订**：会引入内存—磁盘状态、关闭/flush/队列满和 EISDIR 恢复语义，超出首切片纪律（本 ADR 修订仅记录取舍，演进留后续切片）。
 - **自动修复中间损坏或从BIN重建JSONL**：无法恢复attempt、stage、issues与input等语义，会制造虚假连续性。
 
 ## 后果
@@ -328,6 +342,7 @@ replay不暴露live Y.Doc，只返回owned snapshot bytes与结构化报告：
 - manifest自描述有利于离线工具解释旧日志，代价是必须长期保留冻结dialect/schema reader。
 - retention默认有界，可能主动裁剪诊断历史并使replay不完整；reader必须诚实展示partial/failed。
 - writer、reader、frame codec、尾部恢复、retention和删除形成独立深模块；业务调用方只依赖semantic emitter，不学习JSONL/BIN布局。
+- **首切片取舍（2026-08-28 amendment）**：同步有界 append 保持同步可观察性、无常驻 fd——简化 EISDIR 占位恢复、消除内存—磁盘孪生状态；代价是调用方线程可能被文件系统延迟阻塞。因此只有 write-slot 外规范性接线可以保持 ADR 0011 的业务隔离；未来 queue/batch 切片可改善 producer 延迟，但必须独立设计其故障与寿命语义，且不得改变 emitter 公共 seam、record schema 或 manifest policy。
 
 ## 验收门槛
 
