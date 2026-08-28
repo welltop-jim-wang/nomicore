@@ -23,6 +23,7 @@ import {
 import type { NamespaceAuthorization } from './types.js';
 import { RoundAborted, RoundEngine } from './round-engine.js';
 import { UpdateChannel } from './update-channel.js';
+import type { DataSenderFacet } from './backpressure.js';
 import type {
   ReplicationTimer,
   ResolvedLimits,
@@ -53,6 +54,14 @@ export interface HubChannelHost {
     namespaceId: string,
   ) => Promise<NamespaceAuthorization>;
   sendControl(message: ReplicationMessage): number;
+  /** data 帧（UPDATE）发送路径（§6.3，issue #137）：连接级水位闸门 + data 出队。 */
+  sendData(namespaceId: string, bytes: Uint8Array): number;
+  /** 连接级 data 水位闸门（§4.2，issue #137）。 */
+  dataGateOpen(): boolean;
+  /** data 入队通知（§4.4 连接总压/wheel 登记，issue #137）。 */
+  onDataQueued(namespaceId: string): void;
+  /** 请求连接级 drain（§4.5，issue #137）。 */
+  requestDataDrain(): void;
   connectionFatal(code: string, wsCloseCode?: number): void;
 }
 
@@ -86,6 +95,22 @@ export class HubNamespaceChannel {
   readonly channel: UpdateChannel;
   readonly watchdog: FenceWatchdog;
   private readonly onOwnedBound: (bytes: Uint8Array) => void;
+
+  /** 连接级 data 调度面（§6.1/§6.3）：pull 以 state==='live' 为门槛；shed 按通道
+   *  live 性分派（live → declareHubResync 声明并等待；非 live → pendingResync）。 */
+  readonly sendFacet: DataSenderFacet = {
+    queuedBytes: () => this.channel.queuedBytes,
+    queuedCount: () => this.channel.queuedCount,
+    pullAndSendOne: () => (this.state === 'live' ? this.channel.pullAndSendOne() : false),
+    discardForConnectionPressure: () => {
+      this.channel.discardForConnectionPressure();
+      if (this.state === 'live') {
+        this.declareHubResync();
+      } else {
+        this.pendingResync = true;
+      }
+    },
+  };
 
   constructor(
     private readonly host: HubChannelHost,
@@ -128,6 +153,9 @@ export class HubNamespaceChannel {
       onAckTimeout: () => this.onAckTimeoutFired(),
       armTimer: (cb, ms) => host.timer.setTimeout(cb, ms),
       clearTimer: (h) => host.timer.clearTimeout(h),
+      dataGateOpen: () => this.host.dataGateOpen(),
+      onDataQueued: () => this.host.onDataQueued(this.namespaceId),
+      requestDataDrain: () => this.host.requestDataDrain(),
     });
     this.watchdog = new FenceWatchdog({
       role: 'hub',
@@ -631,11 +659,12 @@ this.startBootstrap(hubIdentity);
     if (bytes.byteLength > this.host.limits.maxUpdateBytes) {
       return 0; // 由恢复 round 的 state-vector diff 修复（§10.1 镜像语义）
     }
-    return this.sendChecked({
-      kind: 'UPDATE',
-      namespaceId: this.namespaceId,
-      update: bytes,
-    });
+    try {
+      // §6.3 R2（SA2 #7）：see peer-namespace.sendUpdateFrame——异常统一收敛返回 0 → F4。
+      return this.host.sendData(this.namespaceId, bytes);
+    } catch {
+      return 0;
+    }
   }
 
   private async applyStep2(update: Uint8Array, step2Sequence: number): Promise<'ok' | 'aborted'> {

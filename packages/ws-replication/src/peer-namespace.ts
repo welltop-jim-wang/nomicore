@@ -22,6 +22,7 @@ import {
 } from './error-mapping.js';
 import { RoundAborted, RoundEngine } from './round-engine.js';
 import { UpdateChannel } from './update-channel.js';
+import type { DataSenderFacet } from './backpressure.js';
 import type {
   PeerNamespaceState,
   ReplicationTarget,
@@ -39,6 +40,14 @@ export interface PeerNamespaceHost {
   readonly hubInstanceId: string;
   /** 控制面帧（含 UPDATE——单 ns 场景直发路径）；返回分配帧序。 */
   sendControl(message: ReplicationMessage): number;
+  /** data 帧（UPDATE）发送路径（§6.3，issue #137）：连接级水位闸门 + data 出队。 */
+  sendData(namespaceId: string, bytes: Uint8Array): number;
+  /** 连接级 data 水位闸门（§4.2，issue #137）。 */
+  dataGateOpen(): boolean;
+  /** data 入队通知（§4.4 连接总压/wheel 登记，issue #137）。 */
+  onDataQueued(namespaceId: string): void;
+  /** 请求连接级 drain（§4.5，issue #137）。 */
+  requestDataDrain(): void;
   /** 本端连接致命（ACK_STATE_VIOLATION 等）：connection ERROR + close + blocked。 */
   connectionFatal(code: string, wsCloseCode?: number): void;
   /** 连接代际（每次拨号 +1）：异步续体以此判别「连接已断/已重建」的迟到性（§13.4）。 */
@@ -79,6 +88,23 @@ export class PeerNamespaceController {
   readonly channel: UpdateChannel;
   readonly watchdog: FenceWatchdog;
   private readonly onOwnedBound: (bytes: Uint8Array) => void;
+
+  /** 连接级 data 调度面（§6.1/§6.3）：pull 以 state==='live' 为门槛（deferred 队列
+   *  仅在 resetForLive 后经 drain 放行——与 #136「flushQueued 只从 onAck/resetForLive
+   *  调用」的 live 门逐语义等价）；shed 按通道 live 性分派 §10.2 同构处置。 */
+  readonly sendFacet: DataSenderFacet = {
+    queuedBytes: () => this.channel.queuedBytes,
+    queuedCount: () => this.channel.queuedCount,
+    pullAndSendOne: () => (this.state === 'live' ? this.channel.pullAndSendOne() : false),
+    discardForConnectionPressure: () => {
+      this.channel.discardForConnectionPressure();
+      if (this.state === 'live') {
+        this.declareLocalResync();
+      } else {
+        this.pendingResync = true;
+      }
+    },
+  };
 
   constructor(
     private readonly host: PeerNamespaceHost,
@@ -121,6 +147,9 @@ export class PeerNamespaceController {
       onAckTimeout: () => this.onAckTimeoutFired(),
       armTimer: (cb, ms) => host.timer.setTimeout(cb, ms),
       clearTimer: (h) => host.timer.clearTimeout(h),
+      dataGateOpen: () => this.host.dataGateOpen(),
+      onDataQueued: () => this.host.onDataQueued(this.namespaceId),
+      requestDataDrain: () => this.host.requestDataDrain(),
     });
     this.watchdog = new FenceWatchdog({
       role: 'peer',
@@ -716,11 +745,15 @@ export class PeerNamespaceController {
       // 发送侧超限：丢弃并由 round diff 修复（§5.3 丢弃安全性论证）
       return 0;
     }
-    return this.sendChecked({
-      kind: 'UPDATE',
-      namespaceId: this.namespaceId,
-      update: bytes,
-    });
+    try {
+      // §6.3 R2（SA2 #7）：sendChecked 同款 try/catch 明确覆盖 host.sendData——
+      // OutboundExhaustedError（uint32 耗尽已由 onSequenceExhausted 先行收口连接）
+      // 与编码错统一收敛为返回 0 → F4 消费即丢弃。任何异常不得穿越
+      // drainData/onAck/onMessage/timer 回调栈成为 uncaught。
+      return this.host.sendData(this.namespaceId, bytes);
+    } catch {
+      return 0;
+    }
   }
 
   private async applyStep2(update: Uint8Array, step2Sequence: number): Promise<'ok' | 'aborted'> {
