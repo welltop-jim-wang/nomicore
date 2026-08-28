@@ -732,6 +732,10 @@ describe('AC-2 窄能力六项与不暴露内部句柄（ADR 0010 L81–88）', 
     expect(diff.length).toBeGreaterThan(0);
     const replay1 = replayDelta(remoteView, diff);
     expect(replay1.getMap('ROOT').get('n')).toBe(8);
+    // R2.2 发现 1（SA1 裁决 2 授权，§15.3-3）：异步 fanout 的交付集 = 交付时刻 listener
+    // 快照（§4.2 要点 8 at-least-once——晚订阅者可收到订阅前入队项）——排空步骤 ② 写
+    // （n→8）的入队积压，使锚回到「订阅先于写」时序域；断言语义零变化。
+    await flushMicrotasks();
 
     // ③ owned 订阅：本地写投递 owned bytes（应用到写前副本=ext 7）；unsubscribe 后不再投递
     const received: Uint8Array[] = [];

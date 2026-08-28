@@ -329,6 +329,10 @@ describe('R2-3 fanout 投递非阻塞（owned bytes 复制 + 有界异步队列 
     expect(w.ok).toBe(true);
     expect(doc.getMap('ROOT').get('n')).toBe(5); // transaction 已返回（先于慢 listener 完成的证明面）
     expect(elapsed, `mutateRoot 槽被慢 listener 同步阻塞（耗时 ${Math.round(elapsed)}ms ≥ 400ms）`).toBeLessThan(250);
+
+    // R2.2 发现 2 / 裁决 3(a)（§4.3(d) 测试隔离义务）：spin fixture 收尾——close 终止
+    // channel + 清队 ⇒ 自延伸泵于下一让步点退出，零跨测试泄漏（断言零改动）
+    await session1.close();
   });
 
   it('慢 listener 不阻塞 apply 槽与后续 sequencer 槽 settle（跨 channel——回声抑制面）【必红】', async () => {
@@ -357,6 +361,11 @@ describe('R2-3 fanout 投递非阻塞（owned bytes 复制 + 有界异步队列 
     const t3 = performance.now();
     expect(w.ok).toBe(true);
     expect(t3 - t2, `后续 sequencer 槽被慢 listener 同步阻塞（耗时 ${Math.round(t3 - t2)}ms）`).toBeLessThan(250);
+
+    // R2.2 发现 2 / 裁决 3(a)（§4.3(d) 测试隔离义务）：spin fixture 收尾——两 session
+    // 均 close（B 为慢泵源、A 为 apply 源），终止 channel + 清队，零跨测试泄漏
+    await sessionA.close();
+    await sessionB.close();
   });
 
   it('溢出可观测：慢消费者 + 突发写 → 该 channel 标 needs-resync；突发槽零阻塞（ADR 0010 L113）【必红】', async () => {
@@ -380,6 +389,10 @@ describe('R2-3 fanout 投递非阻塞（owned bytes 复制 + 有界异步队列 
     expect(status.needsResync, '慢消费者突发投递后未见 needs-resync 可观测标记（队列溢出契约）').toBe(true);
     // ② 投递零阻塞：64 个槽的总耗时远小于同步阻塞下的 64×15ms（当前 ≈ 960ms+）
     expect(elapsed, `突发 64 槽总耗时 ${Math.round(elapsed)}ms——槽被同步阻塞`).toBeLessThan(400);
+
+    // R2.2 发现 2 / 裁决 3(a)（§4.3(d) 测试隔离义务）：spin fixture（15ms 同款义务）
+    // 收尾——close 终止 channel + 清队（含溢出遗留排队项），零跨测试泄漏
+    await session1.close();
   });
 });
 

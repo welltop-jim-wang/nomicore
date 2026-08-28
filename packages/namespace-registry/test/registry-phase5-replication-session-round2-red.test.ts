@@ -386,7 +386,9 @@ describe('R2-5 lease release hostile seam（ADR 0009 L42/L150 + 修订节 L246�
     return core;
   }
 
-  /** 全形冻结 status 产物（敌意 core 的 getStatus 默认/分叉值——类型面完整，零缺字段）。 */
+  /** 全形冻结 status 产物（敌意 core 的 getStatus 默认/分叉值——类型面完整，零缺字段）。
+   *  §15.3-1（R2.2 同步清单）：ReplicationSessionStatus 增第 11 字段 needsResync
+   *  （ADR 0010 L113 溢出标记）——fixture 类型面同步，断言本体零改动。 */
   function makeHostileStatus(
     overrides: { state?: 'open' | 'closed' | 'conflicted' } = {},
   ): Readonly<ReplicationSessionStatus> {
@@ -401,6 +403,7 @@ describe('R2-5 lease release hostile seam（ADR 0009 L42/L150 + 修订节 L246�
       rootValidation: 'none',
       durability: Object.freeze({ memoryCaughtUp: false, diskCaughtUp: false as const }),
       observerFailures: 0,
+      needsResync: false,
     });
   }
 
