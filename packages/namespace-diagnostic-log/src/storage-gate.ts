@@ -9,6 +9,23 @@
 import { decodeBase64Strict } from './carrier.js'
 import { crc32cHex } from './crc32c.js'
 import { FRAME_HEADER_BYTES, frameCrcOf } from './frame.js'
+import { P_DECIMAL } from './schema-patterns.js'
+
+const RE_P_DECIMAL = new RegExp(P_DECIMAL)
+
+/**
+ * P_DECIMAL 的 JS 正则镜像（单源：schema-patterns.ts 冻结常量）。
+ * 实证（2026-08-28 运行时核验，SA4 报告 §2.3 + 本报告裁决 2）：vfsl Pattern 引擎的
+ * match 语义为「非锚定搜索 + 前缀匹配」且 alternation codegen 的 jmp 目标有缺陷
+ * （`'a|b'` 接受 `'ab'`），`^(0|[1-9][0-9]*)$` 对 `''`/`'01'`/`'0123'` 返回 true——
+ * 前导零/空串十进制不会被 VFSL 层拒绝。设计 §7.1 B（P_DECIMAL 拒 '01' 的落点）由
+ * 本层以冻结常量复核实现——reader（sequence 与 sidecar frameOffset 两消费面）与
+ * writer 注入门共用，零扩码。不依赖 BigInt 解析兜底（Node 20/24 的 `BigInt('')`
+ * 行为分歧——先镜像、后解析）。
+ */
+export function isCanonicalDecimal(value: string): boolean {
+  return value !== '' && RE_P_DECIMAL.test(value)
+}
 
 /** storage 层 issue code（reader 23 码词表中 storage/frame 交叉面；SA6 词表边界逐字）。 */
 export type StorageIssueCode =

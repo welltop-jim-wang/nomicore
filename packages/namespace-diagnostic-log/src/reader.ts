@@ -14,8 +14,8 @@ import { join } from 'node:path'
 import { validateLogicalSnapshot } from '@nomicore/vfsl'
 import { isSafeNamespaceId, isSafeStreamId, isSegmentName, streamLayoutPaths } from './paths.js'
 import { RECORD_SCHEMA_ENVELOPE, RECORD_SCHEMA_ID, getRecordSchemaCompilation } from './schema.js'
-import { P_DECIMAL, P_ISO_MS } from './schema-patterns.js'
-import { validateInlineCarrier, validateSidecarFrame } from './storage-gate.js'
+import { P_ISO_MS } from './schema-patterns.js'
+import { isCanonicalDecimal, validateInlineCarrier, validateSidecarFrame } from './storage-gate.js'
 import type { UpdateCarrier } from './record.js'
 
 /** 读取请求（路径三组件；streamId/namespaceId 过安全文法后才会触达磁盘——§7.1 ①）。 */
@@ -71,14 +71,6 @@ const INCOMPATIBLE_SET = new Set([
 ])
 
 const RE_ISO_MS = new RegExp(P_ISO_MS)
-/**
- * P_DECIMAL 的 JS 正则镜像（单源：schema-patterns.ts 冻结常量）。
- * 实证（2026-08-28 运行时核验）：vfsl Pattern 引擎的 match 语义为「非锚定搜索 +
- * 前缀匹配」（pattern.ts 头注），`^(0|[1-9][0-9]*)$` 对 '01' 返回 true——
- * 前导零序列不会被 VFSL 层拒绝。设计 §7.1 B 的落点（「P_DECIMAL 拒 '01'」）由
- * reader 在本层以冻结常量复核实现（只补 VFSL 引擎的模式语义缺口，零扩码）。
- */
-const RE_P_DECIMAL = new RegExp(P_DECIMAL)
 
 /** manifest 恰 14 键（§2.2 键集精确；多余键/缺失键均拒——G8 严格形）。 */
 const MANIFEST_KEYS = [
@@ -322,6 +314,10 @@ export function readStreamStrict(request: StrictReadRequest): StrictStreamRead {
       carrier: UpdateCarrier & { storage: 'sidecar' },
       sequence: string,
     ): string | null => {
+      // R-1（SA4 R1 reject）：frameOffset 是 P_DECIMAL 的第二个消费面——同层镜像复核
+      // （前导零/空串/非十进制字面 → record 级 vfsl-invalid，与 sequence 补齐同层同码；
+      // 先镜像后解析——不依赖 BigInt('') 的 Node 20/24 行为分歧）。
+      if (!isCanonicalDecimal(carrier.frameOffset)) return 'vfsl-invalid'
       if (!segmentSet.has(carrier.segment)) return 'reference-invalid'
       let bytes = bins.get(carrier.segment)
       if (bytes === undefined) {
@@ -370,9 +366,10 @@ export function readStreamStrict(request: StrictReadRequest): StrictStreamRead {
         }
         const sequence = sequenceStringOf(parsed)
         const vfsl = validateLogicalSnapshot(compiled.derived, parsed)
-        // P_DECIMAL 前导零复核（见 RE_P_DECIMAL 注：VFSL 引擎前缀语义放行 '01'——
-        // 设计 §7.1 B 把「无前导零十进制纪律」归 VFSL 层，本层以冻结常量实现同一落点）
-        const sequenceShaped = sequence !== '' && RE_P_DECIMAL.test(sequence)
+        // P_DECIMAL 前导零/空串复核（见 isCanonicalDecimal 注：VFSL 引擎 alternation
+        // 语义放行 '01'/''——设计 §7.1 B 把「无前导零十进制纪律」归 VFSL 层，本层以
+        // 冻结常量镜像实现同一落点；sequence 面）
+        const sequenceShaped = isCanonicalDecimal(sequence)
         if (!vfsl.ok || !sequenceShaped) {
           const issue: StrictReadIssue = { code: 'vfsl-invalid', segment, offset: i, ...(sequence !== '' ? { sequence } : {}) }
           records.push({ ok: false, record: parsed, sequence, issues: [issue] })

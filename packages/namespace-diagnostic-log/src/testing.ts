@@ -12,9 +12,7 @@ import type { RandomSource } from './emission.js'
 import type { DiagnosticLogHealthEvent, DiagnosticLogHealthObserver } from './health.js'
 import type { DiagnosticChangeRecord } from './record.js'
 import type { MemoryLogInternals } from './adapters/memory.js'
-import { P_DECIMAL } from './schema-patterns.js'
-
-const RE_P_DECIMAL = new RegExp(P_DECIMAL)
+import { isCanonicalDecimal } from './storage-gate.js'
 
 export { nextDecimal }
 export { jcs, SnapshotContractViolation } from './canonical-json.js'
@@ -111,7 +109,7 @@ export function createFileDiagnosticLogPresetSequence(
   config: FileDiagnosticLogConfig,
   lastSequence: string,
 ): FileDiagnosticLog {
-  if (!RE_P_DECIMAL.test(lastSequence) || BigInt(lastSequence) >= BigInt(UINT64_MAX)) {
+  if (!isCanonicalDecimal(lastSequence) || BigInt(lastSequence) >= BigInt(UINT64_MAX)) {
     throw new Error(
       `createFileDiagnosticLogPresetSequence: lastSequence 非法（须为无前导零十进制且 < ${UINT64_MAX}）：${lastSequence}`,
     )

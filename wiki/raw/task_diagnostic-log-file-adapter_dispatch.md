@@ -15,3 +15,5 @@
 | 11 | 18:42 | SA6 | Phase 3 契约修订 | 18:46 | SA3 实证唯一条红=SA6 断言自相矛盾（genesis-results:90 对 fatal 记录断言 committed）；总控复核属实（record.ts:99 + 同文件:91 + 上下文），续传 SA6 一行修订（7dcb9aad） |
 | 12 | 18:46 | 总控 | 亲跑绿灯确认 | 18:46 | npx vitest run --typecheck 包级：18 文件 252 测试全绿，Type Errors 0（.mabf-bg/ctl-green.log，exit 0） |
 | 13 | 18:47 | SA4 | Phase 3 静态验尸 | (pending) | 红灯全绿已亲验，进入静态评审 |
+| 14 | 18:56 | SA4 | Phase 3 静态验尸 R1 | 19:03 | verdict=reject：R-1 frameOffset 前导零/空串未镜像（PoC 假 ok 实证）+ R-2 writer 注入门无镜像 + R-3 P_BASE64 字面量重打；全部 ≤10 行 SA3 lane 修复 |
+| 15 | 19:03 | SA3 | Phase 3 R 修复轮 | (pending) | 续传 SA3 修 R-1/R-2/R-3（25c2439e）；vfsl alternation codegen 根因另案备案（DENY LIST 外） |

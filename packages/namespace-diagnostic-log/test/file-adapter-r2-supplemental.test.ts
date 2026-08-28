@@ -307,3 +307,77 @@ describe('R2 补充（#6 + 实现期备注 1）：injectFinalRecordFile 门序�
     expect(existsSync(streamPaths(root, 'ns-r2-inject-trap', log.streamId).jsonlPath)).toBe(false)
   })
 })
+
+describe('R 修复轮（SA4 R1 reject 落地）：P_DECIMAL 镜像第二消费面（frameOffset）与 writer 注入门对称', () => {
+  function sidecarResult(overrides: Record<string, unknown>): Record<string, unknown> {
+    return {
+      kind: 'committed',
+      effect: 'update',
+      update: { storage: 'sidecar', format: 'yjs-update-v1', segment: '00000001', frameOffset: '0', payloadLength: 100, crc32c: '00000000', ...overrides },
+    }
+  }
+
+  it('R-1a：frameOffset "0125"（前导零）→ corrupt + record 级 vfsl-invalid（不再判 ok）', () => {
+    const root = freshRoot()
+    const p100 = patternedBytes(100)
+    const bin = concatU8(encodeFrame(1, p100), encodeFrame(2, p100))
+    const rec1 = validAttemptRecord(STREAM, '1', {
+      result: sidecarResult({ frameOffset: '0', crc32c: crc32cHex(p100) }),
+    })
+    const rec2 = validAttemptRecord(STREAM, '2', { result: sidecarResult({ frameOffset: '0125' }) })
+    writeStreamFixture(root, NS, STREAM, { jsonlLines: [rec1, rec2], bin })
+
+    const read = readStreamStrict({ rootDir: root, namespaceId: NS, streamId: STREAM })
+    expect(read.status).toBe('corrupt')
+    expect(read.records[0]!.ok).toBe(true) // 规范首帧照常
+    expect(read.records[1]!.ok).toBe(false)
+    expect(issueCodes(read.records[1]!.issues)).toContain('vfsl-invalid')
+  })
+
+  it('R-1b：frameOffset ""（空串）→ corrupt + record 级 vfsl-invalid（不依赖 BigInt("") 行为分歧）', () => {
+    const root = freshRoot()
+    const rec = validAttemptRecord(STREAM, '1', { result: sidecarResult({ frameOffset: '' }) })
+    writeStreamFixture(root, NS, STREAM, { jsonlLines: [rec], bin: encodeFrame(1, patternedBytes(100)) })
+
+    const read = readStreamStrict({ rootDir: root, namespaceId: NS, streamId: STREAM })
+    expect(read.status).toBe('corrupt')
+    expect(read.records[0]!.ok).toBe(false)
+    expect(issueCodes(read.records[0]!.issues)).toContain('vfsl-invalid')
+  })
+
+  it('R-2a：注入 sequence "01" → storage-validation-failed/vfsl-invalid + 零落盘', () => {
+    const root = freshRoot()
+    const { log, events } = makeFileLog({ rootDir: root, namespaceId: 'ns-r2-inject-seq' })
+    injectFinalRecordFile(log, validAttemptRecord(log.streamId, '01') as never)
+
+    expect(eventsOfType(events, 'storage-validation-failed')[0]).toMatchObject({
+      type: 'storage-validation-failed',
+      recordKind: 'attempt',
+      code: 'vfsl-invalid',
+    })
+    expect(existsSync(streamPaths(root, 'ns-r2-inject-seq', log.streamId).jsonlPath)).toBe(false)
+  })
+
+  it('R-2b：注入 sidecar frameOffset "01"（前导零）→ storage-validation-failed/vfsl-invalid + 零落盘', () => {
+    const root = freshRoot()
+    const { log, events } = makeFileLog({ rootDir: root, namespaceId: 'ns-r2-inject-off' })
+    injectFinalRecordFile(
+      log,
+      validAttemptRecord(log.streamId, '1', { result: sidecarResult({ frameOffset: '01', payloadLength: 4097 }) }) as never,
+    )
+
+    expect(eventsOfType(events, 'storage-validation-failed')[0]).toMatchObject({
+      type: 'storage-validation-failed',
+      recordKind: 'attempt',
+      code: 'vfsl-invalid',
+    })
+    expect(existsSync(streamPaths(root, 'ns-r2-inject-off', log.streamId).jsonlPath)).toBe(false)
+  })
+})
+
+function concatU8(a: Uint8Array, b: Uint8Array): Uint8Array {
+  const out = new Uint8Array(a.byteLength + b.byteLength)
+  out.set(a, 0)
+  out.set(b, a.byteLength)
+  return out
+}
