@@ -23,4 +23,6 @@
 | 13 | 00:27 | SA3 | Phase 3 回流修复 R2 | 00:30 | SA4 reject 回流（一次收敛）：F1 一行修复（操作数互换，gate 先行）+ 固定复验范围，续传原 SA3 会话；commit 8f9751e（1 文件 5+/1−），vitest 77/77 + tsc + E5 复现脚本转绿，exit 码落盘核验 |
 | 14 | 00:30 | SA4 | Phase 3 静态验尸 R2（固定范围） | 00:33 | SA3 F1 修复落盘，续传原 SA4 会话按固定复验范围复审；verdict: pass（最终）——diff 恰一行互换、三件证据 SA4 独立复跑吻合、零新阻断项；回流一轮收敛 |
 | 15 | 00:33 | SA7 | Phase 4 动态验证 | 01:33 | SA4 pass，派 SA7 动态验证；verdict: pass（D1–D5 全绿 + 四红锚复证 + 84/84 两轮 + tsc exit 0；新增 7 IT commit 98ffafc；CI log 摘录因 push 禁令登记为发布后可得；N1/N2 非阻断留痕） |
-| 16 | 01:33 | 总控 | Phase 3.5 AC 逐条门禁 | (pending) | SA4+SA7 双清，总控按 issue AC 逐条核对证据（不重复执行套件） |
+| 16 | 01:33 | 总控 | Phase 3.5 AC 逐条门禁 | 01:35 | SA4+SA7 双清，总控按 issue AC 逐条核对证据（不重复执行套件）；AC-1~AC-7 全部 ✅，产出 ac_checklist.md；wiki 任务档案 commit 179495b |
+| 17 | 01:35 | Review×2 | Phase 5 双轴终审（Standards ∥ Spec） | Standards 02:01 / Spec 02:06 | 硬门禁 #4：engineering/code-review skill，两个并行独立 review subagent（generic subagent 同模型路由），diff 6f2676f..179495b；Standards verdict: blocking-findings（恰 1 阻断 B1：onGoaway blocked 直达路径缺 sender teardown + 7 非阻断）；Spec verdict: clear（AC 逐条 ✅，3 非阻断留痕） |
+| 18 | 02:06 | SA3 ∥ SA1 | Phase 5 终审修复轮 | SA1 02:08 / SA3 (pending) | repair-and-repeat：B1 代码修复（SA3：一行 teardown + D5 变体用例）∥ 设计 §8 表述对齐（SA1，R4 落文 4 处：blocked 双入口 teardown 义务 + B-2 墓碑边界 + B-8 N-2/N-3 登记 + §4.5 注记 a 指针） |

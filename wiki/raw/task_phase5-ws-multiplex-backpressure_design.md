@@ -318,7 +318,9 @@ drainData():                      // 触发点：① 水位恢复 ② onAck 窗�
 - **调度细节注记（R2 成文，SA2 #8 / I-1 注记 a·b·c）**：
   a. **共存窗口带宽分享**：恢复窗口内「热 ns 新写直发」与「积压 ns 排队 drain」共享恢复带宽——
      每个排队 ns 每轮必得一帧（非饥饿），但逐帧交错不承诺；共存窗口的带宽分享由水位闸门兜底
-     （直发路径同样逐帧前置观察，超 highWater 过冲有界 ≤ 1 帧/方向）。
+     （直发路径同样逐帧前置观察，超 highWater 过冲有界 ≤ 1 帧/方向）。**（R4 注）边界建模措辞**：
+     直发路径双读闸门微窗口下，实现面实测为 **F4 丢弃**而非「发出」——该边界差异登记于
+     §15 B-8（终审 N-3 回流），有界且属 F4 sanctioned 族，下轮修订对齐措辞或接受「丢弃」为定案。
   b. **wheel 移除的游标偏移**：pass 内移除元素（facet 消失/队列清空）会使旋转游标在本次 pass 内
      跳过一邻位（经典下标偏移）——pass 内公平轻微偏斜、无跨 pass 饥饿；实现可选择「移除时不
      前移游标」消除偏斜（等价于重索引，非规范性要求，SA3 二选一即可）。
@@ -505,7 +507,7 @@ export const BACKPRESSURE_POLL_INTERVAL_MS = 1_000;   // §1.3-3：≤30s 假设
 |---|---|
 | dial/accept（连接建立） | 新建 sender（clean：!paused、额度 0、空 wheel、无 timer） |
 | 水位暂停进入/退出 | arm/clear poll timer（唯一新增 timer 面；仅暂停段存活） |
-| peer stop()/GOAWAY 收口、blocked、temporary failure、rebuild | `sender.teardown()`（清 timer + wheel + 复位）——重拨/重建由新 sender 接管 |
+| peer stop()/GOAWAY 收口、blocked、temporary failure、rebuild | `sender.teardown()`（清 timer + wheel + 复位）——重拨/重建由新 sender 接管。**（R4 明示，终审 B1）blocked 的两个入口均承担 teardown 义务**：① 公共 `enterBlocked()` 路径；② onGoaway `SERVER_SHUTTING_DOWN`/`REAUTH_REQUIRED` **直达 `setState('blocked')` 分支（`peer-connection.ts:362-371`，不经 enterBlocked）——与 scheduleDrainClose 路径同型，setState 前补 `sender.teardown()`**（否则该直达分支成为矩阵唯一缺口：已武装 poll timer 在 stale getter 上周期性重武装直至下次 dialNow）。 |
 | **（R2 补行，SA2 #6）** peer GOAWAY `SERVER_RESTARTING` 等 → `scheduleDrainClose()` 本地 close（FSM 停留 ready、无重拨编排，`peer-connection.ts:357-365`） | close 前补 `sender.teardown()`——清除已武装 poll timer，杜绝「stale getter 上 1s 周期性重武装直至下次 dialNow 换 sender」；即便 stale fire 到达（防御面）：teardown 后 `pollHandle` 恒 undefined，回调对已收口连接零副作用且**不重武装** |
 | hub close()/transport closed/connectionFatal | 同上 |
 | 停机顺序（§21） | 无新依赖：sender teardown 不 await 任何 Runtime/Lease/Registry；drain 不在 sequencer 槽内（协议 §17「不进入 Runtime sequencer」） |
@@ -638,12 +640,13 @@ catch 重抛 / 可空性翻转）均不命中。
 | # | 项 | 风险/代价 | 缓解 | 演进位 |
 |---|---|---|---|---|
 | B-1 | 合并策略钉死「queued>avail 才合并」 | 单 ns 窗口大开时的批量带宽优化被刻意放弃（换 AC-4 逐笔交错锚点） | 两红锚唯一共同解；§5 语义论证 | 切片 10 可按负载画像复议（需同步 SA6 锚点修订） |
-| B-2 | 保留额度 = lowWater 的量化选择 | 额度过小：大 Step2 在压力下即刻触发 1011；过大：backpressure 失控缓冲膨胀。**完整风暴闭环（R2 补全，SA2 #10/I-3.4）**：慢消费者 + 大 diff——重连 → reconcile → Step2（≤2MiB 控制帧不经闸门）灌满出站缓冲 → 下一控制帧观察点进入暂停 → 后续 Step2/ACK 计入额度 → 耗尽 → 1011 → 重连 → 同一 diff 再 Step2……周期循环，每循环白传 ≤ 2MiB；**终止条件**：唯一出口是对端恢复读取 socket（bufferedAmount 降档 → poll 恢复 → drain）；backoff baseMs=100→maxMs=30s 全抖动（defaults.ts:40-44）使重连尝试收敛、不放大为风暴——协议字面如此（reserve 耗尽 = 分类失败），非设计缺陷 | 按缺省 64KiB：小 ACK（~40B）≈ 1600+ 帧余量（§4.3 R2 谓词）；1011 retryable（backoff + jitter 收敛）。**运维下界指导（R2，SA2 #3b；R3 补注 7.4-3）**：期望「暂停期控制面存活 / reconcile 期 Step2 不瞬断」的部署应使 `lowWater ≥ maxSyncDiffBytes`——**该指导下 highWater 须同步上调**（validate `lowWater < highWater`，只调一端在构造期 TypeError；数据闸门阈值随之变大属预期代价）；`lowWater=1` 等合法极端 = 暂停段首控制帧即 1011（§4.3 R2 显式接受） | 切片 8 观测数据后按需调参（届时需公共契约增字段 = Jim 裁决） |
+| B-2 | 保留额度 = lowWater 的量化选择 | 额度过小：大 Step2 在压力下即刻触发 1011；过大：backpressure 失控缓冲膨胀。**完整风暴闭环（R2 补全，SA2 #10/I-3.4）**：慢消费者 + 大 diff——重连 → reconcile → Step2（≤2MiB 控制帧不经闸门）灌满出站缓冲 → 下一控制帧观察点进入暂停 → 后续 Step2/ACK 计入额度 → 耗尽 → 1011 → 重连 → 同一 diff 再 Step2……周期循环，每循环白传 ≤ 2MiB；**终止条件**：唯一出口是对端恢复读取 socket（bufferedAmount 降档 → poll 恢复 → drain）；backoff baseMs=100→maxMs=30s 全抖动（defaults.ts:40-44）使重连尝试收敛、不放大为风暴——协议字面如此（reserve 耗尽 = 分类失败），非设计缺陷 | 按缺省 64KiB：小 ACK（~40B）≈ 1600+ 帧余量（§4.3 R2 谓词）；1011 retryable（backoff + jitter 收敛）。**运维下界指导（R2，SA2 #3b；R3 补注 7.4-3）**：期望「暂停期控制面存活 / reconcile 期 Step2 不瞬断」的部署应使 `lowWater ≥ maxSyncDiffBytes`——**该指导下 highWater 须同步上调**（validate `lowWater < highWater`，只调一端在构造期 TypeError；数据闸门阈值随之变大属预期代价）；`lowWater=1` 等合法极端 = 暂停段首控制帧即 1011（§4.3 R2 显式接受）。**（R4 补入，SA7 N2 回流）F4 丢弃的 round-repair 边界（含墓碑尺寸）**：被弃超限项的 yjs item 成为同链后续合法 delta 的 left-origin——合法帧可正常上 wire 并获 ACK，但对端 integrate 依赖 item-chain 完整性，值收敛需 state-vector round diff 修复；且修复 diff 含被弃项墓碑内容，若 `maxUpdateBytes < 单笔真实增量（含删除墓碑）` 则修复 diff 自身同样超限——不可依赖「后续合法项/单次 round」承载修复（动态实证见 SA7 报告 D4/E5）。运维同域指导：`maxUpdateBytes` 应 ≥ 单笔真实增量（含墓碑），使该形态留在配置病理面（协议 §17「配置保证单笔必可发送」既定边界内） | 切片 8 观测数据后按需调参（届时需公共契约增字段 = Jim 裁决） |
 | B-3 | cap < 单笔 update 的配置病理（round 抖动） | §4.4 边界语义段 | 有界内存/一致性保持；运维指导：cap ≥ maxQueuedUpdateBytes | 切片 10 复议是否入 validate（需协议 §17 清单增补） |
 | B-4 | 总压求和 O(ns)/入队 | 每 data 入队一次线性求和 | v1 规模可忽略；正确性优先 | 「每连接最大 channel 数」上限（ADR 0010 L165）落地时一并增量化 |
 | B-5 | 恢复延迟 = poll 间隔（1s） | data 恢复最多迟一个间隔 | 间隔内 control 不受影响；ACK/业务时序不受闸门影响 | 真实 WS Adapter（切片 7 其余）可接 drain event 事件化（届时替换 poll） |
 | B-6 | #136 R-13（sendControl ready 门以 connState 判定） | **R2 状态更新（SA2 #2）**：本任务已部分收口——peer 收口 ERROR（connectionFatal 等三路径）改直发绕过 ready 门（§6.3 R2），handshaking 期 fatal 的 best-effort ERROR 义务已落实；残留面 = 非收口控制器帧仍以 connState 判定（B-2e 重建语义保留） | §10 行 9 登记 delta（73 IT 零触及，已核实）；SA7 F2 锚定 | 剩余精确化（按 epoch 判定）维持 #136 登记：切片 7 真实 WS 适配层一并处理 |
 | B-7（R2 新增，SA2 #11） | 生产 adapter 忘接 `bufferedAmount` 属性 → 背压静默失效、无检测面 | 慢消费者场景缺水位闸门保护；per-ns/连接记账三层上限（§11.3）仍有效，内存不失控 | §4.2 R2 已登记契约行为定性（非伪降级） | 切片 7：adapter 启动自检（首读探测「属性在位」+ 日志/metrics 暴露——切片 8 观测面） |
+| B-8（R4 新增，终审 Spec 非阻断留痕 N-2/N-3 回流——下轮设计修订输入） | **N-2**：`onAck` drain 触发条件实现仅判 `queued.length > 0`（差「inFlight 空位」合取项）——窗口满时 requestDataDrain → pullAndSendOne 前置③（先于闸门检查⑤）自限 false → 全轮零进展退出，**零水位读取/零发射/零副作用，行为与 §6.2 文本逐语义等价（纯形式差）**。**N-3**：deliver 直发快速路径存在双读闸门微窗口（闸门检查 → tryEmitData 再观察，其间 resume-drain 同步发射可把真实 bufferedAmount 推过 highWater；真实 WS 可达、fake 静态值不可达）——该帧实现为 **F4 丢弃（seq=0、不置 needs-resync）**，而 §4.5 注记 a 建模为「过冲 ≤1 帧/方向（发出）」 | 二者均有界、无 AC 违反、终审判非阻断：N-2 属 self-limit 形式差；N-3 丢弃属 #136 已接受的 F4 处置族（与大小门丢弃同构，协议 §10.1 round diff 修复语义覆盖——持续写下一次 deliver 经队列路径自愈，静默连接修复延迟至下一 round 成因） | 留痕不改现文本语义；§4.5 注记 a 已加 B-8 指针 | 下轮设计修订二选一：N-2 对齐 §6.2 触发条件措辞（补合取项）或登记实现形态为准；N-3 对齐注记 a 措辞（「过冲」→「丢弃」）或显式接受「丢弃」为定案 |
 
 ## §16. 移交要点逐条回应（恢复轮补充上下文 + SA6 seam 注记）
 
@@ -713,3 +716,24 @@ F7→§6.3），供 SA3/SA7 直接消费。
 pass）/ §10 行 5（等价性补强）五处同口径；③ SA2 R2 版红灯思路（超限项 + 合法小更新 + settleUntil
 收敛断言）与 F1–F9 一并供 SA3/SA7 消费——该红灯在方案 A 下转绿（合法项经同 drain 后续 pass 到达
 对端、超限项零 UPDATE wire 帧）。
+
+---
+
+## 修订记录（R4，2026-08-28 · 双轴终审 Standards 轴 B1 表述对齐 + 非阻断留痕回流）
+
+> 触发：双轴终审 B1——设计 §8 声称 teardown 矩阵覆盖「blocked」，但实现 onGoaway
+> SERVER_SHUTTING_DOWN/REAUTH_REQUIRED **直达 `setState('blocked')` 分支**（`peer-connection.ts:362-371`，
+> 不经 enterBlocked）缺 `sender.teardown()`。SA3 并行补实现（一行 teardown + D5 变体测试）；本轮为
+> 设计文本对齐（SA1 仅改本文档）。窄幅 4 处落文，结构与行级锚点保持。
+
+| 项 | 是否落实 | 修订位置 | 内容摘要 |
+|---|:--:|---|---|
+| 终审 B1（§8 表述对齐） | ✅ | §8 首行「blocked」条（R4 明示） | blocked 的**两个入口**均承担 teardown 义务成文：① 公共 `enterBlocked()`；② onGoaway 两 reasonCode 直达 setState('blocked') 分支（:362-371，不经 enterBlocked）——与 scheduleDrainClose 路径**同型**，setState 前补 `sender.teardown()`（否则该直达分支是矩阵唯一缺口：poll timer stale 重武装直至下次 dialNow） |
+| SA7 N2 回流（F4 墓碑超限边界） | ✅ | §15 B-2 缓解列（R4 补入） | round-repair 边界（含墓碑尺寸）并入 B-2 运维登记：被弃超限项为同链后续 delta 的 left-origin（合法帧可上 wire 获 ACK，值收敛需 round diff）；修复 diff 含墓碑内容、`maxUpdateBytes < 单笔真实增量（含墓碑）` 时修复自身超限——不可依赖「后续合法项/单次 round」承载修复；运维指导 `maxUpdateBytes ≥ 单笔真实增量（含墓碑）`（SA7 D4/E5 动态实证） |
+| 终审 Spec N-2 回流（onAck 触发条件形式差） | ✅ | §15 B-8（R4 新增行，N-2 部分） | 实现仅判 `queued.length > 0`，self-limit（前置③先于⑤自限 false、零水位读取/零发射/零副作用），行为与 §6.2 逐语义等价、纯形式差——登记为下轮修订输入（对齐措辞或以实现形态为准） |
+| 终审 Spec N-3 回流（双读闸门微窗口） | ✅ | §15 B-8（N-3 部分）+ §4.5 注记 a（R4 注） | 实现面为 F4 丢弃（seq=0、不置 needs-resync）而注记 a 建模为「过冲 ≤1 帧发出」——登记边界差异 + 注记 a 加 B-8 指针消除自相矛盾面；下轮二选一（对齐措辞 / 接受「丢弃」为定案）；F4 sanctioned 族论证随文 |
+
+**R4 自查**：① 4 处落文（§8×1 / §15×2 / §4.5×1）+ 本记录，零架构变更、零行为面变更（纯对齐与
+登记）；② §8「blocked」两入口枚举与 SA3 修复后实现一致；③ B-2/B-8 与 §4.5 注记 a 交叉引用
+闭合（「过冲 vs 丢弃」关系显式化，无残留自相矛盾）；④ §10 行 8 的 teardown 覆盖枚举随之成立
+（blocked 直达分支补入后矩阵完备）。
