@@ -198,3 +198,62 @@ frame-version-unknown / frame-payload-type-unknown / frame-flags-nonzero / frame
 4. **不做**：#153（segment rolling/耗尽、打开与尾部恢复修复）、#154（retention/删除）、#155（replay）；本测试集不锚定门槛 5/6/7/8/9/11/12/13/14/15（分别属 #148 或 #153/#154/#155）。
 5. **无新增依赖、无新端口、无 scripts/test-lock.sh**（本仓无该脚本）：测试仅用 node:fs/os/path + 既有 vitest；`pnpm-lock.yaml` 未改动。
 6. **SA6 未改任何 src/生产文件**（`git status` 仅测试 + wiki）。
+
+---
+
+## Round 2 修订（PR #159 人工评审反馈，2026-08-28；round=2，run_id 不变）
+
+> **⚠️ 历史档案（2026-08-28 总控裁定，见 r2_dispatch.md 第 12 行）**：本章（含下方「SA6 Round 2 锚定」）为并行任务族「族 A」产物。经 Host 裁决，本轮实施基线为族 B `task_diagnostic-log-file-adapter-r2.md`（任务书）+ `task_diagnostic-log-file-adapter-r2_design.md`（SA1 R3，门禁全闭环）。本章降级为历史档案，不得作为实现或验收依据；码表、genesis/capture 正交性、sequence 分配时点、EISDIR 恢复语义等冲突面一律以族 B 为准（详见 `task_diagnostic-log-file-adapter-r2_design.md` §2.6/§3.2/§3.4 与 r2_dispatch.md 第 12 行裁决）。
+
+### 反馈原文与规格修正
+
+1. **Strict reader 必须执行 manifest 冻结的 format policy**：ADR 0012 要求 manifest 冻结 committed-update capture、input policy、inline threshold、line limit；AC4 要求 strict reader 严格解释这些策略。round 1 的 reader.ts 只查字段类型，未验证记录是否实际遵守 `committedUpdateCapture`、`inlineUpdateMaxBytes` 等策略。反例：manifest 声明 capture=false 时仍接受带 update 的记录；超阈值 update 以 inline 存储时仍返回 ok。→ 修复：strict reader 对每条记录按 manifest format policy 做遵守性校验，违反者给出相应 strict 错误码，不得 ok。
+2. **Stream sequence 必须验证连续性，而非仅递增**：AC4 明列 stream sequence 校验，ADR 0012 storage validator 职责含「stream 连续性」。round 1 只拒重复/倒序，允许 gap（[1,2,3] 删 2 后 [1,3] 仍 ok）。→ 修复：stream 内 sequence 必须连续（起始值按既有裁决/manifest 语义，逐步 +1），gap 响亮报错。
+
+### 总控备案（round 2 裁决 R2-G1）
+
+- **round 1「gap 合法」裁决被本反馈取代**：round 1 G2/§4.1「分配即消耗、gap 诚实信号、reader 不视 gap 为错」是总控/SA6/SA1 对 ADR「不证明业务尝试无缺」的解读（指向未到达 logger 的 emission）；ADR 0012 §VFSL record schema 的 storage validator 职责清单明文含「offset、segment、frame 边界与 **stream 连续性**」，owner 反馈裁定连续性校验归 strict reader。冲突时 owner 反馈优先；round 1 相关测试锚（如 gap 合法断言）由 SA6 修订。
+- **后果面**：writer 侧分配后丢弃（VFSL/storage 门拒绝、写失败）现在会在 reader 面呈现 gap 损坏——这是诚实性增强而非回归；replay 的 complete 条件（「records 连续、无已知 gap」，ADR 0012 §Strict reader，#155 范围）与该语义同向。
+- 边界不变：packages/vfsl 不触碰；政策校验全部在 reader 消费者侧落地。
+
+---
+
+## SA6 Round 2 锚定（红灯测试，PR #159 反馈落实）— 2026-08-28
+
+### 1. 新 issue code 建议（SA6 定义，待总控/SA1 确认；全部归 corrupt——政策/连续性违规是策略/物理缺陷，不是未知版本）
+
+| code | 层 | 触发条件 |
+|---|---|---|
+| `policy-capture-mismatch` | record | manifest.committedUpdateCapture=false 但 record（attempt 或 genesis）携带 update carrier |
+| `policy-input-mismatch` | record | record.input.capture 超出 manifest.inputCapturePolicy 允许阶梯（none ⊂ digest ⊂ redacted ⊂ full；基础捕获 none/not-accessed/unavailable/unsafe-input 恒可；capture 强于 policy 即违规） |
+| `policy-threshold-mismatch` | record | 阈值双向遵守：inline 且 payloadLength > inlineUpdateMaxBytes / sidecar 且 payloadLength ≤ inlineUpdateMaxBytes |
+| `policy-line-limit-exceeded` | record | JSONL 行（紧凑 JSON，UTF-8 字节数，不含结尾 `\n`）> manifest.jsonlLineLimitBytes |
+| `sequence-gap` | stream | 跨（首外）record 的 sequence ≠ 前一条 + 1（issue.sequence = 缺失号） |
+| `sequence-start-invalid` | stream | 首条 record sequence ≠ '1' |
+
+### 2. 起始值语义（SA6 R2 建议）
+
+- 首条跨 segment 拼接后的 record sequence 必须为 '1'：genesis-baseline 落盘则 sequence 1 即 genesis；genesis 缺失时首条 attempt 也是 '1'。
+- 后续每条 = 前条 + 1（BigInt 数值比较）；缺号 → `sequence-gap`；乱序/重复 → 既有 `sequence-out-of-order` 回归保持（round 1 锚不动）。
+- **已登记后果**：G2 的「genesis 0 字节跳过 → attempt 从 '2' 起」与 exhausted 预置接缝产生的单条 UINT64_MAX stream 在 R2-G1 取代后由 reader 面报 `sequence-start-invalid`（诚实性增强）；writer 侧是否改（如跳过 genesis 时不消耗、或预置接缝文档化）属 SA1/SA3 实现空间，本测试集只锚定 reader 判罚。
+- record 级 ok 是「本条 record 全量校验通过」判定，不含 stream 级序列检查——gap/start 违规的 stream 中，各 present record 仍可各自 ok（stream status 报 corrupt + 响亮 issue）。
+
+### 3. 产出文件与修订清单
+
+- **新增** `test/file-adapter-r2-policy-continuity.test.ts`（15 测试）：policy 四类违规各隔离锚 + 4 个控制组（capture 合格 / input 基础捕获 / 自定义阈值 64 双向合法 / 行上限合格）；连续性 gap [1,3]（缺失 '2' 归因 + status 非 ok + record 保留且各自 ok）、起始非 1 → `sequence-start-invalid`、genesis@1+attempt@2 正例、乱序/重复回归保持。
+- **修订 round 1 断言**（被 R2-G1/R2 政策取代的锚）：
+  1. `file-adapter-mismatch-interference.test.ts` BIN-first EISDIR 恢复尾部：`read.status === 'ok'` → `'corrupt'` + 断言 stream 级 `sequence-gap`（sequence '2'）+ 恢复 record 仍 ok（分配即消耗 → [1,3]）。
+  2. `file-adapter-r2-supplemental.test.ts`（SA3 R2 补充，同语义取代）EISDIR 恢复：同上修订。
+  3. `file-adapter-r2-supplemental.test.ts` exhausted 预置接缝：单条 UINT64_MAX stream 的 `reader ok` → `corrupt + sequence-start-invalid`（起始值语义第 2 条后果；record 级 ok 不变）。
+  4. `helpers/file.ts` `validManifest` 默认 `committedUpdateCapture: false → true`：reader 基线夹具的 record 携带 update carrier，manifest 必须与之政策一致（否则 R2 政策校验自身触发 policy-capture-mismatch 污染被测断言）；`file-adapter-strict-reader.test.ts` 边界用例与「纯侧车正例」的帧载荷改为 4097B（sidecar 必须 > 阈值 4096 才政策一致——两处注释均已标注 R2 修订）。
+
+### 4. 红灯验证证据（Round 2）
+
+- 命令（唯一，后台独立进程）：`npx vitest run --typecheck packages/namespace-diagnostic-log`
+- 日志/退出码：`.mabf-bg/sa6-r2-red.log` / `.mabf-bg/sa6-r2-red.exit` —— **exit=1（红灯 ✅）**
+- 结果：`Test Files 3 failed | 16 passed (19)`；`Tests 12 failed | 262 passed (274)`；`Type Errors no errors`
+- 失败清单与根因（全部为 reader 缺校验，无测试自身缺陷）：
+  - 新增 9 条：policy-capture-mismatch ×2 / policy-input-mismatch ×2 / policy-threshold-mismatch ×2 / policy-line-limit-exceeded ×1 / sequence-gap ×1 / sequence-start-invalid ×1 —— 失败形态一致：`expected 'ok' to be 'corrupt'`（当前 reader 对政策/连续性违规不设防，返回 ok）。
+  - 修订 3 条：interference BIN-first（gap）、supplemental EISDIR（gap）、supplemental exhausted（start）—— 当前 reader 仍按 round 1「gap 合法/起始任意」判 ok，与新契约不符。
+  - 控制组 6 条与其余 256 条全绿（含 15 条新增中的 6 条控制/正例）——无 collateral 破坏。
+- SA3 修绿目标：上述 12 条转绿 + Type Errors 0，exit=0。

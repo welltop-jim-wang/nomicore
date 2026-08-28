@@ -30,3 +30,7 @@
 | 26 | 20:10 | 双轴终审 R 轮 | Phase 4 前置复审 | 20:10 | standards=pass（N-1..N-7 闭合）+ spec=pass（F-1 PoC 级闭合），两轴当前生效 verdict 均 pass |
 | 27 | 20:10 | SA4 | Phase 3 最终 verdict 登记 | 20:10 | pass |（sa4_review.md 生效 verdict=pass，与本行一致；含 1.4 vitest 触发性自检 marker）
 | 28 | 20:10 | SA7 | Phase 3 最终 verdict 登记 | 20:10 | pass |（sa7_report.md verdict=pass，与本行一致；含 all-vitest-packages-triggered）
+| 29 | 20:58 | 总控 | Round 2 修订轮启动 | 20:58 | PR #159 评审反馈两项（reader 执行 manifest format policy + sequence 连续性）；R2-G1 备案：round 1 gap 合法裁决被取代 |
+| 30 | 20:31 | SA6 | R2 红灯锚定 | 21:08 | 测试先行：policy 违反 + sequence gap 红灯（续传 7dcb9aad） |
+| 31 | 21:08 | SA1 | R2 设计修订 | 21:23 | 红灯 12 条已锚（policy 4 型 + gap/起始），进入设计修订（续传 be1820ca） |
+| 32 | 21:27 | 总控 | 双总控冲突升级 | 21:27 | 发现并行 r2 任务族（非本 session；裁决相反+反馈范围更全）；本族流水线停止推进，已 report Host 待裁决；未动并行族文件 |
