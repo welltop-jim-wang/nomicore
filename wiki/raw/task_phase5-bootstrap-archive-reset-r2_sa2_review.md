@@ -187,3 +187,57 @@ fence armed 后 Runtime 已 closing，后续 enable/bump 被 lifecycle gate 拒�
 ## R3 裁决
 
 **pass。** R2-R2 的二段协议已把 fence sampling/arm 与 close-draining 解耦，并以 post-settlement tail 捕获消除了自等待；armed-only archive 映射和 Registry-only internal capability gate 也已冻结且可测试。允许进入 SA3 实现；本 pass 不替代 SA4 对实现结构、SA7 对 FIFO/shutdown 活链路的验证。
+
+---
+
+# SA2 R4 Delta 复审 — reset expected 输入分类学方案 B
+
+**Date**: 2026-08-28  
+**Verdict**: **pass**
+
+本段仅审查 R4 delta：§3.6 的 reset `expectedLocalIdentity` 输入拒绝分类学、相应公共类型/测试锚、F-2/F-4 顺带清理与 file scope；不重开 R3 已通过的 fence/close 审查。
+
+## D-1 至 D-4 复核
+
+| 项 | 裁决 | 依据 |
+|---|---|---|
+| D-1：共享 `InvalidIdentityIssue.field` 不得扩宽 | **已消解** | §3.6.1:293-304 明确恢复且冻结 `'owner.userId' | 'namespaceId'`，并说明该 shape 经 Open/Create/Import/Reset public aliases 进入声明图。新事实不再挤入共享 field，而是只 append 到 `ResetReplicaIssue`。这符合任务简报对冻结分类学公共演进须明确设计/审查的红线。 |
+| D-2：message/field 诊断自相矛盾 | **已消解** | `NAMESPACE_RESET_EXPECTED_IDENTITY_INVALID` 是 reset 专属 code；恒定 message 明确说明“期望本地复制身份（reset expectedLocalIdentity）不符合安全文法”。新成员无 `field`，不再声称已通过验证的 owner/namespace 有错。message 不插值、不包含 expected 实值、actual identity、owner 或 namespace 值；诊断范围与失败事实一致。 |
+| D-3：测试未锚新分类学 | **已消解** | §3.6.3 强制 16 hostile forms 用完整 `toEqual({ok:false, code, message})`，因此会拒绝残留/新增 `field`。同时锁零 probe/archive、lease/runtime 可用、正确重试和 TOCTOU snapshot。`*.test-d.ts` 通过 public aliases 锁四个 issue union 中旧 invalid field 仍为二元，并验证 reset 专属 member 非 `never` 且无 `field`；这可直接侦测重新扩宽共享 field 或把新 member 接错 union。 |
+| D-4：F-1 标题过宽 | **已消解** | §3.6.3 把标题/说明收窄为“cause 零身份值回显”，保留标准 observer identity 字段和既有断言，文案与实际检查范围一致。 |
+
+## 严格双源语义与 SA6 红锚一致性
+
+§3.6.2 把 mismatch 明确为“expected 合法但 **live 或 persisted 任一** `identityEquals` 为 false”。这与 §3.1 的 `live == expected AND persisted == expected` 通过条件严格等价，且与 SA6 Flag 1 完全一致：
+
+- 竞态 A：expected 为 persisted 旧 identity、live 已 bump 为新 epoch，因此 **live** false → `NAMESPACE_RESET_IDENTITY_MISMATCH`、零破坏；
+- 竞态 B：expected 为 live 新 identity、persisted 仍旧，因此 **persisted** false → 同一 reject、零破坏；
+- 任一侧 disabled、缺键或可读但格式不合规时其 checked identity 不等于 expected，仍走 mismatch，而 decode/docId corruption、abort 和 operational 仍按 §3.3.1 的 fatal/load-failed 路径，不被三码表误吞。
+
+故 R4 的表述精确化没有改变 R3 冻结语义，也无需回流改写 SA6 的 strict-race 红锚。
+
+## 入口、零副作用与公开类型保持性
+
+入口次序仍为 acceptance → `validateOpenIdentity` → `snapshotReplicationIdentityRef` → `admitResetSlot`。owner/namespace 不合法时不读取 expected；expected 不合法时不建立 carrier、不查询 entry、不触发 Runtime fence、probe、Persistence/archive 或 doc 访问。对 getter/Proxy trap 的收编及 primitive frozen snapshot 继续保持 TOCTOU 免疫。
+
+公开 alias 类型锚的设计可测试：`Extract<OpenNamespaceIssue|CreateNamespaceIssue|ImportReplicaIssue|ResetReplicaIssue, {code:'NAMESPACE_INVALID_IDENTITY'}>['field']` 锁定既有二元 union；专属 Reset `Extract` 非 never/无 field 则锁 append-only 落点。该测试通过公共 result aliases 而非扩大 barrel，符合声明图纪律。
+
+## F-2 / F-4 与 ALLOW scope
+
+- **F-2** 仅把悬空 `beginCloseCurrent` 注释改到现行 fence/lazy-close 名称，明确不触碰 close 行为，范围适当。
+- **F-4** 仅把 SA6 头注的“临时拼写”更新为 R2/R3 已冻结，不改断言或行为，范围适当。
+- §8 已覆盖 R4 所需的 `registry.ts`（专属 issue 常量/F-2）、`types.ts`（共享 field 回退+reset-only member/message）、SA6 red header（F-4）、surface type test 及 internal hostile/TOCTOU/F-1 test；无新增生产或测试变更面遗漏。`index.ts` 保持无 R4 值 export 亦与 §3.6.1 一致。
+
+## R4 后续验证红线
+
+SA3/SA4/SA7 必须落地验证：
+
+1. 16 个 hostile expected 输入逐一 exact-equal reset 专属 issue，且对象没有 `field`；同时保持零 probe/archive、原 lease/runtime 可用和有效重试成功。
+2. owner/namespace 非法仍返回旧 `NAMESPACE_INVALID_IDENTITY`、旧恒定 message、且 field 仅二元；不得被 reset 专属 code 劫持。
+3. public alias typecheck 锁 Open/Create/Import/Reset 的旧 invalid field 二元 union，并锁 reset 专属 issue member/无 field。
+4. 可变 expected 调用后变更原对象，fence/archive 必使用调用时 primitive snapshot；SA6 race A/B 保持“任一源不等即 mismatch”的零破坏断言。
+5. F-2/F-4 仅产生文案修改；`git diff --check`、target typecheck 和相关测试集全绿。
+
+## R4 裁决
+
+**pass。** 方案 B 将 expected 格式错误安置为 reset 专属、append-only、无 field 的稳定 issue，恢复共享 invalid field 的 round-1 二元契约，且 message 诚实、零插值零回显。三码表的“live 或 persisted 任一 false”精确表述与 R3 strict dual-source 及 SA6 两个 dirty race 锚完全一致。允许按 §8 范围进入实现/增量验证；本 pass 不替代 SA4/SA7 对实际 diff、类型面和活链路的验证。
