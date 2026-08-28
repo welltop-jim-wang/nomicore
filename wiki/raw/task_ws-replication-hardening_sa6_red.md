@@ -107,3 +107,15 @@
 规则按 A2-3 定案为**与 A 规则同检查点并列评估**（不依赖第二次 checkpoint）——测试即按单次
 advanceBy 断言。A5/A6 双门闩时钟结构（gate 换挂 + advanceBy 拆分派发/ACK 时刻）与 AC6-3
 同族，零 real sleep。
+
+## R3 段（§3.8 裁决 3 豁免调整，2026-08-28 复测）
+
+裁决 3（2）（3）已获 SA2 R3 复审通过，按设计 §10 显式扩展的 ALLOW 对冻结文件执行**单项**豁免调整：
+
+- **文件**：`packages/ws-replication/test/ws-replication-r3-r4-regressions.test.ts`，**仅用例 ⑦**「序列分配点：saveGate 积压下 CLOSE 插队 → 到达序严格 +1」（L241-275；原 await 点 L253）。
+- **调整**（发起/结算分离，E1 事件结算）：
+  - L253 `await run.peer.removeTarget(run.nsId);` → `const closeP = run.peer.removeTarget(run.nsId);`（原 `await settle();` 原样保留）；
+  - `await run.waitNamespace('closed');` 后新增一行 `await closeP;`（§3.8 裁决 3（3）：E1 事件结算）；
+  - 断言面与构造其余部分**零改动**：CLOSE×1 / 交付序序列严格 [1..9] / CLOSE seq=9 / UPDATE×2 / CLOSE_OK×1；用例 ①-⑥/⑧* 零触碰。
+- **复测**（repo root）：`./node_modules/.bin/vitest run packages/ws-replication` →
+  **14 files / 103 tests 全部通过（Type Errors none）**：⑦ 由死锁超时转为通过（SA3 事件驱动 closeMemo 修复已在工作区未提交，与本次豁免调整共同生效）；**无任何其他失败**——包括本项目 21 项红灯锚（AC1/AC2/AC3/AC4/AC5×4/AC6×4/补充锚×6）在当前工作区 src（SA3 未提交修复）下均已转绿、PR #160 既有 82 例保持绿。已知的「待 SA3 一行 E5 接线」未在本轮产生失败（此次运行零 failed），按原样回报、未改任何业务代码。

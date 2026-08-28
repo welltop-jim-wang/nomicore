@@ -153,3 +153,54 @@
 - **Verdict: pass**。A1–A11 全部闭合且闭合质量高（A1/A2 的修复精确落在 R1 指认的矛盾点上，AC5 三例逐帧重推与本人独立重推结论一致；A3/A4 裁决选型与本人 R1 建议 (b) 完全对齐且可执行）；§3.8 两项裁决最终形态完整、自洽、与 harness 实际 API 逐一吻合，**可一次性下发 SA6**。
 - 放行条件（由总控执行，不需 SA1 返工设计）：① NB1 的 §13 机械填充（或以本报告 R2 §一 表为权威映射）；② NB2 原文转达 SA3 作为实现约束；③ NB3/NB4 作为 SA3/SA4 参考注记。
 - `pass` 仅表示设计通过审查；实现正确性与活链路验证仍由 SA4（静态门禁+实测）与 SA7（动态验证）承担，红灯全绿基线（15 failed → 97 passed）以实际 vitest 运行为准。
+
+---
+---
+
+# SA2 R3 快速复审 — §3.8 裁决 3（实现期 addendum：事件驱动 close 结算 × DENY 冻结测试 ⑦）
+
+**Date**: 2026-08-29
+**Verdict**: **reject（窄域）**——裁决 3 的 (2)(3)(4) 三项全部核验通过且**可立即下发**（互不依赖第 (1) 项的修订）；但第 (1) 项「resolve 事件集**封闭穷尽为四类**，无第五种」的定案被协议文本与实现状态机**双重证伪**（见 R3-1）：closing 期间的终局 finalize（failed/conflicted）是第五种收口完成事件且当前实现**不结算** → removeTarget 承诺在该路径上永久悬挂。需补一条 E5 子句 + 一行接线修复后生效。
+
+**评审对象**: `wiki/raw/task_ws-replication-hardening_design.md` §3.8 裁决 3（L580-609）+ 实现态工作区（SA3 回流修复已落盘：`peer-namespace.ts` 事件驱动 closeMemo/gate、E1-E4 接线、`frame-io.ts`/`peer-connection.ts`）+ `ws-replication-r3-r4-regressions.test.ts` ⑦（实际 L241-272）。
+**复审方法**: E1–E4 逐事件对照协议 §12/§16/§18 与实现接线（`peer-namespace.ts` L490/L502/L534/L609-611/L624-629/L634-642/L1020-1028）；测试 ⑦ 新构造逐帧推演；全仓 `removeTarget` 调用点死锁排查（ac1-ac2:276/279、ac6:111/135、ac7:153/185-186、r3-r4 ⑤a-d、SA6 AC6-3/4、g1-g2 AC3b）；SA4 R3 裁定原文核对。
+
+## 一、逐项核验
+
+| 项 | 内容 | 核验结论 |
+|---|------|---------|
+| (1) E1–E4 封闭事件集 + ADR-0008 L93 分层论证 | E1=关联 CLOSE_OK（§12 L311 ✓）/ E2=closeTimeout（§18 + §12 L312 本地兜底 ✓，实现 L1020-1028 ✓）/ E3=连接死亡（§16 ✓，实现 L609-611/L624-629/L634-642 三入口齐 ✓）/ E4=onCloseRequest 完成段（§4.1 ✓，实现 L490 ✓）；「apply drain 段不设 timeout（memo body 无限等待已接纳 apply）vs 握手等待段 closeTimeout 管辖」的分层与 ADR-0008 L93/协议 §12 L304 相容——**分层论证本身成立**，且实现忠实（memo body = drain→cleanup→await gate，E2 只解除 wire 等待、绝不截断 drain） | ⚠️ **四事件各自成立，但「封闭穷尽、无第五种」的枚举声明为假** → R3-1。E2 保证「连接存活」前提下主通路必有结算点 + E3 覆盖断线——主通路无死锁 ✓；缺口在第五条终局路径。 |
+| (2) 测试 ⑦ 发起/结算分离构造 | 逐帧推演 ✓：`removeTarget` 同步置 closing + CLOSE_NAMESPACE 经控制路径即时派发（seq 9）→ 观测面即刻固定（CLOSE×1 / peerToHub 序列严格 [1..9] / CLOSE seq=9=length / UPDATE×2——第 3 笔因窗口满滞留 channel 队列、closing 停发）→ 断言全部只读 wire 帧，与 closeP 是否结算零耦合（原轮询环的「提前 resolve」对断言零贡献——成立）；释放 saveGate → hub apply 链完成（sequencer FIFO）→ hub closeQueue drain → `CLOSE_OK(ackedSequence=9)` → peer §2.2 关联通过（closeNamespaceSeq=9）→ closed → settle → memo body（peer drain 空，微任务级）→ `await closeP` 确定性结算。零 timer 推进、零轮询、零魔法常数 ✓。迟到 UPDATE_ACK 在 quiet-state 门被忽略、无干扰 ✓。**与同域兄弟测试（ac6:103-127、ac7:145-168）的既有「发起/结算分离」形态完全同构——⑦ 本是唯一例外**，调整即收敛到家族惯例 | ✅ 通过。 |
+| (3) 文件门禁豁免最小化 | 全仓 removeTarget 调用点逐一排查：其余全部具备结算事件（真实 CLOSE_OK 的 E1：ac1-ac2:279、ac6:111/135、ac7:153/185、AC6-3/4；E2+advanceMs：⑤d、AC3b；本地收口分支：⑤a/b/c；幂等 memo 合流：ac7:186）——**唯 ⑦ 在 gate 持有下直接 await，是唯一的结构性死锁点**，豁免必要性成立；豁免面最小（单用例、断言面冻结、其余用例 ①-⑥/⑧* 仍 DENY；ALLOW L912 与 DENY L921 口径一致） | ✅ 通过。 |
+| (4) 选型 (A) 否定 (B) | (B) 恢复有界预算 = 生产魔法常数延迟环（SA4 R3 的 G5.2 裁定成立）且「预算耗尽无条件 resolve」破坏 (1) 定案的承诺语义；(A) 无需 SA4 撤回正确裁定。补充独立佐证：SA6 已批红灯 **AC3b 的 `closeSettled === false` 锚本身就要求事件驱动语义**（PR #160 的「本地 cleanup 完成即结算」旧语义会使 closeP 在 closing 期早结算 → AC3b 红）——事件驱动方向被已批契约独立锁定，(A) 是唯一可行选型 | ✅ 通过。 |
+
+## 二、R3-1（reject 依据）：E-集枚举不封闭——closing 期终局 finalize 是第五结算事件，且实现不结算
+
+**触发条件（确定性可达，两类生产路径）**：
+1. **apply drain 期终局失败/fence**：removeTarget 置 closing 后，close drain 等待的已接纳 apply 以失败结算 → `applyRemoteUpdate` 续体 → `applyOutcome`（`peer-namespace.ts:853-866`）→ `finalize('failed')`（APPLY_FAILED / PERSISTENCE_DEGRADED / INTERNAL_ERROR 等，`error-mapping.ts` L84-122 全部映射终态）或 `finalize('conflicted')`（fence——close drain 与 bump 竞态，⑧a 家族已证该竞态真实可达）；
+2. **closing 期迟到 OPEN_OK 违例**：removeTarget 与在途 OPEN 竞态 → hub 迟到 OPEN_OK → `onOpenOk` 非 opening 分支 → `finalize('failed')`。
+
+**缺口机制（实现证据）**：`finalize()`（`peer-namespace.ts:902-910`）仅在 `state === 'closed'` 时 `settleCloseMemo()`（L908）——failed/conflicted **不结算**。此后四事件全部被状态门锁死：E1 `onCloseOk` 首行 `state !== 'closing'` 早退；E2 `onTimerFired` 首行 `isTerminal()` 早退（且 finalize 已 `clearAllTimers`）；E4 `onCloseRequest` quiet-state 早退；仅真实断线（E3）可解。**连接存活 → removeTarget 承诺永久悬挂**——公共契约 `removeTarget(): Promise<void>`（types.ts L118）的活性被破坏（调用方编排收口悬挂；资源无泄漏、wire 无违例，纯 promise 活性缺陷）。
+
+**协议证伪「无第五种」**：协议 §12 L313「**终止性 namespace ERROR 已经完成收口**，不再追加 CLOSE握手」——终态即收口完成，承诺必须兑现。终局 finalize 与 E1/E2/E4 同为「生命周期已终结」事件，归属同一结算族；addendum 的四类枚举漏掉它。
+
+**ADR-0008 L93 相容性**：E5 在 apply **结算之后**由其续体触发（失败的 apply 已 settle——drain 已完成其「无条件排空」义务），不构成对 drain 段的打断 ✓。
+
+**修复要求（窄域，两处）**：
+1. 裁决 3 (1) 文字修订：E-集补 **E5「终局收口」**——closing 期间 `finalize('failed'|'conflicted')`（apply drain 终局失败/fence、迟到帧违例等）= 第五结算事件；「封闭穷尽为四类」改为五类（或将 E4 措辞扩为「终局收口族：hub 发起 CLOSE 完成段 ∥ 终局 finalize」）。依据补引 §12 L313。
+2. SA3 接线一行：`finalize()` 的 `settleCloseMemo()` 去掉 `state === 'closed'` 条件（终态皆结算）。
+
+**回归面核查**：E5 不触碰任何既有绿灯——AC3b（无 finalize 发生）、⑤d（terminal ERROR 期维持 closing 不 finalize，R3/#5d 语义不变、仍由 E2 结算）、⑤c（conflicted/failed 的 removeTarget 走本地分支立即 resolve）均不受影响；hub 侧对称场景（hub drain 期终局失败 → `isTerminal` 守卫跳过 CLOSE_OK）由 peer E2 closeTimeout 有界兜底（§12 L312 丢包容），无悬挂 ✓。
+
+**建议红灯锚（随 E5 定案补发 SA6）**：closing drain 期 bump（或持久层降级注入）→ 断言 ns 终态（conflicted/failed）**且 `removeTarget` 承诺在有限微任务内结算**（E5 锚；零 timer 推进形态可用 bump 续体事件驱动）。
+
+## 三、其余核验注记
+
+- addendum 引证勘误（NIT）：⑦ 实际位于 L241-272（原文引 L240-266）；原 await 点实际 L253（原文引 L250-251）——SA6 执行时以用例名「序列分配点」定位为准。
+- 实现的 gate 装饰 promise 设计（memo 创建时同步登记 resolve，settle 与登记之间零竞态窗口）经审查成立 ✓；「SA3 已接线 peer-namespace.ts:610」核实 ✓（实际 L609-611）。
+- 裁决 3 (2)(3) 与 E5 修订**零耦合**：⑦ 的调整构造、单测豁免、SA6 执行包可先行下发；(1) 的 E5 子句 + finalize 一行随后到为即可，不需重新过 (2)(3)。
+
+## 四、R3 复审结论
+
+- **Verdict: reject（窄域）**。唯一阻断项 = R3-1（E-集枚举不封闭 + 实现孤儿承诺路径，一行接线 + 一句文字）。分层论证、⑦ 构造时序、豁免最小化、选型 (A) 四项均核验通过。
+- 放行路径：SA1 补 E5 子句（引 §12 L313）→ SA3 落 `finalize` 无条件 settle（一行）→ E5 修复与本节要求逐字一致时无需再轮 SA2（建议 SA4 复验时加验 E5 路径）→ (2)(3) 的 SA6 调整包不受本轮影响、可并行下发。

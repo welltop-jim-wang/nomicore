@@ -1,7 +1,7 @@
 # SA1 设计 — issue #161 ws-replication 协议/生命周期加固（PR #160 post-review）
 
 **Status**: R2 修订（落实 SA2 R1 reject 全部攻击点 A1–A11 + SA8 附注） | **Author**: SA1 | **Date**: 2026-08-29
-**R2 修订摘要**：§3 组按 A1/A2/A5/A7 重写（水位检查点起挂条件、总队列记账口径与 shedding 滞回、dropData 语义定案、pendingData 记账出口不变量）并逐帧重推三例红灯锚；§1.1 AC1 第二锚按 A3 定锚形态（§3.8 裁决 2）；AC5-RR 替换构造并入 A4 强制修正（§3.8 裁决 1）；A6/A8–A11 与 SA8 编辑性附注全部落实（逐条映射见 §13 表）。
+**R2 修订摘要**：§3 组按 A1/A2/A5/A7 重写（水位检查点起挂条件、总队列记账口径与 shedding 滞回、dropData 语义定案、pendingData 记账出口不变量）并逐帧重推三例红灯锚；§1.1 AC1 第二锚按 A3 定锚形态（§3.8 裁决 2）；AC5-RR 替换构造并入 A4 强制修正（§3.8 裁决 1）；A6/A8–A11 与 SA8 编辑性附注全部落实（逐条映射见 §13 表）。**实现期 addendum**：§3.8 裁决 3（SA4 R3 事件驱动 close 结算 × DENY 测试 ⑦ 死锁的三方冲突裁决：E1–E5 封闭结算事件集定案——SA2 R3-1 补 E5「终局收口」（协议 §12 L313）+ 测试 ⑦ 发起/结算分离豁免），SA2 快速复审通道进行中。
 **任务**: Bug 修复（6 组 required fixes 共 21 项，其中 18 项缺陷确认 + 3 项范围澄清）
 **输入**: 任务简报 `task_ws-replication-hardening.md`；SA5 缺陷分析 `20260828-bug-ws-replication-hardening.md`；SA6 红灯契约 `task_ws-replication-hardening_sa6_red.md`（15 例红灯，实测基线 **15 failed / 82 passed / Type Errors none**，本设计期复核一致）；相关决议 `_relevant_decisions.md`（ADR-0010/0008/0009 约束基准）。
 **红线**: 本文档为唯一产出；零源码改动（`git status` 仅 4 个 wiki 文件 + 2 个 SA6 红灯测试，与 SA5 审计一致）。
@@ -577,6 +577,38 @@ expect(errorCodes(toPeer)).toContain('INSTANCE_IDENTITY_MISMATCH');  // 锚 3 �
 
 **若总控裁定 SA6 文件逐字节冻结**：AC5-RR 在本设计下恒红（构造不可行），需总控明确放宽该锚——本设计不接受以测试耦合延迟环换绿。AC1 第二锚同表裁决（替换断言组如上）。
 
+**裁决 3（实现期三方契约冲突：事件驱动 close 结算 × DENY 冻结测试 ⑦——总控转 SA2 快速复审后生效）**：
+
+**冲突事实**（SA3 实测，本设计期复核源码证实）：SA4 R3 要求 `ensureCloseMemo` 事件驱动化（删除 3000 跳轮询环——其「预算耗尽无条件 resolve」不兑现收口语义，G5.2 论证成立，本设计**维持 R3 裁定**）；但 DENY 冻结测试 `ws-replication-r3-r4-regressions.test.ts` 用例 ⑦「序列分配点」（L241-272）在 hub saveGate 持有、CLOSE_OK 结构性不可能到达、注入 timer 从未推进至 closeTimeout 的场景下直接 `await run.peer.removeTarget(...)`——事件驱动语义下该 promise 无任何结算事件，确定性死锁。二者不可同时满足，裁决如下。
+
+**(1) close 结算事件权威语义定案（R3-1 修订：E 集补 E5「终局收口」）**：`removeTarget`/closeMemo 承诺的 resolve 事件集**封闭穷尽为五类**，无第六种、禁止预算/轮询兜底 resolve——
+- **E1** `onCloseOk`（§2.2 关联校验通过的 CLOSE_OK——协议 §12 L311 `CLOSE_OK.ackedSequence = CLOSE_NAMESPACE sequence` 关联后的收口完成信号）；
+- **E2** `onTimerFired('close')` closeTimeout 本地收口（协议 §18 closeTimeoutMs；§12 L312「正常 close 不等待丢失的 UPDATE_ACK」的本地兜底）；
+- **E3** 连接死亡（`onConnectionLost`/`onConnectionFatal`/`onConnectionStopped`——协议 §16「socket 断开时……立即停止 session、排空已接纳 apply 并 release Lease」：断线即承诺兑现）；SA3 已接线 `peer-namespace.ts:610`；
+- **E4** `onCloseRequest` 完成段（hub 发起 CLOSE 的对偶收口）。
+- **E5** `finalize('failed' | 'conflicted')` **终局收口**——closing 期间 apply drain 终局失败/fence（error-mapping 'wire'/'fence'/'local' 族命中）、迟到帧违例等一切终局化路径：终局即承诺兑现。依据：协议 §12 L313「终止性 namespace ERROR 已经完成收口，不再追加 CLOSE 握手」——终态本身已完成关闭，close 承诺不得再等待结构性不存在的 CLOSE_OK/closeTimeout。配套实现（总控已另行下发 SA3，本设计不动代码）：`finalize()` 的 `settleCloseMemo()` 去掉 `state === 'closed'` 条件——现守卫（`peer-namespace.ts` finalize 内 `if (state === 'closed') this.settleCloseMemo()`）使 failed/conflicted 终局下 closeMemo 悬挂，正是 E5 补集后须移除的遗漏结算点。
+**与 ADR-0008 L93「无条件排空、不设内部 timeout」的关系（关键区分）**：该条款管辖 **apply drain 段**（`drainPendingApplies`/`closeSessionAndRelease` 不得因超时打断已接纳 apply——memo body 保持无限等待已接纳 apply，纪律不变）；协议 §12/§18 的 closeTimeout 管辖 **握手等待段**（CLOSE_OK 丢失时的本地收口）。二者分层不冲突：等待 CLOSE_OK 的**测试或调用方**在无事件窗口内只能靠 E1（让真实 CLOSE_OK 流动）、E2（推进 timer 至 closeTimeout）或 E5（终局收口事件：apply drain 终局失败/fence）合法解阻塞——「无事件 resolve」不是合法出口（测试 ⑦ 场景无终局事件，其解阻塞走 E1，见 (2)）。
+
+**(2) 测试 ⑦ 合法构造形态**（断言面零变化，仅调整结算路径）：⑦ 的全部断言（CLOSE×1、peer→hub 序列严格 `[1..9]`、CLOSE 序=9=`peerToHub.length`、UPDATE×2）**只读 wire 帧与投影**——`removeTarget` 发起 + `settle()` 后观测面即完全固定，原构造在 await 点上的「提前 resolve」对断言零贡献（旧轮询环只是恰好让 await 穿过）。调整为**发起/结算分离**：
+
+```ts
+// 原 await 点（L253，SA2 R3 NIT 勘误）：await run.peer.removeTarget(run.nsId); await settle();
+const closeP = run.peer.removeTarget(run.nsId);   // 发起：同步置 closing + CLOSE_NAMESPACE
+                                                   // 控制优先派发（序列分配点观测面即刻固定）
+await settle();
+// …既有断言全部原样（CLOSE×1 / seqs [1..9] / CLOSE seq=9 / UPDATE×2）…
+const gate = run.hubNode.persistence.saveGate;     // 既有收尾段原样 +
+run.hubNode.persistence.saveGate = undefined;
+if (gate !== undefined) gate.resolve();            // hub apply 链完成 → hub close drain 完成
+await run.waitNamespace('closed');                 //   → CLOSE_OK(ackedSeq=9) → peer E1
+await closeP;                                      // ← 新增一行：E1 事件结算（确定性）
+expect(run.hubFrames('CLOSE_OK')).toHaveLength(1); // 既有
+```
+
+时序论证：gate 释放 → hub 首笔 apply 完成（sequencer FIFO 带后续）→ hub `onCloseRequest` closeQueue drain 收口 → `CLOSE_OK(ackedSequence=9)` → peer §2.2 关联通过 → `closed` + `settleCloseMemo` → `closeP` 于后续微任务结算——**全事件驱动、零轮询、零 timer 推进、零魔法常数**。⑦ 的测试目的（序列号在出队时刻分配、CLOSE 经控制优先级插队）在调整后完整保留。
+
+**(3) 文件门禁指示**：`test/ws-replication-r3-r4-regressions.test.ts` **为此单项进入 ALLOW 调整面**（最小侵入豁免，依文件清单立法「评审攻击要求改 DENY 文件时 SA1 显式扩展 ALLOW 并标注理由」）——仅授权用例 ⑦ 的 await 点调整（发起/结算分离 + 结算行 `await closeP`，断言面与构造其余部分冻结），该文件其余用例（①-⑥/⑧*）依旧 DENY 冻结；执行归 **SA6**（随裁决 1+2 调整包或单独快速通道，以总控排期为准）。选型 (A)（调整测试）而非 (B)（恢复有界预算）：R3 的 G5.2 论证成立且「预算耗尽无条件 resolve」违背 (1) 定案的承诺语义（resolve 时 ns 必已收口），(B) 需 SA4 撤回正确裁定，不予采纳。
+
 ---
 
 ## §4. D4 — Close、GOAWAY 与异步竞态（G4.1–G4.5）
@@ -630,6 +662,7 @@ onCloseRequest(message: { sequence: number }): void {
 - 后续 UPDATE/Step2 在 `isQuietState` 门处被拒 → **不再有新 apply 进入 `pendingApplies`**；
 - `drainPendingApplies()`（`Promise.allSettled([...this.pendingApplies])`）快照覆盖**全部**已接纳 apply（peer 侧原缺口：快照取自 async IIFE 首个 await 前，但不停接纳导致快照后仍可新增——同步 closing 关闭该窗口）；
 - 排空完成 → `closeSessionAndRelease()`（session.close barrier → unsubscribe → lease.release）——「apply settle 后才 cleanup」的通道层保证成立（AC6-2 锚）。
+- **close 结算事件权威语义**（drain 段 vs 握手等待段的分层、E1–E5 封闭事件集——R3-1 补 E5 终局收口、测试 ⑦ 豁免）：见 **§3.8 裁决 3**。
 
 ### 4.3 G4.3：迟到 round 结算不得复活 closing（hub 侧补 B-1 同款守卫）
 
@@ -762,9 +795,11 @@ if (this.state === 'live' || this.state === 'needs-resync') {
   this.setState('needs-resync');
   this.host.deferTask(() => { if (this.state === 'needs-resync') this.maybeStartRecovery(); });
 }
-// peer-connection.ts requestRebuild（裸 queueMicrotask 替换）
+// peer-connection.ts requestRebuild（设计基线经 seam；实现偏离声明见下）
 this.host.deferTask(() => { this.rebuildPending = false; if (!this.stopping) this.dialNow(); });
 ```
+
+**实现偏离声明（SA4 R1 N1 追认，SA3 代码不改）**：`requestRebuild` 的重建调度**保持单跳裸 `queueMicrotask`，不接入 `deferTask`/TEST_DEFER seam**——若照搬上行伪码经 seam 调度，driver 注入的 512 跳 TEST_DEFER 会使 DENY 冻结面 `ws-replication-spec-b1-b2-red.test.ts` 的 B-1 锚（settle 内 `dialCount+1` 的重建可观测时序）恒红；生产语义与缺省 `deferTask`（单跳 `queueMicrotask`）**完全等价**，无行为差异。seam（deferTask/TEST_DEFER）仅作用于 ACK-timeout 恢复路径（`peer-connection.ts:626-630` 注释同款声明）。
 
 **既有测试保绿的关键**：`ac6-resync-close:73-105` 与 `r3-r4:31-60` 的 ACK-timeout 流程为 `advanceMs(200) → waitNamespace('needs-resync') → waitPeerSent('SYNC_STEP1', 2)`——若缺省单微任务，恢复 round 会在 `advanceMs` 内部的（3+300 跳）微任务排空期先行启动，`needs-resync` 投影不可观测 → 既有测试红。512 这个数正是「> 303（advanceBy 3 跳 + settle 300 跳）且 < 3000（settleUntil 预算）」的测试耦合常数。因此：**`test/driver.ts`（boot 与 bootFanout 两处 createPeerReplication）注入测试 defer**——
 
@@ -831,7 +866,7 @@ SA6 红灯文件不注入（`bootMulti` 直构 peer）——AC4-2 的 peer 恢�
 8. `validateLimits` 新增 `highWater ≤ maxQueuedBytesPerConnection` 链式校验（A2-3）：既有测试配置（WATER_LIMITS 4096 ≤ 8MiB、SHED_LIMITS 4096 ≤ 64KiB）与缺省（512KiB ≤ 8MiB）全部满足——零既有测试触碰；新校验只拦截病态配置。
 9. peer 侧 `sendData` 非 ready 门从静默丢改为「丢 + onDataShed 声明」（A7）：现有测试中该窗口（live 会话 + 非 ready 连接）结构性不可达（ready 门 + 控制器投影先行），零行为回归；即使可达，行为差异仅为多一帧 RESYNC_REQUIRED 声明（恢复语义正确方向）。
 
-**风险与回归面**：改动集中在 `packages/ws-replication/src`（11 文件）；`replication-protocol`、`namespace-registry`、`namespace-runtime`、`persistence`、`apps` 零改动。typecheck 由 vitest --typecheck 覆盖（api.test-d.ts + 全量）。
+**风险与回归面**：改动集中在 `packages/ws-replication/src`（12 文件，含 §5.1 的 `src/liveness.ts` 新建——SA4 R1 N2 补列后口径）；`replication-protocol`、`namespace-registry`、`namespace-runtime`、`persistence`、`apps` 零改动。typecheck 由 vitest --typecheck 覆盖（api.test-d.ts + 全量）。
 
 ---
 
@@ -862,7 +897,12 @@ SA6 红灯文件不注入（`bootMulti` 直构 peer）——AC4-2 的 peer 恢�
 - `src/defaults.ts` — 修改：DEFAULT_REPLICATION_TIMEOUTS 增 `pingIntervalMs: 30_000`/`pongTimeoutMs: 10_000`（§5.1；约 +6 行）
 - `src/validate.ts` — 修改：可选 ping/pong 超时校验（正有限安全整数 + pong < ping）、deferTask callable（§5.1）、**`highWater ≤ maxQueuedBytesPerConnection` 链式校验**（§3.4/A2-3；约 +20 行）
 - `src/index.ts` — 修改：导出 `UpgradeIdentity` 类型（§1.1；约 +3 行）
+- `src/liveness.ts` — 新建（54 行）：WS ping/pong 活性小工具（§5.1「共用小工具 `liveness.ts` 或内联」的落点——hub 每连接 / peer 每次 dial 共用：transport 提供 `ping`+`onPong` 可选面时武装 ping 循环与 pong 超时收口，缺面 dormant；timer 生命周期归连接收口清理）。设计正文 §5.1 已明文授权该命名，SA3 采「新建」分支；本条目为 SA4 R1 N2 补列（SA1 文档缺口，非 SA3 越界）
 - `src/lifecycle-queue.ts` — 修改：删除 `LifecycleQueue` 类，保留 `Memoized`（§5.3；约 −18 行）
+
+包清单（`packages/ws-replication/` 根，SA4 R1 阻断项 R2 处置追加）：
+
+- `packages/ws-replication/package.json` — 修改，**仅限 version patch bump 一行**（`"version": "0.1.0"` → `"0.1.1"`，git diff 实测恰一行，无其他字段变更）。理由：硬门禁 #9「所有改过代码的模块必须 bump 版本号」——本任务改动 `@nomicore/ws-replication` 上述 12 个 src 文件（含 SA4 R1 N2 补列的 `src/liveness.ts`），SA3 已按门禁执行 patch bump；SA4 R1 阻断项 R2 选定处置「走 SA1 显式扩展 ALLOW LIST 并标注理由」（`wiki/raw/task_ws-replication-hardening_sa4_review.md` §R2）。本条目为 ALLOW 只增不删纪律下的显式扩展，不授权该文件任何其他改动。
 
 测试文件（SA6/SA4 owned + 测试基建；SA3 仅按本设计调整**调用点与构造**，断言面零改动）：
 
@@ -870,6 +910,7 @@ SA6 红灯文件不注入（`bootMulti` 直构 peer）——AC4-2 的 peer 恢�
 - `test/ws-replication-spec-b1-b2-red.test.ts` — `[SA4 authored（PR #160 红灯）· 本任务仅调用点]` 修改：dial 闭包内 `hub.accept` 调用点传受信身份（1 处；约 +1 行，断言面零改动）
 - `test/ws-replication-sa6-hardening-g3-g4-red.test.ts` — `[SA6 owned]` 修改：bootMulti 的 `hub.accept` 调用点传受信身份；**AC5-RR 构造按 §3.8 裁决 1 调整**（SA2 R1 已批 + A4 强制修正并入；断言 `[a,b,a,b]` 不变；SA6 调整单一包随 R2 复审通过后一次性下发）
 - `test/ws-replication-sa6-hardening-g1-g2-red.test.ts` — `[SA6 owned]` 修改：**AC1 第二锚按 §3.8 裁决 2 替换**（`hub.connections[0]?.state === 'closed'` → `wire.hubSideClosed === true` + `hub.connections.length === 0`；锚 1/3 不变；A3 定案）——R1 标注「预期零改动」作废，该文件现在属调整面（调用形状 `accept(transport, {peerInstanceId})` 仍与本设计 §1.1 精确吻合，无需改动）
+- `test/ws-replication-r3-r4-regressions.test.ts` — `[PR #160 回归测试 · §3.8 裁决 3 单项豁免]` 修改：**仅用例 ⑦（L241-272）**的结算路径调整——`await removeTarget` 改发起/结算分离（`const closeP = …; await settle(); …; await closeP;` 新增一行），断言面（CLOSE×1 / 序列严格 +1 / CLOSE seq=9 / UPDATE×2 / CLOSE_OK×1）与构造其余部分**冻结不变**；其余用例（①-⑥/⑧*）依旧 DENY。理由：事件驱动 close 结算（SA4 R3，维持）与该 await 点确定性死锁的冲突，经 §3.8 裁决 3 选型 (A)；执行归 SA6
 
 ### DENY LIST
 
@@ -878,7 +919,7 @@ SA6 红灯文件不注入（`bootMulti` 直构 peer）——AC4-2 的 peer 恢�
 - `apps/**` — 切片 9 组合根（G6 澄清：本任务只留 seam）
 - `docs/protocols/instance-replication-v1.md`、`docs/adr/**` — wire contract 与 ADR 为基准文本，本任务只实现不修法
 - `packages/ws-replication/src/testing.ts` — 内存 transport 不加活性面（dormant 语义即正确；SA6 慢 socket wire 在测试文件内自治）
-- `test/ws-replication-ac1-ac7*.test.ts`、`test/ws-replication-r3-r4-regressions.test.ts`、`test/ws-replication-sa4-*.test.ts`、`test/ws-replication-sa7-dynamic.test.ts`、`test/ws-replication-api.test-d.ts` — PR #160 验收/回归/类型契约断言面冻结（其时序依赖由 driver 侧 TEST_DEFER 承接，不需触碰）
+- `test/ws-replication-ac1-ac7*.test.ts`、`test/ws-replication-sa4-*.test.ts`、`test/ws-replication-sa7-dynamic.test.ts`、`test/ws-replication-api.test-d.ts` — PR #160 验收/回归/类型契约断言面冻结（其时序依赖由 driver 侧 TEST_DEFER 承接，不需触碰）；`test/ws-replication-r3-r4-regressions.test.ts` — **除用例 ⑦（§3.8 裁决 3 单项豁免，已列 ALLOW）外冻结**
 - `test/harness.ts` — 共享测试基建冻结（settle/settleUntil/makeWire 语义是 §3.8 论证基准）
 
 ---
