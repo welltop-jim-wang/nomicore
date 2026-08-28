@@ -277,14 +277,24 @@ export class Run {
     return nextSeqOf(this.allFrames().hubToPeer);
   }
 
-  /** 手工注入一帧到 hub（沿 peer→hub 方向；调用方负责在 peer 静默期注入）。 */
-  injectPeer(message: ReplicationMessage): void {
-    this.wire.peerEnd.send(encodeMessage(message, { sequence: this.nextPeerSeq() }));
+  /** 手工注入一帧到 hub（沿 peer→hub 方向；调用方负责在 peer 静默期注入——
+   *  序列记账纪律（SA4 F3 配套 seam）：默认序列 = 接收端当前期望（已见最大 +1）；
+   *  注入帧经 wire 包装器发送、同样计入帧日志与后续 nextSeq 计算；**不变量**：
+   *  注入必须发生在「发送方不再产生真实帧」的窗口（否则真实帧与注入帧同序列
+   *  撞号 → 接收端按序列纪律判 SEQUENCE_VIOLATION，非确定性）。确需注入错序/
+   *  重复帧（F3 红灯）时显式传 `sequence`。 */
+  injectPeer(message: ReplicationMessage, opts?: { readonly sequence?: number }): void {
+    this.wire.peerEnd.send(
+      encodeMessage(message, { sequence: opts?.sequence ?? this.nextPeerSeq() }),
+    );
   }
 
-  /** 手工注入一帧到 peer（沿 hub→peer 方向；调用方负责在 hub 静默期注入）。 */
-  injectHub(message: ReplicationMessage): void {
-    this.wire.hubEnd.send(encodeMessage(message, { sequence: this.nextHubSeq() }));
+  /** 手工注入一帧到 peer（沿 hub→peer 方向；调用方负责在 hub 静默期注入——同
+   *  injectPeer 的序列记账纪律）。 */
+  injectHub(message: ReplicationMessage, opts?: { readonly sequence?: number }): void {
+    this.wire.hubEnd.send(
+      encodeMessage(message, { sequence: opts?.sequence ?? this.nextHubSeq() }),
+    );
   }
 
   /** 丢弃下一个指定 kind 的 hub→peer 帧（故障注入）。 */

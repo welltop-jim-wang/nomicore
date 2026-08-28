@@ -1,7 +1,7 @@
 # 设计 — `@nomicore/ws-replication`：Peer namespace 与 Hub 的 v1 协议端到端同步状态机
 
 - 任务：issue #136（Phase 5 切片 6，功能开发）
-- run_id: issue-136-1787888033-8367 / round: 1（设计 R4 修订：2026-08-30，SA2 R2 重审 reject（窄幅）→ N-1/N-2 + nano-notes ×3 收口——见文末「SA2 R2 反馈逐条回应（R4）」；此前 R3：SA2 R1 攻击评审 #1–#13 全收口，R2：SA8 CP-1/CP-2 × 总控裁决「维持 ADR 字面」，R2.1：O-7 措辞澄清）/ branch `fix/issue-136-on-docs-phase-5-websocket-replication`
+- run_id: issue-136-1787888033-8367 / round: 1（设计 R4.2 单条款澄清：2026-08-30，§12 hub 溢出分支「声明+等待」定案〔SA4 F1 语义〕；R4.1 勘误轮：SA4 F8 追认 + F6/F9 登记——见文末「SA4 勘误轮（R4.1/R4.2）逐条回应」；此前 R4：SA2 R2 重审 N-1/N-2 收口，R3：SA2 R1 攻击评审 #1–#13 全收口，R2：SA8 CP-1/CP-2 × 总控裁决「维持 ADR 字面」，R2.1：O-7 措辞澄清）/ branch `fix/issue-136-on-docs-phase-5-websocket-replication`
 - 设计基准（约束顺序）：SA6 冻结契约面 + 冻结红灯测试（`packages/ws-replication/test/`，36 it 已锚红；**R2 注记：其中 7 处断言经总控裁决须由 SA6 按 §18.11 对齐清单修订**）→ `docs/protocols/instance-replication-v1.md`（唯一 wire contract）→ ADR 0010（含 #133/#134 round-2 修订节）→ ADR 0006/0008/0009 → `docs/phases/phase-5-websocket-replication.md` → CONTEXT.md。
 - 相关决议：`wiki/raw/task_phase5-ws-namespace-sync_relevant_decisions.md`（SA8 摘录，前置 verdict clear）+ `wiki/raw/task_phase5-ws-namespace-sync_design_conflict_report.md`（设计后复审 verdict conflict → R2 回归 ADR 字面）。
 
@@ -566,7 +566,7 @@ degraded 判别依据（避免解析 message 文本）：refusal 后读自有 le
 1. **微任务节奏（活跃突发兜底；R4/N-2 作用域更正：双侧对称持有）**：**每条 ns 通道（hub 与 peer 对称）**各持一个 watchdog 实例（同一 `src/fence-watchdog.ts`，职责注释：fence 判据 + session 溢出边沿），每次通道事件（收帧/发帧/apply settle/listener 交付/timer fire/状态迁移）触发一次**有界**自延伸微任务链：每 8 次 `await Promise.resolve()` 探测一次，预算 4096 次让步（512 次探测）后静默退出。**探测谓词（R3/#3 扩编）**：`state !== 'open'` ∨ `currentEpoch !== replicationEpoch` ∨ **`status.needsResync`**——**peer 通道上 fence 两判据结构性不命中**（peer Runtime 永不 bump，ADR 0010 hub-only 管理权），peer 侧 watchdog **仅 `needsResync` 边沿生效**（peer 本地连写突发的唯一发现路径——若按「hub 侧」字面实现则 R1 #3 在 peer 侧复发）；hub 侧三判据全效。**边沿触发（硬约束）**：只在 false→true 跃迁时动作——sticky 标志永不清除，电平触发会每 8 让步重复动作死循环；每通道维护 `lastPredicateValue`。**有界性**同前：无界自延伸链会永久霸占 microtask 队列饿死 macrotask；与 runtime fanout 泵同族，以让步预算替代队列空条件退出。
 2. **timer 节奏（空闲兜底，双侧对称同上）**：每 `ackTimeoutMs`（合并配置；无专用配置面——冻结契约不许新增字段）经注入 timer 探测一次（同谓词、同边沿触发、peer 侧仅 needsResync 边沿）并重新武装微任务突发。生产空闲期由该节奏覆盖；fence 的空闲检测延迟 = ackTimeoutMs（协议未设上界，可接受——#2 钩子已覆盖 busy 期）。
 
-**命中分派（按谓词成因）**：`state!=='open' ∨ currentEpoch!==replicationEpoch`（fence）→ §12.2 one-shot 终结器；`status.needsResync` 边沿（session 层溢出，fence 两项为假）→ **§10.2 同构处置**：丢弃本端未发送队列、置 ns needs-resync、peer 端发 RESYNC_REQUIRED 并在 in-flight 窗口收口后开新 round（§10.5 同连接拓扑）；hub 侧命中（多 peer fan-out 方向）→ §10.6 语义（丢弃 hub→peer 未发送队列、等待 peer 新 round）。两分派共享「停止新 UPDATE、由 state-vector round 修复」的收敛骨架（CONTEXT「transport 须 reset/bootstrap」义务的 v1 落地形态：连接内 reset = 新 round；bootstrap 留给重连路径）。
+**命中分派（按谓词成因；R4.2 澄清 hub 分支——SA4 F1 语义定案，防误读为「只等待零声明」）**：`state!=='open' ∨ currentEpoch!==replicationEpoch`（fence）→ §12.2 one-shot 终结器；`status.needsResync` 边沿（session 层溢出，fence 两项为假）→ **§10.2 同构处置**：丢弃本端未发送队列、置 ns needs-resync、peer 端发 RESYNC_REQUIRED 并在 in-flight 窗口收口后开新 round（§10.5 同连接拓扑）；**hub 侧命中（多 peer fan-out 方向 / hub 通道任一溢出面——§10.2 本地排队溢出与 §12 needsResync 边沿同规）= 声明 RESYNC_REQUIRED + 等待**：丢弃 hub→peer 未发送队列、**发 RESYNC_REQUIRED**（协议 §9.4「任一端可声明」——hub 的声明是 peer 得知、从而发起恢复 round 的**唯一通路**，round 恒由 peer 发起）→ 等待 peer 新 round（§10.6 语义）。「声明 + 等待」与 §10.2/§18.4「hub 溢出同机制声明」一致——**hub 侧不存在「只等待零声明」的分支**（SA4 F1 静默发散根因即该误读）。两分派共享「停止新 UPDATE、由 state-vector round 修复」的收敛骨架（CONTEXT「transport 须 reset/bootstrap」义务的 v1 落地形态：连接内 reset = 新 round；bootstrap 留给重连路径）。
 
 预算量纲论证：AC6 冻结测试从「hub 通道最后一次事件（round 收口进 live）」到「fence 检测可观测窗口耗尽（bump 链 ≈20 让步 + settle() 300 让步 + settleUntil 预算 3000）」约 ≤3.5×10³ 让步；预算 4096 覆盖且留裕量。**耦合不变量（R3/#10 钉死，双向登记）**：`watchdog 预算（4096）> harness settle 预算之和（settle 300 + settleUntil 3000 = 3300）`——SA6 若上调 harness 常量（harness.ts:198/207）须同步复核本不变量（建议在两常量旁登记耦合注释）；#2 钩子落地后 fence 主检测不依赖预算、敏感度下降，预算仅覆盖 needsResync 边沿与空闲 fence。生产成本：每次活动突发 ≤4096 次微任务让步 + 廉价 `getStatus()`，量级亚毫秒、不跨 macrotask 边界饿死定时器。
 
@@ -766,7 +766,7 @@ backoff：baseMs/maxMs/resetAfterMs 为有限安全整数 > 0 ∧ baseMs ≤ max
 | P-9 | session fanout：null-origin 恒投全部 channel、applyOrigin 回声抑制、每投递独立副本、20 让步异步化 | 源码引用 | replication-session.ts:252-293（observer）/216-241（泵）——AC5 fan-out/回声抑制锚 | 低 |
 | P-10 | y-protocols 空 diff 为 2 字节封装（断言 ≤4 安全） | 设计期实测验证（SA6 已验） | 任务简报 SA6 裁决注记 5：「空 diff 实测为 y-protocols 2 字节封装，断言 ≤4 字节」；本设计不锁字节，零风险传递 | 低 |
 | P-11 | 微任务自延伸链若无界将饿死 macrotask（timer/IO）——watchdog 必须有界 | 官方文档引用（Node.js 事件循环模型）+ 仓库先例 | Node.js docs：microtask queue 清空后才进入下一 phase；仓库先例 fanout 泵以队列空为退出条件（replication-session.ts:221）避免无界 | 低（设计已内置 4096 让步预算） |
-| P-12 | vitest 根配置无需改动即可拾取本包测试（include 通配覆盖） | 源码引用 | vitest.config.ts:5-11（`packages/*/test/**`）+ tsconfig.typecheck.json include `packages/*/src|test`；红灯记录（简报 §红灯运行验证）确认 7 套件已被发现（失败仅因包缺席） | 低 |
+| P-12（R4.1 勘误：vitest 半句维持、typecheck 半句更正） | 测试拾取与类型门禁两条路径**性质不同**：(a) vitest 路径——根配置通配覆盖本包，无需改动 ✓；(b) `pnpm typecheck` 路径——根 `package.json` 脚本为**逐包显式枚举**（`tsc -p … && …`），新包必须追加一行，否则 CI Typecheck 步骤**静默跳过本包**（R1 原表述「根配置零改动必要」对此路径不成立，已于 §21 ALLOW 追认 `0cd1ae6` 单行追加） | 源码引用 + SA4 实证 | vitest.config.ts:5-11（`packages/*/test/**` include + typecheck include 通配 ✓）+ tsconfig.typecheck.json include `packages/*/src|test`（聚合 `--noEmit` 路径确覆盖，但非 CI 所跑路径）；根 package.json:13（typecheck 脚本逐包枚举——本包追加前不含 ws-replication）；`.github/workflows/ci.yml` L36-40（push/PR 均跑 `pnpm typecheck`/`pnpm test`）；SA4 报告 F8（`git diff ff50d47..HEAD -- package.json` 单行追加 + 改后 `pnpm typecheck` exit 0 含本包复核）；红灯记录确认 7 套件已被 vitest 发现（失败仅因包缺席） | 低（已收口：0cd1ae6 落地 + 本勘误） |
 | P-13（R2） | WebSocket 可靠有序传输 ⇒ 连接内 sequence gap 真实不可达；gap/repeat 的可达面仅为注入测试与实现缺陷，均以 `SEQUENCE_VIOLATION` fatal close（1002）为正确响应；注入丢帧后的收敛经「fatal close → 重连/重建 → re-OPEN/reconcile」达成 | ADR/协议文档引用 | ADR 0010 L147「每方向sequence从1严格递增，不回绕；**gap、repeat或错误ACK关联关闭连接**」（SA8 CP-1 裁决基准原文）+ 协议 §1.2「对端严格按期望值接收」+ §13.1 注册表 + RFC 6455（WS 有序可靠交付）；SA8 报告 CP-1 行「WebSocket 为可靠有序传输、连接内 gap 在真实传输下不可达」 | 低（受影响冻结用例已列 §18.11 清单移交 SA6） |
 | P-14（R3） | session status 可作围栏/溢出判别面：`getStatus()` 暴露 `state('open'\|'closed'\|'conflicted')`、`currentEpoch`（投影链当前值 ≠ 冻结 `replicationEpoch` ⟹ 已被 fence）与第 11 字段 `needsResync`（sticky、置位后永不清除）；apply 拒绝码 `REPLICATION_EPOCH_CONFLICTED` 在 A1 接纳层（session 已 conflicted）与槽 R2 被动 fence 两路径同码产出 | 源码引用 | namespace-registry types.ts `ReplicationSessionStatus`（state/currentEpoch/needsResync 字段冻结形状）+ replication-session.ts :450-453（A1）/:568-580（R2 被动 fence → 同码拒绝）/:258-261（队列容量 16 溢出置 sticky needsResync）；CONTEXT.md《ReplicationSession》词条「transport 须 reset/bootstrap」义务（SA2 #2/#3 依据，本轮独立核实） | 低 |
 
@@ -801,6 +801,7 @@ backoff：baseMs/maxMs/resetAfterMs 为有限安全整数 > 0 ∧ baseMs ≤ max
 - `packages/ws-replication/src/testing.ts` — 新建，§17 createMemoryDuplexTransport（≈50 行）
 - `pnpm-lock.yaml` — 修改，`pnpm install` 登记新包依赖（红灯记录明示此为消解根因的必要步骤）
 - `packages/ws-replication/test/*.ts`（既有 9 文件）— `[SA6 owned]` 冻结验收测试；SA3 仅可修测试**基础设施**（import 解析、hook/fixture 装配），**禁改断言逻辑**；§18.11 对齐清单 #1–#7 的断言修正必须由 SA6 走测试侧修订，SA3 不得代改
+- `package.json`（根）— 修改，`typecheck` 脚本枚举追加 `tsc -p packages/ws-replication/tsconfig.json` 单行（**R4.1 勘误轮追认**，SA4 静态验尸 F8 范围越界项；commit `0cd1ae6` 已落地，SA4 复核 `pnpm typecheck` exit 0 且含本包）。理由（总控裁决依据）：根 `package.json` 的 `typecheck` 脚本是**逐包显式枚举**（`tsc -p … && tsc -p …`）而非通配——不追加则本包在 CI `pnpm typecheck` 门禁（`.github/workflows/ci.yml` L36-40）中**静默跳过**（issue #147 §1.4 立法要堵的 CI 黑洞）；R1 设计 P-12「通配已覆盖」的 typecheck 半句对此路径**不成立**（vitest 半句成立——`vitest.config.ts` include 通配确覆盖本包，见 §19 P-12 勘误）。原 DENY 排除据此解除（ALLOW 只增原则 + SA4 F8 编号理由；其余根配置仍 DENY）
 
 ### DENY LIST
 
@@ -808,7 +809,7 @@ backoff：baseMs/maxMs/resetAfterMs 为有限安全整数 > 0 ∧ baseMs ≤ max
 - `packages/namespace-registry/**`、`packages/namespace-runtime/**`、`packages/persistence/**`、`packages/clock/**`、`packages/doc-runtime/**`、`packages/dsh-persistence/**`、`packages/vfsl*/**` — 既有交付物只读
 - `apps/**`、`domains/**`、`tests/**` — 组合根/域/跨包测试不属本切片
 - `docs/**`、`CONTEXT.md`、`wiki/**` — ADR/规格/词汇一致性收口属切片 10（§23 登记项届时处理）
-- `vitest.config.ts`、`tsconfig.base.json`、`tsconfig.typecheck.json`、`pnpm-workspace.yaml`、根 `package.json` — 通配已覆盖本包（P-12），零改动必要
+- `vitest.config.ts`、`tsconfig.base.json`、`tsconfig.typecheck.json`、`pnpm-workspace.yaml` — 通配已覆盖本包（P-12 勘误后仅 vitest 半句成立；typecheck 脚本枚举项已于 R4.1 移入 ALLOW——见上条）
 
 ---
 
@@ -852,6 +853,8 @@ backoff：baseMs/maxMs/resetAfterMs 为有限安全整数 > 0 ∧ baseMs ≤ max
 | R-8 | `maxQueuedBytesPerConnection`/水位以内部记账实现 | 真实 WS bufferedAmount 背压未接（DuplexTransport 无该面） | 内存双端 send 同步、结构性零积压 | 切片 7 transport 适配层接 bufferedAmount |
 | R-9（R3/#9 新增，O-4 登记补全） | submit 门 UPDATE-only（§11.1.2/§18.1）：submit:false 的重连同 peer 可经 reconcile Step2 diff 向 hub 传播**离线写** | 授权语义缺口——「提交权限」未覆盖 Step2 数据面（冻结 AC1 锚死 UPDATE-only 读法，本切片不改行为） | 冻结测试锚定 + 缺口在此显式登记（原先只在 SA8 摘录 relevant_decisions #5） | **Jim/切片 10 裁决候选**：submit 权限是否应扩展覆盖 Step2（届时需 ADR 0010 §19 增补 + SA6 新锚） |
 | R-10（R3/#10 新增） | watchdog 预算 4096 与 harness settle 常量（300/3000）的耦合不变量 | SA6 上调 harness 预算会静默破坏 fence/溢出检测（用例超时红） | 不变量「watchdog 预算 > settle 预算之和」已写入 §12（双向登记；建议 harness 常量旁加耦合注释） | SA6 在 harness.ts:198/207 登记耦合注释（测试侧文档性动作） |
+| R-11（R4.1 新增，SA4 F6 登记） | §4.4 连接级调度**半残**：`lowWater/highWater/maxQueuedBytesPerConnection` 仅存在于 defaults+validate（零字节记账）、`OutboundQueue` round-robin/dataQueues 未被喂入、`CONNECTION_BACKPRESSURE` 无实现面；SA4 另录角落差异——UPDATE 大小门的执行层先于 state/submit 门（设计 §11.1 门序 state→submit→size，语义等价但角落码可达面不同） | v1 内存同步 transport（send 即达）下结构性不可达，无行为影响；真实 WS（有 bufferedAmount/投递延迟）接入后背压全失效 | §4.4 已声明「bufferedAmount 观察属切片 7 适配层」；SA4 判不阻塞 | **切片 7**：真实 WS 适配层必须接上 bufferedAmount 观察水位、连接排队字节记账、round-robin data 队列喂入与 `CONNECTION_BACKPRESSURE` close(1011)；门序差异一并收口（SA7 动态审核重点 #4） |
+| R-12（R4.1 新增，SA4 F9 登记） | §4.3 GOAWAY 接收的 `SERVER_RESTARTING` 分支未实现「停止新 OPEN/round」（实现仅按 drainTimeoutMs deadline 关连接，deadline 期间 namespace 照常 live/open） | 停机通告期继续开新生命周期与「收口后关闭」意图相悖（hub 停机窗口内 peer 白开 round，随后必然断连重来） | 本切片无冻结测试覆盖；hub 主动 GOAWAY 发送属切片 9（§4.3 已划界） | **切片 9**：停机编排收口——drain 期停新 OPEN/round + deadline 关闭 + reasonCode 分类重连全链路（SA7 动态审核重点 #5） |
 
 **R2 收口状态（CP-1/CP-2）**：round 1 曾登记的两条 ADR 增补候选（溢出整连接重建拓扑、序列跳跃容忍）与 R-2（整连接扰动代价）**已删除**——两冲突点均按总控裁决回退 ADR 0010/协议字面（§4.1/§10.5/§18.7/§18.8），**无需 ADR 增补、无待 Jim 裁决残留**。
 
@@ -913,3 +916,14 @@ backoff：baseMs/maxMs/resetAfterMs 为有限安全整数 > 0 ∧ baseMs ≤ max
 | nano-note 1 | §8「重读保证帧身份与快照内容一致通过安装」措辞过强（bump 落 encodeDiff 与重读之间仍安全失败 BOOTSTRAP_FAILED） | ✅ 措辞校准为「**最小化**不一致窗口；**残余窗口安全失败**」（#133 R2 有意口径，非缺陷） | §8 第 3 步身份读取点条款 |
 | nano-note 2 | uint32 耗尽 1008/blocked 不自愈 vs retryable 1011 + 重连自愈（计数器按连接重置） | ✅ 选择注记登记：保守选择理由（永久性配置级信号更贴近「计数器不可信」事实）+ 备选形态（1011/backoff）登记供切片 10 复议 | §4.1 出站耗尽条款 |
 | nano-note 3 | §18.11「R3 追加」首句「SA2 R3 攻击评审」轮次笔误 | ✅ 更正为「SA2 R1 攻击评审」+ 笔误说明；顺带补 N-1 红灯候选 ⑧（fence × 恢复 round / OPEN(mode0) × bump 变体）入移交清单 | §18.11 R3 追加节 |
+
+### SA4 勘误轮（R4.1/R4.2）逐条回应（静态验尸 F8 追认 + F6/F9 登记 + F1 hub 声明条款澄清，2026-08-30）
+
+> 报告：`task_phase5-ws-namespace-sync_sa4_review.md`。R4.1 按总控指令窄幅执行：F8 勘误 + F6/F9 演进位登记；R4.2 追加授权完成 F1 的 SA1 侧条款澄清（§12 hub 分支「声明+等待」定案）。F1/F2/F3 的实现与测试修复归 SA3/SA6（SA4 已裁回流路径）。
+
+| # | 项 | 处置 | 修订位置 |
+|---|---|---|---|
+| F8 | 根 `package.json` 越界（0cd1ae6 单行 typecheck 枚举追加）：P-12「通配已覆盖」对 typecheck 脚本路径不成立，不追加则 CI 静默跳过本包 | ✅ 追认：§21 ALLOW LIST 追加根 package.json 条目（附总控裁决依据 + 0cd1ae6 + CI 门禁锚）；DENY LIST 该行同步收窄（根 package.json 移出，其余根配置仍 DENY；ALLOW 只增原则）；P-12 勘误为双路径分述（vitest 通配 ✓ / typecheck 枚举须追加） | §21 ALLOW LIST 末尾新增条目 + DENY LIST 配置行；§19 P-12（整行重写，标注 R4.1 勘误） |
+| F6 | §4.4 水位/round-robin/CONNECTION_BACKPRESSURE 半残（v1 内存 transport 结构性不可达）+ UPDATE 门序角落差异 | ✅ 登记 R-11：演进位指向切片 7（bufferedAmount 水位/记账/round-robin 喂入/CONNECTION_BACKPRESSURE + 门序收口，SA7 动态审核重点 #4） | §23 R-11 |
+| F9 | GOAWAY `SERVER_RESTARTING` 未停新 OPEN/round（仅 deadline 关连接） | ✅ 登记 R-12：演进位指向切片 9（停机编排：drain 期停新 OPEN/round + deadline 关闭 + 分类重连，SA7 动态审核重点 #5） | §23 R-12 |
+| F1（SA1 侧条款，R4.2 追加授权） | §12「命中分派」hub 分支「丢弃+等待」与 §10.2/§18.4「hub 溢出同机制声明 RESYNC_REQUIRED」内部张力——SA3 曾按 §12 字面实现为「只等待零声明」→ hub 侧溢出零 wire 信号、恢复 round 永不触发（SA4 F1 静默发散根因） | ✅ 单条款澄清：hub 分支明确定为「**声明 RESYNC_REQUIRED + 等待**」（hub 通道任一溢出面——§10.2 本地排队溢出与 §12 needsResync 边沿同规；协议 §9.4「任一端可声明」——hub 的声明是 peer 发起恢复 round 的唯一通路）；明文「hub 侧不存在『只等待零声明』的分支」。实现侧补发（SA3）与红灯（SA6）按 SA4 F1 处置回流路径执行 | §12 命中分派段（R4.2 标注） |

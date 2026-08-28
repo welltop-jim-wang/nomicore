@@ -190,15 +190,16 @@ describe('R3/R4 补测：恢复窗口 / fence 竞态 / fanout 溢出 / removeTar
     expect(runF.peerFrames('CLOSE_NAMESPACE')).toHaveLength(0);
   });
 
-  it('⑤d closing 中到达 terminal namespace ERROR：维持 closing、收敛 closed（非 failed）、零回发帧', async () => {
-    const run = await boot();
-    // 悬挂在途 apply → CLOSE 帧先行、CLOSE_OK 未回（closing）
+  it('⑤d closing 中到达 terminal namespace ERROR：维持 closing、收敛 closed（非 failed）、零回发帧〔无撞号形态〕', async () => {
+    const run = await boot({ timeouts: { closeTimeoutMs: 200 } });
+    // 悬挂 hub 在途 apply（saveGate 保持悬挂——CLOSE_OK 永不发出 → hub 方向完全静默，
+    // 注入帧与真实出站帧零撞号——序列记账纪律见 driver.injectHub 注释）
     run.hubNode.persistence.saveGate = deferred();
     await run.writePeer({ n: 1 });
     await settle();
     const closePromise = run.peer.removeTarget(run.nsId);
     await run.waitNamespace('closing');
-    // 注入 terminal namespace ERROR（hub→peer 静默期，序列连续）
+    // 注入 terminal namespace ERROR（hub 静默期，序列 = peer 期望值，连续）
     run.injectHub({
       kind: 'ERROR',
       code: 'NAMESPACE_STATE_VIOLATION',
@@ -206,15 +207,15 @@ describe('R3/R4 补测：恢复窗口 / fence 竞态 / fanout 溢出 / removeTar
       namespaceId: run.nsId,
     });
     await settle();
-    // 不降级为 failed：只推进收口
+    // 不降级为 failed：只推进收口（R3/#5d）
     expect(run.namespaceState()).not.toBe('failed');
     expect(run.peerFrames('ERROR')).toHaveLength(0); // 零回发帧
-    // 释放 → 已接纳 apply 完成 → CLOSE_OK → closed
-    const gate = run.hubNode.persistence.saveGate;
-    run.hubNode.persistence.saveGate = undefined;
-    if (gate !== undefined) gate.resolve();
+    // CLOSE_OK 未达（gate 悬挂）→ closeTimeout 本地收口 closed（§13.1「fire → 不再等待」）
+    await advanceMs(run, 200);
     await closePromise;
     await run.waitNamespace('closed');
+    expect(run.hubFrames('CLOSE_OK')).toHaveLength(0); // 注入后 hub 方向零新帧
+    // 已接纳 apply 未丢（live 已提交——dirty 悬挂不影响 commit）
     expect(run.rootValue('hub', 'n')).toBe(1);
   });
 

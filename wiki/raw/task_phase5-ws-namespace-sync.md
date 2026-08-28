@@ -219,3 +219,33 @@ EXIT=0
 （修订前基线 /tmp/sa6-phase3-run.log：8 文件 3 失败 5 通过、67 测试 7 失败 60 通过——7 条失败与上述仲裁逐条对应。）
 
 **类型干净性**：修订后 /tmp/wsstub 契约 stub + 路径映射 `tsc -p /tmp/wsstub/tsconfig.json` → exit 0。**范围说明**：SA6 只跑 `packages/ws-replication` 包范围；全仓 `pnpm test` 零回归确认由总控亲跑（简报另述）。
+
+### SA6 回流红灯记录（SA4 F1/F2/F3，2026-08-30）
+
+> 背景：SA4 静态验尸 verdict: reject（`wiki/raw/task_phase5-ws-namespace-sync_sa4_review.md`，F1/F2/F3 三条 REJECT 依据）。SA6 以测试所有者身份落地三条新红灯（实现未修、预期红）+ F3 配套 seam 修复 + ⑤d 无撞号形态修订（保持 R3/#5d 语义）。
+
+### 新增红灯（`packages/ws-replication/test/ws-replication-sa4-f1-f2-f3-red.test.ts`，3 it）
+
+| IT | 设计依据 | 红锚（现实现实测失败 = SA4 执行证据一致） | 转绿条件（SA3 修复） |
+|---|---|---|---|
+| F1 hub 侧溢出 → RESYNC_REQUIRED → 同连接恢复 round → 双向收敛 | §10.2 溢出动作表「发 RESYNC_REQUIRED{reasonCode:'send-queue-overflow'}（本端声明）」；§18.4「hub 溢出同机制（协议 §9.4 任一端可声明）」；协议 §9.4（round 恒由 peer 发起——hub 声明是唯一通路）。构造：`maxInFlightUpdates:1, maxQueuedUpdateCount:1` + 悬挂 peer saveDoc（hub→peer 首笔 UPDATE 在途 ACK 不回 → hub in-flight 不收口）→ hub 连写 extra:5/n:6 → 第二笔触发 channel 溢出 | `expected [] to have a length of 1 but got +0`（hubFrames('RESYNC_REQUIRED')=0；= SA4 R-D 证据）| hub 两处溢出路径补发 RESYNC_REQUIRED → peer §10.6 路径收敛 → 本 IT 断言（reasonCode/roundId=2/n:6/extra:5 双侧收敛）全绿 |
+| F2 重连后 open 超时兜底 | §5.1「opening → armed openTimeoutMs」；§16 timer 清单；§9.3——均**无条件武装、无 everBeenLive 豁免**。构造：live → closePeerSide(1006) → backoff（0.5×50=25ms）重连（第二次 authorize 悬挂——hub 永不回 OPEN_OK）→ waitNamespace('opening') → `advanceMs(openTimeoutMs=200)` | `settleUntil 预算耗尽：namespace 状态 ∈ [failed]，当前 opening`（= SA4 R-C 证据：10× 超时时长仍 opening）| 删 everBeenLive 豁免、按 §16 无条件武装 → advanceMs 后收口 failed（§13.3 重连规则接管） |
+| F3 closing 窗口重复序列帧 → SEQUENCE_VIOLATION fatal → blocked | §4.1/§18.8（ADR 0010 L147 字面）：入站 sequence ≠ 期望——**无论 gap、repeat 或回退——一律 SEQUENCE_VIOLATION connection fatal**；§18.11 前言「不得为迁就现行断言偏离 ADR」。构造：⑤d 同款 closing 窗口（saveGate 悬挂、CLOSE_OK 不回）→ 显式 `injectHub(ERROR, { sequence: 1 })`（HELLO_ACK 已占用的回退序列——断言序列纪律无 closing 豁免）| `settleUntil 预算耗尽：connection 状态 = blocked，当前 ready`（= SA4 R-A 证据：closing 窗口宽赦放行）| 删除 anyNamespaceClosing 宽赦分支（回归 §4.1 字面：fatal → blocked + ns disconnected） |
+
+### F3 配套 seam 修复（测试侧；既有断言语义零改动）
+
+- `driver.injectPeer/injectHub` 增加可选 `{ sequence?: number }`（默认仍为「接收端期望 = 已见最大 +1」）并文档化**静默期不变量**：注入必须发生在「发送方不再产生真实帧」的窗口——否则真实帧与注入帧同序列撞号（接收端按序列纪律判 SEQUENCE_VIOLATION，非确定性）；确需注入错序/重复帧（F3 红灯）时显式传 sequence。
+- **⑤d 无撞号形态修订**（`ws-replication-r3-r4-regressions.test.ts`）：原形态（saveGate 悬挂 → 注入 → 释放 → CLOSE_OK 序列与注入帧撞号——现被实现宽赦掩盖，SA3 修 F3 后必然假红）改为：saveGate **保持悬挂**（CLOSE_OK 永不发出 → hub 方向完全静默）→ 注入合法序列 ERROR → 断言不降级 failed + 零回发帧 → `advanceMs(closeTimeoutMs=200)` 按 §13.1「fire → 不再等待，本地收口 closed」→ closed + CLOSE_OK 帧数 0 + 已接纳 apply 不丢。**覆盖等价性**：R3/#5d 语义（closing 期迟到的 terminal ERROR 只推进收口、收敛 closed 非 failed、零回发帧）原样保留；注入序列合法性与 CP-1 序列纪律兼容（消除与真实出站帧的撞号面）。
+
+### 红绿证据（独立进程，`pnpm exec vitest run packages/ws-replication`，/tmp/sa6-f1f2f3-run.log，exit=1）
+
+```
+Test Files  1 failed | 8 passed (9)    ← 新文件 3 it 全红；既有 8 文件（67 IT）全绿
+Tests       3 failed | 67 passed (70)
+Type Errors no errors
+EXIT=1（预期——F1/F2/F3 实现未修）
+```
+
+红锚逐条与 SA4 执行证据一致：F1 = R-D（RESYNC 0 帧）、F2 = R-C（100× 超时时长仍 opening——本 IT 用 1× openTimeoutMs 等效收口断言）、F3 = R-A（closing 期重复序列被宽赦 → 恒 ready）。既有 67 IT 零回归（含修订后的 ⑤d 与 R3 ①/⑧a 等触发面）。
+
+**类型干净性**：修订 + 新增后 /tmp/wsstub 契约 stub 路径映射 `tsc -p /tmp/wsstub/tsconfig.json` → exit 0。**范围**：仅 `packages/ws-replication/test/`（新增 1 文件、修订 driver/r3-r4-regressions）与简报；未触碰生产代码（SA3 随后对 F1/F2/F3 实现）。
