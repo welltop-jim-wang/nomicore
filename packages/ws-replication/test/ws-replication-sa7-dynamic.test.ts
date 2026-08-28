@@ -48,7 +48,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { boot, advanceMs, collectUnhandledRejections, type Run } from './driver.js';
-import { HUB_OWNER, settle } from './harness.js';
+import { deferred, HUB_OWNER, settle } from './harness.js';
 
 /** 手动推进 hub 侧虚拟时钟（P-2 缺口补面：advanceMs 只推进 peer scheduler）。 */
 async function advanceHubMs(run: Run, ms: number): Promise<void> {
@@ -221,5 +221,121 @@ describe('SA7 动态验证：hub watchdog 空闲节奏（SA4 #3）/ hub needsRes
     expect(run.connectionState()).toBe('blocked');
     // 未走 deadline 关闭路径（非 SERVER_RESTARTING 分支）
     expect(run.wire.peerSideClosed).toBe(false);
+  });
+});
+
+// ═════════════════════════ R3 复验轮补充（2026-08-30）═════════════════════════
+
+/**
+ * B-2a 闭项探针（SA7 R3）：B-2a（导入迟到终态不回收 lease——Spec §5 B-2a，无红灯：
+ * Registry 无 lease 列表公共观测面）由 SA3 R4（0324d8f）顺手修复。本 IT 以**终态变体**
+ * （B-2b 红灯锚的是 disconnected 变体）动态闭项：迟到导入续体在 ns 已终态（closed）时
+ * ——零 wire、零状态机迁移（§13.4）；被回收 lease 的后继流程全功能（回收未损伤文档/
+ * 持久化面：re-add → 重建 → reconcile live → 业务写双向收敛）。
+ */
+describe('SA7 R3 补充：B-2a 终态变体闭项（迟到导入回收 × 后继 lease 全功能）', () => {
+  it('B2a：导入在途 → removeTarget 收口 closed（终态）→ 迟到导入零 wire 零迁移 → re-add live + 写收敛', async () => {
+    const probe = collectUnhandledRejections();
+    try {
+      const run = await boot({ start: false });
+      run.peerNode.persistence.importHold = deferred();
+      run.peer.start();
+      await run.waitNamespace('bootstrapping');
+      // removeTarget（导入悬挂中）→ closing → CLOSE → hub CLOSE_OK → closed（终态）
+      const closePromise = run.peer.removeTarget(run.nsId);
+      await run.waitNamespace('closed');
+      await closePromise;
+      await settle();
+      // 冻结 wire 快照（迟到续体不得产生任何新帧）
+      const frozenPeerToHub = run.frames().peerToHub.length;
+      const frozenHubToPeer = run.frames().hubToPeer.length;
+      // 释放导入 → 迟到续体：§13.4 已终局 → lease 静默回收（B-2a）、零 wire、零迁移
+      const hold = run.peerNode.persistence.importHold;
+      run.peerNode.persistence.importHold = undefined;
+      if (hold !== undefined) hold.resolve();
+      await settle();
+      expect(run.namespaceState()).toBe('closed');
+      expect(run.peerFramesAll('BOOTSTRAP_ACK')).toHaveLength(0);
+      expect(run.hubFramesAll('ERROR')).toHaveLength(0);
+      expect(run.frames().peerToHub.length).toBe(frozenPeerToHub);
+      expect(run.frames().hubToPeer.length).toBe(frozenHubToPeer);
+      // 后继 lease 全功能：re-add → §14.1 整连接重建（B-2e 通知面同路径）→ 副本已导入
+      // → mode1 reconcile → live；业务写经新 lease 双向收敛（回收未损伤持久化面）
+      const dials = run.dialCount;
+      run.peer.addTarget(run.target);
+      await run.waitNamespace('live');
+      expect(run.dialCount).toBeGreaterThan(dials);
+      await run.writePeer({ ext: 3 });
+      await settle();
+      expect(run.rootValue('hub', 'ext')).toBe(3);
+      expect(run.rootValue('peer', 'ext')).toBe(3);
+      await settle();
+      expect(probe.events).toEqual([]);
+    } finally {
+      probe.dispose();
+    }
+  });
+});
+
+// ═════════════════════════ R3 复验轮红锚（D2，2026-08-30 实测，预期红）═════════════════════════
+
+/**
+ * D2（MAJOR，SA7 R3 发现）：迟到 cleanup 的 `unsubscribe` 步骤在 B-2d「当前
+ * session/lease 判别」守卫之外——跨重连在途 apply 场景下误退订**新** session 的
+ * owned-updates listener → peer→hub live 更新静默停摆（零 UPDATE、零 ERROR、零
+ * RESYNC——peer 投影恒 live，hub 永久缺失后续本地写；F1 同族静默失败红线）。
+ *
+ * 机制（peer-namespace.ts `closeSessionAndRelease`）：旧 cleanup 在
+ * `await session.close()`（S1 屏障 = 在途 apply 排空）期间，重连已把 `this.unsubscribe`
+ * 换成新 session S2 的 U2；屏障解除后无条件执行 `this.unsubscribe()`——击中 U2。
+ * 守卫（`this.session === session && this.lease === lease`）只保护 session/lease/
+ * watchdog/round/channel 的 teardown 面，漏了位于守卫之前的 unsubscribe 步骤。
+ *
+ * 构造（与 SA6 B-2d 红灯同构 + post-live 写探针，3/3 确定性）：
+ * peer saveGate 悬挂 hub→peer UPDATE 的 apply → 断线（投影先行 disconnected，旧
+ * cleanup 停在 S1.close() 屏障）→ backoff 重连 → re-OPEN/reconcile（round Step2
+ * apply 排队于 pendingApplies 集合中的悬挂旧 apply 之后；U2 已在 round 启动时订阅）
+ * → 释放 gate（同一微任务级联：旧 apply 迟结算 → round 收口 live + S1.close() 解除
+ * → 旧 cleanup 苏醒 → unsubscribe 击杀 U2）→ live 后 peer 本地写。
+ *
+ * 转绿条件（SA3）：`closeSessionAndRelease` 在入口捕获 unsubscribe 句柄（与
+ * session/lease 同款），仅当仍为当前句柄才调用/清除（或把 unsubscribe 移入
+ * 「当前 session/lease」守卫块内）。
+ */
+describe('SA7 R3 红锚：D2 迟到 cleanup 误退订新 session listener（B-2d 守卫遗漏 unsubscribe 面）', () => {
+  it('D2：在途 apply 跨重连收口 live 后，peer 本地写必须送达 hub（UPDATE ≥1 + 双向收敛）', async () => {
+    const probe = collectUnhandledRejections();
+    try {
+      const run = await boot({
+        backoff: { baseMs: 50, maxMs: 400, resetAfterMs: 500 },
+        random: () => 0.5,
+      });
+      run.peerNode.persistence.saveGate = deferred();
+      await run.writeHub({ n: 1 });
+      await settle();
+      await run.waitHubSent('UPDATE', 1);
+      run.wire.closePeerSide(1006, 'network lost');
+      await settle();
+      await advanceMs(run, 25);
+      await run.waitConnection('ready');
+      expect(run.peerFramesAll('OPEN_NAMESPACE')).toHaveLength(2); // B-2d 修复面（已知绿）
+      const gate = run.peerNode.persistence.saveGate;
+      run.peerNode.persistence.saveGate = undefined;
+      if (gate !== undefined) gate.resolve();
+      await settle();
+      await run.waitNamespace('live'); // B-2d 主断言（已知绿——round 收口不依赖 listener 存活）
+      await settle();
+      // ── D2 红灯锚：live UPDATE 通道必须承载 post-round 本地写 ──
+      await run.writePeer({ ext: 5 });
+      await settle();
+      await settle();
+      expect(run.frames().peerToHub.filter((f) => f.message.kind === 'UPDATE').length).toBeGreaterThanOrEqual(1);
+      expect(run.rootValue('hub', 'ext'), '迟到 cleanup 不得误退订新 session listener（§13.4 只回收旧资源）').toBe(5);
+      expect(run.rootValue('peer', 'ext')).toBe(5);
+      await settle();
+      expect(probe.events).toEqual([]);
+    } finally {
+      probe.dispose();
+    }
   });
 });

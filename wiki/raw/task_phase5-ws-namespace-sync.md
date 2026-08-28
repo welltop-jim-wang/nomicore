@@ -291,3 +291,30 @@ EXIT=1（预期——B-1/B-2 实现未修）
 ```
 
 红锚逐条与 Spec 报告证据对应（B-1 复活 live / B-2b 重连零 OPEN / B-2c OPEN 决策链迟滞 / B-2d 滞留不重 OPEN / B-2e 兄弟 ns 零重 OPEN）。既有 74 IT 零回归；`git diff --check`（工作区+缓存区）exit 0（G-1）；类型干净性：/tmp/wsstub 契约 stub 路径映射 tsc → exit 0。范围：仅 `packages/ws-replication/test/`（新增 1 文件、harness loadGate 一行门闩、r3-r4 EOF 一行）与简报；未触碰生产代码（SA3 随后对 B-1/B-2 实现）。
+
+### SA6 回流红灯记录（SA4 R4 复审 R4-1，2026-08-30）
+
+> 背景：SA4 R4 复审 verdict: reject（窄幅）——B-1/B-2 五主窗口修复到位，但 connectionEpoch 代际守卫接线不完备（R4-1：导入/session-open 续体未接判别 → 良性断线致 ns 永久 failed + 先于新 OPEN 的垃圾控制帧；R4-2：unsubscribe 误杀新 listener——红锚 SA7 已落 `sa7-dynamic.test.ts` D2 IT，**不重复锚定**）。SA6 只落 R4-1。
+
+### 新增红灯（`packages/ws-replication/test/ws-replication-sa4-r4-1-red.test.ts`，1 it，实测红）
+
+| 项 | 内容 |
+|---|---|
+| 设计依据 | §13.4「连接已断」半句（本 delta 声称完整实现）+ §13.3 重连修复承诺；R4-1 静态面：onBootstrapSnapshot 导入续体（importReplica + tryOpenReplicationSession await 后仅 isConnectionDead）与 openSessionAndStartRound（入口检查在 await 前）均未捕获/比对 connectionEpoch；isConnectionDead = 终态 ∨ disconnected——新生命周期离开 disconnected 停留域（'opening'）后迟到续体照常推进 |
+| 构造（staging 按 SA4 报告明文） | bootstrap + **importHold**（快照已收、BOOTSTRAP_ACK 未发）→ 良性断线（cleanup 快）→ backoff 重连 ready（**Registry 每-ns carrier FIFO：新生命周期 registry.open 排队在停泊 import #1 之后 → state 恒 'opening'**——isConnectionDead 结构性失效）→ 释放 importHold（#1 续体照常推进） |
+| 红锚（现实现实测 = SA4 执行证据） | ① `NAMESPACE_STATE_VIOLATION ×2`（旧续体 BOOTSTRAP_ACK/STEP1 先于新 OPEN 落新连接 → hub 无通道）；② wire #2 第一个非握手帧 = BOOTSTRAP_ACK（非 OPEN——旧续体零 wire 断言失败）；③ ns 永久 failed（waitNamespace('live') 超时）。实测红锚：① 先红（`expected [ 'NAMESPACE_STATE_VIOLATION', …(1) ] to deeply equal []`——恰 2 次，与 SA4 报告 wire 实测一致） |
+| 转绿条件（SA3 修复） | 两处续体入口捕获 connectionEpoch、每个 await 后 `isConnectionDead() || epoch !== 当前` → 交付物静默回收 + 零 wire 零迁移 → 新连接单 OPEN（reconcile——副本已导入）→ 零 violation → live 收敛 |
+
+### 红绿证据（独立进程，`pnpm exec vitest run packages/ws-replication`，/tmp/sa6-r4-1-full.log，exit=1）
+
+```
+Test Files  2 failed | 10 passed (12)   ← R4-1 新红锚 + SA7 D2（R4-2 既有预期红锚，SA7 已落）
+Tests       2 failed | 80 passed (82)
+Type Errors no errors
+EXIT=1（预期——R4-1/R4-2 实现未修）
+```
+
+- **R4-1（本轮回流，新 IT）**：红锚逐条对应 SA4 R4 报告执行证据（2× NAMESPACE_STATE_VIOLATION / 垃圾帧先于 OPEN / 永久 failed）。
+- **既有 81 IT 零回归**：80 通过 + 唯一既有红 = SA7 D2（R4-2 红锚，设计与 R4-1 同批修复后转绿——非回归）。
+- `git diff --check`（工作区+缓存区）exit 0；类型干净性：/tmp/wsstub 契约 stub 路径映射 tsc → exit 0。
+- 范围：仅 `packages/ws-replication/test/`（新增 1 文件）与简报；未触碰生产代码（SA3 随后修复 R4-1/R4-2，R4-3 随修、R4-4 登记切片 7）。
