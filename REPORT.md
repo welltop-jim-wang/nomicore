@@ -1,94 +1,98 @@
 ---
 status: complete
 run_id: issue-134-1787847658-8367
-task_type: feature
+task_type: bugfix
 branch: fix/issue-134-on-docs-phase-5-websocket-replication
-round: 1
+round: 2
 issue: 134
-started_at: 2026-08-28T00:21:00+08:00
-finished_at: 2026-08-28T05:00:00+08:00
+started_at: 2026-08-28T06:05:00+08:00
+finished_at: 2026-08-28T09:35:00+08:00
 ---
 
-# Phase 5: expose trusted NamespaceLease ReplicationSession（issue #134）
+# issue #134 Round 2：PR #146 评审 12 项反馈修复（修订轮）
 
 ## 概要
 
-交付 Phase 5 切片 3/4：`NamespaceLease.openReplicationSession(options)` 受信任 duplex 复制会话——
-可信 transport 可编码 state vector/diff、订阅 owned updates、经唯一 write sequencer 应用远端 Yjs
-update，全程不取得 live Y.Doc。会话创建时冻结 localRole/remoteInstanceId/replicationId/
-replicationEpoch；Hub 方向对 Peer update 执行 scratch clone 预检（SCHEMA 容器与 META 保留字段
-内容投影不变才放行）；Peer persistence-degraded 下仅冻结 hub-to-peer 方向 session 可内存 apply
-并继续 saveDoc 登记；单 Runtime observer 扇出不可变字节至多 session、排除源 origin、listener
-失败自捕获不影响已提交事务；raw apply 不做 VFSL 预校验、状态标记 `replication-unvalidated`。
-实例静态角色（hub/peer）经 Registry 构造注入；peer 本地 replaceSchema/enable/bump 以稳定
-REPLICATION_ROLE_PERMISSION 拒绝。
+按 PR #146 评审反馈（阻断 5 / 需明确 3 / 收口 4，共 12 项）对 round 1 交付做修订修复，
+评审合同逐字收录于 `wiki/raw/task_namespace-lease-replication-session_round2.md`。核心
+修复五件：epoch fence 前置到 bump 槽（旧 session outbound 立即停止投递）、Runtime close
+同步段终止/detach 现存 sessions、复制扇出异步化（observer 零 listener 调用 + 每 channel
+有界队列 16 + 自延伸微任务泵让步 20 + sticky `needsResync` 第 11 字段——ADR 0010 L113
+字面落地）、受保护字段规范化深比较（白名单 = Y.Map/Y.Array ∪ plain array/object）、
+lease release guaranteed cleanup（seam 抛错隔离、半释放结构性不可达）。另：committed
+精确二分（beforeTransaction 探针）、no-op 置位语义明文、plugin role 贯通（含
+createNamespaceRegistry 工厂漏转发第二根因）、AC7 竞态矩阵补齐、owned bytes 测试加严、
+两包 README、PEER_ALLOWED_META_KEYS 空占位删除。
 
-流水线全程：SA8 前置门禁 **clear**（O-1..O-12 开放点）→ SA6 验收锚定（20 行为红+2 类型红）
-→ SA1 设计 R1.1（SA2 R1 reject：HIGH×2 修复）→ SA8 设计复审 clear → SA2 R2 **pass** →
-SA3 TDD 实现（666f9b1）→ SA6 R2 修复 8 项测试口径缺陷（08b49fd）→ 总控亲验三档全绿 →
-SA4 静态验尸 **pass**（0 MAJOR/0 MINOR）→ SA7 动态验证 **PASS**（0 缺陷）→
-AC 门禁 **7/7 + O-5 补锚 2/2** → 双轴终审**双 pass** → 终审非阻断项回流收口（04849fe）。
+流水线全程（修订轮工作流）：SA8 前置门禁 **clear**（12/12 no-conflict + D-1..D-4 登记义务）
+→ SA6 红灯锚定（29 新用例：21 预期红 + 8 绿锁定）→ SA1 设计增补 → SA8 设计复审 **clear**
+（C-1'/C-2' 条件 + R-1'..R-4' 残留）→ SA2 攻击评审（R2 **reject** HIGH+MEDIUM → R2.1
+**pass** → R2.2 **pass**）→ SA3 TDD 实现（8a68d82，偏离 3 项 + 发现 2 项全部经 SA1 R2.2
+就地裁决）→ SA6 三项同步（9cfc1b6：fixture 类型面 / AC-2 ③ 时序演进 / spin 收尾）→
+总控亲验三档全绿 → SA4 静态验尸（首轮 **reject** F-1 窄门 → 回流补锚闭合 → **pass**）→
+SA7 动态验证 **PASS**（0 契约缺陷，R-1'/R-2' 满载复核闭合）→ AC-R2 门禁 **12/12** →
+双轴终审**双 pass**（Standards 0 hard/2 minor/6 info；Spec 0 缺陷/5 INFO）→
+终审非阻断项机械收口（79194dd）→ 最终验证全绿。
 
-## 变更（diff ebc5419..HEAD = 666f9b1 + 08b49fd + 04849fe）
+## 变更（diff 4cfaffd..HEAD = 8a68d82 + 2a7117a + 9cfc1b6 + 1e2c748 + 1128ef7 + 79194dd）
 
-- `packages/namespace-runtime/src/replication-session.ts`（新，~660 行）：fanout（构造期恰一
-  doc.on('update')、origin 回声抑制、每 listener 独立副本+自捕获计数、detach 摘除）、WeakMap
-  host 登记、session core 十键六能力、apply 槽 R1–R7（fatal→身份/epoch fence→writable+
-  degraded bypass 五条件合取→scratch 判据 (a) 预演→一次 Y.applyUpdate(origin token)→R5.5 标记
-  →await notifyDirty→释槽）、open 门序。
-- `packages/namespace-runtime/src/`：runtime.ts 构造期挂接（十二键公共面不变）；internal.ts 第二
-  值导出 openReplicationSessionCoreForRegistry（Registry-only 消费边界不变）；errors.ts
-  append-only（NSRT-FATAL-REPLICATION-APPLY-INTERNAL、ReplicationSessionClosedError）；
-  write.ts WriteSlot +'replication-apply'（append-only，既有渲染逐字节不变）。**index.ts 零改动
-  （值导出仍恰一键）**。
-- `packages/namespace-registry/src/`：types.ts（ReplicationSession 结构性公共类型、open 输入/输出、
-  稳定 message 常量、CreateNamespaceRegistryOptions.role）；lease.ts（open 编排①–⑥、wrapCore
-  恰十键冻结、每 Lease 一活跃 session 计数、三 role gate、released 通道、doRelease 同步 close、
-  Equal 断言锁）；registry.ts（role 门禁第五门、deps 单点注入、跨包 Equal 真锁）；testing.ts
-  role 透传；index.ts type-only 追加（exports 不变）。
-- 测试：SA6 红转绿套件 `registry-phase5-replication-session-red.test.ts`（22 行为用例）+
-  `registry-phase5-replication-session-surface.test-d.ts`（5 探针）；SA3 包内
-  `runtime-replication-session.test.ts`（30 用例，含设计 R1 T-1..T-8）；既有
-  `runtime-registry-internal-seam.test.ts` 与 `registry-open.test.ts` 键集锁各演进一键（沿头注先例）。
-- 文档同步四件套：ADR 0010 增补节（稳定词汇注册、hub 侧 META 全键收紧登记、needs-resync 推迟
-  对账注记 C-1、判据 (a) 边界、observerFailures 显式化、回灌注记）；ADR 0009 两注记（internal
-  第二导出、Lease 面新增）；phase-5 切片 3/4 锚定 + C-1 注记；CONTEXT.md（ReplicationSession
-  词条扩写 + 新增「实例角色」词条）。
-- 流水线档案：wiki/raw/task_namespace-lease-replication-session_{,conflict_report,relevant_decisions,
-  sa6_red,design,design_conflict_report,sa2_review,sa2_review_r2,sa3_impl,sa4_review,sa7_report,
-  ac_checklist,standards_review,spec_review,dispatch}.md。
+- `packages/namespace-runtime/src/replication-session.ts`：SessionChannel/Sep/Fanout
+  异步化重构——observer 只做回声抑制谓词 + 容量检查（先于复制）+ `update.slice()` 入队 +
+  调度泵；自延伸微任务泵（20 让步/项、交付时刻快照、逐 listener 自捕获、最外层 catch、
+  finally 复位）；fenceStale/finalize/terminateAll/isTerminal 终态机；closedBy 记账 +
+  A1 码域精化（runtime-close → RUNTIME_WRITE_DISABLED）；protectedValueEqual/
+  deepEqualPlain/isWhitelistedValueContainer/projectOf 替换 protectedPrimitiveEqual；
+  R5 beforeTransaction 探针 committed 精确二分；status 第 11 字段 needsResync；
+  PEER_ALLOWED_META_KEYS 删除（语义冻结由 ADR 文字承载）。
+- `packages/namespace-runtime/src/replication-write.ts`：bump 槽 E5.5'（同步投影步）
+  `fenceStale(replicationId, nextEpoch)`——facts 整替之后、notifyDirty 之前；enable 槽零
+  fence（显式裁决）。
+- `packages/namespace-runtime/src/runtime.ts`：close() 同步段 lifecycle 翻转后、barrier
+  入队前 `fanout.terminateAll('runtime-close')`；构造期 fanout 前移。
+- `packages/namespace-registry/src/lease.ts`：doRelease guaranteed cleanup（① released
+  ② entry 删除 ③ releasePromise+observer 先于 ④ 幂等直调 close（`Promise.resolve(closing)
+  .catch` 原生同化 + try/catch）→ ⑤ onReleased 无条件）；Equal 锁自锁第 11 字段同步。
+- `packages/namespace-registry/src/plugin.ts`：NamespaceRegistryPluginConfig +role 键 +
+  校验序 ①形状→②键集→③role 域（NAMESPACE_REGISTRY_ROLE_INVALID）→④idleTimeoutMs +
+  apply 透传。
+- `packages/namespace-registry/src/registry.ts`：createNamespaceRegistry 工厂补转发
+  options.role（L1333-1339 展开缺 role 键的生产缺口修复）+ 跨包 Equal 双锁同步。
+- `packages/namespace-registry/src/types.ts`：PLUGIN_CONFIG 文案更新；status 类型第 11
+  字段 needsResync。
+- 测试：SA6 round-2 红套件两文件 29 用例全部转绿（runtime 17 + registry 12）；SA3 新建
+  包内套件 runtime-replication-session-round2.test.ts 25 用例（泵/队列/交付集/fence/
+  terminateAll/深比较矩阵/F-1 补锚/探针锚）；SA6 R2-10 加严 round-1 两文件（直存原始
+  callback 参数断言）+ R2.2 三项同步（fixture 类型面、AC-2 ③ flushMicrotasks 时序演进、
+  spin fixture 收尾 close——全部零断言语义变化、登记在案）。
+- 文档：ADR 0010 修订节 append-only round-2 小节（D-1..D-4 全条目：异步队列+needs-resync
+  交付集冻结、主动 fence、close 终止语义含 closedBy 码映射、深比较规则表+成本注记、
+  committed 二分+例外方向、成功接纳即置位）；phase-5 C-1 显式撤销改写 + 词汇追加；
+  CONTEXT.md needs-resync 一句；两包 README（runtime「ReplicationSession 内部宿主」8 条 +
+  Lifecycle 增补；registry Public API 5 条 + Plugin configuration）。
+- 版本：namespace-runtime 0.1.9→0.1.10；namespace-registry 0.1.5→0.1.6（恰 version 字段）。
+- wiki 归档：round-2 简报/冲突报告×2/相关决策/设计 R2.2.1（含 R2.1/R2.2/R2.2.1 修订记录）
+  /SA6 红灯报告/SA2 评审（含更正记录）/SA3 实现报告/SA4 验尸（含 F-1 追节）/SA7 动态报告
+  /AC-R2 checklist/双轴终审两份/dispatch 追加段。
 
-## 验证（总控亲跑，最终 HEAD 04849fe；forks 单 worker/heap 默认/显式 timeout 约束）
+## 验证（最终档，总控亲跑）
 
-| 项 | 命令 | 结果 | 证据（.mabf-bg/） |
-|---|---|---|---|
-| diff 卫生 | `git diff --check ebc5419..HEAD` | **exit 0** | 终端输出 |
-| 根 typecheck | `pnpm typecheck`（10 包链） | **exit 0** | final-typecheck.log/.exit |
-| 根全量测试 | `pnpm test --pool=forks --poolOptions.forks.maxForks=1 --poolOptions.forks.minForks=1 --testTimeout=60000 --hookTimeout=60000` | **138/138 文件 · 1681/1681 测试 · Type Errors 0 · exit 0**（95s） | final-test.log/.exit |
-| 基线对照 | 同命令于 ebc5419 | 1624/1624 exit 0（零回归；+57 = 本任务新增用例） | baseline-test.log |
+| 验证 | 命令 | 结果 |
+|---|---|---|
+| whitespace | `git diff --check 4cfaffd..HEAD` | **exit 0** |
+| 类型 | `pnpm typecheck` | **exit 0**（`.mabf-bg/r2final-typecheck.log`） |
+| 全量测试 | `pnpm test --pool=forks --poolOptions.forks.maxForks=1 --poolOptions.forks.minForks=1 --testTimeout=60000 --hookTimeout=60000` | **141 文件 / 1735 用例全绿；Type Errors: no errors；零 TypeCheckError / 零 Unhandled；exit 0**（92.73s；`.mabf-bg/r2final-test.log`） |
 
-SA7 动态验证摘要（PASS；探针全在 .mabf-bg/）：确定性三文件×3 连跑逐字一致；close barrier×停机序
-17/17；scratch O(doc) 实测 5k 键 7.8ms/50k 键 102.7ms 近线性、heap 无泄漏增长；degraded retry
-Memory+File 两路 16/16；observerFailures 3002 次投递计数精确、fatal 恒 null；Yjs 13.6.32 锚定
-19/19；敌意/变异 22/22。
+评审 12 项逐项处置详见 `wiki/raw/task_namespace-lease-replication-session_round2_ac_checklist.md`
+（12/12 通过：阻断 5 修复+回归锚、需明确 3 项全部裁决落盘、收口 4 项完成）。
+SA7 附加实测：red #9 forks 池满载 ×3 复跑最坏 202ms<400ms；泵活链路 13/13、fence/terminate
+活链路 18/18、敌意 beforeTransaction 探针 11/11、敌意 close 六型直构 unhandledRejection
+Δ0；round-2 三文件 ×3 连跑零 flaky。
 
-## 门禁结论
+## 遗留事项（全部登记归属，不阻断）
 
-- SA4：pass（0 MAJOR/0 MINOR/6 INFO）；SA7：PASS（0 缺陷）。
-- AC 门禁：7/7 + O-5 补锚 2/2（ac_checklist.md）；非目标零越界（WS/状态机/认证/resetReplica/
-  transport 抽取/replication-protocol 包零改动）。
-- 双轴终审（diff ebc5419..08b49fd，并行双 subagent）：Standards **pass**（0 hard/2 minor/5 info）；
-  Spec **pass**（0 CRITICAL/0 HIGH/1 MEDIUM/2 LOW/2 INFO，AC 逐条独立抽查、scope creep 零）。
-- 终审非阻断项已全部收口：Spec MEDIUM-1/LOW-1/LOW-2 → SA6 R3 补锚（22/22 直接绿）；Standards
-  minor×2 → SA3 R2 机械修复；INFO 项归属切片 6/9 或知情接受（明细见 ac_checklist.md 终审后补记）。
-
-## 遗留风险（全部已登记归属，不阻断本切片）
-
-- `INSTANCE_ID_PATTERN` 双副本（lease.ts ↔ replication-protocol constants.ts，互指注释结构守卫）：
-  切片 6 接线时收敛为单一真相源或加跨包一致性测试（Spec INFO-1）。
-- `PEER_ALLOWED_META_KEYS` 占位常量首版空集、needs-resync 队列/背压、scratch 增量检查演进位：
-  均属切片 6（ADR 0010 增补节已对账）。
-- 实例角色缺省 'hub'（O-4 零回归唯一解）：切片 9 部署切片必须显式配置（SA8 R-1 登记）。
-- observerFailures 无界计数、scratch O(doc)/apply 成本：O-10/O-12 显式裁决并登记，演进位属切片 6。
-
-CI 跟踪与发布（push/PR/标签/.mabf-done）移交 Host。
+- SA7 §十 N 级表征 4 条（跨 channel 首投递墙钟交错、Proxy 种子延迟域、RAW_UPDATE_INVALID
+  码语义面向、突发弃新计数）——设计 §18/SA7 报告登记，属知情接受。
+- Standards I-1（SessionClosedBy 'explicit-close' 死联合成员）等 info 级项记录在案。
+- needs-resync 消费面（transport reset/bootstrap 清零路径）属切片 6（ADR 0010 L151 域分界
+  维持）。
+- CI 状态不在本地完成门槛内：发布（push/PR）与 CI 观察由 Host 执行。
