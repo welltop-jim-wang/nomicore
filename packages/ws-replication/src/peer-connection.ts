@@ -367,6 +367,11 @@ class PeerConnectionImpl implements PeerReplication {
     this.goawayDrainMs = message.drainTimeoutMs;
     void this;
     if (message.reasonCode === 'SERVER_SHUTTING_DOWN' || message.reasonCode === 'REAUTH_REQUIRED') {
+      // B1（终审 Standards 轴，2026-08-29）：blocked 直达路径补 sender teardown——
+      // 与 enterBlocked/scheduleDrainClose 同型（§8 teardown 矩阵成文声称）。blocked
+      // 是长寿命等待态且 onClose 对 blocked 早退——若暂停段 poll timer 已武装而未清，
+      // stale getter 上 1s 周期无限重武装（backpressure.ts poll 回调）直至人工 stop。
+      this.sender?.teardown();
       this.setState('blocked');
       return;
     }

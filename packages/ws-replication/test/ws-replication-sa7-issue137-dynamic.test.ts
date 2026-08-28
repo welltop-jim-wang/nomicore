@@ -570,6 +570,58 @@ describe('SA7 动态验证（issue #137）：SA4 §6 D1–D5 / SA2 §8.4 移交�
       probe.dispose();
     }
   });
+
+  // ─────────────── D5 变体（终审 Standards 轴 B1 回归锚）：blocked 直达分类 teardown ───────────────
+
+  it('D5 变体(B1): 暂停段 GOAWAY(SERVER_SHUTTING_DOWN) → blocked 直达分类前 sender.teardown()——poll timer 清除（pending 恰回退 1）、blocked 无重拨编排、stale 零重武装', async () => {
+    const probe = collectUnhandledRejections();
+    try {
+      const run = await bootMulti({
+        count: 1,
+        withPressure: true,
+        limits: { maxInFlightUpdates: 1, maxQueuedUpdateCount: 100, maxQueuedUpdateBytes: 1_048_576 },
+        timeouts: { ackTimeoutMs: 120_000 },
+      });
+      const a = run.nsIds[0] as string;
+
+      // 置压（> highWater）→ 暂停段：零 UPDATE 帧；poll timer 武装（pending 严格 +1）
+      const beforePause = run.peerNode.scheduler.pending();
+      run.setPeerPressure(HIGH_WATER * 2);
+      await run.peerWrite(a, { n: 11 });
+      await settle();
+      expect(updateFrames(run, a)).toHaveLength(0);
+      const pausedPending = run.peerNode.scheduler.pending();
+      expect(pausedPending).toBe(beforePause + 1);
+
+      // hub 静默期注入连接级 GOAWAY(SERVER_SHUTTING_DOWN)（序列 = hub 方向下一期望）
+      const seq = nextHubSeq(run.frames('hubToPeer'));
+      run.wire().hubEnd.send(
+        encodeMessage(
+          { kind: 'GOAWAY', reasonCode: 'SERVER_SHUTTING_DOWN', drainTimeoutMs: 0 },
+          { sequence: seq },
+        ),
+      );
+      await settle();
+
+      // ★ B1 主锚：分类 blocked + sender.teardown() → poll timer 清除（pending 恰回退 1；
+      // 未清则恒为 pausedPending——且后续 poll fire 会在 stale getter 上周期性重武装）
+      expect(run.connectionState()).toBe('blocked');
+      expect(run.peerNode.scheduler.pending()).toBe(pausedPending - 1);
+
+      // blocked 是长寿命等待态：无重拨编排（保持 blocked——不 backoff、不 dialNow 换新
+      // sender；#136 G2 分类语义），stale fire 零副作用、零重武装（计面不增长；wire 冻结）
+      const framesFrozen = run.frames('peerToHub').length;
+      await run.peerNode.scheduler.advanceBy(60_000);
+      await settle();
+      expect(run.connectionState()).toBe('blocked');
+      expect(run.peerNode.scheduler.pending()).toBeLessThanOrEqual(pausedPending);
+      expect(run.frames('peerToHub').length).toBe(framesFrozen);
+      await settle();
+      expect(probe.events).toEqual([]);
+    } finally {
+      probe.dispose();
+    }
+  });
 });
 
 // ═════════════════════════ D3b/D4 本地组装（测试基建，零 src 触碰） ═════════════════════════
