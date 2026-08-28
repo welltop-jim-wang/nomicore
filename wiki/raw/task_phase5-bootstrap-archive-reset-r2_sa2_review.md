@@ -192,7 +192,7 @@ fence armed 后 Runtime 已 closing，后续 enable/bump 被 lifecycle gate 拒�
 
 # SA2 R4 Delta 复审 — reset expected 输入分类学方案 B
 
-**Date**: 2026-08-28  
+**Date**: 2026-08-28
 **Verdict**: **pass**
 
 本段仅审查 R4 delta：§3.6 的 reset `expectedLocalIdentity` 输入拒绝分类学、相应公共类型/测试锚、F-2/F-4 顺带清理与 file scope；不重开 R3 已通过的 fence/close 审查。
