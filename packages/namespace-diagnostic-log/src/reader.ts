@@ -34,7 +34,7 @@ export interface StrictReadRequest {
 
 export type StrictReadStatus = 'ok' | 'corrupt' | 'incompatible'
 
-/** 单条 stream/record issue（23 码封闭词表；segment/sequence/offset 归因）。 */
+/** 单条 stream/record issue（reader 稳定码词表共 29 码——23 码 v1 基表 + R2 六码；见文件头注；segment/sequence/offset 归因）。 */
 export interface StrictReadIssue {
   code: string
   /** 所属 segment（8 位十进制名）。 */

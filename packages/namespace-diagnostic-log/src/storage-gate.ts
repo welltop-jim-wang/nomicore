@@ -27,7 +27,7 @@ export function isCanonicalDecimal(value: string): boolean {
   return value !== '' && RE_P_DECIMAL.test(value)
 }
 
-/** storage 层 issue code（reader 23 码词表中 storage/frame 交叉面；SA6 词表边界逐字）。 */
+/** storage 层 issue code（reader 29 码词表中 storage/frame 交叉面——23 码 v1 基表 + R2 六码；SA6 词表边界逐字）。 */
 export type StorageIssueCode =
   | 'base64-invalid'
   | 'base64-length-mismatch'

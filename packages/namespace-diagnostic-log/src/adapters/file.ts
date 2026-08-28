@@ -483,7 +483,7 @@ export function createFileLog(config: FileDiagnosticLogConfig, options: FileLogO
     }
     // —— P_DECIMAL 字面镜像（R 修复轮 R-1/R-2；SA4 实证：vfsl Pattern 引擎 alternation
     //    语义放行 '01'/''/前导零——sequence 与 sidecar frameOffset 两消费面在此复核）。
-    //    违规 → storage-validation-failed（code 复用 reader 23 码既有的 vfsl-invalid——
+    //    违规 → storage-validation-failed（code 复用 reader 29 码词表既有的 vfsl-invalid——
     //    与 G3 扩 frame-missing 同一「复用 reader 词表既有稳定码」原则）+ 零落盘；
     //    可达面仅 testing 注入接缝（emission 路径 sequence/frameOffset 恒规范）。——
     if (!isCanonicalDecimal(effective.sequence)) {
