@@ -139,3 +139,77 @@
 无 blocker；4 个 concern（C-1 事件类型检查绕过、C-2 primitive input 收编不一致、
 C-3 plainness 防御与 typed-array 冻结漏洞、C-4 presence 语义注释漂移）均应在合入后
 尽快跟进（C-1/C-2/C-4(TS 侧) 廉价，C-3 需设计裁决一句）；14 个 nano 入台账即可。
+
+---
+
+# R5 复审（687aa94「R5 errata batch from dual-axis final review」）
+
+范围：`git diff ae3aeec..HEAD -- packages/namespace-diagnostic-log`（16 文件 +241/−115）；
+只核对本报告 4 concern + nano 台账的修复实效与回归面。复验：`tsc` 全绿；
+`vitest run --typecheck` 12 文件 **164** 测试全绿（152→164，净增 12 个 R5 契约测试）；
+运行期探针复跑（tsx eval，零落盘）。
+
+## Concern 修复核对
+
+### C-1 事件构造点判别联合编译期检查 —— 已修复 ✅
+`makeEventNotifier` 参数与返回类型收紧为 `DiagnosticLogHealthEvent`（health.ts:100-108），
+`freezeEvent` 入参同步收紧（health.ts:60），`cleanContext`/`buildSemanticRecord` 的 notify
+形参跟随（pipeline.ts:166/210）。全部 ~15 个构造点现受判别联合 + excess property 编译期
+检查；tsc 全绿即机器证据。memory.ts:265 的词表外 operation 显式 cast 按约定保留（注释在）。
+
+### C-2 primitive input 收编层级 —— 已修复 ✅（双层防御）
+intake 前置拒绝（pipeline.ts:93-97）：primitive/null/数组 input → `emission-dropped`
+（结构违规桶），不进 `in` 运算、不消耗 sequence；`projectInput` 内层守卫
+（projection/input.ts:59-63）兜底 `unavailable`。实测 `42`/`null`/`'x'`/`[]` 全部
+emission-dropped、零 pipeline-crashed、sequence 不消耗；新增 it.each 契约测试
+（input-capture.test.ts:232-241）。记录：数组 input 的归类由「降级 unavailable +
+record 保留」改为「整条 emission-dropped」——R5 明裁为结构违规，内部一致且有注释；
+`null`/`[]` 两形状未入 it.each（仅 42/'x'/true），nano 级覆盖缺口，不阻塞。
+
+### C-3 plainness 守卫与 typed-array 冻结漏洞 —— 已修复 ✅
+`assertPlainObject`（canonical-json.ts:93-99，原型仅接受 `Object.prototype`/`null`）挂入
+jcs 对象分支（:78-82）与 `redactValue`（projection/input.ts:38-40）。实测：嵌套/根级
+Date/Map/Uint8Array → `capture:unavailable` + `input-projection-failed`；null 原型 plain
+对象仍正常 digest（守卫不过杀）；**full 捕获内嵌 Uint8Array 现在整链转 unavailable，
+post-emit 变异不再可达已接纳 record**（冻结漏洞封死）；`jcs(new Map())` 抛
+SnapshotContractViolation。契约测试 3 件（input-capture.test.ts:243-283，含 plainness 判定
+后零重读探针）。设计 §5.4 清单已在 R5 状态行备案。
+
+### C-4 presence 注释漂移 —— 已按 R5 再裁决收敛 ✅
+再裁决口径：presence **严格 ⇔ 预算截断**（冻结 schema JSDoc「仅在实际发生预算截断时出现」
+为准，R4「丢弃也置位」撤销；畸形丢弃只走健康事件）。实现（issues.ts:177-179
+`if (truncated)`）、record.ts:51-58 JSDoc、issues.ts:97-104 头注/JSDoc、design §6.2 伪码
+四方现已逐字一致；**schema.ts 文本零改动、指纹未变**（schema-freeze 钉死测试仍绿——
+裁决选择了不动冻结面的方向，正确）。测试三连断言两键缺席（issues-projection.test.ts
+:161-197）。
+
+## Nano 台账核对
+
+- 已修（7 项）：1 UPDATE_OMITTED_REASONS 死导出删除；2 六枚死 RE_* 删除且头注改实述；
+  9-pipeline 多余空行；10 两处错字（AGENTS.md「契约契约」/line-budget「红action」）；
+  12 TEXT_ENCODER 模块级单例（memory.ts:52-56）；13 空字节序列 loud 抛错
+  （testing.ts:28-32）；14 memory-adapter.test.ts 冗余 cast。
+- 未修（维持台账，均「记录即可」级、不阻塞）：3 两枚死 eslint-disable（health.ts:74 /
+  test/helpers/twin.ts:21）；4 identity.test-d.ts:36,44 同义反复 expectTypeOf；
+  5 line-budget.test.ts:69 跨量纲断言；6 emitter-isolation.test.ts:90 标题与覆盖不符；
+  7 pipeline.ts:299 safeOperationOf 双调用 + 冗余 cast；8 memory.ts:20-21 split import /
+  :265 冗余 cast；9-memory 多余空行（memory.ts:62-63）；11 两处 deliberate lie 保留
+  （约定如此，注释需随代码同步）。
+
+## 回归与新问题检查
+
+- 规格轴附带改动（C-S1 redacted 下 path 预算一致化 / C-S2 emission.issues 裸数组形状 /
+  C-S3 source 封闭键校验）在 standards 面无新问题：无新增 any/不安全 cast；
+  `IssuesInput` 接口删除后全仓零残留引用（grep 核实）；source 封闭键校验只读
+  `Object.keys` 不写回；design §6.2 成文「redacted 下 code 保留不截断（稳定码低敏）」
+  为明示决策，非缺陷。
+- 敌意 Proxy 与 assertPlainObject 的交互（getPrototypeOf trap 抛出）仍落入既有
+  try/catch 收编链，不产生新外抛面。
+- `projectInput` 内层守卫自 emit 路径不可达（intake 已前置），属文档化纵深防御，
+  内部函数未导出——非死代码负债。
+- README/AGENTS/CONTEXT.md 与公共面无新增漂移；根配置零改动。
+
+## R5 最终 verdict：**pass**
+
+4 个 concern 全部真正修复并经测试 + 探针双重钉死；nano 台账清理 7/14，余项均为
+「记录即可」级不阻塞；修复未引入新问题。本轴对 687aa94 无保留通过。

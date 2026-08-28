@@ -156,3 +156,50 @@ git diff 6de2f1d..HEAD --stat：47 文件、仅新包 + 根 package.json 一行 
 
 - 五条验收标准全部独立复核通过，证据链 = 代码位置 + 测试位置 + 本机复跑/探针；ADR 抽查 13 项全过（1 项角落见 C-S3）；反馈闭环 10+4+3+5+4 项全部实证落实，无虚假宣称；冻结纪律三轮证据链一致；切片零越界。
 - 3 条新 concern 全部属「冻结文本与实现/披露的落差」而非运行时危险：fail-safe、非默认路径或 producer 违约角、schema/指纹零影响。建议总控开 R5 文档/微修轮（或并入 #149 接线前维护轮）按 §5 建议处置；本票交付可进入发布流程。
+
+---
+
+## 8. R5 复审（commit `687aa94`，聚焦 C-S1/C-S2/C-S3）
+
+- **Date**: 2026-08-28（R5 修复轮后）
+- **范围**: `git diff ae3aeec..HEAD -- packages/namespace-diagnostic-log` + 设计 R5 头部/§6.2
+- **复审结论**：**3/3 concern 全部真实修复、各有新测试锚，无引入新问题**；standards 轴 presence 再裁决与冻结文本一致；附带改动逐项核验良性。包测试 **164/164 绿**（R4 时 152 → +12 新用例）、Type Errors 0、根 `pnpm typecheck` exit 0（均本机复跑）。
+
+### 8.1 C-S1（redacted 策略 path 预算）→ **fixed**
+
+- **代码**：issues.ts 把 path 预算（前 256 段 + string 段 truncateUtf8 1024 + 截断探测置 `truncated`）上移到策略分支之前，对 full/redacted 一致生效；redacted 分支复用截断后 path。设计 R5 头部 ④ 注记。
+- **实证（探针 R5-P1）**：redacted 下 301 段 + 2000B 段 → 保 256 段、`truncated:true`、`originalCount:1` 同现、message=`«redacted»`——与 ADR 0012 L134 预算及设计 §6.2 无条件 path 行一致。
+- **测试锚**：issues-projection.test.ts R5 用例（redacted 257 段/1025B 段断言截断 + 两键同现）。
+
+### 8.2 C-S2（emission issues 裸数组对齐设计 §2.6）→ **fixed**
+
+- **代码**：emission.ts 删 `IssuesInput` 容器，`issues?: DiagnosticIssue[]` 恢复设计 §2.6 逐字形状；issues.ts `projectIssues` 改收裸数组（非数组 → 一次 enrichment-field-dropped/issues + 字段缺席，fail-safe）；pipeline.ts 注释同步。
+- **实证（探针 R5-P2/P2b）**：裸数组正常投影；旧 `{items}` 容器现按畸形容器丢弃 + 恰一次事件（无静默）。
+- **测试锚**：record-vocabulary/line-budget/issues-projection 全部改用裸数组；畸形容器用例保留。
+
+### 8.3 C-S3（source 封闭键 intake 校验）→ **fixed**
+
+- **代码**：pipeline.ts `intakeValid` 增 source 封闭键校验（local 恰 `{kind}`；replication 键 ⊆ `{kind,direction,remoteInstanceId}`，必需键存在性仍由先行的 isLogSource 保证）→ 多余键归 emission-dropped/emission-shape，不再触达 VFSL 门。
+- **实证（探针 R5-P3/P3b）**：local+extra 与 replication+junk 均 → emission-dropped、records 0、**零 vfsl-validation-failed**——writer-bug 信号纯度恢复（ADR 0012 L214）。
+- **测试锚**：record-vocabulary.test.ts 违规表 +2 用例，并断言整个 intake 表 `vfsl-validation-failed` 恒 0。
+
+### 8.4 附带改动核验（防新问题）
+
+| 改动 | 核验 |
+|---|---|
+| presence 再裁决（truncated/originalCount 严格 ⇔ 预算截断；畸形丢弃只走事件） | ✅ 与冻结 schema JSDoc 逐字一致（本报告 N-S2 以此方式消解）；设计 §6.2:850 已改；探针 R5-P6/P6b 双向实证；schema.ts 零改动（脚本复验 7040 字符相等、指纹不变） |
+| plainness 守卫（jcs/redact 拒 Date/Map/typed array） | ✅ 契约正确（快照本为 plain-data）；探针 R5-P5 三型 unavailable + 恰一次事件；getter 单触达零重读纪律保持（新测试锚） |
+| input 非对象 intake 拒绝（std C-2） | ✅ 探针 R5-P4（null/42/'x'/[1] → emission-dropped，非 pipeline-crashed，sequence 不消耗） |
+| makeEventNotifier 参数收窄为判别联合（std C-1） | ✅ 纯类型面收紧，运行时不变；事件构造点恢复编译期校验 |
+| 死导出清理（UPDATE_OMITTED_REASONS、未用 RE_* 六枚） | ✅ grep 全包零引用；三 reason 词表仍由 CONTEXT.md/AGENTS.md 承载 |
+| TextEncoder 单例 / testing.ts 空字节 loud throw / AGENTS.md 叠字 | ✅ 良性 |
+
+### 8.5 残留项（均 nano，不阻断）
+
+- **N-S1（records() 浅冻结）**：R5 未触及——adapter 新建 result/update carrier 仍未深冻结；维持 nano（§9.7 测试锚字面满足）。
+- **N-S3（半残留）**：AGENTS.md 叠字已修；L5「设计 R2 唯一权威」版本指引仍滞后（现 R5）。
+- **N-S4**：设计文档旧「13B」措辞残留处未随 R5 清理（SA7 已备案，文档级）。
+
+### 8.6 最终 verdict
+
+**pass**——spec 轴 3 条 concern 全部真实修复并有测试锚与本机探针实证；R5 未触碰冻结 schema（文本/指纹复验不变）；切片仍零越界；测试无弱化（断言全部同向或加强）。本票从 spec 轴放行发布。
