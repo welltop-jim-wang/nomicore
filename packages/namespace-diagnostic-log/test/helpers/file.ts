@@ -129,7 +129,11 @@ export function makeFileLog(config: Partial<FileDiagnosticLogConfig> = {}): Asse
   return { log, events: observer.events, observer }
 }
 
-/** 标准 manifest（SA6 契约键集；ADR 0012「至少保存」逐项）。 */
+/** 标准 manifest（SA6 契约键集；ADR 0012「至少保存」逐项）。
+ *  R2 修订（PR #159，设计 §2.2）：默认 `committedUpdateCapture: true`——reader 基线夹具的
+ *  record 携带 update carrier，manifest 必须与之政策一致，否则 R2 起的 policy 校验
+ *  （manifest-update-capture-violation）会判夹具自身为 corrupt（夹具语义：记录被测
+ *  reader 行为，不引政策噪音）；capture=false 的敌意用例由测试显式 override。 */
 export function validManifest(streamId: string, namespaceId: string, overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     format: MANIFEST_FORMAT,
@@ -142,7 +146,7 @@ export function validManifest(streamId: string, namespaceId: string, overrides: 
     frameVersion: FRAME_VERSION,
     schemaId: RECORD_SCHEMA_ID,
     schemaFingerprint: FROZEN_ENVELOPE_FINGERPRINT,
-    committedUpdateCapture: false,
+    committedUpdateCapture: true,
     inputCapturePolicy: 'digest',
     inlineUpdateMaxBytes: DEFAULT_INLINE_UPDATE_MAX_BYTES,
     jsonlLineLimitBytes: DEFAULT_LINE_LIMIT_BYTES,

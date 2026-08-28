@@ -89,10 +89,21 @@ streams/{streamId}/segments/00000001.bin     # NDCL v1 25-byte frame + payload�
 ```
 
 - `streamId` = `log-` + 32 位小写 hex（CSPRNG；注入随机源可确定性复现）。
-- 同步写契约：emit 返回 = 字节已入文件；无队列、无 batch、**无 fsync**（ADR 0012
-  「真正 fsync 可配置且默认关闭」——本适配器不暴露开关）、无常驻 fd；
-  属 **best-effort** 诊断流：崩溃/断电可留下最后一条不完整行或孤儿帧（ADR 明文允许），
+- 同步写契约：emit 返回 = 字节已入文件；每 emit 至多一条 final JSONL record 的有界
+  同步 append（sidecar 则 BIN-first 至多一帧），无队列、无 batch、**无 fsync**
+  （ADR 0012 「真正 fsync 可配置且默认关闭」——本适配器不暴露开关）、无常驻 fd；
+  「有界」只指数据量/操作数受 payload/line 预算与单 record/单帧限制，**不承诺磁盘
+  延迟上界**。同步 append 完成不构成 fsync 或掉电持久性承诺。属 **best-effort**
+  诊断流：崩溃/断电可留下最后一条不完整行或孤儿帧（ADR 明文允许），
   由 strict reader 诚实判定损坏，不做自动修复。
+- **write-slot 接线纪律（ADR 0012 amendment MUST）**：File adapter `emit` 同步且可能
+  阻塞——任何接入 namespace 生命周期的调用点必须位于 NamespaceRuntime write
+  sequencer slot 之外或该 slot 释放之后；slot 内执行同步 File adapter emit 为不合规
+  （接线归 #149–#151/#155 等票）。
+- R2 提交点纪律：definitive pre-commit append 失败（open 期 EISDIR/EACCES/ENOENT，
+  零字节可证明）复用同一 sequence candidate 恢复；ambiguous outcome（write 期失败等）
+  保守封闭旧 generation 并保留「sequence N may not be persisted」证据，绝不在旧
+  stream 写第二条相同 sequence。
 - 每 record 过 line 预算 → VFSL → storage（Base64 canonical / length / CRC /
   sidecar 帧交叉）门后才落盘；sidecar 恒 BIN-first（帧先于 JSONL 引用）。
 
@@ -113,6 +124,11 @@ streams/{streamId}/segments/00000001.bin     # NDCL v1 25-byte frame + payload�
   （0 字节 / 超 `min(payloadMaxBytes, uint32)` 上限），stream 照常可用但**不写
   genesis 记录也不发事件**——读 JSONL 首行 `recordKind ≠ 'genesis-baseline'` 即知
   无 genesis（缺失是「尽力」语义的合法终态，非故障）。
+- **strict `ok` 的语义边界（R2 起）**：`readStreamStrict.status === 'ok'` 只表示
+  「在本次静态读取中，已解析的该 stream v1 物理 records 自 sequence 1 连续，且通过
+  manifest/storage/frame 校验」——绝不表示业务变更完整、无业务 attempt gap 或可恢复
+  namespace；该限定同时适用于 replay 的成功文案（其另附 ADR 0011 既有限定）。
+  物理删除中间 record（如 `[1,3]`）会被判 `sequence-gap/corrupt`。
 - **并发读写语义**：JSONL 行的 `appendFileSync` 在内核侧可能拆为多个 `write(2)`，
   与活跃 writer 并发运行的 reader 可能读到半行（误判 invalid-json）。
   `readStreamStrict` 面向**静态 stream**（writer 停写后 / 离线拷贝上使用），

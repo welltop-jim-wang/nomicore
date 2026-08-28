@@ -5,16 +5,21 @@
  * - 构造即建三件套：segments/（recursive mkdir）→ manifest.json（'wx' 不可变创建，
  *   恰 14 键）→ genesis（尽力）→ current.json（temp + rename 原子替换）；
  * - 同步落盘：每 record 独立 open-append-close（`appendFileSync`），无队列、无
- *   batch、无 fsync、无常驻 fd（§4.3/J2；EISDIR 占位恢复语义的必要条件）；
- * - 每 record：sequence 分配（分配即消耗；exhausted 转换时刻恰一次
- *   `stream-exhausted`，bool 门闩）→ 三守卫（empty / update-capture-disabled /
- *   payload-too-large → update-omitted）→ inline/sidecar 物理投影（sidecar 的
- *   frameOffset 恒取 append 前 fresh stat——无内存-磁盘孪生状态，R2 修订 SA2 #1）
- *   → line 预算（先降级后丢弃）→ VFSL 门 → storage 门 → 落盘（BIN-first）；
- * - 构造级 crash 包络：任何未预见异常 → failed 模式 + 恰一次
- *   `pipeline-crashed{stage:'adapter'}`（§3.1，R2 修订 SA2 #2），绝不向 Host 抛；
- * - `FILE_INTERNAL` 直通接缝（testing.injectFinalRecordFile）——不分配 sequence、
- *   不触碰 exhausted 门闩（无分配即无转换）。
+ *   batch、无 fsync、无常驻 fd（§4.3/J2；EISDIR 占位恢复语义的必要条件；
+ *   R2 ADR-0012 amendment 把有界同步 append 显性化为首切片决策，write-slot 外接线
+ *   为规范性条件——见 docs/adr/0012）；
+ * - R2 提交点纪律（设计 §3.2/§3.2.1）：sequence 以 candidate 在「全部可失败准备门
+ *   通过、即将进入 JSONL append 的提交分支」时取得并即刻物化；definitive pre-commit
+ *   failure（open 期 EISDIR/EACCES/ENOENT，零字节可证明）不消耗 candidate 可复用；
+ *   ambiguous outcome（write 期失败等不能证明零字节）保守 reservation + 封闭旧
+ *   generation（failed/readonly），绝不写第二条相同 sequence，证据走
+ *   「may not be persisted」fallbackLog 行；confirmed success 才推进
+ *   lastCommittedSequence（UINT64_MAX → 恰一次 stream-exhausted）；
+ * - 每 record：三守卫（empty / update-capture-disabled / payload-too-large →
+ *   update-omitted）→ inline/sidecar 物理投影（sidecar 的 frameOffset 恒取 append 前
+ *   fresh stat——无内存-磁盘孪生状态）→ line 预算（先降级后丢弃）→ VFSL 门 →
+ *   storage 门 → 落盘（BIN-first）；构造级 crash 包络与 FILE_INTERNAL 直通接缝
+ *   （不分配 sequence、不触碰 exhausted 门闩）同 round 1。
  */
 import { appendFileSync, mkdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -227,16 +232,51 @@ export function createFileLog(config: FileDiagnosticLogConfig, options: FileLogO
   let binPath: string | null = null
   let segmentsDir: string | null = null
   let envelopeFingerprint = ''
-  let lastSequence: string | null = options.presetLastSequence ?? null
+  /** 已确认提交的连续前缀末尾（R2 设计 §3.2：仅 confirmed success / ambiguous reservation 写入）。 */
+  let lastCommittedSequence: string | null = options.presetLastSequence ?? null
   let exhaustedLatch = false
+  /** ambiguous outcome 保守封闭标记（构造期 genesis 密封后不得被 mode='ready' 覆盖）。 */
+  let sealed = false
   /** inject 路径 per-segment expectedOffset（§6.3 注入门与 reader 同款边界语义）。 */
   const injectedFrameOffsets = new Map<string, bigint>()
 
-  /** sequence 分配（分配即消耗——§10-J3；exhausted 转换由调用方判定）。 */
-  function allocate(): string {
-    const sequence = lastSequence === null ? '1' : nextDecimal(lastSequence)
-    lastSequence = sequence
-    return sequence
+  /**
+   * 无副作用候选（R2 设计 §3.2 双阶段）：仅读 lastCommittedSequence 推导下一个序号；
+   * 不写任何状态——candidate 本地化，直到 confirmed success 或 ambiguous reservation
+   * 才写入 lastCommittedSequence。
+   */
+  function candidateSequence(): string {
+    return lastCommittedSequence === null ? '1' : nextDecimal(lastCommittedSequence)
+  }
+
+  /** confirmed JSONL success（§3.3）：提交点推进；UINT64_MAX → 恰一次 stream-exhausted。 */
+  function commitConfirmed(sequence: string): void {
+    lastCommittedSequence = sequence
+    if (sequence === UINT64_MAX) {
+      exhaustedLatch = true
+      notify({ type: 'stream-exhausted' })
+    }
+  }
+
+  /**
+   * ambiguous outcome（R2 设计 §3.2.1）：无法证明「完整 JSONL line 未出现」——
+   * 保守 reservation 该 candidate（永不复用）、封闭旧 generation（failed/readonly），
+   * 绝不在旧 stream 写第二条相同 (streamId, sequence)。
+   * 可观察证据（R2-G21）：经 fallbackLog 行通道——`sequence <candidate> may not be persisted`，
+   * 不断言其缺失；storage-write-failed 事件字段形状不变。
+   */
+  function commitAmbiguous(sequence: string, stage: 'bin' | 'jsonl', code: string, operation: Operation | undefined): void {
+    lastCommittedSequence = sequence
+    sealed = true
+    mode = 'failed'
+    notify(
+      operation === undefined
+        ? { type: 'storage-write-failed', stage, code }
+        : { type: 'storage-write-failed', stage, code, operation },
+    )
+    fallbackLog(
+      `sequence ${sequence} may not be persisted: ${stage} append outcome ambiguous (${code}); old generation sealed, no in-place retry`,
+    )
   }
 
   /**
@@ -380,8 +420,22 @@ export function createFileLog(config: FileDiagnosticLogConfig, options: FileLogO
     return null
   }
 
-  /** final-record 管线（line 预算 → VFSL 门 → storage 门 → 落盘；attempt/genesis/注入共用）。 */
-  function writeRecord(record: DiagnosticChangeRecord, operation: Operation | undefined, payload: Uint8Array | undefined): void {
+  /** 提交前准备门后的产物（sequence 仍为临时 preview；提交点才物化候选）。 */
+  interface PreparedRecord {
+    record: DiagnosticChangeRecord
+    payload: Uint8Array | undefined
+  }
+
+  /**
+   * 提交前准备门（R2 设计 §3.2 prepare：line 预算 → VFSL → P_DECIMAL 镜像 → storage 门）。
+   * 任何失败：notify/drop 并返回 undefined——**绝不分配 sequence**（candidate 前 gate 不消耗）。
+   * attempt/genesis/注入共用；注入路径 record 自带 sequence，只作形状参与校验。
+   */
+  function prepareRecord(
+    record: DiagnosticChangeRecord,
+    operation: Operation | undefined,
+    payload: Uint8Array | undefined,
+  ): PreparedRecord | undefined {
     // —— line 预算门（§4.1：超限先降级 input full/redacted → digest + degraded；仍超限丢弃 + 上报）——
     let effective = record
     let bytes = measure(effective)
@@ -405,7 +459,7 @@ export function createFileLog(config: FileDiagnosticLogConfig, options: FileLogO
         queueDepth: 0,
       }
       notify(operation === undefined ? base : { ...base, operation })
-      return
+      return undefined
     }
     // —— VFSL 门（失败 → writer bug 信号——只带 issuePaths，不带 message）——
     const compiled: RecordSchemaCompilationResult | null = getRecordSchemaCompilation()
@@ -424,7 +478,7 @@ export function createFileLog(config: FileDiagnosticLogConfig, options: FileLogO
           schemaFingerprint: compiled.envelopeFingerprint,
         }
         notify(operation === undefined ? base : { ...base, operation })
-        return
+        return undefined
       }
     }
     // —— P_DECIMAL 字面镜像（R 修复轮 R-1/R-2；SA4 实证：vfsl Pattern 引擎 alternation
@@ -435,14 +489,14 @@ export function createFileLog(config: FileDiagnosticLogConfig, options: FileLogO
     if (!isCanonicalDecimal(effective.sequence)) {
       const base = { type: 'storage-validation-failed' as const, recordKind: effective.recordKind, code: 'vfsl-invalid' }
       notify(operation === undefined ? base : { ...base, operation })
-      return
+      return undefined
     }
     {
       const carrier = carrierFrom(effective)
       if (carrier !== null && carrier.storage === 'sidecar' && !isCanonicalDecimal(carrier.frameOffset)) {
         const base = { type: 'storage-validation-failed' as const, recordKind: effective.recordKind, code: 'vfsl-invalid' }
         notify(operation === undefined ? base : { ...base, operation })
-        return
+        return undefined
       }
     }
     // —— storage 门（§6：inline 全量校验 / sidecar 注入引用交叉）——
@@ -450,71 +504,118 @@ export function createFileLog(config: FileDiagnosticLogConfig, options: FileLogO
     if (gateIssue !== null) {
       const base = { type: 'storage-validation-failed' as const, recordKind: effective.recordKind, code: gateIssue }
       notify(operation === undefined ? base : { ...base, operation })
-      return
+      return undefined
     }
-    // —— 落盘（BIN-first：帧完整落盘后才写 JSONL 引用）——
+    return { record: effective, payload }
+  }
+
+  /**
+   * append 失败分类（R2 设计 §3.2.1）：definitive pre-commit failure = 目标文件写入前即可
+   * 证明零字节（open 期 EISDIR/EACCES/ENOENT）；**其余一律 ambiguous**——不得从 errno
+   * 名猜测零写入（ENOSPC 无字节回执，属歧义结果）。
+   */
+  function classifyAppendFailure(err: unknown): { definitive: boolean; code: string } {
+    const code = errnoOf(err)
+    return { definitive: code === 'EISDIR' || code === 'EACCES' || code === 'ENOENT', code }
+  }
+
+  /** 提交钩子（emission 路径：confirmed 推进 / ambiguous reservation；注入路径：不推进）。 */
+  interface CommitHooks {
+    onConfirmed(sequence: string): void
+    onAmbiguous(sequence: string, stage: 'bin' | 'jsonl', code: string): void
+  }
+
+  /**
+   * 提交落盘（R2 设计 §3.2.1 commitPrepared；BIN-first：帧完整落盘后才写 JSONL 引用）：
+   * - definitive pre-commit failure → notify storage-write-failed 后返回（candidate 可复用）；
+   * - ambiguous outcome → hooks.onAmbiguous（reservation + 封闭 generation，绝不复用）；
+   * - success → hooks.onConfirmed。
+   * 注入路径与 emission 路径共用（payload === undefined 时不做 BIN 写——帧已被注入门验证）。
+   */
+  function commitRecord(
+    record: DiagnosticChangeRecord,
+    payload: Uint8Array | undefined,
+    operation: Operation | undefined,
+    hooks: CommitHooks,
+  ): void {
     if (jsonlPath === null || binPath === null) return
-    const line = JSON.stringify(effective) + '\n'
-    const carrier = carrierFrom(effective)
+    const carrier = carrierFrom(record)
     const isSidecar = carrier !== null && carrier.storage === 'sidecar'
     if (isSidecar && payload !== undefined) {
       // emission 路径：encode + 自检（writer bug 防线，§6.3）→ BIN append → JSONL append
-      const frame = encodeFrame(effective.sequence, payload)
+      const frame = encodeFrame(record.sequence, payload)
       const decoded = decodeFrame(frame, 0)
       if (
-        decoded.sequence !== BigInt(effective.sequence) ||
+        decoded.sequence !== BigInt(record.sequence) ||
         decoded.payloadLength !== payload.byteLength ||
         decoded.crc32c !== frameCrcOf(frame, 0)
       ) {
-        const base = { type: 'storage-validation-failed' as const, recordKind: effective.recordKind, code: 'crc-mismatch' }
+        // 自检失败 = 提交前 gate（零写入）：不消耗 candidate
+        const base = { type: 'storage-validation-failed' as const, recordKind: record.recordKind, code: 'crc-mismatch' }
         notify(operation === undefined ? base : { ...base, operation })
         return
       }
       try {
         appendFileSync(binPath, frame)
       } catch (err) {
-        const base = { type: 'storage-write-failed' as const, stage: 'bin' as const, code: errnoOf(err) }
-        notify(operation === undefined ? base : { ...base, operation })
-        return
-      }
-      try {
-        appendFileSync(jsonlPath, line)
-      } catch (err) {
-        const base = { type: 'storage-write-failed' as const, stage: 'jsonl' as const, code: errnoOf(err) }
-        notify(operation === undefined ? base : { ...base, operation })
-        return
-      }
-    } else {
-      // inline 或注入 sidecar（帧已存在且已被门验证——只写 JSONL）
-      try {
-        appendFileSync(jsonlPath, line)
-      } catch (err) {
-        const base = { type: 'storage-write-failed' as const, stage: 'jsonl' as const, code: errnoOf(err) }
-        notify(operation === undefined ? base : { ...base, operation })
+        const failure = classifyAppendFailure(err)
+        if (failure.definitive) {
+          const base = { type: 'storage-write-failed' as const, stage: 'bin' as const, code: failure.code }
+          notify(operation === undefined ? base : { ...base, operation })
+          return // candidate 可复用（零字节可证明）
+        }
+        hooks.onAmbiguous(record.sequence, 'bin', failure.code) // orphan/partial frame 保守封闭
         return
       }
     }
+    const line = JSON.stringify(record) + '\n'
+    try {
+      appendFileSync(jsonlPath, line)
+    } catch (err) {
+      const failure = classifyAppendFailure(err)
+      if (failure.definitive) {
+        const base = { type: 'storage-write-failed' as const, stage: 'jsonl' as const, code: failure.code }
+        notify(operation === undefined ? base : { ...base, operation })
+        return // candidate 可复用（BIN 已写帧的交错依 best-effort orphan 语义保留）
+      }
+      hooks.onAmbiguous(record.sequence, 'jsonl', failure.code) // write 期失败：不能证明零字节
+      return
+    }
+    hooks.onConfirmed(record.sequence)
   }
 
-  /** emitter → adapter 路径（§4.1；顶层 try/catch 兜底 → pipeline-crashed）。 */
+  /**
+   * emission 提交入口（R2 设计 §3.2：candidate 只在准备门全过后取得并即刻物化进
+   * JSONL record 与（若 sidecar）frame；confirmed/ambiguous 才写入 lastCommittedSequence）。
+   */
+  function commitPrepared(prepared: PreparedRecord, operation: Operation | undefined): void {
+    const candidate = candidateSequence()
+    const record = { ...prepared.record, sequence: candidate } as DiagnosticChangeRecord
+    commitRecord(record, prepared.payload, operation, {
+      onConfirmed: (sequence) => commitConfirmed(sequence),
+      onAmbiguous: (sequence, stage, code) => commitAmbiguous(sequence, stage, code, operation),
+    })
+  }
+
+  /**
+   * emitter → adapter 路径（§4.1 / R2 设计 §3.2：candidate 前准备门，drop 不消耗；
+   * 提交点分配 + §3.2.1 definitive/ambiguous 分类；顶层 try/catch 兜底 → pipeline-crashed）。
+   */
   function appendSemantic(semantic: DiagnosticSemanticRecord): void {
     try {
       if (mode !== 'ready' || exhaustedLatch || jsonlPath === null || binPath === null) return
       const streamId = currentStreamId
       if (streamId === undefined) return
-      const sequence = allocate()
-      if (sequence === UINT64_MAX) {
-        // —— exhausted 转换时刻（总控 J9 裁决）：分配完成即触发；该 record 继续走门与落盘 ——
-        exhaustedLatch = true
-        notify({ type: 'stream-exhausted' })
-      }
-      const attempted = assembleAttempt(semantic, sequence, streamId)
+      // —— 准备门（candidate 前；sequence 仅为临时 preview 参与形状校验）——
+      const attempted = assembleAttempt(semantic, candidateSequence(), streamId)
       if ('offsetFailed' in attempted) {
-        // §4.4 offset 规划行：stat throw → storage-write-failed{stage:'bin'} + 丢弃
+        // §4.4 offset 规划行：stat throw → storage-write-failed{stage:'bin'} + 丢弃（candidate 未取得）
         notify({ type: 'storage-write-failed', stage: 'bin', code: attempted.offsetFailed, operation: semantic.operation })
         return
       }
-      writeRecord(attempted.record, semantic.operation, attempted.payload)
+      const prepared = prepareRecord(attempted.record, semantic.operation, attempted.payload)
+      if (prepared === undefined) return // 门失败零落盘、不推进（line/VFSL/storage 门）
+      commitPrepared(prepared, semantic.operation)
     } catch {
       const operation = operationOf(semantic)
       notify(
@@ -525,12 +626,21 @@ export function createFileLog(config: FileDiagnosticLogConfig, options: FileLogO
     }
   }
 
-  /** 直通接缝（testing.injectFinalRecordFile）：不分配 sequence、不触碰 exhausted 门闩
-   *  （无分配即无转换——R2 修订 SA2 #6）；顶层 try/catch 显式化（SA2 实现期备注 1）。 */
+  /**
+   * 直通接缝（testing.injectFinalRecordFile）：不分配 sequence、不推进 lastCommittedSequence、
+   * 不触碰 exhausted 门闩（无分配即无转换——R2 修订 SA2 #6）；append 失败与 emission 路径
+   * 同一分类（ambiguous → 保守封闭）；顶层 try/catch 显式化（SA2 实现期备注 1）。
+   */
   function appendFinal(record: DiagnosticChangeRecord): void {
     try {
       if (mode !== 'ready' || exhaustedLatch || jsonlPath === null || binPath === null) return
-      writeRecord(record, operationOf(record), undefined)
+      const operation = operationOf(record)
+      const prepared = prepareRecord(record, operation, undefined)
+      if (prepared === undefined) return
+      commitRecord(prepared.record, prepared.payload, operation, {
+        onConfirmed: () => {}, // 注入不推进（record 自带 sequence）
+        onAmbiguous: (sequence, stage, code) => commitAmbiguous(sequence, stage, code, operation),
+      })
     } catch {
       const operation = operationOf(record)
       notify(
@@ -541,36 +651,33 @@ export function createFileLog(config: FileDiagnosticLogConfig, options: FileLogO
     }
   }
 
-  /** genesis（§4.2：与 attempt 同一 final-record 管线；守卫跳过消耗 sequence——G2 裁决）。 */
+  /**
+   * genesis（§4.2 / R2 设计 §3.3：与 attempt 同一 final-record 管线；守卫、投影、门
+   * 全部在 candidate 前结束——守卫跳过不消耗 sequence；append 失败与 attempt 走同一
+   * definitive/ambiguous 分类；confirmed success 提交 '1'）。
+   */
   function runGenesis(streamId: string): void {
     const bytes = config.genesisUpdateBytes
     if (bytes === undefined) return
-    const sequence = allocate() // 新 stream 即 '1'（预置接缝下与 attempt 路径一致推进）
-    if (sequence === UINT64_MAX) {
-      // —— exhausted 转换时刻（总控 J9 裁决 + 终审 G13 裁决）：与 attempt 路径同一门闩
-      //    语义——genesis 的 sequence 分配产出 UINT64_MAX 即触发恰一次
-      //    `stream-exhausted`；该 genesis record 照常继续走门与落盘，此后进入 exhausted
-      //    （后续 append/注入静默丢弃，绝不落盘超域 sequence）。 ——
-      exhaustedLatch = true
-      notify({ type: 'stream-exhausted' })
-    }
     if (bytes.length === 0) return // 守卫跳过：不写记录、不发事件（§11-G10 豁免备案）
     if (bytes.length > payloadMaxBytes) return
     const projected = projectCarrier(bytes)
     if ('offsetFailed' in projected) {
-      // IO 型失败：事件 + 不禁用 stream（genesis 尽力语义）
+      // IO 型失败：事件 + 不禁用 stream（genesis 尽力语义）；candidate 未取得
       notify({ type: 'storage-write-failed', stage: 'bin', code: projected.offsetFailed })
       return
     }
     const record: GenesisBaselineRecord = {
       recordKind: 'genesis-baseline',
       streamId,
-      sequence,
+      sequence: candidateSequence(), // 临时 preview；提交点物化（与最终候选一致）
       observedAt: observedAtFrom(clock.now),
       source: { kind: 'local' },
       update: projected.carrier,
     }
-    writeRecord(record, undefined, projected.payload)
+    const prepared = prepareRecord(record, undefined, projected.payload)
+    if (prepared === undefined) return // gate drop：不消耗 sequence
+    commitPrepared(prepared, undefined)
   }
 
   /** 新 generation 建立（§3.1 ⑤；segments → manifest('wx') → genesis → current.json）。 */
@@ -665,7 +772,8 @@ export function createFileLog(config: FileDiagnosticLogConfig, options: FileLogO
         } else if (outcome === 'disabled') {
           mode = 'disabled'
         } else {
-          mode = 'ready'
+          // genesis 期间 ambiguous 密封（构造期 commitAmbiguous）不得被 'ready' 覆盖
+          mode = sealed ? 'failed' : 'ready'
         }
       }
     }

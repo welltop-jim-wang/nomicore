@@ -208,7 +208,14 @@ describe('R2 补充（#4）：exhausted 转换（预置接缝）与 R2-1 入参 
     expect(eventsOfType(observer.events, 'record-dropped')).toHaveLength(0)
 
     const read = readStreamStrict({ rootDir: root, namespaceId: 'ns-r2-exh', streamId: log.streamId })
-    expect(read.status).toBe('ok')
+    // R3 修订（设计 §3.3/§3.4）：预置接缝是 testing 人工构造——磁盘流仅含 UINT64_MAX
+    // 单条，reader 的连续性锚从 1 起（expected=1n）→ 诚实报 sequence-gap（corrupt）；
+    // record 级判定不受 stream 级序列检查影响（§3.4：ok=false ≠ 不参与连续性）。
+    // 设计 §3.3：邻近 max 的预置测试不得以任意未落盘值期待健康 reader。
+    // SA6 复核（归因字段）：设计 §3.4 状态机以发现缺口的 record 归因 issue
+    // （segment/offset/sequence），本断言只锚 gap 存在性，不绑定具体归因值。
+    expect(read.status).toBe('corrupt')
+    expect(read.issues.some((i) => i.code === 'sequence-gap')).toBe(true)
     expect(read.records[0]!.ok).toBe(true)
   })
 
@@ -326,7 +333,15 @@ describe('R 修复轮（SA4 R1 reject 落地）：P_DECIMAL 镜像第二消费�
       result: sidecarResult({ frameOffset: '0', crc32c: crc32cHex(p100) }),
     })
     const rec2 = validAttemptRecord(STREAM, '2', { result: sidecarResult({ frameOffset: '0125' }) })
-    writeStreamFixture(root, NS, STREAM, { jsonlLines: [rec1, rec2], bin })
+    // R2 政策一致化（SA6 同批「4097B ×2」先例；设计 §5.3 锚 4）：100B sidecar 在默认
+    // 阈值 4096 下违反 manifest-sidecar-threshold-violation（≤ 阈值必 sidecar 即违规），
+    // 会污染本用例的「首帧照常 ok」隔离断言——manifest 阈值收窄到 64（同文件 EISDIR/
+    // truncate 用例的 64 阈值先例），rec1 的 100B sidecar 恢复为政策正例。
+    writeStreamFixture(root, NS, STREAM, {
+      manifest: validManifest(STREAM, NS, { inlineUpdateMaxBytes: 64 }),
+      jsonlLines: [rec1, rec2],
+      bin,
+    })
 
     const read = readStreamStrict({ rootDir: root, namespaceId: NS, streamId: STREAM })
     expect(read.status).toBe('corrupt')
@@ -402,7 +417,10 @@ describe('终审回流修复轮（总控 G13 / standards N-3/N-4）：genesis ex
     expect(eventsOfType(observer.events, 'stream-exhausted')).toHaveLength(1)
 
     const read = readStreamStrict({ rootDir: root, namespaceId: 'ns-r2-genesis-exh', streamId: log.streamId })
-    expect(read.status).toBe('ok')
+    // R3 修订（设计 §3.3/§3.4）：同「预置 UINT64_MAX−1」一测——磁盘流从 UINT64_MAX 起
+    // 而非 1，诚实 sequence-gap（corrupt）；record 级判定不受 stream 级序列检查影响。
+    expect(read.status).toBe('corrupt')
+    expect(read.issues.some((i) => i.code === 'sequence-gap')).toBe(true)
     expect(read.records[0]!.ok).toBe(true)
   })
 
