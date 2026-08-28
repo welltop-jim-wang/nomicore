@@ -1,7 +1,9 @@
 # SA7 动态验证报告 — `@nomicore/ws-replication`（issue #136 切片 6，Phase 3）
 
-**Date**: 2026-08-30
-**Verdict**: **fail-needs-fix** —— SA4 R2 verdict 为 pass（静态门通过），SA7 在其「动态审核重点 #3」上独立发现一条真实实现缺陷 **D1（hub/peer watchdog 空闲探测不重武装——一次性节奏）**，附可复现红锚（`packages/ws-replication/test/ws-replication-sa7-dynamic.test.ts` W1，现实现实测红）。SA4 清单其余各项（#1/#2/#4/#5）动态复核全部通过或维持登记。修复面窄（`src/fence-watchdog.ts` 单点 + 顺手 N1），不触及架构——无需 redesign。
+**Date**: 2026-08-30（R1）/ 2026-08-30（R2 复验轮，见文末「SA7 R2 复验节——D1/N1 修复复验 + 终局裁决」）
+**Verdict（终局，R2）**: **pass** —— R1 的 D1（watchdog 空闲探测一次性）与 N1（hub hello timer 未 clear）已由 SA3 R3（commit `f175e3e`）治本修复：W1 红锚转绿且全链闭合（armed / ackTimeoutMs 边界节奏 / 重武装 / busy 隔离对照 / 边沿记忆 / teardown 零泄漏）；全仓 163 文件 / 1945 测试 + typecheck 复跑全绿（与总控亲跑逐值一致）；修复形态（重武装先于 probe）经 timer 计量轨迹动态证明无新增风险。R1 fail-needs-fix 依据全部消解。**R1 正文原样保留于下**。
+
+**R1 Verdict（历史，保留）**: **fail-needs-fix** —— SA4 R2 verdict 为 pass（静态门通过），SA7 在其「动态审核重点 #3」上独立发现一条真实实现缺陷 **D1（hub/peer watchdog 空闲探测不重武装——一次性节奏）**，附可复现红锚（`packages/ws-replication/test/ws-replication-sa7-dynamic.test.ts` W1，现实现实测红）。SA4 清单其余各项（#1/#2/#4/#5）动态复核全部通过或维持登记。修复面窄（`src/fence-watchdog.ts` 单点 + 顺手 N1），不触及架构——无需 redesign。
 
 - **被验实现**: `packages/ws-replication`（基线 `ff50d47..HEAD`：24642a9 + 0cd1ae6 + 4333593/c1ec56c + ade002c + fa6d61c/3a18dfa/784dea5）
 - **输入**: 任务简报（含 SA6 全记录）/ 设计定稿 R4.2（§12/§16/§4.3/§23）/ SA4 静态验尸 R2 pass（文末「动态审核重点」）
@@ -146,3 +148,75 @@ SA4 动态清单五项中四项（#1/#2/#4/#5）通过或维持登记；**#3 的
 | 8 | `grep -n "helloHandle" packages/ws-replication/src/hub-connection.ts` | 仅 :113/:141（武装）——无清除点（N1） |
 | 9 | `gh pr list --head <branch>` / `gh run list --branch <branch>` | 双空（未推送/无 PR）→ CI 触发证据环境阻塞 |
 | 10 | `git status --short` | 仅新增 `?? packages/ws-replication/test/ws-replication-sa7-dynamic.test.ts` |
+
+---
+
+# SA7 R2 复验节 —— D1/N1 修复复验 + 终局裁决（2026-08-30，同会话第二轮）
+
+**Verdict: pass** —— R1 两条发现治本修复，红锚转绿，全量零回归，修复形态无新增动态风险。
+
+- **被验增量**: `ffe8e84..f175e3e`（SA3 R3：`src/fence-watchdog.ts` D1 修复 +10/−2、`src/hub-connection.ts` N1 修复 +3）——仅 2 个生产文件、11 行插入，零测试改动、零契约面触碰。
+- **修复形态核对（源码级）**: `startIdle()` 到期回调现为 `idleHandle=undefined → idleArmed=false → startIdle()（重武装新 timer）→ probe() → onEvent()`——先清守卫再重武装（D1 根因消除）；N1 在 HELLO_ACK 处理同步段 `clearTimeout(this.helloHandle)`（§16 行 1「HELLO_ACK 解除」落实）。
+
+## 一、复验任务 1 —— W1 红锚转绿确认（重武装/边界节奏/teardown 全链）
+
+独立进程 `pnpm exec vitest run packages/ws-replication/test/ws-replication-sa7-dynamic.test.ts`（/tmp/sa7r2-file.log，exit 0）：**4/4 通过（W1/W2/G1/G2）**。W1 通过即下列全链断言逐项成立：armed（live 空闲期 `pending()≥1`）→ 首探测健康零动作 → deep-drain 隔离 + bump 后 busy 对照零帧 → 边界 −1ms 不 fire（`identity@19_999=0`）→ **2×ackTimeoutMs 边界 fire 检出 fence（R1 红锚位，现 `identity@20_000=1`）** → epoch=2 + ns `conflicted` → teardown 后 `pending()` 严格递减 → 30s 追加推进零新帧（边沿记忆 + 零残留活动）。
+
+**timer 计量轨迹（临时诊断套件，跑毕已删；/tmp/sa7r2-diag 快照）——三合一精确证据**：
+
+```json
+{"pending_live":1, "pending_after_probe1":1, "identity_after_bump_settle":0,
+ "identity_at_19_999":0, "identity_at_20_000":1,
+ "pending_after_fence_teardown":0, "identity_at_50_000":1, "pending_at_50_000":0}
+```
+
+| 计量点 | R1（缺陷态） | R2（修复态） | 证明对象 |
+|---|---|---|---|
+| `pending_live` | 2（idle + 永不清除的 hello timer） | **1** | **N1 修复**：HELLO_ACK 同步段解除 hello timer |
+| `pending_after_probe1` | **0（节奏死亡）** | **1** | **D1 修复（重武装）**：首探测后下一周期 timer 在位 |
+| `identity 19_999→20_000` | 0→0（永不检出） | 0→**1** | **边界节奏**：检出恰在 2×ackTimeoutMs（且由重武装的第二周期 timer 完成——R1 红锚位转绿） |
+| `pending_after_fence_teardown` | —（无可清） | **0** | **teardown 零泄漏**（见下节风险分析） |
+| `identity_at_50_000` | 0（缺陷态另一面） | 1 | 边沿记忆 + 残留链惰性（零重复帧/零 ERROR） |
+
+## 二、复验任务 2 —— 全量动态回归
+
+| 命令（独立进程） | 结果 | 日志 |
+|---|---|---|
+| `pnpm exec vitest run packages/ws-replication` | **10 文件 / 74 测试全绿，Type Errors no errors，exit 0**（含 SA7 4 IT + SA6 回流红转绿 3 IT + 冻结 67 IT） | /tmp/sa7r2-pkg.log |
+| `pnpm test`（全仓） | **163 文件 / 1945 测试全绿，Type Errors no errors，exit 0**——**与总控亲跑逐值一致**；R1 基线 162/1941 之上仅 +1 文件 +4 IT（SA7 补充测试），零回归 | /tmp/sa7r2-full.log |
+| `pnpm typecheck` | **exit 0**（含 `packages/ws-replication/tsconfig.json` 枚举） | /tmp/sa7r2-tc.log |
+
+## 三、复验任务 3 —— D1 修复形态新风险分析（重武装先于 probe 的 teardown 交互）
+
+修复采用「先重武装、后 probe」次序。逐场景核验：
+
+| 场景 | 分析 | 证据 |
+|---|---|---|
+| probe 触发终局（fence → one-shot 终结器 → finalize → cleanup → `watchdog.teardown()`） | teardown 清除的恰是**本回调刚重武装的下一周期 timer**——零泄漏。次序正确性关键：若反之「先 probe 后重武装」，终局 teardown 先行、随后 arm 会在已收口 watchdog 上留下孤儿 timer（真泄漏）——SA3 选型正确（commit message 明文记录该取舍） | `pending_after_fence_teardown=0`（若泄漏此处=1）；W1 `pending()` 严格递减断言绿 |
+| teardown 时序 | `closeSessionAndRelease()` 先 `this.session = undefined`（hub-namespace.ts:799）**再** `watchdog.teardown()`（:800）——回调尾部残留的 `onEvent()` 微任务链（teardown 后重启的 4096 让步链）probe 时 `session()` 恒 undefined → 早退，**惰性有代码级保证**；且该「probe→onEvent」次序为修复前既有形态，非本轮新引入 | `identity_at_50_000=1`、W1 断言 ERROR×0 / 30s 零新帧 |
+| 非终局边沿（hub needsResync → `declareHubResync`，无 teardown） | 重武装 timer 存续——恢复期通道探测节奏延续，符合设计（§12 空闲兜底覆盖恢复等待窗） | W2 绿（20 笔连发 → RESYNC×1 → round 2 → 收敛）+ 全量绿 |
+| 双重武装 / 重入 | 守卫 `if (this.idleArmed) return` + 回调先清 idleArmed → 任一时刻至多一个在位 timer；外部 teardown（socket close 等）清除在位者；teardown 后新会话 `startIdle()` 重新武装（idleArmed 已 false） | 单线程无交错；W1 全程 pending ∈ {0,1} |
+| 双侧对称 | 共用文件单点修复，peer 侧（`peer-namespace.ts:815` 起同样节奏）同步获益 | 包级 74/74 绿 |
+
+**结论：无新增动态风险。** 唯一行为差异（探测节奏由一次性变为周期性）即设计 §16 本义；全量 1945 测试零回归佐证无溢出效应。
+
+## 四、R2 裁决
+
+- D1/N1 修复均为**根因消除**（守卫清除 + 次序选型 / HELLO_ACK 同步解除），非表面补丁；R1 红锚同源场景翻绿，timer 计量轨迹与 R1 缺陷签名逐点对偶消解。
+- 范围守卫：`git status --short` 干净（R1 产物已随 ffe8e84 入仓；本轮仅本报告更新）。
+- CI 触发证据（Step 4 立法）状态不变：分支仍未推送、无 PR（`gh pr list`/`gh run list` 双空，ahead 13）——**环境阻塞维持**，本地动态门（12 package 全触发 + 全绿）已闭环；CI 侧 `gh run view --log` 摘录仍待总控 push/PR 后补做（非本轮 fail 因素，R1 已如实登记）。
+
+**Verdict: pass** —— SA7 动态验证闭合（SA4 清单 #1/#2/#3/#4/#5 全部落动态证据或维持登记；D1/N1 治本；全仓零回归）。可进总控收口流程。
+
+## R2 验证证据总表
+
+| # | 命令（独立进程，setsid nohup） | 结果 |
+|---|---|---|
+| 1 | `pnpm exec vitest run packages/ws-replication/test/ws-replication-sa7-dynamic.test.ts` | 4/4 通过（W1 转绿），exit 0（/tmp/sa7r2-file.log） |
+| 2 | `pnpm exec vitest run packages/ws-replication` | 10 文件 / 74 测试全绿，Type Errors no errors，exit 0（/tmp/sa7r2-pkg.log） |
+| 3 | `pnpm test`（全仓） | 163 文件 / 1945 测试全绿，Type Errors no errors，exit 0——与总控亲跑逐值一致（/tmp/sa7r2-full.log） |
+| 4 | `pnpm typecheck` | exit 0（/tmp/sa7r2-tc.log） |
+| 5 | timer 计量轨迹诊断（临时套件，跑毕已删） | `pending_live=1 / after_probe1=1 / identity@20_000=1 / pending_after_teardown=0 / identity@50_000=1`——D1 重武装 + N1 解除 + 边界节奏 + teardown 零泄漏四点齐证 |
+| 6 | `git show f175e3e --stat` / `-- src` | 2 生产文件 +11/−2；修复形态与 commit message 一致 |
+| 7 | `gh pr list --head <branch>` / `gh run list --branch <branch>` | 双空（未推送/无 PR）→ CI 摘录维持环境阻塞登记 |
+| 8 | `git status --short` | 干净（本轮仅更新本报告） |

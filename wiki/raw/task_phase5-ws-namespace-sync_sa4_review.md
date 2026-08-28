@@ -1,7 +1,7 @@
 # SA4 静态验尸报告 — `@nomicore/ws-replication`（issue #136 切片 6，Phase 3）
 
-**Date**: 2026-08-30（R1）/ 2026-08-30（R2 复审，见文末「SA4 R2 复审节——回流修复增量核对 + 全量复跑」）
-**Verdict（当前，R2）**: **pass** —— R1 三条阻塞项 F1/F2/F3 及次要项 F4/F5/F7 全部治本修复并经执行证据复核翻绿；F8 勘误与 F6/F9 登记落实；全量复跑 162 文件 / 1941 测试 + typecheck 全绿。**R1 正文（verdict: reject）原样保留于下**。
+**Date**: 2026-08-30（R1）/ 2026-08-30（R2 复审）/ 2026-08-30（R3 窄幅增量，见文末「SA4 R3 复审节——SA7 D1/N1 回流修复」）
+**Verdict（当前，R3）**: **pass** —— R2 pass 判定经 SA7 动态验证 D1/N1 回流修复（f175e3e）核验后**维持有效**：D1 watchdog 空闲节奏治本（清守卫 + 重武装前置，零泄漏/零死 timer 论证成立）、N1 HELLO timer 解除到位；复跑包级 10 文件/74 IT、全量 163 文件/1945 IT、typecheck 全绿。**R1 正文（verdict: reject）原样保留于下**，R2/R3 复审节在文末。
 
 **R1 Verdict（历史，保留）**: **reject**（3 条已获执行证据的设计偏离，修复面窄、方向明确；无需 needs-redesign——架构本身成立）
 
@@ -157,3 +157,32 @@
 ## 五、R2 裁决
 
 F1/F2/F3 修复均为**机制删除或通路接通**（宽赦整删、豁免整删、声明统一入口），非表面补丁——R1 三条执行证据在同源复现下全部翻绿，对照路径维持，红灯锚定链闭合，全仓零回归。F4/F5/F7 到位，F8 勘误与 F6/F9 登记落实。**Verdict: pass**——SA7 可进入动态验证（重点见 R1「动态审核重点」节，状态更新：#1/#2 已有静态+确定性测试覆盖、动态复核降级为建议项，#3/#4/#5 维持）。
+
+---
+
+# SA4 R3 复审节 —— SA7 D1/N1 回流修复窄幅增量核对（2026-08-30，同会话第三轮）
+
+**Verdict（本 delta）: pass** —— D1/N1 修复治本、teardown 交互正确、零泄漏/零死 timer 论证成立（静态推演 + SA7 W1 动态锚双侧核验）；复跑包级 10 文件/74 IT、全量 163 文件/1945 IT、typecheck 全绿（与总控 verify3 逐值一致）。
+
+- **被审 delta**: `3a18dfa..HEAD`（ffe8e84 SA7 红锚 W1/W2/G1/G2 + 报告 / f175e3e D1+N1 修复 / 167a6df dispatch log）——**src 仅 2 文件**（fence-watchdog.ts +10/−2、hub-connection.ts +3/−0）+ 1 新 SA7 测试文件 + 3 wiki，全部在 ALLOW LIST（`packages/ws-replication/**`）/白名单；零根配置、BLACKLIST 零命中。
+- **复跑（独立进程）**: `pnpm exec vitest run packages/ws-replication` → **10 文件 / 74 IT 全绿，Type Errors no errors，exit 0**（/tmp/sa4-r3-pkg.log）；`pnpm test` → **163 文件 / 1945 IT 全绿，exit 0**（/tmp/sa4-r3-full.log，与 verify3 一致）；`pnpm typecheck` → **exit 0**（/tmp/sa4-r3-tc.log）。
+
+## D1（MAJOR）修复核验 —— `startIdle` 到期回调
+
+**缺陷回顾**（SA7 动态实证，R2 静态审漏判「startIdle 实现正确，但零覆盖」——SA4→SA7 两层门互补的实证）：原回调内递归 `startIdle()` 被 `if (this.idleArmed) return` 守卫挡死（`idleArmed` 在回调内从未清 false）→ idle 探测一次性、节奏死亡 → 空闲通道 fence/needsResync 检出延迟无上界（§16「每 ackTimeoutMs 探测 + 重武装」违约，静默失败面）。
+
+**修复形态**（fence-watchdog.ts:58-70）：回调序 = `idleHandle=undefined` → `idleArmed=false` → `startIdle()`（重武装 H2）→ `probe()` → `onEvent()`。逐点核验：
+
+1. **节奏恢复（零死 timer）**：`idleArmed` 的 true→false 迁移点全仓仅两处——到期回调（同步紧跟重武装）与 `teardown()`（紧跟 handle 清除）；两处 false→true 之间无 await、无让步点 → 单线程下零交错。任意空闲周期数后探测仍按 `ackTimeoutMs` 边界 fire。**动态锚**：SA7 W1 断言第二个 `ackTimeoutMs` 边界（2×−1ms 不 fire、+1ms fire）检出 fence 且恰 1 帧 `IDENTITY_CHANGED(epoch=2)`——节奏存活的直接证明（红锚在修复前实测 pending 2→0）。
+2. **重武装先于 probe 的 teardown 交互（零泄漏——本修复的关键次序）**：probe 命中 fence → `onPredicateEdge` → one-shot 终结器 → `finalize` → `closeSessionAndRelease` → `watchdog.teardown()` 全部同步完成；因重武装（H2）先于 probe，teardown 时 `idleArmed=true ∧ idleHandle=H2` → `clearTimeout(H2)` 精确清除**本回调刚武装的下一周期 timer**。若次序倒置（probe 先、重武装后），teardown 会以 `idleArmed=false` 空转、随后的 startIdle 在死通道上武装永久 no-op 节奏（timer 泄漏）。**动态锚**：W1 断言 fence 后 `scheduler.pending()` 严格递减 + 再推进 30s 零新帧（既证 teardown 清除了 H2，也证 sticky 谓词电平恒真下边沿记忆不重复动作）。
+3. **teardown 后的残余 `onEvent()` 有界无害**：probe 终局链返回后回调尾部的 `onEvent()` 仍会启动一条新微任务链（`chainRunning=false` → 重置预算 4096）——但 `closeSessionAndRelease` 已先置 `session=undefined`，probe 全程 no-op，链在 4096 让步内自然终止（§12 有界性保持；零 wire/零状态影响）。登记为可接受的常数级残余，不构成泄漏。
+4. **复活路径**：peer 控制器跨连接复用（§14.2）——断线 teardown（idleArmed=false）→ 重连 `subscribe()` → `startIdle()` 重新武装 ✓（grep 核：startIdle 恰两处调用 peer:815/hub:303，均为会话建立点；teardown 恰两处 peer:834/hub:800，均为 closeSessionAndRelease）。
+5. **§16/§12 对齐**：§16 末行「每 ackTimeoutMs 探测 + 重武装」字面达成；§12 机制 2「并重新武装微任务突发」由回调尾部 `onEvent()` 承载（未动）；hub/peer 双侧共用文件单点修复（N-2 对称性保持）。
+
+## N1（nano）修复核验 —— hub HELLO timer 解除
+
+`onHello` 在 `state='ready'` 同步段、发送 HELLO_ACK 之前 `clearTimeout(helloHandle)`——§16 行 1「HELLO_ACK 解除」字面达成（peer 侧 `onHelloAck → clearHello()` R1 起已有，N1 为 hub 侧对称缺口）。W1 旁证：修复前 live 期 hub `pending()=2`（idle + 残留 hello）、修复后武装面收敛。**残留（登记不阻塞）**：握手期夭折的连接（HELLO 未达即 close/fatal）hello timer 不清除、到期后经 state 守卫（`'handshaking'` 检查）成 no-op 并自移除——有界生命周期、零行为影响，与 R1/R2 既有接受面一致（如需彻底，切片 7 顺手在 connectionFatal/cleanupAll 一并 clear）。
+
+## 结论
+
+D1 修复是**次序敏感的单点机制修复**（清守卫 + 重武装前置），非行为面扩张；W1 红锚（修复前实测红：第二边界零探测、IDENTITY_CHANGED=0）转绿 + 零泄漏/边沿记忆/teardown 计面断言全过；N1 到位。全仓零回归（163/1945 + typecheck）。**本 delta Verdict: pass** —— SA7 fail-needs-fix 的回流闭合，R2 pass 判定在 D1/N1 修复后维持有效，可进入收口（SA7 报告的 R2 动态复核由总控另行派发）。
