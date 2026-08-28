@@ -1323,7 +1323,11 @@ export function createRegistryInternal(
  * randomBytes 形状门禁（均必须显式提供——禁 Date.now / 系统 timer / 全局 crypto
  * fallback；检查顺序 clock → scheduler → randomBytes，均与 createRegistryInternal
  * 内部同序）；idleTimeoutMs 可选（resolveIdleTimeoutMs 单点校验）；不接受 Runtime
- * override；observer 经构造 options 注入。 */
+ * override；observer 经构造 options 注入。
+ * 【R2-8 补缺（§9.1-2）】`options.role` 转发：`CreateNamespaceRegistryOptions.role`
+ * 已声明但工厂未透传给 createRegistryInternal——生产 composition 无法构造 peer
+ * Registry 的根因之二（与 plugin config 缺口叠加）；补转发后缺省路径零回归（不传
+ * role ⇒ 'hub' ⇒ 基线全权限等价面）。 */
 export function createNamespaceRegistry(
   persistence: DocPersistence,
   options: CreateNamespaceRegistryOptions,
@@ -1336,5 +1340,6 @@ export function createNamespaceRegistry(
     randomBytes: options.randomBytes,
     ...(options.idleTimeoutMs !== undefined ? { idleTimeoutMs: options.idleTimeoutMs } : {}),
     ...(options.observer !== undefined ? { observer: options.observer } : {}),
+    ...(options.role !== undefined ? { role: options.role } : {}),
   });
 }

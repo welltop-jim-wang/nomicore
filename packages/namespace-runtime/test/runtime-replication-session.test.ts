@@ -12,6 +12,9 @@
  *
  * 确定性 Yjs 纪律（SA6 §7.2）：远端 update 以 live doc 全量状态 bootstrap 独立 Y.Doc
  * 后仅写**新键**（并发键胜者按随机 clientID 决胜）；快照重放同 clientID 无冲突。
+ *
+ * Round-2 加严（评审项 10 允许范围，仅此一档）：fanout listener 直存 callback 原始
+ * 参数（不先 slice）并断言每投递数组独立且 buffer 不共享——断言语义不变（更强）。
  */
 import { describe, expect, it } from 'vitest';
 import * as Y from 'yjs';
@@ -193,6 +196,8 @@ type PublicStatusShape = {
   readonly rootValidation: 'none' | 'replication-unvalidated';
   readonly durability: Readonly<{ readonly memoryCaughtUp: boolean; readonly diskCaughtUp: false }>;
   readonly observerFailures: number;
+  /** R2-3（F-1）：fanout 投递队列溢出标记——status 第 11 字段（sticky、继续投递）。 */
+  readonly needsResync: boolean;
 };
 
 // ─────────────────────────────── open 门序单元锚 ───────────────────────────────
@@ -334,11 +339,12 @@ describe('T-3 epoch fence：conflicted 终态 + 存量订阅停止投递（共�
     await readyOf(runtime);
     const session1 = openSession(runtime, 'hub', 'peer-a');
     const events1: Uint8Array[] = [];
-    session1.subscribeOwnedUpdates((u) => events1.push(u.slice()));
+    session1.subscribeOwnedUpdates((u) => events1.push(u));
 
     expect((await runtime.bumpReplicationEpoch()).ok).toBe(true); // E5.5 整替 state.replication
     const afterBump = events1.length;
-    expect(afterBump).toBe(1); // bump 的 META 写（origin null）投给了存量订阅
+    expect(afterBump).toBe(0); // R2-1（F-3）：bump 槽同步投影步主动 fence——fence 取消该
+    // channel 全部未投递排队项 ⇒ bump 的 META 写（origin null，E5 已入队）零投递给旧 session
     expect(session1.replicationEpoch).toBe(1); // 冻结值不漂移（INV-S5）
 
     const { update } = makeRemoteUpdate(doc, (peer) => {
@@ -362,7 +368,7 @@ describe('T-3 epoch fence：conflicted 终态 + 存量订阅停止投递（共�
     const session2 = openSession(runtime, 'hub', 'peer-b');
     expect(session2.replicationEpoch).toBe(2);
     const events2: Uint8Array[] = [];
-    session2.subscribeOwnedUpdates((u) => events2.push(u.slice()));
+    session2.subscribeOwnedUpdates((u) => events2.push(u));
     expect((await runtime.mutateRoot({ op: 'set', path: ['n'], value: 10 })).ok).toBe(true);
     await flushMicrotasks();
     expect(events2.length).toBe(1);
@@ -852,8 +858,8 @@ describe('fanout 扇出：多 channel 广播；apply 源 origin 回声抑制；�
     const sessionB = openSession(runtime, 'hub', 'peer-b');
     const eventsA: Uint8Array[] = [];
     const eventsB: Uint8Array[] = [];
-    sessionA.subscribeOwnedUpdates((u) => eventsA.push(u.slice()));
-    sessionB.subscribeOwnedUpdates((u) => eventsB.push(u.slice()));
+    sessionA.subscribeOwnedUpdates((u) => eventsA.push(u)); // R2-10 加严：直存原始参数
+    sessionB.subscribeOwnedUpdates((u) => eventsB.push(u));
 
     // 1) 本地业务写（origin null）→ 两个 channel 均投递
     expect((await runtime.mutateRoot({ op: 'set', path: ['n'], value: 7 })).ok).toBe(true);
@@ -861,6 +867,11 @@ describe('fanout 扇出：多 channel 广播；apply 源 origin 回声抑制；�
     expect(eventsA.length).toBe(1);
     expect(eventsB.length).toBe(1);
     expect(eventsA[0]).toBeDefined();
+    // R2-10 加严：数组互异 + 全幅独立 buffer（byteOffset=0、length=全幅、buffer 不共享）
+    expect(eventsA[0]).not.toBe(eventsB[0]);
+    expect((eventsA[0] as Uint8Array).byteOffset).toBe(0);
+    expect((eventsA[0] as Uint8Array).length).toBe((eventsA[0] as Uint8Array).buffer.byteLength);
+    expect((eventsA[0] as Uint8Array).buffer).not.toBe((eventsB[0] as Uint8Array).buffer);
 
     // 2) apply@A（源 origin = A token）→ A 回声抑制、B 照常收
     const { update } = makeRemoteUpdate(doc, (peer) => {
@@ -870,6 +881,8 @@ describe('fanout 扇出：多 channel 广播；apply 源 origin 回声抑制；�
     await flushMicrotasks();
     expect(eventsA.length).toBe(1); // 排除源 origin
     expect(eventsB.length).toBe(2);
+    // R2-10 加严：同一 session 的相邻投递 buffer 亦不共享
+    expect((eventsB[0] as Uint8Array).buffer).not.toBe((eventsB[1] as Uint8Array).buffer);
 
     // 3) 字节不可变：突变已交付副本不影响 live doc 与后续投递
     const delivered = eventsB[1] as Uint8Array;
@@ -891,7 +904,7 @@ describe('fanout 扇出：多 channel 广播；apply 源 origin 回声抑制；�
     sessionA.subscribeOwnedUpdates(() => {
       throw new Error('observer channel down (deterministic)');
     });
-    sessionB.subscribeOwnedUpdates((u) => eventsB.push(u.slice()));
+    sessionB.subscribeOwnedUpdates((u) => eventsB.push(u));
 
     expect((await runtime.mutateRoot({ op: 'set', path: ['n'], value: 5 })).ok).toBe(true);
     await flushMicrotasks();
@@ -913,7 +926,7 @@ describe('fanout 扇出：多 channel 广播；apply 源 origin 回声抑制；�
     await readyOf(runtime);
     const session = openSession(runtime, 'hub');
     const received: Uint8Array[] = [];
-    const unsubscribe = session.subscribeOwnedUpdates((u) => received.push(u.slice()));
+    const unsubscribe = session.subscribeOwnedUpdates((u) => received.push(u));
     expect((await runtime.mutateRoot({ op: 'set', path: ['n'], value: 9 })).ok).toBe(true);
     await flushMicrotasks();
     expect(received.length).toBe(1);
@@ -923,7 +936,7 @@ describe('fanout 扇出：多 channel 广播；apply 源 origin 回声抑制；�
     expect(received.length).toBe(1); // unsubscribe 后不再投递
 
     await session.close();
-    const noop = session.subscribeOwnedUpdates((u) => received.push(u.slice()));
+    const noop = session.subscribeOwnedUpdates((u) => received.push(u));
     expect((await runtime.mutateRoot({ op: 'set', path: ['n'], value: 11 })).ok).toBe(true);
     await flushMicrotasks();
     expect(received.length).toBe(1); // no-op 订阅永不投递

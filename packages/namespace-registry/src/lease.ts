@@ -215,14 +215,25 @@ export function createLeaseController(
         generation: entry.generation,
         remainingLeases: entry.leases.size,
       });
-      // issue #134（O-9/O-11/§5.2）：release 同步段调用既有 session.close()（停接纳 +
-      // 退订 + 释放 Lease 槽位；零新增方法面——core 与公共类型十键 Equal 锁的前提）。
-      // 不追踪已接纳 apply 槽（ADR 0009 L42——release 不等待/取消已成接纳写）；
-      // close() 恒绿空槽体 barrier 结构性无 reject → fire-and-forget 零 unhandled
-      // rejection 前提（INV-S11）；release 事实由 Lease getStatus() 单点投影，session
+      // issue #134 round-2（R2-5，§6.1）：幂等直调 session.close()——不先查状态
+      // （getStatus seam 异常不得跳过 close / 不得同步抛出）；close 的同步/异步异常
+      // 全部隔离（guaranteed cleanup 路径——onReleased 无条件执行，半释放结构性
+      // 不可达）。既有 session（含终态 closed/conflicted）同样直调（close 幂等
+      // same-promise / 恒绿 barrier——L246「永不 reject」使直调零风险，red #6 锚
+      // 终态仍收到 close 调用）。不追踪已接纳 apply 槽（ADR 0009 L42——release
+      // 不等待/取消已成接纳写）；release 事实由 Lease getStatus() 单点投影，session
       // status 不复写（O-11——不双写）。
-      if (activeSession !== undefined && activeSession.getStatus().state === 'open') {
-        void activeSession.close();
+      if (activeSession !== undefined) {
+        try {
+          // 【R2.1 / SA2 #5 加固】Promise.resolve(closing) 同化：敌意返回值（undefined /
+          // 原始值 / thenable / 假 catch 方法返回 rejecting promise 的对象）一律经原生
+          // promise 吸收——.catch 为原生方法，兜底分支结构性零 unhandled rejection
+          //（前版 closing.catch 直接调用敌意 catch 方法的尾巴已闭合）。
+          const closing = activeSession.close() as unknown;
+          void Promise.resolve(closing).catch(() => {});
+        } catch {
+          /* session seam 同步 throw 隔离——不阻断 onReleased（guaranteed cleanup 路径） */
+        }
       }
       onReleased?.();
     }

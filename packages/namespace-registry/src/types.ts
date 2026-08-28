@@ -72,7 +72,7 @@ export const NAMESPACE_REGISTRY_IDLE_TIMEOUT_TYPE_MESSAGE =
 export const NAMESPACE_REGISTRY_IDLE_TIMEOUT_RANGE_MESSAGE =
   'NAMESPACE_REGISTRY_IDLE_TIMEOUT_RANGE: idleTimeoutMs 必须是 0..2147483647 的有限整数';
 export const NAMESPACE_REGISTRY_PLUGIN_CONFIG_MESSAGE =
-  'NAMESPACE_REGISTRY_PLUGIN_CONFIG: namespace-registry 插件配置仅接受 idleTimeoutMs 键';
+  'NAMESPACE_REGISTRY_PLUGIN_CONFIG: namespace-registry 插件配置仅接受 idleTimeoutMs 与 role 键';
 export const NAMESPACE_REGISTRY_SHUTDOWN_FAILED_MESSAGE =
   'NAMESPACE_REGISTRY_SHUTDOWN_FAILED: Registry shutdown 期间部分 Runtime 关闭失败';
 // —— phase-5 切片 1 增量（ADR 0010 身份条款/ADR 0009 依赖纪律）——
@@ -381,6 +381,11 @@ export interface ReplicationSessionStatus {
   readonly durability: Readonly<{ readonly memoryCaughtUp: boolean; readonly diskCaughtUp: false }>;
   /** 扇出 listener 抛错的自捕获计数（ADR 0007 L54「记录」面；不 fatal、不断扇出）。 */
   readonly observerFailures: number;
+  /** fanout 投递队列溢出标记（F-1：status 第 11 字段；初值 false、**sticky**——置位后
+   *  session 生命周期内永不清除；清零路径 = transport reset/bootstrap 后 open 新
+   *  session。标记后投递行为不变（继续投递——标记是观测信号不是行为切换），transport
+   *  观测后自行决策 reset/bootstrap（切片 6 消费）。 */
+  readonly needsResync: boolean;
 }
 
 /** ReplicationSession 公共窄能力面（ADR 0010 L81–88 六项 + 冻结四域；恰十键）。 */

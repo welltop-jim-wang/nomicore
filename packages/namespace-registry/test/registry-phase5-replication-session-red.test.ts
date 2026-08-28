@@ -1197,8 +1197,10 @@ describe('AC-6 单 Runtime observer 扇出；排除源 origin；observer 失败�
     const { stub, registry, leaseA, sessionA, sessionB } = await readyFanOut();
     const eventsA: Uint8Array[] = [];
     const eventsB: Uint8Array[] = [];
-    sessionA.subscribeOwnedUpdates((u) => eventsA.push(u.slice()));
-    sessionB.subscribeOwnedUpdates((u) => eventsB.push(u.slice()));
+    // R2-10 加严（评审项 10 允许范围，仅此一档）：listener 直存 callback 原始参数——
+    // 不先 slice——断言每投递数组独立且 buffer 不共享（byteOffset/length/底 buffer identity）
+    sessionA.subscribeOwnedUpdates((u) => eventsA.push(u));
+    sessionB.subscribeOwnedUpdates((u) => eventsB.push(u));
 
     // 1) 本地业务写（本地 origin）：两个 session 均投递；字节内容真实生效于远端副本
     const preWrite = makeReplica(stub.liveDoc()); // 写前远端视角（n=42）
@@ -1206,6 +1208,11 @@ describe('AC-6 单 Runtime observer 扇出；排除源 origin；observer 失败�
     await flushMicrotasks();
     expect(eventsA.length).toBe(1);
     expect(eventsB.length).toBe(1);
+    // R2-10 加严：数组互异 + 全幅独立 buffer（byteOffset=0、length=全幅、buffer 不共享）
+    expect(eventsA[0]).not.toBe(eventsB[0]);
+    expect((eventsA[0] as Uint8Array).byteOffset).toBe(0);
+    expect((eventsA[0] as Uint8Array).length).toBe((eventsA[0] as Uint8Array).buffer.byteLength);
+    expect((eventsA[0] as Uint8Array).buffer).not.toBe((eventsB[0] as Uint8Array).buffer);
     const replayA = replayDelta(preWrite, eventsA[0] as Uint8Array);
     expect(replayA.getMap('ROOT').get('n')).toBe(7);
 
@@ -1218,6 +1225,8 @@ describe('AC-6 单 Runtime observer 扇出；排除源 origin；observer 失败�
     await flushMicrotasks();
     expect(eventsA.length).toBe(1); // 排除源 origin（O-10 回声抑制）
     expect(eventsB.length).toBe(2);
+    // R2-10 加严：同一 session 的相邻投递 buffer 亦不共享
+    expect((eventsB[0] as Uint8Array).buffer).not.toBe((eventsB[1] as Uint8Array).buffer);
     const replayB = replayDelta(preApply, eventsB[1] as Uint8Array);
     expect(replayB.getMap('ROOT').get('ext')).toBe(7); // B 收到的即 apply@A 的所有权增量
 

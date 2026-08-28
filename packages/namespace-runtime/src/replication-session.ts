@@ -11,11 +11,15 @@
  * re-export。
  *
  * 结构（D-1/D-2）：
- * - SessionFanout：构造期 `doc.on('update')` 恰一监听（INV-S2——每 Runtime 恰一个），
- *   同步扇出；按 origin token 抑制回声（INV-S3）；每 listener 独立 try/catch 自捕获
- *   （计数进 session status `observerFailures`——ADR 0007 L54「记录」面；绝不向 Yjs
- *   transaction 栈抛，T-2 和解）；每 listener 每投递独立 `Uint8Array` 副本（slice()，
- *   INV-S4）。
+ * - SessionFanout：构造期 `doc.on('update')` 恰一监听（INV-S2——每 Runtime 恰一个）；
+ *   **R2-3 异步化**：observer 内只复制 owned bytes（`update.slice()`）并入队；listener
+ *   移出 transaction 栈——经每 channel 自延伸微任务泵（让步 20）有界投递（容量 16 冻结
+ *   常量 FANOUT_CHANNEL_QUEUE_CAPACITY）；溢出 → 弃新 + `needsResync`（sticky、继续
+ *   投递——ADR 0010 L113 字面实现）；投递集 = 交付时刻 listener 快照（at-least-once，
+ *   §4.2 要点 8）；按 origin token 抑制回声（INV-S3）；每 listener 每投递独立
+ *   `Uint8Array` 副本（slice()——INV-S4 字节面）；listener throw 在投递点自捕获
+ *   （计数进 session status `observerFailures`——ADR 0007 L54「记录」面；绝不抛入
+ *   Yjs transaction 栈，T-2 和解）。
  * - RuntimeReplicationHost：{doc, handle, state, sequencer, notifyDirty, fanout}——
  *   由 runtime.ts 构造期一次成型，经模块级 WeakMap 以 runtime 对象引用为键登记
  *   （SA2 R1 #15：登记在 runtime 对象构造之后——零属性污染，Object.keys 仍十二键）。
@@ -100,6 +104,11 @@ export interface RuntimeReplicationSessionStatus {
   readonly durability: Readonly<{ readonly memoryCaughtUp: boolean; readonly diskCaughtUp: false }>;
   /** 扇出 listener 抛错的自捕获计数（ADR 0007 L54「记录」面；不 fatal、不断扇出）。 */
   readonly observerFailures: number;
+  /** fanout 投递队列溢出标记（F-1：status 第 11 字段；初值 false——open 时队列为空；
+   *  **sticky**——置位后 session 生命周期内永不清除（无清除 API；清零路径 = transport
+   *  reset/bootstrap 后 open 新 session）；标记后投递行为不变（继续投递——标记是
+   *  观测信号不是行为切换），transport 观测后自行决策 reset/bootstrap（切片 6 消费）。 */
+  readonly needsResync: boolean;
 }
 
 /** 公共窄能力面（ADR 0010 L81–88 六项 + 冻结四域；恰十键；与 registry 侧
@@ -128,9 +137,24 @@ export type RuntimeReplicationSessionOpenResult =
       message: string;
     }>;
 
-// ─────────────────────────────── 扇出（§4.2 / O-10 / AC-6） ───────────────────────────────
+// ─────────────────────────────── 扇出（§4.2 / O-10 / AC-6；R2-3 异步化） ───────────────────────────────
 
-/** 会话广播通道（每 session 一份；fanout 的 channel 集合成员）。 */
+/** 每 channel（= 每 session）投递队列容量上限（F-1：冻结常量 16——不可配置，沿
+ *  RAW_PROTECTED_FIELDS「raw caller 不得逐次自定义」同款纪律）。溢出 → 丢弃**新**项
+ *  （保序：已入队最旧项保留）+ 置 needsResync（ADR 0010 L113 字面实现）。 */
+const FANOUT_CHANNEL_QUEUE_CAPACITY = 16;
+
+/** 每次投递前的微任务让步数（§4.3 时序论证：20 为双向 load-bearing 常数——
+ *  下界 = 写结算链上界（~8 跳）+ 裕度（公平性：T 恒先于 listener 调用）；
+ *  上界 = flushMicrotasks 预算（registry 侧 40 内首投递可见）；合法区间 [16, 24]。）
+ *  让步只产生微任务计数，不产生墙钟等待。 */
+const FANOUT_DELIVERY_DEFERRAL_MICROTASKS = 20;
+
+/** 会话广播通道（每 session 一份；fanout 的 channel 集合成员）。
+ *  【R2.1 / SA2 #4 实现不变量（冻结）】finalize 只摘除**自身** channel
+ *  （fanout.detach 以自引用为参）；fenceStale/terminateAll 迭代期间的 Set 删除限于
+ *  当前被访元素（JS Set 迭代语义下安全）。SA3 不得引入终态级联摘除（finalize 摘除
+ *  非当前 channel）；如确需，必须同步改为快照迭代（[...channels]）。 */
 export interface SessionChannel {
   /** 每 session 唯一回声抑制 token（D-4：apply 源 origin 与该 token 恒等即排除）。 */
   readonly applyOrigin: symbol;
@@ -138,33 +162,104 @@ export interface SessionChannel {
   /** listener throw 自捕获计数（ADR 0007 L54「记录」面——不 fatal、不熔断、不断扇出；
    *  无界纯计数，熔断/退订/背压属切片 6 队列属主——O-10 显式选择）。 */
   failures: number;
+  /** 冻结 fence 谓词输入（createSessionCore 单次成型——不变不漂移；fenceStale 以
+   *  （replicationId, replicationEpoch）与传入不等判过期——身份不等或 epoch 落后）。 */
+  readonly replicationId: string;
+  readonly replicationEpoch: number;
+  /** 有界异步投递队列（F-1：每 channel 容量 16；FIFO；溢出弃新保旧）。 */
+  readonly queue: Uint8Array[];
+  /** 溢出 sticky 标记（F-1：置位后 session 生命周期内永不清除；清零路径 = transport
+   *  reset/bootstrap 后 open 新 session；标记后投递行为不变——标记是观测信号）。 */
+  needsResync: boolean;
+  /** 泵单飞守卫（任一时刻每 channel 至多一个泵 continuation 挂起——公平性机制根源）。 */
+  pumpScheduled: boolean;
+  /** finalize 回调（core 闭包——终态唯一可变源仍在 core，channel 不复制终态，防双写）。
+   *  终态迁移：terminal==='open' 时才生效（幂等；conflicted 不降级）；置终态 +
+   *  fanout.detach(channel)（摘除点复用）+ **取消全部未投递排队项**（queue.length = 0；
+   *  进行中泵于下一让步点经 isTerminal() 退出）。 */
+  readonly finalize: (terminal: 'closed' | 'conflicted', cause?: 'runtime-close') => void;
+  /** 终态观测（core 闭包转置——泵/observer 的双闸输入）。 */
+  readonly isTerminal: () => boolean;
 }
 
 /** 扇出器（O-10/AC-6）：构造期挂接、永不离线（空 channel 集合零成本快路径）。 */
 export interface SessionFanout {
   attach(channel: SessionChannel): void;
   detach(channel: SessionChannel): void;
+  /** R2-1（bump 槽 E5.5 主动 fence）：凡 channel 冻结 (replicationId, replicationEpoch)
+   *  与传入不等（身份不等或 epoch 落后）→ 调 channel.finalize('conflicted')。
+   *  bump 后 nextEpoch 为全新值 ⇒ 全部现存 channel（全部冻结旧 epoch）被 fence——
+   *  无幸存者、无逐 channel 判断遗漏。 */
+  fenceStale(replicationId: string, replicationEpoch: number): void;
+  /** R2-2（Runtime close 同步段）：逐 channel finalize('closed', 'runtime-close')
+   *  并从集合移除（finalize 自摘除——迭代删除限于当前被访元素，见 SessionChannel 注记）。 */
+  terminateAll(cause: 'runtime-close'): void;
 }
 
 /**
- * 创建扇出器：`doc.on('update')` 恰一监听。投递谓词（INV-S3）= `origin !== 本 channel
- * token` 唯一否定——null origin（一切 Runtime 内部写，含本地业务写与管理写：transact
- * 无 origin → 事件 origin 为 null，§14 实测）恒投全部活跃 channel；apply 源 token 恒被
- * 其所属 session 排除。listener 迭代取快照（[...listeners]——重入退订/订阅安全）；
- * 每 listener 独立 `update.slice()` 副本（INV-S4——字节不可变）。
+ * 泵（R2-3）：自延伸微任务链（每 channel 独立）。设计要点（冻结）：
+ * 1. 单飞守卫 + 自延伸链——任一时刻每 channel 至多一个泵 continuation 挂起
+ *    （await Promise.resolve() 在循环内逐次延伸，非一次性预排 k 个微任务；预排式链
+ *    会霸占微任务队列，无「后续 sequencer 槽先于投递」的公平性）；
+ * 2. 每项投递前统一让步 20 次（首项与后续项同规——无特例）；
+ * 3. 交付集 = **交付时刻** listener 快照（[...listeners] 于每项投递时点取，非入队时点）
+ *    ——at-least-once 语义（§4.2 要点 8）：晚订阅者可收订阅前入队项；跨退订重订可重复
+ *    交付；重复由 Yjs Y.applyUpdate 幂等吸收；
+ * 4. 每 listener 每投递独立 `item.slice()` 副本（INV-S4 字节面——两级副本）；
+ * 5. listener throw 在投递点自捕获计数（捕获点从 transaction 栈内移到栈外——隔离从
+ *    「异常域」升级为「异常域 + 时序域」，计数面不变）；
+ * 6. 与终态互斥：循环条件 + 让步后重检双闸（isTerminal()）；fence/terminate 的清队使
+ *    queue.length === 0 双重成立。
+ */
+function schedulePump(channel: SessionChannel): void {
+  if (channel.pumpScheduled) return;
+  channel.pumpScheduled = true;
+  void (async () => {
+    try {
+      while (channel.queue.length > 0 && !channel.isTerminal()) {
+        for (let i = 0; i < FANOUT_DELIVERY_DEFERRAL_MICROTASKS; i += 1) await Promise.resolve();
+        if (channel.isTerminal() || channel.queue.length === 0) return; // 让步后重检（fence/terminate/清队）
+        const item = channel.queue.shift()!; // FIFO：最旧先投（溢出弃新保旧）
+        for (const listener of [...channel.listeners]) {
+          // 交付时刻 listener 快照（要点 3）；每 listener 每投递独立副本（INV-S4 字节面）
+          try {
+            listener(item.slice());
+          } catch {
+            channel.failures += 1; // 自捕获计数（observerFailures——不熔断不自动退订）
+          }
+        }
+      }
+    } catch {
+      // 【R2.1 / SA2 #7】最外层兜底：listener 已逐个隔离、shift()/slice() 结构性不可抛，
+      // 但未来任何编辑引入非 listener 抛点时收敛为计数而非 unhandled rejection。
+      channel.failures += 1;
+    } finally {
+      channel.pumpScheduled = false; // 与 while 退出检查同一同步段（无 await 间隔）⇒ 无丢失唤醒
+    }
+  })();
+}
+
+/**
+ * 创建扇出器：`doc.on('update')` 恰一监听。observer 内**只做**（异步化契约，R2-3）：
+ * 回声抑制谓词（INV-S3 唯一谓词）→ 终态双保险 → 容量检查（先于字节复制——溢出路径
+ * 零分配）→ owned bytes 复制（`update.slice()`——六步之 4「产出」的同步面）→ 入队 →
+ * 调度泵。**listener 调用全部移出 transaction 栈**（时序隔离 + 异常隔离双保险）。
+ * null origin（一切 Runtime 内部写：transact 无 origin → 事件 origin 为 null）恒投
+ * 全部活跃 channel；apply 源 token 恒被其所属 session 排除。
  */
 export function createSessionFanout(doc: Y.Doc): SessionFanout {
   const channels = new Set<SessionChannel>();
   doc.on('update', (update: Uint8Array, origin: unknown) => {
     for (const channel of channels) {
       if (origin === channel.applyOrigin) continue; // 回声抑制排除谓词（唯一谓词）
-      for (const listener of [...channel.listeners]) {
-        try {
-          listener(update.slice()); // 每 listener 独立副本（字节不可变纪律）
-        } catch {
-          channel.failures += 1; // 自捕获：绝不抛入 transaction 栈（T-2 和解）
-        }
+      if (channel.isTerminal()) continue; // 终态双保险（detach 后结构性不可达）
+      if (channel.queue.length >= FANOUT_CHANNEL_QUEUE_CAPACITY) {
+        // F-1：溢出 → 只标记（丢弃新项、零分配、保序弃新）——L113 字面实现
+        channel.needsResync = true;
+        continue;
       }
+      channel.queue.push(update.slice()); // owned bytes 复制（隔离 yjs 数组复用）
+      schedulePump(channel); // 泵已调度则 no-op（单飞守卫）
     }
   });
   return {
@@ -173,6 +268,24 @@ export function createSessionFanout(doc: Y.Doc): SessionFanout {
     },
     detach(channel) {
       channels.delete(channel);
+    },
+    fenceStale(replicationId, replicationEpoch) {
+      // R2-1（§2.1）：finalize 只摘除自身 channel——本迭代期删除限于当前被访元素
+      //（JS Set 迭代语义安全；SA3 不得引入级联摘除——见 SessionChannel 注记）
+      for (const channel of channels) {
+        if (
+          channel.replicationId !== replicationId ||
+          channel.replicationEpoch !== replicationEpoch
+        ) {
+          channel.finalize('conflicted');
+        }
+      }
+    },
+    terminateAll(cause) {
+      // R2-2（§3.1）：同款迭代纪律；finalize 对 conflicted 不降级（终态保持）
+      for (const channel of channels) {
+        channel.finalize('closed', cause);
+      }
     },
   };
 }
@@ -213,10 +326,9 @@ const RAW_PROTECTED_FIELDS = Object.freeze({
   peer: Object.freeze({ schema: false, meta: true }),
 } as const);
 
-/** peer 允许的 META 白名单：首版空集（⟺ META 全键保护——两侧 META 皆全键 ⇒ META 检查
- *  谓词统一为「全键投影相等」，仅 SCHEMA 随角色分叉；ADR 0010 L121「未决定即不可同步」
- *  的保守读法）。当前空白名单使 PEER_ALLOWED_META_KEYS 仅作语义占位（零运行时差分）。 */
-const PEER_ALLOWED_META_KEYS: readonly string[] = Object.freeze([]);
+// 【R2-12（§13.1）】PEER_ALLOWED_META_KEYS 空占位已删除：空集是**语义冻结**（ADR 0010
+// 修订节「peer 允许的 META 白名单首版 = 空集 ⟺ META 全键保护」——ADR 文字即真相源，
+// 非代码常量义务）；运行时零差分、零引用（grep 全域复核）。
 
 // ─────────────────────────────── 会话 core 状态与工厂（§4.3） ───────────────────────────────
 
@@ -226,6 +338,11 @@ interface SessionCoreState {
   rootValidation: 'none' | 'replication-unvalidated';
   memoryCaughtUp: boolean;
 }
+
+/** Runtime-close 终止来源记账（R2-2 §3.3——**不进 status 形状**；A1 拒绝码映射专用：
+ *  closedBy==='runtime-close' → apply 拒绝码 RUNTIME_WRITE_DISABLED（close 域接纳拒绝，
+ *  #93 第 (4) 类），显式 close → REPLICATION_SESSION_CLOSED。 */
+type SessionClosedBy = 'explicit-close' | 'runtime-close';
 
 /** apply 槽冻结上下文（open 时捕获常量——结构性不漂移，INV-S5）。 */
 interface SessionSlotContext {
@@ -251,10 +368,34 @@ function createSessionCore(
   const replicationEpoch = facts.replicationEpoch;
   const direction: 'hub-to-peer' | 'peer-to-hub' = localRole === 'peer' ? 'hub-to-peer' : 'peer-to-hub';
   const applyOrigin = Symbol('replication-session-apply-origin'); // 每 session 唯一 token（D-4）
-  const channel: SessionChannel = { applyOrigin, listeners: new Set(), failures: 0 };
-  host.fanout.attach(channel);
   const coreState: SessionCoreState = { terminal: 'open', rootValidation: 'none', memoryCaughtUp: false };
   let closePromise: Promise<void> | undefined;
+  let closedBy: SessionClosedBy | undefined;
+
+  /** 终态迁移统一入口（R2-1/R2-2：bump 槽 fenceStale、Runtime close terminateAll、显式
+   *  close、apply 槽 R2 被动 fence 共用——零新增终态语义；channel 持 finalize/isTerminal
+   *  闭包，core 持 channel——一次成型互持，终态唯一可变源仍在 core）。 */
+  const finalize = (terminal: 'closed' | 'conflicted', cause?: 'runtime-close'): void => {
+    if (coreState.terminal !== 'open') return; // 幂等 + 终态不降级（conflicted 保持 conflicted）
+    coreState.terminal = terminal;
+    if (terminal === 'closed' && cause === 'runtime-close') closedBy = 'runtime-close';
+    host.fanout.detach(channel); // 摘除点复用——存量 listener 即刻停止投递
+    channel.queue.length = 0; // 取消全部未投递排队项（F-3：bump 写零投递给旧 session）
+  };
+
+  const channel: SessionChannel = {
+    applyOrigin,
+    listeners: new Set(),
+    failures: 0,
+    replicationId,
+    replicationEpoch,
+    queue: [],
+    needsResync: false,
+    pumpScheduled: false,
+    finalize,
+    isTerminal: () => coreState.terminal !== 'open',
+  };
+  host.fanout.attach(channel);
 
   const session: RuntimeReplicationSessionCore = {
     localRole,
@@ -292,6 +433,14 @@ function createSessionCore(
       // ── 接纳层（同步段，非槽——镜像 D5.1 接纳门）A0–A4 ──────────────────────
       // A1 core 终态（停接纳即时生效；终态后 apply 一概不入队）
       if (coreState.terminal === 'closed') {
+        // R2-2（§3.3）码域精化：Runtime-close 终止的 session 的复后拒绝本质是 close 域
+        // 接纳拒绝（ADR 0008 #93 修订节第 (4) 类）——code 域统一到 RUNTIME_WRITE_DISABLED；
+        // 显式 close 保持 REPLICATION_SESSION_CLOSED（A1 拒绝码映射专用 closedBy 记账）。
+        if (closedBy === 'runtime-close') {
+          return Promise.resolve(
+            refusal('RUNTIME_WRITE_DISABLED', writeDisabledMessage('lifecycle', host.state.lifecycle)),
+          );
+        }
         return Promise.resolve(
           refusal('REPLICATION_SESSION_CLOSED', REPLICATION_SESSION_CLOSED_MESSAGE),
         );
@@ -370,22 +519,21 @@ function createSessionCore(
           diskCaughtUp: false as const,
         }),
         observerFailures: channel.failures,
+        needsResync: channel.needsResync,
       });
     },
     close() {
       // 幂等 same-promise 缓存（INV-S11，沿 runtime.close INV-C2 形状）：
-      // 首调**同步段**：① 标记终态 + fanout.detach（停接纳即时生效，后到的 apply 在
-      // 接纳层 A1 被拒、不入队；当前为 conflicted 时保持 conflicted——§8 终态保持）
+      // 首调**同步段**：① finalize('closed')——标记终态 + fanout.detach + 排队项取消
+      //（停接纳即时生效，后到的 apply 在接纳层 A1 被拒、不入队；当前为 conflicted 时
+      // 保持 conflicted——终态不降级，finalize 幂等 no-op）
       // ② 恒绿空槽体 barrier 入队（resolve 时点 = 先于本次 close() 接纳的全部任务
       // 排空之后——镜像 runtime.close barrier/INV-C4；直接服务 ADR 0010 L179「等待已
       // 被 Runtime 接纳的 apply 槽完成但不无限等待网络 ACK」）。**永不 reject**：
       // barrier 槽体为空 async 函数，结构性无 reject 面（§5.2 `void close()` fire-and-
       // forget 零 unhandled rejection 前提）
       if (closePromise !== undefined) return closePromise;
-      if (coreState.terminal === 'open') {
-        coreState.terminal = 'closed';
-        host.fanout.detach(channel);
-      }
+      finalize('closed');
       closePromise = host.sequencer.enqueue(async () => {
         /* 恒绿空槽体：barrier 只承担「排在已接纳任务之后」的时序语义 */
       });
@@ -422,10 +570,9 @@ async function runSessionApplySlot(
     factsNow.replicationId !== ctx.replicationId ||
     factsNow.replicationEpoch !== ctx.replicationEpoch
   ) {
-    // O-8：不等 → session 转终态 conflicted + **同步执行 fanout.detach(channel)**
-    //（与 close() 共用同一终态摘除点，SA2 R1 #4：存量 listener 即刻停投）+ 零写入拒绝
-    coreState.terminal = 'conflicted';
-    host.fanout.detach(channel);
+    // O-8：不等 → 被动 fence——**同一 finalize**（与 bump 槽 E5.5 主动 fence 共用：
+    // 终态置位 + fanout.detach 摘除点 + 未投递排队项取消；零新增终态语义，D-2a）+ 零写入拒绝
+    channel.finalize('conflicted');
     return refusal('REPLICATION_EPOCH_CONFLICTED', REPLICATION_EPOCH_CONFLICTED_MESSAGE);
   }
 
@@ -476,13 +623,29 @@ async function runSessionApplySlot(
   }
 
   // ── R5 一次 Y.applyUpdate(doc, bytes, 受控 origin token)（本槽唯一 live Y.Doc
-  //    写入口；fanout 在事务内同步扇出——ADR 0010 六步之 4 结构性满足）────────
+  //    写入口）+ 事务边界探针（R2-6：committed 精确二分，F-4）───────────────
+  // 探针注册于本槽内——晚于一切先注册 listener（Yjs doc.on 按注册次序同步派发；敌意
+  // beforeTransaction 先抛 ⇒ 探针不运行 ⇒ txStarted=false）。
+  let txStarted = false;
+  const txProbe = (): void => {
+    txStarted = true;
+  };
+  host.doc.on('beforeTransaction', txProbe);
   try {
     Y.applyUpdate(host.doc, bytes, ctx.applyOrigin);
   } catch (err) {
-    // 结构性不可达（R4 同步预演已过同字节）；保守 committed:true（过报方向强制）——
-    // rejectWithWriteFatal 负责 markWriteFatal + committed:true 时 best-effort notifier
-    return rejectWithWriteFatal(host, true, 'unknown-pipeline-throw', err, 'replication-apply');
+    // 精确二分（F-4）：txStarted=false ⟺ beforeTransaction emit 未完成 ⟺ 事务函数
+    // 从未执行 ⟺ 零 mutation ⇒ committed:false；txStarted=true ⟹ 事务已开始、mutation
+    // 程度不可判 ⇒ 保守 committed:true（ADR 0008 L84「未知异常保守视为可能已提交」——
+    // 过报方向强制）。rejectWithWriteFatal 负责 markWriteFatal + committed:true 时
+    // best-effort notifyDirty。
+    // 【例外注记（D-4）】二分精确性条件 = 注入面为 yjs 事务钩子域；解码期异常（R4 已拦
+    // REPLICATION_RAW_UPDATE_INVALID）、notifyDirty 失败（committed:true 既有锁定）不在
+    // 判据内；复合敌意（beforeTransaction 内先变异后抛错的多个 listener）属 ADR 0007
+    // L54 observer 契约破坏域——二分不为其承诺，残余风险方向为 under-report（已登记）。
+    return rejectWithWriteFatal(host, txStarted, 'unknown-pipeline-throw', err, 'replication-apply');
+  } finally {
+    host.doc.off('beforeTransaction', txProbe); // 槽级一次性——零泄漏到后续事务
   }
 
   // ── R5.5 session 标记（镜像 E5.5 时序：notify 挂起窗口内 status 已可观测提交事实；
@@ -521,7 +684,8 @@ type ProtectedEvaluation = 'equal' | 'changed' | 'invalid';
  * 2. Y.applyUpdate(scratch, bytes)（throw → 'invalid'——畸形字节过滤器）；
  * 3. 投影比对（scratch vs liveDoc 当前投影——两读之间零 await，JS run-to-completion
  *    无并发写入）：SCHEMA（仅接收方为 hub）全容器 + META（两侧）全键 各自全键值
- *    投影相等（primitive 直比；非 primitive 形态保守判「已改变」）；
+ *    投影相等（R2-4 后：primitive 直比 + 合法结构值规范化深比较——protectedValueEqual；
+ *    契约外形态保守判「已改变」）；
  * 4. 不等 → 'changed'（整体拒绝、零写入、saveDoc 0 次、拒绝行为稳定）。
  * 边界 (a)：删后同值重写 = 内容未变 = 允许（内容投影相等判据的字面推论——同值重写
  * 仅历史膨胀，危害有界；ADR 0010 增补节已登记）。
@@ -545,7 +709,9 @@ function protectedContentEvaluated(
 }
 
 /** 单容器全键值内容投影相等（判据 (a)）。载体在场经 share.has 判别（零惰性 getMap）；
- *  载体异型（同名非 Y.Map）保守 'changed'（契约外形态不得经 raw 入容器——O-12 保守读法）。 */
+ *  载体异型（同名非 Y.Map）保守 'changed'（契约外形态不得经 raw 入容器——O-12 保守读法）。
+ *  键集先行（存在性——长度判别）+ 逐键值比较（round-1 结构保留，仅替换值判等函数为
+ *  protectedValueEqual——R2-4）。 */
 function protectedMapEqual(
   live: Y.Doc,
   scratch: Y.Doc,
@@ -567,21 +733,79 @@ function protectedMapEqual(
   const scratchKeys = [...scratchMap.keys()];
   if (liveKeys.length !== scratchKeys.length) return false;
   for (const key of scratchKeys) {
-    if (!protectedPrimitiveEqual(liveMap.get(key), scratchMap.get(key))) return false;
+    if (!protectedValueEqual(liveMap.get(key), scratchMap.get(key))) return false;
   }
   return true;
 }
 
-/** 值投影：primitive（string/number/boolean/null）直比（SameValue 语义——NaN 与自身
- *  视为内容相等，-0 与 0 视为不同）；非 primitive 形态（Yjs 容器/对象——SCHEMA/META
- *  契约外值域）、undefined、bigint、symbol 一律保守判「已改变」（O-12 冻结）。 */
-function protectedPrimitiveEqual(a: unknown, b: unknown): boolean {
+/** 白名单容器判据（R2-4 路线 (B) 保守白名单 —— 物化域对齐）：
+ *  - Y.Map / Y.Array（合法 plain value 经手工 Yjs 容器形态的仅有两种；toJSON 递归投影）；
+ *  - plain array / plain object（**yjs 13.6.32 实测**：`Y.Map.set` 对 plain 值经 lib0
+ *    writeAny 原样存储、encode/apply round-trip 后仍为 plain——ADR 0008 L31 合法
+ *    JSON-compatible 值域的实际本地形态；本判据即设计 §5.1 白名单对真实物化域的修正）；
+ *    原型必须为 Object.prototype/null（排除 Date/Map/Set 等非 plain 实例——契约外）。
+ *  其余一切形态（Y.Text/Y.XmlText 等 instanceof Y.AbstractType 的契约外容器、
+ *  undefined/bigint/symbol/function、其它实例）保守判「已改变」——即使内容未变亦拒
+ *  （round-1 姿势对契约外形态连续；合法写路径结构性不可达，仅种子/直构面）。 */
+function isWhitelistedValueContainer(value: unknown): boolean {
+  if (value instanceof Y.Map || value instanceof Y.Array) return true;
+  if (Array.isArray(value)) return true;
+  if (typeof value !== 'object' || value === null) return false;
+  if (value instanceof Y.AbstractType) return false; // Y.Text 等——契约外容器
+  const proto = Object.getPrototypeOf(value);
+  return proto === Object.prototype || proto === null;
+}
+
+/**
+ * 值投影相等（O-12 判据 (a) round-2 细化，R2-4）：primitive 直比（SameValue——NaN 与
+ * 自身相等、-0 ≠ 0）；白名单容器（Y.Map/Y.Array 经 toJSON() 递归投影、plain 结构直递）
+ * 深比较（deepEqualPlain——键序无关/数组有序）；其余一切形态（契约外容器、未定义域
+ * 标量、其它实例）保守判「已改变」。跨形态分叉（单侧白名单即拒——Y.Text vs plain
+ * 'abc' 同拒）。META 值域零收窄：深比较只在受保护字段投影比对域内执行。
+ */
+function protectedValueEqual(a: unknown, b: unknown): boolean {
+  const aContainer = isWhitelistedValueContainer(a);
+  const bContainer = isWhitelistedValueContainer(b);
+  if (aContainer || bContainer) {
+    if (!(aContainer && bContainer)) return false; // 跨形态分叉（白名单容器 vs primitive/契约外容器/异型）
+    return deepEqualPlain(projectOf(a), projectOf(b));
+  }
+  // 白名单外的容器（Y.Text 等 AbstractType）与一切契约外标量在此落入保守拒：
+  // typeof 恒 'object' ≠ string/number/boolean，非 null ⇒ return false。
+  const t = typeof a;
+  if (t === 'string' || t === 'number' || t === 'boolean') return typeof b === t && Object.is(a, b);
+  if (a === null) return b === null;
+  return false; // 契约外（ADR 0008 L31 值域外 / 物化域外容器）保守拒
+}
+
+/** 白名单容器投影（Y.Map/Y.Array → toJSON() 递归 plain；plain 结构恒等直递——不加副本，
+ *  deepEqualPlain 只读）。 */
+function projectOf(value: unknown): unknown {
+  return value instanceof Y.Map || value instanceof Y.Array ? value.toJSON() : value;
+}
+
+/**
+ * plain 结构深比较（规范化规则冻结）：array 有序递归；plain object 键序无关（键集
+ * 排序后比对）；primitive SameValue（NaN=NaN、-0≠0——round-1 语义延续）；嵌套契约外
+ * 子值随投影参与比较（表征归一化边界——投影相等即放行）；其余形态 false。
+ */
+function deepEqualPlain(a: unknown, b: unknown): boolean {
+  if (a === null || b === null) return a === b;
   const t = typeof a;
   if (t === 'string' || t === 'number' || t === 'boolean') {
     return typeof b === t && Object.is(a, b);
   }
-  if (a === null) return b === null;
-  return false;
+  if (Array.isArray(a) || Array.isArray(b)) {
+    if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
+    return a.every((item, i) => deepEqualPlain(item, b[i]));
+  }
+  if (t === 'object' && typeof b === 'object') {
+    const ka = Object.keys(a as object).sort();
+    const kb = Object.keys(b as object).sort();
+    if (ka.length !== kb.length || ka.some((k, i) => k !== kb[i])) return false;
+    return ka.every((k) => deepEqualPlain((a as Record<string, unknown>)[k], (b as Record<string, unknown>)[k]));
+  }
+  return false; // bigint/symbol/function/undefined 等：契约外
 }
 
 // ─────────────────────────────── open 门序与宿主暴露（§3.2） ───────────────────────────────
