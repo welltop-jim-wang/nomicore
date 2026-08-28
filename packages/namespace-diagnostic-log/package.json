@@ -1,0 +1,21 @@
+{
+  "name": "@nomicore/namespace-diagnostic-log",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./testing": "./src/testing.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@nomicore/vfsl": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^20",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4"
+  }
+}
