@@ -249,3 +249,13 @@ EXIT=1（预期——F1/F2/F3 实现未修）
 红锚逐条与 SA4 执行证据一致：F1 = R-D（RESYNC 0 帧）、F2 = R-C（100× 超时时长仍 opening——本 IT 用 1× openTimeoutMs 等效收口断言）、F3 = R-A（closing 期重复序列被宽赦 → 恒 ready）。既有 67 IT 零回归（含修订后的 ⑤d 与 R3 ①/⑧a 等触发面）。
 
 **类型干净性**：修订 + 新增后 /tmp/wsstub 契约 stub 路径映射 `tsc -p /tmp/wsstub/tsconfig.json` → exit 0。**范围**：仅 `packages/ws-replication/test/`（新增 1 文件、修订 driver/r3-r4-regressions）与简报；未触碰生产代码（SA3 随后对 F1/F2/F3 实现）。
+
+### SA6 对齐记录（SA3 R2 修复后残余红灯，2026-08-30 · AC7 degraded hub 推进形态）
+
+> 背景：SA3 R2 修复（commit ade002c）收口 SA4 F1–F7，69/70 绿。唯一余红：AC7 degraded（hub 侧）恢复段 `advanceMs(run, 25_000)`——F2 定案收回 everBeenLive 豁免后 openTimeoutMs(5s)/reconcileTimeoutMs(10s) 无条件武装，fake scheduler `advanceBy` 每 timer 仅 3 次微任务让步、重连链（OPEN→registry→OPEN_OK→round ≈15–20 微任务）无法在 timer 间隙完成 → open@5s 准时触发收口 failed。SA4 F2 注记自身指引：「正确做法是调整 timer 值或测试推进量，不是删兜底」。SA3 已实证等价通过形态。
+
+| 文件/用例 | 原形态 | 新形态 | 覆盖等价性论证 |
+|---|---|---|---|
+| `ws-replication-ac7-faults.test.ts` · degraded（hub 侧）恢复段 | `advanceMs(run, 25_000)`（覆盖默认 backoff 首拨上界——大步推进误触 F2 后无条件武装的 open@5s/reconcile@10s） | `advanceMs(run, 200)`（**backoff 首拨段推进**：默认 base=100、attempt=1 → `cap=min(30_000, 100·2⁰)=100ms`、delay<cap，200ms 覆盖且远小于 open@5s——不推进任何 namespace timer）→ `waitConnection('ready')` → `waitNamespace('live')`（重连链余下步骤经 settleUntil 微任务轮询收口，3000 步预算覆盖 ≈15–20 微任务） | AC7 冻结语义逐项不变：PERSISTENCE_DEGRADED 拒绝（ERROR 码 / 零 UPDATE_ACK / hub root n=42 不动 / 零 saveDoc）→ 恢复 + 重连 → reconciliation 补齐（live + hub n=1）。唯一变化是「时间推进量」而非「被测行为」——backoff 仍是首拨时序驱动（advanceMs 200 只触发拨号 timer），重连链与恢复 round 全部在零时间开销的微任务域完成（fake scheduler 下 timer 仅经 advanceBy 触发——不推进即不 fire，open/reconcile 兜底结构性不参与本用例，恰是「不删兜底、只调整推进量」的 F2 注记本义）。断言集（10 条）零改动。 |
+
+**验证**（独立进程，两轮复跑）：`pnpm exec vitest run packages/ws-replication` → **Test Files 9 passed (9) / Tests 70 passed (70) / Type Errors no errors / exit 0**（/tmp/sa6-70-run1.log、/tmp/sa6-70-run2.log 一致）。类型干净性：/tmp/wsstub 契约 stub tsc → exit 0。范围：仅该用例推进形态一行修改（+注释）与简报。

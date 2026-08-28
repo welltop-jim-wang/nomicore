@@ -28,4 +28,6 @@ run_id: issue-136-1787888033-8367 / round: 1 / branch: fix/issue-136-on-docs-pha
 | 21 | 16:41 | SA6 | Phase 3 回流红灯 | 16:51 完成（+3 IT 全红锚定 F1/F2/F3，seam 序列记账修复 + ⑤d 无撞号修订，67 既有零回归） | SA4 回流：F1 hub 侧溢出红灯 + F2 重连超时红灯 + F3 配套 seam 序列记账修复（先行锚定，SA3 对红灯实现） |
 | 22 | 16:41 | SA1 | Phase 3 勘误 | 16:52 R4.1/R4.2 落地（F8 勘误 + F6/F9 登记 + §12 hub 分支澄清定案） | SA4 F8：§21 ALLOW LIST 补根 package.json（P-12 勘误）+ F6/F9 登记切片 7/9（与 SA6 并行） |
 | 23 | 16:52 | SA3 | Phase 3 修复轮 R2 | 17:12 commit ade002c：F1-F7 全修，69/70 绿（余 1 条 AC7 degraded 推进形态与 F2 无条件 timer 冲突，SA4 F2 注记指引转 SA6） | SA4 回流：F1/F2/F3（阻塞）+F4/F5/F7（顺手）对 SA6 新红灯实现；设计 R4.2 hub 分支澄清已就位 |
-| 24 | 17:12 | SA6 | Phase 3 回流对齐 R2 | (pending) | AC7 degraded（hub 侧）25s 推进形态调整（SA4 F2 注记：调推进量非删兜底；SA3 实证等价形态已达标） |
+| 24 | 17:12 | SA6 | Phase 3 回流对齐 R2 | 17:20 完成（advanceMs 25s→200 backoff 段推进，断言集零改动，70/70 两轮全绿） | AC7 degraded（hub 侧）25s 推进形态调整（SA4 F2 注记：调推进量非删兜底；SA3 实证等价形态已达标） |
+| 25 | 17:22 | 总控亲验 | Phase 3 绿灯复验 | 17:22 | pnpm typecheck + pnpm test 后台亲跑：162 文件 1941 测试全绿、零类型错误、exit 0 |
+| 26 | 17:22 | SA4 | Phase 3 复审 R2 | (pending) | 修复已亲验全绿 → SA4 增量复审（F1/F2/F3+F4/F5/F7 四处核对 + F8 勘误确认 + 复跑全量） |

@@ -115,7 +115,13 @@ describe('AC7：fake-duplex 确定性故障注入', () => {
     run.setDegraded('hub', false);
     run.wire.closePeerSide(1006, 'reconnect');
     await run.waitNamespace('disconnected');
-    await advanceMs(run, 25_000); // 覆盖默认 backoff 首拨上界（<100ms）
+    // F2 定案（SA3 R2 修复 ade002c）后：openTimeoutMs/reconcileTimeoutMs 无条件武装——
+    // 大步推进（如 25_000）会在重连链（OPEN→registry→OPEN_OK→round，≈15–20 微任务）
+    // 完成前触发 open@5s 收口 failed。正确推进形态（SA4 F2 注记「调整 timer 值或测试
+    // 推进量，不是删兜底」）：只推进 backoff 首拨段（默认 base=100、attempt=1 → cap=100ms，
+    // delay < cap——advanceMs(200) 覆盖且远小于 open@5s），重连链余下经微任务轮询收口
+    //（settleUntil 预算内完成——模块缺失侧零真实时间开销）。
+    await advanceMs(run, 200);
     await run.waitConnection('ready');
     await run.waitNamespace('live');
     expect(run.rootValue('hub', 'n')).toBe(1);
