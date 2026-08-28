@@ -30,8 +30,13 @@
 
 - **storage projection 归 adapter**：emitter 只做语义投影（不构造
   segment/frame/offset/Base64/CRC）；VFSL 校验唯一在最终 record（adapter 侧）。
-- **`node:crypto` / `Buffer` 仅出现于 `src/digest.ts` 与 `src/carrier.ts`**——
-  本包唯一环境绑定面；其余模块纯 TS（TextEncoder 全局可用，字节计量不引 Buffer）。
+- **环境绑定面（三处声明；#152 起）**：
+  - `node:crypto` / `Buffer` 仅出现于 `src/digest.ts` 与 `src/carrier.ts`——
+    （#152 扩展）Buffer 在 carrier.ts 收口 Base64 编解码两侧
+    （`buildInlineCarrier` / `decodeBase64Strict`），reader/storage-gate 不得自起炉灶；
+  - `node:fs` / `node:path` 仅出现于 `src/adapters/file.ts` 与 `src/reader.ts`——
+    本包唯一 IO 面（File adapter；Node 内置模块，零新增依赖）；
+  - 其余模块纯 TS（TextEncoder 全局可用，字节计量不引 Buffer）。
 - 不依赖 yjs / clock / registry / persistence；只依赖 `@nomicore/vfsl`
   （compileSchemaEnvelope / validateLogicalSnapshot）。
 - 不改 ADR（`docs/adr/**` 冻结源）；`VFSL 校验失败 = writer bug`——丢弃 +
