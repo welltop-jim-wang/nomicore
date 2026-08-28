@@ -40,3 +40,6 @@ run_id: issue-136-1787888033-8367 / round: 1 / branch: fix/issue-136-on-docs-pha
 | 33 | 18:17 | 双轴终审 | Phase 3.75 独立代码审查 | (pending) | code-review skill：Standards + Spec 两并行 review（generic subagent，diff ff50d47..HEAD） |
 | 34 | 19:05 | SA6 | Phase 3.75 回流红灯 | (pending) | Spec B-1/B-2 竞态补红灯 + G-1 EOF 空行修复（测试所有者） |
 | 35 | 19:24 | SA3 | Phase 3.75 修复轮 R4 | (pending) | Spec B-1/B-2(a-e) 对新红灯实现修复（§13.4 全语义：已终局+连接已断双半句） |
+| 36 | 19:36 | 总控亲验 | Phase 3.75 绿灯四验 | 19:36 | pnpm typecheck + pnpm test + git diff --check：164 文件 1950 测试全绿、零类型错误、exit 0 |
+| 37 | 19:36 | SA4 | Phase 3 复审 R4 | (pending) | B-1/B-2 delta 静态增量核对（与 SA7 并行） |
+| 38 | 19:36 | SA7 | Phase 3 动态复验 R3 | (pending) | B-1/B-2 五条红锚转绿复验 + 全量回归（与 SA4 并行） |
