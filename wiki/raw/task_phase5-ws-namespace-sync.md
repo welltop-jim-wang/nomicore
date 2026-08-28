@@ -259,3 +259,35 @@ EXIT=1（预期——F1/F2/F3 实现未修）
 | `ws-replication-ac7-faults.test.ts` · degraded（hub 侧）恢复段 | `advanceMs(run, 25_000)`（覆盖默认 backoff 首拨上界——大步推进误触 F2 后无条件武装的 open@5s/reconcile@10s） | `advanceMs(run, 200)`（**backoff 首拨段推进**：默认 base=100、attempt=1 → `cap=min(30_000, 100·2⁰)=100ms`、delay<cap，200ms 覆盖且远小于 open@5s——不推进任何 namespace timer）→ `waitConnection('ready')` → `waitNamespace('live')`（重连链余下步骤经 settleUntil 微任务轮询收口，3000 步预算覆盖 ≈15–20 微任务） | AC7 冻结语义逐项不变：PERSISTENCE_DEGRADED 拒绝（ERROR 码 / 零 UPDATE_ACK / hub root n=42 不动 / 零 saveDoc）→ 恢复 + 重连 → reconciliation 补齐（live + hub n=1）。唯一变化是「时间推进量」而非「被测行为」——backoff 仍是首拨时序驱动（advanceMs 200 只触发拨号 timer），重连链与恢复 round 全部在零时间开销的微任务域完成（fake scheduler 下 timer 仅经 advanceBy 触发——不推进即不 fire，open/reconcile 兜底结构性不参与本用例，恰是「不删兜底、只调整推进量」的 F2 注记本义）。断言集（10 条）零改动。 |
 
 **验证**（独立进程，两轮复跑）：`pnpm exec vitest run packages/ws-replication` → **Test Files 9 passed (9) / Tests 70 passed (70) / Type Errors no errors / exit 0**（/tmp/sa6-70-run1.log、/tmp/sa6-70-run2.log 一致）。类型干净性：/tmp/wsstub 契约 stub tsc → exit 0。范围：仅该用例推进形态一行修改（+注释）与简报。
+
+### SA6 回流红灯记录（双轴终审 B-1/B-2/G-1，2026-08-30）
+
+> 背景：Spec review verdict: has-blocking-findings（`wiki/raw/task_phase5-ws-namespace-sync_spec_review.md` §5 B-1/B-2 簇）；Standards review G-1（=Spec G-1：r3-r4-regressions.test.ts 文件末多余空行致 `git diff --check` exit 2）。
+
+### G-1（一行修复）
+`ws-replication-r3-r4-regressions.test.ts` 文件末 `});\n\n` → `});\n`。验证：`git diff --check`（工作区+缓存区）exit 0。
+
+### 新增红灯（`packages/ws-replication/test/ws-replication-spec-b1-b2-red.test.ts`，5 it，全部实测红）
+
+| IT | 设计依据 | 构造（确定性门闩/时序） | 红锚（现实现实测 = Spec 报告证据） | 转绿条件（SA3 修复） |
+|---|---|---|---|---|
+| B-1 removeTarget×reconcile 竞态 | §5.1（closing 唯一出口 CLOSE_OK/closeTimeout→closed）+ §13.4（终态不复活、零状态机迁移） | reconcile 模式 + **peer saveGate**（本端 Step2 apply 在途）→ hub 的 SYNC_APPLIED 已收（waitHubSent）→ removeTarget（closing）→ **dropNextHubFrame('CLOSE_OK')**（收口只走 closeTimeout 路径——消除 CLOSE_OK 先到的随机序；drop 后 hub 无后续帧、零 gap）→ 释放 gate（apply 迟结算 → checkSettled 双位齐 → onRoundSettled）→ advanceMs(closeTimeout) → 断言 closed；re-add 断言拨号数增加 | `settleUntil 超时：状态 ∈ [closed]，当前 live`（= Spec B-1「投影谎报 live、close timer 仅认 closing → no-op」） | onRoundSettled 加状态守卫（仅 reconciling 进 live）→ 无复活 → closeTimer 收口 closed → re-add 重建 → live |
+| B-2b 导入迟到遇 disconnected | §13.4「连接已断」半句 + §8 L361 | bootstrap + **importHold** → 断线（cleanup 快、投影 disconnected）→ 释放 import → backoff 重连 ready → 断言重连 OPEN 帧数 2（重开 reconcile——副本已导入）→ live | `OPEN_NAMESPACE 期望 2，实际 1`（= Spec B-2b：续体假迁 reconciling → openActiveTargets 跳过 → 重连零 OPEN） | 续体守卫扩至 'disconnected'（零状态机迁移）→ 重连按 §13.3 重开（reconcile → live） |
+| B-2c startOpen 迟到续体 | §13.4 + §5.2 | **peer loadGate**（首轮 startOpen 的 registry.open/loadDoc 在途）→ ready 后断线 → backoff 重连 ready（重连 startOpen 的 open #2 与 #1 同走 registry carrier）→ 释放 loadGate → 断言 OPEN 帧数 1（迟到续体零 wire、仅收敛路径一帧）→ live | `OPEN_NAMESPACE 期望 1，实际 0`（= Spec B-2c 同簇：OPEN 决策链迟滞/零收敛——恒 opening；均违反「零 wire + 收敛」） | 续体守卫扩至 'disconnected'（与当前连接不符 → 零 wire、旧 lease 回收）→ 单 OPEN → live |
+| B-2d（最重）在途 apply 跨重连 | §13.4 + §13.3 + AC6「socket loss → 重连修复」承诺 | live + **peer saveGate**（hub→peer UPDATE apply 在途）→ writeHub({n:1}) → 断线（现实现 cleanup 卡 session.close 屏障 → 投影滞留 live）→ backoff 重连 ready → 断言重连 OPEN 帧数 2 → 释放 gate（旧 ACK 续体）→ 断言收敛 live + hub/peer n=1 | `OPEN_NAMESPACE 期望 2，实际 1`（= Spec B-2d：openActiveTargets 跳过滞留 'live' → 新连接不重 OPEN → 旧 ACK 落新连接 → hub 违例 → failed；本 IT 另锚 live 收敛） | 断开即投影 disconnected（cleanup 不滞留）+ 重连按 §13.3 重开 → 旧 ACK 不落新连接 → reconcile → live + n=1 |
+| B-2e rebuild 不投影 disconnected | §4.3 L228（重建期间所有 namespace 投影 disconnected 字面） | 双 namespace 自建装配（per `peer.getNamespaceState`）→ A、B 均 live → A removeTarget（closed）→ re-add A（§14.1 整连接重建）→ 断言新连接 OPEN 帧数 4（A 重建 + **B 重开**）→ B 后续本地写（bus lease）不断连无通道 | `OPEN_NAMESPACE 期望 4，实际 3`（= Spec B-2e：requestRebuild 不通知 namespace → 兄弟 B 恒 'live' 残留投影、新连接不重 OPEN） | requestRebuild 通知全部 namespace 投影 disconnected → B 亦重 OPEN → 写经通道正常 → live |
+
+**B-2a（导入终态不回收 lease）未单独锚定——理由**：lease 泄漏无公共观测面（Registry 无 lease 列表/计数 API；泄漏的 lease 不改变重连行为——Registry open 复用 entry）——无法以行为断言确定性观测；其修复由实现侧顺手完成（`importResult.lease` 终态分支 release），SA7 动态/静态闭项（简报记录，N-12 同述）。
+
+**基建改动（测试 seam，零既有断言语义影响）**：`StubPersistence` 新增 `loadGate`（单次门闩：下一次 `loadDoc` 挂起——B-2c 的 registry.open 在途锚；缺省 undefined → 既有测试零影响）。
+
+### 红绿证据（独立进程，`pnpm exec vitest run packages/ws-replication`，/tmp/sa6-spec-b12-final.log，exit=1）
+
+```
+Test Files  1 failed | 10 passed (11)   ← 新文件 5 it 全红；既有 10 文件（74 IT）全绿
+Tests       5 failed | 74 passed (79)
+Type Errors no errors
+EXIT=1（预期——B-1/B-2 实现未修）
+```
+
+红锚逐条与 Spec 报告证据对应（B-1 复活 live / B-2b 重连零 OPEN / B-2c OPEN 决策链迟滞 / B-2d 滞留不重 OPEN / B-2e 兄弟 ns 零重 OPEN）。既有 74 IT 零回归；`git diff --check`（工作区+缓存区）exit 0（G-1）；类型干净性：/tmp/wsstub 契约 stub 路径映射 tsc → exit 0。范围：仅 `packages/ws-replication/test/`（新增 1 文件、harness loadGate 一行门闩、r3-r4 EOF 一行）与简报；未触碰生产代码（SA3 随后对 B-1/B-2 实现）。
