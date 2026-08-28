@@ -54,5 +54,5 @@ round-1 dispatch log 见 `task_phase5-bootstrap-archive-reset_dispatch.md`（21 
 | 26 | 08:20 | SA2 | Phase 2 R4 delta 复审 | 08:23 | SA1 R4 方案B定稿（§3.6 冻结专属码/二元field回退/测试锚），原会话复审 |
 | 27 | 08:23 | SA3 | Phase 3 方案B返工+F-2/F-4清理 | 08:33 | SA2 R4 delta pass；SA3 接管工作区（含外部候选 hunk）逐块审计后实现 §3.6 并 commit |
 | 28 | 08:33 | 总控亲验 | Phase 3 R4 绿灯确认 | 08:37 | 方案B落地（外部 commit 1aa1994 经注册 SA3 逐块审计采信 + d52130b 追加锚），总控后台独跑 typecheck+全量 |
-| 29 | 08:37 | SA4 | Phase 4 R4 增量复审 | (pending) | R4 绿灯亲验通过（147/1760 全绿 exit 0，diff --check 干净）；SA4 原会话增量复审 1aa1994+d52130b |
+| 29 | 08:37 | SA4 | Phase 4 R4 增量复审 | 08:38 | R4 绿灯亲验通过（147/1760 全绿 exit 0，diff --check 干净）；SA4 原会话增量复审 1aa1994+d52130b |
 | 30 | 08:38 | SA7 | Phase 4 R4 定向复跑 | (pending) | SA4 R4 增量 pass；SA7 原会话定向复跑 R4 受影响面 + 全量复跑 |
