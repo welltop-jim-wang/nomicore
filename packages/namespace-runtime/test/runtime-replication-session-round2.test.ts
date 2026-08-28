@@ -624,6 +624,75 @@ describe('R2-4 受保护字段结构值（protectedValueEqual/deepEqualPlain 行
     expect(v.ok, '嵌套契约外子值随 toJSON 投影摊平参与比较——投影相等即放行（归一化边界）').toBe(true);
     expect(doc.getMap('ROOT').get('k1')).toBe(1);
   });
+
+  it('Date 种子（非 plain 实例）+ ROOT-only update → 拒（R2.2.1 / SA4 F-1 必修①——跨形态分叉分支）', async () => {
+    const doc = seedDoc({
+      metaExtra: (meta) => {
+        meta.set('d', new Date(0)); // trusted-domain 种子面直构（合法写路径不可达）
+      },
+    });
+    const { runtime, notifyCount } = makeRuntime(doc);
+    await readyOf(runtime);
+    const session = openSession(runtime, 'hub', 'peer-a');
+
+    // 触发分支注记（R2.2.1 措辞收窄——实测 yjs 13.6.32 + lib0 writeAny）：
+    // live 侧 'd' 保持 Date 实例（proto=Date.prototype ⇒ 非白名单——但**不落 proto 门**）；
+    // scratch 侧 round-trip 被 writeAny 摊平为 plain {}（proto=Object.prototype ⇒ 白名单）
+    // ⇒ 单侧白名单即拒 = **跨形态分叉**分支（结果同为保守拒，与「契约外容器拒」同构）。
+    const { update } = makeRemoteUpdateOf(doc, (peer) => {
+      peer.getMap('ROOT').set('k1', 1); // 仅 ROOT——受保护字段零触碰
+    });
+    const applied = await settleOf(session.applyRemoteUpdate(update));
+    expect(applied.kind).toBe('resolved');
+    if (applied.kind !== 'resolved') throw new Error('unreachable');
+    const v = applied.value as { ok?: unknown; code?: unknown };
+    expect(v.ok).toBe(false);
+    expect(v.code).toBe('REPLICATION_PROTECTED_FIELDS_CHANGED');
+    expect(doc.getMap('ROOT').get('k1')).toBeUndefined(); // 零写入
+    expect(doc.getMap('META').get('d')).toBeInstanceOf(Date); // 零写入（live 侧未被触碰）
+    expect(notifyCount()).toBe(0); // 零 notify
+  });
+
+  it('undefined / bigint 种子（契约外标量）+ ROOT-only update → 拒（R2.2.1 / SA4 F-1 必修②——typeof fallthrough 保守拒）', async () => {
+    const doc = seedDoc({
+      metaExtra: (meta) => {
+        meta.set('u', undefined); // Yjs 忠实存储（has==='true'、get===undefined）
+        meta.set('b', 10n); // bigint 同型忠实 round-trip（lib0 writeAny 域内）
+      },
+    });
+    const { runtime, notifyCount } = makeRuntime(doc);
+    await readyOf(runtime);
+    const session = openSession(runtime, 'hub', 'peer-a');
+
+    // 触发分支注记：两值经 encode/apply round-trip **同型忠实**（scratch 侧仍为 undefined /
+    // 10n——非摊平）；protectedValueEqual 的 typeof fallthrough（'undefined'/'bigint' 不匹配
+    // string/number/boolean、非 null）⇒ 同型同值亦保守拒（契约外——L31 值域外形态不得
+    // 经 raw 判等放行）。
+    const { update } = makeRemoteUpdateOf(doc, (peer) => {
+      peer.getMap('ROOT').set('k1', 1); // 仅 ROOT——受保护字段零触碰
+    });
+    const applied = await settleOf(session.applyRemoteUpdate(update));
+    expect(applied.kind).toBe('resolved');
+    if (applied.kind !== 'resolved') throw new Error('unreachable');
+    const v = applied.value as { ok?: unknown; code?: unknown };
+    expect(v.ok).toBe(false);
+    expect(v.code).toBe('REPLICATION_PROTECTED_FIELDS_CHANGED');
+    expect(doc.getMap('ROOT').get('k1')).toBeUndefined(); // 零写入
+    expect(doc.getMap('META').has('u')).toBe(true); // 零写入（live 键未被触碰/删除）
+    expect(doc.getMap('META').get('b')).toBe(10n);
+    expect(notifyCount()).toBe(0); // 零 notify
+  });
+
+  it('Map/Set/symbol/function 种子面 loud throw 豁免（R2.2.1 / SA4 F-1 可选①——Yjs 自身域门先于比较层）', () => {
+    // 豁免登记：这四类值在 Y.Map.set 即同步 throw「Unexpected content type」（lib0
+    // writeAny 域外——先于本判据的 Yjs 自身域门）⇒ 种子面 loud 拒、比较层结构性
+    // 不可达——**无比较层锚义务**；本断言只锚 Yjs 事实（R2.2.1 表末尾行）。
+    const doc = new Y.Doc();
+    const meta = doc.getMap('META');
+    for (const value of [new Map(), new Set(), Symbol('s'), () => {}]) {
+      expect(() => meta.set('x', value)).toThrow(/Unexpected content type/);
+    }
+  });
 });
 
 // ═══════════════════════════════════ R2-6：committed 探针 ═══════════════════════════════════
