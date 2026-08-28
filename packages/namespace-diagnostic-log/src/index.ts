@@ -65,3 +65,18 @@ export type { RecordSchemaCompilationResult } from './schema.js'
 
 // —— 健康 observability（§8）——
 export type { DiagnosticLogHealthEvent, DiagnosticLogHealthObserver } from './health.js'
+
+// —— File adapter（issue #152；§1.2 公共导出增量——既有导出一字不动）——
+export {
+  createFileDiagnosticLog,
+  type FileDiagnosticLog,
+  type FileDiagnosticLogConfig,
+} from './adapters/file.js'
+export {
+  readStreamStrict,
+  type StrictStreamRead,
+  type StrictReadStatus,
+  type StrictReadIssue,
+  type StrictRecordRead,
+  type StrictReadRequest,
+} from './reader.js'

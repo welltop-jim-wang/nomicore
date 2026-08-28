@@ -28,10 +28,26 @@
 
 ## Boundaries
 
+- **File adapter `emit` 为有界同步 append（ADR 0012 amendment，issue #152 R2）**：
+  慢文件系统可阻塞调用方线程——**任何把 File adapter `emit` 接入 namespace 生命周期的
+  接线必须位于 NamespaceRuntime write sequencer slot 之外或释放后**（slot 内接线为
+  不合规；接线范围归 #149–#151/#155 等票，本包不实施）。「有界」只限制数据量/操作数，
+  不承诺磁盘延迟上界；同步 append 不构成 fsync/掉电持久性承诺。
+- **sequence 提交点纪律（R2）**：candidate 只在准备门全过后取得；definitive
+  pre-commit append 失败（open 期 EISDIR/EACCES/ENOENT）可复用 candidate，
+  ambiguous outcome（write 期失败等）必须 reservation 并封闭旧 generation，
+  绝不在旧 stream 写第二条相同 sequence——不要改回「分配即消耗」。
 - **storage projection 归 adapter**：emitter 只做语义投影（不构造
   segment/frame/offset/Base64/CRC）；VFSL 校验唯一在最终 record（adapter 侧）。
-- **`node:crypto` / `Buffer` 仅出现于 `src/digest.ts` 与 `src/carrier.ts`**——
-  本包唯一环境绑定面；其余模块纯 TS（TextEncoder 全局可用，字节计量不引 Buffer）。
+- **环境绑定面（三处声明；#152 起）**：
+  - `node:crypto` / `Buffer` 仅出现于 `src/digest.ts` 与 `src/carrier.ts`——
+    （#152 扩展）Buffer 在 carrier.ts 收口 Base64 编解码两侧
+    （`buildInlineCarrier` / `decodeBase64Strict`），reader/storage-gate 不得自起炉灶；
+  - `node:fs` 仅出现于 `src/adapters/file.ts` 与 `src/reader.ts`——
+    本包唯一 IO 面（File adapter；Node 内置模块，零新增依赖）；
+    `node:path` 出现于 `src/adapters/file.ts`、`src/reader.ts` 与 `src/paths.ts`
+    （后者仅 `join`——布局路径派生；终审 N-1 勘误声明：R2 声明漏列 paths.ts）；
+  - 其余模块纯 TS（TextEncoder 全局可用，字节计量不引 Buffer）。
 - 不依赖 yjs / clock / registry / persistence；只依赖 `@nomicore/vfsl`
   （compileSchemaEnvelope / validateLogicalSnapshot）。
 - 不改 ADR（`docs/adr/**` 冻结源）；`VFSL 校验失败 = writer bug`——丢弃 +
@@ -47,4 +63,6 @@
   并视为 schema 版本变更（id 升 `@2`、新 stream generation、旧 stream 只读）。
 - 观察者事件只允许低基数白名单字段（§8.2）：type/reason/stage/field/fromPolicy/
   recordKind/operation/schemaId/schemaFingerprint/issuePaths/projectedRecordBytes/
-  queueDepth/issueCount——禁原 record/input/Base64/update bytes/message/stack。
+  queueDepth/issueCount/code（storage-validation-failed 与 storage-write-failed 的
+  code 字段——固定词表或稳定 errno；#152 新事件成员形状一致）——
+  禁原 record/input/Base64/update bytes/message/stack。

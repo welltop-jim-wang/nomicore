@@ -1,0 +1,259 @@
+# MABF Task: Persist and strictly read VFSL-validated JSONL and sidecars
+
+## Issue #152
+
+## Parent
+
+PR #142（docs/namespace-diagnostic-change-log）
+
+## What to build
+
+Provide a File diagnostic-log adapter that turns semantic emissions into self-describing, VFSL-validated segmented JSONL records with inline small updates and framed binary sidecars for larger updates. A strict reader can round-trip and cross-check stored records, while format, validation, queue, and storage failures remain confined to logger health.
+
+## Acceptance criteria
+
+- [ ] A new namespace stream has an immutable manifest containing the frozen VFSL envelope and format policy, plus an atomically replaceable current-stream locator.
+- [ ] Updates at or below the configured threshold are stored as padded standard Base64 with payload length and CRC32C; larger updates use the shared NDCL v1 sidecar frame and a correlated JSONL reference.
+- [ ] Final physical records pass the built-in VFSL schema and storage validation before append, and sidecar frames are appended before their JSONL references.
+- [ ] The strict reader validates JSON, VFSL, Base64, lengths, CRC32C, frame metadata, references, offsets, formats, and stream sequence without approximately interpreting unknown versions.
+- [ ] Public adapter tests cover inline and sidecar round trips, the exact threshold boundary, every result branch, malformed references and frames, schema-envelope mismatch, and non-interference with producer results.
+
+## Blocked by
+
+- #148（已由 PR #156 合入，commit 7ceede1 在本分支基线中）
+
+## Working Directory
+
+/home/wangjian/nomicore-fix-issue-152
+
+## Branch
+
+fix/issue-152-on-docs-namespace-diagnostic-change-log
+
+## Task Type
+
+feature（功能开发）
+
+## 上下游事实（总控注入）
+
+- 上游 #148 已交付 `@nomicore/namespace-diagnostic-log` 包：冻结 v1 词表/record 类型、内建冻结 VFSL schema（id `nomicore.namespace-diagnostic-change-record@1`）、envelope 指纹 `sha256:v1:dedad2ab93d9df9224960ca094924168f8bcc1c0512dfdd0a03dc6e66613e070`、emitter 管线、内存 adapter、crc32c、carrier（Buffer Base64 inline）、health 事件联合、testing 工具。
+- #148 遗留风险 1：GenesisBaselineRecord 形状是设计裁决；v1 冻结 emission/sink 面无 genesis 构造路径——#152 需增设 adapter 内部构造，**不改 schema**。
+- 主规范：docs/adr/0012-vfsl-validated-jsonl-and-framed-sidecar-change-log.md（354 行）；背景：docs/adr/0011。
+- 上游设计档案：wiki/raw/task_diagnostic-log-v1-contract_design.md（1157 行）。
+- 本票只做 File adapter（manifest / current-stream locator / segmented JSONL / inline carrier / NDCL v1 sidecar frame / strict reader）。#153（滚动/修复）、#154（retention）、#155（replay）不在范围，除非 ADR 0012 明确归属本票。
+
+---
+
+## SA6 Phase 1 验收锚定（红灯测试）— 2026-08-28
+
+> 附：本简报以下「SA6 Phase 1 验收锚定（红灯测试）」节（含五测试文件 + 两 helper 的契约要点）为唯一权威记录（N-6 勘误：原「`task_diagnostic-log-file-adapter_sa6_red.md` 为同内容详细版存档」为死引用——该文件不在树，详细版即本锚定节自身）。
+
+### 1. SA6 定义的 File adapter 公共契约（SA1 设计/SA3 实现必须满足；分歧走总控裁决）
+
+**包内位置**：`packages/namespace-diagnostic-log/`（复用 #148 的 emitter 管线 / 冻结 schema / crc32c / health 接缝，不改 schema、不建第二份 VFSL）。
+
+**index.ts 新增导出（SA6 契约）**：
+
+```ts
+export {
+  createFileDiagnosticLog,
+  type FileDiagnosticLog,
+  type FileDiagnosticLogConfig,
+} from './adapters/file.js'
+export {
+  readStreamStrict,
+  type StrictStreamRead, type StrictReadStatus, type StrictReadIssue, type StrictRecordRead,
+} from './reader.js'   // 文件名可调；导出面固定
+```
+
+**FileDiagnosticLogConfig**（全部默认值带 `| undefined` 显式联合——对齐 DiagnosticLogConfig 的 exactOptionalPropertyTypes 装配模式）：
+
+```ts
+interface FileDiagnosticLogConfig {
+  rootDir: string                       // 日志根目录（单进程独占根目录约束，无跨进程锁）
+  namespaceId: string                   // 必须符合安全文法（见 §2 路径安全）
+  genesisUpdateBytes?: Uint8Array       // 提供 → 新 stream 先尽力写 genesis-baseline（sequence 1）
+  resumeStreamId?: string               // 提供 → manifest 指纹匹配检查；不匹配 → 新 generation（旧只读）
+  inputPolicy?: 'none' | 'digest' | 'redacted' | 'full'
+  issuesPolicy?: 'none' | 'full' | 'redacted'
+  updateCapture?: boolean
+  lineBudgetBytes?: number
+  payloadMaxBytes?: number
+  inlineUpdateMaxBytes?: number         // 默认 4096（ADR 0012 §Inline 与 sidecar）
+  observer?: DiagnosticLogHealthObserver | undefined
+  fallbackLog?: ((line: string) => void) | undefined
+  randomSource?: RandomSource | undefined
+  clock?: { now(): number } | undefined // genesis observedAt 用（默认 Date.now）
+}
+
+interface FileDiagnosticLog {
+  emitter: NamespaceDiagnosticChangeEmitter   // #148 同一管线
+  readonly streamId: string
+  readonly rootDir: string
+  readonly namespaceId: string
+}
+```
+
+**strict reader（AC4）**：
+
+```ts
+readStreamStrict(opts: { rootDir: string; namespaceId: string; streamId: string }): StrictStreamRead
+
+type StrictReadStatus = 'ok' | 'corrupt' | 'incompatible'
+interface StrictReadIssue  { code: string; sequence?: string; segment?: string; offset?: number }
+interface StrictRecordRead { sequence: string; recordKind: 'attempt' | 'genesis-baseline'; ok: boolean;
+                             issues: readonly StrictReadIssue[]; record: Readonly<Record<string, unknown>> | null }
+interface StrictStreamRead { status: StrictReadStatus; namespaceId: string; streamId: string;
+                             manifest: Readonly<Record<string, unknown>> | null;   // incompatible 时也可展示
+                             records: readonly StrictRecordRead[];                  // incompatible → 空（不近似解释）
+                             issues: readonly StrictReadIssue[] }
+```
+
+**testing.ts 新增接缝（SA6 定义）**：
+
+```ts
+injectFinalRecordFile(log: FileDiagnosticLog, record: DiagnosticChangeRecord): void
+// 直通 storage projection → VFSL 门（内建冻结 schema）→ storage 校验 → 落盘。
+// 仅 inline 形状（sidecar 注入无 payload 源，边界归 #153）；复制 #148 injectFinalRecord 语义
+// （不分配 sequence、自管 streamId/sequence）。
+```
+
+**health.ts 事件联合新增成员（只增不改，#148 设计 §8.1 备案）**：
+
+```ts
+| { type: 'stream-init-failed'; code: 'LOG_STREAM_INIT_FAILED'; reason: 'invalid-namespace-id'
+    | 'invalid-stream-id' | 'manifest-mismatch' | 'manifest-missing' }
+| { type: 'storage-validation-failed'; recordKind: 'attempt' | 'genesis-baseline'; operation?: Operation; code: string }
+  // code ∈ { base64-invalid | base64-length-mismatch | crc-mismatch | stream-mismatch }
+| { type: 'storage-write-failed'; stage: 'bin' | 'jsonl' | 'manifest' | 'current'; operation?: Operation; code: string }
+  // code = 稳定 errno 码（'EISDIR' / 'ENOSPC' …），不含底层 message
+```
+
+### 2. 磁盘布局与物理格式（SA6 契约常量；ADR 0012 逐条落实）
+
+```text
+{rootDir}/namespaces/{namespaceId}/current.json          // {format:'ndcl-current',version:1,streamId} 恰三键
+{rootDir}/namespaces/{namespaceId}/streams/{streamId}/manifest.json
+{rootDir}/namespaces/{namespaceId}/streams/{streamId}/segments/00000001.jsonl
+{rootDir}/namespaces/{namespaceId}/streams/{streamId}/segments/00000001.bin   // 惰性
+```
+
+**manifest.json（恰 14 键；格式常量 `ndcl-manifest`/version 1）**：
+`format, version, streamId, namespaceId, createdAt, schema(四键信封 lang/version/id/text),
+recordVersion:1, frameVersion:1, schemaId, schemaFingerprint, committedUpdateCapture,
+inputCapturePolicy, inlineUpdateMaxBytes, jsonlLineLimitBytes`。
+`schemaFingerprint === 'sha256:v1:dedad2ab93d9df9224960ca094924168f8bcc1c0512dfdd0a03dc6e66613e070'`（#148 冻结常量，实测一致）。
+
+**JSONL line**：UTF-8 无 BOM、每行一个紧凑 JSON object 以 `\n` 结束；sequence 十进制无前导零字符串；payloadLength 为 JSON number；frameOffset 为十进制字符串；inline Base64 为 RFC 4648 标准（正确 padding、无空白换行）。
+
+**NDCL v1 frame（25-byte header + payload）**：magic `NDCL`/frameVersion `0x01`/payloadType `0x01`=yjs-update-v1/flags `0x00`/reserved `0x0000`/sequence uint64 BE/payloadLength uint32 BE/crc32c uint32 BE；CRC 输入 = header 前 21B 直接连接 payload（不含 crc32c 字段）；`frameOffset` 指向 magic 首字节。
+
+**reader issue code 词表（稳定、低基数）**：`invalid-json | vfsl-invalid | base64-invalid |
+base64-length-mismatch | crc-mismatch | frame-missing | frame-magic-invalid |
+frame-sequence-mismatch | frame-length-mismatch | frame-crc-mismatch |
+frame-boundary-invalid | reference-invalid | sequence-out-of-order | stream-mismatch |
+manifest-invalid | schema-fingerprint-mismatch | dialect-unknown | record-version-unknown |
+frame-version-unknown | frame-payload-type-unknown | frame-flags-nonzero |
+frame-reserved-nonzero | locator-invalid`。
+→ incompatible 触发：`dialect-unknown / schema-fingerprint-mismatch / record-version-unknown /
+frame-version-unknown / frame-payload-type-unknown / frame-flags-nonzero / frame-reserved-nonzero`；
+其余 → corrupt。**边界语义**：首个 frame 校验前先验 magic（offset 非 0 且非 magic → frame-magic-invalid）；
+前一 frame 校验通过后，下一 record 的 offset ≠ 前一 frame end → frame-boundary-invalid（不解释该帧）。
+
+**路径安全文法**（namespaceId/streamId/segment 进入路径前必须校验；不符 → 日志不启用 + health 上报，不编码/不替换静默另存）：namespaceId 拒绝空串、`.`、`..`、控制字符（C0/C1）、`/`、`\`（对齐 registry identity.ts 的 isMinimalSafeString 纪律）；streamId 拒绝非 `^log-[0-9a-f]{32}$`；segment 拒绝非 `^[0-9]{8}$`。
+
+### 3. 交付物（仅测试，src 零改动）
+
+| 文件 | AC/门槛 | 契约锚点摘要 |
+|---|---|---|
+| `test/helpers/frame.ts` | 夹具 | NDCL v1 frame 编解码/CRC 重算/严格 Base64 判定（零缺失接缝依赖，已独立自检通过：CRC KAT e3069283、round-trip、AB==/空白/缺 padding 判定） |
+| `test/helpers/file.ts` | 夹具 | 临时根、布局路径、JSON/JSONL 读写、manifest/current 标准夹具、fake stream 写入、装配工厂 |
+| `test/file-adapter-layout.test.ts` | AC1 | 布局三件套；streamId 三处一致 + `log-`+32hex + 确定性随机源；current.json 恰三键 + 无 tmp 残留；manifest 14 键逐项（含四键信封 === RECORD_SCHEMA_ENVELOPE、指纹钉死、配置值冻结）；manifest emit 前后字节恒等；.bin 惰性创建；6 种敌意 namespaceId → 零文件 + stream-init-failed + emit 不抛 |
+| `test/file-adapter-inline-sidecar.test.ts` | 门槛 1/2/3 | 4096B inline 逐字段 + canonical Base64 + CRC + VFSL 孪生 + 无 BOM/\n 结尾；4097B sidecar 帧逐字节（magic/version/type/flags/reserved/sequence BE/payloadLength BE/crc BE）+ CRC 输入域 + payload 恒等；双帧 offset 递推；BIN-first 帧完整性；4096↔4097 与自定义 7↔8 阈值边界；frame 编解码双工自校验 |
+| `test/file-adapter-genesis-results.test.ts` | 门槛 4 + genesis | 8 结果分支逐字段（rejected/fatal+false 无 update 键）；三守卫 update-omitted（empty-update 无 vfsl-validation-failed、update-capture-disabled、payload-too-large 保 metadata）；genesis-baseline 首条 sequence 1 + 无 attemptId/operation/stage/result/input + 固定时钟 observedAt；genesis 大 update 走 sidecar offset 0 |
+| `test/file-adapter-strict-reader.test.ts` | AC4 | 正例 ok；incompatible 六类（dialect/record-version/frame-version/payloadType/flags/reserved/schema 指纹不匹配 → records 空、manifest 仍可展示）；corrupt 十二类（坏 JSON、VFSL 败、stream-mismatch、AB== 非规范尾位、length 不符、inline CRC、空白 Base64、frame-missing、offset 越界、magic 偏移、frame sequence/length/CRC 不符、边界不连续、reference 段不存在、sequence 乱序/重复/前导零、manifest 不可解析） |
+| `test/file-adapter-mismatch-interference.test.ts` | 门槛 10 + AC3/AC5 | VFSL 门注入（vfsl-validation-failed 只带 issuePaths + 零落盘）；storage 门注入四类（base64-invalid/base64-length-mismatch/crc-mismatch/stream-mismatch → storage-validation-failed + 零落盘）；合法 emit 不受注入干扰；.bin 占位（EISDIR）→ emit 不抛 + 零 sidecar 引用 + storage-write-failed{stage:'bin'} + 恢复后帧/JSONL 交叉一致（reader ok）；jsonl 占位 → 不抛 + 事件 + 恢复；observer 必 throw → 不抛 + fallback 稳定码行；manifest 指纹不匹配 → 新 generation、旧 manifest 字节恒等、旧 segments 零写入、current.json 指向新 stream、旧 stream reader 判定 incompatible |
+
+共 5 个 `.test.ts` + 2 个共享 helper；**测试总数变 17 文件（+5）**，包内既有 12 文件 165 测试不受影响。
+
+**勘误记录（2026-08-28 总控 R 裁决，Phase 3 回流）**：`file-adapter-genesis-results.test.ts`「committed+update（inline）与 fatal+true+update（inline）两载体分支」用例先前对循环两条记录无条件断言 `expect(result.kind).toBe('committed')`——原断言为 **SA6 笔误**：idx=1 为 fatal+committed:true 分支，冻结契约（src/record.ts AttemptResult：`committed` 键仅 fatal 结局携带、kind 保留 `'fatal'`；#148 record-vocabulary.test.ts 同语义）与之矛盾；任何正确实现都不可能满足。已修订为 `expect(result.kind).toBe(idx === 1 ? 'fatal' : 'committed')`，该用例其余断言不变；语义以冻结词表为准。
+
+### 4. 红灯验证证据
+
+- 命令（唯一，后台独立进程）：`npx vitest run --typecheck packages/namespace-diagnostic-log`
+- 日志/退出码：`.mabf-bg/sa6-red.log` / `.mabf-bg/sa6-red.exit` —— **exit=1（红灯 ✅）**
+- 结果：`Test Files 5 failed | 12 passed (17)；Tests 72 failed | 165 passed (237)；Errors 20 errors`
+- 失败根因（全部为 #152 未实现，无测试自身语法缺陷；`tsc -p tsconfig.typecheck.json` 仅 21 条同类错误）：
+  1. `src/index.js` 缺 `createFileDiagnosticLog` / `FileDiagnosticLog` / `FileDiagnosticLogConfig` / `readStreamStrict`；
+  2. `src/testing.js` 缺 `injectFinalRecordFile`；
+  3. `src/health.ts` 的 `DiagnosticLogHealthEvent` 缺 `stream-init-failed` / `storage-validation-failed` / `storage-write-failed` 三成员；
+  4. 两条隐式 any 为上述缺失的级联（无独立问题）。
+- 自检：frame 夹具独立执行 `FRAME-HELPER-SELFCHECK: ALL OK`（CRC KAT/round-trip/规范 Base64 判定），排除夹具自身造成假红灯。
+
+### 5. 实现期约束（SA1/SA3 请注意；本票范围边界）
+
+1. **同步可观察性**：`emit` 返回时该 record 的 write 已完成（可为无 fsync 的同步 write；batch 缓冲若影响测试可观察性，须另设 flush 接缝并让本测试集可见——SA6 按同步 write 契约实现，SA1 如有异步设计须在 SA1 设计与本测试集之间达成协调，否则走总控裁决）。
+2. **临界点语义裁决（SA6 定义，SA1 可提异议）**：序列分配失败也消耗（已有 gap 诚实信号，reader 不接受 gap 为错误）；observer 只收到独立低基数事件（与 #148 一致）；genesis 失败（如 payload > payloadMaxBytes）的 sequence 消耗属 SA1 设计空间——SA6 只断言「无 genesis 记录、attempt 照常、无虚假完整重放」（本次未锚定该场景的 sequence 值）。
+3. **resume 边界**：本票只锚定「指纹不匹配 → 新 generation、旧 manifest/segments 字节不变 + current.json 指向新 stream」；指纹匹配时的安全续写（尾部扫描/sequence 续接）归 #153「打开与尾部恢复」，SA1 若在 #152 实现 resume 续写，需自洽且不得违反本测试集。
+4. **不做**：#153（segment rolling/耗尽、打开与尾部恢复修复）、#154（retention/删除）、#155（replay）；本测试集不锚定门槛 5/6/7/8/9/11/12/13/14/15（分别属 #148 或 #153/#154/#155）。
+5. **无新增依赖、无新端口、无 scripts/test-lock.sh**（本仓无该脚本）：测试仅用 node:fs/os/path + 既有 vitest；`pnpm-lock.yaml` 未改动。
+6. **SA6 未改任何 src/生产文件**（`git status` 仅测试 + wiki）。
+
+---
+
+## Round 2 修订（PR #159 人工评审反馈，2026-08-28；round=2，run_id 不变）
+
+> **⚠️ 历史档案（2026-08-28 总控裁定，见 r2_dispatch.md 第 12 行）**：本章（含下方「SA6 Round 2 锚定」）为并行任务族「族 A」产物。经 Host 裁决，本轮实施基线为族 B `task_diagnostic-log-file-adapter-r2.md`（任务书）+ `task_diagnostic-log-file-adapter-r2_design.md`（SA1 R3，门禁全闭环）。本章降级为历史档案，不得作为实现或验收依据；码表、genesis/capture 正交性、sequence 分配时点、EISDIR 恢复语义等冲突面一律以族 B 为准（详见 `task_diagnostic-log-file-adapter-r2_design.md` §2.6/§3.2/§3.4 与 r2_dispatch.md 第 12 行裁决）。
+
+### 反馈原文与规格修正
+
+1. **Strict reader 必须执行 manifest 冻结的 format policy**：ADR 0012 要求 manifest 冻结 committed-update capture、input policy、inline threshold、line limit；AC4 要求 strict reader 严格解释这些策略。round 1 的 reader.ts 只查字段类型，未验证记录是否实际遵守 `committedUpdateCapture`、`inlineUpdateMaxBytes` 等策略。反例：manifest 声明 capture=false 时仍接受带 update 的记录；超阈值 update 以 inline 存储时仍返回 ok。→ 修复：strict reader 对每条记录按 manifest format policy 做遵守性校验，违反者给出相应 strict 错误码，不得 ok。
+2. **Stream sequence 必须验证连续性，而非仅递增**：AC4 明列 stream sequence 校验，ADR 0012 storage validator 职责含「stream 连续性」。round 1 只拒重复/倒序，允许 gap（[1,2,3] 删 2 后 [1,3] 仍 ok）。→ 修复：stream 内 sequence 必须连续（起始值按既有裁决/manifest 语义，逐步 +1），gap 响亮报错。
+
+### 总控备案（round 2 裁决 R2-G1）
+
+- **round 1「gap 合法」裁决被本反馈取代**：round 1 G2/§4.1「分配即消耗、gap 诚实信号、reader 不视 gap 为错」是总控/SA6/SA1 对 ADR「不证明业务尝试无缺」的解读（指向未到达 logger 的 emission）；ADR 0012 §VFSL record schema 的 storage validator 职责清单明文含「offset、segment、frame 边界与 **stream 连续性**」，owner 反馈裁定连续性校验归 strict reader。冲突时 owner 反馈优先；round 1 相关测试锚（如 gap 合法断言）由 SA6 修订。
+- **后果面**：writer 侧分配后丢弃（VFSL/storage 门拒绝、写失败）现在会在 reader 面呈现 gap 损坏——这是诚实性增强而非回归；replay 的 complete 条件（「records 连续、无已知 gap」，ADR 0012 §Strict reader，#155 范围）与该语义同向。
+- 边界不变：packages/vfsl 不触碰；政策校验全部在 reader 消费者侧落地。
+
+---
+
+## SA6 Round 2 锚定（红灯测试，PR #159 反馈落实）— 2026-08-28
+
+### 1. 新 issue code 建议（SA6 定义，待总控/SA1 确认；全部归 corrupt——政策/连续性违规是策略/物理缺陷，不是未知版本）
+
+| code | 层 | 触发条件 |
+|---|---|---|
+| `policy-capture-mismatch` | record | manifest.committedUpdateCapture=false 但 record（attempt 或 genesis）携带 update carrier |
+| `policy-input-mismatch` | record | record.input.capture 超出 manifest.inputCapturePolicy 允许阶梯（none ⊂ digest ⊂ redacted ⊂ full；基础捕获 none/not-accessed/unavailable/unsafe-input 恒可；capture 强于 policy 即违规） |
+| `policy-threshold-mismatch` | record | 阈值双向遵守：inline 且 payloadLength > inlineUpdateMaxBytes / sidecar 且 payloadLength ≤ inlineUpdateMaxBytes |
+| `policy-line-limit-exceeded` | record | JSONL 行（紧凑 JSON，UTF-8 字节数，不含结尾 `\n`）> manifest.jsonlLineLimitBytes |
+| `sequence-gap` | stream | 跨（首外）record 的 sequence ≠ 前一条 + 1（issue.sequence = 缺失号） |
+| `sequence-start-invalid` | stream | 首条 record sequence ≠ '1' |
+
+### 2. 起始值语义（SA6 R2 建议）
+
+- 首条跨 segment 拼接后的 record sequence 必须为 '1'：genesis-baseline 落盘则 sequence 1 即 genesis；genesis 缺失时首条 attempt 也是 '1'。
+- 后续每条 = 前条 + 1（BigInt 数值比较）；缺号 → `sequence-gap`；乱序/重复 → 既有 `sequence-out-of-order` 回归保持（round 1 锚不动）。
+- **已登记后果**：G2 的「genesis 0 字节跳过 → attempt 从 '2' 起」与 exhausted 预置接缝产生的单条 UINT64_MAX stream 在 R2-G1 取代后由 reader 面报 `sequence-start-invalid`（诚实性增强）；writer 侧是否改（如跳过 genesis 时不消耗、或预置接缝文档化）属 SA1/SA3 实现空间，本测试集只锚定 reader 判罚。
+- record 级 ok 是「本条 record 全量校验通过」判定，不含 stream 级序列检查——gap/start 违规的 stream 中，各 present record 仍可各自 ok（stream status 报 corrupt + 响亮 issue）。
+
+### 3. 产出文件与修订清单
+
+- **新增** `test/file-adapter-r2-policy-continuity.test.ts`（15 测试）：policy 四类违规各隔离锚 + 4 个控制组（capture 合格 / input 基础捕获 / 自定义阈值 64 双向合法 / 行上限合格）；连续性 gap [1,3]（缺失 '2' 归因 + status 非 ok + record 保留且各自 ok）、起始非 1 → `sequence-start-invalid`、genesis@1+attempt@2 正例、乱序/重复回归保持。
+- **修订 round 1 断言**（被 R2-G1/R2 政策取代的锚）：
+  1. `file-adapter-mismatch-interference.test.ts` BIN-first EISDIR 恢复尾部：`read.status === 'ok'` → `'corrupt'` + 断言 stream 级 `sequence-gap`（sequence '2'）+ 恢复 record 仍 ok（分配即消耗 → [1,3]）。
+  2. `file-adapter-r2-supplemental.test.ts`（SA3 R2 补充，同语义取代）EISDIR 恢复：同上修订。
+  3. `file-adapter-r2-supplemental.test.ts` exhausted 预置接缝：单条 UINT64_MAX stream 的 `reader ok` → `corrupt + sequence-start-invalid`（起始值语义第 2 条后果；record 级 ok 不变）。
+  4. `helpers/file.ts` `validManifest` 默认 `committedUpdateCapture: false → true`：reader 基线夹具的 record 携带 update carrier，manifest 必须与之政策一致（否则 R2 政策校验自身触发 policy-capture-mismatch 污染被测断言）；`file-adapter-strict-reader.test.ts` 边界用例与「纯侧车正例」的帧载荷改为 4097B（sidecar 必须 > 阈值 4096 才政策一致——两处注释均已标注 R2 修订）。
+
+### 4. 红灯验证证据（Round 2）
+
+- 命令（唯一，后台独立进程）：`npx vitest run --typecheck packages/namespace-diagnostic-log`
+- 日志/退出码：`.mabf-bg/sa6-r2-red.log` / `.mabf-bg/sa6-r2-red.exit` —— **exit=1（红灯 ✅）**
+- 结果：`Test Files 3 failed | 16 passed (19)`；`Tests 12 failed | 262 passed (274)`；`Type Errors no errors`
+- 失败清单与根因（全部为 reader 缺校验，无测试自身缺陷）：
+  - 新增 9 条：policy-capture-mismatch ×2 / policy-input-mismatch ×2 / policy-threshold-mismatch ×2 / policy-line-limit-exceeded ×1 / sequence-gap ×1 / sequence-start-invalid ×1 —— 失败形态一致：`expected 'ok' to be 'corrupt'`（当前 reader 对政策/连续性违规不设防，返回 ok）。
+  - 修订 3 条：interference BIN-first（gap）、supplemental EISDIR（gap）、supplemental exhausted（start）—— 当前 reader 仍按 round 1「gap 合法/起始任意」判 ok，与新契约不符。
+  - 控制组 6 条与其余 256 条全绿（含 15 条新增中的 6 条控制/正例）——无 collateral 破坏。
+- SA3 修绿目标：上述 12 条转绿 + Type Errors 0，exit=0。

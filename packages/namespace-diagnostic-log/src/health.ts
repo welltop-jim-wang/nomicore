@@ -14,10 +14,10 @@ export interface DiagnosticLogHealthObserver {
   onEvent(event: DiagnosticLogHealthEvent): void
 }
 
-/** 健康事件词表（v1 冻结；设计 §8.1——8 成员判别联合，type 判别；
- *  record-dropped.reason 仅两值）。record-dropped 与 vfsl-validation-failed 两成员的
- *  operation 为 `operation?: Operation`（R4/C-5 已注：genesis-baseline 无 operation
- *  属形状事实——直通接缝注入的 genesis 校验失败事件无该键）；其余成员携带
+/** 健康事件词表（v1 冻结；设计 §8.1——#148 的 8 成员 + #152 追加 4 成员（只增不改），
+ *  type 判别；record-dropped.reason 仅两值）。record-dropped 与 vfsl-validation-failed
+ *  两成员的 operation 为 `operation?: Operation`（R4/C-5 已注：genesis-baseline 无
+ *  operation 属形状事实——直通接缝注入的 genesis 校验失败事件无该键）；其余成员携带
  *  operation: Operation（emission 路径由 intake 保证词表内值）。 */
 export type DiagnosticLogHealthEvent =
   | { type: 'emission-dropped'; reason: 'emission-shape'; operation?: Operation }
@@ -55,6 +55,31 @@ export type DiagnosticLogHealthEvent =
       schemaFingerprint: string
     }
   | { type: 'schema-compile-failed'; schemaId: typeof RECORD_SCHEMA_ID; issueCount: number }
+  | {
+      type: 'stream-init-failed'
+      code: 'LOG_STREAM_INIT_FAILED'
+      reason: 'invalid-namespace-id' | 'invalid-stream-id' | 'manifest-mismatch' | 'manifest-missing'
+    }
+  | {
+      type: 'storage-validation-failed'
+      recordKind: 'attempt' | 'genesis-baseline'
+      operation?: Operation
+      /** code ∈ { base64-invalid | base64-length-mismatch | crc-mismatch | stream-mismatch
+       *  | frame-missing | vfsl-invalid }
+       *  （前四值 SA6 锚定；frame-missing 总控 G3 裁决扩值（复用 reader 词表既有稳定码）——
+       *  注入 sidecar 引用帧缺失的 loud 拒绝；vfsl-invalid 为 R 修复轮（SA4 R1 R-2）第 6 值——
+       *  P_DECIMAL 字面镜像违规（注入 sequence/frameOffset 前导零/空串/非十进制）的 loud 拒绝，
+       *  同 G3「复用 reader issue 词表既有稳定码」原则，零新码）。 */
+      code: string
+    }
+  | {
+      type: 'storage-write-failed'
+      stage: 'bin' | 'jsonl' | 'manifest' | 'current'
+      operation?: Operation
+      /** code = 稳定 errno 码（'EISDIR'/'ENOSPC'/'EEXIST'…），不含底层 message。 */
+      code: string
+    }
+  | { type: 'stream-exhausted' }
 
 /** 事件对象深冻结（设计 §8.2；事件构造后冻结，防 observer 侧变异）。 */
 export function freezeEvent(event: DiagnosticLogHealthEvent): DiagnosticLogHealthEvent {
