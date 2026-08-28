@@ -38,3 +38,4 @@ run_id: issue-136-1787888033-8367 / round: 1 / branch: fix/issue-136-on-docs-pha
 | 31 | 18:05 | SA7 | Phase 3 动态复验 R2 | 18:15 verdict: pass（W1 红锚转绿全链闭合，全量回归一致） | D1 修复后 W1 红锚转绿复验 + 全量回归（与 SA4 并行） |
 | 32 | 18:15 | 总控 | Phase 3.5 AC 门禁 | (pending) | 评审双清达成 → AC 逐条确认 |
 | 33 | 18:17 | 双轴终审 | Phase 3.75 独立代码审查 | (pending) | code-review skill：Standards + Spec 两并行 review（generic subagent，diff ff50d47..HEAD） |
+| 34 | 19:05 | SA6 | Phase 3.75 回流红灯 | (pending) | Spec B-1/B-2 竞态补红灯 + G-1 EOF 空行修复（测试所有者） |
