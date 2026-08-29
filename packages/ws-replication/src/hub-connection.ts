@@ -416,7 +416,7 @@ class HubConnectionImpl implements HubConnection {
         pongTimeoutMs: this.hub.timeouts.pongTimeoutMs,
         ping: this.transport.ping,
         onPong: this.transport.onPong,
-        onPongTimeout: () => this.connectionFatal('PONG_TIMEOUT', 1002),
+        onPongTimeout: () => this.onLivenessLost(),
       });
     }
     // N1：§16 行 1「HELLO_ACK 解除」——HELLO 握手完成的同步段解除 hello timer
@@ -570,6 +570,24 @@ class HubConnectionImpl implements HubConnection {
       this.transport.close(wsCloseCode, 'protocol-error');
     }
     void this.cleanupAll();
+  }
+
+  /**
+   * 活性失联（临时类，协议 L524/§14/L42）：零 ERROR 帧——该错误码不在 connection
+   * 错误注册表（§13.1 append-only，活性是 WS 级事件非 wire 协议事件，不得扩表），
+   * close(1001) + 与 connectionFatal 同构的收口拓扑（ready → closed 直迁；hub 无
+   * dial/backoff——§15.2，重连责任在 peer，peer 侧对 1001 分类为临时失败 → backoff）。
+   */
+  private onLivenessLost(): void {
+    if (this.closedFlag) return; // 重入守卫（与 connectionFatal 同构）
+    this.sender.teardown(); // §8：poll timer 清零（连接收口必经点）
+    this.closedFlag = true; // 先置位：close 触发的 onClose 命中 onTransportClosed 早退
+    this.state = 'closed';
+    for (const channel of this.channels.values()) channel.quiesceConnection();
+    if (!this.transport.closed) {
+      this.transport.close(1001, 'pong-timeout');
+    }
+    void this.cleanupAll(); // stopLiveness + 摘 transport 监听 + channel cleanup + dropConnection
   }
 
   private sendControlChecked(message: ReplicationMessage): number {
