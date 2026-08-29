@@ -402,12 +402,9 @@ class PeerConnectionImpl implements PeerReplication {
     this.goawayDrainMs = message.drainTimeoutMs;
     this.goawayRetryAfterMs = message.retryAfterMs;
     if (message.reasonCode === 'SERVER_SHUTTING_DOWN' || message.reasonCode === 'REAUTH_REQUIRED') {
-      // §15.1 原因分级（G2/B1 冻结锚）：永久失败类——blocked 直达（sender teardown），
-      // 无 deadline 编排、wire 不关。路由冻结（R3 N2）：不经 enterBlocked（其额外
-      // clearReset 会使 B1 pending 计面 -2）——本分支处于 ready 态、drainCloseHandle
-      // 必为 undefined（armDrainClose 仅存在于 drain 类路径），空虚真安全。
-      this.sender?.teardown();
-      this.setState('blocked');
+      // 永久失败类必须走统一 blocked 收口：同步静默 namespace、清发送队列及全部 timer，
+      // 同时保持 wire 开放供宿主决定最终关闭时机。
+      this.enterBlocked();
       return;
     }
     // drain 类（SERVER_RESTARTING 及未知非永久类）：§15.1 L411 字面——无条件 draining。

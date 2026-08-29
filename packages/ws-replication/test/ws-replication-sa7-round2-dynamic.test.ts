@@ -31,6 +31,7 @@ import { OutboundQueue } from '../src/frame-io.js';
 import type { ResolvedLimits } from '../src/types.js';
 import { advanceMs, boot } from './driver.js';
 import { makeAuthorizer } from './driver.js';
+import { DEFAULT_PEER_VERIFIER, TEST_TOKEN } from './driver.js';
 import {
   HUB_INSTANCE,
   HUB_OWNER,
@@ -326,6 +327,7 @@ async function bootD2(): Promise<D2Run> {
     registry: hubNode.registry,
     authorize: authorizer.authorize,
     timer: hubNode.scheduler,
+    verifyToken: DEFAULT_PEER_VERIFIER,
     limits: D2_LIMITS,
   });
   const wireRef: { current: GatedWire | undefined } = { current: undefined };
@@ -336,7 +338,7 @@ async function bootD2(): Promise<D2Run> {
     dial: () => {
       const wire = makeGatedWire();
       wireRef.current = wire;
-      hub.accept(wire.hubEnd, { peerInstanceId: PEER_INSTANCE });
+      hub.accept(wire.hubEnd, { token: TEST_TOKEN });
       return wire.peerEnd;
     },
     timer: peerNode.scheduler,
@@ -584,6 +586,7 @@ async function bootD3(): Promise<D3Env> {
     registry: hubNode.registry,
     authorize: authorizer.authorize,
     timer: hubNode.scheduler,
+    verifyToken: DEFAULT_PEER_VERIFIER,
   });
   const wires: LivenessLogWire[] = [];
   const peer = createPeerReplication({
@@ -594,7 +597,7 @@ async function bootD3(): Promise<D3Env> {
       // 首代 wire 不复 pong（触发 pong 超时）；重连代 auto-pong（观察窗内不被自身收口）
       const wire = makeLivenessLogWire({ autoPong: wires.length > 0 });
       wires.push(wire);
-      hub.accept(wire.hubEnd, { peerInstanceId: PEER_INSTANCE });
+      hub.accept(wire.hubEnd, { token: TEST_TOKEN });
       return wire.peerEnd;
     },
     timer: peerNode.scheduler,
@@ -642,7 +645,7 @@ describe('SA7 D3（round 2）：GOAWAY drain 窗口 × pong 超时互斥 + 重�
       ),
     );
     await settle();
-    expect(env.peer.getConnectionState(), 'drain 窗口期连接照常（deadline 未到）').toBe('ready');
+    expect(env.peer.getConnectionState(), 'drain 类 GOAWAY 必须立即进入 draining').toBe('draining');
     expect(wire1.peerSideClosed).toBe(false);
     // ping 周期到 → pong 不复 → 超时（drain 窗口内触发互斥路径）
     await env.peerNode.scheduler.advanceBy(1_000);
@@ -757,6 +760,7 @@ describe('SA7 D5（round 2，登记观察项——设计 §D4 N2）：hello 超�
       registry: hubNode.registry,
       authorize: authorizer.authorize,
       timer: hubNode.scheduler,
+      verifyToken: DEFAULT_PEER_VERIFIER,
     });
     const wires: LivenessLogWire[] = [];
     const peer = createPeerReplication({
@@ -771,7 +775,7 @@ describe('SA7 D5（round 2，登记观察项——设计 §D4 N2）：hello 超�
             ? makeLivenessLogWire({ autoPong: true, dropNextPeerToHubKind: 'HELLO' })
             : makeLivenessLogWire({ autoPong: true });
         wires.push(wire);
-        hub.accept(wire.hubEnd, { peerInstanceId: PEER_INSTANCE });
+        hub.accept(wire.hubEnd, { token: TEST_TOKEN });
         return wire.peerEnd;
       },
       timer: peerNode.scheduler,
