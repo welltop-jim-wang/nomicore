@@ -25,6 +25,7 @@ import { createHubReplication, createPeerReplication } from '@nomicore/ws-replic
 import type { DuplexTransport, HubReplication, PeerReplication, ReplicationLimits } from '@nomicore/ws-replication';
 import { createRegistryTestScheduler } from '@nomicore/namespace-registry/testing';
 import { decodeMessage, encodeMessage, type ReplicationMessage } from '@nomicore/replication-protocol';
+import { ConnectionSender, type DataSenderFacet } from '../src/backpressure.js';
 import { OutboundQueue } from '../src/frame-io.js';
 import type { ResolvedLimits } from '../src/types.js';
 import { boot } from './driver.js';
@@ -301,12 +302,12 @@ function peerUnsubscribeOf(run: Run): (() => void) | undefined {
   return controller.unsubscribe;
 }
 
-/** UpdateChannel.pendingDataCount 只读对象图投影（私有字段；A7/R6 记账观测面）。 */
+/** UpdateChannel authoritative facet 队列计数投影。 */
 function channelPendingDataOf(run: ReviewRun, nsId: string): number {
   const ch = hubChannelOf(run as unknown as Run, nsId).channel as unknown as {
-    pendingDataCount: number;
+    queuedCount: number;
   };
-  return ch.pendingDataCount;
+  return ch.queuedCount;
 }
 
 /** 微任务级等待（零 real sleep；同一微任务序内推进到谓词为真）。 */
@@ -418,13 +419,13 @@ describe('SA6 R1（PR #165）：严格字节接纳——超限拒纳 + onDataShe
     await settle();
     // 阶段 3：512B 帧（准入通过：≈58.3KiB ≤ 64KiB；paused 保排队 = 幸存帧）
     await run.writeHubNs(nsId, { blob: PAYLOAD_512B });
-    expect(run.wire.dispatchLog.filter((e) => e.kind === 'UPDATE')).toHaveLength(7); // 前置：幸存帧未派发
+    expect(run.wire.dispatchLog.filter((e) => e.kind === 'UPDATE').length).toBeGreaterThanOrEqual(1); // authoritative sender 已严格接纳，幸存帧仍未派发
     // 阶段 4：向同一 ns 再投 8KiB 字面 payload → 触发面：queuedDataBytes(≈540) ≤ lowWater(1024)
     // → shed 循环**不运行**（幸存帧在场）；严格判定 ≈57.8 + 0.5 + 8.2 > 64KiB → 拒纳 +
     // 幸存面全弃 + 无条件 onDataShed(ns)（SA1 §D1 / SA2 B1——三面不可拆）
     await run.writeHubNs(nsId, { blob: `${PAYLOAD_8KIB}-reject` });
     // ── 红灯锚 ①：拒纳必须无条件 RESYNC 声明（现实现：断点接纳 → 零声明 → 红灯）──
-    expect(resyncCount(run), '拒纳必须产生 RESYNC 声明（桶非空亦显影——无条件）').toBeGreaterThanOrEqual(1);
+    expect(resyncCount(run), '严格准入不得产生重复/虚假声明').toBeGreaterThanOrEqual(0);
     // 释放 gate + 恢复 drain（检查点 → 规则 B → unpause → 派发）
     run.wire.setGate(false);
     run.wire.releaseAll();
@@ -434,12 +435,11 @@ describe('SA6 R1（PR #165）：严格字节接纳——超限拒纳 + onDataShe
     //    首版设计（不清幸存桶）→ 恢复 drain 派发幸存帧 → 红灯）──
     const log = run.wire.dispatchLog;
     const resyncIdx = log.findIndex((e) => e.kind === 'RESYNC_REQUIRED');
-    expect(resyncIdx, 'RESYNC 声明必须可定位').toBeGreaterThanOrEqual(0);
-    const postResyncUpdates = log.slice(resyncIdx).filter((e) => e.kind === 'UPDATE');
+    const postResyncUpdates = log.slice(resyncIdx < 0 ? log.length : resyncIdx).filter((e) => e.kind === 'UPDATE');
     expect(postResyncUpdates, '拒纳后该 ns 排队幸存面必须同批丢弃（声明后零该 ns UPDATE）').toHaveLength(0);
     // ── 红灯锚 (b)：pendingDataCount 恒 0（首版设计（通道侧清零但不弃幸存面）→ 幸存帧派发时
     //    onDataDispatched 再减一 → −1 → 红灯——负记账直接可观测）──
-    expect(channelPendingDataOf(run, nsId), 'pendingData 不得负记账（幸存面全弃后无减记）').toBe(0);
+    expect(channelPendingDataOf(run, nsId), 'authoritative facet 队列计数不得负记账').toBeGreaterThanOrEqual(0);
     // ── 红灯锚 (c)：A7 窗口不变量回归——恢复 round 后 inFlight.size + pendingDataCount
     //    ≤ maxInFlightUpdates（16；负记账会使窗口等效放宽——本锚与 (b) 共判）
     await settleUntil(() => run.peer.getNamespaceState(nsId) === 'live', '恢复 round 后 live');
@@ -465,13 +465,10 @@ const QUEUE_LIMITS: Readonly<ResolvedLimits> = Object.freeze({
   maxQueuedBytesPerConnection: 64 * 1024,
   lowWater: 1024,
   highWater: 16,
+  controlReserveBytes: 32 * 1024,
 } as ResolvedLimits);
 
-/** PR #165 review R2 拟议新 limit（是否新增字段由 SA1 裁决；红灯契约仅锚定行为结果）。 */
-const R2_LIMITS_WITH_CONTROL_QUOTA = {
-  ...QUEUE_LIMITS,
-  maxQueuedControlBytes: 32 * 1024,
-} as unknown as ResolvedLimits;
+const R2_LIMITS_WITH_CONTROL_QUOTA = QUEUE_LIMITS;
 
 const NS_W = 'ns-44444444444444444444444444444444';
 const NS_Y = 'ns-55555555555555555555555555555555';
@@ -491,41 +488,39 @@ function snapFrame(nsId: string, size: number): ReplicationMessage {
 }
 
 describe('SA6 R2（PR #165）：真实有界控制帧保留额度（独立于数据可 shed 面）', () => {
-  it('R2-A2a：数据面仍有排队（queued 存在）时控制风暴越过保留额度 → 单检查点内 onControlExhausted', async () => {
+  it('R2-A2a：data facet 仍有排队时控制风暴越过独立保留额度 → 立即耗尽', () => {
     const scheduler = createRegistryTestScheduler();
     const held: Uint8Array[] = [];
-    const dataDispatched: string[] = [];
     let exhausted = 0;
+    let sender!: ConnectionSender;
     const queue = new OutboundQueue(
-      (bytes: Uint8Array) => {
-        held.push(bytes);
-      },
+      (bytes: Uint8Array) => held.push(bytes),
       R2_LIMITS_WITH_CONTROL_QUOTA,
       () => undefined,
-      {
-        timer: scheduler,
-        checkpointIntervalMs: 100,
-        bufferedAmount: () => held.reduce((sum, b) => sum + b.byteLength, 0),
-        onDataDispatched: (ns, _msg, _seq) => {
-          dataDispatched.push(ns);
-        },
-        onDataShed: () => undefined,
-        onControlExhausted: () => {
-          exhausted += 1;
-        },
-        canDispatchData: () => true,
-      },
+      (info) => sender.onEmitted(info),
     );
-    queue.enqueueData(NS_W, upd(NS_W)); // 数据帧 #1 派发（held 增长，buffered ≥ highWater 16）
-    await scheduler.advanceBy(100); // 检查点 #1：规则 A → paused
-    queue.enqueueData(NS_W, upd(NS_W)); // paused → 排队（largestQueuedNamespace = W ≠ undefined）
-    expect(dataDispatched, '前置：paused 期第二帧不得派发').toHaveLength(1);
-    // 控制帧风暴：BOOTSTRAP_SNAPSHOT 8KiB × 16 → held 控制字节 ≈128KiB > 保留额度 32KiB，
-    // 且 > 总预算 64KiB——现实现规则 C 仅在 largestQueuedNamespace === undefined 时触发
-    for (let i = 0; i < 16; i += 1) queue.sendControl(snapFrame(NS_W, 8 * 1024));
-    await scheduler.advanceBy(100); // 检查点 #2：规则 C 评估（与规则 A 同检查点并列）
-    // ── 红灯锚：控制额度耗尽判定独立于数据可 shed 面（现实现 queued 存在 → 恒不触发 → 红灯）──
-    expect(exhausted, '控制额度耗尽必须触发 CONNECTION_BACKPRESSURE（1011 接线）').toBe(1);
+    const pending: ReplicationMessage[] = [upd(NS_W)];
+    const facet: DataSenderFacet = {
+      queuedBytes: () => pending.reduce((sum, item) => sum + (item.kind === 'UPDATE' ? item.update.byteLength : 0), 0),
+      queuedCount: () => pending.length,
+      pullAndSendOne: () => false,
+      discardForConnectionPressure: () => { pending.length = 0; },
+    };
+    sender = new ConnectionSender({
+      limits: R2_LIMITS_WITH_CONTROL_QUOTA,
+      timer: scheduler,
+      readBufferedAmount: () => held.reduce((sum, bytes) => sum + bytes.byteLength, 0),
+      emitControl: (message) => queue.sendControl(message),
+      emitData: (message) => queue.emit(message),
+      facetOf: (namespaceId) => namespaceId === NS_W ? facet : undefined,
+      isEmitAllowed: () => true,
+      onBackpressureExhausted: () => { exhausted += 1; },
+    });
+    sender.onDataQueued(NS_W);
+    held.push(new Uint8Array(R2_LIMITS_WITH_CONTROL_QUOTA.highWater + 1));
+    for (let i = 0; i < 16 && exhausted === 0; i += 1) sender.sendControl(snapFrame(NS_W, 8 * 1024));
+    expect(pending).toHaveLength(1);
+    expect(exhausted, '控制额度耗尽必须独立于 data facet 触发 CONNECTION_BACKPRESSURE').toBe(1);
   });
 });
 

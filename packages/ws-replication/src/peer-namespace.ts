@@ -48,6 +48,10 @@ export interface PeerNamespaceHost {
   onDataQueued(namespaceId: string): void;
   /** 请求连接级 drain（§4.5，issue #137）。 */
   requestDataDrain(): void;
+  /** GOAWAY drain 窗口投影；namespace 断线处理据此保持 draining 语义。 */
+  isGoawayDraining(): boolean;
+  /** 确定性延后 seam：生产缺省单 microtask，测试可注入显式泵。 */
+  deferTask(task: () => void): void;
   /** 本端连接致命（ACK_STATE_VIOLATION 等）：connection ERROR + close + blocked。 */
   connectionFatal(code: string, wsCloseCode?: number): void;
   /** 连接代际（每次拨号 +1）：异步续体以此判别「连接已断/已重建」的迟到性（§13.4）。 */
@@ -83,6 +87,7 @@ export class PeerNamespaceController {
   };
   private cleanupTail: Promise<void> = Promise.resolve();
   private closeMemo: Memoized | undefined;
+  private closeSequence: number | undefined;
   /** R3（SA4）：close 承诺的事件驱动结算器——settleCloseMemo 触发前 removeTarget 的
    *  promise 保持 pending（零轮询环；AC3b closeSettled===false 锚语义）。 */
   private closeSettleResolve: (() => void) | undefined;
@@ -488,6 +493,8 @@ export class PeerNamespaceController {
 
   onCloseRequest(message: { sequence: number }): void {
     if (this.isQuietState()) return;
+    this.setState('closing');
+    this.quiesceSync();
     // 对称收口（§13.2）：停接纳 → 等已接纳 apply → session close → lease release → CLOSE_OK
     void (async () => {
       await this.drainPendingApplies();
@@ -502,8 +509,8 @@ export class PeerNamespaceController {
     })();
   }
 
-  onCloseOk(): void {
-    if (this.state === 'closing') {
+  onCloseOk(ackedSequence: number): void {
+    if (this.state === 'closing' && ackedSequence === this.closeSequence) {
       // §13.4：closing 期 terminal 帧只推进收口——CLOSE_OK 为收口完成信号（即使在
       // 测试注入帧与出站计数器重叠的序列冲突下仍接受收口，不重复失败）
       this.clearTimer('close');
@@ -550,7 +557,7 @@ export class PeerNamespaceController {
       case 'needs-resync':
         this.setState('closing');
         this.armTimer('close');
-        this.sendChecked({
+        this.closeSequence = this.sendChecked({
           kind: 'CLOSE_NAMESPACE',
           namespaceId: this.namespaceId,
           reasonCode: 'target-removed',
@@ -613,6 +620,7 @@ export class PeerNamespaceController {
    *  §13.3/§14.1：failed 等待连接重建——断线投影 disconnected 后重连重 OPEN）。 */
   onConnectionLost(): void {
     if (this.state === 'closed' || this.state === 'conflicted') return; // 终态保持
+    this.quiesceSync();
     if (this.state === 'closing') {
       this.setState('disconnected');
       this.settleCloseMemo(); // R3：断线 = 关闭承诺兑现（无 CLOSE_OK/closeTimeout 可等）
@@ -631,6 +639,7 @@ export class PeerNamespaceController {
   /** 连接 blocked（fatal）：活跃态投影 disconnected。 */
   onConnectionFatal(): void {
     if (this.isTerminal()) return;
+    this.quiesceSync();
     if (this.state === 'closing') {
       this.settleCloseMemo(); // R3：blocked = 关闭承诺兑现（同步投影先行）
     }
@@ -937,10 +946,19 @@ export class PeerNamespaceController {
     await Promise.allSettled([...this.pendingApplies]);
   }
 
+  private quiesceSync(): void {
+    const unsubscribe = this.unsubscribe;
+    if (unsubscribe !== undefined) {
+      unsubscribe();
+      this.unsubscribe = undefined;
+    }
+  }
+
   private async closeSessionAndRelease(): Promise<void> {
     const session = this.session;
     const lease = this.lease;
     const unsubscribe = this.unsubscribe;
+    this.quiesceSync();
     if (session !== undefined) {
       await session.close();
     }

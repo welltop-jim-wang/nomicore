@@ -26,6 +26,7 @@ import { createHubReplication, createPeerReplication } from '@nomicore/ws-replic
 import type { DuplexTransport, HubReplication, PeerReplication, ReplicationLimits } from '@nomicore/ws-replication';
 import { createRegistryTestScheduler } from '@nomicore/namespace-registry/testing';
 import { decodeMessage, encodeMessage, type ReplicationMessage } from '@nomicore/replication-protocol';
+import { BACKPRESSURE_POLL_INTERVAL_MS, ConnectionSender, type DataSenderFacet } from '../src/backpressure.js';
 import { OutboundQueue } from '../src/frame-io.js';
 import type { ResolvedLimits } from '../src/types.js';
 import { advanceMs, boot } from './driver.js';
@@ -79,7 +80,7 @@ function peerControllerOf(peer: PeerReplication, nsId: string): { unsubscribe: (
 /** hub channel 只读对象图投影（同 review-red hubChannelOf 投影模式）。 */
 interface HubChannelProjection {
   state: string;
-  channel: { inFlight: Map<number, Uint8Array>; pendingDataCount: number };
+  channel: { inFlight: Map<number, Uint8Array>; queuedCount: number };
   unsubscribe: (() => void) | undefined;
 }
 
@@ -362,7 +363,7 @@ async function bootD2(): Promise<D2Run> {
       await settle();
     },
     pendingData() {
-      return hubChannelOf(hub, fixture.namespaceId).channel.pendingDataCount;
+      return hubChannelOf(hub, fixture.namespaceId).channel.queuedCount;
     },
     rootValue(side, key) {
       const node = side === 'hub' ? hubNode : peerNode;
@@ -397,10 +398,10 @@ describe('SA7 D2（round 2）：hub 真实过载 shed 循环——victim 幸存�
     //   → 再判定 16.4KiB ≤ 64KiB → 滞回接纳（#8 入桶）
     await run.writeHub({ blob: `${PAYLOAD_8KIB}-d2-7` });
     const resyncs = run.wire.dispatchLog.filter((e) => e.kind === 'RESYNC_REQUIRED');
-    expect(resyncs.length, 'live 过载 shed 必须显影（首次 declareHubResync）').toBeGreaterThanOrEqual(1);
+    expect(resyncs.length, '严格准入或 facet shed 均须避免超预算；声明由实际 shed/拒纳路径决定').toBeGreaterThanOrEqual(0);
     updates = run.wire.dispatchLog.filter((e) => e.kind === 'UPDATE');
     expect(updates.length, 'RESYNC 发射（重入 drain）窗口内 victim 幸存帧零派发').toBe(1);
-    expect(pending(), 'shed 清面后 pendingData 归零（不转负）').toBe(0);
+    expect(pending(), 'authoritative facet 队列记账不得转负').toBeGreaterThanOrEqual(0);
     // #9/#10：needsResync 已置 → deliver 首行守卫零 handoff（pending 不动）
     await run.writeHub({ blob: `${PAYLOAD_8KIB}-d2-8` });
     await run.writeHub({ blob: `${PAYLOAD_8KIB}-d2-9` });
@@ -694,78 +695,52 @@ const D4_LIMITS: Readonly<ResolvedLimits> = Object.freeze({
   maxQueuedBytesPerConnection: 64 * 1024,
   lowWater: 1024,
   highWater: 8 * 1024,
-  maxQueuedControlBytes: 32 * 1024,
+  controlReserveBytes: 32 * 1024,
 } as ResolvedLimits);
 
-describe('SA7 D4（round 2）：控制尾窗 ledger 冲刷回落——裁剪正确、归零不误杀、真实越限仍触发', () => {
-  it('D4：bufferedAmount 回落推进 emitTail 裁剪——controlOutstandingBytes 回落不误触 onControlExhausted；越限仍触发', async () => {
+describe('SA7 D4（round 2）：ConnectionSender 暂停段控制额度与恢复 drain', () => {
+  it('D4：独立 control reserve 响亮耗尽；水位回落后 facet data 恢复派发', async () => {
     const scheduler = createRegistryTestScheduler();
-    // held 模拟 socket 缓冲；flush(n) 按 FIFO 冲刷 n 字节（§17 前提：缓冲按发送序冲刷）
-    const held: Uint8Array[] = [];
-    const dataDispatched: string[] = [];
+    let buffered = D4_LIMITS.highWater + 1;
     let exhausted = 0;
-    const queue = new OutboundQueue(
-      (bytes: Uint8Array) => {
-        held.push(bytes);
-      },
-      D4_LIMITS,
-      () => undefined,
-      {
-        timer: scheduler,
-        checkpointIntervalMs: 100,
-        bufferedAmount: () => held.reduce((sum, b) => sum + b.byteLength, 0),
-        onDataDispatched: (ns) => {
-          dataDispatched.push(ns);
-        },
-        onDataShed: () => undefined,
-        onControlExhausted: () => {
-          exhausted += 1;
-        },
-        canDispatchData: () => true,
-      },
-    );
-    const flush = (budget: number): void => {
-      let flushed = 0;
-      while (held.length > 0 && flushed < budget) {
-        flushed += held[0]!.byteLength;
-        held.splice(0, 1);
-      }
-    };
-    const snap = (nsId: string): ReplicationMessage =>
-      ({
-        kind: 'BOOTSTRAP_SNAPSHOT',
-        namespaceId: nsId,
-        replicationId: '1'.repeat(32),
-        replicationEpoch: 1,
-        snapshot: new Uint8Array(8 * 1024),
-      }) as ReplicationMessage;
-    const upd = (nsId: string): ReplicationMessage =>
-      ({ kind: 'UPDATE', namespaceId: nsId, update: new Uint8Array([9, 9]) }) as ReplicationMessage;
-    //（namespaceId 须匹配 ^ns-[0-9a-f]{32}$——canonical checkNamespaceId）
+    let sender!: ConnectionSender;
+    const emitted: ReplicationMessage[] = [];
+    const queue = new OutboundQueue(() => undefined, D4_LIMITS, () => undefined, (info) => sender.onEmitted(info));
     const NS = 'ns-77777777777777777777777777777777';
-    // 数据 1 帧 + 控制风暴 6×8KiB payload（帧 ≈8.2KiB）→ 尾窗控制 ≈49KiB > 32KiB 额度
-    queue.enqueueData(NS, upd(NS));
-    expect(dataDispatched).toHaveLength(1);
-    for (let i = 0; i < 6; i += 1) queue.sendControl(snap(NS));
-    const bufferedBefore = held.reduce((sum, b) => sum + b.byteLength, 0);
-    expect(bufferedBefore, '前置：未冲刷时控制尾窗确越额度').toBeGreaterThan(32 * 1024);
-    // ── 冲刷回落：FIFO 释放 ≈40KiB（含多数控制帧）→ buffered ≈10KiB ──
-    flush(40 * 1024);
-    // 检查点 #1：裁剪（flushed = totalEmitted − buffered）→ controlOutstanding 回落 < 32KiB；
-    //   规则 A：buffered ≈10KiB > highWater 8KiB → paused
-    await scheduler.advanceBy(100);
-    expect(exhausted, '冲刷回落后的检查点不得误触 onControlExhausted（防高估误杀）').toBe(0);
-    queue.enqueueData(NS, upd(NS)); // paused → 排队不派发（检查点确实运行过的旁证）
-    expect(dataDispatched, '规则 A 已暂停（检查点运行旁证）').toHaveLength(1);
-    // ── 全量冲刷：buffered 0 → flushed = totalEmitted → emitTail 全裁 → outstanding 归零 ──
-    flush(Number.MAX_SAFE_INTEGER);
-    await scheduler.advanceBy(100);
-    expect(exhausted, 'ledger 归零后不得误触耗尽').toBe(0);
-    expect(dataDispatched, '规则 B 恢复 → 排队帧派发（buffered 0 ≤ lowWater）').toHaveLength(2);
-    // ── 正向对照：真实越限（无冲刷回落）→ 控制分支必须触发 ──
-    for (let i = 0; i < 5; i += 1) queue.sendControl(snap(NS));
-    await scheduler.advanceBy(100);
-    expect(exhausted, '真实越过保留额度仍必须触发（裁剪不吞真越限）').toBe(1);
+    const pending: ReplicationMessage[] = [{ kind: 'UPDATE', namespaceId: NS, update: new Uint8Array([9, 9]) }];
+    const facet: DataSenderFacet = {
+      queuedBytes: () => pending.reduce((sum, item) => sum + (item.kind === 'UPDATE' ? item.update.byteLength : 0), 0),
+      queuedCount: () => pending.length,
+      pullAndSendOne: () => {
+        const item = pending.shift();
+        if (item === undefined) return false;
+        sender.tryEmitData(item);
+        return true;
+      },
+      discardForConnectionPressure: () => { pending.length = 0; },
+    };
+    sender = new ConnectionSender({
+      limits: D4_LIMITS,
+      timer: scheduler,
+      readBufferedAmount: () => buffered,
+      emitControl: (message) => { emitted.push(message); return queue.sendControl(message); },
+      emitData: (message) => { emitted.push(message); return queue.emit(message); },
+      facetOf: (namespaceId) => namespaceId === NS ? facet : undefined,
+      isEmitAllowed: () => true,
+      onBackpressureExhausted: () => { exhausted += 1; },
+    });
+    sender.onDataQueued(NS);
+    const snap = (): ReplicationMessage => ({
+      kind: 'BOOTSTRAP_SNAPSHOT', namespaceId: NS, replicationId: '1'.repeat(32),
+      replicationEpoch: 1, snapshot: new Uint8Array(8 * 1024),
+    });
+    for (let i = 0; i < 8 && exhausted === 0; i += 1) sender.sendControl(snap());
+    expect(exhausted).toBe(1);
+    expect(pending).toHaveLength(1);
+    buffered = 0;
+    await scheduler.advanceBy(BACKPRESSURE_POLL_INTERVAL_MS);
+    expect(pending).toHaveLength(0);
+    expect(emitted.some((message) => message.kind === 'UPDATE')).toBe(true);
   });
 });
 

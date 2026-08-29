@@ -183,6 +183,7 @@ class HubConnectionImpl implements HubConnection {
     this.closedFlag = true;
     this.state = 'draining';
     this.sender.teardown(); // §8：poll timer 清零（连接收口必经点）
+    for (const channel of this.channels.values()) channel.quiesceConnection();
     if (!this.transport.closed) {
       this.transport.close(code ?? 1001, reason ?? 'hub-close');
     }
@@ -383,6 +384,7 @@ class HubConnectionImpl implements HubConnection {
   }
 
   private async cleanupAll(): Promise<void> {
+    for (const channel of this.channels.values()) channel.quiesceConnection();
     this.stopLiveness?.();
     this.stopLiveness = undefined;
     for (const off of this.transportSubscribers.splice(0)) off();
@@ -405,6 +407,7 @@ class HubConnectionImpl implements HubConnection {
     }
     this.closedFlag = true;
     this.state = 'closed';
+    for (const channel of this.channels.values()) channel.quiesceConnection();
     if (!this.transport.closed) {
       this.transport.close(wsCloseCode, 'protocol-error');
     }

@@ -92,7 +92,7 @@ class PeerConnectionImpl implements PeerReplication {
       connectionFatal: (code, wsCloseCode) => this.connectionFatal(code, wsCloseCode ?? 1002),
       connectionEpoch: () => this.connectionEpochValue,
       isGoawayDraining: () => this.goawayActive,
-      deferTask: (task) => this.deferTask(task),
+      deferTask: (task: () => void) => this.deferTask(task),
     };
     for (const target of options.targets ?? []) {
       this.addTarget(target);
@@ -305,7 +305,10 @@ class PeerConnectionImpl implements PeerReplication {
         pongTimeoutMs: this.timeouts.pongTimeoutMs,
         ping: transport.ping,
         onPong: transport.onPong,
-        onPongTimeout: () => this.onTemporaryFailure(),
+        onPongTimeout: () => {
+          if (!transport.closed) transport.close(1001, 'pong-timeout');
+          this.onTemporaryFailure();
+        },
       });
     }
     this.openActiveTargets();
@@ -601,7 +604,7 @@ class PeerConnectionImpl implements PeerReplication {
     // 不得继续派发向已宣布停机的 hub；controller 已投影 disconnected，dispose 的
     // onDataShed → declareLocalResync 经 sendControl 非 ready 门 → 零出站帧，无噪声）
     if (this.outbound !== undefined) {
-      this.outbound.dispose();
+      this.outbound.clear();
       this.outbound = undefined;
     }
     for (const controller of this.controllers.values()) {

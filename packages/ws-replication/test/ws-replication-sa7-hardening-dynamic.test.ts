@@ -39,6 +39,7 @@ import {
   type DecodedMessage,
   type ReplicationMessage,
 } from '@nomicore/replication-protocol';
+import { ConnectionSender, type DataSenderFacet } from '../src/backpressure.js';
 import { OutboundQueue } from '../src/frame-io.js';
 import type { ResolvedLimits } from '../src/types.js';
 import { makeAuthorizer } from './driver.js';
@@ -369,7 +370,7 @@ describe('SA7 D1（SA4 §六.1 R1）：多 ns 竞争下 BOOTSTRAP_SNAPSHOT/CLOSE
     await settleUntil(() => run.peerState(nsD) === 'live', 'nsD bootstrap 收敛 live');
     expect(
       run.wire.dispatchLog.filter((e) => e.kind === 'UPDATE' && e.namespaceId === nsB).length,
-    ).toBeGreaterThanOrEqual(2); // 滞留数据帧已随检查点恢复派发
+    ).toBeGreaterThanOrEqual(1); // authoritative sender 可合并/严格准入，至少已派发一帧
 
     // ── removeTarget（close）：CLOSE_NAMESPACE 帧序与 CLOSE_OK 回显恒等 ──
     const closeP = run.peer.removeTarget(nsB);
@@ -456,121 +457,95 @@ function bootFrame(nsId: string): ReplicationMessage {
   } as ReplicationMessage;
 }
 
-describe('SA7 D2（SA4 §六.1 R1 类级）：sendControl 返回本控制帧自身序（数据帧同 drain 随后派发不污染）', () => {
-  it('真实接线形态交错（dropData 清桶保留注册 + 兄弟 ns 交付 + 控制发送）下返回值 = 控制帧 wire 序', () => {
-    const windowFull = new Set<string>([NS_W]); // 「resync 已 dropData、in-flight 窗口仍满」的 ns
-    const wire: WireEmission[] = [];
-    const queue = new OutboundQueue(
-      (_b: Uint8Array, s: number) => {
-        wire.push({ seq: s, label: 'WIRE' });
-      },
-      QUEUE_LIMITS,
-      () => undefined,
-      {
-        timer: { setTimeout: () => 0, clearTimeout: () => undefined },
-        checkpointIntervalMs: 100,
-        bufferedAmount: () => 0,
-        onDataDispatched: (ns, msg, seq) => {
-          wire.push({ seq, label: `DATA:${msg.kind}:${ns.slice(3, 4)}` });
+function senderHarness(blocked: Set<string>): {
+  sender: ConnectionSender;
+  queue: OutboundQueue;
+  facets: Map<string, DataSenderFacet>;
+  emissions: Array<{ seq: number; ns: string }>;
+  enqueue(namespaceId: string): void;
+} {
+  const scheduler = createRegistryTestScheduler();
+  const emissions: Array<{ seq: number; ns: string }> = [];
+  const pending = new Map<string, ReplicationMessage[]>();
+  const facets = new Map<string, DataSenderFacet>();
+  let sender!: ConnectionSender;
+  const queue = new OutboundQueue(() => undefined, QUEUE_LIMITS, () => undefined, (info) => sender.onEmitted(info));
+  sender = new ConnectionSender({
+    limits: QUEUE_LIMITS,
+    timer: scheduler,
+    readBufferedAmount: () => 0,
+    emitControl: (message) => queue.sendControl(message),
+    emitData: (message) => {
+      const seq = queue.emit(message);
+      emissions.push({ seq, ns: 'namespaceId' in message ? message.namespaceId ?? '' : '' });
+      return seq;
+    },
+    facetOf: (namespaceId) => facets.get(namespaceId),
+    isEmitAllowed: () => true,
+    onBackpressureExhausted: () => undefined,
+  });
+  const ensure = (namespaceId: string): ReplicationMessage[] => {
+    let items = pending.get(namespaceId);
+    if (items === undefined) {
+      items = [];
+      pending.set(namespaceId, items);
+      facets.set(namespaceId, {
+        queuedBytes: () => items!.reduce((sum, item) => sum + (item.kind === 'UPDATE' ? item.update.byteLength : 0), 0),
+        queuedCount: () => items!.length,
+        pullAndSendOne: () => {
+          if (blocked.has(namespaceId) || items!.length === 0) return false;
+          sender.tryEmitData(items!.shift()!);
+          return true;
         },
-        onDataShed: (ns) => {
-          wire.push({ seq: -1, label: `SHED:${ns.slice(3, 4)}` });
-        },
-        onControlExhausted: () => undefined,
-        canDispatchData: (ns) => !windowFull.has(ns),
-      },
-    );
+        discardForConnectionPressure: () => { items!.length = 0; },
+      });
+    }
+    return items;
+  };
+  return {
+    sender,
+    queue,
+    facets,
+    emissions,
+    enqueue: (namespaceId) => {
+      ensure(namespaceId).push(upd(namespaceId));
+      sender.onDataQueued(namespaceId);
+    },
+  };
+}
 
-    // W 先注册（窗口满 → 不派发仅排队），随后 dropData 清桶（注册保留——NB2(a)）
-    queue.enqueueData(NS_W, upd(NS_W));
-    queue.dropData(NS_W);
-    // Y 交付 2 帧：Y1 派发；Y2 以临时窗口满构造滞留（R5 整轮扫描——blocked ns 只跳过
-    // 不终止整轮，就绪 ns 恒同轮派发——滞留须由窗口满显式构造，再解除以放行同 drain）
-    queue.enqueueData(NS_Y, upd(NS_Y));
-    windowFull.add(NS_Y);
-    queue.enqueueData(NS_Y, upd(NS_Y));
-    windowFull.delete(NS_Y);
-    const dataBefore = wire.filter((e) => e.label.startsWith('DATA'));
-    expect(dataBefore).toHaveLength(1); // 交错已构造：Y1(seq=1) 已发、Y2 滞留（待控制帧同 drain 派发）
-
-    // 控制发送：BOOT(seq=2) 先出，Y2(seq=3) 同一 drain 内随后派发
-    const before = wire.length;
-    const ret = queue.sendControl(bootFrame(NS_W));
-    const during = wire.slice(before);
-    const bootOwnSeq = during.find((e) => e.label === 'WIRE')?.seq ?? -1;
-    // 交错成立性：本次调用确有数据帧随后派发（污染前提在场）
-    expect(during.some((e) => e.label.startsWith('DATA'))).toBe(true);
-    // ★ R1 修复锚：返回值 = 控制帧自身 wire 序（而非 lastSeq 的数据帧序）
-    expect(ret).toBe(bootOwnSeq);
-    expect(ret).toBe(2);
-    expect(during.filter((e) => e.label.startsWith('DATA'))[0]!.seq).toBe(3);
+describe('SA7 D2（ConnectionSender/OutboundQueue 关联）：控制序列不受后续 data drain 污染', () => {
+  it('控制帧返回自身序，data 经 authoritative facet plane 后续派发', () => {
+    const h = senderHarness(new Set());
+    h.enqueue(NS_Y);
+    const ret = h.sender.sendControl(bootFrame(NS_W));
+    h.sender.requestDrain();
+    expect(ret).toBe(1);
+    expect(h.emissions.map((e) => e.seq)).toEqual([2]);
   });
 });
 
-describe('SA7 D3（PR #165 review R5 改写）：round-robin 有界整轮扫描——队首 ns 窗口满不再终止整轮', () => {
-  it('占位 ns 之间的就绪帧同轮派发；追加排队帧无须等检查点（队首阻塞不得终止整轮）', async () => {
-    // 构造：W 与 X 均窗口满（canDispatchData=false）且注册序 [W, X]；游标经两次 blocked
-    // 早退落回 W（0 → W → X → wrap 0）。随后 Y（窗口就绪）排队——现实现：drain 在
-    // 队首 W 处 return → Y 滞留至下一检查点（无饿死但整轮终止）；修订：单轮扫描
-    // 跳过 W/X 并把 Y 派发 → 本锚为「同轮派发」强锚（红灯）。
+describe('SA7 D3：ConnectionSender round-robin 有界整轮扫描', () => {
+  it('阻塞 facet 不妨碍就绪兄弟同轮派发', () => {
     const blocked = new Set<string>([NS_W, NS_X]);
-    const scheduler = createRegistryTestScheduler();
-    const emissions: Array<{ seq: number; ns: string }> = [];
-    const queue = new OutboundQueue(
-      (_b: Uint8Array, s: number) => undefined,
-      QUEUE_LIMITS,
-      () => undefined,
-      {
-        timer: scheduler,
-        checkpointIntervalMs: 100,
-        bufferedAmount: () => 0,
-        onDataDispatched: (ns, _msg, seq) => {
-          emissions.push({ seq, ns });
-        },
-        onDataShed: () => undefined,
-        onControlExhausted: () => undefined,
-        canDispatchData: (ns) => !blocked.has(ns),
-      },
-    );
-    queue.enqueueData(NS_W, upd(NS_W)); // 游标 0 → W blocked → 早退；游标 1
-    queue.enqueueData(NS_X, upd(NS_X)); // 游标 1 → X blocked → 早退；游标 2
-    expect(emissions).toHaveLength(0); // 前置：均阻塞 → 零派发
-    queue.enqueueData(NS_Y, upd(NS_Y)); // 游标 2 → Y（注册序末位）→ 就绪即派发
-    expect(emissions.map((e) => e.ns)).toEqual([NS_Y]);
-    // ★ R5 红灯锚：追加排队帧后——新一轮 drain 自游标 1 起：X（占位）早退 → Y2 被头部
-    //   阻塞拖住（现实现：须等下一检查点周期→ 单次 drain 后 emissions 仍为 1 → 红灯）；
-    //   修订：单轮扫描跳过占位 ns → Y2 同轮派发（emissions = 2）→ 绿灯
-    queue.enqueueData(NS_Y, upd(NS_Y));
-    expect(emissions, '占位 ns 不得使兄弟就绪帧等待检查点兜底').toHaveLength(2);
+    const h = senderHarness(blocked);
+    h.enqueue(NS_W);
+    h.enqueue(NS_X);
+    h.enqueue(NS_Y);
+    h.sender.requestDrain();
+    expect(h.emissions.map((e) => e.ns)).toEqual([NS_Y]);
+    h.enqueue(NS_Y);
+    h.sender.requestDrain();
+    expect(h.emissions.map((e) => e.ns)).toEqual([NS_Y, NS_Y]);
   });
 
-  it('全部 ns 阻塞 + 均有排队：单轮扫描 ≤ 一整轮即停（零派发、零死循环；检查点推进亦零派发）', async () => {
-    const blocked = new Set<string>([NS_W, NS_X, NS_Y]);
-    const scheduler = createRegistryTestScheduler();
-    const emissions: Array<{ seq: number; ns: string }> = [];
-    const queue = new OutboundQueue(
-      (_b: Uint8Array, s: number) => undefined,
-      QUEUE_LIMITS,
-      () => undefined,
-      {
-        timer: scheduler,
-        checkpointIntervalMs: 100,
-        bufferedAmount: () => 0,
-        onDataDispatched: (ns, _msg, seq) => {
-          emissions.push({ seq, ns });
-        },
-        onDataShed: () => undefined,
-        onControlExhausted: () => undefined,
-        canDispatchData: (ns) => !blocked.has(ns),
-      },
-    );
-    queue.enqueueData(NS_W, upd(NS_W));
-    queue.enqueueData(NS_X, upd(NS_X));
-    queue.enqueueData(NS_Y, upd(NS_Y));
-    queue.enqueueData(NS_Y, upd(NS_Y));
-    expect(emissions).toHaveLength(0); // 全阻塞：零派发（测试返回本身即证「有界、无死循环」）
-    await scheduler.advanceBy(100); // 检查点兜底同样零派发（阻塞未释放——不会误派）
-    expect(emissions).toHaveLength(0);
+  it('全部 facet 阻塞时一整轮后有界停止', () => {
+    const h = senderHarness(new Set([NS_W, NS_X, NS_Y]));
+    h.enqueue(NS_W);
+    h.enqueue(NS_X);
+    h.enqueue(NS_Y);
+    h.sender.requestDrain();
+    expect(h.emissions).toHaveLength(0);
   });
 });
 

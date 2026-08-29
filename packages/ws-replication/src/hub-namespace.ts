@@ -551,6 +551,9 @@ this.startBootstrap(hubIdentity);
           ackedSequence: message.sequence,
         });
         this.setState('closed');
+        const waiters = this.openWaiters;
+        this.openWaiters = [];
+        for (const waiter of waiters) waiter();
       }
     });
   }
@@ -567,8 +570,19 @@ this.startBootstrap(hubIdentity);
     this.finalize(toFinalState(terminalStateOf(message.code)));
   }
 
+  /** 连接关闭同步静默：先停接纳并摘订阅，再异步 drain/释放。 */
+  quiesceConnection(): void {
+    if (!this.isTerminal() && this.state !== 'closing') this.setState('closing');
+    const unsubscribe = this.unsubscribe;
+    if (unsubscribe !== undefined) {
+      unsubscribe();
+      this.unsubscribe = undefined;
+    }
+  }
+
   /** 连接关闭（socket 断开 / Hub 停机）：全量 cleanup。 */
   onConnectionClosed(): Promise<void> {
+    this.quiesceConnection();
     return this.closeQueue.then(async () => {
       await this.drainPendingApplies();
       await this.closeSessionAndRelease();

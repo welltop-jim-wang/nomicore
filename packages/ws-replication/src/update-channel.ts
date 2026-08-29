@@ -158,7 +158,12 @@ export class UpdateChannel {
       return; // 不调用 host.sendUpdateFrame——控制器大小门保留为不可达后盾
     }
     const seq = this.host.sendUpdateFrame(bytes);
-    if (seq <= 0) return; // F4：非超限原因（连接收口/ready 门/编码错）——round-1 语义不变
+    if (seq <= 0) {
+      this.discardQueued();
+      this.needsResync = true;
+      this.host.declareLocalResync();
+      return;
+    }
     this.inFlight.set(seq, bytes);
     this.armAckTimer();
   }
@@ -253,6 +258,11 @@ export class UpdateChannel {
     this.zombieSeqs.clear();
     this.discardQueued();
     this.needsResync = true;
+  }
+
+  /** 当前最老在途序列；Map 保持实际发送插入序。 */
+  private oldestInFlightSeq(): number | undefined {
+    return this.inFlight.keys().next().value as number | undefined;
   }
 
   private armAckTimer(): void {
