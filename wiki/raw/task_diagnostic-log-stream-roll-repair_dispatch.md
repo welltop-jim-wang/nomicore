@@ -43,3 +43,18 @@ Round-1 会话无 resumable 子代理（list_agents 空），全部新派。基�
 | 22 | 09:31 | SA6 | R2 Phase 1 红灯重锚 | 09:45 | owner 反馈推翻 round-1 §13.11 错误语义锚（保留完整 orphan 帧）；按反馈建议 3/4 重锚：bin 修复后长度=0 + 修复后续写 sidecar frameOffset="0" + strict reader ok；新断言在当前实现下必须红（硬门禁 2）——已红（见行 23） |
 | 23 | 09:45 | 总控 | R2 双总控竞态发现 + 产物归并裁决 | 09:45 | 发现另一总控实例（05:47 启动的原实例，续传 round-1 SA 会话）round-2 产物：`-r2.md` 简报、SA8 前置门禁 `-r2_conflict_report.md` verdict=**clear**（含 O1 勘误：首引用 expectedOffset=null 跳边界检查系既定链语义，反馈的 frame-boundary-invalid 后果表述不成立但规格违反独立成立）、`-r2_relevant_decisions.md`、`-r2_dispatch.md`。双方 SA6（本控 00c71f4c / 彼控 debc0178）经文件系统收敛为同一最终契约：`-r2_sa6_red.md`（6 红锚：§13.11 重写/§13.11b/§13.11c/窗口1/3/§13.32c，6 failed/375 passed(381) exit=1 两轮复跑一致，红因全为 reader.ts:1090-1093 例外未修，硬门禁 2 满足；存量 375 零回退；本控 SA6 早期报告 `_sa6_red_r2.md` 已自标「已取代」）。裁决：采纳彼控 SA8 门禁 + 收敛后红灯契约；上报 Runner 裁决控制权归属，暂停派发防双 SA3 竞写 |
 | 24 | 09:53 | 总控 | R2 竞态终裁：让位 standby | 09:53 | 观察窗实证原总控存活且领先：reader.ts/package.json 09:47 被改、修复 commit **a2cf3a5**（09:50，删例外+walkCompletePrefixEnd 死码+bump 0.1.4+测试随 commit；包级 381/381、全仓 140 文件/1786 测试、tsc 0 错、diff --check 干净）、`-r2_dispatch.md` 09:52 更新（SA4 已续传 d303de2c 在途）。本实例为 recover 催生的副本；已上报 Runner 建议终止本会话，worktree 让位原总控。本实例零 src/test 残留改动（SA6 测试编辑已并入 a2cf3a5）；留存产物：round2_feedback.md（-r2_sa6_red.md 引用为权威输入，收尾时应随 wiki 入库）、_sa6_red_r2.md（已取代草稿自标记）、本日志 round-2 段（未 stage）。本实例不再做任何写/派发动作 |
+
+---
+
+# Round 3 — PR #166 High 反馈复核修订轮（2026-08-29）
+
+类型自判：**Bug 修复复核**。round-2 已落地候选实现；本轮先复核权威设计和现状，然后执行独立 SA4 静态审查与 SA7 动态验证。若任一发现阻断，回流同一 SA3 会话修复并复审；否则不作无意义代码改动。
+
+| # | 派发时间 | SA | 阶段 | 完成时间 | 决策逻辑 |
+|---|---------|-----|------|---------|---------|
+| 25 | 10:39 | SA4 | R3 Phase 3 静态复核 | interrupted | 首次 SA4 会话 c2ee1194-4ece-464e-9d8d-3272f54a7229 未在时限内交付任何审查档案，已中断；不得以此形成 verdict |
+| 26 | 10:46 | SA4 | R3 Phase 3 静态复核（替换） | interrupted | 替换会话 b6fd5358-7ac4-43f0-8f25-931cf14d257c 长时间运行但未落盘 `r3_sa4_review.md`，已中断；累计两次 SA4 未交付，绝不据此推定 pass |
+| 27 | 11:01 | SA4 | R3 Phase 3 静态复核（有界重派） | interrupted | 有界替代会话 d4a58a04-ee80-480c-b93b-3a7439c5081c 已被限定为三项静态核验和≤15行 verdict，仍未落盘报告；已中断。累计三次 SA4 会话均无交付，原判流水线门禁外部阻断 |
+| 28 | 11:13 | SA4 | R3 Phase 3 静态复核（Runner 最后授权重派） | 11:16 | **verdict=pass**（`r3_sa4_review.md` 逐字一致）：前台交付且先落盘；Refs 空→T=0 全截、§13.11b/c BIN=0+frameOffset="0"+strict ok、round-2 HEAD 后零业务差异。通过后派 SA7 独立动态复验 |
+| 29 | 11:16 | SA7 | R3 Phase 3 动态复验 | interrupted | 会话 34e9d988-9c8f-4b87-ab06-f2682014fbfb 长时间未创建 `r3_sa7_report.md`，已中断；总控独立后台包级验证已完成 exit=0（22 files/381 tests/Type Errors 0），但不能替代 SA7 verdict |
+| 30 | 12:05 | SA7 | R3 Phase 3 动态复验（唯一授权重派） | 12:08 | **verdict=pass**（`r3_sa7_report.md` 逐字一致）：前台交付且先落盘；独立定向实跑 §13.11/11b/11c exit=0（3 passed）、BIN=0/offset="0"/strict ok 活链路成立，并核对总控 22 files/381 tests/Type Errors 0 与 tsc exit=0 |
