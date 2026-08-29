@@ -693,22 +693,9 @@ export class PeerNamespaceController {
   private onAckTimeoutFired(): void {
     if (this.state === 'live' || this.state === 'needs-resync') {
       this.setState('needs-resync');
-      // §10.4：不重发同一 UPDATE；窗口已收口 → 发起新 round（下一微任务——needs-resync
-      // 状态先可观测，随后同连接立即恢复）
-      // needs-resync 状态先可观测（§10.4 timer 锚），随后立即同连接恢复——恢复 round 的
-      // 起始经微任务链错开，保证测试的 settleUntil 至少观察到一次 needs-resync 投影。
-      let attempts = 0;
-      const deferRecovery = (): void => {
-        queueMicrotask(() => {
-          attempts += 1;
-          if (attempts >= 512) {
-            if (this.state === 'needs-resync') this.maybeStartRecovery();
-          } else {
-            deferRecovery();
-          }
-        });
-      };
-      deferRecovery();
+      this.host.deferTask(() => {
+        if (this.state === 'needs-resync') this.maybeStartRecovery();
+      });
     }
   }
 

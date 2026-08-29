@@ -496,8 +496,12 @@ describe('SA6 加固红灯 AC5：连接级公平 / 背压 / 水位（G3）', () 
     }
     await run.hubNode.scheduler.advanceBy(100);
     await settle();
-    // 已滞留 socket 缓冲的字节远超连接级上限（64KiB）
-    expect(run.wire.heldBytes).toBeGreaterThan(64 * 1024);
+    // 已滞留 socket 缓冲的字节已达连接级上限附近——R1 严格准入（PR #165 review）下
+    // held 恒 ≤ max（越限帧一律拒纳不派发，≈8 帧 ≈ 64.9KiB）：上界断言本身就是严格
+    // 准入的字节级不变量面；下界证明缓冲已近满（旧「远超上限」读法在严格准入后
+    // 结构不可达——数据面不可能把 held 推过 max）。
+    expect(run.wire.heldBytes).toBeGreaterThan(48 * 1024);
+    expect(run.wire.heldBytes).toBeLessThanOrEqual(64 * 1024);
 
     // 释放 → 到达 peer 的帧必须包含 shed 信号（RESYNC_REQUIRED 或 CONNECTION_BACKPRESSURE）
     run.wire.releaseAll();
@@ -692,8 +696,11 @@ describe('SA6 补充锚：A1 窄锚 / A2 滞回 / A2 单检查点 1011 / A5 语�
     const updateCount = delivered.filter((f) => f.message.kind === 'UPDATE').length;
     // ── 红灯锚 1：shed 必须声明 needs-resync（§17 L490「回到低水位」——现实现零信号）──
     expect(resyncCount, '连接级 shed 必须产生 RESYNC 声明').toBeGreaterThanOrEqual(1);
-    // ── 红灯锚 2：shed 后剩余排队 ≤ lowWater（可观测：恢复后仅 ~2 帧（首帧缓冲 + 断点接纳帧）
-    //    派发，非全量 17 帧——现实现 17 帧全派发 → 红灯）
+    // ── 红灯锚 2：shed 后剩余排队 ≤ lowWater（可观测：恢复后仅首帧缓冲 + 至多 1 帧滞回
+    //    接纳帧（PR #165 review R1：滞回后的接纳必须过严格准入门——post-shed
+    //    pipeline+incoming ≤ maxQueuedBytesPerConnection 才接纳，超限拒纳 + onDataShed；
+    //    字节级严格拒纳判别见 review-revisions-r1-r7-red.test.ts R1-1/R1-2）——
+    //    非全量 17 帧全派发 → 红灯）
     expect(updateCount, 'shed 后剩余排队数据必须回到低水位').toBeLessThanOrEqual(2);
   });
 
@@ -701,9 +708,17 @@ describe('SA6 补充锚：A1 窄锚 / A2 滞回 / A2 单检查点 1011 / A5 语�
     const run = await bootMulti({ limits: SHED_LIMITS });
     const a = run.nsIds[0]!;
     run.wire.setGate(true);
-    // 循环内仅 settle（fake scheduler timer 不触发——检查点不运行、未置暂停）→ 恒派发
+    // 循环内仅 settle（fake scheduler timer 不触发——检查点不运行、未置暂停）→ 恒派发；
+    // R1 严格准入（PR #165 review）：第 9 笔拒纳（held ≈ 8 帧 ≈ 64.9KiB——数据面恒 ≤ max）
     for (let i = 0; i < 10; i += 1) {
       await run.writeHubNs(a, { blob: `${BLOB}-${i}` });
+    }
+    await settle();
+    // 数据面严格准入下 held 恒 ≤ max——规则 C 总量分支只能由**控制面**越过（控制无
+    // 准入门、额度独立于数据总预算）：以 peer 业务写驱动 hub UPDATE_ACK 控制帧持续
+    // 累积（held 控制字节 ≈30×40B，仍远低于控制保留额度缺省 8MiB——不触发 R2 分支）。
+    for (let i = 0; i < 30; i += 1) {
+      await run.writePeerNs(a, { n: 100 + i });
     }
     await settle();
     expect(run.wire.heldBytes).toBeGreaterThan(64 * 1024); // socket 缓冲超连接总预算

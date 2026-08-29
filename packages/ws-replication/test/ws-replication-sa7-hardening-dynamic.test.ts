@@ -434,6 +434,7 @@ const QUEUE_LIMITS: Readonly<ResolvedLimits> = Object.freeze({
 } as ResolvedLimits);
 
 const NS_W = 'ns-44444444444444444444444444444444';
+const NS_X = 'ns-66666666666666666666666666666666';
 const NS_Y = 'ns-55555555555555555555555555555555';
 
 interface WireEmission {
@@ -483,11 +484,14 @@ describe('SA7 D2（SA4 §六.1 R1 类级）：sendControl 返回本控制帧自�
     // W 先注册（窗口满 → 不派发仅排队），随后 dropData 清桶（注册保留——NB2(a)）
     queue.enqueueData(NS_W, upd(NS_W));
     queue.dropData(NS_W);
-    // Y 交付 2 帧：Y1 派发后游标挡回 W，Y2 滞留
+    // Y 交付 2 帧：Y1 派发；Y2 以临时窗口满构造滞留（R5 整轮扫描——blocked ns 只跳过
+    // 不终止整轮，就绪 ns 恒同轮派发——滞留须由窗口满显式构造，再解除以放行同 drain）
     queue.enqueueData(NS_Y, upd(NS_Y));
+    windowFull.add(NS_Y);
     queue.enqueueData(NS_Y, upd(NS_Y));
+    windowFull.delete(NS_Y);
     const dataBefore = wire.filter((e) => e.label.startsWith('DATA'));
-    expect(dataBefore).toHaveLength(1); // 交错已构造：Y1(seq=1) 已发、Y2 滞留
+    expect(dataBefore).toHaveLength(1); // 交错已构造：Y1(seq=1) 已发、Y2 滞留（待控制帧同 drain 派发）
 
     // 控制发送：BOOT(seq=2) 先出，Y2(seq=3) 同一 drain 内随后派发
     const before = wire.length;
@@ -503,12 +507,13 @@ describe('SA7 D2（SA4 §六.1 R1 类级）：sendControl 返回本控制帧自�
   });
 });
 
-describe('SA7 D3（SA4 §六.2 N3）：窗口满 ns 长期占位 → 兄弟 ns 由检查点 timer（一个周期）兜底派发', () => {
-  it('canDispatchData=false 持续占位时，滞留帧在下一个 100ms 检查点派发（无饿死）', async () => {
-    // 构造：W（窗口满长期占位）与 Y（自身窗口亦满、两帧滞留连接队列）同时注册；
-    // 游标停在 W 前。随后 Y 的窗口重新开放（生产对应 ACK 到达）——无 enqueue 触发，
-    // 滞留帧只能等检查点 timer 兜底。
-    const blocked = new Set<string>([NS_W, NS_Y]);
+describe('SA7 D3（PR #165 review R5 改写）：round-robin 有界整轮扫描——队首 ns 窗口满不再终止整轮', () => {
+  it('占位 ns 之间的就绪帧同轮派发；追加排队帧无须等检查点（队首阻塞不得终止整轮）', async () => {
+    // 构造：W 与 X 均窗口满（canDispatchData=false）且注册序 [W, X]；游标经两次 blocked
+    // 早退落回 W（0 → W → X → wrap 0）。随后 Y（窗口就绪）排队——现实现：drain 在
+    // 队首 W 处 return → Y 滞留至下一检查点（无饿死但整轮终止）；修订：单轮扫描
+    // 跳过 W/X 并把 Y 派发 → 本锚为「同轮派发」强锚（红灯）。
+    const blocked = new Set<string>([NS_W, NS_X]);
     const scheduler = createRegistryTestScheduler();
     const emissions: Array<{ seq: number; ns: string }> = [];
     const queue = new OutboundQueue(
@@ -527,24 +532,45 @@ describe('SA7 D3（SA4 §六.2 N3）：窗口满 ns 长期占位 → 兄弟 ns �
         canDispatchData: (ns) => !blocked.has(ns),
       },
     );
-    queue.enqueueData(NS_W, upd(NS_W)); // W 注册 + 占位（drain 在 W 早退）
-    queue.enqueueData(NS_Y, upd(NS_Y)); // Y1 滞留（Y 窗口满）
-    queue.enqueueData(NS_Y, upd(NS_Y)); // Y2 滞留（游标 wrap 后又挡在 W）
-    expect(emissions).toHaveLength(0); // 两 ns 窗口均满：零派发
-
-    // Y 窗口开放（模拟 ACK 到达）；不产生新 enqueue —— 滞留帧仅靠检查点推进
-    blocked.delete(NS_Y);
-    await scheduler.advanceBy(100); // 检查点 #1：Y1 派发（每轮每 ns 至多一帧）
-    expect(emissions).toHaveLength(1);
-    expect(emissions[0]!.ns).toBe(NS_Y);
-    await scheduler.advanceBy(100); // 检查点 #2：Y2 派发
-    expect(emissions.filter((e) => e.ns === NS_Y)).toHaveLength(2);
-    expect(emissions.filter((e) => e.ns === NS_W)).toHaveLength(0); // W 仍占位、零饿死影响
-
-    // W 长期占位持续：Y 再排队也只需一个周期/轮
+    queue.enqueueData(NS_W, upd(NS_W)); // 游标 0 → W blocked → 早退；游标 1
+    queue.enqueueData(NS_X, upd(NS_X)); // 游标 1 → X blocked → 早退；游标 2
+    expect(emissions).toHaveLength(0); // 前置：均阻塞 → 零派发
+    queue.enqueueData(NS_Y, upd(NS_Y)); // 游标 2 → Y（注册序末位）→ 就绪即派发
+    expect(emissions.map((e) => e.ns)).toEqual([NS_Y]);
+    // ★ R5 红灯锚：追加排队帧后——新一轮 drain 自游标 1 起：X（占位）早退 → Y2 被头部
+    //   阻塞拖住（现实现：须等下一检查点周期→ 单次 drain 后 emissions 仍为 1 → 红灯）；
+    //   修订：单轮扫描跳过占位 ns → Y2 同轮派发（emissions = 2）→ 绿灯
     queue.enqueueData(NS_Y, upd(NS_Y));
-    await scheduler.advanceBy(100);
-    expect(emissions.filter((e) => e.ns === NS_Y)).toHaveLength(3);
+    expect(emissions, '占位 ns 不得使兄弟就绪帧等待检查点兜底').toHaveLength(2);
+  });
+
+  it('全部 ns 阻塞 + 均有排队：单轮扫描 ≤ 一整轮即停（零派发、零死循环；检查点推进亦零派发）', async () => {
+    const blocked = new Set<string>([NS_W, NS_X, NS_Y]);
+    const scheduler = createRegistryTestScheduler();
+    const emissions: Array<{ seq: number; ns: string }> = [];
+    const queue = new OutboundQueue(
+      (_b: Uint8Array, s: number) => undefined,
+      QUEUE_LIMITS,
+      () => undefined,
+      {
+        timer: scheduler,
+        checkpointIntervalMs: 100,
+        bufferedAmount: () => 0,
+        onDataDispatched: (ns, _msg, seq) => {
+          emissions.push({ seq, ns });
+        },
+        onDataShed: () => undefined,
+        onControlExhausted: () => undefined,
+        canDispatchData: (ns) => !blocked.has(ns),
+      },
+    );
+    queue.enqueueData(NS_W, upd(NS_W));
+    queue.enqueueData(NS_X, upd(NS_X));
+    queue.enqueueData(NS_Y, upd(NS_Y));
+    queue.enqueueData(NS_Y, upd(NS_Y));
+    expect(emissions).toHaveLength(0); // 全阻塞：零派发（测试返回本身即证「有界、无死循环」）
+    await scheduler.advanceBy(100); // 检查点兜底同样零派发（阻塞未释放——不会误派）
+    expect(emissions).toHaveLength(0);
   });
 });
 

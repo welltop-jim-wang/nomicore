@@ -289,3 +289,16 @@ Phase 4 中列为非目标的 WS room、raw Yjs sync 和分布式部署由 Phase
 **4. dirty 事实的诚实表达**：dirty notification 不是 durable（ADR-0008）；live 已 bump、持久化仍为旧 epoch 的严格双源不一致是**有意**的拒绝条件（严格口径），本节不得被解读为「live dirty 身份已被持久化」。任何「dirty live 即 persisted」的表述均与本条冲突。
 
 **5. 归档重定位的 committed 诚实**：归档写/rename resolve = 归档提交点；随后主键移除失败由 Persistence 以 `relocate-remove` 致命（`committed:true`）传播，Registry 保留该 committed 事实并原样传播为 `NamespaceRegistryFatalError`；禁止翻译为 reset 领域不匹配或普通运营失败、禁止宣称旧主键状态未变；重试为 latest-wins 归档收敛 + 主键移除重试。reset fence **armed 之后**的每个 archive typed 拒绝按 §3.5.2 冻结矩阵分类——特别地，身份不匹配是运营 `NAMESPACE_RESET_FAILED`，**永不**是零破坏的 preflight 结果。
+
+### issue #161 round 2 修订（PR #165 review 八项——2026-08-30）
+
+本节登记 ws-replication 实现层的八项 review 修订决策；wire 契约以
+`docs/protocols/instance-replication-v1.md`（§2/§17/§18 本轮扩写）为唯一权威：
+公共身份投影只取受信 Upgrade 身份（缺身份 accept = 响亮 TypeError）；transport
+三可选面（bufferedAmount/ping/onPong）缺面 dormant 语义与生产装配期断言；liveness
+缺省 30s/10s 与 pongTimeout < pingInterval 构造期校验；背压终态口径（pipeline =
+queued+buffered、shed 仅 queued 侧、严格接纳 + onDataShed 显影、控制独立保留额度
+maxQueuedControlBytes 缺省 8MiB、有界整轮扫描、pending handoff 计入 per-ns 溢出
+双口径、checkpoint = max(1, floor(ackTimeoutMs/100))、1011 终止）；peer pong 超时
+close(1001) + 代际安全脱离后重连；GOAWAY/blocked/连接收口同步静默订阅先于异步
+drain。实现证据：`packages/ws-replication/src/*`（PR #165 round 2）。

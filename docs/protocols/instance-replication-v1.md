@@ -37,6 +37,8 @@ Bearer token 在 HTTP Upgrade 前验证。失败返回 HTTP 401/403，不建立 
 
 WebSocket 建立后，Peer 必须先发送 HELLO，Hub 必须回复 HELLO_ACK。Upgrade 身份、HELLO Peer instanceId 和配置的 Hub instanceId 必须一致。HELLO 完成前任何 namespace frame均为 `HELLO_REQUIRED` connection error。
 
+Hub 的公共身份投影（`HubConnection.peerInstanceId`）只消费 Upgrade 认证产生的受信身份，绝不采信 HELLO 自述身份；宿主 `accept` 未提供受信身份即接线缺陷——实现必须响亮拒绝（同步 TypeError），不得降级为匿名或 wire 自述会话。
+
 活性检测只使用 WebSocket ping/pong。协议不定义业务 PING/PONG frame。
 
 生产部署必须由网关、反向代理或 service mesh 提供 TLS。Nomicore 允许 `ws://`，但不对 bearer token 与 Y.Doc 数据提供链路机密性保证。
@@ -487,9 +489,9 @@ Target controller用单一生命周期队列串行化 removeTarget、socket clos
 
 未发送队列任一上限超出：丢弃全部未发送增量，标记 needs-resync，停止新 UPDATE。已发送窗口等待 ACK或连接断开；窗口收口后由 Peer开始新 reconciliation。
 
-Connection使用 per-namespace队列和 round-robin：control/error/ACK高优先级，data每轮每 namespace最多一个。总队列超限时，按最大 queued namespace依次丢弃未发送增量并标记 needs-resync，直到回到低水位。Control frame有独立保留额度，耗尽为 `CONNECTION_BACKPRESSURE`。
+Connection使用 per-namespace队列和 round-robin：control/error/ACK高优先级，data每轮每 namespace最多一个。总队列记账 = 每 namespace 排队字节 + socket `bufferedAmount`（连接级 pipeline）。溢出触发时按最大排队 namespace 整队丢弃至 queued 侧 ≤ low-water——shed 只作用于排队侧（socket 缓冲不可撤回，由水位暂停与 1011 承接）；**严格接纳**：shed 后（或空队列时）接纳 incoming 仍会越限则拒纳该帧并同批丢弃该 namespace 幸存排队帧，以 needs-resync 声明显影（不静默吞、不静默纳）。Control frame 使用独立保留额度 `maxQueuedControlBytes`（缺省 8 MiB；必须 ≥ `maxBootstrapBytes` + 协议开销），额度按 socket 缓冲内未冲刷控制字节计，耗尽为 `CONNECTION_BACKPRESSURE`（close 1011）。水位检查点间隔 = `max(1, floor(ackTimeoutMs / 100))`。round-robin 派发扫描有界：单轮内队首 namespace 窗口满只跳过该 namespace，连续一整轮无可派发 namespace 才停止本轮。
 
-Adapter观察 WebSocket `bufferedAmount`：超过 high-water暂停 dequeue，降至 low-water恢复。无 drain event时使用 Cordis Timer调度检查，不使用原生 timer，也不进入 Runtime sequencer。
+Adapter观察 WebSocket `bufferedAmount`：超过 high-water暂停 dequeue，降至 low-water恢复。无 drain event时使用 Cordis Timer调度检查，不使用原生 timer，也不进入 Runtime sequencer。传输 Adapter 暴露三个可选能力面：`bufferedAmount`（socket 未冲刷字节；缺面视为 0——背压水位退化为不可观察，数据总量仍受准入与 1011 收口）、`ping` / `onPong`（WS 级活性；缺面 = 无活性面，零 timer 的 dormant 降级）。生产 Adapter 必须暴露三面；组合根在装配期对缺面做响亮断言（应用层缺面 = 配置错误，非运行时降级——见 issue #164）。
 
 配置启动时响亮验证：
 
@@ -499,6 +501,8 @@ maxSyncDiffBytes <= maxFrameBytes - protocol overhead
 maxUpdateBytes <= maxFrameBytes - protocol overhead
 maxQueuedUpdateBytes >= maxUpdateBytes
 maxInFlightUpdates >= 1
+maxQueuedControlBytes >= maxBootstrapBytes + protocol overhead
+maxQueuedBytesPerConnection >= highWater   # 既有链式不变量（validate.ts 已实现，文档补记）
 所有 timeout 是有限安全整数且 > 0
 low-water < high-water
 ```
@@ -516,6 +520,8 @@ low-water < high-water
 - `closeTimeoutMs`；
 - `ackTimeoutMs`；
 - WS ping interval/pong timeout。
+
+工程缺省：`pingIntervalMs = 30_000`、`pongTimeoutMs = 10_000`；约束 `pongTimeoutMs < pingIntervalMs` 在配置解析期响亮验证（TypeError），绝不运行时 clamp。pong 超时按临时失败处理：关闭传输（close code 1001）并经 backoff 重连。
 
 HELLO/pong timeout关闭连接。Open/bootstrap/reconcile/close/ACK timeout只收口 namespace；ACK timeout不重发同一 UPDATE，而进入 needs-resync并由新 state-vector round修复。
 

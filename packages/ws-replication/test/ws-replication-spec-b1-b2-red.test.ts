@@ -87,7 +87,9 @@ describe('Spec 回流红灯：B-1 removeTarget×reconcile / B-2 迟到续体竞�
     // ── re-add 非 no-op（现实现：复活 live → addTarget 仅置 intent 合流 → 零重建）──
     const dials = run.dialCount;
     run.peer.addTarget(run.target);
-    await settle();
+    // R7（PR #165 review）：重建调度经 deferTask seam（测试侧显式 defer 泵）——
+    // 时序窗从 settle()（300 跳）放宽为 settleUntil(3000)（语义不变：re-add 必须触发重建拨号）
+    await settleUntil(() => run.dialCount > dials, 're-add 必须重建连接（dialCount+1）');
     expect(run.dialCount).toBeGreaterThan(dials);
     await run.waitNamespace('live');
   });

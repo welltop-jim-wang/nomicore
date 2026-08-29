@@ -611,7 +611,7 @@ class PeerConnectionImpl implements PeerReplication {
     if (transport !== undefined && !transport.closed) {
       transport.close(1000, 'replication-rebuild');
     }
-    queueMicrotask(() => {
+    this.deferTask(() => {
       this.rebuildPending = false;
       if (!this.stopping) this.dialNow();
     });
