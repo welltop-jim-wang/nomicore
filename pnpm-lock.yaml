@@ -157,6 +157,9 @@ importers:
       '@nomicore/doc-runtime':
         specifier: workspace:*
         version: link:../doc-runtime
+      '@nomicore/namespace-diagnostic-log':
+        specifier: workspace:*
+        version: link:../namespace-diagnostic-log
       '@nomicore/persistence':
         specifier: workspace:*
         version: link:../persistence

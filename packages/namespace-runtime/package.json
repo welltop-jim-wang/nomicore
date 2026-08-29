@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@nomicore/doc-runtime": "workspace:*",
+    "@nomicore/namespace-diagnostic-log": "workspace:*",
     "@nomicore/persistence": "workspace:*",
     "@nomicore/vfsl": "workspace:*",
     "yjs": "^13.6.30"

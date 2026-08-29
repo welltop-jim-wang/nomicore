@@ -34,7 +34,13 @@ import { readLogicalValueAtPath } from '@nomicore/doc-runtime';
 import type { ReadLogicalValueResult } from '@nomicore/doc-runtime';
 import { compileSchemaEnvelope } from '@nomicore/vfsl';
 import type { CompileSchemaEnvelopeResult, SchemaEnvelope } from '@nomicore/vfsl';
-import { NamespaceRuntimeConstructionError, RUNTIME_READ_DISABLED_CODE, RuntimeReadDisabledError } from './errors.js';
+import type { DiagnosticIssue, NamespaceDiagnosticChangeEmitter } from '@nomicore/namespace-diagnostic-log';
+import {
+  NamespaceRuntimeConstructionError,
+  RUNTIME_READ_DISABLED_CODE,
+  RUNTIME_WRITE_DISABLED_CODE,
+  RuntimeReadDisabledError,
+} from './errors.js';
 import { runP0 } from './p0.js';
 import type { ActiveSchemaInfo, P0Env, RuntimeState } from './p0.js';
 import { projectMetadata, projectSchemaEnvelope } from './projection.js';
@@ -48,6 +54,8 @@ import type { ReplaceSchemaInput, ReplaceSchemaResult, SchemaWriteEnv } from './
 import { runRootWriteSlot } from './write.js';
 import { disabled } from './write.js';
 import type { MutateRootResult, WriteEnv } from './write.js';
+import { buildDiagnosticEnv, createSlotDiag, emitAttempt, emitSlot } from './diagnostic.js';
+import type { DiagnosticEnv } from './diagnostic.js';
 
 /** seam 输入（D8'）：包内确定性测试接缝；@internal 沿 doc-runtime getCompiledWith 先例。 */
 export interface NamespaceRuntimeSeamInput {
@@ -61,6 +69,14 @@ export interface NamespaceRuntimeSeamInput {
    *  persistence.saveDoc(handle)；测试经 seam 注入确定性 notifier。缺省 = 未绑定
    *  （写槽 S2 loud 拒绝——D6.4 拒绝虚假降级立法，非静默 no-op）。 */
   readonly notifyDirty?: () => Promise<void>;
+  /** [新增，issue #149] 诊断发射接缝（ADR-0011 §E emitter 接口）。缺省 = 未装配
+   *  （零 emit、零 update 订阅——既有全部测试与生产路径行为等价）。 */
+  readonly diagnosticEmitter?: NamespaceDiagnosticChangeEmitter;
+  /** [新增，issue #149] 诊断 observedAt 的注入 Clock（结构兼容 @nomicore/clock
+   *  Clock.now / 诊断包 emission.ts observedAtFrom）。与 diagnosticEmitter **成对**：
+   *  装配 emitter 而缺 clock ⇒ 构造期 loud 拒绝（captureSeamInput）——消除「装配日志
+   *  而静默走系统墙钟」形态（ADR-0012 §observedAt；SA2 #5 立法）。 */
+  readonly clock?: () => number;
 }
 
 /** closing/closed 期 read 拒绝分支（#92）：ADR-0008 读取能力节「预期路径、载体和
@@ -183,6 +199,10 @@ export function createNamespaceRuntimeWithSeam(input: NamespaceRuntimeSeamInput)
   // V3c''' closeEnv 一次成型（D2/D3：barrier 纯数据闭包——release 槽体零读 seam 输入）
   const closeEnv: CloseEnv = { handle, state };
 
+  // V3c'''' diagEnv 一次成型（issue #149：诊断环境纯数据闭包——emitter/clock 成对性
+  //   已由 captureSeamInput 校验前置保证；未装配 = 零 emit 零订阅，行为等价）
+  const diagEnv = buildDiagnosticEnv(captured.diagnosticEmitter, captured.clock);
+
   // V3d sequencer + P0 入队（INV-N1：return 前 P0 已是队首 pending 节点；微任务起步；
   //     thunk = 纯调用 () => runP0(env)，零属性读取/零字面量构造/无可抛点——
   //     INV-N12 的「槽体全 catch」从此是结构事实）
@@ -234,21 +254,67 @@ export function createNamespaceRuntimeWithSeam(input: NamespaceRuntimeSeamInput)
       // D5.1 接纳门：lifecycle≠ready 时同步零入队拒绝（INV-C3）——经返回 Promise
       // 即时 settle 领域化联合（不 throw、不读 mutation——Proxy 零触发、零 doc 副作用）
       if (state.lifecycle !== 'ready') {
-        return Promise.resolve(disabled(lifecycleWriteRefusal(state.lifecycle)));
+        const result = disabled(lifecycleWriteRefusal(state.lifecycle));
+        // [issue #149] acceptance 拒绝（零入队路径无 slot）：公共入口即记录点
+        // （ADR-0011 §F）；issues 与业务返回同源透传（同一 disabled 数组引用，§9.3）
+        if (result.ok === false) {
+          emitAttempt(diagEnv, {
+            operation: 'root-mutation',
+            stage: 'acceptance',
+            result: { kind: 'rejected' },
+            code: RUNTIME_WRITE_DISABLED_CODE,
+            input: { status: 'not-accessed' },
+            issues: result.issues as DiagnosticIssue[],
+          });
+        }
+        return Promise.resolve(result);
       }
       // D1：同步接纳定序（enqueue 同步拼尾）+ 槽完成信号；thunk 是纯调用——
       // mutation 引用仅被捕获不被读取（Proxy 零触发），无可抛点（INV-W1/W14）
-      return sequencer.enqueue(() => runRootWriteSlot(writeEnv, mutation));
+      const diag = diagEnv.emitter !== undefined ? createSlotDiag('root-mutation') : undefined;
+      const settled = sequencer.enqueue(() => runRootWriteSlot(writeEnv, mutation, diag));
+      // [issue #149] emitSlot 挂点：作为 enqueue 返回 promise 的**附加反应**（非包装——
+      // 返回面仍是 settled 本体：基线 promise 身份与结算时点逐字节不变，无「派生 promise/
+      // 多一跳微任务」差异——SA2 #6 登记差异的最优解）。执行序（设计 §7.1 证明）：settled
+      // settle 时依注册序 [内部 noop, emitSlot]；noop 使 tail settle 并排程下一任务 thunk
+      // ——emitSlot 先于下一任务（emit 顺序 ≡ 槽完成顺序 ≡ FIFO；amendment C：slot 已释放
+      // 后的微任务）。结算事实入参——缺省组装仅在 r.ok === true 时生效（§7.3）。
+      // emitSlot 自身吞没一切（emitAttempt）；onErr 不重抛——caller 经 settled 观察原
+      // rejection，本反应链恒绿（无可抛点、无 unhandled rejection）。
+      void settled.then(
+        (r) => { emitSlot(diagEnv, diag, { kind: 'fulfilled', value: r }); },
+        (e) => { emitSlot(diagEnv, diag, { kind: 'rejected' }); },
+      );
+      return settled;
     },
     replaceSchema: (input: ReplaceSchemaInput): Promise<ReplaceSchemaResult> => {
       // D5.1 接纳门：同 mutateRoot——lifecycle≠ready 时零入队即时 ok:false
       if (state.lifecycle !== 'ready') {
-        return Promise.resolve(disabled(lifecycleWriteRefusal(state.lifecycle)));
+        const result = disabled(lifecycleWriteRefusal(state.lifecycle));
+        // [issue #149] acceptance 拒绝：同 mutateRoot——公共入口即记录点（§9.2 S1′）
+        if (result.ok === false) {
+          emitAttempt(diagEnv, {
+            operation: 'schema-replacement',
+            stage: 'acceptance',
+            result: { kind: 'rejected' },
+            code: RUNTIME_WRITE_DISABLED_CODE,
+            input: { status: 'not-accessed' },
+            issues: result.issues as DiagnosticIssue[],
+          });
+        }
+        return Promise.resolve(result);
       }
       // D1（issue #91）：与 mutateRoot 同一 sequencer 实例——同步接纳定序、占槽互斥、
       // S6 同槽 await notifyDirty 构成屏障（双向 FIFO 互通）；thunk 是纯调用——
       // input 引用仅被捕获不被读取（Proxy 零触发），无可抛点
-      return sequencer.enqueue(() => runSchemaWriteSlot(schemaWriteEnv, input));
+      const diag = diagEnv.emitter !== undefined ? createSlotDiag('schema-replacement') : undefined;
+      const settled = sequencer.enqueue(() => runSchemaWriteSlot(schemaWriteEnv, input, diag));
+      // [issue #149] 同 mutateRoot 的 emitSlot 附加反应挂点（§7.1/§7.3；非包装——见上）
+      void settled.then(
+        (r) => { emitSlot(diagEnv, diag, { kind: 'fulfilled', value: r }); },
+        (e) => { emitSlot(diagEnv, diag, { kind: 'rejected' }); },
+      );
+      return settled;
     },
     close: (): Promise<void> => {
       // D2：幂等（INV-C2）——已赋值（含已结算 reject）即返回同一实例，release 恰一次
@@ -318,6 +384,8 @@ function captureSeamInput(input: unknown): {
   p0Gate: Promise<void> | undefined;
   compile: ((envelope: SchemaEnvelope) => CompileSchemaEnvelopeResult) | undefined;
   notifyDirty: (() => Promise<void>) | undefined;
+  diagnosticEmitter: NamespaceDiagnosticChangeEmitter | undefined;
+  clock: (() => number) | undefined;
 } {
   if (typeof input !== 'object' || input === null) {
     throw new TypeError('seam 输入必须是对象（{ handle, p0Gate?, compile?, notifyDirty? }）');
@@ -377,6 +445,39 @@ function captureSeamInput(input: unknown): {
     }
     notifyDirty = rec.notifyDirty as () => Promise<void>;
   }
+  // [issue #149] 诊断发射器捕获（沿 p0Gate/compile/notifyDirty 同款三行式；读取均限
+  // 构造栈内、入队前——INV-N14）。校验对象是 doc 局部量（handle.doc，Y.Doc 事件面）
+  // 而非 handle——DocHandle 契约只有 owner/docId/doc/getStatus/release 五键，无 on/off
+  // （SA2 #1 修订：照抄 h.on/h.off 会炸掉全部合法装配）。
+  let diagnosticEmitter: NamespaceDiagnosticChangeEmitter | undefined;
+  if (rec.diagnosticEmitter !== undefined) {
+    const e = rec.diagnosticEmitter;
+    if (typeof e !== 'object' || e === null || typeof (e as { emit?: unknown }).emit !== 'function') {
+      throw new TypeError('input.diagnosticEmitter 若提供必须是含 emit 方法的对象（NamespaceDiagnosticChangeEmitter 契约）');
+    }
+    diagnosticEmitter = e as NamespaceDiagnosticChangeEmitter;
+    // loud assert，非静默降级：装配诊断发射即要求 doc 具备事务事件订阅面——缺 on/off
+    // 属上游契约破坏，构造期 loud 拒绝（沿「残缺 handle 校验前置于 enqueue」先例，
+    // INV-N4），绝不静默吞掉后把「应有 update 的记录」降级成 noop/omitted。
+    const d = doc as unknown as Record<string, unknown>;
+    if (typeof d.on !== 'function' || typeof d.off !== 'function') {
+      throw new TypeError('装配 diagnosticEmitter 时 handle.doc（Y.Doc）必须具备 on/off 方法（yjs 事务事件契约——owned bytes 捕获依赖）');
+    }
+  }
+  // [issue #149] 注入 Clock 捕获（observedAt 唯一来源——ADR-0012 §observedAt）
+  let clock: (() => number) | undefined;
+  if (rec.clock !== undefined) {
+    if (typeof rec.clock !== 'function') {
+      throw new TypeError('input.clock 若提供必须是 function（() => number，epoch ms）');
+    }
+    clock = rec.clock as () => number;
+  }
+  // [issue #149] 成对 loud 校验（SA2 #5）：装配 emitter 而缺 clock ⇒ 拒绝——无墙钟缺省，
+  // observedAt 不接受静默系统墙钟；与 SA8 冲突点 #4 移交 Registry 票的「生产装配必须
+  // 显式注入 Clock」呼应
+  if (diagnosticEmitter !== undefined && clock === undefined) {
+    throw new TypeError('装配 diagnosticEmitter 时必须同时注入 clock（() => number）——observedAt 不接受静默系统墙钟');
+  }
   return {
     handle: handle as DocHandle,
     userId: userId as string,
@@ -385,5 +486,7 @@ function captureSeamInput(input: unknown): {
     p0Gate,
     compile,
     notifyDirty,
+    diagnosticEmitter,
+    clock,
   };
 }
