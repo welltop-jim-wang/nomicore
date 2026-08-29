@@ -16,4 +16,11 @@ Type assessment: feature development. Required pipeline: SA8 preflight → SA6 a
 | 10 | 19:09 | SA1 | Phase 2 revision R3 | 19:14 | SA2 R2 reject：同步重放 transport 下 early listener off 句柄未初始化导致 accept reject；并处置 N2-N5 |
 | 11 | 19:14 | SA2 | Phase 2 design review R3 | 19:19 | SA1 R3 已修同步重放 listener 安全与 N2-N5，回原 SA2 复审 |
 | 12 | 19:19 | SA6 | Phase 2.5 acceptance revision | 19:28 | SA2 R3 pass；SA1 R1-R3 指定 G1 改锚及 A2-a至A2-e 红灯契约补充 |
-| 13 | 19:28 | SA3 | Phase 3 implementation | (pending) | SA6 R2 已确认 15 IT + G1 改锚共16 红，设计/测试门禁均通过 |
+| 13 | 19:28 | SA3 | Phase 3 implementation | 20:00 | SA6 R2 已确认 15 IT + G1 改锚共16 红，设计/测试门禁均通过 |
+| 14 | 20:00 | SA4 | Phase 3 static review | 20:15 | SA3 已交付 commits 556d6da/f749c89 与红灯15绿、包回归绿；进入独立静态审查 |
+| 15 | 20:15 | SA7 | Phase 3 dynamic verification | 20:39 | SA4 pass；进行独立动态验证，重点真实 WS/TCP、资源与帧序 |
+| 16 | 20:39 | AC | Phase 3.5 acceptance gate | 20:39 | SA4 pass、SA7 pass；逐条核对 issue AC 与证据 |
+| 17 | 20:39 | Final review | Phase 4 | 20:40 | SA4/SA7 pass 且 AC 7/7 完成；进入双轴终审 |
+| 18 | 20:40 | SA3 | Phase 4 standards repair | 20:42 | Standards review reject B1：任务简报 EOF 多余空白；修复文档卫生并提交 |
+| 19 | 20:42 | Final review | Phase 4 R2 | 20:43 | Standards B1 修复 commit d528103，diff --check 与包验证绿，重跑双轴终审 |
+| 20 | 20:43 | Finalization | Phase 4 | (pending) | Standards R2 pass 与 Spec R2 pass；归档提交、后台终验与 REPORT 收口 |
