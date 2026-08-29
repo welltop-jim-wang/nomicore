@@ -783,27 +783,6 @@ function walkBinTail(bin: Uint8Array, from: number): 'complete' | 'incomplete' |
 }
 
 /**
- * 从 0 起的完整帧前缀末端（§13.11 契约面：无任何引用时，C2/C3 的截断点取完整帧前缀边界而非
- * 0——SA6 红灯锚定「C1+C2 并存 → 两事件两截断」中未引用完整帧保留为惰性残渣，仅截断不完整
- * 尾块；有引用时该值不参与（T = max ref end 优先）。
- */
-function walkCompletePrefixEnd(bin: Uint8Array): number {
-  let p = 0
-  const len = bin.byteLength
-  while (p < len) {
-    if (len - p < FRAME_HEADER_BYTES) break
-    const header = bin.subarray(p, p + FRAME_HEADER_BYTES)
-    const magic = String.fromCharCode(header[0]!, header[1]!, header[2]!, header[3]!)
-    if (magic !== 'NDCL') break
-    if (header[4] !== 1 || header[5] !== 1 || header[6] !== 0 || ((header[7]! << 8) | header[8]!) !== 0) break
-    const payloadLength = ((header[17]! << 24) | (header[18]! << 16) | (header[19]! << 8) | header[20]!) >>> 0
-    if (p + FRAME_HEADER_BYTES + payloadLength > len) break
-    p += FRAME_HEADER_BYTES + payloadLength
-  }
-  return p
-}
-
-/**
  * §4.1 健康证明（reopen 的严格检查；纯同步、绝不抛——调用方（file.ts 构造路径）
  * 已有构造级 crash 包络，本函数内部异常一律按 manifest-invalid 收敛）。
  *
@@ -1081,16 +1060,12 @@ export function analyzeStreamForResume(req: {
       })
       finalJsonlBytes = truncateToBytes
     }
-    // C2/C3
+    // C2/C3（§5.2/§5.4：T = max ref end；Refs 为空 → T=0——完整未引用尾帧全量截断）
     {
       let t = 0
       for (const ref of refsToSegMax) if (ref.end > t) t = ref.end
       const bin = bins.get(segMax) ?? null
       if (bin !== null && bin.byteLength > t) {
-        if (refsToSegMax.length === 0) {
-          // §13.11 契约面：无引用 → 截断点取从 0 起的完整帧前缀边界（未引用完整帧保留）
-          t = walkCompletePrefixEnd(bin)
-        }
         const walk = walkBinTail(bin, t)
         if (walk === 'unknown-magic') return { verdict: 'rotate', cause: 'stream-corrupt' }
         if (walk === 'unknown-frame') return { verdict: 'rotate', cause: 'stream-incompatible' }

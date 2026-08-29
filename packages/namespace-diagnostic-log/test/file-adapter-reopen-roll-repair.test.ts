@@ -23,6 +23,17 @@
  * - 运行身份前提（EACCES 注入族）：root 可读/写 chmod 000 文件——§13.32b 的 chmod 000
  *   EACCES 注入在 uid===0 环境 skip（`it.skipIf(isRoot)`；与 file-adapter-sa7-repair-io.test.ts
  *   同款护栏约定）；SA7 §1.2 实证本机/CI runner 均非 root（潜伏可移植性缺口，非现患）。
+ * - Round-2 重锚（PR #166 review High 阻断；权威输入
+ *   `wiki/raw/task_diagnostic-log-stream-roll-repair_round2_feedback.md` + r2 门禁
+ *   `…_r2_conflict_report.md` O1 勘误）：§13.11 按 §5.4「Refs 空 → T=0」字面重写
+ *   （修复后 bin 实际长度 = 0、事件 truncatedBytes = 真实移除量）；新增 §13.11b
+ *   （§13.11 fixture 修复后 sidecar 续写 frameOffset="0" + reader ok，反馈建议 4）与
+ *   §13.11c（refs 空 + 全完整 orphan 尾帧的 C3 场景：修复后 bin 长度 0 + 续写
+ *   frameOffset="0" + reader ok）；§13.29 窗口 1/3 与 §13.32c 补 truncatedBytes =
+ *   真实移除量与 bin 长度 0 断言（消除 truncatedBytes:0 零字节事件语义）。
+ *   门禁 O1：不得补「防 frame-boundary-invalid」类伪需求断言——首引用
+ *   expectedOffset=null 跳边界检查系既定链语义（storage-gate.ts:88），本文件
+ *   只锚定 T=0 全截、bin 长度 0、frameOffset="0" 与 reader ok。
  */
 import { chmodSync, mkdirSync, readFileSync, readdirSync, renameSync, rmdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -428,9 +439,47 @@ describe('§13.7–12 AC3：三类可证明尾部修复（C1/C2/C3 + 种子）',
     expect(readStreamStrict({ rootDir: root, namespaceId: ns, streamId: FX }).status).toBe('ok')
   })
 
-  it('§13.11 [红灯] C1+C2 并存 → 两事件两截断、各自修复', () => {
+  // —— Round-2 重锚（PR #166 review High 阻断；round2_feedback.md 验收契约 1）——
+  // 语义：§5.4「Refs 为空 → T=0」。无任何 sidecar 引用时，最大 segment 的完整未引用
+  // orphan 尾帧**不保留**（废止 round-1「walkCompletePrefixEnd 例外」对 §13.11 的固化）：
+  // 修复后 bin 实际长度 = 0，bin 事件 truncatedBytes = 真实移除量（FRAME_BYTES + 7）。
+  it('§13.11 [红灯·R2] C1+C2 并存（无引用完整 orphan 帧 + 撕裂尾块）→ 两事件两截断；bin 修复后实际长度 = 0', () => {
     const root = freshRoot()
     const ns = 'ns-ac3-7'
+    const payload1 = patternedBytes(SIDE_PAYLOAD)
+    const line1 = JSON.stringify(validAttemptRecord(FX, '1')) + '\n'
+    const partial = '{"partial":'
+    writeStreamFixture(root, ns, FX, {
+      manifest: validManifest(FX, ns),
+      // jsonl 仅 inline record（validAttemptRecord）→ Refs 空；
+      // bin = [完整未引用 orphan 帧][7B 撕裂尾块]（<25B → C2 终局证据）
+      jsonlText: line1 + partial,
+      bin: concatU8(encodeFrame(1, payload1), patternedBytes(7)),
+      current: validCurrent(FX),
+    })
+    const b = makeResumeLog(root, ns)
+    const repaired = eventsOfTypeRaw(b.events, 'stream-tail-repaired')
+    expect(repaired).toHaveLength(2)
+    const kinds = repaired.map((r) => r.repair).sort()
+    expect(kinds).toEqual(['bin-incomplete-frame', 'jsonl-incomplete-line'])
+    // 两截断各自真实移除量（bin 事件 = 完整 orphan 帧 + 撕裂尾块全部移除）
+    const jsonlEvent = repaired.find((r) => r.repair === 'jsonl-incomplete-line')!
+    expect(jsonlEvent.truncatedBytes).toBe(Buffer.byteLength(partial))
+    const binEvent = repaired.find((r) => r.repair === 'bin-incomplete-frame')!
+    expect(binEvent.truncatedBytes).toBe(FRAME_BYTES + 7)
+    const p = streamPaths(root, ns, FX)
+    expect(readFileSync(p.jsonlPath, 'utf8')).toBe(line1)
+    // 反馈建议 3：修复后 BIN 实际长度为 0（完整未引用帧一并截断，不再保留）
+    expect(readJsonlBytes(p.binPath).byteLength).toBe(0)
+    // 零字节修复事件消失：每个 stream-tail-repaired 事件的 truncatedBytes 均为真实
+    // 移除量（>0）——不存在「对全文件无操作」的 truncatedBytes===0 事件
+    expect(repaired.every((e) => typeof e.truncatedBytes === 'number' && (e.truncatedBytes as number) > 0)).toBe(true)
+    expect(readStreamStrict({ rootDir: root, namespaceId: ns, streamId: FX }).status).toBe('ok')
+  })
+
+  it('§13.11b [红灯·R2，反馈建议 4] §13.11 修复后的 stream 再 emit 一条 sidecar record → frameOffset="0" 且 reader ok', () => {
+    const root = freshRoot()
+    const ns = 'ns-ac3-7b'
     const payload1 = patternedBytes(SIDE_PAYLOAD)
     const line1 = JSON.stringify(validAttemptRecord(FX, '1')) + '\n'
     const partial = '{"partial":'
@@ -441,13 +490,49 @@ describe('§13.7–12 AC3：三类可证明尾部修复（C1/C2/C3 + 种子）',
       current: validCurrent(FX),
     })
     const b = makeResumeLog(root, ns)
+    expect(eventsOfTypeRaw(b.events, 'stream-tail-repaired')).toHaveLength(2)
+    expect(readJsonlBytes(streamPaths(root, ns, FX).binPath).byteLength).toBe(0)
+    // 修复后 sidecar append：bin 已清零（T=0 全截）→ fresh-stat 落 offset 0 → 引用链自 0 重衔接。
+    // 注（round-2 门禁 O1 勘误）：本锚的引文是「首引用帧 expectedOffset=null 跳过边界检查」
+    // 的既定链语义（storage-gate.ts:88）——只断言 frameOffset==="0" + reader ok，
+    // 不补「防 frame-boundary-invalid」类伪需求断言。
+    b.log.emitter.emit(baseEmission({ result: { kind: 'committed', effect: 'update', updateBytes: patternedBytes(SIDE_PAYLOAD) } }))
+    const rec2 = readJsonl(streamPaths(root, ns, FX).jsonlPath)[1]!
+    expect(rec2.sequence).toBe('2')
+    const carrier2 = (rec2.result as { update: { storage: string; frameOffset: string } }).update
+    expect(carrier2.storage).toBe('sidecar')
+    expect(carrier2.frameOffset).toBe('0')
+    expect(readStreamStrict({ rootDir: root, namespaceId: ns, streamId: FX }).status).toBe('ok')
+  })
+
+  it('§13.11c [红灯·R2，反馈 ③④ 原样] refs 空 + 完整 orphan 尾帧（全完整 C3）→ 修复后 bin 长度 0 + 续写 sidecar frameOffset="0" + reader ok', () => {
+    const root = freshRoot()
+    const ns = 'ns-ac3-7c'
+    const payload1 = patternedBytes(SIDE_PAYLOAD)
+    writeStreamFixture(root, ns, FX, {
+      manifest: validManifest(FX, ns),
+      // jsonl 仅 inline record（无 sidecar 引用 → Refs 空）；bin = [完整未引用 orphan 帧]
+      jsonlLines: [validAttemptRecord(FX, '1')],
+      bin: encodeFrame(1, payload1),
+      current: validCurrent(FX),
+    })
+    const b = makeResumeLog(root, ns)
     const repaired = eventsOfTypeRaw(b.events, 'stream-tail-repaired')
-    expect(repaired).toHaveLength(2)
-    const kinds = repaired.map((r) => r.repair).sort()
-    expect(kinds).toEqual(['bin-incomplete-frame', 'jsonl-incomplete-line'])
-    const p = streamPaths(root, ns, FX)
-    expect(readFileSync(p.jsonlPath, 'utf8')).toBe(line1)
-    expect(readJsonlBytes(p.binPath).byteLength).toBe(FRAME_BYTES)
+    // Refs 空 + 全部完整帧 → C3：事件照常上报且 truncatedBytes = 修复前 bin 长度（>0，非 0）
+    expect(repaired).toHaveLength(1)
+    expect(repaired[0]).toMatchObject({ type: 'stream-tail-repaired', repair: 'bin-orphan-frames' })
+    expect(repaired[0]!.truncatedBytes).toBe(FRAME_BYTES)
+    expect(repaired.every((e) => typeof e.truncatedBytes === 'number' && (e.truncatedBytes as number) > 0)).toBe(true)
+    // 修复后 BIN 实际长度 = 0（反馈建议 3）
+    expect(readJsonlBytes(streamPaths(root, ns, FX).binPath).byteLength).toBe(0)
+    expect(b.log.streamId).toBe(FX)
+    // 续写一条 sidecar record → frameOffset === "0"（反馈建议 4）+ reader 读全流 ok
+    b.log.emitter.emit(baseEmission({ result: { kind: 'committed', effect: 'update', updateBytes: patternedBytes(SIDE_PAYLOAD) } }))
+    const rec2 = readJsonl(streamPaths(root, ns, FX).jsonlPath)[1]!
+    expect(rec2.sequence).toBe('2')
+    const carrier2 = (rec2.result as { update: { storage: string; frameOffset: string } }).update
+    expect(carrier2.storage).toBe('sidecar')
+    expect(carrier2.frameOffset).toBe('0')
     expect(readStreamStrict({ rootDir: root, namespaceId: ns, streamId: FX }).status).toBe('ok')
   })
 
@@ -1020,6 +1105,11 @@ describe('§13.29 AC5：BIN-before-JSONL 崩溃窗口重启矩阵（修复或健
     const repaired = eventsOfTypeRaw(b.events, 'stream-tail-repaired')
     expect(repaired).toHaveLength(1)
     expect(repaired[0]).toMatchObject({ repair: 'bin-orphan-frames' })
+    // Round-2（round2_feedback.md 验收契约 4）：refs 空 + 全完整帧 → 事件照常上报，
+    // 但 truncatedBytes = 真实移除量（= 完整帧全量），绝不再是 0
+    expect(repaired[0]!.truncatedBytes).toBe(FRAME_BYTES)
+    // 反馈建议 3：修复后 BIN 实际长度为 0（完整未引用帧全部截断）
+    expect(readJsonlBytes(streamPaths(root, ns, FX).binPath).byteLength).toBe(0)
     expect(b.log.streamId).toBe(FX)
     b.log.emitter.emit(baseEmission({ result: { kind: 'committed', effect: 'update', updateBytes: patternedBytes(100) } }))
     expect(readJsonl(streamPaths(root, ns, FX).jsonlPath).map((r) => r.sequence)).toEqual(['1'])
@@ -1059,6 +1149,11 @@ describe('§13.29 AC5：BIN-before-JSONL 崩溃窗口重启矩阵（修复或健
     expect(repaired).toHaveLength(2)
     const kinds = repaired.map((r) => r.repair).sort()
     expect(kinds).toEqual(['bin-orphan-frames', 'jsonl-incomplete-line'])
+    // Round-2（同窗口1 形）：bin 事件 truncatedBytes = 完整帧真实移除量（不再是 0）
+    const binEvent = repaired.find((r) => r.repair === 'bin-orphan-frames')!
+    expect(binEvent.truncatedBytes).toBe(FRAME_BYTES)
+    // 反馈建议 3：修复后 BIN 实际长度为 0
+    expect(readJsonlBytes(streamPaths(root, ns, FX).binPath).byteLength).toBe(0)
     b.log.emitter.emit(baseEmission({ result: { kind: 'committed', effect: 'update', updateBytes: patternedBytes(100) } }))
     expect(readJsonl(streamPaths(root, ns, FX).jsonlPath).map((r) => r.sequence)).toEqual(['1'])
     expect(readStreamStrict({ rootDir: root, namespaceId: ns, streamId: FX }).status).toBe('ok')
@@ -1190,7 +1285,12 @@ describe('§13.31–33 R1 新增锚：链中 orphan 生命周期 / 不可读≠�
     const b = makeResumeLog(root, ns)
     expect(eventsOfTypeRaw(b.events, 'stream-generation-rotated')).toHaveLength(0)
     expect(b.log.streamId).toBe(FX)
-    expect(eventsOfTypeRaw(b.events, 'stream-tail-repaired')).toHaveLength(1)
+    const repaired = eventsOfTypeRaw(b.events, 'stream-tail-repaired')
+    expect(repaired).toHaveLength(1)
+    // Round-2：refs 空 + 全完整帧 → C3 截断点 T=0；修复后 BIN 实际长度 0、事件为真实移除量
+    expect(repaired[0]).toMatchObject({ repair: 'bin-orphan-frames' })
+    expect(repaired[0]!.truncatedBytes).toBe(FRAME_BYTES)
+    expect(readJsonlBytes(streamPaths(root, ns, FX).binPath).byteLength).toBe(0)
     b.log.emitter.emit(baseEmission({ result: { kind: 'committed', effect: 'update', updateBytes: patternedBytes(100) } }))
     expect(readJsonl(streamPaths(root, ns, FX).jsonlPath).map((r) => r.sequence)).toEqual(['1'])
   })

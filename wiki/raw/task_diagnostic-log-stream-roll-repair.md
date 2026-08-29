@@ -109,3 +109,23 @@ Make File diagnostic streams survive normal restarts and long-running append wor
 ### 挂起歧义（报告 §6 详述，交 SA1/SA8 裁决口径）
 
 §13.17 「非 SegMax 段 bin 尾 orphan → corrupt rotate」与 §5.4/§5.1 规范性文本（闭段 bin 未引用尾字节 = 惰性残渣、不构成损坏）不一致；本契约以 §5.4（+SA2 评审「orphan 变闭段尾部字节=reader-ok 惰性残渣」的引用口径）为测试 oracle（§13.17b 断言健康 resume + 零修复），若 SA8 裁决取 §13.17 字面（corrupt rotate）则 §13.17b 需按裁决翻转。
+
+---
+
+## Round 2 附记（SA6 红灯重锚，round2_feedback.md 裁决）
+
+**背景**：PR #166 review High 阻断——owner 裁决推翻 round-1 已锚定语义（无引用时保留完整 orphan BIN 尾帧），要求 §5.4 字面「Refs 为空 → T=0」：完整未引用 orphan 尾帧全部截断、修复后 bin 实际长度 = 0。
+
+**测试修订**（`packages/namespace-diagnostic-log/test/file-adapter-reopen-roll-repair.test.ts`，唯一测试改动文件）：
+
+- §13.11 重写：断言 bin 修复后实际长度 = 0、bin 事件 `truncatedBytes = FRAME_BYTES + 7`（真实移除量）、jsonl 截到最后 `0x0A` 断言保持；新增负向断言（不存在 truncatedBytes===0 的 stream-tail-repaired 事件）；
+- §13.11b 新增（反馈建议 4）：§13.11 fixture 修复后 emit 一条 sidecar record → `update.frameOffset === "0"` 且 `readStreamStrict.status === 'ok'`（链从 offset 0 重新衔接）；
+- §13.11c 新增（反馈 ③④ 原样：refs 空 + 完整 orphan 尾帧的纯 C3 场景）：修复后 bin 长度 0、事件 truncatedBytes = 真实移除量、续写 sidecar `frameOffset === "0"` + reader ok；
+- §13.29 窗口1/3 与 §13.32c 增补 `truncatedBytes = FRAME_BYTES`（真实移除量）+ bin 长度 0 断言——消除 `truncatedBytes: 0` 事件（round-1 遗留风险 #2 / 契约 4）。
+
+**红灯运行结果**（基线 51b79b9 = round-1 交付态，src 零改动；命令 `node_modules/.bin/vitest run packages/namespace-diagnostic-log/test`，后台独立进程）：
+
+- 受影响文件：**6 failed / 46 passed（52）**，exit=1；复跑一致（`.mabf-bg/sa6-r2-reopen-file-run.log`）；改动前基线 50/50 绿（`/tmp/sa6-r2-baseline.log`）。
+- 红因（全为 src 偏差未修——`reader.ts:1090-1093` walkCompletePrefixEnd 例外）：§13.11 `expected 7 to be 4129`（bin 事件只计撕裂尾块 7B）；§13.11b `expected 4122 to be +0`（bin 保留 4122B → 新帧 offset 4122）；§13.11c `expected +0 to be 4122`（零字节事件）；窗口1/3 与 §13.32c 同 `expected +0 to be 4122`。
+- 全包：**1 failed file / 22；6 failed / 375 passed（381）；Type Errors: no errors**——既有断言零回退，受影响断言清单逐条结论见 `wiki/raw/task_diagnostic-log-stream-roll-repair-r2_sa6_red.md` §2。
+- 非测试面注记：`walkCompletePrefixEnd`（`src/reader.ts:785-804`）删除例外后成死码，须一并删除（SA3 范围；SA6 未动 src）。
