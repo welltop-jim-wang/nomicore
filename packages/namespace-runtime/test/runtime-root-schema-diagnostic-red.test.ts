@@ -111,6 +111,21 @@ async function waitAttempts(log: BoundedMemoryDiagnosticLog, expected: number): 
   return log.records().filter((r): r is AttemptRecord => r.recordKind === 'attempt');
 }
 
+/** 单条记录提取（类型收窄专用——waitAttempts 已 poll 至 1 条，运行时恒非空；
+ *  防御分支与原「rec 为 undefined 时属性访问 TypeError 判失败」同判失败语义）。 */
+function firstAttempt(recs: AttemptRecord[]): AttemptRecord {
+  const r = recs[0];
+  if (r === undefined) throw new Error('waitAttempts 返回 0 条记录（poll 已保证非空——不可达防御）');
+  return r;
+}
+
+/** inline carrier 的 bytes 提取（类型收窄专用——与 expect(carrier.storage==='inline')
+ *  同义；防御 throw 与原断言失败同判失败语义）。 */
+function inlineBytes(carrier: UpdateCarrier): Uint8Array {
+  if (carrier.storage !== 'inline') throw new Error(`预期 inline carrier，实际 ${carrier.storage}`);
+  return new Uint8Array(Buffer.from(carrier.base64, 'base64'));
+}
+
 /**
  * 同源基态 + 既有增量链 + 本条 carrier → 重放 doc。消费形态按设计 §6.4/§13.8：
  * 事务增量是**增量**（left origin / delete set 引用 pre-state struct）——应用到空
@@ -121,11 +136,11 @@ async function waitAttempts(log: BoundedMemoryDiagnosticLog, expected: number): 
 function applyCarrier(carrier: UpdateCarrier, baseState: Uint8Array, prior: UpdateCarrier[] = []): Y.Doc {
   expect(carrier.storage).toBe('inline');
   expect(carrier.format).toBe('yjs-update-v1');
-  const bytes = new Uint8Array(Buffer.from(carrier.base64, 'base64'));
+  const bytes = inlineBytes(carrier);
   expect(bytes.length).toBe(carrier.payloadLength);
   const fresh = new Y.Doc();
   Y.applyUpdate(fresh, baseState); // 基态先立（pre-state struct 就位——origin 可解析）
-  for (const p of prior) Y.applyUpdate(fresh, new Uint8Array(Buffer.from(p.base64, 'base64')));
+  for (const p of prior) Y.applyUpdate(fresh, inlineBytes(p));
   Y.applyUpdate(fresh, bytes); // 本条事务增量
   return fresh;
 }
@@ -134,7 +149,7 @@ function applyCarrier(carrier: UpdateCarrier, baseState: Uint8Array, prior: Upda
  *  文档编码」冒充则 ROOT/SCHEMA 必然物化、本断言立即红（防冒充回归；P8 实测钉死）。 */
 function expectNoMaterializeWithoutBase(carrier: UpdateCarrier): void {
   const empty = new Y.Doc();
-  Y.applyUpdate(empty, new Uint8Array(Buffer.from(carrier.base64, 'base64')));
+  Y.applyUpdate(empty, inlineBytes(carrier));
   expect(empty.getMap('ROOT').size).toBe(0);
   expect(empty.getMap('SCHEMA').size).toBe(0);
 }
@@ -144,10 +159,9 @@ function updateCarrierOf(result: AttemptResult): UpdateCarrier {
   if (result.kind !== 'committed' && result.kind !== 'fatal') {
     throw new Error(`预料之外的 result kind: ${result.kind}`);
   }
-  if (result.effect !== 'update') {
-    throw new Error(`预期 effect:update，实际 ${JSON.stringify(result)}`);
-  }
-  return result.update;
+  if (result.kind === 'committed' && result.effect === 'update') return result.update;
+  if (result.kind === 'fatal' && result.committed === true && result.effect === 'update') return result.update;
+  throw new Error(`预期 effect:update，实际 ${JSON.stringify(result)}`);
 }
 
 function readOk(runtime: NamespaceRuntime, path: readonly (string | number)[]): unknown {
@@ -173,7 +187,7 @@ describe('#149 ROOT mutation 诊断记录（红灯契约）', () => {
     const res = await runtime.mutateRoot({ op: 'set', path: ['n'], value: 42 });
     expect(res).toEqual({ ok: true });
 
-    const [rec] = await waitAttempts(log, 1);
+    const rec = firstAttempt(await waitAttempts(log, 1));
     expect(rec.operation).toBe('root-mutation');
     expect(rec.stage).toBe('transaction');
     expect(rec.source).toEqual({ kind: 'local' });
@@ -209,7 +223,7 @@ describe('#149 ROOT mutation 诊断记录（红灯契约）', () => {
     const res = await runtime.mutateRoot({ op: 'set', path: ['a'], value: 99 }); // a 是 string
     expect(res.ok).toBe(false);
 
-    const [rec] = await waitAttempts(log, 1);
+    const rec = firstAttempt(await waitAttempts(log, 1));
     expect(rec.operation).toBe('root-mutation');
     expect(rec.stage).toBe('validation');
     expect(rec.result).toEqual({ kind: 'rejected' });
@@ -248,7 +262,7 @@ describe('#149 ROOT mutation 诊断记录（红灯契约）', () => {
     expect(JSON.stringify(res)).toContain('MUTATION_INPUT_NOT_PLAIN_DATA');
     expect(fired).toBe(0); // 快照器拒绝先于任何值读取
 
-    const [rec] = await waitAttempts(log, 1);
+    const rec = firstAttempt(await waitAttempts(log, 1));
     expect(rec.operation).toBe('root-mutation');
     expect(rec.stage).toBe('input-snapshot');
     expect(rec.result).toEqual({ kind: 'rejected' });
@@ -389,7 +403,7 @@ describe('#149 ROOT mutation 诊断记录（红灯契约）', () => {
       committed: true,
     });
 
-    const [rec] = await waitAttempts(log, 1);
+    const rec = firstAttempt(await waitAttempts(log, 1));
     expect(rec.operation).toBe('root-mutation');
     expect(rec.stage).toBe('dirty-notification');
     expect(rec.sourcePhase).toBe('notify-dirty-failed');
@@ -398,7 +412,8 @@ describe('#149 ROOT mutation 诊断记录（红灯契约）', () => {
     expect(rec.result.kind).toBe('fatal');
     if (rec.result.kind === 'fatal') {
       expect(rec.result.committed).toBe(true);
-      expect(rec.result.effect).toBe('update'); // committed-aware：携带该事务精确 effect
+      // committed-aware：携带该事务精确 effect（effect:update 断言由 updateCarrierOf 承担——
+      // 非 update 即 throw 判失败，断言语义等价）
       const fresh = applyCarrier(updateCarrierOf(rec.result), baseState); // 基态 → tx₁（§13.8c 单笔）
       expect(fresh.getMap('ROOT').get('n')).toBe(42);
       expectNoMaterializeWithoutBase(updateCarrierOf(rec.result)); // §13.8d：真增量空 doc 不物化
@@ -431,7 +446,7 @@ describe('#149 ROOT mutation 诊断记录（红灯契约）', () => {
     expect(res.ok).toBe(false);
     expect(JSON.stringify(res)).toContain('SCHEMA_UNAVAILABLE');
 
-    const [rec] = await waitAttempts(log, 1);
+    const rec = firstAttempt(await waitAttempts(log, 1));
     expect(rec.operation).toBe('root-mutation');
     expect(rec.stage).toBe('capability-gate');
     expect(rec.result).toEqual({ kind: 'rejected' });
@@ -455,7 +470,7 @@ describe('#149 ROOT mutation 诊断记录（红灯契约）', () => {
     expect(res.ok).toBe(false);
     expect(JSON.stringify(res)).toContain('RUNTIME_WRITE_DISABLED');
 
-    const [rec] = await waitAttempts(log, 1);
+    const rec = firstAttempt(await waitAttempts(log, 1));
     expect(rec.operation).toBe('root-mutation');
     expect(rec.stage).toBe('capability-gate');
     expect(rec.result).toEqual({ kind: 'rejected' });
@@ -497,20 +512,22 @@ describe('#149 SCHEMA replacement 诊断记录（红灯契约）', () => {
       expect(rec.result.kind).toBe('committed');
     }
     // ① 精确 effect：SCHEMA 换成 ENV_KEEP.text（ROOT 未动）——基态 → tx₁（§13.8c 单笔）
-    if (recs[0]?.result.kind === 'committed' && recs[0].result.effect === 'update') {
-      const fresh = applyCarrier(updateCarrierOf(recs[0].result), baseState);
+    const rec0 = recs[0]!;
+    const rec1 = recs[1]!;
+    if (rec0.result.kind === 'committed' && rec0.result.effect === 'update') {
+      const fresh = applyCarrier(updateCarrierOf(rec0.result), baseState);
       expect(fresh.getMap('SCHEMA').get('text')).toBe(ENV_KEEP.text);
       expect(fresh.getMap('SCHEMA').get('id')).toBe('ns-1');
     }
     // ② 精确 effect：SCHEMA + ROOT 同事务——基态 → tx₁ → tx₂（§13.8c：prior = recs[0] 的 carrier，
     //   第二笔事务的 left origin 依赖第一笔后的状态，链式依序是机制必需）
-    if (recs[1]?.result.kind === 'committed' && recs[1].result.effect === 'update') {
-      const fresh = applyCarrier(updateCarrierOf(recs[1].result), baseState, [updateCarrierOf(recs[0].result)]);
+    if (rec1.result.kind === 'committed' && rec1.result.effect === 'update') {
+      const fresh = applyCarrier(updateCarrierOf(rec1.result), baseState, [updateCarrierOf(rec0.result)]);
       expect(fresh.getMap('SCHEMA').get('text')).toBe(ENV_REPLACE.text);
       expect(fresh.getMap('ROOT').get('n')).toBe(2);
       expect(fresh.getMap('ROOT').get('a')).toBe('y');
       expect(fresh.getMap('ROOT').get('b')).toBe(true);
-      expectNoMaterializeWithoutBase(updateCarrierOf(recs[1].result)); // §13.8d：真增量空 doc 不物化
+      expectNoMaterializeWithoutBase(updateCarrierOf(rec1.result)); // §13.8d：真增量空 doc 不物化
     }
     // ② 输入捕获：完整 root 快照被日志消费（既有安全快照）
     expect(recs[1]?.input).toMatchObject({ capture: 'full', value: { schema: ENV_REPLACE, root: ROOT_REPLACE } });
@@ -537,7 +554,7 @@ describe('#149 SCHEMA replacement 诊断记录（红灯契约）', () => {
     expect(res.ok).toBe(false);
     expect(JSON.stringify(res)).toContain('SCHEMA_TEXT_INVALID');
 
-    const [rec] = await waitAttempts(log, 1);
+    const rec = firstAttempt(await waitAttempts(log, 1));
     expect(rec.operation).toBe('schema-replacement');
     expect(rec.stage).toBe('schema-compile');
     expect(rec.result).toEqual({ kind: 'rejected' });
@@ -572,7 +589,7 @@ describe('#149 SCHEMA replacement 诊断记录（红灯契约）', () => {
       committed: false,
     });
 
-    const [rec] = await waitAttempts(log, 1);
+    const rec = firstAttempt(await waitAttempts(log, 1));
     expect(rec.operation).toBe('schema-replacement');
     expect(rec.stage).toBe('schema-compile');
     expect(rec.result).toEqual({ kind: 'fatal', committed: false });

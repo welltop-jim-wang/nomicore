@@ -43,6 +43,9 @@
 | 全仓测试 | `npx vitest run` | **141 files / 1800 tests 全部通过，0 失败**（470s；Type Errors no errors） |
 | 全仓类型检查 | `pnpm typecheck` | **通过（exit 0）**——10 个包 tsc 全部干净 |
 | 包级类型检查 | `pnpm --filter @nomicore/namespace-runtime typecheck` | 干净（src 严格模式含 exactOptionalPropertyTypes/verbatimModuleSyntax） |
+| **CI 等价（SA4/SA7 轮）** | `pnpm test`（= CI `Test` 步：`vitest run --typecheck`） | **142 files / 1816 tests 全部通过、Type Errors no errors**；exit 1 仅因 2 条 `[vitest-worker]: Timeout calling "onTaskUpdate"` 环境工件（SA7-I-2：改动前同签名同条数、单独运行零工件） |
+| **CI 等价（测试文件级类型检查）** | `npx tsc -p tsconfig.typecheck.json`（include 含 `packages/*/test/**/*.ts`） | **0 错误（exit 0）**——SA7-F-1 修复闭环：SA3 轮提交的红灯测试文件 63 处类型错误（`rec` possibly undefined / carrier 未收窄）由 SA7 纯类型层修复（`firstAttempt`/`inlineBytes`/`updateCarrierOf` 收窄守卫，零断言零语义变更） |
+| CI 等价（类型步） | `pnpm typecheck` | **通过（exit 0）**（复跑确认） |
 
 - 转绿前关键发现（R1 版阻塞，已由 SA1 R2 修订 + SA6 §13.8 修订闭环）：yjs 事务 update 事件 payload 为**增量**（`writeStructsFromTransaction` = `writeClientsStructs(encoder, store, transaction.beforeState)`，left origin/delete set 引用 pre-state struct）——应用到**空 Y.Doc 不物化**（实测：38B 增量 → 空 doc `store.clients=[]`、不抛错）。设计 §10.2 R1 版「空 doc 可重放」声称不成立。SA3 以最小实验（yjs@13.6.32）实证后上报；SA1 R2 冻结修正契约（§6.4：同源基态 + 依序增量链 = ADR-0011「连续的 committed Yjs updates 诊断性重放」原生语义；新增 §14 P8 实测证据 + §13.8 SA6 测试修订规格），**producer 侧零改动**（§6.1–6.3/§7/§8/§9 全部不变）——SA3 已实施捕获机制本就产事务增量，与修订后设计一致。
 
@@ -51,4 +54,10 @@
 - 全部改动位于 ALLOW LIST；DENY LIST（diagnostic-log/doc-runtime/sequencer/index/p0/close/status/projection/plain-data/errors/internal/registry/persistence/vfsl/clock）零触碰；`index.ts` 零改动（公共导出面不变，runtime-acceptance-exports-audit 通过）。
 - 「completion 前红灯基线」：SA3 实施期间红灯文件 11/14 绿 → SA6 修订消费形态后（§13.8）14/14 全绿，**断言值与分类面未变**（改动仅为基态链式重放的消费方式 + 反向鉴别断言）。
 - 回归重点面（SA2 #6/§13.5）：runtime-close-lifecycle / runtime-close-sa7-dynamic / runtime-p0-sequencer / runtime-mutate-root-sequencer 全部通过（emit 挂点为非包装附加反应后，时序敏感面零回归）。
-- **终验补记（2026-08-29 完成轮）**：三连验证全绿——红灯契约 14/14、全仓 vitest 1800/1800（141 文件）、`pnpm typecheck` exit 0。提交 `35e5b39`（本地，未 push）含生产代码 + SA6 红灯文件 + 全部任务 wiki 归档。
+- **终验补记（2026-08-29 完成轮）**：三连验证全绿——红灯契约 14/14、全仓 vitest 1800/1800（141 文件）、`pnpm typecheck` exit 0。提交 `96cd085`（本地，未 push）含生产代码 + SA6 红灯文件 + 全部任务 wiki 归档。
+- **终验补记 R2（SA7 动态验证轮，2026-08-29）**：SA4 静态评审 pass（5 INFO，无阻塞）；SA7 动态验证 pass（16 个新动态测试全部通过：DV-1 慢 emit 槽间延迟 / DV-2 acceptance 同步 emit / DV-3 unhandledRejection 抑制 / DV-4 §13.7 未钉死结局点 9 点补钉 / DV-6 队列满×full 组合；生产面零缺陷发现）。SA7-F-1（红灯测试文件 63 处类型错误——SA3 轮全链路验证均用 `--typecheck.enabled=false` 而 `pnpm typecheck` 只覆盖 src 的**验证缺口**）已在测试层修复并闭环：`tsc -p tsconfig.typecheck.json` 0 错误；SA7 测试/报告与修复由 **SA3 本轮并入本地提交**（commit 见 §五；生产代码零改动——无任何演示性失败触发）。备注观察项（SA7 owned，不阻塞）：DV-2 对照断言 `syncMs < 20` 在本沙箱 scoped/隔离运行下处于边缘（实测 22–27ms——memory adapter 单次 emit 本机约 14ms + 首调 warmup；CI 等价全量运行 142/142 绿灯）；如后续 CI 出现该断言 flaky，建议 SA7 放宽余量或在对照前预热管线。
+
+## 五、提交记录
+
+- `96cd085`（R2 完成轮）：生产代码 5 + SA6 红灯文件 + wiki 归档 9 件（SA3 实现报告初版含内）——16 files, +2717/−19
+- R3 完成轮（本报告更新）：SA7 纯类型层修复（红灯测试 +38/−21）、SA7 动态测试 16 it（新）、`sa4_review.md`（新）、`sa7_report.md`（新）、派发日志行 15–17——本地提交，未 push
