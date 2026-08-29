@@ -73,3 +73,17 @@ export function cidField(
 ): Readonly<{ connectionId?: string }> {
   return connectionId === undefined ? {} : { connectionId };
 }
+
+/**
+ * 安全时源采样（SA4 B1）：观测时钟 `now()` 抛错视为「时源缺面」（dormant——与
+ * 设计 §3.3「缺 clock = latency 字段缺失」同纪律），返回 undefined；绝不让 clock
+ * 异常外溢到协议路径（状态/wire 序列/Runtime 写入零影响；零 unhandledRejection /
+ * 零 uncaughtException——observer/clock seam 是观测面，不是业务失败面）。
+ */
+export function safeNow(read: () => number | undefined): number | undefined {
+  try {
+    return read();
+  } catch {
+    return undefined;
+  }
+}

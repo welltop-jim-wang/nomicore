@@ -687,6 +687,11 @@ terminalState）、受控标识（`namespaceId` 恒为 `^ns-[0-9a-f]{32}$`；`co
   apply 成功续体时刻 − 进入 apply 时刻（**含 write sequencer 排队等待**）；
   `ackLatencyMs` = 收到 UPDATE_ACK 时刻 − 帧实际出队发送时刻（含对端 sequencer +
   网络）。缺省 clock = 全部 latency 字段不存在（field 缺失，非 undefined 值）。
+  **clock-throw 折叠策略（SA4 B1 登记）**：宿主注入的 `clock.now()` 属观测面能力——
+  其 throw 一律视为「时源缺面」（dormant）——采样点经安全折叠返回缺面，对应 latency
+  字段不存在；**绝不**外溢为协议状态/wire 帧/Runtime 写入变化，也**不产生**
+  unhandledRejection/uncaughtException（观测失败不是业务失败，与 §23.4 observer throw
+  隔离同纪律）。
   `now()` 只作差，**绝对时间戳不入事件**。实现内禁止 `Date.now()`/
   `performance.now()` 回退（ADR 0009 纪律）。
 - 无 observer = 零事件、零状态投影读取、零时钟调用（行为与现状逐字节等价）。

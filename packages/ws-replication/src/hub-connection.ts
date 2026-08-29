@@ -15,7 +15,7 @@ import {
 import { startLiveness } from './liveness.js';
 import { HubNamespaceChannel, type HubChannelHost } from './hub-namespace.js';
 import { ConnectionSender } from './backpressure.js';
-import { dispatchReplicationObserver, stableConnectionCode } from './observer.js';
+import { dispatchReplicationObserver, safeNow, stableConnectionCode } from './observer.js';
 import type { NamespaceRegistry } from '@nomicore/namespace-registry';
 import type {
   HubConnection,
@@ -365,7 +365,8 @@ class HubConnectionImpl implements HubConnection {
       observerPresent: () => this.connectionObserver() !== undefined,
       emitObserver: (event) => dispatchReplicationObserver(this.connectionObserver(), event),
       connectionId: () => this.connectionIdValue,
-      now: () => (this.connectionObserver() !== undefined ? hub.clock?.now() : undefined),
+      // B1：时钟采样经 safeNow 折叠（throw → dormant undefined，零协议外溢）
+      now: () => (this.connectionObserver() !== undefined ? safeNow(() => hub.clock?.now()) : undefined),
     };
     this.helloHandle = hub.timer.setTimeout(() => {
       if (this.state === 'handshaking') {

@@ -11,6 +11,7 @@
  */
 import * as Y from 'yjs';
 import type { ReplicationMessage } from '@nomicore/replication-protocol';
+import { safeNow } from './observer.js';
 import type { ResolvedLimits } from './types.js';
 
 export interface UpdateChannelHost {
@@ -117,7 +118,7 @@ export class UpdateChannel {
         this.armAckTimer();
       }
       // §6.5 U2：ack 收妥记账（latency = 收到 ACK 时刻 − 帧出队发送时刻；只作差）
-      const t1 = this.host.now?.();
+      const t1 = safeNow(() => this.host.now?.());
       const latencyMs =
         entry.sentAt !== undefined && t1 !== undefined ? t1 - entry.sentAt : undefined;
       this.host.onUpdateAcked({
@@ -184,8 +185,8 @@ export class UpdateChannel {
       this.host.declareLocalResync('send-failed');
       return;
     }
-    // §6.5 U2：发送时刻记账（帧实际出队后；clock 缺省 → undefined）
-    const sentAt = this.host.now?.();
+    // §6.5 U2：发送时刻记账（帧实际出队后；clock 缺省 → undefined；throw → 缺面）
+    const sentAt = safeNow(() => this.host.now?.());
     this.inFlight.set(seq, {
       bytes: bytes.byteLength,
       ...(sentAt !== undefined ? { sentAt } : {}),

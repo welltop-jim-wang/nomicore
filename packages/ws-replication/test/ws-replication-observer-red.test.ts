@@ -28,6 +28,8 @@ import {
   HUB_OWNER,
   PEER_INSTANCE,
   PEER_OWNER,
+  SCHEMA_ENVELOPE,
+  bytesToHex,
   deferred,
   makeHubNamespace,
   makeNode,
@@ -97,8 +99,8 @@ export interface ObservedSetup {
   readonly fixture: HubNamespaceFixture;
   readonly hubEvents: Collector;
   readonly peerEvents: Collector;
-  readonly hubClock: ManualClock;
-  readonly peerClock: ManualClock;
+  readonly hubClock: ReplicationClock;
+  readonly peerClock: ReplicationClock;
   writeHub(update: Readonly<{ n?: number; extra?: number }>): Promise<void>;
   writePeer(update: Readonly<{ n?: number; extra?: number }>): Promise<void>;
   rootValue(side: 'hub' | 'peer', key: string): unknown;
@@ -125,6 +127,9 @@ interface ObservedOptions {
   readonly hubObserver?: ReplicationObserver;
   readonly peerObserver?: ReplicationObserver;
   readonly startClockValue?: number;
+  /** 覆盖默认确定性时钟（B1 throw 时钟锚） */
+  readonly hubClock?: ReplicationClock;
+  readonly peerClock?: ReplicationClock;
 }
 
 async function observedBoot(opts: ObservedOptions = {}): Promise<ObservedSetup> {
@@ -134,8 +139,10 @@ async function observedBoot(opts: ObservedOptions = {}): Promise<ObservedSetup> 
   const nsId = fixture.namespaceId;
   const hubEvents = new Collector();
   const peerEvents = new Collector();
-  const hubClock = new ManualClock(opts.startClockValue ?? 1_000);
-  const peerClock = new ManualClock(opts.startClockValue ?? 1_000);
+  const hubClock: ReplicationClock =
+    opts.hubClock ?? new ManualClock(opts.startClockValue ?? 1_000);
+  const peerClock: ReplicationClock =
+    opts.peerClock ?? new ManualClock(opts.startClockValue ?? 1_000);
 
   const authorizer = async (
     _instanceIdentity: string,
@@ -790,24 +797,96 @@ describe('T5：背压 / resync 事件', () => {
     await settle();
   });
 
-  it('control 保留额度耗尽 → connection-failed{CONNECTION_BACKPRESSURE, 1011} + backoff{connection-backpressure}', async () => {
-    const run = await observedBoot({
-      limits: { controlReserveBytes: 1, lowWater: 64 * 1024, highWater: 512 * 1024 },
+  it('control 保留额度耗尽（真实运行时锚：可编程 bufferedAmount + 1B reserve）→ connection-failed{CONNECTION_BACKPRESSURE, 1011} 先于 backoff{connection-backpressure}', async () => {
+    // —— P8 运行时锚：peer 已 live 且 wire 可编程 bufferedAmount ——
+    let buffered = 0;
+    const hubNode = makeNode('hub');
+    const peerNode = makeNode('peer');
+    const fixture = await makeHubNamespace(hubNode, { owner: HUB_OWNER });
+    const nsId = fixture.namespaceId;
+    const peerEvents = new Collector();
+    const hub = createHubReplication({
+      instanceId: HUB_INSTANCE,
+      registry: hubNode.registry,
+      authorize: async () => ({ ok: true, localOwner: HUB_OWNER, permissions: { read: true, submit: true } }),
+      timer: hubNode.scheduler,
+      verifyToken: async (token) =>
+        token === TEST_TOKEN ? { ok: true, instanceId: PEER_INSTANCE } : { ok: false },
+    });
+    const wire = makeWire();
+    const peerEnd: DuplexTransport = {
+      send: (bytes) => wire.peerEnd.send(bytes),
+      close: (code, reason) => wire.peerEnd.close(code, reason),
+      get closed() {
+        return wire.peerEnd.closed;
+      },
+      onMessage: (listener) => wire.peerEnd.onMessage(listener),
+      onClose: (listener) => wire.peerEnd.onClose(listener),
+      get bufferedAmount() {
+        return buffered; // 可编程水位（G3/G4 同款锚）
+      },
+    };
+    const peer = createPeerReplication({
+      instanceId: PEER_INSTANCE,
+      hubInstanceId: HUB_INSTANCE,
+      registry: peerNode.registry,
+      dial: () => {
+        void hub.accept(wire.hubEnd, { token: TEST_TOKEN });
+        return peerEnd;
+      },
+      timer: peerNode.scheduler,
+      targets: [{ namespaceId: nsId, localOwner: PEER_OWNER }],
+      observer: peerEvents.observer,
+      limits: { controlReserveBytes: 1 }, // 任何 control 帧都越界 → CONNECTION_BACKPRESSURE
       random: () => 0,
     });
-    await waitFor(() => run.peer.getNamespaceState(run.nsId) === 'live', 'live');
-    // 触发 peer 暂停（bufferedAmount 高）→ 再发 control 帧 → 额度耗尽
-    // peer 端 transport 为 makeWire（bufferedAmount 恒 0）——直接经 peer 侧 ERROR 帧路径难以触发，
-    // 该特性由既有 G3/G4 backpressure 红灯保障；此处断言非 ready 期 control 发送零出站（b-2e 门）。
-    run.wire.closePeerSide(1006, 'network lost');
+    peer.start();
+    await waitFor(() => peer.getNamespaceState(nsId) === 'live', 'live');
+    // live 期先暂停：buffered > highWater（512KiB）→ 下一笔 control 出站观察即暂停
+    buffered = 600 * 1024;
+    const checkWrite = await fixture.lease.mutateRoot({ op: 'set', path: ['n'], value: 9 });
+    if (!checkWrite.ok) throw new Error(`hub 写失败：${JSON.stringify(checkWrite)}`);
     await settle();
+    // —— 锚 1：connection-failed{CONNECTION_BACKPRESSURE, 1011}（P8） ——
     await waitFor(
       () =>
-        run.peerEvents
-          .of('connection-backoff-scheduled')
-          .some((e) => (e as Extract<ReplicationObserverEvent, { type: 'connection-backoff-scheduled' }>).reason === 'socket-closed'),
-      'socket-closed backoff',
+        peerEvents
+          .of('connection-failed')
+          .some(
+            (e) =>
+              (e as Extract<ReplicationObserverEvent, { type: 'connection-failed' }>).code ===
+              'CONNECTION_BACKPRESSURE',
+          ),
+      'CONNECTION_BACKPRESSURE',
     );
+    const failed = peerEvents
+      .of('connection-failed')
+      .find(
+        (e) =>
+          (e as Extract<ReplicationObserverEvent, { type: 'connection-failed' }>).code ===
+          'CONNECTION_BACKPRESSURE',
+      ) as Extract<ReplicationObserverEvent, { type: 'connection-failed' }>;
+    expect(failed.wsCloseCode).toBe(1011);
+    // —— 锚 2：backoff{connection-backpressure, attempt:1}（P3，其后） ——
+    const backoff = peerEvents
+      .of('connection-backoff-scheduled')
+      .find(
+        (e) =>
+          (e as Extract<ReplicationObserverEvent, { type: 'connection-backoff-scheduled' }>).reason ===
+          'connection-backpressure',
+      ) as Extract<ReplicationObserverEvent, { type: 'connection-backoff-scheduled' }> | undefined;
+    expect(backoff).toBeDefined();
+    expect(backoff?.attempt).toBe(1);
+    // —— 锚 3：事件次序 send-paused → connection-failed → connection-backoff-scheduled ——
+    const order = peerEvents.events.map((e) => e.type).join(',');
+    const iPaused = order.indexOf('send-paused');
+    const iFailed = order.indexOf('connection-failed');
+    const iBackoff = order.indexOf('connection-backoff-scheduled');
+    expect(iPaused).toBeGreaterThanOrEqual(0);
+    expect(iPaused).toBeLessThan(iFailed);
+    expect(iFailed).toBeLessThan(iBackoff);
+    // —— 锚 4：wire 侧 close code 1011（对端 hub 收到 close 信息） ——
+    expect(wire.hubSideCloseInfo?.code).toBe(1011);
   });
 });
 
@@ -1154,6 +1233,130 @@ describe('T9：事件内容安全（safe-field）', () => {
     }
     expect(all.length).toBeGreaterThan(0);
   });
+
+  it('sentinel 植入补全（B3）：失败路径 token / verifier throw message / SCHEMA text / ROOT 字符串 / wire bytes hex+base64 全事件零出现', async () => {
+    // —— fixture：schema text 与 ROOT 均植入 sentinel（真实文档内容，经 bootstrap + live 复制） ——
+    const hubNode = makeNode('hub');
+    const peerNode = makeNode('peer');
+    const created = okLease(
+      await hubNode.registry.create({
+        owner: HUB_OWNER,
+        schema: {
+          ...SCHEMA_ENVELOPE,
+          text: 'type ROOT = { n: number; marker: string; };\n// schema-envelope-SENTINEL-1a2b\n',
+        },
+        root: { n: 42, marker: 'ROOT-SENTINEL-VALUE' },
+      }),
+    );
+    await schemaReady(created);
+    const enabled = await created.enableReplication();
+    if (!enabled.ok) throw new Error(`enableReplication 失败：${JSON.stringify(enabled)}`);
+    const nsId = created.namespaceId;
+    const hubEvents = new Collector();
+    const peerEvents = new Collector();
+    const hub = createHubReplication({
+      instanceId: HUB_INSTANCE,
+      registry: hubNode.registry,
+      authorize: async () => ({ ok: true, localOwner: HUB_OWNER, permissions: { read: true, submit: true } }),
+      timer: hubNode.scheduler,
+      verifyToken: async (token) =>
+        token === TEST_TOKEN ? { ok: true, instanceId: PEER_INSTANCE } : { ok: false },
+      observer: hubEvents.observer,
+    });
+    const wire = makeWire();
+    const peer = createPeerReplication({
+      instanceId: PEER_INSTANCE,
+      hubInstanceId: HUB_INSTANCE,
+      registry: peerNode.registry,
+      dial: () => {
+        void hub.accept(wire.hubEnd, { token: TEST_TOKEN });
+        return wire.peerEnd;
+      },
+      timer: peerNode.scheduler,
+      targets: [{ namespaceId: nsId, localOwner: PEER_OWNER }],
+      observer: peerEvents.observer,
+    });
+    peer.start();
+    await waitFor(() => peer.getNamespaceState(nsId) === 'live', 'live');
+    // 双向 live 复制（ROOT 字符串 sentinel 经 mutateRoot 合法写入，随后随 UPDATE 帧复制）
+    const peerLease = okLease(await peerNode.registry.open(PEER_OWNER, nsId));
+    await schemaReady(peerLease);
+    const w1 = await peerLease.mutateRoot({ op: 'set', path: ['marker'], value: 'PEER-SENTINEL-ROOT' });
+    if (!w1.ok) throw new Error(`peer 写失败：${JSON.stringify(w1)}`);
+    await peerLease.release();
+    await settle();
+    const w2 = await created.mutateRoot({ op: 'set', path: ['n'], value: 43 });
+    if (!w2.ok) throw new Error(`hub 写失败：${JSON.stringify(w2)}`);
+    await settle();
+    // 收敛锚：复制确已发生（sentinel 值落到对端，验证“内容在 wire 上”这一前提）
+    const peerDoc = peerNode.persistence.peek(PEER_OWNER, nsId);
+    const hubDoc = hubNode.persistence.peek(HUB_OWNER, nsId);
+    expect((peerDoc?.getMap('ROOT') as unknown as Map<string, unknown>).get('n')).toBe(43);
+    expect((hubDoc?.getMap('ROOT') as unknown as Map<string, unknown>).get('marker')).toBe(
+      'PEER-SENTINEL-ROOT',
+    );
+
+    // —— 失败路径 sentinel：token 本身走 accept 拒绝（失败路径事件同样禁携） ——
+    const wireFail = makeWire();
+    await hub.accept(wireFail.hubEnd, { token: 'sk-SENTINEL-T0K3N-97f3' });
+    await settle();
+    const rejectEvent = hubEvents.lastOf('auth-upgrade-rejected') as Extract<
+      ReplicationObserverEvent,
+      { type: 'auth-upgrade-rejected' }
+    >;
+    expect(rejectEvent.reason).toBe('invalid-credentials');
+
+    // —— verifier throw message sentinel（异常 message 禁携） ——
+    const throwingEvents = new Collector();
+    const hubThrowing = createHubReplication({
+      instanceId: HUB_INSTANCE,
+      registry: makeNode('hub').registry,
+      authorize: async () => ({ ok: true, localOwner: HUB_OWNER, permissions: { read: true, submit: true } }),
+      timer: makeNode('hub').scheduler,
+      verifyToken: async () => {
+        throw new Error('verifier-message-SENTINEL');
+      },
+      observer: throwingEvents.observer,
+    });
+    const wireThrow = makeWire();
+    await hubThrowing.accept(wireThrow.hubEnd, { token: TEST_TOKEN });
+    await settle();
+    const throwEvent = throwingEvents.lastOf('auth-upgrade-rejected') as Extract<
+      ReplicationObserverEvent,
+      { type: 'auth-upgrade-rejected' }
+    >;
+    expect(throwEvent.reason).toBe('invalid-credentials');
+
+    // —— wire bytes hex/base64 子串扫描（设计 T9「真实 wire bytes」面） ——
+    const wireFrames = [...wire.peerToHub, ...wire.hubToPeer];
+    expect(wireFrames.length).toBeGreaterThan(0);
+    const hexSubs: string[] = [];
+    const b64Subs: string[] = [];
+    for (const frame of wireFrames.slice(0, 3)) {
+      const hex = bytesToHex(frame);
+      hexSubs.push(hex.slice(0, 24)); // 原样前缀子串（事件文本若含任何字节序列即中招）
+      b64Subs.push(Buffer.from(frame).toString('base64').slice(0, 24));
+    }
+
+    // —— 汇总扫描（键集白名单 + sentinel + 二进制/Error 深扫 + 文法 + 数值） ——
+    const all = [...hubEvents.events, ...peerEvents.events, ...throwingEvents.events];
+    expect(all.length).toBeGreaterThan(10);
+    assertSafe(all, 'sentinel-planted-matrix');
+    for (const event of all) {
+      const text = JSON.stringify(event);
+      expect(text.includes('sk-SENTINEL-T0K3N-97f3')).toBe(false);
+      expect(text.includes('verifier-message-SENTINEL')).toBe(false);
+      expect(text.includes('schema-envelope-SENTINEL-1a2b')).toBe(false);
+      expect(text.includes('ROOT-SENTINEL-VALUE')).toBe(false);
+      expect(text.includes('PEER-SENTINEL-ROOT')).toBe(false);
+      for (const hex of hexSubs) {
+        expect(text.includes(hex), `${event.type} 泄漏 wire hex 子串`).toBe(false);
+      }
+      for (const b64 of b64Subs) {
+        expect(text.includes(b64), `${event.type} 泄漏 wire base64 子串`).toBe(false);
+      }
+    }
+  });
 });
 
 // ═══════════════════════════ T12：bytes in/out + latency ═══════════════════════════
@@ -1169,9 +1372,9 @@ describe('T12：per-frame bytes 与 apply/ACK latency', () => {
     await settle();
     // UPDATE 已出队（peer sentAt 已记录）且 hub apply 已进 sequencer（t0 已捕获）
     expect(run.peerEvents.of('update-sent').length).toBeGreaterThanOrEqual(1);
-    const t0s = run.hubClock.value;
-    run.hubClock.advance(25);
-    run.peerClock.advance(25);
+    const t0s = (run.hubClock as ManualClock).value;
+    (run.hubClock as ManualClock).advance(25);
+    (run.peerClock as ManualClock).advance(25);
     const gate = run.hubNode.persistence.saveGate;
     run.hubNode.persistence.saveGate = undefined;
     if (gate !== undefined) gate.resolve();
@@ -1253,11 +1456,15 @@ describe('T13：peer degraded bypass', () => {
     const run = await observedBoot();
     await waitFor(() => run.peer.getNamespaceState(run.nsId) === 'live', 'live');
 
+    // A1：degraded 窗口的互斥负向半边基线——写前快照 update-applied/update-acked 计数
+    const appliedBefore = run.peerEvents.of('update-applied').length;
+    const ackedBefore = run.peerEvents.of('update-acked').length;
+
     run.setDegraded('peer', true);
     await settle();
     await run.writeHub({ extra: 88 });
     await settle();
-    // bypass 事件（peer 专属）——互斥规则：通笔 apply 恰一事件
+    // bypass 事件（peer 专属）——互斥规则：每笔成功 apply 恰一事件
     const bypass = run.peerEvents.lastOf('degraded-bypass-applied') as Extract<
       ReplicationObserverEvent,
       { type: 'degraded-bypass-applied' }
@@ -1265,22 +1472,29 @@ describe('T13：peer degraded bypass', () => {
     expect(bypass).toBeDefined();
     expect(bypass?.side).toBe('peer');
     expect(bypass?.namespaceId).toBe(run.nsId);
-    const appliedCountAfterDegraded = run.peerEvents.of('update-applied').length;
-    expect(run.peerEvents.of('degraded-bypass-applied').length).toBeGreaterThanOrEqual(1);
+    expect(bypass?.bytes).toBeGreaterThan(0);
+    // 互斥负向半边：degraded 窗口内零新增 update-applied（双发回归不可通过）
+    expect(run.peerEvents.of('update-applied').length).toBe(appliedBefore);
+    expect(run.peerEvents.of('update-acked').length).toBe(ackedBefore);
+    const bypassCountDegraded = run.peerEvents.of('degraded-bypass-applied').length;
+    expect(bypassCountDegraded).toBeGreaterThanOrEqual(1);
 
-    // 恢复 → 回 update-applied（degraded 事件不再增长；互斥保持）
+    // 恢复 → 回 update-applied（互斥正侧恢复）
     run.setDegraded('peer', false);
     await settle();
     await run.writeHub({ extra: 99 });
     await settle();
-    const bypassCountAfter = run.peerEvents.of('degraded-bypass-applied').length;
-    expect(run.peerEvents.of('update-applied').length).toBeGreaterThan(appliedCountAfterDegraded + 0);
-    expect(bypassCountAfter).toBeGreaterThanOrEqual(1);
+    const appliedAfterRecovery1 = run.peerEvents.of('update-applied').length;
+    expect(appliedAfterRecovery1).toBeGreaterThan(appliedBefore + 0);
+    // 恢复期第二次写：投影已回 ready → update-applied；旁路事件**不再增长**（A1 原死变量修复）
+    const bypassCountBeforeSecond = run.peerEvents.of('degraded-bypass-applied').length;
     await run.writeHub({ extra: 100 });
     await settle();
-    // 恢复期第二次写：若投影已回 ready → update-applied；旁路事件数不再增长
-    const bypassFinal = run.peerEvents.of('degraded-bypass-applied').length;
-    void bypassFinal;
+    const appliedAfterRecovery2 = run.peerEvents.of('update-applied').length;
+    expect(appliedAfterRecovery2).toBeGreaterThan(appliedAfterRecovery1);
+    expect(run.peerEvents.of('degraded-bypass-applied').length).toBe(
+      bypassCountBeforeSecond,
+    );
     expect(run.rootValue('peer', 'extra')).toBe(100);
   });
 
@@ -1310,6 +1524,82 @@ describe('T13：peer degraded bypass', () => {
     run.setDegraded('hub', false);
     // 该 ns 已被 failed 收口（wire 拒绝路径）；验证旁路事件在 hub 始终为零即可
     expect(run.rootValue('hub', 'n')).toBe(42);
+  });
+});
+
+// ═══════════════════════════ B1（SA4 R2）：clock.now throw 隔离 ═══════════════════════════
+
+describe('B1：clock.now throw 隔离（观测缺面，非业务失败）', () => {
+  it('throwing clock：全路径零 unhandled、apply/dirty/wire 不受影响、latency 字段缺失（dormant）', async () => {
+    const unhandled: unknown[] = [];
+    const listener = (reason: unknown): void => {
+      unhandled.push(reason);
+    };
+    process.on('unhandledRejection', listener);
+    try {
+      const boom = (): number => {
+        throw new Error('clock-boom-not-for-wire');
+      };
+      const run = await observedBoot({
+        hubClock: { now: boom },
+        peerClock: { now: boom },
+        random: () => 0.5,
+      });
+      await waitFor(() => run.peer.getNamespaceState(run.nsId) === 'live', 'live');
+      const saveBefore = run.hubNode.persistence.saveEvents.length;
+      // UPDATE / ACK / Step2 全路径（live 双向写 + 门闩挂起让 inFlight/apply 都走时钟面）
+      await run.writePeer({ n: 7 });
+      await settle();
+      await run.writeHub({ extra: 11 });
+      await settle();
+      await run.hubNode.scheduler.advanceBy(1_000); // 挂起期间无未决 timer——仅推进（消耗 ack/空闲探测面）
+      await settle();
+      // —— 数据面：apply 结果与 dirty 登记不受 clock throw 影响 ——
+      expect(run.rootValue('hub', 'n')).toBe(7);
+      expect(run.rootValue('peer', 'extra')).toBe(11);
+      expect(run.hubNode.persistence.saveEvents.length).toBeGreaterThan(saveBefore);
+      // —— 事件面：事件照发（update-applied/update-acked 存在）且 latency 字段缺失（dormant） ——
+      const applied = run.hubEvents.lastOf('update-applied') as Extract<
+        ReplicationObserverEvent,
+        { type: 'update-applied' }
+      > | undefined;
+      expect(applied).toBeDefined();
+      expect('applyLatencyMs' in applied!).toBe(false);
+      const acked = run.peerEvents.lastOf('update-acked') as Extract<
+        ReplicationObserverEvent,
+        { type: 'update-acked' }
+      > | undefined;
+      expect(acked).toBeDefined();
+      expect('ackLatencyMs' in acked!).toBe(false);
+      // —— 进程面：零 unhandledRejection（t0/t1/ACK 记账三点全部折叠） ——
+      expect(unhandled).toHaveLength(0);
+      await run.peer.stop();
+      expect(unhandled).toHaveLength(0);
+    } finally {
+      process.off('unhandledRejection', listener);
+    }
+  });
+
+  it('throwing clock：observer 在场也不改变 wire 帧行为（与无 clock 基线同构）', async () => {
+    const run = await observedBoot({ hubClock: { now: () => { throw new Error('boom'); } }, random: () => 0.5 });
+    await waitFor(() => run.peer.getNamespaceState(run.nsId) === 'live', 'live');
+    await run.writePeer({ n: 21 });
+    await settle();
+    await run.writeHub({ extra: 33 });
+    await settle();
+    // 应用/收敛完整（Step2 + UPDATE + ACK 序列未被打断）
+    expect(run.rootValue('hub', 'n')).toBe(21);
+    await waitFor(() => run.rootValue('peer', 'extra') === 33, 'peer extra 33');
+    const wire = run.wire;
+    const kinds = [...wire.peerToHub, ...wire.hubToPeer].map((b) => {
+      try {
+        return decodeMessage(b).message.kind;
+      } catch {
+        return '?';
+      }
+    });
+    expect(kinds).toContain('UPDATE');
+    expect(kinds).toContain('UPDATE_ACK');
   });
 });
 

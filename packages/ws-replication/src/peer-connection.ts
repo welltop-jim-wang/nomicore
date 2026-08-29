@@ -13,7 +13,7 @@ import {
 import { PeerNamespaceController, type PeerNamespaceHost } from './peer-namespace.js';
 import { ConnectionSender } from './backpressure.js';
 import { startLiveness } from './liveness.js';
-import { dispatchReplicationObserver, stableConnectionCode, stableNamespaceCode } from './observer.js';
+import { dispatchReplicationObserver, safeNow, stableConnectionCode, stableNamespaceCode } from './observer.js';
 import type { NamespaceRegistry } from '@nomicore/namespace-registry';
 import type {
   PeerConnectionState,
@@ -109,7 +109,8 @@ class PeerConnectionImpl implements PeerReplication {
       observerPresent: () => this.observer() !== undefined,
       emitObserver: (event) => dispatchReplicationObserver(this.observer(), event),
       connectionId: () => this.connectionIdValue,
-      now: () => (this.observer() !== undefined ? this.options.clock?.now() : undefined),
+      // B1：时钟采样经 safeNow 折叠（throw → dormant undefined，零协议外溢）
+      now: () => (this.observer() !== undefined ? safeNow(() => this.options.clock?.now()) : undefined),
     };
     for (const target of options.targets ?? []) {
       this.addTarget(target);
