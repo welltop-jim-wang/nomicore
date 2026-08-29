@@ -86,7 +86,7 @@ function ackByteLength(wire: Wire): number {
 describe('issue #137 R2：质量复审 5 项红灯契约', () => {
   // ─────────────────────────── R2-1：超大 UPDATE 静默丢失 ───────────────────────────
 
-  it('R2-1 (直发): live + 窗口有空位 + 队列空 + 单笔超限直发——发送失败必须响亮收口（RESYNC_REQUIRED ≥ 1 + needs-resync），不得静默丢弃', async () => {
+  it('R2-1 (直发): live + 窗口有空位 + 队列空 + 单笔超限直发——发送失败必须响亮收口（RESYNC_REQUIRED ≥ 1）并经恢复 round 收敛，不得静默丢弃', async () => {
     const probe = collectUnhandledRejections();
     try {
       const run = await bootMulti({
@@ -107,13 +107,21 @@ describe('issue #137 R2：质量复审 5 项红灯契约', () => {
       await run.peerWrite(a, { blurb: BIG });
       await settle();
 
-      // ★ 红灯锚（SA2 红线思路 #4 钉死形态）：直发失败必须走 §17 L488 溢出纪律——
-      // 响亮收口：state needs-resync + RESYNC_REQUIRED ≥ 1（当前实现 state=live、RESYNC=0 → 红）
-      expect(run.peer.getNamespaceState(a)).toBe('needs-resync');
+      // ★ 红灯锚（SA2 红线思路 #4 钉死形态，修订版——R2/设计勘误 §5.6 同类先例）：
+      // 直发失败必须走 §17 L488 溢出纪律——wire 级 RESYNC_REQUIRED ≥ 1（当前实现 RESYNC=0 → 红）。
+      // 状态快照断言（needs-resync）已删除：declareLocalResync 立即触发恢复 round 且在本
+      // settle 预算内完成，断言时刻恒为 'live'——瞬时态快照与修复语义结构性矛盾（非软化：
+      // 核心红灯信号 RESYNC_REQUIRED 与收敛性保留并加强，见下 ② 分支）。
       expect(resyncsOf(run.frames('peerToHub'), a).length).toBeGreaterThanOrEqual(1);
-      // 守卫：本地已接受（不回滚）+ 收口在 ns 域（连接健康，不杀连接）
+      // ① 守卫：本地已接受（不回滚）+ 收口在 ns 域（连接健康，不杀连接）
       expect(run.rootValue('peer', a, 'blurb')).toBe(BIG);
       expect(run.connectionState()).toBe('ready');
+      // ② 更强收敛分支（与 R2-1 队列路径用例「显式收口 或 hub 收敛」二选一契约对齐）：
+      // 恢复 round（state-vector diff）确定性收敛到 hub——静默丢失下恒不收敛 → 红
+      await settleUntil(
+        () => run.rootValue('hub', a, 'blurb') === BIG,
+        '恢复 round 后 hub 收敛 blurb=BIG（当前 ' + String(run.rootValue('hub', a, 'blurb')) + '）',
+      );
       await settle();
       expect(probe.events).toEqual([]);
     } finally {
