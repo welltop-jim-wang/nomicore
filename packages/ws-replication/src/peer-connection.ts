@@ -13,12 +13,14 @@ import {
 import { PeerNamespaceController, type PeerNamespaceHost } from './peer-namespace.js';
 import { ConnectionSender } from './backpressure.js';
 import { startLiveness } from './liveness.js';
+import { dispatchReplicationObserver, stableConnectionCode, stableNamespaceCode } from './observer.js';
 import type { NamespaceRegistry } from '@nomicore/namespace-registry';
 import type {
   PeerConnectionState,
   PeerNamespaceState,
   PeerReplication,
   PeerReplicationOptions,
+  ReplicationObserver,
   ReplicationTarget,
   ResolvedBackoff,
   ResolvedLimits,
@@ -31,6 +33,16 @@ import { validatePeerOptions, validateLimits, validateTimeouts, validateBackoff 
 const defaultDefer = (task: () => void): void => queueMicrotask(task);
 
 const HANDSHAKE_OR_READY: ReadonlySet<PeerConnectionState> = new Set(['handshaking', 'ready']);
+
+/** 连接退避 reason 闭联合（§3.1；append-only）。 */
+export type PeerBackoffReason =
+  | 'dial-failed'
+  | 'socket-closed'
+  | 'hello-timeout'
+  | 'pong-timeout'
+  | 'connection-backpressure'
+  | 'goaway-closed'
+  | 'goaway-retry-hint';
 
 export function createPeerReplication(options: PeerReplicationOptions): PeerReplication {
   return new PeerConnectionImpl(options);
@@ -64,6 +76,8 @@ class PeerConnectionImpl implements PeerReplication {
   private goawayActive = false;
   private stopLiveness: (() => void) | undefined;
   private readonly deferTask: (task: () => void) => void;
+  /** 协议 §6.2 专用 observability id（HELLO_ACK 捕获；握手完成前 undefined——事件可选字段）。 */
+  private connectionIdValue: string | undefined;
 
   constructor(private readonly options: PeerReplicationOptions) {
     validatePeerOptions(options);
@@ -92,10 +106,76 @@ class PeerConnectionImpl implements PeerReplication {
       connectionEpoch: () => this.connectionEpochValue,
       isGoawayDraining: () => this.goawayActive,
       deferTask: (task: () => void) => this.deferTask(task),
+      observerPresent: () => this.observer() !== undefined,
+      emitObserver: (event) => dispatchReplicationObserver(this.observer(), event),
+      connectionId: () => this.connectionIdValue,
+      now: () => (this.observer() !== undefined ? this.options.clock?.now() : undefined),
     };
     for (const target of options.targets ?? []) {
       this.addTarget(target);
     }
+  }
+
+  private observer(): ReplicationObserver | undefined {
+    return this.options.observer;
+  }
+
+  /** 连接级观测发射（热路径纪律：先判 observer 在场再构造事件）。 */
+  private emitConnection(event: Parameters<typeof dispatchReplicationObserver>[1]): void {
+    const observer = this.observer();
+    if (observer === undefined) return;
+    dispatchReplicationObserver(observer, event);
+  }
+
+  /** connection-backoff-scheduled（P3/P4）：backoff timer 武装前发射。 */
+  private emitBackoffScheduled(
+    reason: PeerBackoffReason,
+    attempt: number,
+    delayMs: number,
+  ): void {
+    this.emitConnection({
+      type: 'connection-backoff-scheduled',
+      side: 'peer',
+      attempt,
+      delayMs,
+      reason,
+    });
+  }
+
+  /** namespace-error{direction:'sent'}（P9）。 */
+  private emitNsErrorSent(code: string, namespaceId: string): void {
+    this.emitConnection({
+      type: 'namespace-error',
+      side: 'peer',
+      ...(this.connectionIdValue !== undefined ? { connectionId: this.connectionIdValue } : {}),
+      namespaceId,
+      code: stableNamespaceCode(code),
+      direction: 'sent',
+    });
+  }
+
+  /** connection-failed（P6/P7/P8）。 */
+  private emitConnectionFailed(
+    code: string,
+    wsCloseCode: number,
+  ): void {
+    this.emitConnection({
+      type: 'connection-failed',
+      side: 'peer',
+      ...(this.connectionIdValue !== undefined ? { connectionId: this.connectionIdValue } : {}),
+      code: stableConnectionCode(code),
+      wsCloseCode,
+    });
+  }
+
+  /** 水位边沿事件（P10）。 */
+  private emitWaterEvent(type: 'send-paused' | 'send-resumed', bufferedAmount: number): void {
+    this.emitConnection({
+      type,
+      side: 'peer',
+      ...(this.connectionIdValue !== undefined ? { connectionId: this.connectionIdValue } : {}),
+      bufferedAmount,
+    });
   }
 
   // ─────────────────────────────── PeerReplication 公共面 ───────────────────────────────
@@ -209,7 +289,7 @@ class PeerConnectionImpl implements PeerReplication {
     try {
       transport = this.options.dial();
     } catch {
-      this.onTemporaryFailure();
+      this.onTemporaryFailure('dial-failed');
       return;
     }
     this.transport = transport;
@@ -233,6 +313,8 @@ class PeerConnectionImpl implements PeerReplication {
       facetOf: (namespaceId) => this.controllers.get(namespaceId)?.sendFacet,
       isEmitAllowed: () => this.connStateValue === 'ready',
       onBackpressureExhausted: () => this.failConnectionBackpressure(),
+      onSendPaused: (bufferedAmount) => this.emitWaterEvent('send-paused', bufferedAmount),
+      onSendResumed: (bufferedAmount) => this.emitWaterEvent('send-resumed', bufferedAmount),
     });
     this.expectedSeq = 1;
     this.nonce = this.makeNonce();
@@ -297,6 +379,7 @@ class PeerConnectionImpl implements PeerReplication {
     hubInstanceId: string;
     protocolVersion: number;
     connectionNonce: Uint8Array;
+    connectionId: string;
   }): void {
     if (
       message.hubInstanceId !== this.options.hubInstanceId ||
@@ -306,6 +389,7 @@ class PeerConnectionImpl implements PeerReplication {
       this.connectionFatal('INSTANCE_IDENTITY_MISMATCH', 1008);
       return;
     }
+    this.connectionIdValue = message.connectionId; // P2：受控 observability id（协议 §6.2）
     this.clearHello();
     this.setState('ready');
     this.armResetCheck();
@@ -319,7 +403,7 @@ class PeerConnectionImpl implements PeerReplication {
         onPong: transport.onPong,
         onPongTimeout: () => {
           if (!transport.closed) transport.close(1001, 'pong-timeout');
-          this.onTemporaryFailure();
+          this.onTemporaryFailure('pong-timeout');
         },
       });
     }
@@ -402,9 +486,11 @@ class PeerConnectionImpl implements PeerReplication {
     const controller = this.controllers.get(message.namespaceId);
     if (controller === undefined) {
       this.sendControl(namespaceErrorFrame('TARGET_NOT_REQUESTED', message.namespaceId));
+      this.emitNsErrorSent('TARGET_NOT_REQUESTED', message.namespaceId);
       return;
     }
     this.sendControl(namespaceErrorFrame('NAMESPACE_STATE_VIOLATION', message.namespaceId));
+    this.emitNsErrorSent('NAMESPACE_STATE_VIOLATION', message.namespaceId);
   }
 
   private onGoaway(message: { reasonCode: string; drainTimeoutMs: number; retryAfterMs?: number }): void {
@@ -413,6 +499,21 @@ class PeerConnectionImpl implements PeerReplication {
     // 无条件 draining，与 retryAfterMs 无关；hint 只影响 deadline close 后的重连调度）。
     this.goawayDrainMs = message.drainTimeoutMs;
     this.goawayRetryAfterMs = message.retryAfterMs;
+    // P5：reasonCode 稳定化——已知三码原样；未知一律折叠 'other'（对抗高基数注入）
+    const reasonCode =
+      message.reasonCode === 'SERVER_RESTARTING' ||
+      message.reasonCode === 'SERVER_SHUTTING_DOWN' ||
+      message.reasonCode === 'REAUTH_REQUIRED'
+        ? message.reasonCode
+        : 'other';
+    this.emitConnection({
+      type: 'goaway-received',
+      side: 'peer',
+      ...(this.connectionIdValue !== undefined ? { connectionId: this.connectionIdValue } : {}),
+      reasonCode,
+      drainTimeoutMs: message.drainTimeoutMs,
+      ...(message.retryAfterMs !== undefined ? { retryAfterMs: message.retryAfterMs } : {}),
+    });
     if (message.reasonCode === 'SERVER_SHUTTING_DOWN' || message.reasonCode === 'REAUTH_REQUIRED') {
       // 永久失败类必须走统一 blocked 收口：同步静默 namespace、清发送队列及全部 timer，
       // 同时保持 wire 开放供宿主决定最终关闭时机。
@@ -496,6 +597,7 @@ class PeerConnectionImpl implements PeerReplication {
     if (controller === undefined) {
       // 无生命周期即无合法收发态（§6 广义面）：统一 NAMESPACE_STATE_VIOLATION
       this.sendControl(namespaceErrorFrame('NAMESPACE_STATE_VIOLATION', namespaceId));
+      this.emitNsErrorSent('NAMESPACE_STATE_VIOLATION', namespaceId);
       return;
     }
     fn(controller);
@@ -581,6 +683,7 @@ class PeerConnectionImpl implements PeerReplication {
       transport.close(1008, 'sequence-exhausted');
     }
     this.enterBlocked();
+    this.emitConnectionFailed('OUTBOUND_SEQUENCE_EXHAUSTED', 1008); // P7
   }
 
   // ─────────────────────────────── 失败/关闭分类 ───────────────────────────────
@@ -608,7 +711,7 @@ class PeerConnectionImpl implements PeerReplication {
       this.enterBlocked();
       return;
     }
-    this.onTemporaryFailure();
+    this.onTemporaryFailure('socket-closed');
   }
 
   /** GOAWAY drain 关闭后的重连编排（§15.1 SERVER_RESTARTING 行）。 */
@@ -617,7 +720,7 @@ class PeerConnectionImpl implements PeerReplication {
     this.sender?.teardown();
     const retryAfter = this.goawayRetryAfterMs;
     if (retryAfter === undefined) {
-      this.onTemporaryFailure(); // 无 hint：普通 full-jitter backoff（G1 L193-209/D5 冻结面）
+      this.onTemporaryFailure('goaway-closed'); // 无 hint：普通 full-jitter backoff（G1 L193-209/D5 冻结面）
       return;
     }
     this.clearHello();
@@ -628,10 +731,13 @@ class PeerConnectionImpl implements PeerReplication {
     // random=0 → 恰 retryAfterMs；attempt 不递增——hub 编排的回重不是失败事件，不放大退避）
     const cap = Math.min(this.backoff.maxMs, this.backoff.baseMs * 2 ** this.attempts);
     const random = this.options.random ?? Math.random;
+    const delay = retryAfter + Math.max(0, random() * cap);
+    // P4：goaway-retry-hint（attempt 不递增——回重提示不是失败事件）
+    this.emitBackoffScheduled('goaway-retry-hint', this.attempts, delay);
     this.backoffHandle = this.options.timer.setTimeout(() => {
       this.backoffHandle = undefined;
       if (this.connStateValue === 'backoff') this.dialNow();
-    }, retryAfter + Math.max(0, random() * cap));
+    }, delay);
   }
 
   private connectionFatal(code: string, wsCloseCode: number): void {
@@ -653,6 +759,7 @@ class PeerConnectionImpl implements PeerReplication {
       transport.close(wsCloseCode, 'protocol-error');
     }
     this.enterBlocked();
+    this.emitConnectionFailed(code, wsCloseCode); // P6：稳定码折叠（未知 → INTERNAL_ERROR）
   }
 
   /**
@@ -684,7 +791,8 @@ class PeerConnectionImpl implements PeerReplication {
       transport.close(1011, 'control-backpressure');
     }
     this.sender?.teardown();
-    this.onTemporaryFailure();
+    this.emitConnectionFailed('CONNECTION_BACKPRESSURE', 1011); // P8
+    this.onTemporaryFailure('connection-backpressure'); // P3（其后 backoff 事件）
   }
 
   private enterBlocked(): void {
@@ -708,7 +816,7 @@ class PeerConnectionImpl implements PeerReplication {
     }
   }
 
-  private onTemporaryFailure(): void {
+  private onTemporaryFailure(reason: PeerBackoffReason): void {
     if (this.stopping) return;
     if (this.connStateValue === 'backoff' || this.connStateValue === 'blocked') return;
     this.sender?.teardown();
@@ -722,6 +830,8 @@ class PeerConnectionImpl implements PeerReplication {
     const cap = Math.min(this.backoff.maxMs, this.backoff.baseMs * Math.pow(2, this.attempts - 1));
     const random = this.options.random ?? Math.random;
     const delay = Math.max(0, random() * cap);
+    // P3：backoff timer 武装前发射（attempt = 已递增后的尝试序；delayMs = 实际退避）
+    this.emitBackoffScheduled(reason, this.attempts, delay);
     this.backoffHandle = this.options.timer.setTimeout(() => {
       this.backoffHandle = undefined;
       if (this.connStateValue === 'backoff') this.dialNow();
@@ -761,7 +871,7 @@ class PeerConnectionImpl implements PeerReplication {
     this.clearHello();
     this.helloHandle = this.options.timer.setTimeout(() => {
       this.helloHandle = undefined;
-      if (this.connStateValue === 'handshaking') this.onTemporaryFailure();
+      if (this.connStateValue === 'handshaking') this.onTemporaryFailure('hello-timeout');
     }, this.timeouts.helloTimeoutMs);
   }
 
@@ -796,7 +906,16 @@ class PeerConnectionImpl implements PeerReplication {
 
   private setState(state: PeerConnectionState): void {
     if (this.connStateValue === state) return;
+    const from = this.connStateValue;
     this.connStateValue = state;
+    // P1：连接 FSM 唯一迁移点（同态早退——边沿 exactly-once；初始 'stopped' 无迁移不发射）
+    this.emitConnection({
+      type: 'connection-state-changed',
+      side: 'peer',
+      ...(this.connectionIdValue !== undefined ? { connectionId: this.connectionIdValue } : {}),
+      from,
+      to: state,
+    });
   }
 
   private isTerminalState(state: PeerNamespaceState): boolean {

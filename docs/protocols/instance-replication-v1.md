@@ -591,3 +591,141 @@ GOAWAY 的 `drainTimeoutMs` 是网络域硬 deadline：Hub 先武装 drain、发
 - secret-free logs和受控metrics标签。
 
 首批 golden vectors 的具体十六进制输出由实现票在锁定 `lib0`/`y-protocols` 版本后生成并提交；实现不得改变本文字段顺序和消息语义来适配库的偶然编码。
+
+## 23. Observability seam（local，非 wire 契约）
+
+本节登记 `@nomicore/ws-replication` 的**结构化 observer seam**（ADR 0010 L167、issue #177）。
+属于 local seam：**不改变任何 wire 字节**，不新增帧/字段/错误码；事件词汇只描述既有协议
+事实的观测投影。事件经构造函数注入的 `observer?: ReplicationObserver` 同步交付
+（附带可选 `clock?: ReplicationClock` 以观测 apply/ACK latency）。Seam 是**追加式
+（append-only）**：事件类型、reason/cause/via 词表、稳定码表只增不改；GA 后字段语义冻结。
+
+### 23.1 事件词汇（19 型，分类列示）
+
+连接域：
+
+| type | side | 字段 |
+|---|---|---|
+| `connection-state-changed` | hub/peer | `connectionId?`、`from`、`to`（连接态；hub 仅 `handshaking/ready/draining/closed`，peer 为 §15 全 8 态） |
+| `connection-backoff-scheduled` | peer | `attempt`、`delayMs`、`reason` ∈ {dial-failed, socket-closed, hello-timeout, pong-timeout, connection-backpressure, goaway-closed, goaway-retry-hint} |
+| `goaway-received` | peer | `connectionId?`、`reasonCode` ∈ {SERVER_RESTARTING, SERVER_SHUTTING_DOWN, REAUTH_REQUIRED, **other**}（未知码一律折叠 `other`——对抗高基数注入）、`drainTimeoutMs`、`retryAfterMs?` |
+
+channel 域：
+
+| type | side | 字段 |
+|---|---|---|
+| `channel-state-changed` | hub/peer | `connectionId?`、`namespaceId`、`from`、`to`（hub 9 态 / peer 11 态） |
+
+bootstrap / reconcile / updates 字节与 latency（每帧粒度；次数 = 事件计数）：
+
+| type | side | 字段 |
+|---|---|---|
+| `bootstrap-snapshot-sent` | hub | `connectionId?`、`namespaceId`、`bytes`（BOOTSTRAP_SNAPSHOT 帧快照长度） |
+| `bootstrap-imported` | peer | `connectionId?`、`namespaceId`、`bytes`（本地导入快照长度） |
+| `sync-step2-sent` | hub/peer | `connectionId?`、`namespaceId`、`bytes`（出向 Step2 diff 载荷长度） |
+| `sync-diff-applied` | hub/peer | `connectionId?`、`namespaceId`、`bytes`、`applyLatencyMs?` |
+| `update-sent` | hub/peer | `connectionId?`、`namespaceId`、`bytes`（出站 UPDATE 帧 payload 长度；合并帧报合并后长度） |
+| `update-applied` | hub/peer | `connectionId?`、`namespaceId`、`bytes`、`applyLatencyMs?` |
+| `update-acked` | hub/peer | `connectionId?`、`namespaceId`、`bytes`、`ackLatencyMs?` |
+| `degraded-bypass-applied` | peer（专属） | `connectionId?`、`namespaceId`、`bytes`（§20 peer degraded 内存 apply） |
+
+auth / 背压 / resync：
+
+| type | side | 字段 |
+|---|---|---|
+| `auth-upgrade-rejected` | hub | `reason` ∈ {hub-shutdown, missing-token, verifier-missing, frame-too-large, early-frame-limit, auth-timeout, invalid-credentials, invalid-instance-id, peer-disconnected}（pre-connection：无 connectionId 字段——设计 §四攻击点 #8） |
+| `resync-required` | hub/peer | `connectionId?`、`namespaceId`、`cause` ∈ {queue-overflow, send-failed, connection-shed, ack-timeout, session-fanout-overflow, remote-declared} |
+| `send-paused` / `send-resumed` | hub/peer | `connectionId?`、`bufferedAmount` |
+
+稳定错误计数：
+
+| type | side | 字段 |
+|---|---|---|
+| `connection-failed` | hub/peer | `connectionId?`、`code`（§23.2 闭联合）、`wsCloseCode` |
+| `namespace-error` | hub/peer | `connectionId?`、`namespaceId`、`code`（§23.2 闭联合）、`direction` ∈ {sent, received}、`terminalState?` ∈ {failed, conflicted, closed} |
+| `identity-conflicted` | hub/peer | `connectionId?`、`namespaceId`、`via` ∈ {open-mismatch, fence, identity-changed-frame} |
+
+**apply 成功路径互斥规则**（避免计数重复）：每笔成功 apply 恰一事件 = `update-applied`
+（UPDATE 且非 degraded）／`sync-diff-applied`（Step2 且非 degraded）／
+`degraded-bypass-applied`（degraded，任意来源）三选一。
+
+### 23.2 稳定码闭联合（append-only）
+
+- **连接域** `ReplicationObserverConnectionCode` = 协议 §13.1 全 17 码（codec
+  `ConnectionErrorCode` 同源）＋ **本 seam 登记的内部码**：
+  - `PONG_TIMEOUT`（hub 活性失联；无 wire 帧——本地内部路径）；
+  - `OUTBOUND_SEQUENCE_EXHAUSTED`（双端出站 uint32 耗尽；无 wire 帧）。
+- **namespace 域** `ReplicationObserverNamespaceCode` = 协议 §13.2 全 20 码（codec
+  `NamespaceErrorCode` 同源）＋ **内部码**：
+  - `IDENTITY_CHANGED`（§11 fence 帧方向标注；消息名作稳定字符串）。
+- **未知码折叠规则**：异常携带任意 string 时经白名单匹配（注册表键 + 上述内部码），
+  不匹配一律折叠 `INTERNAL_ERROR`（注册表既有成员）。折叠只影响事件字段取值，
+  协议行为零变化。
+- `namespace-error.terminalState` 沿用 §13 注册表导出（needs-resync 钳制为 failed）。
+
+### 23.3 事件内容安全清单（Safe-field）
+
+**允许**：稳定字面量（type/side/direction/via/reason/cause/reasonCode/from/to/
+terminalState）、受控标识（`namespaceId` 恒为 `^ns-[0-9a-f]{32}$`；`connectionId` 为
+§6.2 专用 observability id，握手完成前字段不存在）、稳定错误码（§23.2 闭联合）、
+有限数值（`bytes` 是**长度**不是内容；`applyLatencyMs`/`ackLatencyMs` 是**差值**
+非绝对时间戳）。
+
+**禁止**：token（任何形态）；owner 值（NamespaceOwner/userId/localOwner）；Yjs bytes
+（事件树深扫不得出现 `Uint8Array`/`ArrayBuffer`/`DataView`）；SCHEMA/ROOT 内容；
+原始 cause（Error 对象/`.message`/`.stack`/异常字符串）；wire 原样自由文本
+（含 transport close `reason`——只允许 close code 与本地分类）；不受控高基数字段。
+
+### 23.4 隔离语义与时钟
+
+- 回调**同步**投递；throw 被隔离（静默，绝不改变协议状态、关闭分类或 Runtime 写入
+  结果）；返回值（含 Promise）被忽略——异步 reject 属宿主域 unhandled。
+- 事件在**决策已落定之后**发射（状态已写入 / close 已判定 / 帧已入队或已收 /
+  apply promise 已结算）；发射点均位于 ws-replication 层帧分发同步段或 apply 结算
+  续体，永不位于 Registry write sequencer 槽内。
+- `clock?: ReplicationClock`（`{ now(): number }`，单调时源）：`applyLatencyMs` =
+  apply 成功续体时刻 − 进入 apply 时刻（**含 write sequencer 排队等待**）；
+  `ackLatencyMs` = 收到 UPDATE_ACK 时刻 − 帧实际出队发送时刻（含对端 sequencer +
+  网络）。缺省 clock = 全部 latency 字段不存在（field 缺失，非 undefined 值）。
+  `now()` 只作差，**绝对时间戳不入事件**。实现内禁止 `Date.now()`/
+  `performance.now()` 回退（ADR 0009 纪律）。
+- 无 observer = 零事件、零状态投影读取、零时钟调用（行为与现状逐字节等价）。
+- 事件对象不可变（类型层 readonly）；observer 内调用公共 API（stop/removeTarget/
+  addTarget/close/revoke）由既有幂等/状态门承接；递归事件环属宿主缺陷（同
+  Registry seam 取舍）。
+
+### 23.5 peer degraded bypass 判别语义
+
+`degraded-bypass-applied` 判据（仅 apply 成功 ∧ observer 已注入时求值）：
+
+```text
+lease.getStatus() = { lease: 'active', runtime: R } 且
+R.lifecycle === 'ready' ∧ R.fatal === null ∧ R.rootWrite.enabled === false
+⟹ degraded-bypass-applied
+```
+
+判别在 apply 完成后**读投影**（§20 语义：认证 Hub→Peer session 在 persistencedegraded 期仍可 memory apply）；投影读取的翻转窗口会产生单笔误归因（恢复期漏报 /
+新降级期多报方向）。观测信号不是行为开关，runtime 槽内决策仍是权威事实。hub 侧
+`rootWrite` 关闭表现为 §20 hub degraded 拒绝（`PERSISTENCE_DEGRADED` wire 拒绝，
+已由 `namespace-error` 覆盖）——hub 结构性不可能 bypass，故事件 `side:'peer'` 专属。
+
+### 23.6 Adapter（日志/metrics/trace）指引
+
+| Adapter | 允许 | 禁止 |
+|---|---|---|
+| 日志 | side/type/code/cause/reason/namespaceId/connectionId/数值（访问控制下）；每帧事件建议采样 | token、owner、bytes 内容、SCHEMA/ROOT、cause 原文、绝对时间戳 |
+| metrics（默认） | label ∈ {side, type, code, cause, reason}；counter/gauge/histogram 数值（bytes/latency 入 histogram） | namespaceId/connectionId 作默认 label |
+| trace | 同日志 + 采样 | 全量 update 级 span 未采样直发 |
+
+`namespaceId`/`connectionId` 是事件 payload（供受控日志/trace 关联），**默认不绑
+metric label**（§19 ADR L159）。每帧事件（update-sent/applied/acked、sync-*）体量
+注记：adapter 应聚合计数/直方图而非逐事件打日志。
+
+### 23.7 Conformance 补充
+
+Conformance 测试（§22 增补）须覆盖：全事件矩阵 key-set 冻结白名单断言；token/owner/
+Yjs bytes/SCHEMA/ROOT/cause 哨兵深扫（含 `JSON.stringify` 无标记物、深扫无
+`Uint8Array`/`ArrayBuffer`/`Error`）；observer 每事件必 throw 时 wire 帧序列、终态、
+文档内容与 apply 结算与无 observer 基线全等；无 clock 时 latency 字段缺失、有 clock
+时 ≥ 0；degraded 期 hub→peer apply 产生 `degraded-bypass-applied` 且互斥于
+`update-applied`。

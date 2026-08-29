@@ -18,12 +18,20 @@ export interface UpdateChannelHost {
   readonly ackTimeoutMs: number;
   /** 发送 UPDATE 帧；返回分配的帧序。 */
   readonly sendUpdateFrame: (bytes: Uint8Array) => number;
-  /** 本端声明 RESYNC（§10.2 溢出/ACK timeout/session 溢出边沿）：ns → needs-resync + RESYNC 帧。 */
-  readonly declareLocalResync: () => void;
+  /** 本端声明 RESYNC（§10.2 溢出/ACK timeout/session 溢出边沿）：ns → needs-resync + RESYNC 帧。
+   *  cause 为 resync 子因判别（§6.5 U1：live 溢出 / 发送失败）。 */
+  readonly declareLocalResync: (cause: 'queue-overflow' | 'send-failed') => void;
   /** 非 live 溢出（§5.3）：丢弃未发送 + 置 pendingResync（round 完成时再开 round）。 */
   readonly notePendingResync: () => void;
   /** ACK timeout（§10.4）：弃置 in-flight + needs-resync + 立即新 round。 */
   readonly onAckTimeout: () => void;
+  /** 单笔 ACK 收妥记账（§6.5 U2/U3）：bytes = 在途帧载荷长度；latencyMs = ACK 时刻 − 发送时刻
+   *  （clock 缺省/无 observer 时 undefined）。 */
+  readonly onUpdateAcked: (
+    info: Readonly<{ bytes: number; latencyMs?: number }>,
+  ) => void;
+  /** 单调时源（仅作差；控制器绑定 clock——无 clock 时返回 undefined）。 */
+  readonly now?: () => number | undefined;
   readonly armTimer: (callback: () => void, delayMs: number) => unknown;
   readonly clearTimer: (handle: unknown) => void;
   /** 连接级 data 水位闸门（§4.2；issue #137）：true = 可发送。 */
@@ -39,7 +47,9 @@ interface QueuedItem {
 }
 
 export class UpdateChannel {
-  readonly inFlight = new Map<number, Uint8Array>();
+  /** 在途记账（§6.5 U2）：值形状 = {载荷字节数, 发送时刻}——纯内部记账，消费方仅
+   *  size/keys/get/delete/clear，行为等价。sentAt 仅作差（clock 缺省 → undefined）。 */
+  readonly inFlight = new Map<number, { readonly bytes: number; readonly sentAt?: number }>();
   readonly zombieSeqs = new Set<number>();
   private readonly queued: QueuedItem[] = [];
   private queuedByteCount = 0;
@@ -81,7 +91,7 @@ export class UpdateChannel {
       this.discardQueued();
       if (mode === 'live') {
         this.needsResync = true;
-        this.host.declareLocalResync();
+        this.host.declareLocalResync('queue-overflow');
       } else {
         this.host.notePendingResync();
       }
@@ -96,6 +106,7 @@ export class UpdateChannel {
   /** ACK 簿记（§10.3）：返回 'ok' | 'zombie' | 'violation'（never-sent → 连接级 fatal）。 */
   onAck(sequence: number): 'ok' | 'zombie' | 'violation' {
     if (this.inFlight.has(sequence)) {
+      const entry = this.inFlight.get(sequence)!;
       const wasOldest = sequence === this.oldestInFlightSeq();
       this.inFlight.delete(sequence);
       if (this.inFlight.size === 0) {
@@ -105,6 +116,14 @@ export class UpdateChannel {
         this.disarmAckTimer();
         this.armAckTimer();
       }
+      // §6.5 U2：ack 收妥记账（latency = 收到 ACK 时刻 − 帧出队发送时刻；只作差）
+      const t1 = this.host.now?.();
+      const latencyMs =
+        entry.sentAt !== undefined && t1 !== undefined ? t1 - entry.sentAt : undefined;
+      this.host.onUpdateAcked({
+        bytes: entry.bytes,
+        ...(latencyMs !== undefined ? { latencyMs } : {}),
+      });
       if (this.queued.length > 0) this.host.requestDataDrain(); // §6.2：原同步 flush 循环 → 连接级 drain
       return 'ok';
     }
@@ -152,8 +171,9 @@ export class UpdateChannel {
       if (this.queued.length === 0) {
         this.discardQueued();            // no-op（队列已空）；保持 §17 L488「丢弃全部未发送」形状
         this.needsResync = true;         // 停发新 UPDATE（deliver 首行丢弃）
-        this.host.declareLocalResync();  // peer: RESYNC_REQUIRED{send-queue-overflow} + setState
-                                         //       + maybeStartRecovery；hub: declareHubResync 同构
+        this.host.declareLocalResync('send-failed'); // peer: RESYNC_REQUIRED{send-queue-overflow}
+                                                     // + setState + maybeStartRecovery；
+                                                     // hub: declareHubResync 同构
       }
       return; // 不调用 host.sendUpdateFrame——控制器大小门保留为不可达后盾
     }
@@ -161,10 +181,15 @@ export class UpdateChannel {
     if (seq <= 0) {
       this.discardQueued();
       this.needsResync = true;
-      this.host.declareLocalResync();
+      this.host.declareLocalResync('send-failed');
       return;
     }
-    this.inFlight.set(seq, bytes);
+    // §6.5 U2：发送时刻记账（帧实际出队后；clock 缺省 → undefined）
+    const sentAt = this.host.now?.();
+    this.inFlight.set(seq, {
+      bytes: bytes.byteLength,
+      ...(sentAt !== undefined ? { sentAt } : {}),
+    });
     this.armAckTimer();
   }
 

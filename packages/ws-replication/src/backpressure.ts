@@ -49,6 +49,10 @@ export interface ConnectionSenderHost {
   isEmitAllowed(): boolean;
   /** §4.3 保留额度耗尽 → CONNECTION_BACKPRESSURE 分类连接失败（1011）。 */
   onBackpressureExhausted(): void;
+  /** 水位暂停边沿（> highWater 进入暂停；§6.5 B1）。可选（无 observer 接线 = 零回调）。 */
+  onSendPaused?(bufferedAmount: number): void;
+  /** 水位恢复边沿（暂停段降至 ≤ lowWater；§6.5 B2）。可选（无 observer 接线 = 零回调）。 */
+  onSendResumed?(bufferedAmount: number): void;
 }
 
 /** 恢复检查间隔（§1.3-3 冻结常量；测试 1s×30 步进假设内，非配置）。 */
@@ -185,6 +189,8 @@ export class ConnectionSender {
     this.paused = true;
     this.controlReserveUsed = 0;
     this.armPoll();
+    // 水位暂停边沿（决策已落定后通知；观察值 = 触发时刻 bufferedAmount）
+    this.host.onSendPaused?.(this.host.readBufferedAmount());
   }
 
   private resume(): void {
@@ -192,6 +198,8 @@ export class ConnectionSender {
     this.paused = false;
     this.controlReserveUsed = 0;
     this.clearPoll();
+    // 水位恢复边沿先于 drain 通知（事件描述「恢复已决」的事实；drain 是后续动作）
+    this.host.onSendResumed?.(this.host.readBufferedAmount());
     this.requestDrain(); // §4.2：恢复即立即 drain（设计走查：AC-6a/6b 恢复段由 poll 触发）
   }
 

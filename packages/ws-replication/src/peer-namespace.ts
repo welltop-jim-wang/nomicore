@@ -11,6 +11,7 @@ import type {
 } from '@nomicore/namespace-registry';
 import { FenceWatchdog, type WatchdogPredicate } from './fence-watchdog.js';
 import { namespaceErrorFrame } from './frame-io.js';
+import { cidField, stableNamespaceCode } from './observer.js';
 import { Memoized } from './lifecycle-queue.js';
 import {
   mapEncodeThrow,
@@ -25,6 +26,7 @@ import { UpdateChannel } from './update-channel.js';
 import type { DataSenderFacet } from './backpressure.js';
 import type {
   PeerNamespaceState,
+  ReplicationObserverEvent,
   ReplicationTarget,
   ReplicationTimer,
   ResolvedLimits,
@@ -56,6 +58,14 @@ export interface PeerNamespaceHost {
   connectionFatal(code: string, wsCloseCode?: number): void;
   /** 连接代际（每次拨号 +1）：异步续体以此判别「连接已断/已重建」的迟到性（§13.4）。 */
   connectionEpoch(): number;
+  /** observer 是否在场（热路径纪律：无 observer 零事件构造/零投影读取/零时钟调用）。 */
+  observerPresent(): boolean;
+  /** observer 事件分发（隔离语义在 dispatchReplicationObserver 单点）。 */
+  emitObserver(event: ReplicationObserverEvent): void;
+  /** 连接级受控 observability id（HELLO_ACK 前 undefined）。 */
+  connectionId(): string | undefined;
+  /** 单调时源（仅作差；clock 缺省/无 observer 时 undefined）。 */
+  now?(): number | undefined;
 }
 
 type TimerKind = 'open' | 'bootstrap' | 'reconcile' | 'close';
@@ -96,6 +106,8 @@ export class PeerNamespaceController {
   readonly channel: UpdateChannel;
   readonly watchdog: FenceWatchdog;
   private readonly onOwnedBound: (bytes: Uint8Array) => void;
+  /** 构造期捕获的 observer 在场标记（options 注入后不可变——热路径判空零调用）。 */
+  private readonly observerOn: boolean;
 
   /** 连接级 data 调度面（§6.1/§6.3）：pull 以 state==='live' 为门槛（deferred 队列
    *  仅在 resetForLive 后经 drain 放行——与 #136「flushQueued 只从 onAck/resetForLive
@@ -107,7 +119,7 @@ export class PeerNamespaceController {
     discardForConnectionPressure: () => {
       this.channel.discardForConnectionPressure();
       if (this.state === 'live') {
-        this.declareLocalResync();
+        this.declareLocalResync('connection-shed');
       } else {
         this.pendingResync = true;
       }
@@ -119,10 +131,24 @@ export class PeerNamespaceController {
     target: ReplicationTarget,
   ) {
     this.target = target;
+    this.observerOn = host.observerPresent();
     this.onOwnedBound = (bytes: Uint8Array): void => this.onOwnedUpdate(bytes);
     this.round = new RoundEngine({
       role: 'peer',
-      send: (message) => this.sendChecked(message),
+      send: (message) => {
+        const seq = this.sendChecked(message);
+        // PN11：出向 Step2 diff 字节（seq>0 时发射——0 = 帧被否决，未出站）
+        if (seq > 0 && message.kind === 'SYNC_STEP2' && this.observerOn) {
+          this.host.emitObserver({
+            type: 'sync-step2-sent',
+            side: 'peer',
+            ...(cidField(this.host.connectionId())),
+            namespaceId: this.namespaceId,
+            bytes: message.update.byteLength,
+          });
+        }
+        return seq;
+      },
       encode: (kind, remoteSV) => {
         try {
           const session = this.session;
@@ -148,11 +174,13 @@ export class PeerNamespaceController {
       limits: host.limits,
       ackTimeoutMs: host.timeouts.ackTimeoutMs,
       sendUpdateFrame: (bytes) => this.sendUpdateFrame(bytes),
-      declareLocalResync: () => this.declareLocalResync(),
+      declareLocalResync: (cause) => this.declareLocalResync(cause),
       notePendingResync: () => {
         this.pendingResync = true;
       },
       onAckTimeout: () => this.onAckTimeoutFired(),
+      onUpdateAcked: (info) => this.onUpdateAcked(info),
+      now: () => this.host.now?.(),
       armTimer: (cb, ms) => host.timer.setTimeout(cb, ms),
       clearTimer: (h) => host.timer.clearTimeout(h),
       dataGateOpen: () => this.host.dataGateOpen(),
@@ -399,6 +427,16 @@ export class PeerNamespaceController {
         return;
       }
       this.lease = importResult.lease;
+      // PN4：bootstrap 导入字节（成功分支；importResult.ok 已判定、BOOTSTRAP_ACK 之前）
+      if (this.observerOn) {
+        this.host.emitObserver({
+          type: 'bootstrap-imported',
+          side: 'peer',
+          ...(cidField(this.host.connectionId())),
+          namespaceId: this.namespaceId,
+          bytes: message.snapshot.byteLength,
+        });
+      }
       const opened = await this.tryOpenReplicationSession(epoch);
       if (!opened) return;
       this.clearTimer('bootstrap');
@@ -456,6 +494,7 @@ export class PeerNamespaceController {
     if (this.isQuietState()) return;
     this.channel.markResyncReceived();
     this.setState('needs-resync');
+    this.emitResyncRequired('remote-declared'); // PN6
     this.maybeStartRecovery();
   }
 
@@ -524,6 +563,7 @@ export class PeerNamespaceController {
     if (this.state === 'closing') {
       return; // §13.4：closing 期 terminal 帧只推进收口
     }
+    this.emitIdentityConflicted('identity-changed-frame'); // PN8
     this.finalize('conflicted');
   }
 
@@ -533,7 +573,19 @@ export class PeerNamespaceController {
       // R3/#5d：closing 中 terminal ERROR → 维持 closing（零回发帧）
       return;
     }
-    this.finalize(toFinalState(terminalStateOf(message.code)));
+    const terminal = toFinalState(terminalStateOf(message.code));
+    if (this.observerOn) {
+      this.host.emitObserver({
+        type: 'namespace-error',
+        side: 'peer',
+        ...(cidField(this.host.connectionId())),
+        namespaceId: this.namespaceId,
+        code: stableNamespaceCode(message.code),
+        direction: 'received',
+        terminalState: terminal,
+      });
+    }
+    this.finalize(terminal);
   }
 
   // ─────────────────────────────── removeTarget / 生命周期矩阵（§13.1） ───────────────────────────────
@@ -702,6 +754,7 @@ export class PeerNamespaceController {
   private onAckTimeoutFired(): void {
     if (this.state === 'live' || this.state === 'needs-resync') {
       this.setState('needs-resync');
+      this.emitResyncRequired('ack-timeout'); // PN6b：peer 不发 RESYNC_REQUIRED——本地边沿通知
       this.host.deferTask(() => {
         if (this.state === 'needs-resync') this.maybeStartRecovery();
       });
@@ -717,7 +770,15 @@ export class PeerNamespaceController {
     this.startRound();
   }
 
-  private declareLocalResync(): void {
+  private declareLocalResync(
+    cause:
+      | 'queue-overflow'
+      | 'send-failed'
+      | 'connection-shed'
+      | 'session-fanout-overflow'
+      | 'remote-declared'
+      | 'ack-timeout',
+  ): void {
     if (this.resyncDeclared) return;
     this.resyncDeclared = true;
     this.sendChecked({
@@ -726,6 +787,7 @@ export class PeerNamespaceController {
       reasonCode: 'send-queue-overflow',
     });
     this.setState('needs-resync');
+    this.emitResyncRequired(cause); // PN5：仅 resyncDeclared false→true 翻转时发射
     this.maybeStartRecovery();
   }
 
@@ -740,6 +802,7 @@ export class PeerNamespaceController {
       reasonCode: 'send-queue-overflow',
     });
     this.setState('needs-resync');
+    this.emitResyncRequired('session-fanout-overflow'); // PN5②（自持声明逻辑）
     this.maybeStartRecovery();
   }
 
@@ -773,10 +836,34 @@ export class PeerNamespaceController {
       // OutboundExhaustedError（uint32 耗尽已由 onSequenceExhausted 先行收口连接）
       // 与编码错统一收敛为返回 0 → F4 消费即丢弃。任何异常不得穿越
       // drainData/onAck/onMessage/timer 回调栈成为 uncaught。
-      return this.host.sendData(this.namespaceId, bytes);
+      const seq = this.host.sendData(this.namespaceId, bytes);
+      // PN10：出向 UPDATE 帧字节（seq>0 时发射——0 = 帧被否决，未出站；合并帧报合并后长度）
+      if (seq > 0 && this.observerOn) {
+        this.host.emitObserver({
+          type: 'update-sent',
+          side: 'peer',
+          ...(cidField(this.host.connectionId())),
+          namespaceId: this.namespaceId,
+          bytes: bytes.byteLength,
+        });
+      }
+      return seq;
     } catch {
       return 0;
     }
+  }
+
+  /** PN12：本出向 UPDATE 被对端 ACK 收妥（数据来自 UpdateChannel 记账）。 */
+  private onUpdateAcked(info: Readonly<{ bytes: number; latencyMs?: number }>): void {
+    if (!this.observerOn) return;
+    this.host.emitObserver({
+      type: 'update-acked',
+      side: 'peer',
+      ...(cidField(this.host.connectionId())),
+      namespaceId: this.namespaceId,
+      bytes: info.bytes,
+      ...(info.latencyMs !== undefined ? { ackLatencyMs: info.latencyMs } : {}),
+    });
   }
 
   private async applyStep2(update: Uint8Array, step2Sequence: number): Promise<'ok' | 'aborted'> {
@@ -808,6 +895,8 @@ export class PeerNamespaceController {
       return 'failed';
     }
     const epoch = this.host.connectionEpoch(); // B-2d：代际捕获——旧连接的迟到 ACK 不得落新连接
+    // §5.7：latency 采样仅在 observer 在场时取钟（进入 apply 时刻——含 sequencer 排队）
+    const t0 = this.observerOn ? this.host.now?.() : undefined;
     const pending = session.applyRemoteUpdate(update);
     this.pendingApplies.add(pending);
     try {
@@ -817,6 +906,35 @@ export class PeerNamespaceController {
           mapSessionRefusal(result.code, this.session, this.runtimeSnapshot(), 'peer'),
         );
         return 'failed';
+      }
+      if (this.observerOn) {
+        // PN7'：每笔成功 apply 恰一事件（§3.1 互斥三选一；degraded 判别仅在 observer 在场读投影）
+        const degraded = this.degradedBypassActive();
+        if (degraded) {
+          this.host.emitObserver({
+            type: 'degraded-bypass-applied',
+            side: 'peer',
+            ...(cidField(this.host.connectionId())),
+            namespaceId: this.namespaceId,
+            bytes: update.byteLength,
+          });
+        } else {
+          const t1 = this.host.now?.();
+          const applyLatencyMs =
+            t0 !== undefined && t1 !== undefined ? t1 - t0 : undefined;
+          const base = {
+            side: 'peer',
+            ...cidField(this.host.connectionId()),
+            namespaceId: this.namespaceId,
+            bytes: update.byteLength,
+            ...(applyLatencyMs !== undefined ? { applyLatencyMs } : {}),
+          } as const;
+          if (isStep2) {
+            this.host.emitObserver({ type: 'sync-diff-applied', ...base });
+          } else {
+            this.host.emitObserver({ type: 'update-applied', ...base });
+          }
+        }
       }
       if (isStep2) return 'ok'; // SYNC_APPLIED 由 applyStep2 发送（§9.1.4）
       if (this.isQuietState() || this.host.connectionEpoch() !== epoch) {
@@ -833,6 +951,31 @@ export class PeerNamespaceController {
       return 'failed';
     } finally {
       this.pendingApplies.delete(pending);
+    }
+  }
+
+  /**
+   * §3.4 peer degraded bypass 判别（零 Registry/Runtime 改动）：apply 成功后读
+   * lease.getStatus() 投影——`rootWrite.enabled === false` ∧ runtime 健康（lifecycle
+   * 'ready' ∧ fatal null）⟹ bypass 分支（ADR L131-137：认证 Hub→Peer session 仍可
+   * memory apply）。仅 observer 在场时调用（热路径纪律：无 observer 零投影读取）。
+   * 已知近似性声明（设计 §3.4）：判定在 apply 完成后读投影，状态翻转窗口内产生
+   * 单笔误归因——observation 非行为开关，runtime 槽内决策仍是权威事实。
+   */
+  private degradedBypassActive(): boolean {
+    const lease = this.lease;
+    if (lease === undefined) return false;
+    try {
+      const status = lease.getStatus();
+      if (status.lease !== 'active' || status.runtime === null) return false;
+      const runtime = status.runtime;
+      return (
+        runtime.lifecycle === 'ready' &&
+        runtime.fatal === null &&
+        runtime.rootWrite.enabled === false
+      );
+    } catch {
+      return false;
     }
   }
 
@@ -857,6 +1000,7 @@ export class PeerNamespaceController {
         return;
       case 'fence':
         // peer 侧防御性对称保留：命中即按 conflicted 终局收口（零 wire）
+        this.emitIdentityConflicted('fence'); // PN9：apply 期围栏
         this.finalize('conflicted');
         return;
       case 'local':
@@ -874,6 +1018,7 @@ export class PeerNamespaceController {
 
   private sendNsError(code: string): void {
     this.sendChecked(namespaceErrorFrame(code, this.namespaceId));
+    this.emitNsErrorSent(code); // PN2：本端 ns ERROR（稳定码折叠）
   }
 
   private sendChecked(message: ReplicationMessage): number {
@@ -884,6 +1029,7 @@ export class PeerNamespaceController {
       if (typeof code === 'string' && !this.isTerminal()) {
         // codec 编码超限（编码面抛）：同码命名空间 ERROR + failed（§9.1 注记）
         this.sendNsErrorNoWrap(code);
+        if (message.kind !== 'ERROR') this.emitNsErrorSent(code); // PN2：编码面失败族；ERROR 自发射路径防双计
         this.finalize('failed');
       }
       return 0;
@@ -995,7 +1141,69 @@ export class PeerNamespaceController {
   }
 
   setState(state: PeerNamespaceState): void {
+    if (this.state === state) return;
+    const from = this.state;
     this.state = state;
+    // PN1：channel FSM 唯一迁移点（同态早退——边沿 exactly-once；初始 'targeted' 无迁移不发射）
+    if (this.observerOn) {
+      this.host.emitObserver({
+        type: 'channel-state-changed',
+        side: 'peer',
+        ...(cidField(this.host.connectionId())),
+        namespaceId: this.namespaceId,
+        from,
+        to: state,
+      });
+    }
+  }
+
+  // ─────────────────────────────── 观测发射辅助（§3/§4 safe-field） ───────────────────────────────
+
+  /** PN2：namespace-error{direction:'sent'}（稳定码折叠；每次 wire 错误恰一事件）。 */
+  private emitNsErrorSent(code: string): void {
+    if (!this.observerOn) return;
+    this.host.emitObserver({
+      type: 'namespace-error',
+      side: 'peer',
+      ...(cidField(this.host.connectionId())),
+      namespaceId: this.namespaceId,
+      code: stableNamespaceCode(code),
+      direction: 'sent',
+    });
+  }
+
+  /** PN5/PN6/PN6b：resync-required（cause 闭联合）。 */
+  private emitResyncRequired(
+    cause:
+      | 'queue-overflow'
+      | 'send-failed'
+      | 'connection-shed'
+      | 'ack-timeout'
+      | 'session-fanout-overflow'
+      | 'remote-declared',
+  ): void {
+    if (!this.observerOn) return;
+    this.host.emitObserver({
+      type: 'resync-required',
+      side: 'peer',
+      ...(cidField(this.host.connectionId())),
+      namespaceId: this.namespaceId,
+      cause,
+    });
+  }
+
+  /** PN8/PN9：identity-conflicted（via 闭联合）。 */
+  private emitIdentityConflicted(
+    via: 'open-mismatch' | 'fence' | 'identity-changed-frame',
+  ): void {
+    if (!this.observerOn) return;
+    this.host.emitObserver({
+      type: 'identity-conflicted',
+      side: 'peer',
+      ...(cidField(this.host.connectionId())),
+      namespaceId: this.namespaceId,
+      via,
+    });
   }
 
   private armTimer(kind: TimerKind): void {
