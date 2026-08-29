@@ -111,6 +111,7 @@ export function validateLimits(limits: ReplicationLimits): void {
   positiveSafeInteger(limits.maxQueuedBytesPerConnection, 'maxQueuedBytesPerConnection');
   positiveSafeInteger(limits.lowWater, 'lowWater');
   positiveSafeInteger(limits.highWater, 'highWater');
+  positiveSafeInteger(limits.controlReserveBytes, 'controlReserveBytes');
 
   const budget = limits.maxFrameBytes - PROTOCOL_OVERHEAD_BYTES;
   assertCollKind(

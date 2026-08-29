@@ -3,7 +3,7 @@
  * （§4.2/§6/§15.2）。per-(connection, namespace) 通道见 hub-namespace.ts。
  */
 import type { DuplexTransport } from './types.js';
-import { encodeMessage, selectProtocolVersion, type ReplicationMessage } from '@nomicore/replication-protocol';
+import { selectProtocolVersion, type ReplicationMessage } from '@nomicore/replication-protocol';
 import {
   decodeInbound,
   namespaceFieldViolation,
@@ -12,6 +12,7 @@ import {
   codecFieldLimits,
 } from './frame-io.js';
 import { HubNamespaceChannel, type HubChannelHost } from './hub-namespace.js';
+import { ConnectionSender } from './backpressure.js';
 import type { NamespaceRegistry } from '@nomicore/namespace-registry';
 import type {
   HubConnection,
@@ -108,6 +109,8 @@ class HubConnectionImpl implements HubConnection {
   state: 'handshaking' | 'ready' | 'draining' | 'closed' = 'handshaking';
   peerInstanceId: string | undefined;
   private readonly outbound: OutboundQueue;
+  /** 连接级发送调度（§6.3；每连接实例一个，随 transport 生命周期）。 */
+  private readonly sender: ConnectionSender;
   private expectedSeq = 1;
   private readonly channels = new Map<string, HubNamespaceChannel>();
   private readonly helloHandle: unknown;
@@ -126,7 +129,18 @@ class HubConnectionImpl implements HubConnection {
       },
       hub.limits,
       () => this.onSequenceExhausted(transport),
+      (info) => this.sender.onEmitted(info),
     );
+    this.sender = new ConnectionSender({
+      limits: hub.limits,
+      timer: hub.timer,
+      readBufferedAmount: () => this.readBufferedAmount(),
+      emitControl: (message) => this.outbound.sendControl(message),
+      emitData: (message) => this.outbound.emit(message),
+      facetOf: (namespaceId) => this.channels.get(namespaceId)?.sendFacet,
+      isEmitAllowed: () => !this.closedFlag,
+      onBackpressureExhausted: () => this.connectionFatal('CONNECTION_BACKPRESSURE', 1011),
+    });
     this.channelHost = {
       limits: hub.limits,
       timeouts: hub.timeouts,
@@ -136,6 +150,10 @@ class HubConnectionImpl implements HubConnection {
       peerInstanceId: () => this.peerInstanceId ?? '',
       authorize: (instanceIdentity, namespaceId) => hub.authorize(instanceIdentity, namespaceId),
       sendControl: (message) => this.sendControlChecked(message),
+      sendData: (namespaceId, bytes) => this.sendData(namespaceId, bytes),
+      dataGateOpen: () => this.sender.dataGateOpen(),
+      onDataQueued: (namespaceId) => this.sender.onDataQueued(namespaceId),
+      requestDataDrain: () => this.sender.requestDrain(),
       connectionFatal: (code, wsCloseCode) => this.connectionFatal(code, wsCloseCode ?? 1002),
     };
     this.helloHandle = hub.timer.setTimeout(() => {
@@ -151,6 +169,7 @@ class HubConnectionImpl implements HubConnection {
     if (this.closedFlag) return;
     this.closedFlag = true;
     this.state = 'draining';
+    this.sender.teardown(); // §8：poll timer 清零（连接收口必经点）
     if (!this.transport.closed) {
       this.transport.close(code ?? 1001, reason ?? 'hub-close');
     }
@@ -332,6 +351,7 @@ class HubConnectionImpl implements HubConnection {
     if (this.closedFlag) return;
     this.closedFlag = true;
     this.state = 'closed';
+    this.sender.teardown();
     void this.cleanupAll();
   }
 
@@ -344,8 +364,12 @@ class HubConnectionImpl implements HubConnection {
 
   private connectionFatal(code: string, wsCloseCode: number): void {
     if (this.closedFlag) return;
+    this.sender.teardown();
     try {
-      this.sendControlChecked(connectionErrorFrame(code));
+      // §4.3 豁免（R2，SA2 #2）：收口 ERROR 直发 outbound——绕过 sender 额度判据
+      // （非耗尽场景下行为与经 sender 等价——控制帧本就不受阻，仅差额度记账，
+      // 而收口后额度无意义）；收口路径零递归。
+      this.outbound.sendControl(connectionErrorFrame(code));
     } catch {
       // best-effort；framing 已不可信
     }
@@ -358,24 +382,40 @@ class HubConnectionImpl implements HubConnection {
   }
 
   private sendControlChecked(message: ReplicationMessage): number {
-    return this.outbound.sendControl(message);
+    // §4.3：保留额度判据在 sender.sendControl 单点（收口路径直发 outbound 豁免）。
+    return this.sender.sendControl(message);
   }
 
-  /** §4.1 R3/#11：出站 uint32 耗尽（实践不可达）→ best-effort connection ERROR +
-   *  close(1008)（绕过出站队列直发——队列已耗尽；ERROR 帧以最后合法序列发送）。 */
+  /**
+   * data 帧（UPDATE）发送路径（§6.3，issue #137）：sender.tryEmitData（水位观察② +
+   * data 出队；序列号由 OutboundQueue.emit 单点分配）。
+   */
+  private sendData(namespaceId: string, bytes: Uint8Array): number {
+    return this.sender.tryEmitData({
+      kind: 'UPDATE',
+      namespaceId,
+      update: bytes,
+    });
+  }
+
+  /** §4.2 鸭子类型读取 transport.bufferedAmount（属性形态；缺失/非法 → 0=无压力）。 */
+  private readBufferedAmount(): number {
+    try {
+      const level = (this.transport as { readonly bufferedAmount?: unknown }).bufferedAmount;
+      return typeof level === 'number' && Number.isFinite(level) ? level : 0;
+    } catch {
+      return 0; // seam 契约：transport 契约是「number 属性或缺失」；非契约形态 = 无压力
+    }
+  }
+
+  /** §4.1 R3/#11（R2-2 修订）：出站 uint32 耗尽（实践不可达）→ 直接 close(1008)。
+   *  framing 已不可信（§14 L391「否则直接 close」）：任何后续帧都只能以重复序列
+   *  0xffffffff 发送 ⇒ 违反 §1 不变量 2 / §3 L54 严格递增；故零出站帧（原 best-effort
+   *  ERROR 直发已删除——它正是重复序列号的唯一来源）。sender.teardown() 于 close 前
+   *  （既有）；closedFlag/state/cleanupAll 收口拓扑不变。 */
   private onSequenceExhausted(transport: DuplexTransport): void {
     if (transport.closed) return;
-    try {
-      transport.send(
-        encodeMessage(connectionErrorFrame('CONNECTION_POLICY_VIOLATION'), {
-          sequence: 0xffffffff,
-          maxFrameBytes: this.hub.limits.maxFrameBytes,
-          limits: codecFieldLimits(this.hub.limits),
-        }),
-      );
-    } catch {
-      // best-effort；framing 已不可信
-    }
+    this.sender.teardown();
     if (!transport.closed) {
       transport.close(1008, 'sequence-exhausted');
     }

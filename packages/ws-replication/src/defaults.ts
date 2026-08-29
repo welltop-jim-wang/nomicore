@@ -24,6 +24,7 @@ export const DEFAULT_REPLICATION_LIMITS: Readonly<ReplicationLimits> = Object.fr
   maxQueuedBytesPerConnection: 8 * 1024 * 1024,
   lowWater: 64 * 1024,
   highWater: 512 * 1024,
+  controlReserveBytes: 64 * 1024,
 });
 
 /** 冻结默认 timeouts（§2 注释值；与 harness CONTRACT_TIMEOUTS 逐值一致）。 */

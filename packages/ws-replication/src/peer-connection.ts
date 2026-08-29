@@ -3,15 +3,15 @@
  * （§4.3/§4.4/§14）。目标级状态机见 peer-namespace.ts。
  */
 import type { DuplexTransport } from './types.js';
-import { encodeMessage, type ReplicationMessage } from '@nomicore/replication-protocol';
+import type { ReplicationMessage } from '@nomicore/replication-protocol';
 import {
-  codecFieldLimits,
   decodeInbound,
   OutboundQueue,
   connectionErrorFrame,
   namespaceErrorFrame,
 } from './frame-io.js';
 import { PeerNamespaceController, type PeerNamespaceHost } from './peer-namespace.js';
+import { ConnectionSender } from './backpressure.js';
 import type { NamespaceRegistry } from '@nomicore/namespace-registry';
 import type {
   PeerConnectionState,
@@ -46,6 +46,8 @@ class PeerConnectionImpl implements PeerReplication {
   private connectionEpochValue = 0;
   private transport: DuplexTransport | undefined;
   private outbound: OutboundQueue | undefined;
+  /** 连接级发送调度（连接域背压；每连接实例一个，随 transport 生命周期，§6.3）。 */
+  private sender: ConnectionSender | undefined;
   private expectedSeq = 1;
   private nonce: Uint8Array | undefined;
   private attempts = 0;
@@ -74,6 +76,10 @@ class PeerConnectionImpl implements PeerReplication {
       registry: options.registry,
       hubInstanceId: options.hubInstanceId,
       sendControl: (message) => this.sendControl(message),
+      sendData: (namespaceId, bytes) => this.sendData(namespaceId, bytes),
+      dataGateOpen: () => this.sender?.dataGateOpen() ?? true,
+      onDataQueued: (namespaceId) => this.sender?.onDataQueued(namespaceId),
+      requestDataDrain: () => this.sender?.requestDrain(),
       connectionFatal: (code, wsCloseCode) => this.connectionFatal(code, wsCloseCode ?? 1002),
       connectionEpoch: () => this.connectionEpochValue,
     };
@@ -97,6 +103,7 @@ class PeerConnectionImpl implements PeerReplication {
     this.clearBackoff();
     this.clearHello();
     this.clearReset();
+    this.sender?.teardown(); // §8：poll timer 清零（连接收口必经点）
     const previous = this.connStateValue;
     if (previous === 'stopped') return Promise.resolve();
     this.setState('draining');
@@ -181,7 +188,21 @@ class PeerConnectionImpl implements PeerReplication {
       },
       this.limits,
       () => this.onSequenceExhausted(transport),
+      (info) => this.sender?.onEmitted(info),
     );
+    // §8：新 sender 创建前旧 sender.teardown()（poll timer 零泄漏；重拨后新 sender
+    // 从 clean 态起步——!paused、额度 0、空 wheel、无 timer）。
+    this.sender?.teardown();
+    this.sender = new ConnectionSender({
+      limits: this.limits,
+      timer: this.options.timer,
+      readBufferedAmount: () => this.readBufferedAmount(),
+      emitControl: (message) => this.emitControl(message),
+      emitData: (message) => this.emitData(message),
+      facetOf: (namespaceId) => this.controllers.get(namespaceId)?.sendFacet,
+      isEmitAllowed: () => this.connStateValue === 'ready',
+      onBackpressureExhausted: () => this.failConnectionBackpressure(),
+    });
     this.expectedSeq = 1;
     this.nonce = this.makeNonce();
     // HELLO 是连接自身握手帧：直发（sendControl 的 ready 状态门不适用于握手期发送）
@@ -345,6 +366,11 @@ class PeerConnectionImpl implements PeerReplication {
     this.goawayDrainMs = message.drainTimeoutMs;
     void this;
     if (message.reasonCode === 'SERVER_SHUTTING_DOWN' || message.reasonCode === 'REAUTH_REQUIRED') {
+      // B1（终审 Standards 轴，2026-08-29）：blocked 直达路径补 sender teardown——
+      // 与 enterBlocked/scheduleDrainClose 同型（§8 teardown 矩阵成文声称）。blocked
+      // 是长寿命等待态且 onClose 对 blocked 早退——若暂停段 poll timer 已武装而未清，
+      // stale getter 上 1s 周期无限重武装（backpressure.ts poll 回调）直至人工 stop。
+      this.sender?.teardown();
       this.setState('blocked');
       return;
     }
@@ -358,6 +384,10 @@ class PeerConnectionImpl implements PeerReplication {
     const timer = this.options.timer;
     const transport = this.transport;
     timer.setTimeout(() => {
+      // §8（R2 补行，SA2 #6）：close 前补 sender.teardown()——清除已武装 poll timer，
+      // 杜绝 stale getter 上 1s 周期性重武装直至下次 dialNow 换 sender；即便 stale
+      // fire 到达（防御面）：teardown 后 pollHandle 恒 undefined、回调零副作用且不重武装。
+      this.sender?.teardown();
       if (transport !== undefined && !transport.closed) {
         transport.close(1001, 'goaway-drain');
       }
@@ -390,32 +420,65 @@ class PeerConnectionImpl implements PeerReplication {
   // ─────────────────────────────── 连接级帧出入 ───────────────────────────────
 
   private sendControl(message: ReplicationMessage): number {
-    if (this.outbound === undefined) return 0;
+    if (this.outbound === undefined || this.sender === undefined) return 0;
     // B-2e 放大器：连接状态门——控制器帧只在连接 ready 时发送；重建/断开/重连的
     // pending 期零出站（迟到帧落在新连接 handshaking 窗口会触发 HELLO_REQUIRED fatal）。
     if (this.connStateValue !== 'ready') return 0;
-    return this.outbound.sendControl(message);
+    // §4.3：保留额度判据在 sender.sendControl 单点（收口路径直发 outbound 豁免——
+    // 见 onSequenceExhausted/connectionFatal/failConnectionBackpressure）。
+    return this.sender.sendControl(message);
+  }
+
+  /**
+   * data 帧（UPDATE）发送路径（§6.3，issue #137）：ready 门 → sender.tryEmitData
+   * （水位观察② + data 出队；序列号由 OutboundQueue.emit 单点分配）。
+   */
+  private sendData(namespaceId: string, bytes: Uint8Array): number {
+    if (this.outbound === undefined || this.sender === undefined) return 0;
+    if (this.connStateValue !== 'ready') return 0;
+    return this.sender.tryEmitData({
+      kind: 'UPDATE',
+      namespaceId,
+      update: bytes,
+    });
+  }
+
+  /** ConnectionSender 宿主：control 出站（无水位门；保留额度判据在 sender 侧）。 */
+  private emitControl(message: ReplicationMessage): number {
+    return this.outbound?.sendControl(message) ?? 0;
+  }
+
+  /** ConnectionSender 宿主：data 出站（OutboundQueue.emit——序列分配单点）。 */
+  private emitData(message: ReplicationMessage): number {
+    return this.outbound?.emit(message) ?? 0;
+  }
+
+  /**
+   * §4.2 鸭子类型读取 transport.bufferedAmount（seam 定案：属性形态）。
+   * 缺失/非 number/非有限数 → 0 = 无压力（既有 makeWire 与全部用例结构性零影响）。
+   */
+  private readBufferedAmount(): number {
+    const transport = this.transport;
+    if (transport === undefined) return 0;
+    try {
+      const level = (transport as { readonly bufferedAmount?: unknown }).bufferedAmount;
+      return typeof level === 'number' && Number.isFinite(level) ? level : 0;
+    } catch {
+      return 0; // seam 契约：transport 契约是「number 属性或缺失」；非契约形态 = 无压力
+    }
   }
 
   private transportClosed(): boolean {
     return this.transport?.closed ?? true;
   }
 
-  /** §4.1 R3/#11：出站 uint32 耗尽 → best-effort connection ERROR + close(1008) →
-   *  blocked（绕过出站队列直发——队列已耗尽；ERR0R 帧以最后合法序列 0xffffffff 发送）。 */
+  /** §4.1 R3/#11（R2-2 修订）：出站 uint32 耗尽 → 直接 close(1008) → blocked。
+   *  framing 已不可信（§14 L391「否则直接 close」）：任何后续帧都只能以重复序列
+   *  0xffffffff 发送 ⇒ 违反 §1 不变量 2 / §3 L54 严格递增；故零出站帧（原 best-effort
+   *  ERROR 直发已删除——它正是重复序列号的唯一来源），peer 侧 teardown 由
+   *  enterBlocked() 承担（:565-575 已含 sender?.teardown()）。 */
   private onSequenceExhausted(transport: DuplexTransport): void {
     if (transport.closed) return;
-    try {
-      transport.send(
-        encodeMessage(connectionErrorFrame('CONNECTION_POLICY_VIOLATION'), {
-          sequence: 0xffffffff,
-          maxFrameBytes: this.limits.maxFrameBytes,
-          limits: codecFieldLimits(this.limits),
-        }),
-      );
-    } catch {
-      // best-effort；framing 已不可信
-    }
     if (!transport.closed) {
       transport.close(1008, 'sequence-exhausted');
     }
@@ -439,18 +502,60 @@ class PeerConnectionImpl implements PeerReplication {
 
   private connectionFatal(code: string, wsCloseCode: number): void {
     if (this.stopping) return;
-    // best-effort connection ERROR（若 framing 仍可信）
-    if (this.transport !== undefined && !this.transport.closed) {
-      this.sendControl(connectionErrorFrame(code));
+    // R2（设计 §6.3/§4.3 豁免；SA2 #2）：收口 ERROR 直发 outbound——绕过 ready 门
+    // （协议 §14「framing 仍可信时关闭前 best-effort 发送 connection ERROR」义务
+    // 落实，#136 R-13 收口方向）。有意的 wire 可观察变化：handshaking 期 fatal 从
+    // 0 ERROR 帧 → 恰 1 帧（§10 行 9 登记；ready 态行为不变）。豁免路径不经
+    // sender.sendControl 的额度判据——收口路径零递归（§4.3 I-4）。
+    const transport = this.transport;
+    if (transport !== undefined && this.outbound !== undefined && !transport.closed) {
+      try {
+        this.emitControl(connectionErrorFrame(code));
+      } catch {
+        // best-effort；framing 已不可信
+      }
     }
-    if (this.transport !== undefined && !this.transport.closed) {
-      this.transport.close(wsCloseCode, 'protocol-error');
+    if (transport !== undefined && !transport.closed) {
+      transport.close(wsCloseCode, 'protocol-error');
     }
     this.enterBlocked();
   }
 
+  /**
+   * §4.3 保留额度耗尽动作（CONNECTION_BACKPRESSURE 分类连接失败，retryable=yes/1011）：
+   * best-effort ERROR（豁免帧——直发 outbound 不经额度判据）→ close(1011) →
+   * onTemporaryFailure（attempts+1 → backoff → 重拨；**不走** enterBlocked——
+   * #136 §4.3 的 1002/1008 才是 blocked）。本地 close 不触发本地 onClose
+   * （fake/真实 WS 同构），FSM 迁移由本方法显式驱动；重入守卫：state ∈
+   * {stopped/backoff/blocked/draining} 直接返回（best-effort ERROR 的递归发送被守卫吸收）。
+   */
+  private failConnectionBackpressure(): void {
+    if (
+      this.connStateValue === 'stopped' ||
+      this.connStateValue === 'backoff' ||
+      this.connStateValue === 'blocked' ||
+      this.connStateValue === 'draining'
+    ) {
+      return;
+    }
+    const transport = this.transport;
+    if (transport !== undefined && this.outbound !== undefined && !transport.closed) {
+      try {
+        this.emitControl(connectionErrorFrame('CONNECTION_BACKPRESSURE'));
+      } catch {
+        // best-effort；framing 已不可信
+      }
+    }
+    if (transport !== undefined && !transport.closed) {
+      transport.close(1011, 'control-backpressure');
+    }
+    this.sender?.teardown();
+    this.onTemporaryFailure();
+  }
+
   private enterBlocked(): void {
     if (this.connStateValue === 'blocked') return;
+    this.sender?.teardown();
     this.clearHello();
     this.clearReset();
     this.clearBackoff();
@@ -463,6 +568,7 @@ class PeerConnectionImpl implements PeerReplication {
   private onTemporaryFailure(): void {
     if (this.stopping) return;
     if (this.connStateValue === 'backoff' || this.connStateValue === 'blocked') return;
+    this.sender?.teardown();
     this.clearHello();
     this.clearReset();
     this.attempts += 1;
@@ -486,6 +592,7 @@ class PeerConnectionImpl implements PeerReplication {
     this.clearHello();
     this.clearReset();
     this.clearBackoff();
+    this.sender?.teardown(); // §8：重建 = 旧连接终结（poll timer 清零）
     this.setState('disconnected');
     // B-2e：§4.3 L228「重建期间所有 namespace 投影 disconnected」——通知全部目标
     // 控制器（兄弟活跃 ns 立即投影、由其清理；重连后 openActiveTargets 统一重 OPEN）

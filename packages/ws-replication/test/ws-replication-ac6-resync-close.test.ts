@@ -44,7 +44,11 @@ describe('AC6：resync / ACK timeout / close / terminal ERROR / identity / socke
     // 门闩：hub 第一笔 apply 的 dirty 挂起 → 窗口保持满
     run.hubNode.persistence.saveGate = deferred();
     await run.writePeer({ n: 1 });
-    await run.writePeer({ extra: 2 }); // 队列溢出（cap=1）
+    // R2-3 适配（queued limits 不得计入 in-flight——§17 分列限制）：窗口满不占队列
+    // 额度，第二笔入队；第三笔（溢出点后移一笔）触发溢出 → 丢弃未发送 + needs-resync
+    // + RESYNC_REQUIRED（AC6 溢出/round 修复语义保持）
+    await run.writePeer({ extra: 2 }); // 入队（queued 0→1；cap=1）
+    await run.writePeer({ ext: 3 }); // 队列溢出（cap=1）
     await settle();
 
     // 未发送增量被丢弃并置 needs-resync；发出 RESYNC_REQUIRED
@@ -65,8 +69,9 @@ describe('AC6：resync / ACK timeout / close / terminal ERROR / identity / socke
     const step1s = run.peerFrames('SYNC_STEP1');
     expect(step1s).toHaveLength(2);
     expect(asMsg<SyncStep1Msg>(step1s[1], 'SYNC_STEP1')?.syncRoundId).toBe(2);
-    // 丢弃的增量经 diff 修复（extra=2 已收敛）
+    // 丢弃的增量经 diff 修复（extra=2 已收敛；R2-3 适配的第三笔 ext=3 亦经 diff 收敛）
     expect(run.rootValue('hub', 'extra')).toBe(2);
+    expect(run.rootValue('hub', 'ext')).toBe(3);
     expect(run.rootValue('hub', 'n')).toBe(1);
   });
 

@@ -95,18 +95,24 @@ export class OutboundExhaustedError extends Error {
   }
 }
 
-/** 单方向出站队列：控制帧恒先；序列号在 dequeue 发送时单点分配（R3/#7）。 */
+/** 出站帧实际编码字节回报（§4.3 control 保留额度记账的确定判据来源）。 */
+export interface EmittedInfo {
+  readonly kind: 'control' | 'data';
+  readonly byteLength: number;
+}
+
+/** 单方向出站队列：控制帧恒先；序列号在 dequeue 发送时单点分配（R3/#7）。
+ *  data 帧经 `emit`（ConnectionSender 出队点）；round-robin 公平轮转已由
+ *  ConnectionSender + UpdateChannel 落地（§6.4——原 dataQueues/sendData 死代码删除）。 */
 export class OutboundQueue {
   private lastSeq = 0;
   private readonly controlQueue: ReplicationMessage[] = [];
-  private readonly dataQueues = new Map<string, ReplicationMessage[]>();
-  private readonly dataOrder: string[] = [];
-  private dataCursor = 0;
 
   constructor(
     private readonly emitRaw: (bytes: Uint8Array, sequence: number) => void,
     private readonly limits: ResolvedLimits,
     private readonly onSequenceExhausted: () => void = () => undefined,
+    private readonly onEmitted: (info: EmittedInfo) => void = () => undefined,
   ) {}
 
   get lastSequence(): number {
@@ -120,57 +126,25 @@ export class OutboundQueue {
     return this.lastSeq;
   }
 
-  /** 立即发送一条 data 帧（窗口放行直发路径），返回分配的帧序。 */
-  sendData(namespaceId: string, message: ReplicationMessage): number {
-    void namespaceId;
-    return this.emitOne(message);
+  /** 立即发送一条 data 帧（ConnectionSender 出队点）；返回分配的帧序。 */
+  emit(message: ReplicationMessage): number {
+    return this.emitOne(message, 'data');
   }
 
-  /** 排空：控制队列全部先行；data 每轮每 ns 至多一笔（round-robin）。 */
+  /** 排空控制队列（收窄为 control-only——data 调度已移入 ConnectionSender，§6.4）。 */
   drain(): void {
     while (this.controlQueue.length > 0) {
       const item = this.controlQueue.shift()!;
-      this.emitOne(item);
-    }
-    while (this.queuedDataCount() > 0) {
-      const nsId = this.nextDataNamespace();
-      if (nsId === undefined) return;
-      const bucket = this.dataQueues.get(nsId);
-      const item = bucket?.shift();
-      if (item === undefined || bucket === undefined) continue;
-      this.emitOne(item);
-      if (bucket.length === 0) {
-        this.dataQueues.delete(nsId);
-        const index = this.dataOrder.indexOf(nsId);
-        if (index >= 0) this.dataOrder.splice(index, 1);
-        if (this.dataCursor >= this.dataOrder.length) this.dataCursor = 0;
-      }
+      this.emitOne(item, 'control');
     }
   }
 
   /** 清空队列（连接收口防御）。 */
   clear(): void {
     this.controlQueue.length = 0;
-    this.dataQueues.clear();
-    this.dataOrder.length = 0;
-    this.dataCursor = 0;
   }
 
-  private queuedDataCount(): number {
-    let total = 0;
-    for (const queue of this.dataQueues.values()) total += queue.length;
-    return total;
-  }
-
-  private nextDataNamespace(): string | undefined {
-    if (this.dataOrder.length === 0) return undefined;
-    if (this.dataCursor >= this.dataOrder.length) this.dataCursor = 0;
-    const nsId = this.dataOrder[this.dataCursor]!;
-    this.dataCursor += 1;
-    return nsId;
-  }
-
-  private emitOne(message: ReplicationMessage): number {
+  private emitOne(message: ReplicationMessage, kind: 'control' | 'data'): number {
     if (this.lastSeq >= 0xffffffff) {
       // 出站 uint32 耗尽（实践不可达）：不回绕、不静默错序——响亮收口（§4.1 R3/#11）：
       // 触发连接层 best-effort connection ERROR + close(1008)；本出队不再发送。
@@ -185,6 +159,7 @@ export class OutboundQueue {
     });
     this.lastSeq = sequence;
     this.emitRaw(bytes, sequence);
+    this.onEmitted({ kind, byteLength: bytes.byteLength });
     return sequence;
   }
 }

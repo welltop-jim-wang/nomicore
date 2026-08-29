@@ -50,6 +50,7 @@ export interface WsReplicationLimits {
   readonly maxQueuedBytesPerConnection: number;
   readonly lowWater: number;
   readonly highWater: number;
+  readonly controlReserveBytes: number; // R2-4：control 帧独立保留额度（§17 L490）
 }
 
 export interface WsReplicationTimeouts {
@@ -134,6 +135,7 @@ export const CONTRACT_LIMITS: Readonly<WsReplicationLimits> = Object.freeze({
   maxQueuedBytesPerConnection: 8 * 1024 * 1024,
   lowWater: 64 * 1024,
   highWater: 512 * 1024,
+  controlReserveBytes: 64 * 1024,
 });
 
 export const CONTRACT_TIMEOUTS: Readonly<WsReplicationTimeouts> = Object.freeze({
@@ -335,6 +337,10 @@ export class StubPersistence implements DocPersistence {
   importHold: Deferred | undefined;
   /** 单次门闩：下一次 loadDoc 挂起（B-2c startOpen 迟到续体竞态锚——registry.open 在途）。 */
   loadGate: Deferred | undefined;
+  /** 顺序门闩队列（issue #137 多 namespace 锚）：每个 saveDoc 依次消费队首门闩并挂起
+   *  ——「分别悬挂多个 namespace 的 dirty notification」的确定性时序锚（单次 saveGate
+   *  只能挂一个命名空间；两个 namespace 的窗口各自满需各自 ACK 被悬挂）。 */
+  saveGates: Deferred[] = [];
   /** 单次门闩消费登记：同一门闩只挂起一次（第二次 saveDoc/importDoc/loadDoc 不被重复卡死）。 */
   private saveGateSeen: Deferred | undefined;
   private importHoldSeen: Deferred | undefined;
@@ -395,6 +401,12 @@ export class StubPersistence implements DocPersistence {
       // 单次门闩：保持可读（测试侧经同一引用释放）；同一门闩只挂起一次。
       this.saveGateSeen = this.saveGate;
       await this.saveGate.promise;
+    }
+    if (this.saveGates.length > 0) {
+      // 顺序门闩队列（issue #137）：按 saveDoc 到达顺序逐个消费并挂起；空队列零影响
+      //（既有 saveGate 单次门闩行为不变）。
+      const gate = this.saveGates.shift();
+      if (gate !== undefined) await gate.promise;
     }
   }
 
