@@ -210,6 +210,20 @@ class HubReplicationImpl implements HubReplication {
     await Promise.all(tails); // 未知 scope → 空数组 → resolve
   }
 
+  /** issue #175（AC1/AC2/AC3/AC6/AC7）：认证/授权 Adapter 主动 reauth 事件 seam——按认证
+   *  实例身份定位连接（绝不以 token 值为键），对每个匹配连接发送
+   *  GOAWAY(REAUTH_REQUIRED, drainTimeoutMs>0) 并按 drain/deadline 规则以 WS 1001 收口。
+   *  未知实例/已收口连接 → 无副作用 resolve；重复调用幂等。resolve 语义 =「请求已受理」
+   *  （GOAWAY 同步冲刷 + deadline 同步武装后即归；等待 drain 结算的是 deadline 回调）。
+   *  全路径零 throw（sendControl 的 framing 异常在 beginReauth 内 fail-closed 收口）。 */
+  async requestReauth(instanceIdentity: string): Promise<void> {
+    if (this.closed) return; // hub 已停机：迟到请求零副作用（AC6）
+    for (const connection of [...this.connectionList]) { // 拷贝迭代——同 revoke：发起途中连接可能收口
+      if (connection.authenticatedInstanceId !== instanceIdentity) continue; // 认证身份为权威键（AC3/AC7）
+      connection.beginReauth(); // 同步发起：GOAWAY 同步冲刷 + deadline 同步武装
+    }
+  }
+
   get connections(): readonly HubConnection[] {
     return this.connectionList;
   }
@@ -246,6 +260,10 @@ class HubConnectionImpl implements HubConnection {
   private readonly channelHost: HubChannelHost;
   private readonly transportSubscribers: Array<() => void> = [];
   private stopLiveness: (() => void) | undefined;
+  /** issue #175：reauth 已发起（连接级幂等守卫——重复 requestReauth 零重复 GOAWAY）。 */
+  private reauthRequested = false;
+  /** issue #175：reauth drain deadline 句柄（§8 timer 纪律：必须可清——stale fire 零副作用）。 */
+  private reauthDeadlineHandle: unknown | undefined;
 
   constructor(
     private readonly hub: HubInternals,
@@ -337,6 +355,40 @@ class HubConnectionImpl implements HubConnection {
       // best-effort：framing 不可信 → 直接 close
     }
     this.close(1001, 'hub-shutdown'); // 既有路径：teardown + close + cleanupAll
+  }
+
+  /** issue #175 AC1/AC2/AC4：定向 reauth——GOAWAY(REAUTH_REQUIRED, drain>0) + deadline 后
+   *  1001 收口。幂等（reauthRequested）；迟到/竞态（closedFlag）零副作用；绝不携带凭据
+   *  （AC7）。与 shutdownWithGoaway 的区别：后者发帧后立即 close（停机零 drain 窗），
+   *  本方法真正等待 drain 窗（closeTimeoutMs 预算）再收口（§6.3 L149「之后发送方以
+   *  WS 1001 关闭」）。 */
+  beginReauth(): void {
+    if (this.closedFlag || this.reauthRequested) return;
+    this.reauthRequested = true;
+    if (this.state === 'handshaking') {
+      // GOAWAY-before-ACK 是协议伤害：peer handshaking 门对非 HELLO_ACK 帧判
+      // CONNECTION_POLICY_VIOLATION（peer-connection.ts:277-279）——镜像 shutdownWithGoaway
+      // 的 handshaking 分支：不发 GOAWAY，直接 close(1001)。该连接同样是匹配身份的连接
+      // （其 Upgrade 已用待轮换凭据认证），关闭 = 正确的 reauth 语义。
+      this.close(1001, 'hub-reauth');
+      return;
+    }
+    this.state = 'draining'; // 连接级可观测迁移；现有 namespace 到 deadline 前自然收口（§6.3 L148）
+    try {
+      this.outbound.sendControl({ // 收口路径直发豁免（同 shutdownWithGoaway/connectionFatal
+        kind: 'GOAWAY', // 家族）：生命周期控制帧不允许被 data 背压额度否决
+        reasonCode: 'REAUTH_REQUIRED', // 稳定安全码，零凭据字段（AC7）
+        drainTimeoutMs: this.hub.timeouts.closeTimeoutMs, // drain 预算载体（§4.3，构造期验证 >0）
+      });
+    } catch {
+      this.close(1001, 'hub-reauth'); // framing 不可信 → fail-closed 直接收口（:336-338 同款）
+      return;
+    }
+    this.reauthDeadlineHandle = this.hub.timer.setTimeout(() => {
+      this.reauthDeadlineHandle = undefined;
+      if (this.closedFlag) return; // transport 断/hub.close 已收口 → stale fire 零副作用
+      this.close(1001, 'hub-reauth'); // 既有收口拓扑：teardown + quiesce + close + cleanupAll + drop
+    }, this.hub.timeouts.closeTimeoutMs);
   }
 
   /** §5.1 revoke 链第二层：HELLO 前无 channels → 天然 no-op。 */
@@ -542,6 +594,12 @@ class HubConnectionImpl implements HubConnection {
   }
 
   private async cleanupAll(): Promise<void> {
+    // issue #175：reauth deadline 句柄单点清理（覆盖 close/onTransportClosed/
+    // connectionFatal/onSequenceExhausted 全部收口路径——§8.1 timer 纪律「句柄必须可清」）
+    if (this.reauthDeadlineHandle !== undefined) {
+      this.hub.timer.clearTimeout(this.reauthDeadlineHandle);
+      this.reauthDeadlineHandle = undefined;
+    }
     for (const channel of this.channels.values()) channel.quiesceConnection();
     this.stopLiveness?.();
     this.stopLiveness = undefined;
