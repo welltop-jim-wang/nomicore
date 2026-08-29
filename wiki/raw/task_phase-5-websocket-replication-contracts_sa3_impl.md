@@ -1,9 +1,17 @@
 # SA3 实现记录 — Issue #172 Phase 5 权威契约收敛
 
-**Date**: 2026-08-30
+**Date**: 2026-08-30（SA4 F1 修正：2026-08-31，窄域纯文档）
 **Author**: SA3（TDD Executor）
 **被审对象**: `wiki/raw/task_phase-5-websocket-replication-contracts_design.md`（R3，SA2 R3 = pass）
 **Worktree**: `/home/wangjian/nomicore-fix-issue-172`（branch `fix/issue-172-on-docs-phase-5-websocket-replication`）
+
+> **修订记录（SA4 reject → 窄域 F1 回流）**：SA4 静态验尸 verdict = reject（窄域
+> F1 单一阻断簇）——SA3 对 T7/T8 缺口的归类失实（初版「Σ queued 与冻结文本兼容」
+> 被 protocol §17 L492 明文否定——该行属**冻结语义偏差**）。本记录 §3.1/§3.2 归类句
+> 已更正（标记「SA4 F1 更正」）；归类失实连带修复 = phase 文档「交付现状与边界」节
+> 切片 6 行限定注记 + 已知偏差表新增「严格接纳 pipeline 判据」行 + 「验收锚」段登记
+> R1-3 期望红灯锚（存在性可审计——N1 登记面闭合）+ 设计文档 EOF 空行剥除（N2）。
+> 生产代码与测试断言零改动；修复后提交为独立 commit（纯文档/wiki 变更）。
 
 ---
 
@@ -99,9 +107,14 @@ update-channel/round-engine/lifecycle-queue/fence-watchdog/testing）——零�
   handoff（Σ queued 66.1KiB > 64KiB）触发。
 - **处置**：RESYNC ≥ 1 / pendingData = 0 断言移至第 9/10 笔之后（与设计意图「触发面
   显影 + 幸存面清零」一致、非恒真），注释记录实测值与修正依据；文件头 D2 叙事同步。
-- **归类**：非冻结语义冲突——§17 数据面判据口径为「未发送队列上限」，Σ queued 实现
-  与冻结文本兼容；设计 P4 的 pipeline 读法是作者层面的偏差。**known gap 登记**：
-  严格接纳（pipeline）判据未实现——与 3.2 同一缺口，修复路由待下游归类。
+- **归类（SA4 F1 更正）**：**冻结语义偏差**——protocol §17 L492 明文「总队列记账 =
+  每 namespace 排队字节 + socket `bufferedAmount`（**连接级 pipeline**）」「严格接纳：
+  拒纳 + 幸存面同批丢弃 + needs-resync 显影」；当前实现 `enforceConnectionCap` 仅
+  Σ queued、暂停段入队无 pipeline 判据 = **与冻结文本不合**（SA3 初版记录的「Σ queued
+  实现与冻结文本兼容」陈述已被 SA4 以协议原文否定——本行即更正记录）。同一缺口与
+  3.2 同源：**缺口登记**——phase 文档已知偏差表新增「严格接纳 pipeline 判据」行 +
+  R1-3 锚登记入验收锚段（存在性可审计）；修复路由待总控裁决（建议并入 #169 背压域
+  扩 scope 或新立 issue）。
 
 ### 3.2 T8（r1-r7 R1-3）：幸存面组合场景未实现——以 it.fails 注册期望红灯（KNOWN GAP）
 
@@ -115,8 +128,11 @@ update-channel/round-engine/lifecycle-queue/fence-watchdog/testing）——零�
   设计 D2 的 it.fails 机制注册**期望红灯**（断言谓词零改动——it.fails 是注册转换）；
   用例上方与文件头 R1 条「现状」注释记载实测证据与归类（KNOWN GAP，非 #169/#170/#171
   验收锚）。修复落地转绿时套件会红 → 自动摘标。
-- **归类**：KNOWN GAP（严格字节接纳幸存面场景）——本票无修复授权（行为修复属 R1
-  修订域，未分配 issue）；按设计反证门记录并上报总控归类。
+- **归类（SA4 F1 更正）**：**冻结语义偏差**（§17 L492 连接级 pipeline 记账 + 严格接纳
+  幸存面语义）——同 3.1 的缺口同一冻结文本依据；本票无修复授权（行为修复属严格接纳
+  R1 修订域，未分配 issue），按设计反证门记录并上报总控裁决路由。**存在性登记**：
+  phase 文档「验收锚」段已登记 R1-3 为 it.fails 期望红灯锚（文档面兜底——r1-r7 文件
+  的 `.fails` 标记不受 anchors 文件 D2-bis 守卫覆盖，删锚零信号风险以该登记契约收缩）。
 
 ### 3.3 T6（sa7-issue137-dynamic D3b）：合法化场景的结构性后果 + allowed 算术微调
 

@@ -591,4 +591,3 @@ git diff --check                                                      # 预期�
 git grep -n "controlReserveBytes" -- 'packages/**/*.ts'   # 改后预期零命中（§5 门禁）
 git grep -n "\bcreateHubReplication\s*(\|\bcreatePeerReplication\s*(" -- 'packages/**/*.ts' 'apps/**/*.ts' | grep -v "src/hub-connection.ts\|src/peer-connection.ts\|src/index.ts\|src/testing.ts"   # 全部 caller = 测试文件
 ```
-

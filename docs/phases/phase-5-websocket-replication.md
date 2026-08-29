@@ -153,7 +153,7 @@ Peer instance × N
 | 2 Persistence 导入/归档 | 已交付 | importDoc/archiveDoc/只读身份探针（ADR 0006 #133 修订节） |
 | 3/4 ReplicationSession + trusted apply | 已交付 | ADR 0010 issue #134（含 round 2）修订节冻结词汇 |
 | 5 replication-protocol codec | 已交付 | envelope/payload/注册表/版本协商 + golden/截断/fuzz 套件 |
-| 6 ws-replication namespace 状态机 | 已交付* | 背压（水位/严格接纳/shed/control 保留额度）随 #137/#161 交付；*恢复检查点 cadence 为已知偏差（#169） |
+| 6 ws-replication namespace 状态机 | 部分交付* | 背压随 #137/#161 交付：水位（bufferedAmount 高/低）、**Σ-queued** 连接总压 shed、control 保留额度、**单帧严格拒纳**（R1-1/R1-2——wire 零该帧 + RESYNC 声明）；*已知偏差：连接级 pipeline 记账（§17 L492 明文含 bufferedAmount）与「拒纳 + 幸存面同批丢弃」**未接线**（R1-3 it.fails 锚——见已知偏差表）；恢复检查点 cadence → #169 |
 | 7 WS 连接/认证/授权 | 部分交付 | 受信 Upgrade 身份、peer pong close(1001)、peer GOAWAY deadline/blocked 已交付；hub pong 语义（#170）与 GOAWAY 静默窗口、hub 停机 GOAWAY（#171）为已知偏差；生产 adapter 三面装配断言随 #164 |
 | 8 Reset/配置/observability | 部分交付 | Registry 侧 resetReplica 已交付（ADR 0010 #133 round-2 修订节为现行有效文本，正文旧次序描述不引用）；peer 侧 resetReplica 编排与结构化 observer/metrics 面（#163）未交付 |
 | 9 apps/yjs-server | 未交付 | #164（composition root + DuplexTransport 三可选面装配期断言 + §21 停机编排） |
@@ -164,6 +164,7 @@ Peer instance × N
 | 偏差 | 冻结语义（权威出处） | 当前实现 | 修复票 |
 |---|---|---|---|
 | 背压恢复检查点 | §17：`max(1, floor(ackTimeoutMs/100))`（缺省 100ms） | 固定 1_000ms（`BACKPRESSURE_POLL_INTERVAL_MS`） | #169 |
+| 严格接纳 pipeline 判据 | §17 L492：总队列记账含 bufferedAmount（连接级 pipeline）；拒纳 + 幸存面同批丢弃 + needs-resync 显影 | `enforceConnectionCap` 仅 Σ queued；暂停段入队无 pipeline 检查（R1-3 场景实测：触发帧被接纳、0 RESYNC、0 丢弃） | 待总控裁决（R1-3 it.fails 锚随修复摘标） |
 | hub 侧 pong 超时 | §18：临时失败 → close(1001) + backoff | close(1002)；`PONG_TIMEOUT` 不在 §13.1 注册表（无 ERROR 帧） | #170 |
 | CLOSE_OK 关联 | §10.2/§13.1：错误/多余 ACK 关联 → `ACK_STATE_VIOLATION`(1002) connection fatal | closing/live 期不匹配或多余 CLOSE_OK 静默忽略 | #171 |
 | GOAWAY 静默窗口 | §6.3：drain 窗口内停止 OPEN、不开始新 sync round | `addTarget` 在 ready 下直接 startOpen；needs-resync 恢复未查 drain 窗口 | #171 |
@@ -173,7 +174,11 @@ Peer instance × N
 （A2-1/A2-2 → #169；A3-1 → #170；A4-1/A4-2/A5-1/A5-2/A5-5 → #171——以上以 `it.fails`
 注册为期望红灯，修复票落地转绿时自动反红提示摘标；锚集存在性由同文件常驻 meta 守卫
 保护——删锚/摘标不同步清点都会使套件反红；A1-1/A1-2/A1-3/A1-2b/A3-2/A3-3/
-A5-3/A5-4 为现绿回归锁）。
+A5-3/A5-4 为现绿回归锁）。**R1-3**（`packages/ws-replication/test/ws-replication-review-revisions-r1-r7-red.test.ts`
+——严格接纳 pipeline 判据缺口，见上方已知偏差表）同为 `it.fails` 注册的期望红灯锚：
+锚号/登记面属 r1-r7 文件自身（D2-bis 守卫只覆盖 anchors 文件），本段为其**存在性登记
+契约**（删锚/摘标不同步——含本表行——均应反红提示）；修复落地摘标时须同步删除本段
+登记与本表行。
 
 **hub 停机 GOAWAY 归属裁决**：§21 第 1 步的 GOAWAY 发送属 `@nomicore/ws-replication`
 包行为（`HubReplication.close()` 包内可完成，不依赖 composition root），修复票 #171；

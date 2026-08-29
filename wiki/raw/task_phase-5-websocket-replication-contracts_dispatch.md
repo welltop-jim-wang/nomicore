@@ -11,4 +11,6 @@
 | 7 | 00:36 | SA2 | Phase 2 design R2 review | 00:47 | Verdict: reject。仅新发现 D3b 收口 ERROR 帧额度豁免造成断言确定性红。 |
 | 8 | 00:48 | SA1 | Phase 2 design R3 | 00:55 | 已将 D3b 字节断言改为排除 §4.3 豁免的收口 ERROR 帧并添加反向验证。 |
 | 9 | 00:56 | SA2 | Phase 2 design R3 review | 01:06 | Verdict: pass。#8 收口 ERROR 豁免断言已构造性闭合，可进入实现。 |
-| 10 | 01:07 | SA3 | Phase 3 implementation | (pending) | SA1 设计和 SA2 R3 均通过，授权按设计实施、转绿并提交。 |
+| 10 | 01:07 | SA3 | Phase 3 implementation | 01:32 | Commit c271476；typecheck 与全量测试绿。实施记录提出 R1-3 新 known gap，待 SA4 独立审查。 |
+| 11 | 01:33 | SA4 | Phase 3 static review | 01:49 | Verdict: reject。F1 发现 R1-3 known gap 违反 protocol §17，文档将未交付严格接纳误称已交付。 |
+| 12 | 01:50 | SA3 | Phase 3 F1 documentation fix | (pending) | SA4 固定复验为纯文档 F1；原 SA3 修正文档归类、phase 状态与锚登记，不改生产代码。 |
