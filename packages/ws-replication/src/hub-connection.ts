@@ -3,7 +3,7 @@
  * （§4.2/§6/§15.2）。per-(connection, namespace) 通道见 hub-namespace.ts。
  */
 import type { DuplexTransport } from './types.js';
-import { encodeMessage, selectProtocolVersion, type ReplicationMessage } from '@nomicore/replication-protocol';
+import { selectProtocolVersion, type ReplicationMessage } from '@nomicore/replication-protocol';
 import {
   decodeInbound,
   namespaceFieldViolation,
@@ -408,22 +408,14 @@ class HubConnectionImpl implements HubConnection {
     }
   }
 
-  /** §4.1 R3/#11：出站 uint32 耗尽（实践不可达）→ best-effort connection ERROR +
-   *  close(1008)（绕过出站队列直发——队列已耗尽；ERROR 帧以最后合法序列发送）。 */
+  /** §4.1 R3/#11（R2-2 修订）：出站 uint32 耗尽（实践不可达）→ 直接 close(1008)。
+   *  framing 已不可信（§14 L391「否则直接 close」）：任何后续帧都只能以重复序列
+   *  0xffffffff 发送 ⇒ 违反 §1 不变量 2 / §3 L54 严格递增；故零出站帧（原 best-effort
+   *  ERROR 直发已删除——它正是重复序列号的唯一来源）。sender.teardown() 于 close 前
+   *  （既有）；closedFlag/state/cleanupAll 收口拓扑不变。 */
   private onSequenceExhausted(transport: DuplexTransport): void {
     if (transport.closed) return;
     this.sender.teardown();
-    try {
-      transport.send(
-        encodeMessage(connectionErrorFrame('CONNECTION_POLICY_VIOLATION'), {
-          sequence: 0xffffffff,
-          maxFrameBytes: this.hub.limits.maxFrameBytes,
-          limits: codecFieldLimits(this.hub.limits),
-        }),
-      );
-    } catch {
-      // best-effort；framing 已不可信
-    }
     if (!transport.closed) {
       transport.close(1008, 'sequence-exhausted');
     }

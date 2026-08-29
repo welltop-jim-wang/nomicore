@@ -16,17 +16,19 @@
  *      connectionFatal 直发 outbound（绕过 ready 门——R2 有意 delta）→ peerToHub
  *      恰 1 个 connection ERROR 帧 + close(1002) + blocked。#136 旧语义（0 帧）下红。
  *
- *   D3（SA2 §5-F3 配方 / SA4 §6-D3）control 保留额度耗尽可达性，三个互补面：
- *      a lowWater=1 极端：暂停段首个控制帧（hub UPDATE_ACK）即触发 →
+ *   D3（SA2 §5-F3 配方 / SA4 §6-D3）control 保留额度耗尽可达性，三个互补面
+ *      （R2-4 适配：额度由 lowWater 迁至独立配置 controlReserveBytes——lowWater 仅
+ *      保留 §17 L492 恢复 dequeue 水位迟滞语义；缺省 64KiB 逐值零漂移）：
+ *      a controlReserveBytes=1 极端：暂停段首个控制帧（hub UPDATE_ACK）即触发 →
  *        CONNECTION_BACKPRESSURE ERROR + close(1011) + peer backoff（非 blocked）
  *        + 撤压重连恢复；
  *      b 缺省 64KiB 配方（大控制帧路径）：暂停段首个 >64KiB BOOTSTRAP_SNAPSHOT
- *        首帧即触发，且触发帧不上 wire（谓词 `used + frameBytes > lowWater` 的
- *        「触发帧不发送」语义）+ 1011 + 撤压重连恢复（≈1600+ ACK 路径与本路径
+ *        首帧即触发，且触发帧不上 wire（谓词 `used + frameBytes > controlReserveBytes`
+ *        的「触发帧不发送」语义）+ 1011 + 撤压重连恢复（≈1600+ ACK 路径与本路径
  *        同谓词，由 c 以精确帧数锁定）；
- *      c 谓词精确触发帧数锁定：lowWater=100 + 实测等长 ACK 帧——暂停段恰发出
- *        floor(lowWater/ackBytes) 个 ACK 后下一帧触发（区分 `used ≥ lowWater`
- *        异形谓词——后者多发 1 帧）。
+ *      c 谓词精确触发帧数锁定：controlReserveBytes=100 + 实测等长 ACK 帧——暂停段
+ *        恰发出 floor(controlReserveBytes/ackBytes) 个 ACK 后下一帧触发（区分
+ *        `used ≥ controlReserveBytes` 异形谓词——后者多发 1 帧）。
  *
  *   D4（SA2 R2-N1 转绿守卫 / SA4 §6-D4）「消费即进展」活性：超限项（>maxUpdateBytes）
  *      + 合法小更新同队 → 释放 ACK → 同一次 drain 的后续 pass 发出合法项（对端在
@@ -246,18 +248,20 @@ describe('SA7 动态验证（issue #137）：SA4 §6 D1–D5 / SA2 §8.4 移交�
 
   // ─────────────── D3（SA2 §5-F3 配方）：control 保留额度耗尽可达性 ───────────────
 
-  it('D3a: lowWater=1 极端——暂停段首个控制帧（hub UPDATE_ACK）即耗尽 → CONNECTION_BACKPRESSURE + close(1011) + peer backoff（非 blocked）+ 撤压重连恢复', async () => {
+  it('D3a: controlReserveBytes=1 极端——暂停段首个控制帧（hub UPDATE_ACK）即耗尽 → CONNECTION_BACKPRESSURE + close(1011) + peer backoff（非 blocked）+ 撤压重连恢复', async () => {
     const probe = collectUnhandledRejections();
     try {
       const run = await bootMulti({
         count: 1,
         withPressure: true,
         limits: {
-          lowWater: 1,
+          lowWater: 1, // 水位迟滞语义原样（§17 L492 恢复 dequeue 水位）
           highWater: 2,
           maxInFlightUpdates: 1,
           maxQueuedUpdateCount: 100,
           maxQueuedUpdateBytes: 1_048_576,
+          // R2-4 适配：保留额度独立配置——与原 lowWater=1 额度语义逐帧等价
+          controlReserveBytes: 1,
         },
         timeouts: { ackTimeoutMs: 60_000 },
       });
@@ -266,7 +270,8 @@ describe('SA7 动态验证（issue #137）：SA4 §6 D1–D5 / SA2 §8.4 移交�
       const ackBefore = wireFrames(wire0, 'hubToPeer').filter((f) => f.message.kind === 'UPDATE_ACK').length;
 
       // 置压（3 > highWater=2）→ hub 出站入暂停段；peer 写 → hub 应用 + saveDoc 后
-      // 尝试 UPDATE_ACK（control）→ observeWater 入暂停 + 首帧字节 > lowWater=1 → 耗尽
+      // 尝试 UPDATE_ACK（control）→ observeWater 入暂停 + 首帧字节 > controlReserveBytes=1
+      // → 耗尽
       run.setHubPressure(3);
       await run.peerWrite(a, { n: 5 });
       await settle();
@@ -315,7 +320,7 @@ describe('SA7 动态验证（issue #137）：SA4 §6 D1–D5 / SA2 §8.4 移交�
     try {
       const big = await bootLocal({ schemaText: 'type ROOT = { n: number; blurb?: string; };', root: { n: 1 }, initialHubPressure: HIGH_WATER * 2, blurbBytes: 90_000, waitForLive: false });
       // 首连：HELLO_ACK（小控制帧，满额放行）→ BOOTSTRAP_SNAPSHOT（~90KB >
-      // lowWater=64KiB 缺省）→ used + frameBytes > lowWater 首帧即耗尽
+      // controlReserveBytes=64KiB 缺省）→ used + frameBytes > controlReserveBytes 首帧即耗尽
       await settleUntil(
         () => big.wires[0]?.hubSideClosed === true || big.peer.getConnectionState() === 'backoff',
         '首连耗尽收口（hub 侧 close 或 peer backoff）',
@@ -351,18 +356,20 @@ describe('SA7 动态验证（issue #137）：SA4 §6 D1–D5 / SA2 §8.4 移交�
     }
   });
 
-  it('D3c: 谓词精确触发帧数——lowWater=100 + 实测等长 ACK：暂停段恰 floor(lowWater/ackBytes) 帧放行后下一帧触发', async () => {
+  it('D3c: 谓词精确触发帧数——controlReserveBytes=100 + 实测等长 ACK：暂停段恰 floor(controlReserveBytes/ackBytes) 帧放行后下一帧触发', async () => {
     const probe = collectUnhandledRejections();
     try {
       const run = await bootMulti({
         count: 1,
         withPressure: true,
         limits: {
-          lowWater: 100,
+          lowWater: 100, // 水位迟滞语义原样（§17 L492 恢复 dequeue 水位）
           highWater: 200,
           maxInFlightUpdates: 8,
           maxQueuedUpdateCount: 100,
           maxQueuedUpdateBytes: 1_048_576,
+          // R2-4 适配：保留额度独立配置——与原 lowWater=100 额度数值恒等（allowed=1）
+          controlReserveBytes: 100,
         },
         timeouts: { ackTimeoutMs: 60_000 },
       });
@@ -381,7 +388,7 @@ describe('SA7 动态验证（issue #137）：SA4 §6 D1–D5 / SA2 §8.4 移交�
       );
       expect(rawAcks.length).toBeGreaterThanOrEqual(1);
       const ackBytes = rawAcks[rawAcks.length - 1]?.byteLength as number;
-      const allowed = Math.floor(100 / ackBytes); // 谓词 `used + frame > lowWater` 的放行帧数
+      const allowed = Math.floor(100 / ackBytes); // 谓词 `used + frame > controlReserveBytes` 的放行帧数
       const ackBefore = rawAcks.length;
 
       // 置压（300 > highWater=200）→ 暂停段；allowed+1 笔写：前 allowed 笔 ACK 放行，
@@ -392,12 +399,12 @@ describe('SA7 动态验证（issue #137）：SA4 §6 D1–D5 / SA2 §8.4 移交�
       }
       await settle();
 
-      // ★ D3c 主锚：放行帧数恰 = floor(lowWater/ackBytes)（异形谓词 `used ≥ lowWater`
-      // 会多发 1 帧 → 本断言红——SA2 #3(a) 两读法触发帧数不同）
+      // ★ D3c 主锚：放行帧数恰 = floor(controlReserveBytes/ackBytes)（异形谓词
+      // `used ≥ controlReserveBytes` 会多发 1 帧 → 本断言红——SA2 #3(a) 两读法触发帧数不同）
       const acksAfter = wire0.hubToPeer.filter(
         (bytes) => decodeMessage(bytes).message.kind === 'UPDATE_ACK',
       ).length;
-      expect(acksAfter - ackBefore, '暂停段放行帧数 = floor(lowWater/ackBytes)').toBe(allowed);
+      expect(acksAfter - ackBefore, '暂停段放行帧数 = floor(controlReserveBytes/ackBytes)').toBe(allowed);
       // 触发帧所属写已应用（apply 先于 ACK 发射——数据面不受 control 耗尽影响）
       expect(run.rootValue('hub', a, 'n')).toBe(43 + allowed);
       const errors = wireFrames(wire0, 'hubToPeer').filter((f) => f.message.kind === 'ERROR');

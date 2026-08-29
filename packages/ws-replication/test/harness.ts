@@ -50,6 +50,7 @@ export interface WsReplicationLimits {
   readonly maxQueuedBytesPerConnection: number;
   readonly lowWater: number;
   readonly highWater: number;
+  readonly controlReserveBytes: number; // R2-4：control 帧独立保留额度（§17 L490）
 }
 
 export interface WsReplicationTimeouts {
@@ -134,6 +135,7 @@ export const CONTRACT_LIMITS: Readonly<WsReplicationLimits> = Object.freeze({
   maxQueuedBytesPerConnection: 8 * 1024 * 1024,
   lowWater: 64 * 1024,
   highWater: 512 * 1024,
+  controlReserveBytes: 64 * 1024,
 });
 
 export const CONTRACT_TIMEOUTS: Readonly<WsReplicationTimeouts> = Object.freeze({

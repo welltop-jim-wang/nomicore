@@ -26,6 +26,7 @@ export interface ReplicationLimits {
   readonly maxQueuedBytesPerConnection: number; // 8 MiB
   readonly lowWater: number; // 64 KiB
   readonly highWater: number; // 512 KiB
+  readonly controlReserveBytes: number; // 64 KiB——control 帧独立保留额度（§17 L490）；耗尽 = CONNECTION_BACKPRESSURE
 }
 
 export interface ReplicationTimeouts {

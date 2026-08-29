@@ -278,10 +278,13 @@ describe('R3/R4 补测：恢复窗口 / fence 竞态 / fanout 溢出 / removeTar
         limits: { maxInFlightUpdates: 1, maxQueuedUpdateCount: 1 },
         timeouts: { ackTimeoutMs: 200 },
       });
-      // 溢出 → needs-resync + RESYNC_REQUIRED（无丢帧路径）
+      // R2-3 适配（queued limits 不得计入 in-flight——§17 分列限制）：溢出 → needs-resync
+      // + RESYNC_REQUIRED（无丢帧路径）——第二笔入队、第三笔（溢出点后移一笔）触发溢出，
+      // RESYNC/fence 流程断言不变
       run.hubNode.persistence.saveGate = deferred();
       await run.writePeer({ n: 1 });
-      await run.writePeer({ extra: 2 });
+      await run.writePeer({ extra: 2 }); // 入队（queued 0→1；cap=1）
+      await run.writePeer({ ext: 3 }); // 队列溢出（cap=1）
       await settle();
       expect(run.peerFrames('RESYNC_REQUIRED')).toHaveLength(1);
       await run.waitNamespace('needs-resync');

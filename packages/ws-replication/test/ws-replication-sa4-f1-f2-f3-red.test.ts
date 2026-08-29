@@ -35,9 +35,14 @@ describe('SA4 回流红灯：F1 hub 溢出声明 / F2 重连超时兜底 / F3 cl
     await run.writeHub({ extra: 5 }); // 首笔：发出（in-flight 1/1）
     await settle();
     expect(run.hubFrames('UPDATE')).toHaveLength(1);
-    // hub 连写第二笔 → 该通道 pending = inFlight(1) + queued(1) ≥ maxQueuedUpdateCount(1)
-    // → 溢出（§10.2 判据）→ 设计 §10.2/§18.4：hub 发 RESYNC_REQUIRED（本端声明）
-    await run.writeHub({ n: 6 });
+    // R2-3 适配（queued limits 不得计入 in-flight——§17 分列限制）：hub 连写第二笔
+    // → 入队（在途窗口满不占队列额度）；第三笔（溢出点后移一笔）触发溢出（§10.2
+    // 判据）→ 设计 §10.2/§18.4：hub 发 RESYNC_REQUIRED（本端声明）。
+    // 注：writeHub 的 TS 形参仅声明 n/extra，但 schema 声明 ext 字段（SCHEMA_ENVELOPE），
+    // 故以类型断言传 ext——保持「第三笔为独立字段」的设计形态（hub n/extra 不受影响，
+    // 下方收敛断言 n=6/extra=5 原样成立）。
+    await run.writeHub({ n: 6 }); // 入队（queued 0→1；cap=1）
+    await run.writeHub({ ext: 7 } as unknown as { n?: number; extra?: number }); // 队列溢出（cap=1）
     await settle();
     // ── F1 红灯锚（现实现：0 帧——hub 侧仅置状态、零 wire 信号）──
     const resyncs = run.hubFrames('RESYNC_REQUIRED');

@@ -120,13 +120,12 @@ export class UpdateChannel {
     this.markResyncReceived();
   }
 
-  /** 每笔 UPDATE 的大小门（§17 配置保证单笔必可发送——校验侧不 clamp）。 */
+  /** 未发送队列溢出判据（§17 L479–486 分列限制 + L488「未发送队列」任一上限超出）。
+   *  R2-3：in-flight 窗口是独立限制（§10.2 L279「窗口满只暂停发送」），不得计入
+   *  queued count/bytes 判据——否则合法满窗口会让第一笔未发送 UPDATE 提前溢出。 */
   private overflows(incoming: Uint8Array): boolean {
-    const pending = this.inFlight.size + this.queued.length;
-    if (pending >= this.host.limits.maxQueuedUpdateCount) return true;
-    let pendingBytes = this.queuedByteCount;
-    for (const bytes of this.inFlight.values()) pendingBytes += bytes.byteLength;
-    return pendingBytes + incoming.byteLength > this.host.limits.maxQueuedUpdateBytes;
+    if (this.queued.length >= this.host.limits.maxQueuedUpdateCount) return true;
+    return this.queuedByteCount + incoming.byteLength > this.host.limits.maxQueuedUpdateBytes;
   }
 
   private discardQueued(): void {
@@ -135,8 +134,24 @@ export class UpdateChannel {
   }
 
   private sendAndRegister(bytes: Uint8Array): void {
+    if (bytes.byteLength > this.host.limits.maxUpdateBytes) {
+      // R2-1：超限面判别（唯一可达形态 = 单笔项自身超限，§2.1①——贪心合并以累计
+      // 原始字节 ≤ maxUpdateBytes 为上界，多项帧结构性不可能超限）。该项无论走哪条
+      // 路径都永不可 wire——F4 丢弃语义不变；但丢弃必须可修复：
+      //  - 队列非空：同一次 drain 后续 pass 照发合法项（D4 钉死——R2-N1 活性），
+      //    丢失项由既有配置病理立场与下一次 reconciliation 修复；
+      //  - 队列已空：丢弃即终局静默（三个 drain 触发点均不可达），
+      //    ⇒ §10.2 同构响亮收口。
+      if (this.queued.length === 0) {
+        this.discardQueued();            // no-op（队列已空）；保持 §17 L488「丢弃全部未发送」形状
+        this.needsResync = true;         // 停发新 UPDATE（deliver 首行丢弃）
+        this.host.declareLocalResync();  // peer: RESYNC_REQUIRED{send-queue-overflow} + setState
+                                         //       + maybeStartRecovery；hub: declareHubResync 同构
+      }
+      return; // 不调用 host.sendUpdateFrame——控制器大小门保留为不可达后盾
+    }
     const seq = this.host.sendUpdateFrame(bytes);
-    if (seq <= 0) return; // F4：发送侧未出队（超限丢弃/连接已收口）→ 零 in-flight 幽灵登记
+    if (seq <= 0) return; // F4：非超限原因（连接收口/ready 门/编码错）——round-1 语义不变
     this.inFlight.set(seq, bytes);
     this.armAckTimer();
   }

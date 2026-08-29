@@ -71,12 +71,14 @@ export class ConnectionSender {
 
   // ─────────────────────────────── control / data 发送点 ───────────────────────────────
 
-  /** control 发送点（§4.1/§4.3）：水位观察 + 保留额度判据 + emit（控制帧不被闸门阻塞）。 */
+  /** control 发送点（§4.1/§4.3）：水位观察 + 保留额度判据 + emit（控制帧不被闸门阻塞）。
+   *  R2-4：额度判据用独立配置 `controlReserveBytes`（§17 L490）；lowWater 仅保留
+   *  §17 L492 恢复 dequeue 的水位迟滞语义（observeWater/poll），与额度无关。 */
   sendControl(message: ReplicationMessage): number {
     this.observeWater();
     if (this.paused) {
       const frameBytes = this.measureFrame(message);
-      if (this.controlReserveUsed + frameBytes > this.host.limits.lowWater) {
+      if (this.controlReserveUsed + frameBytes > this.host.limits.controlReserveBytes) {
         // §4.3 耗尽谓词（R2 钉死）：触发帧是首个会越界的帧——不发送、立即收口。
         this.host.onBackpressureExhausted();
         return 0;
