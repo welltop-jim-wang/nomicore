@@ -1,7 +1,8 @@
 /**
  * SA6 哨兵测试 — compileSchemaEnvelope 攻击评审红线补锚（issue #72，Phase 3）。
  *
- * 契约来源：wiki/raw/task_issue-72_sa2_review.md「红线测试思路」RT-1b / RT-1c /
+ * 规范权威：ADR-0004（schema envelope/projection 域）；设计记录（历史证据，非规范）：
+ * wiki/raw/task_issue-72_sa2_review.md「红线测试思路」RT-1b / RT-1c /
  * RT-2 / RT-3 / RT-4 原文逐条（SA2 R1 pass 附带的 MAJOR(M1c)/MINOR(M2,M3)/NOTE(N2)
  * 加固项，经总控排入本修订轮，新内部测试文件承载——vitest include 覆盖
  * `packages/vfsl/test/**`）。

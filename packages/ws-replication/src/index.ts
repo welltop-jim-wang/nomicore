@@ -1,5 +1,6 @@
 /**
- * `@nomicore/ws-replication` 公共入口（SA6 冻结契约面，§2；值 + 类型，零逻辑）。
+ * `@nomicore/ws-replication` 公共入口（公共契约面：值 + 类型，零逻辑；规范权威
+ * protocol §17/§18 + ADR-0010 #161/#172 修订节）。
  */
 export { createHubReplication } from './hub-connection.js';
 export { createPeerReplication } from './peer-connection.js';

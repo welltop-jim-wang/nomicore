@@ -1,6 +1,8 @@
 /**
  * @nomicore/namespace-runtime —— ReplicationSession 会话核心（issue #134：Phase 5
- * 切片 3/4「expose trusted NamespaceLease ReplicationSession」；设计
+ * 切片 3/4「expose trusted NamespaceLease ReplicationSession」；规范权威：ADR-0010
+ * issue #134（含 round 2）修订节 + docs/phases/phase-5-websocket-replication.md
+ * 切片 3/4 落地锚定；设计记录（历史证据，非规范）：
  * wiki/raw/task_namespace-lease-replication-session_design.md §4，R1 定稿）。
  *
  * 模块职责边界：一切需要 doc/handle/state/sequencer/notifyDirty 的机制——gate、

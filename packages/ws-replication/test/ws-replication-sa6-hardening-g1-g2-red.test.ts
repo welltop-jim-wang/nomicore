@@ -2,22 +2,23 @@
  * SA6 加固红灯 —— issue #161（PR #160 post-review 协议加固）G1/G2 组确定性红灯：
  *
  *   AC1（G1.2）：伪造 HELLO 身份必须在命名空间授权之前被拒绝（§6.1 L120「peerInstanceId
- *      必须等于 Upgrade 身份」）；当前实现 `accept()` 无受信身份、`onHello` 直接采信
- *      wire 自述身份（`hub-connection.ts:215`）→ 冒充者可借任意 instanceId 获得授权。
+ *      必须等于 Upgrade 身份」）；已修复（回归锁）：`accept()` 受信身份缺失 → 同步
+ *      TypeError、`onHello` 采信受信身份而非 wire 自述（冒充者无法借任意 instanceId
+ *      获得授权）。
  *   AC2（G1.3）：旧 socket 迟到 message/close 回调不得影响替代连接（§13.4 代际纪律）；
- *      当前 peer 侧 `transport.onMessage/onClose` 闭包未绑定当次连接代际且退订句柄被丢弃
- *      （`peer-connection.ts:199-200`）→ 重连后旧 socket 的迟到帧进入新连接 FSM、
- *      迟到 close 把新连接打进 backoff。
+ *      已修复（回归锁）：peer 侧 `transport.onMessage/onClose` 闭包绑定当次连接代际且
+ *      退订句柄保留——重连后旧 socket 迟到帧/迟到 close 零副作用。
  *   AC3（G2.1/G2.2）：伪造/过期 BOOTSTRAP_ACK 与 CLOSE_OK 不得推进状态机（§8.2 L197、
- *      §12 L311 ackedSequence 关联）；当前 `hub-namespace.ts:412-413` `void message`、
- *      `peer-namespace.ts:473-481` `onCloseOk()` 无参——任意 ackedSequence 均被采信。
+ *      §12 L311 ackedSequence 关联）；已修复（回归锁）：`hub-namespace.ts`/`peer-namespace.ts`
+ *      关联校验 ackedSequence，不匹配分支不推进状态机。
  *
  * 红线纪律：真实 yjs / Registry / Runtime；fake-duplex；fake scheduler；零 real sleep；
  * 断言均为 wire 帧 / 状态投影 / 授权调用记录（零源码 grep）。
  *
- * ⚠ 说明：`accept()` 的受信身份参数当前不存在。本测试经 `AcceptWithIdentity` 形状
- * 传入（运行时被现实现忽略），红灯锚不依赖该参数存在：现实现接受冒充 → 红灯；
- * SA3 按修复方向为 `accept()`/Options 引入 Upgrade 认证产物后，同一调用即携带受信身份。
+ * ⚠ 现状说明：本文件锚定的 G1/G2 加固面已交付（issue #161 / PR #165 round 2：
+ * `accept(transport, identity)` 受信 Upgrade 身份 + 缺失同步 TypeError、旧 socket
+ * 代际退订句柄、CLOSE_OK/BOOTSTRAP_ACK 关联校验）——本文件现为回归锁（文件名中
+ * red 为历史红灯批次标记）。
  */
 import { describe, expect, it } from 'vitest';
 import { createHubReplication } from '@nomicore/ws-replication';

@@ -68,7 +68,7 @@ describe('AC4：双向 reconciliation 与 SYNC_APPLIED 门禁', () => {
     }));
     const peerStep1At = timeline.findIndex((t) => t.direction === 'peer-to-hub' && t.kind === 'SYNC_STEP1');
     const hubStep1At = timeline.findIndex((t) => t.direction === 'hub-to-peer' && t.kind === 'SYNC_STEP1');
-    expect(peerStep1At, 'peer 的 Step1 必须已发出').toBeGreaterThanOrEqual(0);
+    expect(run.peerFrames('SYNC_STEP1').length, 'peer 的 Step1 必须已发出').toBeGreaterThanOrEqual(1);
     expect(hubStep1At).toBeGreaterThan(peerStep1At);
 
     const peerStep1 = asMsg<SyncStep1Msg>(run.peerFrames('SYNC_STEP1')[0], 'SYNC_STEP1');

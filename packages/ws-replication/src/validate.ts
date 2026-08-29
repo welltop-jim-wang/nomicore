@@ -181,6 +181,13 @@ export function validateLimits(limits: ReplicationLimits): void {
     'limits',
     'highWater 必须 ≤ maxQueuedBytesPerConnection',
   );
+  // §17 链式不变量：control 保留额度必须恒容纳一次 bootstrap + 协议开销（构造期
+  // 响亮校验，绝不运行时 clamp——最低合法额度即「恰好容纳一次 bootstrap + 开销」）。
+  assertCollKind(
+    limits.maxQueuedControlBytes >= limits.maxBootstrapBytes + PROTOCOL_OVERHEAD_BYTES,
+    'limits',
+    `maxQueuedControlBytes(${limits.maxQueuedControlBytes}) 必须 ≥ maxBootstrapBytes(${limits.maxBootstrapBytes}) + ${PROTOCOL_OVERHEAD_BYTES}`,
+  );
 }
 
 export function validateTimeouts(timeouts: ResolvedTimeouts): void {

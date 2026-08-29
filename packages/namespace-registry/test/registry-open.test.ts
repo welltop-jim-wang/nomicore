@@ -2,7 +2,8 @@
  * SA6 红灯锚定 — issue #110：namespace-registry open 主链、唯一 Runtime、
  * 同键 lifecycle 串行、lease 全语义（设计 §9 测试矩阵）。
  *
- * 契约来源：wiki/raw/task_namespace-registry-open_design.md（冻结设计）§4/§5/§6/§7/§8。
+ * 规范权威：ADR-0009；设计记录（历史证据，非规范）：
+ * wiki/raw/task_namespace-registry-open_design.md（冻结设计）§4/§5/§6/§7/§8。
  * 纪律：全部并发用 deferred gate + 显式 microtask settle，零 real sleep；
  * 公开文本零回显负锁；observer 收 exact cause/identity；observer throw 被隔离。
  */

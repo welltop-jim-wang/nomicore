@@ -15,7 +15,8 @@
  *   R2-10 owned bytes 加严：listener 直存 callback 原始参数，断言每投递数组独立且
  *         buffer 不共享（byteOffset/length/底 buffer identity 层面）。
  *
- * 契约来源：wiki/raw/task_namespace-lease-replication-session_round2.md（评审全文 +
+ * 规范权威：ADR-0010 issue #134 round-2 修订节；设计记录（历史证据，非规范）：
+ * wiki/raw/task_namespace-lease-replication-session_round2.md（评审全文 +
  * AC-R2 映射）；round2_conflict_report（verdict: clear；R2-1/R2-2 放行方向与登记义务
  * D-1/D-2a/D-2b/D-3/D-4）；round2_relevant_decisions（R2-3/R2-4/R2-6/R2-7 裁决增量）。
  *

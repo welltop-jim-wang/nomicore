@@ -302,3 +302,30 @@ maxQueuedControlBytes 缺省 8MiB、有界整轮扫描、pending handoff 计入 
 双口径、checkpoint = max(1, floor(ackTimeoutMs/100))、1011 终止）；peer pong 超时
 close(1001) + 代际安全脱离后重连；GOAWAY/blocked/连接收口同步静默订阅先于异步
 drain。实现证据：`packages/ws-replication/src/*`（PR #165 round 2）。
+
+### issue #172 修订（Phase 5 权威契约收敛——2026-08-30）
+
+本节登记公共 TypeScript API 与 wire 权威文档的收敛决定及交付边界陈述；wire 冻结值
+不变，正文与既有修订节效力不变。
+
+1. **control 保留额度公共字段**：`@nomicore/ws-replication` 公开 `ReplicationLimits`
+   的 control 保留额度字段为 `maxQueuedControlBytes`（缺省 8 MiB；构造期响亮校验
+   `maxQueuedControlBytes ≥ maxBootstrapBytes + 协议开销`，同步 TypeError，绝不运行时
+   clamp）。PR #165 曾以 `controlReserveBytes`（64 KiB）落地，与本节及 protocol §17
+   不一致；issue #172 收敛为冻结字段名/缺省/下界，记账判据（耗尽 →
+   `CONNECTION_BACKPRESSURE` close 1011）由冻结字段驱动。「额度按 socket 缓冲内未冲刷
+   控制字节计」的实现口径 = 暂停段出站 control 帧实际编码字节的近似累计（段内不扣减
+   已冲刷字节、段边界复位丢弃暂停前未冲刷残留——净方向取决于冲刷进度，不构成恒保守
+   上界；WS 无逐帧冲刷可观察面，此为可实现近似）。
+2. **`wiki/raw` 非规范**：源码与规范中的公共行为表述必须指向 `CONTEXT.md`、ADR 或
+   `docs/protocols/`；`wiki/raw/` 仅为流水线历史证据（`docs/AGENTS.md` Authority 节）。
+   仓库内以「冻结契约/权威设计/契约来源」措辞指向 `wiki/raw` 的源引用已改为权威指向
+   +历史证据双标注。
+3. **交付边界陈述**（详见 `docs/phases/phase-5-websocket-replication.md`「交付现状与
+   边界」节，此处登记结论）：peer 侧 resetReplica 编排未交付（Registry 侧已按 #133
+   round-2 修订节交付）；结构化 observer/metrics 面（#163）未交付；apps/yjs-server
+   composition root 与 transport 三可选面装配期断言（#164）未交付。已知偏差修复路由：
+   背压恢复检查点 → #169；hub 侧 pong 超时 close(1001) → #170；CLOSE_OK 错误/多余
+   关联 `ACK_STATE_VIOLATION`(1002)、GOAWAY drain 窗口静默（停 OPEN/不开新 round）、
+   hub 停机先发 GOAWAY → #171。hub 停机 GOAWAY 发送归属 `@nomicore/ws-replication`
+   包行为（非 #164 composition 边界）。
