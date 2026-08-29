@@ -10,8 +10,10 @@
  *     释放；耗尽 = CONNECTION_BACKPRESSURE（1011）收口）；阈值 maxQueuedControlBytes
  *     （缺省 8 MiB，≥ maxBootstrapBytes + 128 启动期响亮验证）；
  *  ③ 统一连接账本：P3 观察值 + P2 未吸收/未离开交接（FIFO handoffQueue：data 恒计、
- *     control 按 onEmitted 裁定注计）+ Σ P1 排队——admission（tryEmitData）与 shed 触发
- *     （enforceConnectionCap）共用（单一台账，无缝隙）；
+ *     control 仅暂停窗口——R11 裁定）+ Σ P1 排队——admission（tryEmitData）与 shed 触发
+ *     （enforceConnectionCap）共用（单一台账，无缝隙）；额度释放经 R12 kind-aware 退休
+ *     账本（§3.5：Δ<0 按 ①已吸收 data → ②handoff data → ③已吸收 control → ④handoff
+ *     control 优先序退休；控制额度仅由 ③+④ 驱动——data flush 绝不释放控制额度）；
  *  ④ shed：溢出触发（总压 > cap 严格大于）→ 按最大 queued namespace 依次整队丢弃
  *     至 queued 侧 ≤ lowWater（§17「整队丢弃至 queued 侧 ≤ low-water」）；
  *  ⑤ data round-robin 轮转：插入序 wheel + 旋转游标，每轮每 ns 至多一帧（不变）。
@@ -71,13 +73,18 @@ export class ConnectionSender {
   private paused = false;
   private pollHandle: unknown | undefined;
   /** P2 交接队列（FIFO，§3.1）：data 与 control 帧的压力相位账（I-1）。 */
-  private readonly handoffQueue: HandoffChunk[] = [];
+  private handoffQueue: HandoffChunk[] = [];
   /** = Σ kind==='data' 的 bytes（data 侧 P2 余额）。 */
   private pendingDataHandoff = 0;
-  /** = Σ kind==='control' 的 bytes（control 侧 P2 余额；暂停窗口内交接的控制帧计——见 onEmitted 裁定注）。 */
+  /** = Σ kind==='control' 的 bytes（control 侧 P2 余额；仅暂停窗口，R11 批准形状）。 */
   private controlPendingHandoff = 0;
   /** 策略账本（非压力相位）：暂停窗口内交接、未观察冲刷的控制字节——只喂额度判据（R3）。 */
   private controlUnflushed = 0;
+  /** 退休候选计数（R12 §3.5）：Δ>0 归因弹出 handoff chunk 时按 kind 累积的「已吸收、未退休」
+   *  余额——Δ<0 的控制额度退休按 §3.5 优先序消耗这些候选；仅 teardown 清零
+   *  （缓冲模型，跨暂停窗口持续）。 */
+  private unretiredAbsorbedData = 0;
+  private unretiredAbsorbedControl = 0;
   /** 最近一次观察基线（delta 对账，§3.2）。 */
   private lastObservedBuffered = 0;
   /** 恢复检查间隔 = max(1, floor(ackTimeoutMs/100))（协议 §17 权威公式，§7）。 */
@@ -143,22 +150,18 @@ export class ConnectionSender {
   onEmitted(info: Readonly<{ kind: 'control' | 'data'; byteLength: number }>): void {
     if (this.tornDown) return; // 收口路径直发 ERROR 的回报零记账（§13.4）
     if (info.kind === 'control') {
-      // 压力侧 P2（R4 注——裁定待 SA1/SA2 复核）：暂停窗口内的控制帧入共享 FIFO 恒计；
-      // 非暂停控制帧不入 FIFO。设计 §4.2「controlPendingHandoff 恒计（不区分暂停）」与
-      // §12.3「R1-1 判据同旧（P2 已被 observe 释放，projected 逐值同）」在
-      // 「Δ≡0 段（gate-off/write-through-0）→ 随后 Δ>0」的混合观察面上互斥：恒计会把
-      // Δ≡0 段交接的未观察控制字节作为 FIFO 首残差永久保留（总残差 = Σ未观察控制字节，
-      // 不随后续 Δ 收敛——head-pop 语义下 min(|Δ|, 队列总余额) 的残差恒等），使 R1-1
-      // 类边界（协议公式 64,808 ≤ cap 但 65,597 > cap）误拒一帧。本实现选 §12.3 面
-      // （R1-1 判据同旧）：非暂停控制栈的压力盲区维持 PR #165/issue #137 基线口径
-      // （SA2 T4 构想未入红灯契约——17 用例全部不依赖非暂停控制 P2 计总压）。
+      // 压力侧 P2（R11 裁定批准形状，§12.7）：暂停窗口内的控制帧入共享 FIFO（压力侧）
+      // 并计策略账 controlUnflushed；非暂停控制帧不入任何台账（§4.4/§14.2 诚实暴露界——
+      // 恒计会在「Δ≡0 相位（gate-off/write-through-0）后接 Δ>0」的混合观察面上留下等额
+      // 永久 data 残差（SA3 实测 789B），击穿既有 R1-1 协议公式边界锚——R11 裁定选
+      // 该形状，SA2 R11 复审 pass，17 红灯 + 全量回归零迁移保持绿色）。
       if (this.paused) {
         this.handoffQueue.push({ kind: 'control', bytes: info.byteLength });
         this.controlPendingHandoff += info.byteLength;
         this.controlUnflushed += info.byteLength; // 策略侧：窗口内累计
       }
     } else {
-      this.handoffQueue.push({ kind: 'data', bytes: info.byteLength }); // 压力侧 P2
+      this.handoffQueue.push({ kind: 'data', bytes: info.byteLength }); // 压力侧 P2（data 恒计）
       this.pendingDataHandoff += info.byteLength;
     }
   }
@@ -169,7 +172,7 @@ export class ConnectionSender {
     this.drainData();
   }
 
-  /** 连接收口/重拨/重建/停机的必经点：清 poll timer、清 wheel、复位全部台账（§8）。 */
+  /** 连接收口/重拨/重建/停机的必经点：清 poll timer、清 wheel、复位全部台账与新退休候选计数（§8/NC-8）。 */
   teardown(): void {
     this.tornDown = true;
     this.clearPoll();
@@ -180,6 +183,8 @@ export class ConnectionSender {
     this.pendingDataHandoff = 0;
     this.controlPendingHandoff = 0;
     this.controlUnflushed = 0;
+    this.unretiredAbsorbedData = 0;
+    this.unretiredAbsorbedControl = 0;
     this.lastObservedBuffered = 0;
   }
 
@@ -265,39 +270,81 @@ export class ConnectionSender {
   // ─────────────────────────────── §3 统一连接账本 / §4.4 总压与 shed ───────────────────────────────
 
   /**
-   * 读数 + 对账（§3.2/§3.3）：
-   *  - Δ ≠ 0（吸收证据 / 离开证据）：FIFO 队首起弹出 min(|Δ|, 队列总余额) 字节
-   *    （按 chunk kind 核减对应侧余额；队首 chunk 原地缩减）；双向释放——「吸收+冲刷
-   *    同间隙」的 chunk 在恒动面上不留不可回收 stale（P2 无界累积 → 假拒/假 shed）；
-   *  - Δ < 0 另释放策略账本：controlUnflushed -= min(|Δ|, controlUnflushed)
-   *    （§4.2 G3b 冲刷即释放）。
+   * 读数 + 对账（§3.2/§3.3；§3.5 R12 kind-aware 退休账本）：
+   *  - Δ > 0（吸收证据）：FIFO 队首起弹出 min(Δ, 队列总余额) 字节（按 kind 核减压力侧
+   *    余额），并把弹出量按 kind 累积到退休候选计数（unretiredAbsorbedData/Control）；
+   *    超出队列余额的增量 = 外部积压（非本连接写入）——不作退休候选、不记账。
+   *  - Δ < 0（离开证据）：按 §3.5 退休优先序消耗退休预算 |Δ|——
+   *      ① unretiredAbsorbedData → ② handoffQueue 的 data chunk（最老优先）
+   *      → ③ unretiredAbsorbedControl → ④ handoffQueue 的 control chunk（最老优先）；
+   *    控制额度释放 = ③+④ 实际退休的控制字节（clamp 到 controlUnflushed）——硬不变量
+   *    （R12）：data flush 绝不释放控制额度（①② 消耗不触额度）。
    *  返回本次观察值。
    */
   private observe(): number {
     const level = this.host.readBufferedAmount();
     const delta = level - this.lastObservedBuffered;
-    if (delta !== 0) {
-      let remaining = Math.abs(delta);
+    if (delta > 0) {
+      let remaining = delta;
       while (remaining > 0 && this.handoffQueue.length > 0) {
         const chunk = this.handoffQueue[0]!;
         const take = Math.min(chunk.bytes, remaining);
-        if (chunk.kind === 'data') this.pendingDataHandoff -= take;
-        else this.controlPendingHandoff -= take;
+        if (chunk.kind === 'data') {
+          this.pendingDataHandoff -= take;
+          this.unretiredAbsorbedData += take;
+        } else {
+          this.controlPendingHandoff -= take;
+          this.unretiredAbsorbedControl += take;
+        }
         chunk.bytes -= take;
         remaining -= take;
         if (chunk.bytes === 0) this.handoffQueue.shift();
       }
-      if (delta < 0) {
-        // 策略侧独立于压力侧：已吸收（Δ>0）≠ 已冲刷——吸收后仍占用额度（R2-A2a 语义锚）
-        this.controlUnflushed -= Math.min(-delta, this.controlUnflushed);
-      }
+      // remaining > 0 的部分 = 外部积压增量（非本连接写入）——不作退休候选，不记账
+    } else if (delta < 0) {
+      let remaining = -delta;
+      // ① 已吸收 data 退休候选（data flush 绝不释放控制额度——R12 硬不变量）
+      const r1 = Math.min(remaining, this.unretiredAbsorbedData);
+      this.unretiredAbsorbedData -= r1;
+      remaining -= r1;
+      // ② handoff data chunk（最老优先；data 对 data stale 的释放——§3.3(c) 恒动面防假拒）
+      remaining -= this.retireFromHandoff('data', remaining);
+      // ③ 已吸收 control 退休候选
+      const r3 = Math.min(remaining, this.unretiredAbsorbedControl);
+      this.unretiredAbsorbedControl -= r3;
+      remaining -= r3;
+      // ④ handoff control chunk（最老优先）——G3b 的归因读法（无本连接 data 在场时的下降归因于控制）
+      const r4 = this.retireFromHandoff('control', remaining);
+      // 控制额度释放：仅由 ③+④（退休的控制字节）驱动——data flush（①+②）绝不释放（§3.5 硬不变量）
+      this.controlUnflushed -= Math.min(r3 + r4, this.controlUnflushed);
     }
     this.lastObservedBuffered = level;
     return level;
   }
 
-  /** 连接总压（§3.4）：P3 观察 + P2 未吸收/未离开交接（data 与 control，各恰一次）+ Σ P1 排队。
-   *  controlUnflushed 不在此（R3）：已吸收控制字节已在 lastObservedBuffered 内。 */
+  /** 从 handoffQueue 按指定 kind（最老优先）退休 up to budget 字节（核减压力侧余额、清空 chunk）；返回实退量。 */
+  private retireFromHandoff(kind: 'data' | 'control', budget: number): number {
+    if (budget <= 0 || this.handoffQueue.length === 0) return 0;
+    let retired = 0;
+    for (const chunk of this.handoffQueue) {
+      if (budget <= 0) break;
+      if (chunk.kind !== kind || chunk.bytes === 0) continue;
+      const take = Math.min(chunk.bytes, budget);
+      chunk.bytes -= take;
+      budget -= take;
+      retired += take;
+      if (kind === 'data') this.pendingDataHandoff -= take;
+      else this.controlPendingHandoff -= take;
+    }
+    if (retired > 0) {
+      this.handoffQueue = this.handoffQueue.filter((c) => c.bytes > 0);
+    }
+    return retired;
+  }
+
+  /** 连接总压（§3.4）：P3 观察 + P2 未吸收/未离开交接（data 恒计；control 仅暂停窗口，R11）+ Σ P1 排队。
+   *  controlUnflushed 不在此（R3）：已吸收控制字节已在 lastObservedBuffered 内；
+   *  非暂停控制不在此（R11）：归协议观察滞后域（§4.4/§14.2 诚实暴露界）。 */
   private totalPressure(): number {
     return this.lastObservedBuffered + this.pendingDataHandoff
       + this.controlPendingHandoff + this.totalQueuedBytes();
