@@ -46,6 +46,9 @@
 | **CI 等价（SA4/SA7 轮）** | `pnpm test`（= CI `Test` 步：`vitest run --typecheck`） | **142 files / 1816 tests 全部通过、Type Errors no errors**；exit 1 仅因 2 条 `[vitest-worker]: Timeout calling "onTaskUpdate"` 环境工件（SA7-I-2：改动前同签名同条数、单独运行零工件） |
 | **CI 等价（测试文件级类型检查）** | `npx tsc -p tsconfig.typecheck.json`（include 含 `packages/*/test/**/*.ts`） | **0 错误（exit 0）**——SA7-F-1 修复闭环：SA3 轮提交的红灯测试文件 63 处类型错误（`rec` possibly undefined / carrier 未收窄）由 SA7 纯类型层修复（`firstAttempt`/`inlineBytes`/`updateCarrierOf` 收窄守卫，零断言零语义变更） |
 | CI 等价（类型步） | `pnpm typecheck` | **通过（exit 0）**（复跑确认） |
+| **B-1 复验（终审 §4 固定范围）** | `npx vitest run packages/namespace-runtime/test/runtime-root-schema-diagnostic-sa7.test.ts -t "DV-2" --typecheck` ×3 | **×3 全部 2/2 通过**（0 失败；修复前隔离 3/3 失败 22–27ms vs 20ms） |
+| **B-1/B-2 后全量** | `pnpm test`（= CI `Test` 步） | **142 files / 1816 tests 全部通过；Type Errors no errors**（全量绿；exit 1 仅余已文档化环境工件 A-3/SA7-I-2） |
+| **B-2 复验（终审 §4 固定范围）** | `pnpm install --frozen-lockfile --prefer-offline --ignore-scripts` | **exit 0**——lockfile 无连锁变化；`git diff pnpm-lock.yaml` 空 |
 
 - 转绿前关键发现（R1 版阻塞，已由 SA1 R2 修订 + SA6 §13.8 修订闭环）：yjs 事务 update 事件 payload 为**增量**（`writeStructsFromTransaction` = `writeClientsStructs(encoder, store, transaction.beforeState)`，left origin/delete set 引用 pre-state struct）——应用到**空 Y.Doc 不物化**（实测：38B 增量 → 空 doc `store.clients=[]`、不抛错）。设计 §10.2 R1 版「空 doc 可重放」声称不成立。SA3 以最小实验（yjs@13.6.32）实证后上报；SA1 R2 冻结修正契约（§6.4：同源基态 + 依序增量链 = ADR-0011「连续的 committed Yjs updates 诊断性重放」原生语义；新增 §14 P8 实测证据 + §13.8 SA6 测试修订规格），**producer 侧零改动**（§6.1–6.3/§7/§8/§9 全部不变）——SA3 已实施捕获机制本就产事务增量，与修订后设计一致。
 
@@ -56,6 +59,11 @@
 - 回归重点面（SA2 #6/§13.5）：runtime-close-lifecycle / runtime-close-sa7-dynamic / runtime-p0-sequencer / runtime-mutate-root-sequencer 全部通过（emit 挂点为非包装附加反应后，时序敏感面零回归）。
 - **终验补记（2026-08-29 完成轮）**：三连验证全绿——红灯契约 14/14、全仓 vitest 1800/1800（141 文件）、`pnpm typecheck` exit 0。提交 `96cd085`（本地，未 push）含生产代码 + SA6 红灯文件 + 全部任务 wiki 归档。
 - **终验补记 R2（SA7 动态验证轮，2026-08-29）**：SA4 静态评审 pass（5 INFO，无阻塞）；SA7 动态验证 pass（16 个新动态测试全部通过：DV-1 慢 emit 槽间延迟 / DV-2 acceptance 同步 emit / DV-3 unhandledRejection 抑制 / DV-4 §13.7 未钉死结局点 9 点补钉 / DV-6 队列满×full 组合；生产面零缺陷发现）。SA7-F-1（红灯测试文件 63 处类型错误——SA3 轮全链路验证均用 `--typecheck.enabled=false` 而 `pnpm typecheck` 只覆盖 src 的**验证缺口**）已在测试层修复并闭环：`tsc -p tsconfig.typecheck.json` 0 错误；SA7 测试/报告与修复由 **SA3 本轮并入本地提交**（commit 见 §五；生产代码零改动——无任何演示性失败触发）。备注观察项（SA7 owned，不阻塞）：DV-2 对照断言 `syncMs < 20` 在本沙箱 scoped/隔离运行下处于边缘（实测 22–27ms——memory adapter 单次 emit 本机约 14ms + 首调 warmup；CI 等价全量运行 142/142 绿灯）；如后续 CI 出现该断言 flaky，建议 SA7 放宽余量或在对照前预热管线。
+- **终验补记 R3（standards 终审轮，2026-08-29）**：SA4 standards 轴独立终审 **verdict: reject**（BLOCKER×2，其余 7 轴全部 pass）——**BLOCKER-1**：SA7 DV-2 对照断言 `syncMs < 20` 为贴界墙钟上界（实测 ~1/3 失败率，CI `Test` 步随机红）；**BLOCKER-2**：`@nomicore/namespace-runtime` 漏 version bump（仓库「逐变更 patch bump」惯例）。两项均已修复：
+  - **B-1 修复（SA7 owned 测试文件，按终审 §1 (a) 方案）**：`runtime-root-schema-diagnostic-sa7.test.ts` DV-2 对照 it 断言 `< 20` → `< 100`，it 标题与注释同步改为「无自旋量级」语义（`SPIN_MS=30` 慢 emitter 首测的 `>= SPIN_MS-5` 下界不变——对照区分度完整保留；同步发射测试本体零改动）。终审 §4 固定复验范围复跑：DV-2 隔离 ×3 全绿、全量 `pnpm test` 全绿 + Type Errors no errors（见 §三表）、`tsc -p tsconfig.typecheck.json` 0 错误、`pnpm typecheck` exit 0。
+  - **B-2 修复（SA3 回流）**：`packages/namespace-runtime/package.json` version `0.1.7 → 0.1.8`；`pnpm install --frozen-lockfile` exit 0——pnpm-lock.yaml 无连锁变化（workspace 包版本不入 lockfile；终审 V10 复核面）。
+  - AC checklist Gate summary 已同步修正（原先的「exited 1 only for two documented vitest-worker RPC timeout environment artifacts」归因被终审证伪——存在第三个 exit-1 成因即 B-1；现已改写并记录修正）。
+  - 其余 7 轴（映射一致性/触发/ADR/范围/业务回归/卫生）终审 pass 支撑面零改动；本轮生产代码变更 = 仅版本行（package.json），无任何语义改动。
 
 ## 五、提交记录
 
