@@ -1651,4 +1651,3 @@ describe('T11（冒烟）：observer 内调用公共 API 不崩、状态一致',
     expect(p.getConnectionState()).toBe('stopped');
   });
 });
-
