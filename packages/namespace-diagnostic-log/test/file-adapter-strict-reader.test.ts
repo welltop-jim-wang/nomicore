@@ -25,6 +25,7 @@ import { baseEmission, OBSERVED_AT } from './helpers/base.js'
 import {
   encodeFrame,
   FRAME_HEADER_BYTES,
+  legacyManifest,
   makeFileLog,
   makeTempRoot,
   patternedBytes,
@@ -1031,7 +1032,12 @@ describe('R2 轮：stream sequence 连续性（设计 §3.4 / §5.3 #6）', () =
 
   it('跨 segment：seg1=[1] + seg2=[3] → sequence-gap（expected 跨 segment 不重置）', () => {
     const root = freshRoot()
-    writeStreamFixture(root, NS, STREAM, { jsonlLines: [validAttemptRecord(STREAM, '1')] })
+    // #153：闭段 roll-target 核查（§9.3）要求闭段至少一维达标——夹具声明 records target=1
+    // （seg1 恰 1 条 = target）以隔离本用例的连续性锚定，不引 §9.3 政策噪音。
+    writeStreamFixture(root, NS, STREAM, {
+      manifest: validManifest(STREAM, NS, { targetRecordsPerSegment: 1 }),
+      jsonlLines: [validAttemptRecord(STREAM, '1')],
+    })
     writeSecondSegment(root, STREAM, [validAttemptRecord(STREAM, '3')])
     const read = readStreamStrict({ rootDir: root, namespaceId: NS, streamId: STREAM })
     expect(read.status).toBe('corrupt')
@@ -1040,7 +1046,11 @@ describe('R2 轮：stream sequence 连续性（设计 §3.4 / §5.3 #6）', () =
 
   it('跨 segment 正例：seg1=[1] + seg2=[2] → ok（连续前缀跨 segment 合法）', () => {
     const root = freshRoot()
-    writeStreamFixture(root, NS, STREAM, { jsonlLines: [validAttemptRecord(STREAM, '1')] })
+    // #153：同上——records target=1 使闭段 seg1 达标（§9.3 正例面），隔离连续性语义。
+    writeStreamFixture(root, NS, STREAM, {
+      manifest: validManifest(STREAM, NS, { targetRecordsPerSegment: 1 }),
+      jsonlLines: [validAttemptRecord(STREAM, '1')],
+    })
     writeSecondSegment(root, STREAM, [validAttemptRecord(STREAM, '2')])
     const read = readStreamStrict({ rootDir: root, namespaceId: NS, streamId: STREAM })
     expect(read.status).toBe('ok')
@@ -1184,3 +1194,134 @@ function concatU8(a: Uint8Array, b: Uint8Array): Uint8Array {
   out.set(b, a.byteLength)
   return out
 }
+
+// ============================================================================
+// #153 增量（设计 §9.1/§9.2/§9.3 与 §13.30）：manifest 双形状 + 两新码
+// ============================================================================
+describe('#153（§9.1–§9.3/§13.30）：manifest 双封闭形状 + line-unterminated + manifest-roll-target-violation', () => {
+  it('§13.30a [护栏·绿] 17 键 manifest 健康 stream → readStreamStrict ok（本票 writer 产物形状的正例）', () => {
+    const root = freshRoot()
+    writeStreamFixture(root, NS, STREAM, {
+      manifest: validManifest(STREAM, NS), // helpers 默认即 17 键
+      jsonlLines: [validAttemptRecord(STREAM, '1')],
+    })
+    const read = readStreamStrict({ rootDir: root, namespaceId: NS, streamId: STREAM })
+    expect(read.status).toBe('ok')
+    expect(read.issues).toHaveLength(0)
+    expect(read.records[0]!.ok).toBe(true)
+  })
+
+  it('§13.30b [护栏·绿] 14 键 legacy manifest 健康 stream → 仍读为 ok（读能力双形状）', () => {
+    const root = freshRoot()
+    writeStreamFixture(root, NS, STREAM, {
+      manifest: legacyManifest(STREAM, NS),
+      jsonlLines: [validAttemptRecord(STREAM, '1')],
+    })
+    const read = readStreamStrict({ rootDir: root, namespaceId: NS, streamId: STREAM })
+    expect(read.status).toBe('ok')
+    expect(read.records).toHaveLength(1)
+  })
+
+  it('§13.30c [护栏·绿] 15 键 manifest → manifest-invalid（原子扩展：三键同进同出）', () => {
+    const root = freshRoot()
+    writeStreamFixture(root, NS, STREAM, {
+      manifest: legacyManifest(STREAM, NS, { strayKey: true }),
+      jsonlLines: [validAttemptRecord(STREAM, '1')],
+    })
+    const read = readStreamStrict({ rootDir: root, namespaceId: NS, streamId: STREAM })
+    expect(read.status).toBe('corrupt')
+    expect(issueCodes(read.issues)).toContain('manifest-invalid')
+  })
+
+  it('§13.30d [护栏·绿] 16 键 manifest（只加两个 target）→ manifest-invalid', () => {
+    const root = freshRoot()
+    // 14 键 legacy + 2 个 target（三键不齐 → 16 键，非封闭形状）
+    const partial = legacyManifest(STREAM, NS)
+    writeStreamFixture(root, NS, STREAM, {
+      manifest: { ...partial, targetJsonlSegmentBytes: 67108864, targetBinSegmentBytes: 268435456 },
+      jsonlLines: [validAttemptRecord(STREAM, '1')],
+    })
+    const read = readStreamStrict({ rootDir: root, namespaceId: NS, streamId: STREAM })
+    expect(read.status).toBe('corrupt')
+    expect(issueCodes(read.issues)).toContain('manifest-invalid')
+  })
+
+  it('§13.30e [红灯] line-unterminated：末物理块缺终止符 \\n → corrupt + line-unterminated（终止符证明取代宽容 parse）', () => {
+    const root = freshRoot()
+    writeStreamFixture(root, NS, STREAM, {
+      manifest: validManifest(STREAM, NS),
+      jsonlText: JSON.stringify(validAttemptRecord(STREAM, '1')) + '\n' + '  {"partial":',
+    })
+    const read = readStreamStrict({ rootDir: root, namespaceId: NS, streamId: STREAM })
+    expect(read.status).toBe('corrupt')
+    expect(issueCodes(read.issues)).toContain('line-unterminated')
+  })
+
+  it('§13.30f [红灯] line-unterminated 变体：末块截断后恰为合法 JSON（无 \\n）→ 仍判 line-unterminated', () => {
+    const root = freshRoot()
+    writeStreamFixture(root, NS, STREAM, {
+      manifest: validManifest(STREAM, NS),
+      jsonlText: JSON.stringify(validAttemptRecord(STREAM, '1')), // 合法 JSON、无 \n
+    })
+    const read = readStreamStrict({ rootDir: root, namespaceId: NS, streamId: STREAM })
+    expect(read.status).toBe('corrupt')
+    expect(issueCodes(read.issues)).toContain('line-unterminated')
+  })
+
+  it('§13.30g [红灯] manifest-roll-target-violation：闭段未达任一 target → corrupt + 该码（最大段不核查）', () => {
+    const root = freshRoot()
+    // 17 键 manifest（默认 targets 100,000 records）；seg1 闭段仅 1 条 → 未达标违规；seg2 为最大段不核查
+    writeStreamFixture(root, NS, STREAM, {
+      manifest: validManifest(STREAM, NS),
+      segments: [
+        { segment: '00000001', jsonlLines: [validAttemptRecord(STREAM, '1')] },
+        { segment: '00000002', jsonlLines: [validAttemptRecord(STREAM, '2')] },
+      ],
+    })
+    const read = readStreamStrict({ rootDir: root, namespaceId: NS, streamId: STREAM })
+    expect(read.status).toBe('corrupt')
+    expect(issueCodes(read.issues)).toContain('manifest-roll-target-violation')
+    const issue = read.issues.find((i) => i.code === 'manifest-roll-target-violation')!
+    expect(issue.segment).toBe('00000001')
+  })
+
+  it('§13.30h [护栏·绿] manifest-roll-target-violation 正例：闭段达标（records == target）→ ok', () => {
+    const root = freshRoot()
+    writeStreamFixture(root, NS, STREAM, {
+      manifest: validManifest(STREAM, NS, { targetRecordsPerSegment: 1 }),
+      segments: [
+        { segment: '00000001', jsonlLines: [validAttemptRecord(STREAM, '1')] },
+        { segment: '00000002', jsonlLines: [validAttemptRecord(STREAM, '2')] },
+      ],
+    })
+    const read = readStreamStrict({ rootDir: root, namespaceId: NS, streamId: STREAM })
+    expect(read.status).toBe('ok')
+    expect(issueCodes(read.issues)).not.toContain('manifest-roll-target-violation')
+  })
+
+  it('§13.30i [护栏·绿] 14 键 legacy manifest 无 targets → 跳过闭段核查（无可执行的冻结声明）', () => {
+    const root = freshRoot()
+    writeStreamFixture(root, NS, STREAM, {
+      manifest: legacyManifest(STREAM, NS),
+      segments: [
+        { segment: '00000001', jsonlLines: [validAttemptRecord(STREAM, '1')] },
+        { segment: '00000002', jsonlLines: [validAttemptRecord(STREAM, '2')] },
+      ],
+    })
+    const read = readStreamStrict({ rootDir: root, namespaceId: NS, streamId: STREAM })
+    expect(read.status).toBe('ok')
+    expect(issueCodes(read.issues)).not.toContain('manifest-roll-target-violation')
+  })
+
+  it('§13.30j [红灯] line-unterminated 与既有码共存：未终止的末块 + 坏 JSON → 两码叠加', () => {
+    const root = freshRoot()
+    writeStreamFixture(root, NS, STREAM, {
+      manifest: validManifest(STREAM, NS),
+      jsonlText: JSON.stringify(validAttemptRecord(STREAM, '1')) + '\n' + 'not-json-no-newline',
+    })
+    const read = readStreamStrict({ rootDir: root, namespaceId: NS, streamId: STREAM })
+    expect(read.status).toBe('corrupt')
+    expect(issueCodes(read.issues)).toContain('line-unterminated')
+    expect(issueCodes(read.issues)).toContain('invalid-json')
+  })
+})

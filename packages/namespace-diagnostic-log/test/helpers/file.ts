@@ -32,6 +32,14 @@ import { OBSERVED_AT } from './base.js'
 // 事件窄化单源：复用 base.ts 的 eventsOfType（同签名；file.ts 单向 import base.ts，无循环——
 // N-7 去重：删除本地重复实现）
 export { eventsOfType } from './base.js'
+/**
+ * #153 辅助：对新健康事件成员（src 类型面尚未加成员时）以原始形状按 type 判别窄化。
+ * 保证红灯测试在 src 类型面冻结期也能编译通过（SA3 加成员后仍编译——只按字符串判别）。
+ * 用法：`eventsOfTypeRaw(events, 'stream-generation-rotated')` → Array<Record<string, unknown>>。
+ */
+export function eventsOfTypeRaw(events: readonly DiagnosticLogHealthEvent[], type: string): Array<Record<string, unknown>> {
+  return (events as unknown as Array<Record<string, unknown>>).filter((e) => e.type === type)
+}
 // frame 基架与本模块解耦（零缺失接缝依赖，可独立自检）——见 frame.ts 头注
 export {
   FRAME_HEADER_BYTES,
@@ -60,6 +68,10 @@ export const RECORD_VERSION = 1
 export const FRAME_VERSION = 1
 export const DEFAULT_INLINE_UPDATE_MAX_BYTES = 4096
 export const DEFAULT_LINE_LIMIT_BYTES = 1024 * 1024
+/** #153 roll targets 默认值（ADR 0012 §Segment rolling：64 MiB / 256 MiB / 100,000 records；冻结进 manifest）。 */
+export const DEFAULT_TARGET_JSONL_SEGMENT_BYTES = 67108864
+export const DEFAULT_TARGET_BIN_SEGMENT_BYTES = 268435456
+export const DEFAULT_TARGET_RECORDS_PER_SEGMENT = 100000
 
 /** 安全 namespaceId（ADR 0012：必须按安全文法校验后才能进入路径）。 */
 export const SAFE_NAMESPACE_ID = 'ns-test-152'
@@ -133,7 +145,10 @@ export function makeFileLog(config: Partial<FileDiagnosticLogConfig> = {}): Asse
  *  R2 修订（PR #159，设计 §2.2）：默认 `committedUpdateCapture: true`——reader 基线夹具的
  *  record 携带 update carrier，manifest 必须与之政策一致，否则 R2 起的 policy 校验
  *  （manifest-update-capture-violation）会判夹具自身为 corrupt（夹具语义：记录被测
- *  reader 行为，不引政策噪音）；capture=false 的敌意用例由测试显式 override。 */
+ *  reader 行为，不引政策噪音）；capture=false 的敌意用例由测试显式 override。
+ *  #153 修订（设计 §4.2/§11.3）：默认追加三 roll target 键（17 键当前形状——本票
+ *  writer 的产物形状；默认值 = ADR 0012 §Segment rolling 默认）；14 键 legacy 形状
+ *  请用 `legacyManifest`（§13.18(b)/§13.19 双形状锚）。 */
 export function validManifest(streamId: string, namespaceId: string, overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     format: MANIFEST_FORMAT,
@@ -150,8 +165,17 @@ export function validManifest(streamId: string, namespaceId: string, overrides: 
     inputCapturePolicy: 'digest',
     inlineUpdateMaxBytes: DEFAULT_INLINE_UPDATE_MAX_BYTES,
     jsonlLineLimitBytes: DEFAULT_LINE_LIMIT_BYTES,
+    targetJsonlSegmentBytes: DEFAULT_TARGET_JSONL_SEGMENT_BYTES,
+    targetBinSegmentBytes: DEFAULT_TARGET_BIN_SEGMENT_BYTES,
+    targetRecordsPerSegment: DEFAULT_TARGET_RECORDS_PER_SEGMENT,
     ...overrides,
   }
+}
+
+/** 14 键 legacy manifest（#152 时代 writer 的合法产物形状；设计 §4.1 步 1d/§13.18(b)/§13.19）。 */
+export function legacyManifest(streamId: string, namespaceId: string, overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  const { targetJsonlSegmentBytes: _a, targetBinSegmentBytes: _b, targetRecordsPerSegment: _c, ...legacy } = validManifest(streamId, namespaceId)
+  return { ...legacy, ...overrides }
 }
 
 /** 标准 current.json locator（ADR 0012：只保存 format/version/streamId）。 */
@@ -159,10 +183,22 @@ export function validCurrent(streamId: string): Record<string, unknown> {
   return { format: CURRENT_FORMAT, version: CURRENT_VERSION, streamId }
 }
 
+/** 多 segment fixture 条目（#153 writeStreamFixture 扩展：current.json 与多 segment 夹具支持）。 */
+export interface StreamSegmentFixture {
+  /** 8 位十进制 segment 名（P_SEGMENT 文法）。 */
+  segment: string
+  jsonlText?: string
+  jsonlLines?: unknown[]
+  bin?: Uint8Array
+}
+
 /**
  * 手工 fake stream（strict reader 损坏/不兼容注入用）：
- * 写 manifest.json + segments/00000001.jsonl（jsonlText 逐字节 or jsonlLines 序列化）
- * + 可选 00000001.bin。
+ * - 默认写 manifest.json + segments/00000001.{jsonl,bin}（jsonlText 逐字节 or jsonlLines 序列化）；
+ * - `segments` 提供 → 按条目写每 segment 的 .jsonl/.bin（多 segment / 非 00000001 夹具），
+ *   此时顶层 jsonlText/jsonlLines/bin（00000001 别名）忽略；
+ * - `current` 提供 → 写 namespaceDir/current.json（true → validCurrent(streamId)，对象 → 逐字
+ *   JSON 化，字符串 → 原样字节写入——坏 JSON 腐蚀用例）。
  */
 export function writeStreamFixture(
   root: string,
@@ -173,19 +209,45 @@ export function writeStreamFixture(
     jsonlText?: string
     jsonlLines?: unknown[]
     bin?: Uint8Array
+    current?: boolean | Record<string, unknown> | string
+    segments?: StreamSegmentFixture[]
   } = {},
 ): string {
   const p = streamPaths(root, namespaceId, streamId)
   mkdirSync(p.segmentsDir, { recursive: true })
   writeFileSync(p.manifestPath, JSON.stringify(opts.manifest ?? validManifest(streamId, namespaceId)))
-  if (opts.jsonlText !== undefined) {
-    writeFileSync(p.jsonlPath, opts.jsonlText)
-  } else if (opts.jsonlLines !== undefined) {
-    const lines = opts.jsonlLines.map((line) => JSON.stringify(line) + '\n').join('')
-    writeFileSync(p.jsonlPath, lines)
+  if (opts.segments !== undefined) {
+    for (const seg of opts.segments) {
+      if (seg.jsonlText !== undefined) {
+        writeFileSync(join(p.segmentsDir, `${seg.segment}.jsonl`), seg.jsonlText)
+      } else if (seg.jsonlLines !== undefined) {
+        const lines = seg.jsonlLines.map((line) => JSON.stringify(line) + '\n').join('')
+        writeFileSync(join(p.segmentsDir, `${seg.segment}.jsonl`), lines)
+      }
+      if (seg.bin !== undefined) {
+        writeFileSync(join(p.segmentsDir, `${seg.segment}.bin`), seg.bin)
+      }
+    }
+  } else {
+    if (opts.jsonlText !== undefined) {
+      writeFileSync(p.jsonlPath, opts.jsonlText)
+    } else if (opts.jsonlLines !== undefined) {
+      const lines = opts.jsonlLines.map((line) => JSON.stringify(line) + '\n').join('')
+      writeFileSync(p.jsonlPath, lines)
+    }
+    if (opts.bin !== undefined) {
+      writeFileSync(p.binPath, opts.bin)
+    }
   }
-  if (opts.bin !== undefined) {
-    writeFileSync(p.binPath, opts.bin)
+  if (opts.current !== undefined) {
+    mkdirSync(p.namespaceDir, { recursive: true })
+    if (opts.current === true) {
+      writeFileSync(p.currentPath, JSON.stringify(validCurrent(streamId)))
+    } else if (typeof opts.current === 'string') {
+      writeFileSync(p.currentPath, opts.current)
+    } else {
+      writeFileSync(p.currentPath, JSON.stringify(opts.current))
+    }
   }
   return p.streamDir
 }
@@ -229,4 +291,51 @@ export function checkInlineCarrier(update: { base64: string; payloadLength: numb
   expect(decoded.byteLength, 'decoded length 必须与 payloadLength 一致').toBe(update.payloadLength)
   expect(crc32cHex(decoded), 'inline CRC32C 必须与 decoded payload 一致').toBe(update.crc32c)
   return new Uint8Array(decoded)
+}
+
+/**
+ * #153 夹具：sidecar attempt record（引用 segment/frameOffset 处的帧；payload 确定 CRC）。
+ * 默认 segment '00000001'、frameOffset '0'、payloadLength = payload.byteLength、crc32c 由
+ * payload 计算——手工夹具的「合法帧引用」基模（与 encodeFrame 配对成 healthy stream）。
+ * overrides 可故意覆盖 crc32c/frameOffset/payloadLength 造损坏引用。
+ */
+export function sidecarAttemptRecord(
+  streamId: string,
+  sequence: string,
+  payload: Uint8Array,
+  opts: {
+    segment?: string
+    frameOffset?: string | number
+    payloadLength?: number
+    crc32c?: string
+    overrides?: Record<string, unknown>
+  } = {},
+): Record<string, unknown> {
+  return validAttemptRecord(streamId, sequence, {
+    result: {
+      kind: 'committed',
+      effect: 'update',
+      update: {
+        storage: 'sidecar',
+        format: 'yjs-update-v1',
+        segment: opts.segment ?? '00000001',
+        frameOffset: String(opts.frameOffset ?? '0'),
+        payloadLength: opts.payloadLength ?? payload.byteLength,
+        crc32c: opts.crc32c ?? crc32cHex(payload),
+      },
+    },
+    ...(opts.overrides ?? {}),
+  })
+}
+
+/** #153 夹具：若干 Uint8Array 的顺序拼接（frame 串接基模）。 */
+export function concatU8(...chunks: Uint8Array[]): Uint8Array {
+  const total = chunks.reduce((sum, c) => sum + c.byteLength, 0)
+  const out = new Uint8Array(total)
+  let offset = 0
+  for (const chunk of chunks) {
+    out.set(chunk, offset)
+    offset += chunk.byteLength
+  }
+  return out
 }

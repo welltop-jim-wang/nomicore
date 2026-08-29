@@ -43,7 +43,9 @@ export function isSegmentName(value: string): boolean {
   return RE_SEGMENT.test(value)
 }
 
-/** ADR 0012 §File adapter 布局的路径派生（与 `test/helpers/file.ts:streamPaths` 同构）。 */
+/** ADR 0012 §File adapter 布局的路径派生（与 `test/helpers/file.ts:streamPaths` 同构）。
+ *  `jsonlPath`/`binPath` 语义收窄为「segment 00000001 的别名」——任意 segment 的路径
+ *  一律经 `segmentFilePaths` 派生（#153 §6.1 滚动）。 */
 export function streamLayoutPaths(rootDir: string, namespaceId: string, streamId: string) {
   const namespaceDir = join(rootDir, 'namespaces', namespaceId)
   const streamsDir = join(namespaceDir, 'streams')
@@ -58,5 +60,13 @@ export function streamLayoutPaths(rootDir: string, namespaceId: string, streamId
     segmentsDir,
     jsonlPath: join(segmentsDir, '00000001.jsonl'),
     binPath: join(segmentsDir, '00000001.bin'),
+  }
+}
+
+/** 任意 segment 的 JSONL/BIN 文件路径（#153 §6.1：8 位十进制 segment 名 → 成对路径）。 */
+export function segmentFilePaths(segmentsDir: string, segment: string): { jsonlPath: string; binPath: string } {
+  return {
+    jsonlPath: join(segmentsDir, `${segment}.jsonl`),
+    binPath: join(segmentsDir, `${segment}.bin`),
   }
 }
