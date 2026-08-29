@@ -33,6 +33,19 @@
   接线必须位于 NamespaceRuntime write sequencer slot 之外或释放后**（slot 内接线为
   不合规；接线范围归 #149–#151/#155 等票，本包不实施）。「有界」只限制数据量/操作数，
   不承诺磁盘延迟上界；同步 append 不构成 fsync/掉电持久性承诺。
+  **（#153）该纪律同样覆盖构造期**：reopen 健康证明、可证明尾部修复（truncate）
+  与 locator 解析的全部同步 fs 操作必须在 write sequencer slot 外执行。
+- **reopen 与续写（#153）**：构造期 locator 解析走确定性三分支（显式
+  resumeStreamId > 可用 current.json > 恰一候选扫描恢复；≥2 候选 → disabled +
+  `locator-ambiguous`，绝不猜测）。健康证明与 strict reader 共享同源判定（manifest
+  门双形状：14 键 legacy 可读不可续写 / 17 键 current 含三 roll targets——17 键
+  manifest 创建后不可变；证明失败 → `stream-generation-rotated{cause:…}` 新
+  generation 承接，旧 stream 只读恒等；`stream-init-failed.reason` 只保留
+  disabled 终态四值）。尾部修复仅作用于最大有文件 segment 的三类可证明残留
+  （不完整尾行 / 不完整尾 frame / 未引用尾 orphan frames），中间损坏一律零修复
+  rotate（全有或全无）。**耗尽 = disabled**（segment `99999999` 溢出与 sequence
+  `UINT64_MAX` 共用 exhausted 门闩 + 恰一次 `stream-exhausted`），绝不新建
+  generation。
 - **sequence 提交点纪律（R2）**：candidate 只在准备门全过后取得；definitive
   pre-commit append 失败（open 期 EISDIR/EACCES/ENOENT）可复用 candidate，
   ambiguous outcome（write 期失败等）必须 reservation 并封闭旧 generation，
@@ -65,4 +78,7 @@
   recordKind/operation/schemaId/schemaFingerprint/issuePaths/projectedRecordBytes/
   queueDepth/issueCount/code（storage-validation-failed 与 storage-write-failed 的
   code 字段——固定词表或稳定 errno；#152 新事件成员形状一致）——
+  **（#153）追加 `repair` / `truncatedBytes`（`stream-tail-repaired`）与 `cause`
+  （`stream-generation-rotated`）——均为封闭枚举/计数类字段；streamId/segment/
+  offset 刻意不进事件**（身份经 adapter 实例上下文可得，低基数纪律）。
   禁原 record/input/Base64/update bytes/message/stack。

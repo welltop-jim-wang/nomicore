@@ -123,6 +123,31 @@ describe('SA7 动态重点 #2：BIN-ok + JSONL-definitive 交错终态（orphan 
     expect(read.records.every((r) => r.ok)).toBe(true)
     expect(issueCodes(read)).toEqual([])
   })
+
+  it('D-A1-续（§13.17 后半，#153）：同 root 重启构造 → 健康 resume 同一 stream、零修复、续写自 seq 3', () => {
+    const { root, ns } = freshRoot('ns-sa7-reopen')
+    const a = makeFileLog({ rootDir: root, namespaceId: ns, updateCapture: true })
+    const pa = streamPaths(root, ns, a.log.streamId)
+
+    // ①–③ 复现 D-A1 终态（inline 前置 + JSONL-definitive 交错 + candidate 复用）
+    a.log.emitter.emit(baseEmission({ result: { kind: 'committed', effect: 'update', updateBytes: patternedBytes(10) } }))
+    renameSync(pa.jsonlPath, `${pa.jsonlPath}.bak`)
+    mkdirSync(pa.jsonlPath, { recursive: true })
+    a.log.emitter.emit(baseEmission({ result: { kind: 'committed', effect: 'update', updateBytes: patternedBytes(4097) } }))
+    rmdirSync(pa.jsonlPath)
+    renameSync(`${pa.jsonlPath}.bak`, pa.jsonlPath)
+    a.log.emitter.emit(baseEmission({ result: { kind: 'committed', effect: 'update', updateBytes: invertedBytes(4097) } }))
+    expect(readJsonl(pa.jsonlPath).map((r) => r.sequence)).toEqual(['1', '2'])
+
+    // §13.17 后半正例锚：orphan 在首个被引用帧之前（D-A1 终态）→ 重启构造健康 resume、零修复
+    const b = makeFileLog({ rootDir: root, namespaceId: ns, updateCapture: true })
+    expect(b.log.streamId).toBe(a.log.streamId)
+    expect(readStreamStrict({ rootDir: root, namespaceId: ns, streamId: a.log.streamId }).status).toBe('ok')
+    // 续写：seq 3 落同段（bin 引用链从孤儿之后衔接）
+    b.log.emitter.emit(baseEmission({ result: { kind: 'committed', effect: 'update', updateBytes: patternedBytes(10) } }))
+    expect(readJsonl(pa.jsonlPath).map((r) => r.sequence)).toEqual(['1', '2', '3'])
+    expect(readStreamStrict({ rootDir: root, namespaceId: ns, streamId: a.log.streamId }).status).toBe('ok')
+  })
 })
 
 describe('SA7 R2-AC2 活链路：真实 writer 产物的物理删除必发现、健康 stream（含合法终态）不误判', () => {

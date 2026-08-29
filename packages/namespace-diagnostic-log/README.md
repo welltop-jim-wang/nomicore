@@ -82,10 +82,11 @@ log.emitter.emit(/* 同一语义 emission */)
 ### 磁盘布局（{rootDir}/namespaces/{namespaceId}/…）
 
 ```text
-current.json                        # 恰三键 locator；temp + rename 原子替换
-streams/{streamId}/manifest.json    # 不可变（'wx' 创建；恰 14 键，含冻结 VFSL 四键信封）
+current.json                        # 恰三键 locator；temp + rename 原子替换（仅保存 format/version/streamId——可重建 locator 而非完整性证明）
+streams/{streamId}/manifest.json    # 不可变（'wx' 创建；17 键——含冻结 VFSL 四键信封 + 三 roll targets；14 键 legacy 产物可读不可续写）
 streams/{streamId}/segments/00000001.jsonl   # JSONL record（UTF-8、无 BOM、\n 结尾）
 streams/{streamId}/segments/00000001.bin     # NDCL v1 25-byte frame + payload（首 sidecar 时惰性创建）
+streams/{streamId}/segments/00000002…        # 滚动 segment（#153；8 位定宽十进制、JSONL/BIN 成对、无「关闭标记」文件）
 ```
 
 - `streamId` = `log-` + 32 位小写 hex（CSPRNG；注入随机源可确定性复现）。
@@ -95,11 +96,15 @@ streams/{streamId}/segments/00000001.bin     # NDCL v1 25-byte frame + payload�
   「有界」只指数据量/操作数受 payload/line 预算与单 record/单帧限制，**不承诺磁盘
   延迟上界**。同步 append 完成不构成 fsync 或掉电持久性承诺。属 **best-effort**
   诊断流：崩溃/断电可留下最后一条不完整行或孤儿帧（ADR 明文允许），
-  由 strict reader 诚实判定损坏，不做自动修复。
+  **#153 起构造期自动修复三类「可证明尾部」**（不完整尾 JSONL 行 / 不完整尾 frame /
+  完整未引用尾 orphan frames——见下「reopen 与尾部修复」）；中间损坏一律不修复，
+  由 strict reader 诚实判定。
 - **write-slot 接线纪律（ADR 0012 amendment MUST）**：File adapter `emit` 同步且可能
   阻塞——任何接入 namespace 生命周期的调用点必须位于 NamespaceRuntime write
   sequencer slot 之外或该 slot 释放之后；slot 内执行同步 File adapter emit 为不合规
-  （接线归 #149–#151/#155 等票）。
+  （接线归 #149–#151/#155 等票）。**该纪律同样覆盖构造期**（#153 起构造含 reopen
+  健康证明与尾部修复的全部同步 fs 操作，O(stream 总字节)）——Host 必须在 slot 外
+  构造 adapter。
 - R2 提交点纪律：definitive pre-commit append 失败（open 期 EISDIR/EACCES/ENOENT，
   零字节可证明）复用同一 sequence candidate 恢复；ambiguous outcome（write 期失败等）
   保守封闭旧 generation 并保留「sequence N may not be persisted」证据，绝不在旧
@@ -112,11 +117,64 @@ streams/{streamId}/segments/00000001.bin     # NDCL v1 25-byte frame + payload�
 | 键 | 默认 | 说明 |
 |---|---|---|
 | `rootDir` / `namespaceId` | 必填 | 日志根目录 / namespace 段（安全文法校验后才进路径；违规 → 不启用 + `stream-init-failed`） |
-| `genesisUpdateBytes` | — | 提供 → 新 stream 先尽力写 genesis-baseline（sequence 1） |
-| `resumeStreamId` | — | 提供 → manifest 指纹匹配检查；#152 无续写能力——恒新建 generation、旧 stream 只读 |
-| `inlineUpdateMaxBytes` | `4096` | inline/sidecar 分界（≤ 内联，> sidecar） |
+| `genesisUpdateBytes` | — | 提供 → **新** stream 先尽力写 genesis-baseline（sequence 1）；resume 路径忽略（重写会伪造基线时点） |
+| `resumeStreamId` | — | 提供 → 显式续写目标；构造期健康证明通过 → 续写，失败 → 确定性 rotate（`stream-generation-rotated{cause:…}`），绝不静默回退 locator |
+| `inlineUpdateMaxBytes` | `4096` | inline/sidecar 分界（≤ 内联，> sidecar；冻结进 manifest） |
 | `payloadMaxBytes` | `64 MiB` | 单 update payload 硬上限（守卫取 `min(配置值, 0xFFFFFFFF)`） |
+| `targetJsonlSegmentBytes` | `64 MiB` | JSONL segment 滚动 target（≥1 整数；非法 → disabled + `stream-init-failed{reason:'invalid-roll-targets'}`；冻结进 manifest） |
+| `targetBinSegmentBytes` | `256 MiB` | BIN segment 滚动 target（同上） |
+| `targetRecordsPerSegment` | `100,000` | segment record 数滚动 target（同上） |
 | `clock` | `Date.now` | 注入时钟（manifest `createdAt` 与 genesis `observedAt` 同源；异常被构造级 crash 包络收编） |
+
+### reopen、segment 滚动与尾部修复（#153：ADR 0012 §打开现有 stream / §Segment rolling / §打开与尾部恢复）
+
+- **构造期 locator 解析（确定性，禁 wall-clock 猜测）**：`resumeStreamId` 显式优先 →
+  `current.json`（format/version/streamId 三键且目标 manifest 存在）→ manifests 扫描
+  「恰一候选」恢复 → 空命名空间 fresh → ≥2 候选 **disabled + `stream-init-failed
+  {reason:'locator-ambiguous'}`**（零文件写入、绝不猜测）。显式目标证明失败 →
+  rotate（不回退 locator）。
+- **健康证明 ⇔ 续写**：reopen 时构造期执行全量交叉扫描（与 strict reader 同源的
+  manifest 门 / 逐行 VFSL/storage/policy / 跨 segment sequence 连续性状态机）——
+  判健康 ⇒ 从 `lastCommittedSequence` 续写（sequence 跨进程可证明地唯一）；
+  任一损坏/不兼容/冻结配置改变/14 键 legacy ⇒ **确定性 rotate**：恰一次
+  `stream-generation-rotated{cause:…}`（`manifest-missing` / `manifest-invalid` /
+  `legacy-manifest` / `frozen-policy-mismatch` / `stream-corrupt` /
+  `stream-incompatible` / `repair-io-failure`）+ 新 generation 承接，旧 stream
+  永久只读、字节恒等、无数据丢失。
+- **三类可证明尾部修复**（仅最大有文件 segment；全有或全无——任何中间损坏 → 零修复
+  rotate）：不完整尾 JSONL 行（缺 `\n` → 截到最后 `\n`；全文无 `\n` → 截 0 字节）、
+  不完整尾 frame（<25B 残块或合法头 + payload 越界）、完整未引用尾 orphan frames。
+  每类逐次上报 `stream-tail-repaired{repair,truncatedBytes}`（`jsonl-incomplete-line`
+  / `bin-incomplete-frame` / `bin-orphan-frames`）。修复是续写前置条件：清除残块后
+  新帧 fresh-stat 恰好衔接引用链末端（链安全）。
+- **segment group 滚动**：任一 roll target（jsonl 字节 / bin 字节 / record 数）达到
+  「当前用量 ≥ target」→ 写下一记录前滚入下一 8 位编号 segment（JSONL/BIN 成对、
+  惰性创建、无关闭标记文件）；单条合法 record 可让新组超 target（ADR 允许），
+  绝不空转滚动。**耗尽 = disabled（丢弃 + 恰一次 `stream-exhausted`），绝不新建
+  generation**：segment `99999999` 溢出 与 sequence `UINT64_MAX` 两条路径共用
+  exhausted 门闩；reopen 已耗尽的 stream 在构造期再上报恰一次。
+- **17 键 manifest**：三 roll targets 冻结进 manifest（创建后不可变）；14 键 legacy
+  manifest 仍可读（strict reader 双形状）但不可续写（缺冻结 targets 无法证明续写
+  策略一致）。**升级顺序：reader 先于 writer 部署**——新 reader 读写两形状，旧
+  reader（0.1.2）只读旧形状；先升 reader 则读写两侧均安全。
+
+#### 运维面（#153 R1 记档）
+
+- **writer 自产「链中 orphan」**：同段已有 committed sidecar 引用后，一次瞬时
+  JSONL definitive 故障（`storage-write-failed{stage:'jsonl',code:EISDIR/EACCES/
+  ENOENT}`）+ 故障清除 + R2 candidate 复用续写 → 新帧 fresh-stat 跳过孤儿，引用链
+  断（strict reader `frame-boundary-invalid`）→ 此后每次重启必然
+  `stream-corrupt` rotate（该段历史永久只读、后续日志另起 generation；无数据丢失、
+  业务零影响）。**可执行处置（抢时间窗）**：收到 definitive
+  `storage-write-failed{stage:'jsonl'}` 事件后、**后续 sidecar append 提交前**尽快
+  重启进程——此刻 orphan 仍位于可证明尾部（最后被引用帧末尾之后），重启后 C3
+  自动截断、健康续写；期间 inline append 不移动 bin 尾、不破坏该窗口。若后续
+  sidecar append 已提交（orphan 已成链中），手工处置不可行，重启按 corrupt rotate。
+- **current.json 愈合失败**（`storage-write-failed{stage:'current'}`，temp+rename
+  失败）：续写不受影响；未愈合窗口内每次重启会按 locator 权威再次重走证明——
+  所指为 rotate 成因流时每次重启铸造一个新 generation 直到某次写成功愈合；期间
+  current.json 彻底损坏/丢失 + ≥2 候选 → `locator-ambiguous` disabled。
+  **该告警持续出现即处于未愈合窗口，应触发运维处置**。
 
 ### 两个声明（R2 起）
 

@@ -24,6 +24,9 @@ import {
   CURRENT_VERSION,
   DEFAULT_INLINE_UPDATE_MAX_BYTES,
   DEFAULT_LINE_LIMIT_BYTES,
+  DEFAULT_TARGET_BIN_SEGMENT_BYTES,
+  DEFAULT_TARGET_JSONL_SEGMENT_BYTES,
+  DEFAULT_TARGET_RECORDS_PER_SEGMENT,
   eventsOfType,
   makeFileLog,
   makeTempRoot,
@@ -105,7 +108,7 @@ describe('AC1 布局：manifest + current.json + segments（ADR 0012 §File adap
     expect(leftovers).toEqual([])
   })
 
-  it('manifest.json 含冻结 VFSL 四键信封与 format policy（键集与取值逐项）', () => {
+  it('manifest.json 含冻结 VFSL 四键信封与 format policy（键集与取值逐项；#153 17 键形状）', () => {
     const root = freshRoot()
     const { log } = makeFileLog({ rootDir: root, namespaceId: 'ns-layout-4' })
     const p = streamPaths(root, 'ns-layout-4', log.streamId)
@@ -125,6 +128,9 @@ describe('AC1 布局：manifest + current.json + segments（ADR 0012 §File adap
       'schemaFingerprint',
       'schemaId',
       'streamId',
+      'targetBinSegmentBytes',
+      'targetJsonlSegmentBytes',
+      'targetRecordsPerSegment',
       'version',
     ])
     expect(manifest.format).toBe(MANIFEST_FORMAT)
@@ -146,7 +152,7 @@ describe('AC1 布局：manifest + current.json + segments（ADR 0012 §File adap
     expect(manifest.schemaFingerprint).toBe(FROZEN_ENVELOPE_FINGERPRINT)
   })
 
-  it('配置值冻结进 manifest（updateCapture/inputPolicy/inline 阈值/line 上限）', () => {
+  it('配置值冻结进 manifest（updateCapture/inputPolicy/inline 阈值/line 上限/#153 roll targets）', () => {
     const root = freshRoot()
     const { log } = makeFileLog({
       rootDir: root,
@@ -155,15 +161,26 @@ describe('AC1 布局：manifest + current.json + segments（ADR 0012 §File adap
       inputPolicy: 'none',
       inlineUpdateMaxBytes: 64,
       lineBudgetBytes: 8192,
+      targetJsonlSegmentBytes: 12345,
+      targetBinSegmentBytes: 54321,
+      targetRecordsPerSegment: 77,
+    } as Parameters<typeof makeFileLog>[0] & {
+      targetJsonlSegmentBytes?: number
+      targetBinSegmentBytes?: number
+      targetRecordsPerSegment?: number
     })
     const manifest = readJson<Record<string, unknown>>(streamPaths(root, 'ns-layout-5', log.streamId).manifestPath)
     expect(manifest.committedUpdateCapture).toBe(true)
     expect(manifest.inputCapturePolicy).toBe('none')
     expect(manifest.inlineUpdateMaxBytes).toBe(64)
     expect(manifest.jsonlLineLimitBytes).toBe(8192)
+    // #153：三个 roll target 冻结（D5/§4.2）
+    expect(manifest.targetJsonlSegmentBytes).toBe(12345)
+    expect(manifest.targetBinSegmentBytes).toBe(54321)
+    expect(manifest.targetRecordsPerSegment).toBe(77)
   })
 
-  it('默认 manifest 值：committedUpdateCapture=false / inputCapturePolicy=digest / inline=4096 / line=1MiB', () => {
+  it('默认 manifest 值：committedUpdateCapture=false / inputCapturePolicy=digest / inline=4096 / line=1MiB / #153 targets 默认', () => {
     const root = freshRoot()
     const { log } = makeFileLog({ rootDir: root, namespaceId: 'ns-layout-6' })
     const manifest = readJson<Record<string, unknown>>(streamPaths(root, 'ns-layout-6', log.streamId).manifestPath)
@@ -171,6 +188,10 @@ describe('AC1 布局：manifest + current.json + segments（ADR 0012 §File adap
     expect(manifest.inputCapturePolicy).toBe('digest')
     expect(manifest.inlineUpdateMaxBytes).toBe(DEFAULT_INLINE_UPDATE_MAX_BYTES)
     expect(manifest.jsonlLineLimitBytes).toBe(DEFAULT_LINE_LIMIT_BYTES)
+    // ADR 0012 §Segment rolling 默认：64 MiB / 256 MiB / 100,000 records
+    expect(manifest.targetJsonlSegmentBytes).toBe(DEFAULT_TARGET_JSONL_SEGMENT_BYTES)
+    expect(manifest.targetBinSegmentBytes).toBe(DEFAULT_TARGET_BIN_SEGMENT_BYTES)
+    expect(manifest.targetRecordsPerSegment).toBe(DEFAULT_TARGET_RECORDS_PER_SEGMENT)
   })
 
   it('manifest 不可变：emit 前后字节恒等（创建后不可改）', () => {

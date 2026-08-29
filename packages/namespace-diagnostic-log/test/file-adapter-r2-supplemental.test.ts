@@ -27,6 +27,7 @@ import {
   encodeFrame,
   eventsOfType,
   makeFileLog,
+  legacyManifest,
   makeTempRoot,
   patternedBytes,
   readJsonl,
@@ -252,7 +253,7 @@ describe('R2 补充（#5/#8）：manifest 身份互核与严格度', () => {
   it('第 15 键 → corrupt + manifest-invalid + records []', () => {
     const root = freshRoot()
     writeStreamFixture(root, NS, STREAM, {
-      manifest: validManifest(STREAM, NS, { strayKey: true }),
+      manifest: legacyManifest(STREAM, NS, { strayKey: true }),
       jsonlLines: [validAttemptRecord(STREAM, '1')],
     })
     const read = readStreamStrict({ rootDir: root, namespaceId: NS, streamId: STREAM })
