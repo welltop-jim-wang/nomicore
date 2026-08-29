@@ -8,6 +8,8 @@
 
 **Verdict: reject**（BLOCKER × 2，均一行/一断言级修复，可共同修复后按 §4 固定复验范围一轮复审；§2 九个审查项中其余 7 项全部通过）
 
+> **【R2 取代注记】两项 BLOCKER 已在 commit `942ac31` 按 R1 §4 处方修复并经固定范围复验（见文末「# R2 复审（闭合轮）」节）——Final Verdict: **pass**。本节 reject 结论至此失效，正文保留为历史记录。**
+
 ---
 
 ## 0. 审查方法与独立验证证据（全部命令在独立进程执行，不采信 SA3/SA4/SA7 报告自述）
@@ -102,3 +104,52 @@
 ## 5. 结论
 
 **Verdict: reject。** 实现本体（25 结局点映射、owned bytes 捕获、emit 挂点、四层缺口闭合、ADR 全线合规、范围零越界）经独立验证全部成立；但 (1) 新增 DV-2 对照测试的墙钟上界断言以 ~1/3 概率失败并已在本轮独立全量运行实际打红 `pnpm test`（CI `Test` 步），(2) namespace-runtime 违反仓库逐变更 patch bump 惯例漏 bump 版本。两项均为一行/一断言级修复（SA7 + SA3 各自回流），修复后按 §4 固定范围复验即可转 pass。
+
+---
+
+# R2 复审（闭合轮，2026-08-29，SA4）
+
+- **复审对象**：commit `942ac31`（`fix(namespace-runtime): remediate final-review blockers — DV-2 timing bound and version bump (#149)`，基线 `874cc10`）+ worktree 现状（未提交区仅 dispatch 行 20 归档行）
+- **复审方式**：严格按 R1 §4 固定复验范围；只读（未修改任何生产/测试/配置文件，未 push）；全部命令独立进程执行
+- **范围合规预检**：`git diff --name-only 874cc10 942ac31` 代码文件 = **恰两个 mandated 文件**（`packages/namespace-runtime/package.json` + `test/runtime-root-schema-diagnostic-sa7.test.ts`）；其余 6 文件均为 wiki 档案（AC checklist 修正[mandated] + dispatch/sa3_impl 归档 + 新 SA2 spec_review 流水线档案 + 本报告 R1 原件）。无第三代码面，不触发 R1 §4.3 新审查面条款。
+
+## R2.0 独立复验证据
+
+| # | mandated 项 | 命令（独立进程） | 结果 |
+|---|---|---|---|
+| R2-V1 | B-1 修复形态 | `git show 942ac31 -- …sa7.test.ts` | 与 R1 §B-1 处方 (a) 逐字对应：`expect(syncMs).toBeLessThan(20)` → `toBeLessThan(100)`（+注释实测稳态 14–27ms、语义改「无自旋量级」）；it 标题「微秒级」→「无自旋量级」；**对照对完整保持**——慢 emitter 首测下界 `>= SPIN_MS-5`（:275）原样未动；全文件仅此 2 hunk / 9 行，其余断言零变化 |
+| R2-V2 | DV-2 隔离 ×3 | `npx vitest run …runtime-root-schema-diagnostic-sa7.test.ts --typecheck.enabled=false` ×3 | **16/16 ×3 全绿，exit 0 ×3** |
+| R2-V3 | 全量相关性（run A，首跑） | `pnpm test`（管道尾部日志） | 6 failed / 2 files（generate-cli-check + dsh-probe-cli——均为 #149 未触碰包的子进程 spawn 测试）；`Type Errors no errors`；#149 两文件全绿 |
+| R2-V4 | 全量相关性（run B，完整日志 + 真实退出码） | `pnpm test > log; echo $?` | **exit 1**：唯一失败 = `dsh-persistence/test/dsh-probe-cli.test.ts`「可复制性」it **Test timed out in 5000ms**（spawn 类负载超时）；2 条 vitest-worker RPC 工件（SA7-I-2 同签名）；`Type Errors no errors`；**`runtime-root-schema-diagnostic-sa7.test.ts (16 tests)` 与 `runtime-root-schema-diagnostic-red.test.ts (14 tests)` 全量负载下全绿（816ms / 444ms）** |
+| R2-V5 | 负载归因闭合 | `npx vitest run …dsh-probe-cli.test.ts --typecheck.enabled=false`（隔离） | **7/7 全绿**——全量失败确证为满载子进程超时（预存负载敏感类，R1 A-3 同族），非 #149 回归；三轮全量失败集漂移（3→6→1，文件各异）佐证非确定性环境负载而非确定性缺陷 |
+| R2-V6 | B-1 修复后失败率对照 | R2-V2 + R2-V3/V4 中 DV-2 it 执行 | 修复后 DV-2 对照 it **5/5 绿**（隔离 ×3 + 全量 ×2）vs 修复前 2/6 红（R1）；100ms 上界对实测 14–27ms 分布留 4–7× 余量 |
+| R2-V7 | AC checklist 修正 | `git show 942ac31:…ac_checklist.md` | Gate summary 已重写：exit-1 归因 = (a) 2 条 RPC 工件 + (b) DV-2 断言（BLOCKER-1，20ms→100ms 已修，对照下界保持）；登记 standards review verdict 与 §4 复验范围——被 R1 证伪的原表述已消除 |
+| R2-V8 | B-2 版本行 | `grep '"version"' packages/namespace-runtime/package.json` | **`0.1.8`**（942ac31 唯一生产变更行；R1 B-2 处方逐字落地） |
+| R2-V9 | lockfile 无连锁 | `git diff --name-only 874cc10 942ac31 -- pnpm-lock.yaml`（0 行）+ `pnpm install --frozen-lockfile --prefer-offline --ignore-scripts` | **exit 0**（"Lockfile is up to date"）——版本 bump 不触发 lockfile 变更，CI Install 步（--frozen-lockfile）不红 |
+| R2-V10 | 类型双面（AC checklist §4 附加项） | `pnpm typecheck` / `npx tsc -p tsconfig.typecheck.json` | **双 exit 0**（版本行与断言修改对类型面零影响，符合预期） |
+
+## R2.1 逐项处置核对表
+
+| 项 | R1 处方 | 落地证据 | 结论 |
+|---|---|---|---|
+| BLOCKER-1（DV-2 墙钟上界 ~33% 失败率随机红 CI Test 步） | 上界放宽 ≥100ms（语义降为「无自旋量级」，与慢 emitter 下界保持对照）/ warmup / 相对差三选一 | R2-V1（选处方 a，逐字落地）+ R2-V2（隔离 ×3 绿）+ R2-V3/V4（全量负载下 #149 文件全绿、Type Errors no errors）+ R2-V6（5/5 vs 2/6） | ✅ 闭合 |
+| BLOCKER-1 附注（AC checklist exit-1 归因被证伪） | 修正 Gate summary 措辞 | R2-V7 | ✅ 闭合 |
+| BLOCKER-2（漏 version bump） | `0.1.7 → 0.1.8` 一行 | R2-V8 + R2-V9（lockfile 零连锁、frozen install exit 0） | ✅ 闭合 |
+
+## R2.2 残留观察（非阻塞，留档）
+
+1. **预存子进程测试的满载敏感性（仓库级，非 #149）**：`dsh-probe-cli.test.ts` / `generate-cli-check.test.ts` 在本沙箱满载全量下非确定性超时红（三轮失败集 3/6/1 漂移；各自隔离 7/7、3/3 绿；均为 #149 未触碰的 #23 期 spawn 类测试；GitHub runner 历史 5/5 绿——SA7 DV-5）。与 R1 A-3 同族，#149 面零关联；若未来 CI 满载偶红，属该预存类，不应记到本票。
+2. vitest-worker RPC Timeout 工件（每轮 2 条，SA7-I-2 已归档签名）依旧存在——环境工件，维持原判定。
+3. SA2 spec_review（并行流水线，条件性 reject）与本审查两项 blocker 收敛且同样以 `942ac31` 为闭合条件——其三项未满足项（DV-2 断言 / 版本 bump / checklist 归因）与本轮 R2-V1/V7/V8 逐项同面闭合，无独立遗留。
+
+## R2.3 复审裁决
+
+**Final Verdict: pass。**
+
+- 两项 BLOCKER 均按 R1 §4 处方逐字修复（B-1 选项 a；B-2 一行 bump），修复面恰为 mandated 两文件，零范围扩张；
+- 固定复验范围全绿：DV-2 隔离 ×3（16/16 ×3）+ 全量 ×2 下 #149 测试文件全绿（red 14/14、sa7 16/16）+ `Type Errors no errors` + typecheck/tsc 双 exit 0 + frozen-lockfile exit 0 + AC checklist 归因修正到位；
+- 修复后 DV-2 断言失败率 0/5（vs 修复前 2/6），100ms 上界对实测分布留 4–7× 余量，CI `Test` 步（node 20/24 矩阵）的不稳定源已消除；
+- 全量 exit-1 的残余成分**全部**为预存环境负载类（R2.2 #1/#2，非 #149 面、非确定性、隔离全绿、CI runner 历史绿）——不构成本票阻塞；
+- R1 已 pass 的 7 轴（映射一致性/触发/ADR/范围/业务回归/git 卫生等）不受两处修复影响（一断言余量 + 一版本行，零生产语义变化），维持原判。
+
+Standards 轴不再持有阻塞项；#149 可进入发布流程（push/PR 后由 SA7 按 DV-5 补 `gh run view --log` 触发证据）。
