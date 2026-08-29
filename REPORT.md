@@ -1,57 +1,40 @@
 ---
 status: complete
-run_id: issue-153-1787937652-3942974
-branch: fix/issue-153-on-docs-namespace-diagnostic-change-log
-round: 2
+run_id: issue-149-1787977374-4073122
+branch: fix/issue-149-on-docs-namespace-diagnostic-change-log
+round: 1
 ---
 
-# Issue #153 round=2：修订轮 — 无引用时完整 orphan BIN 尾帧未被清除（PR #166 质量审查 High）
+# Issue #149 — Record ROOT mutations and SCHEMA replacements
 
-## 概要
+## 变更摘要
 
-round=1 已发布（PR #166，CI 双腿全绿），质量审查判 1 项 High 规格/正确性缺陷并作废 round=1 完成事务。本轮按修订流程修复并重走验收。
+本轮将 `NamespaceRuntime` 的 ROOT mutation 与 SCHEMA replacement 接入 namespace diagnostic change log，同时保持原有业务返回、写入 sequencer、dirty notification、capability 状态和 hostile-input 访问纪律不变。
 
-**缺陷**：`reader.ts` C2/C3 修复在 `refsToSegMax` 为空时调用 `walkCompletePrefixEnd()`，将截断点 T 从 0 推进到完整 orphan 帧前缀末端——保留这些帧（违反设计 §5.2/§5.4 明文「Refs 为空 → T=0」与 ADR-0012「截断完整但未被任何完整 JSONL record 引用的尾部 orphan frames」），且前缀走到底时发出 `truncatedBytes: 0` 的不诚实修复事件（round-1 LOW-1）。AC3 未满足。
+- `96cd085` — 接入 runtime seam（可选 diagnostic emitter/clock）、ROOT/SCHEMA 各结局路径的稳定诊断记录、事务级 owned Yjs update bytes 捕获，以及 14 项红灯契约。
+- `874cc10` — 增加 16 项 SA7 动态验证，并修复测试文件的 TypeScript 收窄问题，确保 CI 的测试文件类型检查可通过。
+- `942ac31` — 收尾修复：将 DV-2 的贴界时间断言改为稳定的无自旋量级断言，并将 `@nomicore/namespace-runtime` 从 `0.1.7` 提升至 `0.1.8`。
+- 本收尾档案 commit — AC 核对表、standards/spec 双轴终审档案、dispatch 终态和本 REPORT.md。
 
-**修复**（commit `a2cf3a5`，零设计变更——实现向已定稿设计字面收敛）：
-1. 删除 refs 空例外分支，C2/C3 截断点严格 `T = max ref end`（Refs 空 → 0），完整未引用尾帧全量截断；`walkCompletePrefixEnd` 成死代码一并移除（reader.ts 净 -27 行）。
-2. 修复事件诚实性获结构保证：`bin.byteLength > t` 守卫 ⇒ `truncatedBytes > 0` 恒成立（C1 侧代数同理），零字节事件结构性消除并有负向断言钉死。
-3. 测试锚纠错（SA6 owned）：§13.11 重写（修复后 BIN 实长 ===0、truncatedBytes=真实移除量）+ §13.11b/§13.11c 新回归锚（修复后续写 sidecar `frameOffset === "0"` + strict reader 全流 ok）+ 窗口1/3/§13.32c 补断言。
-4. 版本 bump：`@nomicore/namespace-diagnostic-log` 0.1.3 → 0.1.4。
-5. 反馈建议⑤（共享原语抽取）按审查方「非必须」明示不做。
+实现记录覆盖 committed、no-op/rejected、fatal-before-commit、fatal-after-commit、queue-full、logger/sink failure，以及 Proxy/accessor 输入；事务 effect 使用同源基态加连续增量链进行诊断性重放，且测试保留“空文档不得物化真实增量”的反向鉴别，避免整文档编码冒充事务更新。
 
-## 总控核验裁决（开工取证，round-2 G1）
+## 验证证据
 
-**审查 claim 成立**：设计 §5.2（L224 区）与 §5.4 伪代码双处明文「Refs 为空 → T=0」；ADR-0012 §打开与尾部恢复第三类修复条文要求截断全部未引用尾帧；实现与 §13.11 锚（round-1 SA3 备案偏差 + SA4 裁定 + spec 轴非阻断①）共同偏离设计字面——owner 裁决以设计为准绳推翻备案链。
+- SA6 红灯契约：14/14 通过；覆盖 ROOT/SCHEMA 诊断路径、owned bytes、fault isolation 和 hostile-input 访问纪律。
+- SA7 动态补充：16/16 通过；覆盖慢 emitter 的槽间时序、acceptance 同步发射、unhandled rejection 抑制、未钉死路径、queue-full/full input policy 等。
+- 双轴终审：standards **pass**（R2 闭合 DV-2 不稳定断言及 patch version blocker）；spec **pass**（AC1–AC5 独立核验通过）。
+- 测试文件类型检查：`npx tsc -p tsconfig.typecheck.json`，0 errors。
+- `pnpm typecheck`：exit 0。
+- 修复后独立 spec 审查的全仓 `vitest run --typecheck`：142 files / **1816 tests 全部通过**，Type Errors no errors。
+- standards R2 复验：DV-2 隔离 3/3 通过，之后两次全量复验中 #149 的 red 14/14、SA7 16/16 均通过，Type Errors no errors；`pnpm install --frozen-lockfile` exit 0。
 
-**机制勘误（诚实记录）**：审查方声称的下游后果「下一条 sidecar 触发 frame-boundary-invalid 使 stream 再次损坏」在当前链语义下不成立——首个被引用帧 `expectedOffset=null` 跳过边界检查（`storage-gate.ts:88` + round-1 D-A1 动态锚实证）。规格违反（未截断 + 不诚实事件）独立于该机制成立；SA8 R2 门禁同裁（O1），SA6 锚纠错零「防 frame-boundary-invalid」伪需求断言（grep 实证）。
-
-## 流水线（缺陷修复轮；r2_dispatch.md 全审计）
-
-SA8 R2 前置门禁 **clear**（T=0 全截 = ADR 第三类条文直接形式化；零设计/ADR/词表变更；无遗留张力）→ SA6 锚纠错+新回归锚（**6 红 / 375 绿，exit=1**，两轮复跑一致，红因唯一指向偏差分支）→ SA3 修复（a2cf3a5）→ 总控绿灯亲验 exit=0（包级 22 文件/381 测试全绿）→ SA4 R2 **pass**（七项复核全过：T=0 忠实性/死码零残留/事件诚实性结构证明/注释逐字/bump/ALLOW-DENY/1.4 触发性）→ SA7 R2 **pass**（AC3/AC1 活链路重证 24/24；SIGKILL 抽样 68 轮 0 失败含 W1 真实命中 `bin-orphan-frames{truncatedBytes:4194329}` 4MiB 全截；双 Node 全量零回退）→ AC 门禁 **5/5 ✅**（AC3/AC1 重证闭合，AC2/4/5 零回退）→ 双轴终审 delta **均 pass**（standards 零 hard violation；spec 零阻断 + 独立探针 P1–P6 六形态边界全中）。硬门禁 12/13/14/15/16 自检全过（13/15 N/A：无 spec.ts、R2 零设计变更零新协议假设）。
-
-**双总控竞态事件如实记录**：round=2 启动时存在一个 recover 催生的并行总控副本（09:31–09:53），其写就 `round2_feedback.md`（权威任务输入）与 SA6 早期草稿（`_sa6_red_r2.md`，自标「已取代」）；09:45 发现本线后如实记录竞态、09:53 自裁让位并终止（零 src/test 残留、零后续写/派发）。其留存档案随本 commit 入库，round-1 dispatch 的 Round-2 附段加本线注记（其「跳过 SA8」叙事系未执行计划，权威流水线以 `-r2_` 档案为准）。
-
-## 变更（基线 51b79b9 round=1 HEAD → 本轮 HEAD）
-
-- `a2cf3a5` fix：T=0 收敛修复（reader.ts -27 / 测试锚纠错+新增 +106 / bump 0.1.4）
-- 本收尾 commit：round-2 全部档案（r2 简报/dispatch/SA8 门禁×2/SA6 红灯/SA4/SA7/AC 表/双轴终审 + round2_feedback 权威输入 + SA6 超替草稿）+ round-1 dispatch 竞态注记 + 本 REPORT.md
-
-## 验证（最终状态，全部后台独立进程亲跑/复验）
-
-| 命令 | 结果 |
-|---|---|
-| SA6 R2 红灯 | exit=1，6 failed / 375 passed（红因唯一指向 reader.ts 偏差分支；存量 375 零回退） |
-| 总控绿灯亲验（包级） | exit=0，22 文件 / 381 测试全绿，Type Errors 0（`.mabf-bg/ctl-green-r2.log`） |
-| 最终 `pnpm typecheck`（全包链） | exit 0（`.mabf-bg/final-r2-typecheck.log`） |
-| 最终 `pnpm test`（全仓 vitest run --typecheck） | exit 0，**140 文件 / 1786 测试全绿，Type Errors 0**（`.mabf-bg/final-r2-test.log`；round-1 基线 140/1784 → +2 恰为 §13.11b/c 新锚） |
-| 最终 `git diff --check` | 干净（exit 0） |
-| 双 Node（SA7 R2） | v24.13.0 与 v20.18.1 均 140/1786 全绿 |
-| SA7 R2 活链路 | AC3/AC1 重证 24/24：修复后 BIN 实长恒 0、truncatedBytes===修复前长度（4129/4122/8244 全 >0）、零字节事件绝迹、frameOffset==="0"、reader ok、序列连续；SIGKILL 68 轮 0 失败 |
+历史上 `pnpm test` 曾在满载环境以非零退出：早期包含 DV-2 的 20ms 贴界断言（现已修复），其余为未触及包的 `generate-cli-check` / `dsh-probe-cli` spawn 超时以及 vitest-worker RPC timeout 环境伪影。最终双轴复验将这些与 #149 分离：#149 测试、类型检查和全仓成功复验均已通过；残余负载工件不属于本次 diff。DV-2 的对照断言已由 `<20ms` 改为 `<100ms`，同时保留慢 emitter 的 `>=25ms` 同步发射下界，因此避免宿主机调度抖动而不删除行为验证。
 
 ## 遗留风险
 
-1. round-1 遗留风险 1（writer 自产链中 orphan 不可修复终态）维持备案不变（本轮 diff 不触该面）；风险 2（零字节修复事件）**已随本轮结构性消除作废**（结构保证 + 负向断言双落地）；风险 3（设计字面与实现截断点分歧）**已闭合**（实现向设计字面收敛）；风险 4–6（VFSL 步数上限记档 / CI runner 非 root 证据 / CI 矩阵）维持原状归对应后续面。
-2. spec 轴 R2 非阻断 1 条：测试文件 L444 残留 `walkCompletePrefixEnd` 历史注释引用（「废止」记档性质，非死代码）。
-3. standards 轴 R2 非阻断 2 条：NB-R2-1 两 untracked 档案**已随本轮收尾入库闭合**；NB-R2-2 记档更新已并入本报告。
-4. CI 证据属发布阶段：本地双 Node 全绿 + `--frozen-lockfile` 前置已于 round-1 验证；R2 最终 CI 状态由 Host 发布流程确认。不 push、不开 PR、不写 .mabf-done（归 Host）。
+1. 发布后 CI run 级的触发日志（SA7 DV-5）只能在 Host push/PR 后取得；本地完成事务不宣称 CI 已绿。
+2. 本地全仓并发运行仍可能出现未触及 #149 包的 spawn/RPC 负载超时；其隔离复跑可通过，且双轴审查将其登记为环境问题而非本任务回归。
+3. `engineering/code-review` skill 加载被运行时拒绝（`invalid skill name`），无法在本控制器权限内修复 catalog/目录映射。替代措施是并行独立 standards 终审（SA4）与 issue/AC spec 终审（SA2），两轴均基于 `eaf0484..942ac31` 和可复核运行证据给出 pass。
+4. 未覆盖的扩展行为（个别 no-op 和边缘 fatal 枚举点）已被 SA4/SA2 标为后续增强测试项；25 个生产结局点已静态逐项核对，当前 AC 门槛已满足。
+
+本 REPORT.md 仅表示本地 MABF 验收已完成；未执行 push、PR、标签、`.mabf-done` 或其他 Host 生命周期操作。
