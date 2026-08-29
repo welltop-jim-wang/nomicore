@@ -1,10 +1,10 @@
 # SA4 静态验尸报告 — Issue #172 Phase 5 权威契约收敛
 
-**Date**: 2026-08-31
+**Date**: 2026-08-31（R1）／ 2026-08-31（R2 固定范围复验，见 §8）
 **Reviewer**: SA4（Red Team，静态绿光验尸）
-**被审对象**: 基线 `ef19bae` → HEAD `c271476`（SA3 实现全量 diff，47 文件 +2206/−142）
+**被审对象**: R1 = 基线 `ef19bae` → `c271476`（SA3 实现全量 diff，47 文件 +2206/−142）；R2 复验 = `c271476 → 3141884`（F1 窄域文档修复）
 **设计基准**: `wiki/raw/task_phase-5-websocket-replication-contracts_design.md`（R3，SA2 R3 = pass）
-**Verdict**: **reject（窄域：单一阻断簇 F1 + 2 项顺手修）** —— 代码与测试工作全部验证成立；阻断项是**文档交付物内部的归类失实**，恰好落在本票「契约收敛」的核心承诺上。修复为纯文档级（phase 文档 + impl 记录），无生产代码改动。
+**Verdict**: R1 = **reject（窄域：单一阻断簇 F1 + 2 项顺手修）** → **R2 = pass（固定范围复验全过，见 §8）**。R1 阻断项是文档交付物内部的归类失实（代码与测试工作 R1 即全部验证成立）；R2 修复为纯文档级，逐项闭合。
 
 ---
 
@@ -146,3 +146,47 @@ grep -n '"version"\|"private"' packages/ws-replication/package.json   # 0.1.2 / 
 - **成立面（全部实测通过）**：范围护栏零越界；G1 公共 API 收敛与 protocol §17 逐项一致；8 条延后锚 it.fails 注册完整、当前红态与红因经翻转实验独立证实、D2-bis meta 守卫三方向敏感；4 组恒真断言全部加固非真空；D3a/D3b/D3c 合法化重构成立（断言③的收口 ERROR 剔除口径与 `hub-connection.ts:397-415` 豁免互证）；去权威化 23 处 + 三道 grep 门禁干净；ws-replication 172 测试全绿 + 12 包 typecheck 零错误；版本 bump 判定非违规。
 - **拒绝理由（F1 单一簇）**：本票是契约收敛票，交付物就是「current contract / known gap / planned fix」的准确登记。SA3 实测发现严格接纳 pipeline 判据未实现（真实缺口，R1-3 锚红因正确），但 (a) impl 记录将其归类为「与冻结文本兼容」——被 §17 L492 明文否定；(b) 同 commit 落盘的 phase 文档切片 6 仍把严格接纳整体列为「已交付」、已知偏差表不含该缺口——同一 commit 内文档与测试自相矛盾，违反票面 scope 5「不把未实现行为表述为当前实现」。
 - **修复成本**：纯文档（phase 文档两行级修订 + impl 记录归类句更正 + R1-3 登记入验收锚段），加总控/SA1 的路由裁决；无生产代码、无断言改动。**回流目标：SA3（文档修订）+ 总控/SA1（缺口路由裁决）**；修复后 SA4 只复审 §3-F1 固定复验范围。
+
+---
+
+# SA4 R2 固定范围复验（2026-08-31）
+
+**被审对象**：`c271476 → 3141884`（SA3 窄域 F1 文档修复提交：`docs(ws-replication): issue #172 SA4 F1 窄域文档修复——严格接纳缺口归类更正与登记`）
+**复验范围**：严格限定为 R1 §3-F1 固定复验范围（四处文档修订 diff + 门禁①②③ + anchors/r1-r7 两文件 vitest + 无生产代码/断言改动确认）+ 顺手修 N2。R1 已裁定面不重做。
+
+## R2-1. F1 四处文档修订逐项核验（diff 对照 R1 修复要求）
+
+| # | R1 修复要求 | `3141884` 落盘 | 核验结论 |
+|---|---|---|---|
+| 1 | phase 文档切片 6 行追加严格接纳限定注记 | `已交付*` → `部分交付*`：已交付面精确枚举（水位 / **Σ-queued** 连接总压 shed / control 保留额度 / **单帧严格拒纳 R1-1/R1-2**），已知偏差显式标注「连接级 pipeline 记账（§17 L492 明文含 bufferedAmount）与『拒纳 + 幸存面同批丢弃』**未接线**（R1-3 it.fails 锚——见已知偏差表）」 | ✅ 与 R1 代码证据逐一吻合（enforceConnectionCap Σ-queued、暂停段入队无 pipeline、R1-1/R1-2 现绿）；不再把未实现行为表述为当前实现 |
+| 2 | 已知偏差表追加「严格接纳 pipeline 判据」行 | 新行：冻结语义引 §17 L492（pipeline 记账 + 拒纳 + 幸存面同批丢弃 + needs-resync 显影）；当前实现引 R1-3 实测（触发帧被接纳、0 RESYNC、0 丢弃）；修复票列 = **待总控裁决（R1-3 it.fails 锚随修复摘标）** | ✅ 三栏内容与 R1 E9 证据一致；路由裁决按 R1 要求留归总控（开放项正确挂起，非本票缺陷） |
+| 3 | 「验收锚」段登记 R1-3 | 新增段落：R1-3 为 it.fails 期望红灯锚，明示 D2-bis 守卫覆盖边界（只覆盖 anchors 文件）、本段为其**存在性登记契约**，删锚/摘标须同步删登记与偏差表行 | ✅ 同时闭合 R1-N1（R1-3 无守卫的删锚零信号风险——文档面兜底） |
+| 4 | impl 记录 §3.1/§3.2 归类句更正 | 两处均以「**SA4 F1 更正**」标记改为「**冻结语义偏差**——protocol §17 L492 明文……与冻结文本不合」，并保留初版错误陈述的被更正记录；文件头新增修订记录块 | ✅ 归类更正如实、可审计（保留错误历史而非抹除） |
+
+## R2-2. 门禁与测试复验（可重跑）
+
+| 检查 | 命令 | 结果 |
+|---|---|---|
+| 门禁① | `git grep -n "controlReserveBytes" -- ':(exclude)wiki'` | 仅 `docs/adr/0010-…md:314` 一处（R1 已裁定的合规历史记述例外）✅ |
+| 门禁② | `git grep -nE "契约来源：wiki\|设计基准：wiki\|以 wiki/raw.*为准" -- 'packages/**' 'apps/**' 'docs/**'` | 零命中 ✅ |
+| 门禁③ | `git grep -n "保守上界\|fail-safe" -- 'docs/**' 'packages/ws-replication/src/**'` | 零命中 ✅ |
+| anchors + r1-r7 | `pnpm exec vitest run …issue172-contract-anchors.test.ts …review-revisions-r1-r7-red.test.ts --passWithNoTests=false` | **2 文件 / 31 tests 全绿，Type Errors: no errors，exit 0**（anchors 17/17 含 8 锚 it.fails 期望红 + meta 守卫；r1-r7 14/14 含 R1-3 it.fails 期望红）✅ |
+| 无生产代码/断言改动 | `git diff --name-only c271476 HEAD -- packages/ apps/` | **0 文件**（R2 提交仅触 `docs/phases/…` + wiki/raw 5 文件）✅ |
+| N2 EOF | `git diff --check ef19bae HEAD` | **PASS**（R1 报的 design.md:594 EOF 空行已剥除）✅ |
+
+## R2-3. 一致性与残余项
+
+- **phase 文档 ↔ r1-r7 测试头陈述一致**（F1-b 闭合）：两侧均陈述「单帧拒纳 R1-1/R1-2 已交付（现绿回归锁）/ 幸存面组合场景未实现 / 过载判据仅 Σ queued」——同 commit 内不再有文档说已交付、测试说未实现的自相矛盾。
+- **残余开放项（非缺陷，正确挂起）**：
+  1. 严格接纳 pipeline 判据缺口的**修复路由**待总控裁决（偏差表行已显式挂起；建议并入 #169 背压域扩 scope 或新立 issue——impl 记录已附建议）。
+  2. R1-N3（全量套件负载抖动 / CI 绿证据）仍交 SA7/CI 观察确认——R2 范围未触及，状态不变。
+  3. 微措辞备注（无需行动）：r1-r7 文件头「pipeline 判据不存在」为场景语境措辞（指 shed/接纳判据路径；live 快速路径 `tryEmitData:103-104` 有 pipeline 检查），phase 文档新措辞（「连接级 pipeline 记账未接线」限定于偏差表）为更精确的权威登记——两者不冲突。
+
+## R2-4. R2 裁决
+
+**Verdict: pass。**
+
+- R1 固定复验范围四项（F1 四处文档修订 / 门禁①②③ / anchors+r1-r7 vitest 全绿 / 零生产代码与断言改动）+ 顺手修 N2 全部通过；修复严格限定在 R1 指定位点且方向正确，无越界改动、无新引入偏差。
+- R1 已验证成立面（范围护栏、G1 收敛、it.fails 机制与守卫、恒真加固、D3 系列重构、去权威化、版本 bump 裁决）不受 R2 影响（R2 零代码/零测试改动，R2-2 表已复核关键门禁与两测试文件）。
+- SA3 的 F1 修复质量良好：错误归类被如实更正并保留审计痕迹，phase 文档「交付现状与边界」节恢复其自序承诺的准确性（区分 current contract / known gap / planned fix），R1-3 获得文档面存在性登记契约。
+- 后继：SA7 动态验证按 R1 §5 清单执行（重点：CI 绿证据）；严格接纳缺口路由裁决归总控。

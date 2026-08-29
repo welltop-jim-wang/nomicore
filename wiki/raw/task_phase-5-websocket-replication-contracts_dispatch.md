@@ -13,4 +13,9 @@
 | 9 | 00:56 | SA2 | Phase 2 design R3 review | 01:06 | Verdict: pass。#8 收口 ERROR 豁免断言已构造性闭合，可进入实现。 |
 | 10 | 01:07 | SA3 | Phase 3 implementation | 01:32 | Commit c271476；typecheck 与全量测试绿。实施记录提出 R1-3 新 known gap，待 SA4 独立审查。 |
 | 11 | 01:33 | SA4 | Phase 3 static review | 01:49 | Verdict: reject。F1 发现 R1-3 known gap 违反 protocol §17，文档将未交付严格接纳误称已交付。 |
-| 12 | 01:50 | SA3 | Phase 3 F1 documentation fix | (pending) | SA4 固定复验为纯文档 F1；原 SA3 修正文档归类、phase 状态与锚登记，不改生产代码。 |
+| 12 | 01:50 | SA3 | Phase 3 F1 documentation fix | 02:05 | Commit 3141884；纯文档修正 F1、R1-3锚登记与设计EOF，最小31用例绿。 |
+| 13 | 02:06 | SA4 | Phase 3 static review R2 | 02:19 | Verdict: pass。F1 文档归类与锚登记已闭合；门禁及31测试通过。 |
+| 14 | 02:20 | SA7 | Phase 4 dynamic validation | 02:42 | Verdict: pass。动态链路、全量测试与文档三态核验通过；CI触发证据待 Host 发布后补取。 |
+| 15 | 02:43 | AC | Phase 3.5 acceptance checklist | 02:51 | Verdict: 6/6 AC ✅。无回流项；CI证据与R1-3路由为发布后/后续票事项。 |
+| 16 | 02:52 | Final Standards | Pre-publication dual-axis review | 03:01 | Verdict: pass（初始档案pending状态修正后窄域复验通过）。 |
+| 17 | 02:52 | Final Spec | Pre-publication dual-axis review | 03:00 | Verdict: pass。范围、设计、Issue与AC一致。 |
