@@ -20,15 +20,16 @@
  */
 import type * as Y from 'yjs';
 import type { DocHandle, DocHandleStatus } from '@nomicore/persistence';
+import type { DiagnosticIssue } from '@nomicore/namespace-diagnostic-log';
 import { applyValidatedMutation, DocRuntimeFatalError } from '@nomicore/doc-runtime';
 import type { ApplyValidatedMutationResult } from '@nomicore/doc-runtime';
 import {
-  FATAL_REPLICATION_APPLY_WRITE_INTERNAL_CODE,
-  FATAL_REPLICATION_APPLY_WRITE_INTERNAL_MESSAGE,
-  FATAL_REPLICATION_WRITE_INTERNAL_CODE,
-  FATAL_REPLICATION_WRITE_INTERNAL_MESSAGE,
   FATAL_SCHEMA_WRITE_INTERNAL_CODE,
   FATAL_SCHEMA_WRITE_INTERNAL_MESSAGE,
+  FATAL_REPLICATION_WRITE_INTERNAL_CODE,
+  FATAL_REPLICATION_WRITE_INTERNAL_MESSAGE,
+  FATAL_REPLICATION_APPLY_WRITE_INTERNAL_CODE,
+  FATAL_REPLICATION_APPLY_WRITE_INTERNAL_MESSAGE,
   FATAL_WRITE_INTERNAL_CODE,
   FATAL_WRITE_INTERNAL_MESSAGE,
   MUTATION_INPUT_NOT_PLAIN_DATA_CODE,
@@ -39,6 +40,16 @@ import {
 import type { RuntimeWriteFatalPhase } from './errors.js';
 import type { RuntimeState } from './p0.js';
 import { ownDataFact, putPlainKey } from './plain-data.js';
+import {
+  diagCapGate,
+  diagDirtyFatal,
+  diagFatalCapGate,
+  diagFatalTx,
+  diagInputReady,
+  diagInputSnapshotFail,
+  diagValidation,
+} from './diagnostic.js';
+import type { SlotDiag } from './diagnostic.js';
 
 /** 写槽运行时环境（构造栈一次成型——纯数据闭包，槽体零读 seam 输入）。 */
 export interface WriteEnv {
@@ -69,21 +80,24 @@ export interface DataMutationIssue {
 export type MutateDataResult = { ok: true } | { ok: false; issues: unknown[] };
 
 /**
- * 写槽位名词（D9，issue #91；issue #132 追加 'replication'；issue #134 追加
- * 'replication-apply'）：fatal 摘要与 rejection message 的来源区分——ROOT / SCHEMA /
- * REPLICATION（管理写）/ REPLICATION apply（会话复制写）四写槽共享同一机械但独立
- * fatal 摘要稳定码（status.fatal 诊断不失真；apply fatal 与管理写 fatal 分码）。
+ * 写槽位名词（D9，issue #91）：fatal 摘要与 rejection message 的来源区分——ROOT 写槽
+ * 与 SCHEMA 写槽共享同一机械但独立 fatal 摘要稳定码（status.fatal 诊断不失真）。
  */
 export type WriteSlot = 'root' | 'schema' | 'replication' | 'replication-apply';
 
 /**
  * 写槽主函数（唯一写槽实现）。async——同步段无可抛点（全部 gate/分类在体内），
  * 一切异常进入返回 Promise（sequencer 链尾恒绿接线消化 reject——INV-W12）。
+ * diag（issue #149）：可选 per-attempt 诊断收集器——未装配 emitter 时 undefined
+ * （槽体全部 diag 写入 no-op，行为等价）；装配时每个结局点恰一行诊断写入（设计 §8.1）。
  */
-export async function runRootWriteSlot(env: WriteEnv, input: unknown): Promise<MutateDataResult> {
+export async function runRootWriteSlot(env: WriteEnv, input: unknown, diag?: SlotDiag): Promise<MutateDataResult> {
   // ── S1 fatal gate（零输入访问）───────────────────────────────────────
   if (env.state.fatal !== undefined) {
-    return disabled('fatal 已置位（internal fatal 已永久禁用本 Runtime 的全部写能力，读取仍保留）');
+    const r = disabled('fatal 已置位（internal fatal 已永久禁用本 Runtime 的全部写能力，读取仍保留）');
+    // [issue #149] R2：capability-gate / RUNTIME_WRITE_DISABLED / rejected / not-accessed
+    if (r.ok === false) diagCapGate(diag, RUNTIME_WRITE_DISABLED_CODE, r.issues as DiagnosticIssue[]);
+    return r;
   }
   //    [裁决标注：#92] lifecycle gate 已兑现于公共方法接纳层（runtime.ts D5.1）；槽内
   //    不设——已接纳任务无条件排空（ADR-0008），槽内只留 fatal gate
@@ -96,30 +110,45 @@ export async function runRootWriteSlot(env: WriteEnv, input: unknown): Promise<M
     // adapter bug → 统一 fatal（committed:false——此时尚零 doc 写）；统一形状防止
     // 裸异常从结果联合之外的第二通道逃逸（与 #89 读取面「原样传播」的差异：写槽必须
     // 经 Promise 结算，且 fatal 面要求立即永久禁用写能力）
+    // [issue #149] R5：capability-gate / NSRT-FATAL-WRITE-INTERNAL / write-slot-internal
+    diagFatalCapGate(diag, FATAL_WRITE_INTERNAL_CODE);
     return rejectWithWriteFatal(
       env, false, 'write-slot-internal', err,
     );
   }
   if (handleStatus !== 'ready') {
-    return disabled(
+    // [issue #149] R3：capability-gate / RUNTIME_WRITE_DISABLED / rejected / not-accessed
+    const r = disabled(
       `DocHandle 状态 ${handleStatus} 不可写（persistence-degraded 阻止全部 Y.Doc 写；released/disposed 同拒）`,
     );
+    if (r.ok === false) diagCapGate(diag, RUNTIME_WRITE_DISABLED_CODE, r.issues as DiagnosticIssue[]);
+    return r;
   }
   if (env.notifyDirty === undefined) {
-    return disabled(
+    // [issue #149] R4：capability-gate / RUNTIME_WRITE_DISABLED / rejected / not-accessed
+    const r = disabled(
       'notifyDirty 未绑定——构造方必须绑定 persistence.saveDoc(handle)（ADR-0008 窄接缝）；'
       + '无持久化绑定的 Runtime 拒绝一切 Y.Doc 写，杜绝「提交成功但永无 dirty 登记」的静默失信',
     );
+    if (r.ok === false) diagCapGate(diag, RUNTIME_WRITE_DISABLED_CODE, r.issues as DiagnosticIssue[]);
+    return r;
   }
   const notifyDirty = env.notifyDirty; // 单读捕获（此后不再读 env 字段语义）
 
   // ── S3 槽起点输入快照（本槽第一次也是唯一一次读取输入）────────────────
   const snap = snapshotMutation(input); // D3；拒绝 → ok:false（类 B：输入缺陷不升格 fatal）
-  if (snap.kind === 'issue') return { ok: false, issues: [snap.issue] };
+  if (snap.kind === 'issue') {
+    // [issue #149] R6：input-snapshot / MUTATION_INPUT_NOT_PLAIN_DATA / rejected / unsafe-input
+    diagInputSnapshotFail(diag, MUTATION_INPUT_NOT_PLAIN_DATA_CODE, snap.issue as DiagnosticIssue);
+    return { ok: false, issues: [snap.issue] };
+  }
+  // [issue #149] S3 成功：input ← {snapshot}（唯一 payload 来源——同一 frozen 快照引用）
+  diagInputReady(diag, snap.value);
 
   // ── S4 执行时 active schema（不绑定调用时 generation）─────────────────
   if (env.state.schemaState === 'unavailable') {
-    return {
+    // [issue #149] R7：capability-gate / SCHEMA_UNAVAILABLE / rejected / input 已是 snapshot
+    const r: MutateDataResult = {
       ok: false,
       issues: [{
         message: `${SCHEMA_UNAVAILABLE_CODE}: 无可用 active schema（P0 编译失败）——` +
@@ -127,29 +156,55 @@ export async function runRootWriteSlot(env: WriteEnv, input: unknown): Promise<M
         path: [],
       }],
     };
+    if (r.ok === false) diagCapGate(diag, SCHEMA_UNAVAILABLE_CODE, r.issues as DiagnosticIssue[]);
+    return r;
   }
   const tools = env.state.activeTools;
   if (env.state.schemaState !== 'ready' || tools === undefined) {
     // 结构上不可达（D4：P0 是队首真实节点，写槽启动时 P0 必已 settle）——loud
     // internal fatal（拒绝虚假降级立法：出现即包缺陷，不静默跳过、不伪 ok）
+    // [issue #149] R8：capability-gate / NSRT-FATAL-WRITE-INTERNAL / write-slot-internal
+    diagFatalCapGate(diag, FATAL_WRITE_INTERNAL_CODE);
     return rejectWithWriteFatal(
       env, false, 'write-slot-internal', undefined,
     );
   }
 
   // ── S5 领域校验 + detached 构造 + 单事务（唯一 Y.Doc 写入口）───────────
+  // [issue #149] D-B 捕获窗口：仅装配诊断时订阅 yjs 事务 update 事件——捕获该事务的
+  // 增量 update bytes（事务 cleanup 原生投递面；hasContent 守卫下零事件 ⇔ noop）。
+  // 分类在 catch 内执行（读取窗口局部 capturedUpdate——事件在 transact 调用栈内、
+  // throw 之前已派发，捕获值在 catch 时已就绪）；finally 只负责退订与收口
+  // diag.updateBytes（成功路径的 S6/S7 消费）——try/finally 保证异常路径同样退订
+  //（handler 体为单赋值闭包，无可抛点——零额外 try/catch 成本）。
   let result: ApplyValidatedMutationResult;
+  let capturedUpdate: Uint8Array | undefined;
+  const updateHandler = (u: Uint8Array): void => {
+    if (capturedUpdate === undefined) capturedUpdate = u; // 首-赋值（多事件分支结构性不可达，§6.2）
+  };
+  if (diag !== undefined) env.doc.on('update', updateHandler);
   try {
     result = applyValidatedMutation(tools.derived, env.doc, snap.value);
   } catch (err) {
     // D5 fatal 分类（唯一 throw 通道）：doc-runtime branded 透传 committed/phase 事实；
     // 未知异常保守 committed:true（ADR「未知异常保守视为可能已提交」——过报方向强制）
     if (err instanceof DocRuntimeFatalError) {
+      // [issue #149] R10：transaction / NSRT-FATAL-WRITE-INTERNAL / err.phase 透传
+      diagFatalTx(diag, FATAL_WRITE_INTERNAL_CODE, err.committed, err.phase, capturedUpdate);
       return rejectWithWriteFatal(env, err.committed, err.phase, err);
     }
+    // [issue #149] R11：transaction / NSRT-FATAL-WRITE-INTERNAL / unknown-pipeline-throw
+    diagFatalTx(diag, FATAL_WRITE_INTERNAL_CODE, true, 'unknown-pipeline-throw', capturedUpdate);
     return rejectWithWriteFatal(env, true, 'unknown-pipeline-throw', err);
+  } finally {
+    if (diag !== undefined) {
+      env.doc.off('update', updateHandler);
+      diag.updateBytes = capturedUpdate;
+    }
   }
   if (!result.ok) {
+    // [issue #149] R9：validation / rejected / issues 同源透传（零写入由管线承诺）
+    diagValidation(diag, result.issues as DiagnosticIssue[]);
     return { ok: false, issues: result.issues }; // 领域失败透传（零写入由管线承诺）
   }
 
@@ -159,6 +214,9 @@ export async function runRootWriteSlot(env: WriteEnv, input: unknown): Promise<M
   } catch (err) {
     // 写已提交而登记通道损坏——诚实 fatal；不重试（S6 本次即本槽 notifier 唯一一次尝试）
     markWriteFatal(env, err);
+    // [issue #149] R12：dirty-notification / NSRT-FATAL-WRITE-INTERNAL /
+    // notify-dirty-failed / fatal committed:true（effect 由 §7.3 表裁决——必有 bytes → update）
+    diagDirtyFatal(diag, FATAL_WRITE_INTERNAL_CODE);
     throw new RuntimeWriteFatalError(
       'notify-dirty-failed',
       true,
@@ -185,27 +243,17 @@ export function disabled(reason: string): MutateDataResult {
 }
 
 /** 永久禁用写能力（fatal 摘要稳定注册——INV-N7：code/message 恒定文案，不插值原始文本）。
- *  slot 参数（D9，issue #91/#132/#134）：'schema' 走 SCHEMA write 独立摘要码、
- *  'replication' 走 REPLICATION write 独立摘要码、'replication-apply' 走 REPLICATION
- *  apply 独立摘要码（会话复制写与管理写分码防诊断失真）；缺省 'root' 渲染与现状逐字节
- *  相同（#90 冻结行为零回归）。 */
+ *  slot 参数（D9，issue #91）：'schema' 走 SCHEMA write 独立摘要码；缺省 'root' 渲染与
+ *  现状逐字节相同（#90 冻结行为零回归）。 */
 export function markWriteFatal(env: WriteEnv, cause: unknown, slot: WriteSlot = 'root'): void {
-  let code: string;
-  let message: string;
-  if (slot === 'schema') {
-    code = FATAL_SCHEMA_WRITE_INTERNAL_CODE;
-    message = FATAL_SCHEMA_WRITE_INTERNAL_MESSAGE;
-  } else if (slot === 'replication') {
-    code = FATAL_REPLICATION_WRITE_INTERNAL_CODE;
-    message = FATAL_REPLICATION_WRITE_INTERNAL_MESSAGE;
-  } else if (slot === 'replication-apply') {
-    code = FATAL_REPLICATION_APPLY_WRITE_INTERNAL_CODE;
-    message = FATAL_REPLICATION_APPLY_WRITE_INTERNAL_MESSAGE;
-  } else {
-    code = FATAL_WRITE_INTERNAL_CODE;
-    message = FATAL_WRITE_INTERNAL_MESSAGE;
-  }
-  env.state.fatal = Object.freeze({ code, message });
+  const summary = slot === 'schema'
+    ? { code: FATAL_SCHEMA_WRITE_INTERNAL_CODE, message: FATAL_SCHEMA_WRITE_INTERNAL_MESSAGE }
+    : slot === 'replication'
+      ? { code: FATAL_REPLICATION_WRITE_INTERNAL_CODE, message: FATAL_REPLICATION_WRITE_INTERNAL_MESSAGE }
+      : slot === 'replication-apply'
+        ? { code: FATAL_REPLICATION_APPLY_WRITE_INTERNAL_CODE, message: FATAL_REPLICATION_APPLY_WRITE_INTERNAL_MESSAGE }
+        : { code: FATAL_WRITE_INTERNAL_CODE, message: FATAL_WRITE_INTERNAL_MESSAGE };
+  env.state.fatal = Object.freeze(summary);
   env.state.fatalCause = cause; // 包内诊断锚点（不进任何公共面——#89 R2 立法延续）
 }
 
@@ -239,19 +287,17 @@ export async function rejectWithWriteFatal(
 }
 
 /** fatal 稳定 message 模板（稳定前缀 + phase/committed 事实 + 固定处置说明；不插值任何
- *  原始异常文本）。slot 名词参数化（D9，issue #91/#132/#134）：'root' → 「ROOT write」渲染与
+ *  原始异常文本）。slot 名词参数化（D9，issue #91）：'root' → 「ROOT write」渲染与
  *  现状逐字节相同（runtime-write-fatal-message-rev1.test.ts 子串锚全保留）；'schema'
- *  → 「SCHEMA write」；'replication' → 「REPLICATION write」；'replication-apply'
- *  → 「REPLICATION apply」。 */
+ *  → 「SCHEMA write」。 */
 export function writeFatalMessage(slot: WriteSlot, phase: RuntimeWriteFatalPhase, committed: boolean): string {
-  const noun =
-    slot === 'schema'
-      ? 'SCHEMA write'
-      : slot === 'replication'
-        ? 'REPLICATION write'
-        : slot === 'replication-apply'
-          ? 'REPLICATION apply'
-          : 'ROOT write';
+  const noun = slot === 'schema'
+    ? 'SCHEMA write'
+    : slot === 'replication'
+      ? 'REPLICATION write'
+      : slot === 'replication-apply'
+        ? 'REPLICATION apply'
+        : 'ROOT write';
   return `NSRT-WRITE-FATAL: ${noun} internal fatal（phase=${phase}, committed=${String(committed)}）；` +
     'internal fatal 已永久禁用本 Runtime 的全部写能力，读取仍保留；不补偿、不 fallback、不声称回滚；' +
     '上层不得自动重试非幂等写。';
