@@ -135,7 +135,7 @@ export async function bootMulti(opts: Issue137BootOptions = {}): Promise<Run137>
         applyPressure(wire.peerEnd, () => peerPressure);
         applyPressure(wire.hubEnd, () => hubPressure);
       }
-      hub.accept(wire.hubEnd);
+      hub.accept(wire.hubEnd, { peerInstanceId: PEER_INSTANCE });
       return wire.peerEnd;
     },
     timer: peerNode.scheduler,

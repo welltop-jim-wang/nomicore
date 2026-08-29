@@ -84,6 +84,7 @@ export class HubNamespaceChannel {
   private pendingResync = false;
   private resyncDeclared = false;
   private identityChangedSent = false;
+  private bootstrapSnapshotSeq: number | undefined;
   private timers: Record<TimerKind, unknown | undefined> = {
     bootstrap: undefined,
     close: undefined,
@@ -422,13 +423,14 @@ this.startBootstrap(hubIdentity);
         this.finishOpenError('INTERNAL_ERROR');
         return;
       }
-      this.sendChecked({
+      const seq = this.sendChecked({
         kind: 'BOOTSTRAP_SNAPSHOT',
         namespaceId: this.namespaceId,
         replicationId: identity2.replicationId,
         replicationEpoch: identity2.replicationEpoch,
         snapshot,
       });
+      this.bootstrapSnapshotSeq = seq > 0 ? seq : undefined;
       // 帧内身份=重读值（最小化「帧身份 ≠ 快照内容」窗口；§8 step 3 R3/#8）
       void _hubIdentity;
       this.armTimer('bootstrap');
@@ -438,7 +440,6 @@ this.startBootstrap(hubIdentity);
   }
 
   onBootstrapAck(message: { ackedSequence: number }): void {
-    void message;
     if (this.state !== 'bootstrapping') {
       if (!this.isTerminal()) {
         this.sendNsError('NAMESPACE_STATE_VIOLATION');
@@ -446,7 +447,15 @@ this.startBootstrap(hubIdentity);
       }
       return;
     }
+    if (
+      this.bootstrapSnapshotSeq === undefined ||
+      message.ackedSequence !== this.bootstrapSnapshotSeq
+    ) {
+      this.host.connectionFatal('ACK_STATE_VIOLATION', 1002);
+      return;
+    }
     this.clearTimer('bootstrap');
+    this.bootstrapSnapshotSeq = undefined;
     this.setState('reconciling'); // 等待 peer Step1
   }
 
@@ -527,10 +536,11 @@ this.startBootstrap(hubIdentity);
   }
 
   onCloseRequest(message: { sequence: number }): void {
-    if (this.isTerminal()) return;
+    if (this.isTerminal() || this.state === 'closing') return;
+    // 帧分发同步段即停接纳，消除异步 closeQueue 前继续接收 UPDATE/Step 的竞态窗口。
+    this.setState('closing');
     this.closeQueue = this.closeQueue.then(async () => {
       if (this.isTerminal()) return;
-      this.setState('closing');
       // §13.2：停接纳 → 等已接纳 apply → session close → lease release → CLOSE_OK
       await this.drainPendingApplies();
       await this.closeSessionAndRelease();
@@ -541,6 +551,9 @@ this.startBootstrap(hubIdentity);
           ackedSequence: message.sequence,
         });
         this.setState('closed');
+        const waiters = this.openWaiters;
+        this.openWaiters = [];
+        for (const waiter of waiters) waiter();
       }
     });
   }
@@ -557,8 +570,19 @@ this.startBootstrap(hubIdentity);
     this.finalize(toFinalState(terminalStateOf(message.code)));
   }
 
+  /** 连接关闭同步静默：先停接纳并摘订阅，再异步 drain/释放。 */
+  quiesceConnection(): void {
+    if (!this.isTerminal() && this.state !== 'closing') this.setState('closing');
+    const unsubscribe = this.unsubscribe;
+    if (unsubscribe !== undefined) {
+      unsubscribe();
+      this.unsubscribe = undefined;
+    }
+  }
+
   /** 连接关闭（socket 断开 / Hub 停机）：全量 cleanup。 */
   onConnectionClosed(): Promise<void> {
+    this.quiesceConnection();
     return this.closeQueue.then(async () => {
       await this.drainPendingApplies();
       await this.closeSessionAndRelease();
@@ -650,7 +674,7 @@ this.startBootstrap(hubIdentity);
   }
 
   private onAckTimeoutFired(): void {
-    if (!this.isQuietState()) this.setState('needs-resync');
+    this.declareHubResync();
   }
 
   // ─────────────────────────────── apply（§11.1） ───────────────────────────────
@@ -756,12 +780,11 @@ this.startBootstrap(hubIdentity);
       this.pendingResync = false;
       // hub 侧「再开 round」恒由 peer 发起（§10.6 等待）；仅做状态与队列清理
     }
+    if (this.state !== 'reconciling' && this.state !== 'needs-resync') return;
     this.round.markLive();
-    if (!this.isTerminal()) {
-      this.setState('live');
-      this.channel.resetForLive();
-      this.resyncDeclared = false; // 恢复周期完成：恢复声明记忆化清零
-    }
+    this.setState('live');
+    this.channel.resetForLive();
+    this.resyncDeclared = false; // 恢复周期完成：恢复声明记忆化清零
     this.watchdog.onEvent();
   }
 
@@ -816,12 +839,14 @@ this.startBootstrap(hubIdentity);
 
   private async closeSessionAndRelease(): Promise<void> {
     const session = this.session;
+    const unsubscribe = this.unsubscribe;
+    // 同步摘除订阅，再跨 session.close 屏障，确保 close/GOAWAY 期间不再接纳本地更新。
+    if (unsubscribe !== undefined) {
+      unsubscribe();
+      this.unsubscribe = undefined;
+    }
     if (session !== undefined) {
       await session.close();
-    }
-    if (this.unsubscribe !== undefined) {
-      this.unsubscribe();
-      this.unsubscribe = undefined;
     }
     const lease = this.lease;
     this.lease = undefined;

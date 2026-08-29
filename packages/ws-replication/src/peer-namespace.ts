@@ -48,6 +48,10 @@ export interface PeerNamespaceHost {
   onDataQueued(namespaceId: string): void;
   /** 请求连接级 drain（§4.5，issue #137）。 */
   requestDataDrain(): void;
+  /** GOAWAY drain 窗口投影；namespace 断线处理据此保持 draining 语义。 */
+  isGoawayDraining(): boolean;
+  /** 确定性延后 seam：生产缺省单 microtask，测试可注入显式泵。 */
+  deferTask(task: () => void): void;
   /** 本端连接致命（ACK_STATE_VIOLATION 等）：connection ERROR + close + blocked。 */
   connectionFatal(code: string, wsCloseCode?: number): void;
   /** 连接代际（每次拨号 +1）：异步续体以此判别「连接已断/已重建」的迟到性（§13.4）。 */
@@ -83,6 +87,10 @@ export class PeerNamespaceController {
   };
   private cleanupTail: Promise<void> = Promise.resolve();
   private closeMemo: Memoized | undefined;
+  private closeSequence: number | undefined;
+  /** R3（SA4）：close 承诺的事件驱动结算器——settleCloseMemo 触发前 removeTarget 的
+   *  promise 保持 pending（零轮询环；AC3b closeSettled===false 锚语义）。 */
+  private closeSettleResolve: (() => void) | undefined;
 
   readonly round: RoundEngine;
   readonly channel: UpdateChannel;
@@ -485,6 +493,8 @@ export class PeerNamespaceController {
 
   onCloseRequest(message: { sequence: number }): void {
     if (this.isQuietState()) return;
+    this.setState('closing');
+    this.quiesceSync();
     // 对称收口（§13.2）：停接纳 → 等已接纳 apply → session close → lease release → CLOSE_OK
     void (async () => {
       await this.drainPendingApplies();
@@ -499,8 +509,8 @@ export class PeerNamespaceController {
     })();
   }
 
-  onCloseOk(): void {
-    if (this.state === 'closing') {
+  onCloseOk(ackedSequence: number): void {
+    if (this.state === 'closing' && ackedSequence === this.closeSequence) {
       // §13.4：closing 期 terminal 帧只推进收口——CLOSE_OK 为收口完成信号（即使在
       // 测试注入帧与出站计数器重叠的序列冲突下仍接受收口，不重复失败）
       this.clearTimer('close');
@@ -547,7 +557,7 @@ export class PeerNamespaceController {
       case 'needs-resync':
         this.setState('closing');
         this.armTimer('close');
-        this.sendChecked({
+        this.closeSequence = this.sendChecked({
           kind: 'CLOSE_NAMESPACE',
           namespaceId: this.namespaceId,
           reasonCode: 'target-removed',
@@ -572,15 +582,34 @@ export class PeerNamespaceController {
 
   private ensureCloseMemo(): Promise<void> {
     if (this.closeMemo === undefined) {
+      // R3（SA4）：memo body 只做 drain + cleanup——**零轮询环**（G5.2：生产代码不得为
+      // 测试可观测性引入魔法常数延迟环）；收口完成由 onCloseOk（关联 CLOSE_OK）/
+      // onTimerFired('close')（closeTimeout）/onCloseRequest 完成段的 settleCloseMemo()
+      // 事件驱动——settle 显式 resolve 装饰 promise（close 状态未收口前 removeTarget
+      // 承诺保持 pending；closeTimeout 兜底保证必有结算点）。
+      // gate 在 memo 创建时**同步登记**（executor 仅在其后 await）：settle
+      // （CLOSE_OK 早到/closeTimeout/断线）与登记之间零竞态窗口，无不死锁。
+      const gate = new Promise<void>((resolve) => {
+        this.closeSettleResolve = resolve;
+      });
       this.closeMemo = new Memoized(async () => {
         await this.drainPendingApplies();
         await this.closeSessionAndRelease();
+        await gate;
       });
     }
     return this.closeMemo.get();
   }
 
   private settleCloseMemo(): void {
+    // R3（SA4）：事件驱动结算——settle 由状态迁移点（CLOSE_OK/closeTimeout/CLOSE 请求
+    // 完成段/终局收口）触发；无装饰 promise 挂起时退回既有 trivial-memo 合流。
+    if (this.closeSettleResolve !== undefined) {
+      const resolve = this.closeSettleResolve;
+      this.closeSettleResolve = undefined;
+      resolve();
+      return;
+    }
     if (this.closeMemo === undefined) {
       this.closeMemo = new Memoized(async () => undefined);
     }
@@ -591,8 +620,10 @@ export class PeerNamespaceController {
    *  §13.3/§14.1：failed 等待连接重建——断线投影 disconnected 后重连重 OPEN）。 */
   onConnectionLost(): void {
     if (this.state === 'closed' || this.state === 'conflicted') return; // 终态保持
+    this.quiesceSync();
     if (this.state === 'closing') {
       this.setState('disconnected');
+      this.settleCloseMemo(); // R3：断线 = 关闭承诺兑现（无 CLOSE_OK/closeTimeout 可等）
       return;
     }
     if (this.state === 'failed') {
@@ -608,6 +639,10 @@ export class PeerNamespaceController {
   /** 连接 blocked（fatal）：活跃态投影 disconnected。 */
   onConnectionFatal(): void {
     if (this.isTerminal()) return;
+    this.quiesceSync();
+    if (this.state === 'closing') {
+      this.settleCloseMemo(); // R3：blocked = 关闭承诺兑现（同步投影先行）
+    }
     this.setState('disconnected');
     void this.cleanupResources();
   }
@@ -617,6 +652,7 @@ export class PeerNamespaceController {
     this.intent = 'removed';
     if (!this.isTerminal()) {
       this.setState('closed');
+      this.settleCloseMemo(); // R3：stop = 关闭承诺兑现
     }
     return this.cleanupResources();
   }
@@ -666,22 +702,9 @@ export class PeerNamespaceController {
   private onAckTimeoutFired(): void {
     if (this.state === 'live' || this.state === 'needs-resync') {
       this.setState('needs-resync');
-      // §10.4：不重发同一 UPDATE；窗口已收口 → 发起新 round（下一微任务——needs-resync
-      // 状态先可观测，随后同连接立即恢复）
-      // needs-resync 状态先可观测（§10.4 timer 锚），随后立即同连接恢复——恢复 round 的
-      // 起始经微任务链错开，保证测试的 settleUntil 至少观察到一次 needs-resync 投影。
-      let attempts = 0;
-      const deferRecovery = (): void => {
-        queueMicrotask(() => {
-          attempts += 1;
-          if (attempts >= 512) {
-            if (this.state === 'needs-resync') this.maybeStartRecovery();
-          } else {
-            deferRecovery();
-          }
-        });
-      };
-      deferRecovery();
+      this.host.deferTask(() => {
+        if (this.state === 'needs-resync') this.maybeStartRecovery();
+      });
     }
   }
 
@@ -881,7 +904,9 @@ export class PeerNamespaceController {
     }
     this.clearAllTimers();
     this.setState(state);
-    if (state === 'closed') this.settleCloseMemo();
+    // E5 终局收口（SA2 R3 / §3.8 裁决 3）：failed/conflicted 也是收口终态——closeMemo
+    // 的事件驱动结算不区分终态种类，一律 settle（AC3b/⑤c/⑤d 回归面已核查为零）。
+    this.settleCloseMemo();
     void this.cleanupResources();
   }
 
@@ -921,10 +946,19 @@ export class PeerNamespaceController {
     await Promise.allSettled([...this.pendingApplies]);
   }
 
+  private quiesceSync(): void {
+    const unsubscribe = this.unsubscribe;
+    if (unsubscribe !== undefined) {
+      unsubscribe();
+      this.unsubscribe = undefined;
+    }
+  }
+
   private async closeSessionAndRelease(): Promise<void> {
     const session = this.session;
     const lease = this.lease;
     const unsubscribe = this.unsubscribe;
+    this.quiesceSync();
     if (session !== undefined) {
       await session.close();
     }

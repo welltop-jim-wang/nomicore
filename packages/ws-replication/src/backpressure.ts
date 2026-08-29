@@ -91,6 +91,10 @@ export class ConnectionSender {
   tryEmitData(message: ReplicationMessage): number {
     if (!this.host.isEmitAllowed()) return 0;
     if (!this.dataGateOpen()) return 0;
+    const frameBytes = this.measureFrame(message);
+    if (frameBytes > this.host.limits.maxQueuedBytesPerConnection) return 0;
+    const projected = this.host.readBufferedAmount() + this.totalQueuedBytes() + frameBytes;
+    if (projected > this.host.limits.maxQueuedBytesPerConnection) return 0;
     return this.host.emitData(message);
   }
 
@@ -213,13 +217,16 @@ export class ConnectionSender {
 
   // ─────────────────────────────── §4.4 连接总压记账与 shed ───────────────────────────────
 
+  private totalQueuedBytes(): number {
+    let total = 0;
+    for (const nsId of this.wheel) total += this.queuedBytesOf(nsId);
+    return total;
+  }
+
   private enforceConnectionCap(): void {
     const cap = this.host.limits.maxQueuedBytesPerConnection;
     while (true) {
-      let total = 0;
-      for (const nsId of this.wheel) {
-        total += this.queuedBytesOf(nsId);
-      }
+      const total = this.totalQueuedBytes();
       if (total <= cap) return; // 触发用严格大于（§4.4 边界语义；AC-5 逐值吻合）
       const victim = this.pickVictim();
       if (victim === undefined) return;

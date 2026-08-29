@@ -236,7 +236,7 @@ async function bootReal(count: number): Promise<RealRun> {
       hubSentBytes.push(bytes.byteLength);
     });
     hubTransport = transport;
-    hub.accept(transport); // server 回调晚于 hub 构造执行——TDZ 安全
+    hub.accept(transport, { peerInstanceId: PEER_INSTANCE }); // server 回调晚于 hub 构造执行——TDZ 安全
   });
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   const port = (server.address() as net.AddressInfo).port;

@@ -25,4 +25,5 @@ export type {
   ReplicationTarget,
   ReplicationTimer,
   ReplicationTimeouts,
+  UpgradeIdentity,
 } from './types.js';

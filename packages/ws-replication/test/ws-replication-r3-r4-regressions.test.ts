@@ -250,7 +250,9 @@ describe('R3/R4 补测：恢复窗口 / fence 竞态 / fanout 溢出 / removeTar
     await settle();
     expect(run.peerFrames('UPDATE')).toHaveLength(2);
     // CLOSE 出队（control 优先级；序列号在出队时点分配——不得预占）
-    await run.peer.removeTarget(run.nsId);
+    // §3.8 裁决 3（2）（3）：发起/结算分离——事件驱动 closeMemo 下 removeTarget 的结算
+    // 挂到 close 事件，发起不 await（同 ⑧a bumpP 的「发起即入队，不等待」纪律）。
+    const closeP = run.peer.removeTarget(run.nsId);
     await settle();
     const closes = run.peerFrames('CLOSE_NAMESPACE');
     expect(closes).toHaveLength(1);
@@ -268,6 +270,7 @@ describe('R3/R4 补测：恢复窗口 / fence 竞态 / fanout 溢出 / removeTar
     run.hubNode.persistence.saveGate = undefined;
     if (gate !== undefined) gate.resolve();
     await run.waitNamespace('closed');
+    await closeP; // §3.8 裁决 3（3）：E1 事件结算（close 事件驱动 closeMemo 后的显式结算点）
     expect(run.hubFrames('CLOSE_OK')).toHaveLength(1);
   });
 

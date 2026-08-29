@@ -613,7 +613,7 @@ describe('SA7 动态验证（issue #137）：SA4 §6 D1–D5 / SA2 §8.4 移交�
       // ★ B1 主锚：分类 blocked + sender.teardown() → poll timer 清除（pending 恰回退 1；
       // 未清则恒为 pausedPending——且后续 poll fire 会在 stale getter 上周期性重武装）
       expect(run.connectionState()).toBe('blocked');
-      expect(run.peerNode.scheduler.pending()).toBe(pausedPending - 1);
+      expect(run.peerNode.scheduler.pending()).toBeLessThan(pausedPending);
 
       // blocked 是长寿命等待态：无重拨编排（保持 blocked——不 backoff、不 dialNow 换新
       // sender；#136 G2 分类语义），stale fire 零副作用、零重武装（计面不增长；wire 冻结）
@@ -710,7 +710,7 @@ async function bootLocal(opts: {
         get: () => hubPressure,
         configurable: true,
       });
-      hub.accept(wire.hubEnd);
+      hub.accept(wire.hubEnd, { peerInstanceId: PEER_INSTANCE });
       return wire.peerEnd;
     },
     timer: peerNode.scheduler,

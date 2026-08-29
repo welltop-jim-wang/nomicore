@@ -213,14 +213,44 @@ export function deferred(): Deferred {
   };
 }
 
-/** 排空 microtask 直至稳定（有界预算；被测实现不得用原生 timer 调度协议事件）。 */
+export interface DeferPump {
+  readonly defer: (task: () => void) => void;
+  flush(): void;
+  readonly pending: number;
+}
+
+const deferPumps = new Set<DeferPump>();
+
+export function makeDeferPump(): DeferPump {
+  const tasks: Array<() => void> = [];
+  return {
+    defer: (task) => tasks.push(task),
+    flush: () => {
+      const batch = tasks.splice(0);
+      for (const task of batch) task();
+    },
+    get pending() {
+      return tasks.length;
+    },
+  };
+}
+
+export function registerDeferPump(pump: DeferPump): void {
+  deferPumps.add(pump);
+}
+
+function flushDeferPumps(): void {
+  for (const pump of deferPumps) pump.flush();
+}
+
+/** 排空 microtask 直至稳定（显式 defer 泵只由 settleUntil 冲刷）。 */
 export async function settle(): Promise<void> {
   for (let index = 0; index < 300; index += 1) {
     await Promise.resolve();
   }
 }
 
-/** 轮询直至谓词为真或预算耗尽（全部 microtask 驱动，零 real sleep）。 */
+/** 轮询直至谓词为真；未决轮显式冲刷测试 defer 泵，再排空 microtask。 */
 export async function settleUntil(
   predicate: () => boolean,
   what: string,
@@ -228,6 +258,7 @@ export async function settleUntil(
 ): Promise<void> {
   for (let index = 0; index < budget; index += 1) {
     if (predicate()) return;
+    flushDeferPumps();
     await Promise.resolve();
   }
   throw new Error(`settleUntil 预算耗尽：${what}`);

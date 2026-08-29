@@ -7,7 +7,7 @@
 import type {
   ReplicationBackoff,
   ReplicationLimits,
-  ReplicationTimeouts,
+  ResolvedTimeouts,
 } from './types.js';
 
 const INSTANCE_ID_RE = /^[a-z][a-z0-9-]{0,62}$/;
@@ -79,6 +79,7 @@ export function validatePeerOptions(
     registry: unknown;
     dial: unknown;
     timer: unknown;
+    deferTask?: unknown;
   }>,
 ): void {
   validateInstanceId(options.instanceId, 'instanceId');
@@ -98,6 +99,9 @@ export function validatePeerOptions(
     (options.timer as { clearTimeout?: unknown }).clearTimeout,
     'timer.clearTimeout',
   );
+  if (options.deferTask !== undefined) {
+    assertCallable(options.deferTask, 'deferTask');
+  }
 }
 
 export function validateLimits(limits: ReplicationLimits): void {
@@ -140,15 +144,28 @@ export function validateLimits(limits: ReplicationLimits): void {
     'limits',
     'lowWater 必须 < highWater',
   );
+  // §3.4/A2-3 链式不变量：可恢复暂停阈值必须先于终止性 1011 阈值（low < high ≤ 总预算）
+  assertCollKind(
+    limits.highWater <= limits.maxQueuedBytesPerConnection,
+    'limits',
+    'highWater 必须 ≤ maxQueuedBytesPerConnection',
+  );
 }
 
-export function validateTimeouts(timeouts: ReplicationTimeouts): void {
+export function validateTimeouts(timeouts: ResolvedTimeouts): void {
   positiveSafeInteger(timeouts.helloTimeoutMs, 'helloTimeoutMs');
   positiveSafeInteger(timeouts.openTimeoutMs, 'openTimeoutMs');
   positiveSafeInteger(timeouts.bootstrapTimeoutMs, 'bootstrapTimeoutMs');
   positiveSafeInteger(timeouts.reconcileTimeoutMs, 'reconcileTimeoutMs');
   positiveSafeInteger(timeouts.closeTimeoutMs, 'closeTimeoutMs');
   positiveSafeInteger(timeouts.ackTimeoutMs, 'ackTimeoutMs');
+  positiveSafeInteger(timeouts.pingIntervalMs, 'pingIntervalMs');
+  positiveSafeInteger(timeouts.pongTimeoutMs, 'pongTimeoutMs');
+  assertCollKind(
+    timeouts.pongTimeoutMs < timeouts.pingIntervalMs,
+    'timeouts',
+    'pongTimeoutMs 必须 < pingIntervalMs',
+  );
 }
 
 export function validateBackoff(backoff: ReplicationBackoff): void {

@@ -31,12 +31,15 @@ import {
   HUB_OWNER,
   PEER_INSTANCE,
   PEER_OWNER,
+  makeDeferPump,
   makeHubNamespace,
   makeNode,
   makePeerReplica,
   makeSeedDoc,
   makeWire,
   okLease,
+  registerDeferPump,
+  type DeferPump,
   type ReplicaNode,
   schemaReady,
   settle,
@@ -128,6 +131,11 @@ export interface BootOptions {
   readonly start?: boolean;
   /** ready 后等待的 namespace 状态（缺省 'live'；'handshake' 只等 connection；'none' 不等）。 */
   readonly waitFor?: PeerNamespaceState | 'handshake' | 'none';
+  /** §5.2 可观测性延迟 seam 覆盖（缺省 driver 显式 defer 泵——见 makeDeferPump /
+   *  settleUntil 谓词未决冲刷）；需要「手动 latch / 零自动推进」的测试注入自有调度
+   * （R7 红灯锚）。注意：这是测试侧注入的生产 0 seam（deferTask），生产缺省 =
+   * 单次 queueMicrotask。 */
+  readonly deferTask?: (task: () => void) => void;
 }
 
 export class Run {
@@ -141,6 +149,9 @@ export class Run {
   readonly nsId: string;
   readonly target: ReplicationTarget;
   readonly hubRoot: Readonly<{ n: number; extra?: number }>;
+  /** R7：本 Run 的显式 defer 泵（手动 flush 观测面；pendingCount 可断言零隐式执行）。
+   *  缺省 pump（opts.deferTask 未注入时）已注册入 harness 注册表——settleUntil 冲刷。 */
+  readonly deferPump: DeferPump | undefined;
   dialCount = 0;
 
   constructor(
@@ -152,6 +163,7 @@ export class Run {
     hubFixture: HubNamespaceFixture | undefined,
     nsId: string,
     hubRoot: Readonly<{ n: number; extra?: number }>,
+    deferPump: DeferPump | undefined = undefined,
   ) {
     this.hubNode = hubNode;
     this.peerNode = peerNode;
@@ -161,6 +173,7 @@ export class Run {
     this.hubFixture = hubFixture;
     this.nsId = nsId;
     this.hubRoot = hubRoot;
+    this.deferPump = deferPump;
     this.target = { namespaceId: nsId, localOwner: PEER_OWNER };
   }
 
@@ -392,6 +405,13 @@ export class Run {
 
 // ═══════════════════════════ 组装与启动 ═══════════════════════════
 
+/**
+ * §5.2：测试可观测性延迟（PR #165 review R7 修订——原跳数链微任务魔法整体废除，
+ *  改为**显式 defer 泵**：入队零隐式执行、`flush()` 显式冲刷、唯一自动冲刷点 =
+ *  `settleUntil` 谓词未决轮（谓词先于冲刷——needs-resync 投影先可观测结构化保持）、
+ *  `settle()` 永不冲刷）。泵实现与注册表见 harness.ts（makeDeferPump/registerDeferPump）。
+ *  需要「手动 latch」的测试经 BootOptions.deferTask 注入自有调度（见 R7 红灯锚）。
+ */
 export async function boot(opts: BootOptions = {}): Promise<Run> {
   const hubNode = makeNode('hub');
   const peerNode = makeNode('peer');
@@ -428,10 +448,13 @@ export async function boot(opts: BootOptions = {}): Promise<Run> {
     dialCount += 1;
     const wire = makeWire();
     wires.push(wire);
-    hub.accept(wire.hubEnd);
+    hub.accept(wire.hubEnd, { peerInstanceId: PEER_INSTANCE });
     return wire.peerEnd;
   };
 
+  // R7：显式 defer 泵（唯一自动冲刷点 = settleUntil 谓词未决轮；settle 永不冲刷）
+  const pump = makeDeferPump();
+  registerDeferPump(pump);
   const peer = createPeerReplication({
     instanceId: PEER_INSTANCE,
     hubInstanceId: HUB_INSTANCE,
@@ -439,13 +462,14 @@ export async function boot(opts: BootOptions = {}): Promise<Run> {
     dial,
     timer: peerNode.scheduler,
     targets: [{ namespaceId: nsId, localOwner: PEER_OWNER }],
+    deferTask: opts.deferTask ?? pump.defer, // §5.2：测试侧显式泵（生产缺省单微任务）
     ...(opts.limits !== undefined ? { limits: opts.limits } : {}),
     ...(opts.timeouts !== undefined ? { timeouts: opts.timeouts } : {}),
     ...(opts.backoff !== undefined ? { backoff: opts.backoff } : {}),
     ...(opts.random !== undefined ? { random: opts.random } : {}),
   });
 
-  const run = new Run(hubNode, peerNode, hub, peer, authorizer, hubFixture, nsId, hubRoot);
+  const run = new Run(hubNode, peerNode, hub, peer, authorizer, hubFixture, nsId, hubRoot, pump);
   // dial 闭包内 push 的 wires 与拨号计数与 Run 同步
   Object.defineProperty(run, 'wires', { value: wires });
   Object.defineProperty(run, 'dialCount', { get: () => dialCount });
@@ -578,6 +602,8 @@ export async function bootFanout(opts: BootOptions = {}): Promise<FanoutRun> {
 
   const makePeer = (peerNode: ReplicaNode): { peer: PeerReplication; wire: Wire } => {
     const wireRef = { current: undefined as Wire | undefined };
+    const pump = makeDeferPump();
+    registerDeferPump(pump);
     const peer = createPeerReplication({
       instanceId: PEER_INSTANCE,
       hubInstanceId: HUB_INSTANCE,
@@ -585,11 +611,12 @@ export async function bootFanout(opts: BootOptions = {}): Promise<FanoutRun> {
       dial: () => {
         const wire = makeWire();
         wireRef.current = wire;
-        hub.accept(wire.hubEnd);
+        hub.accept(wire.hubEnd, { peerInstanceId: PEER_INSTANCE });
         return wire.peerEnd;
       },
       timer: peerNode.scheduler,
       targets: [{ namespaceId: nsId, localOwner: PEER_OWNER }],
+      deferTask: opts.deferTask ?? pump.defer, // §5.2：测试侧显式泵（生产缺省单微任务）
     });
     return {
       peer,

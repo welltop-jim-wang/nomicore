@@ -96,8 +96,15 @@ export class UpdateChannel {
   /** ACK 簿记（§10.3）：返回 'ok' | 'zombie' | 'violation'（never-sent → 连接级 fatal）。 */
   onAck(sequence: number): 'ok' | 'zombie' | 'violation' {
     if (this.inFlight.has(sequence)) {
+      const wasOldest = sequence === this.oldestInFlightSeq();
       this.inFlight.delete(sequence);
-      if (this.inFlight.size === 0) this.disarmAckTimer();
+      if (this.inFlight.size === 0) {
+        this.disarmAckTimer();
+      } else if (wasOldest) {
+        // 最老在途完成后，以当前时刻为新锚重挂剩余窗口，避免部分进度仍被旧计时锚整窗弃置。
+        this.disarmAckTimer();
+        this.armAckTimer();
+      }
       if (this.queued.length > 0) this.host.requestDataDrain(); // §6.2：原同步 flush 循环 → 连接级 drain
       return 'ok';
     }
@@ -151,7 +158,12 @@ export class UpdateChannel {
       return; // 不调用 host.sendUpdateFrame——控制器大小门保留为不可达后盾
     }
     const seq = this.host.sendUpdateFrame(bytes);
-    if (seq <= 0) return; // F4：非超限原因（连接收口/ready 门/编码错）——round-1 语义不变
+    if (seq <= 0) {
+      this.discardQueued();
+      this.needsResync = true;
+      this.host.declareLocalResync();
+      return;
+    }
     this.inFlight.set(seq, bytes);
     this.armAckTimer();
   }
@@ -246,6 +258,11 @@ export class UpdateChannel {
     this.zombieSeqs.clear();
     this.discardQueued();
     this.needsResync = true;
+  }
+
+  /** 当前最老在途序列；Map 保持实际发送插入序。 */
+  private oldestInFlightSeq(): number | undefined {
+    return this.inFlight.keys().next().value as number | undefined;
   }
 
   private armAckTimer(): void {

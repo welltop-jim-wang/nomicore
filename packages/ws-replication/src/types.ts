@@ -36,6 +36,10 @@ export interface ReplicationTimeouts {
   readonly reconcileTimeoutMs: number; // 10_000
   readonly closeTimeoutMs: number; // 5_000
   readonly ackTimeoutMs: number; // 10_000
+  /** WS 级 ping 间隔（§18「心跳与失联判定」；§5.1）。缺省 30_000（安全缺省，ADR L165）。 */
+  readonly pingIntervalMs?: number;
+  /** pong 超时（PONG 未复 → 活性失联收口）。缺省 10_000；必须 < pingIntervalMs。 */
+  readonly pongTimeoutMs?: number;
 }
 
 export interface ReplicationBackoff {
@@ -51,6 +55,18 @@ export interface DuplexTransport {
   readonly closed: boolean;
   onMessage(listener: (bytes: Uint8Array) => void): () => void;
   onClose(listener: (info: Readonly<{ code: number; reason: string }>) => void): () => void;
+  /** socket 缓冲未冲刷字节（真实 WS bufferedAmount 语义；协议 §17 L492 观察点）。缺省视为 0。
+   *  生产 adapter 必须暴露（G3.4 背压的前提面）——缺面 = 能力缺失的 dormant（正确降级）。 */
+  readonly bufferedAmount?: number;
+  /** WS 级活性（§18；协议不定义业务 PING/PONG frame——活性只走 WS 层）。缺省 = 无活性面。 */
+  ping?(data?: Uint8Array): void;
+  onPong?(listener: () => void): () => void;
+}
+
+/** HTTP Upgrade bearer-token 验证的受信产物（协议 §2：成功认证至少产生可信 Peer
+ *  instanceId）。由宿主（切片 9 组合根）在 Upgrade 验证通过后传给 accept()。 */
+export interface UpgradeIdentity {
+  readonly peerInstanceId: string; // 文法 ^[a-z][a-z0-9-]{0,62}$（§6.1）
 }
 
 /** 注入延迟 seam：零 native timer（ADT 0009 依赖纪律）。 */
@@ -88,7 +104,9 @@ export interface HubReplicationOptions {
 }
 
 export interface HubReplication {
-  accept(transport: DuplexTransport): HubConnection;
+  /** 接受一条 Upgrade 连接。identity = bearer-token 验证的受信产物（协议 §2）；缺失 →
+   *  同步 TypeError（拒绝虚假降级：不得采信 HELLO 自述身份）。 */
+  accept(transport: DuplexTransport, identity?: UpgradeIdentity): HubConnection;
   readonly connections: readonly HubConnection[];
   close(): Promise<void>;
 }
@@ -110,6 +128,8 @@ export interface PeerReplicationOptions {
   readonly timeouts?: Readonly<Partial<ReplicationTimeouts>>;
   readonly backoff?: Readonly<Partial<ReplicationBackoff>>;
   readonly random?: () => number; // 缺省 () => Math.random()
+  /** 可观测性延迟 seam（§5.2）：恢复/重建的异步调度点。缺省 = 单次 queueMicrotask。 */
+  readonly deferTask?: (task: () => void) => void;
 }
 
 export interface PeerReplication {
@@ -148,7 +168,10 @@ export type PeerNamespaceState =
 
 /** 解析后的合并配置（构造期校验后的不可变值）。 */
 export interface ResolvedLimits extends ReplicationLimits {}
-export interface ResolvedTimeouts extends ReplicationTimeouts {}
+export interface ResolvedTimeouts extends ReplicationTimeouts {
+  readonly pingIntervalMs: number; // resolve 后必填（DEFAULT 提供缺省；§5.1）
+  readonly pongTimeoutMs: number;
+}
 export interface ResolvedBackoff extends ReplicationBackoff {}
 
 /** 本包从 replication-protocol 借用的 codec 字段级限额。 */
@@ -168,12 +191,4 @@ export interface RoundState {
   receivedStep2: boolean; // 已收对端 Step2（防重复）
   remoteDiffAppliedLocally: boolean; // 已 apply 对端 Step2 且已发 SYNC_APPLIED
   localDiffAppliedByRemote: boolean; // 已收对端对本端 Step2 的 SYNC_APPLIED
-}
-
-/** 通道载体接口（hub / peer 两侧各自实现；供 round-engine / update-channel 回调）。 */
-export interface NamespaceChannelCore {
-  readonly limits: ResolvedLimits;
-  readonly remoteInstanceId: string;
-  session: ReplicationSession | undefined;
-  lease: NamespaceLease | undefined;
 }
