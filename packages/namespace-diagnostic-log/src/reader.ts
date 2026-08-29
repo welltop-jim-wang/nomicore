@@ -23,7 +23,9 @@ import { isSafeNamespaceId, isSafeStreamId, isSegmentName, streamLayoutPaths } f
 import { RECORD_SCHEMA_ENVELOPE, RECORD_SCHEMA_ID, getRecordSchemaCompilation } from './schema.js'
 import { P_ISO_MS } from './schema-patterns.js'
 import { isCanonicalDecimal, validateInlineCarrier, validateSidecarFrame } from './storage-gate.js'
+import { FRAME_HEADER_BYTES } from './frame.js'
 import type { UpdateCarrier } from './record.js'
+import { UINT64_MAX } from './adapters/memory.js'
 
 /** 读取请求（路径三组件；streamId/namespaceId 过安全文法后才会触达磁盘——§7.1 ①）。 */
 export interface StrictReadRequest {
@@ -81,13 +83,16 @@ const INCOMPATIBLE_SET = new Set([
 
 /**
  * manifest 冻结的 format policy（R2 设计 §2.1——manifest 严格门通过后提取的只读四值；
- * 不得在未通过 manifest 门的 manifest 上执行策略）。
+ * 不得在未通过 manifest 门的 manifest 上执行策略；#153 追加三 roll target——仅 17 键形状存在）。
  */
 interface ManifestFormatPolicy {
   committedUpdateCapture: boolean
   inputCapturePolicy: 'none' | 'digest' | 'redacted' | 'full'
   inlineUpdateMaxBytes: number
   jsonlLineLimitBytes: number
+  targetJsonlSegmentBytes?: number
+  targetBinSegmentBytes?: number
+  targetRecordsPerSegment?: number
 }
 
 /** 原始物理行（text 供 JSON.parse；byteLength 供 §2.5 行长检查——不含行终止符 `\n`）。 */
@@ -118,6 +123,24 @@ const MANIFEST_KEYS = [
   'version',
 ]
 
+/** #153 roll targets 三键（§9.1 原子扩展：与 14 键共同构成 17 键 current 形状；三键同进同出）。 */
+const ROLL_TARGET_KEYS = ['targetJsonlSegmentBytes', 'targetBinSegmentBytes', 'targetRecordsPerSegment'] as const
+
+/** manifest 键集封闭形状：恰 14（legacy）/ 恰 17（current）/ 其它（→ manifest-invalid）。 */
+function manifestKeyShape(manifest: Record<string, unknown>): '14' | '17' | null {
+  const joined = Object.keys(manifest).sort().join('\u0000')
+  const legacy = [...MANIFEST_KEYS].sort().join('\u0000')
+  const current = [...MANIFEST_KEYS, ...ROLL_TARGET_KEYS].sort().join('\u0000')
+  if (joined === legacy) return '14'
+  if (joined === current) return '17'
+  return null
+}
+
+/** roll target 值域（§9.1：整数 ∧ ≥1 ∧ ≤ 2^53-1——Number.isSafeInteger）。 */
+function isRollTargetValue(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 1
+}
+
 /**
  * manifest 门（§7.1 ③）：恰 14 键 + 每键类型核对 → 身份互核（G7）→
  * 格式/版本 → dialect → 信封/指纹（自述不自洽并入）→ recordVersion → frameVersion。
@@ -131,10 +154,9 @@ function manifestGateIssue(
 ): string | null {
   if (manifest === null || typeof manifest !== 'object' || Array.isArray(manifest)) return 'manifest-invalid'
   const m = manifest as Record<string, unknown>
-  const keys = Object.keys(m).sort()
-  if (keys.length !== MANIFEST_KEYS.length || keys.join('\u0000') !== [...MANIFEST_KEYS].sort().join('\u0000')) {
-    return 'manifest-invalid'
-  }
+  // §9.1 双封闭形状：恰 14 键（legacy）∪ 恰 17 键（14 + 三 target 原子扩展）；其余 → invalid
+  const shape = manifestKeyShape(m)
+  if (shape === null) return 'manifest-invalid'
   // —— 每键类型核对（任何类型/结构违规 → manifest-invalid）——
   if (typeof m.format !== 'string') return 'manifest-invalid'
   if (typeof m.version !== 'number') return 'manifest-invalid'
@@ -161,6 +183,11 @@ function manifestGateIssue(
   }
   if (typeof m.inlineUpdateMaxBytes !== 'number' || !Number.isFinite(m.inlineUpdateMaxBytes)) return 'manifest-invalid'
   if (typeof m.jsonlLineLimitBytes !== 'number' || !Number.isFinite(m.jsonlLineLimitBytes)) return 'manifest-invalid'
+  if (shape === '17') {
+    for (const key of ROLL_TARGET_KEYS) {
+      if (!isRollTargetValue(m[key])) return 'manifest-invalid'
+    }
+  }
 
   // —— 身份互核（G7：身份误归因风险下不逐条解释）——
   if (m.streamId !== expectedStreamId || m.namespaceId !== expectedNamespaceId) return 'stream-mismatch'
@@ -271,7 +298,7 @@ function inputPolicyViolation(input: unknown, policy: string): boolean {
   )
 }
 
-/** manifest 严格门通过后提取只读 policy 四值（防御性复核；异常顺序不可达——门已核对类型）。 */
+/** manifest 严格门通过后提取只读 policy（四值 + #153 三 target；防御性复核；异常顺序不可达——门已核对类型）。 */
 function extractFormatPolicy(manifest: Record<string, unknown>): ManifestFormatPolicy | null {
   const committedUpdateCapture = manifest.committedUpdateCapture
   const inputCapturePolicy = manifest.inputCapturePolicy
@@ -286,11 +313,20 @@ function extractFormatPolicy(manifest: Record<string, unknown>): ManifestFormatP
   }
   if (typeof inlineUpdateMaxBytes !== 'number' || !Number.isFinite(inlineUpdateMaxBytes)) return null
   if (typeof jsonlLineLimitBytes !== 'number' || !Number.isFinite(jsonlLineLimitBytes)) return null
+  const targetJsonlSegmentBytes = manifest.targetJsonlSegmentBytes
+  const targetBinSegmentBytes = manifest.targetBinSegmentBytes
+  const targetRecordsPerSegment = manifest.targetRecordsPerSegment
+  if (targetJsonlSegmentBytes !== undefined && !isRollTargetValue(targetJsonlSegmentBytes)) return null
+  if (targetBinSegmentBytes !== undefined && !isRollTargetValue(targetBinSegmentBytes)) return null
+  if (targetRecordsPerSegment !== undefined && !isRollTargetValue(targetRecordsPerSegment)) return null
   return {
     committedUpdateCapture,
     inputCapturePolicy: inputCapturePolicy as ManifestFormatPolicy['inputCapturePolicy'],
     inlineUpdateMaxBytes,
     jsonlLineLimitBytes,
+    ...(targetJsonlSegmentBytes !== undefined ? { targetJsonlSegmentBytes } : {}),
+    ...(targetBinSegmentBytes !== undefined ? { targetBinSegmentBytes } : {}),
+    ...(targetRecordsPerSegment !== undefined ? { targetRecordsPerSegment } : {}),
   }
 }
 
@@ -453,22 +489,42 @@ export function readStreamStrict(request: StrictReadRequest): StrictStreamRead {
     }
 
     // ⑤ 逐 segment、逐行（原始字节行分割——§2.1：行长按原始 UTF-8 字节、排除 '\n'；
-    //    无 '\n' 结尾的残尾块按一行处理——JSON parse 大概率失败 → invalid-json）
+    //    无 '\n' 结尾的残尾块按一行处理——#153 §9.2 起记 line-unterminated，不因可 parse 豁免）
+    const segmentJsonlBytes = new Map<string, number>()
+    const segmentBinBytes = new Map<string, number>()
+    const segmentRecordCount = new Map<string, number>()
+    const segmentUnterminated = new Set<string>()
     for (const segment of segments) {
-      let rawLines: RawJsonlLine[]
+      let jbuf: Uint8Array | null
       try {
-        rawLines = splitRawLines(readFileSync(join(paths.segmentsDir, `${segment}.jsonl`)))
+        jbuf = readFileSync(join(paths.segmentsDir, `${segment}.jsonl`))
       } catch (err) {
         if ((err as NodeJS.ErrnoException | null)?.code === 'ENOENT') {
-          rawLines = [] // 合法 BIN-first 崩溃窗口：有 bin 无 jsonl 的段按零行处理、无 issue
+          jbuf = null // 合法 BIN-first 崩溃窗口：有 bin 无 jsonl 的段按零行处理、无 issue
         } else {
           streamIssues.push({ code: 'invalid-json', segment }) // 该段零 record 条目；其余可读段照常
           continue
         }
       }
+      const jsonlBytes = jbuf === null ? 0 : jbuf.byteLength
+      const unterminated = jbuf !== null && jbuf.byteLength > 0 && jbuf[jbuf.byteLength - 1] !== 0x0a
+      const rawLines = jbuf === null ? [] : splitRawLines(jbuf)
+      segmentJsonlBytes.set(segment, jsonlBytes)
+      segmentRecordCount.set(segment, unterminated ? rawLines.length - 1 : rawLines.length)
+      if (unterminated) segmentUnterminated.add(segment)
+      try {
+        const st = statSync(join(paths.segmentsDir, `${segment}.bin`), { throwIfNoEntry: false })
+        segmentBinBytes.set(segment, st !== undefined && st.isFile() ? st.size : 0)
+      } catch {
+        segmentBinBytes.set(segment, 0)
+      }
       for (let i = 0; i < rawLines.length; i++) {
         const line = rawLines[i]!
         const recordIssues: StrictReadIssue[] = []
+        // —— §9.2 line-unterminated（终止符证明：末物理块缺 '\n' 即不完整行，与内容可 parse 无关）——
+        if (unterminated && i === rawLines.length - 1) {
+          recordIssues.push({ code: 'line-unterminated', segment, offset: i })
+        }
         // —— §2.5 行长检查（先于解析：超限行即使不可解析也保留该 issue——不跳过、不隐藏证据）——
         if (line.byteLength > policy.jsonlLineLimitBytes) {
           recordIssues.push({ code: 'manifest-line-limit-exceeded', segment, offset: i })
@@ -545,6 +601,10 @@ export function readStreamStrict(request: StrictReadRequest): StrictStreamRead {
           expectedSequence = null // undefined over identity break：不拼接精确缺口
           continue
         }
+        if (unterminated && i === rawLines.length - 1) {
+          expectedSequence = null // §9.2：未终止末块 = 不完整行——sequence 不锚定（身份不可解释行现行语义）
+          continue
+        }
         const actual = BigInt(sequence)
         if (expectedSequence === null) {
           expectedSequence = actual + 1n // 身份不可解释段后的新基线：不推断数值缺口
@@ -556,6 +616,26 @@ export function readStreamStrict(request: StrictReadRequest): StrictStreamRead {
           expectedSequence = actual + 1n
         } else {
           expectedSequence = actual + 1n
+        }
+      }
+    }
+
+    // —— §9.3 manifest-roll-target-violation（17 键形状）：每个闭段（存在更大编号 segment）
+    //    必须至少一维达标（滚动只在达标时发生——"任一 target 达到时关闭当前 group" 的逆否）；
+    //    最大段不核查（当前组未关闭）；14 键 legacy 无 targets → 跳过 ——
+    if (policy.targetRecordsPerSegment !== undefined && segments.length > 0) {
+      const maxSegment = segments[segments.length - 1]!
+      for (const segment of segments) {
+        if (segment === maxSegment) continue
+        const jsonlBytes = segmentJsonlBytes.get(segment) ?? 0
+        const binBytes = segmentBinBytes.get(segment) ?? 0
+        const records = segmentRecordCount.get(segment) ?? 0
+        if (
+          jsonlBytes < (policy.targetJsonlSegmentBytes ?? 0) &&
+          binBytes < (policy.targetBinSegmentBytes ?? 0) &&
+          records < (policy.targetRecordsPerSegment ?? 0)
+        ) {
+          streamIssues.push({ code: 'manifest-roll-target-violation', segment })
         }
       }
     }
@@ -590,5 +670,447 @@ export function readStreamStrict(request: StrictReadRequest): StrictStreamRead {
       issues: [{ code: 'manifest-invalid' }],
       records: [],
     }
+  }
+}
+
+// ============================================================================
+// #153 §4.1 健康证明：analyzeStreamForResume（内部函数——不从 index.ts 导出；
+// 与 readStreamStrict 共享 manifest 门/行分割/逐行校验/连续性状态机/内部原语）。
+// ============================================================================
+
+/** 三类可修复尾部（§5.1）。 */
+export type ResumeRepairKind = 'jsonl-incomplete-line' | 'bin-incomplete-frame' | 'bin-orphan-frames'
+
+/** 单条修复（§5.5；segment 恒为 SegMax）。 */
+export interface ResumeRepair {
+  kind: ResumeRepairKind
+  segment: string
+  /** 截断至该字节偏移（C1 = 最后 0x0A 下一字节；C2/C3 = T）。 */
+  truncateToBytes: number
+  /** 截断字节数。 */
+  truncatedBytes: number
+}
+
+/** resume 装配态（§6.3 种子；修复后计数）。 */
+export interface ResumeStreamState {
+  lastCommittedSequence: string | null
+  currentSegment: string
+  jsonlBytes: number
+  binBytes: number
+  records: number
+  exhaustedAtOpen: 'sequence' | 'segment' | null
+}
+
+/** rotate cause 封闭枚举（§4.4）。 */
+export type RotateCause =
+  | 'manifest-missing'
+  | 'manifest-invalid'
+  | 'legacy-manifest'
+  | 'frozen-policy-mismatch'
+  | 'stream-corrupt'
+  | 'stream-incompatible'
+  | 'repair-io-failure'
+
+/** 健康证明闭合判定（§4.1）。 */
+export type ResumeAnalysis =
+  | { verdict: 'resume'; repairs: ResumeRepair[]; resume: ResumeStreamState }
+  | { verdict: 'rotate'; cause: RotateCause }
+
+/** 解析后配置（§4.2 冻结策略比对的匹配面）。 */
+export interface ResumeResolvedConfig {
+  updateCapture: boolean
+  inputPolicy: string
+  inlineUpdateMaxBytes: number
+  lineBudgetBytes: number
+  targetJsonlSegmentBytes: number
+  targetBinSegmentBytes: number
+  targetRecordsPerSegment: number
+}
+
+/** 读取三分支（§5.1 R1）：ENOENT（真缺失）≠ 不可读 ≠ 可读。 */
+type SegmentReadResult = { bytes: Uint8Array | null } | 'enoent' | 'unreadable'
+
+/**
+ * segment .jsonl 读取（文件感知三分支：ENOENT → ∅；目录占位/不可读 → 'unreadable'）。
+ */
+function readSegmentJsonl(file: string): SegmentReadResult {
+  try {
+    const st = statSync(file, { throwIfNoEntry: false })
+    if (st === undefined) return 'enoent'
+    if (!st.isFile()) return 'unreadable'
+    return { bytes: readFileSync(file) }
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException | null)?.code === 'ENOENT') return 'enoent'
+    return 'unreadable'
+  }
+}
+
+/** segment .bin 读取（文件感知；ENOENT → 空集；目录占位/不可读 → 'unreadable'）。 */
+function readSegmentBin(file: string): SegmentReadResult {
+  try {
+    const st = statSync(file, { throwIfNoEntry: false })
+    if (st === undefined) return 'enoent'
+    if (!st.isFile()) return 'unreadable'
+    return { bytes: readFileSync(file) }
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException | null)?.code === 'ENOENT') return 'enoent'
+    return 'unreadable'
+  }
+}
+
+/**
+ * §5.4 bin 尾部行走（T 起）：返回 'complete'（全为完整未引用帧 → C3）/
+ * 'incomplete'（尾块不足 header 或 header 合法而 payload 越界 → C2）/
+ * 'unknown-magic'（不可证明为撕裂的字节 → corrupt）/ 'unknown-frame'（未知 frame 事实 → incompatible）。
+ */
+function walkBinTail(bin: Uint8Array, from: number): 'complete' | 'incomplete' | 'unknown-magic' | 'unknown-frame' {
+  let p = from
+  const len = bin.byteLength
+  while (p < len) {
+    if (len - p < FRAME_HEADER_BYTES) return 'incomplete'
+    const header = bin.subarray(p, p + FRAME_HEADER_BYTES)
+    const magic = String.fromCharCode(header[0]!, header[1]!, header[2]!, header[3]!)
+    if (magic !== 'NDCL') return 'unknown-magic'
+    if (header[4] !== 1) return 'unknown-frame'
+    if (header[5] !== 1) return 'unknown-frame'
+    if (header[6] !== 0) return 'unknown-frame'
+    if (((header[7]! << 8) | header[8]!) !== 0) return 'unknown-frame'
+    const payloadLength = ((header[17]! << 24) | (header[18]! << 16) | (header[19]! << 8) | header[20]!) >>> 0
+    if (p + FRAME_HEADER_BYTES + payloadLength > len) return 'incomplete'
+    p += FRAME_HEADER_BYTES + payloadLength
+  }
+  return 'complete'
+}
+
+/**
+ * §4.1 健康证明（reopen 的严格检查；纯同步、绝不抛——调用方（file.ts 构造路径）
+ * 已有构造级 crash 包络，本函数内部异常一律按 manifest-invalid 收敛）。
+ *
+ * 判定次序（§4.1 R1）：manifest 门（含 incompatible 全部判定）先于 resume 特有的
+ * 17 键要求——14 键篡改指纹 → stream-incompatible（与 reader 同向），非 legacy-manifest。
+ */
+export function analyzeStreamForResume(req: {
+  rootDir: string
+  namespaceId: string
+  streamId: string
+  resolved: ResumeResolvedConfig
+}): ResumeAnalysis {
+  const paths = streamLayoutPaths(req.rootDir, req.namespaceId, req.streamId)
+  try {
+    // —— 1. manifest 门（与 reader 同源、同序；§4.1 短路次序 a–d）——
+    let raw: string
+    try {
+      raw = readFileSync(paths.manifestPath, 'utf8')
+    } catch (err) {
+      return {
+        verdict: 'rotate',
+        cause: (err as NodeJS.ErrnoException | null)?.code === 'ENOENT' ? 'manifest-missing' : 'manifest-invalid',
+      }
+    }
+    let parsedManifest: unknown
+    try {
+      parsedManifest = JSON.parse(raw)
+    } catch {
+      return { verdict: 'rotate', cause: 'manifest-invalid' }
+    }
+    if (parsedManifest === null || typeof parsedManifest !== 'object' || Array.isArray(parsedManifest)) {
+      return { verdict: 'rotate', cause: 'manifest-invalid' }
+    }
+    const compiled = getRecordSchemaCompilation()
+    if (!compiled.ok) return { verdict: 'rotate', cause: 'manifest-invalid' }
+    const gateIssue = manifestGateIssue(parsedManifest, req.streamId, req.namespaceId, compiled.envelopeFingerprint)
+    if (gateIssue !== null) {
+      return { verdict: 'rotate', cause: INCOMPATIBLE_SET.has(gateIssue) ? 'stream-incompatible' : 'manifest-invalid' }
+    }
+    const shape = manifestKeyShape(parsedManifest as Record<string, unknown>)
+    if (shape !== '17') return { verdict: 'rotate', cause: 'legacy-manifest' } // 门全过但恰 14 键 → 可读不可续写
+    const policy = extractFormatPolicy(parsedManifest as Record<string, unknown>)
+    if (policy === null || policy.targetRecordsPerSegment === undefined) {
+      return { verdict: 'rotate', cause: 'manifest-invalid' }
+    }
+
+    // —— 2. 冻结策略比对（§4.2；仅 17 键形状可达）——
+    const r = req.resolved
+    if (
+      policy.committedUpdateCapture !== r.updateCapture ||
+      policy.inputCapturePolicy !== r.inputPolicy ||
+      policy.inlineUpdateMaxBytes !== r.inlineUpdateMaxBytes ||
+      policy.jsonlLineLimitBytes !== r.lineBudgetBytes ||
+      policy.targetJsonlSegmentBytes !== r.targetJsonlSegmentBytes ||
+      policy.targetBinSegmentBytes !== r.targetBinSegmentBytes ||
+      policy.targetRecordsPerSegment !== r.targetRecordsPerSegment
+    ) {
+      return { verdict: 'rotate', cause: 'frozen-policy-mismatch' }
+    }
+
+    // —— 3. 交叉扫描（segments 升序；逐行行长/parse/VFSL/canonical decimal/streamId/policy/
+    //        storage 帧交叉 + 跨 segment expectedSequence 连续性状态机，reader §3.4 语义原样）——
+    let entries: string[]
+    try {
+      entries = readdirSync(paths.segmentsDir)
+    } catch {
+      return { verdict: 'rotate', cause: 'manifest-invalid' } // 构造协议保证 segments/ 存在
+    }
+    const segmentSet = new Set<string>()
+    for (const entry of entries) {
+      let base = entry
+      if (base.endsWith('.jsonl')) base = base.slice(0, -'.jsonl'.length)
+      else if (base.endsWith('.bin')) base = base.slice(0, -'.bin'.length)
+      if (isSegmentName(base)) segmentSet.add(base)
+    }
+    const segments = [...segmentSet].sort()
+    const segMax = segments.length > 0 ? segments[segments.length - 1]! : '00000001'
+
+    let corrupt = false
+    let incompatible = false
+    let lastCommittedSequence: string | null = null
+    let expectedSequence: bigint | null = 1n
+    const expectedOffsets = new Map<string, bigint>()
+    const bins = new Map<string, Uint8Array | null>() // null = 缺失/不可读（已加载）
+    const refsToSegMax: Array<{ off: number; end: number }> = []
+    const segmentJsonlBytes = new Map<string, number>()
+    const segmentBinBytes = new Map<string, number>()
+    const segmentRecordCount = new Map<string, number>()
+    const segmentUnterminated = new Set<string>()
+    const segMaxJbuf: Uint8Array[] = [] // 恰好 0/1 元素（修复计算用）
+
+    const checkSidecar = (
+      carrier: UpdateCarrier & { storage: 'sidecar' },
+      sequence: string,
+    ): string | null => {
+      // R-1 镜像复核（同 reader：frameOffset 先镜像后解析——不依赖 BigInt('') 行为分歧）
+      if (!isCanonicalDecimal(carrier.frameOffset)) return 'vfsl-invalid'
+      if (!segmentSet.has(carrier.segment)) return 'reference-invalid'
+      let bytes = bins.get(carrier.segment)
+      if (bytes === undefined) {
+        const br = readSegmentBin(join(paths.segmentsDir, `${carrier.segment}.bin`))
+        if (br === 'unreadable') {
+          corrupt = true // §5.1 R1：引用帧不可读 → 引用帧不可证（与 reader frame-missing 同向）
+          bytes = null
+        } else {
+          bytes = br === 'enoent' ? null : br.bytes
+        }
+        bins.set(carrier.segment, bytes)
+      }
+      const expected = expectedOffsets.get(carrier.segment) ?? null
+      const check = validateSidecarFrame(
+        bytes,
+        bytes === null ? 0 : bytes.byteLength,
+        BigInt(carrier.frameOffset),
+        expected,
+        sequence,
+        carrier,
+      )
+      if (!check.ok) return check.issue
+      expectedOffsets.set(carrier.segment, check.nextExpectedOffset)
+      if (carrier.segment === segMax) {
+        refsToSegMax.push({
+          off: Number(BigInt(carrier.frameOffset)),
+          end: Number(check.nextExpectedOffset),
+        })
+      }
+      return null
+    }
+
+    for (const segment of segments) {
+      const isMax = segment === segMax
+      // —— 该 segment jsonl 三分支 ——
+      const jr = readSegmentJsonl(join(paths.segmentsDir, `${segment}.jsonl`))
+      if (jr === 'unreadable') {
+        corrupt = true // 不可读 ≠ 缺失：与 reader invalid-json 同向；绝不按空文件续写
+        segmentJsonlBytes.set(segment, 0)
+        segmentRecordCount.set(segment, 0)
+        continue
+      }
+      const jbuf = jr === 'enoent' ? null : jr.bytes
+      if (isMax) segMaxJbuf[0] = jbuf ?? new Uint8Array(0)
+      const jsonlBytes = jbuf === null ? 0 : jbuf.byteLength
+      const unterminated = jbuf !== null && jbuf.byteLength > 0 && jbuf[jbuf.byteLength - 1] !== 0x0a
+      const rawLines = jbuf === null ? [] : splitRawLines(jbuf)
+      segmentJsonlBytes.set(segment, jsonlBytes)
+      segmentRecordCount.set(segment, unterminated ? rawLines.length - 1 : rawLines.length)
+      if (unterminated && !isMax) corrupt = true // 后缀性质：中间段未终止末块 = 中间损坏
+      if (unterminated) segmentUnterminated.add(segment)
+      // —— 该 segment bin：SegMax 预读（§5.1 R1：不可读 → corrupt 无论有无引用）；非 SegMax 只统计 ——
+      if (isMax) {
+        const br = readSegmentBin(join(paths.segmentsDir, `${segment}.bin`))
+        if (br === 'unreadable') {
+          corrupt = true
+          bins.set(segment, null)
+          segmentBinBytes.set(segment, 0)
+        } else {
+          const b = br === 'enoent' ? null : br.bytes
+          bins.set(segment, b)
+          segmentBinBytes.set(segment, b === null ? 0 : b.byteLength)
+        }
+      } else {
+        try {
+          const st = statSync(join(paths.segmentsDir, `${segment}.bin`), { throwIfNoEntry: false })
+          if (st === undefined) segmentBinBytes.set(segment, 0)
+          else if (st.isFile()) segmentBinBytes.set(segment, st.size)
+          else segmentBinBytes.set(segment, 0)
+        } catch (err) {
+          if ((err as NodeJS.ErrnoException | null)?.code === 'ENOENT') segmentBinBytes.set(segment, 0)
+          else {
+            corrupt = true // §5.1 R1：闭段 bin stat 失败（不可读）→ 同款 corrupt
+            segmentBinBytes.set(segment, 0)
+          }
+        }
+      }
+      for (let i = 0; i < rawLines.length; i++) {
+        const line = rawLines[i]!
+        // —— SegMax 末行未终止 = C1 可修复候选：跳过逐行校验（终止符证明与内容可 parse 无关）——
+        if (unterminated && isMax && i === rawLines.length - 1) continue
+        let recordIssue = false
+        if (line.byteLength > policy.jsonlLineLimitBytes) recordIssue = true
+        let parsed: unknown
+        try {
+          parsed = JSON.parse(line.text)
+        } catch {
+          corrupt = true
+          expectedSequence = null
+          continue
+        }
+        const sequence = sequenceStringOf(parsed)
+        const vfsl = validateLogicalSnapshot(compiled.derived, parsed)
+        const sequenceShaped = isCanonicalDecimal(sequence)
+        if (!vfsl.ok || !sequenceShaped) {
+          corrupt = true
+          expectedSequence = null
+          continue
+        }
+        const parsedStreamId = (parsed as { streamId: unknown }).streamId
+        if (parsedStreamId !== req.streamId) {
+          corrupt = true
+          expectedSequence = null
+          continue
+        }
+        const kind = (parsed as { recordKind: unknown }).recordKind
+        const carrier = carrierFromParsed(parsed)
+        if (!policy.committedUpdateCapture && carrier !== null && kind !== 'genesis-baseline') recordIssue = true
+        if (kind === 'attempt') {
+          const input = (parsed as { input: unknown }).input
+          if (inputPolicyViolation(input, policy.inputCapturePolicy)) recordIssue = true
+        }
+        if (carrier !== null) {
+          const storageIssue =
+            carrier.storage === 'inline' ? validateInlineCarrier(carrier) : checkSidecar(carrier, sequence)
+          if (storageIssue !== null) {
+            if (INCOMPATIBLE_SET.has(storageIssue)) incompatible = true
+            else corrupt = true
+          } else if (carrier.storage === 'inline') {
+            if (carrier.payloadLength > policy.inlineUpdateMaxBytes) recordIssue = true
+          } else if (carrier.payloadLength <= policy.inlineUpdateMaxBytes) {
+            recordIssue = true
+          }
+        }
+        const actual = BigInt(sequence)
+        if (expectedSequence === null) {
+          expectedSequence = actual + 1n
+        } else if (actual < expectedSequence) {
+          corrupt = true
+        } else if (actual > expectedSequence) {
+          corrupt = true
+          expectedSequence = actual + 1n
+        } else {
+          expectedSequence = actual + 1n
+        }
+        lastCommittedSequence = sequence
+        if (recordIssue) corrupt = true
+      }
+    }
+
+    // —— §9.3 闭段 roll-target 核查（reader 同款；最大段不核查）——
+    if (segments.length > 0) {
+      for (const segment of segments) {
+        if (segment === segMax) continue
+        const jb = segmentJsonlBytes.get(segment) ?? 0
+        const bb = segmentBinBytes.get(segment) ?? 0
+        const rc = segmentRecordCount.get(segment) ?? 0
+        if (jb < r.targetJsonlSegmentBytes && bb < r.targetBinSegmentBytes && rc < r.targetRecordsPerSegment) {
+          corrupt = true
+        }
+      }
+    }
+
+    if (incompatible) return { verdict: 'rotate', cause: 'stream-incompatible' }
+    if (corrupt) return { verdict: 'rotate', cause: 'stream-corrupt' }
+
+    // —— 5. 修复计算（§5.1 三类；仅最大有文件 segment）+ 修复后计数 ——
+    const repairs: ResumeRepair[] = []
+    const jbufMax = segMaxJbuf[0] ?? null
+    let finalJsonlBytes = jbufMax === null ? 0 : jbufMax.byteLength
+    let finalBinBytes = segmentBinBytes.get(segMax) ?? 0
+    let finalRecords = 0
+    // C1
+    if (jbufMax !== null && segmentUnterminated.has(segMax)) {
+      let lastNl = -1
+      for (let i = jbufMax.byteLength - 1; i >= 0; i--) {
+        if (jbufMax[i] === 0x0a) {
+          lastNl = i
+          break
+        }
+      }
+      const truncateToBytes = lastNl === -1 ? 0 : lastNl + 1
+      repairs.push({
+        kind: 'jsonl-incomplete-line',
+        segment: segMax,
+        truncateToBytes,
+        truncatedBytes: jbufMax.byteLength - truncateToBytes,
+      })
+      finalJsonlBytes = truncateToBytes
+    }
+    // C2/C3（§5.2/§5.4：T = max ref end；Refs 为空 → T=0——完整未引用尾帧全量截断）
+    {
+      let t = 0
+      for (const ref of refsToSegMax) if (ref.end > t) t = ref.end
+      const bin = bins.get(segMax) ?? null
+      if (bin !== null && bin.byteLength > t) {
+        const walk = walkBinTail(bin, t)
+        if (walk === 'unknown-magic') return { verdict: 'rotate', cause: 'stream-corrupt' }
+        if (walk === 'unknown-frame') return { verdict: 'rotate', cause: 'stream-incompatible' }
+        repairs.push(
+          walk === 'incomplete'
+            ? { kind: 'bin-incomplete-frame', segment: segMax, truncateToBytes: t, truncatedBytes: bin.byteLength - t }
+            : { kind: 'bin-orphan-frames', segment: segMax, truncateToBytes: t, truncatedBytes: bin.byteLength - t },
+        )
+        finalBinBytes = t
+      }
+    }
+    // 修复后 segRecords = 修复后 JSONL 的 0x0A 计数（§6.3）
+    const countLimit = finalJsonlBytes
+    if (jbufMax !== null) {
+      for (let i = 0; i < countLimit; i++) {
+        if (jbufMax[i] === 0x0a) finalRecords += 1
+      }
+    }
+    // —— §7 exhaustedAtOpen ——
+    let exhaustedAtOpen: 'sequence' | 'segment' | null = null
+    if (lastCommittedSequence === UINT64_MAX) {
+      exhaustedAtOpen = 'sequence'
+    } else if (
+      segMax === '99999999' &&
+      (finalJsonlBytes >= r.targetJsonlSegmentBytes ||
+        finalBinBytes >= r.targetBinSegmentBytes ||
+        finalRecords >= r.targetRecordsPerSegment)
+    ) {
+      exhaustedAtOpen = 'segment'
+    }
+
+    return {
+      verdict: 'resume',
+      repairs,
+      resume: {
+        lastCommittedSequence,
+        currentSegment: segMax,
+        jsonlBytes: finalJsonlBytes,
+        binBytes: finalBinBytes,
+        records: finalRecords,
+        exhaustedAtOpen,
+      },
+    }
+  } catch {
+    // 分析函数自身不抛（构造级 crash 包络在调用方，此处按 manifest-invalid 收敛）
+    return { verdict: 'rotate', cause: 'manifest-invalid' }
   }
 }
