@@ -115,4 +115,3 @@ A2-e 的同步重放 fixture 属 seam 层新增（设计 §11 治理放行），
   typecheck 21 处报错全部属新契约面未落型（`verifyToken` 不存在、`accept` 双参——
   A2-d/A2-e 新调用点计入），SA3 落型后消解（预期）。
 - `scripts/test-lock.sh`：仓库无此脚本（无 scripts/ 目录），无端口/新包依赖——无更新。
-
