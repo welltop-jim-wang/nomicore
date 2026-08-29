@@ -30,4 +30,5 @@ Round 1 dispatch log：wiki/raw/task_phase5-ws-multiplex-backpressure_dispatch.m
 | 20 | 12:53 | Review×2 | 双轴终审（Standards/Spec） | 13:20 | 硬门禁 #4：generic subagent 同模型路由双并行，diff 58150ad..e483825；engineering/code-review skill |
 | 14v | 12:44 | SA4 | Phase 3 静态验尸 verdict 登记 | 12:44 | pass（sa4_review.md 文件 Verdict: pass 逐字一致——HG12 真实性交叉核对 ✓） |
 | 17v | 12:47 | SA7 | Phase 3 动态验证 verdict 登记（干净态重验轮） | 12:47 | pass（sa7_report.md verdict: pass 逐字一致——HG12 真实性交叉核对 ✓；早期受损窗口结果作废已登记） |
-| 21 | 13:22 | 总控 | Phase 4 收尾固化 | (pending) | 双轴终审 Standards clear / Spec clear（各 0 阻断；非阻断注释级发现 S1-S8/LOW-1/LOW-2 登记留痕）；HG12/14/15/16 自检全过；wiki 档案 13 文件入库 + 最终验收后台跑 |
+| 21 | 13:22 | 总控 | Phase 4 收尾固化 | 13:28 | 双轴终审 Standards clear / Spec clear（各 0 阻断；非阻断注释级发现 S1-S8/LOW-1/LOW-2 登记留痕）；HG12/14/15/16 自检全过；wiki 档案 13 文件入库 + 最终验收后台跑 |
+| 22 | 13:20 | 总控 | 完成事务封口 | 13:28 | 最终验收全绿（106/106 + tsc + typecheck 全仓 + diff --check 全 exit 0）；REPORT.md status:complete 写入；未 push/未写 .mabf-done（Host 职责）；dispatch log 封口 |
