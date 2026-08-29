@@ -127,3 +127,65 @@ git diff 0a18661 -- docs/adr/0010-hub-peer-websocket-ydoc-replication.md      # 
 ## 6. 提交
 
 本地单 commit（`git commit`，中英双语），**不 push、不建 PR**；commit hash 见报告结尾与 dispatch 行。工作树余留仅 `REPORT.md`（详见 §5.8，未纳入提交）。
+
+---
+
+# F1 增补（§D9 wipe-credit 修复轮 — SA7 D2 破坏性锚转绿）
+
+- **Status**: implemented & verified | **Date**: 2026-08-30
+- **输入**: SA1 最终设计 §D9（F1 增补，SA2 R4 verdict **pass** ——含 R4-N1 排除引理、R4-N2 credit 清零不可省、R4-N3 包级 131 口径）；SA7 动态报告（`..._round2_sa7_report.md` §2，唯一缺陷 D2 commit `218ca3a` ——负记账破坏性红灯）；冻结锚 `ws-replication-sa7-round2-dynamic.test.ts` L377-431（**零改动**——本节亦未触碰该文件）。
+- **实现基线**: commit `218ca3a`（含 SA7 动态锚 6 例：D2 红 + D1/D3/D4/D5 绿）。
+
+## F1.1 变更文件清单（恰 5 个 src 文件；hub-connection.ts DENY 零文本改动）
+
+| 文件 | 内容 |
+|---|---|
+| `src/frame-io.ts` | `enqueueData` 返回**接纳布尔**（签名 void→boolean 扩展）：拒纳分支 `return false`（onDataShed 已清零含先计）、正常/滞回接纳 `return true`——判定回传链唯一点；doc 注释同步 §D9 语义 |
+| `src/update-channel.ts` | **核心**：`UpdateChannelHost.enqueueUpdate` → `(bytes) => boolean`；`uncountedAccepted/uncountedAcceptedBytes` 子账本（credit 恒 ∈ {0,1}）；handoff **increment-before** + `accepted && needsResync 翻转` = wipe 检测（登记信用、不重计 pending——冻结 D2 锚 L403/L407 = 0 观测面保持）+ **R4-N1 排除引理注释**（wipe ⟹ paused ⟹ 信用先于一切同栈派发——否则 onDataDispatched 先于登记减记未计帧 = F1 复发）；`onDataDispatched` 信用消费先于减记（L430 ≥ 0）；`onDataShed` **credit 双清零**（R4-N2：不得以「恒 ≤1」省去——跨代 wipe 正确性依赖）；`teardown` **credit 双清零**（四出口对称）；三门精确负载（deliver/flushQueued 窗口门 + overflows count/bytes 均读 pending+uncounted——引理地基：SA4 检查项「窗口门必须保留 pendingDataCount 于和式」保持） |
+| `src/hub-namespace.ts` | `HubChannelHost.sendData` → boolean；`enqueueUpdateFrame` 改 return 透传（超限早退 → false——防御性双门，结构性不可达）；L127 表达式体 `enqueueUpdate: (bytes) => this.enqueueUpdateFrame(bytes)` 布尔自动回流（零额外改动） |
+| `src/peer-namespace.ts` | `PeerNamespaceHost.sendData` → boolean；`enqueueUpdateFrame` 改 return 透传（同 hub 侧对称）；L128 表达式体同上 |
+| `src/peer-connection.ts` | `sendData` → boolean：outbound undefined → false（S9 结构性前置）/ 非 ready → onConnectionDataShed 显影后 false / namespaceId 缺失 → false（防御，结构不可达）/ ready → **透传 enqueueData 判定** |
+| `src/hub-connection.ts` | **零文本改动（DENY 保持）**——L181 实测为表达式体 `(message) => this.outbound.enqueueData(...)`，类型放宽后布尔自动回流（§D9 实现期验证注记已核——无需回 SA1 扩 ALLOW） |
+
+**零测试改动**：冻结 D2 锚（218ca3a）与全部既有锚（15 红锚 + ac*/sa4/sa6/sa7 系）未触碰——本节只改 5 个 src 文件（+SA3 wiki/dispatch 工件）。
+
+## F1.2 验证命令与结果（全部实测）
+
+```bash
+# 1) F1 红转绿（§V 1a；冻结 D2 破坏性锚 + D1/D3/D4/D5 保绿）
+npx vitest run packages/ws-replication/test/ws-replication-sa7-round2-dynamic.test.ts
+# → Test Files 1 passed (1); Tests 6 passed (6); Type Errors no errors  ← 218ca3a 基线为 1 failed
+
+# 2) 包级全量（R4-N3 口径 131）
+npx vitest run packages/ws-replication
+# → Test Files 17 passed (17); Tests 131 passed (131); Type Errors no errors
+
+# 3) 整仓（§9.4 口径 2002）
+pnpm test
+# → Test Files 170 passed (170); Tests 2002 passed (2002); Type Errors no errors
+
+# 4) 聚合静态
+npx tsc --noEmit -p tsconfig.typecheck.json    # → exit 0
+git diff --check                               # → 干净
+
+# 5) §C DENY 验证：hub-connection.ts 零 diff
+git diff -- packages/ws-replication/src/hub-connection.ts   # → 空（L181 表达式体，布尔自动回流）
+
+# 6) 冻结锚零改动验证
+git diff 218ca3a -- packages/ws-replication/test/ws-replication-sa7-round2-dynamic.test.ts  # → 空
+```
+
+## F1.3 冻结 D2 锚逐子锚对位（S1 推演实现后实测确认）
+
+L388（#1 派发后 pending 0）/L392（#2..#7 计 6 且 ≥ 0）/L394（=6）/L400（RESYNC ≥ 1）/L402（重入 drain 零幸存派发）/L403（#8 滞回接纳后 pending === 0——未计帧不入 pending，credit 登记）/L407（#9/#10 门弃后 0）/L418-420（收敛 n=5）/L423（inFlight+pending ≤ 16）/L430（恢复派发 #8 后 pending ≥ 0——信用消费跳过减记，恒 0）——全部绿，**断言零改动**。
+
+## F1.4 残余风险登记（§D9 S1–S10 之外）
+
+1. **credit 与观测面语义**（§B 风险 10）：`pendingDataCount` 字段语义 = 「已计数未派发」——未计帧期间该字段不含帧；窗口/溢出判定经三门精确负载（pending+uncounted）零偏差（S6）；A7 不变量结构成立（未计帧不在任一加数）。
+2. **R4-N1 引理地基**：deliver/flushQueued 窗口门当前均保留 `pendingDataCount + uncountedAccepted` 于和式（不可被「优化」掉——引理角落复活）；SA4 静态检查项已注释于两门与 handoff。
+3. **credit 表达为通用计数 N**（R4-N2）：实际可达域 ∈ {0,1}——跨代 wipe 正确性依赖 onDataShed 的 credit 清零，勿简化。
+4. **包级计数口径**（R4-N3）：`218ca3a` 后包级 131（125+6，D2 红→绿）、整仓 2002——验收按此口径，勿按 §9.4 首版「125」字面判。
+
+## F1.5 提交
+
+本地单 commit（中英双语），**不 push、不建 PR**；commit hash 见文末与 dispatch 行。工作树余留仅 `REPORT.md`（未纳入提交，同主轮）。
