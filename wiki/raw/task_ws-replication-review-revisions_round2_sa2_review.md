@@ -4,7 +4,7 @@
 **Reviewer**: SA2（adversarial / wallfacer）
 **对象**: `wiki/raw/task_ws-replication-review-revisions_round2_design.md`（SA1，2026-08-30，基线 commit `0a18661`）
 **输入交叉**: SA5 分析（`..._round2_sa5_analysis.md`）、SA6 红灯契约（`..._round2_sa6_red.md`，13+1 红灯基线）、`packages/ws-replication/src/*`、`test/driver.ts`、`test/harness.ts`、五个测试文件锚、`docs/protocols/instance-replication-v1.md`、`docs/adr/0010-*`、`docs/phases/phase-5-websocket-replication.md`、round-1 relevant_decisions。
-**Verdict（最新 = R3）**: **pass**——B4 三处修正（§D7 配套注释同步②属主 / §C 限定性条目 / 锚 1 清单实测全列 11 处）逐项核验通过，四条 grep 锚修后全部可满足；R1 阻塞 B1/B2/B3 与 R2 阻塞 B4 全部闭环。详见文末「R3 限定复审」。裁决历史：R1 reject（B1 CRITICAL/B2/B3）→ R2 reject（B4 残留）→ R3 pass。
+**Verdict（最新 = R4）**: **pass（§D9 增补）**——F1 wipe-credit 修复对全部可达状态正确（信用登记次序角落经窗口门引理结构性排除）、冻结 D2 锚三组观测全绿、公共面零触碰/DENY 保持/hub-peer 对称。裁决链：R1 reject（B1/B2/B3）→ R2 reject（B4）→ R3 pass（八项主体）→ **R4 pass（§D9）**。详见文末各节。
 
 ---
 
@@ -196,3 +196,48 @@
 
 - **B4 → 已修复**：三处修正逐项对上，设计内嵌清单与 worktree 实测**零偏差**；R1（B1/B2/B3）→ R2（B4）全部阻塞项闭环。
 - **Verdict: pass**——设计放行 SA3 实现。放行边界（非阻塞、随行提醒）：(i) SA6 补写 R1-3 时须用 ≥8192B 字面 payload（R2-N1——BLOB=8000 常量差 ~520B 不达限）；(ii) SA7 对 N3 落实新增的 closing/failed 分支 cleanupResources 做「断线态资源回收」回归观察（R2-N2）；(iii) SA3 严格执行 §C 允许面（spec-b1-b2 仅一行注释、review-red 仅头注释，断言/测试体零改动）；(iv) pass 仅覆盖设计与红锚可满足性——实现与活链路验证归 SA4（修正后四条 grep + §V.5 doc-diff + 冻结值防回归）与 SA7（动态活链路 + R1-3 转绿）。
+
+---
+
+# R4 限定评审（SA1 design R4 §D9 — F1 wipe-credit 修复）
+
+**Date**: 2026-08-30 | **对象**: design R4 增补节 §D9（F1 = SA7 §2 唯一缺陷：滞回接纳帧 pendingData 负记账）；交叉输入 = SA7 报告 §2（fail-needs-fix，D2 破坏性锚冻结于 commit `218ca3a`）+ 冻结锚 `ws-replication-sa7-round2-dynamic.test.ts` L377-431 + 实现态源码（`4bc57dd`）。
+**范围声明**: 仅评审 §D9（wipe-credit 记账正确性 / 公共 API 面与 DENY / UpdateChannel 重入·FIFO·reset / hub-peer 对称 / SA7 D2 冻结观测兼容）；八项修订主体与 R1–R3 裁决不重开。
+**Verdict**: **pass** ——§D9 对全部可达状态正确（含 SA2 独立攻击推演：信用登记次序 × 同栈派发角落经窗口门引理结构性排除）；冻结 D2 锚三组观测（L403/L407 派发前 raw pending===0、L430 派发后 ≥0）在 §D9 下全绿且 SA7 方向 (a) 字面形态确会破坏冻结锚（§9.0 推论成立）；公共面零触碰、DENY 保持。3 条非阻塞观察见 R4.4。
+
+## R4.1 wipe-credit 记账正确性（含 SA2 独立攻击推演）
+
+**机制**：handoff 先计（increment-before）→ `enqueueUpdate` 回传接纳布尔 → `accepted && needsResync 翻转` = wipe 检测 → 该帧以「未计数」入桶（credit +1，不重计 pending）→ 派发点信用消费（`uncountedAccepted>0` 先消费、跳过减记）→ onDataShed/teardown 双清零 + 三门（deliver/flushQueued/overflows）读 `pending+uncounted` 精确负载。
+
+- **wipe 检测条件健全**：deliver 首行与 flushQueued 循环条件均守卫 needsResync（实测源码 update-channel.ts L54/L153）→ handoff 入口 needsResync 恒 false；`host.enqueueUpdate` 同步栈内唯一可达的 needsResync 置位源 = onDataShed（wipe）——「翻转即 wipe」判别精确，无误报路径（markResyncReceived/watchdog 边沿不在该栈内；dispose/enterBlocked 不在 enqueueData 栈内）。
+- **FIFO/信用对位（S5 复核）**：wipe 清空整桶 → 未计帧推入**空桶**必为队头；其后 needsResync 阻断一切新 handoff → 计数帧只能经 resetForLive 后追加队尾 → 派发序 = uncounted 先于新 counted，先消费信用后减记——严格对位。跨代：第二次 wipe 弃整桶（含未计帧）且 onDataShed **同步清 credit** → credit 实际恒 ∈ {0,1} 且恰等于桶内未计帧数（消费/弃桶为仅有两出口）——无悬挂、无错位。
+- **SA2 深攻角落（设计未明述、经引理排除）**：若 wipe-接纳帧在**同一 enqueueData 调用内的 drain** 中被派发（未 paused + 窗口有余），`onDataDispatched` 将在信用登记**之前**执行 → 减记未计帧 → −1 + 悬挂信用 = F1 复发。**排除引理**（SA2 推导）：wipe 需 shed 循环运行（queued > lowWater）且 victim = 本 ns → 本 ns 桶非空；而「每次 enqueueData 末尾同步 drain + 窗口门 `inFlight+pending<max`」归纳保证「桶非空 ⟹ paused ∨ 本 ns 窗口满」；handoff 门通过（本 ns inFlight+pending<max）⟹ 窗口未满 ⟹ **paused** → 内层 drain 数据循环跳过 → 帧入队、信用先登记。victim=他 ns 时不抹本 channel（needsResync 不翻）→ 先计保留、同栈派发减记命中已计帧——两条路径均正确。该引理是 increment-before 方案的安全基石——见 R4-N1。
+- **bytes 口径对位**：`uncountedAcceptedBytes -= bytes.byteLength` 消费的即登记帧自身（同对象流经）→ 精确；overflows bytes 门 `queued + pendingBytes + uncountedBytes + ΣinFlight + incoming` 无双计无缺口。
+- **三门必要性验证**：resetForLive 后（needsResync=false、未计帧仍在桶）新 deliver 门若不含 uncounted 项将漏计 1 帧——§D9 三门含之，正确且必要。
+
+## R4.2 公共 API 面 / DENY 保持 / hub-peer 对称（实测源码核验）
+
+| 轴 | 设计声称 | SA2 实测（`4bc57dd` 源码） | 结论 |
+|---|---|---|---|
+| 公共 API 面 | disposition 链 void→boolean 仅内部结构类型 | `index.ts` 仅导出冻结面（两工厂 + DEFAULT_* + types.ts 类型）；`UpdateChannelHost`/`HubChannelHost`/`PeerNamespaceHost`/`OutboundQueue` **均不在公共导出**；enqueueData void→boolean 为返回类型放宽（调用方源兼容——类级锚经深导入调用并忽略返回值） | ✅ 冻结公共面零触碰 |
+| DENY：hub-connection.ts | 「零文本改动——L181 表达式体自动回流布尔」+ 若非表达式体须回 SA1 扩 ALLOW | 实测 L181 = `sendData: (message) => this.outbound.enqueueData(...)` **确为表达式体** → 类型放宽后布尔自动回流，零文本改动成立；防御条款（不符则回 SA1）adequate | ✅ DENY 保持 |
+| 接线链现状 | enqueueUpdateFrame 超限早退 → false（防御双门） | hub-namespace L689-696 / peer-namespace L777-784 均有 `if (bytes.byteLength > maxUpdateBytes) return;` 早退结构——「return false」改造点真实存在；channel 侧 handoff 先行门（update-channel L143）已拦 → 结构性不可达声明成立 | ✅ |
+| hub/peer 对称 | 修复落共享层 + 双侧 disposition 接线对称 | 共享 UpdateChannel 单点记账；hub 链 hub-namespace.sendData→hub-connection L181→enqueueData，peer 链 peer-namespace.sendData→peer-connection.sendData（L506，含 outbound-undefined/非 ready→显影+false 两分支，S9 一致）→enqueueData——两侧同形回传 | ✅ 对称成立 |
+
+## R4.3 SA7 D2 冻结观测兼容（逐子锚推演）
+
+冻结锚（`218ca3a`，断言不可改）L377-431 逐条：L388（#1 派发后 pending 0，正常路径先计−减记）✓；L392/L394（#2..#7 计 6，无 wipe 正常计数）✓；L400（RESYNC ≥1，wipe 链不变）✓；L402（重入 drain 零幸存派发——wipe 清桶 + paused 数据循环跳过，S4 与 SA7 实测一致）✓；**L403（#8 滞回接纳后 pending === 0——未计帧不入 pendingDataCount，信用登记）✓（这正是 SA7 方向 (a) 字面形态必破坏的观测——§9.0 推论经锚文复核成立）**；L407（#9/#10 被 deliver 首行弃，pending 恒 0）✓；L418-420（收敛——帧仍正常派发）✓；L423（A7 raw 不变量 inFlight+pending ≤ 16——pending=0、未计帧不进 inFlight+pending 和）✓；**L430（恢复派发 #8 后 pending ≥ 0——信用消费、跳过减记、pending 恒 0）✓**。其余冻结面：15 红锚中 R6-1/R6-2（8MiB 配置无 wipe → uncounted≡0 → 三门读数与 R6 版逐值相同）、A2 ≤2（数 delivered 帧、信用不可见）、R1-3 三断言（accepted=false 早退——与 R3 版逐字节同形）、sa4 F1/F2/F3（无 wipe 配置）——全部不动即绿（S2/S6 推演经抽查证实）。
+
+## R4.4 非阻塞观察
+
+| # | 观察 | 建议 |
+|---|---|---|
+| R4-N1 | §D9 未明述「wipe-接纳 ⟹ paused」排除引理（窗口门 + 每 enqueueData 末尾 drain 的归纳不变量「桶非空 ⟹ paused ∨ 窗口满」）——increment-before 在**未计帧同栈派发**角落的安全性全系于此，S3/S5 只是隐含 | SA1 在 §D9.2 补一句 binding 注（引理陈述）；SA4 静态检查项：deliver/flushQueued 窗口门必须保留 pendingDataCount 于和式（引理地基——若被「优化」掉，角落复活） |
+| R4-N2 | credit 计数器写为通用 N，实际可达域 ∈ {0,1}（跨代 wipe 同步清）——无害泛化 | 无需改设计；SA4 复核时勿以「恒 ≤1」为由简化掉 onDataShed 的 credit 清零（跨代正确性依赖它） |
+| R4-N3 | §9.4「包级 125」为 `4bc57dd` 期数字；`218ca3a` 后包级 = 131（125+6，D2 红） | SA4/SA7 验收以 §V 1a（sa7-round2 6/6）+ 包级全量并集口径执行，勿按 125 字面判 |
+
+## R4.5 结论
+
+- **F1 根因复述与 §D9 判定一致**（设计级缺口：onDataShed 清零前提「面已全弃」在滞回接纳窗口被先计打破——SA7 §2 机制根因 + §D9.0 复述吻合，与实现态源码对位）。
+- **修复形态是冻结锚约束下的唯一自洽解**：不重计 pending（保 L403/L407=0）+ 派发点信用（保 L430≥0）+ 三门精确负载（保 R6/A7 语义零偏差）；(b)/(c) 排除理由经锚文复核成立。
+- **Verdict: pass**——§D9 放行 SA3 实现（半径 5 src 文件 + hub-connection 零文本改动；15 锚 + 冻结 D2 按 S1/S2 推演转绿/保绿）。实现与活链路验证归 SA4（含 R4-N1 静态检查项）与 SA7（D2 复测 + 整仓 2002/2002）。裁决链：R1 reject → R2 reject → R3 pass（八项主体）→ **R4 pass（§D9 增补）**。

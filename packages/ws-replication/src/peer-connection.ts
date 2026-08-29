@@ -12,6 +12,7 @@ import {
 } from './frame-io.js';
 import { PeerNamespaceController, type PeerNamespaceHost } from './peer-namespace.js';
 import { ConnectionSender } from './backpressure.js';
+import { startLiveness } from './liveness.js';
 import type { NamespaceRegistry } from '@nomicore/namespace-registry';
 import type {
   PeerConnectionState,
@@ -26,6 +27,8 @@ import type {
 import type { ReplicationTimer } from './types.js';
 import { resolveBackoff, resolveLimits, resolveTimeouts } from './defaults.js';
 import { validatePeerOptions, validateLimits, validateTimeouts, validateBackoff } from './validate.js';
+
+const defaultDefer = (task: () => void): void => queueMicrotask(task);
 
 const HANDSHAKE_OR_READY: ReadonlySet<PeerConnectionState> = new Set(['handshaking', 'ready']);
 
@@ -48,6 +51,7 @@ class PeerConnectionImpl implements PeerReplication {
   private outbound: OutboundQueue | undefined;
   /** 连接级发送调度（连接域背压；每连接实例一个，随 transport 生命周期，§6.3）。 */
   private sender: ConnectionSender | undefined;
+  private transportSubscriptions: Array<() => void> = [];
   private expectedSeq = 1;
   private nonce: Uint8Array | undefined;
   private attempts = 0;
@@ -57,6 +61,10 @@ class PeerConnectionImpl implements PeerReplication {
   private rebuildPending = false;
   private stopping = false;
   private stopTail: Promise<void> = Promise.resolve();
+  private goawayActive = false;
+  private goawayDrainHandle: unknown | undefined;
+  private stopLiveness: (() => void) | undefined;
+  private readonly deferTask: (task: () => void) => void;
 
   constructor(private readonly options: PeerReplicationOptions) {
     validatePeerOptions(options);
@@ -69,6 +77,7 @@ class PeerConnectionImpl implements PeerReplication {
     this.limits = limits;
     this.timeouts = timeouts;
     this.backoff = backoff;
+    this.deferTask = options.deferTask ?? defaultDefer;
     this.host = {
       limits,
       timeouts,
@@ -82,6 +91,8 @@ class PeerConnectionImpl implements PeerReplication {
       requestDataDrain: () => this.sender?.requestDrain(),
       connectionFatal: (code, wsCloseCode) => this.connectionFatal(code, wsCloseCode ?? 1002),
       connectionEpoch: () => this.connectionEpochValue,
+      isGoawayDraining: () => this.goawayActive,
+      deferTask: (task) => this.deferTask(task),
     };
     for (const target of options.targets ?? []) {
       this.addTarget(target);
@@ -103,6 +114,9 @@ class PeerConnectionImpl implements PeerReplication {
     this.clearBackoff();
     this.clearHello();
     this.clearReset();
+    this.clearGoawayDrain();
+    this.stopLivenessNow();
+    this.unsubscribeTransport();
     this.sender?.teardown(); // §8：poll timer 清零（连接收口必经点）
     const previous = this.connStateValue;
     if (previous === 'stopped') return Promise.resolve();
@@ -172,7 +186,12 @@ class PeerConnectionImpl implements PeerReplication {
   private dialNow(): void {
     if (this.stopping) return;
     this.clearBackoff();
+    this.clearGoawayDrain();
+    this.goawayActive = false;
+    this.stopLivenessNow();
+    this.unsubscribeTransport();
     this.connectionEpochValue += 1;
+    const epoch = this.connectionEpochValue;
     this.setState('connecting');
     let transport: DuplexTransport;
     try {
@@ -217,8 +236,10 @@ class PeerConnectionImpl implements PeerReplication {
     });
     this.setState('handshaking');
     this.armHello();
-    transport.onMessage((bytes) => this.onMessage(bytes));
-    transport.onClose((info) => this.onClose(info));
+    this.transportSubscriptions = [
+      transport.onMessage((bytes) => { if (this.connectionEpochValue === epoch) this.onMessage(bytes); }),
+      transport.onClose((info) => { if (this.connectionEpochValue === epoch) this.onClose(info); }),
+    ];
   }
 
   private makeNonce(): Uint8Array {
@@ -276,6 +297,17 @@ class PeerConnectionImpl implements PeerReplication {
     this.clearHello();
     this.setState('ready');
     this.armResetCheck();
+    const transport = this.transport;
+    if (transport?.ping !== undefined && transport.onPong !== undefined) {
+      this.stopLiveness = startLiveness({
+        timer: this.options.timer,
+        pingIntervalMs: this.timeouts.pingIntervalMs,
+        pongTimeoutMs: this.timeouts.pongTimeoutMs,
+        ping: transport.ping,
+        onPong: transport.onPong,
+        onPongTimeout: () => this.onTemporaryFailure(),
+      });
+    }
     this.openActiveTargets();
   }
 
@@ -326,7 +358,7 @@ class PeerConnectionImpl implements PeerReplication {
         this.withController(message.namespaceId, (c) => c.onCloseRequest({ ...message, sequence }));
         return;
       case 'CLOSE_OK':
-        this.withController(message.namespaceId, (c) => c.onCloseOk());
+        this.withController(message.namespaceId, (c) => c.onCloseOk(message.ackedSequence));
         return;
       case 'IDENTITY_CHANGED':
         this.withController(message.namespaceId, (c) => c.onIdentityChanged());
@@ -361,37 +393,40 @@ class PeerConnectionImpl implements PeerReplication {
   }
 
   private onGoaway(message: { reasonCode: string; drainTimeoutMs: number }): void {
-    // §4.3 GOAWAY 接收语义（v1 最小面）：停止新 OPEN/round；按 reason 分类；slice 9 前
-    // 不做 deadline 完整编排——按 drainTimeoutMs 后关闭并回退。
-    this.goawayDrainMs = message.drainTimeoutMs;
-    void this;
+    this.goawayActive = true;
     if (message.reasonCode === 'SERVER_SHUTTING_DOWN' || message.reasonCode === 'REAUTH_REQUIRED') {
-      // B1（终审 Standards 轴，2026-08-29）：blocked 直达路径补 sender teardown——
-      // 与 enterBlocked/scheduleDrainClose 同型（§8 teardown 矩阵成文声称）。blocked
-      // 是长寿命等待态且 onClose 对 blocked 早退——若暂停段 poll timer 已武装而未清，
-      // stale getter 上 1s 周期无限重武装（backpressure.ts poll 回调）直至人工 stop。
-      this.sender?.teardown();
-      this.setState('blocked');
+      this.enterBlocked();
       return;
     }
-    // SERVER_RESTARTING / 其他 → 本地计时 deadline 后由回退重连兜底
-    this.scheduleDrainClose();
+    this.clearGoawayDrain();
+    this.goawayDrainHandle = this.options.timer.setTimeout(() => {
+      this.goawayDrainHandle = undefined;
+      this.quiesceControllers();
+      this.sender?.teardown();
+      const transport = this.transport;
+      if (transport !== undefined && !transport.closed) transport.close(1001, 'goaway-drain');
+    }, message.drainTimeoutMs);
   }
 
-  private goawayDrainMs = 0;
+  private quiesceControllers(): void {
+    for (const controller of this.controllers.values()) controller.onConnectionFatal();
+  }
 
-  private scheduleDrainClose(): void {
-    const timer = this.options.timer;
-    const transport = this.transport;
-    timer.setTimeout(() => {
-      // §8（R2 补行，SA2 #6）：close 前补 sender.teardown()——清除已武装 poll timer，
-      // 杜绝 stale getter 上 1s 周期性重武装直至下次 dialNow 换 sender；即便 stale
-      // fire 到达（防御面）：teardown 后 pollHandle 恒 undefined、回调零副作用且不重武装。
-      this.sender?.teardown();
-      if (transport !== undefined && !transport.closed) {
-        transport.close(1001, 'goaway-drain');
-      }
-    }, this.goawayDrainMs);
+  private clearGoawayDrain(): void {
+    if (this.goawayDrainHandle !== undefined) {
+      this.options.timer.clearTimeout(this.goawayDrainHandle);
+      this.goawayDrainHandle = undefined;
+    }
+  }
+
+  private unsubscribeTransport(): void {
+    for (const off of this.transportSubscriptions) off();
+    this.transportSubscriptions = [];
+  }
+
+  private stopLivenessNow(): void {
+    this.stopLiveness?.();
+    this.stopLiveness = undefined;
   }
 
   private withController(namespaceId: string, fn: (c: PeerNamespaceController) => void): void {
@@ -405,6 +440,7 @@ class PeerConnectionImpl implements PeerReplication {
   }
 
   private openActiveTargets(): void {
+    if (this.goawayActive) return;
     for (const controller of [...this.controllers.values()]) {
       if (controller.intent !== 'active') continue;
       if (controller.state === 'targeted') {

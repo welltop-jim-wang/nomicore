@@ -1,8 +1,8 @@
 # SA1 设计与裁决 — PR #165 review 八项修订（issue #161 round 2）
 
-**Status**: R3 修订版（SA2 R1 reject：B1/B2/B3 已落实；SA2 R2 reject：单项 B4 已落实——spec-b1-b2:90 注释同步属主 + 锚 1 命中清单实测全列 11 处；R2-N3 顺带收口）| **Date**: 2026-08-30（首版 → R2 → R3）
-**Worktree**: `/home/wangjian/nomicore-fix-issue-161`（branch `fix/issue-161-on-docs-phase-5-websocket-replication`，基线 commit `0a18661`）
-**输入**: SA5 缺陷分析 `wiki/raw/task_ws-replication-review-revisions_round2_sa5_analysis.md`（行号基线 0a18661）；SA6 红灯契约 `wiki/raw/task_ws-replication-review-revisions_round2_sa6_red.md`（13 例红灯 + D3 改写 1 例，基线 14 failed / 110 passed）；round-1 设计 `wiki/raw/task_ws-replication-hardening_design.md`（§3 背压 / §4.4 同步静默 / §5.2 defer seam 既有口径）。
+**Status**: R4 = F1 增补（SA7 动态验证 `..._round2_sa7_report.md` §2 唯一缺陷——D2 滞回接纳帧负记账；增补节 **§D9**，八项修订主体与 R1–R3 裁决不变）| **Date**: 2026-08-30（首版 → R2 → R3 → R4/F1）
+**Worktree**: `/home/wangjian/nomicore-fix-issue-161`（branch `fix/issue-161-on-docs-phase-5-websocket-replication`，基线 commit `0a18661`；SA3 实现 `4bc57dd`；SA7 冻结锚 `218ca3a`）
+**输入**: SA5 缺陷分析 `wiki/raw/task_ws-replication-review-revisions_round2_sa5_analysis.md`（行号基线 0a18661）；SA6 红灯契约 `wiki/raw/task_ws-replication-review-revisions_round2_sa6_red.md`（13 例红灯 + D3 改写 1 例，基线 14 failed / 110 passed）；SA2 评审 `..._round2_sa2_review.md`（R1：B1/B2/B3 → R2：B4）；**SA7 动态报告 `..._round2_sa7_report.md`（F1——本增补的输入）**；round-1 设计 `wiki/raw/task_ws-replication-hardening_design.md`。
 **产出边界**: 本文件只做设计与裁决，零生产/测试代码改动。
 
 ---
@@ -631,6 +631,134 @@ A8b 落地后，`types.ts` L57-62 facets 注释与 A8b「生产装配期响亮�
 
 ---
 
+## §D9. F1 增补（SA7 §2）— 滞回接纳帧的 pendingData 负记账：wipe-credit 修复
+
+### 9.0 缺陷复述与根因（SA7 §2 证据，设计确认——**设计级缺口，非实现走样**）
+
+**触发链**（A2 滞回接纳路径——**与 B1 拒纳路径不同**）：channel `handoff()` 在调用 `host.enqueueUpdate`（→ 连接层 `sendData` → `outbound.enqueueData`）**之前**已 `pendingDataCount += 1`；`enqueueData` 内部触发面先执行 **shed 循环**——victim = 本 ns 时 `shedNamespace` → `onDataShed(ns)` → channel `pendingDataCount/Bytes` **清零（连同 incoming 的先计 +1）**；随后再判定 `post-shed pipeline + bytes ≤ max` → **滞回接纳**（入桶，不重记）；恢复期派发 → `onDataDispatched` 再减一 → **pendingDataCount = −1**（SA7 D2 锚终态直测）。
+
+SA7 D2 场景算术：max 64KiB / lowWater 1KiB——#2..#7 滞留桶内 ≈49.5KiB + buffered ≈8.2KiB + #8 8.2KiB > 64KiB → shed 弃整桶（6 帧）+ onDataShed（pending 7→0，含 #8 先计）→ 再判定 16.4 ≤ 64 → 接纳 #8。**B1 的 R2 修复只覆盖拒纳分支（该分支帧被弃，清零语义正确）；滞回接纳分支的「清零发生在先计之后、接纳之前」窗口未被覆盖**——SA4 §2 R1 攻击点②推演的「回调窗口内幸存帧被派发」不可达（SA7 D2 动态证实），但「shed 后接纳帧的**迟后**派发」路径漏审。
+
+**SA7 已冻结锚（commit `218ca3a`，断言不可改）的语义约束**——修复必须同时满足三组观测：
+- L403：#8 写完成后 `pendingData() === 0`（「shed 清面后归零」）；
+- L407：#9/#10 被 needsResync 门弃后 `pendingData() === 0`；
+- L430（破坏性锚）：恢复派发 #8 后 `pendingData() ≥ 0`。
+
+**推论（修复形态的硬约束）**：滞回接纳帧在桶内期间 **不得计入 `pendingDataCount`**（否则 L403/L407 读 1 违约）——即 SA7 §2 修复方向 (a) 的字面形态「accept 后重新计入 pending」**会使 L403/L407 转 1 而破坏冻结锚**；同时该帧派发时 **不得走无条件减记**（否则 0−1 = −1 违约 L430）。唯一自洽解：**该帧以「未计数」状态入桶（观测面 pending 恒 0），派发时经独立信用（credit）跳过减记**。
+
+### 9.1 设计：increment-before + wipe 检测 + 派发信用（update-channel 单点记账 + 判定回传链）
+
+**(1) 判定回传链（disposition chain）——`enqueueData` 及其上游返回接纳布尔**：
+
+```ts
+// frame-io.ts：enqueueData 契约扩展（三 return 点）
+enqueueData(namespaceId: string, message: ReplicationMessage): boolean {
+  // …触发面/shed 循环/B1 拒纳分支（§D1 R3 版不变）…
+  //   拒纳分支：清幸存桶 + 无条件 onDataShed → return false;   // ← 帧已弃 + 已显影
+  // …正常/滞回接纳：push + queuedDataBytes += … + drain + ensureCheckpoint → return true;
+}
+
+// 接线链（内部 host 接口——非冻结公共面；类型 void → boolean）：
+//   update-channel.ts   UpdateChannelHost.enqueueUpdate(bytes): boolean
+//   hub-namespace.ts    HubChannelHost.sendData(message): boolean
+//                       + enqueueUpdateFrame 改 return（超限早退 → return false——防御性
+//                         双门，channel 侧 handoff 先行门已拦，结构性不可达）
+//   peer-namespace.ts   PeerNamespaceHost.sendData(message): boolean
+//                       + enqueueUpdateFrame 改 return（同上）
+//   peer-connection.ts  private sendData(message): boolean
+//                       （outbound undefined → return false；非 ready → onConnectionDataShed
+//                         显影后 return false；ready → return this.outbound.enqueueData(...)）
+//   hub-connection.ts   **零文本改动**——L181 接线为表达式体
+//                       `(message) => this.outbound.enqueueData(...)`，类型放宽后布尔自动回流
+//                       （实现期验证注记：若实际非表达式体，须回 SA1 扩 ALLOW 后方可触碰）
+```
+
+**(2) update-channel.ts 记账修复（核心，单文件）**：
+
+```ts
+// 新增双字段（credit 子账本——与 pendingData 同生命周期，随 R6 四出口对称维护）：
+private uncountedAccepted = 0;        // F1：handoff 期间被同 ns onDataShed 清零、仍被滞回接纳的帧数
+private uncountedAcceptedBytes = 0;   // 同上（bytes 口径）
+
+private handoff(bytes: Uint8Array): void {
+  if (bytes.byteLength > this.host.limits.maxUpdateBytes) return;
+  this.pendingDataCount += 1;                       // 先计（无 wipe 路径：派发减记命中已计帧
+  this.pendingDataBytes += bytes.byteLength;        //   ——零瞬态负值）
+  // deliver/flushQueued 入口门已保证 needsResync === false（resyncBefore 恒 false——
+  // 捕获为防御性断言注释，不运行时分支）
+  const accepted = this.host.enqueueUpdate(bytes);  // ← 期间 shed 循环/拒纳/非 ready 门可触发
+                                                    //   onDataShed（清零 + needsResync=true）
+  if (!accepted) return;                            // 拒纳：onDataShed 已清零（含本帧先计）——一致
+  if (this.needsResync) {
+    // F1：本帧先计在 enqueueUpdate 内被同 ns onDataShed 抹除、帧仍被滞回接纳——
+    // 登记信用（不重计 pending，保 D2 锚 L403/L407 = 0 观测语义）；派发时消费信用跳过减记
+    this.uncountedAccepted += 1;
+    this.uncountedAcceptedBytes += bytes.byteLength;
+    return;
+  }
+  // 无 wipe：先计保留——正常路径（D2 的 #1..#7、全部既有锚路径）
+}
+
+onDataDispatched(bytes: Uint8Array, sequence: number): void {
+  if (this.uncountedAccepted > 0) {
+    this.uncountedAccepted -= 1;                    // F1：信用消费——本帧入桶时未计数，跳过减记
+    this.uncountedAcceptedBytes -= bytes.byteLength;
+  } else {
+    this.pendingDataCount -= 1;
+    this.pendingDataBytes -= bytes.byteLength;
+  }
+  this.inFlight.set(sequence, bytes);
+  this.armAckTimer();
+}
+
+onDataShed(): void {
+  this.pendingDataCount = 0;
+  this.pendingDataBytes = 0;
+  this.uncountedAccepted = 0;                       // F1：wipe 弃整桶（含未计帧）——信用同步清零
+  this.uncountedAcceptedBytes = 0;                  //   （弃帧永不派发，防信用悬挂）
+  this.needsResync = true;
+  this.discardQueued();
+}
+
+teardown(): void {
+  …既有…
+  this.uncountedAccepted = 0;                       // F1：teardown 出口同清（四出口对称）
+  this.uncountedAcceptedBytes = 0;
+  …既有…
+}
+
+// 精确负载门（三处——窗口/溢出判定把未计帧计入有效负载，消除 off-by-one 偏差）：
+deliver live 门：  this.inFlight.size + this.pendingDataCount + this.uncountedAccepted < maxInFlightUpdates
+flushQueued 循环： 同上三和
+overflows count：  inFlight.size + queued.length + pendingDataCount + uncountedAccepted ≥ maxQueuedUpdateCount
+overflows bytes：  queuedBytes + pendingDataBytes + uncountedAcceptedBytes + ΣinFlight + incoming > maxQueuedUpdateBytes
+```
+
+### 9.2 状态/顺序/重入全枚举（binding）
+
+| # | 场景 | 推演 | 结论 |
+|---|---|---|---|
+| S1 | **滞回接纳（D2 场景）** | #8 先计 7 → enqueueData：shed 弃桶 → onDataShed（pending 7→0、needsResync、credit 清 0）→ 滞回接纳 → return true → handoff 检出 needsResync → credit=1、pending 不重计。L403/L407 观测 pending 0 ✓；恢复派发 → 信用消费 → pending 0、inFlight+1 → L430 ≥ 0 ✓ | **冻结 D2 锚全绿** |
+| S2 | **拒纳路径（R1-1/2/3）** | B1 分支：清幸存桶 + 无条件 onDataShed（pending→0、credit→0）→ return false → handoff `!accepted` 直接返回——不计数不信用。R1-3 (a)(b)(c) 三断言与 R3 版逐字节同形 | 既有 15 锚不动即绿 |
+| S3 | **正常接纳（无 wipe）** | 先计保留；enqueueData 内同步 drain 派发时 `onDataDispatched` 减记命中**已计**帧（先计在 drain 之前完成）——**零瞬态负值**（对比「计数后移」方案的同步派发瞬态 −1，本设计结构性消除） | 窗口门读数语义不变 |
+| S4 | **重入 drain**（onDataShed → declareHubResync → sendControl → drain） | shed 清面后同 ns 桶空、incoming 未 push → 重入 drain 同 ns 零派发（SA7 D2 实测「RESYNC 发射窗口零幸存派发」保持）；异 ns 派发走各 channel 独立记账，credit 不串扰 | 重入安全 |
+| S5 | **credit × FIFO 混桶** | wipe 后 needsResync 阻断一切新 handoff → 未计帧是该桶代内**唯一**在桶帧；resetForLive 后新帧（已计）排其**后**（桶为 FIFO 数组）；派发序 = counted* → uncounted → counted*，减记/消费严格对位。新一轮 shed 弃桶时 onDataShed 同步清 credit（弃帧永不派发）——无错位消费、无悬挂信用 | 信用精确 |
+| S6 | **精确负载门** | 三门（deliver/flushQueued/overflows）读 `pending + uncounted`（count/bytes 双口径）——未计帧计入有效负载：窗口门与 R6 溢出判定**零偏差**（无 off-by-one 放宽）；`pendingDataCount` 原字段语义与观测面不变（锚直读该字段） | 判定精确 |
+| S7 | **双侧对称** | 修复落共享层（update-channel）+ 双侧 disposition 接线（hub/peer 对称同形）——peer 侧同构造可达同修复 | 对称成立 |
+| S8 | **teardown/stop** | teardown 清 credit（出口 4）——stop/收口后无悬挂 | 四出口对称 |
+| S9 | **非 ready 门（peer sendData）** | 非 ready：onConnectionDataShed 显影（pending→0、needsResync）→ return false → handoff 不计不信用——一致；outbound undefined → return false（此时 channel 侧 deliver 已被状态机 disconnect 投影阻断——结构性前置） | 一致 |
+| S10 | **hub enqueueUpdateFrame 超限早退** | return false（不接纳）——channel 侧 handoff 先行门已拦（`> maxUpdateBytes` 早退），该分支为防御性双门，结构性不可达 | 防御一致 |
+
+### 9.3 与 SA7 修复方向 (a) 的关系（裁决记录）
+
+SA7 建议 (a)「accept 后重新计入 pending」的字面形态会使 L403/L407 观测 1 而**破坏冻结锚**（§9.0 推论）。本设计为 (a) 的**锚兼容精化**：wipe 检测（needsResync 翻转 + accepted 双条件）替代重计 pending，信用在**派发点**闭环——「四出口对称」以 credit 子账本随四出口维护的形式保持（登记/消费/双清零），语义等价、观测面自洽。(b)（逐帧减记）破坏 R1-3 (b) 语义、(c)（判定前置）不消除 wipe 窗口（shed 信号仍先于接纳）——均排除，与 SA7 判断一致。
+
+### 9.4 实现与验收（文件清单增量 + 锚映射见 §C/§A/§V 增补行）
+
+实现半径：**5 个 src 文件、hub-connection.ts 零文本改动**（表达式体接线自动回流布尔——DENY 保持）；零 SA6 锚改动（15 锚按 S2 推演不动即绿）；零 SA7 锚改动（冻结 D2 按 S1 推演转绿）。全量回归 = 包级 125 + 整仓（2002 − D2 红 = 全绿）。
+
+---
+
 ## §A. 验收映射（全部红灯锚 → 设计节 → 实现点）
 
 | 红灯锚（基线 failed） | 文件:测试 | 设计节 | 实现点 | 既有绿锚保持 |
@@ -651,6 +779,7 @@ A8b 落地后，`types.ts` L57-62 facets 注释与 A8b「生产装配期响亮�
 | R6-2 bytes 口径第 9 笔溢出 | L799 | §D6 | pendingDataBytes 四出口 | 同上 |
 | R7-1 latch 未放行零拨号、放行恰 +1 | L833 | §D7 | requestRebuild → this.deferTask | spec B-1（已放宽）、ac1/ac6/g1-g2 重建锚 |
 | A8a–A8e 文档验收（SA6 §5 清单） | sa6_red §5 | §D8 | docs 三件 + types/defaults 注释 | 全部既有行为锚（零改动验收） |
+| **D2（F1 破坏性锚，SA7 冻结于 `218ca3a`）：滞回接纳帧恢复派发后 pendingData ≥ 0**（含 L388/L394/L403/L407 子锚与 RESYNC/幸存零派发/A7 不变量） | sa7-round2-dynamic L377-431 | **§D9** | disposition 回传链 + handoff wipe-credit + onDataDispatched 信用消费 + onDataShed/teardown 信用清零 + 三门精确负载 | 其余 D1/D3/D4/D5 锚（SA7 已绿）+ 15 锚全量（§D9 S2 逐锚推演） |
 
 **红转绿命令**（SA6 §1 + B1 新增 R1-3，SA3 完成后全绿——**15 例**）：
 
@@ -673,13 +802,16 @@ npx vitest run packages/ws-replication/test/ws-replication-review-revisions-r1-r
 | 6 | **R2 sendControl 起挂检查点**：控制发送后可能新增 timer | 低 | 起挂条件既有（buffered>0）；空闲连接零 timer；sa7 W1 的 scheduler.pending 断言场景 buffered=0 不起挂 |
 | 7 | **R6 更早溢出**：per-ns 上限提前 M 帧触发 | 低 | F1 锚旧口径本已溢出（推演 §D6）；A5/A7 锚计数面小 |
 | 8 | **泵注册表模块级共享**（同文件多 run） | 极低 | vitest 按文件隔离模块图；同文件内冲刷闲泵 = no-op；语义 = 「等待进度时时间前进」对全部 run 一致 |
+| 9 | **§D9 判定链布尔回传**：内部 host 接口三处签名 void→boolean | 低（编译期全覆盖） | 内部结构类型（非冻结公共面，`packages/ws-replication` 内 grep 证实唯一消费方 = UpdateChannel.handoff 两侧各一）；hub-connection 表达式体接线零文本改动（实现期验证注记入 §C DENY） |
+| 10 | **§D9 credit 与观测面语义**：未计帧期间 `pendingDataCount` 原字段不含该帧 | 极低 | `pendingDataCount` 语义 = 「已计数未派发」——与冻结 D2 锚 L403/L407 观测语义**一致**（锚作者按此冻结）；窗口/溢出判定经三门精确负载（pending+uncounted）零偏差（S6）；A7 不变量结构成立（未计帧不在任一加数） |
 
 ---
 
 ## §V. 验证计划（SA3 实现后）
 
 1. **红转绿**：`npx vitest run packages/ws-replication/test/ws-replication-review-revisions-r1-r7-red.test.ts packages/ws-replication/test/ws-replication-sa7-hardening-dynamic.test.ts` → **15 例**全绿（SA6 基线 14 + B1 新增 R1-3——SA6 补写后红灯基线应为 15 failed）。
-2. **回归全量**：`npx vitest run packages/ws-replication` → 125 例全绿（14+1 红灯转绿 + 110 既有）；零 real sleep、零 unhandled rejection（既有 collectUnhandledRejections 锚）。
+1a. **F1 红转绿（§D9）**：`npx vitest run packages/ws-replication/test/ws-replication-sa7-round2-dynamic.test.ts` → **6/6 全绿**（D2 破坏性锚转绿；D1/D3/D4/D5 保持绿）。
+2. **回归全量**：`npx vitest run packages/ws-replication` → **126 例全绿**（125 + SA7 D2 转绿）；整仓 `pnpm test` → 2002/2002（SA7 基线唯一红 = D2）；零 real sleep、零 unhandled rejection（既有 collectUnhandledRejections 锚）。
 3. **类型面**：`pnpm test`（内含 --typecheck）零错误；api.test-d 形状断言含 `maxQueuedControlBytes`。
 4. **R7 grep 锚（B2 修正后四条，§D7）**：锚 1/2（`512 跳|TEST_DEFER|DEFER_MICROTASK_HOPS` / `DEFER_MICROTASK_HOPS`）零命中；锚 3（`queueMicrotask(` 排除 testing.ts）恰 1 命中 defaultDefer；锚 4 冻结值防回归（`512 * 1024` 行 diff 为零）。
 5. **R8 grep/doc-diff 锚（含 B3 新增）**：§D8e 两条 grep 零命中（phases/protocols 无红灯/round-N 撤销叙事）；ADR 0010 既有修订节 diff 为零（仅文末追加新节）；**B3 doc-diff**：protocol §17 改写后仍含「高优先级」与「每轮每 namespace最多一个」两短语（`grep -n "高优先级\|每轮每 namespace最多一个" docs/protocols/instance-replication-v1.md` ≥1 且位于 §17）；phase-5 改写面外零改动。
@@ -692,11 +824,11 @@ npx vitest run packages/ws-replication/test/ws-replication-review-revisions-r1-r
 ### ALLOW LIST
 
 生产（src）：
-- `packages/ws-replication/src/frame-io.ts` — 修改：§D1 enqueueData 严格准入分支（拒纳 = 清幸存桶 + 无条件 onDataShed，~20 行）；§D2 尾窗 ledger 字段 + emitOne plane 参数 + runCheckpoint 规则 C 析取 + 裁剪 + sendControl ensureCheckpoint + clear() 单点重置（~45 行）；§D5 drain consecutiveSkipped 循环（~10 行）；§D1/D2 终态注释同步（断点接纳注释删除）
-- `packages/ws-replication/src/update-channel.ts` — 修改：§D6 pendingDataBytes 字段 + overflows 双口径 + 四出口（~10 行）
-- `packages/ws-replication/src/peer-connection.ts` — 修改：§D4 onPongTimeoutDetached 新方法 + liveness 回调改接（~25 行）；§D7 requestRebuild L638 改 deferTask + L634-637 注释改写（~8 行）
-- `packages/ws-replication/src/peer-namespace.ts` — 修改：§D3 quiesceSync + onConnectionFatal/onConnectionLost 三分支内联同步段（~20 行）；§D7 L688-689 注释改写（2 行）
-- `packages/ws-replication/src/hub-namespace.ts` — 修改：§D3 onConnectionClosed 同步段 + quiesceSync（~15 行）
+- `packages/ws-replication/src/frame-io.ts` — 修改：§D1 enqueueData 严格准入分支（拒纳 = 清幸存桶 + 无条件 onDataShed，~20 行）；§D2 尾窗 ledger 字段 + emitOne plane 参数 + runCheckpoint 规则 C 析取 + 裁剪 + sendControl ensureCheckpoint + clear() 单点重置（~45 行）；§D5 drain consecutiveSkipped 循环（~10 行）；**§D9 enqueueData 返回接纳布尔（三 return 点，~6 行）**；§D1/D2 终态注释同步（断点接纳注释删除）
+- `packages/ws-replication/src/update-channel.ts` — 修改：§D6 pendingDataBytes 字段 + overflows 双口径 + 四出口（~10 行）；**§D9 UpdateChannelHost.enqueueUpdate 返回类型 + handoff wipe-credit（先计保留 + accepted/needsResync 双条件信用登记）+ onDataDispatched 信用消费 + onDataShed/teardown 信用清零 + deliver/flushQueued/overflows 三门精确负载（pending+uncounted 双口径，~30 行）**
+- `packages/ws-replication/src/peer-connection.ts` — 修改：§D4 onPongTimeoutDetached 新方法 + liveness 回调改接（~25 行）；§D7 requestRebuild L638 改 deferTask + L634-637 注释改写（~8 行）；**§D9 sendData 返回布尔（outbound undefined / 非 ready → false + 显影；ready → return enqueueData，~5 行）**
+- `packages/ws-replication/src/peer-namespace.ts` — 修改：§D3 quiesceSync + onConnectionFatal/onConnectionLost 三分支内联同步段（~20 行）；§D7 L688-689 注释改写（2 行）；**§D9 PeerNamespaceHost.sendData 返回类型 + enqueueUpdateFrame return 透传（~3 行）**
+- `packages/ws-replication/src/hub-namespace.ts` — 修改：§D3 onConnectionClosed 同步段 + quiesceSync（~15 行）；**§D9 HubChannelHost.sendData 返回类型 + enqueueUpdateFrame return 透传（超限早退 → false，~3 行）**
 - `packages/ws-replication/src/types.ts` — 修改：§D2 ReplicationLimits 增 `maxQueuedControlBytes` 字段（1 行 + 注释）；§D8 N5 必做——facets 注释两层语义改写（~2 行）
 - `packages/ws-replication/src/defaults.ts` — 修改：§D2 缺省 `maxQueuedControlBytes: 8 * 1024 * 1024`（1 行）；§D8 L29-31 注释对齐（1 行）
 - `packages/ws-replication/src/validate.ts` — 修改：§D2 positiveSafeInteger + `≥ maxBootstrapBytes + PROTOCOL_OVERHEAD_BYTES` 校验（~8 行）
@@ -715,6 +847,7 @@ npx vitest run packages/ws-replication/test/ws-replication-review-revisions-r1-r
 - `packages/ws-replication/test/ws-replication-sa4-f1-f2-f3-red.test.ts` — `[SA6 owned]` 条件允许：同上（预期零改动）
 - `packages/ws-replication/test/ws-replication-sa6-hardening-g1-g2-red.test.ts` — `[SA6 owned]` 条件允许：同上（预期零改动）
 - `packages/ws-replication/test/ws-replication-sa7-dynamic.test.ts` — `[SA6 owned]` 条件允许：同上（预期零改动）
+- `packages/ws-replication/test/ws-replication-sa7-round2-dynamic.test.ts` — `[SA7 owned]` **F1 冻结破坏性锚**（commit `218ca3a`，+832 行；D1–D5 六锚，D2 唯一红）。任何 SA 不改——修复后按 §D9 S1 推演直接转绿
 
 文档：
 - `docs/protocols/instance-replication-v1.md` — 修改：§D8 A8a（§2 增句）/A8b（§17 facets 段）/A8c（§18 缺省与约束）/A8d（§17 终态口径 + 校验清单两行）
@@ -728,7 +861,7 @@ npx vitest run packages/ws-replication/test/ws-replication-review-revisions-r1-r
 
 ### DENY LIST
 
-- `packages/ws-replication/src/hub-connection.ts` — R2 终止接线（L161）、R3 cleanupAll 同步前缀、hub 侧 pong close（L295）均已就位，本任务零改动
+- `packages/ws-replication/src/hub-connection.ts` — R2 终止接线（L161）、R3 cleanupAll 同步前缀、hub 侧 pong close（L295）均已就位，本任务零改动。**§D9 注记**：disposition 回传链经 L181 表达式体接线 `(message) => this.outbound.enqueueData(...)` 自动回流布尔——**零文本改动，DENY 保持**；实现期验证：若该行实际非表达式体（需加大括号/return），必须回 SA1 显式扩 ALLOW 并标注 §D9 后方可触碰
 - `packages/ws-replication/src/liveness.ts` — onPongTimeout 回调面已够（§D4 在 connection 层收口）
 - `packages/ws-replication/src/round-engine.ts` / `fence-watchdog.ts` / `error-mapping.ts` — round/fence/错误映射面与本八项无关
 - `packages/ws-replication/src/index.ts` — 导出面无新增符号（ReplicationLimits 字段扩展不需导出变更）
@@ -769,6 +902,11 @@ npx vitest run packages/ws-replication/test/ws-replication-review-revisions-r1-r
 | `HubNamespaceChannel.onConnectionClosed` | `src/hub-namespace.ts:558` | 同步段仅清 openWaiters | 同步段增订阅摘除 + 投影 closed（Promise 返回不变） |
 | `PeerNamespaceController.onConnectionFatal/onConnectionLost` | `src/peer-namespace.ts:606/624` | 订阅异步摘除 | 增同步摘除段（void 返回不变） |
 | `UpdateChannel.overflows`（私有） | `src/update-channel.ts:127` | count/bytes 不含 pending | 双口径含 pending（行为收紧） |
+| `OutboundQueue.enqueueData`（§D9） | `src/frame-io.ts:155` | `void` 返回 | `boolean` 返回（true 接纳 / false 拒纳）——**签名扩展** |
+| `UpdateChannelHost.enqueueUpdate`（§D9） | `src/update-channel.ts:15` | `(bytes) => void` | `(bytes) => boolean`——**内部 host 接口签名** |
+| `HubChannelHost.sendData`（§D9） | `src/hub-namespace.ts:55` | `(message) => void` | `(message) => boolean`——同上 |
+| `PeerNamespaceHost.sendData`（§D9） | `src/peer-namespace.ts:43` | `(message) => void` | `(message) => boolean`——同上 |
+| `UpdateChannel.handoff/onDataDispatched/onDataShed/teardown`（§D9） | `src/update-channel.ts` | 四出口 pending 记账 | 增 credit 子账本随四出口（登记/消费/双清零）+ 三门精确负载——**行为扩展，公共签名不变** |
 
 ### Caller 清单
 
@@ -787,6 +925,7 @@ npx vitest run packages/ws-replication/test/ws-replication-review-revisions-r1-r
 | `onConnectionFatal` 调用点 | `src/peer-connection.ts:459`（quiesceControllers）/`547`（onSequenceExhausted→enterBlocked L592-594） | 同步 | N/A | N/A | 同步段零 throw；R3-4/R3-5 锚直证 |
 | `onConnectionLost` 调用点 | `src/peer-connection.ts:605-607`（onTemporaryFailure）/`627-629`（requestRebuild） | 同步 | N/A | N/A | §D4 ⑥⑦ 顺序保证 onDataShed 零出站 |
 | `handoff/onDataDispatched/onDataShed/teardown` 接线 | `src/update-channel.ts:142/112/120/180`（宿主回调由 hub-namespace L124-139 / peer-namespace 构造注入） | 同步回调 | N/A | N/A | §D6 四出口对称维护——漏项由 A7 记账锚捕获 |
+| `enqueueUpdate`（→enqueueUpdateFrame→sendData→enqueueData 判定链，§D9） | hub 侧：`src/hub-namespace.ts:127/689` → `src/hub-connection.ts:181`（表达式体，零文本改动）；peer 侧：`src/peer-namespace.ts:127 附近/777` → `src/peer-connection.ts:91/506` | 同步 | 拒纳路径经 onDataShed 显影（既有）；返回值纯读（handoff 记账分支） | N/A | 唯一调用方 = `UpdateChannel.handoff`（两侧各一）；布尔消费点单一（§D9 credit 判定）——无第三消费方（内部 host 接口，grep 证实无其他 caller） |
 
 ### 风险评估
 
@@ -813,6 +952,7 @@ npx vitest run packages/ws-replication/test/ws-replication-review-revisions-r1-r
 | **B4（SA2 R2.2 唯一阻塞）**：`spec-b1-b2-red.test.ts:90` 过时注释（「测试侧 DEFER_MICROTASK_HOPS=512」）无清理属主 → 修正后锚 1/2 仍假失败；且 R2 版锚 1 内嵌命中清单与实测不符（漏 5 处 driver 命中 + spec-b1-b2:90，所列 L401 实不匹配） | ✅（R3） | §D7 配套注释同步扩为两处（② 新增 spec-b1-b2 L90 一行注释同步——改泵描述，断言/测试体零改动）、§D7 锚 1 注释命中清单改为**实测全列 11 处/5 文件**（driver.ts:131/400/407/408/413/467/619、peer-connection.ts:636、peer-namespace.ts:689、review-red:13、spec-b1-b2:90——逐处标注清理面归属，driver:131 由 BootOptions.deferTask 注释更新覆盖）、锚 2 注释同步标注两处、§C spec-b1-b2 条目「SA3 零改动预期」→「仅 L90 注释一行同步（B4）」 | 11 处全部落入清理面（本设计 R3 期实测复核与 SA2 R2.2 实测一致）；锚 1/2 修后 → 0、锚 3 → 恰 1、锚 4 冻结值不动——四锚全部可满足 |
 | R2-N1（R1-3 构造 payload 精度：字面 8192B 裕度 ~967B ✓；BLOB=8000 常量则不达限） | ✅ 登记转发 | §D1 R1-3 契约构造注（SA6 补写时须用 ≥8192B 字面 payload 或等效加帧）——按 SA2「设计契约按字面 KiB 读法成立」不改契约文本 | 属 SA6 补写注意事项，随 R1-3 契约一并交接 |
 | R2-N2（N3 落实超字面：closing/failed 分支新增 cleanupResources 排程，无独立锚） | ✅ 登记转发 | §D3 N3 说明段已有「onConnectionLost 侧为对称完备（无独立锚，行为经既有 B-2d/AC6 系锚回归）」——SA7 动态验证对 closing/failed 断线路径加回归观察 | 方向正确（资源更早释放 + B-2d 守卫保护），无需改设计 |
-| R2-N3（锚 4 `<base>` 占位符未落具体基线） | ✅ 顺带收口 | §D7 锚 4 命令 `<base>` → `0a18661`（设计头部载明的基线 commit） | 一词替换 | |
+| R2-N3（锚 4 `<base>` 占位符未落具体基线） | ✅ 顺带收口 | §D7 锚 4 命令 `<base>` → `0a18661`（设计头部载明的基线 commit） | 一词替换 |
+| **F1（SA7 §2 动态发现，非 SA2 项）**：incoming 先计 → enqueueData 内同 ns shed 的 onDataShed 清零（含先计）→ 滞回接纳 → 恢复派发 `onDataDispatched` 再减一 → pendingData = −1（R6 溢出 count 与 A7 窗口门双低估 1 帧/循环累计）；冻结 D2 锚红 | ✅（R4 增补 §D9） | **wipe-credit 修复**：① disposition 回传链（enqueueData/enqueueUpdate/sendData → boolean，5 src 文件 + hub-connection 零文本改动）；② handoff 先计保留 + `accepted && needsResync 翻转` 双条件信用登记（不重计 pending——保 D2 锚 L403/L407 = 0 观测语义，字面 (a) 重计会使冻结锚转 1 破约，§D9.0 推论/§D9.3 裁决）；③ onDataDispatched 信用消费跳过减记（L430 ≥ 0）；④ onDataShed/teardown 信用清零（四出口对称）；⑤ deliver/flushQueued/overflows 三门读 pending+uncounted（count/bytes 双口径——判定零偏差）。S1–S10 状态/顺序/重入全枚举 | 冻结 D2 锚（`218ca3a`）零改动转绿（S1 逐行推演：L388=0/L394=6/L403=0/L407=0/L430=0）；15 既有锚零扰动（S2 逐锚）；R1 幸存面丢弃/R6 四出口语义/双侧对称全部保持（S5/S6/S7） | |
 
 **一致性自检（R3）**：全文 grep 复核——「拒纳」语义在 §0/§D1/§D6/§X/§A/A8d 六处均为「清幸存桶 + 无条件显影」口径；grep 锚仅在 §D7/§V.4 出现且为 B2/B4 修正版（无旧 `grep "512"` 残留；锚 1 命中清单 = 实测 11 处全列，与 R3 期实测逐处一致）；§17 合并文本首句与 protocol 原文逐字一致；红转绿计数 15 在 §A/§V.1/§V.2 三处一致；spec-b1-b2:90 的清理属主在 §D7 配套注释同步② 与 §C 条目两处一致。

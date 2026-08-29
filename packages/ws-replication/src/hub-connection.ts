@@ -2,7 +2,7 @@
  * hub-connection —— `createHubReplication`：accept/HELLO/hub 连接 FSM + 帧分发
  * （§4.2/§6/§15.2）。per-(connection, namespace) 通道见 hub-namespace.ts。
  */
-import type { DuplexTransport } from './types.js';
+import type { DuplexTransport, UpgradeIdentity } from './types.js';
 import { selectProtocolVersion, type ReplicationMessage } from '@nomicore/replication-protocol';
 import {
   decodeInbound,
@@ -11,6 +11,7 @@ import {
   connectionErrorFrame,
   codecFieldLimits,
 } from './frame-io.js';
+import { startLiveness } from './liveness.js';
 import { HubNamespaceChannel, type HubChannelHost } from './hub-namespace.js';
 import { ConnectionSender } from './backpressure.js';
 import type { NamespaceRegistry } from '@nomicore/namespace-registry';
@@ -26,6 +27,7 @@ import type { ReplicationTimer } from './types.js';
 import { resolveLimits, resolveTimeouts } from './defaults.js';
 import {
   validateHubOptions,
+  validateInstanceId,
   validateLimits,
   validateTimeouts,
 } from './validate.js';
@@ -73,8 +75,12 @@ class HubReplicationImpl implements HubReplication {
     };
   }
 
-  accept(transport: DuplexTransport): HubConnection {
-    const connection = new HubConnectionImpl(this.internals, transport, this.connectionCounter);
+  accept(transport: DuplexTransport, identity?: UpgradeIdentity): HubConnection {
+    if (identity === undefined) {
+      throw new TypeError('HUB_ACCEPT_IDENTITY_REQUIRED: accept(transport, identity) requires trusted Upgrade identity');
+    }
+    validateInstanceId(identity.peerInstanceId, 'identity.peerInstanceId');
+    const connection = new HubConnectionImpl(this.internals, transport, identity, this.connectionCounter);
     this.connectionCounter += 1;
     this.connectionList.push(connection);
     if (this.closed) {
@@ -117,12 +123,17 @@ class HubConnectionImpl implements HubConnection {
   private closedFlag = false;
   private settleTail: Promise<void> = Promise.resolve();
   private readonly channelHost: HubChannelHost;
+  private readonly trust: UpgradeIdentity;
+  private readonly transportSubscribers: Array<() => void> = [];
+  private stopLiveness: (() => void) | undefined;
 
   constructor(
     private readonly hub: HubInternals,
     private readonly transport: DuplexTransport,
+    identity: UpgradeIdentity,
     private readonly connId: number,
   ) {
+    this.trust = { peerInstanceId: identity.peerInstanceId };
     this.outbound = new OutboundQueue(
       (bytes) => {
         if (!transport.closed) transport.send(bytes);
@@ -147,7 +158,7 @@ class HubConnectionImpl implements HubConnection {
       timer: hub.timer,
       registry: hub.registry,
       instanceId: hub.instanceId,
-      peerInstanceId: () => this.peerInstanceId ?? '',
+      peerInstanceId: () => this.trust.peerInstanceId,
       authorize: (instanceIdentity, namespaceId) => hub.authorize(instanceIdentity, namespaceId),
       sendControl: (message) => this.sendControlChecked(message),
       sendData: (namespaceId, bytes) => this.sendData(namespaceId, bytes),
@@ -161,8 +172,10 @@ class HubConnectionImpl implements HubConnection {
         this.connectionFatal('HELLO_TIMEOUT', 1002);
       }
     }, hub.timeouts.helloTimeoutMs);
-    transport.onMessage((bytes) => this.onMessage(bytes));
-    transport.onClose(() => this.onTransportClosed());
+    this.transportSubscribers.push(
+      transport.onMessage((bytes) => this.onMessage(bytes)),
+      transport.onClose(() => this.onTransportClosed()),
+    );
   }
 
   close(code?: number, reason?: string): void {
@@ -222,6 +235,10 @@ class HubConnectionImpl implements HubConnection {
       this.connectionFatal('INSTANCE_IDENTITY_MISMATCH', 1008);
       return;
     }
+    if (message.peerInstanceId !== this.trust.peerInstanceId) {
+      this.connectionFatal('INSTANCE_IDENTITY_MISMATCH', 1008);
+      return;
+    }
     const version = selectProtocolVersion(message.protocolVersions, [1]);
     if (version === null) {
       this.connectionFatal('UNSUPPORTED_PROTOCOL_VERSION', 1002);
@@ -231,8 +248,18 @@ class HubConnectionImpl implements HubConnection {
       this.connectionFatal('UNSUPPORTED_CAPABILITY', 1002);
       return;
     }
-    this.peerInstanceId = message.peerInstanceId;
+    this.peerInstanceId = this.trust.peerInstanceId;
     this.state = 'ready';
+    if (this.transport.ping !== undefined && this.transport.onPong !== undefined) {
+      this.stopLiveness = startLiveness({
+        timer: this.hub.timer,
+        pingIntervalMs: this.hub.timeouts.pingIntervalMs,
+        pongTimeoutMs: this.hub.timeouts.pongTimeoutMs,
+        ping: this.transport.ping,
+        onPong: this.transport.onPong,
+        onPongTimeout: () => this.connectionFatal('PONG_TIMEOUT', 1002),
+      });
+    }
     // N1：§16 行 1「HELLO_ACK 解除」——HELLO 握手完成的同步段解除 hello timer
     //（原实现永不 clear：每连接多挂一个 helloTimeoutMs 空 timer）。
     this.hub.timer.clearTimeout(this.helloHandle);
@@ -356,6 +383,9 @@ class HubConnectionImpl implements HubConnection {
   }
 
   private async cleanupAll(): Promise<void> {
+    this.stopLiveness?.();
+    this.stopLiveness = undefined;
+    for (const off of this.transportSubscribers.splice(0)) off();
     const cleanups = [...this.channels.values()].map((channel) => channel.onConnectionClosed());
     this.settleTail = Promise.all(cleanups).then(() => undefined);
     await this.settleTail;
