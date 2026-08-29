@@ -26,7 +26,9 @@ export interface ReplicationLimits {
   readonly maxQueuedBytesPerConnection: number; // 8 MiB
   readonly lowWater: number; // 64 KiB
   readonly highWater: number; // 512 KiB
-  readonly controlReserveBytes: number; // 64 KiB——control 帧独立保留额度（§17 L490）；耗尽 = CONNECTION_BACKPRESSURE
+  readonly maxQueuedControlBytes: number; // 8 MiB——控制帧独立保留额度（协议 §17：未冲刷控制字节口径）；
+                                          // 必须 ≥ maxBootstrapBytes + 协议开销（validate 启动期响亮验证）；
+                                          // 耗尽 = CONNECTION_BACKPRESSURE（close 1011）
 }
 
 export interface ReplicationTimeouts {

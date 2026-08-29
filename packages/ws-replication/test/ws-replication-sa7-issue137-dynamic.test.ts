@@ -248,7 +248,7 @@ describe('SA7 动态验证（issue #137）：SA4 §6 D1–D5 / SA2 §8.4 移交�
 
   // ─────────────── D3（SA2 §5-F3 配方）：control 保留额度耗尽可达性 ───────────────
 
-  it('D3a: controlReserveBytes=1 极端——暂停段首个控制帧（hub UPDATE_ACK）即耗尽 → CONNECTION_BACKPRESSURE + close(1011) + peer backoff（非 blocked）+ 撤压重连恢复', async () => {
+  it('D3a: maxQueuedControlBytes=640（= mb 512+128 恰值）——暂停段第 allowed 笔 ACK 放行、第 allowed+1 笔 ACK 首越界 → CONNECTION_BACKPRESSURE + close(1011) + peer backoff（非 blocked）+ 撤压重连恢复', async () => {
     const probe = collectUnhandledRejections();
     try {
       const run = await bootMulti({
@@ -260,28 +260,60 @@ describe('SA7 动态验证（issue #137）：SA4 §6 D1–D5 / SA2 §8.4 移交�
           maxInFlightUpdates: 1,
           maxQueuedUpdateCount: 100,
           maxQueuedUpdateBytes: 1_048_576,
-          // R2-4 适配：保留额度独立配置——与原 lowWater=1 额度语义逐帧等价
-          controlReserveBytes: 1,
+          // D3 族共用配方（R9）：mb=512 ∈ [512,4096]（种子文档为 {n} 根，yjs snapshot
+          // 量级数十字节有数量级裕度——下方 mb 下界探针断言钉死）；quota=mb+128=640 恰值
+          //（G7d 同构）；boot 期控制帧全部落在暂停窗口之外（窗口起点重置不占额度）
+          maxBootstrapBytes: 512,
+          maxQueuedControlBytes: 640,
         },
         timeouts: { ackTimeoutMs: 60_000 },
       });
       const a = run.nsIds[0] as string;
       const wire0 = run.wires[0] as Wire;
-      const ackBefore = wireFrames(wire0, 'hubToPeer').filter((f) => f.message.kind === 'UPDATE_ACK').length;
 
-      // 置压（3 > highWater=2）→ hub 出站入暂停段；peer 写 → hub 应用 + saveDoc 后
-      // 尝试 UPDATE_ACK（control）→ observeWater 入暂停 + 首帧字节 > controlReserveBytes=1
-      // → 耗尽
+      // boot-before-pressure 前置断言：置压前 ns 已 live（boot 期控制帧不占额度）
+      expect(run.peer.getNamespaceState(a)).toBe('live');
+      // mb 下界探针断言：boot 期 BOOTSTRAP_SNAPSHOT payload < 512（安全值覆盖种子 snapshot）
+      const bootstraps0 = wireFrames(wire0, 'hubToPeer').filter(
+        (f) => f.message.kind === 'BOOTSTRAP_SNAPSHOT',
+      );
+      expect(bootstraps0).toHaveLength(1);
+      expect(
+        (bootstraps0[0]?.message as { snapshot?: Uint8Array }).snapshot?.byteLength ?? Number.MAX_SAFE_INTEGER,
+        'mb 下界探针：boot 期快照 < 512',
+      ).toBeLessThan(512);
+
+      // 探针写（无压力；n=42 ≠ 种子 n=1）：实测该 ns 的 UPDATE_ACK 帧长
+      //（同 kind 同 ns → 逐字节等长——envelope sequence 为定长 4 字节字段）
+      const ackCount = (): number =>
+        wire0.hubToPeer.filter((bytes) => decodeMessage(bytes).message.kind === 'UPDATE_ACK').length;
+      await run.peerWrite(a, { n: 42 });
+      await settleUntil(() => ackCount() >= 1, '探针写 ACK 到达');
+      const rawAcks = wire0.hubToPeer.filter(
+        (bytes) => decodeMessage(bytes).message.kind === 'UPDATE_ACK',
+      );
+      expect(rawAcks.length).toBeGreaterThanOrEqual(1);
+      const ackBytes = rawAcks[rawAcks.length - 1]?.byteLength as number;
+      const allowed = Math.floor(640 / ackBytes); // 谓词 `controlUnflushed + frame > quota` 的放行帧数
+      expect(allowed, '前置：allowed ≥ 2（远离 1 的边界脆弱性）').toBeGreaterThanOrEqual(2);
+      const ackBefore = rawAcks.length;
+
+      // 置压（3 > highWater=2）→ hub 出站入暂停段；连续 allowed+1 笔写：前 allowed 笔
+      // ACK 依序放行（窗口额度 57→…→627），第 allowed+1 笔的 ACK 为首个越界帧
+      //（627+57=684 > 640）触发耗尽且不上 wire——每笔 UPDATE 均先应用（apply 先于 ACK 发射）
       run.setHubPressure(3);
-      await run.peerWrite(a, { n: 5 });
+      for (let n = 43; n <= 43 + allowed; n += 1) {
+        await run.peerWrite(a, { n });
+      }
       await settle();
 
       // 数据面不受控（UPDATE 已应用）——「control 保留额度」不阻塞对端数据接收
-      expect(run.rootValue('hub', a, 'n')).toBe(5);
-      // 触发帧不上 wire：暂停段零 UPDATE_ACK
+      expect(run.rootValue('hub', a, 'n')).toBe(43 + allowed);
+      // 暂停段 wire 上恰 allowed 个 UPDATE_ACK（第 allowed+1 个触发帧不上 wire）
       expect(
-        wireFrames(wire0, 'hubToPeer').filter((f) => f.message.kind === 'UPDATE_ACK').length,
-      ).toBe(ackBefore);
+        wireFrames(wire0, 'hubToPeer').filter((f) => f.message.kind === 'UPDATE_ACK').length - ackBefore,
+        '暂停段放行帧数 = floor(maxQueuedControlBytes/ackBytes)',
+      ).toBe(allowed);
       // ★ D3a 主锚：恰 1 个 connection ERROR（CONNECTION_BACKPRESSURE，无 namespaceId）
       const errors = wireFrames(wire0, 'hubToPeer').filter((f) => f.message.kind === 'ERROR');
       expect(errors).toHaveLength(1);
@@ -315,12 +347,27 @@ describe('SA7 动态验证（issue #137）：SA4 §6 D1–D5 / SA2 §8.4 移交�
     }
   });
 
-  it('D3b: 缺省 64KiB 大控制帧路径——暂停段首个 >64KiB BOOTSTRAP_SNAPSHOT 即触发且触发帧不上 wire + 1011 + 撤压重连恢复', async () => {
+  it('D3b: 双 ns 双帧耗尽——暂停窗口内第一帧 90KiB BOOTSTRAP_SNAPSHOT 放行、第二帧累计越界（quota=mb+128 恰值）→ 触发帧不上 wire + 1011 + backoff + 撤压重连后两 ns live + 大文档收敛', async () => {
     const probe = collectUnhandledRejections();
     try {
-      const big = await bootLocal({ schemaText: 'type ROOT = { n: number; blurb?: string; };', root: { n: 1 }, initialHubPressure: HIGH_WATER * 2, blurbBytes: 90_000, waitForLive: false });
-      // 首连：HELLO_ACK（小控制帧，满额放行）→ BOOTSTRAP_SNAPSHOT（~90KB >
-      // controlReserveBytes=64KiB 缺省）→ used + frameBytes > controlReserveBytes 首帧即耗尽
+      // 主配方（R2 重写；单帧合法 BOOTSTRAP 自杀在启动约束下结构性不可达：
+      // F = P + 93 ≤ mb + 93 < mb + 128 ≤ quota —— 双 ns 双帧保留「控制帧族耗尽
+      // 额度」的路径覆盖）：mb=96KiB ≥ P（90KB blurb payload，宽裕）、quota=mb+128 恰值
+      const big = await bootLocal({
+        schemaText: 'type ROOT = { n: number; blurb?: string; };',
+        root: { n: 1 },
+        count: 2,
+        initialHubPressure: HIGH_WATER * 2, // > 缺省 highWater 512KiB → 首连即暂停窗口
+        blurbBytes: 90_000,
+        waitForLive: false,
+        limits: {
+          maxBootstrapBytes: 96 * 1024,
+          maxQueuedControlBytes: 96 * 1024 + 128,
+        },
+      });
+      // 首连：HELLO_ACK/OPEN_OK/SYNC（小控制帧，累计 ≪ quota）→ BOOTSTRAP#1（≈90.3KiB
+      // ≤ quota 放行）→ BOOTSTRAP#2（累计 ≈180.6KiB > quota ⟺ P > 49,123，90KB blurb
+      // 恒满足）→ 耗尽收口；触发帧（#2）不上 wire
       await settleUntil(
         () => big.wires[0]?.hubSideClosed === true || big.peer.getConnectionState() === 'backoff',
         '首连耗尽收口（hub 侧 close 或 peer backoff）',
@@ -329,26 +376,38 @@ describe('SA7 动态验证（issue #137）：SA4 §6 D1–D5 / SA2 §8.4 移交�
       const frames0 = wireFrames(wire0, 'hubToPeer');
       // 小控制帧满额放行（握手完成——耗尽发生在 BOOTSTRAP 帧，非握手帧）
       expect(frames0.filter((f) => f.message.kind === 'HELLO_ACK')).toHaveLength(1);
-      // ★ D3b 主锚：触发帧不发送——首连 wire 零 BOOTSTRAP_SNAPSHOT（大控制帧路径）
-      expect(frames0.filter((f) => f.message.kind === 'BOOTSTRAP_SNAPSHOT')).toHaveLength(0);
+      // ★ D3b 主锚：恰 1 帧 BOOTSTRAP_SNAPSHOT（首过限帧 = 第 2 帧，不上 wire）
+      expect(
+        frames0.filter((f) => f.message.kind === 'BOOTSTRAP_SNAPSHOT'),
+        '暂停段恰 1 帧 BOOTSTRAP 上 wire（第 2 帧首越界不发送）',
+      ).toHaveLength(1);
       const errors = frames0.filter((f) => f.message.kind === 'ERROR');
       expect(errors).toHaveLength(1);
       expect((errors[0]?.message as { code?: string }).code).toBe('CONNECTION_BACKPRESSURE');
       expect(wire0.peerSideCloseInfo?.code).toBe(1011);
       expect(big.peer.getConnectionState()).toBe('backoff');
 
-      // 撤压 → 分步推进重连 → BOOTSTRAP 流转（无暂停）→ live + 大文档收敛
+      // 撤压 → 分步推进重连 → BOOTSTRAP 流转（无暂停）→ 两 ns live + 大文档收敛
       big.setHubPressure(0);
       await advanceUntilReady(big);
-      await settleUntil(
-        () => big.peer.getNamespaceState(big.nsId) === 'live',
-        '重连后 ns live（当前 ' + String(big.peer.getNamespaceState(big.nsId)) + '）',
-      );
+      for (const nsId of big.nsIds) {
+        await settleUntil(
+          () => big.peer.getNamespaceState(nsId) === 'live',
+          `重连后 ns ${nsId.slice(-2)} live（当前 ${String(big.peer.getNamespaceState(nsId))}）`,
+        );
+      }
       const wire1 = big.wires[1] as Wire;
+      // 重连后 BOOTSTRAP 流转（无暂停，≥1 帧）；第二个 ns 可能经 round-diff（SYNC_STEP1/2）
+      // 修复——设计断言锚在「两 ns live + 大文档收敛」，不在 wire1 的 BOOTSTRAP 精确计数
       expect(
-        wireFrames(wire1, 'hubToPeer').filter((f) => f.message.kind === 'BOOTSTRAP_SNAPSHOT'),
-      ).toHaveLength(1);
-      await settleUntil(() => big.peerValue('blurb') === big.blob, '重连后 peer 收敛大 blurb');
+        wireFrames(wire1, 'hubToPeer').filter((f) => f.message.kind === 'BOOTSTRAP_SNAPSHOT').length,
+      ).toBeGreaterThanOrEqual(1);
+      for (const nsId of big.nsIds) {
+        await settleUntil(
+          () => big.peerValueOf(nsId, 'blurb') === big.blob,
+          `重连后 peer 收敛大 blurb（${nsId.slice(-2)}）`,
+        );
+      }
       await settle();
       expect(probe.events).toEqual([]);
     } finally {
@@ -356,7 +415,7 @@ describe('SA7 动态验证（issue #137）：SA4 §6 D1–D5 / SA2 §8.4 移交�
     }
   });
 
-  it('D3c: 谓词精确触发帧数——controlReserveBytes=100 + 实测等长 ACK：暂停段恰 floor(controlReserveBytes/ackBytes) 帧放行后下一帧触发', async () => {
+  it('D3c: 谓词精确触发帧数——maxQueuedControlBytes=640（= mb 512+128 恰值）+ 实测等长 ACK：暂停段恰 floor(640/ackBytes) 帧放行后下一帧触发', async () => {
     const probe = collectUnhandledRejections();
     try {
       const run = await bootMulti({
@@ -368,13 +427,27 @@ describe('SA7 动态验证（issue #137）：SA4 §6 D1–D5 / SA2 §8.4 移交�
           maxInFlightUpdates: 8,
           maxQueuedUpdateCount: 100,
           maxQueuedUpdateBytes: 1_048_576,
-          // R2-4 适配：保留额度独立配置——与原 lowWater=100 额度数值恒等（allowed=1）
-          controlReserveBytes: 100,
+          // D3 族共用配方（R9）：mb=512 + quota=mb+128=640（恰值合法）；boot 期控制帧
+          // 落在暂停窗口之外（窗口起点重置不占额度）
+          maxBootstrapBytes: 512,
+          maxQueuedControlBytes: 640,
         },
         timeouts: { ackTimeoutMs: 60_000 },
       });
       const a = run.nsIds[0] as string;
       const wire0 = run.wires[0] as Wire;
+
+      // boot-before-pressure 前置断言：置压前 ns 已 live（boot 期控制帧不占额度）
+      expect(run.peer.getNamespaceState(a)).toBe('live');
+      // mb 下界探针断言：boot 期 BOOTSTRAP_SNAPSHOT payload < 512（安全值覆盖种子 snapshot）
+      const bootstraps0 = wireFrames(wire0, 'hubToPeer').filter(
+        (f) => f.message.kind === 'BOOTSTRAP_SNAPSHOT',
+      );
+      expect(bootstraps0).toHaveLength(1);
+      expect(
+        (bootstraps0[0]?.message as { snapshot?: Uint8Array }).snapshot?.byteLength ?? Number.MAX_SAFE_INTEGER,
+        'mb 下界探针：boot 期快照 < 512',
+      ).toBeLessThan(512);
 
       // 探针写（无压力；n=42 ≠ 种子 n=1）：实测该 ns 的 UPDATE_ACK 帧长
       //（同 kind 同 ns → 逐字节等长——envelope sequence 为定长 4 字节字段）。
@@ -388,7 +461,8 @@ describe('SA7 动态验证（issue #137）：SA4 §6 D1–D5 / SA2 §8.4 移交�
       );
       expect(rawAcks.length).toBeGreaterThanOrEqual(1);
       const ackBytes = rawAcks[rawAcks.length - 1]?.byteLength as number;
-      const allowed = Math.floor(100 / ackBytes); // 谓词 `used + frame > controlReserveBytes` 的放行帧数
+      const allowed = Math.floor(640 / ackBytes); // 谓词 `controlUnflushed + frame > quota` 的放行帧数
+      expect(allowed, '前置：allowed ≥ 2（远离 1 的边界脆弱性）').toBeGreaterThanOrEqual(2);
       const ackBefore = rawAcks.length;
 
       // 置压（300 > highWater=200）→ 暂停段；allowed+1 笔写：前 allowed 笔 ACK 放行，
@@ -399,12 +473,12 @@ describe('SA7 动态验证（issue #137）：SA4 §6 D1–D5 / SA2 §8.4 移交�
       }
       await settle();
 
-      // ★ D3c 主锚：放行帧数恰 = floor(controlReserveBytes/ackBytes)（异形谓词
-      // `used ≥ controlReserveBytes` 会多发 1 帧 → 本断言红——SA2 #3(a) 两读法触发帧数不同）
+      // ★ D3c 主锚：放行帧数恰 = floor(maxQueuedControlBytes/ackBytes)（异形谓词
+      // `controlUnflushed ≥ quota` 会多发 1 帧 → 本断言红——SA2 #3(a) 两读法触发帧数不同）
       const acksAfter = wire0.hubToPeer.filter(
         (bytes) => decodeMessage(bytes).message.kind === 'UPDATE_ACK',
       ).length;
-      expect(acksAfter - ackBefore, '暂停段放行帧数 = floor(controlReserveBytes/ackBytes)').toBe(allowed);
+      expect(acksAfter - ackBefore, '暂停段放行帧数 = floor(maxQueuedControlBytes/ackBytes)').toBe(allowed);
       // 触发帧所属写已应用（apply 先于 ACK 发射——数据面不受 control 耗尽影响）
       expect(run.rootValue('hub', a, 'n')).toBe(43 + allowed);
       const errors = wireFrames(wire0, 'hubToPeer').filter((f) => f.message.kind === 'ERROR');
@@ -635,6 +709,7 @@ describe('SA7 动态验证（issue #137）：SA4 §6 D1–D5 / SA2 §8.4 移交�
 
 interface LocalRun {
   readonly nsId: string;
+  readonly nsIds: readonly string[];
   readonly blob: string | undefined;
   readonly wires: Wire[];
   readonly hubNode: ReplicaNode;
@@ -645,6 +720,7 @@ interface LocalRun {
   peerDelete(key: 'blurb'): Promise<void>;
   hubValue(key: string): unknown;
   peerValue(key: string): unknown;
+  peerValueOf(nsId: string, key: string): unknown;
 }
 
 /**
@@ -652,6 +728,7 @@ interface LocalRun {
  * - 自定义 schema 文本（D3b 大文档 / D4 可选 blurb + delete）；
  * - 可选首连预置 hub 压力（D3b 大控制帧路径）；
  * - 可选 blurbBytes 预置大 blurb 种子（D3b）；
+ * - 可选 count 多命名空间（D3b 双 ns 双帧耗尽配方）；
  * - 写助手支持 op:'set' 与 op:'delete'（D4 构造「超限项 + 合法小项」同队）。
  */
 async function bootLocal(opts: {
@@ -661,28 +738,34 @@ async function bootLocal(opts: {
   readonly timeouts?: Readonly<Partial<ReplicationTimeouts>>;
   readonly initialHubPressure?: number;
   readonly blurbBytes?: number;
+  readonly count?: number;
   readonly waitForLive?: boolean;
 }): Promise<LocalRun> {
+  const count = opts.count ?? 1;
   const hubNode = makeNode('hub');
   const peerNode = makeNode('peer');
   const blob = opts.blurbBytes === undefined ? undefined : 'q'.repeat(opts.blurbBytes);
   const rootValue: Record<string, unknown> = { ...opts.root };
   if (blob !== undefined) rootValue.blurb = blob;
-  const lease = okLease(
-    await hubNode.registry.create({
-      owner: HUB_OWNER,
-      schema: {
-        ...ISSUE137_SCHEMA,
-        id: `issue137-sa7-${blob !== undefined ? 'bp-exhaust' : 'r2n1'}`,
-        text: opts.schemaText,
-      },
-      root: rootValue,
-    }),
-  );
-  await schemaReady(lease);
-  const enabled = await lease.enableReplication();
-  if (!enabled.ok) throw new Error(`enableReplication 失败：${JSON.stringify(enabled)}`);
-  const nsId = lease.namespaceId;
+  const nsIds: string[] = [];
+  for (let index = 0; index < count; index += 1) {
+    const lease = okLease(
+      await hubNode.registry.create({
+        owner: HUB_OWNER,
+        schema: {
+          ...ISSUE137_SCHEMA,
+          id: `issue137-sa7-${blob !== undefined ? 'bp-exhaust' : 'r2n1'}-${index}`,
+          text: opts.schemaText,
+        },
+        root: rootValue,
+      }),
+    );
+    await schemaReady(lease);
+    const enabled = await lease.enableReplication();
+    if (!enabled.ok) throw new Error(`enableReplication 失败：${JSON.stringify(enabled)}`);
+    nsIds.push(lease.namespaceId);
+  }
+  const nsId = nsIds[0] as string;
 
   const hub = createHubReplication({
     instanceId: HUB_INSTANCE,
@@ -714,7 +797,7 @@ async function bootLocal(opts: {
       return wire.peerEnd;
     },
     timer: peerNode.scheduler,
-    targets: [{ namespaceId: nsId, localOwner: PEER_OWNER }],
+    targets: nsIds.map((namespaceId) => ({ namespaceId, localOwner: PEER_OWNER })),
     ...(opts.limits !== undefined ? { limits: opts.limits } : {}),
     ...(opts.timeouts !== undefined ? { timeouts: opts.timeouts } : {}),
   });
@@ -722,8 +805,8 @@ async function bootLocal(opts: {
   if (opts.waitForLive === false) return makeLocalRun(); // 首连即置压等「不收敛」场景由用例自行观察
   await settleUntil(() => peer.getConnectionState() === 'ready', '连接 ready');
   await settleUntil(
-    () => peer.getNamespaceState(nsId) === 'live',
-    `ns live（当前 ${String(peer.getNamespaceState(nsId))}）`,
+    () => nsIds.every((namespaceId) => peer.getNamespaceState(namespaceId) === 'live'),
+    `全部 ns live（当前 ${nsIds.map((n) => `${n.slice(-2)}:${String(peer.getNamespaceState(n))}`).join(' ')}）`,
   );
   return makeLocalRun();
 
@@ -735,13 +818,14 @@ async function bootLocal(opts: {
     if (!result.ok) throw new Error(`业务写失败：${JSON.stringify(result)}`);
     await opened.release();
   };
-  const valueOf = (node: ReplicaNode, owner: typeof PEER_OWNER, key: string): unknown => {
-    const doc = node.persistence.peek(owner, nsId);
+  const valueOf = (node: ReplicaNode, owner: typeof PEER_OWNER, namespaceId: string, key: string): unknown => {
+    const doc = node.persistence.peek(owner, namespaceId);
     if (doc === undefined) throw new Error('持久化缺副本');
     return (doc.getMap('ROOT') as unknown as Map<string, unknown>).get(key);
   };
   return {
     nsId,
+    nsIds,
     blob,
     wires,
     hubNode,
@@ -758,8 +842,9 @@ async function bootLocal(opts: {
     peerDelete: async (key) => {
       await mutate({ op: 'delete', path: [key] });
     },
-    hubValue: (key) => valueOf(hubNode, HUB_OWNER, key),
-    peerValue: (key) => valueOf(peerNode, PEER_OWNER, key),
+    hubValue: (key) => valueOf(hubNode, HUB_OWNER, nsId, key),
+    peerValue: (key) => valueOf(peerNode, PEER_OWNER, nsId, key),
+    peerValueOf: (namespaceId, key) => valueOf(peerNode, PEER_OWNER, namespaceId, key),
   };
   }
 }

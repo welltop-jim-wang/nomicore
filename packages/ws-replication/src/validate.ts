@@ -115,7 +115,7 @@ export function validateLimits(limits: ReplicationLimits): void {
   positiveSafeInteger(limits.maxQueuedBytesPerConnection, 'maxQueuedBytesPerConnection');
   positiveSafeInteger(limits.lowWater, 'lowWater');
   positiveSafeInteger(limits.highWater, 'highWater');
-  positiveSafeInteger(limits.controlReserveBytes, 'controlReserveBytes');
+  positiveSafeInteger(limits.maxQueuedControlBytes, 'maxQueuedControlBytes');
 
   const budget = limits.maxFrameBytes - PROTOCOL_OVERHEAD_BYTES;
   assertCollKind(
@@ -139,6 +139,12 @@ export function validateLimits(limits: ReplicationLimits): void {
     'maxQueuedUpdateBytes 必须 ≥ maxUpdateBytes',
   );
   assertCollKind(limits.maxInFlightUpdates >= 1, 'limits', 'maxInFlightUpdates 必须 ≥ 1');
+  // 协议 §17：控制帧独立保留额度 ≥ maxBootstrapBytes + 协议开销（启动期响亮验证，无运行时 clamp）
+  assertCollKind(
+    limits.maxQueuedControlBytes >= limits.maxBootstrapBytes + PROTOCOL_OVERHEAD_BYTES,
+    'limits',
+    `maxQueuedControlBytes(${limits.maxQueuedControlBytes}) 必须 ≥ maxBootstrapBytes(${limits.maxBootstrapBytes}) + ${PROTOCOL_OVERHEAD_BYTES}`,
+  );
   assertCollKind(
     limits.lowWater < limits.highWater,
     'limits',

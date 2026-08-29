@@ -44,6 +44,7 @@ import type {
   DuplexTransport,
   HubReplication,
   PeerReplication,
+  ReplicationLimits,
   ReplicationTimer,
 } from '@nomicore/ws-replication';
 import { decodeMessage, type DecodedMessage } from '@nomicore/replication-protocol';
@@ -194,8 +195,11 @@ interface RealRun {
   destroy(): void;
 }
 
-/** 组装真实 TCP 链路：count 个 namespace 复用单连接 + 真实积压 seam（limits 全缺省）。 */
-async function bootReal(count: number): Promise<RealRun> {
+/** 组装真实 TCP 链路：count 个 namespace 复用单连接 + 真实积压 seam（limits 缺省；可覆写）。 */
+async function bootReal(
+  count: number,
+  limits?: Readonly<Partial<ReplicationLimits>>,
+): Promise<RealRun> {
   const hubNode = makeNode('hub');
   const peerNode = makeNode('peer');
   const nsIds: string[] = [];
@@ -228,6 +232,7 @@ async function bootReal(count: number): Promise<RealRun> {
       permissions: { read: true, submit: true },
     }),
     timer: realTimer,
+    ...(limits !== undefined ? { limits } : {}),
   });
 
   const server = net.createServer((socket) => {
@@ -258,6 +263,7 @@ async function bootReal(count: number): Promise<RealRun> {
     // 仅时间面覆写（limits 零覆写——零漂移抽样前提）：ACK 悬挂期不触发重传；
     // backoff 拉长使 1011 后 peer 稳定停留 backoff（断言窗口内不重拨）。
     timeouts: { ackTimeoutMs: 60_000 },
+    ...(limits !== undefined ? { limits } : {}),
     backoff: { baseMs: 60_000, maxMs: 60_000, resetAfterMs: 60_000 },
   });
   peer.start();
@@ -403,7 +409,12 @@ describe('issue #137 R2 SA7：真实 transport 缺省零漂移抽样（真实 TC
     'B（耗尽侧）：真实暂停段 + 跨越缺省额度 control 流量（40 ns × 32 ACK = 1280 ≈ 73KiB > 64KiB）——恰 1 ERROR(CONNECTION_BACKPRESSURE) + close(1011) + peer backoff',
     { timeout: 180_000 },
     async () => {
-      const run = await bootReal(40);
+      const run = await bootReal(40, {
+        // 显式额度（缺省 8MiB 不再耗尽 73KiB 流量）：quota = mb+128 = 65,664，耗尽点
+        // ≈ floor(65,664/ackBytes) ≈ 旧预测 ~1150 同量级（用例 A 缺省额度天然零改动）
+        maxBootstrapBytes: 64 * 1024,
+        maxQueuedControlBytes: 64 * 1024 + 128,
+      });
       liveRuns.push(run);
       try {
         await enterRealPause(run, run.nsIds[0] as string);

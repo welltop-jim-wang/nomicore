@@ -26,7 +26,8 @@ import { createHubReplication, createPeerReplication } from '@nomicore/ws-replic
 import type { DuplexTransport, HubReplication, PeerReplication, ReplicationLimits } from '@nomicore/ws-replication';
 import { createRegistryTestScheduler } from '@nomicore/namespace-registry/testing';
 import { decodeMessage, encodeMessage, type ReplicationMessage } from '@nomicore/replication-protocol';
-import { BACKPRESSURE_POLL_INTERVAL_MS, ConnectionSender, type DataSenderFacet } from '../src/backpressure.js';
+import { ConnectionSender, type DataSenderFacet } from '../src/backpressure.js';
+import { resolveLimits } from '../src/defaults.js';
 import { OutboundQueue } from '../src/frame-io.js';
 import type { ResolvedLimits } from '../src/types.js';
 import { advanceMs, boot } from './driver.js';
@@ -684,19 +685,21 @@ describe('SA7 D3（round 2）：GOAWAY drain 窗口 × pong 超时互斥 + 重�
 
 // ═══════════════════════════ D4：R2 尾窗 ledger 冲刷回落（类级） ═══════════════════════════
 
-const D4_LIMITS: Readonly<ResolvedLimits> = Object.freeze({
-  maxFrameBytes: 1 << 20,
-  maxBootstrapBytes: 1 << 20,
-  maxSyncDiffBytes: 1 << 20,
-  maxUpdateBytes: 1 << 20,
-  maxQueuedUpdateBytes: 1 << 20,
-  maxQueuedUpdateCount: 1024,
-  maxInFlightUpdates: 8,
-  maxQueuedBytesPerConnection: 64 * 1024,
-  lowWater: 1024,
-  highWater: 8 * 1024,
-  controlReserveBytes: 32 * 1024,
-} as ResolvedLimits);
+const D4_LIMITS: Readonly<ResolvedLimits> = Object.freeze(
+  resolveLimits({
+    maxFrameBytes: 1 << 20,
+    maxBootstrapBytes: 16 * 1024, // D4 快照 8 KiB ≤ 16 KiB（满足额度约束：32 KiB ≥ 16 KiB + 128）
+    maxSyncDiffBytes: 1 << 20,
+    maxUpdateBytes: 1 << 20,
+    maxQueuedUpdateBytes: 1 << 20,
+    maxQueuedUpdateCount: 1024,
+    maxInFlightUpdates: 8,
+    maxQueuedBytesPerConnection: 64 * 1024,
+    lowWater: 1024,
+    highWater: 8 * 1024,
+    maxQueuedControlBytes: 32 * 1024, // 控制帧独立保留额度（协议 §17：未冲刷控制字节口径）
+  }),
+);
 
 describe('SA7 D4（round 2）：ConnectionSender 暂停段控制额度与恢复 drain', () => {
   it('D4：独立 control reserve 响亮耗尽；水位回落后 facet data 恢复派发', async () => {
@@ -722,6 +725,7 @@ describe('SA7 D4（round 2）：ConnectionSender 暂停段控制额度与恢复 
     sender = new ConnectionSender({
       limits: D4_LIMITS,
       timer: scheduler,
+      ackTimeoutMs: 10_000, // poll 间隔 = max(1, floor(10_000/100)) = 100（权威公式）
       readBufferedAmount: () => buffered,
       emitControl: (message) => { emitted.push(message); return queue.sendControl(message); },
       emitData: (message) => { emitted.push(message); return queue.emit(message); },
@@ -738,7 +742,7 @@ describe('SA7 D4（round 2）：ConnectionSender 暂停段控制额度与恢复 
     expect(exhausted).toBe(1);
     expect(pending).toHaveLength(1);
     buffered = 0;
-    await scheduler.advanceBy(BACKPRESSURE_POLL_INTERVAL_MS);
+    await scheduler.advanceBy(100); // = max(1, floor(ackTimeoutMs/100))，权威公式（替代固定 1000ms）
     expect(pending).toHaveLength(0);
     expect(emitted.some((message) => message.kind === 'UPDATE')).toBe(true);
   });

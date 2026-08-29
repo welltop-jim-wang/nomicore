@@ -145,6 +145,7 @@ class HubConnectionImpl implements HubConnection {
     this.sender = new ConnectionSender({
       limits: hub.limits,
       timer: hub.timer,
+      ackTimeoutMs: hub.timeouts.ackTimeoutMs,
       readBufferedAmount: () => this.readBufferedAmount(),
       emitControl: (message) => this.outbound.sendControl(message),
       emitData: (message) => this.outbound.emit(message),
