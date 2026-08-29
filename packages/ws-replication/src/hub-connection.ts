@@ -9,6 +9,7 @@ import {
   namespaceFieldViolation,
   OutboundQueue,
   connectionErrorFrame,
+  namespaceErrorFrame,
   codecFieldLimits,
 } from './frame-io.js';
 import { startLiveness } from './liveness.js';
@@ -257,6 +258,12 @@ class HubConnectionImpl implements HubConnection {
   private readonly helloHandle: unknown;
   private closedFlag = false;
   private settleTail: Promise<void> = Promise.resolve();
+  /** issue #174：GOAWAY drain 窗口结算闸（resolve-only，永不 reject——R1 零 unhandled
+   *  rejection；cleanupAll 尾部 finally 释放）。 */
+  private drainActive = false;
+  private drainDeadline: unknown | undefined;
+  private drainDone: (() => void) | undefined;
+  private drainTail: Promise<void> | undefined;
   private readonly channelHost: HubChannelHost;
   private readonly transportSubscribers: Array<() => void> = [];
   private stopLiveness: (() => void) | undefined;
@@ -306,6 +313,7 @@ class HubConnectionImpl implements HubConnection {
       onDataQueued: (namespaceId) => this.sender.onDataQueued(namespaceId),
       requestDataDrain: () => this.sender.requestDrain(),
       connectionFatal: (code, wsCloseCode) => this.connectionFatal(code, wsCloseCode ?? 1002),
+      onChannelSettled: (_namespaceId) => this.maybeFinishDrainEarly(),
     };
     this.helloHandle = hub.timer.setTimeout(() => {
       if (this.state === 'handshaking') {
@@ -326,7 +334,8 @@ class HubConnectionImpl implements HubConnection {
   close(code?: number, reason?: string): void {
     if (this.closedFlag) return;
     this.closedFlag = true;
-    this.state = 'draining';
+    this.state = 'closed';
+    this.clearDrainHandles(); // §4.6 路径 1：窗口期公共 close = force-close 逃生舱
     this.sender.teardown(); // §8：poll timer 清零（连接收口必经点）
     for (const channel of this.channels.values()) channel.quiesceConnection();
     if (!this.transport.closed) {
@@ -335,26 +344,44 @@ class HubConnectionImpl implements HubConnection {
     void this.cleanupAll();
   }
 
-  /** §7.2：GOAWAY(SERVER_SHUTTING_DOWN, drain) 先行，随后 close(1001)。
-   *  handshaking 连接不发 GOAWAY（HELLO 未完成——对端 handshaking 门对非 HELLO_ACK 帧
-   *  判 CONNECTION_POLICY_VIOLATION，peer-connection.ts:256-258；GOAWAY-before-ACK 反而是
-   *  协议伤害）；直接 close(1001)。 */
+  /** §7.2：GOAWAY(SERVER_SHUTTING_DOWN, drain) 先行，随后真实 drain 窗口，窗口末
+   *  close(1001)。handshaking 连接不发 GOAWAY（HELLO 未完成——对端 handshaking 门对
+   *  非 HELLO_ACK 帧判 CONNECTION_POLICY_VIOLATION，peer-connection.ts:256-258；
+   *  GOAWAY-before-ACK 反而是协议伤害）；直接 close(1001)。 */
   shutdownWithGoaway(drainMs: number): void {
-    if (this.closedFlag) return;
+    // §4.1 双门：窗口期重入会覆盖旧 drainTail/drainDone → 旧 hub.close() Promise
+    // 永不结算（挂起泄漏）。无现实重入路径（唯一调用点受 HubReplicationImpl.closed
+    // 门 + hub.close() 幂等保护），一行防御。
+    if (this.closedFlag || this.drainActive) return;
     if (this.state === 'handshaking') {
       this.close(1001, 'hub-shutdown');
       return;
     }
+    // ① 结算闸先于一切（HubReplication.close() 随后 map settle() 必须观察到 pending——
+    //    R1 RED@2。resolve-only：不存在 reject 路径 → 零 floating rejection）。
+    this.drainTail = new Promise<void>((resolve) => { this.drainDone = resolve; });
+    this.drainActive = true;
+    this.state = 'draining';
     try {
-      this.outbound.sendControl({ // 直发豁免（同 connectionFatal :369-375）：停机帧不允许
+      this.outbound.sendControl({ // 直发豁免（既有注释理由保留：停机帧不允许
         kind: 'GOAWAY', // 被背压额度否决（sender.sendControl 在 paused 态有额度判据，耗尽即
         reasonCode: 'SERVER_SHUTTING_DOWN', // connectionFatal——停机帧不允许被否决）
         drainTimeoutMs: drainMs,
       });
     } catch {
-      // best-effort：framing 不可信 → 直接 close
+      // framing 不可信 = 真降级路径（外部故障）：drain 无从宣告 → 直接收口
+      this.finishDrain();
+      return;
     }
-    this.close(1001, 'hub-shutdown'); // 既有路径：teardown + close + cleanupAll
+    // ② deadline：与 GOAWAY 宣告值同源同值（drainMs 即 closeTimeoutMs，R1 断言锚）。
+    //    零新 knob；经注入 timer（测试 fake scheduler / 生产 timer 同一 seam）。
+    this.drainDeadline = this.hub.timer.setTimeout(() => {
+      this.drainDeadline = undefined;
+      this.finishDrain(); // 不等待任何完成事件（AC4/R1）
+    }, drainMs);
+    // ③ 提前完成初检：channels 空 = 无可收口对象 → 立即收口（GOAWAY 已同步上 wire，
+    //    close 随后——帧序仍先于 close 事件，D4 同序锚）
+    this.maybeFinishDrainEarly();
   }
 
   /** issue #175 AC1/AC2/AC4：定向 reauth——GOAWAY(REAUTH_REQUIRED, drain>0) + deadline 后
@@ -398,9 +425,36 @@ class HubConnectionImpl implements HubConnection {
     return channel.terminateUnauthorized();
   }
 
-  /** 全部通道 cleanup 结算（HubReplication.close 等待）。 */
+  /** 全部通道 cleanup 结算（HubReplication.close 等待）：drain 期 → 窗口末结算闸。 */
   settle(): Promise<void> {
-    return this.settleTail;
+    return this.drainTail ?? this.settleTail; // §4.5：drain 期 → drainTail；否则既有语义
+  }
+
+  /** issue #174 §4.3：drain 窗口提前完成观测——全部 channel 终态（或空）→ 立即收口。 */
+  private maybeFinishDrainEarly(): void {
+    if (!this.drainActive || this.closedFlag) return; // 非 drain 零开销；closedFlag 为第二道闸
+    for (const channel of this.channels.values()) {
+      const s = channel.state; // 公开字段，零新投影 API
+      if (s !== 'closed' && s !== 'conflicted' && s !== 'failed') return;
+    }
+    this.finishDrain(); // 全部终态（或 channels 空）→ 提前收口
+  }
+
+  /** issue #174 §4.4：drain 收口点——deadline/提前完成/对端关三入口合流（幂等）。
+   *  deadline fire 时【不检查任何 channel/apply 状态】——不等待未完成网络 ACK（AC4）。 */
+  private finishDrain(): void {
+    if (this.closedFlag || !this.drainActive) return;
+    this.clearDrainHandles();
+    this.close(1001, 'hub-shutdown'); // 既有收口原样复用（§4.6）
+  }
+
+  /** issue #174 §4.6-R2 单点：drain 复位 + deadline 句柄清理。幂等；四条连接终结路径共用。 */
+  private clearDrainHandles(): void {
+    this.drainActive = false;
+    if (this.drainDeadline !== undefined) {
+      this.hub.timer.clearTimeout(this.drainDeadline); // §8 句柄必清纪律
+      this.drainDeadline = undefined;
+    }
   }
 
   private onMessage(bytes: Uint8Array): void {
@@ -489,6 +543,27 @@ class HubConnectionImpl implements HubConnection {
   }
 
   private dispatchReady(message: ReplicationMessage, sequence: number): void {
+    // issue #174 §4.2：GOAWAY drain 窗口前置门——停止接纳新 OPEN 与新 sync round
+    //（§6.3），其余帧照常分发（现有 namespace 自然收口）。
+    if (this.drainActive) {
+      switch (message.kind) {
+        case 'OPEN_NAMESPACE':
+          // D1：显式拒绝（AC1/R3）：零 authorize、零 Registry open、零 channel 创建、
+          // 不杀连接。relatedSequence = 被拒 OPEN 帧序（§13 ERROR registry）。
+          try {
+            this.sendControlChecked(
+              namespaceErrorFrame('NAMESPACE_REOPEN_REQUIRES_RECONNECT', message.namespaceId, sequence),
+            );
+          } catch {
+            // 连接已收口；忽略（withChannel 同款既有防御）
+          }
+          return;
+        case 'SYNC_STEP1':
+          return; // D2：新 round 不接纳——无响应丢弃（不开始新 sync round，§6.3）
+        default:
+          break; // 其余帧照常走既有分发（自然收口）
+      }
+    }
     switch (message.kind) {
       case 'HELLO':
       case 'HELLO_ACK':
@@ -592,6 +667,7 @@ class HubConnectionImpl implements HubConnection {
     if (this.closedFlag) return;
     this.closedFlag = true;
     this.state = 'closed';
+    this.clearDrainHandles(); // §4.6 路径 2：对端已关 = 窗口无服务对象
     this.sender.teardown();
     void this.cleanupAll();
   }
@@ -608,13 +684,21 @@ class HubConnectionImpl implements HubConnection {
     this.stopLiveness = undefined;
     for (const off of this.transportSubscribers.splice(0)) off();
     const cleanups = [...this.channels.values()].map((channel) => channel.onConnectionClosed());
-    this.settleTail = Promise.all(cleanups).then(() => undefined);
-    await this.settleTail;
-    this.hub.dropConnection(this);
+    try {
+      this.settleTail = Promise.all(cleanups).then(() => undefined);
+      await this.settleTail;
+      this.hub.dropConnection(this);
+    } finally {
+      // §4.6：drain 结算闸在清理链尾释放——即使清理异常，close() Promise 也绝不悬挂
+      const done = this.drainDone;
+      this.drainDone = undefined;
+      done?.();
+    }
   }
 
   private connectionFatal(code: string, wsCloseCode: number): void {
     if (this.closedFlag) return;
+    this.clearDrainHandles(); // §4.6 路径 3（R2-M1）：drain 期 fatal 不留 timer 残留
     this.sender.teardown();
     try {
       // §4.3 豁免（R2，SA2 #2）：收口 ERROR 直发 outbound——绕过 sender 额度判据
@@ -685,6 +769,7 @@ class HubConnectionImpl implements HubConnection {
    *  （既有）；closedFlag/state/cleanupAll 收口拓扑不变。 */
   private onSequenceExhausted(transport: DuplexTransport): void {
     if (transport.closed) return;
+    this.clearDrainHandles(); // §4.6 路径 4（R2-M1）：drain 期序列耗尽不留 timer 残留
     this.sender.teardown();
     if (!transport.closed) {
       transport.close(1008, 'sequence-exhausted');
