@@ -390,6 +390,8 @@ describe('issue #138 切片 7：实例认证与连接生命周期（全部红灯
     const goaway = goaways[0]!.message as { reasonCode: string; drainTimeoutMs: number };
     expect(goaway.reasonCode).toBe('SERVER_SHUTTING_DOWN');
     expect(goaway.drainTimeoutMs).toBeGreaterThan(0);
+    await run.hubNode.scheduler.advanceBy(CONTRACT_TIMEOUTS.closeTimeoutMs); // hub 侧虚拟时钟推进至 drain deadline（注意：driver.advanceMs 推进的是 peer scheduler，不可用）
+    await settle();
     await closePromise;
 
     // close 后不再接纳：accept → undefined、零分配（AC-6「停止接纳连接」）
