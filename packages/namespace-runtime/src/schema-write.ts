@@ -31,10 +31,16 @@
  */
 import type * as Y from 'yjs';
 import type { DocHandle, DocHandleStatus } from '@nomicore/persistence';
+import type { DiagnosticIssue } from '@nomicore/namespace-diagnostic-log';
 import { DocRuntimeFatalError, replaceSchemaAndRoot } from '@nomicore/doc-runtime';
 import type { ReplaceResult, SchemaRootPlan } from '@nomicore/doc-runtime';
 import type { CompileSchemaEnvelopeOk, CompileSchemaEnvelopeResult, SchemaEnvelope, SchemaParseIssue } from '@nomicore/vfsl';
-import { RuntimeWriteFatalError } from './errors.js';
+import {
+  FATAL_SCHEMA_WRITE_INTERNAL_CODE,
+  MUTATION_INPUT_NOT_PLAIN_DATA_CODE,
+  RUNTIME_WRITE_DISABLED_CODE,
+  RuntimeWriteFatalError,
+} from './errors.js';
 import { assertCompiledShape, installActive, toIssueSummary } from './p0.js';
 import type { RuntimeState } from './p0.js';
 import {
@@ -44,6 +50,18 @@ import {
   snapshotMutation,
   writeFatalMessage,
 } from './write.js';
+import {
+  diagCapGate,
+  diagCompileFail,
+  diagDirtyFatal,
+  diagFatalCapGate,
+  diagFatalCompileThrow,
+  diagFatalTx,
+  diagInputReady,
+  diagInputSnapshotFail,
+  diagValidation,
+} from './diagnostic.js';
+import type { SlotDiag } from './diagnostic.js';
 
 /** 写槽运行时环境（构造栈一次成型 V3c''——纯数据闭包，槽体零读 seam 输入）。
  *  与 WriteEnv 的差异 = 多 compile 字段（proposed 编译路由；同一批捕获局部量）。 */
@@ -98,11 +116,16 @@ export type ReplaceSchemaResult = { ok: true } | { ok: false; issues: unknown[] 
 /**
  * SCHEMA 写槽主函数（唯一实现）。async——同步段无可抛点（全部 gate/分类在体内），
  * 一切异常进入返回 Promise（sequencer 链尾恒绿接线消化 reject）。
+ * diag（issue #149）：可选 per-attempt 诊断收集器——未装配 emitter 时 undefined
+ * （槽体全部 diag 写入 no-op，行为等价）；装配时每个结局点恰一行诊断写入（设计 §8.2）。
  */
-export async function runSchemaWriteSlot(env: SchemaWriteEnv, input: unknown): Promise<ReplaceSchemaResult> {
+export async function runSchemaWriteSlot(env: SchemaWriteEnv, input: unknown, diag?: SlotDiag): Promise<ReplaceSchemaResult> {
   // ── S1 lifecycle/fatal gate（零输入访问）──────────────────────────────
   if (env.state.fatal !== undefined) {
-    return disabled('fatal 已置位（internal fatal 已永久禁用本 Runtime 的全部写能力，读取仍保留）');
+    // [issue #149] S2′a：capability-gate / RUNTIME_WRITE_DISABLED / rejected / not-accessed
+    const r = disabled('fatal 已置位（internal fatal 已永久禁用本 Runtime 的全部写能力，读取仍保留）');
+    if (r.ok === false) diagCapGate(diag, RUNTIME_WRITE_DISABLED_CODE, r.issues as DiagnosticIssue[]);
+    return r;
   }
 
   // ── S2 writable gate + notifier 绑定检查（瞬时观察；零输入访问）────────
@@ -111,26 +134,44 @@ export async function runSchemaWriteSlot(env: SchemaWriteEnv, input: unknown): P
     handleStatus = env.handle.getStatus();
   } catch (err) {
     // adapter bug → 统一 fatal（committed:false——此时尚零 doc 写）
+    // [issue #149] S2′c：capability-gate / NSRT-FATAL-SCHEMA-WRITE-INTERNAL / write-slot-internal
+    diagFatalCapGate(diag, FATAL_SCHEMA_WRITE_INTERNAL_CODE);
     return rejectWithWriteFatal(env, false, 'write-slot-internal', err, 'schema');
   }
   if (handleStatus !== 'ready') {
-    return disabled(
+    // [issue #149] S2′b：capability-gate / RUNTIME_WRITE_DISABLED / rejected / not-accessed
+    const r = disabled(
       `DocHandle 状态 ${handleStatus} 不可写（persistence-degraded 阻止全部 Y.Doc 写；released/disposed 同拒）`,
     );
+    if (r.ok === false) diagCapGate(diag, RUNTIME_WRITE_DISABLED_CODE, r.issues as DiagnosticIssue[]);
+    return r;
   }
   if (env.notifyDirty === undefined) {
-    return disabled(
+    // [issue #149] S2′b：capability-gate / RUNTIME_WRITE_DISABLED / rejected / not-accessed
+    const r = disabled(
       'notifyDirty 未绑定——构造方必须绑定 persistence.saveDoc(handle)（ADR-0008 窄接缝）；'
       + '无持久化绑定的 Runtime 拒绝一切 Y.Doc 写，杜绝「提交成功但永无 dirty 登记」的静默失信',
     );
+    if (r.ok === false) diagCapGate(diag, RUNTIME_WRITE_DISABLED_CODE, r.issues as DiagnosticIssue[]);
+    return r;
   }
   const notifyDirty = env.notifyDirty; // 单读捕获（此后不再读 env 字段语义）
 
   // ── S3 槽起点输入快照（本槽第一次也是唯一一次读取输入）+ 输入形状检查 ──
   const snap = snapshotMutation(input); // 共享受控 snapshotter（D3；R2 四查次序原样）
-  if (snap.kind === 'issue') return { ok: false, issues: [snap.issue] }; // MUTATION_INPUT_NOT_PLAIN_DATA
+  if (snap.kind === 'issue') {
+    // [issue #149] S3′a：input-snapshot / MUTATION_INPUT_NOT_PLAIN_DATA / rejected / unsafe-input
+    diagInputSnapshotFail(diag, MUTATION_INPUT_NOT_PLAIN_DATA_CODE, snap.issue as DiagnosticIssue);
+    return { ok: false, issues: [snap.issue] }; // MUTATION_INPUT_NOT_PLAIN_DATA
+  }
+  // [issue #149] S3 成功：input ← {snapshot}（同一 frozen 快照引用）
+  diagInputReady(diag, snap.value);
   const shape = shapeOfReplaceInput(snap.value); // 形状检查在快照后追加（D3；无新稳定码）
-  if (shape.kind === 'issue') return { ok: false, issues: [shape.issue] };
+  if (shape.kind === 'issue') {
+    // [issue #149] S3′b：validation / rejected / issues 透传（input 已是 snapshot）
+    diagValidation(diag, [shape.issue]);
+    return { ok: false, issues: [shape.issue] };
+  }
 
   // ── S4 proposed 编译（seam 注入路由；不读 state 的 active 域——AC1/AC8）──────
   let compiled: CompileSchemaEnvelopeOk;
@@ -142,6 +183,13 @@ export async function runSchemaWriteSlot(env: SchemaWriteEnv, input: unknown): P
       }
       // 普通失败：当前 schema 状态不变、旧 active tools 继续服务（与 P0 失败 →
       // unavailable 的关键差异——proposed 失败只是「这次替换没发生」，D4）
+      // [issue #149] S4′a：schema-compile / rejected / 顶层 code=首条 toIssueSummary().code /
+      // issues={code,message,path:[]} 结构化（码派生单源——p0.toIssueSummary）
+      const diagIssues: DiagnosticIssue[] = r.issues.map((issue) => {
+        const s = toIssueSummary(issue);
+        return { code: s.code, message: s.message, path: [] };
+      });
+      diagCompileFail(diag, diagIssues);
       return { ok: false, issues: r.issues.map((issue) => toReplacementIssue(issue)) };
     }
     // 畸形 ok:true → throw → fatal（P0 同款守卫；【R1.1/A1】检查面扩展：envelope 恰四键
@@ -150,6 +198,9 @@ export async function runSchemaWriteSlot(env: SchemaWriteEnv, input: unknown): P
     assertCompiledShape(r);
     compiled = r;
   } catch (err) {
+    // [issue #149] S4′b：schema-compile / NSRT-FATAL-SCHEMA-WRITE-INTERNAL /
+    // schema-compile-throw / fatal committed:false
+    diagFatalCompileThrow(diag, FATAL_SCHEMA_WRITE_INTERNAL_CODE);
     return rejectWithWriteFatal(env, false, 'schema-compile-throw', err, 'schema');
   }
 
@@ -158,6 +209,13 @@ export async function runSchemaWriteSlot(env: SchemaWriteEnv, input: unknown): P
     ? { kind: 'replace-root', snapshot: shape.root }
     : { kind: 'keep-root' };
   let result: ReplaceResult;
+  // [issue #149] D-B 捕获窗口：与 ROOT 槽同构（§8.2）——分类在 catch 内执行（读取窗口
+  // 局部 capturedUpdate）；finally 只负责退订与收口 diag.updateBytes（成功路径消费）
+  let capturedUpdate: Uint8Array | undefined;
+  const updateHandler = (u: Uint8Array): void => {
+    if (capturedUpdate === undefined) capturedUpdate = u;
+  };
+  if (diag !== undefined) env.doc.on('update', updateHandler);
   try {
     result = replaceSchemaAndRoot(env.doc, {
       envelope: compiled.envelope,
@@ -168,11 +226,24 @@ export async function runSchemaWriteSlot(env: SchemaWriteEnv, input: unknown): P
     // D9 fatal 分类：doc-runtime branded 透传 committed/phase 事实；未知异常保守
     // committed:true（ADR「未知异常保守视为可能已提交」——过报方向强制）
     if (err instanceof DocRuntimeFatalError) {
+      // [issue #149] S5′b：transaction / NSRT-FATAL-SCHEMA-WRITE-INTERNAL / err.phase 透传
+      diagFatalTx(diag, FATAL_SCHEMA_WRITE_INTERNAL_CODE, err.committed, err.phase, capturedUpdate);
       return rejectWithWriteFatal(env, err.committed, err.phase, err, 'schema');
     }
+    // [issue #149] S5′b：transaction / NSRT-FATAL-SCHEMA-WRITE-INTERNAL / unknown-pipeline-throw
+    diagFatalTx(diag, FATAL_SCHEMA_WRITE_INTERNAL_CODE, true, 'unknown-pipeline-throw', capturedUpdate);
     return rejectWithWriteFatal(env, true, 'unknown-pipeline-throw', err, 'schema');
+  } finally {
+    if (diag !== undefined) {
+      env.doc.off('update', updateHandler);
+      diag.updateBytes = capturedUpdate;
+    }
   }
-  if (!result.ok) return { ok: false, issues: result.issues }; // 领域失败透传（零写入由 seam 承诺）
+  if (!result.ok) {
+    // [issue #149] S5′a：validation / rejected / issues 同源透传（零写入由 seam 承诺）
+    diagValidation(diag, result.issues as DiagnosticIssue[]);
+    return { ok: false, issues: result.issues }; // 领域失败透传（零写入由 seam 承诺）
+  }
 
   // ── S5.5 安装新 active tools（AC6：transaction 返回后同步、await notifyDirty 之前）──
   //  五字段身份 + tools + 状态迁回 'ready' + delete schemaIssue——getActiveSchema/
@@ -186,6 +257,9 @@ export async function runSchemaWriteSlot(env: SchemaWriteEnv, input: unknown): P
     // 写已提交而登记通道损坏——诚实 fatal；不重试（S6 本次即本槽 notifier 唯一一次尝试）；
     // 新 tools 已装（与 committed generation 一致，不回滚、不卸载——ADR「不补偿」）
     markWriteFatal(env, err, 'schema');
+    // [issue #149] S6′：dirty-notification / NSRT-FATAL-SCHEMA-WRITE-INTERNAL /
+    // notify-dirty-failed / fatal committed:true（effect 由 §7.3 表裁决——必有 bytes → update）
+    diagDirtyFatal(diag, FATAL_SCHEMA_WRITE_INTERNAL_CODE);
     throw new RuntimeWriteFatalError(
       'notify-dirty-failed',
       true,

@@ -41,7 +41,13 @@ import { readLogicalValueAtPath } from '@nomicore/doc-runtime';
 import type { ReadLogicalValueResult } from '@nomicore/doc-runtime';
 import { compileSchemaEnvelope } from '@nomicore/vfsl';
 import type { CompileSchemaEnvelopeResult, SchemaEnvelope } from '@nomicore/vfsl';
-import { NamespaceRuntimeConstructionError, RUNTIME_READ_DISABLED_CODE, RuntimeReadDisabledError } from './errors.js';
+import type { DiagnosticIssue, NamespaceDiagnosticChangeEmitter } from '@nomicore/namespace-diagnostic-log';
+import {
+  NamespaceRuntimeConstructionError,
+  RUNTIME_READ_DISABLED_CODE,
+  RUNTIME_WRITE_DISABLED_CODE,
+  RuntimeReadDisabledError,
+} from './errors.js';
 import { runP0 } from './p0.js';
 import type { ActiveSchemaInfo, P0Env, RuntimeState } from './p0.js';
 import { projectMetadata, projectSchemaEnvelope } from './projection.js';
@@ -68,6 +74,7 @@ import { disabled } from './write.js';
 import type { MutateDataResult, WriteEnv } from './write.js';
 import { createSessionFanout, registerReplicationHost } from './replication-session.js';
 import type { RuntimeReplicationHost } from './replication-session.js';
+import { buildDiagnosticEnv, createSlotDiag, emitAttempt, emitSlot } from './diagnostic.js';
 
 /** seam 输入（D8'）：包内确定性测试接缝；@internal 沿 doc-runtime getCompiledWith 先例。 */
 export interface NamespaceRuntimeSeamInput {
@@ -81,6 +88,10 @@ export interface NamespaceRuntimeSeamInput {
    *  persistence.saveDoc(handle)；测试经 seam 注入确定性 notifier。缺省 = 未绑定
    *  （写槽 S2 loud 拒绝——D6.4 拒绝虚假降级立法，非静默 no-op）。 */
   readonly notifyDirty?: () => Promise<void>;
+  /** Optional best-effort diagnostic emitter; requires an explicit clock. */
+  readonly diagnosticEmitter?: NamespaceDiagnosticChangeEmitter;
+  /** Epoch-millisecond source used for diagnostic observedAt. */
+  readonly clock?: () => number;
 }
 
 /** closing/closed 期 read 拒绝分支（#92）：ADR-0008 读取能力节「预期路径、载体和
@@ -357,6 +368,7 @@ export function createNamespaceRuntimeWithSeam(input: NamespaceRuntimeSeamInput)
     notifyDirty: captured.notifyDirty,
     fanout,
   };
+  const diagEnv = buildDiagnosticEnv(captured.diagnosticEmitter, captured.clock);
 
   // V3d sequencer + P0 入队（INV-N1：return 前 P0 已是队首 pending 节点；微任务起步；
   //     thunk = 纯调用 () => runP0(env)，零属性读取/零字面量构造/无可抛点——
@@ -376,6 +388,7 @@ export function createNamespaceRuntimeWithSeam(input: NamespaceRuntimeSeamInput)
     sequencer,
     notifyDirty: captured.notifyDirty,
     fanout,
+    diagEnv,
   };
 
   // V3d''' close barrier 懒创建（R2，设计 §3.5 (4)）：公共 close() 首调用与 reset
@@ -443,38 +456,89 @@ export function createNamespaceRuntimeWithSeam(input: NamespaceRuntimeSeamInput)
       // D5.1 接纳门：lifecycle≠ready 时同步零入队拒绝（INV-C3）——经返回 Promise
       // 即时 settle 领域化联合（不 throw、不读 mutation——Proxy 零触发、零 doc 副作用）
       if (state.lifecycle !== 'ready') {
-        return Promise.resolve(disabled(lifecycleWriteRefusal(state.lifecycle)));
+        const result = disabled(lifecycleWriteRefusal(state.lifecycle));
+        if (result.ok === false) {
+          emitAttempt(diagEnv, {
+            operation: 'root-mutation', stage: 'acceptance', result: { kind: 'rejected' },
+            code: RUNTIME_WRITE_DISABLED_CODE, input: { status: 'not-accessed' },
+            issues: result.issues as DiagnosticIssue[],
+          });
+        }
+        return Promise.resolve(result);
       }
-      // D1：同步接纳定序（enqueue 同步拼尾）+ 槽完成信号；thunk 是纯调用——
-      // mutation 引用仅被捕获不被读取（Proxy 零触发），无可抛点（INV-W1/W14）
-      return sequencer.enqueue(() => runRootWriteSlot(writeEnv, mutation));
+      const diag = diagEnv.emitter !== undefined ? createSlotDiag('root-mutation') : undefined;
+      const settled = sequencer.enqueue(() => runRootWriteSlot(writeEnv, mutation, diag));
+      void settled.then(
+        (value) => { emitSlot(diagEnv, diag, { kind: 'fulfilled', value }); },
+        () => { emitSlot(diagEnv, diag, { kind: 'rejected' }); },
+      );
+      return settled;
     },
     replaceSchema: (input: ReplaceSchemaInput): Promise<ReplaceSchemaResult> => {
       // D5.1 接纳门：同 mutateData——lifecycle≠ready 时零入队即时 ok:false
       if (state.lifecycle !== 'ready') {
-        return Promise.resolve(disabled(lifecycleWriteRefusal(state.lifecycle)));
+        const result = disabled(lifecycleWriteRefusal(state.lifecycle));
+        if (result.ok === false) {
+          emitAttempt(diagEnv, {
+            operation: 'schema-replacement', stage: 'acceptance', result: { kind: 'rejected' },
+            code: RUNTIME_WRITE_DISABLED_CODE, input: { status: 'not-accessed' },
+            issues: result.issues as DiagnosticIssue[],
+          });
+        }
+        return Promise.resolve(result);
       }
-      // D1（issue #91）：与 mutateData 同一 sequencer 实例——同步接纳定序、占槽互斥、
-      // S6 同槽 await notifyDirty 构成屏障（双向 FIFO 互通）；thunk 是纯调用——
-      // input 引用仅被捕获不被读取（Proxy 零触发），无可抛点
-      return sequencer.enqueue(() => runSchemaWriteSlot(schemaWriteEnv, input));
+      const diag = diagEnv.emitter !== undefined ? createSlotDiag('schema-replacement') : undefined;
+      const settled = sequencer.enqueue(() => runSchemaWriteSlot(schemaWriteEnv, input, diag));
+      void settled.then(
+        (value) => { emitSlot(diagEnv, diag, { kind: 'fulfilled', value }); },
+        () => { emitSlot(diagEnv, diag, { kind: 'rejected' }); },
+      );
+      return settled;
     },
     enableReplication: (input: EnableReplicationInput): Promise<EnableReplicationResult> => {
       // D5.1 接纳门（#132）：同 mutateData——lifecycle≠ready 时零入队即时 ok:false
       if (state.lifecycle !== 'ready') {
-        return Promise.resolve(disabled(lifecycleWriteRefusal(state.lifecycle)));
+        const result = disabled(lifecycleWriteRefusal(state.lifecycle)) as EnableReplicationResult;
+        if (result.ok === false) {
+          emitAttempt(diagEnv, {
+            operation: 'replication-enable', stage: 'acceptance', result: { kind: 'rejected' },
+            code: RUNTIME_WRITE_DISABLED_CODE, input: { status: 'not-accessed' },
+            issues: result.issues as DiagnosticIssue[],
+          });
+        }
+        return Promise.resolve(result);
       }
       // D1（#132）：与 mutateData/replaceSchema 同一 sequencer 实例——同步接纳定序、
       // 占槽互斥（FIFO 互通）；thunk 是纯调用——input 引用仅被捕获不被读取
       //（Proxy 零触发），无可抛点；槽 E3 单读捕获定序在队列内
-      return sequencer.enqueue(() => runEnableReplicationSlot(replicationWriteEnv, input));
+      const diag = diagEnv.emitter !== undefined ? createSlotDiag('replication-enable') : undefined;
+      const settled = sequencer.enqueue(() => runEnableReplicationSlot(replicationWriteEnv, input, diag));
+      void settled.then(
+        (value) => { emitSlot(diagEnv, diag, { kind: 'fulfilled', value }); },
+        () => { emitSlot(diagEnv, diag, { kind: 'rejected' }); },
+      );
+      return settled;
     },
     bumpReplicationEpoch: (): Promise<BumpReplicationEpochResult> => {
       // D5.1 接纳门（#132）：同 mutateData——lifecycle≠ready 时零入队即时 ok:false
       if (state.lifecycle !== 'ready') {
-        return Promise.resolve(disabled(lifecycleWriteRefusal(state.lifecycle)));
+        const result = disabled(lifecycleWriteRefusal(state.lifecycle)) as BumpReplicationEpochResult;
+        if (result.ok === false) {
+          emitAttempt(diagEnv, {
+            operation: 'replication-epoch-bump', stage: 'acceptance', result: { kind: 'rejected' },
+            code: RUNTIME_WRITE_DISABLED_CODE, issues: result.issues as DiagnosticIssue[],
+          });
+        }
+        return Promise.resolve(result);
       }
-      return sequencer.enqueue(() => runBumpReplicationEpochSlot(replicationWriteEnv));
+      const diag = diagEnv.emitter !== undefined ? createSlotDiag('replication-epoch-bump') : undefined;
+      if (diag !== undefined) diag.input = undefined;
+      const settled = sequencer.enqueue(() => runBumpReplicationEpochSlot(replicationWriteEnv, diag));
+      void settled.then(
+        (value) => { emitSlot(diagEnv, diag, { kind: 'fulfilled', value }); },
+        () => { emitSlot(diagEnv, diag, { kind: 'rejected' }); },
+      );
+      return settled;
     },
     close: (): Promise<void> => {
       // D2：幂等（INV-C2）——已赋值（含已结算 reject）即返回同一实例，release 恰一次
@@ -507,15 +571,34 @@ export function createNamespaceRuntimeWithSeam(input: NamespaceRuntimeSeamInput)
 }
 
 /**
+ * #155：Runtime 诊断注入（Registry 生产装配第三参的载荷形状；§4-D6——emitter 与
+ * clock 成对：observedAt 唯一来源 = Registry 注入 Clock（#149 §5.2 配对纪律）。
+ * 该类型定义于本文件（`internal.ts` 只做 type re-export——值导出键集冻结）。
+ */
+export interface RuntimeForRegistryDiagnostic {
+  readonly emitter: NamespaceDiagnosticChangeEmitter;
+  readonly clock: () => number;
+}
+
+/**
  * 生产构造器（包内，index.ts 不导出——AC1 锁定）。D6.3：绑定义务显式化为必填参数——
  * 未来 Registry 传 `() => persistence.saveDoc(handle)`（ADR-0008「由构造方绑定」）。
+ * #155（§4-D6）：可选第三参 `diagnostic`（emitter+clock 成对）——不传 = 既有行为
+ * 逐字节不变（条件展开进 seam input；`captureSeamInput` 成对校验/loud 语义零改动）。
  * @internal
  */
 export function createNamespaceRuntime(
   handle: DocHandle,
   notifyDirty: () => Promise<void>,
+  diagnostic?: RuntimeForRegistryDiagnostic,
 ): NamespaceRuntime {
-  return createNamespaceRuntimeWithSeam({ handle, notifyDirty });
+  return createNamespaceRuntimeWithSeam({
+    handle,
+    notifyDirty,
+    ...(diagnostic !== undefined
+      ? { diagnosticEmitter: diagnostic.emitter, clock: diagnostic.clock }
+      : {}),
+  });
 }
 
 /** D4 包内 helper：closing/closed 期 read 停接纳的结果联合分支（不导出）。
@@ -558,6 +641,8 @@ function captureSeamInput(input: unknown): {
   p0Gate: Promise<void> | undefined;
   compile: ((envelope: SchemaEnvelope) => CompileSchemaEnvelopeResult) | undefined;
   notifyDirty: (() => Promise<void>) | undefined;
+  diagnosticEmitter: NamespaceDiagnosticChangeEmitter | undefined;
+  clock: (() => number) | undefined;
 } {
   if (typeof input !== 'object' || input === null) {
     throw new TypeError('seam 输入必须是对象（{ handle, p0Gate?, compile?, notifyDirty? }）');
@@ -617,6 +702,26 @@ function captureSeamInput(input: unknown): {
     }
     notifyDirty = rec.notifyDirty as () => Promise<void>;
   }
+  let diagnosticEmitter: NamespaceDiagnosticChangeEmitter | undefined;
+  if (rec.diagnosticEmitter !== undefined) {
+    const emitter = rec.diagnosticEmitter;
+    if (typeof emitter !== 'object' || emitter === null || typeof (emitter as { emit?: unknown }).emit !== 'function') {
+      throw new TypeError('input.diagnosticEmitter 若提供必须是含 emit 方法的对象');
+    }
+    const d = doc as Record<string, unknown>;
+    if (typeof d.on !== 'function' || typeof d.off !== 'function') {
+      throw new TypeError('装配 diagnosticEmitter 时 handle.doc 必须具备 on/off 方法');
+    }
+    diagnosticEmitter = emitter as NamespaceDiagnosticChangeEmitter;
+  }
+  let clock: (() => number) | undefined;
+  if (rec.clock !== undefined) {
+    if (typeof rec.clock !== 'function') throw new TypeError('input.clock 若提供必须是 function');
+    clock = rec.clock as () => number;
+  }
+  if (diagnosticEmitter !== undefined && clock === undefined) {
+    throw new TypeError('装配 diagnosticEmitter 时必须同时注入 clock');
+  }
   return {
     handle: handle as DocHandle,
     userId: userId as string,
@@ -625,5 +730,7 @@ function captureSeamInput(input: unknown): {
     p0Gate,
     compile,
     notifyDirty,
+    diagnosticEmitter,
+    clock,
   };
 }
