@@ -22,12 +22,14 @@ import type {
   HubConnection,
   HubReplication,
   HubReplicationOptions,
+  HubUpgradeRequest,
   NamespaceAuthorization,
   NamespaceAuthorizer,
   PeerConnectionState,
   PeerNamespaceState,
   PeerReplication,
   PeerReplicationOptions,
+  PeerTokenVerifier,
   ReplicationBackoff,
   ReplicationLimits,
   ReplicationTarget,
@@ -44,10 +46,14 @@ describe('`@nomicore/ws-replication` 冻结公共面（切片 6）', () => {
     expectTypeOf(createPeerReplication).returns.toMatchTypeOf<PeerReplication>();
   });
 
-  it('Hub 面：accept(transport) → HubConnection；connections 只读；close() → Promise<void>', () => {
+  it('Hub 面：accept(transport, request?) → Promise<HubConnection | undefined>；connections 只读；revoke → Promise<void>；close() → Promise<void>', () => {
     expectTypeOf<HubReplication>().toMatchTypeOf<{
-      accept(transport: DuplexTransport): HubConnection;
+      accept(
+        transport: DuplexTransport,
+        request?: HubUpgradeRequest,
+      ): Promise<HubConnection | undefined>;
       readonly connections: readonly HubConnection[];
+      revoke(instanceIdentity: string, namespaceId: string): Promise<void>;
       close(): Promise<void>;
     }>();
     expectTypeOf<HubConnection['state']>().toEqualTypeOf<
@@ -153,12 +159,13 @@ describe('`@nomicore/ws-replication` 冻结公共面（切片 6）', () => {
     }>();
   });
 
-  it('HubReplicationOptions / PeerReplicationOptions：registry 为真实 NamespaceRegistry', () => {
+  it('HubReplicationOptions / PeerReplicationOptions：registry 为真实 NamespaceRegistry；verifyToken 必填', () => {
     expectTypeOf<HubReplicationOptions>().toMatchTypeOf<{
       readonly instanceId: string;
       readonly registry: NamespaceRegistry;
       readonly authorize: NamespaceAuthorizer;
       readonly timer: ReplicationTimer;
+      readonly verifyToken: PeerTokenVerifier;
     }>();
     expectTypeOf<PeerReplicationOptions>().toMatchTypeOf<{
       readonly instanceId: string;

@@ -580,12 +580,21 @@ this.startBootstrap(hubIdentity);
     }
   }
 
+  /** §19 L158 授权撤销：terminating namespace ERROR + failed 终局 + 资源收口。
+   *  quiet/终态（closing/closed/conflicted/failed）→ 零副作用 no-op（重复 revoke 幂等）。 */
+  terminateUnauthorized(): Promise<void> {
+    if (this.isQuietState()) return Promise.resolve();
+    this.sendNsError('NAMESPACE_UNAUTHORIZED'); // 既有（:770-772）→ namespaceErrorFrame（带 namespaceId）
+    this.finalize('failed'); // 既有（:791-796）：清 timer/终态/收口
+    return this.terminationSettled(); // §5.3
+  }
+
   /** 连接关闭（socket 断开 / Hub 停机）：全量 cleanup。 */
   onConnectionClosed(): Promise<void> {
     this.quiesceConnection();
     return this.closeQueue.then(async () => {
       await this.drainPendingApplies();
-      await this.closeSessionAndRelease();
+      await this.settleClose();
       if (!this.isTerminal()) this.setState('closed');
     });
   }
@@ -815,7 +824,28 @@ this.startBootstrap(hubIdentity);
     if (this.isTerminal()) return; // 终态不降级
     this.clearAllTimers();
     this.setState(state);
-    void this.closeSessionAndRelease();
+    void this.settleClose();
+  }
+
+  /**
+   * §5.3 收口单点（R2 A5 链式追加）：执行幂等清理体并【链式追加】到 cleanupTail——
+   * 所有发起方（finalize/terminateUnauthorized/onConnectionClosed）的清理都汇入同一链，
+   * 无覆写丢尾（R1 单字段覆写形态在 revoke 与并发 onConnectionClosed 竞争时后写覆写前写，
+   * 强度弱于「revoke resolve 即资源已收口」的声称）。存储前归一化（R2 N4）：清理体抛错
+   * 时 tail 不 reject——void this.settleClose() 零 floating rejected promise。
+   */
+  private settleClose(): Promise<void> {
+    const op = this.closeSessionAndRelease(); // 幂等：session/unsub/lease 二次调用见 undefined 即跳过
+    this.cleanupTail = this.cleanupTail.then(
+      () => op, () => op,
+    ).then(() => undefined, () => undefined);
+    return this.cleanupTail;
+  }
+
+  /** §5.3 revoke 结算：吞清理异常（session.close/lease.release 异常在收口链内部分类处理，
+   *  不允许冒泡成 revoke rejection——红灯 #7/#8 断言 revoke resolve）。 */
+  private terminationSettled(): Promise<void> {
+    return this.cleanupTail.then(() => undefined, () => undefined);
   }
 
   private isTerminal(): boolean {

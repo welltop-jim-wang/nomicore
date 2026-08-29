@@ -62,7 +62,6 @@ class PeerConnectionImpl implements PeerReplication {
   private stopping = false;
   private stopTail: Promise<void> = Promise.resolve();
   private goawayActive = false;
-  private goawayDrainHandle: unknown | undefined;
   private stopLiveness: (() => void) | undefined;
   private readonly deferTask: (task: () => void) => void;
 
@@ -114,7 +113,8 @@ class PeerConnectionImpl implements PeerReplication {
     this.clearBackoff();
     this.clearHello();
     this.clearReset();
-    this.clearGoawayDrain();
+    this.clearDrainClose(); // §8.1：drain deadline 句柄随 stop 清除
+    this.goawayActive = false;
     this.stopLivenessNow();
     this.unsubscribeTransport();
     this.sender?.teardown(); // §8：poll timer 清零（连接收口必经点）
@@ -186,7 +186,7 @@ class PeerConnectionImpl implements PeerReplication {
   private dialNow(): void {
     if (this.stopping) return;
     this.clearBackoff();
-    this.clearGoawayDrain();
+    this.clearDrainClose(); // §8.1：新代际连接零 drain 句柄遗留
     this.goawayActive = false;
     this.stopLivenessNow();
     this.unsubscribeTransport();
@@ -395,31 +395,52 @@ class PeerConnectionImpl implements PeerReplication {
     this.sendControl(namespaceErrorFrame('NAMESPACE_STATE_VIOLATION', message.namespaceId));
   }
 
-  private onGoaway(message: { reasonCode: string; drainTimeoutMs: number }): void {
+  private onGoaway(message: { reasonCode: string; drainTimeoutMs: number; retryAfterMs?: number }): void {
     this.goawayActive = true;
+    // §15.1 GOAWAY 原因分级（R1 总控裁决：协议字面优先——ready 收到的 drain 类 GOAWAY
+    // 无条件 draining，与 retryAfterMs 无关；hint 只影响 deadline close 后的重连调度）。
+    this.goawayDrainMs = message.drainTimeoutMs;
+    this.goawayRetryAfterMs = message.retryAfterMs;
     if (message.reasonCode === 'SERVER_SHUTTING_DOWN' || message.reasonCode === 'REAUTH_REQUIRED') {
-      this.enterBlocked();
+      // §15.1 原因分级（G2/B1 冻结锚）：永久失败类——blocked 直达（sender teardown），
+      // 无 deadline 编排、wire 不关。路由冻结（R3 N2）：不经 enterBlocked（其额外
+      // clearReset 会使 B1 pending 计面 -2）——本分支处于 ready 态、drainCloseHandle
+      // 必为 undefined（armDrainClose 仅存在于 drain 类路径），空虚真安全。
+      this.sender?.teardown();
+      this.setState('blocked');
       return;
     }
-    this.clearGoawayDrain();
-    this.goawayDrainHandle = this.options.timer.setTimeout(() => {
-      this.goawayDrainHandle = undefined;
+    // drain 类（SERVER_RESTARTING 及未知非永久类）：§15.1 L411 字面——无条件 draining。
+    // 注意：此处【不】teardown sender——D5 的 scheduler.pending 计面锚（drain timer 恰 +1，
+    // poll timer 保持武装至 deadline fire 才清）依赖「draining 进入仅改状态」；teardown
+    // 统一在 deadline fire / blocked / 收口路径执行（§8.1 矩阵）。
+    this.setState('draining');
+    this.armDrainClose(); // deadline close(1001)——hint 与否无差别
+  }
+
+  /** §6.2 drain deadline：teardown（清 poll timer）+ close(1001)。句柄必须可清（§8.1）。 */
+  private armDrainClose(): void {
+    this.clearDrainClose();
+    const transport = this.transport;
+    this.drainCloseHandle = this.options.timer.setTimeout(() => {
+      this.drainCloseHandle = undefined;
       this.quiesceControllers();
-      this.sender?.teardown();
-      const transport = this.transport;
-      if (transport !== undefined && !transport.closed) transport.close(1001, 'goaway-drain');
-    }, message.drainTimeoutMs);
+      this.sender?.teardown(); // D5 主锚：close 前清 poll timer
+      if (transport !== undefined && !transport.closed) {
+        transport.close(1001, 'goaway-drain');
+      }
+    }, this.goawayDrainMs);
+  }
+
+  private clearDrainClose(): void {
+    if (this.drainCloseHandle !== undefined) {
+      this.options.timer.clearTimeout(this.drainCloseHandle);
+      this.drainCloseHandle = undefined;
+    }
   }
 
   private quiesceControllers(): void {
     for (const controller of this.controllers.values()) controller.onConnectionFatal();
-  }
-
-  private clearGoawayDrain(): void {
-    if (this.goawayDrainHandle !== undefined) {
-      this.options.timer.clearTimeout(this.goawayDrainHandle);
-      this.goawayDrainHandle = undefined;
-    }
   }
 
   private unsubscribeTransport(): void {
@@ -431,6 +452,12 @@ class PeerConnectionImpl implements PeerReplication {
     this.stopLiveness?.();
     this.stopLiveness = undefined;
   }
+
+  private goawayDrainMs = 0;
+  /** GOAWAY hint（无则 undefined）——只用于 deadline close 后的重连调度（§6.3）。 */
+  private goawayRetryAfterMs: number | undefined;
+  /** drain deadline 句柄（§8 timer 纪律：必须可清——stale fire 零副作用）。 */
+  private drainCloseHandle: unknown | undefined;
 
   private withController(namespaceId: string, fn: (c: PeerNamespaceController) => void): void {
     const controller = this.controllers.get(namespaceId);
@@ -527,16 +554,52 @@ class PeerConnectionImpl implements PeerReplication {
   // ─────────────────────────────── 失败/关闭分类 ───────────────────────────────
 
   private onClose(info: Readonly<{ code: number; reason: string }>): void {
-    void info;
     if (this.stopping || this.connStateValue === 'stopped') return;
     if (this.connStateValue === 'backoff' || this.connStateValue === 'blocked') return;
-    if (this.connStateValue === 'draining') return;
+    if (this.connStateValue === 'draining') {
+      // R2 A1（SA2 必修）：close 事件的机器语义由 code 携带（协议 §14「WS close code 只做
+      // 粗分类」+ §15.1 L439「1002/1008：blocked」），与进入 draining 的前因（GOAWAY）无关——
+      // drain 窗口内 hub 侧 connectionFatal(1002/1008)（hub-connection.ts:365-382，peer 冻结
+      // 出站不阻止 hub 侧检测）或中间盒 1008 强断都可能到达。分类与非 draining 态完全同构：
+      // 永久类 → blocked；其余（1000/1001/1006/1011…）→ onGoawayClosed（1011 落 backoff
+      // 恰合 §15.1 L440「继续 backoff」）。
+      if (info.code === 1002 || info.code === 1008) {
+        this.clearDrainClose(); // drain timer 清理（总控 R2 指令）——杜绝 stale fire
+        this.enterBlocked(); // enterBlocked 亦含 clearDrainClose（§8.1 单点纪律，双保险）
+        return;
+      }
+      this.onGoawayClosed(); // 本地 stop() 的 draining 由上行 stopping 守卫拦截
+      return;
+    }
     const code = info.code;
     if (code === 1002 || code === 1008) {
       this.enterBlocked();
       return;
     }
     this.onTemporaryFailure();
+  }
+
+  /** GOAWAY drain 关闭后的重连编排（§15.1 SERVER_RESTARTING 行）。 */
+  private onGoawayClosed(): void {
+    this.clearDrainClose();
+    this.sender?.teardown();
+    const retryAfter = this.goawayRetryAfterMs;
+    if (retryAfter === undefined) {
+      this.onTemporaryFailure(); // 无 hint：普通 full-jitter backoff（G1 L193-209/D5 冻结面）
+      return;
+    }
+    this.clearHello();
+    this.clearReset();
+    this.setState('backoff');
+    for (const controller of this.controllers.values()) controller.onConnectionLost();
+    // hint 面公式：delay = retryAfterMs + random()×cap（cap 复用 §15.1 full-jitter 帽；
+    // random=0 → 恰 retryAfterMs；attempt 不递增——hub 编排的回重不是失败事件，不放大退避）
+    const cap = Math.min(this.backoff.maxMs, this.backoff.baseMs * 2 ** this.attempts);
+    const random = this.options.random ?? Math.random;
+    this.backoffHandle = this.options.timer.setTimeout(() => {
+      this.backoffHandle = undefined;
+      if (this.connStateValue === 'backoff') this.dialNow();
+    }, retryAfter + Math.max(0, random() * cap));
   }
 
   private connectionFatal(code: string, wsCloseCode: number): void {
@@ -594,6 +657,7 @@ class PeerConnectionImpl implements PeerReplication {
 
   private enterBlocked(): void {
     if (this.connStateValue === 'blocked') return;
+    this.clearDrainClose(); // R2 A1 单点：drain 期 1002/1008 close、connectionFatal 等一切经 enterBlocked 的 blocked 入口
     this.sender?.teardown();
     this.clearHello();
     this.clearReset();

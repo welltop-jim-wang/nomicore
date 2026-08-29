@@ -94,20 +94,33 @@ export interface ReplicationTarget {
   readonly localOwner: NamespaceOwner;
 }
 
+/** Hub upgrade 请求上下文（Bearer token 值；缺失 = 未提供凭据）。 */
+export interface HubUpgradeRequest {
+  readonly token?: string;
+}
+
+/** 升级认证器：token → 可信 Peer instanceId（文法 ^[a-z][a-z0-9-]{0,62}$）或拒绝。 */
+export type PeerTokenVerifier = (
+  token: string,
+) => Promise<Readonly<{ ok: true; instanceId: string }> | Readonly<{ ok: false }>>;
+
 export interface HubReplicationOptions {
   readonly instanceId: string;
   readonly registry: NamespaceRegistry;
   readonly authorize: NamespaceAuthorizer;
   readonly timer: ReplicationTimer;
+  readonly verifyToken: PeerTokenVerifier;
   readonly limits?: Readonly<Partial<ReplicationLimits>>;
   readonly timeouts?: Readonly<Partial<ReplicationTimeouts>>;
 }
 
 export interface HubReplication {
-  /** 接受一条 Upgrade 连接。identity = bearer-token 验证的受信产物（协议 §2）；缺失 →
-   *  同步 TypeError（拒绝虚假降级：不得采信 HELLO 自述身份）。 */
-  accept(transport: DuplexTransport, identity?: UpgradeIdentity): HubConnection;
+  accept(
+    transport: DuplexTransport,
+    request?: HubUpgradeRequest,
+  ): Promise<HubConnection | undefined>;
   readonly connections: readonly HubConnection[];
+  revoke(instanceIdentity: string, namespaceId: string): Promise<void>;
   close(): Promise<void>;
 }
 

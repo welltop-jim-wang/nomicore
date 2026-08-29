@@ -46,12 +46,18 @@ export function validateInstanceId(instanceId: string, name: string): void {
   );
 }
 
+/** D1：对升级认证器返回身份做布尔文法判定（reject 语义——validateInstanceId 是 throw 语义）。 */
+export function isValidInstanceId(value: unknown): boolean {
+  return typeof value === 'string' && INSTANCE_ID_RE.test(value);
+}
+
 export function validateHubOptions(
   options: Readonly<{
     instanceId: string;
     registry: unknown;
     authorize: unknown;
     timer: unknown;
+    verifyToken: unknown;
   }>,
 ): void {
   validateInstanceId(options.instanceId, 'instanceId');
@@ -70,6 +76,7 @@ export function validateHubOptions(
     (options.timer as { clearTimeout?: unknown }).clearTimeout,
     'timer.clearTimeout',
   );
+  assertCallable(options.verifyToken, 'verifyToken');
 }
 
 export function validatePeerOptions(

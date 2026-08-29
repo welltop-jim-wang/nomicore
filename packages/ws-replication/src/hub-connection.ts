@@ -2,7 +2,7 @@
  * hub-connection —— `createHubReplication`：accept/HELLO/hub 连接 FSM + 帧分发
  * （§4.2/§6/§15.2）。per-(connection, namespace) 通道见 hub-namespace.ts。
  */
-import type { DuplexTransport, UpgradeIdentity } from './types.js';
+import type { DuplexTransport, HubUpgradeRequest } from './types.js';
 import { selectProtocolVersion, type ReplicationMessage } from '@nomicore/replication-protocol';
 import {
   decodeInbound,
@@ -26,11 +26,19 @@ import type {
 import type { ReplicationTimer } from './types.js';
 import { resolveLimits, resolveTimeouts } from './defaults.js';
 import {
+  isValidInstanceId,
   validateHubOptions,
   validateInstanceId,
   validateLimits,
   validateTimeouts,
 } from './validate.js';
+
+/**
+ * §3.2 R2 A2（SA2 必修）：认证窗口早到帧缓冲的条数界（模块常数，非配置 knob——
+ * HELLO 是唯一合法早到帧，守规矩的 peer 恰发 1 帧，16 为充裕余量；累计字节由
+ * 「单帧界 limits.maxFrameBytes × 条数界」导出：≤ 16×maxFrameBytes）。
+ */
+const MAX_EARLY_FRAMES = 16;
 
 export function createHubReplication(options: HubReplicationOptions): HubReplication {
   return new HubReplicationImpl(options);
@@ -75,18 +83,131 @@ class HubReplicationImpl implements HubReplication {
     };
   }
 
-  accept(transport: DuplexTransport, identity?: UpgradeIdentity): HubConnection {
-    if (identity === undefined) {
-      throw new TypeError('HUB_ACCEPT_IDENTITY_REQUIRED: accept(transport, identity) requires trusted Upgrade identity');
-    }
-    validateInstanceId(identity.peerInstanceId, 'identity.peerInstanceId');
-    const connection = new HubConnectionImpl(this.internals, transport, identity, this.connectionCounter);
-    this.connectionCounter += 1;
-    this.connectionList.push(connection);
+  async accept(transport: DuplexTransport, request?: HubUpgradeRequest): Promise<HubConnection | undefined> {
+    // ── 门 0：停止接纳（生命周期门先于认证——已 close 的 hub 对新 upgrade 零工作）──
     if (this.closed) {
-      connection.close(1001, 'hub-shutdown');
+      transport.close(1001, 'hub-shutdown');
+      return undefined;
     }
+
+    // ── 门 1：缺凭据（未传 request / 无 token 字段 / 非字符串 / 空串）→ 拒绝 ──
+    const token = request?.token;
+    if (typeof token !== 'string' || token.length === 0) {
+      transport.close(1008, 'upgrade-unauthorized'); // 静态 reason，零 token/身份回显（AC-7）
+      return undefined;
+    }
+
+    // ── 门 2：无认证器（类型必填 + §2.3 构造期 TypeError 后的纵深防御——JS 调用方绕过类型）
+    //    「无认证器 = 全部 upgrade 拒绝」——fail-closed，绝不 fail-open ──
+    if (typeof this.options.verifyToken !== 'function') {
+      transport.close(1008, 'upgrade-unauthorized');
+      return undefined;
+    }
+
+    // ── 门 3（R2 A2 + R3 N1）：有界早到帧缓冲 + 早断线观察 + 认证等待封顶 ──
+    const earlyFrames: Uint8Array[] = [];
+    let earlyClosed = false;
+    let authRejected = false; // 预算/超时拒绝已发生——验证器迟归一律 undefined（迟归不复活）
+    // R3 N1（SA2 必修，一行级）：off 句柄 no-op 初始化——同步重放型 transport（TcpTransport
+    // 实存形态：onMessage 注册即同步重放积压、重放先于 return/句柄赋值，sa7-r2-transport:132-144）
+    // 上，积压帧可在赋值语句完成前触发本 listener 的拒绝路径；no-op 句柄使 detachEarly 在
+    // 【任意时刻】安全（重放期内调用 = 无害 no-op），注册完成后重赋真句柄。拒绝的【效果】
+    // （置标志 + close）在重放期内照常生效；【摘监听】统一延后到注册完成后的同步段收口——
+    // 不再从 transport.onMessage(...) 调用点同步抛 TypeError（那会使 async accept 的 promise
+    // reject，违反 §8.2 硬不变量，且异常展开会流产重放循环——pendingFrames 已 splice、
+    // 余帧丢失、transport 未按设计关闭）。
+    let offMessage: () => void = () => {};
+    let offClose: () => void = () => {};
+    const detachEarly = (): void => { offMessage(); offClose(); }; // 幂等（重复摘除零副作用）
+    offMessage = transport.onMessage((bytes) => {
+      if (authRejected) return; // 已拒（重放循环内后续帧）——幂等早退
+      if (bytes.byteLength > this.limits.maxFrameBytes) {
+        // 单帧界：复用既有 limit（ADR 0010 L165「最大 WS frame」）；§14 语义 → 1009
+        authRejected = true;
+        transport.close(1009, 'upgrade-frame-limit'); // 重放期内 close 照常生效（不摘监听）
+        return;
+      }
+      if (earlyFrames.length >= MAX_EARLY_FRAMES) {
+        // 条数界：第 17 帧即拒绝（policy）→ 1008
+        authRejected = true;
+        transport.close(1008, 'upgrade-frame-limit');
+        return;
+      }
+      earlyFrames.push(bytes);
+    });
+    offClose = transport.onClose(() => { earlyClosed = true; });
+    // 注册完成后的同步收口段（R3 N1）：同步重放期已拒（或注册期早断）→ 摘真句柄 + 直接拒绝
+    // 返回。此刻 auth timer 尚未武装——零清理面；非重放路径 authRejected/earlyClosed 恒 false，
+    // 本检查零开销通过。
+    if (authRejected || earlyClosed) {
+      detachEarly();
+      return undefined;
+    }
+    // 认证等待封顶（显式政策，非沉默）：复用 timeouts.helloTimeoutMs——握手预算的既有载体，
+    // 零新 knob；超时 = 拒绝分配（1008 静态 reason）。起止：门 3 武装 → 任何出口即清（§8.1 矩阵）。
+    const authHandle = this.internals.timer.setTimeout(() => {
+      authRejected = true;
+      detachEarly(); // 此时句柄必为真值（注册已完成）
+      if (!transport.closed) transport.close(1008, 'upgrade-timeout');
+    }, this.timeouts.helloTimeoutMs);
+    const clearAuthTimer = (): void => { this.internals.timer.clearTimeout(authHandle); };
+
+    // ── 门 4：验证（accept 永不 reject——红灯 #5 零 unhandled rejection 的不变量）──
+    let instanceId: unknown;
+    try {
+      const verdict = await this.options.verifyToken(token);
+      clearAuthTimer(); // 首要动作：验证器已归，封顶 timer 必清
+      if (authRejected) return undefined; // 缓冲期已拒（预算/超时）——迟归不复活
+      if (verdict === null || typeof verdict !== 'object' || (verdict as { ok?: unknown }).ok !== true) {
+        return this.rejectUpgrade(transport, detachEarly); // {ok:false} 或畸形裁决
+      }
+      instanceId = (verdict as { instanceId: unknown }).instanceId;
+    } catch {
+      clearAuthTimer();
+      if (authRejected) return undefined; // 超时在先、验证器抛错在后——仍 undefined
+      return this.rejectUpgrade(transport, detachEarly); // 验证器抛错
+    }
+    // A2-d 单帧超界变体的零宽窗口面（§3.1 竞态消除）：即时验证器（1 tick）下，首帧
+    // 投递微任务与验证器续体在同一批次竞争——先让出一次微任务，使排队中的首帧先进入
+    // 早到缓冲（超界 → authRejected + close(1009) / 条数界 → close(1008)），
+    // 门 5 再按 authRejected（或 transport.closed）收口零分配——「帧到达同步段即拒、
+    // 零分配」在验证器即时归的零宽窗口同样成立。
+    await new Promise<void>((resolve) => queueMicrotask(resolve));
+    if (authRejected) return undefined; // 早到缓冲已拒（预算/超界）——验后迟拒的兜底复核
+    // instanceId 文法违例（红灯 #4：'Bad-Id!'）→ 视为无效凭据
+    if (!isValidInstanceId(instanceId)) {
+      return this.rejectUpgrade(transport, detachEarly);
+    }
+
+    // ── 门 5：认证期间世界变化（R2 A4：先摘早到监听 → 再检查 → 再构造——顺序唯一基准 §3.3）──
+    detachEarly();
+    if (this.closed) {
+      transport.close(1001, 'hub-shutdown');
+      return undefined;
+    }
+    if (earlyClosed || transport.closed) return undefined; // 对端已断：零分配、零 close 副作用
+
+    // ── 分配：认证身份随连接注入；早到帧在构造尾部按序重放（§3.3）──
+    const connection = new HubConnectionImpl(
+      this.internals, transport, this.connectionCounter++, instanceId as string, earlyFrames,
+    );
+    this.connectionList.push(connection);
     return connection;
+  }
+
+  private rejectUpgrade(transport: DuplexTransport, detachEarly: () => void): undefined {
+    detachEarly(); // 幂等——预算路径已摘时零副作用
+    transport.close(1008, 'upgrade-unauthorized');
+    return undefined;
+  }
+
+  async revoke(instanceIdentity: string, namespaceId: string): Promise<void> {
+    const tails: Promise<void>[] = [];
+    for (const connection of [...this.connectionList]) { // 拷贝迭代——revoke 途中连接可能收口
+      if (connection.authenticatedInstanceId !== instanceIdentity) continue; // 认证身份为权威键
+      tails.push(connection.revokeNamespace(namespaceId));
+    }
+    await Promise.all(tails); // 未知 scope → 空数组 → resolve
   }
 
   get connections(): readonly HubConnection[] {
@@ -95,9 +216,9 @@ class HubReplicationImpl implements HubReplication {
 
   close(): Promise<void> {
     if (this.closed) return this.closeTail;
-    this.closed = true;
+    this.closed = true; // 先置位：accept 门 0 即刻生效（§3.2）
     for (const connection of [...this.connectionList]) {
-      connection.close(1001, 'hub-shutdown');
+      connection.shutdownWithGoaway(this.timeouts.closeTimeoutMs);
     }
     this.closeTail = Promise.all(
       this.connectionList.map((connection) => connection.settle()),
@@ -123,17 +244,18 @@ class HubConnectionImpl implements HubConnection {
   private closedFlag = false;
   private settleTail: Promise<void> = Promise.resolve();
   private readonly channelHost: HubChannelHost;
-  private readonly trust: UpgradeIdentity;
   private readonly transportSubscribers: Array<() => void> = [];
   private stopLiveness: (() => void) | undefined;
 
   constructor(
     private readonly hub: HubInternals,
     private readonly transport: DuplexTransport,
-    identity: UpgradeIdentity,
     private readonly connId: number,
+    /** D1 分配时绑定的认证身份（授权键权威来源——§3.2/§4/§5.1）。 */
+    readonly authenticatedInstanceId: string,
+    /** §3.2 认证期早到帧缓冲（构造尾部按序重放——§3.3 唯一基准：先摘早到监听 → 构造 → 重放）。 */
+    earlyFrames: readonly Uint8Array[],
   ) {
-    this.trust = { peerInstanceId: identity.peerInstanceId };
     this.outbound = new OutboundQueue(
       (bytes) => {
         if (!transport.closed) transport.send(bytes);
@@ -158,7 +280,7 @@ class HubConnectionImpl implements HubConnection {
       timer: hub.timer,
       registry: hub.registry,
       instanceId: hub.instanceId,
-      peerInstanceId: () => this.trust.peerInstanceId,
+      peerInstanceId: () => this.authenticatedInstanceId,
       authorize: (instanceIdentity, namespaceId) => hub.authorize(instanceIdentity, namespaceId),
       sendControl: (message) => this.sendControlChecked(message),
       sendData: (namespaceId, bytes) => this.sendData(namespaceId, bytes),
@@ -176,6 +298,11 @@ class HubConnectionImpl implements HubConnection {
       transport.onMessage((bytes) => this.onMessage(bytes)),
       transport.onClose(() => this.onTransportClosed()),
     );
+    // 构造尾部重放（§3.3）：早到帧不绕过任何协议纪律——handshaking 态内非 HELLO 帧 →
+    // HELLO_REQUIRED fatal（:199-206 既有）；有界缓冲（≤16 帧）使重放同步段长度有界。
+    for (const bytes of earlyFrames) {
+      this.onMessage(bytes);
+    }
   }
 
   close(code?: number, reason?: string): void {
@@ -188,6 +315,35 @@ class HubConnectionImpl implements HubConnection {
       this.transport.close(code ?? 1001, reason ?? 'hub-close');
     }
     void this.cleanupAll();
+  }
+
+  /** §7.2：GOAWAY(SERVER_SHUTTING_DOWN, drain) 先行，随后 close(1001)。
+   *  handshaking 连接不发 GOAWAY（HELLO 未完成——对端 handshaking 门对非 HELLO_ACK 帧
+   *  判 CONNECTION_POLICY_VIOLATION，peer-connection.ts:256-258；GOAWAY-before-ACK 反而是
+   *  协议伤害）；直接 close(1001)。 */
+  shutdownWithGoaway(drainMs: number): void {
+    if (this.closedFlag) return;
+    if (this.state === 'handshaking') {
+      this.close(1001, 'hub-shutdown');
+      return;
+    }
+    try {
+      this.outbound.sendControl({ // 直发豁免（同 connectionFatal :369-375）：停机帧不允许
+        kind: 'GOAWAY', // 被背压额度否决（sender.sendControl 在 paused 态有额度判据，耗尽即
+        reasonCode: 'SERVER_SHUTTING_DOWN', // connectionFatal——停机帧不允许被否决）
+        drainTimeoutMs: drainMs,
+      });
+    } catch {
+      // best-effort：framing 不可信 → 直接 close
+    }
+    this.close(1001, 'hub-shutdown'); // 既有路径：teardown + close + cleanupAll
+  }
+
+  /** §5.1 revoke 链第二层：HELLO 前无 channels → 天然 no-op。 */
+  revokeNamespace(namespaceId: string): Promise<void> {
+    const channel = this.channels.get(namespaceId);
+    if (channel === undefined) return Promise.resolve();
+    return channel.terminateUnauthorized();
   }
 
   /** 全部通道 cleanup 结算（HubReplication.close 等待）。 */
@@ -232,11 +388,13 @@ class HubConnectionImpl implements HubConnection {
       this.connectionFatal('CONNECTION_POLICY_VIOLATION', 1008);
       return;
     }
-    if (message.expectedHubInstanceId !== this.hub.instanceId) {
+    // D2（§4）：HELLO 自声明身份必须等于认证身份（token 绑定的可信身份，一层↔二层绑定）；
+    // 恒等失败 → INSTANCE_IDENTITY_MISMATCH（connection/config/1008，零新错误码）
+    if (message.peerInstanceId !== this.authenticatedInstanceId) {
       this.connectionFatal('INSTANCE_IDENTITY_MISMATCH', 1008);
       return;
     }
-    if (message.peerInstanceId !== this.trust.peerInstanceId) {
+    if (message.expectedHubInstanceId !== this.hub.instanceId) {
       this.connectionFatal('INSTANCE_IDENTITY_MISMATCH', 1008);
       return;
     }
@@ -249,7 +407,7 @@ class HubConnectionImpl implements HubConnection {
       this.connectionFatal('UNSUPPORTED_CAPABILITY', 1002);
       return;
     }
-    this.peerInstanceId = this.trust.peerInstanceId;
+    this.peerInstanceId = this.authenticatedInstanceId;
     this.state = 'ready';
     if (this.transport.ping !== undefined && this.transport.onPong !== undefined) {
       this.stopLiveness = startLiveness({
