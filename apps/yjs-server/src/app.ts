@@ -256,11 +256,17 @@ class AppHandle {
       host: hubConfig.listen.host,
       port: hubConfig.listen.port,
       path: REPLICATION_UPGRADE_PATH,
-      accept: (transport, token) => {
-        void this.hubPlugin?.replication?.accept(
-          transport,
-          token !== undefined ? { token } : undefined,
-        );
+      authenticate: async (token) => {
+        const verdict = await verifyToken(token);
+        return verdict.ok ? { peerInstanceId: verdict.instanceId } : undefined;
+      },
+      accept: (transport, identity) => {
+        const acceptTrusted = this.hubPlugin?.replication?.acceptTrusted;
+        if (acceptTrusted === undefined) {
+          transport.close(1011, 'trusted-upgrade-unavailable');
+          throw new TypeError('HubReplication.acceptTrusted is required by the production composition root');
+        }
+        void acceptTrusted.call(this.hubPlugin?.replication, transport, identity);
       },
     });
     this.wsServer = wsServer;

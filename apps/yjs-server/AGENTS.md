@@ -13,9 +13,10 @@ out of their owning packages.
 - Consume only package public exports (`@nomicore/{clock,persistence,namespace-registry,ws-replication}`);
   no package-internal subpaths, no testing seams, no DSH profiles.
 - One static role per process (`role: 'hub' | 'peer'`); never both.
-- Authorization bindings are built before any network endpoint accepts; the adapter
-  performs zero credential pre-checks (verifyToken is called exactly once, inside the
-  package's `accept` path).
+- Authorization bindings are built before any network endpoint accepts. The deployable
+  Hub verifies each bearer token exactly once before HTTP Upgrade, then passes only the
+  resulting trusted `peerInstanceId` through the package's public `acceptTrusted` seam;
+  adapters never interpret credentials or re-run the verifier.
 - Single disposal chain: replication drain → registry shutdown → persistence dispose →
   timer/clock teardown. Never trigger a second concurrent teardown chain.
 - stdout is a strict NDJSON lifecycle-event channel; stdin is the NDJSON control channel

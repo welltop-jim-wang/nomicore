@@ -3,10 +3,9 @@
  *
  *  - `node:http` 服务器：`GET /healthz` → 200，其余普通请求 → 404；
  *  - `WebSocketServer({noServer:true})` 经 `upgrade` 事件接管；路径 ≠
- *    `/replication` → upgrade 前 404；路径相符 → **一律完成 upgrade** 后交给
- *    `accept(transport, {token})`——适配层零凭据预检（verifyToken 的唯一一次
- *    调用在包内 `accept` 路径；坏/缺 token 由包以 WS 1008 拒绝并产出 observer
- *    事件 `auth-upgrade-rejected`，观测面不缩水、无双调副作用）。
+ *    `/replication` → upgrade 前 404；路径相符则由 composition root 提供的
+ *    `authenticate` 单点验证 Bearer token，缺失/拒绝分别在 upgrade 前返回 401/403；
+ *    成功产生的可信身份随 transport 交给 accept，绝不二次调用 verifier。
  *  - `wrapWs` 全成员对齐 `DuplexTransport`（5 必填 + 3 可选，ws 事件 1:1 适配）：
  *    一 WS binary message = 一 frame（协议不变量 1）。
  *
@@ -16,7 +15,7 @@
 import { createServer, type IncomingMessage, type Server } from 'node:http';
 import type { Duplex } from 'node:stream';
 import { WebSocketServer, WebSocket, type RawData } from 'ws';
-import type { DuplexTransport } from '@nomicore/ws-replication';
+import type { DuplexTransport, UpgradeIdentity } from '@nomicore/ws-replication';
 
 /** 一 WS binary message = 一 frame：按协议不变量 1 交付独立 Uint8Array（拷贝，防池化）。 */
 function toBytes(data: RawData): Uint8Array {
@@ -114,11 +113,17 @@ function extractBearer(authorizationHeader: string | undefined): string | undefi
   return match?.[1];
 }
 
+function rejectUpgrade(socket: Duplex, status: number, reason: string): void {
+  if (socket.destroyed || !socket.writable || socket.writableEnded) return;
+  socket.end(`HTTP/1.1 ${status} ${reason}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`);
+}
+
 export interface HubWsServerOptions {
   readonly host: string;
   readonly port: number; // 0 = ephemeral（实际端口经返回对象读取）
   readonly path: string;
-  readonly accept: (transport: DuplexTransport, token: string | undefined) => void;
+  readonly authenticate: (token: string) => Promise<UpgradeIdentity | undefined>;
+  readonly accept: (transport: DuplexTransport, identity: UpgradeIdentity) => void;
 }
 
 export interface HubWsServer {
@@ -142,16 +147,56 @@ export async function startHubWsServer(options: HubWsServerOptions): Promise<Hub
     res.end('not found\n');
   });
   const wss = new WebSocketServer({ noServer: true });
+  const pendingUpgrades = new Map<Duplex, () => void>();
+  let closing = false;
   server.on('upgrade', (req: IncomingMessage, socket: Duplex, head: Buffer) => {
-    if (req.url !== options.path) {
-      socket.write('HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n');
-      socket.destroy();
-      return;
-    }
-    wss.handleUpgrade(req, socket, head, (ws) => {
+    let disconnected = socket.destroyed;
+    const markDisconnected = (): void => {
+      disconnected = true;
+    };
+    socket.once('close', markDisconnected);
+    socket.once('error', markDisconnected);
+    const finish = (): void => {
+      pendingUpgrades.delete(socket);
+      socket.off('close', markDisconnected);
+      socket.off('error', markDisconnected);
+    };
+    const abort = (): void => {
+      disconnected = true;
+      finish();
+      rejectUpgrade(socket, 503, 'Service Unavailable');
+    };
+    pendingUpgrades.set(socket, abort);
+    void (async () => {
+      if (req.url !== options.path) {
+        rejectUpgrade(socket, 404, 'Not Found');
+        return;
+      }
       const token = extractBearer(req.headers.authorization);
-      options.accept(wrapWs(ws), token);
-    });
+      if (token === undefined) {
+        rejectUpgrade(socket, 401, 'Unauthorized');
+        return;
+      }
+      let identity: UpgradeIdentity | undefined;
+      try {
+        identity = await options.authenticate(token);
+      } catch {
+        identity = undefined;
+      }
+      if (identity === undefined) {
+        if (!disconnected) rejectUpgrade(socket, 403, 'Forbidden');
+        return;
+      }
+      if (closing || disconnected || socket.destroyed || !socket.writable) {
+        if (!disconnected && !socket.destroyed) rejectUpgrade(socket, 503, 'Service Unavailable');
+        return;
+      }
+      wss.handleUpgrade(req, socket, head, (ws) => {
+        options.accept(wrapWs(ws), identity);
+      });
+    })().catch(() => {
+      socket.destroy();
+    }).finally(finish);
   });
   await new Promise<void>((resolve, reject) => {
     server.once('error', reject);
@@ -163,6 +208,8 @@ export async function startHubWsServer(options: HubWsServerOptions): Promise<Hub
     server,
     port,
     close: () => {
+      closing = true;
+      for (const abort of [...pendingUpgrades.values()]) abort();
       // 关闭 = 停止接纳（listening socket 立即关闭；新 upgrade/请求被拒）。
       // node http `server.close()` 的**回调**要等全部既有连接（含已升级交给 ws 的
       // socket）结束才触发——但那些连接由 `hub.close()` 的 GOAWAY→drain→deadline

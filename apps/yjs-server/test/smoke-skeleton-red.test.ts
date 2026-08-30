@@ -16,6 +16,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
+import { wsUpgrade } from './harness.ts';
 
 const REPO_ROOT = fileURLToPath(new URL('../../..', import.meta.url));
 const TSX_BIN = join(REPO_ROOT, 'node_modules', '.bin', 'tsx');
@@ -197,6 +198,33 @@ afterEach(() => {
 });
 
 describe('T3-skeleton real-process smoke (design §5-T3 minimized / AC7/AC2)', () => {
+  it('deployable hub rejects missing and invalid bearer credentials before WebSocket upgrade', async () => {
+    const hubRoot = makeTmpDir();
+    const hubProc = spawnApp(['--config', writeConfig(hubRoot, hubConfigFile(hubRoot, 0))]);
+    const listening = await waitForEvent(hubProc, (e) => e.event === 'listening', 60_000, 'hub listening');
+    const port = listening.port as number;
+
+    const missing = await wsUpgrade({ port });
+    expect(missing.status).toBe(401);
+    expect(missing.ws).toBeUndefined();
+
+    const invalid = await wsUpgrade({
+      port,
+      headers: { Authorization: 'Bearer invalid-token' },
+    });
+    expect(invalid.status).toBe(403);
+    expect(invalid.ws).toBeUndefined();
+
+    const valid = await wsUpgrade({
+      port,
+      headers: { Authorization: 'Bearer token-1' },
+    });
+    expect(valid.status).toBe(101);
+    valid.ws?.destroy();
+
+    await signalAndExpectExit(hubProc, 'SIGTERM', 30_000, 0, 'hub');
+  }, 90_000);
+
   it(
     'hub emits provisioned→listening(actual port)→ready; peer authenticates static target; verify-write converges to hub read; SIGTERM exits 0',
     async () => {
