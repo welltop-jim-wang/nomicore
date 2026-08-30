@@ -4,8 +4,10 @@ import type { Context } from '@deepseek-ai/cordis'
 import {
   type DocHandle,
   type DocPersistence,
+  type PersistedIdentityProbeResult,
   type PersistenceSchedule,
   type PersistenceScheduler,
+  type ReplicationIdentityRef,
   type User,
 } from './contract.js'
 import {
@@ -64,6 +66,13 @@ export class FilePersistence implements DocPersistence {
     const baseIo: PersistenceIO = {
       read: (key, signal) => this.readCommittedSnapshot(key, signal),
       write: (key, snapshot, signal) => this.writeCommittedSnapshot(key, snapshot, signal),
+      // Phase 5（§4.9）：归档重定位写——archive/ 子树 + 同款 mkdir→tmp→rename 原子提交
+      //（归档文件的出现是原子的，与既有 flush 提交同构——0006:52 纪律）；
+      // 同名重复归档 = 单槽 latest-wins 原子覆盖。不触碰主键区。
+      writeArchive: (key, snapshot, signal) => this.writeArchiveSnapshot(key, snapshot, signal),
+      // Phase 5（§4.9）：主键移除（ENOENT 容忍——fsp.rm force:true 幂等底座）；
+      // 归档区路径子树分离，结构性不误删。
+      remove: (key, signal) => this.removeCommittedSnapshot(key, signal),
     }
     const io = options.wrapIo !== undefined ? options.wrapIo(baseIo) : baseIo
     this.core = new PersistenceLifecycle(io, {
@@ -82,6 +91,34 @@ export class FilePersistence implements DocPersistence {
   async createDoc(owner: User, docId: string, doc: import('yjs').Doc): Promise<DocHandle> {
     this.validateIdentity(owner, docId)
     return await this.core.createDoc(owner, docId, doc)
+  }
+
+  /** Phase 5 受控复制导入委托（§4.3）：与 createDoc 同管线 + META.docId 违约 →
+   *  DocImportIdentityError；File 侧入口沿用 SAFE_PATH_SEGMENT 双段守卫。 */
+  async importDoc(owner: User, docId: string, doc: import('yjs').Doc): Promise<DocHandle> {
+    this.validateIdentity(owner, docId)
+    return await this.core.importDoc(owner, docId, doc)
+  }
+
+  /** Phase 5 受身份前置条件保护的归档委托（§4.5）：入口先 validateIdentity
+   *  （SAFE_PATH_SEGMENT 双段，file.ts:128-131 同款）。 */
+  async archiveDoc(
+    owner: User,
+    docId: string,
+    expectedReplicationIdentity: ReplicationIdentityRef,
+  ): Promise<Readonly<{ ok: true }>> {
+    this.validateIdentity(owner, docId)
+    return await this.core.archiveDoc(owner, docId, expectedReplicationIdentity)
+  }
+
+  /** R2 只读 committed-snapshot identity probe 委托（§3.3）：入口先 validateIdentity
+   *  （SAFE_PATH_SEGMENT 双段同款）；零写/零 flush/零 handle。 */
+  async readPersistedReplicationIdentity(
+    owner: User,
+    docId: string,
+  ): Promise<PersistedIdentityProbeResult> {
+    this.validateIdentity(owner, docId)
+    return await this.core.readPersistedReplicationIdentity(owner, docId)
   }
 
   async saveDoc(handle: DocHandle): Promise<void> {
@@ -125,6 +162,32 @@ export class FilePersistence implements DocPersistence {
     await fsp.rename(tmpPath, snapshotPath)
   }
 
+  /**
+   * Phase 5 归档重定位写（§4.9）：`{rootDir}/archive/users/<userId>/<docId>.snapshot`
+   * 受控子树 + 同款 tmp→rename 原子提交（mkdir → writeFile tmp → rename；
+   * abort 门位 entry/after-mkdir/after-writeFile，镜像 writeCommittedSnapshot）。
+   * 同名重复归档 = tmp→rename 原子覆盖（单槽 latest-wins）；tmp 永非提交态。
+   */
+  private async writeArchiveSnapshot(key: string, snapshot: Uint8Array, signal: AbortSignal): Promise<void> {
+    const { userDir, snapshotPath, tmpPath } = this.resolveArchivePaths(key)
+    signal.throwIfAborted()
+    await fsp.mkdir(userDir, { recursive: true })
+    signal.throwIfAborted()
+    await fsp.writeFile(tmpPath, snapshot, { signal })
+    signal.throwIfAborted()
+    await fsp.rename(tmpPath, snapshotPath)
+  }
+
+  /** Phase 5 主键移除（§4.9）：rm 主键 .snapshot（ENOENT 容忍——force:true）；与
+   *  归档区路径子树分离，主键区读路径的 tmp 清理（readCommittedSnapshot）不触及归档区。
+   *  入口 abort 门（同 writeCommittedSnapshot 纪律）；已进入的 rm 完整执行
+   *  （resolve ⟺ 主键此后缺席——remove 契约）。 */
+  private async removeCommittedSnapshot(key: string, signal: AbortSignal): Promise<void> {
+    signal.throwIfAborted()
+    const { snapshotPath } = this.resolveSnapshotPaths(key)
+    await fsp.rm(snapshotPath, { force: true })
+  }
+
   private validateIdentity(owner: User, docId: string): void {
     assertSafePathSegment('userId', owner.userId)
     assertSafePathSegment('namespaceId', docId)
@@ -138,6 +201,21 @@ export class FilePersistence implements DocPersistence {
     assertSafePathSegment('userId', userId)
     assertSafePathSegment('namespaceId', docId)
     const userDir = path.join(this.options.rootDir, 'users', userId)
+    const snapshotPath = path.join(userDir, `${docId}.snapshot`)
+    return { userDir, snapshotPath, tmpPath: `${snapshotPath}.tmp` }
+  }
+
+  /** Phase 5 归档路径解析（§4.9）：`{rootDir}/archive/users/<userId>/<docId>.snapshot`
+   *  （+ 同名 `.tmp` 暂存）——rootDir 内受控子树（phase:64「同 rootDir 内受控 archive
+   *  路径」）；SAFE_PATH_SEGMENT 双段守卫复用（与主键路径同级安全文法纪律）。 */
+  private resolveArchivePaths(key: string): SnapshotPaths {
+    const separator = key.indexOf('\u0000')
+    if (separator < 0) throw new Error('FilePersistence received an invalid persistence key')
+    const userId = key.slice(0, separator)
+    const docId = key.slice(separator + 1)
+    assertSafePathSegment('userId', userId)
+    assertSafePathSegment('namespaceId', docId)
+    const userDir = path.join(this.options.rootDir, 'archive', 'users', userId)
     const snapshotPath = path.join(userDir, `${docId}.snapshot`)
     return { userDir, snapshotPath, tmpPath: `${snapshotPath}.tmp` }
   }

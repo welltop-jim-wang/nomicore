@@ -278,5 +278,6 @@ describe('序列编辑三件套 + PathElementValue — 数组节点 appendToArra
  * 本会话命令执行不可用，未真实执行。预期红灯表现：本文件 import `@nomicore/vfsl-protocol`
  * 抛 TS2307（模块不存在）→ 全编译单元红灯。实现后（SA1 设计 + SA3 落地）该文件应在
  * `vitest --typecheck` 下转绿：正例 `expectTypeOf` 相等 + 负例 `@ts-expect-error` 均为真实错误。
- * 未尽事项以 wiki/raw/task_vfsl-protocol.md 的 SA6 红灯测试记录为准。
+ * 规范权威：ADR-0004（VFSL 协议类型投影）+ 本文件 `expectTypeOf`/`@ts-expect-error`
+ * 断言即规范载体；SA6 红灯测试记录降为历史证据（wiki/raw/task_vfsl-protocol.md）。
  */

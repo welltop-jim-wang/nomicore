@@ -2,7 +2,8 @@
  * SA6 红灯锚定 — issue #112：namespace-registry idle retention（AC4/5/6/7）
  * （冻结设计 §7 AC4+AC6 测试 1-6、AC5 测试 7-10、AC7 测试 11-12 + R1/H1 测试 3a）。
  *
- * 契约来源：wiki/raw/task_registry-idle-plugin-shutdown.md（冻结设计，R1 修订）：
+ * 规范权威：ADR-0009；设计记录（历史证据，非规范）：
+ * wiki/raw/task_registry-idle-plugin-shutdown.md（冻结设计，R1 修订）：
  * - §2.A RegistryTimeoutScheduler / scheduler 必需（构造门禁）/ idleTimeoutMs 单点校验；
  * - §2.B idle 状态机（entry phase 三态、I1/I2/I3 不变量、I4 arm-token、
  *   beginIdleClose / activateEntry / handleLeaseReleased / removeEntryAfterClose、
@@ -52,6 +53,64 @@ async function flushMicrotasks(times = 20): Promise<void> {
     await Promise.resolve();
   }
 }
+
+// ── phase-5 切片 1（ADR 0010）：受控随机源确定性 helpers（测试内定义；禁止从 src 导出）──
+// 计数源：第 n 次生成 = `ns-` + n 的 32 位小写 hex；剧本源：按 16 字节 hex 序列精确建模
+// 碰撞/重试（entry 碰撞与 DOC_DUPLICATE 重试的确定性布置）。
+
+const X_HEX_ID = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'; // ns-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+const Y_HEX_ID = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'; // ns-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+const Z_HEX_ID = 'cccccccccccccccccccccccccccccccc'; // ns-cccccccccccccccccccccccccccccccc
+
+function hexToBytes16(hex: string): Uint8Array {
+  if (hex.length !== 32 || !/^[0-9a-f]+$/.test(hex)) {
+    throw new Error(`fixture 脚本 hex 必须为 32 位小写 hex：${hex}`);
+  }
+  const out = new Uint8Array(16);
+  for (let i = 0; i < 16; i += 1) {
+    out[i] = Number.parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+  }
+  return out;
+}
+
+function makeDeterministicRandomBytes(): { randomBytes: (length: number) => Uint8Array } {
+  let counter = 0;
+  return {
+    randomBytes(length: number): Uint8Array {
+      if (length !== 16) {
+        throw new Error(`受控随机源必须按 128-bit（16 字节）请求，实际请求 ${length} 字节`);
+      }
+      counter += 1;
+      const hex = counter.toString(16).padStart(32, '0');
+      const out = new Uint8Array(16);
+      for (let i = 0; i < 16; i += 1) {
+        out[i] = Number.parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+      }
+      return out;
+    },
+  };
+}
+
+/** 剧本源（碰撞/重试确定性布置）：按给定 hex 序列逐一吐字节；超出剧本即 throw。 */
+function makeScriptedRandomBytes(hexChunks: readonly string[]): { randomBytes: (length: number) => Uint8Array } {
+  let consumed = 0;
+  const chunks = hexChunks.map(hexToBytes16);
+  return {
+    randomBytes(length: number): Uint8Array {
+      if (length !== 16) {
+        throw new Error(`受控随机源必须按 128-bit（16 字节）请求，实际请求 ${length} 字节`);
+      }
+      const chunk = chunks[consumed];
+      if (chunk === undefined) {
+        throw new Error('受控随机源超出剧本：实现的重试次数超过契约预算');
+      }
+      consumed += 1;
+      return chunk;
+    },
+  };
+}
+
+const TEST_RANDOM_BYTES: (length: number) => Uint8Array = makeDeterministicRandomBytes().randomBytes;
 
 /** manual Clock 固定值（零 real 时间依赖；idle 路径不消费 Clock 值）。 */
 function manualClock(): { now: () => number } {
@@ -156,6 +215,7 @@ const READY_STATUS: NamespaceRuntimeStatus = {
   schema: { state: 'ready' },
   fatal: null,
   close: null,
+  replication: { state: 'disabled' },
 };
 
 interface RuntimeClosePlan {
@@ -202,6 +262,14 @@ class ObservableRuntime implements NamespaceRuntime {
   }
 
   replaceSchema(): Promise<{ ok: true }> {
+    return Promise.resolve({ ok: true });
+  }
+
+  enableReplication(): Promise<{ ok: true }> {
+    return Promise.resolve({ ok: true });
+  }
+
+  bumpReplicationEpoch(): Promise<{ ok: true }> {
     return Promise.resolve({ ok: true });
   }
 
@@ -341,6 +409,7 @@ describe('AC4+AC6（§7.1-6）：idle 武装、完整时限、重进重置、arm
     const registry = createNamespaceRegistryForTesting(persistence, {
       clock: manualClock(),
       scheduler,
+      randomBytes: TEST_RANDOM_BYTES,
       idleTimeoutMs: 300_000,
       runtimeFactory: () => runtime,
       observer: observer.sink,
@@ -382,6 +451,7 @@ describe('AC4+AC6（§7.1-6）：idle 武装、完整时限、重进重置、arm
     const registry = createNamespaceRegistryForTesting(persistence, {
       clock: manualClock(),
       scheduler,
+      randomBytes: TEST_RANDOM_BYTES,
       idleTimeoutMs: 300_000,
       runtimeFactory: () => {
         const r = new ObservableRuntime(`R${runtimes.length + 1}`, 'k');
@@ -418,6 +488,7 @@ describe('AC4+AC6（§7.1-6）：idle 武装、完整时限、重进重置、arm
     const registry = createNamespaceRegistryForTesting(persistence, {
       clock: manualClock(),
       scheduler,
+      randomBytes: TEST_RANDOM_BYTES,
       idleTimeoutMs: 300_000,
       runtimeFactory: () => runtime,
     });
@@ -449,6 +520,7 @@ describe('AC4+AC6（§7.1-6）：idle 武装、完整时限、重进重置、arm
     const registry = createNamespaceRegistryForTesting(persistence, {
       clock: manualClock(),
       scheduler: adversarial,
+      randomBytes: TEST_RANDOM_BYTES,
       idleTimeoutMs: 300_000,
       runtimeFactory: () => runtime,
       observer: observer.sink,
@@ -471,16 +543,22 @@ describe('AC4+AC6（§7.1-6）：idle 武装、完整时限、重进重置、arm
     expect(runtime.closeCalls).toBe(0); // runtime 未 close（AC5 窗口完整）
     expect(observer.events.filter((e) => e.type === 'idle-close-failed').length).toBe(0);
     expect(observer.events.filter((e) => e.type === 'entry-idle').length).toBe(2); // 两次 armed 各一次
-    // 旧回调 no-op 的可观测证据：entry 仍在（create → ALREADY_EXISTS 零 Persistence）
-    const dup = await registry.create({
-      owner: { userId: 'u-idle' },
-      namespaceId: 'k',
-      schema: { lang: 'vfsl', version: 1, id: 'k', text: 'x' },
-      root: { n: 1 },
-    } as never);
-    expect(dup).toMatchObject({ ok: false, code: 'NAMESPACE_ALREADY_EXISTS' });
-    expect(persistence.createCalls.length).toBe(0);
-    expect(persistence.loadCalls.length).toBe(1);
+    // 旧回调 no-op 的可观测证据：entry 仍在——open 复用 entry（零新增 loadDoc、
+    // runtime 未 close）；phase-5 切片 1（ADR 0010）create 不再产出 ALREADY_EXISTS
+    // （ID 由随机源生成、恒为新鲜候选），改锚「create 重生成新 ID 成功 + entry 'k'
+    // 原样保留」。
+    const dupLease = okLease(
+      await registry.create({
+        owner: { userId: 'u-idle' },
+        schema: { lang: 'vfsl', version: 1, id: 'k', text: 'type ROOT = { n: number; };\n' },
+        root: { n: 1 },
+      }),
+    );
+    expect(dupLease.namespaceId).toMatch(/^ns-[0-9a-f]{32}$/);
+    expect(persistence.createCalls.length).toBe(1); // 新 ID 正常落盘（与 'k' 无碰撞）
+    expect(persistence.loadCalls.length).toBe(1); // entry 'k' 仍在（零额外 loadDoc）
+    // 注意：不经 release——新 entry 保持 active（零额外 idle timer），T2（entry 'k'
+    // 的新 timer）仍独占队列首位供下方 fire 判别。
     // 新 timer 存活：旧回调消费后，T2 仍在 adversarial 队列（`pending()===1` 语义等价锚）
     expect(adversarial.armed.length).toBe(1);
     expect(adversarial.armed[0]?.token).not.toBe(token1);
@@ -498,6 +576,7 @@ describe('AC4+AC6（§7.1-6）：idle 武装、完整时限、重进重置、arm
     const registry = createNamespaceRegistryForTesting(persistence, {
       clock: manualClock(),
       scheduler,
+      randomBytes: TEST_RANDOM_BYTES,
       idleTimeoutMs: 0,
       runtimeFactory: () => runtime,
     });
@@ -523,10 +602,12 @@ describe('AC4+AC6（§7.1-6）：idle 武装、完整时限、重进重置、arm
       schema: { state: 'unavailable', issue: { code: 'RUNTIME_SCHEMA_X', message: 'fatal-msg' } },
       fatal: { code: 'RUNTIME_FATAL', message: 'fatal-msg' },
       close: null,
+      replication: { state: 'disabled' },
     }));
     const registry = createNamespaceRegistryForTesting(persistence, {
       clock: manualClock(),
       scheduler,
+      randomBytes: TEST_RANDOM_BYTES,
       idleTimeoutMs: 300_000,
       runtimeFactory: () => runtime,
     });
@@ -550,10 +631,12 @@ describe('AC4+AC6（§7.1-6）：idle 武装、完整时限、重进重置、arm
       schema: { state: 'ready' },
       fatal: null,
       close: null,
+      replication: { state: 'disabled' },
     }));
     const registry = createNamespaceRegistryForTesting(persistence, {
       clock: manualClock(),
       scheduler,
+      randomBytes: TEST_RANDOM_BYTES,
       idleTimeoutMs: 300_000,
       runtimeFactory: () => runtime,
     });
@@ -577,6 +660,7 @@ describe('AC4+AC6（§7.1-6）：idle 武装、完整时限、重进重置、arm
     const registry = createNamespaceRegistryForTesting(persistence, {
       clock: manualClock(),
       scheduler,
+      randomBytes: TEST_RANDOM_BYTES,
       idleTimeoutMs: 300_000,
       runtimeFactory: () => runtime,
       observer: observer.sink,
@@ -612,6 +696,7 @@ describe('AC5（§7.7-10）：idle → active 复用、closing-wait、create idl
     const registry = createNamespaceRegistryForTesting(persistence, {
       clock: manualClock(),
       scheduler,
+      randomBytes: TEST_RANDOM_BYTES,
       idleTimeoutMs: 300_000,
       runtimeFactory: () => runtime,
     });
@@ -643,6 +728,7 @@ describe('AC5（§7.7-10）：idle → active 复用、closing-wait、create idl
     const registry = createNamespaceRegistryForTesting(persistence, {
       clock: manualClock(),
       scheduler,
+      randomBytes: TEST_RANDOM_BYTES,
       idleTimeoutMs: 300_000,
       runtimeFactory: () => {
         const r = new ObservableRuntime(`R${runtimes.length + 1}`, 'k',
@@ -691,6 +777,7 @@ describe('AC5（§7.7-10）：idle → active 复用、closing-wait、create idl
     const registry = createNamespaceRegistryForTesting(persistence, {
       clock: manualClock(),
       scheduler,
+      randomBytes: TEST_RANDOM_BYTES,
       idleTimeoutMs: 300_000,
       runtimeFactory: () => {
         const r = new ObservableRuntime(`R${runtimes.length + 1}`, 'k',
@@ -721,9 +808,11 @@ describe('AC5（§7.7-10）：idle → active 复用、closing-wait、create idl
     }
   });
 
-  it('10. create 于 idle：ALREADY_EXISTS 零 Persistence、零 Clock 读（DQ-5 idle 行）', async () => {
+  it('10. create 于 idle：首个候选撞 idle entry → 重生成新 ID 成功（colliding 候选零 Persistence 尝试）；完整窗口后 entry 清理、再 create 成功', async () => {
+    // phase-5 切片 1（ADR 0010）：create 不再产出 ALREADY_EXISTS——entry（active/idle/
+    // closing 一律）碰撞是编排循环的重试条件；DQ-5「idle 同码」语义迁移为「idle 亦占
+    // 命名空间（碰撞）」，排他性由「重生成 + 耗尽 fatal」承载。
     const persistence = new StubPersistence();
-    persistence.queueLoad({ result: new StubHandle({ userId: 'u-idle' }, 'k') });
     const scheduler = createRegistryTestScheduler();
     const clock = {
       calls: 0,
@@ -732,41 +821,53 @@ describe('AC5（§7.7-10）：idle → active 复用、closing-wait、create idl
         return 1_700_000_123_456;
       },
     };
-    const runtime = new ObservableRuntime('R1', 'k');
+    const runtimes: ObservableRuntime[] = [];
+    const random = makeScriptedRandomBytes([X_HEX_ID, X_HEX_ID, Y_HEX_ID, Z_HEX_ID]);
     const registry = createNamespaceRegistryForTesting(persistence, {
       clock,
       scheduler,
+      randomBytes: random.randomBytes,
       idleTimeoutMs: 300_000,
-      runtimeFactory: () => runtime,
+      runtimeFactory: () => {
+        const r = new ObservableRuntime(`R${runtimes.length + 1}`, 'k');
+        runtimes.push(r);
+        return r;
+      },
     });
-    const lease = okLease(await registry.open({ userId: 'u-idle' }, 'k'));
-    await lease.release();
-    expect(scheduler.pending()).toBe(1);
-    expect(clock.calls).toBe(0); // open 路径不读 Clock
-
-    const r2 = await registry.create({
+    const lease1 = okLease(await registry.create({
       owner: { userId: 'u-idle' },
-      namespaceId: 'k',
       schema: { lang: 'vfsl', version: 1, id: 'k', text: 'type ROOT = { n: number; };\n' },
       root: { n: 1 },
-    } as never);
-    expect(r2).toMatchObject({ ok: false, code: 'NAMESPACE_ALREADY_EXISTS' });
-    expect(persistence.createCalls.length).toBe(0);
-    expect(persistence.loadCalls.length).toBe(1); // 仅原始 open 的 load
+    }));
+    expect(lease1.namespaceId).toBe(`ns-${X_HEX_ID}`);
+    await lease1.release();
+    expect(scheduler.pending()).toBe(1); // idle 武装
+    expect(clock.calls).toBe(1);
+
+    // create#2：首选候选 X 撞 idle entry（payload/Clock 之前短路）→ 重生成 Y 成功；
+    // 证据 = createDoc 恰 [X, Y]（colliding 候选零 Persistence 尝试）。
+    const lease2 = okLease(await registry.create({
+      owner: { userId: 'u-idle' },
+      schema: { lang: 'vfsl', version: 1, id: 'k', text: 'type ROOT = { n: number; };\n' },
+      root: { n: 1 },
+    }));
+    expect(lease2.namespaceId).toBe(`ns-${Y_HEX_ID}`);
+    expect(persistence.createCalls.map((c) => c.docId)).toEqual([`ns-${X_HEX_ID}`, `ns-${Y_HEX_ID}`]);
+    expect(persistence.loadCalls.length).toBe(0);
     expect(persistence.saveCalls).toBe(0);
-    expect(clock.calls).toBe(0); // duplicate 在 payload/Clock 之前
-    // 完整窗口 close 后 entry 清理 → 同 key create 恢复可创建（idle 不遗留）
+    expect(clock.calls).toBe(2); // 每次 create 单读；colliding 候选在 payload/Clock 前短路
+    await lease2.release();
+    // 完整窗口 close 后 entry（X/Y）清理 → 再 create 新 ID 成功（idle 不遗留）
     await scheduler.advanceBy(300_000);
     await flushMicrotasks();
-    const r3 = await registry.create({
+    expect(runtimes[0]?.closeCalls).toBe(1); // X 代际被 idle close
+    const lease3 = okLease(await registry.create({
       owner: { userId: 'u-idle' },
-      namespaceId: 'k',
       schema: { lang: 'vfsl', version: 1, id: 'k', text: 'type ROOT = { n: number; };\n' },
       root: { n: 1 },
-    } as never);
-    expect(r3.ok).toBe(true);
-    expect(persistence.createCalls.length).toBe(1);
-    await okLease(r3).release();
+    }));
+    expect(persistence.createCalls.length).toBe(3);
+    await lease3.release();
   });
 });
 
@@ -783,6 +884,7 @@ describe('idle-arm-failed（§2.B 派生）：武装失败 loud 上报、release
     const registry = createNamespaceRegistryForTesting(persistence, {
       clock: manualClock(),
       scheduler,
+      randomBytes: TEST_RANDOM_BYTES,
       idleTimeoutMs: 300_000,
       runtimeFactory: () => runtime,
       observer: observer.sink,
@@ -810,19 +912,24 @@ describe('idle-arm-failed（§2.B 派生）：武装失败 loud 上报、release
 // ── AC7（§7 测试 11-12）：idle-close 失败三通道 + close 永挂起契约 ────────────────
 
 describe('AC7（§7.11-12）：idle-close failure 零 unhandled rejection、观察者、零污染、永挂起等待契约', () => {
-  it('11. close reject 全链：零 unhandled rejection；observer exact cause 恰一次；后续 open 全新 generation；再 create 同 key 成功', async () => {
+  it('11. close reject 全链：零 unhandled rejection；observer exact cause 恰一次；后续 open 全新 generation；create 于 idle 碰撞重生成、窗口后恢复（跨 generation 零残留）', async () => {
+    // phase-5 切片 1（ADR 0010）：create 的排他性由「重生成 + 耗尽 fatal」承载——
+    // ID 由注入随机源生成，entry（含 idle）碰撞即换 ID 重试；「跨 generation 零残留」
+    // 断言意图 = 完整窗口结算后 entry 移除、create 恢复（无需同 key 重建表达——
+    // 普通 create 已不能指定 key）。
     const probe = collectUnhandledRejections();
     try {
       const persistence = new StubPersistence();
-      persistence.queueLoad({ result: new StubHandle({ userId: 'u-idle' }, 'k') });
       persistence.queueLoad({ result: new StubHandle({ userId: 'u-idle' }, 'k') });
       const scheduler = createRegistryTestScheduler();
       const closeCause = new Error('idle-close-reject-11');
       const observer = collectObserver();
       const runtimes: ObservableRuntime[] = [];
+      const random = makeScriptedRandomBytes([X_HEX_ID, X_HEX_ID, Y_HEX_ID, Z_HEX_ID]);
       const registry = createNamespaceRegistryForTesting(persistence, {
         clock: manualClock(),
         scheduler,
+        randomBytes: random.randomBytes,
         idleTimeoutMs: 300_000,
         runtimeFactory: () => {
           const r = new ObservableRuntime(`R${runtimes.length + 1}`, 'k',
@@ -832,7 +939,13 @@ describe('AC7（§7.11-12）：idle-close failure 零 unhandled rejection、观�
         },
         observer: observer.sink,
       });
-      const lease1 = okLease(await registry.open({ userId: 'u-idle' }, 'k'));
+      // 宿主代际 X（R1）：create 生成 → release → idle → 完整窗口 close reject
+      const lease1 = okLease(await registry.create({
+        owner: { userId: 'u-idle' },
+        schema: { lang: 'vfsl', version: 1, id: 'k', text: 'type ROOT = { n: number; };\n' },
+        root: { n: 1 },
+      }));
+      expect(lease1.namespaceId).toBe(`ns-${X_HEX_ID}`);
       await lease1.release();
       await scheduler.advanceBy(300_000); // close reject
       await flushMicrotasks();
@@ -848,39 +961,36 @@ describe('AC7（§7.11-12）：idle-close failure 零 unhandled rejection、观�
       expect(failed.length).toBe(1);
       if (failed[0]?.type === 'idle-close-failed') {
         expect(failed[0].cause).toBe(closeCause);
+        expect(failed[0].identity?.namespaceId).toBe(`ns-${X_HEX_ID}`);
+        expect(typeof failed[0].generation).toBe('bigint');
       }
-      // AC7④：后续 open 不被污染 → 全新 generation
-      const lease2 = okLease(await registry.open({ userId: 'u-idle' }, 'k'));
-      expect(persistence.loadCalls.length).toBe(2);
+      // AC7④：后续 open 不被污染 → 全新 generation（entry 已移除 → 走 loadDoc 恢复）
+      const lease2 = okLease(await registry.open({ userId: 'u-idle' }, `ns-${X_HEX_ID}`));
+      expect(persistence.loadCalls.length).toBe(1);
       expect(runtimes.length).toBe(2);
       expect(lease2.read(['x'])).toEqual({ ok: true, value: 'R2' });
       await lease2.release();
-      // #112 AC4：release 后 entry 进入 idle 武装（窗口未推进时 entry 存活——此处
-      // create 必须 ALREADY_EXISTS，见本文件测试 10 与 registry-create idle 行同语义）。
-      // 「跨 generation 零残留」断言意图 = 完整窗口结算后 entry 移除、create 恢复。
-      expect(scheduler.pending()).toBe(1); // idle 已武装（R2 代际）
-      const dupIdle = await registry.create({
+      expect(scheduler.pending()).toBe(1); // R2 代际 idle 武装
+      // create#2：首选候选 X 撞 idle entry → 重生成 Y 成功（colliding 候选零 Persistence）
+      const dupIdleLease = okLease(await registry.create({
         owner: { userId: 'u-idle' },
-        namespaceId: 'k',
         schema: { lang: 'vfsl', version: 1, id: 'k', text: 'type ROOT = { n: number; };\n' },
         root: { n: 1 },
-      } as never);
-      expect(dupIdle).toMatchObject({ ok: false, code: 'NAMESPACE_ALREADY_EXISTS' });
-      expect(persistence.createCalls.length).toBe(0); // idle duplicate 零 Persistence
-      // 完整窗口推进（沿用本文件测试 10 的清理模式）→ idle close 结算 → entry 移除
+      }));
+      expect(dupIdleLease.namespaceId).toBe(`ns-${Y_HEX_ID}`);
+      expect(persistence.createCalls.map((c) => c.docId)).toEqual([`ns-${X_HEX_ID}`, `ns-${Y_HEX_ID}`]);
+      // 完整窗口推进 → R2 代际（entry X）idle close 结算 → entry 移除
       await scheduler.advanceBy(300_000);
       await flushMicrotasks();
-      expect(runtimes[1]?.closeCalls).toBe(1); // R2 代际被 idle close 关闭
-      // entry 已清（新 generation 已 settle 移除）：再 create 同 key 成功（跨 generation 零残留）
-      const r = await registry.create({
+      expect(runtimes[1]?.closeCalls).toBe(1);
+      // 零残留：再 create 新 ID 成功（跨 generation 零残留——完整窗口结算后无占用）
+      const rLease = okLease(await registry.create({
         owner: { userId: 'u-idle' },
-        namespaceId: 'k',
         schema: { lang: 'vfsl', version: 1, id: 'k', text: 'type ROOT = { n: number; };\n' },
         root: { n: 1 },
-      } as never);
-      expect(r.ok).toBe(true);
-      expect(persistence.createCalls.length).toBe(1);
-      await okLease(r).release();
+      }));
+      expect(persistence.createCalls.length).toBe(3);
+      await rLease.release();
       await new Promise<void>((resolve) => {
         setImmediate(resolve);
       });
@@ -903,6 +1013,7 @@ describe('AC7（§7.11-12）：idle-close failure 零 unhandled rejection、观�
       const registry = createNamespaceRegistryForTesting(persistence, {
         clock: manualClock(),
         scheduler,
+        randomBytes: TEST_RANDOM_BYTES,
         idleTimeoutMs: 300_000,
         runtimeFactory: () => {
           const r = new ObservableRuntime(
@@ -968,6 +1079,7 @@ describe('AC7（§7.11-12）：idle-close failure 零 unhandled rejection、观�
       const registry = createNamespaceRegistryForTesting(persistence, {
         clock: manualClock(),
         scheduler: adversarial,
+        randomBytes: TEST_RANDOM_BYTES,
         idleTimeoutMs: 300_000,
         runtimeFactory: () => runtime,
         observer: observer.sink,
@@ -1004,32 +1116,47 @@ describe('AC7（§7.11-12）：idle-close failure 零 unhandled rejection、观�
     }
   });
 
-  it('12. close 永挂起：open/create 等待属契约（等待而非崩溃）；零 unhandled rejection', async () => {
+  it('12. close 永挂起：open 等待属契约（等待而非崩溃）；create 对 closing entry 一律碰撞重生成（绝不等待 closePromise）；零 unhandled rejection', async () => {
+    // phase-5 切片 1（ADR 0010，§4.3.3 ①）：create 的 entry 碰撞检查把 active/idle/
+    // closing 一律视为碰撞 → 换 ID 重试——「create 等待 closePromise」旧语义删除，
+    // 等待契约保留在 open（closing-wait，见测试 8）；never-settle close 不击穿 create。
     const probe = collectUnhandledRejections();
     try {
       const persistence = new StubPersistence();
       persistence.queueLoad({ result: new StubHandle({ userId: 'u-idle' }, 'k') });
       const scheduler = createRegistryTestScheduler();
-      const runtime = new ObservableRuntime('R1', 'k', { neverSettle: true });
+      const runtimes: ObservableRuntime[] = [];
+      const random = makeScriptedRandomBytes([X_HEX_ID, X_HEX_ID, Y_HEX_ID]);
       const registry = createNamespaceRegistryForTesting(persistence, {
         clock: manualClock(),
         scheduler,
+        randomBytes: random.randomBytes,
         idleTimeoutMs: 300_000,
-        runtimeFactory: () => runtime,
+        runtimeFactory: () => {
+          const r = new ObservableRuntime(`R${runtimes.length + 1}`, 'k',
+            runtimes.length === 0 ? { neverSettle: true } : {});
+          runtimes.push(r);
+          return r;
+        },
       });
-      const lease = okLease(await registry.open({ userId: 'u-idle' }, 'k'));
-      await lease.release();
-      await scheduler.advanceBy(300_000); // close 发起但永不 settle
-      expect(runtime.closeCalls).toBe(1);
-
-      const p = registry.create({
+      const lease = okLease(await registry.create({
         owner: { userId: 'u-idle' },
-        namespaceId: 'k',
         schema: { lang: 'vfsl', version: 1, id: 'k', text: 'type ROOT = { n: number; };\n' },
         root: { n: 1 },
-      } as never);
+      }));
+      expect(lease.namespaceId).toBe(`ns-${X_HEX_ID}`);
+      await lease.release();
+      await scheduler.advanceBy(300_000); // close 发起但永不 settle → entry X closing
+      expect(runtimes[0]?.closeCalls).toBe(1);
+
+      // create#2：首选候选 X 撞 closing entry → 不等待、不阻塞 → 重生成 Y 成功
+      const createdPromise = registry.create({
+        owner: { userId: 'u-idle' },
+        schema: { lang: 'vfsl', version: 1, id: 'k', text: 'type ROOT = { n: number; };\n' },
+        root: { n: 1 },
+      });
       let settled: 'pending' | 'resolved' | 'rejected' = 'pending';
-      void p.then(
+      void createdPromise.then(
         () => {
           settled = 'resolved';
         },
@@ -1041,10 +1168,12 @@ describe('AC7（§7.11-12）：idle-close failure 零 unhandled rejection、观�
       await new Promise<void>((resolve) => {
         setImmediate(resolve);
       });
-      expect(settled).toBe('pending'); // 契约：等待（ADR-0008 不取消、不设内部 timeout），非崩溃/非 reject
-      await new Promise<void>((resolve) => {
-        setImmediate(resolve);
-      });
+      // create 不被 never-settle closePromise 击穿：碰撞 → 重生成 settle（成功）
+      expect(settled).toBe('resolved');
+      const lease2 = okLease(await createdPromise);
+      expect(lease2.namespaceId).toBe(`ns-${Y_HEX_ID}`);
+      expect(persistence.createCalls.map((c) => c.docId)).toEqual([`ns-${X_HEX_ID}`, `ns-${Y_HEX_ID}`]);
+      await lease2.release();
       expect(probe.events).toEqual([]); // 只锚：不产生 unhandled rejection
     } finally {
       probe.dispose();

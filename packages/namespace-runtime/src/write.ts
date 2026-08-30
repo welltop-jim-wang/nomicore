@@ -23,6 +23,10 @@ import type { DocHandle, DocHandleStatus } from '@nomicore/persistence';
 import { applyValidatedMutation, DocRuntimeFatalError } from '@nomicore/doc-runtime';
 import type { ApplyValidatedMutationResult } from '@nomicore/doc-runtime';
 import {
+  FATAL_REPLICATION_APPLY_WRITE_INTERNAL_CODE,
+  FATAL_REPLICATION_APPLY_WRITE_INTERNAL_MESSAGE,
+  FATAL_REPLICATION_WRITE_INTERNAL_CODE,
+  FATAL_REPLICATION_WRITE_INTERNAL_MESSAGE,
   FATAL_SCHEMA_WRITE_INTERNAL_CODE,
   FATAL_SCHEMA_WRITE_INTERNAL_MESSAGE,
   FATAL_WRITE_INTERNAL_CODE,
@@ -65,10 +69,12 @@ export interface RootMutationIssue {
 export type MutateRootResult = { ok: true } | { ok: false; issues: unknown[] };
 
 /**
- * 写槽位名词（D9，issue #91）：fatal 摘要与 rejection message 的来源区分——ROOT 写槽
- * 与 SCHEMA 写槽共享同一机械但独立 fatal 摘要稳定码（status.fatal 诊断不失真）。
+ * 写槽位名词（D9，issue #91；issue #132 追加 'replication'；issue #134 追加
+ * 'replication-apply'）：fatal 摘要与 rejection message 的来源区分——ROOT / SCHEMA /
+ * REPLICATION（管理写）/ REPLICATION apply（会话复制写）四写槽共享同一机械但独立
+ * fatal 摘要稳定码（status.fatal 诊断不失真；apply fatal 与管理写 fatal 分码）。
  */
-export type WriteSlot = 'root' | 'schema';
+export type WriteSlot = 'root' | 'schema' | 'replication' | 'replication-apply';
 
 /**
  * 写槽主函数（唯一写槽实现）。async——同步段无可抛点（全部 gate/分类在体内），
@@ -179,13 +185,27 @@ export function disabled(reason: string): MutateRootResult {
 }
 
 /** 永久禁用写能力（fatal 摘要稳定注册——INV-N7：code/message 恒定文案，不插值原始文本）。
- *  slot 参数（D9，issue #91）：'schema' 走 SCHEMA write 独立摘要码；缺省 'root' 渲染与
- *  现状逐字节相同（#90 冻结行为零回归）。 */
+ *  slot 参数（D9，issue #91/#132/#134）：'schema' 走 SCHEMA write 独立摘要码、
+ *  'replication' 走 REPLICATION write 独立摘要码、'replication-apply' 走 REPLICATION
+ *  apply 独立摘要码（会话复制写与管理写分码防诊断失真）；缺省 'root' 渲染与现状逐字节
+ *  相同（#90 冻结行为零回归）。 */
 export function markWriteFatal(env: WriteEnv, cause: unknown, slot: WriteSlot = 'root'): void {
-  env.state.fatal = Object.freeze({
-    code: slot === 'schema' ? FATAL_SCHEMA_WRITE_INTERNAL_CODE : FATAL_WRITE_INTERNAL_CODE,
-    message: slot === 'schema' ? FATAL_SCHEMA_WRITE_INTERNAL_MESSAGE : FATAL_WRITE_INTERNAL_MESSAGE,
-  });
+  let code: string;
+  let message: string;
+  if (slot === 'schema') {
+    code = FATAL_SCHEMA_WRITE_INTERNAL_CODE;
+    message = FATAL_SCHEMA_WRITE_INTERNAL_MESSAGE;
+  } else if (slot === 'replication') {
+    code = FATAL_REPLICATION_WRITE_INTERNAL_CODE;
+    message = FATAL_REPLICATION_WRITE_INTERNAL_MESSAGE;
+  } else if (slot === 'replication-apply') {
+    code = FATAL_REPLICATION_APPLY_WRITE_INTERNAL_CODE;
+    message = FATAL_REPLICATION_APPLY_WRITE_INTERNAL_MESSAGE;
+  } else {
+    code = FATAL_WRITE_INTERNAL_CODE;
+    message = FATAL_WRITE_INTERNAL_MESSAGE;
+  }
+  env.state.fatal = Object.freeze({ code, message });
   env.state.fatalCause = cause; // 包内诊断锚点（不进任何公共面——#89 R2 立法延续）
 }
 
@@ -219,11 +239,19 @@ export async function rejectWithWriteFatal(
 }
 
 /** fatal 稳定 message 模板（稳定前缀 + phase/committed 事实 + 固定处置说明；不插值任何
- *  原始异常文本）。slot 名词参数化（D9，issue #91）：'root' → 「ROOT write」渲染与
+ *  原始异常文本）。slot 名词参数化（D9，issue #91/#132/#134）：'root' → 「ROOT write」渲染与
  *  现状逐字节相同（runtime-write-fatal-message-rev1.test.ts 子串锚全保留）；'schema'
- *  → 「SCHEMA write」。 */
+ *  → 「SCHEMA write」；'replication' → 「REPLICATION write」；'replication-apply'
+ *  → 「REPLICATION apply」。 */
 export function writeFatalMessage(slot: WriteSlot, phase: RuntimeWriteFatalPhase, committed: boolean): string {
-  const noun = slot === 'schema' ? 'SCHEMA write' : 'ROOT write';
+  const noun =
+    slot === 'schema'
+      ? 'SCHEMA write'
+      : slot === 'replication'
+        ? 'REPLICATION write'
+        : slot === 'replication-apply'
+          ? 'REPLICATION apply'
+          : 'ROOT write';
   return `NSRT-WRITE-FATAL: ${noun} internal fatal（phase=${phase}, committed=${String(committed)}）；` +
     'internal fatal 已永久禁用本 Runtime 的全部写能力，读取仍保留；不补偿、不 fallback、不声称回滚；' +
     '上层不得自动重试非幂等写。';

@@ -2,7 +2,8 @@
  * SA6 红灯锚定 — issue #111：@nomicore/doc-runtime 公共组合 seam
  * `createInitialDocument`（设计 §6/§9 R2-H1 三分支 + 成功面 + observer 篡改面）。
  *
- * 契约来源：wiki/raw/task_namespace-registry-create_design.md（冻结，R3 PASS）
+ * 规范权威：ADR-0009（create 域）+ ADR-0007（ROOT 载体域）；设计记录（历史证据，非规范）：
+ * wiki/raw/task_namespace-registry-create_design.md（冻结，R3 PASS）
  * - §6：公共签名
  *   createInitialDocument({ envelope, derived, meta: { docId, createdAt }, root }):
  *     | { ok:true; doc:Y.Doc }

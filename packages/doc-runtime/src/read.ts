@@ -3,6 +3,7 @@
  * schema-independent 载体驱动投影读取——读取只依据 live Y.Doc 中的实际 Yjs/plain 载体
  * 转换目标子树，返回隔离的普通逻辑值（不依赖任何 VFSL/派生 schema）。
  *
+ * 规范权威：ADR-0008（载体驱动投影读取域）；设计记录（历史证据，非规范）：
  * 设计 §2–§4（wiki/raw/task_doc-runtime-root-carrier-projection-read_design.md）：
  * - 两阶段载体模型：G0 path 形态守卫 + N0 ROOT 探针（复用 carrier.ts probeRoot，唯一
  *   触碰 doc 的入口，只碰 'ROOT'）→ N1 导航循环（段纪律 D3 + 缺席吸收 D4 +

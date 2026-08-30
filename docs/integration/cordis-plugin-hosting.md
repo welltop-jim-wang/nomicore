@@ -115,9 +115,10 @@ Timer 生命周期必须覆盖 Persistence 和 Registry：先挂 Timer，最后�
 ## 创建、读取、修改和重新打开
 
 ```ts
+// create 恒三键：namespaceId 由 Registry 注入的受控 128-bit CSPRNG 生成
+// （`ns-` + 32 位小写 hex），调用方不得提供；生成 ID 经 lease.namespaceId 获知。
 const created = await registry.create({
   owner: { userId: 'acme-user' },
-  namespaceId: 'notes',
   schema: {
     lang: 'vfsl',
     version: 1,
@@ -132,6 +133,7 @@ if (!created.ok) {
 }
 
 const lease = created.lease
+const notesId = lease.namespaceId // 重新打开与后续引用的凭据
 
 console.log(lease.read(['title']))
 // { ok: true, value: 'first' }
@@ -147,7 +149,9 @@ if (!changed.ok) {
 
 await lease.release()
 
-const reopened = await registry.open({ userId: 'acme-user' }, 'notes')
+// 重开凭据 = 生成 ID（lease.namespaceId）或调用方持久化记录；同 ID 复用时
+// Registry 先核对 owner，mismatch 返回 NAMESPACE_NOT_FOUND（零泄露）。
+const reopened = await registry.open({ userId: 'acme-user' }, notesId)
 if (!reopened.ok) {
   throw new Error(`${reopened.code}: ${reopened.message}`)
 }
@@ -155,7 +159,7 @@ console.log(reopened.lease.read(['count']))
 await reopened.lease.release()
 ```
 
-`create()` 是排他创建，已存在时返回 `NAMESPACE_ALREADY_EXISTS`；读取已有 namespace 使用 `open()`。每次成功调用返回独立 `NamespaceLease`。业务完成后必须 `release()`；支持显式资源管理的运行时也可使用 `await using`。
+`create()` 是排他创建：与 active/idle/closing Registry entry 或 target-owner 持久化重复碰撞时由 Registry **内部重生成换 ID 重试**（至多 8 次），重试预算耗尽则 reject `NamespaceRegistryFatalError`（`committed:false`、`phase: 'namespace-id-generation'`）——普通 create 不再返回 `NAMESPACE_ALREADY_EXISTS`（该码保留在公共类型联合中供后续受信任导入切片使用）；读取已有 namespace 使用 `open()`。每次成功调用返回独立 `NamespaceLease`。业务完成后必须 `release()`；支持显式资源管理的运行时也可使用 `await using`。
 
 写入由 schema 校验，失败返回结构化结果并保持零写入。调用方按 `result.ok` 与稳定的 `code` 分支，不要匹配 message 文本。
 

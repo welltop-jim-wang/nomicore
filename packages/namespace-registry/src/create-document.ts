@@ -1,5 +1,6 @@
 /**
- * @nomicore/namespace-registry —— 私有 create-document 编排（issue #111 设计 §6 DQ-2）。
+ * @nomicore/namespace-registry —— 私有 create-document 编排（issue #111 设计 §6 DQ-2；
+ * phase-5 切片 1 §4.5 拆分：prepare + build 两段）。
  *
  * 职责边界（冻结）：本模块负责 schema 编译与 ROOT 原样封闭校验（verbatim issue
  * 透传——DQ-4 裁决）；Yjs 构造/单事务安装/写后核验全部委托 doc-runtime 公共组合
@@ -8,18 +9,10 @@
  * 模块调用 doc-runtime public entry——主入口可达声明图不含编辑器文档类型名文本（doc 载荷以
  * any-bridge 停留运行期，#110 §8 same discipline）。
  *
- * 编排次序（§5 伪码 slot 第 6 步的映射）：
- * 1. compileSchemaEnvelope(schema) —— 失败 → {ok:false, kind:'schema-invalid',
- *    issues: 完整原对象 verbatim}（不经过 seam——schema 编译失败面属 Registry 私有层）；
- * 2. validateLogicalSnapshot(derived, root) —— 失败 → {ok:false, kind:'root-invalid',
- *    issues: verbatim}（与 seam 内部同源同序；此前置保证 root-invalid 的“构造工厂零
- *    调用”——注入的 testing factory 只承载通过验证后的文档构造步）；
- * 3. 构造步：默认经 doc-runtime `createInitialDocument`（envelope/derived 来自步骤 1
- *    的同一编译产物——五件套深冻结、共享引用）；testing 注入 factory 完全替代构造步。
- *    seam 的 input-invalid 在 Registry 路径结构性不可达（compile 产物恒四键正确型 +
- *    Registry 自构 META：docId=已过文法 namespaceId、createdAt=toISOString() 产物）
- *    ——若仍收到，由 registry.ts 按 §7 fail-loud（create-document-internal/false），
- *    绝不伪装为普通 create input issue；root-invalid 继续 verbatim 透传。
+ * 拆分（§4.5，D-8）：`prepareCreateDocument`（compile + 封闭校验，**一次/create**，
+ * ID 无关——跨重试候选复用）与 `buildInitialDocument`（构造步，**一次/候选**：
+ * META.docId = 候选 namespaceId；testing seam 按候选调用）。原单入口 `createDocument`
+ * 删除（唯一调用方 registry.ts 同步迁移；无测试直接 import 本模块）。
  *
  * 任何 throw（seam internal fatal 或注入 factory throw）原样向上传播——registry.ts
  * 在 slot catch 中保留 DocRuntimeFatalError.committed 原值（create-document-internal/
@@ -57,7 +50,7 @@ export type CreateDocumentFactory = (
   compiled?: { readonly envelope: SchemaEnvelope; readonly derived: DerivedSchema },
 ) => CreateDocumentGatewayResult;
 
-/** 默认构造工厂：编译 → 封闭校验 → doc-runtime 公共 seam（自持 doc，零 partial 出站）。 */
+/** 默认构造工厂：compile → 封闭校验 → doc-runtime 公共 seam（自持 doc，零 partial 出站）。 */
 const defaultDocumentFactory: CreateDocumentFactory = (
   namespaceId,
   createdAt,
@@ -86,21 +79,28 @@ const defaultDocumentFactory: CreateDocumentFactory = (
   });
 };
 
+/** compile + 封闭校验的共享产物（深冻结五件套；跨重试候选复用——ID 无关）。 */
+export interface PreparedDocumentBundle {
+  readonly envelope: SchemaEnvelope;
+  readonly derived: DerivedSchema;
+}
+
+export type PrepareCreateDocumentResult =
+  | { readonly ok: true; readonly bundle: PreparedDocumentBundle }
+  | {
+      readonly ok: false;
+      readonly kind: 'schema-invalid' | 'root-invalid';
+      readonly issues: readonly unknown[];
+    };
+
 /**
- * Registry 私有 create-document 编排（单一入口；registry.ts slot 调用——catch 边界
- * 留在 slot，此处不吞 throw）。按 §4/§6 冻结次序：compile → validate → 构造步。
- *
- * @param factory 构造工厂（testing 注入或缺省默认）；缺省用 doc-runtime seam。
- * @returns 领域失败携带 verbatim issues；成功携带 doc。
- * @throws 仅 seam/internal throw（由 registry.ts 映射 create-document-internal fatal）。
+ * compile + 封闭校验（§4.5；一次/create，ID 无关）。compile/validate 本身是结果联合、
+ * 零 throw——失败面属 Registry 私有层，verbatim issues 完整透传。
  */
-export function createDocument(
-  factory: CreateDocumentFactory | undefined,
-  namespaceId: string,
-  createdAt: string,
+export function prepareCreateDocument(
   schema: unknown,
   root: unknown,
-): CreateDocumentGatewayResult {
+): PrepareCreateDocumentResult {
   const compiled = compileSchemaEnvelope(schema);
   if (!compiled.ok) {
     return { ok: false, kind: 'schema-invalid', issues: compiled.issues };
@@ -109,12 +109,26 @@ export function createDocument(
   if (!logical.ok) {
     return { ok: false, kind: 'root-invalid', issues: logical.issues };
   }
+  return { ok: true, bundle: { envelope: compiled.envelope, derived: compiled.derived } };
+}
+
+/**
+ * 构造步（§4.5；一次/候选）：META.docId = 候选 namespaceId；testing 注入 factory
+ * 完全替代构造步（seam 的 input-invalid 在 Registry 路径结构性不可达）。默认经
+ * doc-runtime `createInitialDocument`（envelope/derived 来自 prepare 的同一编译产物
+ * ——五件套深冻结、共享引用）。
+ */
+export function buildInitialDocument(
+  factory: CreateDocumentFactory | undefined,
+  namespaceId: string,
+  createdAt: string,
+  schema: unknown,
+  root: unknown,
+  bundle: PreparedDocumentBundle,
+): CreateDocumentGatewayResult {
   const build = factory ?? defaultDocumentFactory;
-  return build(
-    namespaceId,
-    createdAt,
-    schema,
-    root,
-    { envelope: compiled.envelope, derived: compiled.derived },
-  );
+  return build(namespaceId, createdAt, schema, root, {
+    envelope: bundle.envelope,
+    derived: bundle.derived,
+  });
 }

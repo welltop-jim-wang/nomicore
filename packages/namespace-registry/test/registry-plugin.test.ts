@@ -2,7 +2,8 @@
  * SA6 红灯锚定 — issue #112：namespace-registry Cordis plugin（AC1/2/3/11）
  * （冻结设计 §7 测试 22-28 + R1/M1 测试 28a；真实 `new Context()` 组合）。
  *
- * 契约来源：wiki/raw/task_registry-idle-plugin-shutdown.md（冻结设计，R1 修订）：
+ * 规范权威：ADR-0009；设计记录（历史证据，非规范）：
+ * wiki/raw/task_registry-idle-plugin-shutdown.md（冻结设计，R1 修订）：
  * - §2.F plugin 形状（NOMICORE_REGISTRY_SERVICE / provide / require / inject /
  *   有序 disposer / assertNamespaceRegistryHostDependencies / createCordisRegistryScheduler /
  *   resolvePluginIdleTimeoutMs / 双通道 AC3 裁决）；
@@ -177,9 +178,10 @@ describe('AC1/AC2/AC3 组合（§7.22-24）：真实 Context 组合与配置校�
     const missing = await registry.open({ userId: 'u-compose' }, 'missing-ns');
     expect(missing).toMatchObject({ ok: false, code: 'NAMESPACE_NOT_FOUND' });
     // create：真实建立（doc 提交）→ 返回 lease；getStatus 真实三相投影
+    // phase-5 切片 1（ADR 0010）：create 恒三键——namespaceId 由 plugin 桥接的
+    // node:crypto 受控随机源生成（ns-+32hex），调用方不再提供。
     const created = await registry.create({
       owner: { userId: 'u-compose' },
-      namespaceId: 'ns-1',
       schema: { lang: 'vfsl', version: 1, id: 'ns-1', text: 'type ROOT = { n: number; };\n' },
       root: { n: 42 },
     });
@@ -236,7 +238,7 @@ describe('AC1/AC2/AC3 组合（§7.22-24）：真实 Context 组合与配置校�
       'NAMESPACE_REGISTRY_IDLE_TIMEOUT_TYPE: idleTimeoutMs 必须是 number（0..2147483647 有限整数）',
     );
     expect(() => createNamespaceRegistryPlugin({ foo: 1 } as never)).toThrow(
-      'NAMESPACE_REGISTRY_PLUGIN_CONFIG: namespace-registry 插件配置仅接受 idleTimeoutMs 键',
+      'NAMESPACE_REGISTRY_PLUGIN_CONFIG: namespace-registry 插件配置仅接受 idleTimeoutMs 与 role 键',
     );
     // RangeError = 数值域（§2.A 二分）
     for (const bad of [-1, 1.5, Number.NaN, 2_147_483_648]) {
@@ -503,7 +505,6 @@ describe('rev1 问题 3：Registry shutdown settle 严格先于 persistence adap
 
       const created = await registry.create({
         owner: { userId: 'u-order' },
-        namespaceId: 'k',
         schema: { lang: 'vfsl', version: 1, id: 'k', text: 'type ROOT = { n: number; };\n' },
         root: { n: 42 },
       });

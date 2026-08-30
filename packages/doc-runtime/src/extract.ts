@@ -2,6 +2,7 @@
  * @nomicore/doc-runtime — extractYjsSnapshot(derived, doc)：只读固定 ROOT，
  * 严格区分 Yjs 载体并提取普通 logical ROOT snapshot（ADR-0007 / issue #73）。
  *
+ * 规范权威：ADR-0007（extract 的求值/校验域）；设计记录（历史证据，非规范）：
  * 设计 §3.1/§4.3–§4.8（wiki/raw/task_doc-runtime-extract-yjs-snapshot_design.md）：
  * - 节点遍历全景表（§4.3）：root/map/array/xml-fragment/leaf/plain/union/ref 八 kinds
  *   全覆盖；缺失字段与未知键不报不进快照（D4，逻辑域归 validateLogicalSnapshot）；

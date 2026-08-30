@@ -2,7 +2,8 @@
  * SA6 红灯锚定 — issue #110：namespace-registry open 主链、唯一 Runtime、
  * 同键 lifecycle 串行、lease 全语义（设计 §9 测试矩阵）。
  *
- * 契约来源：wiki/raw/task_namespace-registry-open_design.md（冻结设计）§4/§5/§6/§7/§8。
+ * 规范权威：ADR-0009；设计记录（历史证据，非规范）：
+ * wiki/raw/task_namespace-registry-open_design.md（冻结设计）§4/§5/§6/§7/§8。
  * 纪律：全部并发用 deferred gate + 显式 microtask settle，零 real sleep；
  * 公开文本零回显负锁；observer 收 exact cause/identity；observer throw 被隔离。
  */
@@ -50,6 +51,34 @@ async function flushMicrotasks(times = 12): Promise<void> {
 
 // #111 设计 §14：testing 工厂 Clock 必需化迁移——本文件全部 factory 调用注入
 // 单一 manual Clock helper（固定 ms；open 路径不消费 Clock 值，零行为变化）。
+
+// ── phase-5 切片 1（ADR 0010）：受控随机源确定性 helper（测试内定义；禁止从 src 导出）──
+// 第 n 次生成 = `ns-` + n 的 32 位小写 hex；每调用恰按 128-bit（16 字节）请求。
+
+function makeDeterministicRandomBytes(): {
+  randomBytes: (length: number) => Uint8Array;
+  readonly id: (n: number) => string;
+} {
+  let counter = 0;
+  return {
+    randomBytes(length: number): Uint8Array {
+      if (length !== 16) {
+        throw new Error(`受控随机源必须按 128-bit（16 字节）请求，实际请求 ${length} 字节`);
+      }
+      counter += 1;
+      const hex = counter.toString(16).padStart(32, '0');
+      const out = new Uint8Array(16);
+      for (let i = 0; i < 16; i += 1) {
+        out[i] = Number.parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+      }
+      return out;
+    },
+    id: (n: number) => `ns-${n.toString(16).padStart(32, '0')}`,
+  };
+}
+
+const TEST_RANDOM_BYTES: (length: number) => Uint8Array = makeDeterministicRandomBytes().randomBytes;
+
 function manualClock(): { now: () => number } {
   return { now: () => 1_700_000_123_456 };
 }
@@ -139,6 +168,7 @@ const READY_STATUS: NamespaceRuntimeStatus = {
   schema: { state: 'ready' },
   fatal: null,
   close: null,
+  replication: { state: 'disabled' },
 };
 
 function makeRuntime(overrides: {
@@ -158,6 +188,8 @@ function makeRuntime(overrides: {
     getStatus: overrides.status ?? (() => READY_STATUS),
     mutateRoot: overrides.mutate ?? (async () => ({ ok: true })),
     replaceSchema: async () => ({ ok: true }),
+    enableReplication: async () => ({ ok: true }),
+    bumpReplicationEpoch: async () => ({ ok: true }),
     close: async () => {},
   };
 }
@@ -184,7 +216,7 @@ describe('identity 分支（§4/§6.1）：最小安全规则 + 零访问', () =
     let factoryCalls = 0;
     const diagnostics: unknown[] = [];
     const registry = createNamespaceRegistryForTesting(persistence, {
-      clock: manualClock(), scheduler: createRegistryTestScheduler(),
+      clock: manualClock(), scheduler: createRegistryTestScheduler(), randomBytes: TEST_RANDOM_BYTES,
       runtimeFactory: () => {
         factoryCalls += 1;
         return makeRuntime();
@@ -259,7 +291,7 @@ describe('identity 分支（§4/§6.1）：最小安全规则 + 零访问', () =
     let factoryCalls = 0;
     const diagnostics: unknown[] = [];
     const registry = createNamespaceRegistryForTesting(persistence, {
-      clock: manualClock(), scheduler: createRegistryTestScheduler(),
+      clock: manualClock(), scheduler: createRegistryTestScheduler(), randomBytes: TEST_RANDOM_BYTES,
       runtimeFactory: () => {
         factoryCalls += 1;
         return makeRuntime();
@@ -282,7 +314,7 @@ describe('identity 分支（§4/§6.1）：最小安全规则 + 零访问', () =
 
   it('invalid 不 reject、不 fatal：任意无效输入都是 resolve 的窄结果', async () => {
     const persistence = new StubPersistence();
-    const registry = createNamespaceRegistryForTesting(persistence, { clock: manualClock(), scheduler: createRegistryTestScheduler() });
+    const registry = createNamespaceRegistryForTesting(persistence, { clock: manualClock(), scheduler: createRegistryTestScheduler(), randomBytes: TEST_RANDOM_BYTES });
     for (const bad of [undefined, null, {}, { userId: 5 }, { userId: {} }]) {
       const result = await registry.open(bad as never, 'ns');
       expect(result.ok).toBe(false);
@@ -315,7 +347,7 @@ describe('identity 分支（§4/§6.1）：最小安全规则 + 零访问', () =
     await persistence.saveDoc(handle);
     await handle.release();
 
-    const registry = createNamespaceRegistryForTesting(persistence, { clock: manualClock(), scheduler: createRegistryTestScheduler() });
+    const registry = createNamespaceRegistryForTesting(persistence, { clock: manualClock(), scheduler: createRegistryTestScheduler(), randomBytes: TEST_RANDOM_BYTES });
     const result = await registry.open(owner, docId);
     const lease = okLease(result);
     expect(lease.namespaceId).toBe(docId);
@@ -333,7 +365,7 @@ describe('singleton / 并发 / 串行（§5/§6.2-§6.3）', () => {
     persistence.queueLoad({ result: handle });
     let factoryCalls = 0;
     const registry = createNamespaceRegistryForTesting(persistence, {
-      clock: manualClock(), scheduler: createRegistryTestScheduler(),
+      clock: manualClock(), scheduler: createRegistryTestScheduler(), randomBytes: TEST_RANDOM_BYTES,
       runtimeFactory: (h, notifyDirty) => {
         factoryCalls += 1;
         expect(typeof h).toBe('object');
@@ -357,7 +389,7 @@ describe('singleton / 并发 / 串行（§5/§6.2-§6.3）', () => {
     const gate1 = deferred();
     persistence.queueLoad({ gate: gate1, result: null });
     persistence.queueLoad({ result: new StubHandle({ userId: 'u' }, 'k') });
-    const registry = createNamespaceRegistryForTesting(persistence, { clock: manualClock(), scheduler: createRegistryTestScheduler() });
+    const registry = createNamespaceRegistryForTesting(persistence, { clock: manualClock(), scheduler: createRegistryTestScheduler(), randomBytes: TEST_RANDOM_BYTES });
     const p1 = registry.open({ userId: 'u' }, 'k');
     await flushMicrotasks();
     const p2 = registry.open({ userId: 'u' }, 'k');
@@ -376,7 +408,7 @@ describe('singleton / 并发 / 串行（§5/§6.2-§6.3）', () => {
     const gate1 = deferred();
     persistence.queueLoad({ gate: gate1, result: new StubHandle({ userId: 'u' }, 'k1') });
     persistence.queueLoad({ result: new StubHandle({ userId: 'u' }, 'k2') });
-    const registry = createNamespaceRegistryForTesting(persistence, { clock: manualClock(), scheduler: createRegistryTestScheduler() });
+    const registry = createNamespaceRegistryForTesting(persistence, { clock: manualClock(), scheduler: createRegistryTestScheduler(), randomBytes: TEST_RANDOM_BYTES });
     const p1 = registry.open({ userId: 'u' }, 'k1');
     const p2 = registry.open({ userId: 'u' }, 'k2');
     await flushMicrotasks();
@@ -394,7 +426,7 @@ describe('singleton / 并发 / 串行（§5/§6.2-§6.3）', () => {
     const persistence = new StubPersistence();
     persistence.queueLoad({ error: new Error('unknown-load-boom') });
     persistence.queueLoad({ result: new StubHandle({ userId: 'u' }, 'k') });
-    const registry = createNamespaceRegistryForTesting(persistence, { clock: manualClock(), scheduler: createRegistryTestScheduler() });
+    const registry = createNamespaceRegistryForTesting(persistence, { clock: manualClock(), scheduler: createRegistryTestScheduler(), randomBytes: TEST_RANDOM_BYTES });
     const p1 = registry.open({ userId: 'u' }, 'k');
     await expect(p1).rejects.toBeInstanceOf(NamespaceRegistryFatalError);
     const r2 = await registry.open({ userId: 'u' }, 'k');
@@ -413,7 +445,7 @@ describe('carrier 清理与 ABA（§5）', () => {
     persistence.queueLoad({ error: new Error('unknown-boom') }); // k3 → fatal rejection
     const events: Array<{ type: string; keyDigest: string; generation: bigint }> = [];
     const registry = createNamespaceRegistryForTesting(persistence, {
-      clock: manualClock(), scheduler: createRegistryTestScheduler(),
+      clock: manualClock(), scheduler: createRegistryTestScheduler(), randomBytes: TEST_RANDOM_BYTES,
       diagnostics: (e) => {
         events.push({ type: e.type, keyDigest: e.keyDigest, generation: e.generation });
       },
@@ -452,7 +484,7 @@ describe('carrier 清理与 ABA（§5）', () => {
     persistence.queueLoad({ result: new StubHandle({ userId: 'u' }, 'k') }); // slot2 → success
     const events: Array<{ type: string; keyDigest: string; generation: bigint }> = [];
     const registry = createNamespaceRegistryForTesting(persistence, {
-      clock: manualClock(), scheduler: createRegistryTestScheduler(),
+      clock: manualClock(), scheduler: createRegistryTestScheduler(), randomBytes: TEST_RANDOM_BYTES,
       diagnostics: (e) => {
         events.push({ type: e.type, keyDigest: e.keyDigest, generation: e.generation });
       },
@@ -479,7 +511,7 @@ describe('carrier 清理与 ABA（§5）', () => {
     persistence.queueLoad({ result: null }); // 轮 2 → NOT_FOUND（新 carrier generation）
     const events: Array<{ type: string; keyDigest: string; generation: bigint }> = [];
     const registry = createNamespaceRegistryForTesting(persistence, {
-      clock: manualClock(), scheduler: createRegistryTestScheduler(),
+      clock: manualClock(), scheduler: createRegistryTestScheduler(), randomBytes: TEST_RANDOM_BYTES,
       diagnostics: (e) => {
         events.push({ type: e.type, keyDigest: e.keyDigest, generation: e.generation });
       },
@@ -506,7 +538,7 @@ describe('carrier 清理与 ABA（§5）', () => {
     persistence.queueLoad({ result: firstHandle });
     let factoryCalls = 0;
     const registry = createNamespaceRegistryForTesting(persistence, {
-      clock: manualClock(), scheduler: createRegistryTestScheduler(),
+      clock: manualClock(), scheduler: createRegistryTestScheduler(), randomBytes: TEST_RANDOM_BYTES,
       runtimeFactory: () => {
         factoryCalls += 1;
         return makeRuntime({ owner: { userId: 'u' }, namespaceId: 'k' });
@@ -530,7 +562,7 @@ describe('open 分支与 fatal 分类（§6.4-§6.7）', () => {
     const persistence = new StubPersistence();
     persistence.queueLoad({ result: null });
     const events: RegistryObserverEvent[] = [];
-    const registry = createNamespaceRegistryForTesting(persistence, { clock: manualClock(), scheduler: createRegistryTestScheduler(), observer: (e) => events.push(e) });
+    const registry = createNamespaceRegistryForTesting(persistence, { clock: manualClock(), scheduler: createRegistryTestScheduler(), randomBytes: TEST_RANDOM_BYTES, observer: (e) => events.push(e) });
     const result = await registry.open({ userId: 'u' }, 'missing');
     expect(result).toMatchObject({
       ok: false,
@@ -546,7 +578,7 @@ describe('open 分支与 fatal 分类（§6.4-§6.7）', () => {
     const typed = new DocLoadOperationalError(cause);
     persistence.queueLoad({ error: typed });
     const events: RegistryObserverEvent[] = [];
-    const registry = createNamespaceRegistryForTesting(persistence, { clock: manualClock(), scheduler: createRegistryTestScheduler(), observer: (e) => events.push(e) });
+    const registry = createNamespaceRegistryForTesting(persistence, { clock: manualClock(), scheduler: createRegistryTestScheduler(), randomBytes: TEST_RANDOM_BYTES, observer: (e) => events.push(e) });
     const result = await registry.open({ userId: 'u' }, 'k');
     expect(result).toMatchObject({
       ok: false,
@@ -568,7 +600,7 @@ describe('open 分支与 fatal 分类（§6.4-§6.7）', () => {
     const boom = new Error('protocol-violation');
     persistence.queueLoad({ error: boom });
     const events: RegistryObserverEvent[] = [];
-    const registry = createNamespaceRegistryForTesting(persistence, { clock: manualClock(), scheduler: createRegistryTestScheduler(), observer: (e) => events.push(e) });
+    const registry = createNamespaceRegistryForTesting(persistence, { clock: manualClock(), scheduler: createRegistryTestScheduler(), randomBytes: TEST_RANDOM_BYTES, observer: (e) => events.push(e) });
     const p = registry.open({ userId: 'u' }, 'k');
     await expect(p).rejects.toMatchObject({
       code: 'NAMESPACE_REGISTRY_FATAL',
@@ -602,7 +634,7 @@ describe('open 分支与 fatal 分类（§6.4-§6.7）', () => {
     const factoryCause = new Error('factory-boom');
     const events: RegistryObserverEvent[] = [];
     const registry = createNamespaceRegistryForTesting(persistence, {
-      clock: manualClock(), scheduler: createRegistryTestScheduler(),
+      clock: manualClock(), scheduler: createRegistryTestScheduler(), randomBytes: TEST_RANDOM_BYTES,
       runtimeFactory: () => {
         throw factoryCause;
       },
@@ -642,7 +674,7 @@ describe('open 分支与 fatal 分类（§6.4-§6.7）', () => {
     const factoryCause = new Error('factory-boom-2');
     const events: RegistryObserverEvent[] = [];
     const registry = createNamespaceRegistryForTesting(persistence, {
-      clock: manualClock(), scheduler: createRegistryTestScheduler(),
+      clock: manualClock(), scheduler: createRegistryTestScheduler(), randomBytes: TEST_RANDOM_BYTES,
       runtimeFactory: () => {
         throw factoryCause;
       },
@@ -678,7 +710,7 @@ describe('open 分支与 fatal 分类（§6.4-§6.7）', () => {
     const factoryCause = new Error('factory-boom-never-settle');
     const events: RegistryObserverEvent[] = [];
     const registry = createNamespaceRegistryForTesting(persistence, {
-      clock: manualClock(), scheduler: createRegistryTestScheduler(),
+      clock: manualClock(), scheduler: createRegistryTestScheduler(), randomBytes: TEST_RANDOM_BYTES,
       runtimeFactory: () => {
         throw factoryCause;
       },
@@ -736,7 +768,7 @@ describe('open 分支与 fatal 分类（§6.4-§6.7）', () => {
     // （等待结算/取消 idle timer/聚合 reject/幂等）由 registry-shutdown.test.ts 全量锚定。
     const persistence = new StubPersistence();
     const registry = createNamespaceRegistryForTesting(persistence, {
-      clock: manualClock(), scheduler: createRegistryTestScheduler(),
+      clock: manualClock(), scheduler: createRegistryTestScheduler(), randomBytes: TEST_RANDOM_BYTES,
       runtimeFactory: () => {
         throw new Error('factory 不得被调用');
       },
@@ -762,11 +794,12 @@ describe('capability：fatal/unavailable/degraded Runtime 均可 open 并透传�
       schema: { state: 'unavailable', issue: { code: 'RUNTIME_SCHEMA_X', message: 'schema-unavailable-msg' } },
       fatal: { code: 'RUNTIME_FATAL', message: 'fatal-msg' },
       close: null,
+      replication: { state: 'disabled' },
     };
     const persistence = new StubPersistence();
     persistence.queueLoad({ result: new StubHandle({ userId: 'u' }, 'k') });
     const registry = createNamespaceRegistryForTesting(persistence, {
-      clock: manualClock(), scheduler: createRegistryTestScheduler(),
+      clock: manualClock(), scheduler: createRegistryTestScheduler(), randomBytes: TEST_RANDOM_BYTES,
       runtimeFactory: () => makeRuntime({ status: () => runtimeStatus, read: () => ({ ok: true, value: 'still-readable' }) }),
     });
     const result = await registry.open({ userId: 'u' }, 'k');
@@ -793,11 +826,12 @@ describe('capability：fatal/unavailable/degraded Runtime 均可 open 并透传�
       schema: { state: 'ready' },
       fatal: null,
       close: null,
+      replication: { state: 'disabled' },
     };
     const persistence = new StubPersistence();
     persistence.queueLoad({ result: new StubHandle({ userId: 'u' }, 'k') });
     const registry = createNamespaceRegistryForTesting(persistence, {
-      clock: manualClock(), scheduler: createRegistryTestScheduler(),
+      clock: manualClock(), scheduler: createRegistryTestScheduler(), randomBytes: TEST_RANDOM_BYTES,
       runtimeFactory: () => makeRuntime({ status: () => degradedStatus }),
     });
     const lease = okLease(await registry.open({ userId: 'u' }, 'k'));
@@ -817,7 +851,7 @@ describe('publish 时机：factory 返回即成功，不等待 P0（§6/AC4）',
       p0Resolved = true;
     });
     const registry = createNamespaceRegistryForTesting(persistence, {
-      clock: manualClock(), scheduler: createRegistryTestScheduler(),
+      clock: manualClock(), scheduler: createRegistryTestScheduler(), randomBytes: TEST_RANDOM_BYTES,
       runtimeFactory: () =>
         makeRuntime({
           read: () => ({ ok: true, value: 'pre-p0-value' }),
@@ -829,6 +863,7 @@ describe('publish 时机：factory 返回即成功，不等待 P0（§6/AC4）',
             schema: { state: 'preparing' },
             fatal: null,
             close: null,
+            replication: { state: 'disabled' },
           }),
         }),
     });
@@ -856,18 +891,18 @@ describe('lease 语义（§7 逐方法表格）', () => {
   }> {
     const persistence = new StubPersistence();
     persistence.queueLoad({ result: new StubHandle({ userId: 'u-alice' }, 'ns-1') });
-    const registry = createNamespaceRegistryForTesting(persistence, { clock: manualClock(), scheduler: createRegistryTestScheduler() });
+    const registry = createNamespaceRegistryForTesting(persistence, { clock: manualClock(), scheduler: createRegistryTestScheduler(), randomBytes: TEST_RANDOM_BYTES });
     const a = okLease(await registry.open({ userId: 'u-alice' }, 'ns-1'));
     const b = okLease(await registry.open({ userId: 'u-alice' }, 'ns-1'));
     return { lease: a, other: b, registry, persistence };
   }
 
-  it('owner 为冻结独立投影；lease 冻结；十键面 + asyncDispose 键；不暴露 runtime/doc', async () => {
+  it('owner 为冻结独立投影；lease 冻结；十二键面 + asyncDispose 键；不暴露 runtime/doc', async () => {
     const persistence = new StubPersistence();
     persistence.queueLoad({ result: new StubHandle({ userId: 'u-alice' }, 'ns-1') });
     const runtime = makeRuntime({ owner: { userId: 'runtime-owner-marker' }, namespaceId: 'runtime-ns' });
     const registry = createNamespaceRegistryForTesting(persistence, {
-      clock: manualClock(), scheduler: createRegistryTestScheduler(),
+      clock: manualClock(), scheduler: createRegistryTestScheduler(), randomBytes: TEST_RANDOM_BYTES,
       runtimeFactory: () => runtime,
     });
     const lease = okLease(await registry.open({ userId: 'u-alice' }, 'ns-1'));
@@ -878,12 +913,15 @@ describe('lease 语义（§7 逐方法表格）', () => {
     expect(lease.namespaceId).toBe('ns-1');
     expect(Object.keys(lease).sort()).toEqual(
       [
+        'bumpReplicationEpoch',
+        'enableReplication',
         'getActiveSchema',
         'getMetadata',
         'getSchemaEnvelope',
         'getStatus',
         'mutateRoot',
         'namespaceId',
+        'openReplicationSession',
         'owner',
         'read',
         'release',
@@ -913,7 +951,7 @@ describe('lease 语义（§7 逐方法表格）', () => {
         return { ok: true };
       },
     });
-    const registry = createNamespaceRegistryForTesting(persistence, { clock: manualClock(), scheduler: createRegistryTestScheduler(), runtimeFactory: () => runtime });
+    const registry = createNamespaceRegistryForTesting(persistence, { clock: manualClock(), scheduler: createRegistryTestScheduler(), randomBytes: TEST_RANDOM_BYTES, runtimeFactory: () => runtime });
     const lease = okLease(await registry.open({ userId: 'u' }, 'k'));
     expect(lease.read(['nope'])).toEqual({ ok: false, code: 'PATH_NOT_ALLOWED', path: ['nope'] });
     expect(lease.getSchemaEnvelope()).toBeNull();
@@ -930,7 +968,7 @@ describe('lease 语义（§7 逐方法表格）', () => {
     persistence.queueLoad({ result: new StubHandle({ userId: 'u' }, 'k') });
     const events: RegistryObserverEvent[] = [];
     const registry = createNamespaceRegistryForTesting(persistence, {
-      clock: manualClock(), scheduler: createRegistryTestScheduler(),
+      clock: manualClock(), scheduler: createRegistryTestScheduler(), randomBytes: TEST_RANDOM_BYTES,
       observer: (e) => events.push(e),
     });
     const lease = okLease(await registry.open({ userId: 'u' }, 'k'));
@@ -994,7 +1032,7 @@ describe('lease 语义（§7 逐方法表格）', () => {
   it('多次 open 各自独立 lease：release 一个不影响另一个', async () => {
     const persistence = new StubPersistence();
     persistence.queueLoad({ result: new StubHandle({ userId: 'u' }, 'k') });
-    const registry = createNamespaceRegistryForTesting(persistence, { clock: manualClock(), scheduler: createRegistryTestScheduler() });
+    const registry = createNamespaceRegistryForTesting(persistence, { clock: manualClock(), scheduler: createRegistryTestScheduler(), randomBytes: TEST_RANDOM_BYTES });
     const r1 = okLease(await registry.open({ userId: 'u' }, 'k'));
     const r2 = okLease(await registry.open({ userId: 'u' }, 'k'));
     expect(r1).not.toBe(r2);
@@ -1009,7 +1047,7 @@ describe('lease 语义（§7 逐方法表格）', () => {
     persistence.queueLoad({ result: new StubHandle({ userId: 'u' }, 'k') });
     let settled = false;
     const registry = createNamespaceRegistryForTesting(persistence, {
-      clock: manualClock(), scheduler: createRegistryTestScheduler(),
+      clock: manualClock(), scheduler: createRegistryTestScheduler(), randomBytes: TEST_RANDOM_BYTES,
       runtimeFactory: () =>
         makeRuntime({
           mutate: async () => {
@@ -1034,7 +1072,7 @@ describe('observer 隔离与公开文本零回显（§8/AC11）', () => {
     persistence.queueLoad({ error: new DocLoadOperationalError(new Error('x')) });
     persistence.queueLoad({ result: new StubHandle({ userId: 'u' }, 'k') });
     const registry = createNamespaceRegistryForTesting(persistence, {
-      clock: manualClock(), scheduler: createRegistryTestScheduler(),
+      clock: manualClock(), scheduler: createRegistryTestScheduler(), randomBytes: TEST_RANDOM_BYTES,
       observer: () => {
         throw new Error('observer-isolated');
       },
@@ -1058,7 +1096,7 @@ describe('observer 隔离与公开文本零回显（§8/AC11）', () => {
     const events: RegistryObserverEvent[] = [];
     const diagnostics: unknown[] = [];
     const registry = createNamespaceRegistryForTesting(persistence, {
-      clock: manualClock(), scheduler: createRegistryTestScheduler(),
+      clock: manualClock(), scheduler: createRegistryTestScheduler(), randomBytes: TEST_RANDOM_BYTES,
       observer: (e) => events.push(e),
       diagnostics: (e) => diagnostics.push(e),
     });
@@ -1142,7 +1180,7 @@ describe('observer reentrancy（SA4 非阻断建议落实）：observer 内同�
     let loadCallsAtObserverTime = -1;
     let reentrantSettledInObserverStack = true;
     const registry = createNamespaceRegistryForTesting(persistence, {
-      clock: manualClock(), scheduler: createRegistryTestScheduler(),
+      clock: manualClock(), scheduler: createRegistryTestScheduler(), randomBytes: TEST_RANDOM_BYTES,
       observer: (e) => {
         if (e.type === 'open-load-failed') {
           // 同步栈内（slot1 尚未返回）：记录 load 计数并同步 reentrant open 同 key
@@ -1199,7 +1237,7 @@ describe('observer reentrancy（SA4 非阻断建议落实）：observer 内同�
     let reentrant: Promise<OpenNamespaceResult> | undefined;
     let reentrantSettledInObserverStack = true;
     const registry = createNamespaceRegistryForTesting(persistence, {
-      clock: manualClock(), scheduler: createRegistryTestScheduler(),
+      clock: manualClock(), scheduler: createRegistryTestScheduler(), randomBytes: TEST_RANDOM_BYTES,
       observer: (e) => {
         if (e.type === 'lifecycle-slot-failed') {
           reentrant = registry.open({ userId: 'u' }, 'k');

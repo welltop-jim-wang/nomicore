@@ -67,6 +67,34 @@ function collectUnhandledRejections(): { readonly events: unknown[]; dispose(): 
   };
 }
 
+
+// ── phase-5 切片 1（ADR 0010）：受控随机源确定性 helper（测试内定义；禁止从 src 导出）──
+// 第 n 次生成 = `ns-` + n 的 32 位小写 hex；每调用恰按 128-bit（16 字节）请求。
+
+function makeDeterministicRandomBytes(): {
+  randomBytes: (length: number) => Uint8Array;
+  readonly id: (n: number) => string;
+} {
+  let counter = 0;
+  return {
+    randomBytes(length: number): Uint8Array {
+      if (length !== 16) {
+        throw new Error(`受控随机源必须按 128-bit（16 字节）请求，实际请求 ${length} 字节`);
+      }
+      counter += 1;
+      const hex = counter.toString(16).padStart(32, '0');
+      const out = new Uint8Array(16);
+      for (let i = 0; i < 16; i += 1) {
+        out[i] = Number.parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+      }
+      return out;
+    },
+    id: (n: number) => `ns-${n.toString(16).padStart(32, '0')}`,
+  };
+}
+
+const TEST_RANDOM_BYTES: (length: number) => Uint8Array = makeDeterministicRandomBytes().randomBytes;
+
 // ── stub（沿用 registry-idle.test.ts 形态）────────────────────────────────────
 
 class StubHandle implements DocHandle {
@@ -115,6 +143,7 @@ const READY_STATUS: NamespaceRuntimeStatus = {
   schema: { state: 'ready' },
   fatal: null,
   close: null,
+  replication: { state: 'disabled' },
 };
 
 interface RuntimeClosePlan {
@@ -157,6 +186,14 @@ class ObservableRuntime implements NamespaceRuntime {
   }
 
   replaceSchema(): Promise<{ ok: true }> {
+    return Promise.resolve({ ok: true });
+  }
+
+  enableReplication(): Promise<{ ok: true }> {
+    return Promise.resolve({ ok: true });
+  }
+
+  bumpReplicationEpoch(): Promise<{ ok: true }> {
     return Promise.resolve({ ok: true });
   }
 
@@ -244,6 +281,7 @@ describe('SA7 敌意注入（攻击面 3）：确定性、零 real sleep', () =>
       const registry = createNamespaceRegistryForTesting(persistence, {
         clock: manualClock(),
         scheduler,
+        randomBytes: TEST_RANDOM_BYTES,
         idleTimeoutMs: 300_000,
         runtimeFactory: () => runtime,
         observer: observer.sink,
@@ -300,6 +338,7 @@ describe('SA7 敌意注入（攻击面 3）：确定性、零 real sleep', () =>
         const registry = createNamespaceRegistryForTesting(persistence, {
           clock: manualClock(),
           scheduler,
+          randomBytes: TEST_RANDOM_BYTES,
           idleTimeoutMs: 300_000,
           runtimeFactory: () => runtime,
           observer: observer.sink,
@@ -332,6 +371,7 @@ describe('SA7 敌意注入（攻击面 3）：确定性、零 real sleep', () =>
         const registry = createNamespaceRegistryForTesting(persistence, {
           clock: manualClock(),
           scheduler,
+          randomBytes: TEST_RANDOM_BYTES,
           idleTimeoutMs: 0,
           runtimeFactory: () => runtime,
         });
@@ -370,6 +410,7 @@ describe('SA7 敌意注入（攻击面 3）：确定性、零 real sleep', () =>
       const registry = createNamespaceRegistryForTesting(persistence, {
         clock: manualClock(),
         scheduler,
+        randomBytes: TEST_RANDOM_BYTES,
         idleTimeoutMs: 300_000,
         runtimeFactory: () => runtime,
         observer: observer.sink,
@@ -411,6 +452,7 @@ describe('SA7 敌意注入（攻击面 3）：确定性、零 real sleep', () =>
       const registry = createNamespaceRegistryForTesting(persistence, {
         clock: manualClock(),
         scheduler,
+        randomBytes: TEST_RANDOM_BYTES,
         idleTimeoutMs: 300_000,
         runtimeFactory: () => runtime,
       });
@@ -463,6 +505,7 @@ describe('SA7 敌意注入（攻击面 3）：确定性、零 real sleep', () =>
       const registry = createNamespaceRegistryForTesting(persistence, {
         clock: rollbackClock,
         scheduler,
+        randomBytes: TEST_RANDOM_BYTES,
         idleTimeoutMs: 300_000,
         runtimeFactory: () => runtime,
       });
@@ -478,9 +521,10 @@ describe('SA7 敌意注入（攻击面 3）：确定性、零 real sleep', () =>
       expect(runtime.closeCalls).toBe(1); // 恰在 scheduler 边界关闭
 
       // create 在回跳时钟下照常（单次读数、无单调性校验）。
+      // phase-5 切片 1（ADR 0010）：create 恒三键（namespaceId 由注入随机源生成）；
+      // 回跳时钟下单次读数、无单调性校验的断言面保持。
       const created = await registry.create({
         owner: { userId: 'u-hostile' },
-        namespaceId: 'ns-h5-create',
         schema: { lang: 'vfsl', version: 1, id: 'ns-h5-create', text: 'type ROOT = { n: number; };\n' },
         root: { n: 7 },
       });
@@ -503,11 +547,13 @@ describe('SA7 敌意注入（攻击面 3）：确定性、零 real sleep', () =>
       createNamespaceRegistryForTesting(persistence2, {
         clock: manualClock(),
         scheduler: createRegistryTestScheduler(),
+        randomBytes: TEST_RANDOM_BYTES,
         runtimeFactory: () => new ObservableRuntime('R-H6', 'ns-h6'),
       });
     const registry = createNamespaceRegistryForTesting(persistence, {
       clock: manualClock(),
       scheduler,
+      randomBytes: TEST_RANDOM_BYTES,
       idleTimeoutMs: 300_000,
       runtimeFactory: () => new ObservableRuntime('R-H6', 'ns-h6'),
     });

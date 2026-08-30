@@ -1,51 +1,41 @@
 ---
 status: complete
-issue: 113
-branch: fix/issue-113-on-docs-namespace-registry
-base: docs/namespace-registry
+run_id: issue-168-1788095633-447205
+branch: refactor/ws-replication-close-peer-transport-synchronously-
+round: 1
 ---
 
-# Phase 4 NamespaceRegistry 全链验收与最终收口
+# issue #168 — Synchronously close peer transport on HELLO timeout
 
-## 验收结论
+## 需求摘要
 
-Phase 4 implementation tickets #106–#112 均已关闭。MemoryPersistence 与 FilePersistence 运行同一套 Registry acceptance contract；FilePersistence 额外覆盖 dispose 后重新构造 adapter/Registry 并 reopen 已提交 namespace。真实 Cordis 组合、缺失依赖 loud fail、open/create/lease/idle/fatal/degraded/shutdown、exports/module graph 与 service/error vocabulary 由既有专项套件覆盖。
+修复 peer 侧 HELLO 握手超时后仅进入 backoff、未立即关闭旧 transport 所造成的有界 orphan-transport race。修复须复用既有 pong-timeout detach-close 纪律（或等价受保护 helper），同时保持 dial-throw、onClose 与 hub 侧行为不变，并确保迟到并发步骤幂等、重拨恢复正常。
 
-Node 20/24 CI 矩阵执行 `registry-node-dispose.test.ts`；测试现将 `Symbol.asyncDispose` 与原生 `await using` 解析能力作为硬断言，不再条件 skip。
+## 改动
 
-## Standards 轴
+- `1092d34 fix(ws-replication): close peer transport synchronously on hello timeout (#168)`
+  - 在 `PeerConnectionImpl` 中抽取受保护的 timeout detach-close helper；HELLO timeout 在进入 backoff 前同步停止 liveness、退订、作废 epoch，并以 `close(1001, 'hello-timeout')` 收口旧 transport。
+  - HELLO 路径增加 transport/epoch 双凭据守卫；pong-timeout 改用同一 helper；dial-throw、onClose、hub timeout 冻结面未改变。
+  - 新增/翻转 SA6 契约以覆盖 peer close、close 签名、幂等、迟到 ACK 与恢复链。
+- `5591c2f test(yjs-server): replace package-internal test seam imports with in-test public-API fixture (#168)`
+  - 修复终审 Standards S1：真实 WS 应用测试删除对 ws-replication 内部测试夹具的跨包导入，改用测试内最小 fixture 和包公共导出，保留 RT-1..RT-4 语义。
+- `a85f767 test(ws-replication): add hello timeout dynamic coverage (#168)`
+  - 提交 SA7 动态故障注入测试、SA4/SA7/SA3 任务存档与 dispatch 记录。
 
-最终审查发现并修复：
+## 审查与验证
 
-- integration diff 中的尾随空格与文件末尾空行；
-- Node dispose 验收可被 skip；
-- 缺少 Registry package README 与准确验证命令。
+- **SA4 静态审查**：`pass`。范围严格为 `git diff ffca4f6..HEAD`；确认无 scope creep，设计一致，冻结面未触碰，且静态攻击面与契约连锁通过。报告：`wiki/raw/task_ws-replication-close-peer-transport-synchronously_sa4_review.md`。
+- **SA7 动态验证**：`pass`。确认红基线非空转、真实 WS adapter close/re-entry 行为、hello/pong close-throw 后恢复；报告：`wiki/raw/task_ws-replication-close-peer-transport-synchronously_sa7_report.md`。
+- **终审双轴 R2**：Standards `pass`（S1 修复后边界合规）；Spec `pass`（issue #168 要求完整，RT-1..RT-4 未削弱）。
+- **最终整合验收**（commit `a85f7670e172bb2a68e612c6e083784564a74fff`）：
+  ```text
+  npx vitest run packages/ws-replication apps/yjs-server/test/ws-hello-timeout-close-issue168.test.ts
+  → Test Files 44 passed (44), Tests 312 passed (312), Type Errors no errors
 
-保留的 judgement-call 风险：`registry.ts` 体量较大；Registry/Runtime plain-data snapshot 逻辑存在相似形状；create document 路径存在防御性重复校验。这些不改变 ADR 0009 行为，建议后续在独立重构票处理。
+  npx tsc -p packages/ws-replication/tsconfig.json --noEmit
+  → exit 0
 
-`packages/dsh-persistence/src/clock.ts` 的真实时间 file-probe settle 轮询是既有 ticket 产物；它与模块规范的“注入 clocks/timers”表述存在张力，但不属于 Registry production fallback。该风险不阻断 Phase 4 合并，后续应单独收口 probe seam。
-
-## Spec 轴
-
-Issue #113 的关键缺口已补齐：
-
-- 新增 Memory/File 共用 Registry acceptance contract，并覆盖 File restart/reopen；
-- Node 20/24 `await using` 行为测试由可跳过改为硬门禁；
-- 补齐 package docs、精确命令与最终双轴结论。
-
-完整并发、idle、degraded/recovery、fatal read-only、typed load/create error、committed create fatal、ordered shutdown、failure aggregation、Cordis dependency 与 module graph 行为继续由 `packages/namespace-registry/test/`、`packages/namespace-runtime/test/` 和 `packages/persistence/test/` 的专项测试覆盖。
-
-## 验证
-
-本地 Node 24：
-
-- `pnpm typecheck`：通过；
-- `pnpm test`：通过（新增验收前 117 files / 1403 tests；新增 focused suite 2 files / 4 tests 通过）；
-- `./node_modules/.bin/tsc -p tsconfig.typecheck.json --noEmit`：通过；
-- `git diff --check origin/main` 与 working diff check：通过。
-
-Node 20/24 最终结果由 PR CI 矩阵门禁确认。
-
-## 合并建议
-
-**建议在本 PR CI 的 Node 20 与 Node 24 jobs 全绿后，将本 PR 合入 base PR #105；随后 PR #105 可合入 `main`。** 若任一 Node job 失败或出现未解决 review blocker，则暂缓 #105 合并。
+  npx tsc -p apps/yjs-server/tsconfig.json --noEmit
+  → exit 0
+  ```
+  后台完整输出：`.mabf-bg/issue168-final.log`；退出码：`.mabf-bg/issue168-final.exit`（`0`）。

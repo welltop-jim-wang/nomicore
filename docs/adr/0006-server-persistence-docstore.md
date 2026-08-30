@@ -195,3 +195,23 @@ interface DocHandle {
 - 降级等待期内（任一可观察时刻）retry 退避即该 entry 的唯一 flush 调度源（退避上限 max-dirty 间隔；flush 记账的 catch→finally 同步续体内允许瞬态并存，无外部可观察后果），「不设外部 flush/cron 协调器」不变。
 
 **3. 实施注记**：entry 状态解析收敛于 adapter 共享的 persistence lifecycle core（两 Adapter 不得复制状态机）；MemoryPersistence 与 FilePersistence 以平行验收套件覆盖同一状态契约（`issue-79-entry-status.test.ts` / `issue-79-file-entry-status.test.ts`）。
+
+---
+
+## 对齐说明：issue #131（Phase 5 切片 1：Registry 普通 create 的 namespaceId 生成）
+
+日期：2026-08-27；状态：已接受。本说明只对齐 Registry 身份演进，**不修改本 ADR 任何 Persistence 契约条款**。
+
+Namespace identity、普通 create 的 ID 生成与 Registry 碰撞处理以 [ADR 0010「Namespace identity、owner 与复制范围」](./0010-hub-peer-websocket-ydoc-replication.md#namespace-identityowner-与复制范围) 为唯一权威来源。本 ADR 仅保留 Persistence 边界：仍按 owner 分区，`createDoc(owner, docId, doc)` 仍以 `(owner.userId, docId)` 排他创建并通过 `DOC_DUPLICATE` 报告重复；不新增跨 owner catalog 或全局唯一约束。Registry 改为以 namespaceId 索引，不改变不同 owner 下相同 docId 属于不同持久化 entry 的既有语义。
+
+### 复制导入、归档与只读身份探针修订（2026-08-28，issue #133 round-2；owner feedback 3 授权）
+
+本节为**增量演进**，修订上方与 Phase 5 import/archive 生命周期有关的接口空白；除下列明示条款外，所有既有条款（尤其 owner 分区、`saveDoc` dirty notification、全量 snapshot、主 snapshot temp→rename、`META.docId`）维持效力。
+
+**1. `importDoc(owner, docId, doc)` 是排他创建能力**：duplicate 绝不覆盖（claim 排他 + `DOC_DUPLICATE`）；成功 = 主快照提交后才签发 handle/ownership；本层只校验 `META.docId === docId`（违约 → `DocImportIdentityError`）。复制身份与 Hub 广告的**完全一致核对是调用方（Registry 受信 bootstrap 编排）在所有权转移之前的职责**——Persistence 不是、也不得成为 Hub 广告授权/复制策略引擎；本层不接收也不校验复制身份期望值。
+
+**2. `archiveDoc(owner, docId, expected)` 只允许在无有效 handle（且在途 dirty 已排空）时执行**：它先排空既有 dirty 状态，再以持久快照复制事实为权威做身份守卫读取（单一谓词：`replicationId`/`replicationEpoch` 与 expected 完全一致；缺失/单键/undefined/格式违约/字节损坏/`META.docId` 不符统一 `DOC_ARCHIVE_IDENTITY_MISMATCH`），随后写全量归档快照并移除主键。身份不匹配/active handle/duplicate/operational/fatal 的分类与 committed-aware 重定位语义保留 round-1 条款：`guard-read`/`relocate-write` 为 committed:false，`relocate-remove` 为 committed:true。
+
+**3. 归档布局与原子语义**：File 归档布局为 `{rootDir}/archive/users/{userId}/{docId}.snapshot`，暂存为对应归档路径 `.tmp`；归档写经 mkdir→writeFile tmp→rename 原子提交，同名重复归档为单槽 latest-wins 原子覆盖，tmp 永不提交。Memory 提供行为等价的独立归档分区（不经 writeSnapshot hook）。**提交边界 = 归档写（rename/write resolve）**：若随后主键移除拒绝，归档字节已提交——`archiveDoc` 必须拒绝 `DocArchiveFatalError('relocate-remove')` 且 `committed:true`，不得报告 operational、identity mismatch 或 duplicate；Registry 必须以 `committed:true` 原样传播为 `NamespaceRegistryFatalError`，而非领域 `RESET_FAILED`。重试是**收敛性**重试：它重新守卫/读取仍存在的主键、latest-wins 覆盖同一归档槽、再重试移除；它绝不主张主键仍是唯一已提交状态。
+
+**4. Persistence 内部只读 committed-identity probe（`readPersistedReplicationIdentity(owner, docId)`）**：为 Registry reset preflight 提供——只读受信任主快照（owner 分区 key + `PersistenceIO.read`），在 detached 临时 Y.Doc 解码后应用既有 `META.docId` 与复制事实格式校验；**不签发 handle、不建 live cell、不调用 saveDoc、不排空 dirty、不写/flush/archive、不转移所有权**。其 typed 拒绝面：当前生命周期 epoch 内的 store 读拒绝 → `DocPersistedIdentityProbeOperationalError`（唯一普通运营失败）；Yjs 解码失败/`META.docId` 不符/载体非法 → `DocPersistedIdentityProbeCorruptError`；dispose/abort/契约违约 → `DocPersistedIdentityProbeFatalError`。全部 `committed:false`（本 seam 从不写或转移所有权——INV-12）；消息为稳定常量，不回显 owner/identity/bytes。该 probe **不是** live-state 降级回退：I/O 失败保持 loud/typed，绝不读取 live Y.Doc 冒充持久事实。

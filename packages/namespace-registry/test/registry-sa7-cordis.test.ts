@@ -151,10 +151,12 @@ function stubPersistencePlugin(stub: Sa7StubPersistence): { name: string; apply(
   };
 }
 
-const CREATE_PAYLOAD = (namespaceId: string) => ({
+/** phase-5 切片 1（ADR 0010）：create 恒三键——namespaceId 由 plugin 桥接的受控
+ * 随机源生成（ns-+32hex），调用方不再提供；schema id 与 namespaceId 解耦（包内
+ * 私域 cosmetic 标识，非 entry key）。 */
+const CREATE_PAYLOAD = () => ({
   owner: { userId: 'u-sa7' },
-  namespaceId,
-  schema: { lang: 'vfsl', version: 1, id: namespaceId, text: 'type ROOT = { n: number; };\n' },
+  schema: { lang: 'vfsl', version: 1, id: 'ns-sa7', text: 'type ROOT = { n: number; };\n' },
   root: { n: 42 },
 });
 
@@ -176,7 +178,7 @@ describe('SA7 Cordis 组合动态（攻击面 4）', () => {
       expect(registry.getStatus()).toEqual({ state: 'running' });
 
       // 工作：create → read → release（idle 武装经 ctx.timeout 桥）。
-      const lease = okLease(await registry.create(CREATE_PAYLOAD('ns-p1')));
+      const lease = okLease(await registry.create(CREATE_PAYLOAD()));
       expect(lease.read(['n'])).toEqual({ ok: true, value: 42 });
       expect(stub.createCalls).toBe(1);
       await lease.release();
@@ -244,7 +246,7 @@ describe('SA7 Cordis 组合动态（攻击面 4）', () => {
         return originalSaveDoc(handle);
       };
 
-      const created = await held.create(CREATE_PAYLOAD('ns-p2'));
+      const created = await held.create(CREATE_PAYLOAD());
       expect(created.ok).toBe(true);
       const lease = okLease(created);
       const writePromise = lease.mutateRoot({ op: 'set', path: ['n'], value: 43 });
