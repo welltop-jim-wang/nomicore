@@ -24,7 +24,8 @@
  *   （channel closing→closed 后无整连接重建），peer 该 ns 永久 `read-failed`，
  *   且文档化恢复入口 `add-target` 被 G5c 恢复的 peerOwners 幂等集短路为伪 ok 零动作。
  *   违反部署文档冻结编排 ③「addTarget → §14.1 整连接重建 → 重 OPEN → bootstrap」
- *   与「恢复入口 = add-target」承诺。SA3 修复本红锚后本文件应全绿。
+ *   与「恢复入口 = add-target」承诺。SA3 修复（f310f18：G5b settle-wait + 状态感知
+ *   add-target 幂等）后本文件应全绿（SA7 R2 于 2026-08-30 复验）。
  *
  * 黑盒纪律与锚测试一致：真实 spawn / 真实 WebSocket / 真实 Persistence（File 独立
  * rootDir）；断言只消费子进程 stdout NDJSON 与运行期磁盘产物（archive 快照、lock 文件），
@@ -638,5 +639,80 @@ describe('Phase-5 SA7 红锚 F1：两轮 bump→fence→reset 运维循环的第
       await waitConverged(t, ['tags'], 60_000, 'F1 add-target 恢复入口后重新收敛（红锚：当前不发生）');
     },
     360_000,
+  );
+});
+
+// ════════ O-R3-1（SA4 R3 移交，SA7 R2 必验）：终态通道 + peerOwners 在册 → add-target 放行分支 ════════
+
+describe('Phase-5 SA7 O-R3-1：终态通道（conflicted）+ peerOwners 在册 → add-target 放行 → target-added + 重建', () => {
+  it(
+    'fence 终态下 add-target 不被幂等集短路：target-added 事件 + 通道离开终态 + 重建后 reset 收敛',
+    async () => {
+      const t = await bootTopology('memory');
+      await sendOp(
+        t.hub,
+        { op: 'verify-write', namespaceId: t.nsId, set: ['tags'], path: ['tags'], value: 'hub', timeoutMs: 30_000 },
+        60_000,
+      );
+      await waitConverged(t, ['tags'], 30_000, 'O-R3-1 基线');
+
+      // 制造终态 + peerOwners 在册：bump → fence → finalize('conflicted')（终态；
+      // openActiveTargets 对 closed/conflicted 等待显式 re-add §14.1——正是放行分支的目标态）。
+      // fencing 不触碰 peerOwners（app.ts 幂等集仅 add/remove/reset 编排维护）。
+      const bumped = await sendOp(t.hub, { op: 'bump-epoch', namespaceId: t.nsId }, 30_000);
+      expect(bumped.ok).toBe(true);
+      await waitForEvent(
+        t.p1,
+        (e) => e.event === 'identity-conflicted' || e.type === 'identity-conflicted',
+        30_000,
+        'O-R3-1 peer-1 fence（通道 → conflicted 终态）',
+      );
+
+      // ── 放行分支本体：终态通道 + peerOwners 有条目 → add-target ──
+      //    旧实现（f310f18 前）：peerOwners.has 短路 → 伪 ok:true、零事件零动作。
+      //    修复后：状态感知短路仅覆盖非终态；conflicted 放行 → engine re-add 分支
+      //    （targeted + requestRebuild('re-add')）→ target-added 事件 + 整连接重建。
+      const mark = t.p1.events.length;
+      const addTarget = await sendOp(
+        t.p1,
+        { op: 'add-target', namespaceId: t.nsId, ownerUserId: 'alice' },
+        30_000,
+      );
+      expect(addTarget.ok).toBe(true);
+      // (a) 放行证据：target-added 恰在本次 add-target 后发射（短路分支零事件）
+      expect(
+        t.p1.events
+          .slice(mark)
+          .some((e) => e.event === 'target-added' && e.namespaceId === t.nsId),
+      ).toBe(true);
+      // (b) 重建证据：通道离开 conflicted 终态（re-add 分支 setState('targeted')）
+      expect(
+        t.p1.events
+          .slice(mark)
+          .some(
+            (e) =>
+              e.event === 'channel-state-changed' &&
+              e.namespaceId === t.nsId &&
+              e.from === 'conflicted',
+          ),
+      ).toBe(true);
+
+      // 重 OPEN 因本地身份陈旧（epoch=1 vs 权威 2）会再入 conflicted（契约内行为）；
+      // 以受控 reset 走完重入 → 证明 (b) 重建出的通道/机制可收敛（rebuilt → converged）。
+      const reset = await sendOp(
+        t.p1,
+        {
+          op: 'reset-replica',
+          namespaceId: t.nsId,
+          ownerUserId: 'alice',
+          expectedReplicationId: t.replicationId,
+          expectedReplicationEpoch: 1,
+        },
+        30_000,
+      );
+      expect(reset.ok).toBe(true);
+      await waitConverged(t, ['tags'], 60_000, 'O-R3-1 add-target 重建后 reset 收敛');
+    },
+    300_000,
   );
 });
