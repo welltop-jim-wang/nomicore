@@ -98,7 +98,9 @@ export function acquireRootLock(rootDir: string, instanceId: string): RootLockHa
   };
 }
 
-/** 稳定码注册表（设计 §3.4，append-only；app 运行期控制通道回执用）。 */
+/** 稳定码注册表（设计 §3.4，append-only；app 运行期控制通道回执用）。
+ * #140（Phase 5 管理动词）追加：registry `resetReplica` 窄 issue 七码透传 +
+ * `reset-replica-failed`（branded fatal / 结构性防御边界）。 */
 export const STABLE_OP_ERROR_CODES = Object.freeze([
   'malformed-line',
   'unknown-op',
@@ -107,4 +109,12 @@ export const STABLE_OP_ERROR_CODES = Object.freeze([
   'verify-write-timeout',
   'write-failed',
   'read-failed',
+  'NAMESPACE_INVALID_IDENTITY',
+  'REGISTRY_NOT_ACCEPTING',
+  'NAMESPACE_NOT_FOUND',
+  'NAMESPACE_RESET_IDENTITY_MISMATCH',
+  'NAMESPACE_RESET_FAILED',
+  'NAMESPACE_LOAD_FAILED',
+  'NAMESPACE_RESET_EXPECTED_IDENTITY_INVALID',
+  'reset-replica-failed',
 ]);
