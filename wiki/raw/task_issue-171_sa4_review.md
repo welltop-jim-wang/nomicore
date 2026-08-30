@@ -2,7 +2,8 @@
 
 **Date**: 2026-08-30
 **被审对象**: SA3 实现 commit `202558b`（src 四文件）+ SA6 R2 测试 commit `fc09cbb`（C4 时序修正 / AC3b 翻转 / C4b 新增）
-**Verdict**: **reject**（1 项阻断 F1 —— AC2 违例 + 对 #165 基线回归；回流目标 SA3（一行修复）+ SA1（设计注记，含 R2-N1 措辞对齐）；其余全部审查维度通过）
+**Verdict（R1）**: **reject**（1 项阻断 F1 —— AC2 违例 + 对 #165 基线回归；回流目标 SA3（一行修复）+ SA1（设计注记，含 R2-N1 措辞对齐）；其余全部审查维度通过）
+**Verdict（R2 终审，2026-08-30，复审 commit `3242d16`）**: **pass** —— F1 按回流目标精确闭合（一行修复 + 终态早退门未拆 + F1 锚转绿 + 固定复验范围全绿）；设计 R1.1 批与实现一致（含 R2-N1 落实）；零越界零测试篡改。终审明细见文末「SA4 R2 固定范围复审」。SA7 可进入动态验证（动态重点清单见 §4，含 F1 修复后真机回归面）。
 
 ---
 
@@ -75,6 +76,45 @@
 3. R2-N2-①②原项：GOAWAY 收帧段 ns `disconnected` 提前投影的可观测时序留证；hub applyStep2 isQuietState 门（closing 期零 SYNC_APPLIED 出站）。
 4. C4/C4b 的 ERROR 帧真 wire 形态（1002 close code + blocked 投影）抽帧验证（测试 harness 已绿，动态面留证）。
 
-## 5. Verdict
+## 5. Verdict（R1）
 
 **reject** —— 阻断集合 = {F1}（可共同修复：SA3 一行 + SA1 设计注记批）；修复后按 §2 固定复验范围复审，预期 pass。本轮其余维度（Scope/调试残留/五链机制落实/测试质量/CI 触发性/协议假设）全部通过。
+
+---
+
+# SA4 R2 固定范围复审（终审）— commit `3242d16`
+
+**Date**: 2026-08-30
+**复审范围**：R1 §2 指定的固定复验范围（F1 锚 + 全量 vitest --typecheck + `git diff --check` + removeTarget 直接影响面）及其回流伴随批（设计 R1.1）。R1 已通过的维度（五链机制/Scope/调试残留/CI 触发性/协议假设）不重开——本轮仅审增量。
+
+## R2.1 修复实现核验（peer-namespace.ts）
+
+`case 'targeted'/'disconnected'` 在 `settleCloseMemo()` 之后、`return` 之前补 `void this.cleanupResources().catch(() => undefined)`（commit 3242d16 唯一生产 hunk，+9 行含注释）——与 R1 §2 处方逐字一致（同函数 seq≤0 分支同款）：
+
+- **claim 时点**：`cleanupResources()` 内部排队前于 caller 同步栈求值（R1 已核验的原语）——'disconnected'（GOAWAY 窗口）态捕获本代 `{session, lease}`（unsubscribe 已被轻量层 `quiesceSync` 清空）→ 身份守卫命中 → 关 session、release lease、清字段 + watchdog/round/channel teardown；'targeted' 态 claim 为空 → 幂等 no-op（round/channel/watchdog teardown 对未启动实例安全：`resetState`/map 清空/`idleArmed=false` 路径均纯字段操作，源码复核）。
+- **终态早退门未拆**：`onConnectionFatal` 的 `if (this.isTerminal()) return;` 零改动（diff 证实）——遵守 R1 明示禁令。
+- **重复处置并存**：loss 路径已排队处置 + 本分支补排 → `session.close()`/`lease.release()` 幂等 same-promise（ADR-0009 L42）恰一次兑付；第二次任务身份守卫因首次已清字段自然短路——机制复核成立。
+- **承诺语义不变**：返回值仍 `closeMemo?.get() ?? Promise.resolve()`，处置为 fire-and-forget——removeTarget 公共 API 契约零变更。
+
+## R2.2 设计 R1.1 一致性
+
+`task_issue-171_design.md` R1.1 修订批（+17 行）核验为**一致且完整**：
+
+1. §D3 伪代码 `case 'targeted'/'disconnected'` 补排语义——与实现逐字对位；
+2. §4.2 表 removeTarget 行「捕获时点/任务体」列同步（本地收口分支 = 同步结算 + runDisposal(claim)，并载明「不得依赖 deadline 全量层处置：该层以 isTerminal() 早退」）；
+3. **R2-N1 落实**：总则 1 改写为「claim `{session, lease, unsubscribe}`（**无 epoch**）+ 身份守卫判定字段/aux 处置」、总则 3 改写为「处置权归身份守卫（有意跨代清字段 + teardown / 新代建成则零触碰）」——SA2 R2-N1 指出的措辞滞后（与 §4.1 身份守卫语义矛盾）消除；零机制改动（纯措辞/一致性），SA2 R2 pass 前提不受影响。
+
+R1 §3 N3（R2-N1）就此**闭环**；N1/N2 保持 SA7 动态项。
+
+## R2.3 测试结果主张独立复核（命令+结果）
+
+- `pnpm exec vitest run packages/ws-replication --typecheck`（独立进程复跑）→ **24 files | 161 tests | 0 failed | Type Errors: no errors**——与 SA3 §2.5/提交说明的主张（161/161）逐值一致；F1 锚 `ws-replication-sa4-issue171-review-red.test.ts (1 test)` ✓ 绿（修复前同锚确定性红灯，症状即泄漏本体）。
+- 既有 160 项零回退（含 removeTarget 直接影响面锚族：r3-r4-regressions、ac6/ac7 close 族、spec-b1-b2 B1、sa4-*、sa7-* 全绿）——「targeted/disconnected 分支零处置」语义无既有锚依赖（全量绿即证）。
+- `git diff --check ef19bae HEAD` → CLEAN。
+- commit `3242d16` 文件清单：生产仅 `peer-namespace.ts`（单 hunk）；SA4 F1 锚**零删改纳入**（zero deletions，工作区 clean）；其余为 wiki 档案（design/sa3_impl/sa4_review）——零 DENY LIST 触碰、零测试篡改、零调试残留（新增行复核零 console/debugger/.only/.skip）。
+
+## R2.4 Verdict
+
+**pass（终审）** —— F1 按固定复验范围全部通过：锚转绿、全量 161/161、git diff --check 干净、直接影响面（removeTarget 分支 + 幂等并存路径）机制复核成立；设计 R1.1 批（§D3/§4.2/总则 1/3 含 R2-N1）与实现一致。无 residual reject。
+
+**SA7 动态验证入口**：§4 清单（F1 真机回归面 / N1 在途 OPEN_NAMESPACE 帧面 / R2-N2-①② / C4·C4b ERROR 帧 wire 形态）。
