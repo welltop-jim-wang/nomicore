@@ -13,12 +13,14 @@ import {
 import { PeerNamespaceController, type PeerNamespaceHost } from './peer-namespace.js';
 import { ConnectionSender } from './backpressure.js';
 import { startLiveness } from './liveness.js';
+import { dispatchReplicationObserver, safeNow, stableConnectionCode, stableNamespaceCode } from './observer.js';
 import type { NamespaceRegistry } from '@nomicore/namespace-registry';
 import type {
   PeerConnectionState,
   PeerNamespaceState,
   PeerReplication,
   PeerReplicationOptions,
+  ReplicationObserver,
   ReplicationTarget,
   ResolvedBackoff,
   ResolvedLimits,
@@ -31,6 +33,16 @@ import { validatePeerOptions, validateLimits, validateTimeouts, validateBackoff 
 const defaultDefer = (task: () => void): void => queueMicrotask(task);
 
 const HANDSHAKE_OR_READY: ReadonlySet<PeerConnectionState> = new Set(['handshaking', 'ready']);
+
+/** 连接退避 reason 闭联合（§3.1；append-only）。 */
+export type PeerBackoffReason =
+  | 'dial-failed'
+  | 'socket-closed'
+  | 'hello-timeout'
+  | 'pong-timeout'
+  | 'connection-backpressure'
+  | 'goaway-closed'
+  | 'goaway-retry-hint';
 
 export function createPeerReplication(options: PeerReplicationOptions): PeerReplication {
   return new PeerConnectionImpl(options);
@@ -62,9 +74,10 @@ class PeerConnectionImpl implements PeerReplication {
   private stopping = false;
   private stopTail: Promise<void> = Promise.resolve();
   private goawayActive = false;
-  private goawayDrainHandle: unknown | undefined;
   private stopLiveness: (() => void) | undefined;
   private readonly deferTask: (task: () => void) => void;
+  /** 协议 §6.2 专用 observability id（HELLO_ACK 捕获；握手完成前 undefined——事件可选字段）。 */
+  private connectionIdValue: string | undefined;
 
   constructor(private readonly options: PeerReplicationOptions) {
     validatePeerOptions(options);
@@ -93,10 +106,77 @@ class PeerConnectionImpl implements PeerReplication {
       connectionEpoch: () => this.connectionEpochValue,
       isGoawayDraining: () => this.goawayActive,
       deferTask: (task: () => void) => this.deferTask(task),
+      observerPresent: () => this.observer() !== undefined,
+      emitObserver: (event) => dispatchReplicationObserver(this.observer(), event),
+      connectionId: () => this.connectionIdValue,
+      // B1：时钟采样经 safeNow 折叠（throw → dormant undefined，零协议外溢）
+      now: () => (this.observer() !== undefined ? safeNow(() => this.options.clock?.now()) : undefined),
     };
     for (const target of options.targets ?? []) {
       this.addTarget(target);
     }
+  }
+
+  private observer(): ReplicationObserver | undefined {
+    return this.options.observer;
+  }
+
+  /** 连接级观测发射（热路径纪律：先判 observer 在场再构造事件）。 */
+  private emitConnection(event: Parameters<typeof dispatchReplicationObserver>[1]): void {
+    const observer = this.observer();
+    if (observer === undefined) return;
+    dispatchReplicationObserver(observer, event);
+  }
+
+  /** connection-backoff-scheduled（P3/P4）：backoff timer 武装前发射。 */
+  private emitBackoffScheduled(
+    reason: PeerBackoffReason,
+    attempt: number,
+    delayMs: number,
+  ): void {
+    this.emitConnection({
+      type: 'connection-backoff-scheduled',
+      side: 'peer',
+      attempt,
+      delayMs,
+      reason,
+    });
+  }
+
+  /** namespace-error{direction:'sent'}（P9）。 */
+  private emitNsErrorSent(code: string, namespaceId: string): void {
+    this.emitConnection({
+      type: 'namespace-error',
+      side: 'peer',
+      ...(this.connectionIdValue !== undefined ? { connectionId: this.connectionIdValue } : {}),
+      namespaceId,
+      code: stableNamespaceCode(code),
+      direction: 'sent',
+    });
+  }
+
+  /** connection-failed（P6/P7/P8）。 */
+  private emitConnectionFailed(
+    code: string,
+    wsCloseCode: number,
+  ): void {
+    this.emitConnection({
+      type: 'connection-failed',
+      side: 'peer',
+      ...(this.connectionIdValue !== undefined ? { connectionId: this.connectionIdValue } : {}),
+      code: stableConnectionCode(code),
+      wsCloseCode,
+    });
+  }
+
+  /** 水位边沿事件（P10）。 */
+  private emitWaterEvent(type: 'send-paused' | 'send-resumed', bufferedAmount: number): void {
+    this.emitConnection({
+      type,
+      side: 'peer',
+      ...(this.connectionIdValue !== undefined ? { connectionId: this.connectionIdValue } : {}),
+      bufferedAmount,
+    });
   }
 
   // ─────────────────────────────── PeerReplication 公共面 ───────────────────────────────
@@ -114,7 +194,8 @@ class PeerConnectionImpl implements PeerReplication {
     this.clearBackoff();
     this.clearHello();
     this.clearReset();
-    this.clearGoawayDrain();
+    this.clearDrainClose(); // §8.1：drain deadline 句柄随 stop 清除
+    this.goawayActive = false;
     this.stopLivenessNow();
     this.unsubscribeTransport();
     this.sender?.teardown(); // §8：poll timer 清零（连接收口必经点）
@@ -181,12 +262,24 @@ class PeerConnectionImpl implements PeerReplication {
     return this.controllers.get(namespaceId)?.state;
   }
 
+  /** issue #175 AC5：token/config 显式变化通知缝。仅 blocked 是恢复语义的合法入口：
+   *  - backoff：下一次 dial 本就读取拨号闭包的当前凭据（token 轮换自动生效，无需通知）；
+   *  - ready/handshaking/connecting：无「待恢复」事实；
+   *  - disconnected（重建编排进行中）：requestRebuild 已排队，rebuildPending 幂等守卫兜底；
+   *  - stopped：恢复入口是 start()（生命周期语义，非凭据语义）。
+   *  自 blocked 走既有 requestRebuild 编排（关旧 wire(1000) → deferTask → dialNow）。 */
+  notifyAuthChanged(): void {
+    if (this.stopping) return;
+    if (this.connStateValue !== 'blocked') return;
+    this.requestRebuild('auth-change');
+  }
+
   // ─────────────────────────────── 连接 FSM ───────────────────────────────
 
   private dialNow(): void {
     if (this.stopping) return;
     this.clearBackoff();
-    this.clearGoawayDrain();
+    this.clearDrainClose(); // §8.1：新代际连接零 drain 句柄遗留
     this.goawayActive = false;
     this.stopLivenessNow();
     this.unsubscribeTransport();
@@ -197,7 +290,7 @@ class PeerConnectionImpl implements PeerReplication {
     try {
       transport = this.options.dial();
     } catch {
-      this.onTemporaryFailure();
+      this.onTemporaryFailure('dial-failed');
       return;
     }
     this.transport = transport;
@@ -222,6 +315,8 @@ class PeerConnectionImpl implements PeerReplication {
       facetOf: (namespaceId) => this.controllers.get(namespaceId)?.sendFacet,
       isEmitAllowed: () => this.connStateValue === 'ready',
       onBackpressureExhausted: () => this.failConnectionBackpressure(),
+      onSendPaused: (bufferedAmount) => this.emitWaterEvent('send-paused', bufferedAmount),
+      onSendResumed: (bufferedAmount) => this.emitWaterEvent('send-resumed', bufferedAmount),
     });
     this.expectedSeq = 1;
     this.nonce = this.makeNonce();
@@ -286,6 +381,7 @@ class PeerConnectionImpl implements PeerReplication {
     hubInstanceId: string;
     protocolVersion: number;
     connectionNonce: Uint8Array;
+    connectionId: string;
   }): void {
     if (
       message.hubInstanceId !== this.options.hubInstanceId ||
@@ -295,6 +391,7 @@ class PeerConnectionImpl implements PeerReplication {
       this.connectionFatal('INSTANCE_IDENTITY_MISMATCH', 1008);
       return;
     }
+    this.connectionIdValue = message.connectionId; // P2：受控 observability id（协议 §6.2）
     this.clearHello();
     this.setState('ready');
     this.armResetCheck();
@@ -308,7 +405,7 @@ class PeerConnectionImpl implements PeerReplication {
         onPong: transport.onPong,
         onPongTimeout: () => {
           if (!transport.closed) transport.close(1001, 'pong-timeout');
-          this.onTemporaryFailure();
+          this.onTemporaryFailure('pong-timeout');
         },
       });
     }
@@ -391,36 +488,94 @@ class PeerConnectionImpl implements PeerReplication {
     const controller = this.controllers.get(message.namespaceId);
     if (controller === undefined) {
       this.sendControl(namespaceErrorFrame('TARGET_NOT_REQUESTED', message.namespaceId));
+      this.emitNsErrorSent('TARGET_NOT_REQUESTED', message.namespaceId);
       return;
     }
     this.sendControl(namespaceErrorFrame('NAMESPACE_STATE_VIOLATION', message.namespaceId));
+    this.emitNsErrorSent('NAMESPACE_STATE_VIOLATION', message.namespaceId);
   }
 
-  private onGoaway(message: { reasonCode: string; drainTimeoutMs: number }): void {
+  private onGoaway(message: { reasonCode: string; drainTimeoutMs: number; retryAfterMs?: number }): void {
     this.goawayActive = true;
+    // §15.1 GOAWAY 原因分级（R1 总控裁决：协议字面优先——ready 收到的 drain 类 GOAWAY
+    // 无条件 draining，与 retryAfterMs 无关；hint 只影响 deadline close 后的重连调度）。
+    this.goawayDrainMs = message.drainTimeoutMs;
+    this.goawayRetryAfterMs = message.retryAfterMs;
+    // P5：reasonCode 稳定化——已知三码原样；未知一律折叠 'other'（对抗高基数注入）
+    const reasonCode =
+      message.reasonCode === 'SERVER_RESTARTING' ||
+      message.reasonCode === 'SERVER_SHUTTING_DOWN' ||
+      message.reasonCode === 'REAUTH_REQUIRED'
+        ? message.reasonCode
+        : 'other';
+    this.emitConnection({
+      type: 'goaway-received',
+      side: 'peer',
+      ...(this.connectionIdValue !== undefined ? { connectionId: this.connectionIdValue } : {}),
+      reasonCode,
+      drainTimeoutMs: message.drainTimeoutMs,
+      ...(message.retryAfterMs !== undefined ? { retryAfterMs: message.retryAfterMs } : {}),
+    });
     if (message.reasonCode === 'SERVER_SHUTTING_DOWN' || message.reasonCode === 'REAUTH_REQUIRED') {
+      // 永久失败类必须走统一 blocked 收口：同步静默 namespace、清发送队列及全部 timer，
+      // 同时保持 wire 开放供宿主决定最终关闭时机。
       this.enterBlocked();
+      // issue #175 AC4（§6.3「接收时开始计算本地 elapsed deadline」）：blocked 类 GOAWAY
+      // 携带正 drain 预算 → 武装本地 deadline——发送方在 drain 窗内死亡、或帧为注入形态
+      // （无发送方收口方）时 wire 不无限开放；drain=0 =「无 drain 预算信息」→ 不武装
+      // （D5-B1 冻结语义：0 值不产生任何新 timer；生产 Hub 两条 GOAWAY 生产路径恒发 >0）。
+      if (this.goawayDrainMs > 0) this.armBlockedDeadline();
       return;
     }
-    this.clearGoawayDrain();
-    this.goawayDrainHandle = this.options.timer.setTimeout(() => {
-      this.goawayDrainHandle = undefined;
+    // drain 类（SERVER_RESTARTING 及未知非永久类）：§15.1 L411 字面——无条件 draining。
+    // 注意：此处【不】teardown sender——D5 的 scheduler.pending 计面锚（drain timer 恰 +1，
+    // poll timer 保持武装至 deadline fire 才清）依赖「draining 进入仅改状态」；teardown
+    // 统一在 deadline fire / blocked / 收口路径执行（§8.1 矩阵）。
+    this.setState('draining');
+    this.armDrainClose(); // deadline close(1001)——hint 与否无差别
+  }
+
+  /** §6.2 drain deadline：teardown（清 poll timer）+ close(1001)。句柄必须可清（§8.1）。 */
+  private armDrainClose(): void {
+    this.clearDrainClose();
+    const transport = this.transport;
+    this.drainCloseHandle = this.options.timer.setTimeout(() => {
+      this.drainCloseHandle = undefined;
       this.quiesceControllers();
-      this.sender?.teardown();
-      const transport = this.transport;
-      if (transport !== undefined && !transport.closed) transport.close(1001, 'goaway-drain');
-    }, message.drainTimeoutMs);
+      this.sender?.teardown(); // D5 主锚：close 前清 poll timer
+      if (transport !== undefined && !transport.closed) {
+        transport.close(1001, 'goaway-drain');
+      }
+    }, this.goawayDrainMs);
+  }
+
+  /** issue #175 AC4（SA5 根因 #3 / 协议 §6.3 L141）：blocked 类 GOAWAY 的 receiver 侧本地
+   *  elapsed deadline——发送方（hub reauth/停机）在 drain 窗内死亡、或帧为注入形态
+   *  （无发送方收口方）时，wire 不无限开放：deadline 到 → 本端 close(1001)。仅处置
+   *  transport 收口：控制器/出站队列/全部 timer 已由 enterBlocked 统一收口，此处重复
+   *  处置反而引入双重 quiesce 风险。句柄复用 drainCloseHandle（stop/dialNow/requestRebuild
+   *  既有清除点白得覆盖；§8.1 双重满足：清句柄 + 回调状态守卫）。 */
+  private armBlockedDeadline(): void {
+    this.clearDrainClose();
+    const transport = this.transport;
+    this.drainCloseHandle = this.options.timer.setTimeout(() => {
+      this.drainCloseHandle = undefined;
+      if (this.connStateValue !== 'blocked') return; // rebuild/stop/dialNow 已接管旧 transport → 零副作用
+      if (transport !== undefined && !transport.closed) {
+        transport.close(1001, 'blocked-deadline'); // 静态 reason，零凭据（AC7）
+      }
+    }, this.goawayDrainMs);
+  }
+
+  private clearDrainClose(): void {
+    if (this.drainCloseHandle !== undefined) {
+      this.options.timer.clearTimeout(this.drainCloseHandle);
+      this.drainCloseHandle = undefined;
+    }
   }
 
   private quiesceControllers(): void {
     for (const controller of this.controllers.values()) controller.onConnectionFatal();
-  }
-
-  private clearGoawayDrain(): void {
-    if (this.goawayDrainHandle !== undefined) {
-      this.options.timer.clearTimeout(this.goawayDrainHandle);
-      this.goawayDrainHandle = undefined;
-    }
   }
 
   private unsubscribeTransport(): void {
@@ -433,11 +588,18 @@ class PeerConnectionImpl implements PeerReplication {
     this.stopLiveness = undefined;
   }
 
+  private goawayDrainMs = 0;
+  /** GOAWAY hint（无则 undefined）——只用于 deadline close 后的重连调度（§6.3）。 */
+  private goawayRetryAfterMs: number | undefined;
+  /** drain deadline 句柄（§8 timer 纪律：必须可清——stale fire 零副作用）。 */
+  private drainCloseHandle: unknown | undefined;
+
   private withController(namespaceId: string, fn: (c: PeerNamespaceController) => void): void {
     const controller = this.controllers.get(namespaceId);
     if (controller === undefined) {
       // 无生命周期即无合法收发态（§6 广义面）：统一 NAMESPACE_STATE_VIOLATION
       this.sendControl(namespaceErrorFrame('NAMESPACE_STATE_VIOLATION', namespaceId));
+      this.emitNsErrorSent('NAMESPACE_STATE_VIOLATION', namespaceId);
       return;
     }
     fn(controller);
@@ -523,21 +685,61 @@ class PeerConnectionImpl implements PeerReplication {
       transport.close(1008, 'sequence-exhausted');
     }
     this.enterBlocked();
+    this.emitConnectionFailed('OUTBOUND_SEQUENCE_EXHAUSTED', 1008); // P7
   }
 
   // ─────────────────────────────── 失败/关闭分类 ───────────────────────────────
 
   private onClose(info: Readonly<{ code: number; reason: string }>): void {
-    void info;
     if (this.stopping || this.connStateValue === 'stopped') return;
     if (this.connStateValue === 'backoff' || this.connStateValue === 'blocked') return;
-    if (this.connStateValue === 'draining') return;
+    if (this.connStateValue === 'draining') {
+      // R2 A1（SA2 必修）：close 事件的机器语义由 code 携带（协议 §14「WS close code 只做
+      // 粗分类」+ §15.1 L439「1002/1008：blocked」），与进入 draining 的前因（GOAWAY）无关——
+      // drain 窗口内 hub 侧 connectionFatal(1002/1008)（hub-connection.ts:365-382，peer 冻结
+      // 出站不阻止 hub 侧检测）或中间盒 1008 强断都可能到达。分类与非 draining 态完全同构：
+      // 永久类 → blocked；其余（1000/1001/1006/1011…）→ onGoawayClosed（1011 落 backoff
+      // 恰合 §15.1 L440「继续 backoff」）。
+      if (info.code === 1002 || info.code === 1008) {
+        this.clearDrainClose(); // drain timer 清理（总控 R2 指令）——杜绝 stale fire
+        this.enterBlocked(); // enterBlocked 亦含 clearDrainClose（§8.1 单点纪律，双保险）
+        return;
+      }
+      this.onGoawayClosed(); // 本地 stop() 的 draining 由上行 stopping 守卫拦截
+      return;
+    }
     const code = info.code;
     if (code === 1002 || code === 1008) {
       this.enterBlocked();
       return;
     }
-    this.onTemporaryFailure();
+    this.onTemporaryFailure('socket-closed');
+  }
+
+  /** GOAWAY drain 关闭后的重连编排（§15.1 SERVER_RESTARTING 行）。 */
+  private onGoawayClosed(): void {
+    this.clearDrainClose();
+    this.sender?.teardown();
+    const retryAfter = this.goawayRetryAfterMs;
+    if (retryAfter === undefined) {
+      this.onTemporaryFailure('goaway-closed'); // 无 hint：普通 full-jitter backoff（G1 L193-209/D5 冻结面）
+      return;
+    }
+    this.clearHello();
+    this.clearReset();
+    this.setState('backoff');
+    for (const controller of this.controllers.values()) controller.onConnectionLost();
+    // hint 面公式：delay = retryAfterMs + random()×cap（cap 复用 §15.1 full-jitter 帽；
+    // random=0 → 恰 retryAfterMs；attempt 不递增——hub 编排的回重不是失败事件，不放大退避）
+    const cap = Math.min(this.backoff.maxMs, this.backoff.baseMs * 2 ** this.attempts);
+    const random = this.options.random ?? Math.random;
+    const delay = retryAfter + Math.max(0, random() * cap);
+    // P4：goaway-retry-hint（attempt 不递增——回重提示不是失败事件）
+    this.emitBackoffScheduled('goaway-retry-hint', this.attempts, delay);
+    this.backoffHandle = this.options.timer.setTimeout(() => {
+      this.backoffHandle = undefined;
+      if (this.connStateValue === 'backoff') this.dialNow();
+    }, delay);
   }
 
   private connectionFatal(code: string, wsCloseCode: number): void {
@@ -559,6 +761,7 @@ class PeerConnectionImpl implements PeerReplication {
       transport.close(wsCloseCode, 'protocol-error');
     }
     this.enterBlocked();
+    this.emitConnectionFailed(code, wsCloseCode); // P6：稳定码折叠（未知 → INTERNAL_ERROR）
   }
 
   /**
@@ -590,11 +793,13 @@ class PeerConnectionImpl implements PeerReplication {
       transport.close(1011, 'control-backpressure');
     }
     this.sender?.teardown();
-    this.onTemporaryFailure();
+    this.emitConnectionFailed('CONNECTION_BACKPRESSURE', 1011); // P8
+    this.onTemporaryFailure('connection-backpressure'); // P3（其后 backoff 事件）
   }
 
   private enterBlocked(): void {
     if (this.connStateValue === 'blocked') return;
+    this.clearDrainClose(); // R2 A1 单点：drain 期 1002/1008 close、connectionFatal 等一切经 enterBlocked 的 blocked 入口
     this.sender?.teardown();
     this.clearHello();
     this.clearReset();
@@ -613,7 +818,7 @@ class PeerConnectionImpl implements PeerReplication {
     }
   }
 
-  private onTemporaryFailure(): void {
+  private onTemporaryFailure(reason: PeerBackoffReason): void {
     if (this.stopping) return;
     if (this.connStateValue === 'backoff' || this.connStateValue === 'blocked') return;
     this.sender?.teardown();
@@ -627,6 +832,8 @@ class PeerConnectionImpl implements PeerReplication {
     const cap = Math.min(this.backoff.maxMs, this.backoff.baseMs * Math.pow(2, this.attempts - 1));
     const random = this.options.random ?? Math.random;
     const delay = Math.max(0, random() * cap);
+    // P3：backoff timer 武装前发射（attempt = 已递增后的尝试序；delayMs = 实际退避）
+    this.emitBackoffScheduled(reason, this.attempts, delay);
     this.backoffHandle = this.options.timer.setTimeout(() => {
       this.backoffHandle = undefined;
       if (this.connStateValue === 'backoff') this.dialNow();
@@ -640,6 +847,9 @@ class PeerConnectionImpl implements PeerReplication {
     this.clearHello();
     this.clearReset();
     this.clearBackoff();
+    this.clearDrainClose(); // issue #175 §6.4：重建 = 旧连接终结（dialNow :189 同款理由）；
+    // 语义保护主体是 armBlockedDeadline 的状态守卫（重建后 state=disconnected → 回调 no-op）；
+    // 此处清句柄是 §8.1 矩阵卫生（杜绝「守卫兜底」成为唯一防线）。
     this.sender?.teardown(); // §8：重建 = 旧连接终结（poll timer 清零）
     this.setState('disconnected');
     // B-2e：§4.3 L228「重建期间所有 namespace 投影 disconnected」——通知全部目标
@@ -663,7 +873,7 @@ class PeerConnectionImpl implements PeerReplication {
     this.clearHello();
     this.helloHandle = this.options.timer.setTimeout(() => {
       this.helloHandle = undefined;
-      if (this.connStateValue === 'handshaking') this.onTemporaryFailure();
+      if (this.connStateValue === 'handshaking') this.onTemporaryFailure('hello-timeout');
     }, this.timeouts.helloTimeoutMs);
   }
 
@@ -698,7 +908,16 @@ class PeerConnectionImpl implements PeerReplication {
 
   private setState(state: PeerConnectionState): void {
     if (this.connStateValue === state) return;
+    const from = this.connStateValue;
     this.connStateValue = state;
+    // P1：连接 FSM 唯一迁移点（同态早退——边沿 exactly-once；初始 'stopped' 无迁移不发射）
+    this.emitConnection({
+      type: 'connection-state-changed',
+      side: 'peer',
+      ...(this.connectionIdValue !== undefined ? { connectionId: this.connectionIdValue } : {}),
+      from,
+      to: state,
+    });
   }
 
   private isTerminalState(state: PeerNamespaceState): boolean {

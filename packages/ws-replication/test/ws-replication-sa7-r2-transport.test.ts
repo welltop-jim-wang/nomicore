@@ -2,8 +2,9 @@
  * SA7 动态验证补充测试（revision round 2）—— SA4 交 SA7 抽查点 2：
  * 真实 transport 下的缺省零漂移抽样。
  *
- * 背景：本轮（R2）全部既有测试走 fake-duplex 内存双端；`controlReserveBytes` 缺省
- * 64KiB 与旧实现以 lowWater（缺省同为 64KiB）为额度 ceiling 的「逐帧等价」声明，
+ * 背景：本轮（R2）全部既有测试走 fake-duplex 内存双端；旧字段 `controlReserveBytes`
+ * 曾以 64KiB 缺省值与 lowWater ceiling 做「逐帧等价」声明；当前权威字段为
+ * `maxQueuedControlBytes`，本文件显式使用历史 64KiB 对照值，
  * 缺真实传输链路（真实 bufferedAmount 水位驱动暂停段）下的行为对照。本文件在
  * 真实 TCP loopback 链路上抽样暂停段 control 行为的缺省边界两侧：
  *   A（存活侧）：真实暂停段 + 缺省额度内容纳的 control 流量 → 全部 ACK 上 wire、
@@ -39,6 +40,7 @@ import {
   schemaReady,
   type ReplicaNode,
 } from './harness.js';
+import { DEFAULT_PEER_VERIFIER, TEST_TOKEN } from './driver.js';
 import { createHubReplication, createPeerReplication } from '@nomicore/ws-replication';
 import type {
   DuplexTransport,
@@ -232,6 +234,7 @@ async function bootReal(
       permissions: { read: true, submit: true },
     }),
     timer: realTimer,
+    verifyToken: DEFAULT_PEER_VERIFIER,
     ...(limits !== undefined ? { limits } : {}),
   });
 
@@ -241,7 +244,7 @@ async function bootReal(
       hubSentBytes.push(bytes.byteLength);
     });
     hubTransport = transport;
-    hub.accept(transport, { peerInstanceId: PEER_INSTANCE }); // server 回调晚于 hub 构造执行——TDZ 安全
+    hub.accept(transport, { token: TEST_TOKEN }); // server 回调晚于 hub 构造执行——TDZ 安全
   });
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   const port = (server.address() as net.AddressInfo).port;

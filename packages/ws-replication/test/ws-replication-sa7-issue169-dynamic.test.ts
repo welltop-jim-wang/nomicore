@@ -33,6 +33,7 @@
  */
 import * as net from 'node:net';
 import { afterAll, describe, expect, it } from 'vitest';
+import { DEFAULT_PEER_VERIFIER, TEST_TOKEN } from './driver.js';
 import { createHubReplication, createPeerReplication } from '@nomicore/ws-replication';
 import type {
   DuplexTransport,
@@ -362,6 +363,7 @@ async function bootSaturation(limits: Readonly<Partial<ReplicationLimits>>): Pro
       permissions: { read: true, submit: true },
     }),
     timer: realTimer,
+    verifyToken: DEFAULT_PEER_VERIFIER,
     limits,
   });
 
@@ -371,7 +373,7 @@ async function bootSaturation(limits: Readonly<Partial<ReplicationLimits>>): Pro
       hubSentBytes.push(bytes.byteLength);
     });
     hubTransport = transport;
-    hub.accept(transport, { peerInstanceId: PEER_INSTANCE });
+    void hub.accept(transport, { token: TEST_TOKEN });
   });
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   const port = (server.address() as net.AddressInfo).port;

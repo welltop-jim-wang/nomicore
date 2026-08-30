@@ -27,7 +27,7 @@
 import { describe, expect, it } from 'vitest';
 import { createHubReplication, createPeerReplication } from '@nomicore/ws-replication';
 import type { DuplexTransport } from '@nomicore/ws-replication';
-import { boot, advanceMs, makeAuthorizer } from './driver.js';
+import { boot, advanceMs, makeAuthorizer, DEFAULT_PEER_VERIFIER, TEST_TOKEN } from './driver.js';
 import {
   deferred,
   HUB_INSTANCE,
@@ -183,6 +183,7 @@ describe('Spec 回流红灯：B-1 removeTarget×reconcile / B-2 迟到续体竞�
       registry: hubNode.registry,
       authorize: authorizer.authorize,
       timer: hubNode.scheduler,
+    verifyToken: DEFAULT_PEER_VERIFIER,
     });
     const wires: Wire[] = [];
     const peer = createPeerReplication({
@@ -192,7 +193,7 @@ describe('Spec 回流红灯：B-1 removeTarget×reconcile / B-2 迟到续体竞�
       dial: (): DuplexTransport => {
         const wire = makeWire();
         wires.push(wire);
-        hub.accept(wire.hubEnd, { peerInstanceId: PEER_INSTANCE });
+        hub.accept(wire.hubEnd, { token: TEST_TOKEN });
         return wire.peerEnd;
       },
       timer: peerNode.scheduler,

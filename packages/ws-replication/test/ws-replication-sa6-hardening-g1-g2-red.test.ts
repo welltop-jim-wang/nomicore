@@ -25,6 +25,7 @@ import type { DuplexTransport, HubConnection } from '@nomicore/ws-replication';
 import { encodeMessage } from '@nomicore/replication-protocol';
 import { advanceMs, boot, makeAuthorizer } from './driver.js';
 import type { Run } from './driver.js';
+import { DEFAULT_PEER_VERIFIER, TEST_TOKEN } from './driver.js';
 import {
   decodeAll,
   deferred,
@@ -38,8 +39,11 @@ import {
   settleUntil,
 } from './harness.js';
 
-/** 修复方向预留形状：`accept(transport, trustedUpgradeIdentity)`（现实现忽略第二参）。 */
-type AcceptWithIdentity = (transport: DuplexTransport, trusted: { readonly peerInstanceId: string }) => HubConnection;
+/** Upgrade 认证入口的测试侧窄签名。 */
+type AcceptWithIdentity = (
+  transport: DuplexTransport,
+  request: { readonly token?: string },
+) => Promise<HubConnection | undefined>;
 
 function errorCodes(decoded: Array<{ message: { kind: string } }>): string[] {
   return decoded
@@ -57,11 +61,12 @@ describe('SA6 加固红灯 G1：HELLO 身份冒充 / 旧 socket 代际污染', (
       registry: node.registry,
       authorize: spy.authorize,
       timer: node.scheduler,
+      verifyToken: DEFAULT_PEER_VERIFIER,
     });
     const wire = makeWire();
     const accept = hub.accept as unknown as AcceptWithIdentity;
     // Upgrade 身份已由 HTTP bearer-token 验证（受信）：peer-alpha
-    accept.call(hub, wire.hubEnd, { peerInstanceId: PEER_INSTANCE });
+    accept.call(hub, wire.hubEnd, { token: TEST_TOKEN });
 
     // 未认证连接：HELLO 自述身份 ≠ 受信身份（冒充）
     wire.peerEnd.send(

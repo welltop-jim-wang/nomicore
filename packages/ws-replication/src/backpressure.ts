@@ -6,11 +6,11 @@
  *  ① bufferedAmount 高/低水位闸门（hysteresis + 注入 ReplicationTimer poll，
  *     间隔 = max(1, floor(ackTimeoutMs/100))，协议 §17 权威公式）——缺失/非 number
  *     属性 → 0 → 恒开（既有 makeWire 零影响）；
- *  ② control 保留额度 = 暂停窗口内**未冲刷**控制字节账本（controlUnflushed，冲刷即
- *     释放；耗尽 = CONNECTION_BACKPRESSURE（1011）收口）；阈值 maxQueuedControlBytes
+ *  ② control 保留额度 = socket 中**未冲刷**控制字节账本（controlUnflushed，冲刷即
+ *     释放；暂停态耗尽 = CONNECTION_BACKPRESSURE（1011）收口）；阈值 maxQueuedControlBytes
  *     （缺省 8 MiB，≥ maxBootstrapBytes + 128 启动期响亮验证）；
- *  ③ 统一连接账本：P3 观察值 + P2 未吸收/未离开交接（FIFO handoffQueue：data 恒计、
- *     control 仅暂停窗口——R11 裁定）+ Σ P1 排队——admission（tryEmitData）与 shed 触发
+ *  ③ 统一连接账本：P3 观察值 + P2 未吸收/未离开交接（FIFO handoffQueue：data/control
+ *     均自 transport handoff 起恒计）+ Σ P1 排队——admission（tryEmitData）与 shed 触发
  *     （enforceConnectionCap）共用（单一台账，无缝隙）；额度释放经 R12 kind-aware 退休
  *     账本（§3.5：Δ<0 按 ①已吸收 data → ②handoff data → ③已吸收 control → ④handoff
  *     control 优先序退休；控制额度仅由 ③+④ 驱动——data flush 绝不释放控制额度）；
@@ -57,6 +57,10 @@ export interface ConnectionSenderHost {
   isEmitAllowed(): boolean;
   /** 控制保留额度耗尽 → CONNECTION_BACKPRESSURE 分类连接失败（1011）。 */
   onBackpressureExhausted(): void;
+  /** 水位暂停边沿（> highWater 进入暂停；§6.5 B1）。可选（无 observer 接线 = 零回调）。 */
+  onSendPaused?(bufferedAmount: number): void;
+  /** 水位恢复边沿（暂停段降至 ≤ lowWater；§6.5 B2）。可选（无 observer 接线 = 零回调）。 */
+  onSendResumed?(bufferedAmount: number): void;
 }
 
 /** 单次 drain 的轮次限额（§4.5 注记 c：turns 截断不是终态——已发帧的 ACK 必再触发 drain）。 */
@@ -76,9 +80,9 @@ export class ConnectionSender {
   private handoffQueue: HandoffChunk[] = [];
   /** = Σ kind==='data' 的 bytes（data 侧 P2 余额）。 */
   private pendingDataHandoff = 0;
-  /** = Σ kind==='control' 的 bytes（control 侧 P2 余额；仅暂停窗口，R11 批准形状）。 */
+  /** = Σ kind==='control' 的 bytes（control 侧 P2 余额；所有发送相位恒计，闭合观察滞后空窗）。 */
   private controlPendingHandoff = 0;
-  /** 策略账本（非压力相位）：暂停窗口内交接、未观察冲刷的控制字节——只喂额度判据（R3）。 */
+  /** 策略账本（非压力相位）：已交接、尚无冲刷证据的控制字节——只喂暂停态额度判据。 */
   private controlUnflushed = 0;
   /** 退休候选计数（R12 §3.5）：Δ>0 归因弹出 handoff chunk 时按 kind 累积的「已吸收、未退休」
    *  余额——Δ<0 的控制额度退休按 §3.5 优先序消耗这些候选；仅 teardown 清零
@@ -101,7 +105,7 @@ export class ConnectionSender {
   // ─────────────────────────────── control / data 发送点 ───────────────────────────────
 
   /** control 发送点（§4.1/§4.3）：水位观察 + 额度判据 + emit（控制帧不被闸门阻塞）。
-   *  额度 = 暂停窗口内未冲刷控制字节账本（controlUnflushed）；触发帧是首个会越界的帧
+   *  额度 = socket 中尚无冲刷证据的控制字节账本（controlUnflushed）；触发帧是首个会越界的帧
    *  ——不发送、立即收口（CONNECTION_BACKPRESSURE）。 */
   sendControl(message: ReplicationMessage): number {
     this.observeWater();
@@ -150,15 +154,19 @@ export class ConnectionSender {
   onEmitted(info: Readonly<{ kind: 'control' | 'data'; byteLength: number }>): void {
     if (this.tornDown) return; // 收口路径直发 ERROR 的回报零记账（§13.4）
     if (info.kind === 'control') {
-      // 压力侧 P2（R11 裁定批准形状，§12.7）：暂停窗口内的控制帧入共享 FIFO（压力侧）
-      // 并计策略账 controlUnflushed；非暂停控制帧不入任何台账（§4.4/§14.2 诚实暴露界——
-      // 恒计会在「Δ≡0 相位（gate-off/write-through-0）后接 Δ>0」的混合观察面上留下等额
-      // 永久 data 残差（SA3 实测 789B），击穿既有 R1-1 协议公式边界锚——R11 裁定选
-      // 该形状，SA2 R11 复审 pass，17 红灯 + 全量回归零迁移保持绿色）。
-      if (this.paused) {
-        this.handoffQueue.push({ kind: 'control', bytes: info.byteLength });
-        this.controlPendingHandoff += info.byteLength;
-        this.controlUnflushed += info.byteLength; // 策略侧：窗口内累计
+      // control 与 data 一样自交接起进入 P2，共同闭合 transport.bufferedAmount 异步更新空窗。
+      // 暂停态发送才增加独立 control quota；进入 pause 不清除已有暂停态责任。
+      this.handoffQueue.push({ kind: 'control', bytes: info.byteLength });
+      this.controlPendingHandoff += info.byteLength;
+      if (this.paused) this.controlUnflushed += info.byteLength;
+      // 非暂停控制只用于闭合「本次同步栈」的 admission 空窗；下一轮观察若 transport
+      // 仍未显影，则保守退休该 control P2，避免低水位控制流量永久挤占 data 预算。
+      // 暂停态 control 由 quota + buffered delta 路径持续追踪，不走该轮次退休。
+      if (!this.paused) {
+        queueMicrotask(() => {
+          if (this.tornDown) return;
+          this.retireUnpausedControl(info.byteLength);
+        });
       }
     } else {
       this.handoffQueue.push({ kind: 'data', bytes: info.byteLength }); // 压力侧 P2（data 恒计）
@@ -235,15 +243,19 @@ export class ConnectionSender {
   private enterPause(): void {
     if (this.paused) return;
     this.paused = true;
-    this.controlUnflushed = 0; // 暂停窗口起点（新窗口从 0 计；D3c 探针 ACK 语义依赖此重置）
+    // pause 只是 data gate 状态，不是 control 账本的新纪元；此前未冲刷责任必须保留。
     this.armPoll();
+    // 水位暂停边沿（决策已落定后通知；观察值 = 触发时刻 bufferedAmount）
+    this.host.onSendPaused?.(this.host.readBufferedAmount());
   }
 
   private resume(): void {
     if (!this.paused) return;
     this.paused = false;
-    this.controlUnflushed = 0; // 窗口关闭（resume ⇔ 观察值已 ≤ lowWater，缓冲基本排空）
+    // 恢复水位不证明 control 已全部冲刷；额度责任只由 observe() 的离开证据退休。
     this.clearPoll();
+    // 水位恢复边沿先于 drain 通知（事件描述「恢复已决」的事实；drain 是后续动作）
+    this.host.onSendResumed?.(this.host.readBufferedAmount());
     this.requestDrain(); // §4.2：恢复即立即 drain（设计走查：AC-6a/6b 恢复段由 poll 触发）
   }
 
@@ -322,6 +334,11 @@ export class ConnectionSender {
     return level;
   }
 
+  /** 非暂停 control 的同步栈 admission 保护期结束后退休其剩余 P2（按 control 最老优先）。 */
+  private retireUnpausedControl(budget: number): void {
+    this.retireFromHandoff('control', budget);
+  }
+
   /** 从 handoffQueue 按指定 kind（最老优先）退休 up to budget 字节（核减压力侧余额、清空 chunk）；返回实退量。 */
   private retireFromHandoff(kind: 'data' | 'control', budget: number): number {
     if (budget <= 0 || this.handoffQueue.length === 0) return 0;
@@ -342,9 +359,9 @@ export class ConnectionSender {
     return retired;
   }
 
-  /** 连接总压（§3.4）：P3 观察 + P2 未吸收/未离开交接（data 恒计；control 仅暂停窗口，R11）+ Σ P1 排队。
-   *  controlUnflushed 不在此（R3）：已吸收控制字节已在 lastObservedBuffered 内；
-   *  非暂停控制不在此（R11）：归协议观察滞后域（§4.4/§14.2 诚实暴露界）。 */
+  /** 连接总压（§3.4）：P3 观察 + P2 未吸收/未离开交接（data/control 恒计）+ Σ P1 排队。
+   *  controlUnflushed 不在此：已吸收控制字节已在 lastObservedBuffered 内；
+   *  未吸收控制字节已在 controlPendingHandoff 内，避免重复计数。 */
   private totalPressure(): number {
     return this.lastObservedBuffered + this.pendingDataHandoff
       + this.controlPendingHandoff + this.totalQueuedBytes();

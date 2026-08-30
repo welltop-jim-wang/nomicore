@@ -176,7 +176,7 @@ Phase 5 首版建立：
 
 在出现第二种 transport 前，不提前提取 transport-independent replication package。第三方 Host 可直接基于公开 NamespaceLease/ReplicationSession 构造自己的可信 transport。
 
-停止顺序为：复制插件停止接纳连接/target，关闭 channels，等待已被 Runtime 接纳的 apply 槽完成但不无限等待网络 ACK，释放 replication leases，随后 Registry shutdown、Persistence dispose，最后停止 Timer/Clock。
+停止顺序为：复制插件停止接纳连接/target，先发送 GOAWAY 并进入真实 drain 窗口；窗口内不接纳新的 namespace 工作，只允许现有 channel 自然 CLOSE，并等待已被 Runtime 接纳的 apply 槽。全部 channel 终态可提前关闭 transport，否则网络 deadline 到达即以 WS 1001 收口，不无限等待网络 ACK。网络关闭后 Runtime barrier 仍排空停机前已接纳 apply，再异常安全地 teardown channel、close session 并尽力释放 replication lease；随后 Registry shutdown、Persistence dispose，最后停止 Timer/Clock。网络 deadline 不取消 Runtime barrier，迟到 apply 结算不得恢复 wire 输出。
 
 ## 参考实现取舍
 

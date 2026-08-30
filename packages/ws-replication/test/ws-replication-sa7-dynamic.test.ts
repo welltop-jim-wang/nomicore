@@ -185,8 +185,9 @@ describe('SA7 动态验证：hub watchdog 空闲节奏（SA4 #3）/ hub needsRes
     // hub 静默期注入连接级 GOAWAY（序列 = 接收端期望，driver seam 默认记账）
     run.injectHub({ kind: 'GOAWAY', reasonCode: 'SERVER_RESTARTING', drainTimeoutMs: 60 });
     await settle();
-    // deadline 未到：连接照常（R-12：drain 期不停既有 namespace——登记切片 9，不断言）
-    expect(run.connectionState()).toBe('ready');
+    // deadline 未到：连接 draining（协议 §15.1 L411 字面「ready ├─ GOAWAY → draining」；
+    // 既有 namespace 不强关——自然收口到 deadline；§6.5-A1 改锚：无 hint 面同样无条件 draining）
+    expect(run.connectionState()).toBe('draining');
     expect(run.wire.peerSideClosed).toBe(false);
 
     // deadline 到：本地计时 fire → transport.close(1001, 'goaway-drain')

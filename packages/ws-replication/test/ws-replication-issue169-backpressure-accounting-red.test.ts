@@ -53,7 +53,7 @@ import {
   settle,
   settleUntil,
 } from './harness.js';
-import { makeAuthorizer } from './driver.js';
+import { DEFAULT_PEER_VERIFIER, makeAuthorizer, TEST_TOKEN } from './driver.js';
 import type { ReplicaNode } from './harness.js';
 
 // ═══════════════════════════ 公共常量 / 探针 ═══════════════════════════
@@ -265,6 +265,34 @@ describe('issue #169 G1：同步栈连发 + bufferedAmount 滞后——总压 �
     expect(h.wireDataBytes, '总压（上线字节）恒 ≤ cap').toBeLessThanOrEqual(cap);
     expect(h.exhaustedCount, '拒纳不是 1011 收口').toBe(0);
   });
+
+  it('G1b：非暂停 control handoff + bufferedAmount 滞后——紧随 data 不得越过 connection cap', () => {
+    const control = bootstrapFrame(NS_A, 1024);
+    const data = updateFrame(NS_A, PAYLOAD_16K);
+    const probeLimits = makeLimits(
+      { maxQueuedBytesPerConnection: 64 * 1024, lowWater: 1024, highWater: 32 * 1024 },
+      8 * 1024 * 1024,
+    );
+    const controlBytes = encodeMessage(control, {
+      sequence: 1,
+      maxFrameBytes: probeLimits.maxFrameBytes,
+      limits: codecFieldLimits(probeLimits),
+    }).byteLength;
+    const dataBytes = encodedUpdateBytes(PAYLOAD_16K, probeLimits);
+    const cap = controlBytes + dataBytes - 1;
+    const limits = makeLimits(
+      { maxQueuedBytesPerConnection: cap, lowWater: 1024, highWater: cap },
+      8 * 1024 * 1024,
+    );
+    const h = makeHarness(limits);
+
+    h.sender.sendControl(control); // 未暂停；transport bufferedAmount 仍为 0（异步滞后）
+    h.sender.tryEmitData(data);
+
+    expect(h.emittedControl, 'control 已交接上线').toHaveLength(1);
+    expect(h.emittedData, 'control P2 必须阻止紧随 data 越过 cap').toHaveLength(0);
+    expect(h.wireControlBytes + h.wireDataBytes, '上线总字节不越 cap').toBeLessThanOrEqual(cap);
+  });
 });
 
 // ═══════════════════════════ G2：边界覆盖 ═══════════════════════════
@@ -332,6 +360,19 @@ describe('issue #169 G3：控制保留额度——冲刷释放 / 首过限帧不
     h.sender.sendControl(bootstrapFrame(NS_A, 16 * 1024));
     expect(h.emittedControl, '首过限帧不上线').toHaveLength(1);
     expect(h.exhaustedCount, '恰一次 CONNECTION_BACKPRESSURE').toBe(1);
+  });
+
+  it('G3-boundary：重复 enterPause 不得清除暂停态已累积的未冲刷 control 责任', () => {
+    const h = makeHarness(makeControlLimits());
+    const frame = bootstrapFrame(NS_A, 16 * 1024);
+
+    h.setBuffered(8 * 1024 + 1);
+    h.sender.sendControl(frame); // 进入暂停并放行首帧，额度责任已累积
+    h.sender.dataGateOpen(); // 再次观察 > highWater；enterPause 幂等且不得清账
+    h.sender.sendControl(frame);
+
+    expect(h.emittedControl, '首个会越过 control cap 的帧不上线').toHaveLength(1);
+    expect(h.exhaustedCount, '暂停边界保留责任并恰一次耗尽').toBe(1);
   });
 
   it('G3b（红灯）：socket 全冲刷后额度释放——仍暂停窗口内再次控制帧放行、零 1011', () => {
@@ -629,6 +670,7 @@ describe('issue #169 G9（E2E）：真实 Hub/Peer 连接——缺省配置下 1
       instanceId: HUB_INSTANCE,
       registry: hubNode.registry,
       authorize: authorizer.authorize,
+      verifyToken: DEFAULT_PEER_VERIFIER,
       timer: hubNode.scheduler,
     });
     const wires: Issue169Wire[] = [];
@@ -639,7 +681,7 @@ describe('issue #169 G9（E2E）：真实 Hub/Peer 连接——缺省配置下 1
       dial: () => {
         const wire = makeIssue169Wire(512 * 1024 + 1); // 缺省 highWater=512KiB；恒塞住
         wires.push(wire);
-        hub.accept(wire.hubEnd, { peerInstanceId: PEER_INSTANCE });
+        void hub.accept(wire.hubEnd, { token: TEST_TOKEN });
         return wire.peerEnd;
       },
       timer: peerNode.scheduler,

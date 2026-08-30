@@ -46,12 +46,20 @@ export function validateInstanceId(instanceId: string, name: string): void {
   );
 }
 
+/** D1：对升级认证器返回身份做布尔文法判定（reject 语义——validateInstanceId 是 throw 语义）。 */
+export function isValidInstanceId(value: unknown): boolean {
+  return typeof value === 'string' && INSTANCE_ID_RE.test(value);
+}
+
 export function validateHubOptions(
   options: Readonly<{
     instanceId: string;
     registry: unknown;
     authorize: unknown;
     timer: unknown;
+    verifyToken: unknown;
+    observer?: unknown;
+    clock?: unknown;
   }>,
 ): void {
   validateInstanceId(options.instanceId, 'instanceId');
@@ -70,6 +78,14 @@ export function validateHubOptions(
     (options.timer as { clearTimeout?: unknown }).clearTimeout,
     'timer.clearTimeout',
   );
+  assertCallable(options.verifyToken, 'verifyToken');
+  if (options.observer !== undefined) {
+    assertCallable(options.observer, 'observer');
+  }
+  if (options.clock !== undefined) {
+    assertObjectShape(options.clock, 'clock');
+    assertCallable((options.clock as { now?: unknown }).now, 'clock.now');
+  }
 }
 
 export function validatePeerOptions(
@@ -80,6 +96,8 @@ export function validatePeerOptions(
     dial: unknown;
     timer: unknown;
     deferTask?: unknown;
+    observer?: unknown;
+    clock?: unknown;
   }>,
 ): void {
   validateInstanceId(options.instanceId, 'instanceId');
@@ -101,6 +119,13 @@ export function validatePeerOptions(
   );
   if (options.deferTask !== undefined) {
     assertCallable(options.deferTask, 'deferTask');
+  }
+  if (options.observer !== undefined) {
+    assertCallable(options.observer, 'observer');
+  }
+  if (options.clock !== undefined) {
+    assertObjectShape(options.clock, 'clock');
+    assertCallable((options.clock as { now?: unknown }).now, 'clock.now');
   }
 }
 

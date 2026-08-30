@@ -44,6 +44,7 @@ import { resolveLimits } from '../src/defaults.js';
 import { OutboundQueue } from '../src/frame-io.js';
 import type { ResolvedLimits } from '../src/types.js';
 import { makeAuthorizer } from './driver.js';
+import { DEFAULT_PEER_VERIFIER, TEST_TOKEN } from './driver.js';
 import {
   HUB_INSTANCE,
   HUB_OWNER,
@@ -251,6 +252,7 @@ async function bootMultiD1(opts: {
     registry: hubNode.registry,
     authorize: authorizer.authorize,
     timer: hubNode.scheduler,
+    verifyToken: DEFAULT_PEER_VERIFIER,
     limits: opts.limits,
     timeouts: { ackTimeoutMs: opts.ackTimeoutMs },
   });
@@ -262,7 +264,7 @@ async function bootMultiD1(opts: {
     dial: () => {
       const wire = makeGatedWire();
       wireRef.current = wire;
-      hub.accept(wire.hubEnd, { peerInstanceId: PEER_INSTANCE });
+      hub.accept(wire.hubEnd, { token: TEST_TOKEN });
       return wire.peerEnd;
     },
     timer: peerNode.scheduler,
@@ -664,6 +666,7 @@ async function bootLiveness(withFacets: boolean): Promise<LivenessBoot> {
     registry: hubNode.registry,
     authorize: authorizer.authorize,
     timer: hubNode.scheduler,
+    verifyToken: DEFAULT_PEER_VERIFIER,
   });
   const wires: LivenessWire[] = [];
   const peer = createPeerReplication({
@@ -675,7 +678,7 @@ async function bootLiveness(withFacets: boolean): Promise<LivenessBoot> {
       wires.push(wire);
       hub.accept(
         withFacets ? wire.hubEnd : wire.hubEnd,
-        { peerInstanceId: PEER_INSTANCE },
+        { token: TEST_TOKEN },
       );
       return withFacets ? wire.peerEnd : stripFacets(wire.peerEnd);
     },
@@ -766,6 +769,7 @@ describe('SA7 D5（SA4 §六.4 R4）：GOAWAY SHUTTING_DOWN → blocked 后零�
       registry: hubNode.registry,
       authorize: authorizer.authorize,
       timer: hubNode.scheduler,
+      verifyToken: DEFAULT_PEER_VERIFIER,
     });
     // peer 侧栅门 wire：peer→hub 方向可栅（模拟慢上行 socket + bufferedAmount 面）
     const peerListeners = new Set<(bytes: Uint8Array) => void>();
@@ -848,7 +852,7 @@ describe('SA7 D5（SA4 §六.4 R4）：GOAWAY SHUTTING_DOWN → blocked 后零�
       hubInstanceId: HUB_INSTANCE,
       registry: peerNode.registry,
       dial: () => {
-        hub.accept(hubEnd, { peerInstanceId: PEER_INSTANCE });
+        hub.accept(hubEnd, { token: TEST_TOKEN });
         return peerEnd;
       },
       timer: peerNode.scheduler,

@@ -22,7 +22,7 @@
  *
  * 新契约字段（SA6 冻结名，types.ts 冻结面增补随设计修订；本轮测试以合法 Partial
  * 传值——resolveLimits 逐字段整值替换，额外字段随 spread 到达运行时）：
- *   `controlReserveBytes` —— 暂停段 control 帧独立保留额度（字节）。
+ *   `maxQueuedControlBytes` —— socket 内未冲刷 control 帧的独立保留额度（字节）。
  *
  * 预期：R2-1（队列路径 + 直发路径）/ R2-2（peer+hub）/ R2-3（count+bytes）/
  * R2-4（独立性+生效）全部红灯（当前实现失败）；R2-5 若 RR 调度本已公平可直绿（落盘即

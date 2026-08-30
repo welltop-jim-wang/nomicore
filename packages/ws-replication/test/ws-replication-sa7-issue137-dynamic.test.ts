@@ -17,18 +17,18 @@
  *      恰 1 个 connection ERROR 帧 + close(1002) + blocked。#136 旧语义（0 帧）下红。
  *
  *   D3（SA2 §5-F3 配方 / SA4 §6-D3）control 保留额度耗尽可达性，三个互补面
- *      （R2-4 适配：额度由 lowWater 迁至独立配置 controlReserveBytes——lowWater 仅
- *      保留 §17 L492 恢复 dequeue 水位迟滞语义；缺省 64KiB 逐值零漂移）：
- *      a controlReserveBytes=1 极端：暂停段首个控制帧（hub UPDATE_ACK）即触发 →
+ *      （R2-4 适配：额度由 lowWater 迁至独立配置 maxQueuedControlBytes——lowWater 仅
+ *      保留 §17 L492 恢复 dequeue 水位迟滞语义；本测试显式使用历史 64KiB 对照值）：
+ *      a maxQueuedControlBytes=1 极端：暂停段首个控制帧（hub UPDATE_ACK）即触发 →
  *        CONNECTION_BACKPRESSURE ERROR + close(1011) + peer backoff（非 blocked）
  *        + 撤压重连恢复；
- *      b 缺省 64KiB 配方（大控制帧路径）：暂停段首个 >64KiB BOOTSTRAP_SNAPSHOT
- *        首帧即触发，且触发帧不上 wire（谓词 `used + frameBytes > controlReserveBytes`
+ *      b 显式 64KiB 配方（大控制帧路径）：暂停段首个 >64KiB BOOTSTRAP_SNAPSHOT
+ *        首帧即触发，且触发帧不上 wire（谓词 `used + frameBytes > maxQueuedControlBytes`
  *        的「触发帧不发送」语义）+ 1011 + 撤压重连恢复（≈1600+ ACK 路径与本路径
  *        同谓词，由 c 以精确帧数锁定）；
- *      c 谓词精确触发帧数锁定：controlReserveBytes=100 + 实测等长 ACK 帧——暂停段
- *        恰发出 floor(controlReserveBytes/ackBytes) 个 ACK 后下一帧触发（区分
- *        `used ≥ controlReserveBytes` 异形谓词——后者多发 1 帧）。
+ *      c 谓词精确触发帧数锁定：maxQueuedControlBytes=100 + 实测等长 ACK 帧——暂停段
+ *        恰发出 floor(maxQueuedControlBytes/ackBytes) 个 ACK 后下一帧触发（区分
+ *        `used ≥ maxQueuedControlBytes` 异形谓词——后者多发 1 帧）。
  *
  *   D4（SA2 R2-N1 转绿守卫 / SA4 §6-D4）「消费即进展」活性：超限项（>maxUpdateBytes）
  *      + 合法小更新同队 → 释放 ACK → 同一次 drain 的后续 pass 发出合法项（对端在
@@ -57,7 +57,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { bootMulti, ISSUE137_SCHEMA } from './issue137-driver.js';
-import { boot, collectUnhandledRejections } from './driver.js';
+import { boot, collectUnhandledRejections, DEFAULT_PEER_VERIFIER, TEST_TOKEN } from './driver.js';
 import {
   deferred,
   HUB_INSTANCE,
@@ -776,6 +776,7 @@ async function bootLocal(opts: {
       permissions: { read: true, submit: true },
     }),
     timer: hubNode.scheduler,
+    verifyToken: DEFAULT_PEER_VERIFIER,
     ...(opts.limits !== undefined ? { limits: opts.limits } : {}),
     ...(opts.timeouts !== undefined ? { timeouts: opts.timeouts } : {}),
   });
@@ -793,7 +794,7 @@ async function bootLocal(opts: {
         get: () => hubPressure,
         configurable: true,
       });
-      hub.accept(wire.hubEnd, { peerInstanceId: PEER_INSTANCE });
+      hub.accept(wire.hubEnd, { token: TEST_TOKEN });
       return wire.peerEnd;
     },
     timer: peerNode.scheduler,
