@@ -40,6 +40,7 @@ import {
   type ReplicationMessage,
 } from '@nomicore/replication-protocol';
 import { ConnectionSender, type DataSenderFacet } from '../src/backpressure.js';
+import { resolveLimits } from '../src/defaults.js';
 import { OutboundQueue } from '../src/frame-io.js';
 import type { ResolvedLimits } from '../src/types.js';
 import { makeAuthorizer } from './driver.js';
@@ -423,18 +424,21 @@ async function withMicrotaskBudget(p: Promise<void>, what: string, budget = 3_00
 
 // ═══════════════════════════ D2/D3：OutboundQueue 类级锚（真实生产类） ═══════════════════════════
 
-const QUEUE_LIMITS: Readonly<ResolvedLimits> = Object.freeze({
-  maxFrameBytes: 1 << 20,
-  maxBootstrapBytes: 1 << 20,
-  maxSyncDiffBytes: 1 << 20,
-  maxUpdateBytes: 1 << 20,
-  maxQueuedUpdateBytes: 1 << 20,
-  maxQueuedUpdateCount: 1024,
-  maxInFlightUpdates: 8,
-  maxQueuedBytesPerConnection: 8 << 20,
-  lowWater: 1024,
-  highWater: 4096,
-} as ResolvedLimits);
+const QUEUE_LIMITS: Readonly<ResolvedLimits> = Object.freeze(
+  resolveLimits({
+    maxFrameBytes: 1 << 20,
+    maxBootstrapBytes: 1 << 20,
+    maxSyncDiffBytes: 1 << 20,
+    maxUpdateBytes: 1 << 20,
+    maxQueuedUpdateBytes: 1 << 20,
+    maxQueuedUpdateCount: 1024,
+    maxInFlightUpdates: 8,
+    maxQueuedBytesPerConnection: 8 << 20,
+    lowWater: 1024,
+    highWater: 4096,
+    maxQueuedControlBytes: 8 * 1024 * 1024, // 控制帧独立保留额度（协议 §17：未冲刷控制字节口径）
+  }),
+);
 
 const NS_W = 'ns-44444444444444444444444444444444';
 const NS_X = 'ns-66666666666666666666666666666666';
@@ -475,6 +479,7 @@ function senderHarness(blocked: Set<string>): {
   sender = new ConnectionSender({
     limits: QUEUE_LIMITS,
     timer: scheduler,
+    ackTimeoutMs: 10_000, // poll 公式输入（D2/D3 语义与 poll 无关——readBufferedAmount 恒 0 不暂停）
     readBufferedAmount: () => 0,
     emitControl: (message) => queue.sendControl(message),
     emitData: (message) => {
@@ -518,6 +523,8 @@ function senderHarness(blocked: Set<string>): {
 
 describe('SA7 D2（ConnectionSender/OutboundQueue 关联）：控制序列不受后续 data drain 污染', () => {
   it('控制帧返回自身序，data 经 authoritative facet plane 后续派发', () => {
+    // cast 防线（SA2 T1）：额度字段必须有界数值——resolveLimits 构造 + isFinite 双保险，杜绝 NaN 静默失效
+    expect(Number.isFinite(QUEUE_LIMITS.maxQueuedControlBytes)).toBe(true);
     const h = senderHarness(new Set());
     h.enqueue(NS_Y);
     const ret = h.sender.sendControl(bootFrame(NS_W));

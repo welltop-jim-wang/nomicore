@@ -22,7 +22,7 @@
  *
  * 新契约字段（SA6 冻结名，types.ts 冻结面增补随设计修订；本轮测试以合法 Partial
  * 传值——resolveLimits 逐字段整值替换，额外字段随 spread 到达运行时）：
- *   `controlReserveBytes` —— 暂停段 control 帧独立保留额度（字节）。
+ *   `maxQueuedControlBytes` —— socket 内未冲刷 control 帧的独立保留额度（字节）。
  *
  * 预期：R2-1（队列路径 + 直发路径）/ R2-2（peer+hub）/ R2-3（count+bytes）/
  * R2-4（独立性+生效）全部红灯（当前实现失败）；R2-5 若 RR 调度本已公平可直绿（落盘即
@@ -386,8 +386,10 @@ describe('issue #137 R2：质量复审 5 项红灯契约', () => {
           maxInFlightUpdates: 8,
           maxQueuedUpdateCount: 100,
           maxQueuedUpdateBytes: 1_048_576,
-          // 独立 control 保留额度（SA6 冻结新契约字段；本轮随 Partial spread 到达运行时）
-          controlReserveBytes: 64_000,
+          // 独立 control 保留额度（协议 §17：未冲刷控制字节口径；缺省 8 MiB）
+          maxQueuedControlBytes: 64_000,
+          // 启动约束：maxQueuedControlBytes ≥ maxBootstrapBytes + 128（恰值合法，G7d 同构）
+          maxBootstrapBytes: 63_872,
         } as Partial<ReplicationLimits>,
         timeouts: { ackTimeoutMs: 60_000 },
       });
@@ -434,7 +436,9 @@ describe('issue #137 R2：质量复审 5 项红灯契约', () => {
           maxInFlightUpdates: 8,
           maxQueuedUpdateCount: 100,
           maxQueuedUpdateBytes: 1_048_576,
-          controlReserveBytes: 1_500, // 独立额度：穷尽于 ~20 笔 ACK
+          maxQueuedControlBytes: 1_500, // 独立额度：穷尽于 ~20 笔 ACK
+          // 启动约束：maxQueuedControlBytes ≥ maxBootstrapBytes + 128（恰值合法，G7d 同构）
+          maxBootstrapBytes: 1_372,
         } as Partial<ReplicationLimits>,
         timeouts: { ackTimeoutMs: 60_000 },
       });

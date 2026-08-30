@@ -147,7 +147,7 @@ describe('`@nomicore/ws-replication` 冻结公共面（切片 6）', () => {
       readonly maxQueuedBytesPerConnection: number;
       readonly lowWater: number;
       readonly highWater: number;
-      readonly controlReserveBytes: number; // R2-4：control 帧独立保留额度（§17 L490）
+      readonly maxQueuedControlBytes: number; // 控制帧独立保留额度（协议 §17：未冲刷控制字节口径；缺省 8 MiB）
     }>();
     expectTypeOf<ReplicationTimeouts>().toMatchTypeOf<{
       readonly helloTimeoutMs: number;

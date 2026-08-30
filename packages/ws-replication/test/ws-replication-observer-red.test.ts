@@ -115,7 +115,7 @@ interface ObservedOptions {
     maxFrameBytes: number; maxBootstrapBytes: number; maxSyncDiffBytes: number;
     maxUpdateBytes: number; maxQueuedUpdateBytes: number; maxQueuedUpdateCount: number;
     maxInFlightUpdates: number; maxQueuedBytesPerConnection: number;
-    lowWater: number; highWater: number; controlReserveBytes: number;
+    lowWater: number; highWater: number; maxQueuedControlBytes: number;
   }>>;
   readonly timeouts?: Readonly<Partial<{
     helloTimeoutMs: number; openTimeoutMs: number; bootstrapTimeoutMs: number;
@@ -743,9 +743,10 @@ describe('T5：背压 / resync 事件', () => {
         maxSyncDiffBytes: 2 * 1024 * 1024, maxUpdateBytes: 512 * 1024,
         maxQueuedUpdateBytes: 4 * 1024 * 1024, maxQueuedUpdateCount: 256,
         maxInFlightUpdates: 32, maxQueuedBytesPerConnection: 8 * 1024 * 1024,
-        lowWater: 64 * 1024, highWater: 512 * 1024, controlReserveBytes: 64 * 1024,
+        lowWater: 64 * 1024, highWater: 512 * 1024, maxQueuedControlBytes: 8 * 1024 * 1024,
       },
       timer: timer as never,
+      ackTimeoutMs: 10_000,
       readBufferedAmount: () => level,
       emitControl: () => 0,
       emitData: () => 0,
@@ -837,16 +838,28 @@ describe('T5：背压 / resync 事件', () => {
       timer: peerNode.scheduler,
       targets: [{ namespaceId: nsId, localOwner: PEER_OWNER }],
       observer: peerEvents.observer,
-      limits: { controlReserveBytes: 1 }, // 任何 control 帧都越界 → CONNECTION_BACKPRESSURE
+      limits: {
+        maxFrameBytes: 4096,
+        maxBootstrapBytes: 512,
+        maxSyncDiffBytes: 512,
+        maxUpdateBytes: 512,
+        maxQueuedControlBytes: 640,
+        maxQueuedUpdateBytes: 4 * 1024 * 1024,
+      }, // 合法最小额度；暂停态累计 control 仍可耗尽 → CONNECTION_BACKPRESSURE
       random: () => 0,
     });
     peer.start();
     await waitFor(() => peer.getNamespaceState(nsId) === 'live', 'live');
     // live 期先暂停：buffered > highWater（512KiB）→ 下一笔 control 出站观察即暂停
     buffered = 600 * 1024;
-    const checkWrite = await fixture.lease.mutateRoot({ op: 'set', path: ['n'], value: 9 });
-    if (!checkWrite.ok) throw new Error(`hub 写失败：${JSON.stringify(checkWrite)}`);
-    await settle();
+    for (let value = 9; value < 40; value += 1) {
+      const checkWrite = await fixture.lease.mutateRoot({ op: 'set', path: ['n'], value });
+      if (!checkWrite.ok) throw new Error(`hub 写失败：${JSON.stringify(checkWrite)}`);
+      await settle();
+      if (peerEvents.of('connection-failed').some((e) =>
+        (e as Extract<ReplicationObserverEvent, { type: 'connection-failed' }>).code ===
+          'CONNECTION_BACKPRESSURE')) break;
+    }
     // —— 锚 1：connection-failed{CONNECTION_BACKPRESSURE, 1011}（P8） ——
     await waitFor(
       () =>

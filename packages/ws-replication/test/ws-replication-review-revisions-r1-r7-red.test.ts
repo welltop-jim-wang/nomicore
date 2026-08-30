@@ -26,6 +26,7 @@ import type { DuplexTransport, HubReplication, PeerReplication, ReplicationLimit
 import { createRegistryTestScheduler } from '@nomicore/namespace-registry/testing';
 import { decodeMessage, encodeMessage, type ReplicationMessage } from '@nomicore/replication-protocol';
 import { ConnectionSender, type DataSenderFacet } from '../src/backpressure.js';
+import { resolveLimits } from '../src/defaults.js';
 import { OutboundQueue } from '../src/frame-io.js';
 import type { ResolvedLimits } from '../src/types.js';
 import { boot } from './driver.js';
@@ -456,19 +457,21 @@ describe('SA6 R1（PR #165）：严格字节接纳——超限拒纳 + onDataShe
 
 // ═══════════════════════════ R2：独立有界控制帧保留额度 ═══════════════════════════
 
-const QUEUE_LIMITS: Readonly<ResolvedLimits> = Object.freeze({
-  maxFrameBytes: 1 << 20,
-  maxBootstrapBytes: 1 << 20,
-  maxSyncDiffBytes: 1 << 20,
-  maxUpdateBytes: 1 << 20,
-  maxQueuedUpdateBytes: 1 << 20,
-  maxQueuedUpdateCount: 1024,
-  maxInFlightUpdates: 8,
-  maxQueuedBytesPerConnection: 64 * 1024,
-  lowWater: 1024,
-  highWater: 16,
-  controlReserveBytes: 32 * 1024,
-} as ResolvedLimits);
+const QUEUE_LIMITS: Readonly<ResolvedLimits> = Object.freeze(
+  resolveLimits({
+    maxFrameBytes: 1 << 20,
+    maxBootstrapBytes: 16 * 1024, // R2-A2a 快照 8 KiB ≤ 16 KiB（满足额度约束：32 KiB ≥ 16 KiB + 128）
+    maxSyncDiffBytes: 1 << 20,
+    maxUpdateBytes: 1 << 20,
+    maxQueuedUpdateBytes: 1 << 20,
+    maxQueuedUpdateCount: 1024,
+    maxInFlightUpdates: 8,
+    maxQueuedBytesPerConnection: 64 * 1024,
+    lowWater: 1024,
+    highWater: 16,
+    maxQueuedControlBytes: 32 * 1024, // 控制帧独立保留额度（协议 §17：未冲刷控制字节口径）
+  }),
+);
 
 const R2_LIMITS_WITH_CONTROL_QUOTA = QUEUE_LIMITS;
 
@@ -511,6 +514,7 @@ describe('SA6 R2（PR #165）：真实有界控制帧保留额度（独立于数
     sender = new ConnectionSender({
       limits: R2_LIMITS_WITH_CONTROL_QUOTA,
       timer: scheduler,
+      ackTimeoutMs: 10_000, // poll 公式输入（D2/D3 语义与 poll 无关——恒不暂停路径）
       readBufferedAmount: () => held.reduce((sum, bytes) => sum + bytes.byteLength, 0),
       emitControl: (message) => queue.sendControl(message),
       emitData: (message) => queue.emit(message),

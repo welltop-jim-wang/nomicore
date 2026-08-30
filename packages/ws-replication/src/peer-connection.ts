@@ -308,6 +308,7 @@ class PeerConnectionImpl implements PeerReplication {
     this.sender = new ConnectionSender({
       limits: this.limits,
       timer: this.options.timer,
+      ackTimeoutMs: this.timeouts.ackTimeoutMs,
       readBufferedAmount: () => this.readBufferedAmount(),
       emitControl: (message) => this.emitControl(message),
       emitData: (message) => this.emitData(message),

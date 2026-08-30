@@ -2,8 +2,9 @@
  * SA7 动态验证补充测试（revision round 2）—— SA4 交 SA7 抽查点 2：
  * 真实 transport 下的缺省零漂移抽样。
  *
- * 背景：本轮（R2）全部既有测试走 fake-duplex 内存双端；`controlReserveBytes` 缺省
- * 64KiB 与旧实现以 lowWater（缺省同为 64KiB）为额度 ceiling 的「逐帧等价」声明，
+ * 背景：本轮（R2）全部既有测试走 fake-duplex 内存双端；旧字段 `controlReserveBytes`
+ * 曾以 64KiB 缺省值与 lowWater ceiling 做「逐帧等价」声明；当前权威字段为
+ * `maxQueuedControlBytes`，本文件显式使用历史 64KiB 对照值，
  * 缺真实传输链路（真实 bufferedAmount 水位驱动暂停段）下的行为对照。本文件在
  * 真实 TCP loopback 链路上抽样暂停段 control 行为的缺省边界两侧：
  *   A（存活侧）：真实暂停段 + 缺省额度内容纳的 control 流量 → 全部 ACK 上 wire、
@@ -45,6 +46,7 @@ import type {
   DuplexTransport,
   HubReplication,
   PeerReplication,
+  ReplicationLimits,
   ReplicationTimer,
 } from '@nomicore/ws-replication';
 import { decodeMessage, type DecodedMessage } from '@nomicore/replication-protocol';
@@ -195,8 +197,11 @@ interface RealRun {
   destroy(): void;
 }
 
-/** 组装真实 TCP 链路：count 个 namespace 复用单连接 + 真实积压 seam（limits 全缺省）。 */
-async function bootReal(count: number): Promise<RealRun> {
+/** 组装真实 TCP 链路：count 个 namespace 复用单连接 + 真实积压 seam（limits 缺省；可覆写）。 */
+async function bootReal(
+  count: number,
+  limits?: Readonly<Partial<ReplicationLimits>>,
+): Promise<RealRun> {
   const hubNode = makeNode('hub');
   const peerNode = makeNode('peer');
   const nsIds: string[] = [];
@@ -230,6 +235,7 @@ async function bootReal(count: number): Promise<RealRun> {
     }),
     timer: realTimer,
     verifyToken: DEFAULT_PEER_VERIFIER,
+    ...(limits !== undefined ? { limits } : {}),
   });
 
   const server = net.createServer((socket) => {
@@ -260,6 +266,7 @@ async function bootReal(count: number): Promise<RealRun> {
     // 仅时间面覆写（limits 零覆写——零漂移抽样前提）：ACK 悬挂期不触发重传；
     // backoff 拉长使 1011 后 peer 稳定停留 backoff（断言窗口内不重拨）。
     timeouts: { ackTimeoutMs: 60_000 },
+    ...(limits !== undefined ? { limits } : {}),
     backoff: { baseMs: 60_000, maxMs: 60_000, resetAfterMs: 60_000 },
   });
   peer.start();
@@ -405,7 +412,12 @@ describe('issue #137 R2 SA7：真实 transport 缺省零漂移抽样（真实 TC
     'B（耗尽侧）：真实暂停段 + 跨越缺省额度 control 流量（40 ns × 32 ACK = 1280 ≈ 73KiB > 64KiB）——恰 1 ERROR(CONNECTION_BACKPRESSURE) + close(1011) + peer backoff',
     { timeout: 180_000 },
     async () => {
-      const run = await bootReal(40);
+      const run = await bootReal(40, {
+        // 显式额度（缺省 8MiB 不再耗尽 73KiB 流量）：quota = mb+128 = 65,664，耗尽点
+        // ≈ floor(65,664/ackBytes) ≈ 旧预测 ~1150 同量级（用例 A 缺省额度天然零改动）
+        maxBootstrapBytes: 64 * 1024,
+        maxQueuedControlBytes: 64 * 1024 + 128,
+      });
       liveRuns.push(run);
       try {
         await enterRealPause(run, run.nsIds[0] as string);
