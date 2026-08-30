@@ -66,9 +66,12 @@ export interface DuplexTransport {
   /** socket 缓冲未冲刷字节（真实 WS bufferedAmount 语义；协议 §17 L492 观察点）。缺省视为 0。
    *  生产 adapter 必须暴露（G3.4 背压的前提面）——缺面 = 能力缺失的 dormant（正确降级）。 */
   readonly bufferedAmount?: number;
-  /** WS 级活性（§18；协议不定义业务 PING/PONG frame——活性只走 WS 层）。缺省 = 无活性面。 */
+  /** WS 级活性（§18；协议不定义业务 PING/PONG frame——活性只走 WS 层）。缺省 = 无活性面。
+   *  pong 关联契约（issue #170）：监听器接收 pong 载荷（RFC 6455 §5.5.2——pong 必须回显
+   *  ping 载荷）。暴露本面的 transport/adapter 必须忠实透传回显载荷；无法透传载荷的实现
+   * 不得暴露 onPong（缺面 → liveness dormant 是唯一合法降级形态）。 */
   ping?(data?: Uint8Array): void;
-  onPong?(listener: () => void): () => void;
+  onPong?(listener: (payload?: Uint8Array) => void): () => void;
 }
 
 /** HTTP Upgrade bearer-token 验证的受信产物（协议 §2：成功认证至少产生可信 Peer

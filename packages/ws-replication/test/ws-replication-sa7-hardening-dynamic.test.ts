@@ -561,7 +561,7 @@ describe('SA7 D3：ConnectionSender round-robin 有界整轮扫描', () => {
 // ═══════════════════════════ D4：N4 liveness（ping/onPong facet 注入） ═══════════════════════════
 
 interface LivenessWire {
-  readonly peerEnd: DuplexTransport & { ping(): void };
+  readonly peerEnd: DuplexTransport & { ping(data?: Uint8Array): void };
   readonly hubEnd: DuplexTransport;
   pingCount(): number;
   firePong(): void;
@@ -572,8 +572,9 @@ function makeLivenessWire(): LivenessWire {
   const peerCloseListeners = new Set<(info: Readonly<{ code: number; reason: string }>) => void>();
   const hubListeners = new Set<(bytes: Uint8Array) => void>();
   const hubCloseListeners = new Set<(info: Readonly<{ code: number; reason: string }>) => void>();
-  const pongListeners = new Set<() => void>();
+  const pongListeners = new Set<(payload?: Uint8Array) => void>();
   let pings = 0;
+  let lastPingData: Uint8Array | undefined;
   let peerClosed = false;
   let hubClosed = false;
 
@@ -603,14 +604,15 @@ function makeLivenessWire(): LivenessWire {
       peerCloseListeners.add(listener);
       return () => peerCloseListeners.delete(listener);
     },
-    ping() {
+    ping(data?: Uint8Array) {
       pings += 1;
+      lastPingData = data;
     },
-    onPong(listener: () => void) {
+    onPong(listener: (payload?: Uint8Array) => void) {
       pongListeners.add(listener);
       return () => pongListeners.delete(listener);
     },
-  } as DuplexTransport & { ping(): void };
+  } as DuplexTransport & { ping(data?: Uint8Array): void };
 
   const hubEnd: DuplexTransport = {
     send(bytes) {
@@ -645,7 +647,8 @@ function makeLivenessWire(): LivenessWire {
     hubEnd,
     pingCount: () => pings,
     firePong() {
-      for (const listener of [...pongListeners]) listener();
+      // RFC 6455 §5.5.2：pong 回显 ping 载荷——以最近一次 ping 的载荷投递（忠实回显）。
+      for (const listener of [...pongListeners]) listener(lastPingData);
     },
   };
 }

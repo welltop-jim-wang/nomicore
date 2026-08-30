@@ -78,10 +78,12 @@ function makeIssue176Wire(
   const hubCloseListeners = new Set<(info: Readonly<{ code: number; reason: string }>) => void>();
   const peerMsgListeners = new Set<(bytes: Uint8Array) => void>();
   const peerCloseListeners = new Set<(info: Readonly<{ code: number; reason: string }>) => void>();
-  const hubPongListeners = new Set<() => void>();
-  const peerPongListeners = new Set<() => void>();
+  const hubPongListeners = new Set<(payload?: Uint8Array) => void>();
+  const peerPongListeners = new Set<(payload?: Uint8Array) => void>();
   let hubPings = 0;
   let peerPings = 0;
+  let lastHubPingPayload: Uint8Array | undefined;
+  let lastPeerPingPayload: Uint8Array | undefined;
   let hubClosed = false;
   let peerClosed = false;
   const hubToPeer: Uint8Array[] = [];
@@ -128,10 +130,11 @@ function makeIssue176Wire(
     },
     ...(peerFacets
       ? {
-          ping() {
+          ping(payload?: Uint8Array) {
             peerPings += 1;
+            lastPeerPingPayload = payload?.slice();
           },
-          onPong(listener: () => void) {
+          onPong(listener: (payload?: Uint8Array) => void) {
             peerPongListeners.add(listener);
             return () => peerPongListeners.delete(listener);
           },
@@ -172,10 +175,11 @@ function makeIssue176Wire(
     },
     ...(hubFacets
       ? {
-          ping() {
+          ping(payload?: Uint8Array) {
             hubPings += 1;
+            lastHubPingPayload = payload?.slice();
           },
-          onPong(listener: () => void) {
+          onPong(listener: (payload?: Uint8Array) => void) {
             hubPongListeners.add(listener);
             return () => hubPongListeners.delete(listener);
           },
@@ -188,12 +192,12 @@ function makeIssue176Wire(
     hubEnd,
     hubPings: () => hubPings,
     fireHubPong() {
-      for (const listener of [...hubPongListeners]) listener();
+      for (const listener of [...hubPongListeners]) listener(lastHubPingPayload?.slice());
     },
     hubPongListenerCount: () => hubPongListeners.size,
     peerPings: () => peerPings,
     firePeerPong() {
-      for (const listener of [...peerPongListeners]) listener();
+      for (const listener of [...peerPongListeners]) listener(lastPeerPingPayload?.slice());
     },
     peerPongListenerCount: () => peerPongListeners.size,
     hubToPeer,

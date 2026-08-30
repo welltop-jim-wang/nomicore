@@ -445,7 +445,7 @@ interface LivenessWireOptions {
 }
 
 interface LivenessLogWire {
-  readonly peerEnd: DuplexTransport & { ping(): void };
+  readonly peerEnd: DuplexTransport & { ping(data?: Uint8Array): void };
   readonly hubEnd: DuplexTransport;
   readonly hubToPeer: Uint8Array[];
   readonly peerToHub: Uint8Array[];
@@ -460,7 +460,7 @@ function makeLivenessLogWire(opts: LivenessWireOptions = {}): LivenessLogWire {
   const peerCloseListeners = new Set<(info: Readonly<{ code: number; reason: string }>) => void>();
   const hubListeners = new Set<(bytes: Uint8Array) => void>();
   const hubCloseListeners = new Set<(info: Readonly<{ code: number; reason: string }>) => void>();
-  const pongListeners = new Set<() => void>();
+  const pongListeners = new Set<(payload?: Uint8Array) => void>();
   const hubToPeer: Uint8Array[] = [];
   const peerToHub: Uint8Array[] = [];
   let pings = 0;
@@ -500,19 +500,20 @@ function makeLivenessLogWire(opts: LivenessWireOptions = {}): LivenessLogWire {
       peerCloseListeners.add(listener);
       return () => peerCloseListeners.delete(listener);
     },
-    ping() {
+    ping(data?: Uint8Array) {
       pings += 1;
       if (opts.autoPong === true) {
+        // RFC 6455 §5.5.2：pong 回显 ping 载荷——以 ping 载荷投递（忠实回显）。
         queueMicrotask(() => {
-          for (const listener of [...pongListeners]) listener();
+          for (const listener of [...pongListeners]) listener(data);
         });
       }
     },
-    onPong(listener: () => void) {
+    onPong(listener: (payload?: Uint8Array) => void) {
       pongListeners.add(listener);
       return () => pongListeners.delete(listener);
     },
-  } as DuplexTransport & { ping(): void };
+  } as DuplexTransport & { ping(data?: Uint8Array): void };
 
   const hubEnd: DuplexTransport = {
     send(bytes) {
