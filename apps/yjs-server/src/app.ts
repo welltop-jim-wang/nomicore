@@ -53,6 +53,8 @@ const OP_TIMEOUT_MIN_MS = 1;
 const OP_TIMEOUT_MAX_MS = 120_000;
 const READ_READY_TIMEOUT_MS = 10_000;
 const LIVE_POLL_INTERVAL_MS = 100;
+/** open 物化等待重试间隔（F1：本地记录未物化时的 `NAMESPACE_NOT_FOUND` 重试）。 */
+const OPEN_RETRY_INTERVAL_MS = 50;
 /** file adapter 缺省 flush 上限（persistence DEFAULT_PERSISTENCE_SCHEDULE.maxDirtyMs）。 */
 const DEFAULT_MAX_DIRTY_MS = 5_000;
 /** 调空窗口边距（flush 提交的保守余量）。 */
@@ -75,6 +77,12 @@ interface Binding {
   readonly read: boolean;
   readonly submit: boolean;
 }
+
+/** `opVerifyWrite` 的 open 三态结果（F1 有界物化等待）。 */
+type WriteOpenResult =
+  | Readonly<{ kind: 'ok'; lease: NamespaceLease }>
+  | Readonly<{ kind: 'timeout' }>
+  | Readonly<{ kind: 'rejected' }>;
 
 export interface NomicoreApp {
   /** 启动完成（`ready` 事件已发射）；失败 → reject（对应 error 事件已发射）。 */
@@ -502,11 +510,20 @@ class AppHandle {
     if (this.registry === undefined) return { ok: false, code: 'namespace-unknown' };
     const ownerUserId = this.knownOwner(namespaceId);
     if (ownerUserId === undefined) return { ok: false, code: 'namespace-unknown' };
-    const opened = await this.registry.open({ userId: ownerUserId }, namespaceId);
-    if (!opened.ok) return { ok: false, code: 'write-failed' };
+    // F1（SA7 §2.5 修复方向）：已知集 ns 的本地记录可能尚未物化（peer 复制收敛中 /
+    // hub 重启恢复路径 / 直引 ns 尚未到达）——`registry.open` 的 `NAMESPACE_NOT_FOUND`
+    // 在 op deadline 内重试（有界物化等待）；deadline 达成仍未物化 → 与「等待达成后
+    // 仍未 live」同一稳定码 `verify-write-timeout`；非 NOT_FOUND 的真实错误
+    // （`NAMESPACE_LOAD_FAILED`/`REGISTRY_NOT_ACCEPTING`）不重试、立即按
+    // `write-failed` 收缩——write-failed 仅保留给「物化后/真实错误」，不再于正常
+    // 收敛窗口内误报（设计 §3.4 有界等待契约）。
+    const deadline = Date.now() + waitMs;
+    const opened = await this.openWriteNamespace(namespaceId, ownerUserId, deadline);
+    if (opened.kind === 'timeout') return { ok: false, code: 'verify-write-timeout' };
+    if (opened.kind === 'rejected') return { ok: false, code: 'write-failed' };
     const lease = opened.lease;
     try {
-      if (!(await this.waitNamespaceLive(lease, namespaceId, waitMs))) {
+      if (!(await this.waitNamespaceLive(lease, namespaceId, Math.max(0, deadline - Date.now())))) {
         return { ok: false, code: 'verify-write-timeout' };
       }
       const mutation = { op: 'set', path: set, value };
@@ -579,6 +596,31 @@ class AppHandle {
       }
       if (Date.now() > deadline) return false;
       await sleep(50);
+    }
+  }
+
+  /**
+   * 已知集 ns 的 `registry.open` 有界物化等待（F1）。本地记录未物化时 open 返回
+   * `NAMESPACE_NOT_FOUND`（persistence.loadDoc → null——复制收敛/恢复路径上的
+   * **瞬态**），非真实错误：在 `deadline` 内以 `OPEN_RETRY_INTERVAL_MS` 间隔重试；
+   * 一次失败尝试后判 deadline（超时检测 ≤ deadline + 间隔，无静默挂起）。
+   * 三态返回：`ok`（拿到 lease）/ `timeout`（deadline 达成仍未物化 → 调用方
+   * `verify-write-timeout`）/ `rejected`（**非** NOT_FOUND 的真实错误 → 调用方
+   * `write-failed`——不吞错、不重试、不冒充超时）。
+   */
+  private async openWriteNamespace(
+    namespaceId: string,
+    ownerUserId: string,
+    deadline: number,
+  ): Promise<WriteOpenResult> {
+    const registry = this.registry;
+    if (registry === undefined) return { kind: 'rejected' }; // 结构性不可达（knownOwner 校验已过）
+    for (;;) {
+      const opened = await registry.open({ userId: ownerUserId }, namespaceId);
+      if (opened.ok) return { kind: 'ok', lease: opened.lease };
+      if (opened.code !== 'NAMESPACE_NOT_FOUND') return { kind: 'rejected' };
+      if (Date.now() >= deadline) return { kind: 'timeout' };
+      await sleep(OPEN_RETRY_INTERVAL_MS);
     }
   }
 
