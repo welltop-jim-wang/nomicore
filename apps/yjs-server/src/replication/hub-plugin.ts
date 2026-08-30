@@ -4,8 +4,8 @@
  *  - `inject ['nomicoreRegistry', 'clock']` —— 依赖图下游：本 fiber 卸载**先于**
  *    registry fiber（有序停机的机制载体——registry/clock 在其依赖方 settle 后才
  *    开始自身拆卸）；
- *  - `apply` 内 `createHubReplication` + `ctx.effect` 有序 disposer（`hub.close()`
- *    GOAWAY→drain→deadline 后 WS 1001 硬收口；幂等）；
+ *  - `apply` 内 `createHubReplication`；第三方缺省由 Cordis disposer 管理，应用组合根
+ *    显式选择 `lifecycleOwner: 'manual'`，确保每个宿主只采用一种 teardown 所有权；
  *  - **ReplicationTimer 用 node timer 桥而非 `ctx.timeout`**（设计 §3.6：本 fiber
  *    卸载期 UNLOADING 内新武装 `ctx.timeout` 会抛 `INACTIVE_EFFECT`——drain
  *    deadline 恰在卸载期需要武装；node timer 桥有 sa7 真实链路先例，句柄由包自持
@@ -41,6 +41,8 @@ export interface HubReplicationPluginConfig {
   readonly limits?: Readonly<Partial<ReplicationLimits>>;
   readonly timeouts?: Readonly<Partial<ReplicationTimeouts>>;
   readonly observer?: ReplicationObserver;
+  /** `manual` 由显式宿主停机链拥有；`cordis` 在 fiber 卸载时自动 close。 */
+  readonly lifecycleOwner?: 'manual' | 'cordis';
 }
 
 export function createHubReplicationPlugin(config: HubReplicationPluginConfig) {
@@ -62,11 +64,13 @@ export function createHubReplicationPlugin(config: HubReplicationPluginConfig) {
         ...(config.observer !== undefined ? { observer: config.observer } : {}),
         clock: replicationClock,
       });
-      ctx.effect(function* () {
-        yield async () => {
-          await replication?.close(); // 幂等（closeTail 单飞）
-        };
-      }, 'yjs-server: hub replication');
+      if ((config.lifecycleOwner ?? 'cordis') === 'cordis') {
+        ctx.effect(function* () {
+          yield async () => {
+            await replication?.close();
+          };
+        }, 'yjs-server: hub replication');
+      }
     },
     get replication(): HubReplication | undefined {
       return replication;

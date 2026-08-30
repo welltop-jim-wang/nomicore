@@ -91,9 +91,31 @@ describe('T1 strict app config contract (design §3.2 / AC1)', () => {
     expect(() => parse(badHub('nope'))).toThrow();
   });
 
-  it('rejects unknown keys loudly (TypeError, no silent ignore)', async () => {
+  it('rejects unknown keys loudly at every nested config boundary', async () => {
     const parse = await loadParseAppConfig();
     expect(() => parse(hubConfig({ bogusTopLevel: true }))).toThrow(TypeError);
+    expect(() =>
+      parse(hubConfig({
+        persistence: {
+          kind: 'file',
+          rootDir: '/tmp/nomicore-config-test',
+          schedule: { debounceMs: 10, maxDirtyMs: 20, debouceMs: 10 },
+        },
+      })),
+    ).toThrow(TypeError);
+    expect(() =>
+      parse(peerConfig({
+        peer: {
+          hub: {
+            url: 'ws://127.0.0.1:3210/replication',
+            hubInstanceId: 'hub-1',
+            token: 'token-1',
+            tokne: 'misspelled-token',
+          },
+          targets: [{ namespaceId: NS_A, ownerUserId: 'alice' }],
+        },
+      })),
+    ).toThrow(TypeError);
   });
 
   it('rejects role×field cross placement (hub config carrying peer block)', async () => {

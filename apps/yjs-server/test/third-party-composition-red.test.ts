@@ -16,6 +16,11 @@ import {
   createNamespaceRegistryPlugin,
   requireNomicoreRegistry,
 } from '@nomicore/namespace-registry';
+import type { DuplexTransport } from '@nomicore/ws-replication';
+import {
+  createHubReplicationPlugin,
+  createPeerReplicationPlugin,
+} from '@nomicore/yjs-server';
 
 describe('T4 third-party public compose seam (AC6 / design §5-T4)', () => {
   it('composes clock→TimerService→persistence→registry→create→enableReplication→openReplicationSession from public entries only', async () => {
@@ -58,9 +63,55 @@ describe('T4 third-party public compose seam (AC6 / design §5-T4)', () => {
     await ctx.fiber.dispose();
   });
 
-  it('app public entry exposes the composition surface (RED baseline: module absent until SA3 implements)', async () => {
+  it('composes Hub and Peer replication plugins from the app public entry only', async () => {
+    const createHost = async (role: 'hub' | 'peer') => {
+      const ctx = new Context();
+      await ctx.plugin(createSystemClockPlugin());
+      new TimerService(ctx);
+      const persistenceFiber = ctx.plugin(createMemoryPersistencePlugin());
+      await persistenceFiber;
+      await ctx.plugin(createNamespaceRegistryPlugin({ role }));
+      return { ctx, persistenceFiber };
+    };
+
+    const hubHost = await createHost('hub');
+    const hubPlugin = createHubReplicationPlugin({
+      instanceId: 'hub-1',
+      verifyToken: async () => ({ ok: true, instanceId: 'peer-1' }),
+      authorize: async () => ({
+        ok: true,
+        localOwner: { userId: 'alice' },
+        permissions: { read: true, submit: true },
+      }),
+    });
+    await hubHost.ctx.plugin(hubPlugin);
+    expect(hubPlugin.replication).toBeDefined();
+
+    const peerHost = await createHost('peer');
+    const peerPlugin = createPeerReplicationPlugin({
+      instanceId: 'peer-1',
+      hubInstanceId: 'hub-1',
+      dial: (): DuplexTransport => {
+        throw new Error('dial is not called until the third-party host explicitly starts replication');
+      },
+    });
+    await peerHost.ctx.plugin(peerPlugin);
+    expect(peerPlugin.replication).toBeDefined();
+
+    // 第三方 Host 使用缺省 Cordis 所有权：依赖 fiber 卸载自动 stop/close，
+    // 不再额外手工触发第二条拆卸链。
+    await peerHost.persistenceFiber.dispose();
+    await peerHost.ctx.fiber.dispose();
+    await hubHost.persistenceFiber.dispose();
+    await hubHost.ctx.fiber.dispose();
+    expect(peerPlugin.replication?.getConnectionState()).toBe('stopped');
+  });
+
+  it('app public entry exposes the composition surface', async () => {
     const mod = (await import(/* @vite-ignore */ '@nomicore/yjs-server')) as Record<string, unknown>;
     expect(typeof mod.createNomicoreApp).toBe('function');
     expect(typeof mod.parseAppConfig).toBe('function');
+    expect(typeof mod.createHubReplicationPlugin).toBe('function');
+    expect(typeof mod.createPeerReplicationPlugin).toBe('function');
   });
 });

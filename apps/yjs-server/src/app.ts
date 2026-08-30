@@ -12,8 +12,8 @@
  * `peer.start()`（peer）——任何网络端点开启之前授权查找已完备（硬崩溃 backoff
  * 重拨/首拨/显式恢复重拨命中 boot 窗口时，authorize 不可能 miss）。
  *
- * 停机（§3.6 单一拆卸链）：复制 drain → registry shutdown → persistence
- * dispose（fiber 级联卸载 registry/复制插件 fiber）→ timer/clock teardown；
+ * 停机（§3.6 单一拆卸链）：宿主显式执行复制 drain → registry shutdown →
+ * persistence dispose → timer/clock teardown；复制插件不另注册重复 disposer；
  * `stop()` 幂等（single-flight promise）。
  */
 import { Context } from '@deepseek-ai/cordis';
@@ -237,6 +237,7 @@ class AppHandle {
       ...(this.config.limits !== undefined ? { limits: this.config.limits } : {}),
       ...(this.config.timeouts !== undefined ? { timeouts: this.config.timeouts } : {}),
       observer: this.observer,
+      lifecycleOwner: 'manual',
     });
     await this.ctx.plugin(this.hubPlugin);
     if (this.stopRequested) return;
@@ -346,6 +347,7 @@ class AppHandle {
       ...(this.config.timeouts !== undefined ? { timeouts: this.config.timeouts } : {}),
       ...(this.config.backoff !== undefined ? { backoff: this.config.backoff } : {}),
       observer: this.observer,
+      lifecycleOwner: 'manual',
     });
     await this.ctx.plugin(this.peerPlugin);
     if (this.stopRequested) return;

@@ -210,6 +210,13 @@ function validatePersistence(value: unknown, violations: Violations): Persistenc
   }
   let schedule: Readonly<{ debounceMs: number; maxDirtyMs: number }> | undefined;
   if (value.schedule !== undefined) {
+    if (isPlainObject(value.schedule)) {
+      for (const key of Object.keys(value.schedule)) {
+        if (key !== 'debounceMs' && key !== 'maxDirtyMs') {
+          violations.push({ path: `persistence.schedule.${key}`, reason: 'unknown key in persistence.schedule' });
+        }
+      }
+    }
     if (
       !isPlainObject(value.schedule) ||
       !isPositiveFinite(value.schedule.debounceMs) ||
@@ -479,6 +486,11 @@ function validatePeer(value: unknown, violations: Violations): PeerConfig | unde
   if (!isPlainObject(value.hub)) {
     violations.push({ path: 'peer.hub', reason: 'peer.hub must be an object' });
     return undefined;
+  }
+  for (const key of Object.keys(value.hub)) {
+    if (key !== 'url' && key !== 'hubInstanceId' && key !== 'token') {
+      violations.push({ path: `peer.hub.${key}`, reason: 'unknown key in peer.hub' });
+    }
   }
   validatePeerHubUrl(value.hub.url, 'peer.hub.url', violations);
   checkStringPattern(value.hub.hubInstanceId, INSTANCE_ID_PATTERN, 'peer.hub.hubInstanceId', 'hubInstanceId', violations);
