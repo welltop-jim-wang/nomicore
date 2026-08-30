@@ -426,6 +426,9 @@ class HubConnectionImpl implements HubConnection {
       this.connectionFatal('HELLO_REQUIRED', 1002);
       return;
     }
+    // GOAWAY drain 开始后停止接纳所有新的协议工作。Peer 已被要求静默；这里仍需
+    // 防御同 tick 迟到帧和不合作对端，避免 OPEN/新 sync 在收口窗口创建生命周期。
+    if (this.state === 'draining') return;
     this.dispatchReady(message, decoded.header.sequence);
   }
 

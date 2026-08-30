@@ -97,6 +97,3 @@ close 观测面），保留 AC7 的 wire 字节 + peer 侧 close reason 验证�
 缺失 TypeError；IT3 死于 60ms deadline 后 `wire.peerSideClosed` 仍 false；IT4 的
 blocked 与 60s 零重拨前置断言在红锚之前全部通过，证明 300s drain 窗口下锚点干净）；
 修正不改变红灯契约的失败面。
-
-
-

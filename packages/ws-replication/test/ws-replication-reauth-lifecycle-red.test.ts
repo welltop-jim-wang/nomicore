@@ -295,6 +295,33 @@ describe('issue #175：主动 reauthentication 生命周期（全部红灯）', 
     expect(probe.events).toEqual([]);
   });
 
+  it('AC4 Hub drain 入站门：requestReauth 后忽略迟到 OPEN，不创建新的 namespace 生命周期', async () => {
+    const probe = collectUnhandledRejections();
+    try {
+      const run = await boot({ timeouts: { closeTimeoutMs: 60 } });
+      const unknownNamespaceId = 'ns-00000000000000000000000000000000';
+
+      expect(await callReauth(run.hub, PEER_INSTANCE)).toBe('resolved');
+      await settle();
+      expect(run.hub.connections[0]?.state).toBe('draining');
+
+      const hubFrameCount = run.frames().hubToPeer.length;
+      run.injectPeer({
+        kind: 'OPEN_NAMESPACE',
+        namespaceId: unknownNamespaceId,
+        hasLocalReplica: false,
+      });
+      await settle();
+
+      expect(run.frames().hubToPeer).toHaveLength(hubFrameCount);
+      expect(run.wire.hubSideClosed).toBe(false);
+      expect(run.hub.connections[0]?.state).toBe('draining');
+    } finally {
+      probe.dispose();
+    }
+    expect(probe.events).toEqual([]);
+  });
+
   it('AC4 接收侧 deadline（SA5 根因 #3 锚）：注入 GOAWAY(REAUTH_REQUIRED, 60ms) → blocked 后 peer 在 deadline 自行 1001 收口，wire 不无限开放', async () => {
     const probe = collectUnhandledRejections();
     try {
