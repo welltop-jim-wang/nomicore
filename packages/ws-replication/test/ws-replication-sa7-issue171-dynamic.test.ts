@@ -156,7 +156,7 @@ describe('SA7 N1（issue #171，SA4 §3 N1 / §6.3 执行面）：GOAWAY drain �
       drainTimeoutMs: 10_000,
     } as ReplicationMessage);
     await run.waitNamespace('disconnected');
-    expect(run.connectionState(), 'drain 窗口连接 ready').toBe('ready');
+    expect(run.connectionState(), 'drain 窗口连接 draining').toBe('draining');
 
     // 放行 registry.open → 续体恢复于 drain 窗口（连接存活、epoch 未变——SA4 N1 的
     // 静态担忧是 B-2c 只判「连接死亡/epoch」而漏 drain 窗口 → 补发一帧 OPEN_NAMESPACE）

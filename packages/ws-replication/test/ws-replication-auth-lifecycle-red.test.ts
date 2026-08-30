@@ -487,8 +487,8 @@ describe('issue #138 切片 7：实例认证与连接生命周期（全部红灯
     ).length;
     run2.injectHub({ kind: 'RESYNC_REQUIRED', namespaceId: run2.nsId, reasonCode: 'send-queue-overflow' });
     await settle();
-    // RED@3：当前实现 ready 态接收 RESYNC → 控制器恢复链 → 新 Step1 上 wire（计数 +1）
-    expect(run2.peer.getNamespaceState(run2.nsId)).toBe('live');
+    // GOAWAY 轻量静默已把 namespace 投影为 disconnected；draining 态丢弃 RESYNC。
+    expect(run2.peer.getNamespaceState(run2.nsId)).toBe('disconnected');
     expect(
       framesOfWire(run2.wires[0]!).peerToHub.filter((message) => kindOf(message) === 'SYNC_STEP1').length,
     ).toBe(step1Before2);
