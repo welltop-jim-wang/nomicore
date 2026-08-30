@@ -144,10 +144,12 @@ export function createWebSocketAdapter(socket: WebSocketLike): DuplexTransport {
       };
     },
 
-    // onPong：忽略 pong 载荷（liveness 契约是 () => void；TF1 计数直证）。
+    // onPong：忠实透传 pong 回显载荷（RFC 6455 §5.5.2 / issue #170 契约——liveness
+    // 以每 ping 的 8 字节凭据逐字节匹配回显；载荷缺失 = 旧契约行为，在 #185 后会使
+    // 每个合法 pong 被判定为不匹配而误收口，FS8 直证）。
     onPong(listener) {
-      const handler = (): void => {
-        listener();
+      const handler = (data: unknown): void => {
+        listener(toBytes(data));
       };
       socket.on('pong', handler);
       return () => {
