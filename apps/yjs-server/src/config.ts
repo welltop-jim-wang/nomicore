@@ -8,6 +8,11 @@
  *  - authorization 双形式：`namespaceId`/`provisionId` 恰一；直引形式
  *    `ownerUserId` 必填非空（localOwner 唯一来源）；provision 形式禁止
  *    `ownerUserId`（owner 唯一来源 = provision 条目）；
+ *  - `hub.tokens` 的 value 全表唯一（重复 → 启动期 loud 拒，杜绝 反查表
+ *    last-wins 静默身份别名）；
+ *  - `persistence.schedule.maxDirtyMs` 设上界（`MAX_MAX_DIRTY_MS`）：file 停机
+ *    排空窗必须严格短于总超时 watchdog，合法配置下的 dirty flush 永不被硬编码
+ *    watchdog 击穿；
  *  - 解析结果**深冻结**（调用方改写配置零效果——配置是不可变契约）。
  *
  * 校验失败抛 `ConfigValidationError`（TypeError 子类，携带结构化
@@ -18,6 +23,15 @@ import type { ReplicationBackoff, ReplicationLimits, ReplicationTimeouts } from 
 
 export const INSTANCE_ID_PATTERN = /^[a-z][a-z0-9-]{0,62}$/;
 export const NAMESPACE_ID_PATTERN = /^ns-[0-9a-f]{32}$/;
+
+/**
+ * `persistence.schedule.maxDirtyMs` 上界（SA4 B2）：file 停机/换装的「停旧」排空窗 =
+ * `maxDirtyMs + DRAIN_MARGIN_MS`（app.ts），必须严格短于 main.ts 的总超时 watchdog
+ * （`STOP_WATCHDOG_MS = 60_000`）——否则合法配置下的干净停机会被 watchdog 强制
+ * exit(1)、dirty flush 随进程终止丢失。上限取 30_000：排空窗 ≤ 30.5s，watchdog 余量
+ * ≥ 29.5s 覆盖其余拆卸链。
+ */
+export const MAX_MAX_DIRTY_MS = 30_000;
 
 export interface AppConfig {
   readonly role: 'hub' | 'peer';
@@ -206,6 +220,12 @@ function validatePersistence(value: unknown, violations: Violations): Persistenc
         reason: 'persistence.schedule requires debounceMs and maxDirtyMs (positive finite numbers)',
       });
     } else {
+      if (value.schedule.maxDirtyMs > MAX_MAX_DIRTY_MS) {
+        violations.push({
+          path: 'persistence.schedule.maxDirtyMs',
+          reason: `maxDirtyMs must be <= ${MAX_MAX_DIRTY_MS} (the stop total-timeout watchdog must cover the dirty-flush drain window)`,
+        });
+      }
       schedule = { debounceMs: value.schedule.debounceMs, maxDirtyMs: value.schedule.maxDirtyMs };
     }
   }
@@ -244,6 +264,9 @@ function validateTokens(value: unknown, violations: Violations): Readonly<Record
     return undefined;
   }
   const tokens: Record<string, string> = {};
+  // token value 全表唯一（SA4 B1）：验证反查表 tokenToPeer 是 Map——重复 value 会让
+  // 两个实例静默别名成 JSON 中靠后的那个身份（last-wins），授权按错误身份裁决。
+  const seenTokenValues = new Set<string>();
   for (const [peerInstanceId, token] of entries) {
     if (!INSTANCE_ID_PATTERN.test(peerInstanceId)) {
       violations.push({ path: `hub.tokens.${peerInstanceId}`, reason: `token key must match ${INSTANCE_ID_PATTERN}` });
@@ -251,6 +274,13 @@ function validateTokens(value: unknown, violations: Violations): Readonly<Record
     if (typeof token !== 'string' || token.length === 0) {
       violations.push({ path: `hub.tokens.${peerInstanceId}`, reason: 'token value must be a non-empty string' });
     } else {
+      if (seenTokenValues.has(token)) {
+        violations.push({
+          path: `hub.tokens.${peerInstanceId}`,
+          reason: 'duplicate token value (token values must be unique per peer)',
+        });
+      }
+      seenTokenValues.add(token);
       tokens[peerInstanceId] = token;
     }
   }

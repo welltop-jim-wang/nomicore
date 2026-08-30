@@ -235,6 +235,41 @@ describe('T1 strict app config contract (design §3.2 / AC1)', () => {
     expect(() => parse(raw)).toThrow();
   });
 
+  it('rejects duplicate token values across hub.tokens entries (SA4 B1: last-wins identity aliasing)', async () => {
+    const parse = await loadParseAppConfig();
+    const raw = hubConfig({
+      hub: {
+        listen: { host: '127.0.0.1', port: 0 },
+        tokens: { 'peer-1': 'shared-token', 'peer-2': 'shared-token' },
+      },
+    });
+    let caught: unknown;
+    try {
+      parse(raw);
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(TypeError);
+    // 违规锚定在靠后的键（token→peer 反查表 last-wins 的别名接受者）上且 loud。
+    expect((caught as Error).message).toContain('hub.tokens.peer-2: duplicate token value');
+  });
+
+  it('rejects file persistence maxDirtyMs above the stop-watchdog budget (SA4 B2: drain window must stay inside the total timeout)', async () => {
+    const parse = await loadParseAppConfig();
+    const basePersistence = { kind: 'file', rootDir: '/tmp/yjs-server-config-b2' };
+    let caught: unknown;
+    try {
+      parse(hubConfig({ persistence: { ...basePersistence, schedule: { debounceMs: 250, maxDirtyMs: 30_001 } } }));
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(TypeError);
+    expect((caught as Error).message).toContain('persistence.schedule.maxDirtyMs');
+    // 上界本身合法：排空窗 ≤ 30.5s，严格短于 STOP_WATCHDOG_MS (60s)。
+    const atBoundary = parse(hubConfig({ persistence: { ...basePersistence, schedule: { debounceMs: 250, maxDirtyMs: 30_000 } } })) as Record<string, unknown>;
+    expect((atBoundary.persistence as Record<string, unknown>).kind).toBe('file');
+  });
+
   it('accepts a valid hub config with direct-form authorization and deep-freezes it', async () => {
     const parse = await loadParseAppConfig();
     const raw = hubConfig({
