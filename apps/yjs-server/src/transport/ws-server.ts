@@ -100,8 +100,8 @@ export function wrapWs(ws: WebSocket): DuplexTransport {
     ping(data?: Uint8Array): void {
       ws.ping(data);
     },
-    onPong(listener: () => void): () => void {
-      const handler = () => listener();
+    onPong(listener: (payload?: Uint8Array) => void): () => void {
+      const handler = (payload: Buffer) => listener(toBytes(payload));
       ws.on('pong', handler);
       return () => ws.off('pong', handler);
     },

@@ -71,6 +71,8 @@ interface LivenessWireOptions {
   readonly hubAutoPong: boolean;
   /** 已关传输上 ping 记录 ws 语义错误（`WebSocket is not open: readyState 3`）。 */
   readonly throwPingWhenClosed: boolean;
+  /** close 同步触发旧连接 callback，模拟可重入 adapter。 */
+  readonly reenterPeerCallbackOnClose?: () => void;
 }
 
 interface FrameProbe {
@@ -134,6 +136,7 @@ function makeLivenessWire(opts: LivenessWireOptions): LivenessWire {
       if (peerClosed) return;
       peerClosed = true;
       peerCloseLog.push({ code, reason });
+      opts.reenterPeerCallbackOnClose?.();
       queueMicrotask(() => {
         for (const listener of [...hubCloseListeners]) listener({ code, reason });
       });
@@ -279,6 +282,8 @@ interface BootOptions {
   readonly autoPongFromSecond?: boolean;
   /** 已关传输上 ping 记录 ws 语义错误（P4 用）。 */
   readonly throwPingWhenClosed?: boolean;
+  /** peer close 同步触发旧连接的已保存 callback，用于证明 close 前 epoch 已失效。 */
+  readonly reenterPeerCallbackOnClose?: () => void;
 }
 
 async function bootIssue170(opts: BootOptions): Promise<Issue170Env> {
@@ -308,6 +313,9 @@ async function bootIssue170(opts: BootOptions): Promise<Issue170Env> {
         peerAutoPong: opts.autoPongFromSecond === true && dialCount > 1,
         hubAutoPong: opts.autoPongFromSecond === true && dialCount > 1,
         throwPingWhenClosed: opts.throwPingWhenClosed === true,
+        ...(opts.reenterPeerCallbackOnClose !== undefined
+          ? { reenterPeerCallbackOnClose: opts.reenterPeerCallbackOnClose }
+          : {}),
       });
       wires.push(wire);
       void hub.accept(wire.hubEnd, { token: TEST_TOKEN });
@@ -462,6 +470,23 @@ describe('SA6 红灯 issue #170 P1–P3（R2）：迟到/重复/未请求 pong �
 // ═══════════════════════════ P4：peer pong 超时同步收口 + 重连（R3 + old-epoch） ═══════════════════════════
 
 describe('SA6 红灯 issue #170 P4（R3 + 验收 1/2/5/6）：pong 超时同步收口栈——停活性/退订/关传输后再排 backoff', () => {
+  it('P4a：close 同步重入旧连接 callback 时，旧 epoch 已失效且不能启动 rebuild', async () => {
+    let env: Issue170Env | undefined;
+    const reenterPeerCallbackOnClose = (): void => {
+      env?.peer.notifyAuthChanged();
+    };
+    env = await bootIssue170({
+      facets: 'peer',
+      reenterPeerCallbackOnClose,
+    });
+    env.peer.start();
+    await settleUntil(() => env.peer.getConnectionState() === 'ready', '握手 ready');
+    await env.peerNode.scheduler.advanceBy(PING_INTERVAL_MS);
+    await env.peerNode.scheduler.advanceBy(PONG_TIMEOUT_MS);
+    expect(env.peer.getConnectionState(), '同步 close 重入必须被旧 epoch guard 吸收').toBe('backoff');
+    expect(env.wires[0]!.peerCloseLog()).toEqual([{ code: 1001, reason: 'pong-timeout' }]);
+  });
+
   it('P4：超时即同步停旧 liveness、退订旧 transport 全部监听（旧代 pong 惰性）；backoff 窗内零 ping 已关传输；重连收敛', async () => {
     const env = await bootIssue170({
       facets: 'peer',

@@ -22,12 +22,12 @@ export interface LivenessDeps {
 
 /** ping 关联凭据：8 字节大端单调计数。会话内严格单调 → 任何旧凭据不等于新在途凭据；
  *  8 字节 ≪ RFC 6455 §5.5 控制帧 125 字节载荷上限。 */
-function encodeCredential(counter: number): Uint8Array {
+function encodeCredential(counter: bigint): Uint8Array {
   const payload = new Uint8Array(8);
   let value = counter;
   for (let i = 7; i >= 0; i -= 1) {
-    payload[i] = value % 256;
-    value = Math.floor(value / 256);
+    payload[i] = Number(value & 0xffn);
+    value >>= 8n;
   }
   return payload;
 }
@@ -46,7 +46,7 @@ export function startLiveness(deps: LivenessDeps): () => void {
   let stopped = false;
   let pingHandle: unknown | undefined;
   let pongHandle: unknown | undefined;
-  let counter = 0; // 会话内单调；跨会话隔离由 per-socket pong 投递保证（§9 E7）
+  let counter = 0n; // 64-bit 凭据不受 Number.MAX_SAFE_INTEGER 精度限制；per-socket 隔离跨会话 pong
   let outstanding: Uint8Array | undefined;
 
   const stopInternal = (): void => {
@@ -81,7 +81,7 @@ export function startLiveness(deps: LivenessDeps): () => void {
 
   const loop = (): void => {
     if (stopped) return;
-    counter += 1;
+    counter = BigInt.asUintN(64, counter + 1n);
     outstanding = encodeCredential(counter);
     // 先武装 timeout，再发送 ping：测试/适配器允许 ping() 同步回显 pong；若先发送后
     // 武装，合法同步 pong 会因 pongHandle 尚未存在而被误判为 unsolicited，随后假超时。

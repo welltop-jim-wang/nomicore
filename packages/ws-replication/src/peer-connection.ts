@@ -422,12 +422,13 @@ class PeerConnectionImpl implements PeerReplication {
           if (this.stopping) return;
           // 双凭据校验（issue 范围 2）：transport 身份 + 连接代际——旧代定时器零影响。
           if (this.transport !== transport || this.connectionEpochValue !== epoch) return;
-          // 同步收口栈（G3，顺序 = issue 原文）：停旧 liveness → 退订旧 transport 全部监听
-          // → 关旧 transport(1001) → epoch 作废（在 onTemporaryFailure 顶部）→ 排 backoff。
+          // 同步收口栈（G3）：停旧 liveness → 退订旧 transport 全部监听 → epoch 作废
+          // → 关旧 transport(1001) → 排 backoff。epoch 必须先于可重入的 adapter.close() 失效。
           this.stopLivenessNow();
           this.unsubscribeTransport();
+          this.connectionEpochValue += 1;
           if (!transport.closed) transport.close(1001, 'pong-timeout');
-          this.onTemporaryFailure('pong-timeout');
+          this.onTemporaryFailure('pong-timeout', true);
         },
       });
     }
@@ -841,16 +842,16 @@ class PeerConnectionImpl implements PeerReplication {
     }
   }
 
-  private onTemporaryFailure(reason: PeerBackoffReason): void {
+  private onTemporaryFailure(reason: PeerBackoffReason, epochAlreadyInvalidated = false): void {
     if (this.stopping) return;
     if (this.connStateValue === 'backoff' || this.connStateValue === 'blocked') return;
     // 同步代际收口（issue #170 验收 2 / I4）：停旧 liveness、退订旧 transport 全部监听、
     // 作废连接代际——先于一切 backoff 排程。不关传输（I5）：关闭是路径特定的——
-    // pong 超时路径由闭包同步 close(1001)（§6.1）；远端关闭路径传输已死；hello 超时
-    // 孤儿传输窗口是 D5 登记处置项，本任务不动。
+    // pong 超时路径在可重入 close 前已作废 epoch，故传 true 防止重复递增；远端关闭路径
+    // 传输已死；hello 超时孤儿传输窗口是 D5 登记处置项，本任务不动。
     this.stopLivenessNow();
     this.unsubscribeTransport();
-    this.connectionEpochValue += 1;
+    if (!epochAlreadyInvalidated) this.connectionEpochValue += 1;
     this.sender?.teardown();
     this.clearHello();
     this.clearReset();
