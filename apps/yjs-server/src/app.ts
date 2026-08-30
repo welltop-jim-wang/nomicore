@@ -623,14 +623,14 @@ class AppHandle {
     const opened = await this.registry.open({ userId: ownerUserId }, namespaceId);
     if (!opened.ok) return { ok: false, code: 'write-failed' };
     try {
-      // 键存在性判定（schema-write.ts:73-77 的 runtime 契约）；G2 已保证 root 存在即 plain object
+      // 键存在性判定（schema-write.ts:73-77 的 runtime 契约）；G2 已保证 root 存在即 plain object。
+      // schema **原样透传**（G2 门禁后仅类型收窄 cast——严禁重建对象）：
+      // 未声明键的封闭校验单源在 runtime SCHEMA 写槽（compile 严格门 ENV-5「恰含四键」），
+      // app 不重复语义校验也不静默剥离额外键（否则运行时防线失活、回执契约漂移）。
       const input =
         'root' in args
-          ? {
-              schema: { lang: schema.lang, version: schema.version, id: schema.id, text: schema.text },
-              root: args.root,
-            }
-          : { schema: { lang: schema.lang, version: schema.version, id: schema.id, text: schema.text } };
+          ? { schema: schema as { lang: string; version: number; id: string; text: string }, root: args.root }
+          : { schema: schema as { lang: string; version: number; id: string; text: string } };
       const result = await opened.lease.replaceSchema(input); // 结果联合 resolve（fatal 除外）
       return result.ok ? { ok: true } : { ok: false, code: 'write-failed' };
     } catch {
