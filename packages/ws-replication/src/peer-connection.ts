@@ -181,6 +181,18 @@ class PeerConnectionImpl implements PeerReplication {
     return this.controllers.get(namespaceId)?.state;
   }
 
+  /** issue #175 AC5：token/config 显式变化通知缝。仅 blocked 是恢复语义的合法入口：
+   *  - backoff：下一次 dial 本就读取拨号闭包的当前凭据（token 轮换自动生效，无需通知）；
+   *  - ready/handshaking/connecting：无「待恢复」事实；
+   *  - disconnected（重建编排进行中）：requestRebuild 已排队，rebuildPending 幂等守卫兜底；
+   *  - stopped：恢复入口是 start()（生命周期语义，非凭据语义）。
+   *  自 blocked 走既有 requestRebuild 编排（关旧 wire(1000) → deferTask → dialNow）。 */
+  notifyAuthChanged(): void {
+    if (this.stopping) return;
+    if (this.connStateValue !== 'blocked') return;
+    this.requestRebuild('auth-change');
+  }
+
   // ─────────────────────────────── 连接 FSM ───────────────────────────────
 
   private dialNow(): void {
@@ -405,6 +417,11 @@ class PeerConnectionImpl implements PeerReplication {
       // 永久失败类必须走统一 blocked 收口：同步静默 namespace、清发送队列及全部 timer，
       // 同时保持 wire 开放供宿主决定最终关闭时机。
       this.enterBlocked();
+      // issue #175 AC4（§6.3「接收时开始计算本地 elapsed deadline」）：blocked 类 GOAWAY
+      // 携带正 drain 预算 → 武装本地 deadline——发送方在 drain 窗内死亡、或帧为注入形态
+      // （无发送方收口方）时 wire 不无限开放；drain=0 =「无 drain 预算信息」→ 不武装
+      // （D5-B1 冻结语义：0 值不产生任何新 timer；生产 Hub 两条 GOAWAY 生产路径恒发 >0）。
+      if (this.goawayDrainMs > 0) this.armBlockedDeadline();
       return;
     }
     // drain 类（SERVER_RESTARTING 及未知非永久类）：§15.1 L411 字面——无条件 draining。
@@ -425,6 +442,24 @@ class PeerConnectionImpl implements PeerReplication {
       this.sender?.teardown(); // D5 主锚：close 前清 poll timer
       if (transport !== undefined && !transport.closed) {
         transport.close(1001, 'goaway-drain');
+      }
+    }, this.goawayDrainMs);
+  }
+
+  /** issue #175 AC4（SA5 根因 #3 / 协议 §6.3 L141）：blocked 类 GOAWAY 的 receiver 侧本地
+   *  elapsed deadline——发送方（hub reauth/停机）在 drain 窗内死亡、或帧为注入形态
+   *  （无发送方收口方）时，wire 不无限开放：deadline 到 → 本端 close(1001)。仅处置
+   *  transport 收口：控制器/出站队列/全部 timer 已由 enterBlocked 统一收口，此处重复
+   *  处置反而引入双重 quiesce 风险。句柄复用 drainCloseHandle（stop/dialNow/requestRebuild
+   *  既有清除点白得覆盖；§8.1 双重满足：清句柄 + 回调状态守卫）。 */
+  private armBlockedDeadline(): void {
+    this.clearDrainClose();
+    const transport = this.transport;
+    this.drainCloseHandle = this.options.timer.setTimeout(() => {
+      this.drainCloseHandle = undefined;
+      if (this.connStateValue !== 'blocked') return; // rebuild/stop/dialNow 已接管旧 transport → 零副作用
+      if (transport !== undefined && !transport.closed) {
+        transport.close(1001, 'blocked-deadline'); // 静态 reason，零凭据（AC7）
       }
     }, this.goawayDrainMs);
   }
@@ -700,6 +735,9 @@ class PeerConnectionImpl implements PeerReplication {
     this.clearHello();
     this.clearReset();
     this.clearBackoff();
+    this.clearDrainClose(); // issue #175 §6.4：重建 = 旧连接终结（dialNow :189 同款理由）；
+    // 语义保护主体是 armBlockedDeadline 的状态守卫（重建后 state=disconnected → 回调 no-op）；
+    // 此处清句柄是 §8.1 矩阵卫生（杜绝「守卫兜底」成为唯一防线）。
     this.sender?.teardown(); // §8：重建 = 旧连接终结（poll timer 清零）
     this.setState('disconnected');
     // B-2e：§4.3 L228「重建期间所有 namespace 投影 disconnected」——通知全部目标

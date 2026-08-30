@@ -73,6 +73,26 @@ export const DEFAULT_PEER_VERIFIER: PeerTokenVerifier = (
 ): Promise<Readonly<{ ok: true; instanceId: string }> | Readonly<{ ok: false }>> =>
   Promise.resolve(token === TEST_TOKEN ? { ok: true, instanceId: PEER_INSTANCE } : { ok: false });
 
+// ═══════════════════════════ Hub 主动 reauth 契约面镜像（issue #175 冻结） ═══════════════════════════
+//
+// SA6 冻结（issue #175 主动 reauthentication 生命周期，协议
+// `docs/protocols/instance-replication-v1.md` §6.3/§15.1 L435-450 + ADR-0010 条款 2/3/4/6/9）：
+// 认证/授权 Adapter 在凭据轮换/撤销后经窄公共入口对已建立连接发起 reauth——按认证
+// 实例身份定位连接（绝不以 token 值为键，AC7），只影响匹配实例的连接（AC3）；reauth
+// 发送 `GOAWAY(REAUTH_REQUIRED, drainTimeoutMs>0)` 并在 drain/deadline 后以 WS 1001
+// 收口（AC4，区别于 hub.close 的零 drain 窗口）；Peer 侧 blocked 仅在 token/config
+// 显式变化通知后恢复拨号（AC5）。实现后与 `@nomicore/ws-replication` 正式类型逐字段一致。
+
+/** Hub 主动 reauth 入口（AC1/AC2）：按认证实例身份定位连接并请求 reauthentication。 */
+export interface HubReauthSeam {
+  requestReauth(instanceIdentity: string): Promise<void>;
+}
+
+/** Peer 侧认证（token/config）变化通知缝（AC5）：blocked 仅在此显式通知后重拨。 */
+export interface PeerAuthNotifySeam {
+  notifyAuthChanged(): void;
+}
+
 // ═══════════════════════════ 授权 spy ═══════════════════════════
 
 export interface AuthorizerSpy {
@@ -156,6 +176,8 @@ export interface BootOptions {
   readonly verifyToken?: PeerTokenVerifier;
   /** 拨号时携带的升级凭据 token（缺省 TEST_TOKEN）。 */
   readonly token?: string;
+  /** 拨号凭据源（每次拨号调用读取；缺省 = 固定 opts.token）。token 轮换场景用。 */
+  readonly tokenSource?: () => string;
   /** Peer 实例身份（HELLO.peerInstanceId；缺省 PEER_INSTANCE）。 */
   readonly peerInstanceId?: string;
   /** 缺省 true：peer.start + 等待 connection ready。 */
@@ -481,11 +503,12 @@ export async function boot(opts: BootOptions = {}): Promise<Run> {
 
   const wires: Wire[] = [];
   let dialCount = 0;
+  const dialToken = opts.tokenSource ?? ((): string => opts.token ?? TEST_TOKEN);
   const dial = (): DuplexTransport => {
     dialCount += 1;
     const wire = makeWire();
     wires.push(wire);
-    hub.accept(wire.hubEnd, { token: opts.token ?? TEST_TOKEN });
+    hub.accept(wire.hubEnd, { token: dialToken() });
     return wire.peerEnd;
   };
 

@@ -1,6 +1,8 @@
 /**
  * `@nomicore/ws-replication` 冻结公共契约类型（SA6 冻结，逐字段；实现不得增删改名）
- * + 包内私有结构类型。
+ * + 包内私有结构类型。issue #175 SA6 冻结契约扩展（主动 reauthentication 生命周期）：
+ * `HubReplication.requestReauth` / `PeerReplication.notifyAuthChanged`（见
+ * wiki/raw/task_active-reauthentication-lifecycle.md §SA6 红灯契约——冻结基线随任务前移）。
  *
  * 设计：wiki/raw/task_phase5-ws-namespace-sync_design.md §2（冻结契约面）。
  * 类型来源：`NamespaceOwner` / `NamespaceRegistry` / `ReplicationSession` /
@@ -121,6 +123,11 @@ export interface HubReplication {
   ): Promise<HubConnection | undefined>;
   readonly connections: readonly HubConnection[];
   revoke(instanceIdentity: string, namespaceId: string): Promise<void>;
+  /** issue #175（AC1/AC2/AC3/AC6/AC7）：认证/授权 Adapter 主动 reauth 事件 seam——按
+   *  认证实例身份定位连接（绝不以 token 值为键），对每个匹配连接发送
+   *  GOAWAY(REAUTH_REQUIRED, drainTimeoutMs>0) 并按 drain/deadline 规则以 WS 1001 收口。
+   *  未知实例/已收口连接 → 无副作用 resolve；重复调用幂等。 */
+  requestReauth(instanceIdentity: string): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -152,6 +159,8 @@ export interface PeerReplication {
   removeTarget(namespaceId: string): Promise<void>; // 幂等；未知 nsId → 立即 resolve undefined
   getConnectionState(): PeerConnectionState;
   getNamespaceState(namespaceId: string): PeerNamespaceState | undefined; // 未知 → undefined
+  /** issue #175（AC5）：token/config 显式变化通知缝——blocked 仅在明确变化后恢复拨号。 */
+  notifyAuthChanged(): void;
 }
 
 export type PeerConnectionState =
