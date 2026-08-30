@@ -32,10 +32,12 @@
  */
 import {
   appendFileSync,
+  existsSync,
   mkdirSync,
   readFileSync,
   readdirSync,
   renameSync,
+  rmSync,
   statSync,
   truncateSync,
   unlinkSync,
@@ -52,8 +54,13 @@ import { decodeFrame, encodeFrame, frameCrcOf } from '../frame.js'
 import { defaultFallbackLog, makeEventNotifier } from '../health.js'
 import type { DiagnosticLogHealthObserver } from '../health.js'
 import { isSafeNamespaceId, isSafeStreamId, segmentFilePaths, streamLayoutPaths } from '../paths.js'
+import { enumerateSegmentGroups } from '../reader.js'
+import type { SegmentGroupEnumeration } from '../reader.js'
 import { analyzeStreamForResume } from '../reader.js'
 import type { ResumeRepair } from '../reader.js'
+import { releaseNamespaceLeasePartition, segmentLeased } from '../read-session.js'
+import { normalizeRetentionConfig } from '../retention.js'
+import type { FileRetentionConfig, NormalizedRetentionConfig, RetentionSweepReport } from '../retention.js'
 import { createDiagnosticChangeEmitter } from '../pipeline.js'
 import type { AttemptRecord, AttemptResult, DiagnosticChangeRecord, GenesisBaselineRecord, UpdateCarrier } from '../record.js'
 import { RECORD_SCHEMA_ENVELOPE, RECORD_SCHEMA_ID, getRecordSchemaCompilation } from '../schema.js'
@@ -101,6 +108,10 @@ export interface FileDiagnosticLogConfig {
   /** 注入时钟：manifest `createdAt` 与 genesis `observedAt` 两处同源（R2 修订：异常被
    *  构造级 crash 包络收编，不从构造函数外抛）。 */
   clock?: { now(): number } | undefined
+  /** #154 retention 配置（null / undefined = 默认 30d + 1 GiB；违规值 → retention 失活 +
+   *  恰一次 `retention-config-invalid`，stream 照常工作——ADR 0012 §Retention 可动态调整，
+   *  不冻结进 manifest、不产生新 generation）。 */
+  retention?: FileRetentionConfig | null | undefined
 }
 
 /** File 日志对象形状（§1.4；无 records()/stats() 读面——读面是 readStreamStrict）。 */
@@ -110,6 +121,9 @@ export interface FileDiagnosticLog {
   readonly streamId: string
   readonly rootDir: string
   readonly namespaceId: string
+  /** #154：执行一次 retention sweep（卫生遍历 → 年龄遍历 → 字节遍历）。纯同步、绝不
+   *  throw；一切 fs 失败计数进报告（INV-5）。now 可注入（缺省 = config.clock.now()）。 */
+  sweepRetention(options?: { now?: number }): RetentionSweepReport
 }
 
 /** 实例内部状态（testing 子路径直通接缝经此访问；与 memory.ts `INTERNAL` 同款模式）。 */
@@ -294,6 +308,13 @@ export function createFileLog(config: FileDiagnosticLogConfig, options: FileLogO
   const targetRecordsPerSegment = config.targetRecordsPerSegment ?? 100000
   const clock = config.clock ?? { now: () => Date.now() }
   const namespaceId = config.namespaceId
+  // #154 retention 配置（loud 门：违规 → 仅 retention 失活 + 恰一次 retention-config-invalid；
+  //   stream 照常工作——与 invalid-roll-targets 刻意不同：retention 属可动态调整类，不冻结进 manifest）。
+  const retentionValidation = normalizeRetentionConfig(config.retention)
+  const retentionConfig: NormalizedRetentionConfig = retentionValidation.ok
+    ? retentionValidation.config
+    : { maxAgeMs: null, maxBytesPerNamespace: null, sweepOnOpen: config.retention?.sweepOnOpen ?? true }
+  const sweepOnOpen = retentionConfig.sweepOnOpen
 
   let mode: 'ready' | 'disabled' | 'failed' = 'failed'
   let currentStreamId: string | undefined
@@ -934,7 +955,399 @@ export function createFileLog(config: FileDiagnosticLogConfig, options: FileLogO
     return true
   }
 
+  // ============================================================================
+  // #154 retention sweep（SA2 §2.2/§4.2/§4.5：卫生 → 年龄 → 字节三遍；INV-1/2/4/5/6/14）
+  // ============================================================================
+
+  /** `.deleting` 标记路径（组删除协议 S1 提交点产物；与 stream 目录级 `.deleting` 同名不同层）。 */
+  function markerPathOf(segmentsDir: string, segment: string): string {
+    return join(segmentsDir, `${segment}.deleting`)
+  }
+
+  /** 常规文件 stat（ENOENT/非常规文件 → 0；其他 stat 异常 → failedSteps++ 计 0——宁少删）。 */
+  function statSizeAccounting(p: string, report: RetentionSweepReport): number {
+    try {
+      const st = statSync(p, { throwIfNoEntry: false })
+      return st !== undefined && st.isFile() ? st.size : 0
+    } catch {
+      report.failedSteps += 1
+      return 0
+    }
+  }
+
+  /** 常规文件存在性（ENOENT/不可读/非常规 → false——不存在即无占用，不计数）。 */
+  function statFileExists(p: string): boolean {
+    try {
+      const st = statSync(p, { throwIfNoEntry: false })
+      return st !== undefined && st.isFile()
+    } catch {
+      return false
+    }
+  }
+
+  /** sweep 候选流的描述（manifest.createdAt ↑, streamId ↑——SA2 §4.5 候选序）。 */
+  interface SweepStream {
+    streamId: string
+    createdAtMs: number
+    segmentsDir: string
+  }
+
+  /** streams 目录扫描（与 locator 恢复同源的文法门；manifest 缺失/不可读 → 保守跳过该流）。 */
+  function scanSweepStreams(streamsDir: string): SweepStream[] | null {
+    let entries: string[]
+    try {
+      entries = readdirSync(streamsDir)
+    } catch (err) {
+      return errnoOf(err) === 'ENOENT' ? [] : null
+    }
+    const streams: SweepStream[] = []
+    for (const entry of entries) {
+      if (!isSafeStreamId(entry)) continue
+      try {
+        const parsed = JSON.parse(readFileSync(join(streamsDir, entry, 'manifest.json'), 'utf8')) as Record<string, unknown>
+        if (typeof parsed.createdAt !== 'string') continue
+        const createdAtMs = Date.parse(parsed.createdAt)
+        if (Number.isNaN(createdAtMs)) continue
+        streams.push({ streamId: entry, createdAtMs, segmentsDir: join(streamsDir, entry, 'segments') })
+      } catch {
+        // manifest 缺失/不可读/非对象 → 跳过（无 createdAt 无法定序——保守不裁）
+      }
+    }
+    streams.sort((a, b) => a.createdAtMs - b.createdAtMs || (a.streamId < b.streamId ? -1 : a.streamId > b.streamId ? 1 : 0))
+    return streams
+  }
+
+  /** 单条 JSONL 行的 observedAt（ms；不可解析/无 observedAt → null）。 */
+  function observedAtMsOfLine(line: string): number | null {
+    try {
+      const parsed = JSON.parse(line) as Record<string, unknown>
+      if (typeof parsed.observedAt !== 'string') return null
+      const ms = Date.parse(parsed.observedAt)
+      return Number.isNaN(ms) ? null : ms
+    } catch {
+      return null
+    }
+  }
+
+  /**
+   * 组年龄判定（SA2 §4.5-R3）：`now − max(observedAt) ≥ maxAgeMs`（含等号，T-A1 钉死）。
+   * - 快速否决：末行 observedAt > cutoff ⇒ max > cutoff ⇒ 必未过期（sound——max ≥ 末行值）；
+   * - 零 record/无 observedAt → 恒视为过期（无可保内容；SA2 §4.5 明文）；
+   * - jsonl 缺失（ENOENT） → 恒视为过期；其他读失败 → failedSteps++ + 保守不定龄（宁少删）。
+   */
+  function groupAgeExpired(segmentsDir: string, segment: string, cutoff: number, report: RetentionSweepReport): boolean {
+    let text: string
+    try {
+      text = readFileSync(segmentFilePaths(segmentsDir, segment).jsonlPath, 'utf8')
+    } catch (err) {
+      if (errnoOf(err) === 'ENOENT') return true
+      report.failedSteps += 1
+      return false
+    }
+    const lines = text.split('\n')
+    if (lines.length > 0 && lines[lines.length - 1] === '') lines.pop()
+    if (lines.length > 0) {
+      const last = observedAtMsOfLine(lines[lines.length - 1]!)
+      if (last !== null && last > cutoff) return false
+    }
+    let maxObserved: number | null = null
+    for (const line of lines) {
+      const ms = observedAtMsOfLine(line)
+      if (ms !== null && (maxObserved === null || ms > maxObserved)) maxObserved = ms
+    }
+    if (maxObserved === null) return true
+    return maxObserved <= cutoff
+  }
+
+  /** 组删除协议（SA2 §4.2 JSONL-as-commit-marker：S1 rename jsonl→.deleting → S2 unlink bin →
+   *  S3 unlink marker；ENOENT 全程容忍读＝幂等续走；任一步失败 → false（调用方计数 + 止步））。 */
+  function deleteGroup(segmentsDir: string, segment: string): boolean {
+    const sp = segmentFilePaths(segmentsDir, segment)
+    const marker = markerPathOf(segmentsDir, segment)
+    try {
+      renameSync(sp.jsonlPath, marker) // S1：意图提交点（同目录原子；ENOENT = 已被续走/无 jsonl）
+    } catch (err) {
+      if (errnoOf(err) !== 'ENOENT') return false
+    }
+    try {
+      unlinkSync(sp.binPath) // S2（ENOENT 容忍）
+    } catch (err) {
+      if (errnoOf(err) !== 'ENOENT') return false
+    }
+    try {
+      unlinkSync(marker) // S3（ENOENT 容忍）
+    } catch (err) {
+      if (errnoOf(err) !== 'ENOENT') return false
+    }
+    return true
+  }
+
+  /** 组删除前字节（reclaimedBytes 口径：jsonl+bin 实际字节）。 */
+  function groupBytesBeforeDelete(segmentsDir: string, segment: string): number {
+    const sp = segmentFilePaths(segmentsDir, segment)
+    let total = 0
+    for (const file of [sp.jsonlPath, sp.binPath]) {
+      try {
+        const st = statSync(file, { throwIfNoEntry: false })
+        if (st !== undefined && st.isFile()) total += st.size
+      } catch {
+        // ENOENT/其他 → 0（已不存在/不可读——删除仍执行，字节如实 0）
+      }
+    }
+    return total
+  }
+
+  /** 卫生遍历（P0，无条件——协议卫生不属「限制」，ADR 步骤 4/5 无条件）：遗留 `.deleting`
+   *  续走（S1→S3）+ orphan BIN 清理（闭组 bin-无-jsonl-无-marker；开组 BIN-first 瞬态绝对豁免）。 */
+  function hygieneStream(stream: SweepStream, openSegment: string | null, report: RetentionSweepReport): void {
+    let enumeration: SegmentGroupEnumeration
+    try {
+      enumeration = enumerateSegmentGroups(stream.segmentsDir)
+    } catch {
+      report.failedSteps += 1
+      return
+    }
+    for (const segment of enumeration.deleting) {
+      const sp = segmentFilePaths(stream.segmentsDir, segment)
+      const marker = markerPathOf(stream.segmentsDir, segment)
+      try {
+        unlinkSync(sp.binPath) // S2（ENOENT 容忍）
+      } catch (err) {
+        if (errnoOf(err) !== 'ENOENT') {
+          report.failedSteps += 1
+          continue // 跳过该标记（下轮重试）；marker 保留 = 残留证明
+        }
+      }
+      try {
+        unlinkSync(marker) // S3（ENOENT 容忍）
+      } catch (err) {
+        if (errnoOf(err) !== 'ENOENT') {
+          report.failedSteps += 1
+          continue
+        }
+      }
+      report.deletingMarkersCompleted += 1
+    }
+    for (const segment of enumeration.live) {
+      if (openSegment !== null && segment === openSegment) continue // INV-1：开组 BIN-first 瞬态绝对豁免
+      const sp = segmentFilePaths(stream.segmentsDir, segment)
+      if (statFileExists(sp.jsonlPath) || statFileExists(markerPathOf(stream.segmentsDir, segment))) continue
+      if (!statFileExists(sp.binPath)) continue
+      try {
+        unlinkSync(sp.binPath)
+        report.orphanBinsDeleted += 1
+      } catch {
+        report.failedSteps += 1
+      }
+    }
+  }
+
+  /** 首条可枚举 record 的 sequence（scan for earliest retained；无 record → null）。 */
+  function firstRecordSequenceOf(segmentsDir: string, segment: string): string | null {
+    let text: string
+    try {
+      text = readFileSync(segmentFilePaths(segmentsDir, segment).jsonlPath, 'utf8')
+    } catch {
+      return null
+    }
+    for (const line of text.split('\n')) {
+      if (line === '') continue
+      try {
+        const parsed = JSON.parse(line) as Record<string, unknown>
+        if (typeof parsed.sequence === 'string' && parsed.sequence !== '') return parsed.sequence
+      } catch {
+        // 不可解析行不计（诚实跳过）
+      }
+    }
+    return null
+  }
+
+  /** 空报告（disabled/failed 模式下显式调用 sweepRetention 的诚实返回）。 */
+  function emptySweepReport(): RetentionSweepReport {
+    return {
+      sweptStreams: 0,
+      deletedGroups: 0,
+      reclaimedBytes: 0,
+      orphanBinsDeleted: 0,
+      deletingMarkersCompleted: 0,
+      leaseBlockedGroups: 0,
+      openProtectedStops: 0,
+      failedSteps: 0,
+      retainedBytes: 0,
+      earliestRetained: [],
+      historyTrimmedStreams: [],
+    }
+  }
+
+  /** sweep 主体（INV-5：绝不 throw——异常一律收敛为 failedSteps 增量 + 零删除语义）。 */
+  function sweepNow(now: number): RetentionSweepReport {
+    const report = emptySweepReport()
+    try {
+      const maxAgeMs = retentionConfig.maxAgeMs
+      const maxBytes = retentionConfig.maxBytesPerNamespace
+      const nsPaths = streamLayoutPaths(config.rootDir, namespaceId, currentStreamId ?? 'log-' + '0'.repeat(32))
+      const streams = scanSweepStreams(nsPaths.streamsDir)
+      if (streams === null) {
+        report.failedSteps += 1
+        return report
+      }
+      report.sweptStreams = streams.length
+      const openSegmentOf = (streamId: string): string | null =>
+        streamId === currentStreamId ? currentSegment : null
+
+      // —— P0 卫生遍历（无条件）——
+      for (const stream of streams) hygieneStream(stream, openSegmentOf(stream.streamId), report)
+
+      // —— P1 年龄遍历（maxAgeMs ≠ null 时；每流前缀纪律：首个不可删组即止步，绝不跳洞）——
+      if (maxAgeMs !== null) {
+        for (const stream of streams) {
+          let enumeration: SegmentGroupEnumeration
+          try {
+            enumeration = enumerateSegmentGroups(stream.segmentsDir)
+          } catch {
+            report.failedSteps += 1
+            continue
+          }
+          const openSegment = openSegmentOf(stream.streamId)
+          for (const segment of enumeration.live) {
+            if (openSegment !== null && segment === openSegment) {
+              report.openProtectedStops += 1
+              break
+            }
+            if (segmentLeased(config.rootDir, namespaceId, stream.streamId, segment, now)) {
+              report.leaseBlockedGroups += 1
+              break
+            }
+            if (!groupAgeExpired(stream.segmentsDir, segment, now - maxAgeMs, report)) break // 未过期 → 止步
+            const before = groupBytesBeforeDelete(stream.segmentsDir, segment)
+            if (before === 0) continue // 无文件组（枚举残留）——无可删内容
+            if (deleteGroup(stream.segmentsDir, segment)) {
+              report.deletedGroups += 1
+              report.reclaimedBytes += before
+            } else {
+              report.failedSteps += 1
+              break // IO 失败 → 止步该流（前缀纪律）
+            }
+          }
+        }
+      }
+
+      // —— P2 字节遍历（maxBytes ≠ null 时；Σ 全部流全部组（含闭组字节——存在即占空间）；
+      //    候选序与 P1 同源；无可删候选（全被开组/租约/未过期/失败止步）→ 停）——
+      if (maxBytes !== null) {
+        let total = 0
+        for (const stream of streams) {
+          let enumeration: SegmentGroupEnumeration
+          try {
+            enumeration = enumerateSegmentGroups(stream.segmentsDir)
+          } catch {
+            report.failedSteps += 1
+            continue
+          }
+          for (const segment of enumeration.live) {
+            const sp = segmentFilePaths(stream.segmentsDir, segment)
+            total += statSizeAccounting(sp.jsonlPath, report) + statSizeAccounting(sp.binPath, report)
+          }
+        }
+        while (total > maxBytes) {
+          let progressed = false
+          for (const stream of streams) {
+            if (total <= maxBytes) break
+            let enumeration: SegmentGroupEnumeration
+            try {
+              enumeration = enumerateSegmentGroups(stream.segmentsDir)
+            } catch {
+              report.failedSteps += 1
+              break
+            }
+            const openSegment = openSegmentOf(stream.streamId)
+            for (const segment of enumeration.live) {
+              if (total <= maxBytes) break
+              if (openSegment !== null && segment === openSegment) {
+                report.openProtectedStops += 1
+                break
+              }
+              if (segmentLeased(config.rootDir, namespaceId, stream.streamId, segment, now)) {
+                report.leaseBlockedGroups += 1
+                break
+              }
+              if (maxAgeMs !== null && !groupAgeExpired(stream.segmentsDir, segment, now - maxAgeMs, report)) break
+              const before = groupBytesBeforeDelete(stream.segmentsDir, segment)
+              if (before === 0) continue
+              if (deleteGroup(stream.segmentsDir, segment)) {
+                report.deletedGroups += 1
+                report.reclaimedBytes += before
+                total -= before
+                progressed = true
+              } else {
+                report.failedSteps += 1
+                break
+              }
+            }
+          }
+          if (!progressed) break // 无可删候选（开组/租约/未过期/失败全部止步）→ 停（INV-5 绝不动开组）
+        }
+      }
+
+      // —— 报告数据面（扫描重建——ADR 明文：earliest retained sequence 通过扫描重建）——
+      for (const stream of streams) {
+        let enumeration: SegmentGroupEnumeration
+        try {
+          enumeration = enumerateSegmentGroups(stream.segmentsDir)
+        } catch {
+          continue
+        }
+        if (enumeration.live.length === 0) continue
+        for (const segment of enumeration.live) {
+          const sp = segmentFilePaths(stream.segmentsDir, segment)
+          report.retainedBytes += statSizeAccounting(sp.jsonlPath, report) + statSizeAccounting(sp.binPath, report)
+        }
+        let first: string | null = null
+        for (const segment of enumeration.live) {
+          const seq = firstRecordSequenceOf(stream.segmentsDir, segment)
+          if (seq !== null) {
+            first = seq
+            break
+          }
+        }
+        report.earliestRetained.push({ streamId: stream.streamId, sequence: first })
+        if (enumeration.live[0] !== '00000001') report.historyTrimmedStreams.push({ streamId: stream.streamId })
+      }
+      return report
+    } catch {
+      // INV-5：任何未预见异常 → 已计数留档（绝不外抛；报告数据面保持诚实）
+      report.failedSteps += 1
+      return report
+    }
+  }
+
+  /** 事件规则（SA2 §2.6）：「有动作」才发——零动作（含全零卫生）不发（防 open 噪声）。 */
+  function emitRetentionSweptIfAction(report: RetentionSweepReport): void {
+    const action =
+      report.deletedGroups > 0 ||
+      report.orphanBinsDeleted > 0 ||
+      report.deletingMarkersCompleted > 0 ||
+      report.leaseBlockedGroups > 0 ||
+      report.openProtectedStops > 0 ||
+      report.failedSteps > 0
+    if (!action) return
+    notify({
+      type: 'retention-swept',
+      deletedGroups: report.deletedGroups,
+      reclaimedBytes: report.reclaimedBytes,
+      orphanBinsDeleted: report.orphanBinsDeleted,
+      deletingMarkersCompleted: report.deletingMarkersCompleted,
+      leaseBlockedGroups: report.leaseBlockedGroups,
+      failedSteps: report.failedSteps,
+    })
+  }
+
   try {
+    if (!retentionValidation.ok) {
+      // #154 loud 配置门：违规 → 仅 retention 失活 + 恰一次 retention-config-invalid
+      // （配置错不杀死日志能力——与 invalid-roll-targets 刻意不同）
+      notify({ type: 'retention-config-invalid', field: retentionValidation.field })
+    }
     currentStreamId = 'log-' + bytesToHex(randomSource.randomBytes(16))
     if (!isSafeNamespaceId(namespaceId)) {
       mode = 'disabled'
@@ -942,6 +1355,11 @@ export function createFileLog(config: FileDiagnosticLogConfig, options: FileLogO
     } else if (config.resumeStreamId !== undefined && !isSafeStreamId(config.resumeStreamId)) {
       mode = 'disabled'
       notify({ type: 'stream-init-failed', code: 'LOG_STREAM_INIT_FAILED', reason: 'invalid-stream-id' })
+    } else if (isNamespaceDeletionMarked(config.rootDir, namespaceId)) {
+      // #154 marker 门（INV-8 线性化）：deletion.json 落盘后构造一律 disabled——零写入、
+      // 绝不 resume/新建 generation（删除半态不得复活；重入删除是唯一完成路径）
+      mode = 'disabled'
+      notify({ type: 'stream-init-failed', code: 'LOG_STREAM_INIT_FAILED', reason: 'namespace-log-deleted' })
     } else if (
       !isRollTargetValue(config.targetJsonlSegmentBytes ?? 67108864) ||
       !isRollTargetValue(config.targetBinSegmentBytes ?? 268435456) ||
@@ -1021,7 +1439,27 @@ export function createFileLog(config: FileDiagnosticLogConfig, options: FileLogO
   const streamId = currentStreamId ?? 'log-' + '0'.repeat(32)
   const emitterConfig: DiagnosticEmitterConfig = { inputPolicy, issuesPolicy, observer, fallbackLog, randomSource }
   const emitter = createDiagnosticChangeEmitter(emitterConfig, { append: appendSemantic })
-  const log: FileDiagnosticLog = { emitter, streamId, rootDir: config.rootDir, namespaceId }
+
+  // #154 构造完成自动 sweep（sweepOnOpen 默认 true；仅 ready 执行——disabled/failed 零动作；
+  //  `now` = config.clock.now()——T-A7 锚点：构造期自动 sweep 恒以注入钟为 now）
+  if (mode === 'ready' && sweepOnOpen) {
+    const report = sweepNow(clock.now())
+    emitRetentionSweptIfAction(report)
+  }
+
+  const log: FileDiagnosticLog = {
+    emitter,
+    streamId,
+    rootDir: config.rootDir,
+    namespaceId,
+    // #154 显式 sweep（INV-5：绝不 throw；disabled/failed → 空报告零动作；now 可注入）
+    sweepRetention: (options?: { now?: number }): RetentionSweepReport => {
+      if (mode !== 'ready') return emptySweepReport()
+      const report = sweepNow(options?.now ?? clock.now())
+      emitRetentionSweptIfAction(report)
+      return report
+    },
+  }
   const internals: FileLogInternals = { appendFinal }
   Object.defineProperty(log, FILE_INTERNAL, { value: internals, enumerable: false })
   return log
@@ -1030,4 +1468,127 @@ export function createFileLog(config: FileDiagnosticLogConfig, options: FileLogO
 /** 生产构造器（§1.2 公共面；内部实现 = createFileLog 默认 options——testing 子路径经 options 注入）。 */
 export function createFileDiagnosticLog(config: FileDiagnosticLogConfig): FileDiagnosticLog {
   return createFileLog(config, {})
+}
+
+// ============================================================================
+// #154 namespace 日志逻辑删除（SA2 §2.4/§4.4/§5 INV-8/12/13；ADR 0012 §Retention 与删除）
+// ============================================================================
+
+/** namespace 日志删除请求（SA2 §2.4）。 */
+export interface NamespaceLogDeletionRequest {
+  rootDir: string
+  namespaceId: string
+}
+
+/** namespace 日志删除结果（结构化；绝不抛——失败以 code+step 显式返回，部分态可重入续走）。 */
+export type NamespaceLogDeletionResult =
+  | { status: 'deleted'; streamsRemoved: number } // 本次（或幂等重试）完成
+  | { status: 'absent' } // namespace 目录不存在（幂等成功）
+  | { status: 'failed'; code: string; step: 'marker' | 'locator' | 'stream' | 'remove' }
+// code = 稳定 errno 码（'EACCES'/'ENOTEMPTY'…）或 'invalid-namespace-id' 字面量；无 message
+
+/** deletion.json 意图标记内容（SA2 §2.4 协议钉死形状；temp+rename 原子写）。 */
+const DELETION_MARKER = JSON.stringify({ format: 'ndcl-deletion', version: 1 })
+
+/** 构造期 marker 门（INV-8）：deletion.json 存在 ⇔ 该 namespace 处于删除半态。 */
+function isNamespaceDeletionMarked(rootDir: string, namespaceId: string): boolean {
+  const base = streamLayoutPaths(rootDir, namespaceId, 'log-' + '0'.repeat(32))
+  return existsSync(join(base.namespaceDir, 'deletion.json'))
+}
+
+/**
+ * namespace 日志逻辑删除（AC-4；只承诺活跃存储的逻辑删除——命名/结果词汇/文档均无
+ * secure-erase 暗示面，INV-12）：
+ *   0. namespaceId 过安全文法（违规 → failed/invalid-namespace-id/marker，零 fs 触达）；
+ *   1. namespaceDir 不存在 → {status:'absent'}（幂等）；
+ *   2. 写 deletion.json（temp+rename：意图线性化点——此后构造一律 disabled；
+ *      重入调用是唯一完成路径）；
+ *   3. unlink current.json（+ best-effort current.json.tmp）；
+ *   4. 逐 stream：renameSync {s} → {s}.deleting（文法不可达——不满足 P_STREAM_ID，扫描
+ *      永不吞入）→ rmSync(recursive, force)；已为 {s}.deleting 的残部直接 rm（N3 续走）；
+ *   5. rmSync(namespaceDir, recursive, force)（N4 续走）；
+ *   6. 释放该 namespace 的租约注册表分区；该 namespace 全部会话置 closed（INV-12）。
+ * 任一步失败（非 ENOENT）→ failed{code,step}；partial 态可重入续走（N1–N5 矩阵）。
+ */
+export function deleteNamespaceDiagnosticLog(req: NamespaceLogDeletionRequest): NamespaceLogDeletionResult {
+  if (!isSafeNamespaceId(req.namespaceId)) {
+    return { status: 'failed', code: 'invalid-namespace-id', step: 'marker' }
+  }
+  const base = streamLayoutPaths(req.rootDir, req.namespaceId, 'log-' + '0'.repeat(32))
+  const namespaceDir = base.namespaceDir
+  const markerPath = join(namespaceDir, 'deletion.json')
+  // 1. 存在性（absent → 幂等成功）
+  let dirExists = false
+  try {
+    dirExists = statSync(namespaceDir, { throwIfNoEntry: false }) !== undefined
+  } catch {
+    dirExists = false
+  }
+  if (!dirExists) return { status: 'absent' }
+  // 2. marker（temp+rename 原子；写失败 → failed/marker）
+  const tmpPath = join(namespaceDir, 'deletion.json.tmp')
+  try {
+    writeFileSync(tmpPath, DELETION_MARKER)
+    renameSync(tmpPath, markerPath)
+  } catch (err) {
+    const code = errnoOf(err)
+    try {
+      unlinkSync(tmpPath) // best-effort 清理（残留不参与定位）
+    } catch {
+      // 静默（清理失败不升级——tmp 固定名不参与任何文法空间）
+    }
+    return { status: 'failed', code, step: 'marker' }
+  }
+  // 3. locator（current.json + 残留 tmp；ENOENT 容忍——N2 续走）
+  try {
+    unlinkSync(base.currentPath)
+  } catch (err) {
+    if (errnoOf(err) !== 'ENOENT') return { status: 'failed', code: errnoOf(err), step: 'locator' }
+  }
+  try {
+    unlinkSync(join(namespaceDir, 'current.json.tmp'))
+  } catch (err) {
+    if (errnoOf(err) !== 'ENOENT') return { status: 'failed', code: errnoOf(err), step: 'locator' }
+  }
+  // 4. 逐 stream（文法门：isSafeStreamId 或 {s}.deleting 残部——其余条目一律忽略，INV-13）
+  let streamsRemoved = 0
+  let streamEntries: string[]
+  try {
+    streamEntries = readdirSync(base.streamsDir)
+  } catch (err) {
+    if (errnoOf(err) !== 'ENOENT') return { status: 'failed', code: errnoOf(err), step: 'stream' }
+    streamEntries = []
+  }
+  for (const entry of streamEntries) {
+    const full = join(base.streamsDir, entry)
+    // N3 残部（已 rename 为 {s}.deleting、未 rm）——predicate 应用于 slice 表达式，不窄化 entry
+    if (entry.endsWith('.deleting') && isSafeStreamId(entry.slice(0, -'.deleting'.length))) {
+      try {
+        rmSync(full, { recursive: true, force: true })
+      } catch (err) {
+        const code = errnoOf(err)
+        if (code !== 'ENOENT') return { status: 'failed', code, step: 'stream' }
+      }
+      streamsRemoved += 1
+    } else if (isSafeStreamId(entry)) {
+      const renamed = join(base.streamsDir, `${entry}.deleting`)
+      try {
+        renameSync(full, renamed)
+        rmSync(renamed, { recursive: true, force: true })
+      } catch (err) {
+        const code = errnoOf(err)
+        if (code !== 'ENOENT') return { status: 'failed', code, step: 'stream' }
+      }
+      streamsRemoved += 1
+    }
+  }
+  // 5. namespaceDir 移除（N4 续走：空壳 dir(+marker)）
+  try {
+    rmSync(namespaceDir, { recursive: true, force: true })
+  } catch (err) {
+    return { status: 'failed', code: errnoOf(err), step: 'remove' }
+  }
+  // 6. 租约分区释放（INV-12）
+  releaseNamespaceLeasePartition(req.rootDir, req.namespaceId)
+  return { status: 'deleted', streamsRemoved }
 }
