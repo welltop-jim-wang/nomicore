@@ -464,6 +464,7 @@ function fatalFromBytes(committed: boolean, updateBytes: Uint8Array | undefined)
 | encodeDetachedState throw | bytes 缺席：initStream 传 undefined；成功路径**不构造 emission**（§6.2 #17）；factory-fatal 路径 `fatalFromBytes(true, undefined)` → 诚实 `effect:'unknown'`（§6.2 #18，SA2 R2-M3） | 零 |
 | raw issues 非数组 / 投影器 throw | **数组级**：整组省略 issues 字段（emission 照常）；**整体级**：外层 try 收编 → emission 丢弃——投影只在吞没 try 边界内执行（SA2 R2-M2，§6.3.4） | 零 |
 | raw issues 单条意外形状 / 敌意 getter | **条目级**：跳过该条（逐条 try/catch），其余照常 | 零 |
+| diagnosticLog 对象违约（null / 敌意 Proxy getter / 畸形 emitter 缺失非函数 emit / initStream 同步 throw） | 全部 seam 属性读取纳入**真非抛边界**（SA4 R1 B1）：`emitter` 在构造栈内一次读取 + 形状校验（失败 → 收敛为日志禁用 NOOP_DIAG——emit/initStream 全程不再读 diagnosticLog 本体属性）；`initStream` 属性读取与调用在同一吞没 try 内 | 零（create ok / duplicate resolve / 生命周期 running 恒不受违约装配影响——B1 回归测试锚） |
 | diagnosticLog 整体缺席 | 短路 no-op（零 emit、零读数、零 encode、零投影） | 零（日志禁用 = 既有行为逐位一致，AC4 baseline） |
 
 ---
@@ -698,6 +699,7 @@ amendment 条款（规范性，本票被点名）：「任何将 File adapter �
 - `packages/namespace-registry/package.json` — **修改**，dependencies 增 `@nomicore/namespace-diagnostic-log: workspace:*` 与 `yjs: ^13.6.30`（devDependencies 中 yjs 上移）
 - `pnpm-lock.yaml` — **修改**，依赖变更的 lockfile 更新（若 install 产出 diff）
 - `packages/namespace-registry/test/registry-create-diagnostic-red.test.ts` — `[SA6 owned]` 验收红灯测试（已存在，16/16 红）。SA3 落地后**无需改动即转绿**；SA3 仅可改测试基础设施，不得改断言逻辑。
+- `packages/namespace-registry/test/registry-create-diagnostic-code-source.test.ts` — `[SA3 owned]` **新建**：SA3 补充守卫套件（① SA2 R2 遗留 #1 跨包码串单源守护——`SCHEMA_ENVELOPE_4` / `SCHEMA_TEXT_INVALID` 与 `p0.toIssueSummary` 同串、反向锚无发明前缀；② SA4 R1 B1 seam 防御边界回归——null / 敌意 Proxy getter / 畸形 emitter 收敛为日志禁用、initStream 同步 throw 吞没，任何违约装配不得把 create ok / duplicate resolve 漂移为 rejection）。与 SA6 冻结文件独立，不改其断言逻辑；本行由 SA4 R1 评审后登记（B2）。
 
 ### DENY LIST
 
@@ -733,7 +735,7 @@ amendment 条款（规范性，本票被点名）：「任何将 File adapter �
 
 | 函数/接口 | 文件 | 改动前契约 | 改动后契约 |
 |---|---|---|---|
-| （新增）`createCreateDiag` / `encodeDetachedState` / `projectIssues(raw, kind)` / `fatalFromBytes` / `fatalFromCommitted` | `src/create-diagnostic.ts`（新文件） | 不存在 | 新内部模块函数，仅 `registry.ts` 相对导入消费（`projectIssues`/`fatalFromBytes` 为模块内私有，不经 CreateDiag 接口暴露）；零公共导出 |
+| （新增）`createCreateDiag` / `encodeDetachedState` / `projectIssues(raw, kind)` / `fatalFromBytes` / `fatalFromCommitted` | `src/create-diagnostic.ts`（新文件） | 不存在 | 新内部模块函数，仅 `registry.ts` 相对导入消费；**实际导出不变量 = 全部模块级导出但不经 CreateDiag 接口暴露、index.ts 零 re-export**（`projectIssues` 为 CreateDiag 接口之外的模块内私有；`fatalFromBytes`/`fatalFromCommitted`/`encodeDetachedState`/`createCreateDiag` 为 registry.ts 相对导入所需——§7 伪码即要求 registry 侧调用——SA4 R1 观察 1 措辞修正） |
 | `NamespaceRegistryInternalOptions` | `src/registry.ts:153` | 8 字段 | 追加**可选** `diagnosticLog?`（结构宽化——既有构造点全部兼容） |
 | `CreateNamespaceRegistryOptions` | `src/types.ts:352` | 4 字段 | 追加**可选** `diagnosticLog?`（结构宽化） |
 | `NamespaceRegistryTestingOverrides` | `src/testing.ts:28` | 7 字段 | 追加**可选** `diagnosticLog?`（结构宽化；testing 工厂透传） |

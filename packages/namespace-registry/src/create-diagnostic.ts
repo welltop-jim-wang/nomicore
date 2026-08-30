@@ -224,31 +224,59 @@ function emitAttempt(emitter: NamespaceDiagnosticChangeEmitter, observedAt: stri
   }
 }
 
-/** CreateDiag 一次成型（构造栈内调用；diagnosticLog 缺席 → no-op 单例）。 */
+/**
+ * CreateDiag 一次成型（构造栈内调用；diagnosticLog 缺席/畸形 → no-op 单例）。
+ *
+ * 【SA4 R1 B1 修订】seam 对象属性读取全部纳入**真非抛边界**：`emitter` 在构造栈内
+ * 一次读取并做最小形状校验（非 null/object 且 `emit` 为 function）；null、敌意
+ * getter（Proxy trap throw）、畸形对象（缺失/非函数 emit）一律收敛为「日志禁用」
+ * （NOOP_DIAG）——此后 emit/initStream 不再读取 `diagnosticLog` 本体属性
+ * （emit 侧只用构造期捕获的 emitter 引用），日志侧任何异常都不可能触达 create
+ * 业务调用栈（SA6 AC4 隔离面在 seam 对象层的补全：create ok/duplicate resolve
+ * 恒不受违约装配影响）。
+ */
 export function createCreateDiag(
   diagnosticLog: NamespaceRegistryDiagnosticLog | undefined,
   clock: Clock,
 ): CreateDiag {
-  if (diagnosticLog === undefined) return NOOP_DIAG;
+  if (diagnosticLog == null) return NOOP_DIAG; // undefined/null 均 = 日志禁用（SA4 R1 B1：收紧为 == null）
+  let emitter: NamespaceDiagnosticChangeEmitter | undefined;
+  try {
+    const candidate = (diagnosticLog as { emitter?: unknown }).emitter;
+    if (
+      candidate !== null &&
+      typeof candidate === 'object' &&
+      typeof (candidate as { emit?: unknown }).emit === 'function'
+    ) {
+      emitter = candidate as NamespaceDiagnosticChangeEmitter;
+    }
+  } catch {
+    emitter = undefined;
+  }
+  if (emitter === undefined) return NOOP_DIAG;
   return {
     // 槽内结局：observedAt 由调用方保证为槽内 Clock 步的 createdAt 字符串（零额外读数）
     emitOutcome: (observedAt, e) => {
-      emitAttempt(diagnosticLog.emitter, observedAt, e);
+      emitAttempt(emitter, observedAt, e);
     },
     // Clock 步之前终结：诊断侧读一次 clock；clock 故障 → 该条 emission 丢弃
     emitEarlyOutcome: (e) => {
       const observedAt = readEarlyObservedAt(clock);
       if (observedAt === undefined) return;
-      emitAttempt(diagnosticLog.emitter, observedAt, e);
+      emitAttempt(emitter, observedAt, e);
     },
     // stream 建立缝：Host 函数同步 throw = 违约 → 吞没隔离（AC4「stream init 失败
     // 不改 create 结果」的 Registry 侧义务）；LOG_STREAM_INIT_FAILED 等健康事件由
-    // Host 侧 adapter 的 observer 自行产生，Registry 不代发、不伪造。
+    // Host 侧 adapter 的 observer 自行产生，Registry 不代发、不伪造。属性读取
+    // （`initStream` getter）与函数调用均在同一吞没 try 内（SA4 R1 B1）。
     initStream: (namespaceId, genesisUpdateBytes) => {
       try {
-        diagnosticLog.initStream?.(namespaceId, genesisUpdateBytes);
+        const initStream = (diagnosticLog as {
+          initStream?: (namespaceId: string, genesisUpdateBytes: Uint8Array | undefined) => void;
+        }).initStream;
+        initStream?.(namespaceId, genesisUpdateBytes);
       } catch {
-        /* Host 违约 → 吞没 */
+        /* Host 违约（同步 throw / 敌意 getter）→ 吞没 */
       }
     },
   };

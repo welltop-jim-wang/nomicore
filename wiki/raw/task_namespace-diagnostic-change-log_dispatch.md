@@ -12,3 +12,5 @@
 | 8 | 00:00 | SA2 | Phase 2 design review R2 | completed | Verdict: pass — all prior blockers independently verified closed; SA3 implementation authorized. |
 | 9 | 00:00 | SA3 | Phase 3 implementation | completed | Commit 85f36bd implements diagnostics; 15/16 SA6 tests green, AC5 contract conflict remains for SA6-owned correction. |
 | 10 | 00:00 | SA6 | Phase 3 contract correction | 2026-08-31 | AC5 adjudicated: SA3 read confirmed (frozen File adapter resume semantics); preferred correction A applied (failed first initStream → ROOT mutation → retry current-state genesis n=2); rerun 16/16 passed, typecheck 0 errors; evidence in brief SA6 R2 section. |
+| 11 | 00:00 | SA4 | Phase 3 static review | completed | Verdict: reject — B1 diagnosticLog emitter property access escapes swallow boundary; B2 design ALLOW-list omission. Fixed-scope R2 required. |
+| 12 | 00:00 | SA3 | Phase 3 remediation R2 | (pending) | Repair all SA4 R1 blockers together: B1 create-diagnostic boundary and B2 SA1 design ALLOW-list. |
