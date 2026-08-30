@@ -1,11 +1,57 @@
 # SA4 静态验尸报告 — issue #164 切片 9（SA3 commit a1fdcfb）
 
-**Date**: 2026-08-30
+**Date**: 2026-08-30（R1）／ 2026-08-30（R2 固定范围复审）
 **Reviewer**: SA4（静态红队审查，独立复跑全部关键证据）
 **对象**: commit `a1fdcfb`（apps/yjs-server 组合根 + 真实 WebSocket adapter）vs
 SA1 R1 设计（`…_design.md`，SA2 R1 PASS 附十条就绪约束）+ SA2 R1（A1–A5）+
-SA6 红灯契约（FS1–FS9[+FS5b] + TF1–TF3）+ issue #164
-**Verdict**: **pass（SA3 实现侧零剩余工作）** —— 附 **SA6 回流 2 项硬阻断（缺陷 A/B，CI 恒红根因）+ 1 项推荐（缺陷 C）**，回流目标与固定复验范围见 §4。SA3 无需重新提交。
+SA6 红灯契约（FS1–FS9[+FS5b] + TF1–TF3）+ issue #164；
+R2 复审对象 = SA6 回流修复 commit `5c4b235`（仅 R1 §4 固定复验范围）
+**Verdict**: R1 = **pass（SA3 实现侧零剩余工作）+ SA6 回流 2 硬阻断 + 1 推荐**；
+**R2 = pass（回流核销，零残余阻断；R1 §4 (i)–(iv) 全过）——SA7 可进入动态验证**
+
+---
+
+# R2 固定范围复审（2026-08-30，SA6 commit 5c4b235；范围 = R1 §4，不重开 R1 已审内容）
+
+## R2.1 (i) SA6 diff 范围与断言强度核对
+
+**范围合规 ✅**：`git diff a1fdcfb 5c4b235 --name-only` = 4 个测试侧文件（harness.ts、
+issue164-slice9-red.test.ts、issue164-transport-faces-red.test.ts、apps/yjs-server/tsconfig.json）
+——与 R1 §4 允许范围逐一对应；**零触碰** `apps/yjs-server/src/**`、`packages/**`、
+`vitest.config.ts`。附带 3 个 wiki/raw 档案文件（SA6 回流报告追加于任务简报 + dispatch log +
+R1 review 入库）属流水线档案白名单；任务简报的追加由简报 §7 自有条款授权（「契约断言自身
+缺陷按最小范围修正本文件或 harness fixture」），非越权。
+
+**断言零削弱 ✅（逐条核对）**：
+
+| 用例 | 改动 | 断言强度裁定 |
+|---|---|---|
+| FS5b | 发送路径 `wire.send(helloMsg('Peer_Alpha!'))` → `wire.sendRaw(makeGrammarViolationHelloFrame())`；三项断言（`waitUntil 连接收口` / 零 HELLO_ACK / `close code ∈ [1002,1008]`）**逐字未动** | ✅ 不降。帧构造 = 合法 HELLO('peer-alpha') 编码后 `patchAsciiOnce` 同长替换为 'Peer_Alph!'——与 R1 E6 探针同构（header 为二进制数值、payload 中 'peer-alpha' 首现即 peerInstanceId 字段，定位确定性已推演）；sequence=1 与原 `wire.send` 首帧一致。服务器若不帧级拒绝（回 HELLO_ACK 或不断连）任一断言仍会失败——**转绿只能来自真实的服务器帧级拒绝行为** |
+| TF3 | harness `RawWsClient.lastClose`（三条关闭路径均记录真实观察：close 帧 code/reason、socket close 1006、未知 opcode 1002）+ `onClose` 迟注册回放真实 `lastClose`；**TF3 三项断言零改动** | ✅ 不降。回放的是**真实观测值**（非合成常量）；服务器若不关闭则 `closed=false`/`lastClose=undefined` → `waitUntil('连接收口')` 仍超时失败。语义与规范客户端（真 ws 事件排队）对齐——恰是 R1 E7 反证的行为面 |
+| TF1/TF2 | 仅类型层修复（`closeCalls` 类型 `number \| undefined` 显式化、`closeCalls[0]!`、`adapter.ping!/onPong!` 非空窄化（均在 typeof 存在性断言之后）、`send: (b: Uint8Array)` 参数标注）；**断言值与逻辑零改动** | ✅ 不降 |
+| makeHubNamespace | `waitUntil` 第三参获得缺省 10_000（原 2 参调用点 TS2554 修复） | ✅ 行为收紧（无界→有界），符合测试纪律（有界轮询） |
+| tsconfig | include 恢复 `["src/**/*.ts","test/**/*.ts"]` | ✅ R1 §4 缺陷 C 修复项兑现（SA1 §6.2 原始意图） |
+
+## R2.2 (ii)–(iv) 独立复验（后台独立进程，全真运行）
+
+| 项 | 命令 | 结果（SA4 独立复跑） |
+|---|---|---|
+| (ii) | `npx vitest run apps/yjs-server/test` | **Test Files 2 passed (2)；Tests 13 passed (13)；Type Errors no errors；exit 0** |
+| (iii) | `pnpm typecheck`（12 项目，含 apps/yjs-server 且 include 已含 test/**） | **exit 0（0 errors）** |
+| (iv) | `pnpm test` 全量 | **Test Files 193 passed (193)；Tests 2179 passed (2179)；Type Errors no errors；exit 0** |
+
+## R2.3 裁定
+
+- R1 §4 三项回流全部核销：A（FS5b 原始帧直发）、B（RawWsClient 关闭回放）、C（严格类型
+  清理 + include 恢复）；**CI test job 恒红根因消除**（`pnpm test` exit 0）。
+- SA3 侧无需任何动作（src/** 零改动，R1 pass 维持）。
+- **零残余阻断、零 residual reject**。R1 §5 的 SA7 动态重点 7 项**不在 R2 范围且维持有效**
+  （A5/A1/A2 红灯、maxPayload、EADDRINUSE、GOAWAY 深水、CI 环境复跑——其中第 7 项
+  「CI 复跑」在 PR 建立后由 SA7 从 `gh run view --log` 摘录）。
+- 微瑕（informational）：SA6 回流报告 wiki 表格一处写「13 处」、commit message 写全部——
+  R1 E4 计 13 个错误（14 行输出，143:21 双错误）——口径已一致，无害。
+
+**R2 verdict：pass。流水线可进入 SA7 动态验证。**
 
 ---
 

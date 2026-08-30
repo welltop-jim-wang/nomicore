@@ -15,8 +15,10 @@
     "@nomicore/clock": "workspace:*",
     "@nomicore/namespace-registry": "workspace:*",
     "@nomicore/persistence": "workspace:*",
+    "@nomicore/replication-protocol": "workspace:*",
     "@nomicore/ws-replication": "workspace:*",
-    "ws": "^8.21.3"
+    "ws": "^8.21.3",
+    "yjs": "^13.6.30"
   },
   "devDependencies": {
     "@types/node": "^20",

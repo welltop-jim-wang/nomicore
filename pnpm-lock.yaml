@@ -35,12 +35,18 @@ importers:
       '@nomicore/persistence':
         specifier: workspace:*
         version: link:../../packages/persistence
+      '@nomicore/replication-protocol':
+        specifier: workspace:*
+        version: link:../../packages/replication-protocol
       '@nomicore/ws-replication':
         specifier: workspace:*
         version: link:../../packages/ws-replication
       ws:
         specifier: ^8.21.3
         version: 8.21.3
+      yjs:
+        specifier: ^13.6.30
+        version: 13.6.32
     devDependencies:
       '@types/node':
         specifier: ^20
