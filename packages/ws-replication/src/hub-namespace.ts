@@ -95,6 +95,7 @@ export class HubNamespaceChannel {
     bootstrap: undefined,
     close: undefined,
   };
+  private cleanupTail: Promise<void> = Promise.resolve();
   private closeQueue: Promise<void> = Promise.resolve();
   /** issue #174 §4.3 记忆位：终态一次性通知（每 channel 至多一次；重复通知幂等）。 */
   private settledNotified = false;

@@ -526,7 +526,6 @@ class PeerConnectionImpl implements PeerReplication {
     }
     // drain 类：收帧同步段先轻量静默，资源处置与 transport close 留到 deadline。
     this.quiesceControllersLite();
-    this.setState('draining');
     this.armDrainClose();
   }
 

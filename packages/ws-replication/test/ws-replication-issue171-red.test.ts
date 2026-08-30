@@ -30,7 +30,7 @@ import { createHubReplication, createPeerReplication } from '@nomicore/ws-replic
 import type { HubReplication, PeerReplication } from '@nomicore/ws-replication';
 import { createNamespaceRegistryForTesting, createRegistryTestScheduler } from '@nomicore/namespace-registry/testing';
 import type { ReplicationMessage } from '@nomicore/replication-protocol';
-import { advanceMs, boot } from './driver.js';
+import { advanceMs, boot, DEFAULT_PEER_VERIFIER, TEST_TOKEN } from './driver.js';
 import type { Run } from './driver.js';
 import {
   deferred,
@@ -134,6 +134,7 @@ async function bootObserved(): Promise<ObservedRun> {
     instanceId: HUB_INSTANCE,
     registry: hubNode.registry,
     authorize,
+    verifyToken: DEFAULT_PEER_VERIFIER,
     timer: hubNode.scheduler,
   });
   const wireRef: { current: Wire | undefined } = { current: undefined };
@@ -144,7 +145,7 @@ async function bootObserved(): Promise<ObservedRun> {
     dial: () => {
       const wire = makeWire();
       wireRef.current = wire;
-      hub.accept(wire.hubEnd, { peerInstanceId: PEER_INSTANCE });
+      void hub.accept(wire.hubEnd, { token: TEST_TOKEN });
       return wire.peerEnd;
     },
     timer: peerNode.scheduler,

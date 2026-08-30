@@ -63,6 +63,7 @@ import {
   type ReplicaNode,
 } from './harness.js';
 import type { ReplicationMessage } from '@nomicore/replication-protocol';
+import { DEFAULT_PEER_VERIFIER, TEST_TOKEN } from './driver.js';
 
 // ═══════════════════════════ 通用工具（真实链路抽样专用） ═══════════════════════════
 
@@ -296,12 +297,13 @@ async function bootReal(opts: RealBootOptions = {}): Promise<RealRun> {
       localOwner: HUB_OWNER,
       permissions: { read: true, submit: true },
     }),
+    verifyToken: DEFAULT_PEER_VERIFIER,
     timer: realTimer,
   });
 
   const server = net.createServer((socket) => {
     hubSide = new RealWireTransport(socket, 'hub', meta);
-    hub.accept(hubSide, { peerInstanceId: PEER_INSTANCE });
+    void hub.accept(hubSide, { token: TEST_TOKEN });
   });
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   const port = (server.address() as net.AddressInfo).port;
