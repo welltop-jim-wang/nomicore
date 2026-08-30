@@ -1,6 +1,6 @@
 {
   "name": "@nomicore/namespace-registry",
-  "version": "0.1.6",
+  "version": "0.1.6"
   "private": true,
   "type": "module",
   "exports": {
@@ -25,15 +25,16 @@
     "@nomicore/clock": "workspace:*",
     "@nomicore/doc-runtime": "workspace:*",
     "@nomicore/instance": "workspace:*",
-    "@nomicore/namespace-runtime": "workspace:*",
+    "@nomicore/namespace-diagnostic-log": "workspace:*",
+    "@nomicore/namespace-runtime": "workspace:*"
     "@nomicore/persistence": "workspace:*",
-    "@nomicore/vfsl": "workspace:*"
+    "@nomicore/vfsl": "workspace:*",
+    "yjs": "^13.6.30"
   },
   "devDependencies": {
     "@types/node": "^20",
     "typescript": "^5.9.3",
-    "vitest": "^3.2.4",
-    "yjs": "^13.6.30"
+    "vitest": "^3.2.4"
   },
   "files": [
     "dist"
