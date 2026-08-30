@@ -895,12 +895,12 @@ export class PeerNamespaceController {
       return 'failed';
     }
     const epoch = this.host.connectionEpoch(); // B-2d：代际捕获——旧连接的迟到 ACK 不得落新连接
+    // §5.7：在调用 applyRemoteUpdate 前采样，完整覆盖同步接纳与 sequencer 排队；
+    // host.now 已经 safeNow 折叠，观测时钟异常不会阻断协议路径。
+    const t0 = this.observerOn ? this.host.now?.() : undefined;
     const pending = session.applyRemoteUpdate(update);
     this.pendingApplies.add(pending);
     try {
-      // §5.7：latency 采样仅在 observer 在场时取钟（进入 apply 时刻——含 sequencer 排队）；
-      // sampled in try（深度防御——throw 由 catch 域收敛为失败判定；host.now 本身已 safeNow）
-      const t0 = this.observerOn ? this.host.now?.() : undefined;
       const result = await pending;
       if (!result.ok) {
         this.applyOutcome(
