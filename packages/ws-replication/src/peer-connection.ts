@@ -330,7 +330,7 @@ class PeerConnectionImpl implements PeerReplication {
       connectionNonce: this.nonce,
     });
     this.setState('handshaking');
-    this.armHello();
+    this.armHello(transport);
     this.transportSubscriptions = [
       transport.onMessage((bytes) => { if (this.connectionEpochValue === epoch) this.onMessage(bytes); }),
       transport.onClose((info) => { if (this.connectionEpochValue === epoch) this.onClose(info); }),
@@ -422,13 +422,12 @@ class PeerConnectionImpl implements PeerReplication {
           if (this.stopping) return;
           // 双凭据校验（issue 范围 2）：transport 身份 + 连接代际——旧代定时器零影响。
           if (this.transport !== transport || this.connectionEpochValue !== epoch) return;
-          // 同步收口栈（G3）：停旧 liveness → 退订旧 transport 全部监听 → epoch 作废
-          // → 关旧 transport(1001) → 排 backoff。epoch 必须先于可重入的 adapter.close() 失效。
-          this.stopLivenessNow();
-          this.unsubscribeTransport();
-          this.connectionEpochValue += 1;
-          if (!transport.closed) transport.close(1001, 'pong-timeout');
-          this.onTemporaryFailure('pong-timeout', true);
+          // 同步收口栈（G3，§18 R4）：停旧 liveness → 退订旧 transport 全部监听 →
+          // epoch 作废 → 关旧 transport(1001) → 排 backoff。epoch 必须先于可重入的
+          // adapter.close() 失效（次序纪律由 detachCloseTimedOutTransport 单向承载）。
+          if (this.detachCloseTimedOutTransport(transport, 'pong-timeout')) {
+            this.onTemporaryFailure('pong-timeout', true);
+          }
         },
       });
     }
@@ -606,6 +605,41 @@ class PeerConnectionImpl implements PeerReplication {
   private stopLivenessNow(): void {
     this.stopLiveness?.();
     this.stopLiveness = undefined;
+  }
+
+  /**
+   * §18 R4 detach-close 序列（本地超时路径共用：pong-timeout / hello-timeout，issue #168）：
+   * 停旧 liveness → 退订旧 transport 全部监听 → epoch 作废 → close(1001, reason)。
+   * epoch 必须先于可能同步重入的 transport close() 失效（§18 次序纪律）；退订先行
+   * + 订阅闭包 epoch 门 = 双保险，本地 close 零重入副作用。
+   * 身份不变量（this.transport === transport）由调用点守卫保证；此处冗余断言
+   * （fail-loud——杜绝未来第三调用点漏写守卫造成「退订错代监听 + 关错传输」）。
+   * close-throw 处置（adapter 违约同步抛错）：未关闭的 transport 不得被当作可恢复断线；
+   * 响亮投影 connection-failed 并进入 blocked，阻止自动重拨制造第二条连接。
+   * 幂等：transport 已关时跳过 close，但前三步代际收口照常执行。
+   */
+  private detachCloseTimedOutTransport(
+    transport: DuplexTransport,
+    reason: 'pong-timeout' | 'hello-timeout',
+  ): boolean {
+    if (this.transport !== transport) {
+      throw new Error(
+        `detachCloseTimedOutTransport: transport identity mismatch (caller guard violated, reason=${reason})`,
+      );
+    }
+    this.stopLivenessNow();
+    this.unsubscribeTransport();
+    this.connectionEpochValue += 1;
+    if (!transport.closed) {
+      try {
+        transport.close(1001, reason);
+      } catch {
+        this.emitConnectionFailed('INTERNAL_ERROR', 1011);
+        this.enterBlocked();
+        return false;
+      }
+    }
+    return true;
   }
 
   private goawayDrainMs = 0;
@@ -846,9 +880,11 @@ class PeerConnectionImpl implements PeerReplication {
     if (this.stopping) return;
     if (this.connStateValue === 'backoff' || this.connStateValue === 'blocked') return;
     // 同步代际收口（issue #170 验收 2 / I4）：停旧 liveness、退订旧 transport 全部监听、
-    // 作废连接代际——先于一切 backoff 排程。不关传输（I5）：关闭是路径特定的——
-    // pong 超时路径在可重入 close 前已作废 epoch，故传 true 防止重复递增；远端关闭路径
-    // 传输已死；hello 超时孤儿传输窗口是 D5 登记处置项，本任务不动。
+    // 作废连接代际——先于一切 backoff 排程。传输关闭是路径特定的（I5）：
+    // - 本地超时路径（pong/hello）在各自回调里经 detachCloseTimedOutTransport 自关
+    //   （可重入 close 前 epoch 已作废，故传 true 防重复递增）；
+    // - 背压终态在 failConnectionBackpressure 内自关(1011)；
+    // - 远端关闭（onClose/onGoawayClosed）传输已死；dial-throw 无 transport 可关。
     this.stopLivenessNow();
     this.unsubscribeTransport();
     if (!epochAlreadyInvalidated) this.connectionEpochValue += 1;
@@ -905,11 +941,24 @@ class PeerConnectionImpl implements PeerReplication {
 
   // ─────────────────────────────── timer 管理 ───────────────────────────────
 
-  private armHello(): void {
+  private armHello(transport: DuplexTransport): void {
     this.clearHello();
+    const epoch = this.connectionEpochValue; // 武装时捕获代际（迟到定时器双凭据之一，pong 同构）
     this.helloHandle = this.options.timer.setTimeout(() => {
       this.helloHandle = undefined;
-      if (this.connStateValue === 'handshaking') this.onTemporaryFailure('hello-timeout');
+      if (this.stopping) return;
+      // 状态守卫（冻结面 T3）：非 handshaking 的迟到 fire 零副作用
+      //（clear-on-ack 是第一保险，此为第二保险——SA6 T3 双保险断言面）。
+      if (this.connStateValue !== 'handshaking') return;
+      // 双凭据守卫（pong-timeout 同构）：迟到的旧代 timer 不得作用新代传输/代际
+      //（helloHandle 单槽 + 各收口路径 clearHello 是第一保险，此为纵深）。
+      if (this.transport !== transport || this.connectionEpochValue !== epoch) return;
+      // issue #168：§18「HELLO/pong timeout关闭连接」——hello 超时与 pong 超时同构，
+      // 进入 backoff 前同步执行 established detach-close 序列，收口孤儿传输窗口
+      //（close(1001,'hello-timeout') → hub 侧可观测序列签名；epoch 先失效防重入）。
+      if (this.detachCloseTimedOutTransport(transport, 'hello-timeout')) {
+        this.onTemporaryFailure('hello-timeout', true);
+      }
     }, this.timeouts.helloTimeoutMs);
   }
 
