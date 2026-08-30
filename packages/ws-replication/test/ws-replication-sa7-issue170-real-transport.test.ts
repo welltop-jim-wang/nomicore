@@ -40,6 +40,7 @@ import {
 import { createHubReplication, createPeerReplication } from '@nomicore/ws-replication';
 import type { DuplexTransport, HubReplication, PeerReplication, ReplicationTimer } from '@nomicore/ws-replication';
 import { decodeMessage, type DecodedMessage } from '@nomicore/replication-protocol';
+import { DEFAULT_PEER_VERIFIER, TEST_TOKEN } from './driver.js';
 
 // ═══════════════════════════ 常量（真实时钟,刻意小值缩短观察窗） ═══════════════════════════
 
@@ -325,6 +326,7 @@ async function bootRealLiveness(
       localOwner: HUB_OWNER,
       permissions: { read: true, submit: true },
     }),
+    verifyToken: DEFAULT_PEER_VERIFIER,
     timer: realTimer,
   });
 
@@ -334,7 +336,7 @@ async function bootRealLiveness(
     const generation = hubTransports.length + 1;
     const transport = new RealTcpTransport(socket, 'hub', meta, generation > 1);
     hubTransports.push(transport);
-    hub.accept(transport, { peerInstanceId: PEER_INSTANCE });
+    void hub.accept(transport, { token: TEST_TOKEN });
   });
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   const port = (server.address() as net.AddressInfo).port;

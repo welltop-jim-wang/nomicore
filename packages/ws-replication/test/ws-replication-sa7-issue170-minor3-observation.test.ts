@@ -34,7 +34,7 @@ import { describe, expect, it } from 'vitest';
 import { createHubReplication, createPeerReplication } from '@nomicore/ws-replication';
 import type { DuplexTransport, HubReplication, PeerReplication } from '@nomicore/ws-replication';
 import { decodeMessage, encodeMessage, type ReplicationMessage } from '@nomicore/replication-protocol';
-import { makeAuthorizer } from './driver.js';
+import { DEFAULT_PEER_VERIFIER, makeAuthorizer, TEST_TOKEN } from './driver.js';
 import {
   HUB_INSTANCE,
   HUB_OWNER,
@@ -202,6 +202,7 @@ async function bootGoawayProbe(): Promise<GoawayProbeEnv> {
     instanceId: HUB_INSTANCE,
     registry: hubNode.registry,
     authorize: authorizer.authorize,
+    verifyToken: DEFAULT_PEER_VERIFIER,
     timer: hubNode.scheduler,
   });
   const wires: GoawayProbeWire[] = [];
@@ -213,7 +214,7 @@ async function bootGoawayProbe(): Promise<GoawayProbeEnv> {
       // 首代 wire 不复 pong（确定性触发 pong 超时）；重连代 autoPong（保持健康）。
       const wire = makeGoawayProbeWire({ autoPong: wires.length > 0 });
       wires.push(wire);
-      hub.accept(wire.hubEnd, { peerInstanceId: PEER_INSTANCE });
+      void hub.accept(wire.hubEnd, { token: TEST_TOKEN });
       return wire.peerEnd;
     },
     timer: peerNode.scheduler,
@@ -262,7 +263,7 @@ describe('SA7 观察探针（SA2 MINOR #3）：GOAWAY drain deadline 落在长 b
       ),
     );
     await settle();
-    expect(env.peer.getConnectionState(), 'drain 窗口期连接照常（deadline 未到）').toBe('ready');
+    expect(env.peer.getConnectionState(), 'GOAWAY 收帧后进入 draining（deadline 未到）').toBe('draining');
     expect(wire1.peerSideClosed).toBe(false);
 
     // t=1.0：ping1（首代 wire 不复 pong）→ pong 超时排于 t=1.5

@@ -31,7 +31,7 @@ import { describe, expect, it } from 'vitest';
 import { createHubReplication, createPeerReplication } from '@nomicore/ws-replication';
 import type { DuplexTransport, HubReplication, PeerReplication } from '@nomicore/ws-replication';
 import { decodeMessage } from '@nomicore/replication-protocol';
-import { makeAuthorizer } from './driver.js';
+import { DEFAULT_PEER_VERIFIER, makeAuthorizer, TEST_TOKEN } from './driver.js';
 import {
   HUB_INSTANCE,
   HUB_OWNER,
@@ -290,6 +290,7 @@ async function bootIssue170(opts: BootOptions): Promise<Issue170Env> {
     instanceId: HUB_INSTANCE,
     registry: hubNode.registry,
     authorize: authorizer.authorize,
+    verifyToken: DEFAULT_PEER_VERIFIER,
     timer: hubNode.scheduler,
     timeouts: { helloTimeoutMs: 10_000, pingIntervalMs: PING_INTERVAL_MS, pongTimeoutMs: PONG_TIMEOUT_MS },
   });
@@ -309,7 +310,7 @@ async function bootIssue170(opts: BootOptions): Promise<Issue170Env> {
         throwPingWhenClosed: opts.throwPingWhenClosed === true,
       });
       wires.push(wire);
-      hub.accept(wire.hubEnd, { peerInstanceId: PEER_INSTANCE });
+      void hub.accept(wire.hubEnd, { token: TEST_TOKEN });
       return wire.peerEnd;
     },
     timer: peerNode.scheduler,
