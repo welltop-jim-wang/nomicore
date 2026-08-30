@@ -60,6 +60,10 @@ const OPEN_RETRY_INTERVAL_MS = 50;
 const DEFAULT_MAX_DIRTY_MS = 5_000;
 /** 调空窗口边距（flush 提交的保守余量）。 */
 const DRAIN_MARGIN_MS = 500;
+/** peer 侧 closeTimeoutMs 缺省（ws-replication defaults.ts:38；app 不 import 包内部缺省）。 */
+const DEFAULT_PEER_CLOSE_TIMEOUT_MS = 5_000;
+/** reset 编排 controller 收口结算预算的边距（closeTimeout 兜底之外的保守余量）。 */
+const RESET_SETTLE_MARGIN_MS = 2_000;
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -553,7 +557,20 @@ class AppHandle {
     if (typeof ownerUserId !== 'string' || ownerUserId.length === 0) {
       return { ok: false, code: 'invalid-op-args' };
     }
-    if (this.peerOwners.has(namespaceId)) return { ok: true }; // 幂等 add（重复 add 不再发 target-added）
+    // 幂等短路（SA7 F1 修正）：仅当通道仍处连接层恢复机制接管面（非终态/controller
+    // 缺席）时短路——终态 closed/conflicted/failed 的通道上短路会吞掉文档化恢复入口
+    // （reset 后重引导链失败场景：G5c 已恢复 peerOwners 而通道停在 closed → 旧短路
+    // 返回伪 ok:true 零动作）。终态 → 走底层 addTarget（re-add 分支 → §14.1 整连接重建，
+    // 发射 target-added）；disconnected → 连接重建机制（openActiveTargets, intent='active'）自恢复。
+    const state = this.peer.getNamespaceState(namespaceId);
+    if (
+      this.peerOwners.has(namespaceId) &&
+      state !== 'closed' &&
+      state !== 'conflicted' &&
+      state !== 'failed'
+    ) {
+      return { ok: true };
+    }
     this.peer.addTarget({ namespaceId, localOwner: { userId: ownerUserId } });
     this.peerOwners.set(namespaceId, ownerUserId);
     this.sink({ event: 'target-added', namespaceId });
@@ -715,6 +732,19 @@ class AppHandle {
     //   throw——catch 为结构性不可达的纯防御边界；peerOwners 保持 deleted，add-target 重试可达）
     try {
       await this.peer.removeTarget(namespaceId); // 幂等；恒 resolve
+      // F1（SA7 复验收编）：await removeTarget 返回时 controller 可能仍处 closing（CLOSE 路径
+      //   的结算与 CLOSE_OK 往返竞争）——引擎 addTarget 的 re-add 分支只在终态触发，
+      //   closing 态落入合流分支（intent='active' 零动作），close 完成后无人再触发重建：
+      //   通道永久 closed、重引导不发生。等待 controller 离开 closing 再 addTarget——
+      //   终态（closed/conflicted/failed）→ re-add 分支（§14.1 整连接重建）；
+      //   disconnected → 连接重建机制（openActiveTargets，intent='active'）自恢复。
+      //   预算 = closeTimeout 兜底（缺省 5s）+ 边距；超限 = 真实异常 → 诚实失败
+      //   （peerOwners 保持 deleted，add-target 重试真正可达）。
+      const settleBudgetMs =
+        (this.config.timeouts?.closeTimeoutMs ?? DEFAULT_PEER_CLOSE_TIMEOUT_MS) + RESET_SETTLE_MARGIN_MS;
+      if (!(await this.waitPeerTargetSettled(namespaceId, settleBudgetMs))) {
+        return { ok: false, code: 'reset-replica-failed' };
+      }
       this.peer.addTarget({ namespaceId, localOwner: { userId: ownerUserId } }); // §14.1 re-add → 重建 → OPEN → bootstrap
     } catch {
       return { ok: false, code: 'reset-replica-failed' };
@@ -781,6 +811,34 @@ class AppHandle {
         live = status.lease === 'active' && status.runtime.lifecycle === 'ready' && status.runtime.read.enabled;
       }
       if (live) return true;
+      if (Date.now() > deadline) return false;
+      await sleep(LIVE_POLL_INTERVAL_MS);
+    }
+  }
+
+  /**
+   * F1（SA7 复验收编）：等 peer controller 离开 closing（收口结算窗口）。
+   * 引擎时钟保证：CLOSE 路径的 controller 必在 closeTimeout 内结算
+   * （CLOSE_OK / closeTimeout 兜底 / 断线 → disconnected / closing 期终局 → failed），
+   * 因此预算 = closeTimeoutMs + 边距内必有终局。返回 true = 终态（closed/conflicted/
+   * failed，addTarget 的 re-add 分支可达）或 disconnected（连接重建机制 intent='active'
+   * 自恢复，且 addTarget 合流会翻转 intent）；false = 预算超限（真实异常，调用方诚实
+   * 报告）。controller 缺席（结构性不可达——controllers map 无 delete 路径）视同 settled
+   * （addTarget 将新建 controller）。
+   */
+  private async waitPeerTargetSettled(namespaceId: string, timeoutMs: number): Promise<boolean> {
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+      const state = this.peer?.getNamespaceState(namespaceId);
+      if (
+        state === undefined ||
+        state === 'closed' ||
+        state === 'conflicted' ||
+        state === 'failed' ||
+        state === 'disconnected'
+      ) {
+        return true;
+      }
       if (Date.now() > deadline) return false;
       await sleep(LIVE_POLL_INTERVAL_MS);
     }

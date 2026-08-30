@@ -121,13 +121,13 @@ token、owner 值、Yjs bytes、SCHEMA/ROOT 内容。
 | `read` | hub/peer | `namespaceId, path` | 回执 `value`；未知 ns → `namespace-unknown` |
 | `verify-write` | hub/peer | `namespaceId, set, path, value, timeoutMs?` | 等待该 ns 达 `live`（缺省 30s，op 级 `timeoutMs ∈ [1,120000]`）后本地 `mutateRoot({op:'set',path:set,value})`；部署自检动词（默认不用） |
 | `shutdown` | hub/peer | — | 回执 ok 后进入有序停机 |
-| `add-target` | peer | `namespaceId, ownerUserId` | 幂等；重复 add 恰一次 `target-added` 事件，回执均 ok |
+| `add-target` | peer | `namespaceId, ownerUserId` | 幂等：非终态通道（live/opening/…/closing/disconnected）短路，重复 add 不重复发 `target-added`；**终态通道（closed/conflicted/failed）的 add 走底层 re-add**（§14.1 整连接重建，发射 `target-added`）——reset-replica 后重引导失败的文档化恢复入口 |
 | `remove-target` | peer | `namespaceId` | 幂等；未知 nsId = ok 回执、无副作用 |
 | `notify-auth-changed` | peer | — | **hub 正常重启/SIGHUP 换装完成且 peer 自身 token 未变**时的连接级恢复入口（透传公共 API `PeerReplication.notifyAuthChanged()`；仅 `blocked` 态生效，其余态文档化 no-op） |
 | `request-reauth` | hub | `instanceIdentity` | 对指定认证实例的全部连接发 GOAWAY(REAUTH_REQUIRED)（issue #175 公共 seam 演示） |
 | `replace-schema` | hub | `namespaceId, schema, root?` | 本地 SCHEMA 写槽替换并单向传播（ADR 0010：SCHEMA 只允许 hub 本地修改）。`ok` 仅表示本地写槽完成——**不承诺**传播已发生或 dirty 已落盘（fenced/needs-resync 通道由复制状态机自行修复或等待运维 reset）。`root` 为可选 **plain JSON 对象**（ROOT 恒 Y.Map 物化）；`null`/数组/标量不是「未提供」而是 `invalid-op-args`（与 schema 形状错同码族，`write-failed` 只留给真实写失败）。不带 `root` 走引擎 keep-root 分支：**保留的旧 root 必须通过新 schema 校验**——schema 演进**新增必填字段**而旧 root 缺该字段时会响亮拒绝（折叠 `write-failed`），此时必须同时提供合规 `root`（满足新 SCHEMA 的完整 ROOT 对象）；兼容演进（新增可选字段 `?:`/放宽类型）不带 `root` 即成功 |
 | `bump-epoch` | hub | `namespaceId` | 提升权威复制代际（epoch 递增，身份不变）。回执成功携带 `replicationEpoch`；`ok` = epoch 已提交，**fencing 是异步传播**（上界 `ackTimeoutMs`，缺省 10s）——双 peer 的 `identity-conflicted` 事件在回执之后观测 |
-| `reset-replica` | peer | `namespaceId, ownerUserId, expectedReplicationId, expectedReplicationEpoch` | 受控副本重置（ADR 0010 #133 round-2 guarded reset）：registry 双源严格核对（mismatch → `NAMESPACE_RESET_IDENTITY_MISMATCH`、零通道动作）→ 通过后归档本地副本 → 收口旧 channel → 重引导。`ok` = 归档完成 + 重引导已入队（同步段完成；重引导链随后的失败走既有 channel/连接 observer 事件，恢复入口 = `add-target`，见「管理动词」）。重复调用（同 expected）→ `NAMESPACE_NOT_FOUND`（reset 成功不可重放，属正确行为） |
+| `reset-replica` | peer | `namespaceId, ownerUserId, expectedReplicationId, expectedReplicationEpoch` | 受控副本重置（ADR 0010 #133 round-2 guarded reset）：registry 双源严格核对（mismatch → `NAMESPACE_RESET_IDENTITY_MISMATCH`、零通道动作）→ 通过后归档本地副本 → 收口旧 channel（**等 controller 收口结算完成**——CLOSE_OK/closeTimeout 兜底 ≤5s；结算超限 → `reset-replica-failed` 诚实回执）→ 重引导入队。`ok` = 归档完成 + 重引导已入队（编排确保全部交错下 addTarget 前 controller 已离开 closing——见「管理动词」）；重引导链随后的失败走既有 channel/连接 observer 事件，恢复入口 = `add-target`（终态通道不被幂等短路拦截）。重复调用（同 expected）→ `NAMESPACE_NOT_FOUND`（reset 成功不可重放，属正确行为） |
 
 角色不适用动词（如 hub 收到 `add-target`、peer 收到 `request-reauth`）→
 `unknown-op`。稳定码注册表（append-only）：`malformed-line | unknown-op |
@@ -136,7 +136,7 @@ read-failed | NAMESPACE_INVALID_IDENTITY | REGISTRY_NOT_ACCEPTING |
 NAMESPACE_NOT_FOUND | NAMESPACE_RESET_IDENTITY_MISMATCH | NAMESPACE_RESET_FAILED |
 NAMESPACE_LOAD_FAILED | NAMESPACE_RESET_EXPECTED_IDENTITY_INVALID |
 reset-replica-failed`（后 8 码为 `reset-replica` 专用：7 个 registry 窄 issue 透传码 +
-`reset-replica-failed`——branded fatal 或结构性防御边界）。
+`reset-replica-failed`——branded fatal / 结构性防御边界 / 旧通道收口结算超限）。
 
 ### 管理动词（#140）
 
@@ -145,9 +145,14 @@ reset-replica-failed`（后 8 码为 `reset-replica` 专用：7 个 registry 窄
 
 - **reset 编排冻结次序**（`reset-replica`）：① `registry.resetReplica` 前置核对
   （失败即透传回执、**零通道动作**）→ ② `peer.removeTarget`（收口旧通道，冲突/
-  失败态立即、live 态 `closeTimeoutMs` 5s 兜底）→ ③ `peer.addTarget`（§14.1
-  整连接重建 → 重 OPEN → bootstrap）。次序不可交换：先 remove 再 reset 会把
-  mismatch 的「零破坏」收窄为「零数据破坏」并留下停摆通道。
+  失败态立即、live 态 `closeTimeoutMs` 5s 兜底）→ ③ **等待 controller 收口结算
+  完成**（离开 `closing`——CLOSE_OK 往返与回执竞争窗口；预算 = closeTimeoutMs +
+  边距，超限 → `reset-replica-failed` 诚实回执，幂等集保持不含该 ns，`add-target`
+  重试真正可达）→ ④ `peer.addTarget`（§14.1 整连接重建 → 重 OPEN → bootstrap）。
+  次序不可交换：先 remove 再 reset 会把 mismatch 的「零破坏」收窄为「零数据破坏」
+  并留下停摆通道。③ 的存在保证「`ok` = 重引导已入队」在**全部**交错下为真
+  （F1 复验收编：不等待则该窗口内 addTarget 落入引擎合流分支、close 后无人
+  再触发重建——通道永久 closed，第二/多轮 bump→fence→reset 循环断裂）。
 - **整连接重建副作用**（§14.1 既定行为）：conflicted/closed 终态后的 re-add 触发
   `requestRebuild('re-add')`——同 peer 的**所有** namespace channel 一并重建；
   多 namespace peer 上执行 `reset-replica` 会导致同连接其余 channel 短暂重连
@@ -161,8 +166,9 @@ reset-replica-failed`（后 8 码为 `reset-replica` 专用：7 个 registry 窄
 - **reset 后重引导失败的恢复指引**：reset 回执 `ok` 之后的重引导链失败（bootstrap
   failed / hub 不可达 backoff / needs-resync）**不在回执域**（回执已 `ok`）——观测
   既有 `channel-state-changed` / `connection-state-changed` / `bootstrap-*` 事件；
-  恢复入口 = `add-target`（幂等集在重引导完成前不含该 ns，重试必达底层，
-  `target-added` 事件为成功信号）。数据已归档零丢失，bootstrap 资格持续有效。
+  恢复入口 = `add-target`（**终态通道不被幂等短路拦截**——短路仅限非终态/活跃
+  通道；重 add 必达底层 re-add 分支，`target-added` 事件为成功信号）。数据已归档
+  零丢失，bootstrap 资格持续有效。
 - **hub 停机窗口的已知偏差**：reset 回执发出与 `peer.stop()` 完成交错时，重引导
   可能被停机守卫静默拦截（回执仍 `ok`）——进程退出后重启按配置 `peer.targets`
   重引导，数据零丢失。
