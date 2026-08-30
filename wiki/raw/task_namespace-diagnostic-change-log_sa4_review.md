@@ -1,7 +1,7 @@
 # SA4 静态验尸报告 — Issue #150 namespace create 生命周期与 genesis 接入诊断变更日志
 
-**Date**: 2026-08-31
-**Verdict**: **reject**（两个可共同修复的阻断项 B1/B2；架构无需重设计——`needs-redesign` 不适用）
+**Date**: 2026-08-31（R1）；同日 R2 固定范围复审（见文末「R2 复审」节）
+**Verdict**: R1 **reject** → **R2 pass**（B1/B2 已于 commit 0f72527 关闭并经独立复验；**最新裁定 = pass**）
 
 - 被审对象：baseline `origin/docs/namespace-diagnostic-change-log` (722bddf) → HEAD (80a2eb8)，即 SA3 实现 commit `85f36bd` + SA6 契约勘误 commit `80a2eb8`
 - 审查基准：`task_namespace-diagnostic-change-log.md`（SA6 契约 16/16 + R2 AC5 勘误裁定）、`task_namespace-diagnostic-change-log_design.md`（SA1 R2，SA2 R2 pass）、`task_namespace-diagnostic-change-log_sa2_review.md`（R1 reject / R2 pass 全文）
@@ -109,3 +109,53 @@
 B1 修复 diff（限 `packages/namespace-registry/src/create-diagnostic.ts`）+ B1 直接影响面（SA6 冻结套件 16 it、`registry-create.test.ts` 50 用例、AC4 隔离锚全量重跑）+ B1 修复后按观察 1 补的 §12 措辞（SA1 侧）+ B2 的 §10 一行修订。其余已审项（18 插点映射、AC 覆盖、触发门禁、DENY 边界）本轮已过，除非修复 diff 越出上述范围否则不再重审。
 
 **Verdict: reject** —— B1（SA3，create-diagnostic.ts 吞没边界补齐）+ B2（SA1，§10 ALLOW LIST 一行修订）共同修复后，按上述固定复验范围复审；预期 residual = pass。
+
+---
+
+# R2 复审（2026-08-31）— 固定范围 — Verdict: **pass**
+
+**复审对象**：SA3 修复 commit `0f72527`（B1/B2）+ `6ae689f`（dispatch 档案）。
+**复审范围**：严格限定 R1 声明的固定复验范围——B1 `create-diagnostic.ts` 边界修复 + 直接影响面（SA6 16 契约、`registry-create.test.ts` 50、AC4 隔离锚）+ B2 §10 登记 + 观察项 1 落实。R1 已过项不重审。**未发现新暴露阻断项，未扩scope。**
+
+## B1 关闭核验（源码 + PoC A/B + 回归三重）
+
+**修复拓扑（create-diagnostic.ts:227-281）**：
+- `createCreateDiag` 缺席判定收紧 `diagnosticLog == null`（null/undefined 均 = 日志禁用——R1 建议选项落地）；
+- `emitter` 在**构造栈内一次读取 + 最小形状校验**（非 null object 且 `emit` 为 function），读取与校验整体在 try 内——敌意 Proxy getter（emitter/emit getter throw）→ 收敛 NOOP_DIAG（日志禁用）；畸形 emitter（`{emitter:{}}`）同收敛；
+- emit 路径（emitOutcome/emitEarlyOutcome）**只使用构造期捕获的 emitter 引用，零 `diagnosticLog` 本体属性读取**；`emitter.emit` 读取+调用留在 `emitAttempt` 吞没 try 内（含构造后 Host 把 emit 换成非函数/throwing getter 的后变形态——TypeError 被 emitAttempt try 收编）；
+- `initStream` 属性读取（含敌意 getter）与函数调用在**同一吞没 try** 内；
+- 全模块再无任何 `diagnosticLog` 属性读取逸出吞没边界的路径（`== null` 比较不触发 get trap）。合规装配（真实 adapter）行为逐位不变：emitter 同一对象，捕获语义等价——16/16 + 50/50 复跑证实。
+- emit 恰一次尝试/不重试/AC4 全锚语义未受修复影响。
+
+**PoC A/B 对照（R1 同款临时测试，逐字重建，跑毕即删）**：
+
+| 注入形态 | R1（85f36bd） | R2（0f72527） |
+|---|---|---|
+| `diagnosticLog: null` | ❌ `rejected TypeError: Cannot read properties of null (reading 'emitter')`（成功 create 被翻转，含 entry 泄漏 + fatal 误报路径） | ✅ `{"kind":"resolved","ok":true}` |
+| Proxy `emitter` throwing getter | ❌ duplicate `rejected`（resolve 语义被翻转） | ✅ first `resolved ok:true`；duplicate `resolved + NAMESPACE_ALREADY_EXISTS` |
+
+**SA3 回归测试（code-source 套件新增 4 it，运行时行为断言、无源码 grep 反模式）**：null / 敌意 Proxy（全 getter throw）/ 畸形 emitter 三形态共用 `assertSeamViolationIsolated`（create ok + lease.createdAt 精确 + duplicate resolve `NAMESPACE_ALREADY_EXISTS` + `getStatus()=={state:'running'}`）；第 4 it 锁 initStream 同步 throw → create ok + createdAt + running。与 R1 PoC 攻击面一一对应，防回归面完整。
+
+## B2 关闭核验
+
+设计 §10 ALLOW LIST 已登记 `packages/namespace-registry/test/registry-create-diagnostic-code-source.test.ts`（标注 SA2 R2 遗留 #1 + SA4 R1 B1 回归双理由，`[SA3 owned]`）。HEAD 全量 diff（剔 whitelist）与修订后 ALLOW LIST **逐文件精确一致，零越界**。附带（同属 R1 观察项 1 与可共同修复集）：§6.4 新增「diagnosticLog 对象违约」防御行（语义与实现一致）、§12 导出不变量措辞修正（「模块级导出但不经 CreateDiag 接口暴露、index.ts 零 re-export」——与实现实际一致）。
+
+## 固定范围回归证据（独立进程复跑）
+
+| 项 | 命令 | 结果 |
+|---|---|---|
+| SA6 冻结契约（含 AC4 四隔离锚：emitter throw/队列压力/禁用一致/stream-init 失败） | vitest（见下） | **16/16 passed** |
+| `registry-create.test.ts`（业务零漂移既有面） | 同上 | **50/50 passed** |
+| code-source 套件（2 守护 + 4 seam 回归） | 同上 | **6/6 passed** |
+| 双包全量 | `./node_modules/.bin/vitest run packages/namespace-registry/test packages/namespace-diagnostic-log/test --typecheck.enabled=false` | **36 文件 / 558 测试全过，exit 0** |
+| CI typecheck 门禁 | `./node_modules/.bin/tsc -p tsconfig.typecheck.json` | **exit 0、0 errors** |
+| 修复 diff scope | `git show 0f72527 --stat` + §10 比对 | 业务代码仅 `create-diagnostic.ts`（B1 固定范围内）；测试文件已登记；其余为 wiki 档案（含本 R1 报告逐字节原样入档，完整性核验一致） |
+
+## 残留（非阻断，交 SA7 备案）
+
+1. 构造期捕获语义：emitter 形状在构造时判定、引用构造时冻结——Host 若在构造后动态替换 emitter/emit（违约邻接形态），行为 = 构造期快照（emit getter 后变 throw 已由 emitAttempt try 兜住；换对象则按旧引用继续）——已在 §6.4 新行文档化，ADR-0011 best-effort 允许；SA7 活链路无须专项。
+2. 畸形 seam 收敛为「静默日志禁用」无独立健康通道（与「不代发健康事件」纪律一致，§6.4 已备案）。
+
+## R2 裁决
+
+**Verdict: pass** —— B1（吞没边界补齐，PoC A/B 红转绿 + 4 回归 it 锁定）与 B2（§10 登记，diff 与 ALLOW LIST 精确一致）均真关闭；固定范围回归面全绿（16/16、50/50、6/6、558/558、typecheck 0）；零新暴露阻断项。R1 五条动态审核重点中第 1 条已被本轮静态+PoC 关闭，其余四条（同步成本、shutdown tail、双记录理论角、CI 触发证据摘录）仍交 SA7。本 pass 不替代 SA7 活链路验证。
