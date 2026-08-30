@@ -46,7 +46,6 @@ import type {
 } from '@nomicore/ws-replication';
 import type { ConnectionErrorCode, NamespaceErrorCode } from '@nomicore/replication-protocol';
 import type { NamespaceOwner, NamespaceRegistry } from '@nomicore/namespace-registry';
-import type { ConnectionErrorCode } from '@nomicore/replication-protocol';
 
 describe('`@nomicore/ws-replication` 冻结公共面（切片 6）', () => {
   it('工厂：createHubReplication / createPeerReplication 签名（选项均为命名形状）', () => {
