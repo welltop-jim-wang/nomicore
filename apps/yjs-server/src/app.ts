@@ -1,0 +1,644 @@
+/**
+ * `createNomicoreApp` —— 最小 Cordis composition root（设计 §3.1/§3.4/§3.6）。
+ *
+ * 装配序（严格按 hosting 文档 L51-73）：clock fiber → `new TimerService(ctx)` →
+ * persistence fiber（memory|file 按 config）→ registry fiber（**显式传 `role`，
+ * 与部署角色一致**）→ hub/peer 复制插件（`inject ['nomicoreRegistry','clock']`
+ * 使其 fiber 位于依赖图下游 → 卸载时先于 registry fiber）。
+ *
+ * 启动序（R1 #2 冻结：**绑定先于接纳**，§3.4）：fiber 组装完成、registry ready
+ * 之后，先执行 provisioning + 授权绑定表构建（直引条目启动即绑定；provision 条目
+ * 在 provision 完成时刻绑定），**完成后才** `httpServer.listen()`（hub）/
+ * `peer.start()`（peer）——任何网络端点开启之前授权查找已完备（硬崩溃 backoff
+ * 重拨/首拨/显式恢复重拨命中 boot 窗口时，authorize 不可能 miss）。
+ *
+ * 停机（§3.6 单一拆卸链）：宿主显式执行复制 drain → registry shutdown →
+ * persistence dispose → timer/clock teardown；复制插件不另注册重复 disposer；
+ * `stop()` 幂等（single-flight promise）。
+ */
+import { Context } from '@deepseek-ai/cordis';
+import TimerService from '@deepseek-ai/cordis-plugin-timer';
+import { createSystemClockPlugin } from '@nomicore/clock';
+import {
+  createFilePersistencePlugin,
+  createMemoryPersistencePlugin,
+} from '@nomicore/persistence';
+import {
+  createNamespaceRegistryPlugin,
+  requireNomicoreRegistry,
+  type NamespaceLease,
+  type NamespaceRegistry,
+} from '@nomicore/namespace-registry';
+import type {
+  NamespaceAuthorizer,
+  NamespaceAuthorization,
+  PeerTokenVerifier,
+  ReplicationObserver,
+} from '@nomicore/ws-replication';
+import {
+  parseAppConfig,
+  NAMESPACE_ID_PATTERN,
+  type AppConfig,
+  type AuthorizationEntry,
+} from './config.ts';
+import { createStdoutEventSink, type EventSink } from './lifecycle.ts';
+import { createHubReplicationPlugin } from './replication/hub-plugin.ts';
+import { createPeerReplicationPlugin } from './replication/peer-plugin.ts';
+import { createPeerDial } from './transport/ws-client.ts';
+import { REPLICATION_UPGRADE_PATH, startHubWsServer, type HubWsServer } from './transport/ws-server.ts';
+import type { PeerReplication } from '@nomicore/ws-replication';
+
+const OP_TIMEOUT_DEFAULT_MS = 30_000;
+const OP_TIMEOUT_MIN_MS = 1;
+const OP_TIMEOUT_MAX_MS = 120_000;
+const READ_READY_TIMEOUT_MS = 10_000;
+const LIVE_POLL_INTERVAL_MS = 100;
+/** open 物化等待重试间隔（F1：本地记录未物化时的 `NAMESPACE_NOT_FOUND` 重试）。 */
+const OPEN_RETRY_INTERVAL_MS = 50;
+/** file adapter 缺省 flush 上限（persistence DEFAULT_PERSISTENCE_SCHEDULE.maxDirtyMs）。 */
+const DEFAULT_MAX_DIRTY_MS = 5_000;
+/** 调空窗口边距（flush 提交的保守余量）。 */
+const DRAIN_MARGIN_MS = 500;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isSegmentArray(value: unknown): value is readonly (string | number)[] {
+  return Array.isArray(value) && value.every((s) => typeof s === 'string' || typeof s === 'number');
+}
+
+interface Binding {
+  readonly ownerUserId: string;
+  readonly read: boolean;
+  readonly submit: boolean;
+}
+
+/** `opVerifyWrite` 的 open 三态结果（F1 有界物化等待）。 */
+type WriteOpenResult =
+  | Readonly<{ kind: 'ok'; lease: NamespaceLease }>
+  | Readonly<{ kind: 'timeout' }>
+  | Readonly<{ kind: 'rejected' }>;
+
+export interface NomicoreApp {
+  /** 启动完成（`ready` 事件已发射）；失败 → reject（对应 error 事件已发射）。 */
+  readonly ready: Promise<void>;
+  /** 单一拆卸链有序停机；幂等。 */
+  stop(): Promise<void>;
+  /** stdout NDJSON 事件面（进程内宿主测试用）。 */
+  readonly sink: EventSink;
+  /** stdin NDJSON 控制通道：输入一行，回执一行（每行恰一回执；进程不因控制输入退出）。 */
+  handleControlLine(line: string): Promise<Readonly<Record<string, unknown>> | undefined>;
+}
+
+export interface CreateNomicoreAppOptions {
+  readonly emitter?: EventSink;
+}
+
+export function createNomicoreApp(
+  rawConfig: unknown,
+  options: CreateNomicoreAppOptions = {},
+): NomicoreApp {
+  const config = parseAppConfig(rawConfig);
+  const sink = options.emitter ?? createStdoutEventSink();
+  return new AppHandle(config, sink).publicFace();
+}
+
+class AppHandle {
+  private readonly ctx: Context;
+  private readonly config: AppConfig;
+  private readonly sink: EventSink;
+  private readonly bindings = new Map<string, Binding>();
+  private readonly knownNamespaces = new Map<string, string>(); // nsId → ownerUserId（hub 侧）
+  private readonly peerOwners = new Map<string, string>(); // nsId → ownerUserId（peer 侧）
+
+  private registry: NamespaceRegistry | undefined;
+  private persistenceFiber: { dispose(): Promise<unknown> } | undefined;
+  private hubPlugin: ReturnType<typeof createHubReplicationPlugin> | undefined;
+  private peerPlugin: ReturnType<typeof createPeerReplicationPlugin> | undefined;
+  private peer: PeerReplication | undefined;
+  private wsServer: HubWsServer | undefined;
+
+  private stopPromise: Promise<void> | undefined;
+  private bootPromise: Promise<void> | undefined;
+  /** 停机请求标志：boot 在每个 await 边界检查——停机中的 boot 静默取消（不抛
+   *  未处理拒绝；SIGTERM 落在 boot 窗口 ⇒ 干净 exit 0 而非 boot 失败 exit 1）。 */
+  private stopRequested = false;
+
+  constructor(config: AppConfig, sink: EventSink) {
+    this.config = config;
+    this.sink = sink;
+    this.ctx = new Context();
+  }
+
+  publicFace(): NomicoreApp {
+    const handle = this;
+    return {
+      ready: (this.bootPromise ??= this.boot()),
+      stop: () => handle.stop(),
+      get sink() {
+        return handle.sink;
+      },
+      handleControlLine: (line: string) => handle.handleControlLine(line),
+    };
+  }
+
+  private get role(): 'hub' | 'peer' {
+    return this.config.role;
+  }
+
+  // ─────────────────────────────── 观测 ───────────────────────────────
+
+  /** 复制域事件：包判别联合 → NDJSON（type 字段改名为 event；其余字段直通——包已脱敏）。 */
+  private readonly observer: ReplicationObserver = (event) => {
+    const { type, ...rest } = event;
+    this.sink({ event: type, ...rest });
+  };
+
+  // ─────────────────────────────── 启动 ───────────────────────────────
+
+  private async boot(): Promise<void> {
+    const ctx = this.ctx;
+    const clockFiber = ctx.plugin(createSystemClockPlugin());
+    await clockFiber;
+    if (this.stopRequested) return;
+    new TimerService(ctx);
+    const persistenceFiber =
+      this.config.persistence.kind === 'file'
+        ? ctx.plugin(
+            createFilePersistencePlugin({
+              rootDir: this.config.persistence.rootDir,
+              ...(this.config.persistence.schedule !== undefined
+                ? { schedule: this.config.persistence.schedule }
+                : {}),
+            }),
+          )
+        : ctx.plugin(createMemoryPersistencePlugin());
+    this.persistenceFiber = persistenceFiber;
+    await persistenceFiber;
+    if (this.stopRequested) return;
+    const registryFiber = ctx.plugin(
+      createNamespaceRegistryPlugin({
+        ...(this.config.idleTimeoutMs !== undefined ? { idleTimeoutMs: this.config.idleTimeoutMs } : {}),
+        role: this.config.role,
+      }),
+    );
+    await registryFiber;
+    if (this.stopRequested) return;
+    this.registry = requireNomicoreRegistry(ctx);
+    if (this.role === 'hub') {
+      await this.bootHub();
+    } else {
+      await this.bootPeer();
+    }
+  }
+
+  private async bootHub(): Promise<void> {
+    const hubConfig = this.config.hub;
+    if (hubConfig === undefined) throw new Error('hub config missing (validated)');
+    // ── 授权绑定表：直引条目启动即绑定（localOwner 唯一来源 = ownerUserId）──
+    if (hubConfig.authorization !== undefined) {
+      for (const entry of hubConfig.authorization) {
+        if ('namespaceId' in entry) {
+          this.bindings.set(`${entry.peerInstanceId}\u0000${entry.namespaceId}`, {
+            ownerUserId: entry.ownerUserId,
+            read: entry.read,
+            submit: entry.submit,
+          });
+          this.knownNamespaces.set(entry.namespaceId, entry.ownerUserId);
+        }
+      }
+    }
+    const tokenToPeer = new Map<string, string>();
+    for (const [peerInstanceId, token] of Object.entries(hubConfig.tokens)) {
+      tokenToPeer.set(token, peerInstanceId);
+    }
+    const verifyToken: PeerTokenVerifier = async (token) => {
+      const peerInstanceId = tokenToPeer.get(token);
+      return peerInstanceId !== undefined ? { ok: true, instanceId: peerInstanceId } : { ok: false };
+    };
+    const authorize: NamespaceAuthorizer = async (instanceIdentity, namespaceId): Promise<NamespaceAuthorization> => {
+      const binding = this.bindings.get(`${instanceIdentity}\u0000${namespaceId}`);
+      if (binding === undefined) return { ok: false };
+      return {
+        ok: true,
+        localOwner: { userId: binding.ownerUserId },
+        permissions: { read: binding.read, submit: binding.submit },
+      };
+    };
+    this.hubPlugin = createHubReplicationPlugin({
+      instanceId: this.config.instanceId,
+      verifyToken,
+      authorize,
+      ...(this.config.limits !== undefined ? { limits: this.config.limits } : {}),
+      ...(this.config.timeouts !== undefined ? { timeouts: this.config.timeouts } : {}),
+      observer: this.observer,
+      lifecycleOwner: 'manual',
+    });
+    await this.ctx.plugin(this.hubPlugin);
+    if (this.stopRequested) return;
+
+    // ── provisioning（NDJSON `provisioned(×N)` — 先于 listen；失败 → 事件 + loud）──
+    if (hubConfig.provision !== undefined) {
+      for (const entry of hubConfig.provision) {
+        if (this.stopRequested) return;
+        await this.provision(entry.id, entry.ownerUserId, entry.schema, entry.root, hubConfig.authorization);
+      }
+    }
+    if (this.stopRequested) return;
+
+    // ── 绑定完成后才 listen（设计 §3.4 启动序）──
+    const wsServer = await startHubWsServer({
+      host: hubConfig.listen.host,
+      port: hubConfig.listen.port,
+      path: REPLICATION_UPGRADE_PATH,
+      accept: (transport, token) => {
+        void this.hubPlugin?.replication?.accept(
+          transport,
+          token !== undefined ? { token } : undefined,
+        );
+      },
+    });
+    this.wsServer = wsServer;
+    if (this.stopRequested) {
+      await wsServer.close();
+      return;
+    }
+    this.sink({ event: 'listening', host: hubConfig.listen.host, port: wsServer.port });
+    this.sink({ event: 'ready', role: this.role, instanceId: this.config.instanceId });
+  }
+
+  /** 单条目 provision：create → enableReplication → release；失败 → `provision-failed` 事件 + loud throw。 */
+  private async provision(
+    provisionId: string,
+    ownerUserId: string,
+    schema: unknown,
+    root: unknown,
+    authorization: readonly AuthorizationEntry[] | undefined,
+  ): Promise<void> {
+    const registry = this.registry;
+    if (registry === undefined) throw new Error('registry unavailable (provision before ready)');
+    const created = await registry.create({ owner: { userId: ownerUserId }, schema, root });
+    if (!created.ok) {
+      this.sink({ event: 'provision-failed', provisionId, code: 'PROVISION_CREATE_REJECTED' });
+      throw new Error(`provision "${provisionId}" rejected by registry.create: ${created.code}`);
+    }
+    const lease = created.lease;
+    try {
+      const enabled = await lease.enableReplication();
+      if (!enabled.ok) {
+        this.sink({ event: 'provision-failed', provisionId, code: 'PROVISION_REPLICATION_REJECTED' });
+        throw new Error(`provision "${provisionId}": enableReplication rejected`);
+      }
+      const namespaceId = lease.namespaceId;
+      this.knownNamespaces.set(namespaceId, ownerUserId);
+      // provision 形式的授权条目此刻绑定（owner 唯一来源 = provision.ownerUserId）。
+      if (authorization !== undefined) {
+        for (const entry of authorization) {
+          if ('provisionId' in entry && entry.provisionId === provisionId) {
+            this.bindings.set(`${entry.peerInstanceId}\u0000${namespaceId}`, {
+              ownerUserId,
+              read: entry.read,
+              submit: entry.submit,
+            });
+          }
+        }
+      }
+      const status = lease.getStatus();
+      const replicationId =
+        status.lease === 'active' && status.runtime.replication.state === 'enabled'
+          ? status.runtime.replication.replicationId
+          : undefined;
+      await lease.release();
+      this.sink({
+        event: 'provisioned',
+        provisionId,
+        namespaceId,
+        ...(replicationId !== undefined ? { replicationId } : {}),
+      });
+    } catch (error) {
+      await lease.release().catch(() => {
+        // release 幂等；失败不掩盖原始 provision 错误。
+      });
+      throw error;
+    }
+  }
+
+  private async bootPeer(): Promise<void> {
+    const peerConfig = this.config.peer;
+    if (peerConfig === undefined) throw new Error('peer config missing (validated)');
+    this.peerPlugin = createPeerReplicationPlugin({
+      instanceId: this.config.instanceId,
+      hubInstanceId: peerConfig.hub.hubInstanceId,
+      dial: createPeerDial(peerConfig.hub.url, peerConfig.hub.token),
+      ...(peerConfig.targets !== undefined
+        ? {
+            targets: peerConfig.targets.map((t) => ({
+              namespaceId: t.namespaceId,
+              localOwner: { userId: t.ownerUserId },
+            })),
+          }
+        : {}),
+      ...(this.config.limits !== undefined ? { limits: this.config.limits } : {}),
+      ...(this.config.timeouts !== undefined ? { timeouts: this.config.timeouts } : {}),
+      ...(this.config.backoff !== undefined ? { backoff: this.config.backoff } : {}),
+      observer: this.observer,
+      lifecycleOwner: 'manual',
+    });
+    await this.ctx.plugin(this.peerPlugin);
+    if (this.stopRequested) return;
+    this.peer = this.peerPlugin.replication;
+    if (this.peer === undefined) throw new Error('peer replication unavailable after apply');
+    for (const target of peerConfig.targets ?? []) {
+      this.peerOwners.set(target.namespaceId, target.ownerUserId);
+    }
+    this.peer.start(); // 启动序：registry ready 后才开始拨号
+    if (this.stopRequested) return;
+    this.sink({ event: 'ready', role: this.role, instanceId: this.config.instanceId });
+  }
+
+  // ─────────────────────────────── 停机 ───────────────────────────────
+
+  stop(): Promise<void> {
+    if (this.stopPromise !== undefined) return this.stopPromise;
+    this.stopRequested = true;
+    this.stopPromise = this.performStop();
+    return this.stopPromise;
+  }
+
+  private async performStop(): Promise<void> {
+    try {
+      // 1. 停止接纳 + 复制 drain（设计 §3.6：GOAWAY → drain → deadline 后 WS 1001）。
+      if (this.wsServer !== undefined) {
+        await this.wsServer.close();
+      }
+      if (this.hubPlugin?.replication !== undefined) {
+        await this.hubPlugin.replication.close();
+      }
+      if (this.peer !== undefined) {
+        await this.peer.stop();
+      }
+      this.sink({ event: 'replication-drained' });
+      // 2. registry shutdown（lease release、已接纳 apply 排空、idle runtime 回收）。
+      if (this.registry !== undefined) {
+        await this.registry.shutdown();
+      }
+      this.sink({ event: 'registry-stopped' });
+      // 3. persistence fiber 卸载前：给 file adapter 的排空窗口——adapter 的 dirty
+      // flush 走 debounce 调度（saveDoc → maxDirtyMs 内保证提交；dispose() 只
+      // abort+destroy，**不冲刷 dirty**，file.ts:27「dispose and drain first」）。
+      // registry.shutdown 后立即拆 fiber 会把停机前最后写入（如 provision 的
+      // enableReplication META）丢弃——先等调度窗（maxDirtyMs + 边距）落盘。
+      if (this.config.persistence.kind === 'file') {
+        const drainMs = (this.config.persistence.schedule?.maxDirtyMs ?? DEFAULT_MAX_DIRTY_MS) + DRAIN_MARGIN_MS;
+        await sleep(drainMs);
+      }
+      // 3b. persistence fiber 卸载（撤服务 → 级联依赖 fiber 卸载 → adapter dispose 落盘）。
+      if (this.persistenceFiber !== undefined) {
+        await this.persistenceFiber.dispose();
+      }
+      this.sink({ event: 'persistence-disposed' });
+      // 4. 根 fiber dispose（Timer/Clock 最后）。
+      await this.ctx.fiber.dispose();
+      this.sink({ event: 'app-stopped' });
+    } catch (error) {
+      this.sink({
+        event: 'app-stop-failed',
+        ...(error instanceof Error ? { message: error.message } : { message: String(error) }),
+      });
+      throw error;
+    }
+  }
+
+  // ─────────────────────────────── 控制通道 ───────────────────────────────
+
+  /** stdin NDJSON 控制通道：每行恰一回执；进程绝不因控制输入退出。 */
+  async handleControlLine(line: string): Promise<Readonly<Record<string, unknown>> | undefined> {
+    if (line.trim() === '') {
+      return { event: 'reply', ok: false, code: 'malformed-line' };
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(line);
+    } catch {
+      return { event: 'reply', ok: false, code: 'malformed-line' };
+    }
+    if (!isPlainObject(parsed) || typeof parsed.op !== 'string') {
+      return { event: 'reply', ok: false, code: 'malformed-line' };
+    }
+    const op = parsed.op;
+    const id = parsed.id;
+    const result = await this.dispatch(op, parsed);
+    return {
+      event: 'reply',
+      op,
+      ...(id !== undefined ? { id } : {}),
+      ...result,
+    };
+  }
+
+  private async dispatch(op: string, args: Record<string, unknown>): Promise<Readonly<Record<string, unknown>>> {
+    switch (op) {
+      case 'status':
+        return {
+          ok: true,
+          role: this.role,
+          instanceId: this.config.instanceId,
+          ...(this.peer !== undefined ? { connectionState: this.peer.getConnectionState() } : {}),
+        };
+      case 'shutdown':
+        return { ok: true }; // main.ts 在回执发射后执行有序停机
+      case 'read':
+        return this.opRead(args);
+      case 'verify-write':
+        return this.opVerifyWrite(args);
+      case 'add-target':
+        return this.opAddTarget(args);
+      case 'remove-target':
+        return this.opRemoveTarget(args);
+      case 'notify-auth-changed':
+        return this.opNotifyAuthChanged();
+      case 'request-reauth':
+        return this.opRequestReauth(args);
+      default:
+        return { ok: false, code: 'unknown-op' };
+    }
+  }
+
+  private async opRead(args: Record<string, unknown>): Promise<Readonly<Record<string, unknown>>> {
+    const { namespaceId, path } = args;
+    if (typeof namespaceId !== 'string' || !NAMESPACE_ID_PATTERN.test(namespaceId) || !isSegmentArray(path)) {
+      return { ok: false, code: 'invalid-op-args' };
+    }
+    if (this.registry === undefined) return { ok: false, code: 'namespace-unknown' };
+    const ownerUserId = this.knownOwner(namespaceId);
+    if (ownerUserId === undefined) return { ok: false, code: 'namespace-unknown' };
+    const opened = await this.registry.open({ userId: ownerUserId }, namespaceId);
+    if (!opened.ok) return { ok: false, code: 'read-failed' };
+    const lease = opened.lease;
+    try {
+      if (!(await this.waitLeaseReadable(lease, READ_READY_TIMEOUT_MS))) {
+        return { ok: false, code: 'read-failed' };
+      }
+      const result = lease.read(path);
+      if (!result.ok) return { ok: false, code: 'read-failed' };
+      return { ok: true, value: result.value };
+    } finally {
+      await lease.release();
+    }
+  }
+
+  private async opVerifyWrite(args: Record<string, unknown>): Promise<Readonly<Record<string, unknown>>> {
+    const { namespaceId, set, path, value, timeoutMs } = args;
+    if (typeof namespaceId !== 'string' || !NAMESPACE_ID_PATTERN.test(namespaceId) || !isSegmentArray(set)) {
+      return { ok: false, code: 'invalid-op-args' };
+    }
+    if (!('value' in args)) return { ok: false, code: 'invalid-op-args' };
+    if (path !== undefined && !isSegmentArray(path)) return { ok: false, code: 'invalid-op-args' };
+    if (path !== undefined && JSON.stringify(path) !== JSON.stringify(set)) {
+      return { ok: false, code: 'invalid-op-args' };
+    }
+    let waitMs = OP_TIMEOUT_DEFAULT_MS;
+    if (timeoutMs !== undefined) {
+      if (typeof timeoutMs !== 'number' || !Number.isInteger(timeoutMs) || timeoutMs < OP_TIMEOUT_MIN_MS || timeoutMs > OP_TIMEOUT_MAX_MS) {
+        return { ok: false, code: 'invalid-op-args' };
+      }
+      waitMs = timeoutMs;
+    }
+    if (this.registry === undefined) return { ok: false, code: 'namespace-unknown' };
+    const ownerUserId = this.knownOwner(namespaceId);
+    if (ownerUserId === undefined) return { ok: false, code: 'namespace-unknown' };
+    // F1（SA7 §2.5 修复方向）：已知集 ns 的本地记录可能尚未物化（peer 复制收敛中 /
+    // hub 重启恢复路径 / 直引 ns 尚未到达）——`registry.open` 的 `NAMESPACE_NOT_FOUND`
+    // 在 op deadline 内重试（有界物化等待）；deadline 达成仍未物化 → 与「等待达成后
+    // 仍未 live」同一稳定码 `verify-write-timeout`；非 NOT_FOUND 的真实错误
+    // （`NAMESPACE_LOAD_FAILED`/`REGISTRY_NOT_ACCEPTING`）不重试、立即按
+    // `write-failed` 收缩——write-failed 仅保留给「物化后/真实错误」，不再于正常
+    // 收敛窗口内误报（设计 §3.4 有界等待契约）。
+    const deadline = Date.now() + waitMs;
+    const opened = await this.openWriteNamespace(namespaceId, ownerUserId, deadline);
+    if (opened.kind === 'timeout') return { ok: false, code: 'verify-write-timeout' };
+    if (opened.kind === 'rejected') return { ok: false, code: 'write-failed' };
+    const lease = opened.lease;
+    try {
+      if (!(await this.waitNamespaceLive(lease, namespaceId, Math.max(0, deadline - Date.now())))) {
+        return { ok: false, code: 'verify-write-timeout' };
+      }
+      const mutation = { op: 'set', path: set, value };
+      const result = await lease.mutateRoot(mutation);
+      if (!result.ok) return { ok: false, code: 'write-failed' };
+      return { ok: true };
+    } finally {
+      await lease.release();
+    }
+  }
+
+  private async opAddTarget(args: Record<string, unknown>): Promise<Readonly<Record<string, unknown>>> {
+    if (this.role !== 'peer' || this.peer === undefined) return { ok: false, code: 'unknown-op' };
+    const { namespaceId, ownerUserId } = args;
+    if (typeof namespaceId !== 'string' || !NAMESPACE_ID_PATTERN.test(namespaceId)) {
+      return { ok: false, code: 'invalid-op-args' };
+    }
+    if (typeof ownerUserId !== 'string' || ownerUserId.length === 0) {
+      return { ok: false, code: 'invalid-op-args' };
+    }
+    if (this.peerOwners.has(namespaceId)) return { ok: true }; // 幂等 add（重复 add 不再发 target-added）
+    this.peer.addTarget({ namespaceId, localOwner: { userId: ownerUserId } });
+    this.peerOwners.set(namespaceId, ownerUserId);
+    this.sink({ event: 'target-added', namespaceId });
+    return { ok: true };
+  }
+
+  private async opRemoveTarget(args: Record<string, unknown>): Promise<Readonly<Record<string, unknown>>> {
+    if (this.role !== 'peer' || this.peer === undefined) return { ok: false, code: 'unknown-op' };
+    const { namespaceId } = args;
+    if (typeof namespaceId !== 'string' || !NAMESPACE_ID_PATTERN.test(namespaceId)) {
+      return { ok: false, code: 'invalid-op-args' };
+    }
+    await this.peer.removeTarget(namespaceId); // 幂等；未知 nsId 无副作用
+    this.peerOwners.delete(namespaceId);
+    return { ok: true };
+  }
+
+  private async opNotifyAuthChanged(): Promise<Readonly<Record<string, unknown>>> {
+    if (this.role !== 'peer' || this.peer === undefined) return { ok: false, code: 'unknown-op' };
+    this.peer.notifyAuthChanged(); // 仅 blocked 生效（其余态文档化 no-op，不抛错）
+    return { ok: true, connectionState: this.peer.getConnectionState() };
+  }
+
+  private async opRequestReauth(args: Record<string, unknown>): Promise<Readonly<Record<string, unknown>>> {
+    if (this.role !== 'hub' || this.hubPlugin?.replication === undefined) {
+      return { ok: false, code: 'unknown-op' };
+    }
+    const { instanceIdentity } = args;
+    if (typeof instanceIdentity !== 'string' || !/^[a-z][a-z0-9-]{0,62}$/.test(instanceIdentity)) {
+      return { ok: false, code: 'invalid-op-args' };
+    }
+    await this.hubPlugin.replication.requestReauth(instanceIdentity);
+    return { ok: true };
+  }
+
+  // ─────────────────────────────── 内部助手 ───────────────────────────────
+
+  private knownOwner(namespaceId: string): string | undefined {
+    if (this.role === 'hub') return this.knownNamespaces.get(namespaceId);
+    return this.peerOwners.get(namespaceId);
+  }
+
+  private async waitLeaseReadable(lease: NamespaceLease, timeoutMs: number): Promise<boolean> {
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+      const status = lease.getStatus();
+      if (status.lease === 'active' && status.runtime.lifecycle === 'ready' && status.runtime.read.enabled) {
+        return true;
+      }
+      if (Date.now() > deadline) return false;
+      await sleep(50);
+    }
+  }
+
+  /**
+   * 已知集 ns 的 `registry.open` 有界物化等待（F1）。本地记录未物化时 open 返回
+   * `NAMESPACE_NOT_FOUND`（persistence.loadDoc → null——复制收敛/恢复路径上的
+   * **瞬态**），非真实错误：在 `deadline` 内以 `OPEN_RETRY_INTERVAL_MS` 间隔重试；
+   * 一次失败尝试后判 deadline（超时检测 ≤ deadline + 间隔，无静默挂起）。
+   * 三态返回：`ok`（拿到 lease）/ `timeout`（deadline 达成仍未物化 → 调用方
+   * `verify-write-timeout`）/ `rejected`（**非** NOT_FOUND 的真实错误 → 调用方
+   * `write-failed`——不吞错、不重试、不冒充超时）。
+   */
+  private async openWriteNamespace(
+    namespaceId: string,
+    ownerUserId: string,
+    deadline: number,
+  ): Promise<WriteOpenResult> {
+    const registry = this.registry;
+    if (registry === undefined) return { kind: 'rejected' }; // 结构性不可达（knownOwner 校验已过）
+    for (;;) {
+      const opened = await registry.open({ userId: ownerUserId }, namespaceId);
+      if (opened.ok) return { kind: 'ok', lease: opened.lease };
+      if (opened.code !== 'NAMESPACE_NOT_FOUND') return { kind: 'rejected' };
+      if (Date.now() >= deadline) return { kind: 'timeout' };
+      await sleep(OPEN_RETRY_INTERVAL_MS);
+    }
+  }
+
+  private async waitNamespaceLive(lease: NamespaceLease, namespaceId: string, timeoutMs: number): Promise<boolean> {
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+      let live: boolean;
+      if (this.role === 'peer') {
+        live = this.peer?.getNamespaceState(namespaceId) === 'live';
+      } else {
+        const status = lease.getStatus();
+        live = status.lease === 'active' && status.runtime.lifecycle === 'ready' && status.runtime.read.enabled;
+      }
+      if (live) return true;
+      if (Date.now() > deadline) return false;
+      await sleep(LIVE_POLL_INTERVAL_MS);
+    }
+  }
+}
