@@ -274,6 +274,13 @@ describe('SA6 C4（issue #171，Scope 5/AC4）：错配 CLOSE_OK 必须按权威
     run.dropNextHubFrame('CLOSE_OK');
     const closeP = run.peer.removeTarget(run.nsId);
     await run.waitNamespace('closing');
+    // 构造（时序修正·AC3b 同款同步点）：等 hub 通道完成收口——真实 CLOSE_OK 已被
+    // drop 谓词拦截（不入 hubToPeer），以 hub 通道投影 'closed' 为「CLOSE_OK 已发出
+    // 并被 drop」的可观测同步点；此后注入伪造帧不再抢占 drop（断言面零改动）。
+    await settleUntil(
+      () => hubChannelStateOf(run, run.nsId) === 'closed',
+      'hub 通道 closed（CLOSE_OK 已发出并被 drop）',
+    );
     // 注入错配 CLOSE_OK（ackedSequence 与 closeSequence 不匹配；序列遵循注入记账纪律）
     run.injectHub({
       kind: 'CLOSE_OK',
@@ -298,6 +305,52 @@ describe('SA6 C4（issue #171，Scope 5/AC4）：错配 CLOSE_OK 必须按权威
       closeSettled = true;
     });
     await untilMicrotask(() => closeSettled, 'removeTarget 承诺经 violation 收口有限结算');
+  });
+
+  it('C4b（设计 §13.4 · 二支）：hub 发起 CLOSE（closeSequence 未定义）窗口注入错配 CLOSE_OK → 同款显式收口（零静默完成）', async () => {
+    const run = await boot();
+    await run.waitNamespace('live');
+    // gen1 在途 apply 悬挂（saveGate）→ onCloseRequest 收口续体卡在 drain → closing 窗口稳定
+    run.peerNode.persistence.saveGate = deferred();
+    await run.writeHub({ n: 66 });
+    await settle();
+    // hub 发起 CLOSE（§14·#8 窗口：本端从未发出 CLOSE_NAMESPACE → closeSequence 未定义；
+    // 入站 CLOSE_OK 按定义 unmatched——R1/SA2 #2 删除初稿 undefined 例外）
+    run.injectHub({
+      kind: 'CLOSE_NAMESPACE',
+      namespaceId: run.nsId,
+      reasonCode: 'hub-side-close',
+    } as ReplicationMessage);
+    await run.waitNamespace('closing');
+    const closeNsSeq = run.hubFrames('CLOSE_NAMESPACE')[0]?.header.sequence;
+    if (closeNsSeq === undefined) throw new Error('未观察到 CLOSE_NAMESPACE');
+    // 注入错配 CLOSE_OK（+7 偏移恒 ≠ 任何关联序）
+    run.injectHub({
+      kind: 'CLOSE_OK',
+      namespaceId: run.nsId,
+      ackedSequence: closeNsSeq + 7,
+    } as ReplicationMessage);
+    await settle();
+    // ── 红灯锚 1：无 silent completion——错配帧必须显式 ACK_STATE_VIOLATION 收口
+    //    （现实现#165 G4 旧决策：静默忽略 → 零 ERROR → 红灯）──
+    expect(
+      run.peerFramesAll('ERROR').some((f) => (f.message as { code: string }).code === 'ACK_STATE_VIOLATION'),
+      'hub-CLOSE 窗口错配 CLOSE_OK 必须产生 ACK_STATE_VIOLATION 显式错误帧',
+    ).toBe(true);
+    // ── 红灯锚 2：协议违例 → 连接 blocked + transport 关闭（现实现：零迁移 → 红灯）──
+    expect(run.connectionState(), 'hub-CLOSE 窗口错配 CLOSE_OK 必须进入 blocked').toBe('blocked');
+    expect(run.wire.peerSideClosed, 'hub-CLOSE 窗口错配 CLOSE_OK 必须关闭传输').toBe(true);
+    // ── 红灯锚 3：violation 窗口内命名空间不得静默完成/倒退到 closed（现实现：
+    //    silent ignore → 续体正常收口 → closed → 红灯；修复后 violation 投影 disconnected）
+    expect(run.namespaceState(), '错配帧不得静默完成 close（violation 窗口投影）').not.toBe('closed');
+    // 收尾：放行悬挂 apply → 本代 CLOSE 收口续体完成（epoch 未变 → 本地收口 closed）
+    const gate = run.peerNode.persistence.saveGate;
+    run.peerNode.persistence.saveGate = undefined;
+    if (gate !== undefined) gate.resolve();
+    await settle();
+    expect(run.namespaceState()).toBe('closed');
+    await run.peer.stop();
+    await settleUntil(() => run.peer.getConnectionState() === 'stopped', 'stopped');
   });
 });
 

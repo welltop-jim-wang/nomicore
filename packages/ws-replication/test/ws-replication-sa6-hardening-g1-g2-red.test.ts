@@ -193,7 +193,7 @@ describe('SA6 加固红灯 G2：BOOTSTRAP_ACK / CLOSE_OK 帧关联校验', () =>
     await settle();
   });
 
-  it('AC3b：伪造 CLOSE_OK（ackedSequence 过期/错配）→ 不得完成 close 收口', async () => {
+  it('AC3b：伪造 CLOSE_OK（ackedSequence 过期/错配）→ 显式 violation 收口（不静默完成、不静默滞留）', async () => {
     const run = await boot();
     // 丢弃 hub 真实 CLOSE_OK → peer 停留 closing（等待关联帧）
     run.dropNextHubFrame('CLOSE_OK');
@@ -226,11 +226,18 @@ describe('SA6 加固红灯 G2：BOOTSTRAP_ACK / CLOSE_OK 帧关联校验', () =>
     });
     await settle();
 
-    // ── 红灯锚：无效 ACK 关联不得完成 close（§12 L311）──
-    //    现实现：`onCloseOk()` 丢弃参数 → 'closing' 即 setState('closed') + settle closeMemo → 红灯
+    // ── 锚（§13.1 翻转登记）：无效 ACK 关联不得**静默完成** close——按库内 ACK 关联
+    //    权威策略（对照 hub onBootstrapAck 错配 → connectionFatal ACK_STATE_VIOLATION）
+    //    显式收口：violation 投影 disconnected（非 closed）+ 关闭承诺经 violation 结算
+    //    （#165 G4 旧决策「错配不完成 close——closeTimeout 兜底」被 issue #171 C4
+    //    红灯契约推翻；AC3b 原始意图「无效 ACK 不得成功收口为 closed」仍成立）
     expect(run.namespaceState()).not.toBe('closed');
-    expect(closeSettled).toBe(false);
-    // 收尾（确定性）：closeTimeout（fake timer）→ 本地收口 closed
+    expect(closeSettled, '伪造 CLOSE_OK 按权威策略 violation 收口并结算关闭承诺').toBe(true);
+    // ── 追加锚：violation 显影（ERROR 帧 + blocked + transport 关闭）
+    expect(errorCodes(run.peerFramesAll('ERROR'))).toContain('ACK_STATE_VIOLATION');
+    expect(run.connectionState()).toBe('blocked');
+    expect(run.wire.peerSideClosed).toBe(true);
+    // 收尾（确定性）：violation 后连接已收口；closeTimeout 兜底不再需要（closeSettled 已真）
     await advanceMs(run, 5_000);
     await settle();
     await closeP.catch(() => undefined);
