@@ -196,6 +196,10 @@ log.sweepRetention({ now })            // 显式 sweep：卫生遍历（遗留 .
 - **`0` 的非无限语义**：`maxAgeMs: 0` → 每次 sweep 时所有闭组已过期（cutoff = now）；
   `maxBytesPerNamespace: 0` → 字节遍历把「闭组字节」压到 0，下限 = 开组 + 被租约/开组
   阻塞的组。两者皆 `null` → 无限制驱动删除，**卫生遍历仍执行**（协议卫生不属「限制」）。
+- **年龄与字节是两个独立限制（SA4 R1 裁决）**：年龄遍历（P1）按 `maxAgeMs` 筛选；
+  字节遍历（P2）**只以 closed ∧ unleased 为门**——不按年龄新鲜度二次筛选（字节预算
+  必须可独立达标，两限制各自生效、不互相门控）；两者的前缀纪律（首个不可删组即止步
+  该流）与开组/租约保护相同。
 - **删除资格（AC-2）**：仅**closed + unleased** 的 segment group 可删。闭组 = writer
   当前 `currentSegment` 之前的组（sealed generation 的全部组皆闭）；开组（含 BIN-first
   写帧后、JSONL 提交前的瞬态）任何路径不碰（INV-1）。流内**前缀纪律**：首个不可删组

@@ -1233,7 +1233,9 @@ export function createFileLog(config: FileDiagnosticLogConfig, options: FileLogO
       }
 
       // —— P2 字节遍历（maxBytes ≠ null 时；Σ 全部流全部组（含闭组字节——存在即占空间）；
-      //    候选序与 P1 同源；无可删候选（全被开组/租约/未过期/失败止步）→ 停）——
+      //    候选序与 P1 同源；SA4 R1 裁决：**字节遍历只以 closed ∧ unleased 为门**——年龄
+      //    新鲜度是 P1 年龄遍历的专属限制，字节预算必须可独立达标（两限制各自独立生效，
+      //    不互相门控、不双重执法）；无可删候选（全被开组/租约/失败止步）→ 停）——
       if (maxBytes !== null) {
         let total = 0
         for (const stream of streams) {
@@ -1271,7 +1273,8 @@ export function createFileLog(config: FileDiagnosticLogConfig, options: FileLogO
                 report.leaseBlockedGroups += 1
                 break
               }
-              if (maxAgeMs !== null && !groupAgeExpired(stream.segmentsDir, segment, now - maxAgeMs, report)) break
+              // SA4 R1：无年龄新鲜度门（P1 专属）——字节预算下闭组即可删（前缀纪律仍生效：
+              // 首个不可删组即止步该流，绝不跳洞）
               const before = groupBytesBeforeDelete(stream.segmentsDir, segment)
               if (before === 0) continue
               if (deleteGroup(stream.segmentsDir, segment)) {
@@ -1285,7 +1288,7 @@ export function createFileLog(config: FileDiagnosticLogConfig, options: FileLogO
               }
             }
           }
-          if (!progressed) break // 无可删候选（开组/租约/未过期/失败全部止步）→ 停（INV-5 绝不动开组）
+          if (!progressed) break // 无可删候选（开组/租约/失败全部止步）→ 停（INV-5 绝不动开组）
         }
       }
 
