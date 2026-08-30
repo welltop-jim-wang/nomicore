@@ -13,19 +13,17 @@
  * 分组与当前偏差（运行证据见本文件断言；任务简报 §「测试设计与红灯运行结果」）：
  *   G1 control reserve 公共字段名/缺省/下界 —— 已于 #172 收敛（A1-1..A1-3 现绿）：
  *     maxQueuedControlBytes=8MiB、>=maxBootstrapBytes+协议开销，记账判据换读冻结字段。
- *   G2 backpressure 恢复检查点 —— 代码固定 BACKPRESSURE_POLL_INTERVAL_MS=1000；
- *     冻结 max(1,floor(ackTimeoutMs/100))（缺省 100ms）。（行为修复属 #169：
- *     A2-1/A2-2 保持红灯为 #169 验收锚。）
+ *   G2 backpressure 恢复检查点 —— #169 已实现
+ *     max(1,floor(ackTimeoutMs/100))（缺省 100ms）；A2-1/A2-2 为现绿回归锁。
  *   G3 pong timeout 语义 —— peer 侧 close(1001)+backoff 已实现（R4 锚绿）；
  *     hub 侧 close(1002) 且错误码 PONG_TIMEOUT 不在 §13.1 注册表（冻结 close(1001)）。
  *     （行为修复属 #170：A3-1 保持红灯为 #170 验收锚；A3-2/A3-3 为现绿回归锁。）
  *   G4 CLOSE_OK 关联违规 —— 代码在 closing/live 期对不匹配/多余 CLOSE_OK 静默忽略；
  *     冻结「错误 ACK 关联关闭连接」（ACK_STATE_VIOLATION 1002）。
  *     （行为修复属 #171：A4-1/A4-2 保持红灯为 #171 验收锚。）
- *   G5 GOAWAY quiesce/deadline —— peer 收侧 deadline 关 1001 与 SHUTTING_DOWN→blocked
- *     已实现（A5-3/A5-4 绿）；drain 窗口内「停止 OPEN / 不开始新 sync round」未实现
- *     （A5-1/A5-2 红）；hub 停机先发 GOAWAY（§21）未实现（A5-5 红）。
- *     （行为修复属 #171：A5-1/A5-2/A5-5 保持红灯为 #171 验收锚。）
+ *   G5 GOAWAY quiesce/deadline —— peer 收侧 deadline、SHUTTING_DOWN→blocked 及 drain
+ *     窗口内停止 OPEN / 不开始新 sync round 已实现（A5-1..A5-4 绿）；hub 停机先发
+ *     GOAWAY（§21）仍未实现（A5-5 为 #171 延后锚）。
  *
  * 纪律：真实 yjs / Registry / Runtime / HubReplication / PeerReplication；fake-duplex +
  * fake scheduler；零 real sleep；零源码 grep 断言；公共 API 尚缺的冻结字段经
@@ -138,7 +136,7 @@ describe('G1（#172）：control reserve 公共契约 = maxQueuedControlBytes / 
 
 // ═══════════════════════════════════════════════════════════════════════
 // G2 — backpressure 恢复检查点 = max(1, floor(ackTimeoutMs/100))（protocol §17；
-//     缺省 ackTimeoutMs=10_000 → 100ms）。行为修复属 #169：本组为 #169 验收锚。
+//     缺省 ackTimeoutMs=10_000 → 100ms）。#169 已交付，本组为现绿回归锁。
 // ═══════════════════════════════════════════════════════════════════════
 
 /**
@@ -175,7 +173,6 @@ async function assertResumeWithinCheckpoint(opts: {
 }
 
 describe('G2（#172/#169）：backpressure 恢复检查点 = max(1, floor(ackTimeoutMs/100))', () => {
-  // → #169 验收锚：本票以 it.fails 注册，行为修复落地后本用例转绿会使套件反红——届时摘除 .fails 标记
   it('A2-1：缺省 ackTimeoutMs=10_000 → 恢复检查点 = 100ms', async () => {
     const run = await bootMulti({ count: 1, withPressure: true });
     await assertResumeWithinCheckpoint({
@@ -185,7 +182,6 @@ describe('G2（#172/#169）：backpressure 恢复检查点 = max(1, floor(ackTim
     });
   });
 
-  // → #169 验收锚：本票以 it.fails 注册，行为修复落地后本用例转绿会使套件反红——届时摘除 .fails 标记
   it('A2-2：ackTimeoutMs=600 → 检查点 = 6ms', async () => {
     const run = await bootMulti({
       count: 1,
@@ -431,12 +427,11 @@ describe('G4（#172/#171）：CLOSE_OK 关联违规 → ACK_STATE_VIOLATION(1002
 // ═══════════════════════════════════════════════════════════════════════
 // G5 — GOAWAY quiesce/deadline（protocol §6.3：停 OPEN、不开始新 sync round、
 //     现有 namespace 到 deadline 前自然收口、之后发送方 WS 1001 关闭；§21 停机
-//     顺序第 1 步「停止接纳并发送 GOAWAY」）。行为修复属 #171：A5-1/A5-2/A5-5
-//     为 #171 验收锚；A5-3/A5-4 为现绿回归锁。
+//     顺序第 1 步「停止接纳并发送 GOAWAY」）。A5-1..A5-4 为现绿回归锁；A5-5
+//     仍为 #171 延后锚。
 // ═══════════════════════════════════════════════════════════════════════
 
 describe('G5（#172/#171）：GOAWAY quiesce/deadline', () => {
-  // → #171 验收锚：本票以 it.fails 注册，行为修复落地后本用例转绿会使套件反红——届时摘除 .fails 标记
   it('A5-1：GOAWAY drain 窗口内 addTarget 必须停止 OPEN', async () => {
     const run = await boot();
     await run.waitNamespace('live');
@@ -451,7 +446,6 @@ describe('G5（#172/#171）：GOAWAY quiesce/deadline', () => {
     ).toBe(openedBefore);
   });
 
-  // → #171 验收锚：本票以 it.fails 注册，行为修复落地后本用例转绿会使套件反红——届时摘除 .fails 标记
   it('A5-2：GOAWAY drain 窗口内 needs-resync 不得启动新 sync round', async () => {
     const run = await boot({
       limits: { maxInFlightUpdates: 1, maxQueuedUpdateCount: 1 },
@@ -544,7 +538,7 @@ describe('G5（#172/#171）：GOAWAY quiesce/deadline', () => {
 // 对象是本测试文件自身的登记面自检（非实现源码——不违「零源码 grep 断言」纪律）。
 // ═══════════════════════════════════════════════════════════════════════
 
-/** 延后锚冻结清单（→ #169/#170/#171 验收锚；修复票落地摘标时同步缩清单，否则守卫反红）。 */
+/** 延后锚冻结清单（→ #170/#171 验收锚；修复票落地摘标时同步缩清单，否则守卫反红）。 */
 const DEFERRED_ANCHORS = [
   'A3-1',
   'A4-1',
