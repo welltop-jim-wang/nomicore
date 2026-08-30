@@ -562,11 +562,11 @@ describe('Phase-5 SA7 补充：file 适配器 reset-replica 全周期', () => {
   );
 });
 
-// ════════ 🔴 红锚 F1（SA7 R1）：第二轮 bump→fence→reset 后重引导不发生 ════════
+// ════════ F1 回归锁：第二轮 bump→fence→reset 后仍能重引导 ════════
 
-describe('Phase-5 SA7 红锚 F1：两轮 bump→fence→reset 运维循环的第二轮重引导（当前实现缺口）', () => {
+describe('Phase-5 SA7 F1 回归锁：两轮 bump→fence→reset 运维循环的第二轮重引导', () => {
   it(
-    '🔴 第二次成功 reset-replica 后应重引导收敛（部署文档冻结编排 ③）；文档化恢复入口 add-target 应有效',
+    '第二次成功 reset-replica 后重引导收敛；文档化恢复入口 add-target 有效',
     async () => {
       const t = await bootTopology('memory');
       await sendOp(
@@ -623,20 +623,19 @@ describe('Phase-5 SA7 红锚 F1：两轮 bump→fence→reset 运维循环的第
       );
       // 归档 + 前置核对成功（SA7 实测：回执 ok:true + replica-reset 事件均出现）
       expect(reset2.ok).toBe(true);
-      // 🔴 部署文档冻结编排 ③：addTarget → §14.1 整连接重建 → 重 OPEN → bootstrap。
-      //    SA7 实测（2026-08-30）：channel closing→closed 后无任何重建/重开事件，
-      //    peer 该 ns 永久 read-failed —— 本断言当前为红，SA3 修复后转绿。
-      await waitConverged(t, ['tags'], 60_000, 'F1 第 2 轮 reset 后重新收敛（红锚：当前不发生）');
+      // 部署文档冻结编排 ③：addTarget → §14.1 整连接重建 → 重 OPEN → bootstrap。
+      // f310f18 修复 closing 结算竞争后，本断言作为第二轮重引导的永久回归锁。
+      await waitConverged(t, ['tags'], 60_000, 'F1 第 2 轮 reset 后重新收敛');
 
       // 文档化恢复入口（部署文档 reset 行）：重引导链失败 → add-target。
-      //    SA7 实测：被 G5c 恢复的 peerOwners 幂等集短路为伪 ok:true 零动作 —— 一并钉红。
+      // 状态感知幂等门确保终态通道不会被 peerOwners 在册状态短路。
       const addTarget = await sendOp(
         t.p1,
         { op: 'add-target', namespaceId: t.nsId, ownerUserId: 'alice' },
         30_000,
       );
       expect(addTarget.ok).toBe(true);
-      await waitConverged(t, ['tags'], 60_000, 'F1 add-target 恢复入口后重新收敛（红锚：当前不发生）');
+      await waitConverged(t, ['tags'], 60_000, 'F1 add-target 恢复入口后重新收敛');
     },
     360_000,
   );

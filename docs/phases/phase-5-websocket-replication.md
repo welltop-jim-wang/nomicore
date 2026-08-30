@@ -180,9 +180,6 @@ A4-1/A4-2/A5-5（#171）仍以 `it.fails` 注册为期望红灯。锚集存在�
 
 - 结构化 observability（#163）：`HubReplication`/`PeerReplication` 公共 API 无
   observer/metrics 事件面；ADR 0010「资源限制与 observability」节的最小观测面未交付。
-- apps/yjs-server + real WebSocket adapter/composition（#164）：`apps/` 下无 composition
-  root；`DuplexTransport` 三可选面（bufferedAmount/ping/onPong）的生产装配期响亮断言
-  （§17「生产 Adapter 必须暴露三面」）随 #164 交付。
 - peer 侧 resetReplica 编排（切片 8 部分）：Registry 侧已交付；**编排已随 #140 以
   app 管理动词（`reset-replica`）交付，归属 composition root（`apps/yjs-server`）**；
   ws-replication 层不引入 reset 编排 API（ADR 0010「包、应用与生命周期」节的宿主

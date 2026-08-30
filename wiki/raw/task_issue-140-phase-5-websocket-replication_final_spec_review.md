@@ -76,8 +76,7 @@
 
 ## 7. 观察项（非阻断，移交）
 
-- **F-O1（文档措辞）**：部署文档「**hub** 停机窗口的已知偏差」小节实际描述的是 **peer 实例自身**停机（shutdown/SIGTERM 与 reset 回执交错时 `peer.stop()` 拦截重引导）——与 hub 无关。标题措辞会误导运维关联到 hub 重启场景。建议后续文档卫生票修正为「peer 停机窗口」。
-- **F-O2（测试文档卫生）**：SA7 文件 F1 用例 describe 标题仍含「（当前实现缺口）」、注释「本断言当前为红，SA3 修复后转绿」——修复后已全绿，历史措辞留存易误导后续读者以为存在未修复缺口（SA7 owned 文件，本审查不改）。
+- **F-O1/F-O2（已在 pre-merge 复审闭环）**：部署文档已将停机窗口更正为 peer；SA7 F1 用例已改为现绿回归锁措辞。
 - **F-O3（基线 flaky 登记）**：`smoke-skeleton-red.test.ts` T3 的「peer verify-write ok → 立即 hub read == 1」断言存在最终一致窗口（ADR 0010：写成功不等待 hub 确认）——高负载下 hub read 可抢在传播前（本轮全量并行 334s 时 1/47 失败；单跑 3/3 绿；SA7 R2 同套件 47/47 绿；相关代码路径本轮零改动）。属基线测试时序脆弱性，建议后续加有界收敛等待（与 `waitConverged` 同款），不属本任务。
 - **O-F2（SA7 移交，确认非本任务缺陷）**：peer 本地写新 schema 字段在增量传播后仍 `write-failed`（引擎「活动 schema 仅在（重）物化时切换」，ADR 0010 L107 已登记原则）；设计文档 L140「→ peer installActive」表述与实现不符的文档卫生票维持 SA7 建议并行处理。
 
@@ -96,7 +95,7 @@
 | `pnpm typecheck` | exit 0（12 个 tsconfig 全过） |
 | `npx vitest run apps/yjs-server/test/ --no-typecheck` | 47 例：46 绿 + smoke T3 1 失败（高负载时序） |
 | `npx vitest run apps/yjs-server/test/smoke-skeleton-red.test.ts --no-typecheck` | **3 passed (3)**，exit 0——T3 单跑绿，flaky 定性成立 |
-| 源码核对（grep/sed 只读） | `peer-connection.ts:216-254/619-629`、`peer-namespace.ts:644-705`、`types.ts:194-205/372-399`、`config.ts:119`、`app.ts:217/303/472-477/567-573/726-756/818-845`、`lifecycle.ts:98-120` | 
+| 源码核对（grep/sed 只读） | `peer-connection.ts:216-254/619-629`、`peer-namespace.ts:644-705`、`types.ts:194-205/372-399`、`config.ts:119`、`app.ts:217/303/472-477/567-573/726-756/818-845`、`lifecycle.ts:98-120` |
 | 文档核对 | `hub-peer-deployment.md` 动词表/稳定码 8 码/管理动词节/replica-reset 事件/add-target 幂等语义；`phase-5-websocket-replication.md` 切片 8/9/10 + 未交付边界 AD-1 改写——与代码逐字一致 |
 
 ## 10. 结论
