@@ -37,6 +37,7 @@ import type {
   ReplicationTimeouts,
 } from '@nomicore/ws-replication';
 import type { NamespaceOwner, NamespaceRegistry } from '@nomicore/namespace-registry';
+import type { ConnectionErrorCode } from '@nomicore/replication-protocol';
 
 describe('`@nomicore/ws-replication` 冻结公共面（切片 6）', () => {
   it('工厂：createHubReplication / createPeerReplication 签名（选项均为命名形状）', () => {
@@ -181,4 +182,10 @@ describe('`@nomicore/ws-replication` 冻结公共面（切片 6）', () => {
     expectTypeOf<typeof DEFAULT_REPLICATION_TIMEOUTS>().toMatchTypeOf<Readonly<ReplicationTimeouts>>();
     expectTypeOf<typeof DEFAULT_REPLICATION_BACKOFF>().toMatchTypeOf<Readonly<ReplicationBackoff>>();
   });
+});
+
+it('P1（issue #176 AC-1）：PONG_TIMEOUT 不在 connection 错误注册表（§13.1 append-only）', () => {
+  // @ts-expect-error PONG_TIMEOUT 未登记——若此行不再报错，说明注册表被污染（错误修法）
+  const code: ConnectionErrorCode = 'PONG_TIMEOUT';
+  expectTypeOf(code).toBeString();
 });
