@@ -57,7 +57,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { bootMulti, ISSUE137_SCHEMA } from './issue137-driver.js';
-import { boot, collectUnhandledRejections } from './driver.js';
+import { boot, collectUnhandledRejections, DEFAULT_PEER_VERIFIER, TEST_TOKEN } from './driver.js';
 import {
   deferred,
   HUB_INSTANCE,
@@ -693,6 +693,7 @@ async function bootLocal(opts: {
       permissions: { read: true, submit: true },
     }),
     timer: hubNode.scheduler,
+    verifyToken: DEFAULT_PEER_VERIFIER,
     ...(opts.limits !== undefined ? { limits: opts.limits } : {}),
     ...(opts.timeouts !== undefined ? { timeouts: opts.timeouts } : {}),
   });
@@ -710,7 +711,7 @@ async function bootLocal(opts: {
         get: () => hubPressure,
         configurable: true,
       });
-      hub.accept(wire.hubEnd, { peerInstanceId: PEER_INSTANCE });
+      hub.accept(wire.hubEnd, { token: TEST_TOKEN });
       return wire.peerEnd;
     },
     timer: peerNode.scheduler,

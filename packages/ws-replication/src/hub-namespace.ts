@@ -12,6 +12,7 @@ import type {
 } from '@nomicore/namespace-registry';
 import { FenceWatchdog, type WatchdogPredicate } from './fence-watchdog.js';
 import { namespaceErrorFrame } from './frame-io.js';
+import { cidField, stableNamespaceCode } from './observer.js';
 import {
   mapEncodeThrow,
   mapRejection,
@@ -25,21 +26,15 @@ import { RoundAborted, RoundEngine } from './round-engine.js';
 import { UpdateChannel } from './update-channel.js';
 import type { DataSenderFacet } from './backpressure.js';
 import type {
+  HubNamespaceState,
+  ReplicationObserverEvent,
   ReplicationTimer,
   ResolvedLimits,
   ResolvedTimeouts,
 } from './types.js';
 
-export type HubChannelState =
-  | 'opening'
-  | 'bootstrapping'
-  | 'reconciling'
-  | 'live'
-  | 'needs-resync'
-  | 'closing'
-  | 'closed'
-  | 'conflicted'
-  | 'failed';
+/** hub 侧 channel 状态（= 公共投影 HubNamespaceState；包内实现用名）。 */
+export type HubChannelState = HubNamespaceState;
 
 /** 通道宿主（由 HubConnectionImpl 实现）。 */
 export interface HubChannelHost {
@@ -63,6 +58,17 @@ export interface HubChannelHost {
   /** 请求连接级 drain（§4.5，issue #137）。 */
   requestDataDrain(): void;
   connectionFatal(code: string, wsCloseCode?: number): void;
+  /** channel 进入终态（closed/conflicted/failed）的一次性通知——连接 drain 窗口
+   *  提前完成观测（issue #174 §4.3）；非 drain 期调用方 no-op。 */
+  onChannelSettled(namespaceId: string): void;
+  /** observer 是否在场（热路径纪律：无 observer 零事件构造/零投影读取/零时钟调用）。 */
+  observerPresent(): boolean;
+  /** observer 事件分发（隔离语义在 dispatchReplicationObserver 单点）。 */
+  emitObserver(event: ReplicationObserverEvent): void;
+  /** 连接级受控 observability id（握手完成前 undefined）。 */
+  connectionId(): string | undefined;
+  /** 单调时源（仅作差；clock 缺省/无 observer 时 undefined）。 */
+  now?(): number | undefined;
 }
 
 type TimerKind = 'bootstrap' | 'close';
@@ -91,11 +97,15 @@ export class HubNamespaceChannel {
   };
   private cleanupTail: Promise<void> = Promise.resolve();
   private closeQueue: Promise<void> = Promise.resolve();
+  /** issue #174 §4.3 记忆位：终态一次性通知（每 channel 至多一次；重复通知幂等）。 */
+  private settledNotified = false;
 
   readonly round: RoundEngine;
   readonly channel: UpdateChannel;
   readonly watchdog: FenceWatchdog;
   private readonly onOwnedBound: (bytes: Uint8Array) => void;
+  /** 构造期捕获的 observer 在场标记（options 注入后不可变——热路径判空零调用）。 */
+  private readonly observerOn: boolean;
 
   /** 连接级 data 调度面（§6.1/§6.3）：pull 以 state==='live' 为门槛；shed 按通道
    *  live 性分派（live → declareHubResync 声明并等待；非 live → pendingResync）。 */
@@ -106,7 +116,7 @@ export class HubNamespaceChannel {
     discardForConnectionPressure: () => {
       this.channel.discardForConnectionPressure();
       if (this.state === 'live') {
-        this.declareHubResync();
+        this.declareHubResync('connection-shed');
       } else {
         this.pendingResync = true;
       }
@@ -117,10 +127,24 @@ export class HubNamespaceChannel {
     private readonly host: HubChannelHost,
     readonly namespaceId: string,
   ) {
+    this.observerOn = host.observerPresent();
     this.onOwnedBound = (bytes: Uint8Array): void => this.onOwnedUpdate(bytes);
     this.round = new RoundEngine({
       role: 'hub',
-      send: (message) => this.sendChecked(message),
+      send: (message) => {
+        const seq = this.sendChecked(message);
+        // HB10：出向 Step2 diff 字节（seq>0 时发射——0 = 帧被否决，未出站）
+        if (seq > 0 && message.kind === 'SYNC_STEP2' && this.observerOn) {
+          this.host.emitObserver({
+            type: 'sync-step2-sent',
+            side: 'hub',
+            ...(cidField(this.host.connectionId())),
+            namespaceId: this.namespaceId,
+            bytes: message.update.byteLength,
+          });
+        }
+        return seq;
+      },
       encode: (kind, remoteSV) => {
         try {
           const session = this.session;
@@ -147,11 +171,13 @@ export class HubNamespaceChannel {
       limits: host.limits,
       ackTimeoutMs: host.timeouts.ackTimeoutMs,
       sendUpdateFrame: (bytes) => this.sendUpdateFrame(bytes),
-      declareLocalResync: () => this.onLocalResyncEdge(),
+      declareLocalResync: (cause) => this.onLocalResyncEdge(cause),
       notePendingResync: () => {
         this.pendingResync = true;
       },
       onAckTimeout: () => this.onAckTimeoutFired(),
+      onUpdateAcked: (info) => this.onUpdateAcked(info),
+      now: () => this.host.now?.(),
       armTimer: (cb, ms) => host.timer.setTimeout(cb, ms),
       clearTimer: (h) => host.timer.clearTimeout(h),
       dataGateOpen: () => this.host.dataGateOpen(),
@@ -295,9 +321,11 @@ this.finishOpenError('INTERNAL_ERROR');
         message.replicationEpoch === undefined ||
         message.replicationId !== hubIdentity.replicationId
       ) {
+        this.emitIdentityConflicted('open-mismatch'); // HB6
         this.finishOpenError('REPLICATION_ID_MISMATCH');
         return;
       } else if (message.replicationEpoch !== hubIdentity.replicationEpoch) {
+        this.emitIdentityConflicted('open-mismatch'); // HB6
         this.finishOpenError('REPLICATION_EPOCH_MISMATCH');
         return;
       } else {
@@ -367,11 +395,15 @@ this.startBootstrap(hubIdentity);
     for (const _waiter of waiters) {
       this.sendChecked(namespaceErrorFrame(code, this.namespaceId));
     }
+    this.emitNsErrorSent(code); // HB2：每次 wire 错误/终局恰一事件（不按 waiter 数）
     const targetState = toFinalState(terminalStateOf(code));
     if (this.state === 'opening' || !this.isTerminal()) {
       this.setState(targetState);
     }
     void this.closeSessionAndRelease();
+    // §4.3 通知入口 3（R2-M5：函数尾部无条件调用；守卫跳过分支同样走到这里——
+    // 已终态情形由记忆位吸收）
+    this.notifySettled();
   }
 
   private finishOpenSilently(): void {
@@ -431,6 +463,16 @@ this.startBootstrap(hubIdentity);
         snapshot,
       });
       this.bootstrapSnapshotSeq = seq > 0 ? seq : undefined;
+      // HB3：快照字节（seq>0 时发射——0 = 帧被否决，未出站）
+      if (seq > 0 && this.observerOn) {
+        this.host.emitObserver({
+          type: 'bootstrap-snapshot-sent',
+          side: 'hub',
+          ...(cidField(this.host.connectionId())),
+          namespaceId: this.namespaceId,
+          bytes: snapshot.byteLength,
+        });
+      }
       // 帧内身份=重读值（最小化「帧身份 ≠ 快照内容」窗口；§8 step 3 R3/#8）
       void _hubIdentity;
       this.armTimer('bootstrap');
@@ -555,6 +597,9 @@ this.startBootstrap(hubIdentity);
         this.openWaiters = [];
         for (const waiter of waiters) waiter();
       }
+      // §4.3 通知入口 2（R2-M5：函数尾部无条件调用——CLOSE_OK 后 setState('closed')
+      //  才通知，时序正确：自然收口在 CLOSE_OK 已上 wire 后计入 drain 完成）
+      this.notifySettled();
     });
   }
 
@@ -562,12 +607,25 @@ this.startBootstrap(hubIdentity);
     if (this.isQuietState()) return;
     this.channel.markResyncReceived();
     this.setState('needs-resync');
+    this.emitResyncRequired('remote-declared'); // HB8：收 RESYNC_REQUIRED（对端声明本端化）
   }
 
   onErrorFrame(message: { code: string }): void {
     if (this.isTerminal()) return;
     if (this.state === 'closing') return; // §13.4 迟到纪律
-    this.finalize(toFinalState(terminalStateOf(message.code)));
+    const terminal = toFinalState(terminalStateOf(message.code));
+    if (this.observerOn) {
+      this.host.emitObserver({
+        type: 'namespace-error',
+        side: 'hub',
+        ...(cidField(this.host.connectionId())),
+        namespaceId: this.namespaceId,
+        code: stableNamespaceCode(message.code),
+        direction: 'received',
+        terminalState: terminal,
+      });
+    }
+    this.finalize(terminal);
   }
 
   /** 连接关闭同步静默：先停接纳并摘订阅，再异步 drain/释放。 */
@@ -580,12 +638,21 @@ this.startBootstrap(hubIdentity);
     }
   }
 
+  /** §19 L158 授权撤销：terminating namespace ERROR + failed 终局 + 资源收口。
+   *  quiet/终态（closing/closed/conflicted/failed）→ 零副作用 no-op（重复 revoke 幂等）。 */
+  terminateUnauthorized(): Promise<void> {
+    if (this.isQuietState()) return Promise.resolve();
+    this.sendNsError('NAMESPACE_UNAUTHORIZED'); // 既有（:770-772）→ namespaceErrorFrame（带 namespaceId）
+    this.finalize('failed'); // 既有（:791-796）：清 timer/终态/收口
+    return this.terminationSettled(); // §5.3
+  }
+
   /** 连接关闭（socket 断开 / Hub 停机）：全量 cleanup。 */
   onConnectionClosed(): Promise<void> {
     this.quiesceConnection();
     return this.closeQueue.then(async () => {
       await this.drainPendingApplies();
-      await this.closeSessionAndRelease();
+      await this.settleClose();
       if (!this.isTerminal()) this.setState('closed');
     });
   }
@@ -618,7 +685,7 @@ this.startBootstrap(hubIdentity);
     // session 层溢出边沿（hub 侧，多 peer fan-out 方向）：§12 R4.2 定案——“hub 命中 =
     // 声明 RESYNC_REQUIRED + 等待”（hub 的声明是 peer 发起恢复 round 的唯一通路，§9.4）
     this.channel.markSessionResyncEdge();
-    this.declareHubResync();
+    this.declareHubResync('session-fanout-overflow');
   }
 
   /** §12.2 one-shot 终结器（帧处理钩子与 watchdog 探测合流点；记忆化保证恰一帧）。 */
@@ -644,6 +711,7 @@ this.startBootstrap(hubIdentity);
         replicationId: identity.replicationId,
         replicationEpoch: identity.replicationEpoch,
       });
+      this.emitIdentityConflicted('fence'); // HB5：epoch fence
       this.finalize('conflicted');
       return;
     }
@@ -653,15 +721,22 @@ this.startBootstrap(hubIdentity);
     this.finalize('failed');
   }
 
-  private onLocalResyncEdge(): void {
+  private onLocalResyncEdge(cause: 'queue-overflow' | 'send-failed'): void {
     // hub 侧 update-channel 本地排队溢出（§10.2 判据）：§10.2/§18.4「hub 溢出同机制声明」
     // + §12 R4.2 定案——声明 RESYNC_REQUIRED + 等待 peer 新 round
-    this.declareHubResync();
+    this.declareHubResync(cause);
   }
 
   /** hub 溢出面统一声明（§10.2/§12 R4.2）：发 RESYNC_REQUIRED（一次/恢复周期，记忆化）
    *  → 置 needs-resync → 等待 peer 新 round（round 恒由 peer 发起，§10.5/§10.6）。 */
-  private declareHubResync(): void {
+  private declareHubResync(
+    cause:
+      | 'queue-overflow'
+      | 'send-failed'
+      | 'connection-shed'
+      | 'ack-timeout'
+      | 'session-fanout-overflow',
+  ): void {
     if (this.isQuietState()) return;
     if (this.resyncDeclared) return;
     this.resyncDeclared = true;
@@ -671,10 +746,11 @@ this.startBootstrap(hubIdentity);
       reasonCode: 'send-queue-overflow',
     });
     if (!this.isQuietState()) this.setState('needs-resync');
+    this.emitResyncRequired(cause); // HB7：仅 resyncDeclared false→true 翻转时发射
   }
 
   private onAckTimeoutFired(): void {
-    this.declareHubResync();
+    this.declareHubResync('ack-timeout');
   }
 
   // ─────────────────────────────── apply（§11.1） ───────────────────────────────
@@ -685,10 +761,34 @@ this.startBootstrap(hubIdentity);
     }
     try {
       // §6.3 R2（SA2 #7）：see peer-namespace.sendUpdateFrame——异常统一收敛返回 0 → F4。
-      return this.host.sendData(this.namespaceId, bytes);
+      const seq = this.host.sendData(this.namespaceId, bytes);
+      // 出向 UPDATE 帧字节（seq>0 时发射——0 = 帧被否决，未出站；合并帧报合并后长度）
+      if (seq > 0 && this.observerOn) {
+        this.host.emitObserver({
+          type: 'update-sent',
+          side: 'hub',
+          ...(cidField(this.host.connectionId())),
+          namespaceId: this.namespaceId,
+          bytes: bytes.byteLength,
+        });
+      }
+      return seq;
     } catch {
       return 0;
     }
+  }
+
+  /** update-acked（hub 出向 UPDATE 被对端 ACK 收妥；数据来自 UpdateChannel 记账）。 */
+  private onUpdateAcked(info: Readonly<{ bytes: number; latencyMs?: number }>): void {
+    if (!this.observerOn) return;
+    this.host.emitObserver({
+      type: 'update-acked',
+      side: 'hub',
+      ...(cidField(this.host.connectionId())),
+      namespaceId: this.namespaceId,
+      bytes: info.bytes,
+      ...(info.latencyMs !== undefined ? { ackLatencyMs: info.latencyMs } : {}),
+    });
   }
 
   private async applyStep2(update: Uint8Array, step2Sequence: number): Promise<'ok' | 'aborted'> {
@@ -716,6 +816,9 @@ this.startBootstrap(hubIdentity);
       if (!this.isTerminal()) this.finalize('failed');
       return 'failed';
     }
+    // §5.7：在调用 applyRemoteUpdate 前采样，完整覆盖同步接纳与 sequencer 排队；
+    // host.now 已经 safeNow 折叠，观测时钟异常不会阻断协议路径。
+    const t0 = this.observerOn ? this.host.now?.() : undefined;
     const pending = session.applyRemoteUpdate(update);
     this.pendingApplies.add(pending);
     try {
@@ -725,6 +828,24 @@ this.startBootstrap(hubIdentity);
           mapSessionRefusal(result.code, this.session, this.runtimeSnapshot(), 'hub'),
         );
         return 'failed';
+      }
+      if (this.observerOn) {
+        // HB9'：每笔成功 apply 恰一事件（hub 无 degraded 判别——结构性不可 bypass）
+        const t1 = this.host.now?.();
+        const applyLatencyMs =
+          t0 !== undefined && t1 !== undefined ? t1 - t0 : undefined;
+        const base = {
+          side: 'hub',
+          ...cidField(this.host.connectionId()),
+          namespaceId: this.namespaceId,
+          bytes: update.byteLength,
+          ...(applyLatencyMs !== undefined ? { applyLatencyMs } : {}),
+        } as const;
+        if (isStep2) {
+          this.host.emitObserver({ type: 'sync-diff-applied', ...base });
+        } else {
+          this.host.emitObserver({ type: 'update-applied', ...base });
+        }
       }
       if (isStep2) return 'ok'; // SYNC_APPLIED 由 applyStep2 发送（§9.1.4）
       if (this.isQuietState()) return 'ok'; // closing/终态：ACK 不再发出
@@ -792,6 +913,7 @@ this.startBootstrap(hubIdentity);
 
   private sendNsError(code: string): void {
     this.sendChecked(namespaceErrorFrame(code, this.namespaceId));
+    this.emitNsErrorSent(code); // HB2：本端 ns ERROR（稳定码折叠）
   }
 
   private sendChecked(message: ReplicationMessage): number {
@@ -805,6 +927,7 @@ this.startBootstrap(hubIdentity);
         } catch {
           // 防御：ERROR 帧本身编码失败（极小帧，理论不可达）
         }
+        if (message.kind !== 'ERROR') this.emitNsErrorSent(code); // HB2：编码面失败族；ERROR 自发射路径防双计
         this.finalize('failed');
       }
       return 0;
@@ -815,7 +938,38 @@ this.startBootstrap(hubIdentity);
     if (this.isTerminal()) return; // 终态不降级
     this.clearAllTimers();
     this.setState(state);
-    void this.closeSessionAndRelease();
+    void this.settleClose();
+    // §4.3 通知入口 1（R2-M5：函数尾部无条件调用——watchdog / violation /
+    // terminateUnauthorized / error-mapping 全部经此；已终态早退情形先前入口已通知）
+    this.notifySettled();
+  }
+
+  /** issue #174 §4.3：终态一次性通知（记忆位保证每 channel 至多一次；重复通知幂等）。 */
+  private notifySettled(): void {
+    if (this.settledNotified) return;
+    this.settledNotified = true;
+    this.host.onChannelSettled(this.namespaceId);
+  }
+
+  /**
+   * §5.3 收口单点（R2 A5 链式追加）：执行幂等清理体并【链式追加】到 cleanupTail——
+   * 所有发起方（finalize/terminateUnauthorized/onConnectionClosed）的清理都汇入同一链，
+   * 无覆写丢尾（R1 单字段覆写形态在 revoke 与并发 onConnectionClosed 竞争时后写覆写前写，
+   * 强度弱于「revoke resolve 即资源已收口」的声称）。存储前归一化（R2 N4）：清理体抛错
+   * 时 tail 不 reject——void this.settleClose() 零 floating rejected promise。
+   */
+  private settleClose(): Promise<void> {
+    const op = this.closeSessionAndRelease(); // 幂等：session/unsub/lease 二次调用见 undefined 即跳过
+    this.cleanupTail = this.cleanupTail.then(
+      () => op, () => op,
+    ).then(() => undefined, () => undefined);
+    return this.cleanupTail;
+  }
+
+  /** §5.3 revoke 结算：吞清理异常（session.close/lease.release 异常在收口链内部分类处理，
+   *  不允许冒泡成 revoke rejection——红灯 #7/#8 断言 revoke resolve）。 */
+  private terminationSettled(): Promise<void> {
+    return this.cleanupTail.then(() => undefined, () => undefined);
   }
 
   private isTerminal(): boolean {
@@ -839,28 +993,98 @@ this.startBootstrap(hubIdentity);
 
   private async closeSessionAndRelease(): Promise<void> {
     const session = this.session;
-    const unsubscribe = this.unsubscribe;
-    // 同步摘除订阅，再跨 session.close 屏障，确保 close/GOAWAY 期间不再接纳本地更新。
-    if (unsubscribe !== undefined) {
-      unsubscribe();
-      this.unsubscribe = undefined;
-    }
-    if (session !== undefined) {
-      await session.close();
-    }
     const lease = this.lease;
-    this.lease = undefined;
+    const unsubscribe = this.unsubscribe;
+    // 入口即取得资源所有权并清空投影，保证并发/重复 cleanup 不会二次关闭或释放。
+    this.unsubscribe = undefined;
     this.session = undefined;
+    this.lease = undefined;
+    // 同步摘除订阅并 teardown；即使敌意测试 seam 令 session.close reject，channel 也已
+    // 停止接纳与发送，且 finally 仍会释放 lease。生产 ReplicationSession.close 契约恒绿，
+    // 这里的防御负责 host 组装边界的异常安全。
+    try {
+      unsubscribe?.();
+    } catch {
+      // best-effort：退订异常不得阻断其余资源收口
+    }
     this.watchdog.teardown();
     this.round.teardown();
     this.channel.teardown();
-    if (lease !== undefined) {
-      await lease.release().catch(() => undefined);
+    try {
+      if (session !== undefined) {
+        await session.close();
+      }
+    } finally {
+      if (lease !== undefined) {
+        await lease.release().catch(() => undefined);
+      }
     }
   }
 
   private setState(state: HubChannelState): void {
+    if (this.state === state) return;
+    const from = this.state;
     this.state = state;
+    // HB1：channel FSM 唯一迁移点（同态早退——边沿 exactly-once；初始 'opening' 无迁移不发射）
+    if (this.observerOn) {
+      this.host.emitObserver({
+        type: 'channel-state-changed',
+        side: 'hub',
+        ...(cidField(this.host.connectionId())),
+        namespaceId: this.namespaceId,
+        from,
+        to: state,
+      });
+    }
+  }
+
+  // ─────────────────────────────── 观测发射辅助（§3/§4 safe-field） ───────────────────────────────
+
+  /** HB2：namespace-error{direction:'sent'}（稳定码折叠；每次 wire 错误恰一事件）。 */
+  private emitNsErrorSent(code: string): void {
+    if (!this.observerOn) return;
+    this.host.emitObserver({
+      type: 'namespace-error',
+      side: 'hub',
+      ...(cidField(this.host.connectionId())),
+      namespaceId: this.namespaceId,
+      code: stableNamespaceCode(code),
+      direction: 'sent',
+    });
+  }
+
+  /** HB7/HB8：resync-required（cause 闭联合）。 */
+  private emitResyncRequired(
+    cause:
+      | 'queue-overflow'
+      | 'send-failed'
+      | 'connection-shed'
+      | 'ack-timeout'
+      | 'session-fanout-overflow'
+      | 'remote-declared',
+  ): void {
+    if (!this.observerOn) return;
+    this.host.emitObserver({
+      type: 'resync-required',
+      side: 'hub',
+      ...(cidField(this.host.connectionId())),
+      namespaceId: this.namespaceId,
+      cause,
+    });
+  }
+
+  /** HB5/HB6：identity-conflicted（via 闭联合）。 */
+  private emitIdentityConflicted(
+    via: 'open-mismatch' | 'fence' | 'identity-changed-frame',
+  ): void {
+    if (!this.observerOn) return;
+    this.host.emitObserver({
+      type: 'identity-conflicted',
+      side: 'hub',
+      ...(cidField(this.host.connectionId())),
+      namespaceId: this.namespaceId,
+      via,
+    });
   }
 
   private armTimer(kind: TimerKind): void {

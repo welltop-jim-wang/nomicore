@@ -39,6 +39,7 @@ import {
   schemaReady,
   type ReplicaNode,
 } from './harness.js';
+import { DEFAULT_PEER_VERIFIER, TEST_TOKEN } from './driver.js';
 import { createHubReplication, createPeerReplication } from '@nomicore/ws-replication';
 import type {
   DuplexTransport,
@@ -228,6 +229,7 @@ async function bootReal(count: number): Promise<RealRun> {
       permissions: { read: true, submit: true },
     }),
     timer: realTimer,
+    verifyToken: DEFAULT_PEER_VERIFIER,
   });
 
   const server = net.createServer((socket) => {
@@ -236,7 +238,7 @@ async function bootReal(count: number): Promise<RealRun> {
       hubSentBytes.push(bytes.byteLength);
     });
     hubTransport = transport;
-    hub.accept(transport, { peerInstanceId: PEER_INSTANCE }); // server 回调晚于 hub 构造执行——TDZ 安全
+    hub.accept(transport, { token: TEST_TOKEN }); // server 回调晚于 hub 构造执行——TDZ 安全
   });
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   const port = (server.address() as net.AddressInfo).port;

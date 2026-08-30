@@ -22,6 +22,7 @@ import type {
   ReplicationTimeouts,
 } from '@nomicore/ws-replication';
 import { decodeMessage, type DecodedMessage } from '@nomicore/replication-protocol';
+import { DEFAULT_PEER_VERIFIER, TEST_TOKEN } from './driver.js';
 import {
   HUB_INSTANCE,
   HUB_OWNER,
@@ -109,6 +110,7 @@ export async function bootMulti(opts: Issue137BootOptions = {}): Promise<Run137>
       permissions: { read: true, submit: true },
     }),
     timer: hubNode.scheduler,
+    verifyToken: DEFAULT_PEER_VERIFIER,
     ...(opts.limits !== undefined ? { limits: opts.limits } : {}),
     ...(opts.timeouts !== undefined ? { timeouts: opts.timeouts } : {}),
   });
@@ -135,7 +137,7 @@ export async function bootMulti(opts: Issue137BootOptions = {}): Promise<Run137>
         applyPressure(wire.peerEnd, () => peerPressure);
         applyPressure(wire.hubEnd, () => hubPressure);
       }
-      hub.accept(wire.hubEnd, { peerInstanceId: PEER_INSTANCE });
+      hub.accept(wire.hubEnd, { token: TEST_TOKEN });
       return wire.peerEnd;
     },
     timer: peerNode.scheduler,

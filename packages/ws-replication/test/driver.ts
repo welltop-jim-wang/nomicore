@@ -48,6 +48,51 @@ import {
   type Wire,
 } from './harness.js';
 
+// ═══════════════════════════ Upgrade 认证契约面镜像（issue #138 AC-1 冻结） ═══════════════════════════
+//
+// SA6 冻结（issue #138 切片 7，协议 §2/ADR 0010 L147/L155）：Bearer token 在
+// HTTP Upgrade 前验证；hub 侧 accept 必须收到 Upgrade 请求上下文；verifyToken 把
+// token 映射到安全文法约束的 instanceId（与包的正式类型逐字段一致——实现后同步）。
+
+/** Hub upgrade 请求上下文（Bearer token 值；缺失 = 未提供凭据）。 */
+export interface HubUpgradeRequest {
+  readonly token?: string;
+}
+
+/** 升级认证器：token → 可信 Peer instanceId 或拒绝（实例身份文法见协议 §6.1）。 */
+export type PeerTokenVerifier = (
+  token: string,
+) => Promise<Readonly<{ ok: true; instanceId: string }> | Readonly<{ ok: false }>>;
+
+/** 默认测试 token（任意 BEARER 值——wire 永不携带 token，AC-7）。 */
+export const TEST_TOKEN = 'tok-test-4f2b8a1c9d3e';
+
+/** 默认验证器：TEST_TOKEN → PEER_INSTANCE；其余拒绝。 */
+export const DEFAULT_PEER_VERIFIER: PeerTokenVerifier = (
+  token: string,
+): Promise<Readonly<{ ok: true; instanceId: string }> | Readonly<{ ok: false }>> =>
+  Promise.resolve(token === TEST_TOKEN ? { ok: true, instanceId: PEER_INSTANCE } : { ok: false });
+
+// ═══════════════════════════ Hub 主动 reauth 契约面镜像（issue #175 冻结） ═══════════════════════════
+//
+// SA6 冻结（issue #175 主动 reauthentication 生命周期，协议
+// `docs/protocols/instance-replication-v1.md` §6.3/§15.1 L435-450 + ADR-0010 条款 2/3/4/6/9）：
+// 认证/授权 Adapter 在凭据轮换/撤销后经窄公共入口对已建立连接发起 reauth——按认证
+// 实例身份定位连接（绝不以 token 值为键，AC7），只影响匹配实例的连接（AC3）；reauth
+// 发送 `GOAWAY(REAUTH_REQUIRED, drainTimeoutMs>0)` 并在 drain/deadline 后以 WS 1001
+// 收口（AC4，区别于 hub.close 的零 drain 窗口）；Peer 侧 blocked 仅在 token/config
+// 显式变化通知后恢复拨号（AC5）。实现后与 `@nomicore/ws-replication` 正式类型逐字段一致。
+
+/** Hub 主动 reauth 入口（AC1/AC2）：按认证实例身份定位连接并请求 reauthentication。 */
+export interface HubReauthSeam {
+  requestReauth(instanceIdentity: string): Promise<void>;
+}
+
+/** Peer 侧认证（token/config）变化通知缝（AC5）：blocked 仅在此显式通知后重拨。 */
+export interface PeerAuthNotifySeam {
+  notifyAuthChanged(): void;
+}
+
 // ═══════════════════════════ 授权 spy ═══════════════════════════
 
 export interface AuthorizerSpy {
@@ -127,6 +172,14 @@ export interface BootOptions {
   readonly timeouts?: Readonly<Partial<ReplicationTimeouts>>;
   readonly backoff?: Readonly<Partial<ReplicationBackoff>>;
   readonly random?: () => number;
+  /** Hub upgrade 认证器（缺省 DEFAULT_PEER_VERIFIER：TEST_TOKEN → PEER_INSTANCE）。 */
+  readonly verifyToken?: PeerTokenVerifier;
+  /** 拨号时携带的升级凭据 token（缺省 TEST_TOKEN）。 */
+  readonly token?: string;
+  /** 拨号凭据源（每次拨号调用读取；缺省 = 固定 opts.token）。token 轮换场景用。 */
+  readonly tokenSource?: () => string;
+  /** Peer 实例身份（HELLO.peerInstanceId；缺省 PEER_INSTANCE）。 */
+  readonly peerInstanceId?: string;
   /** 缺省 true：peer.start + 等待 connection ready。 */
   readonly start?: boolean;
   /** ready 后等待的 namespace 状态（缺省 'live'；'handshake' 只等 connection；'none' 不等）。 */
@@ -149,9 +202,8 @@ export class Run {
   readonly nsId: string;
   readonly target: ReplicationTarget;
   readonly hubRoot: Readonly<{ n: number; extra?: number }>;
-  /** R7：本 Run 的显式 defer 泵（手动 flush 观测面；pendingCount 可断言零隐式执行）。
-   *  缺省 pump（opts.deferTask 未注入时）已注册入 harness 注册表——settleUntil 冲刷。 */
-  readonly deferPump: DeferPump | undefined;
+  /** Upgrade 认证调用记录（token 值序）——AC-1「认证先于协议连接」的观测锚。 */
+  readonly verifyCalls: string[];
   dialCount = 0;
 
   constructor(
@@ -163,7 +215,7 @@ export class Run {
     hubFixture: HubNamespaceFixture | undefined,
     nsId: string,
     hubRoot: Readonly<{ n: number; extra?: number }>,
-    deferPump: DeferPump | undefined = undefined,
+    verifyCalls: string[],
   ) {
     this.hubNode = hubNode;
     this.peerNode = peerNode;
@@ -173,8 +225,8 @@ export class Run {
     this.hubFixture = hubFixture;
     this.nsId = nsId;
     this.hubRoot = hubRoot;
-    this.deferPump = deferPump;
     this.target = { namespaceId: nsId, localOwner: PEER_OWNER };
+    this.verifyCalls = verifyCalls;
   }
 
   get wire(): Wire {
@@ -433,22 +485,30 @@ export async function boot(opts: BootOptions = {}): Promise<Run> {
     opts.namespaceId ?? (hubFixture !== undefined ? hubFixture.namespaceId : 'ns-' + '0'.repeat(32));
 
   // —— hub 面（先建：dial 回调需要它 accept 新连接） ——
+  const verifyToken = opts.verifyToken ?? DEFAULT_PEER_VERIFIER;
+  const verifyCalls: string[] = [];
+  const wrappedVerifier: PeerTokenVerifier = (token: string) => {
+    verifyCalls.push(token);
+    return verifyToken(token);
+  };
   const hub = createHubReplication({
     instanceId: HUB_INSTANCE,
     registry: hubNode.registry,
     authorize: authorizer.authorize,
     timer: hubNode.scheduler,
+    verifyToken: wrappedVerifier,
     ...(opts.limits !== undefined ? { limits: opts.limits } : {}),
     ...(opts.timeouts !== undefined ? { timeouts: opts.timeouts } : {}),
   });
 
   const wires: Wire[] = [];
   let dialCount = 0;
+  const dialToken = opts.tokenSource ?? ((): string => opts.token ?? TEST_TOKEN);
   const dial = (): DuplexTransport => {
     dialCount += 1;
     const wire = makeWire();
     wires.push(wire);
-    hub.accept(wire.hubEnd, { peerInstanceId: PEER_INSTANCE });
+    hub.accept(wire.hubEnd, { token: dialToken() });
     return wire.peerEnd;
   };
 
@@ -456,7 +516,7 @@ export async function boot(opts: BootOptions = {}): Promise<Run> {
   const pump = makeDeferPump();
   registerDeferPump(pump);
   const peer = createPeerReplication({
-    instanceId: PEER_INSTANCE,
+    instanceId: opts.peerInstanceId ?? PEER_INSTANCE,
     hubInstanceId: HUB_INSTANCE,
     registry: peerNode.registry,
     dial,
@@ -469,7 +529,7 @@ export async function boot(opts: BootOptions = {}): Promise<Run> {
     ...(opts.random !== undefined ? { random: opts.random } : {}),
   });
 
-  const run = new Run(hubNode, peerNode, hub, peer, authorizer, hubFixture, nsId, hubRoot, pump);
+  const run = new Run(hubNode, peerNode, hub, peer, authorizer, hubFixture, nsId, hubRoot, verifyCalls);
   // dial 闭包内 push 的 wires 与拨号计数与 Run 同步
   Object.defineProperty(run, 'wires', { value: wires });
   Object.defineProperty(run, 'dialCount', { get: () => dialCount });
@@ -598,6 +658,7 @@ export async function bootFanout(opts: BootOptions = {}): Promise<FanoutRun> {
     registry: hubNode.registry,
     authorize: authorizer.authorize,
     timer: hubNode.scheduler,
+    verifyToken: opts.verifyToken ?? DEFAULT_PEER_VERIFIER,
   });
 
   const makePeer = (peerNode: ReplicaNode): { peer: PeerReplication; wire: Wire } => {
@@ -611,7 +672,7 @@ export async function bootFanout(opts: BootOptions = {}): Promise<FanoutRun> {
       dial: () => {
         const wire = makeWire();
         wireRef.current = wire;
-        hub.accept(wire.hubEnd, { peerInstanceId: PEER_INSTANCE });
+        hub.accept(wire.hubEnd, { token: opts.token ?? TEST_TOKEN });
         return wire.peerEnd;
       },
       timer: peerNode.scheduler,

@@ -1,6 +1,8 @@
 /**
  * `@nomicore/ws-replication` 冻结公共契约类型（SA6 冻结，逐字段；实现不得增删改名）
- * + 包内私有结构类型。
+ * + 包内私有结构类型。issue #175 SA6 冻结契约扩展（主动 reauthentication 生命周期）：
+ * `HubReplication.requestReauth` / `PeerReplication.notifyAuthChanged`（见
+ * wiki/raw/task_active-reauthentication-lifecycle.md §SA6 红灯契约——冻结基线随任务前移）。
  *
  * 设计：wiki/raw/task_phase5-ws-namespace-sync_design.md §2（冻结契约面）。
  * 类型来源：`NamespaceOwner` / `NamespaceRegistry` / `ReplicationSession` /
@@ -12,6 +14,10 @@ import type {
   NamespaceRegistry,
   ReplicationSession,
 } from '@nomicore/namespace-registry';
+import type {
+  ConnectionErrorCode,
+  NamespaceErrorCode,
+} from '@nomicore/replication-protocol';
 
 // ═══════════════════════════ 冻结公共契约面（§2） ═══════════════════════════
 
@@ -94,20 +100,44 @@ export interface ReplicationTarget {
   readonly localOwner: NamespaceOwner;
 }
 
+/** Hub upgrade 请求上下文（Bearer token 值；缺失 = 未提供凭据）。 */
+export interface HubUpgradeRequest {
+  readonly token?: string;
+}
+
+/** 升级认证器：token → 可信 Peer instanceId（文法 ^[a-z][a-z0-9-]{0,62}$）或拒绝。 */
+export type PeerTokenVerifier = (
+  token: string,
+) => Promise<Readonly<{ ok: true; instanceId: string }> | Readonly<{ ok: false }>>;
+
 export interface HubReplicationOptions {
   readonly instanceId: string;
   readonly registry: NamespaceRegistry;
   readonly authorize: NamespaceAuthorizer;
   readonly timer: ReplicationTimer;
+  readonly verifyToken: PeerTokenVerifier;
   readonly limits?: Readonly<Partial<ReplicationLimits>>;
   readonly timeouts?: Readonly<Partial<ReplicationTimeouts>>;
+  /** 结构化观测 seam（ADR 0010 L167）：同步回调；throw 由 dispatchReplicationObserver
+   *  隔离（静默，绝不改变协议状态/关闭分类/Runtime 写入结果）。可选；缺省零事件。 */
+  readonly observer?: ReplicationObserver;
+  /** 单调时源（latency 观测专用；可选——缺省 = 全部 latency 字段 undefined（dormant）。
+   *  禁止实现内部使用原生时钟（系统/高精度时间 API）fallback（零时钟读取不变量保持）。 */
+  readonly clock?: ReplicationClock;
 }
 
 export interface HubReplication {
-  /** 接受一条 Upgrade 连接。identity = bearer-token 验证的受信产物（协议 §2）；缺失 →
-   *  同步 TypeError（拒绝虚假降级：不得采信 HELLO 自述身份）。 */
-  accept(transport: DuplexTransport, identity?: UpgradeIdentity): HubConnection;
+  accept(
+    transport: DuplexTransport,
+    request?: HubUpgradeRequest,
+  ): Promise<HubConnection | undefined>;
   readonly connections: readonly HubConnection[];
+  revoke(instanceIdentity: string, namespaceId: string): Promise<void>;
+  /** issue #175（AC1/AC2/AC3/AC6/AC7）：认证/授权 Adapter 主动 reauth 事件 seam——按
+   *  认证实例身份定位连接（绝不以 token 值为键），对每个匹配连接发送
+   *  GOAWAY(REAUTH_REQUIRED, drainTimeoutMs>0) 并按 drain/deadline 规则以 WS 1001 收口。
+   *  未知实例/已收口连接 → 无副作用 resolve；重复调用幂等。 */
+  requestReauth(instanceIdentity: string): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -130,6 +160,12 @@ export interface PeerReplicationOptions {
   readonly random?: () => number; // 缺省 () => Math.random()
   /** 可观测性延迟 seam（§5.2）：恢复/重建的异步调度点。缺省 = 单次 queueMicrotask。 */
   readonly deferTask?: (task: () => void) => void;
+  /** 结构化观测 seam（ADR 0010 L167）：同步回调；throw 由 dispatchReplicationObserver
+   *  隔离（静默，绝不改变协议状态/关闭分类/Runtime 写入结果）。可选；缺省零事件。 */
+  readonly observer?: ReplicationObserver;
+  /** 单调时源（latency 观测专用；可选——缺省 = 全部 latency 字段 undefined（dormant）。
+   *  禁止实现内部使用原生时钟（系统/高精度时间 API）fallback（零时钟读取不变量保持）。 */
+  readonly clock?: ReplicationClock;
 }
 
 export interface PeerReplication {
@@ -139,6 +175,8 @@ export interface PeerReplication {
   removeTarget(namespaceId: string): Promise<void>; // 幂等；未知 nsId → 立即 resolve undefined
   getConnectionState(): PeerConnectionState;
   getNamespaceState(namespaceId: string): PeerNamespaceState | undefined; // 未知 → undefined
+  /** issue #175（AC5）：token/config 显式变化通知缝——blocked 仅在明确变化后恢复拨号。 */
+  notifyAuthChanged(): void;
 }
 
 export type PeerConnectionState =
@@ -163,6 +201,237 @@ export type PeerNamespaceState =
   | 'conflicted'
   | 'failed'
   | 'disconnected';
+
+// ═══════════════════════════ 观测 seam（ADR 0010 L167；append-only） ═══════════════════════════
+
+/** 观测事件的 side 判别（hub 侧 / peer 侧）。 */
+export type ReplicationObserverSide = 'hub' | 'peer';
+
+/** hub 侧 channel 状态投影（与 HubChannelState 逐字面量一致；首次公共化，加性）。 */
+export type HubNamespaceState =
+  | 'opening'
+  | 'bootstrapping'
+  | 'reconciling'
+  | 'live'
+  | 'needs-resync'
+  | 'closing'
+  | 'closed'
+  | 'conflicted'
+  | 'failed';
+
+/** hub 连接状态（与 `HubConnection['state']` 逐字面量一致）。 */
+export type HubConnectionState = 'handshaking' | 'ready' | 'draining' | 'closed';
+
+/** 连接域稳定码 = 协议 §13.1 注册表全 17 码（codec 同源 import，append-only）
+ *  + 2 个本包登记的内部稳定码（无 wire 帧；协议文档 §23 登记）。 */
+export type ReplicationObserverConnectionCode =
+  | ConnectionErrorCode
+  | 'PONG_TIMEOUT' // hub 活性失联（hub-connection 既有内部路径）
+  | 'OUTBOUND_SEQUENCE_EXHAUSTED'; // 出站 uint32 耗尽（双端既有路径）
+
+/** namespace 域稳定码 = 协议 §13.2 注册表全 20 码（codec 同源 import，append-only）
+ *  + 1 个登记内部码。 */
+export type ReplicationObserverNamespaceCode =
+  | NamespaceErrorCode
+  | 'IDENTITY_CHANGED'; // §11 fence 帧方向标注（消息名作稳定字符串）
+
+/** 单调时源（latency 观测专用；ADR 0009 Clock capability 同形窄面）。
+ *  可选注入：缺省 = 全部 latency 字段 undefined（dormant，协议 §17 L494 缺面先例）。
+ *  生产组合根应注入并在装配期对缺省做响亮断言（issue #164 双层纪律）。禁止实现内部
+ *  使用原生时钟（系统/高精度时间 API）fallback。返回值仅作差，不作为事件字段输出。 */
+export interface ReplicationClock {
+  readonly now: () => number;
+}
+
+/**
+ * 结构化 observer seam 事件（ADR 0010 L167 最小观测面全量映射；19 型，append-only）。
+ *
+ * Safe-field 纪律（协议文档 §23）：字段类别 = 稳定字面量（type/side/direction/via/
+ * reason/cause/terminalState/from/to/reasonCode）、受控标识（namespaceId 恒为
+ * `^ns-[0-9a-f]{32}$`；connectionId 为协议 §6.2 专用 observability id，握手完成前
+ * undefined）、稳定错误码（闭联合，未知折叠 INTERNAL_ERROR）、有限数值（bytes 是长度
+ * 不是内容；latency 是差值非绝对时间戳）。
+ *
+ * 事件**不得**包含：token、owner 值、Yjs bytes（Uint8Array/ArrayBuffer/DataView）、
+ * SCHEMA/ROOT 内容、原始 cause（Error/message/stack）、任意不受控高基数自由文本。
+ */
+export type ReplicationObserverEvent =
+  // ── 连接域（低频：仅真实迁移）──
+  | {
+      readonly type: 'connection-state-changed';
+      readonly side: ReplicationObserverSide;
+      readonly connectionId?: string;
+      readonly from: PeerConnectionState | HubConnectionState;
+      readonly to: PeerConnectionState | HubConnectionState;
+    }
+  | {
+      readonly type: 'connection-backoff-scheduled';
+      readonly side: 'peer';
+      readonly attempt: number;
+      readonly delayMs: number;
+      readonly reason:
+        | 'dial-failed'
+        | 'socket-closed'
+        | 'hello-timeout'
+        | 'pong-timeout'
+        | 'connection-backpressure'
+        | 'goaway-closed'
+        | 'goaway-retry-hint';
+    }
+  | {
+      readonly type: 'goaway-received';
+      readonly side: 'peer';
+      readonly connectionId?: string;
+      readonly reasonCode:
+        | 'SERVER_RESTARTING'
+        | 'SERVER_SHUTTING_DOWN'
+        | 'REAUTH_REQUIRED'
+        | 'other';
+      readonly drainTimeoutMs: number;
+      readonly retryAfterMs?: number;
+    }
+  // ── channel 域（低频：仅真实迁移）──
+  | {
+      readonly type: 'channel-state-changed';
+      readonly side: ReplicationObserverSide;
+      readonly connectionId?: string;
+      readonly namespaceId: string;
+      readonly from: PeerNamespaceState | HubNamespaceState;
+      readonly to: PeerNamespaceState | HubNamespaceState;
+    }
+  // ── bootstrap / reconcile 字节（次数 = 事件计数）──
+  | {
+      readonly type: 'bootstrap-snapshot-sent';
+      readonly side: 'hub';
+      readonly connectionId?: string;
+      readonly namespaceId: string;
+      readonly bytes: number;
+    }
+  | {
+      readonly type: 'bootstrap-imported';
+      readonly side: 'peer';
+      readonly connectionId?: string;
+      readonly namespaceId: string;
+      readonly bytes: number;
+    }
+  | {
+      readonly type: 'sync-step2-sent';
+      readonly side: ReplicationObserverSide;
+      readonly connectionId?: string;
+      readonly namespaceId: string;
+      readonly bytes: number;
+    }
+  | {
+      readonly type: 'sync-diff-applied';
+      readonly side: ReplicationObserverSide;
+      readonly connectionId?: string;
+      readonly namespaceId: string;
+      readonly bytes: number;
+      readonly applyLatencyMs?: number; // clock 缺省时 undefined
+    }
+  // ── updates/bytes in/out + apply/ACK latency（每帧粒度）──
+  | {
+      readonly type: 'update-sent';
+      readonly side: ReplicationObserverSide;
+      readonly connectionId?: string;
+      readonly namespaceId: string;
+      readonly bytes: number;
+    }
+  | {
+      readonly type: 'update-applied';
+      readonly side: ReplicationObserverSide;
+      readonly connectionId?: string;
+      readonly namespaceId: string;
+      readonly bytes: number;
+      readonly applyLatencyMs?: number;
+    }
+  | {
+      readonly type: 'update-acked';
+      readonly side: ReplicationObserverSide;
+      readonly connectionId?: string;
+      readonly namespaceId: string;
+      readonly bytes: number;
+      readonly ackLatencyMs?: number;
+    }
+  | {
+      readonly type: 'degraded-bypass-applied'; // peer 专属（hub 结构性不可 bypass）
+      readonly side: 'peer';
+      readonly connectionId?: string;
+      readonly namespaceId: string;
+      readonly bytes: number;
+    }
+  // ── auth / 背压 / resync ──
+  | {
+      readonly type: 'auth-upgrade-rejected';
+      readonly side: 'hub';
+      readonly reason:
+        | 'hub-shutdown'
+        | 'missing-token'
+        | 'verifier-missing'
+        | 'frame-too-large'
+        | 'early-frame-limit'
+        | 'auth-timeout'
+        | 'invalid-credentials'
+        | 'invalid-instance-id'
+        | 'peer-disconnected';
+    }
+  | {
+      readonly type: 'resync-required';
+      readonly side: ReplicationObserverSide;
+      readonly connectionId?: string;
+      readonly namespaceId: string;
+      readonly cause:
+        | 'queue-overflow'
+        | 'send-failed'
+        | 'connection-shed'
+        | 'ack-timeout'
+        | 'session-fanout-overflow'
+        | 'remote-declared';
+    }
+  | {
+      readonly type: 'send-paused';
+      readonly side: ReplicationObserverSide;
+      readonly connectionId?: string;
+      readonly bufferedAmount: number;
+    }
+  | {
+      readonly type: 'send-resumed';
+      readonly side: ReplicationObserverSide;
+      readonly connectionId?: string;
+      readonly bufferedAmount: number;
+    }
+  // ── 稳定错误计数（code 闭联合）──
+  | {
+      readonly type: 'connection-failed';
+      readonly side: ReplicationObserverSide;
+      readonly connectionId?: string;
+      readonly code: ReplicationObserverConnectionCode;
+      readonly wsCloseCode: number;
+    }
+  | {
+      readonly type: 'namespace-error';
+      readonly side: ReplicationObserverSide;
+      readonly connectionId?: string;
+      readonly namespaceId: string;
+      readonly code: ReplicationObserverNamespaceCode;
+      readonly direction: 'sent' | 'received';
+      readonly terminalState?: 'failed' | 'conflicted' | 'closed';
+    }
+  | {
+      readonly type: 'identity-conflicted';
+      readonly side: ReplicationObserverSide;
+      readonly connectionId?: string;
+      readonly namespaceId: string;
+      readonly via: 'open-mismatch' | 'fence' | 'identity-changed-frame';
+    };
+
+/**
+ * 结构化 observer seam（ADR 0010 L167）：同步回调，事件 = 判别联合（§上文）。
+ * throw 由 dispatchReplicationObserver 隔离（静默，绝不改变协议状态/关闭分类/
+ * Runtime 写入结果——AC #3）。可选注入；缺省零事件。返回 Promise 会被忽略（异步
+ * reject 属宿主域 unhandled）。事件对象不可变（类型层 readonly；mutate 属 Adapter 违约）。
+ */
+export type ReplicationObserver = (event: ReplicationObserverEvent) => void;
 
 // ═══════════════════════════ 包内私有结构类型 ═══════════════════════════
 
