@@ -44,6 +44,15 @@
  *   Persistence 状态与 Registry 生命周期；LOG_STREAM_INIT_FAILED 经日志健康
  *   observer 独立上报。
  *
+ * 【R2 勘误，2026-08-31】AC5 首版 fixture 错误地以「健康 stream 建立后再构造一次
+ * adapter」表达延迟初始化——冻结 File adapter 的续写语义（current.json locator →
+ * 健康 stream resume，构造期 genesisUpdateBytes 被忽略）使其变成原地续写而非新
+ * stream。已按 preferred correction A 修正：首次 initStream 以非法配置失败
+ * （真实 LOG_STREAM_INIT_FAILED/invalid-roll-targets、零落盘）→ ROOT 变更后以合法
+ * 配置 + 当时 Y.Doc bytes 重试建立全新 stream，genesis = 变更后状态（n=2）。诚实
+ * 当前态要求保留（genesis 只代表重试时点），未被弱化为 resume 语义。详见
+ * task_namespace-diagnostic-change-log.md SA6 R2 节。
+ *
  * stage/code/result 映射表（本契约冻结；歧义处取 ADR 语义，事实取 Registry 既有
  * 稳定码——不发明新码）：
  * - 停接纳拒绝 → acceptance / REGISTRY_NOT_ACCEPTING / rejected / not-accessed；
@@ -60,7 +69,7 @@
  *   NAMESPACE_REGISTRY_FATAL / sourcePhase runtime-construction（effect update 携带
  *   初始文档 bytes——committed 事实保留）。
  */
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -861,31 +870,33 @@ describe('#150 create 诊断记录（红灯契约）', () => {
     await lease.release();
   });
 
-  it('AC5 延迟 stream 初始化（诚实当前态 genesis）：以当时 Y.Doc 建新 stream，genesis 非创建态', async () => {
+  it('AC5 延迟 stream 初始化（诚实当前态 genesis）：首次 initStream 失败（LOG_STREAM_INIT_FAILED）后以当时 Y.Doc 重试建新 stream，genesis = 变更后状态', async () => {
+    // ⚠ 设计勘误（SA6 R2 裁定，2026-08-31）：首版 fixture 让首次 initStream 以合法配置
+    // 成功建立 S1，随后第二次 createFileDiagnosticLog 命中冻结 File adapter 的续写语义
+    // （current.json locator → 健康 stream resume，构造期 genesisUpdateBytes 被忽略——
+    // 文件头注释「resume 不写 genesis（genesisUpdateBytes 忽略）」）——那不是「延迟
+    // stream 初始化/重试」场景，而是健康 stream 的原地续写；断言 n=2 因此错误。
+    // 修正（preferred correction A）：首次 initStream 以 AC4 同款非法配置
+    // （targetRecordsPerSegment:0）触发真实 LOG_STREAM_INIT_FAILED/invalid-roll-targets
+    // 且零落盘（无健康 stream）——真正「延迟」：创建时 stream 未建立；ROOT 变更后
+    // 再以合法配置 + 当时 Y.Doc bytes 重试建立全新 stream。诚实当前态契约（genesis
+    // 只代表重试时点、不伪称从创建时起连续）保留，未被弱化为 resume 语义。
     const rootDir = freshTempRoot('ndcl-registry-late-');
     const health: DiagnosticLogHealthEvent[] = [];
-    let fileLog: ReturnType<typeof createFileDiagnosticLog> | undefined;
-    const pending: NamespaceDiagnosticChangeEmission[] = [];
+    let initCalls = 0;
     const binding: NamespaceRegistryDiagnosticLog = {
-      emitter: {
-        emit: (emission) => {
-          if (fileLog !== undefined) {
-            fileLog.emitter.emit(emission);
-            return;
-          }
-          pending.push(emission);
-        },
-      },
+      emitter: { emit: () => undefined }, // 本测试聚焦 initStream 失败→重试面
       initStream: (namespaceId, genesisUpdateBytes) => {
-        fileLog = createFileDiagnosticLog({
+        initCalls += 1;
+        createFileDiagnosticLog({
           rootDir,
           namespaceId,
           genesisUpdateBytes,
           updateCapture: true,
           observer: { onEvent: (e) => health.push(e) },
           clock: { now: () => NOW_MS },
+          targetRecordsPerSegment: 0, // 非法 roll target → disabled + LOG_STREAM_INIT_FAILED，零文件
         });
-        for (const e of pending.splice(0)) fileLog.emitter.emit(e);
       },
     };
 
@@ -893,19 +904,28 @@ describe('#150 create 诊断记录（红灯契约）', () => {
     const registry = makeRegistry(persistence, { diagnosticLog: binding });
     const result = await registry.create(makeInput());
     const lease = okLease(result);
-    await expect.poll(() => fileLog !== undefined, { interval: 5, timeout: 3_000 }).toBe(true); // 首建以创建态 genesis（当前未接线——红灯锚）
+    expect(lease.getMetadata().createdAt).toBe(NOW_ISO);
 
-    // 业务面：变更 ROOT（n:1 → n:2），随后「延迟 stream 初始化」——
-    // ADR 0012「后续重试成功时以当时 Y.Doc 建立新 stream，其 genesis 只代表从该时点
-    // 开始，不能伪称从 namespace 创建时起连续」。
+    // ── 红灯锚：initStream 被调用且首次建立失败（当前 0 调用/0 事件）──
+    await expect.poll(() => initCalls, { interval: 5, timeout: 3_000 }).toBe(1);
+    await expect
+      .poll(() => health.filter((e) => e.type === 'stream-init-failed').length, { interval: 5, timeout: 3_000 })
+      .toBe(1);
+    expect(health.find((e) => e.type === 'stream-init-failed')).toMatchObject({
+      code: 'LOG_STREAM_INIT_FAILED',
+      reason: 'invalid-roll-targets',
+    });
+
+    // 业务面：变更 ROOT（n:1 → n:2）——重试时点与创建时点之间文档已变化
     const mutation = await lease.mutateRoot({ op: 'set', path: ['n'], value: 2 });
     expect(mutation.ok).toBe(true);
 
+    // 延迟重试：健康 stream 尚不存在（首次失败零落盘）→ 以当时 Y.Doc 建立全新 stream。
     // 以当前文档状态取得 bytes（Host 侧经 Persistence loadDoc 访问——不带 live doc 引用泄漏）
     const handle = await persistence.loadDoc(OWNER, 'k-ns');
     expect(handle).not.toBeNull();
     const currentState = Y.encodeStateAsUpdate(handle!.doc);
-    const lateLog = createFileDiagnosticLog({
+    const retryLog = createFileDiagnosticLog({
       rootDir,
       namespaceId: 'k-ns',
       genesisUpdateBytes: currentState,
@@ -913,16 +933,21 @@ describe('#150 create 诊断记录（红灯契约）', () => {
       observer: { onEvent: (e) => health.push(e) },
       clock: { now: () => NOW_MS },
     });
-    const lateRead = readStreamStrict({ rootDir, namespaceId: 'k-ns', streamId: lateLog.streamId });
-    expect(lateRead.status).toBe('ok');
-    const lateGenesis = lateRead.records[0]!;
-    const lateGenesisRec = lateGenesis.record as { recordKind?: string; update?: UpdateCarrier };
-    expect(lateGenesisRec.recordKind).toBe('genesis-baseline');
-    const doc = materialize(lateGenesisRec.update!);
+    const retryRead = readStreamStrict({ rootDir, namespaceId: 'k-ns', streamId: retryLog.streamId });
+    expect(retryRead.status).toBe('ok');
+    expect(retryRead.records.length).toBe(1); // 全新 stream：仅 genesis-baseline（无 attempt、无续写嫁接）
+    const retryGenesis = retryRead.records[0]!;
+    const retryGenesisRec = retryGenesis.record as { recordKind?: string; sequence?: string; update?: UpdateCarrier };
+    expect(retryGenesisRec.recordKind).toBe('genesis-baseline');
+    expect(retryGenesisRec.sequence).toBe('1');
+    const doc = materialize(retryGenesisRec.update!);
     // 诚实当前态：n=2（变更后）；若伪称「从创建时起连续」则 n=1——反向鉴别锚
     expect(doc.getMap('ROOT').get('n')).toBe(2);
     expect(doc.getMap('ROOT').get('a')).toBe('x');
     expect(doc.getMap('META').get('createdAt')).toBe(NOW_ISO);
+
+    // 首次失败零落盘证明：streams 目录恰 1 个（重试产物，无 S1 残留）
+    expect(readdirSync(join(rootDir, 'namespaces', 'k-ns', 'streams')).length).toBe(1);
 
     await lease.release();
   });

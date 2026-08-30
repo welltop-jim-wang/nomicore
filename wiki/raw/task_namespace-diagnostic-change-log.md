@@ -49,7 +49,7 @@ Issue text states it was blocked by #148; implement against the current worktree
 - **AC2 genesis**：成功 create 后 `initStream` **恰一次**、携带提交初始文档的 detached bytes（genesis-baseline seq 1 物化 = SCHEMA/META/ROOT）；真实 File adapter E2E：`createFileDiagnosticLog({genesisUpdateBytes})` → `readStreamStrict` → stream 上 `genesis-baseline`(seq 1) + `attempt`(seq 2)，manifest 存在、observedAt 同源注入 Clock。
 - **AC3 零额外读取与既有快照复用**：合法 Proxy 输入下 logged 与无日志基线的 schema/root trap 计数相等；排队后（createDoc gate 前）变异调用方原对象 → 记录 input 恒为槽内 frozen snapshot（`{schema, root}` 深克隆）而非变异后原对象。
 - **AC4 故障隔离（四不变）**：emitter 违约 throw → create ok/status running/lease active/创建恰一次，emit 恰一次尝试；队列满（capacity 1）→ 第一条 accepted、第二条 queue-full drop（stats 计数），业务双创建均 ok；日志启用 vs 禁用（baseline）→ 业务结果逐位一致（同 namespaceId/同 Clock 下 metadata/status/registryState）且启用侧有记录；stream init 失败（真实 File adapter invalid roll targets）→ create ok + 独立健康 observer `LOG_STREAM_INIT_FAILED/invalid-roll-targets`（绝不手工伪造事件）。
-- **AC5 延迟 stream 初始化（诚实当前态 genesis）**：变更 ROOT（n:1→n:2）后以当时 Y.Doc（Host 经 Persistence loadDoc 取 bytes）建立新 stream → genesis 物化 `ROOT.n=2`（若伪称「从创建时起连续」则 n=1——反向鉴别锚）。
+- **AC5 延迟 stream 初始化（诚实当前态 genesis）**【R2 勘误修正，见下节】：首次 initStream 以 AC4 同款非法配置（`targetRecordsPerSegment:0`）失败（真实 `LOG_STREAM_INIT_FAILED/invalid-roll-targets`、零落盘——创建时无健康 stream），ROOT 变更（n:1→n:2）后以当时 Y.Doc（Host 经 Persistence loadDoc 取 bytes）+ 合法配置重试建立全新 stream → genesis 物化 `ROOT.n=2`（若伪称「从创建时起连续」则 n=1——反向鉴别锚），且 streams 目录恰 1 个（无 S1 残留）。
 - **依赖说明**：`@nomicore/namespace-diagnostic-log` 尚非 namespace-registry 依赖，测试以相对路径 `../../namespace-diagnostic-log/src/index.js` 引入真实 adapter（非 mock、非 fallback）；SA3 落地时需把该包加入 `dependencies`。测试文件无需改动即可在修复后转绿。
 - **测试策略**：沿用 vitest 单文件收集（`packages/*/test/**/*.test.ts`）；无端口、无外部服务、无新测试包（log 包经相对路径），`scripts/test-lock.sh` 在本 worktree 不存在（无端口/新包 → 无需新增）。
 
@@ -99,3 +99,52 @@ bytes 供给后，本套件应 16/16 转绿，且不依赖任何源码文本断�
 **独立性验证**：`./node_modules/.bin/tsc -p tsconfig.typecheck.json`（仓库 CI 门禁，含
 `packages/*/test/**/*.ts`）exit 0、0 errors；既有 `registry-create.test.ts` 50/50 通过
 （附件测试不与既有套件互扰）。
+
+---
+
+## SA6 R2 裁定 — AC5 fixture 勘误（2026-08-31，SA3 实现 85f36bd 后）
+
+### 背景与裁定
+
+SA3 实现 commit `85f36bd` 使本套件 15/16 转绿；唯一红灯为 AC5 延迟 stream 初始化：
+
+```
+× AC5 延迟 stream 初始化（诚实当前态 genesis）：…
+  AssertionError: expected 1 to be 2   ← doc.getMap('ROOT').get('n')
+```
+
+**SA3 的读法成立（本裁定确认）**：首版 AC5 fixture 让 create 成功路径的 `initStream`
+以合法配置建立健康 stream S1（genesis n=1），随后测试再构造一次 `createFileDiagnosticLog`
+表达「延迟初始化」——但冻结 File adapter 的续写语义（`current.json` locator →
+健康 stream resume，构造期 `genesisUpdateBytes` 被忽略，文件头注释「resume 不写 genesis」）
+使第二次构造**原地续写 S1** 而非建立新 stream，genesis 仍是 n=1。这不是「延迟 stream
+初始化/重试」场景，而是健康 stream 的原地续写——断言 n=2 是对冻结行为的错误预期。
+
+### 修正（preferred correction A，已落实）
+
+- AC5 首次 initStream 改为 AC4 同款非法配置（`targetRecordsPerSegment:0`）→ 真实
+  `LOG_STREAM_INIT_FAILED/invalid-roll-targets`、disabled、**零落盘**（无健康 stream——
+  创建时 stream 确实未建立，构成真正「延迟」）；
+- create 仍成功（隔离）；ROOT 经 lease 变更 n:1→n:2；
+- 重试：以当时 Y.Doc（Persistence loadDoc → `Y.encodeStateAsUpdate`）+ 合法配置建立全新
+  stream（无 locator/manifest → fresh）→ `readStreamStrict` → 仅 genesis-baseline seq 1
+  → 物化 `ROOT.n=2`（诚实当前态；伪称创建态则 n=1——反向鉴别锚保留）；
+- streams 目录恰 1 个（首次失败零落盘证明）；
+- **诚实当前态要求保留，未弱化为 resume 语义**：重试 stream 的 genesis 只代表重试时点。
+  健康 stream 的 resume 语义（忽略 genesis bytes）本身是冻结正确行为，测试只在「无健康
+  stream」的延迟场景断言新 genesis。
+
+### 修正后验证（2026-08-31，当前实现 85f36bd）
+
+```
+$ ./node_modules/.bin/vitest run packages/namespace-registry/test/registry-create-diagnostic-red.test.ts --typecheck.enabled=false
+ Test Files  1 passed (1)
+      Tests  16 passed (16)   （Duration 3.17s，tests 478ms）
+```
+
+- 修正前（85f36bd + 首版 AC5）：15 passed / 1 failed（AC5 `expected 1 to be 2`）。
+- 修正后：16/16 passed；AC5 现断言 initCalls===1 + `LOG_STREAM_INIT_FAILED` + 重试
+  genesis n=2 + streams 目录数 1。
+- `tsc -p tsconfig.typecheck.json`：exit 0、0 errors。
+- 同一次运行中 AC2 落盘（E2E genesis+attempt）、AC4 四隔离均保持绿——修正仅改 AC5 fixture，
+  不触碰其他契约断言。

@@ -10,4 +10,5 @@
 | 6 | 00:00 | SA2 | Phase 2 design review | completed | Verdict: reject — three mandatory design corrections (#1 stable issue codes, #2 projection inside swallow boundary, #3 committed fatal unknown fallback). |
 | 7 | 00:00 | SA1 | Phase 2 design revision R2 | completed | R2 closes SA2 #1–#3: stable issue codes, swallowed raw-issues projection, bytes-aware committed fatal. |
 | 8 | 00:00 | SA2 | Phase 2 design review R2 | completed | Verdict: pass — all prior blockers independently verified closed; SA3 implementation authorized. |
-| 9 | 00:00 | SA3 | Phase 3 implementation | (pending) | SA6 red contract and SA1 R2/SA2 pass design authorize TDD implementation. |
+| 9 | 00:00 | SA3 | Phase 3 implementation | completed | Commit 85f36bd implements diagnostics; 15/16 SA6 tests green, AC5 contract conflict remains for SA6-owned correction. |
+| 10 | 00:00 | SA6 | Phase 3 contract correction | 2026-08-31 | AC5 adjudicated: SA3 read confirmed (frozen File adapter resume semantics); preferred correction A applied (failed first initStream → ROOT mutation → retry current-state genesis n=2); rerun 16/16 passed, typecheck 0 errors; evidence in brief SA6 R2 section. |
