@@ -155,9 +155,9 @@ Peer instance × N
 | 5 replication-protocol codec | 已交付 | envelope/payload/注册表/版本协商 + golden/截断/fuzz 套件 |
 | 6 ws-replication namespace 状态机 | 已交付 | 背压水位、连接级 pipeline 记账、control 保留额度、严格拒纳与同批丢弃/RESYNC，以及由 `ackTimeoutMs` 派生的恢复检查点已随 #137/#161/#169/#178 交付；冻结语义见 protocol §17 |
 | 7 WS 连接/认证/授权 | 部分交付 | 受信 Upgrade 身份、peer pong close(1001)、peer GOAWAY deadline/blocked 已交付；hub pong 语义（#170）与 GOAWAY 静默窗口、hub 停机 GOAWAY（#171）为已知偏差；生产 adapter 三面装配断言随 #164 |
-| 8 Reset/配置/observability | 部分交付 | Registry 侧 resetReplica 已交付（ADR 0010 #133 round-2 修订节为现行有效文本，正文旧次序描述不引用）；peer 侧 resetReplica 编排与结构化 observer/metrics 面（#163）未交付 |
-| 9 apps/yjs-server | 未交付 | #164（composition root + DuplexTransport 三可选面装配期断言 + §21 停机编排） |
-| 10 最终集成与审查 | 未交付 | 依赖 #163/#164/#170/#171 |
+| 8 Reset/配置/observability | 部分交付 | Registry 侧 resetReplica 已交付（ADR 0010 #133 round-2 修订节为现行有效文本，正文旧次序描述不引用）；peer 侧 resetReplica 编排已随 #140 经 app 管理动词交付（`reset-replica`，归属 composition root——见下「未交付边界」）；结构化 observer/metrics 面（#163）未交付 |
+| 9 apps/yjs-server | 已交付 | #164（composition root + DuplexTransport 三可选面装配期断言 + §21 停机编排）随 #164+#186 落地 |
+| 10 最终集成与审查 | 部分交付 | app 管理动词面（`replace-schema` / `bump-epoch` / `reset-replica`，#140）与三实例黑盒验收锚已交付；依赖 #163/#170/#171 的剩余集成项未交付 |
 
 ### 已知偏差（冻结契约 vs 当前实现；可执行验收锚已就位）
 
@@ -183,8 +183,11 @@ A4-1/A4-2/A5-5（#171）仍以 `it.fails` 注册为期望红灯。锚集存在�
 - apps/yjs-server + real WebSocket adapter/composition（#164）：`apps/` 下无 composition
   root；`DuplexTransport` 三可选面（bufferedAmount/ping/onPong）的生产装配期响亮断言
   （§17「生产 Adapter 必须暴露三面」）随 #164 交付。
-- peer 侧 resetReplica 编排（切片 8 部分）：Registry 侧已交付；ws-replication 层未暴露
-  peer reset 面（`PeerReplication` 无 reset 编排 API）。
+- peer 侧 resetReplica 编排（切片 8 部分）：Registry 侧已交付；**编排已随 #140 以
+  app 管理动词（`reset-replica`）交付，归属 composition root（`apps/yjs-server`）**；
+  ws-replication 层不引入 reset 编排 API（ADR 0010「包、应用与生命周期」节的宿主
+  编排职责边界，第三方 Host 基于公开 `NamespaceLease`/`ReplicationSession` 自行
+  构造——见 `docs/integration/hub-peer-deployment.md`「管理动词」）。
 
 ### control 保留额度实现口径（#172 收敛登记）
 

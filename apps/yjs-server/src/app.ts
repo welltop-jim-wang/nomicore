@@ -28,6 +28,7 @@ import {
   requireNomicoreRegistry,
   type NamespaceLease,
   type NamespaceRegistry,
+  type ResetReplicaResult,
 } from '@nomicore/namespace-registry';
 import type {
   NamespaceAuthorizer,
@@ -464,6 +465,12 @@ class AppHandle {
         return this.opNotifyAuthChanged();
       case 'request-reauth':
         return this.opRequestReauth(args);
+      case 'replace-schema':
+        return this.opReplaceSchema(args);
+      case 'bump-epoch':
+        return this.opBumpEpoch(args);
+      case 'reset-replica':
+        return this.opResetReplica(args);
       default:
         return { ok: false, code: 'unknown-op' };
     }
@@ -579,6 +586,143 @@ class AppHandle {
       return { ok: false, code: 'invalid-op-args' };
     }
     await this.hubPlugin.replication.requestReauth(instanceIdentity);
+    return { ok: true };
+  }
+
+  // ─────────────────────────────── Phase 5 管理动词（#140） ───────────────────────────────
+
+  private async opReplaceSchema(args: Record<string, unknown>): Promise<Readonly<Record<string, unknown>>> {
+    // G1 角色守卫（hub 专属，peer → unknown-op）
+    if (this.role !== 'hub' || this.registry === undefined) return { ok: false, code: 'unknown-op' };
+    const { namespaceId, schema } = args;
+    // G2 参数门禁 → invalid-op-args
+    if (typeof namespaceId !== 'string' || !NAMESPACE_ID_PATTERN.test(namespaceId)) {
+      return { ok: false, code: 'invalid-op-args' };
+    }
+    // schema 四键形状门禁（形状归 app；编译语义单源归 runtime compile）
+    if (
+      !isPlainObject(schema) ||
+      typeof schema.lang !== 'string' ||
+      typeof schema.id !== 'string' ||
+      typeof schema.text !== 'string' ||
+      typeof schema.version !== 'number' ||
+      !Number.isSafeInteger(schema.version)
+    ) {
+      return { ok: false, code: 'invalid-op-args' };
+    }
+    // root 形状门禁：提供时必须 plain JSON 对象（ROOT 恒 Y.Map 物化——ADR 0003）；
+    // null/数组/标量不是「未提供」而是形状违约，与 schema 形状错同码族；
+    // write-failed 只留给 compile 失败/degraded/fatal 等真实写失败
+    if ('root' in args && !isPlainObject(args.root)) {
+      return { ok: false, code: 'invalid-op-args' };
+    }
+    // G3 known-set 门禁（owner 来源 = hub 侧 knownNamespaces，与 read/verify-write 同款）
+    const ownerUserId = this.knownOwner(namespaceId);
+    if (ownerUserId === undefined) return { ok: false, code: 'namespace-unknown' };
+    // G4 open → replaceSchema → release（与 opRead 同款 lease 模式；无 F1 重试——见设计 §4.4）
+    const opened = await this.registry.open({ userId: ownerUserId }, namespaceId);
+    if (!opened.ok) return { ok: false, code: 'write-failed' };
+    try {
+      // 键存在性判定（schema-write.ts:73-77 的 runtime 契约）；G2 已保证 root 存在即 plain object
+      const input =
+        'root' in args
+          ? {
+              schema: { lang: schema.lang, version: schema.version, id: schema.id, text: schema.text },
+              root: args.root,
+            }
+          : { schema: { lang: schema.lang, version: schema.version, id: schema.id, text: schema.text } };
+      const result = await opened.lease.replaceSchema(input); // 结果联合 resolve（fatal 除外）
+      return result.ok ? { ok: true } : { ok: false, code: 'write-failed' };
+    } catch {
+      return { ok: false, code: 'write-failed' }; // RuntimeWriteFatalError 折叠
+    } finally {
+      await opened.lease.release().catch(() => undefined);
+    }
+  }
+
+  private async opBumpEpoch(args: Record<string, unknown>): Promise<Readonly<Record<string, unknown>>> {
+    // G1 角色守卫（hub 专属，peer → unknown-op）
+    if (this.role !== 'hub' || this.registry === undefined) return { ok: false, code: 'unknown-op' };
+    const { namespaceId } = args;
+    // G2 参数门禁 → invalid-op-args
+    if (typeof namespaceId !== 'string' || !NAMESPACE_ID_PATTERN.test(namespaceId)) {
+      return { ok: false, code: 'invalid-op-args' };
+    }
+    // G3 known-set 门禁
+    const ownerUserId = this.knownOwner(namespaceId);
+    if (ownerUserId === undefined) return { ok: false, code: 'namespace-unknown' };
+    const opened = await this.registry.open({ userId: ownerUserId }, namespaceId);
+    if (!opened.ok) return { ok: false, code: 'write-failed' };
+    try {
+      const bumped = await opened.lease.bumpReplicationEpoch(); // ok | issues | released；fatal → reject
+      if (!bumped.ok) return { ok: false, code: 'write-failed' };
+      // 新 epoch 投影（bump ok ⟹ replication 两态联合必为 enabled——结构性；
+      // 防御分支读不出 enabled 时回执省略该字段，绝不虚构数值）
+      const status = opened.lease.getStatus();
+      const epoch =
+        status.lease === 'active' && status.runtime.replication.state === 'enabled'
+          ? status.runtime.replication.replicationEpoch
+          : undefined;
+      return { ok: true, ...(epoch !== undefined ? { replicationEpoch: epoch } : {}) };
+    } catch {
+      return { ok: false, code: 'write-failed' };
+    } finally {
+      await opened.lease.release().catch(() => undefined);
+    }
+  }
+
+  private async opResetReplica(args: Record<string, unknown>): Promise<Readonly<Record<string, unknown>>> {
+    // G1 角色守卫（peer 专属，hub → unknown-op）
+    if (this.role !== 'peer' || this.peer === undefined || this.registry === undefined) {
+      return { ok: false, code: 'unknown-op' };
+    }
+    const { namespaceId, ownerUserId, expectedReplicationId, expectedReplicationEpoch } = args;
+    // G2 参数门禁 → invalid-op-args
+    if (typeof namespaceId !== 'string' || !NAMESPACE_ID_PATTERN.test(namespaceId)) {
+      return { ok: false, code: 'invalid-op-args' };
+    }
+    if (typeof ownerUserId !== 'string' || ownerUserId.length === 0) {
+      return { ok: false, code: 'invalid-op-args' };
+    }
+    if (typeof expectedReplicationId !== 'string' || !/^[0-9a-f]{32}$/.test(expectedReplicationId)) {
+      return { ok: false, code: 'invalid-op-args' };
+    }
+    if (
+      typeof expectedReplicationEpoch !== 'number' ||
+      !Number.isSafeInteger(expectedReplicationEpoch) ||
+      expectedReplicationEpoch < 1
+    ) {
+      return { ok: false, code: 'invalid-op-args' };
+    }
+    // G3 无 known-set 门禁（显式 owner 参数 + registry 零存在性泄露核对——见设计 §4.3）
+    // G4 编排第 1 步：guarded reset（冻结次序 AD-2：失败即透传，零通道动作）
+    let reset: ResetReplicaResult;
+    try {
+      reset = await this.registry.resetReplica(
+        { userId: ownerUserId },
+        namespaceId,
+        { replicationId: expectedReplicationId, replicationEpoch: expectedReplicationEpoch },
+      );
+    } catch {
+      return { ok: false, code: 'reset-replica-failed' }; // branded fatal（committed 事实见 registry observer）
+    }
+    if (!reset.ok) return { ok: false, code: reset.code }; // 窄 issue 码透传（含 MISMATCH——零通道动作、零 peerOwners 动作）
+    // G5a peerOwners 先删——幂等集在重引导入队完成前不得持有该 ns：
+    //   防两处撕裂——(i) 重引导链失败后运维重试 add-target 被 opAddTarget 幂等短路
+    //   拦截为伪 ok:true 零动作；(ii) 本步与并发 remove-target 的 delete 幂等合流。
+    this.peerOwners.delete(namespaceId);
+    // G5b 编排第 2/3 步：收口旧 channel + 重引导（removeTarget 恒 resolve、addTarget 同步无
+    //   throw——catch 为结构性不可达的纯防御边界；peerOwners 保持 deleted，add-target 重试可达）
+    try {
+      await this.peer.removeTarget(namespaceId); // 幂等；恒 resolve
+      this.peer.addTarget({ namespaceId, localOwner: { userId: ownerUserId } }); // §14.1 re-add → 重建 → OPEN → bootstrap
+    } catch {
+      return { ok: false, code: 'reset-replica-failed' };
+    }
+    // G5c 重引导已入队后恢复幂等集：此后 add-target 幂等短路 = 真 no-op 语义；
+    // remove-target→reset-replica 运维序列经此恢复 read/verify-write 的 knownOwner 来源
+    this.peerOwners.set(namespaceId, ownerUserId);
+    this.sink({ event: 'replica-reset', namespaceId });
     return { ok: true };
   }
 

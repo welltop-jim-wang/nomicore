@@ -15,9 +15,10 @@ NOMICORE_CONFIG=<path> node_modules/.bin/tsx apps/yjs-server/src/main.ts
 ```
 
 stdout 输出 NDJSON 生命周期事件（`config-loaded / provisioned / provision-failed /
-listening / ready / target-added / reply / connection-state-changed / goaway-received
-/ … / replication-drained / registry-stopped / persistence-disposed / app-stopped /
-reload-starting / reload-ignored / config-error / reload-complete`）。复制域事件直接
+listening / ready / target-added / replica-reset（reset-replica 仅成功路径发射）/
+reply / connection-state-changed / goaway-received / … / replication-drained /
+registry-stopped / persistence-disposed / app-stopped / reload-starting /
+reload-ignored / config-error / reload-complete`）。复制域事件直接
 映射公共 `ReplicationObserver` 判别联合（字段与包类型逐字一致），已脱敏：不含
 token、owner 值、Yjs bytes、SCHEMA/ROOT 内容。
 
@@ -124,11 +125,47 @@ token、owner 值、Yjs bytes、SCHEMA/ROOT 内容。
 | `remove-target` | peer | `namespaceId` | 幂等；未知 nsId = ok 回执、无副作用 |
 | `notify-auth-changed` | peer | — | **hub 正常重启/SIGHUP 换装完成且 peer 自身 token 未变**时的连接级恢复入口（透传公共 API `PeerReplication.notifyAuthChanged()`；仅 `blocked` 态生效，其余态文档化 no-op） |
 | `request-reauth` | hub | `instanceIdentity` | 对指定认证实例的全部连接发 GOAWAY(REAUTH_REQUIRED)（issue #175 公共 seam 演示） |
+| `replace-schema` | hub | `namespaceId, schema, root?` | 本地 SCHEMA 写槽替换并单向传播（ADR 0010：SCHEMA 只允许 hub 本地修改）。`ok` 仅表示本地写槽完成——**不承诺**传播已发生或 dirty 已落盘（fenced/needs-resync 通道由复制状态机自行修复或等待运维 reset）。`root` 为可选 **plain JSON 对象**（ROOT 恒 Y.Map 物化）；`null`/数组/标量不是「未提供」而是 `invalid-op-args`（与 schema 形状错同码族，`write-failed` 只留给真实写失败） |
+| `bump-epoch` | hub | `namespaceId` | 提升权威复制代际（epoch 递增，身份不变）。回执成功携带 `replicationEpoch`；`ok` = epoch 已提交，**fencing 是异步传播**（上界 `ackTimeoutMs`，缺省 10s）——双 peer 的 `identity-conflicted` 事件在回执之后观测 |
+| `reset-replica` | peer | `namespaceId, ownerUserId, expectedReplicationId, expectedReplicationEpoch` | 受控副本重置（ADR 0010 #133 round-2 guarded reset）：registry 双源严格核对（mismatch → `NAMESPACE_RESET_IDENTITY_MISMATCH`、零通道动作）→ 通过后归档本地副本 → 收口旧 channel → 重引导。`ok` = 归档完成 + 重引导已入队（同步段完成；重引导链随后的失败走既有 channel/连接 observer 事件，恢复入口 = `add-target`，见「管理动词」）。重复调用（同 expected）→ `NAMESPACE_NOT_FOUND`（reset 成功不可重放，属正确行为） |
 
 角色不适用动词（如 hub 收到 `add-target`、peer 收到 `request-reauth`）→
 `unknown-op`。稳定码注册表（append-only）：`malformed-line | unknown-op |
 invalid-op-args | namespace-unknown | verify-write-timeout | write-failed |
-read-failed`。
+read-failed | NAMESPACE_INVALID_IDENTITY | REGISTRY_NOT_ACCEPTING |
+NAMESPACE_NOT_FOUND | NAMESPACE_RESET_IDENTITY_MISMATCH | NAMESPACE_RESET_FAILED |
+NAMESPACE_LOAD_FAILED | NAMESPACE_RESET_EXPECTED_IDENTITY_INVALID |
+reset-replica-failed`（后 8 码为 `reset-replica` 专用：7 个 registry 窄 issue 透传码 +
+`reset-replica-failed`——branded fatal 或结构性防御边界）。
+
+### 管理动词（#140）
+
+`replace-schema` / `bump-epoch` / `reset-replica` 是 Phase 5 收口的管理动词面，
+宿主编排（composition root）职责，不引入新引擎语义；`packages/**` 零改动。
+
+- **reset 编排冻结次序**（`reset-replica`）：① `registry.resetReplica` 前置核对
+  （失败即透传回执、**零通道动作**）→ ② `peer.removeTarget`（收口旧通道，冲突/
+  失败态立即、live 态 `closeTimeoutMs` 5s 兜底）→ ③ `peer.addTarget`（§14.1
+  整连接重建 → 重 OPEN → bootstrap）。次序不可交换：先 remove 再 reset 会把
+  mismatch 的「零破坏」收窄为「零数据破坏」并留下停摆通道。
+- **整连接重建副作用**（§14.1 既定行为）：conflicted/closed 终态后的 re-add 触发
+  `requestRebuild('re-add')`——同 peer 的**所有** namespace channel 一并重建；
+  多 namespace peer 上执行 `reset-replica` 会导致同连接其余 channel 短暂重连
+  （round 重新收敛，无数据丢失——bootstrap/reconcile 幂等）。
+- **重复 reset 的幂等语义**：首次成功 = key 归档、bootstrap 资格；同一 expected
+  再次到达 → ⑤ 无 entry committed probe → `NAMESPACE_NOT_FOUND`（正确行为，
+  非缺陷；reset 成功不可重放）。
+- **bump 后的完整恢复闭环**（S2）：bump(1→2) → 双 peer `identity-conflicted` →
+  对 peer 发 `reset-replica`（expected = 本地旧身份 `{replicationId, epoch:1}`）→
+  核对通过 → 归档 → 重引导 → hub 广告 epoch 2 → importReplica 继承新身份 → live。
+- **reset 后重引导失败的恢复指引**：reset 回执 `ok` 之后的重引导链失败（bootstrap
+  failed / hub 不可达 backoff / needs-resync）**不在回执域**（回执已 `ok`）——观测
+  既有 `channel-state-changed` / `connection-state-changed` / `bootstrap-*` 事件；
+  恢复入口 = `add-target`（幂等集在重引导完成前不含该 ns，重试必达底层，
+  `target-added` 事件为成功信号）。数据已归档零丢失，bootstrap 资格持续有效。
+- **hub 停机窗口的已知偏差**：reset 回执发出与 `peer.stop()` 完成交错时，重引导
+  可能被停机守卫静默拦截（回执仍 `ok`）——进程退出后重启按配置 `peer.targets`
+  重引导，数据零丢失。
 
 Hub URL/token/authorization **没有任何运行期变更 op**——改动走进程重启或
 SIGHUP 换装（restart-only，见下）。
