@@ -2,7 +2,8 @@
  * SA6 红灯锚定 — issue #112：namespace-registry Host shutdown 状态机
  * （AC8/9/10/12；冻结设计 §7 测试 13-21 + R1/M5 测试 15a）。
  *
- * 契约来源：wiki/raw/task_registry-idle-plugin-shutdown.md（冻结设计，R1 修订）：
+ * 规范权威：ADR-0009；设计记录（历史证据，非规范）：
+ * wiki/raw/task_registry-idle-plugin-shutdown.md（冻结设计，R1 修订）：
  * - §2.D shutdown 状态机（acceptance 三相、接纳门迁移至公共入口同步段、
  *   首次 shutdown 同步段原子序：翻相→取消 idle timer→缓存 promise；
  *   runShutdown 冻结次序：carrier 快照等待 → 全量发起 close（复用

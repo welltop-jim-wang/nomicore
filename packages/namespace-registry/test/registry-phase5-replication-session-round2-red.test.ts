@@ -12,7 +12,8 @@
  *   R2-9 竞态矩阵真实缺口补锚（accepted apply→Lease release / Runtime close /
  *        epoch bump 的确定性 FIFO 与终态）。
  *
- * 契约来源：wiki/raw/task_namespace-lease-replication-session_round2.md（评审全文 +
+ * 规范权威：ADR-0010 issue #134 round-2 修订节；设计记录（历史证据，非规范）：
+ * wiki/raw/task_namespace-lease-replication-session_round2.md（评审全文 +
  * AC-R2 映射）；round2_conflict_report（verdict: clear；#1/#2/#5/#7/#8 对账与登记义务）；
  * round2_relevant_decisions（R2-1/R2-5/R2-8/R2-9 裁决增量）。
  *

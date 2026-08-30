@@ -2,7 +2,8 @@
  * SA6 红灯锚定 — issue #111：namespace-registry 排他 `create` 主矩阵
  * （设计 §3/§4/§5/§6/§7/§9 全量落地）。
  *
- * 契约来源：wiki/raw/task_namespace-registry-create_design.md（冻结，R3 PASS）
+ * 规范权威：ADR-0009（+ADR-0010 namespaceId CSPRNG 面）；设计记录（历史证据，非规范）：
+ * wiki/raw/task_namespace-registry-create_design.md（冻结，R3 PASS）
  * - §3 类型/message 恒定表；§4 identity 最小接纳 + 槽内 payload 冻结；
  * - §5 create slot 伪码（冻结次序：acceptance → entry/closing → payload → Clock →
  *   create-document → Persistence → Runtime）；

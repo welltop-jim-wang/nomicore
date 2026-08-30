@@ -5,9 +5,9 @@
  * 有界队列、connection 总压力、control 保留额度、bufferedAmount 高/低水位与 Cordis
  * Timer 检查、不进入 Runtime sequencer）；ADR 0010 L151；#136 设计 §4.4（连接级
  * control 恒先 + data per-ns 队列 round-robin 每轮每 ns 至多一笔 + lowWater/highWater
- * 作用于连接排队字节记账 + CONNECTION_BACKPRESSURE）——该节为 #136 登记 R-11/F6 的
- * 演进位（SA4 判定「切片 7 必须接上 bufferedAmount 水位观察、连接排队字节记账、
- * round-robin data 队列喂入与 CONNECTION_BACKPRESSURE close(1011)」），即本 issue。
+ * 作用于连接排队字节记账 + CONNECTION_BACKPRESSURE；设计记录，非规范）——该节为 #136
+ * 登记 R-11/F6 的演进位（SA4 判定「切片 7 必须接上 bufferedAmount 水位观察、连接排队
+ * 字节记账、round-robin data 队列喂入与 CONNECTION_BACKPRESSURE close(1011)」），即本 issue。
  *
  * 红灯纪律：真实 yjs / Registry / Runtime 双实例；fake-duplex 内存双端；零 real sleep
  *（fake scheduler + 微任务 + saveGates/门闩驱动）；零源码 grep 断言。
@@ -21,16 +21,16 @@
  * - 故障隔离（A 终态失败不影响 B）、重连修复（双 ns 断线重连）、per-ns 队列/窗口/
  *   ACK-timeout 上限 —— 探针实测全部通过（已绿），以守卫断言组入以下用例。
  *
- * 本文件锚定的 #137 新域红灯（当前实现全部实测红）：
- * - AC-2 未发送增量合并（§10.1 Y.mergeUpdates）——当前每笔未发送增量一帧；
+ * 本文件锚定的 #137 新域（当前全部已交付——现为回归锁）：
+ * - AC-2 未发送增量合并（§10.1 Y.mergeUpdates）——已交付（每笔未发送增量经合并后一帧）；
  * - AC-4+AC-6a 连接级公平调度 + 高水位暂停：bufferedAmount 超 high-water 时 dequeue
  *   暂停（零 UPDATE 帧——「调度器结构性存在但测试中零积压」意味着公平轮转只有在
  *   队列积压时才可观察，故与压力联测：积压恢复段须按 ns 严格交替、每轮每 ns 至多
- *   一笔）——当前无视压力立即发送（零积压）；
+ *   一笔）——已交付（水位闸门接入后压力下零发送）；
  * - AC-5 连接总压力收口（maxQueuedBytesPerConnection 执行 + 只收口最大 queued ns +
- *   其他 ns 不受影响 + 恢复 round 补齐）——当前该限额字段运行时从未被读取；
+ *   其他 ns 不受影响 + 恢复 round 补齐）——已交付（该限额字段运行时生效）；
  * - AC-6b hub 出站方向高水位暂停（data 不通、control 保留额度照常 + 不阻塞
- *   Runtime sequencer）。
+ *   Runtime sequencer）——已交付。
  *
  * seam 说明（AC-6）：DuplexTransport 以 `bufferedAmount` number 属性暴露发送缓冲水位
  *（与真实 WebSocket 属性同构；#136 设计 §4.4/R-11「切片 7 适配层必须接上
@@ -112,8 +112,7 @@ describe('issue #137：multiplex + bounded fair backpressure 红灯契约', () =
     await run.peerWrite(b, { n: 23 });
     await settle();
 
-    // ★ 红灯锚（核心）：压力高于高水位 → 连接 dequeue 暂停 → 零 UPDATE 帧
-    // 当前实现：完全无视 bufferedAmount → 6 帧立即发出 → 本断言红
+    // ★ 回归锁（#137 已交付）：压力高于高水位 → 连接 dequeue 暂停 → 零 UPDATE 帧（bufferedAmount 水位闸门已接入——issue #161 R2/PR #165）
     expect(run.framesOf('peerToHub', a).filter((f) => f.message.kind === 'UPDATE')).toHaveLength(0);
     expect(run.framesOf('peerToHub', b).filter((f) => f.message.kind === 'UPDATE')).toHaveLength(0);
     // ⇒ 数据不得先行到达（hub 本地未收敛）

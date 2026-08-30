@@ -2,7 +2,8 @@
  * SA6 红灯锚定 — issue #112：namespace-registry idle retention（AC4/5/6/7）
  * （冻结设计 §7 AC4+AC6 测试 1-6、AC5 测试 7-10、AC7 测试 11-12 + R1/H1 测试 3a）。
  *
- * 契约来源：wiki/raw/task_registry-idle-plugin-shutdown.md（冻结设计，R1 修订）：
+ * 规范权威：ADR-0009；设计记录（历史证据，非规范）：
+ * wiki/raw/task_registry-idle-plugin-shutdown.md（冻结设计，R1 修订）：
  * - §2.A RegistryTimeoutScheduler / scheduler 必需（构造门禁）/ idleTimeoutMs 单点校验；
  * - §2.B idle 状态机（entry phase 三态、I1/I2/I3 不变量、I4 arm-token、
  *   beginIdleClose / activateEntry / handleLeaseReleased / removeEntryAfterClose、

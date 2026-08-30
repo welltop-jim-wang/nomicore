@@ -3,6 +3,7 @@
  * logical ROOT 内容（ADR-0008 / issue #88）。materializeRoot 的替换路径孪生（JSON→doc，
  * 写侧；保留顶层 `doc.getMap('ROOT')` identity 的原子内容替换 helper）。
  *
+ * 规范权威：ADR-0008（原子替换/六阶段编排域）；设计记录（历史证据，非规范）：
  * 设计：wiki/raw/task_doc-runtime-atomic-root-replace.md（Issue #88 简报）+ 设计
  * wiki/raw/task_doc-runtime-atomic-root-replace_design.md（§2 公共接缝契约 / §4 六阶段编排
  * 规格 / §6 失败面总表）。

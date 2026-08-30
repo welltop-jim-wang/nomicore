@@ -302,3 +302,21 @@ maxQueuedControlBytes 缺省 8MiB、有界整轮扫描、pending handoff 计入 
 双口径、checkpoint = max(1, floor(ackTimeoutMs/100))、1011 终止）；peer pong 超时
 close(1001) + 代际安全脱离后重连；GOAWAY/blocked/连接收口同步静默订阅先于异步
 drain。实现证据：`packages/ws-replication/src/*`（PR #165 round 2）。
+
+### issue #172 修订（Phase 5 权威契约收敛——2026-08-30）
+
+本节登记公共 TypeScript API 与 wire 权威文档的收敛决定及交付边界陈述；wire 冻结值
+不变，正文与既有修订节效力不变。
+
+1. **control 保留额度公共字段**：PR #165 曾以 `controlReserveBytes` 落地；issue #172
+   决定将 `@nomicore/ws-replication` 的公共字段收敛为 `maxQueuedControlBytes`。字段缺省、
+   构造期约束、记账及耗尽语义不在 ADR 重复定义，统一以
+   `docs/protocols/instance-replication-v1.md` §17 为权威。
+2. **`wiki/raw` 非规范**：源码与规范中的公共行为表述必须指向 `CONTEXT.md`、ADR 或
+   `docs/protocols/`；`wiki/raw/` 仅为流水线历史证据（`docs/AGENTS.md` Authority 节）。
+   仓库内以「冻结契约/权威设计/契约来源」措辞指向 `wiki/raw` 的源引用已改为权威指向
+   +历史证据双标注。
+3. **交付边界陈述**：当前切片状态与后续依赖仅由
+   `docs/phases/phase-5-websocket-replication.md`「交付现状与边界」节维护，ADR 不复制交付
+   清单。hub 停机 GOAWAY 发送归属 `@nomicore/ws-replication` 包行为；composition root
+   只按 protocol §21 编排包级停机顺序。

@@ -589,7 +589,8 @@ describe('AC-6 并发 create 与 shutdown 全链行为', () => {
 
 // ═══════════════════════════ 设计 §12.3 回补锚 A/B/C（R3）═══════════════════════════
 //
-// 契约来源：wiki/raw/task_phase5-namespaceid-registry-identity_design.md §12.3
+// 规范权威：ADR-0010（Registry identity 修订）；设计记录（历史证据，非规范）：
+// wiki/raw/task_phase5-namespaceid-registry-identity_design.md §12.3
 // （D-13 零红灯锚机制回补；SA2 攻击 #3「设计声称、测试不见证」）。
 // 基线下三条全部为红：均以三键 create（或含重试的 create 链）驱动，
 // 当前实现以 NAMESPACE_INVALID_IDENTITY / 无 fatal 拒绝 —— 与 AC 套件同款红灯机制。

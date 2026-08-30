@@ -3,14 +3,15 @@
  *
  *   AC4（G2.3）：Hub 侧 UPDATE ACK 超时必须通知 Peer（RESYNC_REQUIRED）并驱动
  *      Peer 发起恢复 round、双向收敛（§9.4「hub 声明是 peer 发起恢复的唯一通路」、
- *      §18 L520）；当前 `hub-namespace.ts:624-626` `onAckTimeoutFired` 只置
- *      `needs-resync`——wire 上零 RESYNC_REQUIRED、peer 永不知情 → 恢复死锁。
+ *      §18 L520）；已修复（回归锁）：`onAckTimeoutFired` 置 needs-resync + wire 上
+ *      RESYNC_REQUIRED 声明驱动恢复。
  *   AC5（G3）：连接级 per-namespace 队列 / round-robin / maxQueuedBytesPerConnection
- *      shedding / bufferedAmount 高低水位 / 控制帧优先——当前全部无实现
- *      （`OutboundQueue` 数据面死置、UPDATE 走控制路径、三常量零逻辑引用）。
- *   AC6（G4）：CLOSE 同步停接纳、已接纳 apply 排空、终态不可复活——当前 peer
- *      `onCloseRequest` 不进 closing（drain 期照常收 UPDATE）、hub `onRoundSettled`
- *      仅判终态（'closing' 可被复活为 live）、closing 期重复 OPEN waiter 永不 flush。
+ *      shedding / bufferedAmount 高低水位 / 控制帧优先——已交付（#137/PR #162 +
+ *      #161 R2/PR #165：per-ns 队列、round-robin、连接总压 shed、bufferedAmount 水位、
+ *      control 保留额度、CONNECTION_BACKPRESSURE 1011）——现为回归锁。
+ *   AC6（G4）：CLOSE 同步停接纳、已接纳 apply 排空、终态不可复活——已修复（回归锁）：
+ *      peer `onCloseRequest` 进 closing（drain 期停收 UPDATE）、hub `onRoundSettled`
+ *      判终态且 closing 不可复活为 live、closing 期重复 OPEN waiter flush 封闭。
  *
  * 红线纪律：真实 yjs / Registry / Runtime；fake-duplex（含测试自制「慢 socket」栅门
  * transport——send 只入 socket 缓冲、test 控制释放 = 可观测 bufferedAmount；

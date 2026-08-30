@@ -1,28 +1,23 @@
 /**
  * SA7 动态验证补充测试（revision round 2）—— SA4 交 SA7 抽查点 2：
- * 真实 transport 下的缺省零漂移抽样。
+ * 真实 transport 下的 control 保留额度边界抽样。
  *
  * 背景：本轮（R2）全部既有测试走 fake-duplex 内存双端；旧字段 `controlReserveBytes`
- * 曾以 64KiB 缺省值与 lowWater ceiling 做「逐帧等价」声明；当前权威字段为
- * `maxQueuedControlBytes`，本文件显式使用历史 64KiB 对照值，
- * 缺真实传输链路（真实 bufferedAmount 水位驱动暂停段）下的行为对照。本文件在
- * 真实 TCP loopback 链路上抽样暂停段 control 行为的缺省边界两侧：
- *   A（存活侧）：真实暂停段 + 缺省额度内容纳的 control 流量 → 全部 ACK 上 wire、
- *      零 ERROR、连接 ready；
- *   B（耗尽侧）：真实暂停段 + 跨越缺省额度（> 64KiB）的 control 流量 → 恰 1 个
+ * 曾使用 64KiB。当前权威字段为 `maxQueuedControlBytes`，工程缺省为 8MiB；本文件在
+ * 真实 TCP loopback 链路上分别验证：
+ *   A（存活侧）：缺省 8MiB 额度内的 control 流量全部上 wire、零 ERROR、连接 ready；
+ *   B（耗尽侧）：显式 64KiB 对照额度被跨越时，产生恰 1 个
  *      ERROR(CONNECTION_BACKPRESSURE) + close(1011) + peer backoff。
- *   A/B 在旧实现（lowWater=64KiB ceiling，58150ad）下行为逐帧相同——缺省零漂移的
- *   动态差分证明（SA7 已在本机对旧 src 复跑本文件核对，见 sa7 报告）。
  *
  * 真实链路结构约束（实现于测试构造，非协议约束）：ACK 反馈与 data 同流——peer 侧
  * 暂停读取切断 ACK 回流后，单连接暂停段内可达 control 流量上界 =
  * Σ_ns min(窗口 32)（每 ns 至多 32 笔在途未 ACK）。故 A 取 4 ns × 32 = 128 ACK
- * （≈7.3KiB，存活侧采样），B 取 40 ns × 32 = 1280 ACK（≈73KiB > 64KiB，跨越缺省
- * 边界）。flood 总量受队列上限（4MB）约束取 44 × 100KiB ≈ 4.4MB（在途 + 队列
+ * （≈7.3KiB，存活侧采样），B 取 40 ns × 32 = 1280 ACK（≈73KiB，跨越显式 64KiB
+ * 对照额度）。flood 总量受队列上限（4MB）约束取 44 × 100KiB ≈ 4.4MB（在途 + 队列
  * ≤ ~4.4MB < 溢出线）。
  *
- * 纪律：limits 全部取缺省（零覆写——零漂移抽样前提）；暂停段由真实内核/用户态发送
- * 积压驱动（socket.writableLength——§4.2 duck-typed bufferedAmount seam 的真值来源，
+ * 纪律：A 使用工程缺省，B 仅显式覆写 control/bootstrap 额度以采样耗尽边界；暂停段由
+ * 真实内核/用户态发送积压驱动（socket.writableLength——§4.2 duck-typed bufferedAmount seam 的真值来源，
  * 零注入）；node:net 真实 TCP；4 字节长度前缀成帧属 transport 适配器职责
  * （DuplexTransport 契约 = 一 send 一 message，TCP 流式承载需适配器重组）。
  * 本文件为真实链路集成抽样：真实 timer + 有界 real wait（与 fake-duplex 套件的
@@ -371,9 +366,9 @@ afterAll(async () => {
   }
 });
 
-describe('issue #137 R2 SA7：真实 transport 缺省零漂移抽样（真实 TCP + 真实 bufferedAmount）', () => {
+describe('issue #137 R2 SA7：真实 transport control 额度边界抽样（真实 TCP + 真实 bufferedAmount）', () => {
   it(
-    'A（存活侧）：真实暂停段 + 缺省额度内 control 流量（4 ns × 32 ACK = 128 ≈ 7.3KiB ≪ 64KiB）——全部上 wire、零 ERROR、连接 ready',
+    'A（存活侧）：真实暂停段 + 缺省 8MiB 额度内 control 流量（4 ns × 32 ACK = 128 ≈ 7.3KiB）——全部上 wire、零 ERROR、连接 ready',
     { timeout: 90_000 },
     async () => {
       const run = await bootReal(4);
@@ -383,7 +378,7 @@ describe('issue #137 R2 SA7：真实 transport 缺省零漂移抽样（真实 TC
         expect(run.hubTransport.bufferedAmount).toBeGreaterThan(512 * 1024);
 
         // 每 ns 32 笔在途（窗口满即止——ACK 回流被切断后的可达上界形态）：
-        // 4 × 32 = 128 ACK ≈ 7.3KiB，缺省 64KiB 额度内容纳。
+        // 4 × 32 = 128 ACK ≈ 7.3KiB，远低于缺省 8MiB 额度。
         for (const nsId of run.nsIds) {
           for (let n = 0; n < 32; n += 1) await run.write(nsId, 'peer', { n });
         }
@@ -393,8 +388,7 @@ describe('issue #137 R2 SA7：真实 transport 缺省零漂移抽样（真实 TC
           30_000,
         );
 
-        // ★ 缺省零漂移抽样（存活侧）：control 不受闸门阻塞、只受保留额度约束——
-        // 额度内全部发出（旧实现 lowWater=64KiB 同界）。
+        // ★ 缺省额度存活侧：control 不受 data 闸门阻塞，只受独立保留额度约束。
         expect(countKind(run.hubSent, 'UPDATE_ACK')).toBe(128);
         expect(countKind(run.hubSent, 'ERROR')).toBe(0);
         expect(countKind(run.hubSent, 'RESYNC_REQUIRED')).toBe(0);
@@ -409,12 +403,11 @@ describe('issue #137 R2 SA7：真实 transport 缺省零漂移抽样（真实 TC
   );
 
   it(
-    'B（耗尽侧）：真实暂停段 + 跨越缺省额度 control 流量（40 ns × 32 ACK = 1280 ≈ 73KiB > 64KiB）——恰 1 ERROR(CONNECTION_BACKPRESSURE) + close(1011) + peer backoff',
+    'B（耗尽侧）：真实暂停段 + 跨越显式 64KiB 对照额度的 control 流量（40 ns × 32 ACK = 1280 ≈ 73KiB）——恰 1 ERROR(CONNECTION_BACKPRESSURE) + close(1011) + peer backoff',
     { timeout: 180_000 },
     async () => {
       const run = await bootReal(40, {
-        // 显式额度（缺省 8MiB 不再耗尽 73KiB 流量）：quota = mb+128 = 65,664，耗尽点
-        // ≈ floor(65,664/ackBytes) ≈ 旧预测 ~1150 同量级（用例 A 缺省额度天然零改动）
+        // 显式对照额度（缺省 8MiB 不会被约 73KiB 流量耗尽）：quota = mb+128 = 65,664。
         maxBootstrapBytes: 64 * 1024,
         maxQueuedControlBytes: 64 * 1024 + 128,
       });
@@ -441,7 +434,7 @@ describe('issue #137 R2 SA7：真实 transport 缺省零漂移抽样（真实 TC
         await waitUntil('peer 观测连接关闭（backoff）', () => run.peer.getConnectionState() === 'backoff', 30_000);
 
         const errors = run.hubSent.filter((f) => f.message.kind === 'ERROR');
-        // ★ 缺省零漂移抽样（耗尽侧）：CONNECTION_BACKPRESSURE | 1011（旧实现同界同码）。
+        // ★ 显式额度耗尽侧：CONNECTION_BACKPRESSURE | 1011。
         expect(errors).toHaveLength(1);
         expect(
           errors[0] !== undefined && errors[0].message.kind === 'ERROR' ? errors[0].message.code : undefined,
@@ -450,7 +443,7 @@ describe('issue #137 R2 SA7：真实 transport 缺省零漂移抽样（真实 TC
         expect(run.peerTransport.closed).toBe(true);
         expect(run.peer.getConnectionState()).toBe('backoff');
         // 边界采样（下界断言，帧长自适配）：按 ERROR 前各 ACK 实测字节累加，计算
-        // 缺省 64KiB 额度的许可 ACK 数（57B 定长到 seq=128，其后 58B——r2-red 实测
+        // 显式 64KiB 对照额度的许可 ACK 数（57B 定长到 seq=128，其后 58B——r2-red 实测
         // 注释同源），断言实际发送量不显著低于许可数（−2 容纳交错）。上界不设：
         // close 排空期（socket.end 先刷积压再 FIN）的收尾 ACK 属收口瞬态，不属额度
         // 记账面。

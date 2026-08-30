@@ -2,7 +2,8 @@
  * SA6 红灯锚定 — issue #112：namespace-registry Cordis plugin（AC1/2/3/11）
  * （冻结设计 §7 测试 22-28 + R1/M1 测试 28a；真实 `new Context()` 组合）。
  *
- * 契约来源：wiki/raw/task_registry-idle-plugin-shutdown.md（冻结设计，R1 修订）：
+ * 规范权威：ADR-0009；设计记录（历史证据，非规范）：
+ * wiki/raw/task_registry-idle-plugin-shutdown.md（冻结设计，R1 修订）：
  * - §2.F plugin 形状（NOMICORE_REGISTRY_SERVICE / provide / require / inject /
  *   有序 disposer / assertNamespaceRegistryHostDependencies / createCordisRegistryScheduler /
  *   resolvePluginIdleTimeoutMs / 双通道 AC3 裁决）；

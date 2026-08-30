@@ -120,7 +120,7 @@ Peer instance × N
 
 ### 8. Reset、配置和 observability
 
-- Peer `resetReplica(owner, namespaceId, expectedLocalIdentity)` 编排 close→archive→允许 bootstrap。
+- Peer `resetReplica(owner, namespaceId, expectedLocalIdentity)` 编排归档与重新 bootstrap 资格；执行次序以 ADR 0010 issue #133 round-2 修订节为准（先在唯一 write sequencer 的 reset-fence 槽内完成 live 投影 + persisted committed-snapshot 双源身份核对，之后才允许 close/archive/bootstrap 资格变更——早期「close→archive→bootstrap」简写已被该修订节替换）。
 - Targets 支持运行时 add/remove；hubUrl、token 和授权规则通过插件 update/restart 生效。
 - 结构化 observer seam：连接/channel 状态、重连、bootstrap/reconcile 字节、updates、ACK/apply latency、backpressure resync、auth/authz、identity conflict、degraded bypass 与稳定错误。
 - 默认指标不以原始 owner、namespace、token 或 update 内容作为标签。
@@ -138,6 +138,59 @@ Peer instance × N
 - Memory/File Persistence 上运行共享复制验收套件。
 - 对包公共 exports、稳定错误注册表、CONTEXT、ADR、Phase 文档和应用配置做一致性收口。
 - 执行 Standards/Spec 两轴审查后才合入主线。
+
+## 交付现状与边界（issue #172 收口登记）
+
+本节区分「当前已交付契约」「已知偏差（planned fix）」与「未交付边界」。wire 语义权威
+仍为 `docs/protocols/instance-replication-v1.md`（ADR 0010 issue #161 修订节冻结值）；
+本节只登记交付状态，不改写任何冻结值，也不把未合入行为表述为当前实现。
+
+### 切片交付状态
+
+| 切片 | 状态 | 说明 |
+|---|---|---|
+| 1 identity/CSPRNG/管理操作 | 已交付 | enable/bump FIFO 槽序、replication 两态投影 |
+| 2 Persistence 导入/归档 | 已交付 | importDoc/archiveDoc/只读身份探针（ADR 0006 #133 修订节） |
+| 3/4 ReplicationSession + trusted apply | 已交付 | ADR 0010 issue #134（含 round 2）修订节冻结词汇 |
+| 5 replication-protocol codec | 已交付 | envelope/payload/注册表/版本协商 + golden/截断/fuzz 套件 |
+| 6 ws-replication namespace 状态机 | 已交付 | 背压水位、连接级 pipeline 记账、control 保留额度、严格拒纳与同批丢弃/RESYNC，以及由 `ackTimeoutMs` 派生的恢复检查点已随 #137/#161/#169/#178 交付；冻结语义见 protocol §17 |
+| 7 WS 连接/认证/授权 | 部分交付 | 受信 Upgrade 身份、peer pong close(1001)、peer GOAWAY deadline/blocked 已交付；hub pong 语义（#170）与 GOAWAY 静默窗口、hub 停机 GOAWAY（#171）为已知偏差；生产 adapter 三面装配断言随 #164 |
+| 8 Reset/配置/observability | 部分交付 | Registry 侧 resetReplica 已交付（ADR 0010 #133 round-2 修订节为现行有效文本，正文旧次序描述不引用）；peer 侧 resetReplica 编排与结构化 observer/metrics 面（#163）未交付 |
+| 9 apps/yjs-server | 未交付 | #164（composition root + DuplexTransport 三可选面装配期断言 + §21 停机编排） |
+| 10 最终集成与审查 | 未交付 | 依赖 #163/#164/#170/#171 |
+
+### 已知偏差（冻结契约 vs 当前实现；可执行验收锚已就位）
+
+| 偏差 | 冻结语义（权威出处） | 当前实现 | 修复票 |
+|---|---|---|---|
+| hub 侧 pong 超时 | §18：临时失败 → close(1001) + backoff | close(1002)；`PONG_TIMEOUT` 不在 §13.1 注册表（无 ERROR 帧） | #170 |
+| CLOSE_OK 关联 | §10.2/§13.1：错误/多余 ACK 关联 → `ACK_STATE_VIOLATION`(1002) connection fatal | closing/live 期不匹配或多余 CLOSE_OK 静默忽略 | #171 |
+| hub 停机 GOAWAY | §21 停机顺序第 1 步：停止接纳并发送 GOAWAY | `HubReplication.close()` 直接 close(1001)，零 GOAWAY 帧 | #171 |
+
+验收锚：`packages/ws-replication/test/ws-replication-issue172-contract-anchors.test.ts`。
+A2-1/A2-2（#169）与 A5-1/A5-2（#171 已覆盖部分）已转为现绿回归锁；A3-1（#170）、
+A4-1/A4-2/A5-5（#171）仍以 `it.fails` 注册为期望红灯。锚集存在性由同文件常驻 meta
+守卫保护，修复票落地摘标时须同步缩减清单。严格接纳 R1-3 已随 #178 转为现绿回归锁。
+
+**hub 停机 GOAWAY 归属裁决**：§21 第 1 步的 GOAWAY 发送属 `@nomicore/ws-replication`
+包行为（`HubReplication.close()` 包内可完成，不依赖 composition root），修复票 #171；
+切片 9（#164）的 composition root 只负责按 §21 顺序编排停机，不拥有 GOAWAY 发送本身。
+
+### 未交付边界（known gap）
+
+- 结构化 observability（#163）：`HubReplication`/`PeerReplication` 公共 API 无
+  observer/metrics 事件面；ADR 0010「资源限制与 observability」节的最小观测面未交付。
+- apps/yjs-server + real WebSocket adapter/composition（#164）：`apps/` 下无 composition
+  root；`DuplexTransport` 三可选面（bufferedAmount/ping/onPong）的生产装配期响亮断言
+  （§17「生产 Adapter 必须暴露三面」）随 #164 交付。
+- peer 侧 resetReplica 编排（切片 8 部分）：Registry 侧已交付；ws-replication 层未暴露
+  peer reset 面（`PeerReplication` 无 reset 编排 API）。
+
+### control 保留额度实现口径（#172 收敛登记）
+
+公共 API 已与 wire 契约收敛；字段、缺省、构造期约束、记账与耗尽语义以
+`docs/protocols/instance-replication-v1.md` §17 为唯一权威。ADR 0010 issue #172 修订节仅记录
+从 PR #165 过渡名称到现行公共字段的兼容性决定，不复制 protocol 的运行规则。
 
 ## 协议与状态机验收
 
