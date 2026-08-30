@@ -291,6 +291,38 @@ describe('T-A retention 语义（AC-1：可配置 age/bytes、null/0 文档语�
     expect(e.log.streamId).not.toBe(d.log.streamId)
     expect(eventsOfTypeRaw(e.events, 'stream-generation-rotated')).toHaveLength(1)
   })
+
+  it('T-A9 [红灯] 字节预算独立达标：非零 maxAge + 新鲜组 + maxBytes < total ⇒ 删最老合格闭组至 ≤；开组原样；保留历史如实', () => {
+    const root = freshRoot()
+    const ns = 'ns-a9'
+    // 非 null、非 0 的 maxAge（30d 名义值）：age 遍历不得成为字节预算的执行者（P1 专属限制）
+    const a = buildThreeGroups(root, ns, { maxAgeMs: 2_592_000_000, sweepOnOpen: false }, 0)
+    // 新鲜度证明（P1）：age 1000 << 30d ⇒ age 遍历零删除；默认 1 GiB 字节上限不触发 P2
+    const fresh = a.log.sweepRetention({ now: T0 + 1000 })
+    expect(fresh.deletedGroups).toBe(0)
+    expect(segmentEntriesOf(root, ns, a.log.streamId)).toHaveLength(6)
+
+    const p = (seg: string) => segmentPathsOf(root, ns, a.log.streamId, seg)
+    const g1 = groupBytesOf(p('00000001'))
+    const g2 = groupBytesOf(p('00000002'))
+    const g3 = groupBytesOf(p('00000003'))
+    const total = g1 + g2 + g3
+
+    // 字节预算 = total−1（P2 独立达标：淘汰最老合格闭组 = 段1）
+    const b = makeRetentionLog(root, ns, { maxAgeMs: 2_592_000_000, maxBytesPerNamespace: total - 1, sweepOnOpen: false })
+    expect(b.log.streamId).toBe(a.log.streamId)
+    const report = b.log.sweepRetention({ now: T0 + 1000 })
+    expect(report.deletedGroups).toBe(1) // 恰最老闭组（字节驱动；age 新鲜未删——见 fresh 证明）
+    expect(report.reclaimedBytes).toBe(g1)
+    expect(report.orphanBinsDeleted).toBe(0)
+    // 磁盘：段1 删、段2（闭组、预算已达标）原样、段3（开组）原样——开组在任何压力下保护
+    expect(segmentEntriesOf(root, ns, a.log.streamId)).toEqual(['00000002.bin', '00000002.jsonl', '00000003.bin', '00000003.jsonl'])
+    // 保留历史报告（扫描重建）：最早保留 sequence = 段2 首条；历史已裁剪标记
+    expect(report.earliestRetained).toEqual([{ streamId: a.log.streamId, sequence: '2' }])
+    expect(report.historyTrimmedStreams.map((s) => s.streamId)).toContain(a.log.streamId)
+    expect(report.retainedBytes).toBe(g2 + g3)
+    expect(report.retainedBytes).toBeLessThanOrEqual(total - 1)
+  })
 })
 
 // ============================================================================
