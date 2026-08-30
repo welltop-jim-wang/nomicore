@@ -95,7 +95,6 @@ export class HubNamespaceChannel {
     bootstrap: undefined,
     close: undefined,
   };
-  private cleanupTail: Promise<void> = Promise.resolve();
   private closeQueue: Promise<void> = Promise.resolve();
   /** issue #174 §4.3 记忆位：终态一次性通知（每 channel 至多一次；重复通知幂等）。 */
   private settledNotified = false;
@@ -255,38 +254,38 @@ export class HubNamespaceChannel {
     this.openInFlight = true;
     this.openWaiters.push(() => undefined);
     void (async () => {
-let authz: NamespaceAuthorization;
+      let authz: NamespaceAuthorization;
       try {
         authz = await this.host.authorize(this.host.peerInstanceId(), this.namespaceId);
-      } catch (err) {
-this.finishOpenError('INTERNAL_ERROR');
+      } catch {
+        if (this.isOpenAborted()) { this.finishOpenSilently(); return; } // ★ 已静默：不向死连接发 INTERNAL_ERROR
+        this.finishOpenError('INTERNAL_ERROR');
         return;
       }
-      if (this.isTerminal()) {
-        this.finishOpenSilently();
-        return;
-      }
+      // D-H1（issue #171 §11.2）：authorize 恢复点**不拦截** registry.open——中止判别
+      // 保护资源账目（acquire→release 配对），不保护调用点；authorize 成功后续体进入
+      // 取得阶段完整执行，中止判别自 registry.open 恢复点起逐点生效。
       if (!authz.ok || !authz.permissions.read) {
-this.finishOpenError('NAMESPACE_UNAUTHORIZED');
+        if (this.isOpenAborted()) { this.finishOpenSilently(); return; } // ★ 同上（未授权不泄露存在性亦适用死连接）
+        this.finishOpenError('NAMESPACE_UNAUTHORIZED');
         return;
       }
       let opened: Awaited<ReturnType<NamespaceRegistry['open']>>;
       try {
         opened = await this.host.registry.open(authz.localOwner, this.namespaceId);
-      } catch (err) {
-this.finishOpenError('INTERNAL_ERROR');
+      } catch {
+        if (this.isOpenAborted()) { this.finishOpenSilently(); return; }
+        this.finishOpenError('INTERNAL_ERROR');
         return;
       }
-      if (this.isTerminal()) {
-        this.finishOpenSilently();
+      if (this.isOpenAborted()) {
+        // ★ H1 主修复点：registry.open 已交付、尚未赋字 → 显式回收局部 lease（零泄漏）
+        this.finishOpenSilently(opened.ok ? opened.lease : undefined);
         return;
       }
       if (!opened.ok) {
-        if (opened.code === 'NAMESPACE_NOT_FOUND') {
-          this.finishOpenError('NAMESPACE_NOT_FOUND');
-        } else {
-          this.finishOpenError('INTERNAL_ERROR');
-        }
+        if (this.isOpenAborted()) { this.finishOpenSilently(); return; } // R1 #5：中止 + 拒绝（无资源可回收）
+        this.finishOpenError(opened.code === 'NAMESPACE_NOT_FOUND' ? 'NAMESPACE_NOT_FOUND' : 'INTERNAL_ERROR');
         return;
       }
       this.lease = opened.lease;
@@ -298,14 +297,13 @@ this.finishOpenError('INTERNAL_ERROR');
         if (status.runtime === null) throw new Error('lease released during hub open');
         replication = status.runtime.replication;
       } catch {
+        if (this.isOpenAborted()) { this.finishOpenSilently(); return; } // R1 #5：lease 已赋字 → 字段回收
         this.finishOpenError('INTERNAL_ERROR');
         return;
       }
-      if (this.isTerminal()) {
-        this.finishOpenSilently();
-        return;
-      }
+      if (this.isOpenAborted()) { this.finishOpenSilently(); return; } // 已赋字：closeSessionAndRelease 兜底回收 this.lease
       if (replication.state !== 'enabled') {
+        if (this.isOpenAborted()) { this.finishOpenSilently(); return; } // R1 #5
         this.finishOpenError('REPLICATION_NOT_ENABLED');
         return;
       }
@@ -321,10 +319,12 @@ this.finishOpenError('INTERNAL_ERROR');
         message.replicationEpoch === undefined ||
         message.replicationId !== hubIdentity.replicationId
       ) {
+        if (this.isOpenAborted()) { this.finishOpenSilently(); return; } // R1 #5
         this.emitIdentityConflicted('open-mismatch'); // HB6
         this.finishOpenError('REPLICATION_ID_MISMATCH');
         return;
       } else if (message.replicationEpoch !== hubIdentity.replicationEpoch) {
+        if (this.isOpenAborted()) { this.finishOpenSilently(); return; } // R1 #5
         this.emitIdentityConflicted('open-mismatch'); // HB6
         this.finishOpenError('REPLICATION_EPOCH_MISMATCH');
         return;
@@ -337,15 +337,18 @@ this.finishOpenError('INTERNAL_ERROR');
           localRole: 'hub',
           remoteInstanceId: this.host.peerInstanceId(),
         });
-      } catch (err) {
-this.finishOpenError('INTERNAL_ERROR');
+      } catch {
+        if (this.isOpenAborted()) { this.finishOpenSilently(); return; }
+        this.finishOpenError('INTERNAL_ERROR');
         return;
       }
-      if (this.isTerminal()) {
-        this.finishOpenSilently();
+      if (this.isOpenAborted()) {
+        // ★ E2 第二窗口：session 已交付、尚未赋字 → 先关 session 再回收 lease（ADR-0010 L90 次序）
+        this.finishOpenSilently(undefined, sessionResult.ok ? sessionResult.session : undefined);
         return;
       }
       if (!sessionResult.ok) {
+        if (this.isOpenAborted()) { this.finishOpenSilently(); return; } // R1 #5
         this.finishOpenError(
           sessionResult.code === 'REPLICATION_NOT_ENABLED' ? 'REPLICATION_NOT_ENABLED' : 'INTERNAL_ERROR',
         );
@@ -360,7 +363,7 @@ this.finishOpenError('INTERNAL_ERROR');
       this.watchdog.startIdle();
       this.flushOpenWaitersOk();
       if (mode === 0) {
-this.startBootstrap(hubIdentity);
+        this.startBootstrap(hubIdentity);
       } else {
         this.setState('reconciling'); // 等待 peer Step1
       }
@@ -406,10 +409,26 @@ this.startBootstrap(hubIdentity);
     this.notifySettled();
   }
 
-  private finishOpenSilently(): void {
-    // §13.4：终局/连接已断 → 零 wire、资源回收
+  private finishOpenSilently(pendingLease?: NamespaceLease, pendingSession?: ReplicationSession): void {
+    // §13.4：终局/连接已静默 → 零 wire、零状态机迁移；对续体局部已取得、尚未赋字的
+    // 资源**显式回收**（§D8.4，issue #171 H1/E2——旧实现只回收字段，`opened.lease`
+    // 局部值永不 release → 泄漏）。
     this.openWaiters = [];
-    void this.closeSessionAndRelease();
+    if (pendingSession !== undefined) {
+      void pendingSession.close().catch(() => undefined); // 先关 session（ADR-0010 L90）
+    }
+    if (pendingLease !== undefined && pendingLease !== this.lease) {
+      void pendingLease.release().catch(() => undefined); // 再释放未赋字 lease（幂等 same-promise）
+    }
+    void this.closeSessionAndRelease(); // 已赋字段的 lease/session（幂等；hub 侧字段读取安全——通道不跨连接）
+  }
+
+  /** §D8.1（issue #171）：open 续体中止判别——终态 ∨ 通道已静默（closing）。
+   *  不变量：进入 closing 的唯一出口是终态（收口链 setState('closed') / finishOpenError
+   *  在静默域内一律走 silent 分支）——hub 通道不跨连接存活，无需连接计数器；
+   *  通道静默态即完备的代际信号。 */
+  private isOpenAborted(): boolean {
+    return this.isTerminal() || this.state === 'closing';
   }
 
   // ─────────────────────────────── Bootstrap（§8 hub 侧） ───────────────────────────────
@@ -581,6 +600,7 @@ this.startBootstrap(hubIdentity);
     if (this.isTerminal() || this.state === 'closing') return;
     // 帧分发同步段即停接纳，消除异步 closeQueue 前继续接收 UPDATE/Step 的竞态窗口。
     this.setState('closing');
+    this.clearAllTimers(); // §D8.5（issue #171）：peer 发起 CLOSE 时 open/bootstrap timer 残留同理清理
     this.closeQueue = this.closeQueue.then(async () => {
       if (this.isTerminal()) return;
       // §13.2：停接纳 → 等已接纳 apply → session close → lease release → CLOSE_OK
@@ -631,6 +651,7 @@ this.startBootstrap(hubIdentity);
   /** 连接关闭同步静默：先停接纳并摘订阅，再异步 drain/释放。 */
   quiesceConnection(): void {
     if (!this.isTerminal() && this.state !== 'closing') this.setState('closing');
+    this.clearAllTimers(); // §D8.5（issue #171）：连接静默同步段清 bootstrap 残留 timer（防静默期 fire → finalize('failed') 污染收口链的 setState('closed') 与 CLOSE_OK）
     const unsubscribe = this.unsubscribe;
     if (unsubscribe !== undefined) {
       unsubscribe();
@@ -795,12 +816,18 @@ this.startBootstrap(hubIdentity);
     const outcome = await this.applyRemoteUpdate(update, step2Sequence, true);
     if (outcome === 'ok') {
       // §9.1.4：apply 成功 → 发 SYNC_APPLIED（ackedSequence = 收到的 Step2 帧序）
-      this.sendChecked({
-        kind: 'SYNC_APPLIED',
-        namespaceId: this.namespaceId,
-        syncRoundId: this.round.currentRound,
-        ackedSequence: step2Sequence,
-      });
+      // §D5.4（issue #171，R1/SA2 #8 裁决 (a)）：hub 通道无 'disconnected' 态；
+      // closing/终态 = 通道已静默，迟到 SYNC_APPLIED 属 Scope 1「迟到续体零 wire」
+      // 家族——补 isQuietState 门（与 peer 侧既有 epoch 门同构：只拦发送，round
+      // 结算语义不变——onRoundSettled 的 closing 守卫既有）。
+      if (!this.isQuietState()) {
+        this.sendChecked({
+          kind: 'SYNC_APPLIED',
+          namespaceId: this.namespaceId,
+          syncRoundId: this.round.currentRound,
+          ackedSequence: step2Sequence,
+        });
+      }
       return 'ok';
     }
     return 'aborted';

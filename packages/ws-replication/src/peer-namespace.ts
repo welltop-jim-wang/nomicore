@@ -50,8 +50,6 @@ export interface PeerNamespaceHost {
   onDataQueued(namespaceId: string): void;
   /** 请求连接级 drain（§4.5，issue #137）。 */
   requestDataDrain(): void;
-  /** GOAWAY drain 窗口投影；namespace 断线处理据此保持 draining 语义。 */
-  isGoawayDraining(): boolean;
   /** 确定性延后 seam：生产缺省单 microtask，测试可注入显式泵。 */
   deferTask(task: () => void): void;
   /** 本端连接致命（ACK_STATE_VIOLATION 等）：connection ERROR + close + blocked。 */
@@ -69,6 +67,16 @@ export interface PeerNamespaceHost {
 }
 
 type TimerKind = 'open' | 'bootstrap' | 'reconcile' | 'close';
+
+/** 排队时（caller 同步栈）捕获的代际资源所有权（§D1，issue #171 Scope 2）：
+ *  执行期只处置捕获对象——「先捕获、后处置」，迟到续体不得触碰当前代字段。
+ *  R1（SA2 #3）：不含 epoch——代际判别由 runDisposal 的**身份守卫**（session
+ *  对象同一性）承担；epoch 比对仅保留于 §D2 收口续体的 wire 副作用门（局部变量）。 */
+interface CleanupClaim {
+  readonly session: ReplicationSession | undefined;
+  readonly lease: NamespaceLease | undefined;
+  readonly unsubscribe: (() => void) | undefined;
+}
 
 export class PeerNamespaceController {
   readonly target: ReplicationTarget;
@@ -277,7 +285,12 @@ export class PeerNamespaceController {
 
   onOpenOk(message: { mode: 0 | 1; replicationId: string; replicationEpoch: number }): void {
     if (this.state !== 'opening') {
+      if (this.state === 'disconnected') {
+        return; // §D7：GOAWAY drain 窗口（连接存活）迟到的 OPEN_OK —— 静默忽略
+      }
       if (!this.isTerminal()) {
+        // closing → finalize('failed') 保留（sa7-hardening D6：「closing 期迟到 OPEN_OK
+        // → finalize + E5 结算」绿灯锚不动）
         this.sendNsError('NAMESPACE_STATE_VIOLATION');
         this.finalize('failed');
       }
@@ -354,6 +367,16 @@ export class PeerNamespaceController {
       return false;
     }
     this.session = result.session;
+    // §D5.2（issue #171）：代际重置——新代 session 建成：清上一代残留的
+    // round/channel/watchdog 簿记与 closeSequence（旧代 disposal 若仍悬挂，其身份
+    // 守卫（§D1）不命中新代 session → 不触碰 aux；残留清理由新代 open 路径自担）。
+    // channel.teardown() 置 needsResync=true 与既有断线路径（处置段 teardown）行为
+    // 一致：gen1 未发送队列按「断线期间不维持 update outbox」丢弃，恢复由 round diff
+    // + 既有 resync 机制修复（与现行断线重连语义逐字同构，非新行为）。
+    this.round.teardown();
+    this.channel.teardown();
+    this.watchdog.teardown();
+    this.closeSequence = undefined;
     this.subscribe();
     return true;
   }
@@ -367,6 +390,9 @@ export class PeerNamespaceController {
     sequence: number;
   }): void {
     if (this.state !== 'bootstrapping') {
+      if (this.state === 'disconnected') {
+        return; // §D7：GOAWAY drain 窗口迟到的 BOOTSTRAP_SNAPSHOT —— 静默忽略
+      }
       if (!this.isTerminal()) {
         this.sendNsError('NAMESPACE_STATE_VIOLATION');
         this.finalize('failed');
@@ -459,7 +485,7 @@ export class PeerNamespaceController {
   // ─────────────────────────────── 入站帧（ready 期） ───────────────────────────────
 
   onSyncStep1(message: { syncRoundId: number; stateVector: Uint8Array; sequence: number }): void {
-    if (this.isQuietState()) return; // §9.2 首行：closing/终态静默忽略
+    if (this.isInboundQuiet()) return; // §9.2 首行 + §D7：closing/终态/失联（GOAWAY drain 窗口）静默忽略
     try {
       this.round.onStep1(message);
     } catch (err) {
@@ -473,7 +499,7 @@ export class PeerNamespaceController {
     update: Uint8Array;
     sequence: number;
   }): void {
-    if (this.isQuietState()) return;
+    if (this.isInboundQuiet()) return;
     try {
       this.round.onStep2(message);
     } catch (err) {
@@ -482,7 +508,7 @@ export class PeerNamespaceController {
   }
 
   onSyncApplied(message: { syncRoundId: number; ackedSequence: number }): void {
-    if (this.isQuietState()) return;
+    if (this.isInboundQuiet()) return;
     try {
       this.round.onApplied(message);
     } catch (err) {
@@ -491,7 +517,7 @@ export class PeerNamespaceController {
   }
 
   onResyncReceived(): void {
-    if (this.isQuietState()) return;
+    if (this.isInboundQuiet()) return;
     this.channel.markResyncReceived();
     this.setState('needs-resync');
     this.emitResyncRequired('remote-declared'); // PN6
@@ -499,7 +525,7 @@ export class PeerNamespaceController {
   }
 
   onHubUpdate(message: { update: Uint8Array; sequence: number }): void {
-    if (this.isQuietState()) return; // §11.3：closing/终态静默忽略
+    if (this.isInboundQuiet()) return; // §11.3 + §D7：closing/终态/失联静默忽略
     const accepted =
       this.state === 'live' ||
       this.state === 'needs-resync' ||
@@ -519,7 +545,7 @@ export class PeerNamespaceController {
   }
 
   onUpdateAck(message: { ackedSequence: number }): void {
-    if (this.isQuietState()) return;
+    if (this.isInboundQuiet()) return;
     const outcome = this.channel.onAck(message.ackedSequence);
     if (outcome === 'violation') {
       this.host.connectionFatal('ACK_STATE_VIOLATION', 1002);
@@ -532,30 +558,55 @@ export class PeerNamespaceController {
 
   onCloseRequest(message: { sequence: number }): void {
     if (this.isQuietState()) return;
+    this.clearAllTimers(); // §D5：进 closing 即清 open/bootstrap/reconcile 残留 timer（防静默期 fire → finalize('failed')）
     this.setState('closing');
     this.quiesceSync();
-    // 对称收口（§13.2）：停接纳 → 等已接纳 apply → session close → lease release → CLOSE_OK
-    void (async () => {
-      await this.drainPendingApplies();
-      await this.closeSessionAndRelease();
+    // §D2（issue #171）：对称收口（§13.2）——停接纳 → 等已接纳 apply → 只处置
+    // **排队前捕获**的 gen-N session/lease → epoch 门内 CLOSE_OK + closed + settle。
+    // R1（SA2 #1）：claim 在 caller 同步栈（onCloseRequest 同步段 quiesceSync 之后）
+    // 求值——绝不放进任务 lambda（执行期捕获 = 可杀新代的错代载体）。
+    const claim = this.claimForDisposal(); // ★ 排队前捕获（unsubscribe 已由 quiesceSync 清空 → 捕获值 = undefined，句柄已退）
+    const epoch = this.host.connectionEpoch();
+    void this.enqueueLifecycle(async () => {
+      await this.drainPendingApplies(); // §16：已接纳 apply 无条件排空（不取消）
+      await this.runDisposal(claim); // 只处置捕获的 gen-N session/lease（身份守卫兜底）
+      if (this.host.connectionEpoch() !== epoch) {
+        return; // ★ P3 核心：跨代 → 零 CLOSE_OK、零 setState、零 settle（settle 已由断线分支完成）
+      }
       this.sendChecked({
         kind: 'CLOSE_OK',
         namespaceId: this.namespaceId,
-        ackedSequence: message.sequence,
+        ackedSequence: message.sequence, // 本端为 CLOSE_NAMESPACE 接收方 → 回发 CLOSE_OK（协议 §5 Result 语义）
       });
       if (this.state !== 'closed') this.setState('closed');
       this.settleCloseMemo();
-    })();
+    }).catch(() => undefined); // R1（SA2 #7）：fire-and-forget 显式吞错（任务体结构性零 throw，防御 seam 偏差）
   }
 
   onCloseOk(ackedSequence: number): void {
-    if (this.state === 'closing' && ackedSequence === this.closeSequence) {
-      // §13.4：closing 期 terminal 帧只推进收口——CLOSE_OK 为收口完成信号（即使在
-      // 测试注入帧与出站计数器重叠的序列冲突下仍接受收口，不重复失败）
-      this.clearTimer('close');
-      this.setState('closed');
-      this.settleCloseMemo();
+    if (this.isTerminal() || this.state === 'disconnected') {
+      // §13.4 迟到纪律：终态/失联静默（含 GOAWAY drain 窗口——§D7）；承诺已结算，不复活
+      return;
     }
+    if (this.state === 'closing') {
+      if (this.closeSequence !== undefined && ackedSequence === this.closeSequence) {
+        // 本端 removeTarget 发出的 CLOSE_NAMESPACE 的关联确认 → 收口完成信号
+        this.clearTimer('close');
+        this.setState('closed');
+        this.settleCloseMemo();
+        return;
+      }
+      // ★ RC5/C4 + R1（SA2 #2）：closing 期其余一切 CLOSE_OK（有 closeSequence 而错配，
+      // 或 closeSequence===undefined 即 close 源于 hub 发起的 CLOSE_NAMESPACE——本端从未
+      // 发出 CLOSE_NAMESPACE，入站 CLOSE_OK 按定义 unmatched）→ 按库内 ACK 关联权威策略
+      // 显式收口，不做任何静默完成（AC4「no silent completion」）
+      this.host.connectionFatal('ACK_STATE_VIOLATION', 1002);
+      return;
+    }
+    // 活跃态收到未请求的 CLOSE_OK：peer 全库唯一 CLOSE_NAMESPACE 发送点 = removeTarget
+    // （hub 侧发送点为零——hub-connection.ts 将入站 CLOSE_OK 判方向异常）→ 本端未请求
+    // 即伪造/错向帧，同款 ACK 关联违例
+    this.host.connectionFatal('ACK_STATE_VIOLATION', 1002);
   }
 
   onIdentityChanged(): void {
@@ -568,7 +619,7 @@ export class PeerNamespaceController {
   }
 
   onErrorFrame(message: { code: string }): void {
-    if (this.isQuietState()) return;
+    if (this.isInboundQuiet()) return; // §D7：closing/终态/失联静默（静默期终局 ERROR 无处置面——连接将死）
     if (this.state === 'closing') {
       // R3/#5d：closing 中 terminal ERROR → 维持 closing（零回发帧）
       return;
@@ -606,15 +657,27 @@ export class PeerNamespaceController {
       case 'bootstrapping':
       case 'reconciling':
       case 'live':
-      case 'needs-resync':
+      case 'needs-resync': {
+        this.clearAllTimers(); // ★ RC3：清残留 open/bootstrap/reconcile timer（防 closing 期触发 finalize('failed') 污染收口）
         this.setState('closing');
-        this.armTimer('close');
-        this.closeSequence = this.sendChecked({
+        const seq = this.sendChecked({
           kind: 'CLOSE_NAMESPACE',
           namespaceId: this.namespaceId,
           reasonCode: 'target-removed',
         });
-        return this.ensureCloseMemo();
+        if (seq > 0) {
+          this.closeSequence = seq; // ★ RC4：仅在 CLOSE 确实上线时武装 CLOSE_OK 等待
+          this.armTimer('close');
+          return this.ensureCloseMemo();
+        }
+        // ★ RC4/AC3：发送被抑制（connState!=='ready' / 出站未就绪 → sendControl 静默 0）
+        // —— CLOSE 未上线即不得等待 CLOSE_OK：本地收口 + 立即结算（不等 closeTimeoutMs）
+        this.closeSequence = undefined;
+        this.setState('closed');
+        this.settleCloseMemo();
+        void this.cleanupResources().catch(() => undefined); // R1（SA2 #7）：drain 由 session.close barrier 承担（§16 无条件排空）
+        return this.closeMemo?.get() ?? Promise.resolve();
+      }
       case 'closing':
         return this.ensureCloseMemo();
       case 'closed':
@@ -644,10 +707,15 @@ export class PeerNamespaceController {
       const gate = new Promise<void>((resolve) => {
         this.closeSettleResolve = resolve;
       });
+      // §D3（issue #171）：claim 于 memo 创建时（= removeTarget 同步段）排队前捕获
+      // （R1/SA2 #1）——执行期只处置捕获对象，不读回当前字段。
+      const claim = this.claimForDisposal();
       this.closeMemo = new Memoized(async () => {
-        await this.drainPendingApplies();
-        await this.closeSessionAndRelease();
-        await gate;
+        await this.enqueueLifecycle(async () => {
+          await this.drainPendingApplies();
+          await this.runDisposal(claim);
+        });
+        await gate; // 事件驱动结算（onCloseOk/closeTimeout/断线/blocked/stop/E5 终局）
       });
     }
     return this.closeMemo.get();
@@ -669,34 +737,48 @@ export class PeerNamespaceController {
   }
 
   /** 连接断开（socket 关闭 / 重建）：活跃态/failed → disconnected（target 保留；
-   *  §13.3/§14.1：failed 等待连接重建——断线投影 disconnected 后重连重 OPEN）。 */
+   *  §13.3/§14.1：failed 等待连接重建——断线投影 disconnected 后重连重 OPEN）。
+   *  §D5.1（issue #171）：全分支同步段 clearAllTimers + 摘订阅 + 处置排队（claim 化）。 */
   onConnectionLost(): void {
     if (this.state === 'closed' || this.state === 'conflicted') return; // 终态保持
-    this.quiesceSync();
+    this.clearAllTimers(); // ★ RC3：断线同步段清全部 timer（open/bootstrap/reconcile/close）
+    this.quiesceSync(); // 同步摘本代 listener（既有）
     if (this.state === 'closing') {
       this.setState('disconnected');
-      this.settleCloseMemo(); // R3：断线 = 关闭承诺兑现（无 CLOSE_OK/closeTimeout 可等）
-      return;
+      this.settleCloseMemo(); // R3 既有：断线 = 关闭承诺兑现
+      return; // 处置由已排队的 close 续体承担（不变量 I-C，§4.2）
     }
     if (this.state === 'failed') {
       this.setState('disconnected');
+      void this.cleanupResources().catch(() => undefined); // finalize 已排队（幂等兑付）；防御性保底
       return;
     }
     // B-2d：投影先行——cleanup 卡 session.close 屏障（在途 apply 未排空）不得让投影
     // 滞留 live（重连 openActiveTargets 会跳过 live → 永不重 OPEN）；资源收口异步进行
     this.setState('disconnected');
-    void this.cleanupResources();
+    void this.cleanupResources().catch(() => undefined);
   }
 
-  /** 连接 blocked（fatal）：活跃态投影 disconnected。 */
+  /** §D6（issue #171，R1/SA2 #4 新增）——GOAWAY RESTARTING 收帧同步段的**轻量**静默：
+   *  与全量层（onConnectionFatal）的差异 = **零处置排队**。摘订阅（G5 数据面双保险
+   *  之一）+ 清 timer + closing 承诺结算 + 投影 disconnected 即止；session/lease 处置
+   *  与 aux teardown 留给 deadline 回调（§D6 全量层）或 transport 失联
+   *  （onConnectionLost/onConnectionFatal）——处置时点与现状完全一致（D5 计面不变的根据）。 */
+  onConnectionQuiesce(): void {
+    if (this.isTerminal()) return;
+    this.clearAllTimers();
+    this.quiesceSync();
+    if (this.state === 'closing') this.settleCloseMemo();
+    this.setState('disconnected');
+  }
+
+  /** 连接 blocked（fatal）：**全量**静默 = 轻量段 + 处置排队。 */
   onConnectionFatal(): void {
     if (this.isTerminal()) return;
-    this.quiesceSync();
-    if (this.state === 'closing') {
-      this.settleCloseMemo(); // R3：blocked = 关闭承诺兑现（同步投影先行）
-    }
-    this.setState('disconnected');
-    void this.cleanupResources();
+    this.onConnectionQuiesce();
+    // closing 分支的补排队 = 有意保底（§4.2 不对称裁决）：不变量 I-C 下幂等零副作用；
+    // 安全前提 = R1（SA2 #1）修复后的排队前捕获——claim 在本同步段求值恒为本代资源。
+    void this.cleanupResources().catch(() => undefined);
   }
 
   /** stop()：一律收口为 closed（本地，零 wire）。 */
@@ -792,6 +874,11 @@ export class PeerNamespaceController {
   }
 
   private onWatchdogEdge(_predicate: WatchdogPredicate): void {
+    // §D5.3（issue #171）：静默域零复活——失联/GOAWAY 静默期 watchdog idle 探测命中
+    // needsResync 边沿时不得 setState('needs-resync') + 发 RESYNC 帧（跨代/静默域复活
+    // + 噪声帧）；hub 侧 declareHubResync 已有同款 isQuietState 门——peer 侧补齐对称
+    // 缺口（disconnected 一并入静默域，见 §D7）。
+    if (this.isQuietState() || this.state === 'disconnected') return;
     // peer 侧仅 needsResync 边沿生效（fence 结构性不命中——防御判别在帧处理钩子）
     this.channel.markSessionResyncEdge();
     if (this.resyncDeclared) return;
@@ -872,6 +959,12 @@ export class PeerNamespaceController {
     if (outcome === 'ok' && this.host.connectionEpoch() === epoch) {
       // §9.1.4：apply 成功 → 发 SYNC_APPLIED（ackedSequence = 收到的 Step2 帧序）；
       // B-2d：连接已重建 → 旧 round 的 Applied 不发（迟到的控制帧不得落新连接）
+      // §D5.4（issue #171，R1/SA2 #8 裁决 (a) 对称放行）：drain 窗口（连接存活、epoch
+      // 未变）内 SYNC_APPLIED 与 UPDATE_ACK 同属「已接纳工作的 ACK」——照常发送，完成
+      // 在途 round 收尾（§9.4 L250「已接纳 update 正常 apply/ACK」是协议义务，非新数据）；
+      // 重连后 epoch 不符 → 零发送。'disconnected' 照发：连接存活 + epoch 未变 = 在途
+      // round 合法收尾（round 结算后的状态推进由 B-1 守卫兜底：state≠'reconciling' →
+      // 零迁移、不复活 live）。
       this.sendChecked({
         kind: 'SYNC_APPLIED',
         namespaceId: this.namespaceId,
@@ -1054,7 +1147,7 @@ export class PeerNamespaceController {
     // E5 终局收口（SA2 R3 / §3.8 裁决 3）：failed/conflicted 也是收口终态——closeMemo
     // 的事件驱动结算不区分终态种类，一律 settle（AC3b/⑤c/⑤d 回归面已核查为零）。
     this.settleCloseMemo();
-    void this.cleanupResources();
+    void this.cleanupResources().catch(() => undefined);
   }
 
   private isTerminal(): boolean {
@@ -1082,6 +1175,12 @@ export class PeerNamespaceController {
     );
   }
 
+  /** §D7（issue #171）：入站帧静默域扩展 `disconnected`——GOAWAY drain 窗口（连接存活）
+   *  投影 disconnected 后，迟发数据/同步帧按静默忽略而非 NAMESPACE_STATE_VIOLATION 终局化。 */
+  private isInboundQuiet(): boolean {
+    return this.isQuietState() || this.state === 'disconnected';
+  }
+
   private subscribe(): void {
     if (this.session === undefined) return;
     this.unsubscribe = this.session.subscribeOwnedUpdates(this.onOwnedBound);
@@ -1101,44 +1200,56 @@ export class PeerNamespaceController {
     }
   }
 
-  private async closeSessionAndRelease(): Promise<void> {
-    const session = this.session;
-    const lease = this.lease;
-    const unsubscribe = this.unsubscribe;
-    this.quiesceSync();
-    if (session !== undefined) {
-      await session.close();
+  private async runDisposal(claim: CleanupClaim): Promise<void> {
+    const { session, lease, unsubscribe } = claim;
+    if (unsubscribe !== undefined) {
+      try { unsubscribe(); } catch { /* seam 防御（R1 #7）：退订回调不得使任务体 throw */ }
     }
-    if (this.session === session && this.lease === lease) {
-      // B-2d：仅当本 cleanup 持有的是**当前** session/lease 才收口通道级状态——
-      // 迟到 cleanup（旧连接 session，跨重连在途 apply 场景）不得摧毁新连接的
-      // round/session/频道状态（否则新 round 被 teardown → 旧 Applied(roundId=0)
-      // 落到新连接 → hub SYNC_STATE_VIOLATION → 误 failed；AC6 重连修复承诺失效）
-      // R4-2：unsubscribe 同批归属——仅退订**本 cleanup 捕获的** listener 句柄
-      //（入口捕获；迟到 cleanup 误调新 session 的退订函数 → 新连接 listener 被移除
-      // → 上行静默死亡：live 后本地写零 UPDATE 帧、hub 永不收敛，零 wire 信号）
-      if (this.unsubscribe === unsubscribe && unsubscribe !== undefined) {
-        unsubscribe();
-        this.unsubscribe = undefined;
-      }
+    if (session !== undefined) await session.close().catch(() => undefined);
+    if (lease !== undefined) await lease.release().catch(() => undefined);
+    if (this.session === session) {
+      // ★ 身份守卫（R1/SA2 #3：替代 epoch 守卫）：自捕获以来未建立新 session
+      // （this.session === claim.session）⇒ aux 簿记（watchdog/round/channel）仍归本代，
+      // **与连接代际无关**——同时正确覆盖：
+      //  - P3（新代已建成 session2 → 不等 → 跳过：新代资源/aux 零触碰）；
+      //  - 泄漏面（epoch 已推进但新代永不 open——intent='removed' ∨ 终态：
+      //    openActiveTargets 跳过、§D5.2 重置永不发生 ⇒ this.session 保持捕获值
+      //    → 照常清字段 + aux teardown，watchdog idle timer（自重武装）/channel 队列/
+      //    round 簿记不泄漏——AC2 明文兑付）。
+      // session 对象一经释放不复用（Registry 语义），「先不等后复等」不可达，判据健全。
+      if (this.lease === lease) this.lease = undefined;
       this.session = undefined;
-      this.lease = undefined;
+      if (this.unsubscribe === unsubscribe && unsubscribe !== undefined) this.unsubscribe = undefined;
       this.watchdog.teardown();
       this.round.teardown();
       this.channel.teardown();
     }
-    if (lease !== undefined) {
-      await lease.release().catch(() => undefined);
-    }
   }
 
-  private cleanupResources(): Promise<void> {
-    const run = this.cleanupTail.then(() => this.closeSessionAndRelease());
-    this.cleanupTail = run.then(
-      () => undefined,
-      () => undefined,
-    );
+  /** 捕获当前代资源所有权（在 caller 同步栈内求值——绝不放进任务 lambda）。 */
+  private claimForDisposal(): CleanupClaim {
+    return { session: this.session, lease: this.lease, unsubscribe: this.unsubscribe };
+  }
+
+  /** 单一生命周期队列原语（Scope 7）：peer 全部生命周期续体经此串行化。
+   *  R1（SA2 #7）吞错纪律：任务体结构性零 throw（runDisposal 各步骤局部吞错）；
+   *  返回值 run 按原语义 reject 传播给显式 await 的调用方（ensureCloseMemo body）；
+   *  fire-and-forget 调用点一律显式 .catch(() => undefined)（§16 caller 表注记）。 */
+  private enqueueLifecycle(task: () => Promise<void>): Promise<void> {
+    const run = this.cleanupTail.then(task);
+    this.cleanupTail = run.then(() => undefined, () => undefined);
     return run;
+  }
+
+  /** 清理入口（各失联/终局/停止事件调用）。
+   *  R1（SA2 #1）：claim 于**排队前**在 caller 同步栈求值——原稿把 claimForDisposal()
+   *  写进任务 lambda，等于任务**执行期**才捕获：T1 挂起（drain 屏障）期间 fatal 补排
+   *  T2、blocked→re-add 重建 gen2 后 T2 才开始执行 → 捕获到 gen2 字段且 epoch 恒等 →
+   *  杀新代（SA2 #1 攻击路径）。排队前求值后 T2 的 claim 恒为 fatal 时刻的本代资源，
+   *  执行滞后到任何代际都只处置捕获对象。 */
+  private cleanupResources(): Promise<void> {
+    const claim = this.claimForDisposal(); // ← 求值点 = 排队前（事件同步段）
+    return this.enqueueLifecycle(() => this.runDisposal(claim));
   }
 
   setState(state: PeerNamespaceState): void {
@@ -1242,7 +1353,7 @@ export class PeerNamespaceController {
       if (this.state === 'closing') {
         this.setState('closed');
         this.settleCloseMemo();
-        void this.cleanupResources();
+        void this.cleanupResources().catch(() => undefined);
       }
       return;
     }
