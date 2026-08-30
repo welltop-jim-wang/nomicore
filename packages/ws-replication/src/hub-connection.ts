@@ -600,6 +600,8 @@ class HubConnectionImpl implements HubConnection {
         pongTimeoutMs: this.hub.timeouts.pongTimeoutMs,
         ping: this.transport.ping,
         onPong: this.transport.onPong,
+        // issue #170 R1：pong 超时 = §18 L524 临时失败——close(1001)、零 ERROR 帧
+        //（§13.1 注册表无 liveness 错误码；不得发明未注册码）。
         onPongTimeout: () => this.onLivenessLost(),
       });
     }

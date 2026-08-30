@@ -411,13 +411,21 @@ class PeerConnectionImpl implements PeerReplication {
     this.armResetCheck();
     const transport = this.transport;
     if (transport?.ping !== undefined && transport.onPong !== undefined) {
+      const epoch = this.connectionEpochValue; // I3：武装时捕获代际
       this.stopLiveness = startLiveness({
         timer: this.options.timer,
         pingIntervalMs: this.timeouts.pingIntervalMs,
         pongTimeoutMs: this.timeouts.pongTimeoutMs,
         ping: transport.ping,
-        onPong: transport.onPong,
+        onPong: transport.onPong, // §3 拓宽后直接透传
         onPongTimeout: () => {
+          if (this.stopping) return;
+          // 双凭据校验（issue 范围 2）：transport 身份 + 连接代际——旧代定时器零影响。
+          if (this.transport !== transport || this.connectionEpochValue !== epoch) return;
+          // 同步收口栈（G3，顺序 = issue 原文）：停旧 liveness → 退订旧 transport 全部监听
+          // → 关旧 transport(1001) → epoch 作废（在 onTemporaryFailure 顶部）→ 排 backoff。
+          this.stopLivenessNow();
+          this.unsubscribeTransport();
           if (!transport.closed) transport.close(1001, 'pong-timeout');
           this.onTemporaryFailure('pong-timeout');
         },
@@ -811,6 +819,13 @@ class PeerConnectionImpl implements PeerReplication {
   private enterBlocked(): void {
     if (this.connStateValue === 'blocked') return;
     this.clearDrainClose(); // R2 A1 单点：drain 期 1002/1008 close、connectionFatal 等一切经 enterBlocked 的 blocked 入口
+    // R4：blocked 也是连接收口——liveness/transport 订阅/代际与 temporary-failure 同纪律拆除
+    //（P5：三监听面计数 0、blocked 态零 ping 活动、零自发二次 close）。传输不关：
+    // 1002/1008 路径传输已被对端关闭；GOAWAY SHUTTING_DOWN 语义要求 socket 保持开放
+    //（sa7-hardening D5：drain 残留排队帧不得继续派发——退订 onMessage 反而强化该语义）。
+    this.stopLivenessNow();
+    this.unsubscribeTransport();
+    this.connectionEpochValue += 1;
     this.sender?.teardown();
     this.clearHello();
     this.clearReset();
@@ -832,6 +847,13 @@ class PeerConnectionImpl implements PeerReplication {
   private onTemporaryFailure(reason: PeerBackoffReason): void {
     if (this.stopping) return;
     if (this.connStateValue === 'backoff' || this.connStateValue === 'blocked') return;
+    // 同步代际收口（issue #170 验收 2 / I4）：停旧 liveness、退订旧 transport 全部监听、
+    // 作废连接代际——先于一切 backoff 排程。不关传输（I5）：关闭是路径特定的——
+    // pong 超时路径由闭包同步 close(1001)（§6.1）；远端关闭路径传输已死；hello 超时
+    // 孤儿传输窗口是 D5 登记处置项，本任务不动。
+    this.stopLivenessNow();
+    this.unsubscribeTransport();
+    this.connectionEpochValue += 1;
     this.sender?.teardown();
     this.clearHello();
     this.clearReset();
@@ -861,6 +883,11 @@ class PeerConnectionImpl implements PeerReplication {
     this.clearDrainClose(); // issue #175 §6.4：重建 = 旧连接终结（dialNow :189 同款理由）；
     // 语义保护主体是 armBlockedDeadline 的状态守卫（重建后 state=disconnected → 回调 no-op）；
     // 此处清句柄是 §8.1 矩阵卫生（杜绝「守卫兜底」成为唯一防线）。
+    // 替换连接编排入口（issue #170 §6.4）：deferTask 挂起窗口内旧代即惰性——
+    // 停 liveness、退订旧 transport、作废代际（dialNow 随后再 +1 无害）。
+    this.stopLivenessNow();
+    this.unsubscribeTransport();
+    this.connectionEpochValue += 1;
     this.sender?.teardown(); // §8：重建 = 旧连接终结（poll timer 清零）
     this.setState('disconnected');
     // B-2e：§4.3 L228「重建期间所有 namespace 投影 disconnected」——通知全部目标

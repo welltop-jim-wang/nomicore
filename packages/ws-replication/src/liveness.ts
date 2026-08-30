@@ -1,9 +1,11 @@
 /**
- * liveness —— WS 级 ping/pong 活性循环（协议 L40「活性检测只使用 WebSocket ping/pong。
- * 协议不定义业务 PING/PONG frame」+ §18 L518-520）。
+ * liveness —— WS 级 ping/pong 活性循环（协议 L42「活性检测只使用 WebSocket ping/pong。
+ * 协议不定义业务 PING/PONG frame」+ §18 L518-524）。
  *
- * 仅当 transport 提供 `ping` 与 `onPong` 两个可选面时武装（缺面 → dormant，零 timer）；
- * 周期 ping → pong 超时 → onPongTimeout（hub: close(1001)；peer: onTemporaryFailure）。
+ * 仅当 transport 提供 `ping` 与 `onPong` 两个可选面时武装（缺面 → dormant，零 timer）。
+ * 周期 ping（每次携带 8 字节单调凭据）→ 仅凭据逐字节匹配的 pong 清超时 →
+ * pong 超时 / 已关传输上 ping 抛错 → 先自停（清双 timer + 退订 pong 监听）再回调
+ * onPongTimeout（hub: 1001 连接关闭；peer: 同步收口栈 + backoff）。
  */
 import type { ReplicationTimer } from './types.js';
 
@@ -12,33 +14,42 @@ export interface LivenessDeps {
   readonly pingIntervalMs: number;
   readonly pongTimeoutMs: number;
   readonly ping: (data?: Uint8Array) => void;
-  readonly onPong: (listener: () => void) => () => void;
-  /** pong 超时（活性失联收口）。 */
+  /** seam 契约（issue #170 / §3）：监听器接收 pong 载荷（RFC 6455 §5.5.2 回显凭据）。 */
+  readonly onPong: (listener: (payload?: Uint8Array) => void) => () => void;
+  /** 活性失联（pong 超时，或已关传输上 ping 抛错）。回调时 liveness 已自停并退订。 */
   readonly onPongTimeout: () => void;
 }
 
-/** 启动活性循环；返回停用函数（收口/重拨/stop 时必须调用——N1 纪律）。 */
+/** ping 关联凭据：8 字节大端单调计数。会话内严格单调 → 任何旧凭据不等于新在途凭据；
+ *  8 字节 ≪ RFC 6455 §5.5 控制帧 125 字节载荷上限。 */
+function encodeCredential(counter: number): Uint8Array {
+  const payload = new Uint8Array(8);
+  let value = counter;
+  for (let i = 7; i >= 0; i -= 1) {
+    payload[i] = value % 256;
+    value = Math.floor(value / 256);
+  }
+  return payload;
+}
+
+/** 逐字节比对；载荷缺失（undefined）/长度不等/任一字节不等 → 不匹配（不静默放行）。 */
+function credentialMatches(payload: Uint8Array | undefined, credential: Uint8Array): boolean {
+  if (payload === undefined || payload.byteLength !== credential.byteLength) return false;
+  for (let i = 0; i < credential.byteLength; i += 1) {
+    if (payload[i] !== credential[i]) return false;
+  }
+  return true;
+}
+
+/** 启动活性循环；返回停用函数（收口/重拨/stop 必调——幂等）。 */
 export function startLiveness(deps: LivenessDeps): () => void {
   let stopped = false;
   let pingHandle: unknown | undefined;
   let pongHandle: unknown | undefined;
-  const offPong = deps.onPong(() => {
-    if (pongHandle !== undefined) {
-      deps.timer.clearTimeout(pongHandle);
-      pongHandle = undefined;
-    }
-  });
-  const loop = (): void => {
-    if (stopped) return;
-    deps.ping();
-    pongHandle = deps.timer.setTimeout(() => {
-      pongHandle = undefined;
-      if (!stopped) deps.onPongTimeout();
-    }, deps.pongTimeoutMs);
-    pingHandle = deps.timer.setTimeout(loop, deps.pingIntervalMs);
-  };
-  pingHandle = deps.timer.setTimeout(loop, deps.pingIntervalMs);
-  return () => {
+  let counter = 0; // 会话内单调；跨会话隔离由 per-socket pong 投递保证（§9 E7）
+  let outstanding: Uint8Array | undefined;
+
+  const stopInternal = (): void => {
     if (stopped) return;
     stopped = true;
     if (pingHandle !== undefined) {
@@ -49,6 +60,44 @@ export function startLiveness(deps: LivenessDeps): () => void {
       deps.timer.clearTimeout(pongHandle);
       pongHandle = undefined;
     }
+    outstanding = undefined;
     offPong();
   };
+
+  // R2 核心：仅当「有在途 ping 且 pong 载荷逐字节 == 在途凭据」才清超时。
+  // 迟到（旧凭据）/ 重复（旧凭据二次投递）/ 未请求（从未发出的载荷）/ 空载荷 → 一律忽略。
+  const offPong = deps.onPong((payload) => {
+    if (stopped || pongHandle === undefined || outstanding === undefined) return;
+    if (!credentialMatches(payload, outstanding)) return;
+    deps.timer.clearTimeout(pongHandle);
+    pongHandle = undefined;
+    outstanding = undefined;
+  });
+
+  const loseLiveness = (): void => {
+    stopInternal(); // I2：回调前自停——清下一 ping timer + 退订 pong 监听
+    deps.onPongTimeout(); // 调用方在「已停活性、已退订」的栈上做连接收口
+  };
+
+  const loop = (): void => {
+    if (stopped) return;
+    counter += 1;
+    outstanding = encodeCredential(counter);
+    try {
+      deps.ping(outstanding);
+    } catch {
+      // 已关/损坏 socket 上的 ping 抛错（ws 语义 `WebSocket is not open: readyState 3`）
+      // = 活性已失。不得让异常逃出 timer 回调（生产 = 进程级未捕获异常）。
+      loseLiveness();
+      return;
+    }
+    pongHandle = deps.timer.setTimeout(() => {
+      pongHandle = undefined;
+      if (!stopped) loseLiveness();
+    }, deps.pongTimeoutMs);
+    pingHandle = deps.timer.setTimeout(loop, deps.pingIntervalMs);
+  };
+
+  pingHandle = deps.timer.setTimeout(loop, deps.pingIntervalMs);
+  return stopInternal;
 }
