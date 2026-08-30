@@ -13,8 +13,11 @@
  *   D4  R2 尾窗 ledger 生命周期（类级 OutboundQueue）：真实冲刷推进 bufferedAmount
  *       回落 → emitTail 裁剪正确、controlOutstandingBytes 归零不误触
  *       onControlExhausted（防高估误杀）；真实越限仍触发。
- *   D5  hello 超时 peer 侧孤儿传输竞速窗口（设计 §D4 N2 登记观察项——本轮不修，
- *       断言的是「登记的行为现状 + hub 侧同值 HELLO_TIMEOUT 兜底 + 恢复不受影响」）。
+ *   D5  hello 超时同步关闭 peer 侧旧 transport（issue #168 修复契约——原 D5 登记观察
+ *       「孤儿窗口在场」已按缺陷修复要求翻转）：hello 超时入口走 established detach-close
+ *       序列同步关闭旧传输（close(1001, hello-timeout)）；hub 侧同值 HELLO_TIMEOUT
+ *       定时器退化为幂等 no-op（close 事件先到 → onTransportClosed 收口）；恢复链
+ *       （重拨 ready/live）保留。
  *
  * 纪律：真实 yjs / Registry / Runtime / HubReplication / PeerReplication；fake
  * scheduler + 微任务推进；零 real sleep、零 skip、零源码 grep 断言；只读对象图投影
@@ -752,10 +755,10 @@ describe('SA7 D4（round 2）：ConnectionSender 暂停段控制额度与恢复 
   });
 });
 
-// ═══════════════════════════ D5：hello 超时孤儿传输（登记观察） ═══════════════════════════
+// ═══════════════════════════ D5：hello 超时同步关闭 peer 侧旧 transport（issue #168 修复契约） ═══════════════════════════
 
-describe('SA7 D5（round 2，登记观察项——设计 §D4 N2）：hello 超时 peer 侧孤儿传输竞速窗口', () => {
-  it('D5：hello 超时不关 peer 侧传输（孤儿窗口在场）；hub 侧同值 HELLO_TIMEOUT(1002) 兜底收口；重连恢复不受影响', async () => {
+describe('SA7 D5（round 2，issue #168 修复契约）：hello 超时 peer 侧同步关闭旧传输（孤儿竞速窗口收口）', () => {
+  it('D5：hello 超时同步关闭 peer 侧传输（close(1001, hello-timeout)）；恢复重拨 ready/live；hub 侧 HELLO_TIMEOUT 幂等 no-op', async () => {
     const hubNode = makeNode('hub');
     const peerNode = makeNode('peer');
     const authorizer = makeAuthorizer({});
@@ -794,22 +797,25 @@ describe('SA7 D5（round 2，登记观察项——设计 §D4 N2）：hello 超�
     await peerNode.scheduler.advanceBy(100);
     await settleUntil(() => peer.getConnectionState() === 'backoff', 'hello 超时 → backoff');
     const wire1 = wires[0]!;
-    // ── 登记观察（非缺陷断言）：peer 侧传输保持开放 = 孤儿窗口在场（设计 §D4 N2
-    //    明示本轮不修、处置建议开跟踪票归总控）──
-    expect(wire1.peerSideClosed, '登记观察：hello 超时不关 peer 侧传输（孤儿窗口在场）').toBe(false);
+    // ── issue #168 修复契约：hello 超时入口必须同步关闭 peer 侧旧传输（established
+    //    detach-close 序列——pong-timeout 同款：停 liveness → 退订 → epoch 失效 → close(1001)）──
+    expect(wire1.peerSideClosed, 'hello 超时同步关闭 peer 侧旧传输（孤儿窗口收口）').toBe(true);
+    await settle(); // close 事件经微任务投递到 hub 侧——先排空再断言
+    expect(wire1.hubSideCloseInfo, 'established 序列签名：close(1001, hello-timeout) 到达 hub 侧').toEqual({
+      code: 1001,
+      reason: 'hello-timeout',
+    });
     // 恢复不受影响：backoff 重拨（扣帧一次性）→ wire2 HELLO 放行 → ready → live
     await peerNode.scheduler.advanceBy(25);
     await settleUntil(() => peer.getConnectionState() === 'ready', '重拨 ready');
     await settleUntil(() => peer.getNamespaceState(fixture.namespaceId) === 'live', '重连 live');
     expect(wires.length).toBe(2);
-    // hub 侧兜底：同值 HELLO_TIMEOUT fatal（1002）关闭孤儿连接的 hub 半边（竞速窗口
-    //   的另一端——双侧同值 10s 缺省下该兜底与 peer 侧超时构成竞速；本探针把 peer 侧
-    //   调至 100ms 以确定性展开窗口，hub 侧保持缺省 10s 观察兜底行为）
+    // hub 侧兜底面（同值缺省 10s）：peer 已同步关闭 → hub 经 onTransportClosed 收口连接；
+    //   其 HELLO_TIMEOUT 定时器到点只剩幂等 no-op（state='closed' 守卫）——不影响新连接
     await hubNode.scheduler.advanceBy(10_000);
     await settle();
-    expect(wire1.hubEnd.closed, 'hub 侧 HELLO_TIMEOUT 兜底关闭其半边').toBe(true);
-    expect(hub.connections.length, 'hub 已收口孤儿连接（仅剩新连接）').toBe(1);
-    expect(wire1.peerSideClosed, 'peer 侧仍未自关（孤儿面——登记项非缺陷）').toBe(false);
+    expect(hub.connections.length, 'hub 已收口旧连接（仅剩新连接）').toBe(1);
+    expect(wire1.peerSideClosed, '旧 wire 关闭态保持（无复活）').toBe(true);
     await peer.stop();
     await settleUntil(() => peer.getConnectionState() === 'stopped', 'stopped');
   });
