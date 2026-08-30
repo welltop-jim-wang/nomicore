@@ -261,7 +261,12 @@ class AppHandle {
         return verdict.ok ? { peerInstanceId: verdict.instanceId } : undefined;
       },
       accept: (transport, identity) => {
-        void this.hubPlugin?.replication?.acceptTrusted(transport, identity);
+        const acceptTrusted = this.hubPlugin?.replication?.acceptTrusted;
+        if (acceptTrusted === undefined) {
+          transport.close(1011, 'trusted-upgrade-unavailable');
+          throw new TypeError('HubReplication.acceptTrusted is required by the production composition root');
+        }
+        void acceptTrusted.call(this.hubPlugin?.replication, transport, identity);
       },
     });
     this.wsServer = wsServer;

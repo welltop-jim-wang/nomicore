@@ -114,6 +114,7 @@ function extractBearer(authorizationHeader: string | undefined): string | undefi
 }
 
 function rejectUpgrade(socket: Duplex, status: number, reason: string): void {
+  if (socket.destroyed || !socket.writable || socket.writableEnded) return;
   socket.end(`HTTP/1.1 ${status} ${reason}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`);
 }
 
@@ -146,7 +147,26 @@ export async function startHubWsServer(options: HubWsServerOptions): Promise<Hub
     res.end('not found\n');
   });
   const wss = new WebSocketServer({ noServer: true });
+  const pendingUpgrades = new Map<Duplex, () => void>();
+  let closing = false;
   server.on('upgrade', (req: IncomingMessage, socket: Duplex, head: Buffer) => {
+    let disconnected = socket.destroyed;
+    const markDisconnected = (): void => {
+      disconnected = true;
+    };
+    socket.once('close', markDisconnected);
+    socket.once('error', markDisconnected);
+    const finish = (): void => {
+      pendingUpgrades.delete(socket);
+      socket.off('close', markDisconnected);
+      socket.off('error', markDisconnected);
+    };
+    const abort = (): void => {
+      disconnected = true;
+      finish();
+      rejectUpgrade(socket, 503, 'Service Unavailable');
+    };
+    pendingUpgrades.set(socket, abort);
     void (async () => {
       if (req.url !== options.path) {
         rejectUpgrade(socket, 404, 'Not Found');
@@ -164,7 +184,11 @@ export async function startHubWsServer(options: HubWsServerOptions): Promise<Hub
         identity = undefined;
       }
       if (identity === undefined) {
-        rejectUpgrade(socket, 403, 'Forbidden');
+        if (!disconnected) rejectUpgrade(socket, 403, 'Forbidden');
+        return;
+      }
+      if (closing || disconnected || socket.destroyed || !socket.writable) {
+        if (!disconnected && !socket.destroyed) rejectUpgrade(socket, 503, 'Service Unavailable');
         return;
       }
       wss.handleUpgrade(req, socket, head, (ws) => {
@@ -172,7 +196,7 @@ export async function startHubWsServer(options: HubWsServerOptions): Promise<Hub
       });
     })().catch(() => {
       socket.destroy();
-    });
+    }).finally(finish);
   });
   await new Promise<void>((resolve, reject) => {
     server.once('error', reject);
@@ -184,6 +208,8 @@ export async function startHubWsServer(options: HubWsServerOptions): Promise<Hub
     server,
     port,
     close: () => {
+      closing = true;
+      for (const abort of [...pendingUpgrades.values()]) abort();
       // 关闭 = 停止接纳（listening socket 立即关闭；新 upgrade/请求被拒）。
       // node http `server.close()` 的**回调**要等全部既有连接（含已升级交给 ws 的
       // socket）结束才触发——但那些连接由 `hub.close()` 的 GOAWAY→drain→deadline

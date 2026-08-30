@@ -629,6 +629,29 @@ describe('issue #138 切片 7：实例认证与连接生命周期（全部红灯
     void pT; // 超时路径在验证器未归时 accept 仍 pending——只断言副作用（设计 §6.5 A2-d 超时变体）
   });
 
+  it('trusted Upgrade identity preserves synchronously replayed HELLO during admission', async () => {
+    const hello = encodeMessage(
+      {
+        kind: 'HELLO',
+        peerInstanceId: PEER_INSTANCE,
+        expectedHubInstanceId: HUB_INSTANCE,
+        protocolVersions: [1],
+        requiredCapabilities: 0,
+        optionalCapabilities: 0,
+        connectionNonce: new Uint8Array(16).fill(7),
+      },
+      { sequence: 1 },
+    );
+    const replay = makeReplayTransport([hello]);
+    const { hub } = await makeAuthHub();
+
+    expect(hub.acceptTrusted).toBeTypeOf('function');
+    const connection = await hub.acceptTrusted!(replay.transport, { peerInstanceId: PEER_INSTANCE });
+    expect(connection).toBeDefined();
+    expect(replay.replayedCount()).toBe(2);
+    expect(connection?.state).toBe('closed');
+  });
+
   it('A2-e：同步重放型 transport 注册期拒绝（SA2 R2 N1 必修锚）——accept 恒 resolve、重放零流产', async () => {
     const probe = collectUnhandledRejections();
     try {

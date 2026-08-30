@@ -252,16 +252,38 @@ class HubReplicationImpl implements HubReplication {
       this.emitUpgradeRejected('invalid-instance-id');
       return undefined;
     }
-    if (transport.closed) {
+    const earlyFrames: Uint8Array[] = [];
+    let earlyClosed = false;
+    let offMessage: () => void = () => {};
+    let offClose: () => void = () => {};
+    offMessage = transport.onMessage((bytes) => {
+      earlyFrames.push(bytes);
+    });
+    offClose = transport.onClose(() => {
+      earlyClosed = true;
+    });
+    const detachEarly = (): void => {
+      offMessage();
+      offClose();
+    };
+    if (this.closed) {
+      detachEarly();
+      transport.close(1001, 'hub-shutdown');
+      this.emitUpgradeRejected('hub-shutdown');
+      return undefined;
+    }
+    if (earlyClosed || transport.closed) {
+      detachEarly();
       this.emitUpgradeRejected('peer-disconnected');
       return undefined;
     }
+    detachEarly();
     const connection = new HubConnectionImpl(
       this.internals,
       transport,
       this.connectionCounter++,
       identity.peerInstanceId,
-      [],
+      earlyFrames,
     );
     this.connectionList.push(connection);
     return connection;

@@ -136,8 +136,9 @@ export interface HubReplication {
     transport: DuplexTransport,
     request?: HubUpgradeRequest,
   ): Promise<HubConnection | undefined>;
-  /** 宿主已在 HTTP Upgrade 前完成认证时的可信身份入口；不得再次调用 verifyToken。 */
-  acceptTrusted(
+  /** 宿主已在 HTTP Upgrade 前完成认证时的可信身份入口；不得再次调用 verifyToken。
+   * 可选以保持结构实现兼容；需要 pre-upgrade HTTP 拒绝语义的宿主必须在装配期断言存在。 */
+  acceptTrusted?(
     transport: DuplexTransport,
     identity: UpgradeIdentity,
   ): Promise<HubConnection | undefined>;
