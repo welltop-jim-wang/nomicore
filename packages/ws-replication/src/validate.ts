@@ -58,6 +58,8 @@ export function validateHubOptions(
     authorize: unknown;
     timer: unknown;
     verifyToken: unknown;
+    observer?: unknown;
+    clock?: unknown;
   }>,
 ): void {
   validateInstanceId(options.instanceId, 'instanceId');
@@ -77,6 +79,13 @@ export function validateHubOptions(
     'timer.clearTimeout',
   );
   assertCallable(options.verifyToken, 'verifyToken');
+  if (options.observer !== undefined) {
+    assertCallable(options.observer, 'observer');
+  }
+  if (options.clock !== undefined) {
+    assertObjectShape(options.clock, 'clock');
+    assertCallable((options.clock as { now?: unknown }).now, 'clock.now');
+  }
 }
 
 export function validatePeerOptions(
@@ -87,6 +96,8 @@ export function validatePeerOptions(
     dial: unknown;
     timer: unknown;
     deferTask?: unknown;
+    observer?: unknown;
+    clock?: unknown;
   }>,
 ): void {
   validateInstanceId(options.instanceId, 'instanceId');
@@ -108,6 +119,13 @@ export function validatePeerOptions(
   );
   if (options.deferTask !== undefined) {
     assertCallable(options.deferTask, 'deferTask');
+  }
+  if (options.observer !== undefined) {
+    assertCallable(options.observer, 'observer');
+  }
+  if (options.clock !== undefined) {
+    assertObjectShape(options.clock, 'clock');
+    assertCallable((options.clock as { now?: unknown }).now, 'clock.now');
   }
 }
 

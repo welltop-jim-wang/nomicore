@@ -15,12 +15,16 @@ import {
 import { startLiveness } from './liveness.js';
 import { HubNamespaceChannel, type HubChannelHost } from './hub-namespace.js';
 import { ConnectionSender } from './backpressure.js';
+import { dispatchReplicationObserver, safeNow, stableConnectionCode } from './observer.js';
 import type { NamespaceRegistry } from '@nomicore/namespace-registry';
 import type {
   HubConnection,
+  HubConnectionState,
   HubReplication,
   HubReplicationOptions,
   NamespaceAuthorizer,
+  ReplicationClock,
+  ReplicationObserver,
   ResolvedLimits,
   ResolvedTimeouts,
 } from './types.js';
@@ -53,6 +57,8 @@ interface HubInternals {
   readonly timer: ReplicationTimer;
   readonly limits: ResolvedLimits;
   readonly timeouts: ResolvedTimeouts;
+  readonly observer: ReplicationObserver | undefined;
+  readonly clock: ReplicationClock | undefined;
   dropConnection(connection: HubConnectionImpl): void;
 }
 
@@ -80,14 +86,38 @@ class HubReplicationImpl implements HubReplication {
       timer: options.timer,
       limits,
       timeouts,
+      observer: options.observer,
+      clock: options.clock,
       dropConnection: (connection) => this.dropConnection(connection),
     };
+  }
+
+  /** auth-upgrade-rejected 发射（pre-connection：无 connectionId 可挂——攻击点 #8 文档化形态）。 */
+  private emitUpgradeRejected(
+    reason:
+      | 'hub-shutdown'
+      | 'missing-token'
+      | 'verifier-missing'
+      | 'frame-too-large'
+      | 'early-frame-limit'
+      | 'auth-timeout'
+      | 'invalid-credentials'
+      | 'invalid-instance-id'
+      | 'peer-disconnected',
+  ): void {
+    if (this.options.observer === undefined) return;
+    dispatchReplicationObserver(this.options.observer, {
+      type: 'auth-upgrade-rejected',
+      side: 'hub',
+      reason,
+    });
   }
 
   async accept(transport: DuplexTransport, request?: HubUpgradeRequest): Promise<HubConnection | undefined> {
     // ── 门 0：停止接纳（生命周期门先于认证——已 close 的 hub 对新 upgrade 零工作）──
     if (this.closed) {
       transport.close(1001, 'hub-shutdown');
+      this.emitUpgradeRejected('hub-shutdown');
       return undefined;
     }
 
@@ -95,6 +125,7 @@ class HubReplicationImpl implements HubReplication {
     const token = request?.token;
     if (typeof token !== 'string' || token.length === 0) {
       transport.close(1008, 'upgrade-unauthorized'); // 静态 reason，零 token/身份回显（AC-7）
+      this.emitUpgradeRejected('missing-token');
       return undefined;
     }
 
@@ -102,6 +133,7 @@ class HubReplicationImpl implements HubReplication {
     //    「无认证器 = 全部 upgrade 拒绝」——fail-closed，绝不 fail-open ──
     if (typeof this.options.verifyToken !== 'function') {
       transport.close(1008, 'upgrade-unauthorized');
+      this.emitUpgradeRejected('verifier-missing');
       return undefined;
     }
 
@@ -126,12 +158,14 @@ class HubReplicationImpl implements HubReplication {
         // 单帧界：复用既有 limit（ADR 0010 L165「最大 WS frame」）；§14 语义 → 1009
         authRejected = true;
         transport.close(1009, 'upgrade-frame-limit'); // 重放期内 close 照常生效（不摘监听）
+        this.emitUpgradeRejected('frame-too-large');
         return;
       }
       if (earlyFrames.length >= MAX_EARLY_FRAMES) {
         // 条数界：第 17 帧即拒绝（policy）→ 1008
         authRejected = true;
         transport.close(1008, 'upgrade-frame-limit');
+        this.emitUpgradeRejected('early-frame-limit');
         return;
       }
       earlyFrames.push(bytes);
@@ -150,6 +184,7 @@ class HubReplicationImpl implements HubReplication {
       authRejected = true;
       detachEarly(); // 此时句柄必为真值（注册已完成）
       if (!transport.closed) transport.close(1008, 'upgrade-timeout');
+      this.emitUpgradeRejected('auth-timeout');
     }, this.timeouts.helloTimeoutMs);
     const clearAuthTimer = (): void => { this.internals.timer.clearTimeout(authHandle); };
 
@@ -160,12 +195,14 @@ class HubReplicationImpl implements HubReplication {
       clearAuthTimer(); // 首要动作：验证器已归，封顶 timer 必清
       if (authRejected) return undefined; // 缓冲期已拒（预算/超时）——迟归不复活
       if (verdict === null || typeof verdict !== 'object' || (verdict as { ok?: unknown }).ok !== true) {
+        this.emitUpgradeRejected('invalid-credentials');
         return this.rejectUpgrade(transport, detachEarly); // {ok:false} 或畸形裁决
       }
       instanceId = (verdict as { instanceId: unknown }).instanceId;
     } catch {
       clearAuthTimer();
       if (authRejected) return undefined; // 超时在先、验证器抛错在后——仍 undefined
+      this.emitUpgradeRejected('invalid-credentials');
       return this.rejectUpgrade(transport, detachEarly); // 验证器抛错
     }
     // A2-d 单帧超界变体的零宽窗口面（§3.1 竞态消除）：即时验证器（1 tick）下，首帧
@@ -177,6 +214,7 @@ class HubReplicationImpl implements HubReplication {
     if (authRejected) return undefined; // 早到缓冲已拒（预算/超界）——验后迟拒的兜底复核
     // instanceId 文法违例（红灯 #4：'Bad-Id!'）→ 视为无效凭据
     if (!isValidInstanceId(instanceId)) {
+      this.emitUpgradeRejected('invalid-instance-id');
       return this.rejectUpgrade(transport, detachEarly);
     }
 
@@ -184,9 +222,13 @@ class HubReplicationImpl implements HubReplication {
     detachEarly();
     if (this.closed) {
       transport.close(1001, 'hub-shutdown');
+      this.emitUpgradeRejected('hub-shutdown');
       return undefined;
     }
-    if (earlyClosed || transport.closed) return undefined; // 对端已断：零分配、零 close 副作用
+    if (earlyClosed || transport.closed) {
+      this.emitUpgradeRejected('peer-disconnected'); // 对端已断：零分配、零 close 副作用
+      return undefined;
+    }
 
     // ── 分配：认证身份随连接注入；早到帧在构造尾部按序重放（§3.3）──
     const connection = new HubConnectionImpl(
@@ -248,8 +290,10 @@ class HubReplicationImpl implements HubReplication {
 }
 
 class HubConnectionImpl implements HubConnection {
-  state: 'handshaking' | 'ready' | 'draining' | 'closed' = 'handshaking';
+  state: HubConnectionState = 'handshaking';
   peerInstanceId: string | undefined;
+  /** 协议 §6.2 专用 observability id（HELLO 完成时捕获；此前 undefined——事件可选字段）。 */
+  private connectionIdValue: string | undefined;
   private readonly outbound: OutboundQueue;
   /** 连接级发送调度（§6.3；每连接实例一个，随 transport 生命周期）。 */
   private readonly sender: ConnectionSender;
@@ -300,6 +344,8 @@ class HubConnectionImpl implements HubConnection {
       facetOf: (namespaceId) => this.channels.get(namespaceId)?.sendFacet,
       isEmitAllowed: () => !this.closedFlag,
       onBackpressureExhausted: () => this.connectionFatal('CONNECTION_BACKPRESSURE', 1011),
+      onSendPaused: (bufferedAmount) => this.emitWaterEvent('send-paused', bufferedAmount),
+      onSendResumed: (bufferedAmount) => this.emitWaterEvent('send-resumed', bufferedAmount),
     });
     this.channelHost = {
       limits: hub.limits,
@@ -316,6 +362,11 @@ class HubConnectionImpl implements HubConnection {
       requestDataDrain: () => this.sender.requestDrain(),
       connectionFatal: (code, wsCloseCode) => this.connectionFatal(code, wsCloseCode ?? 1002),
       onChannelSettled: (_namespaceId) => this.maybeFinishDrainEarly(),
+      observerPresent: () => this.connectionObserver() !== undefined,
+      emitObserver: (event) => dispatchReplicationObserver(this.connectionObserver(), event),
+      connectionId: () => this.connectionIdValue,
+      // B1：时钟采样经 safeNow 折叠（throw → dormant undefined，零协议外溢）
+      now: () => (this.connectionObserver() !== undefined ? safeNow(() => hub.clock?.now()) : undefined),
     };
     this.helloHandle = hub.timer.setTimeout(() => {
       if (this.state === 'handshaking') {
@@ -336,7 +387,7 @@ class HubConnectionImpl implements HubConnection {
   close(code?: number, reason?: string): void {
     if (this.closedFlag) return;
     this.closedFlag = true;
-    this.state = 'closed';
+    this.setConnState('closed');
     this.clearDrainHandles(); // §4.6 路径 1：窗口期公共 close = force-close 逃生舱
     this.sender.teardown(); // §8：poll timer 清零（连接收口必经点）
     for (const channel of this.channels.values()) channel.quiesceConnection();
@@ -539,7 +590,8 @@ class HubConnectionImpl implements HubConnection {
       return;
     }
     this.peerInstanceId = this.authenticatedInstanceId;
-    this.state = 'ready';
+    this.connectionIdValue = `${this.hub.instanceId}-conn-${this.connId}`;
+    this.setConnState('ready');
     if (this.transport.ping !== undefined && this.transport.onPong !== undefined) {
       this.stopLiveness = startLiveness({
         timer: this.hub.timer,
@@ -688,6 +740,16 @@ class HubConnectionImpl implements HubConnection {
       } catch {
         // 连接已收口；忽略
       }
+      if (this.connectionObserver() !== undefined) {
+        dispatchReplicationObserver(this.connectionObserver(), {
+          type: 'namespace-error',
+          side: 'hub',
+          ...(this.connectionIdValue !== undefined ? { connectionId: this.connectionIdValue } : {}),
+          namespaceId,
+          code: 'NAMESPACE_STATE_VIOLATION',
+          direction: 'sent',
+        });
+      }
       return;
     }
     fn(channel);
@@ -696,7 +758,7 @@ class HubConnectionImpl implements HubConnection {
   private onTransportClosed(): void {
     if (this.closedFlag) return;
     this.closedFlag = true;
-    this.state = 'closed';
+    this.setConnState('closed');
     this.clearDrainHandles(); // §4.6 路径 2：对端已关 = 窗口无服务对象
     this.sender.teardown();
     void this.cleanupAll();
@@ -739,10 +801,19 @@ class HubConnectionImpl implements HubConnection {
       // best-effort；framing 已不可信
     }
     this.closedFlag = true;
-    this.state = 'closed';
+    this.setConnState('closed');
     for (const channel of this.channels.values()) channel.quiesceConnection();
     if (!this.transport.closed) {
       this.transport.close(wsCloseCode, 'protocol-error');
+    }
+    if (this.connectionObserver() !== undefined) {
+      dispatchReplicationObserver(this.connectionObserver(), {
+        type: 'connection-failed',
+        side: 'hub',
+        ...(this.connectionIdValue !== undefined ? { connectionId: this.connectionIdValue } : {}),
+        code: stableConnectionCode(code),
+        wsCloseCode,
+      });
     }
     void this.cleanupAll();
   }
@@ -805,8 +876,53 @@ class HubConnectionImpl implements HubConnection {
       transport.close(1008, 'sequence-exhausted');
     }
     this.closedFlag = true;
-    this.state = 'closed';
+    this.setConnState('closed');
+    if (this.connectionObserver() !== undefined) {
+      dispatchReplicationObserver(this.connectionObserver(), {
+        type: 'connection-failed',
+        side: 'hub',
+        ...(this.connectionIdValue !== undefined ? { connectionId: this.connectionIdValue } : {}),
+        code: 'OUTBOUND_SEQUENCE_EXHAUSTED',
+        wsCloseCode: 1008,
+      });
+    }
     void this.cleanupAll();
+  }
+
+  /** H10：hub 连接 FSM 唯一迁移点（原 5 处直赋收编；同态早退——边沿 exactly-once）。
+   *  初始 'handshaking' 不发射（无迁移即无事件）。 */
+  private setConnState(next: HubConnectionState): void {
+    if (this.state === next) return;
+    const from = this.state;
+    this.state = next;
+    if (this.connectionObserver() !== undefined) {
+      dispatchReplicationObserver(this.connectionObserver(), {
+        type: 'connection-state-changed',
+        side: 'hub',
+        ...(this.connectionIdValue !== undefined ? { connectionId: this.connectionIdValue } : {}),
+        from,
+        to: next,
+      });
+    }
+  }
+
+  private connectionObserver(): ReplicationObserver | undefined {
+    return this.hub.observer;
+  }
+
+  /** H15：连接级水位边沿事件（send-paused / send-resumed）。 */
+  private emitWaterEvent(
+    type: 'send-paused' | 'send-resumed',
+    bufferedAmount: number,
+  ): void {
+    const observer = this.connectionObserver();
+    if (observer === undefined) return;
+    dispatchReplicationObserver(observer, {
+      type,
+      side: 'hub',
+      ...(this.connectionIdValue !== undefined ? { connectionId: this.connectionIdValue } : {}),
+      bufferedAmount,
+    });
   }
 }
 
