@@ -2,7 +2,7 @@
  * hub-connection —— `createHubReplication`：accept/HELLO/hub 连接 FSM + 帧分发
  * （§4.2/§6/§15.2）。per-(connection, namespace) 通道见 hub-namespace.ts。
  */
-import type { DuplexTransport, HubUpgradeRequest } from './types.js';
+import type { DuplexTransport, HubUpgradeRequest, UpgradeIdentity } from './types.js';
 import { selectProtocolVersion, type ReplicationMessage } from '@nomicore/replication-protocol';
 import {
   decodeInbound,
@@ -233,6 +233,35 @@ class HubReplicationImpl implements HubReplication {
     // ── 分配：认证身份随连接注入；早到帧在构造尾部按序重放（§3.3）──
     const connection = new HubConnectionImpl(
       this.internals, transport, this.connectionCounter++, instanceId as string, earlyFrames,
+    );
+    this.connectionList.push(connection);
+    return connection;
+  }
+
+  async acceptTrusted(
+    transport: DuplexTransport,
+    identity: UpgradeIdentity,
+  ): Promise<HubConnection | undefined> {
+    if (this.closed) {
+      transport.close(1001, 'hub-shutdown');
+      this.emitUpgradeRejected('hub-shutdown');
+      return undefined;
+    }
+    if (!isValidInstanceId(identity?.peerInstanceId)) {
+      transport.close(1008, 'upgrade-unauthorized');
+      this.emitUpgradeRejected('invalid-instance-id');
+      return undefined;
+    }
+    if (transport.closed) {
+      this.emitUpgradeRejected('peer-disconnected');
+      return undefined;
+    }
+    const connection = new HubConnectionImpl(
+      this.internals,
+      transport,
+      this.connectionCounter++,
+      identity.peerInstanceId,
+      [],
     );
     this.connectionList.push(connection);
     return connection;

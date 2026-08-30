@@ -256,11 +256,12 @@ class AppHandle {
       host: hubConfig.listen.host,
       port: hubConfig.listen.port,
       path: REPLICATION_UPGRADE_PATH,
-      accept: (transport, token) => {
-        void this.hubPlugin?.replication?.accept(
-          transport,
-          token !== undefined ? { token } : undefined,
-        );
+      authenticate: async (token) => {
+        const verdict = await verifyToken(token);
+        return verdict.ok ? { peerInstanceId: verdict.instanceId } : undefined;
+      },
+      accept: (transport, identity) => {
+        void this.hubPlugin?.replication?.acceptTrusted(transport, identity);
       },
     });
     this.wsServer = wsServer;

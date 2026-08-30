@@ -143,4 +143,3 @@ export function assertProductionTransportFaces(transport: DuplexTransport): void
 
 - 结论：**红灯契约全数转绿且断言强度零削弱**；FS5b/TF3 转绿路径分别经 SA4 反向实验 E6/E7 预证（会话失败根因在测试夹具而非实现）。SA4 复验固定范围 (i) diff 比对将仅见上述 4 文件改动。
 - 与 SA4 §5 动态审核交接：A1/A2/A3/D7/A4(a)/FS6 深水变体/CI 复跑等运行时扩展项归 SA7 动态验证，不在本回流范围。
-

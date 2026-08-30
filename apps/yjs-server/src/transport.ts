@@ -54,7 +54,6 @@ export function createWebSocketAdapter(socket: WebSocketLike): DuplexTransport {
   let closeNotified = false; // onClose 恰一次投递守卫
   const messageListeners = new Set<(bytes: Uint8Array) => void>();
   const closeListeners = new Set<(info: Readonly<{ code: number; reason: string }>) => void>();
-  const pongListeners = new Set<() => void>();
 
   socket.on('error', () => {
     ownClosed = true;
