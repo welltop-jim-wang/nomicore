@@ -539,10 +539,11 @@ describe('SA6 红灯 issue #170 P5（R4）：blocked 终态收口必须停 liven
     wire.hubEnd.close(1002, 'protocol-error');
     await settle();
     expect(env.peer.getConnectionState(), '前置：1002 关闭 → blocked').toBe('blocked');
-    // ── R4 红灯锚 1：blocked 收口必须退订 pong/message/close 监听
-    expect(wire.peerPongListeners(), 'BUG R4：blocked 必须退订 pong 监听').toBe(0);
-    expect(wire.peerMessageListeners(), 'BUG R4：blocked 必须退订 message 监听').toBe(0);
-    expect(wire.peerCloseListeners(), 'BUG R4：blocked 必须退订 close 监听').toBe(0);
+    // ── R4 锚 1：blocked 收口必须停 liveness；transport 监听保留到真实 close 通知，
+    // 以兼容连接生命周期的 close 可观测性与在途 namespace 收口续体。
+    expect(wire.peerPongListeners(), 'blocked 必须退订 pong 监听').toBe(0);
+    expect(wire.peerMessageListeners(), 'blocked 在真实 close 前保留 message 监听').toBe(1);
+    expect(wire.peerCloseListeners(), 'blocked 在真实 close 前保留 close 监听').toBe(1);
     // ── R4 红灯锚 2：blocked 态零 liveness 活动（不周期 ping 死对端/已关 socket）
     await env.peerNode.scheduler.advanceBy(PING_INTERVAL_MS); // t=30
     expect(

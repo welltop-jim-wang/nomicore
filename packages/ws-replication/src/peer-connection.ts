@@ -819,13 +819,10 @@ class PeerConnectionImpl implements PeerReplication {
   private enterBlocked(): void {
     if (this.connStateValue === 'blocked') return;
     this.clearDrainClose(); // R2 A1 单点：drain 期 1002/1008 close、connectionFatal 等一切经 enterBlocked 的 blocked 入口
-    // 1002/1008 等已关闭传输必须同步彻底拆除；GOAWAY blocked 则仍需等待对端最终
-    // close，并保留 liveness 作为巨值 drain 的收口 backstop。
-    if (this.transport?.closed === true || this.transport === undefined || !this.goawayActive) {
-      this.stopLivenessNow();
-      this.unsubscribeTransport();
-      this.connectionEpochValue += 1;
-    }
+    // 1002/1008 等普通 blocked 必须停 liveness；GOAWAY blocked 则仍保留 liveness
+    // 作为巨值 drain 的传输收口 backstop。transport message/close 监听保留到真实 close
+    // 通知完成，既保证本端 close 可观测，也允许在途 namespace 收口续体完成终态。
+    if (!this.goawayActive) this.stopLivenessNow();
     this.sender?.teardown();
     this.clearHello();
     this.clearReset();
