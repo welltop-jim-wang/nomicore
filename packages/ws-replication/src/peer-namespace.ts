@@ -775,16 +775,27 @@ export class PeerNamespaceController {
    *  （onConnectionLost/onConnectionFatal）——处置时点与现状完全一致（D5 计面不变的根据）。 */
   onConnectionQuiesce(): void {
     if (this.isTerminal()) return;
-    this.clearAllTimers();
     this.quiesceSync();
-    if (this.state === 'closing') this.settleCloseMemo();
+    if (this.state === 'closing') {
+      // §6.3：deadline 前允许结算 GOAWAY 前已发送的 CLOSE_NAMESPACE；保留 close timer、
+      // closing 投影及 settle gate，使关联 CLOSE_OK 仍可完成自然握手。blocked/fatal
+      // 则由 onConnectionFatal 显式结算。
+      return;
+    }
+    this.clearAllTimers();
     this.setState('disconnected');
   }
 
   /** 连接 blocked（fatal）：**全量**静默 = 轻量段 + 处置排队。 */
   onConnectionFatal(): void {
     if (this.isTerminal()) return;
+    const wasClosing = this.state === 'closing';
     this.onConnectionQuiesce();
+    if (wasClosing) {
+      this.clearAllTimers();
+      this.setState('disconnected');
+      this.settleCloseMemo();
+    }
     // closing 分支的补排队 = 有意保底（§4.2 不对称裁决）：不变量 I-C 下幂等零副作用；
     // 安全前提 = R1（SA2 #1）修复后的排队前捕获——claim 在本同步段求值恒为本代资源。
     void this.cleanupResources().catch(() => undefined);

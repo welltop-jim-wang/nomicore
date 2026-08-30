@@ -345,7 +345,7 @@ export class HubNamespaceChannel {
       }
       if (this.isOpenAborted()) {
         // ★ E2 第二窗口：session 已交付、尚未赋字 → 先关 session 再回收 lease（ADR-0010 L90 次序）
-        this.finishOpenSilently(undefined, sessionResult.ok ? sessionResult.session : undefined);
+        this.finishOpenSilently(this.lease, sessionResult.ok ? sessionResult.session : undefined);
         return;
       }
       if (!sessionResult.ok) {
@@ -412,16 +412,22 @@ export class HubNamespaceChannel {
 
   private finishOpenSilently(pendingLease?: NamespaceLease, pendingSession?: ReplicationSession): void {
     // §13.4：终局/连接已静默 → 零 wire、零状态机迁移；对续体局部已取得、尚未赋字的
-    // 资源**显式回收**（§D8.4，issue #171 H1/E2——旧实现只回收字段，`opened.lease`
-    // 局部值永不 release → 泄漏）。
+    // 资源显式回收，并严格保持 close session → release lease 的完成顺序（协议 §12）。
     this.openWaiters = [];
-    if (pendingSession !== undefined) {
-      void pendingSession.close().catch(() => undefined); // 先关 session（ADR-0010 L90）
-    }
-    if (pendingLease !== undefined && pendingLease !== this.lease) {
-      void pendingLease.release().catch(() => undefined); // 再释放未赋字 lease（幂等 same-promise）
-    }
-    void this.closeSessionAndRelease(); // 已赋字段的 lease/session（幂等；hub 侧字段读取安全——通道不跨连接）
+    const lease = pendingLease ?? this.lease;
+    const session = pendingSession ?? this.session;
+    this.session = undefined;
+    this.lease = undefined;
+    void (async () => {
+      try {
+        if (session !== undefined) await session.close();
+      } catch {
+        // 防御 seam：close 异常不允许阻断 lease 回收。
+      } finally {
+        if (lease !== undefined) await lease.release().catch(() => undefined);
+      }
+      await this.closeSessionAndRelease();
+    })();
   }
 
   /** §D8.1（issue #171）：open 续体中止判别——终态 ∨ 通道已静默（closing）。

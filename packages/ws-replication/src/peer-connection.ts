@@ -347,7 +347,11 @@ class PeerConnectionImpl implements PeerReplication {
   }
 
   private onMessage(bytes: Uint8Array): void {
-    if (this.connStateValue !== 'handshaking' && this.connStateValue !== 'ready') return;
+    if (
+      this.connStateValue !== 'handshaking' &&
+      this.connStateValue !== 'ready' &&
+      this.connStateValue !== 'draining'
+    ) return;
     let decoded: ReturnType<typeof decodeInbound>;
     try {
       decoded = decodeInbound(bytes, {
@@ -372,6 +376,17 @@ class PeerConnectionImpl implements PeerReplication {
       // HELLO 前的任何其他帧 / 错向帧
       this.connectionFatal('CONNECTION_POLICY_VIOLATION', 1008);
       return;
+    }
+    if (this.connStateValue === 'draining') {
+      // §6.3：drain 窗口仅处理自然 CLOSE 握手及 GOAWAY 前工作的 ACK/ERROR；
+      // 其余会启动新工作的 namespace 帧静默丢弃。
+      if (
+        message.kind !== 'CLOSE_NAMESPACE' &&
+        message.kind !== 'CLOSE_OK' &&
+        message.kind !== 'UPDATE_ACK' &&
+        message.kind !== 'SYNC_APPLIED' &&
+        message.kind !== 'ERROR'
+      ) return;
     }
     this.dispatchReady(message, decoded.header.sequence);
   }
