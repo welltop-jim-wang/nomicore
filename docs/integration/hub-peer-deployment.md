@@ -194,14 +194,18 @@ SIGHUP 换装（restart-only，见下）。
 ## 锁文件与共享 root
 
 file 模式启动时在 `rootDir/.nomicore-lock.json`（保留名，adapter 只触
-`users/`、`archive/users/` 受控子树，零干扰）写入 `{instanceId, pid}`；干净停机
-/换装删除。语义：
+`users/`、`archive/users/` 受控子树，零干扰）写入 `{instanceId, pid, nonce}`
+（nonce 为每次获取唯一的随机值）；干净停机/换装删除。语义：
 
 - 锁存在且 pid 存活 → loud `exit(1)`：同 pid/instanceId = 同实例未干净停机；
   不同实例 = **共享活跃 root unsupported**（每个进程必须独立 rootDir；
   hub 与 peer 各自 rootDir，两个 peer 也各自 rootDir）；
-- pid 已死 = stale 覆盖；`wx` EACCES/EPERM → loud `exit(1)`（rootDir 可写性是
-  file 模式前置条件）；
+- pid 已死 = stale 回收：**守卫 + 原子独占重取**——紧贴 unlink 重读锁文件
+  原始字节并与判定读字节全等才删除，随后以 `wx` 独占重建（竞争败者回环重判
+  读到胜者活 pid → loud `exit(1)`；所有权转移从不使用非独占覆写）；`wx`/
+  unlink 的 EACCES/EPERM → loud `exit(1)`（rootDir 可写性是 file 模式前置条件）；
+- release 只删除内容仍等于本进程本次获取写入的 payload 的锁文件（不确定 /
+  读不到 → 不动磁盘，绝不误删后继者的锁）；
 - **pid 复用误判**：死 pid 被无关新进程复用会误报「存活」——人工确认后删除
   `.nomicore-lock.json` 即可继续。
 
