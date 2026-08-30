@@ -104,7 +104,6 @@ class PeerConnectionImpl implements PeerReplication {
       requestDataDrain: () => this.sender?.requestDrain(),
       connectionFatal: (code, wsCloseCode) => this.connectionFatal(code, wsCloseCode ?? 1002),
       connectionEpoch: () => this.connectionEpochValue,
-      isGoawayDraining: () => this.goawayActive,
       deferTask: (task: () => void) => this.deferTask(task),
       observerPresent: () => this.observer() !== undefined,
       emitObserver: (event) => dispatchReplicationObserver(this.observer(), event),
@@ -348,7 +347,11 @@ class PeerConnectionImpl implements PeerReplication {
   }
 
   private onMessage(bytes: Uint8Array): void {
-    if (this.connStateValue !== 'handshaking' && this.connStateValue !== 'ready') return;
+    if (
+      this.connStateValue !== 'handshaking' &&
+      this.connStateValue !== 'ready' &&
+      this.connStateValue !== 'draining'
+    ) return;
     let decoded: ReturnType<typeof decodeInbound>;
     try {
       decoded = decodeInbound(bytes, {
@@ -373,6 +376,17 @@ class PeerConnectionImpl implements PeerReplication {
       // HELLO 前的任何其他帧 / 错向帧
       this.connectionFatal('CONNECTION_POLICY_VIOLATION', 1008);
       return;
+    }
+    if (this.connStateValue === 'draining') {
+      // §6.3：drain 窗口仅处理自然 CLOSE 握手及 GOAWAY 前工作的 ACK/ERROR；
+      // 其余会启动新工作的 namespace 帧静默丢弃。
+      if (
+        message.kind !== 'CLOSE_NAMESPACE' &&
+        message.kind !== 'CLOSE_OK' &&
+        message.kind !== 'UPDATE_ACK' &&
+        message.kind !== 'SYNC_APPLIED' &&
+        message.kind !== 'ERROR'
+      ) return;
     }
     this.dispatchReady(message, decoded.header.sequence);
   }
@@ -521,18 +535,14 @@ class PeerConnectionImpl implements PeerReplication {
       // 同时保持 wire 开放供宿主决定最终关闭时机。
       this.enterBlocked();
       // issue #175 AC4（§6.3「接收时开始计算本地 elapsed deadline」）：blocked 类 GOAWAY
-      // 携带正 drain 预算 → 武装本地 deadline——发送方在 drain 窗内死亡、或帧为注入形态
-      // （无发送方收口方）时 wire 不无限开放；drain=0 =「无 drain 预算信息」→ 不武装
-      // （D5-B1 冻结语义：0 值不产生任何新 timer；生产 Hub 两条 GOAWAY 生产路径恒发 >0）。
+      // 携带正 drain 预算 → 武装本地 deadline；drain=0 不产生新 timer。
       if (this.goawayDrainMs > 0) this.armBlockedDeadline();
       return;
     }
-    // drain 类（SERVER_RESTARTING 及未知非永久类）：§15.1 L411 字面——无条件 draining。
-    // 注意：此处【不】teardown sender——D5 的 scheduler.pending 计面锚（drain timer 恰 +1，
-    // poll timer 保持武装至 deadline fire 才清）依赖「draining 进入仅改状态」；teardown
-    // 统一在 deadline fire / blocked / 收口路径执行（§8.1 矩阵）。
+    // drain 类：收帧同步段先轻量静默，资源处置与 transport close 留到 deadline。
+    this.quiesceControllersLite();
     this.setState('draining');
-    this.armDrainClose(); // deadline close(1001)——hint 与否无差别
+    this.armDrainClose();
   }
 
   /** §6.2 drain deadline：teardown（清 poll timer）+ close(1001)。句柄必须可清（§8.1）。 */
@@ -549,20 +559,15 @@ class PeerConnectionImpl implements PeerReplication {
     }, this.goawayDrainMs);
   }
 
-  /** issue #175 AC4（SA5 根因 #3 / 协议 §6.3 L141）：blocked 类 GOAWAY 的 receiver 侧本地
-   *  elapsed deadline——发送方（hub reauth/停机）在 drain 窗内死亡、或帧为注入形态
-   *  （无发送方收口方）时，wire 不无限开放：deadline 到 → 本端 close(1001)。仅处置
-   *  transport 收口：控制器/出站队列/全部 timer 已由 enterBlocked 统一收口，此处重复
-   *  处置反而引入双重 quiesce 风险。句柄复用 drainCloseHandle（stop/dialNow/requestRebuild
-   *  既有清除点白得覆盖；§8.1 双重满足：清句柄 + 回调状态守卫）。 */
+  /** issue #175 AC4：blocked 类 GOAWAY 的 receiver 侧本地 elapsed deadline。 */
   private armBlockedDeadline(): void {
     this.clearDrainClose();
     const transport = this.transport;
     this.drainCloseHandle = this.options.timer.setTimeout(() => {
       this.drainCloseHandle = undefined;
-      if (this.connStateValue !== 'blocked') return; // rebuild/stop/dialNow 已接管旧 transport → 零副作用
+      if (this.connStateValue !== 'blocked') return;
       if (transport !== undefined && !transport.closed) {
-        transport.close(1001, 'blocked-deadline'); // 静态 reason，零凭据（AC7）
+        transport.close(1001, 'blocked-deadline');
       }
     }, this.goawayDrainMs);
   }
@@ -577,6 +582,12 @@ class PeerConnectionImpl implements PeerReplication {
   private quiesceControllers(): void {
     for (const controller of this.controllers.values()) controller.onConnectionFatal();
   }
+
+  /** §D6（issue #171）：收帧同步段的轻量静默遍历（零处置排队）。 */
+  private quiesceControllersLite(): void {
+    for (const controller of this.controllers.values()) controller.onConnectionQuiesce();
+  }
+
 
   private unsubscribeTransport(): void {
     for (const off of this.transportSubscriptions) off();
