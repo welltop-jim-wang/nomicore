@@ -401,44 +401,25 @@ describe('SA7 issue #168 动态验证：hello 超时 detach-close 的重入语�
     await settleUntil(() => env.peer.getConnectionState() === 'stopped', 'stopped');
   });
 
-  it('V2：adapter close() 同步抛错（hello 路径）——catch 吸收，backoff 必达恰一次（hello-timeout）；零 connection-failed；恢复链完好', async () => {
+  it('V2：adapter close() 同步抛错（hello 路径）——响亮进入 blocked，不把未关闭 transport 当作可恢复断线', async () => {
     const env = await bootSa7168({
       firstWire: { dropNextPeerToHubKind: 'HELLO', throwOnPeerClose: true },
       peerTimeouts: { helloTimeoutMs: HELLO_TIMEOUT_MS },
     });
     env.peer.start();
     await env.peerNode.scheduler.advanceBy(HELLO_TIMEOUT_MS);
-    await settleUntil(() => env.peer.getConnectionState() === 'backoff', 'close 抛错被吸收 → backoff 仍必达');
+    await settleUntil(() => env.peer.getConnectionState() === 'blocked', 'close 抛错 → blocked');
     const wire1 = env.wires[0]!;
-    // ── 注入证据：close 确被调用且抛错（helper catch 分支真实执行——非空转）──
     expect(wire1.peerCloseAttempts(), 'close 尝试恰一次').toBe(1);
-    expect(wire1.peerCloseThrown(), 'close 同步抛错已发生（吸收分支执行面）').toHaveLength(1);
+    expect(wire1.peerCloseThrown(), 'close 同步抛错已发生（失败面非空转）').toHaveLength(1);
     expect(wire1.peerCloseLog(), '违约 adapter 下 close 未完成（socket 层未关）').toHaveLength(0);
-    // ── backoff 必达：恰一次、分类正确、零 connection-failed（异常未劫持恢复链）──
-    const backoffs = env.events.of('connection-backoff-scheduled');
-    expect(backoffs, '恰一次 backoff（close-throw 未吞掉恢复链）').toHaveLength(1);
-    expect(backoffs[0], 'reason=hello-timeout, attempt=1').toMatchObject({
-      type: 'connection-backoff-scheduled',
-      side: 'peer',
-      attempt: 1,
-      reason: 'hello-timeout',
-    });
-    expect(env.events.of('connection-failed'), '零 connection-failed').toHaveLength(0);
-    // ── 迟到 in-flight HELLO_ACK 落旧 wire（epoch 已作废、监听已退订）：零扰动 ──
-    wire1.sendLateHelloAck();
-    await settle();
-    expect(env.peer.getConnectionState(), '迟到 ACK 零扰动（仍 backoff）').toBe('backoff');
-    expect(env.events.of('connection-backoff-scheduled')).toHaveLength(1);
-    // ── 恢复链完好：重拨（wire2 健康）→ ready → live ──
+    expect(env.events.of('connection-backoff-scheduled'), '未关闭 transport 不进入 backoff').toHaveLength(0);
+    expect(env.events.of('connection-failed'), 'adapter 违约按连接失败响亮投影').toHaveLength(1);
     await env.peerNode.scheduler.advanceBy(BACKOFF_DELAY_MS);
-    await settleUntil(() => env.peer.getConnectionState() === 'ready', '重拨 ready');
-    await settleUntil(() => env.peer.getNamespaceState(env.nsId) === 'live', '重连 live');
-    expect(env.dialCount()).toBe(2);
-    await env.peer.stop();
-    await settleUntil(() => env.peer.getConnectionState() === 'stopped', 'stopped');
+    expect(env.dialCount(), 'blocked 不自动重拨，避免孤儿 transport 与新代并存').toBe(1);
   });
 
-  it('V3：adapter close() 同步抛错（pong 路径——helper 第二调用点）——catch 吸收，backoff 必达恰一次（pong-timeout）；恢复后健康代零复发', async () => {
+  it('V3：adapter close() 同步抛错（pong 路径）——响亮进入 blocked，不自动重拨制造孤儿连接', async () => {
     const env = await bootSa7168({
       firstWire: { peerFacets: true, autoPong: false, throwOnPeerClose: true },
       peerTimeouts: {
@@ -453,32 +434,14 @@ describe('SA7 issue #168 动态验证：hello 超时 detach-close 的重入语�
     const wire1 = env.wires[0]!;
     await env.peerNode.scheduler.advanceBy(PING_INTERVAL_MS);
     expect(wire1.peerPings().length, '前置：liveness 已武装且 ping 已发（pong 超时驱动非空转）').toBe(1);
-    // pong 超时 → detachCloseTimedOutTransport(pong-timeout) → close 抛错 → 吸收 → backoff 必达
+    // pong 超时 → detachCloseTimedOutTransport(pong-timeout) → close 抛错 → loud blocked
     await env.peerNode.scheduler.advanceBy(PONG_TIMEOUT_MS);
-    await settleUntil(() => env.peer.getConnectionState() === 'backoff', 'pong 超时 + close 抛错 → backoff 仍必达');
+    await settleUntil(() => env.peer.getConnectionState() === 'blocked', 'pong 超时 + close 抛错 → blocked');
     expect(wire1.peerCloseAttempts(), 'close 尝试恰一次').toBe(1);
-    expect(wire1.peerCloseThrown(), 'close 同步抛错已发生（吸收分支执行面——pong 调用点）').toHaveLength(1);
-    const backoffs = env.events.of('connection-backoff-scheduled');
-    expect(backoffs, '恰一次 backoff（pong 路径 close-throw 未劫持恢复链）').toHaveLength(1);
-    expect(backoffs[0], 'reason=pong-timeout, attempt=1').toMatchObject({
-      type: 'connection-backoff-scheduled',
-      side: 'peer',
-      attempt: 1,
-      reason: 'pong-timeout',
-    });
-    expect(env.events.of('connection-failed'), '零 connection-failed').toHaveLength(0);
-    // ── 恢复链：wire2（facets + autoPong 健康）→ ready → live；活性面健康零复发 ──
+    expect(wire1.peerCloseThrown(), 'close 同步抛错已发生（失败面非空转）').toHaveLength(1);
+    expect(env.events.of('connection-backoff-scheduled'), '未关闭 transport 不进入 backoff').toHaveLength(0);
+    expect(env.events.of('connection-failed'), 'adapter 违约按连接失败响亮投影').toHaveLength(1);
     await env.peerNode.scheduler.advanceBy(BACKOFF_DELAY_MS);
-    await settleUntil(() => env.peer.getConnectionState() === 'ready', '重拨 ready');
-    await settleUntil(() => env.peer.getNamespaceState(env.nsId) === 'live', '重连 live');
-    const wire2 = env.wires[1]!;
-    await env.peerNode.scheduler.advanceBy(PING_INTERVAL_MS); // wire2 ping1 → 自动回 pong
-    await env.peerNode.scheduler.advanceBy(PONG_TIMEOUT_MS);
-    await settle();
-    expect(env.peer.getConnectionState(), '健康代活性面零复发（仍 ready）').toBe('ready');
-    expect(env.events.of('connection-backoff-scheduled'), '无第二次 backoff').toHaveLength(1);
-    expect(wire2.peerSideClosed(), '新代传输保持开放').toBe(false);
-    await env.peer.stop();
-    await settleUntil(() => env.peer.getConnectionState() === 'stopped', 'stopped');
+    expect(env.dialCount(), 'blocked 不自动重拨').toBe(1);
   });
 });

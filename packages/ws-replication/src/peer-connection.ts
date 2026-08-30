@@ -425,8 +425,9 @@ class PeerConnectionImpl implements PeerReplication {
           // 同步收口栈（G3，§18 R4）：停旧 liveness → 退订旧 transport 全部监听 →
           // epoch 作废 → 关旧 transport(1001) → 排 backoff。epoch 必须先于可重入的
           // adapter.close() 失效（次序纪律由 detachCloseTimedOutTransport 单向承载）。
-          this.detachCloseTimedOutTransport(transport, 'pong-timeout');
-          this.onTemporaryFailure('pong-timeout', true);
+          if (this.detachCloseTimedOutTransport(transport, 'pong-timeout')) {
+            this.onTemporaryFailure('pong-timeout', true);
+          }
         },
       });
     }
@@ -613,15 +614,14 @@ class PeerConnectionImpl implements PeerReplication {
    * + 订阅闭包 epoch 门 = 双保险，本地 close 零重入副作用。
    * 身份不变量（this.transport === transport）由调用点守卫保证；此处冗余断言
    * （fail-loud——杜绝未来第三调用点漏写守卫造成「退订错代监听 + 关错传输」）。
-   * close-throw 处置（adapter 违约同步抛错）：epoch 已作废、监听已退订——try/catch
-   * 吸收异常以保证调用方后续 onTemporaryFailure 必达（backoff 恢复链不被劫持）。
-   * 幂等：transport 已关时跳过 close，但前三步代际收口照常执行（调用方随后必经
-   * onTemporaryFailure 的状态守卫，不会双计）。
+   * close-throw 处置（adapter 违约同步抛错）：未关闭的 transport 不得被当作可恢复断线；
+   * 响亮投影 connection-failed 并进入 blocked，阻止自动重拨制造第二条连接。
+   * 幂等：transport 已关时跳过 close，但前三步代际收口照常执行。
    */
   private detachCloseTimedOutTransport(
     transport: DuplexTransport,
     reason: 'pong-timeout' | 'hello-timeout',
-  ): void {
+  ): boolean {
     if (this.transport !== transport) {
       throw new Error(
         `detachCloseTimedOutTransport: transport identity mismatch (caller guard violated, reason=${reason})`,
@@ -634,10 +634,12 @@ class PeerConnectionImpl implements PeerReplication {
       try {
         transport.close(1001, reason);
       } catch {
-        // adapter.close() 同步抛错（第三方违约）：吞掉以保证 onTemporaryFailure 必达
-        // （连接已退订、代际已作废——唯一还差的就是 backoff 恢复链，不能被劫持）
+        this.emitConnectionFailed('INTERNAL_ERROR', 1011);
+        this.enterBlocked();
+        return false;
       }
     }
+    return true;
   }
 
   private goawayDrainMs = 0;
@@ -954,8 +956,9 @@ class PeerConnectionImpl implements PeerReplication {
       // issue #168：§18「HELLO/pong timeout关闭连接」——hello 超时与 pong 超时同构，
       // 进入 backoff 前同步执行 established detach-close 序列，收口孤儿传输窗口
       //（close(1001,'hello-timeout') → hub 侧可观测序列签名；epoch 先失效防重入）。
-      this.detachCloseTimedOutTransport(transport, 'hello-timeout');
-      this.onTemporaryFailure('hello-timeout', true);
+      if (this.detachCloseTimedOutTransport(transport, 'hello-timeout')) {
+        this.onTemporaryFailure('hello-timeout', true);
+      }
     }, this.timeouts.helloTimeoutMs);
   }
 
