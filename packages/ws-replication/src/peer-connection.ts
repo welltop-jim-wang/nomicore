@@ -779,8 +779,8 @@ class PeerConnectionImpl implements PeerReplication {
     if (transport !== undefined && !transport.closed) {
       transport.close(wsCloseCode, 'protocol-error');
     }
-    this.enterBlocked();
     this.emitConnectionFailed(code, wsCloseCode); // P6：稳定码折叠（未知 → INTERNAL_ERROR）
+    this.enterBlocked();
   }
 
   /**
@@ -819,13 +819,13 @@ class PeerConnectionImpl implements PeerReplication {
   private enterBlocked(): void {
     if (this.connStateValue === 'blocked') return;
     this.clearDrainClose(); // R2 A1 单点：drain 期 1002/1008 close、connectionFatal 等一切经 enterBlocked 的 blocked 入口
-    // R4：blocked 也是连接收口——liveness/transport 订阅/代际与 temporary-failure 同纪律拆除
-    //（P5：三监听面计数 0、blocked 态零 ping 活动、零自发二次 close）。传输不关：
-    // 1002/1008 路径传输已被对端关闭；GOAWAY SHUTTING_DOWN 语义要求 socket 保持开放
-    //（sa7-hardening D5：drain 残留排队帧不得继续派发——退订 onMessage 反而强化该语义）。
-    this.stopLivenessNow();
-    this.unsubscribeTransport();
-    this.connectionEpochValue += 1;
+    // 1002/1008 等已关闭传输必须同步彻底拆除；GOAWAY blocked 则仍需等待对端最终
+    // close，并保留 liveness 作为巨值 drain 的收口 backstop。
+    if (this.transport?.closed === true || this.transport === undefined || !this.goawayActive) {
+      this.stopLivenessNow();
+      this.unsubscribeTransport();
+      this.connectionEpochValue += 1;
+    }
     this.sender?.teardown();
     this.clearHello();
     this.clearReset();

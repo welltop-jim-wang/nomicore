@@ -99,7 +99,7 @@ interface PongControl {
 
 /** 在 fake wire 的 peer 端外包裹 WS 级 ping/onPong 可选面（liveness 武装条件——生产 0 seam）。 */
 function wrapLiveness(inner: DuplexTransport, ctl: PongControl): DuplexTransport {
-  const pongListeners: Array<() => void> = [];
+  const pongListeners: Array<(payload?: Uint8Array) => void> = [];
   return {
     send: (bytes) => inner.send(bytes),
     close: (code?: number, reason?: string) => inner.close(code, reason),
@@ -108,9 +108,11 @@ function wrapLiveness(inner: DuplexTransport, ctl: PongControl): DuplexTransport
     },
     onMessage: (listener) => inner.onMessage(listener),
     onClose: (listener) => inner.onClose(listener),
-    ping: () => {
+    ping: (payload?: Uint8Array) => {
       ctl.pingCount += 1;
-      if (ctl.autoPong) for (const listener of [...pongListeners]) listener();
+      if (ctl.autoPong) {
+        for (const listener of [...pongListeners]) listener(payload?.slice());
+      }
     },
     onPong: (listener) => {
       pongListeners.push(listener);

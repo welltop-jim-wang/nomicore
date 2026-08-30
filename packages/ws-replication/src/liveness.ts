@@ -83,6 +83,12 @@ export function startLiveness(deps: LivenessDeps): () => void {
     if (stopped) return;
     counter += 1;
     outstanding = encodeCredential(counter);
+    // 先武装 timeout，再发送 ping：测试/适配器允许 ping() 同步回显 pong；若先发送后
+    // 武装，合法同步 pong 会因 pongHandle 尚未存在而被误判为 unsolicited，随后假超时。
+    pongHandle = deps.timer.setTimeout(() => {
+      pongHandle = undefined;
+      if (!stopped) loseLiveness();
+    }, deps.pongTimeoutMs);
     try {
       deps.ping(outstanding);
     } catch {
@@ -91,11 +97,7 @@ export function startLiveness(deps: LivenessDeps): () => void {
       loseLiveness();
       return;
     }
-    pongHandle = deps.timer.setTimeout(() => {
-      pongHandle = undefined;
-      if (!stopped) loseLiveness();
-    }, deps.pongTimeoutMs);
-    pingHandle = deps.timer.setTimeout(loop, deps.pingIntervalMs);
+    if (!stopped) pingHandle = deps.timer.setTimeout(loop, deps.pingIntervalMs);
   };
 
   pingHandle = deps.timer.setTimeout(loop, deps.pingIntervalMs);
