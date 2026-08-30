@@ -438,7 +438,7 @@ describe('SA7 RT-F1（issue #171，SA4 §4.1）：真实 TCP + 真实 timer 下 
     );
     const tDisconnected = Date.now();
     expect(tDisconnected - t0, 'disconnected 投影必须发生在 deadline 之前（提前投影）').toBeLessThan(DRAIN_MS);
-    expect(run.peer.getConnectionState(), 'drain 窗口内连接保持 ready（deadline 只管 transport）').toBe('ready');
+    expect(run.peer.getConnectionState(), 'drain 窗口内连接进入 draining（deadline 只管 transport）').toBe('draining');
     expect(controllerProjectionOf(run).unsubscribe, '轻量层已摘订阅').toBeUndefined();
 
     // ── 攻击点：drain 窗口内（deadline 未到）宿主移除 target（F1 修复面）──
@@ -505,7 +505,7 @@ describe('SA7 RT-F1（issue #171，SA4 §4.1）：真实 TCP + 真实 timer 下 
     await waitUntil('GOAWAY 收帧后 ns disconnected', () => run.peer.getNamespaceState(run.nsId) === 'disconnected', 2_000);
     const tDisconnected = Date.now();
     expect(tDisconnected - t0, 'disconnected 投影在 deadline 前（同步段先于异步 drain）').toBeLessThan(DRAIN_MS);
-    expect(run.peer.getConnectionState(), 'drain 窗口连接 ready').toBe('ready');
+    expect(run.peer.getConnectionState(), 'drain 窗口连接 draining').toBe('draining');
     expect(controllerProjectionOf(run).unsubscribe, '订阅已摘（数据面双保险之一）').toBeUndefined();
 
     // ── drain 窗口内业务写 → 零 UPDATE 出站（同步静默先于异步 drain——真实 wire 帧面）──
@@ -517,7 +517,7 @@ describe('SA7 RT-F1（issue #171，SA4 §4.1）：真实 TCP + 真实 timer 下 
       countKind(run.peerSide.sent, 'UPDATE'),
       'drain 窗口内业务写零 UPDATE 出站（收帧同步段已静默订阅）',
     ).toBe(updatesBefore);
-    expect(run.peer.getConnectionState(), '窗口内连接仍 ready').toBe('ready');
+    expect(run.peer.getConnectionState(), '窗口内连接保持 draining').toBe('draining');
 
     // ── deadline：transport close(1001) + 全量层处置（本测试无 removeTarget——对照路径）──
     await waitUntil('deadline 关闭 peer 侧 transport', () => run.peerSide.closed, DRAIN_MS + 3_000);

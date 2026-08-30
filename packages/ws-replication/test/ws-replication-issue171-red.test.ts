@@ -383,7 +383,7 @@ describe('SA6 G5（issue #171，Scope 6/AC5）：GOAWAY SERVER_RESTARTING 收帧
     await run.peerNode.scheduler.advanceBy(5_000);
     await settle();
     expect(run.wire.peerEnd.closed, 'deadline 到期必须关闭传输').toBe(true);
-    expect(run.peer.getConnectionState(), 'GOAWAY 后连接按协议时序收口').toBe('ready');
+    expect(run.peer.getConnectionState(), 'GOAWAY 后连接按协议时序收口').toBe('draining');
     await run.peer.stop();
     await settleUntil(() => run.peer.getConnectionState() === 'stopped', 'stopped');
   });
