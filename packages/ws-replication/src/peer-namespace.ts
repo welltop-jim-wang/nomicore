@@ -652,6 +652,15 @@ export class PeerNamespaceController {
         // 本地收口：零 wire 帧（§13.1 矩阵）
         this.setState('closed');
         this.settleCloseMemo();
+        // ★ F1（SA4 复审，issue #171）：本地结算同样排队处置——GOAWAY drain 窗口
+        // （轻量层 onConnectionQuiesce 投影 disconnected + **零处置排队**）内 removeTarget
+        // 落入本分支时，若不排队处置，deadline 全量层 onConnectionFatal 将以
+        // isTerminal()（closed）早退 → session/lease/watchdog 永久泄漏（AC2 违例；
+        // 对 ef19bae 基线回归）。补排 = 与同函数 seq≤0 分支同款：claim 于本同步段
+        // 捕获——'targeted' 态为空 → 幂等 no-op；'disconnected' 态 = 本代资源 →
+        // 恰一次处置（与 loss 路径已排队处置经幂等 same-promise 兑付）。**不拆**终态
+        // 早退门（onConnectionFatal 的 isTerminal() 保护终态控制器免受重复静默投影）。
+        void this.cleanupResources().catch(() => undefined);
         return this.closeMemo?.get() ?? Promise.resolve();
       case 'opening':
       case 'bootstrapping':

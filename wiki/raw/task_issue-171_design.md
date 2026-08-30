@@ -7,6 +7,10 @@
 > - **#4（MAJOR）**：GOAWAY 静默分**轻量（收帧段）/全量（deadline 回调）两层**——轻量层零处置排队，处置时点与现状完全一致 → `sa7-issue137 D5` 四检查点 timer 账目逐值不变（§13.2 重推）。
 > - **#5–#8（MINOR）**：startOpen 取得后失败分支补 `isOpenAborted()` 先行判别；waiter 丢弃裁决 (a)（静默 + openTimeout 兜底，登记 §13.3）；`enqueueLifecycle` 吞错纪律（任务体结构性零 throw + `void` 调用点显式 `.catch`）；SYNC_APPLIED 非对称消除（决策 (a)：peer 维持既有 epoch 门照发、hub 补 `isQuietState` 门）。
 > 修订明细与逐条落实位置见文末「SA2 反馈逐条回应（R1）」。
+>
+> **R1.1 修订（2026-08-30，SA4 复审 F1 回流批）**：按 `task_issue-171_sa4_review.md`（verdict: reject，阻断项 F1）修订：
+> - **F1（CRITICAL）**：`removeTarget` 的 `case 'targeted'/'disconnected'` 本地收口分支补 `void this.cleanupResources().catch(() => undefined)`（§D3 伪代码与 §4.2 表同步）——GOAWAY drain 窗口（轻量层 `onConnectionQuiesce` 投影 `disconnected` 且零处置排队）内 removeTarget 否则落入「无处置」分支，deadline 全量层 `onConnectionFatal` 以 `isTerminal()`（closed）早退 → session/lease/watchdog 泄漏（AC2 违例、对 `ef19bae` 基线回归；SA2 R2 新攻击扫描漏检「drain 窗口内 removeTarget」交叉）。终态早退门**保持不拆**。
+> - **R2-N1（SA2 非阻塞注记）**：总则 1/3 措辞对齐 §4.1 身份守卫语义（claim 无 epoch；字段/aux 处置以「自捕获以来未建立新 session」为准，含有意跨代清字段 + teardown 面）；条款编号不变，机制零改动。
 
 - 任务类型：Bug 修复（bugfix）
 - Worktree：`/home/wangjian/nomicore-fix-issue-171`（branch `fix/issue-171-on-docs-phase-5-websocket-replication`，baseline `docs/phase-5-websocket-replication`）
@@ -72,9 +76,9 @@
 
 ## §3. 设计总则
 
-1. **资源账目制（ownership claim）**：任何异步续体在**发起/排队时**捕获其资源所有权 `{epoch, session, lease, unsubscribe}`；执行期只处置捕获对象；中止/迟到时对**捕获的**（而非字段回读的）资源显式回收。字段（`this.session` 等）只在「处置完成且代际未推进」时清空。
+1. **资源账目制（ownership claim）**：任何异步续体在**发起/排队时**（caller 同步栈）捕获其资源所有权 `{session, lease, unsubscribe}`（**无 epoch 字段**——代际判别由执行期的**身份守卫**承担，见 §4.1 `runDisposal`）；执行期只处置捕获对象；中止/迟到时对**捕获的**（而非字段回读的）资源显式回收。字段清空与 aux teardown 以身份守卫（`this.session === claim.session`）判定：自捕获以来**未建立新 session** ⇒ 照常清字段 + `watchdog/round/channel.teardown()`（无论连接代际是否推进——AC2 零泄漏兑付）；**已建立新 session** ⇒ 零字段/aux 触碰（新代资源归新代生命周期，见总则 3 与 §D5.2）。
 2. **中止判别保护资源账目，不保护调用点**（D-H1）：中止检查位于每个**取得之后**的恢复点；authorize→registry.open 段无资源可保护，取得完成再判别回收。与 peer 侧 B-2c（peer-namespace.ts:191-195：registry.open 已返回、迟到判别后 `releaseLeaseOrNoop(result.lease)`）语义对称——peer 的 abort 点同样在取得之后。
-3. **跨代零副作用**：epoch 已推进的续体 = 迟到 → 只回收自己捕获的资源；**零 wire 帧、零状态机迁移、零当前字段触碰、零 aux teardown**（round/channel/watchdog 簿记归新代生命周期，由新代 open 路径自重置——§D5.2）。
+3. **跨代零副作用（以身份守卫为准）**：epoch 已推进的续体 = 迟到 → 只回收自己捕获的资源、**零 wire 帧、零状态机迁移**；当前字段与 aux 簿记（round/channel/watchdog）的处置权归**身份守卫**——无新 session 建立（intent='removed'/终态/新代未重开）⇒ **有意**跨代清字段 + aux teardown（§4.1；不执行则泄漏面=新代永不 open 时 watchdog 永久自重武装 / channel 队列残留——AC2）；新 session 已建立（P3 stuck-disposal）⇒ 零字段/aux 触碰，残留清理由新代 open 路径自重置（§D5.2）。
 4. **单一生命周期权威（peer）**：`cleanupTail` 队列（经新原语 `enqueueLifecycle`）串行化 peer 全部生命周期续体（hub-CLOSE 收口、removeTarget 处置、loss/fatal/stop 处置）；关闭承诺结算 = 既有事件驱动 settle-gate（R3 纪律，零轮询环保留）。
 5. **同步静默先于异步 drain**（#161 修订节既有决策）：GOAWAY/blocked/收口的**同步段**完成停新数据接受（摘订阅、停 timer、停 round 推进、投影），异步段只做 barrier 排空与 transport 关闭。
 6. **已接纳槽无条件排空**：`drainPendingApplies()` 与 `session.close()` barrier 语义保持；处置链不取消任何已接纳 apply。
@@ -160,7 +164,7 @@ private cleanupResources(): Promise<void> {
 | 触发事件 | 捕获时点（claim 求值位置） | 队列任务体 | 状态机/wire 副作用 |
 |---|---|---|---|
 | hub `CLOSE_NAMESPACE`（§D2） | onCloseRequest 同步段（quiesceSync 之后） | drain → runDisposal(claim) → epoch 内：CLOSE_OK + `closed` + settle | epoch 门（跨代零 wire/零迁移；独立局部变量） |
-| `removeTarget`（§D3） | ensureCloseMemo 创建时（removeTarget 同步段） | drain → runDisposal(claim)，随后 await settle-gate | gate 由 CLOSE_OK/closeTimeout/断线/blocked/stop 事件结算 |
+| `removeTarget`（§D3） | ensureCloseMemo 创建时（removeTarget 同步段）；**本地收口分支**（`targeted`/`disconnected` 与 seq≤0）在 removeTarget 同步段捕获后直接排队 | drain → runDisposal(claim)，随后 await settle-gate；本地收口分支 = 同步结算 + runDisposal(claim)（F1 补排——GOAWAY drain 窗口 `disconnected` 内 removeTarget 不得依赖 deadline 全量层处置：该层以 `isTerminal()` 早退） | gate 由 CLOSE_OK/closeTimeout/断线/blocked/stop 事件结算 |
 | 连接断线 `onConnectionLost`（§D5.1） | 活跃/failed 分支的事件同步段；**closing 分支不排队**（见下） | runDisposal(claim) | 投影 `disconnected` 已在同步段完成 |
 | blocked `onConnectionFatal` / GOAWAY deadline 全量静默（§D5.1/§D6） | 事件同步段（含 closing——见下） | runDisposal(claim) | 投影 `disconnected` 已在同步段完成 |
 | GOAWAY 收帧段轻量静默 `onConnectionQuiesce`（§D6，R1 #4 新增） | **不排队**（零处置） | — | 摘订阅/清 timer/closing 结算/投影 `disconnected`；处置留给 deadline 回调或 transport 失联（与现状同时点） |
@@ -216,6 +220,13 @@ removeTarget(): Promise<void> {
     case 'disconnected':
       this.setState('closed');
       this.settleCloseMemo();
+      // ★ F1（SA4 复审补排，2026-08-30）：本地收口同样排队处置——GOAWAY drain 窗口
+      // （轻量层投影 disconnected + 零处置排队）内 removeTarget 落入本分支时，若不
+      // 排队，deadline 全量层 onConnectionFatal 以 isTerminal()（closed）早退 →
+      // session/lease/watchdog 泄漏（AC2）。claim 于本同步段捕获：'targeted' 态为
+      // 空 → 幂等 no-op；'disconnected' 态 = 本代资源 → 恰一次处置（与 loss 路径已
+      // 排队处置经幂等 same-promise 兑付）。**不拆**终态早退门。
+      void this.cleanupResources().catch(() => undefined);
       return this.closeMemo?.get() ?? Promise.resolve();
     case 'opening':
     case 'bootstrapping':
