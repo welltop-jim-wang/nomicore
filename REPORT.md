@@ -1,41 +1,43 @@
 ---
 status: complete
-run_id: issue-168-1788095633-447205
-branch: refactor/ws-replication-close-peer-transport-synchronously-
+run_id: issue-191-1788112074-447205
+branch: refactor/yjs-server-make-stale-root-lock-reclamation-atomic
 round: 1
 ---
 
-# issue #168 — Synchronously close peer transport on HELLO timeout
+# issue #191 — Make stale root-lock reclamation atomic
 
-## 需求摘要
+## 概要
 
-修复 peer 侧 HELLO 握手超时后仅进入 backoff、未立即关闭旧 transport 所造成的有界 orphan-transport race。修复须复用既有 pong-timeout detach-close 纪律（或等价受保护 helper），同时保持 dial-throw、onClose 与 hub 侧行为不变，并确保迟到并发步骤幂等、重拨恢复正常。
+修复 `apps/yjs-server` 文件持久化根目录锁的两个竞态：stale lock 回收不再通过非独占覆写获得所有权；迟到的 lock handle 不再能删除后继持有者的锁。所有权转移现在均由独占 `wx` 创建裁决，并保留既有活 owner、PID reuse 和不可写根目录诊断。
 
-## 改动
+## 变更
 
-- `1092d34 fix(ws-replication): close peer transport synchronously on hello timeout (#168)`
-  - 在 `PeerConnectionImpl` 中抽取受保护的 timeout detach-close helper；HELLO timeout 在进入 backoff 前同步停止 liveness、退订、作废 epoch，并以 `close(1001, 'hello-timeout')` 收口旧 transport。
-  - HELLO 路径增加 transport/epoch 双凭据守卫；pong-timeout 改用同一 helper；dial-throw、onClose、hub timeout 冻结面未改变。
-  - 新增/翻转 SA6 契约以覆盖 peer close、close 签名、幂等、迟到 ACK 与恢复链。
-- `5591c2f test(yjs-server): replace package-internal test seam imports with in-test public-API fixture (#168)`
-  - 修复终审 Standards S1：真实 WS 应用测试删除对 ws-replication 内部测试夹具的跨包导入，改用测试内最小 fixture 和包公共导出，保留 RT-1..RT-4 语义。
-- `a85f767 test(ws-replication): add hello timeout dynamic coverage (#168)`
-  - 提交 SA7 动态故障注入测试、SA4/SA7/SA3 任务存档与 dispatch 记录。
+- `f2bc4f0 fix(yjs-server): make stale root lock reclamation atomic (issue #191)`
+  - 在 `acquireRootLock()` 中以有界的 `unlink` + `wx` 重试环取代 stale lock 的 `flag: 'w'` 覆写；判定 stale 后在 unlink 前按原始字节重读确认，竞争者获锁时回环并给出 held 诊断。
+  - 为每次获取生成 `nonce`，`release()` 仅在当前文件内容仍逐字节等于该 handle 的 payload 时才 unlink。
+  - 增加可确定性编排的 stale-reclaim hooks、公共类型导出和 T1–T9 回归契约，覆盖双回收者、迟到 release、empty/malformed lock 与不可读 lock 行为。
+  - 更新部署文档以描述原子重取、ownership-checked release 与 PID reuse caveat。
 
-## 审查与验证
+## 验证
 
-- **SA4 静态审查**：`pass`。范围严格为 `git diff ffca4f6..HEAD`；确认无 scope creep，设计一致，冻结面未触碰，且静态攻击面与契约连锁通过。报告：`wiki/raw/task_ws-replication-close-peer-transport-synchronously_sa4_review.md`。
-- **SA7 动态验证**：`pass`。确认红基线非空转、真实 WS adapter close/re-entry 行为、hello/pong close-throw 后恢复；报告：`wiki/raw/task_ws-replication-close-peer-transport-synchronously_sa7_report.md`。
-- **终审双轴 R2**：Standards `pass`（S1 修复后边界合规）；Spec `pass`（issue #168 要求完整，RT-1..RT-4 未削弱）。
-- **最终整合验收**（commit `a85f7670e172bb2a68e612c6e083784564a74fff`）：
+- **SA2 设计破壁复审**：R2 `pass / APPROVE`；原子 wx 回收、原始字节守卫、nonce ownership 和测试契约均获批准。报告：`wiki/raw/task_191_sa2.md`。
+- **SA4 独立静态审查**：`pass / APPROVE`；确认无生产 `flag: 'w'`、只有 wx 持锁出口、回环有界、诊断逐字保留、范围合规。报告：`wiki/raw/task_191_sa4.md`。
+- **SA7 独立动态验证**：`APPROVE`；基线契约为 5 failed / 6 passed，修复后 T1–T9 两次均 11/11；门控真进程探针从基线 9/20 多持有违例改善为修复 20/20 恰一胜。报告：`wiki/raw/task_191_sa7.md`。
+- **SA5 本地完成复核**：`APPROVE`；任务档案和 AC1–AC5 证据完备。报告：`wiki/raw/task_191_sa5.md`。
+- **本地命令结果**（SA5 独立复跑，真实后台进程）：
   ```text
-  npx vitest run packages/ws-replication apps/yjs-server/test/ws-hello-timeout-close-issue168.test.ts
-  → Test Files 44 passed (44), Tests 312 passed (312), Type Errors no errors
+  pnpm exec vitest run apps/yjs-server/test/root-lock-atomic-reclaim-red.test.ts
+  → Test Files 1 passed (1), Tests 11 passed (11), Type Errors no errors
 
-  npx tsc -p packages/ws-replication/tsconfig.json --noEmit
+  pnpm typecheck
   → exit 0
 
-  npx tsc -p apps/yjs-server/tsconfig.json --noEmit
-  → exit 0
+  pnpm exec vitest run --typecheck --no-file-parallelism
+  → Test Files 211 passed (211), Tests 2265 passed (2265), Type Errors no errors, exit 0
+
+  git diff --check && git show --check f2bc4f0
+  → clean
   ```
-  后台完整输出：`.mabf-bg/issue168-final.log`；退出码：`.mabf-bg/issue168-final.exit`（`0`）。
+
+本地 MABF 验收完成；CI、push 与 PR 发布由 Host 后续处理。
