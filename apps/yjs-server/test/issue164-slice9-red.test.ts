@@ -26,6 +26,7 @@ import {
   PEER_INSTANCE,
   TEST_TOKEN,
   PeerWire,
+  makeGrammarViolationHelloFrame,
   makeHubNamespace,
   makeTestRegistry,
   makeVerifier,
@@ -289,7 +290,9 @@ describe('issue #164 切片 9：apps/yjs-server 组合根（真实 WebSocket）'
       });
       expect(upgrade.status).toBe(101);
       const wire = new PeerWire(upgrade.ws as never);
-      wire.send(helloMsg('Peer_Alpha!'));
+      // 原始帧直发 wire（绕过编码器 R9 字段先验——包既定行为，DENY LIST 禁改）：
+      // 帧结构完全合法，仅 instanceId 值违反 §6.1 文法（'Peer_Alph!'，同长替换）。
+      wire.sendRaw(makeGrammarViolationHelloFrame());
       await waitUntil('连接收口', () => wire.closed !== undefined, 5_000);
       expect(wire.frames.some((f) => f.message.kind === 'HELLO_ACK')).toBe(false);
       // 帧级违约（文法违规 payload）→ 关连接，绝不进入协议握手

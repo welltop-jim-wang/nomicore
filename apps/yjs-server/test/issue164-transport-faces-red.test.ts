@@ -45,7 +45,9 @@ class FakeSocket {
   readyState = 1; // open
   readonly sentBinary: Uint8Array[] = [];
   readonly pingData: Uint8Array[] = [];
-  readonly closeCalls: Array<Readonly<{ code?: number; reason?: string }>> = [];
+  readonly closeCalls: Array<
+    Readonly<{ code: number | undefined; reason: string | undefined }>
+  > = [];
   private readonly bags: ListenerBag = {
     message: [],
     close: [],
@@ -133,14 +135,14 @@ describe('issue #164：真实 WebSocket adapter（DuplexTransport 三面）', ()
     socket.emit('message', 'plain text', false);
     expect(received).toHaveLength(before);
     expect(socket.closeCalls.length).toBeGreaterThan(0);
-    expect(socket.closeCalls[0].code).toBe(1002);
+    expect(socket.closeCalls[0]!.code).toBe(1002);
 
     // —— ping / onPong：WS 级活性接线（§18）——
     const pingPayload = new Uint8Array([9, 9]);
-    adapter.ping(pingPayload);
+    adapter.ping!(pingPayload);
     expect(socket.pingData[0]).toEqual(pingPayload);
     let pongCount = 0;
-    const offPong = adapter.onPong(() => {
+    const offPong = adapter.onPong!(() => {
       pongCount += 1;
     });
     socket.emit('pong', pingPayload);
@@ -173,7 +175,7 @@ describe('issue #164：组合根装配期响亮断言（§17：缺面 = 配置�
     const bufferedOnly: DuplexTransport = {
       ...bare,
       bufferedAmount: 0,
-      send: (b) => void b,
+      send: (b: Uint8Array) => void b,
       close: () => undefined,
       closed: true,
       onMessage: () => () => undefined,

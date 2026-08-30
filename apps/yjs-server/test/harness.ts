@@ -284,19 +284,22 @@ export interface UpgradeOutcome {
 }
 
 export class RawWsClient {
-  private incoming = new Uint8Array(0);
+  private incoming: Uint8Array<ArrayBufferLike> = new Uint8Array(0);
   private messageListeners: Array<(bytes: Uint8Array) => void> = [];
   private pingListeners: Array<(data: Uint8Array) => void> = [];
   private pongListeners: Array<(data: Uint8Array) => void> = [];
   private closeListeners: Array<(info: Readonly<{ code: number; reason: string }>) => void> = [];
   private errorListeners: Array<(err: unknown) => void> = [];
   closed = false;
+  /** 最近一次关闭观察（含监听注册前已消费的 close 帧——TF3 观察窗竞态回放锚）。 */
+  lastClose: Readonly<{ code: number; reason: string }> | undefined;
 
   constructor(private readonly socket: net.Socket) {
     socket.on('close', () => {
       if (this.closed) return;
       this.closed = true;
-      for (const l of [...this.closeListeners]) l({ code: 1006, reason: '' });
+      this.lastClose = { code: 1006, reason: '' };
+      for (const l of [...this.closeListeners]) l(this.lastClose);
     });
     socket.on('error', (err) => {
       for (const l of [...this.errorListeners]) l(err);
@@ -324,11 +327,12 @@ export class RawWsClient {
         case 0x8: {
           const code =
             frame.payload.byteLength >= 2
-              ? (frame.payload[0] << 8) | frame.payload[1]
+              ? (frame.payload[0]! << 8) | frame.payload[1]!
               : 1005;
           const reason = Buffer.from(frame.payload.slice(2)).toString('utf8');
           this.closed = true;
-          for (const l of [...this.closeListeners]) l({ code, reason });
+          this.lastClose = { code, reason };
+          for (const l of [...this.closeListeners]) l(this.lastClose);
           this.socket.end();
           return;
         }
@@ -336,6 +340,7 @@ export class RawWsClient {
           // 未知 opcode → 协议违约，直接断开（测试不应产生）。
           this.socket.destroy();
           this.closed = true;
+          this.lastClose = { code: 1002, reason: '' };
           return;
       }
     }
@@ -372,6 +377,12 @@ export class RawWsClient {
     this.pongListeners.push(listener);
   }
   onClose(listener: (info: Readonly<{ code: number; reason: string }>) => void): void {
+    if (this.closed && this.lastClose !== undefined) {
+      // 已关闭状态回放：监听注册晚于关闭（TF3 观察窗竞态——101 与 close 帧同包时，
+      // close 帧在新监听注册前已被 feed 消费）。迟注册监听者仍收到真实 close 观测。
+      listener(this.lastClose);
+      return;
+    }
     this.closeListeners.push(listener);
   }
   onError(listener: (err: unknown) => void): void {
@@ -490,7 +501,7 @@ function encodeClientFrame(opcode: number, payload: Uint8Array): Uint8Array {
   }
   out.set(mask, headerLen);
   for (let i = 0; i < len; i += 1) {
-    out[headerLen + 4 + i] = payload[i] ^ (mask[i % 4] as number);
+    out[headerLen + 4 + i] = (payload[i] ?? 0) ^ (mask[i % 4] ?? 0);
   }
   return out;
 }
@@ -535,7 +546,7 @@ function takeServerFrame(buf: Uint8Array): ParsedFrame | undefined {
 export async function waitUntil(
   what: string,
   predicate: () => boolean,
-  timeoutMs: number,
+  timeoutMs = 10_000,
 ): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
@@ -580,6 +591,13 @@ export class PeerWire {
     return this.seq;
   }
 
+  /** 发送未经编码器字段先验的原始二进制帧（FS5b 文法违规锚专用——编码器 R9
+   *  先验在编码端即拒非法 instanceId，该路径必须先验绕过才能让帧到达 wire；
+   *  序列号由调用方内嵌，不参与本端计数）。 */
+  sendRaw(bytes: Uint8Array): void {
+    this.ws.sendBinary(bytes);
+  }
+
   /** 等待指定 kind 的帧（按到达序扫描；预算内有界轮询）。 */
   async waitKind(kind: string, timeoutMs = 10_000): Promise<DecodedMessage> {
     await waitUntil(
@@ -607,4 +625,53 @@ export class PeerWire {
 /** 从 Y.Doc 读 ROOT.n（测试侧断言锚）。 */
 export function readRootValue(doc: Y.Doc): unknown {
   return (doc.getMap('ROOT') as unknown as Map<string, unknown>).get('n');
+}
+
+// ═══════════════════════════ FS5b 文法违规原始帧（SA4 缺陷 A 回流） ═══════════════════════════
+
+/**
+ * 构造「帧结构完全合法、instanceId 文法非法」的 HELLO 原始帧（FS5b 专用）。
+ *
+ * 机理：replication-protocol 编码器执行 R9 字段先验（`checkInstanceId`：文法违规
+ * 值在编码端即抛 MALFORMED_FRAME，帧永不上 wire——SA4 E5 实锤）。这是包的既定
+ * 行为（DENY LIST，SA3 禁改）；本夹具先以合法 instanceId 编码 HELLO
+ * （'peer-alpha'，10 字节），再按长度钉死替换为同长文法违规串（'Peer_Alph!'）——
+ * 帧结构与字段布局全部合法，仅 instanceId 值违反协议 §6.1 文法，经
+ * `RawWsClient.sendBinary` 直发 wire，让服务器侧帧级拒绝路径被真实驱动
+ * （SA4 E6 反证：服务器回复 ERROR + close(1002,'protocol-error') + 零 HELLO_ACK）。
+ */
+export function makeGrammarViolationHelloFrame(): Uint8Array {
+  const frame = encodeMessage(
+    {
+      kind: 'HELLO',
+      peerInstanceId: PEER_INSTANCE, // 'peer-alpha'（10 字节，文法合法）
+      expectedHubInstanceId: HUB_INSTANCE,
+      protocolVersions: [1],
+      requiredCapabilities: 0,
+      optionalCapabilities: 0,
+      connectionNonce: crypto.randomBytes(16),
+    },
+    { sequence: 1 },
+  );
+  return patchAsciiOnce(frame, PEER_INSTANCE, 'Peer_Alph!'); // 同长 10 字节，文法非法
+}
+
+/** 在字节序中定位并替换首个 ASCII 子序列（同长替换；找不到 → throw）。 */
+function patchAsciiOnce(frame: Uint8Array, from: string, to: string): Uint8Array {
+  const fromBytes = new TextEncoder().encode(from);
+  const toBytes = new TextEncoder().encode(to);
+  if (fromBytes.byteLength !== toBytes.byteLength) {
+    throw new Error(
+      `patchAsciiOnce 替换长度必须一致：${from}(${fromBytes.byteLength}) vs ${to}(${toBytes.byteLength})`,
+    );
+  }
+  outer: for (let i = 0; i + fromBytes.byteLength <= frame.byteLength; i += 1) {
+    for (let j = 0; j < fromBytes.byteLength; j += 1) {
+      if (frame[i + j]! !== fromBytes[j]!) continue outer;
+    }
+    const out = Uint8Array.from(frame);
+    out.set(toBytes, i);
+    return out;
+  }
+  throw new Error(`patchAsciiOnce 未找到字节序列 ${from}`);
 }
