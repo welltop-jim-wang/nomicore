@@ -129,7 +129,7 @@ Peer instance × N
 
 - 最小 Cordis Host：Clock、Timer、Memory/File Persistence、NamespaceRegistry、WS replication。
 - 配置加载：role、instanceId、listen/hub URL、token、精确 targets、资源上限和 Persistence 参数。
-- 停机顺序：replication drain → channel/session close → lease release → Registry shutdown → Persistence dispose → Timer/Clock。
+- 停机顺序：停止接纳并发送 GOAWAY → 真实 drain（拒绝新 namespace 工作、现有 channel 自然 CLOSE、已接纳 apply 排空）→ 全部 channel 终态提前关闭或 deadline 以 WS 1001 硬收口 → 异常安全的 channel teardown/session close/lease release → Registry shutdown → Persistence dispose → Timer/Clock；网络 deadline 不取消 Runtime barrier。
 - 提供 hub + 两 peer 的本机多进程及跨机器部署说明；每个实例必须使用独立 FilePersistence rootDir。
 - **role 注记（切片 3/4 落地）**：生产 composition root（本切片）必须显式向 Registry 构造传 `role`（hub/peer 与部署配置一致）；缺省 `'hub'` 只是未声明时的一致性零回归面，不作为生产配置遗漏的豁免。
 
@@ -182,7 +182,7 @@ terminal failure → failed
 15. 复制管理写与恢复：
     - 15a（本阶段 Runtime/Lease 基础合同）：`enableReplication` 与 epoch bump 的 FIFO 槽序、dirty-not-durable 边界（dirty 登记 ≠ 已落盘）、File bump 至 epoch 2 后以 durable snapshot 重启恢复；fatal 只验收 committed-state recovery，不作 durable restart 承诺；
     - 15b（后续切片 3–8）：replication identity conflict 与 `resetReplica` archive 流程。
-16. 优雅停机完成已被 Runtime 接纳的 apply，不无限等待网络 ACK；
+16. 优雅停机在 GOAWAY 后拒绝新 namespace 工作，允许现有 channel 自然 CLOSE；网络 deadline 不无限等待 ACK，Runtime barrier 继续完成停机前已接纳 apply，并在 session close 异常时仍 teardown、release lease；deadline 后迟到 apply resolve/reject 零 wire 副作用；
 17. 第三方 Host 可直接基于 NamespaceLease/ReplicationSession 构造可信 transport；
 18. Node 支持矩阵下所有 public types、async disposal 与 Cordis ordered shutdown 一致。
 

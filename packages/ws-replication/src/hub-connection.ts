@@ -261,6 +261,8 @@ class HubConnectionImpl implements HubConnection {
   /** issue #174：GOAWAY drain 窗口结算闸（resolve-only，永不 reject——R1 零 unhandled
    *  rejection；cleanupAll 尾部 finally 释放）。 */
   private drainActive = false;
+  /** drain 的触发原因决定窗口内 OPEN 的 wire 语义：停机显式拒绝，reauth 静默丢弃。 */
+  private drainReason: 'SERVER_SHUTTING_DOWN' | 'REAUTH_REQUIRED' | undefined;
   private drainDeadline: unknown | undefined;
   private drainDone: (() => void) | undefined;
   private drainTail: Promise<void> | undefined;
@@ -352,7 +354,13 @@ class HubConnectionImpl implements HubConnection {
     // §4.1 双门：窗口期重入会覆盖旧 drainTail/drainDone → 旧 hub.close() Promise
     // 永不结算（挂起泄漏）。无现实重入路径（唯一调用点受 HubReplicationImpl.closed
     // 门 + hub.close() 幂等保护），一行防御。
-    if (this.closedFlag || this.drainActive) return;
+    if (this.closedFlag) return;
+    // reauth drain 与 Hub shutdown 同 tick 竞态：停机优先，立即 force-close；不能把
+    // reauth 窗误当作已启动的 SERVER_SHUTTING_DOWN drain 后直接返回。
+    if (this.drainActive) {
+      if (this.drainReason === 'REAUTH_REQUIRED') this.close(1001, 'hub-shutdown');
+      return;
+    }
     if (this.state === 'handshaking') {
       this.close(1001, 'hub-shutdown');
       return;
@@ -361,6 +369,7 @@ class HubConnectionImpl implements HubConnection {
     //    R1 RED@2。resolve-only：不存在 reject 路径 → 零 floating rejection）。
     this.drainTail = new Promise<void>((resolve) => { this.drainDone = resolve; });
     this.drainActive = true;
+    this.drainReason = 'SERVER_SHUTTING_DOWN';
     this.state = 'draining';
     try {
       this.outbound.sendControl({ // 直发豁免（既有注释理由保留：停机帧不允许
@@ -400,6 +409,8 @@ class HubConnectionImpl implements HubConnection {
       this.close(1001, 'hub-reauth');
       return;
     }
+    this.drainActive = true;
+    this.drainReason = 'REAUTH_REQUIRED';
     this.state = 'draining'; // 连接级可观测迁移；现有 namespace 到 deadline 前自然收口（§6.3 L148）
     try {
       this.outbound.sendControl({ // 收口路径直发豁免（同 shutdownWithGoaway/connectionFatal
@@ -427,7 +438,18 @@ class HubConnectionImpl implements HubConnection {
 
   /** 全部通道 cleanup 结算（HubReplication.close 等待）：drain 期 → 窗口末结算闸。 */
   settle(): Promise<void> {
-    return this.drainTail ?? this.settleTail; // §4.5：drain 期 → drainTail；否则既有语义
+    // 仅 SERVER_SHUTTING_DOWN 拥有 Hub close 结算闸。若连接此前已进入 reauth drain，
+    // hub.close() 会 force-close，并应等待该次 cleanup，而不是一个从未武装的 drainTail。
+    return this.drainReason === 'SERVER_SHUTTING_DOWN'
+      ? (this.drainTail ?? this.settleTail)
+      : this.settleAfterClose();
+  }
+
+  /** close()/onTransportClosed() 同步启动 cleanupAll 前，settleTail 仍可能是旧 resolved 值；
+   * 让一个微任务后再读取，锁住 reauth→hub.close 同 tick 的结算竞态。 */
+  private async settleAfterClose(): Promise<void> {
+    await Promise.resolve();
+    await this.settleTail;
   }
 
   /** issue #174 §4.3：drain 窗口提前完成观测——全部 channel 终态（或空）→ 立即收口。 */
@@ -451,6 +473,7 @@ class HubConnectionImpl implements HubConnection {
   /** issue #174 §4.6-R2 单点：drain 复位 + deadline 句柄清理。幂等；四条连接终结路径共用。 */
   private clearDrainHandles(): void {
     this.drainActive = false;
+    this.drainReason = undefined;
     if (this.drainDeadline !== undefined) {
       this.hub.timer.clearTimeout(this.drainDeadline); // §8 句柄必清纪律
       this.drainDeadline = undefined;
@@ -480,9 +503,8 @@ class HubConnectionImpl implements HubConnection {
       this.connectionFatal('HELLO_REQUIRED', 1002);
       return;
     }
-    // GOAWAY drain 开始后停止接纳所有新的协议工作。Peer 已被要求静默；这里仍需
-    // 防御同 tick 迟到帧和不合作对端，避免 OPEN/新 sync 在收口窗口创建生命周期。
-    if (this.state === 'draining') return;
+    // GOAWAY drain 开始后仍需分发到 drain 专用门：它只保留自然 CLOSE/CLOSE_OK、
+    // 已接纳 apply 的必要 ACK 与 ERROR 收口；其余 namespace frame 不再进入 channel。
     this.dispatchReady(message, decoded.header.sequence);
   }
 
@@ -543,25 +565,33 @@ class HubConnectionImpl implements HubConnection {
   }
 
   private dispatchReady(message: ReplicationMessage, sequence: number): void {
-    // issue #174 §4.2：GOAWAY drain 窗口前置门——停止接纳新 OPEN 与新 sync round
-    //（§6.3），其余帧照常分发（现有 namespace 自然收口）。
+    // GOAWAY drain 专用接纳门：namespace 不再接纳任何可能启动协议工作或进入 apply
+    // 的 frame。CLOSE_NAMESPACE/CLOSE_OK 保留自然握手；ACK/ERROR 仅结算 drain 前已发送
+    // 的工作。协议没有通用「draining」错误码，因此除 OPEN 复用既有 reconnect 错误外，
+    // 其余新工作静默丢弃，避免发明错误码或把正常在途帧升级为连接 fatal。
     if (this.drainActive) {
       switch (message.kind) {
         case 'OPEN_NAMESPACE':
-          // D1：显式拒绝（AC1/R3）：零 authorize、零 Registry open、零 channel 创建、
-          // 不杀连接。relatedSequence = 被拒 OPEN 帧序（§13 ERROR registry）。
-          try {
-            this.sendControlChecked(
-              namespaceErrorFrame('NAMESPACE_REOPEN_REQUIRES_RECONNECT', message.namespaceId, sequence),
-            );
-          } catch {
-            // 连接已收口；忽略（withChannel 同款既有防御）
+          // SERVER_SHUTTING_DOWN 保持 issue #174 的显式拒绝；REAUTH_REQUIRED 保持
+          // issue #175 AC4 的零响应，避免在认证失效窗口泄露任何 namespace 观测。
+          if (this.drainReason === 'SERVER_SHUTTING_DOWN') {
+            try {
+              this.sendControlChecked(
+                namespaceErrorFrame('NAMESPACE_REOPEN_REQUIRES_RECONNECT', message.namespaceId, sequence),
+              );
+            } catch {
+              // 连接已收口；忽略（withChannel 同款既有防御）
+            }
           }
           return;
+        case 'BOOTSTRAP_ACK':
         case 'SYNC_STEP1':
-          return; // D2：新 round 不接纳——无响应丢弃（不开始新 sync round，§6.3）
+        case 'SYNC_STEP2':
+        case 'RESYNC_REQUIRED':
+        case 'UPDATE':
+          return;
         default:
-          break; // 其余帧照常走既有分发（自然收口）
+          break;
       }
     }
     switch (message.kind) {

@@ -22,7 +22,8 @@
  *
  * ⚠ 本文件全部 IT 为红灯（当前实现未修）：预期失败点见各 it 注释（「RED@」）。
  */
-import { describe, expect, it } from 'vitest';
+import * as Y from 'yjs';
+import { describe, expect, it, vi } from 'vitest';
 import { boot, collectUnhandledRejections } from './driver.js';
 import {
   CONTRACT_TIMEOUTS,
@@ -196,6 +197,20 @@ describe('SA6 issue #174：GOAWAY drain 真实窗口与关闭时序（红灯契�
     );
     expect(round2s).not.toContain(freshRoundId);
 
+    // —— drain 期的后续 UPDATE 同样不得进入 apply：既有 namespace 值与 dirty 计数不变，
+    // 且不产生 UPDATE_ACK。这里使用合法但未由 peer 控制器发送的 Yjs update，模拟
+    // GOAWAY 前已在途、GOAWAY 后才抵达 hub 的 namespace frame。
+    const lateDoc = new Y.Doc();
+    lateDoc.getMap('ROOT').set('n', 999);
+    const lateUpdate = Y.encodeStateAsUpdate(lateDoc);
+    const savesBeforeLateUpdate = run.saveEvents('hub');
+    const updateAcksBeforeLateUpdate = run.hubFramesAll('UPDATE_ACK').length;
+    run.injectPeer({ kind: 'UPDATE', namespaceId: run.nsId, update: lateUpdate });
+    await settle();
+    expect(run.rootValue('hub', 'n')).toBe(42);
+    expect(run.saveEvents('hub')).toBe(savesBeforeLateUpdate);
+    expect(run.hubFramesAll('UPDATE_ACK')).toHaveLength(updateAcksBeforeLateUpdate);
+
     // —— 拒绝不杀连接：窗口保持开放直至 deadline ——
     expect(run.wire.hubSideClosed).toBe(false);
     expect(run.wire.peerSideCloseInfo).toBeUndefined();
@@ -206,7 +221,75 @@ describe('SA6 issue #174：GOAWAY drain 真实窗口与关闭时序（红灯契�
     await closePromise;
   });
 
-  it('R4：hub.close() 时已接纳的 namespace apply 在窗口内排空（dirty 门闩悬挂在途 apply）；排空期间窗口保持开放，deadline 以 1001 收口', async () => {
+  it('R4：session.close 异常仍 teardown channel 并释放 lease，hub.close 正常结算', async () => {
+    const run = await boot({ timeouts: { closeTimeoutMs: 5_000 } });
+    const connection = run.hub.connections[0] as unknown as {
+      channels: Map<string, {
+        session: { close(): Promise<void>; getStatus(): { state: string } } | undefined;
+        lease: { release(): Promise<void>; read(path: readonly (string | number)[]): { ok: boolean } } | undefined;
+        channel: { teardown(): void };
+        round: { teardown(): void };
+        watchdog: { teardown(): void };
+      }>;
+    };
+    const channel = connection.channels.get(run.nsId);
+    if (channel?.session === undefined || channel.lease === undefined) {
+      throw new Error('前置失败：hub live channel/session/lease 不存在');
+    }
+    const lease = channel.lease;
+    const realSession = channel.session;
+    channel.session = {
+      close: () => Promise.reject(new Error('injected-session-close-reject')),
+      getStatus: () => realSession.getStatus(),
+    };
+    const channelTeardown = vi.spyOn(channel.channel, 'teardown');
+    const roundTeardown = vi.spyOn(channel.round, 'teardown');
+    const watchdogTeardown = vi.spyOn(channel.watchdog, 'teardown');
+
+    const closePromise = run.hub.close();
+    await run.hubNode.scheduler.advanceBy(CONTRACT_TIMEOUTS.closeTimeoutMs);
+    await expect(closePromise).resolves.toBeUndefined();
+
+    expect(channelTeardown).toHaveBeenCalled();
+    expect(roundTeardown).toHaveBeenCalled();
+    expect(watchdogTeardown).toHaveBeenCalled();
+    expect(realSession.getStatus().state).toBe('closed');
+    expect(lease.read([]).ok).toBe(false);
+  });
+
+  it.each([
+    ['resolve', false],
+    ['reject', true],
+  ] as const)('R5：deadline 后 pending apply %s 的迟到回调零额外 wire、零 unhandled rejection', async (_label, reject) => {
+    const run = await boot({ timeouts: { closeTimeoutMs: 5_000 } });
+    const rejections = collectUnhandledRejections();
+    const gate = deferred();
+    try {
+      run.hubNode.persistence.saveGate = gate;
+      await run.writePeer({ n: 8 });
+      await settle();
+      const closePromise = run.hub.close();
+      await settle();
+
+      await run.hubNode.scheduler.advanceBy(CONTRACT_TIMEOUTS.closeTimeoutMs);
+      await settle();
+      expect(run.wire.hubSideClosed).toBe(true);
+      const framesAtDeadline = run.frames().hubToPeer.length;
+
+      run.hubNode.persistence.saveGate = undefined;
+      if (reject) gate.reject(new Error('late-save-reject'));
+      else gate.resolve();
+      await closePromise;
+      await settle();
+
+      expect(run.frames().hubToPeer).toHaveLength(framesAtDeadline);
+      expect(rejections.events).toEqual([]);
+    } finally {
+      rejections.dispose();
+    }
+  });
+
+  it('R6：hub.close() 时已接纳的 namespace apply 在窗口内排空（dirty 门闩悬挂在途 apply）；排空期间窗口保持开放，deadline 以 1001 收口', async () => {
     const run = await boot({ timeouts: { closeTimeoutMs: 5_000 } });
     // hub 侧 dirty notification（saveDoc）挂起——apply 已被 Runtime sequencer 接纳但在途。
     const gate = deferred();

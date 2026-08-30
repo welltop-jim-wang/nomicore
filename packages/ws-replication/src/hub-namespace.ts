@@ -890,23 +890,31 @@ this.startBootstrap(hubIdentity);
 
   private async closeSessionAndRelease(): Promise<void> {
     const session = this.session;
-    const unsubscribe = this.unsubscribe;
-    // 同步摘除订阅，再跨 session.close 屏障，确保 close/GOAWAY 期间不再接纳本地更新。
-    if (unsubscribe !== undefined) {
-      unsubscribe();
-      this.unsubscribe = undefined;
-    }
-    if (session !== undefined) {
-      await session.close();
-    }
     const lease = this.lease;
-    this.lease = undefined;
+    const unsubscribe = this.unsubscribe;
+    // 入口即取得资源所有权并清空投影，保证并发/重复 cleanup 不会二次关闭或释放。
+    this.unsubscribe = undefined;
     this.session = undefined;
+    this.lease = undefined;
+    // 同步摘除订阅并 teardown；即使敌意测试 seam 令 session.close reject，channel 也已
+    // 停止接纳与发送，且 finally 仍会释放 lease。生产 ReplicationSession.close 契约恒绿，
+    // 这里的防御负责 host 组装边界的异常安全。
+    try {
+      unsubscribe?.();
+    } catch {
+      // best-effort：退订异常不得阻断其余资源收口
+    }
     this.watchdog.teardown();
     this.round.teardown();
     this.channel.teardown();
-    if (lease !== undefined) {
-      await lease.release().catch(() => undefined);
+    try {
+      if (session !== undefined) {
+        await session.close();
+      }
+    } finally {
+      if (lease !== undefined) {
+        await lease.release().catch(() => undefined);
+      }
     }
   }
 
