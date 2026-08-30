@@ -53,9 +53,22 @@ function makeAuthorize(deny: readonly string[] = []): NamespaceAuthorizer & { re
   return Object.assign(fn, { called });
 }
 
+/**
+ * 活性时序参数（FS8/FS9 专用）。
+ *
+ * 演进（CI 修复轮 1）：原 300ms/150ms 是激进压缩配置——pong 窗口仅 150ms，在
+ * CI 全量并行负载（205 文件 × 多 worker）下无安全边际：一旦「hub 发出 ping 的
+ * tick → 同一进程处理 pong 数据事件的 tick」之间的墙钟间隔被调度延迟推过
+ * 150ms，hub 即按 §18 以 pong-timeout 收口，FS8 的「回 pong 连接保持」断言
+ * 必然失败（本地诊断实测：200ms pong 往返延迟 + 150ms 窗口 → 1001/pong-timeout
+ * 收口、pings 停在 1——与 CI 失败签名一致；同延迟 + 250ms 窗口 → 连接保持）。
+ * 修复：与生产缺省（30s/10s）保持同文法的 3:1 比例改为 2s/1s——窗口放大
+ * 6.7x 提供 CI 调度余量，断言语义不变；FS8（2 ping）≈4s、FS9（收口）≈3s，
+ * 仍在秒级预算，waitUntil 15s / vitest 20s 覆盖。
+ */
 const PING_TIMEOUTS: Readonly<Partial<ReplicationTimeouts>> = Object.freeze({
-  pingIntervalMs: 300,
-  pongTimeoutMs: 150,
+  pingIntervalMs: 2_000,
+  pongTimeoutMs: 1_000,
 });
 
 /** 装配组合根（注入真实 Registry/stub persistence/受控 verifier/authorize）。 */
@@ -229,9 +242,11 @@ describe('issue #164 切片 9：apps/yjs-server 组合根（真实 WebSocket）'
       const hubDoc = ctx.fixture.persistence.peek(HUB_OWNER, ctx.ns.namespaceId);
       expect(readRootValue(hubDoc as never)).toBe(43);
     } finally {
+      // 注：本用例开了 namespace channel 且不回 pong——finally 的 close() 结算于
+      // liveness 自然收口（PING_TIMEOUTS 下 ≈3s）；CI 负载放大后仍在显式预算内。
       await ctx.server.close();
     }
-  });
+  }, 20_000);
 
   it('FS3 边界：缺 Authorization 头 → HTTP 401（不建立 WebSocket）', async () => {
     const ctx = await startHub({});
@@ -371,14 +386,37 @@ describe('issue #164 切片 9：apps/yjs-server 组合根（真实 WebSocket）'
       await established(wire);
       // 回 pong：唯一让活性观察成立的客户端行为
       wire.pongOnPing = true;
-      await waitUntil('收到 hub WS Ping（adapter ping 面已接线）', () => wire.pings.length >= 1, 5_000);
+      // 快速失败诊断（CI 修复轮 1）：等待期间连接被收口 = 活性要么断了要么没
+      // 达到——立即以 close 码/原因 + 已收 ping 数失败，替代 5s 哑等后仅报超时。
+      const aliveOrThrow = (expecting: string): void => {
+        if (wire.closed !== undefined) {
+          throw new Error(
+            `FS8 等待「${expecting}」期间连接被 hub 收口：closed=${JSON.stringify(wire.closed)}；已收 ping=${wire.pings.length}`,
+          );
+        }
+      };
+      await waitUntil(
+        '收到 hub WS Ping（adapter ping 面已接线）',
+        () => {
+          aliveOrThrow('收到 ≥1 次 ping');
+          return wire.pings.length >= 1;
+        },
+        15_000,
+      );
       // 活性保持：反复 ping 下连接不被 pong 超时收口
-      await waitUntil('收到 ≥2 次 ping', () => wire.pings.length >= 2, 5_000);
+      await waitUntil(
+        '收到 ≥2 次 ping',
+        () => {
+          aliveOrThrow('收到 ≥2 次 ping');
+          return wire.pings.length >= 2;
+        },
+        15_000,
+      );
       expect(wire.closed).toBeUndefined();
     } finally {
       await ctx.server.close();
     }
-  });
+  }, 20_000);
 
   it('FS9 活性链路反向：不回 pong → hub 以 pong-timeout 收口（onPong 面真实接线）', async () => {
     const ctx = await startHub({});
@@ -390,11 +428,11 @@ describe('issue #164 切片 9：apps/yjs-server 组合根（真实 WebSocket）'
       expect(upgrade.status).toBe(101);
       const wire = new PeerWire(upgrade.ws as never);
       await established(wire);
-      await waitUntil('连接被 pong-timeout 收口', () => wire.closed !== undefined, 8_000);
+      await waitUntil('连接被 pong-timeout 收口', () => wire.closed !== undefined, 15_000);
       expect(wire.closed?.reason).toBe('pong-timeout');
       expect([1001, 1002]).toContain(wire.closed?.code);
     } finally {
       await ctx.server.close();
     }
-  });
+  }, 20_000);
 });
