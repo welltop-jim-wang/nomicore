@@ -146,7 +146,7 @@ Hub 选择双方共同支持的最高 protocol version。任一 required capabil
 | drainTimeoutMs | varUint | 接收时开始计算本地 elapsed deadline |
 | retryAfterMs | optional varUint | hint，不构成保证 |
 
-收到 GOAWAY 后停止 OPEN，不开始新 sync round；现有 namespace 到 deadline 前自然收口，之后发送方以 WS 1001 关闭。
+收到 GOAWAY 后停止 OPEN，不开始新 sync round，也不接纳新的 bootstrap/sync/resync/update 工作；现有 namespace 到 deadline 前只处理自然 `CLOSE_NAMESPACE` 握手，以及结算 GOAWAY 前已发送工作的 ACK/ERROR。`SERVER_SHUTTING_DOWN` drain 窗口内，Hub 对 `OPEN_NAMESPACE` 返回 namespace `ERROR(NAMESPACE_REOPEN_REQUIRES_RECONNECT)`；`REAUTH_REQUIRED` drain 窗口内则静默丢弃 `OPEN_NAMESPACE`，避免认证失效后产生新的 namespace 观测。其余会启动新工作的迟到 namespace frame 静默丢弃。全部 channel 终态时发送方可提前完成 drain；否则 deadline 到达后以 WS 1001 关闭。
 
 ## 7. Namespace open 与身份
 
@@ -571,7 +571,7 @@ Peer→Hub update保护检查必须在同一 sequencer槽中：
 5. Persistence dispose；
 6. Timer/Clock停止。
 
-Drain不无限等待网络ACK。不得从notifier或sequencer槽内await Runtime close、Lease release或Registry shutdown。
+GOAWAY 的 `drainTimeoutMs` 是网络域硬 deadline：Hub 先武装 drain、发送可观测 GOAWAY，并在全部 channel 终态时提前完成；否则 deadline 到达即以 WS 1001 关闭 transport，不等待网络 ACK。Hub replication close Promise 仍须等待 Runtime 域中停机前已接纳 apply 排空、session close 与 replication lease release；网络 deadline 与 Runtime barrier 是独立结算点。清理必须异常安全：即使 session close 或退订失败，也要 teardown channel 并尽力 release lease，且迟到 apply resolve/reject 不得再产生 wire 输出或 unhandled rejection。不得从notifier或sequencer槽内await Runtime close、Lease release或Registry shutdown。
 
 ## 22. Conformance tests
 
