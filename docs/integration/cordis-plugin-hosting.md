@@ -211,6 +211,7 @@ import {
   createPeerReplicationPlugin,
   requirePeerReplication,
 } from '@nomicore/ws-replication'
+import { createNodePeerDial } from '@nomicore/yjs-server'
 
 const peerFiber = ctx.plugin(createPeerReplicationPlugin({
   expectedHubInstanceId: 'hub-primary',
@@ -221,7 +222,10 @@ const peerFiber = ctx.plugin(createPeerReplicationPlugin({
     localOwner: { userId: 'peer-owner' },
   }],
 }, {
-  dial: peerDialAdapter,
+  dial: createNodePeerDial(
+    'wss://hub.example.test/replication',
+    process.env.HUB_TOKEN!,
+  ),
 }))
 await peerFiber.await()
 const peerReplication = requirePeerReplication(ctx)
@@ -245,6 +249,8 @@ Transport、namespace 与 domain readiness 是三个不同状态：
 | Domain service ready | schema/namespace 门禁及 scanner/worker 启动完成 | 是 |
 
 Node listener 的 `/healthz` 只报告 transport liveness，不是 domain readiness。宿主应另行发布 readiness 状态或事件，覆盖 namespace open、schema 准备、Hub enablement/Peer live policy 与业务启动。
+
+Node Hub 可向 `createNodeHubListenAdapter(observer)` 传入脱敏 adapter observer。事件依次覆盖 `upgrade-authenticated`、`transport-accepted` 与 `transport-closed(code)`，不含 token、owner、instanceId、headers 或 frame bytes。把它与 `ReplicationObserver` 组合诊断：无 upgrade 事件属于 HTTP/认证层；有 `transport-accepted` 但无 Hub `handshaking/ready` 属于 trusted handoff/controller 层；Hub handshaking 配合 Peer `hello-timeout` 通常表示 Peer 未发送 HELLO；Hub ready 但 target 不 live 则继续检查 OPEN、授权、bootstrap/reconcile。Node Peer 必须使用 `createNodePeerDial()`，因为通用 `createWebSocketAdapter()` 不为 CONNECTING socket 缓存立即发送的 HELLO。
 
 需要 Loader activation 与业务 readiness 同步时，插件必须在 `async apply()` 主路径完成启动；`ctx.effect()` 用于登记 cleanup，而不是隐藏 startup failure：
 

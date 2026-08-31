@@ -152,12 +152,15 @@ export function acquireRootLock(rootDir: string, instanceId: string): RootLockHa
 
     const movedRaw = readOwner(tombstone);
     if (movedRaw !== raw) {
-      // The pathname changed after our decision. Restore only when canonical is
-      // absent; otherwise preserve the detached evidence and retry.
+      // The pathname changed after our stale decision: we detached a successor's
+      // live lock. Never leave canonical absent while that owner is alive. First
+      // restore it; if another owner already acquired canonical, keep the
+      // detached evidence and fail closed instead of allowing two live owners.
       try {
         renameSync(tombstone, canonical);
       } catch {
-        // A successor already owns canonical.
+        const movedHeld = heldError(instanceId, movedRaw);
+        if (movedHeld !== undefined) throw movedHeld;
       }
       continue;
     }

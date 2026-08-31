@@ -49,7 +49,8 @@ function openUpgradeRequest(port: number, token: string): net.Socket {
 
 describe('deployable WebSocket upgrade admission', () => {
   it('public Node HubListenAdapter authenticates Bearer upgrade and accepts a DuplexTransport', async () => {
-    const adapter = createNodeHubListenAdapter();
+    const adapterEvents: string[] = [];
+    const adapter = createNodeHubListenAdapter((event) => adapterEvents.push(event.type));
     let acceptedIdentity: Readonly<{ readonly peerInstanceId: string }> | undefined;
     let received: Uint8Array | undefined;
     const listener = await adapter.listen({
@@ -78,7 +79,10 @@ describe('deployable WebSocket upgrade admission', () => {
 
     expect(acceptedIdentity).toEqual({ peerInstanceId: 'center-peer' });
     expect(received).toEqual(new Uint8Array([1, 2, 3]));
+    expect(adapterEvents).toEqual(['upgrade-authenticated', 'transport-accepted']);
     outcome.ws?.destroy();
+    await sleep(25);
+    expect(adapterEvents).toEqual(['upgrade-authenticated', 'transport-accepted', 'transport-closed']);
     await listener.close();
   });
 
