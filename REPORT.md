@@ -1,43 +1,44 @@
 ---
 status: complete
-run_id: issue-191-1788112074-447205
-branch: refactor/yjs-server-make-stale-root-lock-reclamation-atomic
+run_id: issue-151-1788125506-4073122
+branch: fix/issue-151-on-docs-namespace-diagnostic-change-log
 round: 1
 ---
 
-# issue #191 — Make stale root-lock reclamation atomic
+# Issue #151 — Record trusted replication and management writes
 
-## 概要
+## 需求摘要
 
-修复 `apps/yjs-server` 文件持久化根目录锁的两个竞态：stale lock 回收不再通过非独占覆写获得所有权；迟到的 lock handle 不再能删除后继持有者的锁。所有权转移现在均由独占 `wx` 创建裁决，并保留既有活 owner、PID reuse 和不可写根目录诊断。
+将 trusted replication apply、replication enable 和 replication epoch bump 接入 namespace diagnostic change log；记录冻结的 v1 operation、受控 source/context、既有 phase/code/issues/committed 事实与事务级 owned Yjs update bytes，同时不改变 identity gate、ACK、write-sequencer 顺序、dirty notification 或 transport observability。
 
-## 变更
+## 变更摘要
 
-- `f2bc4f0 fix(yjs-server): make stale root lock reclamation atomic (issue #191)`
-  - 在 `acquireRootLock()` 中以有界的 `unlink` + `wx` 重试环取代 stale lock 的 `flag: 'w'` 覆写；判定 stale 后在 unlink 前按原始字节重读确认，竞争者获锁时回环并给出 held 诊断。
-  - 为每次获取生成 `nonce`，`release()` 仅在当前文件内容仍逐字节等于该 handle 的 payload 时才 unlink。
-  - 增加可确定性编排的 stale-reclaim hooks、公共类型导出和 T1–T9 回归契约，覆盖双回收者、迟到 release、empty/malformed lock 与不可读 lock 行为。
-  - 更新部署文档以描述原子重取、ownership-checked release 与 PID reuse caveat。
+- 新增最小 replication 业务闭包：管理写 enable/bump、lease 复制会话及 apply 路径；保持主线形状并显式登记未物化的 fanout/角色编排范围。
+- 在 `NamespaceRuntime`/registry 接入 replication diagnostics：三种 operation、受控 source/context、槽外或槽后 emit、稳定结果映射、transaction update 捕获和 update-omitted 投影。
+- 修复审查发现的两项实现问题：apply 的 capture window 无条件挂接以保持无 emitter 基线的 dirty notification；enable 成功路径记录 frozen input snapshot。
+- 升级 `@nomicore/namespace-runtime` 至 `0.1.9`、`@nomicore/namespace-registry` 至 `0.1.4`。
+- 增加并保留 15 项 SA6 端到端契约、2 项 SA4 探针和 4 项 SA7 动态测试；所有任务档案位于 `wiki/raw/task_trusted-replication-management-diagnostic-change-log*`。
 
-## 验证
+## 验证证据
 
-- **SA2 设计破壁复审**：R2 `pass / APPROVE`；原子 wx 回收、原始字节守卫、nonce ownership 和测试契约均获批准。报告：`wiki/raw/task_191_sa2.md`。
-- **SA4 独立静态审查**：`pass / APPROVE`；确认无生产 `flag: 'w'`、只有 wx 持锁出口、回环有界、诊断逐字保留、范围合规。报告：`wiki/raw/task_191_sa4.md`。
-- **SA7 独立动态验证**：`APPROVE`；基线契约为 5 failed / 6 passed，修复后 T1–T9 两次均 11/11；门控真进程探针从基线 9/20 多持有违例改善为修复 20/20 恰一胜。报告：`wiki/raw/task_191_sa7.md`。
-- **SA5 本地完成复核**：`APPROVE`；任务档案和 AC1–AC5 证据完备。报告：`wiki/raw/task_191_sa5.md`。
-- **本地命令结果**（SA5 独立复跑，真实后台进程）：
-  ```text
-  pnpm exec vitest run apps/yjs-server/test/root-lock-atomic-reclaim-red.test.ts
-  → Test Files 1 passed (1), Tests 11 passed (11), Type Errors no errors
+最终本地验证（本控制器前台执行）：
 
-  pnpm typecheck
-  → exit 0
+- `pnpm typecheck`：exit 0。
+- `pnpm exec vitest run packages/namespace-runtime`：31 files / **201 tests passed**，Type Errors no errors，exit 0。
+- `pnpm exec vitest run packages/namespace-registry`：13 files / **164 tests passed**，Type Errors no errors，exit 0。
+- 隔离复核 `pnpm exec vitest run packages/namespace-registry/test/registry-surface.test.ts`：1 file / **12 tests passed**，exit 0。
 
-  pnpm exec vitest run --typecheck --no-file-parallelism
-  → Test Files 211 passed (211), Tests 2265 passed (2265), Type Errors no errors, exit 0
+前序独立门禁：
 
-  git diff --check && git show --check f2bc4f0
-  → clean
-  ```
+- SA6 由真实红灯（缺失 operation surface）转为 **15/15 PASS**；包含 owned update 链式重放、noop、identity/epoch、fatal、emitter/queue isolation 和 enable input-capture 锚点。
+- SA4 R2：**pass**；F1/F2/F3 均独立复验闭合，探针 2/2、两包回归 361/361、typecheck 0 errors。
+- SA7：**pass**；动态测试 4/4，覆盖 `updateCapture:false`→`update-omitted`、runtime-close/in-flight FIFO、无 emitter 等价，以及 F1 mutation 反证。
+- 双轴终审：standards **pass**（无 blocker）及 spec **pass**（AC1–AC5 独立核验）。
 
-本地 MABF 验收完成；CI、push 与 PR 发布由 Host 后续处理。
+一次合并运行 `pnpm exec vitest run packages/namespace-runtime packages/namespace-registry` 曾使未触及的 `registry-surface.test.ts` 在满载条件下触发 5 秒超时并令外层 120 秒执行上限终止。该文件隔离复跑 12/12 通过，且本报告所列 runtime/registry 分包复跑均通过；standards/spec 双轴亦以历史、隔离复跑和零 diff 证据将该现象定性为负载敏感环境伪影，而非 #151 回归。
+
+## 最终验证 HEAD
+
+最终验证时业务 HEAD 为 `b5b0cb8`：`fix(namespace-runtime,namespace-registry): close SA4 R1 F1/F2 - apply capture window unconditional, enable E3 input snapshot (#151 R2)`。
+
+本报告表示本地 MABF 验收完成；未执行 push、PR、标签、`.mabf-done` 或任何 Host 生命周期操作。

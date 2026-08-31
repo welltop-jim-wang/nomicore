@@ -158,3 +158,47 @@ apply 槽 diag `input: undefined` 构造 → record `{capture:'none'}`（红灯�
 
 - 本报告：`wiki/raw/task_trusted-replication-management-diagnostic-change-log_sa4_review.md`
 - 复现探针（SA4 owned，修复后转绿）：`packages/namespace-runtime/test/runtime-replication-sa4-probe.test.ts`（2 用例，当前 2 failed = F1/F2 的可执行证据；断言全为运行时行为，无源码 grep；tsc 0 errors）
+
+---
+
+# SA4 R2 复验报告 — 固定范围独立复验（F1/F2/F3 @ commit `b5b0cb8` + 最终 worktree）
+
+**Date**: 2026-08-31（R2 fixed-scope re-verification）
+**被审对象**: commit `b5b0cb8`（"close SA4 R1 F1/F2"）+ 最终 worktree（`git diff b5b0cb8 -- packages/` 为空——代码/测试面与 commit 逐字节一致；worktree 仅有 wiki 文档尾差，属 scope 豁免面）
+**复验范围**: 严格限定 R1 reject 的 F1/F2/F3 固定范围及其直接影响面（R1「复验范围」四条），不做全量重审。
+
+**R2 Verdict: pass**（R1 三项 reject 全部闭合，零残留；无新的先前不可见阻断项）
+
+## R2 复验矩阵
+
+| R1 项 | 修复落点（最终 worktree 位点） | 独立复验证据（命令 + 结果） | 判定 |
+|---|---|---|---|
+| **F1**（P0：apply R6 notifyDirty 门控依赖 diag 条件捕获窗口，无 emitter 基线一切成功 apply 静默零持久化） | `replication-session.ts:554` `host.doc.on('update', updateHandler)` **无条件挂接**；`:579` finally 无条件退订（镜像）；`:580` 仅 `diag.updateBytes = capturedUpdate` 保持 diag 条件；`:589` R6 门控读 `capturedUpdate !== undefined` ⇒ 有集成即 notifyDirty（两基线同构） | ① 源码核验（read :541-609）：窗口无条件、退订无条件、diag 赋值条件——与 R1 修复方向逐点一致；② 探针 A 转绿：`pnpm exec vitest run packages/namespace-runtime/test/runtime-replication-sa4-probe.test.ts` → **2/2 passed，PROBE_EXIT=0**（R1 时探针 A `expected 1 to be 2`；现 saveCalls 1→2，对照组 enable=1 依旧）；③ noop 语义不回归：红灯用例 7（空 diff ⇒ 零 dirty）随 15/15 通过；④ enable/bump E5 窗口保持 diag 条件、E6 无条件 await 未被触碰（`replication-write.ts` E6 段 read 核验） | ✅ 闭合 |
+| **F2**（P1：enable E3 成功后未写 `diag.input={snapshot}`，§9.1 E-f…E-k 六行谎报 not-accessed） | `replication-write.ts:309-311` E3 成功分支后 `if (diag !== undefined) diag.input = { snapshot: Object.freeze({ replicationId }) };`（镜像 diagInputReady/E-e freeze 形态——恰 R1 一行修复方向） | ① 源码核验（read :303-311）；② 探针 B 转绿：`rec.input` matchObject `{capture:'full', value:{replicationId}}`（R1 时 `expected { capture: 'not-accessed' } to match { capture: 'full' }`）；③ R1 指出的 SA6 测试缺口已补锚：红灯文件 enable committed 用例新增 `expect(rec.input).toMatchObject({ capture: 'full', value: { replicationId: REPLICATION_ID } })`（`git show b5b0cb8 -- ...red.test.ts` diff 实证）；④ 红灯 15/15 含新锚全绿 | ✅ 闭合 |
+| **F3**（P2：8 文件超 ALLOW、5 文件字面命中 DENY——SA1 补文档闭合） | 设计 §18「R2 修订追加」两组（五替身测试 + registry/src/index.ts type-only re-export + 两 package.json version bump + SA4 探针）；DENY 兜底条目收窄为「非 ALLOW LIST 已列文件」并对五文件显式解除；§15.2 两条补录；§3/§8/§13.5 窗口分化注记（F1 的 SA1 同步项）一并落地 + 明文禁则「禁止任何后续轮次把 apply 窗口退化为 diag 条件」 | 机械复跑 Scope Creep Guard：`git diff --name-only 722bddf HEAD`（非 wiki 24 文件）vs 更新后 ALLOW LIST（设计反引号 token 抽取）→ **comm -23 差集为空**（24/24 全覆盖）；BLACKLIST 五模式零命中；DENY 无条目与 ALLOW 重叠；设计末「R2 一致性自检」的 24 文件对账与本复验独立结果一致 | ✅ 闭合 |
+
+## R2 回归与门禁复跑（固定范围第 4 条）
+
+独立进程全量复跑（`/tmp/sa4-r2.log`，vitest 3.2.7）：
+
+| 项 | 命令 | 结果 |
+|---|---|---|
+| SA4 探针 | `pnpm exec vitest run packages/namespace-runtime/test/runtime-replication-sa4-probe.test.ts` | **2/2 passed，Type Errors no errors，exit 0** |
+| SA6 红灯契约 | `pnpm exec vitest run packages/namespace-runtime/test/runtime-replication-diagnostic-red.test.ts` | **15/15 passed，exit 0**（含 SA6 bump prior 链修正——R1 已知 worktree diff 的提交收编，单键语义断言不变，diff 实证仅 fixture 链 + input 锚） |
+| 两包全量回归 | `pnpm exec vitest run packages/namespace-runtime packages/namespace-registry` | **361/361 passed（43 文件），exit 0**（R1 359/359/42 文件 + 探针文件 2 用例——增量恰为探针，无存量回归） |
+| 类型检查 | `pnpm exec tsc -p tsconfig.typecheck.json --noEmit` | **exit 0（0 errors）** |
+| CI 触发性 | 探针/红灯均落 `packages/namespace-runtime/test/`，根 `vitest.config.ts` include `packages/*/test/**/*.test.ts` 经 CI `Test: pnpm test` 覆盖（R1 E-6 结论延续，路径未变） | 接通 |
+| 源码 grep 断言禁令 | 探针断言全锚运行时值（saveCalls 计数 / record 内容）——无 readFileSync 源码断言 | 合规 |
+
+## 新阻断项扫描（R2 指令：「若有新的先前不可见阻断项，明确列出」）
+
+对 `b5b0cb8` 全 diff（9 文件 +514/−23）逐文件核对：生产改动仅 F1（replication-session.ts 16 行）+ F2（replication-write.ts 8 行）两处，均与 R1 修复方向逐点一致、无夹带；其余为探针（SA4 owned）、红灯锚点（SA6 owned fixture 链 + input 锚）、wiki 文档四份（scope 豁免面）。**无新的先前不可见阻断项。**
+
+影响面附带核验：F1 无条件窗口的副作用面（listener 泄漏 / 双重通知 / noop 误报）——finally 无条件退订 + 窗口限于同步段（Y.applyUpdate 同步、单 sequencer 串行）结构性闭合；探针 A 的精确计数断言（1→2，非 ≥）行为级排除双重通知。
+
+## R2 结论
+
+1. **F1/F2/F3 三项全部闭合**，修复形态与 R1 指定方向逐点一致（无夹带、无回退、无过度修复）。
+2. 固定范围回归全绿（探针 2/2、红灯 15/15、两包 361/361、tsc 0 errors），无存量行为回归。
+3. SA1 文档补录（ALLOW/DENY/§13.5 窗口注记）完整落地并经机械 scope 比对独立复核。
+4. **R2 Verdict: pass**——R1 reject 解除，可进入后续流程；R1「动态审核重点」五条（§15.7 对账、updateCapture:false 面、A-c runtime-close 路径、无诊断基线等价 sweep、CI `gh run` 证据）仍移交 SA7 动态验证，不因本轮 pass 豁免。

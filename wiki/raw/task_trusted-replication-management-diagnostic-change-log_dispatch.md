@@ -17,4 +17,8 @@ Task type: feature (new diagnostic-log integration capability).
 | 11 | 22:22 | SA3 | Phase 3 implementation | done | Implementation committed `218a74e`; initial 14/15 due to SA6 replay-fixture defect, not production behavior. |
 | 12 | 22:36 | SA6 | Phase 3 contract fixture correction | done | Independently verified Yjs replay dependency; minimal prior-chain fixture fix; contract now 15/15 PASS. |
 | 13 | 22:37 | SA4 | Phase 3 static implementation review | reject | F1 apply persistence gated by diag, F2 enable input capture missing, F3 ALLOW-list documentation gap; one unified SA3/SA1/SA6 remediation round. |
-| 14 | 22:47 | SA3 | Phase 3 remediation R1 | (pending) | Fix SA4 F1/F2 only; retain required semantics and re-run fixed verification scope. |
+| 14 | 22:47 | SA3 | Phase 3 remediation R1 | done | Commit `b5b0cb8` closes F1/F2; fixed SA4 probe 2/2, SA6 15/15, two-package 361/361, typecheck all pass. |
+| 15 | 22:55 | SA4 | Phase 3 static implementation review R2 | done | Verdict: pass; F1/F2/F3 independently closed, probes 2/2, contract 15/15, two-package 361/361, tsc pass. |
+| 16 | 23:04 | SA7 | Phase 4 dynamic validation | done | Verdict: pass; dynamic AC and five SA4 focus areas verified; 4 additional dynamic tests delivered. |
+| 17 | 23:18 | Review-A | Final standards review | done | Independent standards review substitute delivered: `task_trusted-replication-management-diagnostic-change-log_standards_review.md` — **Verdict: pass** (9/9 axes; 2 advisory: SA7 test ALLOW-list formality, lineage-merge version-line pre-registration; full CI-equivalent 1833/1837 with 4 pre-existing spawn-timeout artifacts outside diff). |
+| 18 | 23:18 | Review-B | Final issue/spec review | done | Verdict: pass; AC1–AC5 independently verified, with environment/document notes non-blocking. |

@@ -121,6 +121,26 @@ emitter 计数），无源码 grep、无 skip、无软兜底。SA3 实现（操�
 - **复验**：修正后 **15/15 PASS**（`Test Files 1 passed / Tests 15 passed (15)`，exit 0）；
   `pnpm exec tsc -p tsconfig.typecheck.json --noEmit` = TSC_EXIT=0，0 errors。
 
+## 修订记录（SA4 R1 输入捕获补锚 — enable committed input 断言）
+
+- **背景**：SA4 R1 评审发现 15 用例契约的 enable committed 用例缺少输入捕获断言；其 F2
+  【P1】生产缺陷（enable 槽 E3 成功后未写 `diag.input = {snapshot}`，§9.1 表 E-f…E-k 六行
+  谎报 `not-accessed`）已经 SA3 修复落地（`replication-write.ts` E3 成功分支
+  `diag.input = { snapshot: Object.freeze({ replicationId }) }`；SA4 复现探针
+  `runtime-replication-sa4-probe.test.ts` 探针 B 已转绿）。
+- **修正（最小，仅测试文件加 1 条断言，既有断言零改动）**：enable committed 用例于
+  context 断言之后加入：
+  `expect(rec.input).toMatchObject({ capture: 'full', value: { replicationId: REPLICATION_ID } })`
+  ——行为断言：E3 成功捕获后记录输入投影为 `full` 且包含被捕获的 replicationId（既有
+  frozen 安全快照的消费形态，非 not-accessed 谎报）。该用例 fixture 本已 `inputPolicy:'full'`，
+  其余断言零改动。
+- **复验**：补锚后契约 **15/15 PASS**（连续两次复跑均 `Test Files 1 passed / Tests 15 passed (15)`
+  / exit 0 / `Type Errors no errors`）；`pnpm exec tsc -p tsconfig.typecheck.json --noEmit` =
+  TSC_EXIT=0，0 errors。注：首轮补锚运行曾见 `{capture:'not-accessed'}` 的疑似陈旧转换
+  结果；经同款 fixture 调试脚本（tsx 直跑生产代码 + 记录回读，得 `capture:'full'`）与 SA4
+  探针 B（2/2 PASS）双重复核确定 F2 生效无疑，纯复跑 15/15 通过且复跑稳定，判定为
+  vitest 转换缓存伪影，非实现或契约问题（无源码路径/代码改动）。
+
 ## 验证命令与证据（复现）
 
 ```bash
