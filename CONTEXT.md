@@ -106,6 +106,10 @@ JSDoc 首行自由文本 + `@tag` 半结构化标签；全部为文档性质，�
 **封闭对象（closed object）**:
 子集内对象类型默认封闭：未声明字段拒绝。
 
+**实例身份（Instance identity）**:
+参与 Nomicore 复制拓扑的稳定实例身份，由安全文法 `instanceId` 与静态 `role`（Hub/Peer）组成；同一部署实例跨进程重启保持不变，供 Registry 与 transport 共同消费。它不是 namespaceId、owner、SCHEMA id、connectionId、PID 或 hostname。
+_Avoid_: 每次启动随机生成、Registry 与 transport 各自配置一份 role/instanceId
+
 **Hub（中心实例）**:
 静态星型复制拓扑中接受 peer WebSocket 连接、转发 Yjs updates、管理 SCHEMA 与复制身份的完整 Nomicore 实例；Hub 也是可接受本地 ROOT 业务写的副本，不是 ROOT 唯一写者，也不表示自动选举的 leader。
 _Avoid_: master、leader（会误示单写权威或选举语义）、只转发而不持有完整副本的中继
