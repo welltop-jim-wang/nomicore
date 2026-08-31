@@ -21,6 +21,9 @@ out of their owning packages.
   timer/clock teardown. Never trigger a second concurrent teardown chain.
 - stdout is a strict NDJSON lifecycle-event channel; stdin is the NDJSON control channel
   (one reply per line; the process never exits or crashes because of control input).
+- Management verbs preserve the documented role gates and orchestration: Hub owns schema/epoch
+  changes; Peer reset archives the replica, waits for channel settlement, then re-adds the target.
+  Keep `peerOwners` consistent so retries remain reachable after partial failure.
 - Root-level file persistence acquires the authoritative `<rootDir>/.nomicore-lock/`
   directory with exclusive `mkdir` and publishes `.nomicore-lock.json` as a diagnostic
   mirror; clean shutdown releases the directory, and a shared active root is rejected.
