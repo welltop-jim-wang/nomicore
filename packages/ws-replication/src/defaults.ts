@@ -35,6 +35,7 @@ export const DEFAULT_REPLICATION_TIMEOUTS: Readonly<ReplicationTimeouts> = Objec
   openTimeoutMs: 5_000,
   bootstrapTimeoutMs: 10_000,
   reconcileTimeoutMs: 10_000,
+  reconcileIntervalMs: 5 * 60_000,
   closeTimeoutMs: 5_000,
   ackTimeoutMs: 10_000,
   pingIntervalMs: 30_000,

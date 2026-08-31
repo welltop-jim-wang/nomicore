@@ -118,6 +118,16 @@ describe('T1 strict app config contract (design §3.2 / AC1)', () => {
     ).toThrow(TypeError);
   });
 
+  it('accepts periodic reconciliation interval and rejects invalid values', async () => {
+    const parse = await loadParseAppConfig();
+    const parsed = parse(peerConfig({ timeouts: { reconcileIntervalMs: 123_456 } })) as {
+      readonly timeouts?: Readonly<{ reconcileIntervalMs?: number }>;
+    };
+    expect(parsed.timeouts?.reconcileIntervalMs).toBe(123_456);
+    expect(() => parse(peerConfig({ timeouts: { reconcileIntervalMs: 0 } }))).toThrow(TypeError);
+    expect(() => parse(peerConfig({ timeouts: { reconcileIntervallMs: 123_456 } }))).toThrow(TypeError);
+  });
+
   it('rejects role×field cross placement (hub config carrying peer block)', async () => {
     const parse = await loadParseAppConfig();
     const cross = hubConfig({ peer: peerConfig().peer });

@@ -615,15 +615,15 @@ describe('SA7 动态验证（issue #137）：SA4 §6 D1–D5 / SA2 §8.4 移交�
         encodeMessage({ kind: 'GOAWAY', reasonCode: 'SERVER_RESTARTING', drainTimeoutMs: 1 }, { sequence: seq }),
       );
       await settle();
-      expect(run.peerNode.scheduler.pending()).toBe(pausedPending + 1); // drain timer 已武装
+      // GOAWAY 同步清理 live 周期 reconciliation timer，同时武装 drain timer，净计面不变。
+      expect(run.peerNode.scheduler.pending()).toBe(pausedPending);
       // deadline fire：sender.teardown()（清 poll timer）→ transport.close(1001)
       await run.peerNode.scheduler.advanceBy(1);
       await settle();
       expect(run.wire().peerSideClosed).toBe(true);
 
-      // ★ D5 主锚：poll timer 已清——pending 恰回退 1（未清则恒为 pausedPending，
-      // 且 stale getter 上的周期性重武装会维持/放大计面）
-      expect(run.peerNode.scheduler.pending()).toBe(pausedPending - 1);
+      // ★ D5 主锚：poll 与 live 周期 reconciliation timer 均已清。
+      expect(run.peerNode.scheduler.pending()).toBe(pausedPending - 2);
       // 大步推进：teardown 后 stale fire 零副作用、零重武装（零新帧；计面不增长）
       const framesFrozen = run.frames('peerToHub').length;
       await run.peerNode.scheduler.advanceBy(60_000);

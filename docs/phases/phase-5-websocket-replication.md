@@ -214,7 +214,7 @@ identity/epoch mismatch → conflicted
 terminal failure → failed
 ```
 
-每轮reconciliation由Peer以syncRoundId发起，两个方向的Step2都收到SYNC_APPLIED才进入live。完整转移、timeout、ERROR终态与GOAWAY规则以protocol v1规范为准。
+Phase 5 包含 bootstrap、重连与周期 reconciliation；完整所有权、配置、碰撞、清理、状态转移、timeout、ERROR终态与GOAWAY规则以protocol v1规范为准。
 
 ## 必须通过的场景
 
@@ -227,17 +227,18 @@ terminal failure → failed
 7. hub persistence-degraded 拒绝 peer update，恢复后 diff 补齐；
 8. peer persistence-degraded 拒绝本地业务写但继续 hub update 内存 apply，retry 后保存最新完整状态；
 9. peer 在 degraded apply 后崩溃，从旧 snapshot 重启并由 hub 自动补齐；
-10. 慢消费者触发 `needs-resync`，不阻塞本地业务 write sequencer；
-11. 重复、乱序和重连 update 依靠 Yjs 幂等/state vector 收敛；
-12. bearer token、namespace authorization、权限撤销和日志脱敏；
-13. frame/update/channel/queue 上限按 channel 或连接正确隔离；
-14. hub/peer 进程重启和各自 snapshot 恢复；
-15. 复制管理写与恢复：
-    - 15a（本阶段 Runtime/Lease 基础合同）：`enableReplication` 与 epoch bump 的 FIFO 槽序、dirty-not-durable 边界（dirty 登记 ≠ 已落盘）、File bump 至 epoch 2 后以 durable snapshot 重启恢复；fatal 只验收 committed-state recovery，不作 durable restart 承诺；
-    - 15b（后续切片 3–8）：replication identity conflict 与 `resetReplica` archive 流程。
-16. 优雅停机在 GOAWAY 后拒绝新 namespace 工作，允许现有 channel 自然 CLOSE；网络 deadline 不无限等待 ACK，Runtime barrier 继续完成停机前已接纳 apply，并在 session close 异常时仍 teardown、release lease；deadline 后迟到 apply resolve/reject 零 wire 副作用；
-17. 第三方 Host 可直接基于 NamespaceLease/ReplicationSession 构造可信 transport；
-18. Node 支持矩阵下所有 public types、async disposal 与 Cordis ordered shutdown 一致。
+10. live UPDATE 静默丢失且未触发显式 resync 时，周期 reconciliation 修复漂移；进行中 round 不重叠，重连与 shutdown 不遗留 timer；
+11. 慢消费者触发 `needs-resync`，不阻塞本地业务 write sequencer；
+12. 重复、乱序和重连 update 依靠 Yjs 幂等/state vector 收敛；
+13. bearer token、namespace authorization、权限撤销和日志脱敏；
+14. frame/update/channel/queue 上限按 channel 或连接正确隔离；
+15. hub/peer 进程重启和各自 snapshot 恢复；
+16. 复制管理写与恢复：
+    - 16a（本阶段 Runtime/Lease 基础合同）：`enableReplication` 与 epoch bump 的 FIFO 槽序、dirty-not-durable 边界（dirty 登记 ≠ 已落盘）、File bump 至 epoch 2 后以 durable snapshot 重启恢复；fatal 只验收 committed-state recovery，不作 durable restart 承诺；
+    - 16b（后续切片 3–8）：replication identity conflict 与 `resetReplica` archive 流程。
+17. 优雅停机在 GOAWAY 后拒绝新 namespace 工作，允许现有 channel 自然 CLOSE；网络 deadline 不无限等待 ACK，Runtime barrier 继续完成停机前已接纳 apply，并在 session close 异常时仍 teardown、release lease；deadline 后迟到 apply resolve/reject 零 wire 副作用；
+18. 第三方 Host 可直接基于 NamespaceLease/ReplicationSession 构造可信 transport；
+19. Node 支持矩阵下所有 public types、async disposal 与 Cordis ordered shutdown 一致。
 
 ## 测试 seam
 

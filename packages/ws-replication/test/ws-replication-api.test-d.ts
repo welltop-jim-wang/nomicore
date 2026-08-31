@@ -154,6 +154,7 @@ describe('`@nomicore/ws-replication` 冻结公共面（切片 6）', () => {
       readonly openTimeoutMs: number;
       readonly bootstrapTimeoutMs: number;
       readonly reconcileTimeoutMs: number;
+      readonly reconcileIntervalMs: number;
       readonly closeTimeoutMs: number;
       readonly ackTimeoutMs: number;
     }>();
