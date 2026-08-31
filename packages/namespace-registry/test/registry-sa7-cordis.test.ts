@@ -179,7 +179,7 @@ describe('SA7 Cordis 组合动态（攻击面 4）', () => {
 
       // 工作：create → read → release（idle 武装经 ctx.timeout 桥）。
       const lease = okLease(await registry.create(CREATE_PAYLOAD()));
-      expect(lease.read(['n'])).toEqual({ ok: true, value: 42 });
+      expect(lease.readData(['n'])).toEqual({ ok: true, value: 42 });
       expect(stub.createCalls).toBe(1);
       await lease.release();
       expect(scheduler.pending()).toBe(1); // idle timer 武装
@@ -249,7 +249,7 @@ describe('SA7 Cordis 组合动态（攻击面 4）', () => {
       const created = await held.create(CREATE_PAYLOAD());
       expect(created.ok).toBe(true);
       const lease = okLease(created);
-      const writePromise = lease.mutateRoot({ op: 'set', path: ['n'], value: 43 });
+      const writePromise = lease.mutateData({ op: 'set', path: ['n'], value: 43 });
       await flushMicrotasks(30);
       expect(gated).toBe(true); // 写排空窗口挂起中
 
@@ -353,7 +353,7 @@ describe('SA7 Cordis 组合动态（攻击面 4）', () => {
       // 新实例可用（经新 persistence 服务 open）。
       const newLease = okLease(await newRegistry.open({ userId: 'u-sa7' }, 'ns-p3'));
       expect(stub2.loadCalls).toBe(1);
-      expect(newLease.read(['n'])).toEqual({ ok: true, value: 42 });
+      expect(newLease.readData(['n'])).toEqual({ ok: true, value: 42 });
       await newLease.release();
       await oldLease.release(); // 旧 lease 随旧实例回收（幂等、不炸）
       await ctx.fiber.dispose();

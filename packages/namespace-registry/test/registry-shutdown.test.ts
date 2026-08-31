@@ -185,11 +185,11 @@ class ObservableRuntime implements NamespaceRuntime {
     private readonly closePlan: RuntimeClosePlan = {},
   ) {}
 
-  read() {
+  readData() {
     return { ok: true as const, value: this.marker };
   }
 
-  getSchemaEnvelope(): null {
+  getSchema(): null {
     return null;
   }
 
@@ -214,7 +214,7 @@ class ObservableRuntime implements NamespaceRuntime {
     };
   }
 
-  mutateRoot(): Promise<{ ok: true }> {
+  mutateData(): Promise<{ ok: true }> {
     return Promise.resolve({ ok: true });
   }
 

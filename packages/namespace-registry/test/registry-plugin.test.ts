@@ -187,7 +187,7 @@ describe('AC1/AC2/AC3 组合（§7.22-24）：真实 Context 组合与配置校�
     });
     expect(created.ok).toBe(true);
     const lease = okLease(created);
-    expect(lease.read(['n'])).toEqual({ ok: true, value: 42 });
+    expect(lease.readData(['n'])).toEqual({ ok: true, value: 42 });
     expect(registry.getStatus()).toEqual({ state: 'running' });
     await lease.release();
     await ctx.fiber.dispose();
@@ -510,9 +510,9 @@ describe('rev1 问题 3：Registry shutdown settle 严格先于 persistence adap
       });
       expect(created.ok).toBe(true);
       const lease = okLease(created);
-      expect(lease.read(['n'])).toEqual({ ok: true, value: 42 });
+      expect(lease.readData(['n'])).toEqual({ ok: true, value: 42 });
       // 接受一个写（shutdown 关闭排空的对象）：写槽异步起步 → S6 挂于 gated saveDoc。
-      const writePromise = lease.mutateRoot({ op: 'set', path: ['n'], value: 43 });
+      const writePromise = lease.mutateData({ op: 'set', path: ['n'], value: 43 });
       await flushMicrotasks(30);
       expect(gated).toBe(true); // 写槽已到 S6（排空窗口挂起中）
 

@@ -91,7 +91,7 @@ export async function runP0(env: P0Env): Promise<void> {
     if (env.p0Gate !== undefined) {
       await env.p0Gate; // 编译前可控门（reject → ⑦ fatal）
     }
-    // ③ 四键投影（与公共 getSchemaEnvelope 同源单点——projectSchemaEnvelope；唯二
+    // ③ 四键投影（与公共 getSchema 同源单点——projectSchemaEnvelope；唯二
     //    触碰 SCHEMA 的路径之一；mode 'p0'：违规键省略——live 引用绝不进 compile 输入）
     const projection = projectSchemaEnvelope(env.doc, 'p0'); // SchemaEnvelope 形状 | null
     // ④ compile（env.compile 已在构造栈捕获为局部函数引用——不再读 seam 输入）

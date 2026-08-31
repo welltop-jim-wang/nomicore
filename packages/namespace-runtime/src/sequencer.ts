@@ -6,8 +6,8 @@
  * - promise-chain 尾接尾：前项 settle（含 reject）后本项才开始执行——P0 从此获得
  *   「真实队首节点」地位（入队即 pending，绝不因同步执行而挂死构造栈）；
  * - 返回值即本项完成信号：泛型 Promise<T>（D7）——P0 用法 T=void（完成信号无消费方，
- *   runtime.ts 以 `void` 丢弃）；mutateRoot 写槽 T=MutateRootResult（携带槽结果联合
- *   值 / fatal rejection）——「返回完成信号」是 mutateRoot 接纳/屏障的全部依赖
+ *   runtime.ts 以 `void` 丢弃）；mutateData 写槽 T=MutateDataResult（携带槽结果联合
+ *   值 / fatal rejection）——「返回完成信号」是 mutateData 接纳/屏障的全部依赖
  *   （D1/D2：写槽 S6 await notifyDirty 后槽才释放，return 即槽释放信号）；
  * - 链尾恒绿接线（settled.then(noop, noop)）：单项失败不阻断 FIFO（后续写仍取得
  *   槽——扩展位语义与 ADR-0008 一致），队列永不因单项失败断裂。

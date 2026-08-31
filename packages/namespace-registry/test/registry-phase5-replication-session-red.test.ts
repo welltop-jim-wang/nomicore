@@ -642,7 +642,7 @@ describe('AC-1 openReplicationSession：存在、每 Lease 至多一个、冻结
     session.subscribeOwnedUpdates((u) => events.push(u.slice()));
 
     // 前置：订阅正常运行（release 前一次本地写投递恰 1 条）
-    expect((await lease2.mutateRoot({ op: 'set', path: ['n'], value: 7 }))?.ok).toBe(true);
+    expect((await lease2.mutateData({ op: 'set', path: ['n'], value: 7 }))?.ok).toBe(true);
     await flushMicrotasks();
     expect(events.length).toBe(1);
 
@@ -664,7 +664,7 @@ describe('AC-1 openReplicationSession：存在、每 Lease 至多一个、冻结
 
     // ③ 存量订阅零新投递（closed session 已退订——同 Runtime 后续写零投递到该订阅）
     const before = events.length;
-    expect((await lease2.mutateRoot({ op: 'set', path: ['n'], value: 8 }))?.ok).toBe(true);
+    expect((await lease2.mutateData({ op: 'set', path: ['n'], value: 8 }))?.ok).toBe(true);
     await flushMicrotasks();
     expect(events.length).toBe(before);
     await registry.shutdown();
@@ -726,7 +726,7 @@ describe('AC-2 窄能力六项与不暴露内部句柄（ADR 0010 L81–88）', 
     // ② diff：本地业务写 n→8 前捕获远端视角（remoteView），写后按该 state vector 编码 diff，
     //    diff 重放到「写前状态」副本必须使 n=8（真实 Yjs 语义，非类型/形状断言）。
     const remoteView = makeReplica(stub.liveDoc()); // 写前远端视角（n=42）
-    expect((await lease.mutateRoot({ op: 'set', path: ['n'], value: 8 }))?.ok).toBe(true);
+    expect((await lease.mutateData({ op: 'set', path: ['n'], value: 8 }))?.ok).toBe(true);
     const diff = session.encodeDiff(new Uint8Array(Y.encodeStateVector(remoteView)));
     expect(diff).toBeInstanceOf(Uint8Array);
     expect(diff.length).toBeGreaterThan(0);
@@ -744,13 +744,13 @@ describe('AC-2 窄能力六项与不暴露内部句柄（ADR 0010 L81–88）', 
     });
     expect(typeof unsubscribe).toBe('function');
     const preExt = makeReplica(stub.liveDoc()); // 写前（n=8，无 ext）
-    expect((await lease.mutateRoot({ op: 'set', path: ['ext'], value: 7 }))?.ok).toBe(true);
+    expect((await lease.mutateData({ op: 'set', path: ['ext'], value: 7 }))?.ok).toBe(true);
     await flushMicrotasks();
     expect(received.length).toBe(1);
     const replay2 = replayDelta(preExt, received[0] as Uint8Array);
     expect(replay2.getMap('ROOT').get('ext')).toBe(7);
     unsubscribe();
-    expect((await lease.mutateRoot({ op: 'set', path: ['ext'], value: 9 }))?.ok).toBe(true);
+    expect((await lease.mutateData({ op: 'set', path: ['ext'], value: 9 }))?.ok).toBe(true);
     await flushMicrotasks();
     expect(received.length).toBe(1); // unsubscribe 后不再投递
 
@@ -851,7 +851,7 @@ describe('AC-3 远端 apply 进入唯一 write sequencer，槽内完成 dirty no
       peer.getMap('ROOT').set('k2', 2);
     });
     const pA = session.applyRemoteUpdate(uA);
-    const pW = lease.mutateRoot({ op: 'set', path: ['n'], value: 9 });
+    const pW = lease.mutateData({ op: 'set', path: ['n'], value: 9 });
     const pB = session.applyRemoteUpdate(uB);
 
     const rA = await settleOf(pA);
@@ -923,7 +923,7 @@ describe('AC-4 hub scratch-check SCHEMA/保留 META；raw ROOT 不预校验并�
     const r2 = await settleOf(session.applyRemoteUpdate(update));
     expect(settledNonOk(r2)).toBe(true);
     expect(stub.liveDoc().getMap('SCHEMA').get('note')).toBeUndefined();
-    expect(lease.read(['n'])).toMatchObject({ ok: true, value: 42 });
+    expect(lease.readData(['n'])).toMatchObject({ ok: true, value: 42 });
     await registry.shutdown();
   });
 
@@ -960,7 +960,7 @@ describe('AC-4 hub scratch-check SCHEMA/保留 META；raw ROOT 不预校验并�
     expect(stub.saveEvents.length).toBe(saveBaseline + 1); // 接受路径正常登记 dirty
 
     // 后续普通业务写：完整 ROOT 校验 → 当前 ROOT 已不符合 schema → 拒绝、零写入
-    const w = await lease.mutateRoot({ op: 'set', path: ['n'], value: 9 });
+    const w = await lease.mutateData({ op: 'set', path: ['n'], value: 9 });
     expect(w?.ok).toBe(false);
     expect(stub.liveDoc().getMap('ROOT').get('n')).toBe(42); // 零写入
     expect(stub.liveDoc().getMap('ROOT').get('ext')).toBe('zzz');
@@ -1046,7 +1046,7 @@ describe('AC-5 peer degraded 只允许 hub→peer trusted apply；O-5 补锚 (a)
     expect(repStatus(lease).replicationEpoch).toBe(1);
 
     // 1) 一次业务写 + I/O 故障 flush → entry persistence-degraded
-    expect((await lease.mutateRoot({ op: 'set', path: ['n'], value: 2 }))?.ok).toBe(true);
+    expect((await lease.mutateData({ op: 'set', path: ['n'], value: 2 }))?.ok).toBe(true);
     fx.setFailing(true);
     await fx.flushAll();
     const degraded = leaseRuntimeStatus(lease);
@@ -1060,7 +1060,7 @@ describe('AC-5 peer degraded 只允许 hub→peer trusted apply；O-5 补锚 (a)
     const savesBefore = fx.main.saveCount;
 
     // 2) degraded 期业务写：拒绝（RUNTIME_WRITE_DISABLED 码族）+ 零写入
-    const business = await lease.mutateRoot({ op: 'set', path: ['n'], value: 3 });
+    const business = await lease.mutateData({ op: 'set', path: ['n'], value: 3 });
     expect(business?.ok).toBe(false);
     expect(JSON.stringify(business)).toContain('RUNTIME_WRITE_DISABLED');
     expect((await fx.main.loadDoc(ALICE, nsId))?.doc.getMap('ROOT').get('n')).toBe(2);
@@ -1112,7 +1112,7 @@ describe('AC-5 peer degraded 只允许 hub→peer trusted apply；O-5 补锚 (a)
     const lease = okLease(await registry.open(ALICE, nsId));
     await schemaReady(lease);
     expect(repStatus(lease).state).toBe('enabled');
-    expect((await lease.mutateRoot({ op: 'set', path: ['n'], value: 2 }))?.ok).toBe(true);
+    expect((await lease.mutateData({ op: 'set', path: ['n'], value: 2 }))?.ok).toBe(true);
     fx.setFailing(true);
     await fx.flushAll();
     expect(leaseRuntimeStatus(lease).rootWrite.enabled).toBe(false);
@@ -1134,7 +1134,7 @@ describe('AC-5 peer degraded 只允许 hub→peer trusted apply；O-5 补锚 (a)
     expect(liveDoc.getMap('ROOT').get('ext')).toBeUndefined(); // 零写入
 
     // 读取与 state-vector 交换保留（L128）
-    expect(lease.read(['n'])).toMatchObject({ ok: true, value: 2 });
+    expect(lease.readData(['n'])).toMatchObject({ ok: true, value: 2 });
     expect(session.encodeStateVector()).toBeInstanceOf(Uint8Array);
     expect(new Uint8Array(session.encodeStateVector())).toEqual(new Uint8Array(Y.encodeStateVector(liveDoc)));
     await registry.shutdown();
@@ -1153,8 +1153,8 @@ describe('AC-5 peer degraded 只允许 hub→peer trusted apply；O-5 补锚 (a)
     const r2 = await peerLease.replaceSchema({ schema: SCHEMA_ENVELOPE });
     expect(r2.ok).toBe(false);
     expect(JSON.stringify(r2)).toBe(JSON.stringify(r1)); // 稳定：重复调用同形状错误
-    expect(peerLease.getSchemaEnvelope()).not.toBeNull(); // SCHEMA 载体未被破坏
-    expect((await peerLease.mutateRoot({ op: 'set', path: ['n'], value: 5 }))?.ok).toBe(true); // ROOT 业务写不受角色限制
+    expect(peerLease.getSchema()).not.toBeNull(); // SCHEMA 载体未被破坏
+    expect((await peerLease.mutateData({ op: 'set', path: ['n'], value: 5 }))?.ok).toBe(true); // ROOT 业务写不受角色限制
     // peer 的复制管理操作（enable/bump）hub-only（L120）
     const enable = await asRepLease(peerLease).enableReplication();
     expect(enable.ok).toBe(false);
@@ -1208,7 +1208,7 @@ describe('AC-6 单 Runtime observer 扇出；排除源 origin；observer 失败�
 
     // 1) 本地业务写（本地 origin）：两个 session 均投递；字节内容真实生效于远端副本
     const preWrite = makeReplica(stub.liveDoc()); // 写前远端视角（n=42）
-    expect((await leaseA.mutateRoot({ op: 'set', path: ['n'], value: 7 }))?.ok).toBe(true);
+    expect((await leaseA.mutateData({ op: 'set', path: ['n'], value: 7 }))?.ok).toBe(true);
     await flushMicrotasks();
     expect(eventsA.length).toBe(1);
     expect(eventsB.length).toBe(1);
@@ -1238,7 +1238,7 @@ describe('AC-6 单 Runtime observer 扇出；排除源 origin；observer 失败�
     const delivered = eventsB[1] as Uint8Array;
     delivered.fill(0xff);
     expect(stub.liveDoc().getMap('ROOT').get('ext')).toBe(7);
-    expect((await leaseA.mutateRoot({ op: 'set', path: ['n'], value: 8 }))?.ok).toBe(true);
+    expect((await leaseA.mutateData({ op: 'set', path: ['n'], value: 8 }))?.ok).toBe(true);
     await flushMicrotasks();
     expect(eventsB.length).toBe(3); // 后续写继续投递（扇出未被破坏）
     await registry.shutdown();
@@ -1253,17 +1253,17 @@ describe('AC-6 单 Runtime observer 扇出；排除源 origin；observer 失败�
     });
     sessionB.subscribeOwnedUpdates((u) => eventsB.push(u.slice()));
 
-    const w = await leaseA.mutateRoot({ op: 'set', path: ['n'], value: 5 });
+    const w = await leaseA.mutateData({ op: 'set', path: ['n'], value: 5 });
     expect(w?.ok).toBe(true); // 已提交事务不被 observer 拖垮
     await flushMicrotasks();
-    expect(leaseA.read(['n'])).toMatchObject({ ok: true, value: 5 });
+    expect(leaseA.readData(['n'])).toMatchObject({ ok: true, value: 5 });
     expect(leaseRuntimeStatus(leaseA).fatal).toBeNull(); // 不使 Runtime fatal
     expect(eventsB.length).toBe(1); // 另一 session 不受失败 observer 阻断
 
     // 后续写仍提交、B 仍收到（observer 失败未杀死扇出面）
-    expect((await leaseA.mutateRoot({ op: 'set', path: ['n'], value: 6 }))?.ok).toBe(true);
+    expect((await leaseA.mutateData({ op: 'set', path: ['n'], value: 6 }))?.ok).toBe(true);
     await flushMicrotasks();
-    expect(leaseA.read(['n'])).toMatchObject({ ok: true, value: 6 });
+    expect(leaseA.readData(['n'])).toMatchObject({ ok: true, value: 6 });
     expect(eventsB.length).toBe(2);
     expect(leaseRuntimeStatus(leaseA).fatal).toBeNull();
     expect(typeof leaseB.getStatus).toBe('function'); // 第二 Lease 面未受伤害
@@ -1336,7 +1336,7 @@ describe('AC-7 生命周期确定性契约：close / Runtime close / epoch fenci
     const lease = okLease(await registry.create(newContractInput()));
     await schemaReady(lease);
     expect((await asRepLease(lease).enableReplication()).ok).toBe(true);
-    expect((await lease.mutateRoot({ op: 'set', path: ['n'], value: 6 }))?.ok).toBe(true);
+    expect((await lease.mutateData({ op: 'set', path: ['n'], value: 6 }))?.ok).toBe(true);
 
     await lease.release(); // 最后 lease 释放 → Runtime idle 保留（不立即 close）
     await scheduler.advanceBy(10); // < idleTimeoutMs(25)——idle 窗口内
@@ -1346,7 +1346,7 @@ describe('AC-7 生命周期确定性契约：close / Runtime close / epoch fenci
       await asSessionLease(lease2).openReplicationSession({ localRole: 'hub', remoteInstanceId: 'peer-a' }),
     );
     // 观察到旧写状态（同一 Runtime 的连续状态——idle 复用语义）
-    expect(lease2.read(['n'])).toMatchObject({ ok: true, value: 6 });
+    expect(lease2.readData(['n'])).toMatchObject({ ok: true, value: 6 });
     expect(session2.replicationEpoch).toBe(1);
     const { update } = makeRemoteUpdate(stub.liveDoc(), (peer) => {
       peer.getMap('ROOT').set('ext', 7);
@@ -1391,7 +1391,7 @@ describe('AC-7 生命周期确定性契约：close / Runtime close / epoch fenci
 
     // committed facts 保留：ext=7 已在 live doc 提交；读取面仍可用（fatal 只禁写）
     expect(stub.liveDoc().getMap('ROOT').get('ext')).toBe(7);
-    expect(lease.read(['ext'])).toMatchObject({ ok: true, value: 7 });
+    expect(lease.readData(['ext'])).toMatchObject({ ok: true, value: 7 });
     expect(leaseRuntimeStatus(lease).fatal).not.toBeNull();
 
     // 后续写（再次 apply 与业务写）→ RUNTIME_WRITE_DISABLED、零写入
@@ -1404,10 +1404,10 @@ describe('AC-7 生命周期确定性契约：close / Runtime close / epoch fenci
     );
     expect(settledNonOk(laterApply), 'fatal 后 apply 必须不生效').toBe(true);
     expect(stub.liveDoc().getMap('ROOT').get('k1')).toBeUndefined();
-    const laterRoot = await lease.mutateRoot({ op: 'set', path: ['n'], value: 9 });
+    const laterRoot = await lease.mutateData({ op: 'set', path: ['n'], value: 9 });
     expect(laterRoot?.ok).toBe(false);
     expect(JSON.stringify(laterRoot)).toContain('RUNTIME_WRITE_DISABLED');
-    expect(lease.read(['n'])).toMatchObject({ ok: true, value: 42 });
+    expect(lease.readData(['n'])).toMatchObject({ ok: true, value: 42 });
     await registry.shutdown();
   });
 });
@@ -1438,7 +1438,7 @@ describe('AC-7/AC-2 FilePersistence：重启后 session state-vector 与重启�
     const lease = okLease(await registry1.create(newContractInput()));
     await schemaReady(lease);
     expect((await asRepLease(lease).enableReplication()).ok).toBe(true);
-    expect((await lease.mutateRoot({ op: 'set', path: ['n'], value: 8 }))?.ok).toBe(true);
+    expect((await lease.mutateData({ op: 'set', path: ['n'], value: 8 }))?.ok).toBe(true);
     const session1 = expectSession(
       await asSessionLease(lease).openReplicationSession({ localRole: 'hub', remoteInstanceId: 'peer-a' }),
     );

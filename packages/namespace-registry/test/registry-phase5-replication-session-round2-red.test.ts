@@ -300,14 +300,14 @@ describe('R2-1 epoch fence 立即停投（Lease 面：bump 槽边界主动 fence
     const events: Uint8Array[] = [];
     session.subscribeOwnedUpdates((u) => events.push(u));
 
-    expect((await lease.mutateRoot({ op: 'set', path: ['n'], value: 7 }))?.ok).toBe(true);
+    expect((await lease.mutateData({ op: 'set', path: ['n'], value: 7 }))?.ok).toBe(true);
     await flushMicrotasks();
     expect(events.length).toBe(1); // 基线：bump 前投递活着
 
     expect((await asRepLease(lease).bumpReplicationEpoch()).ok).toBe(true);
     const afterBump = events.length;
 
-    expect((await lease.mutateRoot({ op: 'set', path: ['n'], value: 8 }))?.ok).toBe(true);
+    expect((await lease.mutateData({ op: 'set', path: ['n'], value: 8 }))?.ok).toBe(true);
     await flushMicrotasks();
     expect(events.length, 'bump 后（无 inbound apply）旧 session listener 仍收到投递——fence 未在 bump 槽边界生效').toBe(afterBump);
   });

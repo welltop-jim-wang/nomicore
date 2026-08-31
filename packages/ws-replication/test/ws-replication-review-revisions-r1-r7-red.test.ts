@@ -255,7 +255,7 @@ async function bootReview(opts: { limits?: Readonly<Partial<ReplicationLimits>>;
   if (opts.gate === true) wire.setGate(true);
   const writeHubNs = async (nsId: string, update: Readonly<{ n?: number; blob?: string }>): Promise<void> => {
     for (const [key, value] of Object.entries(update)) {
-      const result = await fixture.lease.mutateRoot({ op: 'set', path: [key], value });
+      const result = await fixture.lease.mutateData({ op: 'set', path: [key], value });
       if (!result.ok) throw new Error(`hub 业务写失败：${JSON.stringify(result)}`);
     }
     await settle();
@@ -779,7 +779,7 @@ async function bootLiveness(): Promise<LivenessBoot> {
     nsId: fixture.namespaceId,
     async writeHub(update) {
       for (const [key, value] of Object.entries(update)) {
-        const result = await fixture.lease.mutateRoot({ op: 'set', path: [key], value });
+        const result = await fixture.lease.mutateData({ op: 'set', path: [key], value });
         if (!result.ok) throw new Error(`hub 写失败：${JSON.stringify(result)}`);
       }
       await settle();

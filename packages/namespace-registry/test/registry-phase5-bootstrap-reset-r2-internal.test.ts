@@ -268,8 +268,8 @@ function makeLegacyFakeRuntime(opts: { replicationId?: string; replicationEpoch?
   return {
     owner: { userId: 'u-alice' },
     namespaceId: NS_B,
-    read: () => ({ ok: true, value: 1 }),
-    getSchemaEnvelope: () => null,
+    readData: () => ({ ok: true, value: 1 }),
+    getSchema: () => null,
     getMetadata: () => ({ docId: NS_B }),
     getActiveSchema: () => null,
     getStatus: () => ({
@@ -286,7 +286,7 @@ function makeLegacyFakeRuntime(opts: { replicationId?: string; replicationEpoch?
         replicationEpoch: opts.replicationEpoch ?? 1,
       } as const,
     }),
-    mutateRoot: async () => ({ ok: true }),
+    mutateData: async () => ({ ok: true }),
     replaceSchema: async () => ({ ok: true }),
     enableReplication: async () => ({ ok: true }),
     bumpReplicationEpoch: async () => ({ ok: true }),

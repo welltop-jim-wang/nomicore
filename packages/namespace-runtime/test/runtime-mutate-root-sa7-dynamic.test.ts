@@ -13,12 +13,12 @@
  *     不结算、best-effort notifier 恰一次（挂住的那次）；
  * - 重点 2（O1）：handle.getStatus() adapter 持续抛错——写槽统一 fatal
  *   （committed:false、phase 'write-slot-internal'）、公共 runtime.getStatus() 读面
- *   原样 throw（既有 #89 loud-throw 契约）、runtime.read() 保留；
+ *   原样 throw（既有 #89 loud-throw 契约）、runtime.readData() 保留；
  * - 重点 4（深嵌套栈溢出收编）：200,000 层嵌套数组 → snapshotter 递归 RangeError 被
  *   收编为 ok:false（MUTATION_INPUT_NOT_PLAIN_DATA）——进程不崩、fatal 不置位
  *   （写能力不被永久禁用——防「深嵌套 → 永久禁写」DoS）、后续有效写照常成功。
  *
- * 断言纪律：全部经公共接缝（mutateRoot/read/getStatus/update 事件计数/state 字节/
+ * 断言纪律：全部经公共接缝（mutateData/read/getStatus/update 事件计数/state 字节/
  * notifier 调用计数/Proxy 输入访问计数）观测，不读实现内部。
  */
 import { describe, expect, it } from 'vitest';
@@ -26,7 +26,7 @@ import * as Y from 'yjs';
 import type { DocHandle, User } from '@nomicore/persistence';
 import { RuntimeWriteFatalError } from '../src/index.js';
 import { createNamespaceRuntimeWithSeam } from '../src/runtime.js';
-import type { NamespaceRuntime, MutateRootResult } from '../src/index.js';
+import type { NamespaceRuntime, MutateDataResult } from '../src/index.js';
 
 // —— fixture（与 SA6 冻结测试同族的种子形状）——
 
@@ -53,14 +53,14 @@ function countUpdates(doc: Y.Doc): { count: number } {
 }
 
 function readValue(runtime: NamespaceRuntime, path: readonly (string | number)[]): unknown {
-  const read = runtime.read(path);
+  const read = runtime.readData(path);
   if (!read.ok) throw new Error(`读取应成功，实际 code=${read.code}`);
   return read.value;
 }
 
 async function settleOf(
-  p: Promise<MutateRootResult>,
-): Promise<{ kind: 'resolved'; value: MutateRootResult } | { kind: 'rejected'; reason: unknown }> {
+  p: Promise<MutateDataResult>,
+): Promise<{ kind: 'resolved'; value: MutateDataResult } | { kind: 'rejected'; reason: unknown }> {
   try {
     return { kind: 'resolved', value: await p };
   } catch (reason) {
@@ -167,9 +167,9 @@ describe('SA7 动态验证 — SA4 重点 1：notifier 挂住双窗口', () => {
     await waitReady(runtime);
 
     const updates = countUpdates(doc);
-    const pA = runtime.mutateRoot(SET_N(9));
+    const pA = runtime.mutateData(SET_N(9));
     const { probe, accesses } = makeAccessProbe(11);
-    const pB = runtime.mutateRoot(probe); // 同 tick FIFO 排队第二笔
+    const pB = runtime.mutateData(probe); // 同 tick FIFO 排队第二笔
     await sleep(200); // 给足微任务/事件循环余量——若实现静默跳过/降级，此处即暴露
 
     // 事务已 live commit（S5 完成）：恰 1 次更新事件 + notifier 恰一次被调用
@@ -211,9 +211,9 @@ describe('SA7 动态验证 — SA4 重点 1：notifier 挂住双窗口', () => {
     });
 
     const updates = countUpdates(doc);
-    const pA = runtime.mutateRoot(SET_N(9));
+    const pA = runtime.mutateData(SET_N(9));
     const { probe, accesses } = makeAccessProbe(11);
-    const pB = runtime.mutateRoot(probe); // 已接纳未执行的后续写
+    const pB = runtime.mutateData(probe); // 已接纳未执行的后续写
     await sleep(200);
 
     // fatal 摘要先于（永不送达的）rejection 可观测——markWriteFatal 同步先行兑现
@@ -263,7 +263,7 @@ describe('SA7 动态验证 — SA4 重点 2（O1）：getStatus adapter 持续�
     const before = stateBytes(doc);
     flipToThrow(); // adapter 从此刻起持续违约
 
-    const settled = await settleOf(runtime.mutateRoot(SET_N(5)));
+    const settled = await settleOf(runtime.mutateData(SET_N(5)));
     // 写槽必须经 Promise 结算：统一 fatal（不出裸异常第二通道）
     expect(settled.kind).toBe('rejected');
     if (settled.kind !== 'rejected') return;
@@ -293,7 +293,7 @@ describe('SA7 动态验证 — SA4 重点 2（O1）：getStatus adapter 持续�
     // 队列不被毒死：后续写取得槽、经 S1 fatal gate 结算（非挂住）——与 DV-1b 的
     // 队列停滞（notifier 挂住阻断槽释放）形成对照
     const { probe, accesses } = makeAccessProbe(77);
-    const second = await settleOf(runtime.mutateRoot(probe));
+    const second = await settleOf(runtime.mutateData(probe));
     expect(second.kind).toBe('resolved');
     if (second.kind !== 'resolved') return;
     expect(second.value).toMatchObject({ ok: false });
@@ -324,7 +324,7 @@ describe('SA7 动态验证 — SA4 重点 4：200k 层深嵌套栈溢出收编',
 
     const updates = countUpdates(doc);
     const before = stateBytes(doc);
-    const settled = await settleOf(runtime.mutateRoot(SET_N(deep)));
+    const settled = await settleOf(runtime.mutateData(SET_N(deep)));
 
     // 收编为普通失败（类 B 分级）：不升格 internal fatal、不崩进程
     expect(settled.kind).toBe('resolved');
@@ -342,7 +342,7 @@ describe('SA7 动态验证 — SA4 重点 4：200k 层深嵌套栈溢出收编',
     expect(status.fatal).toBeNull();
     expect(status.rootWrite.enabled).toBe(true);
 
-    const followUp = await settleOf(runtime.mutateRoot(SET_N(42)));
+    const followUp = await settleOf(runtime.mutateData(SET_N(42)));
     expect(followUp.kind).toBe('resolved');
     if (followUp.kind !== 'resolved') return;
     expect(followUp.value).toMatchObject({ ok: true });

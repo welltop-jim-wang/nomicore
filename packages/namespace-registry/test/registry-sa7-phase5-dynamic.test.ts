@@ -144,7 +144,7 @@ describe('SA7 动态验证 #131 — plugin 生产随机链路 / File 持久化 /
       expect(id1).toHaveLength(35); // 'ns-' + 32 hex
       expect(id1).not.toBe(id2); // 两次生成互异（CSPRNG，非常数/单值源）
       expect(lease1.owner).toEqual({ userId: 'u-sa7-d1' }); // owner 投影保持
-      expect(lease1.read(['n'])).toEqual({ ok: true, value: 42 }); // 真实 Runtime 读链路
+      expect(lease1.readData(['n'])).toEqual({ ok: true, value: 42 }); // 真实 Runtime 读链路
       expect(registry.getStatus()).toEqual({ state: 'running' });
 
       console.log(`[SA7-DYN] D1 plugin 链生成 ID: ${id1} / ${id2}`);
@@ -193,7 +193,7 @@ describe('SA7 动态验证 #131 — plugin 生产随机链路 / File 持久化 /
       const reopened = okLease(await host2.registry.open({ userId: ownerId }, first));
       expect(reopened.namespaceId).toBe(first);
       expect(reopened.owner).toEqual({ userId: ownerId });
-      expect(reopened.read(['n'])).toEqual({ ok: true, value: 42 }); // 真实 fs round-trip 数据面
+      expect(reopened.readData(['n'])).toEqual({ ok: true, value: 42 }); // 真实 fs round-trip 数据面
       const crossOwner = await host2.registry.open({ userId: 'u-sa7-other' }, first);
       expect(crossOwner).toMatchObject({ ok: false, code: 'NAMESPACE_NOT_FOUND' }); // AC-4 实机
       await host2.ctx.fiber.dispose();

@@ -501,7 +501,7 @@ class AppHandle {
       if (!(await this.waitLeaseReadable(lease, READ_READY_TIMEOUT_MS))) {
         return { ok: false, code: 'read-failed' };
       }
-      const result = lease.read(path);
+      const result = lease.readData(path);
       if (!result.ok) return { ok: false, code: 'read-failed' };
       return { ok: true, value: result.value };
     } finally {
@@ -546,7 +546,7 @@ class AppHandle {
         return { ok: false, code: 'verify-write-timeout' };
       }
       const mutation = { op: 'set', path: set, value };
-      const result = await lease.mutateRoot(mutation);
+      const result = await lease.mutateData(mutation);
       if (!result.ok) return { ok: false, code: 'write-failed' };
       return { ok: true };
     } finally {

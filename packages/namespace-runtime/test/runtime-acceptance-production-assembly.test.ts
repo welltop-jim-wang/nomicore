@@ -17,7 +17,7 @@
  * 「生产绑定真实生效」的行为证据（每笔成功写恰一次 notify；P0/close 零 notify）。
  *
  * 红/绿标注（SA6 落锚）：
- * - 全链为绿(存量)——唯 post-close `getSchemaEnvelope()` 同步 throw
+ * - 全链为绿(存量)——唯 post-close `getSchema()` 同步 throw
  *   （RUNTIME_READ_DISABLED）断言**红**：D-2 契约（#93 rev2，close 停接纳扩展至三个
  *   数据投影 getter）在生产构造路径上的集成确认；
  * - 其余断言对当前 HEAD 首跑即绿（评审缺口是覆盖不是行为）。
@@ -50,7 +50,7 @@ function sleep(ms: number): Promise<void> {
 }
 
 function readValue(runtime: NamespaceRuntime, p: readonly (string | number)[]): unknown {
-  const read = runtime.read(p);
+  const read = runtime.readData(p);
   if (!read.ok) throw new Error(`读取应成功，实际 code=${read.code}`);
   return read.value;
 }
@@ -93,33 +93,33 @@ async function assertPostClose(
 ): Promise<void> {
   expect(handle.getStatus()).toBe('released');
   expect(runtime.getStatus().lifecycle).toBe('closed');
-  const readAfter = runtime.read(['n']);
+  const readAfter = runtime.readData(['n']);
   expect(readAfter.ok).toBe(false);
   if (readAfter.ok) throw new Error('closed 期读取应被拒绝（D-2 停接纳）');
   expect(readAfter.code).toBe('RUNTIME_READ_DISABLED');
-  const w = await runtime.mutateRoot({ op: 'set', path: ['n'], value: 1 });
+  const w = await runtime.mutateData({ op: 'set', path: ['n'], value: 1 });
   expect(w.ok).toBe(false);
   expect(JSON.stringify(w)).toContain('RUNTIME_WRITE_DISABLED');
   const s = await runtime.replaceSchema({ schema: { ...ENV2 } });
   expect(s.ok).toBe(false);
   expect(JSON.stringify(s)).toContain('RUNTIME_WRITE_DISABLED');
-  // 【D-2 红灯】：post-close getSchemaEnvelope() 同步 throw（code RUNTIME_READ_DISABLED、
+  // 【D-2 红灯】：post-close getSchema() 同步 throw（code RUNTIME_READ_DISABLED、
   // message 含 'closed' 与 getter 名）——现行为返回投影值 → 断言红，随 D-2 转绿。
   let thrown: unknown = '(no throw)';
   try {
-    runtime.getSchemaEnvelope();
+    runtime.getSchema();
   } catch (e) {
     thrown = e;
   }
-  expect(thrown, 'post-close getSchemaEnvelope() 应同步 throw（D-2 停接纳）').not.toBe('(no throw)');
+  expect(thrown, 'post-close getSchema() 应同步 throw（D-2 停接纳）').not.toBe('(no throw)');
   expect(thrown).not.toBeInstanceOf(Promise);
   expect((thrown as { code?: unknown }).code).toBe('RUNTIME_READ_DISABLED');
   expect(String((thrown as { message?: unknown }).message)).toContain('closed');
-  expect(String((thrown as { message?: unknown }).message)).toContain('getSchemaEnvelope');
+  expect(String((thrown as { message?: unknown }).message)).toContain('getSchema');
 }
 
 describe('D-5：生产装配——MemoryPersistence 全链（createNamespaceRuntime 真实绑定 + 真实 compile）', () => {
-  it('T5.1 六步全链：P0→读取→ROOT write→SCHEMA replacement→跨实例持久化→close；dirty 每成功写恰 +1；post-close getSchemaEnvelope throw（D-2 红）',
+  it('T5.1 六步全链：P0→读取→ROOT write→SCHEMA replacement→跨实例持久化→close；dirty 每成功写恰 +1；post-close getSchema throw（D-2 红）',
     async () => {
       const store = new Map<string, Uint8Array>();
       const writer = createMemoryPersistence({
@@ -155,7 +155,7 @@ describe('D-5：生产装配——MemoryPersistence 全链（createNamespaceRunt
         expect(readValue(runtime, ['tags', 1])).toBe('t1');
 
         // ③ ROOT write：ok:true → 读见新值 → dirty 恰 +1
-        const r1 = await runtime.mutateRoot({ op: 'set', path: ['n'], value: 42 });
+        const r1 = await runtime.mutateData({ op: 'set', path: ['n'], value: 42 });
         expect(r1).toEqual({ ok: true });
         expect(readValue(runtime, ['n'])).toBe(42);
         expect(dirty()).toBe(1);
@@ -171,7 +171,7 @@ describe('D-5：生产装配——MemoryPersistence 全链（createNamespaceRunt
         expect(runtime.getActiveSchema()?.id).toBe('ns-2');
         expect(readValue(runtime, ['n'])).toBe(10);
         expect(readValue(runtime, ['b'])).toBe(true);
-        expect(runtime.getSchemaEnvelope()).toEqual({ lang: 'vfsl', version: 1, id: 'ns-2', text: TEXT_V2 });
+        expect(runtime.getSchema()).toEqual({ lang: 'vfsl', version: 1, id: 'ns-2', text: TEXT_V2 });
         expect(dirty()).toBe(2);
 
         // ⑤ 跨实例持久化证明（flush 后全新实例空缓存读取——非 live 别名）
@@ -205,7 +205,7 @@ describe('D-5：生产装配——MemoryPersistence 全链（createNamespaceRunt
 });
 
 describe('D-5：生产装配——FilePersistence 全链（真实磁盘 + crash-restart）', () => {
-  it('T5.2 六步全链（File）：P0→读取→ROOT write→SCHEMA replacement→磁盘落盘→新实例 crash-restart→close；dirty 每成功写恰 +1；post-close getSchemaEnvelope throw（D-2 红）',
+  it('T5.2 六步全链（File）：P0→读取→ROOT write→SCHEMA replacement→磁盘落盘→新实例 crash-restart→close；dirty 每成功写恰 +1；post-close getSchema throw（D-2 红）',
     async () => {
       const rootDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'nsr-prod-assembly-'));
       const writer = new FilePersistence({ rootDir, scheduler: realPersistenceScheduler, schedule: { debounceMs: 5, maxDirtyMs: 60 } });
@@ -222,7 +222,7 @@ describe('D-5：生产装配——FilePersistence 全链（真实磁盘 + crash-
         expect(readValue(runtime, ['tags', 0])).toBe('t0');
 
         // ③ ROOT write
-        expect(await runtime.mutateRoot({ op: 'set', path: ['n'], value: 7 })).toEqual({ ok: true });
+        expect(await runtime.mutateData({ op: 'set', path: ['n'], value: 7 })).toEqual({ ok: true });
         expect(readValue(runtime, ['n'])).toBe(7);
         expect(dirty()).toBe(1);
 

@@ -226,7 +226,7 @@ describe('SA6 issue #174：GOAWAY drain 真实窗口与关闭时序（红灯契�
     const connection = run.hub.connections[0] as unknown as {
       channels: Map<string, {
         session: { close(): Promise<void>; getStatus(): { state: string } } | undefined;
-        lease: { release(): Promise<void>; read(path: readonly (string | number)[]): { ok: boolean } } | undefined;
+        lease: { release(): Promise<void>; readData(path: readonly (string | number)[]): { ok: boolean } } | undefined;
         channel: { teardown(): void };
         round: { teardown(): void };
         watchdog: { teardown(): void };
@@ -254,7 +254,7 @@ describe('SA6 issue #174：GOAWAY drain 真实窗口与关闭时序（红灯契�
     expect(roundTeardown).toHaveBeenCalled();
     expect(watchdogTeardown).toHaveBeenCalled();
     expect(realSession.getStatus().state).toBe('closed');
-    expect(lease.read([]).ok).toBe(false);
+    expect(lease.readData([]).ok).toBe(false);
   });
 
   it.each([

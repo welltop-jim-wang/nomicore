@@ -334,7 +334,7 @@ describe('T-2 敌意 Uint8Array 子类：陷阱安全拷贝（INV-S15；拒绝�
 // ─────────────────────────────── T-3：conflicted 终态停投 ───────────────────────────────
 
 describe('T-3 epoch fence：conflicted 终态 + 存量订阅停止投递（共用摘除点）；新 session 照常', () => {
-  it('bump 后旧 session apply 被 fence 零写入并转终态；mutateRoot 对存量订阅零新增投递；新 session 正常', async () => {
+  it('bump 后旧 session apply 被 fence 零写入并转终态；mutateData 对存量订阅零新增投递；新 session 正常', async () => {
     const doc = seedDoc();
     const { runtime } = makeRuntime(doc);
     await readyOf(runtime);
@@ -361,7 +361,7 @@ describe('T-3 epoch fence：conflicted 终态 + 存量订阅停止投递（共�
     expect(st1.replicationEpoch).toBe(1);
 
     // 终态停投对存量订阅成立（SA2 R1 #4：conflicted 转换处 fanout.detach）
-    expect((await runtime.mutateRoot({ op: 'set', path: ['n'], value: 9 })).ok).toBe(true);
+    expect((await runtime.mutateData({ op: 'set', path: ['n'], value: 9 })).ok).toBe(true);
     await flushMicrotasks();
     expect(events1.length, 'conflicted 后存量订阅零新增投递').toBe(afterBump);
 
@@ -370,7 +370,7 @@ describe('T-3 epoch fence：conflicted 终态 + 存量订阅停止投递（共�
     expect(session2.replicationEpoch).toBe(2);
     const events2: Uint8Array[] = [];
     session2.subscribeOwnedUpdates((u) => events2.push(u));
-    expect((await runtime.mutateRoot({ op: 'set', path: ['n'], value: 10 })).ok).toBe(true);
+    expect((await runtime.mutateData({ op: 'set', path: ['n'], value: 10 })).ok).toBe(true);
     await flushMicrotasks();
     expect(events2.length).toBe(1);
     expect(session2.getStatus().state).toBe('open');
@@ -611,7 +611,7 @@ describe('apply 门序短路：fatal / writable(含 hub 与 peer degraded 分叉
     if (!opened.ok) expect(opened.code).toBe('RUNTIME_WRITE_DISABLED');
 
     // 读取保留
-    expect(runtime.read(['n'])).toMatchObject({ ok: true, value: 1 });
+    expect(runtime.readData(['n'])).toMatchObject({ ok: true, value: 1 });
   });
 
   it('hub degraded（peer→hub 方向）：R3 拒 RUNTIME_WRITE_DISABLED 零写入；session 未终态 → SV 照常；getStatus 恰一次', async () => {
@@ -717,7 +717,7 @@ describe('apply 门序短路：fatal / writable(含 hub 与 peer degraded 分叉
     adapterBroken = false; // 状态读取面恢复（buildStatus 的 ready 期瞬时观察会调用 getStatus）
     expect(runtime.getStatus().fatal).not.toBeNull();
     expect(doc.getMap('ROOT').get('ext')).toBeUndefined();
-    expect(runtime.read(['n'])).toMatchObject({ ok: true, value: 1 });
+    expect(runtime.readData(['n'])).toMatchObject({ ok: true, value: 1 });
   });
 
   it('lifecycle 接纳层 A3：Runtime close 后 apply 即时拒 RUNTIME_WRITE_DISABLED、零入队零写入', async () => {
@@ -863,7 +863,7 @@ describe('fanout 扇出：多 channel 广播；apply 源 origin 回声抑制；�
     sessionB.subscribeOwnedUpdates((u) => eventsB.push(u));
 
     // 1) 本地业务写（origin null）→ 两个 channel 均投递
-    expect((await runtime.mutateRoot({ op: 'set', path: ['n'], value: 7 })).ok).toBe(true);
+    expect((await runtime.mutateData({ op: 'set', path: ['n'], value: 7 })).ok).toBe(true);
     await flushMicrotasks();
     expect(eventsA.length).toBe(1);
     expect(eventsB.length).toBe(1);
@@ -889,7 +889,7 @@ describe('fanout 扇出：多 channel 广播；apply 源 origin 回声抑制；�
     const delivered = eventsB[1] as Uint8Array;
     delivered.fill(0xff);
     expect(doc.getMap('ROOT').get('ext')).toBe(7);
-    expect((await runtime.mutateRoot({ op: 'set', path: ['n'], value: 8 })).ok).toBe(true);
+    expect((await runtime.mutateData({ op: 'set', path: ['n'], value: 8 })).ok).toBe(true);
     await flushMicrotasks();
     expect(eventsB.length).toBe(3);
     expect(eventsA.length).toBe(2); // 后续本地写继续投给 A（扇出未被破坏）
@@ -907,14 +907,14 @@ describe('fanout 扇出：多 channel 广播；apply 源 origin 回声抑制；�
     });
     sessionB.subscribeOwnedUpdates((u) => eventsB.push(u));
 
-    expect((await runtime.mutateRoot({ op: 'set', path: ['n'], value: 5 })).ok).toBe(true);
+    expect((await runtime.mutateData({ op: 'set', path: ['n'], value: 5 })).ok).toBe(true);
     await flushMicrotasks();
     expect(runtime.getStatus().fatal).toBeNull(); // 不使 Runtime fatal（T-2 和解）
     expect(doc.getMap('ROOT').get('n')).toBe(5); // 已提交事务不被 observer 拖垮
     expect(eventsB.length).toBe(1); // 其他 session 不受失败 observer 阻断
     expect(sessionA.getStatus().observerFailures).toBe(1); // 自捕获计数（ADR 0007 L54「记录」面）
 
-    expect((await runtime.mutateRoot({ op: 'set', path: ['n'], value: 6 })).ok).toBe(true);
+    expect((await runtime.mutateData({ op: 'set', path: ['n'], value: 6 })).ok).toBe(true);
     await flushMicrotasks();
     expect(eventsB.length).toBe(2);
     expect(sessionA.getStatus().observerFailures).toBe(2); // 无界纯计数、不熔断（O-10 显式选择）
@@ -928,17 +928,17 @@ describe('fanout 扇出：多 channel 广播；apply 源 origin 回声抑制；�
     const session = openSession(runtime, 'hub');
     const received: Uint8Array[] = [];
     const unsubscribe = session.subscribeOwnedUpdates((u) => received.push(u));
-    expect((await runtime.mutateRoot({ op: 'set', path: ['n'], value: 9 })).ok).toBe(true);
+    expect((await runtime.mutateData({ op: 'set', path: ['n'], value: 9 })).ok).toBe(true);
     await flushMicrotasks();
     expect(received.length).toBe(1);
     unsubscribe();
-    expect((await runtime.mutateRoot({ op: 'set', path: ['n'], value: 10 })).ok).toBe(true);
+    expect((await runtime.mutateData({ op: 'set', path: ['n'], value: 10 })).ok).toBe(true);
     await flushMicrotasks();
     expect(received.length).toBe(1); // unsubscribe 后不再投递
 
     await session.close();
     const noop = session.subscribeOwnedUpdates((u) => received.push(u));
-    expect((await runtime.mutateRoot({ op: 'set', path: ['n'], value: 11 })).ok).toBe(true);
+    expect((await runtime.mutateData({ op: 'set', path: ['n'], value: 11 })).ok).toBe(true);
     await flushMicrotasks();
     expect(received.length).toBe(1); // no-op 订阅永不投递
     noop(); // 幂等无害
@@ -964,7 +964,7 @@ describe('唯一 sequencer：apply 与业务写共享严格 FIFO；dirty 先于 
       order.push('applyA');
       return r;
     });
-    const pW = runtime.mutateRoot({ op: 'set', path: ['n'], value: 9 });
+    const pW = runtime.mutateData({ op: 'set', path: ['n'], value: 9 });
     void pW.then(() => order.push('write'));
     const pB = session.applyRemoteUpdate(uB).then((r) => {
       order.push('applyB');

@@ -29,7 +29,7 @@
  *     接受 getStatus() ∈ {'ready','persistence-degraded'}（读与 P0 不受 degraded 影响）；
  *     'released'/'disposed' → 同步 throw（失败时所有权不转移）。
  * - Runtime 对象公共形状（对象字面量 or 等价同类面，方法同源）：
- *     { owner(冻结,{userId}), namespaceId(=handle.docId), read, getSchemaEnvelope,
+ *     { owner(冻结,{userId}), namespaceId(=handle.docId), read, getSchema,
  *       getMetadata, getActiveSchema, getStatus }——除键集外无任何属性（不公开
  *       doc/handle/docHandle/yDoc/sequencer 等）；
  * - getStatus() 返回结构化对象（非扁平枚举）：
@@ -104,8 +104,8 @@ describe('namespace-runtime 公共面与所有权（AC1/AC2/AC7 状态形状/AC8
     const { handle } = await makeHandle();
     const runtime = createNamespaceRuntimeWithSeam({ handle });
     // 公共方法/属性必须可达
-    expect(typeof runtime.read).toBe('function');
-    expect(typeof runtime.getSchemaEnvelope).toBe('function');
+    expect(typeof runtime.readData).toBe('function');
+    expect(typeof runtime.getSchema).toBe('function');
     expect(typeof runtime.getMetadata).toBe('function');
     expect(typeof runtime.getActiveSchema).toBe('function');
     expect(typeof runtime.getStatus).toBe('function');
@@ -164,12 +164,12 @@ describe('namespace-runtime 公共面与所有权（AC1/AC2/AC7 状态形状/AC8
     expect(settled.fatal).toBeNull();
   });
 
-  it('AC3：read/getSchemaEnvelope/getMetadata/getActiveSchema/getStatus 均为同步返回值（非 Promise）', async () => {
+  it('AC3：read/getSchema/getMetadata/getActiveSchema/getStatus 均为同步返回值（非 Promise）', async () => {
     const { handle } = await makeHandle();
     const runtime = createNamespaceRuntimeWithSeam({ handle });
     const values: unknown[] = [
-      runtime.read(['n']),
-      runtime.getSchemaEnvelope(),
+      runtime.readData(['n']),
+      runtime.getSchema(),
       runtime.getMetadata(),
       runtime.getActiveSchema(),
       runtime.getStatus(),

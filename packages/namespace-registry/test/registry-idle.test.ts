@@ -237,11 +237,11 @@ class ObservableRuntime implements NamespaceRuntime {
     private readonly statusProvider: () => NamespaceRuntimeStatus = () => READY_STATUS,
   ) {}
 
-  read() {
+  readData() {
     return { ok: true as const, value: this.marker };
   }
 
-  getSchemaEnvelope(): null {
+  getSchema(): null {
     return null;
   }
 
@@ -257,7 +257,7 @@ class ObservableRuntime implements NamespaceRuntime {
     return this.statusProvider();
   }
 
-  mutateRoot(): Promise<{ ok: true }> {
+  mutateData(): Promise<{ ok: true }> {
     return Promise.resolve({ ok: true });
   }
 
@@ -476,7 +476,7 @@ describe('AC4+AC6（§7.1-6）：idle 武装、完整时限、重进重置、arm
     const lease2 = okLease(await registry.open({ userId: 'u-idle' }, 'k'));
     expect(persistence.loadCalls.length).toBe(2);
     expect(runtimes.length).toBe(2);
-    expect(lease2.read(['x'])).toEqual({ ok: true, value: 'R2' });
+    expect(lease2.readData(['x'])).toEqual({ ok: true, value: 'R2' });
     await lease2.release();
   });
 
@@ -501,7 +501,7 @@ describe('AC4+AC6（§7.1-6）：idle 武装、完整时限、重进重置、arm
     const lease2 = okLease(await registry.open({ userId: 'u-idle' }, 'k'));
     expect(scheduler.pending()).toBe(0); // 取消
     expect(persistence.loadCalls.length).toBe(1); // 零 loadDoc
-    expect(lease2.read(['x'])).toEqual({ ok: true, value: 'R1' }); // 同一 Runtime marker
+    expect(lease2.readData(['x'])).toEqual({ ok: true, value: 'R1' }); // 同一 Runtime marker
 
     await lease2.release(); // 重武装：全新完整 idleTimeoutMs
     expect(scheduler.pending()).toBe(1);
@@ -532,7 +532,7 @@ describe('AC4+AC6（§7.1-6）：idle 武装、完整时限、重进重置、arm
 
     const lease2 = okLease(await registry.open({ userId: 'u-idle' }, 'k')); // 激活：取消（no-op）+ 复用
     expect(adversarial.armed.length).toBe(1); // 违约取消：T1 仍在（仍在登记的旧回调）
-    expect(lease2.read(['x'])).toEqual({ ok: true, value: 'R1' });
+    expect(lease2.readData(['x'])).toEqual({ ok: true, value: 'R1' });
     expect(persistence.loadCalls.length).toBe(1);
 
     await lease2.release(); // 重武装 T2（时间窗口重新起算）
@@ -612,7 +612,7 @@ describe('AC4+AC6（§7.1-6）：idle 武装、完整时限、重进重置、arm
       runtimeFactory: () => runtime,
     });
     const lease = okLease(await registry.open({ userId: 'u-idle' }, 'k'));
-    expect(lease.read(['x'])).toEqual({ ok: true, value: 'R1' }); // fatal 期读面仍可用
+    expect(lease.readData(['x'])).toEqual({ ok: true, value: 'R1' }); // fatal 期读面仍可用
     await lease.release();
     expect(scheduler.pending()).toBe(1);
     await scheduler.advanceBy(300_000);
@@ -708,7 +708,7 @@ describe('AC5（§7.7-10）：idle → active 复用、closing-wait、create idl
     expect(scheduler.pending()).toBe(0); // AC5 同步取消 timer
     expect(lease2).not.toBe(lease1);
     expect(persistence.loadCalls.length).toBe(1); // 零 loadDoc
-    expect(lease2.read(['x'])).toEqual({ ok: true, value: 'R1' }); // 同一 Runtime identity
+    expect(lease2.readData(['x'])).toEqual({ ok: true, value: 'R1' }); // 同一 Runtime identity
     expect(lease2.getMetadata()).toEqual({ marker: 'R1' });
     // 再次 release → 重新武装（open 后 entry 为 active，release 再入 idle）
     await lease2.release();
@@ -761,7 +761,7 @@ describe('AC5（§7.7-10）：idle → active 复用、closing-wait、create idl
     const lease2 = okLease(await p2);
     expect(persistence.loadCalls.length).toBe(2); // 全新 loadDoc
     expect(runtimes.length).toBe(2);
-    expect(lease2.read(['x'])).toEqual({ ok: true, value: 'R2' }); // 新 generation marker
+    expect(lease2.readData(['x'])).toEqual({ ok: true, value: 'R2' }); // 新 generation marker
     await lease2.release();
   });
 
@@ -797,7 +797,7 @@ describe('AC5（§7.7-10）：idle → active 复用、closing-wait、create idl
     const lease2 = okLease(await p2); // open 吞掉 close reject 并继续（新 generation）
     expect(persistence.loadCalls.length).toBe(2);
     expect(runtimes.length).toBe(2);
-    expect(lease2.read(['x'])).toEqual({ ok: true, value: 'R2' });
+    expect(lease2.readData(['x'])).toEqual({ ok: true, value: 'R2' });
     await lease2.release();
     const failedEvents = observer.events.filter((e) => e.type === 'idle-close-failed');
     expect(failedEvents.length).toBe(1);
@@ -904,7 +904,7 @@ describe('idle-arm-failed（§2.B 派生）：武装失败 loud 上报、release
     // entry 停留 active（零 lease）可复用：open 零 loadDoc、同一 Runtime marker
     const lease2 = okLease(await registry.open({ userId: 'u-idle' }, 'k'));
     expect(persistence.loadCalls.length).toBe(1);
-    expect(lease2.read(['x'])).toEqual({ ok: true, value: 'R1' });
+    expect(lease2.readData(['x'])).toEqual({ ok: true, value: 'R1' });
     await lease2.release();
   });
 });
@@ -968,7 +968,7 @@ describe('AC7（§7.11-12）：idle-close failure 零 unhandled rejection、观�
       const lease2 = okLease(await registry.open({ userId: 'u-idle' }, `ns-${X_HEX_ID}`));
       expect(persistence.loadCalls.length).toBe(1);
       expect(runtimes.length).toBe(2);
-      expect(lease2.read(['x'])).toEqual({ ok: true, value: 'R2' });
+      expect(lease2.readData(['x'])).toEqual({ ok: true, value: 'R2' });
       await lease2.release();
       expect(scheduler.pending()).toBe(1); // R2 代际 idle 武装
       // create#2：首选候选 X 撞 idle entry → 重生成 Y 成功（colliding 候选零 Persistence）
@@ -1052,7 +1052,7 @@ describe('AC7（§7.11-12）：idle-close failure 零 unhandled rejection、观�
       const lease2 = okLease(await registry.open({ userId: 'u-idle' }, 'k'));
       expect(persistence.loadCalls.length).toBe(2);
       expect(runtimes.length).toBe(2);
-      expect(lease2.read(['x'])).toEqual({ ok: true, value: 'R2' });
+      expect(lease2.readData(['x'])).toEqual({ ok: true, value: 'R2' });
       await lease2.release();
       // 收尾：R2 代际正常 idle close 结算（清扫 timer，避免测试残留武装）
       await scheduler.advanceBy(300_000);
@@ -1091,7 +1091,7 @@ describe('AC7（§7.11-12）：idle-close failure 零 unhandled rejection、观�
       // 复用同一 Runtime（零 loadDoc）、翻相 active（非 idle）。
       const lease2 = okLease(await registry.open({ userId: 'u-idle' }, 'k'));
       expect(persistence.loadCalls.length).toBe(1); // 零 loadDoc：复用同 Runtime
-      expect(lease2.read(['x'])).toEqual({ ok: true, value: 'R1' });
+      expect(lease2.readData(['x'])).toEqual({ ok: true, value: 'R1' });
       expect(adversarial.armed.length).toBe(1); // 违约束：T1 回调仍存活
       // 手动触发旧回调：守卫链（I4 token 失配先行；phase !== 'idle' 为结构性防御）——P2
       // 收编逻辑不得在守卫之前发起 close（防误伤）：同步 throw 计划零触发、零事件。

@@ -74,7 +74,7 @@ describe('AC5：Live UPDATE/UPDATE_ACK 与排序、dirty、fan-out、窗口', ()
     await fan.peerA.getNamespaceState(fan.nsId); // 已 live（bootFanout 内等待）
     // A 写 → hub 单 observer fan-out
     const aBusy = await openBusinessLease(fan.peerANode, fan.nsId);
-    const result = await aBusy.mutateRoot({ op: 'set', path: ['n'], value: 11 });
+    const result = await aBusy.mutateData({ op: 'set', path: ['n'], value: 11 });
     if (!result.ok) throw new Error(`A 写失败：${JSON.stringify(result)}`);
     await settle();
 

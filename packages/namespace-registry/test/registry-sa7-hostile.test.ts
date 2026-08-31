@@ -161,11 +161,11 @@ class ObservableRuntime implements NamespaceRuntime {
     private readonly closePlan: RuntimeClosePlan = {},
   ) {}
 
-  read() {
+  readData() {
     return { ok: true as const, value: this.marker };
   }
 
-  getSchemaEnvelope(): null {
+  getSchema(): null {
     return null;
   }
 
@@ -181,7 +181,7 @@ class ObservableRuntime implements NamespaceRuntime {
     return READY_STATUS;
   }
 
-  mutateRoot(): Promise<{ ok: true }> {
+  mutateData(): Promise<{ ok: true }> {
     return Promise.resolve({ ok: true });
   }
 
@@ -419,7 +419,7 @@ describe('SA7 敌意注入（攻击面 3）：确定性、零 real sleep', () =>
       // 全链驱动：open（carrier 事件 throw）→ release（lease-released/entry-idle throw）→
       // advance（close）→ 再 open（全新 generation）。
       const lease1 = okLease(await registry.open({ userId: 'u-hostile' }, 'ns-h3'));
-      expect(lease1.read(['n'])).toEqual({ ok: true, value: 'R-H3' });
+      expect(lease1.readData(['n'])).toEqual({ ok: true, value: 'R-H3' });
       await lease1.release();
       expect(scheduler.pending()).toBe(1);
       await scheduler.advanceBy(300_000);

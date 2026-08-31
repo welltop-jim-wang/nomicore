@@ -288,7 +288,7 @@ async function makeNamespace(hubNode: ReplicaNode, salt: string): Promise<string
 async function writeValue(node: ReplicaNode, owner: NamespaceOwner, nsId: string, n: number): Promise<void> {
   const lease = okLease(await node.registry.open(owner, nsId));
   await schemaReady(lease);
-  const result = await lease.mutateRoot({ op: 'set', path: ['n'], value: n });
+  const result = await lease.mutateData({ op: 'set', path: ['n'], value: n });
   if (!result.ok) throw new Error(`业务写失败：${JSON.stringify(result)}`);
   await lease.release();
 }

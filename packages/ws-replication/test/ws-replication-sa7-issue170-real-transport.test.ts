@@ -364,7 +364,7 @@ async function bootRealLiveness(
   const writeHub = async (value: number): Promise<void> => {
     const opened = okLease(await hubNode.registry.open(HUB_OWNER, nsId));
     await schemaReady(opened);
-    const result = await opened.mutateRoot({ op: 'set', path: ['n'], value });
+    const result = await opened.mutateData({ op: 'set', path: ['n'], value });
     if (!result.ok) throw new Error(`hub 写失败：${JSON.stringify(result)}`);
     await opened.release();
   };

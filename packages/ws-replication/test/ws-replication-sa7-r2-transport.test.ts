@@ -287,7 +287,7 @@ async function bootReal(
     const lease = okLease(await node.registry.open(owner, nsId));
     await schemaReady(lease);
     for (const [key, v] of Object.entries(value)) {
-      const result = await lease.mutateRoot({ op: 'set', path: [key], value: v });
+      const result = await lease.mutateData({ op: 'set', path: [key], value: v });
       if (!result.ok) throw new Error(`业务写失败：${JSON.stringify(result)}`);
     }
     await lease.release();

@@ -119,7 +119,7 @@ token、owner 值、Yjs bytes、SCHEMA/ROOT 内容。
 |---|---|---|---|
 | `status` | hub/peer | — | 回执携带 role/instanceId（peer 另有 `connectionState`） |
 | `read` | hub/peer | `namespaceId, path` | 回执 `value`；未知 ns → `namespace-unknown` |
-| `verify-write` | hub/peer | `namespaceId, set, path, value, timeoutMs?` | 等待该 ns 达 `live`（缺省 30s，op 级 `timeoutMs ∈ [1,120000]`）后本地 `mutateRoot({op:'set',path:set,value})`；部署自检动词（默认不用） |
+| `verify-write` | hub/peer | `namespaceId, set, path, value, timeoutMs?` | 等待该 ns 达 `live`（缺省 30s，op 级 `timeoutMs ∈ [1,120000]`）后本地 `mutateData({op:'set',path:set,value})`；部署自检动词（默认不用） |
 | `shutdown` | hub/peer | — | 回执 ok 后进入有序停机 |
 | `add-target` | peer | `namespaceId, ownerUserId` | 幂等：非终态通道（live/opening/…/closing/disconnected）短路，重复 add 不重复发 `target-added`；**终态通道（closed/conflicted/failed）的 add 走底层 re-add**（§14.1 整连接重建，发射 `target-added`）——reset-replica 后重引导失败的文档化恢复入口 |
 | `remove-target` | peer | `namespaceId` | 幂等；未知 nsId = ok 回执、无副作用 |

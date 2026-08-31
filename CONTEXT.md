@@ -30,9 +30,13 @@ _Avoid_: 已关闭 Runtime、无人引用即可立即销毁
 namespace 创建提交时由生命周期层生成的 UTC ISO 8601 字符串，存于 `META.createdAt`；调用方不提供，Persistence 只保存而不解释或校验。
 _Avoid_: Unix 时间戳、调用方自报创建时间
 
+**Data**:
+调用方在 namespace 中读写的、受 Schema 约束的业务事实。公共消费面以 `readData(path)` / `mutateData(mutation)` 表达最小、可合并且有语义的变更；Data 不包含 Schema 身份或 Metadata 生命周期事实。
+_Avoid_: 把 Data 当成必须整体读写的 ROOT 快照、在业务代码中暴露 Y.Doc 载体
+
 **ROOT**:
-命名空间根别名的保留名（大小写是契约）：每个模块必须恰好声明一个 map 形的 `type ROOT = …`（裸对象 / `YMap` / `Record`），ROOT 固定物化为 Y.Map，Yjs 映射为 doc 根 `getMap('ROOT')`。其余无人引用的别名是惰性积木，不进数据面。
-_Avoid_: 隐式根、汇点推导（被否决的根指定方案，ADR-0003）
+Data 在 VFSL/Y.Doc 实现中的根载体保留名（大小写是契约）：每个模块必须恰好声明一个 map 形的 `type ROOT = …`（裸对象 / `YMap` / `Record`），并物化为 doc 根 `getMap('ROOT')`。ROOT 属于 schema、生成器和运行时实现词汇，不进入普通 namespace 消费接口。其余无人引用的别名是惰性积木，不进数据面。
+_Avoid_: 隐式根、汇点推导（被否决的根指定方案，ADR-0003）、用 `mutateRoot` 暴露实现载体
 
 **标记类型（marker types）**:
 `YMap` / `YArray` / `YPlainArray` / `YLeaf` / `YXmlFragment` / `Pattern`；tsc 视角恒等别名，引擎视角是 Yjs 物化语义标记。
@@ -81,7 +85,7 @@ Runtime 发布前已进入写序列器队首的 schema 准备任务；只投影�
 NamespaceRuntime 当前安装、供 ROOT write 使用的已编译 schema tools 及身份；SCHEMA write 的 transaction 成功后同步切换，不等同于对 live SCHEMA 的即时读取。
 
 **停接纳（stop-acceptance）**:
-close 首次调用同步进入 `closing` 后，capability 槽立即停止接纳新调用：read 同步结果联合返回 `RUNTIME_READ_DISABLED` 分支（lifecycle 失败不是路径缺陷，不借用路径失败码）；三个数据投影 getter（getSchemaEnvelope / getMetadata / getActiveSchema）与 read 同属停接纳范围——同步 loud throw 稳定码 `RUNTIME_READ_DISABLED`（getter 返回类型非结果联合，拒绝通道为 throw；message 区分 getter 域与 lifecycle 值）；mutateRoot/replaceSchema 经 Promise settle 含 `RUNTIME_WRITE_DISABLED` 的零写入结果——该码与 fatal 后排队写、写前 writable gate（handle 非 ready：persistence-degraded / released / disposed）、notifyDirty 未绑定共用同一码族，message 文案区分域；close 前已接纳任务仍无条件排空。internal fatal 只永久禁写并保留读取，不触发 read/getter 停接纳。getStatus 全生命周期可用（生命周期观测面，非数据投影），不在停接纳范围。
+close 首次调用同步进入 `closing` 后，capability 槽立即停止接纳新调用：readData 同步结果联合返回 `RUNTIME_READ_DISABLED` 分支（lifecycle 失败不是路径缺陷，不借用路径失败码）；三个数据投影 getter（getSchema / getMetadata / getActiveSchema）与 readData 同属停接纳范围——同步 loud throw 稳定码 `RUNTIME_READ_DISABLED`（getter 返回类型非结果联合，拒绝通道为 throw；message 区分 getter 域与 lifecycle 值）；mutateData/replaceSchema 经 Promise settle 含 `RUNTIME_WRITE_DISABLED` 的零写入结果——该码与 fatal 后排队写、写前 writable gate（handle 非 ready：persistence-degraded / released / disposed）、notifyDirty 未绑定共用同一码族，message 文案区分域；close 前已接纳任务仍无条件排空。internal fatal 只永久禁写并保留读取，不触发 readData/getter 停接纳。getStatus 全生命周期可用（生命周期观测面，非数据投影），不在停接纳范围。
 _Avoid_: 把 lifecycle 失败伪装成路径失败码、把停接纳误解为取消已接纳任务、把停接纳误读为 getStatus 不可用
 
 **重建校验（rebuild validation）**:

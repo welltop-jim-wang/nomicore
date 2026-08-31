@@ -6,7 +6,7 @@
  * 锚定机制（vitest --typecheck 下红/绿翻转）：
  * - 【红】`NamespaceLease` 必须暴露 ADR 0010 冻结名的 Hub 复制管理操作
  *   `enableReplication()` / `bumpReplicationEpoch()`（返回 `Readonly<{ok:boolean}>`
- *   结果联合——与 replaceSchema/mutateRoot 的写结果联合同构；具体返回字段属 SA1
+ *   结果联合——与 replaceSchema/mutateData 的写结果联合同构；具体返回字段属 SA1
  *   设计，本锚只锁 `ok` 判别与 Promise 通道）→ 当前类型面两方法均缺席 →
  *   条件类型求值 `never` → `true` 赋值 TS2322 → 红；SA3 落位 → 绿。
  * - 【红】`NamespaceRuntimeStatus`（runtime 包）与

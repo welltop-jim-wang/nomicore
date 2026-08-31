@@ -222,7 +222,7 @@ describe('Spec 回流红灯：B-1 removeTarget×reconcile / B-2 迟到续体竞�
     // 兄弟 ns 的后续本地写不得落无通道新连接 → 违例 failed（B 仍 live）
     const busLease = okLease(await peerNode.registry.open(PEER_OWNER, nsB));
     await schemaReady(busLease);
-    const write = await busLease.mutateRoot({ op: 'set', path: ['extra'], value: 9 });
+    const write = await busLease.mutateData({ op: 'set', path: ['extra'], value: 9 });
     if (!write.ok) throw new Error(`B 写失败：${JSON.stringify(write)}`);
     await settle();
     expect(peer.getNamespaceState(nsB)).toBe('live');

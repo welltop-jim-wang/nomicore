@@ -163,12 +163,12 @@ describe('close 生命周期（AC6/AC7）', () => {
       'enableReplication',
       'getActiveSchema',
       'getMetadata',
-      'getSchemaEnvelope',
+      'getSchema',
       'getStatus',
-      'mutateRoot',
+      'mutateData',
       'namespaceId',
       'owner',
-      'read',
+      'readData',
       'replaceSchema',
     ]);
     // AC8 负向：v1 无公共事件订阅键
@@ -186,7 +186,7 @@ describe('close 生命周期（AC6/AC7）', () => {
     const closeFn = closeOf(runtime);
     // 闭前基线（post-close 停接纳对照）：ready 期三数据投影 getter 正常工作——值仅作
     // 对照说明（D-2 后 post-close 读取已停接纳，不再断言 post-close 与闭前相等）
-    const envBefore = runtime.getSchemaEnvelope();
+    const envBefore = runtime.getSchema();
     const metaBefore = runtime.getMetadata();
     const activeBefore = runtime.getActiveSchema();
 
@@ -199,7 +199,7 @@ describe('close 生命周期（AC6/AC7）', () => {
     // read 立即停止接纳：同步结果联合（不是 Promise、不抛错）
     let readOut: unknown;
     expect(() => {
-      readOut = runtime.read(['n']);
+      readOut = runtime.readData(['n']);
     }).not.toThrow();
     expect(readOut).not.toBeInstanceOf(Promise);
     expect((readOut as { ok: boolean }).ok).toBe(false);
@@ -220,7 +220,7 @@ describe('close 生命周期（AC6/AC7）', () => {
     // 断言 post-close 相等（读取已停接纳）。
     expect(envBefore).toEqual({ lang: 'vfsl', version: 1, id: 'ns-1', text: TEXT_VALID });
     for (const [getter, call] of [
-      ['getSchemaEnvelope', () => runtime.getSchemaEnvelope()],
+      ['getSchema', () => runtime.getSchema()],
       ['getMetadata', () => runtime.getMetadata()],
       ['getActiveSchema', () => runtime.getActiveSchema()],
     ] as const) {
@@ -257,7 +257,7 @@ describe('close 生命周期（AC6/AC7）', () => {
     const closeFn = closeOf(runtime);
 
     // close 前已接纳的写：排队 → 提交 → 挂在 notifier 门
-    const pA = runtime.mutateRoot(SET_N(42));
+    const pA = runtime.mutateData(SET_N(42));
     await expect.poll(() => notifierCalls, { interval: 10, timeout: 5_000 }).toBe(1);
     expect(doc.getMap('ROOT').get('n')).toBe(42); // 已提交（close 不取消已接纳写）
 
@@ -269,7 +269,7 @@ describe('close 生命周期（AC6/AC7）', () => {
 
     // close 后新写：立即拒绝、不入队——在 A 结算前即 settle ok:false（领域化结果联合）
     const bytesBefore = stateBytes(doc);
-    const s2 = await settleOf(runtime.mutateRoot(SET_N(99)));
+    const s2 = await settleOf(runtime.mutateData(SET_N(99)));
     expect(s2.kind).toBe('resolved'); // 拒绝属普通零写入失败（领域化联合），非 rejection
     if (s2.kind === 'resolved') {
       expect(s2.value).toMatchObject({ ok: false });
@@ -306,7 +306,7 @@ describe('close 生命周期（AC6/AC7）', () => {
     expect(handleCtl.releaseCalls()).toBe(1);
     expect(doc.getMap('ROOT').get('n')).toBe(42); // A 无条件执行完毕（非取消、非零写入）
     // closed 期：read 停止、三能力位 false、close 摘要 null（正常路径无 close issue）
-    expect(runtime.read(['n']).ok).toBe(false);
+    expect(runtime.readData(['n']).ok).toBe(false);
     const st = statusOf(runtime);
     expect(st.read.enabled).toBe(false);
     expect(st.rootWrite.enabled).toBe(false);
@@ -325,7 +325,7 @@ describe('close 生命周期（AC6/AC7）', () => {
     const pc = closeFn();
     expect(statusOf(runtime).lifecycle).toBe('closing');
     // read 拒绝不等待 P0（lifecycle gate 即时生效）
-    expect(runtime.read(['n']).ok).toBe(false);
+    expect(runtime.readData(['n']).ok).toBe(false);
     // P0 未结算 → barrier 不可能已执行 → release 零次、close 未结算
     let settled = false;
     void pc.then(() => {
@@ -363,7 +363,7 @@ describe('close 生命周期（AC6/AC7）', () => {
     // 无论 release 成败：Runtime 进入 closed
     expect(statusOf(runtime).lifecycle).toBe('closed');
     expect(handleCtl.releaseCalls()).toBe(1);
-    expect(runtime.read(['n']).ok).toBe(false);
+    expect(runtime.readData(['n']).ok).toBe(false);
     const st = statusOf(runtime);
     expect(st.read.enabled).toBe(false);
     expect(st.rootWrite.enabled).toBe(false);
@@ -403,7 +403,7 @@ describe('close 生命周期（AC6/AC7）', () => {
     const closeFn = closeOf(runtime);
 
     // close 前已接纳的写：排队 → 提交 → 挂在 notifier 门
-    const pA = runtime.mutateRoot(SET_N(42));
+    const pA = runtime.mutateData(SET_N(42));
     await expect.poll(() => notifierCalls, { interval: 10, timeout: 5_000 }).toBe(1);
     expect(doc.getMap('ROOT').get('n')).toBe(42);
 
@@ -412,7 +412,7 @@ describe('close 生命周期（AC6/AC7）', () => {
 
     // closing 窗口：三 getter 同步 throw（message 含 'closing'）；拒绝非 Promise
     for (const [getter, call] of [
-      ['getSchemaEnvelope', () => runtime.getSchemaEnvelope()],
+      ['getSchema', () => runtime.getSchema()],
       ['getMetadata', () => runtime.getMetadata()],
       ['getActiveSchema', () => runtime.getActiveSchema()],
     ] as const) {
@@ -441,7 +441,7 @@ describe('close 生命周期（AC6/AC7）', () => {
     expect(handleCtl.releaseCalls()).toBe(1);
     // closed 后三 getter 同步 throw（message 含 'closed'）；getStatus 仍可用
     for (const [getter, call] of [
-      ['getSchemaEnvelope', () => runtime.getSchemaEnvelope()],
+      ['getSchema', () => runtime.getSchema()],
       ['getMetadata', () => runtime.getMetadata()],
       ['getActiveSchema', () => runtime.getActiveSchema()],
     ] as const) {
@@ -544,13 +544,13 @@ describe('capability status 七键与 fatal×close 交叉（AC5/AC1–AC4 交叉
     expect(statusOf(runtime).rootWrite.enabled).toBe(false);
     expect(statusOf(runtime).schemaWrite.enabled).toBe(false);
     expect(statusOf(runtime).read.enabled).toBe(true);
-    expect(runtime.read(['n']).ok).toBe(true);
+    expect(runtime.readData(['n']).ok).toBe(true);
     // T2.3（D-2/裁决 H 显式负向锚）：fatal 置位不改 lifecycle（仍 'ready'）→ 三数据
     // 投影 getter 照常（不 throw——门禁 key 仅 lifecycle，绝不 keyed on fatal）：
     // envelope/meta 照常投影；active 为 null（P0 fatal 未安装 active——「照常」= 不抛、
     // 形状正常，非「有 active 值」）
-    expect(runtime.getSchemaEnvelope()).not.toBeNull();
-    expect(runtime.getSchemaEnvelope()!.id).toBe('ns-1');
+    expect(runtime.getSchema()).not.toBeNull();
+    expect(runtime.getSchema()!.id).toBe('ns-1');
     expect(runtime.getMetadata().docId).toBe('ns-1');
     expect(runtime.getActiveSchema()).toBeNull();
     expect(statusOf(runtime).lifecycle).toBe('ready');
@@ -563,10 +563,10 @@ describe('capability status 七键与 fatal×close 交叉（AC5/AC1–AC4 交叉
     expect(handleCtl.releaseCalls()).toBe(1);
     // read 现在停了（close 后才停）
     expect(statusOf(runtime).read.enabled).toBe(false);
-    expect(runtime.read(['n']).ok).toBe(false);
+    expect(runtime.readData(['n']).ok).toBe(false);
     // T2.3（续）：close 后三 getter 才 throw（D-2 停接纳——fatal 期照常的反面证据）
     for (const [getter, call] of [
-      ['getSchemaEnvelope', () => runtime.getSchemaEnvelope()],
+      ['getSchema', () => runtime.getSchema()],
       ['getMetadata', () => runtime.getMetadata()],
       ['getActiveSchema', () => runtime.getActiveSchema()],
     ] as const) {
@@ -601,7 +601,7 @@ describe('capability status 七键与 fatal×close 交叉（AC5/AC1–AC4 交叉
       throw new Error('observer-boom-close');
     });
 
-    const pa = runtime.mutateRoot(SET_N(9)); // close 前已接纳
+    const pa = runtime.mutateData(SET_N(9)); // close 前已接纳
     const pc = closeOf(runtime)(); // 排空期内 fatal 写槽（在 barrier 之前执行）
     expect(statusOf(runtime).lifecycle).toBe('closing');
     expect(handleCtl.releaseCalls()).toBe(0); // 写槽未 settle，barrier 未执行
@@ -621,6 +621,6 @@ describe('capability status 七键与 fatal×close 交叉（AC5/AC1–AC4 交叉
     expect(statusOf(runtime).lifecycle).toBe('closed');
     expect(handleCtl.releaseCalls()).toBe(1);
     expect(statusOf(runtime).close).toBeNull();
-    expect(runtime.read(['n']).ok).toBe(false);
+    expect(runtime.readData(['n']).ok).toBe(false);
   });
 });

@@ -19,18 +19,18 @@
  *   re-export——seam 输入类型含 DocHandle，随值一并撤出公共面（AC6 点名对象）；
  * - 不导出 WriteSequencer / 运行态；构造/投影错误类别仍不导出（code+message
  *   字符串消费）；
- * - handler/Y.Doc/sequencer 永不从本入口出现；mutateRoot 是 runtime 面方法而非模块级导出。
+ * - handler/Y.Doc/sequencer 永不从本入口出现；mutateData 是 runtime 面方法而非模块级导出。
  */
 export { RuntimeWriteFatalError } from './errors.js';
 export type {
   NamespaceRuntime,
-  NamespaceRuntimeReadResult,
+  NamespaceRuntimeReadDataResult,
   RuntimeReadDisabledResult,
 } from './runtime.js';
 export type { NamespaceRuntimeStatus } from './status.js';
 export type { ActiveSchemaInfo } from './p0.js';
 export type { RuntimeWriteFatalPhase } from './errors.js';
-export type { RootMutationIssue, MutateRootResult } from './write.js';
+export type { DataMutationIssue, MutateDataResult } from './write.js';
 export type { ReplaceSchemaInput, SchemaReplacementIssue, ReplaceSchemaResult } from './schema-write.js';
 // issue #132：复制管理写面的公共类型（type-only——值导出面仍恰 RuntimeWriteFatalError
 // 一键冻结；REPLICATION_ID_PATTERN 等值导出不进本入口）。

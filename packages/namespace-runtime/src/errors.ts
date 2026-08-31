@@ -65,7 +65,7 @@ export class RuntimeReadDisabledError extends Error {
   readonly code = RUNTIME_READ_DISABLED_CODE; // 'RUNTIME_READ_DISABLED'（errors.ts 既有常量）
 
   constructor(
-    getter: 'getSchemaEnvelope' | 'getMetadata' | 'getActiveSchema',
+    getter: 'getSchema' | 'getMetadata' | 'getActiveSchema',
     lifecycle: 'closing' | 'closed',
   ) {
     super(

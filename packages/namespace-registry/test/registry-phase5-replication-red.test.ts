@@ -423,14 +423,14 @@ describe('AC-4 bumpReplicationEpoch：独占写面、sequenced、monotonic、ove
 
     // Hub-only 独占写面（ADR 0010「只能由 hub 的显式复制管理操作修改」）：
     // 普通业务写（ROOT mutate + SCHEMA replace）对复制字段 zero-touch
-    expect((await lease.mutateRoot({ op: 'set', path: ['n'], value: 7 }))?.ok).toBe(true);
-    expect((await lease.mutateRoot({ op: 'set', path: ['n'], value: 8 }))?.ok).toBe(true);
+    expect((await lease.mutateData({ op: 'set', path: ['n'], value: 7 }))?.ok).toBe(true);
+    expect((await lease.mutateData({ op: 'set', path: ['n'], value: 8 }))?.ok).toBe(true);
     expect((await lease.replaceSchema({ schema: SCHEMA_ENVELOPE }))?.ok).toBe(true);
     expect(repMeta(lease).replicationId).toBe(id0);
     expect(repMeta(lease).replicationEpoch).toBe(3);
 
     // 试图经普通业务写触达 META 复制字段：领域拒绝、零写入（META 不变）
-    const foreign = await lease.mutateRoot({
+    const foreign = await lease.mutateData({
       op: 'set',
       path: ['META', 'replicationEpoch'],
       value: 999,
@@ -520,10 +520,10 @@ describe('AC-4 bumpReplicationEpoch：独占写面、sequenced、monotonic、ove
     expect(laterBump.ok).toBe(false);
     expect(JSON.stringify(laterBump)).toContain('RUNTIME_WRITE_DISABLED');
     expect(repMeta(lease).replicationEpoch).toBe(2); // 零写入
-    const laterRoot = await lease.mutateRoot({ op: 'set', path: ['n'], value: 9 });
+    const laterRoot = await lease.mutateData({ op: 'set', path: ['n'], value: 9 });
     expect(laterRoot?.ok).toBe(false);
     expect(JSON.stringify(laterRoot)).toContain('RUNTIME_WRITE_DISABLED');
-    expect(lease.read(['n'])).toMatchObject({ ok: true }); // read 保留
+    expect(lease.readData(['n'])).toMatchObject({ ok: true }); // read 保留
   });
 });
 

@@ -79,7 +79,7 @@ describe('package surface：exports 面与运行时 export-key 审计', () => {
       expect(typeof value, `${key} 必须是函数/类`).toBe('function');
       // 泄漏探测：被导出的值不得具备 Runtime/DocHandle 形状
       expect((value as { readonly namespaceId?: unknown })?.namespaceId).toBeUndefined();
-      expect((value as { readonly mutateRoot?: unknown })?.mutateRoot).toBeUndefined();
+      expect((value as { readonly mutateData?: unknown })?.mutateData).toBeUndefined();
       expect((value as { readonly doc?: unknown })?.doc).toBeUndefined();
       expect((value as { readonly release?: unknown })?.release).toBeUndefined();
     }

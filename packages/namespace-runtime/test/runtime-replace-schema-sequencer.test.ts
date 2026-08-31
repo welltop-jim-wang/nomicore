@@ -41,7 +41,7 @@
  *   成为 runtime 公共面方法（第九键；模块级入口保持窄——entry.replaceSchema undefined）；
  * - 独立窄结果联合：成功 `{ ok: true }`；普通失败（compile/提取/校验/快照拒绝/
  *   write-disabled）`{ ok: false, issues: { message, path }[] }` 且零写入；
- * - 与 mutateRoot 共享唯一严格 FIFO sequencer（占槽互斥 + notifier 屏障互通）；
+ * - 与 mutateData 共享唯一严格 FIFO sequencer（占槽互斥 + notifier 屏障互通）；
  * - 不依赖当前 schema 可编译（P0 unavailable 态 replaceSchema 仍可入槽执行并恢复）；
  * - 未提供 root：按 proposed derived 严格提取并验证当前 ROOT——载体不兼容或逻辑不兼容
  *   均零写入失败，ROOT 不修改、identity 保持；
@@ -59,7 +59,7 @@
  * - snapshotter 拒绝非 plain data（class 实例 / symbol 键 / 非有限 number / 循环引用 /
  *   function）→ ok:false 含稳定码 MUTATION_INPUT_NOT_PLAIN_DATA、零写入；
  * - 输入对象在排队期间被调用方改动 → 槽开始时刻的快照获胜（不是调用时快照）；
- * - AC9：准备/排队期间 read/getSchemaEnvelope/getActiveSchema 继续观察旧 committed
+ * - AC9：准备/排队期间 read/getSchema/getActiveSchema 继续观察旧 committed
  *   generation；transaction 后才观察新 SCHEMA/ROOT。
  *
  * 红灯现状（构造性红灯）：runtime.replaceSchema 尚未实现（公共面只有八键）——全部用例
@@ -126,7 +126,7 @@ function stateBytes(doc: Y.Doc): number[] {
 }
 
 function readValue(runtime: NamespaceRuntime, path: readonly (string | number)[]): unknown {
-  const read = runtime.read(path);
+  const read = runtime.readData(path);
   if (!read.ok) throw new Error(`读取应成功，实际 code=${read.code}`);
   return read.value;
 }
@@ -345,7 +345,7 @@ describe('namespace-runtime replaceSchema：原子 SCHEMA replacement 与 ROOT g
     expect(updates.count).toBe(1);
     // AC4：事务内 clear 后写恰好 lang/version/id/text 四键（键名四字符串；值型 lang/id/text string、version number）
     assertSchemaExactlyFourKeys(doc, ENV2B);
-    expect(runtime.getSchemaEnvelope()).toEqual(ENV2B);
+    expect(runtime.getSchema()).toEqual(ENV2B);
     // AC5：未提供 root → 不修改 ROOT，也不破坏 identity（顶层 Y.Map 同一实例 + 内容原样）
     expect(doc.getMap('ROOT')).toBe(rootBefore);
     expect(doc.getMap('SCHEMA')).toBe(schemaBefore);
@@ -359,7 +359,7 @@ describe('namespace-runtime replaceSchema：原子 SCHEMA replacement 与 ROOT g
     expect(stateBytes(doc)).not.toEqual(bytesBefore);
   });
 
-  it('AC1 + AC9 共享严格 FIFO（mutateRoot 先占槽 → replaceSchema 排队）：准备期 read/getSchemaEnvelope/getActiveSchema 观察旧 committed generation', async () => {
+  it('AC1 + AC9 共享严格 FIFO（mutateData 先占槽 → replaceSchema 排队）：准备期 read/getSchema/getActiveSchema 观察旧 committed generation', async () => {
     const doc = makeDoc();
 
     const gateA = deferred();
@@ -374,8 +374,8 @@ describe('namespace-runtime replaceSchema：原子 SCHEMA replacement 与 ROOT g
     await waitReady(runtime);
 
     const order: string[] = [];
-    // 写 A 先占槽（mutateRoot：共享 sequencer 的前项）
-    const pM = runtime.mutateRoot(SET_N(2));
+    // 写 A 先占槽（mutateData：共享 sequencer 的前项）
+    const pM = runtime.mutateData(SET_N(2));
     pM.then(
       () => order.push('M'),
       () => order.push('M'),
@@ -390,13 +390,13 @@ describe('namespace-runtime replaceSchema：原子 SCHEMA replacement 与 ROOT g
       () => order.push('R'),
     );
 
-    // AC9 准备期（本调用尚未取得槽）：read/getSchemaEnvelope/getActiveSchema 全部观察旧 committed
+    // AC9 准备期（本调用尚未取得槽）：read/getSchema/getActiveSchema 全部观察旧 committed
     // generation——SCHEMA 仍 ns-1、active schema 仍 ns-1、ROOT 值 = A 已提交的 2（旧 generation 对 replace 而言）
-    expect(runtime.getSchemaEnvelope()?.id).toBe('ns-1');
+    expect(runtime.getSchema()?.id).toBe('ns-1');
     expect(runtime.getActiveSchema()?.id).toBe('ns-1');
     expect(readValue(runtime, ['n'])).toBe(2);
     await sleep(25);
-    expect(runtime.getSchemaEnvelope()?.id).toBe('ns-1'); // R 尚未执行（A 的 notifier 仍挂住）
+    expect(runtime.getSchema()?.id).toBe('ns-1'); // R 尚未执行（A 的 notifier 仍挂住）
     expect(order).toEqual([]);
 
     // 放行 notifier → 槽释放 → replaceSchema 才取得槽（FIFO 完成顺序 M → R）
@@ -406,12 +406,12 @@ describe('namespace-runtime replaceSchema：原子 SCHEMA replacement 与 ROOT g
     expect(order).toEqual(['M', 'R']);
     expect(notifierCalls).toBe(2);
     // transaction 后才观察新 generation
-    expect(runtime.getSchemaEnvelope()?.id).toBe('ns-2b');
+    expect(runtime.getSchema()?.id).toBe('ns-2b');
     expect(runtime.getActiveSchema()?.id).toBe('ns-2b');
     expect(readValue(runtime, ['n'])).toBe(2); // 未提供 root：ROOT 零修改
   });
 
-  it('AC1 + AC5 + AC6 反向：replaceSchema 占槽（notifier 挂住）→ mutateRoot 排队；挂住期新 active tools 已安装、新 SCHEMA/ROOT 已提交', async () => {
+  it('AC1 + AC5 + AC6 反向：replaceSchema 占槽（notifier 挂住）→ mutateData 排队；挂住期新 active tools 已安装、新 SCHEMA/ROOT 已提交', async () => {
     const doc = makeDoc();
 
     const gateR = deferred();
@@ -433,8 +433,8 @@ describe('namespace-runtime replaceSchema：原子 SCHEMA replacement 与 ROOT g
     );
     await expect.poll(() => notifierCalls, { interval: 10, timeout: 5_000 }).toBe(1);
 
-    // 同 tick 排队 mutateRoot（共享 sequencer——排在 R 后）
-    const pM = runtime.mutateRoot(SET_N(30));
+    // 同 tick 排队 mutateData（共享 sequencer——排在 R 后）
+    const pM = runtime.mutateData(SET_N(30));
     pM.then(
       () => order.push('M'),
       () => order.push('M'),
@@ -443,14 +443,14 @@ describe('namespace-runtime replaceSchema：原子 SCHEMA replacement 与 ROOT g
     // AC6 时序锚：transaction 已提交（SCHEMA/ROOT 新 generation 可观测）而 notifier 未放行——
     // 此时 getActiveSchema 必须已切换新 active tools（install 先于 await notifyDirty）
     expect(runtime.getActiveSchema()?.id).toBe('ns-2');
-    expect(runtime.getSchemaEnvelope()?.id).toBe('ns-2');
+    expect(runtime.getSchema()?.id).toBe('ns-2');
     expect(runtime.getStatus().schema.state).toBe('ready');
     // ROOT 新内容已提交（root 提供路径：完整 logical ROOT 替换）
     expect(readValue(runtime, ['n'])).toBe(20);
     expect(readValue(runtime, ['a'])).toBe('x');
     expect(readValue(runtime, ['b'])).toBe(true);
     await sleep(25);
-    // 后项 mutateRoot 未开始（R 的 notifier 仍挂住；FIFO 屏障）
+    // 后项 mutateData 未开始（R 的 notifier 仍挂住；FIFO 屏障）
     expect(readValue(runtime, ['n'])).toBe(20);
     expect(order).toEqual([]);
 
@@ -493,7 +493,7 @@ describe('namespace-runtime replaceSchema：原子 SCHEMA replacement 与 ROOT g
     expect(notifierCalls).toBe(0);
     expect(stateBytes(doc)).toEqual(bytesBefore);
     // SCHEMA/ROOT/active tools 均不变
-    expect(runtime.getSchemaEnvelope()?.id).toBe('ns-1');
+    expect(runtime.getSchema()?.id).toBe('ns-1');
     expect(runtime.getActiveSchema()?.id).toBe('ns-1');
     expect(readValue(runtime, ['n'])).toBe(1);
     expect(readValue(runtime, ['a'])).toBe('x');
@@ -524,7 +524,7 @@ describe('namespace-runtime replaceSchema：原子 SCHEMA replacement 与 ROOT g
     expect(updates.count).toBe(0);
     expect(notifierCalls).toBe(0);
     expect(stateBytes(doc)).toEqual(bytesBefore);
-    expect(runtime.getSchemaEnvelope()?.id).toBe('ns-1');
+    expect(runtime.getSchema()?.id).toBe('ns-1');
     expect(runtime.getActiveSchema()?.id).toBe('ns-1');
     expect(readValue(runtime, ['n'])).toBe(1);
     expect(runtime.getStatus().schema.state).toBe('ready');
@@ -560,7 +560,7 @@ describe('namespace-runtime replaceSchema：原子 SCHEMA replacement 与 ROOT g
     expect(readValue(runtime, ['b'])).toBe(true);
     // AC4：SCHEMA 恰四键 + 新 envelope
     assertSchemaExactlyFourKeys(doc, ENV2);
-    expect(runtime.getSchemaEnvelope()).toEqual(ENV2);
+    expect(runtime.getSchema()).toEqual(ENV2);
     // AC6：active tools 已切换
     expect(runtime.getActiveSchema()?.id).toBe('ns-2');
     expect(stateBytes(doc)).not.toEqual(bytesBefore);
@@ -590,7 +590,7 @@ describe('namespace-runtime replaceSchema：原子 SCHEMA replacement 与 ROOT g
     expect(updates.count).toBe(0);
     expect(notifierCalls).toBe(0);
     expect(stateBytes(doc)).toEqual(bytesBefore);
-    expect(runtime.getSchemaEnvelope()?.id).toBe('ns-1');
+    expect(runtime.getSchema()?.id).toBe('ns-1');
     expect(runtime.getActiveSchema()?.id).toBe('ns-1');
     expect(readValue(runtime, ['n'])).toBe(1);
     expect(readValue(runtime, ['a'])).toBe('x');
@@ -625,7 +625,7 @@ describe('namespace-runtime replaceSchema：原子 SCHEMA replacement 与 ROOT g
     expect(updates.count).toBe(0);
     expect(notifierCalls).toBe(0);
     expect(stateBytes(doc)).toEqual(bytesBefore);
-    expect(runtime.getSchemaEnvelope()?.id).toBe('ns-1');
+    expect(runtime.getSchema()?.id).toBe('ns-1');
     expect(runtime.getActiveSchema()?.id).toBe('ns-1'); // 旧 active tools 继续服务
     expect(readValue(runtime, ['n'])).toBe(1);
     expect(runtime.getStatus().schema.state).toBe('ready');
@@ -663,7 +663,7 @@ describe('namespace-runtime replaceSchema：原子 SCHEMA replacement 与 ROOT g
       expect(updates.count, `[${name}] 零写入（0 更新事件）`).toBe(0);
       expect(notifierCalls, `[${name}] 未提交不得登记 dirty`).toBe(0);
       expect(stateBytes(doc), `[${name}] zero-write：state 字节不变`).toEqual(bytesBefore);
-      expect(runtime.getSchemaEnvelope()?.id, `[${name}] SCHEMA 不变`).toBe('ns-1');
+      expect(runtime.getSchema()?.id, `[${name}] SCHEMA 不变`).toBe('ns-1');
       expect(runtime.getActiveSchema()?.id, `[${name}] active tools 不变`).toBe('ns-1');
       expect(readValue(runtime, ['n']), `[${name}] 读取保留`).toBe(1);
     }
@@ -696,7 +696,7 @@ describe('namespace-runtime replaceSchema：原子 SCHEMA replacement 与 ROOT g
     expect(notifierCalls).toBe(1);
     // 槽开始时刻快照 = 改动后的引用（999 / ns-2b），而非调用时（1 / ns-2）
     expect(readValue(runtime, ['n'])).toBe(999);
-    expect(runtime.getSchemaEnvelope()?.id).toBe('ns-2b');
+    expect(runtime.getSchema()?.id).toBe('ns-2b');
   });
 
   it('AC1+AC2+AC8：P0 schema-unavailable（当前 schema 编译失败）→ replaceSchema 合法恢复 → ROOT write 恢复可用', async () => {
@@ -726,12 +726,12 @@ describe('namespace-runtime replaceSchema：原子 SCHEMA replacement 与 ROOT g
     expect(runtime.getStatus().schema.state).toBe('ready');
     expect(runtime.getStatus().rootWrite.enabled).toBe(true); // ROOT write 恢复
     expect(runtime.getActiveSchema()?.id).toBe('ns-2b');
-    expect(runtime.getSchemaEnvelope()?.id).toBe('ns-2b');
+    expect(runtime.getSchema()?.id).toBe('ns-2b');
     assertSchemaExactlyFourKeys(doc, ENV2B);
     expect(readValue(runtime, ['n'])).toBe(1); // 未提供 root：ROOT 零修改
 
-    // AC8 后向：ROOT write 已恢复——mutateRoot 使用新 active schema 成功提交
-    await expect(runtime.mutateRoot(SET_N(7))).resolves.toEqual({ ok: true });
+    // AC8 后向：ROOT write 已恢复——mutateData 使用新 active schema 成功提交
+    await expect(runtime.mutateData(SET_N(7))).resolves.toEqual({ ok: true });
     expect(notifierCalls).toBe(2);
     expect(readValue(runtime, ['n'])).toBe(7);
   });
@@ -766,7 +766,7 @@ describe('namespace-runtime replaceSchema：原子 SCHEMA replacement 与 ROOT g
     expect(updates.count).toBe(0);
     expect(notifierCalls).toBe(0);
     expect(stateBytes(doc)).toEqual(bytesBefore);
-    expect(runtime.getSchemaEnvelope()?.id).toBe('ns-1');
+    expect(runtime.getSchema()?.id).toBe('ns-1');
     expect(runtime.getActiveSchema()?.id).toBe('ns-1'); // active tools 不变
     expect(readValue(runtime, ['n'])).toBe(1); // 读取保留
   });

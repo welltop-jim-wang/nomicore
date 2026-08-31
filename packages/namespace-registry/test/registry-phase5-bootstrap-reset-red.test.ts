@@ -229,7 +229,7 @@ function leaseStatus(lease: NamespaceLease): {
 }
 
 function leaseReadN(lease: NamespaceLease): unknown {
-  const read = lease.read(['n']) as { ok?: boolean; value?: unknown };
+  const read = lease.readData(['n']) as { ok?: boolean; value?: unknown };
   expect(read.ok, `期望读取成功，实际：${JSON.stringify(read)}`).toBe(true);
   return read.value;
 }
@@ -708,7 +708,7 @@ describe('AC-4 resetReplica 编排：close→archive→allow bootstrap；owner/i
     await schemaReady(lease);
 
     // 在途写先入队，reset 随后：carrier FIFO / close-drain 必须让已接纳写槽完整结算
-    const writeP = lease.mutateRoot({ op: 'set', path: ['n'], value: 7 });
+    const writeP = lease.mutateData({ op: 'set', path: ['n'], value: 7 });
     const resetP = asResetRegistry(registry).resetReplica(ALICE, NS_B, {
       replicationId: ID_A,
       replicationEpoch: 1,

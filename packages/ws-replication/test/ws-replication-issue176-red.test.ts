@@ -388,7 +388,7 @@ async function bootIssue176(opts: BootIssue176Options = {}): Promise<Issue176Boo
     peerStats,
     async writeHub(update) {
       for (const [key, value] of Object.entries(update)) {
-        const result = await fixture.lease.mutateRoot({ op: 'set', path: [key], value });
+        const result = await fixture.lease.mutateData({ op: 'set', path: [key], value });
         if (!result.ok) throw new Error(`hub 写失败：${JSON.stringify(result)}`);
       }
       await settle();

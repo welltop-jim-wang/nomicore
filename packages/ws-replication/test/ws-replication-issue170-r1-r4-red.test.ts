@@ -336,7 +336,7 @@ async function bootIssue170(opts: BootOptions): Promise<Issue170Env> {
     nsId: fixture.namespaceId,
     dialCount: () => dialCount,
     async writeHub(value: number) {
-      const result = await fixture.lease.mutateRoot({ op: 'set', path: ['n'], value });
+      const result = await fixture.lease.mutateData({ op: 'set', path: ['n'], value });
       if (!result.ok) throw new Error(`hub 写失败：${JSON.stringify(result)}`);
       await settle();
     },

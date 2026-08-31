@@ -77,7 +77,7 @@ describe('SA7 动态验证 — SA4 重点 3/5：真实 handle close 冒烟与 re
       expect(handle.getStatus()).toBe('ready');
 
       // close 前已接纳写：await 完成信号（含 dirty notification 登记）
-      const res = await runtime.mutateRoot({ op: 'set', path: ['n'], value: 42 });
+      const res = await runtime.mutateData({ op: 'set', path: ['n'], value: 42 });
       expect(res).toEqual({ ok: true });
 
       // 等 debounce flush 真实落盘（release 不冲刷 pending flush——先落盘再 close 保持确定）
@@ -106,8 +106,8 @@ describe('SA7 动态验证 — SA4 重点 3/5：真实 handle close 冒烟与 re
       expect(st.schemaWrite.enabled).toBe(false);
 
       // close 后停接纳：read 同步结果联合拒、新写零入队即时 ok:false
-      expect(runtime.read(['n'])).toMatchObject({ ok: false, code: 'RUNTIME_READ_DISABLED' });
-      const blocked = await runtime.mutateRoot({ op: 'set', path: ['n'], value: 99 });
+      expect(runtime.readData(['n'])).toMatchObject({ ok: false, code: 'RUNTIME_READ_DISABLED' });
+      const blocked = await runtime.mutateData({ op: 'set', path: ['n'], value: 99 });
       expect(JSON.stringify(blocked)).toContain('RUNTIME_WRITE_DISABLED');
 
       // 幂等（AC7）：后续 close 返回同一 Promise 实例
@@ -192,8 +192,8 @@ describe('SA7 动态验证 — SA4 重点 3/5：真实 handle close 冒烟与 re
     expect(st1.close).toMatchObject({ code: 'NSRT-CLOSE-RELEASE-FAILED' });
     const st2 = runtime.getStatus();
     expect(st2.close).toBe(st1.close); // closeIssue 冻结——跨调用同引用稳定
-    expect(runtime.read(['n'])).toMatchObject({ ok: false, code: 'RUNTIME_READ_DISABLED' });
-    const blocked = await runtime.mutateRoot({ op: 'set', path: ['n'], value: 7 });
+    expect(runtime.readData(['n'])).toMatchObject({ ok: false, code: 'RUNTIME_READ_DISABLED' });
+    const blocked = await runtime.mutateData({ op: 'set', path: ['n'], value: 7 });
     expect(JSON.stringify(blocked)).toContain('RUNTIME_WRITE_DISABLED');
 
     // 幂等（AC7）：后续 close 返回同一已结算 Promise，rejection 原因同身份

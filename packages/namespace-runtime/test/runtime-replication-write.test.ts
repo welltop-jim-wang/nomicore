@@ -236,11 +236,11 @@ describe('槽内 E4 读取到损坏 META → internal fatal（拒绝虚假降级
     expect(st.schemaWrite.enabled).toBe(false);
     expect(st.read.enabled).toBe(true);
 
-    // 后续写（再 enable / mutateRoot）→ RUNTIME_WRITE_DISABLED 零写入
+    // 后续写（再 enable / mutateData）→ RUNTIME_WRITE_DISABLED 零写入
     const later = await enableOf(runtime, { replicationId: 'e'.repeat(32) });
     expect(later.ok).toBe(false);
     expect(issuesText(later)).toContain('RUNTIME_WRITE_DISABLED');
-    const rootWrite = await runtime.mutateRoot({ op: 'set', path: ['n'], value: 9 });
+    const rootWrite = await runtime.mutateData({ op: 'set', path: ['n'], value: 9 });
     expect(rootWrite.ok).toBe(false);
     expect(JSON.stringify(rootWrite)).toContain('RUNTIME_WRITE_DISABLED');
   });

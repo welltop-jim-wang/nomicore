@@ -163,11 +163,11 @@ class CountingRuntime implements NamespaceRuntime {
 
   constructor(readonly marker: string, readonly namespaceId: string) {}
 
-  read() {
+  readData() {
     return { ok: true as const, value: this.marker };
   }
 
-  getSchemaEnvelope(): null {
+  getSchema(): null {
     return null;
   }
 
@@ -183,7 +183,7 @@ class CountingRuntime implements NamespaceRuntime {
     return READY_STATUS;
   }
 
-  mutateRoot(): Promise<{ ok: true }> {
+  mutateData(): Promise<{ ok: true }> {
     return Promise.resolve({ ok: true });
   }
 

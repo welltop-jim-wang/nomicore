@@ -138,12 +138,12 @@ describe('SA7 动态验证：hub watchdog 空闲节奏（SA4 #3）/ hub needsRes
       const opened = result as { ok?: boolean; lease?: unknown };
       if (!opened.ok || opened.lease === undefined) throw new Error('hub 业务 lease 开失败');
       const lease = opened.lease as {
-        mutateRoot(input: unknown): Promise<{ ok: boolean }>;
+        mutateData(input: unknown): Promise<{ ok: boolean }>;
         release(): Promise<void>;
       };
       const writes = await Promise.all(
         Array.from({ length: 20 }, (_, i) =>
-          lease.mutateRoot({ op: 'set', path: ['n'], value: i + 1 }),
+          lease.mutateData({ op: 'set', path: ['n'], value: i + 1 }),
         ),
       );
       for (const w of writes) {

@@ -13,7 +13,7 @@ import { DocLoadOperationalError, createMemoryPersistence } from '@nomicore/pers
 import type { DocHandle, DocPersistence, User } from '@nomicore/persistence';
 import type {
   NamespaceRuntime,
-  NamespaceRuntimeReadResult,
+  NamespaceRuntimeReadDataResult,
   NamespaceRuntimeStatus,
 } from '@nomicore/namespace-runtime';
 import {
@@ -173,7 +173,7 @@ const READY_STATUS: NamespaceRuntimeStatus = {
 
 function makeRuntime(overrides: {
   status?: () => NamespaceRuntimeStatus;
-  read?: (path: readonly (string | number)[]) => NamespaceRuntimeReadResult;
+  readData?: (path: readonly (string | number)[]) => NamespaceRuntimeReadDataResult;
   mutate?: () => Promise<{ ok: true } | { ok: false; issues: unknown[] }>;
   owner?: User;
   namespaceId?: string;
@@ -181,12 +181,12 @@ function makeRuntime(overrides: {
   return {
     owner: overrides.owner ?? { userId: 'runtime-owner' },
     namespaceId: overrides.namespaceId ?? 'runtime-ns',
-    read: overrides.read ?? (() => ({ ok: true, value: 'runtime-value' })),
-    getSchemaEnvelope: () => null,
+    readData: overrides.readData ?? (() => ({ ok: true, value: 'runtime-value' })),
+    getSchema: () => null,
     getMetadata: () => ({ marker: 'meta' }),
     getActiveSchema: () => null,
     getStatus: overrides.status ?? (() => READY_STATUS),
-    mutateRoot: overrides.mutate ?? (async () => ({ ok: true })),
+    mutateData: overrides.mutate ?? (async () => ({ ok: true })),
     replaceSchema: async () => ({ ok: true }),
     enableReplication: async () => ({ ok: true }),
     bumpReplicationEpoch: async () => ({ ok: true }),
@@ -353,7 +353,7 @@ describe('identity 分支（§4/§6.1）：最小安全规则 + 零访问', () =
     expect(lease.namespaceId).toBe(docId);
     expect(lease.owner).toEqual({ userId: owner.userId });
     // 真实 Runtime 构造（生产内部 factory 默认路径）：read 对已提交 ROOT 可用
-    expect(lease.read(['n'])).toEqual({ ok: true, value: 42 });
+    expect(lease.readData(['n'])).toEqual({ ok: true, value: 42 });
     await lease.release();
   });
 });
@@ -800,7 +800,7 @@ describe('capability：fatal/unavailable/degraded Runtime 均可 open 并透传�
     persistence.queueLoad({ result: new StubHandle({ userId: 'u' }, 'k') });
     const registry = createNamespaceRegistryForTesting(persistence, {
       clock: manualClock(), scheduler: createRegistryTestScheduler(), randomBytes: TEST_RANDOM_BYTES,
-      runtimeFactory: () => makeRuntime({ status: () => runtimeStatus, read: () => ({ ok: true, value: 'still-readable' }) }),
+      runtimeFactory: () => makeRuntime({ status: () => runtimeStatus, readData: () => ({ ok: true, value: 'still-readable' }) }),
     });
     const result = await registry.open({ userId: 'u' }, 'k');
     const lease = okLease(result);
@@ -812,7 +812,7 @@ describe('capability：fatal/unavailable/degraded Runtime 均可 open 并透传�
       expect(projected.runtime.schemaWrite.enabled).toBe(false);
       expect(projected.runtime.read.enabled).toBe(true);
     }
-    expect(lease.read(['x'])).toEqual({ ok: true, value: 'still-readable' }); // 读取保留
+    expect(lease.readData(['x'])).toEqual({ ok: true, value: 'still-readable' }); // 读取保留
     expect(lease.getActiveSchema()).toBeNull();
     await lease.release();
   });
@@ -854,7 +854,7 @@ describe('publish 时机：factory 返回即成功，不等待 P0（§6/AC4）',
       clock: manualClock(), scheduler: createRegistryTestScheduler(), randomBytes: TEST_RANDOM_BYTES,
       runtimeFactory: () =>
         makeRuntime({
-          read: () => ({ ok: true, value: 'pre-p0-value' }),
+          readData: () => ({ ok: true, value: 'pre-p0-value' }),
           status: () => ({
             lifecycle: 'ready',
             read: { enabled: true },
@@ -876,7 +876,7 @@ describe('publish 时机：factory 返回即成功，不等待 P0（§6/AC4）',
     if (st.lease === 'active') {
       expect(st.runtime.schema.state).toBe('preparing'); // P0 未结算的忠实投影
     }
-    expect(lease.read(['a'])).toEqual({ ok: true, value: 'pre-p0-value' });
+    expect(lease.readData(['a'])).toEqual({ ok: true, value: 'pre-p0-value' });
     p0Gate.resolve();
     await lease.release();
   });
@@ -917,13 +917,13 @@ describe('lease 语义（§7 逐方法表格）', () => {
         'enableReplication',
         'getActiveSchema',
         'getMetadata',
-        'getSchemaEnvelope',
+        'getSchema',
         'getStatus',
-        'mutateRoot',
+        'mutateData',
         'namespaceId',
         'openReplicationSession',
         'owner',
-        'read',
+        'readData',
         'release',
         'replaceSchema',
       ].sort(),
@@ -942,7 +942,7 @@ describe('lease 语义（§7 逐方法表格）', () => {
       owner: { userId: 'u' },
       namespaceId: 'k',
       status: () => READY_STATUS,
-      read: () => {
+      readData: () => {
         calls.push('read');
         return { ok: false, code: 'PATH_NOT_ALLOWED', path: ['nope'] };
       },
@@ -953,11 +953,11 @@ describe('lease 语义（§7 逐方法表格）', () => {
     });
     const registry = createNamespaceRegistryForTesting(persistence, { clock: manualClock(), scheduler: createRegistryTestScheduler(), randomBytes: TEST_RANDOM_BYTES, runtimeFactory: () => runtime });
     const lease = okLease(await registry.open({ userId: 'u' }, 'k'));
-    expect(lease.read(['nope'])).toEqual({ ok: false, code: 'PATH_NOT_ALLOWED', path: ['nope'] });
-    expect(lease.getSchemaEnvelope()).toBeNull();
+    expect(lease.readData(['nope'])).toEqual({ ok: false, code: 'PATH_NOT_ALLOWED', path: ['nope'] });
+    expect(lease.getSchema()).toBeNull();
     expect(lease.getMetadata()).toEqual({ marker: 'meta' });
     expect(lease.getActiveSchema()).toBeNull();
-    await lease.mutateRoot({ op: 'set', path: ['a'], value: 1 });
+    await lease.mutateData({ op: 'set', path: ['a'], value: 1 });
     await lease.replaceSchema({ schema: { lang: 'vfsl', version: 1, id: 'a', text: 'type ROOT = { n: number; };' } });
     expect(calls).toEqual(['read', 'mutate']);
     await lease.release();
@@ -995,14 +995,14 @@ describe('lease 语义（§7 逐方法表格）', () => {
     const { lease, other } = await makeLeasePair();
     await lease.release();
     // read
-    const readResult = lease.read(['x']);
+    const readResult = lease.readData(['x']);
     expect(readResult).toEqual({
       ok: false,
       code: 'NAMESPACE_LEASE_RELEASED',
       message: 'NAMESPACE_LEASE_RELEASED: 此 NamespaceLease 已 release，不能再接纳业务操作',
     });
     // 三投影 getter：同步 throw 且可由 instanceOf/code 判别
-    for (const getter of ['getSchemaEnvelope', 'getMetadata', 'getActiveSchema'] as const) {
+    for (const getter of ['getSchema', 'getMetadata', 'getActiveSchema'] as const) {
       let thrown: unknown;
       try {
         (lease as unknown as Record<string, () => unknown>)[getter]!();
@@ -1018,7 +1018,7 @@ describe('lease 语义（§7 逐方法表格）', () => {
       }
     }
     // 两写：Promise resolve，不 reject
-    const m = await lease.mutateRoot({ op: 'set', path: ['a'], value: 1 });
+    const m = await lease.mutateData({ op: 'set', path: ['a'], value: 1 });
     expect(m).toMatchObject({ ok: false, code: 'NAMESPACE_LEASE_RELEASED' });
     const s = await lease.replaceSchema({ schema: { lang: 'vfsl', version: 1, id: 'a', text: 't' } });
     expect(s).toMatchObject({ ok: false, code: 'NAMESPACE_LEASE_RELEASED' });
@@ -1058,7 +1058,7 @@ describe('lease 语义（§7 逐方法表格）', () => {
         }),
     });
     const lease = okLease(await registry.open({ userId: 'u' }, 'k'));
-    const write = lease.mutateRoot({ op: 'set', path: ['a'], value: 1 }); // release 前已接纳
+    const write = lease.mutateData({ op: 'set', path: ['a'], value: 1 }); // release 前已接纳
     await lease.release();
     const result = await write;
     expect(result).toEqual({ ok: true });
@@ -1125,7 +1125,7 @@ describe('observer 隔离与公开文本零回显（§8/AC11）', () => {
     persistence.queueLoad({ result: new StubHandle(owner, `${sentinelNs}-4`) });
     const lease = okLease(await registry.open(owner, `${sentinelNs}-4`));
     await lease.release();
-    publicTexts.push(JSON.stringify(lease.read(['x'])));
+    publicTexts.push(JSON.stringify(lease.readData(['x'])));
     try {
       lease.getMetadata();
     } catch (e) {
