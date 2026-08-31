@@ -14,6 +14,7 @@ await writeFile(configPath, `${JSON.stringify({
     sourceMap: true,
     rootDir: 'src',
     outDir: 'dist',
+    allowImportingTsExtensions: false,
   },
   include: ['src/**/*.ts'],
   exclude: ['test/**/*.ts'],

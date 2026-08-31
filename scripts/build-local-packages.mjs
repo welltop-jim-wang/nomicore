@@ -6,27 +6,30 @@ import { fileURLToPath } from 'node:url'
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const outDir = resolve(root, process.argv[2] ?? 'artifacts/local-packages')
 const packages = [
-  'vfsl-protocol',
-  'vfsl',
-  'doc-runtime',
-  'clock',
-  'persistence',
-  'namespace-runtime',
-  'namespace-registry',
+  { root: 'packages', name: 'vfsl-protocol' },
+  { root: 'packages', name: 'vfsl' },
+  { root: 'packages', name: 'doc-runtime' },
+  { root: 'packages', name: 'clock' },
+  { root: 'packages', name: 'persistence' },
+  { root: 'packages', name: 'namespace-runtime' },
+  { root: 'packages', name: 'namespace-registry' },
+  { root: 'packages', name: 'replication-protocol' },
+  { root: 'packages', name: 'ws-replication' },
+  { root: 'apps', name: 'yjs-server' },
 ]
 
 await rm(outDir, { recursive: true, force: true })
 await mkdir(outDir, { recursive: true })
 
-for (const name of packages) {
-  const packageDir = join(root, 'packages', name)
+for (const entry of packages) {
+  const packageDir = join(root, entry.root, entry.name)
   await run('pnpm', ['run', 'build'], packageDir)
   await run('pnpm', ['pack', '--out', join(outDir, '%s-%v.tgz')], packageDir)
 }
 
 const manifest = {}
-for (const name of packages) {
-  const pkg = JSON.parse(await readFile(join(root, 'packages', name, 'package.json'), 'utf8'))
+for (const entry of packages) {
+  const pkg = JSON.parse(await readFile(join(root, entry.root, entry.name, 'package.json'), 'utf8'))
   manifest[pkg.name] = `${pkg.name.replace('@', '').replace('/', '-')}-${pkg.version}.tgz`
 }
 await writeFile(join(outDir, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`)

@@ -41,12 +41,12 @@ import {
   NAMESPACE_ID_PATTERN,
   type AppConfig,
   type AuthorizationEntry,
-} from './config.ts';
-import { createStdoutEventSink, type EventSink } from './lifecycle.ts';
-import { createHubReplicationPlugin } from './replication/hub-plugin.ts';
-import { createPeerReplicationPlugin } from './replication/peer-plugin.ts';
-import { createPeerDial } from './transport/ws-client.ts';
-import { REPLICATION_UPGRADE_PATH, startHubWsServer, type HubWsServer } from './transport/ws-server.ts';
+} from './config.js';
+import { createStdoutEventSink, type EventSink } from './lifecycle.js';
+import { createHubReplicationPlugin } from './replication/hub-plugin.js';
+import { createPeerReplicationPlugin } from './replication/peer-plugin.js';
+import { createPeerDial } from './transport/ws-client.js';
+import { REPLICATION_UPGRADE_PATH, startHubWsServer, type HubWsServer } from './transport/ws-server.js';
 import type { PeerReplication } from '@nomicore/ws-replication';
 
 const OP_TIMEOUT_DEFAULT_MS = 30_000;

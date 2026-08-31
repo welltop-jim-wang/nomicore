@@ -18,8 +18,8 @@ import {
   parseAppConfig,
   type AppConfig,
   type NomicoreApp,
-} from './index.ts';
-import { acquireRootLock, createStdoutEventSink, type RootLockHandle } from './lifecycle.ts';
+} from './index.js';
+import { acquireRootLock, createStdoutEventSink, type RootLockHandle } from './lifecycle.js';
 
 const STOP_WATCHDOG_MS = 60_000;
 

@@ -25,7 +25,7 @@ import {
   type ReplicationTimer,
   type ReplicationTimeouts,
 } from '@nomicore/ws-replication';
-import { NODE_TIMER_BRIDGE } from './hub-plugin.ts';
+import { NODE_TIMER_BRIDGE } from './hub-plugin.js';
 
 export interface PeerReplicationPluginConfig {
   readonly instanceId: string;

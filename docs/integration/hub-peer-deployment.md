@@ -5,14 +5,33 @@
 Persistence、NamespaceRegistry（静态角色）、真实 WebSocket 复制（`ws@^8`）、
 认证/授权、严格配置校验与有序停机。
 
-## 启动
+## 安装与启动
+
+仓库内开发/冒烟：
 
 ```bash
-# 仓库内（开发/冒烟）
 node_modules/.bin/tsx apps/yjs-server/src/main.ts --config <path/to/config.json>
 # 或经环境变量
 NOMICORE_CONFIG=<path> node_modules/.bin/tsx apps/yjs-server/src/main.ts
 ```
+
+未发布 npm registry 前，执行 `pnpm pack:local` 会在 `artifacts/local-packages/` 生成完整编译包集，其中包括：
+
+```text
+nomicore-replication-protocol-<version>.tgz
+nomicore-ws-replication-<version>.tgz
+nomicore-yjs-server-<version>.tgz
+```
+
+`@nomicore/yjs-server` tarball 暴露 `nomicore-yjs-server` CLI。消费方安装完整本地依赖图后运行：
+
+```bash
+pnpm exec nomicore-yjs-server --config <path/to/config.json>
+# 或
+NOMICORE_CONFIG=<path> pnpm exec nomicore-yjs-server
+```
+
+这些包尚未发布时不能只安装 server tarball；必须按 `artifacts/local-packages/manifest.json` 将全部 `@nomicore/*` 依赖指向本地 tarball（或解包后的本地 package 目录），否则 package manager 会向 npm 查询未发布的传递依赖。应用方应消费 tarball 的 `dist`，不 link Nomicore `src`。
 
 stdout 输出 NDJSON 生命周期事件（`config-loaded / provisioned / provision-failed /
 listening / ready / target-added / replica-reset（reset-replica 仅成功路径发射）/
