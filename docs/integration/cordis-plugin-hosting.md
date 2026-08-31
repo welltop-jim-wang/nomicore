@@ -6,14 +6,40 @@
 
 本文覆盖第三方生产宿主需要挂载的 Instance、Clock、Cordis Timer、Memory/File Persistence、Namespace Registry，以及可选的角色专用 WebSocket replication plugin。`@nomicore/dsh-persistence` 的 `createDshPersistenceProfile()` 是 DSH 开发/探针装配，不是第三方生产插件；其配置以该包公开类型为准。
 
-生产宿主按以下顺序挂载：
+生产宿主必须区分三个连续阶段，按依赖顺序完成：
+
+**阶段 A：基础设施 plugins**
 
 1. `createInstancePlugin()`：提供不可变的 `ctx.nomicoreInstance`，配置一次 `instanceId + role`。
 2. `createSystemClockPlugin()`：提供 `ctx.clock`。
 3. `TimerService`：提供 `ctx.timer` 与 `ctx.timeout()`。
 4. 一个 Persistence 插件：提供 `ctx.nomicorePersistence`。
 5. `createNamespaceRegistryPlugin()`：提供 `ctx.nomicoreRegistry`，角色来自 Instance service。
-6. 与 Instance role 相符的 `createHubReplicationPlugin()` 或 `createPeerReplicationPlugin()`。
+6. 与 Instance role 相符的 `createHubReplicationPlugin()` 或 `createPeerReplicationPlugin()`；等待其 Fiber ready。
+
+**阶段 B：namespace 复制资格**
+
+7. 通过 Registry `create()` 或 `open()` 取得目标 `NamespaceLease`。Hub 对需要被复制的 namespace 调用并等待 `lease.enableReplication()` 成功；Peer 不调用该 Hub-only 操作，而是把 namespace 作为 replication target 配置或交给 `addTarget()`。授权表和 target 使用同一个持久化的 `lease.namespaceId`。
+
+**阶段 C：宿主业务**
+
+8. 只有在阶段 A、B 成功后，才启动依赖该 namespace 的 scanner、worker、HTTP handler 或其他业务消费者。业务消费者在其整个运行期持有 lease，停止时先停止接纳并排空业务，再 `release()`。
+
+因此，一个 Hub Center 的典型启动链是：
+
+```text
+Instance(role=hub, instanceId=<stable-id>)
+→ Clock
+→ Timer
+→ File Persistence
+→ Namespace Registry
+→ Hub replication plugin ready
+→ create/open Center namespace lease
+→ enableReplication() succeeds
+→ start Center scanner
+```
+
+该顺序不是说 Hub listener 必须等某个 namespace 才能监听：replication plugin 可先 ready；但在 `enableReplication()` 成功且授权绑定指向正确 `namespaceId` 之前，该 namespace 尚未具备可用的 Hub 复制入口，依赖它的 scanner 也不应启动。
 
 依赖关系为：
 
@@ -32,9 +58,10 @@ Persistence、Registry 和 replication plugin 启动时会检查依赖；缺少�
 
 这种方式与项目的插件验收测试一致，并确保：
 
-- Instance、Clock、Timer、Persistence、Registry、replication 按依赖顺序启动；
+- 基础设施按 Instance → Clock → Timer → Persistence → Registry → role-specific replication plugin 的依赖顺序启动；
+- namespace lease 的 create/open 与 Hub `enableReplication()` 在依赖该 namespace 的业务消费者启动前完成；
 - 服务通过公开 `require*` helper 获取；
-- Fiber 卸载时先排空 replication，再关闭 Registry、释放 Persistence；
+- 停机时先停止并排空业务消费者、释放 lease，再排空 replication，最后关闭 Registry、释放 Persistence；
 - 配置由各 `create*Plugin()` 工厂的公开 options 类型校验。
 
 ## 最小生产装配
@@ -129,13 +156,14 @@ Timer 生命周期必须覆盖 Persistence 和 Registry：先挂 Timer，最后�
 
 Hub 与 Peer 的配置面、adapter overrides、service readiness 与 lifecycle 见 [`@nomicore/ws-replication` README](../../packages/ws-replication/README.md)。Hub plugin 只有在 listener 建立后才发布 ready service；Peer ready 只表示 controller/dial loop 已启动，不表示已连接 Hub 或 namespace 已 live，需等待目标可用时调用 `requirePeerReplication(ctx).waitForLive(namespaceId)`。
 
-Hub 最小组合（生产 listener adapter 由宿主实现或封装）：
+Hub 最小组合（Node.js 宿主直接使用 `@nomicore/yjs-server` 提供的公开 listener adapter；其他运行时可实现相同 `HubListenAdapter` contract）：
 
 ```ts
 import {
   createHubReplicationPlugin,
   requireHubReplication,
 } from '@nomicore/ws-replication'
+import { createNodeHubListenAdapter } from '@nomicore/yjs-server'
 
 const hubFiber = ctx.plugin(createHubReplicationPlugin({
   listen: { host: '127.0.0.1', port: 8787, path: '/replication' },
@@ -148,7 +176,7 @@ const hubFiber = ctx.plugin(createHubReplicationPlugin({
     submit: true,
   }],
 }, {
-  listen: hubListenAdapter,
+  listen: createNodeHubListenAdapter(),
 }))
 await hubFiber
 const hubReplication = requireHubReplication(ctx)
@@ -177,6 +205,27 @@ await peerFiber
 const peerReplication = requirePeerReplication(ctx)
 await peerReplication.waitForLive('ns-0123456789abcdef0123456789abcdef')
 ```
+
+## 创建、启用复制并启动业务消费者
+
+Hub 宿主在首次创建或重启打开 namespace 后，应保留 lease，显式启用复制，再启动依赖该 namespace 的业务消费者：
+
+```ts
+const opened = await registry.open({ userId: centerOwnerUserId }, centerNamespaceId)
+if (!opened.ok) throw new Error(`${opened.code}: ${opened.message}`)
+
+const centerLease = opened.lease
+const enabled = await centerLease.enableReplication()
+if (!enabled.ok) {
+  await centerLease.release()
+  throw new Error(`${enabled.code}: ${enabled.message}`)
+}
+
+// scanner 通过 centerLease 读写；其生命周期不得超过 lease。
+const scanner = startCenterScanner({ lease: centerLease })
+```
+
+首次部署可将上面的 `open()` 换成 `create()`，并把返回的 `lease.namespaceId` 持久化为 Center 配置和 Hub 授权表引用。`enableReplication()` 是 Hub-only、幂等的受控操作；Peer 通过 target 配置接入，不调用它。若 scanner 启动失败，应先清理 scanner 的部分资源，再释放 lease；无需为了本地业务失败关闭整个 replication plugin。
 
 ## 创建、读取、修改和重新打开
 
@@ -231,13 +280,14 @@ await reopened.lease.release()
 
 ## 停止与重载
 
-正常停止使用一种所有权策略，不并发触发多条拆卸链：
+正常停止严格反转启动所有权，并只使用一条拆卸链：
 
-1. 停止接纳业务请求，并等待业务持有的 lease 释放。
-2. dispose 角色专用 replication Fiber；它停止 listener/dial、drain/close controller 与 channel，并撤销自身 service，但不会 shutdown Registry。
-3. 若宿主显式拥有 Registry 生命周期，调用并等待 `registry.shutdown()`。
-4. 释放 Persistence Fiber。它撤销 persistence service 后会等待依赖它的 Registry Fiber 完成卸载，再 dispose adapter。
-5. 最后释放承载 Instance、Clock/Timer 的根 Context/Fiber。
+1. 停止 scanner、worker、HTTP handler 等业务消费者接纳新工作，并等待已接纳工作排空。
+2. 释放业务持有的全部 namespace lease；不得让 scanner 在 lease release 后继续读写。
+3. dispose 角色专用 replication Fiber；它停止 listener/dial、drain/close controller 与 channel，并撤销自身 service，但不会 shutdown Registry。
+4. 若宿主显式拥有 Registry 生命周期，调用并等待 `registry.shutdown()`。
+5. 释放 Persistence Fiber。它撤销 persistence service 后会等待依赖它的 Registry Fiber 完成卸载，再 dispose adapter。
+6. 最后释放承载 Instance、Clock/Timer 的根 Context/Fiber。
 
 ```ts
 await replicationFiber.dispose()
