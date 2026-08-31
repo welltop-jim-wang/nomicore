@@ -193,17 +193,22 @@ SIGHUP 换装（restart-only，见下）。
 
 ## 锁文件与共享 root
 
-file 模式启动时在 `rootDir/.nomicore-lock.json`（保留名，adapter 只触
-`users/`、`archive/users/` 受控子树，零干扰）写入 `{instanceId, pid}`；干净停机
-/换装删除。语义：
+file 模式启动时以 `rootDir/.nomicore-lock/` 非空目录作为权威锁（`mkdir`
+是唯一获取线性化点），目录内 `owner.json` 写入 `{instanceId, pid, nonce}`；同时
+刷新 `rootDir/.nomicore-lock.json` 诊断镜像，供运维读取。adapter 只触
+`users/`、`archive/users/` 受控子树，零干扰。语义：
 
-- 锁存在且 pid 存活 → loud `exit(1)`：同 pid/instanceId = 同实例未干净停机；
+- 权威锁存在且 pid 存活 → loud `exit(1)`：同 pid/instanceId = 同实例未干净停机；
   不同实例 = **共享活跃 root unsupported**（每个进程必须独立 rootDir；
   hub 与 peer 各自 rootDir，两个 peer 也各自 rootDir）；
-- pid 已死 = stale 覆盖；`wx` EACCES/EPERM → loud `exit(1)`（rootDir 可写性是
-  file 模式前置条件）；
+- pid 已死 = stale 回收：竞争者以原子 `rename` 将权威目录移到唯一墓碑路径，
+  再以 `mkdir` 竞争新的权威目录；竞争败者重读胜者 owner 后 loud `exit(1)`。
+  EACCES/EPERM → loud `exit(1)`（rootDir 可写性是 file 模式前置条件）；
+- release 先以原子 `rename` 摘走权威目录，只在墓碑 owner 等于本 handle payload
+  时删除；迟到 handle 无法按 canonical 路径删除后继者的目录；
+- `.nomicore-lock.json` 只是诊断镜像，不是所有权 token；
 - **pid 复用误判**：死 pid 被无关新进程复用会误报「存活」——人工确认后删除
-  `.nomicore-lock.json` 即可继续。
+  `.nomicore-lock/` 即可继续。
 
 ## 停机顺序（AC4）
 

@@ -1,40 +1,45 @@
-/**
- * 应用生命周期编排基建（设计 §3.5/§3.6/§3.4 锁守卫）：
- *
- *  - NDJSON 事件 sink：stdout 是全应用生命周期事件面（每事件一行 JSON 对象）；
- *  - FilePersistence 锁守卫：`<rootDir>/.nomicore-lock.json`（`wx` 独占创建，
- *    内容 `{instanceId, pid}`），共享活跃 root 被 loud 拒绝（AC2 unsupported）；
- *    干净停机删除；崩溃残留经 pid 存活性 stale 覆盖。
- *
- * 事件对象经 sink 输出时**不得**携带 token/owner 值/Yjs bytes/SCHEMA/ROOT 内容
- * （复制域事件直接映射公共 `ReplicationObserver` 判别联合——包已脱敏）。
- */
-import { mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
+import {
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  rmdirSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { join } from 'node:path';
 
 export type EventSink = (event: Readonly<Record<string, unknown>>) => void;
 
-/** 生产 sink：每事件一行 NDJSON 到 stdout。 */
 export function createStdoutEventSink(): EventSink {
-  return (event) => {
-    process.stdout.write(`${JSON.stringify(event)}\n`);
-  };
+  return (event) => process.stdout.write(`${JSON.stringify(event)}\n`);
 }
 
-/** rootDir 内保留名锁文件（adapter 只触 `users/`、`archive/users/` 受控子树，零干扰）。 */
+/** Compatibility mirror used by diagnostics and process tooling. */
 export const ROOT_LOCK_FILE_NAME = '.nomicore-lock.json';
+const ROOT_LOCK_DIRECTORY_NAME = '.nomicore-lock';
+const ROOT_LOCK_OWNER_FILE_NAME = 'owner.json';
 
 export interface RootLockHandle {
   release(): void;
 }
 
-function lockPath(rootDir: string): string {
+function legacyLockPath(rootDir: string): string {
   return join(rootDir, ROOT_LOCK_FILE_NAME);
 }
 
-function readLockInfo(rootDir: string): { instanceId?: unknown; pid?: unknown } {
+function lockDirectoryPath(rootDir: string): string {
+  return join(rootDir, ROOT_LOCK_DIRECTORY_NAME);
+}
+
+function ownerPath(lockDirectory: string): string {
+  return join(lockDirectory, ROOT_LOCK_OWNER_FILE_NAME);
+}
+
+function parseLockInfo(raw: string): { instanceId?: unknown; pid?: unknown } {
   try {
-    const parsed = JSON.parse(readFileSync(lockPath(rootDir), 'utf8')) as Record<string, unknown>;
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
     return { instanceId: parsed.instanceId, pid: parsed.pid };
   } catch {
     return {};
@@ -51,56 +56,152 @@ function isPidAlive(pid: unknown): boolean {
   }
 }
 
-/**
- * 独占获取 rootDir 锁。冲突（现存锁且 pid 存活）→ loud throw（文案区分「同实例
- * 重复启动」与「不同实例共享 root（unsupported）」并打印锁内 `{instanceId,pid}`）；
- * pid 已死 = stale 覆盖；`wx` EACCES/EPERM（rootDir 不可写）→ loud throw 并指向
- * 部署文档（rootDir 可写性是 file 模式前置条件）。
- */
-export function acquireRootLock(rootDir: string, instanceId: string): RootLockHandle {
-  const payload = JSON.stringify({ instanceId, pid: process.pid });
+function loudUnwritable(errno: string): Error {
+  return new Error(
+    `cannot write ${ROOT_LOCK_FILE_NAME} in rootDir (${errno}): file persistence requires a writable rootDir — see docs/integration/hub-peer-deployment.md`,
+  );
+}
+
+function heldError(instanceId: string, raw: string): Error | undefined {
+  const info = parseLockInfo(raw);
+  if (!isPidAlive(info.pid)) return undefined;
+  const owner = `{instanceId: ${JSON.stringify(info.instanceId)}, pid: ${JSON.stringify(info.pid)}}`;
+  return new Error(
+    info.instanceId === instanceId
+      ? `rootDir lock ${ROOT_LOCK_FILE_NAME} is held by the same instance (${owner}): previous instance did not shut down cleanly — remove the lock file manually if you are certain it is stale (pid reuse caveat: see docs/integration/hub-peer-deployment.md)`
+      : `shared file persistence root is unsupported: another instance holds ${ROOT_LOCK_FILE_NAME} (${owner}) — each process needs its own rootDir (see docs/integration/hub-peer-deployment.md)`,
+  );
+}
+
+function readOwner(lockDirectory: string): string {
   try {
-    // rootDir 须存在（file adapter 的 `users/` 子树前提）；缺省语义 = 创建（部署文档：
-    // rootDir 可写性是 file 模式前置条件）。
-    mkdirSync(rootDir, { recursive: true });
-    writeFileSync(lockPath(rootDir), payload, { flag: 'wx' });
+    return readFileSync(ownerPath(lockDirectory), 'utf8');
+  } catch {
+    return '';
+  }
+}
+
+function publishLegacyMirror(rootDir: string, payload: string): void {
+  try {
+    writeFileSync(legacyLockPath(rootDir), payload, { flag: 'wx' });
   } catch (error) {
     const errno = (error as NodeJS.ErrnoException).code;
     if (errno === 'EEXIST') {
-      const info = readLockInfo(rootDir);
-      const owner = `{instanceId: ${JSON.stringify(info.instanceId)}, pid: ${JSON.stringify(info.pid)}}`;
-      if (isPidAlive(info.pid)) {
-        const sameInstance = info.instanceId === instanceId;
-        throw new Error(
-          sameInstance
-            ? `rootDir lock ${ROOT_LOCK_FILE_NAME} is held by the same instance (${owner}): previous instance did not shut down cleanly — remove the lock file manually if you are certain it is stale (pid reuse caveat: see docs/integration/hub-peer-deployment.md)`
-            : `shared file persistence root is unsupported: another instance holds ${ROOT_LOCK_FILE_NAME} (${owner}) — each process needs its own rootDir (see docs/integration/hub-peer-deployment.md)`,
-        );
+      try {
+        unlinkSync(legacyLockPath(rootDir));
+        writeFileSync(legacyLockPath(rootDir), payload, { flag: 'wx' });
+        return;
+      } catch (retryError) {
+        const retryErrno = (retryError as NodeJS.ErrnoException).code;
+        if (retryErrno === 'EACCES' || retryErrno === 'EPERM') throw loudUnwritable(retryErrno);
+        throw retryError;
       }
-      // stale（pid 已死）：覆盖重取。
-      writeFileSync(lockPath(rootDir), payload, { flag: 'w' });
-    } else if (errno === 'EACCES' || errno === 'EPERM') {
-      throw new Error(
-        `cannot write ${ROOT_LOCK_FILE_NAME} in rootDir (${errno}): file persistence requires a writable rootDir — see docs/integration/hub-peer-deployment.md`,
-      );
-    } else {
+    }
+    if (errno === 'EACCES' || errno === 'EPERM') throw loudUnwritable(errno);
+    throw error;
+  }
+}
+
+/**
+ * The lock directory itself is the ownership token. `mkdir` is the acquisition
+ * linearization point. Stale directories are atomically detached with rename;
+ * release removes only its detached directory, never a successor pathname.
+ */
+export function acquireRootLock(rootDir: string, instanceId: string): RootLockHandle {
+  const payload = JSON.stringify({ instanceId, pid: process.pid, nonce: randomUUID() });
+  const canonical = lockDirectoryPath(rootDir);
+
+  try {
+    mkdirSync(rootDir, { recursive: true });
+  } catch (error) {
+    const errno = (error as NodeJS.ErrnoException).code;
+    if (errno === 'EACCES' || errno === 'EPERM') throw loudUnwritable(errno);
+    throw error;
+  }
+
+  for (;;) {
+    try {
+      mkdirSync(canonical);
+      try {
+        writeFileSync(ownerPath(canonical), payload, { flag: 'wx' });
+        publishLegacyMirror(rootDir, payload);
+        break;
+      } catch (error) {
+        rmSync(canonical, { recursive: true, force: true });
+        throw error;
+      }
+    } catch (error) {
+      const errno = (error as NodeJS.ErrnoException).code;
+      if (errno === 'EACCES' || errno === 'EPERM') throw loudUnwritable(errno);
+      if (errno !== 'EEXIST') throw error;
+    }
+
+    const raw = readOwner(canonical);
+    const held = heldError(instanceId, raw);
+    if (held !== undefined) throw held;
+
+    const tombstone = join(rootDir, `${ROOT_LOCK_DIRECTORY_NAME}.reap-${randomUUID()}`);
+    try {
+      renameSync(canonical, tombstone);
+    } catch (error) {
+      const errno = (error as NodeJS.ErrnoException).code;
+      if (errno === 'ENOENT' || errno === 'EEXIST' || errno === 'ENOTEMPTY') continue;
+      if (errno === 'EACCES' || errno === 'EPERM') throw loudUnwritable(errno);
       throw error;
     }
+
+    const movedRaw = readOwner(tombstone);
+    if (movedRaw !== raw) {
+      // The pathname changed after our decision. Restore only when canonical is
+      // absent; otherwise preserve the detached evidence and retry.
+      try {
+        renameSync(tombstone, canonical);
+      } catch {
+        // A successor already owns canonical.
+      }
+      continue;
+    }
+    rmSync(tombstone, { recursive: true, force: true });
   }
+
+  let released = false;
   return {
     release(): void {
+      if (released) return;
+      const detached = join(rootDir, `${ROOT_LOCK_DIRECTORY_NAME}.release-${randomUUID()}`);
       try {
-        unlinkSync(lockPath(rootDir));
+        renameSync(canonical, detached);
       } catch {
-        // 已删除/不存在——释放幂等。
+        return;
       }
+      const detachedPayload = readOwner(detached);
+      if (detachedPayload !== payload) {
+        // Do not delete another owner's directory. It is detached, so attempt a
+        // no-overwrite restore; if a successor exists this fails safely.
+        try {
+          renameSync(detached, canonical);
+        } catch {
+          // Successor owns canonical; preserve detached evidence.
+        }
+        return;
+      }
+      try {
+        unlinkSync(ownerPath(detached));
+        rmdirSync(detached);
+      } catch {
+        return;
+      }
+      try {
+        const mirror = readFileSync(legacyLockPath(rootDir), 'utf8');
+        if (mirror === payload) unlinkSync(legacyLockPath(rootDir));
+      } catch {
+        // Compatibility mirror is best-effort on release.
+      }
+      released = true;
     },
   };
 }
 
-/** 稳定码注册表（设计 §3.4，append-only；app 运行期控制通道回执用）。
- * #140（Phase 5 管理动词）追加：registry `resetReplica` 窄 issue 七码透传 +
- * `reset-replica-failed`（branded fatal / 结构性防御边界）。 */
 export const STABLE_OP_ERROR_CODES = Object.freeze([
   'malformed-line',
   'unknown-op',
