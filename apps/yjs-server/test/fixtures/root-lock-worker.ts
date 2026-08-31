@@ -7,12 +7,17 @@ if (rootDir === undefined || instanceId === undefined || holdMsText === undefine
 
 try {
   const handle = acquireRootLock(rootDir, instanceId);
-  process.send?.({ type: 'acquired', instanceId });
-  setTimeout(() => {
-    handle.release();
-    process.send?.({ type: 'released', instanceId });
-    process.exit(0);
-  }, Number(holdMsText));
+  process.send?.({ type: 'acquired', instanceId }, (error) => {
+    if (error) {
+      handle.release();
+      process.exit(3);
+      return;
+    }
+    setTimeout(() => {
+      handle.release();
+      process.send?.({ type: 'released', instanceId }, () => process.exit(0));
+    }, Number(holdMsText));
+  });
 } catch (error) {
   process.send?.({ type: 'rejected', instanceId, message: (error as Error).message });
   process.exit(2);

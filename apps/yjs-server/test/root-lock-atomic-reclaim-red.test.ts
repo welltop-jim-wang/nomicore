@@ -98,12 +98,17 @@ describe('root lock atomic ownership', () => {
     crashed.kill('SIGKILL');
     await exited(crashed);
 
-    const workers = Array.from({ length: 12 }, (_, index) => startWorker(root, `contender-${index}`, 1_500));
+    const workers = Array.from({ length: 12 }, (_, index) => startWorker(root, `contender-${index}`, 5_000));
     const messages = await Promise.all(workers.map(nextMessage));
-    expect(messages.filter(({ type }) => type === 'acquired')).toHaveLength(1);
+    const acquired = messages.filter(({ type }) => type === 'acquired');
+    expect(acquired).toHaveLength(1);
     const rejected = messages.filter(({ type }) => type === 'rejected');
     expect(rejected).toHaveLength(11);
     expect(rejected.every(({ message }) => /held|unsupported/.test(message ?? ''))).toBe(true);
+    // Assert overlap, not eventual sequential ownership: the winner must still
+    // own the canonical directory when every contender has reported.
+    expect(readPayload(root).instanceId).toBe(acquired[0]?.instanceId);
+    for (const worker of workers) worker.kill('SIGTERM');
     await Promise.all(workers.map(exited));
   }, 15_000);
 
