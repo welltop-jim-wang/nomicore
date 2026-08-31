@@ -6,14 +6,40 @@
 
 本文覆盖第三方生产宿主需要挂载的 Instance、Clock、Cordis Timer、Memory/File Persistence、Namespace Registry，以及可选的角色专用 WebSocket replication plugin。`@nomicore/dsh-persistence` 的 `createDshPersistenceProfile()` 是 DSH 开发/探针装配，不是第三方生产插件；其配置以该包公开类型为准。
 
-生产宿主按以下顺序挂载：
+生产宿主必须区分三个连续阶段，按依赖顺序完成：
+
+**阶段 A：基础设施 plugins**
 
 1. `createInstancePlugin()`：提供不可变的 `ctx.nomicoreInstance`，配置一次 `instanceId + role`。
 2. `createSystemClockPlugin()`：提供 `ctx.clock`。
 3. `TimerService`：提供 `ctx.timer` 与 `ctx.timeout()`。
 4. 一个 Persistence 插件：提供 `ctx.nomicorePersistence`。
 5. `createNamespaceRegistryPlugin()`：提供 `ctx.nomicoreRegistry`，角色来自 Instance service。
-6. 与 Instance role 相符的 `createHubReplicationPlugin()` 或 `createPeerReplicationPlugin()`。
+6. 与 Instance role 相符的 `createHubReplicationPlugin()` 或 `createPeerReplicationPlugin()`；等待其 Fiber ready。
+
+**阶段 B：namespace 复制资格**
+
+7. 通过 Registry `create()` 或 `open()` 取得目标 `NamespaceLease`。Hub 对需要被复制的 namespace 调用并等待 `lease.enableReplication()` 成功；Peer 不调用该 Hub-only 操作，而是把 namespace 作为 replication target 配置或交给 `addTarget()`。授权表和 target 使用同一个持久化的 `lease.namespaceId`。
+
+**阶段 C：宿主业务**
+
+8. 只有在阶段 A、B 成功后，才启动依赖该 namespace 的 scanner、worker、HTTP handler 或其他业务消费者。业务消费者在其整个运行期持有 lease，停止时先停止接纳并排空业务，再 `release()`。
+
+因此，一个 Hub Center 的典型启动链是：
+
+```text
+Instance(role=hub, instanceId=<stable-id>)
+→ Clock
+→ Timer
+→ File Persistence
+→ Namespace Registry
+→ Hub replication plugin ready
+→ create/open Center namespace lease
+→ enableReplication() succeeds
+→ start Center scanner
+```
+
+该顺序不是说 Hub listener 必须等某个 namespace 才能监听：replication plugin 可先 ready；但在 `enableReplication()` 成功且授权绑定指向正确 `namespaceId` 之前，该 namespace 尚未具备可用的 Hub 复制入口，依赖它的 scanner 也不应启动。
 
 依赖关系为：
 
@@ -32,14 +58,15 @@ Persistence、Registry 和 replication plugin 启动时会检查依赖；缺少�
 
 这种方式与项目的插件验收测试一致，并确保：
 
-- Instance、Clock、Timer、Persistence、Registry、replication 按依赖顺序启动；
+- 基础设施按 Instance → Clock → Timer → Persistence → Registry → role-specific replication plugin 的依赖顺序启动；
+- namespace lease 的 create/open 与 Hub `enableReplication()` 在依赖该 namespace 的业务消费者启动前完成；
 - 服务通过公开 `require*` helper 获取；
-- Fiber 卸载时先排空 replication，再关闭 Registry、释放 Persistence；
+- 停机时先停止并排空业务消费者、释放 lease，再排空 replication，最后关闭 Registry、释放 Persistence；
 - 配置由各 `create*Plugin()` 工厂的公开 options 类型校验。
 
 ## 最小生产装配
 
-下面示例使用文件持久化。`ctx.plugin()` 返回 Fiber 生命周期句柄；`await fiber` 等待插件进入 active 或启动失败，随后才能消费该插件提供的服务。
+下面示例使用文件持久化。`ctx.plugin()` 返回 Fiber 生命周期句柄。当前 Cordis Fiber wrapper 是 thenable，`await fiber` 会委托到 `fiber.await()`；本文统一显式调用 `await fiber.await()`，以清楚表达“等待当前生命周期迁移完成并重抛配置/启动错误”，随后才能消费该插件提供的服务。
 
 ```ts
 import { Context } from '@deepseek-ai/cordis'
@@ -54,15 +81,20 @@ import {
 
 const ctx = new Context()
 
-createInstancePlugin().apply(ctx, {
+const instanceConfig = {
   instanceId: 'hub-primary',
-  role: 'hub',
-})
+  role: 'hub' as const,
+}
+const instanceFiber = ctx.plugin(
+  createInstancePlugin(instanceConfig),
+  instanceConfig,
+)
+await instanceFiber.await()
 
 const clockFiber = ctx.plugin(createSystemClockPlugin())
-await clockFiber
+await clockFiber.await()
 
-// TimerService 构造时同步向 Context 提供 timer service。
+// 独立 composition root 只构造一次；嵌入已有 Host 时复用 Host 的 timer，跳过此行。
 new TimerService(ctx)
 
 const persistenceFiber = ctx.plugin(createFilePersistencePlugin({
@@ -72,17 +104,17 @@ const persistenceFiber = ctx.plugin(createFilePersistencePlugin({
     maxDirtyMs: 5_000,
   },
 }))
-await persistenceFiber
+await persistenceFiber.await()
 
 const registryFiber = ctx.plugin(createNamespaceRegistryPlugin({
   idleTimeoutMs: 300_000,
 }))
-await registryFiber
+await registryFiber.await()
 
 const registry = requireNomicoreRegistry(ctx)
 ```
 
-Instance plugin 通过 `apply(ctx, hostConfig)` 读取宿主配置；它不应再在 Registry 或 replication 配置中重复 `instanceId`/`role`。Memory adapter 只需替换 Persistence 工厂：
+Instance plugin 的 `apply(ctx, hostConfig)` 必须收到宿主配置；factory overrides 只覆盖已定义字段，不能替代 Fiber config。因此生产推荐使用上面的 Fiber-managed 形式，并将同一个 `instanceConfig` 同时传给 `createInstancePlugin(instanceConfig)` 与 `ctx.plugin(plugin, instanceConfig)`。直接调用 `createInstancePlugin().apply(ctx, config)` 适合由上层 plugin 自己管理 effect 的内部组合，但不返回可独立 dispose/await 的子 Fiber。两种形式都不得在 Registry 或 replication 配置中重复 `instanceId`/`role`。Memory adapter 只需替换 Persistence 工厂：
 
 ```ts
 import { createMemoryPersistencePlugin } from '@nomicore/persistence'
@@ -90,7 +122,7 @@ import { createMemoryPersistencePlugin } from '@nomicore/persistence'
 const persistenceFiber = ctx.plugin(createMemoryPersistencePlugin({
   schedule: { debounceMs: 500, maxDirtyMs: 5_000 },
 }))
-await persistenceFiber
+await persistenceFiber.await()
 ```
 
 Memory adapter 的快照仅属于当前 adapter 实例；实例销毁后不可用于重启恢复。需要跨进程或跨实例恢复时使用 File adapter 或实现 `DocPersistence` 的第三方 adapter。
@@ -109,9 +141,14 @@ Memory adapter 的快照仅属于当前 adapter 实例；实例销毁后不可�
 
 ### Cordis Timer
 
-Nomicore 不复制 Timer 配置。安装 `@deepseek-ai/cordis-plugin-timer` 的 `TimerService` 后，Persistence 和 Registry 会把 `ctx.timeout()` 适配为各自的调度能力。
+Nomicore 不复制 Timer 配置。Persistence、Registry 和 replication plugins 消费当前 Host 已提供的 `ctx.timer`/`ctx.timeout()`。
 
-Timer 生命周期必须覆盖 Persistence 和 Registry：先挂 Timer，最后再释放 Timer 所属 Context/Fiber。
+| Host 形态 | Timer 规则 |
+| --- | --- |
+| 独立 Nomicore composition root | 构造一次 `new TimerService(ctx)` |
+| 嵌入已有 Cordis/DSH Host | 复用 Host 的 Timer；不得再次构造 `TimerService` |
+
+同一 service scope 注册第二个 Timer 会产生 provider collision。Timer 生命周期必须覆盖 Persistence、Registry、replication 及其 shutdown drain：先提供，最后再释放 Timer 所属 Context/Fiber。
 
 ### Memory Persistence
 
@@ -121,21 +158,34 @@ Timer 生命周期必须覆盖 Persistence 和 Registry：先挂 Timer，最后�
 
 `createFilePersistencePlugin(options)` 的 `rootDir`、调度选项、文件布局和 identity 约束以 [`@nomicore/persistence` README](../../packages/persistence/README.md)、`FilePersistenceOptions` 类型及 [ADR-0006](../adr/0006-server-persistence-docstore.md) 为准。HMR 或重载时，先等待旧 adapter/Fiber 完成释放，再以原存储配置创建新实例。
 
+恢复一个既有 namespace 需要三项同时一致：同一个持久 `rootDir`、同一个 owner 分区、同一个 `namespaceId`。全新的空 root 即使 owner/id 正确也会返回 `NAMESPACE_NOT_FOUND`。首次部署应 `create()`、持久化 `lease.namespaceId`，再让授权表和业务配置引用它；使用临时空 root 的 smoke test 应创建 disposable namespace 或复制已知 snapshot。一个 active File Persistence adapter/process 独占一个 `rootDir`，测试使用生产 root 时也必须先取得排他所有权。
+
 ### Namespace Registry
 
 `createNamespaceRegistryPlugin(options)` 的唯一配置域是空闲 Runtime 保留时间；精确类型、默认值和拒绝规则以 [`@nomicore/namespace-registry` README](../../packages/namespace-registry/README.md) 与 `NamespaceRegistryPluginConfig` 类型为准。生产 plugin 从 `ctx.nomicoreInstance.role` 读取角色；旧 `role` 配置键属于未知键并被拒绝。
 
 ### WebSocket replication
 
-Hub 与 Peer 的配置面、adapter overrides、service readiness 与 lifecycle 见 [`@nomicore/ws-replication` README](../../packages/ws-replication/README.md)。Hub plugin 只有在 listener 建立后才发布 ready service；Peer ready 只表示 controller/dial loop 已启动，不表示已连接 Hub 或 namespace 已 live，需等待目标可用时调用 `requirePeerReplication(ctx).waitForLive(namespaceId)`。
+Hub 与 Peer 的配置面、adapter overrides、service readiness 与 lifecycle 见 [`@nomicore/ws-replication` README](../../packages/ws-replication/README.md)。Hub plugin 只有在 listener 建立后才发布 ready service；Peer ready 只表示 controller/dial loop 已启动，不表示已连接 Hub 或 namespace 已 live。
 
-Hub 最小组合（生产 listener adapter 由宿主实现或封装）：
+Peer 宿主必须显式选择 boot policy：
+
+| Peer 工作负载 | domain service 发布策略 |
+| --- | --- |
+| 长期重连 daemon，业务可延迟 | 可先发布；每个需要数据的操作自行等待 live |
+| 对外数据面，所有公开操作依赖复制 namespace | 先 `await waitForLive(namespaceId)`，再发布 domain service |
+| 一次性 CLI/job | 先等待 live，再执行工作或退出 |
+
+不要把该等待藏进后台 effect。若 Loader 只有在 namespace 可用时才算启动成功，应在 plugin 的 `async apply()` 主路径等待并让失败向 Loader 抛出。
+
+Hub 最小组合（Node.js 宿主直接使用 `@nomicore/yjs-server` 提供的公开 listener adapter；其他运行时可实现相同 `HubListenAdapter` contract）：
 
 ```ts
 import {
   createHubReplicationPlugin,
   requireHubReplication,
 } from '@nomicore/ws-replication'
+import { createNodeHubListenAdapter } from '@nomicore/yjs-server'
 
 const hubFiber = ctx.plugin(createHubReplicationPlugin({
   listen: { host: '127.0.0.1', port: 8787, path: '/replication' },
@@ -148,9 +198,9 @@ const hubFiber = ctx.plugin(createHubReplicationPlugin({
     submit: true,
   }],
 }, {
-  listen: hubListenAdapter,
+  listen: createNodeHubListenAdapter(),
 }))
-await hubFiber
+await hubFiber.await()
 const hubReplication = requireHubReplication(ctx)
 ```
 
@@ -173,10 +223,84 @@ const peerFiber = ctx.plugin(createPeerReplicationPlugin({
 }, {
   dial: peerDialAdapter,
 }))
-await peerFiber
+await peerFiber.await()
 const peerReplication = requirePeerReplication(ctx)
 await peerReplication.waitForLive('ns-0123456789abcdef0123456789abcdef')
 ```
+
+## 为什么不提供一键 infrastructure runtime helper
+
+Nomicore 不提供 `startNomicoreHubRuntime()` / `startNomicorePeerRuntime()` 这类创建整条基础设施链的 helper。它会重新隐藏 Instance、Timer、Persistence 与 Registry 的宿主所有权，并需要决定“复用还是创建 Timer”“Memory 还是 File”“谁 dispose 上游资源”等宿主策略，等价于 ADR 0012 已否决的自包含 yjs-server plugin。
+
+稳定的深模块 seam 是各公开 plugin factory + Cordis Fiber 依赖图：宿主显式选择 provider 所有权，Cordis 负责 activation/disposal 排序。重复但容易出错的 Node transport 细节由 `createNodeHubListenAdapter()` 封装；domain-specific namespace open、schema 门禁和 readiness 仍由 owning Host 的 `async apply()` 编排。这样删除任何一个宿主装配层时，复杂度不会被隐藏进一个拥有错误资源的 helper。
+
+## Readiness-critical domain plugin
+
+Transport、namespace 与 domain readiness 是三个不同状态：
+
+| 状态 | 含义 | 可供业务消费者使用 |
+| --- | --- | --- |
+| Transport listener ready | HTTP/WebSocket listener 与认证/授权 wiring 已启动 | 否 |
+| Namespace replication enabled/live | Hub 已 open 并 `enableReplication()` 成功，或 Peer target 已 live | 仅该 namespace 的受控消费者 |
+| Domain service ready | schema/namespace 门禁及 scanner/worker 启动完成 | 是 |
+
+Node listener 的 `/healthz` 只报告 transport liveness，不是 domain readiness。宿主应另行发布 readiness 状态或事件，覆盖 namespace open、schema 准备、Hub enablement/Peer live policy 与业务启动。
+
+需要 Loader activation 与业务 readiness 同步时，插件必须在 `async apply()` 主路径完成启动；`ctx.effect()` 用于登记 cleanup，而不是隐藏 startup failure：
+
+```ts
+export async function apply(ctx: Context, config: Config): Promise<void> {
+  // mountNomicoreInfrastructure 是宿主自有函数：按本文顺序挂载公开 factories，
+  // 并返回宿主明确拥有的 Fibers；它不是 @nomicore/* 公共导出。
+  const runtime = await mountNomicoreInfrastructure(ctx, config)
+  try {
+    const opened = await runtime.registry.open(config.owner, config.namespaceId)
+    if (!opened.ok) throw new Error(opened.code)
+    const lease = opened.lease
+
+    const enabled = await lease.enableReplication()
+    if (!enabled.ok) {
+      await lease.release()
+      throw new Error(enabled.code)
+    }
+
+    const domain = await startScannerAndCreateService(lease)
+    const revoke = ctx.provide('domainService', domain.service)
+    ctx.effect(async () => async () => {
+      revoke()
+      await domain.stop()
+      await lease.release()
+      await runtime.dispose()
+    }, 'domain.shutdown()')
+  } catch (error) {
+    await runtime.dispose()
+    throw error
+  }
+}
+```
+
+`apply()` resolve 后才表示 domain ready；namespace open、schema、enablement 或必要的 Peer live wait 失败都会使 Fiber/Loader activation loud fail。
+
+## 创建、启用复制并启动业务消费者
+
+Hub 宿主在首次创建或重启打开 namespace 后，应保留 lease，显式启用复制，再启动依赖该 namespace 的业务消费者：
+
+```ts
+const opened = await registry.open({ userId: centerOwnerUserId }, centerNamespaceId)
+if (!opened.ok) throw new Error(`${opened.code}: ${opened.message}`)
+
+const centerLease = opened.lease
+const enabled = await centerLease.enableReplication()
+if (!enabled.ok) {
+  await centerLease.release()
+  throw new Error(`${enabled.code}: ${enabled.message}`)
+}
+
+// scanner 通过 centerLease 读写；其生命周期不得超过 lease。
+const scanner = startCenterScanner({ lease: centerLease })
+```
+
+首次部署可将上面的 `open()` 换成 `create()`，并把返回的 `lease.namespaceId` 持久化为 Center 配置和 Hub 授权表引用。`enableReplication()` 是 Hub-only、幂等的受控操作；Peer 通过 target 配置接入，不调用它。若 scanner 启动失败，应先清理 scanner 的部分资源，再释放 lease；无需为了本地业务失败关闭整个 replication plugin。
 
 ## 创建、读取、修改和重新打开
 
@@ -231,13 +355,14 @@ await reopened.lease.release()
 
 ## 停止与重载
 
-正常停止使用一种所有权策略，不并发触发多条拆卸链：
+正常停止严格反转启动所有权，并只使用一条拆卸链：
 
-1. 停止接纳业务请求，并等待业务持有的 lease 释放。
-2. dispose 角色专用 replication Fiber；它停止 listener/dial、drain/close controller 与 channel，并撤销自身 service，但不会 shutdown Registry。
-3. 若宿主显式拥有 Registry 生命周期，调用并等待 `registry.shutdown()`。
-4. 释放 Persistence Fiber。它撤销 persistence service 后会等待依赖它的 Registry Fiber 完成卸载，再 dispose adapter。
-5. 最后释放承载 Instance、Clock/Timer 的根 Context/Fiber。
+1. 停止 scanner、worker、HTTP handler 等业务消费者接纳新工作，并等待已接纳工作排空。
+2. 释放业务持有的全部 namespace lease；不得让 scanner 在 lease release 后继续读写。
+3. dispose 角色专用 replication Fiber；它停止 listener/dial、drain/close controller 与 channel，并撤销自身 service，但不会 shutdown Registry。
+4. 若宿主显式拥有 Registry 生命周期，调用并等待 `registry.shutdown()`。
+5. 释放 Persistence Fiber。它撤销 persistence service 后会等待依赖它的 Registry Fiber 完成卸载，再 dispose adapter。
+6. 最后释放承载 Instance、Clock/Timer 的根 Context/Fiber。
 
 ```ts
 await replicationFiber.dispose()

@@ -39,6 +39,7 @@ import {
 
 export { assertProductionTransportFaces, createWebSocketAdapter } from './transport.js';
 export type { WebSocketLike } from './transport.js';
+export { createNodeHubListenAdapter, REPLICATION_UPGRADE_PATH } from './transport/ws-server.js';
 
 // Legacy issue #164 low-level Hub-only entry remains because the public compatibility
 // suites still import and exercise it. New Cordis hosts should use createNomicoreApp or

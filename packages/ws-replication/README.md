@@ -24,7 +24,7 @@ The plugins own only their network adapter, replication controller, connections/
 4. dispose the replication plugin before Registry shutdown;
 5. shut down Registry, then Persistence, then Timer/Clock.
 
-See the [Cordis plugin hosting guide](../../docs/integration/cordis-plugin-hosting.md) for complete composition examples.
+Node.js hosts can supply the public `createNodeHubListenAdapter()` from `@nomicore/yjs-server`; other runtimes may implement `HubListenAdapter`. See the [Cordis plugin hosting guide](../../docs/integration/cordis-plugin-hosting.md) for complete composition examples.
 
 ## Lower-level controllers
 

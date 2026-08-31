@@ -227,12 +227,43 @@ export async function startHubWsServer(options: HubWsServerOptions): Promise<Hub
   };
 }
 
-/** Concrete package-plugin listener adapter backed by Node HTTP and `ws`. */
+/** Public Node HTTP + `ws` adapter for `createHubReplicationPlugin(..., { listen })`. */
+export function createNodeHubListenAdapter(): HubListenAdapter {
+  let active = false;
+  return {
+    async listen(options): Promise<HubListener> {
+      if (active) throw new Error('hub listener already active');
+      active = true;
+      try {
+        const listener = await startHubWsServer(options);
+        let closed = false;
+        return {
+          ...(listener.port === undefined ? {} : { port: listener.port }),
+          close: async (): Promise<void> => {
+            if (closed) return;
+            closed = true;
+            try {
+              await listener.close();
+            } finally {
+              active = false;
+            }
+          },
+        };
+      } catch (error) {
+        active = false;
+        throw error;
+      }
+    },
+  };
+}
+
+/** Standalone composition-root wrapper retaining access to the active listener. */
 export interface AppHubListenAdapter extends HubListenAdapter {
   readonly listener: HubListener | undefined;
 }
 
 export function createHubListenAdapter(): AppHubListenAdapter {
+  const nodeAdapter = createNodeHubListenAdapter();
   let listener: HubListener | undefined;
   return {
     get listener(): HubListener | undefined {
@@ -240,7 +271,17 @@ export function createHubListenAdapter(): AppHubListenAdapter {
     },
     async listen(options): Promise<HubListener> {
       if (listener !== undefined) throw new Error('hub listener already active');
-      listener = await startHubWsServer(options);
+      const activeListener = await nodeAdapter.listen(options);
+      listener = {
+        ...(activeListener.port === undefined ? {} : { port: activeListener.port }),
+        close: async (): Promise<void> => {
+          try {
+            await activeListener.close();
+          } finally {
+            listener = undefined;
+          }
+        },
+      };
       return listener;
     },
   };

@@ -13,7 +13,7 @@ Read these authorities before implementation:
 ## Choose the integration level
 
 - Use the composed `@nomicore/yjs-server` package when the deployment needs a standalone Hub/Peer process. Its tarball contains compiled `dist` JavaScript/declarations and the `nomicore-yjs-server` CLI. Follow the deployment guide's strict JSON config and NDJSON operations; the package is an application composition root, not a self-contained Cordis plugin.
-- When embedding replication into an existing Cordis host, compose Instance → Clock → Timer → Persistence → Registry, then install `createHubReplicationPlugin()` or `createPeerReplicationPlugin()` from `@nomicore/ws-replication`. Discover the ready service with `requireHubReplication(ctx)` or `requirePeerReplication(ctx)`. There is no `createNomicoreYjsServerPlugin()` / `requireNomicoreYjsServer()` integration surface.
+- When embedding replication into an existing Cordis host, compose Instance → Clock → Timer → Persistence → Registry, then install `createHubReplicationPlugin()` or `createPeerReplicationPlugin()` from `@nomicore/ws-replication`. A Node.js Hub supplies `createNodeHubListenAdapter()` from `@nomicore/yjs-server`; other runtimes implement `HubListenAdapter`. Discover the ready service with `requireHubReplication(ctx)` or `requirePeerReplication(ctx)`. There is no `createNomicoreYjsServerPlugin()` / `requireNomicoreYjsServer()` integration surface.
 - Use lower-level `createHubReplication()` / `createPeerReplication()` only for a trusted host that deliberately owns custom transport integration and controller lifecycle. They are not the default Cordis embedding path.
 
 ## Local tarball distribution
@@ -40,8 +40,8 @@ plus Registry/Runtime/Persistence/Clock/VFSL dependencies listed in `artifacts/l
    - Hub `ws://`/`wss://` URL and expected Hub instance ID;
    - its own bearer token;
    - replication targets containing namespace ID and Peer-local owner.
-4. Enable replication on a Hub-owned namespace before expecting it to replicate. Keep owner local: it is a persistence partition key and is never sent over the wire.
-5. Start Hub before Peer. Hub plugin readiness means its listener is active with authentication and authorization wired; Peer plugin readiness means its controller/dial loop started and does not imply Hub connectivity. Use `waitForLive(namespaceId)` when a Peer operation requires a live target, and do not equate an UPDATE ACK with disk flush or quorum durability.
+4. After the Hub replication plugin is ready, create or open each Hub-owned namespace, retain its lease, and await `lease.enableReplication()` before starting scanners/workers that depend on replication. Keep owner local: it is a persistence partition key and is never sent over the wire. The plugin may listen before this step, but that namespace is not a usable replication entry until enablement and authorization both reference its persisted `namespaceId`.
+5. Start Hub before Peer. Hub plugin readiness means transport listener/auth wiring only, not namespace or domain readiness. Peer plugin readiness means its dial loop started, not target liveness. Choose a Peer boot policy: reconnect daemons may publish early and gate operations; data-plane services and one-shot jobs await `waitForLive(namespaceId)` before publishing/working. Keep readiness-critical waits in `async apply()`, not a background effect. Do not equate an UPDATE ACK with disk flush or quorum durability.
 6. For production, terminate TLS outside the app and use `wss://`. Restrict config/token file permissions. Never send bearer tokens over untrusted plaintext networks.
 7. Test bootstrap, restart/reconcile, bidirectional ROOT changes, unauthorized namespace access, bad credentials, identity/epoch conflict, backpressure, and graceful drain.
 
