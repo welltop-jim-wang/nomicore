@@ -5,10 +5,35 @@
 export { createHubReplication } from './hub-connection.js';
 export { createPeerReplication } from './peer-connection.js';
 export {
+  NOMICORE_HUB_REPLICATION_SERVICE,
+  NOMICORE_PEER_REPLICATION_SERVICE,
+  createHubReplicationPlugin,
+  createPeerReplicationPlugin,
+  requireHubReplication,
+  requirePeerReplication,
+} from './plugin.js';
+export {
   DEFAULT_REPLICATION_BACKOFF,
   DEFAULT_REPLICATION_LIMITS,
   DEFAULT_REPLICATION_TIMEOUTS,
 } from './defaults.js';
+
+export type {
+  HubListenAdapter,
+  HubListener,
+  HubReplicationPluginConfig,
+  HubReplicationPluginOverrides,
+  HubReplicationService,
+  HubReplicationStatus,
+  HubStaticAuthorization,
+  HubStaticToken,
+  PeerDialAdapterFactory,
+  PeerDialAdapterFactoryOptions,
+  PeerReplicationPluginConfig,
+  PeerReplicationPluginOverrides,
+  PeerReplicationService,
+  PeerReplicationStatus,
+} from './plugin.js';
 
 export type {
   DuplexTransport,

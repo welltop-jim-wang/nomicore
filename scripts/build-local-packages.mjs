@@ -10,6 +10,7 @@ const packages = [
   { root: 'packages', name: 'vfsl' },
   { root: 'packages', name: 'doc-runtime' },
   { root: 'packages', name: 'clock' },
+  { root: 'packages', name: 'instance' },
   { root: 'packages', name: 'persistence' },
   { root: 'packages', name: 'namespace-runtime' },
   { root: 'packages', name: 'namespace-registry' },

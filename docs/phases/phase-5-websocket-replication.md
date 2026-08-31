@@ -75,7 +75,7 @@ Peer instance × N
 **切片 3/4 落地锚定（冻结词汇）**：
 
 - 方法名（冻结）：`openReplicationSession(options)` + session 六能力 `encodeStateVector` / `encodeDiff` / `subscribeOwnedUpdates` / `applyRemoteUpdate` / `getStatus` / `close`；open 输入两域 `{ localRole, remoteInstanceId }`（remoteInstanceId 采用 ADR 0010 L156 instanceId 安全文法）；replicationId/replicationEpoch 由 Runtime 投影链冻结、非调用方输入。
-- 角色注入：Registry 构造 `options.role`（`'hub'|'peer'`，可选、缺省 `'hub'`；非法值构造期 TypeError）；生产 `CreateNamespaceRegistryOptions` 与 testing overrides 同形。peer 的 `replaceSchema`/`enableReplication`/`bumpReplicationEpoch` 以稳定角色权限错误拒绝（`REPLICATION_ROLE_PERMISSION`）；session `localRole` 必须等于实例 role。**切片 9 注记：生产 composition root 必须显式传 `role`（缺省 'hub' 仅零回归面，不构成生产配置）**。
+- 角色注入：Registry 核心构造 `options.role`（`'hub'|'peer'`，可选、缺省 `'hub'`；非法值构造期 TypeError）与 testing overrides 同形；这是直接构造/testing seam。issue #204 后，生产 Cordis composition root 只向 Instance plugin 配置一次 `instanceId + role`，Registry plugin 与 role-specific WebSocket plugin 均注入该 service。peer 的 `replaceSchema`/`enableReplication`/`bumpReplicationEpoch` 以稳定角色权限错误拒绝（`REPLICATION_ROLE_PERMISSION`）；session `localRole` 必须等于实例 role。
 - Session status 词汇（冻结）：`state('open'|'closed'|'conflicted')` + `direction` + 冻结四域 + `currentEpoch` + `rootValidation('none'|'replication-unvalidated')` + `durability{memoryCaughtUp（初值 false）, diskCaughtUp:false}` + `observerFailures`；Runtime status 的 replication 域仍只含两态持久事实。
 - 受保护常量（冻结，raw caller 不可逐次自定义）：hub 侧（接收 peer→hub）`SCHEMA 全容器 + META 全键`；peer 侧（接收 hub→peer）`META 全键`，SCHEMA/ROOT 放行；peer 允许的 META 白名单**首版 = 空集**。判据 = 内容投影相等（scratch clone 预演；删后同值重写 = 内容未变 = 允许）。
 - **needs-resync 通知归属**：needs-resync 于切片 3 落地——fanout 投递队列为切片 3 属主（每 session 有界 **16** 项冻结常量、溢出弃新置 `status.needsResync`——sticky、标记后继续投递）；WS 发送队列/连接级背压属切片 6（ADR 0010 L151 域）。
@@ -127,11 +127,11 @@ Peer instance × N
 
 ### 9. `apps/yjs-server` 与部署验收
 
-- 最小 Cordis Host：Clock、Timer、Memory/File Persistence、NamespaceRegistry、WS replication。
-- 配置加载：role、instanceId、listen/hub URL、token、精确 targets、资源上限和 Persistence 参数。
+- 最小 Cordis Host：Instance、Clock、Timer、Memory/File Persistence、NamespaceRegistry、role-specific WS replication。
+- 配置加载：Instance service 单点持有 role/instanceId；其余配置包括 listen/hub URL、token、精确 targets、资源上限和 Persistence 参数。
 - 停机顺序：停止接纳并发送 GOAWAY → 真实 drain（拒绝新 namespace 工作、现有 channel 自然 CLOSE、已接纳 apply 排空）→ 全部 channel 终态提前关闭或 deadline 以 WS 1001 硬收口 → 异常安全的 channel teardown/session close/lease release → Registry shutdown → Persistence dispose → Timer/Clock；网络 deadline 不取消 Runtime barrier。
 - 提供 hub + 两 peer 的本机多进程及跨机器部署说明；每个实例必须使用独立 FilePersistence rootDir。
-- **role 注记（切片 3/4 落地）**：生产 composition root（本切片）必须显式向 Registry 构造传 `role`（hub/peer 与部署配置一致）；缺省 `'hub'` 只是未声明时的一致性零回归面，不作为生产配置遗漏的豁免。
+- **role 注记（issue #204 修订）**：生产 composition root 必须显式配置 Instance plugin；Registry 与 WebSocket plugins 从 `nomicoreInstance` 读取同一 role，Registry plugin 不接受 `role` 配置。核心 Registry 构造缺省 `'hub'` 只保留给直接构造/testing seam。
 
 ### 10. 最终集成与审查
 

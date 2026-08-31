@@ -19,6 +19,7 @@
 import { Context } from '@deepseek-ai/cordis';
 import TimerService from '@deepseek-ai/cordis-plugin-timer';
 import { createSystemClockPlugin } from '@nomicore/clock';
+import { createInstancePlugin } from '@nomicore/instance';
 import {
   createFilePersistencePlugin,
   createMemoryPersistencePlugin,
@@ -30,11 +31,18 @@ import {
   type NamespaceRegistry,
   type ResetReplicaResult,
 } from '@nomicore/namespace-registry';
-import type {
-  NamespaceAuthorizer,
-  NamespaceAuthorization,
-  PeerTokenVerifier,
-  ReplicationObserver,
+import {
+  createHubReplicationPlugin,
+  createPeerReplicationPlugin,
+  requireHubReplication,
+  requirePeerReplication,
+  type HubListenAdapter,
+  type HubReplicationService,
+  type NamespaceAuthorizer,
+  type NamespaceAuthorization,
+  type PeerReplicationService,
+  type PeerTokenVerifier,
+  type ReplicationObserver,
 } from '@nomicore/ws-replication';
 import {
   parseAppConfig,
@@ -43,11 +51,8 @@ import {
   type AuthorizationEntry,
 } from './config.js';
 import { createStdoutEventSink, type EventSink } from './lifecycle.js';
-import { createHubReplicationPlugin } from './replication/hub-plugin.js';
-import { createPeerReplicationPlugin } from './replication/peer-plugin.js';
 import { createPeerDial } from './transport/ws-client.js';
-import { REPLICATION_UPGRADE_PATH, startHubWsServer, type HubWsServer } from './transport/ws-server.js';
-import type { PeerReplication } from '@nomicore/ws-replication';
+import { createHubListenAdapter } from './transport/ws-server.js';
 
 const OP_TIMEOUT_DEFAULT_MS = 30_000;
 const OP_TIMEOUT_MIN_MS = 1;
@@ -123,10 +128,9 @@ class AppHandle {
 
   private registry: NamespaceRegistry | undefined;
   private persistenceFiber: { dispose(): Promise<unknown> } | undefined;
-  private hubPlugin: ReturnType<typeof createHubReplicationPlugin> | undefined;
-  private peerPlugin: ReturnType<typeof createPeerReplicationPlugin> | undefined;
-  private peer: PeerReplication | undefined;
-  private wsServer: HubWsServer | undefined;
+  private hubService: HubReplicationService | undefined;
+  private peerService: PeerReplicationService | undefined;
+  private hubListener: Awaited<ReturnType<HubListenAdapter['listen']>> | undefined;
 
   private stopPromise: Promise<void> | undefined;
   private bootPromise: Promise<void> | undefined;
@@ -168,6 +172,10 @@ class AppHandle {
 
   private async boot(): Promise<void> {
     const ctx = this.ctx;
+    createInstancePlugin().apply(ctx, {
+      instanceId: this.config.instanceId,
+      role: this.config.role,
+    });
     const clockFiber = ctx.plugin(createSystemClockPlugin());
     await clockFiber;
     if (this.stopRequested) return;
@@ -189,7 +197,6 @@ class AppHandle {
     const registryFiber = ctx.plugin(
       createNamespaceRegistryPlugin({
         ...(this.config.idleTimeoutMs !== undefined ? { idleTimeoutMs: this.config.idleTimeoutMs } : {}),
-        role: this.config.role,
       }),
     );
     await registryFiber;
@@ -235,18 +242,6 @@ class AppHandle {
         permissions: { read: binding.read, submit: binding.submit },
       };
     };
-    this.hubPlugin = createHubReplicationPlugin({
-      instanceId: this.config.instanceId,
-      verifyToken,
-      authorize,
-      ...(this.config.limits !== undefined ? { limits: this.config.limits } : {}),
-      ...(this.config.timeouts !== undefined ? { timeouts: this.config.timeouts } : {}),
-      observer: this.observer,
-      lifecycleOwner: 'manual',
-    });
-    await this.ctx.plugin(this.hubPlugin);
-    if (this.stopRequested) return;
-
     // ── provisioning（NDJSON `provisioned(×N)` — 先于 listen；失败 → 事件 + loud）──
     if (hubConfig.provision !== undefined) {
       for (const entry of hubConfig.provision) {
@@ -256,30 +251,34 @@ class AppHandle {
     }
     if (this.stopRequested) return;
 
-    // ── 绑定完成后才 listen（设计 §3.4 启动序）──
-    const wsServer = await startHubWsServer({
-      host: hubConfig.listen.host,
-      port: hubConfig.listen.port,
-      path: REPLICATION_UPGRADE_PATH,
-      authenticate: async (token) => {
-        const verdict = await verifyToken(token);
-        return verdict.ok ? { peerInstanceId: verdict.instanceId } : undefined;
+    // Package plugin owns the listener/controller, but is not installed until every
+    // provision-derived authorization binding is complete.
+    const listenAdapter = createHubListenAdapter();
+    const hubPlugin = createHubReplicationPlugin(
+      {
+        listen: {
+          host: hubConfig.listen.host,
+          port: hubConfig.listen.port,
+          path: '/replication',
+        },
+        ...(this.config.limits !== undefined ? { limits: this.config.limits } : {}),
+        ...(this.config.timeouts !== undefined ? { timeouts: this.config.timeouts } : {}),
       },
-      accept: (transport, identity) => {
-        const acceptTrusted = this.hubPlugin?.replication?.acceptTrusted;
-        if (acceptTrusted === undefined) {
-          transport.close(1011, 'trusted-upgrade-unavailable');
-          throw new TypeError('HubReplication.acceptTrusted is required by the production composition root');
-        }
-        void acceptTrusted.call(this.hubPlugin?.replication, transport, identity);
+      {
+        verifyToken,
+        authorize,
+        listen: listenAdapter,
+        observer: this.observer,
       },
-    });
-    this.wsServer = wsServer;
-    if (this.stopRequested) {
-      await wsServer.close();
-      return;
-    }
-    this.sink({ event: 'listening', host: hubConfig.listen.host, port: wsServer.port });
+    );
+    await this.ctx.plugin(hubPlugin);
+    if (this.stopRequested) return;
+
+    this.hubService = requireHubReplication(this.ctx);
+    this.hubListener = listenAdapter.listener;
+    if (this.hubListener === undefined) throw new Error('hub listener unavailable after plugin startup');
+    if (this.stopRequested) return;
+    this.sink({ event: 'listening', host: hubConfig.listen.host, port: this.hubListener.port ?? hubConfig.listen.port });
     this.sink({ event: 'ready', role: this.role, instanceId: this.config.instanceId });
   }
 
@@ -342,32 +341,34 @@ class AppHandle {
   private async bootPeer(): Promise<void> {
     const peerConfig = this.config.peer;
     if (peerConfig === undefined) throw new Error('peer config missing (validated)');
-    this.peerPlugin = createPeerReplicationPlugin({
-      instanceId: this.config.instanceId,
-      hubInstanceId: peerConfig.hub.hubInstanceId,
-      dial: createPeerDial(peerConfig.hub.url, peerConfig.hub.token),
-      ...(peerConfig.targets !== undefined
-        ? {
-            targets: peerConfig.targets.map((t) => ({
-              namespaceId: t.namespaceId,
-              localOwner: { userId: t.ownerUserId },
-            })),
-          }
-        : {}),
-      ...(this.config.limits !== undefined ? { limits: this.config.limits } : {}),
-      ...(this.config.timeouts !== undefined ? { timeouts: this.config.timeouts } : {}),
-      ...(this.config.backoff !== undefined ? { backoff: this.config.backoff } : {}),
-      observer: this.observer,
-      lifecycleOwner: 'manual',
-    });
-    await this.ctx.plugin(this.peerPlugin);
+    const peerPlugin = createPeerReplicationPlugin(
+      {
+        expectedHubInstanceId: peerConfig.hub.hubInstanceId,
+        hubUrl: peerConfig.hub.url,
+        token: peerConfig.hub.token,
+        ...(peerConfig.targets !== undefined
+          ? {
+              targets: peerConfig.targets.map((t) => ({
+                namespaceId: t.namespaceId,
+                localOwner: { userId: t.ownerUserId },
+              })),
+            }
+          : {}),
+        ...(this.config.limits !== undefined ? { limits: this.config.limits } : {}),
+        ...(this.config.timeouts !== undefined ? { timeouts: this.config.timeouts } : {}),
+        ...(this.config.backoff !== undefined ? { backoff: this.config.backoff } : {}),
+      },
+      {
+        createDial: ({ hubUrl, token }) => createPeerDial(hubUrl, token),
+        observer: this.observer,
+      },
+    );
+    await this.ctx.plugin(peerPlugin);
     if (this.stopRequested) return;
-    this.peer = this.peerPlugin.replication;
-    if (this.peer === undefined) throw new Error('peer replication unavailable after apply');
+    this.peerService = requirePeerReplication(this.ctx);
     for (const target of peerConfig.targets ?? []) {
       this.peerOwners.set(target.namespaceId, target.ownerUserId);
     }
-    this.peer.start(); // 启动序：registry ready 后才开始拨号
     if (this.stopRequested) return;
     this.sink({ event: 'ready', role: this.role, instanceId: this.config.instanceId });
   }
@@ -384,14 +385,14 @@ class AppHandle {
   private async performStop(): Promise<void> {
     try {
       // 1. 停止接纳 + 复制 drain（设计 §3.6：GOAWAY → drain → deadline 后 WS 1001）。
-      if (this.wsServer !== undefined) {
-        await this.wsServer.close();
+      if (this.hubListener !== undefined) {
+        await this.hubListener.close();
       }
-      if (this.hubPlugin?.replication !== undefined) {
-        await this.hubPlugin.replication.close();
+      if (this.hubService !== undefined) {
+        await this.hubService.stop();
       }
-      if (this.peer !== undefined) {
-        await this.peer.stop();
+      if (this.peerService !== undefined) {
+        await this.peerService.stop();
       }
       this.sink({ event: 'replication-drained' });
       // 2. registry shutdown（lease release、已接纳 apply 排空、idle runtime 回收）。
@@ -459,7 +460,7 @@ class AppHandle {
           ok: true,
           role: this.role,
           instanceId: this.config.instanceId,
-          ...(this.peer !== undefined ? { connectionState: this.peer.getConnectionState() } : {}),
+          ...(this.peerService !== undefined ? { connectionState: this.peerService.status.connection } : {}),
         };
       case 'shutdown':
         return { ok: true }; // main.ts 在回执发射后执行有序停机
@@ -555,7 +556,7 @@ class AppHandle {
   }
 
   private async opAddTarget(args: Record<string, unknown>): Promise<Readonly<Record<string, unknown>>> {
-    if (this.role !== 'peer' || this.peer === undefined) return { ok: false, code: 'unknown-op' };
+    if (this.role !== 'peer' || this.peerService === undefined) return { ok: false, code: 'unknown-op' };
     const { namespaceId, ownerUserId } = args;
     if (typeof namespaceId !== 'string' || !NAMESPACE_ID_PATTERN.test(namespaceId)) {
       return { ok: false, code: 'invalid-op-args' };
@@ -568,7 +569,7 @@ class AppHandle {
     // （reset 后重引导链失败场景：G5c 已恢复 peerOwners 而通道停在 closed → 旧短路
     // 返回伪 ok:true 零动作）。终态 → 走底层 addTarget（re-add 分支 → §14.1 整连接重建，
     // 发射 target-added）；disconnected → 连接重建机制（openActiveTargets, intent='active'）自恢复。
-    const state = this.peer.getNamespaceState(namespaceId);
+    const state = this.peerService.status.getNamespaceState(namespaceId);
     if (
       this.peerOwners.has(namespaceId) &&
       state !== 'closed' &&
@@ -577,38 +578,38 @@ class AppHandle {
     ) {
       return { ok: true };
     }
-    this.peer.addTarget({ namespaceId, localOwner: { userId: ownerUserId } });
+    this.peerService.addTarget({ namespaceId, localOwner: { userId: ownerUserId } });
     this.peerOwners.set(namespaceId, ownerUserId);
     this.sink({ event: 'target-added', namespaceId });
     return { ok: true };
   }
 
   private async opRemoveTarget(args: Record<string, unknown>): Promise<Readonly<Record<string, unknown>>> {
-    if (this.role !== 'peer' || this.peer === undefined) return { ok: false, code: 'unknown-op' };
+    if (this.role !== 'peer' || this.peerService === undefined) return { ok: false, code: 'unknown-op' };
     const { namespaceId } = args;
     if (typeof namespaceId !== 'string' || !NAMESPACE_ID_PATTERN.test(namespaceId)) {
       return { ok: false, code: 'invalid-op-args' };
     }
-    await this.peer.removeTarget(namespaceId); // 幂等；未知 nsId 无副作用
+    await this.peerService.removeTarget(namespaceId); // 幂等；未知 nsId 无副作用
     this.peerOwners.delete(namespaceId);
     return { ok: true };
   }
 
   private async opNotifyAuthChanged(): Promise<Readonly<Record<string, unknown>>> {
-    if (this.role !== 'peer' || this.peer === undefined) return { ok: false, code: 'unknown-op' };
-    this.peer.notifyAuthChanged(); // 仅 blocked 生效（其余态文档化 no-op，不抛错）
-    return { ok: true, connectionState: this.peer.getConnectionState() };
+    if (this.role !== 'peer' || this.peerService === undefined) return { ok: false, code: 'unknown-op' };
+    this.peerService.notifyAuthChanged(); // 仅 blocked 生效（其余态文档化 no-op，不抛错）
+    return { ok: true, connectionState: this.peerService.status.connection };
   }
 
   private async opRequestReauth(args: Record<string, unknown>): Promise<Readonly<Record<string, unknown>>> {
-    if (this.role !== 'hub' || this.hubPlugin?.replication === undefined) {
+    if (this.role !== 'hub' || this.hubService === undefined) {
       return { ok: false, code: 'unknown-op' };
     }
     const { instanceIdentity } = args;
     if (typeof instanceIdentity !== 'string' || !/^[a-z][a-z0-9-]{0,62}$/.test(instanceIdentity)) {
       return { ok: false, code: 'invalid-op-args' };
     }
-    await this.hubPlugin.replication.requestReauth(instanceIdentity);
+    await this.hubService.requestReauth(instanceIdentity);
     return { ok: true };
   }
 
@@ -696,7 +697,7 @@ class AppHandle {
 
   private async opResetReplica(args: Record<string, unknown>): Promise<Readonly<Record<string, unknown>>> {
     // G1 角色守卫（peer 专属，hub → unknown-op）
-    if (this.role !== 'peer' || this.peer === undefined || this.registry === undefined) {
+    if (this.role !== 'peer' || this.peerService === undefined || this.registry === undefined) {
       return { ok: false, code: 'unknown-op' };
     }
     const { namespaceId, ownerUserId, expectedReplicationId, expectedReplicationEpoch } = args;
@@ -737,7 +738,7 @@ class AppHandle {
     // G5b 编排第 2/3 步：收口旧 channel + 重引导（removeTarget 恒 resolve、addTarget 同步无
     //   throw——catch 为结构性不可达的纯防御边界；peerOwners 保持 deleted，add-target 重试可达）
     try {
-      await this.peer.removeTarget(namespaceId); // 幂等；恒 resolve
+      await this.peerService.removeTarget(namespaceId); // 幂等；恒 resolve
       // F1（SA7 复验收编）：await removeTarget 返回时 controller 可能仍处 closing（CLOSE 路径
       //   的结算与 CLOSE_OK 往返竞争）——引擎 addTarget 的 re-add 分支只在终态触发，
       //   closing 态落入合流分支（intent='active' 零动作），close 完成后无人再触发重建：
@@ -751,7 +752,7 @@ class AppHandle {
       if (!(await this.waitPeerTargetSettled(namespaceId, settleBudgetMs))) {
         return { ok: false, code: 'reset-replica-failed' };
       }
-      this.peer.addTarget({ namespaceId, localOwner: { userId: ownerUserId } }); // §14.1 re-add → 重建 → OPEN → bootstrap
+      this.peerService.addTarget({ namespaceId, localOwner: { userId: ownerUserId } }); // §14.1 re-add → 重建 → OPEN → bootstrap
     } catch {
       return { ok: false, code: 'reset-replica-failed' };
     }
@@ -811,7 +812,7 @@ class AppHandle {
     for (;;) {
       let live: boolean;
       if (this.role === 'peer') {
-        live = this.peer?.getNamespaceState(namespaceId) === 'live';
+        live = this.peerService?.status.getNamespaceState(namespaceId) === 'live';
       } else {
         const status = lease.getStatus();
         live = status.lease === 'active' && status.runtime.lifecycle === 'ready' && status.runtime.read.enabled;
@@ -835,7 +836,7 @@ class AppHandle {
   private async waitPeerTargetSettled(namespaceId: string, timeoutMs: number): Promise<boolean> {
     const deadline = Date.now() + timeoutMs;
     for (;;) {
-      const state = this.peer?.getNamespaceState(namespaceId);
+      const state = this.peerService?.status.getNamespaceState(namespaceId);
       if (
         state === undefined ||
         state === 'closed' ||

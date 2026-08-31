@@ -3,14 +3,14 @@
 ## Role
 
 `apps/yjs-server` is the deployable Hub/Peer composition root (Phase 5 切片 9). It wires
-Clock, Cordis Timer, Memory/File Persistence, NamespaceRegistry (with static role),
-WebSocket replication (with real `ws` transport), authentication/authorization,
+Instance identity, Clock, Cordis Timer, Memory/File Persistence, NamespaceRegistry,
+role-specific WebSocket replication (with real `ws` transport), authentication/authorization,
 validated configuration, and ordered teardown — without moving any of those contracts
 out of their owning packages.
 
 ## Boundaries
 
-- Consume only package public exports (`@nomicore/{clock,persistence,namespace-registry,ws-replication}`);
+- Consume only package public exports (`@nomicore/{instance,clock,persistence,namespace-registry,ws-replication}`);
   no package-internal subpaths, no testing seams, no DSH profiles.
 - One static role per process (`role: 'hub' | 'peer'`); never both.
 - Authorization bindings are built before any network endpoint accepts. The deployable
