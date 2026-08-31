@@ -1,5 +1,5 @@
 /**
- * SA6 红灯契约 —— issue #164：真实 WebSocket adapter（DuplexTransport 实现）+
+ * SA6 回归契约 —— issue #164：真实 WebSocket adapter（DuplexTransport 实现）+
  * 生产三面（bufferedAmount / ping / onPong）+ 组合根装配期响亮断言。
  *
  * 权威：issue #164 强制要求 + protocol §17（生产 Adapter 必须暴露三面；缺面 =
@@ -8,7 +8,7 @@
  *
  * 全部断言锚在运行时行为（回调调用/关闭码/异常），零源码 grep。
  *
- * 红灯现状：`../src/index.js` 不存在（切片 9 未交付）→ 本文件收集期失败 = 真实红灯。
+ * 交付现状：切片 9 生产入口与三面 adapter 已随 #164 交付；本文件持续锁定运行时契约。
  */
 import { describe, expect, it } from 'vitest';
 import {

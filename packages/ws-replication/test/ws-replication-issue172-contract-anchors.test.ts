@@ -10,27 +10,19 @@
  *     checkpoint=max(1,floor(ackTimeoutMs/100))、peer pong 超时 close(1001)、
  *     gap/repeat/错误 ACK 关联关闭连接、GOAWAY 静默订阅先于异步 drain）。
  *
- * 分组与当前偏差（运行证据见本文件断言；任务简报 §「测试设计与红灯运行结果」）：
- *   G1 control reserve 公共字段名/缺省/下界 —— 已于 #172 收敛（A1-1..A1-3 现绿）：
- *     maxQueuedControlBytes=8MiB、>=maxBootstrapBytes+协议开销，记账判据换读冻结字段。
- *   G2 backpressure 恢复检查点 —— #169 已实现
- *     max(1,floor(ackTimeoutMs/100))（缺省 100ms）；A2-1/A2-2 为现绿回归锁。
- *   G3 pong timeout 语义 —— peer 侧 close(1001)+backoff 已实现（R4 锚绿）；
- *     hub 侧 close(1002) 且错误码 PONG_TIMEOUT 不在 §13.1 注册表（冻结 close(1001)）。
- *     （行为修复属 #170：A3-1 保持红灯为 #170 验收锚；A3-2/A3-3 为现绿回归锁。）
- *   G4 CLOSE_OK 关联违规 —— 代码在 closing/live 期对不匹配/多余 CLOSE_OK 静默忽略；
- *     冻结「错误 ACK 关联关闭连接」（ACK_STATE_VIOLATION 1002）。
- *     （行为修复属 #171：A4-1/A4-2 保持红灯为 #171 验收锚。）
- *   G5 GOAWAY quiesce/deadline —— peer 收侧 deadline、SHUTTING_DOWN→blocked 及 drain
- *     窗口内停止 OPEN / 不开始新 sync round 已实现（A5-1..A5-4 绿）；hub 停机先发
- *     GOAWAY（§21）仍未实现（A5-5 为 #171 延后锚）。
+ * 分组与交付状态：
+ *   G1 control reserve 公共字段名/缺省/下界已于 #172 收敛。
+ *   G2 backpressure 恢复检查点已于 #169 交付。
+ *   G3 pong timeout 的 epoch 安全与 close(1001) 语义已于 #170 交付。
+ *   G4 CLOSE_OK 错误关联的 ACK_STATE_VIOLATION(1002) 已于 #171 交付。
+ *   G5 GOAWAY quiesce/deadline 与 Hub 停机 drain 已于 #171/#174 交付。
+ *   本文件所有锚均为普通现绿回归测试，不保留 expected-failure 或 skip。
  *
  * 纪律：真实 yjs / Registry / Runtime / HubReplication / PeerReplication；fake-duplex +
  * fake scheduler；零 real sleep；零源码 grep 断言；公共 API 尚缺的冻结字段经
  * `as unknown as Partial<...>` 注入（编译期不锁死实现面）。
  */
 import { describe, expect, it } from 'vitest';
-import { readFileSync } from 'node:fs';
 import {
   DEFAULT_REPLICATION_LIMITS,
   DEFAULT_REPLICATION_TIMEOUTS,
@@ -39,7 +31,7 @@ import {
 import type { ReplicationLimits } from '@nomicore/ws-replication';
 import type { CloseOkMsg, GoawayMsg } from '@nomicore/replication-protocol';
 import { encodeMessage } from '@nomicore/replication-protocol';
-import { boot, DEFAULT_PEER_VERIFIER, makeAuthorizer } from './driver.js';
+import { boot, DEFAULT_PEER_VERIFIER, makeAuthorizer, TEST_TOKEN } from './driver.js';
 import type { Run } from './driver.js';
 import { bootMulti } from './issue137-driver.js';
 import type { Run137 } from './issue137-driver.js';
@@ -199,7 +191,7 @@ describe('G2（#172/#169）：backpressure 恢复检查点 = max(1, floor(ackTim
 // ═══════════════════════════════════════════════════════════════════════
 // G3 — ping/pong timeout error/close semantics（protocol §18：pong 超时按临时
 //     失败处理——关闭传输 close(1001) 并经 backoff 重连；HELLO/pong timeout 关闭连接）。
-//     行为修复属 #170：A3-1 为 #170 验收锚；A3-2/A3-3 为现绿回归锁。
+//     #170 已交付；A3-1..A3-3 均为现绿回归锁。
 // ═══════════════════════════════════════════════════════════════════════
 
 interface HubPingWire {
@@ -300,8 +292,7 @@ function makeHubPingWire(): HubPingWire {
 }
 
 describe('G3（#172/#170）：ping/pong timeout error/close semantics', () => {
-  // → #170 验收锚：本票以 it.fails 注册，行为修复落地后本用例转绿会使套件反红——届时摘除 .fails 标记
-  it.fails('A3-1 RED：hub 侧 pong 超时 → 关闭传输 close code = 1001（临时失败语义；现 close(1002) 且错误码 PONG_TIMEOUT 不在 §13.1 注册表）', async () => {
+  it('A3-1 回归锁：hub 侧 pong 超时 → 关闭传输 close code = 1001（临时失败语义）', async () => {
     const node = makeNode('hub');
     const hub = createHubReplication({
       instanceId: HUB_INSTANCE,
@@ -312,7 +303,9 @@ describe('G3（#172/#170）：ping/pong timeout error/close semantics', () => {
       timeouts: { pingIntervalMs: 100, pongTimeoutMs: 40 },
     });
     const wire = makeHubPingWire();
-    hub.accept(wire.hubEnd, { token: 'peer-token' });
+    const accepted = hub.accept(wire.hubEnd, { token: TEST_TOKEN });
+    // 哑 peer 在认证期发送真实 HELLO；accept() 的早到帧 admission 会缓冲并重放。
+    // 这也锁定认证与 HELLO 的无缝交接。
     // 哑 peer 完成握手（真实 HELLO 帧）
     wire.peerEnd.send(
       encodeMessage({
@@ -325,6 +318,7 @@ describe('G3（#172/#170）：ping/pong timeout error/close semantics', () => {
         connectionNonce: new Uint8Array(16).fill(7),
       }),
     );
+    await accepted;
     await settleUntil(() => hub.connections[0]?.state === 'ready', 'hub 连接 ready（HELLO_ACK 已回）');
     await node.scheduler.advanceBy(100); // ping 周期到 → 活性循环已 ping
     expect(wire.pingCount(), '前置：ping 已发出').toBe(1);
@@ -332,7 +326,7 @@ describe('G3（#172/#170）：ping/pong timeout error/close semantics', () => {
     await node.scheduler.advanceBy(40);
     await settle();
     expect(wire.hubSideClosed, 'pong 超时必须关闭传输').toBe(true);
-    // 冻结语义（protocol §18）：临时失败 = close(1001)；当前实现 close(1002)（协议错误域）→ 红灯
+    // 冻结语义（protocol §18）：临时失败 = close(1001)。
     expect(wire.hubSideCloseCode, 'pong 超时 close code 必须为 1001').toBe(1001);
   });
 
@@ -359,7 +353,7 @@ describe('G3（#172/#170）：ping/pong timeout error/close semantics', () => {
 // ═══════════════════════════════════════════════════════════════════════
 // G4 — CLOSE_OK 关联违规（protocol §10.2/§13.1：错误 ACK 关联 → connection fatal
 //     ACK_STATE_VIOLATION 1002；ADR-0010 #161：gap/repeat/错误 ACK 关联关闭连接）。
-//     行为修复属 #171：A4-1/A4-2 为 #171 验收锚。
+//     #171 已交付；A4-1/A4-2 均为现绿回归锁。
 // ═══════════════════════════════════════════════════════════════════════
 
 function closeNamespaceSeqOf(run: Run): number {
@@ -370,8 +364,7 @@ function closeNamespaceSeqOf(run: Run): number {
 }
 
 describe('G4（#172/#171）：CLOSE_OK 关联违规 → ACK_STATE_VIOLATION(1002)', () => {
-  // → #171 验收锚：本票以 it.fails 注册，行为修复落地后本用例转绿会使套件反红——届时摘除 .fails 标记
-  it.fails('A4-1 RED：closing 期 CLOSE_OK.ackedSequence ≠ CLOSE_NAMESPACE 序列 → connection fatal（现静默忽略、等 closeTimeout）', async () => {
+  it('A4-1 回归锁：closing 期 CLOSE_OK.ackedSequence ≠ CLOSE_NAMESPACE 序列 → connection fatal', async () => {
     const run = await boot();
     await run.waitNamespace('live');
     // 真实 hub 的 CLOSE_OK 将被丢弃（一帧故障注入），注入帧独占下一序列——确定性
@@ -388,47 +381,46 @@ describe('G4（#172/#171）：CLOSE_OK 关联违规 → ACK_STATE_VIOLATION(1002
     let fatalSeen = false;
     try {
       await settleUntil(
-        () => run.wire.peerSideCloseInfo !== undefined,
+        () => run.wire.hubSideCloseInfo !== undefined,
         'connection fatal（错误 CLOSE_OK 关联）',
         2_000,
       );
       fatalSeen = true;
     } catch {
-      // 当前实现：静默忽略 → 零关闭 → 走下方断言（干净失败）
+      // 由下方断言报告有限预算内未发生显式收口。
     }
     expect(fatalSeen, '错误关联 CLOSE_OK 必须触发 connection fatal').toBe(true);
     // 冻结语义：ACK_STATE_VIOLATION（§13.1 wsCloseCode 1002）+ 连接错误帧
-    expect(run.wire.peerSideCloseInfo?.code).toBe(1002);
+    expect(run.wire.hubSideCloseInfo?.code).toBe(1002);
     const errorCodes = run.peerFrames('ERROR').map((f) => (f.message as { code: string }).code);
     expect(errorCodes).toContain('ACK_STATE_VIOLATION');
   });
 
-  // → #171 验收锚：本票以 it.fails 注册，行为修复落地后本用例转绿会使套件反红——届时摘除 .fails 标记
-  it.fails('A4-2 RED：无对应未决 CLOSE_NAMESPACE 的 CLOSE_OK（live 期）→ connection fatal（现静默忽略）', async () => {
+  it('A4-2 回归锁：无对应未决 CLOSE_NAMESPACE 的 CLOSE_OK（live 期）→ connection fatal', async () => {
     const run = await boot();
     await run.waitNamespace('live');
     run.injectHub({ kind: 'CLOSE_OK', namespaceId: run.nsId, ackedSequence: 1 } satisfies CloseOkMsg);
     let fatalSeen = false;
     try {
       await settleUntil(
-        () => run.wire.peerSideCloseInfo !== undefined,
+        () => run.wire.hubSideCloseInfo !== undefined,
         'connection fatal（多余的 CLOSE_OK）',
         2_000,
       );
       fatalSeen = true;
     } catch {
-      // 当前实现：静默忽略 → 零关闭 → 走下方断言（干净失败）
+      // 由下方断言报告有限预算内未发生显式收口。
     }
     expect(fatalSeen, '多余 CLOSE_OK 必须触发 connection fatal').toBe(true);
-    expect(run.wire.peerSideCloseInfo?.code).toBe(1002);
+    expect(run.wire.hubSideCloseInfo?.code).toBe(1002);
   });
 });
 
 // ═══════════════════════════════════════════════════════════════════════
 // G5 — GOAWAY quiesce/deadline（protocol §6.3：停 OPEN、不开始新 sync round、
 //     现有 namespace 到 deadline 前自然收口、之后发送方 WS 1001 关闭；§21 停机
-//     顺序第 1 步「停止接纳并发送 GOAWAY」）。A5-1..A5-4 为现绿回归锁；A5-5
-//     仍为 #171 延后锚。
+//     顺序第 1 步「停止接纳并发送 GOAWAY」）。#171/#174 已交付；A5-1..A5-5
+//     均为现绿回归锁。
 // ═══════════════════════════════════════════════════════════════════════
 
 describe('G5（#172/#171）：GOAWAY quiesce/deadline', () => {
@@ -516,47 +508,21 @@ describe('G5（#172/#171）：GOAWAY quiesce/deadline', () => {
     await run.peer.stop();
   });
 
-  // → #171 验收锚：本票以 it.fails 注册，行为修复落地后本用例转绿会使套件反红——届时摘除 .fails 标记
-  it.fails('A5-5 RED：HubReplication.close() 停机必须先发送 GOAWAY（§21 停机顺序第 1 步；现零 GOAWAY 帧、直接 close(1001)）', async () => {
+  it('A5-5 回归锁：HubReplication.close() 停机必须先发送 GOAWAY（§21 停机顺序第 1 步）', async () => {
     const run = await boot();
     await run.waitNamespace('live');
-    await run.hub.close();
-    await settle();
+    const closePromise = run.hub.close();
+    await settleUntil(() => run.hubFramesAll('GOAWAY').length === 1, 'hub 停机 GOAWAY 已发出');
     const goaways = run.hubFramesAll('GOAWAY');
     expect(goaways.length, '§21：replication 停止接纳连接/target 并发送 GOAWAY').toBe(1);
     const msg = goaways[0]?.message as GoawayMsg;
     expect(typeof msg.drainTimeoutMs).toBe('number');
     expect(typeof msg.reasonCode).toBe('string');
+    // close() 表示真实 drain 完成；测试推进冻结 deadline，避免等待真实时间。
+    await run.hubNode.scheduler.advanceBy(msg.drainTimeoutMs);
+    await closePromise;
+    await settle();
     expect(run.wire.peerSideCloseInfo?.code).toBe(1001);
     await run.peer.stop();
   });
-});
-
-// ═══════════════════════════════════════════════════════════════════════
-// #172 锚集完整性常驻 meta 守卫（D2-bis）：剩余 4 条延后锚以 it.fails 注册为期望红，
-// 本守卫保证锚集不腐烂——删锚 / 把 it.fails 改回 it / 标题抹锚号都会使套件反红。
-// 对象是本测试文件自身的登记面自检（非实现源码——不违「零源码 grep 断言」纪律）。
-// ═══════════════════════════════════════════════════════════════════════
-
-/** 延后锚冻结清单（→ #170/#171 验收锚；修复票落地摘标时同步缩清单，否则守卫反红）。 */
-const DEFERRED_ANCHORS = [
-  'A3-1',
-  'A4-1',
-  'A4-2',
-  'A5-5',
-] as const;
-
-it('#172 meta：延后锚集完整性守卫（4 条 it.fails 在场 + 冻结标题锚定）', () => {
-  const source = readFileSync(new URL(import.meta.url), 'utf8');
-  const failsCount = (source.match(/it\.fails\(/g) ?? []).length;
-  expect(
-    failsCount,
-    'it.fails 用例数 = DEFERRED_ANCHORS 清单长度（删锚/漏改标记都会反红）',
-  ).toBe(DEFERRED_ANCHORS.length);
-  for (const id of DEFERRED_ANCHORS) {
-    expect(
-      new RegExp(`it\\.fails\\('${id} `).test(source),
-      `延后锚 ${id} 必须以 it.fails 注册且标题保留冻结锚号`,
-    ).toBe(true);
-  }
 });
