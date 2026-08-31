@@ -66,7 +66,7 @@ Persistence、Registry 和 replication plugin 启动时会检查依赖；缺少�
 
 ## 最小生产装配
 
-下面示例使用文件持久化。`ctx.plugin()` 返回 Fiber 生命周期句柄；`await fiber` 等待插件进入 active 或启动失败，随后才能消费该插件提供的服务。
+下面示例使用文件持久化。`ctx.plugin()` 返回 Fiber 生命周期句柄。当前 Cordis Fiber wrapper 是 thenable，`await fiber` 会委托到 `fiber.await()`；本文统一显式调用 `await fiber.await()`，以清楚表达“等待当前生命周期迁移完成并重抛配置/启动错误”，随后才能消费该插件提供的服务。
 
 ```ts
 import { Context } from '@deepseek-ai/cordis'
@@ -81,15 +81,20 @@ import {
 
 const ctx = new Context()
 
-createInstancePlugin().apply(ctx, {
+const instanceConfig = {
   instanceId: 'hub-primary',
-  role: 'hub',
-})
+  role: 'hub' as const,
+}
+const instanceFiber = ctx.plugin(
+  createInstancePlugin(instanceConfig),
+  instanceConfig,
+)
+await instanceFiber.await()
 
 const clockFiber = ctx.plugin(createSystemClockPlugin())
-await clockFiber
+await clockFiber.await()
 
-// TimerService 构造时同步向 Context 提供 timer service。
+// 独立 composition root 只构造一次；嵌入已有 Host 时复用 Host 的 timer，跳过此行。
 new TimerService(ctx)
 
 const persistenceFiber = ctx.plugin(createFilePersistencePlugin({
@@ -99,17 +104,17 @@ const persistenceFiber = ctx.plugin(createFilePersistencePlugin({
     maxDirtyMs: 5_000,
   },
 }))
-await persistenceFiber
+await persistenceFiber.await()
 
 const registryFiber = ctx.plugin(createNamespaceRegistryPlugin({
   idleTimeoutMs: 300_000,
 }))
-await registryFiber
+await registryFiber.await()
 
 const registry = requireNomicoreRegistry(ctx)
 ```
 
-Instance plugin 通过 `apply(ctx, hostConfig)` 读取宿主配置；它不应再在 Registry 或 replication 配置中重复 `instanceId`/`role`。Memory adapter 只需替换 Persistence 工厂：
+Instance plugin 的 `apply(ctx, hostConfig)` 必须收到宿主配置；factory overrides 只覆盖已定义字段，不能替代 Fiber config。因此生产推荐使用上面的 Fiber-managed 形式，并将同一个 `instanceConfig` 同时传给 `createInstancePlugin(instanceConfig)` 与 `ctx.plugin(plugin, instanceConfig)`。直接调用 `createInstancePlugin().apply(ctx, config)` 适合由上层 plugin 自己管理 effect 的内部组合，但不返回可独立 dispose/await 的子 Fiber。两种形式都不得在 Registry 或 replication 配置中重复 `instanceId`/`role`。Memory adapter 只需替换 Persistence 工厂：
 
 ```ts
 import { createMemoryPersistencePlugin } from '@nomicore/persistence'
@@ -117,7 +122,7 @@ import { createMemoryPersistencePlugin } from '@nomicore/persistence'
 const persistenceFiber = ctx.plugin(createMemoryPersistencePlugin({
   schedule: { debounceMs: 500, maxDirtyMs: 5_000 },
 }))
-await persistenceFiber
+await persistenceFiber.await()
 ```
 
 Memory adapter 的快照仅属于当前 adapter 实例；实例销毁后不可用于重启恢复。需要跨进程或跨实例恢复时使用 File adapter 或实现 `DocPersistence` 的第三方 adapter。
@@ -136,9 +141,14 @@ Memory adapter 的快照仅属于当前 adapter 实例；实例销毁后不可�
 
 ### Cordis Timer
 
-Nomicore 不复制 Timer 配置。安装 `@deepseek-ai/cordis-plugin-timer` 的 `TimerService` 后，Persistence 和 Registry 会把 `ctx.timeout()` 适配为各自的调度能力。
+Nomicore 不复制 Timer 配置。Persistence、Registry 和 replication plugins 消费当前 Host 已提供的 `ctx.timer`/`ctx.timeout()`。
 
-Timer 生命周期必须覆盖 Persistence 和 Registry：先挂 Timer，最后再释放 Timer 所属 Context/Fiber。
+| Host 形态 | Timer 规则 |
+| --- | --- |
+| 独立 Nomicore composition root | 构造一次 `new TimerService(ctx)` |
+| 嵌入已有 Cordis/DSH Host | 复用 Host 的 Timer；不得再次构造 `TimerService` |
+
+同一 service scope 注册第二个 Timer 会产生 provider collision。Timer 生命周期必须覆盖 Persistence、Registry、replication 及其 shutdown drain：先提供，最后再释放 Timer 所属 Context/Fiber。
 
 ### Memory Persistence
 
@@ -148,13 +158,25 @@ Timer 生命周期必须覆盖 Persistence 和 Registry：先挂 Timer，最后�
 
 `createFilePersistencePlugin(options)` 的 `rootDir`、调度选项、文件布局和 identity 约束以 [`@nomicore/persistence` README](../../packages/persistence/README.md)、`FilePersistenceOptions` 类型及 [ADR-0006](../adr/0006-server-persistence-docstore.md) 为准。HMR 或重载时，先等待旧 adapter/Fiber 完成释放，再以原存储配置创建新实例。
 
+恢复一个既有 namespace 需要三项同时一致：同一个持久 `rootDir`、同一个 owner 分区、同一个 `namespaceId`。全新的空 root 即使 owner/id 正确也会返回 `NAMESPACE_NOT_FOUND`。首次部署应 `create()`、持久化 `lease.namespaceId`，再让授权表和业务配置引用它；使用临时空 root 的 smoke test 应创建 disposable namespace 或复制已知 snapshot。一个 active File Persistence adapter/process 独占一个 `rootDir`，测试使用生产 root 时也必须先取得排他所有权。
+
 ### Namespace Registry
 
 `createNamespaceRegistryPlugin(options)` 的唯一配置域是空闲 Runtime 保留时间；精确类型、默认值和拒绝规则以 [`@nomicore/namespace-registry` README](../../packages/namespace-registry/README.md) 与 `NamespaceRegistryPluginConfig` 类型为准。生产 plugin 从 `ctx.nomicoreInstance.role` 读取角色；旧 `role` 配置键属于未知键并被拒绝。
 
 ### WebSocket replication
 
-Hub 与 Peer 的配置面、adapter overrides、service readiness 与 lifecycle 见 [`@nomicore/ws-replication` README](../../packages/ws-replication/README.md)。Hub plugin 只有在 listener 建立后才发布 ready service；Peer ready 只表示 controller/dial loop 已启动，不表示已连接 Hub 或 namespace 已 live，需等待目标可用时调用 `requirePeerReplication(ctx).waitForLive(namespaceId)`。
+Hub 与 Peer 的配置面、adapter overrides、service readiness 与 lifecycle 见 [`@nomicore/ws-replication` README](../../packages/ws-replication/README.md)。Hub plugin 只有在 listener 建立后才发布 ready service；Peer ready 只表示 controller/dial loop 已启动，不表示已连接 Hub 或 namespace 已 live。
+
+Peer 宿主必须显式选择 boot policy：
+
+| Peer 工作负载 | domain service 发布策略 |
+| --- | --- |
+| 长期重连 daemon，业务可延迟 | 可先发布；每个需要数据的操作自行等待 live |
+| 对外数据面，所有公开操作依赖复制 namespace | 先 `await waitForLive(namespaceId)`，再发布 domain service |
+| 一次性 CLI/job | 先等待 live，再执行工作或退出 |
+
+不要把该等待藏进后台 effect。若 Loader 只有在 namespace 可用时才算启动成功，应在 plugin 的 `async apply()` 主路径等待并让失败向 Loader 抛出。
 
 Hub 最小组合（Node.js 宿主直接使用 `@nomicore/yjs-server` 提供的公开 listener adapter；其他运行时可实现相同 `HubListenAdapter` contract）：
 
@@ -178,7 +200,7 @@ const hubFiber = ctx.plugin(createHubReplicationPlugin({
 }, {
   listen: createNodeHubListenAdapter(),
 }))
-await hubFiber
+await hubFiber.await()
 const hubReplication = requireHubReplication(ctx)
 ```
 
@@ -201,10 +223,63 @@ const peerFiber = ctx.plugin(createPeerReplicationPlugin({
 }, {
   dial: peerDialAdapter,
 }))
-await peerFiber
+await peerFiber.await()
 const peerReplication = requirePeerReplication(ctx)
 await peerReplication.waitForLive('ns-0123456789abcdef0123456789abcdef')
 ```
+
+## 为什么不提供一键 infrastructure runtime helper
+
+Nomicore 不提供 `startNomicoreHubRuntime()` / `startNomicorePeerRuntime()` 这类创建整条基础设施链的 helper。它会重新隐藏 Instance、Timer、Persistence 与 Registry 的宿主所有权，并需要决定“复用还是创建 Timer”“Memory 还是 File”“谁 dispose 上游资源”等宿主策略，等价于 ADR 0012 已否决的自包含 yjs-server plugin。
+
+稳定的深模块 seam 是各公开 plugin factory + Cordis Fiber 依赖图：宿主显式选择 provider 所有权，Cordis 负责 activation/disposal 排序。重复但容易出错的 Node transport 细节由 `createNodeHubListenAdapter()` 封装；domain-specific namespace open、schema 门禁和 readiness 仍由 owning Host 的 `async apply()` 编排。这样删除任何一个宿主装配层时，复杂度不会被隐藏进一个拥有错误资源的 helper。
+
+## Readiness-critical domain plugin
+
+Transport、namespace 与 domain readiness 是三个不同状态：
+
+| 状态 | 含义 | 可供业务消费者使用 |
+| --- | --- | --- |
+| Transport listener ready | HTTP/WebSocket listener 与认证/授权 wiring 已启动 | 否 |
+| Namespace replication enabled/live | Hub 已 open 并 `enableReplication()` 成功，或 Peer target 已 live | 仅该 namespace 的受控消费者 |
+| Domain service ready | schema/namespace 门禁及 scanner/worker 启动完成 | 是 |
+
+Node listener 的 `/healthz` 只报告 transport liveness，不是 domain readiness。宿主应另行发布 readiness 状态或事件，覆盖 namespace open、schema 准备、Hub enablement/Peer live policy 与业务启动。
+
+需要 Loader activation 与业务 readiness 同步时，插件必须在 `async apply()` 主路径完成启动；`ctx.effect()` 用于登记 cleanup，而不是隐藏 startup failure：
+
+```ts
+export async function apply(ctx: Context, config: Config): Promise<void> {
+  // mountNomicoreInfrastructure 是宿主自有函数：按本文顺序挂载公开 factories，
+  // 并返回宿主明确拥有的 Fibers；它不是 @nomicore/* 公共导出。
+  const runtime = await mountNomicoreInfrastructure(ctx, config)
+  try {
+    const opened = await runtime.registry.open(config.owner, config.namespaceId)
+    if (!opened.ok) throw new Error(opened.code)
+    const lease = opened.lease
+
+    const enabled = await lease.enableReplication()
+    if (!enabled.ok) {
+      await lease.release()
+      throw new Error(enabled.code)
+    }
+
+    const domain = await startScannerAndCreateService(lease)
+    const revoke = ctx.provide('domainService', domain.service)
+    ctx.effect(async () => async () => {
+      revoke()
+      await domain.stop()
+      await lease.release()
+      await runtime.dispose()
+    }, 'domain.shutdown()')
+  } catch (error) {
+    await runtime.dispose()
+    throw error
+  }
+}
+```
+
+`apply()` resolve 后才表示 domain ready；namespace open、schema、enablement 或必要的 Peer live wait 失败都会使 Fiber/Loader activation loud fail。
 
 ## 创建、启用复制并启动业务消费者
 

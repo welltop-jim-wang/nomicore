@@ -30,6 +30,29 @@ describe('instance configuration', () => {
 })
 
 describe('instance service and plugin lifecycle', () => {
+  it('Fiber-managed startup requires explicit config and Fiber.await() reports readiness', async () => {
+    const missingConfigContext = new Context()
+    const failedFiber = (missingConfigContext.plugin as unknown as (
+      plugin: ReturnType<typeof createInstancePlugin>,
+    ) => ReturnType<Context['plugin']>)(createInstancePlugin({
+      instanceId: 'hub-fiber',
+      role: 'hub',
+    }))
+    expect(typeof (failedFiber as { then?: unknown }).then).toBe('function')
+    await expect(failedFiber.await()).rejects.toThrow('invalid instance config: expected an object')
+    expect(missingConfigContext.get(INSTANCE_SERVICE)).toBeUndefined()
+    await missingConfigContext.fiber.dispose()
+
+    const ctx = new Context()
+    const config = { instanceId: 'hub-fiber', role: 'hub' as const }
+    const fiber = ctx.plugin(createInstancePlugin(config), config)
+    await fiber.await()
+    expect(requireInstance(ctx)).toEqual(config)
+    await fiber.dispose()
+    expect(ctx.get(INSTANCE_SERVICE)).toBeUndefined()
+    await ctx.fiber.dispose()
+  })
+
   it('provides and requires the service through public helpers', () => {
     const ctx = new Context()
     const instance = Object.freeze({ instanceId: 'hub-a', role: 'hub' as const })
