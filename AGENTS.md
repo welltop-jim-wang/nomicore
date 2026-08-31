@@ -22,6 +22,10 @@ Before changing files under `packages/`, `domains/`, `apps/`, or `docs/`, read t
 
 When creating or editing `domains/*/schema.vfsl`, follow `docs/vfsl/schema-authoring-guide.md` for modeling, VFSL v1 syntax, carrier selection, generation, and validation.
 
+### Nomicore integration skill
+
+When an independent project needs to use Nomicore—author or validate VFSL, generate typed Namespace access, compose Cordis plugins, or configure Hub/Peer replication—use the `nomicore` skill in `.agents/skills/nomicore/`; keep the independent project as the owning host.
+
 ### Third-party plugin hosting
 
 When integrating Nomicore into an external Cordis host, changing plugin assembly, or documenting plugin configuration and shutdown, use Cordis plugin-factory composition and follow `docs/integration/cordis-plugin-hosting.md` for dependency order, adapter options, Registry usage, and lifecycle teardown; do not assume a stable dynamic pluginId or `cordis_define` contract.

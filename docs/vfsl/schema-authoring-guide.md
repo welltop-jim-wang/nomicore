@@ -1,6 +1,6 @@
 # VFSL Schema 编写指南
 
-本指南面向编写或修改 `domains/*/schema.vfsl` 的 agent。它把常用决策与交付步骤整理成操作指南；语法和语义的最终权威仍是 [`v1-spec.md`](./v1-spec.md)。领域词汇以根目录 [`CONTEXT.md`](../../CONTEXT.md) 为准，生成链路以 [ADR 0005](../adr/0005-projection-generation-pipeline.md) 为准。
+本指南面向编写或修改 `domains/*/schema.vfsl` 的 agent。它把常用决策与交付步骤整理成操作指南；语法和语义的最终权威仍是 [`v1-spec.md`](./v1-spec.md)。领域词汇以根目录 [`CONTEXT.md`](../../CONTEXT.md) 为准，生成链路以 [ADR 0005](../adr/0005-projection-generation-pipeline.md) 为准。若 schema 位于独立宿主项目，并需要把生成类型接入 Namespace 读写代码和宿主自身的 typecheck，参见[独立项目 VFSL Codegen 指南](../integration/external-project-vfsl-codegen.md)。
 
 ## 目录
 
