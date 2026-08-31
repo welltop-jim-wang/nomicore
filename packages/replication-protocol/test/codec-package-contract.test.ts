@@ -15,7 +15,7 @@ interface PkgManifest {
   name?: string;
   version?: string;
   type?: string;
-  exports?: Record<string, string>;
+  exports?: Record<string, string | { 'nomicore-source': string; types: string; import: string }>;
   dependencies?: Record<string, string>;
   devDependencies?: Record<string, string>;
 }
@@ -26,11 +26,15 @@ function loadManifest(): PkgManifest {
 }
 
 describe('AC5：包 manifest 直接锁定 yjs/y-protocols/lib0 且无 Cordis/WS/Registry/server 依赖', () => {
-  it('package.json 存在 name=@nomicore/replication-protocol、exports["."]=./src/index.ts、type=module', () => {
+  it('package.json 存在 name=@nomicore/replication-protocol、源码/声明/运行时 exports、type=module', () => {
     const pkg = loadManifest();
     expect(pkg.name).toBe('@nomicore/replication-protocol');
     expect(pkg.type).toBe('module');
-    expect(pkg.exports?.['.']).toBe('./src/index.ts');
+    expect(pkg.exports?.['.']).toEqual({
+      'nomicore-source': './src/index.ts',
+      types: './dist/index.d.ts',
+      import: './dist/index.js',
+    });
   });
 
   it('dependencies 直接声明 yjs、y-protocols、lib0（锁定兼容组合）', () => {

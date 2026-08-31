@@ -8,7 +8,7 @@
  */
 import { WebSocket } from 'ws';
 import type { DuplexTransport } from '@nomicore/ws-replication';
-import { wrapWs } from './ws-server.ts';
+import { wrapWs } from './ws-server.js';
 
 /** 建立 peer 拨号闭包（per-connection WebSocket；每次 dial 全新连接）。 */
 export function createPeerDial(hubUrl: string, token: string): () => DuplexTransport {

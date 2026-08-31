@@ -62,7 +62,16 @@ Keep the ordinary build Program package-local. Create a separate `tsconfig.typec
 
 ### C. Every Program is forbidden from reading outside the package
 
-The projection must be generated into the package's permitted source/type directory. Use a deterministic codegen output feature or host generation script; keep `schema.vfsl` as the sole editable source, keep exactly one active projection per TypeScript Program, mark output generated, and make CI regenerate-and-diff it. Do not maintain a copied projection by hand. If current Nomicore CLI cannot target that output, treat adding a stable output-path capability as tooling work rather than weakening package boundaries.
+Generate the projection into the package's permitted source/type directory with the supported single-domain mode:
+
+```bash
+pnpm generate --domains /path/to/host --domain <domain> \
+  --out packages/<consumer>/src/generated/nomicore-schema.ts
+pnpm generate --domains /path/to/host --domain <domain> \
+  --out packages/<consumer>/src/generated/nomicore-schema.ts --check
+```
+
+Relative `--out` resolves from `--domains`. Keep `schema.vfsl` as the sole editable source and exactly one active projection per TypeScript Program; delete the old default projection when moving it package-local. The output remains generated and CI must run `--check`. Do not maintain a copied projection by hand.
 
 Do not add all repository `domains/**/*.ts` to every package: module augmentations merge globally inside a Program, unrelated schemas can pollute path tables, and incompatible top-level fields can collide. Wire only the projection(s) consumed by that package.
 

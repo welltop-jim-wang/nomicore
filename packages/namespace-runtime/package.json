@@ -4,11 +4,20 @@
   "private": true,
   "type": "module",
   "exports": {
-    ".": "./src/index.ts",
-    "./internal": "./src/internal.ts"
+    ".": {
+      "nomicore-source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./internal": {
+      "nomicore-source": "./src/internal.ts",
+      "types": "./dist/internal.d.ts",
+      "import": "./dist/internal.js"
+    }
   },
   "scripts": {
-    "typecheck": "tsc -p tsconfig.json"
+    "typecheck": "tsc -p tsconfig.json",
+    "build": "node ../../scripts/build-package.mjs"
   },
   "dependencies": {
     "@nomicore/doc-runtime": "workspace:*",
@@ -20,5 +29,8 @@
     "@types/node": "^20",
     "typescript": "^5.9.3",
     "vitest": "^3.2.4"
-  }
+  },
+  "files": [
+    "dist"
+  ]
 }

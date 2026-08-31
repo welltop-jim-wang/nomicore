@@ -189,7 +189,16 @@ import type {} from '../../../../domains/inventory/generated.js'
 
 ### C. 任何 Program 都禁止读取 package 外文件
 
-将 projection **直接生成**到 package 允许的 source/type 目录，例如 `src/generated/nomicore-schema.d.ts`。使用支持目标输出路径的确定性 codegen 或宿主生成脚本；`schema.vfsl` 仍是唯一可编辑真相，输出必须带 generated 标记并由 CI regenerate-diff。不要手工复制或维护第二份 projection。若当前 Nomicore CLI 不能指定输出路径，应扩展稳定的 codegen 输出能力，而不是绕过 package 边界规则。
+将 projection **直接生成**到 package 允许的 source/type 目录，例如 `src/generated/nomicore-schema.ts`：
+
+```bash
+pnpm generate --domains /path/to/host --domain inventory \
+  --out packages/inventory/src/generated/nomicore-schema.ts
+pnpm generate --domains /path/to/host --domain inventory \
+  --out packages/inventory/src/generated/nomicore-schema.ts --check
+```
+
+`--domain` 与 `--out` 必须同时提供；相对输出路径按 `--domains` 根解析。`schema.vfsl` 仍是唯一可编辑真相，CI 用 `--check` 做逐字节 freshness gate。迁移到 package-local projection 后删除旧默认 projection，不手工复制或维护第二份 projection。
 
 不要把整个仓库的 `domains/**/*.ts` 加入每个 package：同一 Program 中所有 `VfslPathMap` augmentation 会合并，无关 schema 会污染路径表，相同顶层字段还可能发生声明冲突。每个 package 只接入自己消费的 projection。
 

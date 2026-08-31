@@ -41,7 +41,7 @@ export { assertProductionTransportFaces, createWebSocketAdapter } from './transp
 export type { WebSocketLike } from './transport.js';
 
 // Preserve the deployable app's public API introduced on the updated base.
-export { parseAppConfig, ConfigValidationError, INSTANCE_ID_PATTERN, NAMESPACE_ID_PATTERN } from './config.ts';
+export { parseAppConfig, ConfigValidationError, INSTANCE_ID_PATTERN, NAMESPACE_ID_PATTERN } from './config.js';
 export type {
   AppConfig,
   AuthorizationEntry,
@@ -49,15 +49,15 @@ export type {
   PeerConfig,
   PersistenceConfig,
   ProvisionEntry,
-} from './config.ts';
-export { createNomicoreApp } from './app.ts';
-export type { CreateNomicoreAppOptions, NomicoreApp } from './app.ts';
-export { createHubReplicationPlugin, NODE_TIMER_BRIDGE } from './replication/hub-plugin.ts';
-export type { HubReplicationPluginConfig } from './replication/hub-plugin.ts';
-export { createPeerReplicationPlugin } from './replication/peer-plugin.ts';
-export type { PeerReplicationPluginConfig } from './replication/peer-plugin.ts';
-export { acquireRootLock, createStdoutEventSink, ROOT_LOCK_FILE_NAME, STABLE_OP_ERROR_CODES } from './lifecycle.ts';
-export type { EventSink, RootLockHandle } from './lifecycle.ts';
+} from './config.js';
+export { createNomicoreApp } from './app.js';
+export type { CreateNomicoreAppOptions, NomicoreApp } from './app.js';
+export { createHubReplicationPlugin, NODE_TIMER_BRIDGE } from './replication/hub-plugin.js';
+export type { HubReplicationPluginConfig } from './replication/hub-plugin.js';
+export { createPeerReplicationPlugin } from './replication/peer-plugin.js';
+export type { PeerReplicationPluginConfig } from './replication/peer-plugin.js';
+export { acquireRootLock, createStdoutEventSink, ROOT_LOCK_FILE_NAME, STABLE_OP_ERROR_CODES } from './lifecycle.js';
+export type { EventSink, RootLockHandle } from './lifecycle.js';
 
 // ─────────────────────────────────────────────────────────────────────────
 // 公共面（SA6 冻结形状 + exactOptionalPropertyTypes 细则：可选属性一律声明

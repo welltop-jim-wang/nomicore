@@ -10,8 +10,20 @@ Read these authorities before implementation:
 
 ## Choose the integration level
 
-- Prefer the composed `apps/yjs-server` deployment when the host needs a standalone Hub/Peer process. Follow the deployment guide's strict JSON config and NDJSON operations.
+- Prefer the composed `@nomicore/yjs-server` package when the host needs a standalone Hub/Peer process. Its local tarball contains compiled `dist` JavaScript/declarations and the `nomicore-yjs-server` CLI. Follow the deployment guide's strict JSON config and NDJSON operations.
 - Use `@nomicore/ws-replication` directly only when embedding transport into an existing host. Then assemble public `createHubReplication()` / `createPeerReplication()` options, trusted Upgrade authentication, authorization, Registry, timer, clock, observer, and transport adapters. Derive option shapes from current public types; do not invent config fields from the standalone app.
+
+## Local tarball distribution
+
+Run `pnpm pack:local` in Nomicore. Replication consumers need the complete unpublished graph, including:
+
+```text
+@nomicore/replication-protocol
+@nomicore/ws-replication
+@nomicore/yjs-server
+```
+
+plus Registry/Runtime/Persistence/Clock/VFSL dependencies listed in `artifacts/local-packages/manifest.json`. Until packages are published to a registry, point every `@nomicore/*` dependency to the local tarball or an extracted local package directory; installing only the top-level server tarball makes the package manager query npm for unpublished transitive versions. Consume packed `dist`, not Nomicore source links.
 
 ## Deployment process
 
