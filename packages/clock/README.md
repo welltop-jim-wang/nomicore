@@ -10,7 +10,7 @@
 
 ## 用法
 
-完整的 Clock → Timer → Persistence → Registry 第三方宿主装配与停止顺序见 [`docs/integration/cordis-plugin-hosting.md`](../../docs/integration/cordis-plugin-hosting.md)。
+完整的 Instance → Clock → Timer → Persistence → Registry → 可选角色专用 replication plugin 第三方宿主装配与停止顺序见 [`docs/integration/cordis-plugin-hosting.md`](../../docs/integration/cordis-plugin-hosting.md)。
 
 ```ts
 import { createSystemClockPlugin, requireClock } from '@nomicore/clock'

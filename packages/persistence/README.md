@@ -2,7 +2,7 @@
 
 服务端 `DocPersistence` / `DocHandle` 契约，以及共享同一生命周期语义的 Memory、File adapters。
 
-第三方 Cordis 宿主的 Clock → Timer → Persistence → Registry 装配顺序、插件配置和停止流程见 [`docs/integration/cordis-plugin-hosting.md`](../../docs/integration/cordis-plugin-hosting.md)。
+第三方 Cordis 宿主的 Instance → Clock → Timer → Persistence → Registry → 可选角色专用 replication plugin 装配顺序、插件配置和停止流程见 [`docs/integration/cordis-plugin-hosting.md`](../../docs/integration/cordis-plugin-hosting.md)。
 
 ## 插件入口
 

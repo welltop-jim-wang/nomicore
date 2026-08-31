@@ -4,14 +4,17 @@ Nomicore calls the roles **Hub** and **Peer**. Map “主” to Hub and “从/�
 
 Read these authorities before implementation:
 
-1. `$NOMICORE_ROOT/docs/adr/0010-hub-peer-websocket-ydoc-replication.md` — architecture;
-2. `$NOMICORE_ROOT/docs/protocols/instance-replication-v1.md` — normative wire contract;
-3. `$NOMICORE_ROOT/docs/integration/hub-peer-deployment.md` — deployable app configuration and operations.
+1. `$NOMICORE_ROOT/docs/adr/0010-hub-peer-websocket-ydoc-replication.md` — replication architecture;
+2. `$NOMICORE_ROOT/docs/adr/0012-instance-identity-and-websocket-plugin-ownership.md` — identity, plugin boundaries, and lifecycle ownership;
+3. `$NOMICORE_ROOT/docs/protocols/instance-replication-v1.md` — normative wire contract;
+4. `$NOMICORE_ROOT/docs/integration/cordis-plugin-hosting.md` — embedded Cordis composition;
+5. `$NOMICORE_ROOT/docs/integration/hub-peer-deployment.md` — standalone process configuration and operations.
 
 ## Choose the integration level
 
-- Prefer the composed `@nomicore/yjs-server` package when the host needs a standalone Hub/Peer process. Its local tarball contains compiled `dist` JavaScript/declarations and the `nomicore-yjs-server` CLI. Follow the deployment guide's strict JSON config and NDJSON operations.
-- Use `@nomicore/ws-replication` directly only when embedding transport into an existing host. Then assemble public `createHubReplication()` / `createPeerReplication()` options, trusted Upgrade authentication, authorization, Registry, timer, clock, observer, and transport adapters. Derive option shapes from current public types; do not invent config fields from the standalone app.
+- Use the composed `@nomicore/yjs-server` package when the deployment needs a standalone Hub/Peer process. Its tarball contains compiled `dist` JavaScript/declarations and the `nomicore-yjs-server` CLI. Follow the deployment guide's strict JSON config and NDJSON operations; the package is an application composition root, not a self-contained Cordis plugin.
+- When embedding replication into an existing Cordis host, compose Instance → Clock → Timer → Persistence → Registry, then install `createHubReplicationPlugin()` or `createPeerReplicationPlugin()` from `@nomicore/ws-replication`. Discover the ready service with `requireHubReplication(ctx)` or `requirePeerReplication(ctx)`. There is no `createNomicoreYjsServerPlugin()` / `requireNomicoreYjsServer()` integration surface.
+- Use lower-level `createHubReplication()` / `createPeerReplication()` only for a trusted host that deliberately owns custom transport integration and controller lifecycle. They are not the default Cordis embedding path.
 
 ## Local tarball distribution
 
@@ -27,7 +30,7 @@ plus Registry/Runtime/Persistence/Clock/VFSL dependencies listed in `artifacts/l
 
 ## Deployment process
 
-1. Give every process one static `role` (`hub` or `peer`), a safe unique `instanceId`, its own Persistence instance, and—when file-backed—its own exclusive `rootDir`.
+1. Give every process one static `role` (`hub` or `peer`), a safe unique `instanceId`, its own Persistence instance, and—when file-backed—its own exclusive `rootDir`. In an embedded host, configure `instanceId + role` exactly once through `createInstancePlugin()`; Registry and replication both consume that service, and static identity is restart-only.
 2. Hub configuration supplies:
    - listen address;
    - token mapping from authenticated peer identity;
@@ -38,7 +41,7 @@ plus Registry/Runtime/Persistence/Clock/VFSL dependencies listed in `artifacts/l
    - its own bearer token;
    - replication targets containing namespace ID and Peer-local owner.
 4. Enable replication on a Hub-owned namespace before expecting it to replicate. Keep owner local: it is a persistence partition key and is never sent over the wire.
-5. Start Hub before Peer. Observe readiness and channel state until targets reach `live`; do not equate an UPDATE ACK with disk flush or quorum durability.
+5. Start Hub before Peer. Hub plugin readiness means its listener is active with authentication and authorization wired; Peer plugin readiness means its controller/dial loop started and does not imply Hub connectivity. Use `waitForLive(namespaceId)` when a Peer operation requires a live target, and do not equate an UPDATE ACK with disk flush or quorum durability.
 6. For production, terminate TLS outside the app and use `wss://`. Restrict config/token file permissions. Never send bearer tokens over untrusted plaintext networks.
 7. Test bootstrap, restart/reconcile, bidirectional ROOT changes, unauthorized namespace access, bad credentials, identity/epoch conflict, backpressure, and graceful drain.
 
@@ -49,7 +52,9 @@ plus Registry/Runtime/Persistence/Clock/VFSL dependencies listed in `artifacts/l
 - SCHEMA replacement is Hub-only. A Peer may require controlled reset/re-bootstrap or restart before local business writes use newly introduced fields.
 - Epoch bump fences old replicas asynchronously. Recover a conflicted Peer with guarded `reset-replica` using its expected old replication identity, then observe bootstrap to the new epoch.
 - A Peer target re-add after terminal state rebuilds the whole connection; other namespaces on that connection may briefly reconnect.
-- Stop Peer before Hub when orchestrating manually, or signal each process and let its ordered drain run.
+- Peer target persistence belongs to the host; `addTarget()` / `removeTarget()` mutate only the current process.
+- Static identity, endpoints, credentials, limits, timeouts, backoff, and static authorization are restart-only; runtime target changes are the supported dynamic configuration surface.
+- Stop Peer before Hub when orchestrating standalone processes, or signal each process and let its ordered drain run. In an embedded host, dispose the role-specific replication Fiber before Registry shutdown and Persistence disposal; the replication plugin never owns or tears down those upstream services.
 
 ## Hard invariants
 
@@ -57,4 +62,4 @@ Authentication evidence comes from successful HTTP Upgrade verification, never H
 
 ## Completion gate
 
-Complete when each process has isolated storage and static identity, trusted auth and per-namespace authorization are tested, targets bootstrap and reconcile to `live`, TLS/token handling is production-safe, conflict/reset and Hub-restart runbooks are verified, and shutdown reaches replication drain before Registry and Persistence teardown.
+Complete when each process has isolated storage and one static Instance identity source, the selected standalone or embedded surface is used without inventing a unified yjs-server plugin, trusted auth and per-namespace authorization are tested, plugin readiness is distinguished from Peer target liveness, targets bootstrap and reconcile to `live`, TLS/token handling is production-safe, conflict/reset and Hub-restart runbooks are verified, and shutdown reaches replication drain before Registry and Persistence teardown.

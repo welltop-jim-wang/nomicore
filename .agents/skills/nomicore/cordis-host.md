@@ -5,37 +5,27 @@ Compose Nomicore inside the independent host's existing composition root. Read `
 ## Process
 
 1. Inspect the host's current Cordis context ownership, configuration system, persistence requirements, health checks, and shutdown path.
-2. Link or install the public packages used by the host. For unpublished local integration, typical runtime paths are:
-
-   ```bash
-   cd /path/to/host
-   pnpm link \
-     "$NOMICORE_ROOT/packages/vfsl" \
-     "$NOMICORE_ROOT/packages/doc-runtime" \
-     "$NOMICORE_ROOT/packages/clock" \
-     "$NOMICORE_ROOT/packages/persistence" \
-     "$NOMICORE_ROOT/packages/namespace-runtime" \
-     "$NOMICORE_ROOT/packages/namespace-registry"
-   ```
-
+2. Link or install the public packages used by the host. For unpublished local integration, prefer the complete tarball graph from `$NOMICORE_ROOT/artifacts/local-packages/manifest.json`; when intentionally linking checkout directories, include every runtime package the selected branches consume, including `packages/instance` and `packages/ws-replication` for embedded replication.
 3. In one Cordis `Context`, install in dependency order:
-   1. `createSystemClockPlugin()`;
-   2. `@deepseek-ai/cordis-plugin-timer`;
-   3. exactly one production Persistence plugin (`createMemoryPersistencePlugin` for ephemeral use or `createFilePersistencePlugin` for restart recovery);
-   4. `createNamespaceRegistryPlugin()`.
-4. Await plugin Fibers before requiring their services. Obtain Registry with `requireNomicoreRegistry(ctx)`. Let business code consume Registry leases rather than Persistence handles or live Yjs objects.
+   1. `createInstancePlugin()` with the one immutable `{ instanceId, role }` source;
+   2. `createSystemClockPlugin()`;
+   3. `@deepseek-ai/cordis-plugin-timer`;
+   4. exactly one production Persistence plugin (`createMemoryPersistencePlugin` for ephemeral use or `createFilePersistencePlugin` for restart recovery);
+   5. `createNamespaceRegistryPlugin()`, which reads role from the Instance service and has no role configuration;
+   6. when embedding replication, the matching `createHubReplicationPlugin()` or `createPeerReplicationPlugin()` from `@nomicore/ws-replication`.
+4. Await plugin Fibers before requiring their services. Obtain Registry with `requireNomicoreRegistry(ctx)` and replication with `requireHubReplication(ctx)` or `requirePeerReplication(ctx)`. Let business code consume Registry leases and the role-specific service rather than Persistence handles, raw controllers, ReplicationSessions, or live Yjs objects.
 5. Create a namespace with the host-owned VFSL file text, a matching `{lang:'vfsl', version:1, id, text}` envelope, and an initial plain JSON ROOT. Persist `lease.namespaceId` in the host's own data model. Release every lease after use.
 6. For reopen, call `registry.open(owner, namespaceId)` with the same persistence-partition owner. Branch on stable `result.ok` and `code`; do not parse message text.
 7. Add health projection from public status methods. Test missing dependencies, invalid schema/root, read/write rejection, lease release, persistence restart behavior, and zero-write validation failure.
-8. Shutdown in ownership order: stop host requests, release leases, await `registry.shutdown()` when explicitly owned, dispose Persistence, then tear down Timer/Clock/root Context. Use one teardown chain rather than racing manual and Cordis cascade disposal.
+8. Shutdown in ownership order: stop host requests, release leases, dispose the role-specific replication Fiber, await `registry.shutdown()` when explicitly owned, dispose Persistence, then tear down Timer/Clock/Instance/root Context. Replication disposal drains only its listener/dialer, controller, connections, channels, and service; it never shuts down Registry or Persistence. Use one teardown chain rather than racing manual and Cordis cascade disposal.
 
 ## Guardrails
 
 - `@nomicore/dsh-persistence` is a DSH development/profile adapter, not the default third-party production choice.
 - Memory persistence does not survive adapter destruction.
 - File persistence needs a host-selected writable root and exclusive lifecycle ownership.
-- Use public `create*Plugin()` factories. Dynamic plugin IDs, source scanning, and `cordis_define` are not stable Nomicore contracts.
+- Use public `create*Plugin()` factories. Embedded Hub/Peer replication uses the role-specific factories and services from `@nomicore/ws-replication`; a self-contained `createNomicoreYjsServerPlugin()` / `requireNomicoreYjsServer()` API is not part of the architecture. Dynamic plugin IDs, source scanning, and `cordis_define` are not stable Nomicore contracts.
 
 ## Completion gate
 
-Complete when startup proves Clock → Timer → Persistence → Registry ordering, a namespace can be created/read/mutated/reopened through a lease, invalid writes remain zero-write, every lease and Fiber has one owner, and graceful shutdown flushes/disposes in the documented order.
+Complete when startup proves Instance → Clock → Timer → Persistence → Registry → optional role-specific replication ordering, Registry and replication consume the same immutable identity, a namespace can be created/read/mutated/reopened through a lease, invalid writes remain zero-write, every lease and Fiber has one owner, and graceful shutdown drains replication before Registry and Persistence.

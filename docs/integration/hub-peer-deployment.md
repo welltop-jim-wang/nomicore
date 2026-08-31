@@ -1,9 +1,11 @@
 # Hub/Peer 部署（`apps/yjs-server`）
 
 `@nomicore/yjs-server` 是可部署的 Cordis 组合根：一个进程恰好承担一个静态角色
-（`hub` 或 `peer`，配置必填、无缺省），组成 Clock、Cordis Timer、Memory/File
-Persistence、NamespaceRegistry（静态角色）、真实 WebSocket 复制（`ws@^8`）、
-认证/授权、严格配置校验与有序停机。
+（`hub` 或 `peer`，配置必填、无缺省），显式组装 Instance identity、Clock、Cordis
+Timer、Memory/File Persistence、NamespaceRegistry（角色来自 Instance service）、
+对应角色的 WebSocket replication plugin（真实 `ws@^8` transport）、认证/授权、严格
+配置校验与有序停机。它是 standalone 应用/CLI，不提供统一的嵌入式 yjs-server plugin；
+第三方 Cordis 宿主应按 [Cordis plugin hosting 指南](./cordis-plugin-hosting.md) 组合角色专用插件。
 
 ## 安装与启动
 

@@ -1,6 +1,6 @@
 ---
 name: nomicore
-description: Integrate Nomicore into an independent project. Use when authoring or validating VFSL schemas, generating TypeScript namespace projections, implementing typed namespace reads/writes, composing Cordis Clock/Timer/Persistence/Registry plugins, or configuring Hub/Peer replication and replica recovery.
+description: Integrate Nomicore into an independent project. Use when authoring or validating VFSL schemas, generating TypeScript namespace projections, implementing typed namespace reads/writes, composing Cordis Instance/Clock/Timer/Persistence/Registry and role-specific replication plugins, or configuring standalone Hub/Peer deployment and replica recovery.
 ---
 
 # Nomicore integration
@@ -13,8 +13,8 @@ Load only the branch needed:
 
 - **Schema** — creating or changing `schema.vfsl`, choosing carriers, validating schema or example ROOT data: read [schema.md](schema.md).
 - **Typed access** — generating `generated.ts`, wiring TypeScript, or implementing namespace read/write code: read [typed-access.md](typed-access.md).
-- **Cordis host** — configuring Clock, Timer, Persistence, Registry, namespace creation/opening, or shutdown: read [cordis-host.md](cordis-host.md).
-- **Replication** — configuring hub/peer (primary/replica), authorization, targets, TLS, lifecycle, epoch bump, reset, or recovery: read [replication.md](replication.md).
+- **Cordis host** — configuring Instance identity, Clock, Timer, Persistence, Registry, namespace creation/opening, role-specific replication plugins, or shutdown: read [cordis-host.md](cordis-host.md).
+- **Replication** — choosing standalone versus embedded Hub/Peer hosting, or configuring authorization, targets, TLS, readiness, lifecycle, epoch bump, reset, or recovery: read [replication.md](replication.md).
 
 For an end-to-end integration, execute those branches in that order. Re-open a prior branch when a later change alters its input—for example, regenerate and typecheck after changing the schema.
 
