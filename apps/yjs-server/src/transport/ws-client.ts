@@ -10,7 +10,15 @@ import { WebSocket } from 'ws';
 import type { DuplexTransport } from '@nomicore/ws-replication';
 import { wrapWs } from './ws-server.js';
 
-/** 建立 peer 拨号闭包（per-connection WebSocket；每次 dial 全新连接）。 */
-export function createPeerDial(hubUrl: string, token: string): () => DuplexTransport {
+/**
+ * Public Node Peer dial adapter. Each invocation opens a fresh WebSocket and
+ * presents dial-as-connected semantics to the replication controller: HELLO
+ * writes issued while `ws` is CONNECTING are queued by `wrapWs()` and flushed
+ * on `open`.
+ */
+export function createNodePeerDial(hubUrl: string, token: string): () => DuplexTransport {
   return () => wrapWs(new WebSocket(hubUrl, { headers: { Authorization: `Bearer ${token}` } }));
 }
+
+/** @deprecated Use createNodePeerDial. */
+export const createPeerDial = createNodePeerDial;

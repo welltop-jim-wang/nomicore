@@ -13,7 +13,7 @@ Read these authorities before implementation:
 ## Choose the integration level
 
 - Use the composed `@nomicore/yjs-server` package when the deployment needs a standalone Hub/Peer process. Its tarball contains compiled `dist` JavaScript/declarations and the `nomicore-yjs-server` CLI. Follow the deployment guide's strict JSON config and NDJSON operations; the package is an application composition root, not a self-contained Cordis plugin.
-- When embedding replication into an existing Cordis host, compose Instance → Clock → Timer → Persistence → Registry, then install `createHubReplicationPlugin()` or `createPeerReplicationPlugin()` from `@nomicore/ws-replication`. A Node.js Hub supplies `createNodeHubListenAdapter()` from `@nomicore/yjs-server`; other runtimes implement `HubListenAdapter`. Discover the ready service with `requireHubReplication(ctx)` or `requirePeerReplication(ctx)`. There is no `createNomicoreYjsServerPlugin()` / `requireNomicoreYjsServer()` integration surface.
+- When embedding replication into an existing Cordis host, compose Instance → Clock → Timer → Persistence → Registry, then install `createHubReplicationPlugin()` or `createPeerReplicationPlugin()` from `@nomicore/ws-replication`. A Node.js Hub supplies `createNodeHubListenAdapter()` and a Node.js Peer supplies `createNodePeerDial()` from `@nomicore/yjs-server`; other runtimes implement the corresponding interfaces. Never use generic `createWebSocketAdapter()` for a Node Peer socket while it is CONNECTING: it does not queue the controller's immediate HELLO. Discover the ready service with `requireHubReplication(ctx)` or `requirePeerReplication(ctx)`. There is no `createNomicoreYjsServerPlugin()` / `requireNomicoreYjsServer()` integration surface.
 - Use lower-level `createHubReplication()` / `createPeerReplication()` only for a trusted host that deliberately owns custom transport integration and controller lifecycle. They are not the default Cordis embedding path.
 
 ## Local tarball distribution
@@ -55,6 +55,10 @@ plus Registry/Runtime/Persistence/Clock/VFSL dependencies listed in `artifacts/l
 - Peer target persistence belongs to the host; `addTarget()` / `removeTarget()` mutate only the current process.
 - Static identity, endpoints, credentials, limits, timeouts, backoff, and static authorization are restart-only; runtime target changes are the supported dynamic configuration surface.
 - Stop Peer before Hub when orchestrating standalone processes, or signal each process and let its ordered drain run. In an embedded host, dispose the role-specific replication Fiber before Registry shutdown and Persistence disposal; the replication plugin never owns or tears down those upstream services.
+
+## Diagnosis ladder
+
+For Node Hub/Peer handshake failures, combine `createNodeHubListenAdapter(observer)` events with `ReplicationObserver`: no `upgrade-authenticated` means routing/auth; authenticated without `transport-accepted` means adapter handoff; accepted without Hub handshaking/ready means trusted controller admission; Hub handshaking plus Peer `hello-timeout` means the Peer HELLO was not delivered—first verify `createNodePeerDial()` is used; Hub ready but target not live moves diagnosis to OPEN, authorization, bootstrap, or reconcile. Keep all captured credentials redacted.
 
 ## Hard invariants
 

@@ -123,12 +123,28 @@ function rejectUpgrade(socket: Duplex, status: number, reason: string): void {
   socket.end(`HTTP/1.1 ${status} ${reason}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`);
 }
 
+export type NodeHubAdapterEvent =
+  | Readonly<{ readonly type: 'upgrade-authenticated' }>
+  | Readonly<{ readonly type: 'transport-accepted' }>
+  | Readonly<{ readonly type: 'transport-closed'; readonly code: number }>;
+
+export type NodeHubAdapterObserver = (event: NodeHubAdapterEvent) => void;
+
+function notifyAdapter(observer: NodeHubAdapterObserver | undefined, event: NodeHubAdapterEvent): void {
+  try {
+    observer?.(Object.freeze(event));
+  } catch {
+    // Observability is isolated from transport admission and protocol state.
+  }
+}
+
 export interface HubWsServerOptions {
   readonly host: string;
   readonly port: number; // 0 = ephemeral（实际端口经返回对象读取）
   readonly path: string;
   readonly authenticate: (token: string) => Promise<UpgradeIdentity | undefined>;
   readonly accept: (transport: DuplexTransport, identity: UpgradeIdentity) => void;
+  readonly observer?: NodeHubAdapterObserver;
 }
 
 export interface HubWsServer {
@@ -197,7 +213,13 @@ export async function startHubWsServer(options: HubWsServerOptions): Promise<Hub
         return;
       }
       wss.handleUpgrade(req, socket, head, (ws) => {
-        options.accept(wrapWs(ws), identity);
+        notifyAdapter(options.observer, { type: 'upgrade-authenticated' });
+        const transport = wrapWs(ws);
+        transport.onClose((info) => {
+          notifyAdapter(options.observer, { type: 'transport-closed', code: info.code });
+        });
+        options.accept(transport, identity);
+        notifyAdapter(options.observer, { type: 'transport-accepted' });
       });
     })().catch(() => {
       socket.destroy();
@@ -228,14 +250,16 @@ export async function startHubWsServer(options: HubWsServerOptions): Promise<Hub
 }
 
 /** Public Node HTTP + `ws` adapter for `createHubReplicationPlugin(..., { listen })`. */
-export function createNodeHubListenAdapter(): HubListenAdapter {
+export function createNodeHubListenAdapter(
+  observer?: NodeHubAdapterObserver,
+): HubListenAdapter {
   let active = false;
   return {
     async listen(options): Promise<HubListener> {
       if (active) throw new Error('hub listener already active');
       active = true;
       try {
-        const listener = await startHubWsServer(options);
+        const listener = await startHubWsServer({ ...options, ...(observer === undefined ? {} : { observer }) });
         let closed = false;
         return {
           ...(listener.port === undefined ? {} : { port: listener.port }),
