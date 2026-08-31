@@ -107,8 +107,8 @@ JSDoc 首行自由文本 + `@tag` 半结构化标签；全部为文档性质，�
 子集内对象类型默认封闭：未声明字段拒绝。
 
 **实例身份（Instance identity）**:
-参与 Nomicore 复制拓扑的稳定实例身份，由安全文法 `instanceId` 与静态 `role`（Hub/Peer）组成；同一部署实例跨进程重启保持不变，供 Registry 与 transport 共同消费。它不是 namespaceId、owner、SCHEMA id、connectionId、PID 或 hostname。
-_Avoid_: 每次启动随机生成、Registry 与 transport 各自配置一份 role/instanceId
+参与 Nomicore 复制拓扑的稳定、不可变实例身份，由安全文法 `instanceId` 与静态 `role`（Hub/Peer）组成；同一部署实例跨进程重启保持不变，是 Registry 与 transport 共同消费的单一身份事实。它不是 namespaceId、owner、SCHEMA id、connectionId、PID 或 hostname。
+_Avoid_: 每次启动随机生成、Registry 与 transport 各自配置一份 role/instanceId、运行期切换身份
 
 **Hub（中心实例）**:
 静态星型复制拓扑中接受 peer WebSocket 连接、转发 Yjs updates、管理 SCHEMA 与复制身份的完整 Nomicore 实例；Hub 也是可接受本地 ROOT 业务写的副本，不是 ROOT 唯一写者，也不表示自动选举的 leader。
@@ -139,8 +139,8 @@ Trusted raw Yjs update 已在 sequencer 中提交并登记 dirty，但未执行�
 _Avoid_: validated replication、apply 后校验失败自动 rollback
 
 **实例角色（instance role）**:
-实例静态角色 hub/peer，经 Registry 构造 `options.role` 注入（可选、缺省 `'hub'`）；peer 实例的本地 replaceSchema/enableReplication/bumpReplicationEpoch 以稳定角色权限错误拒绝，session 的 localRole 必须等于实例角色。生产 composition root（phase-5 切片 9）必须显式传入。
-_Avoid_: 运行期角色切换、peer 本地修改 SCHEMA 或复制身份
+实例身份中不可变的 hub/peer 拓扑角色；生产 composition root 配置一次，由 Instance service 同时提供给 Registry 与 transport。peer 实例的本地 replaceSchema/enableReplication/bumpReplicationEpoch 以稳定角色权限错误拒绝，session 的 localRole 必须等于实例角色。
+_Avoid_: 运行期角色切换、Registry 与 transport 分别配置角色、peer 本地修改 SCHEMA 或复制身份
 
 **authority 规则**:
 旧系统的 `__authority__` manifest（enum / range / conditional / state-machine 等不变式）。**本仓库范围外**（ADR-0002）。

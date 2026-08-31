@@ -73,7 +73,7 @@ export const NAMESPACE_REGISTRY_IDLE_TIMEOUT_TYPE_MESSAGE =
 export const NAMESPACE_REGISTRY_IDLE_TIMEOUT_RANGE_MESSAGE =
   'NAMESPACE_REGISTRY_IDLE_TIMEOUT_RANGE: idleTimeoutMs 必须是 0..2147483647 的有限整数';
 export const NAMESPACE_REGISTRY_PLUGIN_CONFIG_MESSAGE =
-  'NAMESPACE_REGISTRY_PLUGIN_CONFIG: namespace-registry 插件配置仅接受 idleTimeoutMs 与 role 键';
+  'NAMESPACE_REGISTRY_PLUGIN_CONFIG: namespace-registry 插件配置仅接受 idleTimeoutMs 键';
 export const NAMESPACE_REGISTRY_SHUTDOWN_FAILED_MESSAGE =
   'NAMESPACE_REGISTRY_SHUTDOWN_FAILED: Registry shutdown 期间部分 Runtime 关闭失败';
 // —— phase-5 切片 1 增量（ADR 0010 身份条款/ADR 0009 依赖纪律）——

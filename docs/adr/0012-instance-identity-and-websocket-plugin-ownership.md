@@ -1,6 +1,6 @@
 # ADR 0012：实例身份单一真相与 WebSocket plugin 所有权
 
-状态：proposed
+状态：已接受（issue #204 已实现）
 
 Nomicore 将 `instanceId + role` 建模为独立、不可变的 Instance identity service，由 composition root 配置一次，并由 Namespace Registry 与角色专用的 Hub/Peer WebSocket plugins 共同消费。WebSocket plugins 只拥有 listener/dialer、认证与授权适配、replication controller、连接和自身 service；它们可以引用但不得创建、shutdown 或 dispose Clock、Timer、Persistence、Namespace Registry。Standalone yjs-server 继续作为上层 composition root，显式组装 Instance → Clock → Timer → Persistence → Registry → role-specific WebSocket plugin。
 
@@ -27,6 +27,14 @@ Nomicore 将 `instanceId + role` 建模为独立、不可变的 Instance identit
 - 单一 role-switching WebSocket plugin：产生大量可选字段和运行期分支，削弱配置门禁。
 - Registry 与 WebSocket 分别配置 role/instanceId：允许静默不一致。
 - WebSocket plugin 暴露 raw Registry、ReplicationSession 或 live Y.Doc：扩大可信能力面。
+
+## 最终服务所有权
+
+- Composition root 拥有 Instance、Clock、Timer、Persistence 与 Namespace Registry 的创建、配置和最终 teardown；Instance service 是 `instanceId + role` 的唯一生产来源。
+- Namespace Registry plugin 只拥有 Registry 实例与 `nomicoreRegistry` service；它读取 Instance role，但不拥有或销毁 Instance、Clock、Timer、Persistence。
+- Hub WebSocket plugin 只拥有 listener、Hub replication controller、连接/channel 与 `nomicoreHubReplication` service。
+- Peer WebSocket plugin 只拥有 dial loop、Peer replication controller、连接/channel、进程内 targets 与 `nomicorePeerReplication` service。
+- WebSocket plugin Fiber dispose 先停止自身网络接纳并 drain/close controller，再撤自身 service；它不调用 Registry shutdown 或 Persistence dispose。上游资源随后由 composition root 按 Registry → Persistence → Timer/Clock 的顺序释放。
 
 ## 后果
 

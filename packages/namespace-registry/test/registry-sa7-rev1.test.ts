@@ -50,6 +50,7 @@ import { createNamespaceRegistryForTesting, createRegistryTestScheduler } from '
 import { createNamespaceRegistryPlugin } from '@nomicore/namespace-registry';
 import { createCordisRegistryScheduler } from '../src/plugin.js';
 import { Context } from '@deepseek-ai/cordis';
+import { provideInstance } from '@nomicore/instance';
 import TimerService from '@deepseek-ai/cordis-plugin-timer';
 
 const FIBER_STATE_PENDING = 0;
@@ -372,6 +373,7 @@ describe('SA7 rev1 补充动态（P1 floating-window / R5′ 活链路 / P2 real
     const probe = collectUnhandledRejections();
     try {
       const ctx = new Context();
+      provideInstance(ctx, Object.freeze({ instanceId: 'test-host', role: 'hub' }));
       createManualClockPlugin(createManualClock(0)).apply(ctx);
       new TimerService(ctx); // 真实 timer 服务（native setTimeout/clearTimeout，经 ctx.effect 注册）
       const memoryPlugin = createMemoryPersistencePlugin();
@@ -495,6 +497,7 @@ describe('SA7 rev1 补充动态（P1 floating-window / R5′ 活链路 / P2 real
     const probe = collectUnhandledRejections();
     try {
       const ctx = new Context();
+      provideInstance(ctx, Object.freeze({ instanceId: 'test-host', role: 'hub' }));
       createManualClockPlugin(createManualClock(0)).apply(ctx);
       new TimerService(ctx); // 真实 timer 服务（ctx.timeout → TimerService → ctx.effect → native setTimeout）
       const persistence = new StubPersistence();
@@ -584,6 +587,7 @@ describe('SA7 rev1 补充动态（P1 floating-window / R5′ 活链路 / P2 real
     const probe = collectUnhandledRejections();
     try {
       const ctx = new Context();
+      provideInstance(ctx, Object.freeze({ instanceId: 'test-host', role: 'hub' }));
       createManualClockPlugin(createManualClock(0)).apply(ctx);
       new TimerService(ctx); // 真实 timer：idle 武装经 createCordisRegistryScheduler → ctx.timeout
       const persistence = new StubPersistence();

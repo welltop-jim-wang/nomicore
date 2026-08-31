@@ -34,6 +34,7 @@ import {
 import type { NamespaceLease } from '@nomicore/namespace-registry';
 import { createRegistryTestScheduler } from '@nomicore/namespace-registry/testing';
 import { Context } from '@deepseek-ai/cordis';
+import { provideInstance } from '@nomicore/instance';
 import TimerService from '@deepseek-ai/cordis-plugin-timer';
 
 // FiberState（cordis fiber.d.ts const enum，无运行时对象——数值常量断言）。
@@ -166,6 +167,7 @@ describe('SA7 Cordis 组合动态（攻击面 4）', () => {
     try {
       const scheduler = createRegistryTestScheduler();
       const ctx = new Context();
+      provideInstance(ctx, Object.freeze({ instanceId: 'test-host', role: 'hub' }));
       createManualClockPlugin(createManualClock(1_700_000_123_456)).apply(ctx);
       createFakeTimerPlugin(scheduler).apply(ctx);
       const stub = new Sa7StubPersistence();
@@ -210,6 +212,7 @@ describe('SA7 Cordis 组合动态（攻击面 4）', () => {
     try {
       const scheduler = createRegistryTestScheduler();
       const ctx = new Context();
+      provideInstance(ctx, Object.freeze({ instanceId: 'test-host', role: 'hub' }));
       createManualClockPlugin(createManualClock(0)).apply(ctx);
       createFakeTimerPlugin(scheduler).apply(ctx);
       // rev1 问题 3：真实 MemoryPersistence（adapter dispose 可观测）+ registry plugin。
@@ -317,6 +320,7 @@ describe('SA7 Cordis 组合动态（攻击面 4）', () => {
     try {
       const scheduler = createRegistryTestScheduler();
       const ctx = new Context();
+      provideInstance(ctx, Object.freeze({ instanceId: 'test-host', role: 'hub' }));
       createManualClockPlugin(createManualClock(0)).apply(ctx);
       createFakeTimerPlugin(scheduler).apply(ctx);
       const stub1 = new Sa7StubPersistence();
@@ -371,6 +375,7 @@ describe('SA7 Cordis 组合动态（攻击面 4）', () => {
     const probe = collectUnhandledRejections();
     try {
       const ctx = new Context();
+      provideInstance(ctx, Object.freeze({ instanceId: 'test-host', role: 'hub' }));
       createManualClockPlugin(createManualClock(0)).apply(ctx);
       new TimerService(ctx); // 真实 timer 服务（native setTimeout/clearTimeout）
       const stub = new Sa7StubPersistence();

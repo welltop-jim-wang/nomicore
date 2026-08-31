@@ -15,7 +15,12 @@
 import { createServer, type IncomingMessage, type Server } from 'node:http';
 import type { Duplex } from 'node:stream';
 import { WebSocketServer, WebSocket, type RawData } from 'ws';
-import type { DuplexTransport, UpgradeIdentity } from '@nomicore/ws-replication';
+import type {
+  DuplexTransport,
+  HubListenAdapter,
+  HubListener,
+  UpgradeIdentity,
+} from '@nomicore/ws-replication';
 
 /** 一 WS binary message = 一 frame：按协议不变量 1 交付独立 Uint8Array（拷贝，防池化）。 */
 function toBytes(data: RawData): Uint8Array {
@@ -218,6 +223,25 @@ export async function startHubWsServer(options: HubWsServerOptions): Promise<Hub
         // 所有连接收口后的无害回调（不 await）。
       });
       return Promise.resolve();
+    },
+  };
+}
+
+/** Concrete package-plugin listener adapter backed by Node HTTP and `ws`. */
+export interface AppHubListenAdapter extends HubListenAdapter {
+  readonly listener: HubListener | undefined;
+}
+
+export function createHubListenAdapter(): AppHubListenAdapter {
+  let listener: HubListener | undefined;
+  return {
+    get listener(): HubListener | undefined {
+      return listener;
+    },
+    async listen(options): Promise<HubListener> {
+      if (listener !== undefined) throw new Error('hub listener already active');
+      listener = await startHubWsServer(options);
+      return listener;
     },
   };
 }

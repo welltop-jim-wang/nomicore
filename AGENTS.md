@@ -28,7 +28,7 @@ When an independent project needs to use Nomicore—author or validate VFSL, gen
 
 ### Third-party plugin hosting
 
-When integrating Nomicore into an external Cordis host, changing plugin assembly, or documenting plugin configuration and shutdown, use Cordis plugin-factory composition and follow `docs/integration/cordis-plugin-hosting.md` for dependency order, adapter options, Registry usage, and lifecycle teardown; do not assume a stable dynamic pluginId or `cordis_define` contract.
+When integrating Nomicore into an external Cordis host, changing plugin assembly, or documenting plugin configuration and shutdown, use Cordis plugin-factory composition and follow `docs/integration/cordis-plugin-hosting.md` for Instance → Clock/Timer → Persistence → Registry → role-specific replication order, readiness, adapter options, and lifecycle teardown; keep `instanceId + role` in the Instance service and do not assume a stable dynamic pluginId or `cordis_define` contract.
 
 ### Instance replication
 

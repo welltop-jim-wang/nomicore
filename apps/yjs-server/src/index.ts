@@ -40,7 +40,9 @@ import {
 export { assertProductionTransportFaces, createWebSocketAdapter } from './transport.js';
 export type { WebSocketLike } from './transport.js';
 
-// Preserve the deployable app's public API introduced on the updated base.
+// Legacy issue #164 low-level Hub-only entry remains because the public compatibility
+// suites still import and exercise it. New Cordis hosts should use createNomicoreApp or
+// @nomicore/ws-replication plugins; removal requires a separately versioned migration.
 export { parseAppConfig, ConfigValidationError, INSTANCE_ID_PATTERN, NAMESPACE_ID_PATTERN } from './config.js';
 export type {
   AppConfig,
@@ -52,10 +54,6 @@ export type {
 } from './config.js';
 export { createNomicoreApp } from './app.js';
 export type { CreateNomicoreAppOptions, NomicoreApp } from './app.js';
-export { createHubReplicationPlugin, NODE_TIMER_BRIDGE } from './replication/hub-plugin.js';
-export type { HubReplicationPluginConfig } from './replication/hub-plugin.js';
-export { createPeerReplicationPlugin } from './replication/peer-plugin.js';
-export type { PeerReplicationPluginConfig } from './replication/peer-plugin.js';
 export { acquireRootLock, createStdoutEventSink, ROOT_LOCK_FILE_NAME, STABLE_OP_ERROR_CODES } from './lifecycle.js';
 export type { EventSink, RootLockHandle } from './lifecycle.js';
 
