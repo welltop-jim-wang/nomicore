@@ -11,20 +11,22 @@ import { describe, expect, it } from 'vitest';
 import { Context } from '@deepseek-ai/cordis';
 import TimerService from '@deepseek-ai/cordis-plugin-timer';
 import { createSystemClockPlugin } from '@nomicore/clock';
+import { createInstancePlugin } from '@nomicore/instance';
 import { createMemoryPersistencePlugin } from '@nomicore/persistence';
 import {
   createNamespaceRegistryPlugin,
   requireNomicoreRegistry,
 } from '@nomicore/namespace-registry';
-import type { DuplexTransport } from '@nomicore/ws-replication';
 import {
   createHubReplicationPlugin,
   createPeerReplicationPlugin,
-} from '@nomicore/yjs-server';
+  type DuplexTransport,
+} from '@nomicore/ws-replication';
 
 describe('T4 third-party public compose seam (AC6 / design §5-T4)', () => {
   it('composes clock→TimerService→persistence→registry→create→enableReplication→openReplicationSession from public entries only', async () => {
     const ctx = new Context();
+    createInstancePlugin().apply(ctx, { instanceId: 'hub-1', role: 'hub' });
 
     const clockFiber = ctx.plugin(createSystemClockPlugin());
     await clockFiber;
@@ -35,7 +37,7 @@ describe('T4 third-party public compose seam (AC6 / design §5-T4)', () => {
     const persistenceFiber = ctx.plugin(createMemoryPersistencePlugin());
     await persistenceFiber;
 
-    const registryFiber = ctx.plugin(createNamespaceRegistryPlugin({ role: 'hub' }));
+    const registryFiber = ctx.plugin(createNamespaceRegistryPlugin());
     await registryFiber;
 
     const registry = requireNomicoreRegistry(ctx);
@@ -63,38 +65,43 @@ describe('T4 third-party public compose seam (AC6 / design §5-T4)', () => {
     await ctx.fiber.dispose();
   });
 
-  it('composes Hub and Peer replication plugins from the app public entry only', async () => {
+  it('composes Hub and Peer replication plugins from their package public entry', async () => {
     const createHost = async (role: 'hub' | 'peer') => {
       const ctx = new Context();
+      createInstancePlugin().apply(ctx, { instanceId: role === 'hub' ? 'hub-1' : 'peer-1', role });
       await ctx.plugin(createSystemClockPlugin());
       new TimerService(ctx);
       const persistenceFiber = ctx.plugin(createMemoryPersistencePlugin());
       await persistenceFiber;
-      await ctx.plugin(createNamespaceRegistryPlugin({ role }));
+      await ctx.plugin(createNamespaceRegistryPlugin());
       return { ctx, persistenceFiber };
     };
 
     const hubHost = await createHost('hub');
-    const hubPlugin = createHubReplicationPlugin({
-      instanceId: 'hub-1',
-      verifyToken: async () => ({ ok: true, instanceId: 'peer-1' }),
-      authorize: async () => ({
-        ok: true,
-        localOwner: { userId: 'alice' },
-        permissions: { read: true, submit: true },
-      }),
-    });
+    const hubPlugin = createHubReplicationPlugin(
+      { listen: { host: '127.0.0.1', port: 0 } },
+      {
+        verifyToken: async () => ({ ok: true, instanceId: 'peer-1' }),
+        authorize: async () => ({
+          ok: true,
+          localOwner: { userId: 'alice' },
+          permissions: { read: true, submit: true },
+        }),
+        listen: { listen: async () => ({ close: async () => undefined }) },
+      },
+    );
     await hubHost.ctx.plugin(hubPlugin);
     expect(hubPlugin.replication).toBeDefined();
 
     const peerHost = await createHost('peer');
-    const peerPlugin = createPeerReplicationPlugin({
-      instanceId: 'peer-1',
-      hubInstanceId: 'hub-1',
-      dial: (): DuplexTransport => {
-        throw new Error('dial is not called until the third-party host explicitly starts replication');
+    const peerPlugin = createPeerReplicationPlugin(
+      { expectedHubInstanceId: 'hub-1' },
+      {
+        dial: (): DuplexTransport => {
+          throw new Error('offline test dial');
+        },
       },
-    });
+    );
     await peerHost.ctx.plugin(peerPlugin);
     expect(peerPlugin.replication).toBeDefined();
 
@@ -104,14 +111,14 @@ describe('T4 third-party public compose seam (AC6 / design §5-T4)', () => {
     await peerHost.ctx.fiber.dispose();
     await hubHost.persistenceFiber.dispose();
     await hubHost.ctx.fiber.dispose();
-    expect(peerPlugin.replication?.getConnectionState()).toBe('stopped');
+    expect(peerPlugin.replication).toBeUndefined();
   });
 
   it('app public entry exposes the composition surface', async () => {
     const mod = (await import(/* @vite-ignore */ '@nomicore/yjs-server')) as Record<string, unknown>;
     expect(typeof mod.createNomicoreApp).toBe('function');
     expect(typeof mod.parseAppConfig).toBe('function');
-    expect(typeof mod.createHubReplicationPlugin).toBe('function');
-    expect(typeof mod.createPeerReplicationPlugin).toBe('function');
+    expect(mod.createHubReplicationPlugin).toBeUndefined();
+    expect(mod.createPeerReplicationPlugin).toBeUndefined();
   });
 });

@@ -34,6 +34,7 @@ import type { DocHandle, DocPersistence, User } from '@nomicore/persistence';
 import { createMemoryPersistencePlugin } from '@nomicore/persistence';
 import { createFakeTimerPlugin } from '@nomicore/persistence/testing';
 import { createManualClock, createManualClockPlugin } from '@nomicore/clock/testing';
+import { provideInstance } from '@nomicore/instance';
 import { createNamespaceRegistryPlugin } from '@nomicore/namespace-registry';
 import type { NamespaceLease, NamespaceRegistry, RegistryRandomBytes } from '@nomicore/namespace-registry';
 import { createRegistryTestScheduler } from '@nomicore/namespace-registry/testing';
@@ -527,41 +528,30 @@ describe('R2-5 lease release hostile seam（ADR 0009 L42/L150 + 修订节 L246�
 
 // ═══════════════════════════════ R2-8：plugin role 贯通 ═══════════════════════════════
 
-describe('R2-8 生产 Cordis plugin 的 peer role 装配（config → 校验 → 构造 → 静态角色行为）', () => {
-  it("plugin config 接受 role:'hub'|'peer'（缺省 hub）；role 与 idleTimeoutMs 可组合【必红】", () => {
-    // 当前 resolvePluginIdleTimeoutMs 仅接受 idleTimeoutMs 单键——任何 role 键 → TypeError
-    //（config 的 TS 类型面同样尚未含 role——类型错误即契约缺口；行为断言以运行时为准）
-    expect(() => createNamespaceRegistryPlugin({ role: 'hub' } as never)).not.toThrow();
-    expect(() => createNamespaceRegistryPlugin({ role: 'peer' } as never)).not.toThrow();
-    expect(() => createNamespaceRegistryPlugin({ role: 'peer', idleTimeoutMs: 25 } as never)).not.toThrow();
-    expect(() => createNamespaceRegistryPlugin({ role: 'hub', idleTimeoutMs: 0 } as never)).not.toThrow();
-    expect(() => createNamespaceRegistryPlugin()).not.toThrow(); // 缺省 → 'hub'（既有零回归面）
+describe('R2-8 生产 Cordis plugin 的 Instance role 装配（config 拒绝 → Instance 注入 → 静态角色行为）', () => {
+  it("plugin config 拒绝 role:'hub'|'peer'；仅接受 idleTimeoutMs", () => {
+    expect(() => createNamespaceRegistryPlugin({ role: 'hub' } as never)).toThrow('NAMESPACE_REGISTRY_PLUGIN_CONFIG');
+    expect(() => createNamespaceRegistryPlugin({ role: 'peer' } as never)).toThrow('NAMESPACE_REGISTRY_PLUGIN_CONFIG');
+    expect(() => createNamespaceRegistryPlugin({ role: 'peer', idleTimeoutMs: 25 } as never)).toThrow(
+      'NAMESPACE_REGISTRY_PLUGIN_CONFIG',
+    );
+    expect(() => createNamespaceRegistryPlugin({ idleTimeoutMs: 0 })).not.toThrow();
+    expect(() => createNamespaceRegistryPlugin()).not.toThrow();
   });
 
-  it('非法 role 值 loud 拒绝（NAMESPACE_REGISTRY_ROLE_INVALID 语义——当前误报 PLUGIN_CONFIG）【必红】', () => {
-    for (const bad of ['solo', 'HUB', 42, null] as unknown[]) {
-      let threw: unknown;
-      try {
-        createNamespaceRegistryPlugin({ role: bad } as never);
-      } catch (err) {
-        threw = err;
-      }
-      expect(threw, `非法 role ${JSON.stringify(bad)} 必须 loud 拒绝`).toBeInstanceOf(Error);
-      if (threw instanceof Error) {
-        expect(threw.message, '非法 role 拒绝必须报 ROLE_INVALID 域（O-4 既有词汇），而非键集误报').toContain(
-          'NAMESPACE_REGISTRY_ROLE_INVALID',
-        );
-      }
+  it('任何 role 值均作为旧 plugin config loud 拒绝', () => {
+    for (const role of ['solo', 'HUB', 42, null] as unknown[]) {
+      expect(() => createNamespaceRegistryPlugin({ role } as never)).toThrow('NAMESPACE_REGISTRY_PLUGIN_CONFIG');
     }
   });
 
-  it('peer-role Registry 经 plugin 组合：本地 replaceSchema/enableReplication 以 REPLICATION_ROLE_PERMISSION 拒；hub 对照正常【必红】', async () => {
-    // peer 装配：插件工厂当前对 { role } 抛 NAMESPACE_REGISTRY_PLUGIN_CONFIG —— 组合无法成立
+  it('Registry role 来自注入的 Instance：peer 拒绝本地角色操作；hub 对照正常', async () => {
     const peerCtx = new Context();
+    provideInstance(peerCtx, Object.freeze({ instanceId: 'peer-a', role: 'peer' }));
     createManualClockPlugin(createManualClock(FIXED_MS)).apply(peerCtx);
     createFakeTimerPlugin(createRegistryTestScheduler()).apply(peerCtx);
     createMemoryPersistencePlugin().apply(peerCtx);
-    const peerPlugin = createNamespaceRegistryPlugin({ role: 'peer', idleTimeoutMs: 300_000 } as never);
+    const peerPlugin = createNamespaceRegistryPlugin({ idleTimeoutMs: 300_000 });
     const peerFiber = peerCtx.plugin(peerPlugin);
     await peerFiber;
     const peerRegistry = peerPlugin.instance;
@@ -582,8 +572,9 @@ describe('R2-8 生产 Cordis plugin 的 peer role 装配（config → 校验 →
     expect(enable.ok).toBe(false); // peer 的 enable hub-only（L120）
     expect(JSON.stringify(enable)).toContain('REPLICATION_ROLE_PERMISSION');
 
-    // hub 对照：同一 plugin 面（缺省 role）装配 → replaceSchema 正常
+    // hub 对照：同一 plugin config，由 Instance 提供 hub role
     const hubCtx = new Context();
+    provideInstance(hubCtx, Object.freeze({ instanceId: 'hub-a', role: 'hub' }));
     createManualClockPlugin(createManualClock(FIXED_MS)).apply(hubCtx);
     createFakeTimerPlugin(createRegistryTestScheduler()).apply(hubCtx);
     createMemoryPersistencePlugin().apply(hubCtx);

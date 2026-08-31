@@ -1,27 +1,30 @@
 # 第三方 Cordis 宿主接入指南
 
-本文是第三方宿主挂载 Nomicore 插件的操作入口。架构与生命周期依据分别见 [ADR-0006](../adr/0006-server-persistence-docstore.md)、[ADR-0008](../adr/0008-namespace-runtime-read-write-capabilities-and-sequencer.md) 和 [ADR-0009](../adr/0009-namespace-registry-leases-and-host-lifecycle.md)。
+本文是第三方宿主挂载 Nomicore 插件的操作入口。架构与生命周期依据分别见 [ADR-0006](../adr/0006-server-persistence-docstore.md)、[ADR-0008](../adr/0008-namespace-runtime-read-write-capabilities-and-sequencer.md)、[ADR-0009](../adr/0009-namespace-registry-leases-and-host-lifecycle.md)、[ADR-0010](../adr/0010-hub-peer-websocket-ydoc-replication.md) 和 [ADR-0012](../adr/0012-instance-identity-and-websocket-plugin-ownership.md)。
 
 ## 范围与依赖图
 
-本文覆盖第三方生产宿主需要挂载的四类插件：Clock、Cordis Timer、Memory/File Persistence 和 Namespace Registry。`@nomicore/dsh-persistence` 的 `createDshPersistenceProfile()` 是 DSH 开发/探针装配，不是第三方生产插件；其配置以该包公开类型为准。
+本文覆盖第三方生产宿主需要挂载的 Instance、Clock、Cordis Timer、Memory/File Persistence、Namespace Registry，以及可选的角色专用 WebSocket replication plugin。`@nomicore/dsh-persistence` 的 `createDshPersistenceProfile()` 是 DSH 开发/探针装配，不是第三方生产插件；其配置以该包公开类型为准。
 
 生产宿主按以下顺序挂载：
 
-1. `createSystemClockPlugin()`：提供 `ctx.clock`。
-2. `TimerService`：提供 `ctx.timer` 与 `ctx.timeout()`。
-3. 一个 Persistence 插件：提供 `ctx.nomicorePersistence`。
-4. `createNamespaceRegistryPlugin()`：提供 `ctx.nomicoreRegistry`。
+1. `createInstancePlugin()`：提供不可变的 `ctx.nomicoreInstance`，配置一次 `instanceId + role`。
+2. `createSystemClockPlugin()`：提供 `ctx.clock`。
+3. `TimerService`：提供 `ctx.timer` 与 `ctx.timeout()`。
+4. 一个 Persistence 插件：提供 `ctx.nomicorePersistence`。
+5. `createNamespaceRegistryPlugin()`：提供 `ctx.nomicoreRegistry`，角色来自 Instance service。
+6. 与 Instance role 相符的 `createHubReplicationPlugin()` 或 `createPeerReplicationPlugin()`。
 
 依赖关系为：
 
 ```text
-clock ───────┐
-             ├─> memory/file persistence ──> namespace registry
-Cordis timer ┘                         └────> namespace registry
+instance ───────────────────────────┬─> namespace registry ─┐
+clock ───────┐                      │                       ├─> hub/peer replication
+             ├─> memory/file persistence ─> namespace registry ┘
+Cordis timer ┘───────────────────────────────────────────────┘
 ```
 
-Persistence 和 Registry 启动时会检查依赖；缺少 clock、timer 或 persistence 会直接抛错，不会使用系统能力兜底。第三方业务通常只消费 `nomicoreRegistry`，不要直接持有 live `Y.Doc` 或 Persistence `DocHandle`。
+Persistence、Registry 和 replication plugin 启动时会检查依赖；缺少所需 service 会直接抛错，不会使用系统能力兜底。角色不匹配会在 listener/dial side effect 前失败。第三方业务通常只消费 `nomicoreRegistry` 和角色专用 replication service，不要直接持有 live `Y.Doc`、Persistence `DocHandle` 或 raw `ReplicationSession`。
 
 ## 推荐加载方式
 
@@ -29,9 +32,9 @@ Persistence 和 Registry 启动时会检查依赖；缺少 clock、timer 或 per
 
 这种方式与项目的插件验收测试一致，并确保：
 
-- Clock、Timer、Persistence、Registry 按依赖顺序启动；
-- Persistence 与 Registry 服务通过公开 `require*` helper 获取；
-- Fiber 卸载时按 Cordis 依赖图排空 Registry、释放 Persistence；
+- Instance、Clock、Timer、Persistence、Registry、replication 按依赖顺序启动；
+- 服务通过公开 `require*` helper 获取；
+- Fiber 卸载时先排空 replication，再关闭 Registry、释放 Persistence；
 - 配置由各 `create*Plugin()` 工厂的公开 options 类型校验。
 
 ## 最小生产装配
@@ -42,6 +45,7 @@ Persistence 和 Registry 启动时会检查依赖；缺少 clock、timer 或 per
 import { Context } from '@deepseek-ai/cordis'
 import TimerService from '@deepseek-ai/cordis-plugin-timer'
 import { createSystemClockPlugin } from '@nomicore/clock'
+import { createInstancePlugin } from '@nomicore/instance'
 import { createFilePersistencePlugin } from '@nomicore/persistence'
 import {
   createNamespaceRegistryPlugin,
@@ -49,6 +53,11 @@ import {
 } from '@nomicore/namespace-registry'
 
 const ctx = new Context()
+
+createInstancePlugin().apply(ctx, {
+  instanceId: 'hub-primary',
+  role: 'hub',
+})
 
 const clockFiber = ctx.plugin(createSystemClockPlugin())
 await clockFiber
@@ -73,7 +82,7 @@ await registryFiber
 const registry = requireNomicoreRegistry(ctx)
 ```
 
-Memory adapter 只需替换 Persistence 工厂：
+Instance plugin 通过 `apply(ctx, hostConfig)` 读取宿主配置；它不应再在 Registry 或 replication 配置中重复 `instanceId`/`role`。Memory adapter 只需替换 Persistence 工厂：
 
 ```ts
 import { createMemoryPersistencePlugin } from '@nomicore/persistence'
@@ -87,6 +96,10 @@ await persistenceFiber
 Memory adapter 的快照仅属于当前 adapter 实例；实例销毁后不可用于重启恢复。需要跨进程或跨实例恢复时使用 File adapter 或实现 `DocPersistence` 的第三方 adapter。
 
 ## 配置
+
+### Instance
+
+`createInstancePlugin(overrides?)` 在 apply 时读取宿主配置 `{ instanceId, role }`，以已定义的 override 字段覆盖后严格校验并发布不可变 service。`instanceId` 必须匹配 `^[a-z][a-z0-9-]{0,62}$`，`role` 必须为 `hub` 或 `peer`；两者均为 restart-only。精确 API 见 [`@nomicore/instance` README](../../packages/instance/README.md)。
 
 ### Clock
 
@@ -110,7 +123,60 @@ Timer 生命周期必须覆盖 Persistence 和 Registry：先挂 Timer，最后�
 
 ### Namespace Registry
 
-`createNamespaceRegistryPlugin(options)` 的唯一配置域是空闲 Runtime 保留时间；精确类型、默认值和拒绝规则以 [`@nomicore/namespace-registry` README](../../packages/namespace-registry/README.md) 与 `NamespaceRegistryPluginConfig` 类型为准。
+`createNamespaceRegistryPlugin(options)` 的唯一配置域是空闲 Runtime 保留时间；精确类型、默认值和拒绝规则以 [`@nomicore/namespace-registry` README](../../packages/namespace-registry/README.md) 与 `NamespaceRegistryPluginConfig` 类型为准。生产 plugin 从 `ctx.nomicoreInstance.role` 读取角色；旧 `role` 配置键属于未知键并被拒绝。
+
+### WebSocket replication
+
+Hub 与 Peer 的配置面、adapter overrides、service readiness 与 lifecycle 见 [`@nomicore/ws-replication` README](../../packages/ws-replication/README.md)。Hub plugin 只有在 listener 建立后才发布 ready service；Peer ready 只表示 controller/dial loop 已启动，不表示已连接 Hub 或 namespace 已 live，需等待目标可用时调用 `requirePeerReplication(ctx).waitForLive(namespaceId)`。
+
+Hub 最小组合（生产 listener adapter 由宿主实现或封装）：
+
+```ts
+import {
+  createHubReplicationPlugin,
+  requireHubReplication,
+} from '@nomicore/ws-replication'
+
+const hubFiber = ctx.plugin(createHubReplicationPlugin({
+  listen: { host: '127.0.0.1', port: 8787, path: '/replication' },
+  tokens: [{ token: process.env.PEER_TOKEN!, instanceId: 'peer-west-1' }],
+  authorization: [{
+    instanceId: 'peer-west-1',
+    namespaceId: 'ns-0123456789abcdef0123456789abcdef',
+    localOwner: { userId: 'hub-owner' },
+    read: true,
+    submit: true,
+  }],
+}, {
+  listen: hubListenAdapter,
+}))
+await hubFiber
+const hubReplication = requireHubReplication(ctx)
+```
+
+Peer 最小组合：
+
+```ts
+import {
+  createPeerReplicationPlugin,
+  requirePeerReplication,
+} from '@nomicore/ws-replication'
+
+const peerFiber = ctx.plugin(createPeerReplicationPlugin({
+  expectedHubInstanceId: 'hub-primary',
+  hubUrl: 'wss://hub.example.test/replication',
+  token: process.env.HUB_TOKEN!,
+  targets: [{
+    namespaceId: 'ns-0123456789abcdef0123456789abcdef',
+    localOwner: { userId: 'peer-owner' },
+  }],
+}, {
+  dial: peerDialAdapter,
+}))
+await peerFiber
+const peerReplication = requirePeerReplication(ctx)
+await peerReplication.waitForLive('ns-0123456789abcdef0123456789abcdef')
+```
 
 ## 创建、读取、修改和重新打开
 
@@ -168,17 +234,19 @@ await reopened.lease.release()
 正常停止使用一种所有权策略，不并发触发多条拆卸链：
 
 1. 停止接纳业务请求，并等待业务持有的 lease 释放。
-2. 若宿主显式拥有 Registry 生命周期，调用并等待 `registry.shutdown()`。
-3. 释放 Persistence Fiber。它撤销 persistence service 后会等待依赖它的 Registry Fiber 完成卸载，再 dispose adapter。
-4. 最后释放承载 Clock/Timer 的根 Context/Fiber。
+2. dispose 角色专用 replication Fiber；它停止 listener/dial、drain/close controller 与 channel，并撤销自身 service，但不会 shutdown Registry。
+3. 若宿主显式拥有 Registry 生命周期，调用并等待 `registry.shutdown()`。
+4. 释放 Persistence Fiber。它撤销 persistence service 后会等待依赖它的 Registry Fiber 完成卸载，再 dispose adapter。
+5. 最后释放承载 Instance、Clock/Timer 的根 Context/Fiber。
 
 ```ts
+await replicationFiber.dispose()
 await registry.shutdown()
 await persistenceFiber.dispose()
 await ctx.fiber.dispose()
 ```
 
-若宿主完全由 Cordis 管理生命周期，可省略显式 `registry.shutdown()`，只释放 Persistence 或根 Context，让依赖图级联卸载 Registry。不要同时手工 dispose Registry Fiber 又依赖 Persistence 撤服务触发同一卸载链。
+若宿主完全由 Cordis 管理生命周期，可省略显式 `registry.shutdown()`，释放根 Context，让依赖图先卸载 replication，再级联卸载 Registry 与 Persistence。不要同时手工 dispose replication/Registry Fiber 又依赖上游撤服务触发同一卸载链。
 
 Timer 的生命周期必须覆盖整个排空过程。Registry 关闭期间已接纳的写会被排空；提前拆 Timer 会使新 timer 武装响亮失败。
 
@@ -188,15 +256,19 @@ Timer 的生命周期必须覆盖整个排空过程。Registry 关闭期间已�
 
 ```ts
 import { requireClock } from '@nomicore/clock'
+import { requireNomicoreInstance } from '@nomicore/instance'
 import { requireNomicorePersistence } from '@nomicore/persistence'
 import { requireNomicoreRegistry } from '@nomicore/namespace-registry'
+import { requireHubReplication } from '@nomicore/ws-replication'
 
+const instance = requireNomicoreInstance(ctx)
 const clock = requireClock(ctx)
 const persistence = requireNomicorePersistence(ctx)
 const registry = requireNomicoreRegistry(ctx)
+const replication = requireHubReplication(ctx) // Hub composition only
 ```
 
-Registry 的 `getStatus()` 返回 `running`、`shutting-down` 或 `stopped`。Lease 的 `getStatus()` 展示 lease 与 runtime 能力状态。File/Memory adapter 实例的 `getStatus()` 可用于宿主健康检查；业务数据访问仍应通过 Registry lease。
+Registry 的 `getStatus()` 返回 `running`、`shutting-down` 或 `stopped`。Lease 的 `getStatus()` 展示 lease 与 runtime 能力状态。Hub service 的 ready 表示 listener 已启动；Peer service 的 ready 不等于 Hub 已连接或 target 已 live。File/Memory adapter 实例的 `getStatus()` 可用于宿主健康检查；业务数据访问仍应通过 Registry lease。
 
 ## 第三方自定义 Persistence
 

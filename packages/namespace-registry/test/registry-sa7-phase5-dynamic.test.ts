@@ -31,6 +31,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { randomBytes as nodeRandomBytes } from 'node:crypto';
 import { Context } from '@deepseek-ai/cordis';
+import { provideInstance } from '@nomicore/instance';
 import TimerService from '@deepseek-ai/cordis-plugin-timer';
 import { systemClock, createSystemClockPlugin } from '@nomicore/clock';
 import {
@@ -118,6 +119,7 @@ afterAll(() => {
 /** 真实生产 host 组合（system clock + 真实 TimerService + 指定 persistence 接线）。 */
 async function composeRealHost(installPersistence: (ctx: Context) => void): Promise<{ ctx: Context; registry: NamespaceRegistry }> {
   const ctx = new Context();
+  provideInstance(ctx, Object.freeze({ instanceId: 'test-host', role: 'hub' }));
   createSystemClockPlugin().apply(ctx);
   new TimerService(ctx); // 真实 timer 服务（native setTimeout/clearTimeout）
   installPersistence(ctx); // persistence 服务接线（直接 apply——plugin 测试 22 先例）

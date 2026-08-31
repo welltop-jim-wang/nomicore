@@ -24,6 +24,7 @@
     "@deepseek-ai/cordis-plugin-timer": "^1.1.3",
     "@nomicore/clock": "workspace:*",
     "@nomicore/doc-runtime": "workspace:*",
+    "@nomicore/instance": "workspace:*",
     "@nomicore/namespace-runtime": "workspace:*",
     "@nomicore/persistence": "workspace:*",
     "@nomicore/vfsl": "workspace:*"

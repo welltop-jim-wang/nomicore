@@ -20,6 +20,10 @@
     "build": "node ../../scripts/build-package.mjs"
   },
   "dependencies": {
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/cordis-plugin-timer": "^1.1.3",
+    "@nomicore/clock": "workspace:*",
+    "@nomicore/instance": "workspace:*",
     "@nomicore/namespace-registry": "workspace:*",
     "@nomicore/replication-protocol": "workspace:*",
     "lib0": "^0.2.117",
