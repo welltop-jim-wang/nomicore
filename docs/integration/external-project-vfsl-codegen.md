@@ -145,14 +145,75 @@ domains/inventory/generated.ts
 }
 ```
 
-`generated.ts` 只有类型声明和 `import type`，没有运行时副作用。通常只要它被 `tsconfig.json` 的 `include` 纳入，就不必从业务模块执行运行时 import。若宿主使用基于入口文件裁剪的类型检查配置，可在一个类型入口中显式进行 type-only 引用：
+`generated.ts` 只有类型声明和 `import type`，没有运行时副作用，但它必须进入**消费业务代码的同一个 TypeScript Program**，module augmentation 才会生效。仅生成、提交文件，或者让另一个无关 tsconfig 编译它，都不能让业务 package 看到类型。
 
-```ts
-// src/nomicore-types.d.ts
-import type {} from '../domains/inventory/generated.js'
+先检查消费 package 的完整 tsconfig 继承链、构建/typecheck 脚本、`rootDir`、`include`/`files`、project references、emit 模式和 package 边界守卫。用以下命令取得证据：
+
+```bash
+pnpm exec tsc -p packages/<consumer>/tsconfig.json --listFilesOnly
 ```
 
-并确保该 `.d.ts` 也在 `include` 中。
+输出必须包含消费源码和准确的 `domains/<domain>/generated.ts`。
+
+按约束选择一种接线方式：
+
+### A. 同一 Program 允许包含仓库级 projection
+
+可以直接把特定 generated 文件加入 `include`，或者在 package 内增加类型入口：
+
+```ts
+// packages/<consumer>/src/nomicore-schema.d.ts
+import type {} from '../../../../domains/inventory/generated.js'
+```
+
+相对路径从类型入口出发。确保 `.d.ts` 本身被 `include`/`files` 纳入。`import type {}` 不产生运行时 import，但会把目标 generated 模块拉进 TypeScript Program。
+
+### B. 普通 build 不能越过 `rootDir`，no-emit typecheck 可以
+
+保留 package-local build tsconfig，只编译/emit `src/`；另建 `tsconfig.typecheck.json` 和类型入口：
+
+```text
+packages/<consumer>/
+├── src/
+├── typecheck/nomicore-schema.d.ts
+├── tsconfig.json
+└── tsconfig.typecheck.json
+```
+
+```ts
+// typecheck/nomicore-schema.d.ts
+import type {} from '../../../../domains/inventory/generated.js'
+```
+
+类型检查配置使用 `noEmit: true`，包含 `src/**/*.ts` 与 `typecheck/**/*.d.ts`，并移除 `rootDir` 或把它提升到覆盖仓库级 projection 的目录。package CI 和仓库 CI 都必须运行这个 projection-aware typecheck；普通 build 仍保持 package-local emit。
+
+### C. 任何 Program 都禁止读取 package 外文件
+
+将 projection **直接生成**到 package 允许的 source/type 目录，例如 `src/generated/nomicore-schema.d.ts`。使用支持目标输出路径的确定性 codegen 或宿主生成脚本；`schema.vfsl` 仍是唯一可编辑真相，输出必须带 generated 标记并由 CI regenerate-diff。不要手工复制或维护第二份 projection。若当前 Nomicore CLI 不能指定输出路径，应扩展稳定的 codegen 输出能力，而不是绕过 package 边界规则。
+
+不要把整个仓库的 `domains/**/*.ts` 加入每个 package：同一 Program 中所有 `VfslPathMap` augmentation 会合并，无关 schema 会污染路径表，相同顶层字段还可能发生声明冲突。每个 package 只接入自己消费的 projection。
+
+最后增加防退化类型守卫，同时证明“已加载”与“fail closed”：
+
+```ts
+import type { PathAt, PathPatchValue, VfslPathMap } from '@nomicore/vfsl-protocol'
+
+type Quantity = PathPatchValue<
+  PathAt<VfslPathMap, ['items', string, 'quantity']>
+>
+
+const valid: Quantity = 12
+// @ts-expect-error quantity 必须是 number
+const invalid: Quantity = 'twelve'
+
+type Missing = PathPatchValue<
+  PathAt<VfslPathMap, ['items', string, 'missing']>
+>
+// @ts-expect-error 未知路径必须 fail closed 为 never
+const missing: Missing = 'x'
+```
+
+守卫中的路径和值必须来自实际 schema。已知路径精确解析、未知路径拒绝，再加 `--listFilesOnly` 中出现准确生成文件，三者全部成立才算接线完成。
 
 ## 5. 把运行时 Lease 适配成类型安全访问面
 

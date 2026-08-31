@@ -30,7 +30,7 @@ Generate projections in the independent host and use them to type-check business
    pnpm exec tsx "$NOMICORE_ROOT/packages/vfsl-codegen/src/cli.ts" --domains .
    ```
 
-4. Include `domains/**/*.ts` in the host `tsconfig.json`. If the TypeScript program is entry-pruned, add a host `.d.ts` type-only import of each generated projection.
+4. Prove that each consuming package's TypeScript **Program** contains its generated projection. `generated.ts` augments `@nomicore/vfsl-protocol`; merely generating or committing it does nothing when it is outside the Program. Follow [Program wiring](#program-wiring) and choose the narrowest compliant branch.
 5. Review generated diffs. Modify `schema.vfsl` or the generator contract—not `generated.ts`—when output is wrong.
 6. Keep runtime validation and static typing distinct:
    - business code uses generated `VfslPathMap`, `PathAt`, `PathValue`, `PathPatchValue`, and `PathElementValue` through a host-owned adapter;
@@ -39,6 +39,56 @@ Generate projections in the independent host and use them to type-check business
    - application call sites contain no `any`, source-deep imports, or live `Y.Doc` access.
 7. Preserve literal paths (`as const` for reused tuples). Verify negative cases: unknown paths, wrong values, and array operations on non-array nodes must fail host typecheck.
 8. Add host scripts equivalent to generation, freshness check, typecheck, and tests. Until a stable packaged CLI exists, keep absolute checkout paths explicitly marked as local-only configuration.
+
+## Program wiring
+
+First inspect the consuming package's `tsconfig` chain, build/typecheck scripts, `rootDir`, `include`/`files`, project references, declaration/emit mode, and repository package-boundary guards. Use `tsc -p <consumer-tsconfig> --listFilesOnly` as evidence; editor hover or a successful unrelated build is not evidence.
+
+Choose exactly one branch:
+
+### A. One Program may include the domain projection
+
+Add the generated file to the consuming Program through `include`, or add a package-owned type entry such as `src/nomicore-schema.d.ts`:
+
+```ts
+import type {} from '../../../../domains/<domain>/generated.js'
+```
+
+The relative path is from the type entry. Ensure that `.d.ts` itself is included. This creates no runtime import, but it does pull `generated.ts` into the TypeScript Program.
+
+### B. Build may not cross `rootDir`, but no-emit typecheck may
+
+Keep the ordinary build Program package-local. Create a separate `tsconfig.typecheck.json` and a `typecheck/nomicore-schema.d.ts` type entry. The typecheck Program uses `noEmit: true`, includes package source plus the type entry, and either omits `rootDir` or sets it high enough to cover the repository-level domain projection. Run this Program in package and repository CI.
+
+### C. Every Program is forbidden from reading outside the package
+
+The projection must be generated into the package's permitted source/type directory. Use a deterministic codegen output feature or host generation script; keep `schema.vfsl` as the sole editable source, keep exactly one active projection per TypeScript Program, mark output generated, and make CI regenerate-and-diff it. Do not maintain a copied projection by hand. If current Nomicore CLI cannot target that output, treat adding a stable output-path capability as tooling work rather than weakening package boundaries.
+
+Do not add all repository `domains/**/*.ts` to every package: module augmentations merge globally inside a Program, unrelated schemas can pollute path tables, and incompatible top-level fields can collide. Wire only the projection(s) consumed by that package.
+
+### Activation guards
+
+Add a package-local `.test-d.ts` or equivalent compile fixture that fails if the augmentation disappears:
+
+```ts
+import type { PathAt, PathPatchValue, VfslPathMap } from '@nomicore/vfsl-protocol'
+
+type Quantity = PathPatchValue<
+  PathAt<VfslPathMap, ['items', string, 'quantity']>
+>
+
+const valid: Quantity = 12
+// @ts-expect-error schema says quantity is numeric
+const invalid: Quantity = 'twelve'
+
+type Missing = PathPatchValue<
+  PathAt<VfslPathMap, ['items', string, 'missing']>
+>
+// @ts-expect-error unknown path must fail closed to never
+const missing: Missing = 'x'
+```
+
+Use paths and values from the actual schema. A guard is complete only when both a known path resolves to its exact value type and an unknown path fails closed. Also inspect `--listFilesOnly` output for the exact generated file.
 
 ## Mutation policy: minimal, mergeable, semantic
 
@@ -83,4 +133,4 @@ The runtime SCHEMA passed to Registry creation must come from the same `schema.v
 
 ## Completion gate
 
-Complete when generation succeeds, `--check` reports fresh output, generated files are tracked by the host, positive access code type-checks, intentional invalid examples are rejected by TypeScript tests, and every business write is demonstrably minimal, mergeable, and semantic: its verb/path describe the intended change, it preserves unrelated Yjs nodes, and it does not reconstruct ROOT or a parent container. Runtime failures remain handled as structured results, concurrency tests cover independent edits where relevant, and the host's full typecheck/tests pass.
+Complete when generation succeeds, `--check` reports fresh output, generated files are tracked by the host, `tsc --listFilesOnly` proves the consuming Program contains the exact projection, and activation guards prove a known path's exact type plus an unknown path's fail-closed behavior. Positive access code type-checks, intentional invalid examples are rejected, and every business write is demonstrably minimal, mergeable, and semantic: its verb/path describe the intended change, it preserves unrelated Yjs nodes, and it does not reconstruct ROOT or a parent container. Runtime failures remain handled as structured results, concurrency tests cover independent edits where relevant, and both the package-local build Program and the projection-aware typecheck Program pass their required CI gates.
