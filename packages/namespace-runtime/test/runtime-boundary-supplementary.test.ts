@@ -85,10 +85,10 @@ describe('SA7 补充锚：外部边界与登记态行为（SA4 动态清单 #4/#
     expect(caught).toBeInstanceOf(RangeError);
 
     // 其余读取面不受影响（同一 runtime 上照常工作）
-    const env = runtime.getSchemaEnvelope();
+    const env = runtime.getSchema();
     expect(env).not.toBeNull();
     expect(Object.keys(env as object).sort()).toEqual(['id', 'lang', 'text', 'version']);
-    expect(runtime.read(['n'])).toEqual({ ok: true, value: 'str' });
+    expect(runtime.readData(['n'])).toEqual({ ok: true, value: 'str' });
     // fatal 零污染：循环值是 META 投影问题，不升级 internal fault
     const st = runtime.getStatus();
     expect(st.fatal).toBeNull();
@@ -125,8 +125,8 @@ describe('SA7 补充锚：外部边界与登记态行为（SA4 动态清单 #4/#
     expect(after.fatal).toBeNull();
 
     // 读取面照常：同一 live Y.Doc 引用，值不变、不崩
-    expect(runtime.read(['n'])).toEqual({ ok: true, value: 'str' });
-    const env = runtime.getSchemaEnvelope();
+    expect(runtime.readData(['n'])).toEqual({ ok: true, value: 'str' });
+    const env = runtime.getSchema();
     expect(env?.lang).toBe('vfsl');
     const meta = runtime.getMetadata();
     expect(meta['docId']).toBe('ns-rel');

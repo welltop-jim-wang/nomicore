@@ -26,7 +26,7 @@
  *   由 runtime.ts 构造期一次成型，经模块级 WeakMap 以 runtime 对象引用为键登记
  *   （SA2 R1 #15：登记在 runtime 对象构造之后——零属性污染，Object.keys 仍十二键）。
  * - RuntimeReplicationSessionCore：冻结四域 + 六能力；apply 槽 `enqueue` **同一
- *   WriteSequencer 实例**（INV-S1——与 mutateRoot/replaceSchema/enable/bump 共享唯一
+ *   WriteSequencer 实例**（INV-S1——与 mutateData/replaceSchema/enable/bump 共享唯一
  *   FIFO，AC-3 结构性保证）。
  * - 会话域拒绝 message 全部为 §6.2 冻结文案（errors.ts 单一真相源；本模块只引用）。
  *

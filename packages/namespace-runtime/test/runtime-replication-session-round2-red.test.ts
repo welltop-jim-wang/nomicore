@@ -172,7 +172,7 @@ describe('R2-1 epoch fence 立即停投（bump 槽边界主动 fence——不等
     session1.subscribeOwnedUpdates((u) => events1.push(u)); // R2-10 纪律：直存原始参数
 
     // 基线：bump 前本地写投递给存量 listener（证明扇出链路活着）
-    expect((await runtime.mutateRoot({ op: 'set', path: ['n'], value: 7 })).ok).toBe(true);
+    expect((await runtime.mutateData({ op: 'set', path: ['n'], value: 7 })).ok).toBe(true);
     await flushMicrotasks();
     expect(events1.length).toBe(1);
 
@@ -181,7 +181,7 @@ describe('R2-1 epoch fence 立即停投（bump 槽边界主动 fence——不等
     const afterBump = events1.length;
 
     // 契约：bump 槽 settle 后，旧 session listener 对任何新本地写零投递
-    expect((await runtime.mutateRoot({ op: 'set', path: ['n'], value: 8 })).ok).toBe(true);
+    expect((await runtime.mutateData({ op: 'set', path: ['n'], value: 8 })).ok).toBe(true);
     await flushMicrotasks();
     expect(events1.length, 'bump 后（无 inbound apply）存量 listener 仍收到投递——fence 未立即生效').toBe(afterBump);
   });
@@ -266,7 +266,7 @@ describe('R2-2 Runtime close 同步段终止并摘除 sessions（ADR 0008 L93 se
     session1.subscribeOwnedUpdates((u) => events1.push(u));
 
     // 基线：close 前本地写投递
-    expect((await runtime.mutateRoot({ op: 'set', path: ['n'], value: 7 })).ok).toBe(true);
+    expect((await runtime.mutateData({ op: 'set', path: ['n'], value: 7 })).ok).toBe(true);
     await flushMicrotasks();
     expect(events1.length).toBe(1);
 
@@ -314,7 +314,7 @@ describe('R2-2 Runtime close 同步段终止并摘除 sessions（ADR 0008 L93 se
 // ═══════════════════════════════ R2-3：非阻塞投递 + needs-resync ═══════════════════════════════
 
 describe('R2-3 fanout 投递非阻塞（owned bytes 复制 + 有界异步队列 + 溢出 needs-resync 契约）', () => {
-  it('慢 listener（同步自旋 400ms）不阻塞本地 mutateRoot 槽 settle（当前随 listener 同步阻塞）【必红】', async () => {
+  it('慢 listener（同步自旋 400ms）不阻塞本地 mutateData 槽 settle（当前随 listener 同步阻塞）【必红】', async () => {
     const doc = seedDoc();
     const { runtime } = makeRuntime(doc);
     await readyOf(runtime);
@@ -324,12 +324,12 @@ describe('R2-3 fanout 投递非阻塞（owned bytes 复制 + 有界异步队列 
     });
 
     const t0 = performance.now();
-    const w = await runtime.mutateRoot({ op: 'set', path: ['n'], value: 5 });
+    const w = await runtime.mutateData({ op: 'set', path: ['n'], value: 5 });
     const elapsed = performance.now() - t0;
 
     expect(w.ok).toBe(true);
     expect(doc.getMap('ROOT').get('n')).toBe(5); // transaction 已返回（先于慢 listener 完成的证明面）
-    expect(elapsed, `mutateRoot 槽被慢 listener 同步阻塞（耗时 ${Math.round(elapsed)}ms ≥ 400ms）`).toBeLessThan(250);
+    expect(elapsed, `mutateData 槽被慢 listener 同步阻塞（耗时 ${Math.round(elapsed)}ms ≥ 400ms）`).toBeLessThan(250);
 
     // R2.2 发现 2 / 裁决 3(a)（§4.3(d) 测试隔离义务）：spin fixture 收尾——close 终止
     // channel + 清队 ⇒ 自延伸泵于下一让步点退出，零跨测试泄漏（断言零改动）
@@ -358,7 +358,7 @@ describe('R2-3 fanout 投递非阻塞（owned bytes 复制 + 有界异步队列 
 
     // 后续 sequencer 槽（同 namespace 下一项）同样不被阻塞
     const t2 = performance.now();
-    const w = await runtime.mutateRoot({ op: 'set', path: ['n'], value: 6 });
+    const w = await runtime.mutateData({ op: 'set', path: ['n'], value: 6 });
     const t3 = performance.now();
     expect(w.ok).toBe(true);
     expect(t3 - t2, `后续 sequencer 槽被慢 listener 同步阻塞（耗时 ${Math.round(t3 - t2)}ms）`).toBeLessThan(250);
@@ -380,7 +380,7 @@ describe('R2-3 fanout 投递非阻塞（owned bytes 复制 + 有界异步队列 
 
     const t0 = performance.now();
     for (let i = 0; i < 64; i += 1) {
-      const w = await runtime.mutateRoot({ op: 'set', path: ['k1'], value: i });
+      const w = await runtime.mutateData({ op: 'set', path: ['k1'], value: i });
       expect(w.ok).toBe(true);
     }
     const elapsed = performance.now() - t0;
@@ -570,8 +570,8 @@ describe('R2-10 owned bytes：listener 直存 callback 原始参数，断言数�
     sessionA.subscribeOwnedUpdates((u) => eventsA.push(u)); // 直存原始参数（不禁用 slice 防御）
     sessionB.subscribeOwnedUpdates((u) => eventsB.push(u));
 
-    expect((await runtime.mutateRoot({ op: 'set', path: ['n'], value: 7 })).ok).toBe(true);
-    expect((await runtime.mutateRoot({ op: 'set', path: ['n'], value: 8 })).ok).toBe(true);
+    expect((await runtime.mutateData({ op: 'set', path: ['n'], value: 7 })).ok).toBe(true);
+    expect((await runtime.mutateData({ op: 'set', path: ['n'], value: 8 })).ok).toBe(true);
     await flushMicrotasks();
     expect(eventsA.length).toBe(2);
     expect(eventsB.length).toBe(2);

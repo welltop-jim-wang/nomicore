@@ -142,7 +142,7 @@ function leaseMeta(lease: NamespaceLease): Record<string, unknown> {
 }
 
 function leaseReadN(lease: NamespaceLease): unknown {
-  const read = lease.read(['n']) as { ok?: boolean; value?: unknown };
+  const read = lease.readData(['n']) as { ok?: boolean; value?: unknown };
   expect(read.ok, `期望读取成功，实际：${JSON.stringify(read)}`).toBe(true);
   return read.value;
 }
@@ -283,7 +283,7 @@ describe('SA7 §1a settle 排空活性（真实 MemoryPersistence + Registry 全
     await schemaReady(lease);
 
     // 在途写（不 await）→ release（entry 零-handle dirty，flush 未发生）→ 立即 reset
-    const writeP = lease.mutateRoot({ op: 'set', path: ['n'], value: 77 }) as Promise<{ ok: boolean }>;
+    const writeP = lease.mutateData({ op: 'set', path: ['n'], value: 77 }) as Promise<{ ok: boolean }>;
     const releaseP = lease.release();
     const resetP = fx.registry.resetReplica(ALICE, NS_B, {
       replicationId: ID_A,

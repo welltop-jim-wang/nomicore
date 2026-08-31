@@ -226,14 +226,14 @@ async function observedBoot(opts: ObservedOptions = {}): Promise<ObservedSetup> 
     const lease = okLease(await peerNode.registry.open(PEER_OWNER, nsId));
     await schemaReady(lease);
     for (const [key, value] of Object.entries(update)) {
-      const result = await lease.mutateRoot({ op: 'set', path: [key], value });
+      const result = await lease.mutateData({ op: 'set', path: [key], value });
       if (!result.ok) throw new Error(`peer 业务写失败：${JSON.stringify(result)}`);
     }
     await lease.release();
   };
   const writeHub = async (update: Readonly<{ n?: number; extra?: number }>): Promise<void> => {
     for (const [key, value] of Object.entries(update)) {
-      const result = await fixture.lease.mutateRoot({ op: 'set', path: [key], value });
+      const result = await fixture.lease.mutateData({ op: 'set', path: [key], value });
       if (!result.ok) throw new Error(`hub 业务写失败：${JSON.stringify(result)}`);
     }
     await settle();
@@ -853,7 +853,7 @@ describe('T5：背压 / resync 事件', () => {
     // live 期先暂停：buffered > highWater（512KiB）→ 下一笔 control 出站观察即暂停
     buffered = 600 * 1024;
     for (let value = 9; value < 40; value += 1) {
-      const checkWrite = await fixture.lease.mutateRoot({ op: 'set', path: ['n'], value });
+      const checkWrite = await fixture.lease.mutateData({ op: 'set', path: ['n'], value });
       if (!checkWrite.ok) throw new Error(`hub 写失败：${JSON.stringify(checkWrite)}`);
       await settle();
       if (peerEvents.of('connection-failed').some((e) =>
@@ -1291,14 +1291,14 @@ describe('T9：事件内容安全（safe-field）', () => {
     });
     peer.start();
     await waitFor(() => peer.getNamespaceState(nsId) === 'live', 'live');
-    // 双向 live 复制（ROOT 字符串 sentinel 经 mutateRoot 合法写入，随后随 UPDATE 帧复制）
+    // 双向 live 复制（ROOT 字符串 sentinel 经 mutateData 合法写入，随后随 UPDATE 帧复制）
     const peerLease = okLease(await peerNode.registry.open(PEER_OWNER, nsId));
     await schemaReady(peerLease);
-    const w1 = await peerLease.mutateRoot({ op: 'set', path: ['marker'], value: 'PEER-SENTINEL-ROOT' });
+    const w1 = await peerLease.mutateData({ op: 'set', path: ['marker'], value: 'PEER-SENTINEL-ROOT' });
     if (!w1.ok) throw new Error(`peer 写失败：${JSON.stringify(w1)}`);
     await peerLease.release();
     await settle();
-    const w2 = await created.mutateRoot({ op: 'set', path: ['n'], value: 43 });
+    const w2 = await created.mutateData({ op: 'set', path: ['n'], value: 43 });
     if (!w2.ok) throw new Error(`hub 写失败：${JSON.stringify(w2)}`);
     await settle();
     // 收敛锚：复制确已发生（sentinel 值落到对端，验证“内容在 wire 上”这一前提）
@@ -1441,7 +1441,7 @@ describe('T12：per-frame bytes 与 apply/ACK latency', () => {
     await waitFor(() => peer.getNamespaceState(fixture.namespaceId) === 'live', 'live');
     const lease = okLease(await peerNode.registry.open(PEER_OWNER, fixture.namespaceId));
     await schemaReady(lease);
-    const result = await lease.mutateRoot({ op: 'set', path: ['n'], value: 9 });
+    const result = await lease.mutateData({ op: 'set', path: ['n'], value: 9 });
     if (!result.ok) throw new Error(`写失败：${JSON.stringify(result)}`);
     await lease.release();
     await settle();

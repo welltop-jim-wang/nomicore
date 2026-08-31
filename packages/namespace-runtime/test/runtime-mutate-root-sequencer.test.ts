@@ -30,7 +30,7 @@
  * - seam 输入新增 `notifyDirty?: () => Promise<void>`（ADR-0008 原文对此窄接缝的命名；
  *   构造方绑定 persistence.saveDoc(handle) 的注入点——SA3 若采用其他字段名，本测试即契约
  *   要求对齐）；生产工厂由构造方绑定，测试经 seam 注入确定性 notifier；
- * - `runtime.mutateRoot(mutation)` 为唯一公共 ROOT 写入口：异步、返回完成信号
+ * - `runtime.mutateData(mutation)` 为唯一公共 ROOT 写入口：异步、返回完成信号
  *   （Acceptance-order 在调用时同步决定——调用本身不同步 throw、不同步结算）；
  *   形状 `{ op: 'set', path: readonly (string|number)[], value: unknown }`
  *   （ADR-0007 首版子集的当前仓库事实 set-only；与 applyValidatedMutation 公共入口同形状）；
@@ -53,8 +53,8 @@
  *   function）→ ok:false、零写入（输入缺陷属普通领域失败，不升格 internal fatal）；
  * - 输入对象在排队期间被调用方改动 → 槽开始时刻的快照获胜（不是调用时快照）。
  *
- * 红灯现状（构造性红灯）：runtime.mutateRoot 尚未实现（当前公共面只有七键只读面）——
- * 全部用例在首个 mutateRoot 调用处红（TypeError: runtime.mutateRoot is not a function）。
+ * 红灯现状（构造性红灯）：runtime.mutateData 尚未实现（当前公共面只有七键只读面）——
+ * 全部用例在首个 mutateData 调用处红（TypeError: runtime.mutateData is not a function）。
  */
 import { describe, expect, it, beforeAll } from 'vitest';
 import * as Y from 'yjs';
@@ -66,19 +66,19 @@ import type { CompileSchemaEnvelopeResult, DerivedSchema, SchemaEnvelope } from 
 import { createNamespaceRuntimeWithSeam } from '../src/runtime.js';
 import type { NamespaceRuntime } from '../src/index.js';
 
-// —— 契约类型（测试侧声明：公共入口尚无 mutateRoot / RuntimeWriteFatalError 类型名目）——
+// —— 契约类型（测试侧声明：公共入口尚无 mutateData / RuntimeWriteFatalError 类型名目）——
 
 interface MutationIssue {
   message: string;
   path: Array<string | number>;
 }
 
-type MutateRootResult = { ok: true } | { ok: false; issues: MutationIssue[] };
+type MutateDataResult = { ok: true } | { ok: false; issues: MutationIssue[] };
 
-type MutateRoot = (mutation: unknown) => Promise<MutateRootResult>;
+type MutateRoot = (mutation: unknown) => Promise<MutateDataResult>;
 
 interface MutateRootRuntime extends NamespaceRuntime {
-  mutateRoot: MutateRoot;
+  mutateData: MutateRoot;
 }
 
 type RuntimeWriteFatalCtor = new (...args: unknown[]) => Error;
@@ -108,7 +108,7 @@ function stateBytes(doc: Y.Doc): number[] {
 }
 
 function readValue(runtime: NamespaceRuntime, path: readonly (string | number)[]): unknown {
-  const read = runtime.read(path);
+  const read = runtime.readData(path);
   if (!read.ok) throw new Error(`读取应成功，实际 code=${read.code}`);
   return read.value;
 }
@@ -262,20 +262,20 @@ function hasDisabledCode(value: unknown): boolean {
   );
 }
 
-// —— 模块级动态取成员（公共入口当前无 mutateRoot / RuntimeWriteFatalError）——
+// —— 模块级动态取成员（公共入口当前无 mutateData / RuntimeWriteFatalError）——
 
 let entry: Record<string, unknown> | undefined;
 let runtimeWriteFatalCtor: RuntimeWriteFatalCtor | undefined;
-let mutateRootOfEntry: unknown;
+let mutateDataOfEntry: unknown;
 
 beforeAll(async () => {
   entry = (await import('../src/index.js')) as Record<string, unknown>;
   runtimeWriteFatalCtor = entry['RuntimeWriteFatalError'] as RuntimeWriteFatalCtor | undefined;
-  mutateRootOfEntry = entry['mutateRoot'];
+  mutateDataOfEntry = entry['mutateData'];
 });
 
 describe('namespace-runtime 唯一 write sequencer 与 validated ROOT write（AC1–AC9）', () => {
-  it('AC9 + AC5/AC6 幸福路径：mutateRoot → ok:true；恰 1 次 Y.Doc 更新、恰 1 次 notifier；read-your-write 经 await 写 Promise', async () => {
+  it('AC9 + AC5/AC6 幸福路径：mutateData → ok:true；恰 1 次 Y.Doc 更新、恰 1 次 notifier；read-your-write 经 await 写 Promise', async () => {
     const doc = new Y.Doc();
     const sc = doc.getMap('SCHEMA');
     for (const [k, v] of Object.entries(ENVELOPE)) sc.set(k, v);
@@ -292,14 +292,14 @@ describe('namespace-runtime 唯一 write sequencer 与 validated ROOT write（AC
     });
     await waitReady(runtime);
 
-    // 红灯锚：runtime 公共面方法 mutateRoot 必须存在且为函数（当前未实现 → 此行红）
-    expect(typeof runtime.mutateRoot).toBe('function');
-    // 护栏（当前契约保持）：mutateRoot 是 runtime 面方法，不是模块级导出——入口保持窄
-    expect(mutateRootOfEntry).toBeUndefined();
+    // 红灯锚：runtime 公共面方法 mutateData 必须存在且为函数（当前未实现 → 此行红）
+    expect(typeof runtime.mutateData).toBe('function');
+    // 护栏（当前契约保持）：mutateData 是 runtime 面方法，不是模块级导出——入口保持窄
+    expect(mutateDataOfEntry).toBeUndefined();
 
     const updates = countUpdates(doc);
     const before = stateBytes(doc);
-    const p = runtime.mutateRoot(SET_N(2));
+    const p = runtime.mutateData(SET_N(2));
     const res = await p;
 
     expect(res).toEqual({ ok: true });
@@ -333,7 +333,7 @@ describe('namespace-runtime 唯一 write sequencer 与 validated ROOT write（AC
     await waitReady(runtime);
 
     const order: string[] = [];
-    const pA = runtime.mutateRoot(SET_N(2));
+    const pA = runtime.mutateData(SET_N(2));
     pA.then(
       () => order.push('A'),
       () => order.push('A'),
@@ -345,7 +345,7 @@ describe('namespace-runtime 唯一 write sequencer 与 validated ROOT write（AC
     expect(readValue(runtime, ['n'])).toBe(2); // read 观察调用瞬间已提交状态（A 已提交）
 
     // 写 B 排队（同步接纳，FIFO）——read 不等待 B：仍只见 A
-    const pB = runtime.mutateRoot(SET_N(3));
+    const pB = runtime.mutateData(SET_N(3));
     pB.then(
       () => order.push('B'),
       () => order.push('B'),
@@ -384,7 +384,7 @@ describe('namespace-runtime 唯一 write sequencer 与 validated ROOT write（AC
     const updates = countUpdates(doc);
     const before = stateBytes(doc);
     // 同一同步时刻发送失败 + 成功两笔（FIFO 接纳顺序固定；失败不阻塞队列）
-    const pFail = runtime.mutateRoot(SET_N('not-a-number'));
+    const pFail = runtime.mutateData(SET_N('not-a-number'));
     // 同步注册结算探针（先于 pOk 入队）：捕获「失败写结算瞬间」的零写入证据——
     // 不依赖 await 续体相对 pOk 槽体的微任务时序（await 包装多一跳即可跨过 pOk 提交点）
     const failProbe = { updates: -1, bytesSame: false, notifier: -1 };
@@ -398,7 +398,7 @@ describe('namespace-runtime 唯一 write sequencer 与 validated ROOT write（AC
         // 失败写若走 rejection（fatal）由下方 result 断言暴露；探针仅承担零写入证据
       },
     );
-    const pOk = runtime.mutateRoot(SET_N(5));
+    const pOk = runtime.mutateData(SET_N(5));
 
     const failSettle = await settleOf(pFail);
     expect(failSettle.kind).toBe('resolved');
@@ -446,7 +446,7 @@ describe('namespace-runtime 唯一 write sequencer 与 validated ROOT write（AC
     const { probe, accesses } = makeAccessProbe(99);
     const updates = countUpdates(doc);
     const before = stateBytes(doc);
-    const settled = await settleOf(runtime.mutateRoot(probe));
+    const settled = await settleOf(runtime.mutateData(probe));
 
     expect(settled.kind).toBe('resolved');
     if (settled.kind !== 'resolved') return;
@@ -460,7 +460,7 @@ describe('namespace-runtime 唯一 write sequencer 与 validated ROOT write（AC
     expect(readValue(runtime, ['n'])).toBe(1);
 
     // 队列持续流转（FIFO 不因 fatal 断链）：再次写入仍 settle（disabled），不挂死
-    const again = await settleOf(runtime.mutateRoot(SET_N(7)));
+    const again = await settleOf(runtime.mutateData(SET_N(7)));
     expect(again.kind).toBe('resolved');
     if (again.kind !== 'resolved') return;
     expect(again.value).toMatchObject({ ok: false });
@@ -498,7 +498,7 @@ describe('namespace-runtime 唯一 write sequencer 与 validated ROOT write（AC
     const { probe, accesses } = makeAccessProbe(42);
     const updates = countUpdates(doc);
     const before = stateBytes(doc);
-    const settled = await settleOf(runtime.mutateRoot(probe));
+    const settled = await settleOf(runtime.mutateData(probe));
 
     expect(settled.kind).toBe('resolved');
     if (settled.kind !== 'resolved') return;
@@ -533,7 +533,7 @@ describe('namespace-runtime 唯一 write sequencer 与 validated ROOT write（AC
 
     const updates = countUpdates(doc);
     // 第一笔：gate 通过 → 提交 + notifier 登记（降级发生在检查后，不撤销已提交事务）
-    await expect(runtime.mutateRoot(SET_N(11))).resolves.toEqual({ ok: true });
+    await expect(runtime.mutateData(SET_N(11))).resolves.toEqual({ ok: true });
     expect(updates.count).toBe(1);
     expect(readValue(runtime, ['n'])).toBe(11);
     expect(runtime.getStatus().rootWrite.enabled).toBe(false); // 新降级已反映
@@ -541,7 +541,7 @@ describe('namespace-runtime 唯一 write sequencer 与 validated ROOT write（AC
     // 第二笔：新降级 gate 阻止 → RUNTIME_WRITE_DISABLED，零写入
     const { probe, accesses } = makeAccessProbe(12);
     const before = stateBytes(doc);
-    const settled = await settleOf(runtime.mutateRoot(probe));
+    const settled = await settleOf(runtime.mutateData(probe));
     expect(settled.kind).toBe('resolved');
     if (settled.kind !== 'resolved') return;
     expect(settled.value).toMatchObject({ ok: false });
@@ -568,7 +568,7 @@ describe('namespace-runtime 唯一 write sequencer 与 validated ROOT write（AC
     });
 
     const mut = { op: 'set', path: ['n'], value: 7 };
-    const p = runtime.mutateRoot(mut);
+    const p = runtime.mutateData(mut);
     mut.value = 999; // 调用方在排队期间改动输入引用内容（合法：快照时点=槽开始）
     gate.resolve();
 
@@ -605,7 +605,7 @@ describe('namespace-runtime 唯一 write sequencer 与 validated ROOT write（AC
 
       const updates = countUpdates(doc);
       const before = stateBytes(doc);
-      const settled = await settleOf(runtime.mutateRoot(input));
+      const settled = await settleOf(runtime.mutateData(input));
 
       expect(settled.kind, `[${name}] 输入拒绝应 settle（resolved ok:false）`).toBe('resolved');
       if (settled.kind !== 'resolved') continue;
@@ -635,7 +635,7 @@ describe('namespace-runtime 唯一 write sequencer 与 validated ROOT write（AC
 
     // P0 仍准备中（preparing）时接纳写——FIFO 排在 P0 后
     expect(runtime.getStatus().schema.state).toBe('preparing');
-    const p = runtime.mutateRoot(SET_N(8));
+    const p = runtime.mutateData(SET_N(8));
     gate.resolve();
 
     await expect(p).resolves.toEqual({ ok: true }); // 槽开始时 active schema 已安装（执行时绑定）
@@ -669,7 +669,7 @@ describe('namespace-runtime 唯一 write sequencer 与 validated ROOT write（AC
 
     const updates = countUpdates(doc);
     const before = stateBytes(doc);
-    const settled = await settleOf(runtime.mutateRoot(SET_N(6)));
+    const settled = await settleOf(runtime.mutateData(SET_N(6)));
     expect(settled.kind).toBe('resolved');
     if (settled.kind !== 'resolved') return;
     expect(settled.value).toMatchObject({ ok: false }); // 没有可用 schema → 零写入失败
@@ -705,8 +705,8 @@ describe('namespace-runtime 唯一 write sequencer 与 validated ROOT write（AC
 
     // 同 tick 排队第二笔（已接纳未执行的写）——fatal 后仍按 FIFO 取得槽
     const { probe, accesses } = makeAccessProbe(77);
-    const pA = runtime.mutateRoot(SET_N(9));
-    const pB = runtime.mutateRoot(probe);
+    const pA = runtime.mutateData(SET_N(9));
+    const pB = runtime.mutateData(probe);
 
     const aSettle = await settleOf(pA);
     expect(aSettle.kind).toBe('rejected');
@@ -771,7 +771,7 @@ describe('namespace-runtime 唯一 write sequencer 与 validated ROOT write（AC
 
     const updates = countUpdates(doc);
     const before = stateBytes(doc);
-    const settled = await settleOf(runtime.mutateRoot(SET_N(4)));
+    const settled = await settleOf(runtime.mutateData(SET_N(4)));
 
     expect(settled.kind).toBe('rejected'); // internal fatal 走 rejection（不出 ok:false 后门）
     if (settled.kind !== 'rejected') return;

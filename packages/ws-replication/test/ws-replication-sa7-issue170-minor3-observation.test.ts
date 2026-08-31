@@ -231,7 +231,7 @@ async function bootGoawayProbe(): Promise<GoawayProbeEnv> {
     wires,
     nsId: fixture.namespaceId,
     async writeHub(value: number) {
-      const result = await fixture.lease.mutateRoot({ op: 'set', path: ['n'], value });
+      const result = await fixture.lease.mutateData({ op: 'set', path: ['n'], value });
       if (!result.ok) throw new Error(`hub 写失败：${JSON.stringify(result)}`);
       await settle();
     },

@@ -176,7 +176,7 @@ export class TypedNamespace {
   read<const P extends readonly string[]>(
     path: P,
   ): PathValue<PathAt<VfslPathMap, P>> {
-    const result = this.lease.read(path)
+    const result = this.lease.readData(path)
     if (!result.ok) throw new Error(`${result.code}: ${result.message}`)
     return result.value as PathValue<PathAt<VfslPathMap, P>>
   }
@@ -185,7 +185,7 @@ export class TypedNamespace {
     path: P,
     value: PathPatchValue<PathAt<VfslPathMap, P>>,
   ): Promise<void> {
-    const result = await this.lease.mutateRoot({ op: 'set', path, value })
+    const result = await this.lease.mutateData({ op: 'set', path, value })
     if (!result.ok) {
       throw new Error(result.issues.map(issue => `${issue.code}: ${issue.message}`).join('\n'))
     }
@@ -196,7 +196,7 @@ export class TypedNamespace {
     value: PathElementValue<PathAt<VfslPathMap, P>>,
   ): Promise<void> {
     const current = this.read(path)
-    const result = await this.lease.mutateRoot({
+    const result = await this.lease.mutateData({
       op: 'array-insert',
       path,
       index: Array.isArray(current) ? current.length : 0,
@@ -211,7 +211,7 @@ export class TypedNamespace {
 
 适配器中的断言只位于运行时校验结果与生成类型之间的受控边界。Nomicore 仍会在运行时依据 namespace 自带的 SCHEMA 校验 mutation；TypeScript 类型不能替代运行时校验。
 
-> 注意：mutation 的实际 `op` 名称与输入形状必须以 `@nomicore/doc-runtime` / `NamespaceLease.mutateRoot()` 当前公开契约为准。当前底层数组写操作是 `array-insert` 和 `array-delete`，没有独立的 `array-append`；上面的 `append()` 先读取当前数组长度，再转换为 `array-insert`。它不是并发原子 append，存在并发写入时宿主应直接使用满足业务并发语义的操作或上层协调机制。如果升级 Nomicore 后 mutation 联合改变，应先更新这个单一适配器。
+> 注意：mutation 的实际 `op` 名称与输入形状必须以 `@nomicore/doc-runtime` / `NamespaceLease.mutateData()` 当前公开契约为准。当前底层数组写操作是 `array-insert` 和 `array-delete`，没有独立的 `array-append`；上面的 `append()` 先读取当前数组长度，再转换为 `array-insert`。它不是并发原子 append，存在并发写入时宿主应直接使用满足业务并发语义的操作或上层协调机制。如果升级 Nomicore 后 mutation 联合改变，应先更新这个单一适配器。
 
 ## 6. 生成最小、可合并、有语义的 mutation
 
@@ -243,7 +243,7 @@ export class TypedNamespace {
 例如只修改库存数量：
 
 ```ts
-await lease.mutateRoot({
+await lease.mutateData({
   op: 'set',
   path: ['items', itemId, 'quantity'],
   value: 12,
@@ -254,10 +254,10 @@ await lease.mutateRoot({
 
 ```ts
 // 反例：读取完整 ROOT，在内存中重建，然后 set([]) 替换整个 ROOT。
-const root = lease.read([])
+const root = lease.readData([])
 if (!root.ok) throw new Error(root.message)
 
-await lease.mutateRoot({
+await lease.mutateData({
   op: 'set',
   path: [],
   value: {

@@ -233,7 +233,7 @@ function leaseStatus(lease: NamespaceLease): {
 }
 
 function leaseReadN(lease: NamespaceLease): unknown {
-  const read = lease.read(['n']) as { ok?: boolean; value?: unknown };
+  const read = lease.readData(['n']) as { ok?: boolean; value?: unknown };
   expect(read.ok, `期望读取成功，实际：${JSON.stringify(read)}`).toBe(true);
   return read.value;
 }

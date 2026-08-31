@@ -341,7 +341,7 @@ async function bootReal(opts: RealBootOptions = {}): Promise<RealRun> {
   const writePeer = async (value: Readonly<{ n: number }>): Promise<void> => {
     const lease = okLease(await peerNode.registry.open(PEER_OWNER, nsId));
     await schemaReady(lease);
-    const result = await lease.mutateRoot({ op: 'set', path: ['n'], value: value.n });
+    const result = await lease.mutateData({ op: 'set', path: ['n'], value: value.n });
     if (!result.ok) throw new Error(`peer 业务写失败：${JSON.stringify(result)}`);
     await lease.release();
   };
@@ -609,7 +609,7 @@ describe('SA7 RT-C4（issue #171，SA4 §4.4）：错配 CLOSE_OK 的 ERROR 帧�
     // hub 侧业务写（经 registry 重开 fixture——与 fake 套件 writeHub 同语义）
     const hubLease = okLease(await run.hubNode.registry.open(HUB_OWNER, run.nsId));
     await schemaReady(hubLease);
-    const mutated = await hubLease.mutateRoot({ op: 'set', path: ['n'], value: 66 });
+    const mutated = await hubLease.mutateData({ op: 'set', path: ['n'], value: 66 });
     if (!mutated.ok) throw new Error(`hub 业务写失败：${JSON.stringify(mutated)}`);
     await waitUntil('peer apply 到达 saveDoc（悬挂）', () => run.peerNode.persistence.saveEvents.length > 0, 3_000);
     await waitUntil(

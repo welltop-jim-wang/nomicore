@@ -152,7 +152,7 @@ describe('namespace-runtime 队首 P0（AC5/AC6/AC7/AC8）', () => {
     await expect.poll(() => runtime.getStatus().schema.state, { interval: 10, timeout: 5_000 }).toBe('ready');
     expect(runtime.getActiveSchema()).not.toBeNull();
     // 读取面按实际载体投影：ROOT 非 map → 拒绝（doc-runtime 语义）；与 P0 无关
-    const read = runtime.read([]);
+    const read = runtime.readData([]);
     expect(read.ok).toBe(false);
     if (read.ok) throw new Error('Y.Text ROOT 上读取应被载体纪律拒绝');
     expect(read.code).toBe('PATH_NOT_ALLOWED');
@@ -164,7 +164,7 @@ describe('namespace-runtime 队首 P0（AC5/AC6/AC7/AC8）', () => {
     const runtime = createNamespaceRuntimeWithSeam({ handle });
 
     await expect.poll(() => runtime.getStatus().schema.state, { interval: 10, timeout: 5_000 }).toBe('ready');
-    const read = runtime.read(['n']);
+    const read = runtime.readData(['n']);
     expect(read.ok).toBe(true);
     if (!read.ok) throw new Error(`期望 ok:true，实际 code=${read.code}`);
     expect(read.value).toBe('str');
@@ -194,7 +194,7 @@ describe('namespace-runtime 队首 P0（AC5/AC6/AC7/AC8）', () => {
     expect((issue as unknown as Record<string, unknown>).cause).toBeUndefined();
 
     // 读取保留：四键投影与 META 照常
-    expect(runtime.getSchemaEnvelope()).toEqual({ lang: 'vfsl', version: 1, id: 'ns-1', text: TEXT_BAD });
+    expect(runtime.getSchema()).toEqual({ lang: 'vfsl', version: 1, id: 'ns-1', text: TEXT_BAD });
     const meta = runtime.getMetadata();
     expect(meta.docId).toBe('ns-1');
 
@@ -232,11 +232,11 @@ describe('namespace-runtime 队首 P0（AC5/AC6/AC7/AC8）', () => {
     expect(status.rootWrite.enabled).toBe(false);
     expect(status.schemaWrite.enabled).toBe(false);
     expect(['preparing', 'ready', 'unavailable']).toContain(status.schema.state);
-    const read = runtime.read(['n']);
+    const read = runtime.readData(['n']);
     expect(read.ok).toBe(true);
     if (!read.ok) throw new Error(`期望 ok:true，实际 code=${read.code}`);
     expect(read.value).toBe('str');
-    expect(runtime.getSchemaEnvelope()).toEqual(ENVELOPE_FIXTURE);
+    expect(runtime.getSchema()).toEqual(ENVELOPE_FIXTURE);
     expect(runtime.getMetadata().docId).toBe('ns-1');
 
     // 关闭是永久态：后续采样仍关闭（非瞬时）

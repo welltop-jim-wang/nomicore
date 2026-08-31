@@ -415,7 +415,7 @@ async function bootSaturation(limits: Readonly<Partial<ReplicationLimits>>): Pro
     const target = okLease(await node.registry.open(owner, nsId));
     await schemaReady(target);
     for (const [key, v] of Object.entries(value)) {
-      const result = await target.mutateRoot({ op: 'set', path: [key], value: v });
+      const result = await target.mutateData({ op: 'set', path: [key], value: v });
       if (!result.ok) throw new Error(`业务写失败：${JSON.stringify(result)}`);
     }
     await target.release();

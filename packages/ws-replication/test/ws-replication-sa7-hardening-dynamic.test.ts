@@ -294,9 +294,9 @@ async function bootMultiD1(opts: {
 async function writeHubBlob(run: MultiRunD1, nsId: string, n: number): Promise<void> {
   const fixture = run.fixtures.get(nsId);
   if (fixture === undefined) throw new Error(`未知 ns ${nsId}`);
-  const result = await fixture.lease.mutateRoot({ op: 'set', path: ['n'], value: n });
+  const result = await fixture.lease.mutateData({ op: 'set', path: ['n'], value: n });
   if (!result.ok) throw new Error(`hub 业务写失败：${JSON.stringify(result)}`);
-  const blobResult = await fixture.lease.mutateRoot({ op: 'set', path: ['blob'], value: BLOB });
+  const blobResult = await fixture.lease.mutateData({ op: 'set', path: ['blob'], value: BLOB });
   if (!blobResult.ok) throw new Error(`hub 业务写失败：${JSON.stringify(blobResult)}`);
   await settle();
 }
@@ -872,15 +872,15 @@ describe('SA7 D5（SA4 §六.4 R4）：GOAWAY SHUTTING_DOWN → blocked 后零�
     const writePeer = async (n: number): Promise<void> => {
       const lease = okLease(await peerNode.registry.open(PEER_OWNER, fixture.namespaceId));
       await schemaReady(lease);
-      const r1 = await lease.mutateRoot({ op: 'set', path: ['n'], value: n });
+      const r1 = await lease.mutateData({ op: 'set', path: ['n'], value: n });
       if (!r1.ok) throw new Error(`peer 写失败：${JSON.stringify(r1)}`);
-      const r2 = await lease.mutateRoot({ op: 'set', path: ['blob'], value: BLOB });
+      const r2 = await lease.mutateData({ op: 'set', path: ['blob'], value: BLOB });
       if (!r2.ok) throw new Error(`peer 写失败：${JSON.stringify(r2)}`);
       await lease.release();
       await settle();
     };
 
-    // 栅住上行：writePeer（n+blob 两笔 mutateRoot → 2 个 UPDATE）全部派发滞留
+    // 栅住上行：writePeer（n+blob 两笔 mutateData → 2 个 UPDATE）全部派发滞留
     // socket 缓冲（in-flight 2/3 未收口），检查点 → 暂停（16KiB ≥ highWater）
     gated = true;
     await writePeer(1);

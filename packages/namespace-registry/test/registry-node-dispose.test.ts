@@ -121,7 +121,7 @@ describe('Node runtime：await using lease 实际 dispose（§7/§9）', () => {
     await awaitUsingDriver(lease);
     // 块退出即实际调用 asyncDispose —— lease 同步失效（released）
     expect(lease.getStatus()).toEqual({ lease: 'released', runtime: null });
-    expect(lease.read(['x'])).toMatchObject({ ok: false, code: 'NAMESPACE_LEASE_RELEASED' });
+    expect(lease.readData(['x'])).toMatchObject({ ok: false, code: 'NAMESPACE_LEASE_RELEASED' });
     const again = lease.release();
     const first = lease[Symbol.asyncDispose]!;
     expect(again).toBe(first());

@@ -104,7 +104,7 @@ function issuesOf(value: unknown): Array<{ message: string; path: unknown[] }> {
 }
 
 function readValue(runtime: NamespaceRuntime, path: readonly (string | number)[]): unknown {
-  const read = runtime.read(path);
+  const read = runtime.readData(path);
   if (!read.ok) throw new Error(`读取应成功，实际 code=${read.code}`);
   return read.value;
 }
@@ -171,7 +171,7 @@ describe('P1 fatal message 稳定面（AC-R1-1/2/3/4：rejection 形状、cause 
     });
     await waitReady(runtime);
 
-    const settled = await settleOf(runtime.mutateRoot(SET_N(2)));
+    const settled = await settleOf(runtime.mutateData(SET_N(2)));
 
     expect(settled.kind).toBe('rejected'); // fatal 走 rejection（不出 ok:false 后门）
     if (settled.kind !== 'rejected') return;
@@ -221,7 +221,7 @@ describe('P1 fatal message 稳定面（AC-R1-1/2/3/4：rejection 形状、cause 
     });
     await waitReady(runtime);
 
-    const settled = await settleOf(runtime.mutateRoot(SET_N(2)));
+    const settled = await settleOf(runtime.mutateData(SET_N(2)));
 
     expect(settled.kind).toBe('rejected');
     if (settled.kind !== 'rejected') return;
@@ -262,7 +262,7 @@ describe('P2 术语纪律可执行面（AC-R2-1：可观测 message 无「永久
     expectStableFatalSummary(runtime.getStatus().fatal, 'NSRT-FATAL-P0-INTERNAL');
 
     // fatal 已置位 → 后续写经 S1 gate：disabled 结果（稳定码 + 零写入声明），措辞面同步收货
-    const settled = await settleOf(runtime.mutateRoot(SET_N(5)));
+    const settled = await settleOf(runtime.mutateData(SET_N(5)));
     expect(settled.kind).toBe('resolved');
     if (settled.kind !== 'resolved') return;
     const issues = issuesOf(settled.value);

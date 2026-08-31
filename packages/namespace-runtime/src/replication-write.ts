@@ -4,7 +4,7 @@
  *
  * 职责：META 复制保留字段（replicationId / replicationEpoch）的制式、事实读取单点
  * （readReplicationFacts）与 enable/bump 两写槽。写槽共享唯一 WriteSequencer
- * （同 mutateRoot/replaceSchema——FIFO 由既有机械保证），槽序 E1–E7 逐位镜像 ROOT
+ * （同 mutateData/replaceSchema——FIFO 由既有机械保证），槽序 E1–E7 逐位镜像 ROOT
  * 写槽 S1–S7（差异仅在 E3 输入校验 / E4 领域事实读取 / E5 事务内容）：
  *
  * ```
@@ -75,7 +75,7 @@ export interface EnableReplicationInput {
   readonly replicationId: string;
 }
 
-/** 复制管理写 issue 元素形状名目（沿 RootMutationIssue 先例；META 管理写无路径语义——
+/** 复制管理写 issue 元素形状名目（沿 DataMutationIssue 先例；META 管理写无路径语义——
  *  path 恒 []，与 gate 级 issue 同款）。 */
 export interface ReplicationManagementIssue {
   message: string;
@@ -190,7 +190,7 @@ function runReplicationWriteGate(env: ReplicationWriteEnv): ReplicationWriteGate
 }
 
 /** disabled() → 共享拒绝窄化：disabled 恒为 ok:false 分支（write.ts 冻结实现，ok:true
- *  结构性不可达）。此 cast 仅为把 MutateRootResult 联合窄化为共享拒绝成员（拒绝子集
+ *  结构性不可达）。此 cast 仅为把 MutateDataResult 联合窄化为共享拒绝成员（拒绝子集
  *  的 ok:false 分支不含 ok:true），零运行时分支、零 message 模板复制——stable message
  *  单一来源仍归 write.ts disabled()。 */
 function refusalOf(reason: string): ReplicationWriteGateRefusal {

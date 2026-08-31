@@ -54,8 +54,8 @@ async function loadFactory(): Promise<(...args: unknown[]) => unknown> {
 }
 
 type RuntimeLike = {
-  read: (p: readonly string[]) => { ok: boolean; value?: unknown; code?: string };
-  mutateRoot: (m: { op: 'set'; path: readonly string[]; value: unknown }) => Promise<
+  readData: (p: readonly string[]) => { ok: boolean; value?: unknown; code?: string };
+  mutateData: (m: { op: 'set'; path: readonly string[]; value: unknown }) => Promise<
     { ok: true } | { ok: false; issues: { message: string; path: readonly (string | number)[] }[] }
   >;
   getStatus: () => { lifecycle: string };
@@ -89,12 +89,12 @@ describe('SA7 动态补充：internal factory 破坏性探测（构造门透传 
       expect(handle.getStatus()).toBe('ready');
       const runtime = factory(handle, notify) as RuntimeLike;
       expect(runtime.getStatus().lifecycle).toBe('ready');
-      const r = runtime.read(['n']);
+      const r = runtime.readData(['n']);
       expect(r.ok).toBe(true);
       if (r.ok) expect(r.value).toBe(1);
-      const wr = await runtime.mutateRoot({ op: 'set', path: ['n'], value: 7 });
+      const wr = await runtime.mutateData({ op: 'set', path: ['n'], value: 7 });
       expect(wr.ok).toBe(true);
-      const r2 = runtime.read(['n']);
+      const r2 = runtime.readData(['n']);
       if (r2.ok) expect(r2.value).toBe(7);
       await runtime.close();
       expect(handle.getStatus()).toBe('released');
@@ -145,11 +145,11 @@ describe('SA7 动态补充：internal factory 破坏性探测（构造门透传 
       expect(runtime.getStatus().lifecycle).toBe('ready');
 
       // 读取不受 notifier 影响（读取能力独立于持久化绑定）。
-      const r = runtime.read(['n']);
+      const r = runtime.readData(['n']);
       expect(r.ok).toBe(true);
 
       // 写 → S2 loud 拒绝：无「提交成功但永无 dirty 登记」的静默失信。
-      const wr = await runtime.mutateRoot({ op: 'set', path: ['n'], value: 2 });
+      const wr = await runtime.mutateData({ op: 'set', path: ['n'], value: 2 });
       expect(wr.ok).toBe(false);
       if (!wr.ok) {
         // noUncheckedIndexedAccess：issues[0] 判空后单读捕获（与包内「单读捕获」纪律同款）。

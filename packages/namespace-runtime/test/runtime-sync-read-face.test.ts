@@ -5,12 +5,12 @@
  * 契约来源：
  * - docs/adr/0008「读取能力」节：「Runtime 获得并信任有效 DocHandle 后，在对外发布前
  *   把 P0 放入 write sequencer 队首，同时立即开放同步读取；读取不等待 P0 或任何写任务，
- *   也不进入 sequencer」；「getSchemaEnvelope() 从顶层 SCHEMA Y.Map 投影
+ *   也不进入 sequencer」；「getSchema() 从顶层 SCHEMA Y.Map 投影
  *   lang/version/id/text 四个 primitive string 键，忽略额外键，不 coercion 或补默认值」；
  *   「getMetadata() 深拷贝顶层 META Y.Map 的全部键」；「读取只观察调用瞬间已经提交的
  *   live Y.Doc」；
- * - 任务简报 AC3/AC4/AC8：读、getSchemaEnvelope、getMetadata、getActiveSchema、getStatus
- *   均为同步只读能力，读取不等待 P0；getSchemaEnvelope 只投影四标准键并忽略额外键、
+ * - 任务简报 AC3/AC4/AC8：读、getSchema、getMetadata、getActiveSchema、getStatus
+ *   均为同步只读能力，读取不等待 P0；getSchema 只投影四标准键并忽略额外键、
  *   META 返回全部 plain JSON 字段；包内确定性 seam 能控制 P0 resolve/reject，并证明
  *   读取在 P0 pending 时立即工作。
  *
@@ -19,7 +19,7 @@
  *   getStatus().schema.state === 'preparing'，且五个读取面立即可用（同步、正确值）；
  * - P0 经 sequencer 异步执行（构造同步返回，P0 绝不同步结算在构造调用栈内）——
  *   若 P0 同步执行，p0Gate 未 resolve 时构造本身即挂死（可观测死锁），本测试直接红；
- * - getSchemaEnvelope() 返回 vfsl SchemaEnvelope 形状（lang/version/id/text；
+ * - getSchema() 返回 vfsl SchemaEnvelope 形状（lang/version/id/text；
  *   version 为 number——与 @nomicore/vfsl compileSchemaEnvelope 严格门一致，不 coercion）；
  *   额外键（任意值）一律不出现；
  * - getMetadata() 返回 META 全部键的普通深拷贝（每次调用独立副本，与 live Y.Doc
@@ -89,9 +89,9 @@ describe('namespace-runtime 同步只读面（AC3/AC4/AC8）', () => {
 
     // 构造同步返回；P0 在队首 pending —— 读取面立即可用且值正确
     expect(runtime.getStatus().schema.state).toBe('preparing');
-    expect(runtime.getSchemaEnvelope()).toEqual(ENVELOPE_FIXTURE);
+    expect(runtime.getSchema()).toEqual(ENVELOPE_FIXTURE);
     expect(runtime.getMetadata()).toEqual(META_FIXTURE);
-    const read = runtime.read(['n']);
+    const read = runtime.readData(['n']);
     expect(read.ok).toBe(true);
     if (!read.ok) throw new Error(`期望 ok:true，实际 code=${read.code}`);
     expect(read.value).toBe('str');
@@ -107,7 +107,7 @@ describe('namespace-runtime 同步只读面（AC3/AC4/AC8）', () => {
     expect(runtime.getActiveSchema()).not.toBeNull();
   });
 
-  it('AC4：getSchemaEnvelope 只投影四个 primitive string 标准键并忽略额外键', async () => {
+  it('AC4：getSchema 只投影四个 primitive string 标准键并忽略额外键', async () => {
     const schema: Record<string, unknown> = {
       ...ENVELOPE_FIXTURE,
       extraKey: 'extra-value',
@@ -117,7 +117,7 @@ describe('namespace-runtime 同步只读面（AC3/AC4/AC8）', () => {
     const { handle } = await makeHandle({ schema });
     const runtime = createNamespaceRuntimeWithSeam({ handle });
 
-    const envelope = runtime.getSchemaEnvelope();
+    const envelope = runtime.getSchema();
     expect(envelope).toEqual(ENVELOPE_FIXTURE);
     if (envelope === null) throw new Error('SCHEMA 存在且为标准四键，投影应为信封');
     expect([...Object.keys(envelope)].sort()).toEqual(['id', 'lang', 'text', 'version']);
@@ -150,12 +150,12 @@ describe('namespace-runtime 同步只读面（AC3/AC4/AC8）', () => {
     const { handle } = await makeHandle();
     const runtime = createNamespaceRuntimeWithSeam({ handle });
 
-    const missing = runtime.read(['nope']);
+    const missing = runtime.readData(['nope']);
     expect(missing.ok).toBe(true);
     if (!missing.ok) throw new Error(`期望 ok:true，实际 code=${missing.code}`);
     expect(missing.value).toBeUndefined();
 
-    const invalidPath = runtime.read(['n', 0]);
+    const invalidPath = runtime.readData(['n', 0]);
     expect(invalidPath.ok).toBe(false);
     if (invalidPath.ok) throw new Error('Y.Map 上数字段应被段纪律拒绝');
     expect(invalidPath.code).toBe('PATH_NOT_ALLOWED');

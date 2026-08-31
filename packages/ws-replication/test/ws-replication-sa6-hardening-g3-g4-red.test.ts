@@ -285,7 +285,7 @@ async function bootMulti(opts: { limits?: Readonly<Partial<ReplicationLimits>>; 
     const fixture = fixtures.get(nsId);
     if (fixture === undefined) throw new Error(`未知 ns ${nsId}`);
     for (const [key, value] of Object.entries(update)) {
-      const result = await fixture.lease.mutateRoot({ op: 'set', path: [key], value });
+      const result = await fixture.lease.mutateData({ op: 'set', path: [key], value });
       if (!result.ok) throw new Error(`hub 业务写失败：${JSON.stringify(result)}`);
     }
     await settle();
@@ -294,7 +294,7 @@ async function bootMulti(opts: { limits?: Readonly<Partial<ReplicationLimits>>; 
     const lease = okLease(await peerNode.registry.open(PEER_OWNER, nsId));
     await schemaReady(lease);
     for (const [key, value] of Object.entries(update)) {
-      const result = await lease.mutateRoot({ op: 'set', path: [key], value });
+      const result = await lease.mutateData({ op: 'set', path: [key], value });
       if (!result.ok) throw new Error(`peer 业务写失败：${JSON.stringify(result)}`);
     }
     await lease.release();

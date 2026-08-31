@@ -378,8 +378,8 @@ function makeMarkerRuntime(marker: string, namespaceId: string): any {
   return {
     owner: { userId: 'u-alice' },
     namespaceId,
-    read: () => ({ ok: true, value: marker }),
-    getSchemaEnvelope: () => null,
+    readData: () => ({ ok: true, value: marker }),
+    getSchema: () => null,
     getMetadata: () => ({ marker }),
     getActiveSchema: () => null,
     getStatus: () => {
@@ -394,7 +394,7 @@ function makeMarkerRuntime(marker: string, namespaceId: string): any {
         close: null,
       };
     },
-    mutateRoot: async () => ({ ok: true }),
+    mutateData: async () => ({ ok: true }),
     replaceSchema: async () => ({ ok: true }),
     close: async () => {},
   };
@@ -456,7 +456,7 @@ describe('create 成功全链（§3/§5/§6/§9）：manual Clock 精确 created
         // P0 经 sequencer 微任务在 create resolve 前已结算（同 open 先例），state=ready
         expect(st.runtime.schema.state).toBe('ready');
       }
-      expect(lease.read(['n'])).toEqual({ ok: true, value: 42 });
+      expect(lease.readData(['n'])).toEqual({ ok: true, value: 42 });
       expect(lease.getMetadata().createdAt).toBe(FIXED_ISO); // 真实 runtime 投影同锚
       // 零 load/零 save（create 不 load、不 upsert）
       expect(persistence.loadCalls.length).toBe(0);
@@ -510,7 +510,7 @@ describe('create 成功全链（§3/§5/§6/§9）：manual Clock 精确 created
     expect(factoryCalls).toBe(1);
     expect(handleDocSeen).toBeInstanceOf(Y.Doc);
     expect(typeof notifyDirtySeen).toBe('function');
-    expect(lease.read(['a'])).toEqual({ ok: true, value: 'MARKER_FACTORY' });
+    expect(lease.readData(['a'])).toEqual({ ok: true, value: 'MARKER_FACTORY' });
     await lease.release();
   });
 });
@@ -1642,7 +1642,7 @@ describe('post-commit factory failure（§7/§9 DQ-7）：release 恰一次、�
     const committedId = src.id(1); // 第 1 次生成即失败 create 的候选 ID（committed 文档）
     const openLease = okLease(await registry.open({ userId: 'u-alice' }, committedId));
     expect(openLease.getMetadata().createdAt).toBe(FIXED_ISO);
-    expect(openLease.read(['n'])).toEqual({ ok: true, value: 42 });
+    expect(openLease.readData(['n'])).toEqual({ ok: true, value: 42 });
     await openLease.release();
     // 零 entry 残留：失败的 create 未建 entry——上面的 open 走了 loadDoc 恢复路径
     // （而非 entry 命中）；此后 entry 由 open 建立，再 open 复用同一 Runtime 且不再
@@ -1762,8 +1762,8 @@ describe('ordering/concurrency（§5/§9）：create→open、open→create、ga
     const lease1 = okLease(await registry.create(makeCreateInput()));
     const lease2 = okLease(await registry.open({ userId: 'u-alice' }, src.id(1)));
     expect(factoryCalls).toBe(1); // open 复用 entry 的 Runtime（同一 identity）
-    expect(lease1.read(['x'])).toEqual({ ok: true, value: 'RUNTIME_MARKER_9f' });
-    expect(lease2.read(['x'])).toEqual({ ok: true, value: 'RUNTIME_MARKER_9f' });
+    expect(lease1.readData(['x'])).toEqual({ ok: true, value: 'RUNTIME_MARKER_9f' });
+    expect(lease2.readData(['x'])).toEqual({ ok: true, value: 'RUNTIME_MARKER_9f' });
     expect(lease1).not.toBe(lease2);
     expect(persistence.loadCalls.length).toBe(0);
     expect(persistence.createCalls.length).toBe(1);

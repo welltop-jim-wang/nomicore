@@ -815,7 +815,7 @@ async function bootLocal(opts: {
   const mutate = async (mutation: { op: 'set'; path: readonly string[]; value: unknown } | { op: 'delete'; path: readonly string[] }): Promise<void> => {
     const opened = okLease(await peerNode.registry.open(PEER_OWNER, nsId));
     await schemaReady(opened);
-    const result = await opened.mutateRoot(mutation);
+    const result = await opened.mutateData(mutation);
     if (!result.ok) throw new Error(`业务写失败：${JSON.stringify(result)}`);
     await opened.release();
   };

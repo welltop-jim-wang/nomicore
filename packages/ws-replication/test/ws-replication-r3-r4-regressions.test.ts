@@ -41,7 +41,7 @@ describe('R3/R4 补测：恢复窗口 / fence 竞态 / fanout 溢出 / removeTar
       await run.waitNamespace('needs-resync');
       await run.waitPeerSent('SYNC_STEP1', 2);
       // 恢复窗口期 hub 新写 → fan-out UPDATE（hub 通道镜像语义：恢复期入 queued、round 后 flush）。
-      // 注意：writeHub 的 mutateRoot 走 hub 同一 write sequencer——gate 挂起期间 await 会排在
+      // 注意：writeHub 的 mutateData 走 hub 同一 write sequencer——gate 挂起期间 await 会排在
       // 挂起槽之后死锁——只发起不等待（操作已入队），释放 gate 后 await。
       const hubWrite = run.writeHub({ extra: 5 });
       // 释放 gate → 首笔 apply 完成（ACK 入 zombie 良性）→ 恢复 round 收口 → live → flush UPDATE
@@ -115,11 +115,11 @@ describe('R3/R4 补测：恢复窗口 / fence 竞态 / fanout 溢出 / removeTar
       const r = result as { ok?: boolean; lease?: unknown };
       if (!r.ok || r.lease === undefined) throw new Error('bus 开失败');
       const lease = r.lease as {
-        mutateRoot(input: unknown): Promise<{ ok: boolean }>;
+        mutateData(input: unknown): Promise<{ ok: boolean }>;
         release(): Promise<void>;
       };
       await Promise.all(
-        Array.from({ length: 20 }, (_, i) => lease.mutateRoot({ op: 'set', path: ['n'], value: i + 1 })),
+        Array.from({ length: 20 }, (_, i) => lease.mutateData({ op: 'set', path: ['n'], value: i + 1 })),
       );
       await lease.release();
       await settle();

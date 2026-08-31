@@ -60,13 +60,13 @@ export interface WriteEnv {
  * 管线透传四来源全部如此）；公共联合的 issues 元素类型放宽为 unknown（R2 修订，
  * SA2 攻击点 #1——兼容 SA6 冻结孪生的 `unknown[]` 与 `MutationIssue[]` 双侧赋值）。
  */
-export interface RootMutationIssue {
+export interface DataMutationIssue {
   message: string;
   path: Array<string | number>;
 }
 
 /** ROOT mutation 完成信号联合（D9）。fatal 经 rejection（RuntimeWriteFatalError），不入本联合。 */
-export type MutateRootResult = { ok: true } | { ok: false; issues: unknown[] };
+export type MutateDataResult = { ok: true } | { ok: false; issues: unknown[] };
 
 /**
  * 写槽位名词（D9，issue #91；issue #132 追加 'replication'；issue #134 追加
@@ -80,7 +80,7 @@ export type WriteSlot = 'root' | 'schema' | 'replication' | 'replication-apply';
  * 写槽主函数（唯一写槽实现）。async——同步段无可抛点（全部 gate/分类在体内），
  * 一切异常进入返回 Promise（sequencer 链尾恒绿接线消化 reject——INV-W12）。
  */
-export async function runRootWriteSlot(env: WriteEnv, input: unknown): Promise<MutateRootResult> {
+export async function runRootWriteSlot(env: WriteEnv, input: unknown): Promise<MutateDataResult> {
   // ── S1 fatal gate（零输入访问）───────────────────────────────────────
   if (env.state.fatal !== undefined) {
     return disabled('fatal 已置位（internal fatal 已永久禁用本 Runtime 的全部写能力，读取仍保留）');
@@ -174,7 +174,7 @@ export async function runRootWriteSlot(env: WriteEnv, input: unknown): Promise<M
 /** disabled 结果（D9）：RUNTIME_WRITE_DISABLED 稳定码 + 零写入/零输入访问声明。
  *  共享供 SCHEMA 写槽复用（issue #91——两 Result 联合的 issues 同为 unknown[]，
  *  按结构兼容复用、零适配层，A7②）。 */
-export function disabled(reason: string): MutateRootResult {
+export function disabled(reason: string): MutateDataResult {
   return {
     ok: false,
     issues: [{
@@ -265,7 +265,7 @@ export function errDetailOf(err: unknown): string {
 
 // ── D3 受控 snapshotter ────────────────────────────────────────────────────
 
-export type SnapshotResult = { kind: 'ok'; value: unknown } | { kind: 'issue'; issue: RootMutationIssue };
+export type SnapshotResult = { kind: 'ok'; value: unknown } | { kind: 'issue'; issue: DataMutationIssue };
 
 /**
  * 槽起点输入快照（D3）。整体 try/catch：敌意 getter/Proxy trap 在快照读取面抛错

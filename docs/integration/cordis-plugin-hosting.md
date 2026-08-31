@@ -135,10 +135,10 @@ if (!created.ok) {
 const lease = created.lease
 const notesId = lease.namespaceId // 重新打开与后续引用的凭据
 
-console.log(lease.read(['title']))
+console.log(lease.readData(['title']))
 // { ok: true, value: 'first' }
 
-const changed = await lease.mutateRoot({
+const changed = await lease.mutateData({
   op: 'set',
   path: ['count'],
   value: 1,
@@ -155,7 +155,7 @@ const reopened = await registry.open({ userId: 'acme-user' }, notesId)
 if (!reopened.ok) {
   throw new Error(`${reopened.code}: ${reopened.message}`)
 }
-console.log(reopened.lease.read(['count']))
+console.log(reopened.lease.readData(['count']))
 await reopened.lease.release()
 ```
 

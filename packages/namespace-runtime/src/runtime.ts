@@ -18,7 +18,7 @@
  * 公共面（D2）：对象字面量 + 闭包（非 class 实例）——原型链是 Object.prototype，
  * handle/Y.Doc/sequencer/state 只存在于闭包；Object.freeze(runtime) 防属性注入。
  * 十二键恰好（issue #89/#90/#91/#92/#132）：owner / namespaceId / read /
- * getSchemaEnvelope / getMetadata / getActiveSchema / getStatus / mutateRoot（第八键 =
+ * getSchema / getMetadata / getActiveSchema / getStatus / mutateData（第八键 =
  * 唯一公共 ROOT 写入口，D1）+ replaceSchema（第九键，issue #91，唯一公共 SCHEMA
  * 写入口）**+ close（第十键，issue #92——close 生命周期：幂等、同步进 closing、
  * 队尾 barrier；详见接口 JSDoc 与 close.ts）+ enableReplication / bumpReplicationEpoch
@@ -65,7 +65,7 @@ import type {
 } from './replication-write.js';
 import { runRootWriteSlot } from './write.js';
 import { disabled } from './write.js';
-import type { MutateRootResult, WriteEnv } from './write.js';
+import type { MutateDataResult, WriteEnv } from './write.js';
 import { createSessionFanout, registerReplicationHost } from './replication-session.js';
 import type { RuntimeReplicationHost } from './replication-session.js';
 
@@ -95,7 +95,7 @@ export interface RuntimeReadDisabledResult {
 
 /** read 结果联合（#92 宽化）：ready 期透传 ReadLogicalValueResult 逐字节不变；
  *  closing/closed 期返回 RuntimeReadDisabledResult 新分支（加法扩展，ok 判别兼容）。 */
-export type NamespaceRuntimeReadResult = ReadLogicalValueResult | RuntimeReadDisabledResult;
+export type NamespaceRuntimeReadDataResult = ReadLogicalValueResult | RuntimeReadDisabledResult;
 
 /** Runtime 公共形状（D2 十键协议；键集/形状即公共契约——AC2/AC6/AC8 锚定）。 */
 export interface NamespaceRuntime {
@@ -106,13 +106,13 @@ export interface NamespaceRuntime {
   /** 透传 readLogicalValueAtPath(doc, path) 的同步结果联合（D3 零包装，ready 期）；
    *  lifecycle≠ready 期返回 RuntimeReadDisabledResult（同步、非抛、非 Promise——
    *  D4 lifecycle gate 即时生效，不等待已接纳任务排空）。 */
-  readonly read: (path: readonly (string | number)[]) => NamespaceRuntimeReadResult;
+  readonly readData: (path: readonly (string | number)[]) => NamespaceRuntimeReadDataResult;
   /** SCHEMA 四标准键投影（D4；载体缺席 → null，载体异型 → loud throw NSRT-SCHEMA-E2；
    *  非 primitive 值 → loud throw）。
    *  lifecycle≠ready（closing/closed）期同步 throw RuntimeReadDisabledError（code
    *  RUNTIME_READ_DISABLED，包内类）——close 停接纳覆盖全部公共数据投影；getStatus
    *  不受影响（全生命周期观测面）。 */
-  readonly getSchemaEnvelope: () => SchemaEnvelope | null;
+  readonly getSchema: () => SchemaEnvelope | null;
   /** META 全键深拷贝（D5；载体异常/值域违规 → loud throw）。
    *  lifecycle≠ready（closing/closed）期同步 throw RuntimeReadDisabledError（code
    *  RUNTIME_READ_DISABLED，包内类）——close 停接纳覆盖全部公共数据投影；getStatus
@@ -130,12 +130,12 @@ export interface NamespaceRuntime {
    *  internal fatal 经 Promise rejection（RuntimeWriteFatalError）。
    *  #92 接纳门（D5.1）：lifecycle≠ready 时同步不入队、经返回 Promise 即时 settle
    *  领域化联合（RUNTIME_WRITE_DISABLED）——零输入访问、零 doc 副作用。 */
-  readonly mutateRoot: (mutation: unknown) => Promise<MutateRootResult>;
-  /** 唯一公共 SCHEMA 写入口（D1，issue #91）：与 mutateRoot 共享同一严格 FIFO write
+  readonly mutateData: (mutation: unknown) => Promise<MutateDataResult>;
+  /** 唯一公共 SCHEMA 写入口（D1，issue #91）：与 mutateData 共享同一严格 FIFO write
    *  sequencer（同步接纳定序）；不依赖当前 schema 可编译（P0 unavailable 照常入槽，
    *  成功后恢复 ROOT write）；不同步 throw/结算——一切拒绝经返回的 Promise 结算；
    *  internal fatal 经 Promise rejection（RuntimeWriteFatalError）。
-   *  #92 接纳门（D5.1）：同 mutateRoot——lifecycle≠ready 时零入队即时 ok:false。 */
+   *  #92 接纳门（D5.1）：同 mutateData——lifecycle≠ready 时零入队即时 ok:false。 */
   readonly replaceSchema: (input: ReplaceSchemaInput) => Promise<ReplaceSchemaResult>;
   /** 第十一/十二键（issue #132）：Hub 显式复制管理操作（ADR 0010 冻结名）——
    *  META 复制保留字段（replicationId/replicationEpoch）的唯一公共写入口。
@@ -146,7 +146,7 @@ export interface NamespaceRuntime {
    *  REPLICATION_META_ABSENT / RUNTIME_WRITE_DISABLED 系——内外部格式门 check
    *  提交前零写入）；写管线 internal fatal 经 RuntimeWriteFatalError rejection
    *  （committed 事实诚实）。
-   *  #92 接纳门（D5.1）：同 mutateRoot——lifecycle≠ready 时零入队即时 ok:false。 */
+   *  #92 接纳门（D5.1）：同 mutateData——lifecycle≠ready 时零入队即时 ok:false。 */
   readonly enableReplication: (input: EnableReplicationInput) => Promise<EnableReplicationResult>;
   /** Hub 显式提升权威代际（身份不变——replicationId 永不被改写，INV-R1）。
    *  overflow（epoch = MAX_SAFE_INTEGER）→ ok:false 结果面拒绝、绝不回绕（判据先于
@@ -406,7 +406,7 @@ export function createNamespaceRuntimeWithSeam(input: NamespaceRuntimeSeamInput)
   const runtime: NamespaceRuntime = {
     owner,
     namespaceId: docId,
-    read: (path) => {
+    readData: (path) => {
       // D4 lifecycle gate 在透传**之前**：closing/closed 期同步结果联合拒绝（非抛、
       // 非 Promise、零触碰 live Y.Doc——RED 锚 case 2/4 三重锁）；ready 期透传分支
       // 逐字节不变（既有 read 锚零回归）
@@ -415,16 +415,16 @@ export function createNamespaceRuntimeWithSeam(input: NamespaceRuntimeSeamInput)
         ? readLogicalValueAtPath(doc, path)
         : readDisabled(lifecycle, path);
     },
-    getSchemaEnvelope: () => {
+    getSchema: () => {
       // D2（#93 rev2，SA8 裁决 B）：数据投影 getter 停接纳——key 仅 lifecycle（裁决 H：
       // 绝不 keyed on fatal/schemaState）；拒绝先于触碰 live Y.Doc（INV 同 read() 分支）
       if (state.lifecycle !== 'ready') {
-        throw new RuntimeReadDisabledError('getSchemaEnvelope', state.lifecycle);
+        throw new RuntimeReadDisabledError('getSchema', state.lifecycle);
       }
       return projectSchemaEnvelope(doc, 'public'); // D4（INV-N13 守卫）
     },
     getMetadata: () => {
-      // D2（#93 rev2，SA8 裁决 B）：同 getSchemaEnvelope——key 仅 lifecycle；拒绝先于
+      // D2（#93 rev2，SA8 裁决 B）：同 getSchema——key 仅 lifecycle；拒绝先于
       // 深拷贝递归（零触碰 live Y.Doc——F-3 原始 RangeError 不外泄的证明面）
       if (state.lifecycle !== 'ready') {
         throw new RuntimeReadDisabledError('getMetadata', state.lifecycle);
@@ -432,14 +432,14 @@ export function createNamespaceRuntimeWithSeam(input: NamespaceRuntimeSeamInput)
       return projectMetadata(doc); // D5（深拷贝 / 载体与值域双 loud）
     },
     getActiveSchema: () => {
-      // D2（#93 rev2，SA8 裁决 B）：同 getSchemaEnvelope——key 仅 lifecycle；不触 doc
+      // D2（#93 rev2，SA8 裁决 B）：同 getSchema——key 仅 lifecycle；不触 doc
       if (state.lifecycle !== 'ready') {
         throw new RuntimeReadDisabledError('getActiveSchema', state.lifecycle);
       }
       return state.activeInfo ?? null; // D8（preparing/unavailable/fatal 期 null 照常）
     },
     getStatus: () => buildStatus(handle, state), // D9 → D6（handle 仅用于 ready 期 writableNow 瞬时观察）
-    mutateRoot: (mutation: unknown): Promise<MutateRootResult> => {
+    mutateData: (mutation: unknown): Promise<MutateDataResult> => {
       // D5.1 接纳门：lifecycle≠ready 时同步零入队拒绝（INV-C3）——经返回 Promise
       // 即时 settle 领域化联合（不 throw、不读 mutation——Proxy 零触发、零 doc 副作用）
       if (state.lifecycle !== 'ready') {
@@ -450,27 +450,27 @@ export function createNamespaceRuntimeWithSeam(input: NamespaceRuntimeSeamInput)
       return sequencer.enqueue(() => runRootWriteSlot(writeEnv, mutation));
     },
     replaceSchema: (input: ReplaceSchemaInput): Promise<ReplaceSchemaResult> => {
-      // D5.1 接纳门：同 mutateRoot——lifecycle≠ready 时零入队即时 ok:false
+      // D5.1 接纳门：同 mutateData——lifecycle≠ready 时零入队即时 ok:false
       if (state.lifecycle !== 'ready') {
         return Promise.resolve(disabled(lifecycleWriteRefusal(state.lifecycle)));
       }
-      // D1（issue #91）：与 mutateRoot 同一 sequencer 实例——同步接纳定序、占槽互斥、
+      // D1（issue #91）：与 mutateData 同一 sequencer 实例——同步接纳定序、占槽互斥、
       // S6 同槽 await notifyDirty 构成屏障（双向 FIFO 互通）；thunk 是纯调用——
       // input 引用仅被捕获不被读取（Proxy 零触发），无可抛点
       return sequencer.enqueue(() => runSchemaWriteSlot(schemaWriteEnv, input));
     },
     enableReplication: (input: EnableReplicationInput): Promise<EnableReplicationResult> => {
-      // D5.1 接纳门（#132）：同 mutateRoot——lifecycle≠ready 时零入队即时 ok:false
+      // D5.1 接纳门（#132）：同 mutateData——lifecycle≠ready 时零入队即时 ok:false
       if (state.lifecycle !== 'ready') {
         return Promise.resolve(disabled(lifecycleWriteRefusal(state.lifecycle)));
       }
-      // D1（#132）：与 mutateRoot/replaceSchema 同一 sequencer 实例——同步接纳定序、
+      // D1（#132）：与 mutateData/replaceSchema 同一 sequencer 实例——同步接纳定序、
       // 占槽互斥（FIFO 互通）；thunk 是纯调用——input 引用仅被捕获不被读取
       //（Proxy 零触发），无可抛点；槽 E3 单读捕获定序在队列内
       return sequencer.enqueue(() => runEnableReplicationSlot(replicationWriteEnv, input));
     },
     bumpReplicationEpoch: (): Promise<BumpReplicationEpochResult> => {
-      // D5.1 接纳门（#132）：同 mutateRoot——lifecycle≠ready 时零入队即时 ok:false
+      // D5.1 接纳门（#132）：同 mutateData——lifecycle≠ready 时零入队即时 ok:false
       if (state.lifecycle !== 'ready') {
         return Promise.resolve(disabled(lifecycleWriteRefusal(state.lifecycle)));
       }

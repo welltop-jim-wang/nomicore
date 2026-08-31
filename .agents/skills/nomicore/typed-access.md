@@ -34,7 +34,7 @@ Generate projections in the independent host and use them to type-check business
 5. Review generated diffs. Modify `schema.vfsl` or the generator contract—not `generated.ts`—when output is wrong.
 6. Keep runtime validation and static typing distinct:
    - business code uses generated `VfslPathMap`, `PathAt`, `PathValue`, `PathPatchValue`, and `PathElementValue` through a host-owned adapter;
-   - the adapter calls public `NamespaceLease.read()` and `mutateRoot()`;
+   - the adapter calls public `NamespaceLease.readData()` and `mutateData()`;
    - one narrow assertion may bridge a successful runtime result to its projected type;
    - application call sites contain no `any`, source-deep imports, or live `Y.Doc` access.
 7. Preserve literal paths (`as const` for reused tuples). Verify negative cases: unknown paths, wrong values, and array operations on non-array nodes must fail host typecheck.
@@ -51,7 +51,7 @@ Design every business write against three simultaneous criteria:
 Business updates therefore target the **narrowest independently writable schema path**. For a scalar field, call `set` on that leaf path:
 
 ```ts
-await lease.mutateRoot({
+await lease.mutateData({
   op: 'set',
   path: ['items', itemId, 'quantity'],
   value: nextQuantity,

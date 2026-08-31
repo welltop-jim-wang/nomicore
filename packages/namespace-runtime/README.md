@@ -11,12 +11,12 @@ Production assembly is performed by the owning registry layer through the restri
 ### Reads
 
 - `read(path)` projects a schema-independent logical value from the live ROOT carrier.
-- `getSchemaEnvelope()`, `getMetadata()`, and `getActiveSchema()` return detached projections and never expose live writable Yjs references.
+- `getSchema()`, `getMetadata()`, and `getActiveSchema()` return detached projections and never expose live writable Yjs references.
 - Reads do not enter the write sequencer. New reads and projection getters stop being accepted once `close()` enters `closing`; `getStatus()` remains available.
 
 ### Writes
 
-- `mutateRoot(mutation)` performs a validated ROOT mutation.
+- `mutateData(mutation)` performs a validated ROOT mutation.
 - `replaceSchema(input)` compiles a proposed schema and atomically replaces SCHEMA plus, when supplied, the complete ROOT generation. A supplied ROOT is validated as-is; unknown top-level or nested keys fail loudly with zero writes.
 - P0, ROOT writes, SCHEMA writes, and the close barrier share one FIFO sequencer. Inputs are snapshotted at slot start, and dirty notification remains part of the slot.
 - Persistence degradation rejects new writes without disabling reads. Internal fatal errors permanently disable writes while preserving reads.

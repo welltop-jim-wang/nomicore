@@ -11,7 +11,7 @@
  *
  * released 逐方法通道（§7 表格）：read 同步返回 released issue；三投影 getter 同步
  * throw NamespaceLeaseReleasedError；getStatus 恒成功（released → runtime:null）；
- * 四写（mutateRoot/replaceSchema/enableReplication/bumpReplicationEpoch）resolve
+ * 四写（mutateData/replaceSchema/enableReplication/bumpReplicationEpoch）resolve
  * released issue（不 reject）。release 不追踪/取消已接纳写。
  *
  * #132 增量（D-7）：第 4 参 `deps.drawReplicationId`（包内签名；必选——无缺省即无
@@ -31,12 +31,12 @@ import type {
   NamespaceLeaseBumpReplicationEpochResult,
   NamespaceLeaseEnableReplicationResult,
   NamespaceLeaseMetadata,
-  NamespaceLeaseMutateRootResult,
-  NamespaceLeaseReadResult,
+  NamespaceLeaseMutateDataResult,
+  NamespaceLeaseReadDataResult,
   NamespaceLeaseReleasedIssue,
   NamespaceLeaseReplaceSchemaInput,
   NamespaceLeaseReplaceSchemaResult,
-  NamespaceLeaseSchemaEnvelope,
+  NamespaceLeaseSchema,
   NamespaceRuntimeStatusProjection,
   ReplicationSession,
   ReplicationSessionApplyResult,
@@ -273,13 +273,13 @@ export function createLeaseController(
   const lease: NamespaceLease = {
     owner,
     namespaceId,
-    read(path) {
+    readData(path) {
       if (released) return RELEASED_ISSUE;
-      return entry.runtime.read(path);
+      return entry.runtime.readData(path);
     },
-    getSchemaEnvelope() {
+    getSchema() {
       if (released) throw new NamespaceLeaseReleasedError();
-      return entry.runtime.getSchemaEnvelope();
+      return entry.runtime.getSchema();
     },
     getMetadata() {
       if (released) throw new NamespaceLeaseReleasedError();
@@ -300,9 +300,9 @@ export function createLeaseController(
         runtime: Object.freeze(entry.runtime.getStatus()),
       });
     },
-    mutateRoot(mutation) {
+    mutateData(mutation) {
       if (released) return Promise.resolve(RELEASED_ISSUE);
-      return entry.runtime.mutateRoot(mutation);
+      return entry.runtime.mutateData(mutation);
     },
     replaceSchema(input) {
       if (released) return Promise.resolve(RELEASED_ISSUE);
@@ -387,10 +387,10 @@ type Equal<A, B> = (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ?
 type AssertTrue<T extends true> = T;
 
 type _readAlias = AssertTrue<
-  Equal<NamespaceLeaseReadResult, ReturnType<NamespaceRuntime['read']> | NamespaceLeaseReleasedIssue>
+  Equal<NamespaceLeaseReadDataResult, ReturnType<NamespaceRuntime['readData']> | NamespaceLeaseReleasedIssue>
 >;
 type _schemaEnvelopeAlias = AssertTrue<
-  Equal<NamespaceLeaseSchemaEnvelope, ReturnType<NamespaceRuntime['getSchemaEnvelope']>>
+  Equal<NamespaceLeaseSchema, ReturnType<NamespaceRuntime['getSchema']>>
 >;
 type _metadataAlias = AssertTrue<
   Equal<NamespaceLeaseMetadata, ReturnType<NamespaceRuntime['getMetadata']>>
@@ -401,8 +401,8 @@ type _activeSchemaAlias = AssertTrue<
 type _projectionAlias = AssertTrue<Equal<NamespaceRuntimeStatusProjection, NamespaceRuntimeStatus>>;
 type _mutateAlias = AssertTrue<
   Equal<
-    NamespaceLeaseMutateRootResult,
-    Awaited<ReturnType<NamespaceRuntime['mutateRoot']>> | NamespaceLeaseReleasedIssue
+    NamespaceLeaseMutateDataResult,
+    Awaited<ReturnType<NamespaceRuntime['mutateData']>> | NamespaceLeaseReleasedIssue
   >
 >;
 type _replaceInputAlias = AssertTrue<

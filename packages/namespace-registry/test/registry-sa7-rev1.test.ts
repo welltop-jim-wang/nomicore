@@ -208,11 +208,11 @@ class ObservableRuntime implements NamespaceRuntime {
     private readonly closePlan: RuntimeClosePlan = {},
   ) {}
 
-  read() {
+  readData() {
     return { ok: true as const, value: this.marker };
   }
 
-  getSchemaEnvelope(): null {
+  getSchema(): null {
     return null;
   }
 
@@ -228,7 +228,7 @@ class ObservableRuntime implements NamespaceRuntime {
     return READY_STATUS;
   }
 
-  mutateRoot(): Promise<{ ok: true }> {
+  mutateData(): Promise<{ ok: true }> {
     return Promise.resolve({ ok: true });
   }
 
@@ -410,7 +410,7 @@ describe('SA7 rev1 补充动态（P1 floating-window / R5′ 活链路 / P2 real
       });
       expect(created.ok).toBe(true);
       const lease = okLease(created);
-      const writePromise = lease.mutateRoot({ op: 'set', path: ['n'], value: 43 });
+      const writePromise = lease.mutateData({ op: 'set', path: ['n'], value: 43 });
       await flushMicrotasks(30);
       expect(gated).toBe(true); // 写槽 S6 已挂于 gated saveDoc（排空窗口拉开）
 
@@ -557,7 +557,7 @@ describe('SA7 rev1 补充动态（P1 floating-window / R5′ 活链路 / P2 real
       const lease2 = okLease(await registry.open({ userId: 'u-sa7-rev1' }, 'k'));
       expect(persistence.loadCalls.length).toBe(2);
       expect(runtimes.length).toBe(2);
-      expect(lease2.read(['x'])).toEqual({ ok: true, value: 'R2' });
+      expect(lease2.readData(['x'])).toEqual({ ok: true, value: 'R2' });
       // 清扫：release → 重武装（真实桥第二枚 native timer）→ shutdown 同步取消
       // （registry 的 clearTimeout 路径走真实 disposer）+ 关闭 R2。
       await lease2.release();
@@ -633,7 +633,7 @@ describe('SA7 rev1 补充动态（P1 floating-window / R5′ 活链路 / P2 real
       const lease2 = okLease(await registry.open({ userId: 'u-sa7-rev1' }, 'k'));
       expect(persistence.loadCalls.length).toBe(2);
       expect(runtimes.length).toBe(2);
-      expect(lease2.read(['x'])).toEqual({ ok: true, value: 'R2' });
+      expect(lease2.readData(['x'])).toEqual({ ok: true, value: 'R2' });
       // 清扫：release → 重武装 → shutdown 同步取消 native timer + 关闭 R2。
       await lease2.release();
       await registry.shutdown();
@@ -696,7 +696,7 @@ describe('SA7 rev1 补充动态（P1 floating-window / R5′ 活链路 / P2 real
       const lease2 = okLease(await registry.open({ userId: 'u-sa7-rev1' }, 'k'));
       expect(persistence.loadCalls.length).toBe(2);
       expect(runtimes.length).toBe(2);
-      expect(lease2.read(['x'])).toEqual({ ok: true, value: 'R2' });
+      expect(lease2.readData(['x'])).toEqual({ ok: true, value: 'R2' });
       await lease2.release();
       await scheduler.advanceBy(300_000);
       await flushMicrotasks();

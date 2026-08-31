@@ -107,11 +107,11 @@ function runRegistryContract(name: string, factory: AdapterFactory): void {
       const second = await firstRegistry.open({ userId: 'contract-user' }, createdId);
       expect(second.ok).toBe(true);
       if (!second.ok) throw new Error(second.message);
-      expect(second.lease.read(['value'])).toEqual({ ok: true, value: 'created' });
+      expect(second.lease.readData(['value'])).toEqual({ ok: true, value: 'created' });
 
-      const write = created.lease.mutateRoot({ op: 'set', path: ['value'], value: 'updated' });
+      const write = created.lease.mutateData({ op: 'set', path: ['value'], value: 'updated' });
       await expect(write).resolves.toMatchObject({ ok: true });
-      expect(second.lease.read(['value'])).toEqual({ ok: true, value: 'updated' });
+      expect(second.lease.readData(['value'])).toEqual({ ok: true, value: 'updated' });
       await fixture.flush();
 
       await created.lease.release();
@@ -125,7 +125,7 @@ function runRegistryContract(name: string, factory: AdapterFactory): void {
         const reopened = await reopenedRegistry.open({ userId: 'contract-user' }, createdId);
         expect(reopened.ok).toBe(true);
         if (!reopened.ok) throw new Error(reopened.message);
-        expect(reopened.lease.read(['value'])).toEqual({ ok: true, value: 'created' });
+        expect(reopened.lease.readData(['value'])).toEqual({ ok: true, value: 'created' });
         await reopened.lease.release();
         await reopenedRegistry.shutdown();
         await restarted.dispose();

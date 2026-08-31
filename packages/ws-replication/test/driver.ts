@@ -377,7 +377,7 @@ export class Run {
     const lease = okLease(await this.peerNode.registry.open(PEER_OWNER, this.nsId));
     await schemaReady(lease);
     for (const [key, value] of Object.entries(update)) {
-      const result = await lease.mutateRoot({ op: 'set', path: [key], value });
+      const result = await lease.mutateData({ op: 'set', path: [key], value });
       if (!result.ok) throw new Error(`peer 业务写失败：${JSON.stringify(result)}`);
     }
     await lease.release();
@@ -388,7 +388,7 @@ export class Run {
     const lease = this.hubFixture?.lease;
     if (lease === undefined) throw new Error('无 hub fixture lease');
     for (const [key, value] of Object.entries(update)) {
-      const result = await lease.mutateRoot({ op: 'set', path: [key], value });
+      const result = await lease.mutateData({ op: 'set', path: [key], value });
       if (!result.ok) throw new Error(`hub 业务写失败：${JSON.stringify(result)}`);
     }
     await settle();

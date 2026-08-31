@@ -19,15 +19,15 @@
  * 本文件冻结的契约锚点（SA1/SA3 验收行为锚）：
  * - seam 注入 `notifyDirty: () => persistence.saveDoc(handle)`（生产绑定形态的测试直译）；
  * - 完整链路（E2E）：真实内存 Persistence（公开 I/O hook 接线下共享 store）→
- *   createDoc 提交初始快照 → Runtime（真实 P0/active schema）→ mutateRoot ok:true →
+ *   createDoc 提交初始快照 → Runtime（真实 P0/active schema）→ mutateData ok:true →
  *   同槽 saveDoc 登记 → debounce flush 落盘 → **全新 Persistence 实例** loadDoc 观察到
  *   Runtime 写入的 ROOT 值（跨实例持久化证明，非 live-doc 别名）；
- * - degraded 链：flush 失败 → entry persistence-degraded → 下一次 mutateRoot 被 gate
+ * - degraded 链：flush 失败 → entry persistence-degraded → 下一次 mutateData 被 gate
  *   拦截（RUNTIME_WRITE_DISABLED、零写入）；恢复 I/O → retry 覆盖最新 live doc →
- *   全新实例 loadDoc 看到降级前那次 mutateRoot 的值（「检查后降级的写仍登记最新 dirty
+ *   全新实例 loadDoc 看到降级前那次 mutateData 的值（「检查后降级的写仍登记最新 dirty
  *   状态」的端到端证明）。
  *
- * 红灯现状（构造性红灯）：runtime.mutateRoot 尚未实现——首个 mutateRoot 调用即红。
+ * 红灯现状（构造性红灯）：runtime.mutateData 尚未实现——首个 mutateData 调用即红。
  */
 import { describe, expect, it } from 'vitest';
 import * as Y from 'yjs';
@@ -43,7 +43,7 @@ const ENVELOPE = { lang: 'vfsl', version: 1, id: 'ns-1', text: TEXT_VALID } as c
 const ROOT0 = { n: 1, a: 'x' };
 
 interface MutateRootRuntime extends NamespaceRuntime {
-  mutateRoot: (mutation: unknown) => Promise<{ ok: true } | { ok: false; issues: unknown[] }>;
+  mutateData: (mutation: unknown) => Promise<{ ok: true } | { ok: false; issues: unknown[] }>;
 }
 
 function sleep(ms: number): Promise<void> {
@@ -51,7 +51,7 @@ function sleep(ms: number): Promise<void> {
 }
 
 function readValue(runtime: NamespaceRuntime, path: readonly (string | number)[]): unknown {
-  const read = runtime.read(path);
+  const read = runtime.readData(path);
   if (!read.ok) throw new Error(`读取应成功，实际 code=${read.code}`);
   return read.value;
 }
@@ -111,7 +111,7 @@ describe('namespace-runtime validateRoot write × 真实 Persistence 集成（AC
     const runtime = await readyRuntime(handle, () => writer.saveDoc(handle));
 
     // 前向断言：写 Promise 完成（完成信号 = 含 dirty notification 登记）
-    const res = await runtime.mutateRoot({ op: 'set', path: ['n'], value: 42 });
+    const res = await runtime.mutateData({ op: 'set', path: ['n'], value: 42 });
     expect(res).toEqual({ ok: true });
 
     // read-your-write（后向闭环：await 写 Promise 后 read 观察提交值）
@@ -146,7 +146,7 @@ describe('namespace-runtime validateRoot write × 真实 Persistence 集成（AC
     const runtime = await readyRuntime(handle, () => writer.saveDoc(handle));
 
     // 第一笔：writable gate 通过（检查时点尚未降级）→ 提交 ok + saveDoc 登记（不撤销、不拒绝）
-    const res = await runtime.mutateRoot({ op: 'set', path: ['n'], value: 22 });
+    const res = await runtime.mutateData({ op: 'set', path: ['n'], value: 22 });
     expect(res).toEqual({ ok: true });
     expect(readValue(runtime, ['n'])).toBe(22);
 
@@ -159,7 +159,7 @@ describe('namespace-runtime validateRoot write × 真实 Persistence 集成（AC
 
     // 第二笔：新降级 gate 拦截 → RUNTIME_WRITE_DISABLED，文档不变
     const before = [...Y.encodeStateAsUpdate(doc)];
-    const blocked = await runtime.mutateRoot({ op: 'set', path: ['n'], value: 23 });
+    const blocked = await runtime.mutateData({ op: 'set', path: ['n'], value: 23 });
     expect(blocked).toMatchObject({ ok: false });
     expect(JSON.stringify(blocked)).toContain('RUNTIME_WRITE_DISABLED');
     expect([...Y.encodeStateAsUpdate(doc)]).toEqual(before);

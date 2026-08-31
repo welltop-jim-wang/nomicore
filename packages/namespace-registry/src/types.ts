@@ -36,7 +36,7 @@ import type {
   ActiveSchemaInfo,
   BumpReplicationEpochResult,
   EnableReplicationResult,
-  MutateRootResult,
+  MutateDataResult,
   ReplaceSchemaInput,
   ReplaceSchemaResult,
   RuntimeReadDisabledResult,
@@ -406,13 +406,13 @@ export type ResetReplicaResult =
 // —— Lease 代理能力的公开 alias（§3.2）：结构性表达 Runtime 能力，不转导 Runtime 名称 ——
 
 /** lease.read 结果 = runtime read 正常联合 | released issue。 */
-export type NamespaceLeaseReadResult =
+export type NamespaceLeaseReadDataResult =
   | ReadLogicalValueResult
   | RuntimeReadDisabledResult
   | NamespaceLeaseReleasedIssue;
 
-/** lease.getSchemaEnvelope 结果（runtime 同签名：载体缺席 → null）。 */
-export type NamespaceLeaseSchemaEnvelope = SchemaEnvelope | null;
+/** lease.getSchema 结果（runtime 同签名：载体缺席 → null）。 */
+export type NamespaceLeaseSchema = SchemaEnvelope | null;
 
 /** lease.getMetadata 结果（runtime 同签名：META 全键深拷贝）。 */
 export type NamespaceLeaseMetadata = Record<string, unknown>;
@@ -420,8 +420,8 @@ export type NamespaceLeaseMetadata = Record<string, unknown>;
 /** lease.getActiveSchema 结果（runtime 同签名：preparing/unavailable/fatal 期 null）。 */
 export type NamespaceLeaseActiveSchema = ActiveSchemaInfo | null;
 
-/** lease.mutateRoot 结果 = runtime 同名结果 | released issue（Promise resolve，不 reject）。 */
-export type NamespaceLeaseMutateRootResult = MutateRootResult | NamespaceLeaseReleasedIssue;
+/** lease.mutateData 结果 = runtime 同名结果 | released issue（Promise resolve，不 reject）。 */
+export type NamespaceLeaseMutateDataResult = MutateDataResult | NamespaceLeaseReleasedIssue;
 
 /** lease.replaceSchema 输入（与 runtime 同名类型逐字段一致）。 */
 export type NamespaceLeaseReplaceSchemaInput = ReplaceSchemaInput;
@@ -430,7 +430,7 @@ export type NamespaceLeaseReplaceSchemaInput = ReplaceSchemaInput;
 export type NamespaceLeaseReplaceSchemaResult = ReplaceSchemaResult | NamespaceLeaseReleasedIssue;
 
 /** lease.enableReplication 结果 = runtime 同名结果 | released issue（沿
- *  NamespaceLeaseMutateRootResult 先例——Promise resolve，不 reject；随机源违约与
+ *  NamespaceLeaseMutateDataResult 先例——Promise resolve，不 reject；随机源违约与
  *  领域拒绝均经结果联合结算，写管线 internal fatal 经 RuntimeWriteFatalError rejection）。 */
 export type NamespaceLeaseEnableReplicationResult = EnableReplicationResult | NamespaceLeaseReleasedIssue;
 
@@ -575,12 +575,12 @@ export interface NamespaceLease {
   /** 冻结的独立 owner 投影（仅 userId）。 */
   readonly owner: Readonly<{ readonly userId: string }>;
   readonly namespaceId: string;
-  read(path: readonly (string | number)[]): NamespaceLeaseReadResult;
-  getSchemaEnvelope(): NamespaceLeaseSchemaEnvelope;
+  readData(path: readonly (string | number)[]): NamespaceLeaseReadDataResult;
+  getSchema(): NamespaceLeaseSchema;
   getMetadata(): NamespaceLeaseMetadata;
   getActiveSchema(): NamespaceLeaseActiveSchema;
   getStatus(): NamespaceLeaseStatus;
-  mutateRoot(mutation: unknown): Promise<NamespaceLeaseMutateRootResult>;
+  mutateData(mutation: unknown): Promise<NamespaceLeaseMutateDataResult>;
   replaceSchema(input: NamespaceLeaseReplaceSchemaInput): Promise<NamespaceLeaseReplaceSchemaResult>;
   /** Hub 显式复制管理操作（issue #132/ADR 0010 冻结名）：原子安装随机 128-bit 复制谱系
    *  + epoch 1（经 runtime 同一 write sequencer——单槽单事务原子、dirty 恰一次）。
