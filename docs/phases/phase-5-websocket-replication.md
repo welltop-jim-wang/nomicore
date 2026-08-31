@@ -141,9 +141,9 @@ Peer instance × N
 
 ## 交付现状与边界（issue #172 收口登记）
 
-本节区分「当前已交付契约」「已知偏差（planned fix）」与「未交付边界」。wire 语义权威
-仍为 `docs/protocols/instance-replication-v1.md`（ADR 0010 issue #161 修订节冻结值）；
-本节只登记交付状态，不改写任何冻结值，也不把未合入行为表述为当前实现。
+本节登记当前已交付契约。wire 语义权威仍为
+`docs/protocols/instance-replication-v1.md`（ADR 0010 issue #161 修订节冻结值）；
+本节只登记交付状态，不改写任何冻结值。`wiki/raw/` 历史材料仅作证据，不是规范来源。
 
 ### 切片交付状态
 
@@ -154,37 +154,33 @@ Peer instance × N
 | 3/4 ReplicationSession + trusted apply | 已交付 | ADR 0010 issue #134（含 round 2）修订节冻结词汇 |
 | 5 replication-protocol codec | 已交付 | envelope/payload/注册表/版本协商 + golden/截断/fuzz 套件 |
 | 6 ws-replication namespace 状态机 | 已交付 | 背压水位、连接级 pipeline 记账、control 保留额度、严格拒纳与同批丢弃/RESYNC，以及由 `ackTimeoutMs` 派生的恢复检查点已随 #137/#161/#169/#178 交付；冻结语义见 protocol §17 |
-| 7 WS 连接/认证/授权 | 部分交付 | 受信 Upgrade 身份、peer pong close(1001)、peer GOAWAY deadline/blocked 已交付；hub pong 语义（#170）与 GOAWAY 静默窗口、hub 停机 GOAWAY（#171）为已知偏差；生产 adapter 三面装配断言随 #164 |
-| 8 Reset/配置/observability | 部分交付 | Registry 侧 resetReplica 已交付（ADR 0010 #133 round-2 修订节为现行有效文本，正文旧次序描述不引用）；peer 侧 resetReplica 编排已随 #140 经 app 管理动词交付（`reset-replica`，归属 composition root——见下「未交付边界」）；结构化 observer/metrics 面（#163）未交付 |
-| 9 apps/yjs-server | 已交付 | #164（composition root + DuplexTransport 三可选面装配期断言 + §21 停机编排）随 #164+#186 落地 |
-| 10 最终集成与审查 | 部分交付 | app 管理动词面（`replace-schema` / `bump-epoch` / `reset-replica`，#140）与三实例黑盒验收锚已交付；依赖 #163/#170/#171 的剩余集成项未交付 |
+| 7 WS 连接/认证/授权 | 已交付 | 受信 Upgrade 身份、双端 pong timeout close(1001)、GOAWAY 静默/drain/deadline、CLOSE_OK 关联违规收口与生产 adapter 三面装配断言已随 #164/#170/#171/#174 交付 |
+| 8 Reset/配置/observability | 已交付 | Registry resetReplica 与 app 管理动词 `reset-replica` 已随 #133/#140 交付；结构化 observer/metrics 事件面已随 #163/#177 交付 |
+| 9 apps/yjs-server | 已交付 | #164（composition root + DuplexTransport 三可选面装配期断言 + §21 停机编排）随 #164/#186 落地 |
+| 10 最终集成与审查 | 已交付 | app 管理动词面（`replace-schema` / `bump-epoch` / `reset-replica`，#140）、三实例黑盒验收锚及 #163/#170/#171 后续收口均已交付 |
 
-### 已知偏差（冻结契约 vs 当前实现；可执行验收锚已就位）
+### 已交付的后续收口
 
-| 偏差 | 冻结语义（权威出处） | 当前实现 | 修复票 |
-|---|---|---|---|
-| hub 侧 pong 超时 | §18：临时失败 → close(1001) + backoff | close(1002)；`PONG_TIMEOUT` 不在 §13.1 注册表（无 ERROR 帧） | #170 |
-| CLOSE_OK 关联 | §10.2/§13.1：错误/多余 ACK 关联 → `ACK_STATE_VIOLATION`(1002) connection fatal | closing/live 期不匹配或多余 CLOSE_OK 静默忽略 | #171 |
-| hub 停机 GOAWAY | §21 停机顺序第 1 步：停止接纳并发送 GOAWAY | `HubReplication.close()` 直接 close(1001)，零 GOAWAY 帧 | #171 |
+- hub 侧 pong 超时按 §18 以 WS 1001 临时失败语义收口（#170）。
+- 错误或多余 `CLOSE_OK` 关联按 §10.2/§13.1 触发
+  `ACK_STATE_VIOLATION`(1002) connection fatal（#171）。
+- `HubReplication.close()` 先发送 `GOAWAY(SERVER_SHUTTING_DOWN)`，再执行真实 drain，
+  并在 deadline 以 WS 1001 收口（#171/#174）。§21 第 1 步的 GOAWAY 发送属于
+  `@nomicore/ws-replication`；切片 9 composition root 负责后续 Registry/Persistence
+  停机编排。
+- `HubReplication`/`PeerReplication` 公共结构化 observer/metrics 事件面已交付
+  （#163/#177）。
 
-验收锚：`packages/ws-replication/test/ws-replication-issue172-contract-anchors.test.ts`。
-A2-1/A2-2（#169）与 A5-1/A5-2（#171 已覆盖部分）已转为现绿回归锁；A3-1（#170）、
-A4-1/A4-2/A5-5（#171）仍以 `it.fails` 注册为期望红灯。锚集存在性由同文件常驻 meta
-守卫保护，修复票落地摘标时须同步缩减清单。严格接纳 R1-3 已随 #178 转为现绿回归锁。
+可执行验收锚位于
+`packages/ws-replication/test/ws-replication-issue172-contract-anchors.test.ts`；A3-1、
+A4-1、A4-2 与 A5-5 均为普通现绿回归测试，不再使用 expected-failure 或 skip。
 
-**hub 停机 GOAWAY 归属裁决**：§21 第 1 步的 GOAWAY 发送属 `@nomicore/ws-replication`
-包行为（`HubReplication.close()` 包内可完成，不依赖 composition root），修复票 #171；
-切片 9（#164）的 composition root 只负责按 §21 顺序编排停机，不拥有 GOAWAY 发送本身。
+### 责任边界
 
-### 未交付边界（known gap）
-
-- 结构化 observability（#163）：`HubReplication`/`PeerReplication` 公共 API 无
-  observer/metrics 事件面；ADR 0010「资源限制与 observability」节的最小观测面未交付。
-- peer 侧 resetReplica 编排（切片 8 部分）：Registry 侧已交付；**编排已随 #140 以
-  app 管理动词（`reset-replica`）交付，归属 composition root（`apps/yjs-server`）**；
-  ws-replication 层不引入 reset 编排 API（ADR 0010「包、应用与生命周期」节的宿主
-  编排职责边界，第三方 Host 基于公开 `NamespaceLease`/`ReplicationSession` 自行
-  构造——见 `docs/integration/hub-peer-deployment.md`「管理动词」）。
+peer 侧 resetReplica 编排归属 composition root（`apps/yjs-server`），已随 #140 以
+`reset-replica` 管理动词交付；ws-replication 层不引入 reset 编排 API。第三方 Host
+基于公开 `NamespaceLease`/`ReplicationSession` 自行构造，见
+`docs/integration/hub-peer-deployment.md`「管理动词」。
 
 ### control 保留额度实现口径（#172 收敛登记）
 

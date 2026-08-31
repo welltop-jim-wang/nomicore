@@ -1,5 +1,5 @@
 /**
- * SA6 红灯契约 —— issue #164 切片 9：apps/yjs-server 组合根（真实 WebSocket adapter +
+ * SA6 回归契约 —— issue #164 切片 9：apps/yjs-server 组合根（真实 WebSocket adapter +
  * HTTP Upgrade bearer-token 接线 + §21 停机编排）。
  *
  * 权威：issue #164 + ADR-0010 L175 + docs/protocols/instance-replication-v1.md
@@ -9,13 +9,13 @@
  * 全部断言锚在可观察运行时行为：HTTP 状态 / WS 帧（codec 编解码）/ WS close 码 /
  * Y.Doc 内容 / Registry 生命周期；零源码 grep；被测服务 = 真实 TCP WS 组合根。
  *
- * 红灯现状（本任务前置）：apps/ 无 composition root（ADR-0010 L175 切片 9 未交付）——
- * `../src/index.js` 不存在，本文件全部用例收集期失败 = 红灯（真实、非伪红）。
+ * 交付现状：切片 9 composition root 已随 #164 交付；本文件持续以真实 TCP WebSocket
+ * 验证生产入口、认证接线、复制行为与 §21 停机编排。
  */
 import * as crypto from 'node:crypto';
 import * as Y from 'yjs';
 import { describe, expect, it } from 'vitest';
-import { createYjsHubServer } from '../src/index.js'; // 冻结生产入口（缺失 = 红灯锚点）
+import { createYjsHubServer } from '../src/index.js'; // 冻结生产入口
 import type {
   NamespaceAuthorizer,
   ReplicationTimeouts,
