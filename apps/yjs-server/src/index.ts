@@ -57,7 +57,7 @@ export type { HubReplicationPluginConfig } from './replication/hub-plugin.ts';
 export { createPeerReplicationPlugin } from './replication/peer-plugin.ts';
 export type { PeerReplicationPluginConfig } from './replication/peer-plugin.ts';
 export { acquireRootLock, createStdoutEventSink, ROOT_LOCK_FILE_NAME, STABLE_OP_ERROR_CODES } from './lifecycle.ts';
-export type { EventSink, RootLockAcquireHooks, RootLockHandle } from './lifecycle.ts';
+export type { EventSink, RootLockHandle } from './lifecycle.ts';
 
 // ─────────────────────────────────────────────────────────────────────────
 // 公共面（SA6 冻结形状 + exactOptionalPropertyTypes 细则：可选属性一律声明
