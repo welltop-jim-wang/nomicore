@@ -213,7 +213,75 @@ export class TypedNamespace {
 
 > 注意：mutation 的实际 `op` 名称与输入形状必须以 `@nomicore/doc-runtime` / `NamespaceLease.mutateRoot()` 当前公开契约为准。当前底层数组写操作是 `array-insert` 和 `array-delete`，没有独立的 `array-append`；上面的 `append()` 先读取当前数组长度，再转换为 `array-insert`。它不是并发原子 append，存在并发写入时宿主应直接使用满足业务并发语义的操作或上层协调机制。如果升级 Nomicore 后 mutation 联合改变，应先更新这个单一适配器。
 
-## 6. 在宿主业务代码中读写
+## 6. 生成最小、可合并、有语义的 mutation
+
+每个业务写入应同时满足三个标准：
+
+1. **最小化**：生成能完成目标变更的最小 mutation，只触及 schema 中预期改变的节点；
+2. **协作友好**：保留不相关的 Yjs 节点，让多方同时修改不同字段、Record 条目或数组位置时能够合并，并把冲突面压缩到实际竞争的节点；
+3. **语义明确**：mutation 的操作和路径直接说明业务变化，例如“设置数量”“删除可选备注”“在标签数组插入元素”，而不是通过替换某份快照间接表达。
+
+因此，普通业务写入应定位到 **schema 中最窄可独立写入路径**：
+
+- 标量字段：`set` 到最后的 leaf 路径；
+- optional 字段或 `Record` 条目：在该字段/条目路径执行 `set` 或 `delete`；
+- `YArray`：在数组路径执行 `array-insert` / `array-delete`；
+- `YPlainArray`、`YLeaf` 和 `YXmlFragment`：它们是不可下钻终态，业务确实要修改时整体 `set` 该终态值；
+- 未改变的父容器和兄弟字段保持原位。
+
+实现前先用一句话命名业务变更，再映射成 mutation：
+
+| 业务变更 | mutation |
+| --- | --- |
+| 修改一个字段 | 在该字段终态路径执行 `set` |
+| 新增或替换一个 Record 条目 | 在该条目路径执行 `set` |
+| 删除 Record 条目或 optional 字段 | 在该路径执行 `delete` |
+| 插入有序元素 | 在数组路径执行 `array-insert`，显式给出 index |
+| 删除有序元素 | 在数组路径执行 `array-delete`，显式给出 index/count |
+| 修改刻意不透明的整体值 | 在对应 `plain`/leaf/XML 终态执行 `set` |
+
+例如只修改库存数量：
+
+```ts
+await lease.mutateRoot({
+  op: 'set',
+  path: ['items', itemId, 'quantity'],
+  value: 12,
+})
+```
+
+以下做法是普通业务更新的反例：
+
+```ts
+// 反例：读取完整 ROOT，在内存中重建，然后 set([]) 替换整个 ROOT。
+const root = lease.read([])
+if (!root.ok) throw new Error(root.message)
+
+await lease.mutateRoot({
+  op: 'set',
+  path: [],
+  value: {
+    ...root.value,
+    items: {
+      ...root.value.items,
+      [itemId]: {
+        ...root.value.items[itemId],
+        quantity: 12,
+      },
+    },
+  },
+})
+```
+
+底层契约允许 `set([])`，但它是显式的**整 ROOT 替换**：旧 Yjs 子类型引用失效，不做 identity-preserving diff。用它模拟单字段更新会扩大写入和冲突范围，可能覆盖读取之后发生的并发修改，并浪费 VFSL 载体对同步粒度的建模。它只适用于经过专门并发控制和生命周期编排的管理迁移/整库替换，不用于日常业务写入。
+
+同理，修改对象的一个子字段时，不应重建并替换整个父对象；继续下钻到最后一个可独立写入的终态。运行时仍会在 mutation 提交前验证完整 ROOT，并在失败时保持零写入，因此“窄路径写入”同时保留 Yjs 协作粒度和 VFSL 完整校验。
+
+如果一个业务命令确实改变多个彼此独立的节点，应分别生成对应的最小 mutation，并明确该命令允许部分成功还是需要上层事务/补偿编排。不能为了把多项变化塞进一次调用而退化成父对象或完整 ROOT 替换。
+
+并发测试至少应覆盖“两方修改不同叶子/不同 Record 条目，最终两项变化都保留”；若双方修改同一个终态，则只把该终态视为实际冲突范围，而不是让整个父对象或 ROOT 参与竞争。
+
+## 7. 在宿主业务代码中读写
 
 `src/inventory-service.ts`：
 
@@ -253,7 +321,7 @@ const path: string[] = ['items', 'item-001', 'quantity']
 // path 已失去各段的字面量信息，无法提供精确的路径类型检查。
 ```
 
-## 7. 创建 namespace 时仍使用同一份 schema
+## 8. 创建 namespace 时仍使用同一份 schema
 
 生成类型和运行时 SCHEMA 必须来自同一个 `schema.vfsl`。宿主创建 namespace 时应读取该文件文本，组装信封并传给 Registry，而不是在业务代码中复制一份 schema 字符串。
 
@@ -286,7 +354,7 @@ export async function createInventoryNamespace(registry: NamespaceRegistry) {
 
 部署时必须把 `schema.vfsl` 作为宿主应用资源一并交付，或在构建阶段以不产生第二份可独立维护副本的方式嵌入。`generated.ts` 只提供静态类型，不能代替运行时 SCHEMA 文本。
 
-## 8. 宿主项目的验证流程
+## 9. 宿主项目的验证流程
 
 每次修改 schema 后，在宿主项目执行：
 
@@ -305,7 +373,7 @@ pnpm test
 - 所有 namespace 路径和值通过宿主 TypeScript typecheck；
 - 业务测试仍覆盖运行时失败结果和零写入行为。
 
-## 9. 多领域限制
+## 10. 多领域限制
 
 每个 `generated.ts` 都通过 module augmentation 增广同一个 `VfslPathMap`。因此，若一个 TypeScript program 同时包含多个领域，而它们的 ROOT 顶层字段同名但类型不兼容，TypeScript 会报告声明合并冲突；即使不冲突，全局表也表示这些领域路径的并集，而不是某一个 namespace 的独立类型。
 
@@ -317,7 +385,7 @@ pnpm test
 
 在 Nomicore 提供按 schema/domain 参数化的独立生成类型之前，不应声称单个 `VfslPathMap` 能静态区分多个不同 namespace schema。
 
-## 10. 职责边界
+## 11. 职责边界
 
 宿主项目负责：
 
