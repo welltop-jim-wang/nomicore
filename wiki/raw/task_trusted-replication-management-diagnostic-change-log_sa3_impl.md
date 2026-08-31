@@ -142,13 +142,77 @@ SA2 E-8 断言「无遗漏」只覆盖 `Object.keys` 断言。处理：替身补
 
 ---
 
-## 4. commit
+## 6. 修复轮（SA4 R1 reject → 共同修复集合 F1/F2）
 
-见 `git log -1`：`<hash>`（see §5）——中英双语，含实现 + 必要测试改面 + SA6 红灯契约文件 + wiki 归档；未 push。
+> 输入：`wiki/raw/task_trusted-replication-management-diagnostic-change-log_sa4_review.md`
+> （verdict reject，F1 P0 / F2 P1 回流 SA3；F3 文档缺口回流 SA1——本轮不涉及）。
+> 总控指令：只修 F1/F2 生产侧；SA6 红灯契约的 prior 链修正与 enable input 补锚已由
+> SA6 在 worktree 完成（本报告只引用，不改动）。
+
+### 6.1 F1【P0】apply 槽 R5 捕获窗口无条件挂接（业务事实源化）
+
+- **位点**：`replication-session.ts` `runSessionApplySlot` R5。
+- **修复**：`if (diag !== undefined) host.doc.on('update', updateHandler)` →
+  **无条件** `host.doc.on('update', updateHandler)`（finally 内退订同步无条件化；
+  `diag.updateBytes = capturedUpdate` 保持 diag 条件——仅诊断面条件）。
+- **机理**：`capturedUpdate` 是 R-3.1 业务判据（有集成 ⟹ 必须 notifyDirty）的事实源，
+  与无条件挂接的 beforeTransaction 探针（committed 二分业务事实）同待遇；无 emitter
+  基线（生产默认）下一切成功 apply 不再静默跳过持久化（此前：saveCalls 停在 enable
+  的 1——SA4 探针 A 复现）。enable/bump 的 E5 窗口形态不变（其 E6 本就无条件 await，
+  窗口纯诊断面）。
+- **保真**：R-3.1 零事件 ⟺ noop 跳过 R6 的判据完整保留（两基线同构）；槽序/owned
+  bytes/emit 挂点零改动。
+
+### 6.2 F2【P1】enable 槽 E3 成功后写入 input 快照
+
+- **位点**：`replication-write.ts` `runEnableReplicationSlot` E3 成功分支。
+- **修复**：`replicationId = captured` 后、E4 之前：
+  `if (diag !== undefined) diag.input = { snapshot: Object.freeze({ replicationId }) };`
+  （镜像 #149 `diagInputReady` 与 E-e 失败分支 freeze 形态）。
+- **机理**：E3 成功捕获后 E4/E5/E6 一切结局点（§9.1 E-f/E-g/E-h/E-i/E-j/E-k 六行
+  input=snapshot）不再谎报 `not-accessed`（「拒绝先于任何输入访问」是 E-a/E-b/E-c/E-d
+  专属语义；committed 记录携带 not-accessed 属设计 §9.3 明文契约违规）。F2 修复后
+  inputPolicy 'full' 记录面 = `{capture:'full', value:{replicationId}}`（SA4 探针 B +
+  SA6 补锚断言）；'digest' 策略下同样捕获（值域受策略投影）。
+
+### 6.3 修复验证（SA4 固定复审面）
+
+| 验证项 | 命令 | 结果 |
+|---|---|---|
+| SA4 探针（复现面） | `pnpm exec vitest run packages/namespace-runtime/test/runtime-replication-sa4-probe.test.ts` | **2/2 PASS**（探针 A：无 emitter apply 集成 ⟹ saveCalls 1→2；探针 B：enable record input `{capture:'full', value:{replicationId}}`） |
+| SA6 红灯契约 | `pnpm exec vitest run packages/namespace-runtime/test/runtime-replication-diagnostic-red.test.ts` | **15/15 PASS**（含 SA6 prior 链补正与 enable input 补锚） |
+| 两包全量回归 | `pnpm exec vitest run packages/namespace-runtime packages/namespace-registry` | **361/361 PASS（43 文件）exit 0** |
+| 全仓类型检查 | `pnpm exec tsc -p tsconfig.typecheck.json --noEmit` | **exit 0，0 errors** |
+| 包级类型检查 | `pnpm exec tsc -p packages/namespace-runtime/tsconfig.json --noEmit` | **exit 0** |
+
+### 6.4 本轮 commit
+
+`<新增 commit hash>`（见 §5 修订）——F1/F2 修复 + SA4 探针文件 + SA6 红灯契约补正 +
+SA4/SA6 归档更新 + 本报告；未 push。
+
+### 6.5 本轮残留（SA1 侧，不在 SA3 范围）
+
+- F3：设计 §18 ALLOW LIST 补录（6 处替身收容 + registry index.ts + 两 package.json）——
+  SA1 文档修订，代码不回滚（SA4 明确不接受回滚）。
+- SA1 §13.5/§3「零 update 订阅」措辞收窄为 enable/bump 槽（apply 窗口为 R-3.1
+  业务判据载体、必须无条件）——SA1 补注记。
+- SA7 动态面消费项不变（(a) 物化面对账——F1 修复后 diff 形态、(b) updateCapture:false
+  活链路、(c) A-c runtime-close 分支、无诊断基线行为等价 sweep）。
+
+---
+
+## 4. commit（初轮）
+
+- 初轮实现：`218a74e`（feat(namespace-runtime,namespace-registry): wire trusted
+  replication and management writes into namespace diagnostic change log (#151)——中英双语，
+  含实现 + 必要测试改面 + SA6 红灯契约文件 + wiki 归档；未 push）。
+- 修复轮：见 §6.4。
 
 ## 5. 遗留风险（移交 SA4/SA7/总控）
 
-1. **SA6 一行修订先于 SA4 转绿**（偏差 1；排程序同 R-3.2 前置先例）。
+1. ~~SA6 一行修订先于 SA4 转绿~~（偏差 1）——**已闭合**：SA6 已按 §13.8 链式消费形态
+   补正 bump 用例 prior 锚，红灯 15/15（本轮复跑实证）。
 2. SA7 (a) 物化面对账：`git diff b66615c -- packages/namespace-runtime/src/replication-write.ts packages/namespace-runtime/src/replication-session.ts`——SA3 自检差异面全部落在 R-3.1（零字节跳过 R6）、R-3.3（方向无关通道，registry 侧）、§0.2 不物化清单（fanout/编码面/observerFailures/needsResync）、diag 接线行/捕获窗口/SessionRegistry 适配（豁免）内；无登记外差异。
 3. SA7 (b) `updateCapture:false` 活链路（update-omitted 为存储面分支——producer 恒不产出，需 adapter 配置路径验证）。
-4. 全仓并发运行的历史负载伪影（#149 REPORT 已登记 spawn/RPC 超时）与本次无关；局部复跑 358/359 已将其与 #151 分离。
+4. 全仓并发运行的历史负载伪影（#149 REPORT 已登记 spawn/RPC 超时）与本次无关；局部复跑 361/361 已将其与 #151 分离。
+5. F3 文档补录（§18 ALLOW LIST 四项 + §13.5 窗口注记）属 SA1 侧；本报告 §6.5 已列。

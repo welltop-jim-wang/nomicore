@@ -84,8 +84,10 @@ Type Errors  no errors
 **RED（真实红灯，可复现）**：15/15 FAIL，失败原因单一且诚实——基线不存在 #151 的目标操作面
 （runtime 复制管理键、lease 复制会话键全部缺失），诊断发射层面（三条 operation 的语义 emission）
 同样为零。测试全部锚定可观察运行时行为（record 内容 / Yjs 增量重放 / 业务结果 / session 状态 /
-emitter 计数），无源码 grep、无 skip、无软兜底；SA3 实现（操作面落地 + 诊断接线）后同一测试文件
-应转绿，无需改写测试主体。
+emitter 计数），无源码 grep、无 skip、无软兜底。SA3 实现（操作面落地 + 诊断接线，commit `218a74e`）
+后，本契约 14/15 转绿；余 1 个红灯经 SA6 独立核验为**本契约 fixture 缺陷**（bump 重放链缺失，
+见下节），最小修正后 **15/15 PASS**（`Test Files 1 passed / Tests 15 passed (15)`，exit 0；
+`tsc -p tsconfig.typecheck.json`=0 errors）。
 
 ## 修订记录（设计裁决勘误，SA1/SA2 独立核验）
 
@@ -99,6 +101,25 @@ emitter 计数），无源码 grep、无 skip、无软兜底；SA3 实现（操�
 - **复核**：修订后重跑红灯测试（见「验证命令与证据」），仍 15/15 FAIL（同一失败形态：
   操作面 TypeError），判定红未受修改影响——该码断言在基线处本就不可达（记录断言在操作面
   之后）；`tsc -p tsconfig.typecheck.json` 仍 0 errors。
+
+## 修订记录（SA3 期间契约 fixture 勘误，SA6 最小修正 — replay chain）
+
+- **背景**：SA3 实现落地（commit `218a74e`）后契约 14/15 绿灯；唯一红灯为
+  `AC1/AC2/AC3 epoch bump committed` 用例 —— `AssertionError: expected undefined to be 2`
+  （`fresh.getMap('META').get('replicationEpoch')` 为 undefined，测试文件第 520 行）。
+- **独立核验（SA6 复跑确认，SA3 报告属实）**：失败位于该用例 committed-update 的重放断言。
+  根因为 SA6 契约 fixture 错误：bump 事务增量**结构性依赖** enable 事务 pre-state
+  （META 复制键 replicationId/replicationEpoch 由 enable 事务创建，bump 增量的 left origin
+  引用其 struct）——用例以 `applyCarrier(rec.result, baseState)` 基态**单独**重放 bump 增量，
+  未链入 enable 增量（与 apply 用例同款 prior 链缺失），META 键因此不物化。
+- **修正（最小，仅测试文件重放链，断言零改动）**：bump 用例改为与 apply 用例同款链式重放
+  `applyCarrier(bumpCarrier, baseState, [enableCarrier])`（prior = enable 记录的 committed
+  update carrier，经既有 helper 的 prior 参）。单键语义断言原样保持：
+  `META.replicationEpoch === 2`、`META.replicationId === REPLICATION_ID`（identity 保留）、
+  context/operation/source/stage 断言不动、`expectNoMaterializeWithoutBase` 保留（bump 增量
+  对空 doc 仍不物化——真增量鉴别不受影响）。
+- **复验**：修正后 **15/15 PASS**（`Test Files 1 passed / Tests 15 passed (15)`，exit 0）；
+  `pnpm exec tsc -p tsconfig.typecheck.json --noEmit` = TSC_EXIT=0，0 errors。
 
 ## 验证命令与证据（复现）
 

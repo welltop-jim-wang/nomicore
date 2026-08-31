@@ -435,6 +435,9 @@ describe('#151 replication 管理写（enable / bump）诊断记录（红灯契�
     expect(rec.observedAt).toBe(NOW_ISO);
     expect(rec.attemptId).toMatch(/^att-[0-9a-f]{32}$/);
     expect(rec.context).toMatchObject({ replicationId: REPLICATION_ID, replicationEpoch: 1 });
+    // SA4 R1 补锚（F2 生产修正的验收侧）：enable E3 成功捕获后，记录输入投影为 full
+    // 且包含被捕获的 replicationId（既有 frozen 安全快照的消费形态——不回读调用方原对象）。
+    expect(rec.input).toMatchObject({ capture: 'full', value: { replicationId: REPLICATION_ID } });
     expect(rec.result.kind).toBe('committed');
     if (rec.result.kind === 'committed') {
       expect(rec.result.effect).toBe('update');
@@ -516,7 +519,18 @@ describe('#151 replication 管理写（enable / bump）诊断记录（红灯契�
     });
     if (rec.result.kind === 'committed') {
       expect(rec.result.effect).toBe('update');
-      const fresh = applyCarrier(updateCarrierOf(rec.result), baseState);
+      // 链式重放（§13.8 消费形态）：bump 事务增量结构性依赖 enable 事务 pre-state
+      // （META 复制键为 enable 所建——left origin 引用其 struct），必须以基态 →
+      // enable 增量 → bump 增量依序重放（与 apply 用例同款 prior 链）；单键语义
+      // 断言不变：仅 epoch 键被 bump 改写、replicationId 保留。
+      const enableRec = recs[0]!;
+      const fresh = applyCarrier(
+        updateCarrierOf(rec.result),
+        baseState,
+        enableRec.result.kind === 'committed' && enableRec.result.effect === 'update'
+          ? [updateCarrierOf(enableRec.result)]
+          : [],
+      );
       expect(fresh.getMap('META').get('replicationEpoch')).toBe(2);
       expect(fresh.getMap('META').get('replicationId')).toBe(REPLICATION_ID);
       expectNoMaterializeWithoutBase(updateCarrierOf(rec.result));

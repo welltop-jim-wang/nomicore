@@ -133,7 +133,7 @@ ReplicationSession.applyRemoteUpdate(update)
 | emit 不改变 FIFO | enable/bump/apply 与 ROOT/SCHEMA 共享同一 sequencer 实例（INV-S1）；emit 回调注册晚于 sequencer 内部 `tail.then(noop)`、早于下一任务 thunk 排程——emit 顺序 ≡ 槽完成顺序 ≡ FIFO（AC4 用例「enable→bump FIFO：epoch 2 在 id 安装之后」的结构基础） |
 | emit 不改变 capability | emit 路径零接触 `state.fatal`/`state.lifecycle`/handle/sequencer；敌意 emitter（AC4 用例 makeHostileEmitter）、队列满（capacity:1，drop 在 adapter 内）全部隔离；新增的 host/WeakMap/会话终态机不在 emit 路径上 |
 
-补充隔离（本票特有面）：**诊断装配不改变无日志基线**——`diagEnv.emitter === undefined` 时 enable/bump/apply 槽体所有 `diag` 写入为可选链 no-op、零 update 订阅（#149 D-C 同款行为等价声明）；**会话面零日志副作用**——open/getStatus/close 无任何 emission 接线（AC5 用例 `emissions.length === 2` 断言锚点）。
+补充隔离（本票特有面）：**诊断装配不改变无日志基线**——`diagEnv.emitter === undefined` 时 enable/bump/apply 槽体所有 `diag` 写入为可选链 no-op、emit 挂点零效果（#149 D-C 同款行为等价声明）。**【R2 修订，SA4 F1——窗口订阅的分化措辞】update 订阅窗口在两槽面分化**：enable/bump 的 E5 窗口是纯诊断附件（未装配 ⇒ 零订阅，行为等价）；**apply 的 R5 窗口是 R-3.1 业务判据载体，必须无条件挂接**（与 beforeTransaction 二分探针同待遇——探针承载 committed 二分业务事实，本就无条件）——无诊断基线下 `capturedUpdate !== undefined` 同构判定 R6 的 notifyDirty 门控，仅 `diag.updateBytes = capturedUpdate` 赋值保持 diag 条件。**禁止任何后续轮次把 apply 窗口退化为 diag 条件**（该退化使无日志基线的一切成功 apply 静默跳过持久化——ADR-0006 唯一持久化触发器被悬空，SA4 F1 P0 已证）；**会话面零日志副作用**——open/getStatus/close 无任何 emission 接线（AC5 用例 `emissions.length === 2` 断言锚点）。
 
 ---
 
@@ -366,9 +366,15 @@ try {
   if (diag !== undefined) { env.doc.off('update', updateHandler); diag.updateBytes = capturedUpdate; }
 }
 
-// apply 的 R5（replication-session.ts）：同款窗口夹住 Y.applyUpdate(doc, bytes, ctx.applyOrigin)
-// + beforeTransaction 二分探针（主线 R2-6 逐字：探针晚于一切先注册 listener 注册；
-//    finally 内 off 两者）。
+// apply 的 R5（replication-session.ts）：窗口夹住 Y.applyUpdate(doc, bytes, ctx.applyOrigin)
+// 【R2 修订，SA4 F1——冻结判据】apply 窗口**无条件挂接**（业务事实源——capturedUpdate
+//    是 R6 notifyDirty 门控（R-3.1「零字节 ⟺ 零集成 ⟺ 零通知」）的唯一判据，无诊断
+//    基线同样成立）；仅 finally 内 diag 赋值以 diag 为条件：
+//      host.doc.on('update', updateHandler);   // 无条件（≠ enable/bump 的 diag 条件窗口）
+//      ... finally { host.doc.off('update', updateHandler);
+//                    if (diag !== undefined) diag.updateBytes = capturedUpdate; }
+//    + beforeTransaction 二分探针（主线 R2-6 逐字：探针晚于一切先注册 listener 注册；
+//      finally 内 off 两者——探针本就无条件，承载 committed 二分业务事实）。
 ```
 
 关键实证（§16）：事务 cleanup 原生投递面给出的增量对**基态链式重放**精确物化本槽效果、对**无基态空 doc 不物化**（真增量的结构性特征——防「事务后 `Y.encodeStateAsUpdate(doc)` 全文档编码」冒充，SA8 钉死 #1）；空 diff 集成零事件（⇒ 捕获 undefined ⟺ noop ⟺ 跳过 dirty，R-3.1 判据）。窗口互斥性：三窗口 + #149 两窗口全部开在各自槽体的同步段内、且所有写共享唯一 FIFO sequencer——**两窗口结构性不可能同时打开**。
@@ -498,7 +504,7 @@ enable/bump 的 issues 元素形状 `{message, path: []}`（gate 级——主线
 2. **bump 与 apply 的 fence 竞争**：bump E5.5' 主动 fence（同步段，在 bump 槽内）与 apply A1 终态检查/R2 被动 fence（apply 槽内）经同一 sequencer 串行化——无并发窗口；finalize 幂等 + 终态不降级（conflicted 保持）保证两次 fence 收敛同一终态。
 3. **enable 幂等与 in-flight apply**：enable 幂等分支零写零通知——对 in-flight session 零影响（身份不变 ⇒ session 冻结值继续匹配）。
 4. **close 与已接纳 apply**：close() 同步段 terminateAll 只终态化 session（后续 apply 在 A1/A3 被拒）；已 enqueue 的 apply 槽在 barrier 之前照常排空（ADR-0008 已接纳任务无条件排空）。
-5. **diag 未装配的行为等价**：`diagEnv.emitter === undefined` ⇒ 三槽体 diag 写入全 no-op、零窗口订阅、emit 挂点零效果（`emitSlot` 首行返回）——无日志基线行为等价（#149 D-C 同款：唯一差异是返回 promise 结算多一跳微任务，对 await 消费者不可观测）。
+5. **diag 未装配的行为等价**：`diagEnv.emitter === undefined` ⇒ 三槽体 diag 写入全 no-op、emit 挂点零效果（`emitSlot` 首行返回）；**【R2 修订，SA4 F1】窗口订阅分化**——enable/bump 的 E5 窗口随 diag 缺席零订阅；**apply 的 R5 窗口无条件订阅**（R-3.1 业务判据载体，§3/§8——无诊断基线下 R6 门控经同一 capturedUpdate 判定，两基线行为同构）。无日志基线行为等价（#149 D-C 同款：唯一差异是返回 promise 结算多一跳微任务，对 await 消费者不可观测）。
 6. **敌意输入**：enable E3 单读捕获 + 全探测 try/catch（Proxy get/ownKeys trap throw 收编为 REPLICATION_INPUT_INVALID，绝不裸 reject、绝不升格 fatal——防「一次敌意 value → 永久禁写」DoS）；apply A2 `new Uint8Array(update)` 陷阱安全拷贝（绝不用 `update.slice()`——敌意子类可覆写）；lease parseOpenSessionOptions 同款收编。全部主线既有机械逐字保留。
 7. **捕获 bytes 的所有权**：emit 时窗口已关（finally 退订在先），producer 此后零触碰——满足「所有权移交后不得再变异」（捕获值本身是 yjs 事件投递的数组，窗口内单赋值后不再有写入方；emit 后由 emitter 管线 slice 复制——#149 §2.6 既有）。
 8. **epoch 与 stream generation 混同防御**：emission 面无 stream 身份构造路径（物理投影归 adapter）——结构性满足 SA8 #6。
@@ -521,8 +527,10 @@ enable/bump 的 issues 元素形状 `{message, path: []}`（gate 级——主线
 2. **存量测试更新**（公共面扩张的必然改面，全部在 ALLOW LIST）：
    - `runtime-close-lifecycle.test.ts:159` 十键断言 → 十二键（+`bumpReplicationEpoch`/`enableReplication`）；
    - `runtime-registry-internal-seam.test.ts:270` 十键断言 → 十二键；`:123` internal 值导出键集 `['createNamespaceRuntimeForRegistry']` → 追加 `'openReplicationSessionCoreForRegistry'`；
-   - `registry-open.test.ts:879` lease 键集 → 追加 `openReplicationSession`。
-   - 其余存量测试**零改动应全绿**（exports-audit 的 index 值导出一键锁不受影响——两方法在 runtime 对象上、不在 index；writeFatalMessage 既有渲染分支逐字节不变）。
+   - `registry-open.test.ts:879` lease 键集 → 追加 `openReplicationSession`；
+   - **【R2 修订补录，SA4 F3】五个 registry 测试替身文件**（`registry-idle` / `registry-shutdown` / `registry-sa7-hostile` / `registry-sa7-rev1` / `registry-sa7-concurrency` `.test.ts`）：各含 `implements NamespaceRuntime` 的 stub runtime——十二键扩张后 TS 结构类型**强制**要求替身补两个新键，否则 CI typecheck 断；收容形态 = loud stub（`enableReplication`/`bumpReplicationEpoch` 返回 `REPLICATION_NOT_STUBBED` 显式失败 issue——被误用即以结果面拒绝暴露，不静默伪装 ok），**零断言改动**（SA4 逐 diff 核实）。
+   - **【R2 修订补录，SA4 F3】类型面收容与版本纪律**：`namespace-registry/src/index.ts` +7 个 **type-only** re-export（`OpenReplicationSessionIssueCode` / `OpenReplicationSessionOptions` / `OpenReplicationSessionResult` / `ReplicationSession` / `ReplicationSessionApplyRefusalCode` / `ReplicationSessionApplyResult` / `ReplicationSessionStatus`——主线 b66615c registry index 同款 re-export 面；registry-surface「恰九个 value」断言不受影响，逐 diff 核实零运行时值导出）；两触及包 `package.json` **仅 version 字段 bump**（runtime 0.1.8→0.1.9 / registry 0.1.3→0.1.4——仓库既定纪律：#167 `722bddf` 同款只 bump 触及包；workspace 版本不入 lockfile，pnpm-lock 零 diff 属预期）。
+   - 其余存量测试**零改动应全绿**（exports-audit 的 index 值导出一键锁不受影响——两方法在 runtime 对象上、不在 index；writeFatalMessage 既有渲染分支逐字节不变；上条五个替身文件是 typecheck 强制收容，不属「改冻结行为」）。
 3. **SA6 前置**：红灯测试两处 fatal 码字面量修订（§11 末）——SA6 owned 文件、SA6 自己改；SA3 不准动断言。
 4. **类型面**：`exactOptionalPropertyTypes` 纪律——context/可选字段用条件展开（`...(x !== undefined ? {x} : {})`），沿 emitAttempt 既有形态。
 5. **禁止事项**：不得给 open/getStatus/close 加任何 emission；不得在 enable 槽加 fence（主线显式裁决）；不得「优化」E3 单读捕获为双读；不得给 R6 恢复无条件 notifyDirty（R-3.1 是契约）；不得把 raw bytes 放进 input.snapshot。
@@ -629,6 +637,19 @@ E5 corrupt bytes rejected by scratch preview: Error
 **SA6 owned**
 - `packages/namespace-runtime/test/runtime-replication-diagnostic-red.test.ts` — `[SA6 owned]` 红灯验收测试。**SA6 依其报告注记 2 协议修订两处 fatal 码字面量**（R-3.2：`NSRT-FATAL-REPLICATION-APPLY-WRITE-INTERNAL` → `NSRT-FATAL-REPLICATION-APPLY-INTERNAL`，断言语义不变）；SA3 禁改断言逻辑
 
+**R2 修订追加（SA4 R1 F3——8 个实际改动文件的显式收容；代码不回滚，理由见各条）**
+- `packages/namespace-registry/test/registry-idle.test.ts` — 修改，stub runtime 补两键 loud stub（`REPLICATION_NOT_STUBBED` 显式失败）——十二键类型面强制收容，零断言改动（SA4 逐 diff 核实）
+- `packages/namespace-registry/test/registry-shutdown.test.ts` — 修改，同上 loud stub 收容
+- `packages/namespace-registry/test/registry-sa7-hostile.test.ts` — 修改，同上 loud stub 收容
+- `packages/namespace-registry/test/registry-sa7-rev1.test.ts` — 修改，同上 loud stub 收容
+- `packages/namespace-registry/test/registry-sa7-concurrency.test.ts` — 修改，同上 loud stub 收容
+- `packages/namespace-registry/src/index.ts` — 修改，+7 个 type-only re-export（`OpenReplicationSessionIssueCode`/`OpenReplicationSessionOptions`/`OpenReplicationSessionResult`/`ReplicationSession`/`ReplicationSessionApplyRefusalCode`/`ReplicationSessionApplyResult`/`ReplicationSessionStatus`）——公共复制会话类型的公共面收容（主线 b66615c registry index 同款）；零运行时值导出（registry-surface「恰九个 value」断言绿）
+- `packages/namespace-runtime/package.json` — 修改，仅 version bump 0.1.8→0.1.9（触及包版本纪律——#167 `722bddf` 先例同款；lockfile 零 diff 属预期，workspace 版本不入 lockfile）
+- `packages/namespace-registry/package.json` — 修改，仅 version bump 0.1.3→0.1.4（同上）
+
+**R2 修订追加（SA4 owned 探针——修复后转绿的复现面）**
+- `packages/namespace-runtime/test/runtime-replication-sa4-probe.test.ts` — `[SA4 owned]` F1/F2 复现探针（2 用例，SA4 评审 §附；修复前 2 failed = 缺陷可执行证据，修复后转绿入树）——SA4 自有产物，非 SA3 改动面
+
 ### DENY LIST
 
 - `packages/namespace-diagnostic-log/**` — #148/#156/#159/#166 冻结的词表/emitter/adapter，本票纯消费方零改动（§1.1/P5）
@@ -638,8 +659,8 @@ E5 corrupt bytes rejected by scratch preview: Error
 - `packages/namespace-runtime/src/schema-write.ts` — SCHEMA 槽零触碰（其 diag 调用形态经 diagnostic.ts 缺省值保持）
 - `packages/namespace-registry/src/testing.ts` — runtimeFactory 通道零改动（§6.5）
 - `packages/doc-runtime/**` / `packages/persistence/**` / `packages/dsh-persistence/**` / `packages/vfsl*/**` / `packages/clock/**` — 非接线对象
-- `packages/namespace-runtime/test/*.test.ts` 与 `packages/namespace-registry/test/*.test.ts` 中**非上述三文件、非红灯文件**者 — 存量冻结行为测试零改动（全绿即回归证明）
-- `pnpm-lock.yaml` — 零新增依赖（workspace 链接已存在：registry→runtime、runtime→diagnostic-log 均已登记），预期无 diff
+- `packages/namespace-runtime/test/*.test.ts` 与 `packages/namespace-registry/test/*.test.ts` 中**非 ALLOW LIST 已列文件**者 — 存量冻结行为测试零改动（全绿即回归证明）。【R2 修订收窄，SA4 F3】本条原措辞「非上述三文件、非红灯文件」的完备性声明有缺口：五个含 `implements NamespaceRuntime` 替身的 registry 测试因十二键扩张被 TS 结构类型**强制**要求补 loud stub（不补即 CI typecheck 断）——该五文件 + SA4 探针已上移 ALLOW（带 F3 理由），**原 DENY 对该五文件显式解除**；除此之外的存量测试仍零改动
+- `pnpm-lock.yaml` — 零新增依赖（workspace 链接已存在：registry→runtime、runtime→diagnostic-log 均已登记），预期无 diff【R2 注：两 package.json 仅 version bump，workspace 版本不入 lockfile——SA4 F3 实测零 diff，本条声明维持】
 
 ---
 
@@ -657,3 +678,18 @@ E5 corrupt bytes rejected by scratch preview: Error
 | #6【建议】探测脚本随档或注明可机械重建 | ✅（择替代方案） | §16 脚本可重建性注记 | SA1 文件写权限限本设计文档（skill 硬门禁），脚本本体无法落盘；改为注明机械重建路径（红灯 helpers `:107-132` + §16 步骤描述）+ SA2 E-7 已独立重建复现全部关键值（第二方验证） |
 
 **一致性自检**（修订后全文执行）：`三点` 残留 0 处（§2 D-5 / §7 / §14.1 / §15.1 / §17 / §18 全部改为「四点」并同步内容）；`capture:'none'` 语义在 §7 / §9.2 注 / §9.3 表头注 / §16 P8 / §17 五处口径一致（省略 emission input ⇒ record `{capture:'none'}`，与 not-accessed/unavailable 严格三分）；`NSRT-FATAL-REPLICATION-APPLY-INTERNAL` 全文字面量唯一（旧字面量仅存于 R-3.2 / §11 / §18 的「修订对象」引述上下文）；B-e′ 行标签与 §9.2 锚注、§11 可选锚引用一致。
+
+---
+
+## R2 修订记录（SA4 R1 F1/F3 闭合，2026-08-31）
+
+> 评审输入：`wiki/raw/task_trusted-replication-management-diagnostic-change-log_sa4_review.md`（verdict reject；F1 P0 / F2 P1 回流 SA3 修实现，F3 P2 回流 SA1 补文档）。SA1 动作仅文档（本节 + §15.2 + §18 + F1 注记）；**生产与测试代码零触碰**（skill 硬门禁）。F2（enable E3 成功后 `diag.input = {snapshot}` 赋值）是纯实现缺陷，设计的 §9.1 表 E-f…E-k input 列（snapshot）与 #149 `diagInputReady` 先例已正确表达契约——SA3 按修复方向落地即可，无需设计修订。
+
+| SA4 要求 | 是否落实 | 修订位置 | 修订内容摘要 |
+|---|:--:|---|---|
+| F1（P0）SA1 同步：§13.5/§3「零 update 订阅」措辞收窄为 enable/bump 槽；apply 窗口是 R-3.1 业务判据载体必须无条件；设计补注防后续轮次回退 | ✅ | §3 补充隔离 / §8 apply R5 窗口代码注 / §13 边界 5 | 三处统一「窗口订阅分化」措辞：enable/bump E5 窗口 = 纯诊断附件（diag 条件）；**apply R5 窗口 = 无条件业务事实源**（capturedUpdate 是 R6 notifyDirty 门控唯一判据，无诊断基线同构成立；与 beforeTransaction 二分探针同待遇）；仅 `diag.updateBytes` 赋值保持 diag 条件；明文禁则「禁止任何后续轮次把 apply 窗口退化为 diag 条件」+ 退化后果（无日志基线 apply 静默零持久化，ADR-0006 触发器悬空） |
+| F3（P2）8 个实际改动文件补进 §18 ALLOW LIST（5 测试替身字面命中 DENY——不接受回滚） | ✅ | §18「R2 修订追加」两组 + DENY 兜底条目收窄 + §15.2 两条补录 | ALLOW 追加：五个 registry 替身测试（loud stub `REPLICATION_NOT_STUBBED`，typecheck 强制收容、零断言改动）、`registry/src/index.ts`（+7 type-only re-export，主线同款、零运行时值）、两 package.json（仅 version bump，#167 先例）；DENY 兜底条目改「非 ALLOW LIST 已列文件」并对五文件显式解除（带 F3 理由）；pnpm-lock 条目补 R2 注（workspace 版本不入 lockfile，零 diff 维持） |
+| F3 附带：SA4 探针文件入树后的 scope 覆盖 | ✅ | §18「R2 修订追加（SA4 owned）」 | `runtime-replication-sa4-probe.test.ts` 以 `[SA4 owned]` 入 ALLOW（修复后转绿入树）——防下一轮 scope 比对再报 |
+| F1/F2 代码修复 | ➖（非 SA1 动作） | — | 回流 SA3：F1 = `replication-session.ts` R5 窗口无条件化（SA4 §F1 修复方向，与 §8 修订后的设计契约一致）；F2 = `replication-write.ts` E3 成功分支 `diag.input = {snapshot:{replicationId}}` 一行（§9.1 表既有契约，镜像 `diagInputReady`）。SA4 探针 A/B 转绿 + 红灯 15/15 不回归 = 复验面 |
+
+**R2 一致性自检**：窗口条件性措辞三处（§3/§8/§13.5）与 §2 流程图 R6 行、§9.3 A-j/A-k 的 R-3.1 判据表述同构（capturedUpdate 业务判据 ⟺ 无条件窗口）；§18 ALLOW 现覆盖 `git diff --name-only 722bddf HEAD` 全部 24 个代码/测试文件（源码 11 + 测试 9 + index.ts + package.json×2 + 红灯文件——SA4 E-1 的 33 文件含 wiki 文档 9 个，非 scope 比对面）；DENY 无条目与 ALLOW 重叠。
