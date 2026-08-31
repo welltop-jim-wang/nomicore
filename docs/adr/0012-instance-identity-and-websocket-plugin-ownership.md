@@ -1,4 +1,4 @@
-# ADR 0011：实例身份单一真相与 WebSocket plugin 所有权
+# ADR 0012：实例身份单一真相与 WebSocket plugin 所有权
 
 状态：proposed
 
