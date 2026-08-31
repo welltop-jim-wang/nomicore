@@ -26,6 +26,10 @@ When creating or editing `domains/*/schema.vfsl`, follow `docs/vfsl/schema-autho
 
 When integrating Nomicore into an external Cordis host, changing plugin assembly, or documenting plugin configuration and shutdown, use Cordis plugin-factory composition and follow `docs/integration/cordis-plugin-hosting.md` for dependency order, adapter options, Registry usage, and lifecycle teardown; do not assume a stable dynamic pluginId or `cordis_define` contract.
 
+### Instance replication
+
+When changing Hub/Peer replication, authentication, wire frames, connection or namespace state machines, backpressure, reconciliation, or shutdown drain, treat `docs/adr/0010-hub-peer-websocket-ydoc-replication.md` as the architecture and `docs/protocols/instance-replication-v1.md` as the normative wire contract; then read the nearest package or app `AGENTS.md`.
+
 ### Git worktrees
 
 Create all repository worktrees under the repository-local `.worktrees/` directory. Do not create routine worktrees beside the repository or under `/tmp`. See `.agents/WORKTREES.md`.
