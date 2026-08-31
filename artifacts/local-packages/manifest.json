@@ -9,5 +9,5 @@
   "@nomicore/namespace-registry": "nomicore-namespace-registry-0.1.6.tgz",
   "@nomicore/replication-protocol": "nomicore-replication-protocol-0.1.0.tgz",
   "@nomicore/ws-replication": "nomicore-ws-replication-0.1.3.tgz",
-  "@nomicore/yjs-server": "nomicore-yjs-server-0.1.0.tgz"
+  "@nomicore/yjs-server": "nomicore-yjs-server-0.1.1.tgz"
 }
