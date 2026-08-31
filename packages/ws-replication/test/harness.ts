@@ -58,6 +58,7 @@ export interface WsReplicationTimeouts {
   readonly openTimeoutMs: number;
   readonly bootstrapTimeoutMs: number;
   readonly reconcileTimeoutMs: number;
+  readonly reconcileIntervalMs: number;
   readonly closeTimeoutMs: number;
   readonly ackTimeoutMs: number;
 }
@@ -143,6 +144,7 @@ export const CONTRACT_TIMEOUTS: Readonly<WsReplicationTimeouts> = Object.freeze(
   openTimeoutMs: 5_000,
   bootstrapTimeoutMs: 10_000,
   reconcileTimeoutMs: 10_000,
+  reconcileIntervalMs: 5 * 60_000,
   closeTimeoutMs: 5_000,
   ackTimeoutMs: 10_000,
 });

@@ -66,7 +66,7 @@ export interface PeerNamespaceHost {
   now?(): number | undefined;
 }
 
-type TimerKind = 'open' | 'bootstrap' | 'reconcile' | 'close';
+type TimerKind = 'open' | 'bootstrap' | 'reconcile' | 'periodic-reconcile' | 'close';
 
 /** 排队时（caller 同步栈）捕获的代际资源所有权（§D1，issue #171 Scope 2）：
  *  执行期只处置捕获对象——「先捕获、后处置」，迟到续体不得触碰当前代字段。
@@ -101,6 +101,7 @@ export class PeerNamespaceController {
     open: undefined,
     bootstrap: undefined,
     reconcile: undefined,
+    'periodic-reconcile': undefined,
     close: undefined,
   };
   private cleanupTail: Promise<void> = Promise.resolve();
@@ -749,6 +750,7 @@ export class PeerNamespaceController {
    *  §13.3/§14.1：failed 等待连接重建——断线投影 disconnected 后重连重 OPEN）。
    *  §D5.1（issue #171）：全分支同步段 clearAllTimers + 摘订阅 + 处置排队（claim 化）。 */
   onConnectionLost(): void {
+    this.clearTimer('periodic-reconcile');
     if (this.state === 'closed' || this.state === 'conflicted') return; // 终态保持
     this.clearAllTimers(); // ★ RC3：断线同步段清全部 timer（open/bootstrap/reconcile/close）
     this.quiesceSync(); // 同步摘本代 listener（既有）
@@ -803,6 +805,7 @@ export class PeerNamespaceController {
 
   /** stop()：一律收口为 closed（本地，零 wire）。 */
   onConnectionStopped(): Promise<void> {
+    this.clearAllTimers();
     this.intent = 'removed';
     if (!this.isTerminal()) {
       this.setState('closed');
@@ -851,10 +854,12 @@ export class PeerNamespaceController {
     this.channel.resetForLive();
     this.resyncDeclared = false;
     this.watchdog.onEvent();
+    this.armTimer('periodic-reconcile');
   }
 
   private onAckTimeoutFired(): void {
     if (this.state === 'live' || this.state === 'needs-resync') {
+      this.clearTimer('periodic-reconcile');
       this.setState('needs-resync');
       this.emitResyncRequired('ack-timeout'); // PN6b：peer 不发 RESYNC_REQUIRED——本地边沿通知
       this.host.deferTask(() => {
@@ -872,6 +877,19 @@ export class PeerNamespaceController {
     this.startRound();
   }
 
+  /** Peer-owned one-shot cadence: re-armed only after the namespace returns to live. */
+  private startPeriodicReconcile(): void {
+    if (this.state !== 'live') return;
+    if (this.channel.inFlightCount > 0) {
+      this.armTimer('periodic-reconcile');
+      return;
+    }
+    this.clearTimer('periodic-reconcile');
+    this.setState('reconciling');
+    this.armTimer('reconcile');
+    this.startRound();
+  }
+
   private declareLocalResync(
     cause:
       | 'queue-overflow'
@@ -882,6 +900,7 @@ export class PeerNamespaceController {
       | 'ack-timeout',
   ): void {
     if (this.resyncDeclared) return;
+    this.clearTimer('periodic-reconcile');
     this.resyncDeclared = true;
     this.sendChecked({
       kind: 'RESYNC_REQUIRED',
@@ -902,6 +921,7 @@ export class PeerNamespaceController {
     // peer 侧仅 needsResync 边沿生效（fence 结构性不命中——防御判别在帧处理钩子）
     this.channel.markSessionResyncEdge();
     if (this.resyncDeclared) return;
+    this.clearTimer('periodic-reconcile');
     this.resyncDeclared = true;
     this.sendChecked({
       kind: 'RESYNC_REQUIRED',
@@ -1347,7 +1367,9 @@ export class PeerNamespaceController {
           ? this.host.timeouts.bootstrapTimeoutMs
           : kind === 'reconcile'
             ? this.host.timeouts.reconcileTimeoutMs
-            : this.host.timeouts.closeTimeoutMs;
+            : kind === 'periodic-reconcile'
+              ? this.host.timeouts.reconcileIntervalMs
+              : this.host.timeouts.closeTimeoutMs;
     this.timers[kind] = this.host.timer.setTimeout(() => {
       this.timers[kind] = undefined;
       this.onTimerFired(kind);
@@ -1363,11 +1385,15 @@ export class PeerNamespaceController {
   }
 
   private clearAllTimers(): void {
-    (['open', 'bootstrap', 'reconcile', 'close'] as const).forEach((kind) => this.clearTimer(kind));
+    (['open', 'bootstrap', 'reconcile', 'periodic-reconcile', 'close'] as const).forEach((kind) => this.clearTimer(kind));
   }
 
   private onTimerFired(kind: TimerKind): void {
     if (this.isTerminal()) return;
+    if (kind === 'periodic-reconcile') {
+      this.startPeriodicReconcile();
+      return;
+    }
     if (kind === 'close') {
       // §13.1：closeTimeout 不再等待 → 本地收口 closed
       if (this.state === 'closing') {

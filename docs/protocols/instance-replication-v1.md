@@ -249,7 +249,7 @@ Peer 的首个 Step1 隐式开始 round；Hub 不自行开始 round。Hub 收到
 
 任一端可声明当前增量连续性作废，但始终由 Peer用新 roundId 发起下一轮。发出后不再发送新 UPDATE；已接纳 update 正常 apply/ACK。Peer等待 in-flight 窗口收口后开始新 round；断线则重连后重新 OPEN/reconcile。
 
-首版不做周期 reconciliation，仅在 bootstrap、reconnect、queue overflow、ACK timeout或显式 RESYNC_REQUIRED 时运行。
+协议 v1 执行周期 reconciliation。Peer 为每个 live namespace 持有一个 one-shot timer；`reconcileIntervalMs` 为正整数配置，缺省 300000 ms。timer 只在完整 round 收口并进入 live 后武装；到期时 Peer 直接进入 reconciling 并以新 roundId 发起 round，不发送 RESYNC_REQUIRED。round 进行期间不武装下一次周期 timer，因此不会出现重叠 round；期间发生的 queue overflow、ACK timeout 或显式 RESYNC_REQUIRED 仍按既有 pending-resync 规则合并为至多一个紧随其后的 round。连接断开、GOAWAY、remove/close、终态与 shutdown 必须清理 timer；重连后只有新连接代际重新 OPEN/reconcile 并进入 live 后才开始新的周期。
 
 ## 10. Live UPDATE
 
@@ -517,6 +517,7 @@ low-water < high-water
 - `openTimeoutMs`；
 - `bootstrapTimeoutMs`；
 - `reconcileTimeoutMs`；
+- `reconcileIntervalMs`（缺省 `300_000`）；
 - `closeTimeoutMs`；
 - `ackTimeoutMs`；
 - WS ping interval/pong timeout。

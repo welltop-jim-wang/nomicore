@@ -42,6 +42,8 @@ export interface ReplicationTimeouts {
   readonly openTimeoutMs: number; // 5_000
   readonly bootstrapTimeoutMs: number; // 10_000
   readonly reconcileTimeoutMs: number; // 10_000
+  /** Peer-owned periodic reconciliation cadence while a namespace is live. */
+  readonly reconcileIntervalMs: number; // 300_000
   readonly closeTimeoutMs: number; // 5_000
   readonly ackTimeoutMs: number; // 10_000
   /** WS 级 ping 间隔（§18「心跳与失联判定」；§5.1）。缺省 30_000（安全缺省，ADR L165）。 */

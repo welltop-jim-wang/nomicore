@@ -195,6 +195,7 @@ export function validateTimeouts(timeouts: ResolvedTimeouts): void {
   positiveSafeInteger(timeouts.openTimeoutMs, 'openTimeoutMs');
   positiveSafeInteger(timeouts.bootstrapTimeoutMs, 'bootstrapTimeoutMs');
   positiveSafeInteger(timeouts.reconcileTimeoutMs, 'reconcileTimeoutMs');
+  positiveSafeInteger(timeouts.reconcileIntervalMs, 'reconcileIntervalMs');
   positiveSafeInteger(timeouts.closeTimeoutMs, 'closeTimeoutMs');
   positiveSafeInteger(timeouts.ackTimeoutMs, 'ackTimeoutMs');
   positiveSafeInteger(timeouts.pingIntervalMs, 'pingIntervalMs');

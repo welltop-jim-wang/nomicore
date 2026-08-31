@@ -116,6 +116,7 @@ const TIMEOUT_KEYS = new Set([
   'openTimeoutMs',
   'bootstrapTimeoutMs',
   'reconcileTimeoutMs',
+  'reconcileIntervalMs',
   'closeTimeoutMs',
   'ackTimeoutMs',
   'pingIntervalMs',
