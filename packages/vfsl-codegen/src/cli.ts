@@ -11,7 +11,7 @@
  * 同目录多 id）→ 顶层 catch 结构化 stderr + 2。
  */
 import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { SchemaSourceError } from '@nomicore/vfsl';
 import { collectProjections } from './collect.js';
 import type { ProjectionOutput } from './collect.js';
@@ -19,6 +19,8 @@ import type { ProjectionOutput } from './collect.js';
 interface CliArgs {
   domains: string;
   check: boolean;
+  domain?: string;
+  out?: string;
 }
 
 class CliUsageError extends Error {
@@ -44,16 +46,43 @@ function parseArgs(argv: string[]): CliArgs {
       i++;
     } else if (a.startsWith('--domains=')) {
       args.domains = a.slice('--domains='.length);
+    } else if (a === '--domain') {
+      args.domain = requiredValue(argv, ++i, '--domain');
+    } else if (a.startsWith('--domain=')) {
+      args.domain = nonEmptyValue(a.slice('--domain='.length), '--domain');
+    } else if (a === '--out') {
+      args.out = requiredValue(argv, ++i, '--out');
+    } else if (a.startsWith('--out=')) {
+      args.out = nonEmptyValue(a.slice('--out='.length), '--out');
     } else {
       throw new CliUsageError(`未知参数: ${a}`);
     }
   }
+  if ((args.domain === undefined) !== (args.out === undefined)) {
+    throw new CliUsageError('--domain 与 --out 必须同时提供');
+  }
   return args;
+}
+
+function requiredValue(argv: string[], index: number, flag: string): string {
+  const value = argv[index];
+  if (value === undefined || value.startsWith('--')) throw new CliUsageError(`${flag} 缺少参数`);
+  return nonEmptyValue(value, flag);
+}
+
+function nonEmptyValue(value: string, flag: string): string {
+  if (value === '') throw new CliUsageError(`${flag} 参数不能为空`);
+  return value;
 }
 
 async function main(): Promise<number> {
   const args = parseArgs(process.argv.slice(2));
-  const outputs = await collectProjections(args.domains);
+  const outputs = await collectProjections(args.domains, args.domain);
+  if (args.out !== undefined) {
+    const output = outputs[0];
+    if (output === undefined) throw new CliUsageError('自定义输出模式未找到目标领域');
+    output.outPath = isAbsolute(args.out) ? args.out : resolve(args.domains, args.out);
+  }
 
   // 零领域集一律响亮失败（G 已落地，阶段门随 #27 移除——domains/ 被误删/改名时
   // 不允许静默 vacuous pass 掩蔽回归；--allow-empty-domains 同步退役）。
@@ -64,7 +93,7 @@ async function main(): Promise<number> {
     return 2;
   }
 
-  if (args.check) return checkFreshness(outputs, args.domains);
+  if (args.check) return checkFreshness(outputs, args.domains, args.out === undefined);
 
   // 全量重新生成 + 写盘（幂等：同输入重写同字节）
   for (const o of outputs) {
@@ -75,7 +104,7 @@ async function main(): Promise<number> {
 }
 
 /** §5.4 --check：全量重生成 → 与盘上逐字节 diff（+ 孤儿生成物检测）；任何不一致 → 1。 */
-async function checkFreshness(outputs: ProjectionOutput[], root: string): Promise<number> {
+async function checkFreshness(outputs: ProjectionOutput[], root: string, checkOrphans: boolean): Promise<number> {
   const problems: string[] = [];
   for (const o of outputs) {
     let disk: string | null = null;
@@ -94,8 +123,10 @@ async function checkFreshness(outputs: ProjectionOutput[], root: string): Promis
       problems.push(`生成物过期（diff 非空）：${o.outPath}`);
     }
   }
-  for (const p of await findOrphanGenerated(root, outputs)) {
-    problems.push(`孤儿生成物：${p}`);
+  if (checkOrphans) {
+    for (const p of await findOrphanGenerated(root, outputs)) {
+      problems.push(`孤儿生成物：${p}`);
+    }
   }
   if (problems.length === 0) return 0;
   for (const p of problems) process.stderr.write(`vfsl-codegen: --check 失败 — ${p}\n`);

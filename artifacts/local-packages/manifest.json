@@ -1,0 +1,9 @@
+{
+  "@nomicore/vfsl-protocol": "nomicore-vfsl-protocol-0.1.1.tgz",
+  "@nomicore/vfsl": "nomicore-vfsl-0.2.2.tgz",
+  "@nomicore/doc-runtime": "nomicore-doc-runtime-0.1.11.tgz",
+  "@nomicore/clock": "nomicore-clock-0.1.0.tgz",
+  "@nomicore/persistence": "nomicore-persistence-0.2.2.tgz",
+  "@nomicore/namespace-runtime": "nomicore-namespace-runtime-0.1.10.tgz",
+  "@nomicore/namespace-registry": "nomicore-namespace-registry-0.1.6.tgz"
+}

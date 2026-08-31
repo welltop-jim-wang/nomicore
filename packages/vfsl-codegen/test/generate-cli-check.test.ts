@@ -18,7 +18,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { mkdir, mkdtemp, writeFile, appendFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, writeFile, appendFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -50,6 +50,51 @@ describe('AC4 — pnpm generate 存在且幂等（全量重新生成 + 写盘）
     const fx = await makeStaleFixture();
     const r = runPnpm(['generate', '--domains', fx.dir], repoRoot);
     expect(r.status).toBe(0);
+  });
+});
+
+describe('单领域自定义输出', () => {
+  it('将指定领域生成到宿主 package 路径，内容与默认 projection 逐字节相同', async () => {
+    const fx = await makeStaleFixture();
+    expect(runPnpm(['generate', '--domains', fx.dir], repoRoot).status).toBe(0);
+    const custom = join(fx.dir, 'packages', 'consumer', 'src', 'generated', 'nomicore-schema.ts');
+    const generated = runPnpm([
+      'generate', '--domains', fx.dir, '--domain', 'demo', '--out',
+      'packages/consumer/src/generated/nomicore-schema.ts',
+    ], repoRoot);
+    expect(generated.status).toBe(0);
+    expect(await readFile(custom, 'utf8')).toBe(
+      await readFile(join(fx.dir, 'domains', 'demo', 'generated.ts'), 'utf8'),
+    );
+  });
+});
+
+describe('单领域自定义输出参数与 freshness', () => {
+  it('自定义输出 --check：fresh=0；stale/missing=1 且不写盘', async () => {
+    const fx = await makeStaleFixture();
+    const rel = 'packages/consumer/src/generated/nomicore-schema.ts';
+    const custom = join(fx.dir, rel);
+    const args = ['generate', '--domains', fx.dir, '--domain', 'demo', '--out', rel];
+    expect(runPnpm(args, repoRoot).status).toBe(0);
+    expect(runPnpm([...args, '--check'], repoRoot).status).toBe(0);
+    await writeFile(custom, 'stale\n', 'utf8');
+    expect(runPnpm([...args, '--check'], repoRoot).status).toBe(1);
+    expect(await readFile(custom, 'utf8')).toBe('stale\n');
+    const missing = join(fx.dir, 'packages', 'consumer', 'src', 'generated', 'missing.ts');
+    const missingArgs = ['generate', '--domains', fx.dir, '--domain', 'demo', '--out', missing, '--check'];
+    expect(runPnpm(missingArgs, repoRoot).status).toBe(1);
+    await expect(readFile(missing, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it.each([
+    [['generate', '--domain', 'demo'], '--domain 与 --out 必须同时提供'],
+    [['generate', '--out', 'x.ts'], '--domain 与 --out 必须同时提供'],
+    [['generate', '--domain', 'missing', '--out', 'x.ts'], '领域不存在'],
+  ] as const)('无效参数响亮失败：%j', async (tail, message) => {
+    const fx = await makeStaleFixture();
+    const r = runPnpm([...tail, '--domains', fx.dir], repoRoot);
+    expect(r.status).toBe(2);
+    expect(r.stderr).toContain(message);
   });
 });
 
