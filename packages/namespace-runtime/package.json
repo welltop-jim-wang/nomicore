@@ -5,10 +5,12 @@
   "type": "module",
   "exports": {
     ".": {
+      "nomicore-source": "./src/index.ts",
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
     },
     "./internal": {
+      "nomicore-source": "./src/internal.ts",
       "types": "./dist/internal.d.ts",
       "import": "./dist/internal.js"
     }
