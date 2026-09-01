@@ -975,13 +975,16 @@ export function createFileLog(config: FileDiagnosticLogConfig, options: FileLogO
     }
   }
 
-  /** 常规文件存在性（ENOENT/不可读/非常规 → false——不存在即无占用，不计数）。 */
-  function statFileExists(p: string): boolean {
+  type FileState = 'file' | 'absent' | 'error'
+
+  /** 常规文件状态：仅 ENOENT 是 absent；不可访问/非常规文件均保守视为 error。 */
+  function statFileState(p: string): FileState {
     try {
       const st = statSync(p, { throwIfNoEntry: false })
-      return st !== undefined && st.isFile()
-    } catch {
-      return false
+      if (st === undefined) return 'absent'
+      return st.isFile() ? 'file' : 'error'
+    } catch (err) {
+      return errnoOf(err) === 'ENOENT' ? 'absent' : 'error'
     }
   }
 
@@ -1131,8 +1134,14 @@ export function createFileLog(config: FileDiagnosticLogConfig, options: FileLogO
     for (const segment of enumeration.live) {
       if (openSegment !== null && segment === openSegment) continue // INV-1：开组 BIN-first 瞬态绝对豁免
       const sp = segmentFilePaths(stream.segmentsDir, segment)
-      if (statFileExists(sp.jsonlPath) || statFileExists(markerPathOf(stream.segmentsDir, segment))) continue
-      if (!statFileExists(sp.binPath)) continue
+      const jsonlState = statFileState(sp.jsonlPath)
+      const markerState = statFileState(markerPathOf(stream.segmentsDir, segment))
+      const binState = statFileState(sp.binPath)
+      if (jsonlState === 'error' || markerState === 'error' || binState === 'error') {
+        report.failedSteps += 1
+        continue
+      }
+      if (jsonlState === 'file' || markerState === 'file' || binState === 'absent') continue
       try {
         unlinkSync(sp.binPath)
         report.orphanBinsDeleted += 1
@@ -1524,8 +1533,8 @@ export function deleteNamespaceDiagnosticLog(req: NamespaceLogDeletionRequest): 
   let dirExists = false
   try {
     dirExists = statSync(namespaceDir, { throwIfNoEntry: false }) !== undefined
-  } catch {
-    dirExists = false
+  } catch (err) {
+    return { status: 'failed', code: errnoOf(err), step: 'marker' }
   }
   if (!dirExists) return { status: 'absent' }
   // 2. marker（temp+rename 原子；写失败 → failed/marker）

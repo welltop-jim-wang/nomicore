@@ -436,6 +436,24 @@ describe('T-B 闭组资格与删除协议（AC-2）', () => {
     expect(all[all.length - 1]!.segment).toBe('00000004')
   })
 
+  it.skipIf(isRoot)('T-B9b 卫生扫描遇到不可访问目录时保守失败，绝不把 BIN 误删为 orphan', () => {
+    const root = freshRoot()
+    const ns = 'ns-b9b'
+    const a = buildThreeGroups(root, ns, { maxAgeMs: null, maxBytesPerNamespace: null, sweepOnOpen: false })
+    const segmentsDir = streamPaths(root, ns, a.log.streamId).segmentsDir
+    const bin = segmentPathsOf(root, ns, a.log.streamId, '00000001').binPath
+
+    chmodSync(segmentsDir, 0o000)
+    try {
+      const report = a.log.sweepRetention({ now: T0 + 1000 })
+      expect(report.failedSteps).toBeGreaterThan(0)
+      expect(report.orphanBinsDeleted).toBe(0)
+    } finally {
+      chmodSync(segmentsDir, 0o755)
+    }
+    expect(existsSync(bin)).toBe(true)
+  })
+
   it('T-B10 [红灯] 多 generation：候选序 = manifest.createdAt↑；旧代先裁；字节预算跨代合计', () => {
     const root = freshRoot()
     const ns = 'ns-b10'

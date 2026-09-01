@@ -11,7 +11,7 @@
  *
  * 断言全部针对运行时产物（返回值、磁盘树、observer 事件、会话状态）——零源码文本断言。
  */
-import { existsSync, renameSync, rmSync, unlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, renameSync, rmSync, unlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import {
@@ -50,6 +50,7 @@ afterEach(() => {
 const T0 = Date.parse('2026-08-28T12:00:00.000Z')
 const SIDE = 100
 const INLINE_T = 64
+const isRoot = typeof process.getuid === 'function' && process.getuid() === 0
 
 /** deletion.json 意图标记内容（SA2 §2.4 协议钉死形状）。 */
 const DELETION_MARKER = JSON.stringify({ format: 'ndcl-deletion', version: 1 })
@@ -123,6 +124,19 @@ describe('T-D namespace 日志删除（AC-4：locator/manifest/jsonl/bin/标记/
     expect(first.status).toBe('deleted')
     const second = deleteNamespaceDiagnosticLog({ rootDir: root, namespaceId: ns })
     expect(second.status).toBe('absent')
+  })
+
+  it.skipIf(isRoot)('T-D2b namespace 路径探测失败必须 loud failed，不能伪报 absent', () => {
+    const root = freshRoot()
+    const namespacesDir = join(root, 'namespaces')
+    mkdirSync(namespacesDir)
+    chmodSync(namespacesDir, 0o000)
+    try {
+      const result = deleteNamespaceDiagnosticLog({ rootDir: root, namespaceId: 'ns-d2b' })
+      expect(result).toEqual({ status: 'failed', code: 'EACCES', step: 'marker' })
+    } finally {
+      chmodSync(namespacesDir, 0o755)
+    }
   })
 
   it('T-D3 [红灯] 非法 namespaceId（含 .. / 控制符 / 路径分隔）：failed + invalid-namespace-id + 零 fs 触达', () => {

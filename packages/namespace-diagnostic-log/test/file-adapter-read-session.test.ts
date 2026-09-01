@@ -166,6 +166,7 @@ describe('T-C 读会话租约（AC-3：短期可续租、过期不阻塞）', ()
     expect(report.deletedGroups).toBe(2)
     // 过期后可重租（§2.3：租约是劝告锁——renew()===true 不保证快照仍完整）
     expect(session.renew()).toBe(true)
+    expect(session.leasedUntil).toBe(T0 + 3000) // 从当前时刻续租，不返回“成功但仍已过期”
     expect(session.closed).toBe(false)
     expect(session.segments).toEqual(['00000001', '00000002', '00000003']) // 快照不增（数据不复活）
   })

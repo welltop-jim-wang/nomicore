@@ -110,7 +110,7 @@ class DiagnosticReadSessionImpl implements DiagnosticReadSession {
     if (this.closedValue) return false
     const now = this.clock.now()
     if (this.maxLifetimeMs !== null && now > this.openAt + this.maxLifetimeMs) return false
-    const next = this.leasedUntilValue + this.ttlMs
+    const next = Math.max(now, this.leasedUntilValue) + this.ttlMs
     // 解释性裁决（SA6 报告 §4.1）：越界即拒——续租后租期不得超出 open 起
     // maxLifetimeMs 总时长（与「当前时刻已超」互斥覆盖）。
     if (this.maxLifetimeMs !== null && next > this.openAt + this.maxLifetimeMs) return false

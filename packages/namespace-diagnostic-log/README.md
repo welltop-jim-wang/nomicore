@@ -221,10 +221,15 @@ log.sweepRetention({ now })            // 显式 sweep：卫生遍历（遗留 .
 #### 读会话租约（AC-3；短期可续租、过期不阻塞）
 
 ```ts
-const session = openDiagnosticReadSession({ rootDir, namespaceId, streamId, ttlMs: 15_000 })
-session.segments    // open 时刻枚举的 segment 快照（升序；新滚出段不在内）
-session.renew()     // 续租（越界 maxLifetimeMs/已 close → false）；默认无总时长上限 = 显式续租模式
-session.close()     // 立即释放（幂等）
+const request = { rootDir, namespaceId, streamId }
+const session = openDiagnosticReadSession({ ...request, ttlMs: 15_000 })
+try {
+  const result = readStreamStrict(request) // 会话存续期间 retention 不删其快照组
+  session.renew()                         // 长读取按需续租
+  consume(result)
+} finally {
+  session.close()                         // 立即释放（幂等）
+}
 ```
 
 - 租约覆盖 open 时刻快照的全部组；**过期租约永不阻塞删除**（TTL 过即视同无租约，
