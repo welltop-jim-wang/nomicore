@@ -30,7 +30,7 @@ plus Registry/Runtime/Persistence/Clock/VFSL dependencies listed in `artifacts/l
 
 ## Deployment process
 
-1. Give every process one static `role` (`hub` or `peer`), a safe unique `instanceId`, its own Persistence instance, and—when file-backed—its own exclusive `rootDir`. In an embedded host, configure `instanceId + role` exactly once through `createInstancePlugin()`; Registry and replication both consume that service, and static identity is restart-only.
+1. Give every process one static `role` (`hub` or `peer`), a safe unique `instanceId`, its own Persistence instance, and—when file-backed—its own exclusive `rootDir`. A root is private storage, not a cross-process mutation channel: never point a second live process at it or edit its snapshots; use replication between distinct roots. In an embedded host, configure `instanceId + role` exactly once through `createInstancePlugin()`; Registry and replication both consume that service, and static identity is restart-only.
 2. Hub configuration supplies:
    - listen address;
    - token mapping from authenticated peer identity;

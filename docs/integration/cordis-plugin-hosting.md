@@ -158,7 +158,11 @@ Nomicore 不复制 Timer 配置。Persistence、Registry 和 replication plugins
 
 `createFilePersistencePlugin(options)` 的 `rootDir`、调度选项、文件布局和 identity 约束以 [`@nomicore/persistence` README](../../packages/persistence/README.md)、`FilePersistenceOptions` 类型及 [ADR-0006](../adr/0006-server-persistence-docstore.md) 为准。HMR 或重载时，先等待旧 adapter/Fiber 完成释放，再以原存储配置创建新实例。
 
-恢复一个既有 namespace 需要三项同时一致：同一个持久 `rootDir`、同一个 owner 分区、同一个 `namespaceId`。全新的空 root 即使 owner/id 正确也会返回 `NAMESPACE_NOT_FOUND`。首次部署应 `create()`、持久化 `lease.namespaceId`，再让授权表和业务配置引用它；使用临时空 root 的 smoke test 应创建 disposable namespace 或复制已知 snapshot。一个 active File Persistence adapter/process 独占一个 `rootDir`，测试使用生产 root 时也必须先取得排他所有权。
+恢复一个既有 namespace 需要三项同时一致：同一个持久 `rootDir`、同一个 owner 分区、同一个 `namespaceId`。全新的空 root 即使 owner/id 正确也会返回 `NAMESPACE_NOT_FOUND`。首次部署应 `create()`、持久化 `lease.namespaceId`，再让授权表和业务配置引用它；使用临时空 root 的 smoke test 应创建 disposable namespace 或复制已知 snapshot。
+
+**File Persistence root 是单实例私有存储，不是多进程共享数据库或业务写入口。** 一个 active File Persistence adapter/process 在其完整生命周期内独占整个 `rootDir`。其他进程、脚本、CLI、测试或管理工具不得在 owner 存活时用同一 `rootDir` 再启动 File Persistence、打开同一 namespace 或直接修改 `.snapshot` 文件；即使双方使用相同 `instanceId`、owner 和 namespaceId，也不构成受支持的协同写。绕过锁或复制目录后离线改文件同样不受支持：它绕过 Registry lease、唯一 Runtime/write sequencer、VFSL 校验、dirty/flush 生命周期和 replication reconciliation，可能造成丢写、快照覆盖或副本身份冲突。
+
+需要从另一个业务系统修改数据时，选择受支持路径：在拥有该 root 的进程内通过公开业务接口或 `NamespaceLease.mutateData()` 执行受控写；或者为另一个进程配置独立 `rootDir`，作为 Peer 通过 Hub/Peer replication 同步后在其本地 lease 上写。运维迁移必须先完全停止并 dispose 原 owner，确认锁已释放，再由唯一新 owner 接管同一 root；接管用于重启/迁移，不允许两个 owner 重叠运行。
 
 ### Namespace Registry
 

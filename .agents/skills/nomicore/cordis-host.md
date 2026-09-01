@@ -23,7 +23,7 @@ Compose Nomicore inside the independent host's existing composition root. Read `
 
 - `@nomicore/dsh-persistence` is a DSH development/profile adapter, not the default third-party production choice.
 - Memory persistence does not survive adapter destruction.
-- File persistence recovery identity is `rootDir + owner + namespaceId`; a fresh root means no existing namespace. Each active adapter/process exclusively owns its root.
+- File persistence recovery identity is `rootDir + owner + namespaceId`; a fresh root means no existing namespace. Treat each root as one active process's private store, never a shared database: another process must not open the same root, bypass its lock, or edit snapshots. Cross-process mutation uses the owning process's interface or a Peer with its own root; restart/migration reuses a root only after the previous owner fully disposes.
 - Use public `create*Plugin()` factories and the Cordis Fiber dependency graph. Do not invent `startNomicoreHubRuntime()` / `startNomicorePeerRuntime()` helpers that create or own Instance, Timer, Persistence, and Registry: that hides Host policy and recreates the self-contained server plugin rejected by ADR 0012. Embedded replication uses role-specific factories/services from `@nomicore/ws-replication`; Node transport wiring may use `createNodeHubListenAdapter()` from `@nomicore/yjs-server`. Dynamic plugin IDs, source scanning, and `cordis_define` are not stable Nomicore contracts.
 
 ## Completion gate

@@ -228,8 +228,9 @@ file 模式启动时以 `rootDir/.nomicore-lock/` 非空目录作为权威锁（
 - release 先以原子 `rename` 摘走权威目录，只在墓碑 owner 等于本 handle payload
   时删除；迟到 handle 无法按 canonical 路径删除后继者的目录；
 - `.nomicore-lock.json` 只是诊断镜像，不是所有权 token；
-- **pid 复用误判**：死 pid 被无关新进程复用会误报「存活」——人工确认后删除
-  `.nomicore-lock/` 即可继续。
+- root 是当前进程的私有持久化实现，不是共享数据库：其他业务系统、脚本或管理工具不得同时打开同一 root、绕过锁或直接修改 `.snapshot`；跨进程数据修改应通过拥有者业务接口，或使用独立 root 的 Peer replication；
+- 同一 root 的合法接管只发生在旧 owner 已完全停机并 dispose、权威锁已释放之后，用于重启或迁移，两个 owner 的运行期不得重叠；
+- **pid 复用误判**：死 pid 被无关新进程复用会误报「存活」——人工确认原 owner 确已退出后，才可删除 `.nomicore-lock/` 继续接管。
 
 ## 停机顺序（AC4）
 

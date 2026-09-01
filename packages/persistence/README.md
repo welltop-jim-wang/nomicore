@@ -23,6 +23,8 @@
 
 Memory 插件还接受 `writeSnapshot` 和 `readSnapshot` seam；其内建快照属于当前 adapter 实例，dispose 后不可重启恢复。
 
-File 插件要求非空 `rootDir`，快照布局为 `rootDir/users/<userId>/<namespaceId>.snapshot`。`owner.userId` 与 `namespaceId` 必须匹配 `^[a-z][a-z0-9-]{0,62}$`。同一时刻只让一个 active File adapter 拥有该目录。
+File 插件要求非空 `rootDir`，快照布局为 `rootDir/users/<userId>/<namespaceId>.snapshot`。`owner.userId` 与 `namespaceId` 必须匹配 `^[a-z][a-z0-9-]{0,62}$`。同一时刻只允许一个 active File adapter/process 独占整个目录；同一 root 只可在旧 owner 完全 dispose 后用于重启或迁移接管。
 
-业务数据访问优先经 `@nomicore/namespace-registry` 的 `NamespaceLease` 完成。直接消费 `DocHandle` 表示宿主正在实现生命周期层，必须遵守 [ADR-0006](../../docs/adr/0006-server-persistence-docstore.md)。
+`rootDir` 不是共享数据库或跨进程写接口。另一个进程不得同时以同一 root 打开/修改 namespace，不得绕过锁，也不得直接编辑、替换或复制回 `.snapshot` 文件来提交业务数据。此类操作绕过唯一 Runtime/write sequencer、VFSL 校验、dirty/flush 与 replication 身份，结果不在兼容性或恢复保证内。
+
+业务数据访问必须经 `@nomicore/namespace-registry` 的 `NamespaceLease` 或拥有者公开的业务接口完成。跨进程写使用独立 root 的 Hub/Peer replication；直接消费 `DocHandle` 仅表示宿主正在实现生命周期层，仍必须遵守单 owner 和 [ADR-0006](../../docs/adr/0006-server-persistence-docstore.md)。
