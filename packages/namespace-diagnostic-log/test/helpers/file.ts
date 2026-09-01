@@ -14,7 +14,7 @@
  * 所有断言针对运行时产物（磁盘文件字节、observer 事件、reader 返回），
  * 不对源码文本做任何字符串/正则断言。
  */
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { expect } from 'vitest'
@@ -338,4 +338,99 @@ export function concatU8(...chunks: Uint8Array[]): Uint8Array {
     offset += chunk.byteLength
   }
   return out
+}
+
+// ============================================================================
+// #154 红灯契约辅助（SA6 纯增量；issue #154 保留/租约/删除的 fixture 扩展——
+// 零既有函数改动、零既有测试断言变更）
+// ============================================================================
+
+/**
+ * #154：segments 目录条目枚举（readdirSync 排序；保留文件名含后缀）。
+ * 判定锚：ADR 0012 §Retention 删除协议 —— `.deleting` 标记与段落文件共存于 segments/。
+ */
+export function segmentEntriesOf(rootDir: string, namespaceId: string, streamId: string): string[] {
+  return readdirSync(streamPaths(rootDir, namespaceId, streamId).segmentsDir).sort()
+}
+
+/**
+ * #154：任意 segment 的 jsonl/bin/deleting 三路径。
+ * `.deleting` 命名约定 = ADR 0012 L291「将 .jsonl 原子 rename 为 .deleting」+
+ * SA2 设计 §4.2 钉死命名（组删除协议 S1 state 文件）。
+ */
+export function segmentPathsOf(rootDir: string, namespaceId: string, streamId: string, segment: string) {
+  const segmentsDir = streamPaths(rootDir, namespaceId, streamId).segmentsDir
+  return {
+    jsonlPath: join(segmentsDir, `${segment}.jsonl`),
+    binPath: join(segmentsDir, `${segment}.bin`),
+    deletingPath: join(segmentsDir, `${segment}.deleting`),
+  }
+}
+
+/** #154：组字节合计（jsonl+bin 实际字节；文件不存在计 0 —— INV-10 字节核算口径）。 */
+export function groupBytesOf(p: { jsonlPath: string; binPath: string }): number {
+  let total = 0
+  for (const file of [p.jsonlPath, p.binPath]) {
+    try {
+      total += statSync(file).size
+    } catch {
+      // ENOENT = 0 字节（INV-10：stat ENOENT=0）
+    }
+  }
+  return total
+}
+
+/**
+ * #154：目录树 → { 相对路径: 字节数 } 快照（目录不存在 → 空 Map）。
+ * 零写入/零改动断言用（构造门禁后目录字节恒等证明）。
+ */
+export function bytesSnapshotOf(dir: string): Map<string, number> {
+  const out = new Map<string, number>()
+  if (!existsSync(dir)) return out
+  const walk = (d: string, prefix: string): void => {
+    for (const entry of readdirSync(d, { withFileTypes: true })) {
+      const full = join(d, entry.name)
+      if (entry.isDirectory()) walk(full, join(prefix, entry.name))
+      else out.set(join(prefix, entry.name), statSync(full).size)
+    }
+  }
+  walk(dir, '')
+  return out
+}
+
+/** #154：逐 segment（8 位名升序）读取全部 JSONL record。 */
+export function readAllSegmentRecords(
+  rootDir: string,
+  namespaceId: string,
+  streamId: string,
+): Array<{ segment: string; record: Record<string, unknown> }> {
+  const p = streamPaths(rootDir, namespaceId, streamId)
+  const out: Array<{ segment: string; record: Record<string, unknown> }> = []
+  for (const entry of segmentEntriesOf(rootDir, namespaceId, streamId)) {
+    if (!entry.endsWith('.jsonl')) continue
+    const segment = entry.slice(0, -'.jsonl'.length)
+    for (const record of readJsonl(join(p.segmentsDir, entry))) out.push({ segment, record })
+  }
+  return out
+}
+
+/**
+ * #154：合成组删除协议中断态（W1/W2——ADR 步骤 2「rename jsonl → .deleting」之后、
+ * 步骤 3「unlink bin」之前/之后）。
+ * - keepBin=true  → W1（.deleting + bin）
+ * - keepBin=false → W2（仅 .deleting）
+ * 前置：目标 segment 的 .jsonl 存在且无 .deleting 残留（loud throw——fixture 装配错误）。
+ */
+export function synthesizeDeletingMarker(
+  rootDir: string,
+  namespaceId: string,
+  streamId: string,
+  segment: string,
+  opts: { keepBin: boolean },
+): void {
+  const p = segmentPathsOf(rootDir, namespaceId, streamId, segment)
+  if (!existsSync(p.jsonlPath)) throw new Error(`synthesizeDeletingMarker: ${segment}.jsonl 不存在（fixture 装配错误）`)
+  if (existsSync(p.deletingPath)) throw new Error(`synthesizeDeletingMarker: ${segment}.deleting 已存在（fixture 装配错误）`)
+  renameSync(p.jsonlPath, p.deletingPath)
+  if (!opts.keepBin) unlinkSync(p.binPath)
 }
