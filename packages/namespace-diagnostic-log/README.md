@@ -176,6 +176,110 @@ streams/{streamId}/segments/00000002…        # 滚动 segment（#153；8 位�
   current.json 彻底损坏/丢失 + ≥2 候选 → `locator-ambiguous` disabled。
   **该告警持续出现即处于未愈合窗口，应触发运维处置**。
 
+### retention、读会话租约与 namespace 逻辑删除（#154：ADR 0012 §Retention 与删除）
+
+#### 配置（`FileDiagnosticLogConfig.retention`；仅运行时生效——**不冻结进 manifest、不产生新 generation**）
+
+```ts
+log.sweepRetention({ now })            // 显式 sweep：卫生遍历（遗留 .deleting 完成 + orphan BIN）
+                                       // → 年龄遍历 → 字节遍历；同步、绝不 throw，返回 RetentionSweepReport
+```
+
+| 键 | 默认 | 说明 |
+|---|---|---|
+| `maxAgeMs` | `30 天`（2_592_000_000） | 年龄上限：组内最晚 `observedAt` 距 now ≥ 该值即过期（含等号）。`null` = 关闭年龄限制；`0` = 一切闭组立即过期（**非无限**，绝不触开组） |
+| `maxBytesPerNamespace` | `1 GiB` | 每 namespace 字节上限（JSONL+BIN 跨全部 stream generation 合计）。`null` = 关闭；`0` = 裁掉全部可删闭组 |
+| `sweepOnOpen` | `true` | 构造完成后自动执行一次 sweep（`now` = `config.clock.now()`） |
+
+- **值域**：`number` 必须为非负 safe integer；负数/NaN/∞/小数/非数字 → **retention 失活**
+  + 恰一次 `retention-config-invalid{field}`，stream 照常工作（配置错不杀死日志能力）。
+- **`0` 的非无限语义**：`maxAgeMs: 0` → 每次 sweep 时所有闭组已过期（cutoff = now）；
+  `maxBytesPerNamespace: 0` → 字节遍历把「闭组字节」压到 0，下限 = 开组 + 被租约/开组
+  阻塞的组。两者皆 `null` → 无限制驱动删除，**卫生遍历仍执行**（协议卫生不属「限制」）。
+- **年龄与字节是两个独立限制（SA4 R1 裁决）**：年龄遍历（P1）按 `maxAgeMs` 筛选；
+  字节遍历（P2）**只以 closed ∧ unleased 为门**——不按年龄新鲜度二次筛选（字节预算
+  必须可独立达标，两限制各自生效、不互相门控）；两者的前缀纪律（首个不可删组即止步
+  该流）与开组/租约保护相同。
+- **删除资格（AC-2）**：仅**closed + unleased** 的 segment group 可删。闭组 = writer
+  当前 `currentSegment` 之前的组（sealed generation 的全部组皆闭）；开组（含 BIN-first
+  写帧后、JSONL 提交前的瞬态）任何路径不碰（INV-1）。流内**前缀纪律**：首个不可删组
+  即止步该流——幸存组恒为连续后缀，绝不跳洞（INV-2）。
+- **删除协议（JSONL-as-commit-marker，跨重启可恢复）**：rename `{seg}.jsonl` →
+  `{seg}.deleting`（意图提交点）→ unlink `{seg}.bin` → unlink `{seg}.deleting`。
+  JSONL 先行 → 任何中间态都落在 reader 既有合法窗口（bin-无-jsonl），删一半的流永不
+  产生 `frame-missing`/`sequence-gap`；崩溃后构造期/下次 sweep 的卫生遍历自动续走
+  （`deletingMarkersCompleted`）；orphan BIN（闭组、无 jsonl、无 marker、有 bin）直接
+  unlink（开组绝对豁免）。
+- **触发点（write-slot 外）**：仅构造期自动一次（`sweepOnOpen`）+ Host 显式
+  `log.sweepRetention()`——**绝不挂在 `emit`/`beforeCommit`**（INV-14：每 emit 至多
+  一条 record + 至多一帧 BIN 的「有界」纪律）。
+- **报告**：`RetentionSweepReport`（sweptStreams / deletedGroups / reclaimedBytes /
+  orphanBinsDeleted / deletingMarkersCompleted / leaseBlockedGroups / openProtectedStops /
+  failedSteps / retainedBytes / earliestRetained / historyTrimmedStreams）——仅当
+  「有动作」时恰一次 `retention-swept` 健康事件（全零动作不发）。
+
+#### 读会话租约（AC-3；短期可续租、过期不阻塞）
+
+```ts
+const request = { rootDir, namespaceId, streamId }
+const session = openDiagnosticReadSession({ ...request, ttlMs: 15_000 })
+try {
+  const result = readStreamStrict(request) // 会话存续期间 retention 不删其快照组
+  session.renew()                         // 长读取按需续租
+  consume(result)
+} finally {
+  session.close()                         // 立即释放（幂等）
+}
+```
+
+- 租约覆盖 open 时刻快照的全部组；**过期租约永不阻塞删除**（TTL 过即视同无租约，
+  AC-3 核心）；已 rename `.deleting` 后的续租不能中止该组删除（marker 即提交点）。
+- 注册表**进程内**按 `(rootDir, namespaceId)` 共享（INV-9）——与 adapter 实例无亲缘；
+  正确性依赖 ADR 0012「单进程独占根目录」部署约束。裸 `readStreamStrict` 仍是
+  静态/离线工具（其契约不承诺与并发 retention 的一致性）；会话包装是受支持的并发读路径。
+- **劝告锁语义**：`renew() === true` 不保证快照仍完整（过期窗口内数据可能已被裁剪），
+  调用方仍须容忍 ENOENT/裁剪。
+
+#### namespace 日志逻辑删除（AC-4；无 secure-erase 暗示面）
+
+```ts
+deleteNamespaceDiagnosticLog({ rootDir, namespaceId })
+// → { status: 'deleted', streamsRemoved } | { status: 'absent' } | { status: 'failed', code, step }
+```
+
+- 协议（幂等、可重入）：namespaceId 安全文法 → `deletion.json`（temp+rename 原子，
+  意图线性化点）→ unlink `current.json`（+ `current.json.tmp` 残留）→ 逐 stream
+  `{s}` → `{s}.deleting` → rm（N3 残部直接 rm）→ rm namespaceDir → 释放该 namespace
+  的租约分区（全部会话置 closed）。
+- **半态门（INV-8）**：`deletion.json` 落盘后，任何构造 → `mode='disabled'` + 恰一次
+  `stream-init-failed{reason:'namespace-log-deleted'}` + 零写入——绝不 resume/新建
+  generation（删除半态不得复活）；重入 `deleteNamespaceDiagnosticLog` 是唯一完成路径。
+  删除完成后重新构造 = fresh 新 lineage（新 streamId + genesis，合法）。
+- **只承诺活跃存储的逻辑删除**：不暗示 SSD 削除、备份/快照/对象存储版本回收——结果
+  词汇/事件/文档均无 erased/purged/wiped/secure 字样，删除后无 tombstone 残留。
+- **前置条件（Host 责任）**：调用时该 namespace 无存活 writer 实例（否则 writer 会
+  重建文件树）；v1 不提供 quiesce 钩子——存活 emitter 实例不强制停摆，其后续写入
+  随目录删除逐步 ENOENT → definitive pre-commit failure → `storage-write-failed` 事件
+  + 记录丢弃（ADR 0011 隔离：日志故障不影响业务）；Host 应在删除后关闭/换装 adapter。
+
+#### 裁剪历史报告与 reader/resume 兼容（AC-5；防「裁剪 → rotate 风暴」）
+
+- `readStreamStrict` 增 `historyTrimmed`（最低幸存段 ≠ `00000001`）与
+  `earliestRetainedSequence`（首条可枚举 record 的 sequence；无 record → null）。
+  `historyTrimmed === true` 的流：连续性锚以首条身份可解释 record **重定基**，前缀
+  跨越**不产生** `sequence-gap`（状态仍 `ok`）；`false` 时行为与现状逐字节等同
+  （首 record > 1 的单段流仍判 `sequence-gap/corrupt`——组内行丢失 = 真损坏）。
+- resume 侧同款锚容差（§7.5）：裁剪后重开**不 rotate**（无 `stream-generation-rotated`），
+  续写 sequence 接续最后幸存记录——否则每次重启都 rotate 新 generation，retention 自毁。
+- mid-deletion 态（`.deleting` + bin）从 reader/resume/session 枚举中**整体剔除**
+  （jsonl 与 bin 均不可见）——不产生 roll-target-violation/sequence-gap/frame-missing。
+- 中段真缺口（段 1、3 在、段 2 无；最低段仍 = `00000001`）仍按 `sequence-gap` →
+  `corrupt` / resume rotate——**trim 感知不得弱化既有 gap 检测**（T-E2/T-E3/T-E5 锚）。
+- **全裁剪收敛（备案行为）**：闭组删尽 + 开组零记录 ⇒ resume 于空流
+  （`currentSegment='00000001'`、seq 自 1）——与「manifest 落盘后首 record 前崩溃」态
+  同构；同一 `streamId` 内 sequence 字面量跨裁剪可复用（best-effort 日志无审计连续性
+  承诺；ADR 明文禁止持久 retention 状态——earliest retained 恒由扫描重建）。
+
 ### 两个声明（R2 起）
 
 - **genesis 缺失判别法**：host 显式提供 `genesisUpdateBytes` 后若被守卫跳过
@@ -183,10 +287,13 @@ streams/{streamId}/segments/00000002…        # 滚动 segment（#153；8 位�
   genesis 记录也不发事件**——读 JSONL 首行 `recordKind ≠ 'genesis-baseline'` 即知
   无 genesis（缺失是「尽力」语义的合法终态，非故障）。
 - **strict `ok` 的语义边界（R2 起）**：`readStreamStrict.status === 'ok'` 只表示
-  「在本次静态读取中，已解析的该 stream v1 物理 records 自 sequence 1 连续，且通过
-  manifest/storage/frame 校验」——绝不表示业务变更完整、无业务 attempt gap 或可恢复
-  namespace；该限定同时适用于 replay 的成功文案（其另附 ADR 0011 既有限定）。
-  物理删除中间 record（如 `[1,3]`）会被判 `sequence-gap/corrupt`。
+  「在本次静态读取中，已解析的该 stream v1 物理 records 自 sequence 1 连续（或——
+  `historyTrimmed === true` 的最低保存活段 ≠ `00000001` 时——自首条幸存 record 连续，
+  见上「裁剪历史报告」），且通过 manifest/storage/frame 校验」——绝不表示业务变更
+  完整、无业务 attempt gap 或可恢复 namespace；该限定同时适用于 replay 的成功文案
+  （其另附 ADR 0011 既有限定）。物理删除中间 record（如 `[1,3]`）会被判
+  `sequence-gap/corrupt`（第 1 段存活时）；前缀整组被 retention 裁剪为可解释的
+  `historyTrimmed`（非损坏）。
 - **并发读写语义**：JSONL 行的 `appendFileSync` 在内核侧可能拆为多个 `write(2)`，
   与活跃 writer 并发运行的 reader 可能读到半行（误判 invalid-json）。
   `readStreamStrict` 面向**静态 stream**（writer 停写后 / 离线拷贝上使用），

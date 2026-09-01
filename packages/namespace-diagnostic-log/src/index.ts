@@ -80,3 +80,16 @@ export {
   type StrictRecordRead,
   type StrictReadRequest,
 } from './reader.js'
+
+// —— #154 增量（保留/租约/删除；全部为增量导出——既有导出一字不动）——
+export type { FileRetentionConfig, RetentionSweepReport } from './retention.js'
+export {
+  openDiagnosticReadSession,
+  type DiagnosticReadSession,
+  type DiagnosticReadSessionRequest,
+} from './read-session.js'
+export {
+  deleteNamespaceDiagnosticLog,
+  type NamespaceLogDeletionRequest,
+  type NamespaceLogDeletionResult,
+} from './adapters/file.js'

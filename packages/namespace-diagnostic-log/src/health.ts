@@ -59,7 +59,12 @@ export type DiagnosticLogHealthEvent =
   | {
       type: 'stream-init-failed'
       code: 'LOG_STREAM_INIT_FAILED'
-      reason: 'invalid-namespace-id' | 'invalid-stream-id' | 'locator-ambiguous' | 'invalid-roll-targets'
+      reason:
+        | 'invalid-namespace-id'
+        | 'invalid-stream-id'
+        | 'locator-ambiguous'
+        | 'invalid-roll-targets'
+        | 'namespace-log-deleted'
     }
   | {
       type: 'storage-validation-failed'
@@ -92,6 +97,23 @@ export type DiagnosticLogHealthEvent =
       /** #153：rotate 决策的诚实可观测（旧 stream 保持只读、未改写）。 */
       type: 'stream-generation-rotated'
       cause: RotateCause
+    }
+  | {
+      /** #154（ADR 0012 §Retention）：每次「有动作」的 retention sweep 恰一次
+       *  （全零动作不发——防 open 噪声）；streamId/segment/offset 刻意不进事件
+       *  （低基数纪律——身份经 adapter 实例上下文可得；报告对象是数据面可含 streamId）。 */
+      type: 'retention-swept'
+      deletedGroups: number
+      reclaimedBytes: number
+      orphanBinsDeleted: number
+      deletingMarkersCompleted: number
+      leaseBlockedGroups: number
+      failedSteps: number
+    }
+  | {
+      /** #154：retention 配置违规（负数/NaN/∞/非整数/非数字）→ 仅 retention 失活 + 恰一次本事件。 */
+      type: 'retention-config-invalid'
+      field: 'maxAgeMs' | 'maxBytesPerNamespace'
     }
 
 /** 事件对象深冻结（设计 §8.2；事件构造后冻结，防 observer 侧变异）。 */

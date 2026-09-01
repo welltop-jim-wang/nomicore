@@ -66,6 +66,10 @@ export interface StrictStreamRead {
   manifest: unknown | null
   issues: StrictReadIssue[]
   records: StrictRecordRead[]
+  /** 历史已裁剪 iff 本次枚举到的最低段 ≠ '00000001'（纯结构判定，SA2 §7.1）。 */
+  readonly historyTrimmed: boolean
+  /** 最早保留 sequence（首条可枚举 record 的 sequence；无 record 时 null）。 */
+  readonly earliestRetainedSequence: string | null
 }
 
 /** incompatible 七码集（SA6 词表边界逐字：未知版本 → 不近似解释）。
@@ -330,11 +334,58 @@ function extractFormatPolicy(manifest: Record<string, unknown>): ManifestFormatP
   }
 }
 
+/** segments 枚举结果（#154：`.deleting` 标记组整体剔除——JSONL 与 BIN 均不可见）。 */
+export interface SegmentGroupEnumeration {
+  /** 存活段名（8 位十进制升序；有 `.deleting` 标记的组已整体剔除——其 jsonl/bin 均不可见）。 */
+  live: string[]
+  /** 存在 `{seg}.deleting` 标记的段名（升序；retention 卫生遍历/协议续走用）。 */
+  deleting: string[]
+}
+
+/**
+ * segments 目录枚举（#154；reader / resume / retention sweep / read-session 快照
+ * 同源——防双份漂移，同 storage-gate 共享原语先例）：
+ * - `.deleting` 后缀 = 组删除协议中间态（SA2 §4.2 S1/S2）——该组整体从枚举剔除
+ *   （jsonl 与 bin 都不可见），从而 mid-deletion 流不产生 roll-target-violation/
+ *   sequence-gap/frame-missing（T20/W1 契约）；
+ * - 其余文件名按既有后缀剥离语义（`.jsonl`/`.bin` → 段名）参与；
+ * - 非段名/未知后缀（含非段名的 `.deleting` 残名——文法不可达，INV-13）一律忽略。
+ * readdir 失败（目录缺失/不可读）→ throw——调用方按既有语义包络（reader → corrupt、
+ * resume → rotate、sweep → failedSteps）。
+ */
+export function enumerateSegmentGroups(segmentsDir: string): SegmentGroupEnumeration {
+  const entries = readdirSync(segmentsDir)
+  const deleting = new Set<string>()
+  const live = new Set<string>()
+  for (const entry of entries) {
+    if (entry.endsWith('.deleting')) {
+      const base = entry.slice(0, -'.deleting'.length)
+      if (isSegmentName(base)) deleting.add(base)
+      continue
+    }
+    let base = entry
+    if (base.endsWith('.jsonl')) base = base.slice(0, -'.jsonl'.length)
+    else if (base.endsWith('.bin')) base = base.slice(0, -'.bin'.length)
+    else continue
+    if (isSegmentName(base)) live.add(base)
+  }
+  for (const segment of deleting) live.delete(segment)
+  return { live: [...live].sort(), deleting: [...deleting].sort() }
+}
+
+/** 结构性 trim 判定（SA2 §7.1 裁决：最低存活段 ≠ '00000001' ⇔ 历史被裁剪——组粒度裁剪的必然形态）。 */
+function historyTrimmedOf(segments: readonly string[]): boolean {
+  return segments.length > 0 && segments[0] !== '00000001'
+}
+
 /**
  * strict reader（§7.1 算法总流程；纯同步、不抛——fs 错误包络 + 全函数兜底）。
  *
  * 契约补充（§4.3）：面向**静态 stream**（writer 停写后/离线拷贝上使用），不承诺与
  * 活跃 writer 的并发一致性（1 MiB 行可拆多个 write(2)，并发 reader 可能见半行）。
+ * #154 增量（§2.5/§7.1）：`historyTrimmed === true` 的流，连续性锚以首条身份可解释
+ * record 重定基（前缀跨越不产生 `sequence-gap`——状态仍 `ok`/其余 issue 照旧）；
+ * `historyTrimmed === false` 时行为与现状逐字节等同（锚恒 1n——钉死测试零回归）。
  */
 export function readStreamStrict(request: StrictReadRequest): StrictStreamRead {
   let manifest: unknown | null = null
@@ -348,6 +399,8 @@ export function readStreamStrict(request: StrictReadRequest): StrictStreamRead {
         manifest: null,
         issues: [{ code: 'locator-invalid' }],
         records: [],
+        historyTrimmed: false,
+        earliestRetainedSequence: null,
       }
     }
     const paths = streamLayoutPaths(request.rootDir, request.namespaceId, request.streamId)
@@ -364,6 +417,8 @@ export function readStreamStrict(request: StrictReadRequest): StrictStreamRead {
         manifest: null,
         issues: [{ code: 'manifest-invalid' }],
         records: [],
+        historyTrimmed: false,
+        earliestRetainedSequence: null,
       }
     }
     let parsedManifest: unknown
@@ -377,6 +432,8 @@ export function readStreamStrict(request: StrictReadRequest): StrictStreamRead {
         manifest: null,
         issues: [{ code: 'manifest-invalid' }],
         records: [],
+        historyTrimmed: false,
+        earliestRetainedSequence: null,
       }
     }
     if (parsedManifest === null || typeof parsedManifest !== 'object' || Array.isArray(parsedManifest)) {
@@ -387,6 +444,8 @@ export function readStreamStrict(request: StrictReadRequest): StrictStreamRead {
         manifest: null,
         issues: [{ code: 'manifest-invalid' }],
         records: [],
+        historyTrimmed: false,
+        earliestRetainedSequence: null,
       }
     }
     manifest = parsedManifest
@@ -401,6 +460,8 @@ export function readStreamStrict(request: StrictReadRequest): StrictStreamRead {
         manifest,
         issues: [{ code: 'manifest-invalid' }],
         records: [],
+        historyTrimmed: false,
+        earliestRetainedSequence: null,
       }
     }
     const gateIssue = manifestGateIssue(parsedManifest, request.streamId, request.namespaceId, compiled.envelopeFingerprint)
@@ -413,6 +474,8 @@ export function readStreamStrict(request: StrictReadRequest): StrictStreamRead {
         manifest,
         issues: [{ code: gateIssue }],
         records: [],
+        historyTrimmed: false,
+        earliestRetainedSequence: null,
       }
     }
     // —— 只读 policy 提取（§2.1：仅 manifest 门通过后；门已核对四值类型）——
@@ -425,15 +488,18 @@ export function readStreamStrict(request: StrictReadRequest): StrictStreamRead {
         manifest,
         issues: [{ code: 'manifest-invalid' }],
         records: [],
+        historyTrimmed: false,
+        earliestRetainedSequence: null,
       }
     }
 
     const streamIssues: StrictReadIssue[] = []
 
-    // ④ segments 枚举（readdir throw → corrupt + manifest-invalid——构造协议保证 segments/ 存在，§11-G9）
-    let entries: string[]
+    // ④ segments 枚举（readdir throw → corrupt + manifest-invalid——构造协议保证 segments/ 存在，§11-G9；
+    //    #154：与 resume/sweep/session 同源共享 enumerateSegmentGroups——`.deleting` 组整体剔除）
+    let enumeration: SegmentGroupEnumeration
     try {
-      entries = readdirSync(paths.segmentsDir)
+      enumeration = enumerateSegmentGroups(paths.segmentsDir)
     } catch {
       return {
         status: 'corrupt',
@@ -442,23 +508,23 @@ export function readStreamStrict(request: StrictReadRequest): StrictStreamRead {
         manifest,
         issues: [{ code: 'manifest-invalid' }],
         records: [],
+        historyTrimmed: false,
+        earliestRetainedSequence: null,
       }
     }
-    const segmentSet = new Set<string>()
-    for (const entry of entries) {
-      let base = entry
-      if (base.endsWith('.jsonl')) base = base.slice(0, -'.jsonl'.length)
-      else if (base.endsWith('.bin')) base = base.slice(0, -'.bin'.length)
-      if (isSegmentName(base)) segmentSet.add(base)
-    }
-    const segments = [...segmentSet].sort() // 8 位定宽十进制 → 字典序 = 数值序
+    const segments = enumeration.live
+    const segmentSet = new Set<string>(segments)
+    // —— 结构性 trim 判定（SA2 §7.1）：最低存活段 ≠ '00000001' ⇔ 前缀被 retention 裁剪。
+    //    `historyTrimmed === true` 时连续性锚初始化为 null（首条身份可解释 record 重定基，
+    //    前缀跨越不产生 sequence-gap）；`false` 时锚恒 1n——行为与现状逐字节等同。 ——
+    const historyTrimmed = historyTrimmedOf(segments)
 
     const records: StrictRecordRead[] = []
     const recordIssuesAll: StrictReadIssue[] = []
     const bins = new Map<string, Uint8Array | null>()
     const expectedOffsets = new Map<string, bigint>()
     // —— 连续性状态机（§3.4）：expected = 下一可信 sequence；null = 身份不可解释段后的未知基线 ——
-    let expectedSequence: bigint | null = 1n
+    let expectedSequence: bigint | null = historyTrimmed ? null : 1n
 
     const checkSidecar = (
       carrier: UpdateCarrier & { storage: 'sidecar' },
@@ -650,6 +716,8 @@ export function readStreamStrict(request: StrictReadRequest): StrictStreamRead {
         manifest,
         issues: allIssues,
         records: [],
+        historyTrimmed,
+        earliestRetainedSequence: null,
       }
     }
     return {
@@ -659,6 +727,8 @@ export function readStreamStrict(request: StrictReadRequest): StrictStreamRead {
       manifest,
       issues: allIssues,
       records,
+      historyTrimmed,
+      earliestRetainedSequence: records.find((record) => record.sequence !== '')?.sequence ?? null,
     }
   } catch {
     // ⑧ 兜底（R2 修订 SA2 #3）：损坏诊断工具绝不在损坏状态下自己崩——绝不抛
@@ -669,6 +739,8 @@ export function readStreamStrict(request: StrictReadRequest): StrictStreamRead {
       manifest,
       issues: [{ code: 'manifest-invalid' }],
       records: [],
+      historyTrimmed: false,
+      earliestRetainedSequence: null,
     }
   }
 }
@@ -844,27 +916,24 @@ export function analyzeStreamForResume(req: {
     }
 
     // —— 3. 交叉扫描（segments 升序；逐行行长/parse/VFSL/canonical decimal/streamId/policy/
-    //        storage 帧交叉 + 跨 segment expectedSequence 连续性状态机，reader §3.4 语义原样）——
-    let entries: string[]
+    //        storage 帧交叉 + 跨 segment expectedSequence 连续性状态机，reader §3.4 语义原样；
+    //        #154：枚举与 reader 同源共享 enumerateSegmentGroups——`.deleting` 组整体剔除；
+    //        锚容差同步 §7.5：最低存活段 ≠ '00000001' ⇒ 锚初始化 null（防裁剪→rotate 风暴））——
+    let enumeration: SegmentGroupEnumeration
     try {
-      entries = readdirSync(paths.segmentsDir)
+      enumeration = enumerateSegmentGroups(paths.segmentsDir)
     } catch {
       return { verdict: 'rotate', cause: 'manifest-invalid' } // 构造协议保证 segments/ 存在
     }
-    const segmentSet = new Set<string>()
-    for (const entry of entries) {
-      let base = entry
-      if (base.endsWith('.jsonl')) base = base.slice(0, -'.jsonl'.length)
-      else if (base.endsWith('.bin')) base = base.slice(0, -'.bin'.length)
-      if (isSegmentName(base)) segmentSet.add(base)
-    }
-    const segments = [...segmentSet].sort()
+    const segments = enumeration.live
+    const segmentSet = new Set<string>(segments)
     const segMax = segments.length > 0 ? segments[segments.length - 1]! : '00000001'
+    const historyTrimmed = historyTrimmedOf(segments)
 
     let corrupt = false
     let incompatible = false
     let lastCommittedSequence: string | null = null
-    let expectedSequence: bigint | null = 1n
+    let expectedSequence: bigint | null = historyTrimmed ? null : 1n
     const expectedOffsets = new Map<string, bigint>()
     const bins = new Map<string, Uint8Array | null>() // null = 缺失/不可读（已加载）
     const refsToSegMax: Array<{ off: number; end: number }> = []

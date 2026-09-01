@@ -61,6 +61,19 @@
     `node:path` 出现于 `src/adapters/file.ts`、`src/reader.ts` 与 `src/paths.ts`
     （后者仅 `join`——布局路径派生；终审 N-1 勘误声明：R2 声明漏列 paths.ts）；
   - 其余模块纯 TS（TextEncoder 全局可用，字节计量不引 Buffer）。
+  **（#154）**新增 `src/retention.ts` 与 `src/read-session.ts` 两模块均为**纯 TS**、
+  零新增 fs 绑定——retention 纯策略（配置校验/报告类型），read-session 的枚举经
+  reader 内部导出 `enumerateSegmentGroups`（与 reader/sweep 同源）、路径派生经
+  paths.ts；sweep 与 namespace 删除的全部 IO 仍收口 `src/adapters/file.ts`。
+- **保留字文件名（#154，INV-13 文法不可达）**：`segments/{seg}.deleting`（组删除协议
+  S1 提交标记——不满足 `P_SEGMENT`，既有枚举/扫描永不当作数据；联合 `streams/{s}.deleting`
+  （namespace 删除 N3 残部——不满足 `P_STREAM_ID`，locator 扫描永不吞入）与
+  `namespaces/{ns}/deletion.json`（namespace 删除意图标记——与 current.json 并列的固定
+  文件名）。三者均不可被任何既有枚举/扫描路径当作数据；新增枚举/扫描必须沿用
+  `enumerateSegmentGroups` 与 `isSafeStreamId` 文法门。
+- **retention 租约（#154，INV-9）**：读会话租约注册表为**进程内**共享结构
+  （`(rootDir, namespaceId)` 分区）——正确性依赖 ADR 0012「单进程独占根目录」部署
+  约束，不实现跨进程锁；跨进程部署不在 v1 契约内。
 - 不依赖 yjs / clock / registry / persistence；只依赖 `@nomicore/vfsl`
   （compileSchemaEnvelope / validateLogicalSnapshot）。
 - 不改 ADR（`docs/adr/**` 冻结源）；`VFSL 校验失败 = writer bug`——丢弃 +
@@ -81,4 +94,10 @@
   **（#153）追加 `repair` / `truncatedBytes`（`stream-tail-repaired`）与 `cause`
   （`stream-generation-rotated`）——均为封闭枚举/计数类字段；streamId/segment/
   offset 刻意不进事件**（身份经 adapter 实例上下文可得，低基数纪律）。
+  **（#154）追加 `retention-swept` 的 `deletedGroups` / `reclaimedBytes` /
+  `orphanBinsDeleted` / `deletingMarkersCompleted` / `leaseBlockedGroups` /
+  `failedSteps`（计数类）与 `retention-config-invalid` 的 `field`
+  （封闭枚举 `'maxAgeMs' | 'maxBytesPerNamespace'`）；`stream-init-failed.reason`
+  追加 `'namespace-log-deleted'`——同上纪律：streamId/segment/offset 不进事件
+  （sweep 报告 `RetentionSweepReport` 是数据面，可含 streamId）。
   禁原 record/input/Base64/update bytes/message/stack。
