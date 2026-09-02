@@ -11,7 +11,7 @@ Treat the current repository as the owning host. Its schema, generated types, ap
 
 Load only the branch needed:
 
-- **Schema** — creating or changing `schema.vfsl`, choosing carriers, validating schema or example ROOT data: read [schema.md](schema.md).
+- **Schema** — creating or changing `schema.vfsl`, choosing carriers, validating schema/example ROOT data, or replacing the SCHEMA of an existing namespace: read [schema.md](schema.md).
 - **Typed access** — generating `generated.ts`, wiring TypeScript, or implementing namespace read/write code: read [typed-access.md](typed-access.md).
 - **Cordis host** — configuring Instance identity, Clock, Timer, Persistence, Registry, namespace creation/opening, role-specific replication plugins, or shutdown: read [cordis-host.md](cordis-host.md).
 - **Replication** — choosing standalone versus embedded Hub/Peer hosting, or configuring authorization, targets, TLS, readiness, lifecycle, epoch bump, reset, or recovery: read [replication.md](replication.md).
