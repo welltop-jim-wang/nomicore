@@ -295,7 +295,7 @@ export class TypedNamespace {
 
 - 标量字段：`set` 到最后的 leaf 路径；
 - optional 字段或 `Record` 条目：在该字段/条目路径执行 `set` 或 `delete`；
-- `YArray`：在数组路径执行 `array-insert` / `array-delete`；
+- `YArray`：在数组路径执行 `array-insert` / `array-delete`；若路径继续下钻到数组元素，索引 segment 必须是 `number`，例如 `0` 或变量 `index`，不能写成字符串 `'0'`；
 - `YPlainArray`、`YLeaf` 和 `YXmlFragment`：它们是不可下钻终态，业务确实要修改时整体 `set` 该终态值；
 - 未改变的父容器和兄弟字段保持原位。
 
@@ -319,6 +319,24 @@ await lease.mutateData({
   value: 12,
 })
 ```
+
+数组索引是 path 的数值 segment，与对象/Record 的字符串键不同。通过 typed adapter 下钻数组元素时：
+
+```ts
+// 正确：0 是 number，表示数组第一个元素。
+await namespace.set(
+  ['tasks', key, 'run', 'workspaceAssignments', 0, 'headSha'],
+  sha,
+)
+
+// 编译错误：'0' 是 string，会被解释为对象/Record 键，不是数组下标。
+await namespace.set(
+  ['tasks', key, 'run', 'workspaceAssignments', '0', 'headSha'],
+  sha,
+)
+```
+
+动态下标变量也必须保持 `number` 类型；不要通过 `String(index)`、模板字符串或对象键枚举把它转换成字符串。该区分是 `VfslPathMap` 对容器结构的静态证明，不应使用 cast 绕过。
 
 以下做法是普通业务更新的反例：
 

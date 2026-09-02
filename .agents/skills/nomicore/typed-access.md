@@ -117,7 +117,7 @@ await lease.mutateData({
 })
 ```
 
-For collections, use their structural operations at the collection path: `array-insert` / `array-delete`; use `set` only for a `plain`, `leaf`, or XML terminal that is intentionally replaced as one value. Add or remove a Record entry at that entry path. Preserve every unaffected Yjs container and sibling.
+For collections, use their structural operations at the collection path: `array-insert` / `array-delete`; use `set` only for a `plain`, `leaf`, or XML terminal that is intentionally replaced as one value. When a typed path descends through an array element, its index segment is a `number` (`0`, `index`), never a numeric-looking string (`'0'`); string segments address object/Record keys, while number segments address array positions. Add or remove a Record entry at that entry path. Preserve every unaffected Yjs container and sibling.
 
 Before implementing a write, name the domain change in one sentence and map it to one mutation:
 
@@ -137,6 +137,8 @@ A read-modify-write of the complete ROOT (read `[]`, construct a new object, the
 The same rule applies below ROOT: replacing an entire map/object after changing one child is broader than the intended mutation. Descend to the last independently writable terminal described by the generated path projection.
 
 Current validated operations are `set`, `delete`, `array-insert`, and `array-delete`. `array-insert` takes `values: readonly unknown[]`. There is no atomic `array-append` operation; a read-length-then-insert helper has concurrency semantics that the host must judge explicitly.
+
+Array element paths use numeric segments. Keep `['assignments', 0, 'headSha']` or `['assignments', index, 'headSha']` with `index: number`; reject `['assignments', '0', 'headSha']`, `String(index)`, and template-string indices. A string segment means an object/Record key. Add a negative type fixture for every typed adapter that writes through an array, proving the numeric-looking string form fails compilation.
 
 The runtime SCHEMA passed to Registry creation must come from the same `schema.vfsl`. Generated types do not replace that text.
 
