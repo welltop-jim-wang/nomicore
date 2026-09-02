@@ -21,12 +21,13 @@ round: 1
 
 ## 验证证据
 
-最终本地验证（本控制器前台执行）：
+rebase 到最新 base 后的最终本地验证：
 
 - `pnpm typecheck`：exit 0。
-- `pnpm exec vitest run packages/namespace-runtime`：31 files / **201 tests passed**，Type Errors no errors，exit 0。
-- `pnpm exec vitest run packages/namespace-registry`：13 files / **164 tests passed**，Type Errors no errors，exit 0。
-- 隔离复核 `pnpm exec vitest run packages/namespace-registry/test/registry-surface.test.ts`：1 file / **12 tests passed**，exit 0。
+- `pnpm exec vitest run packages/namespace-runtime packages/namespace-registry`：70 files / **661 tests passed**，Type Errors no errors，exit 0。
+- `pnpm exec vitest run packages/namespace-runtime/test/runtime-replication-diagnostic-red.test.ts packages/namespace-runtime/test/runtime-replication-sa4-probe.test.ts packages/namespace-runtime/test/runtime-replication-sa7-dynamic.test.ts`：3 files / **21 tests passed**，Type Errors no errors，exit 0。
+- `pnpm test`：257 files / **2826 tests passed**，Type Errors no errors，exit 0。
+- `git diff --check`：clean。
 
 前序独立门禁：
 
@@ -35,10 +36,10 @@ round: 1
 - SA7：**pass**；动态测试 4/4，覆盖 `updateCapture:false`→`update-omitted`、runtime-close/in-flight FIFO、无 emitter 等价，以及 F1 mutation 反证。
 - 双轴终审：standards **pass**（无 blocker）及 spec **pass**（AC1–AC5 独立核验）。
 
-一次合并运行 `pnpm exec vitest run packages/namespace-runtime packages/namespace-registry` 曾使未触及的 `registry-surface.test.ts` 在满载条件下触发 5 秒超时并令外层 120 秒执行上限终止。该文件隔离复跑 12/12 通过，且本报告所列 runtime/registry 分包复跑均通过；standards/spec 双轴亦以历史、隔离复跑和零 diff 证据将该现象定性为负载敏感环境伪影，而非 #151 回归。
+rebase 后曾因生产接线缺失、测试 fixture 使用旧 API 及 noop dirty 语义过期而出现 20 项 focused 失败；本轮已完成三条 operation 的生产接线、fixture 迁移与现行 ADR 对齐，并以上述 661/661 结果闭环。
 
 ## 最终验证 HEAD
 
-最终验证时业务 HEAD 为 `b5b0cb8`：`fix(namespace-runtime,namespace-registry): close SA4 R1 F1/F2 - apply capture window unconditional, enable E3 input snapshot (#151 R2)`。
+最终验证基于 PR #200 rebase 后分支及本轮修复工作树；提交与推送信息由 Host 操作记录确定。
 
-本报告表示本地 MABF 验收完成；未执行 push、PR、标签、`.mabf-done` 或任何 Host 生命周期操作。
+本报告表示本地验收完成。

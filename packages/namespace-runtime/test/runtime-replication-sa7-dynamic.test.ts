@@ -453,9 +453,9 @@ describe('[SA7] #151 SA4 移交动态验证（重点 2/3/4）', () => {
     expect(bare.applyNoop).toEqual(logged.applyNoop);
     expect(bare.applyFenced).toEqual(logged.applyFenced);
 
-    // saveCalls 轨迹一致（notifyDirty 触发面一致：enable E6 / bump E6 / apply R6 有集成；
-    // 空 diff apply 零通知（R-3.1）；fenced apply 零通知）
-    expect(bare.saveCallsAfterEachStep).toEqual([1, 2, 3, 3, 4, 4]);
+    // saveCalls 轨迹一致：enable、bump 与每次成功 apply（含空 diff/noop）均登记 dirty；
+    // fenced apply 在身份门拒绝，零通知。
+    expect(bare.saveCallsAfterEachStep).toEqual([1, 2, 3, 4, 5, 5]);
     expect(logged.saveCallsAfterEachStep).toEqual(bare.saveCallsAfterEachStep);
 
     // 最终业务状态一致（ROOT 集成 / META 身份与 epoch）

@@ -79,7 +79,7 @@ import { createMemoryPersistence } from '@nomicore/persistence';
 // （沿 #149 红灯契约相对路径 import 诊断包先例；registry package.json 未声明
 // ./testing 子路径导出到 workspace 依赖图，属包依赖修复，SA3 在装配期处理）。
 import { createNamespaceRegistryForTesting, createRegistryTestScheduler } from '../../namespace-registry/src/testing.js';
-import type { CreateNamespaceInput, NamespaceLease } from '../../namespace-registry/src/index.js';
+import type { CreateNamespaceInput, NamespaceLease, RegistryRandomBytes } from '../../namespace-registry/src/index.js';
 import type { NamespaceRuntime } from '../src/index.js';
 import { createNamespaceRuntimeWithSeam } from '../src/runtime.js';
 import { realPersistenceScheduler } from './real-persistence-scheduler.js';
@@ -106,6 +106,16 @@ const NAMESPACE_ID = 'k-ns';
 const REPLICATION_ID = 'a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6'; // ADR-0010 冻结格式：32 位小写 hex
 const REMOTE_HUB_ID = 'hub-1';
 const REMOTE_PEER_ID = 'peer-9';
+
+function makeCounterRandomBytes(): RegistryRandomBytes {
+  let counter = 0;
+  return (length) => {
+    if (length !== 16) throw new Error(`expected 16 random bytes, got ${length}`);
+    const bytes = new Uint8Array(length);
+    bytes[15] = counter++ & 0xff;
+    return bytes;
+  };
+}
 
 function makeDoc(): Y.Doc {
   const doc = new Y.Doc();
@@ -242,7 +252,7 @@ function expectEnableResult(res: unknown): void {
 }
 
 function readValue(runtime: NamespaceRuntime, path: readonly (string | number)[]): unknown {
-  const read = runtime.read(path);
+  const read = runtime.readData(path);
   expect(read.ok).toBe(true);
   return (read as { value: unknown }).value;
 }
@@ -343,6 +353,7 @@ async function makeRegistryFixture(
   opts: {
     notifyDirty?: () => Promise<void>;
     wrapHandle?: (handle: DocHandle) => DocHandle;
+    role?: 'hub' | 'peer';
   } = {},
 ): Promise<RegistryFixture> {
   const persistence = new StubPersistence();
@@ -351,6 +362,8 @@ async function makeRegistryFixture(
   const registry = createNamespaceRegistryForTesting(persistence, {
     clock: { now: () => NOW_MS },
     scheduler: createRegistryTestScheduler(),
+    randomBytes: makeCounterRandomBytes(),
+    role: opts.role ?? 'hub',
     runtimeFactory: (handle, notifyDirty) => {
       const runtime = createNamespaceRuntimeWithSeam({
         handle,
@@ -364,7 +377,6 @@ async function makeRegistryFixture(
   });
   const result = await registry.create({
     owner: OWNER,
-    namespaceId: NAMESPACE_ID,
     schema: ENVELOPE,
     root: ROOT0,
   } satisfies CreateNamespaceInput);
@@ -547,7 +559,7 @@ describe('#151 replication 管理写（enable / bump）诊断记录（红灯契�
 describe('#151 trusted replication apply（session）诊断记录（红灯契约）', () => {
   it('AC1/AC2/AC3 committed apply（hub-to-peer）：replication-apply 记录 + 受控 source/context + 精确 owned update bytes', async () => {
     const log = makeLog({ inputPolicy: 'full' });
-    const fixture = await makeRegistryFixture(log);
+    const fixture = await makeRegistryFixture(log, { role: 'peer' });
     await enableReplication(fixture);
     const session = await openSession(fixture.lease, 'peer', REMOTE_HUB_ID); // peer 侧接收 → hub-to-peer
     expect(session.localRole).toBe('peer');
@@ -612,15 +624,15 @@ describe('#151 trusted replication apply（session）诊断记录（红灯契约
     expect(rec.result).toMatchObject({ kind: 'committed', effect: 'update' });
 
     // 业务面闭环
-    const read = fixture.runtime.read(['a']);
+    const read = fixture.runtime.readData(['a']);
     expect(read.ok).toBe(true);
     expect((read as { value: unknown }).value).toBe('y');
     await session.close();
   });
 
-  it('AC3 noop 显式：无新状态 update → committed + noop、零写入零 dirty', async () => {
+  it('AC3 noop 显式：无新状态 update → committed + noop，成功 apply 仍登记 dirty', async () => {
     const log = makeLog();
-    const fixture = await makeRegistryFixture(log);
+    const fixture = await makeRegistryFixture(log, { role: 'peer' });
     await enableReplication(fixture);
     const session = await openSession(fixture.lease, 'peer', REMOTE_HUB_ID);
     const dirtyBefore = fixture.persistence.saveCalls;
@@ -633,15 +645,15 @@ describe('#151 trusted replication apply（session）诊断记录（红灯契约
     expect(rec.operation).toBe('replication-apply');
     expect(rec.result).toEqual({ kind: 'committed', effect: 'noop' }); // 零写入 → noop 显式
 
-    // 业务面：零写入零 dirty（只有 enable 的一次 saveDoc）
-    expect(fixture.persistence.saveCalls).toBe(dirtyBefore);
+    // 业务面：文档效果为 noop，但成功 apply 仍按现行 ADR 登记 dirty。
+    expect(fixture.persistence.saveCalls).toBe(dirtyBefore + 1);
     expect(readValue(fixture.runtime, ['n'])).toBe(1);
     await session.close();
   });
 
   it('AC2 identity/epoch 拒绝：fence 后 apply → stage identity / REPLICATION_EPOCH_CONFLICTED / rejected / 零写入', async () => {
     const log = makeLog();
-    const fixture = await makeRegistryFixture(log);
+    const fixture = await makeRegistryFixture(log, { role: 'peer' });
     await enableReplication(fixture);
     const session = await openSession(fixture.lease, 'peer', REMOTE_HUB_ID); // session 冻结 epoch=1
 
@@ -669,7 +681,7 @@ describe('#151 trusted replication apply（session）诊断记录（红灯契约
 
   it('AC2 capability-gate（session closed）：acceptance / REPLICATION_SESSION_CLOSED / rejected / not-accessed / 零写入', async () => {
     const log = makeLog();
-    const fixture = await makeRegistryFixture(log);
+    const fixture = await makeRegistryFixture(log, { role: 'peer' });
     await enableReplication(fixture);
     const session = await openSession(fixture.lease, 'peer', REMOTE_HUB_ID);
     await session.close();
@@ -694,7 +706,7 @@ describe('#151 trusted replication apply（session）诊断记录（红灯契约
 
   it('AC2 validation（raw update 损坏）：validation / REPLICATION_RAW_UPDATE_INVALID / rejected / 零写入', async () => {
     const log = makeLog();
-    const fixture = await makeRegistryFixture(log);
+    const fixture = await makeRegistryFixture(log, { role: 'peer' });
     await enableReplication(fixture);
     const session = await openSession(fixture.lease, 'peer', REMOTE_HUB_ID);
 
@@ -717,6 +729,7 @@ describe('#151 trusted replication apply（session）诊断记录（红灯契约
     const log = makeLog();
     let armed = false;
     const fixture = await makeRegistryFixture(log, {
+      role: 'peer',
       notifyDirty: async () => {
         if (armed) throw new Error('persistence down (injected)');
       },
@@ -766,6 +779,7 @@ describe('#151 trusted replication apply（session）诊断记录（红灯契约
     const log = makeLog();
     let armed = false;
     const fixture = await makeRegistryFixture(log, {
+      role: 'peer',
       wrapHandle: (raw) =>
         new Proxy(raw, {
           get(target, prop) {
@@ -871,6 +885,8 @@ describe('#151 AC4/AC5 日志故障与 transport 隔离（红灯契约）', () =
     const registry = createNamespaceRegistryForTesting(persistence, {
       clock: { now: () => NOW_MS },
       scheduler: createRegistryTestScheduler(),
+      randomBytes: makeCounterRandomBytes(),
+      role: 'peer',
       runtimeFactory: (handle, notifyDirty) => {
         const runtime = createNamespaceRuntimeWithSeam({
           handle,
@@ -884,7 +900,6 @@ describe('#151 AC4/AC5 日志故障与 transport 隔离（红灯契约）', () =
     });
     const result = await registry.create({
       owner: OWNER,
-      namespaceId: NAMESPACE_ID,
       schema: ENVELOPE,
       root: ROOT0,
     } satisfies CreateNamespaceInput);

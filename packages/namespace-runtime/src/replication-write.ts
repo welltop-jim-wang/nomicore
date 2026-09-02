@@ -38,13 +38,28 @@
 import type * as Y from 'yjs';
 import type { DocHandle, DocHandleStatus } from '@nomicore/persistence';
 import {
+  FATAL_REPLICATION_WRITE_INTERNAL_CODE,
+  REPLICATION_EPOCH_OVERFLOW_CODE,
   REPLICATION_EPOCH_OVERFLOW_MESSAGE,
+  REPLICATION_INPUT_INVALID_CODE,
   REPLICATION_INPUT_INVALID_MESSAGE,
+  REPLICATION_META_ABSENT_CODE,
   REPLICATION_META_ABSENT_MESSAGE,
+  REPLICATION_NOT_ENABLED_CODE,
   REPLICATION_NOT_ENABLED_MESSAGE,
+  RUNTIME_WRITE_DISABLED_CODE,
   ReplicationMetaCorruptError,
   RuntimeWriteFatalError,
 } from './errors.js';
+import {
+  diagCapGate,
+  diagDirtyFatal,
+  diagFatalCapGate,
+  diagFatalTx,
+  diagInputReady,
+  diagValidationCode,
+} from './diagnostic.js';
+import type { SlotDiag } from './diagnostic.js';
 import type { RuntimeState } from './p0.js';
 import type { SessionFanout } from './replication-session.js';
 import {
@@ -259,6 +274,7 @@ function describeOf(v: unknown): string {
 export async function runEnableReplicationSlot(
   env: ReplicationWriteEnv,
   input: unknown,
+  diag?: SlotDiag,
 ): Promise<EnableReplicationResult> {
   // ── E1/E2 共享 gate（fatal → writable → notifier 绑定；零输入访问）────────
   const gate = runReplicationWriteGate(env);
@@ -267,7 +283,11 @@ export async function runEnableReplicationSlot(
     // branded fatal（write-slot-internal、committed:false，markWriteFatal 已同步
     // 置位）→ throw 经 async promise rejection 送达——与既有
     // `return rejectWithWriteFatal(...)` 同一错误对象、同一结算通道
-    if (gate.result instanceof RuntimeWriteFatalError) throw gate.result;
+    if (gate.result instanceof RuntimeWriteFatalError) {
+      diagFatalCapGate(diag, FATAL_REPLICATION_WRITE_INTERNAL_CODE, 'replication');
+      throw gate.result;
+    }
+    diagCapGate(diag, RUNTIME_WRITE_DISABLED_CODE, gate.result.issues as ReplicationManagementIssue[]);
     return gate.result;
   }
   const notifyDirty = gate.notifyDirty; // 单读捕获（gate 已捕获；此后槽体零再读 env 字段语义）
@@ -293,14 +313,19 @@ export async function runEnableReplicationSlot(
       typeof captured !== 'string' ||
       !REPLICATION_ID_PATTERN.test(captured)
     ) {
-      return { ok: false, issues: [{ message: REPLICATION_INPUT_INVALID_MESSAGE, path: [] }] };
+      const issues = [{ message: REPLICATION_INPUT_INVALID_MESSAGE, path: [] }];
+      diagValidationCode(diag, REPLICATION_INPUT_INVALID_CODE, issues, 'replication');
+      return { ok: false, issues };
     }
     replicationId = captured;
+    diagInputReady(diag, Object.freeze({ replicationId }));
   } catch {
     // 敌意 Proxy/getter/ownKeys trap 的任何 throw 收编为类 B issue（结果联合结算）——
     // 绝不裸 reject 原始 TypeError（击穿 INV-R7 二通道纪律）、绝不升格 fatal
     //（防「一次敌意 value → 永久禁写」DoS——write.ts snapshotMutation 立法注释同源）
-    return { ok: false, issues: [{ message: REPLICATION_INPUT_INVALID_MESSAGE, path: [] }] };
+    const issues = [{ message: REPLICATION_INPUT_INVALID_MESSAGE, path: [] }];
+    diagValidationCode(diag, REPLICATION_INPUT_INVALID_CODE, issues, 'replication');
+    return { ok: false, issues };
   }
 
   // ── E4 领域事实读取（从 live META 读取执行时事实——镜像 S4「执行时 active
@@ -311,9 +336,16 @@ export async function runEnableReplicationSlot(
   } catch (err) {
     // 损坏判据（恰一键存在/键存在而值 undefined/格式违约/载体异型）→ 槽内不变量破坏
     // = internal fatal（committed:false——此时尚零 doc 写）；不静默降级为 disabled
+    diagFatalCapGate(diag, FATAL_REPLICATION_WRITE_INTERNAL_CODE, 'replication');
     return rejectWithWriteFatal(env, false, 'write-slot-internal', err, 'replication');
   }
   if (facts.state === 'enabled') {
+    if (diag !== undefined) {
+      diag.context = Object.freeze({
+        replicationId: facts.replicationId,
+        replicationEpoch: facts.replicationEpoch,
+      });
+    }
     // 幂等（D-5）：已启用命名空间再 enable → 零事务、零 notifyDirty、身份/epoch 不变；
     // 调用方传入的 replicationId 被弃用（决策单点在槽内——唯一 sequencer 串行域，
     // 不做 read-then-write 预检；被弃 id 是惰性数据、零副作用）
@@ -324,10 +356,15 @@ export async function runEnableReplicationSlot(
   if (!env.doc.share.has('META')) {
     // 载体缺席 → 拒绝在无 docId 的 META 上凭空造载体（防「下次 loadDoc 被 META.docId
     // 校验击穿」的真实损坏；生产不可达，seedForTest 设施专用防御——D-4/D-5 边界 7）
-    return { ok: false, issues: [{ message: REPLICATION_META_ABSENT_MESSAGE, path: [] }] };
+    const issues = [{ message: REPLICATION_META_ABSENT_MESSAGE, path: [] }];
+    diagValidationCode(diag, REPLICATION_META_ABSENT_CODE, issues, 'replication');
+    return { ok: false, issues };
   }
 
   // ── E5 单 Yjs transaction（本槽唯一 Y.Doc 写入口；两键同事务 = 原子安装）──
+  let capturedUpdate: Uint8Array | undefined;
+  const updateHandler = (update: Uint8Array): void => { capturedUpdate ??= update.slice(); };
+  if (diag !== undefined) env.doc.on('update', updateHandler);
   try {
     env.doc.transact(() => {
       const meta = env.doc.getMap('META');
@@ -338,19 +375,29 @@ export async function runEnableReplicationSlot(
     // 保守 committed:true（ADR「未知异常保守视为可能已提交」过报方向强制——镜像
     //  write.ts S5）；该路径 E5.5 被跳过 → status.replication 可能陈旧于 live META
     //  （INV-R5 登记的例外窗口：与 SCHEMA 槽 S5.5 先例同构，生产不可达）
+    diagFatalTx(diag, FATAL_REPLICATION_WRITE_INTERNAL_CODE, true, 'unknown-pipeline-throw', capturedUpdate, 'replication');
     return rejectWithWriteFatal(env, true, 'unknown-pipeline-throw', err, 'replication');
+  } finally {
+    if (diag !== undefined) {
+      env.doc.off('update', updateHandler);
+      diag.updateBytes = capturedUpdate;
+    }
   }
 
   // ── E5.5 复制事实同步整替（transaction 返回后、await notifyDirty 之前——镜像
   //    SCHEMA 槽 S5.5 installActive 时序：notifier 挂起窗口内 status 已可观测提交
   //    事实；notify-dirty 失败路径不回滚——committed 事实诚实）──────────
   env.state.replication = Object.freeze({ state: 'enabled', replicationId, replicationEpoch: 1 });
+  if (diag !== undefined) {
+    diag.context = Object.freeze({ replicationId, replicationEpoch: 1 });
+  }
 
   // ── E6 同槽 await notifyDirty（完成信号 = live commit + dirty 登记两者）──
   try {
     await notifyDirty();
   } catch (err) {
     // 写已提交而登记通道损坏——诚实 fatal；不重试（E6 本次即本槽 notifier 唯一一次尝试）
+    diagDirtyFatal(diag, FATAL_REPLICATION_WRITE_INTERNAL_CODE, 'replication');
     markWriteFatal(env, err, 'replication');
     throw new RuntimeWriteFatalError(
       'notify-dirty-failed',
@@ -369,11 +416,16 @@ export async function runEnableReplicationSlot(
  */
 export async function runBumpReplicationEpochSlot(
   env: ReplicationWriteEnv,
+  diag?: SlotDiag,
 ): Promise<BumpReplicationEpochResult> {
   // ── E1/E2 共享 gate（同 enable——入口无关；bump 无输入面）───────────────
   const gate = runReplicationWriteGate(env);
   if (gate.kind === 'gate-failure') {
-    if (gate.result instanceof RuntimeWriteFatalError) throw gate.result;
+    if (gate.result instanceof RuntimeWriteFatalError) {
+      diagFatalCapGate(diag, FATAL_REPLICATION_WRITE_INTERNAL_CODE, 'replication');
+      throw gate.result;
+    }
+    diagCapGate(diag, RUNTIME_WRITE_DISABLED_CODE, gate.result.issues as ReplicationManagementIssue[]);
     return gate.result;
   }
   const notifyDirty = gate.notifyDirty; // 单读捕获
@@ -383,28 +435,42 @@ export async function runBumpReplicationEpochSlot(
   try {
     facts = readReplicationFacts(env.doc);
   } catch (err) {
+    diagFatalCapGate(diag, FATAL_REPLICATION_WRITE_INTERNAL_CODE, 'replication');
     return rejectWithWriteFatal(env, false, 'write-slot-internal', err, 'replication');
   }
   if (facts.state === 'disabled') {
     // 无谱系即无代际可提升（两键真缺席与载体缺席在此同拒——REPLICATION_NOT_ENABLED，
     // 零写入、零通知）
-    return { ok: false, issues: [{ message: REPLICATION_NOT_ENABLED_MESSAGE, path: [] }] };
+    const issues = [{ message: REPLICATION_NOT_ENABLED_MESSAGE, path: [] }];
+    diagValidationCode(diag, REPLICATION_NOT_ENABLED_CODE, issues, 'replication');
+    return { ok: false, issues };
   }
   if (facts.replicationEpoch >= Number.MAX_SAFE_INTEGER) {
     // overflow：结果面拒绝（D-6）——判据先于任何 +1 运算，MAX+1 永不被计算/存储，
     // 无回绕面（ADR 0010「拒绝提升不回绕」）
-    return { ok: false, issues: [{ message: REPLICATION_EPOCH_OVERFLOW_MESSAGE, path: [] }] };
+    const issues = [{ message: REPLICATION_EPOCH_OVERFLOW_MESSAGE, path: [] }];
+    diagValidationCode(diag, REPLICATION_EPOCH_OVERFLOW_CODE, issues, 'replication');
+    return { ok: false, issues };
   }
 
   // ── E5 单 Yjs transaction（本槽唯一 Y.Doc 写入口；replicationId 不触碰——
   //    身份不可变；facts.replicationEpoch <= MAX-1 已由 E4 保证，+1 后 <= MAX 恒安全整数）
   const nextEpoch = facts.replicationEpoch + 1;
+  let capturedUpdate: Uint8Array | undefined;
+  const updateHandler = (update: Uint8Array): void => { capturedUpdate ??= update.slice(); };
+  if (diag !== undefined) env.doc.on('update', updateHandler);
   try {
     env.doc.transact(() => {
       env.doc.getMap('META').set('replicationEpoch', nextEpoch);
     });
   } catch (err) {
+    diagFatalTx(diag, FATAL_REPLICATION_WRITE_INTERNAL_CODE, true, 'unknown-pipeline-throw', capturedUpdate, 'replication');
     return rejectWithWriteFatal(env, true, 'unknown-pipeline-throw', err, 'replication');
+  } finally {
+    if (diag !== undefined) {
+      env.doc.off('update', updateHandler);
+      diag.updateBytes = capturedUpdate;
+    }
   }
 
   // ── E5.5 复制事实同步整替（同 enable；notify-dirty 失败不回滚——诚实事实）──
@@ -413,6 +479,12 @@ export async function runBumpReplicationEpochSlot(
     replicationId: facts.replicationId,
     replicationEpoch: nextEpoch,
   });
+  if (diag !== undefined) {
+    diag.context = Object.freeze({
+      replicationId: facts.replicationId,
+      replicationEpoch: nextEpoch,
+    });
+  }
   // ── E5.5' R2-1：bump 槽同步投影步主动 fence（transaction 返回后、await notifyDirty
   //    之前——ADR 0008 #132 L134 槽序「同步投影」步的落点，零新增 sequencer 机制）。
   //    nextEpoch 为全新值 ⇒ 全部现存 channel（全部冻结旧 epoch）被 fence——conflicted
