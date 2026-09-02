@@ -194,6 +194,9 @@ importers:
       '@nomicore/instance':
         specifier: workspace:*
         version: link:../instance
+      '@nomicore/namespace-diagnostic-log':
+        specifier: workspace:*
+        version: link:../namespace-diagnostic-log
       '@nomicore/namespace-runtime':
         specifier: workspace:*
         version: link:../namespace-runtime
@@ -203,6 +206,9 @@ importers:
       '@nomicore/vfsl':
         specifier: workspace:*
         version: link:../vfsl
+      yjs:
+        specifier: ^13.6.30
+        version: 13.6.32
     devDependencies:
       '@types/node':
         specifier: ^20
@@ -213,9 +219,6 @@ importers:
       vitest:
         specifier: ^3.2.4
         version: 3.2.7(@types/node@20.19.43)(tsx@4.23.12)
-      yjs:
-        specifier: ^13.6.30
-        version: 13.6.32
 
   packages/namespace-runtime:
     dependencies:
