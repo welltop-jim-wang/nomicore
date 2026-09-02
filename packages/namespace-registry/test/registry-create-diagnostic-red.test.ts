@@ -108,6 +108,21 @@ const ENVELOPE = Object.freeze({
 const ROOT0 = Object.freeze({ n: 1, a: 'x' });
 const BAD_SCHEMA = Object.freeze({ lang: 'vfsl', version: 1, id: 'ns-bad', text: 'type ROOT = { n: ;\n' });
 const BAD_ROOT = Object.freeze({ n: 'not-a-number' });
+const GENERATED_NAMESPACE_IDS = Object.freeze({
+  first: 'ns-00000000000000000000000000000001',
+  second: 'ns-00000000000000000000000000000002',
+});
+
+function makeDeterministicRandomBytes(): (length: number) => Uint8Array {
+  let counter = 0;
+  return (length: number): Uint8Array => {
+    if (length !== 16) throw new Error(`expected 16 random bytes, received ${length}`);
+    counter += 1;
+    const bytes = new Uint8Array(16);
+    bytes[15] = counter;
+    return bytes;
+  };
+}
 
 /** 契约锚点：#150 注入 seam（字段名 = 契约锚点；当前 Overrides 无此字段——传参被
  *  忽略 → 红灯）。emitter 为 #148 冻结接口；initStream 为 ADR-0012 stream 建立缝
@@ -134,8 +149,8 @@ function makeLog(config?: Partial<DiagnosticLogConfig>): BoundedMemoryDiagnostic
   return createBoundedMemoryDiagnosticLog({ inputPolicy: 'digest', updateCapture: true, ...config });
 }
 
-function makeInput(namespaceId = 'k-ns', schema: unknown = ENVELOPE, root: unknown = ROOT0): CreateNamespaceInput {
-  return { owner: OWNER, namespaceId, schema, root };
+function makeInput(schema: unknown = ENVELOPE, root: unknown = ROOT0): CreateNamespaceInput {
+  return { owner: OWNER, schema, root };
 }
 
 function okLease(result: unknown): NamespaceLease {
@@ -266,6 +281,7 @@ interface RegistryDiagOverrides {
   readonly createDocumentFactory?: (namespaceId: string, createdAt: string, schema: unknown, root: unknown) => unknown;
   readonly observer?: (e: RegistryObserverEvent) => void;
   readonly diagnosticLog?: NamespaceRegistryDiagnosticLog;
+  readonly randomBytes?: (length: number) => Uint8Array;
 }
 
 function makeRegistry(
@@ -276,6 +292,7 @@ function makeRegistry(
   const seam: Record<string, unknown> = {
     clock,
     scheduler: createRegistryTestScheduler(),
+    randomBytes: overrides.randomBytes ?? makeDeterministicRandomBytes(),
   };
   if (overrides.runtimeFactory !== undefined) seam.runtimeFactory = overrides.runtimeFactory;
   if (overrides.createDocumentFactory !== undefined) seam.createDocumentFactory = overrides.createDocumentFactory;
@@ -376,7 +393,7 @@ describe('#150 create 诊断记录（红灯契约）', () => {
 
     // 业务面闭环（当前 green——隔离守卫）：create 成功、createdAt 精确、Clock 恰读一次
     expect(lease.owner).toEqual({ userId: 'u-alice' });
-    expect(lease.namespaceId).toBe('k-ns');
+    expect(lease.namespaceId).toBe(GENERATED_NAMESPACE_IDS.first);
     expect(lease.getMetadata().createdAt).toBe(NOW_ISO);
     expect(clock.calls).toBe(1);
 
@@ -389,7 +406,7 @@ describe('#150 create 诊断记录（红灯契约）', () => {
     if (rec.result.kind === 'committed') {
       expect(rec.result.effect).toBe('update'); // 无 noop/update-omitted——create 恒产生初始 doc effect
       const fresh = materialize(updateCarrierOf(rec.result));
-      expectInitialDoc(fresh, 'k-ns');
+      expectInitialDoc(fresh, GENERATED_NAMESPACE_IDS.first);
     }
     // committed 无 code（ADR-0011「committed 无 code」；code↔sourceModule 成对仅在拒绝/fatal）
     expect(rec.code).toBeUndefined();
@@ -399,12 +416,12 @@ describe('#150 create 诊断记录（红灯契约）', () => {
     // 契约不锁定 initStream 相对 create() 结算的先后（ADR-0011「emitter 不被 await」）
     // ——poll 消除合法延后下的伪红。
     await expect.poll(() => initCalls.length, { interval: 5, timeout: 3_000 }).toBe(1);
-    expect(initCalls[0]?.namespaceId).toBe('k-ns');
+    expect(initCalls[0]?.namespaceId).toBe(GENERATED_NAMESPACE_IDS.first);
     const genesis = initCalls[0]!.bytes;
     expect(genesis).toBeDefined();
     const genesisDoc = new Y.Doc();
     Y.applyUpdate(genesisDoc, genesis!);
-    expectInitialDoc(genesisDoc, 'k-ns');
+    expectInitialDoc(genesisDoc, GENERATED_NAMESPACE_IDS.first);
 
     await lease.release();
   });
@@ -447,7 +464,7 @@ describe('#150 create 诊断记录（红灯契约）', () => {
     // ── 红灯锚：initStream 从未被调用（当前 0 记录/0 文件）──
     await expect.poll(() => fileLog !== undefined, { interval: 5, timeout: 3_000 }).toBe(true);
     const logInstance = fileLog!;
-    const streamPath = { rootDir, namespaceId: 'k-ns', streamId: logInstance.streamId };
+    const streamPath = { rootDir, namespaceId: GENERATED_NAMESPACE_IDS.first, streamId: logInstance.streamId };
     // attempt 记录可合法晚于 initStream（契约不锁定次序）→ 磁盘行数 poll 至 2 再细读
     await expect
       .poll(() => readStreamStrict(streamPath).records.length, { interval: 5, timeout: 3_000 })
@@ -464,7 +481,7 @@ describe('#150 create 诊断记录（红灯契约）', () => {
     expect(genesisRec.sequence).toBe('1');
     expect(genesisRec.observedAt).toBe(NOW_ISO); // 适配器注入 Clock 同源
     expect(genesisRec.update).toBeDefined();
-    expectInitialDoc(materialize(genesisRec.update!), 'k-ns');
+    expectInitialDoc(materialize(genesisRec.update!), GENERATED_NAMESPACE_IDS.first);
 
     const attemptRead = readable.records[1]!;
     expect(attemptRead.ok).toBe(true);
@@ -484,64 +501,50 @@ describe('#150 create 诊断记录（红灯契约）', () => {
     expect(attemptRec.result?.effect).toBe('update');
     expect(attemptRec.input?.capture).toBe('full');
     expect(attemptRec.input?.value).toEqual({ schema: ENVELOPE, root: ROOT0 });
-    expectInitialDoc(materialize(attemptRec.result!.update!), 'k-ns');
+    expectInitialDoc(materialize(attemptRec.result!.update!), GENERATED_NAMESPACE_IDS.first);
 
     await lease.release();
   });
 
-  it('AC1 重复（entry duplicate）：acceptance/rejected/ALREADY_EXISTS/not-accessed + 零 payload 读取', async () => {
-    const log = makeLog({ inputPolicy: 'full' }); // full 策略下仍必须 not-accessed
+  it('AC1 连续 create：生成不同 namespaceId，均保留 transaction/committed 诊断覆盖', async () => {
+    const log = makeLog({ inputPolicy: 'full' });
     const binding: NamespaceRegistryDiagnosticLog = { emitter: log.emitter };
     const persistence = new StubPersistence();
     const registry = makeRegistry(persistence, { diagnosticLog: binding });
 
-    const first = await registry.create(makeInput());
-    const lease = okLease(first);
-
-    // 重复尝试：payload 以代理包装——schema/root 读取计数（业务 payload 零访问锚）
-    const schemaGets = { count: 0 };
-    const proxied = new Proxy(makeInput('k-ns'), {
-      get(target, prop, receiver) {
-        if (prop === 'schema' || prop === 'root') schemaGets.count += 1;
-        return Reflect.get(target, prop, receiver);
-      },
-    });
-    const second = await registry.create(proxied as unknown as CreateNamespaceInput);
-    expect(second.ok).toBe(false);
-    expect((second as { code?: string }).code).toBe('NAMESPACE_ALREADY_EXISTS');
-    expect(schemaGets.count).toBe(0); // pre-input 拒绝：payload 零读取
+    const first = okLease(await registry.create(makeInput()));
+    const second = okLease(await registry.create(makeInput()));
+    expect(first.namespaceId).toBe(GENERATED_NAMESPACE_IDS.first);
+    expect(second.namespaceId).toBe(GENERATED_NAMESPACE_IDS.second);
 
     const recs = await waitAttempts(log, 2);
-    // 第一条 = 首次成功创建（transaction/committed）
-    expect(recs[0]?.stage).toBe('transaction');
-    expect(recs[0]?.result.kind).toBe('committed');
-    expect(recs[1]?.stage).toBe('acceptance');
-    expect(recs[1]?.operation).toBe('namespace-create');
-    expect(recs[1]?.result).toEqual({ kind: 'rejected' });
-    expect(recs[1]?.code).toBe('NAMESPACE_ALREADY_EXISTS');
-    expect(recs[1]?.sourceModule).toBe('registry'); // code↔sourceModule 成对
-    expect(recs[1]?.input).toEqual({ capture: 'not-accessed' }); // full 策略下事实优先
+    expect(recs.map((rec) => rec.stage)).toEqual(['transaction', 'transaction']);
+    expect(recs.map((rec) => rec.result.kind)).toEqual(['committed', 'committed']);
 
-    await lease.release();
+    await first.release();
+    await second.release();
   });
 
-  it('AC1 持久层重复（DOC_DUPLICATE）：transaction/rejected/ALREADY_EXISTS + 快照已捕获', async () => {
+  it('AC1 持久层 ID 冲突（DOC_DUPLICATE）：重生成后 committed，保留最终 transaction 诊断', async () => {
     const log = makeLog({ inputPolicy: 'full' });
     const binding: NamespaceRegistryDiagnosticLog = { emitter: log.emitter };
     const persistence = new StubPersistence();
     persistence.queueCreate({ error: new DocDuplicateError('injected duplicate') });
     const registry = makeRegistry(persistence, { diagnosticLog: binding });
 
-    const result = await registry.create(makeInput());
-    expect(result.ok).toBe(false);
-    expect((result as { code?: string }).code).toBe('NAMESPACE_ALREADY_EXISTS'); // 四源同码
+    const lease = okLease(await registry.create(makeInput()));
+    expect(lease.namespaceId).toBe(GENERATED_NAMESPACE_IDS.second);
+    expect(persistence.createCalls.map((call) => call.docId)).toEqual([
+      GENERATED_NAMESPACE_IDS.first,
+      GENERATED_NAMESPACE_IDS.second,
+    ]);
 
     const rec = firstAttempt(await waitAttempts(log, 1));
-    expect(rec.stage).toBe('transaction'); // 已进入 Persistence 提交段（非 pre-input）
-    expect(rec.result).toEqual({ kind: 'rejected' });
-    expect(rec.code).toBe('NAMESPACE_ALREADY_EXISTS');
-    expect(rec.sourceModule).toBe('registry');
+    expect(rec.stage).toBe('transaction');
+    expect(rec.result.kind).toBe('committed');
+    expect(rec.code).toBeUndefined();
     expect(rec.input).toMatchObject({ capture: 'full', value: { schema: ENVELOPE, root: ROOT0 } });
+    await lease.release();
   });
 
   it('AC1 停接纳拒绝（shutdown 后 create）：acceptance/REGISTRY_NOT_ACCEPTING/not-accessed + 零 trap', async () => {
@@ -610,7 +613,7 @@ describe('#150 create 诊断记录（红灯契约）', () => {
     const persistence = new StubPersistence();
     const registry = makeRegistry(persistence, { diagnosticLog: binding });
 
-    const result = await registry.create(makeInput('k-ns', BAD_SCHEMA, ROOT0));
+    const result = await registry.create(makeInput(BAD_SCHEMA, ROOT0));
     expect(result.ok).toBe(false);
     expect((result as { code?: string }).code).toBe('NAMESPACE_SCHEMA_INVALID');
 
@@ -630,7 +633,7 @@ describe('#150 create 诊断记录（红灯契约）', () => {
     const persistence = new StubPersistence();
     const registry = makeRegistry(persistence, { diagnosticLog: binding });
 
-    const result = await registry.create(makeInput('k-ns', ENVELOPE, BAD_ROOT));
+    const result = await registry.create(makeInput(ENVELOPE, BAD_ROOT));
     expect(result.ok).toBe(false);
     expect((result as { code?: string }).code).toBe('NAMESPACE_ROOT_INVALID');
 
@@ -691,7 +694,7 @@ describe('#150 create 诊断记录（红灯契约）', () => {
     if (rec.result.kind === 'fatal' && rec.result.committed === true) {
       expect(rec.result.effect).toBe('update'); // 提交事实确切可知——owned bytes 诚实携带
       const fresh = materialize(updateCarrierOf(rec.result));
-      expectInitialDoc(fresh, 'k-ns');
+      expectInitialDoc(fresh, GENERATED_NAMESPACE_IDS.first);
     } else {
       throw new Error(`预期 fatal committed:true，实际 ${JSON.stringify(rec.result)}`);
     }
@@ -701,7 +704,7 @@ describe('#150 create 诊断记录（红灯契约）', () => {
     expect(rec.input).toMatchObject({ capture: 'full', value: { schema: ENVELOPE, root: ROOT0 } });
 
     // 业务面：文档保留（不补偿删除不 fallback）——open 可恢复已创建 namespace
-    const opened = await registry.open(OWNER, 'k-ns');
+    const opened = await registry.open(OWNER, GENERATED_NAMESPACE_IDS.first);
     expect(opened.ok).toBe(true);
     const openLease = okLease(opened);
     expect(openLease.getMetadata().createdAt).toBe(NOW_ISO);
@@ -741,7 +744,7 @@ describe('#150 create 诊断记录（红灯契约）', () => {
     persistence2.queueCreate({ gate });
     const log2 = makeLog({ inputPolicy: 'full' });
     const registry2 = makeRegistry(persistence2, { diagnosticLog: { emitter: log2.emitter } });
-    const payload2: Record<string, unknown> = { owner: OWNER, namespaceId: 'k-ns', schema: ENVELOPE, root: ROOT0 };
+    const payload2: Record<string, unknown> = { owner: OWNER, schema: ENVELOPE, root: ROOT0 };
     const pendingCreate = registry2.create(payload2 as unknown as CreateNamespaceInput);
     await flushMicrotasks();
     expect(persistence2.createCalls.length).toBe(1); // 快照已完成、createDoc 正在 gate 上等待
@@ -785,8 +788,8 @@ describe('#150 create 诊断记录（红灯契约）', () => {
     const persistence = new StubPersistence();
     const registry = makeRegistry(persistence, { diagnosticLog: binding });
 
-    const r1 = await registry.create(makeInput('k-ns-a'));
-    const r2 = await registry.create(makeInput('k-ns-b'));
+    const r1 = await registry.create(makeInput());
+    const r2 = await registry.create(makeInput());
     expect(r1.ok).toBe(true);
     expect(r2.ok).toBe(true);
     const l1 = okLease(r1);
@@ -811,7 +814,7 @@ describe('#150 create 诊断记录（红灯契约）', () => {
         persistence,
         log === undefined ? {} : { diagnosticLog: { emitter: log.emitter } as NamespaceRegistryDiagnosticLog },
       );
-      const result = await registry.create(makeInput('k-ns-shared'));
+      const result = await registry.create(makeInput());
       const lease = okLease(result);
       const snapshot = {
         metadata: lease.getMetadata(),
@@ -917,23 +920,23 @@ describe('#150 create 诊断记录（红灯契约）', () => {
     });
 
     // 业务面：变更 ROOT（n:1 → n:2）——重试时点与创建时点之间文档已变化
-    const mutation = await lease.mutateRoot({ op: 'set', path: ['n'], value: 2 });
+    const mutation = await lease.mutateData({ op: 'set', path: ['n'], value: 2 });
     expect(mutation.ok).toBe(true);
 
     // 延迟重试：健康 stream 尚不存在（首次失败零落盘）→ 以当时 Y.Doc 建立全新 stream。
     // 以当前文档状态取得 bytes（Host 侧经 Persistence loadDoc 访问——不带 live doc 引用泄漏）
-    const handle = await persistence.loadDoc(OWNER, 'k-ns');
+    const handle = await persistence.loadDoc(OWNER, GENERATED_NAMESPACE_IDS.first);
     expect(handle).not.toBeNull();
     const currentState = Y.encodeStateAsUpdate(handle!.doc);
     const retryLog = createFileDiagnosticLog({
       rootDir,
-      namespaceId: 'k-ns',
+      namespaceId: GENERATED_NAMESPACE_IDS.first,
       genesisUpdateBytes: currentState,
       updateCapture: true,
       observer: { onEvent: (e) => health.push(e) },
       clock: { now: () => NOW_MS },
     });
-    const retryRead = readStreamStrict({ rootDir, namespaceId: 'k-ns', streamId: retryLog.streamId });
+    const retryRead = readStreamStrict({ rootDir, namespaceId: GENERATED_NAMESPACE_IDS.first, streamId: retryLog.streamId });
     expect(retryRead.status).toBe('ok');
     expect(retryRead.records.length).toBe(1); // 全新 stream：仅 genesis-baseline（无 attempt、无续写嫁接）
     const retryGenesis = retryRead.records[0]!;
@@ -947,7 +950,7 @@ describe('#150 create 诊断记录（红灯契约）', () => {
     expect(doc.getMap('META').get('createdAt')).toBe(NOW_ISO);
 
     // 首次失败零落盘证明：streams 目录恰 1 个（重试产物，无 S1 残留）
-    expect(readdirSync(join(rootDir, 'namespaces', 'k-ns', 'streams')).length).toBe(1);
+    expect(readdirSync(join(rootDir, 'namespaces', GENERATED_NAMESPACE_IDS.first, 'streams')).length).toBe(1);
 
     await lease.release();
   });

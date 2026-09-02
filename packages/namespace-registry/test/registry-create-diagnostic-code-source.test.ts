@@ -32,6 +32,14 @@ const NOW_ISO = new Date(NOW_MS).toISOString();
 
 const OWNER: Readonly<{ userId: string }> = Object.freeze({ userId: 'u-alice' });
 const ROOT0 = Object.freeze({ n: 1, a: 'x' });
+const GENERATED_NAMESPACE_ID = 'ns-00000000000000000000000000000001';
+
+function deterministicRandomBytes(length: number): Uint8Array {
+  if (length !== 16) throw new Error(`expected 16 random bytes, received ${length}`);
+  const bytes = new Uint8Array(16);
+  bytes[15] = 1;
+  return bytes;
+}
 /** 合法 schema（B1 回归的成功路径需要；SA6 契约文件已有同款）。 */
 const ENVELOPE = Object.freeze({
   lang: 'vfsl',
@@ -86,14 +94,15 @@ function makeLog(): BoundedMemoryDiagnosticLog {
   return createBoundedMemoryDiagnosticLog({ inputPolicy: 'full', updateCapture: true });
 }
 
-function makeInput(namespaceId: string, schema: unknown): CreateNamespaceInput {
-  return { owner: OWNER, namespaceId, schema, root: ROOT0 };
+function makeInput(schema: unknown): CreateNamespaceInput {
+  return { owner: OWNER, schema, root: ROOT0 };
 }
 
 function makeRegistry(persistence: DocPersistence, log: BoundedMemoryDiagnosticLog) {
   return createNamespaceRegistryForTesting(persistence, {
     clock: { now: () => NOW_MS },
     scheduler: createRegistryTestScheduler(),
+    randomBytes: deterministicRandomBytes,
     diagnosticLog: { emitter: log.emitter } as NamespaceRegistryDiagnosticLog,
   } as never);
 }
@@ -118,7 +127,7 @@ describe('#150 code 派生单源守护（与 p0.toIssueSummary 同串；SA2 R2-M
     const log = makeLog();
     const persistence = new StubPersistence();
     const registry = makeRegistry(persistence, log);
-    const result = await registry.create(makeInput('k-ns-env4', UNKNOWN_DIALECT));
+    const result = await registry.create(makeInput(UNKNOWN_DIALECT));
     expect(result.ok).toBe(false);
     expect((result as { code?: string }).code).toBe('NAMESPACE_SCHEMA_INVALID');
 
@@ -141,7 +150,7 @@ describe('#150 code 派生单源守护（与 p0.toIssueSummary 同串；SA2 R2-M
     const log = makeLog();
     const persistence = new StubPersistence();
     const registry = makeRegistry(persistence, log);
-    const result = await registry.create(makeInput('k-ns-text', BAD_SCHEMA));
+    const result = await registry.create(makeInput(BAD_SCHEMA));
     expect(result.ok).toBe(false);
     expect((result as { code?: string }).code).toBe('NAMESPACE_SCHEMA_INVALID');
 
@@ -164,15 +173,13 @@ describe('#150 diagnosticLog seam 防御边界（SA4 R1 B1 回归）', () => {
     const registry = createNamespaceRegistryForTesting(persistence, {
       clock: { now: () => NOW_MS },
       scheduler: createRegistryTestScheduler(),
+      randomBytes: deterministicRandomBytes,
       diagnosticLog: seam as never,
     } as never);
-    const first = await registry.create(makeInput('k-ns', ENVELOPE));
+    const first = await registry.create(makeInput(ENVELOPE));
     const lease = okLease(first);
     expect(lease.getMetadata().createdAt).toBe(NOW_ISO);
-    // 重复 attempt：诊断侧无论违约与否都必须 resolve ALREADY_EXISTS（绝不 reject）
-    const second = await registry.create(makeInput('k-ns', ENVELOPE));
-    expect(second.ok).toBe(false);
-    expect((second as { code?: string }).code).toBe('NAMESPACE_ALREADY_EXISTS');
+    expect(lease.namespaceId).toBe(GENERATED_NAMESPACE_ID);
     expect(registry.getStatus()).toEqual({ state: 'running' });
     await lease.release();
   }
@@ -199,6 +206,7 @@ describe('#150 diagnosticLog seam 防御边界（SA4 R1 B1 回归）', () => {
     const registry = createNamespaceRegistryForTesting(persistence, {
       clock: { now: () => NOW_MS },
       scheduler: createRegistryTestScheduler(),
+      randomBytes: deterministicRandomBytes,
       diagnosticLog: {
         emitter: { emit: () => undefined },
         initStream: () => {
@@ -206,7 +214,7 @@ describe('#150 diagnosticLog seam 防御边界（SA4 R1 B1 回归）', () => {
         },
       } as never,
     } as never);
-    const result = await registry.create(makeInput('k-ns', ENVELOPE));
+    const result = await registry.create(makeInput(ENVELOPE));
     const lease = okLease(result);
     expect(lease.getMetadata().createdAt).toBe(NOW_ISO);
     expect(registry.getStatus()).toEqual({ state: 'running' });

@@ -54,6 +54,22 @@ const ENVELOPE = Object.freeze({
 const ROOT0 = Object.freeze({ n: 1, a: 'x' });
 const BAD_SCHEMA = Object.freeze({ lang: 'vfsl', version: 1, id: 'ns-bad', text: 'type ROOT = { n: ;\n' });
 const BAD_ROOT = Object.freeze({ n: 'not-a-number' });
+const GENERATED_NAMESPACE_IDS = Object.freeze({
+  first: 'ns-00000000000000000000000000000001',
+  second: 'ns-00000000000000000000000000000002',
+  third: 'ns-00000000000000000000000000000003',
+});
+
+function makeDeterministicRandomBytes(): (length: number) => Uint8Array {
+  let counter = 0;
+  return (length: number): Uint8Array => {
+    if (length !== 16) throw new Error(`expected 16 random bytes, received ${length}`);
+    counter += 1;
+    const bytes = new Uint8Array(16);
+    bytes[15] = counter;
+    return bytes;
+  };
+}
 
 interface NamespaceRegistryDiagnosticLog {
   readonly emitter: NamespaceDiagnosticChangeEmitter;
@@ -72,8 +88,8 @@ afterEach(() => {
   for (const root of tempRoots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
-function makeInput(namespaceId = 'k-ns', schema: unknown = ENVELOPE, root: unknown = ROOT0): CreateNamespaceInput {
-  return { owner: OWNER, namespaceId, schema, root };
+function makeInput(schema: unknown = ENVELOPE, root: unknown = ROOT0): CreateNamespaceInput {
+  return { owner: OWNER, schema, root };
 }
 
 /** 成功结果 → lease（与冻结文件 okLease 同款断言强度）。 */
@@ -163,6 +179,7 @@ function makeRegistry(persistence: DocPersistence, overrides: RegistryOverrides 
   const seam: Record<string, unknown> = {
     clock: { now: () => NOW_MS },
     scheduler: createRegistryTestScheduler(),
+    randomBytes: makeDeterministicRandomBytes(),
   };
   if (overrides.runtimeFactory !== undefined) seam.runtimeFactory = overrides.runtimeFactory;
   // 注意：null 必须穿透（!== undefined 判定）——与 B1 攻击形态一致。
@@ -213,19 +230,19 @@ async function settle(p: Promise<unknown>): Promise<Outcome> {
 async function driveAllPaths(diagnosticLog: unknown): Promise<Record<string, Outcome>> {
   const out: Record<string, Outcome> = {};
 
-  // P1 成功 + P2 entry duplicate（同一 registry：duplicate 依赖 P1 的 entry）
+  // P1 + P2 连续成功：普通 create 每次生成不同 ID。
   {
     const persistence = new StubPersistence();
     const registry = makeRegistry(persistence, { diagnosticLog });
-    const firstResult = await registry.create(makeInput('k-dup'));
+    const firstResult = await registry.create(makeInput());
     const lease = leaseOf(firstResult); // 成功不被 fatal 翻转（B1 R1 症状直接击穿点）
     out.success = {
       kind: 'resolved',
       ok: true,
       createdAt: lease.getMetadata().createdAt as string,
     };
-    const second = await settle(registry.create(makeInput('k-dup')));
-    out.entryDuplicate = second; // resolve ALREADY_EXISTS = entry 恰一次登记（无泄漏/无误报 fatal）
+    const second = await settle(registry.create(makeInput()));
+    out.secondGeneratedCreate = second
     await lease.release();
     // entry 泄漏守卫：干净 shutdown（零关闭失败——泄漏 entry 会以多余 close/失败形态暴露）
     await registry.shutdown();
@@ -236,7 +253,7 @@ async function driveAllPaths(diagnosticLog: unknown): Promise<Record<string, Out
     const persistence = new StubPersistence();
     persistence.queueCreate({ error: new DocDuplicateError('injected persistence duplicate') });
     const registry = makeRegistry(persistence, { diagnosticLog });
-    out.persistenceDuplicate = await settle(registry.create(makeInput()));
+    out.persistenceDuplicateRetry = await settle(registry.create(makeInput()));
     await registry.shutdown();
   }
 
@@ -260,7 +277,7 @@ async function driveAllPaths(diagnosticLog: unknown): Promise<Record<string, Out
   {
     const persistence = new StubPersistence();
     const registry = makeRegistry(persistence, { diagnosticLog });
-    out.schemaCompileFailure = await settle(registry.create(makeInput('k-ns', BAD_SCHEMA, ROOT0)));
+    out.schemaCompileFailure = await settle(registry.create(makeInput(BAD_SCHEMA, ROOT0)));
     await registry.shutdown();
   }
 
@@ -268,7 +285,7 @@ async function driveAllPaths(diagnosticLog: unknown): Promise<Record<string, Out
   {
     const persistence = new StubPersistence();
     const registry = makeRegistry(persistence, { diagnosticLog });
-    out.rootValidationFailure = await settle(registry.create(makeInput('k-ns', ENVELOPE, BAD_ROOT)));
+    out.rootValidationFailure = await settle(registry.create(makeInput(ENVELOPE, BAD_ROOT)));
     await registry.shutdown();
   }
 
@@ -294,7 +311,7 @@ async function driveAllPaths(diagnosticLog: unknown): Promise<Record<string, Out
       },
     });
     out.postCommitConstructionFailure = await settle(registry.create(makeInput()));
-    const opened = await registry.open(OWNER, 'k-ns');
+    const opened = await registry.open(OWNER, GENERATED_NAMESPACE_IDS.first);
     const openLease = leaseOf(opened);
     out.openRecoveryAfterFatal = {
       kind: 'resolved',
@@ -331,8 +348,8 @@ describe('SA7 动态重点 1 — B1 回归面：违约/畸形 seam × create 全
     expect(injected).toEqual(baseline);
     // 基线自证（防对照空转）：关键路径业务码与冻结契约一致
     expect(baseline.success).toEqual({ kind: 'resolved', ok: true, createdAt: NOW_ISO });
-    expect(baseline.entryDuplicate).toEqual({ kind: 'resolved', ok: false, code: 'NAMESPACE_ALREADY_EXISTS' });
-    expect(baseline.persistenceDuplicate).toEqual({ kind: 'resolved', ok: false, code: 'NAMESPACE_ALREADY_EXISTS' });
+    expect(baseline.secondGeneratedCreate).toEqual({ kind: 'resolved', ok: true, createdAt: NOW_ISO });
+    expect(baseline.persistenceDuplicateRetry).toEqual({ kind: 'resolved', ok: true, createdAt: NOW_ISO });
     expect(baseline.payloadSnapshotFailure).toEqual({
       kind: 'resolved',
       ok: false,
@@ -356,7 +373,7 @@ describe('SA7 动态重点 1 — B1 回归面：违约/畸形 seam × create 全
     expect(baseline.identityRejection).toEqual({
       kind: 'resolved',
       ok: false,
-      code: 'NAMESPACE_INVALID_IDENTITY', // identity 阶段既有稳定码（缺 namespaceId/schema/root）
+      code: 'NAMESPACE_CREATE_INVALID_INPUT',
     });
     expect(baseline.postShutdownRejection).toEqual({ kind: 'resolved', ok: false, code: 'REGISTRY_NOT_ACCEPTING' });
   });
@@ -469,67 +486,48 @@ describe('SA7 动态重点 2 — File adapter first-slice 同步落盘与同 key
     // 同步落盘证据：构造返回即严格可读（status ok + manifest 存在 + genesis 已在）
     expect(init.syncRead).toEqual({ status: 'ok+manifest', records: 1 });
 
-    // 同 namespace 第二次尝试（entry duplicate）：不付 stream 成本（initStream 不再调用）
-    const t1 = performance.now();
-    const second = await registry.create(makeInput());
-    const dupMs = performance.now() - t1;
-    expect(second.ok).toBe(false);
-    expect((second as { code?: string }).code).toBe('NAMESPACE_ALREADY_EXISTS');
-    expect(host.initCalls.length).toBe(1); // 每 namespace 至多一次
-    console.log(`[SA7-DV] 同 key duplicate create（零 first-slice 成本）耗时 ${dupMs.toFixed(2)}ms`);
-
-    // 单 stream 续写：genesis + committed + duplicate，seq 严格递增，无损坏
-    const fileLog = host.getFileLog()!;
-    const rd = readStreamStrict({ rootDir, namespaceId: 'k-ns', streamId: fileLog.streamId });
+    // 首个 stream 仅含 genesis + committed，seq 严格递增，无损坏。
+    const firstFileLog = host.getFileLog()!;
+    const rd = readStreamStrict({
+      rootDir,
+      namespaceId: GENERATED_NAMESPACE_IDS.first,
+      streamId: firstFileLog.streamId,
+    });
     expect(rd.status).toBe('ok');
-    expect(rd.records.length).toBe(3);
-    expect(rd.records.map((r) => (r.record as { sequence?: string }).sequence)).toEqual(['1', '2', '3']);
+    expect(rd.records.length).toBe(2);
+    expect(rd.records.map((r) => (r.record as { sequence?: string }).sequence)).toEqual(['1', '2']);
     expect((rd.records[0]!.record as { recordKind?: string }).recordKind).toBe('genesis-baseline');
     expect((rd.records[1]!.record as { recordKind?: string }).recordKind).toBe('attempt');
-    expect((rd.records[2]!.record as { recordKind?: string }).recordKind).toBe('attempt');
-    expect(readdirSync(join(rootDir, 'namespaces', 'k-ns', 'streams')).length).toBe(1);
+    expect(readdirSync(join(rootDir, 'namespaces', GENERATED_NAMESPACE_IDS.first, 'streams')).length).toBe(1);
 
     await lease.release();
   });
 
-  it('同 key FIFO：3 连 create 排队（首槽 Persistence gate）→ FIFO 结算、单 stream、seq 严格递增、initStream 恰一次（无成本放大）', async () => {
+  it('并发 3 连 create：首个 Persistence gate 不阻止生成独立 ID，三次均建立诊断 stream', async () => {
     const rootDir = freshTempRoot('ndcl-sa7-fifo-');
-    const host = makeFileHostBinding(rootDir);
     const persistence = new StubPersistence();
     const gate = deferred();
     persistence.queueCreate({ gate });
-    const registry = makeRegistry(persistence, { diagnosticLog: host.binding });
+    const initIds: string[] = [];
+    const binding: NamespaceRegistryDiagnosticLog = {
+      emitter: { emit: () => undefined },
+      initStream: (namespaceId) => initIds.push(namespaceId),
+    };
+    const registry = makeRegistry(persistence, { diagnosticLog: binding });
 
-    const t0 = performance.now();
-    const p1 = registry.create(makeInput('k-fifo'));
-    const p2 = registry.create(makeInput('k-fifo'));
-    const p3 = registry.create(makeInput('k-fifo'));
+    const p1 = registry.create(makeInput());
+    const p2 = registry.create(makeInput());
+    const p3 = registry.create(makeInput());
     await flushMicrotasks();
-    // FIFO 证据：首槽独占 Persistence（gate 挂住），后续尝试在 carrier 排队
-    expect(persistence.createCalls.length).toBe(1);
-    expect(host.initCalls.length).toBe(0);
+    expect(persistence.createCalls.length).toBeGreaterThanOrEqual(1);
 
     gate.resolve();
-    const [r1, r2, r3] = await Promise.all([p1, p2, p3]);
-    const fifoMs = performance.now() - t0;
-    const lease = leaseOf(r1);
-    expect(r2.ok).toBe(false);
-    expect((r2 as { code?: string }).code).toBe('NAMESPACE_ALREADY_EXISTS');
-    expect(r3.ok).toBe(false);
-    expect((r3 as { code?: string }).code).toBe('NAMESPACE_ALREADY_EXISTS');
-    console.log(`[SA7-DV] 同 key FIFO ×3（1 成功 + 2 duplicate，恰 1 次 first-slice）总耗时 ${fifoMs.toFixed(2)}ms`);
+    const leases = (await Promise.all([p1, p2, p3])).map(leaseOf);
+    expect(leases.map((lease) => lease.namespaceId).sort()).toEqual(Object.values(GENERATED_NAMESPACE_IDS).sort());
+    await expect.poll(() => initIds.length, { interval: 5, timeout: 3_000 }).toBe(3);
+    expect(new Set(initIds)).toEqual(new Set(Object.values(GENERATED_NAMESPACE_IDS)));
 
-    await expect.poll(() => host.initCalls.length, { interval: 5, timeout: 3_000 }).toBe(1); // 无放大
-    const fileLog = host.getFileLog()!;
-    const rd = readStreamStrict({ rootDir, namespaceId: 'k-fifo', streamId: fileLog.streamId });
-    expect(rd.status).toBe('ok');
-    expect(rd.records.length).toBe(4); // genesis + committed + dup + dup
-    expect(rd.records.map((r) => (r.record as { sequence?: string }).sequence)).toEqual(['1', '2', '3', '4']);
-    const stages = rd.records.slice(1).map((r) => (r.record as { stage?: string }).stage);
-    expect(stages).toEqual(['transaction', 'acceptance', 'acceptance']); // FIFO 顺序：成功先、duplicate 后
-    expect(readdirSync(join(rootDir, 'namespaces', 'k-fifo', 'streams')).length).toBe(1);
-
-    await lease.release();
+    await Promise.all(leases.map((lease) => lease.release()));
   });
 });
 
@@ -589,21 +587,21 @@ describe('SA7 动态重点 3 — shutdown 与在途 create（不调 initStream�
 
     // initStream 恰一次（来自 create 槽；shutdown 未调用）；stream 落盘完整（genesis+attempt）
     expect(initCalls).toBe(1);
-    const rd = readStreamStrict({ rootDir, namespaceId: 'k-ns', streamId: fileLog!.streamId });
+    const rd = readStreamStrict({ rootDir, namespaceId: GENERATED_NAMESPACE_IDS.first, streamId: fileLog!.streamId });
     expect(rd.status).toBe('ok');
     expect(rd.records.length).toBe(2);
     expect(rd.records.map((r) => (r.record as { sequence?: string }).sequence)).toEqual(['1', '2']);
 
     // 不 drain：shutdown 结算后无任何后续写（flush 后计数稳定）
     await flushMicrotasks(64);
-    expect(readStreamStrict({ rootDir, namespaceId: 'k-ns', streamId: fileLog!.streamId }).records.length).toBe(2);
+    expect(readStreamStrict({ rootDir, namespaceId: GENERATED_NAMESPACE_IDS.first, streamId: fileLog!.streamId }).records.length).toBe(2);
 
     // 停后 create：REGISTRY_NOT_ACCEPTING（诚实记录一条 acceptance attempt），但不建 stream
     const after = await registry.create(makeInput());
     expect(after.ok).toBe(false);
     expect((after as { code?: string }).code).toBe('REGISTRY_NOT_ACCEPTING');
     expect(initCalls).toBe(1); // shutdown/停后路径零 initStream
-    const rdFinal = readStreamStrict({ rootDir, namespaceId: 'k-ns', streamId: fileLog!.streamId });
+    const rdFinal = readStreamStrict({ rootDir, namespaceId: GENERATED_NAMESPACE_IDS.first, streamId: fileLog!.streamId });
     expect(rdFinal.records.length).toBe(3); // +1 acceptance 记录（create 尝试本身，非 drain）
     // 注意：不在此 release lease——entry 已被 shutdown 关闭（AC9 带活 lease 关闭），
     // closing 后 getMetadata/release 面不属本验证目标。
