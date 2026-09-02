@@ -388,6 +388,7 @@ export function createNamespaceRuntimeWithSeam(input: NamespaceRuntimeSeamInput)
     sequencer,
     notifyDirty: captured.notifyDirty,
     fanout,
+    diagEnv,
   };
 
   // V3d''' close barrier 懒创建（R2，设计 §3.5 (4)）：公共 close() 首调用与 reset
@@ -497,19 +498,47 @@ export function createNamespaceRuntimeWithSeam(input: NamespaceRuntimeSeamInput)
     enableReplication: (input: EnableReplicationInput): Promise<EnableReplicationResult> => {
       // D5.1 接纳门（#132）：同 mutateData——lifecycle≠ready 时零入队即时 ok:false
       if (state.lifecycle !== 'ready') {
-        return Promise.resolve(disabled(lifecycleWriteRefusal(state.lifecycle)));
+        const result = disabled(lifecycleWriteRefusal(state.lifecycle)) as EnableReplicationResult;
+        if (result.ok === false) {
+          emitAttempt(diagEnv, {
+            operation: 'replication-enable', stage: 'acceptance', result: { kind: 'rejected' },
+            code: RUNTIME_WRITE_DISABLED_CODE, input: { status: 'not-accessed' },
+            issues: result.issues as DiagnosticIssue[],
+          });
+        }
+        return Promise.resolve(result);
       }
       // D1（#132）：与 mutateData/replaceSchema 同一 sequencer 实例——同步接纳定序、
       // 占槽互斥（FIFO 互通）；thunk 是纯调用——input 引用仅被捕获不被读取
       //（Proxy 零触发），无可抛点；槽 E3 单读捕获定序在队列内
-      return sequencer.enqueue(() => runEnableReplicationSlot(replicationWriteEnv, input));
+      const diag = diagEnv.emitter !== undefined ? createSlotDiag('replication-enable') : undefined;
+      const settled = sequencer.enqueue(() => runEnableReplicationSlot(replicationWriteEnv, input, diag));
+      void settled.then(
+        (value) => { emitSlot(diagEnv, diag, { kind: 'fulfilled', value }); },
+        () => { emitSlot(diagEnv, diag, { kind: 'rejected' }); },
+      );
+      return settled;
     },
     bumpReplicationEpoch: (): Promise<BumpReplicationEpochResult> => {
       // D5.1 接纳门（#132）：同 mutateData——lifecycle≠ready 时零入队即时 ok:false
       if (state.lifecycle !== 'ready') {
-        return Promise.resolve(disabled(lifecycleWriteRefusal(state.lifecycle)));
+        const result = disabled(lifecycleWriteRefusal(state.lifecycle)) as BumpReplicationEpochResult;
+        if (result.ok === false) {
+          emitAttempt(diagEnv, {
+            operation: 'replication-epoch-bump', stage: 'acceptance', result: { kind: 'rejected' },
+            code: RUNTIME_WRITE_DISABLED_CODE, issues: result.issues as DiagnosticIssue[],
+          });
+        }
+        return Promise.resolve(result);
       }
-      return sequencer.enqueue(() => runBumpReplicationEpochSlot(replicationWriteEnv));
+      const diag = diagEnv.emitter !== undefined ? createSlotDiag('replication-epoch-bump') : undefined;
+      if (diag !== undefined) diag.input = undefined;
+      const settled = sequencer.enqueue(() => runBumpReplicationEpochSlot(replicationWriteEnv, diag));
+      void settled.then(
+        (value) => { emitSlot(diagEnv, diag, { kind: 'fulfilled', value }); },
+        () => { emitSlot(diagEnv, diag, { kind: 'rejected' }); },
+      );
+      return settled;
     },
     close: (): Promise<void> => {
       // D2：幂等（INV-C2）——已赋值（含已结算 reject）即返回同一实例，release 恰一次
