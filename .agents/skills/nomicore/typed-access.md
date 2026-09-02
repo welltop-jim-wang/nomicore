@@ -140,7 +140,7 @@ Current validated operations are `set`, `delete`, `array-insert`, and `array-del
 
 Array element paths use numeric segments. Keep `['assignments', 0, 'headSha']` or `['assignments', index, 'headSha']` with `index: number`; reject `['assignments', '0', 'headSha']`, `String(index)`, and template-string indices. A string segment means an object/Record key. Add a negative type fixture for every typed adapter that writes through an array, proving the numeric-looking string form fails compilation.
 
-The runtime SCHEMA passed to Registry creation must come from the same `schema.vfsl`. Generated types do not replace that text.
+The runtime SCHEMA passed to Registry creation or an existing namespace's `replaceSchema()` must come from the same `schema.vfsl`. Generated types do not replace that text. For an existing namespace, complete the Hub/Peer rollout in [schema-evolution.md](schema-evolution.md) before publishing writers that use changed paths.
 
 ## Completion gate
 

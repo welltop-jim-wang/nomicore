@@ -30,6 +30,7 @@ Author the schema inside the independent host repository. Treat it as the single
    ```
 
 5. Fix every diagnostic at its source. Preserve structured constraints in VFSL rather than replacing them with comments or parallel handwritten TypeScript.
+6. When the schema change must be installed into an existing namespace, continue with [schema-evolution.md](schema-evolution.md). Authoring and validation alone do not update stored SCHEMA or coordinate Peer Runtimes.
 
 ## Completion gate
 
