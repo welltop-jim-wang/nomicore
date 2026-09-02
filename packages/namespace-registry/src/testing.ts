@@ -24,6 +24,7 @@ import type { CreateDocumentGatewayResult } from './create-document.js';
 import type {
   InstanceRole,
   NamespaceRegistry,
+  NamespaceRegistryDiagnosticLog,
   RegistryRandomBytes,
   RegistryTimeoutScheduler,
 } from './types.js';
@@ -56,6 +57,8 @@ export interface NamespaceRegistryTestingOverrides {
   /** 实例静态角色（issue #134 O-4；同生产同形——可选，缺省 'hub'；非法值 → 构造期
    * 同步固定 TypeError，检查顺序与生产一致（randomBytes 之后）。 */
   readonly role?: InstanceRole;
+  /** #150 可选诊断日志注入（emitter/initStream；缺省 = 日志禁用，行为与既有一致）。 */
+  readonly diagnosticLog?: NamespaceRegistryDiagnosticLog;
 }
 
 /**
@@ -130,6 +133,7 @@ export function createNamespaceRegistryForTesting(
       schema: unknown,
       root: unknown,
     ) => CreateDocumentGatewayResult;
+    diagnosticLog?: NamespaceRegistryDiagnosticLog;
   } = {
     clock: overrides?.clock as Clock,
     scheduler: overrides?.scheduler as RegistryTimeoutScheduler,
@@ -152,6 +156,9 @@ export function createNamespaceRegistryForTesting(
   }
   if (overrides?.role !== undefined) {
     internal.role = overrides.role;
+  }
+  if (overrides?.diagnosticLog !== undefined) {
+    internal.diagnosticLog = overrides.diagnosticLog;
   }
   return createRegistryInternal(persistence, internal);
 }
