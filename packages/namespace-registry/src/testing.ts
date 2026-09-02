@@ -23,8 +23,8 @@ import type { RegistryDiagnosticsSink, RegistryObserver } from './observer.js';
 import type { CreateDocumentGatewayResult } from './create-document.js';
 import type {
   InstanceRole,
-  NamespaceReplicationObservabilityOptions,
   NamespaceRegistry,
+  NamespaceRegistryDiagnosticLog,
   RegistryRandomBytes,
   RegistryTimeoutScheduler,
 } from './types.js';
@@ -33,11 +33,7 @@ import type {
  * scheduler/idleTimeoutMs；phase-5 切片 1 增量 randomBytes（必需）；diagnostics
  * 类型单点取自 observer.ts）。 */
 export interface NamespaceRegistryTestingOverrides {
-  readonly runtimeFactory?: (
-    handle: DocHandle,
-    notifyDirty: () => Promise<void>,
-    replicationObservability?: TestingSeamReplicationObservability,
-  ) => NamespaceRuntime;
+  readonly runtimeFactory?: (handle: DocHandle, notifyDirty: () => Promise<void>) => NamespaceRuntime;
   readonly observer?: RegistryObserver;
   /** 仅测试诊断事件，不返回或读取 carrier/entry map。keyDigest 非 raw identity。 */
   readonly diagnostics?: RegistryDiagnosticsSink;
@@ -61,28 +57,8 @@ export interface NamespaceRegistryTestingOverrides {
   /** 实例静态角色（issue #134 O-4；同生产同形——可选，缺省 'hub'；非法值 → 构造期
    * 同步固定 TypeError，检查顺序与生产一致（randomBytes 之后）。 */
   readonly role?: InstanceRole;
-  /** issue #238：复制观测注入（生产 options 同名透传；缺省 dormant）。 */
-  readonly replicationObservability?: NamespaceReplicationObservabilityOptions;
-}
-
-/**
- * testing seam 的 runtime 侧复制观测形状（issue #238；结构镜像 registry.ts
- * RuntimeReplicationObservabilitySeam——runtimeFactory 注入口收到的第三参不含
- * namespaceId（runtime 包不知命名）。公开测试面以本地结构类型表达，避免把 runtime
- * 内部类型名带进 testing subpath 声明图）。
- */
-export interface TestingSeamReplicationObservability {
-  readonly stageClock?: { now(): number };
-  readonly slotMetrics?: (sample: TestingSeamSlotSample) => void;
-}
-
-/** runtime 槽样本（seam 侧形状；与注册表公共 ReplicationObservabilitySlotSample
- *  差一个 namespaceId 字段——装配层包装补盖）。 */
-export interface TestingSeamSlotSample {
-  readonly slotKind: 'P0' | 'S' | 'E' | 'R' | 'schema' | 'bump' | 'close-barrier';
-  readonly waitMs?: number;
-  readonly runMs: number;
-  readonly queueDepthAtStart: number;
+  /** #150 可选诊断日志注入（emitter/initStream；缺省 = 日志禁用，行为与既有一致）。 */
+  readonly diagnosticLog?: NamespaceRegistryDiagnosticLog;
 }
 
 /**
@@ -143,11 +119,7 @@ export function createNamespaceRegistryForTesting(
   overrides: NamespaceRegistryTestingOverrides | undefined = undefined,
 ): NamespaceRegistry {
   const internal: {
-    runtimeFactory?: (
-      handle: any,
-      notifyDirty: () => Promise<void>,
-      replicationObservability?: TestingSeamReplicationObservability,
-    ) => any;
+    runtimeFactory?: (handle: any, notifyDirty: () => Promise<void>) => any;
     observer?: RegistryObserver;
     diagnostics?: RegistryDiagnosticsSink;
     clock: Clock;
@@ -161,7 +133,7 @@ export function createNamespaceRegistryForTesting(
       schema: unknown,
       root: unknown,
     ) => CreateDocumentGatewayResult;
-    replicationObservability?: NamespaceReplicationObservabilityOptions;
+    diagnosticLog?: NamespaceRegistryDiagnosticLog;
   } = {
     clock: overrides?.clock as Clock,
     scheduler: overrides?.scheduler as RegistryTimeoutScheduler,
@@ -185,8 +157,8 @@ export function createNamespaceRegistryForTesting(
   if (overrides?.role !== undefined) {
     internal.role = overrides.role;
   }
-  if (overrides?.replicationObservability !== undefined) {
-    internal.replicationObservability = overrides.replicationObservability;
+  if (overrides?.diagnosticLog !== undefined) {
+    internal.diagnosticLog = overrides.diagnosticLog;
   }
   return createRegistryInternal(persistence, internal);
 }
