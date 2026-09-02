@@ -50,6 +50,7 @@ import { createNamespaceRegistryForTesting, createRegistryTestScheduler } from '
 import { createNamespaceRegistryPlugin } from '@nomicore/namespace-registry';
 import { createCordisRegistryScheduler } from '../src/plugin.js';
 import { Context } from '@deepseek-ai/cordis';
+import { provideInstance } from '@nomicore/instance';
 import TimerService from '@deepseek-ai/cordis-plugin-timer';
 
 const FIBER_STATE_PENDING = 0;
@@ -91,6 +92,34 @@ async function flushMacrotasks(times = 3): Promise<void> {
     });
   }
 }
+
+
+// ── phase-5 切片 1（ADR 0010）：受控随机源确定性 helper（测试内定义；禁止从 src 导出）──
+// 第 n 次生成 = `ns-` + n 的 32 位小写 hex；每调用恰按 128-bit（16 字节）请求。
+
+function makeDeterministicRandomBytes(): {
+  randomBytes: (length: number) => Uint8Array;
+  readonly id: (n: number) => string;
+} {
+  let counter = 0;
+  return {
+    randomBytes(length: number): Uint8Array {
+      if (length !== 16) {
+        throw new Error(`受控随机源必须按 128-bit（16 字节）请求，实际请求 ${length} 字节`);
+      }
+      counter += 1;
+      const hex = counter.toString(16).padStart(32, '0');
+      const out = new Uint8Array(16);
+      for (let i = 0; i < 16; i += 1) {
+        out[i] = Number.parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+      }
+      return out;
+    },
+    id: (n: number) => `ns-${n.toString(16).padStart(32, '0')}`,
+  };
+}
+
+const TEST_RANDOM_BYTES: (length: number) => Uint8Array = makeDeterministicRandomBytes().randomBytes;
 
 function manualClock(): { now: () => number } {
   return { now: () => 1_700_000_123_456 };
@@ -161,6 +190,7 @@ const READY_STATUS: NamespaceRuntimeStatus = {
   schema: { state: 'ready' },
   fatal: null,
   close: null,
+  replication: { state: 'disabled' },
 };
 
 interface RuntimeClosePlan {
@@ -179,11 +209,11 @@ class ObservableRuntime implements NamespaceRuntime {
     private readonly closePlan: RuntimeClosePlan = {},
   ) {}
 
-  read() {
+  readData() {
     return { ok: true as const, value: this.marker };
   }
 
-  getSchemaEnvelope(): null {
+  getSchema(): null {
     return null;
   }
 
@@ -199,11 +229,19 @@ class ObservableRuntime implements NamespaceRuntime {
     return READY_STATUS;
   }
 
-  mutateRoot(): Promise<{ ok: true }> {
+  mutateData(): Promise<{ ok: true }> {
     return Promise.resolve({ ok: true });
   }
 
   replaceSchema(): Promise<{ ok: true }> {
+    return Promise.resolve({ ok: true });
+  }
+
+  enableReplication(): Promise<{ ok: true }> {
+    return Promise.resolve({ ok: true });
+  }
+
+  bumpReplicationEpoch(): Promise<{ ok: true }> {
     return Promise.resolve({ ok: true });
   }
 
@@ -259,6 +297,7 @@ describe('SA7 rev1 补充动态（P1 floating-window / R5′ 活链路 / P2 real
       const registry = createNamespaceRegistryForTesting(persistence, {
         clock: manualClock(),
         scheduler,
+        randomBytes: TEST_RANDOM_BYTES,
         idleTimeoutMs: 300_000,
         runtimeFactory: (handle) => {
           // k1 居 Map 插入序首位：close 返回 gated Promise（挂起）；
@@ -334,6 +373,7 @@ describe('SA7 rev1 补充动态（P1 floating-window / R5′ 活链路 / P2 real
     const probe = collectUnhandledRejections();
     try {
       const ctx = new Context();
+      provideInstance(ctx, Object.freeze({ instanceId: 'test-host', role: 'hub' }));
       createManualClockPlugin(createManualClock(0)).apply(ctx);
       new TimerService(ctx); // 真实 timer 服务（native setTimeout/clearTimeout，经 ctx.effect 注册）
       const memoryPlugin = createMemoryPersistencePlugin();
@@ -367,13 +407,12 @@ describe('SA7 rev1 补充动态（P1 floating-window / R5′ 活链路 / P2 real
 
       const created = await registry.create({
         owner: { userId: 'u-r5p' },
-        namespaceId: 'ns-r5p',
         schema: { lang: 'vfsl', version: 1, id: 'ns-r5p', text: 'type ROOT = { n: number; };\n' },
         root: { n: 42 },
       });
       expect(created.ok).toBe(true);
       const lease = okLease(created);
-      const writePromise = lease.mutateRoot({ op: 'set', path: ['n'], value: 43 });
+      const writePromise = lease.mutateData({ op: 'set', path: ['n'], value: 43 });
       await flushMicrotasks(30);
       expect(gated).toBe(true); // 写槽 S6 已挂于 gated saveDoc（排空窗口拉开）
 
@@ -458,6 +497,7 @@ describe('SA7 rev1 补充动态（P1 floating-window / R5′ 活链路 / P2 real
     const probe = collectUnhandledRejections();
     try {
       const ctx = new Context();
+      provideInstance(ctx, Object.freeze({ instanceId: 'test-host', role: 'hub' }));
       createManualClockPlugin(createManualClock(0)).apply(ctx);
       new TimerService(ctx); // 真实 timer 服务（ctx.timeout → TimerService → ctx.effect → native setTimeout）
       const persistence = new StubPersistence();
@@ -491,6 +531,7 @@ describe('SA7 rev1 补充动态（P1 floating-window / R5′ 活链路 / P2 real
       const registry = createNamespaceRegistryForTesting(persistence, {
         clock: { now: () => 1_700_000_123_456 },
         scheduler,
+        randomBytes: TEST_RANDOM_BYTES,
         idleTimeoutMs: 300_000,
         runtimeFactory: () => {
           const r = new ObservableRuntime(
@@ -519,7 +560,7 @@ describe('SA7 rev1 补充动态（P1 floating-window / R5′ 活链路 / P2 real
       const lease2 = okLease(await registry.open({ userId: 'u-sa7-rev1' }, 'k'));
       expect(persistence.loadCalls.length).toBe(2);
       expect(runtimes.length).toBe(2);
-      expect(lease2.read(['x'])).toEqual({ ok: true, value: 'R2' });
+      expect(lease2.readData(['x'])).toEqual({ ok: true, value: 'R2' });
       // 清扫：release → 重武装（真实桥第二枚 native timer）→ shutdown 同步取消
       // （registry 的 clearTimeout 路径走真实 disposer）+ 关闭 R2。
       await lease2.release();
@@ -546,6 +587,7 @@ describe('SA7 rev1 补充动态（P1 floating-window / R5′ 活链路 / P2 real
     const probe = collectUnhandledRejections();
     try {
       const ctx = new Context();
+      provideInstance(ctx, Object.freeze({ instanceId: 'test-host', role: 'hub' }));
       createManualClockPlugin(createManualClock(0)).apply(ctx);
       new TimerService(ctx); // 真实 timer：idle 武装经 createCordisRegistryScheduler → ctx.timeout
       const persistence = new StubPersistence();
@@ -560,6 +602,7 @@ describe('SA7 rev1 补充动态（P1 floating-window / R5′ 活链路 / P2 real
         // ★ 真实 ctx.timeout 桥（与生产 plugin 同款 wiring）：idle timer 经
         //   TimerService → ctx.effect → native setTimeout(15ms) 武装，并真实到期。
         scheduler: createCordisRegistryScheduler(ctx),
+        randomBytes: TEST_RANDOM_BYTES,
         idleTimeoutMs: 15, // 15ms native 窗口
         runtimeFactory: () => {
           const r = new ObservableRuntime(
@@ -594,7 +637,7 @@ describe('SA7 rev1 补充动态（P1 floating-window / R5′ 活链路 / P2 real
       const lease2 = okLease(await registry.open({ userId: 'u-sa7-rev1' }, 'k'));
       expect(persistence.loadCalls.length).toBe(2);
       expect(runtimes.length).toBe(2);
-      expect(lease2.read(['x'])).toEqual({ ok: true, value: 'R2' });
+      expect(lease2.readData(['x'])).toEqual({ ok: true, value: 'R2' });
       // 清扫：release → 重武装 → shutdown 同步取消 native timer + 关闭 R2。
       await lease2.release();
       await registry.shutdown();
@@ -624,6 +667,7 @@ describe('SA7 rev1 补充动态（P1 floating-window / R5′ 活链路 / P2 real
       const registry = createNamespaceRegistryForTesting(persistence, {
         clock: manualClock(),
         scheduler,
+        randomBytes: TEST_RANDOM_BYTES,
         idleTimeoutMs: 300_000,
         runtimeFactory: () => {
           const r = new ObservableRuntime(
@@ -656,7 +700,7 @@ describe('SA7 rev1 补充动态（P1 floating-window / R5′ 活链路 / P2 real
       const lease2 = okLease(await registry.open({ userId: 'u-sa7-rev1' }, 'k'));
       expect(persistence.loadCalls.length).toBe(2);
       expect(runtimes.length).toBe(2);
-      expect(lease2.read(['x'])).toEqual({ ok: true, value: 'R2' });
+      expect(lease2.readData(['x'])).toEqual({ ok: true, value: 'R2' });
       await lease2.release();
       await scheduler.advanceBy(300_000);
       await flushMicrotasks();

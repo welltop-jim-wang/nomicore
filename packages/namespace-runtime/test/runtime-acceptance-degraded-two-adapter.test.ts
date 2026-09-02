@@ -47,7 +47,7 @@ function sleep(ms: number): Promise<void> {
 }
 
 function readValue(runtime: NamespaceRuntime, p: readonly (string | number)[]): unknown {
-  const read = runtime.read(p);
+  const read = runtime.readData(p);
   if (!read.ok) throw new Error(`读取应成功，实际 code=${read.code}`);
   return read.value;
 }
@@ -163,7 +163,7 @@ function fileCtx(): AdapterCtx {
 
 /**
  * AC4 平行场景（两 Adapter 同一断言集）：
- * 1. gate 通过后降级：首个 mutateRoot 的 writable gate 检查时 handle 仍 ready（尚无失败
+ * 1. gate 通过后降级：首个 mutateData 的 writable gate 检查时 handle 仍 ready（尚无失败
  *    flush）→ 提交 ok + saveDoc 正常登记；
  * 2. entry 转 persistence-degraded（flush 失败）→ Runtime status：rootWrite 关、read 开、
  *    schema 保持 ready——degraded 不阻止 P0/read；
@@ -180,7 +180,7 @@ async function runDegradedRecoveryAcceptance(ctx: AdapterCtx): Promise<void> {
   try {
     // 1) 降级注入先于首次 flush：gate 检查瞬时 handle 仍 ready
     await fx.setFailing(true);
-    const first = await runtime.mutateRoot({ op: 'set', path: ['n'], value: 22 });
+    const first = await runtime.mutateData({ op: 'set', path: ['n'], value: 22 });
     expect(first).toEqual({ ok: true });
     expect(readValue(runtime, ['n'])).toBe(22);
 
@@ -195,7 +195,7 @@ async function runDegradedRecoveryAcceptance(ctx: AdapterCtx): Promise<void> {
 
     // 3) 后续写被拦：RUNTIME_WRITE_DISABLED、零写入（doc 字节不变）
     const before = [...Y.encodeStateAsUpdate(fx.doc)];
-    const blocked = await runtime.mutateRoot({ op: 'set', path: ['n'], value: 23 });
+    const blocked = await runtime.mutateData({ op: 'set', path: ['n'], value: 23 });
     expect(blocked.ok).toBe(false);
     expect(JSON.stringify(blocked)).toContain('RUNTIME_WRITE_DISABLED');
     expect([...Y.encodeStateAsUpdate(fx.doc)]).toEqual(before);
@@ -212,7 +212,7 @@ async function runDegradedRecoveryAcceptance(ctx: AdapterCtx): Promise<void> {
     await fresh1.release();
 
     // 5) 恢复后第三笔写成功并落盘 → 再次全新实例读到
-    const third = await runtime.mutateRoot({ op: 'set', path: ['n'], value: 31 });
+    const third = await runtime.mutateData({ op: 'set', path: ['n'], value: 31 });
     expect(third).toEqual({ ok: true });
     await sleep(100);
     await expect.poll(() => fx.handle.getStatus(), { interval: 10, timeout: 5_000 }).toBe('ready');
@@ -257,7 +257,7 @@ async function runSchemaDegradedAndCloseGenerationAcceptance(ctx: AdapterCtx): P
 
     // 最后一代不等待 debounce：成功 ROOT write 后立即 close，barrier 必须先排空 notifier；
     // release 后 persistence entry 仍需 flush 到 savedGeneration === dirtyGeneration 才可淘汰。
-    expect(await runtime.mutateRoot({ op: 'set', path: ['n'], value: 99 })).toEqual({ ok: true });
+    expect(await runtime.mutateData({ op: 'set', path: ['n'], value: 99 })).toEqual({ ok: true });
     await runtime.close();
     expect(fx.handle.getStatus()).toBe('released');
 

@@ -4,7 +4,9 @@
  * Registry 生产代码消费）+ Registry 生产白名单收窄（ADR-0009 §公共 Interface「测试 seam 只
  * 位于受控 testing subpath」——该载体属非生产代码，不在白名单内）。
  *
- * 设计基准：wiki/raw/task_namespace-runtime-registry-seam-rev1_design.md（R1）§D-A–§D-D。
+ * 规范权威：ADR-0009（internal subpath 消费边界 + testing seam 白名单——上文已引
+ * ADR-0009 两处）；设计记录（历史证据，非规范）：
+ * wiki/raw/task_namespace-runtime-registry-seam-rev1_design.md（R1）§D-A–§D-D。
  * 真实全仓门禁与探针 fixture 共用同一份实现（roots 参数化，单一实现双输入）：
  * - 消费形态识别 = TS compiler API AST 五形态（ImportDeclaration 含副作用导入 /
  *   ExportDeclaration moduleSpecifier 再导出 / import = require() / import('…') /

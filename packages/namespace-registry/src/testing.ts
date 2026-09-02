@@ -21,10 +21,16 @@ import type { NamespaceRuntime } from '@nomicore/namespace-runtime';
 import { createRegistryInternal } from './registry.js';
 import type { RegistryDiagnosticsSink, RegistryObserver } from './observer.js';
 import type { CreateDocumentGatewayResult } from './create-document.js';
-import type { NamespaceRegistry, RegistryTimeoutScheduler } from './types.js';
+import type {
+  InstanceRole,
+  NamespaceRegistry,
+  RegistryRandomBytes,
+  RegistryTimeoutScheduler,
+} from './types.js';
 
 /** 受控依赖替换（§8.2 冻结面；#111 增量 clock/createDocumentFactory；#112 增量
- * scheduler/idleTimeoutMs；diagnostics 类型单点取自 observer.ts）。 */
+ * scheduler/idleTimeoutMs；phase-5 切片 1 增量 randomBytes（必需）；diagnostics
+ * 类型单点取自 observer.ts）。 */
 export interface NamespaceRegistryTestingOverrides {
   readonly runtimeFactory?: (handle: DocHandle, notifyDirty: () => Promise<void>) => NamespaceRuntime;
   readonly observer?: RegistryObserver;
@@ -44,6 +50,12 @@ export interface NamespaceRegistryTestingOverrides {
   readonly scheduler: RegistryTimeoutScheduler;
   /** 可选 idleTimeoutMs（#112 §2.J）：缺省 300_000；测试常用小值或直接驱动 fake。 */
   readonly idleTimeoutMs?: number;
+  /** 必需受控随机源（phase-5 切片 1；同生产门禁——缺失/非函数 → 构造期同步固定
+   * TypeError，禁全局 crypto fallback）。 */
+  readonly randomBytes: RegistryRandomBytes;
+  /** 实例静态角色（issue #134 O-4；同生产同形——可选，缺省 'hub'；非法值 → 构造期
+   * 同步固定 TypeError，检查顺序与生产一致（randomBytes 之后）。 */
+  readonly role?: InstanceRole;
 }
 
 /**
@@ -109,14 +121,20 @@ export function createNamespaceRegistryForTesting(
     diagnostics?: RegistryDiagnosticsSink;
     clock: Clock;
     scheduler: RegistryTimeoutScheduler;
+    randomBytes: RegistryRandomBytes;
     idleTimeoutMs?: number;
+    role?: InstanceRole;
     createDocumentFactory?: (
       namespaceId: string,
       createdAt: string,
       schema: unknown,
       root: unknown,
     ) => CreateDocumentGatewayResult;
-  } = { clock: overrides?.clock as Clock, scheduler: overrides?.scheduler as RegistryTimeoutScheduler };
+  } = {
+    clock: overrides?.clock as Clock,
+    scheduler: overrides?.scheduler as RegistryTimeoutScheduler,
+    randomBytes: overrides?.randomBytes as RegistryRandomBytes,
+  };
   if (overrides?.runtimeFactory !== undefined) {
     internal.runtimeFactory = overrides.runtimeFactory;
   }
@@ -131,6 +149,9 @@ export function createNamespaceRegistryForTesting(
   }
   if (overrides?.idleTimeoutMs !== undefined) {
     internal.idleTimeoutMs = overrides.idleTimeoutMs;
+  }
+  if (overrides?.role !== undefined) {
+    internal.role = overrides.role;
   }
   return createRegistryInternal(persistence, internal);
 }

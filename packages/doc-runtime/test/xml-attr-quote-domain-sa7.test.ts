@@ -1,7 +1,8 @@
 /**
  * SA7 补充动态验证测试 — XML 属性引号接受域一致性（issue #94，commit a2e6c52）。
  *
- * 契约来源：SA4 静态审核报告（wiki/raw/task_xml-attr-quote-domain_sa4_review.md）
+ * 规范权威：ADR-0007（逻辑校验域）；评审报告降为历史证据：
+ * SA4 静态审核报告（wiki/raw/task_xml-attr-quote-domain_sa4_review.md）
  * 「动态审核重点」②③ 与 §1.5 附加攻击角落实跑 [B][C][D][E]——SA4 以一次性脚本验证、
  * 未入库锁定；本文件把这些角度固化为常驻回归锚，并补充设计 §8 实测 #3（quote-free
  * 字节一致性）的回归锁。全部断言为运行时行为（公共入口返回值 / 投影字符串 / throw /

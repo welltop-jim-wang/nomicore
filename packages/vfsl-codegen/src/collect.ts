@@ -34,12 +34,21 @@ export class ProjectionError extends Error {
 }
 
 /** §5.3 流程 2–5：list → 逐 id load/断言/parse/evaluate/生成 → 冲突检查。 */
-export async function collectProjections(root: string): Promise<ProjectionOutput[]> {
+export async function collectProjections(root: string, domain?: string): Promise<ProjectionOutput[]> {
   const source = new FileSchemaSource(root);
   const ids = await source.list();
+  const selectedIds = domain === undefined
+    ? ids
+    : ids.filter((id) => baseOf(id) === domain);
+  if (domain !== undefined && selectedIds.length === 0) {
+    throw new ProjectionError(`领域不存在：'${domain}'（期望 domains/${domain}/schema.vfsl）`);
+  }
+  if (domain !== undefined && selectedIds.length !== 1) {
+    throw new ProjectionError(`领域 '${domain}' 必须恰好对应一个 schema，实际 ${selectedIds.length} 个`);
+  }
   const outputs: ProjectionOutput[] = [];
   const outByPath = new Map<string, string>();
-  for (const id of ids) {
+  for (const id of selectedIds) {
     const env = await source.load(id);
     assertVfslDialect(env); // 消费方首动作 = 方言断言（ADR 0005 §1）
     const text = projectionText(env);

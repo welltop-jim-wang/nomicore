@@ -3,9 +3,9 @@
  * （issue #91 / ADR-0008「SCHEMA write」节 + 任务简报 AC1/AC10，类型层锚）。
  *
  * 契约来源：
- * - docs/adr/0008：「v1 公开两个窄方法：runtime.mutateRoot(mutation) 与
+ * - docs/adr/0008：「v1 公开两个窄方法：runtime.mutateData(mutation) 与
  *   runtime.replaceSchema({ schema: proposedEnvelope, root?: completeLogicalRoot })」；
- * - 任务简报 AC1（replaceSchema 与 mutateRoot 共享唯一 write sequencer）与 AC10
+ * - 任务简报 AC1（replaceSchema 与 mutateData 共享唯一 write sequencer）与 AC10
  *   （通过全量 typecheck/test）。
  *
  * 锚定机制（在 vitest --typecheck 配置下红/绿翻转）：

@@ -47,7 +47,7 @@ function sleep(ms: number): Promise<void> {
 }
 
 function readValue(runtime: NamespaceRuntime, p: readonly (string | number)[]): unknown {
-  const read = runtime.read(p);
+  const read = runtime.readData(p);
   if (!read.ok) throw new Error(`读取应成功，实际 code=${read.code}`);
   return read.value;
 }
@@ -115,12 +115,18 @@ describe('AC1/AC6：internal subpath 导出面（package exports 配置 + 运行
     }
   });
 
-  it('specifier 可解析，且值导出键集恰一键 createNamespaceRuntimeForRegistry（模块级运行时探测）', async () => {
-    // 【红灯】import 解析失败（exports 无 ./internal）；修绿 = 值导出恰一键
-    // createNamespaceRuntimeForRegistry（ADR-0009 冻结的 factory 名）。
+  it('specifier 可解析，且值导出键集恰两键 createNamespaceRuntimeForRegistry + openReplicationSessionCoreForRegistry（模块级运行时探测）', async () => {
+    // 【演进】issue #134（D-2）：internal 值导出由一键扩为两键——既有一键断言沿
+    // 本文件头注「精确键集断言由实现时同步演进」既定先例同步演进；键集 =
+    // ADR-0009 冻结 factory + issue #134 冻结的复制会话宿主打开面（import 图审计
+    // 白名单谓词 `packages/namespace-registry/src/` 对消费边界零改动）。
     const entry = await loadInternalEntry();
-    expect(Object.keys(entry).sort()).toEqual(['createNamespaceRuntimeForRegistry']);
+    expect(Object.keys(entry).sort()).toEqual([
+      'createNamespaceRuntimeForRegistry',
+      'openReplicationSessionCoreForRegistry',
+    ]);
     expect(typeof entry.createNamespaceRuntimeForRegistry).toBe('function');
+    expect(typeof entry.openReplicationSessionCoreForRegistry).toBe('function');
   });
 
   it('internal entry 零测试 seam 泄漏、零生产工厂别名、零运行态导出（模块级探测）', async () => {
@@ -181,7 +187,7 @@ describe('AC2：factory 只接收 handle + dirty notifier——compile/p0Gate/fa
 
       // Runtime 经最小输入仍全功能：读 + 写 + notifyDirty 绑定恰好生效一次
       expect(readValue(runtime, ['n'])).toBe(1);
-      const wr = await runtime.mutateRoot({ op: 'set', path: ['n'], value: 11 });
+      const wr = await runtime.mutateData({ op: 'set', path: ['n'], value: 11 });
       expect(wr).toEqual({ ok: true });
       expect(readValue(runtime, ['n'])).toBe(11);
       expect(notifySeq).toEqual([1]); // 恰好一次 notifyDirty（无 P0/close 杂音）
@@ -237,28 +243,28 @@ describe('AC4：factory 产出的 Runtime 保持 P0 队首/读取/写序列器/f
       });
 
       // ① 构造返回后同步读取立即可用（读取不等待 P0 或任何写任务——ADR-0008 读取能力节）
-      const r0 = runtime.read(['n']);
+      const r0 = runtime.readData(['n']);
       expect(r0.ok, '构造返回后读取必须立即可用（不等待 P0）').toBe(true);
       if (r0.ok) expect(r0.value).toBe(1);
 
       // ② P0 队首 + 真实编译：构造后立即发第一笔写（排在 P0 后）；P0 以真实 vfsl
       //    compileSchemaEnvelope 结算为 ready，且 P0 零 notify（预算恰为每笔成功写一次）
-      const w1p = runtime.mutateRoot({ op: 'set', path: ['n'], value: 10 });
+      const w1p = runtime.mutateData({ op: 'set', path: ['n'], value: 10 });
       await expect
         .poll(() => runtime.getStatus().schema.state, { interval: 10, timeout: 5_000 })
         .toBe('ready');
       expect(runtime.getActiveSchema()?.id).toBe('ns-1');
       expect(compileCalls.count, 'compile 注入面必须零调用').toBe(0);
       // 在首笔 notify 的 40ms 延迟窗内发起第二笔写——FIFO 缺失则第二笔越过第一笔
-      const w2p = runtime.mutateRoot({ op: 'set', path: ['n'], value: 20 });
+      const w2p = runtime.mutateData({ op: 'set', path: ['n'], value: 20 });
       expect(await w1p).toEqual({ ok: true });
       expect(await w2p).toEqual({ ok: true });
       expect(notifySeq, 'notifyDirty 必须严格按写槽序（写序列器 FIFO 屏障）').toEqual([1, 2]);
       expect(readValue(runtime, ['n'])).toBe(20);
 
-      // ③ status 七键面（经 registry factory 构造路径逐键复核——AC4「保持现有语义」）
+      // ③ status 八键面（经 registry factory 构造路径逐键复核——AC4「保持现有语义」）
       const st = runtime.getStatus();
-      expect(Object.keys(st).sort()).toEqual(['close', 'fatal', 'lifecycle', 'read', 'rootWrite', 'schema', 'schemaWrite']);
+      expect(Object.keys(st).sort()).toEqual(['close', 'fatal', 'lifecycle', 'read', 'replication', 'rootWrite', 'schema', 'schemaWrite']);
       expect(st.lifecycle).toBe('ready');
       expect(st.fatal).toBeNull();
       expect(st.close).toBeNull();
@@ -266,17 +272,19 @@ describe('AC4：factory 产出的 Runtime 保持 P0 队首/读取/写序列器/f
       expect(st.rootWrite.enabled).toBe(true);
       expect(st.schemaWrite.enabled).toBe(true);
 
-      // ④ 十键公共面（对象字面量 + freeze，无 class 原型、无脚本注入键）
+      // ④ 十二键公共面（对象字面量 + freeze，无 class 原型、无脚本注入键）
       expect(Object.keys(runtime).sort()).toEqual([
+        'bumpReplicationEpoch',
         'close',
+        'enableReplication',
         'getActiveSchema',
         'getMetadata',
-        'getSchemaEnvelope',
+        'getSchema',
         'getStatus',
-        'mutateRoot',
+        'mutateData',
         'namespaceId',
         'owner',
-        'read',
+        'readData',
         'replaceSchema',
       ]);
       expect(runtime.owner).toEqual({ userId: 'u-alice' });
@@ -291,10 +299,10 @@ describe('AC4：factory 产出的 Runtime 保持 P0 队首/读取/写序列器/f
       await c1;
       expect(runtime.getStatus().lifecycle).toBe('closed');
       expect(handle.getStatus()).toBe('released');
-      const ra = runtime.read(['n']);
+      const ra = runtime.readData(['n']);
       expect(ra.ok).toBe(false);
       if (!ra.ok) expect(ra.code).toBe('RUNTIME_READ_DISABLED');
-      const wAfter = await runtime.mutateRoot({ op: 'set', path: ['n'], value: 99 });
+      const wAfter = await runtime.mutateData({ op: 'set', path: ['n'], value: 99 });
       expect(wAfter.ok).toBe(false);
       expect(JSON.stringify(wAfter)).toContain('RUNTIME_WRITE_DISABLED');
       const st2 = runtime.getStatus();

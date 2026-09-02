@@ -5,6 +5,10 @@
  * lifecycle 三态）；read 结果联合 +RuntimeReadDisabledResult 分支（closing/closed 期
  * 停接纳）。
  *
+ * #132 增量：Runtime 十二键（+enableReplication/bumpReplicationEpoch 复制管理操作键）；
+ * getStatus 八键（+replication 复制域）；type-only 追加五个复制管理类型（值导出面仍
+ * 恰一键——REPLICATION_ID_PATTERN 等值导出不进本入口）。
+ *
  * 公共面纪律（AC1/AC2/AC6/AC9 锚定；issue #93 round 2 收口）：
  * - 值导出恰一键：RuntimeWriteFatalError（ADR-0008 点名的稳定 rejection 形状——
  *   instanceof 判别 committed/phase 是上层「不得自动重试非幂等写」纪律的依赖面）；
@@ -15,16 +19,25 @@
  *   re-export——seam 输入类型含 DocHandle，随值一并撤出公共面（AC6 点名对象）；
  * - 不导出 WriteSequencer / 运行态；构造/投影错误类别仍不导出（code+message
  *   字符串消费）；
- * - handler/Y.Doc/sequencer 永不从本入口出现；mutateRoot 是 runtime 面方法而非模块级导出。
+ * - handler/Y.Doc/sequencer 永不从本入口出现；mutateData 是 runtime 面方法而非模块级导出。
  */
 export { RuntimeWriteFatalError } from './errors.js';
 export type {
   NamespaceRuntime,
-  NamespaceRuntimeReadResult,
+  NamespaceRuntimeReadDataResult,
   RuntimeReadDisabledResult,
 } from './runtime.js';
 export type { NamespaceRuntimeStatus } from './status.js';
 export type { ActiveSchemaInfo } from './p0.js';
 export type { RuntimeWriteFatalPhase } from './errors.js';
-export type { RootMutationIssue, MutateRootResult } from './write.js';
+export type { DataMutationIssue, MutateDataResult } from './write.js';
 export type { ReplaceSchemaInput, SchemaReplacementIssue, ReplaceSchemaResult } from './schema-write.js';
+// issue #132：复制管理写面的公共类型（type-only——值导出面仍恰 RuntimeWriteFatalError
+// 一键冻结；REPLICATION_ID_PATTERN 等值导出不进本入口）。
+export type {
+  BumpReplicationEpochResult,
+  EnableReplicationInput,
+  EnableReplicationResult,
+  NamespaceRuntimeReplicationStatus,
+  ReplicationManagementIssue,
+} from './replication-write.js';

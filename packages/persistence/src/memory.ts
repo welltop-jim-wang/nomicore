@@ -4,8 +4,10 @@ import { PersistenceLifecycle, type PersistenceIO, type PersistenceStatus } from
 import {
   type DocHandle,
   type DocPersistence,
+  type PersistedIdentityProbeResult,
   type PersistenceSchedule,
   type PersistenceScheduler,
+  type ReplicationIdentityRef,
   type User,
 } from './contract.js'
 import {
@@ -37,6 +39,15 @@ export interface MemoryPersistenceOptions {
   /** Implementations must honor `signal` to make in-flight I/O cancellable. */
   readonly readSnapshot?: (key: string, signal: AbortSignal) => Promise<Uint8Array | undefined> | Uint8Array | undefined
   /**
+   * Phase 5（§4.10）：归档 remove 段的主键删除 hook。契约 = 从 readSnapshot /
+   * writeSnapshot 所接外部 store 中删除该 key 的 committed snapshot（仅主键直传——
+   * writeArchive 不经本 hook、独立 archiveSnapshots 分区，§4.10.1）；缺省（未接线
+   * readSnapshot 的实例）= 仅 mirror 删除。read hook 接线而本 hook 缺席的实例在
+   * 归档时 loud 拒绝（配置缺陷，非静默——§4.10 loud 配置门；构造期门禁会使全部既有
+   * hook 接线实例构造即炸，违反零回归，故为运行时门）。
+   */
+  readonly deleteSnapshot?: (key: string, signal: AbortSignal) => Promise<void> | void
+  /**
    * Around-seam over this adapter's real I/O (fault injection / composition).
    * Receives the adapter's default io (Memory: entry-abort-gate → writeSnapshot
    * hook → mirror set, per §3.5 方案 (a); File: mkdir → writeFile tmp → rename)
@@ -63,6 +74,11 @@ interface StoredSnapshot { readonly snapshot: Uint8Array }
 export class MemoryPersistence implements DocPersistence {
   private readonly core: PersistenceLifecycle
   private readonly snapshots = new Map<string, StoredSnapshot>()
+  /** Phase 5 归档副本独立分区（R2 修订，§4.10.1）：以主键为键、与主 mirror 结构性
+   *  分区——任意 userId/docId 组合的主键写不可能触及归档域，反之亦然；writeArchive
+   *  不经 writeSnapshot hook（hook store 不再收到任何归档键）。实例私有、无恢复面
+   *  （恢复面按 phase:183 由 File 承担）。 */
+  private readonly archiveSnapshots = new Map<string, StoredSnapshot>()
 
   constructor(private readonly options: MemoryPersistenceOptions) {
     const baseIo: PersistenceIO = {
@@ -79,6 +95,27 @@ export class MemoryPersistence implements DocPersistence {
         signal.throwIfAborted()
         if (options.writeSnapshot) await options.writeSnapshot(key, snapshot, signal)
         this.snapshots.set(key, { snapshot: snapshot.slice() })
+      },
+      // Phase 5（§4.10）：归档写——独立 archiveSnapshots 分区（不经 writeSnapshot
+      // hook，§4.10.1 碰撞消解：hook store 中任何键都不可能被归档写触达）。公理与
+      // write 同款：resolve ⟺ 归档区已持有该字节；reject ⟹ 归档区不变；禁同步 throw。
+      writeArchive: async (key, snapshot, signal) => {
+        signal.throwIfAborted()
+        this.archiveSnapshots.set(key, { snapshot: snapshot.slice() })
+      },
+      // Phase 5（§4.10 R2 形态）：主键移除——loud 配置门（read hook 接线时 hook
+      // store 是唯一读权威，无 delete hook 则「主键移除」对外部 store 虚假 no-op：
+      // 归档后 hook 仍吐旧字节 ⟹ 文档复活 + store.has(key) 撒谎）→ deleteSnapshot
+      // hook（仅主键直传）→ 主 mirror 删除（归档域不触碰——remove 契约：仅主键）。
+      remove: async (key, signal) => {
+        signal.throwIfAborted()
+        if (options.readSnapshot !== undefined && options.deleteSnapshot === undefined) {
+          throw new Error(
+            'MemoryPersistence archive requires the deleteSnapshot hook when readSnapshot is wired: an external read authority without an external delete path cannot be archived honestly',
+          )
+        }
+        await options.deleteSnapshot?.(key, signal)
+        this.snapshots.delete(key)
       },
     }
     const io = options.wrapIo !== undefined ? options.wrapIo(baseIo) : baseIo
@@ -97,6 +134,30 @@ export class MemoryPersistence implements DocPersistence {
 
   createDoc(owner: User, docId: string, doc: Y.Doc): Promise<DocHandle> {
     return this.core.createDoc(owner, docId, doc)
+  }
+
+  /** Phase 5 受控复制导入委托（§4.3）：语义与 createDoc 同管线，META.docId 违约 →
+   *  DocImportIdentityError。 */
+  importDoc(owner: User, docId: string, doc: Y.Doc): Promise<DocHandle> {
+    return this.core.importDoc(owner, docId, doc)
+  }
+
+  /** Phase 5 受身份前置条件保护的归档委托（§4.5）：settle 排空 → claim →
+   *  guard-read → 身份核对 → relocate（writeArchive 独立分区 + remove）。 */
+  archiveDoc(
+    owner: User,
+    docId: string,
+    expectedReplicationIdentity: ReplicationIdentityRef,
+  ): Promise<Readonly<{ ok: true }>> {
+    return this.core.archiveDoc(owner, docId, expectedReplicationIdentity)
+  }
+
+  /** R2 只读 committed-snapshot identity probe 委托（§3.3）：零写/零 flush/零 handle。 */
+  readPersistedReplicationIdentity(
+    owner: User,
+    docId: string,
+  ): Promise<PersistedIdentityProbeResult> {
+    return this.core.readPersistedReplicationIdentity(owner, docId)
   }
 
   saveDoc(handle: DocHandle): Promise<void> {
@@ -124,6 +185,10 @@ export class MemoryPersistence implements DocPersistence {
   async dispose(): Promise<void> {
     await this.core.dispose()
     this.snapshots.clear()
+    // Phase 5（§4.10 R2 形态）：归档分区同款 drain-then-clear——core.dispose 的
+    // allSettled 先结算被 track 的归档提交段（writeArchive 已进入的写入先于
+    // clear() 生效），clear 后置（与既有 mirror 同款纪律，MEMORY.ts:124-127）。
+    this.archiveSnapshots.clear()
   }
 
   [TEST_FACTORY](owner: User, docId: string): DocHandle {

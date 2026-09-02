@@ -121,7 +121,7 @@ export interface SlotEmissionArgs {
  *  clock 必在（判别联合窄化）。**吞没一切**——日志属 best-effort observability，
  *  任何日志侧故障不得改变业务结果。 */
 export function emitAttempt(env: DiagnosticEnv, e: SlotEmissionArgs): void {
-  if (env.emitter === undefined) return; // 判别联合窄化：此后 env.clock 必在（成对校验）
+  if (env.emitter === undefined || env.clock === undefined) return;
   try {
     env.emitter.emit({
       operation: e.operation,

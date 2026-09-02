@@ -1,0 +1,437 @@
+/**
+ * backpressure —— 连接级发送调度（协议 §17 / ADR 0010 L151；每连接实例一个，
+ * 随 transport 生命周期）。issue #169 记账纠偏（SA1 设计：统一连接账本 3.1-3.4、
+ * 控制保留额度 §4、admission §5、shed §6、poll 公式 §7）：
+ *
+ *  ① bufferedAmount 高/低水位闸门（hysteresis + 注入 ReplicationTimer poll，
+ *     间隔 = max(1, floor(ackTimeoutMs/100))，协议 §17 权威公式）——缺失/非 number
+ *     属性 → 0 → 恒开（既有 makeWire 零影响）；
+ *  ② control 保留额度 = socket 中**未冲刷**控制字节账本（controlUnflushed，冲刷即
+ *     释放；暂停态耗尽 = CONNECTION_BACKPRESSURE（1011）收口）；阈值 maxQueuedControlBytes
+ *     （缺省 8 MiB，≥ maxBootstrapBytes + 128 启动期响亮验证）；
+ *  ③ 统一连接账本：P3 观察值 + P2 未吸收/未离开交接（FIFO handoffQueue：data/control
+ *     均自 transport handoff 起恒计）+ Σ P1 排队——admission（tryEmitData）与 shed 触发
+ *     （enforceConnectionCap）共用（单一台账，无缝隙）；额度释放经 R12 kind-aware 退休
+ *     账本（§3.5：Δ<0 按 ①已吸收 data → ②handoff data → ③已吸收 control → ④handoff
+ *     control 优先序退休；控制额度仅由 ③+④ 驱动——data flush 绝不释放控制额度）；
+ *  ④ shed：溢出触发（总压 > cap 严格大于）→ 按最大 queued namespace 依次整队丢弃
+ *     至 queued 侧 ≤ lowWater（§17「整队丢弃至 queued 侧 ≤ low-water」）；
+ *  ⑤ data round-robin 轮转：插入序 wheel + 旋转游标，每轮每 ns 至多一帧（不变）。
+ *
+ * 属主边界（R0-2）：本模块只记账 ws-replication 自己的未发送 data 队列；零触碰
+ * namespace-registry 的 session fanout 队列（切片 3 域）。不进 Runtime sequencer
+ * （§11.2）：本模块不 import、不 await、不回调 Runtime/Lease/Registry——依赖方向
+ * 保证，非约定。
+ */
+import { encodeMessage, type ReplicationMessage } from '@nomicore/replication-protocol';
+import { codecFieldLimits } from './frame-io.js';
+import type { ReplicationTimer, ResolvedLimits } from './types.js';
+
+/** 连接级 data 调度面（由控制器/通道实现；设计 §6.1/§6.2/§6.3）。 */
+export interface DataSenderFacet {
+  /** 连接总压记账：本 ns 未发送 data 队列字节（口径=各项原始字节之和，§5 R2）。 */
+  queuedBytes(): number;
+  /** wheel 留轮判定：本 ns 是否有未发送 data。 */
+  queuedCount(): number;
+  /** 取一帧发送；true ⇔ 消费 ≥1 队列项（F4 丢弃也是进展，R3——「消费即进展」）。 */
+  pullAndSendOne(): boolean;
+  /** §4.4 shed → §10.2 同构处置（丢全部未发送 + needs-resync + 声明/pendingResync）。 */
+  discardForConnectionPressure(): void;
+}
+
+/** ConnectionSender 宿主（连接层实现；设计 §6.1）。 */
+export interface ConnectionSenderHost {
+  readonly limits: ResolvedLimits;
+  readonly timer: ReplicationTimer;
+  /** poll 间隔公式输入（协议 §17 L492：max(1, floor(ackTimeoutMs/100))）。 */
+  readonly ackTimeoutMs: number;
+  /** 鸭子类型读取 transport.bufferedAmount（设计 §4.2；缺失/非法 → 0=无压力）。 */
+  readBufferedAmount(): number;
+  /** control 帧出站点（→ OutboundQueue.sendControl；无水位门，保留额度判据在 sendControl）。 */
+  emitControl(message: ReplicationMessage): number;
+  /** data 帧出站点（→ OutboundQueue.emit；序列号单点分配）。 */
+  emitData(message: ReplicationMessage): number;
+  /** 命名空间 facet 查询（peer: controllers map / hub: channels map）。 */
+  facetOf(namespaceId: string): DataSenderFacet | undefined;
+  /** 连接可发送性（peer: connState==='ready'；hub: 未收口）。 */
+  isEmitAllowed(): boolean;
+  /** 控制保留额度耗尽 → CONNECTION_BACKPRESSURE 分类连接失败（1011）。 */
+  onBackpressureExhausted(): void;
+  /** 水位暂停边沿（> highWater 进入暂停；§6.5 B1）。可选（无 observer 接线 = 零回调）。 */
+  onSendPaused?(bufferedAmount: number): void;
+  /** 水位恢复边沿（暂停段降至 ≤ lowWater；§6.5 B2）。可选（无 observer 接线 = 零回调）。 */
+  onSendResumed?(bufferedAmount: number): void;
+}
+
+/** 单次 drain 的轮次限额（§4.5 注记 c：turns 截断不是终态——已发帧的 ACK 必再触发 drain）。 */
+const DRAIN_TURN_LIMIT = 10_000;
+
+/** FIFO 交接队列成员：按交接序记录「已交给 transport、未被观察吸收/离开」的 chunk。 */
+interface HandoffChunk {
+  readonly kind: 'data' | 'control';
+  /** 剩余未吸收字节；队首可原地缩减（observe 的 min 弹出）。 */
+  bytes: number;
+}
+
+export class ConnectionSender {
+  private paused = false;
+  private pollHandle: unknown | undefined;
+  /** P2 交接队列（FIFO，§3.1）：data 与 control 帧的压力相位账（I-1）。 */
+  private handoffQueue: HandoffChunk[] = [];
+  /** = Σ kind==='data' 的 bytes（data 侧 P2 余额）。 */
+  private pendingDataHandoff = 0;
+  /** = Σ kind==='control' 的 bytes（control 侧 P2 余额；所有发送相位恒计，闭合观察滞后空窗）。 */
+  private controlPendingHandoff = 0;
+  /** 策略账本（非压力相位）：已交接、尚无冲刷证据的控制字节——只喂暂停态额度判据。 */
+  private controlUnflushed = 0;
+  /** 退休候选计数（R12 §3.5）：Δ>0 归因弹出 handoff chunk 时按 kind 累积的「已吸收、未退休」
+   *  余额——Δ<0 的控制额度退休按 §3.5 优先序消耗这些候选；仅 teardown 清零
+   *  （缓冲模型，跨暂停窗口持续）。 */
+  private unretiredAbsorbedData = 0;
+  private unretiredAbsorbedControl = 0;
+  /** 最近一次观察基线（delta 对账，§3.2）。 */
+  private lastObservedBuffered = 0;
+  /** 恢复检查间隔 = max(1, floor(ackTimeoutMs/100))（协议 §17 权威公式，§7）。 */
+  private readonly pollIntervalMs: number;
+  /** 插入序 wheel（首次入队登记；队列清空/消失移除）。 */
+  private readonly wheel: string[] = [];
+  private cursor = 0;
+  private tornDown = false;
+
+  constructor(private readonly host: ConnectionSenderHost) {
+    this.pollIntervalMs = Math.max(1, Math.floor(host.ackTimeoutMs / 100));
+  }
+
+  // ─────────────────────────────── control / data 发送点 ───────────────────────────────
+
+  /** control 发送点（§4.1/§4.3）：水位观察 + 额度判据 + emit（控制帧不被闸门阻塞）。
+   *  额度 = socket 中尚无冲刷证据的控制字节账本（controlUnflushed）；触发帧是首个会越界的帧
+   *  ——不发送、立即收口（CONNECTION_BACKPRESSURE）。 */
+  sendControl(message: ReplicationMessage): number {
+    this.observeWater();
+    if (this.paused) {
+      const frameBytes = this.measureFrame(message);
+      if (this.controlUnflushed + frameBytes > this.host.limits.maxQueuedControlBytes) {
+        // §4.3 耗尽谓词（R2 钉死）：触发帧是首个会越界的帧——不发送、立即收口。
+        this.host.onBackpressureExhausted();
+        return 0;
+      }
+    }
+    return this.host.emitControl(message);
+  }
+
+  /** data 发送尝试（§5 严格接纳）：isEmitAllowed + 水位 + 单帧守卫 + 统一账本投影。 */
+  tryEmitData(message: ReplicationMessage): number {
+    if (!this.host.isEmitAllowed()) return 0;
+    if (!this.dataGateOpen()) return 0;
+    const frameBytes = this.measureFrame(message);
+    if (frameBytes > this.host.limits.maxQueuedBytesPerConnection) return 0;
+    // 严格接纳：P3 观察 + P2（data 与 control 未吸收/未离开，R4）+ Σ P1 排队 + 本帧 ≤ cap。
+    // controlUnflushed 不计入（R3）：已吸收控制字节已在观察值内；未吸收的在 controlPendingHandoff。
+    const projected =
+      this.observe() + this.pendingDataHandoff + this.controlPendingHandoff
+      + this.totalQueuedBytes() + frameBytes;
+    if (projected > this.host.limits.maxQueuedBytesPerConnection) return 0;
+    return this.host.emitData(message);
+  }
+
+  /** data 闸门（§4.2 hysteresis）：> highWater → 暂停；暂停段 ≤ lowWater → 恢复 + drain。 */
+  dataGateOpen(): boolean {
+    this.observeWater();
+    return !this.paused;
+  }
+
+  /** 任一通道 data 入队后（§4.4 触发点）：wheel 登记 → 统一账本总压检查。 */
+  onDataQueued(namespaceId: string): void {
+    if (this.tornDown) return;
+    if (!this.wheel.includes(namespaceId)) {
+      this.wheel.push(namespaceId);
+    }
+    this.enforceConnectionCap();
+  }
+
+  /** 出站帧实际编码字节回报（OutboundQueue onEmitted 单点；§4.2 记账判据来源）。 */
+  onEmitted(info: Readonly<{ kind: 'control' | 'data'; byteLength: number }>): void {
+    if (this.tornDown) return; // 收口路径直发 ERROR 的回报零记账（§13.4）
+    if (info.kind === 'control') {
+      // control 与 data 一样自交接起进入 P2，共同闭合 transport.bufferedAmount 异步更新空窗。
+      // 暂停态发送才增加独立 control quota；进入 pause 不清除已有暂停态责任。
+      this.handoffQueue.push({ kind: 'control', bytes: info.byteLength });
+      this.controlPendingHandoff += info.byteLength;
+      if (this.paused) this.controlUnflushed += info.byteLength;
+      // 非暂停控制只用于闭合「本次同步栈」的 admission 空窗；下一轮观察若 transport
+      // 仍未显影，则保守退休该 control P2，避免低水位控制流量永久挤占 data 预算。
+      // 暂停态 control 由 quota + buffered delta 路径持续追踪，不走该轮次退休。
+      if (!this.paused) {
+        queueMicrotask(() => {
+          if (this.tornDown) return;
+          this.retireUnpausedControl(info.byteLength);
+        });
+      }
+    } else {
+      this.handoffQueue.push({ kind: 'data', bytes: info.byteLength }); // 压力侧 P2（data 恒计）
+      this.pendingDataHandoff += info.byteLength;
+    }
+  }
+
+  /** 请求排空（ACK 空位 / 恢复 / resetForLive）：!paused → drainData。 */
+  requestDrain(): void {
+    if (this.paused) return;
+    this.drainData();
+  }
+
+  /** 连接收口/重拨/重建/停机的必经点：清 poll timer、清 wheel、复位全部台账与新退休候选计数（§8/NC-8）。 */
+  teardown(): void {
+    this.tornDown = true;
+    this.clearPoll();
+    this.wheel.length = 0;
+    this.cursor = 0;
+    this.paused = false;
+    this.handoffQueue.length = 0;
+    this.pendingDataHandoff = 0;
+    this.controlPendingHandoff = 0;
+    this.controlUnflushed = 0;
+    this.unretiredAbsorbedData = 0;
+    this.unretiredAbsorbedControl = 0;
+    this.lastObservedBuffered = 0;
+  }
+
+  // ─────────────────────────────── §4.5 drain（RR 轮转） ───────────────────────────────
+
+  private drainData(): void {
+    if (this.tornDown || this.paused || !this.host.isEmitAllowed()) return;
+    let turns = 0;
+    while (this.wheel.length > 0 && turns < DRAIN_TURN_LIMIT) {
+      turns += 1;
+      let progressed = false;
+      let visited = 0;
+      while (visited < this.wheel.length) {
+        const nsId = this.wheel[this.cursor]!;
+        this.cursor = this.cursor + 1;
+        if (this.cursor >= this.wheel.length) this.cursor = 0;
+        visited += 1;
+        const facet = this.host.facetOf(nsId);
+        if (facet === undefined) {
+          this.removeFromWheel(nsId);
+          continue;
+        }
+        if (facet.queuedCount() === 0) {
+          this.removeFromWheel(nsId);
+          continue;
+        }
+        // 每轮每 ns 至多一帧；true ⇔ 消费 ≥1 项（F4 丢弃也是进展——R3「消费即进展」）
+        if (facet.pullAndSendOne()) progressed = true;
+        if (this.paused || !this.host.isEmitAllowed()) return; // 帧间水位复查（§4.5）
+      }
+      if (!progressed) return; // 全轮零消费（窗口满/live 门槛未过/闸门关）→ 退出，ACK 后再来
+    }
+  }
+
+  // ─────────────────────────────── §4.2 水位观察 / poll ───────────────────────────────
+
+  private observeWater(): void {
+    const level = this.observe(); // 迟滞判定前先对账（G3b 冲刷释放的观察点之一）
+    if (level > this.host.limits.highWater) {
+      this.enterPause();
+      return;
+    }
+    if (this.paused && level <= this.host.limits.lowWater) {
+      this.resume();
+    }
+  }
+
+  private enterPause(): void {
+    if (this.paused) return;
+    this.paused = true;
+    // pause 只是 data gate 状态，不是 control 账本的新纪元；此前未冲刷责任必须保留。
+    this.armPoll();
+    // 水位暂停边沿（决策已落定后通知；观察值 = 触发时刻 bufferedAmount）
+    this.host.onSendPaused?.(this.host.readBufferedAmount());
+  }
+
+  private resume(): void {
+    if (!this.paused) return;
+    this.paused = false;
+    // 恢复水位不证明 control 已全部冲刷；额度责任只由 observe() 的离开证据退休。
+    this.clearPoll();
+    // 水位恢复边沿先于 drain 通知（事件描述「恢复已决」的事实；drain 是后续动作）
+    this.host.onSendResumed?.(this.host.readBufferedAmount());
+    this.requestDrain(); // §4.2：恢复即立即 drain（设计走查：AC-6a/6b 恢复段由 poll 触发）
+  }
+
+  private armPoll(): void {
+    if (this.pollHandle !== undefined) return;
+    this.pollHandle = this.host.timer.setTimeout(() => {
+      this.pollHandle = undefined;
+      if (this.tornDown || !this.paused) return; // stale fire：零副作用、不重武装（§8）
+      const level = this.observe(); // poll 也是对账点（冲刷释放）
+      if (level > this.host.limits.lowWater) {
+        this.armPoll(); // 一拍一查，不叠帧
+        return;
+      }
+      this.resume();
+    }, this.pollIntervalMs); // 协议 §17 权威公式派生间隔（替代固定 1000ms）
+  }
+
+  private clearPoll(): void {
+    if (this.pollHandle === undefined) return;
+    this.host.timer.clearTimeout(this.pollHandle);
+    this.pollHandle = undefined;
+  }
+
+  // ─────────────────────────────── §3 统一连接账本 / §4.4 总压与 shed ───────────────────────────────
+
+  /**
+   * 读数 + 对账（§3.2/§3.3；§3.5 R12 kind-aware 退休账本）：
+   *  - Δ > 0（吸收证据）：FIFO 队首起弹出 min(Δ, 队列总余额) 字节（按 kind 核减压力侧
+   *    余额），并把弹出量按 kind 累积到退休候选计数（unretiredAbsorbedData/Control）；
+   *    超出队列余额的增量 = 外部积压（非本连接写入）——不作退休候选、不记账。
+   *  - Δ < 0（离开证据）：按 §3.5 退休优先序消耗退休预算 |Δ|——
+   *      ① unretiredAbsorbedData → ② handoffQueue 的 data chunk（最老优先）
+   *      → ③ unretiredAbsorbedControl → ④ handoffQueue 的 control chunk（最老优先）；
+   *    控制额度释放 = ③+④ 实际退休的控制字节（clamp 到 controlUnflushed）——硬不变量
+   *    （R12）：data flush 绝不释放控制额度（①② 消耗不触额度）。
+   *  返回本次观察值。
+   */
+  private observe(): number {
+    const level = this.host.readBufferedAmount();
+    const delta = level - this.lastObservedBuffered;
+    if (delta > 0) {
+      let remaining = delta;
+      while (remaining > 0 && this.handoffQueue.length > 0) {
+        const chunk = this.handoffQueue[0]!;
+        const take = Math.min(chunk.bytes, remaining);
+        if (chunk.kind === 'data') {
+          this.pendingDataHandoff -= take;
+          this.unretiredAbsorbedData += take;
+        } else {
+          this.controlPendingHandoff -= take;
+          this.unretiredAbsorbedControl += take;
+        }
+        chunk.bytes -= take;
+        remaining -= take;
+        if (chunk.bytes === 0) this.handoffQueue.shift();
+      }
+      // remaining > 0 的部分 = 外部积压增量（非本连接写入）——不作退休候选，不记账
+    } else if (delta < 0) {
+      let remaining = -delta;
+      // ① 已吸收 data 退休候选（data flush 绝不释放控制额度——R12 硬不变量）
+      const r1 = Math.min(remaining, this.unretiredAbsorbedData);
+      this.unretiredAbsorbedData -= r1;
+      remaining -= r1;
+      // ② handoff data chunk（最老优先；data 对 data stale 的释放——§3.3(c) 恒动面防假拒）
+      remaining -= this.retireFromHandoff('data', remaining);
+      // ③ 已吸收 control 退休候选
+      const r3 = Math.min(remaining, this.unretiredAbsorbedControl);
+      this.unretiredAbsorbedControl -= r3;
+      remaining -= r3;
+      // ④ handoff control chunk（最老优先）——G3b 的归因读法（无本连接 data 在场时的下降归因于控制）
+      const r4 = this.retireFromHandoff('control', remaining);
+      // 控制额度释放：仅由 ③+④（退休的控制字节）驱动——data flush（①+②）绝不释放（§3.5 硬不变量）
+      this.controlUnflushed -= Math.min(r3 + r4, this.controlUnflushed);
+    }
+    this.lastObservedBuffered = level;
+    return level;
+  }
+
+  /** 非暂停 control 的同步栈 admission 保护期结束后退休其剩余 P2（按 control 最老优先）。 */
+  private retireUnpausedControl(budget: number): void {
+    this.retireFromHandoff('control', budget);
+  }
+
+  /** 从 handoffQueue 按指定 kind（最老优先）退休 up to budget 字节（核减压力侧余额、清空 chunk）；返回实退量。 */
+  private retireFromHandoff(kind: 'data' | 'control', budget: number): number {
+    if (budget <= 0 || this.handoffQueue.length === 0) return 0;
+    let retired = 0;
+    for (const chunk of this.handoffQueue) {
+      if (budget <= 0) break;
+      if (chunk.kind !== kind || chunk.bytes === 0) continue;
+      const take = Math.min(chunk.bytes, budget);
+      chunk.bytes -= take;
+      budget -= take;
+      retired += take;
+      if (kind === 'data') this.pendingDataHandoff -= take;
+      else this.controlPendingHandoff -= take;
+    }
+    if (retired > 0) {
+      this.handoffQueue = this.handoffQueue.filter((c) => c.bytes > 0);
+    }
+    return retired;
+  }
+
+  /** 连接总压（§3.4）：P3 观察 + P2 未吸收/未离开交接（data/control 恒计）+ Σ P1 排队。
+   *  controlUnflushed 不在此：已吸收控制字节已在 lastObservedBuffered 内；
+   *  未吸收控制字节已在 controlPendingHandoff 内，避免重复计数。 */
+  private totalPressure(): number {
+    return this.lastObservedBuffered + this.pendingDataHandoff
+      + this.controlPendingHandoff + this.totalQueuedBytes();
+  }
+
+  private totalQueuedBytes(): number {
+    let total = 0;
+    for (const nsId of this.wheel) total += this.queuedBytesOf(nsId);
+    return total;
+  }
+
+  private enforceConnectionCap(): void {
+    const cap = this.host.limits.maxQueuedBytesPerConnection;
+    this.observe(); // 决策点先观察（I-2；对账后 totalPressure 才是无缝隙口径）
+    if (this.totalPressure() <= cap) return; // 触发：严格大于（I-3；恰好 cap 不触发）
+    // 恢复目标 = queued 侧 ≤ lowWater（协议 §17「整队丢弃至 queued 侧 ≤ low-water」；
+    // 触发后不止步于 cap——即便中途总压已回落也要清到 lowWater）
+    while (this.totalQueuedBytes() > this.host.limits.lowWater) {
+      const victim = this.pickVictim(); // 最大 queued 优先；并列取 wheel 序先者（不变，确定性）
+      if (victim === undefined) break; // 无可弃（socket 侧压力 → 水位暂停/1011 承接域）
+      const facet = this.host.facetOf(victim);
+      if (facet === undefined || facet.queuedBytes() === 0) break;
+      facet.discardForConnectionPressure(); // §10.2 同构处置（丢全部未发送 + needs-resync）
+      if (facet.queuedBytes() > 0) break; // facet 契约防御：discard 后未清零即停（防活锁）
+      this.removeFromWheel(victim); // 队列已空，不留轮
+    }
+  }
+
+  /** 最大 queued namespace；并列取 wheel 序先者（确定性，§4.4）。 */
+  private pickVictim(): string | undefined {
+    let best: string | undefined;
+    let bestBytes = 0;
+    for (const nsId of this.wheel) {
+      const bytes = this.queuedBytesOf(nsId);
+      if (bytes > bestBytes) {
+        bestBytes = bytes;
+        best = nsId;
+      }
+    }
+    return best;
+  }
+
+  private queuedBytesOf(nsId: string): number {
+    const facet = this.host.facetOf(nsId);
+    if (facet === undefined) return 0;
+    const bytes = facet.queuedBytes();
+    return bytes > 0 ? bytes : 0;
+  }
+
+  /** 移除（游标偏移可按移除位置微调——pass 内公平轻微偏斜、无跨 pass 饥饿，§4.5 b）。 */
+  private removeFromWheel(namespaceId: string): void {
+    const index = this.wheel.indexOf(namespaceId);
+    if (index < 0) return;
+    this.wheel.splice(index, 1);
+    if (this.cursor > index) this.cursor -= 1;
+    if (this.cursor >= this.wheel.length) this.cursor = 0;
+  }
+
+  // ─────────────────────────────── §4.3 帧长确定判据 ───────────────────────────────
+
+  /**
+   * 控制帧编码后实际字节数（判据必须确定，估算不可接受）。探针编码：envelope 的
+   * sequence 是固定 4 字节大端字段（replication-protocol/envelope.ts writeBe32），
+   * 帧长与序列号取值无关——探针序列与出站序列产生逐字节相同帧长，为「确定判据」。
+   */
+  private measureFrame(message: ReplicationMessage): number {
+    return encodeMessage(message, {
+      sequence: 0,
+      maxFrameBytes: this.host.limits.maxFrameBytes,
+      limits: codecFieldLimits(this.host.limits),
+    }).byteLength;
+  }
+}

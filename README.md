@@ -94,6 +94,8 @@ nomicore/
 
 第三方宿主应使用 **Cordis 插件工厂组合加载**：在同一个 `Context` 中按 Clock → Timer → Memory/File Persistence → Namespace Registry 的顺序挂载公开 `create*Plugin()` 工厂。当前不以动态 `pluginId` 或 `cordis_define` 作为稳定集成契约。完整装配示例、配置、数据读写和停止顺序见[第三方 Cordis 宿主接入指南](docs/integration/cordis-plugin-hosting.md)。
 
+在发布 npm registry 前，源码级高频联调见[本机包联调指南](docs/integration/local-package-linking.md)；更接近正式安装的消费方式是运行 `pnpm pack:local`，使用 `artifacts/local-packages/` 中编译后的完整 tarball 集。该集合包含 VFSL/Runtime/Registry，也包含 `@nomicore/replication-protocol`、`@nomicore/ws-replication` 和可执行的 `@nomicore/yjs-server`。独立宿主项目如何维护自己的 VFSL、生成 `generated.ts`、为 Namespace 读写接入类型投影并用自身 TypeScript 工程检查，见[外部项目 VFSL Codegen 指南](docs/integration/external-project-vfsl-codegen.md)。
+
 ## 开发
 
 ```bash

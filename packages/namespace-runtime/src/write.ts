@@ -26,6 +26,10 @@ import type { ApplyValidatedMutationResult } from '@nomicore/doc-runtime';
 import {
   FATAL_SCHEMA_WRITE_INTERNAL_CODE,
   FATAL_SCHEMA_WRITE_INTERNAL_MESSAGE,
+  FATAL_REPLICATION_WRITE_INTERNAL_CODE,
+  FATAL_REPLICATION_WRITE_INTERNAL_MESSAGE,
+  FATAL_REPLICATION_APPLY_WRITE_INTERNAL_CODE,
+  FATAL_REPLICATION_APPLY_WRITE_INTERNAL_MESSAGE,
   FATAL_WRITE_INTERNAL_CODE,
   FATAL_WRITE_INTERNAL_MESSAGE,
   MUTATION_INPUT_NOT_PLAIN_DATA_CODE,
@@ -67,19 +71,19 @@ export interface WriteEnv {
  * 管线透传四来源全部如此）；公共联合的 issues 元素类型放宽为 unknown（R2 修订，
  * SA2 攻击点 #1——兼容 SA6 冻结孪生的 `unknown[]` 与 `MutationIssue[]` 双侧赋值）。
  */
-export interface RootMutationIssue {
+export interface DataMutationIssue {
   message: string;
   path: Array<string | number>;
 }
 
 /** ROOT mutation 完成信号联合（D9）。fatal 经 rejection（RuntimeWriteFatalError），不入本联合。 */
-export type MutateRootResult = { ok: true } | { ok: false; issues: unknown[] };
+export type MutateDataResult = { ok: true } | { ok: false; issues: unknown[] };
 
 /**
  * 写槽位名词（D9，issue #91）：fatal 摘要与 rejection message 的来源区分——ROOT 写槽
  * 与 SCHEMA 写槽共享同一机械但独立 fatal 摘要稳定码（status.fatal 诊断不失真）。
  */
-export type WriteSlot = 'root' | 'schema';
+export type WriteSlot = 'root' | 'schema' | 'replication' | 'replication-apply';
 
 /**
  * 写槽主函数（唯一写槽实现）。async——同步段无可抛点（全部 gate/分类在体内），
@@ -87,7 +91,7 @@ export type WriteSlot = 'root' | 'schema';
  * diag（issue #149）：可选 per-attempt 诊断收集器——未装配 emitter 时 undefined
  * （槽体全部 diag 写入 no-op，行为等价）；装配时每个结局点恰一行诊断写入（设计 §8.1）。
  */
-export async function runRootWriteSlot(env: WriteEnv, input: unknown, diag?: SlotDiag): Promise<MutateRootResult> {
+export async function runRootWriteSlot(env: WriteEnv, input: unknown, diag?: SlotDiag): Promise<MutateDataResult> {
   // ── S1 fatal gate（零输入访问）───────────────────────────────────────
   if (env.state.fatal !== undefined) {
     const r = disabled('fatal 已置位（internal fatal 已永久禁用本 Runtime 的全部写能力，读取仍保留）');
@@ -144,7 +148,7 @@ export async function runRootWriteSlot(env: WriteEnv, input: unknown, diag?: Slo
   // ── S4 执行时 active schema（不绑定调用时 generation）─────────────────
   if (env.state.schemaState === 'unavailable') {
     // [issue #149] R7：capability-gate / SCHEMA_UNAVAILABLE / rejected / input 已是 snapshot
-    const r: MutateRootResult = {
+    const r: MutateDataResult = {
       ok: false,
       issues: [{
         message: `${SCHEMA_UNAVAILABLE_CODE}: 无可用 active schema（P0 编译失败）——` +
@@ -228,7 +232,7 @@ export async function runRootWriteSlot(env: WriteEnv, input: unknown, diag?: Slo
 /** disabled 结果（D9）：RUNTIME_WRITE_DISABLED 稳定码 + 零写入/零输入访问声明。
  *  共享供 SCHEMA 写槽复用（issue #91——两 Result 联合的 issues 同为 unknown[]，
  *  按结构兼容复用、零适配层，A7②）。 */
-export function disabled(reason: string): MutateRootResult {
+export function disabled(reason: string): MutateDataResult {
   return {
     ok: false,
     issues: [{
@@ -242,10 +246,14 @@ export function disabled(reason: string): MutateRootResult {
  *  slot 参数（D9，issue #91）：'schema' 走 SCHEMA write 独立摘要码；缺省 'root' 渲染与
  *  现状逐字节相同（#90 冻结行为零回归）。 */
 export function markWriteFatal(env: WriteEnv, cause: unknown, slot: WriteSlot = 'root'): void {
-  env.state.fatal = Object.freeze({
-    code: slot === 'schema' ? FATAL_SCHEMA_WRITE_INTERNAL_CODE : FATAL_WRITE_INTERNAL_CODE,
-    message: slot === 'schema' ? FATAL_SCHEMA_WRITE_INTERNAL_MESSAGE : FATAL_WRITE_INTERNAL_MESSAGE,
-  });
+  const summary = slot === 'schema'
+    ? { code: FATAL_SCHEMA_WRITE_INTERNAL_CODE, message: FATAL_SCHEMA_WRITE_INTERNAL_MESSAGE }
+    : slot === 'replication'
+      ? { code: FATAL_REPLICATION_WRITE_INTERNAL_CODE, message: FATAL_REPLICATION_WRITE_INTERNAL_MESSAGE }
+      : slot === 'replication-apply'
+        ? { code: FATAL_REPLICATION_APPLY_WRITE_INTERNAL_CODE, message: FATAL_REPLICATION_APPLY_WRITE_INTERNAL_MESSAGE }
+        : { code: FATAL_WRITE_INTERNAL_CODE, message: FATAL_WRITE_INTERNAL_MESSAGE };
+  env.state.fatal = Object.freeze(summary);
   env.state.fatalCause = cause; // 包内诊断锚点（不进任何公共面——#89 R2 立法延续）
 }
 
@@ -283,7 +291,13 @@ export async function rejectWithWriteFatal(
  *  现状逐字节相同（runtime-write-fatal-message-rev1.test.ts 子串锚全保留）；'schema'
  *  → 「SCHEMA write」。 */
 export function writeFatalMessage(slot: WriteSlot, phase: RuntimeWriteFatalPhase, committed: boolean): string {
-  const noun = slot === 'schema' ? 'SCHEMA write' : 'ROOT write';
+  const noun = slot === 'schema'
+    ? 'SCHEMA write'
+    : slot === 'replication'
+      ? 'REPLICATION write'
+      : slot === 'replication-apply'
+        ? 'REPLICATION apply'
+        : 'ROOT write';
   return `NSRT-WRITE-FATAL: ${noun} internal fatal（phase=${phase}, committed=${String(committed)}）；` +
     'internal fatal 已永久禁用本 Runtime 的全部写能力，读取仍保留；不补偿、不 fallback、不声称回滚；' +
     '上层不得自动重试非幂等写。';
@@ -297,7 +311,7 @@ export function errDetailOf(err: unknown): string {
 
 // ── D3 受控 snapshotter ────────────────────────────────────────────────────
 
-export type SnapshotResult = { kind: 'ok'; value: unknown } | { kind: 'issue'; issue: RootMutationIssue };
+export type SnapshotResult = { kind: 'ok'; value: unknown } | { kind: 'issue'; issue: DataMutationIssue };
 
 /**
  * 槽起点输入快照（D3）。整体 try/catch：敌意 getter/Proxy trap 在快照读取面抛错

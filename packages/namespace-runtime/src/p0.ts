@@ -30,6 +30,7 @@ import type {
 } from '@nomicore/vfsl';
 import { FATAL_P0_INTERNAL_CODE, FATAL_P0_INTERNAL_MESSAGE } from './errors.js';
 import { projectSchemaEnvelope } from './projection.js';
+import type { NamespaceRuntimeReplicationStatus } from './replication-write.js';
 
 /** Runtime 可变运行态（闭包私有；唯一可变源——P0 终态迁移单点写入，JS 单线程无竞态）。 */
 export interface RuntimeState {
@@ -52,6 +53,10 @@ export interface RuntimeState {
   /** 【#92】包内诊断锚点：release 失败原始异常（不进任何公共面；公共通道经 close
    *  rejection 的 cause）。沿 fatalCause（#90 R2，SA2 #6）先例。 */
   closeCause?: unknown;
+  /** 【issue #132】复制身份事实（构造期 V2.5 单次预投影；enable/bump 槽 E5.5 整替——
+   *  唯一两写入点，均在唯一 write sequencer 内或构造栈内，JS 单线程零竞态；读取面
+   *  零写）。恒为冻结的两态联合（INV-R5/R6）。 */
+  replication: NamespaceRuntimeReplicationStatus;
 }
 
 /** active schema 身份投影（D8）：五键恰好；module/derived/validator 永不出现。 */
@@ -86,7 +91,7 @@ export async function runP0(env: P0Env): Promise<void> {
     if (env.p0Gate !== undefined) {
       await env.p0Gate; // 编译前可控门（reject → ⑦ fatal）
     }
-    // ③ 四键投影（与公共 getSchemaEnvelope 同源单点——projectSchemaEnvelope；唯二
+    // ③ 四键投影（与公共 getSchema 同源单点——projectSchemaEnvelope；唯二
     //    触碰 SCHEMA 的路径之一；mode 'p0'：违规键省略——live 引用绝不进 compile 输入）
     const projection = projectSchemaEnvelope(env.doc, 'p0'); // SchemaEnvelope 形状 | null
     // ④ compile（env.compile 已在构造栈捕获为局部函数引用——不再读 seam 输入）

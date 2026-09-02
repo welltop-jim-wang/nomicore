@@ -7,7 +7,11 @@
  * 仅供日志/metrics/trace adapter；v1 无 public subscription；所有 public
  * error/issue 文本零回显本文件事件内容。
  */
-import type { DocCreateOperationalError, DocLoadOperationalError } from '@nomicore/persistence';
+import type {
+  DocArchiveOperationalError,
+  DocCreateOperationalError,
+  DocLoadOperationalError,
+} from '@nomicore/persistence';
 import type { InternalIdentity } from './identity.js';
 
 /** 内部 observer 事件（§8.1 冻结五形；#111 扩展为七形；#112 扩展为十形——设计
@@ -24,13 +28,29 @@ export type RegistryObserverEvent =
   | {
       type: 'lifecycle-slot-failed';
       identity: InternalIdentity;
-      operation: 'open' | 'create';
+      operation: 'open' | 'create' | 'reset' | 'import';
       cause: unknown;
     }
   // —— #112 增量（§2.B/§2.I）：idle 状态机三事件 ——
   | { type: 'entry-idle'; identity: InternalIdentity; generation: bigint }
   | { type: 'idle-arm-failed'; identity: InternalIdentity; generation: bigint; cause: unknown }
-  | { type: 'idle-close-failed'; identity: InternalIdentity; generation: bigint; cause: unknown };
+  | { type: 'idle-close-failed'; identity: InternalIdentity; generation: bigint; cause: unknown }
+  // —— phase-5 切片 1 增量（ADR 0010 / §4.3.5）：create ID 生成阶段失败（随机源
+  //    throw / 形状违约 / 重试预算耗尽，各恰一次；逐次碰撞重试不发事件）——
+  | {
+      type: 'create-id-generation-failed';
+      owner: Readonly<{ readonly userId: string }>;
+      attempt: number;
+      cause: unknown;
+    }
+  // —— Phase 5 增量（issue #133；ADR 0010 reset/archive 编排与受信 bootstrap 导入）——
+  | { type: 'reset-archive-failed'; identity: InternalIdentity; cause: DocArchiveOperationalError }
+  | { type: 'import-persist-failed'; identity: InternalIdentity; cause: DocCreateOperationalError }
+  | { type: 'import-runtime-construction-failed'; identity: InternalIdentity; cause: unknown }
+  // —— R2 增量（issue #133 round-2；设计 §3.5.2）：armed 后 archive 拒绝（identity/
+  //    active/duplicate/operational 分支统一注册；cause 不含复制身份内容——零泄露，
+  //    与既有 reset-archive-failed 的「仅运营失败」语义分域）——
+  | { type: 'reset-archive-after-arm-failed'; identity: InternalIdentity; cause: unknown };
 
 /** observer 回调：同步调用；throw 由 dispatchObserver 隔离（静默丢弃）。 */
 export type RegistryObserver = (event: RegistryObserverEvent) => void;

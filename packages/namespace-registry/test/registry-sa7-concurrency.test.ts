@@ -63,6 +63,34 @@ function collectUnhandledRejections(): { readonly events: unknown[]; dispose(): 
   };
 }
 
+
+// ── phase-5 切片 1（ADR 0010）：受控随机源确定性 helper（测试内定义；禁止从 src 导出）──
+// 第 n 次生成 = `ns-` + n 的 32 位小写 hex；每调用恰按 128-bit（16 字节）请求。
+
+function makeDeterministicRandomBytes(): {
+  randomBytes: (length: number) => Uint8Array;
+  readonly id: (n: number) => string;
+} {
+  let counter = 0;
+  return {
+    randomBytes(length: number): Uint8Array {
+      if (length !== 16) {
+        throw new Error(`受控随机源必须按 128-bit（16 字节）请求，实际请求 ${length} 字节`);
+      }
+      counter += 1;
+      const hex = counter.toString(16).padStart(32, '0');
+      const out = new Uint8Array(16);
+      for (let i = 0; i < 16; i += 1) {
+        out[i] = Number.parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+      }
+      return out;
+    },
+    id: (n: number) => `ns-${n.toString(16).padStart(32, '0')}`,
+  };
+}
+
+const TEST_RANDOM_BYTES: (length: number) => Uint8Array = makeDeterministicRandomBytes().randomBytes;
+
 // ── 可控 Persistence / Runtime stub（沿用 registry-idle.test.ts 形态）─────────
 
 class StubHandle implements DocHandle {
@@ -126,6 +154,7 @@ const READY_STATUS: NamespaceRuntimeStatus = {
   schema: { state: 'ready' },
   fatal: null,
   close: null,
+  replication: { state: 'disabled' },
 };
 
 class CountingRuntime implements NamespaceRuntime {
@@ -134,11 +163,11 @@ class CountingRuntime implements NamespaceRuntime {
 
   constructor(readonly marker: string, readonly namespaceId: string) {}
 
-  read() {
+  readData() {
     return { ok: true as const, value: this.marker };
   }
 
-  getSchemaEnvelope(): null {
+  getSchema(): null {
     return null;
   }
 
@@ -154,11 +183,19 @@ class CountingRuntime implements NamespaceRuntime {
     return READY_STATUS;
   }
 
-  mutateRoot(): Promise<{ ok: true }> {
+  mutateData(): Promise<{ ok: true }> {
     return Promise.resolve({ ok: true });
   }
 
   replaceSchema(): Promise<{ ok: true }> {
+    return Promise.resolve({ ok: true });
+  }
+
+  enableReplication(): Promise<{ ok: true }> {
+    return Promise.resolve({ ok: true });
+  }
+
+  bumpReplicationEpoch(): Promise<{ ok: true }> {
     return Promise.resolve({ ok: true });
   }
 
@@ -204,6 +241,7 @@ describe('SA7 并发压力（攻击面 2）：确定性、零 real sleep', () =>
       const registry = createNamespaceRegistryForTesting(persistence, {
         clock: manualClock(),
         scheduler,
+        randomBytes: TEST_RANDOM_BYTES,
         idleTimeoutMs: 300_000,
         runtimeFactory: () => shared,
         observer: observer.sink,
@@ -263,6 +301,7 @@ describe('SA7 并发压力（攻击面 2）：确定性、零 real sleep', () =>
       const registry = createNamespaceRegistryForTesting(persistence, {
         clock: manualClock(),
         scheduler,
+        randomBytes: TEST_RANDOM_BYTES,
         idleTimeoutMs: 300_000,
         runtimeFactory: (handle) => {
           const runtime = new CountingRuntime(`R-${handle.docId}`, handle.docId);
@@ -327,6 +366,7 @@ describe('SA7 并发压力（攻击面 2）：确定性、零 real sleep', () =>
       const registry = createNamespaceRegistryForTesting(persistence, {
         clock: manualClock(),
         scheduler,
+        randomBytes: TEST_RANDOM_BYTES,
         idleTimeoutMs: 300_000,
         runtimeFactory: (handle) => {
           const runtime = new CountingRuntime(`R-${handle.docId}`, handle.docId);
@@ -389,6 +429,7 @@ describe('SA7 并发压力（攻击面 2）：确定性、零 real sleep', () =>
         const registry = createNamespaceRegistryForTesting(persistence, {
           clock: manualClock(),
           scheduler,
+          randomBytes: TEST_RANDOM_BYTES,
           idleTimeoutMs: 300_000,
           runtimeFactory: (handle) => {
             const runtime = new CountingRuntime(`R-${handle.docId}`, handle.docId);

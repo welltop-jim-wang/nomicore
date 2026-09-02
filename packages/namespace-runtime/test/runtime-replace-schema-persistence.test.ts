@@ -26,7 +26,7 @@
  *   内容（跨实例持久化证明，非 live-doc 别名）；
  * - AC8 恢复链：真实 P0 编译失败（doc SCHEMA 文本非法）→ unavailable + rootWrite 关 →
  *   replaceSchema（合法 proposed + 完整 ROOT）恢复 → ready + rootWrite 开 →
- *   mutateRoot 成功提交 → flush → 全新实例看到新 SCHEMA 与 mutateRoot 写入值；
+ *   mutateData 成功提交 → flush → 全新实例看到新 SCHEMA 与 mutateData 写入值；
  *   （「不依赖当前 schema 编译成功」的端到端证明）。
  *
  * 红灯现状（构造性红灯）：runtime.replaceSchema 尚未实现——首个 replaceSchema 调用即红
@@ -58,7 +58,7 @@ function sleep(ms: number): Promise<void> {
 }
 
 function readValue(runtime: NamespaceRuntime, path: readonly (string | number)[]): unknown {
-  const read = runtime.read(path);
+  const read = runtime.readData(path);
   if (!read.ok) throw new Error(`读取应成功，实际 code=${read.code}`);
   return read.value;
 }
@@ -167,7 +167,7 @@ describe('namespace-runtime replaceSchema × 真实 Persistence 集成（AC3/AC8
     await writer.dispose();
   });
 
-  it('AC8 + AC10 恢复全链：真实 P0 编译失败（unavailable）→ replaceSchema 合法恢复 → mutateRoot 恢复 ROOT write → flush → 全新实例看到新 SCHEMA 与写入值', async () => {
+  it('AC8 + AC10 恢复全链：真实 P0 编译失败（unavailable）→ replaceSchema 合法恢复 → mutateData 恢复 ROOT write → flush → 全新实例看到新 SCHEMA 与写入值', async () => {
     const { writer, reader } = makePersistences({});
     const doc = await makeDoc(ENV_BAD); // 非法 SCHEMA 文本 → 真实 vfsl 编译失败
     const handle = await writer.createDoc(OWNER, 'ns-1', doc);
@@ -194,12 +194,12 @@ describe('namespace-runtime replaceSchema × 真实 Persistence 集成（AC3/AC8
     expect(readValue(runtime, ['n'])).toBe(4);
     expect(readValue(runtime, ['b'])).toBe(false);
 
-    // 恢复后 ROOT write 可用：mutateRoot 使用新 active schema 成功提交
-    await expect(runtime.mutateRoot({ op: 'set', path: ['n'], value: 6 })).resolves.toEqual({ ok: true });
+    // 恢复后 ROOT write 可用：mutateData 使用新 active schema 成功提交
+    await expect(runtime.mutateData({ op: 'set', path: ['n'], value: 6 })).resolves.toEqual({ ok: true });
     expect(notifierCalls).toBe(2);
     expect(readValue(runtime, ['n'])).toBe(6);
 
-    // 落盘后全新实例：新 SCHEMA 四键 + mutateRoot 写入值（降级/window 外正常链）
+    // 落盘后全新实例：新 SCHEMA 四键 + mutateData 写入值（降级/window 外正常链）
     await sleep(80);
     expect(handle.getStatus()).toBe('ready');
     const loaded = await reader.loadDoc(OWNER, 'ns-1');

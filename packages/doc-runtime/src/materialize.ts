@@ -2,6 +2,7 @@
  * @nomicore/doc-runtime — materializeRoot(derived, snapshot, doc)：验证后安全物化
  * logical ROOT 到 Yjs（ADR-0007 / issue #74）。extract 的方向反转孪生（JSON→doc，写侧）。
  *
+ * 规范权威：ADR-0007/ADR-0008（materialize 的校验/安装域）；设计记录（历史证据，非规范）：
  * 设计 §4.1–§4.8（wiki/raw/task_doc-runtime-materialize-root_design.md）+ 修订轮 rev1
  * （wiki/raw/task_doc-runtime-materialize-root-rev1_design.md，PR #84 owner Review 闭环）+
  * 修订轮 rev2（wiki/raw/task_doc-runtime-materialize-root-rev2_design.md，RD7/RD8/RD9/RD11；

@@ -9,6 +9,10 @@ Namespace 的读取频率高于写入。创建和所有受控写入负责用 VFS
 
 本决策建立独立包 `@nomicore/namespace-runtime`。它组合 `@nomicore/doc-runtime`、`@nomicore/vfsl` 与 Persistence 的窄通知接缝；不承担 Registry、鉴权、REST/WS、Persistence 实现或原始 Yjs 同步协议。
 
+## 公共概念面：Schema、Data、Metadata
+
+Namespace 的普通调用方只需要三个概念：Schema 描述数据，Data 是受 Schema 约束的业务事实，Metadata 是 namespace 的系统与生命周期事实。公共方法使用 `getSchema()`、`readData()`、`mutateData()` 与 `getMetadata()`；`ROOT`、`SCHEMA`、`META` 仅作为 VFSL/Y.Doc 内部载体名出现在实现和底层契约中。该 seam 避免诱导调用方读取并替换完整 ROOT；普通业务写应生成最小、可合并且直接表达业务语义的 mutation。
+
 ## 读取能力
 
 Runtime 获得并信任有效 `DocHandle` 后，在对外发布前把 P0 放入 write sequencer 队首，同时立即开放同步读取；读取不等待 P0 或任何写任务，也不进入 sequencer。普通 open 不执行 schema、ROOT 载体或 logical validation，持久化文件被其他程序错误修改不在本契约范围内。
@@ -27,7 +31,7 @@ Runtime 获得并信任有效 `DocHandle` 后，在对外发布前把 P0 放入 
 
 Runtime 另提供同步只读投影：
 
-- `getSchemaEnvelope()` 从顶层 `SCHEMA` Y.Map 投影 `lang/version/id/text` 四个 primitive string，忽略额外键，不 coercion 或补默认值；
+- `getSchema()` 从顶层 `SCHEMA` Y.Map 投影 `lang/version/id/text` 四个 primitive string，忽略额外键，不 coercion 或补默认值；
 - `getMetadata()` 深拷贝顶层 `META` Y.Map 的全部键；META 是开放键空间，但值只允许 JSON-compatible plain value，不允许嵌套 Yjs shared type；v1 不提供 META 写；
 - `getActiveSchema()` 返回当前已安装 schema tools 的 `lang/version/id` 与 envelope/semantic fingerprints，不暴露 module、derived 或 validator。
 
@@ -36,9 +40,11 @@ Runtime 另提供同步只读投影：
 同一 namespace 内所有受控 Y.Doc 写共享唯一严格 FIFO write sequencer；不同 namespace 可并行。v1 公开两个窄方法：
 
 ```ts
-runtime.mutateRoot(mutation)
+runtime.mutateData(mutation)
 runtime.replaceSchema({ schema: proposedEnvelope, root?: completeLogicalRoot })
 ```
+
+`mutateData` 接受路径化领域 mutation，而不是“下一个完整 Data”快照。普通业务更新定位到最窄可独立写入节点：叶子用 `set`，Record 条目/optional 字段用 `set` 或 `delete`，Y.Array 用 `array-insert` / `array-delete`，只有 plain/leaf/XML 不透明终态才整体 `set`。这样保留不相关 Yjs identity，让并发修改不同节点可合并，并使 verb/path 直接表达变更语义。底层仍允许空路径整体替换作为受控管理/迁移能力，但不作为普通消费模式。
 
 写方法调用时同步决定接纳顺序。输入引用在排队期间可以变化；任务取得槽后立即用受控 snapshotter 复制并递归冻结 plain data，之后编译、校验、构造和提交只使用该内部快照。snapshotter 只接受 primitive、finite number、null、plain object/array，拒绝 accessor、class instance、特殊对象、symbol key、循环引用及其他非 plain data。
 
@@ -123,3 +129,15 @@ Runtime 实现前先完成以下 `@nomicore/doc-runtime` 契约演进：
 4. **术语纪律注记**：本文行文「永久关闭（写能力）」在可观测 message/status 词汇中表述为「永久禁用……读取仍保留」——避免与 close 生命周期域词（closing/closed）碰撞；该纪律由 `runtime-write-fatal-message-rev1.test.ts` 锚定。
 
 5. **注册表归属**：其余公共面可观测稳定码不逐码入本文，以包内**各稳定码定义处**的 append-only 注册表为准——错误/禁用码族在 `packages/namespace-runtime/src/errors.ts`（`MUTATION_INPUT_NOT_PLAIN_DATA`、`SCHEMA_UNAVAILABLE`、`NSRT-FATAL-P0-INTERNAL`、`NSRT-FATAL-WRITE-INTERNAL`、`NSRT-FATAL-SCHEMA-WRITE-INTERNAL`、`NSRT-SCHEMA-E1`、`NSRT-META-E1/E2`、`HANDLE_NOT_USABLE`），P0 schema issue 摘要派生码在 `packages/namespace-runtime/src/p0.ts` 的 `toIssueSummary`（`SCHEMA_TEXT_INVALID`——正文「P0 与 active schema」节「unavailable 与稳定 schema issue 摘要」的实现词汇，经 status 的 schema 摘要键可观测，亦经 replaceSchema 编译失败 issues 可观测）。`SCHEMA_ENVELOPE_<code>` 动态族是 vfsl `compileSchemaEnvelope` envelope 相位 issue code 的不透明段透传（本包不校验、不注册该码域），归属上游注册表。ADR 记录决策词汇，不复制实现注册表。
+
+### issue #132 修订：复制保留事实投影与管理写（2026-08-27）
+
+本增补依据 **issue #132 / PR #145 review feedback 1 / owner `welltop-jim-wang` / 2026-08-27** 的明确授权（该反馈给出生效路径之一：「若构造期校验是预期设计：显式修订/增补 ADR 0008，说明复制保留字段是普通 open 规则的例外，并记录损坏时拒绝构造的语义」；本增补选择该**构造期复制事实窄例外**路径），登记 Runtime 构造期对 META 复制保留事实的窄读取例外、损坏拒绝语义与两个 ADR 0010 授权的管理写方法。除下列明示条款外，正文其余条款维持原文效力。
+
+1. **授权链、读取例外及闭合边界**：仅允许 Runtime 在构造、**对外发布前**同步读取 `META.replicationId` 和 `META.replicationEpoch` 两个保留字段，仅为生成 status 的复制持久事实（lineage identity/epoch）投影；不读取其他 META 键。
+2. **两态与损坏通道**：唯一允许的判定是双键均真缺席 → `{state:'disabled'}`，或双键均存在且均合规 → `{state:'enabled'; replicationId; replicationEpoch}`；恰一键存在、键存在而值为显式 `undefined`、格式不合法（id 非 32 位小写 hex / epoch 非 >=1 的安全整数）、META 载体异型均为**持久化损坏**，Runtime 构造同步拒绝（经 Registry 收编为 `NamespaceRegistryFatalError('open', 'runtime-construction', committed:false)`）；禁止伪装 disabled、禁止自动补写新 lineage。
+3. **原规则保持**：**除此之外，原第 14 行保持不变**：普通 open 不读取或验证 `SCHEMA`、`ROOT` 或任何 logical value，不编译 schema，不引入通用 META validation；外部持久化文件的其他错误修改仍不在本契约范围。
+4. **公共窄写方法**：正文「v1 公开两个窄方法」作如下限定：“基础 v1 方法为两个（`mutateData` / `replaceSchema`）；经 ADR 0010 授权的复制管理例外另加 `enableReplication()` 和 `bumpReplicationEpoch()`”。四者均进入同一严格 FIFO write sequencer，完整槽序（lifecycle/fatal gate → `DocHandle.getStatus()` writable gate → 输入校验 → 领域事实读取 → 单 Yjs transaction → 同步投影 → `await notifyDirty()`）不变。
+5. **status 字段**：在正文 status 列举（第 95 行）中补 `replication`；该域仅含持久 identity/epoch 的两态联合（`{state:'disabled'}` 或 `{state:'enabled'; replicationId; replicationEpoch}`），不含 session、网络、队列或 sync 状态。
+6. **失败与持久化真相**：`enableReplication()` / `bumpReplicationEpoch()` 的成功仍只表示 live commit + dirty notification 已登记，**不等于已落盘**（ADR 0006 dirty-not-durable）；notify failure 的 committed facts 不回滚，fatal 之后读取与 status 保留最后已提交事实；fatal 恢复只表述为 committed-state recovery，不作 durable restart 承诺。
+7. **关联权威**：复制字段格式、不可变性、epoch 上限与 hub-only 管理权以 ADR 0010 为权威；ADR 0008 仅规定 Runtime 的 sequencer 槽序、status 投影、构造期窄例外与失败通道。

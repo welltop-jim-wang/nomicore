@@ -1,11 +1,15 @@
 /**
- * @nomicore/namespace-runtime —— Runtime 构造与十键公共面（设计 §3/§4 D1/D2/D3/D6/D8'）。
+ * @nomicore/namespace-runtime —— Runtime 构造与十二键公共面（设计 §3/§4 D1/D2/D3/D6/D8'；
+ * issue #132 增第十一/十二键 enableReplication/bumpReplicationEpoch）。
  *
  * 构造序（D1，R2 修订落实 SA2 #3/#4——一切 throw 与一切 seam 读取均在入队前）：
  *  V1 形状守卫（loud TypeError；seam 字段全部读取限于构造栈内有限次——校验与捕获
  *     合并、均在入队前，入队后零读取（INV-N14，SA4 N-1 精确化措辞）；此时零副作用）；
  *  V2 状态门（getStatus() ∈ {ready, persistence-degraded} 放行；released/disposed/
  *     未知值 → NamespaceRuntimeConstructionError throw——零副作用，INV-N4）；
+ *  V2.5 复制事实预投影（issue #132：从 live META 单次纯读——share.has + getMap +
+ *     has/get 探测，损坏 → 构造 throw 零副作用；status 从 t=0 起即诚实，预启用文档
+ *     无「preparing 期短暂谎报 disabled」窗口）；
  *  V3 所有权转移（全部在入队前求值）：身份/载体一次捕获 → state 初始化 →
  *      env 一次成型（纯数据闭包）→ P0 入队（thunk = 纯调用 () => runP0(env)，
  *      零属性读取/零字面量构造/无可抛点）→ writeEnv 一次成型（D6.2）→
@@ -13,13 +17,16 @@
  *
  * 公共面（D2）：对象字面量 + 闭包（非 class 实例）——原型链是 Object.prototype，
  * handle/Y.Doc/sequencer/state 只存在于闭包；Object.freeze(runtime) 防属性注入。
- * 十键恰好（issue #89/#90/#91/#92）：owner / namespaceId / read / getSchemaEnvelope /
- * getMetadata / getActiveSchema / getStatus / mutateRoot（第八键 = 唯一公共 ROOT 写
- * 入口，D1）+ replaceSchema（第九键，issue #91，唯一公共 SCHEMA 写入口）
- * **+ close（第十键，issue #92——close 生命周期：幂等、同步进 closing、队尾 barrier；
- * 详见接口 JSDoc 与 close.ts）**。read/write 与三数据投影 getter 的接纳门（lifecycle
- * gate）住在公共方法层（D4/D5.1）：closing/closed 期 read 同步结果联合拒绝、三 getter
- * 同步 throw RUNTIME_READ_DISABLED（D-2，#93 rev2）、两种写同步入队拒绝（零入队）；
+ * 十二键恰好（issue #89/#90/#91/#92/#132）：owner / namespaceId / read /
+ * getSchema / getMetadata / getActiveSchema / getStatus / mutateData（第八键 =
+ * 唯一公共 ROOT 写入口，D1）+ replaceSchema（第九键，issue #91，唯一公共 SCHEMA
+ * 写入口）**+ close（第十键，issue #92——close 生命周期：幂等、同步进 closing、
+ * 队尾 barrier；详见接口 JSDoc 与 close.ts）+ enableReplication / bumpReplicationEpoch
+ * （第十一/十二键，issue #132——Hub 显式复制管理操作，唯一公共 META 复制保留字段
+ * 写入口；经同一 WriteSequencer，槽序 E1–E7 见 replication-write.ts）**。read/write
+ * 与三数据投影 getter 的接纳门（lifecycle gate）住在公共方法层（D4/D5.1）：
+ * closing/closed 期 read 同步结果联合拒绝、三 getter 同步 throw
+ * RUNTIME_READ_DISABLED（D-2，#93 rev2）、两种写同步入队拒绝（零入队）；
  * 槽内不设 lifecycle gate——已接纳任务无条件排空（ADR-0008）。
  * 生产工厂 createNamespaceRuntime 保留包内，index.ts 不 re-export（AC1 锁定
  * entry.createNamespaceRuntime === undefined）。
@@ -29,7 +36,7 @@
  * 瞬时观察转 false（写槽 S2 同拒）；读取面继续观察 live Y.Doc 引用（不崩、不静默换源）。
  */
 import type * as Y from 'yjs';
-import type { DocHandle } from '@nomicore/persistence';
+import type { DocHandle, ReplicationIdentityRef } from '@nomicore/persistence';
 import { readLogicalValueAtPath } from '@nomicore/doc-runtime';
 import type { ReadLogicalValueResult } from '@nomicore/doc-runtime';
 import { compileSchemaEnvelope } from '@nomicore/vfsl';
@@ -47,15 +54,27 @@ import { projectMetadata, projectSchemaEnvelope } from './projection.js';
 import { WriteSequencer } from './sequencer.js';
 import { buildStatus } from './status.js';
 import type { NamespaceRuntimeStatus } from './status.js';
-import { runCloseBarrier } from './close.js';
+import { enqueueCloseBarrier } from './close.js';
 import type { CloseEnv } from './close.js';
 import { runSchemaWriteSlot } from './schema-write.js';
 import type { ReplaceSchemaInput, ReplaceSchemaResult, SchemaWriteEnv } from './schema-write.js';
+import {
+  readReplicationFacts,
+  runBumpReplicationEpochSlot,
+  runEnableReplicationSlot,
+} from './replication-write.js';
+import type {
+  BumpReplicationEpochResult,
+  EnableReplicationInput,
+  EnableReplicationResult,
+  ReplicationWriteEnv,
+} from './replication-write.js';
 import { runRootWriteSlot } from './write.js';
 import { disabled } from './write.js';
-import type { MutateRootResult, WriteEnv } from './write.js';
+import type { MutateDataResult, WriteEnv } from './write.js';
+import { createSessionFanout, registerReplicationHost } from './replication-session.js';
+import type { RuntimeReplicationHost } from './replication-session.js';
 import { buildDiagnosticEnv, createSlotDiag, emitAttempt, emitSlot } from './diagnostic.js';
-import type { DiagnosticEnv } from './diagnostic.js';
 
 /** seam 输入（D8'）：包内确定性测试接缝；@internal 沿 doc-runtime getCompiledWith 先例。 */
 export interface NamespaceRuntimeSeamInput {
@@ -69,13 +88,9 @@ export interface NamespaceRuntimeSeamInput {
    *  persistence.saveDoc(handle)；测试经 seam 注入确定性 notifier。缺省 = 未绑定
    *  （写槽 S2 loud 拒绝——D6.4 拒绝虚假降级立法，非静默 no-op）。 */
   readonly notifyDirty?: () => Promise<void>;
-  /** [新增，issue #149] 诊断发射接缝（ADR-0011 §E emitter 接口）。缺省 = 未装配
-   *  （零 emit、零 update 订阅——既有全部测试与生产路径行为等价）。 */
+  /** Optional best-effort diagnostic emitter; requires an explicit clock. */
   readonly diagnosticEmitter?: NamespaceDiagnosticChangeEmitter;
-  /** [新增，issue #149] 诊断 observedAt 的注入 Clock（结构兼容 @nomicore/clock
-   *  Clock.now / 诊断包 emission.ts observedAtFrom）。与 diagnosticEmitter **成对**：
-   *  装配 emitter 而缺 clock ⇒ 构造期 loud 拒绝（captureSeamInput）——消除「装配日志
-   *  而静默走系统墙钟」形态（ADR-0012 §observedAt；SA2 #5 立法）。 */
+  /** Epoch-millisecond source used for diagnostic observedAt. */
   readonly clock?: () => number;
 }
 
@@ -91,7 +106,7 @@ export interface RuntimeReadDisabledResult {
 
 /** read 结果联合（#92 宽化）：ready 期透传 ReadLogicalValueResult 逐字节不变；
  *  closing/closed 期返回 RuntimeReadDisabledResult 新分支（加法扩展，ok 判别兼容）。 */
-export type NamespaceRuntimeReadResult = ReadLogicalValueResult | RuntimeReadDisabledResult;
+export type NamespaceRuntimeReadDataResult = ReadLogicalValueResult | RuntimeReadDisabledResult;
 
 /** Runtime 公共形状（D2 十键协议；键集/形状即公共契约——AC2/AC6/AC8 锚定）。 */
 export interface NamespaceRuntime {
@@ -102,13 +117,13 @@ export interface NamespaceRuntime {
   /** 透传 readLogicalValueAtPath(doc, path) 的同步结果联合（D3 零包装，ready 期）；
    *  lifecycle≠ready 期返回 RuntimeReadDisabledResult（同步、非抛、非 Promise——
    *  D4 lifecycle gate 即时生效，不等待已接纳任务排空）。 */
-  readonly read: (path: readonly (string | number)[]) => NamespaceRuntimeReadResult;
+  readonly readData: (path: readonly (string | number)[]) => NamespaceRuntimeReadDataResult;
   /** SCHEMA 四标准键投影（D4；载体缺席 → null，载体异型 → loud throw NSRT-SCHEMA-E2；
    *  非 primitive 值 → loud throw）。
    *  lifecycle≠ready（closing/closed）期同步 throw RuntimeReadDisabledError（code
    *  RUNTIME_READ_DISABLED，包内类）——close 停接纳覆盖全部公共数据投影；getStatus
    *  不受影响（全生命周期观测面）。 */
-  readonly getSchemaEnvelope: () => SchemaEnvelope | null;
+  readonly getSchema: () => SchemaEnvelope | null;
   /** META 全键深拷贝（D5；载体异常/值域违规 → loud throw）。
    *  lifecycle≠ready（closing/closed）期同步 throw RuntimeReadDisabledError（code
    *  RUNTIME_READ_DISABLED，包内类）——close 停接纳覆盖全部公共数据投影；getStatus
@@ -126,13 +141,29 @@ export interface NamespaceRuntime {
    *  internal fatal 经 Promise rejection（RuntimeWriteFatalError）。
    *  #92 接纳门（D5.1）：lifecycle≠ready 时同步不入队、经返回 Promise 即时 settle
    *  领域化联合（RUNTIME_WRITE_DISABLED）——零输入访问、零 doc 副作用。 */
-  readonly mutateRoot: (mutation: unknown) => Promise<MutateRootResult>;
-  /** 唯一公共 SCHEMA 写入口（D1，issue #91）：与 mutateRoot 共享同一严格 FIFO write
+  readonly mutateData: (mutation: unknown) => Promise<MutateDataResult>;
+  /** 唯一公共 SCHEMA 写入口（D1，issue #91）：与 mutateData 共享同一严格 FIFO write
    *  sequencer（同步接纳定序）；不依赖当前 schema 可编译（P0 unavailable 照常入槽，
    *  成功后恢复 ROOT write）；不同步 throw/结算——一切拒绝经返回的 Promise 结算；
    *  internal fatal 经 Promise rejection（RuntimeWriteFatalError）。
-   *  #92 接纳门（D5.1）：同 mutateRoot——lifecycle≠ready 时零入队即时 ok:false。 */
+   *  #92 接纳门（D5.1）：同 mutateData——lifecycle≠ready 时零入队即时 ok:false。 */
   readonly replaceSchema: (input: ReplaceSchemaInput) => Promise<ReplaceSchemaResult>;
+  /** 第十一/十二键（issue #132）：Hub 显式复制管理操作（ADR 0010 冻结名）——
+   *  META 复制保留字段（replicationId/replicationEpoch）的唯一公共写入口。
+   *  enableReplication 经同一 WriteSequencer 原子安装随机 128-bit 复制谱系 + epoch 1
+   *  （单槽单事务，E1–E7 镜像 ROOT 写槽）；已启用命名空间 → 幂等 ok:true（零写入、
+   *  零 notifyDirty、身份/epoch 不变——调用方传入的 replicationId 被弃用）；
+   *  拒绝（ok:false, issues）经结果联合结算（REPLICATION_INPUT_INVALID /
+   *  REPLICATION_META_ABSENT / RUNTIME_WRITE_DISABLED 系——内外部格式门 check
+   *  提交前零写入）；写管线 internal fatal 经 RuntimeWriteFatalError rejection
+   *  （committed 事实诚实）。
+   *  #92 接纳门（D5.1）：同 mutateData——lifecycle≠ready 时零入队即时 ok:false。 */
+  readonly enableReplication: (input: EnableReplicationInput) => Promise<EnableReplicationResult>;
+  /** Hub 显式提升权威代际（身份不变——replicationId 永不被改写，INV-R1）。
+   *  overflow（epoch = MAX_SAFE_INTEGER）→ ok:false 结果面拒绝、绝不回绕（判据先于
+   *  任何 +1）；未启用 → REPLICATION_NOT_ENABLED；fatal/degraded/close →
+   *  RUNTIME_WRITE_DISABLED 零写入。 */
+  readonly bumpReplicationEpoch: () => Promise<BumpReplicationEpochResult>;
   /** 第十键（#92）：close 生命周期入口（ADR-0008「close() 幂等」）。
    *  幂等：所有调用（并发/顺序/已结算后）返回**同一 Promise 实例**（INV-C2）——
    *  barrier 恰入队一次、release 恰一次。
@@ -150,6 +181,120 @@ export interface NamespaceRuntime {
    *  settle）——close 与该写双双永挂起，属「不取消、不设内部 timeout」的契约行为，
    *  调用方不得如此使用。 */
   readonly close: () => Promise<void>;
+}
+
+// ═══════════════════════ R2：Registry 受控 reset fence（内部 capability；包内类型） ═══════════════════════
+
+/**
+ * 已核对复制身份的 checked 表达（设计 §3.2；结构上与 persistence 测
+ * CheckedReplicationIdentity 逐字段相同——Registry 传入的读取闭包按结构赋值）。
+ * `{ok:false}` = 合法读取但无匹配 enabled 事实（不带任何字段值，零泄露）。
+ */
+type CheckedFenceIdentity =
+  | Readonly<{ ok: true; value: ReplicationIdentityRef }>
+  | Readonly<{ ok: false }>;
+
+/**
+ * fence 的 persisted 读取闭包返回面（结构上与 persistence 测
+ * PersistedIdentityProbeResult 相同；reject 面由 Registry 的 typed 错误分类学
+ * 负责——fence 任务内 `await readPersisted()` 原样传播）。
+ */
+type ResetFencePersistedProbe =
+  | Readonly<{ kind: 'found'; identity: CheckedFenceIdentity }>
+  | Readonly<{ kind: 'missing' }>;
+
+/**
+ * beginResetFence 结果（设计 §3.4/§3.5）：
+ * - `mismatch`：live/persisted 双源任一不合法或与 expected 不等——lifecycle 未动、
+ *   零破坏（调用方返回领域缺失拒绝）；
+ * - `missing`：committed snapshot 缺席（active entry 场景 = 持久化完整性缺陷，调用方
+ *   loud fatal，不得把缺失当匹配）；
+ * - `armed`：唯一成功线性化点——同一 FIFO 槽内已同步进入 closing（此后写接纳被
+ *   lifecycle gate 拒绝）。`startCloseAfterFence()` 是 **lazy** close barrier 启动器：
+ *   只能在 fence 槽结算后调用，绝不等待 fence 任务自身（无自等待证明，设计 §3.5）。
+ */
+type ResetFenceResult =
+  | Readonly<{ kind: 'mismatch' }>
+  | Readonly<{ kind: 'missing' }>
+  | Readonly<{ kind: 'armed'; startCloseAfterFence: () => Promise<void> }>;
+
+/** fence 槽内返回子集（startCloseAfterFence 只由槽后 continuation 产出——槽内
+ *  绝不创建/await close barrier；类型面同样禁止把 armed 裸结果当完整结果消费）。 */
+type ResetFenceTaskResult =
+  | Readonly<{ kind: 'mismatch' }>
+  | Readonly<{ kind: 'missing' }>
+  | Readonly<{ kind: 'armed' }>;
+
+/** 结构等值判别（设计 §3.2；actual.ok===false → 恒 false，绝不把未知当匹配）。 */
+function fenceIdentityEquals(
+  actual: CheckedFenceIdentity,
+  expected: ReplicationIdentityRef,
+): boolean {
+  return actual.ok
+    && actual.value.replicationId === expected.replicationId
+    && actual.value.replicationEpoch === expected.replicationEpoch;
+}
+
+/**
+ * Registry 受控 reset fence 的 Runtime 侧（设计 §3.4/§3.5）：唯一 write sequencer
+ * 槽内先完成双源核验，再同步进入 closing；槽后由 lazy continuation 创建 close
+ * barrier。live 身份读取自 state.replication（与 getStatus 同一真相源；构造期
+ * V2.5 预投影 + enable/bump 槽 E5.5 整替——INV-R5）。
+ */
+function createBeginResetFence(
+  sequencer: WriteSequencer,
+  state: RuntimeState,
+  closeAfterFence: () => Promise<void>,
+): (
+  expected: ReplicationIdentityRef,
+  readPersisted: () => Promise<ResetFencePersistedProbe>,
+) => Promise<ResetFenceResult> {
+  return function beginResetFence(
+    expected: ReplicationIdentityRef,
+    readPersisted: () => Promise<ResetFencePersistedProbe>,
+  ): Promise<ResetFenceResult> {
+    // 防御性接纳门（内部 capability 契约违约通道，稳定 message 零身份回显）：
+    // Registry 只在 active entry 上调用本能力；lifecycle 已关闭时拒绝启动。
+    if (state.lifecycle !== 'ready') {
+      return Promise.reject(
+        new Error('beginResetFence: Runtime lifecycle 非 ready，拒绝启动 reset fence'),
+      );
+    }
+    const fenceTask = sequencer.enqueue(async (): Promise<ResetFenceTaskResult> => {
+      // ① 先取 persisted（外部 I/O）——此时 lifecycle 仍 ready：probe 失败/mismatch
+      //    均发生在零破坏阶段（设计 §3.5 (2)）
+      const persisted = await readPersisted();
+      if (persisted.kind === 'missing') return { kind: 'missing' } as const;
+      // ② live 投影：enable/bump 等此前已接纳的 mutation 必先于本 task 结算并参与
+      //    核验（同一 FIFO——「此前已接纳任务无条件排空」）；disabled 态 = {ok:false}
+      const live = state.replication;
+      const liveChecked: CheckedFenceIdentity = live.state === 'enabled'
+        ? { ok: true, value: { replicationId: live.replicationId, replicationEpoch: live.replicationEpoch } }
+        : { ok: false };
+      // ③ 严格直读：live 与 persisted 都必须与 expected 相等（任一不等/disabled → mismatch）
+      if (
+        !fenceIdentityEquals(liveChecked, expected)
+        || !fenceIdentityEquals(persisted.identity, expected)
+      ) {
+        return { kind: 'mismatch' } as const;
+      }
+      // ④ 线性化点：同步进入 closing 后本 task 返回——绝不在此创建或 await close
+      //    barrier（自等待禁律；设计 §3.5 (3)）
+      state.lifecycle = 'closing';
+      return { kind: 'armed' } as const;
+    });
+    // ⑤ 槽后 continuation：fence task 已结算、不再是 sequencer 活跃任务——唯有此刻
+    //    才允许懒创建 close barrier（predecessor tail 必然不含仍在活动的 fence 任务，
+    //    依赖图无环；设计 §3.5 (4) + 无自等待证明）
+    return fenceTask.then((result) => {
+      if (result.kind !== 'armed') return result;
+      let started: Promise<void> | undefined;
+      return {
+        kind: 'armed' as const,
+        startCloseAfterFence: () => (started ??= closeAfterFence()),
+      };
+    });
+  };
 }
 
 /**
@@ -182,9 +327,21 @@ export function createNamespaceRuntimeWithSeam(input: NamespaceRuntimeSeamInput)
   //   seam 提供即注入，未提供即真实编译步）
   const compile = captured.compile ?? compileSchemaEnvelope;
 
+  // V2.5 复制事实预投影（issue #132；纯读：share.has + getMap + has/get 探测——
+  //   R2 修订后含键存在性判别。ReplicationMetaCorruptError → 构造 throw = 零副作用
+  //   （INV-N4）；status 从 t=0 起即诚实（预启用文档不存在「preparing 期短暂谎报
+  //   disabled」窗口——SA6 类型锚锁死两态联合，无 'unknown' 第三态可用，唯一诚实解
+  //   是构造期就位而非 P0 期补读；P0 的「只读取 SCHEMA 标准四键」职责保持不变））。
+  const replicationFacts = readReplicationFacts(doc);
+
   // 运行态（闭包私有；唯一可变源——P0 终态迁移单点写入，读取方法零写；
-  //   #92：lifecycle 写入点仅 close() 同步段与 runCloseBarrier 两处——INV-C1）
-  const state: RuntimeState = { schemaState: 'preparing', lifecycle: 'ready' };
+  //   #92：lifecycle 写入点仅 close() 同步段与 runCloseBarrier 两处——INV-C1；
+  //   #132：replication 写入点仅构造栈（上方预投影）与复制槽 E5.5 两处——INV-R5）
+  const state: RuntimeState = {
+    schemaState: 'preparing',
+    lifecycle: 'ready',
+    replication: replicationFacts,
+  };
 
   // V3c env 一次成型（INV-N14：纯数据闭包——thunk 内零求值面、无可抛点）
   const env: P0Env = { doc, state, p0Gate: captured.p0Gate, compile };
@@ -199,8 +356,18 @@ export function createNamespaceRuntimeWithSeam(input: NamespaceRuntimeSeamInput)
   // V3c''' closeEnv 一次成型（D2/D3：barrier 纯数据闭包——release 槽体零读 seam 输入）
   const closeEnv: CloseEnv = { handle, state };
 
-  // V3c'''' diagEnv 一次成型（issue #149：诊断环境纯数据闭包——emitter/clock 成对性
-  //   已由 captureSeamInput 校验前置保证；未装配 = 零 emit 零订阅，行为等价）
+  // V3c'''' Fanout + replicationWriteEnv 一次成型（#132 + issue #134：fanout 先于
+  //   replicationWriteEnv——bump 槽 E5.5 fenceStale 经 env.fanout 消费同一局部量
+  //  （INV-N14 纪律延续：同批捕获局部量、零新增注入点）；fanout 挂接无条件执行
+  //  （无 session 时空集合快路径）；每 Runtime 恰一次 doc.on('update') 监听——INV-S2）
+  const fanout = createSessionFanout(doc);
+  const replicationWriteEnv: ReplicationWriteEnv = {
+    doc,
+    handle,
+    state,
+    notifyDirty: captured.notifyDirty,
+    fanout,
+  };
   const diagEnv = buildDiagnosticEnv(captured.diagnosticEmitter, captured.clock);
 
   // V3d sequencer + P0 入队（INV-N1：return 前 P0 已是队首 pending 节点；微任务起步；
@@ -212,12 +379,46 @@ export function createNamespaceRuntimeWithSeam(input: NamespaceRuntimeSeamInput)
   // V3d' closePromise 幂等缓存（INV-C2 的载体——并发/已结算后调用返回同一实例）
   let closePromise: Promise<void> | undefined;
 
-  // V3e 公共面（十键闭包对象；owner/namespaceId 由 V3a 捕获局部量构造——不再解引用成员）
+  // V3d'' replication host 一次成型（issue #134 §4.1：仅依赖已捕获局部量与 sequencer
+  //   ——INV-N14 纪律延续；fanout 已在 V3c'''' 创建——同一局部量）
+  const replicationHost: RuntimeReplicationHost = {
+    doc,
+    handle,
+    state,
+    sequencer,
+    notifyDirty: captured.notifyDirty,
+    fanout,
+  };
+
+  // V3d''' close barrier 懒创建（R2，设计 §3.5 (4)）：公共 close() 首调用与 reset
+  // fence 的 startCloseAfterFence() 共用同一幂等入口——barrier 恰入队一次，
+  // 二者返回同一 Promise（普通 close 幂等 + fence-armed 后公共 close 不建第二
+  // barrier 的双重保证，SA2 R3 红线测试 2 锚）。
+  const lazyCloseBarrier = (): Promise<void> => {
+    if (closePromise !== undefined) return closePromise;
+    closePromise = enqueueCloseBarrier(sequencer, closeEnv);
+    return closePromise;
+  };
+
+  // V3d'''' reset/普通 close 共用关闭 admission：终止现存 ReplicationSession 后再创建
+  // 唯一 close barrier。reset fence 已在槽内同步 arm closing，因此这里只补齐普通 close
+  // 同款 session 终止语义；terminateAll 幂等，保证两条入口汇合时零重复副作用。
+  const closeAfterFence = (): Promise<void> => {
+    fanout.terminateAll('runtime-close');
+    return lazyCloseBarrier();
+  };
+
+  // V3d''''' 受控 reset fence（设计 §3.4/§3.5）：唯一写 sequencer 槽内双源核验 + 同步
+  // arm closing；槽后懒启动共享关闭 admission。仅以 non-enumerable 键挂到 runtime 对象
+  // （Object.keys 十二键审计不漂移——runtime-acceptance-exports-audit /
+  // runtime-registry-internal-seam 既有锚零回归）。
+  const beginResetFence = createBeginResetFence(sequencer, state, closeAfterFence);
+  // V3e 公共面（十二键闭包对象；owner/namespaceId 由 V3a 捕获局部量构造——不再解引用成员）
   const owner = Object.freeze({ userId });
   const runtime: NamespaceRuntime = {
     owner,
     namespaceId: docId,
-    read: (path) => {
+    readData: (path) => {
       // D4 lifecycle gate 在透传**之前**：closing/closed 期同步结果联合拒绝（非抛、
       // 非 Promise、零触碰 live Y.Doc——RED 锚 case 2/4 三重锁）；ready 期透传分支
       // 逐字节不变（既有 read 锚零回归）
@@ -226,16 +427,16 @@ export function createNamespaceRuntimeWithSeam(input: NamespaceRuntimeSeamInput)
         ? readLogicalValueAtPath(doc, path)
         : readDisabled(lifecycle, path);
     },
-    getSchemaEnvelope: () => {
+    getSchema: () => {
       // D2（#93 rev2，SA8 裁决 B）：数据投影 getter 停接纳——key 仅 lifecycle（裁决 H：
       // 绝不 keyed on fatal/schemaState）；拒绝先于触碰 live Y.Doc（INV 同 read() 分支）
       if (state.lifecycle !== 'ready') {
-        throw new RuntimeReadDisabledError('getSchemaEnvelope', state.lifecycle);
+        throw new RuntimeReadDisabledError('getSchema', state.lifecycle);
       }
       return projectSchemaEnvelope(doc, 'public'); // D4（INV-N13 守卫）
     },
     getMetadata: () => {
-      // D2（#93 rev2，SA8 裁决 B）：同 getSchemaEnvelope——key 仅 lifecycle；拒绝先于
+      // D2（#93 rev2，SA8 裁决 B）：同 getSchema——key 仅 lifecycle；拒绝先于
       // 深拷贝递归（零触碰 live Y.Doc——F-3 原始 RangeError 不外泄的证明面）
       if (state.lifecycle !== 'ready') {
         throw new RuntimeReadDisabledError('getMetadata', state.lifecycle);
@@ -243,78 +444,72 @@ export function createNamespaceRuntimeWithSeam(input: NamespaceRuntimeSeamInput)
       return projectMetadata(doc); // D5（深拷贝 / 载体与值域双 loud）
     },
     getActiveSchema: () => {
-      // D2（#93 rev2，SA8 裁决 B）：同 getSchemaEnvelope——key 仅 lifecycle；不触 doc
+      // D2（#93 rev2，SA8 裁决 B）：同 getSchema——key 仅 lifecycle；不触 doc
       if (state.lifecycle !== 'ready') {
         throw new RuntimeReadDisabledError('getActiveSchema', state.lifecycle);
       }
       return state.activeInfo ?? null; // D8（preparing/unavailable/fatal 期 null 照常）
     },
     getStatus: () => buildStatus(handle, state), // D9 → D6（handle 仅用于 ready 期 writableNow 瞬时观察）
-    mutateRoot: (mutation: unknown): Promise<MutateRootResult> => {
+    mutateData: (mutation: unknown): Promise<MutateDataResult> => {
       // D5.1 接纳门：lifecycle≠ready 时同步零入队拒绝（INV-C3）——经返回 Promise
       // 即时 settle 领域化联合（不 throw、不读 mutation——Proxy 零触发、零 doc 副作用）
       if (state.lifecycle !== 'ready') {
         const result = disabled(lifecycleWriteRefusal(state.lifecycle));
-        // [issue #149] acceptance 拒绝（零入队路径无 slot）：公共入口即记录点
-        // （ADR-0011 §F）；issues 与业务返回同源透传（同一 disabled 数组引用，§9.3）
         if (result.ok === false) {
           emitAttempt(diagEnv, {
-            operation: 'root-mutation',
-            stage: 'acceptance',
-            result: { kind: 'rejected' },
-            code: RUNTIME_WRITE_DISABLED_CODE,
-            input: { status: 'not-accessed' },
+            operation: 'root-mutation', stage: 'acceptance', result: { kind: 'rejected' },
+            code: RUNTIME_WRITE_DISABLED_CODE, input: { status: 'not-accessed' },
             issues: result.issues as DiagnosticIssue[],
           });
         }
         return Promise.resolve(result);
       }
-      // D1：同步接纳定序（enqueue 同步拼尾）+ 槽完成信号；thunk 是纯调用——
-      // mutation 引用仅被捕获不被读取（Proxy 零触发），无可抛点（INV-W1/W14）
       const diag = diagEnv.emitter !== undefined ? createSlotDiag('root-mutation') : undefined;
       const settled = sequencer.enqueue(() => runRootWriteSlot(writeEnv, mutation, diag));
-      // [issue #149] emitSlot 挂点：作为 enqueue 返回 promise 的**附加反应**（非包装——
-      // 返回面仍是 settled 本体：基线 promise 身份与结算时点逐字节不变，无「派生 promise/
-      // 多一跳微任务」差异——SA2 #6 登记差异的最优解）。执行序（设计 §7.1 证明）：settled
-      // settle 时依注册序 [内部 noop, emitSlot]；noop 使 tail settle 并排程下一任务 thunk
-      // ——emitSlot 先于下一任务（emit 顺序 ≡ 槽完成顺序 ≡ FIFO；amendment C：slot 已释放
-      // 后的微任务）。结算事实入参——缺省组装仅在 r.ok === true 时生效（§7.3）。
-      // emitSlot 自身吞没一切（emitAttempt）；onErr 不重抛——caller 经 settled 观察原
-      // rejection，本反应链恒绿（无可抛点、无 unhandled rejection）。
       void settled.then(
-        (r) => { emitSlot(diagEnv, diag, { kind: 'fulfilled', value: r }); },
-        (e) => { emitSlot(diagEnv, diag, { kind: 'rejected' }); },
+        (value) => { emitSlot(diagEnv, diag, { kind: 'fulfilled', value }); },
+        () => { emitSlot(diagEnv, diag, { kind: 'rejected' }); },
       );
       return settled;
     },
     replaceSchema: (input: ReplaceSchemaInput): Promise<ReplaceSchemaResult> => {
-      // D5.1 接纳门：同 mutateRoot——lifecycle≠ready 时零入队即时 ok:false
+      // D5.1 接纳门：同 mutateData——lifecycle≠ready 时零入队即时 ok:false
       if (state.lifecycle !== 'ready') {
         const result = disabled(lifecycleWriteRefusal(state.lifecycle));
-        // [issue #149] acceptance 拒绝：同 mutateRoot——公共入口即记录点（§9.2 S1′）
         if (result.ok === false) {
           emitAttempt(diagEnv, {
-            operation: 'schema-replacement',
-            stage: 'acceptance',
-            result: { kind: 'rejected' },
-            code: RUNTIME_WRITE_DISABLED_CODE,
-            input: { status: 'not-accessed' },
+            operation: 'schema-replacement', stage: 'acceptance', result: { kind: 'rejected' },
+            code: RUNTIME_WRITE_DISABLED_CODE, input: { status: 'not-accessed' },
             issues: result.issues as DiagnosticIssue[],
           });
         }
         return Promise.resolve(result);
       }
-      // D1（issue #91）：与 mutateRoot 同一 sequencer 实例——同步接纳定序、占槽互斥、
-      // S6 同槽 await notifyDirty 构成屏障（双向 FIFO 互通）；thunk 是纯调用——
-      // input 引用仅被捕获不被读取（Proxy 零触发），无可抛点
       const diag = diagEnv.emitter !== undefined ? createSlotDiag('schema-replacement') : undefined;
       const settled = sequencer.enqueue(() => runSchemaWriteSlot(schemaWriteEnv, input, diag));
-      // [issue #149] 同 mutateRoot 的 emitSlot 附加反应挂点（§7.1/§7.3；非包装——见上）
       void settled.then(
-        (r) => { emitSlot(diagEnv, diag, { kind: 'fulfilled', value: r }); },
-        (e) => { emitSlot(diagEnv, diag, { kind: 'rejected' }); },
+        (value) => { emitSlot(diagEnv, diag, { kind: 'fulfilled', value }); },
+        () => { emitSlot(diagEnv, diag, { kind: 'rejected' }); },
       );
       return settled;
+    },
+    enableReplication: (input: EnableReplicationInput): Promise<EnableReplicationResult> => {
+      // D5.1 接纳门（#132）：同 mutateData——lifecycle≠ready 时零入队即时 ok:false
+      if (state.lifecycle !== 'ready') {
+        return Promise.resolve(disabled(lifecycleWriteRefusal(state.lifecycle)));
+      }
+      // D1（#132）：与 mutateData/replaceSchema 同一 sequencer 实例——同步接纳定序、
+      // 占槽互斥（FIFO 互通）；thunk 是纯调用——input 引用仅被捕获不被读取
+      //（Proxy 零触发），无可抛点；槽 E3 单读捕获定序在队列内
+      return sequencer.enqueue(() => runEnableReplicationSlot(replicationWriteEnv, input));
+    },
+    bumpReplicationEpoch: (): Promise<BumpReplicationEpochResult> => {
+      // D5.1 接纳门（#132）：同 mutateData——lifecycle≠ready 时零入队即时 ok:false
+      if (state.lifecycle !== 'ready') {
+        return Promise.resolve(disabled(lifecycleWriteRefusal(state.lifecycle)));
+      }
+      return sequencer.enqueue(() => runBumpReplicationEpochSlot(replicationWriteEnv));
     },
     close: (): Promise<void> => {
       // D2：幂等（INV-C2）——已赋值（含已结算 reject）即返回同一实例，release 恰一次
@@ -323,13 +518,27 @@ export function createNamespaceRuntimeWithSeam(input: NamespaceRuntimeSeamInput)
       // INV-C1）；写入点在 close() 同步段，与接纳门 check-then-enqueue 无交错（JS
       // run-to-completion，§12 #6）
       state.lifecycle = 'closing';
-      // 队尾 barrier（INV-C3/C4）：enqueue 经 .then 微任务排程（sequencer.ts:33-37），
-      // thunk 绝不在 close() 调用栈内同步执行；thunk 是纯调用（零读取/零构造/无可抛点）
-      closePromise = sequencer.enqueue(() => runCloseBarrier(closeEnv));
+      // R2-2（issue #134 round 2，§3.1）：共享关闭 admission 同步终止/detach 全部
+      // 现存 sessions，再创建队尾 barrier；reset fence 也走同一入口，避免归档/bootstrap
+      // 后旧 session 仍 attached。conflicted 终态不降级；已接纳 apply 槽照常排空。
+      closePromise = closeAfterFence();
       return closePromise;
     },
   };
-  return Object.freeze(runtime);
+  // R2：受控 reset fence 以 non-enumerable 键附加（不进入公共十二键/声明图；
+  // freeze 前定义——Object.freeze 后属性不可增删的既定纪律保持）。
+  Object.defineProperty(runtime, 'beginResetFence', {
+    value: beginResetFence,
+    enumerable: false,
+    writable: false,
+    configurable: false,
+  });
+  const frozen = Object.freeze(runtime);
+  // V3f replication host 登记（SA2 R1 #15：runtime 对象构造后、返回之前——WeakMap 以
+  // 对象引用为键；不触碰 runtime 对象本身、零可枚举属性污染——Object.keys(runtime)
+  // 仍恰十二键，runtime-registry-internal-seam.test.ts 键集锁零改动即绿）
+  registerReplicationHost(frozen, replicationHost);
+  return frozen;
 }
 
 /**
@@ -445,38 +654,25 @@ function captureSeamInput(input: unknown): {
     }
     notifyDirty = rec.notifyDirty as () => Promise<void>;
   }
-  // [issue #149] 诊断发射器捕获（沿 p0Gate/compile/notifyDirty 同款三行式；读取均限
-  // 构造栈内、入队前——INV-N14）。校验对象是 doc 局部量（handle.doc，Y.Doc 事件面）
-  // 而非 handle——DocHandle 契约只有 owner/docId/doc/getStatus/release 五键，无 on/off
-  // （SA2 #1 修订：照抄 h.on/h.off 会炸掉全部合法装配）。
   let diagnosticEmitter: NamespaceDiagnosticChangeEmitter | undefined;
   if (rec.diagnosticEmitter !== undefined) {
-    const e = rec.diagnosticEmitter;
-    if (typeof e !== 'object' || e === null || typeof (e as { emit?: unknown }).emit !== 'function') {
-      throw new TypeError('input.diagnosticEmitter 若提供必须是含 emit 方法的对象（NamespaceDiagnosticChangeEmitter 契约）');
+    const emitter = rec.diagnosticEmitter;
+    if (typeof emitter !== 'object' || emitter === null || typeof (emitter as { emit?: unknown }).emit !== 'function') {
+      throw new TypeError('input.diagnosticEmitter 若提供必须是含 emit 方法的对象');
     }
-    diagnosticEmitter = e as NamespaceDiagnosticChangeEmitter;
-    // loud assert，非静默降级：装配诊断发射即要求 doc 具备事务事件订阅面——缺 on/off
-    // 属上游契约破坏，构造期 loud 拒绝（沿「残缺 handle 校验前置于 enqueue」先例，
-    // INV-N4），绝不静默吞掉后把「应有 update 的记录」降级成 noop/omitted。
-    const d = doc as unknown as Record<string, unknown>;
+    const d = doc as Record<string, unknown>;
     if (typeof d.on !== 'function' || typeof d.off !== 'function') {
-      throw new TypeError('装配 diagnosticEmitter 时 handle.doc（Y.Doc）必须具备 on/off 方法（yjs 事务事件契约——owned bytes 捕获依赖）');
+      throw new TypeError('装配 diagnosticEmitter 时 handle.doc 必须具备 on/off 方法');
     }
+    diagnosticEmitter = emitter as NamespaceDiagnosticChangeEmitter;
   }
-  // [issue #149] 注入 Clock 捕获（observedAt 唯一来源——ADR-0012 §observedAt）
   let clock: (() => number) | undefined;
   if (rec.clock !== undefined) {
-    if (typeof rec.clock !== 'function') {
-      throw new TypeError('input.clock 若提供必须是 function（() => number，epoch ms）');
-    }
+    if (typeof rec.clock !== 'function') throw new TypeError('input.clock 若提供必须是 function');
     clock = rec.clock as () => number;
   }
-  // [issue #149] 成对 loud 校验（SA2 #5）：装配 emitter 而缺 clock ⇒ 拒绝——无墙钟缺省，
-  // observedAt 不接受静默系统墙钟；与 SA8 冲突点 #4 移交 Registry 票的「生产装配必须
-  // 显式注入 Clock」呼应
   if (diagnosticEmitter !== undefined && clock === undefined) {
-    throw new TypeError('装配 diagnosticEmitter 时必须同时注入 clock（() => number）——observedAt 不接受静默系统墙钟');
+    throw new TypeError('装配 diagnosticEmitter 时必须同时注入 clock');
   }
   return {
     handle: handle as DocHandle,

@@ -34,6 +34,7 @@ import {
 import type { NamespaceLease } from '@nomicore/namespace-registry';
 import { createRegistryTestScheduler } from '@nomicore/namespace-registry/testing';
 import { Context } from '@deepseek-ai/cordis';
+import { provideInstance } from '@nomicore/instance';
 import TimerService from '@deepseek-ai/cordis-plugin-timer';
 
 // FiberState（cordis fiber.d.ts const enum，无运行时对象——数值常量断言）。
@@ -151,10 +152,12 @@ function stubPersistencePlugin(stub: Sa7StubPersistence): { name: string; apply(
   };
 }
 
-const CREATE_PAYLOAD = (namespaceId: string) => ({
+/** phase-5 切片 1（ADR 0010）：create 恒三键——namespaceId 由 plugin 桥接的受控
+ * 随机源生成（ns-+32hex），调用方不再提供；schema id 与 namespaceId 解耦（包内
+ * 私域 cosmetic 标识，非 entry key）。 */
+const CREATE_PAYLOAD = () => ({
   owner: { userId: 'u-sa7' },
-  namespaceId,
-  schema: { lang: 'vfsl', version: 1, id: namespaceId, text: 'type ROOT = { n: number; };\n' },
+  schema: { lang: 'vfsl', version: 1, id: 'ns-sa7', text: 'type ROOT = { n: number; };\n' },
   root: { n: 42 },
 });
 
@@ -164,6 +167,7 @@ describe('SA7 Cordis 组合动态（攻击面 4）', () => {
     try {
       const scheduler = createRegistryTestScheduler();
       const ctx = new Context();
+      provideInstance(ctx, Object.freeze({ instanceId: 'test-host', role: 'hub' }));
       createManualClockPlugin(createManualClock(1_700_000_123_456)).apply(ctx);
       createFakeTimerPlugin(scheduler).apply(ctx);
       const stub = new Sa7StubPersistence();
@@ -176,8 +180,8 @@ describe('SA7 Cordis 组合动态（攻击面 4）', () => {
       expect(registry.getStatus()).toEqual({ state: 'running' });
 
       // 工作：create → read → release（idle 武装经 ctx.timeout 桥）。
-      const lease = okLease(await registry.create(CREATE_PAYLOAD('ns-p1')));
-      expect(lease.read(['n'])).toEqual({ ok: true, value: 42 });
+      const lease = okLease(await registry.create(CREATE_PAYLOAD()));
+      expect(lease.readData(['n'])).toEqual({ ok: true, value: 42 });
       expect(stub.createCalls).toBe(1);
       await lease.release();
       expect(scheduler.pending()).toBe(1); // idle timer 武装
@@ -208,6 +212,7 @@ describe('SA7 Cordis 组合动态（攻击面 4）', () => {
     try {
       const scheduler = createRegistryTestScheduler();
       const ctx = new Context();
+      provideInstance(ctx, Object.freeze({ instanceId: 'test-host', role: 'hub' }));
       createManualClockPlugin(createManualClock(0)).apply(ctx);
       createFakeTimerPlugin(scheduler).apply(ctx);
       // rev1 问题 3：真实 MemoryPersistence（adapter dispose 可观测）+ registry plugin。
@@ -244,10 +249,10 @@ describe('SA7 Cordis 组合动态（攻击面 4）', () => {
         return originalSaveDoc(handle);
       };
 
-      const created = await held.create(CREATE_PAYLOAD('ns-p2'));
+      const created = await held.create(CREATE_PAYLOAD());
       expect(created.ok).toBe(true);
       const lease = okLease(created);
-      const writePromise = lease.mutateRoot({ op: 'set', path: ['n'], value: 43 });
+      const writePromise = lease.mutateData({ op: 'set', path: ['n'], value: 43 });
       await flushMicrotasks(30);
       expect(gated).toBe(true); // 写排空窗口挂起中
 
@@ -315,6 +320,7 @@ describe('SA7 Cordis 组合动态（攻击面 4）', () => {
     try {
       const scheduler = createRegistryTestScheduler();
       const ctx = new Context();
+      provideInstance(ctx, Object.freeze({ instanceId: 'test-host', role: 'hub' }));
       createManualClockPlugin(createManualClock(0)).apply(ctx);
       createFakeTimerPlugin(scheduler).apply(ctx);
       const stub1 = new Sa7StubPersistence();
@@ -351,7 +357,7 @@ describe('SA7 Cordis 组合动态（攻击面 4）', () => {
       // 新实例可用（经新 persistence 服务 open）。
       const newLease = okLease(await newRegistry.open({ userId: 'u-sa7' }, 'ns-p3'));
       expect(stub2.loadCalls).toBe(1);
-      expect(newLease.read(['n'])).toEqual({ ok: true, value: 42 });
+      expect(newLease.readData(['n'])).toEqual({ ok: true, value: 42 });
       await newLease.release();
       await oldLease.release(); // 旧 lease 随旧实例回收（幂等、不炸）
       await ctx.fiber.dispose();
@@ -369,6 +375,7 @@ describe('SA7 Cordis 组合动态（攻击面 4）', () => {
     const probe = collectUnhandledRejections();
     try {
       const ctx = new Context();
+      provideInstance(ctx, Object.freeze({ instanceId: 'test-host', role: 'hub' }));
       createManualClockPlugin(createManualClock(0)).apply(ctx);
       new TimerService(ctx); // 真实 timer 服务（native setTimeout/clearTimeout）
       const stub = new Sa7StubPersistence();

@@ -47,13 +47,15 @@
  */
 import type { Context } from '@deepseek-ai/cordis';
 import type {} from '@deepseek-ai/cordis-plugin-timer';
+import { randomBytes as nodeRandomBytesSource } from 'node:crypto';
 import { requireClock } from '@nomicore/clock';
+import { requireNomicoreInstance } from '@nomicore/instance';
 import { requireNomicorePersistence } from '@nomicore/persistence';
 import {
   createNamespaceRegistry,
   resolveIdleTimeoutMs,
 } from './registry.js';
-import type { NamespaceRegistry, RegistryTimeoutScheduler } from './types.js';
+import type { NamespaceRegistry, RegistryRandomBytes, RegistryTimeoutScheduler } from './types.js';
 import { NAMESPACE_REGISTRY_PLUGIN_CONFIG_MESSAGE } from './types.js';
 
 // R1/M3 单点化：DEFAULT_IDLE_TIMEOUT_MS 唯一运行时定义点在 registry.ts（与
@@ -63,6 +65,16 @@ export { DEFAULT_IDLE_TIMEOUT_MS } from './registry.js';
 
 /** Cordis service 名（issue #104 决策冻结名）。 */
 export const NOMICORE_REGISTRY_SERVICE = 'nomicoreRegistry' as const;
+
+/**
+ * 生产受控随机源（phase-5 切片 1，ADR 0010 身份条款 + ADR 0009 依赖纪律）：Node
+ * CSPRNG 桥接。核心（registry.ts 等）零全局 crypto 直调——生产来源只在本
+ * Host-facing 适配层接线。Buffer → `new Uint8Array` 拷贝：交付精确契约类型（独立
+ * 普通 Uint8Array，防 Buffer 池化/子类语义外泄进核心；file.ts 的 node:fs 先例：
+ * Host-facing 适配层使用 Node 内建模块）。
+ */
+const productionRandomBytes: RegistryRandomBytes = (length: number): Uint8Array =>
+  new Uint8Array(nodeRandomBytesSource(length));
 
 declare module '@deepseek-ai/cordis' {
   interface Context {
@@ -84,7 +96,7 @@ export function requireNomicoreRegistry(ctx: Context): NamespaceRegistry {
   return registry;
 }
 
-/** 插件配置（AC2）：唯一配置键 `idleTimeoutMs`（多余键 loud 拒绝）。 */
+/** 插件配置。实例角色 exclusively 来自注入的 @nomicore/instance service。 */
 export interface NamespaceRegistryPluginConfig {
   readonly idleTimeoutMs?: number;
 }
@@ -94,9 +106,10 @@ export interface NamespaceRegistryPluginConfig {
  * loud throw（不 fallback、不 console.error 后继续）。检验经 `ctx.get(name)` 安全
  * 探针（cordis 已核实：缺失返回 `undefined`、从不 throw）；检查顺序固定
  * clock → timer → nomicorePersistence，首个失败即 throw；文案稳定、单句、含
- * service 名与安装指引（clock/persistence 沿用各包现有文案，timer 为本插件专属）。
+ * service 名与安装指引（instance/clock/persistence 沿用各包现有文案，timer 为本插件专属）。
  */
 export function assertNamespaceRegistryHostDependencies(ctx: Context): void {
+  requireNomicoreInstance(ctx);
   requireClock(ctx); // 缺失 → throw 'required Cordis service "clock" is unavailable'（@nomicore/clock 现有文案）
   const timer = ctx.get('timer') as { timeout?: unknown } | undefined;
   if (timer === undefined || typeof timer.timeout !== 'function') {
@@ -130,10 +143,8 @@ export function createCordisRegistryScheduler(ctx: Context): RegistryTimeoutSche
 
 /**
  * 插件 config 校验（AC2）：工厂调用期同步 loud（对齐 `resolvePersistenceSchedule`
- * 先例；不声明 cordis Config schema，零新依赖）。仅接受 `{ idleTimeoutMs? }` 单键
- * ——恒 'idleTimeoutMs' 子集；多余键 TypeError（拒绝静默忽略拼错键——默认 5 分钟将
- * 掩盖错误）；数值域校验复用核心单点 resolveIdleTimeoutMs（§2.A：类型/域二分 +
- * 默认值）。
+ * 先例；不声明 cordis Config schema，零新依赖）。仅接受 `{ idleTimeoutMs? }`；实例角色
+ * 由注入的 Instance service 单一提供。多余键 TypeError（拒绝静默忽略旧 role 配置或拼错键）。
  */
 function resolvePluginIdleTimeoutMs(config: NamespaceRegistryPluginConfig): number {
   if (typeof config !== 'object' || config === null || Array.isArray(config)) {
@@ -158,13 +169,15 @@ export function createNamespaceRegistryPlugin(config: NamespaceRegistryPluginCon
   const idleTimeoutMs = resolvePluginIdleTimeoutMs(config); // 工厂调用期同步校验（无 ctx）
   let instance: NamespaceRegistry | undefined;
   return {
-    inject: ['clock', 'timer', 'nomicorePersistence'], // 依赖图边：AC11 时序保证的机制载体（§5#5/#8）；rev1：adapter 级次序另经 persistence 侧有序 disposer 兑现（设计 rev1 §2.C）
+    inject: ['nomicoreInstance', 'clock', 'timer', 'nomicorePersistence'], // 依赖图边：AC11 时序保证的机制载体（§5#5/#8）；rev1：adapter 级次序另经 persistence 侧有序 disposer 兑现（设计 rev1 §2.C）
     apply(ctx: Context): void {
       assertNamespaceRegistryHostDependencies(ctx); // 形状级 loud fail（见上）
       const registry = createNamespaceRegistry(requireNomicorePersistence(ctx), {
         clock: requireClock(ctx),
         scheduler: createCordisRegistryScheduler(ctx),
+        randomBytes: productionRandomBytes,
         idleTimeoutMs,
+        role: requireNomicoreInstance(ctx).role,
       });
       instance = registry;
       let revokeService: (() => void) | undefined;

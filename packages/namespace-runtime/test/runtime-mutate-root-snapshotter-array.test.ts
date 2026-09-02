@@ -32,8 +32,8 @@
  *   信封形状校验绕道）；
  * - 正例零误伤：密集嵌套数组 value → ok:true + 提交值深等（防「拒一切数组」式过度实现）。
  *
- * 红灯现状（构造性红）：runtime.mutateRoot 尚未实现——全部用例在首个 mutateRoot 调用处红
- * （TypeError: runtime.mutateRoot is not a function）。
+ * 红灯现状（构造性红）：runtime.mutateData 尚未实现——全部用例在首个 mutateData 调用处红
+ * （TypeError: runtime.mutateData is not a function）。
  *
  * 非冻结文件：SA3 不得修改 SA6 冻结测试（runtime-mutate-root-sequencer /
  * runtime-mutate-root-persistence / doc-runtime 两守卫）；本文件为补充锚，若 SA1/SA3 对
@@ -52,12 +52,12 @@ interface MutationIssue {
   path: Array<string | number>;
 }
 
-type MutateRootResult = { ok: true } | { ok: false; issues: MutationIssue[] };
+type MutateDataResult = { ok: true } | { ok: false; issues: MutationIssue[] };
 
-type MutateRoot = (mutation: unknown) => Promise<MutateRootResult>;
+type MutateRoot = (mutation: unknown) => Promise<MutateDataResult>;
 
 interface MutateRootRuntime extends NamespaceRuntime {
-  mutateRoot: MutateRoot;
+  mutateData: MutateRoot;
 }
 
 // —— fixture ——
@@ -76,7 +76,7 @@ function stateBytes(doc: Y.Doc): number[] {
 }
 
 function readValue(runtime: NamespaceRuntime, path: readonly (string | number)[]): unknown {
-  const read = runtime.read(path);
+  const read = runtime.readData(path);
   if (!read.ok) throw new Error(`读取应成功，实际 code=${read.code}`);
   return read.value;
 }
@@ -172,7 +172,7 @@ async function assertZeroWriteRejection(
 ): Promise<void> {
   const updates = countUpdates(doc);
   const before = stateBytes(doc);
-  const settled = await settleOf(runtime.mutateRoot(mutation));
+  const settled = await settleOf(runtime.mutateData(mutation));
   expect(settled.kind).toBe('resolved'); // 输入缺陷属普通领域失败：ok:false 联合，不升格 internal fatal
   if (settled.kind !== 'resolved') return;
   expect(settled.value).toMatchObject({ ok: false });
@@ -184,13 +184,13 @@ async function assertZeroWriteRejection(
   expect(readValue(runtime, ['n'])).toBe(1); // 读取保留（只读面不受影响）
 }
 
-// —— 模块级动态取成员（构造性红观测点：mutateRoot 经 runtime 面方法）——
+// —— 模块级动态取成员（构造性红观测点：mutateData 经 runtime 面方法）——
 
-let mutateRootOfEntry: unknown;
+let mutateDataOfEntry: unknown;
 
 beforeAll(async () => {
   const entry = (await import('../src/index.js')) as Record<string, unknown>;
-  mutateRootOfEntry = entry['mutateRoot'];
+  mutateDataOfEntry = entry['mutateData'];
 });
 
 describe('namespace-runtime snapshotter 数组分支 R2 拒绝（SA2 红线 #2a/#2b/#2c + 同族 + 正例）', () => {
@@ -203,9 +203,9 @@ describe('namespace-runtime snapshotter 数组分支 R2 拒绝（SA2 红线 #2a/
         notifierCalls += 1;
       },
     });
-    // 哨兵：先确认公共面形状（红灯锚——当前 mutateRoot 未实现 → 此断言红）
-    expect(typeof runtime.mutateRoot).toBe('function');
-    expect(mutateRootOfEntry).toBeUndefined(); // 契约护栏：mutateRoot 是 runtime 面方法，非模块级导出
+    // 哨兵：先确认公共面形状（红灯锚——当前 mutateData 未实现 → 此断言红）
+    expect(typeof runtime.mutateData).toBe('function');
+    expect(mutateDataOfEntry).toBeUndefined(); // 契约护栏：mutateData 是 runtime 面方法，非模块级导出
 
     const a = [1, 2] as unknown as Array<number> & Record<symbol, unknown>;
     a[Symbol('x')] = 9; // symbol 键不进 Object.keys / Object.getOwnPropertyNames——
@@ -275,7 +275,7 @@ describe('namespace-runtime snapshotter 数组分支 R2 拒绝（SA2 红线 #2a/
       },
     });
     const tags = ['x', 'y', 'z'];
-    const res = await runtime.mutateRoot({ op: 'set', path: ['tags'], value: tags });
+    const res = await runtime.mutateData({ op: 'set', path: ['tags'], value: tags });
     expect(res).toEqual({ ok: true });
     expect(notifierCalls).toBe(1);
     expect(readValue(runtime, ['tags'])).toEqual(['x', 'y', 'z']);

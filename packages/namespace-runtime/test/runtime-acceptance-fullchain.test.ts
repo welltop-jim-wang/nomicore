@@ -60,7 +60,7 @@ function deferred(): { promise: Promise<void>; resolve: () => void } {
 }
 
 function readValue(runtime: NamespaceRuntime, p: readonly (string | number)[]): unknown {
-  const read = runtime.read(p);
+  const read = runtime.readData(p);
   if (!read.ok) throw new Error(`读取应成功，实际 code=${read.code}`);
   return read.value;
 }
@@ -140,9 +140,9 @@ describe('issue #102：P0 → ROOT → SCHEMA → ROOT → close barrier 共享�
 
     try {
       // Runtime 返回时 P0 已在队首；四个后续调用在同一同步 turn 接纳。
-      const first = runtime.mutateRoot({ op: 'set', path: ['n'], value: 2 });
+      const first = runtime.mutateData({ op: 'set', path: ['n'], value: 2 });
       const replacement = runtime.replaceSchema({ schema: { ...ENV2 }, root: { n: 10, a: 'z', b: true } });
-      const third = runtime.mutateRoot({ op: 'set', path: ['n'], value: 30 });
+      const third = runtime.mutateData({ op: 'set', path: ['n'], value: 30 });
       const close = runtime.close();
       expect(runtime.getStatus().lifecycle).toBe('closing');
       expect(events).toEqual([]);
@@ -217,10 +217,10 @@ describe('AC1：真实 VFSL compiler + doc-runtime + MemoryPersistence 端到端
         expect(readValue(runtime, ['tags', 1])).toBe('t1');
 
         // ③ ROOT write（validated mutation 管线）：标量 + 数组载体
-        const r1 = await runtime.mutateRoot({ op: 'set', path: ['n'], value: 42 });
+        const r1 = await runtime.mutateData({ op: 'set', path: ['n'], value: 42 });
         expect(r1).toEqual({ ok: true });
         expect(readValue(runtime, ['n'])).toBe(42);
-        const r2 = await runtime.mutateRoot({ op: 'set', path: ['tags'], value: ['x', 'y', 'z'] });
+        const r2 = await runtime.mutateData({ op: 'set', path: ['tags'], value: ['x', 'y', 'z'] });
         expect(r2).toEqual({ ok: true });
         expect(readValue(runtime, ['tags'])).toEqual(['x', 'y', 'z']);
 
@@ -235,7 +235,7 @@ describe('AC1：真实 VFSL compiler + doc-runtime + MemoryPersistence 端到端
         expect(runtime.getActiveSchema()?.id).toBe('ns-2');
         expect(readValue(runtime, ['n'])).toBe(10);
         expect(readValue(runtime, ['b'])).toBe(true);
-        expect(runtime.getSchemaEnvelope()).toEqual({ lang: 'vfsl', version: 1, id: 'ns-2', text: TEXT_V2 });
+        expect(runtime.getSchema()).toEqual({ lang: 'vfsl', version: 1, id: 'ns-2', text: TEXT_V2 });
 
         // ⑤ 跨实例持久化（flush 落盘后全新实例空缓存读取——非 live 别名）
         await sleep(100);
@@ -257,11 +257,11 @@ describe('AC1：真实 VFSL compiler + doc-runtime + MemoryPersistence 端到端
         expect(runtime.getStatus().lifecycle).toBe('closing');
         await closeP;
         expect(runtime.getStatus().lifecycle).toBe('closed');
-        const readAfter = runtime.read(['n']);
+        const readAfter = runtime.readData(['n']);
         expect(readAfter.ok).toBe(false);
         if (readAfter.ok) throw new Error('closed 期读取应被拒绝');
         expect(readAfter.code).toBe('RUNTIME_READ_DISABLED');
-        const writeAfter = await runtime.mutateRoot({ op: 'set', path: ['n'], value: 1 });
+        const writeAfter = await runtime.mutateData({ op: 'set', path: ['n'], value: 1 });
         expect(writeAfter.ok).toBe(false);
         expect(JSON.stringify(writeAfter)).toContain('RUNTIME_WRITE_DISABLED');
         expect(handle.getStatus()).toBe('released');
@@ -308,7 +308,7 @@ describe('AC1：真实 VFSL compiler + doc-runtime + FilePersistence 端到端�
           expect(runtime.getActiveSchema()?.id).toBe('ns-1');
 
           // ② ROOT write
-          expect(await runtime.mutateRoot({ op: 'set', path: ['n'], value: 7 })).toEqual({ ok: true });
+          expect(await runtime.mutateData({ op: 'set', path: ['n'], value: 7 })).toEqual({ ok: true });
           expect(readValue(runtime, ['n'])).toBe(7);
 
           // ③ SCHEMA replacement（提供完整 ROOT：原子替换 + active 同步切换）
@@ -339,7 +339,7 @@ describe('AC1：真实 VFSL compiler + doc-runtime + FilePersistence 端到端�
           await runtime.close();
           expect(runtime.getStatus().lifecycle).toBe('closed');
           expect(handle.getStatus()).toBe('released');
-          expect(runtime.read(['n']).ok).toBe(false);
+          expect(runtime.readData(['n']).ok).toBe(false);
         } finally {
           await handle.release().catch(() => {});
         }
@@ -369,7 +369,7 @@ describe('AC5：fatal 全链 × 真实 Persistence（committed:true best-effort 
           throw new Error('observer-boom-acceptance');
         });
 
-        const p = runtime.mutateRoot({ op: 'set', path: ['n'], value: 9 });
+        const p = runtime.mutateData({ op: 'set', path: ['n'], value: 9 });
         await expect(p).rejects.toBeInstanceOf(RuntimeWriteFatalError);
         await expect(p).rejects.toMatchObject({ committed: true });
 
@@ -387,7 +387,7 @@ describe('AC5：fatal 全链 × 真实 Persistence（committed:true best-effort 
         expect(typeof status.fatal!.message).toBe('string');
 
         // 后续写：RUNTIME_WRITE_DISABLED 零写入
-        const blocked = await runtime.mutateRoot({ op: 'set', path: ['n'], value: 1 });
+        const blocked = await runtime.mutateData({ op: 'set', path: ['n'], value: 1 });
         expect(blocked.ok).toBe(false);
         expect(JSON.stringify(blocked)).toContain('RUNTIME_WRITE_DISABLED');
         expect(readValue(runtime, ['n'])).toBe(9);
@@ -500,7 +500,7 @@ describe('AC5（#93 rev2 追加）：D-6 pre-commit fatal 真实持久化全链�
 
         // ⑤ 后续两写 RUNTIME_WRITE_DISABLED 零字节变化
         const bytesAfter = stateBytes(doc);
-        const followRoot = await settleOf(runtime.mutateRoot({ op: 'set', path: ['n'], value: 7 }));
+        const followRoot = await settleOf(runtime.mutateData({ op: 'set', path: ['n'], value: 7 }));
         expect(followRoot.kind).toBe('resolved');
         if (followRoot.kind === 'resolved') {
           expect(followRoot.value).toMatchObject({ ok: false });
@@ -596,7 +596,7 @@ describe('AC5（#93 rev2 追加）：D-6 pre-commit fatal 真实持久化全链�
           throw new Error('OBSERVER_BOOM_U3');
         });
 
-        const p = runtime.mutateRoot({ op: 'set', path: ['n'], value: 9 });
+        const p = runtime.mutateData({ op: 'set', path: ['n'], value: 9 });
         await expect(p).rejects.toBeInstanceOf(RuntimeWriteFatalError);
         await expect(p).rejects.toMatchObject({ committed: true });
 
@@ -609,7 +609,7 @@ describe('AC5（#93 rev2 追加）：D-6 pre-commit fatal 真实持久化全链�
         expect(status.schemaWrite.enabled).toBe(false);
         expect(status.fatal?.code).toBe('NSRT-FATAL-WRITE-INTERNAL');
 
-        const blocked = await runtime.mutateRoot({ op: 'set', path: ['n'], value: 1 });
+        const blocked = await runtime.mutateData({ op: 'set', path: ['n'], value: 1 });
         expect(blocked.ok).toBe(false);
         expect(JSON.stringify(blocked)).toContain('RUNTIME_WRITE_DISABLED');
         expect(readValue(runtime, ['n'])).toBe(9);
@@ -656,19 +656,19 @@ describe('AC5（#93 rev2 追加）：D-6 pre-commit fatal 真实持久化全链�
       });
       try {
         // 读立即可用（read 不等 P0）
-        expect(runtime.read(['n']).ok).toBe(true);
+        expect(runtime.readData(['n']).ok).toBe(true);
         await expect.poll(() => runtime.getStatus().fatal, { interval: 10, timeout: 5_000 }).not.toBeNull();
 
         const status = runtime.getStatus();
         expect(status.fatal?.code).toBe('NSRT-FATAL-P0-INTERNAL');
         expect(status.schema.state).toBe('preparing'); // P0 未结算成 ready/unavailable
         expect(status.read.enabled).toBe(true);
-        expect(runtime.read(['n']).ok).toBe(true);
+        expect(runtime.readData(['n']).ok).toBe(true);
 
         // 全部写 RUNTIME_WRITE_DISABLED（fatal 永久禁写）——零 update/notifier/字节变化
         const updates = countUpdates(doc);
         const bytesBefore = stateBytes(doc);
-        const rw = await runtime.mutateRoot({ op: 'set', path: ['n'], value: 3 });
+        const rw = await runtime.mutateData({ op: 'set', path: ['n'], value: 3 });
         expect(rw.ok).toBe(false);
         expect(JSON.stringify(rw)).toContain('RUNTIME_WRITE_DISABLED');
         const rs = await runtime.replaceSchema({ schema: { ...ENV2 } });

@@ -9,6 +9,23 @@ pnpm generate          # 全量生成（domains/*）
 pnpm generate --check  # CI 新鲜度校验：重新生成 → 逐字节 diff，漂移即非零退出
 ```
 
+独立宿主的 package build 只能读取自身源码时，可从同一 `domains/<domain>/schema.vfsl` 生成唯一的 package-local projection：
+
+```bash
+pnpm generate \
+  --domains /path/to/host \
+  --domain inventory \
+  --out packages/inventory/src/generated/nomicore-schema.ts
+
+pnpm generate \
+  --domains /path/to/host \
+  --domain inventory \
+  --out packages/inventory/src/generated/nomicore-schema.ts \
+  --check
+```
+
+`--domain` 与 `--out` 必须同时提供。相对 `--out` 按 `--domains` 根目录解析，绝对路径保持原样；该模式只生成一个 id base 匹配的领域。普通模式创建输出父目录并写盘；`--check` 只在内存中生成并逐字节比较，fresh 退出 0，缺失/过期退出 1，且不写文件。单领域模式不扫描默认 `domains/*/generated.ts` 的孤儿，默认全量模式的 orphan 检查保持不变。
+
 ## 工具层限制（非方言约束）
 
 以下是**本生成器 v1 的实现边界**，不改变方言合法性（v1-spec / ADR 0003 对这些构造依然合法）：

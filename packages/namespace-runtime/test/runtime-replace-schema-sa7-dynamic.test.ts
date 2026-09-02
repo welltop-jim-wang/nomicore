@@ -10,7 +10,7 @@
  *   四键（delete text）→ ⑤-S verifySchemaFourKeys 检出偏离 → branded
  *   post-commit-verification committed:true → 槽内 markWriteFatal + best-effort
  *   notify 恰一次 + RuntimeWriteFatalError rejection。撕裂态五要素断言：
- *   getActiveSchema 永久旧 id / read+getSchemaEnvelope 新 generation / 双写位
+ *   getActiveSchema 永久旧 id / read+getSchema 新 generation / 双写位
  *   false / 后续写 RUNTIME_WRITE_DISABLED / status.fatal 显式标记；
  * - 注入路径 β（E203）：doc 级 update observer throw → transactGuarded 包装
  *   observer-cleanup-throw committed:true → 同 fatal 走线；
@@ -24,12 +24,12 @@
  * - SA2 §5.2 A2 边界（独立动态确认，rev2 契约修订——D7 顶层投影废止）：顶层未声明
  *   键 loud（ok:false + issue path=[<k>]）、嵌套未声明键 loud、union 形 ROOT ×
  *   未声明键 loud（不投影）；
- * - AC9 时序实证：notifier 挂住窗口（前项 mutateRoot 占槽）内
- *   read/getSchemaEnvelope/getActiveSchema 观察旧 generation、transaction 后同步切换；
+ * - AC9 时序实证：notifier 挂住窗口（前项 mutateData 占槽）内
+ *   read/getSchema/getActiveSchema 观察旧 generation、transaction 后同步切换；
  * - SA4 §12 动态审核重点 4：⑥ verifySnapshotIntact 喂原样 snapshot 的对称性——嵌套
  *   Y.Array 载体（a: string[]）replace-root 快乐路径双侧提取等价。
  *
- * 断言纪律：全部经公共接缝（replaceSchema/mutateRoot/read/getSchemaEnvelope/
+ * 断言纪律：全部经公共接缝（replaceSchema/mutateData/read/getSchema/
  * getActiveSchema/getStatus/update 事件计数/state 字节/notifier 计数）观测，
  * 不读实现内部、零源码字符串断言。
  */
@@ -105,7 +105,7 @@ function countUpdates(doc: Y.Doc): { count: number } {
 }
 
 function readValue(runtime: NamespaceRuntime, path: readonly (string | number)[]): unknown {
-  const read = runtime.read(path);
+  const read = runtime.readData(path);
   if (!read.ok) throw new Error(`读取应成功，实际 code=${read.code}`);
   return read.value;
 }
@@ -236,13 +236,13 @@ describe('SA7 动态验证 — replaceSchema fatal 通道注入路径 α：obser
     // ── A3 撕裂态五要素 ──
     // ① getActiveSchema 永久停留旧 id（installActive 未执行；本 Runtime 生命周期内不再切换）
     expect(runtime.getActiveSchema()?.id).toBe('ns-1');
-    // ② read/getSchemaEnvelope 观察已提交的新 generation（读取以 live doc 为准）
-    expect(runtime.getSchemaEnvelope()?.id).toBe('ns-2b');
+    // ② read/getSchema 观察已提交的新 generation（读取以 live doc 为准）
+    expect(runtime.getSchema()?.id).toBe('ns-2b');
     expect(readValue(runtime, ['n'])).toBe(999);
     expect(readValue(runtime, ['a'])).toBe('x');
     // doc 保持 observer 留下的实际状态（不回滚、不补偿——E201 文案承诺）
     expect([...doc.getMap('SCHEMA').keys()].sort()).toEqual(['id', 'lang', 'version']);
-    expect(runtime.getSchemaEnvelope()?.text).toBeUndefined(); // text 已被 observer 删除（键省略投影）
+    expect(runtime.getSchema()?.text).toBeUndefined(); // text 已被 observer 删除（键省略投影）
     // ③ 双写位 false（fatal 永久禁写）
     const status = runtime.getStatus();
     expect(status.rootWrite.enabled).toBe(false);
@@ -254,7 +254,7 @@ describe('SA7 动态验证 — replaceSchema fatal 通道注入路径 α：obser
 
     // ④ 后续写一律 RUNTIME_WRITE_DISABLED（队列持续流转不挂死）
     const bytesAfter = stateBytes(doc);
-    const followRoot = await settleOf(runtime.mutateRoot(SET_N(7)));
+    const followRoot = await settleOf(runtime.mutateData(SET_N(7)));
     expect(followRoot.kind).toBe('resolved');
     if (followRoot.kind !== 'resolved') return;
     expect(followRoot.value).toMatchObject({ ok: false });
@@ -270,7 +270,7 @@ describe('SA7 动态验证 — replaceSchema fatal 通道注入路径 α：obser
     expect(updates.count).toBeGreaterThanOrEqual(1); // 无新事务（disabled 零写入）
     expect(stateBytes(doc)).toEqual(bytesAfter);
     expect(runtime.getActiveSchema()?.id).toBe('ns-1');
-    expect(runtime.getSchemaEnvelope()?.id).toBe('ns-2b');
+    expect(runtime.getSchema()?.id).toBe('ns-2b');
     expect(readValue(runtime, ['n'])).toBe(999);
   });
 });
@@ -309,7 +309,7 @@ describe('SA7 动态验证 — replaceSchema fatal 通道注入路径 β：obser
     // 事务已 live commit：SCHEMA 四键新内容在 live doc 上（doc 保持事务留下的实际状态）
     expect(updates.count).toBe(1);
     expect(stateBytes(doc)).not.toEqual(bytesBefore);
-    expect(runtime.getSchemaEnvelope()?.id).toBe('ns-2b');
+    expect(runtime.getSchema()?.id).toBe('ns-2b');
     expect([...doc.getMap('SCHEMA').keys()].sort()).toEqual(['id', 'lang', 'text', 'version']);
 
     // best-effort notify 恰一次；撕裂（active 旧 id × live 新 generation）；双写位 false
@@ -321,7 +321,7 @@ describe('SA7 动态验证 — replaceSchema fatal 通道注入路径 β：obser
     expect(status.schemaWrite.enabled).toBe(false);
 
     // 后续写 DISABLED（队列流转）+ 读取保留
-    const follow = await settleOf(runtime.mutateRoot(SET_N(7)));
+    const follow = await settleOf(runtime.mutateData(SET_N(7)));
     expect(follow.kind).toBe('resolved');
     if (follow.kind !== 'resolved') return;
     expect(hasIssueCode(follow.value, 'RUNTIME_WRITE_DISABLED')).toBe(true);
@@ -383,7 +383,7 @@ describe('SA7 动态验证 — replaceSchema fatal 通道注入路径 γ：手�
     expect(notifierCalls).toBe(0);
     expect(updates.count).toBe(0);
     expect(stateBytes(doc)).toEqual(bytesBefore);
-    expect(runtime.getSchemaEnvelope()?.id).toBe('ns-1');
+    expect(runtime.getSchema()?.id).toBe('ns-1');
     expect(runtime.getActiveSchema()?.id).toBe('ns-1');
     expect(readValue(runtime, ['n'])).toBe(1);
 
@@ -435,7 +435,7 @@ describe('SA7 动态验证 — SA2 §5.1 A1：注入 compile 畸形 ok:true enve
       expect(notifierCalls, `[${name}] 0 notifier`).toBe(0);
       expect(updates.count, `[${name}] 0 update`).toBe(0);
       expect(stateBytes(doc), `[${name}] state 字节不变`).toEqual(bytesBefore);
-      expect(runtime.getSchemaEnvelope()?.id, `[${name}] SCHEMA 不变`).toBe('ns-1');
+      expect(runtime.getSchema()?.id, `[${name}] SCHEMA 不变`).toBe('ns-1');
       expect(runtime.getActiveSchema()?.id, `[${name}] active tools 不变`).toBe('ns-1');
       expect(runtime.getStatus().fatal?.code, `[${name}] fatal 摘要码`).toBe(FATAL_SCHEMA_CODE);
     }
@@ -479,7 +479,7 @@ describe('SA7 动态验证 — SA2 §5.2 A2（rev2 契约）：provided root 未
     expect(notifierCalls).toBe(0);
     expect(stateBytes(doc)).toEqual(bytesBefore);
     // SCHEMA / ROOT / active tools 三不变（旧 generation 继续服务）
-    expect(runtime.getSchemaEnvelope()?.id).toBe('ns-1');
+    expect(runtime.getSchema()?.id).toBe('ns-1');
     expect(runtime.getActiveSchema()?.id).toBe('ns-1');
     expect(doc.getMap('ROOT')).toBe(rootBefore);
     expect([...rootBefore.keys()].sort()).toEqual(['a', 'n']);
@@ -515,7 +515,7 @@ describe('SA7 动态验证 — SA2 §5.2 A2（rev2 契约）：provided root 未
     expect(updates.count).toBe(0);
     expect(notifierCalls).toBe(0);
     expect(stateBytes(doc)).toEqual(bytesBefore);
-    expect(runtime.getSchemaEnvelope()?.id).toBe('ns-1');
+    expect(runtime.getSchema()?.id).toBe('ns-1');
     expect(runtime.getActiveSchema()?.id).toBe('ns-1');
   });
 
@@ -542,7 +542,7 @@ describe('SA7 动态验证 — SA2 §5.2 A2（rev2 契约）：provided root 未
     expect(updates.count).toBe(0);
     expect(notifierCalls).toBe(0);
     expect(stateBytes(doc)).toEqual(bytesBefore);
-    expect(runtime.getSchemaEnvelope()?.id).toBe('ns-1');
+    expect(runtime.getSchema()?.id).toBe('ns-1');
     expect(runtime.getActiveSchema()?.id).toBe('ns-1');
   });
 });
@@ -550,7 +550,7 @@ describe('SA7 动态验证 — SA2 §5.2 A2（rev2 契约）：provided root 未
 // —— AC9 时序实证：notifier 挂住窗口观察旧 generation、transaction 后同步切换 ——
 
 describe('SA7 动态验证 — AC9 时序：准备期观察旧 committed generation、transaction 后同步切换', () => {
-  it('AC9 前项 mutateRoot notifier 挂住 → replaceSchema 排队窗口三读面均观察旧 generation；放行后 transaction 提交并同步切换', async () => {
+  it('AC9 前项 mutateData notifier 挂住 → replaceSchema 排队窗口三读面均观察旧 generation；放行后 transaction 提交并同步切换', async () => {
     const doc = makeDoc();
     const gateA = deferred();
     let notifierCalls = 0;
@@ -558,13 +558,13 @@ describe('SA7 动态验证 — AC9 时序：准备期观察旧 committed generat
       doc,
       notifyDirty: async () => {
         notifierCalls += 1;
-        await gateA.promise; // 首次调用（mutateRoot）挂住——replaceSchema 排队窗口
+        await gateA.promise; // 首次调用（mutateData）挂住——replaceSchema 排队窗口
       },
     });
     await waitReady(runtime);
 
     const order: string[] = [];
-    const pM = runtime.mutateRoot(SET_N(2));
+    const pM = runtime.mutateData(SET_N(2));
     pM.then(
       () => order.push('M'),
       () => order.push('M'),
@@ -578,11 +578,11 @@ describe('SA7 动态验证 — AC9 时序：准备期观察旧 committed generat
     );
 
     // 排队窗口：三读面全部观察旧 committed generation（ns-1 / ROOT n=2 为 M 已提交值）
-    expect(runtime.getSchemaEnvelope()?.id).toBe('ns-1');
+    expect(runtime.getSchema()?.id).toBe('ns-1');
     expect(runtime.getActiveSchema()?.id).toBe('ns-1');
     expect(readValue(runtime, ['n'])).toBe(2);
     await sleep(25); // 给足微任务余量——若 R 提前提交此处即暴露
-    expect(runtime.getSchemaEnvelope()?.id).toBe('ns-1');
+    expect(runtime.getSchema()?.id).toBe('ns-1');
     expect(runtime.getActiveSchema()?.id).toBe('ns-1');
     expect(readValue(runtime, ['n'])).toBe(2);
     expect(order).toEqual([]); // R 未完成（FIFO 屏障）
@@ -593,7 +593,7 @@ describe('SA7 动态验证 — AC9 时序：准备期观察旧 committed generat
     await expect(pR).resolves.toEqual({ ok: true });
     expect(order).toEqual(['M', 'R']);
     expect(notifierCalls).toBe(2);
-    expect(runtime.getSchemaEnvelope()?.id).toBe('ns-2b');
+    expect(runtime.getSchema()?.id).toBe('ns-2b');
     expect(runtime.getActiveSchema()?.id).toBe('ns-2b');
     expect(readValue(runtime, ['n'])).toBe(42);
     expect(readValue(runtime, ['a'])).toBe('q');
@@ -688,7 +688,7 @@ describe('SA7 动态验证 — replaceSchema fatal 通道注入路径 δ：非 m
     expect(notifierCalls).toBe(0);
     expect(updates.count).toBe(0);
     expect(stateBytes(doc)).toEqual(bytesBefore);
-    expect(runtime.getSchemaEnvelope()?.id).toBe('ns-1');
+    expect(runtime.getSchema()?.id).toBe('ns-1');
     expect(runtime.getActiveSchema()?.id).toBe('ns-1');
     expect(readValue(runtime, ['n'])).toBe(1);
     const status = runtime.getStatus();
@@ -698,7 +698,7 @@ describe('SA7 动态验证 — replaceSchema fatal 通道注入路径 δ：非 m
     expect(status.read.enabled).toBe(true);
 
     const bytesAfter = stateBytes(doc);
-    const followRoot = await settleOf(runtime.mutateRoot(SET_N(7)));
+    const followRoot = await settleOf(runtime.mutateData(SET_N(7)));
     expect(followRoot.kind).toBe('resolved');
     if (followRoot.kind === 'resolved') {
       expect(followRoot.value).toMatchObject({ ok: false });
@@ -793,7 +793,7 @@ describe('SA7 动态验证 — T3.4（rev2）：深 doc × keep-root → E 层�
       expect(st.fatal).toBeNull();
       expect(st.rootWrite.enabled).toBe(true);
       expect(st.schemaWrite.enabled).toBe(true);
-      expect(runtime.getSchemaEnvelope()?.id).toBe('ns-deep');
+      expect(runtime.getSchema()?.id).toBe('ns-deep');
       expect(runtime.getActiveSchema()?.id).toBe('ns-deep');
       expect(readValue(runtime, ['a'])).toBe('shallow');
 

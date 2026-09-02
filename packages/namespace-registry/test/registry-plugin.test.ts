@@ -2,7 +2,8 @@
  * SA6 红灯锚定 — issue #112：namespace-registry Cordis plugin（AC1/2/3/11）
  * （冻结设计 §7 测试 22-28 + R1/M1 测试 28a；真实 `new Context()` 组合）。
  *
- * 契约来源：wiki/raw/task_registry-idle-plugin-shutdown.md（冻结设计，R1 修订）：
+ * 规范权威：ADR-0009；设计记录（历史证据，非规范）：
+ * wiki/raw/task_registry-idle-plugin-shutdown.md（冻结设计，R1 修订）：
  * - §2.F plugin 形状（NOMICORE_REGISTRY_SERVICE / provide / require / inject /
  *   有序 disposer / assertNamespaceRegistryHostDependencies / createCordisRegistryScheduler /
  *   resolvePluginIdleTimeoutMs / 双通道 AC3 裁决）；
@@ -36,6 +37,7 @@ import {
 import type { NamespaceLease } from '@nomicore/namespace-registry';
 import { createRegistryTestScheduler } from '@nomicore/namespace-registry/testing';
 import { Context } from '@deepseek-ai/cordis';
+import { createInstancePlugin } from '@nomicore/instance';
 
 // FiberState（cordis fiber.d.ts const enum）：PENDING=0 / LOADING=1 / ACTIVE=2 /
 // FAILED=3 / DISPOSED=4 / UNLOADING=5。const enum 无运行时对象，本文件以数值
@@ -86,6 +88,10 @@ function okLease(result: unknown): NamespaceLease {
   expect(r.ok, `open 应成功，实际：${JSON.stringify(result)}`).toBe(true);
   if (!r.ok || r.lease === undefined) throw new Error('unreachable');
   return r.lease;
+}
+
+function mountHubInstance(ctx: Context): void {
+  createInstancePlugin().apply(ctx, { instanceId: 'test-host', role: 'hub' });
 }
 
 // ── 可控 persistence stub（plugin 组合经 nomicorePersistence 服务注入）──────────
@@ -158,6 +164,7 @@ class PluginStubPersistence implements DocPersistence {
 describe('AC1/AC2/AC3 组合（§7.22-24）：真实 Context 组合与配置校验', () => {
   it('22. 组合：manualClockPlugin + createFakeTimerPlugin + createMemoryPersistencePlugin + createNamespaceRegistryPlugin → ctx.nomicoreRegistry 为真实 Registry（open/create/getStatus 可用）', async () => {
     const ctx = new Context();
+    mountHubInstance(ctx);
     createManualClockPlugin(createManualClock(1_700_000_123_456)).apply(ctx);
     createFakeTimerPlugin(createRegistryTestScheduler()).apply(ctx);
     createMemoryPersistencePlugin().apply(ctx);
@@ -177,15 +184,16 @@ describe('AC1/AC2/AC3 组合（§7.22-24）：真实 Context 组合与配置校�
     const missing = await registry.open({ userId: 'u-compose' }, 'missing-ns');
     expect(missing).toMatchObject({ ok: false, code: 'NAMESPACE_NOT_FOUND' });
     // create：真实建立（doc 提交）→ 返回 lease；getStatus 真实三相投影
+    // phase-5 切片 1（ADR 0010）：create 恒三键——namespaceId 由 plugin 桥接的
+    // node:crypto 受控随机源生成（ns-+32hex），调用方不再提供。
     const created = await registry.create({
       owner: { userId: 'u-compose' },
-      namespaceId: 'ns-1',
       schema: { lang: 'vfsl', version: 1, id: 'ns-1', text: 'type ROOT = { n: number; };\n' },
       root: { n: 42 },
     });
     expect(created.ok).toBe(true);
     const lease = okLease(created);
-    expect(lease.read(['n'])).toEqual({ ok: true, value: 42 });
+    expect(lease.readData(['n'])).toEqual({ ok: true, value: 42 });
     expect(registry.getStatus()).toEqual({ state: 'running' });
     await lease.release();
     await ctx.fiber.dispose();
@@ -193,15 +201,18 @@ describe('AC1/AC2/AC3 组合（§7.22-24）：真实 Context 组合与配置校�
   });
 
   it('23. 缺依赖 loud（直接 apply 通道）：clock/timer/nomicorePersistence 逐一剔除 → 稳定文案 throw + 零 service 提供', async () => {
-    // ① 裸 Context：clock 缺失（断言订单 clock 先行）
+    // ① 仅装 Instance：clock 缺失
+    const ctxA = new Context();
+    mountHubInstance(ctxA);
     const pluginA = createNamespaceRegistryPlugin();
-    expect(() => pluginA.apply(new Context())).toThrow(
+    expect(() => pluginA.apply(ctxA)).toThrow(
       'required Cordis service "clock" is unavailable',
     );
     expect(pluginA.instance).toBeUndefined();
 
     // ② 已装 clock、缺 timer：timer 专属文案
     const ctxB = new Context();
+    mountHubInstance(ctxB);
     createManualClockPlugin(createManualClock(0)).apply(ctxB);
     const pluginB = createNamespaceRegistryPlugin();
     expect(() => pluginB.apply(ctxB)).toThrow(
@@ -213,6 +224,7 @@ describe('AC1/AC2/AC3 组合（§7.22-24）：真实 Context 组合与配置校�
 
     // ③ 已装 clock + timer、缺 nomicorePersistence：persistence 现有文案
     const ctxC = new Context();
+    mountHubInstance(ctxC);
     createManualClockPlugin(createManualClock(0)).apply(ctxC);
     createFakeTimerPlugin(createRegistryTestScheduler()).apply(ctxC);
     const pluginC = createNamespaceRegistryPlugin();
@@ -252,6 +264,7 @@ describe('AC1/AC2/AC3 组合（§7.22-24）：真实 Context 组合与配置校�
 describe('AC11（§7.25-27）：有序 async disposer、fiber 级先序、失败路径 finally', () => {
   it('25. 有序 disposer：shutdown 完成前 fiber dispose 不 settle；探针次序 shutdownStarted → statusWhileDisposing → shutdownSettled → serviceRevoked', async () => {
     const ctx = new Context();
+    mountHubInstance(ctx);
     createManualClockPlugin(createManualClock(0)).apply(ctx);
     createFakeTimerPlugin(createRegistryTestScheduler()).apply(ctx);
     const handleGate = deferred();
@@ -306,6 +319,7 @@ describe('AC11（§7.25-27）：有序 async disposer、fiber 级先序、失败
     const probe = collectUnhandledRejections();
     try {
       const ctx = new Context();
+      mountHubInstance(ctx);
       createManualClockPlugin(createManualClock(0)).apply(ctx);
       createFakeTimerPlugin(createRegistryTestScheduler()).apply(ctx);
       const memoryPlugin = createMemoryPersistencePlugin();
@@ -352,6 +366,7 @@ describe('AC11（§7.25-27）：有序 async disposer、fiber 级先序、失败
     const probe = collectUnhandledRejections();
     try {
       const ctx = new Context();
+      mountHubInstance(ctx);
       createManualClockPlugin(createManualClock(0)).apply(ctx);
       createFakeTimerPlugin(createRegistryTestScheduler()).apply(ctx);
       const releaseCause = new Error('release-reject-plugin-27');
@@ -406,6 +421,7 @@ describe('AC3/AC11（§7.28/28a）：timer 经 ctx.timeout 真实桥；ctx.plugi
   it('28. timer 经 ctx.timeout 真实桥：idle close 由 fake timer service 的 ctx.timeout 通道触发（advance 驱动）', async () => {
     const scheduler = createRegistryTestScheduler();
     const ctx = new Context();
+    mountHubInstance(ctx);
     createManualClockPlugin(createManualClock(0)).apply(ctx);
     createFakeTimerPlugin(scheduler).apply(ctx);
     const stub = new PluginStubPersistence();
@@ -433,6 +449,7 @@ describe('AC3/AC11（§7.28/28a）：timer 经 ctx.timeout 真实桥；ctx.plugi
 
   it('28a. 通道 B（ctx.plugin）依赖门：缺依赖 → fiber PENDING（非 ACTIVE）、零 service、零 instance；补装缺失服务 → ACTIVE + service/instance 就绪（双向）', async () => {
     const ctx = new Context();
+    mountHubInstance(ctx);
     const plugin = createNamespaceRegistryPlugin();
     const fiber = ctx.plugin(plugin); // 全部依赖缺失 → cordis 原生依赖门
     await fiber;
@@ -466,6 +483,7 @@ describe('rev1 问题 3：Registry shutdown settle 严格先于 persistence adap
     const probe = collectUnhandledRejections();
     try {
       const ctx = new Context();
+      mountHubInstance(ctx);
       createManualClockPlugin(createManualClock(0)).apply(ctx);
       createFakeTimerPlugin(createRegistryTestScheduler()).apply(ctx);
       const memoryPlugin = createMemoryPersistencePlugin();
@@ -503,15 +521,14 @@ describe('rev1 问题 3：Registry shutdown settle 严格先于 persistence adap
 
       const created = await registry.create({
         owner: { userId: 'u-order' },
-        namespaceId: 'k',
         schema: { lang: 'vfsl', version: 1, id: 'k', text: 'type ROOT = { n: number; };\n' },
         root: { n: 42 },
       });
       expect(created.ok).toBe(true);
       const lease = okLease(created);
-      expect(lease.read(['n'])).toEqual({ ok: true, value: 42 });
+      expect(lease.readData(['n'])).toEqual({ ok: true, value: 42 });
       // 接受一个写（shutdown 关闭排空的对象）：写槽异步起步 → S6 挂于 gated saveDoc。
-      const writePromise = lease.mutateRoot({ op: 'set', path: ['n'], value: 43 });
+      const writePromise = lease.mutateData({ op: 'set', path: ['n'], value: 43 });
       await flushMicrotasks(30);
       expect(gated).toBe(true); // 写槽已到 S6（排空窗口挂起中）
 

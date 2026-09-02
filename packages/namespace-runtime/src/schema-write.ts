@@ -247,7 +247,7 @@ export async function runSchemaWriteSlot(env: SchemaWriteEnv, input: unknown, di
 
   // ── S5.5 安装新 active tools（AC6：transaction 返回后同步、await notifyDirty 之前）──
   //  五字段身份 + tools + 状态迁回 'ready' + delete schemaIssue——getActiveSchema/
-  //  getSchemaEnvelope/read 自此观察新 generation（notifier 挂住窗口内可观测——锚 9）
+  //  getSchema/read 自此观察新 generation（notifier 挂住窗口内可观测——锚 9）
   installActive(compiled, env.state);
 
   // ── S6 同槽 await notifyDirty（完成信号 = live commit + dirty 登记两者）──

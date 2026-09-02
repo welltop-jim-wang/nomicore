@@ -1,11 +1,19 @@
 {
   "name": "@nomicore/persistence",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "private": true,
   "type": "module",
   "exports": {
-    ".": "./src/index.ts",
-    "./testing": "./src/testing.ts"
+    ".": {
+      "nomicore-source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./testing": {
+      "nomicore-source": "./src/testing.ts",
+      "types": "./dist/testing.d.ts",
+      "import": "./dist/testing.js"
+    }
   },
   "dependencies": {
     "@deepseek-ai/cordis": "^4.0.1",
@@ -17,5 +25,11 @@
     "@types/node": "^20",
     "typescript": "^5.9.3",
     "vitest": "^3.2.4"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "node ../../scripts/build-package.mjs"
   }
 }

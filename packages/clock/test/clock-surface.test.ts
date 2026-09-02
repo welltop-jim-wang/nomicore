@@ -70,11 +70,11 @@ describe('静态审计：受控 testing 子路径边界（#104）', () => {
 
   it('package.json exports 恰为 "." 与 "./testing"', () => {
     const pkg = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as {
-      exports: Record<string, string>
+      exports: Record<string, { 'nomicore-source': string; types: string; import: string }>
     }
     expect(pkg.exports).toEqual({
-      '.': './src/index.ts',
-      './testing': './src/testing.ts',
+      '.': { 'nomicore-source': './src/index.ts', types: './dist/index.d.ts', import: './dist/index.js' },
+      './testing': { 'nomicore-source': './src/testing.ts', types: './dist/testing.d.ts', import: './dist/testing.js' },
     })
     expect(fs.existsSync(`${pkgDir}src/testing.ts`)).toBe(true)
   })

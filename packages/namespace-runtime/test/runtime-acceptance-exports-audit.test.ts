@@ -38,6 +38,9 @@ describe('AC6：公共 exports 审计（模块级导出表精确性）', () => {
       'runP0', // P0 槽体不导出
       'runRootWriteSlot', // 写槽体不导出
       'runSchemaWriteSlot', // SCHEMA 写槽体不导出
+      'runEnableReplicationSlot', // 【#132】复制写槽体不导出（值导出面仍恰一键）
+      'runBumpReplicationEpochSlot', // 【#132】同上
+      'readReplicationFacts', // 【#132】复制事实读取器不导出（值导出面仍恰一键）
       'runCloseBarrier', // close barrier 不导出
       'buildStatus', // 状态组装不导出
       'PersistenceHandle', // 持久层租约实现不导出

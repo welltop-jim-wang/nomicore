@@ -14,6 +14,34 @@ import type { DocHandle, DocPersistence, User } from '@nomicore/persistence';
 import type { NamespaceLease } from '@nomicore/namespace-registry';
 import { createNamespaceRegistryForTesting, createRegistryTestScheduler } from '@nomicore/namespace-registry/testing';
 
+
+// ── phase-5 切片 1（ADR 0010）：受控随机源确定性 helper（测试内定义；禁止从 src 导出）──
+// 第 n 次生成 = `ns-` + n 的 32 位小写 hex；每调用恰按 128-bit（16 字节）请求。
+
+function makeDeterministicRandomBytes(): {
+  randomBytes: (length: number) => Uint8Array;
+  readonly id: (n: number) => string;
+} {
+  let counter = 0;
+  return {
+    randomBytes(length: number): Uint8Array {
+      if (length !== 16) {
+        throw new Error(`受控随机源必须按 128-bit（16 字节）请求，实际请求 ${length} 字节`);
+      }
+      counter += 1;
+      const hex = counter.toString(16).padStart(32, '0');
+      const out = new Uint8Array(16);
+      for (let i = 0; i < 16; i += 1) {
+        out[i] = Number.parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+      }
+      return out;
+    },
+    id: (n: number) => `ns-${n.toString(16).padStart(32, '0')}`,
+  };
+}
+
+const TEST_RANDOM_BYTES: (length: number) => Uint8Array = makeDeterministicRandomBytes().randomBytes;
+
 // #111 设计 §14：testing 工厂 Clock 必需化迁移——本文件唯一 factory 调用注入
 // 单一 manual Clock helper（固定 ms；open 路径不消费 Clock 值，零行为变化）。
 function manualClock(): { now: () => number } {
@@ -78,7 +106,7 @@ class StubPersistence implements DocPersistence {
 
 async function makeLease(): Promise<NamespaceLease> {
   const persistence = new StubPersistence();
-  const registry = createNamespaceRegistryForTesting(persistence, { clock: manualClock(), scheduler: createRegistryTestScheduler() });
+  const registry = createNamespaceRegistryForTesting(persistence, { clock: manualClock(), scheduler: createRegistryTestScheduler(), randomBytes: TEST_RANDOM_BYTES });
   const result = await registry.open({ userId: 'dispose-user' }, 'dispose-ns');
   if (!result.ok) {
     throw new Error('open 应成功');
@@ -93,7 +121,7 @@ describe('Node runtime：await using lease 实际 dispose（§7/§9）', () => {
     await awaitUsingDriver(lease);
     // 块退出即实际调用 asyncDispose —— lease 同步失效（released）
     expect(lease.getStatus()).toEqual({ lease: 'released', runtime: null });
-    expect(lease.read(['x'])).toMatchObject({ ok: false, code: 'NAMESPACE_LEASE_RELEASED' });
+    expect(lease.readData(['x'])).toMatchObject({ ok: false, code: 'NAMESPACE_LEASE_RELEASED' });
     const again = lease.release();
     const first = lease[Symbol.asyncDispose]!;
     expect(again).toBe(first());

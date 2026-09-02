@@ -34,11 +34,14 @@ import type { Clock } from '@nomicore/clock';
 import type { ReadLogicalValueResult } from '@nomicore/doc-runtime';
 import type {
   ActiveSchemaInfo,
-  MutateRootResult,
+  BumpReplicationEpochResult,
+  EnableReplicationResult,
+  MutateDataResult,
   ReplaceSchemaInput,
   ReplaceSchemaResult,
   RuntimeReadDisabledResult,
 } from '@nomicore/namespace-runtime';
+import type { ReplicationIdentityRef, YjsDoc } from '@nomicore/persistence';
 import type { SchemaEnvelope } from '@nomicore/vfsl';
 import type { RegistryObserver } from './observer.js';
 
@@ -53,7 +56,7 @@ export const REGISTRY_NOT_ACCEPTING_MESSAGE =
 export const NAMESPACE_LEASE_RELEASED_MESSAGE =
   'NAMESPACE_LEASE_RELEASED: 此 NamespaceLease 已 release，不能再接纳业务操作';
 export const NAMESPACE_CREATE_INVALID_INPUT_MESSAGE =
-  'NAMESPACE_CREATE_INVALID_INPUT: create 输入必须恰含 owner、namespaceId、schema 与 root';
+  'NAMESPACE_CREATE_INVALID_INPUT: create 输入必须恰含 owner、schema 与 root';
 export const NAMESPACE_SCHEMA_INVALID_MESSAGE =
   'NAMESPACE_SCHEMA_INVALID: namespace schema 编译失败';
 export const NAMESPACE_ROOT_INVALID_MESSAGE =
@@ -73,6 +76,54 @@ export const NAMESPACE_REGISTRY_PLUGIN_CONFIG_MESSAGE =
   'NAMESPACE_REGISTRY_PLUGIN_CONFIG: namespace-registry 插件配置仅接受 idleTimeoutMs 键';
 export const NAMESPACE_REGISTRY_SHUTDOWN_FAILED_MESSAGE =
   'NAMESPACE_REGISTRY_SHUTDOWN_FAILED: Registry shutdown 期间部分 Runtime 关闭失败';
+// —— phase-5 切片 1 增量（ADR 0010 身份条款/ADR 0009 依赖纪律）——
+export const NAMESPACE_REGISTRY_RANDOM_REQUIRED_MESSAGE =
+  'NAMESPACE_REGISTRY_RANDOM_REQUIRED: Registry 必须提供受控随机源 randomBytes(length): Uint8Array';
+// —— phase-5 复制谱系切片增量（issue #132；ADR 0010 复制谱系节/ADR 0009 依赖纪律）——
+export const REPLICATION_RANDOM_SOURCE_INVALID_MESSAGE =
+  'REPLICATION_RANDOM_SOURCE_INVALID: 受控随机源必须返回 16 字节 Uint8Array（ADR 0009 依赖纪律）——本调用零写入、零随机消耗副作用';
+// —— phase-5 ReplicationSession 切片增量（issue #134；ADR 0010 §NamespaceLease 与
+//    ReplicationSession / §SCHEMA 与 META 权限；O-4 角色注入；稳定 message 单一真相源）——
+export const NAMESPACE_REGISTRY_ROLE_INVALID_MESSAGE =
+  'NAMESPACE_REGISTRY_ROLE_INVALID: Registry 实例角色 role 必须是 "hub" 或 "peer"';
+export const REPLICATION_SESSION_INPUT_INVALID_MESSAGE =
+  'REPLICATION_SESSION_INPUT_INVALID: openReplicationSession 输入必须恰含 localRole（"hub"|"peer"）与 remoteInstanceId（^[a-z][a-z0-9-]{0,62}$）';
+export const REPLICATION_ROLE_MISMATCH_MESSAGE =
+  'REPLICATION_ROLE_MISMATCH: options.localRole 与实例静态角色不一致（session 的 localRole 必须等于 Registry 构造时注入的 role）——本调用零写入';
+export const REPLICATION_SESSION_EXISTS_MESSAGE =
+  'REPLICATION_SESSION_EXISTS: 此 Lease 已有一个活跃 ReplicationSession（每 Lease 首版最多一个 duplex session；close 或终态后槽位释放方可再开）——本调用零写入';
+export const REPLICATION_ROLE_PERMISSION_MESSAGE =
+  'REPLICATION_ROLE_PERMISSION: peer 实例无权本地修改 SCHEMA 或复制保留字段（ADR 0010：SCHEMA 与复制身份 hub-only）——本调用零写入';
+// 【注记】open 结果面的 `REPLICATION_NOT_ENABLED`（O-7）/ `RUNTIME_WRITE_DISABLED` 码族
+// message 复用 runtime 侧 #132/errors.ts 既有冻结词（replication-session.ts 单点产出，
+// Lease 编排经 internal seam 原样透传——沿 REPLICATION_ID_PATTERN 双副本先例的结构
+// 守卫在两处互相引用；本文件不持第三副本）。
+
+// —— Phase 5 增量（issue #133；ADR 0010 bootstrap/reset 编排；phase:62-65/113）——
+// 稳定 message 冻结常量（单一真相源；零插值、零 identity/输入回显）：
+export const NAMESPACE_IMPORT_INVALID_IDENTITY_MESSAGE =
+  'NAMESPACE_IMPORT_INVALID_IDENTITY: 导入文档缺少合规的复制身份（replicationId/replicationEpoch）';
+export const NAMESPACE_IMPORT_IDENTITY_MISMATCH_MESSAGE =
+  'NAMESPACE_IMPORT_IDENTITY_MISMATCH: 导入文档 META.docId 与请求 namespaceId 不一致';
+export const NAMESPACE_IMPORT_FAILED_MESSAGE =
+  'NAMESPACE_IMPORT_FAILED: namespace 受信导入发生运营故障';
+export const NAMESPACE_RESET_IDENTITY_MISMATCH_MESSAGE =
+  'NAMESPACE_RESET_IDENTITY_MISMATCH: 本地副本复制身份与期望不一致，拒绝重置';
+export const NAMESPACE_RESET_FAILED_MESSAGE =
+  'NAMESPACE_RESET_FAILED: namespace 重置编排发生运营故障';
+// —— R2 增量（issue #133 round-2；ADR 0010 bootstrap/reset 修订；owner feedback 2/3）——
+// 稳定 message 冻结常量（单一真相源；零插值、零 Hub 广告身份/输入回显）：
+export const NAMESPACE_IMPORT_EXPECTED_IDENTITY_MISMATCH_MESSAGE =
+  'NAMESPACE_IMPORT_EXPECTED_IDENTITY_MISMATCH: 导入文档复制身份与 Hub 广告身份不一致';
+export const NAMESPACE_IMPORT_EXPECTED_IDENTITY_INVALID_MESSAGE =
+  'NAMESPACE_IMPORT_EXPECTED_IDENTITY_INVALID: 期望复制身份（Hub 广告）不符合安全文法';
+// R4 微修订（方案 B，§3.6.1 R4-D2）：resetReplica expected 输入缺陷专属常量——镜像
+// import 侧先例（单一真相源；零插值、零本地复制身份/输入值回显）。
+export const NAMESPACE_RESET_EXPECTED_IDENTITY_INVALID_MESSAGE =
+  'NAMESPACE_RESET_EXPECTED_IDENTITY_INVALID: 期望本地复制身份（reset expectedLocalIdentity）不符合安全文法';
+
+/** 复制身份引用（N-1 冻结形状）：自 @nomicore/persistence 转出（类型别名）。 */
+export type { ReplicationIdentityRef };
 
 /** Host 无关的命名空间归属标识：owner 是 Persistence partition key，非当前调用人。 */
 export interface NamespaceOwner {
@@ -94,11 +145,14 @@ export interface RegistryNotAcceptingIssue {
   readonly message: typeof REGISTRY_NOT_ACCEPTING_MESSAGE;
 }
 
-/** Registry 内部故障阶段词表（§3.3；#110 只用 runtime-construction / lifecycle-slot-internal）。 */
+/** Registry 内部故障阶段词表（§3.3；#110 只用 runtime-construction / lifecycle-slot-internal）。
+ * phase-5 切片 1（ADR 0010）：追加 `namespace-id-generation`——普通 create 的 ID 生成阶段
+ * （随机源 throw / 形状违约 / 重试预算耗尽）的三类终局（ADR 0009 开放清单新注册）。 */
 export type NamespaceRegistryFatalPhase =
   | 'runtime-construction'
   | 'create-document-internal'
-  | 'lifecycle-slot-internal';
+  | 'lifecycle-slot-internal'
+  | 'namespace-id-generation';
 
 /** Registry 生命周期投影（#112 §2.E）：恒三相（running/shutting-down/stopped）。 */
 export type NamespaceRegistryStatus =
@@ -109,6 +163,8 @@ export type NamespaceRegistryStatus =
 /**
  * Runtime getStatus() 返回值的结构性复制型公开 alias（设计 §3.1）：不 re-export
  * 运行时命名类型；与 runtime 包的状态形态逐字段同构（lease.ts 有编译期 Equal 断言）。
+ * issue #132 增量：+replication 复制域（与 runtime 包 NamespaceRuntimeReplicationStatus
+ * 逐字段相等——由 NamespaceLeaseReplicationStatus 结构复制型 + lease.ts Equal 断言锁死）。
  */
 export interface NamespaceRuntimeStatusProjection {
   readonly lifecycle: 'ready' | 'closing' | 'closed';
@@ -121,7 +177,17 @@ export interface NamespaceRuntimeStatusProjection {
   };
   readonly fatal: Readonly<{ code: string; message: string }> | null;
   readonly close: Readonly<{ code: string; message: string }> | null;
+  readonly replication: NamespaceLeaseReplicationStatus;
 }
+
+/**
+ * Lease status 复制域的结构复制型（§3.2 纪律：不 re-export 运行时命名类型；形状与
+ * runtime 包 NamespaceRuntimeReplicationStatus 逐字段相等，由 lease.ts Equal 断言锁死）。
+ * 两态联合（无 'unknown' 第三态——AC-5 判别面 = 两次读取的值比较）。
+ */
+export type NamespaceLeaseReplicationStatus =
+  | Readonly<{ state: 'disabled' }>
+  | Readonly<{ state: 'enabled'; replicationId: string; replicationEpoch: number }>;
 
 /** Lease 状态：active 期向 Runtime 实时委托；released 期仅 status 可观察（runtime: null）。 */
 export type NamespaceLeaseStatus =
@@ -171,16 +237,27 @@ export interface RegistryTimeoutScheduler {
 // —— #111 create 公共面（设计 §3 冻结类型；§14 签名替换契约）——
 
 /**
- * create 输入（设计 §3）：恒四键——owner/namespaceId 由接纳段读取冻结（§4 DQ-1：
- * 排队期间改写不影响 identity/Persistence），schema/root 在槽内做一次 cycle-safe
- * plain-data 深快照 + 深冻结（§4 第 4 步）。ROOT 是完整 logical snapshot；
- * 调用方不得携带 META/createdAt，且不得省略 root。
+ * create 输入（#111 设计 §3；phase-5 切片 1 修正：恒三键，ADR 0010「普通 create 不
+ * 再接受调用方 namespaceId」）：owner 由接纳段读取冻结（§4 DQ-1：排队期间改写不影响
+ * identity/Persistence），schema/root 在槽内做一次 cycle-safe plain-data 深快照 +
+ * 深冻结（§4 第 4 步）。namespaceId 由注入的受控 128-bit CSPRNG 生成（`ns-`+32 小写
+ * hex）；调用方携带 namespaceId 键 → NAMESPACE_CREATE_INVALID_INPUT（接纳段拒绝）。
+ * ROOT 是完整 logical snapshot；调用方不得携带 META/createdAt，且不得省略 root。
  */
 export interface CreateNamespaceInput {
   readonly owner: NamespaceOwner;
-  readonly namespaceId: string;
   readonly schema: unknown;
   readonly root: unknown;
+}
+
+/**
+ * Registry 受控随机源 capability（phase-5 切片 1；ADR 0009 依赖纪律 + ADR 0010 身份条款）。
+ * 契约：实现必须是密码学安全随机（CSPRNG）；每次调用返回**新鲜、无偏、恰 length 字节**的
+ * Uint8Array；不得是可 fallback 的全局 crypto 直调。缺失/非函数 → 构造期同步 TypeError，
+ * 绝不 fallback（禁 Math.random / crypto.getRandomValues 缺省）。
+ */
+export interface RegistryRandomBytes {
+  (length: number): Uint8Array;
 }
 
 /**
@@ -227,16 +304,115 @@ export type CreateNamespaceResult =
   | Readonly<{ ok: true; lease: NamespaceLease }>
   | CreateNamespaceIssue;
 
+// —— Phase 5 增量的窄结果联合（issue #133；ADR 0010 bootstrap/reset；仿 create 窄结果先例）——
+
+/**
+ * importReplica 领域窄 issue（Phase 5；ADR 0010:28/65）：common 窄 issue
+ * （InvalidIdentityIssue / RegistryNotAcceptingIssue）与导入专属拒绝
+ * （ALREADY_EXISTS / INVALID_IDENTITY / IDENTITY_MISMATCH / IMPORT_FAILED）。
+ * R2 增量（append-only）：`NAMESPACE_IMPORT_EXPECTED_IDENTITY_MISMATCH`
+ * （META 复制事实合规但与 Hub 广告身份不一致——ownership 转移前拒绝）与
+ * `NAMESPACE_IMPORT_EXPECTED_IDENTITY_INVALID`（expected 输入本身不合安全文法
+ * ——与 NAMESPACE_INVALID_IDENTITY 同语义族：常量 message、零字段值回显）。
+ * message 全部为不可插值常量。
+ */
+export type ImportReplicaIssue =
+  | InvalidIdentityIssue
+  | RegistryNotAcceptingIssue
+  | Readonly<{
+      ok: false;
+      code: 'NAMESPACE_NOT_FOUND';
+      message: typeof NAMESPACE_NOT_FOUND_MESSAGE;
+    }>
+  | Readonly<{
+      ok: false;
+      code: 'NAMESPACE_ALREADY_EXISTS';
+      message: typeof NAMESPACE_ALREADY_EXISTS_MESSAGE;
+    }>
+  | Readonly<{
+      ok: false;
+      code: 'NAMESPACE_IMPORT_INVALID_IDENTITY';
+      message: typeof NAMESPACE_IMPORT_INVALID_IDENTITY_MESSAGE;
+    }>
+  | Readonly<{
+      ok: false;
+      code: 'NAMESPACE_IMPORT_IDENTITY_MISMATCH';
+      message: typeof NAMESPACE_IMPORT_IDENTITY_MISMATCH_MESSAGE;
+    }>
+  | Readonly<{
+      ok: false;
+      code: 'NAMESPACE_IMPORT_EXPECTED_IDENTITY_MISMATCH';
+      message: typeof NAMESPACE_IMPORT_EXPECTED_IDENTITY_MISMATCH_MESSAGE;
+    }>
+  | Readonly<{
+      ok: false;
+      code: 'NAMESPACE_IMPORT_EXPECTED_IDENTITY_INVALID';
+      message: typeof NAMESPACE_IMPORT_EXPECTED_IDENTITY_INVALID_MESSAGE;
+    }>
+  | Readonly<{
+      ok: false;
+      code: 'NAMESPACE_IMPORT_FAILED';
+      message: typeof NAMESPACE_IMPORT_FAILED_MESSAGE;
+    }>;
+
+/** importReplica 结果联合：成功携带 lease（bootstrap 后的本地 generation 独占面）。 */
+export type ImportReplicaResult =
+  | Readonly<{ ok: true; lease: NamespaceLease }>
+  | ImportReplicaIssue;
+
+/**
+ * resetReplica 领域窄 issue（Phase 5；ADR 0010:57）：common 窄 issue 与编排专属
+ * 拒绝（NOT_FOUND / RESET_IDENTITY_MISMATCH / RESET_FAILED / LOAD_FAILED）。
+ * R4 微修订（append-only，方案 B §3.6.1 R4-D2/D3）：
+ * `NAMESPACE_RESET_EXPECTED_IDENTITY_INVALID`（expectedLocalIdentity 参数本身
+ * 不符安全文法——入口快照校验失败即拒绝；零 Persistence/probe 触达、零载体/
+ * entry 访问；无 field 成员（判别完全由 code 承载）；常量 message、零值回显）。
+ * 内部故障经 branded NamespaceRegistryFatalError reject。
+ */
+export type ResetReplicaIssue =
+  | InvalidIdentityIssue
+  | RegistryNotAcceptingIssue
+  | Readonly<{
+      ok: false;
+      code: 'NAMESPACE_NOT_FOUND';
+      message: typeof NAMESPACE_NOT_FOUND_MESSAGE;
+    }>
+  | Readonly<{
+      ok: false;
+      code: 'NAMESPACE_RESET_IDENTITY_MISMATCH';
+      message: typeof NAMESPACE_RESET_IDENTITY_MISMATCH_MESSAGE;
+    }>
+  | Readonly<{
+      ok: false;
+      code: 'NAMESPACE_RESET_FAILED';
+      message: typeof NAMESPACE_RESET_FAILED_MESSAGE;
+    }>
+  | Readonly<{
+      ok: false;
+      code: 'NAMESPACE_LOAD_FAILED';
+      message: typeof NAMESPACE_LOAD_FAILED_MESSAGE;
+    }>
+  | Readonly<{
+      ok: false;
+      code: 'NAMESPACE_RESET_EXPECTED_IDENTITY_INVALID';
+      message: typeof NAMESPACE_RESET_EXPECTED_IDENTITY_INVALID_MESSAGE;
+    }>;
+
+/** resetReplica 结果联合：成功为窄 {ok:true}（key 缺席即 bootstrap 资格，无显式标记）。 */
+export type ResetReplicaResult =
+  | Readonly<{ ok: true }>
+  | ResetReplicaIssue;
+
 // —— Lease 代理能力的公开 alias（§3.2）：结构性表达 Runtime 能力，不转导 Runtime 名称 ——
 
 /** lease.read 结果 = runtime read 正常联合 | released issue。 */
-export type NamespaceLeaseReadResult =
+export type NamespaceLeaseReadDataResult =
   | ReadLogicalValueResult
   | RuntimeReadDisabledResult
   | NamespaceLeaseReleasedIssue;
 
-/** lease.getSchemaEnvelope 结果（runtime 同签名：载体缺席 → null）。 */
-export type NamespaceLeaseSchemaEnvelope = SchemaEnvelope | null;
+/** lease.getSchema 结果（runtime 同签名：载体缺席 → null）。 */
+export type NamespaceLeaseSchema = SchemaEnvelope | null;
 
 /** lease.getMetadata 结果（runtime 同签名：META 全键深拷贝）。 */
 export type NamespaceLeaseMetadata = Record<string, unknown>;
@@ -244,14 +420,137 @@ export type NamespaceLeaseMetadata = Record<string, unknown>;
 /** lease.getActiveSchema 结果（runtime 同签名：preparing/unavailable/fatal 期 null）。 */
 export type NamespaceLeaseActiveSchema = ActiveSchemaInfo | null;
 
-/** lease.mutateRoot 结果 = runtime 同名结果 | released issue（Promise resolve，不 reject）。 */
-export type NamespaceLeaseMutateRootResult = MutateRootResult | NamespaceLeaseReleasedIssue;
+/** lease.mutateData 结果 = runtime 同名结果 | released issue（Promise resolve，不 reject）。 */
+export type NamespaceLeaseMutateDataResult = MutateDataResult | NamespaceLeaseReleasedIssue;
 
 /** lease.replaceSchema 输入（与 runtime 同名类型逐字段一致）。 */
 export type NamespaceLeaseReplaceSchemaInput = ReplaceSchemaInput;
 
 /** lease.replaceSchema 结果 = runtime 同名结果 | released issue（Promise resolve，不 reject）。 */
 export type NamespaceLeaseReplaceSchemaResult = ReplaceSchemaResult | NamespaceLeaseReleasedIssue;
+
+/** lease.enableReplication 结果 = runtime 同名结果 | released issue（沿
+ *  NamespaceLeaseMutateDataResult 先例——Promise resolve，不 reject；随机源违约与
+ *  领域拒绝均经结果联合结算，写管线 internal fatal 经 RuntimeWriteFatalError rejection）。 */
+export type NamespaceLeaseEnableReplicationResult = EnableReplicationResult | NamespaceLeaseReleasedIssue;
+
+/** lease.bumpReplicationEpoch 结果 = runtime 同名结果 | released issue（同上）。 */
+export type NamespaceLeaseBumpReplicationEpochResult =
+  BumpReplicationEpochResult | NamespaceLeaseReleasedIssue;
+
+// —— phase-5 ReplicationSession 公共面（issue #134；ADR 0010 L71–90 / L81–88 / L105 / L115–121；
+//    全部纯结构性——零 Runtime 命名类型、零内部 subpath 字面量、零 Y.Doc/DocHandle/sequencer
+//    引用；形状与 runtime 包 internal 面逐字段相等，由 lease.ts Equal 断言锁死）——
+
+/** 实例静态角色（ADR 0010 静态星型拓扑；O-4 注入点：Registry 构造 options.role）。
+ *  缺省 'hub'（基线全权限等价面——零回归）。 */
+export type InstanceRole = 'hub' | 'peer';
+
+/** openReplicationSession 输入（ADR 0010 L81 冻结四域中的两域为调用方输入；
+ *  replicationId/replicationEpoch 由 Runtime 投影链冻结，非调用方输入——SA8 T-6/O-7）。 */
+export interface OpenReplicationSessionOptions {
+  readonly localRole: InstanceRole;
+  /** 远端实例标识；采纳 ADR 0010 L156 instanceId 安全文法（切片 6/7 wire 身份先行词）。 */
+  readonly remoteInstanceId: string;
+}
+
+/** open 拒绝码闭集（append-only）。 */
+export type OpenReplicationSessionIssueCode =
+  | 'NAMESPACE_LEASE_RELEASED'        // released lease 通道（冻结码）
+  | 'REPLICATION_SESSION_INPUT_INVALID'
+  | 'REPLICATION_ROLE_MISMATCH'
+  | 'REPLICATION_SESSION_EXISTS'
+  | 'REPLICATION_NOT_ENABLED'         // #132 已冻结族的新结果面用法（O-7）
+  | 'RUNTIME_WRITE_DISABLED'          // 既有码族（lifecycle≠ready / fatal 已置位）
+  | 'REPLICATION_SESSION_UNSUPPORTED';
+
+/** open 结果联合：一切拒绝（含 released）经返回 Promise 的 ok:false 结算（O-3 通道表）。 */
+export type OpenReplicationSessionResult =
+  | Readonly<{ ok: true; session: ReplicationSession }>
+  | Readonly<{ ok: false; code: OpenReplicationSessionIssueCode; message: string }>;
+
+/** apply 拒绝码闭集（append-only；fatal 经 RuntimeWriteFatalError rejection，不入本联合）。
+ *  【SA2 R1 HIGH-1】与 runtime 侧 core 联合逐字相同（六码）——Equal 十键逐字段相等前提。 */
+export type ReplicationSessionApplyRefusalCode =
+  | 'NAMESPACE_LEASE_RELEASED'        // lease 已 release（会话吊销；唯一产出点 = 包装层 revoked 前置检查）
+  | 'REPLICATION_SESSION_CLOSED'      // 显式 close 终态
+  | 'REPLICATION_EPOCH_CONFLICTED'    // 冻结 epoch 过期（终态 conflicted）
+  | 'REPLICATION_RAW_UPDATE_INVALID'  // 非 Uint8Array / scratch 预演无法接纳
+  | 'REPLICATION_PROTECTED_FIELDS_CHANGED'
+  | 'RUNTIME_WRITE_DISABLED';         // lifecycle / fatal / writable gate（含 hub-degraded）
+
+export type ReplicationSessionApplyResult =
+  | Readonly<{ ok: true }>
+  | Readonly<{ ok: false; code: ReplicationSessionApplyRefusalCode; message: string }>;
+
+/** session 独立状态查询面（O-11 冻结词汇；Runtime status 的 replication 域仍只含两态
+ *  持久事实——T-4：session 状态绝不入 Runtime status）。 */
+export interface ReplicationSessionStatus {
+  /** session 终态机：open → closed（显式 close、Lease release 或 Runtime close）| conflicted（epoch fence，稳定）。 */
+  readonly state: 'open' | 'closed' | 'conflicted';
+  /** closed 的来源；仅 state==='closed' 时存在。Runtime reset/close 必须投影 runtime-close。 */
+  readonly closedBy?: 'explicit-close' | 'runtime-close';
+  readonly localRole: InstanceRole;
+  /** 创建时派生冻结：localRole==='peer' ⇔ 'hub-to-peer'（星型拓扑下 peer 的唯一对端是 hub）。 */
+  readonly direction: 'hub-to-peer' | 'peer-to-hub';
+  readonly remoteInstanceId: string;
+  readonly replicationId: string;
+  /** 冻结值——永不随 Runtime bump 漂移（ADR 0010 L81；SA6 用例 17 锚）。 */
+  readonly replicationEpoch: number;
+  /** Runtime 投影链当前 epoch（fence 可观测：currentEpoch !== replicationEpoch ⟹ 已过期）。 */
+  readonly currentEpoch: number;
+  /** raw apply 成功后置位、session 生命周期内永不清除（session 无法证明 ROOT 重新合法——只置不清是诚实方向）。 */
+  readonly rootValidation: 'none' | 'replication-unvalidated';
+  /** ADR 0010 L139：必须区分「内存已追上」与「磁盘未追上」，不得声称 durable。
+   *  memoryCaughtUp 初值冻结为 false（open 时刻尚无经本 session 的 raw apply——SA2 R1 #7），
+   *  首次 apply 槽 R5.5 置 true 后不回落；diskCaughtUp 为字面量 false 类型——本查询面
+   *  结构性永不声称磁盘已追上（durable 证据通道在本切片不存在；Persistence retry 落盘
+   *  不由 session 观测）。 */
+  readonly durability: Readonly<{ readonly memoryCaughtUp: boolean; readonly diskCaughtUp: false }>;
+  /** 扇出 listener 抛错的自捕获计数（ADR 0007 L54「记录」面；不 fatal、不断扇出）。 */
+  readonly observerFailures: number;
+  /** fanout 投递队列溢出标记（F-1：status 第 11 字段；初值 false、**sticky**——置位后
+   *  session 生命周期内永不清除；清零路径 = transport reset/bootstrap 后 open 新
+   *  session。标记后投递行为不变（继续投递——标记是观测信号不是行为切换），transport
+   *  观测后自行决策 reset/bootstrap（切片 6 消费）。 */
+  readonly needsResync: boolean;
+}
+
+/** ReplicationSession 公共窄能力面（ADR 0010 L81–88 六项 + 冻结四域；恰十键）。 */
+export interface ReplicationSession {
+  readonly localRole: InstanceRole;
+  readonly remoteInstanceId: string;
+  readonly replicationId: string;
+  readonly replicationEpoch: number;
+  /** 反射 live doc 真实状态向量（与 Y.encodeStateVector(doc) 逐字节一致）。终态 session
+   *  同步 throw ReplicationSessionClosedError（code REPLICATION_SESSION_CLOSED——沿
+   *  getter 域 throw 先例）。 */
+  encodeStateVector(): Uint8Array;
+  /** 按远端 state vector 编码 diff（Y.encodeStateAsUpdate(doc, sv)）。终态同上。
+   *  畸形 state vector（无法被 lib0/yjs 解码）→ 照实抛 Yjs 原生错误——**可信域契约**
+   *  （调用方为 Host 组装的可信 transport；本方法为同步编码面，不经结果联合包装）。 */
+  encodeDiff(remoteStateVector: Uint8Array): Uint8Array;
+  /** 订阅 owned 本地 updates：每投递独立 Uint8Array 副本；本 session apply 的源 origin
+   *  被排除（回声抑制）；返回退订函数。终态 session 退化为永不投递的 no-op 订阅。
+   *  listener 非函数 → 订阅时同步 TypeError（形状门禁）；listener 运行期 throw 由扇出层
+   *  自捕获计数，不熔断。 */
+  subscribeOwnedUpdates(listener: (update: Uint8Array) => void): () => void;
+  /** trusted raw apply：进入唯一 write sequencer，槽内完成 dirty notification 后 resolve；
+   *  一切拒绝经返回 Promise 的 ok:false 结果结算（含敌意 Uint8Array 子类——陷阱安全
+   *  拷贝 `new Uint8Array(update)`，绝不用 update.slice()）；internal fatal 经
+   *  RuntimeWriteFatalError rejection。 */
+  applyRemoteUpdate(update: Uint8Array): Promise<ReplicationSessionApplyResult>;
+  /** 独立复制状态（全生命周期可观测——沿 lease.getStatus 先例，不在停接纳范围）。
+   *  每次调用返回**全新深冻结对象**（state/currentEpoch/rootValidation/observerFailures/
+   *  durability 均为时变域——共享可变产物会污染后续读数）。 */
+  getStatus(): Readonly<ReplicationSessionStatus>;
+  /** 幂等 close：所有调用返回同一 Promise 实例；首次调用**同步段**标记终态 + 摘除扇出
+   *  channel（停接纳即时生效）；Promise 结算语义冻结为 **barrier 语义**：resolve 时点 =
+   *  先于本次 close() 接纳的全部任务（含在途 apply 槽）经唯一 write sequencer 排空之后；
+   *  **close() 永不 reject**（barrier 为恒绿空槽体，结构性无 reject 面）。后接纳的
+   *  apply 在接纳层被拒，不入队。 */
+  close(): Promise<void>;
+}
 
 /**
  * asyncDispose 键（ES2023 显式资源管理）。lib ES2022 未声明 Symbol.asyncDispose，
@@ -276,13 +575,33 @@ export interface NamespaceLease {
   /** 冻结的独立 owner 投影（仅 userId）。 */
   readonly owner: Readonly<{ readonly userId: string }>;
   readonly namespaceId: string;
-  read(path: readonly (string | number)[]): NamespaceLeaseReadResult;
-  getSchemaEnvelope(): NamespaceLeaseSchemaEnvelope;
+  readData(path: readonly (string | number)[]): NamespaceLeaseReadDataResult;
+  getSchema(): NamespaceLeaseSchema;
   getMetadata(): NamespaceLeaseMetadata;
   getActiveSchema(): NamespaceLeaseActiveSchema;
   getStatus(): NamespaceLeaseStatus;
-  mutateRoot(mutation: unknown): Promise<NamespaceLeaseMutateRootResult>;
+  mutateData(mutation: unknown): Promise<NamespaceLeaseMutateDataResult>;
   replaceSchema(input: NamespaceLeaseReplaceSchemaInput): Promise<NamespaceLeaseReplaceSchemaResult>;
+  /** Hub 显式复制管理操作（issue #132/ADR 0010 冻结名）：原子安装随机 128-bit 复制谱系
+   *  + epoch 1（经 runtime 同一 write sequencer——单槽单事务原子、dirty 恰一次）。
+   *  已启用命名空间 → 幂等 ok:true（零写入、零 dirty、身份/epoch 不变——稳定文档化
+   *  结果）。拒绝（ok:false, issues）经结果联合结算：REPLICATION_RANDOM_SOURCE_INVALID
+   *  （受控随机源违约）/ REPLICATION_INPUT_INVALID / REPLICATION_META_ABSENT /
+   *  RUNTIME_WRITE_DISABLED 系；写管线 internal fatal 经 RuntimeWriteFatalError
+   *  rejection。released → released issue（与两写同通道）。 */
+  enableReplication(): Promise<NamespaceLeaseEnableReplicationResult>;
+  /** Hub 显式提升权威代际（issue #132/ADR 0010 冻结名；身份不变——复制谱系不可变）。
+   *  overflow（epoch = Number.MAX_SAFE_INTEGER）→ ok:false 结果面拒绝、绝不回绕；
+   *  未启用 → REPLICATION_NOT_ENABLED；fatal/degraded/close → RUNTIME_WRITE_DISABLED
+   *  零写入；released → released issue。 */
+  bumpReplicationEpoch(): Promise<NamespaceLeaseBumpReplicationEpochResult>;
+  /** ADR 0010 L73–79：受信任 duplex raw 复制会话入口。raw replication 绕过 VFSL 业务
+   *  校验（ADR 0010 L94 明示例外）——Host 搭建方负责只把 Lease 交给可信代码。
+   *  拒绝全部经返回 Promise 的 ok:false 结果结算（released / 输入形状 / role 不匹配 /
+   *  已有活跃 session / 复制未启用 / Runtime lifecycle 或 fatal / 宿主缺席）。 */
+  openReplicationSession(
+    options: OpenReplicationSessionOptions,
+  ): Promise<OpenReplicationSessionResult>;
   release(): Promise<void>;
   readonly [ASYNC_DISPOSE]: () => Promise<void>;
 }
@@ -290,13 +609,16 @@ export interface NamespaceLease {
 /**
  * Host 无关 Registry 主接口（设计 §3.2）：open + create 双主链 + shutdown 三相状态机。
  *
- * create 契约（§5 伪码）：运行时按 §4 DQ-1 最小 identity 接纳 → 同 key 与 open 共用
- * #110 carrier FIFO → 槽内 payload 快照 → 必需的 Clock 单次读数 → 私有 create-document
+ * create 契约（§5 伪码；phase-5 切片 1 按 ADR 0010 修订）：运行时按 §4 DQ-1 最小
+ * identity 接纳（owner-only——namespaceId 由注入受控 CSPRNG 生成，调用方携带
+ * namespaceId 键即拒）→ 生成编排循环（entry 碰撞/DOC_DUPLICATE → 换 ID 重试，至多
+ * 8 次；耗尽 → committed:false fatal）→ 候选经 carrier FIFO 入 attempt slot → 槽内
+ * payload 快照 → 必需的 Clock 单次读数 → 私有 create-document（prepare + build）
  * → Persistence createDoc → 普通 P0 Runtime factory。拒绝分三通道：resolve 领域窄
- * issue（含 duplicate 四源同码 ALREADY_EXISTS）、reject branded
+ * issue（身份/输入形状/schema/root/持久化运营故障/不接纳）、reject branded
  * NamespaceRegistryFatalError（internal/clock/create-document/persistence-fatal/
- * post-commit runtime-construction，committed 事实诚实）、构造期同步 TypeError
- * （Clock/scheduler 形状门禁）。
+ * post-commit runtime-construction/namespace-id-generation，committed 事实诚实）、
+ * 构造期同步 TypeError（Clock/scheduler/randomBytes 形状门禁——ADR 0009 依赖纪律）。
  *
  * #112 增量（设计 §2.D/§2.E/§2.H）：shutdown 真实化——三次调用态机
  * （running → shutting-down → stopped）、停接纳于公共入口同步段、聚合关闭全部
@@ -306,13 +628,48 @@ export interface NamespaceRegistry {
   /** 校验身份后取得或建立同 key 唯一 Runtime，并签发独立 lease；不等 P0。 */
   open(owner: NamespaceOwner, namespaceId: string): Promise<OpenNamespaceResult>;
   /**
-   * #111 排他 create 主链（§3/§14 typed 签名）：恒四键输入（§4 DQ-1 最小接纳是运行时
-   * 唯一形状验收点——顶层非 object / identity 缺陷 / payload 变体 → 窄 issue），同
+   * #111 排他 create 主链（§3/§14 typed 签名；phase-5 切片 1 修正：恒三键输入——
+   * namespaceId 由注入受控 CSPRNG 生成，调用方携带 namespaceId 键即拒），同
    * key 排他（绝不 create-as-open），成功签发独立 lease（普通 P0 Runtime，不等 P0
    * 结算）。实现层签名以 unknown 表达（对齐 open 的「公共 typed / 实现 unknown」双层
    * 先例——接纳段校验一切敌意/畸形输入是运行时契约，静态类型是调用方命名形状）。
    */
   create(input: CreateNamespaceInput): Promise<CreateNamespaceResult>;
+  /**
+   * Phase 5 内部受信任 bootstrap 导入（ADR 0010:28/65；phase:62）。保留 Hub
+   * namespaceId（不生成、不改写）；在 persistence ownership 转移之前严格核对
+   * META 复制身份与 **Hub 广告 expected 身份**（第 4 参数 expectedReplicationIdentity
+   * ——R2 增量，owner feedback 2；必须在任何 doc 读取/carrier 入队/Persistence 调用
+   * 之前被安全快照验证，来源只能是对认证 Hub 广告身份的可靠绑定，绝不可用文档自身
+   * 值替代）；排他创建（live entry / committed snapshot / 并发 →
+   * NAMESPACE_ALREADY_EXISTS，绝不覆盖/合并）。META 复制事实合规但与广告身份
+   * 不符 → `NAMESPACE_IMPORT_EXPECTED_IDENTITY_MISMATCH`（零持久化写入、零 entry
+   * 登记）。
+   *
+   * 信任模型（ADR 0010:79 同款纪律，文档化而非 capability 化）：本入口允许调用
+   * 方指定 namespaceId，是「复制 bootstrap 保留 Hub 身份」的授权例外；Host
+   * 搭建方负责只把 Registry（及本方法可达面）交给可信复制编排代码，不得把它
+   * 暴露为普通客户端写入口。本入口不改变普通 create 的 owner-only 接纳与
+   * CSPRNG 生成纪律（SA6 保持性守卫锚）。
+   */
+  importReplica(
+    owner: NamespaceOwner,
+    namespaceId: string,
+    doc: YjsDoc,
+    expectedReplicationIdentity: ReplicationIdentityRef,
+  ): Promise<ImportReplicaResult>;
+  /**
+   * Phase 5 Peer 冲突恢复编排（ADR 0010:57；phase:113）：串行化
+   * close → archive → 允许 bootstrap。期望身份由调用方（复制插件）供给、
+   * 纯传递给 Persistence 归档守卫（§4.7）；owner/identity race → 稳定拒绝且
+   * 零部分删除。成功 ⟹ 该 key 的全部未决 lease 已失效、本地副本已归档、
+   * 随后 importReplica 可成功（bootstrap 资格 = key 缺席，无显式标记）。
+   */
+  resetReplica(
+    owner: NamespaceOwner,
+    namespaceId: string,
+    expectedLocalIdentity: ReplicationIdentityRef,
+  ): Promise<ResetReplicaResult>;
   /** 同步 Registry 生命周期投影：恒三相（running/shutting-down/stopped）、恒冻结常量。 */
   getStatus(): NamespaceRegistryStatus;
   /**
@@ -352,6 +709,15 @@ export interface NamespaceRegistryShutdownFailure {
 export interface CreateNamespaceRegistryOptions {
   readonly clock: Clock;
   readonly scheduler: RegistryTimeoutScheduler;
+  /** 受控随机源（phase-5 切片 1，ADR 0010）：普通 create 的 namespaceId 生成源；
+   * **必需**——缺失/非函数 → 构造期同步 TypeError（禁全局 crypto fallback，ADR 0009）。
+   * 契约细节见 RegistryRandomBytes。 */
+  readonly randomBytes: RegistryRandomBytes;
   readonly idleTimeoutMs?: number;
   readonly observer?: RegistryObserver;
+  /** 实例静态角色（ADR 0010 静态星型拓扑）。可选，缺省 'hub'（基线全权限等价面——零
+   *  回归）；提供非法值 → 构造期同步 TypeError（NAMESPACE_REGISTRY_ROLE_INVALID，
+   *  检查顺序在 randomBytes 之后）。生产 composition root（phase-5 切片 9）必须显式
+   *  传入。 */
+  readonly role?: InstanceRole;
 }

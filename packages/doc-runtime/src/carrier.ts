@@ -1,6 +1,7 @@
 /**
  * @nomicore/doc-runtime — 载体判定（carrierOf）+ ROOT 探针（probeRoot）。
  *
+ * 规范权威：ADR-0007（载体判定/ROOT 探针域）；设计记录（历史证据，非规范）：
  * 设计 §4.1/§4.2（wiki/raw/task_doc-runtime-extract-yjs-snapshot_design.md）：
  * - 两层判定：carrierOf 为粗判（五值词汇表 + null 不可达态），细判（bigint/Date/
  *   类实例/内嵌 Y 类型等 JSON 值域断言）由 extract.ts 的 copyPlainValue 承担；
