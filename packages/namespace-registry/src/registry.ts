@@ -1227,7 +1227,13 @@ export function createRegistryInternal(
     return issueLease(entry);
   }
 
-  /** Generated-ID create orchestration: each candidate uses its own carrier FIFO. */
+  /**
+   * Generated-ID create orchestration: each candidate uses its own carrier FIFO. Entry and
+   * Persistence collisions are internal candidate-selection retries, not terminal public create
+   * outcomes. The diagnostic log therefore emits exactly one final outcome for the accepted public
+   * create; representing candidate retries would require a retry result/correlation shape outside
+   * the frozen v1 diagnostic vocabulary.
+   */
   interface CreatePreparedState {
     readonly schema: unknown;
     readonly root: unknown;
@@ -1414,6 +1420,10 @@ export function createRegistryInternal(
       const runtime = factory(handle, () => persistence.saveDoc(handle));
       const entry = makeEntry(id, runtime);
       entries.set(id.key, entry);
+      // Persistence createDoc already encoded and committed this same detached document. A second
+      // encode failure is structurally unreachable for conforming adapters; frozen v1 has no honest
+      // update-omitted reason for producer encode failure, so the defensive undefined branch must not
+      // invent noop/rejected/fatal facts or an unapproved stable reason.
       if (state !== undefined) {
         diag.emitOutcome(p.createdAt, {
           stage: 'transaction',
@@ -1892,7 +1902,7 @@ export function createRegistryInternal(
     async create(input: unknown): Promise<CreateNamespaceResult> {
       // #112 逻辑门迁移（§2.D）：停接纳先于 acceptCreateIdentity（零 descriptor/Proxy
       // trap 执行，AC9）。公共 typed / 实现 unknown 双层签名说明见 #111 冻结文本。
-if (acceptance !== 'running') {
+      if (acceptance !== 'running') {
         diag.emitEarlyOutcome({
           stage: 'acceptance',
           code: 'REGISTRY_NOT_ACCEPTING',

@@ -13,7 +13,7 @@
 
 ### 1.1 一句话目标
 
-把 `NamespaceRegistry.create` 的**全部结局路径**（从公共入口的停接纳/身份拒绝，经槽内 duplicate/快照/编译/校验/Persistence 提交，到 post-commit Runtime 构造）接入可选注入的 namespace 诊断变更日志：每次尝试恰一条 `namespace-create` attempt 语义 emission；提交事实确立后向 Host 供给 detached genesis bytes 建立 stream；一切日志侧行为（emitter 违约、时钟故障、队列压力、stream 初始化失败）对 create 的返回值、Persistence 状态与 Registry 生命周期**零影响**。
+把 `NamespaceRegistry.create` 的**全部公共结局路径**（从公共入口的停接纳/身份拒绝，经快照/编译/校验/Persistence 提交，到 post-commit Runtime 构造）接入可选注入的 namespace 诊断变更日志：每次公共 create 恰一条最终 `namespace-create` attempt 语义 emission；提交事实确立后向 Host 供给 detached genesis bytes 建立 stream；一切日志侧行为（emitter 违约、时钟故障、队列压力、stream 初始化失败）对 create 的返回值、Persistence 状态与 Registry 生命周期**零影响**。Phase 5 改为内部生成 namespaceId 后，entry / `DOC_DUPLICATE` 只表示候选 ID 碰撞并触发内部重生成，不是公共 create 的 rejected 结局；v1 冻结 result 词表也没有可诚实表达候选 retry 的形状，因此不为候选碰撞另发 rejected attempt，只记录重试后的公共终局。
 
 ### 1.2 范围内 / 范围外
 

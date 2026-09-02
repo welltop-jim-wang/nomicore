@@ -207,7 +207,7 @@ function emitAttempt(emitter: NamespaceDiagnosticChangeEmitter, observedAt: stri
         ? projectIssues(e.rawIssues, e.issuesKind)
         : undefined;
     emitter.emit({
-      operation: 'namespace-create', // ADR-0012 v1 封闭词表
+      operation: 'namespace-create', // ADR 0011 v1 封闭 operation 词表
       stage: e.stage,
       observedAt, // 注入 Clock 同源 ISO（禁墙钟）
       source: { kind: 'local' }, // Registry 本地写路径

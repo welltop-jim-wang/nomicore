@@ -11,7 +11,8 @@
  *   四隔离；六类测试场景）；
  * - ADR-0011（stage/结局词表、输入捕获四态、接口 seam 小 emitter、fatal 保留既有
  *   committed 事实、业务模块不依赖日志存储实现）；
- * - ADR-0012（每新 stream 尽力先记 genesis baseline；初始化失败不影响 namespace
+ * - docs/adr/0012-vfsl-validated-jsonl-and-framed-sidecar-change-log.md（每新 stream
+ *   尽力先记 genesis baseline；初始化失败不影响 namespace
  *   create，独立健康 observer 上报 `LOG_STREAM_INIT_FAILED`；后续重试成功以当时
  *   Y.Doc 建立新 stream，genesis 只代表从该时点开始）；
  * - #148 冻结 emission/record/vocabulary（操作 `namespace-create`、8 值 stage 词表、
@@ -124,9 +125,9 @@ function makeDeterministicRandomBytes(): (length: number) => Uint8Array {
   };
 }
 
-/** 契约锚点：#150 注入 seam（字段名 = 契约锚点；当前 Overrides 无此字段——传参被
- *  忽略 → 红灯）。emitter 为 #148 冻结接口；initStream 为 ADR-0012 stream 建立缝
- *  （genesis bytes 由 producer 供给、adapter 内部构造 genesis-baseline）。 */
+/** 契约锚点：#150 注入 seam。emitter 为 #148 冻结接口；initStream 为
+ * docs/adr/0012-vfsl-validated-jsonl-and-framed-sidecar-change-log.md 定义的 stream 建立缝
+ *（genesis bytes 由 producer 供给、adapter 内部构造 genesis-baseline）。 */
 interface NamespaceRegistryDiagnosticLog {
   readonly emitter: NamespaceDiagnosticChangeEmitter;
   readonly initStream?: (namespaceId: string, genesisUpdateBytes: Uint8Array | undefined) => void;
@@ -525,7 +526,7 @@ describe('#150 create 诊断记录（红灯契约）', () => {
     await second.release();
   });
 
-  it('AC1 持久层 ID 冲突（DOC_DUPLICATE）：重生成后 committed，保留最终 transaction 诊断', async () => {
+  it('AC1 持久层候选 ID 冲突（DOC_DUPLICATE）：内部重试后仅记录公共 create 的最终 committed 结局', async () => {
     const log = makeLog({ inputPolicy: 'full' });
     const binding: NamespaceRegistryDiagnosticLog = { emitter: log.emitter };
     const persistence = new StubPersistence();
@@ -539,7 +540,10 @@ describe('#150 create 诊断记录（红灯契约）', () => {
       GENERATED_NAMESPACE_IDS.second,
     ]);
 
-    const rec = firstAttempt(await waitAttempts(log, 1));
+    const records = await waitAttempts(log, 1);
+    await flushMicrotasks();
+    expect(log.records().filter((record) => record.recordKind === 'attempt')).toHaveLength(1);
+    const rec = firstAttempt(records);
     expect(rec.stage).toBe('transaction');
     expect(rec.result.kind).toBe('committed');
     expect(rec.code).toBeUndefined();
