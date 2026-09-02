@@ -35,14 +35,6 @@ export const FATAL_SCHEMA_WRITE_INTERNAL_CODE = 'NSRT-FATAL-SCHEMA-WRITE-INTERNA
 export const FATAL_SCHEMA_WRITE_INTERNAL_MESSAGE =
   'SCHEMA write internal fault：写管线产生结果联合之外的 internal fatal；该 fatal 已永久禁用本 Runtime 的全部写能力，读取仍保留。' as const;
 
-/** 复制管理写槽 internal fault 稳定 code（issue #132 D-9——append-only：与 ROOT/SCHEMA
- *  写槽区分来源，status.fatal 诊断不失真）。 */
-export const FATAL_REPLICATION_WRITE_INTERNAL_CODE = 'NSRT-FATAL-REPLICATION-WRITE-INTERNAL' as const;
-
-/** 复制管理写槽 internal fault 稳定 message（恒定文案：不含任何原始异常文本/stack/cause——INV-N7）。 */
-export const FATAL_REPLICATION_WRITE_INTERNAL_MESSAGE =
-  'REPLICATION write internal fault：写管线产生结果联合之外的 internal fatal；该 fatal 已永久禁用本 Runtime 的全部写能力，读取仍保留。' as const;
-
 /** ROOT 写禁用稳定码（D9）：出现在 ok:false issue.message 内（JSON.stringify 含码判定）。 */
 export const RUNTIME_WRITE_DISABLED_CODE = 'RUNTIME_WRITE_DISABLED' as const;
 
@@ -144,19 +136,28 @@ export class MetaProjectionError extends Error {
   }
 }
 
-/**
- * META 复制保留字段损坏错误（issue #132 D-3，拒绝虚假降级立法；类不导出——index 不
- * re-export，code+message 字符串消费，沿 MetaProjectionError 先例）：
- * - 判据：`readReplicationFacts` 以 `has()` 区分键存在/缺席——两键真缺席 → disabled；
- *   恰一键存在、键存在而值显式 undefined（Yjs `set(k, undefined)` 后 has=true/get=
- *   undefined 且经 round-trip 持久化存活）、格式违约（id 非 32 位小写 hex / epoch 非
- *   ≥1 的安全整数）、载体异型 → 本类 loud——拒绝把持久化损坏静默降级为「未启用」
- *   （静默降级将允许 enable 重新安装全新谱系，无声击穿「replicationId 是不可变复制
- *   谱系身份」（ADR 0010））。
- * - 通道：构造期 V2.5 = 构造 throw（零副作用，→ Registry open/create 的
- *   runtime-construction fatal）；写槽 E4 = 槽内 internal fatal（committed:false）。
- * - message 含违约类别与观测 typeof——不含值内容（零插值纪律）。
- */
+// ── 复制管理/会话写域（issue #151：主线 b66615c 复制稳定码族逐字端口——跨谱系单一
+//    append-only 注册表；值/文案与主线完全一致，message 零改 ──────────────────────────
+
+/** 复制管理写槽 internal fault 稳定 code（append-only：与 ROOT/SCHEMA 写槽区分来源，
+ *  status.fatal 诊断不失真）。 */
+export const FATAL_REPLICATION_WRITE_INTERNAL_CODE = 'NSRT-FATAL-REPLICATION-WRITE-INTERNAL' as const;
+
+/** 复制管理写槽 internal fault 稳定 message（恒定文案：不含任何原始异常文本/stack/cause——INV-N7）。 */
+export const FATAL_REPLICATION_WRITE_INTERNAL_MESSAGE =
+  'REPLICATION write internal fault：写管线产生结果联合之外的 internal fatal；该 fatal 已永久禁用本 Runtime 的全部写能力，读取仍保留。' as const;
+
+/** 会话 apply 写槽 internal fault 稳定 code（append-only：与管理写 fatal 分码防诊断
+ *  失真——常量名含 WRITE（沿管理写 FATAL_REPLICATION_WRITE_INTERNAL_CODE 命名族），
+ *  **值**不含 WRITE（apply 专用码，b66615c:errors.ts 原值）。 */
+export const FATAL_REPLICATION_APPLY_WRITE_INTERNAL_CODE = 'NSRT-FATAL-REPLICATION-APPLY-INTERNAL' as const;
+
+/** 会话 apply 写槽 internal fault 稳定 message（恒定文案：不含任何原始异常文本/stack/cause——INV-N7）。 */
+export const FATAL_REPLICATION_APPLY_WRITE_INTERNAL_MESSAGE =
+  'REPLICATION apply internal fault：会话 apply 管线产生结果联合之外的 internal fatal；该 fatal 已永久禁用本 Runtime 的全部写能力，读取仍保留。' as const;
+
+/** META 复制保留字段损坏错误（拒绝虚假降级立法；类不导出——index 不 re-export，
+ *  code+message 字符串消费，沿 MetaProjectionError 先例）。 */
 export const REPLICATION_META_CORRUPT_CODE = 'NSRT-REPLICATION-META-CORRUPT' as const;
 
 export class ReplicationMetaCorruptError extends Error {
@@ -168,38 +169,38 @@ export class ReplicationMetaCorruptError extends Error {
   }
 }
 
-/** 复制管理写的结果面稳定码/文案（issue #132 §4.8 注册表；message 恒含码前缀，零值回显）。 */
+/** 复制管理写的结果面稳定码/文案（issue #132 注册表；message 恒含码前缀，零值回显）。
+ *  CODE 常量与 MESSAGE 常量同源声明（沿 RUNTIME_WRITE_DISABLED_CODE 先例——诊断
+ *  emission 的顶层 code 字段引用 CODE 常量，message 引用 MESSAGE 常量）。 */
+export const REPLICATION_EPOCH_OVERFLOW_CODE = 'REPLICATION_EPOCH_OVERFLOW' as const;
 export const REPLICATION_EPOCH_OVERFLOW_MESSAGE =
   'REPLICATION_EPOCH_OVERFLOW: epoch 已达 Number.MAX_SAFE_INTEGER，拒绝提升（不回绕）——本调用零写入';
+export const REPLICATION_NOT_ENABLED_CODE = 'REPLICATION_NOT_ENABLED' as const;
 export const REPLICATION_NOT_ENABLED_MESSAGE =
   'REPLICATION_NOT_ENABLED: 复制身份未安装（disabled）——先 enableReplication()；本调用零写入';
+export const REPLICATION_INPUT_INVALID_CODE = 'REPLICATION_INPUT_INVALID' as const;
 export const REPLICATION_INPUT_INVALID_MESSAGE =
   'REPLICATION_INPUT_INVALID: replicationId 必须为 32 位小写 hex 字符串（ADR 0010 冻结格式）——本调用零写入';
+export const REPLICATION_META_ABSENT_CODE = 'REPLICATION_META_ABSENT' as const;
 export const REPLICATION_META_ABSENT_MESSAGE =
   'REPLICATION_META_ABSENT: META 载体缺席，拒绝在其上安装复制身份（防产生无 docId 的 META）——生产路径不可达（仅 seedForTest 设施）；本调用零写入';
 
-// —— issue #134（Phase 5 切片 3/4）：ReplicationSession 会话 apply 域（append-only）——
-/** 会话 apply 写槽 internal fault 稳定 code（D-11——append-only：与 ROOT/SCHEMA/REPLICATION
- *  管理写槽区分来源——apply fatal 与管理写 fatal 分码防诊断失真；status.fatal 可判别）。 */
-export const FATAL_REPLICATION_APPLY_WRITE_INTERNAL_CODE = 'NSRT-FATAL-REPLICATION-APPLY-INTERNAL' as const;
-
-/** 会话 apply 写槽 internal fault 稳定 message（恒定文案：不含任何原始异常文本/stack/cause——INV-N7）。 */
-export const FATAL_REPLICATION_APPLY_WRITE_INTERNAL_MESSAGE =
-  'REPLICATION apply internal fault：会话 apply 管线产生结果联合之外的 internal fatal；该 fatal 已永久禁用本 Runtime 的全部写能力，读取仍保留。' as const;
-
-/** 终态 session 的同步能力拒绝码（getter/编码域 throw 通道——沿 RuntimeReadDisabledError
- *  先例；类不导出 index，code+message 字符串消费）。 */
+/** 会话 apply 域稳定码/文案（issue #134 注册表——源码引用 CODE 常量，message 单点）。
+ *  终态 session 的同步能力拒绝码（getter/编码域 throw 通道——沿 RuntimeReadDisabledError
+ *  先例；本票编码域未物化，code 供 apply 拒绝面与诊断 emission 顶层 code 使用）。 */
 export const REPLICATION_SESSION_CLOSED_CODE = 'REPLICATION_SESSION_CLOSED' as const;
-
-/** session 域拒绝 message（§6.2 冻结文案，单一真相源：apply 结果面与 SV/diff throw 共用）。 */
 export const REPLICATION_SESSION_CLOSED_MESSAGE =
   'REPLICATION_SESSION_CLOSED: 此 ReplicationSession 已关闭（close 或 Lease release），不再接纳会话操作——本调用零写入' as const;
+export const REPLICATION_EPOCH_CONFLICTED_CODE = 'REPLICATION_EPOCH_CONFLICTED' as const;
 export const REPLICATION_EPOCH_CONFLICTED_MESSAGE =
   'REPLICATION_EPOCH_CONFLICTED: 复制代际已提升，本 session 冻结的 replicationEpoch 已过期（须以新 epoch 显式重建 session 或 reset/bootstrap）——本调用零写入' as const;
+export const REPLICATION_RAW_UPDATE_INVALID_CODE = 'REPLICATION_RAW_UPDATE_INVALID' as const;
 export const REPLICATION_RAW_UPDATE_INVALID_MESSAGE =
   'REPLICATION_RAW_UPDATE_INVALID: raw update 非 Uint8Array 或无法被 Yjs 接纳（scratch clone 预演失败）——本调用零写入' as const;
+export const REPLICATION_PROTECTED_FIELDS_CHANGED_CODE = 'REPLICATION_PROTECTED_FIELDS_CHANGED' as const;
 export const REPLICATION_PROTECTED_FIELDS_CHANGED_MESSAGE =
   'REPLICATION_PROTECTED_FIELDS_CHANGED: raw update 改变了受保护内容（SCHEMA 容器或 META 字段；受保护集合为冻结常量，raw caller 不得逐次自定义）——本调用零写入' as const;
+export const REPLICATION_SESSION_UNSUPPORTED_CODE = 'REPLICATION_SESSION_UNSUPPORTED' as const;
 export const REPLICATION_SESSION_UNSUPPORTED_MESSAGE =
   'REPLICATION_SESSION_UNSUPPORTED: Runtime 未提供复制会话宿主（测试替身 Runtime 或包版本错配）——显式能力缺席拒绝，本调用零写入' as const;
 

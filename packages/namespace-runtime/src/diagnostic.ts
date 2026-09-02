@@ -27,8 +27,11 @@ import type {
   DiagnosticIssue,
   EmissionInput,
   EmissionResult,
+  LogContext,
+  LogSource,
   NamespaceDiagnosticChangeEmitter,
   Operation,
+  SourceModule,
   Stage,
 } from '@nomicore/namespace-diagnostic-log';
 
@@ -60,8 +63,12 @@ export function buildDiagnosticEnv(
 export interface SlotOutcome {
   readonly stage: Stage;
   readonly result: EmissionResult;
-  /** 与 sourceModule 'runtime' 成对（emitAttempt 单点保证——设计 §7.2 / §10-J3）。 */
+  /** 与 sourceModule 成对（emitAttempt 单点保证——设计 §7.2 / §10-J3）。 */
   readonly code?: string;
+  /** 【issue #151 D-9】code 的注册表来源：'runtime'（RUNTIME_WRITE_DISABLED 等）/
+   *  'replication'（REPLICATION_* / NSRT-FATAL-REPLICATION-*）。缺省 'runtime'
+   *  （emitAttempt 缺省）——ROOT/SCHEMA 既有槽零改动。 */
+  readonly sourceModule?: SourceModule;
   readonly sourcePhase?: string;
   readonly issues?: DiagnosticIssue[];
 }
@@ -71,12 +78,22 @@ export interface SlotOutcome {
 export interface SlotDiag {
   readonly operation: Operation;
   /** 输入捕获态：初始 not-accessed；S3 失败→unsafe-input；S3 成功→{snapshot}
-   *  （同一 frozen 快照引用——AC5 零额外读取的机制保证）。 */
-  input: EmissionInput;
+   *  （同一 frozen 快照引用——AC5 零额外读取的机制保证）。
+   *  【issue #151】放宽为 `EmissionInput | undefined`：undefined = 本尝试**无可捕获
+   *  输入**（≠「拒绝先于输入访问」——那是 {status:'not-accessed'} 的专属语义，
+   *  ADR-0011 §E）——apply/bump 槽以 undefined 构造（D-8）；省略 → record 面
+   *  {capture:'none'}（projection/input.ts 单点）。 */
+  input: EmissionInput | undefined;
   /** 槽体各结局点单点写入（最后一个结局点胜——槽内无并发，确定性）。 */
   outcome: SlotOutcome | undefined;
   /** S5 捕获窗口产物（槽体在窗口 finally 内赋值；fatal 分类在窗口收口之后读取）。 */
   updateBytes: Uint8Array | undefined;
+  /** 【issue #151 D-7】受控变更来源（apply 会话槽恒带 replication source；enable/bump
+   *  缺省 local——发射层透传，缺省即既有行为，零改动）。 */
+  source?: LogSource;
+  /** 【issue #151 D-7】受控身份 context（per-record；enable/bump 槽 E4 后写入；
+   *  apply 槽创建时即携会话冻结值）。 */
+  context?: LogContext;
 }
 
 /** 公共方法对槽完成信号的结算事实（emitSlot 签名载荷——SA2 #2 修订：缺省组装仅在
@@ -106,15 +123,21 @@ function observedAtMs(now: () => number): string {
   return new Date(now()).toISOString();
 }
 
-/** emitAttempt 载荷。code 与 sourceModule 的成对性由 emitAttempt 单点保证（§7.2）。 */
+/** emitAttempt 载荷。code 与 sourceModule 的成对性由 emitAttempt 单点保证（§7.2）。
+ *  【issue #151 四点向后兼容扩展】input 可选化（省略 ⇒ record 面 {capture:'none'}——
+ *  不携带 input: undefined 值键）+ source/context/sourceModule 可选（缺省 = 既有
+ *  行为：local / 省略 / 'runtime'）——ROOT/SCHEMA 既有调用零改动、字节面零变化。 */
 export interface SlotEmissionArgs {
   readonly operation: Operation;
   readonly stage: Stage;
   readonly code?: string;
   readonly sourcePhase?: string;
   readonly issues?: DiagnosticIssue[];
-  readonly input: EmissionInput;
+  readonly input?: EmissionInput;
   readonly result: EmissionResult;
+  readonly source?: LogSource;
+  readonly context?: LogContext;
+  readonly sourceModule?: SourceModule;
 }
 
 /** 语义 emission（ADR-0011 §E）。emitter 未装配 = 零 emit 零成本；emitter 装配后
@@ -127,15 +150,20 @@ export function emitAttempt(env: DiagnosticEnv, e: SlotEmissionArgs): void {
       operation: e.operation,
       stage: e.stage,
       observedAt: observedAtMs(env.clock),
-      source: { kind: 'local' }, // ADR-0012 source 词表；Runtime 本地写路径
-      ...(e.code !== undefined ? { code: e.code, sourceModule: 'runtime' as const } : {}),
+      // 【issue #151 D-7/D-9】source 缺省 {kind:'local'}（ADR-0012 source 词表；Runtime
+      // 本地写路径）；sourceModule 缺省 'runtime' 且与 code 恒成对（§10-J3 单侧即丢）。
+      ...(e.source !== undefined ? { source: e.source } : { source: { kind: 'local' } }),
+      ...(e.code !== undefined ? { code: e.code, sourceModule: e.sourceModule ?? 'runtime' } : {}),
       ...(e.sourcePhase !== undefined ? { sourcePhase: e.sourcePhase } : {}),
       ...(e.issues !== undefined ? { issues: e.issues } : {}),
-      input: e.input,
+      ...(e.context !== undefined ? { context: e.context } : {}),
+      // 【R1，SA2 #1】input 条件展开：省略 = 本尝试无可捕获输入（record 面投影
+      // {capture:'none'}——projection/input.ts 单点）；不携带 `input: undefined` 值键。
+      ...(e.input !== undefined ? { input: e.input } : {}),
       result: e.result,
       // attemptId 省略 → emitter 管线 CSPRNG 生成（att-+32hex，pipeline.ts 既有）；
       // durationMs 省略（无可靠 monotonic 来源，不发明——ADR-0012 §observedAt）；
-      // context 省略（Runtime 无 runtimeGeneration/replication 身份可提供，全可选字段）
+      // context 省略时缺省不携带（全可选字段，仅 replication 身份/关联提供）
     });
   } catch {
     /* ADR-0011 §A：adapter 同步 throw（含敌意 emitter，AC4 锚点）/ 违约 clock（NaN/
@@ -155,12 +183,16 @@ export function emitSlot<T extends { ok: boolean }>(
     // 槽体显式结局——唯一常规路径（设计 §9 的 25 结局点映射表）
     emitAttempt(env, {
       operation: diag.operation,
-      input: diag.input,
+      ...(diag.input !== undefined ? { input: diag.input } : {}),
       stage: diag.outcome.stage,
       ...(diag.outcome.code !== undefined ? { code: diag.outcome.code } : {}),
+      ...(diag.outcome.sourceModule !== undefined ? { sourceModule: diag.outcome.sourceModule } : {}),
       ...(diag.outcome.sourcePhase !== undefined ? { sourcePhase: diag.outcome.sourcePhase } : {}),
       ...(diag.outcome.issues !== undefined ? { issues: diag.outcome.issues } : {}),
       result: diag.outcome.result,
+      // 【issue #151】source/context 透传（apply 槽恒带；enable/bump 缺省 local/省略）
+      ...(diag.source !== undefined ? { source: diag.source } : {}),
+      ...(diag.context !== undefined ? { context: diag.context } : {}),
     });
     return;
   }
@@ -168,8 +200,10 @@ export function emitSlot<T extends { ok: boolean }>(
   if (settle.kind === 'fulfilled' && settle.value.ok === true) {
     emitAttempt(env, {
       operation: diag.operation,
-      input: diag.input,
+      ...(diag.input !== undefined ? { input: diag.input } : {}),
       stage: 'transaction',
+      ...(diag.source !== undefined ? { source: diag.source } : {}),
+      ...(diag.context !== undefined ? { context: diag.context } : {}),
       result: diag.updateBytes !== undefined
         ? { kind: 'committed', effect: 'update', updateBytes: diag.updateBytes }
         : { kind: 'committed', effect: 'noop' },
@@ -195,14 +229,21 @@ export function diagCapGate(diag: SlotDiag | undefined, code: string, issues: Di
 }
 
 /** capability-gate fatal（S2 getStatus 抛错 / S4 结构不可达守卫）——committed:false，
- *  无 issues 载荷（throw 通道：RuntimeWriteFatalError 无 issues 字段，§9.3 裁决）。 */
-export function diagFatalCapGate(diag: SlotDiag | undefined, code: string): void {
+ *  无 issues 载荷（throw 通道：RuntimeWriteFatalError 无 issues 字段，§9.3 裁决）。
+ *  【issue #151】sourceModule 可选（D-9：复制域 fatal 码传 'replication'；缺省
+ *  'runtime'——ROOT/SCHEMA 既有调用零改动）。 */
+export function diagFatalCapGate(
+  diag: SlotDiag | undefined,
+  code: string,
+  sourceModule?: SourceModule,
+): void {
   if (diag === undefined) return;
   diag.outcome = {
     stage: 'capability-gate',
     result: { kind: 'fatal', committed: false },
     code,
     sourcePhase: 'write-slot-internal',
+    ...(sourceModule !== undefined ? { sourceModule } : {}),
   };
 }
 
@@ -242,6 +283,7 @@ export function diagFatalTx(
   committed: boolean,
   phase: string,
   updateBytes: Uint8Array | undefined,
+  sourceModule?: SourceModule,
 ): void {
   if (diag === undefined) return;
   diag.outcome = {
@@ -249,18 +291,20 @@ export function diagFatalTx(
     result: fatalFromBytes(committed, updateBytes),
     code,
     sourcePhase: phase,
+    ...(sourceModule !== undefined ? { sourceModule } : {}),
   };
 }
 
 /** dirty-notification fatal（S6 notifier 失败）——committed:true（写已提交），
  *  effect 由 diag.updateBytes 裁决（正常必有 bytes → update）。 */
-export function diagDirtyFatal(diag: SlotDiag | undefined, code: string): void {
+export function diagDirtyFatal(diag: SlotDiag | undefined, code: string, sourceModule?: SourceModule): void {
   if (diag === undefined) return;
   diag.outcome = {
     stage: 'dirty-notification',
     result: fatalFromBytes(true, diag.updateBytes),
     code,
     sourcePhase: 'notify-dirty-failed',
+    ...(sourceModule !== undefined ? { sourceModule } : {}),
   };
 }
 
@@ -287,5 +331,24 @@ export function diagFatalCompileThrow(diag: SlotDiag | undefined, code: string):
     result: { kind: 'fatal', committed: false },
     code,
     sourcePhase: 'schema-compile-throw',
+  };
+}
+
+/** 【issue #151】validation 拒绝 + 顶层稳定码（enable E3 / bump E4 域拒绝——issues
+ *  同源透传）。与既有 `diagValidation`（无顶层 code，ROOT/SCHEMA 领域校验面）并存：
+ *  复制管理域的拒绝码字段固定来自结果面稳定码族（REPLICATION_*）。 */
+export function diagValidationCode(
+  diag: SlotDiag | undefined,
+  code: string,
+  issues: DiagnosticIssue[],
+  sourceModule?: SourceModule,
+): void {
+  if (diag === undefined) return;
+  diag.outcome = {
+    stage: 'validation',
+    result: { kind: 'rejected' },
+    code,
+    issues,
+    ...(sourceModule !== undefined ? { sourceModule } : {}),
   };
 }

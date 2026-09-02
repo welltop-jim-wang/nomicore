@@ -37,16 +37,32 @@
 import * as Y from 'yjs';
 import type { DocHandle, DocHandleStatus } from '@nomicore/persistence';
 import {
+  FATAL_REPLICATION_APPLY_WRITE_INTERNAL_CODE,
+  REPLICATION_EPOCH_CONFLICTED_CODE,
   REPLICATION_EPOCH_CONFLICTED_MESSAGE,
   REPLICATION_NOT_ENABLED_MESSAGE,
+  REPLICATION_PROTECTED_FIELDS_CHANGED_CODE,
   REPLICATION_PROTECTED_FIELDS_CHANGED_MESSAGE,
+  REPLICATION_RAW_UPDATE_INVALID_CODE,
   REPLICATION_RAW_UPDATE_INVALID_MESSAGE,
+  REPLICATION_SESSION_CLOSED_CODE,
   REPLICATION_SESSION_CLOSED_MESSAGE,
   REPLICATION_SESSION_UNSUPPORTED_MESSAGE,
   RUNTIME_WRITE_DISABLED_CODE,
   ReplicationSessionClosedError,
   RuntimeWriteFatalError,
 } from './errors.js';
+import {
+  createSlotDiag,
+  diagCapGate,
+  diagDirtyFatal,
+  diagFatalCapGate,
+  diagFatalTx,
+  diagValidationCode,
+  emitAttempt,
+  emitSlot,
+} from './diagnostic.js';
+import type { SlotDiag } from './diagnostic.js';
 import type { RuntimeState } from './p0.js';
 import { markWriteFatal, rejectWithWriteFatal, writeFatalMessage } from './write.js';
 import { WriteSequencer } from './sequencer.js';
@@ -78,25 +94,8 @@ export type RuntimeReplicationSessionApplyRefusalCode =
   | 'RUNTIME_WRITE_DISABLED'
   | 'NAMESPACE_LEASE_RELEASED';
 
-/**
- * 槽内四段观测的差值样本（issue #238 §4；与 registry 侧镜像联合逐字段同形——lease.ts
- * Equal 锁要求结构逐字一致）。语义 = 各段时差（单调时钟域差值，非绝对时间戳）：
- * - queueWaitMs      = slotStart − admission（sequencer 排队等待）；
- * - protectedCheckMs = applyStart − slotStart（R1–R3 同步门 + R4 scratch 预演）；
- * - liveApplyMs      = dirtyStart − applyStart（R5 Y.applyUpdate 实时写入）；
- * - dirtyNotifyMs    = dirtyDone − dirtyStart（R6 saveDoc 登记时长）。
- * 在场纪律：全 present 或全缺席（任一捕获点时钟读数缺面/throw → 整个 stages 缺席——
- * D7 折叠，零协议外溢）。仅 ok:true 分支携带（refusal/fatal 路径无成功 apply 事件）。
- */
-export interface RuntimeReplicationApplyStages {
-  readonly queueWaitMs: number;
-  readonly protectedCheckMs: number;
-  readonly liveApplyMs: number;
-  readonly dirtyNotifyMs: number;
-}
-
 export type RuntimeReplicationSessionApplyResult =
-  | Readonly<{ ok: true; stages?: Readonly<RuntimeReplicationApplyStages> }>
+  | Readonly<{ ok: true }>
   | Readonly<{ ok: false; code: RuntimeReplicationSessionApplyRefusalCode; message: string }>;
 
 /** session 独立状态查询面（O-11 冻结词汇；Runtime status 的 replication 域仍只含两态
@@ -322,11 +321,7 @@ export interface RuntimeReplicationHost {
   readonly sequencer: WriteSequencer;
   readonly notifyDirty: (() => Promise<void>) | undefined;
   readonly fanout: SessionFanout;
-  /** 单调时源（issue #238 §4 槽内四段戳；可选项——缺省 = 零时钟读、stages 缺席。
-   *  纪律与 ws-replication `ReplicationClock` 同款：仅作差、禁原生时钟 fallback、
-   *  throw 折叠为字段缺席（D7）。装配层应注入与 ws-replication 同一实例（守恒恒等式
-   *  前提——组装纪律，非库层强制）。 */
-  readonly stageClock?: { now(): number };
+  readonly diagEnv: ReturnType<typeof import('./diagnostic.js').buildDiagnosticEnv>;
 }
 
 /** 模块级 host 登记（WeakMap——以 runtime 对象引用为键；不触碰 runtime 对象本身，
@@ -456,6 +451,16 @@ function createSessionCore(
       };
     },
     applyRemoteUpdate(update) {
+      const source = Object.freeze({ kind: 'replication' as const, direction, remoteInstanceId });
+      const context = Object.freeze({ replicationId, replicationEpoch });
+      const emitRejection = (stage: 'acceptance' | 'identity' | 'validation', code: string, message: string, inputAccessed: boolean): void => {
+        emitAttempt(host.diagEnv, {
+          operation: 'replication-apply', stage, code,
+          sourceModule: code === RUNTIME_WRITE_DISABLED_CODE ? 'runtime' : 'replication', source, context,
+          ...(inputAccessed ? {} : { input: { status: 'not-accessed' as const } }),
+          issues: [{ message, path: [] }], result: { kind: 'rejected' },
+        });
+      };
       // ── 接纳层（同步段，非槽——镜像 D5.1 接纳门）A0–A4 ──────────────────────
       // A1 core 终态（停接纳即时生效；终态后 apply 一概不入队）
       if (coreState.terminal === 'closed') {
@@ -463,15 +468,17 @@ function createSessionCore(
         // 接纳拒绝（ADR 0008 #93 修订节第 (4) 类）——code 域统一到 RUNTIME_WRITE_DISABLED；
         // 显式 close 保持 REPLICATION_SESSION_CLOSED（A1 拒绝码映射专用 closedBy 记账）。
         if (closedBy === 'runtime-close') {
-          return Promise.resolve(
-            refusal('RUNTIME_WRITE_DISABLED', writeDisabledMessage('lifecycle', host.state.lifecycle)),
-          );
+          const message = writeDisabledMessage('lifecycle', host.state.lifecycle);
+          emitRejection('acceptance', RUNTIME_WRITE_DISABLED_CODE, message, false);
+          return Promise.resolve(refusal('RUNTIME_WRITE_DISABLED', message));
         }
+        emitRejection('acceptance', REPLICATION_SESSION_CLOSED_CODE, REPLICATION_SESSION_CLOSED_MESSAGE, false);
         return Promise.resolve(
           refusal('REPLICATION_SESSION_CLOSED', REPLICATION_SESSION_CLOSED_MESSAGE),
         );
       }
       if (coreState.terminal === 'conflicted') {
+        emitRejection('identity', REPLICATION_EPOCH_CONFLICTED_CODE, REPLICATION_EPOCH_CONFLICTED_MESSAGE, false);
         return Promise.resolve(
           refusal('REPLICATION_EPOCH_CONFLICTED', REPLICATION_EPOCH_CONFLICTED_MESSAGE),
         );
@@ -482,6 +489,7 @@ function createSessionCore(
       // 截获的整型索引读取复制，产物为纯 Uint8Array（中性化 Buffer 伪装/子类覆写），
       // 排队期间调用方对原对象的变异无效（单读捕获——快照纪律的 bytes 最小实现）
       if (!(update instanceof Uint8Array)) {
+        emitRejection('validation', REPLICATION_RAW_UPDATE_INVALID_CODE, REPLICATION_RAW_UPDATE_INVALID_MESSAGE, true);
         return Promise.resolve(
           refusal('REPLICATION_RAW_UPDATE_INVALID', REPLICATION_RAW_UPDATE_INVALID_MESSAGE),
         );
@@ -493,6 +501,7 @@ function createSessionCore(
         // 防御分支（构造器异常面完备——整型索引与 length 均为内部槽；detached buffer
         // 产出全零字节属良性闭环：下游 scratch 预演按非法/空内容处理）。覆盖 A2 的
         // 极端拒绝路径——一切拒绝经返回 Promise 的 ok:false 结算
+        emitRejection('validation', REPLICATION_RAW_UPDATE_INVALID_CODE, REPLICATION_RAW_UPDATE_INVALID_MESSAGE, true);
         return Promise.resolve(
           refusal('REPLICATION_RAW_UPDATE_INVALID', REPLICATION_RAW_UPDATE_INVALID_MESSAGE),
         );
@@ -502,41 +511,38 @@ function createSessionCore(
       //   close() 在途切换时已接纳槽照常排空，ADR-0008）
       const lifecycle = host.state.lifecycle;
       if (lifecycle !== 'ready') {
-        return Promise.resolve(
-          refusal('RUNTIME_WRITE_DISABLED', writeDisabledMessage('lifecycle', lifecycle)),
-        );
+        const message = writeDisabledMessage('lifecycle', lifecycle);
+        emitRejection('acceptance', RUNTIME_WRITE_DISABLED_CODE, message, true);
+        return Promise.resolve(refusal('RUNTIME_WRITE_DISABLED', message));
       }
-      // A4 入队唯一 write sequencer（INV-S1——同一 WriteSequencer 实例，FIFO 互通）。
-      // issue #238 §4：接纳戳在入队调用前采样（槽内 queueWaitMs = slotStart − admission
-      // 的起点；纯同步时钟读、零新增 await——G1 槽序不变）。stageClock 缺面/throw →
-      // admission 缺面 → 本笔 stages 整体缺席（D7 折叠）。
-      const stageClock = host.stageClock;
-      let admission: number | undefined;
-      if (stageClock !== undefined) {
-        try {
-          admission = stageClock.now();
-        } catch {
-          admission = undefined;
-        }
+      // A4 入队唯一 write sequencer（INV-S1——同一 WriteSequencer 实例，FIFO 互通）
+      const diag = host.diagEnv.emitter !== undefined ? createSlotDiag('replication-apply') : undefined;
+      if (diag !== undefined) {
+        diag.input = undefined;
+        diag.source = source;
+        diag.context = context;
       }
-      return host.sequencer.enqueue(
-        () =>
-          runSessionApplySlot(
-            host,
-            coreState,
-            channel,
-            {
-              localRole,
-              direction,
-              replicationId,
-              replicationEpoch,
-              applyOrigin,
-            },
-            bytes,
-            admission,
-          ),
-        'R',
+      const settled = host.sequencer.enqueue(() =>
+        runSessionApplySlot(
+          host,
+          coreState,
+          channel,
+          {
+            localRole,
+            direction,
+            replicationId,
+            replicationEpoch,
+            applyOrigin,
+          },
+          bytes,
+          diag,
+        ),
       );
+      void settled.then(
+        (value) => { emitSlot(host.diagEnv, diag, { kind: 'fulfilled', value }); },
+        () => { emitSlot(host.diagEnv, diag, { kind: 'rejected' }); },
+      );
+      return settled;
     },
     getStatus() {
       // 每次调用返回全新深冻结对象（沿 buildStatus/INV-R6 先例——SA2 R1 #6：
@@ -576,12 +582,9 @@ function createSessionCore(
       // forget 零 unhandled rejection 前提）
       if (closePromise !== undefined) return closePromise;
       finalize('closed');
-      closePromise = host.sequencer.enqueue(
-        async () => {
-          /* 恒绿空槽体：barrier 只承担「排在已接纳任务之后」的时序语义 */
-        },
-        'close-barrier',
-      );
+      closePromise = host.sequencer.enqueue(async () => {
+        /* 恒绿空槽体：barrier 只承担「排在已接纳任务之后」的时序语义 */
+      });
       return closePromise;
     },
   };
@@ -601,23 +604,13 @@ async function runSessionApplySlot(
   channel: SessionChannel,
   ctx: SessionSlotContext,
   bytes: Uint8Array,
-  admission?: number,
+  diag?: SlotDiag,
 ): Promise<RuntimeReplicationSessionApplyResult> {
-  // issue #238 §4：slotStart 戳 = thunk 入口（槽真正开跑时点；queueWaitMs =
-  // slotStart − admission）。stageClock 缺面 → 零时钟读（D7：无注入即零采样）；
-  // clock throw → 折叠（本笔 stages 缺席，协议路径零影响）。
-  const stageNow = (): number | undefined => {
-    if (host.stageClock === undefined) return undefined;
-    try {
-      return host.stageClock.now();
-    } catch {
-      return undefined;
-    }
-  };
-  const slotStart = stageNow();
   // ── R1 fatal gate（零输入访问；零 doc 访问）──────────────────────────────
   if (host.state.fatal !== undefined) {
-    return refusal('RUNTIME_WRITE_DISABLED', writeDisabledMessage('fatal'));
+    const message = writeDisabledMessage('fatal');
+    diagCapGate(diag, RUNTIME_WRITE_DISABLED_CODE, [{ message, path: [] }]);
+    return refusal('RUNTIME_WRITE_DISABLED', message);
   }
 
   // ── R2 身份/epoch gate（约 E4 会话变体：事实源 = 投影链 state.replication 单点
@@ -631,6 +624,8 @@ async function runSessionApplySlot(
     // O-8：不等 → 被动 fence——**同一 finalize**（与 bump 槽 E5.5 主动 fence 共用：
     // 终态置位 + fanout.detach 摘除点 + 未投递排队项取消；零新增终态语义，D-2a）+ 零写入拒绝
     channel.finalize('conflicted');
+    diagValidationCode(diag, REPLICATION_EPOCH_CONFLICTED_CODE, [{ message: REPLICATION_EPOCH_CONFLICTED_MESSAGE, path: [] }], 'replication');
+    if (diag?.outcome !== undefined) diag.outcome = { ...diag.outcome, stage: 'identity' };
     return refusal('REPLICATION_EPOCH_CONFLICTED', REPLICATION_EPOCH_CONFLICTED_MESSAGE);
   }
 
@@ -641,6 +636,7 @@ async function runSessionApplySlot(
     handleStatus = host.handle.getStatus();
   } catch (err) {
     // adapter bug → 统一 fatal（committed:false——此时尚零 doc 写）
+    diagFatalCapGate(diag, FATAL_REPLICATION_APPLY_WRITE_INTERNAL_CODE, 'replication');
     markWriteFatal(host, err, 'replication-apply');
     throw new RuntimeWriteFatalError(
       'write-slot-internal',
@@ -660,12 +656,16 @@ async function runSessionApplySlot(
     if (!bypass) {
       // hub degraded 拒 peer→hub（O-5a）/ released / disposed 同拒（L136：handle
       // 失效不得绕过）
-      return refusal('RUNTIME_WRITE_DISABLED', writeDisabledMessage('writable', handleStatus));
+      const message = writeDisabledMessage('writable', handleStatus);
+      diagCapGate(diag, RUNTIME_WRITE_DISABLED_CODE, [{ message, path: [] }]);
+      return refusal('RUNTIME_WRITE_DISABLED', message);
     }
   }
   if (host.notifyDirty === undefined) {
     // D6.4 立法：无持久化绑定不得写——bypass 亦不得「提交成功但永无 dirty 登记」
-    return refusal('RUNTIME_WRITE_DISABLED', writeDisabledMessage('notifier'));
+    const message = writeDisabledMessage('notifier');
+    diagCapGate(diag, RUNTIME_WRITE_DISABLED_CODE, [{ message, path: [] }]);
+    return refusal('RUNTIME_WRITE_DISABLED', message);
   }
   const notifyDirty = host.notifyDirty; // 单读捕获（此后槽体零再读 host 字段语义）
 
@@ -673,25 +673,27 @@ async function runSessionApplySlot(
   const evaluation = protectedContentEvaluated(host.doc, bytes, ctx.localRole);
   if (evaluation === 'invalid') {
     // 畸形字节（Yjs 无法解码）→ 整体拒绝零写入（live doc 永不被无效字节触碰，§14 实测）
+    diagValidationCode(diag, REPLICATION_RAW_UPDATE_INVALID_CODE, [{ message: REPLICATION_RAW_UPDATE_INVALID_MESSAGE, path: [] }], 'replication');
     return refusal('REPLICATION_RAW_UPDATE_INVALID', REPLICATION_RAW_UPDATE_INVALID_MESSAGE);
   }
   if (evaluation === 'changed') {
     // 受保护内容变化 → 整体拒绝、零写入、saveDoc 0 次、拒绝行为稳定（重复调用同拒）
+    diagValidationCode(diag, REPLICATION_PROTECTED_FIELDS_CHANGED_CODE, [{ message: REPLICATION_PROTECTED_FIELDS_CHANGED_MESSAGE, path: [] }], 'replication');
     return refusal('REPLICATION_PROTECTED_FIELDS_CHANGED', REPLICATION_PROTECTED_FIELDS_CHANGED_MESSAGE);
   }
-  // issue #238 §4：applyStart 戳 = R4 判据通过后、R5 实时写入前（protectedCheckMs =
-  // applyStart − slotStart；R1–R3 同步门 + R4 scratch 预演并入该段——§4.1 裁决）
-  const applyStart = stageNow();
 
   // ── R5 一次 Y.applyUpdate(doc, bytes, 受控 origin token)（本槽唯一 live Y.Doc
   //    写入口）+ 事务边界探针（R2-6：committed 精确二分，F-4）───────────────
   // 探针注册于本槽内——晚于一切先注册 listener（Yjs doc.on 按注册次序同步派发；敌意
   // beforeTransaction 先抛 ⇒ 探针不运行 ⇒ txStarted=false）。
   let txStarted = false;
+  let capturedUpdate: Uint8Array | undefined;
   const txProbe = (): void => {
     txStarted = true;
   };
+  const updateHandler = (update: Uint8Array): void => { capturedUpdate ??= update.slice(); };
   host.doc.on('beforeTransaction', txProbe);
+  if (diag !== undefined) host.doc.on('update', updateHandler);
   try {
     Y.applyUpdate(host.doc, bytes, ctx.applyOrigin);
   } catch (err) {
@@ -704,9 +706,14 @@ async function runSessionApplySlot(
     // REPLICATION_RAW_UPDATE_INVALID）、notifyDirty 失败（committed:true 既有锁定）不在
     // 判据内；复合敌意（beforeTransaction 内先变异后抛错的多个 listener）属 ADR 0007
     // L54 observer 契约破坏域——二分不为其承诺，残余风险方向为 under-report（已登记）。
+    diagFatalTx(diag, FATAL_REPLICATION_APPLY_WRITE_INTERNAL_CODE, txStarted, 'unknown-pipeline-throw', capturedUpdate, 'replication');
     return rejectWithWriteFatal(host, txStarted, 'unknown-pipeline-throw', err, 'replication-apply');
   } finally {
     host.doc.off('beforeTransaction', txProbe); // 槽级一次性——零泄漏到后续事务
+    if (diag !== undefined) {
+      host.doc.off('update', updateHandler);
+      diag.updateBytes = capturedUpdate;
+    }
   }
 
   // ── R5.5 session 标记（镜像 E5.5 时序：notify 挂起窗口内 status 已可观测提交事实；
@@ -714,9 +721,6 @@ async function runSessionApplySlot(
   coreState.rootValidation = 'replication-unvalidated'; // 置位后永不清除（INV-S9 语义面的
   // 诚实方向：session 无法证明 ROOT 重新合法——只置不清）
   coreState.memoryCaughtUp = true; // 首次 apply 成功后不回落（INV-S16）
-  // issue #238 §4：dirtyStart 戳 = R5/R5.5 完成后、R6 登记前（liveApplyMs =
-  // dirtyStart − applyStart；R5 Y.applyUpdate 实时写入段）
-  const dirtyStart = stageNow();
 
   // ── R6 同槽 await notifyDirty（bypass 路径同样调用——ADR 0010 L135「仍调用
   //    saveDoc 登记」；#79：degraded 不构成 saveDoc 拒绝理由）──────────────
@@ -724,6 +728,7 @@ async function runSessionApplySlot(
     await notifyDirty();
   } catch (err) {
     // 写已提交而登记通道损坏——诚实 fatal（committed:true）；不重试
+    diagDirtyFatal(diag, FATAL_REPLICATION_APPLY_WRITE_INTERNAL_CODE, 'replication');
     markWriteFatal(host, err, 'replication-apply');
     throw new RuntimeWriteFatalError(
       'notify-dirty-failed',
@@ -734,25 +739,6 @@ async function runSessionApplySlot(
   }
 
   // ── R7 槽释放（promise settle；sequencer 自动放行下一项）─────────────────
-  // issue #238 §4：dirtyDone 戳 = R6 resolve 后、R7 return 前（dirtyNotifyMs =
-  // dirtyDone − dirtyStart）。全 present 才组 stages（全 present 或全缺席纪律）；
-  // stages 是 ok 分支的加性可选导出——refusal/fatal 路径逐字节不动。
-  const dirtyDone = stageNow();
-  if (
-    admission !== undefined &&
-    slotStart !== undefined &&
-    applyStart !== undefined &&
-    dirtyStart !== undefined &&
-    dirtyDone !== undefined
-  ) {
-    const stages: RuntimeReplicationApplyStages = {
-      queueWaitMs: slotStart - admission,
-      protectedCheckMs: applyStart - slotStart,
-      liveApplyMs: dirtyStart - applyStart,
-      dirtyNotifyMs: dirtyDone - dirtyStart,
-    };
-    return { ok: true, stages: Object.freeze(stages) };
-  }
   return { ok: true };
 }
 

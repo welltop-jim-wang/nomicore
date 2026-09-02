@@ -1,42 +1,45 @@
 ---
 status: complete
-run_id: issue-154-1788105229-447205
-branch: fix/issue-154-on-docs-namespace-diagnostic-change-log
+run_id: issue-151-1788125506-4073122
+branch: fix/issue-151-on-docs-namespace-diagnostic-change-log
 round: 1
 ---
 
-# Issue #154 — Retain, lease, and delete namespace diagnostic logs
+# Issue #151 — Record trusted replication and management writes
 
-## 改动摘要
+## 需求摘要
 
-完成 namespace diagnostic File adapter 的有界存储、读会话租约与 namespace 级逻辑删除能力。
+将 trusted replication apply、replication enable 和 replication epoch bump 接入 namespace diagnostic change log；记录冻结的 v1 operation、受控 source/context、既有 phase/code/issues/committed 事实与事务级 owned Yjs update bytes，同时不改变 identity gate、ACK、write-sequencer 顺序、dirty notification 或 transport observability。
 
-- `c0f6cbc` — 实现 age/byte retention、JSONL-as-commit-marker 可恢复删除、orphan hygiene、可续租 read-session、trim-aware strict reader/resume、namespace logical deletion、公共导出、健康事件与文档。
-- `385a376` — 修复 SA4 发现的 P2 byte sweep 被 age freshness 错误门控的问题；age 与 byte 两个限制独立生效。
-- `739a24b` — 加入 T-A9 回归钉，确保新鲜数据在非空 age limit 下仍会被 byte budget 裁剪。
+## 变更摘要
 
-实现遵守 File adapter 边界：只删除 closed 且未被有效 reader lease 持有的 segment groups；`.jsonl → .deleting → 删除 .bin → 删除 .deleting` 作为可跨重启续跑的提交标记协议。strict reader/resume 能报告已裁剪历史而不掩盖中间缺口；namespace 删除只承诺活跃存储的逻辑删除，不承诺 SSD、备份或对象存储版本的 secure erase。
+- 新增最小 replication 业务闭包：管理写 enable/bump、lease 复制会话及 apply 路径；保持主线形状并显式登记未物化的 fanout/角色编排范围。
+- 在 `NamespaceRuntime`/registry 接入 replication diagnostics：三种 operation、受控 source/context、槽外或槽后 emit、稳定结果映射、transaction update 捕获和 update-omitted 投影。
+- 修复审查发现的两项实现问题：apply 的 capture window 无条件挂接以保持无 emitter 基线的 dirty notification；enable 成功路径记录 frozen input snapshot。
+- 升级 `@nomicore/namespace-runtime` 至 `0.1.9`、`@nomicore/namespace-registry` 至 `0.1.4`。
+- 增加并保留 15 项 SA6 端到端契约、2 项 SA4 探针和 4 项 SA7 动态测试；所有任务档案位于 `wiki/raw/task_trusted-replication-management-diagnostic-change-log*`。
 
-依赖 #153 已确认可用：`eaf0484` 是任务基线的祖先，rolling、reopen/repair 与 segment path 接口均已在位。
+## 验证证据
 
-## 验证
+rebase 到最新 base 后的最终本地验证：
 
-- SA6 测试先行：新增 46 个 retention/lease/deletion/history 契约测试；初始 41 个有效红灯，后续全部转绿。T-A9 经反事实验证：在缺陷提交 `c0f6cbc` 红、修复后 `385a376` 绿。
-- SA4 静态审查：R1 发现 P1 byte-budget defect；SA3/SA6 回流后，SA4 R2 **PASS**。
-- SA7 独立动态验证：**PASS**。真实默认 `30d/1GiB` 情形下对 1.113 GiB 新鲜数据裁剪至 0.996 GiB；真实 SIGKILL 捕获 W1/W2 删除窗口并验证恢复、无 rotate 与幂等重扫；租约/过期/续租、trim reader/resume、namespace 删除、残余风险探针均通过。
-- 最终 engineering/code-review 双轴：standards **PASS**（无标准违规）；spec **PASS**（全部 issue #154 与 ADR-0012:280-299 要求可追溯满足）。
-- 最终独立后台验收（未被 SA4/SA7/双轴覆盖的 repository integration gate）：
-  - `pnpm typecheck` → exit 0。
-  - `pnpm test` → **147 files / 1862 tests passed / Type Errors no errors**，exit 0。
-- package 级复验：`npx vitest run packages/namespace-diagnostic-log/` → **27 files / 427 tests passed / Type Errors no errors**。
+- `pnpm typecheck`：exit 0。
+- `pnpm exec vitest run packages/namespace-runtime packages/namespace-registry`：70 files / **661 tests passed**，Type Errors no errors，exit 0。
+- `pnpm exec vitest run packages/namespace-runtime/test/runtime-replication-diagnostic-red.test.ts packages/namespace-runtime/test/runtime-replication-sa4-probe.test.ts packages/namespace-runtime/test/runtime-replication-sa7-dynamic.test.ts`：3 files / **21 tests passed**，Type Errors no errors，exit 0。
+- `pnpm test`：257 files / **2826 tests passed**，Type Errors no errors，exit 0。
+- `git diff --check`：clean。
 
-最终 HEAD：`739a24b test(namespace-diagnostic-log): pin byte-budget independence from age (T-A9, SA4 R1 #154)`。
+前序独立门禁：
 
-## 遗留风险
+- SA6 由真实红灯（缺失 operation surface）转为 **15/15 PASS**；包含 owned update 链式重放、noop、identity/epoch、fatal、emitter/queue isolation 和 enable input-capture 锚点。
+- SA4 R2：**pass**；F1/F2/F3 均独立复验闭合，探针 2/2、两包回归 361/361、typecheck 0 errors。
+- SA7：**pass**；动态测试 4/4，覆盖 `updateCapture:false`→`update-omitted`、runtime-close/in-flight FIFO、无 emitter 等价，以及 F1 mutation 反证。
+- 双轴终审：standards **pass**（无 blocker）及 spec **pass**（AC1–AC5 独立核验）。
 
-1. 发布后 GitHub CI 结果仅能由 Host push/PR 后观察；本报告表示本地 MABF 完成，不宣称 CI 已绿。
-2. byte budget/report 口径为 JSONL+BIN segment bytes，不含约 KB 级的 manifest/current locator 元数据；两侧口径一致，建议在后续 Host 文档中澄清。
-3. reader lease registry 以原始 `rootDir` 字符串分区；Host 接线应对同一根目录使用规范化一致的路径（后续 #155 文档项）。
-4. `sweepOnOpen: false` 会将遗留 `.deleting` 的卫生完成延后到显式 sweep；默认 `true` 符合启动恢复路径。
+rebase 后曾因生产接线缺失、测试 fixture 使用旧 API 及 noop dirty 语义过期而出现 20 项 focused 失败；本轮已完成三条 operation 的生产接线、fixture 迁移与现行 ADR 对齐，并以上述 661/661 结果闭环。
 
-本 REPORT.md 仅表示本地 MABF 验收已完成；未执行 push、PR、标签、`.mabf-done` 或其他 Host 生命周期操作。
+## 最终验证 HEAD
+
+最终验证基于 PR #200 rebase 后分支及本轮修复工作树；提交与推送信息由 Host 操作记录确定。
+
+本报告表示本地验收完成。
