@@ -5,7 +5,7 @@ import { spawn } from 'node:child_process'
 import { publishPackages } from './package-catalog.mjs'
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
-const args = new Set(process.argv.slice(2))
+const args = new Set(process.argv.slice(2).filter((arg) => arg !== '--'))
 const publish = args.delete('--publish')
 const provenance = args.delete('--provenance')
 const outArg = [...args][0]
