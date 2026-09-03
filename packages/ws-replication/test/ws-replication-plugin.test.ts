@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { provideClock } from '@nomicore/clock';
 import { provideInstance } from '@nomicore/instance';
 import { provideNomicoreRegistry } from '@nomicore/namespace-registry';
+import { encodeMessage } from '@nomicore/replication-protocol';
 import {
   createHubReplicationPlugin,
   createPeerReplicationPlugin,
@@ -31,6 +32,32 @@ function transport(): DuplexTransport {
   };
 }
 
+function effectTimer(ctx: Context): {
+  timeout(callback: () => void, delayMs: number): () => void;
+  active: Set<() => void>;
+} {
+  const active = new Set<() => void>();
+  const root = ctx.root;
+  return {
+    active,
+    timeout(callback, delayMs) {
+      let dispose!: () => void;
+      dispose = root.effect(() => {
+        const handle = setTimeout(() => {
+          active.delete(dispose);
+          callback();
+        }, delayMs);
+        return () => {
+          active.delete(dispose);
+          clearTimeout(handle);
+        };
+      });
+      active.add(dispose);
+      return dispose;
+    },
+  };
+}
+
 describe('role-specific Cordis replication plugins', () => {
   it('rejects role mismatch before hub listener side effects', async () => {
     const listen = vi.fn();
@@ -42,6 +69,59 @@ describe('role-specific Cordis replication plugins', () => {
     dependencies(ctx, 'peer');
     expect(() => plugin.apply(ctx)).toThrow(/requires instance role "hub"/);
     expect(listen).not.toHaveBeenCalled();
+  });
+
+  it('disposes and remounts a ready Hub while shutdown arms a drain timeout', async () => {
+    const ctx = new Context();
+    const timer = effectTimer(ctx);
+    dependencies(ctx, 'hub', timer);
+    let deliverMessage!: (bytes: Uint8Array) => void;
+    const socket = {
+      ...transport(),
+      onMessage(callback: (bytes: Uint8Array) => void) {
+        deliverMessage = callback;
+        return () => {};
+      },
+    };
+    const listen = vi.fn(async (options) => ({
+      close: vi.fn(async () => {}),
+      accept: options.accept,
+    }));
+    const createPlugin = () => createHubReplicationPlugin(
+      {
+        listen: { host: '127.0.0.1', port: 18790 },
+        tokens: [{ token: 'secret', instanceId: 'peer-one' }],
+        authorization: [],
+      },
+      { listen: { listen } as never, timeouts: { closeTimeoutMs: 1 } },
+    );
+
+    const first = createPlugin();
+    const firstFiber = ctx.plugin(first);
+    await firstFiber.await();
+    const accept = (await listen.mock.results[0]!.value).accept;
+    accept(socket, { peerInstanceId: 'peer-one' });
+    deliverMessage(encodeMessage({
+      kind: 'HELLO',
+      peerInstanceId: 'peer-one',
+      expectedHubInstanceId: 'hub-one',
+      protocolVersions: [1],
+      requiredCapabilities: 0,
+      optionalCapabilities: 0,
+      connectionNonce: new Uint8Array(16),
+    }, { sequence: 1 }));
+    expect(first.replication?.connections[0]?.state).toBe('ready');
+
+    await expect(firstFiber.dispose()).resolves.toBeUndefined();
+    expect(() => requireHubReplication(ctx)).toThrow(/unavailable/);
+    expect(timer.active.size).toBe(0);
+
+    const secondFiber = ctx.plugin(createPlugin());
+    await secondFiber.await();
+    expect(requireHubReplication(ctx).status.state).toBe('ready');
+    await secondFiber.dispose();
+    expect(timer.active.size).toBe(0);
+    await ctx.fiber.dispose();
   });
 
   it('publishes hub status/reauth and owns only listener/replication resources', async () => {
@@ -115,6 +195,31 @@ describe('role-specific Cordis replication plugins', () => {
     releaseClose();
     await disposing;
     expect(() => requireHubReplication(ctx)).toThrow(/unavailable/);
+  });
+
+  it('disposes and remounts a Peer while connection timers remain armed', async () => {
+    const ctx = new Context();
+    const timer = effectTimer(ctx);
+    dependencies(ctx, 'peer', timer);
+    const createPlugin = () => createPeerReplicationPlugin(
+      { expectedHubInstanceId: 'hub-one' },
+      { dial: () => transport(), backoff: { baseMs: 1, maxMs: 1, resetAfterMs: 1 } },
+    );
+
+    const firstFiber = ctx.plugin(createPlugin());
+    await firstFiber.await();
+    expect(requirePeerReplication(ctx).status.state).toBe('ready');
+    expect(timer.active.size).toBeGreaterThan(0);
+    await firstFiber.dispose();
+    expect(() => requirePeerReplication(ctx)).toThrow(/unavailable/);
+    expect(timer.active.size).toBe(0);
+
+    const secondFiber = ctx.plugin(createPlugin());
+    await secondFiber.await();
+    expect(requirePeerReplication(ctx).status.state).toBe('ready');
+    await secondFiber.dispose();
+    expect(timer.active.size).toBe(0);
+    await ctx.fiber.dispose();
   });
 
   it('cancels a pending waitForLive timer when stopped', async () => {

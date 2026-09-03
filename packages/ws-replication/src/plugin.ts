@@ -167,14 +167,38 @@ function assertRole(identity: Instance, expected: 'hub' | 'peer'): void {
   }
 }
 
-function timerFromContext(ctx: Context) {
-  const timer = ctx.get('timer') as { timeout?: (callback: () => void, delayMs: number) => () => void } | undefined;
+interface OwnedTimer {
+  setTimeout(callback: () => void, delayMs: number): unknown;
+  clearTimeout(handle: unknown): void;
+  dispose(): void;
+}
+
+function timerFromContext(ctx: Context): OwnedTimer {
+  const timer = ctx.get('timer') as { timeout?: unknown } | undefined;
   if (timer === undefined || typeof timer.timeout !== 'function') {
     throw new Error('required Cordis service "timer" is unavailable');
   }
+  const handles = new Set<() => void>();
   return {
-    setTimeout: (callback: () => void, delayMs: number): unknown => timer.timeout!(callback, delayMs),
-    clearTimeout: (handle: unknown): void => { (handle as () => void)(); },
+    setTimeout(callback, delayMs) {
+      let dispose!: () => void;
+      dispose = (timer.timeout as (callback: () => void, delayMs: number) => () => void)
+        .call(ctx.root, () => {
+          handles.delete(dispose);
+          callback();
+        }, delayMs);
+      handles.add(dispose);
+      return dispose;
+    },
+    clearTimeout(handle) {
+      const dispose = handle as () => void;
+      handles.delete(dispose);
+      dispose();
+    },
+    dispose() {
+      for (const dispose of handles) dispose();
+      handles.clear();
+    },
   };
 }
 
@@ -385,9 +409,13 @@ export function createHubReplicationPlugin(
       }
       const stop = (): Promise<void> => stopPromise ??= (async () => {
         stopped = true;
-        try { await listener?.close(); } finally { await replication?.close(); }
-        listener = undefined;
-        replication = undefined;
+        try {
+          try { await listener?.close(); } finally { await replication?.close(); }
+        } finally {
+          timer.dispose();
+          listener = undefined;
+          replication = undefined;
+        }
       })();
       const service: HubReplicationService = Object.freeze({
         get status(): HubReplicationStatus {
@@ -450,12 +478,16 @@ export function createPeerReplicationPlugin(
       replication.start();
       const stop = (): Promise<void> => stopPromise ??= (async () => {
         stopped = true;
-        for (const wait of [...liveWaits]) {
-          timer.clearTimeout(wait.handle);
-          wait.reject(new Error('peer replication stopped'));
+        try {
+          for (const wait of [...liveWaits]) {
+            timer.clearTimeout(wait.handle);
+            wait.reject(new Error('peer replication stopped'));
+          }
+          await replication?.stop();
+        } finally {
+          timer.dispose();
+          replication = undefined;
         }
-        await replication?.stop();
-        replication = undefined;
       })();
       const service: PeerReplicationService = Object.freeze({
         get status(): PeerReplicationStatus {
