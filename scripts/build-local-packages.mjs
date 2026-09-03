@@ -2,22 +2,10 @@ import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { spawn } from 'node:child_process'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { publishPackages as packages } from './package-catalog.mjs'
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const outDir = resolve(root, process.argv[2] ?? 'artifacts/local-packages')
-const packages = [
-  { root: 'packages', name: 'vfsl-protocol' },
-  { root: 'packages', name: 'vfsl' },
-  { root: 'packages', name: 'doc-runtime' },
-  { root: 'packages', name: 'clock' },
-  { root: 'packages', name: 'instance' },
-  { root: 'packages', name: 'persistence' },
-  { root: 'packages', name: 'namespace-runtime' },
-  { root: 'packages', name: 'namespace-registry' },
-  { root: 'packages', name: 'replication-protocol' },
-  { root: 'packages', name: 'ws-replication' },
-  { root: 'apps', name: 'yjs-server' },
-]
 
 await rm(outDir, { recursive: true, force: true })
 await mkdir(outDir, { recursive: true })

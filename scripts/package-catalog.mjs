@@ -1,0 +1,15 @@
+export const publishPackages = Object.freeze([
+  { root: 'packages', name: 'vfsl-protocol' },
+  { root: 'packages', name: 'vfsl' },
+  { root: 'packages', name: 'vfsl-codegen' },
+  { root: 'packages', name: 'doc-runtime' },
+  { root: 'packages', name: 'clock' },
+  { root: 'packages', name: 'instance' },
+  { root: 'packages', name: 'persistence' },
+  { root: 'packages', name: 'dsh-persistence' },
+  { root: 'packages', name: 'namespace-runtime' },
+  { root: 'packages', name: 'namespace-registry' },
+  { root: 'packages', name: 'replication-protocol' },
+  { root: 'packages', name: 'ws-replication' },
+  { root: 'apps', name: 'yjs-server' },
+])
