@@ -166,6 +166,7 @@ pnpm typecheck
 pnpm test
 pnpm pack:local
 pnpm publish:verify
+pnpm publish:reproducible
 ```
 
 `publish:verify` 对每个 tarball 检查：
@@ -176,7 +177,7 @@ pnpm publish:verify
 - 所有 packed `exports` 与 `bin` target 存在；
 - `npm publish --dry-run --json --ignore-scripts` 成功。
 
-CI 的 Node 20 / 24 matrix 也会执行 `pack:local && publish:verify`。
+`publish:reproducible` 从同一源码独立构建两套 tarballs，并要求每个 package 的 SHA-256 完全一致；这防止同版本 tarball 因 manifest key 顺序或归档元数据漂移而改变。CI 的 Node 20 / 24 matrix 同时执行内容验证与可重现性验证。
 
 ### 安全 dry-run
 

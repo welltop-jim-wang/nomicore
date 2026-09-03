@@ -13,7 +13,9 @@ await mkdir(outDir, { recursive: true })
 for (const entry of packages) {
   const packageDir = join(root, entry.root, entry.name)
   await run('pnpm', ['run', 'build'], packageDir)
-  await run('pnpm', ['pack', '--out', join(outDir, '%s-%v.tgz')], packageDir)
+  const pkg = JSON.parse(await readFile(join(packageDir, 'package.json'), 'utf8'))
+  const filename = `${pkg.name.replace('@', '').replace('/', '-')}-${pkg.version}.tgz`
+  await run('node', [join(root, 'scripts/pack-package.mjs'), packageDir, join(outDir, filename)], root)
 }
 
 const manifest = {}

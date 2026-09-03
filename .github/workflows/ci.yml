@@ -63,3 +63,6 @@ jobs:
 
       - name: Build and verify publishable tarballs
         run: pnpm pack:local && pnpm publish:verify
+
+      - name: Verify reproducible tarballs
+        run: pnpm publish:reproducible
