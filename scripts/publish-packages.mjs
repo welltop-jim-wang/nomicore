@@ -3,6 +3,7 @@ import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { spawn } from 'node:child_process'
 import { publishPackages } from './package-catalog.mjs'
+import { decidePublication, localTarballIntegrity, queryRegistryVersion } from './publish-state.mjs'
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const args = new Set(process.argv.slice(2).filter((arg) => arg !== '--'))
@@ -28,6 +29,16 @@ await mkdir(npmCache, { recursive: true })
 for (const entry of publishPackages) {
   const pkg = JSON.parse(await readFile(join(root, entry.root, entry.name, 'package.json'), 'utf8'))
   const tarball = join(outDir, manifest[pkg.name])
+  const registry = await queryRegistryVersion(pkg.name, pkg.version)
+  const decision = decidePublication({
+    packageId: `${pkg.name}@${pkg.version}`,
+    localIntegrity: await localTarballIntegrity(tarball),
+    registry,
+  })
+  if (decision.kind === 'already-published') {
+    process.stdout.write(`already-published ${pkg.name}@${pkg.version} (integrity matched)\n`)
+    continue
+  }
   const command = ['publish', tarball, '--access', 'public', '--ignore-scripts']
   if (!publish) command.push('--dry-run')
   if (provenance) command.push('--provenance')
