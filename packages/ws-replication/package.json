@@ -1,7 +1,6 @@
 {
   "name": "@nomicore/ws-replication",
   "version": "0.1.3",
-  "private": true,
   "type": "module",
   "exports": {
     ".": {
@@ -38,5 +37,19 @@
   },
   "files": [
     "dist"
-  ]
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/welltop-jim-wang/nomicore.git",
+    "directory": "packages/ws-replication"
+  },
+  "homepage": "https://github.com/welltop-jim-wang/nomicore",
+  "bugs": {
+    "url": "https://github.com/welltop-jim-wang/nomicore/issues"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  }
 }

@@ -1,7 +1,6 @@
 {
   "name": "@nomicore/yjs-server",
   "version": "0.1.1",
-  "private": true,
   "type": "module",
   "exports": {
     ".": {
@@ -37,5 +36,19 @@
   ],
   "bin": {
     "nomicore-yjs-server": "./dist/main.js"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/welltop-jim-wang/nomicore.git",
+    "directory": "apps/yjs-server"
+  },
+  "homepage": "https://github.com/welltop-jim-wang/nomicore",
+  "bugs": {
+    "url": "https://github.com/welltop-jim-wang/nomicore/issues"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
   }
 }

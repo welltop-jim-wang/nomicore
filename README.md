@@ -89,10 +89,12 @@ artifacts/local-packages/
 ├── manifest.json
 ├── nomicore-vfsl-protocol-<version>.tgz
 ├── nomicore-vfsl-<version>.tgz
+├── nomicore-vfsl-codegen-<version>.tgz
 ├── nomicore-doc-runtime-<version>.tgz
 ├── nomicore-clock-<version>.tgz
 ├── nomicore-instance-<version>.tgz
 ├── nomicore-persistence-<version>.tgz
+├── nomicore-dsh-persistence-<version>.tgz
 ├── nomicore-namespace-runtime-<version>.tgz
 ├── nomicore-namespace-registry-<version>.tgz
 ├── nomicore-replication-protocol-<version>.tgz
@@ -151,6 +153,62 @@ pnpm exec tsc -p <projection-aware-tsconfig> --listFilesOnly
 ```
 
 `--listFilesOnly` 输出必须包含该业务 package 消费的准确 projection 文件。
+
+## npm 发布准备与发布
+
+所有 `@nomicore/*` 包采用 MIT 许可证，并配置为 npm public scoped packages。包顺序由 `scripts/package-catalog.mjs` 单点维护，build、verify 和 publish 共用该清单。
+
+### 构建并验证
+
+```bash
+pnpm install --frozen-lockfile
+pnpm typecheck
+pnpm test
+pnpm pack:local
+pnpm publish:verify
+```
+
+`publish:verify` 对每个 tarball 检查：
+
+- `name`、`version` 与 manifest 文件名一致；
+- 非 private、MIT、public npm registry；
+- dependencies 中没有 `workspace:` 或 `file:`；
+- 所有 packed `exports` 与 `bin` target 存在；
+- `npm publish --dry-run --json --ignore-scripts` 成功。
+
+CI 的 Node 20 / 24 matrix 也会执行 `pack:local && publish:verify`。
+
+### 安全 dry-run
+
+```bash
+pnpm publish:packages
+```
+
+这是默认模式：先再次 verify，再按依赖顺序对全部包执行 `npm publish --dry-run`，不会创建 npm package。
+
+### 首次正式发布
+
+正式发布要求：
+
+- 当前分支为 `main`；
+- Git working tree 完全干净；
+- `npm whoami` 是有 `nomicore` organization publish 权限的账号；
+- 每个待发布的 package/version 尚未存在于 npm；
+- tarball 内容变化已经先提升对应 package version，并重建 manifest。
+
+执行：
+
+```bash
+pnpm publish:packages -- --publish
+```
+
+需要 npm provenance 时：
+
+```bash
+pnpm publish:packages -- --publish --provenance
+```
+
+脚本依赖顺序逐个发布，任一包失败即停止，不会跳过失败依赖继续发布上层包。发布后在全新临时项目从 npm 安装顶层包并运行 typecheck/runtime smoke，确认 registry 消费不依赖 checkout source。
 
 ## 第三方 Cordis Host 装配
 
