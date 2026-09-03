@@ -1,110 +1,205 @@
-# nomicore
+# Nomicore
 
 [![CI](https://github.com/welltop-jim-wang/nomicore/actions/workflows/ci.yml/badge.svg)](https://github.com/welltop-jim-wang/nomicore/actions/workflows/ci.yml)
 
-[yjs-server Namespace Schema 自描述体系](https://welltop.feishu.cn/docx/MvtJdEr84ojlRTxbmsWcqHD8npg)的落地仓库：一次完整重写，而非对现有 yjs-server 的修补。
+Nomicore 是以 Yjs 为载体的自描述 Namespace 运行时。每个 Namespace 把 VFSL schema 作为数据存入 `SCHEMA` 信封；宿主使用同一份 `schema.vfsl` 生成 TypeScript 路径投影，并在运行时通过 Registry lease 执行受控读写。Hub/Peer replication 在不同实例、不同 Persistence root 之间复制完整副本。
 
-核心思想：一段 **VFSL 文本**（受限 TypeScript 子集 + 标记类型 + JSDoc）作为 schema 的**单一真相源**，作为数据存进 doc 的 `SCHEMA` 信封——派生 TS 类型、结构树、路径校验器、整文档校验器与 AI 说明，命名空间随数据走、不依赖代码模块。
+## 当前能力
 
-## 这个版本能做什么（v0.1.3）
+- **VFSL v1**：解析、求值、schema envelope、逻辑 ROOT 校验、路径与载体投影。
+- **TypeScript codegen**：从宿主拥有的 `schema.vfsl` 生成 `VfslPathMap` augmentation，用于强类型写路径和值。
+- **Namespace Runtime**：同步读取、VFSL 校验写、严格 FIFO write sequencer、SCHEMA replacement。
+- **Namespace Registry**：namespace create/open、lease、idle retention、生命周期与有序 shutdown。
+- **Persistence**：Memory/File adapters、dirty/flush、恢复、归档与 replica reset；File root 由单一 active process 独占。
+- **Instance identity**：不可变的 `instanceId + role` Cordis service。
+- **WebSocket replication**：角色专用 Hub/Peer Cordis plugins、认证授权、bootstrap/reconcile、backpressure、liveness、GOAWAY drain 与受控恢复。
+- **Standalone server**：`@nomicore/yjs-server` CLI，以及可供嵌入式 Node Host 使用的 Hub listener 和 Peer dial adapters。
 
-**VFSL v1 方言的完整解析器**。输入一段 schema 文本，输出可 JSON 序列化的 IR，或精确到行列的错误——同步、纯函数、对任意输入（含对抗性深嵌套、超长模块）**不抛错**。
+权威术语见 [`CONTEXT.md`](CONTEXT.md)，架构决策见 [`docs/adr/`](docs/adr/)，wire contract 见 [`docs/protocols/instance-replication-v1.md`](docs/protocols/instance-replication-v1.md)。
 
-```ts
-import { parseVfsl } from '@nomicore/vfsl';
+## 关键使用规则
 
-const result = parseVfsl(`
-/** 名字约束 */
-type Name = string & Pattern<"^[a-z][a-z0-9_]*$">;
-type Port = 80 | 443;
-type Pair = { first: string; second?: number };
-type Synced = YMap<{ items: YArray<Name>; plain: YPlainArray<Pair>; leaf: YLeaf<number> }>;
-`);
+1. 宿主项目拥有自己的 `schema.vfsl`、生成类型、业务代码、配置、测试与部署；Nomicore 是依赖，不接管宿主领域。
+2. Namespace 写入必须使用生成的 `VfslPathMap` 投影和 projection-aware typecheck，通过宿主 typed adapter 调用 `NamespaceLease.mutateData()`。运行时 SCHEMA 校验不能代替编译期路径和值检查。
+3. 业务 mutation 应最小、可合并、有语义；修改一个叶子时不要读取并替换整个 ROOT 或父对象。
+4. File Persistence `rootDir` 是单进程私有存储，不是共享数据库。跨进程数据修改使用拥有者业务接口或不同 root 之间的 Hub/Peer replication；不得并发打开同一 root 或直接编辑 snapshot。
+5. SCHEMA replacement 只由 Hub 通过 existing namespace lease 执行。更新后需刷新类型投影，并按文档协调 Peer reset/re-bootstrap 或重启。
+
+相关指南：
+
+- [外部项目 VFSL Codegen 与类型安全访问](docs/integration/external-project-vfsl-codegen.md)
+- [第三方 Cordis Host 装配](docs/integration/cordis-plugin-hosting.md)
+- [Hub/Peer standalone 部署与运维](docs/integration/hub-peer-deployment.md)
+- [本机源码 linking](docs/integration/local-package-linking.md)
+
+## 包与目录
+
+```text
+packages/
+├── vfsl-protocol/          # 生成类型使用的路径访问协议
+├── vfsl/                   # VFSL parser/evaluator/validator
+├── vfsl-codegen/           # TypeScript projection generator
+├── doc-runtime/            # Yjs 载体物化、读取和校验 mutation
+├── namespace-runtime/      # Namespace 能力与 write sequencer
+├── clock/                  # Cordis wall-clock service
+├── instance/               # instanceId + role service
+├── persistence/            # Memory/File persistence
+├── namespace-registry/     # Registry、lease 与 replication sessions
+├── replication-protocol/   # instance replication v1 codec
+├── ws-replication/         # Hub/Peer controllers 与 Cordis plugins
+└── dsh-persistence/        # DSH 开发/探针 profile
+
+apps/yjs-server/            # standalone Hub/Peer composition root 与 Node WS adapters
+domains/                    # 仓库内示例/测试领域
+docs/                       # ADR、protocol、VFSL 与 integration guides
+artifacts/local-packages/   # 本地集成 tarballs 和 manifest
 ```
 
-成功时得到 IR（kind 判别联合；不带行列——内容哈希对排版不敏感）：
+## 构建本地 tarballs
+
+这些包尚未统一发布到 npm registry。与独立项目做接近正式安装的集成时，使用编译后的完整 tarball 集，而不是只安装顶层 server 包。
+
+### 1. 准备 checkout
+
+```bash
+git switch main
+git pull --ff-only origin main
+pnpm install --frozen-lockfile
+```
+
+要求 Node.js 20+ 和仓库声明的 pnpm 版本。
+
+### 2. 构建完整包集
+
+```bash
+pnpm run pack:local
+```
+
+该命令会：
+
+1. 清空 `artifacts/local-packages/`；
+2. 依依赖顺序编译每个可集成包的 `dist`；
+3. 为每个包运行 `pnpm pack`；
+4. 写入 `artifacts/local-packages/manifest.json`。
+
+默认输出示例：
+
+```text
+artifacts/local-packages/
+├── manifest.json
+├── nomicore-vfsl-protocol-<version>.tgz
+├── nomicore-vfsl-<version>.tgz
+├── nomicore-doc-runtime-<version>.tgz
+├── nomicore-clock-<version>.tgz
+├── nomicore-instance-<version>.tgz
+├── nomicore-persistence-<version>.tgz
+├── nomicore-namespace-runtime-<version>.tgz
+├── nomicore-namespace-registry-<version>.tgz
+├── nomicore-replication-protocol-<version>.tgz
+├── nomicore-ws-replication-<version>.tgz
+└── nomicore-yjs-server-<version>.tgz
+```
+
+可选地将输出写到其他目录：
+
+```bash
+pnpm run pack:local -- /absolute/path/to/output
+```
+
+`manifest.json` 是包名到实际版本化文件名的权威映射。不要在消费项目中硬编码 README 示例中的版本号。
+
+> 只要 tarball 内容发生变化，相应 package 的 `version` 就必须先更新；构建脚本会把版本写入文件名和 manifest。不要以相同版本号覆盖不同内容。
+
+### 3. 在独立项目中安装
+
+独立消费项目必须为其使用的全部未发布 `@nomicore/*` 传递依赖提供本地 tarball。仅安装 `@nomicore/yjs-server` 会让包管理器尝试从 npm 解析其余未发布依赖。
+
+示例 `package.json`（文件名以本次生成的 manifest 为准）：
 
 ```jsonc
-// result.module.aliases[0]
 {
-  "kind": "alias",
-  "name": "Name",
-  "docs": [" 名字约束 "],          // JSDoc 原文，按出现序
-  "type": { "kind": "pattern", "regex": "^[a-z][a-z0-9_]*$" }
+  "dependencies": {
+    "@nomicore/instance": "file:../nomicore/artifacts/local-packages/nomicore-instance-0.1.0.tgz",
+    "@nomicore/clock": "file:../nomicore/artifacts/local-packages/nomicore-clock-0.1.0.tgz",
+    "@nomicore/persistence": "file:../nomicore/artifacts/local-packages/nomicore-persistence-0.2.2.tgz",
+    "@nomicore/namespace-registry": "file:../nomicore/artifacts/local-packages/nomicore-namespace-registry-0.1.6.tgz",
+    "@nomicore/replication-protocol": "file:../nomicore/artifacts/local-packages/nomicore-replication-protocol-0.1.0.tgz",
+    "@nomicore/ws-replication": "file:../nomicore/artifacts/local-packages/nomicore-ws-replication-0.1.3.tgz",
+    "@nomicore/yjs-server": "file:../nomicore/artifacts/local-packages/nomicore-yjs-server-0.1.1.tgz"
+  }
 }
 ```
 
-失败时得到精确锚定的单条诊断（`message` 携带冻结前缀 `VFSL-E<编号>`）：
+实际闭包还可能包含 `vfsl-protocol`、`vfsl`、`doc-runtime` 和 `namespace-runtime`；以 package manager 报告及 `manifest.json` 为准。更新 tarballs 后，在消费项目重新执行其 package manager install，确保 lockfile 指向新文件和内容。
 
-```ts
-parseVfsl('type A = any;');
-// { ok: false, issues: [{ message: 'VFSL-E101: any 类型被禁止（判定顺序第 5 条）', line: 1, column: 10 }] }
+### 4. 验证 tarball 消费
+
+消费项目应从 packed `dist` 导入，不应通过 `nomicore-source` condition、源码路径或 checkout 内部 subpath 运行生产集成。至少执行：
+
+```bash
+pnpm install
+pnpm typecheck
+pnpm test
 ```
 
-### 支持的方言子集（v1 冻结，只增不改）
+对于 typed Namespace writers，还要执行宿主自己的：
 
-| 构造 | 形式 | IR 节点 |
-| --- | --- | --- |
-| 类型别名 | `type A = …;` | `alias` |
-| 原始类型 | `string` `number` `boolean` `null` `unknown` | `primitive` |
-| 字面量联合 | `80 \| 443`、`"admin" \| "user"` | `literal` |
-| 封闭对象 | `{ first: string; second?: number }` | `object` + `field`（`optional`） |
-| 数组后缀 | `T[]` | `array` |
-| 记录 | `Record<K, V>` | `record` |
-| 六标记 | `YMap` `YArray` `YPlainArray` `YLeaf` `YXmlFragment`（**大小写是契约**） | `marker` |
-| 值约束 | `string & Pattern<"正则">` | `pattern` |
-| 别名引用 | 前向引用合法；声明顺序无关 | `ref` |
-| JSDoc 原文 | `/** … */` 挂别名 / 属性 / 标记三锚位；不相邻即悬空（E305） | `docs: string[]` |
-
-**诊断覆盖**：21 个错误码全量落地——词法（E201–E203）、语法（E100–E106）、语义（E301–E311，含环检测 E106、字段重名 E308、ROOT 完整性 E310/E311）。单错误模型：全部候选按 `(line, column, code)` 取最小，恰返回 1 条。
-
-**当前引擎能力**：`parseVfsl`（文本→IR）、`evaluate`（IR→派生 schema）、`validateLogicalSnapshot`（逻辑快照校验：普通 JSON logical ROOT snapshot，不接受 live Yjs 载体）、`parseSchemaEnvelope`（`SCHEMA` 信封形状与方言路由）。尚未包含 NomicoreServer、Y.Doc 持久化与实时同步。
-
-## 设计不变量
-
-- **显式公共接缝**：`parseVfsl` / `evaluate` / `validateLogicalSnapshot` / `parseSchemaEnvelope` 各自冻结入参、结果联合与错误域；tokenizer / parser / semantic / shapes 等内部件不构成契约。
-- **不抛错承诺**：任何输入的错误只经返回值传递；顶层兜底把意外异常转化为结构化 E100（命中即实现缺陷，不得视为通过）。
-- **IR 可序列化**：纯数据、无环（环被 E106 显式拒绝）、值域在 JSON 表达力内——编译缓存与跨版本消费的前提。
-- **方言冻结**：v1 按[规格](docs/vfsl/v1-spec.md)冻结，后续只做加法；未知方言在读取侧响亮失败，不静默降级。
-- **仓库不含 schema 文本**（测试除外）：运行时真相是 doc 里 `SCHEMA` 的数据，不是代码库里的 `.vfsl` 文件。
-- **零写入**：所有校验在事务前完成，失败 400 且文档不变（服务端落地时的承诺，解析层先行兑现其判定部分）。
-- **单一真相**：禁止在代码里另立 schema 副本（手写 ValueShape / 平行的 zod 定义）；派生物全部从 VFSL 文本来。
-- **零运行时依赖**：`@nomicore/vfsl` 只依赖 Node 标准库。
-
-## 仓库结构
-
-```
-nomicore/
-├── packages/vfsl/          # VFSL 引擎：本版本的解析器（tokenizer / parser / semantic / shapes / ir）
-├── apps/                   # 新 yjs-server 服务端（预留）
-├── docs/
-│   ├── vfsl/v1-spec.md     # v1 方言规格（错误码表、EBNF、物化规则）
-│   └── adr/                # 架构决策记录（单一真相源 / 全重写边界）
-├── wiki/raw/               # 各 ticket 的任务简报与 SA 评审产物（流水线审计轨迹）
-└── CONTEXT.md              # 领域术语表
+```bash
+pnpm nomicore:generate
+pnpm nomicore:generate:check
+pnpm exec tsc -p <projection-aware-tsconfig> --listFilesOnly
 ```
 
-## 路线图
+`--listFilesOnly` 输出必须包含该业务 package 消费的准确 projection 文件。
 
-1. ~~Phase 0a · parser 切片~~ ✅ v0.1.3：v1 方言全量解析（issues #5–#9，180 个测试）
-2. **Phase 0b · 引擎补全**：求值器 / 路径索引 / `validateLogicalSnapshot` / `SCHEMA` 信封
-3. **Phase 2 · yjs-server**：schema 数据面服务端（namespace 生命周期、统一写入管线、同步协议）——两个开放问题见 PRD #3（写入强制级别、API 面拆分）
+## 第三方 Cordis Host 装配
 
-## 第三方宿主接入
+嵌入式 Host 使用公开 plugin factories，按以下依赖顺序启动：
 
-第三方宿主应使用 **Cordis 插件工厂组合加载**：在同一个 `Context` 中按 Clock → Timer → Memory/File Persistence → Namespace Registry 的顺序挂载公开 `create*Plugin()` 工厂。当前不以动态 `pluginId` 或 `cordis_define` 作为稳定集成契约。完整装配示例、配置、数据读写和停止顺序见[第三方 Cordis 宿主接入指南](docs/integration/cordis-plugin-hosting.md)。
+```text
+Instance
+→ Clock
+→ Host-owned Timer
+→ Memory/File Persistence
+→ Namespace Registry
+→ role-specific Hub/Peer replication plugin
+→ namespace lease / replication readiness
+→ domain service
+```
 
-在发布 npm registry 前，源码级高频联调见[本机包联调指南](docs/integration/local-package-linking.md)；更接近正式安装的消费方式是运行 `pnpm pack:local`，使用 `artifacts/local-packages/` 中编译后的完整 tarball 集。该集合包含 VFSL/Runtime/Registry，也包含 `@nomicore/replication-protocol`、`@nomicore/ws-replication` 和可执行的 `@nomicore/yjs-server`。独立宿主项目如何维护自己的 VFSL、生成 `generated.ts`、为 Namespace 读写接入类型投影并用自身 TypeScript 工程检查，见[外部项目 VFSL Codegen 指南](docs/integration/external-project-vfsl-codegen.md)。
+Node Host 可从 `@nomicore/yjs-server` 使用：
 
-## 开发
+- `createNodeHubListenAdapter()`
+- `createNodePeerDial()`
+
+详细的 readiness、Timer 所有权、File root、Peer reconnect 与 teardown 规则见 [Cordis Host 指南](docs/integration/cordis-plugin-hosting.md)。
+
+## Standalone Hub/Peer
+
+`@nomicore/yjs-server` tarball 提供 `nomicore-yjs-server` CLI。安装完整 tarball 闭包后：
+
+```bash
+pnpm exec nomicore-yjs-server --config /path/to/config.json
+# 或
+NOMICORE_CONFIG=/path/to/config.json pnpm exec nomicore-yjs-server
+```
+
+配置、NDJSON 管理面、TLS、root lock、Hub restart、Peer recovery 和 reset runbook 见 [Hub/Peer 部署指南](docs/integration/hub-peer-deployment.md)。
+
+## 开发与验证
 
 ```bash
 pnpm install --frozen-lockfile
 pnpm typecheck
 pnpm test
-./node_modules/.bin/tsc -p tsconfig.typecheck.json --noEmit
+pnpm run pack:local
 ```
 
-CI：Node 20 / 24 矩阵（`.github/workflows/ci.yml`）。
+常用工具：
 
-Ticket 经 [MABF 流水线](docs/agents/issue-tracker.md)自动执行：SA6 红灯测试 → SA1 设计 → SA2 攻击评审 → SA3 实现 → SA4 静态 / SA7 动态双清 → PR → 绿 CI 合入集成分支。各阶段产物存于 `wiki/raw/`。
+```bash
+pnpm schema:check /absolute/path/to/schema.vfsl
+pnpm generate --domains /absolute/path/to/host
+```
+
+CI 使用 Node 20 / 24 矩阵，配置位于 `.github/workflows/ci.yml`。
