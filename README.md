@@ -191,6 +191,8 @@ pnpm publish:reproducible
 - 所有 packed `exports` 与 `bin` target 存在；
 - `npm publish --dry-run --json --ignore-scripts` 成功。
 
+默认情况下，`publish:verify` 还会查询 npm registry：已发布的同版本包必须与本地 integrity 完全一致，并对尚未发布版本执行 npm dry-run。普通源码 PR 的 CI 设置 `NOMICORE_VERIFY_REGISTRY_INTEGRITY=0`，只验证当前源码 tarball 的结构；同版本 integrity、版本提升和 npm publish dry-run 的强门禁保留给 release/publish 流程。
+
 `publish:reproducible` 从同一源码独立构建两套 tarballs，并要求每个 package 的 SHA-256 完全一致；这防止同版本 tarball 因 manifest key 顺序或归档元数据漂移而改变。CI 的 Node 20 / 24 matrix 同时执行内容验证与可重现性验证。
 
 ### 安全 dry-run

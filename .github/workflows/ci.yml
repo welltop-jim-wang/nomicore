@@ -66,8 +66,11 @@ jobs:
       - name: Generated projection freshness (regen-diff)
         run: pnpm generate --check
 
+      # 普通 PR 验证当前源码能构建出结构合法的 tarball；不要把“与 registry 同版本
+      # integrity 相等”或 npm 对已发布版本的 dry-run 拒绝当作源码 PR 门禁——版本提升
+      # 与 npm publish dry-run 属于 release 流程。
       - name: Build and verify publishable tarballs
-        run: pnpm pack:local && pnpm publish:verify
+        run: pnpm pack:local && NOMICORE_VERIFY_REGISTRY_INTEGRITY=0 pnpm publish:verify
 
       - name: Verify reproducible tarballs
         run: pnpm publish:reproducible
