@@ -11,15 +11,12 @@
  * - 19d-CTRL（探针灵敏度对照）：同款 turn 结构下裸 `Promise.reject`（零 handler）
  *   必被探针捕获——证明 19d 的「零 unhandled」断言具备真判别力（若移除即刻空
  *   catch 防御，19d 将转红）。
- * - R5P（R5′ 残余窗口活链路契约化，SA4 动态审核重点 #1）：真实 cordis-plugin-timer
- *   TimerService + 真实 MemoryPersistence + 真实 registry plugin + gated 写排空窗口：
- *   窗口内（persistence fiber UNLOADING）到达 saveDoc 的在途写按设计 §8 R5′ 声明
- *   reject——写调用方收到响亮 rejection（runtime 冻结稳定形态 RuntimeWriteFatalError
- *   'notify-dirty-failed'/committed=true，cause 链终端 = CordisError('INACTIVE_EFFECT')
- *   零信息损失）；close barrier/shutdown 终态不受影响（resolve undefined）；次序契约
- *   （registry-shutdown-settled < persistence-adapter-disposed）在真实 timer 在场下
- *   成立；adapter dispose 恰一次；零 unhandled rejection。门控拓扑使全程确定性
- *   （零 native timer 到期、零 real sleep——真实 timer 仅作为装配在场）。
+ * - R5P（Persistence 卸载排空回归）：真实 cordis-plugin-timer TimerService + 真实
+ *   MemoryPersistence + 真实 registry plugin + gated 写排空窗口。Persistence fiber 已进入
+ *   UNLOADING 时，此前接纳并已提交的写仍须成功登记 dirty，Runtime 不得进入
+ *   notify-dirty-failed fatal；Registry shutdown settle 仍严格先于 adapter dispose，
+ *   adapter dispose 恰一次且零 unhandled rejection。门控拓扑使全程确定性（零 native
+ *   timer 到期、零 real sleep——真实 timer 仅作为装配在场）。
  * - 11d（P2 活链路，**确定性**）：testing seam registry + 经
  *   createCordisRegistryScheduler 的**真实 ctx.timeout 桥**（TimerService/ctx.effect/
  *   native setTimeout 真实武装；idleTimeoutMs=300_000 → 测试期内 native 必不到期，
@@ -282,7 +279,7 @@ function collectObserver(): { readonly events: ObservedEvent[]; sink: (event: un
   };
 }
 
-describe('SA7 rev1 补充动态（P1 floating-window / R5′ 活链路 / P2 real timer）', () => {
+describe('SA7 rev1 补充动态（P1 floating-window / Persistence unload drain / P2 real timer）', () => {
   it('19d. P1 floating-window 对抗：同步 throw entry 不居首位——首位 gated rejection 挂起聚合循环期间（跨宏任务 checkpoint），合成 rejected Promise 零 unhandled rejection；放行后聚合次序/恰一次/stopped 全保持', async () => {
     const probe = collectUnhandledRejections();
     try {
@@ -369,7 +366,7 @@ describe('SA7 rev1 补充动态（P1 floating-window / R5′ 活链路 / P2 real
     }
   });
 
-  it('R5P. R5′ 活链路契约（真实 TimerService + gated drain）：窗口内在途写 reject（cause 链终端 CordisError INACTIVE_EFFECT）交付写调用方；shutdown resolve undefined；registry-shutdown-settled < persistence-adapter-disposed；dispose 恰一次；零 unhandled', async () => {
+  it('R5P. persistence 卸载排空在途写：dirty notification 成功登记且 Runtime 不进入 fatal；shutdown 先于 adapter dispose；零 unhandled', async () => {
     const probe = collectUnhandledRejections();
     try {
       const ctx = new Context();
@@ -439,26 +436,12 @@ describe('SA7 rev1 补充动态（P1 floating-window / R5′ 活链路 / P2 real
       expect(events).toEqual([]);
       expect(shutdownSettled).toBe(false);
 
-      // ★ R5′ 核心：窗口内放行写 → saveDoc → scheduleFlush → ctx.timeout（绑定调用
-      //   方 fiber = memory fiber，UNLOADING 态）→ CordisError('INACTIVE_EFFECT')。
+      // persistence fiber 已进入 UNLOADING，但依赖 Registry 仍在排空此前接纳的写。
+      // dirty notification 必须保持可用，不能因调度 flush timer 依赖 inactive fiber 而
+      // 把已提交写升级成 notify-dirty-failed fatal。
       saveGate.resolve();
-      const writeRejection = await writePromise.then(
-        () => undefined,
-        (e: unknown) => e,
-      );
-      // 写调用方收到响亮 rejection：runtime 冻结稳定形态（notify-dirty-failed /
-      // committed=true），cause 链终端 = 原始 CordisError（零信息损失）。
-      expect(writeRejection).toBeInstanceOf(Error);
-      const terminal = (() => {
-        let cursor = writeRejection as { cause?: unknown } | undefined;
-        while (cursor instanceof Error && cursor.cause !== undefined) cursor = cursor.cause as { cause?: unknown };
-        return cursor as { code?: unknown; message?: unknown; constructor?: { name?: string } };
-      })();
-      expect(writeRejection?.constructor?.name).toBe('RuntimeWriteFatalError');
-      expect(String(writeRejection)).toContain('notify-dirty-failed');
-      expect(terminal.constructor?.name).toBe('CordisError');
-      expect(terminal.code).toBe('INACTIVE_EFFECT');
-      expect(String(terminal.message)).toContain('cannot create effect on inactive context');
+      await expect(writePromise).resolves.toEqual({ ok: true });
+      expect(lease.getStatus().runtime?.fatal).toBeNull();
 
       await disposal;
       await flushMicrotasks(30);

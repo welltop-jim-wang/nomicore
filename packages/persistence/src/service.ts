@@ -12,7 +12,7 @@ import { provideNomicorePersistence, type DocPersistence, type PersistenceSchedu
  * 生命周期：宿主必须**先装 timer、后停 persistence**（本任务 DSH profile 的
  * clock → timer → persistence 装配序与 adapter → fiber dispose 序即满足）。
  * 若宿主先拆 timer fiber 再使用 persistence adapter，`scheduleRetry` →
- * `ctx.timeout` 会在 native 回调续体里抛 INACTIVE_EFFECT（uncaught）——该顺序
+ * `ctx.root.timeout` 会在 native 回调续体里抛 INACTIVE_EFFECT（uncaught）——该顺序
  * 是宿主接线契约，不在 persistence 内部防御（adapter `closed` 标志只覆盖自身
  * dispose 路径）。
  */
@@ -48,7 +48,10 @@ export function assertPersistenceHostDependencies(ctx: Context): void {
 export function createCordisPersistenceScheduler(ctx: Context): PersistenceScheduler {
   assertPersistenceHostDependencies(ctx)
   return {
-    setTimeout: (callback, delayMs) => ctx.timeout(callback, delayMs),
+    // Persistence 的调度器属于 adapter 资源，而不是单次调用 saveDoc 时的当前 fiber。
+    // root Context 的生命周期覆盖完整 Host，可让卸载排空期间的 dirty notification 继续
+    // 武装 flush timer；adapter.dispose() 会在依赖方 settle 后显式清理这些 timer。
+    setTimeout: (callback, delayMs) => ctx.root.timeout(callback, delayMs),
     clearTimeout: (handle) => { (handle as () => void)() },
   }
 }
@@ -79,13 +82,10 @@ export function createCordisPersistenceScheduler(ctx: Context): PersistenceSched
  * ——「close 撞已销毁 handle」聚合失败被消灭）——AC11「先于 Persistence dispose」
  * 从 fiber 级提升为 adapter 级真实保证。
  *
- * ⚠️ 宿主接线契约（R5′，生产 timer 限定）：本 fiber 处于 UNLOADING 的 drain 窗口内，
- * 经 `ctx.timeout` 的**新 flush/retry timer 武装**会抛 CordisError('INACTIVE_EFFECT')
- * （真实 TimerService 语义：副作用绑定调用方 fiber，fiber.effect 对 UNLOADING 态
- * 显式 throw）→ 窗口内到达 saveDoc 的在途写收到响亮 rejection（交付写调用方）。
- * 需要写排空完整落盘的宿主应先 settle 依赖方（await registry shutdown/fiber 卸载）
- * 再拆 persistence fiber。fake-timer 测试 seam（testing.ts）不经 ctx.effect，对该
- * 窗口结构性失明。详见设计 rev1 §8 R5′。
+ * 调度生命周期：生产 scheduler 通过 `ctx.root.timeout` 武装 timer，使 adapter fiber
+ * 进入 UNLOADING 后、依赖 Registry 排空此前接纳写的窗口内，`saveDoc` 仍能完成 dirty
+ * 登记。adapter.dispose() 在依赖方 settle 后清理全部 timer，因此不会把调度资源泄漏到
+ * adapter 生命周期之外。真实 TimerService 集成回归见 Registry R5P 测试。
  *
  * 直接调用 adapter.dispose() 的宿主编排（不经 fiber 卸载）不受影响：dispose 语义
  * 与幂等性零变化（宿主职责，ADR-0006 :86）。
