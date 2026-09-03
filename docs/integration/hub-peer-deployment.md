@@ -17,15 +17,13 @@ node_modules/.bin/tsx apps/yjs-server/src/main.ts --config <path/to/config.json>
 NOMICORE_CONFIG=<path> node_modules/.bin/tsx apps/yjs-server/src/main.ts
 ```
 
-未发布 npm registry 前，执行 `pnpm pack:local` 会在 `artifacts/local-packages/` 生成完整编译包集，其中包括：
+生产或普通测试环境优先从 npm 安装正式版本：
 
-```text
-nomicore-replication-protocol-<version>.tgz
-nomicore-ws-replication-<version>.tgz
-nomicore-yjs-server-<version>.tgz
+```bash
+pnpm add @nomicore/yjs-server
 ```
 
-`@nomicore/yjs-server` tarball 暴露 `nomicore-yjs-server` CLI。消费方安装完整本地依赖图后运行：
+该包暴露 `nomicore-yjs-server` CLI，package manager 会从 npm 解析正式传递依赖。安装后运行：
 
 ```bash
 pnpm exec nomicore-yjs-server --config <path/to/config.json>
@@ -33,7 +31,7 @@ pnpm exec nomicore-yjs-server --config <path/to/config.json>
 NOMICORE_CONFIG=<path> pnpm exec nomicore-yjs-server
 ```
 
-这些包尚未发布时不能只安装 server tarball；必须按 `artifacts/local-packages/manifest.json` 将全部 `@nomicore/*` 依赖指向本地 tarball（或解包后的本地 package 目录），否则 package manager 会向 npm 查询未发布的传递依赖。应用方应消费 tarball 的 `dist`，不 link Nomicore `src`。
+仅当验证 Nomicore checkout 中尚未发布的修改时，才运行 `pnpm pack:local` 并按 `artifacts/local-packages/manifest.json` 使用同一批本地 tarballs。普通使用不应 link Nomicore `src`，也不应维护本地完整依赖闭包。
 
 stdout 输出 NDJSON 生命周期事件（`config-loaded / provisioned / provision-failed /
 listening / ready / target-added / replica-reset（reset-replica 仅成功路径发射）/

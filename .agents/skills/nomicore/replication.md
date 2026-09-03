@@ -12,21 +12,19 @@ Read these authorities before implementation:
 
 ## Choose the integration level
 
-- Use the composed `@nomicore/yjs-server` package when the deployment needs a standalone Hub/Peer process. Its tarball contains compiled `dist` JavaScript/declarations and the `nomicore-yjs-server` CLI. Follow the deployment guide's strict JSON config and NDJSON operations; the package is an application composition root, not a self-contained Cordis plugin.
+- Use the released `@nomicore/yjs-server` package from npm when the deployment needs a standalone Hub/Peer process. It contains compiled `dist` JavaScript/declarations and the `nomicore-yjs-server` CLI. Follow the deployment guide's strict JSON config and NDJSON operations; the package is an application composition root, not a self-contained Cordis plugin.
 - When embedding replication into an existing Cordis host, compose Instance → Clock → Timer → Persistence → Registry, then install `createHubReplicationPlugin()` or `createPeerReplicationPlugin()` from `@nomicore/ws-replication`. A Node.js Hub supplies `createNodeHubListenAdapter()` and a Node.js Peer supplies `createNodePeerDial()` from `@nomicore/yjs-server`; other runtimes implement the corresponding interfaces. Never use generic `createWebSocketAdapter()` for a Node Peer socket while it is CONNECTING: it does not queue the controller's immediate HELLO. Discover the ready service with `requireHubReplication(ctx)` or `requirePeerReplication(ctx)`. There is no `createNomicoreYjsServerPlugin()` / `requireNomicoreYjsServer()` integration surface.
 - Use lower-level `createHubReplication()` / `createPeerReplication()` only for a trusted host that deliberately owns custom transport integration and controller lifecycle. They are not the default Cordis embedding path.
 
-## Local tarball distribution
+## Package installation
 
-Run `pnpm pack:local` in Nomicore. Replication consumers need the complete unpublished graph, including:
+Ordinary consumers install released packages from npm:
 
-```text
-@nomicore/replication-protocol
-@nomicore/ws-replication
-@nomicore/yjs-server
+```bash
+pnpm add @nomicore/yjs-server @nomicore/ws-replication
 ```
 
-plus Registry/Runtime/Persistence/Clock/VFSL dependencies listed in `artifacts/local-packages/manifest.json`. Until packages are published to a registry, point every `@nomicore/*` dependency to the local tarball or an extracted local package directory; installing only the top-level server tarball makes the package manager query npm for unpublished transitive versions. Consume packed `dist`, not Nomicore source links.
+The package manager resolves the published Registry/Runtime/Persistence/Clock/VFSL dependency graph. Use `pnpm pack:local` and the complete manifest tarball set only for an explicitly unreleased Nomicore change; final production and integration verification should return to npm packages whenever possible.
 
 ## Deployment process
 

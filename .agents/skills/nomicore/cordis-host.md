@@ -5,7 +5,7 @@ Compose Nomicore inside the independent host's existing composition root. Read `
 ## Process
 
 1. Inspect the host's Cordis context ownership, configuration system, existing Timer provider, persistence/recovery identity, health/readiness model, domain startup policy, and shutdown path.
-2. Link or install the public packages used by the host. For unpublished local integration, prefer the complete tarball graph from `$NOMICORE_ROOT/artifacts/local-packages/manifest.json`; when intentionally linking checkout directories, include every runtime package the selected branches consume, including `packages/instance` and `packages/ws-replication` for embedded replication.
+2. Install the released public packages used by the host from npm. Let the package manager resolve transitive dependencies and commit the lockfile. Use the complete local tarball graph or checkout links only when the task explicitly validates unreleased Nomicore changes; do not make local artifacts the normal consumer configuration.
 3. In one Cordis `Context`, install in dependency order:
    1. `createInstancePlugin()` with one immutable `{ instanceId, role }` source; for Fiber management pass that config both to the factory and as the second `ctx.plugin(plugin, config)` argument;
    2. `createSystemClockPlugin()`;

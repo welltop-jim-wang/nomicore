@@ -58,32 +58,25 @@ type ROOT = YMap<{
 }>;
 ```
 
-## 2. 安装或本机链接依赖
+## 2. 从 npm 安装依赖
 
-正式发布后，宿主项目应把实际使用的 Nomicore 包声明为自己的依赖和开发依赖。发布前同机联调，可从宿主项目根目录按实际路径链接：
+宿主项目优先安装正式发布的 npm 包，只声明自己直接使用的依赖：
 
 ```bash
 cd /path/to/my-service
-
-pnpm link \
-  /home/wangjian/nomicore/packages/vfsl \
-  /home/wangjian/nomicore/packages/vfsl-protocol \
-  /home/wangjian/nomicore/packages/vfsl-codegen \
-  /home/wangjian/nomicore/packages/doc-runtime \
-  /home/wangjian/nomicore/packages/clock \
-  /home/wangjian/nomicore/packages/persistence \
-  /home/wangjian/nomicore/packages/namespace-runtime \
-  /home/wangjian/nomicore/packages/namespace-registry
+pnpm add @nomicore/namespace-registry @nomicore/persistence
+pnpm add -D @nomicore/vfsl-codegen @nomicore/vfsl-protocol typescript
 ```
 
-宿主还需自行安装 Cordis、Timer、TypeScript 和用于当前源码联调的 TS 执行器，例如：
+如需其他 Runtime 或 replication 能力，再按实际 import 增加对应包。仅当开发 Nomicore 本身或验证尚未发布的修改时，才按[本机包联调指南](local-package-linking.md)使用源码 link 或同批本地 tarballs。
+
+宿主还需按其 composition 自行安装 Cordis、Timer 和 Yjs，例如：
 
 ```bash
 pnpm add @deepseek-ai/cordis @deepseek-ai/cordis-plugin-timer yjs
-pnpm add -D typescript tsx
 ```
 
-当前本机链接的 Nomicore packages 直接 export TypeScript 源码，因此宿主开发工具链必须能处理 ESM TypeScript。正式 npm 包应改为消费编译后的 `dist`，但不改变本文的生成和类型检查模型。
+正式 npm 包消费编译后的 `dist`，宿主无需配置 Nomicore checkout 或 TypeScript 源码执行器。
 
 ## 3. 从宿主项目生成投影
 
