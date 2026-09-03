@@ -15,6 +15,7 @@
     "schema:check": "NODE_OPTIONS=--conditions=nomicore-source tsx packages/vfsl/src/schema-check-cli.ts",
     "pack:local": "node scripts/build-local-packages.mjs",
     "publish:verify": "node scripts/verify-package-tarballs.mjs",
+    "publish:reproducible": "node scripts/verify-reproducible-packages.mjs",
     "publish:packages": "node scripts/publish-packages.mjs"
   },
   "devDependencies": {
