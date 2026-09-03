@@ -1,79 +1,85 @@
 # Nomicore
 
+English | [中文](README_zh.md)
+
 [![CI](https://github.com/welltop-jim-wang/nomicore/actions/workflows/ci.yml/badge.svg)](https://github.com/welltop-jim-wang/nomicore/actions/workflows/ci.yml)
 
-Nomicore 是以 Yjs 为载体的自描述 Namespace 运行时。每个 Namespace 把 VFSL schema 作为数据存入 `SCHEMA` 信封；宿主使用同一份 `schema.vfsl` 生成 TypeScript 路径投影，并在运行时通过 Registry lease 执行受控读写。Hub/Peer replication 在不同实例、不同 Persistence root 之间复制完整副本。
+> **The database built for agents.**
+>
+> **面向 Agent 的数据库**
 
-## 当前能力
+Nomicore is a self-describing Namespace runtime built on Yjs. Each Namespace stores its VFSL schema alongside its data in the `SCHEMA` envelope. A host project uses the same `schema.vfsl` to generate TypeScript path projections, then performs controlled reads and writes through Registry leases. Hub/Peer replication maintains complete replicas across instances and independent Persistence roots.
 
-- **VFSL v1**：解析、求值、schema envelope、逻辑 ROOT 校验、路径与载体投影。
-- **TypeScript codegen**：从宿主拥有的 `schema.vfsl` 生成 `VfslPathMap` augmentation，用于强类型写路径和值。
-- **Namespace Runtime**：同步读取、VFSL 校验写、严格 FIFO write sequencer、SCHEMA replacement。
-- **Namespace Registry**：namespace create/open、lease、idle retention、生命周期与有序 shutdown。
-- **Persistence**：Memory/File adapters、dirty/flush、恢复、归档与 replica reset；File root 由单一 active process 独占。
-- **Instance identity**：不可变的 `instanceId + role` Cordis service。
-- **WebSocket replication**：角色专用 Hub/Peer Cordis plugins、认证授权、bootstrap/reconcile、backpressure、liveness、GOAWAY drain 与受控恢复。
-- **Standalone server**：`@nomicore/yjs-server` CLI，以及可供嵌入式 Node Host 使用的 Hub listener 和 Peer dial adapters。
+## Capabilities
 
-权威术语见 [`CONTEXT.md`](CONTEXT.md)，架构决策见 [`docs/adr/`](docs/adr/)，wire contract 见 [`docs/protocols/instance-replication-v1.md`](docs/protocols/instance-replication-v1.md)。
+- **VFSL v1**: parsing, evaluation, schema envelopes, logical ROOT validation, and path/carrier projections.
+- **TypeScript code generation**: generates a `VfslPathMap` augmentation from the host-owned `schema.vfsl`, providing typed mutation paths and values.
+- **Namespace Runtime**: synchronous reads, VFSL-validated writes, a strict FIFO write sequencer, and SCHEMA replacement.
+- **Namespace Registry**: namespace creation/opening, leases, idle retention, lifecycle management, and ordered shutdown.
+- **Persistence**: Memory and File adapters, dirty tracking and flush scheduling, recovery, archival, and replica reset. A File root is exclusively owned by one active process.
+- **Instance identity**: an immutable `instanceId + role` Cordis service.
+- **WebSocket replication**: role-specific Hub/Peer Cordis plugins with authentication, authorization, bootstrap/reconcile, backpressure, liveness, GOAWAY drain, and controlled recovery.
+- **Standalone server**: the `@nomicore/yjs-server` CLI plus embeddable Node Hub-listen and Peer-dial adapters.
 
-## 关键使用规则
+See [`CONTEXT.md`](CONTEXT.md) for authoritative terminology, [`docs/adr/`](docs/adr/) for architecture decisions, and [`docs/protocols/instance-replication-v1.md`](docs/protocols/instance-replication-v1.md) for the wire contract.
 
-1. 宿主项目拥有自己的 `schema.vfsl`、生成类型、业务代码、配置、测试与部署；Nomicore 是依赖，不接管宿主领域。
-2. Namespace 写入必须使用生成的 `VfslPathMap` 投影和 projection-aware typecheck，通过宿主 typed adapter 调用 `NamespaceLease.mutateData()`。运行时 SCHEMA 校验不能代替编译期路径和值检查。
-3. 业务 mutation 应最小、可合并、有语义；修改一个叶子时不要读取并替换整个 ROOT 或父对象。
-4. File Persistence `rootDir` 是单进程私有存储，不是共享数据库。跨进程数据修改使用拥有者业务接口或不同 root 之间的 Hub/Peer replication；不得并发打开同一 root 或直接编辑 snapshot。
-5. SCHEMA replacement 只由 Hub 通过 existing namespace lease 执行。更新后需刷新类型投影，并按文档协调 Peer reset/re-bootstrap 或重启。
+## Core usage rules
 
-相关指南：
+1. The host project owns its `schema.vfsl`, generated types, business code, configuration, tests, and deployment. Nomicore is a dependency; it does not take ownership of the host domain.
+2. Namespace writes must use the generated `VfslPathMap` projection and a projection-aware typecheck. Route writes through a host-owned typed adapter over `NamespaceLease.mutateData()`. Runtime SCHEMA validation does not replace compile-time path/value checking.
+3. Business mutations should be minimal, mergeable, and semantic. Do not read and replace an entire ROOT or parent object when updating one leaf.
+4. A File Persistence `rootDir` is private to one process; it is not a shared database directory. Cross-process changes must use the owner application's API or Hub/Peer replication between independent roots. Never open the same root concurrently or edit snapshots directly.
+5. Only a Hub may replace SCHEMA through an existing namespace lease. After replacement, regenerate the type projection and coordinate Peer reset/re-bootstrap or restart as documented.
 
-- [外部项目 VFSL Codegen 与类型安全访问](docs/integration/external-project-vfsl-codegen.md)
-- [第三方 Cordis Host 装配](docs/integration/cordis-plugin-hosting.md)
-- [Hub/Peer standalone 部署与运维](docs/integration/hub-peer-deployment.md)
-- [本机源码 linking](docs/integration/local-package-linking.md)
+Related guides:
 
-## 包与目录
+- [VFSL code generation and type-safe access in external projects](docs/integration/external-project-vfsl-codegen.md)
+- [Hosting Nomicore in a third-party Cordis application](docs/integration/cordis-plugin-hosting.md)
+- [Standalone Hub/Peer deployment and operations](docs/integration/hub-peer-deployment.md)
+- [Local source linking](docs/integration/local-package-linking.md)
+
+## Packages and repository layout
 
 ```text
 packages/
-├── vfsl-protocol/          # 生成类型使用的路径访问协议
-├── vfsl/                   # VFSL parser/evaluator/validator
+├── vfsl-protocol/          # path-access protocol consumed by generated types
+├── vfsl/                   # VFSL parser, evaluator, and validator
 ├── vfsl-codegen/           # TypeScript projection generator
-├── doc-runtime/            # Yjs 载体物化、读取和校验 mutation
-├── namespace-runtime/      # Namespace 能力与 write sequencer
+├── doc-runtime/            # Yjs materialization, reads, and validated mutations
+├── namespace-runtime/      # Namespace capabilities and write sequencer
 ├── clock/                  # Cordis wall-clock service
 ├── instance/               # instanceId + role service
 ├── persistence/            # Memory/File persistence
-├── namespace-registry/     # Registry、lease 与 replication sessions
+├── namespace-registry/     # Registry, leases, and replication sessions
 ├── replication-protocol/   # instance replication v1 codec
-├── ws-replication/         # Hub/Peer controllers 与 Cordis plugins
-└── dsh-persistence/        # DSH 开发/探针 profile
+├── ws-replication/         # Hub/Peer controllers and Cordis plugins
+└── dsh-persistence/        # DSH development/probe profile
 
-apps/yjs-server/            # standalone Hub/Peer composition root 与 Node WS adapters
-domains/                    # 仓库内示例/测试领域
-docs/                       # ADR、protocol、VFSL 与 integration guides
-artifacts/local-packages/   # 本地集成 tarballs 和 manifest
+apps/yjs-server/            # standalone Hub/Peer composition and Node WS adapters
+domains/                    # repository examples and test domains
+docs/                       # ADRs, protocols, VFSL, and integration guides
+artifacts/local-packages/   # generated local integration tarballs and manifest
 ```
 
-## 从 npm 安装（消费方首选）
+## Install from npm
 
-全部 `@nomicore/*` 包已经公开发布到 npm。仅使用 Nomicore 的独立项目应优先安装 registry 版本，让 package manager 解析正式版本和传递依赖：
+All `@nomicore/*` packages are publicly available on npm. Independent consumers should prefer registry packages so the package manager resolves released versions and transitive dependencies:
 
 ```bash
 pnpm add @nomicore/namespace-registry @nomicore/persistence
-# 需要嵌入 Hub/Peer 时
+# To embed Hub/Peer replication:
 pnpm add @nomicore/instance @nomicore/clock @nomicore/ws-replication @nomicore/yjs-server
-# 需要生成类型投影时
+# To generate typed projections:
 pnpm add -D @nomicore/vfsl-codegen @nomicore/vfsl-protocol
 ```
 
-不要为了普通消费 clone Nomicore checkout、link `src` 或维护完整本地 tarball 闭包。固定版本的生产部署应把选择的 npm 版本和 lockfile 一并提交。源码 linking 和本地 tarballs 只用于开发 Nomicore 本身、验证尚未发布的修改或发布流程。
+Do not clone the Nomicore checkout, link `src`, or maintain a complete local tarball closure for ordinary consumption. Commit the selected npm versions and lockfile for reproducible production deployments. Source linking and local tarballs are only for Nomicore development, testing unreleased changes, or release preparation.
 
-## 构建本地 tarballs（Nomicore 开发/发布）
+## Build local tarballs
 
-只有在联调未发布的仓库修改或准备 npm 发布时才构建本地 tarball 集。普通消费优先使用上面的 npm 安装方式。
+Build a local tarball set only when integrating unreleased repository changes or preparing an npm release.
 
-### 1. 准备 checkout
+### 1. Prepare the checkout
 
 ```bash
 git switch main
@@ -81,22 +87,22 @@ git pull --ff-only origin main
 pnpm install --frozen-lockfile
 ```
 
-要求 Node.js 20+ 和仓库声明的 pnpm 版本。
+Node.js 20+ and the pnpm version declared by the repository are required.
 
-### 2. 构建完整包集
+### 2. Build the complete package set
 
 ```bash
 pnpm run pack:local
 ```
 
-该命令会：
+The command:
 
-1. 清空 `artifacts/local-packages/`；
-2. 依依赖顺序编译每个可集成包的 `dist`；
-3. 为每个包运行 `pnpm pack`；
-4. 写入 `artifacts/local-packages/manifest.json`。
+1. clears `artifacts/local-packages/`;
+2. builds each publishable package's `dist` in dependency order;
+3. packs each package into a deterministic tarball;
+4. writes `artifacts/local-packages/manifest.json`.
 
-默认输出示例：
+Default output:
 
 ```text
 artifacts/local-packages/
@@ -116,21 +122,21 @@ artifacts/local-packages/
 └── nomicore-yjs-server-<version>.tgz
 ```
 
-可选地将输出写到其他目录：
+To write to another directory:
 
 ```bash
 pnpm run pack:local -- /absolute/path/to/output
 ```
 
-`manifest.json` 是包名到实际版本化文件名的权威映射。不要在消费项目中硬编码 README 示例中的版本号。生成的 `*.tgz` 是本地/CI 构建产物，已被 Git 忽略；clone 后必须运行 `pnpm pack:local` 生成，不能依赖仓库中预置的归档文件。`manifest.json` 保留在仓库中只用于声明当前包集和文件命名基线，运行构建时会重写。
+`manifest.json` is the authoritative package-name-to-versioned-filename mapping. Do not hard-code the versions shown in examples. Generated `*.tgz` files are local/CI build artifacts and are ignored by Git; run `pnpm pack:local` after cloning instead of expecting archives in the repository. The tracked manifest declares the current package set and filename baseline and is rewritten during each build.
 
-> 只要 tarball 内容发生变化，相应 package 的 `version` 就必须先更新；构建脚本会把版本写入文件名和 manifest。不要以相同版本号覆盖不同内容。
+> If package contents change, bump the corresponding package version before release. Never publish different contents under the same version.
 
-### 3. 在独立项目中测试未发布构建
+### 3. Test an unreleased build in an independent project
 
-以下 `file:` 方式只适用于验证尚未发布的仓库修改。普通消费直接使用 npm 依赖。测试本地构建时，应让相关 `@nomicore/*` 依赖都指向同一批 manifest tarballs，避免混合 registry 与本地版本。
+Use `file:` dependencies only to test unreleased repository changes. Point the relevant `@nomicore/*` dependency closure to tarballs from the same manifest; do not mix registry and local builds accidentally.
 
-示例 `package.json`（文件名以本次生成的 manifest 为准）：
+Example `package.json` (use the filenames from the generated manifest):
 
 ```jsonc
 {
@@ -146,11 +152,11 @@ pnpm run pack:local -- /absolute/path/to/output
 }
 ```
 
-实际闭包还可能包含 `vfsl-protocol`、`vfsl`、`doc-runtime` 和 `namespace-runtime`；以 package manager 报告及 `manifest.json` 为准。更新 tarballs 后，在消费项目重新执行其 package manager install，确保 lockfile 指向新文件和内容。
+The actual closure may also include `vfsl-protocol`, `vfsl`, `doc-runtime`, and `namespace-runtime`; use the package manager's report and `manifest.json`. Re-run the consumer's package-manager install after rebuilding tarballs so its lockfile captures the new files and integrity values.
 
-### 4. 验证 tarball 消费
+### 4. Verify tarball consumption
 
-消费项目应从 packed `dist` 导入，不应通过 `nomicore-source` condition、源码路径或 checkout 内部 subpath 运行生产集成。至少执行：
+A consumer should import packed `dist` output, not run production integration through the `nomicore-source` condition, source paths, or checkout-internal subpaths. At minimum, run:
 
 ```bash
 pnpm install
@@ -158,7 +164,7 @@ pnpm typecheck
 pnpm test
 ```
 
-对于 typed Namespace writers，还要执行宿主自己的：
+For typed Namespace writers, also run the host project's generation checks:
 
 ```bash
 pnpm nomicore:generate
@@ -166,13 +172,13 @@ pnpm nomicore:generate:check
 pnpm exec tsc -p <projection-aware-tsconfig> --listFilesOnly
 ```
 
-`--listFilesOnly` 输出必须包含该业务 package 消费的准确 projection 文件。
+The `--listFilesOnly` output must contain the exact projection file used by the business package.
 
-## npm 发布准备与发布
+## npm release preparation and publication
 
-所有 `@nomicore/*` 包采用 MIT 许可证，并配置为 npm public scoped packages。包顺序由 `scripts/package-catalog.mjs` 单点维护，build、verify 和 publish 共用该清单。
+All `@nomicore/*` packages use the MIT license and are configured as public npm scoped packages. `scripts/package-catalog.mjs` is the single source of truth for package ordering across build, verification, and publication.
 
-### 构建并验证
+### Build and verify
 
 ```bash
 pnpm install --frozen-lockfile
@@ -183,53 +189,53 @@ pnpm publish:verify
 pnpm publish:reproducible
 ```
 
-`publish:verify` 对每个 tarball 检查：
+For each tarball, `publish:verify` checks:
 
-- `name`、`version` 与 manifest 文件名一致；
-- 非 private、MIT、public npm registry；
-- dependencies 中没有 `workspace:` 或 `file:`；
-- 所有 packed `exports` 与 `bin` target 存在；
-- `npm publish --dry-run --json --ignore-scripts` 成功。
+- package `name` and `version` match the manifest filename;
+- the package is public, non-private, MIT-licensed, and targets the public npm registry;
+- dependencies contain no `workspace:` or `file:` protocols;
+- all packed `exports` and `bin` targets exist;
+- `npm publish --dry-run --json --ignore-scripts` succeeds for versions not yet published.
 
-默认情况下，`publish:verify` 还会查询 npm registry：已发布的同版本包必须与本地 integrity 完全一致，并对尚未发布版本执行 npm dry-run。普通源码 PR 的 CI 设置 `NOMICORE_VERIFY_REGISTRY_INTEGRITY=0`，只验证当前源码 tarball 的结构；同版本 integrity、版本提升和 npm publish dry-run 的强门禁保留给 release/publish 流程。
+By default, `publish:verify` queries npm: an already-published version must have the same integrity as the local tarball, while an unpublished version must pass npm's dry run. Ordinary source PR CI sets `NOMICORE_VERIFY_REGISTRY_INTEGRITY=0` and checks tarball structure only; registry integrity, version-bump enforcement, and npm publish dry runs remain release gates.
 
-`publish:reproducible` 从同一源码独立构建两套 tarballs，并要求每个 package 的 SHA-256 完全一致；这防止同版本 tarball 因 manifest key 顺序或归档元数据漂移而改变。CI 的 Node 20 / 24 matrix 同时执行内容验证与可重现性验证。
+`publish:reproducible` independently builds two tarball sets from the same source and requires identical SHA-256 values for every package. The Node 20/24 CI matrix validates both package structure and reproducibility.
 
-### 安全 dry-run
+### Safe dry run
 
 ```bash
 pnpm publish:packages
 ```
 
-这是默认模式：先再次 verify，再按依赖顺序对全部包执行 `npm publish --dry-run`，不会创建 npm package。
+This mode verifies again and executes `npm publish --dry-run` for every package in dependency order without creating a release.
 
-### 首次正式发布
+### Publish
 
-正式发布要求：
+A real publication requires:
 
-- 当前分支为 `main`；
-- Git working tree 完全干净；
-- `npm whoami` 是有 `nomicore` organization publish 权限的账号；
-- 每个待发布的 package/version 尚未存在于 npm；
-- tarball 内容变化已经先提升对应 package version，并重建 manifest。
+- the current branch is `main`;
+- the Git working tree is clean;
+- `npm whoami` identifies an account authorized to publish under the `nomicore` organization;
+- every package/version selected for publication is not already present on npm;
+- every changed package has been version-bumped before rebuilding the manifest and tarballs.
 
-执行：
+Run:
 
 ```bash
 pnpm publish:packages -- --publish
 ```
 
-需要 npm provenance 时：
+For npm provenance:
 
 ```bash
 pnpm publish:packages -- --publish --provenance
 ```
 
-脚本依赖顺序逐个发布，任一包失败即停止，不会跳过失败依赖继续发布上层包。发布后在全新临时项目从 npm 安装顶层包并运行 typecheck/runtime smoke，确认 registry 消费不依赖 checkout source。
+The script publishes in dependency order and stops at the first failure. After publishing, install the top-level packages from npm in a fresh temporary project and run typecheck/runtime smoke tests to prove registry consumption does not depend on checkout sources.
 
-## 第三方 Cordis Host 装配
+## Third-party Cordis hosting
 
-嵌入式 Host 使用公开 plugin factories，按以下依赖顺序启动：
+Embedded hosts start public plugin factories in this dependency order:
 
 ```text
 Instance
@@ -242,26 +248,26 @@ Instance
 → domain service
 ```
 
-Node Host 可从 `@nomicore/yjs-server` 使用：
+Node hosts can import these adapters from `@nomicore/yjs-server`:
 
 - `createNodeHubListenAdapter()`
 - `createNodePeerDial()`
 
-详细的 readiness、Timer 所有权、File root、Peer reconnect 与 teardown 规则见 [Cordis Host 指南](docs/integration/cordis-plugin-hosting.md)。
+See the [Cordis hosting guide](docs/integration/cordis-plugin-hosting.md) for readiness, Timer ownership, File roots, Peer reconnect, and teardown requirements.
 
 ## Standalone Hub/Peer
 
-`@nomicore/yjs-server` 提供 `nomicore-yjs-server` CLI。普通部署从 npm 安装后运行：
+`@nomicore/yjs-server` provides the `nomicore-yjs-server` CLI. Install it from npm and run:
 
 ```bash
 pnpm exec nomicore-yjs-server --config /path/to/config.json
-# 或
+# or
 NOMICORE_CONFIG=/path/to/config.json pnpm exec nomicore-yjs-server
 ```
 
-配置、NDJSON 管理面、TLS、root lock、Hub restart、Peer recovery 和 reset runbook 见 [Hub/Peer 部署指南](docs/integration/hub-peer-deployment.md)。
+See the [Hub/Peer deployment guide](docs/integration/hub-peer-deployment.md) for configuration, the NDJSON management interface, TLS, root locking, Hub restart, Peer recovery, and the reset runbook.
 
-## 开发与验证
+## Development and verification
 
 ```bash
 pnpm install --frozen-lockfile
@@ -270,11 +276,11 @@ pnpm test
 pnpm run pack:local
 ```
 
-常用工具：
+Common tools:
 
 ```bash
 pnpm schema:check /absolute/path/to/schema.vfsl
 pnpm generate --domains /absolute/path/to/host
 ```
 
-CI 使用 Node 20 / 24 矩阵，配置位于 `.github/workflows/ci.yml`。
+CI runs on Node 20 and Node 24 via `.github/workflows/ci.yml`.
