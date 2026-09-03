@@ -1,21 +1,45 @@
 {
   "name": "@nomicore/vfsl-codegen",
   "version": "0.1.1",
-  "private": true,
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": {
+      "nomicore-source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "bin": {
+    "nomicore-generate": "./dist/cli.js"
   },
   "scripts": {
-    "typecheck": "tsc -p tsconfig.json"
+    "typecheck": "tsc -p tsconfig.json",
+    "build": "node ../../scripts/build-package.mjs"
   },
   "dependencies": {
     "@nomicore/vfsl": "workspace:*"
   },
+  "files": [
+    "dist"
+  ],
   "devDependencies": {
     "@nomicore/vfsl-protocol": "workspace:*",
     "@types/node": "^20",
     "typescript": "^5.9.3",
     "vitest": "^3.2.4"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/welltop-jim-wang/nomicore.git",
+    "directory": "packages/vfsl-codegen"
+  },
+  "homepage": "https://github.com/welltop-jim-wang/nomicore",
+  "bugs": {
+    "url": "https://github.com/welltop-jim-wang/nomicore/issues"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
   }
 }

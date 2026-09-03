@@ -1,7 +1,6 @@
 {
   "name": "@nomicore/namespace-runtime",
   "version": "0.1.10",
-  "private": true,
   "type": "module",
   "exports": {
     ".": {
@@ -33,5 +32,19 @@
   },
   "files": [
     "dist"
-  ]
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/welltop-jim-wang/nomicore.git",
+    "directory": "packages/namespace-runtime"
+  },
+  "homepage": "https://github.com/welltop-jim-wang/nomicore",
+  "bugs": {
+    "url": "https://github.com/welltop-jim-wang/nomicore/issues"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  }
 }

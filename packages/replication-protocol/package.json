@@ -1,7 +1,6 @@
 {
   "name": "@nomicore/replication-protocol",
   "version": "0.1.0",
-  "private": true,
   "type": "module",
   "exports": {
     ".": {
@@ -25,5 +24,19 @@
   },
   "files": [
     "dist"
-  ]
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/welltop-jim-wang/nomicore.git",
+    "directory": "packages/replication-protocol"
+  },
+  "homepage": "https://github.com/welltop-jim-wang/nomicore",
+  "bugs": {
+    "url": "https://github.com/welltop-jim-wang/nomicore/issues"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  }
 }

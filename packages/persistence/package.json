@@ -1,7 +1,6 @@
 {
   "name": "@nomicore/persistence",
   "version": "0.2.2",
-  "private": true,
   "type": "module",
   "exports": {
     ".": {
@@ -31,5 +30,19 @@
   ],
   "scripts": {
     "build": "node ../../scripts/build-package.mjs"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/welltop-jim-wang/nomicore.git",
+    "directory": "packages/persistence"
+  },
+  "homepage": "https://github.com/welltop-jim-wang/nomicore",
+  "bugs": {
+    "url": "https://github.com/welltop-jim-wang/nomicore/issues"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
   }
 }

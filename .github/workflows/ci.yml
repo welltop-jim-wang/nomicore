@@ -60,3 +60,6 @@ jobs:
       # 零领域集 = 响亮失败（exit 2，cli.ts §5.5）：防 domains/ 被误删/改名后的回归掩蔽。
       - name: Generated projection freshness (regen-diff)
         run: pnpm generate --check
+
+      - name: Build and verify publishable tarballs
+        run: pnpm pack:local && pnpm publish:verify
