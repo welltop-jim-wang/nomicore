@@ -140,31 +140,59 @@ export function acquireRootLock(rootDir: string, instanceId: string): RootLockHa
     const held = heldError(instanceId, raw);
     if (held !== undefined) throw held;
 
-    const tombstone = join(rootDir, `${ROOT_LOCK_DIRECTORY_NAME}.reap-${randomUUID()}`);
+    // Serialize stale reclaimers with an exclusive claim file. Without this,
+    // contender B can decide from the old stale owner, then detach contender
+    // A's newly acquired live canonical directory before comparing owner bytes.
+    const reapClaim = join(rootDir, `${ROOT_LOCK_DIRECTORY_NAME}.reap-claim`);
     try {
-      renameSync(canonical, tombstone);
+      writeFileSync(reapClaim, payload, { flag: 'wx' });
     } catch (error) {
       const errno = (error as NodeJS.ErrnoException).code;
-      if (errno === 'ENOENT' || errno === 'EEXIST' || errno === 'ENOTEMPTY') continue;
+      if (errno === 'EEXIST') {
+        const claimRaw = (() => {
+          try { return readFileSync(reapClaim, 'utf8'); } catch { return ''; }
+        })();
+        if (heldError(instanceId, claimRaw) !== undefined) continue;
+        try { unlinkSync(reapClaim); } catch { /* another contender changed it */ }
+        continue;
+      }
       if (errno === 'EACCES' || errno === 'EPERM') throw loudUnwritable(errno);
       throw error;
     }
 
-    const movedRaw = readOwner(tombstone);
-    if (movedRaw !== raw) {
-      // The pathname changed after our stale decision: we detached a successor's
-      // live lock. Never leave canonical absent while that owner is alive. First
-      // restore it; if another owner already acquired canonical, keep the
-      // detached evidence and fail closed instead of allowing two live owners.
+    const tombstone = join(rootDir, `${ROOT_LOCK_DIRECTORY_NAME}.reap-${randomUUID()}`);
+    try {
       try {
-        renameSync(tombstone, canonical);
-      } catch {
-        const movedHeld = heldError(instanceId, movedRaw);
-        if (movedHeld !== undefined) throw movedHeld;
+        const claimedRaw = readOwner(canonical);
+        const claimedHeld = heldError(instanceId, claimedRaw);
+        if (claimedHeld !== undefined) throw claimedHeld;
+        if (claimedRaw !== raw) continue;
+        renameSync(canonical, tombstone);
+      } catch (error) {
+        const errno = (error as NodeJS.ErrnoException).code;
+        if (errno === 'ENOENT' || errno === 'EEXIST' || errno === 'ENOTEMPTY') continue;
+        if (errno === 'EACCES' || errno === 'EPERM') throw loudUnwritable(errno);
+        throw error;
       }
-      continue;
+
+      const movedRaw = readOwner(tombstone);
+      if (movedRaw !== raw) {
+        try {
+          renameSync(tombstone, canonical);
+        } catch {
+          const movedHeld = heldError(instanceId, movedRaw);
+          if (movedHeld !== undefined) throw movedHeld;
+        }
+        continue;
+      }
+      rmSync(tombstone, { recursive: true, force: true });
+    } finally {
+      try {
+        if (readFileSync(reapClaim, 'utf8') === payload) unlinkSync(reapClaim);
+      } catch {
+        // Claim cleanup is best-effort; a stale claim is reclaimed below.
+      }
     }
-    rmSync(tombstone, { recursive: true, force: true });
   }
 
   let released = false;
