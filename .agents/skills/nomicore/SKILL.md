@@ -20,13 +20,13 @@ For an end-to-end integration, execute those branches in that order. Re-open a p
 
 ## Shared discovery
 
-Resolve the Nomicore checkout before editing:
+For ordinary consumption, install released `@nomicore/*` packages from npm with the host's package manager and keep the chosen versions in its lockfile. Resolve a Nomicore checkout only when editing Nomicore itself, reading repository-only architecture references, or validating an explicitly unreleased change:
 
 1. Prefer an explicit path supplied by the user or host instructions.
-2. Otherwise inspect linked `@nomicore/*` package paths and the current project's dependency metadata.
-3. Record the resolved checkout as `NOMICORE_ROOT` for commands; do not copy Nomicore source into the host.
+2. Otherwise inspect the current project's dependency metadata; do not replace a working npm dependency with a source link.
+3. When a checkout is genuinely needed, record it as `NOMICORE_ROOT`; do not copy Nomicore source into the host.
 
-Use the host's package manager and scripts where they already encode the workflow. During pre-publish local integration, link package directories by actual path; global package-name linking is not the contract.
+Use source links or local tarballs only for unreleased integration work. Return final consumer verification to released npm packages whenever the task does not require checkout modifications.
 
 ## Completion gate
 

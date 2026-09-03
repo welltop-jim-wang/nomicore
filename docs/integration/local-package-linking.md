@@ -1,8 +1,16 @@
 # 本机包联调
 
-在正式发布到 npm registry 前，使用 `pnpm link` 将另一个本机项目连接到 Nomicore workspace 中的包，适合高频修改、运行和调试。
+Nomicore 已发布到 npm；普通消费应直接安装正式 registry 版本。本指南仅用于开发 Nomicore 本身或验证尚未发布的本机修改，需要高频修改、运行和调试时才使用 `pnpm link`。
 
-这是一种**开发期**工作流，不验证最终发布 tarball 的内容、`files` 白名单或 registry 解析；发布前仍须用 `pnpm pack` 在干净消费者项目中验收。
+这是一种**开发期例外**，不验证正式 npm 包的内容、`files` 白名单或 registry 解析；集成验收仍应回到正式 npm 版本，或使用同批 deterministic tarballs。
+
+## 普通消费
+
+```bash
+pnpm add @nomicore/vfsl
+```
+
+只有确认正式版本无法复现正在开发的 checkout 修改时，才进入下述 linking 流程。
 
 ## 前提
 

@@ -12,22 +12,19 @@ Generate projections in the independent host and use them to type-check business
    <host>/src/...
    ```
 
-2. During unpublished local integration, link required Nomicore package directories from the host by actual path. At minimum for generation and type projection:
+2. Install released packages from npm with the host package manager:
 
    ```bash
    cd /path/to/host
-   pnpm link \
-     "$NOMICORE_ROOT/packages/vfsl" \
-     "$NOMICORE_ROOT/packages/vfsl-protocol" \
-     "$NOMICORE_ROOT/packages/vfsl-codegen"
+   pnpm add -D @nomicore/vfsl-codegen @nomicore/vfsl-protocol
    ```
 
-   Link runtime packages required by the Cordis branch separately. Do not use global package-name linking as the primary workflow.
-3. Generate from the host root. The current CLI's `--domains` value is the directory that **contains** `domains/`:
+   Add runtime packages required by the Cordis branch separately. Source links or local tarballs are only for explicitly unreleased Nomicore changes.
+3. Generate from the host root. The CLI's `--domains` value is the directory that **contains** `domains/`:
 
    ```bash
    cd /path/to/host
-   pnpm exec tsx "$NOMICORE_ROOT/packages/vfsl-codegen/src/cli.ts" --domains .
+   pnpm exec nomicore-generate --domains .
    ```
 
 4. Prove that each consuming package's TypeScript **Program** contains its generated projection. `generated.ts` augments `@nomicore/vfsl-protocol`; merely generating or committing it does nothing when it is outside the Program. Follow [Program wiring](#program-wiring) and choose the narrowest compliant branch.

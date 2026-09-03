@@ -55,9 +55,23 @@ docs/                       # ADR、protocol、VFSL 与 integration guides
 artifacts/local-packages/   # 本地集成 tarballs 和 manifest
 ```
 
-## 构建本地 tarballs
+## 从 npm 安装（消费方首选）
 
-这些包尚未统一发布到 npm registry。与独立项目做接近正式安装的集成时，使用编译后的完整 tarball 集，而不是只安装顶层 server 包。
+全部 `@nomicore/*` 包已经公开发布到 npm。仅使用 Nomicore 的独立项目应优先安装 registry 版本，让 package manager 解析正式版本和传递依赖：
+
+```bash
+pnpm add @nomicore/namespace-registry @nomicore/persistence
+# 需要嵌入 Hub/Peer 时
+pnpm add @nomicore/instance @nomicore/clock @nomicore/ws-replication @nomicore/yjs-server
+# 需要生成类型投影时
+pnpm add -D @nomicore/vfsl-codegen @nomicore/vfsl-protocol
+```
+
+不要为了普通消费 clone Nomicore checkout、link `src` 或维护完整本地 tarball 闭包。固定版本的生产部署应把选择的 npm 版本和 lockfile 一并提交。源码 linking 和本地 tarballs 只用于开发 Nomicore 本身、验证尚未发布的修改或发布流程。
+
+## 构建本地 tarballs（Nomicore 开发/发布）
+
+只有在联调未发布的仓库修改或准备 npm 发布时才构建本地 tarball 集。普通消费优先使用上面的 npm 安装方式。
 
 ### 1. 准备 checkout
 
@@ -112,9 +126,9 @@ pnpm run pack:local -- /absolute/path/to/output
 
 > 只要 tarball 内容发生变化，相应 package 的 `version` 就必须先更新；构建脚本会把版本写入文件名和 manifest。不要以相同版本号覆盖不同内容。
 
-### 3. 在独立项目中安装
+### 3. 在独立项目中测试未发布构建
 
-独立消费项目必须为其使用的全部未发布 `@nomicore/*` 传递依赖提供本地 tarball。仅安装 `@nomicore/yjs-server` 会让包管理器尝试从 npm 解析其余未发布依赖。
+以下 `file:` 方式只适用于验证尚未发布的仓库修改。普通消费直接使用 npm 依赖。测试本地构建时，应让相关 `@nomicore/*` 依赖都指向同一批 manifest tarballs，避免混合 registry 与本地版本。
 
 示例 `package.json`（文件名以本次生成的 manifest 为准）：
 
@@ -235,7 +249,7 @@ Node Host 可从 `@nomicore/yjs-server` 使用：
 
 ## Standalone Hub/Peer
 
-`@nomicore/yjs-server` tarball 提供 `nomicore-yjs-server` CLI。安装完整 tarball 闭包后：
+`@nomicore/yjs-server` 提供 `nomicore-yjs-server` CLI。普通部署从 npm 安装后运行：
 
 ```bash
 pnpm exec nomicore-yjs-server --config /path/to/config.json
