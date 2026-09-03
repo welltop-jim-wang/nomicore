@@ -21,7 +21,8 @@ function dependencies(
 ): void {
   provideInstance(ctx, Object.freeze({ instanceId: `${role}-one`, role }));
   provideClock(ctx, { now: () => 1 });
-  ctx.provide('timer', timer as never);
+  if (typeof ctx.root.timeout === 'function') ctx.provide('timer', timer as never);
+  else ctx.provide('timer', { ...timer, ctx: { root: { ...ctx.root, timeout: timer.timeout } } } as never);
   provideNomicoreRegistry(ctx, { open: vi.fn() } as never);
 }
 

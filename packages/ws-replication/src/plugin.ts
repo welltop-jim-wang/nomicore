@@ -174,19 +174,25 @@ interface OwnedTimer {
 }
 
 function timerFromContext(ctx: Context): OwnedTimer {
-  const timer = ctx.get('timer') as { timeout?: unknown } | undefined;
+  const timer = ctx.get('timer') as {
+    ctx?: Context;
+    timeout?: unknown;
+  } | undefined;
   if (timer === undefined || typeof timer.timeout !== 'function') {
     throw new Error('required Cordis service "timer" is unavailable');
+  }
+  const root = timer.ctx?.root ?? ctx.root;
+  if (typeof root.timeout !== 'function') {
+    throw new Error('required Cordis root timer context is unavailable');
   }
   const handles = new Set<() => void>();
   return {
     setTimeout(callback, delayMs) {
       let dispose!: () => void;
-      dispose = (timer.timeout as (callback: () => void, delayMs: number) => () => void)
-        .call(ctx.root, () => {
-          handles.delete(dispose);
-          callback();
-        }, delayMs);
+      dispose = root.timeout(() => {
+        handles.delete(dispose);
+        callback();
+      }, delayMs);
       handles.add(dispose);
       return dispose;
     },
