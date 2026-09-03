@@ -9,6 +9,7 @@ import { decidePublication, localTarballIntegrity, queryRegistryVersion } from '
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const outDir = resolve(root, process.argv[2] ?? 'artifacts/local-packages')
 const manifest = JSON.parse(await readFile(join(outDir, 'manifest.json'), 'utf8'))
+const verifyRegistryIntegrity = process.env.NOMICORE_VERIFY_REGISTRY_INTEGRITY !== '0'
 const expectedNames = []
 const failures = []
 
@@ -37,13 +38,15 @@ for (const entry of publishPackages) {
     checkNoWorkspace(packed.peerDependencies, source.name, 'peerDependencies')
     await checkExports(packageRoot, packed.exports, source.name)
     await checkBin(packageRoot, packed.bin, source.name)
-    const registry = await queryRegistryVersion(source.name, source.version)
+    const registry = verifyRegistryIntegrity
+      ? await queryRegistryVersion(source.name, source.version)
+      : { kind: 'missing' }
     const decision = decidePublication({
       packageId: `${source.name}@${source.version}`,
       localIntegrity: await localTarballIntegrity(tarball),
       registry,
     })
-    if (decision.kind === 'publish') {
+    if (decision.kind === 'publish' && verifyRegistryIntegrity) {
       const npmOutput = await runCapture('npm', ['publish', tarball, '--dry-run', '--json', '--ignore-scripts'], {
         npm_config_cache: join(temp, 'npm-cache'),
       })

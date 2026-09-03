@@ -43,6 +43,11 @@ jobs:
       - name: Persistence contracts
         run: pnpm exec vitest run packages/persistence/test/persistence-contract.test.ts --typecheck --passWithNoTests=false
 
+      # Cordis live-unload 回归门禁：已提交写的 dirty notification 必须在 Registry
+      # 排空完成前保持可用，不能因 Persistence fiber 进入 UNLOADING 而触发 Runtime fatal。
+      - name: Persistence unload dirty-notification regression
+        run: pnpm exec vitest run packages/namespace-registry/test/registry-sa7-rev1.test.ts -t "R5P" --typecheck --passWithNoTests=false
+
       # AC5（ADR 0005）：全领域脚手架解析 + 信封校验——显式步骤使校验在工作流文件里
       # 评审可见；--passWithNoTests=false 防测试文件被删后静默假绿（vitest.config 默认 true）。
       - name: Domain scaffolds check
@@ -61,8 +66,11 @@ jobs:
       - name: Generated projection freshness (regen-diff)
         run: pnpm generate --check
 
+      # 普通 PR 验证当前源码能构建出结构合法的 tarball；不要把“与 registry 同版本
+      # integrity 相等”或 npm 对已发布版本的 dry-run 拒绝当作源码 PR 门禁——版本提升
+      # 与 npm publish dry-run 属于 release 流程。
       - name: Build and verify publishable tarballs
-        run: pnpm pack:local && pnpm publish:verify
+        run: pnpm pack:local && NOMICORE_VERIFY_REGISTRY_INTEGRITY=0 pnpm publish:verify
 
       - name: Verify reproducible tarballs
         run: pnpm publish:reproducible

@@ -83,7 +83,7 @@ NomicoreServer 与 DSH 均以 **Cordis** 为宿主内核；持久层先作为宿
 - 插件实现只依赖 Cordis、Yjs 与持久化 contracts，**不得 import DSH 或 NomicoreServer app**；
 - DSH 与 NomicoreServer 都只是 Cordis Host：前者装调试/inspector 插件，后者只装生产插件集合；
 - 插件采用工厂/实例模型而非全局单例，以支持测试隔离、不同 rootDir 与 HMR/reload；
-- dispose 时释放文件句柄、后台任务和 Y.Doc 缓存；宿主负责按依赖逆序停止插件。
+- dispose 时释放文件句柄、后台任务和 Y.Doc 缓存；宿主负责按依赖逆序停止插件；Persistence 内部 timer 绑定 Host root Context 而非 adapter fiber，使依赖方卸载排空期间已接纳写仍可完成 dirty notification，最终由 adapter dispose 显式清理；
 
 ### 实施顺序
 

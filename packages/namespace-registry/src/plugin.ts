@@ -30,15 +30,10 @@
  *    disposer 的依赖 fiber join）；「close 撞已销毁 handle → shutdown 聚合失败」
  *    被消灭。fiber 级保证（Registry fiber 卸载完成先于 persistence fiber 卸载完成）
  *    仍由 inject 依赖图承载，且是 adapter 级保证的上游前提。
- *    ⚠️ 残余窗口（R5′，生产 timer 限定）：persistence fiber 自身 UNLOADING 的 drain
- *    窗口内，经 ctx.timeout 的新 flush/retry timer 武装抛 CordisError('INACTIVE_EFFECT')
- *    （真实 TimerService 语义，副作用绑定调用方 fiber）→ 窗口内到达 saveDoc 的在途写
- *    收到响亮 rejection（交付写调用方；close barrier 在写槽 settle 后照常执行，
- *    shutdown 终态不受影响）。需要写排空完整落盘的宿主：先 settle 依赖方（await
- *    registry shutdown / fiber 卸载）再拆 persistence fiber。fake-timer 测试 seam
- *    不经 ctx.effect，对该窗口结构性失明。round 1 的「fiber 级限定 + adapter 级残余
- *    并发（§8 R1）」声明废止（§8 R1 并发已根治；本窗口为 cordis fiber 状态门的
- *    独立残余，见设计 rev1 §8 R5′）。
+ *    Persistence 的生产 scheduler 绑定 Host root Context；因此 persistence fiber 已进入
+ *    UNLOADING、但依赖 Registry 尚在排空此前接纳写的窗口内，saveDoc 仍可登记 dirty，
+ *    不会因 ctx.timeout 绑定 inactive fiber 而触发 notify-dirty-failed。adapter.dispose()
+ *    在依赖方 settle 后清理这些 timer；真实 TimerService 路径由 R5P 回归测试锚定。
  *
  * 3. **fiber reload 语义**：persistence 服务替换/重启触发本 fiber 卸载+重载，每次
  *    apply 构造**全新 Registry 实例**（旧实例 shutdown、service 撤销、`instance`

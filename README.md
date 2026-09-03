@@ -122,7 +122,7 @@ artifacts/local-packages/
 pnpm run pack:local -- /absolute/path/to/output
 ```
 
-`manifest.json` 是包名到实际版本化文件名的权威映射。不要在消费项目中硬编码 README 示例中的版本号。
+`manifest.json` 是包名到实际版本化文件名的权威映射。不要在消费项目中硬编码 README 示例中的版本号。生成的 `*.tgz` 是本地/CI 构建产物，已被 Git 忽略；clone 后必须运行 `pnpm pack:local` 生成，不能依赖仓库中预置的归档文件。`manifest.json` 保留在仓库中只用于声明当前包集和文件命名基线，运行构建时会重写。
 
 > 只要 tarball 内容发生变化，相应 package 的 `version` 就必须先更新；构建脚本会把版本写入文件名和 manifest。不要以相同版本号覆盖不同内容。
 
@@ -190,6 +190,8 @@ pnpm publish:reproducible
 - dependencies 中没有 `workspace:` 或 `file:`；
 - 所有 packed `exports` 与 `bin` target 存在；
 - `npm publish --dry-run --json --ignore-scripts` 成功。
+
+默认情况下，`publish:verify` 还会查询 npm registry：已发布的同版本包必须与本地 integrity 完全一致，并对尚未发布版本执行 npm dry-run。普通源码 PR 的 CI 设置 `NOMICORE_VERIFY_REGISTRY_INTEGRITY=0`，只验证当前源码 tarball 的结构；同版本 integrity、版本提升和 npm publish dry-run 的强门禁保留给 release/publish 流程。
 
 `publish:reproducible` 从同一源码独立构建两套 tarballs，并要求每个 package 的 SHA-256 完全一致；这防止同版本 tarball 因 manifest key 顺序或归档元数据漂移而改变。CI 的 Node 20 / 24 matrix 同时执行内容验证与可重现性验证。
 
