@@ -4,6 +4,7 @@ import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { spawn } from 'node:child_process'
 import { publishPackages } from './package-catalog.mjs'
+import { decidePublication, localTarballIntegrity, queryRegistryVersion } from './publish-state.mjs'
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const outDir = resolve(root, process.argv[2] ?? 'artifacts/local-packages')
@@ -36,12 +37,20 @@ for (const entry of publishPackages) {
     checkNoWorkspace(packed.peerDependencies, source.name, 'peerDependencies')
     await checkExports(packageRoot, packed.exports, source.name)
     await checkBin(packageRoot, packed.bin, source.name)
-    const npmOutput = await runCapture('npm', ['publish', tarball, '--dry-run', '--json', '--ignore-scripts'], {
-      npm_config_cache: join(temp, 'npm-cache'),
+    const registry = await queryRegistryVersion(source.name, source.version)
+    const decision = decidePublication({
+      packageId: `${source.name}@${source.version}`,
+      localIntegrity: await localTarballIntegrity(tarball),
+      registry,
     })
-    const report = JSON.parse(npmOutput)
-    const npmPackage = report[source.name] ?? report
-    check(npmPackage.id === `${source.name}@${source.version}`, `${source.name}: npm dry-run id mismatch`)
+    if (decision.kind === 'publish') {
+      const npmOutput = await runCapture('npm', ['publish', tarball, '--dry-run', '--json', '--ignore-scripts'], {
+        npm_config_cache: join(temp, 'npm-cache'),
+      })
+      const report = JSON.parse(npmOutput)
+      const npmPackage = report[source.name] ?? report
+      check(npmPackage.id === `${source.name}@${source.version}`, `${source.name}: npm dry-run id mismatch`)
+    }
   } catch (error) {
     failures.push(error instanceof Error ? error.message : String(error))
   } finally {
