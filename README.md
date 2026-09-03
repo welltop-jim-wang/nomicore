@@ -122,7 +122,7 @@ artifacts/local-packages/
 pnpm run pack:local -- /absolute/path/to/output
 ```
 
-`manifest.json` 是包名到实际版本化文件名的权威映射。不要在消费项目中硬编码 README 示例中的版本号。
+`manifest.json` 是包名到实际版本化文件名的权威映射。不要在消费项目中硬编码 README 示例中的版本号。生成的 `*.tgz` 是本地/CI 构建产物，已被 Git 忽略；clone 后必须运行 `pnpm pack:local` 生成，不能依赖仓库中预置的归档文件。`manifest.json` 保留在仓库中只用于声明当前包集和文件命名基线，运行构建时会重写。
 
 > 只要 tarball 内容发生变化，相应 package 的 `version` 就必须先更新；构建脚本会把版本写入文件名和 manifest。不要以相同版本号覆盖不同内容。
 
