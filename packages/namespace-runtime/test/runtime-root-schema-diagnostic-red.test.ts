@@ -165,7 +165,7 @@ function updateCarrierOf(result: AttemptResult): UpdateCarrier {
 }
 
 function readOk(runtime: NamespaceRuntime, path: readonly (string | number)[]): unknown {
-  const read = runtime.read(path);
+  const read = runtime.readData(path);
   expect(read.ok).toBe(true);
   return (read as { value: unknown }).value;
 }
@@ -184,7 +184,7 @@ describe('#149 ROOT mutation 诊断记录（红灯契约）', () => {
       clock: () => NOW_MS,
     });
 
-    const res = await runtime.mutateRoot({ op: 'set', path: ['n'], value: 42 });
+    const res = await runtime.mutateData({ op: 'set', path: ['n'], value: 42 });
     expect(res).toEqual({ ok: true });
 
     const rec = firstAttempt(await waitAttempts(log, 1));
@@ -220,7 +220,7 @@ describe('#149 ROOT mutation 诊断记录（红灯契约）', () => {
       clock: () => NOW_MS,
     });
 
-    const res = await runtime.mutateRoot({ op: 'set', path: ['a'], value: 99 }); // a 是 string
+    const res = await runtime.mutateData({ op: 'set', path: ['a'], value: 99 }); // a 是 string
     expect(res.ok).toBe(false);
 
     const rec = firstAttempt(await waitAttempts(log, 1));
@@ -257,7 +257,7 @@ describe('#149 ROOT mutation 诊断记录（红灯契约）', () => {
       },
     });
 
-    const res = await runtime.mutateRoot(hostile);
+    const res = await runtime.mutateData(hostile);
     expect(res.ok).toBe(false);
     expect(JSON.stringify(res)).toContain('MUTATION_INPUT_NOT_PLAIN_DATA');
     expect(fired).toBe(0); // 快照器拒绝先于任何值读取
@@ -289,7 +289,7 @@ describe('#149 ROOT mutation 诊断记录（红灯契约）', () => {
         notifyDirty: () => writer.saveDoc(handle),
         ...(log === undefined ? {} : { diagnosticEmitter: log.emitter, clock: () => NOW_MS }),
       });
-      const res = await runtime.mutateRoot(mutation);
+      const res = await runtime.mutateData(mutation);
       expect(res).toEqual({ ok: true });
       const attempts = log === undefined ? 0 : await waitAttempts(log, 1).then((r) => r.length);
       await handle.release();
@@ -316,7 +316,7 @@ describe('#149 ROOT mutation 诊断记录（红灯契约）', () => {
 
     await runtime.close();
 
-    const res = await runtime.mutateRoot({ op: 'set', path: ['n'], value: 7 });
+    const res = await runtime.mutateData({ op: 'set', path: ['n'], value: 7 });
     expect(res.ok).toBe(false);
     expect(JSON.stringify(res)).toContain('RUNTIME_WRITE_DISABLED');
     const resS = await runtime.replaceSchema({ schema: ENVELOPE });
@@ -358,7 +358,7 @@ describe('#149 ROOT mutation 诊断记录（红灯契约）', () => {
     });
     armed = true;
 
-    await expect(runtime.mutateRoot({ op: 'set', path: ['n'], value: 5 })).rejects.toMatchObject({
+    await expect(runtime.mutateData({ op: 'set', path: ['n'], value: 5 })).rejects.toMatchObject({
       phase: 'write-slot-internal',
       committed: false,
     });
@@ -374,7 +374,7 @@ describe('#149 ROOT mutation 诊断记录（红灯契约）', () => {
     expect(fatalRec.input).toEqual({ capture: 'not-accessed' }); // S2 在输入访问前拒绝
 
     // 已排队后续写：S1 fatal 门 → 零写入 RUNTIME_WRITE_DISABLED（第二条记录，顺序保持）
-    const res2 = await runtime.mutateRoot({ op: 'set', path: ['a'], value: 'zz' });
+    const res2 = await runtime.mutateData({ op: 'set', path: ['a'], value: 'zz' });
     expect(res2.ok).toBe(false);
     recs = await waitAttempts(log, 2);
     expect(recs[1]?.operation).toBe('root-mutation');
@@ -398,7 +398,7 @@ describe('#149 ROOT mutation 诊断记录（红灯契约）', () => {
       clock: () => NOW_MS,
     });
 
-    await expect(runtime.mutateRoot({ op: 'set', path: ['n'], value: 42 })).rejects.toMatchObject({
+    await expect(runtime.mutateData({ op: 'set', path: ['n'], value: 42 })).rejects.toMatchObject({
       phase: 'notify-dirty-failed',
       committed: true,
     });
@@ -442,7 +442,7 @@ describe('#149 ROOT mutation 诊断记录（红灯契约）', () => {
       'unavailable',
     );
 
-    const res = await runtime.mutateRoot({ op: 'set', path: ['n'], value: 42 });
+    const res = await runtime.mutateData({ op: 'set', path: ['n'], value: 42 });
     expect(res.ok).toBe(false);
     expect(JSON.stringify(res)).toContain('SCHEMA_UNAVAILABLE');
 
@@ -466,7 +466,7 @@ describe('#149 ROOT mutation 诊断记录（红灯契约）', () => {
       clock: () => NOW_MS,
     });
 
-    const res = await runtime.mutateRoot({ op: 'set', path: ['n'], value: 3 });
+    const res = await runtime.mutateData({ op: 'set', path: ['n'], value: 3 });
     expect(res.ok).toBe(false);
     expect(JSON.stringify(res)).toContain('RUNTIME_WRITE_DISABLED');
 
@@ -533,7 +533,7 @@ describe('#149 SCHEMA replacement 诊断记录（红灯契约）', () => {
     expect(recs[1]?.input).toMatchObject({ capture: 'full', value: { schema: ENV_REPLACE, root: ROOT_REPLACE } });
 
     // 业务面：active schema 已切换、ROOT 已替换
-    expect(runtime.getSchemaEnvelope()?.text).toBe(ENV_REPLACE.text);
+    expect(runtime.getSchema()?.text).toBe(ENV_REPLACE.text);
     expect(readOk(runtime, ['n'])).toBe(2);
     expect(readOk(runtime, ['b'])).toBe(true);
     await handle.release();
@@ -563,7 +563,7 @@ describe('#149 SCHEMA replacement 诊断记录（红灯契约）', () => {
     expect(rec.input.capture).toBe('digest'); // 快照（含 proposed schema）已被既有快照链消费
 
     // 业务面：active schema 与 ROOT 不变
-    expect(runtime.getSchemaEnvelope()?.text).toBe(ENVELOPE.text);
+    expect(runtime.getSchema()?.text).toBe(ENVELOPE.text);
     expect(readOk(runtime, ['n'])).toBe(1);
     await handle.release();
     await writer.dispose();
@@ -598,7 +598,7 @@ describe('#149 SCHEMA replacement 诊断记录（红灯契约）', () => {
     expect(rec.input.capture).toBe('digest'); // S3 快照成功后才编译 —— 消费既有快照
 
     // 业务面：零写入 —— active schema 不变
-    expect(runtime.getSchemaEnvelope()?.text).toBe(ENVELOPE.text);
+    expect(runtime.getSchema()?.text).toBe(ENVELOPE.text);
     await handle.release();
     await writer.dispose();
   });
@@ -625,9 +625,9 @@ describe('#149 日志故障隔离（AC4 红灯契约）', () => {
 
     // 当前 worktree 红灯点：emitter 从未被调用（接线缺失）→ 末尾 emitCalls === 2 断言红。
     // 修复后：两次尝试各一次 emit，且 throw 被吞没（不改变下面全部业务结果）。
-    const r1 = await runtime.mutateRoot({ op: 'set', path: ['n'], value: 42 });
+    const r1 = await runtime.mutateData({ op: 'set', path: ['n'], value: 42 });
     expect(r1).toEqual({ ok: true });
-    const r2 = await runtime.mutateRoot({ op: 'set', path: ['n'], value: 7 });
+    const r2 = await runtime.mutateData({ op: 'set', path: ['n'], value: 7 });
     expect(r2).toEqual({ ok: true });
 
     // 业务面：顺序提交、dirty notification 完成、无 internal fatal
@@ -651,9 +651,9 @@ describe('#149 日志故障隔离（AC4 红灯契约）', () => {
       clock: () => NOW_MS,
     });
 
-    const r1 = await runtime.mutateRoot({ op: 'set', path: ['n'], value: 11 });
+    const r1 = await runtime.mutateData({ op: 'set', path: ['n'], value: 11 });
     expect(r1).toEqual({ ok: true });
-    const r2 = await runtime.mutateRoot({ op: 'set', path: ['n'], value: 22 });
+    const r2 = await runtime.mutateData({ op: 'set', path: ['n'], value: 22 });
     expect(r2).toEqual({ ok: true });
 
     await waitAttempts(log, 1); // 第一条被接纳；第二条因队列满被丢

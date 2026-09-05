@@ -100,7 +100,7 @@ function inlineBytes(carrier: UpdateCarrier): Uint8Array {
 }
 
 function readOk(runtime: NamespaceRuntime, path: readonly (string | number)[]): unknown {
-  const read = runtime.read(path);
+  const read = runtime.readData(path);
   expect(read.ok).toBe(true);
   return (read as { value: unknown }).value;
 }
@@ -195,8 +195,8 @@ describe('#149 SA7 DV-1 慢 emit 槽间延迟（amendment C 动态面）', () =>
     });
 
     // 连续两写（同步背靠背入队——FIFO 场景）
-    const p1 = runtime.mutateRoot({ op: 'set', path: ['n'], value: 42 });
-    const p2 = runtime.mutateRoot(m2);
+    const p1 = runtime.mutateData({ op: 'set', path: ['n'], value: 42 });
+    const p2 = runtime.mutateData(m2);
     const [r1, r2] = await Promise.all([p1, p2]);
 
     // 业务面：两写均成功、FIFO 顺序（终值 = 第二笔）
@@ -266,7 +266,7 @@ describe('#149 SA7 DV-2 acceptance 同步 emit 延迟', () => {
     await runtime.close();
 
     const t0 = performance.now();
-    const p = runtime.mutateRoot({ op: 'set', path: ['n'], value: 7 });
+    const p = runtime.mutateData({ op: 'set', path: ['n'], value: 7 });
     const syncMs = performance.now() - t0;
 
     // emit 在公共方法调用栈内同步发生（恰一次）
@@ -308,7 +308,7 @@ describe('#149 SA7 DV-2 acceptance 同步 emit 延迟', () => {
     });
     await runtime.close();
     const t0 = performance.now();
-    const res = await runtime.mutateRoot({ op: 'set', path: ['n'], value: 7 });
+    const res = await runtime.mutateData({ op: 'set', path: ['n'], value: 7 });
     const syncMs = performance.now() - t0;
     expect(res.ok).toBe(false);
     // 无自旋：同步段 = acceptance 路径上的**一次真实 memory 管线 emit**（本沙箱实测
@@ -342,7 +342,7 @@ describe('#149 SA7 DV-3 unhandledRejection 抑制面', () => {
         ...(withEmitter ? { diagnosticEmitter: log.emitter, clock: () => NOW_MS } : {}),
       });
       armed = true;
-      void runtime.mutateRoot({ op: 'set', path: ['n'], value: 5 }); // 故意不 await
+      void runtime.mutateData({ op: 'set', path: ['n'], value: 5 }); // 故意不 await
       // 数个 macrotask 轮回（Node 在 turn 检查点派发 unhandledRejection）
       for (let i = 0; i < 6; i++) {
         await new Promise<void>((r) => setImmediate(r));
@@ -399,7 +399,7 @@ describe('#149 SA7 DV-4 未钉死结局点（§13.7 清单）', () => {
 
     await handle.release(); // 调用方越过 runtime 直接 release（v1 边界场景）
 
-    const res = await runtime.mutateRoot({ op: 'set', path: ['n'], value: 5 });
+    const res = await runtime.mutateData({ op: 'set', path: ['n'], value: 5 });
     expect(res.ok).toBe(false);
     expect(JSON.stringify(res)).toContain('RUNTIME_WRITE_DISABLED');
 
@@ -430,7 +430,7 @@ describe('#149 SA7 DV-4 未钉死结局点（§13.7 清单）', () => {
     // 先以 ROOT 槽 R5 触发 fatal（getStatus 抛错）；观察 status 前解除 arm
     //（hostile Proxy 同时劫持 runtime.getStatus() 公共面——buildStatus 亦读 handle.getStatus）
     armed = true;
-    await expect(runtime.mutateRoot({ op: 'set', path: ['n'], value: 5 })).rejects.toMatchObject({ committed: false });
+    await expect(runtime.mutateData({ op: 'set', path: ['n'], value: 5 })).rejects.toMatchObject({ committed: false });
     armed = false;
     expect(runtime.getStatus().fatal).not.toBeNull();
     armed = true;
@@ -449,7 +449,7 @@ describe('#149 SA7 DV-4 未钉死结局点（§13.7 清单）', () => {
     expect(rec.code).toBe('RUNTIME_WRITE_DISABLED');
     expect(rec.input).toEqual({ capture: 'not-accessed' });
     // 业务面：active schema 不变
-    expect(runtime.getSchemaEnvelope()?.text).toBe(ENVELOPE.text);
+    expect(runtime.getSchema()?.text).toBe(ENVELOPE.text);
     await runtime.close().catch(() => undefined);
     await writer.dispose();
   });
@@ -473,7 +473,7 @@ describe('#149 SA7 DV-4 未钉死结局点（§13.7 清单）', () => {
     expect(rec.result).toEqual({ kind: 'rejected' });
     expect(rec.code).toBe('RUNTIME_WRITE_DISABLED');
     expect(rec.input).toEqual({ capture: 'not-accessed' });
-    expect(runtime.getSchemaEnvelope()?.text).toBe(ENVELOPE.text); // 零写入
+    expect(runtime.getSchema()?.text).toBe(ENVELOPE.text); // 零写入
     await runtime.close().catch(() => undefined);
     await writer.dispose();
   });
@@ -505,7 +505,7 @@ describe('#149 SA7 DV-4 未钉死结局点（§13.7 清单）', () => {
     expect(rec.sourceModule).toBe('runtime');
     expect(rec.input).toEqual({ capture: 'not-accessed' }); // S2 在输入访问前
     // 业务面：零写入 + fatal 置位（SCHEMA 码）
-    expect(runtime.getSchemaEnvelope()?.text).toBe(ENVELOPE.text);
+    expect(runtime.getSchema()?.text).toBe(ENVELOPE.text);
     expect(runtime.getStatus().fatal).toMatchObject({ code: 'NSRT-FATAL-SCHEMA-WRITE-INTERNAL' });
     await runtime.close().catch(() => undefined);
     await writer.dispose();
@@ -534,7 +534,7 @@ describe('#149 SA7 DV-4 未钉死结局点（§13.7 清单）', () => {
     expect(rec.input).toMatchObject({ capture: 'full', value: { schema: ENV_KEEP, extra: 1 } }); // 快照已捕获
     expect((rec.issues?.items.length ?? 0)).toBeGreaterThan(0);
     // 业务面：零写入
-    expect(runtime.getSchemaEnvelope()?.text).toBe(ENVELOPE.text);
+    expect(runtime.getSchema()?.text).toBe(ENVELOPE.text);
     expect(readOk(runtime, ['n'])).toBe(1);
     await handle.release();
     await writer.dispose();
@@ -561,7 +561,7 @@ describe('#149 SA7 DV-4 未钉死结局点（§13.7 清单）', () => {
     expect(rec.input.capture).toBe('digest'); // 快照成功后被消费
     expect((rec.issues?.items.length ?? 0)).toBeGreaterThan(0);
     // 业务面：active schema 与 ROOT 均不变
-    expect(runtime.getSchemaEnvelope()?.text).toBe(ENVELOPE.text);
+    expect(runtime.getSchema()?.text).toBe(ENVELOPE.text);
     expect(readOk(runtime, ['n'])).toBe(1);
     await handle.release();
     await writer.dispose();
@@ -600,7 +600,7 @@ describe('#149 SA7 DV-4 未钉死结局点（§13.7 清单）', () => {
       expect(fresh.getMap('ROOT').get('n')).toBe(1);
     }
     // 三联之二/三：live doc 已提交（notifier 失败不撤销事务）；fatal 置位（SCHEMA 码）
-    expect(runtime.getSchemaEnvelope()?.text).toBe(ENV_KEEP.text);
+    expect(runtime.getSchema()?.text).toBe(ENV_KEEP.text);
     expect(runtime.getStatus().fatal).toMatchObject({ code: 'NSRT-FATAL-SCHEMA-WRITE-INTERNAL' });
     await runtime.close().catch(() => undefined);
     await writer.dispose();
@@ -622,7 +622,7 @@ describe('#149 SA7 DV-4 未钉死结局点（§13.7 清单）', () => {
     } as never) as unknown as NamespaceRuntime;
 
     // P0 挂住：写被接纳但槽不启动（FIFO——P0 是队首真实节点）
-    const wp = runtime.mutateRoot({ op: 'set', path: ['n'], value: 9 });
+    const wp = runtime.mutateData({ op: 'set', path: ['n'], value: 9 });
     let done = false;
     void wp.then(() => {
       done = true;
@@ -672,7 +672,7 @@ describe('#149 SA7 DV-4 未钉死结局点（§13.7 清单）', () => {
       await expect
         .poll(() => runtime.getStatus().schema.state, { interval: 10, timeout: 5_000 })
         .toBe('ready');
-      const res = await runtime.mutateRoot({ op: 'set', path: ['n'], value: 2 });
+      const res = await runtime.mutateData({ op: 'set', path: ['n'], value: 2 });
       expect(res).toEqual({ ok: true });
       await waitAttempts(log, 1); // 正常 emit
       await runtime.close();
@@ -703,9 +703,9 @@ describe('#149 SA7 DV-6 队列满 + inputPolicy=full', () => {
       clock: () => NOW_MS,
     });
 
-    const r1 = await runtime.mutateRoot({ op: 'set', path: ['n'], value: 11 });
+    const r1 = await runtime.mutateData({ op: 'set', path: ['n'], value: 11 });
     expect(r1).toEqual({ ok: true });
-    const r2 = await runtime.mutateRoot({ op: 'set', path: ['n'], value: 22 });
+    const r2 = await runtime.mutateData({ op: 'set', path: ['n'], value: 22 });
     expect(r2).toEqual({ ok: true });
 
     // 等两次 emit 尝试都发生（第二次在管线内被 queue-full drop）
