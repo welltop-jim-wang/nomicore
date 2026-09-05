@@ -1,15 +1,14 @@
 /**
  * `@nomicore/ws-replication` 冻结公共契约类型（SA6 冻结，逐字段；实现不得增删改名）
  * + 包内私有结构类型。issue #175 SA6 冻结契约扩展（主动 reauthentication 生命周期）：
- * `HubReplication.requestReauth` / `PeerReplication.notifyAuthChanged`（见
- * wiki/raw/task_active-reauthentication-lifecycle.md §SA6 红灯契约——冻结基线随任务前移）。
+ * `HubReplication.requestReauth` / `PeerReplication.notifyAuthChanged`。公共行为以
+ * `docs/adr/0010-hub-peer-websocket-ydoc-replication.md` 与
+ * `docs/protocols/instance-replication-v1.md` 为权威。
  *
- * 设计：wiki/raw/task_phase5-ws-namespace-sync_design.md §2（冻结契约面）。
- * 类型来源：`NamespaceOwner` / `NamespaceRegistry` / `ReplicationSession` /
- * `NamespaceLease` 自 `@nomicore/namespace-registry` import type。
+ * 类型来源：`NamespaceOwner` / `NamespaceRegistry` / `ReplicationSession`
+ * 自 `@nomicore/namespace-registry` import type。
  */
 import type {
-  NamespaceLease,
   NamespaceOwner,
   NamespaceRegistry,
   ReplicationSession,

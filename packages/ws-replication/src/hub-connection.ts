@@ -399,7 +399,7 @@ class HubReplicationImpl implements HubReplication {
     if (this.closed) return this.closeTail;
     this.closed = true; // 先置位：accept 门 0 即刻生效（§3.2）
     for (const connection of [...this.connectionList]) {
-      connection.shutdownWithGoaway(this.timeouts.closeTimeoutMs);
+      connection.close(1001, 'hub-shutdown');
     }
     this.closeTail = Promise.all(
       this.connectionList.map((connection) => connection.settle()),
@@ -426,14 +426,9 @@ class HubConnectionImpl implements HubConnection {
   private readonly helloHandle: unknown;
   private closedFlag = false;
   private settleTail: Promise<void> = Promise.resolve();
-  /** issue #174：GOAWAY drain 窗口结算闸（resolve-only，永不 reject——R1 零 unhandled
-   *  rejection；cleanupAll 尾部 finally 释放）。 */
+  /** 定向 reauthentication 的 GOAWAY drain 状态；Hub service close 不进入该窗口。 */
   private drainActive = false;
-  /** drain 的触发原因决定窗口内 OPEN 的 wire 语义：停机显式拒绝，reauth 静默丢弃。 */
-  private drainReason: 'SERVER_SHUTTING_DOWN' | 'REAUTH_REQUIRED' | undefined;
   private drainDeadline: unknown | undefined;
-  private drainDone: (() => void) | undefined;
-  private drainTail: Promise<void> | undefined;
   private readonly channelHost: HubChannelHost;
   private readonly transportSubscribers: Array<() => void> = [];
   private stopLiveness: (() => void) | undefined;
@@ -522,74 +517,26 @@ class HubConnectionImpl implements HubConnection {
     void this.cleanupAll();
   }
 
-  /** §7.2：GOAWAY(SERVER_SHUTTING_DOWN, drain) 先行，随后真实 drain 窗口，窗口末
-   *  close(1001)。handshaking 连接不发 GOAWAY（HELLO 未完成——对端 handshaking 门对
-   *  非 HELLO_ACK 帧判 CONNECTION_POLICY_VIOLATION，peer-connection.ts:256-258；
-   *  GOAWAY-before-ACK 反而是协议伤害）；直接 close(1001)。 */
-  shutdownWithGoaway(drainMs: number): void {
-    // §4.1 双门：窗口期重入会覆盖旧 drainTail/drainDone → 旧 hub.close() Promise
-    // 永不结算（挂起泄漏）。无现实重入路径（唯一调用点受 HubReplicationImpl.closed
-    // 门 + hub.close() 幂等保护），一行防御。
-    if (this.closedFlag) return;
-    // reauth drain 与 Hub shutdown 同 tick 竞态：停机优先，立即 force-close；不能把
-    // reauth 窗误当作已启动的 SERVER_SHUTTING_DOWN drain 后直接返回。
-    if (this.drainActive) {
-      if (this.drainReason === 'REAUTH_REQUIRED') this.close(1001, 'hub-shutdown');
-      return;
-    }
-    if (this.state === 'handshaking') {
-      this.close(1001, 'hub-shutdown');
-      return;
-    }
-    // ① 结算闸先于一切（HubReplication.close() 随后 map settle() 必须观察到 pending——
-    //    R1 RED@2。resolve-only：不存在 reject 路径 → 零 floating rejection）。
-    this.drainTail = new Promise<void>((resolve) => { this.drainDone = resolve; });
-    this.drainActive = true;
-    this.drainReason = 'SERVER_SHUTTING_DOWN';
-    this.state = 'draining';
-    try {
-      this.outbound.sendControl({ // 直发豁免（既有注释理由保留：停机帧不允许
-        kind: 'GOAWAY', // 被背压额度否决（sender.sendControl 在 paused 态有额度判据，耗尽即
-        reasonCode: 'SERVER_SHUTTING_DOWN', // connectionFatal——停机帧不允许被否决）
-        drainTimeoutMs: drainMs,
-      });
-    } catch {
-      // framing 不可信 = 真降级路径（外部故障）：drain 无从宣告 → 直接收口
-      this.finishDrain();
-      return;
-    }
-    // ② deadline：与 GOAWAY 宣告值同源同值（drainMs 即 closeTimeoutMs，R1 断言锚）。
-    //    零新 knob；经注入 timer（测试 fake scheduler / 生产 timer 同一 seam）。
-    this.drainDeadline = this.hub.timer.setTimeout(() => {
-      this.drainDeadline = undefined;
-      this.finishDrain(); // 不等待任何完成事件（AC4/R1）
-    }, drainMs);
-    // ③ 提前完成初检：channels 空 = 无可收口对象 → 立即收口（GOAWAY 已同步上 wire，
-    //    close 随后——帧序仍先于 close 事件，D4 同序锚）
-    this.maybeFinishDrainEarly();
-  }
-
   /** issue #175 AC1/AC2/AC4：定向 reauth——GOAWAY(REAUTH_REQUIRED, drain>0) + deadline 后
    *  1001 收口。幂等（reauthRequested）；迟到/竞态（closedFlag）零副作用；绝不携带凭据
-   *  （AC7）。与 shutdownWithGoaway 的区别：后者发帧后立即 close（停机零 drain 窗），
-   *  本方法真正等待 drain 窗（closeTimeoutMs 预算）再收口（§6.3 L149「之后发送方以
+   *  （AC7）。与 Hub service close 的区别：后者按 issue #229 不发送 GOAWAY、直接
+   *  close；本方法真正等待 drain 窗（closeTimeoutMs 预算）再收口（§6.3 L149「之后发送方以
    *  WS 1001 关闭」）。 */
   beginReauth(): void {
     if (this.closedFlag || this.reauthRequested) return;
     this.reauthRequested = true;
     if (this.state === 'handshaking') {
       // GOAWAY-before-ACK 是协议伤害：peer handshaking 门对非 HELLO_ACK 帧判
-      // CONNECTION_POLICY_VIOLATION（peer-connection.ts:277-279）——镜像 shutdownWithGoaway
-      // 的 handshaking 分支：不发 GOAWAY，直接 close(1001)。该连接同样是匹配身份的连接
+      // CONNECTION_POLICY_VIOLATION（peer-connection.ts:277-279）——handshaking 分支
+      // 不发 GOAWAY，直接 close(1001)。该连接同样是匹配身份的连接
       // （其 Upgrade 已用待轮换凭据认证），关闭 = 正确的 reauth 语义。
       this.close(1001, 'hub-reauth');
       return;
     }
     this.drainActive = true;
-    this.drainReason = 'REAUTH_REQUIRED';
     this.state = 'draining'; // 连接级可观测迁移；现有 namespace 到 deadline 前自然收口（§6.3 L148）
     try {
-      this.outbound.sendControl({ // 收口路径直发豁免（同 shutdownWithGoaway/connectionFatal
+      this.outbound.sendControl({ // 收口路径直发豁免（同 connectionFatal
         kind: 'GOAWAY', // 家族）：生命周期控制帧不允许被 data 背压额度否决
         reasonCode: 'REAUTH_REQUIRED', // 稳定安全码，零凭据字段（AC7）
         drainTimeoutMs: this.hub.timeouts.closeTimeoutMs, // drain 预算载体（§4.3，构造期验证 >0）
@@ -612,13 +559,9 @@ class HubConnectionImpl implements HubConnection {
     return channel.terminateUnauthorized();
   }
 
-  /** 全部通道 cleanup 结算（HubReplication.close 等待）：drain 期 → 窗口末结算闸。 */
+  /** 全部通道 cleanup 结算（HubReplication.close 等待）。 */
   settle(): Promise<void> {
-    // 仅 SERVER_SHUTTING_DOWN 拥有 Hub close 结算闸。若连接此前已进入 reauth drain，
-    // hub.close() 会 force-close，并应等待该次 cleanup，而不是一个从未武装的 drainTail。
-    return this.drainReason === 'SERVER_SHUTTING_DOWN'
-      ? (this.drainTail ?? this.settleTail)
-      : this.settleAfterClose();
+    return this.settleAfterClose();
   }
 
   /** close()/onTransportClosed() 同步启动 cleanupAll 前，settleTail 仍可能是旧 resolved 值；
@@ -643,13 +586,12 @@ class HubConnectionImpl implements HubConnection {
   private finishDrain(): void {
     if (this.closedFlag || !this.drainActive) return;
     this.clearDrainHandles();
-    this.close(1001, 'hub-shutdown'); // 既有收口原样复用（§4.6）
+    this.close(1001, 'hub-reauth');
   }
 
   /** issue #174 §4.6-R2 单点：drain 复位 + deadline 句柄清理。幂等；四条连接终结路径共用。 */
   private clearDrainHandles(): void {
     this.drainActive = false;
-    this.drainReason = undefined;
     if (this.drainDeadline !== undefined) {
       this.hub.timer.clearTimeout(this.drainDeadline); // §8 句柄必清纪律
       this.drainDeadline = undefined;
@@ -751,17 +693,7 @@ class HubConnectionImpl implements HubConnection {
     if (this.drainActive) {
       switch (message.kind) {
         case 'OPEN_NAMESPACE':
-          // SERVER_SHUTTING_DOWN 保持 issue #174 的显式拒绝；REAUTH_REQUIRED 保持
-          // issue #175 AC4 的零响应，避免在认证失效窗口泄露任何 namespace 观测。
-          if (this.drainReason === 'SERVER_SHUTTING_DOWN') {
-            try {
-              this.sendControlChecked(
-                namespaceErrorFrame('NAMESPACE_REOPEN_REQUIRES_RECONNECT', message.namespaceId, sequence),
-              );
-            } catch {
-              // 连接已收口；忽略（withChannel 同款既有防御）
-            }
-          }
+          // REAUTH_REQUIRED 窗口零响应，避免认证失效后泄露 namespace 观测。
           return;
         case 'BOOTSTRAP_ACK':
         case 'SYNC_STEP1':
@@ -908,10 +840,7 @@ class HubConnectionImpl implements HubConnection {
       await this.settleTail;
       this.hub.dropConnection(this);
     } finally {
-      // §4.6：drain 结算闸在清理链尾释放——即使清理异常，close() Promise 也绝不悬挂
-      const done = this.drainDone;
-      this.drainDone = undefined;
-      done?.();
+      // cleanupAll 的 settleTail 在异常路径也已归一化，由 Hub close 等待。
     }
   }
 

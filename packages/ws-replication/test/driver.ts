@@ -189,6 +189,8 @@ export interface BootOptions {
    * （R7 红灯锚）。注意：这是测试侧注入的生产 0 seam（deferTask），生产缺省 =
    * 单次 queueMicrotask。 */
   readonly deferTask?: (task: () => void) => void;
+  readonly hubRegistryObserver?: NonNullable<Parameters<typeof import('./harness.js').makeNode>[1]>;
+  readonly createHub?: typeof import('@nomicore/ws-replication').createHubReplication;
 }
 
 export class Run {
@@ -465,7 +467,7 @@ export class Run {
  *  需要「手动 latch」的测试经 BootOptions.deferTask 注入自有调度（见 R7 红灯锚）。
  */
 export async function boot(opts: BootOptions = {}): Promise<Run> {
-  const hubNode = makeNode('hub');
+  const hubNode = makeNode('hub', opts.hubRegistryObserver);
   const peerNode = makeNode('peer');
   const authorizer =
     opts.authorize !== undefined && typeof opts.authorize === 'function'
@@ -491,7 +493,7 @@ export async function boot(opts: BootOptions = {}): Promise<Run> {
     verifyCalls.push(token);
     return verifyToken(token);
   };
-  const hub = createHubReplication({
+  const hub = (opts.createHub ?? createHubReplication)({
     instanceId: HUB_INSTANCE,
     registry: hubNode.registry,
     authorize: authorizer.authorize,

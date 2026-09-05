@@ -565,14 +565,16 @@ Peer→Hub update保护检查必须在同一 sequencer槽中：
 
 停机顺序：
 
-1. replication停止接纳连接/target并发送GOAWAY；
+1. replication停止接纳连接/target，并直接以 WS 1001 关闭 Hub transport（issue #229 临时措施：不发送停机 GOAWAY）；
 2. namespace停止新frame，排空已接纳apply；
 3. close sessions并release replication leases；
 4. Registry shutdown；
 5. Persistence dispose；
 6. Timer/Clock停止。
 
-GOAWAY 的 `drainTimeoutMs` 是网络域硬 deadline：Hub 先武装 drain、发送可观测 GOAWAY，并在全部 channel 终态时提前完成；否则 deadline 到达即以 WS 1001 关闭 transport，不等待网络 ACK。Hub replication close Promise 仍须等待 Runtime 域中停机前已接纳 apply 排空、session close 与 replication lease release；网络 deadline 与 Runtime barrier 是独立结算点。清理必须异常安全：即使 session close 或退订失败，也要 teardown channel 并尽力 release lease，且迟到 apply resolve/reject 不得再产生 wire 输出或 unhandled rejection。不得从notifier或sequencer槽内await Runtime close、Lease release或Registry shutdown。
+`GOAWAY` 的 `drainTimeoutMs` 在使用 GOAWAY 的连接收口路径（当前包括定向 reauthentication）中仍是网络域硬 deadline：发送方先武装 drain、发送可观测 GOAWAY，并在全部 channel 终态时提前完成；否则 deadline 到达即以 WS 1001 关闭 transport，不等待网络 ACK。
+
+**issue #229 临时偏离：**Hub replication service close 不走上述 GOAWAY drain，而是先停止接纳、同步使连接代际与 wire 输出失效，再直接以 WS 1001 关闭 transport。只要本地 target 仍存在，Peer 必须将该无 GOAWAY 的 1001 视为普通临时断线，进入 backoff 并在同一 endpoint 恢复后重新 OPEN/reconcile。网络域的有界 deadline 在该路径退化为同步 transport close；Runtime 域不设置取消 deadline，Hub replication close Promise 必须等待停机前已接纳 apply 无条件排空、session close 与 replication lease release。宿主负责以进程级总停机 watchdog 提供整体有界退出。清理必须异常安全：即使 session close 或退订失败，也要 teardown channel 并尽力 release lease，且迟到 apply resolve/reject 不得再产生 wire 输出或 unhandled rejection。不得从 notifier 或 sequencer 槽内 await Runtime close、Lease release 或 Registry shutdown。
 
 ## 22. Conformance tests
 

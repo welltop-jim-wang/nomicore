@@ -492,7 +492,10 @@ export interface ReplicaNode {
 }
 
 /** 构造真实 Registry（testing seam；受控 clock/scheduler/randomBytes；idle 远大于测试预算）。 */
-export function makeNode(role: 'hub' | 'peer'): ReplicaNode {
+export function makeNode(
+  role: 'hub' | 'peer',
+  observer?: NonNullable<Parameters<typeof createNamespaceRegistryForTesting>[1]>['observer'],
+): ReplicaNode {
   const persistence = new StubPersistence();
   const scheduler = createRegistryTestScheduler();
   const registry = createNamespaceRegistryForTesting(persistence, {
@@ -500,6 +503,7 @@ export function makeNode(role: 'hub' | 'peer'): ReplicaNode {
     scheduler,
     idleTimeoutMs: 1_000_000,
     randomBytes: makeCounterRandomBytes(),
+    ...(observer === undefined ? {} : { observer }),
     role,
   });
   return { role, persistence, scheduler, registry };

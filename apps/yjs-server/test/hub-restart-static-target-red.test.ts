@@ -1,18 +1,8 @@
 /**
- * [SA6 owned] T6 — hub 正常重启 ⇒ peer 显式恢复语义红测（设计 §5-T6，R2 NB-1 冻结的
- * b+c 恢复路线；AC1/AC3）。
- *
- * 断言链（与冻结包源码逐行核实，见设计 §6-A13/A15 与 SA2 R3 报告）：
- *   hub v1（file 持久化 + provision）boot → 捕获 `provisioned` nsId →
- *   hub v2（同 rootDir，**直引形式** authorization{捕获 nsId, ownerUserId}）→
- *   peer **配置态静态 targets** → bootstrap live 基线（verify-write→hub read 收敛）→
- *   hub SIGTERM → peer NDJSON 依次 `goaway-received`(reasonCode=SERVER_SHUTTING_DOWN)
- *   与 `connection-state-changed`(to=blocked) → 同 rootDir 重启 hub → **负例静默窗口**
- *   （有界期 peer 零 dial/backoff/状态迁移事件——blocked 不自动重拨）→ 对 peer stdin
- *   注 `{"op":"notify-auth-changed"}` → 回执 ok:true 且 `connectionState` 离开
- *   blocked → 有界轮询（verify-write 自带 30s deadline）达 live 且 read 收敛。
- *
- * RED 基线：`apps/yjs-server/src/main.ts` 尚不存在 → spawn 即刻失败（进程提前退出）。
+ * Issue #229 真实进程回归：Hub 正常 SIGTERM 不发送 GOAWAY；Peer 保持运行、保留静态
+ * target 并进入普通 backoff。同 rootDir、同 endpoint、同凭据重启 Hub 后，不重启 Peer、
+ * 不 re-add target、不 notify-auth-changed、不改配置，Peer 自动重新 OPEN/reconcile 并
+ * 收敛 Hub 在断线期间写入的数据。
  */
 import { spawn, type ChildProcess } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
@@ -61,7 +51,10 @@ const liveProcs: Proc[] = [];
 function spawnApp(args: string[]): Proc {
   const child = spawn(TSX_BIN, [MAIN_TS, ...args], {
     stdio: ['pipe', 'pipe', 'pipe'],
-    env: { ...process.env },
+    env: {
+      ...process.env,
+      NODE_OPTIONS: [process.env.NODE_OPTIONS, '--conditions=nomicore-source'].filter(Boolean).join(' '),
+    },
   });
   const proc: Proc = { child, raw: [], events: [], stderr: [], exitCode: null };
   child.stdout!.on('data', (chunk: Buffer) => {
@@ -91,10 +84,11 @@ async function waitForEvent(
   predicate: (e: Record<string, unknown>) => boolean,
   timeoutMs: number,
   what: string,
+  fromIndex = 0,
 ): Promise<Record<string, unknown>> {
   const start = Date.now();
   for (;;) {
-    const hit = proc.events.find(predicate);
+    const hit = proc.events.slice(fromIndex).find(predicate);
     if (hit) return hit;
     if (proc.exitCode !== null) {
       throw new Error(
@@ -175,9 +169,9 @@ afterEach(() => {
   }
 });
 
-describe('T6 hub restart ⇒ peer blocked-recovery (design §5-T6 / AC1+AC3)', () => {
+describe('issue #229：Hub 正常重启后 Peer 自动恢复静态 target', () => {
   it(
-    'hub restart drives peer to blocked; negative silence window; notify-auth-changed recovers to live and converges',
+    'live → Hub SIGTERM → Peer 保持运行并 backoff → 同 endpoint 重启 → 自动 live 且收敛断线期 Hub 写',
     async () => {
       const hubRoot = makeTmpDir();
       const port = await freePort();
@@ -228,6 +222,7 @@ describe('T6 hub restart ⇒ peer blocked-recovery (design §5-T6 / AC1+AC3)', (
             hub: { url: `ws://127.0.0.1:${port}/replication`, hubInstanceId: 'hub-1', token: 'token-1' },
             targets: [{ namespaceId, ownerUserId: 'alice' }],
           },
+          backoff: { baseMs: 5_000, maxMs: 5_000, resetAfterMs: 60_000 },
         }),
       ]);
       await waitForEvent(peerProc, (e) => e.event === 'ready', 60_000, 'peer ready');
@@ -239,52 +234,56 @@ describe('T6 hub restart ⇒ peer blocked-recovery (design §5-T6 / AC1+AC3)', (
       expect(baselineRead.ok).toBe(true);
       expect(baselineRead.value).toBe(7);
 
-      // ── hub 正常 SIGTERM ⇒ peer 收到 GOAWAY 并进入 blocked（不自动重拨）──
+      // ── Hub 正常 SIGTERM：不发 GOAWAY，Peer 保持运行并进入普通 backoff ──
+      const peerEventOffset = peerProc.events.length;
       await signalAndExpectExit(hubV2, 'SIGTERM', 30_000, 0, 'hub v2 (restart source)');
-
-      const goaway = await waitForEvent(
+      await waitForEvent(
         peerProc,
-        (e) => e.event === 'goaway-received',
+        (e) => e.event === 'connection-backoff-scheduled',
         30_000,
-        'peer goaway-received',
+        'peer backoff after Hub shutdown',
+        peerEventOffset,
       );
-      expect(goaway.reasonCode).toBe('SERVER_SHUTTING_DOWN');
+      const shutdownEvents = peerProc.events.slice(peerEventOffset);
+      expect(
+        shutdownEvents.some((e) => e.event === 'connection-backoff-scheduled'),
+        JSON.stringify(shutdownEvents),
+      ).toBe(true);
+      expect(shutdownEvents.some((e) => e.event === 'goaway-received')).toBe(false);
+      expect(shutdownEvents.some((e) => e.event === 'connection-state-changed' && e.to === 'blocked')).toBe(false);
+      expect(peerProc.exitCode).toBeNull();
 
-      const blocked = await waitForEvent(
-        peerProc,
-        (e) => e.event === 'connection-state-changed' && e.to === 'blocked',
-        30_000,
-        'peer connection-state-changed to blocked',
-      );
-      const goawayIndex = peerProc.events.indexOf(goaway);
-      const blockedIndex = peerProc.events.indexOf(blocked);
-      expect(goawayIndex).toBeGreaterThanOrEqual(0);
-      expect(blockedIndex).toBeGreaterThan(goawayIndex);
-
-      // ── 同 rootDir 重启 hub（直引授权绑定先于 listen）──
+      // ── 同 rootDir、同 endpoint 重启 Hub；Peer target/凭据/配置均不变化，也不发恢复命令 ──
       const hubV2b = spawnApp(['--config', configV2Path]);
       await waitForEvent(hubV2b, (e) => e.event === 'ready', 60_000, 'hub v2 ready (restart)');
 
-      // ── 负例静默窗口：blocked 不自动重拨（零 dial/backoff/状态迁移事件）──
-      const snapshotLength = peerProc.events.length;
-      await sleep(4_000);
-      const newEvents = peerProc.events.slice(snapshotLength);
-      const silentViolation = newEvents.filter((e) =>
-        ['connection-state-changed', 'connection-backoff-scheduled', 'goaway-received'].includes(e.event as string),
+      // 在 Peer 尚处于 backoff/disconnected 时立即写 Hub；长 backoff 配置保证写入先于重拨。
+      const statusBeforeWrite = await sendOp(peerProc, { op: 'status' }, 20_000);
+      expect(statusBeforeWrite.connectionState).toBe('backoff');
+      const disconnectedWrite = await sendOp(
+        hubV2b,
+        { op: 'verify-write', namespaceId, set: ['count'], path: ['count'], value: 11, timeoutMs: 30_000 },
+        60_000,
       );
-      expect(silentViolation, `expected zero redial events while blocked, got ${JSON.stringify(silentViolation)}`).toEqual([]);
+      expect(disconnectedWrite.ok).toBe(true);
 
-      // ── 显式恢复：stdin notify-auth-changed（设计 §3.4 恢复动词）──
-      const notifyReply = await sendOp(peerProc, { op: 'notify-auth-changed' }, 20_000);
-      expect(notifyReply.ok).toBe(true);
-      expect(notifyReply.connectionState, 'notify reply connectionState leaves blocked').not.toBe('blocked');
-
-      // ── 有界收敛：verify-write 自带 30s live 等待，随后 hub read 回读 ──
-      const recoveredWrite = await sendOp(peerProc, { op: 'verify-write', namespaceId, set: ['count'], path: ['count'], value: 11, timeoutMs: 30_000 }, 60_000);
-      expect(recoveredWrite.ok).toBe(true);
-      const recoveredRead = await sendOp(hubV2b, { op: 'read', namespaceId, path: ['count'] }, 20_000);
-      expect(recoveredRead.ok).toBe(true);
-      expect(recoveredRead.value).toBe(11);
+      // 不重启 Peer、不 re-add target、不 notify-auth-changed、不改配置；等待既有静态 target 自动恢复。
+      await waitForEvent(
+        peerProc,
+        (e) => e.event === 'channel-state-changed' && e.namespaceId === namespaceId && e.to === 'live',
+        60_000,
+        'peer target live after hub restart',
+        peerEventOffset,
+      );
+      let recoveredRead: Record<string, unknown> | undefined;
+      const reconcileDeadline = Date.now() + 30_000;
+      while (Date.now() < reconcileDeadline) {
+        recoveredRead = await sendOp(peerProc, { op: 'read', namespaceId, path: ['count'] }, 20_000);
+        if (recoveredRead.ok === true && recoveredRead.value === 11) break;
+        await sleep(100);
+      }
+      expect(recoveredRead?.ok).toBe(true);
+      expect(recoveredRead?.value).toBe(11);
 
       await signalAndExpectExit(peerProc, 'SIGTERM', 30_000, 0, 'peer');
       await signalAndExpectExit(hubV2b, 'SIGTERM', 30_000, 0, 'hub v2 (restart)');

@@ -176,7 +176,7 @@ Phase 5 首版建立：
 
 在出现第二种 transport 前，不提前提取 transport-independent replication package。第三方 Host 可直接基于公开 NamespaceLease/ReplicationSession 构造自己的可信 transport。
 
-停止顺序为：复制插件停止接纳连接/target，先发送 GOAWAY 并进入真实 drain 窗口；窗口内不接纳新的 namespace 工作，只允许现有 channel 自然 CLOSE，并等待已被 Runtime 接纳的 apply 槽。全部 channel 终态可提前关闭 transport，否则网络 deadline 到达即以 WS 1001 收口，不无限等待网络 ACK。网络关闭后 Runtime barrier 仍排空停机前已接纳 apply，再异常安全地 teardown channel、close session 并尽力释放 replication lease；随后 Registry shutdown、Persistence dispose，最后停止 Timer/Clock。网络 deadline 不取消 Runtime barrier，迟到 apply 结算不得恢复 wire 输出。
+停止与重连语义以 `docs/protocols/instance-replication-v1.md` §21 为权威。issue #229 决定临时以直接关闭 Hub transport 取代停机 GOAWAY，使本地 target 仍存在的 Peer 保有重拨所有权；Runtime barrier 与资源释放不变量不变。
 
 ## 参考实现取舍
 
@@ -318,5 +318,4 @@ drain。实现证据：`packages/ws-replication/src/*`（PR #165 round 2）。
    +历史证据双标注。
 3. **交付边界陈述**：当前切片状态与后续依赖仅由
    `docs/phases/phase-5-websocket-replication.md`「交付现状与边界」节维护，ADR 不复制交付
-   清单。hub 停机 GOAWAY 发送归属 `@nomicore/ws-replication` 包行为；composition root
-   只按 protocol §21 编排包级停机顺序。
+   清单。hub 停机连接收口归属 `@nomicore/ws-replication` 包行为；当前按 issue #229 临时偏离直接关闭 transport、不发送 GOAWAY。composition root 只按 protocol §21 编排包级停机顺序。

@@ -216,9 +216,9 @@ class YjsHubServerImpl implements YjsHubServer {
     });
   }
 
-  // §4.6 §21 停机编排（切片 9 只编排，GOAWAY 归包——phase §9 裁决）：
+  // §4.6 §21 停机编排：
   // closed 先置位 → ① httpServer.close（新 TCP 连接 ECONNREFUSED——FS6 refused 断言）
-  // → ②-③ await hub.close()（GOAWAY/drain/Runtime barrier 包语义）
+  // → ②-③ await hub.close()（issue #229：零 GOAWAY、直接 1001、Runtime barrier）
   // → 残留 socket 清扫 destroy（httpClosed 不悬挂兜底）
   // → wss.close()（noServer 形态卫生性）→ ④ registry.shutdown()（幂等 same-Promise；
   //   失败响亮上抛，此时连接/端口清理已完成，失败面最小）→ await httpClosed。
