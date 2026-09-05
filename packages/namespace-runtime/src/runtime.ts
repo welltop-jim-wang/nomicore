@@ -571,15 +571,34 @@ export function createNamespaceRuntimeWithSeam(input: NamespaceRuntimeSeamInput)
 }
 
 /**
+ * #155：Runtime 诊断注入（Registry 生产装配第三参的载荷形状；§4-D6——emitter 与
+ * clock 成对：observedAt 唯一来源 = Registry 注入 Clock（#149 §5.2 配对纪律）。
+ * 该类型定义于本文件（`internal.ts` 只做 type re-export——值导出键集冻结）。
+ */
+export interface RuntimeForRegistryDiagnostic {
+  readonly emitter: NamespaceDiagnosticChangeEmitter;
+  readonly clock: () => number;
+}
+
+/**
  * 生产构造器（包内，index.ts 不导出——AC1 锁定）。D6.3：绑定义务显式化为必填参数——
  * 未来 Registry 传 `() => persistence.saveDoc(handle)`（ADR-0008「由构造方绑定」）。
+ * #155（§4-D6）：可选第三参 `diagnostic`（emitter+clock 成对）——不传 = 既有行为
+ * 逐字节不变（条件展开进 seam input；`captureSeamInput` 成对校验/loud 语义零改动）。
  * @internal
  */
 export function createNamespaceRuntime(
   handle: DocHandle,
   notifyDirty: () => Promise<void>,
+  diagnostic?: RuntimeForRegistryDiagnostic,
 ): NamespaceRuntime {
-  return createNamespaceRuntimeWithSeam({ handle, notifyDirty });
+  return createNamespaceRuntimeWithSeam({
+    handle,
+    notifyDirty,
+    ...(diagnostic !== undefined
+      ? { diagnosticEmitter: diagnostic.emitter, clock: diagnostic.clock }
+      : {}),
+  });
 }
 
 /** D4 包内 helper：closing/closed 期 read 停接纳的结果联合分支（不导出）。

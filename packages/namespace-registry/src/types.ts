@@ -703,7 +703,14 @@ export interface NamespaceRegistryShutdownFailure {
  * Registry 实例零诊断行为）；缺 initStream = 只记录 attempt、不建立 stream（Host
  * 选择延迟初始化——AC5 场景）。
  *
- * sync-only 契约（SA2 LOW 落实）：两成员均为同步调用——`initStream` 必须同步完成并
+ * #155（§4-D5/§4-D6）增量可选成员 `runtimeEmitterFor`：per-namespace emitter 的
+ * **数据键控**解析（消费方两族：open/create/import 三处 RuntimeFactory 第三参 +
+ * create 槽 initStream 后 #17/#18 的 `emitStreamOutcome`——C1 归因正确性论证）。
+ * 生产供应方（Host 管理器）恒返回良构 emitter（缓存命中/构造成功 → adapter.emitter；
+ * 构造不可用 → 丢弃桩）；返回 undefined / throw / 畸形形状 = seam 违约，被 Registry
+ * 隔离为「无诊断」，绝不影响 open/create/import 结果（ADR-0011 §A；§4-D11）。
+ *
+ * sync-only 契约（SA2 LOW 落实）：成员均为同步调用——`initStream` 必须同步完成并
  * 返回 void；Host 若以 async 函数实现属违约（floating promise 处置责任在 Host）。
  * 声明纪律说明：`NamespaceDiagnosticChangeEmitter` 是 ADR-0011「Interface 与 seam」
  * 节明文要求业务模块依赖的小 emitter 接口（纯数据契约，非运行时对象/租约/文档类型），
@@ -713,6 +720,7 @@ export interface NamespaceRegistryShutdownFailure {
 export interface NamespaceRegistryDiagnosticLog {
   readonly emitter: NamespaceDiagnosticChangeEmitter;
   readonly initStream?: (namespaceId: string, genesisUpdateBytes: Uint8Array | undefined) => void;
+  readonly runtimeEmitterFor?: (namespaceId: string) => NamespaceDiagnosticChangeEmitter | undefined;
 }
 
 /**

@@ -1,6 +1,6 @@
 {
   "name": "@nomicore/namespace-registry",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "type": "module",
   "exports": {
     ".": {
@@ -37,19 +37,5 @@
   },
   "files": [
     "dist"
-  ],
-  "license": "MIT",
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/welltop-jim-wang/nomicore.git",
-    "directory": "packages/namespace-registry"
-  },
-  "homepage": "https://github.com/welltop-jim-wang/nomicore",
-  "bugs": {
-    "url": "https://github.com/welltop-jim-wang/nomicore/issues"
-  },
-  "publishConfig": {
-    "access": "public",
-    "registry": "https://registry.npmjs.org/"
-  }
+  ]
 }

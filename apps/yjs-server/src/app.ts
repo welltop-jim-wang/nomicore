@@ -18,7 +18,7 @@
  */
 import { Context } from '@deepseek-ai/cordis';
 import TimerService from '@deepseek-ai/cordis-plugin-timer';
-import { createSystemClockPlugin } from '@nomicore/clock';
+import { createSystemClockPlugin, requireClock } from '@nomicore/clock';
 import { createInstancePlugin } from '@nomicore/instance';
 import {
   createFilePersistencePlugin,
@@ -53,6 +53,10 @@ import {
 import { createStdoutEventSink, type EventSink } from './lifecycle.js';
 import { createPeerDial } from './transport/ws-client.js';
 import { createHubListenAdapter } from './transport/ws-server.js';
+import {
+  createHostDiagnosticsManager,
+  type HostDiagnosticsManager,
+} from './diagnostics.js';
 
 const OP_TIMEOUT_DEFAULT_MS = 30_000;
 const OP_TIMEOUT_MIN_MS = 1;
@@ -131,6 +135,8 @@ class AppHandle {
   private hubService: HubReplicationService | undefined;
   private peerService: PeerReplicationService | undefined;
   private hubListener: Awaited<ReturnType<HubListenAdapter['listen']>> | undefined;
+  /** #155：Host 诊断管理器（`config.diagnostics.enabled === true` 时构造；D7）。 */
+  private diagnostics: HostDiagnosticsManager | undefined;
 
   private stopPromise: Promise<void> | undefined;
   private bootPromise: Promise<void> | undefined;
@@ -194,10 +200,24 @@ class AppHandle {
     this.persistenceFiber = persistenceFiber;
     await persistenceFiber;
     if (this.stopRequested) return;
+    // #155（§5.2/§5.3）：Host 诊断管理器——本地旁路（不进 SCHEMA/META/ROOT/
+    // snapshot/wire，§6.2 结构性隔离）；clock fiber 就绪后、registry fiber 之前
+    // 构造；`now` = 注入 Clock（禁墙钟）。adapter 构造全部懒发生于 Registry
+    // open/create/import 槽（每 namespace 每进程至多一次，D3 成本注记）。
+    this.diagnostics =
+      this.config.diagnostics?.enabled === true
+        ? createHostDiagnosticsManager(this.config.diagnostics, {
+            sink: this.sink,
+            now: () => requireClock(this.ctx).now(),
+          })
+        : undefined;
     const registryFiber = ctx.plugin(
-      createNamespaceRegistryPlugin({
-        ...(this.config.idleTimeoutMs !== undefined ? { idleTimeoutMs: this.config.idleTimeoutMs } : {}),
-      }),
+      createNamespaceRegistryPlugin(
+        {
+          ...(this.config.idleTimeoutMs !== undefined ? { idleTimeoutMs: this.config.idleTimeoutMs } : {}),
+        },
+        this.diagnostics !== undefined ? { diagnosticLog: this.diagnostics.binding } : {},
+      ),
     );
     await registryFiber;
     if (this.stopRequested) return;
@@ -400,6 +420,12 @@ class AppHandle {
         await this.registry.shutdown();
       }
       this.sink({ event: 'registry-stopped' });
+      // 2b. #155（§5.3/§4-D7）：诊断管理器 O(1) 结构性收口——正序位置（registry
+      // shutdown 完成之后、file 排空窗之前）。Runtime close barrier 排空 ⇒ 全部 slot
+      // 释放后 emit 已发生；close 零 fs、零 await——Registry/Persistence 停机不被日志
+      // 无限延迟（结构性满足；未来 writer queue 切片的 drain 预算另行定义——§4-D7 备案）。
+      this.diagnostics?.close();
+      this.sink({ event: 'diagnostics-closed' });
       // 3. persistence fiber 卸载前：给 file adapter 的排空窗口——adapter 的 dirty
       // flush 走 debounce 调度（saveDoc → maxDirtyMs 内保证提交；dispose() 只
       // abort+destroy，**不冲刷 dirty**，file.ts:27「dispose and drain first」）。
@@ -423,6 +449,12 @@ class AppHandle {
         ...(error instanceof Error ? { message: error.message } : { message: String(error) }),
       });
       throw error;
+    } finally {
+      // #155（i2 修订）：幂等双保险——正序已关时零成本 no-op；registry.shutdown()
+      // throw 路径上也保证 diagnostics `closed` 置位后才 rethrow（adapter 无常驻
+      // fd/队列——实害为零，finally 仅兜底 closed 标志必然置位；顺序语义由正序
+      // 调用承担，finally 不定义顺序）。
+      this.diagnostics?.close();
     }
   }
 
