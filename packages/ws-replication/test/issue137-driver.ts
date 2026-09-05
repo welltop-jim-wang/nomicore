@@ -19,6 +19,7 @@ import type {
   PeerNamespaceState,
   PeerReplication,
   ReplicationLimits,
+  ReplicationObserver,
   ReplicationTimeouts,
 } from '@nomicore/ws-replication';
 import { decodeMessage, type DecodedMessage } from '@nomicore/replication-protocol';
@@ -50,8 +51,11 @@ export const ISSUE137_SCHEMA = Object.freeze({
 
 export interface Issue137BootOptions {
   readonly count?: number;
+  readonly initialBlurb?: string;
   readonly limits?: Readonly<Partial<ReplicationLimits>>;
   readonly timeouts?: Readonly<Partial<ReplicationTimeouts>>;
+  readonly hubObserver?: ReplicationObserver;
+  readonly peerObserver?: ReplicationObserver;
   /** 传输端暴露 bufferedAmount 压力属性（AC-6 seam；缺省 false——makeWire 原形，零压力）。 */
   readonly withPressure?: boolean;
 }
@@ -91,7 +95,7 @@ export async function bootMulti(opts: Issue137BootOptions = {}): Promise<Run137>
       await hubNode.registry.create({
         owner: HUB_OWNER,
         schema: { ...ISSUE137_SCHEMA, id: `issue137-${index}` },
-        root: { n: index + 1, blurb: 'seed' },
+        root: { n: index + 1, blurb: opts.initialBlurb ?? 'seed' },
       }),
     );
     await schemaReady(lease);
@@ -113,6 +117,7 @@ export async function bootMulti(opts: Issue137BootOptions = {}): Promise<Run137>
     verifyToken: DEFAULT_PEER_VERIFIER,
     ...(opts.limits !== undefined ? { limits: opts.limits } : {}),
     ...(opts.timeouts !== undefined ? { timeouts: opts.timeouts } : {}),
+    ...(opts.hubObserver !== undefined ? { observer: opts.hubObserver } : {}),
   });
 
   const wires: Wire[] = [];
@@ -144,6 +149,7 @@ export async function bootMulti(opts: Issue137BootOptions = {}): Promise<Run137>
     targets: nsIds.map((nsId) => ({ namespaceId: nsId, localOwner: PEER_OWNER })),
     ...(opts.limits !== undefined ? { limits: opts.limits } : {}),
     ...(opts.timeouts !== undefined ? { timeouts: opts.timeouts } : {}),
+    ...(opts.peerObserver !== undefined ? { observer: opts.peerObserver } : {}),
   });
   peer.start();
   await settleUntil(() => peer.getConnectionState() === 'ready', '连接 ready');

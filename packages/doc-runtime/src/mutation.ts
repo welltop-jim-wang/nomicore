@@ -1,16 +1,17 @@
 /**
  * ADR-0007 validated mutation bridge. Every operation is simulated against a
- * concrete JSON snapshot, fully validated, rebuilt detached, then installed by
- * one guarded Yjs transaction. Domain failures are zero-write results; fatal
- * transaction/install failures retain their committed-aware exception channel.
+ * concrete JSON snapshot and fully validated before a single guarded Yjs
+ * transaction applies the corresponding minimal carrier edit.
  */
 import * as Y from 'yjs';
-import type { DerivedSchema } from '@nomicore/vfsl';
+import type { DerivedSchema, StructureNode } from '@nomicore/vfsl';
 import { validateLogicalSnapshot } from '@nomicore/vfsl';
-import { extractYjsSnapshot } from './extract.js';
+import { extractYjsSnapshot, walk } from './extract.js';
 import { assertOutermostTransactionContext } from './tx-guard.js';
-import { buildTopEntries } from './detached-build.js';
-import { verifyInstall } from './install-verify.js';
+import { buildDetachedValue, buildTopEntries } from './detached-build.js';
+import { verifyInstall, verifySnapshotIntact } from './install-verify.js';
+import { carrierOf } from './carrier.js';
+import { makeRefResolver } from './resolve.js';
 import { DerivedInvariantError, DocRuntimeFatalError, transactGuarded } from './fatal.js';
 
 export interface MutationIssue {
@@ -30,11 +31,19 @@ export type ApplyValidatedMutationResult =
   | { ok: false; issues: MutationIssue[] };
 
 type Path = Array<string | number>;
+type ParsedMutation = ValidatedMutation & { path: Path };
+type PreparedCommit =
+  | { kind: 'replace-root'; rootMap: Y.Map<unknown>; entries: Array<[string, unknown]> }
+  | { kind: 'set'; parent: Y.Map<unknown>; key: string; value: unknown }
+  | { kind: 'delete'; parent: Y.Map<unknown>; key: string }
+  | { kind: 'array-insert'; target: Y.Array<unknown>; index: number; values: unknown[] }
+  | { kind: 'array-delete'; target: Y.Array<unknown>; index: number; count: number };
 type MutationPrepared =
-  | { kind: 'ready'; rootMap: Y.Map<unknown>; entries: Array<[string, unknown]> }
+  | { kind: 'ready'; commit: PreparedCommit; proposed: unknown }
   | { kind: 'fail'; issues: MutationIssue[] };
 type PlaceResult = { kind: 'ok'; value: unknown } | { kind: 'issue'; issue: MutationIssue };
 type StepResult = { kind: 'ok'; value: unknown } | { kind: 'issue'; issue: MutationIssue };
+type LiveStep = { live: unknown; node: StructureNode };
 
 /** Apply one ADR-0007 set/delete/array-insert/array-delete operation synchronously. */
 export function applyValidatedMutation(
@@ -45,11 +54,11 @@ export function applyValidatedMutation(
   assertOutermostTransactionContext(doc, 'applyValidatedMutation');
   const ready = prepareMutation(derived, doc, mutation);
   if (ready.kind === 'fail') return { ok: false, issues: ready.issues };
-  transactGuarded(doc, () => {
-    ready.rootMap.clear();
-    for (const [k, v] of ready.entries) ready.rootMap.set(k, v);
-  });
-  verifyInstall({ rootMap: ready.rootMap, entries: ready.entries });
+  transactGuarded(doc, () => commitPrepared(ready.commit));
+  if (ready.commit.kind === 'replace-root') {
+    verifyInstall({ rootMap: ready.commit.rootMap, entries: ready.commit.entries });
+  }
+  verifySnapshotIntact(derived, ready.proposed, doc);
   return { ok: true };
 }
 
@@ -71,10 +80,9 @@ function prepareMutation(derived: DerivedSchema, doc: Y.Doc, mutation: unknown):
 
     const validated = validateLogicalSnapshot(derived, placed.value);
     if (!validated.ok) return { kind: 'fail', issues: validated.issues };
-    const top = buildTopEntries(derived, placed.value);
-    if (top.kind === 'issue') return { kind: 'fail', issues: [top.issue] };
-    const rootMap = doc.getMap('ROOT');
-    return { kind: 'ready', rootMap, entries: top.entries };
+    const commit = prepareCommit(derived, doc, parsed.mutation, ex.snapshot, placed.value);
+    if (commit.kind === 'issue') return { kind: 'fail', issues: [commit.issue] };
+    return { kind: 'ready', commit: commit.commit, proposed: placed.value };
   } catch (err) {
     if (err instanceof DerivedInvariantError) {
       throw new DocRuntimeFatalError(
@@ -88,8 +96,188 @@ function prepareMutation(derived: DerivedSchema, doc: Y.Doc, mutation: unknown):
   }
 }
 
+function prepareCommit(
+  derived: DerivedSchema,
+  doc: Y.Doc,
+  mutation: ParsedMutation,
+  current: unknown,
+  proposed: unknown,
+): { kind: 'ok'; commit: PreparedCommit } | { kind: 'issue'; issue: MutationIssue } {
+  const rootMap = doc.getMap<unknown>('ROOT');
+  if (mutation.op === 'set' && mutation.path.length === 0) {
+    const top = buildTopEntries(derived, proposed);
+    if (top.kind === 'issue') return top;
+    return { kind: 'ok', commit: { kind: 'replace-root', rootMap, entries: top.entries } };
+  }
+
+  const resolve = makeRefResolver(derived);
+  if (mutation.op === 'array-insert' || mutation.op === 'array-delete') {
+    const target = navigateLive(rootMap, rootStructureNode(derived), current, mutation.path, resolve);
+    if (carrierOf(target.live) !== 'Y.Array') return issueOf(mutation.path, 'array mutation 目标 live 载体不是 Y.Array');
+    if (mutation.op === 'array-delete') {
+      return {
+        kind: 'ok',
+        commit: { kind: 'array-delete', target: target.live as Y.Array<unknown>, index: mutation.index, count: mutation.count },
+      };
+    }
+    const logicalTarget = navigate(proposed, mutation.path);
+    if (logicalTarget.kind === 'issue') return logicalTarget;
+    const node = resolveNode(target.node, target.live, logicalTarget.value, resolve);
+    if (node.kind !== 'array') throw new DerivedInvariantError('array mutation 目标结构节点非 array');
+    const values: unknown[] = [];
+    for (let i = 0; i < mutation.values.length; i++) {
+      const built = buildDetachedValue(derived, node.element, mutation.values[i], [...mutation.path, mutation.index + i]);
+      if (built.kind === 'issue') return built;
+      values.push(built.value);
+    }
+    return {
+      kind: 'ok',
+      commit: { kind: 'array-insert', target: target.live as Y.Array<unknown>, index: mutation.index, values },
+    };
+  }
+
+  const parentPath = mutation.path.slice(0, -1);
+  const parent = navigateLive(rootMap, rootStructureNode(derived), current, parentPath, resolve);
+  const key = mutation.path[mutation.path.length - 1];
+  if (carrierOf(parent.live) !== 'Y.Map' || typeof key !== 'string') {
+    return issueOf(mutation.path, `${mutation.op} 终态必须是 Y.Map 的字符串键`);
+  }
+  if (mutation.op === 'delete') {
+    return { kind: 'ok', commit: { kind: 'delete', parent: parent.live as Y.Map<unknown>, key } };
+  }
+  const parentLogical = navigate(current, parentPath);
+  if (parentLogical.kind === 'issue') return parentLogical;
+  const targetNode = childNodeOf(parent.node, key, parent.live, parentLogical.value, resolve);
+  const built = buildDetachedValue(derived, targetNode, mutation.value, mutation.path);
+  if (built.kind === 'issue') return built;
+  return { kind: 'ok', commit: { kind: 'set', parent: parent.live as Y.Map<unknown>, key, value: built.value } };
+}
+
+function rootStructureNode(derived: DerivedSchema): StructureNode {
+  if (derived.structure.kind !== 'root') throw new DerivedInvariantError('derived.structure 非 root（手造派生物）');
+  return derived.structure.node;
+}
+
+function commitPrepared(commit: PreparedCommit): void {
+  switch (commit.kind) {
+    case 'replace-root':
+      commit.rootMap.clear();
+      for (const [key, value] of commit.entries) commit.rootMap.set(key, value);
+      return;
+    case 'set':
+      commit.parent.set(commit.key, commit.value);
+      return;
+    case 'delete':
+      commit.parent.delete(commit.key);
+      return;
+    case 'array-insert':
+      commit.target.insert(commit.index, commit.values);
+      return;
+    case 'array-delete':
+      commit.target.delete(commit.index, commit.count);
+      return;
+  }
+}
+
+function navigateLive(
+  rootMap: Y.Map<unknown>,
+  rootNode: StructureNode,
+  logicalRoot: unknown,
+  path: Path,
+  resolve: (node: StructureNode) => StructureNode,
+): LiveStep {
+  let live: unknown = rootMap;
+  let logical: unknown = logicalRoot;
+  let node = rootNode;
+  for (const seg of path) {
+    const resolved = resolveNode(node, live, logical, resolve);
+    if (resolved.kind === 'map') {
+      if (carrierOf(live) !== 'Y.Map' || typeof seg !== 'string') {
+        throw new DerivedInvariantError('validated map path 与 live Y.Map 载体不一致');
+      }
+      const parentLive = live;
+      const parentLogical = logical;
+      live = (parentLive as Y.Map<unknown>).get(seg);
+      logical = plainObjectOf(parentLogical)?.[seg];
+      node = childNodeOf(resolved, seg, parentLive, parentLogical, resolve);
+      continue;
+    }
+    if (resolved.kind === 'array') {
+      if (carrierOf(live) !== 'Y.Array' || !strictNonNegativeInteger(seg)) {
+        throw new DerivedInvariantError('validated array path 与 live Y.Array 载体不一致');
+      }
+      live = (live as Y.Array<unknown>).get(seg);
+      logical = Array.isArray(logical) ? logical[seg] : undefined;
+      node = resolved.element;
+      continue;
+    }
+    throw new DerivedInvariantError('validated path 穿越不可下钻结构终态');
+  }
+  return { live, node: resolveNode(node, live, logical, resolve) };
+}
+
+function resolveNode(
+  node: StructureNode,
+  live: unknown,
+  logical: unknown,
+  resolve: (node: StructureNode) => StructureNode,
+): StructureNode {
+  let current = resolve(node);
+  if (current.kind === 'root') current = resolve(current.node);
+  if (current.kind !== 'union') return current;
+  for (const member of current.members) {
+    const candidate = resolveNode(member, live, logical, resolve);
+    if (!carrierCompatible(candidate, live)) continue;
+    const trial = walk(candidate, live, [], resolve);
+    if (trial.kind !== 'issue' && logicalValuesEqual(trial.snapshot, logical)) return candidate;
+  }
+  throw new DerivedInvariantError('validated union 无 live/logical 匹配成员');
+}
+
+function logicalValuesEqual(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (Array.isArray(a) && Array.isArray(b)) {
+    return a.length === b.length && a.every((value, index) => logicalValuesEqual(value, b[index]));
+  }
+  const ao = plainObjectOf(a);
+  const bo = plainObjectOf(b);
+  if (ao === null || bo === null) return false;
+  const aKeys = Object.keys(ao).filter((key) => ao[key] !== undefined);
+  const bKeys = Object.keys(bo).filter((key) => bo[key] !== undefined);
+  return aKeys.length === bKeys.length
+    && aKeys.every((key) => bo[key] !== undefined && logicalValuesEqual(ao[key], bo[key]));
+}
+
+function carrierCompatible(node: StructureNode, live: unknown): boolean {
+  switch (node.kind) {
+    case 'map': return live === undefined || carrierOf(live) === 'Y.Map';
+    case 'array': return live === undefined || carrierOf(live) === 'Y.Array';
+    case 'xml-fragment': return live === undefined || carrierOf(live) === 'Y.XmlFragment';
+    case 'leaf':
+    case 'plain': return live === undefined || carrierOf(live) === 'plain value';
+    default: return true;
+  }
+}
+
+function childNodeOf(
+  node: StructureNode,
+  key: string,
+  live: unknown,
+  logical: unknown,
+  resolve: (node: StructureNode) => StructureNode,
+): StructureNode {
+  const resolved = resolveNode(node, live, logical, resolve);
+  if (resolved.kind !== 'map') throw new DerivedInvariantError('validated map child 的结构节点非 map');
+  const record = resolved.fields.length === 1 && resolved.fields[0]?.name === '<key>'
+    ? resolved.fields[0].node
+    : undefined;
+  const child = record ?? resolved.fields.find((field) => field.name === key)?.node;
+  if (child === undefined) throw new DerivedInvariantError(`validated map child 缺少结构字段（${key}）`);
+  return child;
+}
+
 function parseMutation(input: unknown):
-  | { kind: 'ok'; mutation: ValidatedMutation & { path: Path } }
+  | { kind: 'ok'; mutation: ParsedMutation }
   | { kind: 'fail'; issues: MutationIssue[] } {
   const env = plainObjectOf(input);
   if (env === null) return failIssue([], `mutation 信封形状错误：期望普通对象，实际 ${wordOf(input)}`);
@@ -128,7 +316,7 @@ function parseMutation(input: unknown):
   return { kind: 'ok', mutation: { op, path, index: env.index, count: env.count } };
 }
 
-function applyToJson(root: unknown, mutation: ValidatedMutation & { path: Path }): PlaceResult {
+function applyToJson(root: unknown, mutation: ParsedMutation): PlaceResult {
   switch (mutation.op) {
     case 'set': return placeSet(root, mutation.path, mutation.value);
     case 'delete': return placeDelete(root, mutation.path);

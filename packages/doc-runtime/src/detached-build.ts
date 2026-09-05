@@ -9,6 +9,7 @@
  * 导出面（R3 定稿，SA2 零裁量——设计 §3.1 写死）：
  * - `buildTopEntries` —— 构造接缝（materialize/replace 的 ② 与 install-verify 的
  *   scratch 构造共用）；
+ * - `buildDetachedValue` —— mutation 局部 carrier 提交前的 detached 子树构造；
  * - `@internal plainObjectOf / recordSlotOf / declaredFieldOf / makeIssue` —— 包内共享
  *   辅助（唯一消费方 = install-verify 的 productEqual/deepEqualValue/keysetOf 与
  *   materialize 留守 prepare 的载体/非空 issue；walk @internal 包内复用接缝先例——
@@ -82,6 +83,15 @@ function rootEntries(node: StructureNode, snap: unknown, resolve: Resolver): Ent
  * map/array/xml-fragment 位有形状断言（D4）；leaf/plain 同支走 copyJsonDomain（D6）；
  * union 递归试验；ref 经共享解析器（D8）。
  */
+export function buildDetachedValue(
+  derived: DerivedSchema,
+  node: StructureNode,
+  value: unknown,
+  path: Path,
+): BuildResult {
+  return buildValue(node, value, path, makeRefResolver(derived));
+}
+
 function buildValue(node: StructureNode, v: unknown, path: Path, resolve: Resolver): BuildResult {
   switch (node.kind) {
     case 'root':
