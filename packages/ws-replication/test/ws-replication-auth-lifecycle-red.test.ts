@@ -20,8 +20,8 @@
  *   连接与其他 namespace 不受影响；
  * - Peer 收 GOAWAY → 连接状态 `ready → draining`；drain 期停新 OPEN/round；
  *   按 reasonCode 分类并尊重 `retryAfterMs` 提示重新调度重连；
- * - `HubReplication.close()` 先发 GOAWAY（`SERVER_SHUTTING_DOWN` + 正 drainTimeoutMs）
- *   再关闭；close 后不再接纳新连接（accept → undefined、零分配）。
+ * - issue #229：`HubReplication.close()` 不发送停机 GOAWAY，直接以 WS 1001 关闭；
+ *   close 后不再接纳新连接（accept → undefined、零分配）。
  *
  * 红线纪律：真实 yjs / Registry / Runtime 双实例；fake-duplex（微任务投递）；
  * fake scheduler（零 real sleep）；断言 = wire 帧 / 状态投影 / 认证记账 /
@@ -37,6 +37,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { createHubReplication } from '@nomicore/ws-replication';
+import { createHubReplicationForTesting } from '@nomicore/ws-replication/testing';
 import type { DuplexTransport } from '@nomicore/ws-replication';
 import { decodeMessage, encodeMessage } from '@nomicore/replication-protocol';
 import {
@@ -380,26 +381,91 @@ describe('issue #138 切片 7：实例认证与连接生命周期（全部红灯
     expect(run.dialCount).toBe(2);
   });
 
-  it('AC-6：hub.close() 先发 GOAWAY（稳定 reasonCode + 正 drainTimeoutMs）再关闭；close 后零接纳', async () => {
+  it('AC-6/#229：hub.close() 不发 GOAWAY、直接关闭 transport；close 后零接纳', async () => {
     const run = await boot({});
-    const closePromise = run.hub.close();
+    await run.hub.close();
     await settle();
-    const goaways = run.hubFramesAll('GOAWAY');
-    // RED@1：当前实现 close 只发 transport.close(1001)，无 GOAWAY 帧
-    expect(goaways.length).toBe(1);
-    const goaway = goaways[0]!.message as { reasonCode: string; drainTimeoutMs: number };
-    expect(goaway.reasonCode).toBe('SERVER_SHUTTING_DOWN');
-    expect(goaway.drainTimeoutMs).toBeGreaterThan(0);
-    await run.hubNode.scheduler.advanceBy(CONTRACT_TIMEOUTS.closeTimeoutMs); // hub 侧虚拟时钟推进至 drain deadline（注意：driver.advanceMs 推进的是 peer scheduler，不可用）
-    await settle();
-    await closePromise;
+    expect(run.hubFramesAll('GOAWAY')).toHaveLength(0);
+    expect(run.wire.peerSideCloseInfo?.code).toBe(1001);
 
-    // close 后不再接纳：accept → undefined、零分配（AC-6「停止接纳连接」）
+    // close 后不再接纳：accept → undefined、零分配。
     const wire = makeWire();
     const conn = await (run.hub.accept(wire.hubEnd, { token: TEST_TOKEN }) as unknown);
-    // RED@2：当前实现 close 后 accept 仍分配 HubConnection（随即 1001）
     expect(conn).toBeUndefined();
     expect(run.hub.connections.length).toBe(0);
+  });
+
+  it.each([
+    ['resolve', false],
+    ['reject', true],
+  ] as const)('#229 shutdown barrier：transport 先关闭，close 仍等待已接纳 apply；迟到 %s 零 wire', async (_label, reject) => {
+    const run = await boot();
+    const gate = deferred();
+    const rejections = collectUnhandledRejections();
+    try {
+      run.hubNode.persistence.saveGate = gate;
+      await run.writePeer({ n: 229 });
+      await settle();
+      const framesBeforeClose = run.frames().hubToPeer.length;
+
+      let closed = false;
+      const closing = run.hub.close().then(() => { closed = true; });
+      await settle();
+      expect(run.wire.hubSideClosed).toBe(true);
+      expect(closed).toBe(false);
+
+      run.hubNode.persistence.saveGate = undefined;
+      if (reject) gate.reject(new Error('injected-late-save-reject'));
+      else gate.resolve();
+      await closing;
+      await settle();
+      expect(run.rootValue('hub', 'n')).toBe(229);
+      expect(run.frames().hubToPeer).toHaveLength(framesBeforeClose);
+      expect(rejections.events).toEqual([]);
+    } finally {
+      rejections.dispose();
+    }
+  });
+
+
+  it('#229 shutdown cleanup：重复 close 只释放一次 lease 且只关闭一次 session', async () => {
+    let sessionCounts: ReadonlyMap<object, number> = new Map();
+    const released: number[] = [];
+    const run = await boot({
+      createHub: (options) => {
+        const tested = createHubReplicationForTesting(options);
+        sessionCounts = tested.probe.sessionCloseCalls;
+        return tested.replication;
+      },
+      hubRegistryObserver: (event) => {
+        if (event.type === 'lease-released') released.push(event.remainingLeases);
+      },
+    });
+    const closing = run.hub.close();
+    expect(run.hub.close()).toBe(closing);
+    await closing;
+    expect(released).toEqual([1]);
+    expect([...sessionCounts.values()]).toEqual([1]);
+  });
+
+  it('#229 shutdown cleanup：session.close reject 后仍 release lease', async () => {
+    let sessionCounts: ReadonlyMap<object, number> = new Map();
+    const released: number[] = [];
+    const run = await boot({
+      createHub: (options) => {
+        const tested = createHubReplicationForTesting(options, {
+          sessionCloseError: new Error('injected-session-close-reject'),
+        });
+        sessionCounts = tested.probe.sessionCloseCalls;
+        return tested.replication;
+      },
+      hubRegistryObserver: (event) => {
+        if (event.type === 'lease-released') released.push(event.remainingLeases);
+      },
+    });
+    await expect(run.hub.close()).resolves.toBeUndefined();
+    expect([...sessionCounts.values()]).toEqual([1]);
+    expect(released).toEqual([1]);
   });
 
   // ─────────────────────── §6.5 A2：SA2 R3 放行后新增锚（a/b/c/d/e） ───────────────────────

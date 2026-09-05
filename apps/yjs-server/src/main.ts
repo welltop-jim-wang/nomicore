@@ -20,6 +20,7 @@ import {
   type NomicoreApp,
 } from './index.js';
 import { acquireRootLock, createStdoutEventSink, type RootLockHandle } from './lifecycle.js';
+import { runWithShutdownWatchdog } from './shutdown-watchdog.js';
 
 const STOP_WATCHDOG_MS = 60_000;
 
@@ -61,13 +62,17 @@ function failBoot(state: CliState, message: string, violations?: readonly Readon
 async function shutdown(state: CliState, exitCode: number): Promise<void> {
   if (state.shuttingDown) return;
   state.shuttingDown = true;
-  const watchdog = setTimeout(() => {
-    process.stderr.write('shutdown watchdog timeout: force exit(1)\n');
-    process.exit(1);
-  }, STOP_WATCHDOG_MS);
-  watchdog.unref();
   try {
-    await state.app.stop();
+    await runWithShutdownWatchdog(
+      () => state.app.stop(),
+      STOP_WATCHDOG_MS,
+      {
+        setTimeout: (callback, delayMs) => setTimeout(callback, delayMs),
+        clearTimeout: (handle) => clearTimeout(handle as NodeJS.Timeout),
+        writeError: (message) => process.stderr.write(message),
+        exit: (code) => process.exit(code),
+      },
+    );
     state.lock?.release();
     process.exit(exitCode);
   } catch (error) {

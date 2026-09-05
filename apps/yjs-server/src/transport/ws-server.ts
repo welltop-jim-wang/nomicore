@@ -239,8 +239,8 @@ export async function startHubWsServer(options: HubWsServerOptions): Promise<Hub
       for (const abort of [...pendingUpgrades.values()]) abort();
       // 关闭 = 停止接纳（listening socket 立即关闭；新 upgrade/请求被拒）。
       // node http `server.close()` 的**回调**要等全部既有连接（含已升级交给 ws 的
-      // socket）结束才触发——但那些连接由 `hub.close()` 的 GOAWAY→drain→deadline
-      // 强制收口负责销毁；此处不等待回调（设计 §3.6 停机序：先停止接纳、后复制 drain）。
+      // socket）结束才触发；那些连接由 Hub replication service close 直接以 1001
+      // 收口。此处不等待回调，避免监听器关闭与连接清理互相等待。
       server.close(() => {
         // 所有连接收口后的无害回调（不 await）。
       });

@@ -14,7 +14,7 @@ This package implements the Hub/Peer connection and namespace state machines ove
 - Keep admission bounded across handshake, ready, backpressure, and drain windows. Control/data accounting, queued bytes, early frames, timers, retries, and periodic reconciliation are observable concurrency contracts.
 - Use injected transport, scheduler, randomness, and optional observer/clock seams. Observer or adapter failures must follow their documented isolation and close classifications.
 - Role-specific Cordis plugins consume Instance, Clock, Timer, and Registry services. They own only listener/dialer, replication controller, connections/channels, and their published service; teardown upstream services at the composition root.
-- Preserve graceful shutdown: GOAWAY drain admits only allowed in-flight work, rejects new namespace opens, settles or reaches its deadline, then closes transport and releases every channel exactly once.
+- Preserve shutdown safety and follow `docs/protocols/instance-replication-v1.md` §21 as the authority for Hub close, Runtime barriers, session/lease release, and reauthentication drain behavior.
 - Export production APIs through `src/index.ts`; keep programmable adapters and test controls in the explicit testing surface.
 
 ## Verification

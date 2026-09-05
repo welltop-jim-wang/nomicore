@@ -29,7 +29,7 @@ import {
   createHubReplication,
 } from '@nomicore/ws-replication';
 import type { ReplicationLimits } from '@nomicore/ws-replication';
-import type { CloseOkMsg, GoawayMsg } from '@nomicore/replication-protocol';
+import type { CloseOkMsg } from '@nomicore/replication-protocol';
 import { encodeMessage } from '@nomicore/replication-protocol';
 import { boot, DEFAULT_PEER_VERIFIER, makeAuthorizer, TEST_TOKEN } from './driver.js';
 import type { Run } from './driver.js';
@@ -508,20 +508,12 @@ describe('G5（#172/#171）：GOAWAY quiesce/deadline', () => {
     await run.peer.stop();
   });
 
-  it('A5-5 回归锁：HubReplication.close() 停机必须先发送 GOAWAY（§21 停机顺序第 1 步）', async () => {
+  it('A5-5/#229 回归锁：HubReplication.close() 停机不发送 GOAWAY，直接以 1001 收口', async () => {
     const run = await boot();
     await run.waitNamespace('live');
-    const closePromise = run.hub.close();
-    await settleUntil(() => run.hubFramesAll('GOAWAY').length === 1, 'hub 停机 GOAWAY 已发出');
-    const goaways = run.hubFramesAll('GOAWAY');
-    expect(goaways.length, '§21：replication 停止接纳连接/target 并发送 GOAWAY').toBe(1);
-    const msg = goaways[0]?.message as GoawayMsg;
-    expect(typeof msg.drainTimeoutMs).toBe('number');
-    expect(typeof msg.reasonCode).toBe('string');
-    // close() 表示真实 drain 完成；测试推进冻结 deadline，避免等待真实时间。
-    await run.hubNode.scheduler.advanceBy(msg.drainTimeoutMs);
-    await closePromise;
+    await run.hub.close();
     await settle();
+    expect(run.hubFramesAll('GOAWAY')).toHaveLength(0);
     expect(run.wire.peerSideCloseInfo?.code).toBe(1001);
     await run.peer.stop();
   });

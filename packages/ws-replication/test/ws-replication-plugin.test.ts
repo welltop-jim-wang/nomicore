@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { provideClock } from '@nomicore/clock';
 import { provideInstance } from '@nomicore/instance';
 import { provideNomicoreRegistry } from '@nomicore/namespace-registry';
-import { encodeMessage } from '@nomicore/replication-protocol';
+import { decodeMessage, encodeMessage } from '@nomicore/replication-protocol';
 import {
   createHubReplicationPlugin,
   createPeerReplicationPlugin,
@@ -72,13 +72,15 @@ describe('role-specific Cordis replication plugins', () => {
     expect(listen).not.toHaveBeenCalled();
   });
 
-  it('disposes and remounts a ready Hub while shutdown arms a drain timeout', async () => {
+  it('disposes and remounts a ready Hub without sending GOAWAY', async () => {
     const ctx = new Context();
     const timer = effectTimer(ctx);
     dependencies(ctx, 'hub', timer);
     let deliverMessage!: (bytes: Uint8Array) => void;
+    const send = vi.fn<(bytes: Uint8Array) => void>();
     const socket = {
       ...transport(),
+      send,
       onMessage(callback: (bytes: Uint8Array) => void) {
         deliverMessage = callback;
         return () => {};
@@ -114,6 +116,8 @@ describe('role-specific Cordis replication plugins', () => {
     expect(first.replication?.connections[0]?.state).toBe('ready');
 
     await expect(firstFiber.dispose()).resolves.toBeUndefined();
+    expect(send.mock.calls.map(([bytes]) => decodeMessage(bytes).message.kind)).not.toContain('GOAWAY');
+    expect(socket.close).toHaveBeenCalledWith(1001, 'hub-shutdown');
     expect(() => requireHubReplication(ctx)).toThrow(/unavailable/);
     expect(timer.active.size).toBe(0);
 

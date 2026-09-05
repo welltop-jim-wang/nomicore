@@ -9,8 +9,8 @@
  * - DV3 = §5-3（A2）：永不 resolve 的 verifier → helloTimeoutMs 封顶 503 Auth Timeout；
  * - DV4 = §5-4（D7）：limits.maxFrameBytes 覆写传播至 ws maxPayload 双层同界（1009/1002 边界对）；
  * - DV5 = §5-5（A4a）：EADDRINUSE 失败复位——重试报真实根因，端口释放后同实例可复用；
- * - DV6 = §5-6（FS6 深水）：活跃 channel 下 close() → GOAWAY(SERVER_SHUTTING_DOWN) →
- *   drain 窗末/提前收口 1001 → Registry stopped + 端口拒绝（被动/主动两变体）。
+ * - DV6/#229：活跃 channel 下 close() 不发送停机 GOAWAY，直接以 1001 收口，随后
+ *   Registry stopped + 端口拒绝。
  *
  * 纪律：与 SA6 冻结测试同源——零源码 grep，全部锚在 HTTP 状态行 / WS 帧 / 关闭码 /
  * Registry 状态 / 进程级异常计数；真实 TCP（port 0）；有界轮询等待。
@@ -356,7 +356,7 @@ describe('issue #164 SA7 动态验证：SA4 §5 动态审核重点', () => {
 
   // ═══════════════════════════ DV6（SA4 §5-6 / FS6 深水变体） ═══════════════════════════
 
-  it('DV6a（FS6 深水·被动 deadline）：活跃 channel 下 close() → GOAWAY(SERVER_SHUTTING_DOWN, drain=closeTimeoutMs) → drain 窗末 1001 收口 → close() 结算 + Registry stopped + 端口拒绝', async () => {
+  it('DV6a/#229：活跃 channel 下 close() 不发 GOAWAY，直接以 1001 收口并停止 Registry/端口', async () => {
     const closeTimeoutMs = 400;
     const ctx = await startSa7Hub({ timeouts: { closeTimeoutMs, ...QUIET_PING } });
     const upgrade = await wsUpgrade({
@@ -372,16 +372,7 @@ describe('issue #164 SA7 动态验证：SA4 §5 动态审核重点', () => {
     await ctx.server.close();
     const closeElapsed = Date.now() - t0;
 
-    // 客户端观测：GOAWAY 帧在 close 之前上 wire（帧序先于 close 事件）
-    const goaway = wire.frames.find((f) => f.message.kind === 'GOAWAY');
-    expect(goaway).toBeDefined();
-    expect(goaway?.message).toMatchObject({
-      kind: 'GOAWAY',
-      reasonCode: 'SERVER_SHUTTING_DOWN',
-      drainTimeoutMs: closeTimeoutMs,
-    });
-    // close() 真实等待 drain 窗（活跃 channel 无自然收口 → 窗末结算），非甩手即归
-    expect(closeElapsed).toBeGreaterThanOrEqual(0);
+    expect(wire.frames.some((f) => f.message.kind === 'GOAWAY')).toBe(false);
     expect(closeElapsed).toBeLessThan(closeTimeoutMs + 3_000);
     // 连接以 1001 'hub-shutdown' 收口
     await waitUntil('连接以 1001 收口', () => wire.closed !== undefined, 5_000);
@@ -392,41 +383,4 @@ describe('issue #164 SA7 动态验证：SA4 §5 动态审核重点', () => {
     await expectRefused(ctx.port);
   });
 
-  it('DV6b（FS6 深水·主动收口）：GOAWAY 后客户端 CLOSE_NAMESPACE → CLOSE_OK + 提前收口（远早于 drain 预算）', async () => {
-    const closeTimeoutMs = 5_000;
-    const ctx = await startSa7Hub({ timeouts: { closeTimeoutMs, ...QUIET_PING } });
-    const upgrade = await wsUpgrade({
-      port: ctx.port,
-      headers: { Authorization: `Bearer ${TEST_TOKEN}` },
-    });
-    expect(upgrade.status).toBe(101);
-    const wire = new PeerWire(upgrade.ws as never);
-    await established(wire);
-    await openActiveChannel(wire, ctx.ns.namespaceId);
-
-    const t0 = Date.now();
-    const closedPromise = ctx.server.close();
-    // drain 窗内客户端自然收口：CLOSE_NAMESPACE → CLOSE_OK
-    const goaway = await wire.waitKind('GOAWAY');
-    expect(goaway.message).toMatchObject({
-      kind: 'GOAWAY',
-      reasonCode: 'SERVER_SHUTTING_DOWN',
-      drainTimeoutMs: closeTimeoutMs,
-    });
-    wire.send({
-      kind: 'CLOSE_NAMESPACE',
-      namespaceId: ctx.ns.namespaceId,
-      reasonCode: 'CLIENT_DONE',
-    });
-    await wire.waitKind('CLOSE_OK');
-    await waitUntil('连接以 1001 收口', () => wire.closed !== undefined, 5_000);
-    const elapsed = Date.now() - t0;
-    expect(wire.closed?.code).toBe(1001);
-    expect(wire.closed?.reason).toBe('hub-shutdown');
-    // 提前完成：远早于 5000ms deadline（自然 CLOSE 握手触发 maybeFinishDrainEarly）
-    expect(elapsed).toBeLessThan(closeTimeoutMs - 500);
-    await closedPromise;
-    expect(ctx.fixture.registry.getStatus().state).toBe('stopped');
-    await expectRefused(ctx.port);
-  });
 });

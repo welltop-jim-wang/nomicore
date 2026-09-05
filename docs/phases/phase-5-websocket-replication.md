@@ -129,7 +129,7 @@ Peer instance × N
 
 - 最小 Cordis Host：Instance、Clock、Timer、Memory/File Persistence、NamespaceRegistry、role-specific WS replication。
 - 配置加载：Instance service 单点持有 role/instanceId；其余配置包括 listen/hub URL、token、精确 targets、资源上限和 Persistence 参数。
-- 停机顺序：停止接纳并发送 GOAWAY → 真实 drain（拒绝新 namespace 工作、现有 channel 自然 CLOSE、已接纳 apply 排空）→ 全部 channel 终态提前关闭或 deadline 以 WS 1001 硬收口 → 异常安全的 channel teardown/session close/lease release → Registry shutdown → Persistence dispose → Timer/Clock；网络 deadline 不取消 Runtime barrier。
+- 停机与重连行为遵循 `docs/protocols/instance-replication-v1.md` §21；composition root 只负责编排 replication → Registry → Persistence → Timer/Clock 的资源所有权顺序。
 - 提供 hub + 两 peer 的本机多进程及跨机器部署说明；每个实例必须使用独立 FilePersistence rootDir。
 - **role 注记（issue #204 修订）**：生产 composition root 必须显式配置 Instance plugin；Registry 与 WebSocket plugins 从 `nomicoreInstance` 读取同一 role，Registry plugin 不接受 `role` 配置。核心 Registry 构造缺省 `'hub'` 只保留给直接构造/testing seam。
 
@@ -164,10 +164,7 @@ Peer instance × N
 - hub 侧 pong 超时按 §18 以 WS 1001 临时失败语义收口（#170）。
 - 错误或多余 `CLOSE_OK` 关联按 §10.2/§13.1 触发
   `ACK_STATE_VIOLATION`(1002) connection fatal（#171）。
-- `HubReplication.close()` 先发送 `GOAWAY(SERVER_SHUTTING_DOWN)`，再执行真实 drain，
-  并在 deadline 以 WS 1001 收口（#171/#174）。§21 第 1 步的 GOAWAY 发送属于
-  `@nomicore/ws-replication`；切片 9 composition root 负责后续 Registry/Persistence
-  停机编排。
+- issue #229 已将 Hub 正常重启自动恢复收敛为 protocol §21 的现行行为；真实进程验收锚位于 `apps/yjs-server/test/hub-restart-static-target-red.test.ts`。
 - `HubReplication`/`PeerReplication` 公共结构化 observer/metrics 事件面已交付
   （#163/#177）。
 
@@ -232,7 +229,7 @@ Phase 5 包含 bootstrap、重连与周期 reconciliation；完整所有权、�
 16. 复制管理写与恢复：
     - 16a（本阶段 Runtime/Lease 基础合同）：`enableReplication` 与 epoch bump 的 FIFO 槽序、dirty-not-durable 边界（dirty 登记 ≠ 已落盘）、File bump 至 epoch 2 后以 durable snapshot 重启恢复；fatal 只验收 committed-state recovery，不作 durable restart 承诺；
     - 16b（后续切片 3–8）：replication identity conflict 与 `resetReplica` archive 流程。
-17. 优雅停机在 GOAWAY 后拒绝新 namespace 工作，允许现有 channel 自然 CLOSE；网络 deadline 不无限等待 ACK，Runtime barrier 继续完成停机前已接纳 apply，并在 session close 异常时仍 teardown、release lease；deadline 后迟到 apply resolve/reject 零 wire 副作用；
+17. Hub 正常停机按 protocol §21 先停止接纳并直接关闭 transport；Runtime barrier 继续完成停机前已接纳 apply，并在 session close 异常时仍 teardown、release lease；transport close 后迟到 apply resolve/reject 零 wire 副作用；
 18. 第三方 Host 可直接基于 NamespaceLease/ReplicationSession 构造可信 transport；
 19. Node 支持矩阵下所有 public types、async disposal 与 Cordis ordered shutdown 一致。
 

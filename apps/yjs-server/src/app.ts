@@ -384,13 +384,13 @@ class AppHandle {
 
   private async performStop(): Promise<void> {
     try {
-      // 1. 停止接纳 + 复制 drain（设计 §3.6：GOAWAY → drain → deadline 后 WS 1001）。
-      if (this.hubListener !== undefined) {
-        await this.hubListener.close();
-      }
+      // 1. listener.close() 同步停止 HTTP/Upgrade 接纳且不等待既有 socket；随后由
+      // replication plugin 单点关闭其拥有的 transport 并等待 Runtime barrier。
+      const listenerClosed = this.hubListener?.close();
       if (this.hubService !== undefined) {
         await this.hubService.stop();
       }
+      await listenerClosed;
       if (this.peerService !== undefined) {
         await this.peerService.stop();
       }

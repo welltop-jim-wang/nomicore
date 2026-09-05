@@ -435,7 +435,7 @@ describe('issue #138 SA7 R1：真实 TCP 认证窗口动态验证（SA4 D3/D4/D5
   );
 
   it(
-    'D4：hub.close() → peer 原始 socket 先收 GOAWAY(SERVER_SHUTTING_DOWN, drain>0) 帧再收 close 事件；hub 侧 close(1001)；peer 终态 blocked',
+    'D4/#229：hub.close() 不发送 GOAWAY；真实 TCP 以 1001 收口，Peer 进入 backoff',
     { timeout: 90_000 },
     async () => {
       const hubNode = makeNode('hub');
@@ -503,23 +503,10 @@ describe('issue #138 SA7 R1：真实 TCP 认证窗口动态验证（SA4 D3/D4/D5
       await hub.close();
 
       await waitUntil('peer 原始 socket 关闭', () => wireEvents.includes('socket-close'), 15_000);
-      // ★ TCP 半关闭次序（D4 主断言）：GOAWAY 帧先于 close 事件到达。
-      const goawayIndex = wireEvents.findIndex((e) => e === 'frame:GOAWAY');
-      const closeIndex = wireEvents.indexOf('socket-close');
-      expect(goawayIndex).toBeGreaterThanOrEqual(0);
-      expect(closeIndex).toBeGreaterThan(goawayIndex);
-      const goaway = wireFrames.find((f) => f.message.kind === 'GOAWAY');
-      expect(goaway && goaway.message.kind === 'GOAWAY' ? goaway.message.reasonCode : undefined).toBe(
-        'SERVER_SHUTTING_DOWN',
-      );
-      expect(
-        goaway && goaway.message.kind === 'GOAWAY' ? goaway.message.drainTimeoutMs : undefined,
-      ).toBeGreaterThan(0);
-      // hub 侧终局：close(1001, 'hub-shutdown')；无协议 ERROR 帧（优雅停机）。
+      expect(wireFrames.some((f) => f.message.kind === 'GOAWAY')).toBe(false);
       expect(meta.hub).toEqual({ code: 1001, reason: 'hub-shutdown' });
       expect(wireFrames.some((f) => f.message.kind === 'ERROR')).toBe(false);
-      // peer 终态：SERVER_SHUTTING_DOWN = 永久类 → blocked（§15.1 分类）。
-      await waitUntil('peer blocked', () => peer.getConnectionState() === 'blocked', 15_000);
+      await waitUntil('peer backoff', () => peer.getConnectionState() === 'backoff', 15_000);
     },
   );
 

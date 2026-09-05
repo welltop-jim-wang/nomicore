@@ -232,31 +232,21 @@ file 模式启动时以 `rootDir/.nomicore-lock/` 非空目录作为权威锁（
 
 ## 停机顺序（AC4）
 
-SIGTERM/SIGINT → 停止接纳（hub `httpServer.close()`）→ 复制 drain（GOAWAY
-`SERVER_SHUTTING_DOWN` → drain 窗口 → WS 1001 硬收口）→ Registry shutdown →
-Persistence dispose（落盘）→ Timer/Clock teardown；NDJSON 事件序 =
+SIGTERM/SIGINT 的网络与 Runtime 收口语义以
+`docs/protocols/instance-replication-v1.md` §21 为权威。composition root 先同步停止
+HTTP/Upgrade 接纳，再关闭 replication transport 并等待已接纳 apply 与资源清理，随后
+依次执行 Registry shutdown、Persistence dispose、Timer/Clock teardown。NDJSON 事件序 =
 `replication-drained → registry-stopped → persistence-disposed → app-stopped`；
 全程总超时保护（超时 `exit(1)`）。`stop()` 幂等（single-flight）。
 
-## hub 正常重启 ⇒ peer 恢复 runbook
+## hub 正常重启 ⇒ peer 自动恢复
 
-hub 一次正常重启/停机（SIGTERM/SIGHUP）会向全部在线 peer 发送
-GOAWAY(`SERVER_SHUTTING_DOWN`)；peer 收到后进入连接态 `blocked`，**且不自动
-重拨**（包冻结语义；NDJSON 依次出现 `goaway-received`(`reasonCode=
-SERVER_SHUTTING_DOWN`) 与 `connection-state-changed`(to=`blocked`)）。
-
-恢复三步（择一，均在 hub 回到 `ready` 之后执行）：
-
-1. **peer 自身 config/token 未变**：对每个 blocked peer 注
-   `{"op":"notify-auth-changed"}`（回执 `connectionState` 离开 blocked，
-   有界收敛到 `live`）；
-2. **peer 自身 token/config 已变**：重启 peer 进程或对 peer SIGHUP 换装
-   （restart-only）；
-3. 直接重启 peer 进程（最简单，但会短暂断开本地服务）。
-
-对 blocked peer **不发任何通知 ⇒ 复制静默停摆**（负例语义：blocked 期间零
-dial/backoff/状态迁移事件）。hub **硬崩溃**（SIGKILL，无 GOAWAY）则 peer 按
-backoff **自动**重拨，无需人工干预。
+只要本地 target 仍存在，Hub 正常重启和硬崩溃都由 Peer 的普通 backoff/reconnect
+路径自动恢复；Hub 回到相同 endpoint 后，Peer 重新 OPEN/reconcile 并收敛断线期间的
+写入。不需要重启 Peer、重新添加 target、调用 `notify-auth-changed` 或修改凭据/配置。
+`notify-auth-changed` 仅用于真实的认证配置变化或 `REAUTH_REQUIRED` 恢复，不是正常 Hub
+重启 runbook。真实进程回归见
+`apps/yjs-server/test/hub-restart-static-target-red.test.ts`。
 
 ## 生产要求摘要
 
