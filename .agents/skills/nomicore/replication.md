@@ -54,9 +54,40 @@ The package manager resolves the published Registry/Runtime/Persistence/Clock/VF
 - Static identity, endpoints, credentials, limits, timeouts, backoff, and static authorization are restart-only; runtime target changes are the supported dynamic configuration surface.
 - Stop Peer before Hub when orchestrating standalone processes, or signal each process and let its ordered drain run. In an embedded host, dispose the role-specific replication Fiber before Registry shutdown and Persistence disposal; the replication plugin never owns or tears down those upstream services.
 
+## Replication observability and logs
+
+`ReplicationObserver` is an optional callback seam, not a default persistent logger. The package-level `createHubReplicationPlugin()` and `createPeerReplicationPlugin()` factories emit no externally observable replication records unless the Host explicitly supplies `overrides.observer`; synchronization continues normally when the observer is absent. An observer callback still does not persist anything by itself—the Host owns the adapter that writes events to stdout, files, logs, metrics, or traces.
+
+The standalone `@nomicore/yjs-server` application explicitly installs observers on both roles and maps their events to its stdout NDJSON channel. Embedded Cordis Hosts must install and retain their own observer adapters on both Hub and Peer. Hub and Peer produce independent local event streams; there is no central stream, cross-replica global sequence, or default durable log.
+
+Persist at least these events when a deployment must diagnose synchronization and recovery:
+
+- connection lifecycle: `connection-state-changed`, `connection-backoff-scheduled`, `goaway-received`, `connection-failed`;
+- namespace lifecycle: `channel-state-changed`, `namespace-error`, `identity-conflicted`;
+- bootstrap/reconciliation: `bootstrap-snapshot-sent`, `bootstrap-imported`, `sync-step2-sent`, `sync-diff-applied`, `resync-required`;
+- live updates: `update-sent`, `update-applied`, `update-acked`, `degraded-bypass-applied`;
+- backpressure: `send-paused`, `send-resumed`.
+
+`ReplicationObserver` records transport and replication progress using safe metadata such as side, connection ID, namespace ID, byte length, state, stable code, and optional latency. It deliberately excludes bearer tokens, owners, ROOT/SCHEMA contents, raw Yjs bytes, stacks, and uncontrolled causes. Current update events do not provide a globally stable update ID, so concurrent same-size updates may not be correlated across replicas without additional Host-owned tracing.
+
+Do not confuse transport observation with the optional namespace diagnostic change log: `ReplicationObserver` explains connection/channel/send/apply/ACK/reconcile behavior, while the diagnostic change log records local Y.Doc mutation or trusted replication-apply attempts and their committed/rejected/fatal outcomes. Complete Hub/Peer inconsistency diagnosis generally needs both sides' replication observer logs and, when enabled, both sides' independent diagnostic change streams.
+
+Example embedded wiring:
+
+```ts
+const observer: ReplicationObserver = (event) => replicationLog.write(event)
+
+createHubReplicationPlugin(hubConfig, { listen, observer })
+createPeerReplicationPlugin(peerConfig, { createDial, observer })
+```
+
+The adapter must preserve the observer's failure-isolation contract: callback failures must not change replication state or business results, and sensitive fields must remain redacted.
+
 ## Diagnosis ladder
 
 For Node Hub/Peer handshake failures, combine `createNodeHubListenAdapter(observer)` events with `ReplicationObserver`: no `upgrade-authenticated` means routing/auth; authenticated without `transport-accepted` means adapter handoff; accepted without Hub handshaking/ready means trusted controller admission; Hub handshaking plus Peer `hello-timeout` means the Peer HELLO was not delivered—first verify `createNodePeerDial()` is used; Hub ready but target not live moves diagnosis to OPEN, authorization, bootstrap, or reconcile. Keep all captured credentials redacted.
+
+For data divergence, compare both local streams in order: prove the writer committed a local Y.Doc effect, then find `update-sent`, receiver `update-applied`, sender `update-acked`, and any intervening `resync-required` or reconnect/reconcile events. Absence of a receiver apply record narrows the problem to fanout/connection/wire state but does not by itself explain where the update stopped. Record the exact target state and path-level public `readData()` result at the failed business decision; snapshot mtimes or raw string matches do not prove that a live Peer was connected or converged.
 
 ## Hard invariants
 
