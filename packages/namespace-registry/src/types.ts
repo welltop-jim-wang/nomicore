@@ -31,6 +31,7 @@
  * 键集 + §2.H shutdown 聚合）。
  */
 import type { Clock } from '@nomicore/clock';
+import type { NamespaceDiagnosticChangeEmitter } from '@nomicore/namespace-diagnostic-log';
 import type { ReadLogicalValueResult } from '@nomicore/doc-runtime';
 import type {
   ActiveSchemaInfo,
@@ -694,6 +695,35 @@ export interface NamespaceRegistryShutdownFailure {
 }
 
 /**
+ * #150 诊断日志注入 seam（设计 §3.1/§5.1）：emitter 为 ADR-0011「Interface 与 seam」
+ * 节冻结小接口；initStream 为 `docs/adr/0012-vfsl-validated-jsonl-and-framed-sidecar-change-log.md`
+ * 定义的 stream 建立缝（genesis bytes 由 producer 供给、adapter 内部构造
+ * genesis-baseline——CONTEXT.md「producer 只供 bytes」，v1
+ * emission/sink 公共面无 genesis 构造路径）。两成员可选：缺 emitter = 日志禁用（本
+ * Registry 实例零诊断行为）；缺 initStream = 只记录 attempt、不建立 stream（Host
+ * 选择延迟初始化——AC5 场景）。
+ *
+ * #155（§4-D5/§4-D6）增量可选成员 `runtimeEmitterFor`：per-namespace emitter 的
+ * **数据键控**解析（消费方两族：open/create/import 三处 RuntimeFactory 第三参 +
+ * create 槽 initStream 后 #17/#18 的 `emitStreamOutcome`——C1 归因正确性论证）。
+ * 生产供应方（Host 管理器）恒返回良构 emitter（缓存命中/构造成功 → adapter.emitter；
+ * 构造不可用 → 丢弃桩）；返回 undefined / throw / 畸形形状 = seam 违约，被 Registry
+ * 隔离为「无诊断」，绝不影响 open/create/import 结果（ADR-0011 §A；§4-D11）。
+ *
+ * sync-only 契约（SA2 LOW 落实）：成员均为同步调用——`initStream` 必须同步完成并
+ * 返回 void；Host 若以 async 函数实现属违约（floating promise 处置责任在 Host）。
+ * 声明纪律说明：`NamespaceDiagnosticChangeEmitter` 是 ADR-0011「Interface 与 seam」
+ * 节明文要求业务模块依赖的小 emitter 接口（纯数据契约，非运行时对象/租约/文档类型），
+ * 且为纯 `import type`（零运行时绑定、零值级引入诊断包运行图——对齐 #149
+ * namespace-runtime/src/diagnostic.ts 同款先例）。
+ */
+export interface NamespaceRegistryDiagnosticLog {
+  readonly emitter: NamespaceDiagnosticChangeEmitter;
+  readonly initStream?: (namespaceId: string, genesisUpdateBytes: Uint8Array | undefined) => void;
+  readonly runtimeEmitterFor?: (namespaceId: string) => NamespaceDiagnosticChangeEmitter | undefined;
+}
+
+/**
  * 生产工厂选项（设计 §2.1/§8；#112 §2.A）：`clock` 为必需 capability（ADR-0009 禁静默
  * 系统时钟；缺失/null/非 object/now 非函数 → 构造期同步 TypeError
  * `NAMESPACE_REGISTRY_CLOCK_REQUIRED: Registry 必须提供可调用的 Clock.now`，
@@ -704,7 +734,9 @@ export interface NamespaceRegistryShutdownFailure {
  * `NAMESPACE_REGISTRY_SCHEDULER_REQUIRED: …`，零回显传入值；检查顺序在 clock 门禁
  * 之后）。`idleTimeoutMs` 可选（缺省 `DEFAULT_IDLE_TIMEOUT_MS = 300_000`；校验单点
  * resolveIdleTimeoutMs，registry.ts 模块级导出）。仅内部 observer seam 允许经构造
- * options 注入；observer throw 由 Registry 隔离，不得改变公开结果。
+ * options 注入；observer throw 由 Registry 隔离，不得改变公开结果。`diagnosticLog`
+ * 可选（#150：缺省 = 日志禁用，行为与既有完全一致；经编程面 options 注入，不经插件
+ * 配置——插件 config 键集冻结）。
  */
 export interface CreateNamespaceRegistryOptions {
   readonly clock: Clock;
@@ -720,4 +752,6 @@ export interface CreateNamespaceRegistryOptions {
    *  检查顺序在 randomBytes 之后）。生产 composition root（phase-5 切片 9）必须显式
    *  传入。 */
   readonly role?: InstanceRole;
+  /** #150：可选 namespace 诊断变更日志（缺省 = 日志禁用，行为与既有完全一致）。 */
+  readonly diagnosticLog?: NamespaceRegistryDiagnosticLog;
 }

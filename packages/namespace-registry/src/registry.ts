@@ -44,6 +44,7 @@
  * registry.ts；plugin.ts 经相对通道 import 后 re-export，index 沿 plugin 链转出）。
  */
 import { createNamespaceRuntimeForRegistry, openReplicationSessionCoreForRegistry } from '@nomicore/namespace-runtime/internal';
+import type { RuntimeForRegistryDiagnostic } from '@nomicore/namespace-runtime/internal';
 import type {
   RuntimeReplicationSessionCore,
   RuntimeReplicationSessionStatus,
@@ -87,6 +88,13 @@ import {
   type PreparedDocumentBundle,
 } from './create-document.js';
 import {
+  createCreateDiag,
+  createRuntimeDiagResolver,
+  encodeDetachedState,
+  fatalFromBytes,
+  fatalFromCommitted,
+} from './create-diagnostic.js';
+import {
   dispatchDiagnostics,
   dispatchObserver,
   type RegistryDiagnosticsEvent,
@@ -100,6 +108,7 @@ import type {
   InstanceRole,
   NamespaceLease,
   NamespaceRegistry,
+  NamespaceRegistryDiagnosticLog,
   NamespaceRegistryShutdownFailure,
   NamespaceRegistryStatus,
   OpenNamespaceResult,
@@ -179,8 +188,14 @@ export function resolveIdleTimeoutMs(config: { readonly idleTimeoutMs?: number }
   return value;
 }
 
-/** 生产 Runtime 工厂类型（精确形状；仅 testing.ts 注入口与 registry 内部可见）。 */
-type RuntimeFactory = (handle: DocHandle, notifyDirty: () => Promise<void>) => NamespaceRuntime;
+/** 生产 Runtime 工厂类型（精确形状；仅 testing.ts 注入口与 registry 内部可见）。
+ *  #155（§4-D6）：第三可选参 `diagnostic?`——两参实现（测试 override）对三参可选
+ *  签名保持可赋值，零测试破坏。 */
+type RuntimeFactory = (
+  handle: DocHandle,
+  notifyDirty: () => Promise<void>,
+  diagnostic?: RuntimeForRegistryDiagnostic,
+) => NamespaceRuntime;
 
 // —— phase-5 切片 1（ADR 0010）：namespaceId 生成常量（核心私有，不导出）——
 const NAMESPACE_ID_RANDOM_BYTES = 16; // 128-bit CSPRNG
@@ -385,6 +400,9 @@ export interface NamespaceRegistryInternalOptions {
   /** 测试专用 entry 注入面（仅内部 fixture；不进公共导出面）。设计 §8 冻结：Map 静态
    *  种子或种子函数二选一（SA4 HIGH-1 变体 C 的 generation 迁移语义）。 */
   readonly testEntries?: ReadonlyMap<string, any> | ((entries: Map<string, any>) => void);
+  /** #150 可选 namespace 诊断变更日志（缺省 = 日志禁用，行为与既有完全一致；
+   *  等效生产面 CreateNamespaceRegistryOptions.diagnosticLog）。 */
+  readonly diagnosticLog?: NamespaceRegistryDiagnosticLog;
 }
 
 /**
@@ -754,6 +772,11 @@ export function createRegistryInternal(
     options.createDocumentFactory === undefined
       ? undefined
       : (options.createDocumentFactory as CreateDocumentFactory);
+  // #150 诊断环境（构造栈一次成型；absent → no-op 单例——零日志行为、零开销）。
+  const diag = createCreateDiag(options.diagnosticLog, clock);
+  // #155（§4-D5/C1）：per-namespace Runtime 诊断解析器（非抛边界；三处 factory
+  // 调用点共用——每次调用以 namespaceId **数据**现场解析，零共享可变路由状态）。
+  const resolveRuntimeDiag = createRuntimeDiagResolver(options.diagnosticLog, clock);
 
   const entries = new Map<string, Entry>();
   const carriers = new Map<string, LifecycleCarrier>();
@@ -1201,7 +1224,9 @@ export function createRegistryInternal(
 
     let runtime: NamespaceRuntime;
     try {
-      runtime = factory(handle, () => persistence.saveDoc(handle));
+      // #155（§4-D6）：第三参 = 按 namespaceId 数据键控解析的 Runtime 诊断（emitter+clock
+      // 成对；解析器自带非抛边界——违约 → undefined = 既有两参行为）。
+      runtime = factory(handle, () => persistence.saveDoc(handle), resolveRuntimeDiag(identity.namespaceId));
     } catch (e) {
       // 所有权仍归调用方：handle.release() 恰一次（resolve/reject 均不替换 factory cause）。
       // 清理不阻塞 fatal 交付（#110 R2）：fire-and-forget 同步发起 release、绝不 await；
@@ -1221,18 +1246,12 @@ export function createRegistryInternal(
   }
 
   /**
-   * create 新主链（phase-5 切片 1，ADR 0010；§4.3）：
-   * - 公共入口同步接纳（owner-only，§4.3.1）→ 编排循环；
-   * - 编排：首生成 + 至多 8 次重试（总生成 ≤ 9）；候选 K 经该 K 的 carrier FIFO 入
-   *   attempt slot；entry 碰撞（active/idle/closing 一律碰撞——绝不等待 closePromise）
-   *   或 DOC_DUPLICATE → 换 ID 重试；耗尽/随机源违约 → committed:false fatal
-   *   （phase='namespace-id-generation'）；
-   * - 每次重试把 attempt 追加到**新候选 key** 的 carrier 尾部（C-3 重试再接纳不破坏
-   *   FIFO 语义：对任意 key K，作用于 K 的 slots 严格按接纳顺序串行——C-1 推论 1
-   *   「同 ID 每进程至多一个 Runtime」由 carrier FIFO 结构性保证）。
+   * Generated-ID create orchestration: each candidate uses its own carrier FIFO. Entry and
+   * Persistence collisions are internal candidate-selection retries, not terminal public create
+   * outcomes. The diagnostic log therefore emits exactly one final outcome for the accepted public
+   * create; representing candidate retries would require a retry result/correlation shape outside
+   * the frozen v1 diagnostic vocabulary.
    */
-
-  /** 一次/create 的准备产物（§4.5 拆分产物 + 快照/Clock；跨重试候选复用）。 */
   interface CreatePreparedState {
     readonly schema: unknown;
     readonly root: unknown;
@@ -1248,9 +1267,6 @@ export function createRegistryInternal(
     const run = (async (): Promise<CreateNamespaceResult> => {
       for (let retry = 0; ; retry += 1) {
         if (retry > MAX_NAMESPACE_ID_RETRIES) {
-          // 耗尽：已完成 MAX+1 次生成（首生成 + 至多 8 次重试）且全部撞 collisions。
-          // 任何 createDoc 成功都直接登记 entry 返回——结构性不可带 committed 事实
-          // 进耗尽分支 ⇒ committed:false 恒成立。
           const cause = new Error(
             `NAMESPACE_ID_RETRY_BUDGET_EXHAUSTED: 受控随机源生成与重试预算耗尽(attempts=${MAX_NAMESPACE_ID_RETRIES + 1})`,
           );
@@ -1258,19 +1274,13 @@ export function createRegistryInternal(
         }
         const candidate = generateNamespaceId(owner, retry);
         const outcome = await admitCreateAttempt(owner, inputRef, candidate, preparedBox);
-        if (outcome.kind === 'retry') continue; // entry 碰撞 / DOC_DUPLICATE → 换 ID
-        return outcome.result; // 成功 lease / 领域 issue / （fatal 已 throw）
+        if (outcome.kind === 'retry') continue;
+        return outcome.result;
       }
     })();
-    // 恒绿跟踪尾（§4.6 shutdown 屏障用）；run 的 rejection 仍交付原调用方（结果契约）。
-    const tracked = run.then(
-      () => undefined,
-      () => undefined,
-    );
+    const tracked = run.then(() => undefined, () => undefined);
     admittedCreates.add(tracked);
-    void tracked.finally(() => {
-      admittedCreates.delete(tracked);
-    });
+    void tracked.finally(() => admittedCreates.delete(tracked));
     return run;
   }
 
@@ -1278,7 +1288,6 @@ export function createRegistryInternal(
     | { readonly kind: 'final'; readonly result: CreateNamespaceResult }
     | { readonly kind: 'retry' };
 
-  /** 每候选 carrier 接纳（§4.3.3）：同 key FIFO 串行 + cleanup 三条件（机制与 open 同款）。 */
   function admitCreateAttempt(
     owner: Readonly<{ readonly userId: string }>,
     inputRef: unknown,
@@ -1288,52 +1297,47 @@ export function createRegistryInternal(
     const identity: InternalIdentity = { owner, namespaceId: candidate, key: candidate };
     const carrier = carriers.get(identity.key) ?? createCarrier(identity.key);
     const operation = carrier.tail.then(() => runCreateAttempt(identity, inputRef, preparedBox));
-    const operationGreenTail = operation.then(
-      () => undefined,
-      () => undefined,
-    );
+    const operationGreenTail = operation.then(() => undefined, () => undefined);
     carrier.tail = operationGreenTail;
     scheduleCarrierCleanup(identity.key, carrier, operationGreenTail);
     return operation;
   }
 
-  /**
-   * create attempt slot（phase-5 切片 1 精确伪码，§4.3.3 冻结次序）：
-   * ① entry 碰撞检查（active/idle/closing 一律碰撞 → 重生成，不等待 closePromise、
-   *    不 fail-closed）→ ② 首个过门尝试的一次性准备（payload 快照 → Clock 单读 →
-   *    compile+validate）→ ③ 构造步（每候选：META.docId = 候选 ID）→ ④ Persistence
-   *    排他创建（DOC_DUPLICATE → retry；其余映射逐字保持既有 §7 表）→ ⑤ Runtime
-   *    factory + entry 登记 + lease。
-   * 每 attempt 独立结算：失败只毒化本 attempt/本 create，carrier green tail 继续。
-   */
   async function runCreateAttempt(
     id: InternalIdentity,
     inputRef: unknown,
     preparedBox: { current?: CreatePreparedState },
   ): Promise<CreateAttemptOutcome> {
-    // ① entry 碰撞：active / idle / closing 一律碰撞 → 重生成。不检查 closePromise、
-    // 不等待、不 fail-closed——同 key 其他 slot 都在同一 carrier FIFO 上，但 check-
-    // then-register 对同 key 是原子的（C-1：①与⑤之间只有 await createDoc 与同步 factory）。
-    if (entries.has(id.key)) {
-      return { kind: 'retry' };
-    }
+    if (entries.has(id.key)) return { kind: 'retry' };
 
-    // ② 首个过门尝试的一次性准备（一次/create：payload 快照 → Clock 单读 →
-    // compile+validate——不随重试重复；排队期变异语义保持）。
     if (preparedBox.current === undefined) {
       const payload = snapshotCreatePayload(inputRef);
       if (!payload.ok) {
+        diag.emitEarlyOutcome({
+          stage: 'input-snapshot',
+          code: 'NAMESPACE_CREATE_INVALID_INPUT',
+          result: { kind: 'rejected' },
+          input: { status: 'unsafe-input' },
+        });
         return { kind: 'final', result: CREATE_INVALID_INPUT_ISSUE };
       }
       const createdAt = readCreatedAtOrFatal(id);
       const prepared = prepareCreateDocument(payload.schema, payload.root);
       if (!prepared.ok) {
+        const schemaFailure = prepared.kind === 'schema-invalid';
+        diag.emitOutcome(createdAt, {
+          stage: schemaFailure ? 'schema-compile' : 'validation',
+          code: schemaFailure ? 'NAMESPACE_SCHEMA_INVALID' : 'NAMESPACE_ROOT_INVALID',
+          result: { kind: 'rejected' },
+          rawIssues: prepared.issues,
+          issuesKind: schemaFailure ? 'compile' : 'validate',
+          input: { snapshot: { schema: payload.schema, root: payload.root } },
+        });
         return {
           kind: 'final',
-          result:
-            prepared.kind === 'schema-invalid'
-              ? schemaInvalidIssue(prepared.issues)
-              : rootInvalidIssue(prepared.issues),
+          result: schemaFailure
+            ? schemaInvalidIssue(prepared.issues)
+            : rootInvalidIssue(prepared.issues),
         };
       }
       preparedBox.current = {
@@ -1345,7 +1349,6 @@ export function createRegistryInternal(
     }
     const p = preparedBox.current;
 
-    // ③ 构造步（每候选：META.docId = 候选 namespaceId；testing seam 按候选调用）。
     let initial: CreateDocumentGatewayResult;
     try {
       initial = buildInitialDocument(
@@ -1357,94 +1360,111 @@ export function createRegistryInternal(
         p.bundle,
       );
     } catch (cause) {
-      dispatchObserver(observer, {
-        type: 'lifecycle-slot-failed',
-        identity: id,
-        operation: 'create',
-        cause,
+      dispatchObserver(observer, { type: 'lifecycle-slot-failed', identity: id, operation: 'create', cause });
+      diag.emitOutcome(p.createdAt, {
+        stage: 'schema-compile',
+        code: 'NAMESPACE_REGISTRY_FATAL',
+        sourcePhase: 'create-document-internal',
+        result: fatalFromCommitted(cause),
+        input: { snapshot: { schema: p.schema, root: p.root } },
       });
-      // §7：seam internal fatal 保留原 committed 事实；未知异常按 pre-commit false。
       if (cause instanceof DocRuntimeFatalError) {
-        throw new NamespaceRegistryFatalError(
-          'create',
-          'create-document-internal',
-          cause.committed,
-          cause,
-        );
+        throw new NamespaceRegistryFatalError('create', 'create-document-internal', cause.committed, cause);
       }
       throw new NamespaceRegistryFatalError('create', 'create-document-internal', false, cause);
     }
     if (!initial.ok) {
-      if (initial.kind === 'schema-invalid') {
-        return { kind: 'final', result: schemaInvalidIssue(initial.issues) };
+      if (initial.kind === 'schema-invalid' || initial.kind === 'root-invalid') {
+        const schemaFailure = initial.kind === 'schema-invalid';
+        diag.emitOutcome(p.createdAt, {
+          stage: schemaFailure ? 'schema-compile' : 'validation',
+          code: schemaFailure ? 'NAMESPACE_SCHEMA_INVALID' : 'NAMESPACE_ROOT_INVALID',
+          result: { kind: 'rejected' },
+          rawIssues: initial.issues,
+          issuesKind: schemaFailure ? 'compile' : 'validate',
+          input: { snapshot: { schema: p.schema, root: p.root } },
+        });
+        return {
+          kind: 'final',
+          result: schemaFailure ? schemaInvalidIssue(initial.issues) : rootInvalidIssue(initial.issues),
+        };
       }
-      if (initial.kind === 'root-invalid') {
-        return { kind: 'final', result: rootInvalidIssue(initial.issues) };
-      }
-      // input-invalid 结构性不可达（compile 产物恒四键正确型 + Registry 自构 META）；
-      // fail-loud，禁止伪装为普通 create input issue（§6/§7）。
       const cause = new Error('createInitialDocument 返回不可达 input-invalid');
-      dispatchObserver(observer, {
-        type: 'lifecycle-slot-failed',
-        identity: id,
-        operation: 'create',
-        cause,
+      dispatchObserver(observer, { type: 'lifecycle-slot-failed', identity: id, operation: 'create', cause });
+      diag.emitOutcome(p.createdAt, {
+        stage: 'schema-compile',
+        code: 'NAMESPACE_REGISTRY_FATAL',
+        sourcePhase: 'create-document-internal',
+        result: fatalFromCommitted(cause),
+        input: { snapshot: { schema: p.schema, root: p.root } },
       });
       throw new NamespaceRegistryFatalError('create', 'create-document-internal', false, cause);
     }
 
-    // ④ Persistence 排他创建：DOC_DUPLICATE → retry（唯一新增 retry 源——碰撞换 ID
-    //   不是结果、是编排循环一笔）；其余映射逐字保持既有 §7 表。
     let handle: DocHandle;
     try {
       handle = await persistence.createDoc(id.owner, id.namespaceId, initial.doc);
     } catch (cause) {
-      if (cause instanceof DocDuplicateError) {
-        return { kind: 'retry' };
-      }
+      if (cause instanceof DocDuplicateError) return { kind: 'retry' };
       if (cause instanceof DocCreateOperationalError) {
         dispatchObserver(observer, { type: 'create-persist-failed', identity: id, cause });
+        diag.emitOutcome(p.createdAt, {
+          stage: 'transaction', code: 'NAMESPACE_CREATE_FAILED', result: { kind: 'rejected' },
+          input: { snapshot: { schema: p.schema, root: p.root } },
+        });
         return { kind: 'final', result: CREATE_FAILED_ISSUE };
       }
       if (cause instanceof DocCreateFatalError) {
-        dispatchObserver(observer, {
-          type: 'lifecycle-slot-failed',
-          identity: id,
-          operation: 'create',
-          cause,
+        dispatchObserver(observer, { type: 'lifecycle-slot-failed', identity: id, operation: 'create', cause });
+        diag.emitOutcome(p.createdAt, {
+          stage: 'transaction', code: 'NAMESPACE_REGISTRY_FATAL', sourcePhase: 'lifecycle-slot-internal',
+          result: fatalFromBytes(cause.committed, encodeDetachedState(initial.doc)),
+          input: { snapshot: { schema: p.schema, root: p.root } },
         });
-        // phase 改写为 Registry 词表；committed 原样传播（§7 DQ-6）。
-        throw new NamespaceRegistryFatalError(
-          'create',
-          'lifecycle-slot-internal',
-          cause.committed,
-          cause,
-        );
+        throw new NamespaceRegistryFatalError('create', 'lifecycle-slot-internal', cause.committed, cause);
       }
-      // typed 契约覆盖合法结局；unknown 是 adapter/registry 缺陷——固定 committed:false
-      // （DQ-6：retry 由 atomic duplicate 守卫自愈为 ALREADY_EXISTS）。
-      dispatchObserver(observer, {
-        type: 'lifecycle-slot-failed',
-        identity: id,
-        operation: 'create',
-        cause,
+      dispatchObserver(observer, { type: 'lifecycle-slot-failed', identity: id, operation: 'create', cause });
+      diag.emitOutcome(p.createdAt, {
+        stage: 'transaction', code: 'NAMESPACE_REGISTRY_FATAL', sourcePhase: 'lifecycle-slot-internal',
+        result: fatalFromBytes(false, encodeDetachedState(initial.doc)),
+        input: { snapshot: { schema: p.schema, root: p.root } },
       });
       throw new NamespaceRegistryFatalError('create', 'lifecycle-slot-internal', false, cause);
     }
 
-    // ⑤ Runtime factory + entry 登记 + lease（既有语义逐字保持，key/namespaceId = 候选）。
+    const state = encodeDetachedState(initial.doc);
+    diag.initStream(id.namespaceId, state?.slice());
     try {
-      const runtime = factory(handle, () => persistence.saveDoc(handle));
-      // 失败 Runtime 从未发布：entry 只在 factory 成功后登记（§7 DQ-7 结构性零 entry）。
+      // #155（§4-D6）：第三参 = 按 namespaceId 数据键控解析（create 路径恒缓存命中——
+      // initStream 同步续段落位，§4-D4 论证 2）。
+      const runtime = factory(handle, () => persistence.saveDoc(handle), resolveRuntimeDiag(id.namespaceId));
       const entry = makeEntry(id, runtime);
       entries.set(id.key, entry);
+      // Persistence createDoc already encoded and committed this same detached document. A second
+      // encode failure is structurally unreachable for conforming adapters; frozen v1 has no honest
+      // update-omitted reason for producer encode failure, so the defensive undefined branch must not
+      // invent noop/rejected/fatal facts or an unapproved stable reason.
+      if (state !== undefined) {
+        // #155（§4-D4/C1：#17 committed）：initStream 之后的槽内结局——经 namespaceId
+        // 数据键控解析 ns-bound emitter（R1 起唯一 post-initStream 通道）。
+        diag.emitStreamOutcome(id.namespaceId, p.createdAt, {
+          stage: 'transaction',
+          result: { kind: 'committed', effect: 'update', updateBytes: state },
+          input: { snapshot: { schema: p.schema, root: p.root } },
+        });
+      }
       return { kind: 'final', result: issueLease(entry) };
     } catch (cause) {
-      // createDoc resolve 即是 committed 事实 → factory throw 必为 committed:true（§7 DQ-7）；
-      // 所有权未转 Runtime：release 同步发起、恰一次、fire-and-forget（绝不 await——不阻塞
-      // fatal 交付；清理失败仅 observer 上报）。文档不删除、不补偿；后续 open 可恢复。
       void releaseHandleBestEffort(handle, id);
       dispatchObserver(observer, { type: 'create-runtime-construction-failed', identity: id, cause });
+      // #155（§4-D4/C1：#18 runtime-construction fatal）：initStream 之后的槽内结局——
+      // 数据键控解析（与 #17 同一通道；C1 论证：B 的 pre-initStream 失败恒走共享通道，
+      // 本调用点静态位于 A/B 各自的 initStream 之后、以各自 namespaceId 查表）。
+      diag.emitStreamOutcome(id.namespaceId, p.createdAt, {
+        stage: 'transaction', code: 'NAMESPACE_REGISTRY_FATAL', sourcePhase: 'runtime-construction',
+        result: fatalFromBytes(true, state),
+        input: { snapshot: { schema: p.schema, root: p.root } },
+      });
       throw new NamespaceRegistryFatalError('create', 'runtime-construction', true, cause);
     }
   }
@@ -1559,7 +1579,9 @@ export function createRegistryInternal(
     // DQ-7：importDoc resolve 即是 committed 事实 → factory throw 必为 committed:true
     // ——handle best-effort release、entry 不登记、不补偿删除；后续 open 可恢复）。
     try {
-      const runtime = factory(handle, () => persistence.saveDoc(handle));
+      // #155（§4-D6）：import 槽 Runtime 构造（§4.12 单一构造路径同款第三参解析——
+      // 无 genesis 供给路径：adapter 经 locator 续写或诚实缺席 genesis，见设计 §5.2）。
+      const runtime = factory(handle, () => persistence.saveDoc(handle), resolveRuntimeDiag(identity.namespaceId));
       const entry = makeEntry(identity, runtime);
       entries.set(identity.key, entry);
       return issueLease(entry);
@@ -1907,11 +1929,23 @@ export function createRegistryInternal(
     async create(input: unknown): Promise<CreateNamespaceResult> {
       // #112 逻辑门迁移（§2.D）：停接纳先于 acceptCreateIdentity（零 descriptor/Proxy
       // trap 执行，AC9）。公共 typed / 实现 unknown 双层签名说明见 #111 冻结文本。
-      if (acceptance !== 'running') return NOT_ACCEPTING_ISSUE;
-      // phase-5 切片 1（§4.3.1/§4.3.2）：owner-only 接纳同步先行（namespaceId 键出现
-      // 即拒 → 零随机消耗）；通过后进入生成编排（任意 ID 由受控随机源生成）。
+      if (acceptance !== 'running') {
+        diag.emitEarlyOutcome({
+          stage: 'acceptance',
+          code: 'REGISTRY_NOT_ACCEPTING',
+          result: { kind: 'rejected' },
+          input: { status: 'not-accessed' },
+        });
+        return NOT_ACCEPTING_ISSUE;
+      }
       const admission = acceptCreateIdentity(input);
       if (!admission.ok) {
+        diag.emitEarlyOutcome({
+          stage: 'identity',
+          code: admission.issue.code,
+          result: { kind: 'rejected' },
+          input: { status: 'not-accessed' },
+        });
         return admission.issue;
       }
       return orchestrateCreate(admission.owner, input);
@@ -1922,22 +1956,11 @@ export function createRegistryInternal(
       doc: unknown,
       expectedReplicationIdentity: unknown,
     ): Promise<ImportReplicaResult> {
-      // Phase 5（§4.2 接纳段冻结；R2 修订 §4.2.1）：acceptance 检查（零输入访问）→
-      // validateOpenIdentity（零 entries/carriers/Persistence/Runtime 访问）→
-      // **expected 安全快照验证**（先于任何 docRef 读取/carrier 创建/entry 查询/
-      // Persistence 调用——敌意 expected 零副作用：doc 零访问、zero entry、zero
-      // persistence 写入；getter/Proxy trap 收编为稳定输入 issue，message 零值回显）
-      // → carrier FIFO 接纳。File 侧 SAFE_PATH_SEGMENT 第二道门的编排侧对应物：
-      // invalid 身份在两层的任何一层都被拦截，且都先于任何存储访问。
       if (acceptance !== 'running') return NOT_ACCEPTING_ISSUE;
       const outcome = validateOpenIdentity(owner, namespaceId);
-      if (!outcome.ok) {
-        return outcome.issue;
-      }
+      if (!outcome.ok) return outcome.issue;
       const expectedOutcome = snapshotReplicationIdentityRef(expectedReplicationIdentity);
-      if (!expectedOutcome.ok) {
-        return IMPORT_EXPECTED_IDENTITY_INVALID_ISSUE;
-      }
+      if (!expectedOutcome.ok) return IMPORT_EXPECTED_IDENTITY_INVALID_ISSUE;
       return admitImportSlot(outcome.identity, doc as YjsDoc, expectedOutcome.value);
     },
     async resetReplica(
@@ -1945,23 +1968,11 @@ export function createRegistryInternal(
       namespaceId: unknown,
       expectedLocalIdentity: unknown,
     ): Promise<ResetReplicaResult> {
-      // Phase 5（§4.8 接纳段冻结，镜像 open；R2 修订，R-FIX-1 / 设计 §3.2，
-      // R4 微修订 §3.6 方案 B）：acceptance 检查 → validateOpenIdentity（零
-      // entries/carriers/Persistence/Runtime 访问）→ **expected 安全快照校验**
-      // （镜像 import 侧 §4.2.1 纪律——先于任何 carrier 入队/entry 查询/
-      // Persistence 访问，含 getter/Proxy throw 收编；格式错误 = 调用输入错误，
-      // 按设计 §3.2（R4 修订）沿 reset 专属 `NAMESPACE_RESET_EXPECTED_IDENTITY_INVALID`
-      // 通道返回，绝不误报本地 mismatch）→ carrier FIFO 接纳。冻结快照同时消除
-      // fence 槽/archiveDoc 对调用方对象的双读分叉（TOCTOU 免疫——与 import 侧同款）。
       if (acceptance !== 'running') return NOT_ACCEPTING_ISSUE;
       const outcome = validateOpenIdentity(owner, namespaceId);
-      if (!outcome.ok) {
-        return outcome.issue;
-      }
+      if (!outcome.ok) return outcome.issue;
       const expectedOutcome = snapshotReplicationIdentityRef(expectedLocalIdentity);
-      if (!expectedOutcome.ok) {
-        return RESET_EXPECTED_IDENTITY_INVALID_ISSUE;
-      }
+      if (!expectedOutcome.ok) return RESET_EXPECTED_IDENTITY_INVALID_ISSUE;
       return admitResetSlot(outcome.identity, expectedOutcome.value);
     },
     getStatus(): NamespaceRegistryStatus {
@@ -2016,5 +2027,6 @@ export function createNamespaceRegistry(
     ...(options.idleTimeoutMs !== undefined ? { idleTimeoutMs: options.idleTimeoutMs } : {}),
     ...(options.observer !== undefined ? { observer: options.observer } : {}),
     ...(options.role !== undefined ? { role: options.role } : {}),
+    ...(options.diagnosticLog !== undefined ? { diagnosticLog: options.diagnosticLog } : {}),
   });
 }

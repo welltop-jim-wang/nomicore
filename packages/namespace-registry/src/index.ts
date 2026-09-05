@@ -47,6 +47,7 @@ export type {
   NamespaceLeaseStatus,
   NamespaceOwner,
   NamespaceRegistry,
+  NamespaceRegistryDiagnosticLog,
   NamespaceRegistryFatalPhase,
   NamespaceRegistryShutdownFailure,
   NamespaceRegistryStatus,
