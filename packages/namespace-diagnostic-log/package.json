@@ -1,7 +1,6 @@
 {
   "name": "@nomicore/namespace-diagnostic-log",
-  "version": "0.1.5",
-  "private": true,
+  "version": "0.1.6",
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
@@ -17,5 +16,22 @@
     "@types/node": "^20",
     "typescript": "^5.9.3",
     "vitest": "^3.2.4"
+  },
+  "files": [
+    "dist"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/welltop-jim-wang/nomicore.git",
+    "directory": "packages/namespace-diagnostic-log"
+  },
+  "homepage": "https://github.com/welltop-jim-wang/nomicore",
+  "bugs": {
+    "url": "https://github.com/welltop-jim-wang/nomicore/issues"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
   }
 }

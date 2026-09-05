@@ -44,6 +44,7 @@
  * registry.ts；plugin.ts 经相对通道 import 后 re-export，index 沿 plugin 链转出）。
  */
 import { createNamespaceRuntimeForRegistry, openReplicationSessionCoreForRegistry } from '@nomicore/namespace-runtime/internal';
+import type { RuntimeForRegistryDiagnostic } from '@nomicore/namespace-runtime/internal';
 import type {
   RuntimeReplicationSessionCore,
   RuntimeReplicationSessionStatus,
@@ -86,7 +87,13 @@ import {
   type CreateDocumentGatewayResult,
   type PreparedDocumentBundle,
 } from './create-document.js';
-import { createCreateDiag, encodeDetachedState, fatalFromBytes, fatalFromCommitted } from './create-diagnostic.js';
+import {
+  createCreateDiag,
+  createRuntimeDiagResolver,
+  encodeDetachedState,
+  fatalFromBytes,
+  fatalFromCommitted,
+} from './create-diagnostic.js';
 import {
   dispatchDiagnostics,
   dispatchObserver,
@@ -181,8 +188,14 @@ export function resolveIdleTimeoutMs(config: { readonly idleTimeoutMs?: number }
   return value;
 }
 
-/** 生产 Runtime 工厂类型（精确形状；仅 testing.ts 注入口与 registry 内部可见）。 */
-type RuntimeFactory = (handle: DocHandle, notifyDirty: () => Promise<void>) => NamespaceRuntime;
+/** 生产 Runtime 工厂类型（精确形状；仅 testing.ts 注入口与 registry 内部可见）。
+ *  #155（§4-D6）：第三可选参 `diagnostic?`——两参实现（测试 override）对三参可选
+ *  签名保持可赋值，零测试破坏。 */
+type RuntimeFactory = (
+  handle: DocHandle,
+  notifyDirty: () => Promise<void>,
+  diagnostic?: RuntimeForRegistryDiagnostic,
+) => NamespaceRuntime;
 
 // —— phase-5 切片 1（ADR 0010）：namespaceId 生成常量（核心私有，不导出）——
 const NAMESPACE_ID_RANDOM_BYTES = 16; // 128-bit CSPRNG
@@ -761,6 +774,9 @@ export function createRegistryInternal(
       : (options.createDocumentFactory as CreateDocumentFactory);
   // #150 诊断环境（构造栈一次成型；absent → no-op 单例——零日志行为、零开销）。
   const diag = createCreateDiag(options.diagnosticLog, clock);
+  // #155（§4-D5/C1）：per-namespace Runtime 诊断解析器（非抛边界；三处 factory
+  // 调用点共用——每次调用以 namespaceId **数据**现场解析，零共享可变路由状态）。
+  const resolveRuntimeDiag = createRuntimeDiagResolver(options.diagnosticLog, clock);
 
   const entries = new Map<string, Entry>();
   const carriers = new Map<string, LifecycleCarrier>();
@@ -1208,7 +1224,9 @@ export function createRegistryInternal(
 
     let runtime: NamespaceRuntime;
     try {
-      runtime = factory(handle, () => persistence.saveDoc(handle));
+      // #155（§4-D6）：第三参 = 按 namespaceId 数据键控解析的 Runtime 诊断（emitter+clock
+      // 成对；解析器自带非抛边界——违约 → undefined = 既有两参行为）。
+      runtime = factory(handle, () => persistence.saveDoc(handle), resolveRuntimeDiag(identity.namespaceId));
     } catch (e) {
       // 所有权仍归调用方：handle.release() 恰一次（resolve/reject 均不替换 factory cause）。
       // 清理不阻塞 fatal 交付（#110 R2）：fire-and-forget 同步发起 release、绝不 await；
@@ -1417,7 +1435,9 @@ export function createRegistryInternal(
     const state = encodeDetachedState(initial.doc);
     diag.initStream(id.namespaceId, state?.slice());
     try {
-      const runtime = factory(handle, () => persistence.saveDoc(handle));
+      // #155（§4-D6）：第三参 = 按 namespaceId 数据键控解析（create 路径恒缓存命中——
+      // initStream 同步续段落位，§4-D4 论证 2）。
+      const runtime = factory(handle, () => persistence.saveDoc(handle), resolveRuntimeDiag(id.namespaceId));
       const entry = makeEntry(id, runtime);
       entries.set(id.key, entry);
       // Persistence createDoc already encoded and committed this same detached document. A second
@@ -1425,7 +1445,9 @@ export function createRegistryInternal(
       // update-omitted reason for producer encode failure, so the defensive undefined branch must not
       // invent noop/rejected/fatal facts or an unapproved stable reason.
       if (state !== undefined) {
-        diag.emitOutcome(p.createdAt, {
+        // #155（§4-D4/C1：#17 committed）：initStream 之后的槽内结局——经 namespaceId
+        // 数据键控解析 ns-bound emitter（R1 起唯一 post-initStream 通道）。
+        diag.emitStreamOutcome(id.namespaceId, p.createdAt, {
           stage: 'transaction',
           result: { kind: 'committed', effect: 'update', updateBytes: state },
           input: { snapshot: { schema: p.schema, root: p.root } },
@@ -1435,7 +1457,10 @@ export function createRegistryInternal(
     } catch (cause) {
       void releaseHandleBestEffort(handle, id);
       dispatchObserver(observer, { type: 'create-runtime-construction-failed', identity: id, cause });
-      diag.emitOutcome(p.createdAt, {
+      // #155（§4-D4/C1：#18 runtime-construction fatal）：initStream 之后的槽内结局——
+      // 数据键控解析（与 #17 同一通道；C1 论证：B 的 pre-initStream 失败恒走共享通道，
+      // 本调用点静态位于 A/B 各自的 initStream 之后、以各自 namespaceId 查表）。
+      diag.emitStreamOutcome(id.namespaceId, p.createdAt, {
         stage: 'transaction', code: 'NAMESPACE_REGISTRY_FATAL', sourcePhase: 'runtime-construction',
         result: fatalFromBytes(true, state),
         input: { snapshot: { schema: p.schema, root: p.root } },
@@ -1554,7 +1579,9 @@ export function createRegistryInternal(
     // DQ-7：importDoc resolve 即是 committed 事实 → factory throw 必为 committed:true
     // ——handle best-effort release、entry 不登记、不补偿删除；后续 open 可恢复）。
     try {
-      const runtime = factory(handle, () => persistence.saveDoc(handle));
+      // #155（§4-D6）：import 槽 Runtime 构造（§4.12 单一构造路径同款第三参解析——
+      // 无 genesis 供给路径：adapter 经 locator 续写或诚实缺席 genesis，见设计 §5.2）。
+      const runtime = factory(handle, () => persistence.saveDoc(handle), resolveRuntimeDiag(identity.namespaceId));
       const entry = makeEntry(identity, runtime);
       entries.set(identity.key, entry);
       return issueLease(entry);

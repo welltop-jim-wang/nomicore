@@ -14,6 +14,7 @@ export default defineConfig({
   test: {
     include: ['packages/*/test/**/*.test.ts', 'domains/*/test/**/*.test.ts', 'apps/*/test/**/*.test.ts'],
     passWithNoTests: true,
+    maxWorkers: 1,
     typecheck: {
       enabled: true,
       include: ['packages/*/test/**/*.test-d.ts', 'domains/*/test/**/*.test-d.ts'],

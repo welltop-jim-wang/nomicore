@@ -23,7 +23,8 @@ import { isSafeNamespaceId, isSafeStreamId, isSegmentName, streamLayoutPaths } f
 import { RECORD_SCHEMA_ENVELOPE, RECORD_SCHEMA_ID, getRecordSchemaCompilation } from './schema.js'
 import { P_ISO_MS } from './schema-patterns.js'
 import { isCanonicalDecimal, validateInlineCarrier, validateSidecarFrame } from './storage-gate.js'
-import { FRAME_HEADER_BYTES } from './frame.js'
+import { decodeBase64Strict } from './carrier.js'
+import { FRAME_HEADER_BYTES, decodeFrame } from './frame.js'
 import type { UpdateCarrier } from './record.js'
 import { UINT64_MAX } from './adapters/memory.js'
 
@@ -743,6 +744,107 @@ export function readStreamStrict(request: StrictReadRequest): StrictStreamRead {
       earliestRetainedSequence: null,
     }
   }
+}
+
+// ============================================================================
+// #155 §4-D10 payload 物化原语（storage projection 的逆向面；增量——既有函数零改动）。
+// 只回 owned bytes；Y.Doc 构造归 Host 工具（本包零 yjs 依赖冻结）。
+// ============================================================================
+
+/** 单条 strict 记录的可重放 update 投影（§4-D10；一切失败收敛 `invalid`，绝不抛）。 */
+export type StrictRecordUpdate =
+  | { kind: 'update'; bytes: Uint8Array } // owned 副本（可安全 applyUpdate）
+  | { kind: 'omitted'; reason: string } // committed 非-noop 且 effect='update-omitted'（reason 原样）
+  | { kind: 'none' } // 无 update 载荷（noop/rejected/fatal-无-update…）
+  | { kind: 'invalid'; code: string } // 防御：entry.ok=false 或物化校验失败（复用 reader 码族）
+
+/**
+ * materialize 一条 strict 读取记录的 update payload（#155 §4-D10）。
+ *
+ * 只消费包内原语（decodeBase64Strict / validateInlineCarrier / validateSidecarFrame /
+ * decodeFrame / readBinOrNull / streamLayoutPaths / isCanonicalDecimal）——inline 路径
+ * re-check canonical Base64 + payloadLength + crc；sidecar 路径 re-check frame
+ * （magic/version/type/flags/sequence/payloadLength/crc）后返回 payload 的 owned 副本
+ * （`slice()`——绝不把 .bin 文件字节视图泄漏给调用方）。`entry.ok === false`（或其
+ * record 不可解析）→ `{kind:'invalid'}`（码取该条首个 issue，无则 invalid-json）。
+ *
+ * 语义分类：genesis-baseline → 其 update carrier；attempt 的 committed / fatal-committed
+ * 且 effect='update' → carrier；effect='update-omitted' → `omitted{reason}`；其余结局
+ * （noop / rejected / fatal 无 update）→ `none`。
+ *
+ * 绝不抛（§4-D10「一切失败收敛 {kind:'invalid', code}」）——顶层 catch 是最终闭环。
+ */
+export function materializeStrictRecordUpdate(request: StrictReadRequest, entry: StrictRecordRead): StrictRecordUpdate {
+  try {
+    if (!entry.ok || entry.record === null) {
+      return { kind: 'invalid', code: entry.issues[0]?.code ?? 'invalid-json' };
+    }
+    const record = entry.record
+    if (record === null || typeof record !== 'object' || Array.isArray(record)) {
+      return { kind: 'invalid', code: 'vfsl-invalid' }
+    }
+    const rec = record as Record<string, unknown>
+    if (rec.recordKind === 'genesis-baseline') {
+      const update = rec.update
+      if (update === null || typeof update !== 'object' || Array.isArray(update)) {
+        return { kind: 'invalid', code: 'vfsl-invalid' }
+      }
+      return materializeCarrier(request, entry.sequence, update as UpdateCarrier)
+    }
+    if (rec.recordKind === 'attempt') {
+      const result = rec.result
+      if (result === null || typeof result !== 'object' || Array.isArray(result)) {
+        return { kind: 'invalid', code: 'vfsl-invalid' }
+      }
+      const res = result as Record<string, unknown>
+      const effect = res.effect
+      if (effect === 'update-omitted') {
+        const reason = res.reason
+        if (typeof reason !== 'string') return { kind: 'invalid', code: 'vfsl-invalid' }
+        return { kind: 'omitted', reason }
+      }
+      // committed / fatal-committed 且 effect='update' → carrier
+      if (
+        effect === 'update' &&
+        ((res.kind === 'committed') || (res.kind === 'fatal' && res.committed === true))
+      ) {
+        const update = res.update
+        if (update === null || typeof update !== 'object' || Array.isArray(update)) {
+          return { kind: 'invalid', code: 'vfsl-invalid' }
+        }
+        return materializeCarrier(request, entry.sequence, update as UpdateCarrier)
+      }
+      return { kind: 'none' }
+    }
+    return { kind: 'invalid', code: 'vfsl-invalid' }
+  } catch {
+    // 防御深度（structural unreachable）：任何逃逸异常收敛为 invalid——绝不向 Host 抛
+    return { kind: 'invalid', code: 'vfsl-invalid' }
+  }
+}
+
+/** carrier → owned update bytes（inline/sidecar 双侧复验；失败 → invalid + 码）。 */
+function materializeCarrier(request: StrictReadRequest, sequence: string, carrier: UpdateCarrier): StrictRecordUpdate {
+  if (carrier.format !== 'yjs-update-v1') return { kind: 'invalid', code: 'frame-payload-type-unknown' }
+  if (carrier.storage === 'inline') {
+    const check = validateInlineCarrier(carrier)
+    if (check !== null) return { kind: 'invalid', code: check }
+    const bytes = decodeBase64Strict(carrier.base64)
+    if (bytes === null) return { kind: 'invalid', code: 'base64-invalid' } // 防御：validate 已过，不可达
+    return { kind: 'update', bytes }
+  }
+  // sidecar：frame 复验（sequence/payloadLength/crc…——validateSidecarFrame 15 步短路链）
+  const segment = carrier.segment
+  const frameOffset = carrier.frameOffset
+  if (typeof segment !== 'string' || typeof frameOffset !== 'string' || !isCanonicalDecimal(frameOffset)) {
+    return { kind: 'invalid', code: 'vfsl-invalid' }
+  }
+  const segmentsDir = streamLayoutPaths(request.rootDir, request.namespaceId, request.streamId).segmentsDir
+  const bin = readBinOrNull(join(segmentsDir, `${segment}.bin`))
+  const check = validateSidecarFrame(bin, bin === null ? 0 : bin.byteLength, BigInt(frameOffset), null, sequence, carrier)
+  if (!check.ok) return { kind: 'invalid', code: check.issue }
+  const frame = decodeFrame(bin as Uint8Array, Number(BigInt(frameOffset)))
+  return { kind: 'update', bytes: frame.payload.slice() } // owned 副本（非 .bin 视图）
 }
 
 // ============================================================================

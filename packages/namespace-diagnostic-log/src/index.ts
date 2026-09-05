@@ -74,12 +74,17 @@ export {
 } from './adapters/file.js'
 export {
   readStreamStrict,
+  materializeStrictRecordUpdate,
+  type StrictRecordUpdate,
   type StrictStreamRead,
   type StrictReadStatus,
   type StrictReadIssue,
   type StrictRecordRead,
   type StrictReadRequest,
 } from './reader.js'
+// —— #155 增量（m3/D10 单源纪律）：路径安全文法原语 re-export（paths.ts 既有导出
+//    原样转发，零新实现）——replay 工具 locator 前置门与 writer/reader 同源，零双源 ——
+export { isSafeNamespaceId, isSafeStreamId } from './paths.js'
 
 // —— #154 增量（保留/租约/删除；全部为增量导出——既有导出一字不动）——
 export type { FileRetentionConfig, RetentionSweepReport } from './retention.js'

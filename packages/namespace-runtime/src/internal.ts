@@ -15,7 +15,7 @@
  */
 import type { DocHandle } from '@nomicore/persistence';
 import { createNamespaceRuntime } from './runtime.js';   // 相对导入，绝不走本包 subpath specifier（§D-F）
-import type { NamespaceRuntime } from './runtime.js';
+import type { NamespaceRuntime, RuntimeForRegistryDiagnostic } from './runtime.js';
 import { openReplicationSessionCoreForRegistry } from './replication-session.js';
 import type {
   RuntimeReplicationSessionApplyRefusalCode,
@@ -33,15 +33,32 @@ import type {
  *   构造 throw（形状守卫/状态门）时所有权仍归调用方，零副作用（ADR-0008）。
  * - notifyDirty：构造方绑定的 dirty notification 窄接缝——Registry 应绑定
  *   `() => persistence.saveDoc(handle)`；本工厂不提供缺省绑定。
+ * - diagnostic（#155 §4-D6，第三参可选）：`{ emitter, clock }` 成对诊断注入——
+ *   不传 = 既有两参行为逐字节不变（测试 override 两参函数对三参可选签名兼容）。
  *
  * 构造序（形状守卫 → 状态门 → 所有权转移/P0 入队）与十键公共面语义
  * 由 src/runtime.ts 既有实现逐字节承载：本函数纯委托，无任何自有分支。
+ *
+ * 签名形态说明（SA6 #109 类型守卫锁：`runtime-registry-internal-type-guard.test-d.ts`
+ * 对 `Parameters<typeof createNamespaceRuntimeForRegistry>` 断言两参形）——以「两参
+ * 重载居末」承载：`typeof`/`Parameters` 见到的公共签名恒为两参（守卫零漂移），三参
+ * 重载（可选第三参）供 #155 Registry 生产装配注入诊断；实现签名为三参可选。
  */
 export function createNamespaceRuntimeForRegistry(
   handle: DocHandle,
   notifyDirty: () => Promise<void>,
+  diagnostic: RuntimeForRegistryDiagnostic | undefined,
+): NamespaceRuntime;
+export function createNamespaceRuntimeForRegistry(
+  handle: DocHandle,
+  notifyDirty: () => Promise<void>,
+): NamespaceRuntime;
+export function createNamespaceRuntimeForRegistry(
+  handle: DocHandle,
+  notifyDirty: () => Promise<void>,
+  diagnostic?: RuntimeForRegistryDiagnostic,
 ): NamespaceRuntime {
-  return createNamespaceRuntime(handle, notifyDirty);
+  return createNamespaceRuntime(handle, notifyDirty, diagnostic);
 }
 
 export { openReplicationSessionCoreForRegistry };
@@ -53,3 +70,4 @@ export type {
   RuntimeReplicationSessionOptions,
   RuntimeReplicationSessionStatus,
 };
+export type { RuntimeForRegistryDiagnostic } from './runtime.js';
