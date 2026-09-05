@@ -24,7 +24,7 @@
 - `extractYjsSnapshot(derived, doc)`：只读取固定 ROOT，严格验证实际 Yjs 载体并提取普通逻辑 ROOT；首个结构错误立即停止，不读取或验证 SCHEMA/META。
 - `materializeRoot(derived, snapshot, doc)`：唯一公共物化入口；内部先执行 `validateLogicalSnapshot`，再构造未集成到任何 doc 的 detached Yjs 子树，确认目标 ROOT 为空后以一次 `Y.transact` 安装。验证或构造失败时目标 doc 零写入；不覆盖、不合并、不 fallback。
 - `readLogicalValueAtPath(derived, doc, path)`：本阶段冻结的 schema-aware 读取签名；已由 ADR 0008 取代为 schema-independent `readLogicalValueAtPath(doc, path)`。读取按实际载体同步投影目标子树，不重复 VFSL 编译或校验。
-- `applyValidatedMutation(derived, doc, mutation)`：同步完成当前 ROOT 结构/逻辑检查、在普通 JSON 副本中模拟 mutation、完整 ROOT 逻辑校验、detached 子树构造和单次 Yjs transaction；不公开可跨时间执行的 prepared mutation，避免 TOCTOU。
+- `applyValidatedMutation(derived, doc, mutation)`：同步完成当前 ROOT 结构/逻辑检查、在普通 JSON 副本中模拟 mutation、完整 ROOT 逻辑校验、目标值的 detached 子树构造和单次 Yjs transaction；普通非空路径 mutation 在 live ROOT 上只修改目标 carrier（`Y.Map.set/delete` 或 `Y.Array.insert/delete`），不重建无关 carrier。只有 `set([])` 走完整 ROOT 清空与重装。不公开可跨时间执行的 prepared mutation，避免 TOCTOU。transaction 返回后重新提取 live ROOT，并与已校验的 proposed logical ROOT 做完整一致性校验；偏离属于已提交 fatal，不回滚、不补偿。
 
 路径统一为 `readonly (string | number)[]`：map/object/Record 使用 string，Y.Array 使用 number；禁止点号字符串与 JSON Pointer。leaf、plain、XML 是不可下钻终态。XML string 与 Y.XmlFragment 只承诺语义等价 round-trip，不承诺字符串逐字相同。
 
@@ -56,5 +56,5 @@ ADR 0008 取代本文 schema-aware `readLogicalValueAtPath(derived, doc, path)` 
 ## 后果
 
 - namespace 创建、打开、读取和更新拥有清晰且可组合的验证链；YArray 与 plain array 的逻辑值相同，但实际 Yjs 载体仍被严格区分。
-- 普通读取成本与目标 path 子树规模相关；首版 mutation 为正确性执行完整 ROOT 提取与逻辑校验，性能优化必须在行为等价测试下后续引入。
+- 普通读取成本与目标 path 子树规模相关。validated mutation 为正确性继续执行完整 ROOT 提取与逻辑校验，因此其校验 CPU/内存成本仍与 ROOT 规模相关；提交阶段只修改目标 carrier，使 owned Yjs update 与实际变更规模相关，而不再随完整 ROOT 放大。继续优化完整校验成本时必须保留行为等价测试。
 - Persistence 仍只管理 Y.Doc 存储、cache、flush 与 retry；VFSL 仍是纯逻辑引擎；Server/NamespaceRuntime 负责组合二者。

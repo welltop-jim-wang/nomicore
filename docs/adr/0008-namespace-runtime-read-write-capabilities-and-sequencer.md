@@ -44,7 +44,7 @@ runtime.mutateData(mutation)
 runtime.replaceSchema({ schema: proposedEnvelope, root?: completeLogicalRoot })
 ```
 
-`mutateData` 接受路径化领域 mutation，而不是“下一个完整 Data”快照。普通业务更新定位到最窄可独立写入节点：叶子用 `set`，Record 条目/optional 字段用 `set` 或 `delete`，Y.Array 用 `array-insert` / `array-delete`，只有 plain/leaf/XML 不透明终态才整体 `set`。这样保留不相关 Yjs identity，让并发修改不同节点可合并，并使 verb/path 直接表达变更语义。底层仍允许空路径整体替换作为受控管理/迁移能力，但不作为普通消费模式。
+`mutateData` 接受路径化领域 mutation，而不是“下一个完整 Data”快照。普通业务更新定位到最窄可独立写入节点：叶子用 `set`，Record 条目/optional 字段用 `set` 或 `delete`，Y.Array 用 `array-insert` / `array-delete`，只有 plain/leaf/XML 不透明终态才整体 `set`。底层按 ADR 0007 在目标 `Y.Map` 或 `Y.Array` 上提交对应的最小 carrier 修改，保留不相关 Yjs identity，让并发修改不同节点可合并，并使 owned update、verb 与 path 都直接表达实际变更。空路径整体替换仍作为受控管理/迁移能力；它是唯一清空并重装完整 ROOT 的 mutation，不作为普通消费模式。
 
 写方法调用时同步决定接纳顺序。输入引用在排队期间可以变化；任务取得槽后立即用受控 snapshotter 复制并递归冻结 plain data，之后编译、校验、构造和提交只使用该内部快照。snapshotter 只接受 primitive、finite number、null、plain object/array，拒绝 accessor、class instance、特殊对象、symbol key、循环引用及其他非 plain data。
 
@@ -66,7 +66,7 @@ P0 结算后出队，只保留：
 
 ## ROOT write 与 SCHEMA write
 
-ROOT write 依赖 active schema tools。没有可用 schema 时零写入失败；否则每笔写按 ADR 0007 的 validated mutation 管线检查当前 ROOT、模拟并校验完整 proposed ROOT、detached 构造并单事务提交。
+ROOT write 依赖 active schema tools。没有可用 schema 时零写入失败；否则每笔写按 ADR 0007 的 validated mutation 管线检查当前 ROOT、在普通 JSON 副本中模拟并校验完整 proposed ROOT、在事务前 detached 构造目标新值，再以一个 guarded Yjs transaction 直接修改目标 carrier；事务后验证 live ROOT 与 proposed ROOT 一致。非空路径 mutation 不重建完整 ROOT。
 
 SCHEMA write 不依赖当前 schema 可编译。它在自己的完整 sequencer 槽内：
 
