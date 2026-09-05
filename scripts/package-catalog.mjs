@@ -7,6 +7,7 @@ export const publishPackages = Object.freeze([
   { root: 'packages', name: 'instance' },
   { root: 'packages', name: 'persistence' },
   { root: 'packages', name: 'dsh-persistence' },
+  { root: 'packages', name: 'namespace-diagnostic-log' },
   { root: 'packages', name: 'namespace-runtime' },
   { root: 'packages', name: 'namespace-registry' },
   { root: 'packages', name: 'replication-protocol' },

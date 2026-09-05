@@ -32,6 +32,9 @@ importers:
       '@nomicore/instance':
         specifier: workspace:*
         version: link:../../packages/instance
+      '@nomicore/namespace-diagnostic-log':
+        specifier: workspace:*
+        version: link:../../packages/namespace-diagnostic-log
       '@nomicore/namespace-registry':
         specifier: workspace:*
         version: link:../../packages/namespace-registry

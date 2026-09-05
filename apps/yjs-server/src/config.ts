@@ -43,6 +43,8 @@ export interface AppConfig {
   readonly backoff?: Readonly<Partial<ReplicationBackoff>>;
   readonly hub?: HubConfig;
   readonly peer?: PeerConfig;
+  /** #155：Host 本地旁路诊断配置（hub/peer 通用；缺省 = 既有行为逐字节不变）。 */
+  readonly diagnostics?: Readonly<DiagnosticsConfig>;
 }
 
 export type PersistenceConfig =
@@ -81,6 +83,32 @@ export type AuthorizationEntry =
 export interface PeerConfig {
   readonly hub: Readonly<{ url: string; hubInstanceId: string; token: string }>;
   readonly targets?: readonly Readonly<{ namespaceId: string; ownerUserId: string }>[];
+}
+
+/**
+ * #155（§5.1；AC1/AC2）：本地旁路诊断配置——`retention`（可调类）与
+ * `updateCapture`/`inputPolicy`（冻结格式类）二分落点：冻结类改变跨重启由
+ * adapter reopen 健康证明失效 → 新 stream generation（ADR-0012-LOG；#153 机制）；
+ * retention 属可调类、不冻结进 manifest、同 stream 续写。缺省策略不在 config 层
+ * 展开（updateCapture/inputPolicy/retention 缺省 → adapter 层内建缺省）——config
+ * 是操作员意图的忠实载体。
+ */
+export interface DiagnosticsRetentionConfig {
+  /** 段组保留时限（`null` 显式关闭；`0` 合法非无限——ADR-0012-LOG §Retention 语义）。 */
+  readonly maxAgeMs?: number | null;
+  /** 每 namespace 保留字节上限（`null` 显式关闭；`0` 合法非无限）。 */
+  readonly maxBytesPerNamespace?: number | null;
+}
+
+export interface DiagnosticsConfig {
+  readonly enabled: boolean;
+  /** 日志根目录（非空 string；`enabled:false` 亦必填——形状一致）。 */
+  readonly rootDir: string;
+  readonly retention?: Readonly<DiagnosticsRetentionConfig>;
+  /** attempt 的 committed update 捕获（冻结格式策略；缺省 false 由 adapter 展开）。 */
+  readonly updateCapture?: boolean;
+  /** 输入捕获策略（冻结格式策略；缺省 'digest' 由 adapter 展开）。 */
+  readonly inputPolicy?: 'none' | 'digest' | 'redacted' | 'full';
 }
 
 export class ConfigValidationError extends TypeError {
@@ -540,6 +568,99 @@ function validatePeer(value: unknown, violations: Violations): PeerConfig | unde
   };
 }
 
+const DIAGNOSTICS_KEYS = new Set(['enabled', 'rootDir', 'retention', 'updateCapture', 'inputPolicy']);
+const RETENTION_KEYS = new Set(['maxAgeMs', 'maxBytesPerNamespace']);
+const INPUT_POLICY_VALUES = new Set(['none', 'digest', 'redacted', 'full']);
+
+/**
+ * #155（§5.1）`diagnostics` 块校验（violation path 粒度对齐 SA6 负例——未知子键/
+ * 字段级非法值各自报 `diagnostics.<key>` 精确路径）。规则：
+ *  - 非 plain object → `diagnostics` must be an object；
+ *  - 键集白名单 {enabled, rootDir, retention, updateCapture, inputPolicy}；
+ *  - `enabled` 必填 boolean；`rootDir` 必填非空 string（`enabled:false` 亦必填）；
+ *  - `updateCapture` optional boolean；`inputPolicy` optional 四值枚举；
+ *  - `retention` optional object，键集 {maxAgeMs, maxBytesPerNamespace}；每值
+ *    `number | null`，number 须 safe integer ≥ 0（`0` 合法非无限、`null` 显式关闭）。
+ * 解析产物进 deepFreeze（既有纪律）；role×diagnostics 无交叉互斥（hub/peer 均合法）。
+ */
+function validateDiagnostics(value: unknown, violations: Violations): DiagnosticsConfig | undefined {
+  if (value === undefined) return undefined;
+  if (!isPlainObject(value)) {
+    violations.push({ path: 'diagnostics', reason: 'diagnostics must be an object' });
+    return undefined;
+  }
+  for (const key of Object.keys(value)) {
+    if (!DIAGNOSTICS_KEYS.has(key)) {
+      violations.push({
+        path: `diagnostics.${key}`,
+        reason: `unknown key (diagnostics); allowed: ${[...DIAGNOSTICS_KEYS].join(', ')}`,
+      });
+    }
+  }
+  if (typeof value.enabled !== 'boolean') {
+    violations.push({ path: 'diagnostics.enabled', reason: 'diagnostics.enabled is required and must be a boolean' });
+  }
+  if (!isNonEmptyString(value.rootDir)) {
+    violations.push({ path: 'diagnostics.rootDir', reason: 'diagnostics.rootDir is required and must be a non-empty string' });
+  }
+  if (value.updateCapture !== undefined && typeof value.updateCapture !== 'boolean') {
+    violations.push({ path: 'diagnostics.updateCapture', reason: 'diagnostics.updateCapture must be a boolean' });
+  }
+  if (
+    value.inputPolicy !== undefined &&
+    (typeof value.inputPolicy !== 'string' || !INPUT_POLICY_VALUES.has(value.inputPolicy))
+  ) {
+    violations.push({
+      path: 'diagnostics.inputPolicy',
+      reason: `diagnostics.inputPolicy must be one of 'none' | 'digest' | 'redacted' | 'full'`,
+    });
+  }
+  let retention: Readonly<DiagnosticsRetentionConfig> | undefined;
+  if (value.retention !== undefined) {
+    if (!isPlainObject(value.retention)) {
+      violations.push({ path: 'diagnostics.retention', reason: 'diagnostics.retention must be an object' });
+    } else {
+      for (const key of Object.keys(value.retention)) {
+        if (!RETENTION_KEYS.has(key)) {
+          violations.push({
+            path: `diagnostics.retention.${key}`,
+            reason: `unknown key (retention); allowed: ${[...RETENTION_KEYS].join(', ')}`,
+          });
+        }
+      }
+      const limit = (child: unknown, path: string): void => {
+        if (child === undefined) return;
+        if (child === null) return; // 显式关闭
+        if (typeof child !== 'number' || !Number.isSafeInteger(child) || child < 0) {
+          violations.push({ path, reason: 'value must be a non-negative safe integer or null' });
+        }
+      };
+      limit(value.retention.maxAgeMs, 'diagnostics.retention.maxAgeMs');
+      limit(value.retention.maxBytesPerNamespace, 'diagnostics.retention.maxBytesPerNamespace');
+      retention = {
+        ...(value.retention.maxAgeMs !== undefined ? { maxAgeMs: value.retention.maxAgeMs as number | null } : {}),
+        ...(value.retention.maxBytesPerNamespace !== undefined
+          ? { maxBytesPerNamespace: value.retention.maxBytesPerNamespace as number | null }
+          : {}),
+      };
+    }
+  }
+  const enabled = value.enabled as boolean;
+  const rootDir = value.rootDir as string;
+  const updateCapture = value.updateCapture === undefined ? undefined : (value.updateCapture as boolean);
+  const inputPolicy =
+    value.inputPolicy === undefined
+      ? undefined
+      : (value.inputPolicy as 'none' | 'digest' | 'redacted' | 'full');
+  return {
+    enabled,
+    rootDir,
+    ...(retention !== undefined ? { retention } : {}),
+    ...(updateCapture !== undefined ? { updateCapture } : {}),
+    ...(inputPolicy !== undefined ? { inputPolicy } : {}),
+  };
+}
+
 /**
  * 严格解析并深冻结 AppConfig。一切违规 → `ConfigValidationError`（TypeError）。
  */
@@ -549,7 +670,7 @@ export function parseAppConfig(raw: unknown): AppConfig {
     throw new ConfigValidationError([{ path: '$', reason: 'config must be a plain JSON object' }]);
   }
   for (const key of Object.keys(raw)) {
-    if (key !== 'role' && key !== 'instanceId' && key !== 'persistence' && key !== 'idleTimeoutMs' && key !== 'limits' && key !== 'timeouts' && key !== 'backoff' && key !== 'hub' && key !== 'peer') {
+    if (key !== 'role' && key !== 'instanceId' && key !== 'persistence' && key !== 'idleTimeoutMs' && key !== 'limits' && key !== 'timeouts' && key !== 'backoff' && key !== 'hub' && key !== 'peer' && key !== 'diagnostics') {
       violations.push({ path: key, reason: `unknown top-level key: ${key}` });
     }
   }
@@ -565,6 +686,7 @@ export function parseAppConfig(raw: unknown): AppConfig {
   validatePartialNumberBlock(raw.limits, 'limits', LIMIT_KEYS, 'limits', violations);
   validatePartialNumberBlock(raw.timeouts, 'timeouts', TIMEOUT_KEYS, 'timeouts', violations);
   validatePartialNumberBlock(raw.backoff, 'backoff', BACKOFF_KEYS, 'backoff', violations);
+  const diagnostics = validateDiagnostics(raw.diagnostics, violations);
 
   const hasHub = raw.hub !== undefined;
   const hasPeer = raw.peer !== undefined;
@@ -604,6 +726,7 @@ export function parseAppConfig(raw: unknown): AppConfig {
     ...(raw.backoff !== undefined ? { backoff: raw.backoff as Readonly<Partial<ReplicationBackoff>> } : {}),
     ...(hub !== undefined ? { hub } : {}),
     ...(peer !== undefined ? { peer } : {}),
+    ...(diagnostics !== undefined ? { diagnostics } : {}),
   };
   return deepFreeze(config);
 }

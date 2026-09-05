@@ -50,7 +50,12 @@ import {
   createNamespaceRegistry,
   resolveIdleTimeoutMs,
 } from './registry.js';
-import type { NamespaceRegistry, RegistryRandomBytes, RegistryTimeoutScheduler } from './types.js';
+import type {
+  NamespaceRegistry,
+  NamespaceRegistryDiagnosticLog,
+  RegistryRandomBytes,
+  RegistryTimeoutScheduler,
+} from './types.js';
 import { NAMESPACE_REGISTRY_PLUGIN_CONFIG_MESSAGE } from './types.js';
 
 // R1/M3 单点化：DEFAULT_IDLE_TIMEOUT_MS 唯一运行时定义点在 registry.ts（与
@@ -159,9 +164,27 @@ function resolvePluginIdleTimeoutMs(config: NamespaceRegistryPluginConfig): numb
  * `assertNamespaceRegistryHostDependencies`（通道 A：直接 `apply` 的在场+形状 loud
  * 门；inject 只保证服务在场、不保证形状——如无 `timeout` 成员的假 timer 服务仍由
  * 断言 throw）。
+ *
+ * #155（§4-D5）可选第二参 `host`：编程面诊断注入通道（#150 设计 §12 明文预留
+ * 「Host 集成需要插件面 = 后续票」即本通道）；config 键集（{idleTimeoutMs?}）保持
+ * 冻结、零新增配置键。lenient 处置（D11）：host 缺省/undefined/缺 diagnosticLog =
+ * 不注入（既有单参行为零变化）；读取包在非抛边界内——畸形形状交给 Registry 层
+ * 既有隔离（createCreateDiag → no-op 单例；resolver 形状门），绝不影响 apply。
  */
-export function createNamespaceRegistryPlugin(config: NamespaceRegistryPluginConfig = {}) {
+export function createNamespaceRegistryPlugin(
+  config: NamespaceRegistryPluginConfig = {},
+  host?: Readonly<{ diagnosticLog?: NamespaceRegistryDiagnosticLog }>,
+) {
   const idleTimeoutMs = resolvePluginIdleTimeoutMs(config); // 工厂调用期同步校验（无 ctx）
+  let hostDiagnosticLog: NamespaceRegistryDiagnosticLog | undefined;
+  try {
+    const candidate = (host as { diagnosticLog?: unknown } | undefined)?.diagnosticLog;
+    if (candidate !== undefined && candidate !== null && typeof candidate === 'object') {
+      hostDiagnosticLog = candidate as NamespaceRegistryDiagnosticLog;
+    }
+  } catch {
+    hostDiagnosticLog = undefined; // lenient（D11）：敌意 getter → 不注入
+  }
   let instance: NamespaceRegistry | undefined;
   return {
     inject: ['nomicoreInstance', 'clock', 'timer', 'nomicorePersistence'], // 依赖图边：AC11 时序保证的机制载体（§5#5/#8）；rev1：adapter 级次序另经 persistence 侧有序 disposer 兑现（设计 rev1 §2.C）
@@ -173,6 +196,7 @@ export function createNamespaceRegistryPlugin(config: NamespaceRegistryPluginCon
         randomBytes: productionRandomBytes,
         idleTimeoutMs,
         role: requireNomicoreInstance(ctx).role,
+        ...(hostDiagnosticLog !== undefined ? { diagnosticLog: hostDiagnosticLog } : {}),
       });
       instance = registry;
       let revokeService: (() => void) | undefined;

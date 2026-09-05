@@ -50,11 +50,20 @@ export { parseAppConfig, ConfigValidationError, INSTANCE_ID_PATTERN, NAMESPACE_I
 export type {
   AppConfig,
   AuthorizationEntry,
+  DiagnosticsConfig,
+  DiagnosticsRetentionConfig,
   HubConfig,
   PeerConfig,
   PersistenceConfig,
   ProvisionEntry,
 } from './config.js';
+// #155（§5.7）：Host 工具面——离线 strict 诊断重放（ADR-0012-LOG 冻结报告形状）
+export { replayNamespaceDiagnosticLog } from './diagnostic-replay.js';
+export type {
+  DiagnosticReplayIssue,
+  DiagnosticReplayResult,
+  ReplayNamespaceDiagnosticLogRequest,
+} from './diagnostic-replay.js';
 export { createNomicoreApp } from './app.js';
 export type { CreateNomicoreAppOptions, NomicoreApp } from './app.js';
 export { acquireRootLock, createStdoutEventSink, ROOT_LOCK_FILE_NAME, STABLE_OP_ERROR_CODES } from './lifecycle.js';
