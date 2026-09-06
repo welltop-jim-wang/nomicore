@@ -138,6 +138,10 @@ _Avoid_: 裸 Y.Doc WS handler、绕过本地 write sequencer 的 apply、把网�
 Trusted raw Yjs update 已在 sequencer 中提交并登记 dirty，但未执行完整 VFSL ROOT 预校验的复制状态；它可能留下文档路径/边界之外的非法数据——后续普通业务写按路径级/边界级校验工作：其导航路径与语义边界内的非法数据（不含被 set 整值替换的目标位旧值——该位由合法写入修复）仍会被响亮拒绝，触达面外的非法数据不再被普通写发现（ADR-0010 issue #237 修订节；合法性重建与 carrier 覆盖面审计已登记 follow-up）。不表示 transaction 可回滚或 raw update 享有 zero-write 保证。
 _Avoid_: validated replication、apply 后校验失败自动 rollback
 
+**分块复制传输（chunked replication transfer）**:
+（ADR 0013 提议）单个超过 `maxUpdateBytes` 的 live Yjs update 经协商 capability 后拆为多个自描述 `UPDATE_CHUNK` wire 帧的易失传输；以 (连接, 方向, namespaceId, transferId) 为作用域，接收端在有界 detached buffer 完整重组后执行一次 sequenced trusted apply 并以单 ACK 结算。partial assembly 绝不写入 live Y.Doc，中断即丢弃并回退 state-vector reconciliation。
+_Avoid_: 逐片 apply 到 live Y.Doc、跨重连保留 partial chunks、以提高 `maxUpdateBytes` 代替分块、把 transferId 当跨连接持久标识
+
 **实例角色（instance role）**:
 实例身份中不可变的 hub/peer 拓扑角色；生产 composition root 配置一次，由 Instance service 同时提供给 Registry 与 transport。peer 实例的本地 replaceSchema/enableReplication/bumpReplicationEpoch 以稳定角色权限错误拒绝，session 的 localRole 必须等于实例角色。
 _Avoid_: 运行期角色切换、Registry 与 transport 分别配置角色、peer 本地修改 SCHEMA 或复制身份
