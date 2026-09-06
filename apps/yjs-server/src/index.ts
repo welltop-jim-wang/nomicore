@@ -61,6 +61,7 @@ export type {
 export { replayNamespaceDiagnosticLog } from './diagnostic-replay.js';
 export type {
   DiagnosticReplayIssue,
+  DiagnosticReplayReadSessionOptions,
   DiagnosticReplayResult,
   ReplayNamespaceDiagnosticLogRequest,
 } from './diagnostic-replay.js';

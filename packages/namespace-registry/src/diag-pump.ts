@@ -32,14 +32,11 @@
  *   L240）、每被丢任务恰一次、泵侧 try/catch 收编（上报通道违约不外溢——enqueue
  *   非抛契约保持）。低基数：载荷只含 kind/operation/reason 三个封闭维度
  *   （ADR-0011 L87 / ADR-0010 L159；namespaceId/streamId/token 不进）。
- * - 调度原语 = 裸 `setImmediate`（macrotask）。裁决依据（SA1 §3.1）：
- *   ① 微任务级 deferral 不足（T9/T13 语义要求日志 I/O 排程不先于 shutdown/close
- *   结算续段；微任务 hop 仍在同一轮 PromiseJobs 排空内）；② 注入式 scheduler
- *   （testing.ts fake）结构性不可用（纯 Map fake、仅 advanceBy 触发——契约测试均
- *   不 advance）；③ registry-surface §2.M 静态守卫三正则（setTimeout/setInterval/
- *   clearTimeout/clearInterval 裸/globalThis + Date.now）**有意不含 setImmediate**
- *   （R4 注释契约，见 registry-surface.test.ts）；④ node 部署面恒提供 setImmediate，
- *   不做非 node 降级分支。
+ * - 调度原语由 `DiagPumpDeps.defer` 显式注入，语义必须是当前同步栈与微任务链之后的
+ *   macrotask。微任务级 deferral 不足：T9/T13 要求日志 I/O 排程不先于 shutdown/close
+ *   结算续段，而微任务 hop 仍在同一轮 PromiseJobs 排空内。Node 生产适配器在
+ *   create-diagnostic.ts 使用 `setImmediate` 实现该能力；泵本体不读取全局 scheduler，
+ *   测试以手工 defer 确定性驱动。
  * - 有界与丢弃：per-ns 队列容量上界 256，满 → drop-newest（丢弃新到任务、保留已
  *   排队顺序）——有界内存是隔离义务本身（ADR-0011 有界接收），不承诺零丢；
  *   #249 起丢弃**不再静默**（见下方 #249 段——逐条低基数上报），drop 本体与保序
@@ -92,6 +89,9 @@ export type DiagPumpDropReport =
 
 /** 泵依赖（create-diagnostic.ts 构造期以非抛形状门捕获的 seam 调用面）。 */
 export interface DiagPumpDeps {
+  /** 把 drain 安排到当前同步栈与微任务链之后的 macrotask scheduler。
+   *  生产适配器使用 Node `setImmediate`；泵本体不直接依赖全局调度能力。 */
+  readonly defer: (callback: () => void) => void;
   /** drain 内执行 stream 建立缝（Host initStream；违约 throw 由 drain 收编）。 */
   readonly initStream: (namespaceId: string, genesisUpdateBytes: Uint8Array | undefined) => void;
   /** drain 内解析 ns-bound emitter（复用 resolveEmitterOnce 非抛边界）。 */
@@ -200,7 +200,7 @@ export function createDiagPump(deps: DiagPumpDeps): DiagPump {
       // （T8–T13 顺序锚机制）。
       inflight.add(namespaceId);
       try {
-        setImmediate(() => {
+        deps.defer(() => {
           try {
             drainNamespace(namespaceId);
           } finally {
@@ -208,7 +208,7 @@ export function createDiagPump(deps: DiagPumpDeps): DiagPump {
           } //   返回后——同步直线代码、无回调点，无漏调度窗口）
         });
       } catch {
-        // 敌意全局 setImmediate throw（#249 正向改进，SA2 O6）：位回滚——队列任务
+        // 注入 scheduler throw（#249 正向改进，SA2 O6）：位回滚——队列任务
         // 由后续入队补调度（enqueue 非抛契约）。残留边界（O6 登记）：若 throw 持续
         // 且该 ns 再无入队，已接纳任务滞留队列（≤256/ns 有界、不外溢、不重复投递
         // ——可接受降级）。
