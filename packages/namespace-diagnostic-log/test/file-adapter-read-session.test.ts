@@ -9,6 +9,9 @@
  * 红灯性：当前主干无 `openDiagnosticReadSession` 导出（SA2 §2.3 提议增量）⇒ 本文件
  * 静态 import 即失败（vitest 运行时加载错误 + tsc 类型错误）——新导出缺失的红灯；
  * SA3 实现后按 §2.3 形状转绿。
+ * R2.1/F-1（rev2 设计 §8.3）：T-C3/T-C4 夹具钟源对齐为共享推进钟（同一
+ * `newClock(T0)` 对象引用供 writer 与会话——断言零改动），新旧实现均绿、非预红面；
+ * 红基线证据以 rev2 A6a/B4b（+B5 control）为准。
  *
  * 全部断言针对运行时产物（sweep 报告、磁盘文件、会话状态机返回值）——零源码文本断言。
  */
@@ -77,9 +80,15 @@ function emit(log: AssembledFileLog): void {
   )
 }
 
-/** 三组构造（段1、2 闭 / 段3 开；全侧车帧）。retention 0/0：闭组恒过期——租约是唯一阻塞面。 */
-function buildThreeGroups(root: string, ns: string): AssembledFileLog {
-  const log = makeWriter(root, ns, { retention: { maxAgeMs: 0, maxBytesPerNamespace: 0, sweepOnOpen: false } })
+/** 三组构造（段1、2 闭 / 段3 开；全侧车帧）。retention 0/0：闭组恒过期——租约是唯一阻塞面。
+ *  clock 可选（R2.1/F-1：T-C3/T-C4 的共享推进钟源对齐——rev2 设计 §8.3 处置行——
+ *  适配器提交时刻与会话钟同源推进；缺省省略该键 → makeWriter 恒定钟行为对既有
+ *  调用方零变化，K-R2-2）。 */
+function buildThreeGroups(root: string, ns: string, clock?: CurrentTime): AssembledFileLog {
+  const log = makeWriter(root, ns, {
+    retention: { maxAgeMs: 0, maxBytesPerNamespace: 0, sweepOnOpen: false },
+    ...(clock !== undefined ? { clock } : {}),
+  })
   emit(log)
   emit(log)
   emit(log)
@@ -133,8 +142,13 @@ describe('T-C 读会话租约（AC-3：短期可续租、过期不阻塞）', ()
   it('T-C3 [红灯] TTL 过期放行：时钟越过 leasedUntil ⇒ sweep 照删（AC-3 后半句锚点）', () => {
     const root = freshRoot()
     const ns = 'ns-c3'
-    const a = buildThreeGroups(root, ns)
     const clock = newClock(T0)
+    // R2.1/F-1（rev2 设计 §8.3 + SA2 K-R2-3）：钟源对齐——**同一**共享推进钟对象引用
+    //   直传 writer 构造（makeWriter 经 buildThreeGroups）与会话 open；断言字节级不动。
+    //   旧双钟构造（适配器恒 T0 × 会话推进钟）在 D11/INV-227-12 下形成「按策略时刻已
+    //   过期、按提交时刻仍活跃」场景并**正确地**阻塞（非语义回归）——本对齐使提交时刻
+    //   与会话钟同源推进，新旧两实现均绿（构造期 t 恒 T0，零行为漂移）。
+    const a = buildThreeGroups(root, ns, clock)
     const session = openDiagnosticReadSession({
       rootDir: root,
       namespaceId: ns,
@@ -152,8 +166,9 @@ describe('T-C 读会话租约（AC-3：短期可续租、过期不阻塞）', ()
   it('T-C4 [红灯] 过期后 renew 重租（不复活数据）：renew()===true；快照不变；closed 仍 false', () => {
     const root = freshRoot()
     const ns = 'ns-c4'
-    const a = buildThreeGroups(root, ns)
     const clock = newClock(T0)
+    // R2.1/F-1：同 T-C3——共享推进钟对齐（同一对象引用），断言零改动
+    const a = buildThreeGroups(root, ns, clock)
     const session = openDiagnosticReadSession({
       rootDir: root,
       namespaceId: ns,

@@ -5,11 +5,9 @@
  * （2026-09-06 R1 修订：按批准设计 task_249_design.md §10 对齐 R2a / R3-2 / T-C——
  * 授权性质、双向绿推演与轻量复检记录见 wiki/raw/task_249_sa6_align_verification.md。）
  *
- * 载体：真实 `src/diag-pump.ts`（包内模块，零产品改动），确定性手工调度器——把
- * `globalThis.setImmediate` 替换为记录器（diag-pump 以裸标识符调用 setImmediate，
- * 调用时点对 globalThis 求值），场景驱动自行决定每个 macrotask 回调何时触发。
- * 零真实定时器、零到达型 poll：调度次数可精确计数（SA5 §5：到达型 poll 对调度
- * 次数有结构性盲区）。
+ * 载体：真实 `src/diag-pump.ts`（包内模块），通过 `DiagPumpDeps.defer` 注入确定性手工
+ * macrotask scheduler，场景驱动自行决定每个回调何时触发。零真实定时器、零到达型
+ * poll：调度次数可精确计数（SA5 §5：到达型 poll 对调度次数有结构性盲区）。
  *
  * 契约分类（当前 HEAD 判定）：
  * - R1a/R1b/R1c —— **红灯**（AC1 单飞违约）：调度门只识别 running 态（diag-pump
@@ -169,6 +167,10 @@ function makePumpProbe(scheduler: ManualScheduler, options: PumpOptions = {}) {
     },
   };
   const pump = createDiagPump({
+    defer: (callback) => {
+      scheduler.scheduleCount += 1;
+      scheduler.pending.push(callback);
+    },
     initStream: (ns, genesis) => {
       initStreams.push({ ns, genesis: genesis !== undefined });
     },
@@ -369,6 +371,10 @@ describe('issue-249 R3 — AC3 queue-full: bounded order-preserving drop-newest,
     try {
       const delivered: string[] = [];
       const pump = createDiagPump({
+        defer: (callback) => {
+          s.scheduleCount += 1;
+          s.pending.push(callback);
+        },
         initStream: () => {
           /* no-op */
         },
@@ -406,6 +412,10 @@ describe('issue-249 R3 — AC3 queue-full: bounded order-preserving drop-newest,
       type DropReport = EmitDropReport | InitStreamDropReport;
       const reports: DropReport[] = [];
       const pump = createDiagPump({
+        defer: (callback) => {
+          s.scheduleCount += 1;
+          s.pending.push(callback);
+        },
         initStream: () => {
           /* no-op */
         },

@@ -122,7 +122,11 @@ export interface FileDiagnosticLog {
   readonly rootDir: string
   readonly namespaceId: string
   /** #154：执行一次 retention sweep（卫生遍历 → 年龄遍历 → 字节遍历）。纯同步、绝不
-   *  throw；一切 fs 失败计数进报告（INV-5）。now 可注入（缺省 = config.clock.now()）。 */
+   *  throw；一切 fs 失败计数进报告（INV-5）。now 可注入（缺省 = config.clock.now()）。
+   *  #227 R2（INV-227-12 语义分工）：`options.now` 是**策略时刻**——候选/年龄/字节口径
+   *  用单次 sweep 的单一策略快照；一切**删除提交门**（P1/P2 的 S0′ 复查、P0 orphan-BIN
+   *  unlink）以门点 `clock.now()` 现值评估租约（不复用 sweep 起始 now——过期租约在
+   *  提交点永不阻塞，INV-4 字面复位）。 */
   sweepRetention(options?: { now?: number }): RetentionSweepReport
 }
 
@@ -1085,6 +1089,25 @@ export function createFileLog(config: FileDiagnosticLogConfig, options: FileLogO
     return true
   }
 
+  /** #227 §3.3.1 `deleteGroupIfUnleased`（S0′ 提交点复查——替换 P1/P2 的 deleteGroup 直呼）：
+   *  S1 rename 之前再次核对租约（惰性过期语义同 segmentLeased——过期租约永不阻塞，INV-4）。
+   *  「初查通过（P1/P2）→ 读龄/统计 IO → 会话注册」的窗口被提交点二次门结构性关闭
+   *  （INV-227-3——不依赖单线程同步的调度事实）。
+   *  R2（§3.3 D11——owner 命门）：复查以适配器闭包钟 `clock.now()` 取**提交时刻现值**
+   *  （S1 rename 前即刻读取），**不再复用 sweep 起始 now**——sweep 开始后注册、提交前
+   *  已到期的租约不得阻塞（INV-227-12）；策略面（候选/年龄/字节口径）仍用 sweep 入参
+   *  now（语义分工）。'lease-blocked' → 调用方计数 + 止步（前缀纪律）。 */
+  function deleteGroupIfUnleased(
+    rootDir: string,
+    namespaceId: string,
+    streamId: string,
+    segmentsDir: string,
+    segment: string,
+  ): 'deleted' | 'lease-blocked' | 'failed' {
+    if (segmentLeased(rootDir, namespaceId, streamId, segment, clock.now())) return 'lease-blocked'
+    return deleteGroup(segmentsDir, segment) ? 'deleted' : 'failed'
+  }
+
   /** 组删除前字节（reclaimedBytes 口径：jsonl+bin 实际字节）。 */
   function groupBytesBeforeDelete(segmentsDir: string, segment: string): number {
     const sp = segmentFilePaths(segmentsDir, segment)
@@ -1101,8 +1124,16 @@ export function createFileLog(config: FileDiagnosticLogConfig, options: FileLogO
   }
 
   /** 卫生遍历（P0，无条件——协议卫生不属「限制」，ADR 步骤 4/5 无条件）：遗留 `.deleting`
-   *  续走（S1→S3）+ orphan BIN 清理（闭组 bin-无-jsonl-无-marker；开组 BIN-first 瞬态绝对豁免）。 */
-  function hygieneStream(stream: SweepStream, openSegment: string | null, report: RetentionSweepReport): void {
+   *  续走（S1→S3）+ orphan BIN 清理（闭组 bin-无-jsonl-无-marker；开组 BIN-first 瞬态绝对豁免）。
+   *  #227（§3.3.2）：orphan-BIN 清理前加租约门——活跃 read-session 覆盖的闭组 bin 不得被
+   *  P0 删除（ADR 0012 L289「retention 只删除已关闭且没有 reader lease 的 segment group」
+   *  统辖全部删除面）；跳过计入 `leaseBlockedGroups`（N-3：语义扩为「P1/P2 止步 + P0 跳过」，
+   *  事件频率随之——纯卫生租约跳过亦触发 retention-swept，字段形状零变更）。 */
+  function hygieneStream(
+    stream: SweepStream,
+    openSegment: string | null,
+    report: RetentionSweepReport,
+  ): void {
     let enumeration: SegmentGroupEnumeration
     try {
       enumeration = enumerateSegmentGroups(stream.segmentsDir)
@@ -1142,6 +1173,15 @@ export function createFileLog(config: FileDiagnosticLogConfig, options: FileLogO
         continue
       }
       if (jsonlState === 'file' || markerState === 'file' || binState === 'absent') continue
+      // #227 P0 租约门（orphan-BIN 清理前；S0′ 同源惰性过期判定——过期租约不阻塞，INV-4）。
+      //   `.deleting` 标记续走（上循环）不加门：marker 组对一切会话枚举不可见 → 无持约视图。
+      //   R2（G-227-5 采含——SA2 §5.3 裁定）：P0 unlink 与 P1/P2 的 S1 rename 同为删除
+      //   提交点，租约评估统一以门点 `clock.now()` 现值（INV-227-12——不依赖 sweep 起始
+      //   策略时刻 now）。
+      if (segmentLeased(config.rootDir, namespaceId, stream.streamId, segment, clock.now())) {
+        report.leaseBlockedGroups += 1
+        continue
+      }
       try {
         unlinkSync(sp.binPath)
         report.orphanBinsDeleted += 1
@@ -1230,9 +1270,21 @@ export function createFileLog(config: FileDiagnosticLogConfig, options: FileLogO
             if (!groupAgeExpired(stream.segmentsDir, segment, now - maxAgeMs, report)) break // 未过期 → 止步
             const before = groupBytesBeforeDelete(stream.segmentsDir, segment)
             if (before === 0) continue // 无文件组（枚举残留）——无可删内容
-            if (deleteGroup(stream.segmentsDir, segment)) {
+            // #227 S0′ 提交点复查（§3.3.1——双门：判定点初查保留在上，S1 rename 前复查在下；
+            //   R2 D11：复查以提交时刻 clock.now() 现值评估——不复用 sweep 起始 now，INV-227-12）
+            const outcome = deleteGroupIfUnleased(
+              config.rootDir,
+              namespaceId,
+              stream.streamId,
+              stream.segmentsDir,
+              segment,
+            )
+            if (outcome === 'deleted') {
               report.deletedGroups += 1
               report.reclaimedBytes += before
+            } else if (outcome === 'lease-blocked') {
+              report.leaseBlockedGroups += 1
+              break // 前缀纪律（同初查止步语义）
             } else {
               report.failedSteps += 1
               break // IO 失败 → 止步该流（前缀纪律）
@@ -1286,11 +1338,23 @@ export function createFileLog(config: FileDiagnosticLogConfig, options: FileLogO
               // 首个不可删组即止步该流，绝不跳洞）
               const before = groupBytesBeforeDelete(stream.segmentsDir, segment)
               if (before === 0) continue
-              if (deleteGroup(stream.segmentsDir, segment)) {
+              // #227 S0′ 提交点复查（§3.3.1——双门同 P1：判定点初查在上，S1 rename 前复查在下；
+              //   R2 D11：复查以提交时刻 clock.now() 现值评估——不复用 sweep 起始 now，INV-227-12）
+              const outcome = deleteGroupIfUnleased(
+                config.rootDir,
+                namespaceId,
+                stream.streamId,
+                stream.segmentsDir,
+                segment,
+              )
+              if (outcome === 'deleted') {
                 report.deletedGroups += 1
                 report.reclaimedBytes += before
                 total -= before
                 progressed = true
+              } else if (outcome === 'lease-blocked') {
+                report.leaseBlockedGroups += 1
+                break // 前缀纪律（同初查止步语义）
               } else {
                 report.failedSteps += 1
                 break
@@ -1333,7 +1397,10 @@ export function createFileLog(config: FileDiagnosticLogConfig, options: FileLogO
     }
   }
 
-  /** 事件规则（SA2 §2.6）：「有动作」才发——零动作（含全零卫生）不发（防 open 噪声）。 */
+  /** 事件规则（SA2 §2.6）：「有动作」才发——零动作（含全零卫生）不发（防 open 噪声）。
+   *  #227 N-3 备案：P0 租约跳过计入 leaseBlockedGroups 后，「纯卫生租约跳过」亦可触发
+   *  `retention-swept`（现状「零动作不发」语义在租约跳过时不再适用）——事件形状/白名单
+   *  零变更，仅发波频率语义变化（接受并备案，设计 §3.3.2）。 */
   function emitRetentionSweptIfAction(report: RetentionSweepReport): void {
     const action =
       report.deletedGroups > 0 ||

@@ -74,6 +74,42 @@
 - **retention 租约（#154，INV-9）**：读会话租约注册表为**进程内**共享结构
   （`(rootDir, namespaceId)` 分区）——正确性依赖 ADR 0012「单进程独占根目录」部署
   约束，不实现跨进程锁；跨进程部署不在 v1 契约内。
+- **（#227）strict reader / replay 全程持约 + replay 完整性判定收紧**：
+  `readStreamStrict` 在枚举、读取、校验全程持 read-session 租约——`StrictReadRequest.session?`
+  提供时快照即枚举（INV-227-2，reader 不 close、逐段跑 renewIfDue 检查点）；缺省时
+  自开自关（ttl 15s / maxLifetimeMs=null 显式续租 / 真实时钟），每段读取前续租检查点，
+  bounded 拒续 → reader 域码 `lease-expired`（诚实中止、保留已读 records）。jsonl ENOENT
+  分支区分合法 BIN-first 崩溃窗口（bin 在 ∧ 无 marker → 零行零 issue 不变）与快照组
+  盘上消失（`.deleting` marker 在 ∨ bin 缺 → 新码 `segment-vanished`——租约窗内被删的
+  兜底观测，零静默空读）。sweep 侧（#154 协议不动）：P1/P2 在 S1 rename 前经
+  `deleteGroupIfUnleased` 做 S0′ 提交点租约复查；P0 卫生的 orphan-BIN 清理尊重活跃租约
+  （跳过计入 `leaseBlockedGroups`——N-3 备案：纯卫生租约跳过亦可触发 `retention-swept`，
+  事件形状零变更）。`materializeStrictRecordUpdate` 增 `unknown` 第五成员：
+  `fatal ∧ committed:true ∧ effect ∉ {'update','update-omitted'}`（字面 `'unknown'` 或
+  effect 字段缺席——schema.ts:178 第 5 成员）→ `{kind:'unknown'}`：自证已提交而效应不明
+  ⇒ 必要性不可证，**永不落入 `none` 推进面**；`none` 域收窄为 committed-noop /
+  rejected / fatal-committed:false（含其 effect 放宽残差 R-4）。replay（app 工具）以
+  materialize 为唯一分类源（app 侧 result 联合推导删除），完整性以 kind/committed/effect
+  为唯一依据、先于 update 形状在场性（畸形必要 update → invalid 通道）；工具自身全程
+  持约（session open 供参非法 → 收敛 `failed` + `replay-internal-error`，零新 throw 面）。
+  新码恰四（reader 域 `lease-expired`/`segment-vanished`、replay 域 `update-unknown`/
+  `lease-expired`），零 health 事件成员变更。
+  **（#227 R2，owner PR #251 两条必修——rev2 设计 §3.1–§3.3）**：
+  - **取得点前移（O-1/D8）**：`readStreamStrict` 自建臂的 session 取得点 = ① 路径安全
+    检查后、② 首次 manifest I/O 前（④″）——manifest 读取/门/policy 阶段同样持约
+    （INV-227-1 改写版）；传入臂（`session?` 提供）纯绑定不动。`StrictReadRequest`
+    增可选 `clock?`（G-227-6 平铺形状，仅自建臂消费——透传 open；传入臂忽略）。
+    取得检查点（`renewIfDue`）拒绝 → corrupt + `lease-expired`（manifest:null、
+    零进一步 IO）。
+  - **统一释放（O-1/D9，INV-227-11）**：自建 session 的 close 只存在于 `readStreamStrict`
+    函数唯一 `finally`——覆盖 manifest 缺失/JSON 损坏/gate 失败（corrupt/incompatible
+    双臂）/enumerationFailed 等一切持约早退与异常逃逸；函数体内无任何 close 直呼站点。
+    传入臂不 close（生命周期归调用方——replay 维持唯一责任方）。
+  - **提交时刻取时（O-2/D11 + G-227-5 采含，INV-227-12）**：一切删除提交门——P1/P2 的
+    S0′（`deleteGroupIfUnleased`）与 P0 orphan-BIN unlink（`hygieneStream`）——以门点
+    适配器闭包钟 `clock.now()` 现值评估租约（sweep 开始后注册、提交前到期的租约不阻塞；
+    INV-4 在提交点字面复位）；`sweepRetention` 的 `options.now` 语义收窄为**策略时刻**
+    （候选/年龄/字节口径，单次 sweep 单一快照）。
 - 不依赖 yjs / clock / registry / persistence；只依赖 `@nomicore/vfsl`
   （compileSchemaEnvelope / validateLogicalSnapshot）。
 - 不改 ADR（`docs/adr/**` 冻结源）；`VFSL 校验失败 = writer bug`——丢弃 +

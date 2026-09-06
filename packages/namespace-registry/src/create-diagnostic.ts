@@ -479,10 +479,16 @@ export function createDiagRuntime(
     resolveEmitterOnce(streamResolver, namespaceId);
   // #249：满队丢弃上报装配（observer 缺席时 registry.ts 仍传回调——dispatchObserver
   // 自行 no-op；泵级 seam 可测性与生产接线同构；缺席 → 静默，既有行为零漂移）。
+  // Node composition adapter: the pump depends on an explicit macrotask capability rather than
+  // reading a global scheduler itself. setImmediate preserves the frozen post-microtask ordering.
+  const deferDiagDrain: DiagPumpDeps['defer'] = (callback) => {
+    setImmediate(callback);
+  };
   const pump: DiagPump =
     options.reportPumpDrop === undefined
-      ? createDiagPump({ initStream: pumpInitStream, resolveEmitter: pumpResolveEmitter })
+      ? createDiagPump({ defer: deferDiagDrain, initStream: pumpInitStream, resolveEmitter: pumpResolveEmitter })
       : createDiagPump({
+          defer: deferDiagDrain,
           initStream: pumpInitStream,
           resolveEmitter: pumpResolveEmitter,
           reportDrop: options.reportPumpDrop,

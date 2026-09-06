@@ -15,12 +15,18 @@
 import { isSafeNamespaceId, isSafeStreamId, streamLayoutPaths } from './paths.js'
 import { enumerateSegmentGroups } from './reader.js'
 
+/** #227：冻结缺省租期（原 openDiagnosticReadSession 内联 15_000 提名常量的单源导出）。 */
+export const DEFAULT_READ_SESSION_TTL_MS = 15_000
+
+/** #227：冻结续租安全边际——会话内检查点在「距到期不足该值」时触发续租。 */
+export const READ_SESSION_RENEW_MARGIN_MS = 1_000
+
 /** 会话请求（SA2 §2.3）。 */
 export interface DiagnosticReadSessionRequest {
   rootDir: string
   namespaceId: string
   streamId: string
-  /** 单次租期 ms；默认 15_000；须 ≥1 的 safe integer。 */
+  /** 单次租期 ms；默认 DEFAULT_READ_SESSION_TTL_MS；须 ≥1 的 safe integer。 */
   ttlMs?: number | undefined
   /** 会话最长可续租总时长（自 open 起）；默认 null = 显式续租模式（ADR 允许
    *  「长期 reader 必须有最大 lease 时长**或**显式续租」——取后者为默认）。 */
@@ -35,11 +41,19 @@ export interface DiagnosticReadSession {
   readonly streamId: string
   /** open 时刻枚举的 segment 快照（升序；§4.3 快照语义）。 */
   readonly segments: readonly string[]
+  /** open 时刻 segments/ 枚举是否失败（缺失/不可读）。true ⇒ segments===[] 且该会话
+   *  不保护任何组；消费方（reader ④′）据此保持既有 corrupt + manifest-invalid 包络。 */
+  readonly enumerationFailed: boolean
   /** 当前租期到期时刻（epoch ms；close 后无意义）。 */
   readonly leasedUntil: number
   readonly closed: boolean
   /** 续租：已 close 或超出 maxLifetimeMs → false；否则全员续 ttl 并 true。 */
   renew(): boolean
+  /** #227：到期邻近（margin 内）时续租（委托 renew——bounded 语义/注册表同步全沿用）；
+   *  未到期 → true（零副作用快路径）；已 close / 续租被拒 → false。非法 margin
+   *  （非 safe integer / <0）视同 0（不 throw——唯一调用方是包内冻结常量，宽容面无
+   *  人受益，G-227-1 裁决）。 */
+  renewIfDue(marginMs: number): boolean
   /** 立即释放全部租约（幂等）。 */
   close(): void
 }
@@ -69,6 +83,7 @@ class DiagnosticReadSessionImpl implements DiagnosticReadSession {
   readonly namespaceId: string
   readonly streamId: string
   readonly segments: readonly string[]
+  private readonly enumerationFailedValue: boolean
   private readonly openAt: number
   private readonly ttlMs: number
   private readonly maxLifetimeMs: number | null
@@ -81,6 +96,7 @@ class DiagnosticReadSessionImpl implements DiagnosticReadSession {
     namespaceId: string
     streamId: string
     segments: readonly string[]
+    enumerationFailed: boolean
     openAt: number
     leasedUntil: number
     ttlMs: number
@@ -91,6 +107,7 @@ class DiagnosticReadSessionImpl implements DiagnosticReadSession {
     this.namespaceId = req.namespaceId
     this.streamId = req.streamId
     this.segments = req.segments
+    this.enumerationFailedValue = req.enumerationFailed
     this.openAt = req.openAt
     this.leasedUntilValue = req.leasedUntil
     this.ttlMs = req.ttlMs
@@ -104,6 +121,10 @@ class DiagnosticReadSessionImpl implements DiagnosticReadSession {
 
   get closed(): boolean {
     return this.closedValue
+  }
+
+  get enumerationFailed(): boolean {
+    return this.enumerationFailedValue
   }
 
   renew(): boolean {
@@ -127,6 +148,15 @@ class DiagnosticReadSessionImpl implements DiagnosticReadSession {
       }
     }
     return true
+  }
+
+  /** #227：margin 内到期 → renew()；未到期 → true（零副作用）；closed/拒续 → false。 */
+  renewIfDue(marginMs: number): boolean {
+    if (this.closedValue) return false
+    const margin = Number.isSafeInteger(marginMs) && marginMs >= 0 ? marginMs : 0
+    const now = this.clock.now()
+    if (now + margin < this.leasedUntilValue) return true
+    return this.renew()
   }
 
   close(): void {
@@ -154,12 +184,14 @@ function removeEntriesOf(session: DiagnosticReadSessionImpl): void {
   sessionsByNs.get(key)?.delete(session)
 }
 
-/** 打开会话：枚举快照（与 reader/sweep 同源；`.deleting` 组整体剔除）→ 全员注册租约。 */
+/** 打开会话：枚举快照（与 reader/sweep 同源；`.deleting` 组整体剔除）→ 全员注册租约。
+ *  枚举失败（segments/ 缺失/不可读）不 throw——收敛空快照 + `enumerationFailed: true`
+ *  承载事实（#227：调用方可区分「目录空」与「目录不可读」）。 */
 export function openDiagnosticReadSession(req: DiagnosticReadSessionRequest): DiagnosticReadSession {
   if (!isSafeNamespaceId(req.namespaceId) || !isSafeStreamId(req.streamId)) {
     throw new Error('openDiagnosticReadSession: invalid namespaceId/streamId')
   }
-  const ttlMs = req.ttlMs ?? 15_000
+  const ttlMs = req.ttlMs ?? DEFAULT_READ_SESSION_TTL_MS
   if (typeof ttlMs !== 'number' || !Number.isSafeInteger(ttlMs) || ttlMs < 1) {
     throw new Error('openDiagnosticReadSession: ttlMs must be a safe integer >= 1')
   }
@@ -173,10 +205,12 @@ export function openDiagnosticReadSession(req: DiagnosticReadSessionRequest): Di
   const clock = req.clock ?? { now: () => Date.now() }
   const paths = streamLayoutPaths(req.rootDir, req.namespaceId, req.streamId)
   let segments: string[] = []
+  let enumerationFailed = false
   try {
     segments = [...enumerateSegmentGroups(paths.segmentsDir).live]
   } catch {
     segments = [] // segments/ 缺失/不可读 → 空快照（无租约——不保护任何组）
+    enumerationFailed = true // #227：枚举失败事实承载（reader ④′ 保持既有 corrupt 包络）
   }
   const openAt = clock.now()
   const leasedUntil = Math.min(openAt + ttlMs, maxLifetimeMs === null ? Infinity : openAt + maxLifetimeMs)
@@ -185,6 +219,7 @@ export function openDiagnosticReadSession(req: DiagnosticReadSessionRequest): Di
     namespaceId: req.namespaceId,
     streamId: req.streamId,
     segments,
+    enumerationFailed,
     openAt,
     leasedUntil,
     ttlMs,

@@ -19,8 +19,9 @@
  *     replay 报 `genesis-misplaced` + `genesis-missing`、failed、无 snapshot。
  *  3. §六(a) note 运行时复核——record 级 issues 经 read.issues 镜像（③ 全量）与
  *     ④ 停止点双份进入报告（保守方向，只多不少，不影响三态判定）。
- *  4. §六(b) note 运行时复核——`fatal-committed effect:'unknown'` 记录按「其他」
- *     分支推进 lastSeq（连续计数、不 break、不产生 issue）。
+ *  4. §六(b) note 运行时复核——**2026-09-06 由 Issue #227 契约改写（K-1，SA6
+ *     同 change 废止旧 pin）**：`fatal-committed effect:'unknown'` 完整性不可证
+ *     → `update-unknown` + break（不再按「其他」分支推进 lastSeq、不再 complete）。
  *  5. D8 健康事件面 + D1 无泛滥——真实进程（enabled 态）全生命周期 NDJSON 摘录：
  *     停机恰一次 `diagnostics-closed`；健康运行零 `diagnostic-log-emission-dropped`
  *     （生产恒提供 runtimeEmitterFor → 恒走数据键控通道，legacy fallback 分支
@@ -442,12 +443,13 @@ describe('SA7 动态重点 3 — issues 镜像双份运行时复核（保守方�
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 重点 4 — §六(b) note：fatal-committed effect:'unknown' 推进语义
+// 重点 4 — Issue #227 契约改写（K-1，SA2 review binding；2026-09-06 SA6 同 change
+// 废止旧 pin）：fatal-committed effect:'unknown' 不得再按「其他」分支推进至 complete
 // ─────────────────────────────────────────────────────────────────────────────
 
-describe('SA7 动态重点 4 — fatal-committed effect:unknown 按「其他」分支推进（连续计数、不 break）', () => {
-  it('健康链中段含 fatal-unknown 记录：complete、issues=[]、lastAppliedSequence 计入该记录、快照复现终态', () => {
-    const rootDir = freshTempRoot('sa7-155-fatal-');
+describe('SA7 动态重点 4 — fatal-committed effect:unknown 完整性不可证（#227 AC3：update-unknown + break、不推进）', () => {
+  it('健康链中段含 fatal-unknown 记录：partial、issues=[update-unknown]、lastAppliedSequence 停在 fatal-unknown 之前、快照复现前缀态', () => {
+    const rootDir = freshTempRoot('sa7-227-fatal-');
     const prod = makeProdDoc(NS_A, 1);
     const log = createFileLog(rootDir, Y.encodeStateAsUpdate(prod));
     let sv = Y.encodeStateVector(prod);
@@ -463,14 +465,19 @@ describe('SA7 动态重点 4 — fatal-committed effect:unknown 按「其他」�
       emissionFor('root-mutation', { kind: 'committed', effect: 'update', updateBytes: Y.encodeStateAsUpdate(prod, sv) }),
     );
 
+    // 旧 pin（#155 §六(b) note）逐字废止：complete / issues=[] / lastSeq '4' / 快照 count=9。
+    // 新契约（设计 §8.4 D3 + INV-227-5/6）：fatal-committed-unknown 的完整性不可证 →
+    // issue update-unknown + break → partial；lastSeq '2'（genesis=1, update=2 已应用，
+    // fatal-unknown=3 不推进）；快照复现前缀态（count=5，seq4 的 count=9 不进入）。
     const replay = replayNamespaceDiagnosticLog({ rootDir, namespaceId: NS_A });
-    expect(replay.status).toBe('complete');
-    expect(replay.issues).toEqual([]);
-    expect(replay.lastAppliedSequence).toBe('4'); // genesis=1, update=2, fatal-unknown=3（推进）, update=4
+    expect(replay.status).toBe('partial');
+    expect(replay.issues).toEqual([{ code: 'update-unknown' }]);
+    expect(replay.lastAppliedSequence).toBe('2');
     expect(replay.snapshot).toBeInstanceOf(Uint8Array);
     const replayed = new Y.Doc();
     Y.applyUpdate(replayed, replay.snapshot as Uint8Array);
-    expect(replayed.getMap('ROOT').get('count')).toBe(9);
+    expect(replayed.getMap('ROOT').get('count')).toBe(5);
+    console.log(`[SA7-DV] #227 重点 4 改写后语义实测：status=${replay.status} issues=${JSON.stringify(replay.issues)} lastSeq=${replay.lastAppliedSequence}`);
   });
 });
 
