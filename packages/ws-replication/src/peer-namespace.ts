@@ -11,7 +11,7 @@ import type {
 } from '@nomicore/namespace-registry';
 import { FenceWatchdog, type WatchdogPredicate } from './fence-watchdog.js';
 import { namespaceErrorFrame } from './frame-io.js';
-import { cidField, sendFailureContext, stableNamespaceCode } from './observer.js';
+import { cidField, safeStateVector, sendFailureContext, stableNamespaceCode, stateVectorBytesEqual, stateVectorSafeDigest } from './observer.js';
 import { Memoized } from './lifecycle-queue.js';
 import {
   mapEncodeThrow,
@@ -155,12 +155,16 @@ export class PeerNamespaceController {
         const seq = this.sendChecked(message);
         // PN11：出向 Step2 diff 字节（seq>0 时发射——0 = 帧被否决，未出站）
         if (seq > 0 && message.kind === 'SYNC_STEP2' && this.observerOn) {
+          const encodedUpdateBytes = message.update.byteLength;
           this.host.emitObserver({
             type: 'sync-step2-sent',
             side: 'peer',
             ...(cidField(this.host.connectionId())),
             namespaceId: this.namespaceId,
-            bytes: message.update.byteLength,
+            bytes: encodedUpdateBytes,
+            // issue #239 append-only：wire roundId 投影 + 长度澄清（恒 === bytes）
+            syncRoundId: message.syncRoundId,
+            encodedUpdateBytes,
           });
         }
         return seq;
@@ -178,7 +182,8 @@ export class PeerNamespaceController {
           throw new RoundAborted();
         }
       },
-      applyStep2: (update, step2Sequence) => this.applyStep2(update, step2Sequence),
+      applyStep2: (update, step2Sequence, syncRoundId) =>
+        this.applyStep2(update, step2Sequence, syncRoundId),
       onViolation: () => {
         this.sendNsError('SYNC_STATE_VIOLATION');
         this.finalize('failed');
@@ -1002,9 +1007,13 @@ export class PeerNamespaceController {
     });
   }
 
-  private async applyStep2(update: Uint8Array, step2Sequence: number): Promise<'ok' | 'aborted'> {
+  private async applyStep2(
+    update: Uint8Array,
+    step2Sequence: number,
+    syncRoundId: number,
+  ): Promise<'ok' | 'aborted'> {
     const epoch = this.host.connectionEpoch();
-    const outcome = await this.applyRemoteUpdate(update, step2Sequence, true);
+    const outcome = await this.applyRemoteUpdate(update, step2Sequence, true, syncRoundId);
     if (outcome === 'ok' && this.host.connectionEpoch() === epoch) {
       // §9.1.4：apply 成功 → 发 SYNC_APPLIED（ackedSequence = 收到的 Step2 帧序）；
       // B-2d：连接已重建 → 旧 round 的 Applied 不发（迟到的控制帧不得落新连接）
@@ -1025,11 +1034,14 @@ export class PeerNamespaceController {
     return outcome === 'ok' ? 'ok' : 'aborted';
   }
 
-  /** 统一 apply 管线（§11.1/§11.3 镜像：UPDATE / Step2 diff）。 */
+  /** 统一 apply 管线（§11.1/§11.3 镜像：UPDATE / Step2 diff）。
+   *  第四参 `syncRoundId`（issue #239）：isStep2 时恒在（帧携带 wire roundId 的显式
+   *  透传投影，D2）——UPDATE 路径（isStep2=false）零投影。 */
   private async applyRemoteUpdate(
     update: Uint8Array,
     sequence: number,
     isStep2 = false,
+    syncRoundId?: number,
   ): Promise<'ok' | 'failed'> {
     const session = this.session;
     if (session === undefined) {
@@ -1040,6 +1052,12 @@ export class PeerNamespaceController {
     // §5.7：在调用 applyRemoteUpdate 前采样，完整覆盖同步接纳与 sequencer 排队；
     // host.now 已经 safeNow 折叠，观测时钟异常不会阻断协议路径。
     const t0 = this.observerOn ? this.host.now?.() : undefined;
+    // issue #239：Step2 效果组 before 捕获——帧分发同步段（t0 采样同点、同纪律：
+    // 同步读面、sequencer 入队前、完整覆盖排队窗口）；门控 isStep2 && observerOn
+    // （无 observer / UPDATE 热路径零新增读取）。捕获 throw → safeStateVector 折叠
+    // → undefined → 效果字段组整组缺失，绝不外溢协议路径（§23.4）。
+    const svBefore =
+      isStep2 && this.observerOn ? safeStateVector(() => session.encodeStateVector()) : undefined;
     const pending = session.applyRemoteUpdate(update);
     this.pendingApplies.add(pending);
     try {
@@ -1051,6 +1069,28 @@ export class PeerNamespaceController {
         return 'failed';
       }
       if (this.observerOn) {
+        // issue #239：after 捕获（同 session 引用——provenance = 实际执行该 apply 的
+        // session；期间被关闭 → 同步 throw → 折叠 → 效果组整组缺失）+ 效果派生。
+        // degraded 判别在结算后才可得：before 已捕获，after/派生照做，效果组在
+        // degraded 分支不附着（丢弃）——成本有界（每 Step2 apply 至多 2 次 SV 读取
+        // + 2 次 digest；§23.4 纪律）。
+        const svAfter =
+          svBefore !== undefined
+            ? safeStateVector(() => session.encodeStateVector())
+            : undefined;
+        const svEqual =
+          svBefore !== undefined && svAfter !== undefined
+            ? stateVectorBytesEqual(svBefore, svAfter)
+            : undefined;
+        const effect =
+          svEqual !== undefined
+            ? {
+                stateVectorChanged: !svEqual,
+                applyEffect: svEqual ? ('noop' as const) : ('changed' as const),
+                stateVectorBeforeHash: stateVectorSafeDigest(svBefore!),
+                stateVectorAfterHash: stateVectorSafeDigest(svAfter!),
+              }
+            : undefined;
         // PN7'：每笔成功 apply 恰一事件（§3.1 互斥三选一；degraded 判别仅在 observer 在场读投影）
         const degraded = this.degradedBypassActive();
         if (degraded) {
@@ -1073,7 +1113,15 @@ export class PeerNamespaceController {
             ...(applyLatencyMs !== undefined ? { applyLatencyMs } : {}),
           } as const;
           if (isStep2) {
-            this.host.emitObserver({ type: 'sync-diff-applied', ...base });
+            // issue #239 append-only：wire roundId 投影 + 长度澄清 + 效果字段组
+            // （组单命运：effect 整组 spread / 整组缺——绝不部分出现、绝不伪造 noop）
+            this.host.emitObserver({
+              type: 'sync-diff-applied',
+              ...base,
+              syncRoundId: syncRoundId!,
+              encodedUpdateBytes: update.byteLength,
+              ...(effect !== undefined ? effect : {}),
+            });
           } else {
             this.host.emitObserver({ type: 'update-applied', ...base });
           }

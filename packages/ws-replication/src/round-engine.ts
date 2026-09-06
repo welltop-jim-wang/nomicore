@@ -26,8 +26,15 @@ export interface RoundHost {
     kind: 'stateVector' | 'diff',
     remoteStateVector: Uint8Array | undefined,
   ) => Uint8Array;
-  /** Step2 diff 应用（含错误映射）。resolve 'ok' 表示已 apply 并已发 SYNC_APPLIED。 */
-  readonly applyStep2: (update: Uint8Array, step2Sequence: number) => Promise<'ok' | 'aborted'>;
+  /** Step2 diff 应用（含错误映射）。resolve 'ok' 表示已 apply 并已发 SYNC_APPLIED。
+   *  第三参 `syncRoundId`（issue #239）：帧携带的 wire roundId 的显式透传投影——
+   *  onStep2 已在调用前校验 `message.syncRoundId === currentRound`，纯参数化、零
+   *  状态机逻辑变化。 */
+  readonly applyStep2: (
+    update: Uint8Array,
+    step2Sequence: number,
+    syncRoundId: number,
+  ) => Promise<'ok' | 'aborted'>;
   /** 违例（SYNC_STATE_VIOLATION → ERROR + ns failed 终局）。 */
   readonly onViolation: (detail: string) => void;
   /** 本 round 双位为真（§9.1.6）：live（或按 pendingResync 再开 round）。 */
@@ -148,7 +155,8 @@ export class RoundEngine {
       return;
     }
     this.state.receivedStep2 = true;
-    void this.applyStep2Safely(message.update, message.sequence);
+    // issue #239：wire roundId 随帧显式透传（L140-149 已校验 === currentRound）
+    void this.applyStep2Safely(message.update, message.sequence, message.syncRoundId);
   }
 
   /** 收 SYNC_APPLIED（§9.1.5；重复控制帧 → 违例）。 */
@@ -185,8 +193,12 @@ export class RoundEngine {
     this.state.ownStep2Seq = seq;
   }
 
-  private async applyStep2Safely(update: Uint8Array, step2Sequence: number): Promise<void> {
-    const outcome = await this.host.applyStep2(update, step2Sequence);
+  private async applyStep2Safely(
+    update: Uint8Array,
+    step2Sequence: number,
+    syncRoundId: number,
+  ): Promise<void> {
+    const outcome = await this.host.applyStep2(update, step2Sequence, syncRoundId);
     if (outcome === 'ok') {
       this.state.remoteDiffAppliedLocally = true;
       this.checkSettled();

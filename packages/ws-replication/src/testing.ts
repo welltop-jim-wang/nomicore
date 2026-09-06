@@ -2,6 +2,14 @@ import { createHubReplication } from './hub-connection.js';
 import type { NamespaceLease, NamespaceRegistry, ReplicationSession } from '@nomicore/namespace-registry';
 import type { DuplexTransport, HubReplication, HubReplicationOptions } from './types.js';
 
+// issue #239：SV 捕获折叠 / 逐字节比较 / documented safe digest 纯函数显式测试面
+// （不进 src/index.ts 生产 API；D4 算法一经注册即冻结——单测 hardcode 基准向量锁定）。
+export {
+  safeStateVector,
+  stateVectorBytesEqual,
+  stateVectorSafeDigest,
+} from './observer.js';
+
 interface EndState {
   listeners: Set<(bytes: Uint8Array) => void>;
   closeListeners: Set<(info: Readonly<{ code: number; reason: string }>) => void>;

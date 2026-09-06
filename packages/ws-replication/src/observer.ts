@@ -129,3 +129,47 @@ export function safeNow(read: () => number | undefined): number | undefined {
     return undefined;
   }
 }
+
+/**
+ * issue #239：state vector 捕获安全折叠（clock-throw 同款纪律）——session 终态同步
+ * throw（ReplicationSessionClosedError 等）属观测面异常 → undefined（效果字段组整组
+ * 缺失），绝不外溢协议路径（§23.4 捕获纪律：只读、observer 门控、不进 sequencer 槽）。
+ */
+export function safeStateVector(read: () => Uint8Array): Uint8Array | undefined {
+  try {
+    return read();
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * issue #239：SV 逐字节相等（长度 + 逐位）。yjs `encodeStateVector` 编码 canonical
+ * （writeStateVector 对 entries 显式排序后 varUint 写出）⇒ 字节相等 ⟺ 逻辑相等。
+ */
+export function stateVectorBytesEqual(a: Uint8Array, b: Uint8Array): boolean {
+  if (a.byteLength !== b.byteLength) return false;
+  for (let i = 0; i < a.byteLength; i += 1) {
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
+}
+
+/**
+ * issue #239：documented safe digest（§23.3 注册算法，注册即冻结）——双泳道
+ * FNV-1a-32：泳道 A 正序、泳道 B 逆序扫描同一 raw 编码 state vector 字节；两泳道均
+ * offset basis 2166136261、prime 16777619、模 2³²（`Math.imul(h ^ b, 16777619) >>> 0`）。
+ * 输出 = 泳道 A 8 位小写 hex ∥ 泳道 B 8 位小写 hex，恒 16 字符（零填充）。纯函数、
+ * 同步可算、Node/浏览器同构；用途 = 关联/相等判别（非保密，raw SV 字节仍属禁止项）。
+ */
+export function stateVectorSafeDigest(sv: Uint8Array): string {
+  let forward = 2166136261;
+  for (let i = 0; i < sv.byteLength; i += 1) {
+    forward = Math.imul(forward ^ sv[i]!, 16777619) >>> 0;
+  }
+  let reverse = 2166136261;
+  for (let i = sv.byteLength - 1; i >= 0; i -= 1) {
+    reverse = Math.imul(reverse ^ sv[i]!, 16777619) >>> 0;
+  }
+  return `${forward.toString(16).padStart(8, '0')}${reverse.toString(16).padStart(8, '0')}`;
+}

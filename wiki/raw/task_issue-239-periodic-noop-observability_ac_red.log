@@ -1,0 +1,54 @@
+Testing types with tsc and vue-tsc is an experimental feature.
+Breaking changes might not follow SemVer, please pin Vitest's version when using it.
+
+ RUN  v3.2.7 /home/wangjian/nomicore-fix-issue-239
+
+ × packages/ws-replication/test/ws-replication-issue239-ac-red.test.ts > issue #239 验收契约（红灯）：periodic no-op 与有效同步的可观测性差异 > 场景 1：已收敛副本连续 periodic round —— 观察面必须报 roundId 关联 + 全 noop（SV/ROOT/META 不变，bytes 仍非零） 216ms
+   → [issue239 ac-red] 场景1 no-op sync-step2-sent(hub) 缺语义字段 syncRoundId——红灯：生产修复前不得在场: expected undefined to be type of 'number'
+ × packages/ws-replication/test/ws-replication-issue239-ac-red.test.ts > issue #239 验收契约（红灯）：periodic no-op 与有效同步的可观测性差异 > 场景 2：hub 静默漂移 → 下一 periodic round 至少一侧 diff-applied 报 changed（与实测 SV 增量一致）并收敛 62ms
+   → [issue239 ac-red] 场景2 hub-drift sync-step2-sent(hub) 缺语义字段 syncRoundId——红灯：生产修复前不得在场: expected undefined to be type of 'number'
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 2 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  packages/ws-replication/test/ws-replication-issue239-ac-red.test.ts > issue #239 验收契约（红灯）：periodic no-op 与有效同步的可观测性差异 > 场景 1：已收敛副本连续 periodic round —— 观察面必须报 roundId 关联 + 全 noop（SV/ROOT/META 不变，bytes 仍非零）
+AssertionError: [issue239 ac-red] 场景1 no-op sync-step2-sent(hub) 缺语义字段 syncRoundId——红灯：生产修复前不得在场: expected undefined to be type of 'number'
+
+Expected: "number"
+Received: "undefined"
+
+ ❯ numberField packages/ws-replication/test/ws-replication-issue239-ac-red.test.ts:128:5
+    126|     value,
+    127|     `${label} ${e.type}(${e.side}) 缺语义字段 ${key}——红灯：生产修复前不得在场`,
+    128|   ).toBeTypeOf('number');
+       |     ^
+    129|   return value as number;
+    130| }
+ ❯ groupsOf packages/ws-replication/test/ws-replication-issue239-ac-red.test.ts:146:21
+ ❯ packages/ws-replication/test/ws-replication-issue239-ac-red.test.ts:224:20
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/2]⎯
+
+ FAIL  packages/ws-replication/test/ws-replication-issue239-ac-red.test.ts > issue #239 验收契约（红灯）：periodic no-op 与有效同步的可观测性差异 > 场景 2：hub 静默漂移 → 下一 periodic round 至少一侧 diff-applied 报 changed（与实测 SV 增量一致）并收敛
+AssertionError: [issue239 ac-red] 场景2 hub-drift sync-step2-sent(hub) 缺语义字段 syncRoundId——红灯：生产修复前不得在场: expected undefined to be type of 'number'
+
+Expected: "number"
+Received: "undefined"
+
+ ❯ numberField packages/ws-replication/test/ws-replication-issue239-ac-red.test.ts:128:5
+    126|     value,
+    127|     `${label} ${e.type}(${e.side}) 缺语义字段 ${key}——红灯：生产修复前不得在场`,
+    128|   ).toBeTypeOf('number');
+       |     ^
+    129|   return value as number;
+    130| }
+ ❯ groupsOf packages/ws-replication/test/ws-replication-issue239-ac-red.test.ts:146:21
+ ❯ packages/ws-replication/test/ws-replication-issue239-ac-red.test.ts:289:20
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/2]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  2 failed (2)
+Type Errors  no errors
+   Start at  00:58:35
+   Duration  5.27s (transform 2.67s, setup 0ms, collect 3.86s, tests 279ms, environment 0ms, prepare 236ms)

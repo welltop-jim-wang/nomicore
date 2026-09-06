@@ -14,6 +14,7 @@ import type {
   PeerNamespaceState,
   PeerReplication,
   ReplicationLimits,
+  ReplicationObserver,
   ReplicationTarget,
   ReplicationTimeouts,
   ReplicationBackoff,
@@ -191,6 +192,11 @@ export interface BootOptions {
   readonly deferTask?: (task: () => void) => void;
   readonly hubRegistryObserver?: NonNullable<Parameters<typeof import('./harness.js').makeNode>[1]>;
   readonly createHub?: typeof import('@nomicore/ws-replication').createHubReplication;
+  /** issue #239 复现 seam：Hub 侧结构化 observer 直通（缺省不注入 = 零事件，
+   *  与生产 config `observer?: ReplicationObserver` 同一注入面）。 */
+  readonly hubObserver?: ReplicationObserver;
+  /** issue #239 复现 seam：Peer 侧结构化 observer 直通（缺省不注入 = 零事件）。 */
+  readonly peerObserver?: ReplicationObserver;
 }
 
 export class Run {
@@ -501,6 +507,7 @@ export async function boot(opts: BootOptions = {}): Promise<Run> {
     verifyToken: wrappedVerifier,
     ...(opts.limits !== undefined ? { limits: opts.limits } : {}),
     ...(opts.timeouts !== undefined ? { timeouts: opts.timeouts } : {}),
+    ...(opts.hubObserver !== undefined ? { observer: opts.hubObserver } : {}),
   });
 
   const wires: Wire[] = [];
@@ -529,6 +536,7 @@ export async function boot(opts: BootOptions = {}): Promise<Run> {
     ...(opts.timeouts !== undefined ? { timeouts: opts.timeouts } : {}),
     ...(opts.backoff !== undefined ? { backoff: opts.backoff } : {}),
     ...(opts.random !== undefined ? { random: opts.random } : {}),
+    ...(opts.peerObserver !== undefined ? { observer: opts.peerObserver } : {}),
   });
 
   const run = new Run(hubNode, peerNode, hub, peer, authorizer, hubFixture, nsId, hubRoot, verifyCalls);

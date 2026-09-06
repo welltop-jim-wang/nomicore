@@ -43,6 +43,7 @@ import {
   type Wire,
 } from './harness.js';
 import { stableConnectionCode, stableNamespaceCode } from '../src/observer.js';
+import { safeStateVector, stateVectorBytesEqual, stateVectorSafeDigest } from '@nomicore/ws-replication/testing';
 import { ConnectionSender, type ConnectionSenderHost } from '../src/backpressure.js';
 
 const TEST_TOKEN = 'tok-test-4f2b8a1c9d3e';
@@ -1145,8 +1146,8 @@ describe('T9：事件内容安全（safe-field）', () => {
     ['channel-state-changed', new Set(['type', 'side', 'connectionId', 'namespaceId', 'from', 'to'])],
     ['bootstrap-snapshot-sent', new Set(['type', 'side', 'connectionId', 'namespaceId', 'bytes'])],
     ['bootstrap-imported', new Set(['type', 'side', 'connectionId', 'namespaceId', 'bytes'])],
-    ['sync-step2-sent', new Set(['type', 'side', 'connectionId', 'namespaceId', 'bytes'])],
-    ['sync-diff-applied', new Set(['type', 'side', 'connectionId', 'namespaceId', 'bytes', 'applyLatencyMs'])],
+    ['sync-step2-sent', new Set(['type', 'side', 'connectionId', 'namespaceId', 'bytes', 'syncRoundId', 'encodedUpdateBytes'])],
+    ['sync-diff-applied', new Set(['type', 'side', 'connectionId', 'namespaceId', 'bytes', 'applyLatencyMs', 'syncRoundId', 'encodedUpdateBytes', 'stateVectorChanged', 'applyEffect', 'stateVectorBeforeHash', 'stateVectorAfterHash'])],
     ['update-sent', new Set(['type', 'side', 'connectionId', 'namespaceId', 'bytes'])],
     ['update-applied', new Set(['type', 'side', 'connectionId', 'namespaceId', 'bytes', 'applyLatencyMs'])],
     ['update-acked', new Set(['type', 'side', 'connectionId', 'namespaceId', 'bytes', 'ackLatencyMs'])],
@@ -1192,6 +1193,8 @@ describe('T9：事件内容安全（safe-field）', () => {
           key === 'bytes' || key === 'bufferedAmount' || key === 'attempt' ||
           key === 'delayMs' || key === 'drainTimeoutMs' || key === 'retryAfterMs' ||
           key === 'wsCloseCode' || key === 'applyLatencyMs' || key === 'ackLatencyMs' ||
+          // issue #239：round 关联键（uint32，wire §9.1–9.3 投影）与长度澄清字段
+          key === 'syncRoundId' || key === 'encodedUpdateBytes' ||
           // issue #231：send-failed 安全数值上下文（同为有限非负口径）
           key === 'updateBytes' || key === 'maxUpdateBytes' || key === 'queuedUpdateCount' ||
           key === 'queuedUpdateBytes' || key === 'inFlightCount'
@@ -1200,6 +1203,47 @@ describe('T9：事件内容安全（safe-field）', () => {
         }
         if (key === 'namespaceId') {
           expect(typeof value === 'string' && NS_RE.test(value), `${label}: ${event.type} namespaceId 文法`).toBe(true);
+        }
+      }
+      // issue #239：sync 两型 append-only 语义断言（§23.7 招募；编码长度澄清 +
+      // 效果字段组单命运/一致性/hash 文法——矩阵运行中全部 sync 事件逐笔覆盖）
+      if (event.type === 'sync-step2-sent' || event.type === 'sync-diff-applied') {
+        const sync = event as unknown as {
+          readonly bytes: number;
+          readonly syncRoundId?: number;
+          readonly encodedUpdateBytes?: number;
+          readonly stateVectorChanged?: boolean;
+          readonly applyEffect?: 'changed' | 'noop';
+          readonly stateVectorBeforeHash?: string;
+          readonly stateVectorAfterHash?: string;
+        };
+        expect(sync.syncRoundId, `${label}: ${event.type} 缺 syncRoundId`).toBeTypeOf('number');
+        expect(sync.encodedUpdateBytes, `${label}: ${event.type} 缺 encodedUpdateBytes`).toBeTypeOf('number');
+        expect(sync.encodedUpdateBytes, `${label}: ${event.type} encodedUpdateBytes 必须 === bytes`).toBe(sync.bytes);
+      }
+      if (event.type === 'sync-diff-applied') {
+        const groupKeys = [
+          'stateVectorChanged',
+          'applyEffect',
+          'stateVectorBeforeHash',
+          'stateVectorAfterHash',
+        ] as const;
+        const present = groupKeys.filter((k) => Object.prototype.hasOwnProperty.call(event, k));
+        expect(
+          present.length === 0 || present.length === groupKeys.length,
+          `${label}: sync-diff-applied 效果字段组单命运违例（同现同缺；出现 ${present.join(',')}）`,
+        ).toBe(true);
+        if (present.length === groupKeys.length) {
+          const sync = event as unknown as {
+            readonly stateVectorChanged: boolean;
+            readonly applyEffect: 'changed' | 'noop';
+            readonly stateVectorBeforeHash: string;
+            readonly stateVectorAfterHash: string;
+          };
+          expect(sync.stateVectorBeforeHash).toMatch(/^[0-9a-f]{16}$/);
+          expect(sync.stateVectorAfterHash).toMatch(/^[0-9a-f]{16}$/);
+          expect(sync.stateVectorChanged).toBe(sync.stateVectorBeforeHash !== sync.stateVectorAfterHash);
+          expect(sync.applyEffect).toBe(sync.stateVectorChanged ? 'changed' : 'noop');
         }
       }
     }
@@ -1374,6 +1418,46 @@ describe('T9：事件内容安全（safe-field）', () => {
         expect(text.includes(b64), `${event.type} 泄漏 wire base64 子串`).toBe(false);
       }
     }
+  });
+});
+
+// ═══════════════════════════ issue #239：helpers 单元面（testing surface；锁算法冻结） ═══════════════════════════
+
+describe('issue #239 helpers（@nomicore/ws-replication/testing）：safeStateVector / stateVectorBytesEqual / stateVectorSafeDigest', () => {
+  it('stateVectorSafeDigest：确定性、16 位小写 hex 文法、基准向量锁定（算法冻结——双泳道 FNV-1a-32）', () => {
+    const empty = stateVectorSafeDigest(new Uint8Array(0));
+    expect(empty).toBe('811c9dc5811c9dc5'); // 双泳道均 basis-only（2166136261 = 0x811c9dc5）
+    const zeroZero = stateVectorSafeDigest(Uint8Array.of(0, 0));
+    expect(zeroZero).toBe('117697cd117697cd'); // Yjs 最小空 diff 探针 [0,0]
+    const inc = Uint8Array.from({ length: 10 }, (_, i) => i);
+    const incDigest = stateVectorSafeDigest(inc);
+    // 递增序列：正序泳道 2f854072 ≠ 逆序泳道 0825a114（双泳道可分辨，全 digest 锁双值）
+    expect(incDigest).toBe('2f8540720825a114');
+    for (const digest of [empty, zeroZero, incDigest]) {
+      expect(digest).toMatch(/^[0-9a-f]{16}$/);
+    }
+    // 确定性：同输入同输出（纯函数）
+    expect(stateVectorSafeDigest(inc)).toBe(incDigest);
+    expect(stateVectorSafeDigest(inc.slice())).toBe(incDigest);
+  });
+
+  it('safeStateVector：throwing reader → undefined（捕获折叠）；正常 reader → 原样返回', () => {
+    expect(safeStateVector(() => {
+      throw new Error('session closed (sentinel)');
+    })).toBeUndefined();
+    const sv = Uint8Array.of(1, 2, 3);
+    const out = safeStateVector(() => sv);
+    expect(out).toBeDefined();
+    expect(out!.byteLength).toBe(3);
+    expect(out![0]).toBe(1);
+    expect(out![2]).toBe(3);
+  });
+
+  it('stateVectorBytesEqual：相等 / 内容不等 / 长度不等三态', () => {
+    expect(stateVectorBytesEqual(Uint8Array.of(0, 0), Uint8Array.of(0, 0))).toBe(true);
+    expect(stateVectorBytesEqual(Uint8Array.of(0, 0), Uint8Array.of(0, 1))).toBe(false);
+    expect(stateVectorBytesEqual(Uint8Array.of(0, 0), Uint8Array.of(0, 0, 0))).toBe(false);
+    expect(stateVectorBytesEqual(new Uint8Array(0), new Uint8Array(0))).toBe(true);
   });
 });
 
