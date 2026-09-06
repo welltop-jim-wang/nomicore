@@ -5,10 +5,15 @@
  *
  * 返回不含尾换行；调用方按所在位置（块位 / 行内位）自行拼接换行与缩进。
  */
-export function tsdocLines(docs: readonly string[] | undefined, indent: string): string {
+export function tsdocLines(
+  docs: readonly string[] | undefined,
+  indent: string,
+  opts?: { semicolonFree?: boolean },
+): string {
   if (docs === undefined || docs.length === 0) return '';
-  // 多行 doc 条目（以 \n 起始）：`/**` 后不垫空格——否则首行残留行尾空格，
-  // semicolon-free 消费仓的 @stylistic/no-trailing-spaces 会拒绝生成物（issue #222 同 lint 门禁链）；
-  // 续行与闭星行逐字保留源缩进。
-  return docs.map((d) => (d.startsWith('\n') ? `${indent}/**${d} */` : `${indent}/** ${d} */`)).join('\n');
+  // 无分号模式下，多行 doc 的 `/**` 后不垫空格，避免首行留下行尾空格；
+  // 默认模式保留既有字节，避免未选择新格式的消费方发生 freshness 漂移。
+  return docs
+    .map((d) => (opts?.semicolonFree === true && d.startsWith('\n') ? `${indent}/**${d} */` : `${indent}/** ${d} */`))
+    .join('\n');
 }

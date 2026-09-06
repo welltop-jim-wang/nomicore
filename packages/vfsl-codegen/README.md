@@ -38,7 +38,7 @@ pnpm generate --domains /path/to/host --domain inventory \
 
 该模式下生成物全文零分号：语句终止符（import 行、别名声明）省略，对象类型字面量与接口成员逐行无分隔符（多字段字面量转为多行布局）。输出同样确定性、逐字节稳定；**生成与 `--check` 必须同带 `--semicolon-free`**——两种格式字节互斥，混用时 `--check` 必报过期（fail-closed，防格式漂移静默通过）。编程接口对应 `generateProjection(derived, { semicolonFree: true })`；默认输出（分号版）的分隔符布局保持不变。
 
-附带修正（与本开关无关、两种模式同生效）：多行 doc 注释块渲染消除行尾空格（`/**` 后不再垫空格）——此前两种模式的生成物都会被 `@stylistic/no-trailing-spaces` 拒绝。仅当 schema 含多行 doc 时默认模式字节才会变化，已有生成物经 `--check` 响亮报漂移后重新生成即可。
+多行 doc 注释块在无分号模式下同样消除行尾空格（`/**` 后不垫空格），满足 `@stylistic/no-trailing-spaces`；默认模式继续保留既有注释字节，避免未选择新格式的消费方发生无关 freshness 漂移。
 
 ## 工具层限制（非方言约束）
 

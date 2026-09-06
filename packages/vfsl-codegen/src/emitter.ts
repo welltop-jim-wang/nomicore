@@ -33,8 +33,7 @@ export interface GenerateProjectionOptions {
    * （Oxlint `@stylistic/semi: never` + `@stylistic/member-delimiter-style` multiline none）。
    * 开启后全文零分号——语句终止符（import/别名声明）省略、对象类型字面量与接口成员
    * 逐行无分隔符（多字段字面量转为多行布局）。默认 false，分隔符布局保持既有格式。
-   * （同提交另有一处与开关无关的输出修正：docs.ts 多行 doc 块消除行尾空格——
-   * 仅含多行 doc 的 schema 在默认模式下字节才会因此变化，`--check` 会响亮报漂移。）
+   * 多行 doc 块仅在此模式下消除 `/**` 后的行尾空格；默认模式保留既有字节。
    * 生成与 --check 必须使用同一取值（两种格式字节不同，混用必报过期）。
    */
   semicolonFree?: boolean;
@@ -184,7 +183,7 @@ export function generateProjection(derived: DerivedSchema, opts?: GenerateProjec
   // 段③ 增广载体（D5：顶层键 = ROOT 的字段，路径无 ROOT 前缀【逐行搬移，逻辑不变】）
   const augmentationLines: string[] = [];
   augmentationLines.push(`declare module '@nomicore/vfsl-protocol' {`);
-  const rootDoc = tsdocLines(derived.aliasDocs['ROOT'], '  ');
+  const rootDoc = tsdocLines(derived.aliasDocs['ROOT'], '  ', tables);
   if (rootDoc !== '') augmentationLines.push(rootDoc);
   augmentationLines.push('  interface VfslPathMap {');
   for (const field of root.fields) {
@@ -212,7 +211,7 @@ export function generateProjection(derived: DerivedSchema, opts?: GenerateProjec
 function emitAlias(name: string, tables: EmitTables): string {
   const node = tables.aliases[name]!;
   const value = tables.values[name]!;
-  const doc = tsdocLines(tables.aliasDocs[name], '');
+  const doc = tsdocLines(tables.aliasDocs[name], '', tables);
   const head = doc === '' ? '' : `${doc}\n`;
   const term = tables.semicolonFree ? '' : ';';
   if (node.kind === 'union' && value.kind === 'union') {
@@ -233,7 +232,7 @@ function emitInterfaceMember(
   const fieldPath = `ROOT.${field.name}`;
   const valueField = rootValue.fields.find((f) => f.name === field.name);
   if (valueField === undefined) throw desync(field.node, rootValue, fieldPath);
-  const doc = tsdocLines(tables.fieldDocs[fieldPath], '    ');
+  const doc = tsdocLines(tables.fieldDocs[fieldPath], '    ', tables);
   const prefix = doc === '' ? '    ' : `${doc}\n    `;
   const key = isIdentifier(field.name) ? field.name : `'${field.name}'`;
   const { optional, value } = splitOptional(valueField.value);
@@ -246,7 +245,7 @@ function emitInterfaceMember(
 // ---------------------------------------------------------------------------
 
 function emitNode(node: StructureNode, value: ValueSchema, path: string, tables: EmitTables, indent: string): string {
-  const doc = tsdocLines(tables.markerDocs[path], '');
+  const doc = tsdocLines(tables.markerDocs[path], '', tables);
   const kind =
     value.kind === 'ref'
       ? kindOfAlias(value.name, tables, path)
@@ -334,7 +333,7 @@ function emitObjectMembers(
       const doc = tsdocLines(tables.fieldDocs[fieldPath], '');
       parts.push(doc === '' ? body : `${doc} ${body}`);
     } else {
-      const doc = tsdocLines(tables.fieldDocs[fieldPath], childIndent);
+      const doc = tsdocLines(tables.fieldDocs[fieldPath], childIndent, tables);
       parts.push(doc === '' ? `${childIndent}${body}` : `${doc}\n${childIndent}${body}`);
     }
   }

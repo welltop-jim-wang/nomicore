@@ -127,10 +127,12 @@ describe('issue #222 — semicolonFree 发射：全文零分号', () => {
     expect(emitSf()).toBe(emitSf());
   });
 
-  it('默认模式回归锚：不开启 semicolonFree 时保持分号版字节（; 连接 + 终止符在场）', () => {
+  it('默认模式回归锚：不开启 semicolonFree 时保持既有分号与多行 doc 字节', () => {
     const out = generateProjection(derive(), { sourceText: FIXTURE });
     expect(out).toContain("import type { PathSchema } from '@nomicore/vfsl-protocol';");
     expect(out).toMatch(/export type Meta = \{ 'm': PathSchema<number, 'leaf'>; 'n': PathSchema<string, 'leaf'> \};/);
+    // 默认模式仍保留多行 doc 开头 `/** ` 的既有字节；仅无分号模式清理该行尾空格。
+    expect(out).toMatch(/\/\*\* \n {3}\* 多行字段文档第一行/);
   });
 });
 

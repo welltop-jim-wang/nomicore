@@ -116,6 +116,19 @@ domains/inventory/generated.ts
 
 绝对路径脚本仅用于本机联调，不应作为可移植的团队或 CI 契约。Nomicore 发布后，脚本应改为包提供的稳定 CLI 命令。
 
+若宿主强制生成物使用 semicolon-free TypeScript，可显式选择 `--semicolon-free`。生成与 freshness check 必须使用完全相同的格式标志：
+
+```json
+{
+  "scripts": {
+    "nomicore:generate": "nomicore-generate --domains . --semicolon-free",
+    "nomicore:generate:check": "nomicore-generate --domains . --check --semicolon-free"
+  }
+}
+```
+
+不要只在其中一条命令添加 `--semicolon-free`。默认格式和无分号格式逐字节互斥，标志不一致时 `--check` 会按 fail-closed 原则报告生成物过期。
+
 ## 4. 让 TypeScript 加载生成投影
 
 `generated.ts` 会增广 `@nomicore/vfsl-protocol` 的 `VfslPathMap`。宿主的 TypeScript program 必须包含生成文件，否则增广不会生效。
@@ -191,7 +204,7 @@ pnpm generate --domains /path/to/host --domain inventory \
   --out packages/inventory/src/generated/nomicore-schema.ts --check
 ```
 
-`--domain` 与 `--out` 必须同时提供；相对输出路径按 `--domains` 根解析。`schema.vfsl` 仍是唯一可编辑真相，CI 用 `--check` 做逐字节 freshness gate。迁移到 package-local projection 后删除旧默认 projection，不手工复制或维护第二份 projection。
+`--domain` 与 `--out` 必须同时提供；相对输出路径按 `--domains` 根解析。`schema.vfsl` 仍是唯一可编辑真相，CI 用 `--check` 做逐字节 freshness gate。迁移到 package-local projection 后删除旧默认 projection，不手工复制或维护第二份 projection。若选择无分号输出，以上两条命令都要追加 `--semicolon-free`，不能只修改生成或检查中的一侧。
 
 不要把整个仓库的 `domains/**/*.ts` 加入每个 package：同一 Program 中所有 `VfslPathMap` augmentation 会合并，无关 schema 会污染路径表，相同顶层字段还可能发生声明冲突。每个 package 只接入自己消费的 projection。
 
@@ -446,9 +459,10 @@ pnpm typecheck
 pnpm test
 ```
 
-推荐把 `nomicore:generate:check` 和 `typecheck` 加入宿主 CI。验收标准：
+推荐把 `nomicore:generate:check` 和 `typecheck` 加入宿主 CI。若宿主采用 `--semicolon-free`，`nomicore:generate` 与 `nomicore:generate:check` 必须都携带该标志；CI 不得用默认格式检查无分号生成物，反之亦然。验收标准：
 
 - `schema.vfsl` 可以解析和求值；
+- 生成与 `--check` 使用一致的格式标志；
 - `generated.ts` 已刷新且入仓；
 - 生成 diff 与 schema 修改一致；
 - 所有 namespace 路径和值通过宿主 TypeScript typecheck；
