@@ -12,6 +12,7 @@ import { join } from 'node:path';
 import { FileSchemaSource, assertVfslDialect, evaluate, parseVfsl } from '@nomicore/vfsl';
 import type { SchemaEnvelope } from '@nomicore/vfsl';
 import { generateProjection } from './emitter.js';
+import type { GenerateProjectionOptions } from './emitter.js';
 
 export interface ProjectionOutput {
   id: string;
@@ -19,6 +20,9 @@ export interface ProjectionOutput {
   outPath: string;
   text: string;
 }
+
+/** CLI 透传的生成选项（issue #222：semicolonFree 影响输出字节，--check 须与生成同取值）。 */
+export type CollectOptions = Pick<GenerateProjectionOptions, 'semicolonFree'>;
 
 /** 生成期业务错误（parse/evaluate 失败、idBase 约定破坏、同目录多 id 冲突）→ CLI exit 2。 */
 export class ProjectionError extends Error {
@@ -34,7 +38,7 @@ export class ProjectionError extends Error {
 }
 
 /** §5.3 流程 2–5：list → 逐 id load/断言/parse/evaluate/生成 → 冲突检查。 */
-export async function collectProjections(root: string, domain?: string): Promise<ProjectionOutput[]> {
+export async function collectProjections(root: string, domain?: string, opts?: CollectOptions): Promise<ProjectionOutput[]> {
   const source = new FileSchemaSource(root);
   const ids = await source.list();
   const selectedIds = domain === undefined
@@ -51,7 +55,7 @@ export async function collectProjections(root: string, domain?: string): Promise
   for (const id of selectedIds) {
     const env = await source.load(id);
     assertVfslDialect(env); // 消费方首动作 = 方言断言（ADR 0005 §1）
-    const text = projectionText(env);
+    const text = projectionText(env, opts);
     const idBase = baseOf(id);
     await assertIdBaseDir(root, idBase, id);
     const outPath = join(root, 'domains', idBase, 'generated.ts');
@@ -69,7 +73,7 @@ export async function collectProjections(root: string, domain?: string): Promise
 }
 
 /** parse + evaluate + 纯发射；失败 → ProjectionError（issues 全文进 stderr）。 */
-function projectionText(env: SchemaEnvelope): string {
+function projectionText(env: SchemaEnvelope, opts?: CollectOptions): string {
   const parsed = parseVfsl(env.text);
   if (!parsed.ok) {
     throw new ProjectionError(
@@ -84,7 +88,7 @@ function projectionText(env: SchemaEnvelope): string {
       env.id,
     );
   }
-  return generateProjection(result.derived, { sourceText: env.text });
+  return generateProjection(result.derived, { sourceText: env.text, semicolonFree: opts?.semicolonFree === true });
 }
 
 /** id 剥离尾部 `@<digits>` 后缀（无后缀 → 整串）。 */

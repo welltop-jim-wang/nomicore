@@ -19,6 +19,7 @@ import type { ProjectionOutput } from './collect.js';
 interface CliArgs {
   domains: string;
   check: boolean;
+  semicolonFree: boolean;
   domain?: string;
   out?: string;
 }
@@ -30,13 +31,16 @@ class CliUsageError extends Error {
   }
 }
 
-/** 参数解析先行（启动精简）：--domains <root>（默认 cwd）/ --check。 */
+/** 参数解析先行（启动精简）：--domains <root>（默认 cwd）/ --check / --semicolon-free。 */
 function parseArgs(argv: string[]): CliArgs {
-  const args: CliArgs = { domains: process.cwd(), check: false };
+  const args: CliArgs = { domains: process.cwd(), check: false, semicolonFree: false };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i] as string;
     if (a === '--check') {
       args.check = true;
+    } else if (a === '--semicolon-free') {
+      // issue #222：semicolon-free 输出格式（生成与 --check 须同带此标志）
+      args.semicolonFree = true;
     } else if (a === '--domains') {
       const v = argv[i + 1];
       if (v === undefined) {
@@ -77,7 +81,7 @@ function nonEmptyValue(value: string, flag: string): string {
 
 async function main(): Promise<number> {
   const args = parseArgs(process.argv.slice(2));
-  const outputs = await collectProjections(args.domains, args.domain);
+  const outputs = await collectProjections(args.domains, args.domain, { semicolonFree: args.semicolonFree });
   if (args.out !== undefined) {
     const output = outputs[0];
     if (output === undefined) throw new CliUsageError('自定义输出模式未找到目标领域');

@@ -28,6 +28,16 @@ import { tsdocLines } from './docs.js';
 export interface GenerateProjectionOptions {
   /** 源文本（仅用于头注哈希；缺失时头注写 `sha256:<未提供>`，仍确定性）。 */
   sourceText?: string;
+  /**
+   * 无分号输出模式（issue #222）：面向强制 semicolon-free TypeScript 的消费仓
+   * （Oxlint `@stylistic/semi: never` + `@stylistic/member-delimiter-style` multiline none）。
+   * 开启后全文零分号——语句终止符（import/别名声明）省略、对象类型字面量与接口成员
+   * 逐行无分隔符（多字段字面量转为多行布局）。默认 false，分隔符布局保持既有格式。
+   * （同提交另有一处与开关无关的输出修正：docs.ts 多行 doc 块消除行尾空格——
+   * 仅含多行 doc 的 schema 在默认模式下字节才会因此变化，`--check` 会响亮报漂移。）
+   * 生成与 --check 必须使用同一取值（两种格式字节不同，混用必报过期）。
+   */
+  semicolonFree?: boolean;
 }
 
 /** ROOT 形态范围限界（§3.2.1）：F2 仅支持封闭 map 形（裸对象 / YMap）。 */
@@ -108,13 +118,15 @@ export class AliasProtocolExportCollisionError extends Error {
   }
 }
 
-/** 发射上下文：派生 schema 七槽的只读视图（纯函数，无状态）。 */
+/** 发射上下文：派生 schema 七槽的只读视图 + 输出格式开关（纯函数，无状态）。 */
 interface EmitTables {
   aliases: Record<string, StructureNode>;
   values: Record<string, ValueSchema>;
   aliasDocs: Record<string, string[]>;
   fieldDocs: Record<string, string[]>;
   markerDocs: Record<string, string[]>;
+  /** 无分号模式（issue #222，见 GenerateProjectionOptions.semicolonFree）。 */
+  readonly semicolonFree: boolean;
 }
 
 /**
@@ -139,6 +151,7 @@ export function generateProjection(derived: DerivedSchema, opts?: GenerateProjec
     aliasDocs: derived.aliasDocs,
     fieldDocs: derived.fieldDocs,
     markerDocs: derived.markerDocs,
+    semicolonFree: opts?.semicolonFree === true,
   };
 
   // §3.2 root 行 + §3.2.1 范围限界：剥壳取内层 map（封闭字段）；非封闭 map/联合形 → 响亮拒绝
@@ -181,9 +194,11 @@ export function generateProjection(derived: DerivedSchema, opts?: GenerateProjec
   augmentationLines.push('}');
 
   // §3.1 布局冻结：头注 / import 行 / 段② / 段③，相邻非空段恰一空行（段②空时连空行消失）
+  // 无分号模式：接线行剥尾分号（PROTOCOL_IMPORT_LINE 仍为唯一数据源，派生而非另存副本）。
+  const importLine = tables.semicolonFree ? PROTOCOL_IMPORT_LINE.replace(/;$/, '') : PROTOCOL_IMPORT_LINE;
   const sections = [
     [buildHeader(opts?.sourceText)],
-    [PROTOCOL_IMPORT_LINE],
+    [importLine],
     aliasLines,
     augmentationLines,
   ].filter((section) => section.length > 0);
@@ -199,13 +214,15 @@ function emitAlias(name: string, tables: EmitTables): string {
   const value = tables.values[name]!;
   const doc = tsdocLines(tables.aliasDocs[name], '');
   const head = doc === '' ? '' : `${doc}\n`;
+  const term = tables.semicolonFree ? '' : ';';
   if (node.kind === 'union' && value.kind === 'union') {
     // 判别联合（§3.8）：成员声明序、成员互异；外壳 kind = 成员同形 kind（map 形 → 'map'）
     const common = unionKind(node, tables, name);
-    const members = emitUnionBodyMembers(node, value, name, tables, '', common);
-    return `${head}export type ${name} =\n  | ${members.join('\n  | ')};`;
+    // 无分号模式：map 成员字面量多行化后以 `  | ` 列为基准缩进（内层 +2、闭括号对齐 `|` 列）
+    const members = emitUnionBodyMembers(node, value, name, tables, tables.semicolonFree ? '  ' : '', common);
+    return `${head}export type ${name} =\n  | ${members.join('\n  | ')}${term}`;
   }
-  return `${head}export type ${name} = ${emitInner(node, value, name, tables, '')};`;
+  return `${head}export type ${name} = ${emitInner(node, value, name, tables, '')}${term}`;
 }
 
 function emitInterfaceMember(
@@ -220,7 +237,8 @@ function emitInterfaceMember(
   const prefix = doc === '' ? '    ' : `${doc}\n    `;
   const key = isIdentifier(field.name) ? field.name : `'${field.name}'`;
   const { optional, value } = splitOptional(valueField.value);
-  return `${prefix}${key}${optional}: ${emitNode(field.node, value, fieldPath, tables, '    ')};`;
+  const term = tables.semicolonFree ? '' : ';';
+  return `${prefix}${key}${optional}: ${emitNode(field.node, value, fieldPath, tables, '    ')}${term}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -256,7 +274,7 @@ function emitInner(node: StructureNode, value: ValueSchema, path: string, tables
         const { value: inner } = splitOptional(valueField.value);
         return `Record<string, ${emitNode(node.fields[0]!.node, inner, `${path}.<key>`, tables, indent)}>`;
       }
-      return `{ ${emitObjectMembers(node.fields, value, path, tables, indent)} }`;
+      return emitObjectMembers(node.fields, value, path, tables, indent);
     }
     case 'array': {
       if (value.kind !== 'array') throw desync(node, value, path);
@@ -291,7 +309,12 @@ function emitInner(node: StructureNode, value: ValueSchema, path: string, tables
   }
 }
 
-/** 封闭 map → 对象字面量成员（键一律加引号，§3.5）；可选性以 ?: 在字段位表达。 */
+/**
+ * 封闭 map → 对象类型字面量（含花括号；键一律加引号，§3.5；可选性以 ?: 在字段位表达）。
+ * 默认模式：单行 `{ 'a': X; 'b': Y }`（逐字节保持 §3.9 v3 既有格式）。
+ * 无分号模式（issue #222）：多行、成员逐行无分隔符（member-delimiter-style multiline=none），
+ * 成员 doc 由行内位移至成员上一行；空 map 收敛为 `{}`。
+ */
 function emitObjectMembers(
   structFields: MapField[],
   valueObj: Extract<ValueSchema, { kind: 'object' }>,
@@ -300,16 +323,24 @@ function emitObjectMembers(
   indent: string,
 ): string {
   const parts: string[] = [];
+  const childIndent = tables.semicolonFree ? `${indent}  ` : indent;
   for (const f of structFields) {
     const fieldPath = `${path}.${f.name}`;
     const valueField = valueObj.fields.find((vf) => vf.name === f.name);
     if (valueField === undefined) throw desync(f.node, valueObj, fieldPath);
-    const doc = tsdocLines(tables.fieldDocs[fieldPath], '');
     const { optional, value } = splitOptional(valueField.value);
-    const body = `'${f.name}'${optional}: ${emitNode(f.node, value, fieldPath, tables, indent)}`;
-    parts.push(doc === '' ? body : `${doc} ${body}`);
+    const body = `'${f.name}'${optional}: ${emitNode(f.node, value, fieldPath, tables, childIndent)}`;
+    if (!tables.semicolonFree) {
+      const doc = tsdocLines(tables.fieldDocs[fieldPath], '');
+      parts.push(doc === '' ? body : `${doc} ${body}`);
+    } else {
+      const doc = tsdocLines(tables.fieldDocs[fieldPath], childIndent);
+      parts.push(doc === '' ? `${childIndent}${body}` : `${doc}\n${childIndent}${body}`);
+    }
   }
-  return parts.join('; ');
+  if (!tables.semicolonFree) return `{ ${parts.join('; ')} }`;
+  if (parts.length === 0) return '{}';
+  return `{\n${parts.join('\n')}\n${indent}}`;
 }
 
 /** 联合成员发射（声明序，common = 全员同形成员 kind）：
@@ -332,7 +363,7 @@ function emitUnionBodyMembers(
     }
     if (common === 'map') {
       if (m.kind === 'map' && memberValue.kind === 'object') {
-        return `{ ${emitObjectMembers(m.fields, memberValue, memberPath, tables, indent)} }`;
+        return emitObjectMembers(m.fields, memberValue, memberPath, tables, indent);
       }
       return emitNode(m, memberValue, memberPath, tables, indent);
     }

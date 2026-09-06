@@ -26,6 +26,20 @@ pnpm generate \
 
 `--domain` 与 `--out` 必须同时提供。相对 `--out` 按 `--domains` 根目录解析，绝对路径保持原样；该模式只生成一个 id base 匹配的领域。普通模式创建输出父目录并写盘；`--check` 只在内存中生成并逐字节比较，fresh 退出 0，缺失/过期退出 1，且不写文件。单领域模式不扫描默认 `domains/*/generated.ts` 的孤儿，默认全量模式的 orphan 检查保持不变。
 
+## 无分号输出（`--semicolon-free`，issue #222）
+
+面向强制 semicolon-free TypeScript 的消费仓（Oxlint `@stylistic/semi: never` 与 `@stylistic/member-delimiter-style` multiline `none`）：
+
+```bash
+pnpm generate --domains /path/to/host --domain inventory \
+  --out packages/inventory/src/generated/nomicore-schema.ts \
+  --semicolon-free
+```
+
+该模式下生成物全文零分号：语句终止符（import 行、别名声明）省略，对象类型字面量与接口成员逐行无分隔符（多字段字面量转为多行布局）。输出同样确定性、逐字节稳定；**生成与 `--check` 必须同带 `--semicolon-free`**——两种格式字节互斥，混用时 `--check` 必报过期（fail-closed，防格式漂移静默通过）。编程接口对应 `generateProjection(derived, { semicolonFree: true })`；默认输出（分号版）的分隔符布局保持不变。
+
+附带修正（与本开关无关、两种模式同生效）：多行 doc 注释块渲染消除行尾空格（`/**` 后不再垫空格）——此前两种模式的生成物都会被 `@stylistic/no-trailing-spaces` 拒绝。仅当 schema 含多行 doc 时默认模式字节才会变化，已有生成物经 `--check` 响亮报漂移后重新生成即可。
+
 ## 工具层限制（非方言约束）
 
 以下是**本生成器 v1 的实现边界**，不改变方言合法性（v1-spec / ADR 0003 对这些构造依然合法）：
