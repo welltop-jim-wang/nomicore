@@ -169,7 +169,7 @@ function resolvePluginIdleTimeoutMs(config: NamespaceRegistryPluginConfig): numb
  * 「Host 集成需要插件面 = 后续票」即本通道）；config 键集（{idleTimeoutMs?}）保持
  * 冻结、零新增配置键。lenient 处置（D11）：host 缺省/undefined/缺 diagnosticLog =
  * 不注入（既有单参行为零变化）；读取包在非抛边界内——畸形形状交给 Registry 层
- * 既有隔离（createCreateDiag → no-op 单例；resolver 形状门），绝不影响 apply。
+ * 既有隔离（createDiagRuntime → no-op 单例；resolver 形状门），绝不影响 apply。
  */
 export function createNamespaceRegistryPlugin(
   config: NamespaceRegistryPluginConfig = {},

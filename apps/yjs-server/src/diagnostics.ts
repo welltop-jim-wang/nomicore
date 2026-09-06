@@ -6,11 +6,14 @@
  * - **per-namespace File adapter 缓存 = AC3 单 writer**：进程寿命内恒一实例
  *   （`Map<namespaceId, FileDiagnosticLog>`）；Runtime generation 更替（idle close →
  *   reopen）复用同一 adapter 对象（对象同一性），跨进程经 current.json 续写（#153）。
- * - **无归属通道（C1 修订后语义）**：`binding.emitter` 恒丢弃 + 计数
- *   （`unattributed`/`manager-closed`）——`createCreateDiag` 构造期捕获的共享
- *   emitter（全部 initStream 之前的 create emission 落此通道，绝不伪造归属）。
- * - **数据键控归因（§4-D4）**：`binding.runtimeEmitterFor(ns)` 每次以 namespaceId
- *   对 `Map` 查表——归因键是数据不是时间，C1 竞态类别整体消灭。
+ * - **无归属通道（issue #226 后语义）**：`binding.emitter` 恒丢弃 + 计数
+ *   （`unattributed`/`manager-closed`）——#226 兑现后该共享通道只接收 Registry
+ *   公共入口级拒绝（acceptance/identity——namespaceId 生成前的无归属面）与任何
+ *   结构性迟到流量；create 槽内建流前结局已改经 Registry diag-pump 以候选
+ *   namespaceId 数据键控投递（runtimeEmitterFor），不再落此通道（绝不伪造归属）。
+ * - **数据键控归因（§4-D4 + #226）**：`binding.runtimeEmitterFor(ns)` 每次以
+ *   namespaceId 对 `Map` 查表——归因键是数据不是时间，C1 竞态类别整体消灭；
+ *   #226 后调用时机由 Registry 延迟投递泵搬至业务槽外（macrotask drain）。
  * - **有界 drain（§4-D7）**：close() = closed 置位 + Map 引用释放，O(1)、幂等、
  *   零 fs、零 await——first-slice File adapter 无队列/无常驻 fd，停机无积压可冲。
  * - **健康面（§4-D8）**：adapter observer → NDJSON 事件
@@ -20,9 +23,10 @@
  *   `{ event: 'diagnostic-log-manager-failed', code }`（结构性不可达防御）。
  *
  * 构造期同步 fs（mkdir / manifest `'wx'` / genesis append / current.json rename +
- * reopen 健康分析 + 构造期 retention sweep——#154 `sweepOnOpen` 缺省 true）只发生在
- * Registry open/create/import 槽内（write sequencer 尚不存在——#153 纪律合规落点，
- * 每 namespace 每进程至多一次；D3/M3 成本注记）。
+ * reopen 健康分析 + 构造期 retention sweep——#154 `sweepOnOpen` 缺省 true）不再发生
+ * 在 Registry open/create/import 槽内（issue #226：Registry 侧 diag-pump 把这些
+ * seam 调用推迟到业务槽外的 macrotask drain——adapter 构造时机随之出槽；仍为每
+ * namespace 每进程至多一次，D3/M3 成本注记）。
  */
 import { createFileDiagnosticLog, type FileDiagnosticLog } from '@nomicore/namespace-diagnostic-log';
 import type { NamespaceDiagnosticChangeEmitter } from '@nomicore/namespace-diagnostic-log';
@@ -68,9 +72,11 @@ export function createHostDiagnosticsManager(
     });
   };
 
-  // —— 无归属通道（C1）：恒丢弃 + 计数；消费方 = createCreateDiag 构造期捕获的
-  //    共享 emitter（全部 initStream 之前的 create emission）。事件不携 namespaceId
-  //    （无归属是该 reason 的词义本体——伪造归属正是要避免的缺陷，§4-D8）。 ——
+  // —— 无归属通道（C1 + issue #226 后语义）：恒丢弃 + 计数；消费方 = Registry
+  //    诊断装配（createDiagRuntime）在公共入口无归属拒绝（acceptance/identity——
+  //    namespaceId 生成之前）时走的同步共享 emitter；create 槽内建流前结局 #226 起
+  //    经 diag-pump 数据键控投递、不再落此通道。事件不携 namespaceId（无归属是该
+  //    reason 的词义本体——伪造归属正是要避免的缺陷，§4-D8）。 ——
   const unattributedEmitter: NamespaceDiagnosticChangeEmitter = {
     emit: () => drop(closed ? 'manager-closed' : 'unattributed'),
   };

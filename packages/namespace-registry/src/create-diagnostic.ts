@@ -1,6 +1,7 @@
 /**
- * @nomicore/namespace-registry —— create 诊断日志接线模块（issue #150）：
- * CreateDiag 环境 / emission 组装 / 吞没防御 / issues 投影 / genesis bytes。
+ * @nomicore/namespace-registry —— create 诊断日志接线模块（issue #150/#155/#226）：
+ * CreateDiag 环境 / emission 组装 / 吞没防御 / issues 投影 / genesis bytes /
+ * per-namespace 延迟投递泵（diag-pump）路由。
  *
  * 职责边界（SA1 设计 §6，对齐 #149 `namespace-runtime/src/diagnostic.ts` 先例）：
  * - producer 只做语义 emission（ADR-0011「Interface 与 seam」节）——operation 恒
@@ -22,6 +23,21 @@
  *   `schema-write.ts:315-317` 同源语义复制先例本地复刻并显式标注基准）。validate 类
  *   逐字段同形透传（零改写、零码派生）。
  *
+ * #226（创建诊断覆盖 + 生命周期隔离；SA1 design §3.2/§3.3）路由三态：
+ * - seam 提供 `runtimeEmitterFor`（生产形状）→ **泵路径**：一切可能触碰存储的
+ *   seam 调用（initStream 建流 / runtimeEmitterFor 解析 / ns-bound emit）入队
+ *   per-namespace diag-pump，在 macrotask drain（业务槽外）执行；槽内/槽间窗口内
+ *   残余 = O(1) 组装 + 入队。建流前早结局（8 点）以**候选 namespaceId 数据键控**
+ *   投递（被拒 create 无后续 stream → 泵先 `initStream(ns, undefined)` genesis-less
+ *   建流——ADR-0012 L22「genesis 未成功写入时 stream 仍可记录诊断事实」——再落
+ *   结局记录）；`createRuntimeDiagResolver` 产物 emitter = 延迟 wrapper
+ *   （emit = O(1) 入队）——open/create/import 三处 factory 第三参与 Runtime
+ *   write-sequencer 槽间窗口的 emitSlot 同步存储同步出关键路径。
+ * - seam 未提供 `runtimeEmitterFor`（#150 时代 Host 形状）→ **legacy 路径逐字节
+ *   现行**（同步共享 emitter / initStream 同步调用）——#150 冻结契约零漂移面。
+ * - 公共入口 acceptance/identity 拒绝（namespaceId 生成之前，无归属可用）→ 恒走
+ *   同步共享通道（非缺陷 A 对象；SA1 §7.2）。
+ *
  * 模块导出纪律（设计 §10/§12）：零导出到公共面（index.ts 不 re-export）；registry.ts
  * 经相对导入消费。
  */
@@ -31,21 +47,28 @@ import type {
   EmissionInput,
   EmissionResult,
   NamespaceDiagnosticChangeEmitter,
+  NamespaceDiagnosticChangeEmission,
   Stage,
 } from '@nomicore/namespace-diagnostic-log';
 import type { Clock } from '@nomicore/clock';
 import { DocRuntimeFatalError } from '@nomicore/doc-runtime';
+import { createDiagPump, type DiagPump } from './diag-pump.js';
 import type { NamespaceRegistryDiagnosticLog } from './types.js';
 
 /** 诊断环境（构造栈一次成型）：diagnosticLog 缺席 = 全 no-op 单例。 */
 export interface CreateDiag {
-  /** 槽内结局（observedAt 复用槽内 Clock 步的 createdAt 字符串——零额外读数）。 */
-  emitOutcome(observedAt: string, e: CreateEmissionArgs): void;
-  /** Clock 步之前终结的结局（observedAt 由本助手读一次 clock；clock 故障 → 丢弃）。 */
-  emitEarlyOutcome(e: CreateEmissionArgs): void;
+  /** 槽内结局（observedAt 复用槽内 Clock 步的 createdAt 字符串——零额外读数）。
+   *  #226：`namespaceId` = 本次 attempt 的候选 id（建流前早结局的归属键——槽内
+   *  发射时点恒在手；公共入口无 id → 不调用本方法）。 */
+  emitOutcome(namespaceId: string, observedAt: string, e: CreateEmissionArgs): void;
+  /** Clock 步之前终结的结局（observedAt 由本助手读一次 clock；clock 故障 → 丢弃）。
+   *  #226：`namespaceId` = 候选 id（槽内）；`undefined` = 公共入口 acceptance /
+   *  identity 拒绝（id 生成前，无归属可用 → 恒同步共享通道）。 */
+  emitEarlyOutcome(namespaceId: string | undefined, e: CreateEmissionArgs): void;
   /** #155（§4-D4/C1）：initStream 之后的槽内结局（#17 committed / #18 runtime-construction
-   *  fatal）——每次调用以 namespaceId **数据**现场解析 ns-bound emitter（零共享可变
-   *  路由状态——C1 竞态类别整体消灭）；resolver 缺席/违约 → 静默丢弃（D11/i1）。 */
+   *  fatal）——每次调用以 namespaceId **数据**路由 ns-bound emitter（零共享可变
+   *  路由状态——C1 竞态类别整体消灭）；#226：路由经泵延迟投递（drain 内解析
+   *  emitter）；resolver 缺席/违约 → legacy 回退 / 静默丢弃（D11/i1）。 */
   emitStreamOutcome(namespaceId: string, observedAt: string, e: CreateEmissionArgs): void;
   /** stream 建立缝（committed 事实确立后调用；bytes 尽力供给）。 */
   initStream(namespaceId: string, genesisUpdateBytes: Uint8Array | undefined): void;
@@ -122,13 +145,14 @@ function readEarlyObservedAt(clock: Clock): string | undefined {
 }
 
 /**
- * issues 投影（DC-4 展开；SA2 R2-M2 三层防御，只被 emitAttempt 在吞没 try 边界内调用）：
+ * issues 投影（DC-4 展开；SA2 R2-M2 三层防御，只在 assembleEmission 的吞没 try
+ * 边界内调用）：
  * 1. 数组级——raw 非数组（或检查处 throw，如敌对 proxy）→ 空数组（调用方整组省略
  *    issues 字段，emission 照常发出）；
  * 2. 条目级——逐条形状检查（compile：kind 判别 + issue.message string + issue.code
  *    可 String 化；validate：message string + path 数组且段为 string/finite number），
  *    意外形状条目跳过该条；条目读取包在逐条 try/catch 内（敌意 getter throw 只废该条）；
- * 3. 整体级——任何逃逸 throw 由 emitAttempt 外层 try 收编 → 整条 emission 丢弃。
+ * 3. 整体级——任何逃逸 throw 由 assembleEmission 外层 try 收编 → 整条 emission 丢弃。
  */
 function projectIssues(raw: readonly unknown[], kind: 'compile' | 'validate'): DiagnosticIssue[] {
   let items: readonly unknown[];
@@ -198,20 +222,25 @@ function projectValidateIssue(item: unknown): DiagnosticIssue | undefined {
 }
 
 /**
- * 语义 emission 共同内核（emitOutcome/emitEarlyOutcome 共用；两者只差 observedAt
- * 来源）。**吞没一切**（ADR-0011 producer 防御义务 + emit 接缝「不得阻塞、throw」
- * 语义）：emitter 同步 throw（AC4 锚）、issues 投影期任何异常一律隔离——绝不改变
- * 业务结果；emit 尝试恰一次，不重试。attemptId 省略 → emitter 管线 CSPRNG 生成
- * `att-`+32hex（pipeline.ts 既有）；durationMs/context 省略（无来源，不发明）。
+ * 语义 emission 组装（emitAttempt 与泵路径共用；载荷字段与 #150/#155 现状逐字节
+ * 同位——#226 只改传输通道与时机，不改 record 内容面：AC5 内容锚逐字段维持）。
+ * **吞没一切**（ADR-0011 producer 防御义务 + emit 接缝「不得阻塞、throw」语义）：
+ * issues 投影期任何异常一律隔离——绝不改变业务结果；组装失败 → 该条 emission
+ * 丢弃（诚实缺席；与既有 emitAttempt 吞没边界同语义）。attemptId 省略 → emitter
+ * 管线 CSPRNG 生成 `att-`+32hex（pipeline.ts 既有）；durationMs/context 省略（无
+ * 来源，不发明）。
  */
-function emitAttempt(emitter: NamespaceDiagnosticChangeEmitter, observedAt: string, e: CreateEmissionArgs): void {
+function assembleEmission(
+  observedAt: string,
+  e: CreateEmissionArgs,
+): NamespaceDiagnosticChangeEmission | undefined {
   try {
     // —— issues 投影在吞没 try 边界内执行（SA2 R2-M2）——
     const issues =
       e.rawIssues !== undefined && e.issuesKind !== undefined
         ? projectIssues(e.rawIssues, e.issuesKind)
         : undefined;
-    emitter.emit({
+    return {
       operation: 'namespace-create', // ADR 0011 v1 封闭 operation 词表
       stage: e.stage,
       observedAt, // 注入 Clock 同源 ISO（禁墙钟）
@@ -221,11 +250,27 @@ function emitAttempt(emitter: NamespaceDiagnosticChangeEmitter, observedAt: stri
       ...(issues !== undefined && issues.length > 0 ? { issues } : {}),
       input: e.input,
       result: e.result,
-    });
+    };
   } catch {
     /* ADR-0011「Runtime/Registry/复制实现仍防御 adapter 违约」条款 + emit 接缝
-       「不得阻塞、throw」语义：emitter 同步 throw（AC4 锚）、issues 投影期任何
-       异常一律隔离——吞没，绝不改变业务结果；emit 尝试恰一次，不重试。 */
+       「不得阻塞、throw」语义：issues 投影期任何异常一律隔离——吞没，绝不改变
+       业务结果；组装尝试恰一次，不重试。 */
+    return undefined;
+  }
+}
+
+/**
+ * legacy 同步发射（#150 时代 Host 形状 + 公共入口无归属拒绝；与 #150 既有行为
+ * 逐字节一致）：直接 emit；emitter 同步 throw → 吞没（AC4 锚）。emit 尝试恰一次，
+ * 不重试。
+ */
+function emitAttempt(emitter: NamespaceDiagnosticChangeEmitter, observedAt: string, e: CreateEmissionArgs): void {
+  const record = assembleEmission(observedAt, e);
+  if (record === undefined) return; // 组装失败（issues 投影违约）→ 该条丢弃
+  try {
+    emitter.emit(record);
+  } catch {
+    /* emitter 同步 throw（AC4 锚）→ 吞没，绝不改变业务结果 */
   }
 }
 
@@ -244,11 +289,24 @@ function readRuntimeEmitterResolver(
   }
 }
 
+/** #226：非抛读取 seam `initStream` 成员（泵路径的建流调用面；缺席 → undefined）。 */
+function readInitStreamMember(
+  diagnosticLog: NamespaceRegistryDiagnosticLog,
+): ((namespaceId: string, genesisUpdateBytes: Uint8Array | undefined) => void) | undefined {
+  try {
+    const candidate = (diagnosticLog as { initStream?: unknown }).initStream;
+    return typeof candidate === 'function'
+      ? (candidate as (namespaceId: string, genesisUpdateBytes: Uint8Array | undefined) => void)
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /**
  * #155 单次解析 + 形状门（非抛；每次调用独立 try——D11 隔离：解析 throw / 返回
  * undefined / 畸形形状（非 object / emit 非函数）→ undefined）。双消费方共用单一
- * 实现：`emitStreamOutcome`（create 槽数据键控路由）与 `createRuntimeDiagResolver`
- * （open/create/import 三处 RuntimeFactory 第三参）。
+ * 实现：`emitStreamOutcome` 的 legacy 回退面与泵 drain 的 ns 解析面。
  */
 function resolveEmitterOnce(
   resolver: ((namespaceId: string) => unknown) | undefined,
@@ -277,41 +335,28 @@ export interface RuntimeDiagResolved {
   readonly clock: () => number;
 }
 
-/**
- * #155（§5.4）Runtime 诊断解析器（非抛边界；registry.ts 构造期一次成型、三处
- * factory 调用点现场解析）：`diagnosticLog` 缺席/无 `runtimeEmitterFor` → 恒 undefined
- * 解析器（两参既有行为零漂移）；命中 → `{ emitter, clock: () => clock.now() }`
- * （emitter↔clock 成对——#149 §5.2：observedAt 唯一来源 = Registry 注入 Clock）。
- */
-export function createRuntimeDiagResolver(
-  diagnosticLog: NamespaceRegistryDiagnosticLog | undefined,
-  clock: Clock,
-): (namespaceId: string) => RuntimeDiagResolved | undefined {
-  const resolver = diagnosticLog == null ? undefined : readRuntimeEmitterResolver(diagnosticLog);
-  if (resolver === undefined) return () => undefined;
-  return (namespaceId: string): RuntimeDiagResolved | undefined => {
-    const emitter = resolveEmitterOnce(resolver, namespaceId);
-    if (emitter === undefined) return undefined;
-    return { emitter, clock: () => clock.now() };
-  };
+/** 装配产物（registry.ts 构造期一次取得——设计 §3.3：两构造共享同一泵实例）。 */
+export interface CreateDiagRuntimeAssembled {
+  /** CreateDiag（发射面路由；接口签名见上）。 */
+  readonly diag: CreateDiag;
+  /** per-namespace Runtime 诊断解析器（非抛；缺省 → 恒 undefined 解析器）。 */
+  readonly resolveRuntimeDiag: (namespaceId: string) => RuntimeDiagResolved | undefined;
 }
 
 /**
- * CreateDiag 一次成型（构造栈内调用；diagnosticLog 缺席/畸形 → no-op 单例）。
- *
- * 【SA4 R1 B1 修订】seam 对象属性读取全部纳入**真非抛边界**：`emitter` 在构造栈内
- * 一次读取并做最小形状校验（非 null/object 且 `emit` 为 function）；null、敌意
- * getter（Proxy trap throw）、畸形对象（缺失/非函数 emit）一律收敛为「日志禁用」
- * （NOOP_DIAG）——此后 emit/initStream 不再读取 `diagnosticLog` 本体属性
- * （emit 侧只用构造期捕获的 emitter 引用），日志侧任何异常都不可能触达 create
- * 业务调用栈（SA6 AC4 隔离面在 seam 对象层的补全：create ok/duplicate resolve
- * 恒不受违约装配影响）。
+ * 单一诊断装配（#150/#155/#226 三票共用；registry.ts 构造期一次调用）：
+ * `diagnosticLog` 缺席/畸形 emitter → 恒 no-op diag + undefined 解析器（零日志
+ * 行为、零开销——与既有完全一致）；emitter 在场 + 无 `runtimeEmitterFor` →
+ * legacy 路径（#150 缓冲型 Host 逐字节现行）；emitter 在场 + 有
+ * `runtimeEmitterFor` → #226 泵路径（见文件头路由三态）。
  */
-export function createCreateDiag(
+export function createDiagRuntime(
   diagnosticLog: NamespaceRegistryDiagnosticLog | undefined,
   clock: Clock,
-): CreateDiag {
-  if (diagnosticLog == null) return NOOP_DIAG; // undefined/null 均 = 日志禁用（SA4 R1 B1：收紧为 == null）
+): CreateDiagRuntimeAssembled {
+  if (diagnosticLog == null) {
+    return { diag: NOOP_DIAG, resolveRuntimeDiag: () => undefined }; // undefined/null 均 = 日志禁用
+  }
   let emitter: NamespaceDiagnosticChangeEmitter | undefined;
   try {
     const candidate = (diagnosticLog as { emitter?: unknown }).emitter;
@@ -325,57 +370,143 @@ export function createCreateDiag(
   } catch {
     emitter = undefined;
   }
-  if (emitter === undefined) return NOOP_DIAG;
+  if (emitter === undefined) {
+    return { diag: NOOP_DIAG, resolveRuntimeDiag: () => undefined };
+  }
   // #155（§4-D4/C1）：构造期一次非抛读取 runtimeEmitterFor（双消费方共享同一
   // resolveEmitterOnce 形状门/吞没边界——D11）。
   const streamResolver = readRuntimeEmitterResolver(diagnosticLog);
-  return {
-    // 槽内结局：observedAt 由调用方保证为槽内 Clock 步的 createdAt 字符串（零额外读数）
-    emitOutcome: (observedAt, e) => {
-      emitAttempt(emitter, observedAt, e);
-    },
-    // Clock 步之前终结：诊断侧读一次 clock；clock 故障 → 该条 emission 丢弃
-    emitEarlyOutcome: (e) => {
-      const observedAt = readEarlyObservedAt(clock);
-      if (observedAt === undefined) return;
-      emitAttempt(emitter, observedAt, e);
-    },
-    // #155（§4-D4/C1）：initStream 之后的槽内结局——每次调用以 namespaceId **数据**
-    // 现场解析 ns-bound emitter（Map 键控查表；零共享可变路由状态——C1 竞态类别消灭）。
-    // 路由三态（与 D4/§6.4 逐字一致）：
-    //   1. seam 提供 runtimeEmitterFor 且本次解析命中 → ns-bound emitter（生产路径）；
-    //   2. seam 提供 runtimeEmitterFor 但本次解析违约（throw/畸形/undefined）→ 静默
-    //      丢弃（D11/i1 备案：生产供应方恒返回良构 emitter 或丢弃桩）；
-    //   3. seam 未提供 runtimeEmitterFor（#150 时代 Host 形状）→ **legacy fallback**：
-    //      退回构造期捕获的共享 emitter——与 #150 既有行为逐字节一致（#150 SA6 契约
-    //      锚：共享 emitter 接收 #17/#18）。fallback 是 seam 的静态属性（无 resolver），
-    //      不含任何跨续段可变路由状态——C1 论证不受影响（归因键仍是调用点静态分类 +
-    //      namespaceId 数据；生产 Host 管理器恒提供 resolver ⇒ 生产恒走数据键控）。
-    emitStreamOutcome: (namespaceId, observedAt, e) => {
-      const resolved = resolveEmitterOnce(streamResolver, namespaceId);
-      if (resolved !== undefined) {
-        emitAttempt(resolved, observedAt, e);
-        return;
-      }
-      if (streamResolver === undefined) {
-        emitAttempt(emitter, observedAt, e);
-        return;
-      }
-      /* resolver 在场但解析违约 → 静默丢弃（D11/i1） */
-    },
-    // stream 建立缝：Host 函数同步 throw = 违约 → 吞没隔离（AC4「stream init 失败
-    // 不改 create 结果」的 Registry 侧义务）；LOG_STREAM_INIT_FAILED 等健康事件由
-    // Host 侧 adapter 的 observer 自行产生，Registry 不代发、不伪造。属性读取
-    // （`initStream` getter）与函数调用均在同一吞没 try 内（SA4 R1 B1）。
+  if (streamResolver === undefined) {
+    // —— legacy 路径（#150 缓冲型 Host 形状；逐字节现行行为）——
+    return {
+      diag: {
+        // 槽内结局：observedAt 由调用方保证为槽内 Clock 步的 createdAt 字符串
+        // （零额外读数）；namespaceId 参数在 legacy 形状下无归属通道可寻——忽略
+        // （共享 emitter 是 #150 时代冻结语义，行为不变）。
+        emitOutcome: (_namespaceId, observedAt, e) => {
+          emitAttempt(emitter, observedAt, e);
+        },
+        // Clock 步之前终结：诊断侧读一次 clock；clock 故障 → 该条 emission 丢弃。
+        // namespaceId=undefined（公共入口）与槽内候选 id 在 legacy 形状下同路——
+        // 恒同步共享 emitter（与 #150 既有行为逐字节一致）。
+        emitEarlyOutcome: (_namespaceId, e) => {
+          const observedAt = readEarlyObservedAt(clock);
+          if (observedAt === undefined) return;
+          emitAttempt(emitter, observedAt, e);
+        },
+        // #155（§4-D4/C1）：initStream 之后的槽内结局——legacy 回退（seam 静态无
+        // resolver）→ 共享 emitter（#150 契约锚：#17/#18 落共享通道）。归因键仍
+        // 是调用点静态分类 + namespaceId 数据；#150 时代 Host 无 ns-bound 通道。
+        emitStreamOutcome: (_namespaceId, observedAt, e) => {
+          emitAttempt(emitter, observedAt, e);
+        },
+        // stream 建立缝：Host 函数同步 throw = 违约 → 吞没隔离（AC4「stream init
+        // 失败不改 create 结果」的 Registry 侧义务）；LOG_STREAM_INIT_FAILED 等健康
+        // 事件由 Host 侧 adapter 的 observer 自行产生，Registry 不代发、不伪造。
+        // 属性读取（`initStream` getter）与函数调用均在同一吞没 try 内（SA4 R1 B1）。
+        initStream: (namespaceId, genesisUpdateBytes) => {
+          try {
+            const initStream = (diagnosticLog as {
+              initStream?: (namespaceId: string, genesisUpdateBytes: Uint8Array | undefined) => void;
+            }).initStream;
+            initStream?.(namespaceId, genesisUpdateBytes);
+          } catch {
+            /* Host 违约（同步 throw / 敌意 getter）→ 吞没 */
+          }
+        },
+      },
+      resolveRuntimeDiag: () => undefined, // 两参既有行为零漂移（#150 时代形状）
+    };
+  }
+
+  // —— #226 泵路径（生产形状：有 runtimeEmitterFor）——
+  const initStreamMember = readInitStreamMember(diagnosticLog);
+  const pump: DiagPump = createDiagPump({
+    // drain 内建流调用面（成员缺席 → no-op——路由层已保证缺席时不入队建流任务；
+    // 双保险收编 Host 违约 throw）。
     initStream: (namespaceId, genesisUpdateBytes) => {
       try {
-        const initStream = (diagnosticLog as {
-          initStream?: (namespaceId: string, genesisUpdateBytes: Uint8Array | undefined) => void;
-        }).initStream;
-        initStream?.(namespaceId, genesisUpdateBytes);
+        initStreamMember?.(namespaceId, genesisUpdateBytes);
       } catch {
-        /* Host 违约（同步 throw / 敌意 getter）→ 吞没 */
+        /* Host 违约（同步 throw）→ 吞没（drain 内，业务路径外） */
       }
     },
+    // drain 内 ns-bound emitter 解析（resolveEmitterOnce 非抛边界复用）。
+    resolveEmitter: (namespaceId) => resolveEmitterOnce(streamResolver, namespaceId),
+  });
+  // 泵侧「该 ns 已有流」登记（seed 决策：被拒 create 的补建流只发生一次——
+  // SA1 §3.2「若该 ns 尚无流」；成功路径 initStream 亦登记——同一 ns 的后续
+  // 早结局（终局后重试/重建场景）不重复补建）。
+  const streamedNamespaces = new Set<string>();
+  const enqueueInitStreamTask = (namespaceId: string, genesisUpdateBytes: Uint8Array | undefined): void => {
+    streamedNamespaces.add(namespaceId);
+    pump.enqueueInitStream(namespaceId, genesisUpdateBytes);
+  };
+  /** 被拒 create 的 genesis-less 补建流（诚实缺席 genesis——ADR-0012 L22）。 */
+  const seedRejectedStreamIfAbsent = (namespaceId: string): void => {
+    if (initStreamMember === undefined || streamedNamespaces.has(namespaceId)) return;
+    enqueueInitStreamTask(namespaceId, undefined);
+  };
+  /** 泵投递（emission 已在捕获点组装完毕——泵只搬运；drop 语义由 drain 内
+   *  解析违约/emitter throw 的既有吞没边界承载）。 */
+  const enqueueEmit = (namespaceId: string, emission: NamespaceDiagnosticChangeEmission): void => {
+    pump.enqueueEmit(namespaceId, emission);
+  };
+
+  return {
+    diag: {
+      // 槽内结局（#226）：以候选 namespaceId 数据键控投递——先补建流（被拒 create
+      // 无后续 stream）再落结局记录（同 ns 队列 FIFO：建流在前、结局在后——与成功
+      // create 的 initStream→#17 次序同构）；载荷组装在捕获点完成（字段/observedAt
+      // 与 #150/#155 现状同位，零漂移）。
+      emitOutcome: (namespaceId, observedAt, e) => {
+        const record = assembleEmission(observedAt, e);
+        if (record === undefined) return;
+        seedRejectedStreamIfAbsent(namespaceId);
+        enqueueEmit(namespaceId, record);
+      },
+      // Clock 步之前终结：#226 槽内（namespaceId 在场）→ 泵投递（先补建流）；
+      // 公共入口拒绝（namespaceId=undefined，id 生成前无归属可用）→ 同步共享通道
+      // （SA1 §7.2：非缺陷 A 对象——共享通道的丢弃语义在该面保持）。
+      emitEarlyOutcome: (namespaceId, e) => {
+        const observedAt = readEarlyObservedAt(clock);
+        if (observedAt === undefined) return;
+        if (namespaceId === undefined) {
+          emitAttempt(emitter, observedAt, e);
+          return;
+        }
+        const record = assembleEmission(observedAt, e);
+        if (record === undefined) return;
+        seedRejectedStreamIfAbsent(namespaceId);
+        enqueueEmit(namespaceId, record);
+      },
+      // #155（§4-D4/C1）：initStream 之后的槽内结局——泵投递（stream 已由成功路径
+      // 的 initStream 任务建立/排队，无需补建；per-ns FIFO 保持 initStream → #17/#18
+      // 次序）。解析违约（throw/畸形/undefined）→ drain 内静默丢弃（D11/i1）。
+      emitStreamOutcome: (namespaceId, observedAt, e) => {
+        const record = assembleEmission(observedAt, e);
+        if (record === undefined) return;
+        enqueueEmit(namespaceId, record);
+      },
+      // stream 建立缝（成功路径）：O(1) 入队（真实建流在 drain 内——AC3 隔离面）。
+      // initStream 成员缺席 → no-op（Host 选择延迟初始化——既有可选成员语义）。
+      initStream: (namespaceId, genesisUpdateBytes) => {
+        if (initStreamMember === undefined) return;
+        enqueueInitStreamTask(namespaceId, genesisUpdateBytes);
+      },
+    },
+    // #155（§5.4）+ #226（支柱三 wiring）：RuntimeFactory 第三参 = 延迟 wrapper
+    // （O(1) 解析——**不**现场调 runtimeEmitterFor：B2 adapter 构造出槽；emitter
+    // = O(1) 入队——B3 槽间窗口 emit 出窗）。wrapper 形状 = 既有 emitter seam
+    // （同步、void、不 throw）——Runtime 零感知；违约 Host 的解析失败移到 drain
+    // 内静默丢弃（设计路由表第 3 行）。
+    resolveRuntimeDiag: (namespaceId) => ({
+      emitter: {
+        emit: (emission) => {
+          enqueueEmit(namespaceId, emission);
+        },
+      },
+      clock: () => clock.now(),
+    }),
   };
 }

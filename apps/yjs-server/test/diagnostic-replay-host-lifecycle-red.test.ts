@@ -92,6 +92,20 @@ const REPO_ROOT = fileURLToPath(new URL('../../..', import.meta.url));
 const TSX_BIN = join(REPO_ROOT, 'node_modules', '.bin', 'tsx');
 const MAIN_TS = join(REPO_ROOT, 'apps', 'yjs-server', 'src', 'main.ts');
 
+// 进程级 E2E 的子进程必须以仓库规范的 nomicore-source export condition 解析
+// workspace 包源码（等价于根 package.json `test` 脚本的
+// NODE_OPTIONS=--conditions=nomicore-source）。dist/ 是 gitignored 的发布产物、
+// pnpm install 不会生成；若子进程缺少该 condition，Node ESM 将按 exports
+// `import` → `./dist/index.js` 解析并在缺失时报 ERR_MODULE_NOT_FOUND 而无法启动。
+// 在 spawn env 中钉住该 condition 使 E2E 不依赖外层 vitest 的调用方式
+// （根脚本 env 或裸 `vitest run` 均可，行为与规范 env 完全一致）。
+const SPAWN_NODE_OPTIONS = (() => {
+  const existing = process.env.NODE_OPTIONS ?? '';
+  return existing.includes('conditions=nomicore-source')
+    ? existing
+    : `${existing} --conditions=nomicore-source`.trim();
+})();
+
 const VFSL_SCHEMA = { lang: 'vfsl', version: 1, id: 'notes-v1', text: 'type ROOT = { count: number; };\n' };
 const VFSL_SCHEMA_V2 = {
   lang: 'vfsl',
@@ -149,7 +163,7 @@ function writeConfig(dir: string, config: Record<string, unknown>): string {
 function spawnApp(args: string[]): Proc {
   const child = spawn(TSX_BIN, [MAIN_TS, ...args], {
     stdio: ['pipe', 'pipe', 'pipe'],
-    env: { ...process.env },
+    env: { ...process.env, NODE_OPTIONS: SPAWN_NODE_OPTIONS },
   });
   const proc: Proc = { child, events: [], stderr: [], exitCode: null };
   child.stdout!.on('data', (chunk: Buffer) => {
@@ -857,6 +871,30 @@ describe('issue #155 — Host 生命周期 E2E（AC1/AC3/AC6）', () => {
 
     // 日志从创建起：locator + 单一 stream；首条 genesis-baseline；namespace-create 与
     // replication-enable（provision 内部 enableReplication）attempt 记录
+    //
+    // 【issue #226 修订——SA8 C3/R3 同类裁决的落后面（2026-09-06）】：修复后日志存储
+    // 位于 Registry diag-pump 的 macrotask 延迟投递（业务槽外）——「创建即建流」的
+    // 存储完成事实不再与 provision/ready 事件同刻到达（ready 观测后 pump drain 才执行
+    // 建流与落盘）。SA8 R3 重新固话只覆盖了 SA7 文件 C1 用例；本文件 E1 的未 poll 读锚
+    // 把修复前时序冻结为期望，由 SA3 实现全量门暴露（修复前绿、修复后确定性红——
+    // current.json 在 ready 观测后 ~70ms 才出现）。按同一裁决形状修订：先 poll 记录
+    // 到达（poll 让出事件循环 → drain 执行）再读——断言本体零改动（AC1 语义「日志
+    // 从创建起」保持）。
+    await expect
+      .poll(
+        () => {
+          const sid = currentStreamId(logRoot, namespaceId);
+          if (sid === null) return false;
+          try {
+            const ops = attemptOps(allStrictRecords(logRoot, namespaceId, sid));
+            return ops.includes('namespace-create') && ops.includes('replication-enable');
+          } catch {
+            return false; // 撕裂读（写入窗口内）→ 重试
+          }
+        },
+        { interval: 20, timeout: 5_000 },
+      )
+      .toBe(true);
     const streamId = currentStreamId(logRoot, namespaceId);
     expect(streamId, 'log current.json 必须存在（创建即建流）').not.toBeNull();
     expect(listStreamDirs(logRoot, namespaceId)).toHaveLength(1);
@@ -951,6 +989,29 @@ describe('issue #155 — Host 生命周期 E2E（AC1/AC3/AC6）', () => {
     const provisioned = await waitForEvent(hub, (e) => e.event === 'provisioned', 60_000, 'hub provisioned');
     const namespaceId = provisioned.namespaceId as string;
     await waitForEvent(hub, (e) => e.event === 'ready', 60_000, 'hub ready');
+
+    // 【issue #226 修订——SA8 C3/R3 同类裁决的落后面（2026-09-06）】：与 E1 同因——
+    // 修复后 provision 的建流/落盘由 diag-pump 延迟投递，ready 观测时 drain 可能仍在
+    // 执行。原用例在 ready 后立即 SIGTERM：SIGTERM 恰落在子进程 drain（同步 fs）执行窗
+    // 内时，tsx CLI 的信号中继 30ms 应答窗被打穿 → 父进程以 143 退出（伪红，非停机语义
+    // 缺陷）。本用例语义 = 「有界停机（30s 界、exit 0）且停机后日志 strict 一致」——先
+    // poll provision 记录到达（drain 排空、进程空闲）再 SIGTERM，语义断言本体零改动
+    // （有界性仍由 signalAndExpectExit 的 30s 界 + exit 0 证明）。
+    await expect
+      .poll(
+        () => {
+          const sid = currentStreamId(logRoot, namespaceId);
+          if (sid === null) return false;
+          try {
+            const ops = attemptOps(allStrictRecords(logRoot, namespaceId, sid));
+            return ops.includes('namespace-create') && ops.includes('replication-enable');
+          } catch {
+            return false; // 撕裂读（写入窗口内）→ 重试
+          }
+        },
+        { interval: 20, timeout: 5_000 },
+      )
+      .toBe(true);
     await signalAndExpectExit(hub, 'SIGTERM', 30_000, 0, 'hub E3（有界停机：Registry/Persistence 不被日志无限延迟）');
 
     const streamId = currentStreamId(logRoot, namespaceId);
