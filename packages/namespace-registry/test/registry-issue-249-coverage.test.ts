@@ -191,6 +191,9 @@ describe('issue-249 §13.3-a — R3-3 init-stream queue-full drop is reported ex
     const initStreamCalls: Array<{ ns: string; genesis: boolean }> = [];
     const reports: DiagPumpDropReport[] = [];
     const pump = createDiagPump({
+      defer: (callback) => {
+        setImmediate(callback);
+      },
       initStream: (ns, genesis) => {
         initStreamCalls.push({ ns, genesis: genesis !== undefined });
       },

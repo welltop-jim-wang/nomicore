@@ -272,14 +272,10 @@ describe('模块边界静态守卫（#112 设计 §2.M）：cordis import 白名
    *    成员位——`readonly setTimeout: (…) => unknown` 因 `:` 阻断 `\s*\(` 不命中）；
    * ② 显式 `globalThis.…`；③ `Date.now(`。
    *
-   * 【issue #226 R4 注释契约——setImmediate 显式许可】：三正则**有意不含** `setImmediate`
-   * ——它是 diag-pump（`src/diag-pump.ts`，issue #226 修复的隔离载体）的显式许可调度
-   * 原语（SA1 设计 §3.1 裁决：per-ns 延迟投递需 macrotask 级 deferral；微任务级不足、
-   * 注入式 scheduler 结构性不可用、node 部署面恒提供）。守卫禁令针对的是**业务/计时
-   * 路径**对系统 timer 的裸用（ADR-0009 禁系统 timer fallback——idle/retention 等须走
-   * 注入 scheduler）；泵的 setImmediate 不驱动任何业务语义（无业务路径 await/等待之），
-   * 且其调用点位于业务槽外 drain。若未来新增其它 setImmediate 使用者须另行评审——本条
-   * 注释只授权 diag-pump 一处。零正则改动（本轮守卫样本/扫描均不涉 setImmediate）。 */
+   * 【issue #226 scheduler 注入】：三正则不含 `setImmediate`，因为它不是计时 API；
+   * diag-pump 通过 `DiagPumpDeps.defer` 消费显式 macrotask capability，Node 适配位于
+   * create-diagnostic.ts。守卫禁令仍针对业务/计时路径对系统 timer 的裸用
+   * （ADR-0009：idle/retention 等必须走注入 scheduler）。 */
   const HOST_GLOBAL_TIMER_BARE = /(?<![\w$.])(?:setTimeout|setInterval|clearTimeout|clearInterval)\s*\(/;
   const HOST_GLOBAL_TIMER_GLOBALTHIS = /\bglobalThis\s*\.\s*(?:setTimeout|setInterval|clearTimeout|clearInterval)\s*\(/;
   const DATE_NOW = /\bDate\s*\.\s*now\s*\(/;

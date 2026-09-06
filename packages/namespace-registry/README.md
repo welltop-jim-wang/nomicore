@@ -35,7 +35,7 @@ The main entry exports `NamespaceRegistry`, `NamespaceLease`, result/status/erro
 - `ctx.clock` from `@nomicore/clock`;
 - `ctx.nomicorePersistence` from `@nomicore/persistence`.
 
-No system clock or global timer fallback is used by the Registry.
+No system clock or global timer fallback is used by the Registry. Internal diagnostic delivery consumes an explicit macrotask scheduler capability; the Node composition adapter implements it with `setImmediate`, while the pump itself does not read a global scheduler.
 
 ## Errors
 
