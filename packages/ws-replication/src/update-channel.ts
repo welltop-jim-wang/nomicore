@@ -12,7 +12,11 @@
 import * as Y from 'yjs';
 import type { ReplicationMessage } from '@nomicore/replication-protocol';
 import { safeNow } from './observer.js';
-import type { ResolvedLimits } from './types.js';
+import type {
+  ReplicationSendFailureReason,
+  ResolvedLimits,
+  UpdateSendFailureDetail,
+} from './types.js';
 
 export interface UpdateChannelHost {
   readonly limits: ResolvedLimits;
@@ -20,8 +24,17 @@ export interface UpdateChannelHost {
   /** 发送 UPDATE 帧；返回分配的帧序。 */
   readonly sendUpdateFrame: (bytes: Uint8Array) => number;
   /** 本端声明 RESYNC（§10.2 溢出/ACK timeout/session 溢出边沿）：ns → needs-resync + RESYNC 帧。
-   *  cause 为 resync 子因判别（§6.5 U1：live 溢出 / 发送失败）。 */
-  readonly declareLocalResync: (cause: 'queue-overflow' | 'send-failed') => void;
+   *  cause 为 resync 子因判别（§6.5 U1：live 溢出 / 发送失败）。
+   *  issue #231：send-failed 附带惰性失败明细（仅 observer 在场时求值——无 observer
+   *  零分配零采样，热路径纪律与 §23.4「无 observer 逐字节等价」保持）。 */
+  readonly declareLocalResync: (
+    cause: 'queue-overflow' | 'send-failed',
+    failureDetail?: () => UpdateSendFailureDetail,
+  ) => void;
+  /** issue #231：超限项在队列非空时被 F4 静默丢弃（无 resync 声明，R2-1/D4 活性保持）
+   *  的观测通知——控制器侧据此发射 update-dropped 事件（该路径唯一观测信号）。
+   *  惰性明细同款纪律：仅 observer 在场时求值。 */
+  readonly noteUpdateDropped: (detail: () => UpdateSendFailureDetail) => void;
   /** 非 live 溢出（§5.3）：丢弃未发送 + 置 pendingResync（round 完成时再开 round）。 */
   readonly notePendingResync: () => void;
   /** ACK timeout（§10.4）：弃置 in-flight + needs-resync + 立即新 round。 */
@@ -160,6 +173,27 @@ export class UpdateChannel {
     this.queuedByteCount = 0;
   }
 
+  /** issue #231：失败时刻计数采样（调用点纪律 = 先采样、后 discardQueued——丢弃后
+   *  计数恒零，诊断价值丢失）。返回惰性明细供给器：仅 observer 在场时被求值，
+   *  无 observer 时明细对象零构造（§23.4 逐字节等价纪律）。 */
+  private captureFailureDetail(
+    reason: ReplicationSendFailureReason,
+    updateBytes: number,
+  ): () => UpdateSendFailureDetail {
+    const maxUpdateBytes = this.host.limits.maxUpdateBytes;
+    const queuedUpdateCount = this.queued.length;
+    const queuedUpdateBytes = this.queuedByteCount;
+    const inFlightCount = this.inFlight.size;
+    return () => ({
+      reason,
+      updateBytes,
+      maxUpdateBytes,
+      queuedUpdateCount,
+      queuedUpdateBytes,
+      inFlightCount,
+    });
+  }
+
   private sendAndRegister(bytes: Uint8Array): void {
     if (bytes.byteLength > this.host.limits.maxUpdateBytes) {
       // R2-1：超限面判别（唯一可达形态 = 单笔项自身超限，§2.1①——贪心合并以累计
@@ -170,19 +204,31 @@ export class UpdateChannel {
       //  - 队列已空：丢弃即终局静默（三个 drain 触发点均不可达），
       //    ⇒ §10.2 同构响亮收口。
       if (this.queued.length === 0) {
+        // issue #231：失败时刻采样（队列已空——计数恒零，口径与 send-frame-rejected 一致）
+        const detail = this.captureFailureDetail('update-too-large', bytes.byteLength);
         this.discardQueued();            // no-op（队列已空）；保持 §17 L488「丢弃全部未发送」形状
         this.needsResync = true;         // 停发新 UPDATE（deliver 首行丢弃）
-        this.host.declareLocalResync('send-failed'); // peer: RESYNC_REQUIRED{send-queue-overflow}
-                                                     // + setState + maybeStartRecovery；
-                                                     // hub: declareHubResync 同构
+        this.host.declareLocalResync('send-failed', detail); // peer: RESYNC_REQUIRED{send-queue-overflow}
+                                                      // + setState + maybeStartRecovery；
+                                                      // hub: declareHubResync 同构
+      } else {
+        // issue #231 AC1 补盲：队列非空 = 无 resync 声明的静默丢弃——发出观测信号
+        // （update-dropped{update-too-large}），observer 不再漏掉该分支。
+        // 采样口径：被丢弃项已出队，queued* 为残余队列体量（≠0 即本分支判别证）。
+        this.host.noteUpdateDropped(
+          this.captureFailureDetail('update-too-large', bytes.byteLength),
+        );
       }
       return; // 不调用 host.sendUpdateFrame——控制器大小门保留为不可达后盾
     }
     const seq = this.host.sendUpdateFrame(bytes);
     if (seq <= 0) {
+      // issue #231：发送路径拒绝（连接/状态/背压/编码/发送异常折叠为非正 sequence）——
+      // 失败明细必须在 discardQueued 之前采样（丢弃后计数恒零，丢失诊断价值）。
+      const detail = this.captureFailureDetail('send-frame-rejected', bytes.byteLength);
       this.discardQueued();
       this.needsResync = true;
-      this.host.declareLocalResync('send-failed');
+      this.host.declareLocalResync('send-failed', detail);
       return;
     }
     // §6.5 U2：发送时刻记账（帧实际出队后；clock 缺省 → undefined；throw → 缺面）

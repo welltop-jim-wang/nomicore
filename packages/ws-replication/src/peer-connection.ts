@@ -108,6 +108,10 @@ class PeerConnectionImpl implements PeerReplication {
       observerPresent: () => this.observer() !== undefined,
       emitObserver: (event) => dispatchReplicationObserver(this.observer(), event),
       connectionId: () => this.connectionIdValue,
+      // issue #231：send-failed 诊断上下文（观测面只读投影；emitResyncRequired 仅在
+      // observer 在场时调用——无 observer 零读取）
+      connectionState: () => this.connStateValue,
+      bufferedAmount: () => this.observableBufferedAmount(),
       // B1：时钟采样经 safeNow 折叠（throw → dormant undefined，零协议外溢）
       now: () => (this.observer() !== undefined ? safeNow(() => this.options.clock?.now()) : undefined),
     };
@@ -714,13 +718,19 @@ class PeerConnectionImpl implements PeerReplication {
    * 缺失/非 number/非有限数 → 0 = 无压力（既有 makeWire 与全部用例结构性零影响）。
    */
   private readBufferedAmount(): number {
+    return this.observableBufferedAmount() ?? 0;
+  }
+
+  /** issue #231 观测口径：与 §4.2 同一鸭子类型读取，但「缺面/非法」映射为 undefined
+   *  （事件字段缺失）而非 0——0 必须保持为真实读数语义（adapter 可观测时的无压力）。 */
+  private observableBufferedAmount(): number | undefined {
     const transport = this.transport;
-    if (transport === undefined) return 0;
+    if (transport === undefined) return undefined;
     try {
       const level = (transport as { readonly bufferedAmount?: unknown }).bufferedAmount;
-      return typeof level === 'number' && Number.isFinite(level) ? level : 0;
+      return typeof level === 'number' && Number.isFinite(level) ? level : undefined;
     } catch {
-      return 0; // seam 契约：transport 契约是「number 属性或缺失」；非契约形态 = 无压力
+      return undefined; // seam 契约：transport 契约是「number 属性或缺失」；非契约形态 = 不可观测
     }
   }
 

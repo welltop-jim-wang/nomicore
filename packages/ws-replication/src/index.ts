@@ -58,6 +58,7 @@ export type {
   ReplicationObserverEvent,
   ReplicationObserverNamespaceCode,
   ReplicationObserverSide,
+  ReplicationSendFailureReason,
   ReplicationTarget,
   ReplicationTimer,
   ReplicationTimeouts,
