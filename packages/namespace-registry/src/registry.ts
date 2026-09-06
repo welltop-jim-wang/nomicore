@@ -88,8 +88,7 @@ import {
   type PreparedDocumentBundle,
 } from './create-document.js';
 import {
-  createCreateDiag,
-  createRuntimeDiagResolver,
+  createDiagRuntime,
   encodeDetachedState,
   fatalFromBytes,
   fatalFromCommitted,
@@ -772,11 +771,12 @@ export function createRegistryInternal(
     options.createDocumentFactory === undefined
       ? undefined
       : (options.createDocumentFactory as CreateDocumentFactory);
-  // #150 诊断环境（构造栈一次成型；absent → no-op 单例——零日志行为、零开销）。
-  const diag = createCreateDiag(options.diagnosticLog, clock);
-  // #155（§4-D5/C1）：per-namespace Runtime 诊断解析器（非抛边界；三处 factory
-  // 调用点共用——每次调用以 namespaceId **数据**现场解析，零共享可变路由状态）。
-  const resolveRuntimeDiag = createRuntimeDiagResolver(options.diagnosticLog, clock);
+  // #150/#155/#226 诊断环境单一装配（构造栈一次成型；absent → no-op 单例——零日志
+  // 行为、零开销）。#226（SA1 设计 §3.3）：diag 与 resolveRuntimeDiag 共享同一
+  // per-namespace 延迟投递泵实例（diag-pump）——早结局/initStream/#17/#18 入泵
+  // macrotask 延迟投递，RuntimeFactory 第三参 = O(1) 延迟 wrapper（不开现场解析、
+  // 不触碰存储）；legacy Host（无 runtimeEmitterFor）逐字节现行。
+  const { diag, resolveRuntimeDiag } = createDiagRuntime(options.diagnosticLog, clock);
 
   const entries = new Map<string, Entry>();
   const carriers = new Map<string, LifecycleCarrier>();
@@ -1313,7 +1313,9 @@ export function createRegistryInternal(
     if (preparedBox.current === undefined) {
       const payload = snapshotCreatePayload(inputRef);
       if (!payload.ok) {
-        diag.emitEarlyOutcome({
+        // #226：以候选 namespaceId 数据键控投递（SA1 设计 §3.2——建流前早结局
+        // 不再落无归属共享通道）。
+        diag.emitEarlyOutcome(id.namespaceId, {
           stage: 'input-snapshot',
           code: 'NAMESPACE_CREATE_INVALID_INPUT',
           result: { kind: 'rejected' },
@@ -1325,7 +1327,7 @@ export function createRegistryInternal(
       const prepared = prepareCreateDocument(payload.schema, payload.root);
       if (!prepared.ok) {
         const schemaFailure = prepared.kind === 'schema-invalid';
-        diag.emitOutcome(createdAt, {
+        diag.emitOutcome(id.namespaceId, createdAt, {
           stage: schemaFailure ? 'schema-compile' : 'validation',
           code: schemaFailure ? 'NAMESPACE_SCHEMA_INVALID' : 'NAMESPACE_ROOT_INVALID',
           result: { kind: 'rejected' },
@@ -1361,7 +1363,7 @@ export function createRegistryInternal(
       );
     } catch (cause) {
       dispatchObserver(observer, { type: 'lifecycle-slot-failed', identity: id, operation: 'create', cause });
-      diag.emitOutcome(p.createdAt, {
+      diag.emitOutcome(id.namespaceId, p.createdAt, {
         stage: 'schema-compile',
         code: 'NAMESPACE_REGISTRY_FATAL',
         sourcePhase: 'create-document-internal',
@@ -1376,7 +1378,7 @@ export function createRegistryInternal(
     if (!initial.ok) {
       if (initial.kind === 'schema-invalid' || initial.kind === 'root-invalid') {
         const schemaFailure = initial.kind === 'schema-invalid';
-        diag.emitOutcome(p.createdAt, {
+        diag.emitOutcome(id.namespaceId, p.createdAt, {
           stage: schemaFailure ? 'schema-compile' : 'validation',
           code: schemaFailure ? 'NAMESPACE_SCHEMA_INVALID' : 'NAMESPACE_ROOT_INVALID',
           result: { kind: 'rejected' },
@@ -1391,7 +1393,7 @@ export function createRegistryInternal(
       }
       const cause = new Error('createInitialDocument 返回不可达 input-invalid');
       dispatchObserver(observer, { type: 'lifecycle-slot-failed', identity: id, operation: 'create', cause });
-      diag.emitOutcome(p.createdAt, {
+      diag.emitOutcome(id.namespaceId, p.createdAt, {
         stage: 'schema-compile',
         code: 'NAMESPACE_REGISTRY_FATAL',
         sourcePhase: 'create-document-internal',
@@ -1408,7 +1410,7 @@ export function createRegistryInternal(
       if (cause instanceof DocDuplicateError) return { kind: 'retry' };
       if (cause instanceof DocCreateOperationalError) {
         dispatchObserver(observer, { type: 'create-persist-failed', identity: id, cause });
-        diag.emitOutcome(p.createdAt, {
+        diag.emitOutcome(id.namespaceId, p.createdAt, {
           stage: 'transaction', code: 'NAMESPACE_CREATE_FAILED', result: { kind: 'rejected' },
           input: { snapshot: { schema: p.schema, root: p.root } },
         });
@@ -1416,7 +1418,7 @@ export function createRegistryInternal(
       }
       if (cause instanceof DocCreateFatalError) {
         dispatchObserver(observer, { type: 'lifecycle-slot-failed', identity: id, operation: 'create', cause });
-        diag.emitOutcome(p.createdAt, {
+        diag.emitOutcome(id.namespaceId, p.createdAt, {
           stage: 'transaction', code: 'NAMESPACE_REGISTRY_FATAL', sourcePhase: 'lifecycle-slot-internal',
           result: fatalFromBytes(cause.committed, encodeDetachedState(initial.doc)),
           input: { snapshot: { schema: p.schema, root: p.root } },
@@ -1424,7 +1426,7 @@ export function createRegistryInternal(
         throw new NamespaceRegistryFatalError('create', 'lifecycle-slot-internal', cause.committed, cause);
       }
       dispatchObserver(observer, { type: 'lifecycle-slot-failed', identity: id, operation: 'create', cause });
-      diag.emitOutcome(p.createdAt, {
+      diag.emitOutcome(id.namespaceId, p.createdAt, {
         stage: 'transaction', code: 'NAMESPACE_REGISTRY_FATAL', sourcePhase: 'lifecycle-slot-internal',
         result: fatalFromBytes(false, encodeDetachedState(initial.doc)),
         input: { snapshot: { schema: p.schema, root: p.root } },
@@ -1930,7 +1932,9 @@ export function createRegistryInternal(
       // #112 逻辑门迁移（§2.D）：停接纳先于 acceptCreateIdentity（零 descriptor/Proxy
       // trap 执行，AC9）。公共 typed / 实现 unknown 双层签名说明见 #111 冻结文本。
       if (acceptance !== 'running') {
-        diag.emitEarlyOutcome({
+        // #226：公共入口拒绝在 namespaceId 生成之前——无归属可用 → 恒同步共享通道
+        // （非缺陷 A 对象；SA1 设计 §7.2）。
+        diag.emitEarlyOutcome(undefined, {
           stage: 'acceptance',
           code: 'REGISTRY_NOT_ACCEPTING',
           result: { kind: 'rejected' },
@@ -1940,7 +1944,7 @@ export function createRegistryInternal(
       }
       const admission = acceptCreateIdentity(input);
       if (!admission.ok) {
-        diag.emitEarlyOutcome({
+        diag.emitEarlyOutcome(undefined, {
           stage: 'identity',
           code: admission.issue.code,
           result: { kind: 'rejected' },

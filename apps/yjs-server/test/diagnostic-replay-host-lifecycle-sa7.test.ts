@@ -4,9 +4,17 @@
  * 验证对象：SA4 R2 review「动态审核重点」六条中交 SA7 的活链路面：
  *  1. C1 并发 create 交错（SA2 R1 绿灯期增补建议）——`Promise.all([create A, create B])`、
  *     B 的 createDoc 注入 DocCreateOperationalError（A 挂 gate 控制 settle 次序）：
- *     数据键控归因下 A 流无 B 记录、A replay complete/issues=[]、`unattributed`
- *     计数事件出现；附 manager 级迟到 emit 直探（initStream(A) 后 B 的 emission
- *     路由到 B 自己的流，绝不落入 A 的打开流）。
+ *     数据键控归因下 A 流无 B 记录、A replay complete/issues=[]；附 manager 级迟到
+ *     emit 直探（initStream(A) 后 B 的 emission 路由到 B 自己的流，绝不落入 A 的
+ *     打开流）。
+ *     2026-09-06 R3 修订（issue #226 契约重新固话，SA8 design-conflict C3 裁决）：
+ *     C1 原三锚把缺陷 A 的生产行为（B 的建流前结局落 unattributed 丢弃 + B 无日志
+ *     目录）断言为期望——与 #226 AC1「不再被无归属通道确定性丢弃、以正确 namespace
+ *     归属进入诊断流」正面冲突。修订后：B 的结局以 NS_B 归属落 B 自己的流（attempt
+ *     stage=transaction / code=NAMESPACE_CREATE_FAILED / result=rejected、目录存在）、
+ *     全程零 unattributed 丢弃；A 流干净面（恰 genesis+#17、segment 无 B marker、
+ *     replay complete/issues=[]）保持。修复前本用例红（缺陷 A 行为 ≠ 期望）——属于
+ *     #226 全量门必红面，修复后翻绿。
  *  2. M2 篡改流形直探——手工构造 `[attempt(seq1), genesis(seq2)]` 日志文件 →
  *     replay 报 `genesis-misplaced` + `genesis-missing`、failed、无 snapshot。
  *  3. §六(a) note 运行时复核——record 级 issues 经 read.issues 镜像（③ 全量）与
@@ -222,9 +230,9 @@ function makeProdDoc(namespaceId: string, count: number): Y.Doc {
 
 describe('SA7 动态重点 1 — C1 并发 create 交错（数据键控归因，跨 namespace 误归因不可达）', () => {
   it(
-    'Promise.all([create A(挂 gate), create B(createDoc 注入 OperationalError)])：A 流无 B 记录、A replay complete/issues=[]、unattributed 计数事件出现',
+    'Promise.all([create A(挂 gate), create B(createDoc 注入 OperationalError)])：B 以 NS_B 归属落自己的流（attempt transaction/NAMESPACE_CREATE_FAILED/rejected、目录存在）；全程零 unattributed 丢弃；A 流干净（genesis+#17、无 B marker、replay complete/issues=[]）',
     async () => {
-      const rootDir = freshTempRoot('sa7-155-c1-');
+      const rootDir = freshTempRoot('sa7-226-c1-');
       const { host, events } = makeHost(rootDir);
       const persistence = new PlannedPersistence();
       const gate = deferred();
@@ -238,18 +246,23 @@ describe('SA7 动态重点 1 — C1 并发 create 交错（数据键控归因，
       const b = (await pB) as { ok: boolean; code?: string };
       expect(b.ok).toBe(false);
       expect(b.code).toBe('NAMESPACE_CREATE_FAILED');
-      // B 的失败 emission 走共享无归属通道 → 计数事件（不携 namespaceId——词义本体）
+      // R3 修订锚（2026-09-06，#226 后语义）：B 的建流前结局不再落无归属通道——
+      // 修复前此处恰 1 条 unattributed drop（缺陷 A 冻结锚已翻转）。修复后零丢弃；
+      // drop 只会多不会少，「恰 0」断言与修复后投递到达时机正交（无异步伪红）。
       const dropsEarly = events.filter((e) => e.event === 'diagnostic-log-emission-dropped');
-      expect(dropsEarly.length).toBe(1);
-      expect(dropsEarly[0]).toMatchObject({ event: 'diagnostic-log-emission-dropped', reason: 'unattributed' });
-      expect('namespaceId' in dropsEarly[0]!).toBe(false);
+      expect(dropsEarly).toHaveLength(0);
 
       gate.resolve();
       const a = (await pA) as { ok: boolean; lease?: NamespaceLease };
       expect(a.ok).toBe(true);
       expect(a.lease?.namespaceId).toBe(NS_A);
 
-      // A 流：genesis + #17 namespace-create committed，恰 2 条、sequence 连续
+      // A 流：genesis + #17 namespace-create committed，恰 2 条、sequence 连续。
+      // 修复后 A 的建流/记录由延迟投递产生（#226 隔离载体）→ 先 poll current.json
+      // 到达再读（poll 让出事件循环 → drain 执行；到达即该 ns 批次已同步完成）。
+      await expect
+        .poll(() => existsSync(join(rootDir, 'namespaces', NS_A, 'current.json')), { interval: 10, timeout: 3_000 })
+        .toBe(true);
       const streamId = currentStreamIdOf(rootDir, NS_A);
       const read = readStreamStrict({ rootDir, namespaceId: NS_A, streamId });
       expect(read.status).toBe('ok');
@@ -259,10 +272,29 @@ describe('SA7 动态重点 1 — C1 并发 create 交错（数据键控归因，
       expect(records[0]!.recordKind).toBe('genesis-baseline');
       expect(records[1]).toMatchObject({ recordKind: 'attempt', operation: 'namespace-create' });
       expect((records[1]!.result as { kind?: string }).kind).toBe('committed');
-      // A 流无 B 痕迹：segment 全文不含 B 专属 schema marker；B 根本没有日志目录
+      // A 流无 B 痕迹：segment 全文不含 B 专属 schema marker
       const aSegmentText = readFileSync(segmentFile(rootDir, NS_A, streamId), 'utf8');
       expect(aSegmentText.includes('ns-b-schema-leak-marker')).toBe(false);
-      expect(existsSync(join(rootDir, 'namespaces', NS_B))).toBe(false);
+
+      // R3 修订锚：B 的结局以 NS_B 归属落 B 自己的流（修复前 B 无日志目录 → 红）。
+      // genesis-less 流（ADR-0012：genesis 未成功写入时 stream 仍可记录诊断事实）
+      // 的读取形态先例 = 本文件 C1b（status 'ok'、单 attempt 记录）——不锚 replay
+      // complete（无 genesis 时诚实缺席）。
+      await expect
+        .poll(() => existsSync(join(rootDir, 'namespaces', NS_B, 'current.json')), { interval: 10, timeout: 3_000 })
+        .toBe(true);
+      const bStreamId = currentStreamIdOf(rootDir, NS_B);
+      const bRead = readStreamStrict({ rootDir, namespaceId: NS_B, streamId: bStreamId });
+      expect(bRead.status).toBe('ok');
+      const bRecords = bRead.records.map((r) => r.record).filter((r): r is Record<string, unknown> => r !== null);
+      expect(bRecords).toHaveLength(1);
+      expect(bRecords[0]).toMatchObject({
+        recordKind: 'attempt',
+        operation: 'namespace-create',
+        stage: 'transaction',
+        code: 'NAMESPACE_CREATE_FAILED',
+      });
+      expect((bRecords[0]!.result as { kind?: string }).kind).toBe('rejected');
 
       // A replay：complete + issues==[]（SA2 R1 建议的原始断言面）
       const replay = replayNamespaceDiagnosticLog({ rootDir, namespaceId: NS_A });
@@ -275,13 +307,12 @@ describe('SA7 动态重点 1 — C1 并发 create 交错（数据键控归因，
       expect(replayed.getMap('META').get('docId')).toBe(NS_A);
       expect(replayed.getMap('ROOT').get('count')).toBe(0);
 
-      // 全程丢弃计数：恰 1 条 unattributed（B 的早局 emission）；零 stream-unavailable / manager-closed
+      // 全程丢弃计数：0 条 unattributed（R3 修订锚）；零 stream-unavailable / manager-failed
       const drops = events.filter((e) => e.event === 'diagnostic-log-emission-dropped');
-      expect(drops).toHaveLength(1);
-      expect(drops.every((e) => e.reason === 'unattributed')).toBe(true);
+      expect(drops).toHaveLength(0);
       expect(events.filter((e) => e.event === 'diagnostic-log-manager-failed')).toHaveLength(0);
       console.log(
-        `[SA7-DV] C1 并发交错：A 流 ${records.length} 条记录（genesis+#17）；sink 事件 ${JSON.stringify(events)}`,
+        `[SA7-DV] C1 并发交错：A 流 ${records.length} 条记录（genesis+#17）；B 流 ${bRecords.length} 条（NS_B 归属 attempt）；sink 事件 ${JSON.stringify(events)}`,
       );
 
       await a.lease!.release();
@@ -450,6 +481,21 @@ describe('SA7 动态重点 4 — fatal-committed effect:unknown 按「其他」�
 const REPO_ROOT = fileURLToPath(new URL('../../..', import.meta.url));
 const TSX_BIN = join(REPO_ROOT, 'node_modules', '.bin', 'tsx');
 const MAIN_TS = join(REPO_ROOT, 'apps', 'yjs-server', 'src', 'main.ts');
+
+// 进程级 E2E 的子进程必须以仓库规范的 nomicore-source export condition 解析
+// workspace 包源码（等价于根 package.json `test` 脚本的
+// NODE_OPTIONS=--conditions=nomicore-source）。dist/ 是 gitignored 的发布产物、
+// pnpm install 不会生成；若子进程缺少该 condition，Node ESM 将按 exports
+// `import` → `./dist/index.js` 解析并在缺失时报 ERR_MODULE_NOT_FOUND 而无法启动。
+// 在 spawn env 中钉住该 condition 使 E2E 不依赖外层 vitest 的调用方式
+// （根脚本 env 或裸 `vitest run` 均可，行为与规范 env 完全一致）。
+const SPAWN_NODE_OPTIONS = (() => {
+  const existing = process.env.NODE_OPTIONS ?? '';
+  return existing.includes('conditions=nomicore-source')
+    ? existing
+    : `${existing} --conditions=nomicore-source`.trim();
+})();
+
 const VFSL_SCHEMA = { lang: 'vfsl', version: 1, id: 'notes-v1', text: 'type ROOT = { count: number; };\n' };
 
 function sleep(ms: number): Promise<void> {
@@ -482,7 +528,10 @@ interface Proc {
 const liveProcs: Proc[] = [];
 
 function spawnApp(args: string[]): Proc {
-  const child = spawn(TSX_BIN, [MAIN_TS, ...args], { stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env } });
+  const child = spawn(TSX_BIN, [MAIN_TS, ...args], {
+    stdio: ['pipe', 'pipe', 'pipe'],
+    env: { ...process.env, NODE_OPTIONS: SPAWN_NODE_OPTIONS },
+  });
   const proc: Proc = { child, events: [], stderr: [], exitCode: null };
   child.stdout!.on('data', (chunk: Buffer) => {
     for (const line of chunk.toString('utf8').split('\n')) {
@@ -570,6 +619,35 @@ describe('SA7 动态重点 5 — D8 健康事件面 + D1 无泛滥（enabled 态
       expect(writeReply.ok).toBe(true);
 
       // 数据通道记录落地（enabled 态真实写日志——零丢弃断言因此有载荷意义）
+      //
+      // 【issue #226 到达 poll 化（SA2 obs 5.1 预先登记的执行，2026-09-06）】：SA2
+      // §5.1 已登记「verify-write 回复后无 poll 同步读流」为修复后唯一不带 poll 保护的
+      // 跨进程读时序点，并预授权「若历史性偶发，按到达 poll 化处理（属 #155 文件非 C1
+      // 用例的微调）」。全量门高负载轮偶发命中（写入的 pump drain 晚于回复到达）。
+      // 先 poll root-mutation 记录落盘（poll 让出事件循环 → drain 执行；亦保证 SIGTERM
+      // 前子进程 drain 已排空——避免 SIGTERM 落在 tsx 信号中继窗内）再读——断言本体零改动。
+      await expect
+        .poll(
+          () => {
+            try {
+              const sid = currentStreamIdOf(logRoot, namespaceId);
+              const read = readStreamStrict({ rootDir: logRoot, namespaceId, streamId: sid });
+              if (read.status !== 'ok') return false;
+              const ops = read.records
+                .map((r) => r.record)
+                .filter(
+                  (r): r is Record<string, unknown> =>
+                    r !== null && (r as { recordKind?: string }).recordKind === 'attempt',
+                )
+                .map((r) => r.operation);
+              return ops.includes('root-mutation');
+            } catch {
+              return false; // 写入窗口内撕裂读/current.json 未达 → 重试
+            }
+          },
+          { interval: 20, timeout: 5_000 },
+        )
+        .toBe(true);
       const streamId = currentStreamIdOf(logRoot, namespaceId);
       const read = readStreamStrict({ rootDir: logRoot, namespaceId, streamId });
       expect(read.status).toBe('ok');
