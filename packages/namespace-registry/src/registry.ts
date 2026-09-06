@@ -776,7 +776,20 @@ export function createRegistryInternal(
   // per-namespace 延迟投递泵实例（diag-pump）——早结局/initStream/#17/#18 入泵
   // macrotask 延迟投递，RuntimeFactory 第三参 = O(1) 延迟 wrapper（不开现场解析、
   // 不触碰存储）；legacy Host（无 runtimeEmitterFor）逐字节现行。
-  const { diag, resolveRuntimeDiag } = createDiagRuntime(options.diagnosticLog, clock);
+  const { diag, resolveRuntimeDiag } = createDiagRuntime(options.diagnosticLog, clock, {
+    // #249：满队丢弃上报窄回调（AC3/ADR-0011 L25、ADR-0012 L240）——落点 =
+    // ADR-0009 L95 内部 observer seam 新事件 `diag-pump-drop`。低基数四封闭维度
+    // （type/taskKind/operation?/reason——namespaceId/streamId/token 不进）；
+    // dispatchObserver 对 observer 缺席/throw 均隔离——生产 Host 未注入 observer
+    // 时 drops 静默（与全部既有事件同语义，SA1 design §5.3）。
+    reportPumpDrop: (drop) =>
+      dispatchObserver(observer, {
+        type: 'diag-pump-drop',
+        taskKind: drop.kind,
+        ...(drop.kind === 'emit' ? { operation: drop.operation } : {}),
+        reason: drop.reason,
+      }),
+  });
 
   const entries = new Map<string, Entry>();
   const carriers = new Map<string, LifecycleCarrier>();
@@ -1248,9 +1261,15 @@ export function createRegistryInternal(
   /**
    * Generated-ID create orchestration: each candidate uses its own carrier FIFO. Entry and
    * Persistence collisions are internal candidate-selection retries, not terminal public create
-   * outcomes. The diagnostic log therefore emits exactly one final outcome for the accepted public
-   * create; representing candidate retries would require a retry result/correlation shape outside
-   * the frozen v1 diagnostic vocabulary.
+   * outcomes. Each collision candidate is nevertheless one independent create change attempt
+   * (CONTEXT.md), so the diagnostic log records a per-candidate `rejected` outcome on the
+   * colliding namespace's own stream (#249; entry collision → identity/
+   * NAMESPACE_ALREADY_EXISTS, Persistence DOC_DUPLICATE → transaction/DOC_DUPLICATE with
+   * sourceModule 'persistence'); the accepted public create keeps its single final outcome
+   * record. Candidate retries are therefore fully expressible inside the frozen v1 vocabulary —
+   * no retry result/correlation shape is needed. The budget-exhaustion terminal stays
+   * observer-only (`create-id-generation-failed` + branded fatal; design D-2 — no diagnostic
+   * record, attribution unavailable).
    */
   interface CreatePreparedState {
     readonly schema: unknown;
@@ -1308,7 +1327,23 @@ export function createRegistryInternal(
     inputRef: unknown,
     preparedBox: { current?: CreatePreparedState },
   ): Promise<CreateAttemptOutcome> {
-    if (entries.has(id.key)) return { kind: 'retry' };
+    if (entries.has(id.key)) {
+      // #249（AC4）：entry-collision 候选结局——候选 = 一次独立 create 变更尝试，
+      // 以既有冻结词表（stage identity / code NAMESPACE_ALREADY_EXISTS / rejected /
+      // sourceModule 'registry'，design §6.3）落一条**候选级被拒记录**到候选 id 的流
+      // （归属既有 namespace；已建流不重复建流——§6.4）。observedAt 传 undefined：
+      // 碰撞判定在 Clock 步之前（本候选未过 Clock 步）→ emitCandidateOutcome 侧读
+      // 一次 clock（DC-3 每尝试恰一次；clock 故障 → 该条诚实缺席）。碰撞判定只读
+      // entries map——零输入访问（AC5/ADR-0011 L69–77）。槽内 O(1)，不改变既有
+      // retry 语义。
+      diag.emitCandidateOutcome(id.namespaceId, undefined, {
+        stage: 'identity',
+        code: 'NAMESPACE_ALREADY_EXISTS',
+        result: { kind: 'rejected' },
+        input: { status: 'not-accessed' },
+      });
+      return { kind: 'retry' };
+    }
 
     if (preparedBox.current === undefined) {
       const payload = snapshotCreatePayload(inputRef);
@@ -1407,7 +1442,25 @@ export function createRegistryInternal(
     try {
       handle = await persistence.createDoc(id.owner, id.namespaceId, initial.doc);
     } catch (cause) {
-      if (cause instanceof DocDuplicateError) return { kind: 'retry' };
+      if (cause instanceof DocDuplicateError) {
+        // #249（AC4）：Persistence DOC_DUPLICATE 候选结局——rejected 记录（stage
+        // transaction / code DOC_DUPLICATE / sourceModule 'persistence'——该码的所属
+        // 模块，ADR-0011 L51 + ADR-0012 L89 成对纪律；#150 映射表「持久层 duplicate
+        // → transaction」同款 stage 先例，SA2 O5）落到候选 id 的流；该 ns 无活流时
+        // genesis-less 补建一次（ADR-0012 L22）。observedAt 复用槽内 Clock 步产物
+        // p.createdAt——零额外读数（DC-3/L1565「DOC_DUPLICATE 重试不重复读」保持）；
+        // input 复用既有 detached frozen snapshot（AC5——不重读、不建第二套序列化）。
+        // 诊断只观察：不覆盖已提交内容（ADR-0006 #64）、不改变 8 次 retry 预算与
+        // 最终 create 结果（design §6.4/§8）。
+        diag.emitCandidateOutcome(id.namespaceId, p.createdAt, {
+          stage: 'transaction',
+          code: 'DOC_DUPLICATE',
+          sourceModule: 'persistence',
+          result: { kind: 'rejected' },
+          input: { snapshot: { schema: p.schema, root: p.root } },
+        });
+        return { kind: 'retry' };
+      }
       if (cause instanceof DocCreateOperationalError) {
         dispatchObserver(observer, { type: 'create-persist-failed', identity: id, cause });
         diag.emitOutcome(id.namespaceId, p.createdAt, {

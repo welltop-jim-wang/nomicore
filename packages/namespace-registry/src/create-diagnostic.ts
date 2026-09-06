@@ -1,6 +1,6 @@
 /**
- * @nomicore/namespace-registry —— create 诊断日志接线模块（issue #150/#155/#226）：
- * CreateDiag 环境 / emission 组装 / 吞没防御 / issues 投影 / genesis bytes /
+ * @nomicore/namespace-registry —— create 诊断日志接线模块（issue #150/#155/#226/
+ * #249）：CreateDiag 环境 / emission 组装 / 吞没防御 / issues 投影 / genesis bytes /
  * per-namespace 延迟投递泵（diag-pump）路由。
  *
  * 职责边界（SA1 设计 §6，对齐 #149 `namespace-runtime/src/diagnostic.ts` 先例）：
@@ -34,9 +34,17 @@
  *   （emit = O(1) 入队）——open/create/import 三处 factory 第三参与 Runtime
  *   write-sequencer 槽间窗口的 emitSlot 同步存储同步出关键路径。
  * - seam 未提供 `runtimeEmitterFor`（#150 时代 Host 形状）→ **legacy 路径逐字节
- *   现行**（同步共享 emitter / initStream 同步调用）——#150 冻结契约零漂移面。
+ *   现行**（同步共享 emitter / initStream 同步调用）——#150 冻结契约零漂移面；
+ *   #249 候选级结局在 legacy 为 no-op（D-1 裁决，见 `emitCandidateOutcome`）。
  * - 公共入口 acceptance/identity 拒绝（namespaceId 生成之前，无归属可用）→ 恒走
  *   同步共享通道（非缺陷 A 对象；SA1 §7.2）。
+ *
+ * #249（AC4 + 满队上报装配）：`CreateDiag.emitCandidateOutcome` 新方法（泵路径
+ * 实现 + legacy/NOOP no-op）——entry collision / DOC_DUPLICATE 每个碰撞候选一条
+ * rejected 记录（冻结词表零演进，设计 §6.3）；`CreateEmissionArgs` 增可选
+ * `sourceModule`（缺省 'registry'——DOC_DUPLICATE 候选取 'persistence'，code↔
+ * sourceModule 成对纪律）；泵构造接线 `reportDrop`（第三参 options.reportPumpDrop
+ * ——满队丢弃逐条低基数上报，落点为 registry.ts 侧内部 observer seam）。
  *
  * 模块导出纪律（设计 §10/§12）：零导出到公共面（index.ts 不 re-export）；registry.ts
  * 经相对导入消费。
@@ -48,11 +56,12 @@ import type {
   EmissionResult,
   NamespaceDiagnosticChangeEmitter,
   NamespaceDiagnosticChangeEmission,
+  SourceModule,
   Stage,
 } from '@nomicore/namespace-diagnostic-log';
 import type { Clock } from '@nomicore/clock';
 import { DocRuntimeFatalError } from '@nomicore/doc-runtime';
-import { createDiagPump, type DiagPump } from './diag-pump.js';
+import { createDiagPump, type DiagPump, type DiagPumpDeps, type DiagPumpDropReport } from './diag-pump.js';
 import type { NamespaceRegistryDiagnosticLog } from './types.js';
 
 /** 诊断环境（构造栈一次成型）：diagnosticLog 缺席 = 全 no-op 单例。 */
@@ -72,14 +81,30 @@ export interface CreateDiag {
   emitStreamOutcome(namespaceId: string, observedAt: string, e: CreateEmissionArgs): void;
   /** stream 建立缝（committed 事实确立后调用；bytes 尽力供给）。 */
   initStream(namespaceId: string, genesisUpdateBytes: Uint8Array | undefined): void;
+  /** #249（AC4）：候选级被拒结局（entry collision / DOC_DUPLICATE）——每个碰撞/
+   *  duplicate 候选 = 一次独立 create 变更尝试（CONTEXT.md L148–150），以
+   *  `rejected`（冻结词表内预期失败零提交——ADR-0012 L80–87）落到**候选 namespaceId
+   *  的流**。observedAt 语义同 emitEarlyOutcome：复用槽内 Clock 步产物；`undefined`
+   *  （entry collision 判定在 Clock 步之前）→ 本助手读一次 clock；clock 故障 → 该条
+   *  丢弃（诚实缺席）。路由：仅 ns-bound（泵）路径发射——legacy（#150 共享 emitter
+   *  形状）与日志禁用（NOOP_DIAG）为 no-op（design 裁决 D-1：legacy 无「namespace
+   *  的诊断流」承载；#150 冻结契约「恰一条最终结局」零漂移）。归属 = 候选 id 的流
+   *  （碰撞候选 id 即既有 namespace 的 id）；该 ns 无流时 genesis-less 补建一次。 */
+  emitCandidateOutcome(namespaceId: string, observedAt: string | undefined, e: CreateEmissionArgs): void;
 }
 
 export interface CreateEmissionArgs {
   readonly stage: Stage;
   readonly result: EmissionResult;
-  /** 与 sourceModule 'registry' 成对（emitAttempt 单点保证）。 */
+  /** 与 sourceModule 成对（emitAttempt 单点保证）。 */
   readonly code?: string;
   readonly sourcePhase?: string;
+  /** #249：稳定 code 的来源模块（ADR-0012 封闭 4 值）。缺省 'registry'——既有全部
+   *  调用点零漂移（assembleEmission 原 hardcode）；DOC_DUPLICATE 候选记录取
+   *  'persistence'（该码的所属模块——ADR-0011 L51「保留所属模块已有稳定 code」+
+   *  ADR-0012 L89「code 与 sourcePhase…标注 source module」；emitter 管线强制
+   *  code↔sourceModule 成对，单侧缺失即丢字段+健康事件——pipeline.ts §10-J3）。 */
+  readonly sourceModule?: SourceModule;
   /**
    * 原始（verbatim）issues——registry.ts 侧不投影，直接传业务结果里的原数组引用；
    * 投影（→ DiagnosticIssue[]，含码派生）在 emitOutcome/emitEarlyOutcome 的吞没
@@ -98,6 +123,7 @@ const NOOP_DIAG: CreateDiag = Object.freeze({
   emitEarlyOutcome: () => undefined,
   emitStreamOutcome: () => undefined,
   initStream: () => undefined,
+  emitCandidateOutcome: () => undefined, // #249：日志禁用 = 零行为（含零 clock 读数）
 });
 
 /**
@@ -245,7 +271,9 @@ function assembleEmission(
       stage: e.stage,
       observedAt, // 注入 Clock 同源 ISO（禁墙钟）
       source: { kind: 'local' }, // Registry 本地写路径
-      ...(e.code !== undefined ? { code: e.code, sourceModule: 'registry' as const } : {}),
+      ...(e.code !== undefined
+        ? { code: e.code, sourceModule: e.sourceModule ?? ('registry' as const) }
+        : {}), // code↔sourceModule 成对（#249：sourceModule 缺省 'registry'——既有零漂移）
       ...(e.sourcePhase !== undefined ? { sourcePhase: e.sourcePhase } : {}),
       ...(issues !== undefined && issues.length > 0 ? { issues } : {}),
       input: e.input,
@@ -344,7 +372,17 @@ export interface CreateDiagRuntimeAssembled {
 }
 
 /**
- * 单一诊断装配（#150/#155/#226 三票共用；registry.ts 构造期一次调用）：
+ * #249：泵装配窄回调（registry.ts 侧接线到内部 observer seam——本模块与
+ * observer.ts 保持解耦）。absent → 泵侧 reportDrop 缺席 → 满队丢弃静默
+ * （既有行为零漂移）。
+ */
+export interface CreateDiagRuntimeOptions {
+  /** 满队丢弃上报（泵依赖 `DiagPumpDeps.reportDrop` 的装配面）。 */
+  readonly reportPumpDrop?: (drop: DiagPumpDropReport) => void;
+}
+
+/**
+ * 单一诊断装配（#150/#155/#226/#249 共用；registry.ts 构造期一次调用）：
  * `diagnosticLog` 缺席/畸形 emitter → 恒 no-op diag + undefined 解析器（零日志
  * 行为、零开销——与既有完全一致）；emitter 在场 + 无 `runtimeEmitterFor` →
  * legacy 路径（#150 缓冲型 Host 逐字节现行）；emitter 在场 + 有
@@ -353,6 +391,7 @@ export interface CreateDiagRuntimeAssembled {
 export function createDiagRuntime(
   diagnosticLog: NamespaceRegistryDiagnosticLog | undefined,
   clock: Clock,
+  options: CreateDiagRuntimeOptions = {},
 ): CreateDiagRuntimeAssembled {
   if (diagnosticLog == null) {
     return { diag: NOOP_DIAG, resolveRuntimeDiag: () => undefined }; // undefined/null 均 = 日志禁用
@@ -414,6 +453,11 @@ export function createDiagRuntime(
             /* Host 违约（同步 throw / 敌意 getter）→ 吞没 */
           }
         },
+        // #249（design 裁决 D-1）：legacy 形状只有共享 emitter，无「namespace 的
+        // 诊断流」承载——候选级结局 no-op（#150 冻结契约「恰一条最终结局」绿锚
+        // registry-create-diagnostic-red L529 + sa7-dynamic `emitCalls === 10` 均由此
+        // 保护；生产形状的覆盖义务经 runtimeEmitterFor 泵路径兑现——ADR-0011 L57）。
+        emitCandidateOutcome: () => undefined,
       },
       resolveRuntimeDiag: () => undefined, // 两参既有行为零漂移（#150 时代形状）
     };
@@ -421,19 +465,28 @@ export function createDiagRuntime(
 
   // —— #226 泵路径（生产形状：有 runtimeEmitterFor）——
   const initStreamMember = readInitStreamMember(diagnosticLog);
-  const pump: DiagPump = createDiagPump({
-    // drain 内建流调用面（成员缺席 → no-op——路由层已保证缺席时不入队建流任务；
-    // 双保险收编 Host 违约 throw）。
-    initStream: (namespaceId, genesisUpdateBytes) => {
-      try {
-        initStreamMember?.(namespaceId, genesisUpdateBytes);
-      } catch {
-        /* Host 违约（同步 throw）→ 吞没（drain 内，业务路径外） */
-      }
-    },
-    // drain 内 ns-bound emitter 解析（resolveEmitterOnce 非抛边界复用）。
-    resolveEmitter: (namespaceId) => resolveEmitterOnce(streamResolver, namespaceId),
-  });
+  // drain 内建流调用面（成员缺席 → no-op——路由层已保证缺席时不入队建流任务；
+  // 双保险收编 Host 违约 throw）。
+  const pumpInitStream = (namespaceId: string, genesisUpdateBytes: Uint8Array | undefined): void => {
+    try {
+      initStreamMember?.(namespaceId, genesisUpdateBytes);
+    } catch {
+      /* Host 违约（同步 throw）→ 吞没（drain 内，业务路径外） */
+    }
+  };
+  // drain 内 ns-bound emitter 解析（resolveEmitterOnce 非抛边界复用）。
+  const pumpResolveEmitter = (namespaceId: string): NamespaceDiagnosticChangeEmitter | undefined =>
+    resolveEmitterOnce(streamResolver, namespaceId);
+  // #249：满队丢弃上报装配（observer 缺席时 registry.ts 仍传回调——dispatchObserver
+  // 自行 no-op；泵级 seam 可测性与生产接线同构；缺席 → 静默，既有行为零漂移）。
+  const pump: DiagPump =
+    options.reportPumpDrop === undefined
+      ? createDiagPump({ initStream: pumpInitStream, resolveEmitter: pumpResolveEmitter })
+      : createDiagPump({
+          initStream: pumpInitStream,
+          resolveEmitter: pumpResolveEmitter,
+          reportDrop: options.reportPumpDrop,
+        });
   // 泵侧「该 ns 已有流」登记（seed 决策：被拒 create 的补建流只发生一次——
   // SA1 §3.2「若该 ns 尚无流」；成功路径 initStream 亦登记——同一 ns 的后续
   // 早结局（终局后重试/重建场景）不重复补建）。
@@ -493,6 +546,21 @@ export function createDiagRuntime(
       initStream: (namespaceId, genesisUpdateBytes) => {
         if (initStreamMember === undefined) return;
         enqueueInitStreamTask(namespaceId, genesisUpdateBytes);
+      },
+      // #249（AC4）：候选级被拒结局（entry collision / DOC_DUPLICATE）——与
+      // emitEarlyOutcome/emitOutcome 同构的 ns-bound 泵投递（零新机制）：observedAt
+      // 复用槽内 Clock 步产物（DOC_DUPLICATE——零额外读数）；undefined（entry
+      // collision——判定在 Clock 步之前）→ 侧读一次 clock；clock 故障 → 该条诚实
+      // 缺席。随后 genesis-less 补建流（如缺）再落记录——per-ns FIFO 保持建流先于
+      // 记录。归属 = 候选 namespaceId 的流（碰撞候选 id 即既有 namespace 的 id——
+      // 设计 §6.4；unattributed 通道恒零）。
+      emitCandidateOutcome: (namespaceId, observedAt, e) => {
+        const ts = observedAt ?? readEarlyObservedAt(clock);
+        if (ts === undefined) return;
+        const record = assembleEmission(ts, e);
+        if (record === undefined) return;
+        seedRejectedStreamIfAbsent(namespaceId);
+        enqueueEmit(namespaceId, record);
       },
     },
     // #155（§5.4）+ #226（支柱三 wiring）：RuntimeFactory 第三参 = 延迟 wrapper
