@@ -603,7 +603,7 @@ Peer→Hub update保护检查必须在同一 sequencer槽中：
 （附带可选 `clock?: ReplicationClock` 以观测 apply/ACK latency）。Seam 是**追加式
 （append-only）**：事件类型、reason/cause/via 词表、稳定码表只增不改；GA 后字段语义冻结。
 
-### 23.1 事件词汇（19 型，分类列示）
+### 23.1 事件词汇（20 型，分类列示）
 
 连接域：
 
@@ -637,7 +637,8 @@ auth / 背压 / resync：
 | type | side | 字段 |
 |---|---|---|
 | `auth-upgrade-rejected` | hub | `reason` ∈ {hub-shutdown, missing-token, verifier-missing, frame-too-large, early-frame-limit, auth-timeout, invalid-credentials, invalid-instance-id, peer-disconnected}（pre-connection：无 connectionId 字段——设计 §四攻击点 #8） |
-| `resync-required` | hub/peer | `connectionId?`、`namespaceId`、`cause` ∈ {queue-overflow, send-failed, connection-shed, ack-timeout, session-fanout-overflow, remote-declared} |
+| `resync-required` | hub/peer | `connectionId?`、`namespaceId`、`cause` ∈ {queue-overflow, send-failed, connection-shed, ack-timeout, session-fanout-overflow, remote-declared}；**issue #231 追加（append-only，仅 `cause=send-failed` 时存在）**：`reason` ∈ {update-too-large, send-frame-rejected}（区分「单笔 UPDATE 确定性超 `maxUpdateBytes`」与「未超限但发送路径返回非正 sequence」）、`updateBytes`、`maxUpdateBytes`、`queuedUpdateCount`、`queuedUpdateBytes`、`inFlightCount`（失败时刻采样，丢弃前口径）、`channelState`、`connectionState`（发射时刻投影——§23.4 决策落定后发射，`channelState` 在此事件恒为 `needs-resync`）、`bufferedAmount?`（仅 adapter 暴露 `transport.bufferedAmount` 时存在——缺面/非法 = 字段缺失，非 0）。其余 cause 零新字段 |
+| `update-dropped` | hub/peer | **issue #231 追加（append-only 第 20 型）**：`connectionId?`、`namespaceId`、`reason` ∈ {update-too-large}（当前唯一形态：单笔 UPDATE 超 `maxUpdateBytes` 且**队列非空**时的 F4 静默丢弃——不声明 resync、无状态迁移，§10.2 R2-1/D4 活性保持；本事件是该路径的唯一观测信号）、`updateBytes`、`maxUpdateBytes`、`queuedUpdateCount`、`queuedUpdateBytes`、`inFlightCount`（丢弃时刻采样——被丢弃项已出队，`queued*` 为残余队列口径）、`channelState`（恒为 `live`——本路径无状态迁移）、`connectionState`（均为发射时刻投影）、`bufferedAmount?`（口径同上）。**计数不变量**：每笔超限丢弃恰一事件——队列已空 → `resync-required{cause:send-failed, reason:update-too-large}`（伴随 resync 声明）；队列非空 → `update-dropped{update-too-large}`（不声明）。丢弃项与受 Yjs 时钟缺口挂起的后续同向写由下一次 reconciliation 的 state-vector diff 修复（§9 round；diff 走控制帧路径，不受 `maxUpdateBytes` 单帧门约束） |
 | `send-paused` / `send-resumed` | hub/peer | `connectionId?`、`bufferedAmount` |
 
 稳定错误计数：
@@ -669,10 +670,12 @@ auth / 背压 / resync：
 ### 23.3 事件内容安全清单（Safe-field）
 
 **允许**：稳定字面量（type/side/direction/via/reason/cause/reasonCode/from/to/
-terminalState）、受控标识（`namespaceId` 恒为 `^ns-[0-9a-f]{32}$`；`connectionId` 为
+terminalState/channelState/connectionState——后两者为 §15/§16 状态机闭联合字面量，
+issue #231）、受控标识（`namespaceId` 恒为 `^ns-[0-9a-f]{32}$`；`connectionId` 为
 §6.2 专用 observability id，握手完成前字段不存在）、稳定错误码（§23.2 闭联合）、
-有限数值（`bytes` 是**长度**不是内容；`applyLatencyMs`/`ackLatencyMs` 是**差值**
-非绝对时间戳）。
+有限数值（`bytes`/`updateBytes`/`maxUpdateBytes` 是**长度**不是内容；
+`queuedUpdateCount`/`queuedUpdateBytes`/`inFlightCount` 是计数；`bufferedAmount` 是
+adapter 水位读数；`applyLatencyMs`/`ackLatencyMs` 是**差值**非绝对时间戳）。
 
 **禁止**：token（任何形态）；owner 值（NamespaceOwner/userId/localOwner）；Yjs bytes
 （事件树深扫不得出现 `Uint8Array`/`ArrayBuffer`/`DataView`）；SCHEMA/ROOT 内容；
@@ -736,4 +739,10 @@ Yjs bytes/SCHEMA/ROOT/cause 哨兵深扫（含 `JSON.stringify` 无标记物、�
 `Uint8Array`/`ArrayBuffer`/`Error`）；observer 每事件必 throw 时 wire 帧序列、终态、
 文档内容与 apply 结算与无 observer 基线全等；无 clock 时 latency 字段缺失、有 clock
 时 ≥ 0；degraded 期 hub→peer apply 产生 `degraded-bypass-applied` 且互斥于
-`update-applied`。
+`update-applied`；`resync-required{cause:send-failed}` 子因矩阵（issue #231：
+`update-too-large` 与 `send-frame-rejected` × hub/peer 四象限，断言 `reason`/
+`updateBytes`/`maxUpdateBytes` 与失败时刻上下文，其余 cause 事件键集逐字节不变；
+`bufferedAmount` 在 adapter 缺面时字段缺失、可观测时为真实读数）；
+`update-dropped{reason:update-too-large}` × hub/peer（队列非空超限丢弃路径：
+恰一事件、零 `resync-required`、连接/channel 不迁移、同一 drain 后续合法项照发
+并被 ACK、丢弃项由下一次 reconciliation diff 修复收敛）。

@@ -19,10 +19,15 @@ import {
   NAMESPACE_ERRORS,
 } from '@nomicore/replication-protocol';
 import type {
+  HubConnectionState,
+  HubNamespaceState,
+  PeerConnectionState,
+  PeerNamespaceState,
   ReplicationObserver,
   ReplicationObserverConnectionCode,
   ReplicationObserverEvent,
   ReplicationObserverNamespaceCode,
+  UpdateSendFailureDetail,
 } from './types.js';
 
 /** 隔离分发单点（与 namespace-registry/src/observer.ts:55-83 同款纪律）。 */
@@ -72,6 +77,43 @@ export function cidField(
   connectionId: string | undefined,
 ): Readonly<{ connectionId?: string }> {
   return connectionId === undefined ? {} : { connectionId };
+}
+
+/** issue #231：send 失败/超限丢弃事件的安全数值与状态上下文字段组（append-only）。
+ *  采样口径（§23.1 登记）：updateBytes/maxUpdateBytes/queuedUpdateCount/
+ *  queuedUpdateBytes/inFlightCount = 失败时刻（丢弃前）采样，取自通道侧明细；
+ *  channelState/connectionState = 发射时刻投影（§23.4 决策落定后发射）；
+ *  bufferedAmount 仅 adapter 暴露 transport.bufferedAmount 时存在
+ *  （缺面/非法 = 字段缺失，非 0）。 */
+export interface SendFailureContext {
+  readonly updateBytes: number;
+  readonly maxUpdateBytes: number;
+  readonly channelState: PeerNamespaceState | HubNamespaceState;
+  readonly connectionState: PeerConnectionState | HubConnectionState;
+  readonly queuedUpdateCount: number;
+  readonly queuedUpdateBytes: number;
+  readonly inFlightCount: number;
+  readonly bufferedAmount?: number;
+}
+
+/** 上下文字段组构造单点（hub/peer 两侧、resync-required/update-dropped 两事件同形
+ *  ——消除镜像重复的唯一审计点；safe-field 深扫只认本函数产出的字段形状）。 */
+export function sendFailureContext(
+  detail: UpdateSendFailureDetail,
+  channelState: PeerNamespaceState | HubNamespaceState,
+  connectionState: PeerConnectionState | HubConnectionState,
+  bufferedAmount: number | undefined,
+): SendFailureContext {
+  return {
+    updateBytes: detail.updateBytes,
+    maxUpdateBytes: detail.maxUpdateBytes,
+    channelState,
+    connectionState,
+    queuedUpdateCount: detail.queuedUpdateCount,
+    queuedUpdateBytes: detail.queuedUpdateBytes,
+    inFlightCount: detail.inFlightCount,
+    ...(bufferedAmount !== undefined ? { bufferedAmount } : {}),
+  };
 }
 
 /**

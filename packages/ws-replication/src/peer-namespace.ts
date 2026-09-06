@@ -11,7 +11,7 @@ import type {
 } from '@nomicore/namespace-registry';
 import { FenceWatchdog, type WatchdogPredicate } from './fence-watchdog.js';
 import { namespaceErrorFrame } from './frame-io.js';
-import { cidField, stableNamespaceCode } from './observer.js';
+import { cidField, sendFailureContext, stableNamespaceCode } from './observer.js';
 import { Memoized } from './lifecycle-queue.js';
 import {
   mapEncodeThrow,
@@ -25,12 +25,14 @@ import { RoundAborted, RoundEngine } from './round-engine.js';
 import { UpdateChannel } from './update-channel.js';
 import type { DataSenderFacet } from './backpressure.js';
 import type {
+  PeerConnectionState,
   PeerNamespaceState,
   ReplicationObserverEvent,
   ReplicationTarget,
   ReplicationTimer,
   ResolvedLimits,
   ResolvedTimeouts,
+  UpdateSendFailureDetail,
 } from './types.js';
 
 /** 控制器宿主（由 PeerConnectionImpl 实现；指向当前连接的活动出站）。 */
@@ -62,6 +64,11 @@ export interface PeerNamespaceHost {
   emitObserver(event: ReplicationObserverEvent): void;
   /** 连接级受控 observability id（HELLO_ACK 前 undefined）。 */
   connectionId(): string | undefined;
+  /** 连接状态投影（issue #231 send-failed 诊断上下文；观测面只读，仅 observer 在场时调用）。 */
+  connectionState(): PeerConnectionState;
+  /** socket 缓冲未冲刷字节（issue #231）：adapter 可观测 → 有限数值；
+   *  缺面/非法 → undefined（事件字段缺失，非 0——0 是真实读数）。 */
+  bufferedAmount(): number | undefined;
   /** 单调时源（仅作差；clock 缺省/无 observer 时 undefined）。 */
   now?(): number | undefined;
 }
@@ -183,7 +190,8 @@ export class PeerNamespaceController {
       limits: host.limits,
       ackTimeoutMs: host.timeouts.ackTimeoutMs,
       sendUpdateFrame: (bytes) => this.sendUpdateFrame(bytes),
-      declareLocalResync: (cause) => this.declareLocalResync(cause),
+      declareLocalResync: (cause, failureDetail) => this.declareLocalResync(cause, failureDetail),
+      noteUpdateDropped: (detail) => this.noteUpdateDropped(detail),
       notePendingResync: () => {
         this.pendingResync = true;
       },
@@ -898,6 +906,7 @@ export class PeerNamespaceController {
       | 'session-fanout-overflow'
       | 'remote-declared'
       | 'ack-timeout',
+    failureDetail?: () => UpdateSendFailureDetail,
   ): void {
     if (this.resyncDeclared) return;
     this.clearTimer('periodic-reconcile');
@@ -908,7 +917,7 @@ export class PeerNamespaceController {
       reasonCode: 'send-queue-overflow',
     });
     this.setState('needs-resync');
-    this.emitResyncRequired(cause); // PN5：仅 resyncDeclared false→true 翻转时发射
+    this.emitResyncRequired(cause, failureDetail); // PN5：仅 resyncDeclared false→true 翻转时发射
     this.maybeStartRecovery();
   }
 
@@ -1324,7 +1333,8 @@ export class PeerNamespaceController {
     });
   }
 
-  /** PN5/PN6/PN6b：resync-required（cause 闭联合）。 */
+  /** PN5/PN6/PN6b：resync-required（cause 闭联合）。issue #231：send-failed 附子因
+   *  与安全数值上下文（append-only；其余 cause 零新字段——事件形状逐字节不变）。 */
   private emitResyncRequired(
     cause:
       | 'queue-overflow'
@@ -1333,14 +1343,49 @@ export class PeerNamespaceController {
       | 'ack-timeout'
       | 'session-fanout-overflow'
       | 'remote-declared',
+    failureDetail?: () => UpdateSendFailureDetail,
   ): void {
     if (!this.observerOn) return;
+    // 惰性求值：仅 observer 在场时构造明细（无 observer 零分配/零投影读取）。
+    const detail = failureDetail?.();
     this.host.emitObserver({
       type: 'resync-required',
       side: 'peer',
       ...(cidField(this.host.connectionId())),
       namespaceId: this.namespaceId,
       cause,
+      ...(detail !== undefined
+        ? {
+            reason: detail.reason,
+            ...sendFailureContext(
+              detail,
+              this.state,
+              this.host.connectionState(),
+              this.host.bufferedAmount(),
+            ),
+          }
+        : {}),
+    });
+  }
+
+  /** issue #231：update-dropped——队列非空时超限项 F4 静默丢弃（不伴随 resync 声明，
+   *  R2-1/D4 活性保持）的唯一观测信号。计数不变量见 types.ts 事件注释：每笔超限丢弃
+   *  恰一事件（队列已空走 resync-required{update-too-large}，非空走本事件）。 */
+  private noteUpdateDropped(failureDetail: () => UpdateSendFailureDetail): void {
+    if (!this.observerOn) return;
+    const detail = failureDetail();
+    this.host.emitObserver({
+      type: 'update-dropped',
+      side: 'peer',
+      ...(cidField(this.host.connectionId())),
+      namespaceId: this.namespaceId,
+      reason: 'update-too-large',
+      ...sendFailureContext(
+        detail,
+        this.state,
+        this.host.connectionState(),
+        this.host.bufferedAmount(),
+      ),
     });
   }
 

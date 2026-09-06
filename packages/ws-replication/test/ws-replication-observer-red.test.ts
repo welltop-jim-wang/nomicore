@@ -1137,7 +1137,7 @@ describe('T9：事件内容安全（safe-field）', () => {
     ['root', 'ROOT-SENTINEL-VALUE'],
   ];
 
-  /** 冻结白名单：逐 type 键集（19 型；键集契约 = 设计 §4.1 + api 型断言共同锁定）。 */
+  /** 冻结白名单：逐 type 键集（20 型；键集契约 = 设计 §4.1 + api 型断言共同锁定）。 */
   const ALLOWED_KEYS: ReadonlyMap<string, ReadonlySet<string>> = new Map([
     ['connection-state-changed', new Set(['type', 'side', 'connectionId', 'from', 'to'])],
     ['connection-backoff-scheduled', new Set(['type', 'side', 'attempt', 'delayMs', 'reason'])],
@@ -1150,9 +1150,11 @@ describe('T9：事件内容安全（safe-field）', () => {
     ['update-sent', new Set(['type', 'side', 'connectionId', 'namespaceId', 'bytes'])],
     ['update-applied', new Set(['type', 'side', 'connectionId', 'namespaceId', 'bytes', 'applyLatencyMs'])],
     ['update-acked', new Set(['type', 'side', 'connectionId', 'namespaceId', 'bytes', 'ackLatencyMs'])],
+    // issue #231（第 20 型）：队列非空超限静默丢弃的唯一观测信号（与 resync-required 上下文同形，reason 必填）
+    ['update-dropped', new Set(['type', 'side', 'connectionId', 'namespaceId', 'reason', 'updateBytes', 'maxUpdateBytes', 'channelState', 'connectionState', 'queuedUpdateCount', 'queuedUpdateBytes', 'inFlightCount', 'bufferedAmount'])],
     ['degraded-bypass-applied', new Set(['type', 'side', 'connectionId', 'namespaceId', 'bytes'])],
     ['auth-upgrade-rejected', new Set(['type', 'side', 'reason'])],
-    ['resync-required', new Set(['type', 'side', 'connectionId', 'namespaceId', 'cause'])],
+    ['resync-required', new Set(['type', 'side', 'connectionId', 'namespaceId', 'cause', 'reason', 'updateBytes', 'maxUpdateBytes', 'channelState', 'connectionState', 'queuedUpdateCount', 'queuedUpdateBytes', 'inFlightCount', 'bufferedAmount'])],
     ['send-paused', new Set(['type', 'side', 'connectionId', 'bufferedAmount'])],
     ['send-resumed', new Set(['type', 'side', 'connectionId', 'bufferedAmount'])],
     ['connection-failed', new Set(['type', 'side', 'connectionId', 'code', 'wsCloseCode'])],
@@ -1189,7 +1191,10 @@ describe('T9：事件内容安全（safe-field）', () => {
         if (
           key === 'bytes' || key === 'bufferedAmount' || key === 'attempt' ||
           key === 'delayMs' || key === 'drainTimeoutMs' || key === 'retryAfterMs' ||
-          key === 'wsCloseCode' || key === 'applyLatencyMs' || key === 'ackLatencyMs'
+          key === 'wsCloseCode' || key === 'applyLatencyMs' || key === 'ackLatencyMs' ||
+          // issue #231：send-failed 安全数值上下文（同为有限非负口径）
+          key === 'updateBytes' || key === 'maxUpdateBytes' || key === 'queuedUpdateCount' ||
+          key === 'queuedUpdateBytes' || key === 'inFlightCount'
         ) {
           expect(typeof value === 'number' && Number.isFinite(value) && value >= 0, `${label}: ${event.type}.${key}`).toBe(true);
         }
@@ -1223,7 +1228,7 @@ describe('T9：事件内容安全（safe-field）', () => {
     const all = [...run.hubEvents.events, ...run.peerEvents.events];
     expect(all.length).toBeGreaterThan(20);
     assertSafe(all, 'matrix');
-    // 全部 19 型中可达的 type 都出现（本矩阵覆盖的连接域 + 字节域 + degraded）
+    // 全部 20 型中可达的 type 都出现（本矩阵覆盖的连接域 + 字节域 + degraded）
     const types = new Set(all.map((e) => e.type));
     const expectedTypes = [
       'connection-state-changed', 'channel-state-changed', 'bootstrap-imported',

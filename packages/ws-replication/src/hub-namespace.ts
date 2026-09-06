@@ -12,7 +12,7 @@ import type {
 } from '@nomicore/namespace-registry';
 import { FenceWatchdog, type WatchdogPredicate } from './fence-watchdog.js';
 import { namespaceErrorFrame } from './frame-io.js';
-import { cidField, stableNamespaceCode } from './observer.js';
+import { cidField, sendFailureContext, stableNamespaceCode } from './observer.js';
 import {
   mapEncodeThrow,
   mapRejection,
@@ -26,11 +26,13 @@ import { RoundAborted, RoundEngine } from './round-engine.js';
 import { UpdateChannel } from './update-channel.js';
 import type { DataSenderFacet } from './backpressure.js';
 import type {
+  HubConnectionState,
   HubNamespaceState,
   ReplicationObserverEvent,
   ReplicationTimer,
   ResolvedLimits,
   ResolvedTimeouts,
+  UpdateSendFailureDetail,
 } from './types.js';
 
 /** hub 侧 channel 状态（= 公共投影 HubNamespaceState；包内实现用名）。 */
@@ -67,6 +69,11 @@ export interface HubChannelHost {
   emitObserver(event: ReplicationObserverEvent): void;
   /** 连接级受控 observability id（握手完成前 undefined）。 */
   connectionId(): string | undefined;
+  /** 连接状态投影（issue #231 send-failed 诊断上下文；观测面只读，仅 observer 在场时调用）。 */
+  connectionState(): HubConnectionState;
+  /** socket 缓冲未冲刷字节（issue #231）：adapter 可观测 → 有限数值；
+   *  缺面/非法 → undefined（事件字段缺失，非 0——0 是真实读数）。 */
+  bufferedAmount(): number | undefined;
   /** 单调时源（仅作差；clock 缺省/无 observer 时 undefined）。 */
   now?(): number | undefined;
 }
@@ -171,7 +178,8 @@ export class HubNamespaceChannel {
       limits: host.limits,
       ackTimeoutMs: host.timeouts.ackTimeoutMs,
       sendUpdateFrame: (bytes) => this.sendUpdateFrame(bytes),
-      declareLocalResync: (cause) => this.onLocalResyncEdge(cause),
+      declareLocalResync: (cause, failureDetail) => this.onLocalResyncEdge(cause, failureDetail),
+      noteUpdateDropped: (detail) => this.noteUpdateDropped(detail),
       notePendingResync: () => {
         this.pendingResync = true;
       },
@@ -749,10 +757,13 @@ export class HubNamespaceChannel {
     this.finalize('failed');
   }
 
-  private onLocalResyncEdge(cause: 'queue-overflow' | 'send-failed'): void {
+  private onLocalResyncEdge(
+    cause: 'queue-overflow' | 'send-failed',
+    failureDetail?: () => UpdateSendFailureDetail,
+  ): void {
     // hub 侧 update-channel 本地排队溢出（§10.2 判据）：§10.2/§18.4「hub 溢出同机制声明」
     // + §12 R4.2 定案——声明 RESYNC_REQUIRED + 等待 peer 新 round
-    this.declareHubResync(cause);
+    this.declareHubResync(cause, failureDetail);
   }
 
   /** hub 溢出面统一声明（§10.2/§12 R4.2）：发 RESYNC_REQUIRED（一次/恢复周期，记忆化）
@@ -764,6 +775,7 @@ export class HubNamespaceChannel {
       | 'connection-shed'
       | 'ack-timeout'
       | 'session-fanout-overflow',
+    failureDetail?: () => UpdateSendFailureDetail,
   ): void {
     if (this.isQuietState()) return;
     if (this.resyncDeclared) return;
@@ -774,7 +786,7 @@ export class HubNamespaceChannel {
       reasonCode: 'send-queue-overflow',
     });
     if (!this.isQuietState()) this.setState('needs-resync');
-    this.emitResyncRequired(cause); // HB7：仅 resyncDeclared false→true 翻转时发射
+    this.emitResyncRequired(cause, failureDetail); // HB7：仅 resyncDeclared false→true 翻转时发射
   }
 
   private onAckTimeoutFired(): void {
@@ -1087,7 +1099,8 @@ export class HubNamespaceChannel {
     });
   }
 
-  /** HB7/HB8：resync-required（cause 闭联合）。 */
+  /** HB7/HB8：resync-required（cause 闭联合）。issue #231：send-failed 附子因
+   *  与安全数值上下文（append-only；其余 cause 零新字段——事件形状逐字节不变）。 */
   private emitResyncRequired(
     cause:
       | 'queue-overflow'
@@ -1096,14 +1109,49 @@ export class HubNamespaceChannel {
       | 'ack-timeout'
       | 'session-fanout-overflow'
       | 'remote-declared',
+    failureDetail?: () => UpdateSendFailureDetail,
   ): void {
     if (!this.observerOn) return;
+    // 惰性求值：仅 observer 在场时构造明细（无 observer 零分配/零投影读取）。
+    const detail = failureDetail?.();
     this.host.emitObserver({
       type: 'resync-required',
       side: 'hub',
       ...(cidField(this.host.connectionId())),
       namespaceId: this.namespaceId,
       cause,
+      ...(detail !== undefined
+        ? {
+            reason: detail.reason,
+            ...sendFailureContext(
+              detail,
+              this.state,
+              this.host.connectionState(),
+              this.host.bufferedAmount(),
+            ),
+          }
+        : {}),
+    });
+  }
+
+  /** issue #231：update-dropped——队列非空时超限项 F4 静默丢弃（不伴随 resync 声明，
+   *  R2-1/D4 活性保持）的唯一观测信号。计数不变量见 types.ts 事件注释：每笔超限丢弃
+   *  恰一事件（队列已空走 resync-required{update-too-large}，非空走本事件）。 */
+  private noteUpdateDropped(failureDetail: () => UpdateSendFailureDetail): void {
+    if (!this.observerOn) return;
+    const detail = failureDetail();
+    this.host.emitObserver({
+      type: 'update-dropped',
+      side: 'hub',
+      ...(cidField(this.host.connectionId())),
+      namespaceId: this.namespaceId,
+      reason: 'update-too-large',
+      ...sendFailureContext(
+        detail,
+        this.state,
+        this.host.connectionState(),
+        this.host.bufferedAmount(),
+      ),
     });
   }
 

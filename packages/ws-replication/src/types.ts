@@ -247,6 +247,12 @@ export type ReplicationObserverNamespaceCode =
   | NamespaceErrorCode
   | 'IDENTITY_CHANGED'; // §11 fence 帧方向标注（消息名作稳定字符串）
 
+/** `resync-required{cause:'send-failed'}` 的发送失败子因（issue #231，append-only 闭联合）：
+ *  - `update-too-large`：单笔 UPDATE 载荷确定性超过 `maxUpdateBytes`（修业务体量/配置限制）；
+ *  - `send-frame-rejected`：载荷未超限，但发送路径返回非正 sequence（连接/状态/背压/
+ *    编码/发送异常折叠——修连接与背压状态机方向）。 */
+export type ReplicationSendFailureReason = 'update-too-large' | 'send-frame-rejected';
+
 /** 单调时源（latency 观测专用；ADR 0009 Clock capability 同形窄面）。
  *  可选注入：缺省 = 全部 latency 字段 undefined（dormant，协议 §17 L494 缺面先例）。
  *  生产组合根应注入并在装配期对缺省做响亮断言（issue #164 双层纪律）。禁止实现内部
@@ -256,13 +262,14 @@ export interface ReplicationClock {
 }
 
 /**
- * 结构化 observer seam 事件（ADR 0010 L167 最小观测面全量映射；19 型，append-only）。
+ * 结构化 observer seam 事件（ADR 0010 L167 最小观测面全量映射；20 型，append-only）。
  *
  * Safe-field 纪律（协议文档 §23）：字段类别 = 稳定字面量（type/side/direction/via/
- * reason/cause/terminalState/from/to/reasonCode）、受控标识（namespaceId 恒为
- * `^ns-[0-9a-f]{32}$`；connectionId 为协议 §6.2 专用 observability id，握手完成前
- * undefined）、稳定错误码（闭联合，未知折叠 INTERNAL_ERROR）、有限数值（bytes 是长度
- * 不是内容；latency 是差值非绝对时间戳）。
+ * reason/cause/terminalState/from/to/reasonCode/channelState/connectionState）、受控标识
+ * （namespaceId 恒为 `^ns-[0-9a-f]{32}$`；connectionId 为协议 §6.2 专用 observability id，
+ * 握手完成前 undefined）、稳定错误码（闭联合，未知折叠 INTERNAL_ERROR）、有限数值
+ * （bytes/updateBytes/maxUpdateBytes/queuedUpdateCount/queuedUpdateBytes/inFlightCount/
+ * bufferedAmount 是长度/计数/水位读数不是内容；latency 是差值非绝对时间戳）。
  *
  * 事件**不得**包含：token、owner 值、Yjs bytes（Uint8Array/ArrayBuffer/DataView）、
  * SCHEMA/ROOT 内容、原始 cause（Error/message/stack）、任意不受控高基数自由文本。
@@ -366,6 +373,34 @@ export type ReplicationObserverEvent =
       readonly ackLatencyMs?: number;
     }
   | {
+      // issue #231（append-only 第 20 型）：无 resync 声明的超限静默丢弃——队列非空时
+      // F4 丢弃语义继续 drain（R2-1/D4），不声明 resync；本事件是该路径唯一的观测信号。
+      // 计数不变量：每笔超限丢弃恰一事件——队列已空 → resync-required{update-too-large}
+      // （伴随 resync 声明）；队列非空 → update-dropped{update-too-large}（不声明）。
+      readonly type: 'update-dropped';
+      readonly side: ReplicationObserverSide;
+      readonly connectionId?: string;
+      readonly namespaceId: string;
+      /** 丢弃原因（当前唯一形态 = 单笔超 maxUpdateBytes；append-only 闭联合可扩）。 */
+      readonly reason: 'update-too-large';
+      /** 被丢弃帧载荷字节数（长度非内容）。 */
+      readonly updateBytes: number;
+      /** 配置上限（单笔 UPDATE 载荷）。 */
+      readonly maxUpdateBytes: number;
+      /** 发射时刻 channel 状态（本路径无状态迁移——恒为 live）。 */
+      readonly channelState: PeerNamespaceState | HubNamespaceState;
+      /** 发射时刻连接状态。 */
+      readonly connectionState: PeerConnectionState | HubConnectionState;
+      /** 丢弃时刻未发送队列残余项数（被丢弃项已出队，不计入）。 */
+      readonly queuedUpdateCount: number;
+      /** 丢弃时刻未发送队列残余字节（口径 = 各项原始字节之和）。 */
+      readonly queuedUpdateBytes: number;
+      /** 丢弃时刻在途窗口占用。 */
+      readonly inFlightCount: number;
+      /** socket 缓冲未冲刷字节——仅 adapter 暴露 `transport.bufferedAmount` 时存在。 */
+      readonly bufferedAmount?: number;
+    }
+  | {
       readonly type: 'degraded-bypass-applied'; // peer 专属（hub 结构性不可 bypass）
       readonly side: 'peer';
       readonly connectionId?: string;
@@ -399,6 +434,26 @@ export type ReplicationObserverEvent =
         | 'ack-timeout'
         | 'session-fanout-overflow'
         | 'remote-declared';
+      // ── issue #231（append-only）：仅 cause==='send-failed' 时存在的一组字段——
+      //    子因 + 失败时刻安全数值/状态上下文；其余 cause 全部缺省（字段不存在）。 ──
+      /** 发送失败子因（闭联合；区分「确定性超限」与「发送路径拒绝」）。 */
+      readonly reason?: ReplicationSendFailureReason;
+      /** 触发帧载荷字节数（长度非内容）。 */
+      readonly updateBytes?: number;
+      /** 配置上限（单笔 UPDATE 载荷）。 */
+      readonly maxUpdateBytes?: number;
+      /** 事件发射时刻的 channel 状态（事件在决策落定后发射——恒为 needs-resync）。 */
+      readonly channelState?: PeerNamespaceState | HubNamespaceState;
+      /** 事件发射时刻的连接状态（判别「连接健康但帧被拒」的关键上下文）。 */
+      readonly connectionState?: PeerConnectionState | HubConnectionState;
+      /** 失败时刻未发送队列项数（丢弃前采样——被丢弃工作的体量）。 */
+      readonly queuedUpdateCount?: number;
+      /** 失败时刻未发送队列字节（口径 = 各项原始字节之和）。 */
+      readonly queuedUpdateBytes?: number;
+      /** 失败时刻在途窗口占用。 */
+      readonly inFlightCount?: number;
+      /** socket 缓冲未冲刷字节——仅 adapter 暴露 `transport.bufferedAmount` 时存在。 */
+      readonly bufferedAmount?: number;
     }
   | {
       readonly type: 'send-paused';
@@ -446,6 +501,19 @@ export type ReplicationObserverEvent =
 export type ReplicationObserver = (event: ReplicationObserverEvent) => void;
 
 // ═══════════════════════════ 包内私有结构类型 ═══════════════════════════
+
+/** issue #231：send 失败/超限丢弃的通道侧失败明细（observer 诊断载荷；包内私有——
+ *  公共契约面只有事件字段，本结构不出 index.ts）。
+ *  safe-field：全部稳定字面量/有限数值——零 Yjs bytes、零异常原文、零身份字段。
+ *  计数口径 = 失败时刻采样（丢弃前）——描述被丢弃/在途工作的真实体量。 */
+export interface UpdateSendFailureDetail {
+  readonly reason: ReplicationSendFailureReason;
+  readonly updateBytes: number;
+  readonly maxUpdateBytes: number;
+  readonly queuedUpdateCount: number;
+  readonly queuedUpdateBytes: number;
+  readonly inFlightCount: number;
+}
 
 /** 解析后的合并配置（构造期校验后的不可变值）。 */
 export interface ResolvedLimits extends ReplicationLimits {}
