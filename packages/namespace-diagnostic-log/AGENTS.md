@@ -94,6 +94,22 @@
   持约（session open 供参非法 → 收敛 `failed` + `replay-internal-error`，零新 throw 面）。
   新码恰四（reader 域 `lease-expired`/`segment-vanished`、replay 域 `update-unknown`/
   `lease-expired`），零 health 事件成员变更。
+  **（#227 R2，owner PR #251 两条必修——rev2 设计 §3.1–§3.3）**：
+  - **取得点前移（O-1/D8）**：`readStreamStrict` 自建臂的 session 取得点 = ① 路径安全
+    检查后、② 首次 manifest I/O 前（④″）——manifest 读取/门/policy 阶段同样持约
+    （INV-227-1 改写版）；传入臂（`session?` 提供）纯绑定不动。`StrictReadRequest`
+    增可选 `clock?`（G-227-6 平铺形状，仅自建臂消费——透传 open；传入臂忽略）。
+    取得检查点（`renewIfDue`）拒绝 → corrupt + `lease-expired`（manifest:null、
+    零进一步 IO）。
+  - **统一释放（O-1/D9，INV-227-11）**：自建 session 的 close 只存在于 `readStreamStrict`
+    函数唯一 `finally`——覆盖 manifest 缺失/JSON 损坏/gate 失败（corrupt/incompatible
+    双臂）/enumerationFailed 等一切持约早退与异常逃逸；函数体内无任何 close 直呼站点。
+    传入臂不 close（生命周期归调用方——replay 维持唯一责任方）。
+  - **提交时刻取时（O-2/D11 + G-227-5 采含，INV-227-12）**：一切删除提交门——P1/P2 的
+    S0′（`deleteGroupIfUnleased`）与 P0 orphan-BIN unlink（`hygieneStream`）——以门点
+    适配器闭包钟 `clock.now()` 现值评估租约（sweep 开始后注册、提交前到期的租约不阻塞；
+    INV-4 在提交点字面复位）；`sweepRetention` 的 `options.now` 语义收窄为**策略时刻**
+    （候选/年龄/字节口径，单次 sweep 单一快照）。
 - 不依赖 yjs / clock / registry / persistence；只依赖 `@nomicore/vfsl`
   （compileSchemaEnvelope / validateLogicalSnapshot）。
 - 不改 ADR（`docs/adr/**` 冻结源）；`VFSL 校验失败 = writer bug`——丢弃 +

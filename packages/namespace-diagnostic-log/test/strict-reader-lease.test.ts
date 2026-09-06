@@ -10,15 +10,20 @@
  *   语义——HEAD 的 `readStreamStrict` 无 session 字段（请求面三字段），传入的
  *   session 被忽略（自枚举/自读取），断言必然红灯；SA3 按 §3.2 接线后翻绿。
  * - A3b/A4c/A5 为「零回退等价」保护臂（HEAD 已绿，S0′/④′ 改造不得回退）。
- * - 全部断言针对运行时产物（读状态/issue 码/records/注册表可观测行为）；
+ * - A6a/A6b/A7（R2 增量，rev2 设计 §8.1）：manifest 阶段持约 + 唯一 finally 释放
+ *   矩阵。A6 系在 HEAD 上必红（自建臂不消费 `request.clock` → fake 钟零调用 →
+ *   钩子不触发——「取得检查点缝的缺席即红」）；A7 结构 pin 对 HEAD 空洞绿
+ *   （早退均先于 ④′ 会话取得，注册表本就零残留），对漏 finally 的新实现红。
+ * - 全部断言针对运行时产物（读状态/issue 码/records/sweep 报告/注册表可观测行为）；
  *   零源码文本断言、零测试抑制。
  */
-import { existsSync, renameSync, rmSync, unlinkSync } from 'node:fs'
+import { existsSync, readFileSync, renameSync, rmSync, unlinkSync, writeFileSync } from 'node:fs'
 import { afterEach, describe, expect, it } from 'vitest'
 import {
   openDiagnosticReadSession,
   readStreamStrict,
   type DiagnosticReadSession,
+  type RetentionSweepReport,
   type StrictReadRequest,
   type StrictStreamRead,
 } from '../src/index.js'
@@ -82,6 +87,16 @@ function segmentsDirOf(root: string, ns: string, streamId: string): string {
 function withSession(request: Omit<StrictReadRequest, 'session'> & { session: DiagnosticReadSession }): StrictStreamRead {
   // session 字段为 #227 提议增量（HEAD 类型面尚无）——以扩展形状直通，断言交给运行时
   return readStreamStrict(request as StrictReadRequest & { session: DiagnosticReadSession })
+}
+
+function withClock(request: Omit<StrictReadRequest, 'clock'> & { clock: { now(): number } }): StrictStreamRead {
+  // clock 字段为 #227 R2 提议增量（rev2 设计 §3.1.1 `StrictReadRequest.clock?`——HEAD
+  // 类型面尚无）——以扩展形状直通；HEAD 自建臂不消费 → fake 钟零调用（A6 系红差分机制）
+  return readStreamStrict(request as StrictReadRequest & { clock: { now(): number } })
+}
+
+function manifestPathOf(root: string, ns: string, streamId: string): string {
+  return `${root}/namespaces/${ns}/streams/${streamId}/manifest.json`
 }
 
 function seqsOf(read: StrictStreamRead): string[] {
@@ -363,5 +378,191 @@ describe('A5 无泄漏（AC1：自开会话在函数返回前 close——注册�
     // 闭组已删、开组在 → 无 jsonl 残留洞
     expect(existsSync(`${segmentsDirOf(root, ns, a.log.streamId)}/00000001.jsonl`)).toBe(false)
     expect(existsSync(`${segmentsDirOf(root, ns, a.log.streamId)}/00000004.jsonl`)).toBe(true)
+  })
+})
+
+// ============================================================================
+// A6 — manifest 阶段持约（R2/O-1：自建臂在 ① 路径安全后、② 首次 manifest I/O 前取得，
+//       manifest read/gate 期间 lease 已注册并与 retention sweep 并发）
+// ============================================================================
+// 权威契约：rev2 设计 §3.1.1/§3.1.2（④″ 取得点 + 取得检查点确定性缝——call#1 = open
+// openAt（注册前）、call#2 = 取得检查点 renewIfDue（注册后、② 前——owner 窗口唯一
+// 天然钩子））/ §8.1（A6a/A6b 档案）。红差分：HEAD 自建臂不消费 `request.clock`
+// （字段不存在）→ fake 钟零调用 → 钩子不触发 → A6 断言必红（缝的缺席即红）。
+describe('A6 manifest 阶段持约（R2：自建臂 lease 注册先于首次 manifest I/O——INV-227-1 改写版）', () => {
+  /** 供 A6 系共用的自建臂读取（注入 fake 钟）。fake 的 call#2（= rev2 §3.1.2 取得检查点）
+   *  触发钩子；此后（call#3+）返回现值零副作用（fire-once 守卫，K-R2-4）。 */
+  function probeRead(
+    root: string,
+    ns: string,
+    streamId: string,
+    hook: (capture: (report: RetentionSweepReport) => void) => void,
+  ): { read: StrictStreamRead; report: RetentionSweepReport | null; calls: number } {
+    let calls = 0
+    let report: RetentionSweepReport | null = null
+    const fake: { now(): number } = {
+      now(): number {
+        calls += 1
+        if (calls === 2) hook((r) => (report = r))
+        return T0
+      },
+    }
+    const read = withClock({ rootDir: root, namespaceId: ns, streamId, clock: fake })
+    return { read, report, calls }
+  }
+
+  it('A6a [红灯] call#2（取得检查点）内 probe sweep 被已注册租约阻塞 + rm manifest ⇒ corrupt + manifest-invalid（钩子位于 ② 之前）', () => {
+    const root = freshRoot()
+    const ns = 'ns-227-a6a'
+    // 流 ≥1 闭组 + aged（retention 可删）+ 合法 manifest——若 lease 未注册，probe 必删
+    const a = buildSegments(root, ns, 3, {
+      retention: { maxAgeMs: 0, maxBytesPerNamespace: null, sweepOnOpen: false },
+    })
+    const manifestPath = manifestPathOf(root, ns, a.log.streamId)
+    expect(existsSync(manifestPath)).toBe(true)
+    const { read, report } = probeRead(root, ns, a.log.streamId, (capture) => {
+      // ① probe：此刻（manifest read/gate 阶段）reader 自建 session 应已注册——
+      //    retention 以 sweep 起始 now=T0 初查即被阻（deletedGroups=0 = 已注册直接证据）
+      capture(a.log.sweepRetention({ now: T0 }))
+      // ② 删除 manifest：若钩子确实位于 ② 读取之前，本次读取必 corrupt + manifest-invalid
+      rmSync(manifestPath)
+    })
+    // 红（HEAD）：fake 钟零调用 → 钩子不触发 → manifest 未删 → 读取 ok 全量、probe 报告无从产生
+    expect(report).not.toBeNull()
+    expect(report?.leaseBlockedGroups).toBeGreaterThanOrEqual(1)
+    expect(report?.deletedGroups).toBe(0)
+    expect(read.status).toBe('corrupt')
+    expect(read.issues.map((i) => i.code)).toEqual(['manifest-invalid'])
+    expect(read.records).toEqual([])
+    expect(read.manifest).toBeNull()
+  })
+
+  it('A6b [红灯→绿] call#2 内 probe sweep 阻塞零删、不删 manifest ⇒ 读取 ok 全量（manifest 阶段与 sweep 尝试并存零丢失）', () => {
+    const root = freshRoot()
+    const ns = 'ns-227-a6b'
+    const a = buildSegments(root, ns, 3, {
+      retention: { maxAgeMs: 0, maxBytesPerNamespace: null, sweepOnOpen: false },
+    })
+    const { read, report } = probeRead(root, ns, a.log.streamId, (capture) => {
+      // 只跑 probe sweep，不删 manifest——并发尝试被租约挡下，读取照常全量成功
+      capture(a.log.sweepRetention({ now: T0 }))
+    })
+    // 红（HEAD）：fake 钟零调用 → 钩子不触发 → probe 报告无从产生
+    expect(report).not.toBeNull()
+    expect(report?.leaseBlockedGroups).toBeGreaterThanOrEqual(1)
+    expect(report?.deletedGroups).toBe(0)
+    expect(read.status).toBe('ok')
+    expect(read.issues).toEqual([])
+    expect(seqsOf(read)).toEqual(['1', '2', '3'])
+  })
+})
+
+// ============================================================================
+// A7 — 统一 finally 释放矩阵（R2/O-1：自建 session 的 close 只存在于函数唯一 finally，
+//       覆盖 manifest 缺失 / JSON 损坏 / gate 失败（corrupt+incompatible 双臂）/
+//       enumerationFailed 等一切持约早退）
+// ============================================================================
+// 权威契约：rev2 设计 §3.2（D9 唯一 finally——删除 ④′/⑦/⑧ 三处分散 close）/ §8.1
+// （A7 矩阵）。档案：HEAD 上空洞绿（早退均先于 ④′ 会话取得——注册表零残留是旧结构
+// 的既有事实）；对「漏 finally 的新实现」红（②③ 早退时 ④′/⑦/⑧ 三处旧站点不可达 →
+// 会话泄漏 → 读后 sweep 必见 leaseBlockedGroups ≥ 1）。判定 = 每次读取返回后立即
+// sweep：注册表零残留（deletedGroups 达满额 ∧ leaseBlockedGroups === 0）= finally
+// 已释放的可观测证明。
+describe('A7 统一 finally 释放矩阵（R2：manifest 缺失/JSON 损坏/gate 失败/enumerationFailed 早退零泄漏——INV-227-11）', () => {
+  /** 三闭组 aged 夹具的满额删除数（段 1、2 闭可删；段 3 开止步）。 */
+  const CLOSED_DELETABLE = 2
+
+  it('A7 [结构 pin] manifest 缺失早退 ⇒ 读后 sweep 闭组全删、零租约阻塞', () => {
+    const root = freshRoot()
+    const ns = 'ns-227-a7-missing'
+    const a = buildSegments(root, ns, 3, {
+      retention: { maxAgeMs: 0, maxBytesPerNamespace: 0, sweepOnOpen: false },
+    })
+    const manifestPath = manifestPathOf(root, ns, a.log.streamId)
+    const manifestBytes = readFileSync(manifestPath)
+    rmSync(manifestPath)
+    const read = readStreamStrict({ rootDir: root, namespaceId: ns, streamId: a.log.streamId })
+    expect(read.status).toBe('corrupt')
+    expect(read.issues.map((i) => i.code)).toEqual(['manifest-invalid'])
+    // scanSweepStreams 对 manifest 缺失的流保守跳过（无法定序——零删），故在验证 sweep
+    // 前恢复盘面 manifest：本步唯一目的是让 sweep 能枚举该流，从而把「注册表零残留」
+    // 变成可观测断言（漏 finally 的新实现 → 泄漏租约 → leaseBlockedGroups ≥ 1）
+    writeFileSync(manifestPath, manifestBytes)
+    const report = a.log.sweepRetention({ now: T0 + 1000 })
+    expect(report.deletedGroups).toBe(CLOSED_DELETABLE)
+    expect(report.leaseBlockedGroups).toBe(0)
+  })
+
+  it('A7 [结构 pin] manifest JSON 损坏早退 ⇒ 读后 sweep 闭组全删、零租约阻塞', () => {
+    const root = freshRoot()
+    const ns = 'ns-227-a7-json'
+    const a = buildSegments(root, ns, 3, {
+      retention: { maxAgeMs: 0, maxBytesPerNamespace: 0, sweepOnOpen: false },
+    })
+    const manifestPath = manifestPathOf(root, ns, a.log.streamId)
+    const manifestBytes = readFileSync(manifestPath)
+    writeFileSync(manifestPath, '{not-json', 'utf8')
+    const read = readStreamStrict({ rootDir: root, namespaceId: ns, streamId: a.log.streamId })
+    expect(read.status).toBe('corrupt')
+    expect(read.issues.map((i) => i.code)).toEqual(['manifest-invalid'])
+    // 同上：恢复盘面 manifest 使验证 sweep 可枚举该流（scanSweepStreams 保守跳过
+    // 不可解析 manifest 的流——零删）
+    writeFileSync(manifestPath, manifestBytes)
+    const report = a.log.sweepRetention({ now: T0 + 1000 })
+    expect(report.deletedGroups).toBe(CLOSED_DELETABLE)
+    expect(report.leaseBlockedGroups).toBe(0)
+  })
+
+  it('A7 [结构 pin] gate 失败早退（corrupt 臂：version 篡改）⇒ 读后 sweep 闭组全删、零租约阻塞', () => {
+    const root = freshRoot()
+    const ns = 'ns-227-a7-gate'
+    const a = buildSegments(root, ns, 3, {
+      retention: { maxAgeMs: 0, maxBytesPerNamespace: 0, sweepOnOpen: false },
+    })
+    const manifestPath = manifestPathOf(root, ns, a.log.streamId)
+    const manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as Record<string, unknown>
+    writeFileSync(manifestPath, JSON.stringify({ ...manifest, version: 2 }), 'utf8')
+    const read = readStreamStrict({ rootDir: root, namespaceId: ns, streamId: a.log.streamId })
+    expect(read.status).toBe('corrupt')
+    expect(read.issues.map((i) => i.code)).toEqual(['manifest-invalid'])
+    const report = a.log.sweepRetention({ now: T0 + 1000 })
+    expect(report.deletedGroups).toBe(CLOSED_DELETABLE)
+    expect(report.leaseBlockedGroups).toBe(0)
+  })
+
+  it('A7 [结构 pin] gate 失败早退（incompatible 臂：schemaFingerprint 篡改）⇒ 读后 sweep 闭组全删、零租约阻塞', () => {
+    const root = freshRoot()
+    const ns = 'ns-227-a7-fp'
+    const a = buildSegments(root, ns, 3, {
+      retention: { maxAgeMs: 0, maxBytesPerNamespace: 0, sweepOnOpen: false },
+    })
+    const manifestPath = manifestPathOf(root, ns, a.log.streamId)
+    const manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as Record<string, unknown>
+    writeFileSync(
+      manifestPath,
+      JSON.stringify({ ...manifest, schemaFingerprint: 'sha256:v1:0000000000000000000000000000000000000000000000000000000000000000' }),
+      'utf8',
+    )
+    const read = readStreamStrict({ rootDir: root, namespaceId: ns, streamId: a.log.streamId })
+    expect(read.status).toBe('incompatible')
+    expect(read.issues.map((i) => i.code)).toEqual(['schema-fingerprint-mismatch'])
+    const report = a.log.sweepRetention({ now: T0 + 1000 })
+    expect(report.deletedGroups).toBe(CLOSED_DELETABLE)
+    expect(report.leaseBlockedGroups).toBe(0)
+  })
+
+  it('A7 [结构 pin] enumerationFailed 早退（segments/ 缺失）⇒ 读后 sweep 零租约阻塞（注册表零残留）', () => {
+    const root = freshRoot()
+    const ns = 'ns-227-a7-enum'
+    const a = buildSegments(root, ns, 3, {
+      retention: { maxAgeMs: 0, maxBytesPerNamespace: 0, sweepOnOpen: false },
+    })
+    rmSync(segmentsDirOf(root, ns, a.log.streamId), { recursive: true, force: true })
+    const read = readStreamStrict({ rootDir: root, namespaceId: ns, streamId: a.log.streamId })
+    expect(read.status).toBe('corrupt')
+    expect(read.issues.map((i) => i.code)).toEqual(['manifest-invalid'])
+    const report = a.log.sweepRetention({ now: T0 + 1000 })
+    expect(report.deletedGroups).toBe(0)
+    expect(report.leaseBlockedGroups).toBe(0)
   })
 })

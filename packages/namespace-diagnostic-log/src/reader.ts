@@ -44,8 +44,16 @@ export interface StrictReadRequest {
    *  - reader 不 close（生命周期归调用方）；
    *  - 逐段读取前跑 renewIfDue 续租检查点（bounded 拒续 → `lease-expired` 诚实中止）。
    *  缺省时：reader 自开自关（ttl=DEFAULT_READ_SESSION_TTL_MS、maxLifetimeMs=null 显式
-   *  续租、真实时钟）——枚举/读取/校验全程持约（INV-227-1）。 */
+   *  续租、真实时钟）——枚举/读取/校验全程持约（INV-227-1）。
+   *  R2（rev2 设计 §3.1.1）：自建臂取得点前移至 ① 路径安全检查后、② 首次 manifest
+   *  I/O 之前（④″）——manifest 读取/门/policy 阶段同样在未关闭会话保护下；释放收敛
+   *  于函数唯一 finally（INV-227-11）。 */
   session?: DiagnosticReadSession | undefined
+  /** #227 R2（G-227-6 平铺可选、加性演进——rev2 设计 §3.1.1）：仅**自建臂**消费的注入
+   *  钟（透传 openDiagnosticReadSession）；提供 session 的传入臂忽略本字段（调用方拥有
+   *  会话生命周期与时钟）。缺省 = 真实时钟。先例：DiagnosticReadSessionRequest.clock /
+   *  DiagnosticReplayReadSessionOptions.clock。 */
+  clock?: { now(): number } | undefined
 }
 
 export type StrictReadStatus = 'ok' | 'corrupt' | 'incompatible'
@@ -404,8 +412,10 @@ function historyTrimmedOf(segments: readonly string[]): boolean {
  */
 export function readStreamStrict(request: StrictReadRequest): StrictStreamRead {
   let manifest: unknown | null = null
-  /** #227：自开会话（请求未提供 session 时 reader 自开自关——INV-227-1/恒释放；
-   *  函数作用域声明使 ⑦ 两处返回与 ⑧ 兜底 catch 均能执行 close）。 */
+  /** #227：自开会话（请求未提供 session 时 reader 自开自关——INV-227-1/恒释放）。
+   *  R2（rev2 设计 §3.2 D9）：释放收敛于函数唯一 finally（INV-227-11）——函数体内
+   *  不再有任何 `ownedSession.close()` 直呼站点（原 ④′/⑦/⑧ 三处分散站点删除，
+   *  统一由 finally 兜住全部出口与异常逃逸）。 */
   let ownedSession: DiagnosticReadSession | null = null
   try {
     // ①′ 会话防御门（#227 §3.2.2a——request.session 提供时；零 fs 触达）：
@@ -452,6 +462,56 @@ export function readStreamStrict(request: StrictReadRequest): StrictStreamRead {
       }
     }
     const paths = streamLayoutPaths(request.rootDir, request.namespaceId, request.streamId)
+
+    // ④″ 会话取得（#227 R2 §3.1.1——O-1：取得点前移至 ① 路径安全后、② 首次 manifest
+    //   I/O 前；INV-227-1 改写版：manifest 读取（②）/门/policy（③）也发生在未关闭会话
+    //   的保护下——「先观察后注册」的静默丢失窗口关闭。④′ 反应半段原位不动（包络冻结）。
+    //   a. request.session 提供：纯绑定（①′ 已完成身份/已闭校验）——lease 自调用前即
+    //      存在，manifest 阶段天然持约；不跑取得检查点（调用方拥有会话生命周期与时钟，
+    //      A2 传入臂钟调用序列零漂移）。
+    //   b. 未提供（自建臂，owner 命门）：open 透传 `request.clock`（G-227-6 平铺可选——
+    //      仅自建臂消费）；取得检查点 = 注册后、② 前唯一天然钟读位（§3.1.2 时序表
+    //      call#2——A6 确定性缝）——拒续 → corrupt + `lease-expired`（manifest:null、
+    //      零进一步 IO——诚实失败臂前移到任何 fs IO 之前）。
+    let session: DiagnosticReadSession
+    if (request.session !== undefined) {
+      session = request.session
+    } else {
+      try {
+        session = openDiagnosticReadSession({
+          rootDir: request.rootDir,
+          namespaceId: request.namespaceId,
+          streamId: request.streamId,
+          clock: request.clock,
+        })
+        ownedSession = session
+      } catch {
+        // 防御（结构性不可达：路径文法已过 ①、冻结缺省参数合法——open 不 throw）；
+        // 释放由唯一 finally 承接（此处尚无注册条目——close 幂等空操作，INV-227-11）
+        return {
+          status: 'corrupt',
+          streamId: request.streamId,
+          namespaceId: request.namespaceId,
+          manifest: null,
+          issues: [{ code: 'manifest-invalid' }],
+          records: [],
+          historyTrimmed: false,
+          earliestRetainedSequence: null,
+        }
+      }
+      if (!session.renewIfDue(READ_SESSION_RENEW_MARGIN_MS)) {
+        return {
+          status: 'corrupt',
+          streamId: request.streamId,
+          namespaceId: request.namespaceId,
+          manifest: null,
+          issues: [{ code: 'lease-expired' }],
+          records: [],
+          historyTrimmed: false,
+          earliestRetainedSequence: null,
+        }
+      }
+    }
 
     // ② manifest 读取（ENOENT/不可读/JSON ✗/非对象 → corrupt + manifest-invalid，不解释无法自描述的 stream）
     let raw: string
@@ -543,63 +603,21 @@ export function readStreamStrict(request: StrictReadRequest): StrictStreamRead {
 
     const streamIssues: StrictReadIssue[] = []
 
-    // ④′ 会话取得（#227 §3.2.2——替换裸枚举；INV-227-1：每次磁盘枚举/读取/校验都发生
-    //   在某个未关闭会话的保护下）：
-    //   a. request.session 提供：身份/关闭防御门已在上方 ①′ 过——快照即枚举
-    //      （INV-227-2：segments 恒等于 session.segments，绝不另起 enumerateSegmentGroups）；
-    //      enumerationFailed（open 时 segments/ 缺失/不可读）→ 保持既有 ④ 枚举失败包络
-    //      （corrupt + manifest-invalid，与 request 无 session 的现状逐字节等同）。
-    //   b. 未提供：reader 自开自关——ttl=DEFAULT（15s）、maxLifetimeMs=null 显式续租、
-    //      真实时钟；枚举失败同上包络；ownedByReader → 返回前 close（下方 ⑦/⑧ 出口）。
-    let session: DiagnosticReadSession
-    if (request.session !== undefined) {
-      session = request.session
-      if (session.enumerationFailed) {
-        return {
-          status: 'corrupt',
-          streamId: request.streamId,
-          namespaceId: request.namespaceId,
-          manifest,
-          issues: [{ code: 'manifest-invalid' }],
-          records: [],
-          historyTrimmed: false,
-          earliestRetainedSequence: null,
-        }
-      }
-    } else {
-      try {
-        session = openDiagnosticReadSession({
-          rootDir: request.rootDir,
-          namespaceId: request.namespaceId,
-          streamId: request.streamId,
-        })
-        ownedSession = session
-      } catch {
-        // 防御（结构性不可达：路径文法已过 ①、冻结缺省参数合法——open 不 throw）
-        return {
-          status: 'corrupt',
-          streamId: request.streamId,
-          namespaceId: request.namespaceId,
-          manifest,
-          issues: [{ code: 'manifest-invalid' }],
-          records: [],
-          historyTrimmed: false,
-          earliestRetainedSequence: null,
-        }
-      }
-      if (session.enumerationFailed) {
-        session.close()
-        ownedSession = null
-        return {
-          status: 'corrupt',
-          streamId: request.streamId,
-          namespaceId: request.namespaceId,
-          manifest,
-          issues: [{ code: 'manifest-invalid' }],
-          records: [],
-          historyTrimmed: false,
-          earliestRetainedSequence: null,
-        }
+    // ④′ 反应半段（#227 R2 §3.1.1——取得半段已前移至 ④″；本半段原位保留，包络冻结）：
+    //   enumerationFailed（open 时 segments/ 缺失/不可读，session.segments===[] 且该会话
+    //   不保护任何组）→ 保持既有 ④ 枚举失败包络（corrupt + manifest-invalid；传入/自建
+    //   臂同款——manifest 已在 ②/③ 读毕，包络逐字节等同）。随后的快照派生沿用：
+    //   segments 恒等于 session.segments（INV-227-2——绝不另起 enumerateSegmentGroups）。
+    if (session.enumerationFailed) {
+      return {
+        status: 'corrupt',
+        streamId: request.streamId,
+        namespaceId: request.namespaceId,
+        manifest,
+        issues: [{ code: 'manifest-invalid' }],
+        records: [],
+        historyTrimmed: false,
+        earliestRetainedSequence: null,
       }
     }
     const segments = [...session.segments]
@@ -833,12 +851,9 @@ export function readStreamStrict(request: StrictReadRequest): StrictStreamRead {
     }
 
     // ⑦ 聚合（stream 级 ∪ 全部 record 级镜像；incompatible → records:[]）
-    //    #227 恒释放：⑦ 是本 try 内最后两个出口——先 close 自开会话再返回（同步函数
-    //    无 await 面，close 前不可能有新并发删除；注册表零残留由 A5 系测试可观测证明）。
-    if (ownedSession !== null) {
-      ownedSession.close()
-      ownedSession = null
-    }
+    //    #227 R2：⑦ 不再直呼 close——释放收敛于函数唯一 finally（INV-227-11；close
+    //    幂等、同步函数 finally 恒达——外部可观测行为与旧分散站点等价，注册表零残留
+    //    由 A5 系测试可观测证明不变）。
     const allIssues = [...streamIssues, ...recordIssuesAll]
     if (allIssues.some((issue) => INCOMPATIBLE_SET.has(issue.code))) {
       return {
@@ -864,11 +879,7 @@ export function readStreamStrict(request: StrictReadRequest): StrictStreamRead {
     }
   } catch {
     // ⑧ 兜底（R2 修订 SA2 #3）：损坏诊断工具绝不在损坏状态下自己崩——绝不抛。
-    //    #227：异常逃逸面同样先释放自开会话（INV-227-1 恒释放的异常臂）。
-    if (ownedSession !== null) {
-      ownedSession.close()
-      ownedSession = null
-    }
+    //    #227 R2：异常逃逸面不再直呼 close——由函数唯一 finally 承接释放（INV-227-11）。
     return {
       status: 'corrupt',
       streamId: request.streamId,
@@ -879,6 +890,13 @@ export function readStreamStrict(request: StrictReadRequest): StrictStreamRead {
       historyTrimmed: false,
       earliestRetainedSequence: null,
     }
+  } finally {
+    // #227 R2（rev2 设计 §3.2 D9——唯一释放点）：自建 session 的 close 只存在于本
+    //   finally——覆盖 ②/③ 各早退（manifest 缺失/JSON 损坏/非对象/schema-compile/gate
+    //   失败 corrupt+incompatible 双臂/policy）、④′ enumerationFailed 反应、⑤ 各
+    //   break（lease-expired / vanished 后继续聚合）、⑦ 正常返回、⑧ 异常逃逸（INV-227-11）。
+    //   传入臂不 close（生命周期归调用方——replay 的 finally 维持唯一责任方）。
+    ownedSession?.close()
   }
 }
 

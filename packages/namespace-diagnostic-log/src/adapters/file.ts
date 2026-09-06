@@ -122,7 +122,11 @@ export interface FileDiagnosticLog {
   readonly rootDir: string
   readonly namespaceId: string
   /** #154：执行一次 retention sweep（卫生遍历 → 年龄遍历 → 字节遍历）。纯同步、绝不
-   *  throw；一切 fs 失败计数进报告（INV-5）。now 可注入（缺省 = config.clock.now()）。 */
+   *  throw；一切 fs 失败计数进报告（INV-5）。now 可注入（缺省 = config.clock.now()）。
+   *  #227 R2（INV-227-12 语义分工）：`options.now` 是**策略时刻**——候选/年龄/字节口径
+   *  用单次 sweep 的单一策略快照；一切**删除提交门**（P1/P2 的 S0′ 复查、P0 orphan-BIN
+   *  unlink）以门点 `clock.now()` 现值评估租约（不复用 sweep 起始 now——过期租约在
+   *  提交点永不阻塞，INV-4 字面复位）。 */
   sweepRetention(options?: { now?: number }): RetentionSweepReport
 }
 
@@ -1087,18 +1091,20 @@ export function createFileLog(config: FileDiagnosticLogConfig, options: FileLogO
 
   /** #227 §3.3.1 `deleteGroupIfUnleased`（S0′ 提交点复查——替换 P1/P2 的 deleteGroup 直呼）：
    *  S1 rename 之前再次核对租约（惰性过期语义同 segmentLeased——过期租约永不阻塞，INV-4）。
-   *  「初查通过（P1 :1226/P2 :1281）→ 读龄/统计 IO → 会话注册」的窗口被提交点二次门
-   *  结构性关闭（INV-227-3——不依赖单线程同步的调度事实）。复查用 sweepRetention 入参
-   *  `now`（与初查同钟——确定性测试面）。'lease-blocked' → 调用方计数 + 止步（前缀纪律）； */
+   *  「初查通过（P1/P2）→ 读龄/统计 IO → 会话注册」的窗口被提交点二次门结构性关闭
+   *  （INV-227-3——不依赖单线程同步的调度事实）。
+   *  R2（§3.3 D11——owner 命门）：复查以适配器闭包钟 `clock.now()` 取**提交时刻现值**
+   *  （S1 rename 前即刻读取），**不再复用 sweep 起始 now**——sweep 开始后注册、提交前
+   *  已到期的租约不得阻塞（INV-227-12）；策略面（候选/年龄/字节口径）仍用 sweep 入参
+   *  now（语义分工）。'lease-blocked' → 调用方计数 + 止步（前缀纪律）。 */
   function deleteGroupIfUnleased(
     rootDir: string,
     namespaceId: string,
     streamId: string,
     segmentsDir: string,
     segment: string,
-    now: number,
   ): 'deleted' | 'lease-blocked' | 'failed' {
-    if (segmentLeased(rootDir, namespaceId, streamId, segment, now)) return 'lease-blocked'
+    if (segmentLeased(rootDir, namespaceId, streamId, segment, clock.now())) return 'lease-blocked'
     return deleteGroup(segmentsDir, segment) ? 'deleted' : 'failed'
   }
 
@@ -1126,7 +1132,6 @@ export function createFileLog(config: FileDiagnosticLogConfig, options: FileLogO
   function hygieneStream(
     stream: SweepStream,
     openSegment: string | null,
-    now: number,
     report: RetentionSweepReport,
   ): void {
     let enumeration: SegmentGroupEnumeration
@@ -1170,7 +1175,10 @@ export function createFileLog(config: FileDiagnosticLogConfig, options: FileLogO
       if (jsonlState === 'file' || markerState === 'file' || binState === 'absent') continue
       // #227 P0 租约门（orphan-BIN 清理前；S0′ 同源惰性过期判定——过期租约不阻塞，INV-4）。
       //   `.deleting` 标记续走（上循环）不加门：marker 组对一切会话枚举不可见 → 无持约视图。
-      if (segmentLeased(config.rootDir, namespaceId, stream.streamId, segment, now)) {
+      //   R2（G-227-5 采含——SA2 §5.3 裁定）：P0 unlink 与 P1/P2 的 S1 rename 同为删除
+      //   提交点，租约评估统一以门点 `clock.now()` 现值（INV-227-12——不依赖 sweep 起始
+      //   策略时刻 now）。
+      if (segmentLeased(config.rootDir, namespaceId, stream.streamId, segment, clock.now())) {
         report.leaseBlockedGroups += 1
         continue
       }
@@ -1237,7 +1245,7 @@ export function createFileLog(config: FileDiagnosticLogConfig, options: FileLogO
         streamId === currentStreamId ? currentSegment : null
 
       // —— P0 卫生遍历（无条件）——
-      for (const stream of streams) hygieneStream(stream, openSegmentOf(stream.streamId), now, report)
+      for (const stream of streams) hygieneStream(stream, openSegmentOf(stream.streamId), report)
 
       // —— P1 年龄遍历（maxAgeMs ≠ null 时；每流前缀纪律：首个不可删组即止步，绝不跳洞）——
       if (maxAgeMs !== null) {
@@ -1262,14 +1270,14 @@ export function createFileLog(config: FileDiagnosticLogConfig, options: FileLogO
             if (!groupAgeExpired(stream.segmentsDir, segment, now - maxAgeMs, report)) break // 未过期 → 止步
             const before = groupBytesBeforeDelete(stream.segmentsDir, segment)
             if (before === 0) continue // 无文件组（枚举残留）——无可删内容
-            // #227 S0′ 提交点复查（§3.3.1——双门：判定点初查保留在上，S1 rename 前复查在下）
+            // #227 S0′ 提交点复查（§3.3.1——双门：判定点初查保留在上，S1 rename 前复查在下；
+            //   R2 D11：复查以提交时刻 clock.now() 现值评估——不复用 sweep 起始 now，INV-227-12）
             const outcome = deleteGroupIfUnleased(
               config.rootDir,
               namespaceId,
               stream.streamId,
               stream.segmentsDir,
               segment,
-              now,
             )
             if (outcome === 'deleted') {
               report.deletedGroups += 1
@@ -1330,14 +1338,14 @@ export function createFileLog(config: FileDiagnosticLogConfig, options: FileLogO
               // 首个不可删组即止步该流，绝不跳洞）
               const before = groupBytesBeforeDelete(stream.segmentsDir, segment)
               if (before === 0) continue
-              // #227 S0′ 提交点复查（§3.3.1——双门同 P1：判定点初查在上，S1 rename 前复查在下）
+              // #227 S0′ 提交点复查（§3.3.1——双门同 P1：判定点初查在上，S1 rename 前复查在下；
+              //   R2 D11：复查以提交时刻 clock.now() 现值评估——不复用 sweep 起始 now，INV-227-12）
               const outcome = deleteGroupIfUnleased(
                 config.rootDir,
                 namespaceId,
                 stream.streamId,
                 stream.segmentsDir,
                 segment,
-                now,
               )
               if (outcome === 'deleted') {
                 report.deletedGroups += 1

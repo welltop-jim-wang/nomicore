@@ -1,8 +1,13 @@
-# SA4 对抗式实现复审 — Issue #227（implementation-review 轮，2026-09-06）
+# SA4 对抗式实现复审 — Issue #227（implementation-review；R1 工作树态 + R2 已提交态）
 
 - 角色/阶段：SA4 adversarial implementation review（流水线 SA5 → SA6 → SA1 → SA2 → SA3 → **SA4**）
 - Worktree：`/home/wangjian/nomicore-fix-issue-227`（branch `mabf/issue-227`，基线 HEAD `ac91a6b` + 本 change 工作树未提交改动）
 - 被审对象：SA3 实现报告 `wiki/raw/task_issue-227_sa3_impl.md` 所列全部改动（src 8 文件 + 文档 2 + 测试 5）
+- **R2（2026-09-06 21:30，当前轮）**：被审对象升级为**已提交 commit `31ff694`**（`fix(diagnostics):
+  lease strict replay and fail closed`，基线 `ac91a6b`，全部证据随提交入库）；实施轮冲突门禁重开
+  （`wiki/raw/task_issue-227_impl_conflict_recheck.md`，verdict=clear）后的已提交态独立静态复审——
+  **R2 记录见文末 §R2（本轮 verdict：approve，延续 R1 并在提交粒度复核测试触发范围 / 版本 bump /
+  ADR·DENY 约束）**；以下 §1–§8 为 R1 存档（结论经 R2 复核全部维持）
 - 权威契约：设计 `wiki/raw/task_issue-227_design.md`（R1.1，INV-227-1..10）；SA2 复审
   `wiki/raw/task_issue-227_sa2_review.md`（approve + **K-1..K-4 binding**）；SA6 红灯
   `wiki/raw/task_issue-227_sa6_red.md`（§3.3 红基线 19 条 / §3.4 绿灯 pin）；SA8 冲突复审
@@ -216,5 +221,169 @@ S0′+vanished 结构可观测）；合法 complete 保真回归 D7（混合健�
 SA3 自报的 D3 标签缺陷已正确修复且同 class 四处全覆盖；19 条红灯契约全部按 SA6 预期翻转、
 既有 259+ 文件零回退（本轮包级 + 应用定向 + E2E 亲证）；DENY 面零触碰、零测试抑制。
 SA4 裁定 **approve**，可进入 SA7 动态最终验证（§9 全量 `pnpm typecheck && pnpm test` 复跑）。
+
+Verdict: **approve**（`requiresConflictRecheck: false`）
+
+---
+
+# R2 — 已提交态独立静态复审（2026-09-06 21:30，当前轮）
+
+## R2.0 轮次定位、输入与方式
+
+- **触发与对象**：实现已提交为 `31ff694`（「fix(diagnostics): lease strict replay and fail closed」，
+  基线 `ac91a6b`；提交含 src 7 + 包 AGENTS.md/README 2 + 测试 5 + wiki/raw 证据 12）；实施轮冲突
+  门禁已重开并裁 clear（`wiki/raw/task_issue-227_impl_conflict_recheck.md`，工作树新增未跟踪文件）。
+  本轮 SA4 对**已提交 diff** 做独立静态复审——R1 审的是工作树未提交态，本轮在提交粒度重验并补
+  三项专项核对（测试触发范围 / 版本 bump / ADR·DENY 约束）。
+- **核对输入**：任务简报 `task_issue-227.md`（AC1–AC5）、设计 R1.1 `task_issue-227_design.md`
+  （INV-227-1..10）、SA2 `task_issue-227_sa2_review.md`（approve + K-1..K-5）、SA3
+  `task_issue-227_sa3_impl.md`、SA6 `task_issue-227_sa6_red.md`（19 红基线 + 绿 pin）、
+  冲突门禁 `task_issue-227_impl_conflict_recheck.md`（clear）、实际 diff。
+- **方式**：全部独立重验，不沿用任何前轮声明——`git diff ac91a6b..31ff694` 逐 hunk 亲读
+  （read-session/reader/file/retention/index×2/diagnostic-replay/sa7 pin 改写 全文 diff）；
+  ADR-0012-LOG L280–318 与 ADR-0011 L90–105 原文回读；vitest.config.ts / 根 package.json
+  scripts / ci.yml 亲读；定向契约套件后台 Job 独立重跑（§R2.3）。
+- **边界**：零生产代码/测试改动、零 git 写操作（不 commit/push）；唯一写入 = 本文件本节。
+
+## R2.1 提交范围与 ALLOW/DENY 核对（本轮亲证）
+
+`git diff --name-status ac91a6b..31ff694`：生产 src 恰 7 文件（read-session/reader/file/
+retention/index + apps diagnostic-replay/index）+ 包 AGENTS.md/README + 测试 5（4 新增 + sa7
+改写）+ wiki/raw 证据 12——与设计 §0.2 ALLOW 白名单逐项对照：
+
+| 路径 | ALLOW 对照 | 备注 |
+|---|---|---|
+| `packages/.../src/read-session.ts` / `reader.ts` / `adapters/file.ts` / `retention.ts` / `index.ts` | ✅ 列名 | retention 仅 JSDoc；index +3 行增量 re-export |
+| `apps/yjs-server/src/diagnostic-replay.ts` | ✅ 列名 | session 生命周期 + ④ 单源化 + K-3/K-4 |
+| `apps/yjs-server/src/index.ts` | ⚠️ 未逐字列名（+1 行类型 re-export） | O-1 维持接受：纯加性类型导出，DENY 零涉 |
+| 包 AGENTS.md（+20 行）/ README.md | ✅ 列名（文档义务） | 本轮亲读内容与实现逐点相符（§R2.5） |
+| 4 新测试文件 + sa7.test.ts 改写 | ✅ 列名（§8 / §8.5 K-1） | — |
+
+**DENY 面 zero-diff 亲证**：`git diff ac91a6b..31ff694 -- src/schema.ts src/record.ts
+src/emission.ts src/pipeline.ts src/sink.ts src/adapters/memory.ts CONTEXT.md docs/**`
+→ **0 行**；`deleteGroup` S1–S3 本体与 `analyzeStreamForResume` 零 hunk（diff 亲证仅外围
+包装/无触碰）。提交后工作树干净（`git status` 仅余未跟踪的冲突门禁文件）。
+
+## R2.2 五份关键 diff 独立重读（INV-227-1..10 在提交态的锚点复核）
+
+- **read-session.ts**：`DEFAULT_READ_SESSION_TTL_MS=15_000`/`READ_SESSION_RENEW_MARGIN_MS=1_000`
+  单源导出；`renewIfDue`（margin 内到期才续、closed/拒续→false、非法 margin 视同 0 不
+  throw——G-227-1 兑现）；`enumerationFailed` 事实承载（枚举失败收敛空快照+标志，不 throw）；
+  open 的三个 throw 面（id/ttlMs/maxLifetimeMs）原样保留——K-3 收敛所依赖的面未被削除。
+- **reader.ts**：①′ 防御门（:411–440：身份不符→`corrupt+locator-invalid`、已 close→
+  `corrupt+lease-expired`，均零 fs）；④′ 会话取得（:546–604：提供→`segments := [...session.segments]`
+  快照即枚举 / 缺省→自开 `ownedSession`）；逐段续租检查点（:659–662，拒续→`lease-expired`
+  +break 保留已读）；`segment-vanished`（:675–699：jsonl ENOENT 时 bin 在∧无 marker →
+  BIN-first 豁免臂**逐字保留**；marker 在∨bin 缺 → `segment-vanished`；stat 失败 fail-closed）；
+  ⑦ :838 / ⑧ :868 恒释放；materialize 谓词（:946–972）`fatal∧committed:true∧effect∉
+  {'update','update-omitted'}` → `{kind:'unknown'}`（effect 缺席与字面 'unknown' 同归）。
+  **INV-227-2 grep 亲证**：`enumerateSegmentGroups` src 全部调用点 = 定义（reader.ts:371）+
+  analyzeStreamForResume（:1181，DENY 面）+ read-session.ts:210（open 内，唯一枚举源）+
+  file.ts 六处（sweep）——`readStreamStrict` 函数体（:404–880）**零**直呼。
+- **file.ts**：`deleteGroupIfUnleased`（S0′：S1 rename 前以 sweep 入参 `now` 复核
+  `segmentLeased`）；P1/P2 双门（初查保留 + S0′ 复查），`'lease-blocked'` → 计数 + **break**
+  （前缀纪律），P2 `progressed` 守卫防活锁；P0 卫生 orphan-BIN unlink 前租约门（跳过计入
+  `leaseBlockedGroups` 后 continue）；`.deleting` 续走循环正确**不加**门（marker 组对一切
+  会话枚举不可见）；`deleteGroup` S1–S3 本体零 hunk；`hygieneStream` 增 `now` 参；
+  `emitRetentionSweptIfAction` 仅注释（N-3 频率语义备案，事件形状/白名单零变更）。
+- **diagnostic-replay.ts**：**K-3**——session open 位于内层 try/finally **之外**、顶层
+  catch **之内**（非法供参 throw → `failed` + 既有 `replay-internal-error`，零新码）；
+  **INV-227-8**——内层 `finally { session.close() }` 覆盖 incompatible 早退/④ 各 break/正常
+  返回；④ 重写为 materialize switch 唯一分类源（app 侧 `committed`/`hasUpdateCarrier` 推导
+  整体删除）；`entryLoop:` 标签 + 四处终止分支 `break entryLoop`（omitted/unknown/
+  invalid/undecodable-catch——SA3 自报 D3 首版缺陷的修复面，本轮 diff 亲证四处全覆盖）；
+  连续性复核先于物化/omitted（N-1 翻转）；complete 门表达式 `issues===[] ∧ applied>0 ∧
+  readStatusOk ∧ !historyTrimmed` **逐字保留**（INV-227-7）；头注 K-4 措辞段在场。
+- **sa7.test.ts（K-1）**：旧断言（complete/issues:[]/lastSeq'4'/count=9）逐字移除，新断言
+  （partial/`[{code:'update-unknown'}]`/lastSeq'2'/count=5）+ 头注 4 号条目改写并标注
+  「K-1，SA6 同 change 废止旧 pin」——收紧方向改写，经设计 R-5/SA2 binding 预授权。
+
+## R2.3 测试触发范围（本轮专项核对）
+
+- **全量触发面**：根 `pnpm test` = `NODE_OPTIONS=--conditions=nomicore-source vitest run
+  --typecheck`；`vitest.config.ts` `test.include` = `packages/*/test/**/*.test.ts` +
+  `domains/*/test/**/*.test.ts` + `apps/*/test/**/*.test.ts`（`maxWorkers: 1`，typecheck
+  enabled）。⇒ 本 change 的 **5 个测试文件全部落在全量触发面内**（无路径排除；`passWithNoTests:
+  true` 只在 include 为空时放行，本 include 非空不构成掩蔽）；`pnpm typecheck` 顺序覆盖
+  namespace-diagnostic-log 与 apps/yjs-server 两个 tsconfig。
+- **改动文件 → 触达测试映射**：`reader.ts`/`read-session.ts`/`file.ts`/`retention.ts`/
+  `index.ts` → `packages/namespace-diagnostic-log/test/**`（30 文件 448 用例，含本批
+  A/B/C 三新文件 + read-session/retention/strict-reader/deletion 既有面）；`diagnostic-replay.ts`
+  → `apps/yjs-server/test/diagnostic-replay*`（本批 D 新文件 + host-lifecycle-red/sa7）；
+  `apps/src/index.ts` re-export → yjs-server 测试导入面 + typecheck；AGENTS.md/README →
+  无测试触达（纯文档）。
+- **新用例计数亲证**：strict-reader-lease **11** + file-adapter-retention-lease-gate **4** +
+  strict-reader-materialize-unknown **4** + diagnostic-replay-lease-completeness-red **18**
+  = **37** 新用例（与 R1/SA7 记账一致）。
+- **零抑制亲证**：5 个新增/改写测试文件 grep `.skip|.only|.todo|xit(|passWithNoTests|
+  continue-on-error` → 零命中（exit 1）。
+- **本轮亲跑（后台 Job，2026-09-06 21:30，提交态 HEAD `31ff694`）**：6 文件定向契约 +
+  sa7 全文件并跑 → **Test Files 7 passed (7) / Tests 74 passed (74) / Type Errors no
+  errors / exit 0**（45.73s；含 E1–E5 真实进程 E2E；stdout 实测重点 4：
+  `status=partial issues=[{"code":"update-unknown"}] lastSeq=2`）——与 R1 CMD1（68/68）+
+  CMD2b（6/6）、冲突门禁独立重跑（68/68）、SA7 全量（2906/2906）互证一致。
+
+## R2.4 版本 bump 核对（V-1 复核）
+
+- **事实（本轮亲证）**：`31ff694` 对 `**/package.json` 与 `pnpm-lock.yaml` 的 diff = **0 行**；
+  `namespace-diagnostic-log` 维持 **0.1.6**、`apps/yjs-server` 维持 **0.1.3**。
+- **先例（打破面）**：`ac91a6b`（#248）bump 了 apps/yjs-server + namespace-registry；
+  `45a22f0`/`d948ea5` 亦随 src 变更 bump——本 change 未延续该惯例。
+- **repo CI 立法亲读**（`.github/workflows/ci.yml`「Build and verify publishable tarballs」
+  步骤注释，L68–73 区）：明文「不要把『与 registry 同版本 integrity 相等』……当作源码 PR
+  门禁——**版本提升与 npm publish dry-run 属于 release 流程**」，且该步骤以
+  `NOMICORE_VERIFY_REGISTRY_INTEGRITY=0` 显式关闭同版本比对——版本 bump **不构成 CI/PR
+  门禁**。
+- **范围裁定**：设计 §0.2 ALLOW 白名单未列 package.json（SA2 批准的改动范围本不含 bump 面）。
+- **结论**：维持 SA7 V-1 与冲突门禁 §5 的一致裁定——**非阻断**；建议总控在 finalize 或
+  release 流程补 bump（namespace-diagnostic-log 0.1.6→0.1.7、yjs-server 0.1.3→0.1.4；
+  lockfile 依赖全 `workspace:*`（32 处亲证），无版本解析需变更）。备注：SA7 另引
+  `skills/orchestrate-bugfix/SKILL.md` 硬门禁 9 的 bump 要求——该文件不在本 worktree
+  （总控侧环境），本轮无法直接核验其文本；本裁定以 repo CI 立法 + 设计 ALLOW 范围为
+  独立依据，两者均指向非阻断。
+
+## R2.5 ADR / DENY 约束核对（本轮原文回读 + diff 亲证）
+
+- **ADR-0012-LOG §Retention 与删除（L289–297 亲读）**：「retention 只删除已关闭且没有
+  reader lease 的 segment group」——P1/P2 双门 + P0 卫生租约门为**兑现型实施**（原 P0
+  orphan-BIN 不看租约属实施偏差，本票纠偏）；「reader 通过 openReadSession() 获得短期
+  segment lease……长期 reader 必须有最大 lease 时长**或显式续租**」——缺省
+  `maxLifetimeMs=null` 显式续租臂为 ADR 明文两臂之一；删除协议 S1–S3/`.deleting` 文法/
+  orphan 清理步骤文法零触碰。
+- **ADR-0012-LOG §Strict reader 与诊断性 replay（L301–318 亲读）**：报告形状
+  `{status,lastAppliedSequence,issues,snapshot?}` 冻结面零变更；「只有存在有效 genesis、
+  records 连续、**所有必要 updates 可解码且校验通过**……才能返回 complete」——收紧只做
+  必要条件方向的加严（分类/issue 通道），无任何新形状 complete 可达。
+- **ADR-0011（L97–105 亲读）条件 3**：「每个非-noop committed record 都携带可解码的 Yjs
+  update」才可声明诊断性重放成功——`fatal∧committed:true` 而 effect 不可证（字面 'unknown'
+  /字段缺席）不允许 complete；旧实现推进至 complete 属实施偏差，本票纠偏与 ADR 对齐。
+- **DENY 面**：§R2.1 zero-diff 亲证（schema 冻结指纹/result 联合/写路径 emission·pipeline·
+  sink·memory/删除协议/analyzeStreamForResume/CONTEXT.md/docs 全部原样）。
+- **词表封闭（INV-227-10）**：新码恰四（reader 域 `lease-expired`/`segment-vanished`
+  ——头注 29→31 成文；replay 域 `update-unknown`/`lease-expired`）；零 health 事件成员
+  变更、零新 update-omitted reason（CONTEXT.md 词表零触碰——O-2 维持）。
+- **与冲突门禁交叉核对**：`task_issue-227_impl_conflict_recheck.md`（clear）§1–§3 的
+  事实断言（改动面盘点/DENY zero-diff/谓词穷举无 committed:true 落 none/N-A·N-B·N-C 经
+  K-2/K-3/K-4 闭环）与本轮独立重验**逐项一致**，无相互矛盾发现；其对 `31ff694` 的
+  兑现型定性（五缺口 G1–G5 修复 = ADR 已决条款实施）成立。
+
+## R2.6 观察项状态（继承复核，均维持、无新增）
+
+| # | 项 | 本轮复核 |
+|---|---|---|
+| O-1 | apps/yjs-server/src/index.ts +1 行类型 re-export 不在 ALLOW 逐字清单 | 维持**接受**（纯加性、DENY 零涉；冲突门禁同裁） |
+| O-2 | CONTEXT.md 未改（设计 ALLOW 列有该路径） | 维持**接受**（零新 reason/零 health 事件成员；AGENTS.md #227 增量段 +20 行亲读相符，承载词表备案义务） |
+| O-3 | `segment-vanished` marker 判定 `st.isFile()` 目录形态理论边界 | 维持**备案**（INV-13 文法下生产不可达；bin 缺失臂仍 fail-closed） |
+| O-4 | 设计 §9 `pnpm schema:check` 裸命令笔误（实参缺 `<schema.vfsl>`） | 维持**备案**（冻结自证真实承载面 = schema-freeze.test.ts，包级 448 内绿） |
+| V-1 | 两改动包未 bump patch 版本 | 见 §R2.4——**非阻断**，移交总控/release 流程裁量 |
+
+## R2.7 R2 结论
+
+已提交变更集 `31ff694` 在提交粒度经本轮全部独立重验：改动面与设计 §0.2/§0.3 及 SA2
+binding 零偏差；INV-227-1..10 在提交态锚点全部成立；K-1 pin 改写合法且绿；测试触发范围
+完整（5 测试文件全在全量 include 面内、37 新用例零抑制、本轮 7 文件 74/74 亲跑绿）；
+版本 bump 缺位经 repo CI 立法 + 设计范围双依据裁定非阻断（V-1 移交）；ADR-0011/0012-LOG
+全部被引条款兑现型合规、DENY 面 zero-diff；与冲突门禁 clear 结论互证一致。**R2 裁定
+approve（requiresConflictRecheck: false）**——R1 结论在已提交态维持成立，无返工项。
 
 Verdict: **approve**（`requiresConflictRecheck: false`）
