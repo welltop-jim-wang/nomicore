@@ -12,6 +12,7 @@ import type {
   DocCreateOperationalError,
   DocLoadOperationalError,
 } from '@nomicore/persistence';
+import type { Operation } from '@nomicore/namespace-diagnostic-log';
 import type { InternalIdentity } from './identity.js';
 
 /** 内部 observer 事件（§8.1 冻结五形；#111 扩展为七形；#112 扩展为十形——设计
@@ -50,7 +51,22 @@ export type RegistryObserverEvent =
   // —— R2 增量（issue #133 round-2；设计 §3.5.2）：armed 后 archive 拒绝（identity/
   //    active/duplicate/operational 分支统一注册；cause 不含复制身份内容——零泄露，
   //    与既有 reset-archive-failed 的「仅运营失败」语义分域）——
-  | { type: 'reset-archive-after-arm-failed'; identity: InternalIdentity; cause: unknown };
+  | { type: 'reset-archive-after-arm-failed'; identity: InternalIdentity; cause: unknown }
+  // —— #249 增量（diag-pump 满队丢弃健康上报；AC3——ADR-0011 L25「尽力上报
+  //    dropped count」+ ADR-0012 L240「按 operation/reason 低基数 dropped metrics，
+  //    走独立 observer；不得为记录 drop 再挤占同一队列」）——落点 = ADR-0009 L95
+  //    Registry 内部 observer seam（联合按票增量，#111/#112/phase-5/R2 同款演进；
+  //    非公共事件订阅面——index.ts 零导出）——低基数四封闭维度：type/taskKind/
+  //    operation?/reason；namespaceId/streamId/token/SCHEMA/ROOT/owner 一律不进
+  //    （ADR-0010 L159 / ADR-0011 L87，metrics label 安全由构造保证）。taskKind =
+  //    被丢任务判别元（'emit' | 'init-stream'）；operation 仅 emit 任务在场（= 被丢
+  //    emission 自身的 operation）——
+  | {
+      type: 'diag-pump-drop';
+      taskKind: 'emit' | 'init-stream';
+      operation?: Operation;
+      reason: 'queue-full';
+    };
 
 /** observer 回调：同步调用；throw 由 dispatchObserver 隔离（静默丢弃）。 */
 export type RegistryObserver = (event: RegistryObserverEvent) => void;
