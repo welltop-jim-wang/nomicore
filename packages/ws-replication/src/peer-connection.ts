@@ -422,6 +422,25 @@ class PeerConnectionImpl implements PeerReplication {
         pongTimeoutMs: this.timeouts.pongTimeoutMs,
         ping: transport.ping,
         onPong: transport.onPong, // §3 拓宽后直接透传
+        // issue #238 §6（H1 判别探针）：observer + clock + ping/onPong 三者齐备才武装；
+        // 任一缺席 → 零额外状态、零额外调度（dormant 等价）。
+        ...(this.options.clock !== undefined && this.observer() !== undefined
+          ? {
+              delayProbe: {
+                now: () => this.host.now?.(),
+                sample: (delayMs) => {
+                  this.emitConnection({
+                    type: 'event-loop-delay-sampled',
+                    side: 'peer',
+                    ...(this.connectionIdValue !== undefined
+                      ? { connectionId: this.connectionIdValue }
+                      : {}),
+                    delayMs,
+                  });
+                },
+              },
+            }
+          : {}),
         onPongTimeout: () => {
           if (this.stopping) return;
           // 双凭据校验（issue 范围 2）：transport 身份 + 连接代际——旧代定时器零影响。

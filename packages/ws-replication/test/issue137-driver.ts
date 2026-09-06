@@ -18,10 +18,12 @@ import type {
   PeerConnectionState,
   PeerNamespaceState,
   PeerReplication,
+  ReplicationClock,
   ReplicationLimits,
   ReplicationObserver,
   ReplicationTimeouts,
 } from '@nomicore/ws-replication';
+import type { NamespaceReplicationObservabilityOptions } from '@nomicore/namespace-registry';
 import { decodeMessage, type DecodedMessage } from '@nomicore/replication-protocol';
 import { DEFAULT_PEER_VERIFIER, TEST_TOKEN } from './driver.js';
 import {
@@ -58,6 +60,15 @@ export interface Issue137BootOptions {
   readonly peerObserver?: ReplicationObserver;
   /** 传输端暴露 bufferedAmount 压力属性（AC-6 seam；缺省 false——makeWire 原形，零压力）。 */
   readonly withPressure?: boolean;
+  /** 单调时源注入（issue #238 repro 基线）：可选——缺省不注入 clock（latency 字段
+   *  缺面 dormant，与生产缺省一致）。注入手动单调时钟后 applyLatencyMs/ackLatencyMs
+   *  成为可确定性断言的差值（协议 §23.4：仅作差、无绝对时间戳出站）。 */
+  readonly hubClock?: ReplicationClock;
+  readonly peerClock?: ReplicationClock;
+  /** issue #238 分段观测：registry 复制观测注入（stageClock 应 = 同侧 clock 的同一
+   *  实例——守恒恒等式在同一时钟域成立；缺省 dormant——既有调用方零变化）。 */
+  readonly hubReplicationObservability?: NamespaceReplicationObservabilityOptions;
+  readonly peerReplicationObservability?: NamespaceReplicationObservabilityOptions;
 }
 
 export interface Run137 {
@@ -86,8 +97,8 @@ export interface Run137 {
 /** 组装：count 个 hub 命名空间 + 单一 peer 连接（全部 target），等到全部 live。 */
 export async function bootMulti(opts: Issue137BootOptions = {}): Promise<Run137> {
   const count = opts.count ?? 2;
-  const hubNode = makeNode('hub');
-  const peerNode = makeNode('peer');
+  const hubNode = makeNode('hub', undefined, opts.hubReplicationObservability);
+  const peerNode = makeNode('peer', undefined, opts.peerReplicationObservability);
   const fixtures = new Map<string, ReturnType<typeof okLease>>();
   const nsIds: string[] = [];
   for (let index = 0; index < count; index += 1) {
@@ -118,6 +129,7 @@ export async function bootMulti(opts: Issue137BootOptions = {}): Promise<Run137>
     ...(opts.limits !== undefined ? { limits: opts.limits } : {}),
     ...(opts.timeouts !== undefined ? { timeouts: opts.timeouts } : {}),
     ...(opts.hubObserver !== undefined ? { observer: opts.hubObserver } : {}),
+    ...(opts.hubClock !== undefined ? { clock: opts.hubClock } : {}),
   });
 
   const wires: Wire[] = [];
@@ -150,6 +162,7 @@ export async function bootMulti(opts: Issue137BootOptions = {}): Promise<Run137>
     ...(opts.limits !== undefined ? { limits: opts.limits } : {}),
     ...(opts.timeouts !== undefined ? { timeouts: opts.timeouts } : {}),
     ...(opts.peerObserver !== undefined ? { observer: opts.peerObserver } : {}),
+    ...(opts.peerClock !== undefined ? { clock: opts.peerClock } : {}),
   });
   peer.start();
   await settleUntil(() => peer.getConnectionState() === 'ready', '连接 ready');

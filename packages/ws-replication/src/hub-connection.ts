@@ -670,6 +670,27 @@ class HubConnectionImpl implements HubConnection {
         pongTimeoutMs: this.hub.timeouts.pongTimeoutMs,
         ping: this.transport.ping,
         onPong: this.transport.onPong,
+        // issue #238 §6（H1 判别探针）：observer + clock + ping/onPong 三者齐备才武装；
+        // 任一缺席 → 零额外状态、零额外调度（dormant 等价）。
+        ...(this.hub.clock !== undefined && this.connectionObserver() !== undefined
+          ? {
+              delayProbe: {
+                now: () => (this.connectionObserver() !== undefined ? safeNow(() => this.hub.clock?.now()) : undefined),
+                sample: (delayMs) => {
+                  const observer = this.connectionObserver();
+                  if (observer === undefined) return;
+                  dispatchReplicationObserver(observer, {
+                    type: 'event-loop-delay-sampled',
+                    side: 'hub',
+                    ...(this.connectionIdValue !== undefined
+                      ? { connectionId: this.connectionIdValue }
+                      : {}),
+                    delayMs,
+                  });
+                },
+              },
+            }
+          : {}),
         // issue #170 R1：pong 超时 = §18 L524 临时失败——close(1001)、零 ERROR 帧
         //（§13.1 注册表无 liveness 错误码；不得发明未注册码）。
         onPongTimeout: () => this.onLivenessLost(),

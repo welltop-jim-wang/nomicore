@@ -78,8 +78,25 @@ export type RuntimeReplicationSessionApplyRefusalCode =
   | 'RUNTIME_WRITE_DISABLED'
   | 'NAMESPACE_LEASE_RELEASED';
 
+/**
+ * 槽内四段观测的差值样本（issue #238 §4；与 registry 侧镜像联合逐字段同形——lease.ts
+ * Equal 锁要求结构逐字一致）。语义 = 各段时差（单调时钟域差值，非绝对时间戳）：
+ * - queueWaitMs      = slotStart − admission（sequencer 排队等待）；
+ * - protectedCheckMs = applyStart − slotStart（R1–R3 同步门 + R4 scratch 预演）；
+ * - liveApplyMs      = dirtyStart − applyStart（R5 Y.applyUpdate 实时写入）；
+ * - dirtyNotifyMs    = dirtyDone − dirtyStart（R6 saveDoc 登记时长）。
+ * 在场纪律：全 present 或全缺席（任一捕获点时钟读数缺面/throw → 整个 stages 缺席——
+ * D7 折叠，零协议外溢）。仅 ok:true 分支携带（refusal/fatal 路径无成功 apply 事件）。
+ */
+export interface RuntimeReplicationApplyStages {
+  readonly queueWaitMs: number;
+  readonly protectedCheckMs: number;
+  readonly liveApplyMs: number;
+  readonly dirtyNotifyMs: number;
+}
+
 export type RuntimeReplicationSessionApplyResult =
-  | Readonly<{ ok: true }>
+  | Readonly<{ ok: true; stages?: Readonly<RuntimeReplicationApplyStages> }>
   | Readonly<{ ok: false; code: RuntimeReplicationSessionApplyRefusalCode; message: string }>;
 
 /** session 独立状态查询面（O-11 冻结词汇；Runtime status 的 replication 域仍只含两态
@@ -305,6 +322,11 @@ export interface RuntimeReplicationHost {
   readonly sequencer: WriteSequencer;
   readonly notifyDirty: (() => Promise<void>) | undefined;
   readonly fanout: SessionFanout;
+  /** 单调时源（issue #238 §4 槽内四段戳；可选项——缺省 = 零时钟读、stages 缺席。
+   *  纪律与 ws-replication `ReplicationClock` 同款：仅作差、禁原生时钟 fallback、
+   *  throw 折叠为字段缺席（D7）。装配层应注入与 ws-replication 同一实例（守恒恒等式
+   *  前提——组装纪律，非库层强制）。 */
+  readonly stageClock?: { now(): number };
 }
 
 /** 模块级 host 登记（WeakMap——以 runtime 对象引用为键；不触碰 runtime 对象本身，
@@ -484,21 +506,36 @@ function createSessionCore(
           refusal('RUNTIME_WRITE_DISABLED', writeDisabledMessage('lifecycle', lifecycle)),
         );
       }
-      // A4 入队唯一 write sequencer（INV-S1——同一 WriteSequencer 实例，FIFO 互通）
-      return host.sequencer.enqueue(() =>
-        runSessionApplySlot(
-          host,
-          coreState,
-          channel,
-          {
-            localRole,
-            direction,
-            replicationId,
-            replicationEpoch,
-            applyOrigin,
-          },
-          bytes,
-        ),
+      // A4 入队唯一 write sequencer（INV-S1——同一 WriteSequencer 实例，FIFO 互通）。
+      // issue #238 §4：接纳戳在入队调用前采样（槽内 queueWaitMs = slotStart − admission
+      // 的起点；纯同步时钟读、零新增 await——G1 槽序不变）。stageClock 缺面/throw →
+      // admission 缺面 → 本笔 stages 整体缺席（D7 折叠）。
+      const stageClock = host.stageClock;
+      let admission: number | undefined;
+      if (stageClock !== undefined) {
+        try {
+          admission = stageClock.now();
+        } catch {
+          admission = undefined;
+        }
+      }
+      return host.sequencer.enqueue(
+        () =>
+          runSessionApplySlot(
+            host,
+            coreState,
+            channel,
+            {
+              localRole,
+              direction,
+              replicationId,
+              replicationEpoch,
+              applyOrigin,
+            },
+            bytes,
+            admission,
+          ),
+        'R',
       );
     },
     getStatus() {
@@ -539,9 +576,12 @@ function createSessionCore(
       // forget 零 unhandled rejection 前提）
       if (closePromise !== undefined) return closePromise;
       finalize('closed');
-      closePromise = host.sequencer.enqueue(async () => {
-        /* 恒绿空槽体：barrier 只承担「排在已接纳任务之后」的时序语义 */
-      });
+      closePromise = host.sequencer.enqueue(
+        async () => {
+          /* 恒绿空槽体：barrier 只承担「排在已接纳任务之后」的时序语义 */
+        },
+        'close-barrier',
+      );
       return closePromise;
     },
   };
@@ -561,7 +601,20 @@ async function runSessionApplySlot(
   channel: SessionChannel,
   ctx: SessionSlotContext,
   bytes: Uint8Array,
+  admission?: number,
 ): Promise<RuntimeReplicationSessionApplyResult> {
+  // issue #238 §4：slotStart 戳 = thunk 入口（槽真正开跑时点；queueWaitMs =
+  // slotStart − admission）。stageClock 缺面 → 零时钟读（D7：无注入即零采样）；
+  // clock throw → 折叠（本笔 stages 缺席，协议路径零影响）。
+  const stageNow = (): number | undefined => {
+    if (host.stageClock === undefined) return undefined;
+    try {
+      return host.stageClock.now();
+    } catch {
+      return undefined;
+    }
+  };
+  const slotStart = stageNow();
   // ── R1 fatal gate（零输入访问；零 doc 访问）──────────────────────────────
   if (host.state.fatal !== undefined) {
     return refusal('RUNTIME_WRITE_DISABLED', writeDisabledMessage('fatal'));
@@ -626,6 +679,9 @@ async function runSessionApplySlot(
     // 受保护内容变化 → 整体拒绝、零写入、saveDoc 0 次、拒绝行为稳定（重复调用同拒）
     return refusal('REPLICATION_PROTECTED_FIELDS_CHANGED', REPLICATION_PROTECTED_FIELDS_CHANGED_MESSAGE);
   }
+  // issue #238 §4：applyStart 戳 = R4 判据通过后、R5 实时写入前（protectedCheckMs =
+  // applyStart − slotStart；R1–R3 同步门 + R4 scratch 预演并入该段——§4.1 裁决）
+  const applyStart = stageNow();
 
   // ── R5 一次 Y.applyUpdate(doc, bytes, 受控 origin token)（本槽唯一 live Y.Doc
   //    写入口）+ 事务边界探针（R2-6：committed 精确二分，F-4）───────────────
@@ -658,6 +714,9 @@ async function runSessionApplySlot(
   coreState.rootValidation = 'replication-unvalidated'; // 置位后永不清除（INV-S9 语义面的
   // 诚实方向：session 无法证明 ROOT 重新合法——只置不清）
   coreState.memoryCaughtUp = true; // 首次 apply 成功后不回落（INV-S16）
+  // issue #238 §4：dirtyStart 戳 = R5/R5.5 完成后、R6 登记前（liveApplyMs =
+  // dirtyStart − applyStart；R5 Y.applyUpdate 实时写入段）
+  const dirtyStart = stageNow();
 
   // ── R6 同槽 await notifyDirty（bypass 路径同样调用——ADR 0010 L135「仍调用
   //    saveDoc 登记」；#79：degraded 不构成 saveDoc 拒绝理由）──────────────
@@ -675,6 +734,25 @@ async function runSessionApplySlot(
   }
 
   // ── R7 槽释放（promise settle；sequencer 自动放行下一项）─────────────────
+  // issue #238 §4：dirtyDone 戳 = R6 resolve 后、R7 return 前（dirtyNotifyMs =
+  // dirtyDone − dirtyStart）。全 present 才组 stages（全 present 或全缺席纪律）；
+  // stages 是 ok 分支的加性可选导出——refusal/fatal 路径逐字节不动。
+  const dirtyDone = stageNow();
+  if (
+    admission !== undefined &&
+    slotStart !== undefined &&
+    applyStart !== undefined &&
+    dirtyStart !== undefined &&
+    dirtyDone !== undefined
+  ) {
+    const stages: RuntimeReplicationApplyStages = {
+      queueWaitMs: slotStart - admission,
+      protectedCheckMs: applyStart - slotStart,
+      liveApplyMs: dirtyStart - applyStart,
+      dirtyNotifyMs: dirtyDone - dirtyStart,
+    };
+    return { ok: true, stages: Object.freeze(stages) };
+  }
   return { ok: true };
 }
 

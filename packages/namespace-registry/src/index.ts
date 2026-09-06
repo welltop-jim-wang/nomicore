@@ -57,12 +57,15 @@ export type {
   OpenReplicationSessionResult,
   RegistryRandomBytes,
   RegistryTimeoutScheduler,
+  ReplicationApplyStages,
   ReplicationIdentityRef,
+  ReplicationObservabilitySlotSample,
   ReplicationSession,
   ReplicationSessionApplyRefusalCode,
   ReplicationSessionApplyResult,
   ReplicationSessionStatus,
   ResetReplicaIssue,
   ResetReplicaResult,
+  NamespaceReplicationObservabilityOptions,
 } from './types.js';
 export type { NamespaceRegistryPluginConfig } from './plugin.js';

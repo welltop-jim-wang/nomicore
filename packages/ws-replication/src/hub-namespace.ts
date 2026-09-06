@@ -190,6 +190,7 @@ export class HubNamespaceChannel {
       },
       onAckTimeout: () => this.onAckTimeoutFired(),
       onUpdateAcked: (info) => this.onUpdateAcked(info),
+      noteUpdateSent: (info) => this.onUpdateSent(info),
       now: () => this.host.now?.(),
       armTimer: (cb, ms) => host.timer.setTimeout(cb, ms),
       clearTimer: (h) => host.timer.clearTimeout(h),
@@ -807,24 +808,19 @@ export class HubNamespaceChannel {
     try {
       // §6.3 R2（SA2 #7）：see peer-namespace.sendUpdateFrame——异常统一收敛返回 0 → F4。
       const seq = this.host.sendData(this.namespaceId, bytes);
-      // 出向 UPDATE 帧字节（seq>0 时发射——0 = 帧被否决，未出站；合并帧报合并后长度）
-      if (seq > 0 && this.observerOn) {
-        this.host.emitObserver({
-          type: 'update-sent',
-          side: 'hub',
-          ...(cidField(this.host.connectionId())),
-          namespaceId: this.namespaceId,
-          bytes: bytes.byteLength,
-        });
-      }
+      // 出向 UPDATE 帧字节事件发射已移至 onUpdateSent（issue #238——sequence +
+      // sendQueueMs 需在通道记账后构型；seq>0 才触发）
       return seq;
     } catch {
       return 0;
     }
   }
 
-  /** update-acked（hub 出向 UPDATE 被对端 ACK 收妥；数据来自 UpdateChannel 记账）。 */
-  private onUpdateAcked(info: Readonly<{ bytes: number; latencyMs?: number }>): void {
+  /** update-acked（hub 出向 UPDATE 被对端 ACK 收妥；数据来自 UpdateChannel 记账；
+   *  issue #238：sequence = 被 ACK 帧序 = wire ackedSequence）。 */
+  private onUpdateAcked(
+    info: Readonly<{ bytes: number; latencyMs?: number; sequence: number }>,
+  ): void {
     if (!this.observerOn) return;
     this.host.emitObserver({
       type: 'update-acked',
@@ -832,7 +828,24 @@ export class HubNamespaceChannel {
       ...(cidField(this.host.connectionId())),
       namespaceId: this.namespaceId,
       bytes: info.bytes,
+      sequence: info.sequence,
       ...(info.latencyMs !== undefined ? { ackLatencyMs: info.latencyMs } : {}),
+    });
+  }
+
+  /** update-sent（hub 出向 UPDATE 帧实际出站记账事件；issue #238——seq>0 每帧恰一）。 */
+  private onUpdateSent(
+    info: Readonly<{ sequence: number; bytes: number; sendQueueMs?: number }>,
+  ): void {
+    if (!this.observerOn) return;
+    this.host.emitObserver({
+      type: 'update-sent',
+      side: 'hub',
+      ...(cidField(this.host.connectionId())),
+      namespaceId: this.namespaceId,
+      bytes: info.bytes,
+      sequence: info.sequence,
+      ...(info.sendQueueMs !== undefined ? { sendQueueMs: info.sendQueueMs } : {}),
     });
   }
 
@@ -919,12 +932,16 @@ export class HubNamespaceChannel {
         const t1 = this.host.now?.();
         const applyLatencyMs =
           t0 !== undefined && t1 !== undefined ? t1 - t0 : undefined;
+        // issue #238：result.stages = 槽内四段差值（registry stageClock 注入时在场）；
+        // sequence = 触发帧 envelope sequence——三事件面关联键
         const base = {
           side: 'hub',
           ...cidField(this.host.connectionId()),
           namespaceId: this.namespaceId,
           bytes: update.byteLength,
+          sequence,
           ...(applyLatencyMs !== undefined ? { applyLatencyMs } : {}),
+          ...(result.stages !== undefined ? { ...result.stages } : {}),
         } as const;
         if (isStep2) {
           // issue #239 append-only：wire roundId 投影 + 长度澄清 + 效果字段组

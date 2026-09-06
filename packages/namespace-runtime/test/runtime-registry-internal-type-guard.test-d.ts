@@ -13,10 +13,13 @@
  * - 首行 `import type` internal subpath 当前不存在（package.json exports 仅 "."）→
  *   TS2307 → **红**（type-only import 在 transform 期被擦除，不冲击运行期文件收集；
  *   值面/行为锚见 runtime-registry-internal-seam.test.ts）；SA3 建立 ./internal → 绿。
- * - 输入形状条件类型：`Parameters<工厂>` 必须匹配两参形 `(DocHandle, notifyDirty)` 或
+ * - 输入形状条件类型：`Parameters<工厂>` 必须匹配两参形 `(DocHandle, notifyDirty)`、
+ *   **三参形 `(DocHandle, notifyDirty, replicationObservability?)`（issue #238 加性可选
+ *   第三参 = 复制观测注入——ADR-0010 issue #238 修订节登记；仍是「构造真实 Runtime 的
+ *   最小输入 + 观测可选面」，不含 compile/fault/testing seam）** 或
  *   恰 `{handle, notifyDirty}` 单对象形——多出必填参数/缺参/其他形状 → 条件 false →
  *   `never` 赋值 TS2322 → **红**；
- * - AC2 负向（类型层）：单对象形参数必须不存在 `p0Gate`/`compile` 属性面；两参形第 0 参
+ * - AC2 负向（类型层）：单对象形参数必须不存在 `p0Gate`/`compile` 属性面；位置形第 0 参
  *   必须仍是 DocHandle（而非放宽为接受测试注入面的对象）→ 任一泄漏 → `never` 赋值 → **红**；
  * - AC3/AC6 副锚（@ts-expect-error，保持性守卫）：主 entry 不导出 createNamespaceRuntime、
  *   internal subpath 不导出 createNamespaceRuntimeWithSeam / NamespaceRuntimeSeamInput——
@@ -59,11 +62,12 @@ describe('类型面：internal subpath 唯一工厂与受限输入（AC1/AC2/AC3
     void retOk;
   });
 
-  it('工厂输入形态必须是真实构造输入：两参形 (handle, notifyDirty) 或恰 {handle, notifyDirty} 单对象形', () => {
-    // 任一允许形态 =「构造真实 Runtime 所需的最小输入」（AC2）；Arity 与参数名由 SA3
-    // 实现选择，本断言不预锁具体形态，但拒绝一切其他形状（多出必填参数等）。
+  it('工厂输入形态必须是真实构造输入：两参形 (handle, notifyDirty) / 三参形（第三参可选 = 复制观测）/ 恰 {handle, notifyDirty} 单对象形', () => {
+    // 任一允许形态 =「构造真实 Runtime 所需的最小输入」（AC2，issue #238 修订节登记
+    // 加性可选第三参：replicationObservability——复制观测注入，非测试 seam）；Arity 与
+    // 参数名由实现选择，本断言不预锁具体形态，但拒绝一切其他形状（多出必填参数等）。
     // 形状越界 → Allowed=false → never 赋值 TS2322 → 红。
-    type Allowed = FactoryParams extends [DocHandle, () => Promise<void>]
+    type Allowed = FactoryParams extends [DocHandle, () => Promise<void>, unknown?]
       ? true
       : FactoryParams extends [{ readonly handle: DocHandle; readonly notifyDirty: () => Promise<void> }]
         ? true
@@ -74,7 +78,8 @@ describe('类型面：internal subpath 唯一工厂与受限输入（AC1/AC2/AC3
 
   it('AC2 负向：输入面不得包含 p0Gate/compile 测试注入字段（类型层判别）', () => {
     // 单对象形：参数对象类型若声明 p0Gate/compile（哪怕可选）→ 泄漏 → 红。
-    // 两参形：第 0 参必须仍是 DocHandle 形状；第 1 参必须是函数（由形状判别保证）。
+    // 位置形（两参/三参）：第 0 参必须仍是 DocHandle 形状；第 1 参必须是函数；第 3 参
+    // 若存在必须仍是复制观测形状（可选）——拒绝放宽为可接受注入面的对象。
     // （ObjParam 非单对象形时取 never——keyof never 是全键宇宙，必须显式规避。）
     type ObjParam = FactoryParams extends [{ readonly handle: DocHandle; readonly notifyDirty: () => Promise<void> }]
       ? FactoryParams[0]
@@ -86,14 +91,12 @@ describe('类型面：internal subpath 唯一工厂与受限输入（AC1/AC2/AC3
         : 'compile' extends keyof ObjParam
           ? true
           : false;
-    type LeakTwoArg = FactoryParams extends [DocHandle, () => Promise<void>]
-      ? false
-      : FactoryParams extends [infer A, unknown]
-        ? A extends DocHandle
-          ? false
-          : true // 两参但第 0 参放宽为可接受注入面的对象 → 泄漏
-        : false; // 非两参形（即单对象形）→ 由 LeakObj 判别
-    type L = LeakObj extends true ? true : LeakTwoArg extends true ? true : false;
+    type PosHead = FactoryParams extends [infer A, () => Promise<void>, unknown?]
+      ? A extends DocHandle
+        ? false
+        : true // 位置形但第 0 参放宽为可接受注入面的对象 → 泄漏
+      : false; // 非位置形（即单对象形）→ 由 LeakObj 判别
+    type L = LeakObj extends true ? true : PosHead extends true ? true : false;
     const noLeak: L extends false ? true : never = true;
     void noLeak;
   });

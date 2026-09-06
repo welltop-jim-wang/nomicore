@@ -235,7 +235,7 @@ describe('`@nomicore/ws-replication` observer seam（issue #177）', () => {
     >();
   });
 
-  it('事件 union：20 型字面量精确匹配（判别联合闭集，append-only）', () => {
+  it('事件 union：21 型字面量精确匹配（判别联合闭集，append-only；issue #238 增补）', () => {
     expectTypeOf<ReplicationObserverEvent>().toEqualTypeOf<
       | { readonly type: 'connection-state-changed'; readonly side: ReplicationObserverSide; readonly connectionId?: string; readonly from: PeerConnectionState | HubConnectionState; readonly to: PeerConnectionState | HubConnectionState }
       | { readonly type: 'connection-backoff-scheduled'; readonly side: 'peer'; readonly attempt: number; readonly delayMs: number; readonly reason: 'dial-failed' | 'socket-closed' | 'hello-timeout' | 'pong-timeout' | 'connection-backpressure' | 'goaway-closed' | 'goaway-retry-hint' }
@@ -244,12 +244,12 @@ describe('`@nomicore/ws-replication` observer seam（issue #177）', () => {
       | { readonly type: 'bootstrap-snapshot-sent'; readonly side: 'hub'; readonly connectionId?: string; readonly namespaceId: string; readonly bytes: number }
       | { readonly type: 'bootstrap-imported'; readonly side: 'peer'; readonly connectionId?: string; readonly namespaceId: string; readonly bytes: number }
       | { readonly type: 'sync-step2-sent'; readonly side: ReplicationObserverSide; readonly connectionId?: string; readonly namespaceId: string; readonly bytes: number; readonly syncRoundId: number; readonly encodedUpdateBytes: number }
-      | { readonly type: 'sync-diff-applied'; readonly side: ReplicationObserverSide; readonly connectionId?: string; readonly namespaceId: string; readonly bytes: number; readonly applyLatencyMs?: number; readonly syncRoundId: number; readonly encodedUpdateBytes: number; readonly stateVectorChanged?: boolean; readonly applyEffect?: 'changed' | 'noop'; readonly stateVectorBeforeHash?: string; readonly stateVectorAfterHash?: string }
-      | { readonly type: 'update-sent'; readonly side: ReplicationObserverSide; readonly connectionId?: string; readonly namespaceId: string; readonly bytes: number }
-      | { readonly type: 'update-applied'; readonly side: ReplicationObserverSide; readonly connectionId?: string; readonly namespaceId: string; readonly bytes: number; readonly applyLatencyMs?: number }
-      | { readonly type: 'update-acked'; readonly side: ReplicationObserverSide; readonly connectionId?: string; readonly namespaceId: string; readonly bytes: number; readonly ackLatencyMs?: number }
+      | { readonly type: 'sync-diff-applied'; readonly side: ReplicationObserverSide; readonly connectionId?: string; readonly namespaceId: string; readonly bytes: number; readonly applyLatencyMs?: number; readonly syncRoundId: number; readonly encodedUpdateBytes: number; readonly stateVectorChanged?: boolean; readonly applyEffect?: 'changed' | 'noop'; readonly stateVectorBeforeHash?: string; readonly stateVectorAfterHash?: string; readonly sequence: number; readonly queueWaitMs?: number; readonly protectedCheckMs?: number; readonly liveApplyMs?: number; readonly dirtyNotifyMs?: number }
+      | { readonly type: 'update-sent'; readonly side: ReplicationObserverSide; readonly connectionId?: string; readonly namespaceId: string; readonly bytes: number; readonly sequence: number; readonly sendQueueMs?: number }
+      | { readonly type: 'update-applied'; readonly side: ReplicationObserverSide; readonly connectionId?: string; readonly namespaceId: string; readonly bytes: number; readonly applyLatencyMs?: number; readonly sequence: number; readonly queueWaitMs?: number; readonly protectedCheckMs?: number; readonly liveApplyMs?: number; readonly dirtyNotifyMs?: number }
+      | { readonly type: 'update-acked'; readonly side: ReplicationObserverSide; readonly connectionId?: string; readonly namespaceId: string; readonly bytes: number; readonly ackLatencyMs?: number; readonly sequence: number }
       | { readonly type: 'update-dropped'; readonly side: ReplicationObserverSide; readonly connectionId?: string; readonly namespaceId: string; readonly reason: 'update-too-large'; readonly updateBytes: number; readonly maxUpdateBytes: number; readonly channelState: PeerNamespaceState | HubNamespaceState; readonly connectionState: PeerConnectionState | HubConnectionState; readonly queuedUpdateCount: number; readonly queuedUpdateBytes: number; readonly inFlightCount: number; readonly bufferedAmount?: number }
-      | { readonly type: 'degraded-bypass-applied'; readonly side: 'peer'; readonly connectionId?: string; readonly namespaceId: string; readonly bytes: number }
+      | { readonly type: 'degraded-bypass-applied'; readonly side: 'peer'; readonly connectionId?: string; readonly namespaceId: string; readonly bytes: number; readonly sequence: number }
       | { readonly type: 'auth-upgrade-rejected'; readonly side: 'hub'; readonly reason: 'hub-shutdown' | 'missing-token' | 'verifier-missing' | 'frame-too-large' | 'early-frame-limit' | 'auth-timeout' | 'invalid-credentials' | 'invalid-instance-id' | 'peer-disconnected' }
       | { readonly type: 'resync-required'; readonly side: ReplicationObserverSide; readonly connectionId?: string; readonly namespaceId: string; readonly cause: 'queue-overflow' | 'send-failed' | 'connection-shed' | 'ack-timeout' | 'session-fanout-overflow' | 'remote-declared'; readonly reason?: 'update-too-large' | 'send-frame-rejected'; readonly updateBytes?: number; readonly maxUpdateBytes?: number; readonly channelState?: PeerNamespaceState | HubNamespaceState; readonly connectionState?: PeerConnectionState | HubConnectionState; readonly queuedUpdateCount?: number; readonly queuedUpdateBytes?: number; readonly inFlightCount?: number; readonly bufferedAmount?: number }
       | { readonly type: 'send-paused'; readonly side: ReplicationObserverSide; readonly connectionId?: string; readonly bufferedAmount: number }
@@ -257,7 +257,14 @@ describe('`@nomicore/ws-replication` observer seam（issue #177）', () => {
       | { readonly type: 'connection-failed'; readonly side: ReplicationObserverSide; readonly connectionId?: string; readonly code: ReplicationObserverConnectionCode; readonly wsCloseCode: number }
       | { readonly type: 'namespace-error'; readonly side: ReplicationObserverSide; readonly connectionId?: string; readonly namespaceId: string; readonly code: ReplicationObserverNamespaceCode; readonly direction: 'sent' | 'received'; readonly terminalState?: 'failed' | 'conflicted' | 'closed' }
       | { readonly type: 'identity-conflicted'; readonly side: ReplicationObserverSide; readonly connectionId?: string; readonly namespaceId: string; readonly via: 'open-mismatch' | 'fence' | 'identity-changed-frame' }
+      // issue #238（append-only 第 21 型）
+      | { readonly type: 'event-loop-delay-sampled'; readonly side: ReplicationObserverSide; readonly connectionId?: string; readonly delayMs: number }
     >();
+    // issue #238：新字段在场/缺省类型精确性
+    expectTypeOf<Extract<ReplicationObserverEvent, { type: 'update-applied' }>['sequence']>().toEqualTypeOf<number>();
+    expectTypeOf<Extract<ReplicationObserverEvent, { type: 'update-applied' }>['queueWaitMs']>().toEqualTypeOf<number | undefined>();
+    expectTypeOf<Extract<ReplicationObserverEvent, { type: 'update-sent' }>['sendQueueMs']>().toEqualTypeOf<number | undefined>();
+    expectTypeOf<Extract<ReplicationObserverEvent, { type: 'event-loop-delay-sampled' }>['delayMs']>().toEqualTypeOf<number>();
   });
 
   it('稳定码闭联合：ConnectionErrorCode(17) ∪ 2 内部码；NamespaceErrorCode(20) ∪ 1 内部码（同源 append-only）', () => {

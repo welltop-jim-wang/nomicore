@@ -603,7 +603,7 @@ Peer→Hub update保护检查必须在同一 sequencer槽中：
 （附带可选 `clock?: ReplicationClock` 以观测 apply/ACK latency）。Seam 是**追加式
 （append-only）**：事件类型、reason/cause/via 词表、稳定码表只增不改；GA 后字段语义冻结。
 
-### 23.1 事件词汇（20 型，分类列示）
+### 23.1 事件词汇（21 型，分类列示——issue #238 追加第 21 型 `event-loop-delay-sampled` 及四事件面 sequence/四段差值字段）
 
 连接域：
 
@@ -612,6 +612,7 @@ Peer→Hub update保护检查必须在同一 sequencer槽中：
 | `connection-state-changed` | hub/peer | `connectionId?`、`from`、`to`（连接态；hub 仅 `handshaking/ready/draining/closed`，peer 为 §15 全 8 态） |
 | `connection-backoff-scheduled` | peer | `attempt`、`delayMs`、`reason` ∈ {dial-failed, socket-closed, hello-timeout, pong-timeout, connection-backpressure, goaway-closed, goaway-retry-hint} |
 | `goaway-received` | peer | `connectionId?`、`reasonCode` ∈ {SERVER_RESTARTING, SERVER_SHUTTING_DOWN, REAUTH_REQUIRED, **other**}（未知码一律折叠 `other`——对抗高基数注入）、`drainTimeoutMs`、`retryAfterMs?` |
+| `event-loop-delay-sampled` | hub/peer | **issue #238 追加（append-only 第 21 型；连接域低频采样）**：`connectionId?`、`delayMs`（= liveness ping timer 实际 fire 时刻 − 计划 fire 时刻，同一注入单调时钟域差值——event-loop 被同步长任务阻塞时到期 timer 统一后延，本值为停摆**下界信号**非精确测量；cadence = liveness `pingIntervalMs`，无新常驻 timer；gating = observer + clock + transport ping/onPong 三者齐备才武装，任一缺席 → 零状态零调度） |
 
 channel 域：
 
@@ -626,11 +627,11 @@ bootstrap / reconcile / updates 字节与 latency（每帧粒度；次数 = 事�
 | `bootstrap-snapshot-sent` | hub | `connectionId?`、`namespaceId`、`bytes`（BOOTSTRAP_SNAPSHOT 帧快照长度） |
 | `bootstrap-imported` | peer | `connectionId?`、`namespaceId`、`bytes`（本地导入快照长度） |
 | `sync-step2-sent` | hub/peer | `connectionId?`、`namespaceId`、`bytes`（出向 Step2 diff 载荷长度）、`syncRoundId`（issue #239：本 Step2 帧的 wire roundId 投影，§9.1–9.3；uint32、单连接代际内单调；sent/applied 关联键）、`encodedUpdateBytes`（issue #239：恒 === `bytes`——encoded update 长度澄清字段；`bytes` 冻结不 rename） |
-| `sync-diff-applied` | hub/peer | `connectionId?`、`namespaceId`、`bytes`、`applyLatencyMs?`、`syncRoundId`（被 apply 的 Step2 帧的 roundId 投影）、`encodedUpdateBytes`（=== `bytes`）、效果字段组（issue #239，单命运——两次 SV 捕获均成功才存在，捕获异常整组折叠缺失）：`stateVectorChanged`（boolean：本侧「Step2 接纳 → apply 结算」窗口内 state vector 是否推进——观测投影，非因果归因，窗口内其他写如实计入）、`applyEffect` ∈ {changed, noop}（'changed' ⟺ stateVectorChanged）、`stateVectorBeforeHash`/`stateVectorAfterHash`（§23.3 documented safe digest） |
-| `update-sent` | hub/peer | `connectionId?`、`namespaceId`、`bytes`（出站 UPDATE 帧 payload 长度；合并帧报合并后长度） |
-| `update-applied` | hub/peer | `connectionId?`、`namespaceId`、`bytes`、`applyLatencyMs?` |
-| `update-acked` | hub/peer | `connectionId?`、`namespaceId`、`bytes`、`ackLatencyMs?` |
-| `degraded-bypass-applied` | peer（专属） | `connectionId?`、`namespaceId`、`bytes`（§20 peer degraded 内存 apply） |
+| `sync-diff-applied` | hub/peer | `connectionId?`、`namespaceId`、`bytes`、`applyLatencyMs?`、`syncRoundId`（被 apply 的 Step2 帧的 roundId 投影）、`encodedUpdateBytes`（=== `bytes`）、效果字段组（issue #239，单命运——两次 SV 捕获均成功才存在，捕获异常整组折叠缺失）：`stateVectorChanged`（boolean：本侧「Step2 接纳 → apply 结算」窗口内 state vector 是否推进——观测投影，非因果归因，窗口内其他写如实计入）、`applyEffect` ∈ {changed, noop}（'changed' ⟺ stateVectorChanged）、`stateVectorBeforeHash`/`stateVectorAfterHash`（§23.3 documented safe digest）；**issue #238 追加（append-only）**：`sequence`（触发帧 = SYNC_STEP2 帧 envelope sequence，恒在场）、`queueWaitMs?`/`protectedCheckMs?`/`liveApplyMs?`/`dirtyNotifyMs?`（四段差值，registry stageClock 注入时在场——全 present 或全缺席；语义见 §23.4 issue #238 段） |
+| `update-sent` | hub/peer | `connectionId?`、`namespaceId`、`bytes`（出站 UPDATE 帧 payload 长度；合并帧报合并后长度）；**issue #238 追加（append-only）**：`sequence`（出站帧 envelope sequence，恒在场——合并帧 = 该合并帧的 sequence；关联粒度 = wire 帧非业务写）、`sendQueueMs?`（帧实际出队 − 帧内最旧业务项入队；发送方进程内精确——区分 sender dispatch 与线上传输；clock 注入时在场） |
+| `update-applied` | hub/peer | `connectionId?`、`namespaceId`、`bytes`、`applyLatencyMs?`；**issue #238 追加（append-only）**：`sequence`（触发帧 = UPDATE 帧 envelope sequence，恒在场）、`queueWaitMs?`/`protectedCheckMs?`/`liveApplyMs?`/`dirtyNotifyMs?`（四段差值，同上在场纪律） |
+| `update-acked` | hub/peer | `connectionId?`、`namespaceId`、`bytes`、`ackLatencyMs?`；**issue #238 追加（append-only）**：`sequence`（= wire `UPDATE_ACK.ackedSequence`，恒在场——回指被 ACK 帧；与 `update-sent{sequence}`/对端 `update-applied{sequence}` 构成三事件面闭环） |
+| `degraded-bypass-applied` | peer（专属） | `connectionId?`、`namespaceId`、`bytes`（§20 peer degraded 内存 apply）；**issue #238 追加（append-only）**：`sequence`（触发帧 envelope sequence，恒在场——按 §23.5 既有纪律不携时延字段） |
 
 **issue #239 语义注记**：发送不推进发送方 state vector，`sync-step2-sent` 不携带效果
 字段组。Yjs 空 diff 编码结构性非零（§9.2 允许空 diff），`bytes > 0 ∧ applyEffect='noop'
@@ -684,7 +685,10 @@ issue #231）、受控标识（`namespaceId` 恒为 `^ns-[0-9a-f]{32}$`；`conne
 §6.2 专用 observability id，握手完成前字段不存在）、稳定错误码（§23.2 闭联合）、
 有限数值（`bytes`/`updateBytes`/`maxUpdateBytes` 是**长度**不是内容；
 `queuedUpdateCount`/`queuedUpdateBytes`/`inFlightCount` 是计数；`bufferedAmount` 是
-adapter 水位读数；`applyLatencyMs`/`ackLatencyMs` 是**差值**非绝对时间戳）。
+adapter 水位读数；`applyLatencyMs`/`ackLatencyMs`/`sendQueueMs`/`queueWaitMs`/
+`protectedCheckMs`/`liveApplyMs`/`dirtyNotifyMs`/`delayMs` 是**差值**非绝对时间戳；
+`sequence` 是帧级有限数值（uint32，连接局部、不跨连接、不持久化——§10 非目标保持）——
+issue #238 追加字段全部落入上述两类）。
 
 **issue #239 追加（append-only）**：
 - 低基数闭联合字面量 `applyEffect` ∈ {changed, noop} 与 boolean `stateVectorChanged`
@@ -721,6 +725,28 @@ adapter 水位读数；`applyLatencyMs`/`ackLatencyMs` 是**差值**非绝对时
   隔离同纪律）。
   `now()` 只作差，**绝对时间戳不入事件**。实现内禁止 `Date.now()`/
   `performance.now()` 回退（ADR 0009 纪律）。
+- **issue #238 槽内四段捕获纪律（registry 侧）**：`update-applied`/`sync-diff-applied`
+  的四段差值在 namespace write sequencer 的 apply 槽内**同步捕获**（纯时钟读、零新增
+  await/调度点——槽序/FIFO 冻结不动），经 apply 结果联合 ok 分支的加性可选 `stages`
+  结构化导出（ADR-0010 issue #238 修订节登记），发射仍在 ws-replication apply 结算
+  续体（本节约束保持）。段定义（同一注入单调时钟域差值）：
+  `queueWaitMs` = slotStart − admission（sequencer 排队等待）；`protectedCheckMs` =
+  applyStart − slotStart（R1–R3 同步门 + R4 scratch 预演）；`liveApplyMs` = dirtyStart −
+  applyStart（R5 实时写入）；`dirtyNotifyMs` = dirtyDone − dirtyStart（R6 saveDoc 登记）。
+  守恒恒等式：四段之和 ≤ `applyLatencyMs`（手动时钟测试域逐笔精确相等；生产域残差 =
+  t0→admission 同步段 + 槽释放→结算续体微任务跳，亚毫秒量级）。注入路径 = registry
+  构造选项 `replicationObservability.stageClock`（单调时源；**应与本 seam `clock` 为
+  同一实例**——组装纪律；实例不同最坏后果 = 段值不可比，不影响协议行为）；无注入 =
+  零槽内时钟读、`stages` 缺席、槽级记账关闭（与「无 observer = 逐字节等价」同纪律）。
+  clock-throw 折叠策略同上一段（stageClock 读数 throw → 整组 `stages` 缺席，绝无协议
+  外溢）。槽级记账（slotKind/waitMs/runMs/queueDepthAtStart）另经 registry
+  `replicationObservability.slotMetrics` 注入 sink（namespaceId 由装配层闭包盖戳）——
+  ADR 0008「队列进度和内部事件属于日志、metrics 与 trace」指定落点，不进任何 getStatus
+  形状；sink 槽释放后续体调用、throw 自捕获。
+- 跨侧减法边界（issue #238 登记）：hub 与 peer 是不同进程、单调时钟无共同零点——
+  `ackLatencyMs − applyLatencyMs` 之类**跨侧差值只作 triage 近似**，不得表述为精确段值；
+  精确分段只在进程内成立（发送方：`sendQueueMs`/`ackLatencyMs`；接收方：四段 +
+  `applyLatencyMs`）；跨侧由 `sequence` 做帧级逻辑连接。
 - 无 observer = 零事件、零状态投影读取、零时钟调用（行为与现状逐字节等价）。
 - **issue #239 效果字段组捕获纪律**：before 捕获位于 Step2 帧接纳的帧分发同步段
   （sequenced apply 入队前），after 捕获位于 apply 结算续体（事件发射同点）；两处均经
@@ -780,3 +806,15 @@ Yjs bytes/SCHEMA/ROOT/cause 哨兵深扫（含 `JSON.stringify` 无标记物、�
   确定性经 testing surface（`@nomicore/ws-replication/testing`）单元面覆盖（throwing
   reader → 整组缺失；digest 纯函数确定）；periodic no-op round 全 noop / 静默漂移修复
   round 至少一侧 changed 的场景级验收由 `ws-replication-issue239-ac-red.test.ts` 承担。
+
+**issue #238 追加**：四段分解与守恒断言（saveGate 门闩构型：u1 `dirtyNotifyMs` =
+挂起时长、后续排队项 `queueWaitMs` = 剩余占槽时间、逐笔四段之和 = `applyLatencyMs`）；
+三事件面 `sequence` 关联断言（`update-sent{sequence}` ↔ 对端 `update-applied{sequence}`
+↔ `update-acked{sequence = ackedSequence}` 逐位相等；合并帧构型断言一 sequence 覆盖
+合并帧、三事件计数一致）；dormant 等价（无 stageClock → 事件零四段字段）；
+clock-throw 折叠（throw 时源 → 四段缺席、协议路径正常、零 unhandledRejection）；
+`event-loop-delay-sampled.delayMs` 正向控制（已知漂移注入 → 精确复现；无时源读数 →
+零采样）；槽级记账样本（长 `S` 槽 `runMs`、后续 `R` 槽 `waitMs` 抬升、
+`queueDepthAtStart`、namespaceId 盖戳）；observer+clock+stageClock 在场/缺席两构型
+wire 帧协议语义序列全等（Yjs 载荷含随机 doc client id——按本仓库 conformance 惯例以
+kind#seq 语义摘要判定，观测零 wire 扰动）。
