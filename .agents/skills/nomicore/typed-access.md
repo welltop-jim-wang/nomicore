@@ -27,6 +27,15 @@ Generate projections in the independent host and use them to type-check business
    pnpm exec nomicore-generate --domains .
    ```
 
+   If the host enforces semicolon-free generated TypeScript, opt in explicitly and use the same format flag for generation and freshness checks:
+
+   ```bash
+   pnpm exec nomicore-generate --domains . --semicolon-free
+   pnpm exec nomicore-generate --domains . --check --semicolon-free
+   ```
+
+   Do not generate with `--semicolon-free` and check without it, or the reverse. The formats are intentionally byte-incompatible, so a mismatch fails closed as stale.
+
 4. Prove that each consuming package's TypeScript **Program** contains its generated projection. `generated.ts` augments `@nomicore/vfsl-protocol`; merely generating or committing it does nothing when it is outside the Program. Follow [Program wiring](#program-wiring) and choose the narrowest compliant branch.
 5. Review generated diffs. Modify `schema.vfsl` or the generator contract—not `generated.ts`—when output is wrong.
 6. Keep runtime validation and static typing distinct:
@@ -68,7 +77,7 @@ pnpm generate --domains /path/to/host --domain <domain> \
   --out packages/<consumer>/src/generated/nomicore-schema.ts --check
 ```
 
-Relative `--out` resolves from `--domains`. Keep `schema.vfsl` as the sole editable source and exactly one active projection per TypeScript Program; delete the old default projection when moving it package-local. The output remains generated and CI must run `--check`. Do not maintain a copied projection by hand.
+Relative `--out` resolves from `--domains`. Keep `schema.vfsl` as the sole editable source and exactly one active projection per TypeScript Program; delete the old default projection when moving it package-local. The output remains generated and CI must run `--check`. Do not maintain a copied projection by hand. When the host selects semicolon-free output, append `--semicolon-free` to both package-local commands; generation and `--check` must use identical format flags.
 
 Do not add all repository `domains/**/*.ts` to every package: module augmentations merge globally inside a Program, unrelated schemas can pollute path tables, and incompatible top-level fields can collide. Wire only the projection(s) consumed by that package.
 
@@ -141,4 +150,4 @@ The runtime SCHEMA passed to Registry creation or an existing namespace's `repla
 
 ## Completion gate
 
-Complete when generation succeeds, `--check` reports fresh output, generated files are tracked by the host, `tsc --listFilesOnly` proves the consuming Program contains the exact projection, and activation guards prove a known path's exact type plus an unknown path's fail-closed behavior. Positive access code type-checks, intentional invalid examples are rejected, and every business write is demonstrably minimal, mergeable, and semantic: its verb/path describe the intended change, it preserves unrelated Yjs nodes, and it does not reconstruct ROOT or a parent container. Runtime failures remain handled as structured results, concurrency tests cover independent edits where relevant, and both the package-local build Program and the projection-aware typecheck Program pass their required CI gates.
+Complete when generation succeeds, `--check` reports fresh output using the same format flags as generation (including `--semicolon-free` when selected), generated files are tracked by the host, `tsc --listFilesOnly` proves the consuming Program contains the exact projection, and activation guards prove a known path's exact type plus an unknown path's fail-closed behavior. Positive access code type-checks, intentional invalid examples are rejected, and every business write is demonstrably minimal, mergeable, and semantic: its verb/path describe the intended change, it preserves unrelated Yjs nodes, and it does not reconstruct ROOT or a parent container. Runtime failures remain handled as structured results, concurrency tests cover independent edits where relevant, and both the package-local build Program and the projection-aware typecheck Program pass their required CI gates.
