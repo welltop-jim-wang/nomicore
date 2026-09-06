@@ -15,6 +15,10 @@
  * 记录违反冻结 policy/连续性的事实；未知格式仍走 incompatible → records:[]）。
  * storage/frame 交叉面复用 `storage-gate.ts` 共享原语（与 writer 门同源，防双份漂移）；
  * manifest 门对照内建冻结常量（reader 只信任内建冻结 schema，manifest 只作声明被核对）。
+ * #227（2026-09-06）reader 域新增两 stream 级码（共 31 码）：
+ * `lease-expired`——逐段续租检查点被拒（bounded 越界/会话已闭）→ 读取诚实中止；
+ * `segment-vanished`——快照组盘上消失（jsonl ENOENT ∧（`.deleting` marker 在 ∨
+ * bin 缺））→ 租约窗内被删的兜底观测（INV-227-9：绝不静默空读）。
  */
 import { readdirSync, readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
@@ -27,17 +31,27 @@ import { decodeBase64Strict } from './carrier.js'
 import { FRAME_HEADER_BYTES, decodeFrame } from './frame.js'
 import type { UpdateCarrier } from './record.js'
 import { UINT64_MAX } from './adapters/memory.js'
+import { openDiagnosticReadSession, READ_SESSION_RENEW_MARGIN_MS } from './read-session.js'
+import type { DiagnosticReadSession } from './read-session.js'
 
 /** 读取请求（路径三组件；streamId/namespaceId 过安全文法后才会触达磁盘——§7.1 ①）。 */
 export interface StrictReadRequest {
   rootDir: string
   namespaceId: string
   streamId: string
+  /** #227（§3.2.1，增量、可选——零破坏）：调用方持有的读会话（快照租用）。提供时：
+   *  - 枚举采用 session.segments（快照语义：open 后新滚出段不可见——既有 §4.3 契约）；
+   *  - reader 不 close（生命周期归调用方）；
+   *  - 逐段读取前跑 renewIfDue 续租检查点（bounded 拒续 → `lease-expired` 诚实中止）。
+   *  缺省时：reader 自开自关（ttl=DEFAULT_READ_SESSION_TTL_MS、maxLifetimeMs=null 显式
+   *  续租、真实时钟）——枚举/读取/校验全程持约（INV-227-1）。 */
+  session?: DiagnosticReadSession | undefined
 }
 
 export type StrictReadStatus = 'ok' | 'corrupt' | 'incompatible'
 
-/** 单条 stream/record issue（reader 稳定码词表共 29 码——23 码 v1 基表 + R2 六码；见文件头注；segment/sequence/offset 归因）。 */
+/** 单条 stream/record issue（reader 稳定码词表共 31 码——23 码 v1 基表 + R2 六码 +
+ *  #227 两码（lease-expired / segment-vanished）；见文件头注；segment/sequence/offset 归因）。 */
 export interface StrictReadIssue {
   code: string
   /** 所属 segment（8 位十进制名）。 */
@@ -390,7 +404,40 @@ function historyTrimmedOf(segments: readonly string[]): boolean {
  */
 export function readStreamStrict(request: StrictReadRequest): StrictStreamRead {
   let manifest: unknown | null = null
+  /** #227：自开会话（请求未提供 session 时 reader 自开自关——INV-227-1/恒释放；
+   *  函数作用域声明使 ⑦ 两处返回与 ⑧ 兜底 catch 均能执行 close）。 */
+  let ownedSession: DiagnosticReadSession | null = null
   try {
+    // ①′ 会话防御门（#227 §3.2.2a——request.session 提供时；零 fs 触达）：
+    //   身份不符（rootDir/namespaceId/streamId 任一不匹配）→ corrupt + locator-invalid；
+    //   已 close（闭会话无保护）→ corrupt + lease-expired——绝不静默裸读。
+    if (request.session !== undefined) {
+      const s = request.session
+      if (s.rootDir !== request.rootDir || s.namespaceId !== request.namespaceId || s.streamId !== request.streamId) {
+        return {
+          status: 'corrupt',
+          streamId: request.streamId,
+          namespaceId: request.namespaceId,
+          manifest: null,
+          issues: [{ code: 'locator-invalid' }],
+          records: [],
+          historyTrimmed: false,
+          earliestRetainedSequence: null,
+        }
+      }
+      if (s.closed) {
+        return {
+          status: 'corrupt',
+          streamId: request.streamId,
+          namespaceId: request.namespaceId,
+          manifest: null,
+          issues: [{ code: 'lease-expired' }],
+          records: [],
+          historyTrimmed: false,
+          earliestRetainedSequence: null,
+        }
+      }
+    }
     // ① 路径安全（防御性路径检查优先于任何磁盘访问；零 fs 触达——G5）
     if (!isSafeNamespaceId(request.namespaceId) || !isSafeStreamId(request.streamId)) {
       return {
@@ -496,28 +543,71 @@ export function readStreamStrict(request: StrictReadRequest): StrictStreamRead {
 
     const streamIssues: StrictReadIssue[] = []
 
-    // ④ segments 枚举（readdir throw → corrupt + manifest-invalid——构造协议保证 segments/ 存在，§11-G9；
-    //    #154：与 resume/sweep/session 同源共享 enumerateSegmentGroups——`.deleting` 组整体剔除）
-    let enumeration: SegmentGroupEnumeration
-    try {
-      enumeration = enumerateSegmentGroups(paths.segmentsDir)
-    } catch {
-      return {
-        status: 'corrupt',
-        streamId: request.streamId,
-        namespaceId: request.namespaceId,
-        manifest,
-        issues: [{ code: 'manifest-invalid' }],
-        records: [],
-        historyTrimmed: false,
-        earliestRetainedSequence: null,
+    // ④′ 会话取得（#227 §3.2.2——替换裸枚举；INV-227-1：每次磁盘枚举/读取/校验都发生
+    //   在某个未关闭会话的保护下）：
+    //   a. request.session 提供：身份/关闭防御门已在上方 ①′ 过——快照即枚举
+    //      （INV-227-2：segments 恒等于 session.segments，绝不另起 enumerateSegmentGroups）；
+    //      enumerationFailed（open 时 segments/ 缺失/不可读）→ 保持既有 ④ 枚举失败包络
+    //      （corrupt + manifest-invalid，与 request 无 session 的现状逐字节等同）。
+    //   b. 未提供：reader 自开自关——ttl=DEFAULT（15s）、maxLifetimeMs=null 显式续租、
+    //      真实时钟；枚举失败同上包络；ownedByReader → 返回前 close（下方 ⑦/⑧ 出口）。
+    let session: DiagnosticReadSession
+    if (request.session !== undefined) {
+      session = request.session
+      if (session.enumerationFailed) {
+        return {
+          status: 'corrupt',
+          streamId: request.streamId,
+          namespaceId: request.namespaceId,
+          manifest,
+          issues: [{ code: 'manifest-invalid' }],
+          records: [],
+          historyTrimmed: false,
+          earliestRetainedSequence: null,
+        }
+      }
+    } else {
+      try {
+        session = openDiagnosticReadSession({
+          rootDir: request.rootDir,
+          namespaceId: request.namespaceId,
+          streamId: request.streamId,
+        })
+        ownedSession = session
+      } catch {
+        // 防御（结构性不可达：路径文法已过 ①、冻结缺省参数合法——open 不 throw）
+        return {
+          status: 'corrupt',
+          streamId: request.streamId,
+          namespaceId: request.namespaceId,
+          manifest,
+          issues: [{ code: 'manifest-invalid' }],
+          records: [],
+          historyTrimmed: false,
+          earliestRetainedSequence: null,
+        }
+      }
+      if (session.enumerationFailed) {
+        session.close()
+        ownedSession = null
+        return {
+          status: 'corrupt',
+          streamId: request.streamId,
+          namespaceId: request.namespaceId,
+          manifest,
+          issues: [{ code: 'manifest-invalid' }],
+          records: [],
+          historyTrimmed: false,
+          earliestRetainedSequence: null,
+        }
       }
     }
-    const segments = enumeration.live
+    const segments = [...session.segments]
     const segmentSet = new Set<string>(segments)
     // —— 结构性 trim 判定（SA2 §7.1）：最低存活段 ≠ '00000001' ⇔ 前缀被 retention 裁剪。
     //    `historyTrimmed === true` 时连续性锚初始化为 null（首条身份可解释 record 重定基，
-    //    前缀跨越不产生 sequence-gap）；`false` 时锚恒 1n——行为与现状逐字节等同。 ——
+    //    前缀跨越不产生 sequence-gap）；`false` 时锚恒 1n——行为与现状逐字节等同。
+    //    #227：segments 来自会话快照（open 即枚举）——数值与现状同源（§3.2.2 论证）。 ——
     const historyTrimmed = historyTrimmedOf(segments)
 
     const records: StrictRecordRead[] = []
@@ -562,15 +652,50 @@ export function readStreamStrict(request: StrictReadRequest): StrictStreamRead {
     const segmentRecordCount = new Map<string, number>()
     const segmentUnterminated = new Set<string>()
     for (const segment of segments) {
+      // —— #227 §3.2.3 逐段续租检查点（读 .jsonl 之前；冻结策略执行点）——
+      //    默认 maxLifetimeMs=null（显式续租）⇒ renew() 恒 true，`lease-expired` 实际
+      //    不可达；bounded 模式（调用方自开 session 传 maxLifetimeMs）→ 解释性拒续 →
+      //    诚实中止（停止读取、保留已读 records——AC1「续租**或**诚实失败」失败臂）。
+      if (!session.renewIfDue(READ_SESSION_RENEW_MARGIN_MS)) {
+        streamIssues.push({ code: 'lease-expired', segment })
+        break
+      }
       let jbuf: Uint8Array | null
       try {
         jbuf = readFileSync(join(paths.segmentsDir, `${segment}.jsonl`))
       } catch (err) {
         if ((err as NodeJS.ErrnoException | null)?.code === 'ENOENT') {
-          jbuf = null // 合法 BIN-first 崩溃窗口：有 bin 无 jsonl 的段按零行处理、无 issue
+          jbuf = null
         } else {
           streamIssues.push({ code: 'invalid-json', segment }) // 该段零 record 条目；其余可读段照常
           continue
+        }
+      }
+      if (jbuf === null) {
+        // —— #227 §3.2.4 segment-vanished 检测（租约契约的可观测兜底——INV-227-9：
+        //    零静默空读）。jsonl ENOENT 时区分两种形态（判定只增补在罕见分支，零热路径）：
+        //    - bin 在 ∧ 无 `.deleting` marker → 合法 BIN-first 崩溃窗口（现状契约——
+        //      零行、零 issue，W 系 pin 保留）；
+        //    - marker 在 ∨ bin 缺失 → 快照里有、盘上无 = 租约窗内被删/到期后被扫 →
+        //      `segment-vanished`（诚实 corrupt）。 ——
+        const binPath = join(paths.segmentsDir, `${segment}.bin`)
+        const markerPath = join(paths.segmentsDir, `${segment}.deleting`)
+        let binIsFile = false
+        let markerIsFile = false
+        try {
+          const st = statSync(binPath, { throwIfNoEntry: false })
+          binIsFile = st !== undefined && st.isFile()
+        } catch {
+          binIsFile = false // stat 失败 → 无法证明 BIN-first 窗口 → 按消失（fail-closed）
+        }
+        try {
+          const st = statSync(markerPath, { throwIfNoEntry: false })
+          markerIsFile = st !== undefined && st.isFile()
+        } catch {
+          markerIsFile = false
+        }
+        if (markerIsFile || !binIsFile) {
+          streamIssues.push({ code: 'segment-vanished', segment })
         }
       }
       const jsonlBytes = jbuf === null ? 0 : jbuf.byteLength
@@ -708,6 +833,12 @@ export function readStreamStrict(request: StrictReadRequest): StrictStreamRead {
     }
 
     // ⑦ 聚合（stream 级 ∪ 全部 record 级镜像；incompatible → records:[]）
+    //    #227 恒释放：⑦ 是本 try 内最后两个出口——先 close 自开会话再返回（同步函数
+    //    无 await 面，close 前不可能有新并发删除；注册表零残留由 A5 系测试可观测证明）。
+    if (ownedSession !== null) {
+      ownedSession.close()
+      ownedSession = null
+    }
     const allIssues = [...streamIssues, ...recordIssuesAll]
     if (allIssues.some((issue) => INCOMPATIBLE_SET.has(issue.code))) {
       return {
@@ -732,7 +863,12 @@ export function readStreamStrict(request: StrictReadRequest): StrictStreamRead {
       earliestRetainedSequence: records.find((record) => record.sequence !== '')?.sequence ?? null,
     }
   } catch {
-    // ⑧ 兜底（R2 修订 SA2 #3）：损坏诊断工具绝不在损坏状态下自己崩——绝不抛
+    // ⑧ 兜底（R2 修订 SA2 #3）：损坏诊断工具绝不在损坏状态下自己崩——绝不抛。
+    //    #227：异常逃逸面同样先释放自开会话（INV-227-1 恒释放的异常臂）。
+    if (ownedSession !== null) {
+      ownedSession.close()
+      ownedSession = null
+    }
     return {
       status: 'corrupt',
       streamId: request.streamId,
@@ -751,11 +887,16 @@ export function readStreamStrict(request: StrictReadRequest): StrictStreamRead {
 // 只回 owned bytes；Y.Doc 构造归 Host 工具（本包零 yjs 依赖冻结）。
 // ============================================================================
 
-/** 单条 strict 记录的可重放 update 投影（§4-D10；一切失败收敛 `invalid`，绝不抛）。 */
+/** 单条 strict 记录的可重放 update 投影（§4-D10；一切失败收敛 `invalid`，绝不抛）。
+ *  #227（§4.1/§4.2）：必要性由 kind/committed/effect **先定**（INV-227-5）——联合
+ *  增第五成员 `unknown`（加性演进；`none` 域收窄，见下）。 */
 export type StrictRecordUpdate =
   | { kind: 'update'; bytes: Uint8Array } // owned 副本（可安全 applyUpdate）
-  | { kind: 'omitted'; reason: string } // committed 非-noop 且 effect='update-omitted'（reason 原样）
-  | { kind: 'none' } // 无 update 载荷（noop/rejected/fatal-无-update…）
+  | { kind: 'omitted'; reason: string } // effect='update-omitted'（reason 原样；无条件——含 fatal-committed:false 手拼残差，K-2）
+  | { kind: 'none' } // 可证无更新（committed-noop / rejected / fatal-committed:false——含其 effect 放宽残差 R-4）
+  | { kind: 'unknown' } // #227：fatal ∧ committed:true ∧ effect ∉ {'update','update-omitted'}（字面
+  //                     'unknown' 或 effect 字段缺席——schema.ts:178 第 5 成员）——已提交而
+  //                     效应不明 ⇒ 必要性不可证（永不按无更新推进）
   | { kind: 'invalid'; code: string } // 防御：entry.ok=false 或物化校验失败（复用 reader 码族）
 
 /**
@@ -768,9 +909,14 @@ export type StrictRecordUpdate =
  * （`slice()`——绝不把 .bin 文件字节视图泄漏给调用方）。`entry.ok === false`（或其
  * record 不可解析）→ `{kind:'invalid'}`（码取该条首个 issue，无则 invalid-json）。
  *
- * 语义分类：genesis-baseline → 其 update carrier；attempt 的 committed / fatal-committed
- * 且 effect='update' → carrier；effect='update-omitted' → `omitted{reason}`；其余结局
- * （noop / rejected / fatal 无 update）→ `none`。
+ * 语义分类（#227 §4.2 谓词——必要性判定先于任何 update 形状在场性检查，G5/F-1 修复）：
+ * - genesis-baseline → 其 update carrier；
+ * - attempt：effect='update-omitted' → `omitted{reason}`（无条件——不查 kind/committed）；
+ *   effect='update' ∧（committed ∨ fatal-committed:true）→ carrier 物化（畸形 → invalid）；
+ *   `fatal ∧ committed:true ∧ effect ∉ {'update','update-omitted'}`（字面 'unknown' 或
+ *   effect 字段缺席）→ `{kind:'unknown'}`——自证已提交而效应不明，必要性不可证；
+ *   其余（committed-noop / rejected / fatal-committed:false——含 R-4 effect 放宽残差）
+ *   → `{kind:'none'}`（可证无更新，推进面保真）。
  *
  * 绝不抛（§4-D10「一切失败收敛 {kind:'invalid', code}」）——顶层 catch 是最终闭环。
  */
@@ -814,6 +960,15 @@ export function materializeStrictRecordUpdate(request: StrictReadRequest, entry:
         }
         return materializeCarrier(request, entry.sequence, update as UpdateCarrier)
       }
+      // #227（§4.2，F-1 修复）：fatal ∧ committed:true ∧ effect ∉ {'update','update-omitted'}
+      // → 必要性不可证（INV-227-5）——字面 'unknown'（emitter 可达，schema.ts:181）与
+      // effect 字段缺席（schema.ts:178 第 5 成员——VFSL 合法、emitter 不可达、盘面可达）
+      // 同归 `unknown`；已提交而效应不明的记录绝不落入 `none` 推进面。
+      if (res.kind === 'fatal' && res.committed === true) {
+        return { kind: 'unknown' }
+      }
+      // 可证无更新（committed-noop / rejected / fatal-committed:false——含 R-4 残差：
+      // fatal ∧ committed:false ∧ effect:'update' 自证无提交，G-227-2 维持 #155 判定）
       return { kind: 'none' }
     }
     return { kind: 'invalid', code: 'vfsl-invalid' }

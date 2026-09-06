@@ -208,25 +208,26 @@ log.sweepRetention({ now })            // 显式 sweep：卫生遍历（遗留 .
   `{seg}.deleting`（意图提交点）→ unlink `{seg}.bin` → unlink `{seg}.deleting`。
   JSONL 先行 → 任何中间态都落在 reader 既有合法窗口（bin-无-jsonl），删一半的流永不
   产生 `frame-missing`/`sequence-gap`；崩溃后构造期/下次 sweep 的卫生遍历自动续走
-  （`deletingMarkersCompleted`）；orphan BIN（闭组、无 jsonl、无 marker、有 bin）直接
-  unlink（开组绝对豁免）。
+  （`deletingMarkersCompleted`）；orphan BIN（闭组、无 jsonl、无 marker、有 bin）在无
+  活跃租约时直接 unlink（开组绝对豁免；**#227：活跃 read-session 覆盖的 orphan BIN
+  不得被 P0 卫生删除**——跳过计入 `leaseBlockedGroups`）。
 - **触发点（write-slot 外）**：仅构造期自动一次（`sweepOnOpen`）+ Host 显式
   `log.sweepRetention()`——**绝不挂在 `emit`/`beforeCommit`**（INV-14：每 emit 至多
   一条 record + 至多一帧 BIN 的「有界」纪律）。
 - **报告**：`RetentionSweepReport`（sweptStreams / deletedGroups / reclaimedBytes /
   orphanBinsDeleted / deletingMarkersCompleted / leaseBlockedGroups / openProtectedStops /
   failedSteps / retainedBytes / earliestRetained / historyTrimmedStreams）——仅当
-  「有动作」时恰一次 `retention-swept` 健康事件（全零动作不发）。
+  「有动作」时恰一次 `retention-swept` 健康事件（全零动作不发；**#227 N-3：纯卫生
+  租约跳过亦计动作**——事件形状零变更）。
 
-#### 读会话租约（AC-3；短期可续租、过期不阻塞）
+#### 读会话租约（AC-3；短期可续租、过期不阻塞；#227 起 reader/replay 全程持约）
 
 ```ts
 const request = { rootDir, namespaceId, streamId }
 const session = openDiagnosticReadSession({ ...request, ttlMs: 15_000 })
 try {
-  const result = readStreamStrict(request) // 会话存续期间 retention 不删其快照组
-  session.renew()                         // 长读取按需续租
-  consume(result)
+  const result = readStreamStrict({ ...request, session }) // 快照驱动；逐段自动续租检查点
+  consume(result)                                          // 会话存续期间 retention 不删其快照组
 } finally {
   session.close()                         // 立即释放（幂等）
 }
@@ -235,8 +236,12 @@ try {
 - 租约覆盖 open 时刻快照的全部组；**过期租约永不阻塞删除**（TTL 过即视同无租约，
   AC-3 核心）；已 rename `.deleting` 后的续租不能中止该组删除（marker 即提交点）。
 - 注册表**进程内**按 `(rootDir, namespaceId)` 共享（INV-9）——与 adapter 实例无亲缘；
-  正确性依赖 ADR 0012「单进程独占根目录」部署约束。裸 `readStreamStrict` 仍是
-  静态/离线工具（其契约不承诺与并发 retention 的一致性）；会话包装是受支持的并发读路径。
+  正确性依赖 ADR 0012「单进程独占根目录」部署约束。
+- **（#227）`readStreamStrict` 自持约**：即使不传 session，reader 也自开自关一个读会话
+  （15s ttl、显式续租模式）并逐段跑续租检查点——裸读同样受 retention 租约保护；调用方
+  显式传 session 时保留快照语义（open 后新滚出段不可见）与生命周期控制权（reader 不
+  close）。bounded 会话（`maxLifetimeMs` 数字）续租被拒 → `lease-expired` 诚实中止；
+  快照组盘上消失（jsonl ENOENT ∧（`.deleting` marker 在 ∨ bin 缺））→ `segment-vanished`。
 - **劝告锁语义**：`renew() === true` 不保证快照仍完整（过期窗口内数据可能已被裁剪），
   调用方仍须容忍 ENOENT/裁剪。
 

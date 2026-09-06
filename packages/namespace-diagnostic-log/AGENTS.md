@@ -74,6 +74,26 @@
 - **retention 租约（#154，INV-9）**：读会话租约注册表为**进程内**共享结构
   （`(rootDir, namespaceId)` 分区）——正确性依赖 ADR 0012「单进程独占根目录」部署
   约束，不实现跨进程锁；跨进程部署不在 v1 契约内。
+- **（#227）strict reader / replay 全程持约 + replay 完整性判定收紧**：
+  `readStreamStrict` 在枚举、读取、校验全程持 read-session 租约——`StrictReadRequest.session?`
+  提供时快照即枚举（INV-227-2，reader 不 close、逐段跑 renewIfDue 检查点）；缺省时
+  自开自关（ttl 15s / maxLifetimeMs=null 显式续租 / 真实时钟），每段读取前续租检查点，
+  bounded 拒续 → reader 域码 `lease-expired`（诚实中止、保留已读 records）。jsonl ENOENT
+  分支区分合法 BIN-first 崩溃窗口（bin 在 ∧ 无 marker → 零行零 issue 不变）与快照组
+  盘上消失（`.deleting` marker 在 ∨ bin 缺 → 新码 `segment-vanished`——租约窗内被删的
+  兜底观测，零静默空读）。sweep 侧（#154 协议不动）：P1/P2 在 S1 rename 前经
+  `deleteGroupIfUnleased` 做 S0′ 提交点租约复查；P0 卫生的 orphan-BIN 清理尊重活跃租约
+  （跳过计入 `leaseBlockedGroups`——N-3 备案：纯卫生租约跳过亦可触发 `retention-swept`，
+  事件形状零变更）。`materializeStrictRecordUpdate` 增 `unknown` 第五成员：
+  `fatal ∧ committed:true ∧ effect ∉ {'update','update-omitted'}`（字面 `'unknown'` 或
+  effect 字段缺席——schema.ts:178 第 5 成员）→ `{kind:'unknown'}`：自证已提交而效应不明
+  ⇒ 必要性不可证，**永不落入 `none` 推进面**；`none` 域收窄为 committed-noop /
+  rejected / fatal-committed:false（含其 effect 放宽残差 R-4）。replay（app 工具）以
+  materialize 为唯一分类源（app 侧 result 联合推导删除），完整性以 kind/committed/effect
+  为唯一依据、先于 update 形状在场性（畸形必要 update → invalid 通道）；工具自身全程
+  持约（session open 供参非法 → 收敛 `failed` + `replay-internal-error`，零新 throw 面）。
+  新码恰四（reader 域 `lease-expired`/`segment-vanished`、replay 域 `update-unknown`/
+  `lease-expired`），零 health 事件成员变更。
 - 不依赖 yjs / clock / registry / persistence；只依赖 `@nomicore/vfsl`
   （compileSchemaEnvelope / validateLogicalSnapshot）。
 - 不改 ADR（`docs/adr/**` 冻结源）；`VFSL 校验失败 = writer bug`——丢弃 +

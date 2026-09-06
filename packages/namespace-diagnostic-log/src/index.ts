@@ -88,8 +88,11 @@ export { isSafeNamespaceId, isSafeStreamId } from './paths.js'
 
 // —— #154 增量（保留/租约/删除；全部为增量导出——既有导出一字不动）——
 export type { FileRetentionConfig, RetentionSweepReport } from './retention.js'
+// —— #227 增量：冻结常量导出（15s 缺省租期 / 1s 续租边际——单源）——
 export {
   openDiagnosticReadSession,
+  DEFAULT_READ_SESSION_TTL_MS,
+  READ_SESSION_RENEW_MARGIN_MS,
   type DiagnosticReadSession,
   type DiagnosticReadSessionRequest,
 } from './read-session.js'

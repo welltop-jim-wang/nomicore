@@ -94,7 +94,8 @@ export interface RetentionSweepReport {
   orphanBinsDeleted: number
   /** 本次完成的遗留 .deleting 协议数。 */
   deletingMarkersCompleted: number
-  /** 因活跃租约跳过（并止步）的组数。 */
+  /** 因活跃租约跳过的组数（#227 起语义扩写：P1/P2 判定点 + S0′ 提交点止步 + P0 卫生
+   *  orphan 跳过——字段形状与语义族不变，`retention-swept` 事件白名单不动）。 */
   leaseBlockedGroups: number
   /** 因开组保护止步的 stream 数。 */
   openProtectedStops: number
