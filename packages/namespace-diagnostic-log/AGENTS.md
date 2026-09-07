@@ -13,11 +13,14 @@
   `RECORD_SCHEMA_ENVELOPE`、`RECORD_SCHEMA_TEXT`）；指纹
   `sha256:v1:dedad2ab93d9df9224960ca094924168f8bcc1c0512dfdd0a03dc6e66613e070`
   被 `test/schema-freeze.test.ts` 钉死。
-- **emit 同步、不 throw、不阻塞、所有权移交**：emission 传入后 plain-data snapshot
-  所有权移交日志管线（管线深冻结语义 record——producer 后变异在 strict mode 下 loud
-  抛 TypeError，属 producer bug）；updateBytes 为 intake 复制隔离（slice 副本，
-  producer 在 emit 后变异原 updateBytes **不影响**已接纳 record——R3 总控裁决，
-  ADR 0011「已转移或已复制」）。
+- **emit 同步、不 throw、不返回 durability promise、不留调用方可变引用（ADR-0011
+  interface 契约）；File adapter 首切片为有界同步 append——可被文件系统延迟阻塞
+  （ADR-0012-LOG 首切片 amendment 为权威；「非阻塞」是 interface 级契约，不是任意
+  调用点不阻塞的承诺——任何接入 namespace 生命周期的调用点必须在 write sequencer
+  slot 之外）**：emission 传入后 plain-data snapshot 所有权移交日志管线（管线深冻结
+  语义 record——producer 后变异在 strict mode 下 loud 抛 TypeError，属 producer
+  bug）；updateBytes 为 intake 复制隔离（slice 副本，producer 在 emit 后变异原
+  updateBytes **不影响**已接纳 record——R3 总控裁决，ADR 0011「已转移或已复制」）。
 - **四策略输入捕获只消费既有安全快照**（不重读、不重试；事实优先于策略：
   not-accessed/unavailable/unsafe-input 原样入 record）。
 - **line 预算先降级后丢弃**：full/redacted 超限 → digest + degraded；仍超限 →

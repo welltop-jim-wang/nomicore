@@ -148,3 +148,13 @@ interface NamespaceDiagnosticChangeEmitter {
 ## 关联
 
 本 ADR 增加可选 observability，不修改 ADR 0006 的 snapshot Persistence 与 dirty notification 语义、ADR 0008 的单 sequencer/zero-write/fatal/close 契约、ADR 0009 的 Registry lifecycle 与 observer 隔离、ADR 0010 的 trusted replication、ACK 和 transport observability 语义。实现切片应另行定义 record schema 版本、默认策略、容量上限、adapter、查询与 replay 工具。
+
+---
+
+## 澄清性修订节：issue #228（「非阻塞 emitter seam」与 File adapter 首切片同步 append 的措辞对齐）
+
+日期：2026-09-07；状态：已接受（**澄清性修订，非决策变更**——不改动本 ADR 任何决策条款；与 ADR-0012-LOG 2026-08-28 首切片 amendment 自身「ADR 0011 emitter seam 不变」的声明一致，对齐方向 = 后决优先向已接受 amendment 收敛，先例 docs/AGENTS.md「update every normative document whose stated contract changed」）。
+
+1. **「non-throwing、有界、非阻塞的 emitter seam」的准确读法**：其中「非阻塞」是 **interface 级契约**（emitter 面 void、不 throw、不返回 durability promise、不留调用方可变引用——本 ADR §Interface 与 seam 语义不变）；它**不**表示任意调用点都不可被阻塞，也不为具体 adapter 的实现延迟设界。File adapter 首切片的实现属性（每 record 至多一条 final JSONL record 的有界**同步 append**、携带 sidecar 时先一帧 BIN append，可被文件系统延迟阻塞；不维护 writer queue、不做 batch flush、无 fsync 开关、无常驻 fd；queue/batch/fsync/fd cache 为目标演进形态而非现行特性）由 ADR-0012-LOG 2026-08-28 首切片 amendment 定义并为准。
+2. **调用点纪律援引**：任何将 File adapter `emit` 接入 namespace 生命周期的调用点必须位于 NamespaceRuntime write sequencer slot 之外或该 slot 释放之后（amendment 逐字条款；issue #228 的删除联动把该纪律同款从严适用于 `deleteNamespaceDiagnosticLog` 这类同步重 fs 删除能力——删除段在 Host stdin 编排 macrotask 中、registry carrier 槽之外执行）。本文正文若出现与 amendment 冲突的「绝不阻塞」式表述，以本节为准（CONTEXT.md 语义 emission 词条与 namespace-diagnostic-log 包 README/AGENTS.md 已随 issue #228 同款对齐）。
+3. **隔离条款的边界（issue #228 复合删除谓词不在此列）**：本 ADR 产品契约的失效面枚举（emit/排队/持久化/背压/丢弃/关闭失败）与保护对象枚举（createDoc/Yjs transaction/dirty notification/replication ACK）均不含「日志删除能力失败」与「数据删除工作流」——ADR-0012-LOG §Retention 与删除 L299 把日志删除定义为 Host 数据删除请求的伴随义务，其 `ok:true` 复合谓词（数据与日志均完成逻辑删除）不构成对其它业务操作的隔离破坏；该条款对 emit/append 面继续全额适用（issue #228 零改动）。

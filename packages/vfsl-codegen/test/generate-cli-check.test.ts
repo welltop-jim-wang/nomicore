@@ -70,6 +70,9 @@ describe('单领域自定义输出', () => {
 });
 
 describe('单领域自定义输出参数与 freshness', () => {
+  // SA7-F-1（issue #228 AC4 收尾轮）：多 spawn 型用例在门禁负载下实测 5.0–6.3s > 默认
+  // 5000ms 预算（SA7 隔离复跑 5288–5557ms 同超；--test-timeout 20000 复跑 8/8 绿）。
+  // 显式 per-test timeout 只放宽预算、零断言改动（SA10 §7.1）。
   it('自定义输出 --check：fresh=0；stale/missing=1 且不写盘', async () => {
     const fx = await makeStaleFixture();
     const rel = 'packages/consumer/src/generated/nomicore-schema.ts';
@@ -84,7 +87,7 @@ describe('单领域自定义输出参数与 freshness', () => {
     const missingArgs = ['generate', '--domains', fx.dir, '--domain', 'demo', '--out', missing, '--check'];
     expect(runPnpm(missingArgs, repoRoot).status).toBe(1);
     await expect(readFile(missing, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
-  });
+  }, 20_000);
 
   it.each([
     [['generate', '--domain', 'demo'], '--domain 与 --out 必须同时提供'],
@@ -99,6 +102,7 @@ describe('单领域自定义输出参数与 freshness', () => {
 });
 
 describe('AC4 — generate --check 对过期生成物退出非零，对新鲜生成物退出 0', () => {
+  // SA7-F-1：双 spawn 型用例同款显式 per-test timeout（见上注释；零断言改动）。
   it('generate 后再 --check → diff 为空 → 退出 0（新鲜生成物）', async () => {
     const fx = await makeStaleFixture();
     const gen = runPnpm(['generate', '--domains', fx.dir], repoRoot);
@@ -106,7 +110,7 @@ describe('AC4 — generate --check 对过期生成物退出非零，对新鲜生
     expect(gen.status).toBe(0);
     const check = runPnpm(['generate', '--check', '--domains', fx.dir], repoRoot);
     expect(check.status).toBe(0);
-  });
+  }, 20_000);
 
   it('源漂移后 --check → 退出非零（源改动 → 重新生成后 diff 非空）', async () => {
     const fx = await makeStaleFixture();
@@ -116,5 +120,5 @@ describe('AC4 — generate --check 对过期生成物退出非零，对新鲜生
     await appendFile(join(fx.dir, 'domains', 'demo', 'schema.vfsl'), `\ntype Extra = { x: number };\n`, 'utf8');
     const check = runPnpm(['generate', '--check', '--domains', fx.dir], repoRoot);
     expect(check.status).not.toBe(0);
-  });
+  }, 20_000);
 });

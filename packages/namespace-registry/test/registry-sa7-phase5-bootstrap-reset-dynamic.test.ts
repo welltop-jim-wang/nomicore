@@ -19,8 +19,9 @@
  *   flush 落盘→以旧 epoch reset → RESET_IDENTITY_MISMATCH + 文档完好 + open 恢复，
  *   以当前 epoch reset 成功；6b 导入后立即 reset（未 flush 窗口）：守卫读到导入
  *   字节身份。
- * - §7 registry 公共面动态守卫：实例运行时可枚举键恰六面，无 removeNamespace/
- *   deleteNamespace/closeNamespace 等禁词面。
+ * - §7 registry 公共面动态守卫：实例运行时可枚举键恰七面（issue #228 起 +
+ *   deleteNamespace——ADR-0009 修订节终态删除编排），无 removeNamespace/
+ *   closeNamespace 等未受协调管理面。
  *
  * 真实性纪律：真实 yjs / 真实 MemoryPersistence / 真实 Registry + Runtime；
  * fault 注入仅经自定义 wrapIo（设计 §4.6 规格化面）；零 real sleep（fake scheduler
@@ -639,14 +640,16 @@ describe('SA7 §6 identity 守卫动态边界（registry 链）', () => {
 // ═══════════════════════════════ §7 registry 公共面动态守卫 ═══════════════════════════════
 
 describe('SA7 §7 registry 公共面动态守卫（运行时可枚举键）', () => {
-  it('registry 实例运行时可枚举键恰六面；主入口无 removeNamespace/deleteNamespace/closeNamespace 等禁词面', async () => {
+  it('registry 实例运行时可枚举键恰七面；主入口无 removeNamespace/closeNamespace 等未受协调管理面（issue #228：deleteNamespace 为 ADR-0009 修订节终态删除编排，移出禁词表并计入实例面）', async () => {
     const fx = makeRoundFixture();
     const instanceKeys = Object.keys(fx.registry).sort();
-    expect(instanceKeys).toEqual(['create', 'getStatus', 'importReplica', 'open', 'resetReplica', 'shutdown']);
+    expect(instanceKeys).toEqual([
+      'create', 'deleteNamespace', 'getStatus', 'importReplica', 'open', 'resetReplica', 'shutdown',
+    ]);
     const forbiddenInstance = [
-      'removeNamespace', 'deleteNamespace', 'closeNamespace', 'dropNamespace',
+      'removeNamespace', 'closeNamespace', 'dropNamespace',
       'archiveNamespace', 'listNamespaces', 'resetAllNamespaces', 'removeAllNamespaces',
-      'destroyNamespace', 'purgeNamespace',
+      'destroyNamespace', 'purgeNamespace', 'evictNamespace', 'forceCloseNamespace',
     ];
     for (const name of forbiddenInstance) {
       expect(instanceKeys, `registry 实例不得含 ${name}`).not.toContain(name);

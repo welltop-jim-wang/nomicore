@@ -33,6 +33,8 @@ export type {
   CreateNamespaceIssue,
   CreateNamespaceRegistryOptions,
   CreateNamespaceResult,
+  DeleteNamespaceIssue,
+  DeleteNamespaceResult,
   ImportReplicaIssue,
   ImportReplicaResult,
   InstanceRole,

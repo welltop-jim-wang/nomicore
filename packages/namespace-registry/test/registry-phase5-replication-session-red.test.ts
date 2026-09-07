@@ -1023,6 +1023,11 @@ describe('AC-4 hub scratch-check SCHEMA/保留 META；raw ROOT 不预校验并�
 // ═══════════════════════════════ AC-5 / O-5：degraded 矩阵与角色权限 ═══════════════
 
 describe('AC-5 peer degraded 只允许 hub→peer trusted apply；O-5 补锚 (a)(b)', () => {
+  // 显式 per-test timeout（SA4 F-7 / SA7-F-1 同族扩展，issue #228 AC4 收尾轮）：本条与
+  // 补锚 (a) 属 SA3 iteration 3 备案的「两条 AC-5 degraded 用例在全量负载下偶发超时」
+  // 形态（默认 5000ms 预算边际；SA3 收尾轮全量 run 实测补锚 (a) 超时——日志
+  // /tmp/sa3-228/full-test-3.log，2026-09-07 19:39 落盘，5427ms）。提高
+  // 预算只放宽时限、零断言/语义改动——仅消除门禁被既有负载型超时阻塞。
   it('peer persistence-degraded：业务写禁用（RUNTIME_WRITE_DISABLED）；hub→peer apply 允许（内存生效 + saveDoc 仍登记 + 内存/磁盘可区分）', async () => {
     const fx = makeMemoryStoreFixture();
     // ── 先导写期（writer：hub 角色创建并启用复制身份，落盘）──
@@ -1092,7 +1097,7 @@ describe('AC-5 peer degraded 只允许 hub→peer trusted apply；O-5 补锚 (a)
     expect(diskAfter?.doc.getMap('ROOT').get('n')).toBe(2);
     await registry.shutdown();
     await fx.disposeReader();
-  });
+  }, 20_000);
 
   it('补锚 (a)：hub persistence-degraded 拒绝 peer→hub raw apply；读取、身份检查和 state-vector 交换保留', async () => {
     const fx = makeMemoryStoreFixture();
@@ -1139,7 +1144,7 @@ describe('AC-5 peer degraded 只允许 hub→peer trusted apply；O-5 补锚 (a)
     expect(new Uint8Array(session.encodeStateVector())).toEqual(new Uint8Array(Y.encodeStateVector(liveDoc)));
     await registry.shutdown();
     await fx.disposeReader();
-  });
+  }, 20_000);
 
   it('补锚 (b)：peer 实例本地 replaceSchema() 以稳定角色权限错误拒绝；hub 实例正常；peer 的 enable/bump 同为 hub-only', async () => {
     // peer 实例：本地 replaceSchema 拒绝且稳定（同码同文）、SCHEMA 载体完整；ROOT 业务写仍可用

@@ -494,6 +494,16 @@ describe('SA7 RT-F1（issue #171，SA4 §4.1）：真实 TCP + 真实 timer 下 
       () => countKind(run.peerSide.sent, 'UPDATE') >= 1,
       3_000,
     );
+    // ── wire 静默同步（SA7-F-1/issue #228 AC4 收尾轮修复既有编排竞态）：注入帧序列 =
+    //    接收端已见最大 +1；若基线 UPDATE 的 hub UPDATE_ACK 仍在途（负载下 10ms 轮询间隙
+    //    内可未达），注入的 GOAWAY 会与真实 UPDATE_ACK 同序列竞速 → ACK_STATE_VIOLATION
+    //    → 连接 blocked（SA7 全量运行曾观测 'blocked' vs 'draining'）。先等 hub→peer
+    //    方向 ACK 全部到达（UPDATE_ACK ≥ 已发 UPDATE）再注入——断言与语义零改动。──
+    await waitUntil(
+      `wire 静默：基线 UPDATE 的 UPDATE_ACK 已到达 peer（UPDATE_ACK ${countKind(run.peerSide.received, 'UPDATE_ACK')} ≥ UPDATE ${countKind(run.peerSide.sent, 'UPDATE')}）`,
+      () => countKind(run.peerSide.received, 'UPDATE_ACK') >= countKind(run.peerSide.sent, 'UPDATE'),
+      3_000,
+    );
 
     const t0 = Date.now();
     injectHubToPeer(run, {
@@ -539,7 +549,7 @@ describe('SA7 RT-F1（issue #171，SA4 §4.1）：真实 TCP + 真实 timer 下 
     await run.peer.stop();
     await waitUntil('peer stopped', () => run.peer.getConnectionState() === 'stopped', 5_000);
     cleanupQueue.push(() => run.peerSide.socket.destroy());
-  });
+  }, 30_000);
 });
 
 // ═══════════════════════════ RT-C4 / RT-C4b：错配 CLOSE_OK 真 wire 形态 ═══════════════════════════

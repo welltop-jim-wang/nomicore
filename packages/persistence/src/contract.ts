@@ -116,6 +116,27 @@ export interface DocPersistence {
     owner: User,
     docId: string,
   ) => Promise<PersistedIdentityProbeResult>
+  /**
+   * issue #228：按 (owner, docId) 逻辑删除主键 committed snapshot 与同 key 受控归档位
+   * （ADR-0006 修订节；ADR-0012-LOG L299「Host 执行数据删除请求时必须同时调用日志删除
+   * 能力」的持久层 seam）。
+   *
+   * - 幂等（两处均已缺席 → 仍 resolve {ok:true}；缺席与已删不可区分——删除不是存在性
+   *   预言）；resolve ⟺ 主键与受控归档位此后均缺席（File：主键先 = 提交点，归档位后；
+   *   Memory：主 mirror + 独立 archiveSnapshots 分区）。
+   * - 拒绝分类：DocDeleteActiveHandleError（live handle 存在，调用方释放后重试）/
+   *   DocDeleteOperationalError（io.removeKey 运营拒绝——重试收敛）/
+   *   DocDeleteFatalError（'lifecycle-disposed' | 'adapter-violation' |
+   *   'remove-aborted'）。
+   * - 只承诺活跃存储逻辑删除（ADR-0012-LOG L299 同款措辞纪律），不承诺 secure erase；
+   *   与 archiveDoc 的语义区分（delete ≠ archive：无身份前置、无归档写、删除时清理
+   *   归档位；被删 doc 不需要 flush 持久化——settle 取消全部定时器，在途 flush 结算后
+   *   再 removeKey，复活向量封死）。
+   * - 与 doc 的 live cell 状态机同 key 串行：在途 delete 经 'deleting' cell claim 与
+   *   loadDoc/createDoc/archiveDoc/seedForTest 全消费方互斥（M1）；dispose 竞态 →
+   *   DocDeleteFatalError（重试在 lifecycle 新代际上收敛）。
+   */
+  readonly deleteDoc?: (owner: User, docId: string) => Promise<Readonly<{ ok: true }>>
 }
 
 /** 具备复制生命周期能力的 Persistence 面（required 形态）：Memory/File 实现；
@@ -131,6 +152,9 @@ export interface ReplicaPersistence extends DocPersistence {
     owner: User,
     docId: string,
   ) => Promise<PersistedIdentityProbeResult>
+  /** issue #228：逻辑删除 seam（required 形态；放置镜像 importDoc/archiveDoc——
+   *  Memory/File 恒提供；消费编排方 Registry 对缺席 loud 拒绝，不得静默降级）。 */
+  readonly deleteDoc: (owner: User, docId: string) => Promise<Readonly<{ ok: true }>>
 }
 
 /** 受控复制导入的身份违约（稳定分类，phase:65「identity mismatch」导入位）。
@@ -213,6 +237,54 @@ export class DocArchiveFatalError extends Error {
     this.name = 'DocArchiveFatalError'
     this.phase = phase
     this.committed = DOC_ARCHIVE_FATAL_PHASE_COMMITTED[phase]
+    this.cause = cause
+  }
+}
+
+// —— issue #228 删除错误族（ADR-0006 修订节；callers branch on code, never message text）——
+
+/** 删除前置违约：key 仍持有 live handle（镜像 DocArchiveActiveHandleError 放置——
+ *  「仅在无有效 handle 时执行」同款；调用方释放后重试收敛）。 */
+export class DocDeleteActiveHandleError extends Error {
+  readonly code: 'DOC_DELETE_ACTIVE_HANDLE' = 'DOC_DELETE_ACTIVE_HANDLE'
+  constructor(message = 'deleteDoc rejected: the document still has live handles') {
+    super(message)
+    this.name = 'DocDeleteActiveHandleError'
+  }
+}
+
+/** 删除运营失败（io.removeKey 的 store 级拒绝；epoch 当前）。cause 保留 exact 原始
+ *  失败；message 恒不拼接。removeKey 全程 ENOENT 容忍（force 幂等底座），reject ⟹
+ *  可能部分完成——重试收敛（单调性：删除只前进不回退）。 */
+export class DocDeleteOperationalError extends Error {
+  readonly code: 'DOC_DELETE_OPERATIONAL' = 'DOC_DELETE_OPERATIONAL'
+  override readonly cause: unknown
+  constructor(cause: unknown, message = 'deleteDoc operational failure: the store rejected the removal') {
+    super(message)
+    this.name = 'DocDeleteOperationalError'
+    this.cause = cause
+  }
+}
+
+/** 删除 fatal phase 词表（镜像 DocArchiveFatalPhase 纪律）。commit 事实：
+ *  removeKey resolve 后无失败路径 ⟹ 一切 fatal 恒 committed:false（调用方不得重读
+ *  或二猜；registry 映射 NAMESPACE_DELETE_FAILED 时以 committed:false 记账）。 */
+export type DocDeleteFatalPhase =
+  | 'lifecycle-disposed' // 入口或槽内重检时 lifecycle 已 dispose（committed:false）
+  | 'adapter-violation'  // io.removeKey 同步 throw（PersistenceIO 契约违约）
+  | 'remove-aborted'     // io.removeKey 因 dispose/epoch 终结被 abort（committed:false）
+
+export class DocDeleteFatalError extends Error {
+  readonly code: 'DOC_DELETE_FATAL' = 'DOC_DELETE_FATAL'
+  readonly phase: DocDeleteFatalPhase
+  /** Authoritative commit fact: every delete fatal predates the removeKey resolve. */
+  readonly committed: false = false
+  /** The exact original failure. Never concatenated into message. */
+  override readonly cause: unknown
+  constructor(phase: DocDeleteFatalPhase, cause: unknown, message = 'deleteDoc fatal: internal delete failure') {
+    super(message)
+    this.name = 'DocDeleteFatalError'
+    this.phase = phase
     this.cause = cause
   }
 }

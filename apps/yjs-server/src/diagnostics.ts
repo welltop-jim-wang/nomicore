@@ -37,8 +37,16 @@ import type { EventSink } from './lifecycle.js';
 /** 丢弃 reason 封闭词表（§4-D8：三值各有唯一产生方——unattributed = 共享无归属
  *  通道；stream-unavailable = runtimeEmitterFor 解析未命中丢弃桩（结构性不可达）；
  *  manager-closed = close() 之后的两条通道。E4 走 disabled-adapter 缓存路径不落
- *  stream-unavailable——构造不抛、返回 disabled 模式 adapter）。 */
-export type DiagnosticEmissionDropReason = 'unattributed' | 'stream-unavailable' | 'manager-closed';
+ *  stream-unavailable——构造不抛、返回 disabled 模式 adapter）。
+ *  issue #228（AD-4）：追加第四值 `namespace-deleted`——唯一产生方 = retirement
+ *  之后的 runtimeEmitterFor/共享通道迟到流量（已进入删除流程的 namespace 的迟到
+ *  日志流量；其宿主日志正在/已被逻辑删除——丢弃是 ADR-0011 best-effort 隔离的
+ *  正向运用，不改变删除工作流或任何其它业务操作的返回值）。 */
+export type DiagnosticEmissionDropReason =
+  | 'unattributed'
+  | 'stream-unavailable'
+  | 'manager-closed'
+  | 'namespace-deleted';
 
 export interface HostDiagnosticsManager {
   /**
@@ -46,11 +54,23 @@ export interface HostDiagnosticsManager {
    * - `emitter` = 无归属通道（恒丢弃 + 计数；零路由逻辑——C1）；
    * - `initStream(ns, bytes)` = ensureAdapter 建流 + 缓存（void；#150 签名零改动）；
    * - `runtimeEmitterFor(ns)` = 数据键控解析（缓存命中/构造成功 → adapter.emitter；
-   *   构造不可用 → 丢弃桩；closed → `manager-closed` 丢弃桩）。
+   *   构造不可用 → 丢弃桩；closed → `manager-closed` 丢弃桩；retired →
+   *   `namespace-deleted` 丢弃桩——issue #228 AD-4）。
    */
   readonly binding: NamespaceRegistryDiagnosticLog;
   /** O(1) 结构性收口（§4-D7）：closed 置位 + Map 引用释放；幂等；零 fs、零 await。 */
   close(): void;
+  /**
+   * issue #228（AD-4）namespace retirement：`retiredNamespaces.add(ns)` +
+   * `adapters.delete(ns)`——first-slice adapter 无常驻 fd/队列，弃引用即收口；
+   * 幂等。封 diag-pump 迟到重建：Runtime close barrier 排空 slot ≠ 排空泵（泵与
+   * shutdown 零耦合、不清不等的头注契约），删除工作流中先 retire 再关 Registry/
+   * 删日志，此后任何迟到 `runtimeEmitterFor(ns)` 命中 retired → dropStub
+   * （`namespace-deleted`），绝不 `ensureAdapter` 对已删目录重建流写 genesis
+   * （D4「重启不复活」的进程内同构封堵）。同进程内以同 namespaceId 重新 create
+   * 时 `initStream` 先 un-retire 再 ensureAdapter——重建 namespace 走全新流。
+   */
+  retireNamespace(namespaceId: string): void;
 }
 
 /**
@@ -62,6 +82,11 @@ export function createHostDiagnosticsManager(
   deps: { sink: EventSink; now: () => number },
 ): HostDiagnosticsManager {
   const adapters = new Map<string, FileDiagnosticLog>();
+  // issue #228（AD-4）：已进入删除流程的 namespaceId 集合（retirement 面）。
+  // `runtimeEmitterFor` 对 retired ns 一律 dropStub（`namespace-deleted`）——
+  // 绝不 ensureAdapter 重建 adapter；`initStream` 先 un-retire（进程内同 id
+  // 重建 = 新 namespace 语义，D4 第二分支）。
+  const retiredNamespaces = new Set<string>();
   let closed = false;
 
   const drop = (reason: DiagnosticEmissionDropReason, namespaceId?: string): void => {
@@ -120,14 +145,22 @@ export function createHostDiagnosticsManager(
   const binding: NamespaceRegistryDiagnosticLog = {
     // 无归属通道（R1 语义；消费方读取方式/吞没边界不变——create-diagnostic.ts）
     emitter: unattributedEmitter,
-    // stream 建立缝（void；失败对调用方不可见——Registry 侧吞没边界不变）
+    // stream 建立缝（void；失败对调用方不可见——Registry 侧吞没边界不变）。
+    // issue #228（AD-4/O2）：先 un-retire 再 ensureAdapter——同进程内以同
+    // namespaceId 重新 create（如 provision 重建）时新 namespace 正常建流；
+    // 次序（先删 retired 再建流）与重建语义自洽。
     initStream: (namespaceId: string, genesisUpdateBytes: Uint8Array | undefined): void => {
+      retiredNamespaces.delete(namespaceId);
       void ensureAdapter(namespaceId, genesisUpdateBytes);
     },
-    // 数据键控解析（§4-D4）：返回值由 namespaceId 参数与 adapters/closed 两个
-    // 键控/单调状态决定——不存在任何「上一次调用留下的绑定」（R0 bound 已删除）。
+    // 数据键控解析（§4-D4）：返回值由 namespaceId 参数与 adapters/closed/
+    // retiredNamespaces 三个键控/单调状态决定——不存在任何「上一次调用留下的绑定」
+    // （R0 bound 已删除）。
     runtimeEmitterFor: (namespaceId: string): NamespaceDiagnosticChangeEmitter | undefined => {
       if (closed) return dropStub(namespaceId, 'manager-closed');
+      // issue #228（AD-4）：retirement 之后的迟到流量 → `namespace-deleted` 丢弃桩
+      //（先于 ensureAdapter——retired ns 绝不重建 adapter/绝不建流）
+      if (retiredNamespaces.has(namespaceId)) return dropStub(namespaceId, 'namespace-deleted');
       const log = ensureAdapter(namespaceId);
       return log !== undefined ? log.emitter : dropStub(namespaceId, 'stream-unavailable');
     },
@@ -135,9 +168,15 @@ export function createHostDiagnosticsManager(
 
   return {
     binding,
+    retireNamespace: (namespaceId: string): void => {
+      if (closed) return; // close 后无流可收口（manager-closed 通道已覆盖）
+      retiredNamespaces.add(namespaceId);
+      adapters.delete(namespaceId);
+    },
     close: () => {
       if (closed) return; // 幂等（重复调用零副作用）
       closed = true;
+      retiredNamespaces.clear();
       adapters.clear();
     },
   };

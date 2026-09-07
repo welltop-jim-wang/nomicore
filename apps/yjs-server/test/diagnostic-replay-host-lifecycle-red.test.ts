@@ -230,6 +230,12 @@ async function signalAndExpectExit(
   expectedCode: number,
   what: string,
 ): Promise<void> {
+  // tsx CLI wrapper「ready 后 ~600ms 窗口内 SIGTERM」自身 choreography 竞态（得 143——
+  // wrapper 未把信号转发给应用子进程）：全量门禁负载下该窗口可被拉宽，事件观测后立即
+  // kill 仍可能落入窗口（issue #228 AC4 收尾轮实测 E4 得 143）。既有裁决先例 = 停机前
+  // 有界 settle 1.5s（越过 wrapper ready-窗口；host-namespace-delete-diagnostic-link-red
+  // D4 注记同款）。有界性断言不变（exit 0 仍在 timeoutMs 界内验证）。
+  if (signal === 'SIGTERM') await sleep(1_500);
   proc.child.kill(signal);
   const code = await waitForExit(proc, timeoutMs, what);
   expect(code, `${what} exit code`).toBe(expectedCode);
