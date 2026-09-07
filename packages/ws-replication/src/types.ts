@@ -338,15 +338,33 @@ export type ReplicationObserverEvent =
       readonly side: ReplicationObserverSide;
       readonly connectionId?: string;
       readonly namespaceId: string;
-      readonly bytes: number;
+      readonly bytes: number; // 冻结：出向 Step2 diff 载荷长度
+      /** issue #239 append-only：本 Step2 帧的 wire roundId 投影（§9.1–9.3；
+       *  uint32、单连接代际内单调；sent/applied 关联键）。 */
+      readonly syncRoundId: number;
+      /** issue #239 append-only：=== bytes（encoded update 长度澄清字段；bytes 冻结不 rename）。 */
+      readonly encodedUpdateBytes: number;
     }
   | {
       readonly type: 'sync-diff-applied';
       readonly side: ReplicationObserverSide;
       readonly connectionId?: string;
       readonly namespaceId: string;
-      readonly bytes: number;
-      readonly applyLatencyMs?: number; // clock 缺省时 undefined
+      readonly bytes: number; // 冻结
+      readonly applyLatencyMs?: number; // 既有：clock 缺省时字段缺失
+      /** issue #239 append-only：被 apply 的 Step2 帧的 wire roundId 投影。 */
+      readonly syncRoundId: number;
+      /** issue #239 append-only：=== bytes。 */
+      readonly encodedUpdateBytes: number;
+      /** ── 效果字段组（issue #239，单命运：两次 SV 捕获均成功才存在；捕获 throw 整组折叠缺失）── */
+      /** 本侧「Step2 接纳（帧分发同步段）→ apply 结算」窗口内 state vector 是否推进
+       *  （观测投影，非因果归因；窗口内其他写如实计入）。 */
+      readonly stateVectorChanged?: boolean;
+      /** 'changed' ⟺ stateVectorChanged === true。 */
+      readonly applyEffect?: 'changed' | 'noop';
+      /** documented safe digest（§23.3 注册：双泳道 FNV-1a-32，恒 16 位小写 hex）。 */
+      readonly stateVectorBeforeHash?: string;
+      readonly stateVectorAfterHash?: string;
     }
   // ── updates/bytes in/out + apply/ACK latency（每帧粒度）──
   | {

@@ -625,12 +625,21 @@ bootstrap / reconcile / updates 字节与 latency（每帧粒度；次数 = 事�
 |---|---|---|
 | `bootstrap-snapshot-sent` | hub | `connectionId?`、`namespaceId`、`bytes`（BOOTSTRAP_SNAPSHOT 帧快照长度） |
 | `bootstrap-imported` | peer | `connectionId?`、`namespaceId`、`bytes`（本地导入快照长度） |
-| `sync-step2-sent` | hub/peer | `connectionId?`、`namespaceId`、`bytes`（出向 Step2 diff 载荷长度） |
-| `sync-diff-applied` | hub/peer | `connectionId?`、`namespaceId`、`bytes`、`applyLatencyMs?` |
+| `sync-step2-sent` | hub/peer | `connectionId?`、`namespaceId`、`bytes`（出向 Step2 diff 载荷长度）、`syncRoundId`（issue #239：本 Step2 帧的 wire roundId 投影，§9.1–9.3；uint32、单连接代际内单调；sent/applied 关联键）、`encodedUpdateBytes`（issue #239：恒 === `bytes`——encoded update 长度澄清字段；`bytes` 冻结不 rename） |
+| `sync-diff-applied` | hub/peer | `connectionId?`、`namespaceId`、`bytes`、`applyLatencyMs?`、`syncRoundId`（被 apply 的 Step2 帧的 roundId 投影）、`encodedUpdateBytes`（=== `bytes`）、效果字段组（issue #239，单命运——两次 SV 捕获均成功才存在，捕获异常整组折叠缺失）：`stateVectorChanged`（boolean：本侧「Step2 接纳 → apply 结算」窗口内 state vector 是否推进——观测投影，非因果归因，窗口内其他写如实计入）、`applyEffect` ∈ {changed, noop}（'changed' ⟺ stateVectorChanged）、`stateVectorBeforeHash`/`stateVectorAfterHash`（§23.3 documented safe digest） |
 | `update-sent` | hub/peer | `connectionId?`、`namespaceId`、`bytes`（出站 UPDATE 帧 payload 长度；合并帧报合并后长度） |
 | `update-applied` | hub/peer | `connectionId?`、`namespaceId`、`bytes`、`applyLatencyMs?` |
 | `update-acked` | hub/peer | `connectionId?`、`namespaceId`、`bytes`、`ackLatencyMs?` |
 | `degraded-bypass-applied` | peer（专属） | `connectionId?`、`namespaceId`、`bytes`（§20 peer degraded 内存 apply） |
+
+**issue #239 语义注记**：发送不推进发送方 state vector，`sync-step2-sent` 不携带效果
+字段组。Yjs 空 diff 编码结构性非零（§9.2 允许空 diff），`bytes > 0 ∧ applyEffect='noop'
+并存即「健康 periodic no-op round」的可观测形态。全部 `bytes` 字段 = 编码后帧载荷长度
+（长度非内容，亦非 logical change 计数）。`syncRoundId` 关联域 = 单连接代际（§21：
+进程重启即丢弃；跨重启关联不存在）。窗口语义为**观测投影，非因果归因**：delete-set-only
+修复（仅携带 tombstone 的 Step2）不推进 state vector → `applyEffect='noop'` 而 logical
+state 实际变化——效果字段只回答「SV 是否推进」，issue #239 定义（derived from
+before/after vector, not byteLength）与冻结契约的固有语义。
 
 auth / 背压 / resync：
 
@@ -677,6 +686,18 @@ issue #231）、受控标识（`namespaceId` 恒为 `^ns-[0-9a-f]{32}$`；`conne
 `queuedUpdateCount`/`queuedUpdateBytes`/`inFlightCount` 是计数；`bufferedAmount` 是
 adapter 水位读数；`applyLatencyMs`/`ackLatencyMs` 是**差值**非绝对时间戳）。
 
+**issue #239 追加（append-only）**：
+- 低基数闭联合字面量 `applyEffect` ∈ {changed, noop} 与 boolean `stateVectorChanged`
+  （同族先例 channelState/connectionState——状态机/判别闭联合字面量）；
+- 有限数值 `syncRoundId`（uint32，wire §9.1–9.3 既有事实的观测投影，连接代际内）与
+  `encodedUpdateBytes`（长度）；
+- **documented safe digest（issue #239 注册，注册即冻结）**：`stateVectorBeforeHash`/
+  `stateVectorAfterHash`，算法固定 = 双泳道 FNV-1a-32（泳道 A 正序、泳道 B 逆序扫描
+  raw 编码 state vector 字节；offset basis 2166136261、prime 16777619、模 2³²），
+  输出恒 16 位小写 hex；用途 = 关联/相等判别（trace/事件 payload，§23.6 默认不入
+  metric label）。raw state vector 字节仍属 Yjs bytes 禁止项——digest 是派生定长
+  字符串，非字节载荷。若未来需要更强 digest，append-only 另增字段，不修改本字段。
+
 **禁止**：token（任何形态）；owner 值（NamespaceOwner/userId/localOwner）；Yjs bytes
 （事件树深扫不得出现 `Uint8Array`/`ArrayBuffer`/`DataView`）；SCHEMA/ROOT 内容；
 原始 cause（Error 对象/`.message`/`.stack`/异常字符串）；wire 原样自由文本
@@ -701,6 +722,12 @@ adapter 水位读数；`applyLatencyMs`/`ackLatencyMs` 是**差值**非绝对时
   `now()` 只作差，**绝对时间戳不入事件**。实现内禁止 `Date.now()`/
   `performance.now()` 回退（ADR 0009 纪律）。
 - 无 observer = 零事件、零状态投影读取、零时钟调用（行为与现状逐字节等价）。
+- **issue #239 效果字段组捕获纪律**：before 捕获位于 Step2 帧接纳的帧分发同步段
+  （sequenced apply 入队前），after 捕获位于 apply 结算续体（事件发射同点）；两处均经
+  session 受控能力 `encodeStateVector`（读取面，不进 Registry write sequencer 槽），
+  且仅在 observer 注入时执行（无 observer = 零捕获，热路径与现状逐字节等价）。捕获
+  throw（含 session 终态同步 throw）按 clock-throw 同款折叠策略处理：效果字段组整组
+  缺失（事件本体与其余字段照常发射），绝不伪造 `noop`。
 - 事件对象不可变（类型层 readonly）；observer 内调用公共 API（stop/removeTarget/
   addTarget/close/revoke）由既有幂等/状态门承接；递归事件环属宿主缺陷（同
   Registry seam 取舍）。
@@ -725,7 +752,7 @@ R.lifecycle === 'ready' ∧ R.fatal === null ∧ R.rootWrite.enabled === false
 | Adapter | 允许 | 禁止 |
 |---|---|---|
 | 日志 | side/type/code/cause/reason/namespaceId/connectionId/数值（访问控制下）；每帧事件建议采样 | token、owner、bytes 内容、SCHEMA/ROOT、cause 原文、绝对时间戳 |
-| metrics（默认） | label ∈ {side, type, code, cause, reason}；counter/gauge/histogram 数值（bytes/latency 入 histogram） | namespaceId/connectionId 作默认 label |
+| metrics（默认） | label ∈ {side, type, code, cause, reason, applyEffect（issue #239：低基数效果判别，与 code/cause/reason 同族）}；counter/gauge/histogram 数值（bytes/latency 入 histogram） | namespaceId/connectionId 作默认 label；`syncRoundId`/`stateVectorBeforeHash`/`stateVectorAfterHash`（issue #239：round 关联键与 digest 属事件 payload，高基数不入默认 label） |
 | trace | 同日志 + 采样 | 全量 update 级 span 未采样直发 |
 
 `namespaceId`/`connectionId` 是事件 payload（供受控日志/trace 关联），**默认不绑
@@ -746,3 +773,10 @@ Yjs bytes/SCHEMA/ROOT/cause 哨兵深扫（含 `JSON.stringify` 无标记物、�
 `update-dropped{reason:update-too-large}` × hub/peer（队列非空超限丢弃路径：
 恰一事件、零 `resync-required`、连接/channel 不迁移、同一 drain 后续合法项照发
 并被 ACK、丢弃项由下一次 reconciliation diff 修复收敛）。
+- issue #239：两 sync 事件键集白名单追加新字段；断言 `encodedUpdateBytes === bytes`、
+  `syncRoundId` ∈ wire Step1 roundId 集合（每轮有事件、无孤儿事件）、效果字段组单命运
+  （同现同缺）与组内一致性（`stateVectorChanged === (beforeHash !== afterHash)`、
+  `applyEffect ↔ stateVectorChanged`）、hash 16 位小写 hex 文法；捕获折叠与 digest
+  确定性经 testing surface（`@nomicore/ws-replication/testing`）单元面覆盖（throwing
+  reader → 整组缺失；digest 纯函数确定）；periodic no-op round 全 noop / 静默漂移修复
+  round 至少一侧 changed 的场景级验收由 `ws-replication-issue239-ac-red.test.ts` 承担。
