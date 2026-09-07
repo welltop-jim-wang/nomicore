@@ -320,6 +320,7 @@ drain。实现证据：`packages/ws-replication/src/*`（PR #165 round 2）。
    `docs/phases/phase-5-websocket-replication.md`「交付现状与边界」节维护，ADR 不复制交付
    清单。hub 停机连接收口归属 `@nomicore/ws-replication` 包行为；当前按 issue #229 临时偏离直接关闭 transport、不发送 GOAWAY。composition root 只按 protocol §21 编排包级停机顺序。
 
+
 ### issue #238 修订（分段观测导出登记——2026-09-06）
 
 本节是 issue #238 观测面实现的**消歧登记**（SA8 复核随附要求：`RuntimeReplicationSessionApplyResult` ok 分支加性可选 `stages` 的保守读法合规路径）。全部变更为 local seam：不改变任何 wire 字节、不改变槽序（写序列器 FIFO 链形与 `await notifyDirty()` 槽序冻结不动）、不改变受保护字段判据、不向任何冻结公共注册表/状态形状加成员（G1–G4 复核通过；事件词汇 20→21 型走 protocol §23 append-only 条款并由 `docs/protocols/instance-replication-v1.md` §23.1 显式修订登记，标 issue #238）。
@@ -328,3 +329,35 @@ drain。实现证据：`packages/ws-replication/src/*`（PR #165 round 2）。
 2. **观测参数不进 session open 输入**：`lease.openReplicationSession` 的 2 键严格校验（own 键集恰含 `{localRole, remoteInstanceId}`）保持冻结；分段观测/槽级记账走 registry 构造 options（`replicationObservability`）+ ws-replication 既有 `clock` 注入面。
 3. **槽级记账落点**：写序列器槽样本（slotKind/waitMs/runMs/queueDepthAtStart，namespaceId 由 registry 装配闭包盖戳）只进注入的 metrics/log sink（ADR 0008 L101「队列进度和内部事件属于日志、metrics 与 trace」指定落点），不进 `NamespaceRuntime.getStatus()`/`ReplicationSession.getStatus()`（O-11/replication 两态域冻结形状零改动）。
 4. **发射点纪律不变**：四段差值在 apply 槽内同步捕获、经 apply 结果导出，事件发射仍在 ws-replication apply 结算续体（§23.4「发射点永不位于 Registry write sequencer 槽内」保持）；无 observer/无注入 = 零事件/零时钟读/零调度（逐字节等价）。
+
+
+### issue #237 修订：Trusted raw update 后备句收窄 + follow-up 显式登记（2026-09-06）
+
+授权链：issue #237 + Owner `welltop-jim-wang` 评论（2026-09-05T16:01Z「replication、
+损坏存量数据和不可信恢复状态如何重新建立合法性，不属于本 Issue 第一阶段范围，可
+后续单独处理」；2026-09-05T16:08Z carrier 覆盖面审计方向）+ ADR-0007 issue #237
+修订节（损坏条款定稿为单一真相源）。本节修订「Raw merge 后备」段的后续普通业务
+写半句，并显式登记 follow-up（不得静默留白）。除下列明示句外，正文其余条款
+（raw update 受控通道、`replication-unvalidated` 标记语义、禁止先 apply 后回滚、
+零写入豁免边界）维持原文效力。
+
+1. **后备句定稿措辞**（取代「后续普通业务写仍按现有完整 ROOT 校验，可能被拒绝」
+   半句——SA2 裁决二定稿，逐字采用）：
+   > 后续普通业务写按路径级/边界级校验：其导航路径与语义边界内的非法数据（不含
+   > 被 set 整值替换的目标位旧值——该位由合法写入修复）仍会被响亮拒绝；触达面外
+   > 的非法数据不再被普通写发现。
+
+2. **follow-up 显式登记（本 issue 不承担、不得静默留白）**：
+   (a) **合法性重建机制另票**：replication / 损坏存量 / 不可信恢复状态（raw
+       merge 后 `replication-unvalidated` 及历史脏数据）如何重新建立文档合法性
+       （logical values + carrier topology）不属于 issue #237 第一阶段范围，需
+       独立机制与票证（含必要时在复制恢复路径建立全量验证点的设计）；
+   (b) **carrier validation 覆盖面审计**：按 Owner 2026-09-05T16:08Z §1/§6 的
+       核实清单方向单独审计并补齐——`extractYjsSnapshot` / `verifySnapshotIntact`
+       各路径的 carrier 检查职责、P0/load / schema replacement / raw replication
+       apply / 恢复路径分别在哪里建立 carrier 合法性、`YArray` / plain array /
+       `YMap` / plain object / leaf / XML carrier 的合法矩阵测试完备性；文档合法
+       性组合不变量（carrier structure valid ∧ logical value valid）与分层职责
+       （vfsl 校验 pure JSON 值语义；doc-runtime 消费 structure + live carrier）
+       保持。
+

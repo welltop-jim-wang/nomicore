@@ -945,7 +945,17 @@ describe('AC-4 hub scratch-check SCHEMA/保留 META；raw ROOT 不预校验并�
     await registry.shutdown();
   });
 
-  it('raw ROOT update 不做 VFSL 预校验：违反 schema 类型的 update 仍被接受并标 replication-unvalidated；后续业务写被拒零写入', async () => {
+  it('raw ROOT update 不做 VFSL 预校验：违反 schema 类型的 update 仍被接受并标 replication-unvalidated；后续普通业务写按路径级/边界级校验（面外损坏让渡、原样保留）', async () => {
+    // 用例修订（issue #237 语义演进授权的既有测试面变更——SA4 复审
+    // wiki/raw/task_237_sa4_review.md §1 登记并回流 SA3；授权链同 A-2/B-3/A-7 例外注释先例）：
+    // - Owner 评论 5553024739（updated 2026-09-05T16:01:43Z）：replication / 损坏存量 /
+    //   不可信恢复状态重新建立合法性不属于 issue #237 第一阶段范围，后续单独处理；
+    // - ADR-0010「issue #237 修订：Trusted raw update 后备句收窄 + follow-up 显式登记」
+    //   （2026-09-06）：后续普通业务写按路径级/边界级校验——触达面外的非法数据不再被
+    //   普通写发现（E1/E3 语义让渡；ADR-0007 issue #237 修订节为损坏条款单一真相源）。
+    // 后半段原锚定旧「完整 ROOT 校验 → 面外损坏阻断后续写」语义，随上述授权反转；
+    // 现锚声明语义：ext='zzz'（replication-unvalidated 形态）不在 ['n'] 导航路径/语义
+    // 边界内 → 普通写成功、无关损坏原样保留（不发现/不修复/不扫描破坏）、单事务恰一次 dirty。
     const { stub, registry, lease, session } = await readyHub();
     // 计数基准：enable 的 E6 槽已 notify——接受路径断言「相对基准 +1」。
     const saveBaseline = stub.saveEvents.length;
@@ -959,11 +969,13 @@ describe('AC-4 hub scratch-check SCHEMA/保留 META；raw ROOT 不预校验并�
     expect(JSON.stringify(session.getStatus())).toContain('replication-unvalidated');
     expect(stub.saveEvents.length).toBe(saveBaseline + 1); // 接受路径正常登记 dirty
 
-    // 后续普通业务写：完整 ROOT 校验 → 当前 ROOT 已不符合 schema → 拒绝、零写入
+    // 后续普通业务写：路径级/边界级校验——损坏（ext='zzz'）在 ['n'] 触达面外 → 让渡，
+    // 写入成功；无关损坏原样保留；仍单事务、正常登记 dirty（B-3 锚形：相对基准恰 +1）
     const w = await lease.mutateData({ op: 'set', path: ['n'], value: 9 });
-    expect(w?.ok).toBe(false);
-    expect(stub.liveDoc().getMap('ROOT').get('n')).toBe(42); // 零写入
-    expect(stub.liveDoc().getMap('ROOT').get('ext')).toBe('zzz');
+    expect(w?.ok).toBe(true); // 面外 replication-unvalidated 存量不阻断普通写
+    expect(stub.liveDoc().getMap('ROOT').get('n')).toBe(9); // 写入生效
+    expect(stub.liveDoc().getMap('ROOT').get('ext')).toBe('zzz'); // 无关损坏原样保留
+    expect(stub.saveEvents.length).toBe(saveBaseline + 2); // 普通写恰再登记一次 dirty
 
     // 合法类型的 raw update 同样标记 replication-unvalidated（raw 从不执行 VFSL 预校验）
     const saveBaseline2 = stub.saveEvents.length; // 第二次 apply 前重新取基准

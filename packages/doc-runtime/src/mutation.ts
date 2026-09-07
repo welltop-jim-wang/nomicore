@@ -1,7 +1,16 @@
 /**
- * ADR-0007 validated mutation bridge. Every operation is simulated against a
- * concrete JSON snapshot and fully validated before a single guarded Yjs
- * transaction applies the corresponding minimal carrier edit.
+ * ADR-0007 validated mutation bridge. Ordinary non-empty-path mutations run the
+ * issue #237 local pipeline (mutation-local.ts): plan nearest semantic boundary
+ * (vfsl planMutationBoundary) → live navigation with per-hop carrier/presence
+ * checks → boundary-local extraction/rebuild/validation (vfsl
+ * applyMutationAtBoundary) → detached construct → single guarded Yjs minimal
+ * transaction → boundary-scoped post-commit verification (verifyBoundaryIntact).
+ * The phase-1 precondition (committed ROOT legal before the call — logical
+ * values + carrier topology) is documented in mutation-local.ts; the function
+ * proves this mutation does not break the schema constraints it touches and no
+ * longer scans/copies/validates data outside the touched path and boundary.
+ * Only `set([])` keeps the legacy full-ROOT pipeline (extract → double full
+ * logical validation → clone → guarded transaction → verifySnapshotIntact).
  */
 import * as Y from 'yjs';
 import type { DerivedSchema, StructureNode } from '@nomicore/vfsl';
@@ -9,10 +18,12 @@ import { validateLogicalSnapshot } from '@nomicore/vfsl';
 import { extractYjsSnapshot, walk } from './extract.js';
 import { assertOutermostTransactionContext } from './tx-guard.js';
 import { buildDetachedValue, buildTopEntries } from './detached-build.js';
-import { verifyInstall, verifySnapshotIntact } from './install-verify.js';
+import { verifyInstall, verifySnapshotIntact, verifyBoundaryIntact } from './install-verify.js';
+import type { VerifyBoundaryIntactInput } from './install-verify.js';
 import { carrierOf } from './carrier.js';
 import { makeRefResolver } from './resolve.js';
 import { DerivedInvariantError, DocRuntimeFatalError, transactGuarded } from './fatal.js';
+import { prepareLocalMutation } from './mutation-local.js';
 
 export interface MutationIssue {
   message: string;
@@ -32,20 +43,26 @@ export type ApplyValidatedMutationResult =
 
 type Path = Array<string | number>;
 type ParsedMutation = ValidatedMutation & { path: Path };
-type PreparedCommit =
+/** @internal 包内共享类型（issue #237：mutation-local.ts 消费；不经 index.ts 导出）。 */
+export type PreparedCommit =
   | { kind: 'replace-root'; rootMap: Y.Map<unknown>; entries: Array<[string, unknown]> }
   | { kind: 'set'; parent: Y.Map<unknown>; key: string; value: unknown }
   | { kind: 'delete'; parent: Y.Map<unknown>; key: string }
   | { kind: 'array-insert'; target: Y.Array<unknown>; index: number; values: unknown[] }
   | { kind: 'array-delete'; target: Y.Array<unknown>; index: number; count: number };
 type MutationPrepared =
-  | { kind: 'ready'; commit: PreparedCommit; proposed: unknown }
+  | { kind: 'legacy'; commit: PreparedCommit; proposed: unknown }
+  | { kind: 'local'; commit: PreparedCommit; verify: VerifyBoundaryIntactInput }
   | { kind: 'fail'; issues: MutationIssue[] };
 type PlaceResult = { kind: 'ok'; value: unknown } | { kind: 'issue'; issue: MutationIssue };
 type StepResult = { kind: 'ok'; value: unknown } | { kind: 'issue'; issue: MutationIssue };
-type LiveStep = { live: unknown; node: StructureNode };
+/** @internal 包内共享类型（issue #237：mutation-local.ts 换根导航消费）。 */
+export type LiveStep = { live: unknown; node: StructureNode };
 
-/** Apply one ADR-0007 set/delete/array-insert/array-delete operation synchronously. */
+/** Apply one ADR-0007 set/delete/array-insert/array-delete operation synchronously.
+ *  set([]) → legacy full-ROOT pipeline；普通非空路径 mutation → issue #237 局部管线
+ *  （mutation-local.ts），成功写入保持单 guarded transaction + 最小 edit + 边界级
+ *  提交后验证（无无条件完整 ROOT 重提重验）。 */
 export function applyValidatedMutation(
   derived: DerivedSchema,
   doc: Y.Doc,
@@ -55,10 +72,15 @@ export function applyValidatedMutation(
   const ready = prepareMutation(derived, doc, mutation);
   if (ready.kind === 'fail') return { ok: false, issues: ready.issues };
   transactGuarded(doc, () => commitPrepared(ready.commit));
-  if (ready.commit.kind === 'replace-root') {
-    verifyInstall({ rootMap: ready.commit.rootMap, entries: ready.commit.entries });
+  if (ready.kind === 'legacy') {
+    if (ready.commit.kind === 'replace-root') {
+      verifyInstall({ rootMap: ready.commit.rootMap, entries: ready.commit.entries });
+    }
+    verifySnapshotIntact(derived, ready.proposed, doc);
+  } else {
+    // 局部管线：边界级提交后一致性验证（install facts + 边界重投影核；不重过 schema）
+    verifyBoundaryIntact(ready.verify);
   }
-  verifySnapshotIntact(derived, ready.proposed, doc);
   return { ok: true };
 }
 
@@ -68,6 +90,15 @@ function prepareMutation(derived: DerivedSchema, doc: Y.Doc, mutation: unknown):
     if (parsed.kind === 'fail') return parsed;
     if (derived.structure.kind !== 'root') {
       throw new DerivedInvariantError('derived.structure 非 root（手造派生物）');
+    }
+    // set([]) 是唯一合法全量形态：legacy 完整 ROOT 管线原样（extract → 旧 ROOT 全量
+    // 逻辑校验 → clone → applyToJson → proposed 全量校验 → 单事务 → verifyInstall +
+    // verifySnapshotIntact）。其余全部走 issue #237 局部管线。
+    const isRootReplace = parsed.mutation.op === 'set' && parsed.mutation.path.length === 0;
+    if (!isRootReplace) {
+      const local = prepareLocalMutation(derived, doc, parsed.mutation);
+      if (local.kind === 'fail') return { kind: 'fail', issues: local.issues };
+      return { kind: 'local', commit: local.commit, verify: local.verify };
     }
     const ex = extractYjsSnapshot(derived, doc);
     if (!ex.ok) return { kind: 'fail', issues: ex.issues };
@@ -82,7 +113,7 @@ function prepareMutation(derived: DerivedSchema, doc: Y.Doc, mutation: unknown):
     if (!validated.ok) return { kind: 'fail', issues: validated.issues };
     const commit = prepareCommit(derived, doc, parsed.mutation, ex.snapshot, placed.value);
     if (commit.kind === 'issue') return { kind: 'fail', issues: [commit.issue] };
-    return { kind: 'ready', commit: commit.commit, proposed: placed.value };
+    return { kind: 'legacy', commit: commit.commit, proposed: placed.value };
   } catch (err) {
     if (err instanceof DerivedInvariantError) {
       throw new DocRuntimeFatalError(
@@ -179,7 +210,14 @@ function commitPrepared(commit: PreparedCommit): void {
   }
 }
 
-function navigateLive(
+/**
+ * live 载体导航（包内 @internal 接缝，issue #237：mutation-local.ts 换根导航复用；
+ * 不经 index.ts 导出）。rootMap 形参只是「起始 live 载体」——换根调用（R1 union
+ * 边界）时传入边界 live 与边界结构节点/逻辑值（算法零改动，logical 输入改为边界
+ * 提取值的对应下钻）。载体/两树不一致抛 DerivedInvariantError（E204 面），由调用方
+ * 顶层 catch 按管线位置分类。
+ */
+export function navigateLive(
   rootMap: Y.Map<unknown>,
   rootNode: StructureNode,
   logicalRoot: unknown,

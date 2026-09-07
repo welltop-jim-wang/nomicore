@@ -28,7 +28,7 @@ import {
   declaredFieldOf,
 } from './detached-build.js';
 import type { BuildIssue, Path, Resolver } from './detached-build.js';
-import { extractYjsSnapshot } from './extract.js';
+import { extractYjsSnapshot, walk } from './extract.js';
 import type { ExtractResult } from './extract.js';
 import { DocRuntimeFatalError } from './fatal.js';
 import { makeRefResolver } from './resolve.js';
@@ -326,4 +326,135 @@ function renderPath(path: Path): string {
       (acc, seg) => (typeof seg === 'number' ? `${acc}[${seg}]` : `${acc}.${String(seg)}`),
       'ROOT',
     );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// issue #237：边界级提交后验证（verifyBoundaryIntact）——普通非空路径 mutation 的
+// ⑥ 替代形态：O(1) 安装事实核 + O(boundary) 边界重投影核；不再无条件重新提取并
+// 校验完整 ROOT；fatal 分类不削弱（E201 变体 C/D 复用既有码字，committed:true、
+// 不回滚、不补偿、绝不假成功——措辞按设计 §8 收窄到边界 path 报告）。
+// ═══════════════════════════════════════════════════════════════════════════
+
+/** 提交载体事实（O(1) identity/长度断言输入；与 mutation-local 构造的 commit 对应）。 */
+export type BoundaryCommitFacts =
+  | { kind: 'set'; parent: Y.Map<unknown>; key: string; installed: unknown }
+  | { kind: 'delete'; parent: Y.Map<unknown>; key: string }
+  | { kind: 'insert'; target: Y.Array<unknown>; index: number; built: readonly unknown[]; beforeLength: number }
+  | { kind: 'delete-range'; target: Y.Array<unknown>; index: number; count: number; beforeLength: number };
+
+/**
+ * 边界级提交后验证输入（@internal，issue #237；不经 index.ts 公共入口导出）。
+ * kind target（整值替换边界）时边界 live 由 facts.set 的 parent.get(key) 重读；
+ * 其余种类由 boundaryLive（prefix 位 live）重投影。
+ */
+export interface VerifyBoundaryIntactInput {
+  derived: DerivedSchema;
+  /** 边界位置结构节点（kind target → 目标位节点；其余 → prefix 位节点）。 */
+  structureNode: StructureNode;
+  /** 预期边界逻辑值（kind target → payload；其余 → S6 proposedBoundary）。 */
+  proposedBoundary: unknown;
+  /** prefix 位 live（kind target 不消费——提交后重读目标键）。 */
+  boundaryLive?: unknown;
+  facts: BoundaryCommitFacts;
+}
+
+/** E201 变体 C 的边界措辞（对齐 e201C 语义族：检测到偏离；detail 报边界 path）。 */
+function boundaryE201C(detail: string, path: Array<string | number>): Error {
+  return new DocRuntimeFatalError(
+    'post-commit-verification',
+    true,
+    `DOCRT-E201: mutation 边界安装后一致性校验偏离（边界 ${renderPath(path)}）：${detail}` +
+    `——疑似 observer 修改已安装边界；写入已提交，不回滚、不补偿，doc 保持 observer 留下的实际状态`,
+  );
+}
+
+/** E201 变体 D 的边界措辞（防线未能运行，绝不假成功）。 */
+function boundaryE201D(detail: string, cause?: unknown): Error {
+  return new DocRuntimeFatalError(
+    'post-commit-verification',
+    true,
+    `DOCRT-E201: mutation 边界安装后一致性校验无法完成（${detail}）——写入已提交，不回滚、不补偿；` +
+    `此形态不代表已检测到偏离，仅代表校验防线未能运行`,
+    cause === undefined ? undefined : { cause },
+  );
+}
+
+/**
+ * 边界级提交后验证（issue #237 设计 §8）：
+ * 1. 安装事实核（O(1)，verifyInstall 同款 identity/长度纪律）：
+ *    set → parent.get(key) === installed（yjs 按引用存储，同值重插不误报）；
+ *    delete → !parent.has(key)；insert → target.length === before + built.length 且
+ *    target.get(index+i) === built[i]；delete-range → target.length === before - count。
+ * 2. 边界重投影核（O(boundary)）：walk(structureNode, boundaryLive) 重提取 → 与
+ *    proposedBoundary 做 productEqual（XML canonical、union any-of 同 ⑥ 语义）。
+ *    不重新过 schema（pre-commit 已证 proposed 合法；本核证明 installed ≡ proposed）。
+ * 3. 偏离 → E201 变体 C（committed:true）；核自身异常/无法运行 → E201 变体 D
+ *    （防线未能运行，绝不假成功）。
+ * @internal 包内接缝（mutation.ts 消费；不经 index.ts 公共入口导出）。
+ */
+export function verifyBoundaryIntact(input: VerifyBoundaryIntactInput): void {
+  const { derived, structureNode, proposedBoundary, facts } = input;
+  // ── 1. 安装事实核（O(1)）──────────────────────────────────────────────
+  try {
+    if (facts.kind === 'set') {
+      if (facts.parent.get(facts.key) !== facts.installed) {
+        throw boundaryE201C(`键 "${facts.key}" 在事务提交后与安装值不同一——疑似 observer 覆写或删除后重插异值`, [facts.key]);
+      }
+    } else if (facts.kind === 'delete') {
+      if (facts.parent.has(facts.key)) {
+        throw boundaryE201C(`键 "${facts.key}" 在 delete 提交后仍存在——疑似 observer 重插`, [facts.key]);
+      }
+    } else if (facts.kind === 'insert') {
+      if (facts.target.length !== facts.beforeLength + facts.built.length) {
+        throw boundaryE201C(
+          `array-insert 后长度 ${facts.target.length} ≠ 期望 ${facts.beforeLength + facts.built.length}——疑似 observer 干扰`,
+          [],
+        );
+      }
+      for (let i = 0; i < facts.built.length; i++) {
+        if (facts.target.get(facts.index + i) !== facts.built[i]) {
+          throw boundaryE201C(`array-insert 下标 ${facts.index + i} 与安装值不同一——疑似 observer 干扰`, [facts.index + i]);
+        }
+      }
+    } else if (facts.target.length !== facts.beforeLength - facts.count) {
+      throw boundaryE201C(
+        `array-delete 后长度 ${facts.target.length} ≠ 期望 ${facts.beforeLength - facts.count}——疑似 observer 干扰`,
+        [],
+      );
+    }
+  } catch (err) {
+    if (err instanceof DocRuntimeFatalError) throw err;
+    throw boundaryE201D(`安装事实核异常（触发类④）：${errDetail(err)}`, err);
+  }
+
+  // ── 2. 边界重投影核（O(boundary)）─────────────────────────────────────
+  // 边界 live 来源：非 target 种类（union/record/array/parent）传 prefix 位 live；
+  // kind target（整值替换边界 = 目标位）在提交后重读 parent.get(key)。
+  let live: unknown;
+  if (input.boundaryLive !== undefined) {
+    live = input.boundaryLive;
+  } else if (facts.kind === 'set') {
+    live = facts.parent.get(facts.key);
+  } else {
+    throw boundaryE201D('边界重投影输入缺失（无 boundaryLive 且事实非 set）');
+  }
+  let ex: ExtractResult;
+  try {
+    if (derived.structure.kind !== 'root') {
+      throw new Error('derived.structure 非 root（手造派生物）');
+    }
+    const resolve = makeRefResolver(derived);
+    const walked = walk(structureNode, live, [], resolve);
+    if (walked.kind === 'issue') {
+      throw boundaryE201C(
+        `边界重提取失败（${walked.issue.message}）——已安装边界载体与结构树不符`,
+        walked.issue.path,
+      );
+    }
+    const cmp = productEqual(structureNode, walked.snapshot, proposedBoundary, resolve, []);
+    if (!cmp.equal) throw boundaryE201C(detailOf(cmp), cmp.path);
+  } catch (err) {
+    if (err instanceof DocRuntimeFatalError) throw err;
+    throw boundaryE201D(`边界重投影核异常（触发类①/②/③）：${errDetail(err)}`, err);
+  }
 }

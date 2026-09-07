@@ -97,11 +97,21 @@ export function matchPattern(compiled: CompiledPattern, input: string): boolean 
 // issue #53 / H2：路径级写入校验——validatePatch（替换语义）+ 数组三操作
 // （append/insert/delete，ADR 0004 D1 词表的运行时判定面）。同步、纯函数、不抛错；
 // 结构守卫 + 最近结构边界重建整值校验（与 validateLogicalSnapshot 共用解释器）。
+// issue #237：mutation 边界规划（planMutationBoundary）与边界尺度重建/校验
+// （applyMutationAtBoundary）——doc-runtime 写热路径的增量形态（additive 扩展，
+// 既有导出逐字节不变）。
 export {
   validatePatch,
   validateAppendToArray,
   validateInsertIntoArray,
   validateDeleteFromArray,
+  planMutationBoundary,
+  applyMutationAtBoundary,
+} from './validate-patch.js';
+export type {
+  MutationBoundaryOp,
+  MutationBoundaryPlan,
+  BoundaryMutationPayload,
 } from './validate-patch.js';
 
 // issue #25 / F1：SchemaSource 接缝（ADR 0005 §1/§2）——FileSchemaSource 阶段态仓内文件源、

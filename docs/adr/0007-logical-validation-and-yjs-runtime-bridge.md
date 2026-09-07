@@ -58,3 +58,67 @@ ADR 0008 取代本文 schema-aware `readLogicalValueAtPath(derived, doc, path)` 
 - namespace 创建、打开、读取和更新拥有清晰且可组合的验证链；YArray 与 plain array 的逻辑值相同，但实际 Yjs 载体仍被严格区分。
 - 普通读取成本与目标 path 子树规模相关。validated mutation 为正确性继续执行完整 ROOT 提取与逻辑校验，因此其校验 CPU/内存成本仍与 ROOT 规模相关；提交阶段只修改目标 carrier，使 owned Yjs update 与实际变更规模相关，而不再随完整 ROOT 放大。继续优化完整校验成本时必须保留行为等价测试。
 - Persistence 仍只管理 Y.Doc 存储、cache、flush 与 retry；VFSL 仍是纯逻辑引擎；Server/NamespaceRuntime 负责组合二者。
+
+### issue #237 修订：ordinary mutation 的路径级/边界级校验取代完整 ROOT 校验（2026-09-06）
+
+授权链：issue #237（welltop-jim-wang/nomicore）+ Owner `welltop-jim-wang` 三条评论
+（2026-09-05T16:01Z 范围收敛 / 2026-09-05T16:08Z carrier 正确性与校验架构 /
+2026-09-06T02:55Z 生产证据与 benchmark 场景）+ 本文件 L59 后果句预告（「继续优化
+完整校验成本时必须保留行为等价测试」）+ 先行修订 `1c8b907`（incremental mutation
+commits）。本节按「owner 授权 + 显式修订节」模式（ADR-0006 #64/#79、ADR-0008
+#93/#132 先例）修订下列条款；除下列明示条款外，正文其余条款维持原文效力。
+
+1. **普通非空路径 mutation 管线句改写**（正文「applyValidatedMutation」段）：
+   普通非空路径 mutation 的校验/提取/验证从完整 ROOT 收窄为：沿 live carrier 与
+   derived structure 导航（逐跳局部载体检查）→ 定位最近必要语义边界（union 穿越
+   位 / Record 位 / 数组位 / delete 的父 map 位 / set 的目标位）→ 只把该边界投影为
+   局部 logical 值（set 目标位除外——整值替换不读旧值）→ 在 detached 局部值上按
+   mutation 域规则重建 → 用 vfsl validate-patch 家族的边界级校验（批量 values[] /
+   count 一次整体判定，不逐元素）→ 构造正确的 detached Yjs 值 → 在一个 guarded
+   Yjs transaction 中提交最小 carrier edit → 只验证受影响的边界与预期一致。不再
+   执行完整 ROOT 提取、完整旧 ROOT 逻辑校验、整树深拷贝、完整 proposed ROOT
+   校验与提交后整 ROOT 对称重物化验证（verifySnapshotIntact 的 ordinary 形态由
+   边界级 verifyBoundaryIntact 取代：O(1) 安装事实核 + O(boundary) 重投影核）。
+
+2. **phase-1 前置假设条款（新增）**：mutation 开始前的 committed ROOT 已符合
+   active schema——logical values 符合值语义 ∧ carrier topology 符合 `YArray` /
+   `YMap` / plain / leaf 声明。`applyValidatedMutation` 负责证明**本次 mutation
+   不破坏其触达的 schema 约束**，不扫描、不复制、不校验 mutation 路径与最近必要
+   语义边界之外的既存数据。合法性建立点（create 全量校验、SCHEMA
+   write/replaceSchema 全量校验、`set([])` 整体替换的 proposed 全量校验）与归纳
+   维持（合法基线 + 本次边界合法 ⇒ 写后全局合法）保持不变；**不引入任何
+   committed-generation / document-validation-baseline 状态机**（无 generation
+   计数、无 validity 缓存）。
+
+3. **`set([])` 条款保持**：`set([])` 是唯一合法全量形态，继续走完整 ROOT 清空与
+   重装管线（extract + 双全量校验 + clone + 单事务 + verifyInstall +
+   verifySnapshotIntact），不作为普通消费模式。schema 语义要求更大上下文时普通写
+   允许安全退化到更高边界直至 ROOT（如顶层字段 delete / 顶层 Record 键写）。
+
+4. **损坏条款定稿措辞**（取代原「当前 ROOT 已损坏时普通 mutation 失败，不承担
+   recovery」句——SA2 裁决二定稿，逐字采用）：
+   > 损坏条款：普通非空路径写按最近必要语义边界工作——(i) 导航逐跳的局部 carrier
+   > 形态违规（含 array-* 目标非 Y.Array）仍响亮拒绝（ok:false、零写入）；(ii) 被
+   > 提取/重建/校验的边界（union 穿越位、Record 位、数组位、delete 的父 map 位）
+   > 内部既存载体/值域非法仍响亮拒绝；(iii) **set 的目标位旧值不被读取**——set 是
+   > 整值替换，目标位既存非法（载体或值）由本次合法写入整值修复而非拒绝；
+   > (iv) 触达面之外的既存非法数据（含路径祖先容器内未触达的兄弟位）不再被普通写
+   > 发现、不修复、不扫描（声明的语义让渡；全局合法性重建另票，见 ADR-0010
+   > follow-up 登记）。
+
+5. **失败边界与提交后验证范围声明**：零写入承诺、observer no-rollback、禁
+   write-then-undo（验证失败在触碰 live Y.Doc 前决定）全部保持。提交后验证的
+   **覆盖范围随全量校验一并收窄到受影响边界**——边界外 observer 干扰不再被
+   ordinary 写检测（声明语义，非静默）；fatal 分类不削弱：边界级偏离 → E201
+   变体 C（committed:true、不回滚、不补偿），校验无法运行 → E201 变体 D（防线
+   未能运行，绝不假成功）；E203/E204/E205 分类与错误分类表按 SA1 设计 §7.3 保持。
+
+6. **行为等价测试硬前置保持**：SA6 等价性契约（A-6 28 场景：判别联合 / Record /
+   optional / 数组边界 / 嵌套具名引用 / 空路径替换——增量判定 ≡ 完整 proposed
+   ROOT 全量校验）继续是后续任何校验成本优化的硬验收（本文件 L59 后果句效力
+   不变）。
+
+7. **成本模型后果句更新**：普通非空路径写成本 ≈ O(path depth + boundary size)
+   （R6 set 目标位 O(1) 常数；array/Record/union 边界与 delete 父位按边界规模），
+   与完整 ROOT 规模解耦；`set([])` 与顶层退化位仍为 O(ROOT)。owned Yjs update
+   保持最小化（只修改目标 carrier）。

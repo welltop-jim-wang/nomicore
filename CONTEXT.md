@@ -61,7 +61,7 @@ _Avoid_: 编译器（compiler）——该词留给「文本 → IR → 派生 sc
 _Avoid_: 编译产物、DerivedSchema（英文代号）
 
 **逻辑快照校验（validateLogicalSnapshot）**:
-对普通 JSON 逻辑 ROOT 快照运行完整值语义校验；不接收 Y.Doc / Y.Map / Y.Array，也不验证 Yjs 载体。创建前校验、写入前校验、迁移后体检、测试与管理端点共用该入口；普通 open/read 不重复校验已持久化 namespace。
+对普通 JSON 逻辑 ROOT 快照运行完整值语义校验；不接收 Y.Doc / Y.Map / Y.Array，也不验证 Yjs 载体。创建前校验、SCHEMA replacement/迁移后体检、管理端点（`set([])` 整体替换、replaceSchema provided-root 原样封闭校验）与测试共用该入口；普通 open/read 不重复校验已持久化 namespace；ordinary 非空路径写经路径级/边界级校验（ADR-0007 issue #237 修订节），不再为每次写执行完整 ROOT 校验。
 _Avoid_: validateSnapshot（容易误解为可校验 live Yjs 文档）
 
 **信封指纹（envelope fingerprint）**:
@@ -71,7 +71,7 @@ _Avoid_: validateSnapshot（容易误解为可校验 live Yjs 文档）
 `lang + version +` 解析后规范 IR 的语义身份；忽略空白与普通注释，保留 JSDoc、声明顺序及其他 VFSL 语义，并排除仅作谱系标签的 `id`。用于共享编译语义产物。
 
 **载体投影读取（readLogicalValueAtPath）**:
-从 live Y.Doc 的固定 ROOT 按实际 Yjs/plain 载体和路径同步投影普通逻辑值；不依赖 VFSL/派生 schema，也不重复执行结构或逻辑校验。创建与受控写入负责建立并维持数据不变量；持久化文件被其他程序错误修改不在运行时读取契约范围内。
+从 live Y.Doc 的固定 ROOT 按实际 Yjs/plain 载体和路径同步投影普通逻辑值；不依赖 VFSL/派生 schema，也不重复执行结构或逻辑校验。创建与受控写入负责建立并维持数据不变量——ordinary 写以 issue #237 phase-1 前置假设为条件归纳维持（mutation 前 committed ROOT 合法（logical values + carrier topology）+ 本次写保持其触达边界合法 ⇒ 写后全局合法；mutation 路径/边界之外的既存数据不被 ordinary 写扫描、复制或校验，见 ADR-0007 issue #237 修订节）；持久化文件被其他程序错误修改不在运行时读取契约范围内。
 _Avoid_: validated read、schema-aware read（会误解为读取时重新解释或校验 VFSL）
 
 **写序列器（write sequencer）**:
@@ -89,7 +89,7 @@ close 首次调用同步进入 `closing` 后，capability 槽立即停止接纳�
 _Avoid_: 把 lifecycle 失败伪装成路径失败码、把停接纳误解为取消已接纳任务、把停接纳误读为 getStatus 不可用
 
 **重建校验（rebuild validation）**:
-单字段 patch 也在最近结构边界合并当前值后按完整子 schema 校验——判别联合只有看到判别字段才知道按哪个变体验。
+单字段 patch 也在最近结构边界合并当前值后按完整子 schema 校验——判别联合只有看到判别字段才知道按哪个变体验。ordinary mutation 的最近必要语义边界（union 穿越位 / Record 位 / 数组位 / delete 父位 / set 目标位）与批量数组整体判定（values[]/count 一次重建，不逐元素）见 ADR-0007 issue #237 修订节。
 
 **语义层（semantic layer）**:
 JSDoc 首行自由文本 + `@tag` 半结构化标签；全部为文档性质，未识别仅 warn（无机器标签）。
@@ -135,7 +135,7 @@ _Avoid_: 连接次数、自动选主 term、可回绕版本号
 _Avoid_: 裸 Y.Doc WS handler、绕过本地 write sequencer 的 apply、把网络状态塞进 Runtime capability status
 
 **复制未校验（replication-unvalidated）**:
-Trusted raw Yjs update 已在 sequencer 中提交并登记 dirty，但未执行完整 VFSL ROOT 预校验的复制状态；它可能导致后续普通业务写因当前完整 ROOT 不合法而失败，不表示 transaction 可回滚或 raw update 享有 zero-write 保证。
+Trusted raw Yjs update 已在 sequencer 中提交并登记 dirty，但未执行完整 VFSL ROOT 预校验的复制状态；它可能留下文档路径/边界之外的非法数据——后续普通业务写按路径级/边界级校验工作：其导航路径与语义边界内的非法数据（不含被 set 整值替换的目标位旧值——该位由合法写入修复）仍会被响亮拒绝，触达面外的非法数据不再被普通写发现（ADR-0010 issue #237 修订节；合法性重建与 carrier 覆盖面审计已登记 follow-up）。不表示 transaction 可回滚或 raw update 享有 zero-write 保证。
 _Avoid_: validated replication、apply 后校验失败自动 rollback
 
 **实例角色（instance role）**:
