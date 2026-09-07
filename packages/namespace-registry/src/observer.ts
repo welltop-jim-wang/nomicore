@@ -29,7 +29,8 @@ export type RegistryObserverEvent =
   | {
       type: 'lifecycle-slot-failed';
       identity: InternalIdentity;
-      operation: 'open' | 'create' | 'reset' | 'import';
+      // issue #228：+ 'delete'——终态删除编排的内部故障通道（operation append-only）
+      operation: 'open' | 'create' | 'reset' | 'import' | 'delete';
       cause: unknown;
     }
   // —— #112 增量（§2.B/§2.I）：idle 状态机三事件 ——

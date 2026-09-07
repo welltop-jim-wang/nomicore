@@ -215,3 +215,26 @@ Namespace identity、普通 create 的 ID 生成与 Registry 碰撞处理以 [AD
 **3. 归档布局与原子语义**：File 归档布局为 `{rootDir}/archive/users/{userId}/{docId}.snapshot`，暂存为对应归档路径 `.tmp`；归档写经 mkdir→writeFile tmp→rename 原子提交，同名重复归档为单槽 latest-wins 原子覆盖，tmp 永不提交。Memory 提供行为等价的独立归档分区（不经 writeSnapshot hook）。**提交边界 = 归档写（rename/write resolve）**：若随后主键移除拒绝，归档字节已提交——`archiveDoc` 必须拒绝 `DocArchiveFatalError('relocate-remove')` 且 `committed:true`，不得报告 operational、identity mismatch 或 duplicate；Registry 必须以 `committed:true` 原样传播为 `NamespaceRegistryFatalError`，而非领域 `RESET_FAILED`。重试是**收敛性**重试：它重新守卫/读取仍存在的主键、latest-wins 覆盖同一归档槽、再重试移除；它绝不主张主键仍是唯一已提交状态。
 
 **4. Persistence 内部只读 committed-identity probe（`readPersistedReplicationIdentity(owner, docId)`）**：为 Registry reset preflight 提供——只读受信任主快照（owner 分区 key + `PersistenceIO.read`），在 detached 临时 Y.Doc 解码后应用既有 `META.docId` 与复制事实格式校验；**不签发 handle、不建 live cell、不调用 saveDoc、不排空 dirty、不写/flush/archive、不转移所有权**。其 typed 拒绝面：当前生命周期 epoch 内的 store 读拒绝 → `DocPersistedIdentityProbeOperationalError`（唯一普通运营失败）；Yjs 解码失败/`META.docId` 不符/载体非法 → `DocPersistedIdentityProbeCorruptError`；dispose/abort/契约违约 → `DocPersistedIdentityProbeFatalError`。全部 `committed:false`（本 seam 从不写或转移所有权——INV-12）；消息为稳定常量，不回显 owner/identity/bytes。该 probe **不是** live-state 降级回退：I/O 失败保持 loud/typed，绝不读取 live Y.Doc 冒充持久事实。
+
+### 逻辑删除修订（2026-09-07，issue #228；ADR-0012-LOG「Host 执行数据删除请求时必须同时调用日志删除能力」的持久层 seam——演进经 SA8 前置门禁 B1 预授权 + 设计后复审 clear）
+
+本节为**增量演进**，新增 `DocPersistence` 可选成员 / `ReplicaPersistence` **必具**成员 `deleteDoc(owner, docId)` 与共享 lifecycle 的新 I/O seam `PersistenceIO.removeKey`；除下列明示条款外，所有既有条款（owner 分区、`saveDoc` dirty notification、全量 snapshot、主 snapshot temp→rename、`META.docId`、import/archive/probe 的 optional/required 放置）维持效力。
+
+**1. 接口契约（在既有接口面追加）**：
+
+```ts
+// DocPersistence（optional——13 个既有 stub 与 wrapIo 字面量绿守卫不因 required 面变红）
+readonly deleteDoc?: (owner: User, docId: string) => Promise<Readonly<{ ok: true }>>
+// ReplicaPersistence（required——Memory/File 恒提供；与 importDoc/archiveDoc 同款放置先例）
+readonly deleteDoc: (owner: User, docId: string) => Promise<Readonly<{ ok: true }>>
+// PersistenceIO（lifecycle seam；optional 成员，io 构造期成型不可变）
+removeKey?(key: string, signal: AbortSignal): Promise<void>
+```
+
+**2. 语义 = 活跃存储逻辑删除**：按 `(owner.userId, docId)` 移除主键 committed snapshot（File：`{rootDir}/users/{userId}/{docId}.snapshot` + 同名 `.tmp`；Memory：主 mirror）与同 key 受控归档位（File：`{rootDir}/archive/users/{userId}/{docId}.snapshot` + `.tmp`；Memory：独立 `archiveSnapshots` 分区）——**delete ≠ archive**：无身份前置、无归档写、删除时清理归档位（归档语义「不触碰归档区」由 removeKey 的独立 seam 切分保持，`remove` 零改动）。只承诺活跃存储逻辑删除，不承诺 SSD/备份/对象存储版本中的物理 secure erase（ADR-0012-LOG L299 措辞纪律；文档与实现均不出现 erase/purge/secure 字样）。
+
+**3. 幂等与失败面**：absent 与 deleted 不可区分（两处均已缺席仍 resolve `{ok:true}`——删除不是存在性预言）；resolve ⟺ 主键与归档位此后均缺席（File 顺序：主键先 = 提交点、归档位后；全程 ENOENT 容忍——`fsp.rm force:true` 逐处）；reject ⟹ 可能部分完成，重试收敛（单调性：删除只前进不回退，无路径把「已删」翻回「存在」）。拒绝分类：`DocDeleteActiveHandleError`（live handle 存在——删除只在无有效 handle 时执行，调用方释放后重试）、`DocDeleteOperationalError`（`io.removeKey` 在当前 epoch 的 store 级拒绝——cause 原样、重试收敛）、`DocDeleteFatalError`（phase 词表 `lifecycle-disposed` / `adapter-violation` / `remove-aborted`，恒 `committed:false`——removeKey resolve 后无失败路径）。
+
+**4. 状态机与复活向量封堵**：lifecycle per-key cell 状态联合新增 `'deleting'`（claim 排他，镜像 `'archiving'` 放置——settle 后置位、op 段持守、成败双路 identity 守卫清理）；既有全部 cell 消费方（createDoc/importDoc claim 环、loadDoc resolve 环、archiveDoc claim 环、`seedForTest` 拒绝清单）同变更集消费新态（漏一处即 busy-loop 或错误分类）。settle-for-delete 与归档 settle 的关键差异 = **被删除的 doc 不需要 flush 持久化**：零-handle 时取消全部定时器（debounce/maxDirty/retry——含失败 flush 新武装的 retryTimer）并驱逐 cell（`entry.doc.destroy()` 镜像 settle 先例）；`flushing === true`（在途 flush 已越过入口门）必须等待其结算（`archiveWaiters` 通知面），结算后重入重读再 cancel-then-evict（次序倒置 = 定时器在已驱逐 entry 上点火写回 = 复活）。复活向量封堵证明：(i) pending debounce flush——settle 取消定时器（未点火）或等待（已点火 in-flight）后 removeKey，此后无任何定时器/句柄能再写该 key；(ii) 新 saveDoc——cell 已驱逐，`assertOwnedHandle` 拒绝；(iii) 新 loadDoc/createDoc——删除后 key 缺席 → loadDoc null；createDoc 是新 namespace 的合法重建（与归档后重建同构）。
+
+**5. capability 门与实施注记**：lifecycle 入口同步段 `assertDeleteIo`（`typeof io.removeKey !== 'function'` → bare loud Error，镜像 `assertArchiveIo`）；Memory 侧 loud 配置门与 remove 同款（readSnapshot 接线而 deleteSnapshot 缺席 → loud 拒绝，绝不对外部 read 权威谎报删除）；`dispose()` 语义不变（abort → removeKey 拒绝经 `remove-aborted` 收口，inFlight allSettled 覆盖删除全程）；删除槽内只含异步 I/O（`fsp.rm` promise 面），无同步 fs 段。

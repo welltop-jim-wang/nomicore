@@ -55,6 +55,8 @@ import {
   DocArchiveOperationalError,
   DocCreateFatalError,
   DocCreateOperationalError,
+  DocDeleteFatalError,
+  DocDeleteOperationalError,
   DocDuplicateError,
   DocLoadOperationalError,
   DocPersistedIdentityProbeCorruptError,
@@ -103,6 +105,7 @@ import {
 import type {
   CreateNamespaceRegistryOptions,
   CreateNamespaceResult,
+  DeleteNamespaceResult,
   ImportReplicaResult,
   InstanceRole,
   NamespaceLease,
@@ -120,6 +123,7 @@ import type {
 import {
   NAMESPACE_ALREADY_EXISTS_MESSAGE,
   NAMESPACE_CREATE_FAILED_MESSAGE,
+  NAMESPACE_DELETE_FAILED_MESSAGE,
   NAMESPACE_IMPORT_EXPECTED_IDENTITY_INVALID_MESSAGE,
   NAMESPACE_IMPORT_EXPECTED_IDENTITY_MISMATCH_MESSAGE,
   NAMESPACE_IMPORT_FAILED_MESSAGE,
@@ -499,6 +503,15 @@ const RESET_FAILED_ISSUE = Object.freeze({
   ok: false as const,
   code: 'NAMESPACE_RESET_FAILED' as const,
   message: NAMESPACE_RESET_FAILED_MESSAGE,
+});
+
+// —— issue #228 增量（ADR-0009 修订节）窄 issue 常量（稳定 message 单点表；冻结外层）——
+
+/** 删除编排运营失败（close 失败 / deleteDoc operational——重试收敛；F3）。 */
+const DELETE_FAILED_ISSUE = Object.freeze({
+  ok: false as const,
+  code: 'NAMESPACE_DELETE_FAILED' as const,
+  message: NAMESPACE_DELETE_FAILED_MESSAGE,
 });
 
 // —— R2 增量（issue #133 round-2）窄 issue 常量（§4.2.1/§4.2 稳定 message 单点表；冻结外层）——
@@ -1834,6 +1847,148 @@ export function createRegistryInternal(
     return Object.freeze({ ok: true });
   }
 
+  /**
+   * issue #228（ADR-0009 修订节）：deleteNamespace 的 carrier 接纳（与 open 同款
+   * 串行域——同 key FIFO；删除槽与并发 open/create/reset 严格序列化，原子性由此成立）。
+   */
+  function admitDeleteSlot(identity: InternalIdentity): Promise<DeleteNamespaceResult> {
+    const carrier = carriers.get(identity.key) ?? createCarrier(identity.key);
+    const operation = carrier.tail.then(() => runDeleteSlot(identity));
+    const operationGreenTail = operation.then(
+      () => undefined,
+      () => undefined,
+    );
+    carrier.tail = operationGreenTail;
+    scheduleCarrierCleanup(identity.key, carrier, operationGreenTail);
+    return operation;
+  }
+
+  /**
+   * issue #228（ADR-0009 修订节）deleteNamespace 槽（冻结次序；镜像 reset 同型减法——
+   * 减身份前置、减 reset fence、减 bootstrap）：
+   * ① owner 核对（仅 live entry；零存在性泄露）→ ② capability 前置门（deleteDoc
+   * 缺席 → loud branded fatal，先于一切破坏性动作）→ ③ closing generation 等待结算
+   * 后重读（防御：新 generation 不破坏、诚实 DELETE_FAILED）→ ④ active/idle
+   * 破坏性关闭段（forceRelease → cancelIdleArm → close admission（I2 记账）→
+   * await close → settle 后 entry 移除）→ ⑤ deleteDoc（typed 映射；deleteDoc
+   * operational → DELETE_FAILED + observer；fatal/unknown → branded fatal
+   * committed:false——removeKey resolve 后无失败路径）→ ⑥ {ok:true}（absent 与
+   * deleted 不可区分——删除幂等优先于存在性回显）。
+   *
+   * 减 reset fence 论证：fence 防的是「破坏性转变后仍把旧 Runtime 当 live 证据/
+   * 继续接纳写」；delete 的终态是 Runtime 关闭 + 数据删除，fence 窗口内新接纳的写
+   * slot 会被 close barrier 排空且其 dirty 由 persistence settle-for-delete
+   * （ADR-0006 修订节：取消定时器/等待在途 flush）吸收——无处需要 fence。
+   */
+  async function runDeleteSlot(identity: InternalIdentity): Promise<DeleteNamespaceResult> {
+    // ① owner 核对（零存在性泄露；镜像 runOpenSlot 第一谓词）
+    let current = entries.get(identity.key);
+    if (current !== undefined && current.owner.userId !== identity.owner.userId) {
+      return NOT_FOUND_ISSUE;
+    }
+
+    // ② capability 前置门（镜像 reset ②）：先于一切 destructive action——含
+    // forceRelease、close admission；缺失 = 实施/集成错误：loud branded fatal
+    // committed:false（恒零破坏），绝不 fallback、绝不 property-call TypeError。
+    const deleteDocFn = (persistence as Partial<ReplicaPersistence>).deleteDoc;
+    if (typeof deleteDocFn !== 'function') {
+      const cause = new Error(
+        'persistence adapter 缺少逻辑删除能力（deleteDoc）——删除编排要求 ReplicaPersistence 级 Adapter',
+      );
+      dispatchObserver(observer, { type: 'lifecycle-slot-failed', identity, operation: 'delete', cause });
+      throw new NamespaceRegistryFatalError('delete', 'lifecycle-slot-internal', false, cause);
+    }
+
+    // ③ closing generation（镜像 reset ③）：该 generation 已被先前操作破坏性转变——
+    // 先等待既有 closePromise 结算（含失败——settle 处理已双路移除 entry），再从
+    // carrier 槽重读；随后按无 entry 语义直接进入 ⑤（删除编排对缺席幂等）。
+    if (current !== undefined && current.phase === 'closing') {
+      try {
+        await current.closePromise!; // I2：phase==='closing' ⟹ closePromise 已定义
+      } catch (cause) {
+        // close 失败：entry 由 closePromise settle 处理移除；删除编排不在此翻新
+        // generation——诚实 DELETE_FAILED（数据可能仍在；Host tombstone 重试收敛）
+        dispatchObserver(observer, { type: 'lifecycle-slot-failed', identity, operation: 'delete', cause });
+        return DELETE_FAILED_ISSUE;
+      }
+      current = entries.get(identity.key);
+      if (current !== undefined && current.owner.userId !== identity.owner.userId) {
+        return NOT_FOUND_ISSUE;
+      }
+      if (current !== undefined) {
+        // 防御（carrier FIFO 下结构性不可达）：close 后出现的新 generation——
+        // 不得破坏新 generation，诚实 DELETE_FAILED（零破坏它；幂等重试语义下
+        // Host tombstone 二删时该 generation 已按正常编排处理）。
+        return DELETE_FAILED_ISSUE;
+      }
+    }
+
+    // ④ active/idle generation：破坏性关闭段（AD-6 步骤 4；镜像 reset ⑥减 fence）。
+    //    终态 = Runtime 关闭 + entry 移除（settle 双路 removeEntryAfterClose）——
+    //    forceRelease 先行（在途 lease 后续操作得 NAMESPACE_LEASE_RELEASED；
+    //    forceReleasing 抑制旗标使 last-release 不武装 idle）→ cancelIdleArm →
+    //    close admission（I2 记账：先赋值 closePromise 后翻相 closing）。
+    if (current !== undefined) {
+      forceReleaseOutstandingLeases(current);
+      cancelIdleArm(current);
+      if (current.closePromise === undefined) {
+        let closePromise: Promise<void>;
+        try {
+          closePromise = current.runtime.close(); // 同步 throw 收编点（同 shutdown P1）
+        } catch (cause) {
+          closePromise = Promise.reject(cause);
+          void closePromise.catch(() => {});
+        }
+        current.closePromise = closePromise; // I2：closing ⟹ closePromise 定义
+        current.phase = 'closing';
+        closePromise.then(
+          () => removeEntryAfterClose(current, undefined),
+          () => removeEntryAfterClose(current, undefined),
+        );
+      }
+      try {
+        await current.closePromise;
+      } catch (cause) {
+        // close rejection：entry 已由 settle 处理移除（Runtime 可能未完全关闭——数据
+        // 仍可能在）；编排内部失败 → DELETE_FAILED（F3：Host tombstone 重试收敛：
+        // 二删见 entry 缺席 → 直接 deleteDoc 重试）
+        dispatchObserver(observer, { type: 'lifecycle-slot-failed', identity, operation: 'delete', cause });
+        return DELETE_FAILED_ISSUE;
+      }
+    }
+
+    // ⑤ deleteDoc（typed 映射；AD-6 步骤 5）。capability 已由 ② 背书（.call 绑定防
+    //    第三方 receiver——与 archiveDoc/importDoc 同款纪律）。
+    try {
+      await deleteDocFn.call(persistence, identity.owner, identity.namespaceId);
+    } catch (cause) {
+      const code = errorCodeOf(cause);
+      if (
+        cause instanceof DocDeleteOperationalError ||
+        code === 'DOC_DELETE_OPERATIONAL'
+      ) {
+        // deleteDoc 运营拒绝（io.removeKey 在当前 epoch 的 store 级拒绝；重试收敛）
+        dispatchObserver(observer, { type: 'lifecycle-slot-failed', identity, operation: 'delete', cause });
+        return DELETE_FAILED_ISSUE;
+      }
+      // 本分支（Operational 之外的其余拒绝）语义 = 一律 branded fatal
+      // committed:false（removeKey resolve 后无失败路径；绝不让 typed/裸拒绝逃逸为
+      // 未分类 rejection）。含 DocDeleteActiveHandleError（理论不可达——close 已
+      // 释放 Runtime 持有的 handle；防御性收敛为 fatal：Host 可观察结局与
+      // DELETE_FAILED 相同——均 `delete-namespace-failed` + observer 记账，而
+      // committed:false fatal 对「恒零破坏后无重试必要」的刻画更诚实）与
+      // DocDeleteFatalError / unknown。映射语义注记：design AD-6 步骤 5 的
+      // ActiveHandle 分歧文本已由 design §10 勘误 E-2 闭环（现文本与 ADR-0009
+      // 修订节 §5 及本实现三方一致：ActiveHandle 属「其它 throw → branded fatal
+      // committed:false」）；本注释不再指向任何待勘误文本。
+      dispatchObserver(observer, { type: 'lifecycle-slot-failed', identity, operation: 'delete', cause });
+      throw new NamespaceRegistryFatalError('delete', 'lifecycle-slot-internal', false, cause);
+    }
+
+    // ⑥ 幂等成功（absent 与 deleted 不可区分——删除幂等优先于存在性回显）
+    return Object.freeze({ ok: true });
+  }
+
   /** R2 只读 committed-snapshot probe 闭包（§3.3/§3.3.1）：capability 门已在槽 ②
    *  通过；typed 拒绝原样传播，由调用方 mapProbeOrFenceFailureBeforeDestruction
    *  按冻结表分类（Registry 不解析原始 Error.message）。**call 绑定**——方法与
@@ -2031,6 +2186,15 @@ export function createRegistryInternal(
       const expectedOutcome = snapshotReplicationIdentityRef(expectedLocalIdentity);
       if (!expectedOutcome.ok) return RESET_EXPECTED_IDENTITY_INVALID_ISSUE;
       return admitResetSlot(outcome.identity, expectedOutcome.value);
+    },
+    async deleteNamespace(owner: unknown, namespaceId: unknown): Promise<DeleteNamespaceResult> {
+      // issue #228（ADR-0009 修订节）：停接纳检查在公共入口同步段（同款纪律——
+      // 先于一切输入访问）；身份文法同步先行（invalid 零 entries/carriers/
+      // Persistence 访问——镜像 open 门禁；namespaceId 即内部 key 单成分）。
+      if (acceptance !== 'running') return NOT_ACCEPTING_ISSUE;
+      const outcome = validateOpenIdentity(owner, namespaceId);
+      if (!outcome.ok) return outcome.issue;
+      return admitDeleteSlot(outcome.identity);
     },
     getStatus(): NamespaceRegistryStatus {
       // §2.E：恒三相冻结常量投影（不暴露 entry/lease/queue/timer 任何内部计面）。

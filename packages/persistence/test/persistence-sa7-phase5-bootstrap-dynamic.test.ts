@@ -894,11 +894,14 @@ describe('SA7 §6 identity 守卫动态边界', () => {
 // ═══════════════════════════════ §7 公共面动态守卫 ═══════════════════════════════
 
 describe('SA7 §7 persistence 公共面动态守卫（运行时可枚举键）', () => {
-  it('主入口运行时枚举键不含禁词面；实例原型面不含 removeDoc/deleteDoc/listDocs 等删除/枚举词根', async () => {
+  it('主入口运行时枚举键不含禁词面；实例原型面不含 removeDoc/listDocs 等未受协调删除/枚举词根（issue #228：deleteDoc 为 ADR-0006 修订节受管 seam，移出禁词表并加入 required 成员锚）', async () => {
     const mod = (await import('@nomicore/persistence')) as Record<string, unknown>;
     const moduleKeys = [...Object.keys(mod), ...Object.getOwnPropertyNames(mod)];
+    // issue #228：deleteDoc 已按 ADR-0006 显式修订节加入 ReplicaPersistence required
+    // 面（受管 seam：typed 错误族 + cell 状态机协调 + 幂等 ENOENT 容忍 + 逻辑删除措辞
+    // 纪律），不再是「未受协调的裸删除旁路」——禁词表仅保留其余未受协调面。
     const forbiddenModule = [
-      'removeDoc', 'deleteDoc', 'listDocs', 'dropDoc', 'destroyDoc',
+      'removeDoc', 'listDocs', 'dropDoc', 'destroyDoc',
       'restoreDoc', 'putDoc', 'getDoc', 'removeAll', 'deleteAll', 'archiveAll',
     ];
     for (const name of forbiddenModule) {
@@ -906,7 +909,7 @@ describe('SA7 §7 persistence 公共面动态守卫（运行时可枚举键）',
     }
 
     const forbiddenProto = [
-      'removeDoc', 'deleteDoc', 'listDocs', 'dropDoc', 'destroyDoc',
+      'removeDoc', 'listDocs', 'dropDoc', 'destroyDoc',
       'restoreDoc', 'purgeDoc', 'getDoc', 'putDoc', 'removeAllDocs',
     ];
     const surfaceRoot = path.join(
@@ -921,8 +924,8 @@ describe('SA7 §7 persistence 公共面动态守卫（运行时可枚举键）',
       for (const name of forbiddenProto) {
         expect(protoKeys, `${adapter.constructor.name} 原型面不得含 ${name}`).not.toContain(name);
       }
-      // 契约方法恰在：三基础 + Phase 5 两复制成员
-      for (const required of ['createDoc', 'loadDoc', 'saveDoc', 'importDoc', 'archiveDoc']) {
+      // 契约方法恰在：三基础 + Phase 5 两复制成员 + issue #228 删除 seam
+      for (const required of ['createDoc', 'loadDoc', 'saveDoc', 'importDoc', 'archiveDoc', 'deleteDoc']) {
         expect(protoKeys, `${adapter.constructor.name} 原型面必须含 ${required}`).toContain(required);
       }
     }

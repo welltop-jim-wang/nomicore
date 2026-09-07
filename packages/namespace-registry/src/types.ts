@@ -122,6 +122,10 @@ export const NAMESPACE_IMPORT_EXPECTED_IDENTITY_INVALID_MESSAGE =
 // import 侧先例（单一真相源；零插值、零本地复制身份/输入值回显）。
 export const NAMESPACE_RESET_EXPECTED_IDENTITY_INVALID_MESSAGE =
   'NAMESPACE_RESET_EXPECTED_IDENTITY_INVALID: 期望本地复制身份（reset expectedLocalIdentity）不符合安全文法';
+// —— issue #228（ADR-0009 修订节）删除编排增量：稳定 message 单一真相源（零插值、
+//    零 identity/输入值回显——沿既有冻结文本纪律）——
+export const NAMESPACE_DELETE_FAILED_MESSAGE =
+  'NAMESPACE_DELETE_FAILED: namespace 删除编排发生运营故障';
 
 /** 复制身份引用（N-1 冻结形状）：自 @nomicore/persistence 转出（类型别名）。 */
 export type { ReplicationIdentityRef };
@@ -404,6 +408,40 @@ export type ResetReplicaResult =
   | Readonly<{ ok: true }>
   | ResetReplicaIssue;
 
+// —— issue #228 删除编排增量（ADR-0009 修订节；Host namespace 数据删除工作流的
+//    Registry 侧编排 seam——ADR-0012-LOG L299 Host 联动义务的 Registry 半场）——
+
+/**
+ * deleteNamespace 领域窄 issue（issue #228）：common 窄 issue（InvalidIdentityIssue /
+ * RegistryNotAcceptingIssue）与编排专属拒绝（NOT_FOUND / DELETE_FAILED）。
+ * - `NAMESPACE_INVALID_IDENTITY`：owner.userId / namespaceId 不合安全文法（零
+ *   entries/carriers/Persistence 访问——镜像 open 身份门禁）；
+ * - `REGISTRY_NOT_ACCEPTING`：停机竞态（关闭/停止中不接纳删除编排）；
+ * - `NAMESPACE_NOT_FOUND`：**仅 live entry 的 owner 不符**（零存在性泄露——镜像 open
+ *   第一谓词；absent 输入的删除对任意 owner 均 {ok:true}，幂等优先于存在性回显，
+ *   ADR-0009 修订节明示该不对称）；
+ * - `NAMESPACE_DELETE_FAILED`：编排段运营失败（Runtime close 失败 / deleteDoc
+ *   operational——重试收敛；tombstone 置位后二次删除走幂等路径）。
+ * 内部故障经 branded NamespaceRegistryFatalError reject（operation='delete'、
+ * committed:false 恒真——removeKey resolve 后无失败路径）。
+ */
+export type DeleteNamespaceIssue =
+  | InvalidIdentityIssue
+  | RegistryNotAcceptingIssue
+  | Readonly<{
+      ok: false;
+      code: 'NAMESPACE_NOT_FOUND';
+      message: typeof NAMESPACE_NOT_FOUND_MESSAGE;
+    }>
+  | Readonly<{
+      ok: false;
+      code: 'NAMESPACE_DELETE_FAILED';
+      message: typeof NAMESPACE_DELETE_FAILED_MESSAGE;
+    }>;
+
+/** deleteNamespace 结果联合：成功为窄 {ok:true}（absent 与 deleted 不可区分）。 */
+export type DeleteNamespaceResult = Readonly<{ ok: true }> | DeleteNamespaceIssue;
+
 // —— Lease 代理能力的公开 alias（§3.2）：结构性表达 Runtime 能力，不转导 Runtime 名称 ——
 
 /** lease.read 结果 = runtime read 正常联合 | released issue。 */
@@ -671,6 +709,38 @@ export interface NamespaceRegistry {
     namespaceId: string,
     expectedLocalIdentity: ReplicationIdentityRef,
   ): Promise<ResetReplicaResult>;
+  /**
+   * issue #228（ADR-0009 修订节）单 namespace 终态删除编排：关闭（forceRelease +
+   * cancelIdleArm + close barrier 排空）+ Persistence 逻辑删除（`deleteDoc`——
+   * 主键与同 key 受控归档位全清，ADR-0006 修订节）。
+   *
+   * 语义：
+   * - **终态删除 ≠ eviction/按 key close（ADR-0009 v1 排除条款的语义区分）**：删除
+   *   是终态编排（Runtime 关闭 + 持久删除 + 不可复活），排除条款针对逐出/复用语义
+   *   （idle 保留、按 key 优雅 close 后重 open 复用）——两者正交，本方法为公共面
+   *   增量（Host 数据删除工作流的唯一同步路径；Registry 是唯一能同步关闭单
+   *   namespace Runtime 的层——idle 逐出最长 300s、shutdown 是全量操作，均不可用作
+   *   同步回执路径）。
+   * - **carrier per-key 串行**（与 open/create/import/reset 同款 FIFO 域）：并发
+   *   open 与 delete 在同 key 上严格序列化——删除槽结算后迟来 open 得
+   *   NAMESPACE_NOT_FOUND（原子性由该串行域成立）。
+   * - **幂等/零存在性泄露**：live entry 的 owner 不符 → NAMESPACE_NOT_FOUND（镜像
+   *   open 第一谓词——不区分「属他人/不存在」）；absent（无 entry 且无数据）→
+   *   {ok:true}（删除幂等优先于存在性回显；缺席输入对任意 owner 均 ok——非 Owner
+   *   输入零预言边界，ADR-0009 修订节明示）。
+   * - **capability 前置门**：`typeof persistence.deleteDoc !== 'function'` → loud
+   *   branded `NamespaceRegistryFatalError('delete', 'lifecycle-slot-internal', false)`
+   *   + observer `lifecycle-slot-failed`（镜像 reset ②，先于一切破坏性动作）。
+   * - 失败语义：close 失败 / deleteDoc operational → NAMESPACE_DELETE_FAILED（数据
+   *   可能仍在——Host tombstone 置位后二次删除重试收敛）；deleteDoc fatal / 其它
+   *   throw → branded fatal（committed:false 恒真）。成功后该 key 全部未决 lease 已
+   *   失效（forceRelease）、entry 移除、持久副本逻辑删除——随后 open → NOT_FOUND、
+   *   importReplica/bootstrap 可重建。
+   */
+  deleteNamespace(
+    owner: NamespaceOwner,
+    namespaceId: string,
+  ): Promise<DeleteNamespaceResult>;
   /** 同步 Registry 生命周期投影：恒三相（running/shutting-down/stopped）、恒冻结常量。 */
   getStatus(): NamespaceRegistryStatus;
   /**

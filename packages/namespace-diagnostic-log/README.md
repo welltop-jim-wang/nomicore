@@ -27,7 +27,9 @@ const log = createBoundedMemoryDiagnosticLog({
   updateCapture: false,    // committed Yjs update 捕获默认关闭（ADR 0011 §数据保护）
 })
 
-// producer 提交语义 emission（同步、不 throw、不阻塞；所有权移交后不得再变异）
+// producer 提交语义 emission（内存 adapter 语境：同步、不 throw、不阻塞；
+// File adapter 首切片为有界同步 append、可被文件系统延迟阻塞——见下「契约与纪律」节
+// 与 ADR-0011 澄清节 / ADR-0012-LOG amendment；所有权移交后不得再变异）
 log.emitter.emit({
   operation: 'root-mutation',
   stage: 'transaction',
@@ -309,8 +311,14 @@ deleteNamespaceDiagnosticLog({ rootDir, namespaceId })
 - 冻结 v1 record schema：`RECORD_SCHEMA_ID` +
   `RECORD_SCHEMA_ENVELOPE`（指纹 `sha256:v1:dedad2ab…`，单源 `src/schema.ts`）。
   文本任何改动 = 新 schema 版本（`@2` + 新 stream generation + 旧 stream 只读）。
-- `emit` / `append` 同步、**绝不 throw**、绝不阻塞；全部失败路径走健康 observer
-  （低基数白名单字段），不改业务结果。
+- `emit` / `append` 同步、**绝不 throw**、不返回 durability promise、不留调用方可变
+  引用（ADR-0011 interface 契约）；File adapter 首切片为每 record 至多一条 final
+  JSONL record 的有界同步 append（携带 sidecar 时先一帧 BIN append）——**可被文件系统
+  延迟阻塞**，任何接入 namespace 生命周期的调用点必须在 NamespaceRuntime write
+  sequencer slot 之外或该 slot 释放之后；不维护 writer queue、不做 batch flush、
+  无 fsync 开关、无常驻 fd（queue/batch/fsync/fd cache 为目标演进形态而非现行特性，
+  ADR-0012-LOG 首切片 amendment 为权威）。全部失败路径走健康 observer（低基数白名单
+  字段），不改业务结果。
 - 存储投影（inline/sidecar/segment/frame/offset/CRC/Base64）归 adapter；emitter 只做
   语义投影。本包内存 adapter 只产出 inline 形状，记录 JSON 与文件 JSONL 逐字段同构。
 - best-effort：进程中断的尝试直接缺失（不落 `result:'unknown'`；ADR 0011/0012 拼接
