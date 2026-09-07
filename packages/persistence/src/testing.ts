@@ -345,6 +345,60 @@ export async function describeDocCreateContract(
       await fixture.dispose()
     })
 
+    // issue #238 修复腿红锚（设计 §8.3-1）：ADR-0006 L33「saveDoc = 脏状态通知……返回
+    // 仅表示已登记」——在途 flush 悬挂时后续 saveDoc 仍必须登记即返回。H2 类回归
+    // （saveDoc 等待在途/前序 flush 完成）会使下方 withTimeout 变红。FilePersistence
+    // 经 PersistenceLifecycle 共享同一 saveDoc 实现（file.ts → lifecycle.ts），本锚
+    // 覆盖两个适配器。
+    it('saveDoc resolves on registration even while a previous flush is hung (register-and-return)', async () => {
+      const fixture = await factory()
+      const { persistence, scheduler, store } = fixture
+      const owner: User = { userId: 'alice' }
+      const docId = 'register-and-return-doc'
+      const handle = await persistence.createDoc(owner, docId, docWithMeta(docId, 'v1'))
+
+      let releaseWrite!: () => void
+      const writeGate = new Promise<void>((resolve) => { releaseWrite = resolve })
+      const realWrite = store.write
+      let writes = 0
+      store.write = (key, snapshot, signal) => {
+        writes += 1
+        // 只悬挂首笔 flush 的写；后续写直落（隔离变量：在途悬挂期间 saveDoc 的行为）
+        return writes === 1 ? writeGate.then(() => realWrite(key, snapshot, signal)) : realWrite(key, snapshot, signal)
+      }
+
+      // 首笔 dirty → flush 启动并悬挂在 writeGate（在途 flush 不 settle）
+      handle.doc.getMap('ROOT').set('rev', 2)
+      await persistence.saveDoc(handle)
+      await scheduler.advanceBy(500)
+      expect(writes).toBe(1)
+
+      // 红锚断言：在途 flush 悬挂期间，第二笔 saveDoc 登记即返回（若实现退化为
+      // 等待 flush，本 promise 永不 settle → TestTimeoutError）
+      handle.doc.getMap('ROOT').set('rev', 3)
+      await withTimeout(
+        persistence.saveDoc(handle),
+        2_000,
+        'saveDoc to register-and-return while a flush is hung',
+      )
+
+      // 释放在途 flush → 展开其结算/重调度链（纯微任务，调度器时钟仍在 500）→
+      // 重武装的 debounce 在下一个 500ms 窗口触发第二笔 flush
+      releaseWrite()
+      for (let index = 0; index < 10; index += 1) await Promise.resolve()
+      expect(writes).toBe(1) // 重调度未触发前仍只有首笔写
+      await scheduler.advanceBy(500)
+      expect(writes).toBe(2)
+      const fresh = fixture.makeFresh()
+      const loaded = await fresh.loadDoc(owner, docId)
+      expect(loaded).not.toBeNull()
+      expect(loaded!.doc.getMap('ROOT').get('rev')).toBe(3)
+      await loaded!.release()
+
+      await handle.release()
+      await fixture.dispose()
+    })
+
     it('rejects duplicate createDoc with a stable error code and never overwrites committed content', async () => {
       const fixture = await factory()
       const { persistence } = fixture

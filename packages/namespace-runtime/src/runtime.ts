@@ -289,7 +289,9 @@ function createBeginResetFence(
       //    barrier（自等待禁律；设计 §3.5 (3)）
       state.lifecycle = 'closing';
       return { kind: 'armed' } as const;
-    });
+      // issue #238 §7 槽级记账：reset fence 是 close/fence 队列终节点（词表
+      // 'close-barrier' 的第二个挂接点；缺标签 → 槽样本静默缺席）。
+    }, 'close-barrier');
     // ⑤ 槽后 continuation：fence task 已结算、不再是 sequencer 活跃任务——唯有此刻
     //    才允许懒创建 close barrier（predecessor tail 必然不含仍在活动的 fence 任务，
     //    依赖图无环；设计 §3.5 (4) + 无自等待证明）

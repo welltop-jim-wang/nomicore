@@ -31,8 +31,9 @@
  *     （该段非零时长须真实执行成本或生产时源，非门闩可注入——见下边界 1）；
  *   - event-loop stall —— 本 harness（fake duplex + 微任务泵 + 手动时钟）结构性
  *     排除同步阻塞；该段只能在生产观测面经 H1 探针（timer 漂移等）判别，设计输入；
- *   - sent/applied/acked 关联 —— wire sequence（帧级）逐位配对；事件面不携带
- *     sequence（生产缺口，§23 append-only 字段属后续设计/实现）。
+ *   - sent/applied/acked 关联 —— wire sequence（帧级）逐位配对；事件面 `sequence`
+ *     字段已随本 issue 的 §23 append-only 扩展落地（生产 seam 断言见
+ *     `ws-replication-issue238-segmented-observation.test.ts`）。
  * 边界声明（与 SA5 分析 §11 一致）：
  *   1) 门闩悬挂是「慢 dirty notification」的确定性替身，不是真实执行成本测量；
  *      本复现证明排队机制与观测方法，不构成生产 11 秒占槽阶段的证明；
