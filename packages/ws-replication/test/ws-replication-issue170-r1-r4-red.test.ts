@@ -357,6 +357,7 @@ describe('SA6 红灯 issue #170 H1（R1）：hub pong 超时 = 协议临时失�
     const env = await bootIssue170({ facets: 'hub', autoPongFromSecond: true });
     env.peer.start();
     await settleUntil(() => env.peer.getConnectionState() === 'ready', '握手 ready');
+    await settleUntil(() => env.peer.getNamespaceState(env.nsId) === 'live', 'issue #254：ns open 收口完成再启动 liveness 时间线——open 超时现已有恢复重建动作，时间线须确定性');
     const wire1 = env.wires[0]!;
     // 前置：hub 活性武装（ping 面装配）；对端不复 pong
     expect(wire1.hubPongListeners(), '前置：hub pong 监听已注册').toBe(1);
@@ -403,6 +404,7 @@ describe('SA6 红灯 issue #170 P1–P3（R2）：迟到/重复/未请求 pong �
     const env = await bootIssue170({ facets: 'peer' });
     env.peer.start();
     await settleUntil(() => env.peer.getConnectionState() === 'ready', '握手 ready');
+    await settleUntil(() => env.peer.getNamespaceState(env.nsId) === 'live', 'issue #254：ns open 收口完成再启动 liveness 时间线——open 超时现已有恢复重建动作，时间线须确定性');
     const wire = env.wires[0]!;
     // t=30：ping1（对端不复）
     await env.peerNode.scheduler.advanceBy(PING_INTERVAL_MS);
@@ -428,6 +430,7 @@ describe('SA6 红灯 issue #170 P1–P3（R2）：迟到/重复/未请求 pong �
     const env = await bootIssue170({ facets: 'peer' });
     env.peer.start();
     await settleUntil(() => env.peer.getConnectionState() === 'ready', '握手 ready');
+    await settleUntil(() => env.peer.getNamespaceState(env.nsId) === 'live', 'issue #254：ns open 收口完成再启动 liveness 时间线——open 超时现已有恢复重建动作，时间线须确定性');
     const wire = env.wires[0]!;
     // t=30：ping1 + 合法回声（清除 ping1 超时）
     await env.peerNode.scheduler.advanceBy(PING_INTERVAL_MS);
@@ -450,6 +453,7 @@ describe('SA6 红灯 issue #170 P1–P3（R2）：迟到/重复/未请求 pong �
     const env = await bootIssue170({ facets: 'peer' });
     env.peer.start();
     await settleUntil(() => env.peer.getConnectionState() === 'ready', '握手 ready');
+    await settleUntil(() => env.peer.getNamespaceState(env.nsId) === 'live', 'issue #254：ns open 收口完成再启动 liveness 时间线——open 超时现已有恢复重建动作，时间线须确定性');
     const wire = env.wires[0]!;
     // t=30：ping1（对端死——从不应答）
     await env.peerNode.scheduler.advanceBy(PING_INTERVAL_MS);
@@ -481,6 +485,7 @@ describe('SA6 红灯 issue #170 P4（R3 + 验收 1/2/5/6）：pong 超时同步�
     });
     env.peer.start();
     await settleUntil(() => env.peer.getConnectionState() === 'ready', '握手 ready');
+    await settleUntil(() => env.peer.getNamespaceState(env.nsId) === 'live', 'issue #254：ns open 收口完成再启动 liveness 时间线——open 超时现已有恢复重建动作，时间线须确定性');
     await env.peerNode.scheduler.advanceBy(PING_INTERVAL_MS);
     await env.peerNode.scheduler.advanceBy(PONG_TIMEOUT_MS);
     expect(env.peer.getConnectionState(), '同步 close 重入必须被旧 epoch guard 吸收').toBe('backoff');
@@ -495,6 +500,7 @@ describe('SA6 红灯 issue #170 P4（R3 + 验收 1/2/5/6）：pong 超时同步�
     });
     env.peer.start();
     await settleUntil(() => env.peer.getConnectionState() === 'ready', '握手 ready');
+    await settleUntil(() => env.peer.getNamespaceState(env.nsId) === 'live', 'issue #254：ns open 收口完成再启动 liveness 时间线——open 超时现已有恢复重建动作，时间线须确定性');
     const wire1 = env.wires[0]!;
     // t=30：peer ping1（对端不复）→ t=40 pong 超时：close(1001) + backoff（现有行为已正确——绿灯护栏）
     await env.peerNode.scheduler.advanceBy(PING_INTERVAL_MS);

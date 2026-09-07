@@ -12,7 +12,8 @@ import { describe, expect, it } from 'vitest';
 import * as Y from 'yjs';
 import { decodeMessage, type DecodedMessage } from '@nomicore/replication-protocol';
 import type { BootstrapSnapshotMsg, BootstrapAckMsg, SyncStep1Msg, OpenOkMsg } from '@nomicore/replication-protocol';
-import { boot, advanceMs } from './driver.js';
+import type { ReplicationObserverEvent } from '@nomicore/ws-replication';
+import { boot, advanceMs, collectUnhandledRejections } from './driver.js';
 import type { Run } from './driver.js';
 import { deferred, makeSeedDoc } from './harness.js';
 
@@ -23,6 +24,19 @@ function asMsg<T extends { kind: string }>(frame: DecodedMessage | undefined, ki
 
 function errorCodes(decoded: DecodedMessage[]): string[] {
   return decoded.filter((f) => f.message.kind === 'ERROR').map((f) => (f.message as { code: string }).code);
+}
+
+type ChanEvent = Extract<ReplicationObserverEvent, { type: 'channel-state-changed' }>;
+
+/** 事件流内该侧的 channel-state-changed 子集（有序）。 */
+function chanEdges(events: readonly ReplicationObserverEvent[], side: 'peer' | 'hub'): ChanEvent[] {
+  return events.filter(
+    (e): e is ChanEvent => e.type === 'channel-state-changed' && e.side === side,
+  );
+}
+
+function kinds(bytes: readonly Uint8Array[]): string[] {
+  return bytes.map((b) => decodeMessage(b).message.kind);
 }
 
 describe('AC3：Bootstrap 单帧快照 / 排他导入 / ACK / 强制 reconciliation', () => {
@@ -117,24 +131,54 @@ describe('AC3：Bootstrap 单帧快照 / 排他导入 / ACK / 强制 reconciliat
     expect(run.hubFrames('BOOTSTRAP_SNAPSHOT')).toHaveLength(1);
   });
 
-  it('AC3/§18 bootstrap timeout：快照丢失 → 收口 namespace（不重发、不无限等待）', async () => {
+  it('AC3/§18 bootstrap timeout：快照丢失 → 收口 failed（瞬态）→ 本端重建连接 → 新 wire 合法重发快照 → 收敛 live（issue #254 方向 A）', async () => {
+    const uh = collectUnhandledRejections();
+    const peerEvents: ReplicationObserverEvent[] = [];
     const run = await boot({
       start: false,
       timeouts: { bootstrapTimeoutMs: 150 },
+      backoff: { baseMs: 50, maxMs: 5_000, resetAfterMs: 10_000 },
+      random: () => 0,
+      peerObserver: (e) => peerEvents.push(e),
     });
-    run.peer.start();
-    // 丢帧：BOOTSTRAP_SNAPSHOT 到达 peer 前被丢弃
-    run.wire.dropNextHubToPeer(
-      (bytes) => decodeMessage(bytes).message.kind === 'BOOTSTRAP_SNAPSHOT',
-    );
-    await run.waitNamespace('bootstrapping');
-    expect(run.hubFrames('BOOTSTRAP_SNAPSHOT')).toHaveLength(0);
-    expect(run.droppedFrames().hubToPeer).toHaveLength(1);
-    await advanceMs(run, 150);
-    await run.waitNamespace('failed');
-    // 不重发快照、无 ACK 被发送、无第二轮 bootstrap
-    expect(run.hubFrames('BOOTSTRAP_SNAPSHOT')).toHaveLength(0);
-    expect(run.droppedFrames().hubToPeer).toHaveLength(1);
-    expect(run.peerFrames('BOOTSTRAP_ACK')).toHaveLength(0);
+    try {
+      run.peer.start();
+      // 丢帧：BOOTSTRAP_SNAPSHOT 到达 peer 前被丢弃（wire1）
+      run.wire.dropNextHubToPeer(
+        (bytes) => decodeMessage(bytes).message.kind === 'BOOTSTRAP_SNAPSHOT',
+      );
+      await run.waitNamespace('bootstrapping');
+      expect(run.hubFrames('BOOTSTRAP_SNAPSHOT')).toHaveLength(0);
+      expect(run.droppedFrames().hubToPeer).toHaveLength(1);
+      // 越过 bootstrapTimeoutMs → 收口 failed。issue #254：failed 瞬态（事件轨迹钉住），
+      // 随后本端触发连接重建（random=0 → 同一步内已开始重拨）；同一 wire 不重发快照
+      // （wire1 恰一次尝试 = 被丢的那次）。
+      await advanceMs(run, 150);
+      // wire1 零快照成功投递（快照被丢且同 wire 不重发——§18 收口零 wire 帧）
+      expect(kinds(run.wires[0]!.hubToPeer).filter((k) => k === 'BOOTSTRAP_SNAPSHOT')).toHaveLength(0);
+      expect(kinds(run.wires[0]!.peerToHub)).not.toContain('BOOTSTRAP_ACK');
+      const peerChans = chanEdges(peerEvents, 'peer');
+      expect(
+        peerChans.some((e) => e.from === 'bootstrapping' && e.to === 'failed'),
+        'bootstrap timeout 必须收口 failed（§13.2 NAMESPACE_TIMEOUT 映射不变）',
+      ).toBe(true);
+      // 恢复：重建 → 新 wire 上 hub 合法重发快照 → 导入 → 收敛 live。
+      await run.waitConnection('ready');
+      await run.waitNamespace('live');
+      expect(run.wires.length, '自愈必须经连接重建').toBeGreaterThanOrEqual(2);
+      expect(run.dialCount, '自愈必须经重拨').toBeGreaterThanOrEqual(2);
+      const lastWire = run.wires[run.wires.length - 1]!;
+      expect(kinds(lastWire.hubToPeer).filter((k) => k === 'BOOTSTRAP_SNAPSHOT'), '新 wire 恰一次快照重发').toHaveLength(1);
+      expect(kinds(lastWire.peerToHub).filter((k) => k === 'BOOTSTRAP_ACK'), '导入成功 ACK 恰一次').toHaveLength(1);
+      // 被丢帧仍只 1 笔（wire2 快照成功投递，无第二次丢弃）
+      expect(run.wires.reduce((sum, wire) => sum + wire.droppedHubToPeer.length, 0)).toBe(1);
+      expect(run.rootValue('peer', 'n')).toBe(42);
+      expect(run.rootValue('peer', 'extra')).toBe(77);
+      expect(run.metaValue('peer', 'replicationId')).toBe(run.hubFixture?.identity.replicationId);
+      expect(uh.events, '全程零 unhandled rejection').toEqual([]);
+    } finally {
+      await run.peer.stop().catch(() => undefined);
+      uh.dispose();
+    }
   });
 });

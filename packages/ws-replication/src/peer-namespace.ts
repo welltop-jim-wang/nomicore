@@ -58,6 +58,12 @@ export interface PeerNamespaceHost {
   connectionFatal(code: string, wsCloseCode?: number): void;
   /** 连接代际（每次拨号 +1）：异步续体以此判别「连接已断/已重建」的迟到性（§13.4）。 */
   connectionEpoch(): number;
+  /** issue #254：namespace 以 timer 族超时收口（open/bootstrap/reconcile →
+   *  §13.2 `NAMESPACE_TIMEOUT`，retryable=reconnect）且 target 仍活跃时，请求连接层
+   *  执行恢复性重建（§16「failed 等待连接重建」——连接仍存活时本端即触发者）。
+   *  触发面由调用点保证（仅 onTimerFired 尾部）；连接侧状态/stopping/transport 门
+   *  由实现方持有（非 ready 态一律 no-op——既有恢复轨道接管）。 */
+  requestConnectionRecovery(namespaceId: string): void;
   /** observer 是否在场（热路径纪律：无 observer 零事件构造/零投影读取/零时钟调用）。 */
   observerPresent(): boolean;
   /** observer 事件分发（隔离语义在 dispatchReplicationObserver 单点）。 */
@@ -1258,8 +1264,6 @@ export class PeerNamespaceController {
 
   private finalize(state: 'failed' | 'conflicted' | 'closed'): void {
     if (this.isTerminal()) return; // 终态不降级（§12 finalize 同款幂等）
-    if (state === 'failed') {
-    }
     this.clearAllTimers();
     this.setState(state);
     // E5 终局收口（SA2 R3 / §3.8 裁决 3）：failed/conflicted 也是收口终态——closeMemo
@@ -1519,5 +1523,12 @@ export class PeerNamespaceController {
     }
     // §5.1：timeout 只收口 namespace（零 wire 帧）
     this.finalize('failed');
+    // issue #254：open/bootstrap/reconcile 超时 = §13.2 `NAMESPACE_TIMEOUT`
+    // （retryable=reconnect）——failed 的既定恢复路径是连接重建（§16「等待连接重建」），
+    // 而超时本身不拆连接；target 仍活跃（未 remove）而连接仍存活时，重建触发者只能
+    // 是本端。分派经宿主面到连接层（其 ready/stopping/transport 门吸收并发与竞态）。
+    if (this.intent === 'active') {
+      this.host.requestConnectionRecovery(this.namespaceId);
+    }
   }
 }

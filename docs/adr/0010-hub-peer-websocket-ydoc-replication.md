@@ -330,7 +330,6 @@ drain。实现证据：`packages/ws-replication/src/*`（PR #165 round 2）。
 3. **槽级记账落点**：写序列器槽样本（slotKind/waitMs/runMs/queueDepthAtStart，namespaceId 由 registry 装配闭包盖戳）只进注入的 metrics/log sink（ADR 0008 L101「队列进度和内部事件属于日志、metrics 与 trace」指定落点），不进 `NamespaceRuntime.getStatus()`/`ReplicationSession.getStatus()`（O-11/replication 两态域冻结形状零改动）。
 4. **发射点纪律不变**：四段差值在 apply 槽内同步捕获、经 apply 结果导出，事件发射仍在 ws-replication apply 结算续体（§23.4「发射点永不位于 Registry write sequencer 槽内」保持）；无 observer/无注入 = 零事件/零时钟读/零调度（逐字节等价）。
 
-
 ### issue #237 修订：Trusted raw update 后备句收窄 + follow-up 显式登记（2026-09-06）
 
 授权链：issue #237 + Owner `welltop-jim-wang` 评论（2026-09-05T16:01Z「replication、
@@ -361,3 +360,51 @@ drain。实现证据：`packages/ws-replication/src/*`（PR #165 round 2）。
        （vfsl 校验 pure JSON 值语义；doc-runtime 消费 structure + live carrier）
        保持。
 
+### issue #254 修订（recoverable namespace timeout 的连接重建触发——2026-09-08）
+
+本节登记 issue #254（周期 reconciliation 超时 failed/needs-resync 僵尸）方向 A 修复的
+连接重建触发语义与边界。基线 `docs/protocols/instance-replication-v1.md` §16 的
+「failed：等待连接重建或配置变化」未指明**谁、在何条件下触发**该重建——缺口落成
+「failed channel + 仍存活连接 + 仍活跃 target」的永久互等死局。本修订补齐触发者，
+零 wire 字节、零错误码、零注册表/状态机新边。
+
+1. **触发谓词与范围（timer 族）**：open/bootstrap/reconcile timer 超时
+   （§13.2 `NAMESPACE_TIMEOUT`，本地映射，retryable=reconnect）使 namespace 收口
+   `failed` 后，若 target 仍被需要（intent=active）而连接仍存活（ready），由 Peer
+   控制器经 namespace→连接宿主面（`requestConnectionRecovery`，内部缝）请求恢复性
+   整连接重建。触发面**严格**为 timer 族：wire ERROR 帧驱动的 reconnect 族
+   （BOOTSTRAP_FAILED/APPLY_FAILED/INTERNAL_ERROR 收帧）与 `retryable=config/no` 族
+   （UPDATE_TOO_LARGE/NAMESPACE_STATE_VIOLATION 等）不在其内——前者为显式未实现
+   follow-up（SA1 设计 §13-1），后者按 L165 资源超限域保持「收口后连接维持、等待
+   配置变化」语义；L165 域界双向成立（该条不得被援引否定 timer 域重建）。
+2. **编排与不变量**：重建 = §18 detach-close 单点（停 liveness → 退订旧 transport
+   listener → **epoch 先失效** → close(1001, 'namespace-recovery')）+ §15.1 full-jitter
+   backoff 重拨。复活仍只经「终态 → disconnected（连接死投影）→ 新代 ready →
+   targeted → startOpen」——§1 不变量 4 / §7.1（同一连接内终态 namespace 不重开）
+   零变更；非 ready 态收到触发一律 no-op（断线/重连/backoff/blocked/draining 已有
+   既定恢复轨道；同 tick 多 ns 超时由首个触发离开 ready 吸收）。
+3. **close code 与所有权**：close 1001 = §14 粗分类临时类，与 pong/hello-timeout 先例
+   同族；按 §21（issue #229）无 GOAWAY 的 1001 视为普通临时断线，Peer 保有重拨
+   所有权（ADR 0012 L36）。与 requestRebuild（config-change/re-add：close 1000 +
+   立即重拨、无退避）区分——超时是可由事件循环饥饿/抖动持续的本端检测临时故障，
+   走带退避的恢复轨道而非立即生效的配置轨道。
+4. **观测登记**：`connection-backoff-scheduled.reason` 追加 `'namespace-recovery'`
+   （`types.ts` 与 `peer-connection.ts` `PeerBackoffReason` 双闭集合 7→8 值，
+   append-only）——由 protocol §23.1 显式修订登记并标 issue #254（同 issue #238
+   纪律：观测词表显式修订，事件类型 21 型不变）。每次恢复尝试发射该事件（含
+   `attempt`/`delayMs`），构成值班告警面。
+5. **风暴界与运营注记**：持续故障下两种环形（重拨率均 ≤ 1/min(超时窗, backoff 界)）：
+   - open-timeout 环（如 authorize 悬挂）：ready 驻留 ≈ `openTimeoutMs`(缺省 5s) <
+     `backoffResetAfterMs`(10s) ⇒ attempts 每环不清零、单调增长至 cap（`maxMs`
+     30s），稳态环周期 ≈ 5s + 握手 + 退避（~35s 上限）；
+   - reconcile-timeout 环（如 round 持续不结算）：ready 驻留 ≈
+     `reconcileTimeoutMs`(缺省 10s) ≥ `resetAfterMs` ⇒ attempts 每环清零、退避恒为
+     base 抖动，稳态环周期 ≈ 10.1s（超时窗 + 握手）。
+   F2 形态从「静态僵尸」变为「有界环」是 AC1「无需人工重启」的有意语义：故障源
+   消失后通道在下一环自动恢复；`attempt` 字段两环形行为不同（增长 vs 恒 1），
+   告警阈值须按上表分设。
+6. **协议文本修订**：`docs/protocols/instance-replication-v1.md` §16 `failed` 词条
+   （含 wire ERROR 族 follow-up 边界声明）、§18 超时句伴随句、§15.1 ready 出边
+   注记、§23.1 reason 词表——均标 issue #254；本任务 SA8 冲突门禁及设计后复审
+   verdict 均为 `clear`（`wiki/raw/task_issue-254_sa8_gate.md` /
+   `task_issue-254_sa8_recheck.md`，历史证据非规范）。
