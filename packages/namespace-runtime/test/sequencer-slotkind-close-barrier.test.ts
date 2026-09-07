@@ -91,4 +91,41 @@ describe('sequencer 槽级记账 slotKind 挂接（issue #238 §7 词表回归�
     expect(releaseCalls()).toBe(1);
     expect(runtime.getStatus().lifecycle).toBe('closed');
   });
+
+  it('reset fence 槽携带 close-barrier 标签（beginResetFence 入队点回归锚）', async () => {
+    const samples: SequencerSlotSample[] = [];
+    const { handle } = makeFakeHandle(makeDoc());
+    const runtime = createNamespaceRuntimeWithSeam({
+      handle,
+      notifyDirty: async () => {},
+      replicationObservability: {
+        stageClock: { now: () => 0 },
+        slotMetrics: (sample: SequencerSlotSample) => samples.push(sample),
+      },
+    } as never);
+    await waitReady(runtime);
+    samples.length = 0; // 只观察 fence 窗口
+
+    // 与 Registry 消费同款：non-enumerable capability 经结构取法获得
+    // （registry.ts RuntimeForRegistryFence；非公共十二键成员）。
+    const fence = (
+      runtime as unknown as {
+        beginResetFence(
+          expected: Readonly<{ replicationId: string; replicationEpoch: number }>,
+          readPersisted: () => Promise<Readonly<{ kind: 'missing' }>>,
+        ): Promise<Readonly<{ kind: string }>>;
+      }
+    ).beginResetFence;
+    const result = await fence(
+      { replicationId: 'a14c373c98ddc2dbbc99f7ca244e82f8', replicationEpoch: 1 },
+      async () => ({ kind: 'missing' }) as const, // 主键缺席 → 零破坏早退，但槽已执行
+    );
+    expect(result.kind).toBe('missing');
+
+    // 缺标签时本槽静默零样本（sequencer.pushSample 要求 slotKind 非 undefined）→ 红
+    const barriers = samples.filter((s) => s.slotKind === 'close-barrier');
+    expect(barriers).toHaveLength(1); // fence 槽恰一样本
+
+    await runtime.close(); // 收尾（fence missing 路径未进 closing）
+  });
 });

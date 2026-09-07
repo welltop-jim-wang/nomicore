@@ -43,6 +43,7 @@ import {
   createTestScheduler,
   describeDocPersistenceContract,
   describePersistenceErrorContract,
+  itSaveDocRegisterAndReturnContract,
   type TestScheduler,
 } from '../src/testing.js'
 
@@ -155,6 +156,53 @@ await describePersistenceErrorContract(async () => {
       fs.mkdirSync(userDir, { recursive: true })
       fs.writeFileSync(path.join(userDir, `${docId}.snapshot`), bytes)
     },
+    dispose: () => persistence.dispose(),
+  }
+})
+
+// ---------------------------------------------------------------------------
+// saveDoc register-and-return anchor (issue #238), File fixture:
+// hung write via wrapIo gate; committed tracked after real mkdir→tmp→rename.
+// ---------------------------------------------------------------------------
+
+await itSaveDocRegisterAndReturnContract(() => {
+  const rootDir = makeRootDir()
+  const scheduler = createTestScheduler()
+  let writes = 0
+  let inFlight = 0
+  let hung: Promise<void> | undefined
+  const persistence = new FilePersistence({
+    rootDir,
+    scheduler,
+    wrapIo: (io) => ({
+      ...io,
+      write: (key, snapshot, signal) => {
+        writes += 1
+        inFlight += 1
+        const run = () => io.write(key, snapshot, signal).then(
+          () => { inFlight -= 1 },
+          (err: unknown) => { inFlight -= 1; throw err },
+        )
+        if (hung !== undefined) {
+          const gate = hung
+          hung = undefined
+          return gate.then(run)
+        }
+        return run()
+      },
+    }),
+  })
+  return {
+    persistence,
+    scheduler,
+    armHungWrite: () => {
+      const baseline = writes
+      let release!: () => void
+      hung = new Promise<void>((r) => { release = r })
+      return { writes: () => writes - baseline, release }
+    },
+    settleWrites: () => waitFor(() => inFlight === 0, 'all initiated writes settled'),
+    makeFresh: () => new FilePersistence({ rootDir, scheduler: createTestScheduler() }),
     dispose: () => persistence.dispose(),
   }
 })
