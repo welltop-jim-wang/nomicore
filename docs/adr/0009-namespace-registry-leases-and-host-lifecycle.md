@@ -150,7 +150,7 @@ Phase 4使用独立integration PR。实施顺序为Clock capability、Persistenc
 
 ---
 
-## 修订节：issue #228（单 namespace 终态删除编排 deleteNamespace；ADR-0012-LOG「Host 执行数据删除请求时必须同时调用日志删除能力」的 Registry 半场）
+## 修订节：issue #228（单 namespace 终态删除编排 deleteNamespace；ADR-0014-LOG「Host 执行数据删除请求时必须同时调用日志删除能力」的 Registry 半场）
 
 日期：2026-09-07；状态：已接受（演进经 SA8 前置门禁 B1 预授权 + 设计后复审 clear——「扩展冻结 v1 公共接口必须以显式 ADR 修订节备案」通道，先例 #64/#79/#133/#131/#134 同款）。
 

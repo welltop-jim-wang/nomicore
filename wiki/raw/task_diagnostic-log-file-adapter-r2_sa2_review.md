@@ -101,7 +101,7 @@
 
 ## 结论
 
-设计已正确覆盖许多 R2 主路径：原始行 UTF-8 计量、阈值双向校验、genesis 的 capture 豁免、policy issue 不取消 anchor（就 policy 而言）、slot 外接线 MUST，以及 ADR-0012 的局部 amendment 均有清晰文本。
+设计已正确覆盖许多 R2 主路径：原始行 UTF-8 计量、阈值双向校验、genesis 的 capture 豁免、policy issue 不取消 anchor（就 policy 而言）、slot 外接线 MUST，以及 ADR-0014 的局部 amendment 均有清晰文本。
 
 但是，**JSONL commit 不确定性**会直接打破连续 sequence 的核心新不变量；而 carrier/frame 与 degraded marker 两个边界又使 strict reader 的“连续/策略合规”结论不够可验证。三项均影响 R2-AC1/AC2 的诚实性，故：
 
@@ -113,13 +113,13 @@
 
 在 worktree `/home/wangjian/nomicore-fix-issue-152` 对照读取：
 
-- `wiki/raw/task_diagnostic-log-file-adapter-r2_relevant_decisions.md`：ADR-0012 要求 storage validator 负责 stream 连续性、BIN-first/orphan 允许，ADR-0011 保持 non-throwing/写槽隔离。
+- `wiki/raw/task_diagnostic-log-file-adapter-r2_relevant_decisions.md`：ADR-0014 要求 storage validator 负责 stream 连续性、BIN-first/orphan 允许，ADR-0011 保持 non-throwing/写槽隔离。
 - `wiki/raw/task_diagnostic-log-file-adapter-r2.md`：R2-AC1 明列 degraded digest 标记防伪；R2-AC2 要求 `[1,2,3]→[1,3]` 必发现且健康流不误判。
 - `wiki/raw/task_diagnostic-log-file-adapter-r2_design.md:132–156, 166–193`：验证 candidate 复用和 carrier/frame 作为 anchor 前提的设计文本。
 - `wiki/raw/task_diagnostic-log-file-adapter-r2_design.md:64–82`：验证 input policy 表及未精确定义 marker 的设计文本。
 - `packages/namespace-diagnostic-log/src/adapters/file.ts:455–497,499–525,544–574`：现有实现确为 BIN-first，JSONL catch 后直接 return，且当前 allocation 早于落盘；R2 正在重定义此行为。
 - `packages/namespace-diagnostic-log/src/reader.ts:313–399`：现有 reader 的 carrier/frame 判定与 sequence 收集目前耦合方式，作为拟改动风险的代码基线。
-- `docs/adr/0012-vfsl-validated-jsonl-and-framed-sidecar-change-log.md:204–214,216–242`：验证 storage validator 职责、BIN-first/orphan 和旧 queue/batch 条款。
+- `docs/adr/0014-vfsl-validated-jsonl-and-framed-sidecar-change-log.md:204–214,216–242`：验证 storage validator 职责、BIN-first/orphan 和旧 queue/batch 条款。
 
 ---
 
@@ -143,7 +143,7 @@
 
 ### 1. definitive / ambiguous 分类与状态闭环
 
-**通过。** R3 没有以 errno 名称猜测安全重试；除“打开前确定零字节”的 `EISDIR/EACCES/ENOENT` 和测试 seam 明示 `wroteBytes:0` 外，所有错误默认 ambiguous。对 ambiguous JSONL，`lastCommittedSequence` 的 reservation 不是伪称成功，而是唯一性保护，并立即 `failed/readonly` 封闭旧 generation。对 ambiguous BIN，尽管 JSONL 尚未出现，R3 同样封闭 generation，避免同 sequence frame 重写及 orphan 解释污染。这个保守策略满足 ADR-0012 的 best-effort 边界与 CONTEXT 所述“旧 stream 损坏或无法安全续写时新 generation”。
+**通过。** R3 没有以 errno 名称猜测安全重试；除“打开前确定零字节”的 `EISDIR/EACCES/ENOENT` 和测试 seam 明示 `wroteBytes:0` 外，所有错误默认 ambiguous。对 ambiguous JSONL，`lastCommittedSequence` 的 reservation 不是伪称成功，而是唯一性保护，并立即 `failed/readonly` 封闭旧 generation。对 ambiguous BIN，尽管 JSONL 尚未出现，R3 同样封闭 generation，避免同 sequence frame 重写及 orphan 解释污染。这个保守策略满足 ADR-0014 的 best-effort 边界与 CONTEXT 所述“旧 stream 损坏或无法安全续写时新 generation”。
 
 需实施时保持的纪律（已是 R3 规范性要求，不构成 reject）：`appendBin/appendJsonl` 的 wrapper 必须能表达三态 `success | definitive-pre-commit-failure | ambiguous`；绝不可把普通 Node `catch` 自动映射为 definitive。health 输出不得伪造持久性结论，必须保留 `sequence N may not be persisted` 的稳定可观察证据。
 
@@ -153,7 +153,7 @@
 
 ### 3. 连续性状态机与敌意 record
 
-**通过。** R3 保留“JSON/VFSL/streamId 自身不可解释时不虚构精确 gap”的诚实边界；对可解释 JSONL 身份事实，则无论 policy/frame 是否损坏都进入 anchor。这将 stream sequence 的数值事实与 payload 可用性正确分层，符合 ADR-0012 把跨记录连续性和 storage/frame 交叉都交给 storage validator 的职责划分。
+**通过。** R3 保留“JSON/VFSL/streamId 自身不可解释时不虚构精确 gap”的诚实边界；对可解释 JSONL 身份事实，则无论 policy/frame 是否损坏都进入 anchor。这将 stream sequence 的数值事实与 payload 可用性正确分层，符合 ADR-0014 把跨记录连续性和 storage/frame 交叉都交给 storage validator 的职责划分。
 
 ### 4. 词表、冻结面及 ADR amendment
 

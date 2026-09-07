@@ -5,7 +5,7 @@
  * File adapter 期间被独立执行验证（tsx 直跑自检），避免 frame 夹具自身错误造成
  * 假红灯。确定性字节序列与严格 Base64 判定也在此。
  *
- * 契约锚点：ADR 0012 §Binary frame v1（25-byte header 逐字节布局；CRC 输入 =
+ * 契约锚点：ADR 0014 §Binary frame v1（25-byte header 逐字节布局；CRC 输入 =
  * header 前 21 bytes 直接连接 payload）与 §Inline 与 sidecar（RFC 4648 标准
  * Base64、正确 padding、禁止空白换行）。
  */
@@ -13,7 +13,7 @@ import { crc32c } from '../../src/crc32c.js'
 
 /** NDCL v1 固定 header 长度（magic/frameVersion/payloadType/flags/reserved/sequence/payloadLength/crc32c）。 */
 export const FRAME_HEADER_BYTES = 25
-/** payloadType 1 = yjs-update-v1（ADR 0012 逐字）。 */
+/** payloadType 1 = yjs-update-v1（ADR 0014 逐字）。 */
 export const PAYLOAD_TYPE_YJS_UPDATE_V1 = 1
 
 /** 确定性 payload 字节（i % 251——非零、可复现、跨测试独立）。 */
@@ -25,7 +25,7 @@ export function patternedBytes(size: number): Uint8Array {
 
 /**
  * NDCL v1 frame 构造（25-byte header + payload；纯字节拼装）。
- * CRC 输入 = header 前 21 bytes（magic 至 payloadLength）直接连接 payload（ADR 0012 逐字）。
+ * CRC 输入 = header 前 21 bytes（magic 至 payloadLength）直接连接 payload（ADR 0014 逐字）。
  */
 export function encodeFrame(
   sequence: number | string,
@@ -103,7 +103,7 @@ export function decodeFrame(bin: Uint8Array, offset: number): DecodedFrame {
   }
 }
 
-/** frame 的 CRC 输入重算（header 前 21 bytes + payload；ADR 0012 逐字）。 */
+/** frame 的 CRC 输入重算（header 前 21 bytes + payload；ADR 0014 逐字）。 */
 export function recomputeFrameCrc(frame: Uint8Array): number {
   const payloadLength = ((frame[17]! << 24) | (frame[18]! << 16) | (frame[19]! << 8) | frame[20]!) >>> 0
   const input = new Uint8Array(FRAME_HEADER_BYTES - 4 + payloadLength)

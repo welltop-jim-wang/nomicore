@@ -3,13 +3,13 @@
  *
  * 作用：为 packages/namespace-diagnostic-log/test/file-adapter-*.test.ts 提供
  * - 临时根目录（mkdtemp）与磁盘清理；
- * - ADR 0012 §File adapter 布局的路径派生（namespaces/{namespaceId}/…）；
+ * - ADR 0014 §File adapter 布局的路径派生（namespaces/{namespaceId}/…）；
  * - current.json / manifest.json / JSONL 的读写与校验夹具；
- * - NDCL v1 25-byte frame header 的构造/解码（ADR 0012 §Binary frame v1 逐字节）；
+ * - NDCL v1 25-byte frame header 的构造/解码（ADR 0014 §Binary frame v1 逐字节）；
  * - File adapter 装配工厂 + 事件收集；
  * - 手工 fake stream 写入（strict reader 的损坏/不兼容注入用）。
  *
- * 契约锚点：ADR 0012 §File adapter 布局 / §JSONL record / §Binary frame v1 /
+ * 契约锚点：ADR 0014 §File adapter 布局 / §JSONL record / §Binary frame v1 /
  * §VFSL record schema / §Inline 与 sidecar；#148 设计 §3.4（冻结信封指纹）。
  * 所有断言针对运行时产物（磁盘文件字节、observer 事件、reader 返回），
  * 不对源码文本做任何字符串/正则断言。
@@ -59,7 +59,7 @@ export type { DecodedFrame }
 export const FROZEN_ENVELOPE_FINGERPRINT =
   'sha256:v1:dedad2ab93d9df9224960ca094924168f8bcc1c0512dfdd0a03dc6e66613e070'
 
-/** manifest 声明自身格式/版本（SA6 契约常量）与 ADR 0012「record、frame 与 schema 版本」。 */
+/** manifest 声明自身格式/版本（SA6 契约常量）与 ADR 0014「record、frame 与 schema 版本」。 */
 export const MANIFEST_FORMAT = 'ndcl-manifest'
 export const MANIFEST_VERSION = 1
 export const CURRENT_FORMAT = 'ndcl-current'
@@ -68,12 +68,12 @@ export const RECORD_VERSION = 1
 export const FRAME_VERSION = 1
 export const DEFAULT_INLINE_UPDATE_MAX_BYTES = 4096
 export const DEFAULT_LINE_LIMIT_BYTES = 1024 * 1024
-/** #153 roll targets 默认值（ADR 0012 §Segment rolling：64 MiB / 256 MiB / 100,000 records；冻结进 manifest）。 */
+/** #153 roll targets 默认值（ADR 0014 §Segment rolling：64 MiB / 256 MiB / 100,000 records；冻结进 manifest）。 */
 export const DEFAULT_TARGET_JSONL_SEGMENT_BYTES = 67108864
 export const DEFAULT_TARGET_BIN_SEGMENT_BYTES = 268435456
 export const DEFAULT_TARGET_RECORDS_PER_SEGMENT = 100000
 
-/** 安全 namespaceId（ADR 0012：必须按安全文法校验后才能进入路径）。 */
+/** 安全 namespaceId（ADR 0014：必须按安全文法校验后才能进入路径）。 */
 export const SAFE_NAMESPACE_ID = 'ns-test-152'
 
 /** 临时根目录（每个测试私有）。 */
@@ -86,7 +86,7 @@ export function rmTempRoot(root: string): void {
   rmSync(root, { recursive: true, force: true })
 }
 
-/** ADR 0012 §File adapter 布局的路径派生。 */
+/** ADR 0014 §File adapter 布局的路径派生。 */
 export function streamPaths(rootDir: string, namespaceId: string, streamId: string) {
   const namespaceDir = join(rootDir, 'namespaces', namespaceId)
   const streamsDir = join(namespaceDir, 'streams')
@@ -141,13 +141,13 @@ export function makeFileLog(config: Partial<FileDiagnosticLogConfig> = {}): Asse
   return { log, events: observer.events, observer }
 }
 
-/** 标准 manifest（SA6 契约键集；ADR 0012「至少保存」逐项）。
+/** 标准 manifest（SA6 契约键集；ADR 0014「至少保存」逐项）。
  *  R2 修订（PR #159，设计 §2.2）：默认 `committedUpdateCapture: true`——reader 基线夹具的
  *  record 携带 update carrier，manifest 必须与之政策一致，否则 R2 起的 policy 校验
  *  （manifest-update-capture-violation）会判夹具自身为 corrupt（夹具语义：记录被测
  *  reader 行为，不引政策噪音）；capture=false 的敌意用例由测试显式 override。
  *  #153 修订（设计 §4.2/§11.3）：默认追加三 roll target 键（17 键当前形状——本票
- *  writer 的产物形状；默认值 = ADR 0012 §Segment rolling 默认）；14 键 legacy 形状
+ *  writer 的产物形状；默认值 = ADR 0014 §Segment rolling 默认）；14 键 legacy 形状
  *  请用 `legacyManifest`（§13.18(b)/§13.19 双形状锚）。 */
 export function validManifest(streamId: string, namespaceId: string, overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
@@ -178,7 +178,7 @@ export function legacyManifest(streamId: string, namespaceId: string, overrides:
   return { ...legacy, ...overrides }
 }
 
-/** 标准 current.json locator（ADR 0012：只保存 format/version/streamId）。 */
+/** 标准 current.json locator（ADR 0014：只保存 format/version/streamId）。 */
 export function validCurrent(streamId: string): Record<string, unknown> {
   return { format: CURRENT_FORMAT, version: CURRENT_VERSION, streamId }
 }
@@ -284,7 +284,7 @@ export function validAttemptRecord(
   }
 }
 
-/** 内联 carrier 的 storage 交叉校验（decode 长度 + CRC；ADR 0012 §storage validator）。 */
+/** 内联 carrier 的 storage 交叉校验（decode 长度 + CRC；ADR 0014 §storage validator）。 */
 export function checkInlineCarrier(update: { base64: string; payloadLength: number; crc32c: string }): Uint8Array {
   expect(isCanonicalBase64(update.base64), 'inline base64 必须为标准 RFC 4648（含 padding、无空白）').toBe(true)
   const decoded = Buffer.from(update.base64, 'base64')
@@ -347,7 +347,7 @@ export function concatU8(...chunks: Uint8Array[]): Uint8Array {
 
 /**
  * #154：segments 目录条目枚举（readdirSync 排序；保留文件名含后缀）。
- * 判定锚：ADR 0012 §Retention 删除协议 —— `.deleting` 标记与段落文件共存于 segments/。
+ * 判定锚：ADR 0014 §Retention 删除协议 —— `.deleting` 标记与段落文件共存于 segments/。
  */
 export function segmentEntriesOf(rootDir: string, namespaceId: string, streamId: string): string[] {
   return readdirSync(streamPaths(rootDir, namespaceId, streamId).segmentsDir).sort()
@@ -355,7 +355,7 @@ export function segmentEntriesOf(rootDir: string, namespaceId: string, streamId:
 
 /**
  * #154：任意 segment 的 jsonl/bin/deleting 三路径。
- * `.deleting` 命名约定 = ADR 0012 L291「将 .jsonl 原子 rename 为 .deleting」+
+ * `.deleting` 命名约定 = ADR 0014 L291「将 .jsonl 原子 rename 为 .deleting」+
  * SA2 设计 §4.2 钉死命名（组删除协议 S1 state 文件）。
  */
 export function segmentPathsOf(rootDir: string, namespaceId: string, streamId: string, segment: string) {

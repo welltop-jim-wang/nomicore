@@ -7,8 +7,8 @@
  *   adapter 构造 / ns-bound `emitter.emit` 同步 append）从 Registry lifecycle
  *   carrier 槽内与 Runtime write-sequencer 槽间窗口搬到 **macrotask 级 drain**
  *   （`setImmediate` check 阶段）——业务槽内/槽间窗口内的残余日志工作 = O(1)
- *   纯内存入队（ADR-0012 amendment L250 选项 (a)：延迟同步 append，只移调用点）。
- * - 泵 ≠ ADR-0012 L252 的「逻辑 writer queue」：adapter 存储语义一字未动（每个
+ *   纯内存入队（ADR-0014 amendment L250 选项 (a)：延迟同步 append，只移调用点）。
+ * - 泵 ≠ ADR-0014 L252 的「逻辑 writer queue」：adapter 存储语义一字未动（每个
  *   record 仍由 drain 内一次同步单-record append 落盘）；泵只改变调用点位置，
  *   不触发 L252 的 batch/周期 flush/fsync/队列满四类语义义务。
  * - per-namespace FIFO 保序（同一 ns 的建流任务先于其后的 emission 任务执行——
@@ -28,7 +28,7 @@
  *   依赖——缺席 → 静默，既有行为零漂移）。载荷 = 判别联合 `DiagPumpDropReport`
  *   （emit 分支携带被丢 emission 自身的 operation——泵同时承载多 operation 的
  *   Runtime emissions，禁止硬编码；init-stream 分支无 operation——建流无词表位，
- *   诚实缺席）。上报在 drop 点同步调用（槽内 O(1)，不占同一队列——ADR-0012
+ *   诚实缺席）。上报在 drop 点同步调用（槽内 O(1)，不占同一队列——ADR-0014
  *   L240）、每被丢任务恰一次、泵侧 try/catch 收编（上报通道违约不外溢——enqueue
  *   非抛契约保持）。低基数：载荷只含 kind/operation/reason 三个封闭维度
  *   （ADR-0011 L87 / ADR-0010 L159；namespaceId/streamId/token 不进）。
@@ -97,7 +97,7 @@ export interface DiagPumpDeps {
   /** drain 内解析 ns-bound emitter（复用 resolveEmitterOnce 非抛边界）。 */
   readonly resolveEmitter: (namespaceId: string) => NamespaceDiagnosticChangeEmitter | undefined;
   /** #249：满队丢弃健康上报（AC3——ADR-0011 L25「尽力上报 dropped count」+
-   *  ADR-0012 L240「按 operation/reason 低基数 dropped metrics，走独立 observer；
+   *  ADR-0014 L240「按 operation/reason 低基数 dropped metrics，走独立 observer；
    *  不得为记录 drop 再挤占同一队列」）。可选：缺席 → 静默（既有行为）。drop 点
    *  同步调用、每被丢任务恰一次；泵侧 try/catch 收编——上报通道违约绝不外溢
    *  （enqueue 非抛契约保持；dispatchObserver 侧另有同款隔离，双层防御）。 */
@@ -187,7 +187,7 @@ export function createDiagPump(deps: DiagPumpDeps): DiagPump {
     }
     if (queue.length >= DIAG_PUMP_MAX_QUEUE_PER_NAMESPACE) {
       // 满 → drop-newest：丢弃新到任务、保留已排队顺序（保序纪律）。#249：不再
-      // 静默——逐条上报（AC3/ADR-0011 L25、ADR-0012 L240；同步直报、槽内 O(1)、
+      // 静默——逐条上报（AC3/ADR-0011 L25、ADR-0014 L240；同步直报、槽内 O(1)、
       // 不占同一队列）。
       reportDrop(task);
       return;

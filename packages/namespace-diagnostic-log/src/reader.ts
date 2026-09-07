@@ -1,5 +1,5 @@
 /**
- * strict reader（设计 §7——ADR 0012 §Strict reader 与诊断性 replay；R2 修订：
+ * strict reader（设计 §7——ADR 0014 §Strict reader 与诊断性 replay；R2 修订：
  * 逐行执行 manifest 冻结的 format policy + stream sequence 从 1 的连续性状态机）。
  *
  * 契约（§7.1）：`readStreamStrict` 为纯同步函数、**绝不抛**——任何未归类异常收敛为

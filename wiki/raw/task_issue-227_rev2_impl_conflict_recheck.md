@@ -7,7 +7,7 @@
 - 轮次定位：rev2 实施轮冲突门禁重开（rev2 §12 路由第 6 步；沿 R1
   `task_issue-227_impl_conflict_recheck.md` 先例）；历史材料（SA8 R2 设计门禁 reject（窄修型）
   → R2.1 → SA2 approve）仅作参照，本轮对**实施变更集**独立重验
-- 冲突基准：`docs/adr/0012-vfsl-validated-jsonl-and-framed-sidecar-change-log.md`（ADR-0012-LOG，
+- 冲突基准：`docs/adr/0014-vfsl-validated-jsonl-and-framed-sidecar-change-log.md`（ADR-0014-LOG，
   §Retention 与删除 L280–299 / §Strict reader 与诊断性 replay L301–318 本轮原文回读）、
   `docs/adr/0011-best-effort-namespace-diagnostic-change-log.md`（L97–105 无涉面）、包
   `packages/namespace-diagnostic-log/AGENTS.md`（含 #227 R2 增量段）、根 `CONTEXT.md`、
@@ -27,7 +27,7 @@
 
 **clear**（`requiresConflictRecheck: false`）
 
-rev2 变更集对 ADR-0011 / ADR-0012-LOG 及全部模块契约**零冲突**：owner 两条必修（O-1 取得点
+rev2 变更集对 ADR-0011 / ADR-0014-LOG 及全部模块契约**零冲突**：owner 两条必修（O-1 取得点
 前移 + 唯一 finally + manifest 阶段并发契约；O-2 S0′ 提交时刻取时 + 到期放行契约）在代码与
 测试双面落地并经本轮**独立运验证实**（定向 35/35、包级+replay 505/505、typecheck 14 包
 exit 0）；改动面与 rev2 §0.2 ALLOW 逐项吻合（package.json bump 一项越白名单字面但已由
@@ -102,7 +102,7 @@ SA3 声明 + SA4 §5 复审接受，见 §7-O1）；DENY 面 zero-diff 亲证；
 
 | 条款 | 本轮独立核验 | 裁决 |
 |---|---|---|
-| ADR-0012-LOG **L289**「只删除已关闭且没有 reader lease 的 segment group」 | 提交门（S0′×2 + P0）以提交时刻评估「没有 lease」——INV-4 在提交点字面复位（兑现型诚实化，零 amendment：docs zero-diff）；持约范围扩至 manifest 阶段 = 同句 reader lease 保护面完整兑现 | ✅ 兑现型 |
+| ADR-0014-LOG **L289**「只删除已关闭且没有 reader lease 的 segment group」 | 提交门（S0′×2 + P0）以提交时刻评估「没有 lease」——INV-4 在提交点字面复位（兑现型诚实化，零 amendment：docs zero-diff）；持约范围扩至 manifest 阶段 = 同句 reader lease 保护面完整兑现 | ✅ 兑现型 |
 | **L291–295** 删除协议 S1–S3 / orphan 清理文法 | `deleteGroup` 本体零 hunk（diff 亲证）；S0′ 仍是 S1 前置门（仅取时来源变更）；`.deleting` 续走不加门（marker 组对会话枚举不可见）原样 | ✅ 零触碰 |
 | **L297**「reader 通过 openReadSession() 获得短期 segment lease…最大 lease 时长或显式续租」 | 取得点位置非冻结面；缺省 maxLifetimeMs=null 显式续租臂维持（read-session.ts DENY 未动） | ✅ 兑现型收紧 |
 | **L301–318** strict/replay 行为与报告形状冻结 | ②③ 门语义与早退包络逐字节不动（② 早退 manifest:null / ③ 早退 manifest 已设——与旧实现逐字节同）；`StrictStreamRead`/`DiagnosticReplayResult` 形状零变更；物化谓词与分类面零 hunk（reader.ts diff 无 materialize 段）；complete 门 INV-227-7 不动；取得检查点拒绝包络复用既有码 `lease-expired`（缺省参数下结构性不可达） | ✅ 零触碰 |
@@ -133,7 +133,7 @@ SA3 声明 + SA4 §5 复审接受，见 §7-O1）；DENY 面 zero-diff 亲证；
 
 ## 8. 结论与边界
 
-- rev2 变更集（工作树 vs `31ff694`）与 ADR-0011 / ADR-0012-LOG 全部被引条款、包 AGENTS.md
+- rev2 变更集（工作树 vs `31ff694`）与 ADR-0011 / ADR-0014-LOG 全部被引条款、包 AGENTS.md
   契约、根 CONTEXT.md 词条**零冲突**：owner 两条必修为 L289/L297 的兑现型实施，冻结面
   （报告形状、complete 门、分类面、删除协议文法、schema/result 联合、事件白名单）逐字保持；
   DENY 面 zero-diff；INV-227-1（改写）/3（修订）/11/12 静态成立并经 35/35 + 505/505 独立

@@ -16,7 +16,7 @@
   - **O-1（必修，→ D8/D9/D10）**：strict reader 自建 session 取得点从 ④′（reader.ts:546–604）前移至 ① 路径安全检查之后、② 首次 manifest I/O（:456–499）之前；自建 session 改**唯一 finally** 释放（现状分散三处 close 站点删除），覆盖 manifest 缺失、JSON 损坏、gate 失败等一切持约早退；增测试证明 manifest read/gate 期间 lease 已注册并覆盖该阶段与 retention sweep 并发（§8 A6/A7）。
   - **O-2（必修，→ D11）**：S0′ 提交点复查弃用 sweep 起始 `now`（file.ts:1099/:1272/:1340 现传参），改为在 S1 rename 前以 `clock.now()` 取**真正提交时刻**；增测试证明 lease 在 sweep 开始后、S1 rename 前到期时允许删除（§8 B4；P0 同类门 → 裁决点 G-227-5，B5）。
 - **R1.1 及此前轮次**：`wiki/raw/task_issue-227_design.md`（R1.1，SA2 approve + K-1..K-4 全兑现）；SA4 R1/R2 approve（`task_issue-227_sa4_review.md`）；实施冲突门禁 clear（`task_issue-227_impl_conflict_recheck.md`）。**R1.1 的 D1–D7、INV-227-2/4..10、分类表 §4、词表 §5 本轮一字不动**——R2 只动租约生命周期的「取得点/释放结构」与 sweep 复查的「取时来源」两处。
-- 权威上位契约：ADR `docs/adr/0012-vfsl-validated-jsonl-and-framed-sidecar-change-log.md` §Retention 与删除（L280–299）、§Strict reader 与诊断性 replay（L301–318）；ADR-0011 L97–105；包契约 `packages/namespace-diagnostic-log/AGENTS.md`（#227 增量段）；**owner PR #251 评审评论（2026-09-06T13:14:31Z，welltop-jim-wang）= 本轮规范源**。
+- 权威上位契约：ADR `docs/adr/0014-vfsl-validated-jsonl-and-framed-sidecar-change-log.md` §Retention 与删除（L280–299）、§Strict reader 与诊断性 replay（L301–318）；ADR-0011 L97–105；包契约 `packages/namespace-diagnostic-log/AGENTS.md`（#227 增量段）；**owner PR #251 评审评论（2026-09-06T13:14:31Z，welltop-jim-wang）= 本轮规范源**。
 
 ---
 
@@ -301,10 +301,10 @@ NODE_OPTIONS=--conditions=nomicore-source pnpm exec vitest run packages/namespac
 
 | 契约 | R2 影响 | 定性 |
 |---|---|---|
-| ADR-0012-LOG **L289**「只删除已关闭且没有 reader lease 的 segment group」 | 提交门以提交时刻评估「没有 lease」——INV-4（过期永不阻塞）在提交点字面复位 | 兑现型（诚实化读法，无 amendment） |
-| ADR-0012-LOG **L297**「reader 通过 openReadSession() 获得短期 segment lease…或显式续租」 | 持约范围明确覆盖 manifest 读取/校验阶段（AC1「读取、校验…期间」的完整兑现） | 兑现型收紧 |
-| ADR-0012-LOG **L301–318**（strict/replay 行为与报告形状冻结） | ②③ 门语义、各早退包络、complete 门逐字节不动；快照时机前移零漂移论证（§3.1.1） | 零触碰 |
-| ADR-0012-LOG **L291–295**（删除协议 S1–S3/orphan 清理文法） | `deleteGroup` 本体零 hunk；S0′ 仍是 S1 前置门，仅取时来源变更 | 零触碰 |
+| ADR-0014-LOG **L289**「只删除已关闭且没有 reader lease 的 segment group」 | 提交门以提交时刻评估「没有 lease」——INV-4（过期永不阻塞）在提交点字面复位 | 兑现型（诚实化读法，无 amendment） |
+| ADR-0014-LOG **L297**「reader 通过 openReadSession() 获得短期 segment lease…或显式续租」 | 持约范围明确覆盖 manifest 读取/校验阶段（AC1「读取、校验…期间」的完整兑现） | 兑现型收紧 |
+| ADR-0014-LOG **L301–318**（strict/replay 行为与报告形状冻结） | ②③ 门语义、各早退包络、complete 门逐字节不动；快照时机前移零漂移论证（§3.1.1） | 零触碰 |
+| ADR-0014-LOG **L291–295**（删除协议 S1–S3/orphan 清理文法） | `deleteGroup` 本体零 hunk；S0′ 仍是 S1 前置门，仅取时来源变更 | 零触碰 |
 | ADR-0011（重放五条件） | 本轮不触碰分类/complete 面 | 无涉 |
 | 包 AGENTS.md #227 增量段 / 词表 / 事件白名单 | 追加 R2 句；零新码、零事件成员、零 reason | 文档义务（随 SA3） |
 | INV-9/12/13、单进程注册表、`now 可注入` JSDoc | 注册表零改动；now 收窄为策略时刻（形状不变） | 维持 |

@@ -4,7 +4,7 @@
 **Verdict**: R1：reject（窄范围）→ **R2 终裁：pass**。R1 四项必改 + 三项 LOW 记档全部闭合（逐项核验见 R2 节）；R1 修订过程新引入 1 项 MINOR 文字矛盾（N1，不变量 H 措辞）与 1 项 LOW 措辞（N2），均不阻塞任何 §13 锚点与行为决策，作为随附修订交 SA1 在 SA6 红灯定稿前并入、SA4 复核验收。
 
 **被审对象**: `wiki/raw/task_diagnostic-log-stream-roll-repair_design.md`（R1：round 1 初版 628 行全读；R2：R1 修订版 666 行全读）
-**约束基准**: `wiki/raw/task_diagnostic-log-stream-roll-repair_relevant_decisions.md`（ADR 摘录 + 设计后复审追加 10 决策点）＞ ADR-0012（含 2026-08-28 amendment）/ADR-0011/ADR-0008 ＞ #148 冻结契约 ＞ #152/R2 实现。
+**约束基准**: `wiki/raw/task_diagnostic-log-stream-roll-repair_relevant_decisions.md`（ADR 摘录 + 设计后复审追加 10 决策点）＞ ADR-0014（含 2026-08-28 amendment）/ADR-0011/ADR-0008 ＞ #148 冻结契约 ＞ #152/R2 实现。
 **审查方法**: 全新视角；对设计引用的全部代码坐标逐一实证（file.ts 799 行 / reader.ts 594 行 / storage-gate.ts / paths.ts / health.ts / testing.ts / memory.ts / 相关测试五件），非仅读设计文本。
 
 ---

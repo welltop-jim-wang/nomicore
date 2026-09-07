@@ -1,6 +1,6 @@
 /**
  * 红灯契约 — §9.5 line 预算与降级（验收标准 3）
- * 锚点：ADR 0012 §投影（「输入导致超限时先降级为 digest；去掉输入后 record 仍超限则丢弃
+ * 锚点：ADR 0014 §投影（「输入导致超限时先降级为 digest；去掉输入后 record 仍超限则丢弃
  *       整条 record 并通过健康面上报，不影响业务」）+ 设计 §5.5（降级顺序：full/redacted →
  *       digest+degraded+health input-degraded；仍超限 → 丢弃 + record-dropped/
  *       line-budget-exceeded + projectedRecordBytes）+ §4.3（被丢弃 record 同样消耗 sequence

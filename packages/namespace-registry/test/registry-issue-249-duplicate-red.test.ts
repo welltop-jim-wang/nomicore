@@ -17,7 +17,7 @@
  *   （已建流不重复建流）；胜出候选 ns-B 恰 1 条 committed（绿对照，业务链完好）。
  * - T-B —— **红灯**：Persistence `DOC_DUPLICATE` 候选结局（registry.ts L1410 catch →
  *   `{kind:'retry'}` 零发射）必须在 store 碰撞 namespace 的流中落一条被拒记录；
- *   该 ns 无流时 genesis-less 补建一次（`initStream(ns, undefined)`，ADR-0012 L22）；
+ *   该 ns 无流时 genesis-less 补建一次（`initStream(ns, undefined)`，ADR-0014 L22）；
  *   胜出候选 ns-B 恰 1 条 committed（绿对照）。
  * - T-C —— **红灯（D-2 对齐版）**：重试预算耗尽终局冻结语义不变（branded
  *   `NamespaceRegistryFatalError`、committed:false、phase='namespace-id-generation'、
@@ -32,7 +32,7 @@
  *
  * 被拒记录语义（本契约只锚词汇内既存事实，不发明值）：
  * - 每条碰撞/duplicate 候选 = 一次独立 create 变更尝试（CONTEXT.md L148–150）；
- *   候选结局 result.kind = 'rejected'（预期失败零提交，ADR-0012 L80–87 判别联合）。
+ *   候选结局 result.kind = 'rejected'（预期失败零提交，ADR-0014 L80–87 判别联合）。
  * - stage/code/sourceModule 的精确映射由 SA1 设计定夺（SA5 §4.3 给出 identity/
  *   NAMESPACE_ALREADY_EXISTS/registry 与 transaction/DOC_DUPLICATE/persistence
  *   建议组合）；本契约不锁 stage/code 值，只锚归属、条数、rejected 语义与业务
@@ -253,7 +253,7 @@ describe('issue-249 AC4 — entry collision / DOC_DUPLICATE candidate diagnostic
     const nsARecords = host.nsRecords.get(NS_A) ?? [];
     const nsBRecords = host.nsRecords.get(NS_B) ?? [];
     const nsAInit = host.initStreamCalls.filter((c) => c.ns === NS_A);
-    // AC4/ADR-0012 L22: NS_A 无活流 → genesis-less 补建一次 + 落一条被拒记录
+    // AC4/ADR-0014 L22: NS_A 无活流 → genesis-less 补建一次 + 落一条被拒记录
     expect(nsARecords.length).toBe(1);
     expect(nsARecords[0]!.result.kind).toBe('rejected');
     expect(nsARecords[0]!.operation).toBe('namespace-create');

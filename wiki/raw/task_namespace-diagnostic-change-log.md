@@ -34,7 +34,7 @@ Issue text states it was blocked by #148; implement against the current worktree
 - **测试文件**：`packages/namespace-registry/test/registry-create-diagnostic-red.test.ts`（16 it，16/16 红灯）。
 - **注入面（字段名即契约锚点，SA1/SA3 按此落地 seam）**：
   - `NamespaceRegistryTestingOverrides`（及 `CreateNamespaceRegistryOptions` 等价生产面）新增可选 `diagnosticLog?: NamespaceRegistryDiagnosticLog`；
-  - `NamespaceRegistryDiagnosticLog = { emitter: NamespaceDiagnosticChangeEmitter; initStream?(namespaceId: string, genesisUpdateBytes?: Uint8Array): void }`——emitter 为 #148 冻结接口（「业务模块依赖小 emitter interface」ADR-0011 §Interface）；initStream 为 ADR-0012 stream 建立缝（genesis bytes 由 producer 供给、adapter 内部构造 genesis-baseline——CONTEXT.md「producer 只供 bytes」）；测试经 `createBoundedMemoryDiagnosticLog(...).emitter` 与真实 `createFileDiagnosticLog` 装配（非 mock、非 fallback）；
+  - `NamespaceRegistryDiagnosticLog = { emitter: NamespaceDiagnosticChangeEmitter; initStream?(namespaceId: string, genesisUpdateBytes?: Uint8Array): void }`——emitter 为 #148 冻结接口（「业务模块依赖小 emitter interface」ADR-0011 §Interface）；initStream 为 ADR-0014 stream 建立缝（genesis bytes 由 producer 供给、adapter 内部构造 genesis-baseline——CONTEXT.md「producer 只供 bytes」）；测试经 `createBoundedMemoryDiagnosticLog(...).emitter` 与真实 `createFileDiagnosticLog` 装配（非 mock、非 fallback）；
   - `observedAt` 复用 Registry 既有必需 Clock（`new Date(clock.now()).toISOString()`）——**不得引入第二次 Clock 读数**（测试锚 `clock.calls === 1`；ADR-0009「Clock 单次读数」冻结契约）。
 - **stage/code/result 映射（本契约冻结；事实取 Registry 既有稳定码，不发明新码）**：
   - 停接纳拒绝（shutdown 后 create）→ `acceptance` / `REGISTRY_NOT_ACCEPTING` / `rejected` / input `not-accessed`（零 trap——停接纳先于一切输入访问）；

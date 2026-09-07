@@ -64,15 +64,15 @@
 
 ## 3. 设计原则（继承冻结谱系）
 
-1. **槽内 O(1)、槽外 drain**（ADR-0009 L62 + ADR-0012 amendment L250）：入队点（含丢弃上报）
+1. **槽内 O(1)、槽外 drain**（ADR-0009 L62 + ADR-0014 amendment L250）：入队点（含丢弃上报）
    保持 O(1) 纯内存、非抛；一切可能触碰存储的 seam 调用仍在 macrotask drain。
-2. **泵 ≠ adapter writer queue**（ADR-0012 L252）：每 record 仍由 drain 内一次同步单-record
+2. **泵 ≠ adapter writer queue**（ADR-0014 L252）：每 record 仍由 drain 内一次同步单-record
    append 落盘；本设计不触发 batch/周期 flush/fsync/队列满四类语义义务；storage projection
    一字不动。
 3. **producer 只做语义投影**（ADR-0011 L51 + CONTEXT.md「语义 emission」）：候选结局只用
    既有冻结词表与既有稳定 code；不发明 retryable/rollback/result:'unknown'。
 4. **诊断失败零业务外溢**（ADR-0011 L20/L24）：新增的上报与发射路径全部在既有吞没边界内。
-5. **低基数健康面**（ADR-0011 L87 + ADR-0012 L240 + ADR-0010 L159）：drop 上报载荷只有封闭
+5. **低基数健康面**（ADR-0011 L87 + ADR-0014 L240 + ADR-0010 L159）：drop 上报载荷只有封闭
    维度（taskKind/operation/reason），namespaceId/streamId/token/SCHEMA/ROOT/owner 一律不进。
 
 ## 4. AC1 — 单飞状态机：`inflight` 位（scheduled+running 合一）
@@ -168,7 +168,7 @@ function enqueue(task: DiagPumpTask): void {
 
 现实现满队 drop-newest 本体正确（R3-1 绿锚：保序、丢新），但结构性零上报（R3-2 红：44 条
 丢弃零信号）。义务源：ADR-0011 L25「实现应尽力上报 dropped count、sink failure 和 queue
-health」+ ADR-0012 L240「按 operation/reason 增加低基数 dropped metrics，并走独立 observer；
+health」+ ADR-0014 L240「按 operation/reason 增加低基数 dropped metrics，并走独立 observer；
 不得为了记录 drop 再挤占同一队列」。#226「泵满静默、Registry 不代发」的历史立场按 SA8 裁定
 （冲突报告 §检查范围 L17 + 逐项说明 3）让位于上述义务。
 
@@ -183,7 +183,7 @@ export type DiagPumpDropReport =
 export interface DiagPumpDeps {
   readonly initStream: (namespaceId: string, genesisUpdateBytes: Uint8Array | undefined) => void;
   readonly resolveEmitter: (namespaceId: string) => NamespaceDiagnosticChangeEmitter | undefined;
-  /** #249：满队丢弃健康上报（AC3/ADR-0011 L25、ADR-0012 L240）。缺席 → 静默（既有行为）。 */
+  /** #249：满队丢弃健康上报（AC3/ADR-0011 L25、ADR-0014 L240）。缺席 → 静默（既有行为）。 */
   readonly reportDrop?: (drop: DiagPumpDropReport) => void;
 }
 ```
@@ -194,7 +194,7 @@ export interface DiagPumpDeps {
   init-stream 任务**无 operation**（建流不是 record emission，无词表位——诚实缺席，不发明
   第 7 个 operation 值）。`reason` 恒 `'queue-full'`（v1 封闭 reason 维度）。
 - **上报时机与成本**：drop 点同步调用（enqueue 内，槽内 O(1)）——不为记录 drop 排队、不占
-  用同一队列（ADR-0012 L240 逐字）；频率以入队率为上界，聚合归 Host metrics adapter。
+  用同一队列（ADR-0014 L240 逐字）；频率以入队率为上界，聚合归 Host metrics adapter。
 - **隔离**：泵侧 `try { deps.reportDrop?.(drop) } catch { /* 吞没 */ }`——上报通道违约绝不
   外溢（enqueue 非抛契约保持；dispatchObserver 亦有同款隔离，双层防御）。
 - **每被丢任务恰一次**（SA6 契约锚注语义）：覆盖两类任务（emit 与 init-stream）。
@@ -301,7 +301,7 @@ export interface CreateDiag {
 - **NOOP_DIAG 单例**增 no-op 成员（日志禁用零行为）。
 - `CreateEmissionArgs` 增可选 `sourceModule?: SourceModule`（缺省 `'registry'`——既有全部
   调用点零漂移）；`assembleEmission` 的 code↔sourceModule 成对展开改为采用该值。依据：
-  ADR-0012 L89「code 与 sourcePhase …标注 source module」+ ADR-0011 L51「保留**所属模块**
+  ADR-0014 L89「code 与 sourcePhase …标注 source module」+ ADR-0011 L51「保留**所属模块**
   已有稳定 code」——`DOC_DUPLICATE` 的所属模块是 persistence；emitter 管线强制 code 与
   sourceModule 成对（pipeline.ts L239–250，单侧缺失即丢字段+健康事件）。
 
@@ -309,7 +309,7 @@ export interface CreateDiag {
 
 | 结局 | operation | stage | result | code | sourceModule | 依据 |
 |---|---|---|---|---|---|---|
-| entry collision | `namespace-create`（既有） | `identity`（既有 8 值） | `rejected`（预期失败零提交，ADR-0012 L80–87 判别联合） | `NAMESPACE_ALREADY_EXISTS`（types.ts L470 既有冻结稳定码——Registry「namespace 已存在」既有序列） | `registry` | ADR-0011 L51；ADR-0011 L40–49 stage 释义「identity：…namespace identity 不满足」；ADR-0012 L89 |
+| entry collision | `namespace-create`（既有） | `identity`（既有 8 值） | `rejected`（预期失败零提交，ADR-0014 L80–87 判别联合） | `NAMESPACE_ALREADY_EXISTS`（types.ts L470 既有冻结稳定码——Registry「namespace 已存在」既有序列） | `registry` | ADR-0011 L51；ADR-0011 L40–49 stage 释义「identity：…namespace identity 不满足」；ADR-0014 L89 |
 | Persistence duplicate | `namespace-create`（既有） | `transaction`（既有） | `rejected` | `DOC_DUPLICATE`（ADR-0006 #64 修订 L121–123 稳定码） | `persistence` | ADR-0011 L51「所属模块」；ADR-0006 #64 排他创建；#150 冻结映射表「持久层 duplicate → transaction / rejected / 快照已捕获」同款 stage 先例（registry.ts L1413 持久层运营失败 rejected 亦用 transaction） |
 
 - **stage 选择论证**：entry collision 取 `identity` 而非 #150 映射表的 `acceptance`——
@@ -322,8 +322,8 @@ export interface CreateDiag {
 - **code Pattern 合规**：两码均匹配 `P_STABLE_CODE`（ASCII 受控字符集 ≤128；schema-patterns.ts
   单源）——emitter intake（pipeline.ts L64–77）不会丢弃。
 - **其余字段**：`source: {kind:'local'}`（assembleEmission 既有）；`attemptId` 省略 → 管线
-  CSPRNG 生成（ADR-0012 L61–67）；不携带 issues/rawIssues（两类结局无 issues 载荷——零发明）；
-  `result: {kind:'rejected'}` 无 update（ADR-0012 L80–87「rejected 禁止携带 update」）。
+  CSPRNG 生成（ADR-0014 L61–67）；不携带 issues/rawIssues（两类结局无 issues 载荷——零发明）；
+  `result: {kind:'rejected'}` 无 update（ADR-0014 L80–87「rejected 禁止携带 update」）。
 
 ### 6.4 归属与建流（复用 #226 冻结基础设施）
 
@@ -333,7 +333,7 @@ export interface CreateDiag {
 - **建流交互**（`streamedNamespaces` seed 语义）：已建流（create#1 成功路径已入
   `enqueueInitStreamTask` 登记）→ 补记**不重复建流**（T-A：NS_A 流 2 条、initStream 仍恰
   1 次）；未建流（T-B：NS_A 只在 store 侧存在）→ `seedRejectedStreamIfAbsent` genesis-less
-  补建恰一次（`initStream(ns, undefined)`——ADR-0012 L22「genesis 未成功写入时 stream 仍可
+  补建恰一次（`initStream(ns, undefined)`——ADR-0014 L22「genesis 未成功写入时 stream 仍可
   记录诊断事实」）。per-ns FIFO 保证建流任务先于其后的候选结局记录（#150 DC-2 冻结次序）。
 - **unattributed 通道恒零**：候选结局以候选 id 数据键控投递（C1 竞态类别不存在——与
   emitOutcome 同构）；发射点缺席缺陷修复后 `unattributedDrops === 0`（T-A/T-B 断言）。

@@ -1,16 +1,16 @@
 /**
  * 红灯契约 — AC3 校验门（append 前 VFSL + storage 校验；BIN-first）+
- * ADR 0012 验收门槛 10（manifest envelope 不匹配 → 新建 generation、旧 manifest 不改）+
+ * ADR 0014 验收门槛 10（manifest envelope 不匹配 → 新建 generation、旧 manifest 不改）+
  * AC5（格式/校验/队列/存储失败不干扰 producer）。
  *
  * 锚点：
  * - AC3：「Final physical records pass the built-in VFSL schema and storage validation
  *   before append, and sidecar frames are appended before their JSONL references」
- *   （ADR 0012 §VFSL record schema「append 前 VFSL validation failure 是日志 writer bug：
+ *   （ADR 0014 §VFSL record schema「append 前 VFSL validation failure 是日志 writer bug：
  *   丢弃 record、…上报，不改变业务结果」；§Writer「BIN-first 避免完整 JSONL 引用尚不存在
  *   的 frame」「write/flush 失败只改变日志健康，不影响业务」）
  * - 门槛 10：「manifest envelope 不匹配时新建 stream，不改旧 manifest」
- *   （ADR 0012 §VFSL record schema「打开现有 stream 时，manifest format/version 和 schema
+ *   （ADR 0014 §VFSL record schema「打开现有 stream 时，manifest format/version 和 schema
  *   fingerprint 必须与内建冻结版本匹配；不匹配则旧 stream 保持只读，建立新 generation，
  *   不改写旧 manifest」）
  * - AC5 / ADR 0011：「日志 emit、排队、持久化、背压、丢弃或关闭失败不得改变业务操作的
@@ -254,7 +254,7 @@ describe('AC5 observer 故障隔离（存储故障事件经 observer 上报；ob
   })
 })
 
-describe('ADR 0012 验收门槛 10：manifest envelope/schema fingerprint 不匹配 → 新建 generation、旧 manifest 不改', () => {
+describe('ADR 0014 验收门槛 10：manifest envelope/schema fingerprint 不匹配 → 新建 generation、旧 manifest 不改', () => {
   it('resume 到指纹不符的旧 stream → stream-generation-rotated{stream-incompatible} + 新 streamId、旧 manifest 字节恒等、旧 segments 零写入、current.json 指向新 stream', () => {
     const root = freshRoot()
     const ns = 'ns-mismatch'

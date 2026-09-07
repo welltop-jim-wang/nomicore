@@ -1,8 +1,8 @@
-# Design: File diagnostic-log adapter R2 — manifest policy、连续 sequence 与 ADR-0012 修订（Issue #152）
+# Design: File diagnostic-log adapter R2 — manifest policy、连续 sequence 与 ADR-0014 修订（Issue #152）
 
 > SA1 设计产出；任务类型：发布后规格修正（功能开发/缺陷修复混合）。
 >
-> 约束优先级：任务简报 R2 > SA8 `task_diagnostic-log-file-adapter-r2_conflict_report.md` 五条解除条件 > ADR-0012/0011/0008 > round=1 实现与设计。本文只设计，不改变 #148 冻结 schema、emission 词表或 ADR-0011 正文。
+> 约束优先级：任务简报 R2 > SA8 `task_diagnostic-log-file-adapter-r2_conflict_report.md` 五条解除条件 > ADR-0014/0011/0008 > round=1 实现与设计。本文只设计，不改变 #148 冻结 schema、emission 词表或 ADR-0011 正文。
 
 ## §1. 根因、边界与不可变约束
 
@@ -10,7 +10,7 @@
 
 1. `reader.ts` 的 manifest gate 只检查四项冻结策略的类型和枚举合法性，逐 record 时只做 VFSL/storage/frame 校验，故无法拒绝**逻辑 schema 合法、但与本 stream manifest 不一致**的记录。
 2. writer 在 gate、物理投影和实际 append 之前调用 `allocate()`，且 genesis 的空/超载守卫也会先分配。这使健康磁盘流可出现未被 JSONL 保存的合法编号空洞；reader 因而只能做递增检查，无法可靠地将 `[1,3]` 判为物理删除。
-3. 当前首切片的同步 `appendFileSync` 与 ADR-0012 已接受文本中的「内部逻辑 writer queue + 默认周期 batch flush」冲突；仅在实现设计中说明不足以取代 ADR。必须在 ADR-0012 正文做明确、局部、规范性的修订，同时保留 ADR-0011 的上层 emitter 契约。
+3. 当前首切片的同步 `appendFileSync` 与 ADR-0014 已接受文本中的「内部逻辑 writer queue + 默认周期 batch flush」冲突；仅在实现设计中说明不足以取代 ADR。必须在 ADR-0014 正文做明确、局部、规范性的修订，同时保留 ADR-0011 的上层 emitter 契约。
 
 ### 1.2 不得触碰的边界
 
@@ -51,7 +51,7 @@ for segment in lexical/numeric ascending order:
 ```text
 if policy.committedUpdateCapture === false:
   if recordKind === 'genesis-baseline':
-      allow  // genesis 是 Host 显式基线，和 attempt capture 正交，沿用 ADR-0012/#148 边界
+      allow  // genesis 是 Host 显式基线，和 attempt capture 正交，沿用 ADR-0014/#148 边界
   else if updateCarrier(record) != null:
       add manifest-update-capture-violation
 if policy.committedUpdateCapture === true:
@@ -240,13 +240,13 @@ for each record in physical segment/line order:
 
 不得写成「所有业务变更完整」「无业务 attempt gap」「可恢复 namespace」。replay 的成功文案仍附加 ADR-0011 既有限定：只对所选 strict stream 的 committed records 进行诊断性 replay，并且仅在没有已知 gap、截断、损坏或版本不兼容时陈述诊断性成功；它不提供持久性、事务性或跨副本顺序保证。
 
-## §4. ADR-0012 正式修订文本草稿（反馈 3）
+## §4. ADR-0014 正式修订文本草稿（反馈 3）
 
-> 本节是要写入 `docs/adr/0012-vfsl-validated-jsonl-and-framed-sidecar-change-log.md` 的 diff 级设计。ADR 状态保留 `accepted`，追加 dated amendment；ADR-0011 正文不修改。
+> 本节是要写入 `docs/adr/0014-vfsl-validated-jsonl-and-framed-sidecar-change-log.md` 的 diff 级设计。ADR 状态保留 `accepted`，追加 dated amendment；ADR-0011 正文不修改。
 
 ### 4.1 取代/新增条款（规范性文本）
 
-在 ADR-0012 的 writer/emitter 段追加：
+在 ADR-0014 的 writer/emitter 段追加：
 
 > **Amendment — File adapter first slice.** 本 ADR 中「日志 adapter 提供有界、non-blocking emitter，内部每个 stream 同时最多一个逻辑 writer queue」及「默认周期 batch flush，不逐条 fsync」两句，**在首切片 File adapter 的当前实现范围内被以下条款取代**：每个 `emit` 在调用栈内执行至多一条 final JSONL record 的有界同步 append；若其携带 sidecar，则额外执行至多一帧 BIN append，顺序为 BIN-first。该首切片不维护 writer queue、不做 batch flush、不提供 fsync 开关，也不保持常驻 file descriptor。同步 append 完成不构成 fsync 或掉电持久性承诺。
 >
@@ -258,7 +258,7 @@ for each record in physical segment/line order:
 
 ### 4.2 ADR 的具体编辑点
 
-| ADR-0012 现有位置/主题 | 修改动作 | 结果 |
+| ADR-0014 现有位置/主题 | 修改动作 | 结果 |
 |---|---|---|
 | 「有界、non-blocking emitter；每 stream 最多一个逻辑 writer queue」 | 追加 amendment 明确取代其对**当前 File first slice**的 queue 必然性 | queue 不再与同步直写同时强制 |
 | 「默认周期 batch flush，不逐条 fsync；真正 fsync 可配置且默认关闭」 | 追加 amendment 的首切片替代段 | 当前无 batch、无 fsync 开关；仍不承诺掉电持久性 |
@@ -269,7 +269,7 @@ for each record in physical segment/line order:
 
 ### 4.3 被否方案与后果的更新
 
-ADR-0012 的「每条 fsync 或业务 await 日志 append」继续为被否方案，后果维持：会把诊断持久性耦合到业务路径，违背 best-effort。
+ADR-0014 的「每条 fsync 或业务 await 日志 append」继续为被否方案，后果维持：会把诊断持久性耦合到业务路径，违背 best-effort。
 
 新增被否方案：
 
@@ -332,7 +332,7 @@ ADR-0012 的「每条 fsync 或业务 await 日志 append」继续为被否方�
 | 将 policy mismatch 当 incompatible 导致隐藏所有可解析 record | 新码全部 `corrupt`，records 保留逐条诊断 |
 | definitive 与 ambiguous append failure 混同，导致 candidate 重复或假恢复 | §3.2.1 分类：仅可证明零字节的 pre-commit failure 复用；任何 ambiguous outcome 永不复用、reservation candidate 后封闭 generation |
 | BIN 成功/JSONL 失败导致候选序列重复或 orphan 被污染 | definitive 才 fresh-stat 重试；ambiguous BIN/JSONL 保留 partial/orphan 作为残态、封闭旧 stream，strict reader 如实报告 gap/corruption |
-| 同步 IO 再次进入 write slot | ADR-0012 amendment 以 MUST 写成接线门禁，后续 Host 接线验收必须验证 |
+| 同步 IO 再次进入 write slot | ADR-0014 amendment 以 MUST 写成接线门禁，后续 Host 接线验收必须验证 |
 | carrier/frame 损坏被误当作 sequence 不可信 | §3.4 将 anchor 限至 JSON/VFSL/streamId；`ok=false` 仍可锚定，storage corruption 单独报告 |
 | 伪造/错用 degraded marker 降低 input policy 强度 | §2.3 用冻结 union 的唯一 digest literal 与 manifest-relative双向规则验证 |
 | 借 reader 码扩展偷改 #148 | 新码只属 reader 输出，不入 record/schema/emission/health 词表 |
@@ -345,7 +345,7 @@ ADR-0012 的「每条 fsync 或业务 await 日志 append」继续为被否方�
 |---|:--:|---|---|
 | 反馈 1：strict reader 执行 manifest 四策略 | ✅ | §2、§5.1 | 每行/每 record 算法、双向 threshold、输入策略表、六码与 corrupt 映射 |
 | 反馈 2：stream sequence 连续且健康 stream 不误判 | ✅ | §3、§5.2 | 分配收紧到 JSONL commit 成功点；跨 segment 从 1 连续校验，保留 best-effort 限定 |
-| 反馈 3：同步 I/O 与 ADR 的冲突须 ADR 化 | ✅ | §4 | ADR-0012 amendment diff 草稿；取代关系、write-slot MUST、演进路径、被否方案 |
+| 反馈 3：同步 I/O 与 ADR 的冲突须 ADR 化 | ✅ | §4 | ADR-0014 amendment diff 草稿；取代关系、write-slot MUST、演进路径、被否方案 |
 | SA8 条件 1–3：ADR amendment 完整性 | ✅ | §4.1–§4.4 | queue/batch 取代、ADR-0011 seam 与 slot 外条件、未来演进分别写为规范性文本 |
 | SA8 条件 4：sequence 提交点及语义边界 | ✅ | §3.1–§3.5 | definitive failure 无合法 gap；ambiguous outcome 以封闭 reservation 留下可检测的不健康 gap；不声称业务尝试完整 |
 | SA8 条件 5：码表/冻结面边界 | ✅ | §2.6 | 明确 reader 私有码、corrupt 映射，不改 schema/emission |
@@ -361,7 +361,7 @@ ADR-0012 的「每条 fsync 或业务 await 日志 append」继续为被否方�
 - `packages/namespace-diagnostic-log/src/adapters/file.ts` — 修改；把 sequence 的持久状态提交时点移至 JSONL append 成功、修正 genesis/exhausted 语义（约 110 行）。
 - `packages/namespace-diagnostic-log/test/file-adapter-strict-reader.test.ts` — `[SA6 owned]` 修改；新增 policy mismatch、行上限、sequence-gap 和跨 segment 验收断言（约 180 行）。
 - `packages/namespace-diagnostic-log/test/file-adapter-r2-policy-continuity.test.ts` — `[SA6 owned]` 修改；覆盖 gate/IO/genesis 不消耗 sequence、提交点与 exhausted 边界（约 100 行；现有 R2 专用测试域）。
-- `docs/adr/0012-vfsl-validated-jsonl-and-framed-sidecar-change-log.md` — 修改；写入 §4 的 accepted amendment、被否方案与演进路径（约 70 行）。
+- `docs/adr/0014-vfsl-validated-jsonl-and-framed-sidecar-change-log.md` — 修改；写入 §4 的 accepted amendment、被否方案与演进路径（约 70 行）。
 - `packages/namespace-diagnostic-log/README.md` — 修改；纠正 strict `ok` 的连续物理记录限定与静态读取/同步 write-slot 使用边界（约 25 行）。
 - `packages/namespace-diagnostic-log/AGENTS.md` — 修改；增加同步 File adapter emit 不得在 namespace write slot 接线的工程边界提示（约 10 行）。
 
@@ -371,7 +371,7 @@ ADR-0012 的「每条 fsync 或业务 await 日志 append」继续为被否方�
 - `packages/namespace-diagnostic-log/src/vocabulary.ts` — emission 受控词表冻结，本票不改。
 - `packages/namespace-diagnostic-log/src/pipeline.ts` — #148 emitter 管线稳定，本票不改。
 - `packages/namespace-diagnostic-log/src/adapters/memory.ts` — memory adapter 不属于 File reader/commit-point 修正面。
-- `docs/adr/0011-best-effort-namespace-diagnostic-change-log.md` — 简报明确 ADR-0011 正文不动；适用性由 ADR-0012 amendment 澄清。
+- `docs/adr/0011-best-effort-namespace-diagnostic-change-log.md` — 简报明确 ADR-0011 正文不动；适用性由 ADR-0014 amendment 澄清。
 - `packages/namespace-runtime/**` — 本票不实施 Host/write-slot 接线；仅规定后续接线的 MUST 条件。
 
 ## §9. 协议假设依据 (Protocol Assumption Evidence)

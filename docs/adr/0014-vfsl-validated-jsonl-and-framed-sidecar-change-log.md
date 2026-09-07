@@ -1,4 +1,4 @@
-# ADR 0012：VFSL 校验的 JSONL 与 framed sidecar 诊断日志格式
+# ADR 0014：VFSL 校验的 JSONL 与 framed sidecar 诊断日志格式
 
 日期：2026-08-28
 状态：已接受

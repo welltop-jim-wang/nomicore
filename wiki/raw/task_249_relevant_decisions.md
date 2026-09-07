@@ -9,7 +9,7 @@
 - Worktree：`/home/wangjian/nomicore-fix-issue-249`（branch `mabf/issue-249`，HEAD `ac91a6b`）
 - 冲突基准：`docs/adr/` 全集 **13 个文件（0001–0012；注意 0012 有两份不同主题文档，见下）逐个全读，无抽样** + 根目录 `CONTEXT.md` 全读
 - 前置任务链（同一诊断能力谱系，供 SA1 回查先例）：
-  PR #142（ADR-0011/0012 文档落地）→ #148（`@nomicore/namespace-diagnostic-log` 冻结词表与 record schema）→ #149/#150/#155（Runtime/Registry 诊断接线）→ #152（File adapter 首切片 + ADR-0012 amendment）→ #226 / PR #248（create 诊断覆盖 + `diag-pump.ts` —— 本票修复对象）
+  PR #142（ADR-0011/0012 文档落地）→ #148（`@nomicore/namespace-diagnostic-log` 冻结词表与 record schema）→ #149/#150/#155（Runtime/Registry 诊断接线）→ #152（File adapter 首切片 + ADR-0014 amendment）→ #226 / PR #248（create 诊断覆盖 + `diag-pump.ts` —— 本票修复对象）
 
 ## 相关 ADR
 
@@ -33,9 +33,9 @@
   12. L123–129（时序与 sequencer）：「变更尝试的业务排序继续由现有 Registry lifecycle slot 或 namespace write sequencer 决定，日志不得引入第二个业务排序机构」；「emitter 不被 `await`」；「adapter 慢、失败或队列满都不得延长 write slot 或阻塞 close/shutdown；Host shutdown 可 best-effort drain 日志，但 Registry/Persistence 的停止不得无限等待日志 sink」——AC2 FIFO（仅诊断面保序）/AC6 shutdown 上界的依据。
 - 对本任务影响：AC1–AC6 均为该 ADR 既有条款的兑现或允许域内的实现强化，无条款需要修订。
 
-### ADR-0012（诊断格式）VFSL 校验的 JSONL 与 framed sidecar 诊断日志格式（accepted；含 issue #152 round-2 amendment）
+### ADR-0014（诊断格式）VFSL 校验的 JSONL 与 framed sidecar 诊断日志格式（accepted；含 issue #152 round-2 amendment）
 
-`docs/adr/0012-vfsl-validated-jsonl-and-framed-sidecar-change-log.md`
+`docs/adr/0014-vfsl-validated-jsonl-and-framed-sidecar-change-log.md`
 
 - 与本任务的关联点：冻结词表（operation/stage/result/code/sourceModule）、writer queue 满丢弃纪律、File adapter `emit` 的 write-slot 隔离 amendment——AC3/AC4 的直接约束源。**注意：Registry 侧 diag-pump 是生产者→emitter 的投递载体，不是本 ADR L218/L252 所述 adapter 内部「逻辑 writer queue」**（每 record 仍由 drain 内一次同步单-record append 落盘；storage projection 一字不动）。
 - 核心条款（原文摘录，编号=文件行号）：
@@ -73,7 +73,7 @@
 
 `docs/adr/0008-namespace-runtime-read-write-capabilities-and-sequencer.md`
 
-- 与本任务的关联点：ADR-0012 amendment 所引用的 write sequencer 槽定义；本任务不改写路径。
+- 与本任务的关联点：ADR-0014 amendment 所引用的 write sequencer 槽定义；本任务不改写路径。
 - 核心条款：
   1. L40–51：同一 namespace 所有受控 Y.Doc 写共享唯一严格 FIFO write sequencer；槽序为「lifecycle/fatal gate → `DocHandle.getStatus()` writable gate → 输入快照 → 领域校验与 detached 构造 → 一次 Yjs transaction → `await notifyDirty()`」——「slot 内不得同步 File adapter `emit`」所指的槽。
   2. #93 修订节：`RUNTIME_READ_DISABLED` / `RUNTIME_WRITE_DISABLED` / `NSRT-CLOSE-RELEASE-FAILED` 稳定码注册——供 SA1 理解停接纳/写禁用码族，本任务零接触。
@@ -96,8 +96,8 @@
 ### 其余 ADR（与本任务无关联，仅盘点登记）
 
 - ADR-0001（VFSL 单一真相源）、ADR-0002（重写定位/authority 出范围）、ADR-0003（求值器/ROOT/联合表示）、ADR-0004（类型投影）、ADR-0005（投影生成管线）——schema/引擎/投影领地，本任务不触及；无冲突。
-- **ADR-0012（实例身份单一真相与 WebSocket plugin 所有权）**（`docs/adr/0012-instance-identity-and-websocket-plugin-ownership.md`）——Instance service / Hub/Peer WS plugin 生命周期，与本任务无交集；无冲突。
-- ⚠ 编号提示：`docs/adr/` 存在**两份 0012 文件**（instance-identity 与 diagnostic-format，主题无关）。下游 SA 与文档引用「ADR-0012」时必须带主题限定词（如「ADR-0012 诊断格式」），避免歧义；本两份产物均以文件全名区分。
+- **ADR-0014（实例身份单一真相与 WebSocket plugin 所有权）**（`docs/adr/0012-instance-identity-and-websocket-plugin-ownership.md`）——Instance service / Hub/Peer WS plugin 生命周期，与本任务无交集；无冲突。
+- ⚠ 编号提示：`docs/adr/` 存在**两份 0012 文件**（instance-identity 与 diagnostic-format，主题无关）。下游 SA 与文档引用「ADR-0014」时必须带主题限定词（如「ADR-0014 诊断格式」），避免歧义；本两份产物均以文件全名区分。
 
 ## CONTEXT.md 相关术语与惯例
 

@@ -3,8 +3,8 @@
 > SA8 前置门禁产出（审任务简报 `wiki/raw/task_expose-diagnostic-replay-host-lifecycle.md`，Issue #155，feature）。
 > 只摘录，不裁决；引用编号与原文，需要时按编号回查 ADR 全文。
 > **恢复复核对（2026-09-03，总控恢复运行触发）**：`docs/adr/` 13 文件 + `CONTEXT.md` 全量重读，`git diff` 证明基准与 HEAD 一致、worktree 零改动；本清单全部摘录逐条比对 ADR 原文无出入，约束集不变。简报追加的「SA6 红灯契约记录」附录经对照无新增冲突（对照明细见 `…_conflict_report.md`「简报附录对照」节）；本清单红线对 SA3 落地/SA4/SA7 复审阶段继续生效。
-> ADR 全集 = `docs/adr/` 下 13 个文件（0001–0012），逐个全读。**编号撞号注记**：目录中存在两个 ADR-0012——`0012-vfsl-validated-jsonl-and-framed-sidecar-change-log.md`（下称 **ADR-0012-LOG**，本任务主规范）与 `0012-instance-identity-and-websocket-plugin-ownership.md`（下称 **ADR-0012-INSTANCE**）。两者均为 accepted、均构成本门禁基准；引用时须以标题区分。
-> 本任务被 ADR-0012-LOG 首切片 amendment 明文点名为接线修复票之一（「不满足该条件的接线为不合规，必须由 #149–#151/#155 或后续接线票修复后方可启用」）——本票是诊断日志能力从 adapter 走向 Host/Registry 暴露面的收口票。
+> ADR 全集 = `docs/adr/` 下 13 个文件（0001–0012），逐个全读。**编号撞号注记**：目录中存在两个 ADR-0014——`0014-vfsl-validated-jsonl-and-framed-sidecar-change-log.md`（下称 **ADR-0014-LOG**，本任务主规范）与 `0012-instance-identity-and-websocket-plugin-ownership.md`（下称 **ADR-0014-INSTANCE**）。两者均为 accepted、均构成本门禁基准；引用时须以标题区分。
+> 本任务被 ADR-0014-LOG 首切片 amendment 明文点名为接线修复票之一（「不满足该条件的接线为不合规，必须由 #149–#151/#155 或后续接线票修复后方可启用」）——本票是诊断日志能力从 adapter 走向 Host/Registry 暴露面的收口票。
 
 ## 相关 ADR
 
@@ -50,7 +50,7 @@
   - 「`full` 输入与 committed Yjs update 必须由 Host 明确启用，并继承 namespace 数据相同或更严格的访问控制、保留期和加密策略；」
   - 「日志字段不得进入默认低基数 metrics label。」
 
-### ADR-0012-LOG VFSL 校验的 JSONL 与 framed sidecar 诊断日志格式（accepted）——本任务主规范之二：存储、generation、配置冻结与 replay 契约
+### ADR-0014-LOG VFSL 校验的 JSONL 与 framed sidecar 诊断日志格式（accepted）——本任务主规范之二：存储、generation、配置冻结与 replay 契约
 
 #### A. Stream 与 generation（本任务 AC1/AC2 的直接依据）
 
@@ -62,7 +62,7 @@
 
 #### B. 首切片 Amendment——write-slot 外接线强制（本票被点名的合规条件）
 
-- 与本任务的关联点：**ADR-0012-LOG 明文点名 #155 为接线修复票**；SA1 设计的 emit 调用点位置是本票硬约束。
+- 与本任务的关联点：**ADR-0014-LOG 明文点名 #155 为接线修复票**；SA1 设计的 emit 调用点位置是本票硬约束。
 - 核心条款（原文摘录）：
   - 「每个 `emit` 在调用栈内执行至多一条 final JSONL record 的有界同步 append；若其携带 sidecar，则额外执行至多一帧 BIN append，顺序为 BIN-first。该首切片不维护 writer queue、不做 batch flush、不提供 fsync 开关，也不保持常驻 file descriptor。」
   - 「此处「有界」仅指 adapter 主动处理的数据量与操作数量受配置 payload/line limits 和单-record/单-frame 范围限制；它**不**表示底层文件系统延迟有时间上界，亦不表示 `emit` 可在任意调用点不阻塞。**任何将 File adapter 的 `emit` 接入 namespace 生命周期的调用点，必须位于 NamespaceRuntime write sequencer slot 之外，或在该 slot 已释放之后；不得在 slot 内执行同步 File adapter `emit`。** 不满足该条件的接线为不合规，必须由 #149–#151/#155 或后续接线票修复后方可启用。」
@@ -101,7 +101,7 @@
 
 ### ADR-0008 NamespaceRuntime 读写能力与单序列器（accepted）——接线位置约束的权威
 
-- 与本任务的关联点：emit 调用点与 write sequencer slot 的隔离（ADR-0012-LOG amendment 引用的正是 ADR-0011/0008 业务隔离）；Runtime close 的 barrier 语义约束 drain 时点。
+- 与本任务的关联点：emit 调用点与 write sequencer slot 的隔离（ADR-0014-LOG amendment 引用的正是 ADR-0011/0008 业务隔离）；Runtime close 的 barrier 语义约束 drain 时点。
 - 核心条款（原文摘录）：
   - 「同一 namespace 内所有受控 Y.Doc 写共享唯一严格 FIFO write sequencer；不同 namespace 可并行。」
   - 「`close()` 幂等。首次调用同步进入 `closing`，立即停止接纳公共 read 和 write，并在队尾加入 close barrier；此前已接纳任务无条件排空，不取消、不设内部 timeout。」——日志 drain 不得挂进该 barrier、不得阻塞其排空。
@@ -120,29 +120,29 @@
 
 - 与本任务的关联点：AC1「不写入 replication wire state」与「Hub and Peer 独立启用」的拓扑依据；AC3 drain 窗口嵌在既定停止顺序内。
 - 核心条款（原文摘录）：
-  - 「每台机器使用自己的 Persistence」；「hub 与 peer 都运行完整 Registry、Runtime 和独立 Persistence」——Hub/Peer 是独立实例，各自本地启用日志（ADR-0012-LOG「不随 Hub/Peer 复制」）。
+  - 「每台机器使用自己的 Persistence」；「hub 与 peer 都运行完整 Registry、Runtime 和独立 Persistence」——Hub/Peer 是独立实例，各自本地启用日志（ADR-0014-LOG「不随 Hub/Peer 复制」）。
   - 「停止顺序为：复制插件停止接纳连接/target，先发送 GOAWAY 并进入真实 drain 窗口；……随后 Registry shutdown、Persistence dispose，最后停止 Timer/Clock。」——日志 drain 必须有界，不得阻塞该链中 Registry shutdown / Persistence dispose。
   - 「Token、Yjs update、SCHEMA/ROOT 内容以及未经控制的 owner/namespace 不得出现在默认日志或高基数指标标签中。」——日志健康/metrics 暴露面的数据保护与 ADR-0011 数据保护节叠加生效。
 
-### ADR-0012-INSTANCE 实例身份单一真相与 WebSocket plugin 所有权（accepted，issue #204 已实现）——Host 生命周期所有权边界
+### ADR-0014-INSTANCE 实例身份单一真相与 WebSocket plugin 所有权（accepted，issue #204 已实现）——Host 生命周期所有权边界
 
 - 与本任务的关联点：本任务暴露「Host lifecycle configuration」；日志配置是 Host/composition root 旁路，不得改变 Registry/Persistence/WS plugin 的所有权与 teardown 分工。
 - 核心条款（原文摘录）：
   - 「Composition root 拥有 Instance、Clock、Timer、Persistence 与 Namespace Registry 的创建、配置和最终 teardown」——日志 adapter 的配置与 drain 属 composition root/Host 侧职责。
   - 「Fiber dispose 只 drain/close WebSocket plugin 自身资源并撤 service；上游 Registry/Persistence 生命周期由其拥有者处理。」——日志能力不属 WS plugin，其 dispose 不涉及日志；日志 drain 的有界窗口由其拥有者（Host）负责。
-  - 「第一版静态网络、认证、授权、limits/timeouts/backoff 配置 restart-only；仅 targets 支持运行期 add/remove。」（类比参照，非直接条款）——本任务的「非格式策略可调」粒度以 ADR-0012-LOG 冻结/可调二分为准，与本条无交集。
+  - 「第一版静态网络、认证、授权、limits/timeouts/backoff 配置 restart-only；仅 targets 支持运行期 add/remove。」（类比参照，非直接条款）——本任务的「非格式策略可调」粒度以 ADR-0014-LOG 冻结/可调二分为准，与本条无交集。
 
 ### ADR-0006 Cordis 持久化插件 DocPersistence（accepted）——Persistence 独立性
 
 - 与本任务的关联点：AC1「不写入 Persistence snapshots」；日志目录与 snapshot 布局互不侵入；Persistence dispose 不被日志 drain 阻塞。
 - 核心条款（原文摘录）：
   - 「持久层内部的 flush 在触发时以 `Y.encodeStateAsUpdate(doc)` 编码**完整 Y.Doc 状态**，写入 `{namespaceId}.snapshot.tmp` 后以原子 rename 覆盖 `{namespaceId}.snapshot`。」——snapshot 内容仅 Y.Doc 三条目（SCHEMA/META/ROOT），日志配置/状态不进入。
-  - ADR-0012-LOG 布局（`namespaces/{namespaceId}/current.json` 等）为日志 adapter 自有目录，与 `{rootDir}/users/{userId}/{namespaceId}.snapshot` 分离；「日志生命周期不与namespace snapshot Persistence自动绑定」。
+  - ADR-0014-LOG 布局（`namespaces/{namespaceId}/current.json` 等）为日志 adapter 自有目录，与 `{rootDir}/users/{userId}/{namespaceId}.snapshot` 分离；「日志生命周期不与namespace snapshot Persistence自动绑定」。
   - 「dispose 时释放文件句柄、后台任务和 Y.Doc 缓存；宿主负责按依赖逆序停止插件。」
 
 ### 其余 ADR（不直接相关，仅登记）
 
-- **ADR-0001**（VFSL 单一真相源）：无本任务直接条款；间接相关——ADR-0012-LOG 的 record schema 是内建冻结 VFSL schema（`nomicore.namespace-diagnostic-change-record@1`），本任务不得为日志另建仓内 schema 文本通道。
+- **ADR-0001**（VFSL 单一真相源）：无本任务直接条款；间接相关——ADR-0014-LOG 的 record schema 是内建冻结 VFSL schema（`nomicore.namespace-diagnostic-change-record@1`），本任务不得为日志另建仓内 schema 文本通道。
 - **ADR-0002**（重写定位、authority 出范围）：无关联条款。
 - **ADR-0003**（求值器与派生 schema）：无关联条款。
 - **ADR-0004 / ADR-0005**（类型投影与生成管线）：无关联条款——本任务消费面为日志工具/Host 配置，不涉及 PathAt 投影写路径。
@@ -157,20 +157,20 @@
 - **storage projection**（原文）：「日志 adapter 独占的物理表示决策——先决定 inline/sidecar 并构造最终 record（segment/frameOffset/payloadLength/CRC32C/Base64），再运行 VFSL 校验；emitter 只做语义投影，不构造物理字段。」
 - **genesis baseline record**（原文）：「新 stream 的 genesis 基线——当时完整 Y.Doc 的 update，不是变更尝试（无 attemptId/operation/stage/result/input；顶层 `recordKind: 'genesis-baseline'` 判别）；v1 冻结的 emission/sink 公共面无构造路径，由 #152 adapter 内部构造（设计 §10-J1 备案）。」——replay 消费 genesis，公共面不新增构造路径。
 - **空闲 Runtime**（原文）：「当前没有调用方租约、但仍由 NamespaceRegistry 暂时保留的 namespace Runtime；保留期内重新打开会复用同一 Runtime，保留期届满才关闭。」——多 Runtime generation 共享 writer 的生命周期背景。
-- **写序列器**（原文）：「每个 NamespaceRuntime 独有的严格 FIFO：P0 与同一 namespace 的全部受控 Y.Doc 写共享顺序……读取不进入该序列。」——ADR-0012-LOG amendment「emit 不得在 slot 内执行」所指的 slot 即此。
+- **写序列器**（原文）：「每个 NamespaceRuntime 独有的严格 FIFO：P0 与同一 namespace 的全部受控 Y.Doc 写共享顺序……读取不进入该序列。」——ADR-0014-LOG amendment「emit 不得在 slot 内执行」所指的 slot 即此。
 - **namespaceId**（原文）：「Registry entry 与实例复制 wire 的唯一 namespace 身份……」——日志目录布局按 namespaceId；owner 不上 wire，日志配置亦不上 wire。
 - **ReplicationSession / 复制谱系 / 复制代际**：本任务不触碰 session 与 wire 身份；AC5「identity mismatch」指 replay 后受控 identity 与请求目标比对（ADR-0011 五条件之 5），非 wire 身份管理。
 
 ## 供 SA1/SA2/SA3 复用的红线清单（摘录汇编，非裁决）
 
-1. emit 调用点必须在 write sequencer slot 之外或 slot 释放之后（ADR-0012-LOG amendment，点名 #155）。
-2. 日志配置是本地 Host/Registry 旁路：不进 SCHEMA/META/ROOT/snapshot/wire（ADR-0012-LOG §Stream）。
-3. 冻结项（record/schema/frame 版本、update capture、input capture policy、inline threshold、line 上限）改变 → 新 stream generation；retention/queue/batch/flush/fd/metrics 可调不改变解释（ADR-0012-LOG §Segment rolling）。
-4. replay 强制 strict；不暴露 live Y.Doc；只返回 owned bytes + 三态报告；不自动跨 generation 拼接（ADR-0012-LOG §Strict reader）。
-5. complete 仅限五条件全满足（ADR-0011 §重放 + ADR-0012-LOG §Strict reader）；complete 也保留 best-effort disclaimer。
-6. shutdown drain best-effort 且有界；不得阻塞 Registry shutdown / Persistence dispose（ADR-0011 §时序、ADR-0012-LOG §Writer、ADR-0009 §Shutdown、ADR-0010 停止顺序）。
-7. 若引入 queue/batch：不得改 emitter seam / record schema / manifest policy / write-slot 隔离，并须另行定义 close/shutdown、flush、队列满语义（ADR-0012-LOG amendment）。
-8. 健康面独立（`LOG_STREAM_INIT_FAILED`、dropped、sink failure、queue health）；初始化失败不影响 create（ADR-0012-LOG §Stream、ADR-0011 §产品契约）。
+1. emit 调用点必须在 write sequencer slot 之外或 slot 释放之后（ADR-0014-LOG amendment，点名 #155）。
+2. 日志配置是本地 Host/Registry 旁路：不进 SCHEMA/META/ROOT/snapshot/wire（ADR-0014-LOG §Stream）。
+3. 冻结项（record/schema/frame 版本、update capture、input capture policy、inline threshold、line 上限）改变 → 新 stream generation；retention/queue/batch/flush/fd/metrics 可调不改变解释（ADR-0014-LOG §Segment rolling）。
+4. replay 强制 strict；不暴露 live Y.Doc；只返回 owned bytes + 三态报告；不自动跨 generation 拼接（ADR-0014-LOG §Strict reader）。
+5. complete 仅限五条件全满足（ADR-0011 §重放 + ADR-0014-LOG §Strict reader）；complete 也保留 best-effort disclaimer。
+6. shutdown drain best-effort 且有界；不得阻塞 Registry shutdown / Persistence dispose（ADR-0011 §时序、ADR-0014-LOG §Writer、ADR-0009 §Shutdown、ADR-0010 停止顺序）。
+7. 若引入 queue/batch：不得改 emitter seam / record schema / manifest policy / write-slot 隔离，并须另行定义 close/shutdown、flush、队列满语义（ADR-0014-LOG amendment）。
+8. 健康面独立（`LOG_STREAM_INIT_FAILED`、dropped、sink failure、queue health）；初始化失败不影响 create（ADR-0014-LOG §Stream、ADR-0011 §产品契约）。
 9. update-omitted reason 词表冻结 v1 三词；新增须过设计评审（CONTEXT 语义 emission）。
 10. full input / committed update logging 须 Host 显式启用并继承同等或更严格访问控制；日志字段不进默认低基数 metrics label（ADR-0011 §数据保护）。
 
@@ -204,7 +204,7 @@ first-slice adapter 无队列/无常驻 fd ⇒ 停机无积压；`manager.close(
 
 ### D10 逆向物化归日志包（storage projection 逆面收口）
 
-`materializeStrictRecordUpdate`（reader.ts 增量导出）：strict record → `{kind:'update',bytes}|{kind:'omitted',reason}|{kind:'none'}|{kind:'invalid',code}`，实现只消费包内原语（decodeBase64Strict/decodeFrame/frameCrcOf/validateSidecarFrame/streamLayoutPaths），inline/sidecar 路径纵深复验，失败收敛 invalid 绝不抛。app 侧不得二次实现 Base64/frame/CRC 物化（双源必漂移）。locator（current.json）解析留 app 工具层（ADR-0012 冻结布局的离线工具用途；SA8 边界审视 5 判 no-conflict）。
+`materializeStrictRecordUpdate`（reader.ts 增量导出）：strict record → `{kind:'update',bytes}|{kind:'omitted',reason}|{kind:'none'}|{kind:'invalid',code}`，实现只消费包内原语（decodeBase64Strict/decodeFrame/frameCrcOf/validateSidecarFrame/streamLayoutPaths），inline/sidecar 路径纵深复验，失败收敛 invalid 绝不抛。app 侧不得二次实现 Base64/frame/CRC 物化（双源必漂移）。locator（current.json）解析留 app 工具层（ADR-0014 冻结布局的离线工具用途；SA8 边界审视 5 判 no-conflict）。
 
 ### D11 seam 违约姿态 = lenient 隔离（非 loud）
 

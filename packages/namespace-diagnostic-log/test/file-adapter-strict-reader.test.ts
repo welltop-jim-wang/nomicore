@@ -2,7 +2,7 @@
  * 红灯契约 — AC4 strict reader：JSON parse、VFSL、Base64、长度、CRC32C、frame 元数据、
  * 引用、偏移、格式、stream sequence 全量交叉校验；未知版本响亮 incompatible、不近似解释。
  *
- * 锚点：ADR 0012 §Strict reader 与诊断性 replay
+ * 锚点：ADR 0014 §Strict reader 与诊断性 replay
  * - 「默认strict reader对每条record执行JSON parse、VFSL validation及storage/frame交叉校验」
  * - storage validator 职责：「严格 Base64 decode；decoded length 与 payloadLength 一致；
  *   inline/frame CRC 正确；JSONL 与 frame 的 sequence、format/payloadType、payloadLength

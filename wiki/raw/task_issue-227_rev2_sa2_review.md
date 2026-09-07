@@ -1,9 +1,9 @@
 # SA2 窄域设计复审（R2.1）— Issue #227 rev2 design（F-1 窄修验收 + owner 两条必修项逐项验收）
 
 - 被审对象：`wiki/raw/task_issue-227_rev2_design.md`（SA1 **R2.1**——SA8 R2 冲突门禁 reject（窄修型）唯一必修项 F-1 的窄修；D8–D11 架构零变更）
-- 输入：任务简报 `wiki/raw/task_issue-227.md`；R1.1 设计 `wiki/raw/task_issue-227_design.md`；SA8 R2 冲突报告 `wiki/raw/task_issue-227_rev2_design_conflict_report.md`；ADR-0012-LOG L280–318、ADR-0011 L97–105、包 `AGENTS.md`（#227 增量段）
+- 输入：任务简报 `wiki/raw/task_issue-227.md`；R1.1 设计 `wiki/raw/task_issue-227_design.md`；SA8 R2 冲突报告 `wiki/raw/task_issue-227_rev2_design_conflict_report.md`；ADR-0014-LOG L280–318、ADR-0011 L97–105、包 `AGENTS.md`（#227 增量段）
 - 基线亲证：`git rev-parse HEAD` = **`31ff694`**（与 R2.1 声明的被修订基线一致；工作树仅 wiki 未跟踪/修改文件，src/test 零改动）
-- 复审方式：**全部独立重验**——R2.1 引用的全部源码锚点逐处亲读（reader.ts / read-session.ts / file.ts / diagnostic-replay.ts）；三个测试文件全文亲读（`file-adapter-read-session.test.ts`、`file-adapter-retention-lease-gate.test.ts`、`strict-reader-lease.test.ts`）；**独立全仓扫描**所有 `sweepRetention` / `openDiagnosticReadSession` 测试调用点（含设计/SA8 均未逐例列出的 `file-adapter-retention*.test.ts` ×3 与 `apps/yjs-server/test/*` ×2——见 §4.3）；ADR-0012 关键条款原文亲读比对
+- 复审方式：**全部独立重验**——R2.1 引用的全部源码锚点逐处亲读（reader.ts / read-session.ts / file.ts / diagnostic-replay.ts）；三个测试文件全文亲读（`file-adapter-read-session.test.ts`、`file-adapter-retention-lease-gate.test.ts`、`strict-reader-lease.test.ts`）；**独立全仓扫描**所有 `sweepRetention` / `openDiagnosticReadSession` 测试调用点（含设计/SA8 均未逐例列出的 `file-adapter-retention*.test.ts` ×3 与 `apps/yjs-server/test/*` ×2——见 §4.3）；ADR-0014 关键条款原文亲读比对
 - 边界：**零生产代码改动、零测试改动、零 git 操作**；唯一写入 = 本文件
 - 时间：2026-09-06（design-review 窄域轮，R2.1）
 
@@ -117,6 +117,6 @@
 
 - 本轮零生产代码改动、零测试改动、零 git 操作（HEAD 仍 `31ff694`）；唯一写入 = 本文件。
 - 未运行测试套件（被审对象为设计文档；owner 评论已载明 `31ff694` 全量 494 测试绿，与本轮静态推演互证；A6a/B4b 的预红由 SA6 落地时留证）。
-- 编号消歧：ADR-0012-LOG = `docs/adr/0012-vfsl-validated-jsonl-and-framed-sidecar-change-log.md`。
+- 编号消歧：ADR-0014-LOG = `docs/adr/0014-vfsl-validated-jsonl-and-framed-sidecar-change-log.md`。
 
 **Verdict: approve** —— R2.1 兑现 F-1 且无伪绿路径存活；D8–D11 承接 owner O-1/O-2 逐句正确。按 §12 路由第 3 步派发 SA6（携带本文 §5 K-binding）。

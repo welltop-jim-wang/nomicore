@@ -3,7 +3,7 @@
 - **Repository:** welltop-jim-wang/nomicore（worktree `/home/wangjian/nomicore-fix-issue-150`）
 - **任务类型:** Feature（ADR-0011/0012 的 create 接线票，接线票清单 #149–#151/#155 之一）
 - **红灯契约:** `packages/namespace-registry/test/registry-create-diagnostic-red.test.ts`（16 it，16/16 红，SA6 Phase 1 冻结）
-- **上游契约源:** ADR-0011（best-effort 诊断变更日志）、ADR-0012（JSONL/framed 格式 + File adapter first-slice amendment）、ADR-0009（Registry create 行为）、ADR-0006（createDoc/DOC_DUPLICATE）、ADR-0007（compile/validate）、ADR-0008（Runtime/P0/写序列器纪律）
+- **上游契约源:** ADR-0011（best-effort 诊断变更日志）、ADR-0014（JSONL/framed 格式 + File adapter first-slice amendment）、ADR-0009（Registry create 行为）、ADR-0006（createDoc/DOC_DUPLICATE）、ADR-0007（compile/validate）、ADR-0008（Runtime/P0/写序列器纪律）
 - **依赖现状:** `@nomicore/namespace-diagnostic-log`（#148 冻结 emission/record/vocabulary + #152 File adapter）已在 worktree 落地；`@nomicore/namespace-runtime` 已完成 #149 接线（`src/diagnostic.ts` 为本设计的直接先例——producer 只做语义 emission、emitAttempt 吞没一切、code↔sourceModule 成对）
 - **设计轮次:** R2（R1 被 SA2 reject——三强制项 + LOW 文档项逐条落实，见文末回应表）
 
@@ -74,7 +74,7 @@ create 路径的事实源与阶段已经全部存在于 Registry 既有代码中
 | DC-1 | genesis/update bytes 在 Registry create 槽内对 `initial.doc` 做 `Y.encodeStateAsUpdate`（不扩大 `create-document.ts` 契约） | 改 `CreateDocumentGatewayResult` 返回 bytes 会破坏既有 `registry-create.test.ts` 的 `createDocumentFactory` fixture 形状（scope creep）；ADR-0006 #64 已证明 Persistence `createDoc` 内部做过同款 encode（成功提交 ⟹ 可编码），槽内二次 encode 是幂等只读操作 |
 | DC-2 | `initStream` 在 `createDoc` resolve（committed 事实确立）后、factory 调用前同步调用；factory 成败皆然 | lease 尚未签发、同 key 后续操作在 carrier FIFO 排队、P0 只读 SCHEMA（ADR-0008）⟹ 此刻无任何并发写，bytes 恒纯创建态（诚实 genesis）；factory 失败但文档已提交（ADR-0009「后续可 open」）时 namespace 已存在，stream 应已建立 |
 | DC-3 | `observedAt` 的 Clock 不变量：**每次 create 尝试恰一次 clock 读数用于时间戳**——槽内 Clock 步已执行 ⟹ 复用 `createdAt` 字符串（零额外读数）；Clock 步之前终结的尝试 ⟹ 诊断侧读一次（业务侧零读数）；clock 故障 ⟹ 丢弃该条 emission（不伪造时间戳） | SA6 锚 `clock.calls === 1`（成功路径：业务读 1 + 诊断复用 0）；ADR-0009 Clock 单次读数冻结契约；ADR-0011 禁 `Date.now` 墙钟 |
-| DC-4 | emission 的 issues 做 **producer 侧形状投影**（vfsl `SchemaParseIssue` / `ValidateIssue` → 诊断包 `DiagnosticIssue {code?, message, path}`），顺序逐条保留；**compile 类 issue 的 code 派生与 P0/SCHEMA 写槽既有单源规则逐字对齐**（envelope → `SCHEMA_ENVELOPE_${String(code)}`、vfsl 文本 → `SCHEMA_TEXT_INVALID`，见 §6.3.4）；投影整体在 create-diagnostic.ts 吞没 try 边界内执行（§6.3.1） | ADR-0012 冻结 emission.issues 形状 = 裸数组 `DiagnosticIssue[]`；诊断包 `projectIssues` 的 `isValidItem` 要求顶层 `message: string` + `path: Array`，vfsl 原形状（`{kind, issue}` / `{message, line, column}`）不过校验会被整条丢弃——红灯测试断言 `issues.items.length > 0`；issue 级 code 若另造前缀（R1 曾发明 `VFSL-ENV-E${…}`）会与 P0 unavailable 摘要（`p0.ts:134-148` `toIssueSummary`）及 SCHEMA 写槽（`schema-write.ts:315-317` 同源消费先例）产生码漂移——同一 vfsl 编译失败在不同模块出现两种码，破坏码域单源（SA2 R2-M1 落实） |
+| DC-4 | emission 的 issues 做 **producer 侧形状投影**（vfsl `SchemaParseIssue` / `ValidateIssue` → 诊断包 `DiagnosticIssue {code?, message, path}`），顺序逐条保留；**compile 类 issue 的 code 派生与 P0/SCHEMA 写槽既有单源规则逐字对齐**（envelope → `SCHEMA_ENVELOPE_${String(code)}`、vfsl 文本 → `SCHEMA_TEXT_INVALID`，见 §6.3.4）；投影整体在 create-diagnostic.ts 吞没 try 边界内执行（§6.3.1） | ADR-0014 冻结 emission.issues 形状 = 裸数组 `DiagnosticIssue[]`；诊断包 `projectIssues` 的 `isValidItem` 要求顶层 `message: string` + `path: Array`，vfsl 原形状（`{kind, issue}` / `{message, line, column}`）不过校验会被整条丢弃——红灯测试断言 `issues.items.length > 0`；issue 级 code 若另造前缀（R1 曾发明 `VFSL-ENV-E${…}`）会与 P0 unavailable 摘要（`p0.ts:134-148` `toIssueSummary`）及 SCHEMA 写槽（`schema-write.ts:315-317` 同源消费先例）产生码漂移——同一 vfsl 编译失败在不同模块出现两种码，破坏码域单源（SA2 R2-M1 落实） |
 | DC-5 | 类型消费 = 纯 `import type`（零值级 import），对齐 #149 先例注释「避免值级引入诊断包模块导出拉入 reader/file 运行图」 | Registry 核心零 cordis/零新运行时依赖；emitter/initStream 实例全部由 Host 注入 |
 | DC-6 | 测试未冻结的结局路径（入口 identity 拒绝、closing-entry fatal、clock fatal、`DocCreateFatalError`、unknown throw）由本设计给出**显式映射**（见 §6.2 总表） | 「SA1 漏列/含糊 = SA2 必攻击」；映射规则单源：stage = 尝试推进到的实际阶段在 8 值封闭词表内的投影，sourcePhase/code/committed 携带精确事实 |
 
@@ -126,7 +126,7 @@ interface NamespaceRegistryDiagnosticLog {
 ```
 Host（装配者，测试/生产同构）
   │  createNamespaceRegistry(persistence, { clock, scheduler, diagnosticLog? })
-  │  diagnosticLog = { emitter: <#148 adapter emitter>, initStream?: <ADR-0012 stream 建立缝> }
+  │  diagnosticLog = { emitter: <#148 adapter emitter>, initStream?: <ADR-0014 stream 建立缝> }
   ▼
 Registry（registry.ts — 业务主链零改动，仅结算点旁插一行）
   create() 公共入口 ──┬─ acceptance 拒绝 ──► diag.emitEntryOutcome(acceptance/REGISTRY_NOT_ACCEPTING/not-accessed)
@@ -161,7 +161,7 @@ import type { NamespaceDiagnosticChangeEmitter } from '@nomicore/namespace-diagn
 
 /**
  * #150 诊断日志注入 seam：emitter 为 ADR-0011「Interface 与 seam」节冻结小接口；
- * initStream 为 ADR-0012 stream 建立缝（genesis bytes 由 producer 供给、
+ * initStream 为 ADR-0014 stream 建立缝（genesis bytes 由 producer 供给、
  * adapter 内部构造 genesis-baseline——CONTEXT.md「producer 只供 bytes」，
  * v1 emission/sink 公共面无 genesis 构造路径）。两成员均可选缺省：
  * 缺 emitter = 日志禁用（本 Registry 实例零诊断行为）；缺 initStream =
@@ -313,7 +313,7 @@ function emitAttempt(
         ? projectIssues(e.rawIssues, e.issuesKind)
         : undefined;
     diag.emitter.emit({
-      operation: 'namespace-create',        // ADR-0012 v1 封闭词表
+      operation: 'namespace-create',        // ADR-0014 v1 封闭词表
       stage: e.stage,
       observedAt,                            // 注入 Clock 同源 ISO（禁墙钟）
       source: { kind: 'local' },             // Registry 本地写路径
@@ -449,7 +449,7 @@ function fatalFromBytes(committed: boolean, updateBytes: Uint8Array | undefined)
 **SA6 锚的可达性说明**：红灯 AC2 fatal 用例断言 `effect === 'update'` 且 bytes 物化初始文档——该用例的 encode 必然成功（Persistence createDoc 已提交、无并发写，§8.2），故 `state !== undefined`、走 update 分支；`effect:'unknown'` 只在 encode 失败的不可达防御路径出现。
 
 - `state.slice()` 与 `state` 两份**独立 buffer**：initStream 收到的副本与 emission 引用不共享底层内存——Host 若在 initStream 内变异 buffer，emission 副本不受影响（emitter 管线 intake 亦会 slice——双保险）。
-- `encodeDetachedState` 失败（不可达防御）：initStream 仍调用、传 `undefined`（file adapter 对 `undefined` 跳过 genesis 写但建立 stream——ADR-0012「genesis 未成功写入时 stream 仍可记录诊断事实」）；成功路径 emission 丢弃（不能发明 `update-omitted` 受控 reason——v1 词表仅 `payload-too-large` / `update-capture-disabled` / `empty-update`，新增 reason 须过设计评审，本票不扩词表）。
+- `encodeDetachedState` 失败（不可达防御）：initStream 仍调用、传 `undefined`（file adapter 对 `undefined` 跳过 genesis 写但建立 stream——ADR-0014「genesis 未成功写入时 stream 仍可记录诊断事实」）；成功路径 emission 丢弃（不能发明 `update-omitted` 受控 reason——v1 词表仅 `payload-too-large` / `update-capture-disabled` / `empty-update`，新增 reason 须过设计评审，本票不扩词表）。
 - **initStream 恒在 emit 之前**（固定次序）：语义干净（stream 先立、attempt 随后），Host 的 pending-buffer binding（AC2 File E2E：emit 先缓冲、initStream 后直通）与直通 binding 均兼容——SA6 契约「不锁定 emit/initStream 相对 create() 结算的先后」由同步调用天然满足（两者都在 create Promise 结算前完成）。
 - `initStream` 本体 try/catch 吞没（Host 函数 throw = 违约，隔离；AC4「stream init 失败不改 create 结果」的 Registry 侧义务）。`LOG_STREAM_INIT_FAILED` 健康事件由 Host 侧 adapter 的 observer 产生（file adapter 构造期失败内部上报——`file.ts:952` 源码既有），Registry **不代发、不伪造**。
 
@@ -598,7 +598,7 @@ try {
 
 ## §8 时序与合规性
 
-### 8.1 ADR-0012 amendment C（File adapter emit 接线纪律）合规声明
+### 8.1 ADR-0014 amendment C（File adapter emit 接线纪律）合规声明
 
 amendment 条款（规范性，本票被点名）：「任何将 File adapter 的 `emit` 接入 namespace 生命周期的调用点，必须位于 NamespaceRuntime write sequencer slot 之外，或在该 slot 已释放之后；不得在 slot 内执行同步 File adapter `emit`。」
 
@@ -643,7 +643,7 @@ amendment 条款（规范性，本票被点名）：「任何将 File adapter �
 - Host 若在 `initStream` 内同步 throw（违约），Registry 侧 try/catch 吞没（§6.4）——AC4「stream init 失败不改 create 结果」的 Registry 侧义务；`LOG_STREAM_INIT_FAILED` 等健康事件由 Host 侧 adapter 的 observer 自行产生，Registry 不代发、不伪造、不缓存。
 
 **同步成本声明**：
-- `emit` 与 `initStream` 在 create 槽（或公共入口同步段）内**同步执行**，其全部耗时（含 Host 侧 File adapter 构造期的 `mkdirSync`/`writeFileSync` manifest/genesis 同步 append）计入该次 create 尝试的墙钟耗时，由 create 调用方承担——这是 ADR-0012 amendment「emit 不得在 Runtime write sequencer slot 内」纪律下、create 路径（Registry slot，非 Runtime slot）被决议明文允许的代价结构；
+- `emit` 与 `initStream` 在 create 槽（或公共入口同步段）内**同步执行**，其全部耗时（含 Host 侧 File adapter 构造期的 `mkdirSync`/`writeFileSync` manifest/genesis 同步 append）计入该次 create 尝试的墙钟耗时，由 create 调用方承担——这是 ADR-0014 amendment「emit 不得在 Runtime write sequencer slot 内」纪律下、create 路径（Registry slot，非 Runtime slot）被决议明文允许的代价结构；
 - 成本量级：memory adapter 纯内存 O(record)；File adapter first slice 每次有界 I/O（manifest 一次 'wx' 写 + genesis 一条 append + current.json 一次 rename）。Registry 不引入任何异步化/队列化缓解——那是 adapter 层的演进自由（#152 后续切片），不在本票。
 
 **shutdown 行为**：
@@ -652,7 +652,7 @@ amendment 条款（规范性，本票被点名）：「任何将 File adapter �
 - 本设计零异步日志状态（无队列、无在途 Promise、无 timer）⟹ Registry 停止路径零新增资源、零死等风险。
 
 **encode 失败的静默 best-effort 备案**：
-- `encodeDetachedState` 失败（§6.2 #17/#18 的 `state === undefined`）为不可达防御路径（ADR-0006 #64：Persistence createDoc 提交即依赖同款 encode，成功提交 ⟹ 可编码）；一旦到达，处置为：initStream 仍调用（bytes `undefined`，stream 建立而 genesis 缺席——ADR-0012「genesis 未成功写入时 stream 仍可记录诊断事实」）、成功路径不构造 emission、factory-fatal 路径 `effect:'unknown'`；
+- `encodeDetachedState` 失败（§6.2 #17/#18 的 `state === undefined`）为不可达防御路径（ADR-0006 #64：Persistence createDoc 提交即依赖同款 encode，成功提交 ⟹ 可编码）；一旦到达，处置为：initStream 仍调用（bytes `undefined`，stream 建立而 genesis 缺席——ADR-0014「genesis 未成功写入时 stream 仍可记录诊断事实」）、成功路径不构造 emission、factory-fatal 路径 `effect:'unknown'`；
 - 该缺席是**静默的**（Registry 无诊断日志健康通道，不为日志层自身的缺席伪造事件——与「不代发 LOG_STREAM_INIT_FAILED」同款纪律）；观测性缺口在此显式备案：检测手段 = stream 有 manifest 而无 genesis-baseline 记录（Host 侧 readStreamStrict 可见），ADR-0011「这些健康信号本身也不构成日志完整性证明」允许此类最佳努力缺席。
 
 ---

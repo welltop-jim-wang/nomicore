@@ -1,7 +1,7 @@
 /**
- * CRC-32C（Castagnoli）纯 TS 表驱动实现（设计 §7.3；ADR 0012 §Binary frame v1）。
+ * CRC-32C（Castagnoli）纯 TS 表驱动实现（设计 §7.3；ADR 0014 §Binary frame v1）。
  *
- * 参数逐字取 ADR 0012：poly 0x1EDC6F41（反射形 0x82F63B78）/ init 0xFFFFFFFF /
+ * 参数逐字取 ADR 0014：poly 0x1EDC6F41（反射形 0x82F63B78）/ init 0xFFFFFFFF /
  * refin true / refout true / xorout 0xFFFFFFFF。256 项反射表构造期生成。
  * KAT：check("123456789") === 0xE3069283（ADR 给出的检验值即现成 KAT）。
  *

@@ -2,7 +2,7 @@
 
 **Status**: analyzed | **Date**: 2026-08-29
 **Severity**: medium
-**Type**: new-feature-defect（接线从未存在，非回归——ADR-0012 amendment C 点名的 #149 接线缺口）
+**Type**: new-feature-defect（接线从未存在，非回归——ADR-0014 amendment C 点名的 #149 接线缺口）
 **Layer**: multi-service（`@nomicore/namespace-runtime` + `@nomicore/doc-runtime` + `@nomicore/namespace-diagnostic-log` 三包接缝缺失）
 
 ## Symptoms
@@ -78,7 +78,7 @@ $ npx vitest run packages/namespace-runtime/test/sa5-diag-repro.test.ts --typech
 **根因一句话**：#148/#152/#153 只交付了诊断日志的契约与存储侧，NamespaceRuntime 的两个写槽与接纳层从未获得 emitter 注入与发射调用（依赖、seam、emit、owned-bytes 四层全缺）——ROOT/SCHEMA 变更事实在产生点即丢失。
 
 **Fix direction**（供 SA1 设计参考，不展开具体实现方案）：
-需要沿"注入—发射—载荷"三段补线：(a) 在 Runtime 构造 seam（`NamespaceRuntimeSeamInput` + 生产工厂）新增可选 emitter + Clock 注入，emitter 引用进入 `WriteEnv`/`SchemaWriteEnv` 闭包；(b) 在两个写槽的全部既有结果路径（含接纳层拒绝与 fatal/notifier 路径）按上文 stage 映射发射语义 emission，emit 位置遵守 ADR-0012 amendment C（不得在 write sequencer slot 内执行同步 File adapter emit；slot 外或 slot 释放后发射）并保持 gate 拒绝 `input:not-accessed`、快照失败不重读敌意输入；(c) 为 doc-runtime 事务 seam 增加"不暴露 live Y.Doc 的 owned update bytes 交付"能力（transaction 内捕获该事务 update），使 committed 记录可携带精确 effect，捕获不可得时显式 `update-omitted`。
+需要沿"注入—发射—载荷"三段补线：(a) 在 Runtime 构造 seam（`NamespaceRuntimeSeamInput` + 生产工厂）新增可选 emitter + Clock 注入，emitter 引用进入 `WriteEnv`/`SchemaWriteEnv` 闭包；(b) 在两个写槽的全部既有结果路径（含接纳层拒绝与 fatal/notifier 路径）按上文 stage 映射发射语义 emission，emit 位置遵守 ADR-0014 amendment C（不得在 write sequencer slot 内执行同步 File adapter emit；slot 外或 slot 释放后发射）并保持 gate 拒绝 `input:not-accessed`、快照失败不重读敌意输入；(c) 为 doc-runtime 事务 seam 增加"不暴露 live Y.Doc 的 owned update bytes 交付"能力（transaction 内捕获该事务 update），使 committed 记录可携带精确 effect，捕获不可得时显式 `update-omitted`。
 
 ## Evidence
 

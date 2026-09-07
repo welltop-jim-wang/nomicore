@@ -88,7 +88,7 @@
   3. L95：Registry 核心「通过内部结构化 observer seam上报生命周期与故障……v1不提供公共事件订阅」——包内观测 seam 的既有形态。
 - 对本任务影响：event-loop delay / 分段时差探针必须走注入时源（单调），禁止 `Date.now()`/`performance.now()` 回退（protocol §23.4 同款明文）；复现的手动单调时钟与 ADR 纪律一致。
 
-### ADR-0012 实例身份单一真相与 WebSocket plugin 所有权（accepted；issue #204 已实现）— 边界
+### ADR-0014 实例身份单一真相与 WebSocket plugin 所有权（accepted；issue #204 已实现）— 边界
 
 `docs/adr/0012-instance-identity-and-websocket-plugin-ownership.md`
 

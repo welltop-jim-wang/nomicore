@@ -4,7 +4,7 @@
 - Worktree：`/home/wangjian/nomicore-fix-issue-226`（branch `mabf/issue-226`，HEAD `45a22f060eee924e4ed6a2d6fa64fb7cd6b2db08`）
 - 本轮角色：SA1 design iteration 1（对 `task_issue-226_design.md`（iteration 0，2026-09-05 23:09 落盘）的独立复核轮 + 定稿轮）
 - 输入产物：`task_issue-226.md`、`task_issue-226_sa5.md`（独立复现）、`task_issue-226_sa6_red.md`（红灯契约审计 R0）、`task_issue-226_conflict_report.md`（SA8 clear R5 维持）、`task_issue-226_relevant_decisions.md`、`20260905-bug-issue-226*.md`（首轮 + verify2–6）、`task_issue-226_design.md`（iteration 0）
-- 规范基准：`docs/adr/0011-best-effort-namespace-diagnostic-change-log.md`、`docs/adr/0012-vfsl-validated-jsonl-and-framed-sidecar-change-log.md`（含 2026-08-28 File adapter first slice amendment）、ADR-0008/0009/0010 被引条款、`CONTEXT.md` 词条
+- 规范基准：`docs/adr/0011-best-effort-namespace-diagnostic-change-log.md`、`docs/adr/0014-vfsl-validated-jsonl-and-framed-sidecar-change-log.md`（含 2026-08-28 File adapter first slice amendment）、ADR-0008/0009/0010 被引条款、`CONTEXT.md` 词条
 - 本轮边界：**仅设计，不实现生产修复**（`src/**` 零改动）；红灯契约文件零改动（§6 修订建议提给 SA6/总控裁决）
 
 ---
@@ -33,7 +33,7 @@ iteration 0 的全部载荷断言本轮从源码/测试文本重新核验，未�
 | V5 | 虚拟 scheduler 排除注入式延迟 | `testing.ts:77-110`：timer 只存 Map、仅 `advanceBy` 触发；#226/#150 契约测试均不 advance | ✅ 注入式 `scheduler.setTimeout(fn, 0)` 在两套契约下永不触发 |
 | V6 | 静态守卫正则不含 `setImmediate` | `registry-surface.test.ts` §2.M（L274–285）三条正则逐字符：`HOST_GLOBAL_TIMER_BARE`/`GLOBALTHIS` = `setTimeout|setInterval|clearTimeout|clearInterval`，`DATE_NOW` = `Date.now(`；扫描范围 = registry `src/*.ts` 全部（含 testing.ts，零豁免） | ✅ `setImmediate(` 文本不命中任何一条 ⇒ **无需豁免即可过守卫**；persistence/clock 包同型守卫不覆盖 registry/diagnostic-log 包；namespace-diagnostic-log 无 timer 守卫 |
 | V7 | #150 绿契约对 macrotask 延后安全 | `registry-create-diagnostic-red.test.ts`（18 用例）：到达断言全部 poll 型（`waitAttempts` L308、`expect.poll` 3s @ L419/466/785 等）；两处 `flushMicrotasks`（L544/L753）锚定的是**业务槽推进**（createDoc 进入 gate）与「恰一条记录」计数，均与诊断到达时点正交 | ✅ 早结局/initStream 从槽内同步 → macrotask（<1ms 量级）后移，在 3s poll 余量内 |
-| V8 | ADR-0011/0012 时序条款 | ADR-0011「时序与 sequencer」节（业务排序独占、emitter 不被 await、adapter 慢/满不得延长 write slot 或阻塞 close/shutdown）；ADR-0012 amendment：「emit 接入 namespace 生命周期的调用点必须位于 write sequencer slot 之外或 slot 已释放之后」+ queue/batch 为演进形态须另定义四类语义 | ✅ 设计选项 (a)（保持同步 append、只移调用点）为 amendment 显式授权路径 |
+| V8 | ADR-0011/0012 时序条款 | ADR-0011「时序与 sequencer」节（业务排序独占、emitter 不被 await、adapter 慢/满不得延长 write slot 或阻塞 close/shutdown）；ADR-0014 amendment：「emit 接入 namespace 生命周期的调用点必须位于 write sequencer slot 之外或 slot 已释放之后」+ queue/batch 为演进形态须另定义四类语义 | ✅ 设计选项 (a)（保持同步 append、只移调用点）为 amendment 显式授权路径 |
 
 复核中修正 iteration 0 的两处小误差（不影响结论）：①§5.1 早结局发射点实为 **8 处**（iteration 0 列 7 处，漏 L1379）；②R3 从阻断降级为推荐（见 §6）。
 
@@ -74,7 +74,7 @@ type DiagPumpTask =
 4. **非抛边界**：drain 整体 try/catch；单任务失败由既有 `resolveEmitterOnce`/`emitAttempt` 吞没边界收编、不重试（「emit 尝试恰一次」保持）；调度本身 throw（病态宿主）→ 该 ns 队列整体静默终止。
 5. **shutdown 无关**：Registry shutdown 不等待/不取消/不清空泵（ADR-0011 L129）；残留任务照常 drain，投递目标由 Host 决定（生产：manager closed → 丢弃桩 + `manager-closed` 计数，现有语义）。
 6. **内存回收**：drain 至空删该 ns 队列条目；泵按 namespaceId **数据**键控，无共享可变绑定（#155 C1 纪律保持）。
-7. **非 queue/batch 切片**：drain 内每任务仍是对冻结 seam 的单条同步调用（`initStream` 恰一次、每 record 恰一次 `emit`）；不触发 ADR-0012 L252 的 close/flush/队列满/fsync 四类额外语义义务（泵自身的有界/丢弃/寿命已在条款 3–5 显式定义）。
+7. **非 queue/batch 切片**：drain 内每任务仍是对冻结 seam 的单条同步调用（`initStream` 恰一次、每 record 恰一次 `emit`）；不触发 ADR-0014 L252 的 close/flush/队列满/fsync 四类额外语义义务（泵自身的有界/丢弃/寿命已在条款 3–5 显式定义）。
 
 ### D2 早结局数据键控归属（AC1）
 

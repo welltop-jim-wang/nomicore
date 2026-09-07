@@ -17,7 +17,7 @@
  *   fatal 四分类 + owned bytes + not-accessed + 故障隔离 + Proxy/accessor 零额外读取）；
  * - ADR-0011（结局/阶段词表、输入捕获四态、owned update bytes、emit 不 throw 的
  *   producer 防御义务、冒号后「日志不改变业务面」）；
- * - ADR-0012（operation/stage 封闭词表、attemptId att-+32hex、observedAt 注入 Clock）。
+ * - ADR-0014（operation/stage 封闭词表、attemptId att-+32hex、observedAt 注入 Clock）。
  *
  * 行为锚点（全部为运行时行为断言，无任何源码 grep）：
  * - 每次变更尝试（committed/rejected/fatal）恰好产生 1 条 attempt record；

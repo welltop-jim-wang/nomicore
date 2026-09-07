@@ -1,5 +1,5 @@
 /**
- * NDCL v1 binary frame codec（设计 §5；ADR 0012 §Binary frame v1 逐字节）。
+ * NDCL v1 binary frame codec（设计 §5；ADR 0014 §Binary frame v1 逐字节）。
  *
  * 25-byte header + payload；纯 TS（Uint8Array + 位运算），零环境绑定：
  *
@@ -16,14 +16,14 @@
  * ```
  *
  * CRC 输入域 = header 前 21 bytes（magic 至 payloadLength）直接连接 payload，
- * 不含 crc32c 字段（ADR 0012 逐字；与 SA6 测试夹具 `test/helpers/frame.ts`
+ * 不含 crc32c 字段（ADR 0014 逐字；与 SA6 测试夹具 `test/helpers/frame.ts`
  * 三方同构——writer/reader/测试各自独立可校验）。
  */
 import { crc32c } from './crc32c.js'
 
 /** NDCL v1 固定 header 长度（magic/frameVersion/payloadType/flags/reserved/sequence/payloadLength/crc32c）。 */
 export const FRAME_HEADER_BYTES = 25
-/** payloadType 1 = yjs-update-v1（ADR 0012 逐字）。 */
+/** payloadType 1 = yjs-update-v1（ADR 0014 逐字）。 */
 export const PAYLOAD_TYPE_YJS_UPDATE_V1 = 1
 
 /** 解码产物（uint64 sequence 以 BigInt 装载——无 number 失真）。 */
@@ -107,7 +107,7 @@ export function decodeFrame(bin: Uint8Array, offset: number): DecodedFrame {
   }
 }
 
-/** frame 的 CRC 重算（offset 处 frame：header 前 21 bytes + payload；ADR 0012 逐字）。 */
+/** frame 的 CRC 重算（offset 处 frame：header 前 21 bytes + payload；ADR 0014 逐字）。 */
 export function frameCrcOf(bin: Uint8Array, offset: number): number {
   const header = bin.subarray(offset, offset + FRAME_HEADER_BYTES)
   const payloadLength =

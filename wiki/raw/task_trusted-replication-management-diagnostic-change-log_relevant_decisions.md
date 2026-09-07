@@ -73,7 +73,7 @@
   - 「- acceptance 前拒绝在对应公共入口记录；」「- 已接纳操作在取得既有槽后记录真实 gate、snapshot、validation 和 transaction 结局；」「- committed record 的 sequence 分配与 emitter 接收可发生在 transaction committed 事实可知之后，但 **emitter 不被 `await`**；」「- `notifyDirty` 仍按 ADR 0008/0010 的原有槽序执行。日志记录 dirty failure，但不替代或包裹 dirty notification；」「- adapter 慢、失败或队列满都不得延长 write slot 或阻塞 close/shutdown；Host shutdown 可 best-effort drain 日志，但 Registry/Persistence 的停止不得无限等待日志 sink。」
   - （关联节）「本 ADR 增加可选 observability，不修改 ADR 0006 的 snapshot Persistence 与 dirty notification 语义、ADR 0008 的单 sequencer/zero-write/fatal/close 契约、ADR 0009 的 Registry lifecycle 与 observer 隔离、**ADR 0010 的 trusted replication、ACK 和 transport observability 语义**。」——本票「without changing replication identity gates, ACK timing, transport observability, or business write ordering」与该关联节同向。
 
-### ADR-0012 VFSL 校验的 JSONL 与 framed sidecar 诊断日志格式（accepted，含 2026-08-28 首切片 amendment）——本票主规范之二：词表与接线纪律
+### ADR-0014 VFSL 校验的 JSONL 与 framed sidecar 诊断日志格式（accepted，含 2026-08-28 首切片 amendment）——本票主规范之二：词表与接线纪律
 
 #### A. operation / result / stage / source-context 词表（本票 AC1/AC2/AC5 的词表依据）
 
@@ -94,7 +94,7 @@
 
 #### C. 首切片 amendment 与 write-slot 接线纪律（**规范性，点名本票**）
 
-- 与本任务的关联点：ADR-0012 amendment 明文「不满足该条件的接线为不合规，必须由 #149–**#151**/#155 或后续接线票修复后方可启用」——本票（#151）就是 replication/management 侧的接线责任票，emit 调用点位置是本票设计的硬约束。
+- 与本任务的关联点：ADR-0014 amendment 明文「不满足该条件的接线为不合规，必须由 #149–**#151**/#155 或后续接线票修复后方可启用」——本票（#151）就是 replication/management 侧的接线责任票，emit 调用点位置是本票设计的硬约束。
 - 核心条款（原文摘录）：
   - 「每个 `emit` 在调用栈内执行至多一条 final JSONL record 的有界同步 append；若其携带 sidecar，则额外执行至多一帧 BIN append，顺序为 BIN-first。该首切片不维护 writer queue、不做 batch flush、不提供 fsync 开关，也不保持常驻 file descriptor。」
   - 「**任何将 File adapter 的 `emit` 接入 namespace 生命周期的调用点，必须位于 NamespaceRuntime write sequencer slot 之外，或在该 slot 已释放之后；不得在 slot 内执行同步 File adapter `emit`。**不满足该条件的接线为不合规，必须由 #149–#151/#155 或后续接线票修复后方可启用。」
@@ -116,7 +116,7 @@
   - 「同一 namespace 内所有受控 Y.Doc 写共享唯一严格 FIFO write sequencer；不同 namespace 可并行。」
   - 「每个真正写任务的槽依次执行：lifecycle/fatal gate、`DocHandle.getStatus()` writable gate、输入快照、领域校验和 detached 构造、一次 Yjs transaction、`await notifyDirty()`，然后才释放给下一任务。」「`notifyDirty` 是由构造方绑定 `persistence.saveDoc(handle)` 的窄接缝」
   - 「`@nomicore/doc-runtime` 必须提供 branded `DocRuntimeFatalError`，至少包含 `committed` 与稳定 `phase`。任何 internal fatal——无论 committed 与否——都永久关闭该 Runtime 的全部写能力并保留读取：」「- `committed:false` 不调用 dirty notifier；」「- `committed:true` 或未知异常保守视为可能已提交，在当前槽内 best-effort `notifyDirty()`，但始终 reject 原始 fatal；」——committed-aware fatal 结局（AC2）的 committed 事实来源。
-  - 稳定码注册修订（2026-08-24）：「其余公共面可观测稳定码不逐码入本文，以包内各稳定码定义处的 append-only 注册表为准——错误/禁用码族在 `packages/namespace-runtime/src/errors.ts`……」——同理，replication 模块既有稳定码以其定义处注册表为准，日志层只透传不复制（ADR-0012 §A 同款纪律）。
+  - 稳定码注册修订（2026-08-24）：「其余公共面可观测稳定码不逐码入本文，以包内各稳定码定义处的 append-only 注册表为准——错误/禁用码族在 `packages/namespace-runtime/src/errors.ts`……」——同理，replication 模块既有稳定码以其定义处注册表为准，日志层只透传不复制（ADR-0014 §A 同款纪律）。
 
 ### ADR-0007 逻辑验证与 Yjs Runtime Bridge（accepted；open/read 条款被 ADR-0008 取代）——零写入与 observer no-rollback
 
@@ -140,7 +140,7 @@
 
 ### ADR-0001 / 0002 / 0003 / 0004 / 0005（accepted）——盘点结论
 
-- 与本票接线对象无直接条款交集；仍受其既有边界约束（record schema 的 VFSL 冻结纪律经 ADR-0012 §VFSL record schema 间接约束：本票不改 record schema 版本/指纹、不新增 operation）。本票不触碰 VFSL 引擎、类型投影与生成管线。
+- 与本票接线对象无直接条款交集；仍受其既有边界约束（record schema 的 VFSL 冻结纪律经 ADR-0014 §VFSL record schema 间接约束：本票不改 record schema 版本/指纹、不新增 operation）。本票不触碰 VFSL 引擎、类型投影与生成管线。
 
 ## 设计后复审追加（2026-08-31，SA8 设计后复审产出）
 
@@ -167,7 +167,7 @@
 
 ### 接线纪律（SA3 实施约束，§15）
 
-- emit 挂点全部 `settled.then(emitSlot)`（槽后）或公共入口同步段（槽外）——ADR-0012 amendment C 合规形态；emit 不被 await。
+- emit 挂点全部 `settled.then(emitSlot)`（槽后）或公共入口同步段（槽外）——ADR-0014 amendment C 合规形态；emit 不被 await。
 - 禁止事项：open/getStatus/close 加任何 emission；enable 槽加 fence；E3 单读捕获改双读；R6 恢复无条件 notifyDirty（R-3.1 是契约）；raw bytes 进 input.snapshot。
 - 存量测试键集更新恰三文件（`runtime-close-lifecycle.test.ts:159` 十→十二键；`runtime-registry-internal-seam.test.ts:270/:123`；`registry-open.test.ts:879` lease 键集）。
 - SA6 owned：红灯测试文件由 SA6 自行修订两处 fatal 码字面量（R-3.2）；SA3 禁改断言逻辑。

@@ -110,7 +110,7 @@ diff 亲证），iteration 1 的满足判定持续有效。五条 AC 逐项核�
   边际测试文件（§1.1，本审查自己开出的收敛清单内 + 其同类扩展）+ REPORT 扩写（AC5
   份内）+ wiki 档案；**零新增生产面**。清单外 4 落点（M-3）维持 iteration 1 判定
   （必要落点/法定义务，无实质 creep；design §3 ALLOW LIST 补录仍路由 SA1，MINOR）。
-- **AD-9 零漂移面维持**：`packages/ws-replication/src`、`docs/protocols/`、ADR-0012、
+- **AD-9 零漂移面维持**：`packages/ws-replication/src`、`docs/protocols/`、ADR-0014、
   config.ts、main.ts、`domains/`、生成物全部 0 行 diff（SA4 iteration 2 §II.4 复核 +
   `generate --check` exit 0 互证）；`vitest.config.ts`/`package.json`/`pnpm-lock.yaml`/
   `.github/` 零 diff（触发面无操纵，SA4 iteration 4 亲证，本轮文件列表复核一致）。

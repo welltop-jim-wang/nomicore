@@ -15,7 +15,7 @@
   被 `test/schema-freeze.test.ts` 钉死。
 - **emit 同步、不 throw、不返回 durability promise、不留调用方可变引用（ADR-0011
   interface 契约）；File adapter 首切片为有界同步 append——可被文件系统延迟阻塞
-  （ADR-0012-LOG 首切片 amendment 为权威；「非阻塞」是 interface 级契约，不是任意
+  （ADR-0014-LOG 首切片 amendment 为权威；「非阻塞」是 interface 级契约，不是任意
   调用点不阻塞的承诺——任何接入 namespace 生命周期的调用点必须在 write sequencer
   slot 之外）**：emission 传入后 plain-data snapshot 所有权移交日志管线（管线深冻结
   语义 record——producer 后变异在 strict mode 下 loud 抛 TypeError，属 producer
@@ -31,7 +31,7 @@
 
 ## Boundaries
 
-- **File adapter `emit` 为有界同步 append（ADR 0012 amendment，issue #152 R2）**：
+- **File adapter `emit` 为有界同步 append（ADR 0014 amendment，issue #152 R2）**：
   慢文件系统可阻塞调用方线程——**任何把 File adapter `emit` 接入 namespace 生命周期的
   接线必须位于 NamespaceRuntime write sequencer slot 之外或释放后**（slot 内接线为
   不合规；接线范围归 #149–#151/#155 等票，本包不实施）。「有界」只限制数据量/操作数，
@@ -75,7 +75,7 @@
   文件名）。三者均不可被任何既有枚举/扫描路径当作数据；新增枚举/扫描必须沿用
   `enumerateSegmentGroups` 与 `isSafeStreamId` 文法门。
 - **retention 租约（#154，INV-9）**：读会话租约注册表为**进程内**共享结构
-  （`(rootDir, namespaceId)` 分区）——正确性依赖 ADR 0012「单进程独占根目录」部署
+  （`(rootDir, namespaceId)` 分区）——正确性依赖 ADR 0014「单进程独占根目录」部署
   约束，不实现跨进程锁；跨进程部署不在 v1 契约内。
 - **（#227）strict reader / replay 全程持约 + replay 完整性判定收紧**：
   `readStreamStrict` 在枚举、读取、校验全程持 read-session 租约——`StrictReadRequest.session?`

@@ -88,7 +88,7 @@ D4 论证 2 原文「微任务关窗在同步续段结束后 FIFO 执行 → 后
 
 - **静默失败**:manager 全部丢弃路径有 NDJSON 计数事件 ✓;adapter/构造失败有 `diagnostic-log-manager-failed` / `storage-write-failed` 等事件 ✓。例外:i1(resolver 违约无通道,先例对齐,备案)。**但 C1 场景比静默失败更糟——误归因以「正常记录」形态伪装,现有健康面完全不可见**。
 - **状态闭环**:无 UI 面(本票为配置/工具/健康事件);E4(rootDir 为普通文件)→ adapter disabled + NDJSON 事件 + create/open/read 业务照常 ✓。
-- **降级路径**:E4、磁盘满等外部故障 → 业务不变 + 事件可观测,与 ADR-0012-LOG「初始化失败不影响 namespace create」明文一致 ✓。
+- **降级路径**:E4、磁盘满等外部故障 → 业务不变 + 事件可观测,与 ADR-0014-LOG「初始化失败不影响 namespace create」明文一致 ✓。
 - **虚假降级识别**:**未发现伪降级**。E4 是操作员外部配置错误(ADR 明文降级形态);ensureAdapter 失败有 manager-failed 响亮事件(非掩盖)。唯一倾向性风险:D4 的「窗失效 → 丢弃可观测」把「接线前提被打破(如 Registry 未来插入 await)导致**成功 create 的 #17 结局记录丢失**」与「正常无归属前置失败丢弃」混入同一 `unattributed` 计数——接线 bug 有被 generic 降级计数掩盖的倾向。要求:C1 修订时对「成功路径结局记录被丢弃」提供可区分信号(如独立 reason/事件),把接线回归从合法降级中隔离出来。
 - **M1 补充**:replay 工具的「绝不抛」承诺即工具面的错误闭环;当前算法清单使该闭环在 EACCES/EISDIR 等场景破洞(M1)。
 

@@ -2,7 +2,7 @@
 
 > SA1 设计产出（**R1 修订版 + 定稿随附修订（SA2 R2 pass 附条件：N1 §4.3 H 豁免行 / N2 §14 运维指引可执行化，均已并入）**——此前已落实 SA2 R1 reject 全部 4 项必改：#1 MEDIUM 链中 orphan 生命周期、#2 RotateCause 判定次序、#3 不可读≠缺失、#4 writeCurrent 事件指名；+3 项 LOW 记档。逐条落实位置见 §15 表）；任务类型：功能开发。
 >
-> 约束优先级：任务简报 > SA8 前置门禁（`task_diagnostic-log-stream-roll-repair_conflict_report.md` verdict=clear + 七条钉死语义 + `…_relevant_decisions.md` ADR 摘录）> ADR-0012（含 2026-08-28 首切片 amendment）/ADR-0011/ADR-0008 > #148 冻结契约 > #152/R2 实现与设计（`wiki/raw/task_diagnostic-log-file-adapter-r2_design.md`）> SA2 R1 评审（`task_diagnostic-log-stream-roll-repair_sa2_review.md`，reject 窄范围）。
+> 约束优先级：任务简报 > SA8 前置门禁（`task_diagnostic-log-stream-roll-repair_conflict_report.md` verdict=clear + 七条钉死语义 + `…_relevant_decisions.md` ADR 摘录）> ADR-0014（含 2026-08-28 首切片 amendment）/ADR-0011/ADR-0008 > #148 冻结契约 > #152/R2 实现与设计（`wiki/raw/task_diagnostic-log-file-adapter-r2_design.md`）> SA2 R1 评审（`task_diagnostic-log-stream-roll-repair_sa2_review.md`，reject 窄范围）。
 >
 > 本文只设计，不改任何代码。SA6 红灯锚定按简报工作流裁剪置于本设计定稿（SA8 设计复审 clear + SA2 pass）之后——§13 给出 SA6 锚定的完整契约面。
 
@@ -40,8 +40,8 @@
 
 ### 1.2 术语钉死（防 SA2 攻击点：概念混同）
 
-- **Runtime generation**（ADR-0008/0009 的进程内 Runtime 更迭）≠ **stream generation**（本日志的一代 stream）。AC1 的「across Runtime generations」指前者：同一 streamId 的 stream 被**顺序复用**的多位 writer 接力，不绑定任何 Runtime generation（ADR-0012「stream不绑定 Runtime generation」）。
-- **单逻辑 writer**（AC1）：本切片无 queue（amendment 首切片边界），emit 同步在调用栈内执行——单进程内对同一 `(rootDir, namespaceId)` 同时至多一个 adapter 实例是**部署约束**（ADR-0012「单进程独占根目录…不实现跨进程锁」）；正常重启是顺序复用，非并发。本票不添加任何锁原语。
+- **Runtime generation**（ADR-0008/0009 的进程内 Runtime 更迭）≠ **stream generation**（本日志的一代 stream）。AC1 的「across Runtime generations」指前者：同一 streamId 的 stream 被**顺序复用**的多位 writer 接力，不绑定任何 Runtime generation（ADR-0014「stream不绑定 Runtime generation」）。
+- **单逻辑 writer**（AC1）：本切片无 queue（amendment 首切片边界），emit 同步在调用栈内执行——单进程内对同一 `(rootDir, namespaceId)` 同时至多一个 adapter 实例是**部署约束**（ADR-0014「单进程独占根目录…不实现跨进程锁」）；正常重启是顺序复用，非并发。本票不添加任何锁原语。
 - **可证明尾部（provable tail）**：以后缀性质定义的三个可截断集合（§5.1），判定只依赖**终止符/边界行走/引用交叉**三类机器可证事实，绝不依赖「内容恰好能解析」这类弱证据。
 
 ---
@@ -50,10 +50,10 @@
 
 | # | 决策 | 内容 | 依据 |
 |---|---|---|---|
-| D1 | locator 解析三分支 | 显式 `resumeStreamId` > 可用 current.json > manifests 扫描确定性恢复（恰一候选）；歧义（不可用 locator + ≥2 候选）→ disabled + 上报，绝不猜测 | ADR-0012 §File adapter 布局；冲突点 #6 |
-| D2 | reopen = 构造期严格证明 | 健康证明复用 reader 同源校验（manifest 门 + 逐行 VFSL/storage/policy + 跨 segment sequence 状态机），**reader 判 ok（且尾损可修复）⇔ 可续写**；证明失败 → 确定性 rotate（新 generation，cause 封闭枚举） | ADR-0012 §打开现有 stream/§打开与尾部恢复；AC4 |
-| D3 | 修复三类别 + 全有或全无 | 仅 §5.1 三类尾部截断；出现任何不可修复损坏 → **零修复**（含可修复尾巴也不动），旧 stream 只读 + rotate | ADR-0012「以下情况不尝试修复中间数据」；冲突点 #7 |
-| D4 | 滚动状态由文件派生 | segment 编号/字节/行数在 reopen 时从磁盘扫描派生，运行期内存计数器推进；**不新增任何持久状态文件**（无内存-磁盘孪生真相源） | ADR-0012 amendment「无常驻 fd/无队列」精神；#152 fresh-stat 原则 |
+| D1 | locator 解析三分支 | 显式 `resumeStreamId` > 可用 current.json > manifests 扫描确定性恢复（恰一候选）；歧义（不可用 locator + ≥2 候选）→ disabled + 上报，绝不猜测 | ADR-0014 §File adapter 布局；冲突点 #6 |
+| D2 | reopen = 构造期严格证明 | 健康证明复用 reader 同源校验（manifest 门 + 逐行 VFSL/storage/policy + 跨 segment sequence 状态机），**reader 判 ok（且尾损可修复）⇔ 可续写**；证明失败 → 确定性 rotate（新 generation，cause 封闭枚举） | ADR-0014 §打开现有 stream/§打开与尾部恢复；AC4 |
+| D3 | 修复三类别 + 全有或全无 | 仅 §5.1 三类尾部截断；出现任何不可修复损坏 → **零修复**（含可修复尾巴也不动），旧 stream 只读 + rotate | ADR-0014「以下情况不尝试修复中间数据」；冲突点 #7 |
+| D4 | 滚动状态由文件派生 | segment 编号/字节/行数在 reopen 时从磁盘扫描派生，运行期内存计数器推进；**不新增任何持久状态文件**（无内存-磁盘孪生真相源） | ADR-0014 amendment「无常驻 fd/无队列」精神；#152 fresh-stat 原则 |
 | D5 | roll targets 归冻结面 | 三 target 写入 manifest（17 键）并按冻结配置比对；改变 → 新 generation | 冲突点 #1（SA8 裁决放行的保守分支）；论证见 §4.2 |
 | D6 | 耗尽 = disabled（丢弃+上报） | segment `99999999` 滚动溢出与 sequence uint64 共用 exhausted 门闩，恰一次 `stream-exhausted`；**绝不**新建 generation 续写 | 冲突点 #2 钉死 |
 | D7 | 健康事件只增不改 | 新增 2 成员 + 2 reason 扩值；既有成员形状零改动（`stream-exhausted` 复用原形状） | #148 §10-J13 式预授权路径；G3「扩值」先例（`health.ts:66-73` 注） |
@@ -92,7 +92,7 @@ resolveResumeCandidate(rootDir, namespaceId, config):
 - 排序与选择只依赖**封闭字符串集合上的字典序**（streamId 是 `log-+32hex` 定长，字典序全序确定）；`readdir` 顺序不参与判定。
 - **禁止**的猜测变体（全部属「按 wall clock 静默猜测」的等价物，冲突点 #6 钉死）：mtime/ctime 排序、manifest `createdAt` 比较（ISO 时间戳即 wall clock）、目录项顺序、manifest 文件大小、JSONL 覆盖行数比较。唯一的恢复路径是「不可用 locator + 恰一候选」这一**无歧义**情形。
 - 「manifest.json 文件存在」只是候选资格（存在性是确定性事实）；其内容合法性留给 §4 健康证明裁决——恰一候选但 manifest 损坏 → 按证明失败 rotate，不回退重扫。
-- **（R1 预防性澄清，与 §5.1 的纪律分界）** locator「不可读 → 按不可用 → 确定性扫描」**不是** §5.1 禁止的伪降级：current.json 是「可重建 locator 而非完整性证明」（ADR-0012 明文），其全部三个下游结局（恰一候选恢复 / 零候选 fresh / ≥2 候选 disabled+事件）均确定且响亮；而 §5.1 针对的是**历史载荷文件**（segment jsonl/bin）——把不可读历史当空串会以续写覆盖不可证状态，二者性质不同，纪律各自钉死。
+- **（R1 预防性澄清，与 §5.1 的纪律分界）** locator「不可读 → 按不可用 → 确定性扫描」**不是** §5.1 禁止的伪降级：current.json 是「可重建 locator 而非完整性证明」（ADR-0014 明文），其全部三个下游结局（恰一候选恢复 / 零候选 fresh / ≥2 候选 disabled+事件）均确定且响亮；而 §5.1 针对的是**历史载荷文件**（segment jsonl/bin）——把不可读历史当空串会以续写覆盖不可证状态，二者性质不同，纪律各自钉死。
 
 ### 3.2 四种解析结局
 
@@ -149,7 +149,7 @@ function analyzeStreamForResume(req: {
 
 | 解析后配置（file.ts 现行默认） | manifest 键 | ADR 归类 |
 |---|---|---|
-| `updateCapture ?? false` | `committedUpdateCapture` | 冻结（ADR-0012 明列） |
+| `updateCapture ?? false` | `committedUpdateCapture` | 冻结（ADR-0014 明列） |
 | `inputPolicy ?? 'digest'` | `inputCapturePolicy` | 冻结（明列） |
 | `inlineUpdateMaxBytes ?? 4096` | `inlineUpdateMaxBytes` | 冻结（明列） |
 | `lineBudgetBytes ?? 1 MiB` | `jsonlLineLimitBytes` | 冻结（明列） |
@@ -431,7 +431,7 @@ manifest 为 17 键形状时，对每个**闭段**（存在更大编号 segment 
 
 ```ts
 | {
-    type: 'stream-tail-repaired'                       // ADR-0012 §打开与尾部恢复「自动修复通过observer上报」的强制要求
+    type: 'stream-tail-repaired'                       // ADR-0014 §打开与尾部恢复「自动修复通过observer上报」的强制要求
     repair: 'jsonl-incomplete-line' | 'bin-incomplete-frame' | 'bin-orphan-frames'   // 封闭枚举
     truncatedBytes: number                              // 截断字节数（计数，非 label）
   }
@@ -484,9 +484,9 @@ R2 的 ambiguous-reservation 是**进程寿命内**的不可证明性防线（EI
 
 ## §12. 业务隔离与 write-slot 纪律（ADR-0011/0008/0012 amendment）
 
-1. **构造期同步 IO 的接线门**：reopen 健康证明（locator 读 + 全量交叉扫描 + 修复截断）与滚动判定的全部 fs 操作是同步的，量级 O(stream 总字节)。ADR-0012 amendment 的规范性条款（「任何将 File adapter 的 `emit` 接入 namespace 生命周期的调用点必须位于 write sequencer slot 之外或释放后」）经冲突点 #3 钉死**同样覆盖构造期**：Host 必须在 slot 外构造 adapter（Runtime/Host 装配路径天然在写槽外；接线票 #149–#151/#155 验收时核验）。
+1. **构造期同步 IO 的接线门**：reopen 健康证明（locator 读 + 全量交叉扫描 + 修复截断）与滚动判定的全部 fs 操作是同步的，量级 O(stream 总字节)。ADR-0014 amendment 的规范性条款（「任何将 File adapter 的 `emit` 接入 namespace 生命周期的调用点必须位于 write sequencer slot 之外或释放后」）经冲突点 #3 钉死**同样覆盖构造期**：Host 必须在 slot 外构造 adapter（Runtime/Host 装配路径天然在写槽外；接线票 #149–#151/#155 验收时核验）。
 2. **不影响业务结果**：构造任何失败终态（disabled/failed/rotate）只发健康事件，不 throw、不改业务返回值/提交事实（既有构造级 crash 包络保留，`file.ts:780-784`）。
-3. **无锁、无 queue、无常驻 fd**：单进程独占根目录是部署约束（ADR-0012）；同进程内对同一 `(rootDir, namespaceId)` 构造两个 adapter 实例属部署违规，本票不加防御原语（与 #152 立场一致，README 记载）。
+3. **无锁、无 queue、无常驻 fd**：单进程独占根目录是部署约束（ADR-0014）；同进程内对同一 `(rootDir, namespaceId)` 构造两个 adapter 实例属部署违规，本票不加防御原语（与 #152 立场一致，README 记载）。
 4. **shutdown**：无新增后台任务/常驻句柄/后台 flush（滚动与修复都在构造/emit 调用栈内完成）；Registry/Persistence 停止不等日志（ADR-0011/0012 既有）。
 
 ---
@@ -557,8 +557,8 @@ R2 的 ambiguous-reservation 是**进程寿命内**的不可证明性防线（EI
 | manifest 扩键破坏旧流可读性 | 双封闭形状联合（§9.1）；legacy 只禁续写不禁读取 |
 | 事件词表膨胀突破 observer 纪律 | 只增不改 + 封闭枚举 + 计数字段 + 刻意排除高基数身份字段（§10.3） |
 | 构造期 O(stream) 同步扫描阻塞业务 | write-slot 外构造为规范性接线条件（§12）；量级有界（stream 总字节），属一次性启动成本；优化（增量检查点）会引入持久状态文件，明确不做（D4） |
-| 跨进程并发写同一 stream | 部署约束（单进程独占根）重申于 README/AGENTS；不加锁（ADR-0012「不实现跨进程锁」） |
-| **〔R1 记档·SA2 #1a〕writer 自产「链中 orphan」不可修复终态**：同段已有 committed sidecar 引用后，一次瞬时 jsonl definitive 故障（EISDIR/EACCES/ENOENT）+ 故障清除 + R2 candidate 复用续写 → ref 链断（`frame-boundary-invalid`）→ #153 起每次重启必然 `stream-corrupt` rotate，该段历史永久只读、后续日志另起 generation。制造瞬间仅有一个泛化信号 `storage-write-failed{stage:'jsonl',code:<errno>}`，与后果的因果链不可由单事件推出。**〔N2 修订·定稿随附（SA2 R2 附条件）：可执行运维指引〕链中 orphan 无法手工处置——正确处置是抢时间窗**：收到 definitive `storage-write-failed{stage:'jsonl'}` 事件后、**后续 sidecar append 提交前**尽快重启进程——此刻 orphan 仍位于 §5.4 尾部（T=最后被引用帧末尾 之后），重启后 C3 自动截断尾部 orphan、健康续写（§13.9 链路）；期间 inline append 不移动 bin 尾、不破坏该窗口。若后续 sidecar append 已提交（orphan 已成链中），手工处置不可行，重启按 corrupt rotate（本行其余后果与缓解取舍照旧）——README 记档该运维面 | 行为锚定 §13.31（全生命周期红灯）+ §13.9（C3 链衔接）；边界论证 §4.3 R1 段；ADR 合规性：corrupt→新 generation 是 AC4/ADR-0012 授权处置、无数据丢失（旧流字节恒等可检、逐 record 诊断仍可用）、业务零影响。**缓解取舍（SA2 #1c，明示拒绝）**：(i)「definitive-JSONL-失败留 orphan 后强制滚段隔离」被拒——ADR-0012 §Segment rolling 只定义 target-触发滚动，未达标强制滚段是未审计的新滚动触发器，且其闭段必被 §9.3 逆否核查判 `manifest-roll-target-violation`（闭段⇒达标的推导只认 target 触发；豁免「尾部含未引用字节的段」会让 never-rolling writer 逃检——无标记可区分二者，拆掉 §4.2 冻结归类的一致可验证性论证）；(ii)「writer 内存 lastRefEnd 链跳检测 + 专属健康事件」被拒（本票）——终态在 reopen 已有专属信号（`stream-generation-rotated{cause:'stream-corrupt'}`），制造瞬间信号缺失的补偿以 N2 时间窗指引 + README 记档承担；新事件成员+新 writer 状态面的词表/复杂度成本不抵收益，且根治须动 R2 冻结的 candidate 复用语义（`file-adapter-sa7-dynamic.test.ts` D-A1 锚定），超出本票边界——记为未来切片候选（连同 §12 接线票评估） |
+| 跨进程并发写同一 stream | 部署约束（单进程独占根）重申于 README/AGENTS；不加锁（ADR-0014「不实现跨进程锁」） |
+| **〔R1 记档·SA2 #1a〕writer 自产「链中 orphan」不可修复终态**：同段已有 committed sidecar 引用后，一次瞬时 jsonl definitive 故障（EISDIR/EACCES/ENOENT）+ 故障清除 + R2 candidate 复用续写 → ref 链断（`frame-boundary-invalid`）→ #153 起每次重启必然 `stream-corrupt` rotate，该段历史永久只读、后续日志另起 generation。制造瞬间仅有一个泛化信号 `storage-write-failed{stage:'jsonl',code:<errno>}`，与后果的因果链不可由单事件推出。**〔N2 修订·定稿随附（SA2 R2 附条件）：可执行运维指引〕链中 orphan 无法手工处置——正确处置是抢时间窗**：收到 definitive `storage-write-failed{stage:'jsonl'}` 事件后、**后续 sidecar append 提交前**尽快重启进程——此刻 orphan 仍位于 §5.4 尾部（T=最后被引用帧末尾 之后），重启后 C3 自动截断尾部 orphan、健康续写（§13.9 链路）；期间 inline append 不移动 bin 尾、不破坏该窗口。若后续 sidecar append 已提交（orphan 已成链中），手工处置不可行，重启按 corrupt rotate（本行其余后果与缓解取舍照旧）——README 记档该运维面 | 行为锚定 §13.31（全生命周期红灯）+ §13.9（C3 链衔接）；边界论证 §4.3 R1 段；ADR 合规性：corrupt→新 generation 是 AC4/ADR-0014 授权处置、无数据丢失（旧流字节恒等可检、逐 record 诊断仍可用）、业务零影响。**缓解取舍（SA2 #1c，明示拒绝）**：(i)「definitive-JSONL-失败留 orphan 后强制滚段隔离」被拒——ADR-0014 §Segment rolling 只定义 target-触发滚动，未达标强制滚段是未审计的新滚动触发器，且其闭段必被 §9.3 逆否核查判 `manifest-roll-target-violation`（闭段⇒达标的推导只认 target 触发；豁免「尾部含未引用字节的段」会让 never-rolling writer 逃检——无标记可区分二者，拆掉 §4.2 冻结归类的一致可验证性论证）；(ii)「writer 内存 lastRefEnd 链跳检测 + 专属健康事件」被拒（本票）——终态在 reopen 已有专属信号（`stream-generation-rotated{cause:'stream-corrupt'}`），制造瞬间信号缺失的补偿以 N2 时间窗指引 + README 记档承担；新事件成员+新 writer 状态面的词表/复杂度成本不抵收益，且根治须动 R2 冻结的 candidate 复用语义（`file-adapter-sa7-dynamic.test.ts` D-A1 锚定），超出本票边界——记为未来切片候选（连同 §12 接线票评估） |
 | **〔R1 记档·SA2 #4b〕locator 愈合失败的复合效应**：rotate/resume 成功但 `writeCurrent` 失败（复用 `storage-write-failed{stage:'current'}`，§8.1 R1）→ current.json 仍指旧 stream：下次重启 valid locator 权威 → 依其指向重走证明——若所指为本次 rotate 的成因流（corrupt/incompatible/legacy），再次 rotate → **每次重启铸造一个新 generation 直至 current.json 某次写成功愈合**；若期间 current.json 彻底损坏/丢失且扫描 ≥2 候选 → `locator-ambiguous` disabled。机制确定性成立（无猜测、valid locator 权威），无数据丢失/无历史改写（每个中间 generation 均完整：manifest+genesis 尽力+字节恒等），增殖有界（每重启至多一个） | 行为锚定 §13.33；README 记档运维面（current 写失败事件应触发运维告警——持续出现即处于未愈合窗口）；不增设新事件（`storage-write-failed{stage:'current'}` 已语义完备） |
 | **〔LOW-2 记档·SA2 #6〕17 键对旧版 reader 前向断裂** | §9.1 LOW-2 段：包外零 reader（§18 实证）+ 同仓 co-deploy + README「reader 先于 writer 部署」升级顺序 |
 
@@ -619,7 +619,7 @@ R2 的 ambiguous-reservation 是**进程寿命内**的不可证明性防线（EI
 - `packages/namespace-diagnostic-log/src/testing.ts` — 无新测试接缝（preset/inject 语义仅文档化收窄）。
 - `docs/adr/**` — ADR 冻结源；本票按冲突点 #1/#2 裁决在既有条文空间内实施，无需 ADR 修订。
 - `packages/namespace-runtime/**`、`packages/namespace-registry/**`、其余 `packages/**`、`apps/**`、`domains/**` — 接线归 #149–#151/#155；本票不触包外。
-- `CONTEXT.md` — 无新术语（locator/segment group/orphan frame/exhausted 均为 ADR-0012 既有词条）。
+- `CONTEXT.md` — 无新术语（locator/segment group/orphan frame/exhausted 均为 ADR-0014 既有词条）。
 
 ---
 

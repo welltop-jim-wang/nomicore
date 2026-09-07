@@ -8,8 +8,8 @@
 - 任务：Issue #227 — 保证 strict replay 的读取租约与完整性判定（实施缺口修复）
 - 简报：`wiki/raw/task_issue-227.md`（AC1–AC5）；设计：`wiki/raw/task_issue-227_design.md`（SA1 R1.1）
 - Worktree：`/home/wangjian/nomicore-fix-issue-227`（branch `mabf/issue-227`，父链 PR #142 `docs/namespace-diagnostic-change-log`）
-- 冲突基准：`docs/adr/` 全部 12 个文件（编号 0001–0010 + 两个 0012）+ 根 `CONTEXT.md`；本轮核心 = ADR-0011 / ADR-0012-LOG / 包与 app 的 AGENTS.md
-- 编号消歧：`docs/adr/` 存在两个 0012——`0012-vfsl-validated-jsonl-and-framed-sidecar-change-log.md`（本任务核心基准，下称 **ADR-0012-LOG**）与 `0012-instance-identity-and-websocket-plugin-ownership.md`（与本任务无关）。下游引用一律带文件名。
+- 冲突基准：`docs/adr/` 全部 12 个文件（编号 0001–0010 + 两个 0012）+ 根 `CONTEXT.md`；本轮核心 = ADR-0011 / ADR-0014-LOG / 包与 app 的 AGENTS.md
+- 编号消歧：`docs/adr/` 存在两个 0012——`0014-vfsl-validated-jsonl-and-framed-sidecar-change-log.md`（本任务核心基准，下称 **ADR-0014-LOG**）与 `0012-instance-identity-and-websocket-plugin-ownership.md`（与本任务无关）。下游引用一律带文件名。
 
 ## 相关 ADR
 
@@ -25,9 +25,9 @@
   4. L91–93「只有同时满足以下条件…才可声明诊断性重放成功」同源；committed update bytes 是重放权威 effect。
 - 对本任务影响：fatal-committed-true-unknown（及 effect 缺席）记录无法证明条件 3 在场 ⇒ 不允许 complete——设计 §4 分类收紧方向与 ADR 同向；complete 门表达式冻结（INV-227-7）。
 
-### ADR-0012-LOG VFSL 校验的 JSONL 与 framed sidecar 诊断日志格式（accepted；含 2026-08-28 first slice amendment）
+### ADR-0014-LOG VFSL 校验的 JSONL 与 framed sidecar 诊断日志格式（accepted；含 2026-08-28 first slice amendment）
 
-`docs/adr/0012-vfsl-validated-jsonl-and-framed-sidecar-change-log.md`
+`docs/adr/0014-vfsl-validated-jsonl-and-framed-sidecar-change-log.md`
 
 - 与本任务的关联点：**§Retention 与删除（L280–299）**是 AC1/AC2 租约接线的规范源头；**§Strict reader 与诊断性 replay（L301–318）**是 AC3/AC4 的规范源头。
 - 核心条款（原文摘录）：
@@ -67,11 +67,11 @@
 
 | 设计决策 | 权威来源 | 冲突裁决 |
 |---|---|---|
-| D1 reader 自租约/传入 session、快照驱动枚举 | ADR-0012-LOG L297 | clear |
+| D1 reader 自租约/传入 session、快照驱动枚举 | ADR-0014-LOG L297 | clear |
 | D2 S0′ 提交点复查 `deleteGroupIfUnleased` | L289（结构化而非调度依赖） | clear |
 | D3 P0 orphan-BIN 租约门 | L289 统辖 L295（解释性裁定） | clear |
 | D4 `StrictRecordUpdate` 加 `unknown` 第五成员 | 非 ADR 冻结面；包纪律经 §5 评审 + 文档同步 | clear |
-| D5 replay 分类单源化（`unknown` → issue + break） | ADR-0011 L97–105 条件 3 / ADR-0012-LOG L318 | clear（收紧方向） |
+| D5 replay 分类单源化（`unknown` → issue + break） | ADR-0011 L97–105 条件 3 / ADR-0014-LOG L318 | clear（收紧方向） |
 | D6 replay 全程持约 try/finally | L297 | clear |
 | D7 冻结常量 + `renewIfDue`（bounded 诚实失败） | L297 双臂 | clear |
 | R-4 残差维持（fatal-committed:false+effect:'update' → none） | L89「fatal committed:false 禁止携带 update」 | clear |

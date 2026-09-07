@@ -35,7 +35,7 @@ Make File diagnostic streams survive normal restarts and long-running append wor
 ## 设计基线（先读，以此为准）
 
 - `docs/adr/0011-best-effort-namespace-diagnostic-change-log.md`（产品语义：best-effort、业务隔离、健康观测）
-- `docs/adr/0012-vfsl-validated-jsonl-and-framed-sidecar-change-log.md`（存储契约）——本票直接对应章节：
+- `docs/adr/0014-vfsl-validated-jsonl-and-framed-sidecar-change-log.md`（存储契约）——本票直接对应章节：
   - §Stream 与 generation：正常重启继续健康 stream；冻结配置改变/无法安全续写时新建 generation；locator 损坏不得按 wall clock 猜测，须确定性恢复或显式处置；
   - §Segment rolling 与耗尽：JSONL/BIN 作为一个 segment group 成对滚动；默认 targets 64 MiB/256 MiB/100,000 records 可配置；任一 target 达到时**在写下一条 record 前**滚动；segment 从 `00000001` 起（`00000000` 保留）、固定 8 位十进制不回绕；`99999999` 后 stream exhausted（丢弃并上报，业务不受影响）；
   - §打开与尾部恢复：writer 交叉扫描 JSONL 与 BIN；只自动修复可证明的最终尾部（不完整尾 JSONL 行、不完整尾 frame、完整但未被引用的尾部 orphan frames）；修复经 observer 上报；中间损坏/VFSL 失败/CRC 错/引用缺失 frame/offset 越界重叠/未知 format 一律不修复——旧 stream 标 corrupt/incompatible 保持只读，创建新 generation；不得从 BIN 猜回 JSONL 语义；
@@ -57,7 +57,7 @@ Make File diagnostic streams survive normal restarts and long-running append wor
 
 - 不实现 retention 删除（#154）、replay/Host 接线（#155/#149–#151）。
 - 不改 #148 冻结面：record/schema 文本与指纹/vocabulary/emission/health 事件联合的词表**形状**（新增健康事件成员须走 #148 §10-J13 式预授权路径，由 SA1 设计、SA8 对照 ADR 裁决）。
-- 不引入 writer queue/batch/fsync/常驻 fd（ADR-0012 amendment 首切片边界）。
+- 不引入 writer queue/batch/fsync/常驻 fd（ADR-0014 amendment 首切片边界）。
 - 不 push、不开 PR、不写 .mabf-done（发布归 Host/Runner）。
 
 ## 验证门槛（必须通过并记录）

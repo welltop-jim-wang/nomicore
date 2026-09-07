@@ -3,7 +3,7 @@
 - 被审对象：`wiki/raw/task_issue-226_design.md`（SA1 design iteration 4 recovery respawn，331 行）+ 其指认的三组契约层冲突（§10.1/§10.2/§10.3 + 修订集 R1–R4）
 - 任务简报：`wiki/raw/task_issue-226.md`（AC1–AC5）
 - 前置产物：`task_issue-226_conflict_report.md`（前置门禁 clear，R5 复核维持；卫生注记 2 预告「隔离载体形态」为设计后复审必查项——本轮即该项裁决）、`task_issue-226_relevant_decisions.md`、`task_issue-226_sa5.md`、`task_issue-226_sa6_red.md`（红灯契约固话：判定无需修正）
-- 冲突基准：`docs/adr/` 13 文件中被引 6 份的关键条款**本轮直接回查原文**（ADR-0011 L18–28/L55–60/L115–131；ADR-0012 诊断日志版 L22–26/L65–69/L238–254（含 2026-08-28 amendment）/L266–270；ADR-0008 L49–53；ADR-0009 L60–64/L95–102；ADR-0010 L27–29）+ `CONTEXT.md` 日志词条（经 R5 已复核摘录比对）
+- 冲突基准：`docs/adr/` 13 文件中被引 6 份的关键条款**本轮直接回查原文**（ADR-0011 L18–28/L55–60/L115–131；ADR-0014 诊断日志版 L22–26/L65–69/L238–254（含 2026-08-28 amendment）/L266–270；ADR-0008 L49–53；ADR-0009 L60–64/L95–102；ADR-0010 L27–29）+ `CONTEXT.md` 日志词条（经 R5 已复核摘录比对）
 - 独立核验方式：被审设计的关键代码锚点全部亲读源码（registry.ts / create-diagnostic.ts / types.ts / sequencer.ts / runtime.ts / diagnostic.ts / close.ts / testing.ts / registry-surface.test.ts / diagnostics.ts）；三份契约测试锚文本亲读（#226 两文件全文、#149 L607–642、#155 SA7 L219–292）；红灯契约独立重跑（本轮后台 Job `bash-1`：**12 failed | 1 passed，Type Errors 0**）、绿灯基线独立重跑（`bash-2`：**30 passed**）、#155 SA7 独立重跑（`bash-2`：**6 passed**——C1 现状 GREEN）
 - 裁决人：SA8 Conflict Gatekeeper（设计后复审轮）
 - Worktree：`/home/wangjian/nomicore-fix-issue-226`（branch `mabf/issue-226`，HEAD `45a22f0`）
@@ -54,22 +54,22 @@
 
 | # | 设计决策 | ADR 条款（本轮回查原文） | 裁决 | 依据 |
 |---|---|---|---|---|
-| 1 | **隔离载体 = amendment L250 选项 (a)**：泵只搬调用点（macrotask drain），adapter 每 record 同步单条 append 语义一字不动，无 batch/周期 flush/fsync | ADR-0012 amendment L250（调用点必须在 sequencer slot 之外/释放后）/ L252（queue/batch 切片须另定义四类语义） | no-conflict | L252 义务附着于「以逻辑 writer queue **替换**同步 append」的切片；本设计不替换 adapter 存储语义，属 L250 明文授权的搬移路径。即使按严格读法把泵视作「调用方侧有界队列」，队列满（per-ns 256、drop-newest、保序——L240 精神）与 close/shutdown（零耦合、天然有界）语义亦已在设计中定义；flush/fsync 不适用（无 batching）。前置门禁卫生注记 2 的「必查项」就此裁决：选项 (a) 合规 |
-| 2 | **被拒 create 建 genesis-less 流**（`initStream(ns, undefined)`，不伪造 genesis） | ADR-0012 **L22**「genesis 未成功写入时 stream 仍可记录诊断事实，但不得声称完整重放」+ L24（重试建流 genesis 只代表该时点，不得伪称连续） | no-conflict | L22 是比设计所引 L24 更直接的授权条款（建议 SA3 实现注释补引）：无 doc 的被拒 create 诚实缺席 genesis、流仅记 attempt 事实——恰为条款原文覆盖的形态；R3 修订锚只要求 B 目录/attempt 记录，不要求 replay complete（replay 期望仅在含 genesis 的 A 流） |
+| 1 | **隔离载体 = amendment L250 选项 (a)**：泵只搬调用点（macrotask drain），adapter 每 record 同步单条 append 语义一字不动，无 batch/周期 flush/fsync | ADR-0014 amendment L250（调用点必须在 sequencer slot 之外/释放后）/ L252（queue/batch 切片须另定义四类语义） | no-conflict | L252 义务附着于「以逻辑 writer queue **替换**同步 append」的切片；本设计不替换 adapter 存储语义，属 L250 明文授权的搬移路径。即使按严格读法把泵视作「调用方侧有界队列」，队列满（per-ns 256、drop-newest、保序——L240 精神）与 close/shutdown（零耦合、天然有界）语义亦已在设计中定义；flush/fsync 不适用（无 batching）。前置门禁卫生注记 2 的「必查项」就此裁决：选项 (a) 合规 |
+| 2 | **被拒 create 建 genesis-less 流**（`initStream(ns, undefined)`，不伪造 genesis） | ADR-0014 **L22**「genesis 未成功写入时 stream 仍可记录诊断事实，但不得声称完整重放」+ L24（重试建流 genesis 只代表该时点，不得伪称连续） | no-conflict | L22 是比设计所引 L24 更直接的授权条款（建议 SA3 实现注释补引）：无 doc 的被拒 create 诚实缺席 genesis、流仅记 attempt 事实——恰为条款原文覆盖的形态；R3 修订锚只要求 B 目录/attempt 记录，不要求 replay complete（replay 期望仅在含 genesis 的 A 流） |
 | 3 | **per-ns 延迟泵**：槽内 O(1) 入队、macrotask drain、有界 drop-newest、全程非抛、per-ns 单飞 | ADR-0011 L20–25（排队/丢弃/关闭失败不得改变业务结果；队列溢出可丢弃）/ L24（emitter seam non-throwing 有界）/ L123（不得引入第二个业务排序机构） | no-conflict | 泵只序诊断投递、不序业务；入队 O(1) 非抛不阻塞；溢出丢弃在「日志允许缺失」的 best-effort 授权域内（见注记 N1） |
 | 4 | **drain 内经冻结 seam 调 Host**（`initStream`/`runtimeEmitterFor`/emit 成员名零新增；wrapper 实现既有 emitter 接口：同步、void、不 throw） | ADR-0011 L117（emit 立即接收 detached record、不阻塞不 throw 不返回 durability promise）；types.ts L720–724 冻结 seam 形状（本轮亲读） | no-conflict | seam 形状与字段名零漂移；wrapper 的 O(1) 入队即 seam 语义本身；真实存储延迟留 Host/adapter 侧（与现状同构，只是调用栈位置搬出业务路径——amendment L250 的目的本身） |
-| 5 | **槽内组装语义 emission（载荷/observedAt 捕获点同位）+ 泵只搬运 detached record** | ADR-0011 L69–77（输入零访问/复用既有安全快照/不建第二套序列化）+ L127（sequence 分配与 emitter 接收可在 committed 事实之后，emitter 不被 await） | no-conflict | 组装点同位 ⇒ AC2 纪律与 observedAt 单源（DC-3）零漂移；ADR-0012 L67「writer 准备 append 时才分配 sequence」由 adapter 在 drain 内 append 时兑现，不受投递延后影响 |
+| 5 | **槽内组装语义 emission（载荷/observedAt 捕获点同位）+ 泵只搬运 detached record** | ADR-0011 L69–77（输入零访问/复用既有安全快照/不建第二套序列化）+ L127（sequence 分配与 emitter 接收可在 committed 事实之后，emitter 不被 await） | no-conflict | 组装点同位 ⇒ AC2 纪律与 observedAt 单源（DC-3）零漂移；ADR-0014 L67「writer 准备 append 时才分配 sequence」由 adapter 在 drain 内 append 时兑现，不受投递延后影响 |
 | 6 | **shutdown 与泵零耦合**（不清泵、不等待、不注册 disposer；迟到 drain 落 Host `manager-closed` 丢弃桩） | ADR-0011 L129（不得阻塞 close/shutdown；Host 可 best-effort drain，Registry/Persistence 停止不得无限等待 sink）/ ADR-0009 L95–102（shutdown 公共契约） | no-conflict | 「不等待」是「不得无限等待」的平凡满足；shutdown 公共契约（同 Promise、聚合错误、停止接纳）零改动；迟到投递的收口走既有 Host 词表（本轮亲读 diagnostics.ts L74–76/L130+） |
 | 7 | **Runtime 包零生产改动**（B3 由 wiring wrapper 解决；#149 直连注入不经 wrapper） | ADR-0008 L51（槽内步骤清单）/ #132 修订（四公共方法同 FIFO 完整槽序不变） | no-conflict | 槽结构、fatal/close 语义、emit 调用点全部不动；生产 emitSlot 调 wrapper（O(1)）即移出关键路径——与 #149 冻结锚正交（§1 C2 论证） |
-| 8 | **id 耗尽 fatal 零诊断发射**（§7.1 边界裁决：所有候选已证明属他人，任选即伪造归属） | ADR-0010 L28（8 次重试耗尽 `committed:false` fatal）/ ADR-0012 数据键控原则 | no-conflict（边界登记） | 无任何 ADR 条款要求为无归属终局发明无 ns 落盘面；不伪造归属与 Host 侧「绝不伪造归属」词义一致。维持 SA1 的登记：留待后续 SA8 recheck 复核（非本轮阻断项） |
-| 9 | **词表零新增 / 词法路由判据静态**（resolver 在场与否） | ADR-0012 L70–89（operation/result/stage 封闭词表）/ L268（冻结项变更须新 stream generation） | no-conflict | 只改同一 record 的传输通道与时机，不改 record 内容面（AC5 内容锚逐字段维持即证明）；无新 stream generation 触发点 |
+| 8 | **id 耗尽 fatal 零诊断发射**（§7.1 边界裁决：所有候选已证明属他人，任选即伪造归属） | ADR-0010 L28（8 次重试耗尽 `committed:false` fatal）/ ADR-0014 数据键控原则 | no-conflict（边界登记） | 无任何 ADR 条款要求为无归属终局发明无 ns 落盘面；不伪造归属与 Host 侧「绝不伪造归属」词义一致。维持 SA1 的登记：留待后续 SA8 recheck 复核（非本轮阻断项） |
+| 9 | **词表零新增 / 词法路由判据静态**（resolver 在场与否） | ADR-0014 L70–89（operation/result/stage 封闭词表）/ L268（冻结项变更须新 stream generation） | no-conflict | 只改同一 record 的传输通道与时机，不改 record 内容面（AC5 内容锚逐字段维持即证明）；无新 stream generation 触发点 |
 | 10 | **泵调度用全局 `setImmediate`（不经注入 scheduler）** | `registry-surface.test.ts` §2.M 三正则（本轮逐字符核对 L279–284）：`setTimeout|setInterval|clearTimeout|clearInterval`（裸/globalThis 两式）+ `Date.now` ——**均不含 setImmediate**；`testing.ts` L77–110 注入 scheduler 为纯 Map fake（仅 advanceBy 触发） | no-conflict（守卫面） | 泵源码裸调 `setImmediate(` 不命中任何守卫；注入 scheduler 结构性不可承载泵（#226/#150/#155 契约测试均不 advanceBy，经其调度的泵永不触发）；registry 为 node 服务端部署面（yjs-server），setImmediate 恒在。**R4（守卫测试注释固化该许可）为推荐项，随 SA6 一并落地** |
 
 ## 4. 卫生注记（非冲突，登记移交）
 
 - **N1（泵溢出静默丢弃的健康上报）**：ADR-0011 L25「实现应尽力上报 dropped count」为 best-effort 措辞（「应尽力」），非硬门禁；设计以「Registry 侧无日志健康通道（ADR-0009 L95 v1 无公共事件订阅）」为由静默丢弃，可接受。建议 SA3 在 diag-pump 内留一个零成本内部计数（不进公共面），为未来健康通道预留——非阻断。
 - **N2（T13 单锚证明精度勘误）**：见 §1 C1 末段。结论与修订集不变；SA6 采纳 R1/R2 的「到达 poll + 顺序」形状后，病态接线自然失效（poll 让出事件循环 ⇒ macrotask/微任务 drain 均可被观测到，判据回到语义本体）。
-- **N3（引用补强）**：设计 §3.2.2 论 genesis 缺席时建议补引 ADR-0012 L22（比 L24 更直接），SA3 实现注释同。
+- **N3（引用补强）**：设计 §3.2.2 论 genesis 缺席时建议补引 ADR-0014 L22（比 L24 更直接），SA3 实现注释同。
 - **N4（genesis-less 流的工具行为验证点）**：`readStreamStrict`/`replayNamespaceDiagnosticLog` 对仅含 attempt 的流的读取行为（status/issues 形态）应由 SA3/SA6 在 R3 修订锚定范围内实证（R3 现形状只锚目录存在 + attempt 可读，不锚 replay complete——保持该边界即可）。
 - **N5（#150 相邻面零漂移）**：legacy Host（无 `runtimeEmitterFor`）全程同步共享通道逐字节现行（设计 §3.2 路由表 + 本轮判据形态核对：`waitAttempts`/`expect.poll` 为主，两处 `flushMicrotasks` 锚定业务槽推进与「恰一条」计数，与诊断到达时机正交）——SA3 回归时保持该路径为第一验证面。
 

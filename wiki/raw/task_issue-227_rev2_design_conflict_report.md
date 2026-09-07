@@ -2,12 +2,12 @@
 
 - 被审对象：`wiki/raw/task_issue-227_rev2_design.md`（SA1 **R2**，297 行全文——owner PR #251 评审两条必修项的窄修设计）
 - 触发事由：R2 修订设计提请 SA8 设计轮冲突门禁（R2 §12 路由第 1 步）
-- 冲突基准：`docs/adr/0012-vfsl-validated-jsonl-and-framed-sidecar-change-log.md`（ADR-0012-LOG）、
+- 冲突基准：`docs/adr/0014-vfsl-validated-jsonl-and-framed-sidecar-change-log.md`（ADR-0014-LOG）、
   `docs/adr/0011-best-effort-namespace-diagnostic-change-log.md`（ADR-0011）、
   `packages/namespace-diagnostic-log/AGENTS.md`（含 #227 增量段）、`apps/yjs-server/AGENTS.md`、
   根 `CONTEXT.md`、`docs/AGENTS.md`（文档同步纪律）；R1.1 摘录基线 `task_issue-227_relevant_decisions.md`
 - 复审方式：**全部独立重验**——
-  - 两 ADR 关键条款亲读（ADR-0012-LOG L280–318、ADR-0011 L90–110）；
+  - 两 ADR 关键条款亲读（ADR-0014-LOG L280–318、ADR-0011 L90–110）；
   - R2 引用的全部源码锚点逐处亲读比对：reader.ts ①′(:411–440)/①(:441–453)/②(:456–499)/③(:501–542)/
     ④′(:546–604，自建臂 :569–576、enumerationFailed close :590–592)/⑤ 检查点(:659–662)/vanished(:674–700)/
     ⑦ close(:838–841)/⑧ catch(:865–882，close :868–871)、read-session.ts 全文（openAt :215 先于注册 :235–247、
@@ -77,10 +77,10 @@ Owner 原文（PR #251 评论）→ 设计映射 → 独立核验：
 
 | # | 条款 | 与 R2 的关系 | 裁决 |
 |---|---|---|---|
-| C1 | ADR-0012-LOG **L289**「retention 只删除已关闭且没有 reader lease 的 segment group」 | D11 把「没有 lease」的评估时刻从 sweep 起始（陈旧快照）校正为提交时刻现值——兑现型诚实化；INV-4（过期永不阻塞，read-session.ts:12）在提交点字面复位。D8/D9 把持约范围扩至 manifest 阶段，同句「reader lease」保护面的完整兑现 | ✅ 兑现型 |
-| C2 | ADR-0012-LOG **L297**「reader 通过 `openReadSession()` 获得短期 segment lease…长期 reader 必须有最大 lease 时长**或**显式续租」 | 取得点位置非 ADR 冻结面；缺省 maxLifetimeMs=null 显式续租臂维持（R1.1 C2 先例） | ✅ 兑现型收紧 |
-| C3 | ADR-0012-LOG **L291–295**（删除协议 S1–S3 / orphan 清理文法） | `deleteGroup` 本体零 hunk；S0′ 仍是 S1 前置门，仅取时来源变更；`.deleting` 文法/枚举剔除不动 | ✅ 零触碰 |
-| C4 | ADR-0012-LOG **L301–318**（strict reader 行为 / replay 报告形状冻结） | ②③ 门语义与各早退包络逐字节不动（早退 return 原文保留，仅外层加 try/finally）；快照时机前移零漂移论证成立（同一 `enumerateSegmentGroups` 同源输出、同步单线程两次取值间无写者）；分类/complete/报告形状/replay 零涉及；取得检查点拒绝包络复用既有码 | ✅ 零触碰 |
+| C1 | ADR-0014-LOG **L289**「retention 只删除已关闭且没有 reader lease 的 segment group」 | D11 把「没有 lease」的评估时刻从 sweep 起始（陈旧快照）校正为提交时刻现值——兑现型诚实化；INV-4（过期永不阻塞，read-session.ts:12）在提交点字面复位。D8/D9 把持约范围扩至 manifest 阶段，同句「reader lease」保护面的完整兑现 | ✅ 兑现型 |
+| C2 | ADR-0014-LOG **L297**「reader 通过 `openReadSession()` 获得短期 segment lease…长期 reader 必须有最大 lease 时长**或**显式续租」 | 取得点位置非 ADR 冻结面；缺省 maxLifetimeMs=null 显式续租臂维持（R1.1 C2 先例） | ✅ 兑现型收紧 |
+| C3 | ADR-0014-LOG **L291–295**（删除协议 S1–S3 / orphan 清理文法） | `deleteGroup` 本体零 hunk；S0′ 仍是 S1 前置门，仅取时来源变更；`.deleting` 文法/枚举剔除不动 | ✅ 零触碰 |
+| C4 | ADR-0014-LOG **L301–318**（strict reader 行为 / replay 报告形状冻结） | ②③ 门语义与各早退包络逐字节不动（早退 return 原文保留，仅外层加 try/finally）；快照时机前移零漂移论证成立（同一 `enumerateSegmentGroups` 同源输出、同步单线程两次取值间无写者）；分类/complete/报告形状/replay 零涉及；取得检查点拒绝包络复用既有码 | ✅ 零触碰 |
 | C5 | ADR-0011 L97–105（重放五条件） | R2 不触碰分类/complete 面 | ✅ 无涉 |
 | C6 | 包 AGENTS.md：#227 增量段 / 词表 / 事件白名单 / 环境绑定面 | R2 追加一句（取得点/统一 finally/提交时刻 + now 分工）已列 §0.2/§7；零新码、零事件成员、零 reason（§5——A6/A7/B4/B5 全部复用既有码与既有报告计数，亲证）；reader/file 的 node:fs 绑定面不变；read-session/retention/index 零改动 | ✅ 文档义务随 SA3 |
 | C7 | 包 AGENTS.md「契约测试 SA6 owned——改实现不改测试断言」 | T-C3/T-C4 的必要处置（见 F-1）是**测试构造对齐**（双钟合并推进），断言语义（过期放行/过期重租）不变——与 SA7 重点 4 改写同型的合法演进路径（SA6 同 change 落地）；R1.1 §0.2 的 `test/**` SA6 白名单继续有效（R2 §0.2 明示「其余行继续有效」） | ✅ 纪律可满足（需 F-1 修订后明示） |
@@ -137,7 +137,7 @@ Owner 原文（PR #251 评论）→ 设计映射 → 独立核验：
 - 本轮**零生产代码改动、零测试改动、零 git 操作**（HEAD 仍 `31ff694`，`git status` 仅既有 wiki 未跟踪/修改文件）；
   唯一写入 = 本文件。
 - 未运行测试套件（被审对象为设计文档；owner 评论已载明 `31ff694` 全量 494 测试绿——与本轮静态推演互证）。
-- 编号消歧：本文「ADR-0012-LOG」均指 `0012-vfsl-validated-jsonl-and-framed-sidecar-change-log.md`。
+- 编号消歧：本文「ADR-0014-LOG」均指 `0014-vfsl-validated-jsonl-and-framed-sidecar-change-log.md`。
 
 Verdict: **reject（窄修型）** — ADR 冲突面 clear、owner 两条必修项承接正确；唯一驳回事由 = F-1
 （§2/§8.3 既有测试兼容声明失实，T-C3/T-C4 必翻红）。R2.1 窄修（§4 清单）后可径入 SA2 窄域复审，

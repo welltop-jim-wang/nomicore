@@ -30,7 +30,7 @@
 | ADR-0009 | NamespaceRegistry、租约与 Host 生命周期 | accepted（含 #131/#134 修订） | 是（时钟纪律） | 注入 Clock/Timer、manual Clock + fake timer 确定性测试、内部结构化 observer seam——手动时钟注入与单调时源要求的既有纪律；无冲突 |
 | ADR-0010 | Hub/Peer WebSocket Y.Doc 复制与最终一致 | accepted（含 #134/#133/#161/#172 修订） | 是（核心） | 任务全部要求是对六步 trusted apply 管线 + observer seam（L167）+ 安全字段清单（L159）既有框架的兑现/扩展；关联 ID 可由收录 protocol 既有 sequence 派生（§3/§10.2），不触 wire；无冲突 |
 | ADR-0011 | ——（编号空缺，文件不存在） | —— | —— | 盘点完备性注记：`docs/adr/` 无 0011，0001–0010 之后即 0012，全仓无引用 |
-| ADR-0012 | 实例身份单一真相与 WebSocket plugin 所有权 | accepted（issue #204 已实现） | 是（边界） | 「status、observer 与错误不得泄漏 token、Authorization、owner 完整值、Schema/Data、Yjs bytes 或 stack」与任务安全要求同向；observer 属插件配置域；无冲突 |
+| ADR-0014 | 实例身份单一真相与 WebSocket plugin 所有权 | accepted（issue #204 已实现） | 是（边界） | 「status、observer 与错误不得泄漏 token、Authorization、owner 完整值、Schema/Data、Yjs bytes 或 stack」与任务安全要求同向；observer 属插件配置域；无冲突 |
 
 ## 冲突点
 
@@ -45,7 +45,7 @@
 3. **sent/applied/acked 关联 ID vs ADR-0010 非目标 L213 + protocol §3/§10.2**：wire 已有 per-direction uint32 sequence（envelope §3），UPDATE_ACK 显式回带 `ackedSequence`（§10.2）——跨阶段关联可由既有 sequence + 连接局部记账派生，**零 wire 字节变更**；Owner 要求「connection-local」关联与 ADR-0010 非目标（「durable outbox、增量 WAL 或跨重连 update ID 表」）不冲突；安全落点=事件 payload/受控 trace（§23.3/§23.6：默认不绑 metric label）。裁决 no-conflict。**红线**：若设计提出任何新 wire 帧/字段（含 ACK 回带扩展），构成演进门 G3。
 4. **event-loop delay 探针 + 单调时差 vs ADR-0009 L26/L83 + protocol §23.4**：「确定性测试使用 manual Clock 状态与 fake timer协调推进」「实现内禁止 `Date.now()`/`performance.now()` 回退」；`ReplicationClock` 单调、只作差、绝对时间戳不入事件；「无 observer = 零事件、零状态投影读取、零时钟调用（行为与现状逐字节等价）」。Owner 的手动时钟注入复现与此纪律同源；分段字段均为差值（任务明文「单调时差」「不得记录……绝对业务时间戳」）。裁决 no-conflict。**红线**：event-loop delay 采样必须走注入时源/seam，且仅在 observer 已注入时启用（无 observer 热路径逐字节等价，Issue AC 已明文要求）。
 5. **apply source（live UPDATE / sync Step2）vs protocol §23.1 互斥规则**：既有事件型 `update-applied` / `sync-diff-applied` / `degraded-bypass-applied` 三选一互斥已承载该区分；分段字段不得破坏「每笔成功 apply 恰一事件」计数不变量。裁决 no-conflict。
-6. **安全字段要求 vs ADR-0010 L159 / ADR-0012 L22 / protocol §23.3**：任务「不得记录 Yjs bytes、ROOT/SCHEMA 内容、token、owner、原始异常或绝对业务时间戳」与三处权威清单逐条同向强化。裁决 no-conflict。
+6. **安全字段要求 vs ADR-0010 L159 / ADR-0014 L22 / protocol §23.3**：任务「不得记录 Yjs bytes、ROOT/SCHEMA 内容、token、owner、原始异常或绝对业务时间戳」与三处权威清单逐条同向强化。裁决 no-conflict。
 7. **「更新 protocol §23 observability 契约」AC vs §23 append-only 纪律**：§23 自我声明「append-only：事件类型、reason/cause/via 词表、稳定码表只增不改；GA 后字段语义冻结」且为「local，非 wire 契约」。新增分段字段/事件型走 append-only + §23.7 conformance 扩充是文档自身规定的演进方式，不触碰 ADR 决策面。裁决 no-conflict。**红线**：`applyLatencyMs` 语义（§23.4「含 write sequencer 排队等待」）已冻结——分解必须以**新增字段**表达，不得重定义既有字段剔除 queue wait。
 8. **根因修复 + 「不再随序号单调累积」AC vs ADR-0008 槽序 / CONTEXT「写序列器」词条**：CONTEXT L77–79 明文「前项完成 dirty notification 后下一项才执行」——复现的排队机制是**词汇层已文档化的不变量**，阶梯延迟本身不是契约违反；合法修复空间=缩短槽内各阶段时长（如使 saveDoc 回归 ADR-0006「登记即返回」、降低 O(doc) 阶段成本），而非打破 FIFO/移动 `await notifyDirty()`。Issue 未指定任何与冻结条款相悖的修复手段。裁决 no-conflict（条件性演进门见 G1/G2）。
 9. **确定性反馈循环（真实 Runtime + Session + fake duplex + 慢任务注入）vs ADR-0008 L97 / ADR-0009 L83**：「测试通过包内确定性 seam 注入可控 P0、dirty notifier、handle 与 fault」——saveGate 式注入与手动时钟是既有契约认可的测试模式。裁决 no-conflict。

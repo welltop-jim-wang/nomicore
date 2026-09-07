@@ -2,7 +2,7 @@
  * retention 配置与报告（issue #154 纯策略层——零 fs、零环境绑定，AGENTS.md 绑定面
  * 之内：`node:fs` 仅 file.ts/reader.ts；本模块为纯 TS）。
  *
- * 契约：ADR 0012 §Retention 与删除 + SA2 设计 §2.1/§2.2（null/0/缺省语义表、
+ * 契约：ADR 0014 §Retention 与删除 + SA2 设计 §2.1/§2.2（null/0/缺省语义表、
  * 值域 loud 门、配置零持久化）。所有「无法定龄/统计失败」的保守决策在此表达为
  * 类型化返回——IO 收敛在 file.ts 的 sweep 路径内。
  */
@@ -10,9 +10,9 @@
 /** retention 配置（纯类型；不冻结进 manifest——ADR「manifest 不承担频繁变化的 retention 状态」）。 */
 export interface FileRetentionConfig {
   /**
-   * 年龄上限（毫秒）。缺省 = 30 天（ADR 0012 默认）。
+   * 年龄上限（毫秒）。缺省 = 30 天（ADR 0014 默认）。
    * - undefined        → 默认 2_592_000_000（30d）
-   * - null（显式）     → 关闭年龄限制（ADR 0012「显式 null 关闭某个限制」）
+   * - null（显式）     → 关闭年龄限制（ADR 0014「显式 null 关闭某个限制」）
    * - 0                → 一切闭组立即过期（「0 不表示无限」）
    * - n > 0            → group 内最晚 committed record 的 observedAt 距 now ≥ n 时过期
    */
@@ -26,10 +26,10 @@ export interface FileRetentionConfig {
   sweepOnOpen?: boolean | undefined
 }
 
-/** ADR 0012 默认年龄上限：30 天（毫秒）。 */
+/** ADR 0014 默认年龄上限：30 天（毫秒）。 */
 export const DEFAULT_RETENTION_MAX_AGE_MS = 2_592_000_000
 
-/** ADR 0012 默认每 namespace 字节上限：1 GiB。 */
+/** ADR 0014 默认每 namespace 字节上限：1 GiB。 */
 export const DEFAULT_RETENTION_MAX_BYTES = 1024 * 1024 * 1024
 
 /** 规范化后的 retention 配置（校验通过后；null = 该限制关闭）。 */

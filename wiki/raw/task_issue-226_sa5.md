@@ -104,7 +104,7 @@ pnpm test packages/namespace-registry/test/registry-create-diagnostic-red.test.t
 
 - `diag.initStream(...)`（registry.ts L1436）位于 `runCreateAttempt` 槽内（Persistence `createDoc` 成功后、runtime factory 之前），该槽经 `admitCreateAttempt`（L1298–1301）串行化在 lifecycle carrier 上；槽内 `emitStreamOutcome`（L1450/L1463）→ ns emitter `emit` 同步落盘。
 - 生产 `initStream` → `ensureAdapter`（diagnostics.ts L84–112）→ `createFileDiagnosticLog` 构造器**全同步 fs**（本轮实测 `packages/namespace-diagnostic-log/src/adapters/file.ts` 行号）：`initializeGeneration` L857–898——recursive `mkdirSync`（L860）、manifest `'wx'` 不可变创建（L879）、genesis append（`runGenesis` L831 起）、current.json temp+rename（`writeCurrent` L901–915：`writeFileSync` + `renameSync` L906）；#153 reopen 健康证明/可证明尾部修复（`truncateSync` L948）；#154 构造期 retention sweep（`sweepOnOpen` 缺省 true，L316–317、L1455–1457）。
-- 每 record 独立 `appendFileSync`：BIN frame L684 / JSONL line L699——无队列、无 batch、无 fsync（首切片形态，ADR-0012 amendment 明示）。
+- 每 record 独立 `appendFileSync`：BIN frame L684 / JSONL line L699——无队列、无 batch、无 fsync（首切片形态，ADR-0014 amendment 明示）。
 - 复现锚：T8（慢建流 120ms + 慢 append 120ms → `create:settled` 晚于 `initStream:end` 与 `emit:end`，红灯 `expected 6 to be less than 3`；墙钟 ≥240ms）、T9（慢建流 + 已接纳 create + shutdown——ADR-0009 L99「等待此前已接纳的 lifecycle 操作结算」+ amendment L140「create 的跨候选重试仍受 lifecycle carrier 串行化与 shutdown 已接纳操作屏障约束」，故 shutdown 结算被槽内建流同步延长，红灯同形）。
 
 ### 3.2 B2：open lifecycle 槽内 adapter 构造（reopen/repair/retention sweep）
@@ -129,13 +129,13 @@ registry.ts L1229：open 槽内 factory 第三参 `resolveRuntimeDiag(identity.n
 |---|---|
 | ADR-0011 覆盖范围：「namespace create，包括输入、schema、ROOT、duplicate、Persistence 与 post-commit Runtime construction 结局」 | ✓ 逐字属实——建流前结局属明文覆盖项 |
 | ADR-0011 隔离面：日志 emit/排队/持久化/背压/丢弃/关闭失败不得改变业务返回值、rejection、提交事实、sequencer 顺序或 Runtime 状态；emitter seam 以 non-throwing、有界、非阻塞方式同步接收 detached record；「日志不得引入第二个业务排序机构」；「emitter 不被 `await`」「adapter 慢、失败或队列满都不得延长 write slot 或阻塞 close/shutdown；Host shutdown 可 best-effort drain 日志，但 Registry/Persistence 的停止不得无限等待日志 sink」 | ✓ 逐字属实——业务结果隔离面仍守（各红用例 GREEN 锚），缺口在「不延长业务路径」意义上 |
-| ADR-0012（诊断日志版 `0012-vfsl-validated-jsonl-and-framed-sidecar-change-log.md`）amendment（2026-08-28，#152 round 2）：「此处『有界』仅指 adapter 主动处理的数据量与操作数量受配置 payload/line limits 和单-record/单-frame 范围限制；它**不**表示底层文件系统延迟有时间上界，亦不表示 `emit` 可在任意调用点不阻塞。**任何将 File adapter 的 `emit` 接入 namespace 生命周期的调用点，必须位于 NamespaceRuntime write sequencer slot 之外，或在该 slot 已释放之后；不得在 slot 内执行同步 File adapter `emit`。** 不满足该条件的接线为不合规，必须由 #149–#151/#155 或后续接线票修复后方可启用」；queue/batch 为演进形态须另行定义 close/shutdown、flush、队列满、fsync 语义 | ✓ 逐字属实——本任务即该预留接线票；B3 的槽间窗口接线（以及按同一隔离精神经任务简报 AC3 延伸到 B1/B2 的 Registry carrier 槽内建流/构造）不满足该条件 |
+| ADR-0014（诊断日志版 `0014-vfsl-validated-jsonl-and-framed-sidecar-change-log.md`）amendment（2026-08-28，#152 round 2）：「此处『有界』仅指 adapter 主动处理的数据量与操作数量受配置 payload/line limits 和单-record/单-frame 范围限制；它**不**表示底层文件系统延迟有时间上界，亦不表示 `emit` 可在任意调用点不阻塞。**任何将 File adapter 的 `emit` 接入 namespace 生命周期的调用点，必须位于 NamespaceRuntime write sequencer slot 之外，或在该 slot 已释放之后；不得在 slot 内执行同步 File adapter `emit`。** 不满足该条件的接线为不合规，必须由 #149–#151/#155 或后续接线票修复后方可启用」；queue/batch 为演进形态须另行定义 close/shutdown、flush、队列满、fsync 语义 | ✓ 逐字属实——本任务即该预留接线票；B3 的槽间窗口接线（以及按同一隔离精神经任务简报 AC3 延伸到 B1/B2 的 Registry carrier 槽内建流/构造）不满足该条件 |
 | ADR-0008 L51（slot 步骤）：「每个真正写任务的槽依次执行：lifecycle/fatal gate、`DocHandle.getStatus()` writable gate、输入快照、领域校验和 detached 构造、一次 Yjs transaction、`await notifyDirty()`，然后才释放给下一任务」——不含日志 I/O | ✓ 属实 |
 | ADR-0009：同 key open/create/generation close 按同步接纳顺序串行（carrier）；create 槽内清单「完整 snapshot、compile、validate、detached construction、Persistence create 和 Runtime construction 均在同一个 lifecycle 槽中执行」——不含日志建流；shutdown「取消全部 idle timer，等待此前已接纳的 lifecycle 操作结算，然后主动 close 全部 active/idle Runtime」；amendment「create 的跨候选重试仍受 lifecycle carrier 串行化与 shutdown 已接纳操作屏障约束」 | ✓ 属实——T9 机制锚：槽内建流被 shutdown 屏障等待 |
 | ADR-0010：「由注入的受控 128-bit CSPRNG 生成 `ns-` + 32 位小写 hex；撞到当前 Registry entry 或目标 Persistence duplicate 时最多重试 8 次，耗尽以 `committed:false` Registry fatal 失败」 | ✓ 属实——AC1 归属锚：早结局发射时 Registry 已持有候选 id |
 | CONTEXT.md「变更尝试」：「被拒请求也属于变更尝试，即使它从未读取输入或进入 transaction」 | ✓ 属实 |
 
-（编号消歧：本报告「ADR-0012」均指诊断日志版 `0012-vfsl-validated-jsonl-and-framed-sidecar-change-log.md`。）
+（编号消歧：本报告「ADR-0014」均指诊断日志版 `0014-vfsl-validated-jsonl-and-framed-sidecar-change-log.md`。）
 
 ## 5. 红灯契约有效性评估（本轮独立判断）
 
@@ -158,7 +158,7 @@ registry.ts L1229：open 槽内 factory 第三参 `resolveRuntimeDiag(identity.n
 红灯契约文件无需修改即可作为修复验收基线；下游（设计/实现）红线经本轮复核前提全部成立，维持登记：
 
 1. seam 字段名冻结（`diagnosticLog.emitter` / `initStream` / `runtimeEmitterFor`；Runtime `diagnosticEmitter`+`clock` 成对）；
-2. emitter 公共 seam / record schema / manifest policy / 词表冻结——早结局补记不得新增 operation/stage/result 值，不得冒充 genesis 或伪称重放连续（ADR-0012 L24「genesis 只代表从该时点开始」）；
+2. emitter 公共 seam / record schema / manifest policy / 词表冻结——早结局补记不得新增 operation/stage/result 值，不得冒充 genesis 或伪称重放连续（ADR-0014 L24「genesis 只代表从该时点开始」）；
 3. 早结局归属通道形态（数据键控消费点扩展 vs Host 侧按候选 ns 缓冲）为核心设计点；被拒 create 无后续 stream 可补记 ⇒ stream 须为该结局建立（T11 落点）；id 耗尽 fatal 归属需显式裁决；
 4. 隔离载体形态（slot 外延迟同步 append vs queue/batch 切片——后者须另行定义 close/shutdown、flush、队列满、fsync 语义）；T9/T13 要求 macrotask/queue 级搬移或异步化，微任务级 deferral 不足；
 5. shutdown 公共契约不变（同 Promise、`NamespaceRegistryShutdownError` 聚合、停止接纳；日志 drain 只能是有界 best-effort）；

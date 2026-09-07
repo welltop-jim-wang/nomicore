@@ -1,7 +1,7 @@
 /**
  * storage 校验共享原语（设计 §6——writer 门与 reader 复用同一实现，防双份漂移）。
  *
- * ADR 0012 分工：VFSL 负责封闭对象/判别联合/literal enum/Pattern/十进制字面/Base64
+ * ADR 0014 分工：VFSL 负责封闭对象/判别联合/literal enum/Pattern/十进制字面/Base64
  * 与 CRC 的**字面形状**；本模块（storage validator）负责**严格 decode、长度一致、
  * CRC 正确、跨域一致、offset/segment/边界**。纯 TS（Uint8Array + 位运算），
  * 零环境绑定；Base64 decode 收口在 carrier.ts（`decodeBase64Strict`）。

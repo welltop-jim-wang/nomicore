@@ -33,7 +33,7 @@
 
 | # | 严重度 | ADR 条款 | 被审对象要求 | 裁决 | 依据 |
 |---|---|---|---|---|---|
-| 1 | 中（物理不可达路径；词表缺口而非架构矛盾） | ADR-0012 §JSONL record：「达到 uint64 最大值后 stream 进入 exhausted，后续日志 emission 丢弃**并上报**，业务不受影响。」 | 设计 §4.1：「exhausted(lastSequence) → 丢弃（**静默**；§10-J9 护栏）」；§10-J9：「事件词表无 exhausted reason（SA6 未给）；物理不可达（~10¹⁹ 次 append）；词表演进留给实际需要时」 | **evolution**（不自动停，上报 Jim 裁决） | ①「并上报」为无条件行为要求，设计的 exhausted 丢弃无任何上报通道：`record-dropped.reason` 冻结两值 `line-budget-exceeded \| queue-full`（`src/health.ts:43` 核实），File adapter 又无 stats 面（设计 §1.4 明示「无 records()/stats() 读面」）。②设计对基线的转述失准：#148 memory adapter 实为「丢弃 + stats 计数」（`src/adapters/memory.ts:12` 及 323-324 `countDrop(book,'sequence-exhausted',…)`，经 `stats()` 可观测），File 设计较已合入基线更弱。③设计自身承认完全满足该条款需词表演进（新增 reason 值或事件成员）而未走正式声明、总控六项裁决（G1–G6）未覆盖 J9——构成「未声明的能力收窄/条款缓期」。④不判 hard-violation：丢弃护栏存在、业务隔离保持、路径物理不可达（uint64 max ≈1.8×10¹⁹；仅确定性随机源/预置接缝的测试可触达）、设计诚实备案而非隐匿，修复为小型词表决策而非架构返工 |
+| 1 | 中（物理不可达路径；词表缺口而非架构矛盾） | ADR-0014 §JSONL record：「达到 uint64 最大值后 stream 进入 exhausted，后续日志 emission 丢弃**并上报**，业务不受影响。」 | 设计 §4.1：「exhausted(lastSequence) → 丢弃（**静默**；§10-J9 护栏）」；§10-J9：「事件词表无 exhausted reason（SA6 未给）；物理不可达（~10¹⁹ 次 append）；词表演进留给实际需要时」 | **evolution**（不自动停，上报 Jim 裁决） | ①「并上报」为无条件行为要求，设计的 exhausted 丢弃无任何上报通道：`record-dropped.reason` 冻结两值 `line-budget-exceeded \| queue-full`（`src/health.ts:43` 核实），File adapter 又无 stats 面（设计 §1.4 明示「无 records()/stats() 读面」）。②设计对基线的转述失准：#148 memory adapter 实为「丢弃 + stats 计数」（`src/adapters/memory.ts:12` 及 323-324 `countDrop(book,'sequence-exhausted',…)`，经 `stats()` 可观测），File 设计较已合入基线更弱。③设计自身承认完全满足该条款需词表演进（新增 reason 值或事件成员）而未走正式声明、总控六项裁决（G1–G6）未覆盖 J9——构成「未声明的能力收窄/条款缓期」。④不判 hard-violation：丢弃护栏存在、业务隔离保持、路径物理不可达（uint64 max ≈1.8×10¹⁹；仅确定性随机源/预置接缝的测试可触达）、设计诚实备案而非隐匿，修复为小型词表决策而非架构返工 |
 
 ## 结论
 
@@ -41,7 +41,7 @@
 
 ### 1. 需 Jim 裁决的条目（唯一）
 
-**J9 exhausted 上报缺口**，三选一（任一均不推翻 ADR 0012 条款本身）：
+**J9 exhausted 上报缺口**，三选一（任一均不推翻 ADR 0014 条款本身）：
 - (a) 批准缓期：维持「丢弃静默」，记入 REPORT 遗留风险，#153+（rolling 与耗尽同票）落地「上报」；
 - (b) 授权本票扩 `record-dropped.reason` 第 3 值（如 `'sequence-exhausted'`——#148 联合只增不改，与 G3 扩值同型）；
 - (c) 授权新增独立健康事件成员承载 exhausted 转换。
@@ -56,7 +56,7 @@ SA1 依 G1 同款纪律「不擅自扩词表」是正确的；该缺口应在总
 
 ### 3. 非冲突备案（SA2 可攻击，不构成门禁阻塞；已同步登记进相关决议文档）
 
-1. **J1 同步写契约**：#148 基线已将「非阻塞」确立为「有界同步工作」的解释；ADR 0011「可在其实现内部使用…文件…sink」为许可式；ADR 0012 将 batch/flush 列为可动态调整策略；被否方案仅否「每条 fsync 或业务 await」。emit 有界性由 line 预算 + payload 上限保证。
+1. **J1 同步写契约**：#148 基线已将「非阻塞」确立为「有界同步工作」的解释；ADR 0011「可在其实现内部使用…文件…sink」为许可式；ADR 0014 将 batch/flush 列为可动态调整策略；被否方案仅否「每条 fsync 或业务 await」。emit 有界性由 line 预算 + payload 上限保证。
 2. **§3.4 resume 恒新建 + §4.2 genesis 超限跳过**：分别为「无法安全续写→新建」的诚实适用、schema 保形的唯一选项（后果由「不得声称完整重放」条款覆盖）。
 3. **延后项重申**：rolling/尾部恢复/retention/replay/fsync 开关按简报切分延后，设计不与条款字面冲突。
 4. **接线期注意（转 #149–#151，非本票冲突）**：ADR 0011「adapter 慢…不得延长 write slot」——同步 emit 含有界磁盘 IO，emit 调用点须置于 namespace write sequencer 槽外或槽后；默认 `updateCapture:false` 下常规 emit 载荷仅 ≤1 MiB JSONL 行。

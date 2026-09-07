@@ -4,7 +4,7 @@
 **Verdict**: **reject**（1 × CRITICAL + 3 × MAJOR 需 SA1 修订设计后复审；已裁决项 G1–G6 与 J9 裁决本身不重审）
 
 **被审对象**: `wiki/raw/task_diagnostic-log-file-adapter_design.md`（R1，739 行，含文末总控 §11 六项裁决与 J9 裁决）
-**审查基准**: ADR 0012/0011 条款（经 `task_diagnostic-log-file-adapter_relevant_decisions.md`）> SA6 红灯契约（简报 §1–§5 + 五测试文件实体）> 设计选择性裁决。
+**审查基准**: ADR 0014/0011 条款（经 `task_diagnostic-log-file-adapter_relevant_decisions.md`）> SA6 红灯契约（简报 §1–§5 + 五测试文件实体）> 设计选择性裁决。
 **审查方法**: 全新视角；全部攻击点均经基线源码与运行时实证核验（非纸面推断），核验命令与结果见文末附录 A。
 
 ---
@@ -14,7 +14,7 @@
 | # | 严重度 | 攻击面 | 具体漏洞 | 建议修订 |
 |---|--------|--------|---------|---------|
 | 1 | **CRITICAL** | §4.1 binLength 失败重同步 | `binLength 重同步 = stat(bin).size ?? 0` 在 .bin 被目录占位（EISDIR）时把**目录的 st_size（实测 4096）**当作文件长度写入状态；恢复后新帧落盘于真实文件尾（0），JSONL 引用却写 4096 → 永久 corrupt，且直接击穿 SA6 已锚定红灯测试 ns-binfirst-1 | 重同步规则改为 `throwIfNoEntry:false` + `isFile()` 判定（非常规文件 ⇒ 0）；或放弃缓存、每次 sidecar append 前 fresh stat 取 offset；§13 补登 stat-目录行为假设 |
-| 2 | **MAJOR** | §3.1 构造函数无 crash 包络 | `observedAtFrom(clock.now)`（manifest createdAt + genesis observedAt 两处）在注入 clock throw / 返回 NaN / epoch 超域时直接 throw——`createFileDiagnosticLog` 向 Host 抛错，违反 ADR 0012「初始化失败不影响 namespace create」；§4.1 的 append 有「整函数 try/catch」，构造面没有对称防线 | §3.1 增加构造级 catch-all：任何未预见异常 → failed/disabled 模式 + 恰一次既有事件（`pipeline-crashed{stage:'adapter'}`，零词表扩）+ 形状完备返回值（J6 纪律） |
+| 2 | **MAJOR** | §3.1 构造函数无 crash 包络 | `observedAtFrom(clock.now)`（manifest createdAt + genesis observedAt 两处）在注入 clock throw / 返回 NaN / epoch 超域时直接 throw——`createFileDiagnosticLog` 向 Host 抛错，违反 ADR 0014「初始化失败不影响 namespace create」；§4.1 的 append 有「整函数 try/catch」，构造面没有对称防线 | §3.1 增加构造级 catch-all：任何未预见异常 → failed/disabled 模式 + 恰一次既有事件（`pipeline-crashed{stage:'adapter'}`，零词表扩）+ 形状完备返回值（J6 纪律） |
 | 3 | **MAJOR** | §7 reader 无 fs 错误包络 | 「纯同步函数，不抛」无实现面支撑：`readdir(segmentsDir)` ENOENT/EACCES、`readFileSync(jsonl)` EISDIR/EACCES、bin 读取 EISDIR 均未定义分支——reader 在最需要它的损坏状态下自己崩掉 | reader 全函数 try/catch + 显式定义三分支（segments 目录缺失/不可读、jsonl 读失败、bin 读失败）到 corrupt + 稳定码的映射，任何 fs 错误收敛为 corrupt/incompatible 之一，不抛 |
 | 4 | **MAJOR** | §4.1/§8/§10-J9/§12 与文末 J9 裁决矛盾 | 总控 J9 裁决（新增 `{type:'stream-exhausted'}`、转换时刻恰发一次）未回写正文：§4.1 仍写「exhausted → 丢弃（静默）」、§8/§12 仍写「三成员」——SA3 按正文实现即违反已生效裁决 | 裁决回写四处（§4.1 分支、§8 第四成员、§10-J9/§12 计数、§9 测试映射）+ 精确定义「转换时刻」（assign 出 UINT64_MAX 的那次 append 完成后置位并发事件，后续静默） |
 | 5 | MINOR | §7.1 ③ manifest 身份交叉缺失 | manifest.streamId/namespaceId 不与实参互核、schemaId 字段不与信封互核：stream A 目录改名为 stream B 且 records 为空 → 判 'ok'，身份误归因 | manifest 门增补身份互核（建议 stream 级 `stream-mismatch`）；schemaId 一致性并入 manifest-invalid 或 fingerprint 码，取值记 §11 |
@@ -46,7 +46,7 @@
 **影响**：
 - **击穿自身红灯契约**：reader 对该 record 走 §7.4 规则 3（4096+25 ≤ binSize=4122 通过）→ 规则 5 magic 校验（bytes[4096..4099] 是 payload 垃圾区）→ `frame-magic-invalid` → status corrupt。测试 :195 `expect(read.status).toBe('ok')` 与 :198 `expect(rec.ok).toBe(true)` **必败**。§9 测试映射声称该测试由「binLength 重同步 + gap 合法」机制满足——机制本身不成立。
 - **瞬态故障固化为永久损坏**：一次已恢复的 EISDIR 故障让此后**每一条** sidecar 记录都引用错误偏移，stream 永久 corrupt，违反 §4.1 自身声明的「写失败不推进状态」不变量的意图。
-- **虚假恢复（虚假降级立法的镜像）**：把「失败后状态未知」静默猜测为一个数值（0 或目录尺寸）——与 ADR 0012 对 locator「损坏时不得按 wall clock 静默猜测」是同一反模式：未知状态被冒充成已知状态。
+- **虚假恢复（虚假降级立法的镜像）**：把「失败后状态未知」静默猜测为一个数值（0 或目录尺寸）——与 ADR 0014 对 locator「损坏时不得按 wall clock 静默猜测」是同一反模式：未知状态被冒充成已知状态。
 
 **修订要求**（SA1 必须改设计文本，二选一，推荐 b）：
 - (a) 重同步规则改为文件感知：`const st = statSync(binPath, { throwIfNoEntry: false }); binLength = st !== undefined && st.isFile() ? st.size : 0`；
@@ -60,7 +60,7 @@
 
 **触发条件**：`FileDiagnosticLogConfig.clock` 是公共配置面（SA6 契约字段）。`observedAtFrom(now)` 的 #148 冻结文档明示「epoch 超出 ISO 表示域时 throw」（emission.ts:99-106），且 `now()` 本身可抛（Host 侧 bug 或恶意注入）。设计在**构造期**两处调用它：§2.2 manifest `createdAt`、§4.2 genesis `observedAt`。`clock: { now: () => NaN }`（`new Date(NaN).toISOString()` 抛 RangeError）或 `{ now: () => { throw ... } }` → 异常从构造函数直接冒泡。同理，§3.1 ⑤ 中任何未列举 errno 形态的异常（resync stat 的非常规错误等）均无兜底。
 
-**影响**：违反 ADR 0012 明文「初始化失败不影响 namespace create；独立健康 observer 上报 `LOG_STREAM_INIT_FAILED`」（docs/adr/0012:24）与 ADR 0011 隔离总纪律——日志模块把异常抛进 Host 的 namespace 生命周期，是本 ADR 体系最核心的红线。§4.1 给了 append 路径「整函数 try/catch → pipeline-crashed」，构造面没有对称防线；§3.1 模式表也没有「init 期未预见异常」行。这是错误处理「状态闭环」检查的直接缺口：失败态（disabled/failed）不是在所有失败路径上都能被写入。
+**影响**：违反 ADR 0014 明文「初始化失败不影响 namespace create；独立健康 observer 上报 `LOG_STREAM_INIT_FAILED`」（docs/adr/0012:24）与 ADR 0011 隔离总纪律——日志模块把异常抛进 Host 的 namespace 生命周期，是本 ADR 体系最核心的红线。§4.1 给了 append 路径「整函数 try/catch → pipeline-crashed」，构造面没有对称防线；§3.1 模式表也没有「init 期未预见异常」行。这是错误处理「状态闭环」检查的直接缺口：失败态（disabled/failed）不是在所有失败路径上都能被写入。
 
 **修订要求**：§3.1 增加构造级 catch-all：`createFileDiagnosticLog` 整体包 try/catch，任何未预见异常 → failed（或 disabled）模式 + **恰一次**既有事件（建议 `pipeline-crashed{stage:'adapter'}`——已在 #148 词表内，零扩词表）+ 返回 J6 形状完备对象；并在 §3.1 模式表补一行「init 期未预见异常 | failed | pipeline-crashed{stage:'adapter'} | 不保证零产物（mkdir 可能已发生）」。
 
@@ -90,7 +90,7 @@
 - §10-J9：「物理不可达…词表演进留给实际需要时」；
 - §12 ALLOW LIST：`src/health.ts … 追加三成员（§8，+~20 行，只增不改）`。
 
-**影响**：SA3 以 §4.1/§8/§10-J9/§12 为实现依据（正文是工作文档，文末附注易被漏读）→ 落地「静默丢弃」→ 违反已生效总控裁决与 ADR 0012「丢弃**并上报**」（docs/adr/0012:67）。这不是重审裁决（裁决本身正确且已生效），是**裁决集成缺陷**：裁决只追加在文档尾部，没有像 G1–G6 那样获得正文一致性。
+**影响**：SA3 以 §4.1/§8/§10-J9/§12 为实现依据（正文是工作文档，文末附注易被漏读）→ 落地「静默丢弃」→ 违反已生效总控裁决与 ADR 0014「丢弃**并上报**」（docs/adr/0012:67）。这不是重审裁决（裁决本身正确且已生效），是**裁决集成缺陷**：裁决只追加在文档尾部，没有像 G1–G6 那样获得正文一致性。
 
 **修订要求**：裁决回写五处——§4.1 exhausted 分支改为「丢弃 + 转换时刻恰一次 `stream-exhausted`（bool 门闩，与 failed 模式事件抑制同纪律）」；§8 联合列第四成员；§10-J9 改为「已由总控裁决为独立成员」；§12 health.ts 行改「四成员」；§9 补转换测试映射。并精确定义**转换时刻**：`nextDecimal` 产出 `UINT64_MAX` 的那次 append 完成（无论该 record 后续落盘成败——sequence 已分配）后置位并发事件一次；此后所有 append 静默丢弃。
 
@@ -131,7 +131,7 @@
 
 ## 结论
 
-设计的整体架构（BIN-first、双门校验、冻结面只增不改、路径安全、resume 恒新建）与 ADR 0012/0011 及 SA6 红灯契约的对齐度**高**，§13/§14 两项立法要求均合规，绝大多数判断引用的 #148 符号与行为经源码核验属实。但 **#1 是设计按字面实现必然无法通过自身红灯契约的机制性缺陷**（且属「虚假恢复」类红线），#2/#3 是 ADR 核心隔离红线（初始化不影响业务、reader 诚实判定）在两个边界面上的缺口，#4 是已生效总控裁决的集成不一致。
+设计的整体架构（BIN-first、双门校验、冻结面只增不改、路径安全、resume 恒新建）与 ADR 0014/0011 及 SA6 红灯契约的对齐度**高**，§13/§14 两项立法要求均合规，绝大多数判断引用的 #148 符号与行为经源码核验属实。但 **#1 是设计按字面实现必然无法通过自身红灯契约的机制性缺陷**（且属「虚假恢复」类红线），#2/#3 是 ADR 核心隔离红线（初始化不影响业务、reader 诚实判定）在两个边界面上的缺口，#4 是已生效总控裁决的集成不一致。
 
 **Verdict: reject。** 要求 SA1 修订 #1–#4（MINOR #5–#9 可随修订一并处理或显式备案豁免）后提交 R2 复审；R2 仅需复核修订点，不重开全量评审。
 

@@ -4,7 +4,7 @@
 - Worktree：`/home/wangjian/nomicore-fix-issue-226`（branch `mabf/issue-226`，HEAD `45a22f060eee924e4ed6a2d6fa64fb7cd6b2db08`）
 - 派发标识：Host correlation `sa-8eafa2dd-4d4e-4524-a2b1-43da97be5827`（mabf-sa1 / design / iteration 4，child `0a3639b7`，label `issue-226-sa1-design-r4`）。**本文件为恢复重派（recovery respawn）轮产出**：此前 SA1 design 派发（iteration 0–3，盘上旧稿与 `task_issue-226_design_round2.md`）均未形成 durable settlement，**不是本轮输入**；本轮一切关键主张（代码锚点、微任务序、契约锚文本、ADR 引文、静态守卫正则）均由本轮亲自读源码/测试/规范重新核验（核验记录 §11）。本会话早段曾误以总控身份调用 `mabf_runner_start_task`（返回 already-active，零状态变更）与 `mabf_runner_start_sa`（被拒"dispatch sa-8eafa2dd is running"——该 running dispatch 即本会话自身，零状态变更），此后未再触碰 MABF 管理工具。
 - 输入产物（Phase 0 已验收）：`task_issue-226.md`（简报 AC1–AC5）、`task_issue-226_sa5.md`（独立复现与分析）、`task_issue-226_sa6_red.md`（红灯契约固话/审计 R0）、`task_issue-226_conflict_report.md`（SA8 clear，R5 维持）、`task_issue-226_relevant_decisions.md`（规范摘录 + 设计敏感点 1–5）；红灯契约两文件（只读）。
-- 规范基准（normative；ADR-0010 #172 修订 2：wiki/raw 非规范）：`docs/adr/0011-best-effort-namespace-diagnostic-change-log.md`、`docs/adr/0012-vfsl-validated-jsonl-and-framed-sidecar-change-log.md`（诊断日志版，含 2026-08-28 File adapter first slice amendment）、ADR-0008/0009/0010/0006 被引条款、根 `CONTEXT.md` 词条（namespace 诊断变更日志 / 变更尝试 / 语义 emission / storage projection / genesis baseline record / 诊断日志 stream generation / 写序列器）。
+- 规范基准（normative；ADR-0010 #172 修订 2：wiki/raw 非规范）：`docs/adr/0011-best-effort-namespace-diagnostic-change-log.md`、`docs/adr/0014-vfsl-validated-jsonl-and-framed-sidecar-change-log.md`（诊断日志版，含 2026-08-28 File adapter first slice amendment）、ADR-0008/0009/0010/0006 被引条款、根 `CONTEXT.md` 词条（namespace 诊断变更日志 / 变更尝试 / 语义 emission / storage projection / genesis baseline record / 诊断日志 stream generation / 写序列器）。
 - 本轮边界：**仅设计，不实现生产修复**（`src/**`、`apps/**` 零改动）；红灯契约文件与一切既有测试零改动（§10 修订集是提给 SA6/总控的裁决项）。本轮唯一写入 = 本文件。
 
 ---
@@ -15,7 +15,7 @@
 |---|---|
 | 缺口 A（AC1 归属）修复机制 | 建流前早结局改为**以候选 namespaceId 数据键控投递**：create 槽内 O(1) 组装语义 emission（载荷/observedAt 捕获点与现状完全同位）并入队；由 Registry 内部 **per-namespace 延迟投递泵**在业务槽外解析 `runtimeEmitterFor(候选ns)` 并 emit。被拒 create 由泵先经 `initStream(ns, undefined)` 建流（无 genesis——诚实缺席）再落结局记录（T11 落盘面） |
 | 缺口 B（AC3/AC4 隔离）修复机制 | 一切可能触碰存储的 seam 调用（`initStream` 建流、`runtimeEmitterFor` 解析/adapter 构造、ns-bound emit）全部移出 Registry lifecycle carrier 槽与 Runtime write-sequencer 槽间窗口，改由泵在 macrotask（`setImmediate` 级）drain 中执行；carrier 槽内/sequencer 窗口内的残余日志工作 = O(1) 纯内存操作 |
-| 隔离载体形态 | **amendment L250 选项 (a)：延迟同步 append（只移调用点）**。泵 ≠ ADR-0012 L252 的「逻辑 writer queue」切片：adapter 仍是首切片同步 append，泵不做 batch / 周期 flush / fsync、不拥有 stream 写入语义 ⇒ 不触发 L252 四类额外语义义务（§3.1 边界论证） |
+| 隔离载体形态 | **amendment L250 选项 (a)：延迟同步 append（只移调用点）**。泵 ≠ ADR-0014 L252 的「逻辑 writer queue」切片：adapter 仍是首切片同步 append，泵不做 batch / 周期 flush / fsync、不拥有 stream 写入语义 ⇒ 不触发 L252 四类额外语义义务（§3.1 边界论证） |
 | Runtime 包 | **零生产改动**（B3 由生产 wiring 侧延迟 wrapper 解决；任何 Runtime 侧发射时机改动都会击穿 #149 冻结绿锚 `emitCalls===2`，§10.2 证明） |
 | Host（apps/yjs-server） | 零强制改动（binding 三成员名与 sync-only 契约不变；头注释更新可选） |
 | ⚠️ 契约可实现性裁决（本轮独立） | **冻结红灯契约 T8/T9/T10/T12/T13 的顺序锚在任意实现下数学上不可满足**（结算标记 push 与同步 `indexOf` 断言之间无任何可执行调度点——存储完成事件要么早于标记〔顺序失败〕要么缺席〔-1 失败〕，微任务位置逐一枚举排除，§10.1）；**T12/T13 与 #149 AC4 同步锚互斥**（§10.2）；**新发现：#155 SA7 应用层 E2E 三处锚冻结了缺陷 A 行为本身**（B 的早结局必须落 unattributed 丢弃、B 必须无日志目录——AC1 兑现必翻红，§10.3） |
@@ -121,14 +121,14 @@ type DiagPumpTask =
 - **非抛**：drain 全程 try/catch 收编——`resolveEmitterOnce` 既有非抛边界复用；`emit` 的同步 throw 由 `emitAttempt` 同款吞没边界收编（或等价地 drain 内逐任务 try）。Host 任何违约不外溢。
 - **挂起隔离**：某 ns 的存储挂起（如 initStream 永不返回）只饿死该 ns 自己的 drain（per-ns 单飞），不阻塞其它 ns 的诊断投递，更不触及任何业务路径（drain 本就在业务路径外）。
 - **寿命**：泵随 Registry 实例构造（`createCreateDiag` 装配点旁）、随实例 GC。**与 shutdown 零耦合**：不清泵、不等待、不注册 disposer（§7.5）。
-- **不是「逻辑 writer queue」（ADR-0012 L252 边界论证）**：L252 管辖的是**以每 stream 至多一个逻辑 writer queue 替换 adapter 的同步 append**（batch / 周期 flush / fsync / 队列满四类语义义务的由来）。本设计中 adapter 的存储语义**一字未动**——每个 record 仍由 drain 内一次同步单-record append 落盘；泵只改变**调用点位置**（amendment L250 明文授权的「位于 write sequencer slot 之外」路径 = 选项 (a)）。泵自身的有界/丢弃是其作为调用方侧缓冲的局部纪律，不构成 stream 写入语义。若未来演进到 adapter 内 queue/batch，另行按 L252 定义四类语义——本设计明确不选该路。
+- **不是「逻辑 writer queue」（ADR-0014 L252 边界论证）**：L252 管辖的是**以每 stream 至多一个逻辑 writer queue 替换 adapter 的同步 append**（batch / 周期 flush / fsync / 队列满四类语义义务的由来）。本设计中 adapter 的存储语义**一字未动**——每个 record 仍由 drain 内一次同步单-record append 落盘；泵只改变**调用点位置**（amendment L250 明文授权的「位于 write sequencer slot 之外」路径 = 选项 (a)）。泵自身的有界/丢弃是其作为调用方侧缓冲的局部纪律，不构成 stream 写入语义。若未来演进到 adapter 内 queue/batch，另行按 L252 定义四类语义——本设计明确不选该路。
 
 ### 3.2 `create-diagnostic.ts` 改造（发射面路由；`registry.ts` 槽体零改动）
 
 `CreateDiag` 接口（方法名/签名）与 `registry.ts` 全部发射调用点（§1.1 清单）**保持不变**——改造全部收敛在 `createCreateDiag` 内部路由与 `createRuntimeDiagResolver`：
 
 1. **构造期**：`streamResolver` 在场（Host 提供 `runtimeEmitterFor`）⇒ 同时构造泵实例；缺席 ⇒ 不构造泵，走 legacy 路径（见 4/5 的回退分支）。
-2. **`emitOutcome` / `emitEarlyOutcome`（早结局，8 个调用点）**：resolver 在场 → 组装语义 emission（载荷/observedAt 与现状同位）后入队 `{emit, 候选ns, record}`，**并且若该 ns 尚无流**（被拒 create 无后续 stream）→ 先入队 `{init-stream, ns, undefined}`（同 ns 队列内建流在前、结局在后——与成功 create 的 initStream→#17 次序同构）。无 genesis bytes：被拒 create 无 committed doc，`initStream(ns, undefined)` 在既有签名域内（`bytes: Uint8Array | undefined`），不伪造 genesis-baseline（ADR-0012 L24：genesis 只代表某时点的完整 Y.Doc——无 doc ⇒ 诚实缺席；T11 只要求目录与文件存在）。Host 缺 `initStream` 成员（可选成员）→ 跳过建流任务，只投递 emit（resolver 在场而 initStream 缺席的 Host 形状：emit 仍数据键控，落盘与否由 Host 决定——Registry 不越权）。
+2. **`emitOutcome` / `emitEarlyOutcome`（早结局，8 个调用点）**：resolver 在场 → 组装语义 emission（载荷/observedAt 与现状同位）后入队 `{emit, 候选ns, record}`，**并且若该 ns 尚无流**（被拒 create 无后续 stream）→ 先入队 `{init-stream, ns, undefined}`（同 ns 队列内建流在前、结局在后——与成功 create 的 initStream→#17 次序同构）。无 genesis bytes：被拒 create 无 committed doc，`initStream(ns, undefined)` 在既有签名域内（`bytes: Uint8Array | undefined`），不伪造 genesis-baseline（ADR-0014 L24：genesis 只代表某时点的完整 Y.Doc——无 doc ⇒ 诚实缺席；T11 只要求目录与文件存在）。Host 缺 `initStream` 成员（可选成员）→ 跳过建流任务，只投递 emit（resolver 在场而 initStream 缺席的 Host 形状：emit 仍数据键控，落盘与否由 Host 决定——Registry 不越权）。
 3. **`initStream(namespaceId, bytes)`（成功路径建流）**：resolver 在场 → 入队 `{init-stream, ns, bytes}`（槽内 O(1)）；缺席 → 维持现行同步调用。
 4. **`emitStreamOutcome(namespaceId, observedAt, e)`（#17/#18）**：resolver 在场 → 组装后入队 `{emit, ns, record}`（B1 的 emit 面搬移）；resolver 缺席 → **legacy 回退保持逐字节现行**（同步共享 emitter——#150 时代缓冲型 Host 的既有行为）。
 5. **`createRuntimeDiagResolver`（B2+B3 的 wiring 支柱）**：resolver 在场时返回的 `RuntimeDiagResolved.emitter` 改为**延迟 wrapper**：`{ emit: (record) => pump.enqueueEmit(ns, record) }`（O(1) 非抛）；`clock: () => clock.now()` 不变。open/create/import 三处 factory 第三参（registry.ts L1229/L1440/L1584）由此变为 O(1)——**B2 的 adapter 构造与 B3 的生产 emit 同时出槽/出窗口**。wrapper 形状 = 既有 emitter seam（同步、void、不 throw）——Runtime 零感知、seam 冻结不破；observedAt 已在 record 组装时由注入 Clock 定源（AC2 同源纪律保持）。
@@ -208,7 +208,7 @@ drain(ns)：initStream → ensureAdapter（120ms fs）→ emit #17（120ms appen
 ## 7. 边界 case 与裁决
 
 ### 7.1 id 生成耗尽 fatal（敏感点 2 边界）
-8 次候选全部碰撞 → `committed:false` Registry fatal（ADR-0010 L28）。**裁决：维持零诊断发射**（现状：仅 observer 事件）。理由：该终局不存在任何「归属正确」的 namespaceId——所有候选均已证明属于他人，任选其一都是伪造归属（违反 Host 侧「绝不伪造归属」的词义本体与 ADR-0012 数据键控原则）；为它发明无 ns 的落盘面超出 ADR-0011 v1 词表（须 record schema 演进）。登记为边界 case 供 SA8 recheck 复核。
+8 次候选全部碰撞 → `committed:false` Registry fatal（ADR-0010 L28）。**裁决：维持零诊断发射**（现状：仅 observer 事件）。理由：该终局不存在任何「归属正确」的 namespaceId——所有候选均已证明属于他人，任选其一都是伪造归属（违反 Host 侧「绝不伪造归属」的词义本体与 ADR-0014 数据键控原则）；为它发明无 ns 的落盘面超出 ADR-0011 v1 词表（须 record schema 演进）。登记为边界 case 供 SA8 recheck 复核。
 
 ### 7.2 duplicate 族（AC1 明文词的登记面）
 - entry 碰撞候选重试（registry.ts L1311）与 Persistence `DOC_DUPLICATE` 重试（L1408）：**零发射维持**（#150「恰一条最终结局」裁决——重试成功场景由最终结局单条覆盖；与 SA5 §6/SA6 §2 登记一致）。
@@ -317,7 +317,7 @@ AC1 明文要求 B 类结局「以正确 namespace 归属进入诊断流」→ �
 | V9 | 静态守卫不含 setImmediate | 逐字符读 `registry-surface.test.ts` L279–284 三正则 | ✅ |
 | V10 | 注入 scheduler 结构性不可用于泵 | 读 `testing.ts` L77–110（Map fake、仅 advanceBy 触发） | ✅ |
 | V11 | **#155 SA7 C1 三锚冻结缺陷 A（本轮新发现）** | 读 `diagnostic-replay-host-lifecycle-sa7.test.ts` L224–292（L243–246/L265/L279–281）+ 全 repo `unattributed` 锚检索 | ✅（唯二反向锚 = 此文件） |
-| V12 | ADR 条款 | ADR-0011（L20–25/L57/L117–129）、ADR-0012 诊断日志版（amendment L248–252、L24/L67/L240–242/L268）、ADR-0008 L51/L99、ADR-0009 L32/L62/L97–101、ADR-0010 L28——经 `_relevant_decisions.md` 摘录对照 + 关键条款回查原文 | ✅ |
+| V12 | ADR 条款 | ADR-0011（L20–25/L57/L117–129）、ADR-0014 诊断日志版（amendment L248–252、L24/L67/L240–242/L268）、ADR-0008 L51/L99、ADR-0009 L32/L62/L97–101、ADR-0010 L28——经 `_relevant_decisions.md` 摘录对照 + 关键条款回查原文 | ✅ |
 
 ---
 

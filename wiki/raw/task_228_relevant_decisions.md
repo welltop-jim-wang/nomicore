@@ -40,16 +40,16 @@ seam、时序与 shutdown drain）。
   record 携带可解码 update / 无已知 gap、截断、损坏或不兼容 record version / 重放后受控 identity 一致
   （§Committed update 与诊断性重放）。
 - emitter seam：`emit` 「不得阻塞、throw、返回 durability promise，亦不得保留调用方可变引用」
-  （§Interface 与 seam）；——注意与 ADR-0012-LOG 首切片 amendment 的张力（见下）。
+  （§Interface 与 seam）；——注意与 ADR-0014-LOG 首切片 amendment 的张力（见下）。
 - 时序：「committed record 的 sequence 分配与 emitter 接收可发生在 transaction committed 事实可知之后，
   但 emitter 不被 `await`」；「adapter 慢、失败或队列满都不得延长 write slot 或阻塞 close/shutdown；Host
   shutdown 可 best-effort drain 日志，但 Registry/Persistence 的停止不得无限等待日志 sink」（§时序与
   sequencer）。
 
-### ADR-0012-LOG VFSL 校验的 JSONL 与 framed sidecar 诊断日志格式（accepted，2026-08-28；含 issue #152 round-2 首切片 amendment）
+### ADR-0014-LOG VFSL 校验的 JSONL 与 framed sidecar 诊断日志格式（accepted，2026-08-28；含 issue #152 round-2 首切片 amendment）
 
 与本任务的关联点：**AC1 的直接义务来源**、AC2 的 retention/replay/segment 契约、AC3 的对齐目标。仓库内
-存在两个编号 0012 的 ADR（另一个是 instance-identity）；引用本 ADR 时沿用先例消歧写法 **ADR-0012-LOG**。
+存在两个编号 0012 的 ADR（另一个是 instance-identity）；引用本 ADR 时沿用先例消歧写法 **ADR-0014-LOG**。
 
 核心条款（原文摘录）：
 
@@ -137,7 +137,7 @@ seam、时序与 shutdown drain）。
 - 停止顺序：「网络关闭后 Runtime barrier 仍排空停机前已接纳 apply……随后 Registry shutdown、Persistence
   dispose，最后停止 Timer/Clock。」
 
-### ADR-0012-ID 实例身份单一真相与 WebSocket plugin 所有权（accepted，issue #204 已实现）
+### ADR-0014-ID 实例身份单一真相与 WebSocket plugin 所有权（accepted，issue #204 已实现）
 
 与本任务的关联点：AC2 bounded shutdown 的 composition root 编排边界（与 ADR-0010 停止顺序互证）。
 
@@ -191,14 +191,14 @@ seam、时序与 shutdown drain）。
 - **Host app 现无 namespace 数据删除面**：`apps/yjs-server/src/app.ts` NDJSON 控制通道现有 op 闭集 =
   `status / shutdown / read / verify-write / add-target / remove-target / notify-auth-changed /
   request-reauth / replace-schema / bump-epoch / reset-replica`（无 delete 类 op）。Registry/Persistence
-  公共面亦无删除 seam（见 ADR-0009/0006 摘录）。#155 前置冲突报告已备案：「ADR-0012-LOG『Host 执行数据
+  公共面亦无删除 seam（见 ADR-0009/0006 摘录）。#155 前置冲突报告已备案：「ADR-0014-LOG『Host 执行数据
   删除请求时必须同时调用日志删除能力』是条件条款，app 现无数据删除面 → 前件不成立；设计显式备案待相应
   票」——**issue #228 即该顺延票**。
 - AC3 矛盾表述现存位置（本轮亲证）：`packages/namespace-diagnostic-log/README.md:312`（「`emit` /
   `append` 同步、**绝不 throw**、绝不阻塞」）；`CONTEXT.md:157`（「emit 同步、不 throw、不阻塞」）；
   `packages/namespace-diagnostic-log/AGENTS.md:16`（同款；同文件 §Boundaries L20 起已正确陈述首切片
   阻塞纪律——文件内部自相矛盾）。ADR 侧权威文本：ADR-0011 L24「non-throwing、有界、非阻塞的 emitter
-  seam」+ ADR-0012-LOG L244-252 首切片 amendment（同步 append 可被文件系统延迟阻塞 → 调用点必须在
+  seam」+ ADR-0014-LOG L244-252 首切片 amendment（同步 append 可被文件系统延迟阻塞 → 调用点必须在
   write sequencer slot 外）。
 - app 侧纪律（`apps/yjs-server/AGENTS.md`）：只消费包公共导出；stdout = NDJSON lifecycle 事件通道；
   单一 disposal 链（replication drain → registry shutdown → persistence dispose → timer/clock）。
@@ -241,9 +241,9 @@ seam、时序与 shutdown drain）。
 ### ADR-0011 新增澄清性修订节（2026-09-07，issue #228）——已落文
 
 - 「**澄清性修订，非决策变更**」：「非阻塞」是 interface 级契约；File adapter 首切片实现属性由
-  ADR-0012-LOG amendment 定义并为准。
+  ADR-0014-LOG amendment 定义并为准。
 - 「隔离条款的边界：失效面枚举与保护对象枚举均不含『日志删除能力失败』与『数据删除工作流』——
-  ADR-0012-LOG L299 把日志删除定义为 Host 数据删除请求的伴随义务，其 `ok:true` 复合谓词不构成
+  ADR-0014-LOG L299 把日志删除定义为 Host 数据删除请求的伴随义务，其 `ok:true` 复合谓词不构成
   对其它业务操作的隔离破坏」。
 
 ### CSPRNG 身份事实（D4 断言仲裁/勘误 E-1 的约束基准）

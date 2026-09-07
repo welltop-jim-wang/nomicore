@@ -2,10 +2,10 @@
 
 - worktree: `/home/wangjian/nomicore-fix-issue-148`
 - branch: `fix/issue-148-on-docs-namespace-diagnostic-change-log`
-- 规格冻结源：ADR 0011（`docs/adr/0011-best-effort-namespace-diagnostic-change-log.md`）、ADR 0012（`docs/adr/0012-vfsl-validated-jsonl-and-framed-sidecar-change-log.md`）、`CONTEXT.md` namespace 诊断变更日志词条（L105–L115）
+- 规格冻结源：ADR 0011（`docs/adr/0011-best-effort-namespace-diagnostic-change-log.md`）、ADR 0014（`docs/adr/0014-vfsl-validated-jsonl-and-framed-sidecar-change-log.md`）、`CONTEXT.md` namespace 诊断变更日志词条（L105–L115）
 - 状态：R5（双轴终审后总控勘误批：①C-3 再裁决——truncated/originalCount presence **严格 ⇔ 预算截断**（冻结 schema JSDoc 原文「仅在实际发生预算截断时出现」为准，R4 的「丢弃也置位」条款撤销；畸形条目丢弃只经 enrichment-field-dropped/issues 健康事件上报，record 不携带）；②§5.4 快照契约违反清单增补「非 plain 对象（Date/Map/Set/typed array 等，原型非 Object.prototype/null）」——JCS 与 redacted 遍历均以 SnapshotContractViolation 拒止 → capture:'unavailable'，同时封死 full 捕获内嵌 typed array 的冻结漏洞；③intake 增补：input 非对象（primitive）→ emission-dropped（结构违规，不进 `in` 运算）；source 封闭键校验（多余键 → emission-dropped，不得漏到 VFSL 门误报 writer bug）；④issues 投影预算全策略一致（redacted 同样施加 path 256 段/1KiB 段预算，仅 message/code 内容处理不同）；⑤emission `issues?: DiagnosticIssue[]` 数组形状以 §2.6 为准（实现曾偏离为 {items} 且未披露，R5 对齐）。历史：R4 SA4 勘误批；R3 updateBytes 复制隔离（§2.6）；R2 SA2 反馈十条；总控 §11 六项裁决维持生效。
 
-**总控 §11 裁决（2026-08-28）**：G1 ✅ 规范句为准（crc32c 双 carrier 必备）；G2 ✅ 批准 recordKind 二族联合（ADR 0012 要求 genesis baseline 但未定义形状，本设计是唯一诚实表达；风险已入 §10-J1，#152 评审复核）；G3 ✅ 批准（v1 存储不出现 result:'unknown'，与两 ADR 自洽）；G4 ✅ 批准（事件只带 issuePaths）；G5 ✅ 批准（工具实现策略）；G6 ✅ 批准（attemptId 超集 Pattern）。六项裁决全部生效，SA2 评审应攻击设计本身而非重审已裁决项。
+**总控 §11 裁决（2026-08-28）**：G1 ✅ 规范句为准（crc32c 双 carrier 必备）；G2 ✅ 批准 recordKind 二族联合（ADR 0014 要求 genesis baseline 但未定义形状，本设计是唯一诚实表达；风险已入 §10-J1，#152 评审复核）；G3 ✅ 批准（v1 存储不出现 result:'unknown'，与两 ADR 自洽）；G4 ✅ 批准（事件只带 issuePaths）；G5 ✅ 批准（工具实现策略）；G6 ✅ 批准（attemptId 超集 Pattern）。六项裁决全部生效，SA2 评审应攻击设计本身而非重审已裁决项。
 
 ---
 
@@ -54,7 +54,7 @@
         └── Buffer / TextEncoder（Node ≥20 全局，Base64 编码与 UTF-8 字节长）
 ```
 
-- **不依赖** `@nomicore/clock`：`observedAt` 由 producer 用其注入 Clock 生成后以字符串传入（ADR 0012 §JSONL record：「`observedAt` 由完成操作的 producer 使用注入 Clock 生成」）。本包只导出纯 helper `observedAtFrom(now: () => number): string`（结构兼容 `Clock.now`，见 `packages/clock/src/contract.ts:14`），不引入 cordis 依赖链。
+- **不依赖** `@nomicore/clock`：`observedAt` 由 producer 用其注入 Clock 生成后以字符串传入（ADR 0014 §JSONL record：「`observedAt` 由完成操作的 producer 使用注入 Clock 生成」）。本包只导出纯 helper `observedAtFrom(now: () => number): string`（结构兼容 `Clock.now`，见 `packages/clock/src/contract.ts:14`），不引入 cordis 依赖链。
 - **不依赖** yjs：本票消费的是 owned `Uint8Array` update bytes（ADR 0011 §Committed update：「底层 transaction 模块应在不暴露 live Y.Doc 的前提下返回或投递 owned bytes」），不编解码 Yjs 结构。
 
 ### 1.3 公共 exports（`packages/namespace-diagnostic-log/src/index.ts`）
@@ -72,7 +72,7 @@ export interface NamespaceDiagnosticChangeEmitter {
   emit(emission: NamespaceDiagnosticChangeEmission): void
 }
 
-// —— adapter 接缝（storage projection 归 adapter，ADR 0012 §VFSL record schema）——
+// —— adapter 接缝（storage projection 归 adapter，ADR 0014 §VFSL record schema）——
 export interface DiagnosticChangeSink {
   append(record: DiagnosticSemanticRecord): void
 }
@@ -127,9 +127,9 @@ export interface DiagnosticLogConfig {
   issuesPolicy: 'none' | 'full' | 'redacted'
   /** committed update 捕获，默认 false（ADR 0011 §数据保护：「committed Yjs update 必须由 Host 明确启用」） */
   updateCapture: boolean
-  /** 最终 record 紧凑 JSON 的 UTF-8 字节硬上限（不含结尾 \n），默认 1 MiB（ADR 0012 §投影） */
+  /** 最终 record 紧凑 JSON 的 UTF-8 字节硬上限（不含结尾 \n），默认 1 MiB（ADR 0014 §投影） */
   lineBudgetBytes: number
-  /** 单个 update payload 字节硬上限，默认 64 MiB、不得超过 uint32（ADR 0012 §Inline 与 sidecar） */
+  /** 单个 update payload 字节硬上限，默认 64 MiB、不得超过 uint32（ADR 0014 §Inline 与 sidecar） */
   payloadMaxBytes: number
   /** 内存队列容量（条数），默认 1024（judgement call，见 §10-J5） */
   capacity: number
@@ -140,7 +140,7 @@ export interface DiagnosticLogConfig {
 }
 ```
 
-`createDiagnosticChangeEmitter` 取 `inputPolicy/issuesPolicy`（语义投影归 emitter）；adapter 取其余（物理投影归 adapter）——切分依据 ADR 0012 §VFSL record schema：「日志 adapter 独占 storage projection：先决定 inline/sidecar 并构造最终 record，再运行 VFSL」。
+`createDiagnosticChangeEmitter` 取 `inputPolicy/issuesPolicy`（语义投影归 emitter）；adapter 取其余（物理投影归 adapter）——切分依据 ADR 0014 §VFSL record schema：「日志 adapter 独占 storage projection：先决定 inline/sidecar 并构造最终 record，再运行 VFSL」。
 
 ---
 
@@ -148,7 +148,7 @@ export interface DiagnosticLogConfig {
 
 ### 2.1 词表（全部冻结；schema 与 TS 单源，见 §3.2）
 
-**operation**（6 值封闭，ADR 0012 §JSONL record 逐字）：
+**operation**（6 值封闭，ADR 0014 §JSONL record 逐字）：
 
 ```ts
 export type Operation =
@@ -170,7 +170,7 @@ export type Stage =
 
 stage 语义纪律（ADR 0011）：stage 是**结局所属的最后阶段**，不是状态机。`committed` 记录通常 stage=`transaction`；事务已提交但 dirty notification 失败 → producer 提交 `fatal + committed:true + effect:update + stage:'dirty-notification'`（schema 可表达，选择归 producer，日志层不发明语义）。
 
-**result 严格判别联合**（ADR 0012 §JSONL record 六形状；fatal 显式携带 committed 布尔）：
+**result 严格判别联合**（ADR 0014 §JSONL record 六形状；fatal 显式携带 committed 布尔）：
 
 ```ts
 export type AttemptResult =
@@ -185,9 +185,9 @@ export type AttemptResult =
 ```
 
 - TS 用字面量 `false`/`true` 在**编译期**锁死「committed 事实 ↔ effect 存在」的相关性；VFSL v1 无布尔字面量（v1-spec §2 注记 8），schema 侧的残差见 §10-J2。
-- ADR 0011 结局词表第 4 值 `unknown`（结果不可判定）在 v1 存储层**不出现**：v1 只写最终 record（ADR 0012：「首版默认每次变更尝试只写一条最终 attempt record，不写 attempt-started」），进程中断的尝试直接缺失（best-effort），不落 `result:'unknown'` 的记录。此为两份 ADR 的拼接结论，列入 §11-G3 备案。
+- ADR 0011 结局词表第 4 值 `unknown`（结果不可判定）在 v1 存储层**不出现**：v1 只写最终 record（ADR 0014：「首版默认每次变更尝试只写一条最终 attempt record，不写 attempt-started」），进程中断的尝试直接缺失（best-effort），不落 `result:'unknown'` 的记录。此为两份 ADR 的拼接结论，列入 §11-G3 备案。
 
-**source / context**（ADR 0012 §JSONL record 逐字形状）：
+**source / context**（ADR 0014 §JSONL record 逐字形状）：
 
 ```ts
 export type LogSource =
@@ -202,18 +202,18 @@ export interface LogContext {
 }
 ```
 
-v1 不定义 actor（ADR 0012：「首版不定义 actor，等待授权主体模型稳定」）。
+v1 不定义 actor（ADR 0014：「首版不定义 actor，等待授权主体模型稳定」）。
 
-**顶层诊断字段**：`stage` 封闭枚举（顶层，ADR 0012：「顶层诊断 stage 使用日志 schema 的封闭枚举」）；`code`/`sourcePhase` 为安全 Pattern 字符串；`sourceModule` 标注稳定 code 的来源模块，封闭 4 值（ADR 0012：「不复制 Registry、Runtime、Persistence 与 replication 的全部错误枚举」——四模块名即此四值）：
+**顶层诊断字段**：`stage` 封闭枚举（顶层，ADR 0014：「顶层诊断 stage 使用日志 schema 的封闭枚举」）；`code`/`sourcePhase` 为安全 Pattern 字符串；`sourceModule` 标注稳定 code 的来源模块，封闭 4 值（ADR 0014：「不复制 Registry、Runtime、Persistence 与 replication 的全部错误枚举」——四模块名即此四值）：
 
 ```ts
 export type SourceModule = 'registry' | 'runtime' | 'persistence' | 'replication'
 ```
 
 **update-omitted 稳定 reason 词表**（v1 已知 3 值 + 开放 StableCode 形状；R2/D-c1 增补第三值）：
-- `payload-too-large`（ADR 0012 给出）；
+- `payload-too-large`（ADR 0014 给出）；
 - `update-capture-disabled`（本设计补：Host 未启用 update 捕获时，committed/fatal-update 事实保留、update 省略——「payload 超限时保留 attempt metadata，记录 update-omitted 与稳定 reason，而不是丢掉整条记录」原则的配置侧同构）；
-- `empty-update`（R2/D-c1 增补：producer 移交 **0 字节** owned bytes——空事务更新/空 genesis 边界。0 字节的 Base64 是空串，不匹配 P_BASE64（其尾部组强制非空），不设此分支会把 producer 输入缺陷误标为 `vfsl-validation-failed` 的 writer bug 信号，污染 ADR 0012「append 前 VFSL validation failure 是日志 writer bug」的语义。§7.4 物理化前置守卫转 update-omitted，§9.9 断言不触发 vfsl-validation-failed）。
+- `empty-update`（R2/D-c1 增补：producer 移交 **0 字节** owned bytes——空事务更新/空 genesis 边界。0 字节的 Base64 是空串，不匹配 P_BASE64（其尾部组强制非空），不设此分支会把 producer 输入缺陷误标为 `vfsl-validation-failed` 的 writer bug 信号，污染 ADR 0014「append 前 VFSL validation failure 是日志 writer bug」的语义。§7.4 物理化前置守卫转 update-omitted，§9.9 断言不触发 vfsl-validation-failed）。
 
 ### 2.2 输入捕获（四策略 × 可得性 → 七值封闭）
 
@@ -229,12 +229,12 @@ export type InputCapture =
 ```
 
 - `digest` 恒为安全快照 RFC 8785 JCS bytes 的 SHA-256 小写 hex（64 位），**与投影策略无关地对全量快照计算**（§5.2）——full/redacted 变体也携带 digest，保证跨策略可比对（judgement call，§10-J7）。
-- `degraded` 仅出现在 digest 变体上：presence ⇔ full/redacted 投影超出 line 预算被降级（v1 唯一原因即字段值 `projected-input-too-large`，ADR 0012：「超出 line 预算时降级为 digest，并记录 projected-input-too-large」）。
+- `degraded` 仅出现在 digest 变体上：presence ⇔ full/redacted 投影超出 line 预算被降级（v1 唯一原因即字段值 `projected-input-too-large`，ADR 0014：「超出 line 预算时降级为 digest，并记录 projected-input-too-large」）。
 
 ### 2.3 issues 统一投影
 
 ```ts
-export interface DiagnosticIssue {   // ADR 0012 §投影 逐字形状
+export interface DiagnosticIssue {   // ADR 0014 §投影 逐字形状
   code?: string                      // plain string：ADR TS 快照即 plain（§10-J8 论证与预算）
   message: string                    // ≤ 4 KiB UTF-8，超限确定性截断（§6）
   path: (string | number)[]          // ≤ 256 段；string 段 ≤ 1 KiB
@@ -286,7 +286,7 @@ export interface GenesisBaselineRecord {
 }
 ```
 
-`recordKind` 是本设计新增的顶层判别字段（论证见 §11-G2）：让「每个新 stream 尽力先记录 genesis baseline」（ADR 0012 §Stream 与 generation）的基线记录能以**非 attempt** 的诚实形状通过同一 schema，同时 replay 工具可稳定识别 genesis。
+`recordKind` 是本设计新增的顶层判别字段（论证见 §11-G2）：让「每个新 stream 尽力先记录 genesis baseline」（ADR 0014 §Stream 与 generation）的基线记录能以**非 attempt** 的诚实形状通过同一 schema，同时 replay 工具可稳定识别 genesis。
 
 ### 2.5 update 物理载体（两种 storage 形状，一次冻结服务 #152）
 
@@ -296,10 +296,10 @@ export type UpdateCarrier =
   | { storage: 'sidecar'; format: 'yjs-update-v1'; segment: string; frameOffset: string; payloadLength: number; crc32c: string }
 ```
 
-- inline：RFC 4648 标准 Base64、必须 padding、禁空白换行（ADR 0012 §Inline 与 sidecar）。
-- sidecar：字段名逐字对齐 ADR 0012 示例（storage/format/segment/frameOffset/payloadLength），外加 `crc32c`——依据同节规范句「inline 与 sidecar 均记录 payloadLength 与 CRC32C」（示例省略该键属简写，裁决见 §11-G1）。
-- `payloadLength` 为 JSON number（uint32 范围内，ADR 0012：「uint32 范围内的 payloadLength 为 JSON number」；范围校验归 storage validator/#152，VFSL 无数值区间语法）。
-- `crc32c` 为 8 位小写 hex（ADR 0012：「inline update 同样保存 8 位小写 hex CRC32C」）。
+- inline：RFC 4648 标准 Base64、必须 padding、禁空白换行（ADR 0014 §Inline 与 sidecar）。
+- sidecar：字段名逐字对齐 ADR 0014 示例（storage/format/segment/frameOffset/payloadLength），外加 `crc32c`——依据同节规范句「inline 与 sidecar 均记录 payloadLength 与 CRC32C」（示例省略该键属简写，裁决见 §11-G1）。
+- `payloadLength` 为 JSON number（uint32 范围内，ADR 0014：「uint32 范围内的 payloadLength 为 JSON number」；范围校验归 storage validator/#152，VFSL 无数值区间语法）。
+- `crc32c` 为 8 位小写 hex（ADR 0014：「inline update 同样保存 8 位小写 hex CRC32C」）。
 - 本票内存 adapter 只产出 inline 形状；sidecar 形状在 schema 中完整可表达（#152 不改 schema 即可用），内存 adapter 的记录 JSON 与文件 JSONL 记录**逐字段同构**。
 
 ### 2.6 语义 emission（producer → emitter）与语义 record（emitter → sink）
@@ -371,7 +371,7 @@ export const RECORD_SCHEMA_ID = 'nomicore.namespace-diagnostic-change-record@1' 
 // 恰四键、深冻结；经 @nomicore/vfsl compileSchemaEnvelope 编译（严格封闭门 ENV-5 兜底自检）
 ```
 
-id 逐字取自 ADR 0012 §VFSL record schema：「id 为 `nomicore.namespace-diagnostic-change-record@1`」；方言固定 `vfsl@1`，「不引用 latest」（同节）。文本用 `compileSchemaEnvelope`（`packages/vfsl/src/index.ts:303`）编译：恰四键严格封闭 → 方言断言 → parseVfsl → evaluate → 双指纹 + 深冻结五件套，同步纯函数不抛错——与「writer 启动时编译一次内建 schema 并缓存」（ADR 0012）对齐：本设计在 log 工厂构造时**急切编译一次**并缓存于实例外模块级（进程内文本唯一，编译产物可共享；失败进 failed 模式，见 §4 步骤 0）。
+id 逐字取自 ADR 0014 §VFSL record schema：「id 为 `nomicore.namespace-diagnostic-change-record@1`」；方言固定 `vfsl@1`，「不引用 latest」（同节）。文本用 `compileSchemaEnvelope`（`packages/vfsl/src/index.ts:303`）编译：恰四键严格封闭 → 方言断言 → parseVfsl → evaluate → 双指纹 + 深冻结五件套，同步纯函数不抛错——与「writer 启动时编译一次内建 schema 并缓存」（ADR 0014）对齐：本设计在 log 工厂构造时**急切编译一次**并缓存于实例外模块级（进程内文本唯一，编译产物可共享；失败进 failed 模式，见 §4 步骤 0）。
 
 ### 3.2 schema 与 TS 的单源纪律
 
@@ -397,13 +397,13 @@ Base64 Pattern 论证：`(?:[A-Za-z0-9+/]{4})*`（任意完整组）+ 恰一个�
 /** namespace 诊断变更日志 v1 存储 record 契约（issue #148 冻结）。
  *  单条最终 JSONL line 的逻辑形状；ADR 0011/0012 为规范来源。
  *  物理事实（segment/frame/offset 连续性、retention、跨记录不变量）不在本 schema，
- *  由 storage validator 负责（ADR 0012 §VFSL record schema 分工）。 */
+ *  由 storage validator 负责（ADR 0014 §VFSL record schema 分工）。 */
 
-/** record 身份的 stream 半段：log- + 32 位小写 hex，128-bit CSPRNG 生成（ADR 0012 §Stream 与 generation） */
+/** record 身份的 stream 半段：log- + 32 位小写 hex，128-bit CSPRNG 生成（ADR 0014 §Stream 与 generation） */
 type StreamId = string & Pattern<"^log-[0-9a-f]{32}$">;
 
 /** record 身份的顺序半段：无前导零十进制字符串，uint64 值域；仅代表本 stream 的 append 顺序，
- *  不证明业务尝试无缺，也不是跨副本全局顺序（ADR 0012 §JSONL record） */
+ *  不证明业务尝试无缺，也不是跨副本全局顺序（ADR 0014 §JSONL record） */
 type Sequence = string & Pattern<"^(0|[1-9][0-9]*)$">;
 
 /** 变更尝试关联 ID：producer 复用的既有受控关联 ID，或 writer 生成的 att- + 32 位小写 hex；
@@ -414,32 +414,32 @@ type AttemptId = string & Pattern<"^.{1,256}$">;
 type ObservedAt = string & Pattern<"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$">;
 
 /** 稳定诊断码：ASCII 受控字符集、≤128 字符；顶层 code/sourcePhase 与 update-omitted reason 共用。
- *  「安全 Pattern 字符串」（ADR 0012）——低基数、无控制字符、无自由文本 */
+ *  「安全 Pattern 字符串」（ADR 0014）——低基数、无控制字符、无自由文本 */
 type StableCode = string & Pattern<"^[A-Za-z0-9_.:-]{1,128}$">;
 
-/** CRC-32C（Castagnoli）8 位小写 hex：inline 与 sidecar update payload 的完整性侧写（ADR 0012 §Binary frame v1） */
+/** CRC-32C（Castagnoli）8 位小写 hex：inline 与 sidecar update payload 的完整性侧写（ADR 0014 §Binary frame v1） */
 type Crc32cHex = string & Pattern<"^[0-9a-f]{8}$">;
 
-/** RFC 4648 标准 Base64（含必须 padding、无空白换行）：inline update 的物理表示（ADR 0012 §Inline 与 sidecar） */
+/** RFC 4648 标准 Base64（含必须 padding、无空白换行）：inline update 的物理表示（ADR 0014 §Inline 与 sidecar） */
 type Base64 = string & Pattern<"^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=|[A-Za-z0-9+/]{4})$">;
 
-/** sidecar 所在 segment 名：固定 8 位十进制，00000001 起，00000000 保留（ADR 0012 §Segment rolling） */
+/** sidecar 所在 segment 名：固定 8 位十进制，00000001 起，00000000 保留（ADR 0014 §Segment rolling） */
 type SegmentName = string & Pattern<"^[0-9]{8}$">;
 
 /** sidecar frame 起点：指向 frame magic 首字节，十进制无前导零字符串；首 frame 偏移可为 0 */
 type FrameOffset = string & Pattern<"^(0|[1-9][0-9]*)$">;
 
-/** SHA-256 小写 hex（64 位）：安全快照 RFC 8785 JCS bytes 的摘要（ADR 0012 §投影） */
+/** SHA-256 小写 hex（64 位）：安全快照 RFC 8785 JCS bytes 的摘要（ADR 0014 §投影） */
 type Sha256Hex = string & Pattern<"^[0-9a-f]{64}$">;
 
 /** committed Yjs update 的两种物理表示；inline 阈值只影响物理表示，不改语义。
  *  rejected 与 fatal committed:false 的 record 形状不声明 update 字段（封闭对象）→ 携带 update 即被拒绝，
- *  机器强制 ADR 0012「rejected 与 fatal committed:false 禁止携带 update」 */
+ *  机器强制 ADR 0014「rejected 与 fatal committed:false 禁止携带 update」 */
 type UpdateCarrier =
   | {
       storage: "inline";
       format: "yjs-update-v1";
-      /** payload 字节数；与 Base64 解码长度的一致性归 storage validator（ADR 0012 分工） */
+      /** payload 字节数；与 Base64 解码长度的一致性归 storage validator（ADR 0014 分工） */
       payloadLength: number;
       crc32c: Crc32cHex;
       base64: Base64;
@@ -453,7 +453,7 @@ type UpdateCarrier =
       crc32c: Crc32cHex;
     };
 
-/** v1 封闭 operation 词表（ADR 0012 §JSONL record 逐字；新增 operation 需新 record schema 版本与 stream generation） */
+/** v1 封闭 operation 词表（ADR 0014 §JSONL record 逐字；新增 operation 需新 record schema 版本与 stream generation） */
 type Operation =
   | "namespace-create"
   | "root-mutation"
@@ -473,14 +473,14 @@ type Stage =
   | "transaction"
   | "dirty-notification";
 
-/** 稳定 code 的来源模块封闭枚举（ADR 0012：Registry、Runtime、Persistence 与 replication） */
+/** 稳定 code 的来源模块封闭枚举（ADR 0014：Registry、Runtime、Persistence 与 replication） */
 type SourceModule =
   | "registry"
   | "runtime"
   | "persistence"
   | "replication";
 
-/** 变更来源：本地写路径或可信复制路径（ADR 0012 §JSONL record 逐字形状）。
+/** 变更来源：本地写路径或可信复制路径（ADR 0014 §JSONL record 逐字形状）。
  *  remoteInstanceId 有界无换行：复制身份受控，violation 由 intake 拒绝（结构性，§4） */
 type LogSource =
   | { kind: "local" }
@@ -490,7 +490,7 @@ type LogSource =
       remoteInstanceId: string & Pattern<"^.{1,256}$">;
     };
 
-/** 受控关联上下文（ADR 0012 逐字形状）：全可选，缺失即未提供；
+/** 受控关联上下文（ADR 0014 逐字形状）：全可选，缺失即未提供；
  *  owner/instanceId/epoch 不冻结在 manifest，按记录表达（同上） */
 type LogContext = {
   correlationId?: string & Pattern<"^.{1,256}$">;
@@ -499,7 +499,7 @@ type LogContext = {
   replicationEpoch?: number;
 };
 
-/** issues 统一投影单条（ADR 0012 §投影 逐字形状）。message/path 的字节预算由确定性投影施加（截断+标记），
+/** issues 统一投影单条（ADR 0014 §投影 逐字形状）。message/path 的字节预算由确定性投影施加（截断+标记），
  *  不用 Pattern 表达——截断标记可能包含任意原文字符，Pattern 会误杀合法截断结果 */
 type PathSegment = string | number;
 
@@ -521,7 +521,7 @@ type IssuesProjection = {
   originalCount?: number;
 };
 
-/** 输入捕获：四策略 × 可得性的七值封闭（ADR 0011 §输入捕获 + ADR 0012 §投影）。
+/** 输入捕获：四策略 × 可得性的七值封闭（ADR 0011 §输入捕获 + ADR 0014 §投影）。
  *  digest 恒为安全快照 JCS bytes 的 SHA-256；degraded 仅在 digest 变体上出现，
  *  presence ⇔ full/redacted 投影超 line 预算降级（v1 唯一原因 projected-input-too-large） */
 type InputCapture =
@@ -533,7 +533,7 @@ type InputCapture =
   | { capture: "full"; value: unknown; digest: Sha256Hex }
   | { capture: "redacted"; value: unknown; digest: Sha256Hex };
 
-/** 结局严格判别联合（ADR 0012 §JSONL record 六形状展开为 8 个具体成员）。
+/** 结局严格判别联合（ADR 0014 §JSONL record 六形状展开为 8 个具体成员）。
  *  判别字段 kind + effect 均为字符串字面量（VFSL v1 字面量仅 string/number）；
  *  fatal 的 committed 事实以显式 boolean 携带——VFSL 无法机器锁死「committed:true ⇒ effect 存在」
  *  （v1-spec §2 注记 8），该相关性由 TS 字面量类型 + emitter 唯一构造点 + 契约测试三重强制（§10-J2） */
@@ -547,7 +547,7 @@ type AttemptResult =
   | { kind: "fatal"; committed: boolean; effect: "update-omitted"; reason: StableCode }
   | { kind: "fatal"; committed: boolean; effect: "unknown" };
 
-/** 最终 attempt record：一次变更尝试的完整结局；首版不写 attempt-started（ADR 0012）。
+/** 最终 attempt record：一次变更尝试的完整结局；首版不写 attempt-started（ADR 0014）。
  *  记录身份是 (streamId, sequence)，不另设 recordId；无 namespaceId 字段——
  *  namespace 关联由 stream 归属（文件布局 namespaces/{namespaceId}/streams/{streamId}）表达 */
 type AttemptRecord = {
@@ -558,7 +558,7 @@ type AttemptRecord = {
   operation: Operation;
   stage: Stage;
   observedAt: ObservedAt;
-  /** 仅存在可靠 monotonic duration 来源时记录，毫秒（ADR 0012 §JSONL record） */
+  /** 仅存在可靠 monotonic duration 来源时记录，毫秒（ADR 0014 §JSONL record） */
   durationMs?: number;
   source: LogSource;
   context?: LogContext;
@@ -572,7 +572,7 @@ type AttemptRecord = {
 };
 
 /** 新 stream 的 genesis 基线 record：当时的完整 Y.Doc update，不是变更尝试
- *  （ADR 0012 §Stream 与 generation「每个新 stream 尽力先记录 genesis baseline」；
+ *  （ADR 0014 §Stream 与 generation「每个新 stream 尽力先记录 genesis baseline」；
  *  形状裁决见设计 §11-G2——无 attemptId/operation/stage/result/input，诚实表达非尝试身份） */
 type GenesisBaselineRecord = {
   recordKind: "genesis-baseline";
@@ -608,7 +608,7 @@ export function getRecordSchemaCompilation(): RecordSchemaCompilationResult {
 }
 ```
 
-- **冻结身份键 = `envelopeFingerprint`**（格式 `sha256:v1:<hex>`，对恰四键信封整体取指纹）。#152 打开既有 stream 时「manifest format/version 和 schema fingerprint 必须与内建冻结版本匹配；不匹配则旧 stream 保持只读，建立新 generation，不改写旧 manifest」（ADR 0012 §VFSL record schema）——比对双方都用 `getRecordSchemaCompilation().envelopeFingerprint`，单一来源。
+- **冻结身份键 = `envelopeFingerprint`**（格式 `sha256:v1:<hex>`，对恰四键信封整体取指纹）。#152 打开既有 stream 时「manifest format/version 和 schema fingerprint 必须与内建冻结版本匹配；不匹配则旧 stream 保持只读，建立新 generation，不改写旧 manifest」（ADR 0014 §VFSL record schema）——比对双方都用 `getRecordSchemaCompilation().envelopeFingerprint`，单一来源。
 - `semanticFingerprint` 一并导出（忽略 id/空白差异的语义身份），供工具诊断「文本排版漂移 vs 语义漂移」。
 - **变更纪律**：schema 文本任何改动（含 JSDoc——文档注释进 semantic fingerprint）都会改变指纹 → 等价于新 record schema 版本：id 升 `@2`、新 stream generation、旧 stream 只读。契约测试把 `envelopeFingerprint` 钉成编译期常量断言（§9.8），指纹变化必须在测试里有意识地改常量，防止静默漂移。
 - manifest 内嵌：#152 直接内嵌 `RECORD_SCHEMA_ENVELOPE`（「manifest.json …至少保存完整 record schema VFSL 四键信封」）——本包导出该对象即冻结物，不复制第二份文本。
@@ -635,7 +635,7 @@ producer（#149+）
 │ 7 sink.append(semanticRecord)（同样防 throw）                                   │
 └──────────────────────────────────────────────────────────────────────────────┘
   ▼
-┌─ 内存 adapter（storage projection，ADR 0012「adapter 独占」）───────────────────┐
+┌─ 内存 adapter（storage projection，ADR 0014「adapter 独占」）───────────────────┐
 │ 0′ 构造时急切编译冻结 schema；失败 → failed 模式（health schema-compile-failed，  │
 │    后续 append 全丢弃并计数，不再逐条发事件）                                    │
 │ 1 分配 sequence（准备 append 时才分配：十进制字符串进位自增，uint64 全域无 number 失真，│
@@ -647,18 +647,18 @@ producer（#149+）
 │      a input full/redacted → 降级 digest（+degraded 标记）+ health input-degraded│
 │      b 仍超限 → 丢弃整条 record + health record-dropped/line-budget-exceeded    │
 │ 5 VFSL 校验：validateLogicalSnapshot(compiled.derived, record)                  │
-│      失败 → 丢弃 + health vfsl-validation-failed（writer bug，ADR 0012）         │
+│      失败 → 丢弃 + health vfsl-validation-failed（writer bug，ADR 0014）         │
 │ 6 入队：depth < capacity ? push(freeze(record)) : drop newest +                 │
-│      health record-dropped/queue-full（保留已接纳顺序，ADR 0012 §Writer）         │
+│      health record-dropped/queue-full（保留已接纳顺序，ADR 0014 §Writer）         │
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
 
 设计依据：
 
-- 「业务 producer 只提交 semantic emission，不构造 segment/offset/Base64 等物理表示。日志 adapter 独占 storage projection：先决定 inline/sidecar并构造最终 record，再运行 VFSL」（ADR 0012 §VFSL record schema）→ emitter/adapter 的切分线正是**语义投影/物理投影**。
+- 「业务 producer 只提交 semantic emission，不构造 segment/offset/Base64 等物理表示。日志 adapter 独占 storage projection：先决定 inline/sidecar并构造最终 record，再运行 VFSL」（ADR 0014 §VFSL record schema）→ emitter/adapter 的切分线正是**语义投影/物理投影**。
 - 「首版不为 semantic emission 建立第二份 VFSL，避免双 schema 漂移」（同节）→ 语义 emission 只做廉价 TS 级形状校验（步骤 1），不做第二次 VFSL 校验；唯一的 VFSL 校验点在最终 record（步骤 5）。
 - 「append 前 VFSL validation failure 是日志 writer bug：丢弃 record、增加低基数 metric并向独立结构化 observer 上报，不改变业务结果」（同节）→ 步骤 5 失败即丢弃 + §8 事件。
-- 「writer queue 满时 drop newest，保留已排队顺序；不得为了记录 drop 再挤占同一队列」（ADR 0012 §Writer）→ drop 事件**只走 health observer**，绝不作为 record 入队。
+- 「writer queue 满时 drop newest，保留已排队顺序；不得为了记录 drop 再挤占同一队列」（ADR 0014 §Writer）→ drop 事件**只走 health observer**，绝不作为 record 入队。
 
 ### 4.2 每步失败隔离语义（汇总表）
 
@@ -671,7 +671,7 @@ producer（#149+）
 | enrichment | context.*、code/sourcePhase/sourceModule、durationMs 非有限 | 丢弃该字段 + `enrichment-field-dropped/<field>`；**不丢整条 record**（保住诊断事实本体） | 无 |
 | sink.append 任意点 | 意外异常 | adapter 顶层 catch → 丢弃 + `pipeline-crashed/adapter` | 无 |
 | schema 编译 | compileSchemaEnvelope !ok（构建期 bug） | 构造时一次 `schema-compile-failed`；failed 模式全丢弃 + 计数 | 无 |
-| update 物理化 | bytes.length === 0（R2/D-c1）/ bytes > payloadMaxBytes | update-omitted/`empty-update` / update-omitted/`payload-too-large`（均保 attempt metadata，ADR 0012；**不得**产生 `vfsl-validation-failed`） | 无 |
+| update 物理化 | bytes.length === 0（R2/D-c1）/ bytes > payloadMaxBytes | update-omitted/`empty-update` / update-omitted/`payload-too-large`（均保 attempt metadata，ADR 0014；**不得**产生 `vfsl-validation-failed`） | 无 |
 | line 预算 | 序列化超限 | 先降级 input→digest；仍超限丢弃 + `record-dropped/line-budget-exceeded` | 无 |
 | VFSL 校验 | 校验失败（writer bug / 测试注入） | 丢弃 + `vfsl-validation-failed`（只带 issuePaths，不带 message） | 无 |
 | 队列 | 满员 | drop newest + `record-dropped/queue-full`；已接纳顺序不变 | 无 |
@@ -681,10 +681,10 @@ producer（#149+）
 
 ### 4.3 sequence 分配与身份
 
-- 内存路径：`streamId` 在 adapter **构造时**生成一次（`log-` + 32 hex，CSPRNG）；单实例单 stream，无跨实例碰撞域，故不做 ADR 0012 的碰撞重试（文件路径的 manifest 域才有碰撞问题；差异在 AGENTS.md 标注）。`sequence` 在步骤 1 分配（准备 append 时才分配，ADR 0012），从 1 起单调递增、不回绕；被丢弃的 record（line 预算/VFSL/队列满）同样消耗 sequence → 队列内出现 gap 是**诚实信号**（「sequence …仅代表该 stream 的 append 顺序，不证明业务尝试无缺」）。
-- **sequence 生成纪律（R2/A-c1）**：sequence 以**十进制字符串缓存 + 数字符串进位**生成（`nextDecimal(s)`：自末位起逐位 +1、9→0 进位），全程不经 `number` 算术——JS number 超 2^53 后 `next++` 失真会产出重复/跳变、却仍匹配 `P_DECIMAL` 的十进制串（静默损坏），字符串进位覆盖 uint64 全域（上界 `18446744073709551615`）无失真；`stats().lastSequenceAssigned` 因此为 `string | null`（§7.2）。到达 uint64 max 后进入 **exhausted 模式**（ADR 0012 §JSONL record 逐字：「达到 uint64 最大值后 stream 进入 exhausted，后续日志 emission 丢弃并上报，业务不受影响」）：后续 append 丢弃 + stats 计数，事件抑制策略与 failed 模式一致（不逐条发事件）；`sequence-exhausted` reason 的词表演进方式备案于 §8.1 与 §10-J13。testing 子路径提供 lastSequence 预置接缝驱动 exhausted 邻域（§9.10）。
-- `attemptId`：emission 携带则透传（受控关联 ID 复用，ADR 0012）；缺失时 intake 后立即用注入 `RandomSource`（默认 `node:crypto.randomBytes(16)` CSPRNG）生成 `att-` + 32 小写 hex。
-- ADR 0011 的 `emitterSequence` 与 ADR 0012 的 stream `sequence` 在 v1 单写者模型下是同一概念（每 stream 单逻辑 writer queue），统一用 `sequence` 表达，不引入双计数。
+- 内存路径：`streamId` 在 adapter **构造时**生成一次（`log-` + 32 hex，CSPRNG）；单实例单 stream，无跨实例碰撞域，故不做 ADR 0014 的碰撞重试（文件路径的 manifest 域才有碰撞问题；差异在 AGENTS.md 标注）。`sequence` 在步骤 1 分配（准备 append 时才分配，ADR 0014），从 1 起单调递增、不回绕；被丢弃的 record（line 预算/VFSL/队列满）同样消耗 sequence → 队列内出现 gap 是**诚实信号**（「sequence …仅代表该 stream 的 append 顺序，不证明业务尝试无缺」）。
+- **sequence 生成纪律（R2/A-c1）**：sequence 以**十进制字符串缓存 + 数字符串进位**生成（`nextDecimal(s)`：自末位起逐位 +1、9→0 进位），全程不经 `number` 算术——JS number 超 2^53 后 `next++` 失真会产出重复/跳变、却仍匹配 `P_DECIMAL` 的十进制串（静默损坏），字符串进位覆盖 uint64 全域（上界 `18446744073709551615`）无失真；`stats().lastSequenceAssigned` 因此为 `string | null`（§7.2）。到达 uint64 max 后进入 **exhausted 模式**（ADR 0014 §JSONL record 逐字：「达到 uint64 最大值后 stream 进入 exhausted，后续日志 emission 丢弃并上报，业务不受影响」）：后续 append 丢弃 + stats 计数，事件抑制策略与 failed 模式一致（不逐条发事件）；`sequence-exhausted` reason 的词表演进方式备案于 §8.1 与 §10-J13。testing 子路径提供 lastSequence 预置接缝驱动 exhausted 邻域（§9.10）。
+- `attemptId`：emission 携带则透传（受控关联 ID 复用，ADR 0014）；缺失时 intake 后立即用注入 `RandomSource`（默认 `node:crypto.randomBytes(16)` CSPRNG）生成 `att-` + 32 小写 hex。
+- ADR 0011 的 `emitterSequence` 与 ADR 0014 的 stream `sequence` 在 v1 单写者模型下是同一概念（每 stream 单逻辑 writer queue），统一用 `sequence` 表达，不引入双计数。
 
 ### 4.4 随机源/时钟注入接缝
 
@@ -696,7 +696,7 @@ export interface RandomSource {
 ```
 
 - `RandomSource` 仅两个用途：streamId（16B）、attemptId（16B）。生产默认 CSPRNG 是 ADR 硬要求（「受控 128-bit CSPRNG」）；注入接缝仅测试可用性服务，AGENTS.md 写明纪律。
-- 时钟：管线内**零时钟依赖**（observedAt 是 producer 事实；adapter 不盖 appendedAt——ADR 0012：「首版不记录 appendedAt，排序以 sequence 为准，不按 wall clock 排序」）。`observedAtFrom(now)` 是给 producer 的纯 helper：`new Date(now()).toISOString()`（恒为 `YYYY-MM-DDTHH:MM:SS.sssZ`，与 P_ISO_MS 精确匹配；epoch 超出 ISO 表示域时 throw——producer 侧 bug，发生在 emit 之前，不违反 emit 不抛错契约）。
+- 时钟：管线内**零时钟依赖**（observedAt 是 producer 事实；adapter 不盖 appendedAt——ADR 0014：「首版不记录 appendedAt，排序以 sequence 为准，不按 wall clock 排序」）。`observedAtFrom(now)` 是给 producer 的纯 helper：`new Date(now()).toISOString()`（恒为 `YYYY-MM-DDTHH:MM:SS.sssZ`，与 P_ISO_MS 精确匹配；epoch 超出 ISO 表示域时 throw——producer 侧 bug，发生在 emit 之前，不违反 emit 不抛错契约）。
 
 ---
 
@@ -784,7 +784,7 @@ else:
   丢弃整条 record + health record-dropped {reason:'line-budget-exceeded', projectedRecordBytes, operation}
 ```
 
-顺序逐字落实 ADR 0012 §投影：「输入导致超限时先降级为 digest；去掉输入后 record 仍超限则丢弃整条 record并通过健康面上报，不影响业务」。内存 adapter 无 sidecar，≳780 KiB 的 update（Base64 后超预算）必然走丢弃分支——这是 ADR 字面顺序在无 sidecar 环境的诚实后果（§10-J9 备案，测试覆盖）；update 本身超过 `payloadMaxBytes`（64 MiB）在更早的步骤 2 已转 update-omitted，不与本分支竞争。
+顺序逐字落实 ADR 0014 §投影：「输入导致超限时先降级为 digest；去掉输入后 record 仍超限则丢弃整条 record并通过健康面上报，不影响业务」。内存 adapter 无 sidecar，≳780 KiB 的 update（Base64 后超预算）必然走丢弃分支——这是 ADR 字面顺序在无 sidecar 环境的诚实后果（§10-J9 备案，测试覆盖）；update 本身超过 `payloadMaxBytes`（64 MiB）在更早的步骤 2 已转 update-omitted，不与本分支竞争。
 
 ---
 
@@ -792,7 +792,7 @@ else:
 
 ### 6.1 确定性截断原语（JSON 字面量字节预算 + code point 完整）
 
-**预算基准（R2/E-c2 钉死）**：一切「UTF-8 bytes」预算（message 4 KiB、string 段 1 KiB、issue code 256B）按 **JSON 字符串字面量内容字节**计——`jsonLiteralBytes(s) = Buffer.byteLength(JSON.stringify(s)) - 2`（去掉两侧引号）。理由：受限资源本质是 JSONL line 的字节——ADR 0012「最终 JSONL line 默认硬上限 1 MiB」与「资源限制统一按 UTF-8 bytes 计算」的交集是**序列化后**的 UTF-8 字节。该基准下：lone surrogate 计 **6B**（well-formed JSON 转义 `\udXXX`）而非替换语义的 3B；`"`/`\` 计 2B；控制字符计 2B（`\b\t\n\f\r` 短转义）或 6B（`\u00xx`）；合法 astral 字符计 4B（UTF-8 原样）——与 `measure()`（§5.5）所量字节严格同基，消除「4095B（替换语义）不截断、序列化后 8190B」的二义。
+**预算基准（R2/E-c2 钉死）**：一切「UTF-8 bytes」预算（message 4 KiB、string 段 1 KiB、issue code 256B）按 **JSON 字符串字面量内容字节**计——`jsonLiteralBytes(s) = Buffer.byteLength(JSON.stringify(s)) - 2`（去掉两侧引号）。理由：受限资源本质是 JSONL line 的字节——ADR 0014「最终 JSONL line 默认硬上限 1 MiB」与「资源限制统一按 UTF-8 bytes 计算」的交集是**序列化后**的 UTF-8 字节。该基准下：lone surrogate 计 **6B**（well-formed JSON 转义 `\udXXX`）而非替换语义的 3B；`"`/`\` 计 2B；控制字符计 2B（`\b\t\n\f\r` 短转义）或 6B（`\u00xx`）；合法 astral 字符计 4B（UTF-8 原样）——与 `measure()`（§5.5）所量字节严格同基，消除「4095B（替换语义）不截断、序列化后 8190B」的二义。
 
 ```ts
 const TRUNCATION_MARKER = '…[truncated]'   // JSON 字面量字节 = 14B（R4/C-4 勘误：…=3B + [truncated]=11B=14B；R1 原文「13B（[truncated]=10B）」系算术错误，SA2 R2.3-n1 曾标 cosmetic，SA4 C-4 实测 '…'×2048 在 2B 特例记账下穿透 4KiB 子预算 50% 后裁决改回精确基准；预算预留必须按 14B）
@@ -827,9 +827,9 @@ function truncateUtf8(s: string, budgetBytes: number): string {
 }
 ```
 
-确定性来源：预算基准固定（JSON 字面量字节）、扫描顺序固定（前缀序）、code point 对齐固定。「截断不得拆分 Unicode code point」（ADR 0012 §投影）由逐 code point 累计保证；`…`（U+2026）本身是完整 code point。KAT（§9.4）：lone surrogate 计 6B、`\n`/`"` 计 2B、astral 计 4B；1365 个 lone surrogate（字面量 8190B）> 4096 → 截断且截断后序列化字节 ≤ 4096。
+确定性来源：预算基准固定（JSON 字面量字节）、扫描顺序固定（前缀序）、code point 对齐固定。「截断不得拆分 Unicode code point」（ADR 0014 §投影）由逐 code point 累计保证；`…`（U+2026）本身是完整 code point。KAT（§9.4）：lone surrogate 计 6B、`\n`/`"` 计 2B、astral 计 4B；1365 个 lone surrogate（字面量 8190B）> 4096 → 截断且截断后序列化字节 ≤ 4096。
 
-### 6.2 issues 投影（预算逐字对齐 ADR 0012）
+### 6.2 issues 投影（预算逐字对齐 ADR 0014）
 
 ```text
 projectIssues(raw, policy):
@@ -851,7 +851,7 @@ projectIssues(raw, policy):
   return { policy, items, ...(truncated ? { truncated: true, originalCount } : {}) }
 ```
 
-预算常量逐字来源（ADR 0012 §投影）：「每条 message 最大 4 KiB UTF-8，path 最多 256 个 segment，string segment 最大 1 KiB UTF-8，issues 最多 1000 条；超限时确定性截断并记录 truncated 与 originalCount。资源限制统一按 UTF-8 bytes 计算，截断不得拆分 Unicode code point」。预算字节基准 = JSON 字面量内容字节（§6.1，R2/E-c2）——「4 KiB UTF-8」按该值在 JSONL line 中实际占据的 UTF-8 字节解释。`truncated`/`originalCount` 为 presence 语义（VFSL `?` 可选字段；presence ⇔ 截断发生），与 ADR「超限时…记录」的时态一致。
+预算常量逐字来源（ADR 0014 §投影）：「每条 message 最大 4 KiB UTF-8，path 最多 256 个 segment，string segment 最大 1 KiB UTF-8，issues 最多 1000 条；超限时确定性截断并记录 truncated 与 originalCount。资源限制统一按 UTF-8 bytes 计算，截断不得拆分 Unicode code point」。预算字节基准 = JSON 字面量内容字节（§6.1，R2/E-c2）——「4 KiB UTF-8」按该值在 JSONL line 中实际占据的 UTF-8 字节解释。`truncated`/`originalCount` 为 presence 语义（VFSL `?` 可选字段；presence ⇔ 截断发生），与 ADR「超限时…记录」的时态一致。
 
 ### 6.3 其余可变尺寸字段的界
 
@@ -868,7 +868,7 @@ projectIssues(raw, policy):
 
 ## §7 有界内存 adapter 契约
 
-### 7.1 语义（逐条对齐验收标准 5 与 ADR 0012 §Writer）
+### 7.1 语义（逐条对齐验收标准 5 与 ADR 0014 §Writer）
 
 - **容量**：`capacity` 条（默认 1024，judgement §10-J5）。每条 record 已过 line 预算（≤ lineBudgetBytes，默认 1 MiB）→ 实例最坏驻留 ≈ capacity × lineBudgetBytes；README 与 AGENTS.md 写明该上界与调参建议。
 - **drop newest**：队列满时**丢弃新到者**，已接纳 record 及其顺序不变（「writer queue 满时 drop newest，保留已排队顺序」）。drop 只走 health + stats 计数，**绝不**作为 record 入队（「不得为了记录 drop 再挤占同一队列」）。
@@ -896,7 +896,7 @@ export interface DiagnosticMemoryStats {
 
 ### 7.3 CRC32C（inline carrier 必需，纯 TS）
 
-参数逐字取 ADR 0012 §Binary frame v1（poly 0x1EDC6F41 / init 0xFFFFFFFF / refin true / refout true / xorout 0xFFFFFFFF），表驱动实现（256 项反射表，构造期生成），KAT 断言 `check("123456789") === 0xE3069283`（ADR 给出的检验值即现成 KAT）。输出写 8 位小写 hex（`P_CRC32C_HEX`）。文件 adapter 的 frame header 复用同一实现（#152 不改）；**注意**：本票只算 CRC 值本身，不构造 25-byte frame header（那是 #152）。
+参数逐字取 ADR 0014 §Binary frame v1（poly 0x1EDC6F41 / init 0xFFFFFFFF / refin true / refout true / xorout 0xFFFFFFFF），表驱动实现（256 项反射表，构造期生成），KAT 断言 `check("123456789") === 0xE3069283`（ADR 给出的检验值即现成 KAT）。输出写 8 位小写 hex（`P_CRC32C_HEX`）。文件 adapter 的 frame header 复用同一实现（#152 不改）；**注意**：本票只算 CRC 值本身，不构造 25-byte frame header（那是 #152）。
 
 ### 7.4 update 物理化（内存路径恒 inline）
 
@@ -908,7 +908,7 @@ physicalize(result, updateCapture, payloadMaxBytes):   // result = 语义 record
     bytes.length === 0        → { …, effect:'update-omitted', reason:'empty-update' }
                                // R2/D-c1 前置守卫：0 字节 Base64 为空串、不匹配 P_BASE64
                                //（尾部组强制非空）；不设此分支会把 producer 输入缺陷误标为
-                               // vfsl-validation-failed 的 writer bug 信号（ADR 0012 语义污染）
+                               // vfsl-validation-failed 的 writer bug 信号（ADR 0014 语义污染）
     !updateCapture            → { …, effect:'update-omitted', reason:'update-capture-disabled' }
     bytes.length > payloadMaxBytes
                                → { …, effect:'update-omitted', reason:'payload-too-large' }
@@ -952,9 +952,9 @@ export type DiagnosticLogHealthEvent =
 
 注意：failed 模式（构造期 schema 编译失败）只发**一次** `schema-compile-failed`，后续 append 丢弃仅进 stats 计数、不逐条发 `record-dropped`（§4.1 步骤 0′）——故 `record-dropped` 的 reason 词表只有两值。
 
-**R2/A-c1 备案（exhausted reason 的词表演进）**：ADR 0012 明文「达到 uint64 最大值后 stream 进入 exhausted，后续日志 emission 丢弃并上报，业务不受影响」。内存 adapter 达 `18446744073709551615` 后进入 exhausted 模式（后续 append 丢弃 + stats 计数；事件抑制策略与 failed 模式一致，不逐条发事件——防 10¹⁹ 级洪泛）。v1 冻结的 `record-dropped.reason` 词表（两值）**不含** exhausted 位：`sequence-exhausted` reason 由 #152 文件路径实际落地耗尽语义时以**联合成员追加**方式引入（TS 事件类型只增不改；VFSL schema 不受影响——sequence Pattern 已覆盖 uint64 全域；与 §10-J13 互为备案）。
+**R2/A-c1 备案（exhausted reason 的词表演进）**：ADR 0014 明文「达到 uint64 最大值后 stream 进入 exhausted，后续日志 emission 丢弃并上报，业务不受影响」。内存 adapter 达 `18446744073709551615` 后进入 exhausted 模式（后续 append 丢弃 + stats 计数；事件抑制策略与 failed 模式一致，不逐条发事件——防 10¹⁹ 级洪泛）。v1 冻结的 `record-dropped.reason` 词表（两值）**不含** exhausted 位：`sequence-exhausted` reason 由 #152 文件路径实际落地耗尽语义时以**联合成员追加**方式引入（TS 事件类型只增不改；VFSL schema 不受影响——sequence Pattern 已覆盖 uint64 全域；与 §10-J13 互为备案）。
 
-### 8.2 低基数字段白名单（逐项对齐 ADR 0012 §VFSL record schema）
+### 8.2 低基数字段白名单（逐项对齐 ADR 0014 §VFSL record schema）
 
 observer 事件只允许出现：
 
@@ -1050,7 +1050,7 @@ function safeNotify(observer, event): void {
 
 | # | 决策 | 性质 | 风险与缓解 |
 |---|---|---|---|
-| J1 | `recordKind` 判别字段 + `GenesisBaselineRecord` 第二族 record | 判断（ADR 0012 要求基线记录但未给形状；§11-G2） | 若 #152 评审否决此形状 → 必须 bump schema 版本重建 generation（冻结纪律本身是安全网）；提前在 #152 勘察时复核。**R2/D-c2 备案：genesis record 在 v1 冻结的 emission/sink 公共面无构造路径**（`DiagnosticSemanticRecord` 是纯 attempt 形状）——这是设计事实而非缺陷：#152 需为 genesis 增设 adapter 内部构造路径（直通 storage projection 阶段），**不需要**改 schema、也不需要动 emission 面；§1.3 注释已修正为「attempt 记录路径复用同一管线」 |
+| J1 | `recordKind` 判别字段 + `GenesisBaselineRecord` 第二族 record | 判断（ADR 0014 要求基线记录但未给形状；§11-G2） | 若 #152 评审否决此形状 → 必须 bump schema 版本重建 generation（冻结纪律本身是安全网）；提前在 #152 勘察时复核。**R2/D-c2 备案：genesis record 在 v1 冻结的 emission/sink 公共面无构造路径**（`DiagnosticSemanticRecord` 是纯 attempt 形状）——这是设计事实而非缺陷：#152 需为 genesis 增设 adapter 内部构造路径（直通 storage projection 阶段），**不需要**改 schema、也不需要动 emission 面；§1.3 注释已修正为「attempt 记录路径复用同一管线」 |
 | J2 | fatal `committed:boolean` 与 effect 的相关性不被 VFSL 机器锁死 | 受限（v1-spec §2 注记 8 无布尔字面量） | 三重强制：TS 字面量类型（编译期）+ emitter 唯一构造点 + 9.1 契约测试；schema 只放松不收紧（不会拒绝合法 record） |
 | J3 | `code` 与 `sourceModule` 成对性（VFSL 无法表达跨字段依赖） | 判断 | 同 J2 的三重强制；§9.1 覆盖 |
 | J4 | redacted 算法 = 叶值→`«redacted»`、null 保留 | 判断（ADR 未定义脱敏规则） | 保守默认（结构+digest 保留）；schema `value:unknown` 允许未来算法演化而不改 schema |
@@ -1058,11 +1058,11 @@ function safeNotify(observer, event): void {
 | J6 | issuesPolicy 默认 'full' | 判断（ADR 只规定 input 默认 digest 或更保守） | issues 是诊断核心价值；脱敏环境显式配置 redacted；与 input 默认 digest 形成保守组合 |
 | J7 | full/redacted 也携带 digest | 判断（额外 CPU O(snapshot)） | 跨策略可比对收益 > 成本；full 本就是 Host 显式启用 |
 | J8 | issues[].code 为 plain string + 256B 截断（顶层 code 则 Pattern） | 依 ADR TS 快照（`code?: string`）+ 判断 | 截断确定性；不让业务码形状杀死整条诊断记录 |
-| J9 | 内存路径大 update（Base64 超行预算）按 ADR 字面丢弃整条 record | 依 ADR 0012 §投影字面顺序 | 后果已文档化 + 9.5 测试锚；#152 的 sidecar 天然免除该分支 |
+| J9 | 内存路径大 update（Base64 超行预算）按 ADR 字面丢弃整条 record | 依 ADR 0014 §投影字面顺序 | 后果已文档化 + 9.5 测试锚；#152 的 sidecar 天然免除该分支 |
 | J10 | SHA-256 走 node:crypto（环境绑定面） | 判断（§5.2 四点论证） | 绑定收口在 digest.ts/carrier.ts；若未来需要浏览器宿主，替换为纯 TS 实现不改变任何契约（digest 值不变） |
 | J11 | 序列 Pattern 允许 "0"、内存从 1 起 | 判断（给 #152 起点自由度） | 两 adapter 兼容；无前导零语义不受影响 |
 | J12 | enrichment 字段级违规丢字段而非丢 record；结构性违规丢 emission | 判断（「保住诊断事实」 vs 「loud」的权衡） | 两类路径都有 health 事件与测试；producer bug 可观测 |
-| J13 | 内存 adapter 在 uint64 max 进入 exhausted 模式；v1 冻结事件词表不含 exhausted reason | 依 ADR 0012 §JSONL record（耗尽语义明文）+ 判断（词表演进时点归 #152） | 物理不可达（需 ~10¹⁹ 次 append）；sequence 以十进制字符串进位生成、无 number 失真（§4.3）；`sequence-exhausted` reason 由 #152 以联合成员追加方式引入（§8.1 备案），TS 事件类型只增不改、VFSL schema 不受影响 |
+| J13 | 内存 adapter 在 uint64 max 进入 exhausted 模式；v1 冻结事件词表不含 exhausted reason | 依 ADR 0014 §JSONL record（耗尽语义明文）+ 判断（词表演进时点归 #152） | 物理不可达（需 ~10¹⁹ 次 append）；sequence 以十进制字符串进位生成、无 number 失真（§4.3）；`sequence-exhausted` reason 由 #152 以联合成员追加方式引入（§8.1 备案），TS 事件类型只增不改、VFSL schema 不受影响 |
 
 ---
 
@@ -1070,11 +1070,11 @@ function safeNotify(observer, event): void {
 
 | # | 冲突/缺口 | 裁决（本设计采用） | 建议 |
 |---|---|---|---|
-| G1 | ADR 0012 §Inline 与 sidecar：规范句「inline 与 sidecar 均记录 payloadLength 与 CRC32C」，但同节 sidecar JSON 示例只含 storage/format/segment/frameOffset/payloadLength，无 crc32c | 规范句为准：两种 carrier 都带 `crc32c`（8 位小写 hex）；示例视为省略简写 | 建议后续 ADR 勘误补齐示例；#152 实现按本裁决 |
-| G2 | ADR 0012 §Stream 与 generation 要求「每个新 stream 尽力先记录当前完整 Y.Doc 的 genesis baseline」，但 §JSONL record 只定义 attempt record（operation 封闭 6 值 + result 六形状），基线记录无家可归；replay 前提又依赖「有可用 genesis」 | schema 冻结为 `ROOT = AttemptRecord | GenesisBaselineRecord` 两族封闭联合，以顶层 `recordKind` 字面量判别；基线无 attemptId/operation/stage/result/input，诚实表达「非变更尝试」 | 请总控确认 #152/#153 接受该形状；若否，须先改 ADR 再动 schema（冻结纪律） |
-| G3 | ADR 0011 结局词表含 `unknown`（缺可判定结局的诊断记录），ADR 0012 v1 只写最终 record、不写 attempt-started——存储层无处安放 `unknown` | 拼接结论：v1 存储不出现 `result:'unknown'`；进程中断的尝试以「记录缺失」表达（ADR 0012 明示该缺失属 best-effort 语义）；`effect:'unknown'` 仅在 fatal+committed:true 内表达 effect 不可知 | 与两 ADR 均自洽，无需修改；#155 replay 工具不得把缺失推断为任何结局（ADR 0011 原文） |
-| G4 | ADR 0012 observer 白名单提「VFSL issue codes」，但 `validateLogicalSnapshot` 的 `ValidateIssue` 无 code 字段（`packages/vfsl/src/validate.ts:43-47` 只有 message+path，message 含值预览不可外泄） | 事件携带 `issuePaths`（首 10 条，无 message）；「codes」按不存在处理 | 若未来 ValidateIssue 增 code 字段（公共接缝变更），本包事件词表加同名字段即可（向后兼容） |
-| G5 | ADR 0012 引用 CRC32C/RFC 8785 JCS/Base64 工具，仓内均无实现（勘察结论） | 本票落地：CRC32C 纯 TS（ADR KAT）、JCS 纯 TS（RFC 向量 KAT）、SHA-256 走 node:crypto、Base64 用 Buffer.toString('base64')（恒 padding） | 无冲突；#152 复用 CRC32C/JCS/Base64 同一实现，避免第二份 |
+| G1 | ADR 0014 §Inline 与 sidecar：规范句「inline 与 sidecar 均记录 payloadLength 与 CRC32C」，但同节 sidecar JSON 示例只含 storage/format/segment/frameOffset/payloadLength，无 crc32c | 规范句为准：两种 carrier 都带 `crc32c`（8 位小写 hex）；示例视为省略简写 | 建议后续 ADR 勘误补齐示例；#152 实现按本裁决 |
+| G2 | ADR 0014 §Stream 与 generation 要求「每个新 stream 尽力先记录当前完整 Y.Doc 的 genesis baseline」，但 §JSONL record 只定义 attempt record（operation 封闭 6 值 + result 六形状），基线记录无家可归；replay 前提又依赖「有可用 genesis」 | schema 冻结为 `ROOT = AttemptRecord | GenesisBaselineRecord` 两族封闭联合，以顶层 `recordKind` 字面量判别；基线无 attemptId/operation/stage/result/input，诚实表达「非变更尝试」 | 请总控确认 #152/#153 接受该形状；若否，须先改 ADR 再动 schema（冻结纪律） |
+| G3 | ADR 0011 结局词表含 `unknown`（缺可判定结局的诊断记录），ADR 0014 v1 只写最终 record、不写 attempt-started——存储层无处安放 `unknown` | 拼接结论：v1 存储不出现 `result:'unknown'`；进程中断的尝试以「记录缺失」表达（ADR 0014 明示该缺失属 best-effort 语义）；`effect:'unknown'` 仅在 fatal+committed:true 内表达 effect 不可知 | 与两 ADR 均自洽，无需修改；#155 replay 工具不得把缺失推断为任何结局（ADR 0011 原文） |
+| G4 | ADR 0014 observer 白名单提「VFSL issue codes」，但 `validateLogicalSnapshot` 的 `ValidateIssue` 无 code 字段（`packages/vfsl/src/validate.ts:43-47` 只有 message+path，message 含值预览不可外泄） | 事件携带 `issuePaths`（首 10 条，无 message）；「codes」按不存在处理 | 若未来 ValidateIssue 增 code 字段（公共接缝变更），本包事件词表加同名字段即可（向后兼容） |
+| G5 | ADR 0014 引用 CRC32C/RFC 8785 JCS/Base64 工具，仓内均无实现（勘察结论） | 本票落地：CRC32C 纯 TS（ADR KAT）、JCS 纯 TS（RFC 向量 KAT）、SHA-256 走 node:crypto、Base64 用 Buffer.toString('base64')（恒 padding） | 无冲突；#152 复用 CRC32C/JCS/Base64 同一实现，避免第二份 |
 | G6 | attemptId 双来源（producer 受控 ID 形状无规格 / writer 生成 `att-`+32hex 有规格） | schema 取超集 `^.{1,256}$`（有界、无换行）；生成值是其子集 | producer 侧受控 ID 的形状约束留给 #149–#151 各自的接缝文档 |
 
 ---
@@ -1143,9 +1143,9 @@ function safeNotify(observer, event): void {
 |------|:--:|------|------|
 | G-b1（blocker）：ALLOW LIST 增补 `pnpm-lock.yaml` | ✅ 修 | §12 | 增补条目：仅新包 importer 段差异；引 CI `--frozen-lockfile` 依据（ci.yml:33）与 SA4 核对口径（lockfile diff 仅含新包条目） |
 | C-b1（blocker）：issues 段级 JSON-safe + `-0`/稀疏数组 hole 注记 + JSON round-trip 孪生不变量 | ✅ 修 | §4.2（issues 投影行）、§5.2（jcs 数组分支逐槽检查 hole/undefined → SnapshotContractViolation）、§5.4（新增「序列化分叉纪律」：hole/unavailable、`-0` 的 digest 同基与视图差说明）、§6.2（段级判定 `string ∨ Number.isFinite(number)`，非法段整条丢弃；number 段 `-0→+0` 归一）、§9.4（NaN/±Infinity/-0/稀疏 path 红灯）、§9.8（round-trip 不变量升级为全 suite 通用 helper） | writer 不再产出自己读不回的行；「内存 JSON 与 JSONL 逐字段同构」承诺获得编译外机器锚 |
-| D-c1：0 字节 updateBytes 前置守卫二选一写死 | ✅ 修（采纳方案 (a)） | §2.1（reason 词表 +`empty-update`，含 P_BASE64 空串不匹配论证）、§4.1 步骤 2、§4.2（update 物理化行）、§7.4（守卫分支置于最前）、§9.9（红灯：`empty-update` 保 metadata 且**无** `vfsl-validation-failed`） | producer 输入缺陷不再误标为 writer bug（ADR 0012「VFSL failure = writer bug」语义保持纯净） |
+| D-c1：0 字节 updateBytes 前置守卫二选一写死 | ✅ 修（采纳方案 (a)） | §2.1（reason 词表 +`empty-update`，含 P_BASE64 空串不匹配论证）、§4.1 步骤 2、§4.2（update 物理化行）、§7.4（守卫分支置于最前）、§9.9（红灯：`empty-update` 保 metadata 且**无** `vfsl-validation-failed`） | producer 输入缺陷不再误标为 writer bug（ADR 0014「VFSL failure = writer bug」语义保持纯净） |
 | D-c2：genesis 接缝备案 + §1.3 复用表述修正 | ✅ 修 | §10-J1（追加备案：v1 冻结 emission/sink 面无 genesis 构造路径；#152 增设 adapter 内部构造路径，不改 schema、不动 emission 面）、§1.3（注释修正为「attempt 记录路径复用同一管线」） | 设计事实显式化，防 #152 勘察按旧表述误判接缝已就绪 |
-| A-c1：sequence 生成纪律 + exhausted 备案 | ✅ 修（采纳十进制字符串进位） | §4.1 步骤 1、§4.3（新增生成纪律段：字符串进位、无 number 失真、uint64 全域、exhausted 模式逐字对齐 ADR 0012）、§7.2（`lastSequenceAssigned: string \| null`）、§8.1（exhausted reason 备案段）、§10-J13（新增备案行）、§9.10（进位直测 + 预置接缝驱动 exhausted 邻域 + stats 类型断言） | 消除 2^53 失真静默损坏；耗尽语义与事件词表演进方式双双成文 |
+| A-c1：sequence 生成纪律 + exhausted 备案 | ✅ 修（采纳十进制字符串进位） | §4.1 步骤 1、§4.3（新增生成纪律段：字符串进位、无 number 失真、uint64 全域、exhausted 模式逐字对齐 ADR 0014）、§7.2（`lastSequenceAssigned: string \| null`）、§8.1（exhausted reason 备案段）、§10-J13（新增备案行）、§9.10（进位直测 + 预置接缝驱动 exhausted 邻域 + stats 类型断言） | 消除 2^53 失真静默损坏；耗尽语义与事件词表演进方式双双成文 |
 | E-c1：truncateUtf8 预算 < marker 字节数行为写死 | ✅ 修（采纳入口 loud 断言） | §6.1（`TruncationBudgetBelowMarker` 断言 + 经顶层 catch 收编为 pipeline-crashed 的注释）、§9.4（budget=12 throw 红灯 + 生产常量 ≥14B 断言） | 内部不变量违反不静默超预算 |
 | E-c2：预算基准钉死 | ✅ 修（采纳 JSON 字面量字节） | §6.1（全文重写：`jsonLiteralBytes`/`jsonLiteralCpBytes`，lone surrogate 6B、`"`/`\`/短转义 2B、`\u00xx` 6B、astral 4B；与 §5.5 `measure()` 同基论证）、§6.2（基准引用句）、§9.4（逐单位 KAT + 1365-lone-surrogate 向量） | 「4 KiB」在两种表示下的二义消除，预算即 JSONL 行字节 |
 | F-c1：failed 模式可注入（或明文降级备案） | ✅ 修（开缝，不降级） | §1.3（testing 子路径增补「带自定义 envelope 的工厂」——生产构造器内部函数化）、§9.6（红灯：坏 envelope → 构造期恰一次 `schema-compile-failed` + 后续全丢弃 + 无逐条 `record-dropped` + stats 对账） | 冻结公共面上的事件变体与抑制逻辑脱离零覆盖死代码状态 |

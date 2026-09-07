@@ -1,6 +1,6 @@
 /**
  * 红灯契约 — §9.4 issues 投影边界（验收标准 3）
- * 锚点：ADR 0012 §投影（message ≤ 4 KiB、path ≤ 256 段、string 段 ≤ 1 KiB、issues ≤ 1000 条、
+ * 锚点：ADR 0014 §投影（message ≤ 4 KiB、path ≤ 256 段、string 段 ≤ 1 KiB、issues ≤ 1000 条、
  *       确定性截断、truncated/originalCount、不拆 code point）+ 设计 §6.1（R2/E-c2 预算基准 =
  *       JSON 字面量内容字节；R2/E-c1 入口 loud 断言 TruncationBudgetBelowMarker）+ §6.2
  *       （R2/C-b1 段级 JSON-safe：NaN/±Infinity/undefined/稀疏 hole 段整条丢弃；

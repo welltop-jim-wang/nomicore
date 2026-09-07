@@ -58,7 +58,7 @@
 | **line 预算降级 digest** | `test/line-budget.test.ts:13-54` | full/redacted 超预算 → input 降级 digest+degraded + input-degraded 事件（fromPolicy），record 仍接纳 |
 | 仍超限丢弃 | `test/line-budget.test.ts:56-82` | digest-only 超限 → record-dropped/line-budget-exceeded + 诚实 sequence gap |
 | R4 marker 14B | `test/issues-projection.test.ts:87`（"前缀 1010B + marker 14B"）、设计 §6.1:798 | R4/C-4 勘误落地（U+2026 精确 3B 记账，无 2B 特例） |
-| 设计依据 | 设计 §6.1/§6.2/§5.5；ADR 0012 §投影 | — |
+| 设计依据 | 设计 §6.1/§6.2/§5.5；ADR 0014 §投影 | — |
 | SA7 动态复核 | `.mabf-bg/sa7-c4-demo.mts`（exit 0） | `'…'.repeat(2048)` 字面量 6144B → 确定性截断至 4094B、结尾 marker、truncated=true、两次 emit 逐字节相同、record 接纳 |
 
 ## AC4 — 内建 VFSL 信封校验 + 低基数健康面 → **pass**
@@ -73,7 +73,7 @@
 | 外部一致性 | `test/schema-freeze.test.ts:47-146` | §9.1 全 record 形状复跑 validateLogicalSnapshot + JSON round-trip 孪生不变量 |
 | failed 模式 | `test/vfsl-gate.test.ts:165-204` | 坏 envelope → 构造期恰一次 schema-compile-failed + 后续全丢弃 + 无逐条事件 + 无串扰 |
 | **observer 故障隔离** | `test/observer-isolation.test.ts:14-95` | observer 每 throw → emit 不 throw、record 照常入队、fallbackLog 稳定码行；fallbackLog 自身 throw 仍不外抛（67-87）；健康事件不入队列（89-95） |
-| 设计依据 | 设计 §3/§8.1-§8.3、§11-G4；ADR 0012 §VFSL record schema | — |
+| 设计依据 | 设计 §3/§8.1-§8.3、§11-G4；ADR 0014 §VFSL record schema | — |
 | SA7 独立复现 | `.mabf-bg/sa7-fingerprint.mts`（exit 0） | 干净 tsx 进程从公共面导入：指纹 === 期望值、恰四键、深冻结 |
 
 ## AC5 — 有界 adapter：drop newest / 保序 / 永不 throw / 全分支覆盖 → **pass**
@@ -90,7 +90,7 @@
 | sequence 纪律 | `test/identity.test.ts:82-131` | 十进制字符串进位直测；uint64 max 邻域 exhausted 模式（丢弃+计数+事件抑制+不 throw） |
 | 全 result 分支覆盖 | `test/record-vocabulary.test.ts:71-190`（AC1 同源矩阵） | 8 变体全断言 |
 | 故障隔离覆盖 | `test/emitter-isolation.test.ts`（敌意输入）、`test/observer-isolation.test.ts`（observer 故障）、`test/vfsl-gate.test.ts:165-204`（schema failed 模式） | — |
-| 设计依据 | 设计 §7.1/§7.2、§4.3；ADR 0012 §Writer | — |
+| 设计依据 | 设计 §7.1/§7.2、§4.3；ADR 0014 §Writer | — |
 | SA7 动态复核 | `.mabf-bg/sa7-perf.mts` A 段 | 1024 连续 emit（24 预热+1000 计时）零丢弃零异常，全程同步（无 await/IO），mean 3.0ms/emit |
 
 ---

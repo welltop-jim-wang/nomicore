@@ -22,7 +22,7 @@ git diff 722bddf..HEAD            # HEAD = b5b0cb8（2 commits：218a74e 实现 
 
 **代码/测试面实际触及**（wiki 除外）：`git diff --name-only 722bddf HEAD` = 24 文件（namespace-runtime src 8 + test 4；namespace-registry src 4 + test 6；两 package.json version bump）+ worktree 未跟踪 SA7 测试 1 文件。**DENY 面核验**：`packages/namespace-diagnostic-log/**`（冻结词表/adapter）、runtime `index.ts`/`sequencer.ts`/`close.ts`/`status.ts`、registry `testing.ts`、`doc-runtime/persistence/vfsl*/clock` 全部零 diff ✅（与设计 §18 DENY LIST 一致；SA4 R2 F3 机械比对结论独立采信并抽查复核）。
 
-**基准文件**：任务简报 `task_trusted-replication-management-diagnostic-change-log.md`（AC1–AC5 原文）、`_relevant_decisions.md`（ADR-0011 §A–§G / ADR-0012 摘录）、`_conflict_report.md`（clear + 七条钉死）、设计 `_design.md`（695 行 R2 终稿）、`_sa2_review.md`（R1 reject → R2 pass）、`_sa4_review.md`（R1 reject → R2 pass）、`_sa6_red.md`（15 用例 + 三轮修订记录）、`_sa7_report.md`（pass + 五项移交闭合）。
+**基准文件**：任务简报 `task_trusted-replication-management-diagnostic-change-log.md`（AC1–AC5 原文）、`_relevant_decisions.md`（ADR-0011 §A–§G / ADR-0014 摘录）、`_conflict_report.md`（clear + 七条钉死）、设计 `_design.md`（695 行 R2 终稿）、`_sa2_review.md`（R1 reject → R2 pass）、`_sa4_review.md`（R1 reject → R2 pass）、`_sa6_red.md`（15 用例 + 三轮修订记录）、`_sa7_report.md`（pass + 五项移交闭合）。
 
 ---
 
@@ -34,7 +34,7 @@ git diff 722bddf..HEAD            # HEAD = b5b0cb8（2 commits：218a74e 实现 
 
 | 核验面 | 证据（源码位点 + 独立核读） | 测试证据（行为断言） |
 |---|---|---|
-| frozen v1 operation 三字面量 | `replication-enable`（`runtime.ts:390` emitAttempt / `createSlotDiag`）、`replication-epoch-bump`（`runtime.ts:412` 附近）、`replication-apply`（`replication-session.ts:278` emitAway / `:348` SlotDiag.operation）——三字面量均为 `namespace-diagnostic-log` 冻结面既有值（`schema.ts:94-96` / `vocabulary.ts:17-19,53-55`），**该包零 diff**（DENY 面）→ 词表演进为零，符合 ADR-0012「v1 operation 封闭词表」 | 红灯用例 1/4/5 `expect(rec.operation).toBe(...)` 三字面量逐一断言 |
+| frozen v1 operation 三字面量 | `replication-enable`（`runtime.ts:390` emitAttempt / `createSlotDiag`）、`replication-epoch-bump`（`runtime.ts:412` 附近）、`replication-apply`（`replication-session.ts:278` emitAway / `:348` SlotDiag.operation）——三字面量均为 `namespace-diagnostic-log` 冻结面既有值（`schema.ts:94-96` / `vocabulary.ts:17-19,53-55`），**该包零 diff**（DENY 面）→ 词表演进为零，符合 ADR-0014「v1 operation 封闭词表」 | 红灯用例 1/4/5 `expect(rec.operation).toBe(...)` 三字面量逐一断言 |
 | apply 受控 source | `replication-session.ts:267` `const source = { kind:'replication', direction, remoteInstanceId }`（会话闭包冻结常量，R1–R7 槽内全部结局点与 A 层拒绝恒携带）；direction 由 localRole 派生冻结（`:247`） | 红灯 5 `expect(rec.source).toEqual({kind:'replication',direction:'hub-to-peer',remoteInstanceId:REMOTE_HUB_ID})`；红灯 6 peer-to-hub 同款 toEqual（`red.test.ts:568,610`） |
 | apply 受控 context | `replication-session.ts:268` `const context = { replicationId, replicationEpoch }`（open 时冻结四域派生，永不随 bump 漂移） | 红灯 5/6 `toMatchObject({replicationId, replicationEpoch:1})`（`:570,611`） |
 | enable/bump source/context | enable/bump 槽 diag 缺省 source（emitAttempt 缺省 `{kind:'local'}`——`diagnostic.ts` emitAttempt 行）；context E4 后写入：enable 成功 `{replicationId, replicationEpoch:1}`（`replication-write.ts:356`）、幂等分支携既有事实（`:339`）、bump 先携既有/溢出 `{id, MAX}` 后收口 `{id, nextEpoch}`（`:449,464`） | 红灯 1（enable committed + context 断言）、红灯 4（bump context.epoch 递增 + identity 保留断言） |
@@ -80,7 +80,7 @@ git diff 722bddf..HEAD            # HEAD = b5b0cb8（2 commits：218a74e 实现 
 |---|---|
 | emitter 违约 throw | 红灯 13：hostile emitter 下 enable+bump 业务结果逐项 ok、FIFO 槽序（META epoch=2 证明 bump 在 enable 后）、`getStatus().fatal===null`、handle ready 全不变；emit 恰 2 次且 throw 全吞没（`emitAttempt` 单点 try/catch——ADR-0011 §A「Runtime 防御 adapter 违约」） |
 | 队列压力 | 红灯 14：capacity:1 → accepted=1/droppedTotal=1，业务两次写完整成功且顺序正确 |
-| ACK/结果不被日志前置或延迟 | apply/enable/bump 的完成信号 = 槽 promise（`settled`）直接返回调用方；emit 挂 `void settled.then(...)`（`replication-session.ts:375-378`、`runtime.ts:398-402,425-429`）——ADR-0012 amendment C「slot 之外或已释放之后」+ ADR-0011 §G「emitter 不被 await」钉死 #2 兑现；A 层/acceptance 拒绝在公共方法同步段 emit（amendment 允许的两个合法位置） |
+| ACK/结果不被日志前置或延迟 | apply/enable/bump 的完成信号 = 槽 promise（`settled`）直接返回调用方；emit 挂 `void settled.then(...)`（`replication-session.ts:375-378`、`runtime.ts:398-402,425-429`）——ADR-0014 amendment C「slot 之外或已释放之后」+ ADR-0011 §G「emitter 不被 await」钉死 #2 兑现；A 层/acceptance 拒绝在公共方法同步段 emit（amendment 允许的两个合法位置） |
 | 无日志基线行为等价 | SA7 T4：无 emitter 基线 vs 有日志装配，同操作序列（enable→bump→apply 集成→apply 空 diff→bump fence→fenced apply）三面（结果联合/saveCalls 轨迹 `[1,2,3,3,4,4]`/终态 META）逐项相等；**F1 修复的破坏性反证**（mutation check）：临时把 apply 窗口退化为 diag 条件 → T4 + 探针 A 立即双红，还原后复绿、`git diff` 零残留——守卫有效性经实证非恒真 |
 | F1 修复形态（终态核读） | `replication-session.ts:554` `host.doc.on('update', updateHandler)` **无条件**；`:578-579` finally 无条件双退订；`:580` 仅 diag.updateBytes 赋值 diag 条件；`:589` R6 门控读 `capturedUpdate !== undefined`——无 emitter 生产基线（`createNamespaceRuntime(handle, notifyDirty)` 两参默认）下有集成 ⟹ notifyDirty 同构成立，ADR-0006 持久化触发器不悬空 |
 | transport 健康面 | 会话 open/getStatus/close 零诊断路径；本 worktree 无 Phase 5 transport 业务层（SA8 注记 3 基线事实）——transport observability 面结构性零触碰 |

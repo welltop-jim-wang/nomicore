@@ -3,7 +3,7 @@
  *
  * 权威契约：`wiki/raw/task_issue-154_sa2_design.md` §2.3（DiagnosticReadSession 提议 API）、
  * §4.3（读会话状态机：TTL 惰性判定、快照租用、过期 ≠ 阻塞）、§5 INV-4/9、
- * §9 T-C1–T-C8 + T-B6（租约洞=前缀纪律）。ADR 0012 §Retention（「长期 reader 必须有
+ * §9 T-C1–T-C8 + T-B6（租约洞=前缀纪律）。ADR 0014 §Retention（「长期 reader 必须有
  * 最大 lease 时长或显式续租」——默认取显式续租模式）。
  *
  * 红灯性：当前主干无 `openDiagnosticReadSession` 导出（SA2 §2.3 提议增量）⇒ 本文件

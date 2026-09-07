@@ -241,7 +241,7 @@ Verdict: **approve**（`requiresConflictRecheck: false`）
   冲突门禁 `task_issue-227_impl_conflict_recheck.md`（clear）、实际 diff。
 - **方式**：全部独立重验，不沿用任何前轮声明——`git diff ac91a6b..31ff694` 逐 hunk 亲读
   （read-session/reader/file/retention/index×2/diagnostic-replay/sa7 pin 改写 全文 diff）；
-  ADR-0012-LOG L280–318 与 ADR-0011 L90–105 原文回读；vitest.config.ts / 根 package.json
+  ADR-0014-LOG L280–318 与 ADR-0011 L90–105 原文回读；vitest.config.ts / 根 package.json
   scripts / ci.yml 亲读；定向契约套件后台 Job 独立重跑（§R2.3）。
 - **边界**：零生产代码/测试改动、零 git 写操作（不 commit/push）；唯一写入 = 本文件本节。
 
@@ -344,13 +344,13 @@ src/emission.ts src/pipeline.ts src/sink.ts src/adapters/memory.ts CONTEXT.md do
 
 ## R2.5 ADR / DENY 约束核对（本轮原文回读 + diff 亲证）
 
-- **ADR-0012-LOG §Retention 与删除（L289–297 亲读）**：「retention 只删除已关闭且没有
+- **ADR-0014-LOG §Retention 与删除（L289–297 亲读）**：「retention 只删除已关闭且没有
   reader lease 的 segment group」——P1/P2 双门 + P0 卫生租约门为**兑现型实施**（原 P0
   orphan-BIN 不看租约属实施偏差，本票纠偏）；「reader 通过 openReadSession() 获得短期
   segment lease……长期 reader 必须有最大 lease 时长**或显式续租**」——缺省
   `maxLifetimeMs=null` 显式续租臂为 ADR 明文两臂之一；删除协议 S1–S3/`.deleting` 文法/
   orphan 清理步骤文法零触碰。
-- **ADR-0012-LOG §Strict reader 与诊断性 replay（L301–318 亲读）**：报告形状
+- **ADR-0014-LOG §Strict reader 与诊断性 replay（L301–318 亲读）**：报告形状
   `{status,lastAppliedSequence,issues,snapshot?}` 冻结面零变更；「只有存在有效 genesis、
   records 连续、**所有必要 updates 可解码且校验通过**……才能返回 complete」——收紧只做
   必要条件方向的加严（分类/issue 通道），无任何新形状 complete 可达。
@@ -382,7 +382,7 @@ src/emission.ts src/pipeline.ts src/sink.ts src/adapters/memory.ts CONTEXT.md do
 已提交变更集 `31ff694` 在提交粒度经本轮全部独立重验：改动面与设计 §0.2/§0.3 及 SA2
 binding 零偏差；INV-227-1..10 在提交态锚点全部成立；K-1 pin 改写合法且绿；测试触发范围
 完整（5 测试文件全在全量 include 面内、37 新用例零抑制、本轮 7 文件 74/74 亲跑绿）；
-版本 bump 缺位经 repo CI 立法 + 设计范围双依据裁定非阻断（V-1 移交）；ADR-0011/0012-LOG
+版本 bump 缺位经 repo CI 立法 + 设计范围双依据裁定非阻断（V-1 移交）；ADR-0011/0014-LOG
 全部被引条款兑现型合规、DENY 面 zero-diff；与冲突门禁 clear 结论互证一致。**R2 裁定
 approve（requiresConflictRecheck: false）**——R1 结论在已提交态维持成立，无返工项。
 

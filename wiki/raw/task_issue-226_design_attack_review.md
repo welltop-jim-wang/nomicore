@@ -5,7 +5,7 @@
   - `packages/namespace-registry/test/registry-issue-226-red.test.ts`（修订后 13 用例，未跟踪）
   - `apps/yjs-server/test/diagnostic-replay-host-lifecycle-sa7.test.ts`（R3 修订 C1，已跟踪 M）
   - （`packages/namespace-runtime/test/runtime-issue-226-red.test.ts` 已删除——本轮 git status/ls 证实）
-- 简报：`wiki/raw/task_issue-226.md`（AC1–AC5）；规范基准：ADR-0011 / ADR-0012（诊断日志版，含 2026-08-28 amendment）/ ADR-0008 / ADR-0009 / ADR-0010 / 根 CONTEXT.md 词条
+- 简报：`wiki/raw/task_issue-226.md`（AC1–AC5）；规范基准：ADR-0011 / ADR-0014（诊断日志版，含 2026-08-28 amendment）/ ADR-0008 / ADR-0009 / ADR-0010 / 根 CONTEXT.md 词条
 - 评审方式：**全部独立重验**——不沿用 SA1/SA6/SA8 任何声明；生产锚点亲读（create-diagnostic.ts 全文、registry.ts L750–790/L1215–1240/L1290–1470、types.ts seam、diagnostics.ts 全文、sequencer.ts/runtime.ts emit 接线/close.ts、testing.ts、registry-surface §2.M、#149/#150/sa7-dynamic 测试锚文本）；ADR 条款回查原文；三套件后台 Job 独立重跑
 - 边界：零生产代码改动（`src/**`、`apps/**/src/**` 未触碰）；唯一写入 = 本文件
 - Worktree：`/home/wangjian/nomicore-fix-issue-226`（branch `mabf/issue-226`，HEAD `45a22f0`）
@@ -56,7 +56,7 @@ R1「到达 poll + 顺序」形状下，顺序锚成立是调度论必然，不�
 
 ### 2.5 T11（真实 File adapter E2E）：genesis-less 建流机制在位
 
-- Host 侧 `initStream(ns, undefined)` → `ensureAdapter(ns)` 无 genesis bytes 构造（apps/yjs-server/src/diagnostics.ts L84–112 本轮亲读；T11 测试 binding 同形）⇒ 被拒 create 的目录/manifest/current.json 在 drain 内建立；attempt 记录随后落盘。ADR-0012 L22「genesis 未成功写入时 stream 仍可记录诊断事实，但不得声称完整重放」原文覆盖该形态（本轮回查原文）。
+- Host 侧 `initStream(ns, undefined)` → `ensureAdapter(ns)` 无 genesis bytes 构造（apps/yjs-server/src/diagnostics.ts L84–112 本轮亲读；T11 测试 binding 同形）⇒ 被拒 create 的目录/manifest/current.json 在 drain 内建立；attempt 记录随后落盘。ADR-0014 L22「genesis 未成功写入时 stream 仍可记录诊断事实，但不得声称完整重放」原文覆盖该形态（本轮回查原文）。
 - 成功对照半：drain sweep = initStream（adapter 构造期写 genesis seq1）→ emit#17（seq2）——sweep 为单次同步批，poll（current.json 存在）只能观察到 sweep 前后整态，无撕裂读 ⇒ `records≥2`、kinds 含 genesis-baseline+attempt 稳定成立。
 
 ### 2.6 C1（#155 SA7，R3）：三组新锚与设计机制逐点吻合
@@ -78,13 +78,13 @@ R1「到达 poll + 顺序」形状下，顺序锚成立是调度论必然，不�
 
 | 条款 | 裁决 |
 |---|---|
-| ADR-0012 amendment **L250**（emit 调用点必须在 sequencer slot 之外/释放后） | 合规且**强于现状**：泵把 initStream/ensure/emit 全部移至 macrotask drain（业务槽与槽间窗口之外）。现状 emitSlot 位于「槽 N 释放 → 槽 N+1 启动」微任务窗口、慢 emit 推迟下一槽与调用方结算——恰为 ADR-0011 L129 所禁（「不得延长 write slot」），设计对此的诊断成立 |
-| ADR-0012 **L252**（queue/batch 切片四类语义义务） | 不触发：adapter 首「片同步单 record append 语义一字不动，泵只搬调用点（选项 (a)）；泵自身的有界（256/drop-newest/保序）与 close/shutdown（零耦合）语义已在设计内定义，与 SA8 裁决 #1 一致 |
+| ADR-0014 amendment **L250**（emit 调用点必须在 sequencer slot 之外/释放后） | 合规且**强于现状**：泵把 initStream/ensure/emit 全部移至 macrotask drain（业务槽与槽间窗口之外）。现状 emitSlot 位于「槽 N 释放 → 槽 N+1 启动」微任务窗口、慢 emit 推迟下一槽与调用方结算——恰为 ADR-0011 L129 所禁（「不得延长 write slot」），设计对此的诊断成立 |
+| ADR-0014 **L252**（queue/batch 切片四类语义义务） | 不触发：adapter 首「片同步单 record append 语义一字不动，泵只搬调用点（选项 (a)）；泵自身的有界（256/drop-newest/保序）与 close/shutdown（零耦合）语义已在设计内定义，与 SA8 裁决 #1 一致 |
 | ADR-0011 **L20/L24**（排队/丢弃/关闭失败不改业务；emitter seam non-throwing 有界非阻塞） | 入队 O(1) 非抛、drain 全程 try 收编、溢出丢弃在「日志允许缺失」授权域（L25「应尽力上报」为 best-effort 措辞——N1 建议维持非阻断） |
 | ADR-0011 **L117**（emit 立即接收 detached record、不阻塞不 throw 不返 durability promise） | wrapper `{emit:(r)=>pump.enqueueEmit(ns,r)}` 即 seam 语义本身：立即接收（所有权在组装点转移）、void、非抛；真实 Host emit 延后属接线位置问题，归 L250 管辖而非 L117 |
-| ADR-0011 **L123/L127**（不得引入第二个业务排序机构；emitter 不被 await） | 泵只序 per-ns 诊断投递（per-ns FIFO = emission 序 → ADR-0012 L67 sequence 连续性的载体），零业务排序面；全程无 await |
+| ADR-0011 **L123/L127**（不得引入第二个业务排序机构；emitter 不被 await） | 泵只序 per-ns 诊断投递（per-ns FIFO = emission 序 → ADR-0014 L67 sequence 连续性的载体），零业务排序面；全程无 await |
 | ADR-0011 **L129** + ADR-0009 **L97–101**（shutdown 不得无限等待 sink；shutdown 公共契约） | 「不清泵、不等待、不注册 disposer」是「不得无限等待」的平凡满足；shutdown 同 Promise/聚合错误/停止接纳零改动；迟到投递收口走 Host 既有 `manager-closed` 词表（diagnostics.ts L74–76/L124 亲读） |
-| ADR-0012 **L22/L24**（genesis 诚实缺席）+ **L268**（配置 stream 创建时冻结） | genesis-less 流只记 attempt 事实、不锚 replay complete（N4 边界保持）；延迟建流时 Host 侧配置冻结语义不变（配置非 per-attempt 状态） |
+| ADR-0014 **L22/L24**（genesis 诚实缺席）+ **L268**（配置 stream 创建时冻结） | genesis-less 流只记 attempt 事实、不锚 replay complete（N4 边界保持）；延迟建流时 Host 侧配置冻结语义不变（配置非 per-attempt 状态） |
 | ADR-0008 **L51** / ADR-0009 **L62**（槽内步骤清单） | 业务步骤全部留槽（含 Runtime construction——factory 第三参仍是槽内 O(1) 调用，只是产物内部为 wrapper）；仅日志工作出槽 |
 | ADR-0010 **L28**（id 耗尽 fatal） | §7.1 边界裁决（零诊断发射）维持合理：全部候选已证明属他人，任选归属即伪造；recheck §7 已终裁非冲突 |
 | seam 冻结 + 静态守卫 | types.ts 三成员 `{emitter; initStream?; runtimeEmitterFor?}` 零新增（亲读）；wrapper 实现既有 emitter 接口；registry-surface §2.M 三正则逐字符核对——`setTimeout\|setInterval\|clearTimeout\|clearInterval`（裸/globalThis）+ `Date.now(`，**均不含 setImmediate**；注入 scheduler 为纯 timer Map fake（testing.ts L77–110 亲读）⇒ 泵不经其调度、`pending()` 计面零影响；vitest 环境真实 timer、node 恒供 setImmediate（registry 服务端部署面） |

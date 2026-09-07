@@ -2,13 +2,13 @@
 
 > SA8 前置门禁（修订轮）。被审对象：任务简报 `wiki/raw/task_diagnostic-log-stream-roll-repair-r2.md`（Issue #153 round=2，发布后修订：owner 质量审查 1 项 High）。
 > 冲突基准：`docs/adr/` 全集（11 文件）+ `CONTEXT.md`——与 round=1 同一基准；round=1 发布全程零改动（`git diff --stat 8611e68..51b79b9 -- docs/adr CONTEXT.md` 为空，本轮实证）。
-> 总控指定三项裁决：①修复方向 vs ADR-0012 一致性；②「设计零改动、实现向设计收敛」是否无需 override；③round-1 SA4 偏差裁定被推翻是否有 ADR 面遗留张力。
+> 总控指定三项裁决：①修复方向 vs ADR-0014 一致性；②「设计零改动、实现向设计收敛」是否无需 override；③round-1 SA4 偏差裁定被推翻是否有 ADR 面遗留张力。
 
 ## Verdict
 
 `clear`
 
-> 修复方向（删除 `walkCompletePrefixEnd` 例外、Refs 空 → T=0 全截、事件仅真实截断时发出）是 ADR-0012 §打开与尾部恢复第三类授权修复集的直接实施，与 round=1 已裁决 clear 的设计 §5.2/§5.4 字面一致；修订性质为实现向设计收敛，零设计决策变更、零 ADR 条款触碰，无需 override；round-1 偏差链（SA3 备案 → SA4 裁定 → owner 推翻）不留 ADR 面张力。无 hard-violation / override-declared / evolution。
+> 修复方向（删除 `walkCompletePrefixEnd` 例外、Refs 空 → T=0 全截、事件仅真实截断时发出）是 ADR-0014 §打开与尾部恢复第三类授权修复集的直接实施，与 round=1 已裁决 clear 的设计 §5.2/§5.4 字面一致；修订性质为实现向设计收敛，零设计决策变更、零 ADR 条款触碰，无需 override；round-1 偏差链（SA3 备案 → SA4 裁定 → owner 推翻）不留 ADR 面张力。无 hard-violation / override-declared / evolution。
 
 ## 证据独立复核（总控核验之外，本门禁自查）
 
@@ -21,7 +21,7 @@
 | 5 | 机制勘误：首被引用帧跳过边界检查 | ✅ `storage-gate.ts:88` `if (expectedOffset !== null && offset !== expectedOffset) return frame-boundary-invalid`——expectedOffset=null 豁免实证；refs 空时修复后续写的首条 sidecar 帧即首被引用帧，**不**触发 frame-boundary-invalid |
 | 6 | AGENTS.md 同向 | ✅ `AGENTS.md`：「尾部修复仅作用于最大有文件 segment 的三类可证明残留（不完整尾行 / 不完整尾 frame / 未引用尾 orphan frames）」——与 T=0 全截同向，实现注释与之相悖 |
 
-## 指定裁决 ①：修复方向 vs ADR-0012
+## 指定裁决 ①：修复方向 vs ADR-0014
 
 **裁决：no-conflict（修复方向是 ADR 授权修复集的直接实施）。**
 
@@ -60,7 +60,7 @@
 
 **Verdict `clear`，放行 SA6 红灯锚纠错 → SA3 修复转绿。**
 
-1. 修复方向三要素（删例外 / T=0 全截 / 事件仅真实截断时发出）逐项与 ADR-0012 §打开与尾部恢复、§Segment rolling、§Stream 与 generation 一致，且是 round=1 已裁决 clear 设计的字面执行；
+1. 修复方向三要素（删例外 / T=0 全截 / 事件仅真实截断时发出）逐项与 ADR-0014 §打开与尾部恢复、§Segment rolling、§Stream 与 generation 一致，且是 round=1 已裁决 clear 设计的字面执行；
 2. 修订性质＝实现向设计收敛：零设计变更、零 ADR 触碰、零词表演进，无需 override；
 3. SA4 裁定被推翻不遗留 ADR 面张力；全部偏差同源工件（代码/注释/测试锚/文档表述）均在简报修订范围 1–3 内闭合；
 4. SA6 锚纠错红线：按反馈建议 ③④ 落地（修复后 BIN 长度 0、续写 `frameOffset==="0"` + strict ok），不得引入「防 frame-boundary-invalid」伪需求断言（机制勘误备案）。

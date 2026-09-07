@@ -29,7 +29,7 @@ git diff 6de2f1d..HEAD --stat：47 文件、仅新包 + 根 package.json 一行 
 
 ### AC1 — emitter 接受全 operation/result 分支 + 零物理细节 → **pass**
 
-- **代码证据**：`vocabulary.ts:13-19` operation 6 值与 ADR 0012 L69-78 逐字一致；`emission.ts:15-23` EmissionResult 8 成员与 ADR 0012 L82-87 六形状展开一致；`pipeline.ts:88-136` intake 词表校验 + `canonicalResult` 逐成员重建（多余物理键结构性屏蔽，探针 P7 实证 rejected+update 被偷渡时输出干净 `{kind:'rejected'}`）。
+- **代码证据**：`vocabulary.ts:13-19` operation 6 值与 ADR 0014 L69-78 逐字一致；`emission.ts:15-23` EmissionResult 8 成员与 ADR 0014 L82-87 六形状展开一致；`pipeline.ts:88-136` intake 词表校验 + `canonicalResult` 逐成员重建（多余物理键结构性屏蔽，探针 P7 实证 rejected+update 被偷渡时输出干净 `{kind:'rejected'}`）。
 - **测试证据**：`record-vocabulary.test.ts:71-204`（8 变体逐字段断言 × 6 operation 矩阵；rejected/fatal+false 无 update 键封闭性回归锚 117-135）；`identity.test-d.ts:70-102`（R2/F-c2 编译期黑名单：Emission/EmissionResult 键集 ∩ {base64,segment,frameOffset,crc32c,payloadLength,storage,retention} = ∅，UpdateCarrier 非空转正例）；intake 10 类违规 → emission-dropped 不消耗 sequence（229-259，探针确认 `lastSequenceAssigned` 保持 null）。
 - emission 面无 retention/JSONL/frame 任何键（类型层 + 运行时双层锚定）。
 
@@ -41,16 +41,16 @@ git diff 6de2f1d..HEAD --stat：47 文件、仅新包 + 根 package.json 一行 
 
 ### AC3 — 确定性投影 + 预算 + 降级 digest → **pass（附 1 条 concern，见 C-S1）**
 
-- **代码证据**：`issues.ts:29-72` JSON 字面量字节基准 + code-point 对齐截断（R2/E-c2/R4/C-4：marker 精确 14B，无 U+2026 特例）；`issues.ts:105-179` 预算 4096/1024/256 段/1000 条逐字落地 + 段级 JSON-safe + -0 归一 + R4/C-3 两键同现同缺（174-179）；`memory.ts:256-279` line 预算「先降级 digest → 仍超限丢弃」与 ADR 0012 L136 逐字同序。
+- **代码证据**：`issues.ts:29-72` JSON 字面量字节基准 + code-point 对齐截断（R2/E-c2/R4/C-4：marker 精确 14B，无 U+2026 特例）；`issues.ts:105-179` 预算 4096/1024/256 段/1000 条逐字落地 + 段级 JSON-safe + -0 归一 + R4/C-3 两键同现同缺（174-179）；`memory.ts:256-279` line 预算「先降级 digest → 仍超限丢弃」与 ADR 0014 L136 逐字同序。
 - **测试证据**：`issues-projection.test.ts:24-238`（4096/4097B、多字节骑界、1365 lone surrogate、257 段、1025B 段、1001/1000 条、presence、NaN/±Infinity/undefined/hole 段、-0、truncateUtf8(12) loud throw、KAT marker=14B）；`line-budget.test.ts:13-105`（full/redacted 降级 + digest 不变 + 丢弃 + 诚实 sequence gap + §10-J9 大 update 丢弃非伪装）。
-- **C-S1（concern）**：`issuesPolicy:'redacted'` 分支（issues.ts:142-149）**不施加 path 预算**（256 段/段 1024B）也不置 `truncated`——设计 §6.2 的 path 行无 policy 条件（无条件适用），ADR 0012 L134 预算是 record 形状规范。探针 P1 实证：redacted 下 301 段 + 2000B 段原样入 record、`truncated` 缺席、零事件。缓解：默认策略为 full（预算生效）；1000 条总数预算在 redacted 下仍生效（探针 P4）；整行 line 预算（1 MiB）兜底总量。设计 §9.4「code/path 保留」与 §6.2 存在内部张力，SA6/SA3 按 §9.4 字面落地且未披露——需 R5 勘误二选一（设计改口接受 + 备案，或实现对齐 §6.2 补截断）。
+- **C-S1（concern）**：`issuesPolicy:'redacted'` 分支（issues.ts:142-149）**不施加 path 预算**（256 段/段 1024B）也不置 `truncated`——设计 §6.2 的 path 行无 policy 条件（无条件适用），ADR 0014 L134 预算是 record 形状规范。探针 P1 实证：redacted 下 301 段 + 2000B 段原样入 record、`truncated` 缺席、零事件。缓解：默认策略为 full（预算生效）；1000 条总数预算在 redacted 下仍生效（探针 P4）；整行 line 预算（1 MiB）兜底总量。设计 §9.4「code/path 保留」与 §6.2 存在内部张力，SA6/SA3 按 §9.4 字面落地且未披露——需 R5 勘误二选一（设计改口接受 + 备案，或实现对齐 §6.2 补截断）。
 
 ### AC4 — 冻结 VFSL 信封校验 + 故障只走健康面 → **pass（附 1 条 concern，见 C-S3）**
 
 - **代码证据**：`memory.ts:168-178` 构造期急切编译 + failed 模式（恰一次事件 + 后续只计数）；281-301 VFSL 门失败 → 丢弃 + `vfsl-validation-failed`（只带 issuePaths 首 10 条、`$.a.b[0]` 形式、跳根级空路径、schemaId/指纹钉死；`ValidateIssue.message` 含 40 字符值预览整体丢弃——G4 落地）；`health.ts:83-98` observer throw → `DIAGNOSTIC_LOG_OBSERVER_FAILED observer_threw=` 单行 fallback，fallback 再 throw → 静默最后防线。
 - **测试证据**：`vfsl-gate.test.ts:59-204`（9 类违规注入 + 白名单键集断言 104-108 + sidecar/genesis 可表达性正例 + R2/F-c1 failed 模式四断言）；`observer-isolation.test.ts:14-98`（observer 全 throw 业务不受影响、fallback 稳定码、最后防线、健康事件不入队）。
 - **指纹独立复现**：本机脚本（§0）指纹 === 钉死常量，信封恰四键深冻结。
-- **C-S3（concern）**：producer 违约在 `source` 上塞多余键时，intake（`vocabulary.ts:86-97` 不查多余键）放行 → 最终 record 被 VFSL 封闭对象门拒 → 报 `vfsl-validation-failed`（探针 P5 实证，issuePaths=['$.source.base64']）——把 **producer 输入缺陷误标为 ADR 0012 的「writer bug」信号**，与 SA2/D-c1（empty-update）同类污染语义；设计 §4.2 把「source 违形」分配给 intake（emission-dropped）。仅在 JS 侧绕过类型的 producer 违约可达，行为本身 fail-safe（丢弃+健康面，业务零影响）。
+- **C-S3（concern）**：producer 违约在 `source` 上塞多余键时，intake（`vocabulary.ts:86-97` 不查多余键）放行 → 最终 record 被 VFSL 封闭对象门拒 → 报 `vfsl-validation-failed`（探针 P5 实证，issuePaths=['$.source.base64']）——把 **producer 输入缺陷误标为 ADR 0014 的「writer bug」信号**，与 SA2/D-c1（empty-update）同类污染语义；设计 §4.2 把「source 违形」分配给 intake（emission-dropped）。仅在 JS 侧绕过类型的 producer 违约可达，行为本身 fail-safe（丢弃+健康面，业务零影响）。
 
 ### AC5 — 有界 adapter drop-newest/保序/不 throw + 契约测试全分支/故障隔离 → **pass（附 1 nano）**
 
@@ -64,18 +64,18 @@ git diff 6de2f1d..HEAD --stat：47 文件、仅新包 + 根 package.json 一行 
 
 | 抽查点 | 结论 | 证据 |
 |---|---|---|
-| 输入零重读（ADR 0011 L67-75 / ADR 0012 L116-122） | ✅ | not-accessed/unavailable/unsafe-input 事实优先（input.ts:57-64）；快照失败不重读（单触达探针绿）；原始请求结构性不进入 |
+| 输入零重读（ADR 0011 L67-75 / ADR 0014 L116-122） | ✅ | not-accessed/unavailable/unsafe-input 事实优先（input.ts:57-64）；快照失败不重读（单触达探针绿）；原始请求结构性不进入 |
 | 结局词表不折叠（ADR 0011 L33-51） | ✅ | stage 8 值逐字（vocabulary.ts:22-30）；rejected 未折叠；`unknown` 不落存储（G3：schema 无该成员） |
 | 数据保护默认（ADR 0011 L77-87） | ✅ | inputPolicy 默认 digest、updateCapture 默认 false（memory.ts:160-162）；full/update 显式启用；脱敏 policy 自标；事件白名单零敏感字段（vfsl-gate:104-108）；日志字段不进 metrics label（stats 键 = operation:reason 低基数） |
 | emitter interface 语义（ADR 0011 L107-119） | ✅ | `emit(emission): void` 同步不 throw 不阻塞（全路径 catch；SA7 性能探针 ~3ms/256KiB）；所有权「已转移或已复制」= snapshot 深冻结 + updateBytes intake slice 复制（R3 裁决，emitter-isolation:99-120 双锚）；接口名保留 ADR 0011 命名 |
-| VFSL 失败 = writer bug（ADR 0012 L214） | ✅（除 C-S3 角） | 丢弃 + 低基数事件 + 不影响业务；空 update/超 payload 经前置守卫转 update-omitted，不污染该信号（update-carrier:93-114） |
-| sequence 语义（ADR 0012 L61-67） | ✅ | append 时才分配、十进制无前导零、字符串进位无 2^53 失真、不回绕、丢弃消耗（诚实 gap）、uint64 max exhausted 丢弃+上报（计数）业务不受影响 |
-| line 预算顺序（ADR 0012 L136） | ✅ | 降级 digest → 仍超限丢弃，逐字同序（memory.ts:258-279） |
-| rejected/fatal+false 禁携 update（ADR 0012 L89） | ✅ | schema 封闭对象机器强制 + canonicalResult 重建 + 测试双锚 |
+| VFSL 失败 = writer bug（ADR 0014 L214） | ✅（除 C-S3 角） | 丢弃 + 低基数事件 + 不影响业务；空 update/超 payload 经前置守卫转 update-omitted，不污染该信号（update-carrier:93-114） |
+| sequence 语义（ADR 0014 L61-67） | ✅ | append 时才分配、十进制无前导零、字符串进位无 2^53 失真、不回绕、丢弃消耗（诚实 gap）、uint64 max exhausted 丢弃+上报（计数）业务不受影响 |
+| line 预算顺序（ADR 0014 L136） | ✅ | 降级 digest → 仍超限丢弃，逐字同序（memory.ts:258-279） |
+| rejected/fatal+false 禁携 update（ADR 0014 L89） | ✅ | schema 封闭对象机器强制 + canonicalResult 重建 + 测试双锚 |
 | sidecar/inline 双形状一次冻结（issue 关键约束） | ✅ | schema UpdateCarrier 双成员含 crc32c（G1 裁决）；vfsl-gate:122-162 sidecar/genesis 正例过门 |
-| observer 只含白名单字段（ADR 0012 L214） | ✅ | 事件构造点全集（pipeline.ts 5 处 + memory.ts 4 处）逐字段比对 §8.2 无越界；事件深冻结 |
-| 不写递归 health record（ADR 0012 L214） | ✅ | 事件只走 observer/fallbackLog，不入队（observer-isolation:89-98） |
-| streamId/attemptId CSPRNG（ADR 0012 L16-20/L61-65） | ✅ | 默认 node:crypto randomBytes 16B；log-/att- + 32 hex；注入接缝仅测试用（identity:27-59） |
+| observer 只含白名单字段（ADR 0014 L214） | ✅ | 事件构造点全集（pipeline.ts 5 处 + memory.ts 4 处）逐字段比对 §8.2 无越界；事件深冻结 |
+| 不写递归 health record（ADR 0014 L214） | ✅ | 事件只走 observer/fallbackLog，不入队（observer-isolation:89-98） |
+| streamId/attemptId CSPRNG（ADR 0014 L16-20/L61-65） | ✅ | 默认 node:crypto randomBytes 16B；log-/att- + 32 hex；注入接缝仅测试用（identity:27-59） |
 | P_BASE64 空串引擎差异（SA6 §3.2 备案） | 已知悉 | vfsl 引擎接受 `''`；empty-update 前置守卫结构性规避（memory.ts:209-213）——不构成本包缺陷 |
 
 ---
@@ -134,7 +134,7 @@ git diff 6de2f1d..HEAD --stat：47 文件、仅新包 + 根 package.json 一行 
 
 | # | 级别 | 问题 | 证据 |
 |---|---|---|---|
-| C-S1 | concern | redacted issues 策略跳过 path 段数/字节预算且不置 truncated（设计 §6.2 path 行无条件 vs §9.4「保留」内部张力；ADR 0012 L134 预算） | issues.ts:142-149；探针 P1（301 段+2000B 段原样保留、truncated 缺席、零事件）；P4（1000 条预算仍生效） |
+| C-S1 | concern | redacted issues 策略跳过 path 段数/字节预算且不置 truncated（设计 §6.2 path 行无条件 vs §9.4「保留」内部张力；ADR 0014 L134 预算） | issues.ts:142-149；探针 P1（301 段+2000B 段原样保留、truncated 缺席、零事件）；P4（1000 条预算仍生效） |
 | C-S2 | concern | emission `issues` 形状为 `{ items: DiagnosticIssue[] }`（IssuesInput），与冻结设计 §2.6 `issues?: DiagnosticIssue[]` 不符；按设计字面传数组的 producer 将静默丢失全部 issues（仅一次 enrichment-field-dropped/issues 事件）；SA3 偏差清单与 SA4 均未披露、未经裁决 | emission.ts:33-51 vs 设计 §2.6:320；探针 P2；grep 证实 `IssuesInput` 零文档出现 |
 | C-S3 | concern | `source` 多余键逃过 intake（isLogSource 不查封闭性）→ VFSL 门拒 → producer 违约被报为 `vfsl-validation-failed`（writer bug 信号污染，D-c1 同类）；附带：`context` 未知键静默剥离无事件（与 nano-3 同族） | vocabulary.ts:86-97；探针 P5（issuePaths=['$.source.base64']）/P6 |
 | N-S1 | nano | records() 浅冻结：adapter 新建 result/update carrier 未冻结，消费者可静默改写嵌套字段 | memory.ts:309；探针 P3（result/result.update isFrozen=false） |
@@ -168,7 +168,7 @@ git diff 6de2f1d..HEAD --stat：47 文件、仅新包 + 根 package.json 一行 
 ### 8.1 C-S1（redacted 策略 path 预算）→ **fixed**
 
 - **代码**：issues.ts 把 path 预算（前 256 段 + string 段 truncateUtf8 1024 + 截断探测置 `truncated`）上移到策略分支之前，对 full/redacted 一致生效；redacted 分支复用截断后 path。设计 R5 头部 ④ 注记。
-- **实证（探针 R5-P1）**：redacted 下 301 段 + 2000B 段 → 保 256 段、`truncated:true`、`originalCount:1` 同现、message=`«redacted»`——与 ADR 0012 L134 预算及设计 §6.2 无条件 path 行一致。
+- **实证（探针 R5-P1）**：redacted 下 301 段 + 2000B 段 → 保 256 段、`truncated:true`、`originalCount:1` 同现、message=`«redacted»`——与 ADR 0014 L134 预算及设计 §6.2 无条件 path 行一致。
 - **测试锚**：issues-projection.test.ts R5 用例（redacted 257 段/1025B 段断言截断 + 两键同现）。
 
 ### 8.2 C-S2（emission issues 裸数组对齐设计 §2.6）→ **fixed**
@@ -180,7 +180,7 @@ git diff 6de2f1d..HEAD --stat：47 文件、仅新包 + 根 package.json 一行 
 ### 8.3 C-S3（source 封闭键 intake 校验）→ **fixed**
 
 - **代码**：pipeline.ts `intakeValid` 增 source 封闭键校验（local 恰 `{kind}`；replication 键 ⊆ `{kind,direction,remoteInstanceId}`，必需键存在性仍由先行的 isLogSource 保证）→ 多余键归 emission-dropped/emission-shape，不再触达 VFSL 门。
-- **实证（探针 R5-P3/P3b）**：local+extra 与 replication+junk 均 → emission-dropped、records 0、**零 vfsl-validation-failed**——writer-bug 信号纯度恢复（ADR 0012 L214）。
+- **实证（探针 R5-P3/P3b）**：local+extra 与 replication+junk 均 → emission-dropped、records 0、**零 vfsl-validation-failed**——writer-bug 信号纯度恢复（ADR 0014 L214）。
 - **测试锚**：record-vocabulary.test.ts 违规表 +2 用例，并断言整个 intake 表 `vfsl-validation-failed` 恒 0。
 
 ### 8.4 附带改动核验（防新问题）

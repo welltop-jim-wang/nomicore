@@ -409,7 +409,7 @@ export type ResetReplicaResult =
   | ResetReplicaIssue;
 
 // —— issue #228 删除编排增量（ADR-0009 修订节；Host namespace 数据删除工作流的
-//    Registry 侧编排 seam——ADR-0012-LOG L299 Host 联动义务的 Registry 半场）——
+//    Registry 侧编排 seam——ADR-0014-LOG L299 Host 联动义务的 Registry 半场）——
 
 /**
  * deleteNamespace 领域窄 issue（issue #228）：common 窄 issue（InvalidIdentityIssue /
@@ -781,7 +781,7 @@ export interface NamespaceRegistryShutdownFailure {
 
 /**
  * #150 诊断日志注入 seam（设计 §3.1/§5.1）：emitter 为 ADR-0011「Interface 与 seam」
- * 节冻结小接口；initStream 为 `docs/adr/0012-vfsl-validated-jsonl-and-framed-sidecar-change-log.md`
+ * 节冻结小接口；initStream 为 `docs/adr/0014-vfsl-validated-jsonl-and-framed-sidecar-change-log.md`
  * 定义的 stream 建立缝（genesis bytes 由 producer 供给、adapter 内部构造
  * genesis-baseline——CONTEXT.md「producer 只供 bytes」，v1
  * emission/sink 公共面无 genesis 构造路径）。两成员可选：缺 emitter = 日志禁用（本

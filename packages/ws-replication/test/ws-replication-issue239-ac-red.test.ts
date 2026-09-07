@@ -44,7 +44,7 @@
  * （sync-diff-applied = changed），随后到达的 UPDATE 是重复 no-op。**漂移注入后
  * 不得 await**（await 会让 UPDATE 先于 round 送达、round 变成 no-op），也不得丢
  * UPDATE 帧（信封序列按方向连续——丢帧后下一帧即 SEQUENCE_VIOLATION）。本文件
- * 不要求生产代码暴露 live Y.Doc（ADR-0012 被否决方案）。
+ * 不要求生产代码暴露 live Y.Doc（ADR-0014 被否决方案）。
  *
  * 红灯运行：pnpm exec vitest run packages/ws-replication/test/ws-replication-issue239-ac-red.test.ts --reporter=verbose
  * 转绿条件（修复落地后本文件不改即绿）：

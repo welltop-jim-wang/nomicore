@@ -117,7 +117,7 @@ Tests       4 failed (4)
 - B2：「同步触发」语义在本契约中即「ack 同一周期完成」（无异步轮询等待）；失败/重入
   收敛语义（重试收敛、`deleteNamespaceDiagnosticLog` 同步 fs 在 write sequencer slot 外）
   归 SA1 设计显式裁决，D2 只钉幂等结局。
-- B3：本契约零文档面；AC3 措辞对齐方向 = ADR-0012-LOG 首切片 amendment（后决优先），
+- B3：本契约零文档面；AC3 措辞对齐方向 = ADR-0014-LOG 首切片 amendment（后决优先），
   归文档轮。
 
 ## 7. F-1 追认修订 — D4「确定性派生 .toBe」→ CSPRNG 事实下的重启/不复活行为断言

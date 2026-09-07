@@ -87,7 +87,7 @@ export type DiagnosticLogHealthEvent =
     }
   | { type: 'stream-exhausted' }
   | {
-      /** #153（ADR 0012 §打开与尾部恢复「自动修复通过 observer 上报」）：可证明尾部修复。 */
+      /** #153（ADR 0014 §打开与尾部恢复「自动修复通过 observer 上报」）：可证明尾部修复。 */
       type: 'stream-tail-repaired'
       repair: ResumeRepairKind
       /** 截断字节数（计数，非 label）。 */
@@ -99,7 +99,7 @@ export type DiagnosticLogHealthEvent =
       cause: RotateCause
     }
   | {
-      /** #154（ADR 0012 §Retention）：每次「有动作」的 retention sweep 恰一次
+      /** #154（ADR 0014 §Retention）：每次「有动作」的 retention sweep 恰一次
        *  （全零动作不发——防 open 噪声）；streamId/segment/offset 刻意不进事件
        *  （低基数纪律——身份经 adapter 实例上下文可得；报告对象是数据面可含 streamId）。 */
       type: 'retention-swept'

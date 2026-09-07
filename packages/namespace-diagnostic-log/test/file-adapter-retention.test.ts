@@ -3,7 +3,7 @@
  *
  * 权威契约：`wiki/raw/task_issue-154_sa2_design.md`（§9 T-A/T-B 全表；§2.1/§2.2 公共 API；
  * §4.1/§4.2/§4.5 状态机与两遍算法；§5 INV-1/2/5/6/10/11/13）。约束优先级：任务简报
- * （TASK.md AC 1/2/5） > SA2 设计 > ADR-0012 §Retention 与删除 > #153 既有冻结面。
+ * （TASK.md AC 1/2/5） > SA2 设计 > ADR-0014 §Retention 与删除 > #153 既有冻结面。
  *
  * 本文件：T-A（age/bytes 配置语义：null/0/非法值/默认值/不持久化）+
  * T-B1–T-B5、T-B7–T-B10（闭组资格、协议产物、开组保护、前缀纪律、文法不可达、
@@ -257,7 +257,7 @@ describe('T-A retention 语义（AC-1：可配置 age/bytes、null/0 文档语�
     })
     emit(a, 0)
     emit(a, 0) // 段1 闭、段2 开
-    // 30d 整 = 2_592_000_000ms（ADR 0012 默认）——边界前 1ms 不删
+    // 30d 整 = 2_592_000_000ms（ADR 0014 默认）——边界前 1ms 不删
     const before = a.log.sweepRetention({ now: T0 + 2_592_000_000 - 1 })
     expect(before.deletedGroups).toBe(0)
     const at = a.log.sweepRetention({ now: T0 + 2_592_000_000 })

@@ -857,7 +857,7 @@ class AppHandle {
    * 槽）。全序：① retirement（封 diag-pump 迟到重建）→ ② 摘除复制暴露（内存同步：
    * bindings 中以 `\0+namespaceId` 结尾条目全删 + knownNamespaces.delete +
    * tombstone 置位）→ ③ registry.deleteNamespace（carrier 槽内：关 Runtime →
-   * deleteDoc）→ ④ 诊断日志删除（槽外同步 fs——ADR-0012-LOG amendment 调用点
+   * deleteDoc）→ ④ 诊断日志删除（槽外同步 fs——ADR-0014-LOG amendment 调用点
    * 纪律；`{ok:true}` 复合谓词）→ ⑤ `namespace-deleted` 事件 + 回执。
    */
   private async runDeleteNamespace(

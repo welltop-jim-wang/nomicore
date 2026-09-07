@@ -114,7 +114,7 @@ async function flushMicrotasks(times = 16): Promise<void> {
 }
 
 /** 确定性同步阻塞（模拟首切片 File adapter 同步 fs 延迟：appendFileSync /
- *  mkdir / manifest 'wx' / rename——ADR-0012 amendment 明示「有界」不含磁盘延迟
+ *  mkdir / manifest 'wx' / rename——ADR-0014 amendment 明示「有界」不含磁盘延迟
  *  上界，此处以受控毫秒数模拟慢存储；禁 real sleep 的测试纪律针对业务时序，
  *  存储延迟模拟是本复现的被测对象本身）。 */
 function blockSync(ms: number): void {

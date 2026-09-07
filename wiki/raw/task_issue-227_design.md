@@ -11,7 +11,7 @@
   - **N-1/N-2/N-3（应随修备案）**：§4.3 两条备案 bullet（omitted×断链 issue 优先级翻转 / pre-genesis 物化前置）；§3.3.2 事件频率备案一句；**D4 乱序-omitted 变体、D9 pre-genesis pin**；§8.5 备注一句。
   - **G-227-2 闭环**：SA2 R0 §5 维持默认（`committed:false` 自证无提交 → 推进可证安全；与 F-1 的 `committed:true` 形状方向相反、不可折抵）——§10 R-4/§11 同步。
 - **R1**：初版（SA2 R0 独立重验结论：§0.1 五缺口全部真实、锚点全部精确；§3.5 三腿论证与 §4 其余攻击面通过）。
-- 权威上位契约：ADR `docs/adr/0012-vfsl-validated-jsonl-and-framed-sidecar-change-log.md` §Retention 与删除（L289–297）、§Strict reader 与诊断性 replay（L301–318）；包契约 `packages/namespace-diagnostic-log/AGENTS.md`；#154 设计（read-session/retention 落地）；#155（replay 工具落地）
+- 权威上位契约：ADR `docs/adr/0014-vfsl-validated-jsonl-and-framed-sidecar-change-log.md` §Retention 与删除（L289–297）、§Strict reader 与诊断性 replay（L301–318）；包契约 `packages/namespace-diagnostic-log/AGENTS.md`；#154 设计（read-session/retention 落地）；#155（replay 工具落地）
 - 本设计不实现任何生产代码；实现归 SA3，红灯契约归 SA6
 
 ---
@@ -24,7 +24,7 @@
 
 | # | 缺口 | 现状证据（精确锚点） |
 |---|------|---------------------|
-| G1 | ADR 0012 L297「reader 通过 `openReadSession()` 获得短期 segment lease」在生产读取路径**从未接线**：`readStreamStrict`（`packages/namespace-diagnostic-log/src/reader.ts:391`）自枚举、自读取，全程不持租约；`replayNamespaceDiagnosticLog`（`apps/yjs-server/src/diagnostic-replay.ts:49`）同样裸读，且其 `materializeStrictRecordUpdate` 逐条重读 `.bin`（reader.ts:843）时也无保护 | `openDiagnosticReadSession` 仅被测试引用（`file-adapter-read-session.test.ts`、`file-adapter-namespace-deletion.test.ts`），src 内零调用方 |
+| G1 | ADR 0014 L297「reader 通过 `openReadSession()` 获得短期 segment lease」在生产读取路径**从未接线**：`readStreamStrict`（`packages/namespace-diagnostic-log/src/reader.ts:391`）自枚举、自读取，全程不持租约；`replayNamespaceDiagnosticLog`（`apps/yjs-server/src/diagnostic-replay.ts:49`）同样裸读，且其 `materializeStrictRecordUpdate` 逐条重读 `.bin`（reader.ts:843）时也无保护 | `openDiagnosticReadSession` 仅被测试引用（`file-adapter-read-session.test.ts`、`file-adapter-namespace-deletion.test.ts`），src 内零调用方 |
 | G2 | sweep 的租约检查只在**判定点**做一次（file.ts:1226 / :1281），S1 提交点（`deleteGroup` file.ts:1067–1086 的 `renameSync(jsonl→.deleting)`）无复查；P0 卫生遍历的 orphan-BIN 清理（file.ts:1134–1151）**完全不看租约** | 「检查→删除」窗口结构性敞开；正确性今天仅靠「单线程同步执行不可交错」这一调度事实隐式成立 |
 | G3 | replay 把 `fatal ∧ committed:true ∧ effect:'unknown'` 记录归入「其他（无 update 载荷）」分支**推进连续计数**（diagnostic-replay.ts:208–212 else 分支；`committed` 判定 :171 含 fatal-committed-true，`hasUpdateCarrier` :183–188 因 `effect!=='update'` 为 false）→ 该记录后链路可继续走到 `complete` | 既有 pin：`apps/yjs-server/test/diagnostic-replay-host-lifecycle-sa7.test.ts:448`（重点 4）逐字钉死旧行为「complete、issues=[]、推进计数」——**本票必须废止该 pin**（见 §8.4） |
 | G4 | `materializeStrictRecordUpdate` 的 `none` 语义过宽（reader.ts:794–817）：`fatal-committed-unknown` 与 `noop/rejected/fatal-committed-false` 同归 `none`，使上层无法区分「可证无更新」与「不可证」；**R1.1-F1 增补**：`fatal ∧ committed:true ∧ effect 字段缺席`（schema.ts:178 第 5 成员——VFSL 合法、emitter 不可达、盘面可达）现状同落 :817 `none` → replay 推进 → complete 可达——SA2 R0 驳回依据，修复见 §4.1/§4.2 | `StrictRecordUpdate`（reader.ts:755–759）四成员缺「不可证」通道 |
@@ -52,7 +52,7 @@
 | 组删除协议 S1–S3 步序、`.deleting` 标记文法、`enumerateSegmentGroups` 语义 | #154 冻结；本票只在 S1 **之前**加复查门，不改协议本身 |
 | `analyzeStreamForResume`（reader.ts:966） | writer 侧构造期健康证明；构造期 sweepOnOpen 在证明之后同线程执行，无并发面（#153 纪律已覆盖） |
 | `deleteNamespaceDiagnosticLog` / `releaseNamespaceLeasePartition` | INV-12：namespace 逻辑删除有意压过租约（删除意图标记先行）；#227 不改 |
-| 跨进程/跨 worker 锁 | INV-9 冻结：进程内注册表 + ADR 0012 单进程独占 rootDir 部署约束；worker_threads 不共享模块态注册表，属部署违约而非代码缺口 |
+| 跨进程/跨 worker 锁 | INV-9 冻结：进程内注册表 + ADR 0014 单进程独占 rootDir 部署约束；worker_threads 不共享模块态注册表，属部署违约而非代码缺口 |
 | manifest 布局/17 键形状、storage-gate、frame codec、health 事件白名单 | 无涉；本票**零新增 health 事件**（sweep 已有 `leaseBlockedGroups` 计数字段） |
 | 新依赖 / 新 fs 绑定面 | `read-session.ts` 维持纯 TS；reader/file 的 node:fs 绑定面已在 AGENTS.md 声明内 |
 
@@ -163,7 +163,7 @@ if (!session.renewIfDue(READ_SESSION_RENEW_MARGIN_MS)) {
 }
 ```
 
-- 默认 `maxLifetimeMs=null`（显式续租模式，ADR 0012 L297 允许项之二，#154 先例缺省）⇒ 生产路径 `renew()` 恒 true——续租永不失败，`lease-expired` 实际不可达。
+- 默认 `maxLifetimeMs=null`（显式续租模式，ADR 0014 L297 允许项之二，#154 先例缺省）⇒ 生产路径 `renew()` 恒 true——续租永不失败，`lease-expired` 实际不可达。
 - bounded 模式（调用方自开 session 传 `maxLifetimeMs`）：续租被解释性拒续（read-session.ts:116）→ 诚实中止并解释。这正是 AC1「续租**或**诚实失败」的双臂。
 - 同步单线程下检查点间时钟不走（无 await），检查点面向：注入时钟的确定性测试、host 分步物化模式（§3.4）、未来 async 化的结构保险。
 

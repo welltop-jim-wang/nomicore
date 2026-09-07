@@ -84,7 +84,7 @@
 
 - §21 Crash、重启与停机：「进程重启丢弃 connection sequence、syncRoundId、in-flight ACK、queues和协议中间状态。」——**syncRoundId 关联域 = 单连接代际内**，不得设计跨重启关联。
 
-### ADR-0012 实例身份单一真相与 WebSocket plugin 所有权（accepted）
+### ADR-0014 实例身份单一真相与 WebSocket plugin 所有权（accepted）
 
 - 与本任务的关联点：泄漏禁令第二来源 + plugin 配置对 observer 的所有权 + 被否决方案（不得暴露 raw session/Y.Doc）。
 - 核心条款（原文摘录）：

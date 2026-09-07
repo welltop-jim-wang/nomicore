@@ -86,7 +86,7 @@ registry.ts L1229：open 槽内 factory 第三参 `resolveRuntimeDiag(identity.n
 | 引用 | 核对 |
 |---|---|
 | ADR-0011 覆盖范围：「namespace create，包括输入、schema、ROOT、duplicate、Persistence 与 post-commit Runtime construction 结局」 | ✓ 逐字属实（`0011-best-effort-namespace-diagnostic-change-log.md`）——建流前结局属明文覆盖项，缺陷链 A 是实现缺口而非契约空白 |
-| ADR-0012（诊断日志版）amendment：「任何将 File adapter 的 `emit` 接入 namespace 生命周期的调用点，必须位于 NamespaceRuntime write sequencer slot 之外，或在该 slot 已释放之后；不得在 slot 内执行同步 File adapter `emit`。不满足该条件的接线为不合规，必须由 #149–#151/#155 或后续接线票修复后方可启用」；「『有界』……不表示底层文件系统延迟有时间上界」 | ✓ 逐字属实（amendment L248/L250）——本任务即该预留接线票；B3 的槽间窗口接线（以及按同一隔离精神经 ADR-0009 carrier 延伸到 B1/B2 的槽内建流/构造）不满足该条件 |
+| ADR-0014（诊断日志版）amendment：「任何将 File adapter 的 `emit` 接入 namespace 生命周期的调用点，必须位于 NamespaceRuntime write sequencer slot 之外，或在该 slot 已释放之后；不得在 slot 内执行同步 File adapter `emit`。不满足该条件的接线为不合规，必须由 #149–#151/#155 或后续接线票修复后方可启用」；「『有界』……不表示底层文件系统延迟有时间上界」 | ✓ 逐字属实（amendment L248/L250）——本任务即该预留接线票；B3 的槽间窗口接线（以及按同一隔离精神经 ADR-0009 carrier 延伸到 B1/B2 的槽内建流/构造）不满足该条件 |
 | ADR-0009：「shutdown 取消全部 idle timer，**等待此前已接纳的 lifecycle 操作结算**，然后主动 close 全部 active/idle Runtime」「create 的跨候选重试仍受 lifecycle carrier 串行化与 shutdown 已接纳操作屏障约束」 | ✓ 属实（L99/L101/L140）——T9 机制锚：槽内建流被 shutdown 屏障等待 |
 | ADR-0011 隔离面（emitter seam 同步接收、不阻塞不 throw；emitter 不被 await；adapter 慢/失败不得延长 write slot 或阻塞 close/shutdown；不得引入第二个业务排序机构） | ✓ 属实——业务结果 GREEN 锚（T1–T6/T8/T10/T12/T13 均先行通过业务断言）证明当前隔离面在「不改变业务结果」意义上仍守，缺口在「不延长业务路径」意义上 |
 

@@ -38,9 +38,9 @@ feature（功能开发）
 
 - 上游 #148 已交付 `@nomicore/namespace-diagnostic-log` 包：冻结 v1 词表/record 类型、内建冻结 VFSL schema（id `nomicore.namespace-diagnostic-change-record@1`）、envelope 指纹 `sha256:v1:dedad2ab93d9df9224960ca094924168f8bcc1c0512dfdd0a03dc6e66613e070`、emitter 管线、内存 adapter、crc32c、carrier（Buffer Base64 inline）、health 事件联合、testing 工具。
 - #148 遗留风险 1：GenesisBaselineRecord 形状是设计裁决；v1 冻结 emission/sink 面无 genesis 构造路径——#152 需增设 adapter 内部构造，**不改 schema**。
-- 主规范：docs/adr/0012-vfsl-validated-jsonl-and-framed-sidecar-change-log.md（354 行）；背景：docs/adr/0011。
+- 主规范：docs/adr/0014-vfsl-validated-jsonl-and-framed-sidecar-change-log.md（354 行）；背景：docs/adr/0011。
 - 上游设计档案：wiki/raw/task_diagnostic-log-v1-contract_design.md（1157 行）。
-- 本票只做 File adapter（manifest / current-stream locator / segmented JSONL / inline carrier / NDCL v1 sidecar frame / strict reader）。#153（滚动/修复）、#154（retention）、#155（replay）不在范围，除非 ADR 0012 明确归属本票。
+- 本票只做 File adapter（manifest / current-stream locator / segmented JSONL / inline carrier / NDCL v1 sidecar frame / strict reader）。#153（滚动/修复）、#154（retention）、#155（replay）不在范围，除非 ADR 0014 明确归属本票。
 
 ---
 
@@ -79,7 +79,7 @@ interface FileDiagnosticLogConfig {
   updateCapture?: boolean
   lineBudgetBytes?: number
   payloadMaxBytes?: number
-  inlineUpdateMaxBytes?: number         // 默认 4096（ADR 0012 §Inline 与 sidecar）
+  inlineUpdateMaxBytes?: number         // 默认 4096（ADR 0014 §Inline 与 sidecar）
   observer?: DiagnosticLogHealthObserver | undefined
   fallbackLog?: ((line: string) => void) | undefined
   randomSource?: RandomSource | undefined
@@ -129,7 +129,7 @@ injectFinalRecordFile(log: FileDiagnosticLog, record: DiagnosticChangeRecord): v
   // code = 稳定 errno 码（'EISDIR' / 'ENOSPC' …），不含底层 message
 ```
 
-### 2. 磁盘布局与物理格式（SA6 契约常量；ADR 0012 逐条落实）
+### 2. 磁盘布局与物理格式（SA6 契约常量；ADR 0014 逐条落实）
 
 ```text
 {rootDir}/namespaces/{namespaceId}/current.json          // {format:'ndcl-current',version:1,streamId} 恰三键
@@ -207,13 +207,13 @@ frame-version-unknown / frame-payload-type-unknown / frame-flags-nonzero / frame
 
 ### 反馈原文与规格修正
 
-1. **Strict reader 必须执行 manifest 冻结的 format policy**：ADR 0012 要求 manifest 冻结 committed-update capture、input policy、inline threshold、line limit；AC4 要求 strict reader 严格解释这些策略。round 1 的 reader.ts 只查字段类型，未验证记录是否实际遵守 `committedUpdateCapture`、`inlineUpdateMaxBytes` 等策略。反例：manifest 声明 capture=false 时仍接受带 update 的记录；超阈值 update 以 inline 存储时仍返回 ok。→ 修复：strict reader 对每条记录按 manifest format policy 做遵守性校验，违反者给出相应 strict 错误码，不得 ok。
-2. **Stream sequence 必须验证连续性，而非仅递增**：AC4 明列 stream sequence 校验，ADR 0012 storage validator 职责含「stream 连续性」。round 1 只拒重复/倒序，允许 gap（[1,2,3] 删 2 后 [1,3] 仍 ok）。→ 修复：stream 内 sequence 必须连续（起始值按既有裁决/manifest 语义，逐步 +1），gap 响亮报错。
+1. **Strict reader 必须执行 manifest 冻结的 format policy**：ADR 0014 要求 manifest 冻结 committed-update capture、input policy、inline threshold、line limit；AC4 要求 strict reader 严格解释这些策略。round 1 的 reader.ts 只查字段类型，未验证记录是否实际遵守 `committedUpdateCapture`、`inlineUpdateMaxBytes` 等策略。反例：manifest 声明 capture=false 时仍接受带 update 的记录；超阈值 update 以 inline 存储时仍返回 ok。→ 修复：strict reader 对每条记录按 manifest format policy 做遵守性校验，违反者给出相应 strict 错误码，不得 ok。
+2. **Stream sequence 必须验证连续性，而非仅递增**：AC4 明列 stream sequence 校验，ADR 0014 storage validator 职责含「stream 连续性」。round 1 只拒重复/倒序，允许 gap（[1,2,3] 删 2 后 [1,3] 仍 ok）。→ 修复：stream 内 sequence 必须连续（起始值按既有裁决/manifest 语义，逐步 +1），gap 响亮报错。
 
 ### 总控备案（round 2 裁决 R2-G1）
 
-- **round 1「gap 合法」裁决被本反馈取代**：round 1 G2/§4.1「分配即消耗、gap 诚实信号、reader 不视 gap 为错」是总控/SA6/SA1 对 ADR「不证明业务尝试无缺」的解读（指向未到达 logger 的 emission）；ADR 0012 §VFSL record schema 的 storage validator 职责清单明文含「offset、segment、frame 边界与 **stream 连续性**」，owner 反馈裁定连续性校验归 strict reader。冲突时 owner 反馈优先；round 1 相关测试锚（如 gap 合法断言）由 SA6 修订。
-- **后果面**：writer 侧分配后丢弃（VFSL/storage 门拒绝、写失败）现在会在 reader 面呈现 gap 损坏——这是诚实性增强而非回归；replay 的 complete 条件（「records 连续、无已知 gap」，ADR 0012 §Strict reader，#155 范围）与该语义同向。
+- **round 1「gap 合法」裁决被本反馈取代**：round 1 G2/§4.1「分配即消耗、gap 诚实信号、reader 不视 gap 为错」是总控/SA6/SA1 对 ADR「不证明业务尝试无缺」的解读（指向未到达 logger 的 emission）；ADR 0014 §VFSL record schema 的 storage validator 职责清单明文含「offset、segment、frame 边界与 **stream 连续性**」，owner 反馈裁定连续性校验归 strict reader。冲突时 owner 反馈优先；round 1 相关测试锚（如 gap 合法断言）由 SA6 修订。
+- **后果面**：writer 侧分配后丢弃（VFSL/storage 门拒绝、写失败）现在会在 reader 面呈现 gap 损坏——这是诚实性增强而非回归；replay 的 complete 条件（「records 连续、无已知 gap」，ADR 0014 §Strict reader，#155 范围）与该语义同向。
 - 边界不变：packages/vfsl 不触碰；政策校验全部在 reader 消费者侧落地。
 
 ---

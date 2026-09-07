@@ -56,7 +56,7 @@ Duration 504.28s
 `deleteNamespace`（ADR-0009 修订节：forceRelease + close drain + entry 移除）→
 Persistence `deleteDoc`（ADR-0006 修订节：主键 + 受控归档位逻辑删除，复活向量封堵）→
 同步调用 `deleteNamespaceDiagnosticLog`（#154 既有能力）→ ack。`ok:true` ⟺ 同一回执
-周期内数据快照与 `{logRoot}/namespaces/{ns}` 目录树均完成逻辑删除（ADR-0012-LOG L299
+周期内数据快照与 `{logRoot}/namespaces/{ns}` 目录树均完成逻辑删除（ADR-0014-LOG L299
 Host 联动义务的兑现）；失败 → 诚实失败码族（`delete-namespace-failed` /
 `log-delete-failed{step,errno}`），重入重试是唯一完成路径。AC1 红灯契约 D1–D4 全绿
 （进程级 E2E，真实文件产物断言）。
@@ -64,7 +64,7 @@ Host 联动义务的兑现）；失败 → 诚实失败码族（`delete-namespac
 ## PR #142 阶段汇总（tracking issue #141）
 
 PR #142（`docs: specify namespace diagnostic change log`）定义 namespace
-diagnostic-change-log 的规格面，权威表述以 CONTEXT.md / ADR-0011 / ADR-0012-LOG（含
+diagnostic-change-log 的规格面，权威表述以 CONTEXT.md / ADR-0011 / ADR-0014-LOG（含
 首切片 amendment）为准；其实施交付票 #148–#155 沿「SA6 红灯契约 → 实现 → SA4 静态复审
 → SA7 动态验证」逐票闭环并合入本分支历史（#156/#159/#166/#167/#194/#196/#200/#223），
 随后的 #226/#227 修复（#248/#250/#251）亦已合入本分支基线；本票 #228 = PR #142 的阶段级
@@ -108,7 +108,7 @@ diagnostic-change-log 的规格面，权威表述以 CONTEXT.md / ADR-0011 / ADR
   `retireNamespace` + drop reason `namespace-deleted` + `initStream` un-retire）；
   `apps/yjs-server/AGENTS.md` 管理动词段补 hub-owned 终态删除动词。
 - 红灯契约文件头注更新（红灯 → 已转绿）与 D4 断言级仲裁注记（见下）。
-- 文档（AC3，向 ADR-0012-LOG 首切片 amendment 收敛）：`CONTEXT.md` 语义 emission 词条、
+- 文档（AC3，向 ADR-0014-LOG 首切片 amendment 收敛）：`CONTEXT.md` 语义 emission 词条、
   `packages/namespace-diagnostic-log/README.md` 与同包 `AGENTS.md` 的「绝不阻塞」矛盾文本
   修订（interface 非阻塞契约 vs File adapter 首切片有界同步 append 可被 fs 延迟阻塞的
   区分 + 调用点纪律）；`docs/adr/0011-…md` 澄清性修订节（非决策变更）；`docs/adr/0006`

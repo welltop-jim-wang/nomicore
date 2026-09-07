@@ -13,7 +13,7 @@
   - 新契约文件：`packages/namespace-registry/test/registry-issue-226-red.test.ts`（rev1 落地形态）
 - 复审基准：简报 AC1–AC5（`task_issue-226.md`）、批准设计（`task_issue-226_design.md` iter4 §2–§10）、
   SA2 attack review **approve**（§5 观察项）、rev1 契约 + 其 SA8 recheck **clear**（R1–R4/N1–N5/§7/§8）、
-  SA8 design-conflict（C1–C3）、ADR-0011 / ADR-0012（诊断日志版，含 2026-08-28 amendment L250/L252）/ 0008 / 0009 / 0010 被引条款、
+  SA8 design-conflict（C1–C3）、ADR-0011 / ADR-0014（诊断日志版，含 2026-08-28 amendment L250/L252）/ 0008 / 0009 / 0010 被引条款、
   #149/#150/#155 基线
 - 复审方式：全部独立重验——git diff 全量亲读（逐 hunk）、生产锚点亲读（diag-pump 全文、
   create-diagnostic 三态路由、registry 装配点与 8+2 发射点、types.ts seam、三处 factory 调用点）、
@@ -76,8 +76,8 @@ A 流干净面保持、结尾 drops===0 断言仍位于 release/shutdown/host.cl
 
 | 项 | 亲读结论 |
 |---|---|
-| diag-pump.ts | 与设计 §3.1 逐点一致：per-ns FIFO + 单飞 drain、裸 `setImmediate`、有界 256 drop-newest（保序）、逐任务 try/catch 非抛、排空后 `queues.delete` 释放 Map 位、零公共导出（index.ts 无 re-export——grep 证实）。ADR-0012 L252 不触发（adapter 单 record 同步 append 语义一字未动，泵只搬调用点 = amendment L250 选项 (a)） |
-| create-diagnostic.ts | 路由三态与设计 §3.2 表逐行一致：legacy（无 runtimeEmitterFor）路径行为逐字节现行（共享 emitter 同步发射 + initStream 同步调用）；泵路径 emission 组装留捕获点（`assembleEmission`，载荷字段/observedAt 与 #150/#155 现状同位）；被拒 create 先 `initStream(ns, undefined)`（genesis-less——ADR-0012 L22「genesis 未成功写入时 stream 仍可记录诊断事实」）再落结局（同 ns FIFO 次序）；`resolveRuntimeDiag` 产物 = O(1) 延迟 wrapper（`clock: () => clock.now()` 不变）；公共入口 `undefined` → 恒同步共享通道（设计 §7.2） |
+| diag-pump.ts | 与设计 §3.1 逐点一致：per-ns FIFO + 单飞 drain、裸 `setImmediate`、有界 256 drop-newest（保序）、逐任务 try/catch 非抛、排空后 `queues.delete` 释放 Map 位、零公共导出（index.ts 无 re-export——grep 证实）。ADR-0014 L252 不触发（adapter 单 record 同步 append 语义一字未动，泵只搬调用点 = amendment L250 选项 (a)） |
+| create-diagnostic.ts | 路由三态与设计 §3.2 表逐行一致：legacy（无 runtimeEmitterFor）路径行为逐字节现行（共享 emitter 同步发射 + initStream 同步调用）；泵路径 emission 组装留捕获点（`assembleEmission`，载荷字段/observedAt 与 #150/#155 现状同位）；被拒 create 先 `initStream(ns, undefined)`（genesis-less——ADR-0014 L22「genesis 未成功写入时 stream 仍可记录诊断事实」）再落结局（同 ns FIFO 次序）；`resolveRuntimeDiag` 产物 = O(1) 延迟 wrapper（`clock: () => clock.now()` 不变）；公共入口 `undefined` → 恒同步共享通道（设计 §7.2） |
 | registry.ts | 装配点合并为 `createDiagRuntime`（设计 §3.3 唯一 wiring 点）；三处 factory 调用点（L1229/L1442/L1586）零改动；槽体业务步骤零改动。**SA3 §4 偏差 1（发射调用点参数化 `emitOutcome(ns, …)`/`emitEarlyOutcome(ns\|undefined, …)`）裁定合法**：`CreateDiag` 是包内内部接口而非 Host seam——seam 冻结对象 `types.ts` `NamespaceRegistryDiagnosticLog` 三成员 `{emitter; initStream?; runtimeEmitterFor?}` 零新增零改动（亲读）；8 个槽内调用点只加传候选 id（载荷/observedAt/位置零改动），公共入口 2 点传 `undefined` 维持无归属同步面；legacy 路径忽略该参数。物理不可实现性论证成立（泵需 ns 数据键控键而原签名不携带） |
 | Host diagnostics.ts | 仅头注释/行注释更新（文档级，设计 §3.4 建议项）——零代码语义改动（diff 亲读：全部 hunk 在注释内） |
 | plugin.ts | 仅注释内函数名引用更新（`createCreateDiag`→`createDiagRuntime`）——文档级。**登记：SA3 §1 表未单列此项**（见 §4 卫生注记 1） |
@@ -98,11 +98,11 @@ recheck 记录吻合；13 用例全集在场且全绿（§3）。SA3 未借实�
 
 | 条款 | 裁决 |
 |---|---|
-| ADR-0012 amendment **L250**（File adapter emit 接入点必须在 sequencer slot 之外/释放后） | 合规且强于要求：initStream/ensure/emit 全部移至 macrotask drain（一切业务槽与槽间窗口之外） |
-| ADR-0012 **L252**（未来 queue/batch 切片四类语义义务） | 不触发：adapter 存储语义一字未动；泵有界/丢弃为调用方侧局部纪律 |
+| ADR-0014 amendment **L250**（File adapter emit 接入点必须在 sequencer slot 之外/释放后） | 合规且强于要求：initStream/ensure/emit 全部移至 macrotask drain（一切业务槽与槽间窗口之外） |
+| ADR-0014 **L252**（未来 queue/batch 切片四类语义义务） | 不触发：adapter 存储语义一字未动；泵有界/丢弃为调用方侧局部纪律 |
 | ADR-0011 emit seam（L117 帧：「不得阻塞、throw、返回 durability promise」）+ L129（「adapter 慢/失败/队列满不得延长 write slot 或阻塞 close/shutdown；停止不得无限等待日志 sink」） | wrapper `emit = O(1) 入队` 即 seam 语义本身；泵与 shutdown 零耦合（不清、不等、不 disposer）——T9/T13 锚为该条款可执行化 |
-| ADR-0011「日志不得引入第二个业务排序机构」 | 泵只序 per-ns 诊断投递（FIFO = emission 序 → ADR-0012 sequence 连续性载体），零业务排序面 |
-| ADR-0012 **L22/L24**（genesis 诚实缺席；配置 stream 创建时冻结） | genesis-less 流只记 attempt 事实；T11/C1 不锚 replay complete（N4 边界保持） |
+| ADR-0011「日志不得引入第二个业务排序机构」 | 泵只序 per-ns 诊断投递（FIFO = emission 序 → ADR-0014 sequence 连续性载体），零业务排序面 |
+| ADR-0014 **L22/L24**（genesis 诚实缺席；配置 stream 创建时冻结） | genesis-less 流只记 attempt 事实；T11/C1 不锚 replay complete（N4 边界保持） |
 | 词表冻结 | 零新 operation/stage/code/result 值——`assembleEmission` 输出字段与现状同位（AC5 内容锚全绿佐证） |
 | seam 冻结 + 静态守卫 | types.ts 三成员零新增；`setImmediate` 全 src 仅 diag-pump.ts L137 一处调用点（grep 证实）——与 R4 注释「本注释只授权 diag-pump 一处」逐字吻合；三正则不含 setImmediate，守卫 12/12 绿 |
 

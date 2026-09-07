@@ -1,6 +1,6 @@
 # Spec 评审报告 — File diagnostic-log adapter（issue #152）
 
-- **评审轴**：Spec（diff ↔ issue / ADR 0012 / 已接受设计 R2 / SA6 契约 逐条比对）
+- **评审轴**：Spec（diff ↔ issue / ADR 0014 / 已接受设计 R2 / SA6 契约 逐条比对）
 - **评审员**：工程终审 Spec 评审（独立评审，无其它评审者上下文）
 - **日期**：2026-08-28
 - **Verdict**：**pass-with-issues**（5 条 AC 全覆盖且证据充分；0 项阻断性发现；3 项 MINOR + 3 项 INFO，建议回流总控裁量，均不阻断本票）
@@ -26,7 +26,7 @@ git diff 7ceede1..HEAD   （HEAD = 79ac342）
 
 **代码面实际触及**（wiki/raw/* 为流程档案，不计）：src 9 文件（新建 5 + 修改 4）、test 8 文件（新建）、AGENTS.md、README.md、package.json。**DENY 清单核验**：`git diff --name-only` 对 `schema.ts / record.ts / memory.ts / pipeline.ts / emission.ts / sink.ts / vocabulary.ts / crc32c.ts / digest.ts / schema-patterns.ts / canonical-json.ts / projection/** / packages/vfsl/** / pnpm-lock.yaml / 根 package.json` 全部为空 ✅；全仓无本包与 wiki 之外的改动 ✅。
 
-**基准文件**：issue #152 全文（`wiki/raw/task_diagnostic-log-file-adapter.md:3-43`，含 SA6 Phase 1 验收锚定 §1–§5）；ADR 0012（354 行）与 ADR 0011；设计 R2（`…_design.md`，含总控 §11 G1–G6 + J9 裁决表）；AC 核对表（`…_ac_checklist.md`）；SA4 R1→R2 验尸（`…_sa4_review.md`）；SA7 动态报告（`…_sa7_report.md`）；上游 #148 冻结面源码。
+**基准文件**：issue #152 全文（`wiki/raw/task_diagnostic-log-file-adapter.md:3-43`，含 SA6 Phase 1 验收锚定 §1–§5）；ADR 0014（354 行）与 ADR 0011；设计 R2（`…_design.md`，含总控 §11 G1–G6 + J9 裁决表）；AC 核对表（`…_ac_checklist.md`）；SA4 R1→R2 验尸（`…_sa4_review.md`）；SA7 动态报告（`…_sa7_report.md`）；上游 #148 冻结面源码。
 
 **评审方法**：全量逐行审读 9 个 src 文件与 4 个既有文件 diff；测试用例名全量扫描核对 AC5 覆盖面；独立复跑 `npx vitest run --typecheck packages/namespace-diagnostic-log`（**18 文件 256 passed，Type Errors 0，exit 0**，本机 node v24.13.0，HEAD `79ac342`）；对唯一存疑点直打运行时 PoC 实证（脚本 `/tmp/spec-poc2.ts`，输出原文见 §五 F-1）。
 
@@ -34,9 +34,9 @@ git diff 7ceede1..HEAD   （HEAD = 79ac342）
 
 ## 二、任务指定核对项（逐条给证据）
 
-### 1. manifest 14 键 vs ADR 0012「至少保存」清单 → ✅ 全覆盖
+### 1. manifest 14 键 vs ADR 0014「至少保存」清单 → ✅ 全覆盖
 
-ADR 0012 §File adapter 布局（L46-53）六项最低要求 ↔ 实现 `buildManifest`（`src/adapters/file.ts:144-171`）：
+ADR 0014 §File adapter 布局（L46-53）六项最低要求 ↔ 实现 `buildManifest`（`src/adapters/file.ts:144-171`）：
 
 | ADR 要求 | manifest 键 | 证据 |
 |---|---|---|
@@ -49,7 +49,7 @@ ADR 0012 §File adapter 布局（L46-53）六项最低要求 ↔ 实现 `buildMa
 
 恰 14 键由 reader 门双向强制（键集精确相等，多余/缺失均拒：`reader.ts:76-91,107-109`）。owner/instanceId/replicationId/epoch 不进 manifest（ADR L55）✅。不可变性：唯一写点 `writeFileSync(…, { flag:'wx' })`（file.ts:588，grep 全仓确认无第二写点），emit 前后字节恒等有测试锚定（layout.test.ts:176）。
 
-### 2. NDCL v1 25-byte 帧布局逐字节 → ✅ 与 ADR 0012 §Binary frame v1 逐字节一致
+### 2. NDCL v1 25-byte 帧布局逐字节 → ✅ 与 ADR 0014 §Binary frame v1 逐字节一致
 
 `src/frame.ts:53-74`（encode）/ `:85-108`（decode）逐字段核对：
 
@@ -107,7 +107,7 @@ emission sidecar 路径：`appendFileSync(binPath, frame)` 成功后才 `appendF
 | AC4 strict reader 全校验面 + 不近似解释未知版本 | ✅ 全满足 | §二.6；incompatible 6 类 + corrupt 15 类测试锚定（strict-reader.test.ts 27 用例）+ R-1a/R-1b 差分锚定（r2-supplemental.test.ts:311-376） |
 | AC5 公共测试覆盖（round trip / 阈值边界 / 全 result 分支 / malformed / envelope mismatch / 非干扰） | ✅ 全满足 | 6 测试文件 92 用例（用例名全量扫描核对）：8 result 分支逐字段（genesis-results.test.ts:51-152，含总控勘误 `idx===1?'fatal':'committed'`）；三守卫 update-omitted 保 metadata；envelope 不匹配 → 新 generation + 旧 manifest 字节恒等 + 旧 segments 零写入 + 旧 stream reader incompatible（mismatch-interference.test.ts:256-294）；observer 必 throw 不外溢 + fallback 稳定码行（:230-254）；**独立复跑 256/256 全绿** |
 
-**缺失/部分需求：无。** ADR 0012 范围切分遵守：writer 恒写 segment `00000001`（rolling 归 #153）；resume 只做指纹匹配检查、四分支全落新 generation（§3.4 论证 + 总控 G1 裁决——「#152 无安全续写能力 → 恒新建」是 ADR L22「旧 stream 无法安全续写…时建立新 stream」的诚实适用）；retention（#154）/replay（#155）零触碰 ✅。已裁决形态选择（同步写 J1 / 无队列 G6 / 匹配静默 G1 / genesis 守卫豁免 G10 / exhausted 事件 J9）全部有总控裁决记录并按裁决落地，不计偏差。
+**缺失/部分需求：无。** ADR 0014 范围切分遵守：writer 恒写 segment `00000001`（rolling 归 #153）；resume 只做指纹匹配检查、四分支全落新 generation（§3.4 论证 + 总控 G1 裁决——「#152 无安全续写能力 → 恒新建」是 ADR L22「旧 stream 无法安全续写…时建立新 stream」的诚实适用）；retention（#154）/replay（#155）零触碰 ✅。已裁决形态选择（同步写 J1 / 无队列 G6 / 匹配静默 G1 / genesis 守卫豁免 G10 / exhausted 事件 J9）全部有总控裁决记录并按裁决落地，不计偏差。
 
 ---
 
@@ -129,7 +129,7 @@ emission sidecar 路径：`appendFileSync(binPath, frame)` 成功后才 `appendF
 ### F-1（MINOR）genesis 路径消耗 UINT64_MAX 不触发 exhausted 转换——超域 sequence 2^64 可静默落盘（PoC 实证）
 
 - **位置**：`src/adapters/file.ts:545-566`（`runGenesis` 直接 `allocate()`，无 `sequence === UINT64_MAX` 判定）对照 `:505-510`（`appendSemantic` 的转换逻辑只存在于 emit 路径）。
-- **规范依据**：ADR 0012 §JSONL record（L67）「达到 uint64 最大值后 stream 进入 exhausted，后续日志 emission 丢弃并上报」；设计 §4.2 R2 注（design.md:371-372）明示「预置 + genesis 组合时转换时刻**可能在构造期触发**」——实现未触发；总控 J9 裁决「转换时刻 = 产出 UINT64_MAX 的 sequence 分配完成……此后所有 append 走首行分支静默丢弃」未限定 emit 路径。
+- **规范依据**：ADR 0014 §JSONL record（L67）「达到 uint64 最大值后 stream 进入 exhausted，后续日志 emission 丢弃并上报」；设计 §4.2 R2 注（design.md:371-372）明示「预置 + genesis 组合时转换时刻**可能在构造期触发**」——实现未触发；总控 J9 裁决「转换时刻 = 产出 UINT64_MAX 的 sequence 分配完成……此后所有 append 走首行分支静默丢弃」未限定 emit 路径。
 - **PoC 实证**（`/tmp/spec-poc2.ts`，HEAD `79ac342`，node v24.13.0，原文输出）：
   ```text
   [A1] genesis 后事件: []                                    ← 预置 UINT64_MAX−1 + genesisUpdateBytes：
@@ -165,7 +165,7 @@ emission sidecar 路径：`appendFileSync(binPath, frame)` 成功后才 `appendF
 **Verdict：pass-with-issues**
 
 理由：
-1. **五条 AC 全部完整实现且证据链充分**（§三），无缺失/部分需求；ADR 0012 本票范围内条款逐条对合（§二 八项指定核对全过），范围切分（#153/#154/#155）零越界。
+1. **五条 AC 全部完整实现且证据链充分**（§三），无缺失/部分需求；ADR 0014 本票范围内条款逐条对合（§二 八项指定核对全过），范围切分（#153/#154/#155）零越界。
 2. **全部形态级偏离均有总控裁决记录**（G1–G6/J9/J1 同步写等），无擅自背离；#148 冻结面与上游语义零改动（diff 实证）。
 3. 独立复跑 18 文件 256 测试全绿 + Type Errors 0（HEAD `79ac342`），AC 核对表与 SA4/SA7 的绿灯声明属实。
 4. 四项发现（F-1/F-2/F-3 MINOR、F-4 INFO）均不触及 AC 与生产可达路径：F-1 为 testing 接缝组合边缘的 ADR exhausted 条款偏差（PoC 实证，建议 4 行最小修或裁决登记）；F-2 为边界声明与代码的一行级不一致；F-3 为公共契约字段的流程性漏登记（现状工程合理）；S-1/S-2/S-3 均已备案/裁决。

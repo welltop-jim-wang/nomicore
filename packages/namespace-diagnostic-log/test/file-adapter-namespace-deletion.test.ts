@@ -3,7 +3,7 @@
  *
  * 权威契约：`wiki/raw/task_issue-154_sa2_design.md` §2.4（deleteNamespaceDiagnosticLog 提议 API
  * 与协议：deletion.json 意图标记/三步续走/结果联合）、§4.4（N0–N5 状态机）、
- * §5 INV-8/12/13、§9 T-D1–T-D9。ADR 0012 §Retention 与删除（删除清单 + 仅逻辑删除边界）。
+ * §5 INV-8/12/13、§9 T-D1–T-D9。ADR 0014 §Retention 与删除（删除清单 + 仅逻辑删除边界）。
  *
  * 红灯性：当前主干无 `deleteNamespaceDiagnosticLog` 导出（SA2 §2.4 提议增量）；本文件
  * 静态 import 即失败（vitest 运行时加载错误 + tsc 类型错误）——新导出缺失的红灯；

@@ -4,7 +4,7 @@
  *       JSONL/Base64/segment/frame/offset/retention）+ 设计 §2.1（operation 6 值、
  *       result 8 成员判别联合、update-omitted 三 reason 词表）+ §2.6（emission 形状）+
  *       §4.2 表（intake 违规 → emission-dropped）+ §10-J2/J3（fatal committed↔effect、
- *       code↔sourceModule 成对三重强制）+ ADR 0011 §Interface / ADR 0012 §JSONL record。
+ *       code↔sourceModule 成对三重强制）+ ADR 0011 §Interface / ADR 0014 §JSONL record。
  */
 import { describe, expect, it } from 'vitest'
 import { createDiagnosticChangeEmitter } from '../src/index.js'

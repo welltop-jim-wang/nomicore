@@ -205,7 +205,7 @@ AC4 的两个审问（不弱化/不跳过、fresh 全量证据）经本轮**第�
 ### II.4 实现/文档面回归复核（本轮）
 
 - **生产面零漂移**：全部生产文件（persistence 五件、registry 五件、app.ts、diagnostics.ts、CONTEXT.md、ADR 0006/0009/0011、hub-peer-deployment.md、两 AGENTS.md）mtime 09:43–10:53——SA4 iteration 1 / SA10 双重审后未再触碰；收尾轮仅 README（18:16，M-1 纯注释：快速示例「不阻塞」限定内存 adapter 语境）与 registry.ts（18:16，M-2 纯注释：⑤ catch 注释改「design §10 勘误 E-2 已闭环…不再指向任何待勘误文本」）两处写入，diff hunk 逐行亲证零行为；F-8 就此闭合。
-- **AD-9/零漂移面维持**：`packages/ws-replication/src`、`docs/protocols/`、ADR-0012、config.ts、main.ts、`domains/`、生成物 0 行 diff（`generate --check` exit 0 互证）。
+- **AD-9/零漂移面维持**：`packages/ws-replication/src`、`docs/protocols/`、ADR-0014、config.ts、main.ts、`domains/`、生成物 0 行 diff（`generate --check` exit 0 互证）。
 - **AC3 红线维持**：「绝不阻塞」全文仅余 ADR-0011 澄清节自我覆盖条款（amendment 逐字援引）；erase/purge/secure 仅否定句。
 - **SA10 §7 收敛清单对账**：1（AC4 三文件 + 超出清单的两文件，见 F-11）执行 ✅/部分披露 ❌；2（AC5-a）✅；3（AC5-b/F-3）✅；4（AC5-c）✅（除 F-12 一句）；5（runner 侧披露）✅；6（M-1 ✅、M-2 ✅、M-3 维持 SA1 路由 ✅、M-4/M-5/M-6 维持备案 ✅）。
 - **本轮无新增攻击面命中**：E4 settle 与 D4 先例同款（wrapper 层编排竞态，非产品缺陷——19:07 失败形态 `expected 143 to be +0` 为 wrapper 未转发信号所致，日志亲证）；session-red/replication-red/codegen 预算放宽不改变断言敏感度（断言未动）；RT-G5 静默同步只收紧注入前置条件。
@@ -293,8 +293,8 @@ AC4 方向的全部实质主张（不弱化、不跳过、四门绿、证据真�
 
 ### I.4 其余复核面（本轮重取）
 
-- **ADR ↔ 实现一致**：ADR-0006 逻辑删除修订节 ↔ contract.ts（可选/必具放置未倒置 + 三错误族 + phase 词表）/lifecycle.ts（`'deleting'` claim 环 + `settleEntryForDelete` cancel-then-evict + `assertDeleteIo`/`assertDeleteWritable`）/file.ts（主键先归档后、逐处 `fsp.rm force:true`）/memory.ts（loud 配置门 + 双分区）逐条吻合；ADR-0009 修订节 §1–§5 ↔ registry.ts 编排 ①–⑥（acceptance→身份→carrier FIFO→owner 核对→capability 前置门→closing 等待→forceRelease/cancelIdleArm/close admission→deleteDoc→幂等 ok）逐字吻合；ADR-0011 澄清节自声明非决策变更且与 ADR-0012-LOG amendment 一致。✅
-- **AD-9 零漂移**：`packages/ws-replication/`、`docs/protocols/`、`apps/yjs-server/src/config.ts`、`src/main.ts`、ADR-0012 全部 0 行 diff（git status 亲证）。✅
+- **ADR ↔ 实现一致**：ADR-0006 逻辑删除修订节 ↔ contract.ts（可选/必具放置未倒置 + 三错误族 + phase 词表）/lifecycle.ts（`'deleting'` claim 环 + `settleEntryForDelete` cancel-then-evict + `assertDeleteIo`/`assertDeleteWritable`）/file.ts（主键先归档后、逐处 `fsp.rm force:true`）/memory.ts（loud 配置门 + 双分区）逐条吻合；ADR-0009 修订节 §1–§5 ↔ registry.ts 编排 ①–⑥（acceptance→身份→carrier FIFO→owner 核对→capability 前置门→closing 等待→forceRelease/cancelIdleArm/close admission→deleteDoc→幂等 ok）逐字吻合；ADR-0011 澄清节自声明非决策变更且与 ADR-0014-LOG amendment 一致。✅
+- **AD-9 零漂移**：`packages/ws-replication/`、`docs/protocols/`、`apps/yjs-server/src/config.ts`、`src/main.ts`、ADR-0014 全部 0 行 diff（git status 亲证）。✅
 - **协议假设（AD-7）源码级验证**：hub-namespace.ts L298/L474 `status.runtime === null → throw 'lease released'` → `closeSessionAndRelease`（L1028）既有错误路径在场，零 ws-replication 改动下 channel 失败收口假设成立；`bindings.set`/`knownNamespaces.set` 仅存在于 bootHub 直引循环（L248/L253）与 provision()（L337/L342）——**运行期无任何重加路径**，删除后授权暴露摘除稳定（peer 重连 authorize → `{ok:false}`）。✅
 - **冻结面守卫同变更集**：registry surface test-d（`deleteNamespace` 移出禁词表 + 正向 required 锚 + 注明修订节语义区分）、persistence surface test-d（`deleteDoc` 同款）、两个 SA7 动态守卫（恰七面/required 锚）、import-red 断言翻转（注明受管 seam 裁决）——B1「不得静默扩面」守卫面闭环。✅
 - **验证复跑汇总（本轮）**：红灯契约 4/4；三单元套件 24/24（--typecheck 零错）；**persistence 包全量 176/176（17 files）**；根 `pnpm typecheck` exit 0（14 包链）；`git diff HEAD --check` clean。✅ 与 SA3 iteration 3 声明逐位一致。
@@ -379,7 +379,7 @@ R0 的三项强制条件（F-1 追认链 / F-2 三方对齐 / F-5 测试落地�
 | persistence 包全量 176/176 | `vitest run packages/persistence/test` | **176 passed (176)**（17 files），Type Errors no errors，exit 0 | ✅ 与 SA3 数字逐位一致 |
 | 根 `pnpm typecheck` exit 0 | `pnpm typecheck` | **EXIT=0**（全部 14 包 tsc 链） | ✅ |
 | `git diff --check` clean | `git diff HEAD --check` | clean | ✅ |
-| AD-9 零漂移（ADR-0012/protocols/config/main/ws-replication） | `git diff --stat` 定向 | 0 行 | ✅ |
+| AD-9 零漂移（ADR-0014/protocols/config/main/ws-replication） | `git diff --stat` 定向 | 0 行 | ✅ |
 | registry 全量 409/410（1 例 5s 预算超时，既有时序敏感 flake） | `vitest run packages/namespace-registry/test` | **409 passed + 1 failed**（`registry-phase5-replication-red.test.ts` AC-6 `persistence-degraded`，"Test timed out in 5000ms"，非断言失败） | ⚠️ 见 §1.4 基线 A/B——**flake 定性成立，但「单文件运行恒绿」在本环境不成立** |
 
 ### 1.4 registry 超时用例的基线 A/B 对照（本轮关键实验）

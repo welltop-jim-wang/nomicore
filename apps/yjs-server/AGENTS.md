@@ -28,7 +28,7 @@ out of their owning packages.
   `unknown-op`), then argument gate (`invalid-op-args`, zero filesystem touch), known-set gate
   (known namespaces before the deletion tombstone → `namespace-unknown`), single-flight
   per-namespace. The orchestration is a compound workflow — `ok:true` means data AND diagnostic
-  logs are both logically deleted within the same reply cycle (ADR-0012-LOG L299); any segment
+  logs are both logically deleted within the same reply cycle (ADR-0014-LOG L299); any segment
   failure returns an honest failure code (`delete-namespace-failed` / `log-delete-failed` with
   step/errno) and re-entrant retry is the only completion path; the process never exits because
   of control input.

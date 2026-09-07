@@ -1,6 +1,6 @@
 /**
  * 红灯契约 — §9.6 VFSL 校验失败注入（验收标准 4）
- * 锚点：ADR 0012 §VFSL record schema / §Writer（append 前 VFSL validation failure 是日志
+ * 锚点：ADR 0014 §VFSL record schema / §Writer（append 前 VFSL validation failure 是日志
  *       writer bug：丢弃 record、增加低基数 metric 并向独立结构化 observer 上报，不改变
  *       业务结果）+ 设计 §4.1 步骤 5（失败 → 丢弃 + vfsl-validation-failed，只带 issuePaths
  *       不带 message）+ §8.1（事件词表与白名单：issuePaths 首 10 条，无值预览；禁 message/

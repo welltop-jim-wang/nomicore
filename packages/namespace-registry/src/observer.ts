@@ -54,7 +54,7 @@ export type RegistryObserverEvent =
   //    与既有 reset-archive-failed 的「仅运营失败」语义分域）——
   | { type: 'reset-archive-after-arm-failed'; identity: InternalIdentity; cause: unknown }
   // —— #249 增量（diag-pump 满队丢弃健康上报；AC3——ADR-0011 L25「尽力上报
-  //    dropped count」+ ADR-0012 L240「按 operation/reason 低基数 dropped metrics，
+  //    dropped count」+ ADR-0014 L240「按 operation/reason 低基数 dropped metrics，
   //    走独立 observer；不得为记录 drop 再挤占同一队列」）——落点 = ADR-0009 L95
   //    Registry 内部 observer seam（联合按票增量，#111/#112/phase-5/R2 同款演进；
   //    非公共事件订阅面——index.ts 零导出）——低基数四封闭维度：type/taskKind/

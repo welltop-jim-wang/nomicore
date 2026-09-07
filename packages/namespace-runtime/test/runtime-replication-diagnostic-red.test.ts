@@ -14,7 +14,7 @@
  *   拒绝路径 + 与 transport observability 隔离）；
  * - ADR-0011（覆盖范围最后两项、`identity` 阶段词表、committed update owned
  *   bytes「replication transaction seam 提供」、业务隔离、transport 排除面）；
- * - ADR-0012（operation 封闭词表三值、source/context 逐字形状、direction 双
+ * - ADR-0014（operation 封闭词表三值、source/context 逐字形状、direction 双
  *   字面量、result 六分支、阶段八值、attemptId att-+32hex、observedAt 注入
  *   Clock、per-record context 承载 replication 身份——不进 manifest）；
  * - #149 先例（NamespaceRuntimeSeamInput 的 diagnosticEmitter/clock 字段名与

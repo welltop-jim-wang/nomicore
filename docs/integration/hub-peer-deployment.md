@@ -148,7 +148,7 @@ token、owner 值、Yjs bytes、SCHEMA/ROOT 内容。
 | `bump-epoch` | hub | `namespaceId` | 提升权威复制代际（epoch 递增，身份不变）。回执成功携带 `replicationEpoch`；`ok` = epoch 已提交，**fencing 是异步传播**（上界 `ackTimeoutMs`，缺省 10s）——双 peer 的 `identity-conflicted` 事件在回执之后观测 |
 | `reset-replica` | peer | `namespaceId, ownerUserId, expectedReplicationId, expectedReplicationEpoch` | 受控副本重置（ADR 0010 #133 round-2 guarded reset）：registry 双源严格核对（mismatch → `NAMESPACE_RESET_IDENTITY_MISMATCH`、零通道动作）→ 通过后归档本地副本 → 收口旧 channel（**等 controller 收口结算完成**——CLOSE_OK/closeTimeout 兜底 ≤5s；结算超限 → `reset-replica-failed` 诚实回执）→ 重引导入队。`ok` = 归档完成 + 重引导已入队（编排确保全部交错下 addTarget 前 controller 已离开 closing——见「管理动词」）；重引导链随后的失败走既有 channel/连接 observer 事件，恢复入口 = `add-target`（终态通道不被幂等短路拦截）。重复调用（同 expected）→ `NAMESPACE_NOT_FOUND`（reset 成功不可重放，属正确行为） |
 
-| `delete-namespace` | hub | `namespaceId` | 终态删除编排（issue #228）：摘除复制授权暴露（bindings/known-set）→ registry `deleteNamespace`（ADR-0009 修订节：forceRelease + close drain + entry 移除）→ persistence `deleteDoc`（ADR-0006 修订节：主键 + 受控归档位活跃存储逻辑删除）→ 同步 `deleteNamespaceDiagnosticLog`（#154；enabled:true 才存在日志面）。`ok:true` ⟺ **同一回执周期内**数据快照与 `{logRoot}/namespaces/{ns}` 目录树均完成逻辑删除（ADR-0012-LOG L299）；幂等（tombstone 过 known-set 门，二删 ok）；失败码族 `delete-namespace-failed`（registry 数据段窄 issue/fatal 折叠）与 `log-delete-failed{step,errno}`（值域透传包内 failed 形状）——重入重试是唯一完成路径；诊断禁用分支数据删除照常 ok:true。角色不适用（peer）→ `unknown-op`；deletion 后旧 generation 零复活（重启 provision 重建 = 新 namespace 新身份，R-1） |
+| `delete-namespace` | hub | `namespaceId` | 终态删除编排（issue #228）：摘除复制授权暴露（bindings/known-set）→ registry `deleteNamespace`（ADR-0009 修订节：forceRelease + close drain + entry 移除）→ persistence `deleteDoc`（ADR-0006 修订节：主键 + 受控归档位活跃存储逻辑删除）→ 同步 `deleteNamespaceDiagnosticLog`（#154；enabled:true 才存在日志面）。`ok:true` ⟺ **同一回执周期内**数据快照与 `{logRoot}/namespaces/{ns}` 目录树均完成逻辑删除（ADR-0014-LOG L299）；幂等（tombstone 过 known-set 门，二删 ok）；失败码族 `delete-namespace-failed`（registry 数据段窄 issue/fatal 折叠）与 `log-delete-failed{step,errno}`（值域透传包内 failed 形状）——重入重试是唯一完成路径；诊断禁用分支数据删除照常 ok:true。角色不适用（peer）→ `unknown-op`；deletion 后旧 generation 零复活（重启 provision 重建 = 新 namespace 新身份，R-1） |
 
 角色不适用动词（如 hub 收到 `add-target`、peer 收到 `request-reauth`）→
 `unknown-op`。稳定码注册表（append-only）：`malformed-line | unknown-op |
@@ -170,7 +170,7 @@ fatal / 结构性防御边界 / 旧通道收口结算超限；`delete-namespace-
 `delete-namespace`（issue #228）是同族的**终态删除编排**动词：Hub 拥有（peer →
 `unknown-op`——peer 副本删除属 `reset-replica` archive 语义）；它消费 Registry
 `deleteNamespace`（ADR-0009 修订节）与 Persistence `deleteDoc`（ADR-0006 修订节）
-两个按显式修订节备案的公共面增量，并兑现 ADR-0012-LOG L299 的日志删除伴随义务；
+两个按显式修订节备案的公共面增量，并兑现 ADR-0014-LOG L299 的日志删除伴随义务；
 不引入 ws-replication wire 帧变化（在途 channel 经既有 released-lease 错误路径
 异步失败收口，见下）。
 

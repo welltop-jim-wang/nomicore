@@ -71,7 +71,7 @@ owner 原文（逐字）：「S0′ 复查时读取真正提交时刻的当前�
 
 | 条款 | 核验 | 裁决 |
 |---|---|---|
-| ADR-0012-LOG L289（只删除无 reader lease 的 closed 组） | 提交门以提交时刻评估「没有 lease」（INV-4 在提交点字面复位）；持约范围扩至 manifest 阶段——兑现型，零 amendment（docs zero-diff 亲证） | ✅ |
+| ADR-0014-LOG L289（只删除无 reader lease 的 closed 组） | 提交门以提交时刻评估「没有 lease」（INV-4 在提交点字面复位）；持约范围扩至 manifest 阶段——兑现型，零 amendment（docs zero-diff 亲证） | ✅ |
 | L291–295（删除协议 S1–S3/orphan 文法） | `deleteGroup` 本体零 hunk；S0′ 仍是 S1 前置门，仅取时来源变更 | ✅ 零触碰 |
 | L297（短期 segment lease / 显式续租） | 缺省 maxLifetimeMs=null 显式续租臂维持（read-session.ts DENY 未动） | ✅ 兑现型收紧 |
 | L301–318（strict/replay 行为与报告形状冻结） | ②③ 门语义与早退包络逐字节不动；`StrictStreamRead`/报告形状零变更；分类/complete 面零 hunk | ✅ 零触碰 |

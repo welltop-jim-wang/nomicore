@@ -10,7 +10,7 @@
   （`task_issue-227_rev2_design.md` R2.1 / `_sa2_review.md` / `_sa6_red.md` / `_sa3_impl.md` /
   `_sa4_review.md` / `_impl_conflict_recheck.md` / `_sa7_report.md` /
   `task_issue-227_post_rebase_static_review.md`）；**Issue #227 评论面 `gh api` 独立重取**
-  （§0）；现文 reader.ts / read-session.ts / file.ts / paths.ts / 三测试文件 / ADR-0012 L280–318
+  （§0）；现文 reader.ts / read-session.ts / file.ts / paths.ts / 三测试文件 / ADR-0014 L280–318
 - 方式：**全部独立重验**——不沿用任何前轮运行声明：diff 逐 hunk 亲读 + 现文行号回读；
   grep 亲证（释放点/钟消费点/抑制标记/断言改动）；rebase 等价性 git 对象级亲证（§5）；
   定向 35/35、包级+replay 505/505、`pnpm typecheck` 14 tsconfig 全部**本机后台 Job 独立重跑**
@@ -25,7 +25,7 @@
 Owner 两条必修（Issue 评论 id 5559458232，2026-09-06T13:14:31Z，welltop-jim-wang——本轮
 `gh api` 独立重取逐字核得）在 rebase 后权威工作树上逐点静态成立并有真实运行测试背书；
 rev2 变更集经 rebase **字节级无损**（patch-id 亲证）；DENY 面 zero-diff；无测试抑制、无断言
-削弱、无禁用修法（`Math.max` 零命中）；验收契约（AC1–AC5）、ADR-0012-LOG 冻结面、包
+削弱、无禁用修法（`Math.max` 零命中）；验收契约（AC1–AC5）、ADR-0014-LOG 冻结面、包
 AGENTS.md 全部合规。4 条非阻断登记（§9）。
 
 ---
@@ -166,7 +166,7 @@ sed -n '413,899p' reader.ts | grep "\.close()" → 仅 :487 相对位（= 绝对
 
 ## 4. ADR / 包契约合规
 
-- **ADR-0012-LOG L289**「retention 只删除已关闭且没有 reader lease 的 segment group」：提交门
+- **ADR-0014-LOG L289**「retention 只删除已关闭且没有 reader lease 的 segment group」：提交门
   以提交时刻评估「没有 lease」——INV-4（过期租约永不阻塞）在提交点字面复位（兑现型诚实
   读法，零 amendment；`docs/**` zero-diff 佐证）。
 - **L291–295**（删除协议 S1–S3 / orphan 清理文法）：`deleteGroup` 本体 :1071–1090 零 hunk；

@@ -4,7 +4,7 @@
  * 权威契约：`wiki/raw/task_issue-154_sa2_design.md` §2.5（StrictStreamRead 增量两字段）、
  * §7.1（historyTrimmed ⇔ 枚举最低段 ≠ '00000001'；锚 null 重定基；`false` 时逐字节等同现状）、
  * §7.4（全裁剪收敛：resume 空流 seq 1——备案钉死）、§7.5（resume 双侧锚容差：防 rotate 风暴）、
- * §9 T-E1–T-E7。ADR 0012 §Retention（earliest retained sequence 扫描重建）。
+ * §9 T-E1–T-E7。ADR 0014 §Retention（earliest retained sequence 扫描重建）。
  *
  * 红灯性拆分：
  * - T-E1 / T-E4 / T-E7：行为红（当前实现缺 trim 报告/sweep ⇒ corrupt 或 TypeError）；

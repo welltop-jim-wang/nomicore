@@ -2,7 +2,7 @@
 
 > 阶段：Phase 1 acceptance anchoring（实现前初始契约）。
 > 输入：任务简报 `wiki/raw/task_expose-diagnostic-replay-host-lifecycle.md`、SA8 决策产物
-> （`_relevant_decisions.md` / `_conflict_report.md`，verdict `clear`）、ADR-0011/ADR-0012-LOG
+> （`_relevant_decisions.md` / `_conflict_report.md`，verdict `clear`）、ADR-0011/ADR-0014-LOG
 > （replay 报告形状与缺陷清单原文）、#150/#151 SA6 红灯契约先例。
 > 角色声明：本报告只写测试，未改任何生产代码；未 push；未触碰既有测试。
 
@@ -45,9 +45,9 @@ exit code   1
 | 面 | 提案 | 依据/仲裁点 |
 |---|---|---|
 | `AppConfig.diagnostics` | `{ enabled: boolean; rootDir: string; retention?: { maxAgeMs?: number\|null; maxBytesPerNamespace?: number\|null }; updateCapture?: boolean; inputPolicy?: 'none'\|'digest'\|'redacted'\|'full' }`（hub/peer 通用、本地旁路） | AC1/AC2；键名/嵌套仲裁可改，行为断言不动 |
-| `replayNamespaceDiagnosticLog(request: { rootDir; namespaceId })`（@nomicore/yjs-server 入口导出） | `{ status: 'complete'\|'partial'\|'failed'; lastAppliedSequence: string\|null; issues: { code: string }[]; snapshot?: Uint8Array }` | 报告形状逐字段 = ADR-0012-LOG §Strict reader 冻结文本；归 Host 工具面（ADR-0011 §Interface「完整查询、导出、重放…属于日志存储/工具模块的 interface」；yjs-server 为本仓唯一 Host 组合根且可依赖 yjs 构造 detached 快照）。归属/命名仲裁不同 → 仅 import/gate 行修订 |
+| `replayNamespaceDiagnosticLog(request: { rootDir; namespaceId })`（@nomicore/yjs-server 入口导出） | `{ status: 'complete'\|'partial'\|'failed'; lastAppliedSequence: string\|null; issues: { code: string }[]; snapshot?: Uint8Array }` | 报告形状逐字段 = ADR-0014-LOG §Strict reader 冻结文本；归 Host 工具面（ADR-0011 §Interface「完整查询、导出、重放…属于日志存储/工具模块的 interface」；yjs-server 为本仓唯一 Host 组合根且可依赖 yjs 构造 detached 快照）。归属/命名仲裁不同 → 仅 import/gate 行修订 |
 
-replay issue 类别码（契约提案，语义类取 ADR-0011 五条件/ADR-0012-LOG 缺陷清单原文词，
+replay issue 类别码（契约提案，语义类取 ADR-0011 五条件/ADR-0014-LOG 缺陷清单原文词，
 物理类沿用 strict reader 既有码）：`genesis-missing` / `update-omitted` /
 `history-trimmed` / `sequence-gap`（既有）/ `invalid-json`（既有）/ `incompatible-format` /
 `identity-mismatch` / `stream-absent`。测试对缺陷类按「含类别词」断言（`arrayContaining +

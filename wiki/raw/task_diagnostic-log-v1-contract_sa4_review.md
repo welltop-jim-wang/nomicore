@@ -38,7 +38,7 @@ npx vitest run --typecheck（全仓）                           → 130 files /
 ### C-1 健康**事件类型面**从冻结判别联合放宽为全字段可选单接口（需 R4 追认）
 
 - **证据**: `src/health.ts:22-53`——`DiagnosticLogHealthEvent` 为单接口（`type` 必填、`reason/stage/field/fromPolicy/recordKind/operation/schemaId/schemaFingerprint/issueCount` 可选、`issuePaths/projectedRecordBytes/queueDepth` 必填）；设计 §8.1 冻结为 8 成员判别联合。头注（health.ts:17-21）自认偏离及动因（SA6 测试 filter 后无窄化 → TS2339）。运行期事件键集仍守纪律：构造点逐成员字面量（pipeline.ts:202/211/218/233/235/243、memory.ts:174-178/193-195/269-270/284-297），且 `vfsl-gate.test.ts:104-108` 白名单键集断言锚定。
-- **影响**: 公共消费者失去编译期判别窄化；类型上可构造「无意义字段组合」的伪事件对象。属**类型面放宽**而非运行时行为改变——对 ADR 0012「observer 只包含稳定 code…」的运行时合规无影响。
+- **影响**: 公共消费者失去编译期判别窄化；类型上可构造「无意义字段组合」的伪事件对象。属**类型面放宽**而非运行时行为改变——对 ADR 0014「observer 只包含稳定 code…」的运行时合规无影响。
 - **回流目标**: SA1/总控（R4 一句话追认），或 #149 接线前恢复判别联合 + 测试侧 type guard。**不阻塞本票**。
 
 ### C-2 `records()` 返回类型收窄为 `readonly AttemptRecord[]`（v1 公共面类型谎言，#152 必须回收）

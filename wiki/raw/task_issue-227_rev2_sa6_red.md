@@ -6,7 +6,7 @@
 - 输入：已批准修订设计 `wiki/raw/task_issue-227_rev2_design.md`（§8 测试契约 + §3.1.2 时序表）；
   SA2 窄域复审 `wiki/raw/task_issue-227_rev2_sa2_review.md`（**approve** + §5 K-binding K-R2-1..K-R2-4；
   G-227-5 裁定采含）；SA8 冲突门禁 `wiki/raw/task_issue-227_rev2_design_conflict_report.md`
-  （F-1 必修项——T-C3/T-C4 双钟构造处置）；ADR-0012-LOG（`docs/adr/0012-vfsl-validated-jsonl-and-framed-sidecar-change-log.md`）
+  （F-1 必修项——T-C3/T-C4 双钟构造处置）；ADR-0014-LOG（`docs/adr/0014-vfsl-validated-jsonl-and-framed-sidecar-change-log.md`）
   与包 AGENTS.md
 - Owner 要求（PR #251 评审，welltop-jim-wang 2026-09-06T13:14:31Z）：(1) strict reader 在路径安全检查后、
   首次 manifest I/O 前取得 lease，自建 session 用单一 finally 覆盖 manifest 缺失/JSON 损坏/gate 失败的释放；

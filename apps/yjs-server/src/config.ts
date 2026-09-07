@@ -88,13 +88,13 @@ export interface PeerConfig {
 /**
  * #155（§5.1；AC1/AC2）：本地旁路诊断配置——`retention`（可调类）与
  * `updateCapture`/`inputPolicy`（冻结格式类）二分落点：冻结类改变跨重启由
- * adapter reopen 健康证明失效 → 新 stream generation（ADR-0012-LOG；#153 机制）；
+ * adapter reopen 健康证明失效 → 新 stream generation（ADR-0014-LOG；#153 机制）；
  * retention 属可调类、不冻结进 manifest、同 stream 续写。缺省策略不在 config 层
  * 展开（updateCapture/inputPolicy/retention 缺省 → adapter 层内建缺省）——config
  * 是操作员意图的忠实载体。
  */
 export interface DiagnosticsRetentionConfig {
-  /** 段组保留时限（`null` 显式关闭；`0` 合法非无限——ADR-0012-LOG §Retention 语义）。 */
+  /** 段组保留时限（`null` 显式关闭；`0` 合法非无限——ADR-0014-LOG §Retention 语义）。 */
   readonly maxAgeMs?: number | null;
   /** 每 namespace 保留字节上限（`null` 显式关闭；`0` 合法非无限）。 */
   readonly maxBytesPerNamespace?: number | null;

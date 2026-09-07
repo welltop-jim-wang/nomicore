@@ -7,7 +7,7 @@
  * 钉住的裁决（host 级、黑盒、确定性）：
  * - Host `diagnostics.retention`（键形状见 config.ts validateDiagnostics）原样透传
  *   给 File adapter（diagnostics.ts ensureAdapter → createFileDiagnosticLog
- *   retention 选项）；retention 属可调类（ADR 0012 §Retention）——不冻结进
+ *   retention 选项）；retention 属可调类（ADR 0014 §Retention）——不冻结进
  *   manifest、跨重启同 stream 续写后继续生效；
  * - adapter 每次进程内构造（registry open/create/import 触发的懒构造）执行
  *   sweepOnOpen：#154 的 P0 卫生 → P1 年龄 → P2 字节遍历，经 host health observer

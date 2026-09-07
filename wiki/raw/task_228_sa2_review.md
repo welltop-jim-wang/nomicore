@@ -124,7 +124,7 @@ D1–D4 的转绿路径逐用例推演可行（§5）。发现 **0 BLOCKER / 0 M
 - **B2 隔离边界攻击**：ADR-0011 产品契约的失效面枚举（emit/排队/持久化/背压/丢弃/
   关闭）与保护对象枚举（createDoc/Yjs transaction/dirty notification/replication
   ACK）均不含「删除能力失败」与「数据删除工作流」——AD-8 的边界划分（delete 自身
-  是 ADR-0012-LOG L299 义务载体，复合谓词不构成对**其它**业务操作的隔离破坏）经
+  是 ADR-0014-LOG L299 义务载体，复合谓词不构成对**其它**业务操作的隔离破坏）经
   条文比对成立，且明示该条款对 emit/append 面继续全额适用。**过**。
 - **调用点纪律**：op 全程 stdin macrotask、不持 write slot/carrier 槽；`registry
   .deleteNamespace` 槽内只含异步 IO + close drain（archive 写/reset ⑦ 槽内先例）；
@@ -223,7 +223,7 @@ seedForTest 在同 key 交错」（M1 的绿锚）；T-R3 已含 open×delete �
 ### 5.4 文档元数据收口（AC3/AC5）
 
 - 三处矛盾文本亲证仍在（CONTEXT.md 语义 emission 词条 / README「绝不阻塞」/ 包
-  AGENTS「不阻塞」同款且与同文件 §Boundaries 自相矛盾）；§3.4 目标措辞与 ADR-0012-LOG
+  AGENTS「不阻塞」同款且与同文件 §Boundaries 自相矛盾）；§3.4 目标措辞与 ADR-0014-LOG
   2026-08-28 amendment 逐字对齐（BIN-first、单 record/单 frame、queue/batch/fsync/fd
   标注为目标演进形态而非现行特性——B3 红线逐字满足）；ADR-0011 走澄清性修订节且
   明示非决策变更（与 amendment 自身「ADR 0011 emitter seam 不变」声明一致）。**过**。

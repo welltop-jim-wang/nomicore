@@ -1,6 +1,6 @@
 /**
- * 红灯契约 — §9.9 update 物理化（验收标准 5 副产品 + ADR 0012 §Inline 与 sidecar）
- * 锚点：ADR 0012 §Binary frame v1（CRC-32C 参数 0x1EDC6F41/init 0xFFFFFFFF/refin/refout/
+ * 红灯契约 — §9.9 update 物理化（验收标准 5 副产品 + ADR 0014 §Inline 与 sidecar）
+ * 锚点：ADR 0014 §Binary frame v1（CRC-32C 参数 0x1EDC6F41/init 0xFFFFFFFF/refin/refout/
  *       xorout 0xFFFFFFFF；check("123456789") = 0xE3069283）+ 设计 §7.3（表驱动、8 位小写 hex）+
  *       §7.4（physicalize 三守卫分支：empty-update 最前 / update-capture-disabled /
  *       payload-too-large，均保 attempt metadata，**不得**产生 vfsl-validation-failed）+
@@ -114,7 +114,7 @@ describe('§9.9 update-omitted 三 reason 分支（§7.4 守卫）', () => {
   })
 })
 
-describe('§9.9 被省略 update 的元数据完整性（ADR 0012「保 attempt metadata」）', () => {
+describe('§9.9 被省略 update 的元数据完整性（ADR 0014「保 attempt metadata」）', () => {
   it('三 reason 下 attempt 身份/结局事实/observedAt 全部保留', () => {
     const { log } = makeLog({ updateCapture: false, payloadMaxBytes: 4 })
     const cases = [

@@ -154,7 +154,7 @@ _Avoid_: 仅成功事务、统一 failed 事件
 _Avoid_: Runtime generation、replication epoch、跨 generation 隐式连续日志
 
 **语义 emission（semantic emission）**:
-producer → 诊断日志 emitter 提交的 detached 语义结局——operation/stage/observedAt/source/context/result（update 以 owned bytes 表达），不含 streamId/sequence/segment/frameOffset/Base64/CRC 等物理表示（storage projection 归 adapter）。emit 同步、不 throw、不返回 durability promise、不留调用方可变引用（ADR-0011 interface 契约）；File adapter 首切片为每 record 至多一条 final JSONL record 的有界同步 append（携带 sidecar 时先一帧 BIN append）——可被文件系统延迟阻塞，任何接入 namespace 生命周期的调用点必须在 NamespaceRuntime write sequencer slot 之外或该 slot 释放之后；不维护 writer queue、不做 batch flush、无 fsync 开关、无常驻 fd（queue/batch/fsync/fd cache 为目标演进形态而非现行特性，ADR-0012-LOG 首切片 amendment 为权威）；快照与 updateBytes 所有权移交后不得再变异。update-omitted 稳定 reason 受控词表（v1）：`payload-too-large` / `update-capture-disabled` / `empty-update`——新增 reason 属词表演进，须过设计评审。
+producer → 诊断日志 emitter 提交的 detached 语义结局——operation/stage/observedAt/source/context/result（update 以 owned bytes 表达），不含 streamId/sequence/segment/frameOffset/Base64/CRC 等物理表示（storage projection 归 adapter）。emit 同步、不 throw、不返回 durability promise、不留调用方可变引用（ADR-0011 interface 契约）；File adapter 首切片为每 record 至多一条 final JSONL record 的有界同步 append（携带 sidecar 时先一帧 BIN append）——可被文件系统延迟阻塞，任何接入 namespace 生命周期的调用点必须在 NamespaceRuntime write sequencer slot 之外或该 slot 释放之后；不维护 writer queue、不做 batch flush、无 fsync 开关、无常驻 fd（queue/batch/fsync/fd cache 为目标演进形态而非现行特性，ADR-0014-LOG 首切片 amendment 为权威）；快照与 updateBytes 所有权移交后不得再变异。update-omitted 稳定 reason 受控词表（v1）：`payload-too-large` / `update-capture-disabled` / `empty-update`——新增 reason 属词表演进，须过设计评审。
 _Avoid_: 物理载体细节、append 后引用、durability promise
 
 **storage projection**:

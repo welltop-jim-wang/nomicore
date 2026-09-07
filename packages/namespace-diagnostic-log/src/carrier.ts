@@ -1,5 +1,5 @@
 /**
- * update 物理载体（设计 §2.5 / §7.4；ADR 0012 §Inline 与 sidecar / §Binary frame v1）。
+ * update 物理载体（设计 §2.5 / §7.4；ADR 0014 §Inline 与 sidecar / §Binary frame v1）。
  *
  * 环境绑定面：`Buffer` 在本模块与 digest.ts 出现（AGENTS.md 声明）；#152 起本模块
  * 同时收口 Base64 编解码两侧（buildInlineCarrier 编码 / decodeBase64Strict 严格解码——

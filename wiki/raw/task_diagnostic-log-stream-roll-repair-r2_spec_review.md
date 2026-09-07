@@ -3,7 +3,7 @@
 - **审查会话**：双轴终审 Spec 轴 R2（独立审查，未与 Standards 轴交换上下文；本轴 round-1 报告见 `task_diagnostic-log-stream-roll-repair_spec_review.md`）
 - **Worktree**：`/home/wangjian/nomicore-fix-issue-153`（branch `fix/issue-153-on-docs-namespace-diagnostic-change-log`）
 - **审查 diff 范围**：`git diff 51b79b9..a2cf3a5`（基线 51b79b9 = round-1 HEAD；a2cf3a5 = SA3 R2 修复 commit）
-- **对照基准**：round-2 修订简报（`…-r2.md`，含总控核验裁决 G1 与机制勘误）、权威反馈输入（`…_round2_feedback.md`）、SA8 R2 冲突报告（clear + O1/O2）、SA6 R2 红灯、SA4 R2（pass）、SA7 R2（pass）、r2_ac_checklist；round-1 设计定稿 §5.2/§5.4/§6.3 与 ADR-0012 §打开与尾部恢复继续有效
+- **对照基准**：round-2 修订简报（`…-r2.md`，含总控核验裁决 G1 与机制勘误）、权威反馈输入（`…_round2_feedback.md`）、SA8 R2 冲突报告（clear + O1/O2）、SA6 R2 红灯、SA4 R2（pass）、SA7 R2（pass）、r2_ac_checklist；round-1 设计定稿 §5.2/§5.4/§6.3 与 ADR-0014 §打开与尾部恢复继续有效
 
 ## Verdict: **pass**
 
@@ -105,4 +105,4 @@
 
 ---
 
-**结论**：verdict = **pass**。round-2 High 缺陷（无引用完整 orphan BIN 尾帧未清除）修复忠实于设计 §5.2/§5.4 字面与 ADR-0012 授权修复集；反馈建议 ①–④ 落地、⑤ 未做合规；AC3/AC1 重证证据链充分（含本轴独立探针 6/6）；round-1 非阻断①完全消解；零范围蠕变；验证门槛独立复跑全绿（140/1786、typecheck 0、diff --check 干净）。
+**结论**：verdict = **pass**。round-2 High 缺陷（无引用完整 orphan BIN 尾帧未清除）修复忠实于设计 §5.2/§5.4 字面与 ADR-0014 授权修复集；反馈建议 ①–④ 落地、⑤ 未做合规；AC3/AC1 重证证据链充分（含本轴独立探针 6/6）；round-1 非阻断①完全消解；零范围蠕变；验证门槛独立复跑全绿（140/1786、typecheck 0、diff --check 干净）。

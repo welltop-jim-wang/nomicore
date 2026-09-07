@@ -1,5 +1,5 @@
 /**
- * 红灯契约 — AC2 + ADR 0012 验收门槛 1/2/3：inline / sidecar 物理表示与阈值边界。
+ * 红灯契约 — AC2 + ADR 0014 验收门槛 1/2/3：inline / sidecar 物理表示与阈值边界。
  *
  * 锚点：
  * - 「update 大小小于等于阈值时，以 RFC 4648 标准 Base64 内联，必须有正确 padding，

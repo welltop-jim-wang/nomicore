@@ -61,7 +61,7 @@
 
   关联声明：「本 ADR 增加可选 observability，不修改 ADR 0006 的 snapshot Persistence 与 dirty notification 语义、ADR 0008 的单 sequencer/zero-write/fatal/close 契约、ADR 0009 的 Registry lifecycle 与 observer 隔离……」
 
-### ADR-0012 VFSL 校验的 JSONL 与 framed sidecar 诊断日志格式（accepted，2026-08-28；含 2026-08-28 issue #152 first-slice amendment）——本任务核心契约源
+### ADR-0014 VFSL 校验的 JSONL 与 framed sidecar 诊断日志格式（accepted，2026-08-28；含 2026-08-28 issue #152 first-slice amendment）——本任务核心契约源
 
 - 与本任务的关联点：genesis baseline 的落盘语义、stream 初始化失败的业务隔离、以及接线票（#149–#151/#155，本任务 #150 在列）必须满足的 write-slot 接线纪律。
 
@@ -116,7 +116,7 @@
 
 ### ADR-0008 NamespaceRuntime 读写能力与单序列器（accepted，2026-08-23；含 2026-08-24 issue #93 稳定码注册修订）——post-commit Runtime construction / P0 / 槽纪律
 
-- 与本任务的关联点：post-commit Runtime 走「普通 P0 启动路径」；emit 接线不得延长 write slot（与 ADR-0012 amendment 共同构成接线约束）；fatal 通道与稳定码族。
+- 与本任务的关联点：post-commit Runtime 走「普通 P0 启动路径」；emit 接线不得延长 write slot（与 ADR-0014 amendment 共同构成接线约束）；fatal 通道与稳定码族。
 
 - 核心条款（原文摘录）：
 
@@ -183,13 +183,13 @@
 | 任务元素 | 对应条款 |
 |---|---|
 | Objective：从首次可观察尝试到 post-commit Runtime construction 的结构化结局 | ADR-0011 覆盖范围 create 条款（逐词列举同样七类结局）；ADR-0009 Create 节 |
-| Objective/AC2：成功创建尝试 current Y.Doc genesis | ADR-0011「创建成功可记录完整初始 Y.Doc update 作为 `genesis`」+ owned bytes 条款；ADR-0012「每个新 stream 尽力先记录当前完整 Y.Doc 的 genesis baseline」；CONTEXT.md `genesis baseline record`（adapter 内部构造） |
-| Objective/AC4/AC5：stream 初始化或日志失败不改 create 结果与可用性 | ADR-0011 best-effort 六条；ADR-0012「初始化失败不影响 namespace create；独立健康 observer 上报 `LOG_STREAM_INIT_FAILED`」 |
+| Objective/AC2：成功创建尝试 current Y.Doc genesis | ADR-0011「创建成功可记录完整初始 Y.Doc update 作为 `genesis`」+ owned bytes 条款；ADR-0014「每个新 stream 尽力先记录当前完整 Y.Doc 的 genesis baseline」；CONTEXT.md `genesis baseline record`（adapter 内部构造） |
+| Objective/AC4/AC5：stream 初始化或日志失败不改 create 结果与可用性 | ADR-0011 best-effort 六条；ADR-0014「初始化失败不影响 namespace create；独立健康 observer 上报 `LOG_STREAM_INIT_FAILED`」 |
 | AC1：acceptance / duplicate / input snapshot / schema compile / validation / transaction-Persistence / post-commit Runtime construction 结局，用既有稳定事实 | ADR-0011 覆盖范围 + 结局/阶段词表 + 「日志层不得发明」；事实源：ADR-0009（acceptance/duplicate/runtime-construction）、ADR-0006 #64（DOC_DUPLICATE/committed create）、ADR-0007（compile/validate）；阶段映射入 8 值封闭枚举（`packages/namespace-diagnostic-log/src/vocabulary.ts` 为 #148 冻结实现，ADR-0011 逐字） |
 | AC2：post-commit fatal 保留 committed 事实 | ADR-0011 fatal 条款；ADR-0009「以 `committed:true` Registry fatal reject」；ADR-0008 fatal 通道 |
 | AC3：pre-input 失败不触 payload；后续捕获复用 create 路径 detached 安全快照 | ADR-0011 输入捕获五条（含「对 create 等已有独立快照实现的路径，同样复用该路径的安全快照」）；ADR-0009「create 取得 lifecycle 槽后才读取并冻结输入」 |
-| AC4：logging disabled / stream init failure / queue pressure / sink failure 不改 create 成功、拒绝、Persistence 状态、Registry 生命周期 | ADR-0011 业务隔离条款；ADR-0012 初始化失败条款 + amendment 接线纪律（emit 在 write slot 外） |
-| AC5：六类测试场景（含 delayed stream init 的 honest current-state genesis） | ADR-0012「后续重试成功时以当时 Y.Doc 建立新 stream，其 genesis 只代表从该时点开始，不能伪称从 namespace 创建时起连续」；ADR-0012 验收门槛 5/6（gate 拒绝 input not-accessed；初始化失败不改业务） |
+| AC4：logging disabled / stream init failure / queue pressure / sink failure 不改 create 成功、拒绝、Persistence 状态、Registry 生命周期 | ADR-0011 业务隔离条款；ADR-0014 初始化失败条款 + amendment 接线纪律（emit 在 write slot 外） |
+| AC5：六类测试场景（含 delayed stream init 的 honest current-state genesis） | ADR-0014「后续重试成功时以当时 Y.Doc 建立新 stream，其 genesis 只代表从该时点开始，不能伪称从 namespace 创建时起连续」；ADR-0014 验收门槛 5/6（gate 拒绝 input not-accessed；初始化失败不改业务） |
 | Constraint：不等待 #148 合并、按当前 worktree 实施 | 流程约束；#148 冻结契约（emission/record/vocabulary/schema）已在 worktree `packages/namespace-diagnostic-log` 落地，为接线依赖而非 ADR 冲突点 |
 
 ## 设计后复审追加（2026-08-30，SA8 vs SA1 设计 R1）
@@ -198,11 +198,11 @@
 > 冲突裁决见 `task_namespace-diagnostic-change-log_design_conflict_report.md`（verdict: clear）。
 
 - **DC-1 genesis/update bytes 供给方式**（§2.3/§6.3.5）：在 Registry create 槽内对 `initial.doc` 做 `Y.encodeStateAsUpdate`（detached/owned、失败→undefined），不扩大 `create-document.ts` 契约——依据 ADR-0006 #64「创建成功前初始完整 snapshot 已提交（`Y.encodeStateAsUpdate(doc)` 直写）」可行先例；ADR-0011「底层 transaction 模块应在不暴露 live Y.Doc 的前提下返回或投递 owned bytes」读作 seam 未来演进方向而非现行接线禁令。
-- **DC-2 initStream 次序**（§2.3/§6.3.5）：`createDoc` resolve（committed 事实确立）后、factory 调用前同步调用 initStream；factory 成败皆然；#16 防御 fatal 路径不建 stream（Host 可经 ADR-0012 延迟初始化补建）。
+- **DC-2 initStream 次序**（§2.3/§6.3.5）：`createDoc` resolve（committed 事实确立）后、factory 调用前同步调用 initStream；factory 成败皆然；#16 防御 fatal 路径不建 stream（Host 可经 ADR-0014 延迟初始化补建）。
 - **DC-3 observedAt/Clock 不变量**（§6.3.2）：每次 create 尝试恰一次 clock 读数用于时间戳——槽内复用 `createdAt` 字符串（零额外读数）；Clock 步之前终结的诊断侧单次读数；clock 故障 → 该条 emission 丢弃（不伪造时间戳）。
 - **DC-4 issues producer 侧形状投影**（§6.3.4）：vfsl `SchemaParseIssue`/`ValidateIssue` → 诊断包 `DiagnosticIssue {code?, message, path}`，顺序逐条保留、message verbatim；envelope issue code 合成前缀 `VFSL-ENV-E{code}`；意外形状条目跳过（不 throw）。
 - **DC-5 类型消费纪律**（§5.3）：诊断包纯 `import type`（零值级 import）；yjs 上移 dependencies（encode 单函数值级消费）。
 - **DC-6 未测路径显式映射**（§6.2 总表 18 结局点）：identity 入口拒绝 → `identity`；closing fatal ×3 → `acceptance`（input not-accessed）；create-document 编排段（clock fatal/createDocument throw/不可达守卫）→ `schema-compile` 伞形 + `sourcePhase:'create-document-internal'`；createDoc 栈内 → `transaction`。stage 单源规则：尝试推进到的实际阶段在 8 值封闭词表内的投影，精确事实由 code/sourcePhase/committed 携带。
 - **§8.1 amendment C 合规论证**：全部 emit/initStream 调用点位于 Registry lifecycle slot 或公共入口同步段，不进入 NamespaceRuntime write sequencer slot（create 期 Runtime 不存在；post-commit 段运行在 Registry slot 调用栈，P0 独立异步结算、只读 SCHEMA）。
-- **§6.3.5 词表纪律**：成功路径 encode 失败 → emission 丢弃而非发明 update-omitted 新 reason（v1 词表三值冻结）；initStream 传 undefined → adapter 跳过 genesis 写但建 stream（ADR-0012「genesis 未成功写入时 stream 仍可记录诊断事实」）；`initStream` 恒在 emit 之前，二者均在 create Promise 结算前完成。
+- **§6.3.5 词表纪律**：成功路径 encode 失败 → emission 丢弃而非发明 update-omitted 新 reason（v1 词表三值冻结）；initStream 传 undefined → adapter 跳过 genesis 写但建 stream（ADR-0014「genesis 未成功写入时 stream 仍可记录诊断事实」）；`initStream` 恒在 emit 之前，二者均在 create Promise 结算前完成。
 - **SA2 裁量提示 J1–J3**（见设计冲突报告）：J1 write-slot 论证精度（数据量有界 ≠ 延迟有界，合规性立于调用点位置规则）；J2 `VFSL-ENV-E` 前缀为表示层投影；J3 clock fatal 零诊断痕迹的 best-effort 许可。

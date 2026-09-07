@@ -10,7 +10,7 @@
 - 简报：`wiki/raw/task_issue-226.md`
 - Worktree：`/home/wangjian/nomicore-fix-issue-226`（branch `mabf/issue-226`，父链 PR #142 `docs/namespace-diagnostic-change-log`）
 - 冲突基准：`docs/adr/` 全部 12 个文件（编号 0001–0010 + 两个 0012，已逐个全读）+ 根目录 `CONTEXT.md` 全读
-- 编号消歧：`docs/adr/` 存在两个 0012——`0012-vfsl-validated-jsonl-and-framed-sidecar-change-log.md`（本任务核心基准）与 `0012-instance-identity-and-websocket-plugin-ownership.md`（与本任务无关）。本文所有「ADR-0012」均指前者，下游引用建议一律带文件名。
+- 编号消歧：`docs/adr/` 存在两个 0012——`0014-vfsl-validated-jsonl-and-framed-sidecar-change-log.md`（本任务核心基准）与 `0012-instance-identity-and-websocket-plugin-ownership.md`（与本任务无关）。本文所有「ADR-0014」均指前者，下游引用建议一律带文件名。
 
 ## 相关 ADR
 
@@ -33,9 +33,9 @@
   11. L119「一个日志 adapter 不构成新的 Persistence 真相源；snapshot Persistence 与诊断日志独立演进」。
 - 对本任务影响：任务全部 AC 均为兑现条款；实现不得把日志故障升级为业务事实，也不得为日志引入第二个业务排序机构。
 
-### ADR-0012 VFSL 校验的 JSONL 与 framed sidecar 诊断日志格式（accepted；含 2026-08-28 File adapter first slice amendment）
+### ADR-0014 VFSL 校验的 JSONL 与 framed sidecar 诊断日志格式（accepted；含 2026-08-28 File adapter first slice amendment）
 
-`docs/adr/0012-vfsl-validated-jsonl-and-framed-sidecar-change-log.md`
+`docs/adr/0014-vfsl-validated-jsonl-and-framed-sidecar-change-log.md`
 
 - 与本任务的关联点：日志存储侧契约；其 first slice amendment 把「同步 File emit 不得进 write slot」定为规范性接线条件并预留接线修复票——issue #226 即该票。
 - 核心条款（原文摘录）：
@@ -58,7 +58,7 @@
 
 - 与本任务的关联点：write-sequencer 槽结构是「日志 I/O 不得进入的」业务关键路径的定义来源。
 - 核心条款（原文摘录）：
-  1. L51「每个真正写任务的槽依次执行：lifecycle/fatal gate、`DocHandle.getStatus()` writable gate、输入快照、领域校验和 detached 构造、一次 Yjs transaction、`await notifyDirty()`，然后才释放给下一任务。」（slot 边界的权威定义——slot 内出现同步 File append 即 ADR-0012 amendment 所指不合规接线）
+  1. L51「每个真正写任务的槽依次执行：lifecycle/fatal gate、`DocHandle.getStatus()` writable gate、输入快照、领域校验和 detached 构造、一次 Yjs transaction、`await notifyDirty()`，然后才释放给下一任务。」（slot 边界的权威定义——slot 内出现同步 File append 即 ADR-0014 amendment 所指不合规接线）
   2. #132 修订 4（L140）：`mutateData`/`replaceSchema`/`enableReplication`/`bumpReplicationEpoch`「四者均进入同一严格 FIFO write sequencer，完整槽序（lifecycle/fatal gate → writable gate → 输入校验 → 领域事实读取 → 单 Yjs transaction → 同步投影 → `await notifyDirty()`）不变」。
   3. L93 fatal 后「已排队的后续写仍按 FIFO 取得槽，且不访问输入、零写入返回 `RUNTIME_WRITE_DISABLED`」。
   4. L99 close barrier：「此前已接纳任务无条件排空，不取消、不设内部 timeout」。
@@ -98,11 +98,11 @@
   1. L28「普通 `Registry.create()` 不再接受调用方指定 namespaceId，而由注入的受控 128-bit CSPRNG 生成 `ns-` + 32 位小写 hex；撞到当前 Registry entry 或目标 Persistence duplicate 时最多重试 8 次，耗尽以 `committed:false` Registry fatal 失败」。（namespaceId 在 create 接纳后最早生成——建流前早结局的 namespace 归属以此为准；id 生成耗尽 fatal 的归属是边界 case，属 SA1 设计点）
   2. L159「Token、Yjs update、SCHEMA/ROOT 内容以及未经控制的 owner/namespace 不得出现在默认日志或高基数指标标签中」。
   3. #172 修订 2（L315）「`wiki/raw` 非规范：源码与规范中的公共行为表述必须指向 `CONTEXT.md`、ADR 或 `docs/protocols/`；`wiki/raw/` 仅为流水线历史证据」。（本任务设计不得引用 wiki/raw 为契约来源）
-- 对本任务影响：有限——复制 apply/enable/epoch-bump 诊断 operation 词表（ADR-0012 L70–78）已冻结，本任务不得顺带改动。
+- 对本任务影响：有限——复制 apply/enable/epoch-bump 诊断 operation 词表（ADR-0014 L70–78）已冻结，本任务不得顺带改动。
 
 ### 其余 ADR（与本任务无关联，仅盘点登记）
 
-ADR-0001（VFSL 单一真相源）、ADR-0002（重写定位/authority 出范围）、ADR-0003（求值器/ROOT/联合——create 管线中 schema 编译失败的语义上游属 vfsl 包，本任务只消费其结局）、ADR-0004（类型投影）、ADR-0005（投影生成管线）、ADR-0007（逻辑校验与 bridge——残余有效条款为 create 内 `validateLogicalSnapshot`/detached materialization 管线，本任务只消费其结局）、ADR-0012 实例身份版（WebSocket plugin 所有权与 Instance service，与日志生命周期隔离无交集）。
+ADR-0001（VFSL 单一真相源）、ADR-0002（重写定位/authority 出范围）、ADR-0003（求值器/ROOT/联合——create 管线中 schema 编译失败的语义上游属 vfsl 包，本任务只消费其结局）、ADR-0004（类型投影）、ADR-0005（投影生成管线）、ADR-0007（逻辑校验与 bridge——残余有效条款为 create 内 `validateLogicalSnapshot`/detached materialization 管线，本任务只消费其结局）、ADR-0014 实例身份版（WebSocket plugin 所有权与 Instance service，与日志生命周期隔离无交集）。
 
 ## CONTEXT.md 相关术语与惯例
 
@@ -116,8 +116,8 @@ ADR-0001（VFSL 单一真相源）、ADR-0002（重写定位/authority 出范围
 
 ## 设计敏感点登记（SA1 设计将触碰、超出简报字面的决策点；只登记，不裁决——前置裁决见 `_conflict_report.md`，设计后复审另行裁决）
 
-1. **隔离执行载体形态**：ADR-0012 amendment 允许两条路——(a) 保持首切片同步 append，仅把调用点移到 slot 外/槽释放后（如 per-namespace 延迟 drain 通道）；(b) 实现 amendment 预留的 queue/batch 切片（须另行定义 close/shutdown、flush、队列满与 fsync 配置语义）。选择直接决定 AC4「慢/挂起存储不阻塞下一槽」与 shutdown 测试的形状。
-2. **建流前早结局的缓冲与归属**：早结局 attempt 记录在建流前产生、建流后补记时，须同时满足「writer 准备 append 时才分配 sequence」（ADR-0012 L67）、「影响记录解释的配置在 stream 创建时冻结」（L268）、「不能伪称从 namespace 创建时起连续」（L24）与 namespaceId 生成时序（ADR-0010 L28；id 生成耗尽 fatal 时该结局自身无可用 ns id——归属策略是设计点）。
+1. **隔离执行载体形态**：ADR-0014 amendment 允许两条路——(a) 保持首切片同步 append，仅把调用点移到 slot 外/槽释放后（如 per-namespace 延迟 drain 通道）；(b) 实现 amendment 预留的 queue/batch 切片（须另行定义 close/shutdown、flush、队列满与 fsync 配置语义）。选择直接决定 AC4「慢/挂起存储不阻塞下一槽」与 shutdown 测试的形状。
+2. **建流前早结局的缓冲与归属**：早结局 attempt 记录在建流前产生、建流后补记时，须同时满足「writer 准备 append 时才分配 sequence」（ADR-0014 L67）、「影响记录解释的配置在 stream 创建时冻结」（L268）、「不能伪称从 namespace 创建时起连续」（L24）与 namespaceId 生成时序（ADR-0010 L28；id 生成耗尽 fatal 时该结局自身无可用 ns id——归属策略是设计点）。
 3. **shutdown drain 预算机制归属**：在 ADR-0009 shutdown 公共契约（同 Promise、聚合错误、停止接纳）不变前提下的有界 drain 由谁持有（Registry plugin disposer / log adapter 自身 / composition root），以及预算上限的表达。
-4. **词表演进红线**：operation / stage / result / update-omitted reason 任何新增值 = record schema 版本演进 + 新 stream generation + 设计评审（ADR-0012 L70–89、L268；CONTEXT「语义 emission」词条）。本任务不应需要新增词表值。
+4. **词表演进红线**：operation / stage / result / update-omitted reason 任何新增值 = record schema 版本演进 + 新 stream generation + 设计评审（ADR-0014 L70–89、L268；CONTEXT「语义 emission」词条）。本任务不应需要新增词表值。
 5. **慢同步 adapter 测试注入点**：AC5 要求「慢同步 adapter」「后续写入推进」「修复前行为会失败」证据；既有 seam 字段名（Registry `diagnosticLog`、Runtime `diagnosticEmitter` + `clock` 成对注入、testing subpath overrides）是已冻结契约锚点，不得漂移。

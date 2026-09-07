@@ -11,10 +11,10 @@ import type { LogContext, LogSource, Operation, SourceModule, Stage } from './vo
 
 export type { LogContext, LogSource, Operation, SourceModule, Stage } from './vocabulary.js'
 
-/** stream 身份半段：log- + 32 位小写 hex（ADR 0012 §Stream 与 generation）。 */
+/** stream 身份半段：log- + 32 位小写 hex（ADR 0014 §Stream 与 generation）。 */
 export type StreamId = string
 
-/** record 身份的顺序半段：无前导零十进制字符串，uint64 值域（ADR 0012 §JSONL record）。 */
+/** record 身份的顺序半段：无前导零十进制字符串，uint64 值域（ADR 0014 §JSONL record）。 */
 export type Sequence = string
 
 /** 变更尝试关联 ID：producer 受控关联 ID 或 att- + 32 hex（有界、无换行）。 */
@@ -38,7 +38,7 @@ export type SegmentName = string
 /** sidecar frame 起点（十进制无前导零字符串；首 frame 偏移可为 0）。 */
 export type FrameOffset = string
 
-/** issues 统一投影单条（ADR 0012 §投影 逐字形状）。 */
+/** issues 统一投影单条（ADR 0014 §投影 逐字形状）。 */
 export interface DiagnosticIssue {
   /** 所属模块稳定码；ADR TS 快照即 plain string（预算由投影施加，§10-J8）。 */
   code?: string
@@ -88,7 +88,7 @@ export type UpdateCarrier =
       crc32c: string
     }
 
-/** 结局严格判别联合（ADR 0012 §JSONL record 六形状展开为 8 个具体成员；设计 §2.1）。 */
+/** 结局严格判别联合（ADR 0014 §JSONL record 六形状展开为 8 个具体成员；设计 §2.1）。 */
 export type AttemptResult =
   | { kind: 'committed'; effect: 'noop' }
   | { kind: 'committed'; effect: 'update'; update: UpdateCarrier }

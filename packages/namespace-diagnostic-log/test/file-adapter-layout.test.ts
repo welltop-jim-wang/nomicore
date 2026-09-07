@@ -1,8 +1,8 @@
 /**
  * 红灯契约 — AC1 新 stream：不可变 manifest（冻结 VFSL 信封 + format policy）
- * + 原子可替换 current-stream locator（ADR 0012 §File adapter 布局）。
+ * + 原子可替换 current-stream locator（ADR 0014 §File adapter 布局）。
  *
- * 锚点：task_diagnostic-log-file-adapter.md AC1 + ADR 0012
+ * 锚点：task_diagnostic-log-file-adapter.md AC1 + ADR 0014
  * - 「manifest.json 创建后不可变，至少保存：manifest format/version；streamId、
  *   namespaceId 与 createdAt；完整 record schema VFSL 四键信封；record、frame 与
  *   schema 版本；committed update capture、input capture policy；inline threshold
@@ -11,7 +11,7 @@
  * - 「namespaceId、streamId 与 segment 名必须按各自安全文法校验后才能进入路径；
  *   不符合时日志不启用并上报，不通过编码、hash 或替换字符静默另存」
  * - 「.bin 在该 segment 首次出现 sidecar payload 时惰性创建」
- * - ADR 0012 §Stream 与 generation（streamId = log- + 32 位小写 hex）
+ * - ADR 0014 §Stream 与 generation（streamId = log- + 32 位小写 hex）
  */
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { join } from 'node:path'
@@ -61,7 +61,7 @@ afterEach(() => {
   for (const root of tempRoots.splice(0)) rmTempRoot(root)
 })
 
-describe('AC1 布局：manifest + current.json + segments（ADR 0012 §File adapter 布局）', () => {
+describe('AC1 布局：manifest + current.json + segments（ADR 0014 §File adapter 布局）', () => {
   it('构造即建 namespaces/{namespaceId}/current.json + streams/{streamId}/manifest.json + segments/', () => {
     const root = freshRoot()
     const { log, events } = makeFileLog({ rootDir: root, namespaceId: 'ns-layout-1' })
@@ -73,7 +73,7 @@ describe('AC1 布局：manifest + current.json + segments（ADR 0012 §File adap
     expect(statSync(p.segmentsDir).isDirectory()).toBe(true)
     expect(events).toHaveLength(0)
 
-    // streamId 文法：log- + 32 位小写 hex（ADR 0012 §Stream 与 generation）
+    // streamId 文法：log- + 32 位小写 hex（ADR 0014 §Stream 与 generation）
     expect(log.streamId).toMatch(/^log-[0-9a-f]{32}$/)
   })
 
@@ -140,12 +140,12 @@ describe('AC1 布局：manifest + current.json + segments（ADR 0012 §File adap
     expect(typeof manifest.createdAt).toBe('string')
     expect(new RegExp('^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$').test(manifest.createdAt as string)).toBe(true)
 
-    // 完整 VFSL 四键信封（ADR 0012：manifest 内嵌同一完整四键信封以便离线解释）
+    // 完整 VFSL 四键信封（ADR 0014：manifest 内嵌同一完整四键信封以便离线解释）
     expect(manifest.schema).toEqual(RECORD_SCHEMA_ENVELOPE)
     expect(Object.keys(manifest.schema as object).sort()).toEqual(['id', 'lang', 'text', 'version'])
     expect((manifest.schema as { text: string }).text).toBe(RECORD_SCHEMA_TEXT)
 
-    // record/frame/schema 版本 + 指纹（ADR 0012 §VFSL record schema：指纹必须与内建冻结版本匹配）
+    // record/frame/schema 版本 + 指纹（ADR 0014 §VFSL record schema：指纹必须与内建冻结版本匹配）
     expect(manifest.recordVersion).toBe(1)
     expect(manifest.frameVersion).toBe(1)
     expect(manifest.schemaId).toBe(RECORD_SCHEMA_ID)
@@ -188,7 +188,7 @@ describe('AC1 布局：manifest + current.json + segments（ADR 0012 §File adap
     expect(manifest.inputCapturePolicy).toBe('digest')
     expect(manifest.inlineUpdateMaxBytes).toBe(DEFAULT_INLINE_UPDATE_MAX_BYTES)
     expect(manifest.jsonlLineLimitBytes).toBe(DEFAULT_LINE_LIMIT_BYTES)
-    // ADR 0012 §Segment rolling 默认：64 MiB / 256 MiB / 100,000 records
+    // ADR 0014 §Segment rolling 默认：64 MiB / 256 MiB / 100,000 records
     expect(manifest.targetJsonlSegmentBytes).toBe(DEFAULT_TARGET_JSONL_SEGMENT_BYTES)
     expect(manifest.targetBinSegmentBytes).toBe(DEFAULT_TARGET_BIN_SEGMENT_BYTES)
     expect(manifest.targetRecordsPerSegment).toBe(DEFAULT_TARGET_RECORDS_PER_SEGMENT)
@@ -231,7 +231,7 @@ describe('AC1 布局：manifest + current.json + segments（ADR 0012 §File adap
   })
 })
 
-describe('AC1 路径安全文法：namespaceId 不符合安全文法 → 日志不启用并上报（ADR 0012）', () => {
+describe('AC1 路径安全文法：namespaceId 不符合安全文法 → 日志不启用并上报（ADR 0014）', () => {
   const HOSTILE_NAMESPACE_IDS = ['../escape', 'a/b', '..', '.', '', 'a\\b', 'ns\u0000x'] as const
 
   for (const namespaceId of HOSTILE_NAMESPACE_IDS) {
@@ -245,7 +245,7 @@ describe('AC1 路径安全文法：namespaceId 不符合安全文法 → 日志�
       expect(countFilesRecursive(root)).toBe(0)
       // 路径未逃逸：rootDir 外层无 escape 目录
       expect(existsSync(join(root, '..', 'escape'))).toBe(false)
-      // 上报：独立健康 observer 收到 stream-init-failed（ADR 0012 code LOG_STREAM_INIT_FAILED）
+      // 上报：独立健康 observer 收到 stream-init-failed（ADR 0014 code LOG_STREAM_INIT_FAILED）
       const events1 = eventsOfType(events, 'stream-init-failed')
       expect(events1).toHaveLength(1)
       expect(events1[0]).toMatchObject({ type: 'stream-init-failed', code: 'LOG_STREAM_INIT_FAILED', reason: 'invalid-namespace-id' })

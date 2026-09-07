@@ -1,7 +1,7 @@
 # @nomicore/namespace-diagnostic-log
 
 namespace 诊断变更日志 v1 的语义 emission 接缝、冻结 VFSL record schema 与有界内存
-adapter（issue #148 / ADR 0011 / ADR 0012）。
+adapter（issue #148 / ADR 0011 / ADR 0014）。
 
 > **定位**：叶子 observability 模块——从 namespace 创建开始尽力记录所有变更尝试及其
 > 结构化结局的可选诊断流；**不构成 Persistence 真相源**（ADR 0011 §Interface），
@@ -29,7 +29,7 @@ const log = createBoundedMemoryDiagnosticLog({
 
 // producer 提交语义 emission（内存 adapter 语境：同步、不 throw、不阻塞；
 // File adapter 首切片为有界同步 append、可被文件系统延迟阻塞——见下「契约与纪律」节
-// 与 ADR-0011 澄清节 / ADR-0012-LOG amendment；所有权移交后不得再变异）
+// 与 ADR-0011 澄清节 / ADR-0014-LOG amendment；所有权移交后不得再变异）
 log.emitter.emit({
   operation: 'root-mutation',
   stage: 'transaction',
@@ -65,14 +65,14 @@ observer、final-record 直通注入、自定义 envelope 工厂、sequence 预�
 
 - **驻留上界**：`capacity × lineBudgetBytes`（每条已接纳 record 必过 line 预算；
   最坏 ≈ 1024 × 1 MiB ≈ 1 GiB）。按业务调整 `capacity`/`lineBudgetBytes`。
-- **line 预算顺序**（ADR 0012 §投影）：超限先降级 input（full/redacted → digest +
+- **line 预算顺序**（ADR 0014 §投影）：超限先降级 input（full/redacted → digest +
   `degraded:'projected-input-too-large'`）；仍超限则丢弃整条 record 并健康上报，
   不影响业务。无 sidecar 环境大 update（Base64 后超预算）必走丢弃分支
   （`§10-J9` 备案；#152 文件 adapter 的 sidecar 天然免除该分支）。
 - **超预算更新**：超 `payloadMaxBytes` 的 update 转
   `update-omitted` + 稳定 reason（见 AGENTS.md 词表），attempt metadata 保留。
 
-## File adapter（issue #152：ADR 0012 §File adapter）
+## File adapter（issue #152：ADR 0014 §File adapter）
 
 ```ts
 import { createFileDiagnosticLog } from '@nomicore/namespace-diagnostic-log'
@@ -94,14 +94,14 @@ streams/{streamId}/segments/00000002…        # 滚动 segment（#153；8 位�
 - `streamId` = `log-` + 32 位小写 hex（CSPRNG；注入随机源可确定性复现）。
 - 同步写契约：emit 返回 = 字节已入文件；每 emit 至多一条 final JSONL record 的有界
   同步 append（sidecar 则 BIN-first 至多一帧），无队列、无 batch、**无 fsync**
-  （ADR 0012 「真正 fsync 可配置且默认关闭」——本适配器不暴露开关）、无常驻 fd；
+  （ADR 0014 「真正 fsync 可配置且默认关闭」——本适配器不暴露开关）、无常驻 fd；
   「有界」只指数据量/操作数受 payload/line 预算与单 record/单帧限制，**不承诺磁盘
   延迟上界**。同步 append 完成不构成 fsync 或掉电持久性承诺。属 **best-effort**
   诊断流：崩溃/断电可留下最后一条不完整行或孤儿帧（ADR 明文允许），
   **#153 起构造期自动修复三类「可证明尾部」**（不完整尾 JSONL 行 / 不完整尾 frame /
   完整未引用尾 orphan frames——见下「reopen 与尾部修复」）；中间损坏一律不修复，
   由 strict reader 诚实判定。
-- **write-slot 接线纪律（ADR 0012 amendment MUST）**：File adapter `emit` 同步且可能
+- **write-slot 接线纪律（ADR 0014 amendment MUST）**：File adapter `emit` 同步且可能
   阻塞——任何接入 namespace 生命周期的调用点必须位于 NamespaceRuntime write
   sequencer slot 之外或该 slot 释放之后；slot 内执行同步 File adapter emit 为不合规
   （接线归 #149–#151/#155 等票）。**该纪律同样覆盖构造期**（#153 起构造含 reopen
@@ -128,7 +128,7 @@ streams/{streamId}/segments/00000002…        # 滚动 segment（#153；8 位�
 | `targetRecordsPerSegment` | `100,000` | segment record 数滚动 target（同上） |
 | `clock` | `Date.now` | 注入时钟（manifest `createdAt` 与 genesis `observedAt` 同源；异常被构造级 crash 包络收编） |
 
-### reopen、segment 滚动与尾部修复（#153：ADR 0012 §打开现有 stream / §Segment rolling / §打开与尾部恢复）
+### reopen、segment 滚动与尾部修复（#153：ADR 0014 §打开现有 stream / §Segment rolling / §打开与尾部恢复）
 
 - **构造期 locator 解析（确定性，禁 wall-clock 猜测）**：`resumeStreamId` 显式优先 →
   `current.json`（format/version/streamId 三键且目标 manifest 存在）→ manifests 扫描
@@ -178,7 +178,7 @@ streams/{streamId}/segments/00000002…        # 滚动 segment（#153；8 位�
   current.json 彻底损坏/丢失 + ≥2 候选 → `locator-ambiguous` disabled。
   **该告警持续出现即处于未愈合窗口，应触发运维处置**。
 
-### retention、读会话租约与 namespace 逻辑删除（#154：ADR 0012 §Retention 与删除）
+### retention、读会话租约与 namespace 逻辑删除（#154：ADR 0014 §Retention 与删除）
 
 #### 配置（`FileDiagnosticLogConfig.retention`；仅运行时生效——**不冻结进 manifest、不产生新 generation**）
 
@@ -238,7 +238,7 @@ try {
 - 租约覆盖 open 时刻快照的全部组；**过期租约永不阻塞删除**（TTL 过即视同无租约，
   AC-3 核心）；已 rename `.deleting` 后的续租不能中止该组删除（marker 即提交点）。
 - 注册表**进程内**按 `(rootDir, namespaceId)` 共享（INV-9）——与 adapter 实例无亲缘；
-  正确性依赖 ADR 0012「单进程独占根目录」部署约束。
+  正确性依赖 ADR 0014「单进程独占根目录」部署约束。
 - **（#227）`readStreamStrict` 自持约**：即使不传 session，reader 也自开自关一个读会话
   （15s ttl、显式续租模式）并逐段跑续租检查点——裸读同样受 retention 租约保护；调用方
   显式传 session 时保留快照语义（open 后新滚出段不可见）与生命周期控制权（reader 不
@@ -317,7 +317,7 @@ deleteNamespaceDiagnosticLog({ rootDir, namespaceId })
   延迟阻塞**，任何接入 namespace 生命周期的调用点必须在 NamespaceRuntime write
   sequencer slot 之外或该 slot 释放之后；不维护 writer queue、不做 batch flush、
   无 fsync 开关、无常驻 fd（queue/batch/fsync/fd cache 为目标演进形态而非现行特性，
-  ADR-0012-LOG 首切片 amendment 为权威）。全部失败路径走健康 observer（低基数白名单
+  ADR-0014-LOG 首切片 amendment 为权威）。全部失败路径走健康 observer（低基数白名单
   字段），不改业务结果。
 - 存储投影（inline/sidecar/segment/frame/offset/CRC/Base64）归 adapter；emitter 只做
   语义投影。本包内存 adapter 只产出 inline 形状，记录 JSON 与文件 JSONL 逐字段同构。

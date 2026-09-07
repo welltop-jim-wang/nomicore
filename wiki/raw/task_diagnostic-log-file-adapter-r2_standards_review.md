@@ -28,7 +28,7 @@
 
 **I-1 README「emit 返回 = 字节已入文件」未限定成功路径**（README.md:92）。R2 起 ambiguous outcome 下 emit 返回但字节未必落盘——同节下方新增的「R2 提交点纪律」bullet（README.md:103-106）已如实写明「sequence N may not be persisted」语义，头句沿袭 round-1 未加限定。同节内已有正确语义，属表述精度问题，非矛盾误导。
 
-**I-2 CONTEXT.md:118「语义 emission」词条「emit 同步、不 throw、不阻塞」未动**——该词条定义的是 producer→emitter 语义 seam（ADR 0011 面），ADR-0012 amendment 以 write-slot 外接线 MUST 保持该 seam 契约；File adapter 级的阻塞现实已在 ADR 0012/README/AGENTS.md 三处如实成文。简报对 CONTEXT.md 的措辞为「如需」，维持不动可辩护；备案供中心知悉。
+**I-2 CONTEXT.md:118「语义 emission」词条「emit 同步、不 throw、不阻塞」未动**——该词条定义的是 producer→emitter 语义 seam（ADR 0011 面），ADR-0014 amendment 以 write-slot 外接线 MUST 保持该 seam 契约；File adapter 级的阻塞现实已在 ADR 0014/README/AGENTS.md 三处如实成文。简报对 CONTEXT.md 的措辞为「如需」，维持不动可辩护；备案供中心知悉。
 
 **I-3 SA7 域测试文件 `file-adapter-sa7-dynamic.test.ts`（9 用例）在审查时点为 untracked**——不在本轮 diff 范围（`fde8034..HEAD`）内；本轴的包测试复跑（20 文件/314 测试）含该文件。收尾固化 commit 必须将其与 wiki/REPORT 一并纳入，否则 PR 缺 9 条 AC 关联活链路锚（D-A1/D-B1/D-B2/D-C1–C6）。流程提示，非代码缺陷。
 
@@ -71,7 +71,7 @@ reader.ts:542-559：`expectedSequence: bigint|null = 1n` 起点固定 1；跨 se
 README.md:127-131 strict `ok` 语义边界为设计 §3.5 指定文案逐字（「在本次静态读取中，已解析的该 stream v1 物理 records 自 sequence 1 连续，且通过 manifest/storage/frame 校验」），并附 `[1,3]` → `sequence-gap/corrupt` 实例；无「业务完整/可恢复」过度声明。replay 实现不在本包（#155 范围），README 已前置声明该限定同适用于 replay 成功文案。
 
 ### ADR amendment §4.1–4.3 落实 —— ✅
-ADR 0012 diff（+15 行）实核：dated amendment（L244-252）位于「默认周期 batch flush…」段之后、「### Segment rolling 与耗尽」之前（设计 §4.2 指定编辑点）；被取代两句（L218/L242）原文存在且逐字引用；「被以下条款取代」（非并列）；首段同步范围（≤1 JSONL 行 + BIN-first ≤1 帧、无 queue/batch/fsync 开关/常驻 fd、不构成掉电承诺）；「有界」定义（数据量/操作数，非延迟上界、非任意调用点不阻塞）；**write-slot 外 MUST** + 不合规接线由 #149–#151/#155 修复后方可启用 + void/non-throwing/no-durability-promise；演进路径段（seam/schema/policy/slot 隔离不变前提下可替换，须另行定义 close/flush/队列满/fsync）；被否方案新增 4 条逐条对应设计 §4.3；后果段「首切片取舍」权衡成文。增补句「retention、queue 容量、batch/flush 策略、fd cache 与 metrics sampling 可动态调整的既有条款对首切片继续成立」与 ADR L268 既有条款相呼应，保护既有可调条款不被取代关系误伤——与设计精神一致（SA4 备注①同判）。ADR 状态头保留 accepted；**ADR 0011 正文零改动**（diff --name-only 0 文件）；amendment 的 write-slot MUST 与 ADR 0011 L129「adapter 慢、失败或队列满都不得延长 write slot」契约一致。
+ADR 0014 diff（+15 行）实核：dated amendment（L244-252）位于「默认周期 batch flush…」段之后、「### Segment rolling 与耗尽」之前（设计 §4.2 指定编辑点）；被取代两句（L218/L242）原文存在且逐字引用；「被以下条款取代」（非并列）；首段同步范围（≤1 JSONL 行 + BIN-first ≤1 帧、无 queue/batch/fsync 开关/常驻 fd、不构成掉电承诺）；「有界」定义（数据量/操作数，非延迟上界、非任意调用点不阻塞）；**write-slot 外 MUST** + 不合规接线由 #149–#151/#155 修复后方可启用 + void/non-throwing/no-durability-promise；演进路径段（seam/schema/policy/slot 隔离不变前提下可替换，须另行定义 close/flush/队列满/fsync）；被否方案新增 4 条逐条对应设计 §4.3；后果段「首切片取舍」权衡成文。增补句「retention、queue 容量、batch/flush 策略、fd cache 与 metrics sampling 可动态调整的既有条款对首切片继续成立」与 ADR L268 既有条款相呼应，保护既有可调条款不被取代关系误伤——与设计精神一致（SA4 备注①同判）。ADR 状态头保留 accepted；**ADR 0011 正文零改动**（diff --name-only 0 文件）；amendment 的 write-slot MUST 与 ADR 0011 L129「adapter 慢、失败或队列满都不得延长 write slot」契约一致。
 
 ### 总控裁决 —— ✅
 - **G18 (a)-(d)**：六码/起点固定 1n/提交点分配+definitive-ambiguous 二分/genesis 正交/EISDIR 锚语义中立——全部落实（mismatch-interference 11 用例复跑绿，见 §六）。

@@ -31,12 +31,12 @@
 | C-b1 | **blocker** | C 孪生一致 / D 管线 | issues[].path number 段 NaN/±Infinity 通过 VFSL 但 `JSON.stringify` → `null`，#152 落盘即产生 strict reader 必拒的坏行 | §6.2 有效性判定升级为段级 JSON-safe（string 或 finite number），畸形段随条目丢弃 + 既有事件 |
 | D-c1 | concern | D 管线 | `updateBytes.length === 0` → base64 `""` 不匹配 P_BASE64（其尾部组强制非空）→ 记录被当 writer bug 丢弃 | physicalize 前置守卫：0 字节 → `update-omitted` 新稳定 reason（或 intake 拒绝），二选一写死 |
 | D-c2 | concern | D 管线 / G 边界 | `GenesisBaselineRecord` 在冻结的 emission/sink 公共面无构造路径，与「#152 复用同一管线只换 sink」自述矛盾 | §10-J1 补备案：#152 需扩 sink 语义或走内部直通构造；修正 §1.3 复用声明 |
-| A-c1 | concern | A 规格符合 | ADR 0012 明文 sequence 达 uint64 最大值 → exhausted + 丢弃上报；设计无该分支、事件词表无对应 reason、JS number 超 2^53 失精 | sequence 以十进制字符串自增（或声明内存路径上限），并在 §8.1 预留/备案 exhausted reason 的 #152 扩展 |
+| A-c1 | concern | A 规格符合 | ADR 0014 明文 sequence 达 uint64 最大值 → exhausted + 丢弃上报；设计无该分支、事件词表无对应 reason、JS number 超 2^53 失精 | sequence 以十进制字符串自增（或声明内存路径上限），并在 §8.1 预留/备案 exhausted reason 的 #152 扩展 |
 | E-c1 | concern | E 确定性 | `truncateUtf8` 在 budget < 13B（marker 长度）时 target 为负 → cut=0 → 输出 13B marker，静默超预算 | 入口 loud 断言 `budget ≥ marker 字节数`（或定义确定性行为）+ 红灯测试 |
 | E-c2 | concern | E 确定性 | 预算按序列化前字符串的 UTF-8 计，lone surrogate 计 3B（U+FFFD 替换）而 JSONL 转义后 6B——「4 KiB message」在两种表示下不一致 | §6.1 明文规定预算基准（建议 `Buffer.byteLength(JSON.stringify(s))-2`，或声明按替换语义并接受 JSONL 行更大），补 KAT |
 | F-c1 | concern | F 测试 | `schema-compile-failed` failed 模式（§4.2/§8.1）无法注入（schema 为内建常量）、§9 无锚 → 冻结公共面上的死代码 | testing 子路径加 envelope 注入工厂，或在 §10 明文接受不可测并降级该事件为内部信号 |
 | F-c2 | concern | F 测试 | AC1「不向 producer 暴露 JSONL/Base64/segment/frame/offset/retention」无直接锚 | §9.10 test-d 补一条 emission/EmissionResult 类型键位黑名单断言（`expectTypeOf` 键集合） |
-| A-c2 | concern | A 规格符合 | `update-capture-disabled` 为设计自造稳定 reason（ADR 0012 只给了 `payload-too-large`），schema 开放 StableCode 不违约，但未进受控词汇表 | §12 CONTEXT.md 新增词条时一并收录，或 AGENTS.md 词表化该 reason |
+| A-c2 | concern | A 规格符合 | `update-capture-disabled` 为设计自造稳定 reason（ADR 0014 只给了 `payload-too-large`），schema 开放 StableCode 不违约，但未进受控词汇表 | §12 CONTEXT.md 新增词条时一并收录，或 AGENTS.md 词表化该 reason |
 
 ---
 
@@ -71,7 +71,7 @@
 
 **影响**：
 - 本票内存路径：`records()` 返回的对象带 NaN，与设计 §2.5 的承诺「内存 adapter 的记录 JSON 与文件 JSONL 记录**逐字段同构**」直接矛盾；
-- #152 File adapter（复用同一管线）：writer 会写出含 `null` path 段的行，其 schema `string | number` 拒绝 `null` → strict reader 判中段损坏 → 按 ADR 0012 §打开与尾部恢复，**整个旧 stream 转 corrupt 只读、新建 generation**——一次 producer 端数据缺陷（issue 里混入 NaN 段）被放大为 stream 级损坏；
+- #152 File adapter（复用同一管线）：writer 会写出含 `null` path 段的行，其 schema `string | number` 拒绝 `null` → strict reader 判中段损坏 → 按 ADR 0014 §打开与尾部恢复，**整个旧 stream 转 corrupt 只读、新建 generation**——一次 producer 端数据缺陷（issue 里混入 NaN 段）被放大为 stream 级损坏；
 - 健康语义误报：本票内若 record 恰在内存路径被拒（不会——NaN 能通过），或 #152 端 reader 报损坏时，都对应不到任何 writer 侧健康事件，违背「writer 产出的行必须自己能读」的隐含不变量。
 
 **修复要求（SA1 修订 §6.2，一行级改动）**：条目有效性判定升级为**段级 JSON-safe**：
@@ -97,13 +97,13 @@ valid 段判定：typeof seg === 'string'
 
 **证据**：§3.2 `P_BASE64 = '^(?:[A-Za-z0-9+/]{4})*(?:…{2}==|…{3}=|…{4})$'`——尾部强制恰一组（2+pad / 3+pad / 4），**空串不匹配**（已逐语义核对：star 允许零组但尾部组必≥2 字符）。§7.4 physicalize 对 `bytes.length === 0` 无守卫：`Buffer.from(new Uint8Array(0)).toString('base64')` → `''`。空串在 RFC 4648 里本是合法（空输入→空输出）Base64，Pattern 比规范收紧本身没错，但管线没有配套分支。
 
-**影响**：producer 传 `{ kind:'committed', effect:'update', updateBytes: new Uint8Array(0) }`（空事务更新捕获边界、或 #150 空 Y.Doc 的 genesis 路径）→ VFSL 拒绝 → 记录丢弃 + `vfsl-validation-failed`（**writer bug 信号**）——把 producer 输入缺陷误标为 writer 缺陷，污染健康信号语义（ADR 0012：「append 前 VFSL validation failure 是日志 writer bug」——这条 ADR 句子会被错误触发）。
+**影响**：producer 传 `{ kind:'committed', effect:'update', updateBytes: new Uint8Array(0) }`（空事务更新捕获边界、或 #150 空 Y.Doc 的 genesis 路径）→ VFSL 拒绝 → 记录丢弃 + `vfsl-validation-failed`（**writer bug 信号**）——把 producer 输入缺陷误标为 writer 缺陷，污染健康信号语义（ADR 0014：「append 前 VFSL validation failure 是日志 writer bug」——这条 ADR 句子会被错误触发）。
 
 **修复要求**：§7.4 前置守卫二选一并写死：(a) `bytes.length === 0` → `update-omitted` + 新稳定 reason（如 `empty-update`，与 `payload-too-large` 同桶，并把该 reason 补进 §2.1 词表与 A-c2 一并处理）；(b) intake 阶段拒绝该 emission（`emission-dropped`）。**红线测试**：空 bytes emission → 断言选定分支的行为 + 事件，且**不得**出现 `vfsl-validation-failed`。
 
 ### D-c2 · GenesisBaselineRecord 在冻结公共面无构造路径，与「#152 只换 sink」自述矛盾
 
-**证据**：§1.3 `DiagnosticChangeSink.append(record: DiagnosticSemanticRecord)`；§2.6 `DiagnosticSemanticRecord` 是纯 attempt 形状（attemptId/operation/stage/result，无 recordKind、无 carrier 位）。§2.4 `ROOT = AttemptRecord | GenesisBaselineRecord`（§11-G2 裁决生效）。§1.3 注释自述「#152 File adapter 复用同一管线，只换 sink」。而 ADR 0012 §Stream 与 generation L22 要求「每个新 stream 尽力先记录当前完整 Y.Doc 的 genesis baseline」。
+**证据**：§1.3 `DiagnosticChangeSink.append(record: DiagnosticSemanticRecord)`；§2.6 `DiagnosticSemanticRecord` 是纯 attempt 形状（attemptId/operation/stage/result，无 recordKind、无 carrier 位）。§2.4 `ROOT = AttemptRecord | GenesisBaselineRecord`（§11-G2 裁决生效）。§1.3 注释自述「#152 File adapter 复用同一管线，只换 sink」。而 ADR 0014 §Stream 与 generation L22 要求「每个新 stream 尽力先记录当前完整 Y.Doc 的 genesis baseline」。
 
 **影响**：#152 无法经由冻结的 emission/sink 面产出 genesis-baseline record——必然要扩接缝（新增 genesis emission 变体，或走 §9.6 同款的 adapter 内部直通构造）。本票验收不受影响（schema 可表达性由 §9.6 手工 record 测试锚定），但 §10-J1 只备案了「形状被 #152 否决」的风险，没备案「接缝缺 genesis 路径」这一确定事实；#152 勘察若按 §1.3 字面理解会误判接缝已就绪。
 
@@ -111,7 +111,7 @@ valid 段判定：typeof seg === 'string'
 
 ### A-c1 · sequence uint64 耗尽语义缺失 + JS number 精度
 
-**证据**：ADR 0012 §JSONL record L67：「达到 uint64 最大值后 stream 进入 exhausted，后续日志 emission 丢弃并上报，业务不受影响」。设计 §4.3 只写「从 1 起单调递增、不回绕」；§8.1 `record-dropped` 的 reason 词表冻结为两值（`line-budget-exceeded | queue-full`）；§7.2 `lastSequenceAssigned: number | null`。
+**证据**：ADR 0014 §JSONL record L67：「达到 uint64 最大值后 stream 进入 exhausted，后续日志 emission 丢弃并上报，业务不受影响」。设计 §4.3 只写「从 1 起单调递增、不回绕」；§8.1 `record-dropped` 的 reason 词表冻结为两值（`line-budget-exceeded | queue-full`）；§7.2 `lastSequenceAssigned: number | null`。
 
 **影响**：(a) 内存路径物理不可达（需 1.8×10¹⁹ 次 append），但 `sequence` 生成若用 `number` 自增，超过 2^53 后 `next++` 失精（出现重复或跳 2 的十进制串），`String(next)` 产出仍匹配 Pattern——损坏是静默的；(b) 冻结的事件 reason 词表没有 exhausted 位，#152（文件路径 frame sequence 是 uint64 BE，ADR 同节）补该语义时要么改冻结词表要么绕开。
 
@@ -125,7 +125,7 @@ valid 段判定：typeof seg === 'string'
 
 ### E-c2 · lone surrogate 下「UTF-8 字节预算」在序列化前后二义
 
-**证据**：§6.1 用 `Buffer.byteLength(s)`（序列化前字符串）计预算——Node 对 lone surrogate 计 3B（U+FFFD 替换语义）；而 JSONL 中 `JSON.stringify` 按 ES2019 well-formed 语义转义为 `\udXXX` = 6 ASCII 字节。例：message 由 1365 个 lone surrogate 构成 → 计 4095B ≤ 4096 不截断 → 序列化后该字符串占 8190B。ADR 0012「资源限制统一按 UTF-8 bytes 计算」未指明基准表示。§5.2 已对 JCS 的同类问题做了显式确定性扩展并配 KAT，§6 却没有。
+**证据**：§6.1 用 `Buffer.byteLength(s)`（序列化前字符串）计预算——Node 对 lone surrogate 计 3B（U+FFFD 替换语义）；而 JSONL 中 `JSON.stringify` 按 ES2019 well-formed 语义转义为 `\udXXX` = 6 ASCII 字节。例：message 由 1365 个 lone surrogate 构成 → 计 4095B ≤ 4096 不截断 → 序列化后该字符串占 8190B。ADR 0014「资源限制统一按 UTF-8 bytes 计算」未指明基准表示。§5.2 已对 JCS 的同类问题做了显式确定性扩展并配 KAT，§6 却没有。
 
 **修复要求**：§6.1 一句话钉死预算基准（建议：按 JSON 字符串字面量字节 `Buffer.byteLength(JSON.stringify(s)) - 2`，与 JSONL 行字节严格一致；或明文接受替换语义并记录后果），补 KAT。**红灯测试**：lone-surrogate 密集 message 的序列化后字节 ≤ 4096 + 2（引号）或符合修订条文。
 
@@ -145,7 +145,7 @@ valid 段判定：typeof seg === 'string'
 
 ### A-c2 · `update-capture-disabled` 未入受控词汇表
 
-**证据**：ADR 0012 §Inline 与 sidecar 仅给出 `payload-too-large` 一例；设计 §2.1 自造 `update-capture-disabled`（论证正当：默认 `updateCapture:false` 时 committed 事实要诚实保留）。schema 侧 reason 为开放 `StableCode`，不构成规格违反；但 §12 计划新增的 CONTEXT.md 词条（「语义 emission」「storage projection」「genesis baseline record」）未含该 reason 值，稳定码游离在受控词汇之外。
+**证据**：ADR 0014 §Inline 与 sidecar 仅给出 `payload-too-large` 一例；设计 §2.1 自造 `update-capture-disabled`（论证正当：默认 `updateCapture:false` 时 committed 事实要诚实保留）。schema 侧 reason 为开放 `StableCode`，不构成规格违反；但 §12 计划新增的 CONTEXT.md 词条（「语义 emission」「storage projection」「genesis baseline record」）未含该 reason 值，稳定码游离在受控词汇之外。
 
 **修复要求**：把 `update-capture-disabled`（连同 D-c1 可能新增的 `empty-update`）列入 AGENTS.md/README 的 reason 词表，或并入 CONTEXT.md 新增词条的说明行。
 
@@ -154,12 +154,12 @@ valid 段判定：typeof seg === 'string'
 ## 4. 逐项核对通过记录（防止复审重复劳动）
 
 ### A. 规格符合性（通过项）
-- operation 6 值 / stage 8 值：与 ADR 0012 L69-78、ADR 0011 §变更尝试与结局 L42-49 **逐字一致**（含 `dirty-notification`）；`rejected` 未折叠、v1 不新增。
-- result 判别联合：ADR 0012 L80-87 六形状 → §2.1 八成员展开忠实（fatal+committed:true × effect 三值）；`rejected`/`fatal+committed:false` 禁携 update 由 schema 封闭对象机器强制（成员无 update 键 → 携带即未知键被拒，validate.ts:574-578 封闭对象未知键路径）。
+- operation 6 值 / stage 8 值：与 ADR 0014 L69-78、ADR 0011 §变更尝试与结局 L42-49 **逐字一致**（含 `dirty-notification`）；`rejected` 未折叠、v1 不新增。
+- result 判别联合：ADR 0014 L80-87 六形状 → §2.1 八成员展开忠实（fatal+committed:true × effect 三值）；`rejected`/`fatal+committed:false` 禁携 update 由 schema 封闭对象机器强制（成员无 update 键 → 携带即未知键被拒，validate.ts:574-578 封闭对象未知键路径）。
 - 结局 `unknown` 不落 v1 存储：总控 G3 已裁决，落地方式（§11-G3 + §2.1 注）自洽。
 - 输入零重读：原始请求**结构性不进入**日志模块（§5.4）；not-accessed/unavailable/unsafe-input 三事实优先于策略（§5.1 表，与 ADR 0011 L71-74 逐字对齐）；「事实优先」防住「策略改写事实」这一隐蔽违规路径。
 - 数据保护：默认 `inputPolicy:'digest'`、默认 `updateCapture:false`、issues 脱敏时 `policy` 字段自标、健康事件白名单禁 record/input/Base64/update/message/stack 且 `ValidateIssue.message` 整体丢弃（正确处理了 validate.ts:27 的 40 字符值预览外泄面，即总控 G4 裁决的落地）、`streamId`/`namespaceId` 不进事件。
-- emitter 接口：`emit(emission): void` 同步不抛不阻塞；ADR 0011 §Interface 草图的参数名 `record` 被设计改为 `emission`——由 ADR 0012 L212「业务 producer 只提交 semantic emission」正当化，接口名 `NamespaceDiagnosticChangeEmitter` 保留，不算违反。
+- emitter 接口：`emit(emission): void` 同步不抛不阻塞；ADR 0011 §Interface 草图的参数名 `record` 被设计改为 `emission`——由 ADR 0014 L212「业务 producer 只提交 semantic emission」正当化，接口名 `NamespaceDiagnosticChangeEmitter` 保留，不算违反。
 - `emitterSequence` 与 stream `sequence` 合一（§4.3）：单写者模型下等价，ADR 0011 L95 不禁止。
 
 ### B. VFSL schema 可编译性（全项通过，附独立复核证据）
@@ -181,8 +181,8 @@ valid 段判定：typeof seg === 'string'
 ### D. 管线完备性（通过项）
 - **BigInt**：唯一可达 `JSON.stringify` 抛点的路径已被前序步骤封死（snapshot 经 jcs 的非有限/类型守卫 → `unavailable`；durationMs/replicationEpoch 非有限 → enrichment 丢字段；path 段形状检查 + VFSL 兜底），残余意外由「sink.append 任意点 → adapter 顶层 catch」（§4.2）收编——兜底位置明确。
 - **deep freeze × Uint8Array**：最终 record 已物化为 Base64 字符串（无 typed array）；语义 record 冻结时 `Object.freeze(Uint8Array)` 合法不抛。
-- **measure 与 JSONL 字节一致性**：紧凑 `JSON.stringify`、不含 `\n`、固定构造键序（ADR 0012 L59 允许）——除 C-b1 的 NaN 分叉外一致。
-- **降级顺序**：§5.5 与 ADR 0012 L136 逐字对齐（先降级 input→digest，仍超限才丢整条）；J9 对「无 sidecar 时 ≳780 KiB update 必丢」的诚实后果已备案并有 §9.5 测试锚。
+- **measure 与 JSONL 字节一致性**：紧凑 `JSON.stringify`、不含 `\n`、固定构造键序（ADR 0014 L59 允许）——除 C-b1 的 NaN 分叉外一致。
+- **降级顺序**：§5.5 与 ADR 0014 L136 逐字对齐（先降级 input→digest，仍超限才丢整条）；J9 对「无 sidecar 时 ≳780 KiB update 必丢」的诚实后果已备案并有 §9.5 测试锚。
 
 ### E. 算法确定性（通过项）
 - JCS：键序按 UTF-16 code unit（RFC 8785 §3.2.3，comparator 显式）、数字按 ECMAScript toString（§3.2.2.3，`1e+21`/`-0` 进 KAT）、lone surrogate 的确定性全函数扩展已文档化并配 KAT（§9.3）；非有限数 throw → `SnapshotContractViolation`。
@@ -260,7 +260,7 @@ valid 段判定：typeof seg === 'string'
 | **C-b1** blocker | ✅ 修妥 | 三层闭环齐备：①§6.2 段级判定 `string ∨ Number.isFinite(number)`，非法段（NaN/±Infinity/undefined/稀疏 hole）**整条丢弃** + `enrichment-field-dropped/issues`；②§5.2 jcs 数组分支逐槽检查（`!(i in value) ∨ value[i]===undefined` → SnapshotContractViolation → `unavailable`）——比 R1.1 的「map 跳洞 + 隐式 TypeError」更确定；③§9.8 JSON round-trip 不变量升级为全 suite helper（`validateLogicalSnapshot(derived, JSON.parse(JSON.stringify(record)))` ok）——正是 R1.1 建议的通用锚。`-0`：path 段投影处 `Object.is` 归一 +0（§6.2），full value 保留 -0 但 §5.4 明文「序列化视图为准」且 round-trip 合法——残差成文、确定、有测试（§9.4 `[-0]→0`、稀疏 `[,1]` 丢弃）。 | 无 |
 | **D-c1** | ✅ 修妥（方案 a） | §7.4 守卫置于最前（empty-update > update-capture-disabled > payload-too-large，优先级确定）；§2.1 词表三值成文且 `empty-update` 匹配 P_STABLE_CODE（`-` 在字符类内）；§4.2 行明示「**不得**产生 vfsl-validation-failed」；§9.9 双断言（保 metadata + 无该事件）。 | 无 |
 | **D-c2** | ✅ 修妥 | §1.3 注释收窄为「attempt 记录路径复用同一管线」；§10-J1 备案「genesis 在 v1 emission/sink 面无构造路径 = 设计事实，#152 增设 adapter 内部构造路径，不改 schema、不动 emission 面」。 | 无 |
-| **A-c1** | ✅ 修妥（十进制字符串进位） | §4.3 `nextDecimal` 逐位进位、全程无 number 算术（2^53 失真根除）、上界 `18446744073709551615`；exhausted 模式语义逐字对齐 ADR 0012；§7.2 `lastSequenceAssigned: string \| null`；§1.3/§9.10 预置接缝（`…51614 → 一次 …51615 → 再 append exhausted`，边界语义自洽：分配到 max 的那条仍接纳）；§8.1 + §10-J13 双备案（v1 事件词表不含 exhausted 位，#152 以联合成员追加）。 | 见 R2.3-n3（nano） |
+| **A-c1** | ✅ 修妥（十进制字符串进位） | §4.3 `nextDecimal` 逐位进位、全程无 number 算术（2^53 失真根除）、上界 `18446744073709551615`；exhausted 模式语义逐字对齐 ADR 0014；§7.2 `lastSequenceAssigned: string \| null`；§1.3/§9.10 预置接缝（`…51614 → 一次 …51615 → 再 append exhausted`，边界语义自洽：分配到 max 的那条仍接纳）；§8.1 + §10-J13 双备案（v1 事件词表不含 exhausted 位，#152 以联合成员追加）。 | 见 R2.3-n3（nano） |
 | **E-c1** | ✅ 修妥（loud 断言） | §6.1 入口 `TruncationBudgetBelowMarker` throw，经 emitter 顶层 catch 收编 `pipeline-crashed`（内部 bug 信号，不静默超预算）；§9.4 budget=12 红灯 + 生产常量 ≥13B 断言。 | 无 |
 | **E-c2** | ✅ 修妥（JSON 字面量字节，即 R1.1 建议方案） | `jsonLiteralBytes = Buffer.byteLength(JSON.stringify(s)) - 2`；`jsonLiteralCpBytes` 逐项独立复核与 JSON.stringify 转义规则**一一对应**：`"`/`\`→2、短转义 \b\t\n\f\r→2、cp<0x20→6、lone surrogate→6（well-formed `\udXXX`）、ASCII→1、2/3 字节 UTF-8→2/3、合法 astral 对→4（不转义）——含 0x7f（不转义→1）与 U+2028/29（不转义→3）两个易错角均正确；与 §5.5 `measure()` 同基论证成立；§9.4 KAT（1365 lone surrogate = 8190B > 4096 → 截断）钉死。截断输出 = 前缀(≤budget−13) + marker(13B) ≤ budget，数学闭合。 | 见 R2.3-n1（nano） |
 | **F-c1** | ✅ 修妥（开缝不降级） | §1.3 testing 子路径「带自定义 envelope 的 adapter/emitter 工厂（生产构造器内部函数化）」；§9.6 红灯四断言（构造期恰一次 `schema-compile-failed` + 后续全丢弃 + **无**逐条 `record-dropped` + stats 对账）——failed 模式抑制逻辑脱离死代码。形状合理：`getRecordSchemaCompilation()` 模块级缓存不受注入影响，无串扰。 | 无 |

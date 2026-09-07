@@ -77,7 +77,7 @@
 - **冻结面零触碰**：#148 冻结文件与 `index.ts`/`testing.ts` 零改动（E1）；`schema.ts` 未动 → schema-freeze 指纹钉测试无需同步（且全绿 E3）。✅
 - **健康事件低基数白名单**：AGENTS.md:81-83 追加 `repair`/`truncatedBytes`/`cause` 且明示「streamId/segment/offset 刻意不进事件」；实现逐字段吻合（health.ts:84-95；构造点全部封闭枚举/计数，无 message/stack/record 内容）。✅
 - **observer 故障隔离**：新事件走既有 freezeEvent + safeNotify + fallbackLog 管线（E13），未新增绕过通道。✅
-- **CONTEXT.md**：diff 未改（设计 §16 DENY：无新术语——locator/segment group/orphan/exhausted 均 ADR-0012 既有词条）；README 改动与 CONTEXT.md「诊断日志 stream generation」「storage projection」等既有词条语义一致。✅
+- **CONTEXT.md**：diff 未改（设计 §16 DENY：无新术语——locator/segment group/orphan/exhausted 均 ADR-0014 既有词条）；README 改动与 CONTEXT.md「诊断日志 stream generation」「storage projection」等既有词条语义一致。✅
 - **版本纪律**：package.json 0.1.2 → 0.1.3（硬门禁 9；README:159「旧 reader（0.1.2）」表述与之自洽）。✅
 
 ### 3.2 测试纪律
@@ -92,7 +92,7 @@
 - **死代码**：H3（测试面一处）；src 面无死代码——`walkCompletePrefixEnd` 是 SA4 裁定成立的备案偏差支撑（sa4_review §1.2.1），`reprojectSidecarCarrier`/`beforeCommit` 等新增函数全部有调用点。
 - **env-override/fallback 软兜底**：零 env 读取（E10）；无静默钳制——roll targets 非法走 loud 配置门 disabled + 事件（file.ts:935-942，注释明示「绝不静默钳制」）。
 - **错误吞咽**：逐点 catch 均有注释且去向响亮（locator 不可读→重扫、candidates 空→fresh、writeCurrent 清理失败→吞但有「残留合法」注释）；两处宽收敛（N7/N8）已记档；构造/emit 顶层包络 → pipeline-crashed 事件，非静默。
-- **魔数**：`4122`（测试）= 25+4097 有出处注释（:84-86）；`25`/`0x0a`/`99999999`/`UINT64_MAX` 均有 §/ADR 出处；三 roll 默认值字面量重复出现（N3）但每处带「ADR 0012 §Segment rolling」注释出处。
+- **魔数**：`4122`（测试）= 25+4097 有出处注释（:84-86）；`25`/`0x0a`/`99999999`/`UINT64_MAX` 均有 §/ADR 出处；三 roll 默认值字面量重复出现（N3）但每处带「ADR 0014 §Segment rolling」注释出处。
 - **导出面最小性**：index.ts 零新增（E12）；`analyzeStreamForResume` 模块级导出为包内消费最小必要。✅
 - **注释真实性**：除 H1/H2/H3 外，抽核 20+ 处新注释的 § 引用/计数/行为宣称全部与设计定稿及代码一致（§5.4 行走四态、§6.2 判定序、§6.3 种子、§6.4 重投影、§7 双耗尽、§8.1 碰撞重试 ≤8、§9.1-9.3、§13.11 契约面等均逐条相符；「25B header」「17 键」「4122」计数全真）。
 

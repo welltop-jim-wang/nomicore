@@ -4,7 +4,7 @@
  */
 import type { DiagnosticSemanticRecord } from './emission.js'
 
-/** adapter 接缝（storage projection 归 adapter，ADR 0012 §VFSL record schema）。 */
+/** adapter 接缝（storage projection 归 adapter，ADR 0014 §VFSL record schema）。 */
 export interface DiagnosticChangeSink {
   append(record: DiagnosticSemanticRecord): void
 }

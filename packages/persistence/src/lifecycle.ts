@@ -578,7 +578,7 @@ export class PersistenceLifecycle {
    * 删除主体（issue #228；AD-5）：settle 环 → claim 环 → op 体（removeKey），成功与
    * 失败路径全部以 identity 守卫清理 deleting cell（镜像 runArchiveDoc 范型）。
    * 槽内不含同步重 fs（removeKey 经 fsp.rm promise 面）——调用点纪律与
-   * ADR-0012-LOG 首切片 amendment 的「同步重 fs 在 slot 外」不冲突（本 seam 无
+   * ADR-0014-LOG 首切片 amendment 的「同步重 fs 在 slot 外」不冲突（本 seam 无
    * 同步 fs 段）。
    */
   private async runDeleteDoc(key: string): Promise<Readonly<{ ok: true }>> {

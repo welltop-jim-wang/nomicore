@@ -11,7 +11,7 @@
  *   四隔离；六类测试场景）；
  * - ADR-0011（stage/结局词表、输入捕获四态、接口 seam 小 emitter、fatal 保留既有
  *   committed 事实、业务模块不依赖日志存储实现）；
- * - docs/adr/0012-vfsl-validated-jsonl-and-framed-sidecar-change-log.md（每新 stream
+ * - docs/adr/0014-vfsl-validated-jsonl-and-framed-sidecar-change-log.md（每新 stream
  *   尽力先记 genesis baseline；初始化失败不影响 namespace
  *   create，独立健康 observer 上报 `LOG_STREAM_INIT_FAILED`；后续重试成功以当时
  *   Y.Doc 建立新 stream，genesis 只代表从该时点开始）；
@@ -126,7 +126,7 @@ function makeDeterministicRandomBytes(): (length: number) => Uint8Array {
 }
 
 /** 契约锚点：#150 注入 seam。emitter 为 #148 冻结接口；initStream 为
- * docs/adr/0012-vfsl-validated-jsonl-and-framed-sidecar-change-log.md 定义的 stream 建立缝
+ * docs/adr/0014-vfsl-validated-jsonl-and-framed-sidecar-change-log.md 定义的 stream 建立缝
  *（genesis bytes 由 producer 供给、adapter 内部构造 genesis-baseline）。 */
 interface NamespaceRegistryDiagnosticLog {
   readonly emitter: NamespaceDiagnosticChangeEmitter;

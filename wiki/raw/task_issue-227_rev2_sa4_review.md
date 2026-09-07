@@ -64,7 +64,7 @@
 
 - `git diff 31ff694 --name-status`：全部改动 = `src/reader.ts`、`src/adapters/file.ts`、包 `AGENTS.md`、包 `package.json`、三测试文件、`wiki/raw/task_issue-227_sa4_review.md`（前轮 SA4 R2 复审产物，非本轮代码面）+ 未跟踪 rev2 wiki 证据 6 件——**与 rev2 设计 §0.2 ALLOW 白名单逐项吻合**。
 - **DENY zero-diff**：`docs/**`、`CONTEXT.md`、`apps/**`（含 diagnostic-replay.ts / index.ts / sa7 pin）、`src/read-session.ts`、`src/retention.ts`、`src/index.ts`、`src/schema.ts`（冻结指纹）、`src/adapters/memory.ts` —— diff 空（亲证）。词表零增量（无新 issue 码/reason/事件成员——A6/A7 复用 `manifest-invalid`/`lease-expired`，B4/B5 复用既有报告计数）。
-- ADR-0012-LOG L289「只删除已关闭且没有 reader lease 的 segment group」：提交门以提交时刻评估「没有 lease」——INV-4 在提交点字面复位（兑现型读法，零 amendment，docs zero-diff 佐证）；L297 持约范围覆盖 manifest 阶段（AC1 完整兑现）；L301–318 报告形状冻结（②③ 门语义/早退包络逐字节不动）。ADR-0011 无涉（本轮不触分类/complete 面）。
+- ADR-0014-LOG L289「只删除已关闭且没有 reader lease 的 segment group」：提交门以提交时刻评估「没有 lease」——INV-4 在提交点字面复位（兑现型读法，零 amendment，docs zero-diff 佐证）；L297 持约范围覆盖 manifest 阶段（AC1 完整兑现）；L301–318 报告形状冻结（②③ 门语义/早退包络逐字节不动）。ADR-0011 无涉（本轮不触分类/complete 面）。
 
 ## 5. 包版本 bump 与触发范围
 

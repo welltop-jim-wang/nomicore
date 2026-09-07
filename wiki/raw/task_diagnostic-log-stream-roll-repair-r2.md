@@ -20,7 +20,7 @@
 **claim 成立**。证据：
 1. 设计 §5.2：「C2/C3：`T = max{ end | (off,end) ∈ Refs }`（**Refs 为空 → T=0**）」——明文；
 2. 设计 §5.4 伪代码首行：「`T = max(end for (off,end) in Refs) if Refs 非空 else 0`」——明文；
-3. ADR-0012 §打开与尾部恢复：「截断完整但未被任何完整 JSONL record 引用的尾部 orphan frames」——Refs 空时最大 segment 的全部完整帧均为未引用尾帧，规范要求全截；
+3. ADR-0014 §打开与尾部恢复：「截断完整但未被任何完整 JSONL record 引用的尾部 orphan frames」——Refs 空时最大 segment 的全部完整帧均为未引用尾帧，规范要求全截；
 4. 实现 `reader.ts:1091-1094` 与设计字面相反；前缀走到底时发出 `truncatedBytes:0` 零字节修复事件（round-1 LOW-1 备案的不诚实观测）；
 5. 测试锚 §13.11（`file-adapter-reopen-roll-repair.test.ts:410-451`）断言保留完整帧（bin→4122），固化偏差语义，须重写。
 

@@ -6,8 +6,8 @@
 - 轮次定位：SA8 冲突门禁当前 round 重开——历史材料（`task_issue-227_relevant_decisions.md`
   2026-09-06 摘录基线 + `task_issue-227_design_conflict_report.md` design R1.1 轮 verdict=clear）
   仅作参照，本轮对**实施变更集**独立重验并重新提交结构化结论
-- 冲突基准：`docs/adr/` 全部 12 文件（重点 ADR-0011、ADR-0012-LOG——编号消歧：本报告所有
-  「ADR-0012-LOG」均指 `0012-vfsl-validated-jsonl-and-framed-sidecar-change-log.md`；两个 0012
+- 冲突基准：`docs/adr/` 全部 12 文件（重点 ADR-0011、ADR-0014-LOG——编号消歧：本报告所有
+  「ADR-0014-LOG」均指 `0014-vfsl-validated-jsonl-and-framed-sidecar-change-log.md`；两个 0012
   中的 `0012-instance-identity-and-websocket-plugin-ownership.md` 与本任务无关）+ 根 `CONTEXT.md`
   + `packages/namespace-diagnostic-log/AGENTS.md` + `apps/yjs-server/AGENTS.md` + `docs/AGENTS.md`
 - 复审方式：**全部独立重验**——不沿用 SA2/SA4/SA7 任何声明：两 ADR 关键条款原文回读
@@ -24,7 +24,7 @@
 
 **clear**（`requiresConflictRecheck: false`）
 
-实施变更集对 ADR-0011 / ADR-0012-LOG 及全部模块契约**零冲突**：五缺口（G1–G5）修复全部是
+实施变更集对 ADR-0011 / ADR-0014-LOG 及全部模块契约**零冲突**：五缺口（G1–G5）修复全部是
 ADR 已决条款（L289/L297/L301–305/L318、ADR-0011 L97–105 条件 3）的**兑现型实施**；
 replay 完整性收紧只做必要条件方向的收窄（「只有…才能 complete」框架同向），报告形状与
 complete 门表达式冻结面逐字保持；DENY 面（schema/result 联合/写路径/删除协议文法）zero-diff
@@ -52,7 +52,7 @@ src/emission.ts src/pipeline.ts src/sink.ts src/adapters/memory.ts CONTEXT.md do
 
 ## 2. ADR 逐条款合规（本轮原文回读 + 代码亲证）
 
-### 2.1 ADR-0012-LOG §Retention 与删除（L280–299）
+### 2.1 ADR-0014-LOG §Retention 与删除（L280–299）
 
 | 条款 | 本轮独立核验 | 裁决 |
 |---|---|---|
@@ -61,7 +61,7 @@ src/emission.ts src/pipeline.ts src/sink.ts src/adapters/memory.ts CONTEXT.md do
 | **L297**「reader 通过 `openReadSession()` 获得短期 segment lease…长期 reader 必须有最大 lease 时长**或**显式续租」 | reader/replay 缺省 `maxLifetimeMs=null`（**显式续租臂**——ADR 明文两臂之一）+ 冻结常量 + `renewIfDue` 检查点（每段读前 / 每条物化前 / genesis 物化前）；bounded 供参续租被拒 → `lease-expired` 诚实中止保留前缀 | ✅ 明文允许臂 |
 | **L299** Host 数据删除须同时调用日志删除 | INV-12 面未动（§1 DENY 亲证） | ✅ 保留 |
 
-### 2.2 ADR-0012-LOG §Strict reader 与诊断性 replay（L301–318）
+### 2.2 ADR-0014-LOG §Strict reader 与诊断性 replay（L301–318）
 
 | 条款 | 本轮独立核验 | 裁决 |
 |---|---|---|
@@ -69,7 +69,7 @@ src/emission.ts src/pipeline.ts src/sink.ts src/adapters/memory.ts CONTEXT.md do
 | **L307–316** replay 报告形状冻结 `{status:'complete'\|'partial'\|'failed', lastAppliedSequence, issues, snapshot?}` | `DiagnosticReplayResult`（diagnostic-replay.ts:44–50）逐字段一致，零变更 | ✅ 冻结面未触碰 |
 | **L318**「只有存在有效 genesis、records 连续、**所有必要 updates 可解码且校验通过**、无已知 gap/截断/损坏/不兼容、identity 匹配才能 complete；retention 裁剪、update omitted、缺 genesis、generation 断裂只能 partial/failed」 | complete 门表达式 `issues===[] ∧ applied>0 ∧ readStatusOk ∧ !historyTrimmed`（:288–293）与 #155 逐字相同（INV-227-7）；收紧全部经分类/issue 通道发生（§2.3 谓词）——语义单向「更少 complete」，无任何新形状 complete 可达。omitted/断链/pre-genesis/裁剪各成因均走 partial/failed + 稳定 issue（定向套件 68/68 佐证，§4） | ✅ 必要条件框架兑现 |
 
-### 2.3 ADR-0012-LOG result 联合（L69–89）与 ADR-0011 L97–105 条件 3 — 物化谓词穷举
+### 2.3 ADR-0014-LOG result 联合（L69–89）与 ADR-0011 L97–105 条件 3 — 物化谓词穷举
 
 schema `AttemptResult` 八成员联合（DENY 面零改动）× 实施后 `materializeStrictRecordUpdate`
 谓词（reader.ts:946–972 本轮亲读）逐成员求值：
@@ -105,9 +105,9 @@ schema `AttemptResult` 八成员联合（DENY 面零改动）× 实施后 `mater
 
 | 条款 | 核验 | 裁决 |
 |---|---|---|
-| ADR-0012-LOG **L196–212** record schema 单源 + 指纹冻结 | schema.ts/record.ts zero-diff；schema-freeze.test.ts 在 68/68 定向集外围但 SA7 CMD3 包级 448/448 内绿——修消费侧而非 schema，避开「id 升 @2 + 新 generation」版本雪崩 | ✅ |
-| ADR-0012-LOG **L214**「VFSL 校验失败 = writer bug」+ **L20–24**（ADR-0011）best-effort 隔离 | 写路径（emission/pipeline/sink）zero-diff；本票纯读路径 + retention 内部，零 emit 接线、零 sequencer 触碰 | ✅ 无涉 |
-| ADR-0012-LOG **L218** 单进程独占 rootDir（INV-9） | 租约注册表维持进程内共享结构，未引入跨进程锁 | ✅ |
+| ADR-0014-LOG **L196–212** record schema 单源 + 指纹冻结 | schema.ts/record.ts zero-diff；schema-freeze.test.ts 在 68/68 定向集外围但 SA7 CMD3 包级 448/448 内绿——修消费侧而非 schema，避开「id 升 @2 + 新 generation」版本雪崩 | ✅ |
+| ADR-0014-LOG **L214**「VFSL 校验失败 = writer bug」+ **L20–24**（ADR-0011）best-effort 隔离 | 写路径（emission/pipeline/sink）zero-diff；本票纯读路径 + retention 内部，零 emit 接线、零 sequencer 触碰 | ✅ 无涉 |
+| ADR-0014-LOG **L218** 单进程独占 rootDir（INV-9） | 租约注册表维持进程内共享结构，未引入跨进程锁 | ✅ |
 | 包 AGENTS.md 词表纪律 | 新码恰四且归属正确（本轮 grep 亲证）：reader 域 `lease-expired`/`segment-vanished`（reader 稳定码表 29→31，头注成文）；replay 工具域 `update-unknown`/`lease-expired`（app 侧）。**零新增 update-omitted reason**（CONTEXT.md「语义 emission」三值词表零触碰——O-2 裁定维持）；零 health 事件成员变更（`emitRetentionSweptIfAction` 仅注释，N-3 频率语义备案） | ✅ |
 | 包 AGENTS.md「改实现不改测试断言」（SA6 owned） | K-1 pin 改写 diff 逐字亲读：旧断言（complete/issues:[]/lastSeq'4'/count=9）废止，新断言（partial/[update-unknown]/lastSeq'2'/count=5）+ 头注 4 号条目同步改写并显式标注「K-1，SA6 同 change 废止旧 pin」——issue AC3 逐字要求的**收紧方向**改写，经设计 R-5/SA2 K-1 binding 预授权路径，同 change 由测试 owner 落地 | ✅ 合法演进 |
 | 包 AGENTS.md #227 增量段（+20 行）/ README（+23 行） | 本轮亲读：文档只描述已实现行为（与 §1/§2 代码锚点逐点相符），无虚构行为；承载 N-3/K-2/新码词表备案——docs/AGENTS.md「文档不得虚构实现行为；行为变更 ⇔ 成文契约互跟」双向满足（K-4 头注同步亦在场，:12–15/:22–27） | ✅ |
@@ -144,7 +144,7 @@ schema `AttemptResult` 八成员联合（DENY 面零改动）× 实施后 `mater
 
 ## 6. 结论与边界
 
-- 实施变更集（`31ff694`）与 ADR-0011 / ADR-0012-LOG 全部被引条款、包/app AGENTS.md 契约、
+- 实施变更集（`31ff694`）与 ADR-0011 / ADR-0014-LOG 全部被引条款、包/app AGENTS.md 契约、
   根 CONTEXT.md 词条**零冲突**；五缺口修复为兑现型实施，replay 收紧为必要条件方向加严，
   冻结面（报告形状、complete 门、schema/result 联合、删除协议文法）逐字保持。
 - 历史轮全部移交项（N-A/N-B/N-C、N-1..N-3、K-1..K-4）闭环；定向契约 68/68 本轮独立重跑绿。

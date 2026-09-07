@@ -61,7 +61,7 @@ Expose the namespace diagnostic change log as optional local Host/Registry obser
   inputPolicy?: 'none'|'digest'|'redacted'|'full' }`（AC1/AC2；键名/嵌套仲裁可改，行为断言不动）。
 - `replayNamespaceDiagnosticLog({ rootDir, namespaceId }): { status: 'complete'|'partial'|'failed';
   lastAppliedSequence: string|null; issues: {code}[]; snapshot?: Uint8Array }`
-  —— 报告形状逐字段取 ADR-0012-LOG §Strict reader 冻结形状；归 Host 工具面（ADR-0011
+  —— 报告形状逐字段取 ADR-0014-LOG §Strict reader 冻结形状；归 Host 工具面（ADR-0011
   「完整查询、导出、重放…属于日志存储/工具模块的 interface」，yjs-server 为本仓唯一 Host
   组合根且可依赖 yjs 构造 detached 快照）。归属/命名若仲裁不同 → 仅 import/gate 行修订。
 

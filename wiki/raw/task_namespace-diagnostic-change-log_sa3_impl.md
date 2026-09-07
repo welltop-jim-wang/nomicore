@@ -65,7 +65,7 @@
 
 **R1 根因诊断（源码级 + 复现脚本三重确认，已获 SA4/S6 独立复核）**：AC5 测试 create 期 `initStream` binding 以合法配置调用真实 File adapter 成功建立 stream S1（manifest + genesis-baseline n=1 + current.json）；随后测试直接调用 `createFileDiagnosticLog({rootDir, namespaceId:'k-ns', genesisUpdateBytes: currentState(n=2), …})` 模拟「延迟初始化」——但 File adapter 的**冻结 reopen 语义**（#153/#166：`file.ts:960-995` 健康 stream 恒 `resume`；`file.ts:987`「resume 不写 genesis」）使第二次调用 **resume 同一 stream S1**（`lateLog.streamId === S1`），`genesisUpdateBytes`（当前态 n=2）被**静默忽略**——`records[0]` 仍为创建态 genesis（n=1）→ 恒红。测试锚「首建成功 + 同 rootDir 二次调用必须产新 stream」与冻结 resume 语义互斥（契约内部不一致，SA3 无范围内修复路径）。
 
-**Resolution**：SA6 R2 勘误采纳本报告建议的**方案 A**（同 `task_namespace-diagnostic-change-log_sa4_review.md` 观察 3 核验）——commit `80a2eb8`：AC5 首建 binding 改用 `targetRecordsPerSegment: 0`（首次 initStream **真实失败**：`LOG_STREAM_INIT_FAILED/invalid-roll-targets` + 零落盘；`fileLog` 仍被赋值故 poll 通过），ROOT n:1→n:2 后「重试」以合法配置 + currentState 建**新** stream → genesis 物化 n=2（ADR-0012「后续**重试**成功时以当时 Y.Doc 建立新 stream」精确兑付）。SA6 勘误后 **16/16 绿**；15 个无关 it 断言零触碰（仅 header 注释 + `readdirSync` import + AC5 本体重写），SA4 核验通过。
+**Resolution**：SA6 R2 勘误采纳本报告建议的**方案 A**（同 `task_namespace-diagnostic-change-log_sa4_review.md` 观察 3 核验）——commit `80a2eb8`：AC5 首建 binding 改用 `targetRecordsPerSegment: 0`（首次 initStream **真实失败**：`LOG_STREAM_INIT_FAILED/invalid-roll-targets` + 零落盘；`fileLog` 仍被赋值故 poll 通过），ROOT n:1→n:2 后「重试」以合法配置 + currentState 建**新** stream → genesis 物化 n=2（ADR-0014「后续**重试**成功时以当时 Y.Doc 建立新 stream」精确兑付）。SA6 勘误后 **16/16 绿**；15 个无关 it 断言零触碰（仅 header 注释 + `readdirSync` import + AC5 本体重写），SA4 核验通过。
 
 **SA3 侧（无需改实现）**：Registry 只保证「首次 initStream 恰一次 + bytes 诚实」——勘误前后实现零改动；R2 复跑证实 16/16。
 

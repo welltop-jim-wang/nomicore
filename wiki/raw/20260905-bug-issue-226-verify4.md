@@ -78,7 +78,7 @@ pnpm test packages/namespace-registry/test/registry-create-diagnostic-red.test.t
 |---|---|
 | ADR-0011 L57（create 覆盖范围） | ✓ 逐字：「namespace create，包括输入、schema、ROOT、duplicate、Persistence 与 post-commit Runtime construction 结局」——建流前结局属明文覆盖项，缺陷链 A 是实现缺口而非契约空白 |
 | ADR-0011 L117–129（隔离面） | ✓ 逐字：emitter seam 同步接收 detached record、不阻塞不 throw；「日志不得引入第二个业务排序机构」；「emitter 不被 await」；「adapter 慢、失败或队列满都不得延长 write slot 或阻塞 close/shutdown；Host shutdown 可 best-effort drain 日志，但 Registry/Persistence 的停止不得无限等待日志 sink」 |
-| ADR-0012（诊断日志版）amendment L250 | ✓ 逐字：「『有界』……不表示底层文件系统延迟有时间上界，亦不表示 `emit` 可在任意调用点不阻塞。**任何将 File adapter 的 `emit` 接入 namespace 生命周期的调用点，必须位于 NamespaceRuntime write sequencer slot 之外，或在该 slot 已释放之后；不得在 slot 内执行同步 File adapter `emit`。**不满足该条件的接线为不合规，必须由 #149–#151/#155 或后续接线票修复后方可启用」——本任务即该预留接线票；L345 首切片取舍注记同核 |
+| ADR-0014（诊断日志版）amendment L250 | ✓ 逐字：「『有界』……不表示底层文件系统延迟有时间上界，亦不表示 `emit` 可在任意调用点不阻塞。**任何将 File adapter 的 `emit` 接入 namespace 生命周期的调用点，必须位于 NamespaceRuntime write sequencer slot 之外，或在该 slot 已释放之后；不得在 slot 内执行同步 File adapter `emit`。**不满足该条件的接线为不合规，必须由 #149–#151/#155 或后续接线票修复后方可启用」——本任务即该预留接线票；L345 首切片取舍注记同核 |
 | ADR-0009 L99/L101/L140 | ✓ 逐字：shutdown「等待此前已接纳的 lifecycle 操作结算」；「create 的跨候选重试仍受 lifecycle carrier 串行化与 shutdown 已接纳操作屏障约束」——T9 机制锚成立 |
 
 ## 5. 红灯契约有效性（本轮独立判断）

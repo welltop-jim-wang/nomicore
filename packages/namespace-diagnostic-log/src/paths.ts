@@ -4,7 +4,7 @@
  * 的绑定面声明同步——paths.ts 实属 node:path 绑定面；零 node:fs）。
  *
  * 权限：namespaceId 违规 → 日志不启用（`stream-init-failed/invalid-namespace-id`）、
- * 零 fs 触达——**不编码、不 hash、不替换字符静默另存**（ADR 0012 明文）。
+ * 零 fs 触达——**不编码、不 hash、不替换字符静默另存**（ADR 0014 明文）。
  * namespaceId 判定逻辑与 `packages/namespace-registry/src/identity.ts:70
  * isMinimalSafeString` 同纪律（本包不依赖 registry——ADR/AGENTS 边界）。
  *
@@ -33,7 +33,7 @@ export function isSafeNamespaceId(value: unknown): value is string {
   return true
 }
 
-/** streamId：`log-` + 32 位小写 hex（ADR 0012 §Stream 与 generation；P_STREAM_ID 单源）。 */
+/** streamId：`log-` + 32 位小写 hex（ADR 0014 §Stream 与 generation；P_STREAM_ID 单源）。 */
 export function isSafeStreamId(value: unknown): value is string {
   return typeof value === 'string' && RE_STREAM_ID.test(value)
 }
@@ -43,7 +43,7 @@ export function isSegmentName(value: string): boolean {
   return RE_SEGMENT.test(value)
 }
 
-/** ADR 0012 §File adapter 布局的路径派生（与 `test/helpers/file.ts:streamPaths` 同构）。
+/** ADR 0014 §File adapter 布局的路径派生（与 `test/helpers/file.ts:streamPaths` 同构）。
  *  `jsonlPath`/`binPath` 语义收窄为「segment 00000001 的别名」——任意 segment 的路径
  *  一律经 `segmentFilePaths` 派生（#153 §6.1 滚动）。 */
 export function streamLayoutPaths(rootDir: string, namespaceId: string, streamId: string) {

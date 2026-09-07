@@ -4,8 +4,8 @@
 **Author**: SA2（design dispatch 342da82a-2e27-4dfa-8d59-cf3833bd5282）
 **Status**: 待 SA4/SA8 门禁审查
 **任务简报**: 根目录 `TASK.md`（MABF issue #154；dispatch log `wiki/raw/task_issue-154_dispatch.md`）
-**父 PR**: #142 = commit `6de2f1d`（`docs/adr/0011-best-effort-namespace-diagnostic-change-log.md` + `docs/adr/0012-vfsl-validated-jsonl-and-framed-sidecar-change-log.md` + CONTEXT.md 增量）
-**约束基准**: ADR 0011（best-effort 隔离语义）、ADR 0012（§Retention 与删除 / §打开与尾部恢复 / §File adapter 布局 / 2026-08-28 first-slice amendment）
+**父 PR**: #142 = commit `6de2f1d`（`docs/adr/0011-best-effort-namespace-diagnostic-change-log.md` + `docs/adr/0014-vfsl-validated-jsonl-and-framed-sidecar-change-log.md` + CONTEXT.md 增量）
+**约束基准**: ADR 0011（best-effort 隔离语义）、ADR 0014（§Retention 与删除 / §打开与尾部恢复 / §File adapter 布局 / 2026-08-28 first-slice amendment）
 
 ---
 
@@ -23,9 +23,9 @@ File adapter 的有界存储三件套，全部落在 `packages/namespace-diagnos
 
 - **不改** record schema 文本/指纹（`schema-freeze.test.ts` 钉死）、manifest 17 键形状、`emit` seam、v1 词表、CRC/frame 格式、`#148` 冻结面任何既有成员。
 - **不做** replay 工具与 Host/Registry 接线（#155/#149–#151）；`namespace-runtime` 现有依赖面零强迫变更（本设计全部为**增量导出**，见 §2.8）。
-- **不做** queue/batch/fsync、常驻 fd、跨进程锁（ADR 0012 部署约束：单进程独占根目录——本设计的租约注册表正确性建立在该约束上，见 §11-A6）。
-- **不做** memory adapter（`adapters/memory.ts`）的 retention/删除：ADR 0012 retention 条款是 File adapter 布局规范；memory adapter 生命周期由持有者控制。`deleteNamespaceDiagnosticLog` 是 File 布局管理操作。
-- **不承诺**按 wall clock 的 locator 判定（ADR 0012 §File adapter 布局既有纪律）；retention 的年龄判定用 **record 自带 `observedAt`**，绝不用文件 mtime（§4.5-R3）。
+- **不做** queue/batch/fsync、常驻 fd、跨进程锁（ADR 0014 部署约束：单进程独占根目录——本设计的租约注册表正确性建立在该约束上，见 §11-A6）。
+- **不做** memory adapter（`adapters/memory.ts`）的 retention/删除：ADR 0014 retention 条款是 File adapter 布局规范；memory adapter 生命周期由持有者控制。`deleteNamespaceDiagnosticLog` 是 File 布局管理操作。
+- **不承诺**按 wall clock 的 locator 判定（ADR 0014 §File adapter 布局既有纪律）；retention 的年龄判定用 **record 自带 `observedAt`**，绝不用文件 mtime（§4.5-R3）。
 
 ### §0.3 依赖 #153 接口可用性验证（Blocked-by 门禁）
 
@@ -76,9 +76,9 @@ Type Errors  no errors
 /** src/retention.ts —— retention 配置（纯类型；不冻结进 manifest）。 */
 export interface FileRetentionConfig {
   /**
-   * 年龄上限（毫秒）。缺省 = 30 天（ADR 0012 默认）。
+   * 年龄上限（毫秒）。缺省 = 30 天（ADR 0014 默认）。
    * - undefined        → 默认 2_592_000_000（30d）
-   * - null（显式）     → 关闭年龄限制（ADR 0012「显式 null 关闭某个限制」）
+   * - null（显式）     → 关闭年龄限制（ADR 0014「显式 null 关闭某个限制」）
    * - 0                → 一切闭组立即过期（「0 不表示无限」）
    * - n > 0            → group 内最晚 committed record 的 observedAt 距 now ≥ n 时过期
    */
@@ -112,7 +112,7 @@ retention?: FileRetentionConfig | null | undefined
 | `maxBytesPerNamespace: null` | 字节遍历整体跳过 |
 | 两者皆 `null` | 无限制驱动删除；**卫生遍历仍执行**（遗留 `.deleting` 完成 + orphan BIN 清理——协议卫生不属「限制」，ADR 步骤 4/5 无条件） |
 
-**不变式**：retention 配置**不持久化任何地方**（不进 manifest、不写状态文件）——ADR 0012「manifest 不承担频繁变化的 retention 状态」+「retention…可动态调整」；变更配置**不**产生新 generation（对照：冻结项变更才 rotate）。
+**不变式**：retention 配置**不持久化任何地方**（不进 manifest、不写状态文件）——ADR 0014「manifest 不承担频繁变化的 retention 状态」+「retention…可动态调整」；变更配置**不**产生新 generation（对照：冻结项变更才 rotate）。
 
 ### §2.2 Sweep API 与报告
 
@@ -189,7 +189,7 @@ export function openDiagnosticReadSession(req: DiagnosticReadSessionRequest): Di
 ```
 
 - 枚举规则与 reader/sweep 同源（`reader.ts` 内部导出 `enumerateSegmentGroups(segmentsDir)`，见 §3——防双份漂移，同 `storage-gate` 共享原语先例）。
-- **注册表**：模块级 `Map<nsKey, Map<leaseKey, LeaseEntry[]>>`，`nsKey = rootDir + '\u0000' + namespaceId`，`leaseKey = streamId + '\u0000' + segment`。进程内共享是**正确性要求**：writer adapter 实例的 sweep 必须看见无亲缘关系的 reader 会话持有的租约；单进程独占根目录（ADR 0012 §Writer）使进程内注册表充分（INV-9）。跨进程部署不在 v1 契约内。
+- **注册表**：模块级 `Map<nsKey, Map<leaseKey, LeaseEntry[]>>`，`nsKey = rootDir + '\u0000' + namespaceId`，`leaseKey = streamId + '\u0000' + segment`。进程内共享是**正确性要求**：writer adapter 实例的 sweep 必须看见无亲缘关系的 reader 会话持有的租约；单进程独占根目录（ADR 0014 §Writer）使进程内注册表充分（INV-9）。跨进程部署不在 v1 契约内。
 - 过期条目惰性清理：sweep/open 检查时 `expiresAt > now` 才算活跃；**过期租约永不阻塞删除**（AC-3 后半句，INV-4）。
 - 裸 `readStreamStrict`（不经会话）仍是**静态/离线工具**，与并发 retention 的一致性不在其契约内（其文件头注已声明「面向静态 stream」）；会话包装是受支持的并发读路径。Host 文档责任在接线票（#155）。
 
@@ -231,7 +231,7 @@ export function deleteNamespaceDiagnosticLog(req: NamespaceLogDeletionRequest): 
 
 - **步骤 2 之后、完成之前**，任何 `createFileDiagnosticLog` 构造：读 `deletion.json` 存在 → `mode='disabled'` + 恰一次 `stream-init-failed{reason:'namespace-log-deleted'}`（reason 枚举**只增一值**，#153 同款演进路径）。**禁止复活**：不 resume、不新建 generation、不写任何文件（INV-8）。
 - 重入调用 `deleteNamespaceDiagnosticLog` 是**唯一**完成路径（Host 数据删除工作流重试即完成）；管理面也可手工移除 marker 复活残部（明示为部署裁量，不在代码路径内）。
-- **只承诺活跃存储逻辑删除**：不暗示 SSD 削除、备份/快照/对象存储版本回收（ADR 0012 原文；文档与事件措辞均不得出现 secure erase 字样）。
+- **只承诺活跃存储逻辑删除**：不暗示 SSD 削除、备份/快照/对象存储版本回收（ADR 0014 原文；文档与事件措辞均不得出现 secure erase 字样）。
 - 存活 emitter 实例（同进程）不受强制停摆：其缓存路径随目录删除逐步 ENOENT → definitive pre-commit failure → `storage-write-failed` 事件 + 记录丢弃（ADR 0011 隔离：日志故障不影响业务）。v1 不提供 quiesce 钩子；Host 责任在删除后关闭/换装 adapter（接线票文档化）。
 
 ### §2.5 `readStreamStrict` 增量：保留历史报告（AC-5「retained-history reporting」）
@@ -399,7 +399,7 @@ sweep(now):
 | INV-6 | **manifest/locator 不可写**：retention 路径绝不写 `manifest.json`、绝不写/改 `current.json`（namespace 删除是**移除**而非改写）；retention 配置零持久化 | §2.1/§2.4 |
 | INV-7 | **裁剪可解释性**：`historyTrimmed === true` ⇔ 枚举最低段 ≠ `'00000001'`（纯结构判定）；`false` 时 reader/resume 行为与现状逐字节等同；中部缺口恒 `sequence-gap`→corrupt/rotate | §7.1；测试 T-E1–T-E5 |
 | INV-8 | **namespace 删除线性化**：`deletion.json` 落盘后构造一律 disabled（无复活、零写入）；完成态 = 目录消失（此后 fresh 新 lineage 合法） | §4.4；测试 T-D4/T-D5/T-D8 |
-| INV-9 | **租约注册表进程内按 (rootDir, namespaceId) 共享**：正确性依赖 ADR 0012 单进程独占根目录部署约束 | §2.3/§11-A6 |
+| INV-9 | **租约注册表进程内按 (rootDir, namespaceId) 共享**：正确性依赖 ADR 0014 单进程独占根目录部署约束 | §2.3/§11-A6 |
 | INV-10 | **字节核算** = 全 generation JSONL+BIN 之和（stat 实测）；年龄前沿 = 组内 committed records 的 `max(observedAt)`（record 自带时间，**禁用 mtime**） | §4.5-R3 |
 | INV-11 | **null/0/缺省语义表**（§2.1）逐项钉死；配置违规 ⇒ 仅 retention 失活 + 事件，stream 不受影响 | §2.1；测试 T-A6–T-A8 |
 | INV-12 | **逻辑删除边界**：删除能力只作用于活跃存储目录树；措辞/事件/文档不得暗示 secure erase；adapter 索引 = 租约注册表分区（进程内）随删释放 | §2.4；测试 T-D7 |
@@ -594,8 +594,8 @@ pnpm typecheck   # 含 packages/namespace-diagnostic-log/tsconfig.json
 | A3 | `readdirSync` 枚举 + `.jsonl`/`.bin` 后缀剥离可安全忽略一切其他文件名（含 `.deleting`） | `src/reader.ts:447-454`（reader）与 `:854-861`（resume）现行实现即此语义；INV-13 以文法（`P_SEGMENT` 8 位十进制 / `P_STREAM_ID` `log-`+32hex）证明 `.deleting` 后缀名不可达 |
 | A4 | `rmSync(recursive, force)` 幂等且 ENOENT 静默 | Node 文档 fs.rmSync（force:true 时目标不存在不抛）；用于 namespace 删除续走 |
 | A5 | 单线程同步模型内「检查租约→删除」无撕裂窗口 | 本包全同步 IO 风格（无 async fs 调用——`file.ts`/`reader.ts` 全量 `*Sync`）；sweep 与会话 open 均为同步函数，事件循环序列化 |
-| A6 | 单进程独占 rootDir ⇒ 进程内租约注册表充分 | ADR 0012 §Writer 原文「File adapter 沿用单进程独占根目录的部署约束，不实现跨进程锁」（`docs/adr/0012:218`） |
-| A7 | `observedAt` 由注入 Clock 产生、可回拨 ⇒ 年龄判定必须全组取 max | `FileDiagnosticLogConfig.clock`（`file.ts:101-103`）+ ADR 0012「`observedAt` 由完成操作的 producer 使用注入 Clock 生成」；快速否决的 soundness 推理见 §4.5-R3 |
+| A6 | 单进程独占 rootDir ⇒ 进程内租约注册表充分 | ADR 0014 §Writer 原文「File adapter 沿用单进程独占根目录的部署约束，不实现跨进程锁」（`docs/adr/0012:218`） |
+| A7 | `observedAt` 由注入 Clock 产生、可回拨 ⇒ 年龄判定必须全组取 max | `FileDiagnosticLogConfig.clock`（`file.ts:101-103`）+ ADR 0014「`observedAt` 由完成操作的 producer 使用注入 Clock 生成」；快速否决的 soundness 推理见 §4.5-R3 |
 | A8 | 1 MiB 行可拆多个 write(2) ⇒ 并发裸 reader 可见半行，与并发 retention 一致性均不在静态工具契约内 | `reader.ts:335-338` 文件头注既有声明（§4.3）；会话包装为受支持路径 |
 
 ---

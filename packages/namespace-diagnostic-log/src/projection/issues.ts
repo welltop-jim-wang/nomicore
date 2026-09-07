@@ -1,5 +1,5 @@
 /**
- * issues 投影（设计 §6——确定性截断原语 + 预算逐字对齐 ADR 0012 §投影）。
+ * issues 投影（设计 §6——确定性截断原语 + 预算逐字对齐 ADR 0014 §投影）。
  *
  * 预算基准（R2/E-c2 钉死）：一切「UTF-8 bytes」预算按 **JSON 字符串字面量内容字节**
  * 计——`jsonLiteralBytes(s) = utf8Bytes(JSON.stringify(s)).length - 2`。受限资源本质

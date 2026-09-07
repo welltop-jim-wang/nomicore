@@ -73,7 +73,7 @@
    授权暴露 → `registry.deleteNamespace` → 诊断 manager retirement + `deleteNamespaceDiagnosticLog`
    → bookkeeping + NDJSON 事件 + 回执。
 
-**依据**：(a) ADR-0012-LOG L299 把联动义务放在 Host，日志删除函数是包公共导出，Host 直接
+**依据**：(a) ADR-0014-LOG L299 把联动义务放在 Host，日志删除函数是包公共导出，Host 直接
 消费合规（app AGENTS「只消费包公共导出」）；(b) Registry 是唯一能**同步**关闭单 namespace
 Runtime 的层（idle 逐出最长 300s、shutdown 是全量操作，均不可用作同步回执路径）；(c)
 `resetReplica` 先例（registry.ts:1669 起）已经证明「Registry 编排 Persistence 破坏性操作 +
@@ -154,7 +154,7 @@ op delete-namespace(ns)：                          [stdin macrotask，不持任
 NamespaceRuntime write sequencer slot、也不位于 registry carrier 槽内；`registry.deleteNamespace`
 槽内只含异步 IO（`io.removeKey` 走 `fsp.rm`）与 close drain，无同步重 fs；
 `deleteNamespaceDiagnosticLog`（同步重 fs）在步骤 5、即 registry 槽外调用——满足
-ADR-0012-LOG amendment「同步 fs 调用点必须在 slot 之外」。
+ADR-0014-LOG amendment「同步 fs 调用点必须在 slot 之外」。
 
 ### AD-4 Host 诊断 manager retirement（封 diag-pump 迟到重建）
 
@@ -188,7 +188,7 @@ ADR-0011 合规论证：被丢弃的 emission 属「已进入删除流程的 nam
  *  拒绝分类：DocDeleteActiveHandleError（live handle 存在，调用方释放后重试）/
  *  DocDeleteOperationalError（io.removeKey reject——重试收敛）/
  *  DocDeleteFatalError('lifecycle-disposed' | 'adapter-violation')。
- *  只承诺活跃存储逻辑删除（ADR-0012-LOG L299 同款措辞纪律），不承诺 secure erase。 */
+ *  只承诺活跃存储逻辑删除（ADR-0014-LOG L299 同款措辞纪律），不承诺 secure erase。 */
 readonly deleteDoc?: (owner: User, docId: string) => Promise<Readonly<{ ok: true }>>;
 ```
 
@@ -294,7 +294,7 @@ type DeleteNamespaceResult = Readonly<{ ok: true }> | Readonly<{ ok: false; code
 ### AD-8 失败/幂等语义（B2 显式裁决）
 
 **裁决**：`delete-namespace` 是**复合工作流**，其 `ok:true` 谓词 = 数据与日志**均**完成逻辑
-删除（ADR-0012-LOG L299 把日志删除定义为数据删除请求的伴随义务——它不是「日志失败不影响
+删除（ADR-0014-LOG L299 把日志删除定义为数据删除请求的伴随义务——它不是「日志失败不影响
 业务」条款的适用对象；该条款继续管 emit/append/排队/背压/关闭失败对**其它**业务操作的隔离，
 本设计零改动）。任一段失败 → 诚实失败回执 + 结构化码；**重入重试是唯一完成路径**（镜像
 #154「重入调用 `deleteNamespaceDiagnosticLog` 是唯一完成路径」的 Host 级推广）。
@@ -363,15 +363,15 @@ tail 等待覆盖删除槽；诊断删除在槽外但为有界同步协议；`di
 | `test/`（新增） | §6 T-H4/T-H5 + AC2 三补足 T-H6–H8 |
 | `AGENTS.md` | Management verbs 段补一句：hub-owned `delete-namespace`（终态删除编排 + 日志联动；peer → unknown-op） |
 
-### 3.4 文档/词汇（AC3 对齐——方向 = ADR-0012-LOG 首切片 amendment，后决优先）
+### 3.4 文档/词汇（AC3 对齐——方向 = ADR-0014-LOG 首切片 amendment，后决优先）
 
 | 文件 | 现矛盾文本（亲证） | 目标表述 |
 |---|---|---|
 | `CONTEXT.md` 「语义 emission」词条（L157 附近） | 「emit 同步、不 throw、不阻塞」 | 「emit 同步、不 throw、不返回 durability promise、不留调用方可变引用（interface 契约）；File adapter 首切片为每 record 至多一条 final JSONL record 的有界同步 append（携带 sidecar 时先一帧 BIN append）——可被文件系统延迟阻塞，任何接入 namespace 生命周期的调用点必须在 NamespaceRuntime write sequencer slot 之外或该 slot 释放之后；不维护 writer queue、不做 batch flush、无 fsync 开关、无常驻 fd（queue/batch/fsync/fd cache 为目标演进形态而非现行特性）」 |
-| `packages/namespace-diagnostic-log/README.md` L311-312 | 「`emit`/`append` 同步、**绝不 throw**、绝不阻塞」 | 同上措辞（包 README 版；显式指向 ADR-0011 interface 契约 + ADR-0012-LOG amendment） |
+| `packages/namespace-diagnostic-log/README.md` L311-312 | 「`emit`/`append` 同步、**绝不 throw**、绝不阻塞」 | 同上措辞（包 README 版；显式指向 ADR-0011 interface 契约 + ADR-0014-LOG amendment） |
 | `packages/namespace-diagnostic-log/AGENTS.md` L16 | 「emit 同步、不 throw、不阻塞、所有权移交」 | 同款修订（消除与同文件 §Boundaries 首切片正确陈述的自相矛盾） |
-| `docs/adr/0011-best-effort-namespace-diagnostic-change-log.md` | L24「non-throwing、有界、非阻塞的 emitter seam」 | **澄清性修订节**（issue #228，非决策变更）：『非阻塞』为 interface 级契约（void、不 throw、无 durability promise）；File adapter 实现属性（首切片同步 append 可被 fs 延迟阻塞）由 ADR-0012-LOG 2026-08-28 amendment 定义并为准；调用点纪律（slot 外）援引该 amendment——两文由此一致 |
-| `docs/adr/0012-vfsl-validated-jsonl-and-framed-sidecar-change-log.md` | amendment 正文（权威源） | 预期零改动；实施时全文校对一遍，若发现漂移按显式修订节处理（不允许静默改写） |
+| `docs/adr/0011-best-effort-namespace-diagnostic-change-log.md` | L24「non-throwing、有界、非阻塞的 emitter seam」 | **澄清性修订节**（issue #228，非决策变更）：『非阻塞』为 interface 级契约（void、不 throw、无 durability promise）；File adapter 实现属性（首切片同步 append 可被 fs 延迟阻塞）由 ADR-0014-LOG 2026-08-28 amendment 定义并为准；调用点纪律（slot 外）援引该 amendment——两文由此一致 |
+| `docs/adr/0014-vfsl-validated-jsonl-and-framed-sidecar-change-log.md` | amendment 正文（权威源） | 预期零改动；实施时全文校对一遍，若发现漂移按显式修订节处理（不允许静默改写） |
 
 措辞红线（SA8 B3）：一切公共行为表述指向 `CONTEXT.md`/ADR/`docs/protocols/`；删除语义只说
 「活跃存储逻辑删除」，**不出现** erase/purge/secure 字样（#154 词汇纪律延续）。
@@ -395,7 +395,7 @@ tail 等待覆盖删除槽；诊断删除在槽外但为有界同步协议；`di
 - **根 `REPORT.md`**（阶段汇总，普通 artifact 非机器状态）：新增 issue #228 章节——
   #141/PR #142 阶段结论；#148–#155、#226–#227 各票一行阶段结果（交付物 + 验证证据路径）；
   本票验证证据（D1–D4 绿、全量门结果）；残余风险（§7）。公共行为表述引用
-  `CONTEXT.md`/ADR 0011/0012-LOG/0006/0009，不引 `wiki/raw`。
+  `CONTEXT.md`/ADR 0011/0014-LOG/0006/0009，不引 `wiki/raw`。
 - **PR #142 title/body**：body 增补「namespace 删除联动交付（issue #228）」段——op 面、
   删除语义（逻辑删除/幂等/失败码族）、ADR 修订节清单（0006/0009/0011）、文档对齐清单、
   验证命令与结果。title 若需反映阶段终态由 runner 裁量。

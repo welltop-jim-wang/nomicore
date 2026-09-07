@@ -43,11 +43,11 @@
 
 **writer 侧配套（消除合法 gap 源，设计 §3.2/§3.3）**：genesis 空/超 payloadMax/投影失败守卫与 line/VFSL/storage 门全部移至 candidate 前（gate drop 零消耗有锚：「line 预算 gate drop → 后续成功 record 的 sequence 为 "1"」「genesis 0 字节守卫跳过 → 首个 attempt 为 "1"」×2）；genesis confirmed success 提交 '1'——round-1「跳过 genesis 消耗 1」「门禁失败消耗 sequence」两个合法 gap 源均已消除。`sealed` 标记保证构造期 genesis ambiguous 密封不被 `mode='ready'` 覆盖（file.ts diff 末段）。
 
-## 3. 反馈 3（ADR 0012 dated amendment；ADR 0011 零改动）— ✅ 逐条符合
+## 3. 反馈 3（ADR 0014 dated amendment；ADR 0011 零改动）— ✅ 逐条符合
 
 `git diff fde8034..HEAD -- docs/adr/0012-….md`（+15 行）逐字比对设计 §4：
 
-| 设计要求 | ADR 0012 落点（行号 @f52eccb） | 判定 |
+| 设计要求 | ADR 0014 落点（行号 @f52eccb） | 判定 |
 |---|---|---|
 | §4.1 第一段（取代关系+同步 append 范围+无 queue/batch/fsync/常驻 fd+非掉电承诺） | L244–248：「Amendment — File adapter first slice（2026-08-28，issue #152 round 2）」+「**在首切片 File adapter 的当前实现范围内被以下条款取代**」（取代非并列）+ 每 emit ≤1 JSONL 行/sidecar BIN-first ≤1 帧 | ✅ |
 | §4.1 第二段（「有界」非延迟承诺 + write-slot 外 MUST + void/non-throwing/no-durability-promise + #149–#151/#155 修复后方可启用） | L250：全部要素在（seam 重申句置于接线条件后，语序微调、要素无缺） | ✅ |

@@ -815,7 +815,7 @@ export function createRegistryInternal(
   // macrotask 延迟投递，RuntimeFactory 第三参 = O(1) 延迟 wrapper（不开现场解析、
   // 不触碰存储）；legacy Host（无 runtimeEmitterFor）逐字节现行。
   const { diag, resolveRuntimeDiag } = createDiagRuntime(options.diagnosticLog, clock, {
-    // #249：满队丢弃上报窄回调（AC3/ADR-0011 L25、ADR-0012 L240）——落点 =
+    // #249：满队丢弃上报窄回调（AC3/ADR-0011 L25、ADR-0014 L240）——落点 =
     // ADR-0009 L95 内部 observer seam 新事件 `diag-pump-drop`。低基数四封闭维度
     // （type/taskKind/operation?/reason——namespaceId/streamId/token 不进）；
     // dispatchObserver 对 observer 缺席/throw 均隔离——生产 Host 未注入 observer
@@ -1505,9 +1505,9 @@ export function createRegistryInternal(
       if (cause instanceof DocDuplicateError) {
         // #249（AC4）：Persistence DOC_DUPLICATE 候选结局——rejected 记录（stage
         // transaction / code DOC_DUPLICATE / sourceModule 'persistence'——该码的所属
-        // 模块，ADR-0011 L51 + ADR-0012 L89 成对纪律；#150 映射表「持久层 duplicate
+        // 模块，ADR-0011 L51 + ADR-0014 L89 成对纪律；#150 映射表「持久层 duplicate
         // → transaction」同款 stage 先例，SA2 O5）落到候选 id 的流；该 ns 无活流时
-        // genesis-less 补建一次（ADR-0012 L22）。observedAt 复用槽内 Clock 步产物
+        // genesis-less 补建一次（ADR-0014 L22）。observedAt 复用槽内 Clock 步产物
         // p.createdAt——零额外读数（DC-3/L1565「DOC_DUPLICATE 重试不重复读」保持）；
         // input 复用既有 detached frozen snapshot（AC5——不重读、不建第二套序列化）。
         // 诊断只观察：不覆盖已提交内容（ADR-0006 #64）、不改变 8 次 retry 预算与

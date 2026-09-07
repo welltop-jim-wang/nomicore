@@ -87,10 +87,10 @@ E2E 子进程本就经 `TSX_BIN` 启动，该事实只说明 source-condition �
   dropped-count 上报为「应尽力」措辞，SA8 N1 已裁定可接受并登记）、drain 逐任务 try/catch 全程非抛
   （ADR-0011 L20「不得改变业务结果」/ emitter seam 非抛）、per-ns 单飞 + 排空后 Map 位释放、调度只在
   入队点（O(1)）、与 shutdown 零耦合不等待（ADR-0011 L129「不得无限等待日志 sink」）、不引入第二业务
-  排序机构（只序诊断投递）。调用点搬移 = ADR-0012 2026-08-28 amendment **L250 明文授权的选项 (a)**
+  排序机构（只序诊断投递）。调用点搬移 = ADR-0014 2026-08-28 amendment **L250 明文授权的选项 (a)**
   （只移调用点到 sequencer slot 外；adapter 每 record 同步单条 append 语义一字未动，非 L252 writer-queue
   切片）。
-- **被拒 create genesis-less 流**：ADR-0012 L22「genesis 未成功写入时 stream 仍可记录诊断事实，但不得
+- **被拒 create genesis-less 流**：ADR-0014 L22「genesis 未成功写入时 stream 仍可记录诊断事实，但不得
   声称完整重放」直接授权；C1 锚不要求 B 的 replay complete（SA8 N4 边界保持）。
 - **setImmediate 唯一性**：src 全树裸调用唯一命中 `diag-pump.ts:137`，与 R4 守卫注释契约一致；守卫
   套件 12/12 绿（本轮 SEG-B 亲证）。

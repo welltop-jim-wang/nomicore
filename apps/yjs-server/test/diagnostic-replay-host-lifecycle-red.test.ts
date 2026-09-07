@@ -8,7 +8,7 @@
  *   有界 drain / strict replay + owned bytes + 三态报告 / 七类缺陷 → partial|failed /
  *   E2E 组合场景）；
  * - ADR-0011（best-effort、重放五条件、接口 seam 纪律、数据保护）；
- * - ADR-0012-LOG（§Stream 冻结/可调二分；§Writer 多 generation 共享 writer + 有界 drain；
+ * - ADR-0014-LOG（§Stream 冻结/可调二分；§Writer 多 generation 共享 writer + 有界 drain；
  *   §Strict reader 与诊断性 replay——replay 报告形状
  *   `{ status: 'complete'|'partial'|'failed', lastAppliedSequence, issues, snapshot? }`、
  *   「replay 强制 strict」「工具不自动串联多个 generation」「即便 complete 也只证明重放了
@@ -24,7 +24,7 @@
  *      全部携带该键的用例在首个 parse 断言处红灯（诚实：操作员启用意图被拒）。
  * 2. Host 工具面（AC4/AC5）：`@nomicore/yjs-server` 入口新增导出
  *      replayNamespaceDiagnosticLog(request: { rootDir; namespaceId }): DiagnosticReplayResult
- *    报告形状逐字段取 ADR-0012-LOG 冻结形状；replay 归 Host 工具面（ADR-0011「完整查询、
+ *    报告形状逐字段取 ADR-0014-LOG 冻结形状；replay 归 Host 工具面（ADR-0011「完整查询、
  *    导出、重放…属于日志存储/工具模块的 interface」——yjs-server 为本仓唯一 Host 组合根，
  *    可依赖 yjs 构造 detached 快照；命名/归属若仲裁不同 → 仅本文件 import/gate 行修订）。
  *    当前基线：该导出不存在 → 每个 replay 用例在调用门处红灯（诚实：能力缺失）。
@@ -33,7 +33,7 @@
  * - 只断言可观察运行时行为（config 校验结果、进程 NDJSON 事件、控制通道回执、真实文件
  *   产物、strict 读取记录、快照 bytes 对 detached Y.Doc 的重放状态）；零源码 grep。
  * - 无 skip / 无 env 兜底 / 无软断言；用例独立、确定性夹具（真实 Y.Doc 增量 bytes）。
- * - replay issue code 词表为契约提案（语义类缺陷码取自 ADR-0011 五条件 / ADR-0012-LOG
+ * - replay issue code 词表为契约提案（语义类缺陷码取自 ADR-0011 五条件 / ADR-0014-LOG
  *   缺陷清单原文，物理类缺陷沿 strict reader 既有码族：sequence-gap / invalid-json）；
  *   裁定不同按设计仲裁修订（#151 先例）。
  */
@@ -74,7 +74,7 @@ export interface DiagnosticsConfigProposal {
   inputPolicy?: 'none' | 'digest' | 'redacted' | 'full';
 }
 
-/** replay 报告形状（ADR-0012-LOG §Strict reader 逐字段冻结）。 */
+/** replay 报告形状（ADR-0014-LOG §Strict reader 逐字段冻结）。 */
 export interface DiagnosticReplayResult {
   status: 'complete' | 'partial' | 'failed';
   lastAppliedSequence: string | null;
@@ -326,7 +326,7 @@ function peerConfig(port: number, namespaceId: string): Record<string, unknown> 
   };
 }
 
-/** 日志布局读取（ADR-0012-LOG：{rootDir}/namespaces/{namespaceId}/…）。 */
+/** 日志布局读取（ADR-0014-LOG：{rootDir}/namespaces/{namespaceId}/…）。 */
 function namespaceLogDir(logRootDir: string, namespaceId: string): string {
   return join(logRootDir, 'namespaces', namespaceId);
 }
@@ -464,7 +464,7 @@ describe('issue #155 — Host diagnostics 配置面（AC1/AC2；PROPOSAL 键 `di
     });
   });
 
-  it('retention 显式 null 关闭某限制是合法值（ADR-0012-LOG：`null` 关闭，`0` 非无限）', () => {
+  it('retention 显式 null 关闭某限制是合法值（ADR-0014-LOG：`null` 关闭，`0` 非无限）', () => {
     const raw = hubConfig({
       rootDir: '/tmp/x',
       logRootDir: '/tmp/y',
@@ -532,7 +532,7 @@ async function requireReplayTool(): Promise<ReplayTool> {
     throw new Error(
       '[issue-155 contract] `@nomicore/yjs-server` 入口必须导出 ' +
         'replayNamespaceDiagnosticLog(request): DiagnosticReplayResult（PROPOSAL 面，' +
-        'ADR-0012-LOG §Strict reader 报告形状）；当前基线该导出缺失',
+        'ADR-0014-LOG §Strict reader 报告形状）；当前基线该导出缺失',
     );
   }
   return fn as ReplayTool;

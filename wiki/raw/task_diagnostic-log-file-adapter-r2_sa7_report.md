@@ -70,7 +70,7 @@ SA4 静态推演为 ok 但**无测试锚**——本 SA7 以真实恢复路径构
   status = 'ok'；records ['1','2'] 全 ok；issues = []        ← 与静态推演一致
 ```
 
-**机理确认**：reader 的 sidecar 交叉按「被 JSONL 引用的帧」链接（`expectedOffsets` 首个被引用帧 `expected===null` 不做 boundary 检查）；orphan 帧无 JSONL 引用，不产生 `frame-boundary-invalid`——orphan 作为诚实残态保留（ADR 0012 既有「BIN-first 崩溃窗口」语义）。终态诚实：两条路径（判 ok / 逐条诊断）均不产生 false-ok 或静默错乱。日志：`.mabf-bg/sa7-dynamic-run1.log`、`.mabf-bg/sa7-pkg-run4.log`。
+**机理确认**：reader 的 sidecar 交叉按「被 JSONL 引用的帧」链接（`expectedOffsets` 首个被引用帧 `expected===null` 不做 boundary 检查）；orphan 帧无 JSONL 引用，不产生 `frame-boundary-invalid`——orphan 作为诚实残态保留（ADR 0014 既有「BIN-first 崩溃窗口」语义）。终态诚实：两条路径（判 ok / 逐条诊断）均不产生 false-ok 或静默错乱。日志：`.mabf-bg/sa7-dynamic-run1.log`、`.mabf-bg/sa7-pkg-run4.log`。
 
 ### D3 — README 并发半行 / 静态 stream 声明未回退（§5.3）→ ✅ 确认
 
@@ -121,7 +121,7 @@ SA4 静态推演为 ok 但**无测试锚**——本 SA7 以真实恢复路径构
 | D-B2 | 健康 stream 混合合法终态：committed inline / committed sidecar / **fatal-committed sidecar** / noop / fatal-rejected | `ok`、零 issue、sequences ['1'..'5'] 全 ok——**合法终态不误判** ✅ |
 | D-A1 | （见 §D2）definitive 复用后的 [1,2] 连续流 + bin orphan 残态 | `ok`——健康流（含交错恢复终态）不误判 ✅ |
 
-### R2-AC3（反馈 3：ADR 0012 amendment 落地、ADR 0011 不动）✅
+### R2-AC3（反馈 3：ADR 0014 amendment 落地、ADR 0011 不动）✅
 
 - `docs/adr/0012-…md` diff（fde8034→f52eccb，+15 行）实核：
   - **dated amendment**（L244「Amendment — File adapter first slice（2026-08-28，issue #152 round 2）」）明文「**在首切片 File adapter 的当前实现范围内被以下条款取代**」（取代关系，非并列）✅
@@ -130,7 +130,7 @@ SA4 静态推演为 ok 但**无测试锚**——本 SA7 以真实恢复路径构
   - 演进路径（公共 seam/schema/policy/slot 隔离不变前提下可替换 queue/batch；须另行定义 close/flush/队列满/fsync）✅
   - 被否方案新增 4 条 + 后果段「首切片取舍（2026-08-28 amendment）」逐条在 diff 中 ✅
 - `git diff fde8034 f52eccb --name-only -- docs/adr/0011-best-effort-namespace-diagnostic-change-log.md` → **0 文件（ADR 0011 正文未动）** ✅
-- ADR 0012 状态头保留 `accepted`（状态未改）✅
+- ADR 0014 状态头保留 `accepted`（状态未改）✅
 
 ## Step 3 — E2E spec 触发证据
 

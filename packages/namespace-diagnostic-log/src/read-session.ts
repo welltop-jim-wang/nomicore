@@ -5,7 +5,7 @@
  * 同源——防双份漂移）；路径派生经 paths.ts（`node:path` 绑定面已声明）。
  *
  * 契约要点：
- * - 租约注册表**进程内**按 `(rootDir, namespaceId)` 分区共享——正确性依赖 ADR 0012
+ * - 租约注册表**进程内**按 `(rootDir, namespaceId)` 分区共享——正确性依赖 ADR 0014
  *   「File adapter 沿用单进程独占根目录的部署约束，不实现跨进程锁」（INV-9）。
  * - 租约是 retention 的**劝告锁**，不是数据持久性承诺：过期窗口内数据可能已被裁剪；
  *   `renew() === true` 不保证快照仍完整（调用方仍须容忍 ENOENT/裁剪）。

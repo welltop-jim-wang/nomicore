@@ -129,7 +129,7 @@ ReplicationSession.applyRemoteUpdate(update)
 | 防线 | 机制（与 #149 §3 逐字同构，新增点标注） |
 |---|---|
 | emit 不改变返回值 | 三条 operation 的 emit 全部在 `settled.then(onOk,onErr)` 回调内（槽后）或公共入口同步段（acceptance 拒绝）；emitAttempt 自身 try/catch 全吞（`diagnostic.ts:123-144` 既有实现零改动） |
-| emit 不延长 slot | emit 时点 = settled promise 微任务回调，slot 已终止（ADR-0012 amendment C；#149 §7.1 证明对 enable/bump/apply 三挂点逐字成立——同一 sequencer、同一 `.then` 注册次序） |
+| emit 不延长 slot | emit 时点 = settled promise 微任务回调，slot 已终止（ADR-0014 amendment C；#149 §7.1 证明对 enable/bump/apply 三挂点逐字成立——同一 sequencer、同一 `.then` 注册次序） |
 | emit 不改变 FIFO | enable/bump/apply 与 ROOT/SCHEMA 共享同一 sequencer 实例（INV-S1）；emit 回调注册晚于 sequencer 内部 `tail.then(noop)`、早于下一任务 thunk 排程——emit 顺序 ≡ 槽完成顺序 ≡ FIFO（AC4 用例「enable→bump FIFO：epoch 2 在 id 安装之后」的结构基础） |
 | emit 不改变 capability | emit 路径零接触 `state.fatal`/`state.lifecycle`/handle/sequencer；敌意 emitter（AC4 用例 makeHostileEmitter）、队列满（capacity:1，drop 在 adapter 内）全部隔离；新增的 host/WeakMap/会话终态机不在 emit 路径上 |
 

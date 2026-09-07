@@ -26,7 +26,7 @@
 | ADR-0008 | Runtime write sequencer | accepted | write-slot 隔离 | no-conflict |
 | ADR-0009 | Registry / Host lifecycle | accepted | shutdown 间接关联 | no-conflict |
 | ADR-0011 | best-effort diagnostic log | accepted | emitter seam、best-effort、replay | no-conflict |
-| ADR-0012 | JSONL/framed-sidecar log | accepted；设计拟追加 amendment | 主规范 | no-conflict（amendment 为明确局部演进） |
+| ADR-0014 | JSONL/framed-sidecar log | accepted；设计拟追加 amendment | 主规范 | no-conflict（amendment 为明确局部演进） |
 
 ## 冲突点
 
@@ -42,9 +42,9 @@
 | 4 | sequence 在实际 JSONL 提交点分配；reader 自 1 连续；消除合法物理 gap 源；保留 best-effort | §3.2–3.3 只在 JSONL 成功后提交 `lastCommittedSequence`，涵盖 genesis 守卫、gate、BIN/JSONL 失败、exhausted 和注入接缝；§3.4 R2 修订使 policy mismatch 不破坏可信 sequence anchor；§3.5 保留仅证明已保存物理 records 的 best-effort 文案。 | **满足** |
 | 5 | 新 reader 码为私有诊断面，不触碰 #148 冻结面 | §1.2、§2.6、§8 deny list 明定五个 policy code 和 `sequence-gap` 只属于 `reader.ts` 结果与测试，不改 record、VFSL schema、`update-omitted.reason`、health 或 emitter。 | **满足** |
 
-## §4 amendment 与 ADR-0012 逐项复核
+## §4 amendment 与 ADR-0014 逐项复核
 
-| ADR-0012 现行条款 | §4 amendment 的处理 | 结论 |
+| ADR-0014 现行条款 | §4 amendment 的处理 | 结论 |
 |---|---|---|
 | 每 stream 同时最多一个逻辑 writer queue | §4.1 对 File first slice 明示「被以下条款取代」，以单 record（可另加一 BIN frame）同步 append 替代。 | 无并列强制 |
 | 默认周期 batch flush / fsync 可配置 | §4.1 对同一首切片明确无 batch、无 fsync 开关，同时保留不承诺掉电持久性。 | 无并列强制 |
@@ -61,7 +61,7 @@
 - §3.4 的可信 sequence 前提足以保障跨记录比较的数值、stream identity 和有 update 时的必要物理载体事实；policy 是解释规则，独立报错但不篡改已可信的物理序列事实。
 - `committedUpdateCapture:false` 下合法 genesis update 仍可作为 `sequence=1` anchor；后续合法 attempt `sequence=2` 不会被误判。
 - 中间 record 的 manifest policy 违规会令 stream `corrupt`，但不阻断其可信 sequence 对后继 record 的连续性锚定；因此不产生 R1 所述二次虚假 gap。
-- JSON/VFSL/canonical decimal/stream identity/必要 carrier-frame 无法解释时不推断数值缺口，符合 ADR-0012 对中间损坏响亮标记而非猜测恢复的边界。
+- JSON/VFSL/canonical decimal/stream identity/必要 carrier-frame 无法解释时不推断数值缺口，符合 ADR-0014 对中间损坏响亮标记而非猜测恢复的边界。
 
 ## 结论
 
@@ -81,34 +81,34 @@ R2 设计复审通过，Verdict 为 `clear`。R1 hard-violation 已由 §3.4 与
 
 | Delta | 设计证据 | ADR / CONTEXT 对照 | 裁决 |
 |---|---|---|---|
-| append definitive / ambiguous 二分；ambiguous reservation candidate 后封闭旧 generation | §3.1、§3.2.1、§3.3、§5.2–§5.3 #7/#8/#11 | ADR-0012 要求 sequence 仅代表 stream append 顺序、不得回绕，BIN-first 允许 orphan/坏尾；旧 stream 无法安全续写时建立新 generation，且中间损坏旧 stream 只读、新建 generation。ADR-0011 不承诺无 gap、允许尾部缺失并要求日志失败隔离。 | **no-conflict** |
-| sequence anchor 仅依 JSON parse + VFSL/canonical decimal + streamId；carrier/frame 错误独立 corrupt | §3.4、§5.1、§5.3 #6 | ADR-0012 将 stream 连续性与 frame/storage 交叉校验都交给 storage validator，但未规定 carrier failure 可抹除 JSONL record 身份。读取 JSONL `sequence` 可解释时仍锚定，正避免 sidecar 损坏造成假 gap；物理删 JSONL 才可检测真实 gap。 | **no-conflict** |
-| input `degraded` marker 按冻结 union 与 manifest 双向规则校验 | §2.3、§5.3 #2/#3 | ADR-0012 明定 full/redacted 因 line budget 降为 digest 并记录 `projected-input-too-large`；VFSL 是 record 形状真相。R3 只严格解释冻结 record/schema 形状，不改 schema/emission/health 词表。 | **no-conflict** |
+| append definitive / ambiguous 二分；ambiguous reservation candidate 后封闭旧 generation | §3.1、§3.2.1、§3.3、§5.2–§5.3 #7/#8/#11 | ADR-0014 要求 sequence 仅代表 stream append 顺序、不得回绕，BIN-first 允许 orphan/坏尾；旧 stream 无法安全续写时建立新 generation，且中间损坏旧 stream 只读、新建 generation。ADR-0011 不承诺无 gap、允许尾部缺失并要求日志失败隔离。 | **no-conflict** |
+| sequence anchor 仅依 JSON parse + VFSL/canonical decimal + streamId；carrier/frame 错误独立 corrupt | §3.4、§5.1、§5.3 #6 | ADR-0014 将 stream 连续性与 frame/storage 交叉校验都交给 storage validator，但未规定 carrier failure 可抹除 JSONL record 身份。读取 JSONL `sequence` 可解释时仍锚定，正避免 sidecar 损坏造成假 gap；物理删 JSONL 才可检测真实 gap。 | **no-conflict** |
+| input `degraded` marker 按冻结 union 与 manifest 双向规则校验 | §2.3、§5.3 #2/#3 | ADR-0014 明定 full/redacted 因 line budget 降为 digest 并记录 `projected-input-too-large`；VFSL 是 record 形状真相。R3 只严格解释冻结 record/schema 形状，不改 schema/emission/health 词表。 | **no-conflict** |
 
 ## 重点条款复核
 
 ### 1. 「writer 准备 append 时才分配 stream sequence」
 
-R3 在所有 prepare gate 后才生成局部 candidate（§3.2.1）。definitive pre-commit failure 不消耗 candidate；ambiguous outcome 则不把它宣称为 confirmed append，而是为避免同一 `(streamId, sequence)` 可能重复而永久 reservation 并关闭旧 stream。该规则仍在 ADR-0012 的「准备 append」文字空间中，且更严格地区分“候选”与“已确认 JSONL append”。没有把 sequence 解释成业务尝试完整性或 durability 证明。
+R3 在所有 prepare gate 后才生成局部 candidate（§3.2.1）。definitive pre-commit failure 不消耗 candidate；ambiguous outcome 则不把它宣称为 confirmed append，而是为避免同一 `(streamId, sequence)` 可能重复而永久 reservation 并关闭旧 stream。该规则仍在 ADR-0014 的「准备 append」文字空间中，且更严格地区分“候选”与“已确认 JSONL append”。没有把 sequence 解释成业务尝试完整性或 durability 证明。
 
 ### 2. ambiguous outcome、尾部残态与 generation 封闭
 
-ADR-0012 明示 BIN-first 崩溃可留下 orphan frame、不完整尾 frame 或不完整 JSONL 尾行；对不可安全续写或中间损坏旧 stream 要只读并建新 generation（Stream/generation 与打开/尾部恢复条款）。R3 的 ambiguous append 无法证明完整 JSONL line 未出现，封闭旧 generation、保留残态并以新 streamId 新建 generation，属于“旧 stream 无法安全续写”的直接适用，不是未授权的 retention/delete、自动中间修复或跨 generation 拼接。
+ADR-0014 明示 BIN-first 崩溃可留下 orphan frame、不完整尾 frame 或不完整 JSONL 尾行；对不可安全续写或中间损坏旧 stream 要只读并建新 generation（Stream/generation 与打开/尾部恢复条款）。R3 的 ambiguous append 无法证明完整 JSONL line 未出现，封闭旧 generation、保留残态并以新 streamId 新建 generation，属于“旧 stream 无法安全续写”的直接适用，不是未授权的 retention/delete、自动中间修复或跨 generation 拼接。
 
 R3 的 `sequence N may not be persisted` 健康文案如实表述未知状态，不宣称 record 缺失/存在、业务失败或 durability；它走独立 health/observer，符合 ADR-0011/0012 的日志失败隔离与健康上报要求。其闭合旧 generation 只影响日志能力，不得改变业务返回值、提交事实、Runtime 状态或 write-sequencer 顺序。
 
 ### 3. best-effort、gap 与 replay 限定
 
-ambiguous candidate 真未写入时出现 strict 可检测 gap，与 ADR-0011 的“不承诺无 gap”及 ADR-0012 replay 仅在无已知 gap/截断/损坏时可 complete 一致。若完整 JSONL line 实际已写入，则 sequence 连续；若未写入，则旧 stream 因 gap/健康故障不可称健康。R3 没有将任何 stream 的连续性提升为业务 attempt 完整、exactly-once、WAL 或恢复保证。
+ambiguous candidate 真未写入时出现 strict 可检测 gap，与 ADR-0011 的“不承诺无 gap”及 ADR-0014 replay 仅在无已知 gap/截断/损坏时可 complete 一致。若完整 JSONL line 实际已写入，则 sequence 连续；若未写入，则旧 stream 因 gap/健康故障不可称健康。R3 没有将任何 stream 的连续性提升为业务 attempt 完整、exactly-once、WAL 或恢复保证。
 
 ### 4. R3 anchor 收窄与 policy/storage 诊断
 
-R3 保持 R2 对 policy/anchor 解耦的闭合，并进一步规定 carrier/frame/CRC/Base64 失败不取消已经通过 JSON/VFSL/canonical-decimal/streamId 的 JSONL identity anchor。该选择与 ADR-0012 “storage validator”双职责一致：同一 record 可以 storage-corrupt 且 sequence 事实仍可参与连续性；strict 仍报告其 storage issue、stream 仍为 corrupt。对 JSON/VFSL/identity 不可解释行不编造数值 gap，符合 ADR-0012 不从 BIN 猜回 JSONL attempt 语义和中间损坏 loud-fail 的边界。
+R3 保持 R2 对 policy/anchor 解耦的闭合，并进一步规定 carrier/frame/CRC/Base64 失败不取消已经通过 JSON/VFSL/canonical-decimal/streamId 的 JSONL identity anchor。该选择与 ADR-0014 “storage validator”双职责一致：同一 record 可以 storage-corrupt 且 sequence 事实仍可参与连续性；strict 仍报告其 storage issue、stream 仍为 corrupt。对 JSON/VFSL/identity 不可解释行不编造数值 gap，符合 ADR-0014 不从 BIN 猜回 JSONL attempt 语义和中间损坏 loud-fail 的边界。
 
 ### 5. 冻结词表与 marker 规则
 
-R3 §2.3 只将 `projected-input-too-large` 作为 ADR-0012 已有 full/redacted line-budget 降级的解释规则；新增 reader issue 仍局限 `reader.ts` 私有诊断面。没有修改 #148 record schema、VFSL schema/fingerprint、`update-omitted.reason`、emitter 或 health 受控词表，故无 CONTEXT/ADR 词表演进冲突。
+R3 §2.3 只将 `projected-input-too-large` 作为 ADR-0014 已有 full/redacted line-budget 降级的解释规则；新增 reader issue 仍局限 `reader.ts` 私有诊断面。没有修改 #148 record schema、VFSL schema/fingerprint、`update-omitted.reason`、emitter 或 health 受控词表，故无 CONTEXT/ADR 词表演进冲突。
 
 ## 结论
 
-R3 delta 复审通过，最终 Verdict 维持 `clear`。R1/R2 历史裁决继续有效；R3 对 ambiguous I/O 的 generation 封闭是 ADR-0012 已授权的安全续写/新 generation 机制，而非额外架构演进。可继续后续实现与验证链路。
+R3 delta 复审通过，最终 Verdict 维持 `clear`。R1/R2 历史裁决继续有效；R3 对 ambiguous I/O 的 generation 封闭是 ADR-0014 已授权的安全续写/新 generation 机制，而非额外架构演进。可继续后续实现与验证链路。

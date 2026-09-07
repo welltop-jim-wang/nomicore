@@ -2,7 +2,7 @@
  * #155（§5.6/§4-D9/§4-D12）离线 strict 诊断重放工具——`replayNamespaceDiagnosticLog`。
  * #227（2026-09-06）：全程 read-session 租约 + 完整性判定收紧（AC1–AC5）。
  *
- * 契约（ADR-0012-LOG §Strict reader 与诊断性 replay，冻结报告形状）：
+ * 契约（ADR-0014-LOG §Strict reader 与诊断性 replay，冻结报告形状）：
  * - **replay 强制 strict**：唯一读取模式 = `readStreamStrict`（绝不近似解释、绝不
  *   自动拼接多个 stream generation——只重放 current.json 指向的当前 generation）。
  * - **五条件 complete**：有可用 genesis、连续 committed updates、无裁剪、身份相符、
@@ -91,7 +91,7 @@ export function replayNamespaceDiagnosticLog(request: ReplayNamespaceDiagnosticL
     if (!isSafeNamespaceId(request.namespaceId)) {
       return { status: 'failed', lastAppliedSequence: null, issues: [{ code: 'locator-missing' }] };
     }
-    // ① locator（ADR-0012 冻结布局；与 file.ts resolveResumeCandidate 同一物理契约）
+    // ① locator（ADR-0014 冻结布局；与 file.ts resolveResumeCandidate 同一物理契约）
     const currentPath = join(request.rootDir, LOCATOR_PATH[0], request.namespaceId, LOCATOR_PATH[1]);
     let raw: string;
     try {

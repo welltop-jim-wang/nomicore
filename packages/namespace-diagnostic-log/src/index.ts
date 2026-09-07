@@ -48,7 +48,7 @@ export type {
 export { observedAtFrom } from './emission.js'
 export { createDiagnosticChangeEmitter } from './pipeline.js'
 
-// —— adapter 接缝（storage projection 归 adapter，ADR 0012 §VFSL record schema）——
+// —— adapter 接缝（storage projection 归 adapter，ADR 0014 §VFSL record schema）——
 export type { DiagnosticChangeSink } from './sink.js'
 
 // —— 本票交付物：有界内存 adapter（emitter + sink 一体装配）——

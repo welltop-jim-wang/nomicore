@@ -1,10 +1,10 @@
 # Design: File diagnostic-log adapter — VFSL 校验 JSONL + NDCL v1 sidecar + strict reader（issue #152）
 
 > SA1 出品（**R2 修订**：落实 SA2 R1 评审必修 #1–#4 + MINOR #5–#9 + INFO #10 + API 备注，并回写总控 G1–G6/J9 裁决；修订点以「R2 修订（SA2 #N）」标注。**Round 2 修订（PR #159 / 总控 R2-G1）**：manifest policy 遵守性 + stream sequence 连续性——见文末「Round 2 修订」章（§R2-1…§R2-5）与 §11 G14–G18；round 1 正文不删改，被取代处标注「R2 取代 → Round 2 §R2-N」）。任务类型：feature。
-> 主规范：`docs/adr/0012-vfsl-validated-jsonl-and-framed-sidecar-change-log.md`；语义基线：ADR 0011。
+> 主规范：`docs/adr/0014-vfsl-validated-jsonl-and-framed-sidecar-change-log.md`；语义基线：ADR 0011。
 > 红灯契约：SA6 Phase 1 五测试文件 + 两 helper（`packages/namespace-diagnostic-log/test/file-adapter-*.test.ts`、`test/helpers/{file,frame}.ts`），exit=1 红灯已验证（`.mabf-bg/sa6-red.log`，Tests 72 failed | 165 passed）。
 > 上游冻结资产：#148（PR #156，commit 7ceede1，已在本分支基线）——emitter 管线、冻结 VFSL schema（指纹 `sha256:v1:dedad2ab…e070`）、crc32c、carrier、health 接缝、testing 工具。
-> 本设计的权威锚定序位：ADR 0012/0011 条款 > SA6 红灯契约（简报 §1–§5）> 本设计的选择性裁决（§10/§11）。与 SA6 契约的分歧全部集中在 §11 显式列出，交总控裁决，默认按本设计标注的「默认取值」执行。
+> 本设计的权威锚定序位：ADR 0014/0011 条款 > SA6 红灯契约（简报 §1–§5）> 本设计的选择性裁决（§10/§11）。与 SA6 契约的分歧全部集中在 §11 显式列出，交总控裁决，默认按本设计标注的「默认取值」执行。
 
 ## 目录
 
@@ -30,7 +30,7 @@
 
 ### 1.1 位置与依赖方向
 
-本票在 **既有包** `packages/namespace-diagnostic-log/` 内新增 File adapter（SA6 契约明示「包内位置：packages/namespace-diagnostic-log/」）。不建新包、不改 #148 冻结面、不建第二份 VFSL（ADR 0012 明文禁令）。
+本票在 **既有包** `packages/namespace-diagnostic-log/` 内新增 File adapter（SA6 契约明示「包内位置：packages/namespace-diagnostic-log/」）。不建新包、不改 #148 冻结面、不建第二份 VFSL（ADR 0014 明文禁令）。
 
 新增内部模块（文件名实现期可微调，职责与导出面不变）：
 
@@ -87,7 +87,7 @@ SA6 契约形状逐字采用；全部可选项带 `| undefined` 显式联合（e
 
 | 字段 | 类型 | 默认 | 去向 / 说明 |
 |---|---|---|---|
-| `rootDir` | `string` | 必填 | 日志根目录；单进程独占（ADR 0012 §Writer），不做跨进程锁 |
+| `rootDir` | `string` | 必填 | 日志根目录；单进程独占（ADR 0014 §Writer），不做跨进程锁 |
 | `namespaceId` | `string` | 必填 | §2.6 安全文法校验后才能进入路径；违规 → 日志不启用（§3.1） |
 | `genesisUpdateBytes` | `Uint8Array \| undefined` | — | 提供 → 新 stream 先尽力写 genesis-baseline（sequence 1，§4.2） |
 | `resumeStreamId` | `string \| undefined` | — | 提供 → manifest 指纹匹配检查；四分支见 §3.4 |
@@ -134,7 +134,7 @@ interface FileDiagnosticLog {
 
 ## §2 磁盘布局与物理格式契约
 
-### 2.1 布局（SA6 契约 = ADR 0012 §File adapter 布局）
+### 2.1 布局（SA6 契约 = ADR 0014 §File adapter 布局）
 
 ```text
 {rootDir}/namespaces/{namespaceId}/current.json          # 恰三键 locator；temp + rename 原子替换
@@ -168,13 +168,13 @@ manifest **创建后不可变**：只在新建 stream 时以 `writeFileSync(path
 
 ### 2.3 current.json（恰三键；原子替换）
 
-`{ format:'ndcl-current', version:1, streamId }` 恰三键。写法：`writeFileSync(namespaceDir + '/current.json.tmp', bytes)` → `renameSync(tmp, current.json)`（ADR 0012 明文「temp + rename 原子替换」；ADR 0006 snapshot 同款已验证模式）。写于 genesis 之后（§3.2）；失败只发 `storage-write-failed{stage:'current'}`，不禁用 stream（locator 是可重建的派生物，不是完整性证明）。
+`{ format:'ndcl-current', version:1, streamId }` 恰三键。写法：`writeFileSync(namespaceDir + '/current.json.tmp', bytes)` → `renameSync(tmp, current.json)`（ADR 0014 明文「temp + rename 原子替换」；ADR 0006 snapshot 同款已验证模式）。写于 genesis 之后（§3.2）；失败只发 `storage-write-failed{stage:'current'}`，不禁用 stream（locator 是可重建的派生物，不是完整性证明）。
 
 **R2 修订（SA2 #9）——tmp 残留语义**：写/失败分支做 best-effort 清理——`try { unlinkSync(tmp) } catch { /* ENOENT 及其他一律吞——清理失败不升级 */ }`（ENOENT 容忍；清理自身失败静默，残留是合法遗物不作故障上报）。若清理未成或进程在 rename 前崩溃，`current.json.tmp` 残留**合法**：locator 恢复（#153）只按主名 `current.json` 工作，tmp 固定名不参与定位、人工删除安全。
 
 ### 2.4 JSONL line 纪律
 
-UTF-8、无 BOM、每行一个紧凑 JSON object（`JSON.stringify`）、以 `\n` 结束。writer 用固定对象字面量构造顺序（assemble 顺序：recordKind/streamId/sequence/attemptId/operation/stage/observedAt/durationMs?/source/context?/code?/sourcePhase?/sourceModule?/issues?/input/result），但**不承诺 canonical JSON bytes**，reader 不依赖键顺序（ADR 0012 §JSONL record 逐字）。`sequence`/`frameOffset` 为十进制无前导零字符串；`payloadLength` 为 JSON number。
+UTF-8、无 BOM、每行一个紧凑 JSON object（`JSON.stringify`）、以 `\n` 结束。writer 用固定对象字面量构造顺序（assemble 顺序：recordKind/streamId/sequence/attemptId/operation/stage/observedAt/durationMs?/source/context?/code?/sourcePhase?/sourceModule?/issues?/input/result），但**不承诺 canonical JSON bytes**，reader 不依赖键顺序（ADR 0014 §JSONL record 逐字）。`sequence`/`frameOffset` 为十进制无前导零字符串；`payloadLength` 为 JSON number。
 
 ### 2.5 NDCL v1 frame（25-byte header + payload；writer/reader/测试三方同构）
 
@@ -191,7 +191,7 @@ payload        NB   原始 Yjs update bytes
 ```
 
 - frame 总长 `25 + payloadLength`；`frameOffset` 指向 magic 首字节，不存可推导的 frameLength。
-- **CRC 输入域 = header 前 21 bytes（magic 至 payloadLength）直接连接 payload**，不含 crc32c 字段（ADR 0012 逐字；SA6 frame helper 已按此实现并自检）。
+- **CRC 输入域 = header 前 21 bytes（magic 至 payloadLength）直接连接 payload**，不含 crc32c 字段（ADR 0014 逐字；SA6 frame helper 已按此实现并自检）。
 - CRC 参数复用 `src/crc32c.ts`（#148 交付，KAT `check("123456789")=0xE3069283`）；inline carrier 的 `crc32c`（8 位小写 hex）与 frame 的 uint32 BE 是同一 CRC 值的两种字面形。
 - v1 禁止压缩；非零 flags/reserved、未知 frameVersion/payloadType → reader 响亮 incompatible（§7.2）。
 
@@ -203,7 +203,7 @@ payload        NB   原始 Yjs update bytes
 | `streamId` | `^log-[0-9a-f]{32}$`（复用 `P_STREAM_ID` 常量，§10-J12） | 提作 `resumeStreamId` 时违规 → 日志不启用 + `invalid-stream-id`；writer 自生成值恒合法；reader 入参违规 → `locator-invalid`（§7.1） |
 | segment 名 | `^[0-9]{8}$`（`P_SEGMENT`） | writer 侧自产恒合法；reader 侧经 VFSL P_SEGMENT 先行拒绝 |
 
-namespaceId 判定逻辑与 `packages/namespace-registry/src/identity.ts:70 isMinimalSafeString` 同纪律（SA6 简报 §2 明示对齐）；在 `src/paths.ts` 内实现同款函数（不 import registry——本包不依赖 registry，ADR/AGENTS 边界）。**不编码、不 hash、不替换字符静默另存**（ADR 0012 明文）。
+namespaceId 判定逻辑与 `packages/namespace-registry/src/identity.ts:70 isMinimalSafeString` 同纪律（SA6 简报 §2 明示对齐）；在 `src/paths.ts` 内实现同款函数（不 import registry——本包不依赖 registry，ADR/AGENTS 边界）。**不编码、不 hash、不替换字符静默另存**（ADR 0014 明文）。
 
 ---
 
@@ -241,7 +241,7 @@ createFileDiagnosticLog(config):                       // R2 修订（SA2 #2）�
   catch:                                                // —— 构造级 catch-all（R2 新增）——
     failed 模式 + 恰一次 notify({ type:'pipeline-crashed', stage:'adapter' })   // #148 既有成员，零扩词表
     （涵盖：clock.now throw / 返回 NaN / epoch 超域使 observedAtFrom 抛 RangeError；randomSource.randomBytes
-     throw；config 形状垃圾（rootDir 非串等）引发的 TypeError；未列举 errno 形态——ADR 0012「初始化失败
+     throw；config 形状垃圾（rootDir 非串等）引发的 TypeError；未列举 errno 形态——ADR 0014「初始化失败
      不影响 namespace create」的构造面对称防线，与 §4.1 append 面的顶层 catch 同款）
   finally:
     streamId ??= 'log-' + '0'.repeat(32)                // randomSource 即抛时形状完备占位（文法合法、零磁盘产物）
@@ -269,7 +269,7 @@ disabled/failed 模式：emitter 照常构造（emit 同步、不抛——intake
 
 - manifest 先于任何 record：JSONL/BIN 落盘前 stream 已自描述（`'wx'` = O_CREAT|O_EXCL 语义，创建原子且天然检测碰撞）。
 - genesis 先于 current.json：locator 最后指向一个已完成基线尝试的 stream；若中间崩溃，`current.json` 仍指旧 stream 或缺失——都可由 #153「扫描 manifests 确定性恢复」重建，不产生虚假完整性。
-- 每个 emit 的落盘本身即持久（同步 write，§4.3），无 flush 延迟窗口；不 fsync（ADR 0012「真正 fsync 可配置且默认关闭」——#152 不暴露 fsync 开关，固定关）。
+- 每个 emit 的落盘本身即持久（同步 write，§4.3），无 flush 延迟窗口；不 fsync（ADR 0014「真正 fsync 可配置且默认关闭」——#152 不暴露 fsync 开关，固定关）。
 
 ### 3.3 streamId 生成与碰撞
 
@@ -279,7 +279,7 @@ disabled/failed 模式：emitter 照常构造（emit 同步、不抛——intake
 
 **裁决：#152 的 `resumeStreamId` 只做指纹匹配检查，不做任何续写；四种可判定的 resume 结局全部落到「新建 generation，旧 stream 只读、字节恒等」。** 依据：
 
-1. ADR 0012「正常重启继续健康 stream」的**安全**续写依赖「打开与尾部恢复」的全部机制——交叉扫描 JSONL 与 BIN、截断最终不完整 JSONL 行/帧、清尾部 orphan frames（#153 范围，简报 §5.3 明示归属）。
+1. ADR 0014「正常重启继续健康 stream」的**安全**续写依赖「打开与尾部恢复」的全部机制——交叉扫描 JSONL 与 BIN、截断最终不完整 JSONL 行/帧、清尾部 orphan frames（#153 范围，简报 §5.3 明示归属）。
 2. 无修复的续写会主动制造永久中间损坏：崩溃遗留的不完整尾行若不被修复，续写 append 会把「最终尾部损坏」变成「中间损坏」，此后 strict reader 对该 stream 永远 corrupt——直接违反 ADR「只自动修复可以证明的最终尾部；中间损坏不尝试修复」的对称纪律。**半吊子续写比不续写更糟。**
 3. 因此在 #152 的能力边界内，「旧 stream 无法安全续写」恒为真 → 按 ADR「旧 stream 无法安全续写…时建立新 stream」落新建 generation。这是 ADR 条款的诚实适用，不是偏离。
 
@@ -289,7 +289,7 @@ disabled/failed 模式：emitter 照常构造（emit 同步、不抛——intake
 
 ## §4 Writer append 管线
 
-### 4.1 总数据流（ADR 0012 §Writer 两个 append 序列的落地）
+### 4.1 总数据流（ADR 0014 §Writer 两个 append 序列的落地）
 
 ```text
 appendFile(semantic: DiagnosticSemanticRecord):      // sink；整函数 try/catch → pipeline-crashed{stage:'adapter'}
@@ -386,7 +386,7 @@ record = {
 - genesis 的 inline/sidecar 选择、CRC、VFSL、storage 门、落盘顺序与 attempt 完全同一代码路径——只有 record 构造形状不同（`DiagnosticChangeRecord` 联合的另一成员）。
 - genesis 与 `updateCapture` 配置**正交**（§10-J4）：`updateCapture` 管的是 attempt 的 result update 捕获策略；`genesisUpdateBytes` 是 Host 显式提供的 stream 基线，提供即意图。【R2 取代 → Round 2 §R2-3：genesis 捕获亦须 `updateCapture=true`（数据保护 + writer/reader 自洽），「正交」裁决面被取代】
 - genesis 任何失败（守卫跳过 / IO 失败）都**不禁用** stream：attempt 照常、无虚假完整重放（ADR「genesis 未成功写入时 stream 仍可记录诊断事实」）。IO 失败发 `storage-write-failed{stage:'bin'|'jsonl'}`（operation 缺省——genesis 无 operation）。
-- **R2 修订（SA2 #7）——守卫跳过的可观察性备案（豁免，§11-G10）**：守卫跳过（empty/超 payloadCap）不发事件。理由：(a) ADR 对 genesis 的措辞是「尽力先记录」——缺失是合法终态而非故障，与 ADR 0012「丢弃**并上报**」仅约束 record 丢弃路径不同；(b) 可判别性已有工具面出口：读 JSONL 首行 `recordKind ≠ 'genesis-baseline'` 即知无 genesis（README 判别法，§12）；(c) 静默面收窄到「Host 配置自洽可查」的两种输入（0 字节 / 超 `min(payloadMaxBytes, uint32)`——两者都是 Host 已知量）；(d) 事件词表冻结纪律（总控 G1 同款保守取向）。若总控要求事件化，属词表演进（新联合成员），非本票默认。
+- **R2 修订（SA2 #7）——守卫跳过的可观察性备案（豁免，§11-G10）**：守卫跳过（empty/超 payloadCap）不发事件。理由：(a) ADR 对 genesis 的措辞是「尽力先记录」——缺失是合法终态而非故障，与 ADR 0014「丢弃**并上报**」仅约束 record 丢弃路径不同；(b) 可判别性已有工具面出口：读 JSONL 首行 `recordKind ≠ 'genesis-baseline'` 即知无 genesis（README 判别法，§12）；(c) 静默面收窄到「Host 配置自洽可查」的两种输入（0 字节 / 超 `min(payloadMaxBytes, uint32)`——两者都是 Host 已知量）；(d) 事件词表冻结纪律（总控 G1 同款保守取向）。若总控要求事件化，属词表演进（新联合成员），非本票默认。
 - 字节所有权：genesis 在构造函数返回前同步消费完毕，Host 构造后变异不影响已落盘内容（无需额外 slice；emit 路径的 intake 复制隔离由 #148 管线保证）。
 
 ### 4.3 同步落盘契约（SA6 实现期约束 #1 的采纳）
@@ -454,7 +454,7 @@ export function frameCrcOf(bin: Uint8Array, offset: number): number          // 
 
 ## §6 storage 校验门与共享原语
 
-ADR 0012 分工：VFSL 负责封闭对象/判别联合/literal enum/Pattern/十进制字面/Base64 与 CRC **字面形状**；storage validator 负责**严格 decode、长度一致、CRC 正确、跨域一致、offset/segment/边界/连续性**。本票 storage 校验原语收口在 `src/storage-gate.ts` + `src/carrier.ts`（decode 侧），writer 门与 reader 复用同一实现（防双份漂移）。
+ADR 0014 分工：VFSL 负责封闭对象/判别联合/literal enum/Pattern/十进制字面/Base64 与 CRC **字面形状**；storage validator 负责**严格 decode、长度一致、CRC 正确、跨域一致、offset/segment/边界/连续性**。本票 storage 校验原语收口在 `src/storage-gate.ts` + `src/carrier.ts`（decode 侧），writer 门与 reader 复用同一实现（防双份漂移）。
 
 ### 6.1 canonical Base64 判定（`carrier.ts` 新增 `decodeBase64Strict`）
 
@@ -561,7 +561,7 @@ readStreamStrict({ rootDir, namespaceId, streamId }): StrictStreamRead   // 纯�
      stream 级 issue）；**gap 合法**（「sequence 仅代表 append 顺序，不证明业务尝试无缺」——丢弃记录留 gap 是
      设计内诚实信号，SA6 §5.2 明示 reader 不接受 gap 为错误）
      【R2 取代 → Round 2 §R2-2：连续性校验（首条必须 '1'、逐步 +1、gap → stream 级 sequence-gap）取代
-      本环——总控 R2-G1 备案：round 1「gap 合法」裁决被 owner 反馈取代（ADR 0012 storage validator
+      本环——总控 R2-G1 备案：round 1「gap 合法」裁决被 owner 反馈取代（ADR 0014 storage validator
       职责「stream 连续性」）；sequence-out-of-order 码沿用（回归锚不动）】
   ⑦ 聚合：streamIssues = stream 级 ∪ 全部 record 级镜像（带 sequence/segment/offset 归因）
        any(code ∈ INCOMPATIBLE_SET) → status 'incompatible' 且 records 置 []（不近似解释、不声称连续）
@@ -577,7 +577,7 @@ readStreamStrict({ rootDir, namespaceId, streamId }): StrictStreamRead   // 纯�
 
 ### 7.2 「不近似解释」的落点
 
-- incompatible → `records: []`：不逐条猜测、不跳过未知记录后继续声称连续（ADR 0012 §Strict reader 逐字）；manifest 照常展示（含被篡改的 schema.text——测试锚定）。
+- incompatible → `records: []`：不逐条猜测、不跳过未知记录后继续声称连续（ADR 0014 §Strict reader 逐字）；manifest 照常展示（含被篡改的 schema.text——测试锚定）。
 - manifest 不可解析 → 同样 `records: []`（无法自描述的 stream 不进入逐条解释；corrupt + manifest-invalid）。
 - 不同 stream 互不连带：`readStreamStrict` 单 stream 作用域，无跨 stream 状态。
 
@@ -705,7 +705,7 @@ SA6 红灯失败根因四条（缺导出/缺 injectFinalRecordFile/缺三事件�
 | J6 | disabled 模式仍生成 streamId | 判断 | 对象形状完备（readonly 三字段恒有值）；无磁盘产物；确定性随机源下无副作用 |
 | J7 | manifest 碰撞经 `'wx'` EEXIST 检测，≤8 次重试，耗尽 disabled + `storage-write-failed{stage:'manifest',code:'EEXIST'}` | 依 ADR「碰撞时有限重试；耗尽只使日志能力不可用并上报」 | 不发明新 reason（词表冻结）；确定性随机源下有界退出不死循环 |
 | J8 | payload 守卫取 `min(payloadMaxBytes, 0xFFFFFFFF)` | 依 ADR「可配置但不得超过 uint32」 | 物理上限 clamp，非静默降级（frame 无法表达的配置值无合法语义） |
-| J9 | **R2 回写总控裁决（2026-08-28）**：exhausted = 独立成员 `{ type:'stream-exhausted' }`（零附加字段），转换时刻（allocate 产出 UINT64_MAX 的那次 append，无论该 record 后续落盘成败）恰发一次，此后静默（bool 门闩 + 事件抑制，与 failed 模式同纪律） | 依总控 J9 裁决（#148 §10-J13 预授权的联合成员追加）+ ADR 0012「丢弃**并上报**」 | 物理不可达（~10¹⁹ 次 append）；仅 testing 预置接缝（§6.3）可驱动；内存 adapter 维持既有 stats 计数不动（裁决原文） |
+| J9 | **R2 回写总控裁决（2026-08-28）**：exhausted = 独立成员 `{ type:'stream-exhausted' }`（零附加字段），转换时刻（allocate 产出 UINT64_MAX 的那次 append，无论该 record 后续落盘成败）恰发一次，此后静默（bool 门闩 + 事件抑制，与 failed 模式同纪律） | 依总控 J9 裁决（#148 §10-J13 预授权的联合成员追加）+ ADR 0014「丢弃**并上报**」 | 物理不可达（~10¹⁹ 次 append）；仅 testing 预置接缝（§6.3）可驱动；内存 adapter 维持既有 stats 计数不动（裁决原文） |
 | J10 | line 预算/VFSL 门逻辑在 file.ts 重建（~40 行），不从 memory.ts 提取共享 | 判断 | #148 冻结面（memory.ts/pipeline.ts）不可改是更强约束；两处注释互指 + 双测试集锚定防漂移 |
 | J11 | reader 扫描全部 `^[0-9]{8}$` segment（writer 恒写 00000001） | 判断 | reader 面向布局而非 writer 版本史；#153 rolling 落地时 reader 契约零改动 |
 | J12 | 三组件文法复用 `schema-patterns.ts` 常量（P_STREAM_ID/P_SEGMENT/P_DECIMAL） | 依 #148 §3.2 单源纪律 | schema Pattern 与 TS 校验永不漂移；namespaceId 安全文法在 paths.ts 实现（对齐 registry isMinimalSafeString，不 import registry） |
@@ -739,7 +739,7 @@ SA6 红灯失败根因四条（缺导出/缺 injectFinalRecordFile/缺三事件�
 
 | # | 缺口/裁决 | 定稿取值 | 理由与依据 |
 |---|---|---|---|
-| G14（R2 任务 1） | reader 是否执行 manifest 冻结 format policy（round 1 仅查类型） | **执行**：record 级第五环四检查（capture/input/threshold/line-limit），四新码 `policy-capture-mismatch` / `policy-input-mismatch` / `policy-threshold-mismatch` / `policy-line-limit-exceeded`（SA6 建议词，SA1 确认定义——见 Round 2 §R2-1 逐条触发条件表），全部归 corrupt | ADR 0012 §Writer「影响记录解释的配置在 stream 创建时冻结」+ AC4「strictly interpret」；政策违规是策略/物理缺陷而非未知版本 → corrupt 档（非 incompatible） |
+| G14（R2 任务 1） | reader 是否执行 manifest 冻结 format policy（round 1 仅查类型） | **执行**：record 级第五环四检查（capture/input/threshold/line-limit），四新码 `policy-capture-mismatch` / `policy-input-mismatch` / `policy-threshold-mismatch` / `policy-line-limit-exceeded`（SA6 建议词，SA1 确认定义——见 Round 2 §R2-1 逐条触发条件表），全部归 corrupt | ADR 0014 §Writer「影响记录解释的配置在 stream 创建时冻结」+ AC4「strictly interpret」；政策违规是策略/物理缺陷而非未知版本 → corrupt 档（非 incompatible） |
 | G15（R2 任务 1 注） | input 阶梯方向：policy=digest + record capture=full 是否违规 | **确认违规（上界语义）**：record 捕获强度不得**超** policy（none < digest < redacted < full）；弱于 policy 恒可（#148「事实优先于策略」：not-accessed/unavailable/unsafe-input 原样入 record；producer 省略 input → capture 'none' 与 policy 无关） | policy 是 stream 创建时的数据保护上界（ADR 0011「full 输入…必须由 Host 明确启用」）；超限 record = 管线旁路或 policy 漂移，两皆缺陷；SA6 锚定用例（policy=digest + full → 违反）与此一致 |
 | G16（R2 任务 3） | genesis 守卫的消耗面与 capture 面（G2/J4 的 R2 再裁决） | **两项改定**：(a) 守卫（empty / 超 payloadCap / **新增 !updateCapture**）整体前置到 allocate() 之前——不构造、不分配、不消耗，attempt 从 '1' 起（取代 G2 消耗面）；(b) genesis 捕获须 `updateCapture=true`（取代 J4「正交」）：capture=false ∧ 提供 genesisUpdateBytes → 跳过 genesis（无事件，G10 豁免延伸） | (a) SA6 R2 明示属 SA1/SA3 空间；R2-G1 下「明知留 gap 仍消耗」= 故意产出自家 reader 判 corrupt 的 stream，writer/reader 自洽优先；ADR「准备 append 时才分配」——守卫拦下的 genesis 根本未达准备期；(b) ADR 0011 数据保护（committed Yjs update 捕获须 Host 显式启用——genesis 是整档 update，保护强度只高不低）+ SA6 reader 锚明文「attempt 或 genesis」+ writer/reader 自洽。IO 型 genesis 失败仍消耗（分配已发生 → 首 record 从 '2' 起 → reader 诚实报 sequence-start-invalid） |
 | G17（R2 任务 3） | writer 失败路径是否改为不消耗 sequence | **不改**：post-allocation 丢弃（VFSL/storage 门、line 超限、bin/jsonl 写失败）保留「分配即消耗」→ reader 面呈现 sequence-gap → corrupt | (a) owner 备案明文：「writer 侧分配后丢弃…呈现 gap 损坏——这是诚实性增强而非回归」；(b) ADR「writer 准备 append 时才分配 stream sequence」——分配在准备期起点即 ADR 时序本身；sequence 是 record 与 frame header（uint64 BE）的组成部分，BIN-first 下帧先于引用落盘，**结构性不可**推迟到成功后分配（两阶段分配无 ADR 授权）；(c) 诚实性：分配后丢弃确是数据缺损，reader 报 corrupt 是真话 |
@@ -787,7 +787,7 @@ SA6 红灯失败根因四条（缺导出/缺 injectFinalRecordFile/缺三事件�
 | `fs.appendFileSync(path, data)` 以 append 语义写，**文件不存在则创建**（.bin 惰性创建的机制） | 官方文档 + 现有测试引用 | Node docs `fs.appendFile`：「append data to a file, creating the file if it does not exist」；SA6 红灯 `file-adapter-layout.test.ts:190`（`.bin 惰性创建`用例）直接锚定该行为 | 低 |
 | `fs.writeFileSync(path, data, { flag: 'wx' })` 在路径已存在时抛 `EEXIST`（manifest 不可变创建 + 碰撞检测） | 官方文档 | Node docs flag `'wx'`：「Open file for writing. Fails if the path exists」（O_CREAT\|O_EXCL 语义）；EEXIST 经 `err.code` 提取（§8） | 低 |
 | 对**目录**路径 `appendFileSync`/`open` 抛 `EISDIR` 且 `err.code === 'EISDIR'` | 现有测试引用（最强锚） | SA6 红灯 `file-adapter-mismatch-interference.test.ts:170`（`mkdirSync(p.binPath)` 占位 → 断言 `storage-write-failed{stage:'bin'}` + 恢复）与 `:216`（jsonl 占位）已把该行为钉进契约 | 低 |
-| `fs.renameSync(old, new)` 对同目录目标为原子替换（current.json temp+rename） | ADR 明文 + 仓内先例 | ADR 0012 §File adapter 布局：「current.json 使用 temp + rename 原子替换」；ADR 0006 snapshot 写入 `{namespaceId}.snapshot.tmp` 后原子 rename 覆盖——同一已验证模式（相关决议文档 ADR-0006 节引文） | 低 |
+| `fs.renameSync(old, new)` 对同目录目标为原子替换（current.json temp+rename） | ADR 明文 + 仓内先例 | ADR 0014 §File adapter 布局：「current.json 使用 temp + rename 原子替换」；ADR 0006 snapshot 写入 `{namespaceId}.snapshot.tmp` 后原子 rename 覆盖——同一已验证模式（相关决议文档 ADR-0006 节引文） | 低 |
 | `Buffer.from(s, 'base64')` 是**宽松**解码器（跳过非法字符/空白）→ canonical 判定必须 decode→re-encode 恒等比较 | 现有测试引用 + 源码先例 | SA6 `test/helpers/frame.ts:117 isCanonicalBase64` 即此算法（含 `Buffer.from(s,'base64')` 后重编码比较）；红灯用例 'AB=='（`file-adapter-strict-reader.test.ts:235`）与注入门用例（`mismatch:75`）锚定非 canonical 必须被拒 | 低 |
 | `fs.readFileSync` 对缺失文件抛 `ENOENT`、`err.code` 可提取（resume manifest-missing 分支） | 官方文档 | Node docs `fs.readFileSync` 异常传播 `err.code`；仓内 Node ≥20（root package.json engines） | 低 |
 | `fs.mkdirSync(path, { recursive: true })` 幂等（已存在不抛） | 官方文档 | Node docs：「with recursive: true, no error is thrown if the directory exists」 | 低 |
@@ -838,7 +838,7 @@ src/pipeline.ts:105:  switch (r.kind) {     # 唯一 switch——按 result.kind
 | 要求 | 是否落实 | 修订位置 | 修订内容摘要 |
 |------|:--:|------|------|
 | #1（CRITICAL）：binLength 失败重同步在 EISDIR 场景把目录 st_size 当文件长，恢复后永久错位、必败 ns-binfirst-1；建议 (a) 文件感知 stat 或 (b) fresh-stat 弃缓存；§13 补登 stat-目录假设 | ✅ 修（采纳建议 b，更优解） | §4.1（offset = `planFrameOffset(binPath)`：`statSync(binPath,{throwIfNoEntry:false})` + `isFile()`，stat throw → `storage-write-failed{stage:'bin'}` + 丢弃；删除 binLength 缓存与「重同步」两处）、§4.1 不变量（「offset 无内存-磁盘孪生状态」）、§4.4（新增「offset 规划」行）、§9（mismatch 行改 fresh-stat）、§13（补登 stat-目录行为 + R1 缺陷自记） | 彻底废除缓存——每次 sidecar append 前 fresh stat 取预计 offset；EISDIR 目录占位时 `isFile()=false` → offset 0 → append 必败 → record 连同 offset 丢弃，绝无「目录尺寸当文件长」的错位引用；恢复/外部截断后下一次 append 自动从真实文件尾续写（自愈）；红灯 ns-binfirst-1 语义推演：恢复后新帧 offset=0=真实落点，reader ok ✓ |
-| #2（MAJOR）：构造函数无 crash 包络——clock throw/NaN/超域从 `createFileDiagnosticLog` 外抛，违反「初始化失败不影响 namespace create」 | ✅ 修 | §3.1（整体 try/catch：任何未预见异常 → failed 模式 + 恰一次 `pipeline-crashed{stage:'adapter'}`（#148 既有成员，零扩词表）+ finally 返回形状完备对象；`streamId ??= 'log-'+'0'×32` 占位）、§3.1 模式表（新增「init 期未预见异常」行：不保证零产物，但 `'wx'` 保证绝无半写 manifest）、§1.3 clock 行、§4.2 observedAt 注、§4.4（构造面顶层异常行） | 与 §4.1 append 面顶层 catch 对称的构造级防线；ADR 0012「初始化失败不影响 namespace create」闭合 |
+| #2（MAJOR）：构造函数无 crash 包络——clock throw/NaN/超域从 `createFileDiagnosticLog` 外抛，违反「初始化失败不影响 namespace create」 | ✅ 修 | §3.1（整体 try/catch：任何未预见异常 → failed 模式 + 恰一次 `pipeline-crashed{stage:'adapter'}`（#148 既有成员，零扩词表）+ finally 返回形状完备对象；`streamId ??= 'log-'+'0'×32` 占位）、§3.1 模式表（新增「init 期未预见异常」行：不保证零产物，但 `'wx'` 保证绝无半写 manifest）、§1.3 clock 行、§4.2 observedAt 注、§4.4（构造面顶层异常行） | 与 §4.1 append 面顶层 catch 对称的构造级防线；ADR 0014「初始化失败不影响 namespace create」闭合 |
 | #3（MAJOR）：reader 无 fs 错误包络——「不抛」无实现面；readdir/readFileSync/bin 读取分支未定义 | ✅ 修 | §7.1 ④（readdir throw → corrupt + `manifest-invalid` + records:[]）、⑤（jsonl ENOENT → 零行无 issue——合法 BIN-first 崩溃残态；其他 throw → stream 级 `invalid-json` + segment 归因 + 该段零条目）、⑧（全函数 try/catch 兜底 → corrupt，绝不抛）、§7.4（bin 缺失/非常规文件/不可读 → `frame-missing`）、§7.5（四行触发条件更新）、§11-G9（码映射定稿） | 损坏诊断工具在损坏状态下不再自崩；三类分支 + 兜底全部收敛到 corrupt/incompatible，23 码内零扩码 |
 | #4（MAJOR）：总控 J9 裁决未回写正文（§4.1/§8/§10-J9/§12 仍写旧决策） | ✅ 修（五处回写 + 转换时刻精确定义 + 测试接缝） | §4.1（`exhaustedLatch` 门闩 + `sequence === UINT64_MAX` 转换时刻恰一次 `stream-exhausted`——定义：产出 UINT64_MAX 的分配完成即触发，无论该 record 后续落盘成败；此后含注入在内静默丢弃）、§4.1 不量表、§4.4（exhausted 行：不消耗——无分配）、§8（第四成员）、§10-J9（裁决回写）、§12（health.ts 四成员）、§9（R2 补充测试：预置接缝驱动转换）、§6.3（`createFileDiagnosticLogPresetSequence` 接缝）、§1.2/§14（+3 → +4） | 正文与文末裁决一致；SA3 按正文实现即符合已生效裁决 |
 | #5（MINOR）：manifest 身份字段与实参互核缺失 | ✅ 修 | §7.1③（身份互核：streamId/namespaceId ≠ 实参 → corrupt + stream 级 `stream-mismatch` + records:[]；`schemaId ≠ manifest.schema.id` → 并入 `schema-fingerprint-mismatch`）、§7.5、§11-G7 | 23 码内复用，零扩码；消除「stream A 目录改名 stream B → 假 ok」的身份误归因 |
@@ -866,7 +866,7 @@ R1 初版交付时无 SA2 评审反馈（占位），本表自 R2 起逐条填�
 
 | # | 裁决 | 理由 |
 |---|---|---|
-| G1 | **批准设计默认**：resume 指纹匹配 → 静默新建 generation，**不扩 reason 词表**（不引入第 5 值） | #152 无续写能力时新建 generation 是 ADR 0012 明文允许的诚实行为（「旧 stream 无法安全续写…时建立新 stream」）；词表演进留到 #153 落地真续写时自然消失。可诊断性损失记入 REPORT 遗留风险 |
+| G1 | **批准设计默认**：resume 指纹匹配 → 静默新建 generation，**不扩 reason 词表**（不引入第 5 值） | #152 无续写能力时新建 generation 是 ADR 0014 明文允许的诚实行为（「旧 stream 无法安全续写…时建立新 stream」）；词表演进留到 #153 落地真续写时自然消失。可诊断性损失记入 REPORT 遗留风险 |
 | G2 | **批准设计默认**：genesis 守卫跳过消耗 sequence，attempt 从 '2' 起 | 单一「分配即消耗」纪律优于两态并存；gap 是诚实信号，reader 不视 gap 为错 |
 | G3 | **批准扩值**：`storage-validation-failed.code` 增 `'frame-missing'` | 类型本为 `code: string`，零破坏；loud 优于静默，注入侧装配缺陷必须可诊断 |
 | G4 | **批准设计默认**：manifest format/version 异常 → `manifest-invalid`（corrupt），不发明新码 | corrupt 语义诚实（无法自描述）；词表封闭优先 |
@@ -881,7 +881,7 @@ R1 初版交付时无 SA2 评审反馈（占位），本表自 R2 起逐条填�
 
 依据：
 1. #148 设计 §10-J13 已预授权：「`sequence-exhausted` 由 #152 文件路径实际落地耗尽语义时以**联合成员追加**方式引入（§8.1 备案），TS 事件类型只增不改、VFSL schema 不受影响」——本裁决是执行已备案的演进计划，非新开口子；
-2. ADR 0012「丢弃并上报」是无条件行为要求——(a) 缓期在已确认缺口下属隐匿，否；
+2. ADR 0014「丢弃并上报」是无条件行为要求——(a) 缓期在已确认缺口下属隐匿，否；
 3. (b) 扩 `record-dropped.reason` 需为 exhausted 伪造 projectedRecordBytes/queueDepth 两必填字段，语义扭曲，否；(c) 独立成员零字段、低基数（每 stream 恰一次）、满足 §8.2 白名单纪律；
 4. 契约审计（§14）已证联合只增不改零破坏；SA6 红灯测试不触及该成员（物理不可达路径，仅 testing 预置接缝可触达，可在实现期补一条转换测试）。
 
@@ -890,7 +890,7 @@ R1 初版交付时无 SA2 评审反馈（占位），本表自 R2 起逐条填�
 | # | 裁决 | 理由 |
 |---|---|---|
 | G11（spec F-3） | **背书现状**：`StrictRecordRead` 不携带 `recordKind` | SA6 锚定形状对 invalid-json 行本不可满足（JSON 不可解析时无 recordKind 可言）；实现取舍合理，属流程漏登记而非缺陷。以此裁决回写补登记 |
-| G12（spec F-4） | **不增加数值配置校验**，登记为已知限制 | 误配置非静默：NaN lineBudgetBytes 冻结进 manifest 后自家 reader 判 manifest-invalid，可诊断；ADR 0012 未要求配置校验。录入 REPORT 遗留风险 |
+| G12（spec F-4） | **不增加数值配置校验**，登记为已知限制 | 误配置非静默：NaN lineBudgetBytes 冻结进 manifest 后自家 reader 判 manifest-invalid，可诊断；ADR 0014 未要求配置校验。录入 REPORT 遗留风险 |
 | G13（spec F-1） | **必须修复**（非登记）：genesis 路径消耗 UINT64_MAX 必须触发 exhausted 门闩与恰一次 `stream-exhausted` | J9 裁决的精神是「exhausted 必上报」；留一条 testing 接缝可达的静默超域落盘路径与该裁决矛盾。4 行最小修在 SA3 lane |
 
 ---
@@ -899,7 +899,7 @@ R1 初版交付时无 SA2 评审反馈（占位），本表自 R2 起逐条填�
 
 > **⚠️ 历史档案（2026-08-28 总控裁定，见 r2_dispatch.md 第 12 行）**：本章为并行任务族「族 A」的裁决记录。经 Host 裁决，本轮实施基线为族 B `task_diagnostic-log-file-adapter-r2_design.md`（SA1 R3；SA8 前置/设计复审/R3 delta 三度 clear + SA2 R2 pass）。本章降级为历史档案，**不得作为实现或验收依据**。与族 B 的关键语义冲突（一律以族 B 为准）：(a) reader 码表——族 B §2.6 六码（`manifest-update-capture-violation` / `manifest-input-policy-violation` / `manifest-inline-threshold-violation` / `manifest-sidecar-threshold-violation` / `manifest-line-limit-exceeded` + stream 级 `sequence-gap`）；本章 `policy-*` 四码与 `sequence-start-invalid` 不采（族 B 起点固定 1n，起始非 1 归 `sequence-gap`）。(b) sequence 分配时点——族 B §3.2 提交点分配 + §3.2.1 definitive/ambiguous 二分（definitive pre-commit 失败不消耗、candidate 可复用；ambiguous reservation 后封闭 generation）；本章「分配即消耗不变（G17）」不采。(c) genesis 与 capture——族 B §2.2 保持正交（capture=false 下 genesis 合法）；本章 G16「genesis 亦须 capture=true」不采。(d) EISDIR 恢复锚——族 B 下 definitive 失败复用 candidate、恢复后 stream 连续仍 ok；本章「corrupt + sequence-gap」处置不采。本章内所有「R2 取代 → §R2-N」指针随之失效。
 
-> **裁决基线**：round 1「gap 合法」裁决被 owner 反馈取代（依据 ADR 0012 §VFSL record schema storage validator 职责清单「offset、segment、frame 边界与 **stream 连续性**」；冲突时 owner 反馈优先）。round 1 相关正文**不删改**，被取代处已标注「R2 取代 → 本章」。锚定：SA6 Round 2 红灯（`test/file-adapter-r2-policy-continuity.test.ts` 15 测试 + 3 处 round 1 断言修订；红灯证据 `Tests 12 failed | 262 passed`，exit=1）。定稿记 §11 G14–G18。
+> **裁决基线**：round 1「gap 合法」裁决被 owner 反馈取代（依据 ADR 0014 §VFSL record schema storage validator 职责清单「offset、segment、frame 边界与 **stream 连续性**」；冲突时 owner 反馈优先）。round 1 相关正文**不删改**，被取代处已标注「R2 取代 → 本章」。锚定：SA6 Round 2 红灯（`test/file-adapter-r2-policy-continuity.test.ts` 15 测试 + 3 处 round 1 断言修订；红灯证据 `Tests 12 failed | 262 passed`，exit=1）。定稿记 §11 G14–G18。
 
 ### R2-1 strict reader 执行 manifest 冻结 format policy（record 级第五环）
 

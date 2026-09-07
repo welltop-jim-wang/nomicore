@@ -68,7 +68,7 @@
   - （数据保护，本票记录字段须遵守）「默认不记录 token、凭证、原始 Authorization、完整 Error stack、任意 cause 文本或未经控制的 transport payload；」「`actor`、`correlationId`、identity 和 error projection 必须是显式结构化受控字段；」「日志字段不得进入默认低基数 metrics label。」
   - （关联节）「本 ADR 增加可选 observability，不修改 ADR 0006 的 snapshot Persistence 与 dirty notification 语义、ADR 0008 的单 sequencer/zero-write/fatal/close 契约、ADR 0009 的 Registry lifecycle 与 observer 隔离、ADR 0010 的 trusted replication、ACK 和 transport observability 语义。」
 
-### ADR-0012 VFSL 校验的 JSONL 与 framed sidecar 诊断日志格式（accepted，含 2026-08-28 首切片 amendment）——本票主规范之二：词表与接线纪律
+### ADR-0014 VFSL 校验的 JSONL 与 framed sidecar 诊断日志格式（accepted，含 2026-08-28 首切片 amendment）——本票主规范之二：词表与接线纪律
 
 #### A. operation / result / stage 词表（本票 AC1/AC2 的词表依据）
 
@@ -90,7 +90,7 @@
 
 #### C. 首切片 amendment 与 write-slot 接线纪律（**规范性，点名本票**）
 
-- 与本任务的关联点：ADR-0012 amendment 明文「不满足该条件的接线为不合规，必须由 **#149**–#151/#155 或后续接线票修复后方可启用」——本票（#149）就是 ROOT/SCHEMA 侧的接线票，emit 调用点位置是本票设计的硬约束。
+- 与本任务的关联点：ADR-0014 amendment 明文「不满足该条件的接线为不合规，必须由 **#149**–#151/#155 或后续接线票修复后方可启用」——本票（#149）就是 ROOT/SCHEMA 侧的接线票，emit 调用点位置是本票设计的硬约束。
 - 核心条款（原文摘录）：
   - 「每个 `emit` 在调用栈内执行至多一条 final JSONL record 的有界同步 append；若其携带 sidecar，则额外执行至多一帧 BIN append，顺序为 BIN-first。该首切片不维护 writer queue、不做 batch flush、不提供 fsync 开关，也不保持常驻 file descriptor。」
   - 「**任何将 File adapter 的 `emit` 接入 namespace 生命周期的调用点，必须位于 NamespaceRuntime write sequencer slot 之外，或在该 slot 已释放之后；不得在 slot 内执行同步 File adapter `emit`。**不满足该条件的接线为不合规，必须由 #149–#151/#155 或后续接线票修复后方可启用。」
@@ -152,7 +152,7 @@
 
 ### ADR-0001 / 0002 / 0003 / 0004 / 0005（accepted）——盘点结论
 
-- 与本票接线对象无直接条款交集；仍受其既有边界约束（record schema 的 VFSL 冻结纪律经 ADR-0012 §VFSL record schema 间接约束：本票不改 record schema 版本/指纹、不新增 operation）。
+- 与本票接线对象无直接条款交集；仍受其既有边界约束（record schema 的 VFSL 冻结纪律经 ADR-0014 §VFSL record schema 间接约束：本票不改 record schema 版本/指纹、不新增 operation）。
 - ADR-0003 的 ROOT 约定（「ROOT 固定物化为 Y.Map」「Yjs 映射为 `doc.getMap('ROOT')`」）是 ROOT mutation 操作对象的存在前提，本票不触碰。
 
 ## CONTEXT.md 相关术语与惯例
@@ -179,7 +179,7 @@
 ### D-A 发射点：settled promise 微任务（slot 之外）+ acceptance 公共入口同步 emit
 
 - 设计原文（§2 D-A / §7.1）：「emit 挂在 `sequencer.enqueue(...)` 返回 promise 的 `.then` 链上——**write sequencer slot 已释放之后**的微任务内、且先于下一任务取得槽」；「acceptance 拒绝（零入队路径）在公共方法调用栈内同步 emit」。
-- ADR 锚：ADR-0012 amendment C「任何将 File adapter 的 `emit` 接入 namespace 生命周期的调用点，必须位于 NamespaceRuntime write sequencer slot 之外，或在该 slot 已释放之后；不得在 slot 内执行同步 File adapter `emit`」；ADR-0011 §F「acceptance 前拒绝在对应公共入口记录」「committed record 的 sequence 分配与 emitter 接收可发生在 transaction committed 事实可知之后，但 emitter 不被 `await`」「adapter 慢、失败或队列满都不得延长 write slot 或阻塞 close/shutdown」。
+- ADR 锚：ADR-0014 amendment C「任何将 File adapter 的 `emit` 接入 namespace 生命周期的调用点，必须位于 NamespaceRuntime write sequencer slot 之外，或在该 slot 已释放之后；不得在 slot 内执行同步 File adapter `emit`」；ADR-0011 §F「acceptance 前拒绝在对应公共入口记录」「committed record 的 sequence 分配与 emitter 接收可发生在 transaction committed 事实可知之后，但 emitter 不被 `await`」「adapter 慢、失败或队列满都不得延长 write slot 或阻塞 close/shutdown」。
 - 连带事实（§7.1 推论③，SA2 复核点）：调用方 promise 的结算时点**包含**有界 emit（红灯契约 AC4「两次尝试恰好各 emit 一次」的同步断言依赖该顺序：`await mutateRoot()` 恢复时 emit 必已执行）。emit 顺序 ≡ 槽完成顺序 ≡ FIFO（`sequencer.ts` 内部 `tail.then(noop)` 先注册、外部 `.then(emit)` 后注册、下一任务 thunk 挂 tail 之后）。
 
 ### D-B owned bytes：yjs 事务 update 事件订阅窗口（doc-runtime 零改动）
@@ -198,8 +198,8 @@
 ### Seam 扩展：`diagnosticEmitter?` / `clock?`（条件校验 + doc.on/off loud assert）
 
 - 设计原文（§5.1/§5.2）：两可选字段均为加法扩展；`diagnosticEmitter` 提供时校验 `emit` 为 function，且**条件性**校验 `handle.doc` 具备 `on`/`off`——「装配诊断发射即要求 doc 具备事件订阅面（Y.Doc 契约标配）：缺 on/off 属上游契约破坏，构造期 loud 拒绝……绝不静默吞掉后把『应有 update 的记录』降级成 noop/omitted」；`clock` 缺省 `() => Date.now()`（生产缺省），结构兼容 `@nomicore/clock` `Clock.now` / `emission.ts` `observedAtFrom`。
-- ADR 锚：ADR-0012 §A「`observedAt` 由完成操作的 producer 使用注入 Clock 生成 UTC ISO 8601」（注入接缝即本字段；红灯契约明文「`observedAt` 必须来自注入 Clock」）；ADR-0008「构造失败时所有权仍归调用方」（构造期 loud throw 与既有 INV-N4/N14 纪律同族）；ADR-0009「缺失任何依赖均在 plugin 启动时响亮失败，不 fallback 到 `Date.now()` 或全局 timer」「Persistence 和 Registry 都依赖外部 Clock……不各自实现或 fallback 到系统 timer」——**该 No-Date.now-fallback 纪律辖 Registry/Persistence，不辖 namespace-runtime**；未来 Registry 接线票须注入 `ctx.clock`。
-- 边界注记（复审记录）：「装配 emitter 而不注入 clock」的组装形态下 observedAt 将来自 `Date.now()` 缺省——本票生产工厂不装配 emitter（`createNamespaceRuntime` 传参不变），该形态在本票生产面不可达；生产接线的 Clock 注入义务属后续 Registry 接线票（ADR-0009 Registry 纪律 + ADR-0012「注入 Clock」）。
+- ADR 锚：ADR-0014 §A「`observedAt` 由完成操作的 producer 使用注入 Clock 生成 UTC ISO 8601」（注入接缝即本字段；红灯契约明文「`observedAt` 必须来自注入 Clock」）；ADR-0008「构造失败时所有权仍归调用方」（构造期 loud throw 与既有 INV-N4/N14 纪律同族）；ADR-0009「缺失任何依赖均在 plugin 启动时响亮失败，不 fallback 到 `Date.now()` 或全局 timer」「Persistence 和 Registry 都依赖外部 Clock……不各自实现或 fallback 到系统 timer」——**该 No-Date.now-fallback 纪律辖 Registry/Persistence，不辖 namespace-runtime**；未来 Registry 接线票须注入 `ctx.clock`。
+- 边界注记（复审记录）：「装配 emitter 而不注入 clock」的组装形态下 observedAt 将来自 `Date.now()` 缺省——本票生产工厂不装配 emitter（`createNamespaceRuntime` 传参不变），该形态在本票生产面不可达；生产接线的 Clock 注入义务属后续 Registry 接线票（ADR-0009 Registry 纪律 + ADR-0014「注入 Clock」）。
 
 ### emitAttempt 吞没一切（producer 防御义务）
 
@@ -209,9 +209,9 @@
 
 ### 冻结映射表（§9，25 结局点）与词表保真
 
-- 设计原文（§9/§10.1）：stage 全取 ADR-0011 八值词表中本票适用的七值（`identity` 为 replication 域，不用）；operation `root-mutation`/`schema-replacement` 已在 ADR-0012 v1 封闭词表内；code 全部复用 ADR-0008 稳定码注册修订第 5 条所列 `errors.ts` 既有常量（`RUNTIME_WRITE_DISABLED` / `MUTATION_INPUT_NOT_PLAIN_DATA` / `SCHEMA_UNAVAILABLE` / `NSRT-FATAL-WRITE-INTERNAL` / `NSRT-FATAL-SCHEMA-WRITE-INTERNAL`）与 `p0.ts` `toIssueSummary` 既有派生（`SCHEMA_TEXT_INVALID` / `SCHEMA_ENVELOPE_*` 透传族）——零新码、零改 message 文案；result 全取 ADR-0012 六分支判别联合。
+- 设计原文（§9/§10.1）：stage 全取 ADR-0011 八值词表中本票适用的七值（`identity` 为 replication 域，不用）；operation `root-mutation`/`schema-replacement` 已在 ADR-0014 v1 封闭词表内；code 全部复用 ADR-0008 稳定码注册修订第 5 条所列 `errors.ts` 既有常量（`RUNTIME_WRITE_DISABLED` / `MUTATION_INPUT_NOT_PLAIN_DATA` / `SCHEMA_UNAVAILABLE` / `NSRT-FATAL-WRITE-INTERNAL` / `NSRT-FATAL-SCHEMA-WRITE-INTERNAL`）与 `p0.ts` `toIssueSummary` 既有派生（`SCHEMA_TEXT_INVALID` / `SCHEMA_ENVELOPE_*` 透传族）——零新码、零改 message 文案；result 全取 ADR-0014 六分支判别联合。
 - 关键映射裁决（SA2/SA4 复核锚）：
-  - effect `unknown` **仅**用于「fatal + committed:true 且零 bytes」（R11 分支）——ADR-0012 result 判别联合的显式分支，**不是** ADR-0011 结局分类 `unknown`（正常路径禁用结局 `unknown`）；
+  - effect `unknown` **仅**用于「fatal + committed:true 且零 bytes」（R11 分支）——ADR-0014 result 判别联合的显式分支，**不是** ADR-0011 结局分类 `unknown`（正常路径禁用结局 `unknown`）；
   - ROOT/SCHEMA 领域校验失败（R9/S5′a）与 SCHEMA 信封形状检查失败（S3′b）落 `validation`、无顶层 code——模块既有通道（write issue `{message,path}`）无稳定 code，忠实保留；issues 顺序透传；
   - S2 getStatus 抛错与 S4 结构不可达守卫落 `capability-gate` + fatal `committed:false`——ADR-0011 §B capability-gate 定义明文含「被 fatal、handle 状态、schema unavailable 等能力 gate 拒绝」；
   - S4 schema unavailable 落 `capability-gate`（ADR-0011 §B 明文列举）+ 既有码 `SCHEMA_UNAVAILABLE`；

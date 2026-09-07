@@ -1,6 +1,6 @@
 # Design — Expose diagnostic replay and Host lifecycle configuration（issue #155 / SA1 R1）
 
-- **任务类型**: Feature（ADR-0011 + ADR-0012-LOG 的 **Host/Registry 暴露与接线收口票**；ADR-0012-LOG 首切片 amendment 明文点名 #155 为接线修复票）
+- **任务类型**: Feature（ADR-0011 + ADR-0014-LOG 的 **Host/Registry 暴露与接线收口票**；ADR-0014-LOG 首切片 amendment 明文点名 #155 为接线修复票）
 - **红灯契约**: `apps/yjs-server/test/diagnostic-replay-host-lifecycle-red.test.ts`（SA6，22 用例，两档红灯：config 面 `diagnostics` 键被拒 / `@nomicore/yjs-server` 入口无 `replayNamespaceDiagnosticLog` 导出）
 - **约束基准**: `wiki/raw/task_expose-diagnostic-replay-host-lifecycle_relevant_decisions.md`（红线清单 10 条 + SA8 设计后复审追加 D1–D12）+ `…_conflict_report.md`（verdict clear，6 项边界审视）+ `…_sa2_review.md`（**R0 reject 判决：C1/M1/M2/M3/m1/m2/m3/i1/i2/i3——本 R1 逐条落实，回应表见 §9**）
 - **依赖现状**: #148（契约+内存 adapter）、#149（Runtime ROOT/SCHEMA/replication 语义接线）、#150（Registry create 接线 + `diagnosticLog` seam）、#151（复制槽位诊断）、#152（File adapter）、#153（reopen/rolling/rotate）、#154（retention/租约/删除）全部已在 worktree 落地。
@@ -123,7 +123,7 @@
 
 ### D2（仲裁）：冻结/可调二分在配置面上的落点
 
-ADR-0012-LOG 冻结类 = record/schema/frame 版本、committed update capture、input capture policy、inline threshold、line 上限；可调类 = retention/queue/batch/flush/fd/metrics。
+ADR-0014-LOG 冻结类 = record/schema/frame 版本、committed update capture、input capture policy、inline threshold、line 上限；可调类 = retention/queue/batch/flush/fd/metrics。
 
 - 本票配置面**只暴露** `updateCapture`（冻结类）、`inputPolicy`（冻结类）、`retention`（可调类）。inline threshold / line 上限 / roll targets / payloadMax **不暴露**（保持 adapter 内建冻结缺省——暴露即引入「同进程内冻结策略漂移」的操作员错误面，且 R10 已在 adapter 层验证 rotate 机制，无需配置面承载）。
 - **冻结类变更 → 新 generation 的机制**：#153 `analyzeStreamForResume` 以 `resolved` 四值 + roll targets 对照 manifest，不匹配 → `stream-generation-rotated` + 新 generation（`file.ts:1398-1416`）。配置是 restart-only（`parseAppConfig` 在 boot/SIGHUP 换装各解析一次）→ 跨重启改 `updateCapture`/`inputPolicy` ⇒ reopen 健康证明失败 ⇒ rotate。**不自动拼接**（ADR 冻结；R10 断言）。
@@ -224,7 +224,7 @@ first-slice File adapter 每条 record 独立同步 append、无队列、无常�
 2. 释放 Map 引用。**零 fs 操作、零 await**——不执行停机 sweep（同步 fs 扫描无上界，违反有界要求）。
 
 - 挂点：`performStop` 在 `registry.shutdown()` 完成之后（Runtime close barrier 排空 ⇒ 全部 slot 释放后 emit 已发生——#149 §7.1 注册序证明「全部写的 emit 微任务先于 barrier thunk」）、persistence 排空窗之前。顺序：replication drain → registry shutdown → **diagnostics close** → persistence 排空窗 → persistence dispose → ctx dispose。
-- Registry shutdown / Persistence dispose 的等待链**不含任何日志侧 await**（Registry 从不 await emitter；manager.close() 同步 O(1)）→ 「cannot indefinitely delay」以结构性方式满足。未来切片若引入 writer queue（ADR-0012 amendment 目标态），须另行定义 drain 预算——本设计显式备案该边界。
+- Registry shutdown / Persistence dispose 的等待链**不含任何日志侧 await**（Registry 从不 await emitter；manager.close() 同步 O(1)）→ 「cannot indefinitely delay」以结构性方式满足。未来切片若引入 writer queue（ADR-0014 amendment 目标态），须另行定义 drain 预算——本设计显式备案该边界。
 - `main.ts` 零改动（watchdog 链不变；close 耗时 ≈ 0）。
 
 ### D8：健康面 = File adapter observer → NDJSON 事件（inspect health）
@@ -291,11 +291,11 @@ ADR-0011 §A「Runtime/Registry/复制实现仍防御 adapter 违约；…均被
 
 | code | 触发 | 词表依据 |
 |---|---|---|
-| `locator-missing` | current.json/目录缺失（readFileSync ENOENT）；**或 request.namespaceId 文法违规（m3 前置门，零 fs 触达）** | 本票（Host 工具层；物理类新码，语义自 ADR-0012 locator 条款 + paths.ts 安全文法单源） |
+| `locator-missing` | current.json/目录缺失（readFileSync ENOENT）；**或 request.namespaceId 文法违规（m3 前置门，零 fs 触达）** | 本票（Host 工具层；物理类新码，语义自 ADR-0014 locator 条款 + paths.ts 安全文法单源） |
 | `locator-invalid` | current.json 可读但内容违约（JSON parse ✗ / 形状 ✗ / streamId 文法 ✗） | 本票（同上） |
-| `locator-unreadable` | **R1 新码（M1）**：读 current.json 时非 ENOENT 的 fs 错误（EACCES/EISDIR/EPERM/EMFILE/EROFS/…） | 本票（Host 工具层；ADR-0012 locator 冻结布局的工具侧对称——strict reader「绝不抛」契约（reader.ts:5）在工具入口的兑现） |
+| `locator-unreadable` | **R1 新码（M1）**：读 current.json 时非 ENOENT 的 fs 错误（EACCES/EISDIR/EPERM/EMFILE/EROFS/…） | 本票（Host 工具层；ADR-0014 locator 冻结布局的工具侧对称——strict reader「绝不抛」契约（reader.ts:5）在工具入口的兑现） |
 | `replay-internal-error` | **R1 新码（M1 防御深度）**：算法顶层 catch-all 收编的逃逸 throw（结构性不可达——各步骤均已收敛，见 §5.6 收敛映射表） | 本票（ADR-0011 三态诚实报告：内部意外不冒充可解释状态） |
-| `stream-incompatible` | `readStreamStrict` status='incompatible' 的总括码（reader 原生码逐条并列透传） | ADR-0012「未知格式 → incompatible」 |
+| `stream-incompatible` | `readStreamStrict` status='incompatible' 的总括码（reader 原生码逐条并列透传） | ADR-0014「未知格式 → incompatible」 |
 | `genesis-missing` | 无 genesis（或 genesis 被拒作基线——含 mid-genesis `genesis-misplaced` 场景、retention 裁掉 genesis） | ADR-0011 五条件之 1 |
 | `genesis-misplaced` | **R1 触发条件扩（M2，吸收 SA8 边界审视 6）**：genesis 到达时 `genesisSeen ∨ applied>0 ∨ attemptSeen`（**存在前置 attempt 记录——哪怕全部因无基被跳过**）。合法 writer 只在 stream 建立时写首条 genesis ⇒ 前置 attempt + mid-genesis 只能出自篡改/adapter bug ⇒ 拒作基线 | ADR-0011 五条件之 1「有可用 genesis」（misplaced genesis 非合法基线）；五条件之 2 的检测义务（连续性复核不可被「前缀整体跳过」绕过） |
 | `history-trimmed` | `read.historyTrimmed === true` | ADR「retention 裁剪 → partial/failed」 |
@@ -339,7 +339,7 @@ export interface DiagnosticsConfig {
 | `updateCapture` 非 boolean | `diagnostics.updateCapture` | optional boolean |
 | `inputPolicy` 越界（如 `'everything'`） | `diagnostics.inputPolicy` | optional enum 4 值 |
 | `retention` 非对象 / 未知子键 | `diagnostics.retention` / `diagnostics.retention.<key>` | optional object，键集 {maxAgeMs, maxBytesPerNamespace} |
-| `retention.maxAgeMs = -5` 等 | `diagnostics.retention.maxAgeMs` | `number | null`；number 须 safe integer ≥ 0（`0` 合法非无限、`null` 显式关闭——ADR-0012 §Retention 语义，与 `retention.ts:50-55` 值域同源） |
+| `retention.maxAgeMs = -5` 等 | `diagnostics.retention.maxAgeMs` | `number | null`；number 须 safe integer ≥ 0（`0` 合法非无限、`null` 显式关闭——ADR-0014 §Retention 语义，与 `retention.ts:50-55` 值域同源） |
 
 解析产物进 `deepFreeze`（既有纪律）。role×diagnostics 无交叉互斥（hub/peer 均合法）。缺省策略**不在 config 层展开**（`updateCapture ?? false`、`inputPolicy ?? 'digest'`、retention 缺省 → adapter 层默认 30d/1GiB）——config 是操作员意图的忠实载体。
 
@@ -447,7 +447,7 @@ D6 伪代码逐字落地。`internal.ts` 值导出键集不变（恰两键）；
 ### §5.6 replay 工具（新文件 `apps/yjs-server/src/diagnostic-replay.ts` ~200 行 + index.ts 导出）
 
 ```ts
-/** 诊断性重放（ADR-0012 §Strict reader 冻结报告形状）。
+/** 诊断性重放（ADR-0014 §Strict reader 冻结报告形状）。
  *  即便 complete 也只证明重放了该 best-effort stream 所持有的记录，
  *  不证明与生产 namespace 完全一致（ADR-0011 best-effort disclaimer）。 */
 export interface DiagnosticReplayIssue { readonly code: string }
@@ -468,7 +468,7 @@ export function replayNamespaceDiagnosticLog(request): DiagnosticReplayResult   
   与 readStreamStrict 内部 reader.ts:394 安全门同一实现，零双源）
   违规 → failed{locator-missing}，零 fs 触达（namespaceId 无法构成安全路径 ⇒ 视同目标不存在；
   '../..' 之类输入不可使 readFileSync 逃逸 rootDir——工具只读日志目录的封闭性）
-① locator：try { raw = readFileSync(join(rootDir,'namespaces',namespaceId,'current.json'),'utf8') }（ADR-0012 冻结布局；
+① locator：try { raw = readFileSync(join(rootDir,'namespaces',namespaceId,'current.json'),'utf8') }（ADR-0014 冻结布局；
   与 file.ts:244-267 resolveResumeCandidate 同一物理契约）
     catch (err)：err.code === 'ENOENT'（或目录缺失）→ failed{locator-missing}                 ← M1 收敛点
                  其他 errno（EACCES/EISDIR/EPERM/EMFILE/EROFS/…）→ failed{locator-unreadable}  ← M1 新收敛点
@@ -548,7 +548,7 @@ export type { DiagnosticsConfig, DiagnosticsRetentionConfig } from './config.js'
 
 ## §6. 合规性分析
 
-### §6.1 write-slot 纪律（ADR-0012 amendment，点名本票）——emit 调用点全清单
+### §6.1 write-slot 纪律（ADR-0014 amendment，点名本票）——emit 调用点全清单
 
 | # | emit/同步 fs 调用点 | 执行位置 | slot 判定 |
 |---|---|---|---|
@@ -571,7 +571,7 @@ export type { DiagnosticsConfig, DiagnosticsRetentionConfig } from './config.js'
 
 - 进程内：`Map` 缓存对象同一性（D3）；Registry entry 更替（idle close → reopen → 新 Runtime generation）不重建 adapter。
 - 跨进程：current.json 续写（#153 resume 语义）；E5 断言 streamId 不变 / 恒 1 stream / sequence 连续 / genesis 首位——由 adapter 既有行为承载。
-- 术语纪律：AC3 的 "Runtime generations"（ADR-0009 close→reopen）≠ AC2 的 stream generation（ADR-0012-LOG rotate）——本设计全程分用。
+- 术语纪律：AC3 的 "Runtime generations"（ADR-0009 close→reopen）≠ AC2 的 stream generation（ADR-0014-LOG rotate）——本设计全程分用。
 
 ### §6.4 失败隔离矩阵（E4 等；R1 修订 C1/m1——行与丢弃词表一一对应）
 
@@ -625,7 +625,7 @@ E5 的 hub 重启/peer 收敛编排与既有 T6（`hub-restart-static-target-red
 
 ## §8. 非目标（显式备案）
 
-1. **不实现异步 writer queue / batch / fsync**（ADR-0012 amendment 被否条款；首切片纪律）——AC2/AC3 相关措辞按目标态语义由「retention 可调 + O(1) drain」承载。
+1. **不实现异步 writer queue / batch / fsync**（ADR-0014 amendment 被否条款；首切片纪律）——AC2/AC3 相关措辞按目标态语义由「retention 可调 + O(1) drain」承载。
 2. **不暴露** inline threshold / line 上限 / roll targets / payloadMax / sweepOnOpen 配置键（D2；R1 修订 M3——**后果明示**：`sweepOnOpen` 不暴露 ⇒ #154 内建缺省 true ⇒ 每次 adapter 构造（每 ns 每进程）执行一次 retention sweep（目录枚举 + 闭组 stat + 可能删除闭组；仅 ready 模式，见 §5.2/D3/§6.1 #2）。操作员杠杆：`retention` 双 `null` → 删除行为归零（仅剩卫生遍历：orphan BIN / 遗留 `.deleting`）；`enabled:false` → 整面关闭；**完全跳过遍历不可达**——不新增配置键、#154 内建执行面原样消费，暴露的 retention 限值因此保持真实生产语义（每 ns 每进程构造时懒执行），而非静默 no-op）。
 3. **不新增**控制通道 diagnostics op、REST 管理面、metrics 导出（D8）。
 4. **不实现** Host 数据删除请求 → `deleteNamespaceDiagnosticLog` 联动（app 当前无数据删除面；ADR 条款待相应票）。

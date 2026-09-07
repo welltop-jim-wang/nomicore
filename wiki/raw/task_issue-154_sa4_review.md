@@ -79,7 +79,7 @@ if (maxAgeMs !== null && !groupAgeExpired(stream.segmentsDir, segment, now - max
 
 1. **P1 已删尽同口径候选**：P1（`file.ts:1200-1233`）沿同一候选序（createdAt↑/streamId↑/段号↑）、同前缀纪律删除**全部**「闭组 ∧ 无活跃租约 ∧ 年龄过期」的组。P2 开始时，不存在任何剩余的年龄过期闭组。
 2. **P2 的年龄门 ⇒ P2 恒死代码**：P2 组循环遇首个「未过期」组即 `break`（`file.ts:1274`）。而 P2 能走到的每个候选要么已被 P1 删除（不在枚举）、要么正是那个让 P1 止步的未过期/被租约/开组/失败组——后三者同样使 P2 止步。故 **`maxAgeMs ≠ null` 时 P2 的删除数恒等于 0**；字节遍历仅在 `maxAgeMs === null` 时才有行为（恰是 SA6 唯一测到的形态）。
-3. **默认配置下字节上限失效**：ADR 0012 / SA2 §2.1 / README 的缺省 = `maxAgeMs=30d ∧ maxBytes=1GiB`。任一 namespace 在 30 天内写入 >1 GiB（高流量场景常态）：P1 无一过期 → 零删除；P2 首组未过期 → 止步 → `total` 永远压不进预算。**「有界 namespace 诊断存储」的字节界在数据新鲜期内不可执行，磁盘可无界增长至 30 天**。
+3. **默认配置下字节上限失效**：ADR 0014 / SA2 §2.1 / README 的缺省 = `maxAgeMs=30d ∧ maxBytes=1GiB`。任一 namespace 在 30 天内写入 >1 GiB（高流量场景常态）：P1 无一过期 → 零删除；P2 首组未过期 → 止步 → `total` 永远压不进预算。**「有界 namespace 诊断存储」的字节界在数据新鲜期内不可执行，磁盘可无界增长至 30 天**。
 4. **违背的三处上游文本**：
    - TASK.md AC-1：「Retention **enforces** configurable maximum age **and bytes** per namespace」；
    - SA2 §4.5 P2：「无可删候选（全被**开组/租约/失败**止步）→ break」——止步原因穷举式列明三种、**刻意不含「未过期」**（对照同节 P1 的止步清单「（开组 / 租约 / **未过期**）」显式含之——同一作者在两处清单的差异即设计意图）；

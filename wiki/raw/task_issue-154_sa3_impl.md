@@ -94,7 +94,7 @@ $ pnpm typecheck
 
 ## 5. 风险与后续（remaining risks）
 
-- **多实例并发 sweep**（同进程重叠期）：协议幂等（rename/unlink ENOENT 容忍）+ `currentSegment` 单调 ⇒ 仅欠保护方向、无洞（SA2 §12-AT7）；v1 无跨进程锁（ADR 0012 部署约束内）。
+- **多实例并发 sweep**（同进程重叠期）：协议幂等（rename/unlink ENOENT 容忍）+ `currentSegment` 单调 ⇒ 仅欠保护方向、无洞（SA2 §12-AT7）；v1 无跨进程锁（ADR 0014 部署约束内）。
 - **`.deleting` 目录占位**（测试注入的人工态）：卫生遍历对其 unlink 失败 → failedSteps++ 且下轮重试；P1 把它排除在 live 之外——无洞风险但有 failedSteps 噪声（人工态，生产不可达）。
 - **全裁剪收敛**：`(streamId, sequence)` 字面量跨裁剪可复用（SA2 §7.4 已接受、T-E6 钉死）；earliest retained 恒扫描重建（无持久 retention 状态——ADR 明文禁止）。
 - **Host 责任面**：retention 触发点（构造期/显式调用）由 Host 在 write-slot 外接线（#149–#151/#155）；删除前置条件「该 namespace 无存活 writer」由 Host 保证——本票只交付被调能力。

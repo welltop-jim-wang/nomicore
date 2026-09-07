@@ -7,7 +7,7 @@
 
 ## 相关 ADR
 
-### ADR-0012 VFSL 校验的 JSONL 与 framed sidecar 诊断日志格式（accepted，含 2026-08-28 首切片 amendment）——本票主规范
+### ADR-0014 VFSL 校验的 JSONL 与 framed sidecar 诊断日志格式（accepted，含 2026-08-28 首切片 amendment）——本票主规范
 
 #### A. Stream 与 generation（范围项 1：健康 stream 续写 reopen）
 
@@ -82,32 +82,32 @@
 
 ### ADR-0008 NamespaceRuntime 读写能力与单序列器（accepted，含 2026-08-24 稳定码注册修订）——写槽隔离
 
-- 与本任务的关联点：ADR-0012 amendment 的 write-slot 接线纪律以其单 sequencer 条款为直接依据；本票不做 emit 接线（#149–#151/#155 排除），但 reopen/修复设计不得引入 slot 内同步文件操作。
+- 与本任务的关联点：ADR-0014 amendment 的 write-slot 接线纪律以其单 sequencer 条款为直接依据；本票不做 emit 接线（#149–#151/#155 排除），但 reopen/修复设计不得引入 slot 内同步文件操作。
 - 核心条款（原文摘录）：
   - 「同一 namespace 内所有受控 Y.Doc 写共享唯一严格 FIFO write sequencer。」
   - 「每个真正写任务的槽依次执行：lifecycle/fatal gate、`DocHandle.getStatus()` writable gate、输入快照、领域校验和 detached 构造、一次 Yjs transaction、`await notifyDirty()`，然后才释放给下一任务。」
 
 ### ADR-0006 Cordis 持久化插件（accepted，含 createDoc/owner 与 entry status 修订）——间接
 
-- 与本任务的关联点：诊断日志独立于 snapshot Persistence；本票不得触碰 `.snapshot` 布局与 flush 语义。temp+rename 原子替换模式为 locator 所沿用（ADR-0012 已明文）。无直接相反条款。
+- 与本任务的关联点：诊断日志独立于 snapshot Persistence；本票不得触碰 `.snapshot` 布局与 flush 语义。temp+rename 原子替换模式为 locator 所沿用（ADR-0014 已明文）。无直接相反条款。
 
 ### ADR-0009 NamespaceRegistry/租约/Host 生命周期（accepted）——间接
 
-- 与本任务的关联点：日志启用与配置是「本地 Host/Registry 旁路状态」（ADR-0012）；Runtime generation 更迭/空闲复用不影响 stream 身份（stream 不绑定 Runtime generation）。shutdown 不无限等待日志 sink（ADR-0011/0012）。无直接相反条款。
+- 与本任务的关联点：日志启用与配置是「本地 Host/Registry 旁路状态」（ADR-0014）；Runtime generation 更迭/空闲复用不影响 stream 身份（stream 不绑定 Runtime generation）。shutdown 不无限等待日志 sink（ADR-0011/0012）。无直接相反条款。
 
 ### ADR-0001 / 0002 / 0003 / 0004 / 0005 / 0007（accepted）——盘点结论
 
-- 与本票五个范围项无直接条款交集；仍受其既有边界约束（record schema 的 VFSL 冻结纪律经 ADR-0012 §VFSL record schema 间接约束本票：不改 record schema 版本/指纹）。
+- 与本票五个范围项无直接条款交集；仍受其既有边界约束（record schema 的 VFSL 冻结纪律经 ADR-0014 §VFSL record schema 间接约束本票：不改 record schema 版本/指纹）。
 - ADR-0007 的 Runtime/open/read 条款中被 ADR-0008 明示取代的范围不构成约束。
 
 ## CONTEXT.md 相关术语与惯例
 
 - **namespace 诊断变更日志**：「从 namespace 创建开始尽力记录所有变更尝试及其结构化结局的可选 observability 流；连续的 committed Yjs updates 可用于诊断性重放，但日志不参与业务提交、不承诺完整性或恢复能力。」_Avoid_: 审计账本、WAL、event sourcing、可靠恢复日志。
-- **诊断日志 stream generation**：「一个 namespace 的一代独立诊断日志，包含不可变 manifest、VFSL 校验的分段 JSONL records 与可选 framed binary sidecar；冻结格式或策略改变、旧 stream 损坏或无法安全续写时建立新 generation，各 generation 不自动拼接重放。」_Avoid_: **Runtime generation、replication epoch、跨 generation 隐式连续日志**——AC1 的「across Runtime generations」指 stream 跨越多个 Runtime generation 存续（ADR-0012「stream不绑定 Runtime generation」），不得与 stream generation 概念混同。
+- **诊断日志 stream generation**：「一个 namespace 的一代独立诊断日志，包含不可变 manifest、VFSL 校验的分段 JSONL records 与可选 framed binary sidecar；冻结格式或策略改变、旧 stream 损坏或无法安全续写时建立新 generation，各 generation 不自动拼接重放。」_Avoid_: **Runtime generation、replication epoch、跨 generation 隐式连续日志**——AC1 的「across Runtime generations」指 stream 跨越多个 Runtime generation 存续（ADR-0014「stream不绑定 Runtime generation」），不得与 stream generation 概念混同。
 - **语义 emission**：「producer → 诊断日志 emitter 提交的 detached 语义结局……不含 streamId/sequence/segment/frameOffset/Base64/CRC 等物理表示（storage projection 归 adapter）。emit 同步、不 throw、不阻塞……」——本票滚动/续写/修复全部落在 adapter 的 storage projection 领地，emission 公共面不动。
 - **storage projection**：「日志 adapter 独占的物理表示决策——先决定 inline/sidecar 并构造最终 record（segment/frameOffset/payloadLength/CRC32C/Base64），再运行 VFSL 校验；emitter 只做语义投影，不构造物理字段。」_Avoid_: 业务侧构造物理载体、emission 面物理键、VFSL 双 schema。
 - **genesis baseline record**：「新 stream 的 genesis 基线——当时完整 Y.Doc 的 update，不是变更尝试……顶层 `recordKind: 'genesis-baseline'` 判别；v1 冻结的 emission/sink 公共面无构造路径，由 #152 adapter 内部构造（设计 §10-J1 备案）。」——本票新建 generation 时沿用该内部构造路径。
-- **update-omitted 稳定 reason 受控词表（v1）**（语义 emission 词条内）：「`payload-too-large` / `update-capture-disabled` / `empty-update`——新增 reason 属词表演进，须过设计评审。」——健康事件/词表演进同纪律：本票新增健康事件成员走 #148 §10-J13 式预授权路径（简报明示），并对照 ADR-0011 数据保护与 ADR-0012 observer 内容限制裁决。
+- **update-omitted 稳定 reason 受控词表（v1）**（语义 emission 词条内）：「`payload-too-large` / `update-capture-disabled` / `empty-update`——新增 reason 属词表演进，须过设计评审。」——健康事件/词表演进同纪律：本票新增健康事件成员走 #148 §10-J13 式预授权路径（简报明示），并对照 ADR-0011 数据保护与 ADR-0014 observer 内容限制裁决。
 
 ## 设计后复审追加（round 1）— SA1 设计引入的新决策点
 
@@ -121,5 +121,5 @@
 6. **健康词表只增不改（D7/§10）**：+`stream-tail-repaired{repair: 3 值封闭枚举, truncatedBytes: 计数}`、+`stream-generation-rotated{cause: RotateCause}`；`stream-init-failed.reason` +`'locator-ambiguous'`/`'invalid-roll-targets'`。streamId/segment/offset 刻意不进事件（基数纪律保守执行）；事件总量有界（单次构造 ≤2 repair + 1 rotate/1 exhausted）。
 7. **reader 两新码（§9.2/§9.3）**：`line-unterminated`（corrupt；任何 segment 的未终止末物理块——终止符证明取代 #152 宽容 parse，reader 与修复判定同一事实基础）与 `manifest-roll-target-violation`（corrupt；17 键形状下对每个闭段核查「jsonlBytes/binBytes/完整行数 ≥ 对应 target 至少一维成立」——ADR「任一target达到时…关闭当前group」的逆否；最大段不核查；14 键跳过）。两码均不入 INCOMPATIBLE_SET。
 8. **滚动状态机（D4/§6）**：编号/字节/行数 reopen 时从磁盘派生、运行期内存推进、无新持久状态文件；`beforeCommit()` 在 `candidateSequence()` 之前判定（滚动不消耗/不分配 sequence，gate 丢弃不触发滚动）；offset 恒 fresh-stat（正确性关键）与 roll 计数器（软阈值）的非对称有意；注入接缝不滚动。
-9. **构造期 write-slot 纪律（§12）**：reopen 全量交叉扫描（O(stream 总字节)）与修复截断均为同步 fs 操作，Host 必须在 NamespaceRuntime write sequencer slot 外构造 adapter（ADR-0012 amendment 规范性条款经前置门禁冲突点 #3 扩展覆盖构造期）；接线票 #149–#151/#155 验收核验。resume 不写 genesis、忽略 `config.genesisUpdateBytes`（文档化；Host 需要新基线走显式 rotate）；rotate 走既有 genesis 路径（§8.3）。
-10. **无 ADR 修订（§16 DENY LIST）**：全部扩展落在 ADR-0012 非穷举清单空间内（manifest「至少保存」/冻结清单「包括」/reader 码词表/健康事件词表），无任何 mandated 行为被改写，`docs/adr/**` 零改动。
+9. **构造期 write-slot 纪律（§12）**：reopen 全量交叉扫描（O(stream 总字节)）与修复截断均为同步 fs 操作，Host 必须在 NamespaceRuntime write sequencer slot 外构造 adapter（ADR-0014 amendment 规范性条款经前置门禁冲突点 #3 扩展覆盖构造期）；接线票 #149–#151/#155 验收核验。resume 不写 genesis、忽略 `config.genesisUpdateBytes`（文档化；Host 需要新基线走显式 rotate）；rotate 走既有 genesis 路径（§8.3）。
+10. **无 ADR 修订（§16 DENY LIST）**：全部扩展落在 ADR-0014 非穷举清单空间内（manifest「至少保存」/冻结清单「包括」/reader 码词表/健康事件词表），无任何 mandated 行为被改写，`docs/adr/**` 零改动。

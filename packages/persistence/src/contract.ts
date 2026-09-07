@@ -118,7 +118,7 @@ export interface DocPersistence {
   ) => Promise<PersistedIdentityProbeResult>
   /**
    * issue #228：按 (owner, docId) 逻辑删除主键 committed snapshot 与同 key 受控归档位
-   * （ADR-0006 修订节；ADR-0012-LOG L299「Host 执行数据删除请求时必须同时调用日志删除
+   * （ADR-0006 修订节；ADR-0014-LOG L299「Host 执行数据删除请求时必须同时调用日志删除
    * 能力」的持久层 seam）。
    *
    * - 幂等（两处均已缺席 → 仍 resolve {ok:true}；缺席与已删不可区分——删除不是存在性
@@ -128,7 +128,7 @@ export interface DocPersistence {
    *   DocDeleteOperationalError（io.removeKey 运营拒绝——重试收敛）/
    *   DocDeleteFatalError（'lifecycle-disposed' | 'adapter-violation' |
    *   'remove-aborted'）。
-   * - 只承诺活跃存储逻辑删除（ADR-0012-LOG L299 同款措辞纪律），不承诺 secure erase；
+   * - 只承诺活跃存储逻辑删除（ADR-0014-LOG L299 同款措辞纪律），不承诺 secure erase；
    *   与 archiveDoc 的语义区分（delete ≠ archive：无身份前置、无归档写、删除时清理
    *   归档位；被删 doc 不需要 flush 持久化——settle 取消全部定时器，在途 flush 结算后
    *   再 removeKey，复活向量封死）。

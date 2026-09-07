@@ -30,7 +30,7 @@
 ### AC1 — create 全路径结构化结局，用既有稳定事实 ✅
 
 - **接线完整性**：`registry.ts` 18 个 emit 插点覆盖 Issue 列举的全部路径——acceptance（#1 停接纳 / #3、#7 entry duplicate / #4–#6 closing fatal）、duplicate（#3/#7 entry 级 + #14 持久层 DOC_DUPLICATE，四源同码 `NAMESPACE_ALREADY_EXISTS`）、input snapshot（#8 `input-snapshot`/`NAMESPACE_CREATE_INVALID_INPUT`/`unsafe-input`）、schema compile（#10 `NAMESPACE_SCHEMA_INVALID` + #12/#13 fatal 伞形）、validation（#11 `NAMESPACE_ROOT_INVALID`）、transaction/Persistence（#14/#15/#16a/#16b）、post-commit Runtime construction（#18 `runtime-construction`/`committed:true`）与成功（#17 `committed`+`update`）。#2 identity、#9（clock fatal 诚实缺席）为设计 DC-6 显式映射，非Issue 列举项但属同一「首次可观察尝试」目标。
-- **既有稳定事实（零发明）**：全部 code 为 Registry 既有稳定码；stage 均在 ADR-0011 八值封闭词表内（`vocabulary.ts:21-30` 逐字核验）；`operation:'namespace-create'` 为 ADR-0012 v1 封闭集成员；`sourceModule:'registry'` 与 code 成对出现/成对省略（#17 committed 无 code——ADR-0011「committed 无 code」）。issue 级码派生（`SCHEMA_ENVELOPE_${code}`/`SCHEMA_TEXT_INVALID`）是 `p0.toIssueSummary` 的跨包语义复制，由 `registry-create-diagnostic-code-source.test.ts` 冻结同串关系并有 `VFSL-ENV-E` 反向锚（防发明码复活）。
+- **既有稳定事实（零发明）**：全部 code 为 Registry 既有稳定码；stage 均在 ADR-0011 八值封闭词表内（`vocabulary.ts:21-30` 逐字核验）；`operation:'namespace-create'` 为 ADR-0014 v1 封闭集成员；`sourceModule:'registry'` 与 code 成对出现/成对省略（#17 committed 无 code——ADR-0011「committed 无 code」）。issue 级码派生（`SCHEMA_ENVELOPE_${code}`/`SCHEMA_TEXT_INVALID`）是 `p0.toIssueSummary` 的跨包语义复制，由 `registry-create-diagnostic-code-source.test.ts` 冻结同串关系并有 `VFSL-ENV-E` 反向锚（防发明码复活）。
 - **可执行证据**：V1 中 16/16 契约测试（it 列表与简报锚一一对应：停接纳/entry duplicate/持久层 duplicate/敌意 payload/schema 编译/ROOT 校验/持久层运营/提交后构造失败各成独立 it）。
 
 ### AC2 — 成功创建供 detached genesis bytes；post-commit fatal 保留 committed 事实 ✅
@@ -51,7 +51,7 @@
 - **队列压力**：真实 `createBoundedMemoryDiagnosticLog` capacity 1 → 第二条 `queue-full` drop + stats 计数，双创建业务均 ok（red test:782-805）。
 - **stream 初始化失败**：真实 File adapter 非法 roll targets（`targetRecordsPerSegment:0`）→ create ok + 独立健康 observer `LOG_STREAM_INIT_FAILED/invalid-roll-targets`（事件由 Host 侧 adapter observer 真实产生，Registry 不代发不伪造——red test:832-871）。
 - **sink 失败**：对 Registry 而言 throwing sink ≡ throwing emitter（同一 seam、同一吞没边界），由 emitter-throw 锚覆盖；adapter 内部 sink 故障的健康上报属 #152/#159 冻结面（V4 双包全量绿含其自身套件），#150 不重复造证据。
-- **ADR-0012 amendment C（write-slot 接线纪律）**：逐一核读 18+1 个调用点——全部位于 Registry create lifecycle 槽或公共入口同步段；create 期 Runtime write sequencer 尚不存在，post-commit 段在 Registry 槽调用栈（P0 独立异步结算、只读 SCHEMA），无任何 emit/initStream 进入或延长 Runtime write slot。**合规**。
+- **ADR-0014 amendment C（write-slot 接线纪律）**：逐一核读 18+1 个调用点——全部位于 Registry create lifecycle 槽或公共入口同步段；create 期 Runtime write sequencer 尚不存在，post-commit 段在 Registry 槽调用栈（P0 独立异步结算、只读 SCHEMA），无任何 emit/initStream 进入或延长 Runtime write slot。**合规**。
 
 ### AC5 — 六类测试场景（含延迟初始化的诚实当前态 genesis）✅
 
@@ -71,7 +71,7 @@
 3. **公共面扩张最小**：新增仅可选 `diagnosticLog` option（生产面 + 测试面）与 `NamespaceRegistryDiagnosticLog` 类型导出——即 ADR-0011「业务模块依赖小 emitter interface」的落地；查询/导出/重放/健康接口未扩张到 Registry/Runtime/Lease/Persistence 面。version bump 0.1.3→0.1.4 符合仓库能力新增即 patch 的先例（SA4 已裁定非阻断）。
 4. **ADR-0009 Clock 单读**：成功路径 `clock.calls === 1` 锚绿——槽内复用 `createdAt` 字符串（零额外读数）；Clock 步之前终结的结局由诊断侧单次读数；clock 故障 → 该条 emission 丢弃（不伪造时间戳）。`observedAt` 全部源自注入 Clock，无墙钟。
 5. **ADR-0011 排序/时序**：未引入第二业务排序机构（emission 全在既有 carrier FIFO 槽序内）；emitter 不被 await（同步 void）；emission 不构成 createDoc/Yjs transaction/dirty notification 前置。
-6. **ADR-0012 genesis 纪律**：producer 只供 bytes，genesis-baseline 由 adapter 内部构造（emission 公共面无 genesis 构造路径——`EmissionResult` 联合无 genesis 形态，核验属实）；encode 失败 → initStream 传 undefined（stream 仍可记录诊断事实）+ 成功 emission 诚实缺席，**未发明** `update-omitted` 新 reason（v1 三值词表未扩）。
+6. **ADR-0014 genesis 纪律**：producer 只供 bytes，genesis-baseline 由 adapter 内部构造（emission 公共面无 genesis 构造路径——`EmissionResult` 联合无 genesis 形态，核验属实）；encode 失败 → initStream 传 undefined（stream 仍可记录诊断事实）+ 成功 emission 诚实缺席，**未发明** `update-omitted` 新 reason（v1 三值词表未扩）。
 7. **输入策略归属**：producer 语义面供 `{snapshot:{schema,root}}`（detached 快照复用），full/digest 投影为 Host 侧 adapter 配置（测试经 `inputPolicy` 配置，AC 记录面 `capture:'full'` 为 adapter 投影产物）——与 ADR-0011「输入策略可配置、默认保守」及 CONTEXT.md「storage projection 归 adapter」一致，#150 无越权。
 
 ---

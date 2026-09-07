@@ -79,7 +79,7 @@
 | 1 | 审查标准：设计一致性（冻结映射/词表） | **通过** | V16：25 结局点逐点一致、零新码零新词表、INV-DIAG 缺省组装仅 `r.ok===true`、acceptance issues 同源透传、emit 挂点为已记录的良性偏差（非包装附加反应——返回 promise 身份零变化，优于设计字面形态且已由 SA3 决策 1 记录在案） |
 | 2 | 测试触发（vitest/E2E） | **通过** | V11：两测试文件均落 CI `Test` 步 include；无孤儿 spec；CI 单工作流，`push`/`pull_request` 双触发 |
 | 3 | 类型检查触发 | **通过** | V7/V8：`pnpm typecheck`（src）与 `tsc -p tsconfig.typecheck.json`（test 文件，经 `pnpm test --typecheck` 入 CI）双面 exit 0——SA7-F-1（63 处测试类型错误曾致 CI 必红）修复闭环独立复现 |
-| 4 | ADR/工程约束 | **通过** | ADR-0012 amendment C：emit 点 = settled 微任务（slot 释放后，P5 sequencer.ts:38-42 注册序复核）；ADR-0011 §D：src 零整文档编码（V14）+ 测试反向鉴别（`expectNoMaterializeWithoutBase`）；ADR-0007：公共返回形状/index.ts/internal.ts 零改动（V2/V3）；ADR-0008 码族/槽序零变化；P0/close 零 emit（排除面）；ADR-0011 §C 输入纪律：not-accessed/unsafe-input/单快照引用（AC5 Proxy trap 计数相等测试钉死）；包 AGENTS.md 边界（FIFO/快照/detached projection/seam 内部）全保持；observedAt 注入 Clock 成对 loud 校验、无 Date.now 缺省 |
+| 4 | ADR/工程约束 | **通过** | ADR-0014 amendment C：emit 点 = settled 微任务（slot 释放后，P5 sequencer.ts:38-42 注册序复核）；ADR-0011 §D：src 零整文档编码（V14）+ 测试反向鉴别（`expectNoMaterializeWithoutBase`）；ADR-0007：公共返回形状/index.ts/internal.ts 零改动（V2/V3）；ADR-0008 码族/槽序零变化；P0/close 零 emit（排除面）；ADR-0011 §C 输入纪律：not-accessed/unsafe-input/单快照引用（AC5 Proxy trap 计数相等测试钉死）；包 AGENTS.md 边界（FIFO/快照/detached projection/seam 内部）全保持；observedAt 注入 Clock 成对 loud 校验、无 Date.now 缺省 |
 | 5 | 范围 | **通过** | V2：ALLOW 全覆盖、DENY/BLACKLIST 零命中、既有测试零改动；SA7 文件裁决见 A-2 |
 | 6 | 回归风险（业务面） | **通过** | 未装配 emitter 基线行为等价（diag 全可选链 + 挂点不包装）；时序敏感面（close-lifecycle/p0-sequencer/mutate-root-sequencer 等）随全量 1813/1816 绿（3 失败均非业务回归：B-1 + A-3 环境工件）；red 14/14 + sa7 15/16（唯一失败即 B-1） |
 | 7 | 回归风险（CI 门禁稳定性） | **不通过** | **B-1**：DV-2 对照断言 ~33% 失败率将随机打红 CI `Test` 步；AC checklist 的 exit-1 归因表述需随之修正 |

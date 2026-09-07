@@ -2,7 +2,7 @@
  * 有界内存 adapter（设计 §7——emitter + sink 一体装配；AC5）。
  *
  * 契约（§7.1）：容量 capacity 条；queue 满时 drop newest（已接纳 record 与顺序不变，
- * drop 绝不作为 record 入队——ADR 0012 §Writer）；接纳序 = sequence 升序；records()
+ * drop 绝不作为 record 入队——ADR 0014 §Writer）；接纳序 = sequence 升序；records()
  * 返回冻结引用数组；永不 throw、永不阻塞（全同步、纯内存、O(record) CPU——
  * Base64/CRC/序列化/校验均以 line 预算为上界）。
  *
@@ -28,7 +28,7 @@ import type { RecordSchemaCompilationResult } from '../schema.js'
 import type { Operation } from '../vocabulary.js'
 import { isOperation } from '../vocabulary.js'
 
-/** uint64 最大值（decimal 字符串；ADR 0012 §JSONL record「达到 uint64 最大值后 stream 进入 exhausted」）。 */
+/** uint64 最大值（decimal 字符串；ADR 0014 §JSONL record「达到 uint64 最大值后 stream 进入 exhausted」）。 */
 export const UINT64_MAX = '18446744073709551615'
 
 /** 十进制字符串进位（R2/A-c1：全程不经 number 算术——JS number 超 2^53 后失真

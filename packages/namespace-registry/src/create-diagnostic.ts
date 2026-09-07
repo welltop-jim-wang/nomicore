@@ -29,7 +29,7 @@
  *   per-namespace diag-pump，在 macrotask drain（业务槽外）执行；槽内/槽间窗口内
  *   残余 = O(1) 组装 + 入队。建流前早结局（8 点）以**候选 namespaceId 数据键控**
  *   投递（被拒 create 无后续 stream → 泵先 `initStream(ns, undefined)` genesis-less
- *   建流——ADR-0012 L22「genesis 未成功写入时 stream 仍可记录诊断事实」——再落
+ *   建流——ADR-0014 L22「genesis 未成功写入时 stream 仍可记录诊断事实」——再落
  *   结局记录）；`createRuntimeDiagResolver` 产物 emitter = 延迟 wrapper
  *   （emit = O(1) 入队）——open/create/import 三处 factory 第三参与 Runtime
  *   write-sequencer 槽间窗口的 emitSlot 同步存储同步出关键路径。
@@ -83,7 +83,7 @@ export interface CreateDiag {
   initStream(namespaceId: string, genesisUpdateBytes: Uint8Array | undefined): void;
   /** #249（AC4）：候选级被拒结局（entry collision / DOC_DUPLICATE）——每个碰撞/
    *  duplicate 候选 = 一次独立 create 变更尝试（CONTEXT.md L148–150），以
-   *  `rejected`（冻结词表内预期失败零提交——ADR-0012 L80–87）落到**候选 namespaceId
+   *  `rejected`（冻结词表内预期失败零提交——ADR-0014 L80–87）落到**候选 namespaceId
    *  的流**。observedAt 语义同 emitEarlyOutcome：复用槽内 Clock 步产物；`undefined`
    *  （entry collision 判定在 Clock 步之前）→ 本助手读一次 clock；clock 故障 → 该条
    *  丢弃（诚实缺席）。路由：仅 ns-bound（泵）路径发射——legacy（#150 共享 emitter
@@ -99,10 +99,10 @@ export interface CreateEmissionArgs {
   /** 与 sourceModule 成对（emitAttempt 单点保证）。 */
   readonly code?: string;
   readonly sourcePhase?: string;
-  /** #249：稳定 code 的来源模块（ADR-0012 封闭 4 值）。缺省 'registry'——既有全部
+  /** #249：稳定 code 的来源模块（ADR-0014 封闭 4 值）。缺省 'registry'——既有全部
    *  调用点零漂移（assembleEmission 原 hardcode）；DOC_DUPLICATE 候选记录取
    *  'persistence'（该码的所属模块——ADR-0011 L51「保留所属模块已有稳定 code」+
-   *  ADR-0012 L89「code 与 sourcePhase…标注 source module」；emitter 管线强制
+   *  ADR-0014 L89「code 与 sourcePhase…标注 source module」；emitter 管线强制
    *  code↔sourceModule 成对，单侧缺失即丢字段+健康事件——pipeline.ts §10-J3）。 */
   readonly sourceModule?: SourceModule;
   /**
@@ -501,7 +501,7 @@ export function createDiagRuntime(
     streamedNamespaces.add(namespaceId);
     pump.enqueueInitStream(namespaceId, genesisUpdateBytes);
   };
-  /** 被拒 create 的 genesis-less 补建流（诚实缺席 genesis——ADR-0012 L22）。 */
+  /** 被拒 create 的 genesis-less 补建流（诚实缺席 genesis——ADR-0014 L22）。 */
   const seedRejectedStreamIfAbsent = (namespaceId: string): void => {
     if (initStreamMember === undefined || streamedNamespaces.has(namespaceId)) return;
     enqueueInitStreamTask(namespaceId, undefined);

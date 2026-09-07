@@ -45,7 +45,7 @@ Expected open/create failures use narrow result issues such as `REGISTRY_NOT_ACC
 
 ## Contract and verification
 
-The normative contract is `CONTEXT.md`, ADR 0009, ADR 0010, and ADR 0012. Production Instance/Registry/transport ownership and the removal of Registry plugin role configuration are defined by ADR 0012. MemoryPersistence and FilePersistence run the same Registry acceptance contract, including FilePersistence restart/reopen.
+The normative contract is `CONTEXT.md`, ADR 0009, ADR 0010, and ADR 0014. Production Instance/Registry/transport ownership and the removal of Registry plugin role configuration are defined by ADR 0014. MemoryPersistence and FilePersistence run the same Registry acceptance contract, including FilePersistence restart/reopen.
 
 ```sh
 pnpm typecheck

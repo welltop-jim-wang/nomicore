@@ -3,7 +3,7 @@
  *
  * 权威契约：`wiki/raw/task_diagnostic-log-stream-roll-repair_design.md`（§13 SA6 锚点全表；
  * §4 健康证明 / §5 可证明尾部修复 / §6 segment group 滚动 / §7 耗尽 / §8 构造流程 /
- * §10 健康事件词表）。约束优先级：任务简报 > SA8 前置门禁 > ADR-0012（含 2026-08-28
+ * §10 健康事件词表）。约束优先级：任务简报 > SA8 前置门禁 > ADR-0014（含 2026-08-28
  * 首切片 amendment）> ADR-0011/0008 > #148 冻结契约 > #152/R2 设计。
  *
  * 全部断言针对运行时产物（磁盘字节、observer 事件、readStreamStrict 返回）——零源码

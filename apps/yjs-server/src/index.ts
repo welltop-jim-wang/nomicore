@@ -57,7 +57,7 @@ export type {
   PersistenceConfig,
   ProvisionEntry,
 } from './config.js';
-// #155（§5.7）：Host 工具面——离线 strict 诊断重放（ADR-0012-LOG 冻结报告形状）
+// #155（§5.7）：Host 工具面——离线 strict 诊断重放（ADR-0014-LOG 冻结报告形状）
 export { replayNamespaceDiagnosticLog } from './diagnostic-replay.js';
 export type {
   DiagnosticReplayIssue,

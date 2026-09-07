@@ -79,7 +79,7 @@
 - `package.json` 0.1.1→0.1.2 ✅（硬门禁 9）。
 - G18 六码逐字落实（reader.ts:512-537、555）：五 record 级 `manifest-update-capture-violation` / `manifest-input-policy-violation` / `manifest-inline-threshold-violation` / `manifest-sidecar-threshold-violation` / `manifest-line-limit-exceeded` + stream 级 `sequence-gap`；无族 A `policy-*`、无 `sequence-start-invalid`；`[2]`/`[1,3]` 统一 `sequence-gap`；六码均不入 `INCOMPATIBLE_SET`（corrupt + records 逐条保留，未知格式行为不变）✅。提交点分配（§3.2 双阶段）、definitive/ambiguous 二分、genesis/capture 正交（#9 锚）、EISDIR 恢复锚语义中立（mismatch-interference 11 测试复跑绿）均按 G18 (b)(c)(d) 落实。
 
-### 3.8 ADR 0012 amendment vs 设计 §4.1/§4.2/§4.3 逐条对照——✅
+### 3.8 ADR 0014 amendment vs 设计 §4.1/§4.2/§4.3 逐条对照——✅
 
 | 设计要求 | ADR 落点 | 判定 |
 |---|---|---|

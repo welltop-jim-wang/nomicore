@@ -3,7 +3,7 @@
 - Worktree：`/home/wangjian/nomicore-fix-issue-154`（branch `fix/issue-154-on-docs-namespace-diagnostic-change-log`，HEAD `722bddf`）
 - 父设计：PR #142（ADR-0011/0012，commit `6de2f1d`）
 - 依赖：#153（reopen/roll/repair，PR #166，commit `eaf0484`）
-- 本报告为分析产物，不含实现；核心规范原文 = `docs/adr/0012-vfsl-validated-jsonl-and-framed-sidecar-change-log.md` §「Retention 与删除」（L280–299）+ §「验收门槛」9/15 两条。
+- 本报告为分析产物，不含实现；核心规范原文 = `docs/adr/0014-vfsl-validated-jsonl-and-framed-sidecar-change-log.md` §「Retention 与删除」（L280–299）+ §「验收门槛」9/15 两条。
 
 ---
 
@@ -13,7 +13,7 @@
   - segment group 滚动状态机（JSONL/BIN 成对滚动、`beforeCommit()` 三 target 判定、`nextSegmentName`、99999999 溢出 = exhausted）——「closed segment group」概念的物理基础已就位；
   - 构造期 reopen 编排（`resolveResumeCandidate` 三分支 + `analyzeStreamForResume` 健康证明 + `applyRepairs`）——retention「启动时继续完成遗留 `.deleting`」的挂点已在构造路径存在；
   - `paths.segmentFilePaths` 纯增量导出（成对路径派生）。
-- 父 PR #142 的 ADR-0012 已把 retention/lease/删除协议**完整成文**（含默认值 30 days / 1 GiB、`null` 关闭、`0` 非无限、五步删除协议、`openReadSession()` 短期 segment lease、按 namespace 彻底删除清单、仅逻辑删除承诺）。#154 是该节的**首次实现**，不需要也不应该改 ADR。
+- 父 PR #142 的 ADR-0014 已把 retention/lease/删除协议**完整成文**（含默认值 30 days / 1 GiB、`null` 关闭、`0` 非无限、五步删除协议、`openReadSession()` 短期 segment lease、按 namespace 彻底删除清单、仅逻辑删除承诺）。#154 是该节的**首次实现**，不需要也不应该改 ADR。
 - 全仓 `grep -rn "retention\|lease\|openReadSession\|maxAge\|maxBytes"`（本包内）：**零命中**——纯绿地，无半成品冲突面。
 
 ## 2. 现状盘点（代码事实）
@@ -25,7 +25,7 @@
 | 配置面 | `FileDiagnosticLogConfig` 无任何 retention/lease 字段 | `src/adapters/file.ts:67-104` |
 | 适配器对象面 | `FileDiagnosticLog` 仅 `emitter/streamId/rootDir/namespaceId`，无 retention/lease/delete 方法 | `file.ts:107-113` |
 | 滚动 | 三 target（64 MiB JSONL / 256 MiB BIN / 100k records）达标即滚入下一段；**无关闭标记文件**——「group 已关闭」只能由「存在更大编号 segment」推断（reader §9.3 即此判定） | `file.ts:604-622`；`reader.ts:623-641,1023-1034` |
-| 删除协议 | `.deleting` rename / bin unlink / orphan 清理：**全部未实现**（ADR-0012 L291-295 是待建规格） | — |
+| 删除协议 | `.deleting` rename / bin unlink / orphan 清理：**全部未实现**（ADR-0014 L291-295 是待建规格） | — |
 | 读面 | `readStreamStrict` 纯同步函数、绝不抛；连续性状态机**锚定 `expectedSequence = 1n`** | `reader.ts:339,461` |
 | reopen 健康证明 | `analyzeStreamForResume` 与 reader 共享同一状态机；`actual > expected` → `corrupt` → **rotate `stream-corrupt`** | `reader.ts:1012-1013,1037` |
 | 健康事件 | 词表冻结、只增不改；低基数白名单纪律明确（**streamId/segment/offset 刻意不进事件**） | `src/health.ts:23-95`；`AGENTS.md` §Verification |
@@ -50,7 +50,7 @@ Registry 的 caller lease（`namespace-registry/src/lease.ts`，ADR-0009）是**
 | `package.json` | 修改 | `0.1.4 → 0.1.5`（仓库逐变更 patch bump 惯例，#149 REPORT 先例） |
 | 测试（SA6 owned） | 新建 | retention age/bytes、lease、中断矩阵、orphan、trim 报告、namespace 删除（建议 3-4 个新测试文件） |
 
-**明确不动**：`src/schema.ts`（指纹冻结）、`docs/adr/**`（ADR 冻结源）、`src/adapters/memory.ts`（ADR-0012 的 retention 是 File adapter 契约；内存 adapter 已有 capacity 上界）、namespace-runtime/registry 接线（归 #149–#151/#155 及后续 Host 票——ADR-0012「Host 执行数据删除请求时必须同时调用日志删除能力」是 Host 侧义务，本票只交付被调能力）。
+**明确不动**：`src/schema.ts`（指纹冻结）、`docs/adr/**`（ADR 冻结源）、`src/adapters/memory.ts`（ADR-0014 的 retention 是 File adapter 契约；内存 adapter 已有 capacity 上界）、namespace-runtime/registry 接线（归 #149–#151/#155 及后续 Host 票——ADR-0014「Host 执行数据删除请求时必须同时调用日志删除能力」是 Host 侧义务，本票只交付被调能力）。
 
 ## 4. 关键设计决策点（SA2 必须裁决）
 
@@ -59,9 +59,9 @@ Registry 的 caller lease（`namespace-registry/src/lease.ts`，ADR-0009）是**
 3. **age 数据源**：推荐 group 内**最后一条完整 JSONL 行的 `observedAt`**（producer 注入钟、拷贝安全）；拒绝 fs mtime（复制/恢复即漂移）。无法定龄（空 JSONL/末行不可解析）→ 保守不删 + 事件。边界建议 `groupNewest ≤ now − maxAge` 即删（含等号，测试钉死）。
 4. **bytes 口径**：namespace 内全部 stream 的 JSONL+BIN 实际字节（含 `.deleting` 未完成物——建议计入直到删除完成）；删除序 = 最旧 generation 优先、段号升序；仅剩 open/leased group 而仍超预算 → **停 + 事件**（绝不动 open group，非强制达标需文档化）。
 5. **`0`/`null` 语义**：`0` = 每趟把**全部** closed unleased group 判为 eligible（`maxAge=0`：任何龄 ≥0 恒真；`maxBytes=0`：预算恒亏）——绝不解读为无限；`null` = 该限制关闭；两者皆 null = retention 整体关闭。非法值（负/NaN/∞/非整数）→ loud 配置门（#153 `isRollTargetValue` + `invalid-roll-targets` 同款先例），禁止静默钳制。
-6. **lease 形状**：单进程独占根目录（ADR-0012 §Writer）⇒ 租约可为进程内注册表；`openReadSession()` 覆盖 open 时枚举的 segment 集合；TTL 用注入 clock；`renew()` 显式续租（ADR「长期 reader 必须有最大 lease 时长或显式续租」）；过期 = 视同无租约（eligibility 即时恢复）+ 惰性 GC。**一旦某 group 已 rename 为 `.deleting`，续租不能中止删除**（marker 即提交点）。
+6. **lease 形状**：单进程独占根目录（ADR-0014 §Writer）⇒ 租约可为进程内注册表；`openReadSession()` 覆盖 open 时枚举的 segment 集合；TTL 用注入 clock；`renew()` 显式续租（ADR「长期 reader 必须有最大 lease 时长或显式续租」）；过期 = 视同无租约（eligibility 即时恢复）+ 惰性 GC。**一旦某 group 已 rename 为 `.deleting`，续租不能中止删除**（marker 即提交点）。
 7. **删除 API 形状**：standalone 函数（离线可用）+ 可选实例方法；**绝不抛**（结构化 result，`readStreamStrict` 先例）；`isSafeNamespaceId` 不过 → 零 fs 触达；删除 `current.json` + `current.json.tmp` 残留 + `streams/**`（manifest/JSONL/BIN/`.deleting`）+ 空目录；前置条件「该 namespace 无存活 writer 实例」须文档化（否则 writer 会重建文件）。
-8. **执行点与 write-slot 纪律**：构造期（resume 编排**之前**完成 `.deleting` 收尾——否则 mid-deletion 态会污染健康证明）+ 滚段后（group 刚关闭，随 emit 路径，#149 接线下在 slot 外，但会加长 post-slot 同步 IO——需在设计中显式评估）+ 显式 Host 调用。ADR-0012 amendment 的 slot 纪律对本票同样强制。
+8. **执行点与 write-slot 纪律**：构造期（resume 编排**之前**完成 `.deleting` 收尾——否则 mid-deletion 态会污染健康证明）+ 滚段后（group 刚关闭，随 emit 路径，#149 接线下在 slot 外，但会加长 post-slot 同步 IO——需在设计中显式评估）+ 显式 Host 调用。ADR-0014 amendment 的 slot 纪律对本票同样强制。
 9. **空 generation 清理**：旧 generation 全部 group 删除后是否移除 manifest.json + stream 目录（建议：是——无数据的 manifest 无解释价值；但需与「工具可展示历史 generation 元数据」权衡后钉死）。
 
 ## 5. 风险清单（按严重度）

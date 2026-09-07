@@ -16,7 +16,7 @@
 | 相邻绿灯基线（后台 Job `bash-2`） | `30 passed (30)`、`Type Errors: no errors`、`BASELINE_EXIT=0`——失败归因于 #226 新增用例，非环境噪声 |
 | 缺陷链 A（建流前结局确定性丢弃，AC1） | 机制经本轮亲读源码核验成立；T1–T6、T11 红，T7 绿对照通过（23ms）钉住边界 = `initStream` 之前 |
 | 缺陷链 B（同步日志 I/O 在业务关键路径，AC3/AC4） | 三个落点（create carrier 槽 / open 槽 / Runtime sequencer 槽间窗口）经本轮亲读源码核验成立；T8、T9、T10、T12、T13 红 |
-| SA8 冲突门禁 | verdict clear（2026-09-05T08:20Z 首判，09:25Z R5 复核维持）；本轮对 ADR-0011 覆盖条款与 ADR-0012 amendment L250 原文抽查**逐字属实**，未见任何新冲突信号 |
+| SA8 冲突门禁 | verdict clear（2026-09-05T08:20Z 首判，09:25Z R5 复核维持）；本轮对 ADR-0011 覆盖条款与 ADR-0014 amendment L250 原文抽查**逐字属实**，未见任何新冲突信号 |
 | 红灯契约作为修复验收基线 | **确认有效，无需修改即可移交下游**（判据确定性 / Host 形状忠实 / 边界 GREEN 对照 / 业务隔离面守护 / poll 消伪红 / 修复可翻绿，六项全部成立，见 §4） |
 
 ## 1. 本轮独立重跑证据（后台 Job，命令与前七轮完全一致）
@@ -60,7 +60,7 @@ T12/T13 墙钟 101/101ms，落在既有七轮 100–104ms 区间内（顺序断�
 4. **open 槽内 adapter 构造**（registry.ts L1229 一带，本轮亲核）：open 槽 factory 第三参 `resolveRuntimeDiag(identity.namespaceId)` → `runtimeEmitterFor(ns)` → 缓存 miss 时 `ensureAdapter` 同步构造（reopen 健康证明 / 尾部修复 / 构造期 retention sweep 全同步 fs）。
 5. **File adapter 全同步 fs**（`packages/namespace-diagnostic-log/src/adapters/file.ts`，本轮亲核行号）：`mkdirSync` L860、manifest `'wx'` L879、current.json `writeFileSync`+`renameSync` L905–906、尾部修复 `truncateSync` L948、`sweepOnOpen` 缺省 true（L316–317、L1455–1457）；每 record 独立 `appendFileSync`（BIN L684 / JSONL L699）——无队列、无 batch、无 fsync。
 6. **Runtime sequencer 槽间窗口**（`packages/namespace-runtime/src/sequencer.ts` + `runtime.ts` + `close.ts`，本轮亲核）：`enqueue` 内 `const settled = this.tail.then(run, run); this.tail = settled.then(noop, noop);`——noop hop 在 enqueue 内先注册；公共方法（runtime.ts root-write L470–475 / schema-write L491–494 / enable-replication L515–518 / bump-epoch L536–539）在 enqueue 返回后才注册 `settled.then(emitSlot)`。槽 N settle 时微任务队列 = `[noop, emitSlot]`：noop 先跑 → tail resolve → 槽 N+1 的 run 排到 emitSlot 之后 ⇒ 同步 emit 恰落「本槽释放 → 下一槽启动」关键窗口；close barrier 经同一 `enqueue` 挂接，同样排在上游槽 emitSlot 之后。`emitSlot → emitAttempt → env.emitter.emit` 同步调用无 deferral。⇒ 慢同步 emitter 直接推迟下一业务写槽与 close barrier（T12/T13 机制锚成立）。
-7. **规范条款逐字核对**（本轮直接读 ADR 原文）：ADR-0011 覆盖范围明文「namespace create，包括输入、schema、ROOT、duplicate、Persistence 与 post-commit Runtime construction 结局」；ADR-0012（诊断日志版）amendment L250 明文「任何将 File adapter 的 `emit` 接入 namespace 生命周期的调用点，必须位于 NamespaceRuntime write sequencer slot 之外，或在该 slot 已释放之后；不得在 slot 内执行同步 File adapter `emit`。不满足该条件的接线为不合规，必须由 #149–#151/#155 或后续接线票修复后方可启用」——本任务即该预留接线票；`docs/adr/` 共 **13 个文件**（与 SA8 R5 勘误一致）。⇒ 缺陷链 A 是明文契约的实现缺口（非契约空白），缺陷链 B 是 amendment 明文点名的违规接线——两者均有直接规范依据。
+7. **规范条款逐字核对**（本轮直接读 ADR 原文）：ADR-0011 覆盖范围明文「namespace create，包括输入、schema、ROOT、duplicate、Persistence 与 post-commit Runtime construction 结局」；ADR-0014（诊断日志版）amendment L250 明文「任何将 File adapter 的 `emit` 接入 namespace 生命周期的调用点，必须位于 NamespaceRuntime write sequencer slot 之外，或在该 slot 已释放之后；不得在 slot 内执行同步 File adapter `emit`。不满足该条件的接线为不合规，必须由 #149–#151/#155 或后续接线票修复后方可启用」——本任务即该预留接线票；`docs/adr/` 共 **13 个文件**（与 SA8 R5 勘误一致）。⇒ 缺陷链 A 是明文契约的实现缺口（非契约空白），缺陷链 B 是 amendment 明文点名的违规接线——两者均有直接规范依据。
 
 ## 3. 与既有证据链的一致性
 

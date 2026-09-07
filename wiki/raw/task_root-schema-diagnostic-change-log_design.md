@@ -50,7 +50,7 @@
 
 三个结构性决策（详见 §4–§7）：
 
-- **D-A（发射点）**：emit 挂在 `sequencer.enqueue(...)` 返回 promise 的 `.then` 链上——**write sequencer slot 已释放之后**的微任务内、且先于下一任务取得槽（§7 时序证明）。acceptance 拒绝（零入队路径）在公共方法调用栈内同步 emit。二者共同满足 ADR-0012 首切片 amendment C「emit 调用点必须位于 write sequencer slot 之外或该 slot 已释放之后」。
+- **D-A（发射点）**：emit 挂在 `sequencer.enqueue(...)` 返回 promise 的 `.then` 链上——**write sequencer slot 已释放之后**的微任务内、且先于下一任务取得槽（§7 时序证明）。acceptance 拒绝（零入队路径）在公共方法调用栈内同步 emit。二者共同满足 ADR-0014 首切片 amendment C「emit 调用点必须位于 write sequencer slot 之外或该 slot 已释放之后」。
 - **D-B（owned bytes）**：S5 外围用 `doc.on('update')` 订阅窗口捕获**该事务的增量 update**（yjs 事务 cleanup 原生投递面），零 doc-runtime 改动（§6 协议依据 + 与「改 doc-runtime 签名」备选方案的对比裁决）。
 - **D-C（诊断通道）**：槽函数新增**可选第三参数** `diag`（per-attempt 收集器）；`diag === undefined ⇔ 未装配 emitter`，此时槽体所有写入点退化为 `diag?.x()` 可选链——无日志基线**行为等价**（await 消费者可观测面不变；【R1 修订，SA2 #6】非「逐字节不变」：emit 挂点使全部写调用返回的 promise 成为 settled 的派生 promise、结算多一跳微任务——对 await/then 消费者不可观测，但时序敏感的内部测试是回归风险点，SA4 验收含全量套件零回归，§13.5）。
 
@@ -128,7 +128,7 @@ if (rec.clock !== undefined) {
   clock = rec.clock as () => number;
 }
 // 【R1 修订，SA2 #5】成对 loud 校验：装配 emitter 而缺 clock ⇒ 拒绝（无墙钟缺省——
-// observedAt 的唯一来源是注入 Clock，ADR-0012 §observedAt）
+// observedAt 的唯一来源是注入 Clock，ADR-0014 §observedAt）
 if (diagnosticEmitter !== undefined && clock === undefined) {
   throw new TypeError('装配 diagnosticEmitter 时必须同时注入 clock（() => number）——observedAt 不接受静默系统墙钟');
 }
@@ -225,7 +225,7 @@ ADR-0011 §D：「底层 transaction 模块应在不暴露 live Y.Doc 的前提�
 2. 增量 bytes 应用到**空 Y.Doc 不物化**：缺失的 origin struct 使整个 update 静默丢弃（实测 `store.clients` 空、ROOT keys 空、不抛错、无可见效果；delete-set-only 引用 missing items 同样静默 no-op）。增量对空 doc 无效不是缺陷，是 yjs CRDT 增量语义的必然——增量只在**其基线上下文**中有意义。
 3. **正确消费契约：同源基态 + 依序增量链**。基态 = 该 namespace **事务前 pre-state** 的 state update（同 clientID——`makeDoc()` 每次调用产生新 clientID，基态必须与被测 runtime 的 doc 同源）；`applyUpdate(base) → applyUpdate(tx₁) → applyUpdate(tx₂) → …` 链式应用后，doc 状态 ≡ 最后一笔事务后的源 doc 状态。实测：base→tx₁ 得 `n=42, a='x'`；base→tx₁→tx₂ 得 `n=7`——与红灯断言值一致。
 
-**这正是 ADR-0011 的原生重放语义**：CONTEXT.md「namespace 诊断变更日志」术语定义——「**连续的** committed Yjs updates 可用于诊断性重放」——增量链而非孤立单条；ADR-0012 的 genesis baseline record 正是为「新 stream 的基线」而设（本票 emission 面不构造 genesis，但消费契约与之对齐：重放工具 = 基线 + 增量链）。
+**这正是 ADR-0011 的原生重放语义**：CONTEXT.md「namespace 诊断变更日志」术语定义——「**连续的** committed Yjs updates 可用于诊断性重放」——增量链而非孤立单条；ADR-0014 的 genesis baseline record 正是为「新 stream 的基线」而设（本票 emission 面不构造 genesis，但消费契约与之对齐：重放工具 = 基线 + 增量链）。
 
 **消费纪律注记（R3 修订：链洞的静默不物化——增量重放的固有性质）**：若增量链存在**洞**（如 adapter queue-full 丢弃了中间一条 committed 记录——ADR-0011 §A「日志队列溢出可以丢弃记录」授权的 drop；或消费方跳读），洞**之后**的增量在「基态 + 残链」上静默不物化（与事实 2 同机制：洞后增量的 left origin 引用洞中事务创建的 item）。这是增量链重放的固有性质而非缺陷，且与日志定位声明完全一致——CONTEXT.md 术语定义：「尽力记录……日志不参与业务提交、**不承诺完整性或恢复能力**」（_Avoid_: 审计账本、WAL、event sourcing、可靠恢复日志）。重放工具的消费纪律：以 `AttemptRecord.sequence` 严格递增检测链洞（洞可观测、可上报），洞后增量不应用于重放断言；诊断性重放是尽力而为的观测工具，不是恢复机制。
 
@@ -288,15 +288,15 @@ export function emitAttempt(env: DiagnosticEnv, e: SlotEmission): void {
     env.emitter.emit({
       operation: e.operation,
       stage: e.stage,
-      observedAt: observedAtMs(env.clock),    // 注入 Clock（ADR-0012；§5.2 成对校验保证必在）
-      source: { kind: 'local' },             // ADR-0012 source 词表；Runtime 本地写路径
+      observedAt: observedAtMs(env.clock),    // 注入 Clock（ADR-0014；§5.2 成对校验保证必在）
+      source: { kind: 'local' },             // ADR-0014 source 词表；Runtime 本地写路径
       ...(e.code !== undefined ? { code: e.code, sourceModule: 'runtime' as const } : {}), // 成对（§10-J3）
       ...(e.sourcePhase !== undefined ? { sourcePhase: e.sourcePhase } : {}),
       ...(e.issues !== undefined ? { issues: e.issues } : {}),
       input: e.input,
       result: e.result,
       // attemptId 省略 → emitter 管线 CSPRNG 生成 att-+32hex（pipeline.ts:221）
-      // durationMs 省略（无可靠 monotonic 来源，不发明——ADR-0012 §observedAt）
+      // durationMs 省略（无可靠 monotonic 来源，不发明——ADR-0014 §observedAt）
       // context 省略（Runtime 无 runtimeGeneration/replication 身份可提供，全可选字段）
     });
   } catch {
@@ -488,7 +488,7 @@ ADR-0011 §B：「每条结局记录保留所属模块**已有的**稳定 code�
 
 ### 10.1 AC1（冻结分类全覆盖）
 
-§9 两表共 25 个结局点，覆盖两槽全部既有 return/throw 路径（对照 write.ts/schema-write.ts 源码逐点核对，无遗漏）。operation/stage/result 判别联合全部取自冻结词表（vocabulary.ts 8 值 stage / 6 值 operation——`root-mutation`、`schema-replacement` 均在词表内，ADR-0012 §A）；日志层零新造分类。
+§9 两表共 25 个结局点，覆盖两槽全部既有 return/throw 路径（对照 write.ts/schema-write.ts 源码逐点核对，无遗漏）。operation/stage/result 判别联合全部取自冻结词表（vocabulary.ts 8 值 stage / 6 值 operation——`root-mutation`、`schema-replacement` 均在词表内，ADR-0014 §A）；日志层零新造分类。
 
 ### 10.2 AC2（owned bytes）与 AC3/AC5（输入纪律）
 
@@ -514,7 +514,7 @@ ADR-0011 §B：「每条结局记录保留所属模块**已有的**稳定 code�
 | 捕获 handler 自身抛错 | handler 体为单赋值闭包，无可抛点；不做额外 try/catch（保持零成本，注释说明） | 不存在「自有 observer 抛错被 transactGuarded 包装成 E203」的向量 |
 | 窗口内多事件（结构性不可达） | 首-赋值保守取首（§6.1） | 诊断面不崩溃、不 merge 语义争议 |
 | fatal committed:true 但零 bytes（未知异常且事务未派发） | effect:'unknown'（§7.3 表）——诚实而非编造 | 与 EmissionResult 判别联合吻合 |
-| `durationMs` / `context` / `attemptId` | 全部省略（无可靠来源/无身份可提供/emitter CSPRNG 生成） | 不发明字段（ADR-0012） |
+| `durationMs` / `context` / `attemptId` | 全部省略（无可靠来源/无身份可提供/emitter CSPRNG 生成） | 不发明字段（ADR-0014） |
 | P0 与 close barrier | P0 非 变更尝试（ADR-0011 §B 排除面：open 导致的编译不写 Y.Doc）；close 非 变更尝试 | 二者零 emit——`p0.ts`/`close.ts` 零改动 |
 | 未装配 emitter（现状生产路径） | diagEnv.emitter undefined → diag undefined → 槽体全部 `diag?.` 可选链 no-op；零订阅、零 emit | 既有全部测试**行为等价**（await 消费者可观测面不变；R1 修订 SA2 #6：`.then` 挂点使返回 promise 为派生 promise、结算多一跳微任务——非逐字节同一，全量回归由 §13.5 锁定，重点 runtime-close-lifecycle / runtime-close-sa7-dynamic / runtime-p0-sequencer） |
 
@@ -533,9 +533,9 @@ ADR-0011 §B：「每条结局记录保留所属模块**已有的**稳定 code�
 | ADR-0011 §D owned bytes | §6；三种冒充面零触碰；transaction-seam 授权捕获点的合规论证见 §6.3 |
 | ADR-0011 §F 时序/sequencer | acceptance 前拒绝在公共入口记录；已接纳操作记录真实槽内结局；emit 不被 await；notifyDirty 槽序原样（S6 在 emit 之前——emit 在槽外）；日志不延长 write slot |
 | ADR-0011 数据保护 | emission 无 token/stack/原始 Authorization；issue 透传的是既有结构化 `{message,path}`（message 为既有领域文案，非 stack） |
-| ADR-0012 §A 词表/attemptId/observedAt | operation 在冻结词表内；attemptId 委托 emitter CSPRNG；observedAt=注入 Clock 经本地 `observedAtMs`（§7.2——与诊断包 observedAtFrom 同一 ISO 表达式） |
-| ADR-0012 §B producer 只做语义 emission | emission 无 streamId/sequence/segment/Base64/CRC——物理投影全部留给 adapter（memory.ts 既有） |
-| ADR-0012 amendment C（emit 调用点纪律） | emit 点结构性位于 slot 之外（§7.1）——本票即 amendment 点名的接线修复票；File adapter 未来装配经同一 emitter 接口，调用点已合规 |
+| ADR-0014 §A 词表/attemptId/observedAt | operation 在冻结词表内；attemptId 委托 emitter CSPRNG；observedAt=注入 Clock 经本地 `observedAtMs`（§7.2——与诊断包 observedAtFrom 同一 ISO 表达式） |
+| ADR-0014 §B producer 只做语义 emission | emission 无 streamId/sequence/segment/Base64/CRC——物理投影全部留给 adapter（memory.ts 既有） |
+| ADR-0014 amendment C（emit 调用点纪律） | emit 点结构性位于 slot 之外（§7.1）——本票即 amendment 点名的接线修复票；File adapter 未来装配经同一 emitter 接口，调用点已合规 |
 | CONTEXT.md 术语（语义 emission / storage projection / genesis 排除） | 本票产出全部是语义 emission；不新增 genesis 构造路径；不新增 update-omitted reason |
 | #89–#93 冻结行为（十键公共面/导出审计） | `index.ts` 零改动（值导出仍恰 RuntimeWriteFatalError 一键）；runtime 对象键集不变；seam 扩展是加法可选字段 |
 
@@ -651,7 +651,7 @@ ADR-0011 §B：「每条结局记录保留所属模块**已有的**稳定 code�
 | #2 HIGH：emitSlot 缺省组装可伪造 committed（ok:false 是 resolve 非 reject；rejection+无 outcome 未定义） | ✅ | §7.1、§7.3、§8.1、§8.2 | emitSlot 签名带入结算事实：onOk 传 `{kind:'fulfilled', value:r}`、onErr 传 `{kind:'rejected'}`；组装契约三分支——① outcome 显式 → 按 outcome；② outcome 缺失 + fulfilled + **`r.ok === true`** → 缺省 transaction/committed（bytes→update / 零事件→noop）；③ outcome 缺失 + ok:false 或 rejection → **INV-DIAG 违约：不 emit 该记录 + 源码锚点注释**——绝不缺省 committed。§8.1/8.2 的 S7 行同步改引新契约；§13.7 登记「ok:false ⇒ result.kind ≠ committed」机制守卫供 SA6 钉死 |
 | #3 MEDIUM：gate/acceptance 记录省略 issues 与 ADR-0011 §B 不一致且无裁决 | ✅ | §9.1、§9.2（标 †）、新增 §9.3、§8.1、§8.2、§7.1 | 裁决选**透传侧（选项 a）**：§9.3 按业务结算通道三分冻结——领域联合 ok:false（R1–R4/S1′–S2′b 及既有 issues 面）**同源同序透传**（同一 `disabled(...)` 返回值 issues 数组引用，零第二构造）；fatal throw 通道无 issues 载荷不发明（ADR-0011 §B「保留已有」的相容性论证）；committed 无 issues。§8 槽体形态统一「先构造 r 再 `diag?.…(r.issues)`」；§7.1 acceptance 伪代码补 `issues: result.issues` |
 | #4 LOW：§4 type-only 叙述与 §13.1 observedAtFrom 值引入自相矛盾 | ✅ | §4、§7.2、§13.1 | 裁决选**本地实现**：diagnostic.ts 3 行 `observedAtMs`（与 emission.ts:105-107 同一 ISO 表达式，非序列化规则复制）；§4 修订为「值级依赖恰一处 = emitter.emit 方法调用，不引入诊断包任何值级模块导出（含 observedAtFrom——避免经 index 运行图拉入 reader/file）」；§13.1 同步 |
-| #5 LOW：clock 缺省墙钟形态（静默降级面） | ✅ | §5.1、§5.2 | 采纳 loud 方案：删除 `() => Date.now()` 缺省；**装配 diagnosticEmitter 而缺 clock ⇒ 构造期 TypeError**（observedAt 唯一来源是注入 Clock——ADR-0012；红灯 14 例全部成对注入 clock，不受影响；与 SA8 冲突点 #4 移交 Registry 票的「生产装配必须显式注入」呼应） |
+| #5 LOW：clock 缺省墙钟形态（静默降级面） | ✅ | §5.1、§5.2 | 采纳 loud 方案：删除 `() => Date.now()` 缺省；**装配 diagnosticEmitter 而缺 clock ⇒ 构造期 TypeError**（observedAt 唯一来源是注入 Clock——ADR-0014；红灯 14 例全部成对注入 clock，不受影响；与 SA8 冲突点 #4 移交 Registry 票的「生产装配必须显式注入」呼应） |
 | #6 LOW：「逐字节不变」表述过强（.then 挂点产生派生 promise/多一跳微任务） | ✅ | §2 D-C、§11、§13.5 | 措辞修正为「**行为等价（await 消费者可观测面不变）**」并显式登记派生 promise/微任务跳差异；§13.5 回归重点面补 runtime-close-lifecycle / runtime-close-sa7-dynamic / runtime-p0-sequencer |
 
 一致性自检（R1）：全文「逐字节」行为断言残留 0 处（§6.3 已改「编码级等价」——payload 编码器同源的语义断言）；§5.2/§8.1/§8.2/§13.4 校验对象表述统一为 doc；§7.3 契约与 §8.1/§8.2 S7 行、§13.7 守卫描述一致；§9.3 三分裁决与 §8 透传形态、§7.1 acceptance issues 一致；§12/§15 的 observedAt/promise 等价表述与 §4/§7.2/§2 D-C 同步；ALLOW/DENY LIST 文件集零变化（修订均为既有条目内的设计内容修正）。

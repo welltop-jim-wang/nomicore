@@ -48,7 +48,7 @@ SA8 已核实：简报所述 `ws-replication-issue239-repro.test.ts` 与 driver 
 
 - `BootOptions` 新增 `hubObserver?: ReplicationObserver` / `peerObserver?: ReplicationObserver`（缺省不注入 = 零事件，与生产 config 同一注入面），直通 `createHubReplication` / `createPeerReplication` 的 `observer` 选项。
 - 与简报所述「Peer factory 注入」的实现偏差说明：直通选项同样达成「同时捕获 Hub/Peer observer 事件」的目标，改动面更小（无 factory 包装、不动 wires/dial 闭包）；均为测试侧 additive seam，未触碰任何生产代码。
-- 静默漂移注入沿用既有受控 seam：`run.hubNode.persistence.peek(owner, nsId)`（persistence stub 测试面，与 `ws-replication-periodic-reconcile.test.ts` L61 同款）——**未要求生产代码暴露 live Y.Doc**（ADR-0012 被否决方案、包边界纪律遵守）。
+- 静默漂移注入沿用既有受控 seam：`run.hubNode.persistence.peek(owner, nsId)`（persistence stub 测试面，与 `ws-replication-periodic-reconcile.test.ts` L61 同款）——**未要求生产代码暴露 live Y.Doc**（ADR-0014 被否决方案、包边界纪律遵守）。
 
 ### 3.2 复现测试
 
@@ -128,7 +128,7 @@ SA8 已核实：简报所述 `ws-replication-issue239-repro.test.ts` 与 driver 
 
 - **正交两维**（ADR-0010 #134 R2-7）：no-op round 的 Step2 仍是 sequenced apply + dirty + `rootValidation='replication-unvalidated'`；`applyEffect=noop` 只否定 SV 推进——本复现断言的「SV 不变」不与 dirty/unvalidated 冲突（场景 1 中 ROOT/META/SV 全部不变即该正交性的观测面）。
 - **wire / 状态机零变化**：复现未触碰任何生产代码；driver seam 为测试侧 additive。
-- **受控 seam**：SV 捕获经测试面（`run.stateVectorOf` / persistence stub peek），未要求暴露 live Y.Doc（ADR-0012）。
+- **受控 seam**：SV 捕获经测试面（`run.stateVectorOf` / persistence stub peek），未要求暴露 live Y.Doc（ADR-0014）。
 - **不锁字节数**：断言只用 `> 0` 与键集，字节量仅记录为证据。
 - 范围切割：Hub/Peer 状态迁移不对称非缺陷（issue 明示）；#231/#232 不在本次分析面。
 

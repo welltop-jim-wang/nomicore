@@ -55,9 +55,9 @@
 |---|---|---|
 | ADR-0011 L129「adapter 慢/失败/队列满不得延长 write slot 或阻塞 close/shutdown；Registry 停止不得无限等待日志 sink」 | T9/T13 顺序锚（shutdown 结算先于日志存储完成）正是该条款的可执行化 | no-conflict |
 | ADR-0011 L117 emit 立即/detached/non-throw | poll 判据不要求 emit 返回 Promise/durability；夹具阻塞模拟的是被测 Host 存储延迟（缺陷本体） | no-conflict |
-| ADR-0012 L22「genesis 未成功写入时 stream 仍可记录诊断事实」 | R3 B 半 + T11（`initStream(ns, undefined)` genesis-less 流 + attempt 落盘）为该条款原文覆盖形态；不锚 replay complete（无 genesis 诚实缺席） | no-conflict |
-| ADR-0012 L70–89/L268 词表与冻结项 | R3 锚值 stage `transaction`/code `NAMESPACE_CREATE_FAILED`/result `rejected` 全为既有冻结词；零新词表值、零 record schema/stream generation 触发 | no-conflict |
-| ADR-0012 amendment L250（emit 调用点须在 slot 外/释放后） | T8–T13 全部锚定「结算不等待日志、日志不在关键路径」= 该规范性接线条件的验收面 | no-conflict |
+| ADR-0014 L22「genesis 未成功写入时 stream 仍可记录诊断事实」 | R3 B 半 + T11（`initStream(ns, undefined)` genesis-less 流 + attempt 落盘）为该条款原文覆盖形态；不锚 replay complete（无 genesis 诚实缺席） | no-conflict |
+| ADR-0014 L70–89/L268 词表与冻结项 | R3 锚值 stage `transaction`/code `NAMESPACE_CREATE_FAILED`/result `rejected` 全为既有冻结词；零新词表值、零 record schema/stream generation 触发 | no-conflict |
+| ADR-0014 amendment L250（emit 调用点须在 slot 外/释放后） | T8–T13 全部锚定「结算不等待日志、日志不在关键路径」= 该规范性接线条件的验收面 | no-conflict |
 | seam 冻结（#150/#155 契约锚） | binding 三成员名零新增；Runtime 包零改动；`namespace-runtime/testing` 零新导出 | no-conflict |
 | 静态守卫（registry-surface §2.M） | `setImmediate` 不在三正则内（本轮逐字符核对）；R4 注释未落地不构成命中缺口 | no-conflict |
 
@@ -65,13 +65,13 @@
 
 - **N1**（泵溢出健康上报）：契约层无涉——SA3 实现期建议项，维持。
 - **N2**（T13 单锚证明精度勘误）：**已消解**——到达 poll 形状下病态接线自然失效（poll 让出事件循环 ⇒ drain 可观测，判据回到语义本体）；且新 T13 不再直注 Runtime seam，病态接线域不复存在。
-- **N3**（补引 ADR-0012 L22）：R3 修订注释已引（SA7 diff L280「ADR-0012：genesis 未成功写入时 stream 仍可记录诊断事实」）——已兑现。
+- **N3**（补引 ADR-0014 L22）：R3 修订注释已引（SA7 diff L280「ADR-0014：genesis 未成功写入时 stream 仍可记录诊断事实」）——已兑现。
 - **N4**（genesis-less 流只锚目录 + attempt 可读）：**边界保持**（§1 R3 行）。
 - **N5**（#150 零漂移首验面）：本轮 30P 实证，移交 SA3 回归门。
 
 ## 7. 边界裁决（复审轮承接登记项）
 
-- **id 耗尽 fatal 零诊断发射**（前置门禁与 design-conflict §3#8 登记「留待 SA8 recheck」）：本轮裁定**维持，非冲突**。理由：(a) AC1 字面针对「被无归属通道确定性丢弃」的结局——id 耗尽 fatal 是零发射（从未进入任何通道），不在字面域内；(b) 全部候选 id 已证明属他人，任选归属即伪造（违反 ADR-0012 数据键控与「绝不伪造归属」词义）；(c) 无 ns 落盘面需 record schema 演进 + 新 stream generation，超出本票。契约无需为此增设用例。
+- **id 耗尽 fatal 零诊断发射**（前置门禁与 design-conflict §3#8 登记「留待 SA8 recheck」）：本轮裁定**维持，非冲突**。理由：(a) AC1 字面针对「被无归属通道确定性丢弃」的结局——id 耗尽 fatal 是零发射（从未进入任何通道），不在字面域内；(b) 全部候选 id 已证明属他人，任选归属即伪造（违反 ADR-0014 数据键控与「绝不伪造归属」词义）；(c) 无 ns 落盘面需 record schema 演进 + 新 stream generation，超出本票。契约无需为此增设用例。
 
 ## 8. 移交 SA3 的非阻断注意事项
 

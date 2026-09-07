@@ -4,10 +4,10 @@
  * 槽内结局写入 helpers。
  *
  * 职责边界（设计 §5–§8）：
- * - producer 只做语义 emission（ADR-0011 §E / ADR-0012 §B）——stage/code/sourcePhase/
+ * - producer 只做语义 emission（ADR-0011 §E / ADR-0014 §B）——stage/code/sourcePhase/
  *   issues/input/result 全部摘自既有业务事实，零发明、零第二构造（issues 同源引用
  *   透传）；物理投影（digest/base64/segment/stream 身份）全部留给 adapter。
- * - emit 调用点纪律（ADR-0012 amendment C）：emitSlot 由公共方法的 `.then` 回调调用
+ * - emit 调用点纪律（ADR-0014 amendment C）：emitSlot 由公共方法的 `.then` 回调调用
  *   （write sequencer slot 已释放之后；设计 §7.1 的微任务序证明）；acceptance 拒绝
  *   （零入队路径）在公共方法调用栈内同步 emitAttempt。
  * - emitAttempt 吞没一切（ADR-0011 §A producer 防御义务）：emitter 同步 throw /
@@ -38,7 +38,7 @@ import type {
 /**
  * 诊断环境（构造栈一次成型）。emitter 与 clock **成对**（设计 §5.2 构造期 loud 校验）：
  * 装配 emitter 而缺 clock ⇒ 构造 TypeError——observedAt 的唯一来源是注入 Clock
- * （ADR-0012 §observedAt），无 Date.now 系统墙钟缺省。
+ * （ADR-0014 §observedAt），无 Date.now 系统墙钟缺省。
  * 【R1 修订，SA2 #5 / INFO-1】类型面以判别联合表达该配对：未装配 = 两字段俱 undefined
  * （全部既有测试 + 生产路径——零行为变化）；装配 = emitter 与 clock 俱在。
  * emitAttempt 仅在 emitter 分支读取 clock——结构性保证非 undefined。
@@ -150,7 +150,7 @@ export function emitAttempt(env: DiagnosticEnv, e: SlotEmissionArgs): void {
       operation: e.operation,
       stage: e.stage,
       observedAt: observedAtMs(env.clock),
-      // 【issue #151 D-7/D-9】source 缺省 {kind:'local'}（ADR-0012 source 词表；Runtime
+      // 【issue #151 D-7/D-9】source 缺省 {kind:'local'}（ADR-0014 source 词表；Runtime
       // 本地写路径）；sourceModule 缺省 'runtime' 且与 code 恒成对（§10-J3 单侧即丢）。
       ...(e.source !== undefined ? { source: e.source } : { source: { kind: 'local' } }),
       ...(e.code !== undefined ? { code: e.code, sourceModule: e.sourceModule ?? 'runtime' } : {}),
@@ -162,7 +162,7 @@ export function emitAttempt(env: DiagnosticEnv, e: SlotEmissionArgs): void {
       ...(e.input !== undefined ? { input: e.input } : {}),
       result: e.result,
       // attemptId 省略 → emitter 管线 CSPRNG 生成（att-+32hex，pipeline.ts 既有）；
-      // durationMs 省略（无可靠 monotonic 来源，不发明——ADR-0012 §observedAt）；
+      // durationMs 省略（无可靠 monotonic 来源，不发明——ADR-0014 §observedAt）；
       // context 省略时缺省不携带（全可选字段，仅 replication 身份/关联提供）
     });
   } catch {

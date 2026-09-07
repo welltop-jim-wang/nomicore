@@ -3,7 +3,7 @@
 - **审查会话**：双轴终审 Spec 轴（独立审查，未与 Standards 轴交换上下文）
 - **Worktree**：`/home/wangjian/nomicore-fix-issue-153`（branch `fix/issue-153-on-docs-namespace-diagnostic-change-log`）
 - **审查 diff 范围**：`git diff 8611e68..215a18e`（基线 8611e68 = #152 merge commit；3536360 = SA3 实现；001ff80 = SA7 补验；215a18e = Phase 4 回流 3H+N1 修复——注释与测试护栏 only；首轮审查面为 8611e68..001ff80，R 轮 delta 复审见 §9）
-- **对照基准**：任务简报（`….md`）、AC checklist、设计定稿 670 行（`…_design.md`，SA8 clear + SA2 pass + N1/N2）、dispatch log 行 10 总控裁决 G1–G4、ADR-0012（含 2026-08-28 amendment）、ADR-0011
+- **对照基准**：任务简报（`….md`）、AC checklist、设计定稿 670 行（`…_design.md`，SA8 clear + SA2 pass + N1/N2）、dispatch log 行 10 总控裁决 G1–G4、ADR-0014（含 2026-08-28 amendment）、ADR-0011
 - **diff 构成**：src 4 文件（file.ts +344 净值 / reader.ts +567 / paths.ts +12 / health.ts +15）+ package.json bump + README/AGENTS + 测试 7 文件（1 新建主红灯 1239 行 + 1 新建 SA7 补验 241 行 + 5 修改）+ wiki 档案。全在 §16 ALLOW LIST 内；DENY LIST 零触碰（record/schema/vocabulary/pipeline/emission/sink/memory/frame/storage-gate/carrier/crc32c/canonical-json/digest/schema-patterns/index/testing/docs/adr 均无 diff 行）。
 
 ## Verdict: **pass**（R 轮 delta 复审后维持——215a18e 纯注释/测试护栏性质确认，spec 结论不变，验证门槛复跑全绿；见 §9）
@@ -95,8 +95,8 @@
 4. **`manifest-missing` vs `manifest-invalid` 归因**：manifest 读失败按 errno 二分（ENOENT→missing，其他含 EISDIR→invalid），与 §4.1 步 1a/1b 一致。
 5. **`stream-exhausted` 恰一次不变量**：sequence 路径由 UINT64_MAX 单调可达一次性保证；segment 路径由 latch 门保证；exhaustedAtOpen 每进程构造一次。无二次发射路径。
 6. **reader `line-unterminated` 与修复的事实基础同一**（§9.2 动机）：修复按终止符截断可 parse 半行后，reader 若宽容判 ok 即自相矛盾——实现两侧均以终止符为准，一致。
-7. **ADR-0012 §Segment rolling 默认值/编号/耗尽语义**（64MiB/256MiB/100000、00000001 起、00000000 保留、8 位不回绕、99999999 exhausted 丢弃+上报）逐字核对实现与 manifest 默认值，一致。
-8. **ADR-0012 §打开与尾部恢复不修复清单**（中间坏行/VFSL/CRC/引用缺失/越界/未知 format）→ 实现全落 rotate（corrupt/incompatible），无一被修复路径吞并。一致。
+7. **ADR-0014 §Segment rolling 默认值/编号/耗尽语义**（64MiB/256MiB/100000、00000001 起、00000000 保留、8 位不回绕、99999999 exhausted 丢弃+上报）逐字核对实现与 manifest 默认值，一致。
+8. **ADR-0014 §打开与尾部恢复不修复清单**（中间坏行/VFSL/CRC/引用缺失/越界/未知 format）→ 实现全落 rotate（corrupt/incompatible），无一被修复路径吞并。一致。
 
 ## 6. 阻断发现清单
 
@@ -120,7 +120,7 @@
 | 6 | `git diff … \| grep -in "fsync\|queue\|batch\|retention\|replay"` | 仅 wiki/文档引用行，src 零实现命中 |
 | 7 | `grep analyzeStreamForResume src/index.ts` | 无匹配——内部分析函数未公共导出（§4.1/§18 契约） |
 | 8 | diff 逐行研读：src/adapters/file.ts（344 行）、src/reader.ts（567 行）、src/health.ts、src/paths.ts、全部测试 diff、README/AGENTS diff | 见 §1–§5 对照记录 |
-| 9 | ADR-0012 原文核对（§Segment rolling L254–266、§打开与尾部恢复 L270–278、amendment L244–250、§File adapter 布局 L44） | 实现语义逐字对齐（见 §5.7/§5.8） |
+| 9 | ADR-0014 原文核对（§Segment rolling L254–266、§打开与尾部恢复 L270–278、amendment L244–250、§File adapter 布局 L44） | 实现语义逐字对齐（见 §5.7/§5.8） |
 | 10 | 测试锚存在性核对：主红灯文件 §13.1–§13.33 全锚（describe/it 标题逐一 grep）；strict-reader §13.30a–j；sa7-repair-io 4 用例 | 全数在位（本报告 §1 各 AC 行内引 L 号） |
 
 ---

@@ -237,7 +237,7 @@ function listStreamDirs(logRootDir: string, namespaceId: string): string[] {
   return readdirSync(dir).filter((name) => name.startsWith('log-'));
 }
 
-/** strict 读（ADR-0012-LOG 冻结形状）；helper 与 #155 E-series 同款。 */
+/** strict 读（ADR-0014-LOG 冻结形状）；helper 与 #155 E-series 同款。 */
 function strictRead(logRootDir: string, namespaceId: string, streamId: string) {
   return readStreamStrict({ rootDir: logRootDir, namespaceId, streamId });
 }

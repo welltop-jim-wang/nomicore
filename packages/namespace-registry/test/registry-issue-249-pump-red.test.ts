@@ -32,7 +32,7 @@
  * - R3-2 —— **红灯**（AC3 静默丢弃违约）：满队列 drop 结构性零上报——
  *   `DiagPumpDeps`（src/diag-pump.ts L60）只有 initStream/resolveEmitter 两个依赖面，
  *   无任何健康/observer 通道。修复后丢弃必须经既有低基数（operation/reason，
- *   ADR-0012 L240）健康语义上报，且不得为记录 drop 占用同一队列。
+ *   ADR-0014 L240）健康语义上报，且不得为记录 drop 占用同一队列。
  *
  * 【契约 seam 锚注 — AC3 上报面】R3-2 以 `DiagPumpDeps.reportDrop?`（可选成员）为
  * 契约锚（沿用 #150 红灯契约「字段名即本契约锚点」先例）：drop 发生时泵调用
@@ -45,7 +45,7 @@
  *                                                         // emission 自身的 operation
  *     { kind: 'init-stream', reason: 'queue-full' }       // init-stream：诚实缺席
  *
- * reason 为 ADR-0012 L240 封闭 reason 维度；emit 分支的 operation 取自被丢记录
+ * reason 为 ADR-0014 L240 封闭 reason 维度；emit 分支的 operation 取自被丢记录
  * 自身（泵同时承载多 operation 的 Runtime emissions，禁止硬编码）。测试以本地
  * 镜像类型承载 §5.2 形状（产品类型 `DiagPumpDropReport` 由 SA3 随实现导出），
  * 断言按 `kind` 收窄——修复后 `satisfies` 逆变检查与既有断言原样成立（类型级

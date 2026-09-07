@@ -3,7 +3,7 @@
  *
  * 权威契约：`wiki/raw/task_issue-154_sa2_design.md` §6.1（每步中断 × {bin 存在/缺失}）、
  * §4.2（JSONL-as-commit-marker：S0→S1 rename(jsonl→.deleting)→S2 unlink(bin)→S3 unlink(marker)）、
- * §9 T-B8/T-E8/T20。ADR 0012 §Retention 与删除 L291-295。
+ * §9 T-B8/T-E8/T20。ADR 0014 §Retention 与删除 L291-295。
  *
  * 方法学：中断态直接合成磁盘状态（rename jsonl→.deleting 等），断言 = 构造/sweep 后
  * 的运行时磁盘产物 + reader 视图 + 健康事件。当前主干无 retention API/行为 ⇒

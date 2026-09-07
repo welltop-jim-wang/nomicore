@@ -1,15 +1,15 @@
 /**
  * v1 冻结语义词表（issue #148 冻结；设计 §2.1——schema 与 TS 单源纪律见 schema-patterns.ts）。
  *
- * operation（6 值封闭，ADR 0012 §JSONL record 逐字）、stage（8 值封闭，ADR 0011
- * §变更尝试与结局 逐字；v1 不折叠、不新增）、sourceModule（4 值封闭，ADR 0012）、
- * LogSource / LogContext（ADR 0012 逐字形状）。
+ * operation（6 值封闭，ADR 0014 §JSONL record 逐字）、stage（8 值封闭，ADR 0011
+ * §变更尝试与结局 逐字；v1 不折叠、不新增）、sourceModule（4 值封闭，ADR 0014）、
+ * LogSource / LogContext（ADR 0014 逐字形状）。
  *
  * 词表「封闭」语义：词表外值在 emitter intake 直接丢弃 emission（§4.2 表），
  * 不在 record 中留 any 逃生口。
  */
 
-/** v1 封闭 operation 词表（ADR 0012 §JSONL record 逐字；新增 operation 需新 schema 版本与新 stream generation）。 */
+/** v1 封闭 operation 词表（ADR 0014 §JSONL record 逐字；新增 operation 需新 schema 版本与新 stream generation）。 */
 export type Operation =
   | 'namespace-create'
   | 'root-mutation'
@@ -29,15 +29,15 @@ export type Stage =
   | 'transaction'
   | 'dirty-notification'
 
-/** 稳定 code 的来源模块封闭枚举（ADR 0012：Registry、Runtime、Persistence 与 replication）。 */
+/** 稳定 code 的来源模块封闭枚举（ADR 0014：Registry、Runtime、Persistence 与 replication）。 */
 export type SourceModule = 'registry' | 'runtime' | 'persistence' | 'replication'
 
-/** 变更来源：本地写路径或可信复制路径（ADR 0012 §JSONL record 逐字形状）。 */
+/** 变更来源：本地写路径或可信复制路径（ADR 0014 §JSONL record 逐字形状）。 */
 export type LogSource =
   | { kind: 'local' }
   | { kind: 'replication'; direction: 'hub-to-peer' | 'peer-to-hub'; remoteInstanceId: string }
 
-/** 受控关联上下文（ADR 0012 逐字形状）：全可选，缺失即未提供。 */
+/** 受控关联上下文（ADR 0014 逐字形状）：全可选，缺失即未提供。 */
 export interface LogContext {
   correlationId?: string
   runtimeGeneration?: string

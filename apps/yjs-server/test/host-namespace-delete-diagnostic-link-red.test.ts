@@ -15,7 +15,7 @@
  * - 任务简报 AC1 第一条：「Host 的 namespace 数据删除工作流同步触发诊断日志删除，清理
  *   active locator、stream manifests、JSONL/BIN、deletion markers 与 adapter indexes，
  *   同时只承诺活跃存储的逻辑删除而不暗示 secure erase」。
- * - ADR-0012-LOG §Retention 与删除 L299（「Host 执行数据删除请求时必须同时调用日志删除
+ * - ADR-0014-LOG §Retention 与删除 L299（「Host 执行数据删除请求时必须同时调用日志删除
  *   能力」——#155 前置冲突报告显式顺延至本票）、L289-295（.deleting/marker/启动收尾/
  *   orphan 协议）。被调能力 `deleteNamespaceDiagnosticLog` 已由 #154 交付（package 级，
  *   词汇 deleted/absent、重入收敛、INV-12 租约分区释放）。
@@ -223,7 +223,7 @@ afterEach(() => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Host 配置 / 磁盘布局辅助（ADR-0012-LOG：{logRoot}/namespaces/{namespaceId}/…；
+// Host 配置 / 磁盘布局辅助（ADR-0014-LOG：{logRoot}/namespaces/{namespaceId}/…；
 // ADR-0006 数据面：{persistRoot}/users/{userId}/{namespaceId}.snapshot）
 // ─────────────────────────────────────────────────────────────────────────────
 

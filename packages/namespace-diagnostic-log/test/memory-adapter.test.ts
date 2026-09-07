@@ -1,6 +1,6 @@
 /**
  * 红灯契约 — §9.7 有界内存 adapter 语义（验收标准 5）
- * 锚点：ADR 0012 §Writer（「writer queue 满时 drop newest，保留已排队顺序；不得为了记录
+ * 锚点：ADR 0014 §Writer（「writer queue 满时 drop newest，保留已排队顺序；不得为了记录
  *       drop 再挤占同一队列」）+ 设计 §7.1（容量、drop newest、保序、永不 throw/阻塞、
  *       records() 冻结引用数组、接纳序 = sequence 升序）+ §7.2（DiagnosticMemoryStats：
  *       accepted/droppedTotal/droppedByReason/droppedByOperationReason/lastSequenceAssigned
@@ -39,7 +39,7 @@ describe('§9.7 容量饱和：drop newest（AC5）', () => {
     expect(stats.lastSequenceAssigned).toBe('6')
   })
 
-  it('drop 事件绝不作为 record 入队（ADR 0012 §Writer）', () => {
+  it('drop 事件绝不作为 record 入队（ADR 0014 §Writer）', () => {
     const { log } = makeLog({ capacity: 1 })
     log.emitter.emit(baseEmission())
     log.emitter.emit(baseEmission())

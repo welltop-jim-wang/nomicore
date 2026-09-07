@@ -1,7 +1,7 @@
 # SA6 红灯报告 — Reopen streams, roll segments, and repair provable tails（issue #153 round=1）
 
 **日期**：2026-08-28（SA6 红灯锚定阶段；设计定稿后落锚——SA8 设计复审 clear + SA2 R2 pass + N1/N2 并入）
-**权威契约**：`wiki/raw/task_diagnostic-log-stream-roll-repair_design.md`（670 行，§13 = 33 条红灯锚 + §13.7 R1 变体；§16 ALLOW/DENY LIST）；裁决面 `…_relevant_decisions.md`（SA8 前置门禁）；约束优先级：任务简报 > SA8 门禁 > ADR-0012/0011/0008 > #148 冻结 > #152/R2 设计 > SA2 评审。
+**权威契约**：`wiki/raw/task_diagnostic-log-stream-roll-repair_design.md`（670 行，§13 = 33 条红灯锚 + §13.7 R1 变体；§16 ALLOW/DENY LIST）；裁决面 `…_relevant_decisions.md`（SA8 前置门禁）；约束优先级：任务简报 > SA8 门禁 > ADR-0014/0011/0008 > #148 冻结 > #152/R2 设计 > SA2 评审。
 **运行目录**：`/home/wangjian/nomicore-fix-issue-153`（基线 commit 8611e68；**src 零改动**——`git status` 仅 test/ 与 wiki/ 变化；`git diff --check` 干净）。
 **红灯验证命令**：`cd /home/wangjian/nomicore-fix-issue-153 && node_modules/.bin/vitest run packages/namespace-diagnostic-log/test`（后台独立进程；无端口依赖，`fuser` 预检空跑）
 **红灯证据日志**：`.mabf-bg/sa6-red-run.log`（首轮全量）、`/tmp/sa6c.log`（主红灯文件逐锚复跑）、`/tmp/sa6e.log`（终态全量）

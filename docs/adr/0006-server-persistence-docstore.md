@@ -216,7 +216,7 @@ Namespace identity、普通 create 的 ID 生成与 Registry 碰撞处理以 [AD
 
 **4. Persistence 内部只读 committed-identity probe（`readPersistedReplicationIdentity(owner, docId)`）**：为 Registry reset preflight 提供——只读受信任主快照（owner 分区 key + `PersistenceIO.read`），在 detached 临时 Y.Doc 解码后应用既有 `META.docId` 与复制事实格式校验；**不签发 handle、不建 live cell、不调用 saveDoc、不排空 dirty、不写/flush/archive、不转移所有权**。其 typed 拒绝面：当前生命周期 epoch 内的 store 读拒绝 → `DocPersistedIdentityProbeOperationalError`（唯一普通运营失败）；Yjs 解码失败/`META.docId` 不符/载体非法 → `DocPersistedIdentityProbeCorruptError`；dispose/abort/契约违约 → `DocPersistedIdentityProbeFatalError`。全部 `committed:false`（本 seam 从不写或转移所有权——INV-12）；消息为稳定常量，不回显 owner/identity/bytes。该 probe **不是** live-state 降级回退：I/O 失败保持 loud/typed，绝不读取 live Y.Doc 冒充持久事实。
 
-### 逻辑删除修订（2026-09-07，issue #228；ADR-0012-LOG「Host 执行数据删除请求时必须同时调用日志删除能力」的持久层 seam——演进经 SA8 前置门禁 B1 预授权 + 设计后复审 clear）
+### 逻辑删除修订（2026-09-07，issue #228；ADR-0014-LOG「Host 执行数据删除请求时必须同时调用日志删除能力」的持久层 seam——演进经 SA8 前置门禁 B1 预授权 + 设计后复审 clear）
 
 本节为**增量演进**，新增 `DocPersistence` 可选成员 / `ReplicaPersistence` **必具**成员 `deleteDoc(owner, docId)` 与共享 lifecycle 的新 I/O seam `PersistenceIO.removeKey`；除下列明示条款外，所有既有条款（owner 分区、`saveDoc` dirty notification、全量 snapshot、主 snapshot temp→rename、`META.docId`、import/archive/probe 的 optional/required 放置）维持效力。
 
@@ -231,7 +231,7 @@ readonly deleteDoc: (owner: User, docId: string) => Promise<Readonly<{ ok: true 
 removeKey?(key: string, signal: AbortSignal): Promise<void>
 ```
 
-**2. 语义 = 活跃存储逻辑删除**：按 `(owner.userId, docId)` 移除主键 committed snapshot（File：`{rootDir}/users/{userId}/{docId}.snapshot` + 同名 `.tmp`；Memory：主 mirror）与同 key 受控归档位（File：`{rootDir}/archive/users/{userId}/{docId}.snapshot` + `.tmp`；Memory：独立 `archiveSnapshots` 分区）——**delete ≠ archive**：无身份前置、无归档写、删除时清理归档位（归档语义「不触碰归档区」由 removeKey 的独立 seam 切分保持，`remove` 零改动）。只承诺活跃存储逻辑删除，不承诺 SSD/备份/对象存储版本中的物理 secure erase（ADR-0012-LOG L299 措辞纪律；文档与实现均不出现 erase/purge/secure 字样）。
+**2. 语义 = 活跃存储逻辑删除**：按 `(owner.userId, docId)` 移除主键 committed snapshot（File：`{rootDir}/users/{userId}/{docId}.snapshot` + 同名 `.tmp`；Memory：主 mirror）与同 key 受控归档位（File：`{rootDir}/archive/users/{userId}/{docId}.snapshot` + `.tmp`；Memory：独立 `archiveSnapshots` 分区）——**delete ≠ archive**：无身份前置、无归档写、删除时清理归档位（归档语义「不触碰归档区」由 removeKey 的独立 seam 切分保持，`remove` 零改动）。只承诺活跃存储逻辑删除，不承诺 SSD/备份/对象存储版本中的物理 secure erase（ADR-0014-LOG L299 措辞纪律；文档与实现均不出现 erase/purge/secure 字样）。
 
 **3. 幂等与失败面**：absent 与 deleted 不可区分（两处均已缺席仍 resolve `{ok:true}`——删除不是存在性预言）；resolve ⟺ 主键与归档位此后均缺席（File 顺序：主键先 = 提交点、归档位后；全程 ENOENT 容忍——`fsp.rm force:true` 逐处）；reject ⟹ 可能部分完成，重试收敛（单调性：删除只前进不回退，无路径把「已删」翻回「存在」）。拒绝分类：`DocDeleteActiveHandleError`（live handle 存在——删除只在无有效 handle 时执行，调用方释放后重试）、`DocDeleteOperationalError`（`io.removeKey` 在当前 epoch 的 store 级拒绝——cause 原样、重试收敛）、`DocDeleteFatalError`（phase 词表 `lifecycle-disposed` / `adapter-violation` / `remove-aborted`，恒 `committed:false`——removeKey resolve 后无失败路径）。
 

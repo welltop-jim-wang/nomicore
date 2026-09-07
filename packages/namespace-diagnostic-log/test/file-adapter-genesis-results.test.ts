@@ -1,12 +1,12 @@
 /**
- * 红灯契约 — ADR 0012 验收门槛 4（全部 result 判别分支）+ genesis baseline record。
+ * 红灯契约 — ADR 0014 验收门槛 4（全部 result 判别分支）+ genesis baseline record。
  *
  * 锚点：
- * - ADR 0012 §JSONL record：v1 六形状展开 8 成员判别联合（committed+noop / +update /
+ * - ADR 0014 §JSONL record：v1 六形状展开 8 成员判别联合（committed+noop / +update /
  *   +update-omitted；rejected；fatal+committed:false；fatal+committed:true +
  *   unknown | update | update-omitted）；「rejected 与 fatal committed:false 禁止携带
  *   update」；「payload 超限时保留 attempt metadata，记录 update-omitted 与稳定 reason」
- * - ADR 0012 §Stream 与 generation：「每个新 stream 尽力先记录当前完整 Y.Doc 的
+ * - ADR 0014 §Stream 与 generation：「每个新 stream 尽力先记录当前完整 Y.Doc 的
  *   genesis baseline，使该 stream 可独立诊断性重放；genesis 未成功写入时 stream 仍可
  *   记录诊断事实，但不得声称完整重放」
  * - CONTEXT.md：genesis baseline record = 顶层 recordKind: 'genesis-baseline' 判别；
@@ -48,7 +48,7 @@ function jsonlOf(log: ReturnType<typeof makeFileLog>['log']): Array<Record<strin
   return readJsonl(streamPaths(log.rootDir, log.namespaceId, log.streamId).jsonlPath)
 }
 
-describe('ADR 0012 验收门槛 4：全部 result 判别分支落盘且通过冻结 VFSL schema', () => {
+describe('ADR 0014 验收门槛 4：全部 result 判别分支落盘且通过冻结 VFSL schema', () => {
   it('committed+noop / rejected / fatal+false / fatal+true+unknown（无 update 载体）', () => {
     const root = freshRoot()
     const { log } = makeFileLog({ rootDir: root, namespaceId: 'ns-results-1', updateCapture: true })

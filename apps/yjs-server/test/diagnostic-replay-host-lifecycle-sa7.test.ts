@@ -278,7 +278,7 @@ describe('SA7 动态重点 1 — C1 并发 create 交错（数据键控归因，
       expect(aSegmentText.includes('ns-b-schema-leak-marker')).toBe(false);
 
       // R3 修订锚：B 的结局以 NS_B 归属落 B 自己的流（修复前 B 无日志目录 → 红）。
-      // genesis-less 流（ADR-0012：genesis 未成功写入时 stream 仍可记录诊断事实）
+      // genesis-less 流（ADR-0014：genesis 未成功写入时 stream 仍可记录诊断事实）
       // 的读取形态先例 = 本文件 C1b（status 'ok'、单 attempt 记录）——不锚 replay
       // complete（无 genesis 时诚实缺席）。
       await expect

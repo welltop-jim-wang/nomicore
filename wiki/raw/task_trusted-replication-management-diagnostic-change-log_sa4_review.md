@@ -99,7 +99,7 @@ if (capturedUpdate !== undefined) {                              // :585 R6 门�
 - **`runtime.ts`**：十二键、V2.5 预投影（corrupt → 构造 throw）、V3c'''''/V3d''/V3f 顺序、close 同步段 `terminateAll`（lifecycle 置位后、barrier 前——close.ts 零改动）、WeakMap 零键污染（键集测试 12 键绿）。
 - **DENY 面零触碰**：`namespace-diagnostic-log/**`、runtime `index.ts`、`sequencer.ts`、`close.ts`、`status.ts`、`projection.ts`、`plain-data.ts`、`schema-write.ts`、`testing.ts` 均不在 diff。
 
-### 2.2 slot 外/槽后 emit（SA8 钉死 #2 / ADR-0012 amendment C）
+### 2.2 slot 外/槽后 emit（SA8 钉死 #2 / ADR-0014 amendment C）
 
 三条 operation 的槽后挂点全部 `void settled.then((r)=>emitSlot(...), (e)=>emitSlot(...))`——与 #149 mutateRoot 同款（emit 在 slot 释放后的微任务、不被 await、不延长槽）；enable/bump 的 acceptance 拒绝与 apply 的 A 层拒绝在**公共方法同步段**（入队之前，slot 之外）emit——amendment 允许的两个合法位置各归其位。排序机构唯一（INV-S1 同一 WriteSequencer），红灯用例 13（hostile emitter `calls()===2` + FIFO epoch=2）/14（capacity:1 → accepted=1/dropped=1 + 业务序不变）行为级验证通过。
 

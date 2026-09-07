@@ -5,7 +5,7 @@
 - branch: fix/issue-148-on-docs-namespace-diagnostic-change-log
 - run_id: issue-148-1787889316-3529662
 - round: 1
-- 规格冻结源：`docs/adr/0011-best-effort-namespace-diagnostic-change-log.md`、`docs/adr/0012-vfsl-validated-jsonl-and-framed-sidecar-change-log.md`、`CONTEXT.md`（namespace 诊断变更日志词条）
+- 规格冻结源：`docs/adr/0011-best-effort-namespace-diagnostic-change-log.md`、`docs/adr/0014-vfsl-validated-jsonl-and-framed-sidecar-change-log.md`、`CONTEXT.md`（namespace 诊断变更日志词条）
 
 ## 需求理解（issue 原文）
 
@@ -38,7 +38,7 @@
 ## 留给 SA1 的设计问题
 
 1. 新包命名与位置（建议 `packages/namespace-diagnostic-log` / `@nomicore/namespace-diagnostic-log`，须论证）。
-2. 语义 emission 类型与 emitter interface 命名/形状（对齐 ADR 0011 §Interface 与 ADR 0012 「producer 只提交 semantic emission」）；streamId/sequence/attemptId 在 memory adapter 路径的分配与默认值；随机源/时钟注入接缝。
+2. 语义 emission 类型与 emitter interface 命名/形状（对齐 ADR 0011 §Interface 与 ADR 0014 「producer 只提交 semantic emission」）；streamId/sequence/attemptId 在 memory adapter 路径的分配与默认值；随机源/时钟注入接缝。
 3. v1 record 的 TS 类型与 VFSL schema 文本逐字段设计（operation/result 判别联合、stage 封闭枚举、code/sourcePhase Pattern、source/context、input capture 四策略形状、issues 投影形状、update inline/sidecar 两种 storage 形状、observedAt/durationMs、sequence 十进制字符串）。
 4. 输入捕获管线：digest=SHA-256(RFC 8785 JCS bytes) 的实现策略；redacted/full 的投影与 line 预算超限降级 digest + `projected-input-too-large`。
 5. issue 投影：message 4KiB/path 256 段/段 1KiB/issues 1000 条/Unicode code point 不拆分的确定性截断 + truncated/originalCount。

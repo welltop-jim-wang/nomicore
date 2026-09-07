@@ -7,7 +7,7 @@
 
 ## 相关 ADR
 
-### ADR-0012 VFSL 校验的 JSONL 与 framed sidecar 诊断日志格式（accepted）——本轮主规范
+### ADR-0014 VFSL 校验的 JSONL 与 framed sidecar 诊断日志格式（accepted）——本轮主规范
 
 - 与本任务的关联点：R2 的 manifest policy 严格解释、stream sequence 连续性，以及 File adapter 同步 append 的 ADR 修订，均直接涉及本 ADR。
 - 核心条款（原文摘录）：

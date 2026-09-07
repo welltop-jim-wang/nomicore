@@ -1,6 +1,6 @@
 /**
  * File diagnostic-log adapter（设计 §3/§4——issue #152；#153 §3/§5.5/§6/§7/§8；
- * ADR 0012 §File adapter）。
+ * ADR 0014 §File adapter）。
  *
  * 契约摘要：
  * - 构造即建三件套：segments/（recursive mkdir）→ manifest.json（'wx' 不可变创建，
@@ -15,7 +15,7 @@
  *   99999999 溢出 = exhausted disabled + 恰一次 stream-exhausted，绝不新建 generation；
  * - 同步落盘：每 record 独立 open-append-close（`appendFileSync`），无队列、无
  *   batch、无 fsync、无常驻 fd（§4.3/J2；EISDIR 占位恢复语义的必要条件；
- *   R2 ADR-0012 amendment 把有界同步 append 显性化为首切片决策，write-slot 外接线
+ *   R2 ADR-0014 amendment 把有界同步 append 显性化为首切片决策，write-slot 外接线
  *   为规范性条件——见 docs/adr/0012）；
  * - R2 提交点纪律（设计 §3.2/§3.2.1）：sequence 以 candidate 在「全部可失败准备门
  *   通过、即将进入 JSONL append 的提交分支」时取得并即刻物化；definitive pre-commit
@@ -72,7 +72,7 @@ import { nextDecimal, UINT64_MAX } from './memory.js'
 
 /** File adapter 配置（§1.3：全可选项带 `| undefined` 显式联合——exactOptionalPropertyTypes 装配模式）。 */
 export interface FileDiagnosticLogConfig {
-  /** 日志根目录；单进程独占（ADR 0012 §Writer），不做跨进程锁。 */
+  /** 日志根目录；单进程独占（ADR 0014 §Writer），不做跨进程锁。 */
   rootDir: string
   /** 日志根目录下的 namespace 目录段；进入路径前过安全文法（§2.6）。 */
   namespaceId: string
@@ -109,7 +109,7 @@ export interface FileDiagnosticLogConfig {
    *  构造级 crash 包络收编，不从构造函数外抛）。 */
   clock?: { now(): number } | undefined
   /** #154 retention 配置（null / undefined = 默认 30d + 1 GiB；违规值 → retention 失活 +
-   *  恰一次 `retention-config-invalid`，stream 照常工作——ADR 0012 §Retention 可动态调整，
+   *  恰一次 `retention-config-invalid`，stream 照常工作——ADR 0014 §Retention 可动态调整，
    *  不冻结进 manifest、不产生新 generation）。 */
   retention?: FileRetentionConfig | null | undefined
 }
@@ -1126,7 +1126,7 @@ export function createFileLog(config: FileDiagnosticLogConfig, options: FileLogO
   /** 卫生遍历（P0，无条件——协议卫生不属「限制」，ADR 步骤 4/5 无条件）：遗留 `.deleting`
    *  续走（S1→S3）+ orphan BIN 清理（闭组 bin-无-jsonl-无-marker；开组 BIN-first 瞬态绝对豁免）。
    *  #227（§3.3.2）：orphan-BIN 清理前加租约门——活跃 read-session 覆盖的闭组 bin 不得被
-   *  P0 删除（ADR 0012 L289「retention 只删除已关闭且没有 reader lease 的 segment group」
+   *  P0 删除（ADR 0014 L289「retention 只删除已关闭且没有 reader lease 的 segment group」
    *  统辖全部删除面）；跳过计入 `leaseBlockedGroups`（N-3：语义扩为「P1/P2 止步 + P0 跳过」，
    *  事件频率随之——纯卫生租约跳过亦触发 retention-swept，字段形状零变更）。 */
   function hygieneStream(
@@ -1550,7 +1550,7 @@ export function createFileDiagnosticLog(config: FileDiagnosticLogConfig): FileDi
 }
 
 // ============================================================================
-// #154 namespace 日志逻辑删除（SA2 §2.4/§4.4/§5 INV-8/12/13；ADR 0012 §Retention 与删除）
+// #154 namespace 日志逻辑删除（SA2 §2.4/§4.4/§5 INV-8/12/13；ADR 0014 §Retention 与删除）
 // ============================================================================
 
 /** namespace 日志删除请求（SA2 §2.4）。 */

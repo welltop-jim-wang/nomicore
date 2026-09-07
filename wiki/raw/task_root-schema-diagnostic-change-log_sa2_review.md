@@ -62,7 +62,7 @@
 
 - **静默失败**：producer 侧吞没 emitter throw / 违约 clock / 队列满是 ADR-0011 §A 授权的隔离（非静默失败）；**真正的静默失败向量是攻击点 #2**——漏写 outcome 点时缺省组装静默产出伪造 committed 记录，且无测试可捕获（红灯未覆盖全部 25 点）。#1 的故障形态相反（loud 爆炸、全套件立红）——不是静默失败但属实施级死路。
 - **状态闭环**：每条结局路径 → 恰一条 attempt record；记录存在性由红灯 `waitAttempts` poll 闭环；业务面四不变（返回值/FIFO/dirty/capability）由 AC4 两例闭环。✅（前提是 #1/#2 修复）
-- **降级路径**：adapter 队列满 → drop newest + stats（AC4 锚点）；VFSL validation failure → 丢 record + 健康事件（adapter 侧既有测试承担，ADR-0012 验收门槛 6）；File adapter 未装配（本票 memory 面）。✅
+- **降级路径**：adapter 队列满 → drop newest + stats（AC4 锚点）；VFSL validation failure → 丢 record + 健康事件（adapter 侧既有测试承担，ADR-0014 验收门槛 6）；File adapter 未装配（本票 memory 面）。✅
 - **虚假降级识别**：设计整体贯彻 loud-assert 哲学（doc 事件面缺失 loud、notifyDirty 未绑 loud、畸形 ok:true loud）——方向正确；**#1 恰是 loud-assert 写错对象**（意图 loud、实现全杀）；「fatal committed:true 零 bytes → effect unknown」是诚实上报而非虚假降级；#5（clock 缺省墙钟）是唯一接近静默降级的形态，SA8 已裁非冲突、移交 Registry 票。
 
 ## 4. 红线测试思路（每漏洞对应）
@@ -112,7 +112,7 @@
 
 - **INV-DIAG「不 emit」分支**：尝试攻击「合法流程误入 INV-DIAG 丢记录」——对照 25 点映射表与本人 R0 的源码枚举，每个 ok:false/rejection 点均有显式 outcome 写入，INV-DIAG 在完备实现中结构性不可达；即便 SA3 漏写一点，表现是「缺一条记录」而非「错一条 committed」——失败方向正确（与 R0 #2 的要求一致），且 §13.7 机制守卫（ok:false ⇒ result.kind ≠ committed）可捕获。无新攻击面。
 - **§9.3 透传形态的次序风险**：`diag?.…(r.issues)` 传同一数组引用——pipeline `projectIssues` 只读投影（issues.ts 既有），不回写业务数组；「先构造 r 再写 diag」不改变业务返回值语义。无攻击面。
-- **成对校验的误伤面**：唯一可触达形态是「调用方装配 emitter 而忘注入 clock」——这正是要 loud 拒绝的形态（对齐 ADR-0012「注入 Clock」）；红灯与生产装配均不可达。无误伤。
+- **成对校验的误伤面**：唯一可触达形态是「调用方装配 emitter 而忘注入 clock」——这正是要 loud 拒绝的形态（对齐 ADR-0014「注入 Clock」）；红灯与生产装配均不可达。无误伤。
 - **本地 observedAtMs 与诊断包 helper 的漂移风险**：同一 ISO 表达式，但确属两份代码——若未来诊断包改 helper 语义（如时区/精度），runtime 侧不跟随。风险接受度：表达式是 `Date.prototype.toISOString` 的 ECMA-262 规范行为（YYYY-MM-DDTHH:MM:SS.sssZ），冻结度极高；intake RE_ISO_MS 是最终守卫。INFO 级，不阻塞。
 
 ## R1.3 残留（INFO，零行为影响，移交 SA3/SA4——不构成 pass 障碍）
@@ -168,7 +168,7 @@ R0 §0 表的全部独立验证（yjs P1–P7 协议假设、两槽单事务+cle
 | producer 零改动声称 | §6.1–6.3/§7/§9 与 R1 逐字比对（R13/S7′ 行、§7.1/7.2 伪代码均未动）；§9.1 仅锚点注记（L473）标注应用形态变更 | ✅ 捕获机制仍产事务增量，映射表/发射契约不变 |
 | ADR-0011 §D 冒充红线 | §6.4「为什么不改为携带整文档编码」明文拒绝切整文档；A5 实验证明整文档编码在空 doc 物化——若 producer 冒充会被 §13.8d 立即抓出 | ✅ 红线维持且有了机制化检测面 |
 | CONTEXT.md「**连续的** committed Yjs updates 可用于诊断性重放」 | base + 依序增量链正是「连续 updates」的原生消费形态（R1 版空 doc 单条应用反而偏离该语义） | ✅ R2 与 ADR 术语定义拟合更佳 |
-| ADR-0012 genesis baseline 对齐 | §6.4 指出重放工具 = 基线 + 增量链，与 #152 genesis baseline record 的设计目的对齐（本票 emission 面仍零 genesis 构造路径） | ✅ 一致 |
+| ADR-0014 genesis baseline 对齐 | §6.4 指出重放工具 = 基线 + 增量链，与 #152 genesis baseline record 的设计目的对齐（本票 emission 面仍零 genesis 构造路径） | ✅ 一致 |
 | 验收力不降反升 | 链式重放可断言**每笔事务的中间态**（base→tx₁ 停在 tx₁ 边界——整文档₁ 直接跳终态无法停留）；payloadLength 双重鉴别（38 bytes vs 整文档数百字节） | ✅ A2/A5 实证 |
 
 ## R3.4 §13.8 SA6 测试修订规格有效性核验

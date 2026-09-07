@@ -74,11 +74,11 @@
   （「不承诺……secure erase」×3 处）与 ADR-0006 修订节的措辞纪律自指；「绝不阻塞」全文
   残留仅 ADR-0011 澄清节自我覆盖条款（援引 amendment）与 README L30 已限定内存 adapter
   语境的注释（M-1 修复在场）；CONTEXT.md 语义 emission 词条、包 README L311 区、包
-  AGENTS.md L16 区三处矛盾文本均向 ADR-0012-LOG 首切片 amendment 收敛（后决优先），
+  AGENTS.md L16 区三处矛盾文本均向 ADR-0014-LOG 首切片 amendment 收敛（后决优先），
   queue/batch/fsync/fd 一律标注「目标演进形态而非现行特性」。✅
 - **AD-9 零漂移面（本轮定向 diff 亲证）**：`packages/ws-replication/src`、`docs/protocols/`、
   `apps/yjs-server/src/config.ts`、`src/main.ts`、`domains/`、`packages/vfsl/src`、
-  `packages/namespace-runtime/src`、ADR-0012-LOG 全部 **0 行 diff**；`generate --check`
+  `packages/namespace-runtime/src`、ADR-0014-LOG 全部 **0 行 diff**；`generate --check`
   exit 0（日志在场）与零 schema 改动互证。✅
 
 ## 3. 设计忠实度与 SA2 实施条件（M1–M4）

@@ -88,7 +88,7 @@ Duration 39.35s
 
 | # | 风险 | 状态/缓解 |
 |---|---|---|
-| 1 | Runtime wrapper emission 经 pump 满队时以 `reportDrop` 上报、不进诊断流——修复语义为「记录丢失但可见」 | 设计预期（ADR-0012 L240 低基数 dropped metrics）；既有 drop 有界性不变 |
+| 1 | Runtime wrapper emission 经 pump 满队时以 `reportDrop` 上报、不进诊断流——修复语义为「记录丢失但可见」 | 设计预期（ADR-0014 L240 低基数 dropped metrics）；既有 drop 有界性不变 |
 | 2 | entry collision 候选侧读一次 clock（每碰撞候选 +1 读数） | DC-3 每尝试恰一次保持；无既有 clock 计数锚受影响（registry-create.test 无日志场景 zero 读数不变——实测 47/47 绿） |
 | 3 | 敌意全局 setImmediate 持续 throw 时队列滞留（≤256/ns） | 有界、不外溢、不重复投递；注释登记（SA2 O6） |
 | 4 | 生产 Host 未注入 observer → drops 静默（事件无消费方） | 与全部既有 observer 事件同语义；yjs-server 装配零改动（已核） |
