@@ -44,7 +44,6 @@
  * registry.ts；plugin.ts 经相对通道 import 后 re-export，index 沿 plugin 链转出）。
  */
 import { createNamespaceRuntimeForRegistry, openReplicationSessionCoreForRegistry } from '@nomicore/namespace-runtime/internal';
-import type { RuntimeForRegistryDiagnostic } from '@nomicore/namespace-runtime/internal';
 import type {
   RuntimeReplicationSessionCore,
   RuntimeReplicationSessionStatus,
@@ -72,6 +71,7 @@ import type {
   YjsDoc,
 } from '@nomicore/persistence';
 import type { Clock } from '@nomicore/clock';
+import type { NamespaceDiagnosticChangeEmitter } from '@nomicore/namespace-diagnostic-log';
 import { DocRuntimeFatalError } from '@nomicore/doc-runtime';
 import {
   acceptCreateIdentity,
@@ -112,6 +112,7 @@ import type {
   NamespaceRegistry,
   NamespaceRegistryDiagnosticLog,
   NamespaceRegistryShutdownFailure,
+  NamespaceReplicationObservabilityOptions,
   NamespaceRegistryStatus,
   OpenNamespaceResult,
   RegistryRandomBytes,
@@ -194,10 +195,28 @@ export function resolveIdleTimeoutMs(config: { readonly idleTimeoutMs?: number }
 /** 生产 Runtime 工厂类型（精确形状；仅 testing.ts 注入口与 registry 内部可见）。
  *  #155（§4-D6）：第三可选参 `diagnostic?`——两参实现（测试 override）对三参可选
  *  签名保持可赋值，零测试破坏。 */
+interface RuntimeSeamSlotSample {
+  readonly slotKind: 'P0' | 'S' | 'E' | 'R' | 'schema' | 'bump' | 'close-barrier';
+  readonly waitMs?: number;
+  readonly runMs: number;
+  readonly queueDepthAtStart: number;
+}
+
+interface RuntimeReplicationObservabilitySeam {
+  readonly stageClock?: { now(): number };
+  readonly slotMetrics?: (sample: RuntimeSeamSlotSample) => void;
+}
+
+interface RegistryRuntimeOptions {
+  readonly emitter?: NamespaceDiagnosticChangeEmitter;
+  readonly clock?: () => number;
+  readonly replicationObservability?: RuntimeReplicationObservabilitySeam;
+}
+
 type RuntimeFactory = (
   handle: DocHandle,
   notifyDirty: () => Promise<void>,
-  diagnostic?: RuntimeForRegistryDiagnostic,
+  diagnostic?: RegistryRuntimeOptions,
 ) => NamespaceRuntime;
 
 // —— phase-5 切片 1（ADR 0010）：namespaceId 生成常量（核心私有，不导出）——
@@ -383,7 +402,11 @@ function assertRoleShape(value: unknown): asserts value is InstanceRole | undefi
  * generation 迁移，如变体 C 的「close settle 时移除 entry」）。
  */
 export interface NamespaceRegistryInternalOptions {
-  readonly runtimeFactory?: (handle: any, notifyDirty: () => Promise<void>) => any;
+  readonly runtimeFactory?: (
+    handle: any,
+    notifyDirty: () => Promise<void>,
+    diagnostic?: RegistryRuntimeOptions,
+  ) => any;
   readonly observer?: RegistryObserver;
   readonly diagnostics?: RegistryDiagnosticsSink;
   /** 必需 Clock（§2.1/§8）：缺失/null/非 object/now 非函数 → 构造期同步 TypeError。 */
@@ -400,6 +423,7 @@ export interface NamespaceRegistryInternalOptions {
   /** 实例静态角色（issue #134 O-4）：可选，缺省 'hub'；非法值 → 构造期同步 TypeError
    * （检查顺序在 randomBytes 之后）。 */
   readonly role?: InstanceRole;
+  readonly replicationObservability?: NamespaceReplicationObservabilityOptions;
   /** 测试专用 entry 注入面（仅内部 fixture；不进公共导出面）。设计 §8 冻结：Map 静态
    *  种子或种子函数二选一（SA4 HIGH-1 变体 C 的 generation 迁移语义）。 */
   readonly testEntries?: ReadonlyMap<string, any> | ((entries: Map<string, any>) => void);
@@ -771,6 +795,7 @@ export function createRegistryInternal(
   // 文案断言零漂移）；缺省 'hub'（基线全权限等价面——由断言签名保证 hub/peer/undefined）
   assertRoleShape(options?.role);
   const role: InstanceRole = options?.role ?? 'hub';
+  const replicationObservabilityOptions = options.replicationObservability;
   const factory: RuntimeFactory =
     options.runtimeFactory === undefined
       ? createNamespaceRuntimeForRegistry
@@ -803,6 +828,28 @@ export function createRegistryInternal(
         reason: drop.reason,
       }),
   });
+
+  function runtimeOptionsFor(namespaceId: string): RegistryRuntimeOptions | undefined {
+    const diagnostic = resolveRuntimeDiag(namespaceId);
+    if (replicationObservabilityOptions === undefined) return diagnostic;
+    const replicationObservability: RuntimeReplicationObservabilitySeam = {
+      ...(replicationObservabilityOptions.stageClock !== undefined
+        ? { stageClock: replicationObservabilityOptions.stageClock }
+        : {}),
+      ...(replicationObservabilityOptions.slotMetrics !== undefined
+        ? {
+            slotMetrics: (sample) => replicationObservabilityOptions.slotMetrics?.({
+              namespaceId,
+              ...sample,
+            }),
+          }
+        : {}),
+    };
+    return {
+      ...(diagnostic ?? {}),
+      replicationObservability,
+    };
+  }
 
   const entries = new Map<string, Entry>();
   const carriers = new Map<string, LifecycleCarrier>();
@@ -1252,7 +1299,7 @@ export function createRegistryInternal(
     try {
       // #155（§4-D6）：第三参 = 按 namespaceId 数据键控解析的 Runtime 诊断（emitter+clock
       // 成对；解析器自带非抛边界——违约 → undefined = 既有两参行为）。
-      runtime = factory(handle, () => persistence.saveDoc(handle), resolveRuntimeDiag(identity.namespaceId));
+      runtime = factory(handle, () => persistence.saveDoc(handle), runtimeOptionsFor(identity.namespaceId));
     } catch (e) {
       // 所有权仍归调用方：handle.release() 恰一次（resolve/reject 均不替换 factory cause）。
       // 清理不阻塞 fatal 交付（#110 R2）：fire-and-forget 同步发起 release、绝不 await；
@@ -1505,7 +1552,7 @@ export function createRegistryInternal(
     try {
       // #155（§4-D6）：第三参 = 按 namespaceId 数据键控解析（create 路径恒缓存命中——
       // initStream 同步续段落位，§4-D4 论证 2）。
-      const runtime = factory(handle, () => persistence.saveDoc(handle), resolveRuntimeDiag(id.namespaceId));
+      const runtime = factory(handle, () => persistence.saveDoc(handle), runtimeOptionsFor(id.namespaceId));
       const entry = makeEntry(id, runtime);
       entries.set(id.key, entry);
       // Persistence createDoc already encoded and committed this same detached document. A second
@@ -1649,7 +1696,7 @@ export function createRegistryInternal(
     try {
       // #155（§4-D6）：import 槽 Runtime 构造（§4.12 单一构造路径同款第三参解析——
       // 无 genesis 供给路径：adapter 经 locator 续写或诚实缺席 genesis，见设计 §5.2）。
-      const runtime = factory(handle, () => persistence.saveDoc(handle), resolveRuntimeDiag(identity.namespaceId));
+      const runtime = factory(handle, () => persistence.saveDoc(handle), runtimeOptionsFor(identity.namespaceId));
       const entry = makeEntry(identity, runtime);
       entries.set(identity.key, entry);
       return issueLease(entry);
@@ -2248,6 +2295,9 @@ export function createNamespaceRegistry(
     ...(options.idleTimeoutMs !== undefined ? { idleTimeoutMs: options.idleTimeoutMs } : {}),
     ...(options.observer !== undefined ? { observer: options.observer } : {}),
     ...(options.role !== undefined ? { role: options.role } : {}),
+    ...(options.replicationObservability !== undefined
+      ? { replicationObservability: options.replicationObservability }
+      : {}),
     ...(options.diagnosticLog !== undefined ? { diagnosticLog: options.diagnosticLog } : {}),
   });
 }

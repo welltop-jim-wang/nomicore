@@ -329,6 +329,7 @@ export interface RuntimeReplicationHost {
   readonly notifyDirty: (() => Promise<void>) | undefined;
   readonly fanout: SessionFanout;
   readonly diagEnv: ReturnType<typeof import('./diagnostic.js').buildDiagnosticEnv>;
+  readonly stageClock?: { now(): number };
 }
 
 /** 模块级 host 登记（WeakMap——以 runtime 对象引用为键；不触碰 runtime 对象本身，
@@ -523,6 +524,14 @@ function createSessionCore(
         return Promise.resolve(refusal('RUNTIME_WRITE_DISABLED', message));
       }
       // A4 入队唯一 write sequencer（INV-S1——同一 WriteSequencer 实例，FIFO 互通）
+      let admission: number | undefined;
+      if (host.stageClock !== undefined) {
+        try {
+          admission = host.stageClock.now();
+        } catch {
+          admission = undefined;
+        }
+      }
       const diag = host.diagEnv.emitter !== undefined ? createSlotDiag('replication-apply') : undefined;
       if (diag !== undefined) {
         diag.input = undefined;
@@ -543,7 +552,9 @@ function createSessionCore(
           },
           bytes,
           diag,
+          admission,
         ),
+        'R',
       );
       void settled.then(
         (value) => { emitSlot(host.diagEnv, diag, { kind: 'fulfilled', value }); },
@@ -591,7 +602,7 @@ function createSessionCore(
       finalize('closed');
       closePromise = host.sequencer.enqueue(async () => {
         /* 恒绿空槽体：barrier 只承担「排在已接纳任务之后」的时序语义 */
-      });
+      }, 'close-barrier');
       return closePromise;
     },
   };
@@ -612,7 +623,17 @@ async function runSessionApplySlot(
   ctx: SessionSlotContext,
   bytes: Uint8Array,
   diag?: SlotDiag,
+  admission?: number,
 ): Promise<RuntimeReplicationSessionApplyResult> {
+  const stageNow = (): number | undefined => {
+    if (host.stageClock === undefined) return undefined;
+    try {
+      return host.stageClock.now();
+    } catch {
+      return undefined;
+    }
+  };
+  const slotStart = stageNow();
   // ── R1 fatal gate（零输入访问；零 doc 访问）──────────────────────────────
   if (host.state.fatal !== undefined) {
     const message = writeDisabledMessage('fatal');
@@ -689,6 +710,8 @@ async function runSessionApplySlot(
     return refusal('REPLICATION_PROTECTED_FIELDS_CHANGED', REPLICATION_PROTECTED_FIELDS_CHANGED_MESSAGE);
   }
 
+  const applyStart = stageNow();
+
   // ── R5 一次 Y.applyUpdate(doc, bytes, 受控 origin token)（本槽唯一 live Y.Doc
   //    写入口）+ 事务边界探针（R2-6：committed 精确二分，F-4）───────────────
   // 探针注册于本槽内——晚于一切先注册 listener（Yjs doc.on 按注册次序同步派发；敌意
@@ -729,6 +752,8 @@ async function runSessionApplySlot(
   // 诚实方向：session 无法证明 ROOT 重新合法——只置不清）
   coreState.memoryCaughtUp = true; // 首次 apply 成功后不回落（INV-S16）
 
+  const dirtyStart = stageNow();
+
   // ── R6 同槽 await notifyDirty（bypass 路径同样调用——ADR 0010 L135「仍调用
   //    saveDoc 登记」；#79：degraded 不构成 saveDoc 拒绝理由）──────────────
   try {
@@ -745,8 +770,23 @@ async function runSessionApplySlot(
     );
   }
 
+  const dirtyDone = stageNow();
+  const stages =
+    admission !== undefined &&
+    slotStart !== undefined &&
+    applyStart !== undefined &&
+    dirtyStart !== undefined &&
+    dirtyDone !== undefined
+      ? Object.freeze({
+          queueWaitMs: slotStart - admission,
+          protectedCheckMs: applyStart - slotStart,
+          liveApplyMs: dirtyStart - applyStart,
+          dirtyNotifyMs: dirtyDone - dirtyStart,
+        })
+      : undefined;
+
   // ── R7 槽释放（promise settle；sequencer 自动放行下一项）─────────────────
-  return { ok: true };
+  return stages === undefined ? { ok: true } : { ok: true, stages };
 }
 
 // ─────────────────────────────── 受保护字段检查实现（§4.6） ───────────────────────────────

@@ -869,6 +869,7 @@ export interface CreateNamespaceRegistryOptions {
    *  检查顺序在 randomBytes 之后）。生产 composition root（phase-5 切片 9）必须显式
    *  传入。 */
   readonly role?: InstanceRole;
+  readonly replicationObservability?: NamespaceReplicationObservabilityOptions;
   /** #150：可选 namespace 诊断变更日志（缺省 = 日志禁用，行为与既有完全一致）。 */
   readonly diagnosticLog?: NamespaceRegistryDiagnosticLog;
 }

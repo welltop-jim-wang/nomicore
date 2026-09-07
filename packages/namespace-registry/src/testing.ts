@@ -25,6 +25,7 @@ import type {
   InstanceRole,
   NamespaceRegistry,
   NamespaceRegistryDiagnosticLog,
+  NamespaceReplicationObservabilityOptions,
   RegistryRandomBytes,
   RegistryTimeoutScheduler,
 } from './types.js';
@@ -57,6 +58,7 @@ export interface NamespaceRegistryTestingOverrides {
   /** 实例静态角色（issue #134 O-4；同生产同形——可选，缺省 'hub'；非法值 → 构造期
    * 同步固定 TypeError，检查顺序与生产一致（randomBytes 之后）。 */
   readonly role?: InstanceRole;
+  readonly replicationObservability?: NamespaceReplicationObservabilityOptions;
   /** #150 可选诊断日志注入（emitter/initStream；缺省 = 日志禁用，行为与既有一致）。 */
   readonly diagnosticLog?: NamespaceRegistryDiagnosticLog;
 }
@@ -127,6 +129,7 @@ export function createNamespaceRegistryForTesting(
     randomBytes: RegistryRandomBytes;
     idleTimeoutMs?: number;
     role?: InstanceRole;
+    replicationObservability?: NamespaceReplicationObservabilityOptions;
     createDocumentFactory?: (
       namespaceId: string,
       createdAt: string,
@@ -156,6 +159,9 @@ export function createNamespaceRegistryForTesting(
   }
   if (overrides?.role !== undefined) {
     internal.role = overrides.role;
+  }
+  if (overrides?.replicationObservability !== undefined) {
+    internal.replicationObservability = overrides.replicationObservability;
   }
   if (overrides?.diagnosticLog !== undefined) {
     internal.diagnosticLog = overrides.diagnosticLog;
