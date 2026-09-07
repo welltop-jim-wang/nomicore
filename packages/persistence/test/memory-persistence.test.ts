@@ -16,6 +16,7 @@ import {
   describeDocCreateContract,
   describeDocPersistenceContract,
   describePersistenceErrorContract,
+  itSaveDocRegisterAndReturnContract,
   withTimeout,
 } from '../src/testing.js'
 import { createMemoryHandleForTest } from './memory-testkit.js'
@@ -106,6 +107,61 @@ await describeDocCreateContract(async () => {
       scheduler: createFakeTimer(),
       readSnapshot: (key, signal) => store.read(key, signal),
       writeSnapshot: (key, snapshot, signal) => store.write(key, snapshot, signal),
+    }),
+    dispose: () => persistence.dispose(),
+  }
+})
+
+// ---------------------------------------------------------------------------
+// saveDoc register-and-return anchor (issue #238), Memory fixture:
+// hung write via reassigned store.write hook.
+// ---------------------------------------------------------------------------
+
+await itSaveDocRegisterAndReturnContract(() => {
+  const scheduler = createFakeTimer()
+  const store = createDocStore()
+  const realWrite = store.write
+  let writes = 0
+  let pending = 0
+  let hung: Promise<void> | undefined
+  store.write = (key, snapshot, signal) => {
+    writes += 1
+    pending += 1
+    const run = () => realWrite(key, snapshot, signal).then(
+      () => { pending -= 1 },
+      (err: unknown) => { pending -= 1; throw err },
+    )
+    if (hung !== undefined) {
+      const gate = hung
+      hung = undefined
+      return gate.then(run)
+    }
+    return run()
+  }
+  const persistence = createMemoryPersistence({
+    scheduler,
+    readSnapshot: (key, signal) => store.read(key, signal),
+    writeSnapshot: (key, snapshot, signal) => store.write(key, snapshot, signal),
+  })
+  return {
+    persistence,
+    scheduler,
+    armHungWrite: () => {
+      const baseline = writes
+      let release!: () => void
+      hung = new Promise<void>((r) => { release = r })
+      return { writes: () => writes - baseline, release }
+    },
+    settleWrites: async () => {
+      for (let index = 0; index < 50 && pending > 0; index += 1) await Promise.resolve()
+      if (pending > 0) throw new Error('settleWrites: memory writes did not settle within microtask budget')
+      // 写结算后 flush finally 的重调度链还需若干微任务跳（scheduleFlush 重新武装 debounce）
+      for (let index = 0; index < 10; index += 1) await Promise.resolve()
+    },
+    makeFresh: () => createMemoryPersistence({
+      scheduler: createFakeTimer(),
+      readSnapshot: (key, signal) => store.read(key, signal),
+      writeSnapshot: realWrite,
     }),
     dispose: () => persistence.dispose(),
   }

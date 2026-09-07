@@ -18,6 +18,18 @@ export interface LivenessDeps {
   readonly onPong: (listener: (payload?: Uint8Array) => void) => () => void;
   /** 活性失联（pong 超时，或已关传输上 ping 抛错）。回调时 liveness 已自停并退订。 */
   readonly onPongTimeout: () => void;
+  /** event-loop 漂移探针（issue #238 §6/H1；可选——缺省 = 零额外状态、零额外调度）。
+   *  武装门 = 装配方（连接层）：observer + clock + ping/onPong 三者齐备才提供。 */
+  readonly delayProbe?: LivenessDelayProbe;
+}
+
+/** 周期漂移探针钩子：delayMs = timer 实际 fire − 计划 fire（同一注入单调时钟域作差；
+ *  事件循环被同步长任务阻塞时到期 timer 的 fire 统一后延——下界信号，非精确测量）。
+ *  now() 缺面（clock 未注入/throw）→ 本周期不采样（折叠纪律）。 */
+export interface LivenessDelayProbe {
+  readonly now: () => number | undefined;
+  /** 漂移样本（fire − 计划 fire；ms）。调用方负责 observer 在场门与事件发射。 */
+  readonly sample: (delayMs: number) => void;
 }
 
 /** ping 关联凭据：8 字节大端单调计数。会话内严格单调 → 任何旧凭据不等于新在途凭据；
@@ -48,6 +60,9 @@ export function startLiveness(deps: LivenessDeps): () => void {
   let pongHandle: unknown | undefined;
   let counter = 0n; // 64-bit 凭据不受 Number.MAX_SAFE_INTEGER 精度限制；per-socket 隔离跨会话 pong
   let outstanding: Uint8Array | undefined;
+  // issue #238 §6：探针状态（delayProbe 缺省 → 恒 undefined——零额外状态/调度）
+  const probe = deps.delayProbe;
+  let scheduledFireAt: number | undefined;
 
   const stopInternal = (): void => {
     if (stopped) return;
@@ -61,6 +76,7 @@ export function startLiveness(deps: LivenessDeps): () => void {
       pongHandle = undefined;
     }
     outstanding = undefined;
+    scheduledFireAt = undefined;
     offPong();
   };
 
@@ -79,8 +95,38 @@ export function startLiveness(deps: LivenessDeps): () => void {
     deps.onPongTimeout(); // 调用方在「已停活性、已退订」的栈上做连接收口
   };
 
+  const armNextPing = (): void => {
+    // issue #238 §6：计划 fire = 武装时刻 + pingIntervalMs（仅探针在场且时源有读数才
+    // 记账——now() 缺面/throw → 本周期不采样）
+    if (probe !== undefined) {
+      let armNow: number | undefined;
+      try {
+        armNow = probe.now();
+      } catch {
+        armNow = undefined;
+      }
+      scheduledFireAt = armNow === undefined ? undefined : armNow + deps.pingIntervalMs;
+    } else {
+      scheduledFireAt = undefined;
+    }
+    if (!stopped) pingHandle = deps.timer.setTimeout(loop, deps.pingIntervalMs);
+  };
+
   const loop = (): void => {
     if (stopped) return;
+    // issue #238 §6：fire 漂移采样（fire − 计划 fire；下界信号——事件循环被同步长
+    // 任务阻塞时到期 timer 统一后延）。时源读数 throw → 折叠（零样本）。
+    if (probe !== undefined && scheduledFireAt !== undefined) {
+      const plan = scheduledFireAt;
+      scheduledFireAt = undefined;
+      let fireNow: number | undefined;
+      try {
+        fireNow = probe.now();
+      } catch {
+        fireNow = undefined;
+      }
+      if (fireNow !== undefined) probe.sample(fireNow - plan);
+    }
     counter = BigInt.asUintN(64, counter + 1n);
     outstanding = encodeCredential(counter);
     // 先武装 timeout，再发送 ping：测试/适配器允许 ping() 同步回显 pong；若先发送后
@@ -97,9 +143,9 @@ export function startLiveness(deps: LivenessDeps): () => void {
       loseLiveness();
       return;
     }
-    if (!stopped) pingHandle = deps.timer.setTimeout(loop, deps.pingIntervalMs);
+    armNextPing();
   };
 
-  pingHandle = deps.timer.setTimeout(loop, deps.pingIntervalMs);
+  armNextPing();
   return stopInternal;
 }

@@ -251,6 +251,78 @@ export function withTimeout<T>(promise: Promise<T>, milliseconds: number, op: st
   })
 }
 
+// ---------------------------------------------------------------------------
+// saveDoc register-and-return anchor (issue #238 fix leg, design §8.3-1)
+//
+// ADR-0006 L33: saveDoc 是脏状态通知，返回仅表示已登记。本锚断言在途 flush
+// 悬挂时后续 saveDoc 仍登记即返回——H2 类回归（saveDoc 等待在途/前序 flush
+// 完成）会使 promise 永不 settle → TestTimeoutError 变红。
+// 适配器 parity（persistence/AGENTS.md 边界）：memory 与 file 两个适配器的
+// 测试文件都必须以各自夹具消费本套件；两者的 saveDoc 均落在共享的
+// PersistenceLifecycle（file.ts/memory.ts → lifecycle.ts）实现上。
+// ---------------------------------------------------------------------------
+
+/** register-and-return 锚的适配器夹具：各适配器自带「悬挂下一次 flush 写」的手段。 */
+export interface SaveDocRegisterAndReturnFixture {
+  readonly persistence: DocPersistenceWithCreate
+  readonly scheduler: TestScheduler
+  /** 武装下一次 flush 写悬挂（此前的写不受影响）；返回相对写计数（武装后计起）与 release。 */
+  readonly armHungWrite: () => { readonly writes: () => number; readonly release: () => void }
+  /** 等待全部已发起写真实结算（memory = 微任务展开；file = 真实 I/O 谓词等待）。 */
+  readonly settleWrites: () => Promise<void>
+  readonly makeFresh: () => DocPersistence
+  readonly dispose: () => Promise<void>
+}
+
+export type SaveDocRegisterAndReturnFactory = () =>
+  | Promise<SaveDocRegisterAndReturnFixture>
+  | SaveDocRegisterAndReturnFixture
+
+export async function itSaveDocRegisterAndReturnContract(
+  factory: SaveDocRegisterAndReturnFactory,
+): Promise<void> {
+  const { it, expect } = await vitest()
+  it('saveDoc resolves on registration even while a previous flush is hung (register-and-return, ADR-0006 L33)', async () => {
+    const fixture = await factory()
+    const { persistence, scheduler } = fixture
+    const owner: User = { userId: 'alice' }
+    const docId = 'register-and-return-doc'
+    const handle = await persistence.createDoc(owner, docId, docWithMeta(docId, 'v1'))
+
+    const hung = fixture.armHungWrite()
+    // 首笔 dirty → flush 启动并悬挂（在途 flush 不 settle）
+    handle.doc.getMap('ROOT').set('rev', 2)
+    await persistence.saveDoc(handle)
+    await scheduler.advanceBy(500)
+    expect(hung.writes()).toBe(1)
+
+    // 红锚断言：在途 flush 悬挂期间，第二笔 saveDoc 登记即返回
+    handle.doc.getMap('ROOT').set('rev', 3)
+    await withTimeout(
+      persistence.saveDoc(handle),
+      2_000,
+      'saveDoc to register-and-return while a flush is hung',
+    )
+
+    // 释放在途 flush → 其结算触发 finally 重调度（debounce 重武装）→ 下一窗口第二笔
+    // flush 排空 rev 3，最终内容经 fresh adapter 可读（dirty 链无丢失）
+    hung.release()
+    await fixture.settleWrites()
+    expect(hung.writes()).toBe(1) // 重调度的 flush 未到 debounce，仍只有首笔写
+    await scheduler.advanceBy(500)
+    expect(hung.writes()).toBe(2)
+    await fixture.settleWrites()
+    const fresh = fixture.makeFresh()
+    const loaded = await fresh.loadDoc(owner, docId)
+    expect(loaded).not.toBeNull()
+    expect(loaded!.doc.getMap('ROOT').get('rev')).toBe(3)
+    await loaded!.release()
+
+    await handle.release()
+    await fixture.dispose()
+  })
+}
+
 function docWithMeta(docId: string, who?: string): Y.Doc {
   const doc = new Y.Doc()
   doc.getMap('META').set('docId', docId)

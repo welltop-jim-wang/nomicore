@@ -36,7 +36,9 @@ export interface CloseEnv {
  * 保证「普通 close 返回同一 lazy-created promise」）。
  */
 export function enqueueCloseBarrier(sequencer: WriteSequencer, env: CloseEnv): Promise<void> {
-  return sequencer.enqueue(() => runCloseBarrier(env));
+  // issue #238 §7 槽级记账：close/fence 队列终节点标签（sequencer.SequencerSlotKind
+  // 词表「close-barrier」的挂接点之一；缺标签 → 槽样本静默缺席）。
+  return sequencer.enqueue(() => runCloseBarrier(env), 'close-barrier');
 }
 
 /**

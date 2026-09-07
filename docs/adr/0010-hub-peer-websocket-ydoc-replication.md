@@ -319,3 +319,12 @@ drain。实现证据：`packages/ws-replication/src/*`（PR #165 round 2）。
 3. **交付边界陈述**：当前切片状态与后续依赖仅由
    `docs/phases/phase-5-websocket-replication.md`「交付现状与边界」节维护，ADR 不复制交付
    清单。hub 停机连接收口归属 `@nomicore/ws-replication` 包行为；当前按 issue #229 临时偏离直接关闭 transport、不发送 GOAWAY。composition root 只按 protocol §21 编排包级停机顺序。
+
+### issue #238 修订（分段观测导出登记——2026-09-06）
+
+本节是 issue #238 观测面实现的**消歧登记**（SA8 复核随附要求：`RuntimeReplicationSessionApplyResult` ok 分支加性可选 `stages` 的保守读法合规路径）。全部变更为 local seam：不改变任何 wire 字节、不改变槽序（写序列器 FIFO 链形与 `await notifyDirty()` 槽序冻结不动）、不改变受保护字段判据、不向任何冻结公共注册表/状态形状加成员（G1–G4 复核通过；事件词汇 20→21 型走 protocol §23 append-only 条款并由 `docs/protocols/instance-replication-v1.md` §23.1 显式修订登记，标 issue #238）。
+
+1. **apply 结果联合 ok 分支加性可选 `stages`**：`RuntimeReplicationSessionApplyResult`（runtime 侧）与 `ReplicationSessionApplyResult`（registry 侧镜像）的 `ok: true` 分支新增可选只读 `stages?: { queueWaitMs; protectedCheckMs; liveApplyMs; dirtyNotifyMs }`（registry 侧 `ReplicationApplyStages` 镜像；`lease.ts` `Equal<>` 锁要求双侧逐字段同形——编译器强制保持）。`stages` 由注入的 registry 构造选项 `replicationObservability.stageClock`（单调时源，与 ws-replication `clock` 应为同一实例——组装纪律，非库层强制）在场时在 apply 槽 R1–R7 捕获、`ok:true` 结果携带；refusal/fatal 路径形状逐字节不动；缺省（无 stageClock）零时钟读、字段缺席。本联合不是冻结注册表成员，本登记消除「整体视为冻结」的保守读法歧义。
+2. **观测参数不进 session open 输入**：`lease.openReplicationSession` 的 2 键严格校验（own 键集恰含 `{localRole, remoteInstanceId}`）保持冻结；分段观测/槽级记账走 registry 构造 options（`replicationObservability`）+ ws-replication 既有 `clock` 注入面。
+3. **槽级记账落点**：写序列器槽样本（slotKind/waitMs/runMs/queueDepthAtStart，namespaceId 由 registry 装配闭包盖戳）只进注入的 metrics/log sink（ADR 0008 L101「队列进度和内部事件属于日志、metrics 与 trace」指定落点），不进 `NamespaceRuntime.getStatus()`/`ReplicationSession.getStatus()`（O-11/replication 两态域冻结形状零改动）。
+4. **发射点纪律不变**：四段差值在 apply 槽内同步捕获、经 apply 结果导出，事件发射仍在 ws-replication apply 结算续体（§23.4「发射点永不位于 Registry write sequencer 槽内」保持）；无 observer/无注入 = 零事件/零时钟读/零调度（逐字节等价）。

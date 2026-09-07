@@ -40,9 +40,16 @@ export interface UpdateChannelHost {
   /** ACK timeout（§10.4）：弃置 in-flight + needs-resync + 立即新 round。 */
   readonly onAckTimeout: () => void;
   /** 单笔 ACK 收妥记账（§6.5 U2/U3）：bytes = 在途帧载荷长度；latencyMs = ACK 时刻 − 发送时刻
-   *  （clock 缺省/无 observer 时 undefined）。 */
+   *  （clock 缺省/无 observer 时 undefined）；sequence = 被 ACK 帧序（= wire
+   *  UPDATE_ACK.ackedSequence——issue #238 三事件面关联键）。 */
   readonly onUpdateAcked: (
-    info: Readonly<{ bytes: number; latencyMs?: number }>,
+    info: Readonly<{ bytes: number; latencyMs?: number; sequence: number }>,
+  ) => void;
+  /** 帧实际出站记账（issue #238 §5.4）：seq>0 的每帧恰一通知（update-sent 发射信息）——
+   *  sendQueueMs = 帧出队时刻 − 帧内最旧业务项入队时刻（clock 缺省时 undefined）。
+   *  发射方（namespace facet）自行做 observer 在场门。 */
+  readonly noteUpdateSent: (
+    info: Readonly<{ sequence: number; bytes: number; sendQueueMs?: number }>,
   ) => void;
   /** 单调时源（仅作差；控制器绑定 clock——无 clock 时返回 undefined）。 */
   readonly now?: () => number | undefined;
@@ -58,6 +65,8 @@ export interface UpdateChannelHost {
 
 interface QueuedItem {
   readonly bytes: Uint8Array;
+  /** 入队时刻（issue #238 §5.4；clock 缺省/throw → 字段缺省——sendQueueMs 随之缺省）。 */
+  readonly queuedAt?: number;
 }
 
 export class UpdateChannel {
@@ -90,13 +99,16 @@ export class UpdateChannel {
   /** listener 交付（§10.1）。由控制器按 ns 状态选择 live 或 deferred 路径；终态零调用。 */
   deliver(bytes: Uint8Array, mode: 'live' | 'deferred'): void {
     if (this.needsResync) return; // §10.1 首行：溢出/恢复声明后丢弃（round 修复）
+    // issue #238 §5.4：入队时刻记账（仅 clock 在场读数——safeNow 折叠；直发路径同
+    // 口径：帧内最旧业务项入队时刻 = 本交付时刻）
+    const queuedAt = safeNow(() => this.host.now?.());
     if (mode === 'live') {
       // F1（SA4 修复，2026-08-29）：闸门检查**先行**——dataGateOpen 非纯读（暂停段
       // 撤压时 observeWater → resume → 同步 drainData 重入消费窗口空位）；闸门先求值
       // 完成后窗口检查读的是 drain 后真值，直发条件（窗口有空位 ∧ 闸门开）在发送
       // 时刻成立（协议 §10.2 / 设计 §4.1）。
       if (this.host.dataGateOpen() && this.inFlight.size < this.host.limits.maxInFlightUpdates) {
-        this.sendAndRegister(bytes);
+        this.sendAndRegister(bytes, queuedAt);
         return;
       }
     }
@@ -111,7 +123,7 @@ export class UpdateChannel {
       }
       return;
     }
-    this.queued.push({ bytes });
+    this.queued.push({ bytes, ...(queuedAt !== undefined ? { queuedAt } : {}) });
     this.queuedByteCount += bytes.byteLength;
     // §4.4：入队成功后通知连接级（RR wheel 登记 + 连接总压检查）。
     this.host.onDataQueued();
@@ -136,6 +148,7 @@ export class UpdateChannel {
         entry.sentAt !== undefined && t1 !== undefined ? t1 - entry.sentAt : undefined;
       this.host.onUpdateAcked({
         bytes: entry.bytes,
+        sequence,
         ...(latencyMs !== undefined ? { latencyMs } : {}),
       });
       if (this.queued.length > 0) this.host.requestDataDrain(); // §6.2：原同步 flush 循环 → 连接级 drain
@@ -194,7 +207,7 @@ export class UpdateChannel {
     });
   }
 
-  private sendAndRegister(bytes: Uint8Array): void {
+  private sendAndRegister(bytes: Uint8Array, oldestQueuedAt?: number): void {
     if (bytes.byteLength > this.host.limits.maxUpdateBytes) {
       // R2-1：超限面判别（唯一可达形态 = 单笔项自身超限，§2.1①——贪心合并以累计
       // 原始字节 ≤ maxUpdateBytes 为上界，多项帧结构性不可能超限）。该项无论走哪条
@@ -237,6 +250,15 @@ export class UpdateChannel {
       bytes: bytes.byteLength,
       ...(sentAt !== undefined ? { sentAt } : {}),
     });
+    // issue #238 §5.4：sendQueueMs = 帧出队 − 帧内最旧业务项入队（发送方进程内精确；
+    // clock 缺省 → 缺面）。update-sent 发射信息随记账回调传出（发射方做 observer 门）。
+    const sendQueueMs =
+      sentAt !== undefined && oldestQueuedAt !== undefined ? sentAt - oldestQueuedAt : undefined;
+    this.host.noteUpdateSent({
+      sequence: seq,
+      bytes: bytes.byteLength,
+      ...(sendQueueMs !== undefined ? { sendQueueMs } : {}),
+    });
     this.armAckTimer();
   }
 
@@ -267,7 +289,9 @@ export class UpdateChannel {
     if (!this.host.dataGateOpen()) return false;
     const items = this.takeItems();
     const frame = this.mergeItems(items);
-    this.sendAndRegister(frame);
+    // issue #238 §5.4：合并帧 sendQueueMs 口径 = 帧内最旧业务项入队时刻（takeItems
+    // 按 FIFO shift——首项即最旧）
+    this.sendAndRegister(frame, items[0]?.queuedAt);
     return true;
   }
 

@@ -68,6 +68,21 @@ import { disabled } from './write.js';
 import type { MutateDataResult, WriteEnv } from './write.js';
 import { createSessionFanout, registerReplicationHost } from './replication-session.js';
 import type { RuntimeReplicationHost } from './replication-session.js';
+import type { SequencerSlotSample } from './sequencer.js';
+
+/**
+ * 复制观测注入（issue #238 §4/§7；可选项——缺省 = 零时钟读/零样本/零调度，逐字节
+ * 等价）。装配层（Registry options）透传同一单调时钟实例给 ws-replication `clock`
+ * 与本 stageClock（守恒恒等式前提——组装纪律，纯约定，非库层强制）。
+ */
+export interface NamespaceReplicationObservability {
+  /** 槽内四段戳的单调时源（R 槽 stages；仅作差、禁原生时钟 fallback、throw 折叠）。 */
+  readonly stageClock?: { now(): number };
+  /** 槽级记账 sink（ADR-0008 L101「队列进度和内部事件属于日志、metrics 与 trace」）：
+   *  收到**不含 namespaceId** 的槽样本（runtime 包不知命名——命名由装配层闭包加盖）。
+   *  sink 同步回调、槽释放后续体调用、throw 自捕获。 */
+  readonly slotMetrics?: (sample: SequencerSlotSample) => void;
+}
 
 /** seam 输入（D8'）：包内确定性测试接缝；@internal 沿 doc-runtime getCompiledWith 先例。 */
 export interface NamespaceRuntimeSeamInput {
@@ -81,6 +96,9 @@ export interface NamespaceRuntimeSeamInput {
    *  persistence.saveDoc(handle)；测试经 seam 注入确定性 notifier。缺省 = 未绑定
    *  （写槽 S2 loud 拒绝——D6.4 拒绝虚假降级立法，非静默 no-op）。 */
   readonly notifyDirty?: () => Promise<void>;
+  /** 复制观测注入（issue #238；缺省 dormant——无 stageClock 零槽内时钟读、stages 缺席、
+   *  槽级记账关闭；无 slotMetrics 零样本缓冲增长）。 */
+  readonly replicationObservability?: NamespaceReplicationObservability;
 }
 
 /** closing/closed 期 read 拒绝分支（#92）：ADR-0008 读取能力节「预期路径、载体和
@@ -271,7 +289,9 @@ function createBeginResetFence(
       //    barrier（自等待禁律；设计 §3.5 (3)）
       state.lifecycle = 'closing';
       return { kind: 'armed' } as const;
-    });
+      // issue #238 §7 槽级记账：reset fence 是 close/fence 队列终节点（词表
+      // 'close-barrier' 的第二个挂接点；缺标签 → 槽样本静默缺席）。
+    }, 'close-barrier');
     // ⑤ 槽后 continuation：fence task 已结算、不再是 sequencer 活跃任务——唯有此刻
     //    才允许懒创建 close barrier（predecessor tail 必然不含仍在活动的 fence 任务，
     //    依赖图无环；设计 §3.5 (4) + 无自等待证明）
@@ -361,14 +381,23 @@ export function createNamespaceRuntimeWithSeam(input: NamespaceRuntimeSeamInput)
   // V3d sequencer + P0 入队（INV-N1：return 前 P0 已是队首 pending 节点；微任务起步；
   //     thunk = 纯调用 () => runP0(env)，零属性读取/零字面量构造/无可抛点——
   //     INV-N12 的「槽体全 catch」从此是结构事实）
-  const sequencer = new WriteSequencer();
-  void sequencer.enqueue(() => runP0(env));
+  // issue #238 §7：stageClock + slotMetrics 双在场才开槽级记账（D7：任一缺席 →
+  // 整条记账关闭，零开销路径与既有实现逐字节同形）。
+  const obsStageClock = captured.replicationObservability?.stageClock;
+  const obsSlotMetrics = captured.replicationObservability?.slotMetrics;
+  const sequencer = new WriteSequencer(
+    obsStageClock !== undefined && obsSlotMetrics !== undefined
+      ? { now: () => obsStageClock.now(), sink: obsSlotMetrics }
+      : undefined,
+  );
+  void sequencer.enqueue(() => runP0(env), 'P0');
 
   // V3d' closePromise 幂等缓存（INV-C2 的载体——并发/已结算后调用返回同一实例）
   let closePromise: Promise<void> | undefined;
 
   // V3d'' replication host 一次成型（issue #134 §4.1：仅依赖已捕获局部量与 sequencer
-  //   ——INV-N14 纪律延续；fanout 已在 V3c'''' 创建——同一局部量）
+  //   ——INV-N14 纪律延续；fanout 已在 V3c'''' 创建——同一局部量；issue #238：
+  //   stageClock 随 host 进 session 接纳/槽内四段戳——纯捕获局部量透传）
   const replicationHost: RuntimeReplicationHost = {
     doc,
     handle,
@@ -376,6 +405,7 @@ export function createNamespaceRuntimeWithSeam(input: NamespaceRuntimeSeamInput)
     sequencer,
     notifyDirty: captured.notifyDirty,
     fanout,
+    ...(obsStageClock !== undefined ? { stageClock: obsStageClock } : {}),
   };
 
   // V3d''' close barrier 懒创建（R2，设计 §3.5 (4)）：公共 close() 首调用与 reset
@@ -447,7 +477,7 @@ export function createNamespaceRuntimeWithSeam(input: NamespaceRuntimeSeamInput)
       }
       // D1：同步接纳定序（enqueue 同步拼尾）+ 槽完成信号；thunk 是纯调用——
       // mutation 引用仅被捕获不被读取（Proxy 零触发），无可抛点（INV-W1/W14）
-      return sequencer.enqueue(() => runRootWriteSlot(writeEnv, mutation));
+      return sequencer.enqueue(() => runRootWriteSlot(writeEnv, mutation), 'S');
     },
     replaceSchema: (input: ReplaceSchemaInput): Promise<ReplaceSchemaResult> => {
       // D5.1 接纳门：同 mutateData——lifecycle≠ready 时零入队即时 ok:false
@@ -457,7 +487,7 @@ export function createNamespaceRuntimeWithSeam(input: NamespaceRuntimeSeamInput)
       // D1（issue #91）：与 mutateData 同一 sequencer 实例——同步接纳定序、占槽互斥、
       // S6 同槽 await notifyDirty 构成屏障（双向 FIFO 互通）；thunk 是纯调用——
       // input 引用仅被捕获不被读取（Proxy 零触发），无可抛点
-      return sequencer.enqueue(() => runSchemaWriteSlot(schemaWriteEnv, input));
+      return sequencer.enqueue(() => runSchemaWriteSlot(schemaWriteEnv, input), 'schema');
     },
     enableReplication: (input: EnableReplicationInput): Promise<EnableReplicationResult> => {
       // D5.1 接纳门（#132）：同 mutateData——lifecycle≠ready 时零入队即时 ok:false
@@ -467,14 +497,14 @@ export function createNamespaceRuntimeWithSeam(input: NamespaceRuntimeSeamInput)
       // D1（#132）：与 mutateData/replaceSchema 同一 sequencer 实例——同步接纳定序、
       // 占槽互斥（FIFO 互通）；thunk 是纯调用——input 引用仅被捕获不被读取
       //（Proxy 零触发），无可抛点；槽 E3 单读捕获定序在队列内
-      return sequencer.enqueue(() => runEnableReplicationSlot(replicationWriteEnv, input));
+      return sequencer.enqueue(() => runEnableReplicationSlot(replicationWriteEnv, input), 'E');
     },
     bumpReplicationEpoch: (): Promise<BumpReplicationEpochResult> => {
       // D5.1 接纳门（#132）：同 mutateData——lifecycle≠ready 时零入队即时 ok:false
       if (state.lifecycle !== 'ready') {
         return Promise.resolve(disabled(lifecycleWriteRefusal(state.lifecycle)));
       }
-      return sequencer.enqueue(() => runBumpReplicationEpochSlot(replicationWriteEnv));
+      return sequencer.enqueue(() => runBumpReplicationEpochSlot(replicationWriteEnv), 'bump');
     },
     close: (): Promise<void> => {
       // D2：幂等（INV-C2）——已赋值（含已结算 reject）即返回同一实例，release 恰一次
@@ -514,8 +544,13 @@ export function createNamespaceRuntimeWithSeam(input: NamespaceRuntimeSeamInput)
 export function createNamespaceRuntime(
   handle: DocHandle,
   notifyDirty: () => Promise<void>,
+  replicationObservability?: NamespaceReplicationObservability,
 ): NamespaceRuntime {
-  return createNamespaceRuntimeWithSeam({ handle, notifyDirty });
+  return createNamespaceRuntimeWithSeam({
+    handle,
+    notifyDirty,
+    ...(replicationObservability !== undefined ? { replicationObservability } : {}),
+  });
 }
 
 /** D4 包内 helper：closing/closed 期 read 停接纳的结果联合分支（不导出）。
@@ -558,6 +593,7 @@ function captureSeamInput(input: unknown): {
   p0Gate: Promise<void> | undefined;
   compile: ((envelope: SchemaEnvelope) => CompileSchemaEnvelopeResult) | undefined;
   notifyDirty: (() => Promise<void>) | undefined;
+  replicationObservability: NamespaceReplicationObservability | undefined;
 } {
   if (typeof input !== 'object' || input === null) {
     throw new TypeError('seam 输入必须是对象（{ handle, p0Gate?, compile?, notifyDirty? }）');
@@ -617,6 +653,34 @@ function captureSeamInput(input: unknown): {
     }
     notifyDirty = rec.notifyDirty as () => Promise<void>;
   }
+  // issue #238：复制观测注入（可选；形状守卫 loud——同 compile/notifyDirty 纪律）
+  let replicationObservability: NamespaceReplicationObservability | undefined;
+  if (rec.replicationObservability !== undefined) {
+    const obs = rec.replicationObservability;
+    if (typeof obs !== 'object' || obs === null) {
+      throw new TypeError('input.replicationObservability 若提供必须是对象');
+    }
+    const orec = obs as Record<string, unknown>;
+    let stageClock: { now(): number } | undefined;
+    if (orec.stageClock !== undefined) {
+      const sc = orec.stageClock;
+      if (typeof sc !== 'object' || sc === null || typeof (sc as { now?: unknown }).now !== 'function') {
+        throw new TypeError('input.replicationObservability.stageClock 若提供必须是 { now(): number }');
+      }
+      stageClock = sc as { now(): number };
+    }
+    let slotMetrics: ((sample: SequencerSlotSample) => void) | undefined;
+    if (orec.slotMetrics !== undefined) {
+      if (typeof orec.slotMetrics !== 'function') {
+        throw new TypeError('input.replicationObservability.slotMetrics 若提供必须是 function');
+      }
+      slotMetrics = orec.slotMetrics as (sample: SequencerSlotSample) => void;
+    }
+    replicationObservability = {
+      ...(stageClock !== undefined ? { stageClock } : {}),
+      ...(slotMetrics !== undefined ? { slotMetrics } : {}),
+    };
+  }
   return {
     handle: handle as DocHandle,
     userId: userId as string,
@@ -625,5 +689,6 @@ function captureSeamInput(input: unknown): {
     p0Gate,
     compile,
     notifyDirty,
+    replicationObservability,
   };
 }

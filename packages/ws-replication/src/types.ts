@@ -262,7 +262,8 @@ export interface ReplicationClock {
 }
 
 /**
- * 结构化 observer seam 事件（ADR 0010 L167 最小观测面全量映射；20 型，append-only）。
+ * 结构化 observer seam 事件（ADR 0010 L167 最小观测面全量映射；21 型，append-only——
+ * issue #238 追加第 21 型 event-loop-delay-sampled 及四事件面 sequence/四段字段）。
  *
  * Safe-field 纪律（协议文档 §23）：字段类别 = 稳定字面量（type/side/direction/via/
  * reason/cause/terminalState/from/to/reasonCode/channelState/connectionState）、受控标识
@@ -365,6 +366,17 @@ export type ReplicationObserverEvent =
       /** documented safe digest（§23.3 注册：双泳道 FNV-1a-32，恒 16 位小写 hex）。 */
       readonly stateVectorBeforeHash?: string;
       readonly stateVectorAfterHash?: string;
+      // ── issue #238（append-only）：帧级关联 + 四段分段观测 ──
+      /** 触发帧 envelope sequence（SYNC_STEP2 帧；§23 关联粒度 = wire 帧）。 */
+      readonly sequence: number;
+      /** sequencer 排队等待（registry stageClock 注入时在场；全 present 或全缺席）。 */
+      readonly queueWaitMs?: number;
+      /** R1–R3 同步门 + R4 scratch 预演（同上在场纪律）。 */
+      readonly protectedCheckMs?: number;
+      /** R5 Y.applyUpdate 实时写入（同上）。 */
+      readonly liveApplyMs?: number;
+      /** R6 saveDoc 登记时长（同上）。 */
+      readonly dirtyNotifyMs?: number;
     }
   // ── updates/bytes in/out + apply/ACK latency（每帧粒度）──
   | {
@@ -373,6 +385,14 @@ export type ReplicationObserverEvent =
       readonly connectionId?: string;
       readonly namespaceId: string;
       readonly bytes: number;
+      // ── issue #238（append-only）──
+      /** 出站帧 envelope sequence（合并帧 = 该合并帧的 sequence——与 bytes 合并后
+       *  长度口径同帧级；关联粒度 = wire 帧，非业务写）。 */
+      readonly sequence: number;
+      /** 帧实际出队 − 帧内最旧业务项入队（发送方发送队列等待；clock 注入时在场）。
+       *  判读：sendQueueMs 低 + ackLatencyMs 高 → 延迟不在发送方（区分 sender dispatch
+       *  与线上传输；§5.4——跨进程减法只作 triage 近似，非精确段值）。 */
+      readonly sendQueueMs?: number;
     }
   | {
       readonly type: 'update-applied';
@@ -381,6 +401,17 @@ export type ReplicationObserverEvent =
       readonly namespaceId: string;
       readonly bytes: number;
       readonly applyLatencyMs?: number;
+      // ── issue #238（append-only）：帧级关联 + 四段分段观测 ──
+      /** 触发帧 envelope sequence（UPDATE 帧）。 */
+      readonly sequence: number;
+      /** sequencer 排队等待（registry stageClock 注入时在场；全 present 或全缺席）。 */
+      readonly queueWaitMs?: number;
+      /** R1–R3 同步门 + R4 scratch 预演（同上在场纪律）。 */
+      readonly protectedCheckMs?: number;
+      /** R5 Y.applyUpdate 实时写入（同上）。 */
+      readonly liveApplyMs?: number;
+      /** R6 saveDoc 登记时长（同上）。 */
+      readonly dirtyNotifyMs?: number;
     }
   | {
       readonly type: 'update-acked';
@@ -389,6 +420,10 @@ export type ReplicationObserverEvent =
       readonly namespaceId: string;
       readonly bytes: number;
       readonly ackLatencyMs?: number;
+      // ── issue #238（append-only）──
+      /** = wire UPDATE_ACK.ackedSequence（回指被 ACK 的 UPDATE 帧 sequence——与
+       *  update-sent{sequence} / 对端 update-applied{sequence} 构成三事件面闭环）。 */
+      readonly sequence: number;
     }
   | {
       // issue #231（append-only 第 20 型）：无 resync 声明的超限静默丢弃——队列非空时
@@ -424,6 +459,9 @@ export type ReplicationObserverEvent =
       readonly connectionId?: string;
       readonly namespaceId: string;
       readonly bytes: number;
+      // ── issue #238（append-only）：帧级关联；按既有纪律（§23.5）不携时延字段 ──
+      /** 触发帧 envelope sequence（UPDATE 帧）。 */
+      readonly sequence: number;
     }
   // ── auth / 背压 / resync ──
   | {
@@ -508,6 +546,23 @@ export type ReplicationObserverEvent =
       readonly connectionId?: string;
       readonly namespaceId: string;
       readonly via: 'open-mismatch' | 'fence' | 'identity-changed-frame';
+    }
+  // ── issue #238（append-only 第 21 型；连接域低频采样事件）──
+  | {
+      /**
+       * event-loop 停摆判别探针（H1）：delayMs = liveness ping timer 实际 fire 时刻 −
+       * 计划 fire 时刻（同一注入单调时钟域作差）。事件循环被同步长任务阻塞时，到期
+       * timer 的 fire 统一后延——delayMs 是该窗口内停摆的**下界信号**（含 timer 后端
+       * 粒度噪声，非精确测量；判别依赖多窗口对比 + 与各同步段膨胀的相关性——§6 边界
+       * 明示）。cadence = liveness pingIntervalMs（缺省 30 s；无新常驻 timer）。
+       * gating：observer + clock + transport ping/onPong 三者齐备才武装；任一缺席 →
+       * 零状态、零调度（dormant 等价）。
+       */
+      readonly type: 'event-loop-delay-sampled';
+      readonly side: ReplicationObserverSide;
+      readonly connectionId?: string;
+      /** 漂移下界信号（ms；差值非绝对时间戳）。 */
+      readonly delayMs: number;
     };
 
 /**

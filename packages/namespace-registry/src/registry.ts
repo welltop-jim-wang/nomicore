@@ -99,6 +99,7 @@ import type {
   ImportReplicaResult,
   InstanceRole,
   NamespaceLease,
+  NamespaceReplicationObservabilityOptions,
   NamespaceRegistry,
   NamespaceRegistryShutdownFailure,
   NamespaceRegistryStatus,
@@ -179,8 +180,34 @@ export function resolveIdleTimeoutMs(config: { readonly idleTimeoutMs?: number }
   return value;
 }
 
-/** 生产 Runtime 工厂类型（精确形状；仅 testing.ts 注入口与 registry 内部可见）。 */
-type RuntimeFactory = (handle: DocHandle, notifyDirty: () => Promise<void>) => NamespaceRuntime;
+/**
+ * Runtime seam 复制观测输入（issue #238；与 runtime 包 internal seam 工厂第三可选参
+ * 的复制观测类型结构同形——registry 侧以本地
+ * 结构类型表达（import 图审计面零新增 runtime 内部类型导入；形状镜像纪律同拒绝码
+ * 联合——漂移会在 runtime 包 internal 签名消费点编译期红）。slotMetrics 收到的是
+ * **未盖 namespaceId** 的槽样本（runtime 包不知命名——本包在构造处闭包盖戳）。
+ */
+interface RuntimeReplicationObservabilitySeam {
+  readonly stageClock?: { now(): number };
+  readonly slotMetrics?: (sample: RuntimeSeamSlotSample) => void;
+}
+
+/** runtime 槽样本（seam 侧形状；与注册表公共 ReplicationObservabilitySlotSample
+ *  差一个 namespaceId 字段——装配层包装补盖）。 */
+interface RuntimeSeamSlotSample {
+  readonly slotKind: 'P0' | 'S' | 'E' | 'R' | 'schema' | 'bump' | 'close-barrier';
+  readonly waitMs?: number;
+  readonly runMs: number;
+  readonly queueDepthAtStart: number;
+}
+
+/** 生产 Runtime 工厂类型（精确形状；仅 testing.ts 注入口与 registry 内部可见）。
+ *  issue #238：第三可选参 = 复制观测注入（Runtime seam 形状）。 */
+type RuntimeFactory = (
+  handle: DocHandle,
+  notifyDirty: () => Promise<void>,
+  replicationObservability?: RuntimeReplicationObservabilitySeam,
+) => NamespaceRuntime;
 
 // —— phase-5 切片 1（ADR 0010）：namespaceId 生成常量（核心私有，不导出）——
 const NAMESPACE_ID_RANDOM_BYTES = 16; // 128-bit CSPRNG
@@ -365,7 +392,11 @@ function assertRoleShape(value: unknown): asserts value is InstanceRole | undefi
  * generation 迁移，如变体 C 的「close settle 时移除 entry」）。
  */
 export interface NamespaceRegistryInternalOptions {
-  readonly runtimeFactory?: (handle: any, notifyDirty: () => Promise<void>) => any;
+  readonly runtimeFactory?: (
+    handle: any,
+    notifyDirty: () => Promise<void>,
+    replicationObservability?: RuntimeReplicationObservabilitySeam,
+  ) => any;
   readonly observer?: RegistryObserver;
   readonly diagnostics?: RegistryDiagnosticsSink;
   /** 必需 Clock（§2.1/§8）：缺失/null/非 object/now 非函数 → 构造期同步 TypeError。 */
@@ -382,6 +413,9 @@ export interface NamespaceRegistryInternalOptions {
   /** 实例静态角色（issue #134 O-4）：可选，缺省 'hub'；非法值 → 构造期同步 TypeError
    * （检查顺序在 randomBytes 之后）。 */
   readonly role?: InstanceRole;
+  /** issue #238：复制观测注入（生产 options 同名透传；缺省 dormant——零时钟读/零样本/
+   *  零调度）。stageClock 应为 ws-replication `clock` 的同一单调实例（组装纪律）。 */
+  readonly replicationObservability?: NamespaceReplicationObservabilityOptions;
   /** 测试专用 entry 注入面（仅内部 fixture；不进公共导出面）。设计 §8 冻结：Map 静态
    *  种子或种子函数二选一（SA4 HIGH-1 变体 C 的 generation 迁移语义）。 */
   readonly testEntries?: ReadonlyMap<string, any> | ((entries: Map<string, any>) => void);
@@ -717,6 +751,31 @@ function clonePlainData(value: unknown, seen?: WeakSet<object>): unknown {
 }
 
 /**
+ * issue #238：把注册表级复制观测选项转成**单 namespace 的 Runtime seam 输入**——
+ * slotMetrics 以闭包盖 namespaceId 戳（Runtime 构造处已知 namespaceId；runtime 包
+ * 自身不知命名——分层正确，设计 §3.2）。缺省（options 缺省/两子项皆缺省）→ undefined
+ * （runtime 侧 dormant：零时钟读/零样本/零调度）。
+ */
+function runtimeReplicationObservabilityFor(
+  options: NamespaceReplicationObservabilityOptions | undefined,
+  namespaceId: string,
+): RuntimeReplicationObservabilitySeam | undefined {
+  if (options === undefined) return undefined;
+  const stageClock = options.stageClock;
+  const slotMetrics = options.slotMetrics;
+  return {
+    ...(stageClock !== undefined ? { stageClock } : {}),
+    ...(slotMetrics !== undefined
+      ? {
+          slotMetrics: (sample: RuntimeSeamSlotSample) => {
+            slotMetrics({ namespaceId, ...sample });
+          },
+        }
+      : {}),
+  };
+}
+
+/**
  * 槽内 Clock 单次读数（设计 §6 DQ-3/§7 表）：payload 快照成功后、任何 compile/validate
  * 之前执行一次 `clock.now()`；throw / 非有限 number / |ms|>8.64e15 / `toISOString()`
  * RangeError —— 一律 fail-loud：observer `lifecycle-slot-failed(create)` +
@@ -741,6 +800,7 @@ export function createRegistryInternal(
   // 文案断言零漂移）；缺省 'hub'（基线全权限等价面——由断言签名保证 hub/peer/undefined）
   assertRoleShape(options?.role);
   const role: InstanceRole = options?.role ?? 'hub';
+  const replicationObservabilityOptions = options.replicationObservability;
   const factory: RuntimeFactory =
     options.runtimeFactory === undefined
       ? createNamespaceRuntimeForRegistry
@@ -1201,7 +1261,11 @@ export function createRegistryInternal(
 
     let runtime: NamespaceRuntime;
     try {
-      runtime = factory(handle, () => persistence.saveDoc(handle));
+      runtime = factory(
+        handle,
+        () => persistence.saveDoc(handle),
+        runtimeReplicationObservabilityFor(replicationObservabilityOptions, identity.namespaceId),
+      );
     } catch (e) {
       // 所有权仍归调用方：handle.release() 恰一次（resolve/reject 均不替换 factory cause）。
       // 清理不阻塞 fatal 交付（#110 R2）：fire-and-forget 同步发起 release、绝不 await；
@@ -1433,8 +1497,13 @@ export function createRegistryInternal(
     }
 
     // ⑤ Runtime factory + entry 登记 + lease（既有语义逐字保持，key/namespaceId = 候选）。
+    // issue #238：复制观测 seam 按本 namespace 盖戳（id.namespaceId = entry key）。
     try {
-      const runtime = factory(handle, () => persistence.saveDoc(handle));
+      const runtime = factory(
+        handle,
+        () => persistence.saveDoc(handle),
+        runtimeReplicationObservabilityFor(replicationObservabilityOptions, id.namespaceId),
+      );
       // 失败 Runtime 从未发布：entry 只在 factory 成功后登记（§7 DQ-7 结构性零 entry）。
       const entry = makeEntry(id, runtime);
       entries.set(id.key, entry);
@@ -1558,8 +1627,13 @@ export function createRegistryInternal(
     // ⑤ Runtime 构造（§4.12 单一构造路径，与 open/create 步⑤同款；§4.8.3 镜像 create
     // DQ-7：importDoc resolve 即是 committed 事实 → factory throw 必为 committed:true
     // ——handle best-effort release、entry 不登记、不补偿删除；后续 open 可恢复）。
+    // issue #238：复制观测 seam 按本 namespace 盖戳（identity.namespaceId）。
     try {
-      const runtime = factory(handle, () => persistence.saveDoc(handle));
+      const runtime = factory(
+        handle,
+        () => persistence.saveDoc(handle),
+        runtimeReplicationObservabilityFor(replicationObservabilityOptions, identity.namespaceId),
+      );
       const entry = makeEntry(identity, runtime);
       entries.set(identity.key, entry);
       return issueLease(entry);
@@ -2016,5 +2090,8 @@ export function createNamespaceRegistry(
     ...(options.idleTimeoutMs !== undefined ? { idleTimeoutMs: options.idleTimeoutMs } : {}),
     ...(options.observer !== undefined ? { observer: options.observer } : {}),
     ...(options.role !== undefined ? { role: options.role } : {}),
+    ...(options.replicationObservability !== undefined
+      ? { replicationObservability: options.replicationObservability }
+      : {}),
   });
 }

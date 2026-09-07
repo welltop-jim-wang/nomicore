@@ -202,6 +202,7 @@ export class PeerNamespaceController {
       },
       onAckTimeout: () => this.onAckTimeoutFired(),
       onUpdateAcked: (info) => this.onUpdateAcked(info),
+      noteUpdateSent: (info) => this.onUpdateSent(info),
       now: () => this.host.now?.(),
       armTimer: (cb, ms) => host.timer.setTimeout(cb, ms),
       clearTimer: (h) => host.timer.clearTimeout(h),
@@ -978,24 +979,20 @@ export class PeerNamespaceController {
       // 与编码错统一收敛为返回 0 → F4 消费即丢弃。任何异常不得穿越
       // drainData/onAck/onMessage/timer 回调栈成为 uncaught。
       const seq = this.host.sendData(this.namespaceId, bytes);
-      // PN10：出向 UPDATE 帧字节（seq>0 时发射——0 = 帧被否决，未出站；合并帧报合并后长度）
-      if (seq > 0 && this.observerOn) {
-        this.host.emitObserver({
-          type: 'update-sent',
-          side: 'peer',
-          ...(cidField(this.host.connectionId())),
-          namespaceId: this.namespaceId,
-          bytes: bytes.byteLength,
-        });
-      }
+      // PN10 出向 UPDATE 帧字节事件发射已移至 onUpdateSent（issue #238：sequence +
+      // sendQueueMs 需在通道记账后构型——noteUpdateSent 恰一回调；seq>0 才触发）
       return seq;
     } catch {
       return 0;
     }
   }
 
-  /** PN12：本出向 UPDATE 被对端 ACK 收妥（数据来自 UpdateChannel 记账）。 */
-  private onUpdateAcked(info: Readonly<{ bytes: number; latencyMs?: number }>): void {
+  /** PN12：本出向 UPDATE 被对端 ACK 收妥（数据来自 UpdateChannel 记账；issue #238：
+   *  sequence = 被 ACK 帧序 = wire ackedSequence——与对端 update-applied{sequence}
+   *  构成回程闭环）。 */
+  private onUpdateAcked(
+    info: Readonly<{ bytes: number; latencyMs?: number; sequence: number }>,
+  ): void {
     if (!this.observerOn) return;
     this.host.emitObserver({
       type: 'update-acked',
@@ -1003,7 +1000,25 @@ export class PeerNamespaceController {
       ...(cidField(this.host.connectionId())),
       namespaceId: this.namespaceId,
       bytes: info.bytes,
+      sequence: info.sequence,
       ...(info.latencyMs !== undefined ? { ackLatencyMs: info.latencyMs } : {}),
+    });
+  }
+
+  /** PN10：本出向 UPDATE 帧实际出站记账事件（issue #238——seq>0 每帧恰一；含帧级
+   *  sequence 与发送队列等待差值）。 */
+  private onUpdateSent(
+    info: Readonly<{ sequence: number; bytes: number; sendQueueMs?: number }>,
+  ): void {
+    if (!this.observerOn) return;
+    this.host.emitObserver({
+      type: 'update-sent',
+      side: 'peer',
+      ...(cidField(this.host.connectionId())),
+      namespaceId: this.namespaceId,
+      bytes: info.bytes,
+      sequence: info.sequence,
+      ...(info.sendQueueMs !== undefined ? { sendQueueMs: info.sendQueueMs } : {}),
     });
   }
 
@@ -1100,17 +1115,23 @@ export class PeerNamespaceController {
             ...(cidField(this.host.connectionId())),
             namespaceId: this.namespaceId,
             bytes: update.byteLength,
+            // issue #238：帧级关联（按既有纪律不携时延字段——F6）
+            sequence,
           });
         } else {
           const t1 = this.host.now?.();
           const applyLatencyMs =
             t0 !== undefined && t1 !== undefined ? t1 - t0 : undefined;
+          // issue #238：result.stages = 槽内四段差值（registry stageClock 注入时在场；
+          // 全 present 或全缺席）；sequence = 触发帧 envelope sequence——三事件面关联键
           const base = {
             side: 'peer',
             ...cidField(this.host.connectionId()),
             namespaceId: this.namespaceId,
             bytes: update.byteLength,
+            sequence,
             ...(applyLatencyMs !== undefined ? { applyLatencyMs } : {}),
+            ...(result.stages !== undefined ? { ...result.stages } : {}),
           } as const;
           if (isStep2) {
             // issue #239 append-only：wire roundId 投影 + 长度澄清 + 效果字段组

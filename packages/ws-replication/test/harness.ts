@@ -33,6 +33,7 @@ import type {
   NamespaceLeaseReplicationStatus,
   NamespaceOwner,
   NamespaceRegistry,
+  NamespaceReplicationObservabilityOptions,
   RegistryRandomBytes,
 } from '@nomicore/namespace-registry';
 import { decodeMessage, type DecodedMessage } from '@nomicore/replication-protocol';
@@ -491,10 +492,13 @@ export interface ReplicaNode {
   readonly registry: NamespaceRegistry;
 }
 
-/** 构造真实 Registry（testing seam；受控 clock/scheduler/randomBytes；idle 远大于测试预算）。 */
+/** 构造真实 Registry（testing seam；受控 clock/scheduler/randomBytes；idle 远大于测试预算）。
+ *  issue #238：可选第三参 = 复制观测注入（stageClock/slotMetrics；缺省 dormant——
+ *  既有调用方零变化）。 */
 export function makeNode(
   role: 'hub' | 'peer',
   observer?: NonNullable<Parameters<typeof createNamespaceRegistryForTesting>[1]>['observer'],
+  replicationObservability?: NamespaceReplicationObservabilityOptions,
 ): ReplicaNode {
   const persistence = new StubPersistence();
   const scheduler = createRegistryTestScheduler();
@@ -504,6 +508,9 @@ export function makeNode(
     idleTimeoutMs: 1_000_000,
     randomBytes: makeCounterRandomBytes(),
     ...(observer === undefined ? {} : { observer }),
+    ...(replicationObservability === undefined
+      ? {}
+      : { replicationObservability }),
     role,
   });
   return { role, persistence, scheduler, registry };
