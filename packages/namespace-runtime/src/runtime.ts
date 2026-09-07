@@ -74,7 +74,15 @@ import { disabled } from './write.js';
 import type { MutateDataResult, WriteEnv } from './write.js';
 import { createSessionFanout, registerReplicationHost } from './replication-session.js';
 import type { RuntimeReplicationHost } from './replication-session.js';
+import type { SequencerSlotSample } from './sequencer.js';
 import { buildDiagnosticEnv, createSlotDiag, emitAttempt, emitSlot } from './diagnostic.js';
+
+
+/** 复制观测注入（issue #238 §4/§7；缺省 dormant）。 */
+export interface NamespaceReplicationObservability {
+  readonly stageClock?: { now(): number };
+  readonly slotMetrics?: (sample: SequencerSlotSample) => void;
+}
 
 /** seam 输入（D8'）：包内确定性测试接缝；@internal 沿 doc-runtime getCompiledWith 先例。 */
 export interface NamespaceRuntimeSeamInput {
@@ -92,6 +100,7 @@ export interface NamespaceRuntimeSeamInput {
   readonly diagnosticEmitter?: NamespaceDiagnosticChangeEmitter;
   /** Epoch-millisecond source used for diagnostic observedAt. */
   readonly clock?: () => number;
+  readonly replicationObservability?: NamespaceReplicationObservability;
 }
 
 /** closing/closed 期 read 拒绝分支（#92）：ADR-0008 读取能力节「预期路径、载体和
@@ -282,7 +291,7 @@ function createBeginResetFence(
       //    barrier（自等待禁律；设计 §3.5 (3)）
       state.lifecycle = 'closing';
       return { kind: 'armed' } as const;
-    });
+    }, 'close-barrier');
     // ⑤ 槽后 continuation：fence task 已结算、不再是 sequencer 活跃任务——唯有此刻
     //    才允许懒创建 close barrier（predecessor tail 必然不含仍在活动的 fence 任务，
     //    依赖图无环；设计 §3.5 (4) + 无自等待证明）
@@ -373,8 +382,14 @@ export function createNamespaceRuntimeWithSeam(input: NamespaceRuntimeSeamInput)
   // V3d sequencer + P0 入队（INV-N1：return 前 P0 已是队首 pending 节点；微任务起步；
   //     thunk = 纯调用 () => runP0(env)，零属性读取/零字面量构造/无可抛点——
   //     INV-N12 的「槽体全 catch」从此是结构事实）
-  const sequencer = new WriteSequencer();
-  void sequencer.enqueue(() => runP0(env));
+  const obsStageClock = captured.replicationObservability?.stageClock;
+  const obsSlotMetrics = captured.replicationObservability?.slotMetrics;
+  const sequencer = new WriteSequencer(
+    obsStageClock !== undefined && obsSlotMetrics !== undefined
+      ? { now: () => obsStageClock.now(), sink: obsSlotMetrics }
+      : undefined,
+  );
+  void sequencer.enqueue(() => runP0(env), 'P0');
 
   // V3d' closePromise 幂等缓存（INV-C2 的载体——并发/已结算后调用返回同一实例）
   let closePromise: Promise<void> | undefined;
@@ -389,6 +404,7 @@ export function createNamespaceRuntimeWithSeam(input: NamespaceRuntimeSeamInput)
     notifyDirty: captured.notifyDirty,
     fanout,
     diagEnv,
+    ...(obsStageClock !== undefined ? { stageClock: obsStageClock } : {}),
   };
 
   // V3d''' close barrier 懒创建（R2，设计 §3.5 (4)）：公共 close() 首调用与 reset
@@ -467,7 +483,7 @@ export function createNamespaceRuntimeWithSeam(input: NamespaceRuntimeSeamInput)
         return Promise.resolve(result);
       }
       const diag = diagEnv.emitter !== undefined ? createSlotDiag('root-mutation') : undefined;
-      const settled = sequencer.enqueue(() => runRootWriteSlot(writeEnv, mutation, diag));
+      const settled = sequencer.enqueue(() => runRootWriteSlot(writeEnv, mutation, diag), 'S');
       void settled.then(
         (value) => { emitSlot(diagEnv, diag, { kind: 'fulfilled', value }); },
         () => { emitSlot(diagEnv, diag, { kind: 'rejected' }); },
@@ -488,7 +504,7 @@ export function createNamespaceRuntimeWithSeam(input: NamespaceRuntimeSeamInput)
         return Promise.resolve(result);
       }
       const diag = diagEnv.emitter !== undefined ? createSlotDiag('schema-replacement') : undefined;
-      const settled = sequencer.enqueue(() => runSchemaWriteSlot(schemaWriteEnv, input, diag));
+      const settled = sequencer.enqueue(() => runSchemaWriteSlot(schemaWriteEnv, input, diag), 'schema');
       void settled.then(
         (value) => { emitSlot(diagEnv, diag, { kind: 'fulfilled', value }); },
         () => { emitSlot(diagEnv, diag, { kind: 'rejected' }); },
@@ -512,7 +528,7 @@ export function createNamespaceRuntimeWithSeam(input: NamespaceRuntimeSeamInput)
       // 占槽互斥（FIFO 互通）；thunk 是纯调用——input 引用仅被捕获不被读取
       //（Proxy 零触发），无可抛点；槽 E3 单读捕获定序在队列内
       const diag = diagEnv.emitter !== undefined ? createSlotDiag('replication-enable') : undefined;
-      const settled = sequencer.enqueue(() => runEnableReplicationSlot(replicationWriteEnv, input, diag));
+      const settled = sequencer.enqueue(() => runEnableReplicationSlot(replicationWriteEnv, input, diag), 'E');
       void settled.then(
         (value) => { emitSlot(diagEnv, diag, { kind: 'fulfilled', value }); },
         () => { emitSlot(diagEnv, diag, { kind: 'rejected' }); },
@@ -533,7 +549,7 @@ export function createNamespaceRuntimeWithSeam(input: NamespaceRuntimeSeamInput)
       }
       const diag = diagEnv.emitter !== undefined ? createSlotDiag('replication-epoch-bump') : undefined;
       if (diag !== undefined) diag.input = undefined;
-      const settled = sequencer.enqueue(() => runBumpReplicationEpochSlot(replicationWriteEnv, diag));
+      const settled = sequencer.enqueue(() => runBumpReplicationEpochSlot(replicationWriteEnv, diag), 'bump');
       void settled.then(
         (value) => { emitSlot(diagEnv, diag, { kind: 'fulfilled', value }); },
         () => { emitSlot(diagEnv, diag, { kind: 'rejected' }); },
@@ -576,8 +592,9 @@ export function createNamespaceRuntimeWithSeam(input: NamespaceRuntimeSeamInput)
  * 该类型定义于本文件（`internal.ts` 只做 type re-export——值导出键集冻结）。
  */
 export interface RuntimeForRegistryDiagnostic {
-  readonly emitter: NamespaceDiagnosticChangeEmitter;
-  readonly clock: () => number;
+  readonly emitter?: NamespaceDiagnosticChangeEmitter;
+  readonly clock?: () => number;
+  readonly replicationObservability?: NamespaceReplicationObservability;
 }
 
 /**
@@ -596,7 +613,13 @@ export function createNamespaceRuntime(
     handle,
     notifyDirty,
     ...(diagnostic !== undefined
-      ? { diagnosticEmitter: diagnostic.emitter, clock: diagnostic.clock }
+      ? {
+          ...(diagnostic.emitter !== undefined ? { diagnosticEmitter: diagnostic.emitter } : {}),
+          ...(diagnostic.clock !== undefined ? { clock: diagnostic.clock } : {}),
+          ...(diagnostic.replicationObservability !== undefined
+            ? { replicationObservability: diagnostic.replicationObservability }
+            : {}),
+        }
       : {}),
   });
 }
@@ -643,6 +666,7 @@ function captureSeamInput(input: unknown): {
   notifyDirty: (() => Promise<void>) | undefined;
   diagnosticEmitter: NamespaceDiagnosticChangeEmitter | undefined;
   clock: (() => number) | undefined;
+  replicationObservability: NamespaceReplicationObservability | undefined;
 } {
   if (typeof input !== 'object' || input === null) {
     throw new TypeError('seam 输入必须是对象（{ handle, p0Gate?, compile?, notifyDirty? }）');
@@ -722,6 +746,22 @@ function captureSeamInput(input: unknown): {
   if (diagnosticEmitter !== undefined && clock === undefined) {
     throw new TypeError('装配 diagnosticEmitter 时必须同时注入 clock');
   }
+  let replicationObservability: NamespaceReplicationObservability | undefined;
+  if (rec.replicationObservability !== undefined) {
+    const value = rec.replicationObservability;
+    if (typeof value !== 'object' || value === null) throw new TypeError('input.replicationObservability 若提供必须是对象');
+    const orec = value as Record<string, unknown>;
+    const stageClock = orec.stageClock;
+    const slotMetrics = orec.slotMetrics;
+    if (stageClock !== undefined && (typeof stageClock !== 'object' || stageClock === null || typeof (stageClock as { now?: unknown }).now !== 'function')) {
+      throw new TypeError('input.replicationObservability.stageClock 若提供必须是 { now(): number }');
+    }
+    if (slotMetrics !== undefined && typeof slotMetrics !== 'function') throw new TypeError('input.replicationObservability.slotMetrics 若提供必须是 function');
+    replicationObservability = {
+      ...(stageClock !== undefined ? { stageClock: stageClock as { now(): number } } : {}),
+      ...(slotMetrics !== undefined ? { slotMetrics: slotMetrics as (sample: SequencerSlotSample) => void } : {}),
+    };
+  }
   return {
     handle: handle as DocHandle,
     userId: userId as string,
@@ -732,5 +772,6 @@ function captureSeamInput(input: unknown): {
     notifyDirty,
     diagnosticEmitter,
     clock,
+    replicationObservability,
   };
 }

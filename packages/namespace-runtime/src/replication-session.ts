@@ -94,8 +94,15 @@ export type RuntimeReplicationSessionApplyRefusalCode =
   | 'RUNTIME_WRITE_DISABLED'
   | 'NAMESPACE_LEASE_RELEASED';
 
+export interface RuntimeReplicationApplyStages {
+  readonly queueWaitMs: number;
+  readonly protectedCheckMs: number;
+  readonly liveApplyMs: number;
+  readonly dirtyNotifyMs: number;
+}
+
 export type RuntimeReplicationSessionApplyResult =
-  | Readonly<{ ok: true }>
+  | Readonly<{ ok: true; stages?: Readonly<RuntimeReplicationApplyStages> }>
   | Readonly<{ ok: false; code: RuntimeReplicationSessionApplyRefusalCode; message: string }>;
 
 /** session 独立状态查询面（O-11 冻结词汇；Runtime status 的 replication 域仍只含两态

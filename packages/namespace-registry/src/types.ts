@@ -518,8 +518,23 @@ export type ReplicationSessionApplyRefusalCode =
   | 'REPLICATION_PROTECTED_FIELDS_CHANGED'
   | 'RUNTIME_WRITE_DISABLED';         // lifecycle / fatal / writable gate（含 hub-degraded）
 
+/**
+ * 槽内四段观测的差值样本（issue #238 §4；registry 侧镜像——与 runtime 侧
+ * RuntimeReplicationApplyStages 逐字段同形，lease.ts Equal 锁要求结构逐字一致）。
+ * 语义 = 各段时差（单调时钟域差值，非绝对时间戳）：queueWaitMs = sequencer 排队
+ * 等待；protectedCheckMs = R1–R3 同步门 + R4 scratch 预演；liveApplyMs = R5 实时
+ * 写入；dirtyNotifyMs = R6 saveDoc 登记。在场纪律：全 present 或全缺席（任一捕获
+ * 点时钟读数缺面/throw → 整个 stages 缺席）；仅 ok:true 分支携带。
+ */
+export interface ReplicationApplyStages {
+  readonly queueWaitMs: number;
+  readonly protectedCheckMs: number;
+  readonly liveApplyMs: number;
+  readonly dirtyNotifyMs: number;
+}
+
 export type ReplicationSessionApplyResult =
-  | Readonly<{ ok: true }>
+  | Readonly<{ ok: true; stages?: Readonly<ReplicationApplyStages> }>
   | Readonly<{ ok: false; code: ReplicationSessionApplyRefusalCode; message: string }>;
 
 /** session 独立状态查询面（O-11 冻结词汇；Runtime status 的 replication 域仍只含两态
@@ -791,6 +806,38 @@ export interface NamespaceRegistryDiagnosticLog {
   readonly emitter: NamespaceDiagnosticChangeEmitter;
   readonly initStream?: (namespaceId: string, genesisUpdateBytes: Uint8Array | undefined) => void;
   readonly runtimeEmitterFor?: (namespaceId: string) => NamespaceDiagnosticChangeEmitter | undefined;
+}
+
+/**
+ * 槽级记账样本（issue #238 §7；差值与计数，无绝对时间戳）——宿主注入 sink 收到的
+ * 形状：namespaceId 由 Registry 在 Runtime 构造处以闭包盖戳（runtime 包自身不知
+ * 命名——分层正确）。slotKind 词表与 runtime 包内 SequencerSlotKind 逐字镜像。
+ * 落点纪律：样本只进注入的 metrics/log sink（ADR-0008 L101），不进任何 getStatus
+ * 公共面；sink 同步回调、槽释放后续体调用、throw 自捕获。
+ */
+export interface ReplicationObservabilitySlotSample {
+  readonly namespaceId: string;
+  readonly slotKind: 'P0' | 'S' | 'E' | 'R' | 'schema' | 'bump' | 'close-barrier';
+  /** 本槽入队 → 开跑（注入时钟在场才有值）。 */
+  readonly waitMs?: number;
+  /** 本槽执行全程（开跑 → settle）。 */
+  readonly runMs: number;
+  /** 本槽开跑时刻写序列器尚未开跑的排队任务数（含本槽自身）。 */
+  readonly queueDepthAtStart: number;
+}
+
+/**
+ * 复制观测注入（issue #238；生产工厂可选项——缺省 dormant：无 stageClock → 零槽内
+ * 时钟读、apply 结果 stages 缺席、槽级记账关闭；无 slotMetrics → 零样本缓冲增长；
+ * 与无 observer 逐字节等价）。装配纪律：stageClock 应为 ws-replication `clock` 的
+ * **同一单调实例**（四段守恒恒等式在同一时钟域成立的前提——纯组装约定，非库层强制；
+ * 实例不同最坏后果 = 段值不可比/守恒断言失败，不影响协议行为）。
+ */
+export interface NamespaceReplicationObservabilityOptions {
+  /** 槽内四段戳的单调时源（R 槽 stages；仅作差、禁原生时钟 fallback、throw 折叠）。 */
+  readonly stageClock?: { now(): number };
+  /** 槽级记账 sink（收到已盖 namespaceId 戳的样本；见 ReplicationObservabilitySlotSample）。 */
+  readonly slotMetrics?: (sample: ReplicationObservabilitySlotSample) => void;
 }
 
 /**
