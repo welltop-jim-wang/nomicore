@@ -31,8 +31,12 @@ namespace 创建提交时由生命周期层生成的 UTC ISO 8601 字符串，�
 _Avoid_: Unix 时间戳、调用方自报创建时间
 
 **Data**:
-调用方在 namespace 中读写的、受 Schema 约束的业务事实。公共消费面以 `readData(path)` / `mutateData(mutation)` 表达最小、可合并且有语义的变更；Data 不包含 Schema 身份或 Metadata 生命周期事实。
+调用方在 namespace 中读写的、受 Schema 约束的业务事实。公共消费面以 `readData(path)` / `mutateData(mutation)` 表达最小、可合并且有语义的变更；`readData` 成功时同步返回值与其语义 schema 投影（ADR-0016）；Data 不包含 Schema 身份或 Metadata 生命周期事实。
 _Avoid_: 把 Data 当成必须整体读写的 ROOT 快照、在业务代码中暴露 Y.Doc 载体
+
+**语义 schema 投影（semantic schema projection）**:
+`readData` 成功分支随值同步返回的、路径键控的派生 schema 切片：路径终点的值 schema 子树（ref 按名保留）+ 传递闭包别名表 + 文档注释表的相关切片。它是路径键控而非值键控——值缺席时照常返回；无 active schema、路径偏离 schema 或静态无法解析时为 `null`，且 `null` 不是读的失败（ADR-0016）。
+_Avoid_: 把投影当作 live derived schema 的共享引用（每次读都是 detached 深拷贝）、把 `null` 当读失败、向载荷混入载体结构树词汇
 
 **ROOT**:
 Data 在 VFSL/Y.Doc 实现中的根载体保留名（大小写是契约）：每个模块必须恰好声明一个 map 形的 `type ROOT = …`（裸对象 / `YMap` / `Record`），并物化为 doc 根 `getMap('ROOT')`。ROOT 属于 schema、生成器和运行时实现词汇，不进入普通 namespace 消费接口。其余无人引用的别名是惰性积木，不进数据面。
