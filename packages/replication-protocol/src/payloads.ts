@@ -1,5 +1,5 @@
 /**
- * 17 种消息的 payload 编解码 + 字段级验证（设计 §7 字段表逐条落地）。
+ * 18 种消息的 payload 编解码 + 字段级验证（设计 §7 字段表逐条落地）。
  *
  * 权威来源：docs/protocols/instance-replication-v1.md §6–§13（字段顺序 = wire 顺序 =
  * 规范表格顺序）+ §4（lib0 canonical + 完全消费 + 非法 UTF-8/optional/list 拒绝）。
@@ -11,12 +11,21 @@
  * - 失败一律 ProtocolError：payload 级格式违规 → MALFORMED_FRAME；
  *   字段级 limit 超限 → UPDATE_TOO_LARGE / BOOTSTRAP_TOO_LARGE / SYNC_DIFF_TOO_LARGE；
  * - 解码产出 optional 字段缺席时省略键（R10）。
+ * - issue #242（D-3）：decodeMessage 对 DecodeOptions.selectedCapabilities 做急切解析/校验
+ *   （所有消息类型一致生效，对称 resolveExpectedSequence 先例）；UPDATE_CHUNK(0x42) 未协商
+ *   （selected & CAP_CHUNKED_UPDATE === 0）时在 payload 解析前抛 UNSUPPORTED_MESSAGE_TYPE。
  */
 import { CanonicalReader, PayloadWriter, assertNonNegativeSafeInteger, assertU32, throwMalformed } from './canonical.js';
-import { INSTANCE_ID_RE, NAMESPACE_ID_RE, NONCE_BYTES, REPLICATION_ID_RE } from './constants.js';
+import { CAP_CHUNKED_UPDATE, INSTANCE_ID_RE, NAMESPACE_ID_RE, NONCE_BYTES, REPLICATION_ID_RE } from './constants.js';
 import { decodeFrame, encodeFrame, type FrameHeader } from './envelope.js';
 import { ProtocolError, lookupError } from './errors.js';
-import { resolveFieldLimit, type DecodeOptions, type EncodeOptions, type FieldLimits } from './limits.js';
+import {
+  resolveFieldLimit,
+  resolveSelectedCapabilities,
+  type DecodeOptions,
+  type EncodeOptions,
+  type FieldLimits,
+} from './limits.js';
 import {
   type BootstrapAckMsg,
   type BootstrapSnapshotMsg,
@@ -36,6 +45,7 @@ import {
   type SyncStep1Msg,
   type SyncStep2Msg,
   type UpdateAckMsg,
+  type UpdateChunkMsg,
   type UpdateMsg,
 } from './messages.js';
 
@@ -638,6 +648,83 @@ function encodeUpdateAck(writer: PayloadWriter, msg: UpdateAckMsg): void {
   writer.writeVarUint32(msg.ackedSequence, 'ackedSequence');
 }
 
+// ---------------------------------------------------------------- UPDATE_CHUNK 0x42
+//
+// issue #242（ADR 0013）：自描述分块 UPDATE 单帧。字段序（唯一权威 = ADR 0013 表序）：
+// namespaceId(varString) → transferId(varUint, uint32) → chunkIndex(varUint, uint32)
+// → chunkCount(varUint, uint32) → totalBytes(varUint, uint32) → bytes(varUint8Array)。
+// 单帧语义自洽规则（decode/encode 同一套，R9 对称；违规 → MALFORMED_FRAME）：
+// transferId ≥ 1；chunkIndex < chunkCount；chunkCount ≥ 1；bytes 非空；
+// totalBytes ≥ bytes.byteLength。字段限额复用 maxUpdateBytes（超限 → UPDATE_TOO_LARGE，
+// ADR 0013「chunk 大小复用 maxUpdateBytes」）。跨帧规则（transferId 一致性/单调、
+// chunkIndex === 已收数量、totalBytes ≤ maxChunkedUpdateBytes、实收 == totalBytes）
+// 属接收端 assembly 状态机（后续切片），codec 无状态、不承载。
+
+function decodeUpdateChunk(reader: CanonicalReader, limits: FieldLimits | undefined): UpdateChunkMsg {
+  const namespaceId = reader.readVarString();
+  checkNamespaceId(namespaceId);
+  const transferId = reader.readVarUint32();
+  if (transferId < 1) {
+    throwMalformed('transferId must be >= 1');
+  }
+  const chunkIndex = reader.readVarUint32();
+  const chunkCount = reader.readVarUint32();
+  if (chunkCount < 1) {
+    throwMalformed('chunkCount must be >= 1');
+  }
+  if (chunkIndex >= chunkCount) {
+    throwMalformed('chunkIndex must be < chunkCount');
+  }
+  const totalBytes = reader.readVarUint32();
+  const bytes = reader.readVarUint8ArrayCopy();
+  if (bytes.byteLength < 1) {
+    throwMalformed('bytes must not be empty');
+  }
+  if (bytes.byteLength > totalBytes) {
+    throwMalformed('bytes must not exceed totalBytes');
+  }
+  const maxUpdate = resolveFieldLimit(limits?.maxUpdateBytes, 'maxUpdateBytes');
+  if (maxUpdate !== undefined && bytes.byteLength > maxUpdate) {
+    throw new ProtocolError('UPDATE_TOO_LARGE', `bytes ${bytes.byteLength} exceeds maxUpdateBytes ${maxUpdate}`);
+  }
+  return { kind: 'UPDATE_CHUNK', namespaceId, transferId, chunkIndex, chunkCount, totalBytes, bytes };
+}
+
+function encodeUpdateChunk(writer: PayloadWriter, msg: UpdateChunkMsg, limits: FieldLimits | undefined): void {
+  checkNamespaceId(msg.namespaceId);
+  if (!Number.isSafeInteger(msg.transferId) || msg.transferId < 1 || msg.transferId > 0xffffffff) {
+    throwMalformed('transferId must be a uint32 >= 1');
+  }
+  if (!Number.isSafeInteger(msg.chunkIndex) || msg.chunkIndex < 0 || msg.chunkIndex > 0xffffffff) {
+    throwMalformed('chunkIndex must fit in uint32');
+  }
+  if (!Number.isSafeInteger(msg.chunkCount) || msg.chunkCount < 1 || msg.chunkCount > 0xffffffff) {
+    throwMalformed('chunkCount must be a uint32 >= 1');
+  }
+  if (msg.chunkIndex >= msg.chunkCount) {
+    throwMalformed('chunkIndex must be < chunkCount');
+  }
+  if (!Number.isSafeInteger(msg.totalBytes) || msg.totalBytes < 0 || msg.totalBytes > 0xffffffff) {
+    throwMalformed('totalBytes must fit in uint32');
+  }
+  if (!(msg.bytes instanceof Uint8Array) || msg.bytes.byteLength < 1) {
+    throwMalformed('bytes must be a non-empty Uint8Array');
+  }
+  if (msg.bytes.byteLength > msg.totalBytes) {
+    throwMalformed('bytes must not exceed totalBytes');
+  }
+  const maxUpdate = resolveFieldLimit(limits?.maxUpdateBytes, 'maxUpdateBytes');
+  if (maxUpdate !== undefined && msg.bytes.byteLength > maxUpdate) {
+    throw new ProtocolError('UPDATE_TOO_LARGE', `bytes ${msg.bytes.byteLength} exceeds maxUpdateBytes ${maxUpdate}`);
+  }
+  writer.writeVarString(msg.namespaceId, 'namespaceId');
+  writer.writeVarUint32(msg.transferId, 'transferId');
+  writer.writeVarUint32(msg.chunkIndex, 'chunkIndex');
+  writer.writeVarUint32(msg.chunkCount, 'chunkCount');
+  writer.writeVarUint32(msg.totalBytes, 'totalBytes');
+  writer.writeVarUint8Array(msg.bytes);
+}
+
 // ---------------------------------------------------------------- 分发
 
 function decodePayload(messageType: number, reader: CanonicalReader, limits: FieldLimits | undefined): ReplicationMessage {
@@ -676,6 +763,8 @@ function decodePayload(messageType: number, reader: CanonicalReader, limits: Fie
       return decodeUpdate(reader, limits);
     case MESSAGE_TYPES.UPDATE_ACK:
       return decodeUpdateAck(reader);
+    case MESSAGE_TYPES.UPDATE_CHUNK:
+      return decodeUpdateChunk(reader, limits);
     default:
       throw new ProtocolError('UNSUPPORTED_MESSAGE_TYPE', `unknown message type 0x${messageType.toString(16)}`);
   }
@@ -717,6 +806,8 @@ function encodePayload(writer: PayloadWriter, message: ReplicationMessage, limit
       return encodeUpdate(writer, message, limits);
     case 'UPDATE_ACK':
       return encodeUpdateAck(writer, message);
+    case 'UPDATE_CHUNK':
+      return encodeUpdateChunk(writer, message, limits);
     default: {
       // 运行时防御（JS 调用方传入未知 kind）；typed caller 不可达。
       const never: never = message;
@@ -728,10 +819,21 @@ function encodePayload(writer: PayloadWriter, message: ReplicationMessage, limit
 
 /**
  * 解码完整消息：先 decodeFrame（9 步固定检查，含 expectedSequence/maxFrameBytes），
- * 再按 messageType 解码 payload（字段表校验），最后 expectEnd（R1 完全消费）。
+ * 再对 DecodeOptions.selectedCapabilities 做急切解析/校验（issue #242 D-3：对所有消息类型
+ * 一致生效，与 header.messageType 无关；非法值 → CONNECTION_POLICY_VIOLATION），
+ * 然后按 messageType 解码 payload：UPDATE_CHUNK 未协商（selected & CAP_CHUNKED_UPDATE === 0）
+ * 在 payload 解析前抛 UNSUPPORTED_MESSAGE_TYPE（connection fatal），最后 expectEnd（R1 完全消费）。
+ * 拒绝顺序（§9）：帧级 9 步 → 选项急切校验 → 门控 → 载荷级字段规则。
  */
 export function decodeMessage(bytes: Uint8Array, options?: DecodeOptions): DecodedMessage {
   const { header, payload } = decodeFrame(bytes, options);
+  const selectedCapabilities = resolveSelectedCapabilities(options?.selectedCapabilities);
+  if (header.messageType === MESSAGE_TYPES.UPDATE_CHUNK && ((selectedCapabilities ?? 0) & CAP_CHUNKED_UPDATE) === 0) {
+    throw new ProtocolError(
+      'UNSUPPORTED_MESSAGE_TYPE',
+      'UPDATE_CHUNK requires negotiated CAP_CHUNKED_UPDATE (0x42 rejected by non-negotiating endpoint)',
+    );
+  }
   const reader = new CanonicalReader(payload);
   const message = decodePayload(header.messageType, reader, options?.limits);
   reader.expectEnd();

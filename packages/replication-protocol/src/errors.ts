@@ -2,7 +2,8 @@
  * ProtocolError 分类错误 + 连接/namespace 错误注册表（append-only、深冻结）。
  *
  * 权威来源：docs/protocols/instance-replication-v1.md §13.1（17 条连接错误）、
- * §13.2（20 条 namespace 错误，含双 registry INTERNAL_ERROR，元数据不同）。
+ * §13.2（22 条 namespace 错误，含双 registry INTERNAL_ERROR，元数据不同；
+ * issue #242 追加 UPDATE_TRANSFER_VIOLATION / UPDATE_TRANSFER_TOO_LARGE，ADR 0013 冻结值）。
  * 注册表是 codec 一切失败路径的元数据来源：scope/fatal/retryable/wsCloseCode/terminalState
  * 由注册表导出，调用方不可注入（AC4）。注册表条目对象与注册表对象全部 Object.freeze。
  */
@@ -27,7 +28,7 @@ export type ConnectionErrorCode =
   | 'CONNECTION_BACKPRESSURE'
   | 'INTERNAL_ERROR';
 
-/** namespace 错误码（§13.2 全 20 个字面量）。 */
+/** namespace 错误码（§13.2 全 22 个字面量）。 */
 export type NamespaceErrorCode =
   | 'TARGET_NOT_REQUESTED'
   | 'NAMESPACE_REOPEN_REQUIRES_RECONNECT'
@@ -48,7 +49,9 @@ export type NamespaceErrorCode =
   | 'APPLY_FAILED'
   | 'ACK_TIMEOUT'
   | 'NAMESPACE_TIMEOUT'
-  | 'INTERNAL_ERROR';
+  | 'INTERNAL_ERROR'
+  | 'UPDATE_TRANSFER_VIOLATION'
+  | 'UPDATE_TRANSFER_TOO_LARGE';
 
 /** retryable 策略字面量联合（两表并集）。 */
 export type RetryPolicy = 'no' | 'yes' | 'config' | 'reconnect' | 'reset' | 'recovery' | 'resync';
@@ -130,12 +133,16 @@ const _namespaceErrors: Record<NamespaceErrorCode, ErrorInfo> = {
   ACK_TIMEOUT: namespaceError('ACK_TIMEOUT', false, 'resync', 'needs-resync'),
   NAMESPACE_TIMEOUT: namespaceError('NAMESPACE_TIMEOUT', true, 'reconnect', 'failed'),
   INTERNAL_ERROR: namespaceError('INTERNAL_ERROR', true, 'reconnect', 'failed'),
+  // issue #242（ADR 0013）：分块传输语义错误码。发射点（跨帧 violation 判定 /
+  // maxChunkedUpdateBytes 超限）属后续接收端 assembly 切片；本切片只冻结注册与 wire 可编码性。
+  UPDATE_TRANSFER_VIOLATION: namespaceError('UPDATE_TRANSFER_VIOLATION', true, 'no', 'failed'),
+  UPDATE_TRANSFER_TOO_LARGE: namespaceError('UPDATE_TRANSFER_TOO_LARGE', true, 'config', 'failed'),
 };
 
 /** 连接错误注册表（17 条，深冻结，append-only）。 */
 export const CONNECTION_ERRORS: Readonly<Record<ConnectionErrorCode, ErrorInfo>> = Object.freeze(_connectionErrors);
 
-/** namespace 错误注册表（20 条，深冻结，append-only）。 */
+/** namespace 错误注册表（22 条，深冻结，append-only）。 */
 export const NAMESPACE_ERRORS: Readonly<Record<NamespaceErrorCode, ErrorInfo>> = Object.freeze(_namespaceErrors);
 
 /**

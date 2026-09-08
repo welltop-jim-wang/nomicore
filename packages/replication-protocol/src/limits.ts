@@ -23,6 +23,13 @@ export interface DecodeOptions {
   maxFrameBytes?: number;
   expectedSequence?: number;
   limits?: FieldLimits;
+  /**
+   * 调用方已协商的 capability bitset（uint32；HELLO_ACK.selectedCapabilities 语义）。
+   * 缺省 = 未协商（0）——v1 保守语义：UPDATE_CHUNK(0x42) 按未支持消息码拒绝。
+   * 非法值（非安全整数/负/>0xffffffff）→ CONNECTION_POLICY_VIOLATION，响亮不 clamp；
+   * 校验作用域 = 急切（与 expectedSequence 同判据同先例：decodeMessage 对所有消息类型先行生效）。
+   */
+  selectedCapabilities?: number;
 }
 
 /** encodeMessage 选项（sequence 缺省 1）。 */
@@ -55,6 +62,16 @@ export function resolveExpectedSequence(value: number | undefined): number | und
   if (value === undefined) return undefined;
   if (!Number.isSafeInteger(value) || value < 0 || value > 0xffffffff) {
     throwPolicy('expectedSequence must be a uint32');
+  }
+  return value;
+}
+
+/** 解析 selectedCapabilities：缺省 undefined（= 未协商 0）；显式值必须为 uint32 安全整数。
+ *  （issue #242 D-3：判据与 resolveExpectedSequence 完全对称——急切校验、响亮拒绝，绝不 clamp。） */
+export function resolveSelectedCapabilities(value: number | undefined): number | undefined {
+  if (value === undefined) return undefined;
+  if (!Number.isSafeInteger(value) || value < 0 || value > 0xffffffff) {
+    throwPolicy('selectedCapabilities must be a uint32');
   }
   return value;
 }

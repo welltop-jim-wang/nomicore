@@ -8,7 +8,7 @@
  */
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { decodeFrame, decodeMessage, encodeFrame, encodeMessage, ENVELOPE_HEADER_BYTES } from '@nomicore/replication-protocol';
+import { decodeFrame, decodeMessage, encodeFrame, encodeMessage, ENVELOPE_HEADER_BYTES, CAP_CHUNKED_UPDATE } from '@nomicore/replication-protocol';
 import { GOLDEN, hexToBytes } from './fixtures';
 
 interface PkgManifest {
@@ -85,7 +85,8 @@ describe('AC5：运行时不依赖 Node Buffer（行为锚点）', () => {
     for (const g of GOLDEN) {
       const bytes = encodeMessage(g.message, { sequence: g.sequence });
       expect(Object.getPrototypeOf(bytes), g.name).toBe(Uint8Array.prototype);
-      const decoded = decodeMessage(bytes);
+      // UPDATE_CHUNK 帧需已协商 capability（issue #242 D-3 门控）；其余帧同选项亦合法。
+      const decoded = decodeMessage(bytes, { selectedCapabilities: CAP_CHUNKED_UPDATE });
       expect(decoded.header.envelopeVersion).toBe(1);
     }
     expect(ENVELOPE_HEADER_BYTES).toBe(20);
