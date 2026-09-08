@@ -617,7 +617,7 @@ Peer→Hub update保护检查必须在同一 sequencer槽中：
 （附带可选 `clock?: ReplicationClock` 以观测 apply/ACK latency）。Seam 是**追加式
 （append-only）**：事件类型、reason/cause/via 词表、稳定码表只增不改；GA 后字段语义冻结。
 
-### 23.1 事件词汇（21 型，分类列示——issue #238 追加第 21 型 `event-loop-delay-sampled` 及四事件面 sequence/四段差值字段）
+### 23.1 事件词汇（22 型，分类列示——issue #238 追加第 21 型 `event-loop-delay-sampled` 及四事件面 sequence/四段差值字段；issue #256 追加第 22 型 `namespace-failed`）
 
 连接域：
 
@@ -671,11 +671,36 @@ auth / 背压 / resync：
 |---|---|---|
 | `connection-failed` | hub/peer | `connectionId?`、`code`（§23.2 闭联合）、`wsCloseCode` |
 | `namespace-error` | hub/peer | `connectionId?`、`namespaceId`、`code`（§23.2 闭联合）、`direction` ∈ {sent, received}、`terminalState?` ∈ {failed, conflicted, closed} |
+| `namespace-failed` | hub/peer | **issue #256 追加（append-only 第 22 型）**：`connectionId?`、`namespaceId`、`cause` ∈ {open-timeout, bootstrap-timeout, reconcile-timeout, open-failed, session-open-failed, replication-disabled, session-missing, protocol-violation, apply-refused, apply-rejected, remote-error, send-failed, internal-error}（`ReplicationNamespaceFailedCause` 闭联合，append-only；timer 族三值 = §13.2 `NAMESPACE_TIMEOUT` 的本地映射——open/bootstrap/reconcile 超时可仅凭单侧日志区分）、`timeoutMs?`（仅 timer 族 cause 在场：到期的配置上限 openTimeoutMs/bootstrapTimeoutMs/reconcileTimeoutMs——有限数值非时间戳）。**计数不变量**：每次 `failed` 终态边沿恰一事件（终态幂等早退保证——closing 期/终态后迟到的收口调用零事件）；事件在失败决策落定后发射（setState 之后，§23.4）。**与 `namespace-error` 互补不重复**：本事件计**终态边沿**，`namespace-error` 计 **wire ERROR 帧**——wire 错误驱动路径两者各一（失败聚合/告警路由以本事件 `cause` 为准）；本地零 wire 失败路径（timer 超时、本地 open/lease/session 失败、local 终局）仅本事件；`remote-error` 标记对端 ERROR 驱动的终局，防止被误计为本地故障。observer 缺省 = 零事件构造、零 live 状态读取、零时钟调用（cause/timeoutMs 实参仅为稳定字面量与 resolved 配置字段）。cause × `failed` 入口覆盖矩阵见本节附表 |
 | `identity-conflicted` | hub/peer | `connectionId?`、`namespaceId`、`via` ∈ {open-mismatch, fence, identity-changed-frame} |
 
 **apply 成功路径互斥规则**（避免计数重复）：每笔成功 apply 恰一事件 = `update-applied`
 （UPDATE 且非 degraded）／`sync-diff-applied`（Step2 且非 degraded）／
 `degraded-bypass-applied`（degraded，任意来源）三选一。
+
+**`namespace-failed` cause × `failed` 入口覆盖矩阵**（issue #256 验收交付物；
+回归锚 = `ws-replication-issue256-namespace-failed.test.ts` 场景号）：
+
+| cause | peer 入口 | hub 入口 | 伴随 wire ERROR | 回归锚 |
+|---|---|---|---|---|
+| `open-timeout` | `onTimerFired('open')` | —（hub 无 open timer） | 零 wire | 场景 1 |
+| `bootstrap-timeout` | `onTimerFired('bootstrap')` | bootstrap timer 到期 | 零 wire | 场景 2、15 |
+| `reconcile-timeout` | `onTimerFired('reconcile')` | —（hub 无 reconcile timer；hub 侧活性失败走 §17 `ack-timeout` → needs-resync） | 零 wire | 场景 3 |
+| `open-failed` | `startOpen`：`registry.open` throw/拒绝、open 期 lease 状态读取异常 | open 期：authorize 拒绝、身份/epoch 不匹配、lease 状态读取异常 | hub：`NAMESPACE_UNAUTHORIZED`/`REPLICATION_ID_MISMATCH`/`REPLICATION_EPOCH_MISMATCH`/`INTERNAL_ERROR`/`NAMESPACE_NOT_FOUND`（sent）；peer 本地零 wire | 场景 11 |
+| `session-open-failed` | `tryOpenReplicationSession` throw/`ok:false` | `openReplicationSession` throw | hub：`INTERNAL_ERROR`（sent）；peer 零 wire | 场景 13 |
+| `replication-disabled` | OPEN 前置本地检出（零 wire） | open 期（`REPLICATION_NOT_ENABLED`）+ bootstrap 期身份重读（`INTERNAL_ERROR`） | hub：见左（sent）；peer 零 wire | 场景 12 |
+| `session-missing` | `applyRemoteUpdate` 入口防御 | `startBootstrap` 入口防御 | 零 wire | 竞态防御分支（恰一性由 finalize 终态幂等早退结构性保证） |
+| `protocol-violation` | 入站帧状态/身份/序列违例族（opening 期 UPDATE、OPEN_OK 身份不符等） | 入站帧状态/ACK 违例族 | `NAMESPACE_STATE_VIOLATION` 等（sent） | 场景 4 |
+| `apply-refused` | 结构化拒绝映射族（SCHEMA/META 保护、权限） | 同左 | `PROTECTED_FIELD_MUTATION` 等（sent） | 场景 5 |
+| `apply-rejected` | apply/encode/import 内部异常映射族 | 同左 | `BOOTSTRAP_FAILED` 等（sent） | 场景 6 |
+| `remote-error` | 对端 terminal namespace ERROR 驱动 | 同左 | received（本端零回发） | 场景 7、12、14 |
+| `send-failed` | 出站编码面超限/发送异常（UPDATE/SYNC 帧） | 控制帧编码面失败 + **快照超 `maxBootstrapBytes`（本端资源超限，非对端违例）** | hub：`BOOTSTRAP_TOO_LARGE`（sent） | 场景 14 |
+| `internal-error` | —（无专门入口） | `startBootstrap` catch-all + bootstrap 期 lease 重读异常 | `INTERNAL_ERROR`（sent） | 防御兜底（理论不可达/未分类分支） |
+
+矩阵读法：wire 驱动行（`protocol-violation`/`apply-*`/`remote-error`/`send-failed` 的
+帧伴随路径）与 `namespace-error` 各计一次（帧 vs 终态边沿，聚合以本表 cause 为准）；
+本地零 wire 行仅 `namespace-failed` 一事件；`failed` 入口到 cause 的映射为编译期
+强制（`finalize('failed', cause)` 重载签名），新增入口必须登记本表。
 
 ### 23.2 稳定码闭联合（append-only）
 
@@ -701,6 +726,8 @@ issue #231）、受控标识（`namespaceId` 恒为 `^ns-[0-9a-f]{32}$`；`conne
 `queuedUpdateCount`/`queuedUpdateBytes`/`inFlightCount` 是计数；`bufferedAmount` 是
 adapter 水位读数；`applyLatencyMs`/`ackLatencyMs`/`sendQueueMs`/`queueWaitMs`/
 `protectedCheckMs`/`liveApplyMs`/`dirtyNotifyMs`/`delayMs` 是**差值**非绝对时间戳；
+`timeoutMs` 是 resolved 配置上限读数（issue #256，timer 族 cause 专属——有限取值
+集合的配置值，非时间戳非测量值）；
 `sequence` 是帧级有限数值（uint32，连接局部、不跨连接、不持久化——§10 非目标保持）——
 issue #238 追加字段全部落入上述两类）。
 

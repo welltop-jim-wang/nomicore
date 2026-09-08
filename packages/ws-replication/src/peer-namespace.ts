@@ -27,6 +27,7 @@ import type { DataSenderFacet } from './backpressure.js';
 import type {
   PeerConnectionState,
   PeerNamespaceState,
+  ReplicationNamespaceFailedCause,
   ReplicationObserverEvent,
   ReplicationTarget,
   ReplicationTimer,
@@ -80,6 +81,26 @@ export interface PeerNamespaceHost {
 }
 
 type TimerKind = 'open' | 'bootstrap' | 'reconcile' | 'periodic-reconcile' | 'close';
+
+/** §5.1 timer 族 → resolved 配置字段单映射（armTimer 延迟与 onTimerFired 的
+ *  timeoutMs 同源——避免两处级联漂移）。 */
+const TIMER_DELAY_FIELD = {
+  open: 'openTimeoutMs',
+  bootstrap: 'bootstrapTimeoutMs',
+  reconcile: 'reconcileTimeoutMs',
+  'periodic-reconcile': 'reconcileIntervalMs',
+  close: 'closeTimeoutMs',
+} as const satisfies Record<TimerKind, keyof ResolvedTimeouts>;
+
+/** issue #256：timer 族超时 → 稳定 cause 单映射（§13.2 `NAMESPACE_TIMEOUT` 本地映射族）。 */
+const TIMER_TIMEOUT_CAUSE: Record<
+  'open' | 'bootstrap' | 'reconcile',
+  ReplicationNamespaceFailedCause
+> = {
+  open: 'open-timeout',
+  bootstrap: 'bootstrap-timeout',
+  reconcile: 'reconcile-timeout',
+};
 
 /** 排队时（caller 同步栈）捕获的代际资源所有权（§D1，issue #171 Scope 2）：
  *  执行期只处置捕获对象——「先捕获、后处置」，迟到续体不得触碰当前代字段。
@@ -184,7 +205,7 @@ export class PeerNamespaceController {
             : session.encodeDiff(remoteSV ?? new Uint8Array(0));
         } catch (err) {
           if (err instanceof RoundAborted) throw err;
-          this.applyOutcome(mapEncodeThrow(this.session));
+          this.applyOutcome(mapEncodeThrow(this.session), 'apply-rejected');
           throw new RoundAborted();
         }
       },
@@ -192,7 +213,7 @@ export class PeerNamespaceController {
         this.applyStep2(update, step2Sequence, syncRoundId),
       onViolation: () => {
         this.sendNsError('SYNC_STATE_VIOLATION');
-        this.finalize('failed');
+        this.finalize('failed', 'protocol-violation');
       },
       onRoundSettled: () => this.onRoundSettled(),
     });
@@ -242,7 +263,7 @@ export class PeerNamespaceController {
       try {
         result = await this.host.registry.open(this.target.localOwner, this.namespaceId);
       } catch (err) {
-        if (!this.isConnectionDead()) this.finalize('failed');
+        if (!this.isConnectionDead()) this.finalize('failed', 'open-failed');
         return;
       }
       if (this.isConnectionDead() || this.host.connectionEpoch() !== epoch) {
@@ -261,7 +282,7 @@ export class PeerNamespaceController {
           });
           return;
         }
-        this.finalize('failed');
+        this.finalize('failed', 'open-failed');
         return;
       }
       this.lease = result.lease;
@@ -275,7 +296,7 @@ export class PeerNamespaceController {
       } catch (err) {
         this.releaseLeaseOrNoop(this.lease);
         this.lease = undefined;
-        this.finalize('failed');
+        this.finalize('failed', 'open-failed');
         return;
       }
       if (this.isConnectionDead() || this.host.connectionEpoch() !== epoch) {
@@ -286,7 +307,7 @@ export class PeerNamespaceController {
       }
       if (replication.state !== 'enabled') {
         // 本地响亮终局（零 wire 帧；不虚假降级为 bootstrap——ADR 0010）
-        this.finalize('failed');
+        this.finalize('failed', 'replication-disabled');
         return;
       }
       this.openDeclaredLocal = true;
@@ -313,7 +334,7 @@ export class PeerNamespaceController {
         // closing → finalize('failed') 保留（sa7-hardening D6：「closing 期迟到 OPEN_OK
         // → finalize + E5 结算」绿灯锚不动）
         this.sendNsError('NAMESPACE_STATE_VIOLATION');
-        this.finalize('failed');
+        this.finalize('failed', 'protocol-violation');
       }
       return;
     }
@@ -321,7 +342,7 @@ export class PeerNamespaceController {
     if (message.mode === 0) {
       if (this.openDeclaredLocal !== false) {
         this.sendNsError('NAMESPACE_STATE_VIOLATION');
-        this.finalize('failed');
+        this.finalize('failed', 'protocol-violation');
         return;
       }
       this.openOkIdentity = {
@@ -339,7 +360,7 @@ export class PeerNamespaceController {
       this.openDeclaredIdentity.replicationEpoch !== message.replicationEpoch
     ) {
       this.sendNsError('NAMESPACE_STATE_VIOLATION');
-      this.finalize('failed');
+      this.finalize('failed', 'protocol-violation');
       return;
     }
     this.openOkIdentity = {
@@ -373,11 +394,11 @@ export class PeerNamespaceController {
         remoteInstanceId: this.host.hubInstanceId,
       });
     } catch {
-      if (!this.isConnectionDead()) this.finalize('failed');
+      if (!this.isConnectionDead()) this.finalize('failed', 'session-open-failed');
       return false;
     }
     if (!result.ok) {
-      if (!this.isConnectionDead()) this.finalize('failed');
+      if (!this.isConnectionDead()) this.finalize('failed', 'session-open-failed');
       return false;
     }
     if (this.isConnectionDead() || this.host.connectionEpoch() !== epoch) {
@@ -416,7 +437,7 @@ export class PeerNamespaceController {
       }
       if (!this.isTerminal()) {
         this.sendNsError('NAMESPACE_STATE_VIOLATION');
-        this.finalize('failed');
+        this.finalize('failed', 'protocol-violation');
       }
       return;
     }
@@ -427,7 +448,7 @@ export class PeerNamespaceController {
       message.replicationEpoch !== expected.replicationEpoch
     ) {
       this.sendNsError('NAMESPACE_STATE_VIOLATION');
-      this.finalize('failed');
+      this.finalize('failed', 'protocol-violation');
       return;
     }
     const detached = new Y.Doc();
@@ -435,7 +456,7 @@ export class PeerNamespaceController {
       Y.applyUpdate(detached, message.snapshot);
     } catch {
       this.sendNsError('BOOTSTRAP_FAILED');
-      this.finalize('failed');
+      this.finalize('failed', 'apply-rejected');
       return;
     }
     void (async () => {
@@ -454,7 +475,7 @@ export class PeerNamespaceController {
       } catch {
         if (!this.isConnectionDead()) {
           this.sendNsError('INTERNAL_ERROR');
-          this.finalize('failed');
+          this.finalize('failed', 'apply-rejected');
         }
         return;
       }
@@ -470,7 +491,7 @@ export class PeerNamespaceController {
       }
       if (!importResult.ok) {
         this.sendNsError('BOOTSTRAP_FAILED');
-        this.finalize('failed');
+        this.finalize('failed', 'apply-refused');
         return;
       }
       this.lease = importResult.lease;
@@ -554,12 +575,12 @@ export class PeerNamespaceController {
     if (!accepted) {
       // 无生命周期/opening/bootstrapping/首轮 reconciling → 真违例（§7.2 收口）
       this.sendNsError('NAMESPACE_STATE_VIOLATION');
-      this.finalize('failed');
+      this.finalize('failed', 'protocol-violation');
       return;
     }
     if (message.update.byteLength > this.host.limits.maxUpdateBytes) {
       this.sendNsError('UPDATE_TOO_LARGE');
-      this.finalize('failed');
+      this.finalize('failed', 'protocol-violation');
       return;
     }
     void this.applyRemoteUpdate(message.update, message.sequence);
@@ -657,7 +678,12 @@ export class PeerNamespaceController {
         terminalState: terminal,
       });
     }
-    this.finalize(terminal);
+    // issue #256：对端 ERROR 驱动的终局以 'remote-error' 标记——与本地失败零重复计数
+    if (terminal === 'failed') {
+      this.finalize('failed', 'remote-error');
+    } else {
+      this.finalize(terminal);
+    }
   }
 
   // ─────────────────────────────── removeTarget / 生命周期矩阵（§13.1） ───────────────────────────────
@@ -1066,7 +1092,7 @@ export class PeerNamespaceController {
   ): Promise<'ok' | 'failed'> {
     const session = this.session;
     if (session === undefined) {
-      if (!this.isTerminal()) this.finalize('failed');
+      if (!this.isTerminal()) this.finalize('failed', 'session-missing');
       return 'failed';
     }
     const epoch = this.host.connectionEpoch(); // B-2d：代际捕获——旧连接的迟到 ACK 不得落新连接
@@ -1086,6 +1112,7 @@ export class PeerNamespaceController {
       if (!result.ok) {
         this.applyOutcome(
           mapSessionRefusal(result.code, this.session, this.runtimeSnapshot(), 'peer'),
+          'apply-refused',
         );
         return 'failed';
       }
@@ -1165,7 +1192,7 @@ export class PeerNamespaceController {
       });
       return 'ok';
     } catch {
-      this.applyOutcome(mapRejection(this.session, this.runtimeSnapshot(), 'peer'));
+      this.applyOutcome(mapRejection(this.session, this.runtimeSnapshot(), 'peer'), 'apply-rejected');
       return 'failed';
     } finally {
       this.pendingApplies.delete(pending);
@@ -1210,20 +1237,37 @@ export class PeerNamespaceController {
     }
   }
 
-  private applyOutcome(mapped: MappingOutcome): void {
+  private applyOutcome(
+    mapped: MappingOutcome,
+    // issue #256：终态原因由调用点提供（拒绝/异常/编码面语义无歧义区分点 = 调用点）；
+    // 仅 failed 终局消费（conflicted/closed 忽略）。
+    cause: ReplicationNamespaceFailedCause,
+  ): void {
     switch (mapped.kind) {
-      case 'wire':
+      case 'wire': {
         this.sendNsError(mapped.code);
-        this.finalize(toFinalState(mapped.terminalState));
+        const final = toFinalState(mapped.terminalState);
+        if (final === 'failed') {
+          this.finalize('failed', cause);
+        } else {
+          this.finalize(final);
+        }
         return;
+      }
       case 'fence':
         // peer 侧防御性对称保留：命中即按 conflicted 终局收口（零 wire）
         this.emitIdentityConflicted('fence'); // PN9：apply 期围栏
         this.finalize('conflicted');
         return;
-      case 'local':
-        this.finalize(toFinalState(mapped.terminalState));
+      case 'local': {
+        const final = toFinalState(mapped.terminalState);
+        if (final === 'failed') {
+          this.finalize('failed', cause);
+        } else {
+          this.finalize(final);
+        }
         return;
+      }
       default: {
         const never: never = mapped;
         void never;
@@ -1248,7 +1292,7 @@ export class PeerNamespaceController {
         // codec 编码超限（编码面抛）：同码命名空间 ERROR + failed（§9.1 注记）
         this.sendNsErrorNoWrap(code);
         if (message.kind !== 'ERROR') this.emitNsErrorSent(code); // PN2：编码面失败族；ERROR 自发射路径防双计
-        this.finalize('failed');
+        this.finalize('failed', 'send-failed');
       }
       return 0;
     }
@@ -1262,14 +1306,40 @@ export class PeerNamespaceController {
     }
   }
 
-  private finalize(state: 'failed' | 'conflicted' | 'closed'): void {
+  private finalize(state: 'failed', cause: ReplicationNamespaceFailedCause, timeoutMs?: number): void;
+  private finalize(state: 'conflicted' | 'closed'): void;
+  private finalize(
+    state: 'failed' | 'conflicted' | 'closed',
+    cause?: ReplicationNamespaceFailedCause,
+    timeoutMs?: number,
+  ): void {
     if (this.isTerminal()) return; // 终态不降级（§12 finalize 同款幂等）
     this.clearAllTimers();
     this.setState(state);
+    // issue #256：failed 终态边沿恰一可诊断原因事件（isTerminal 早退保证终态不降级、
+    // 不重复——closing 期/终态后迟到的 finalize 调用零事件）；决策落定后发射
+    // （setState 之后，§23.4）。
+    if (state === 'failed' && cause !== undefined) {
+      this.emitNamespaceFailed(cause, timeoutMs);
+    }
     // E5 终局收口（SA2 R3 / §3.8 裁决 3）：failed/conflicted 也是收口终态——closeMemo
     // 的事件驱动结算不区分终态种类，一律 settle（AC3b/⑤c/⑤d 回归面已核查为零）。
     this.settleCloseMemo();
     void this.cleanupResources().catch(() => undefined);
+  }
+
+  /** issue #256：namespace-failed（cause 闭联合；observer 缺省零事件构造——
+   *  cause/timeoutMs 实参 = 稳定字面量/resolved 配置字段，无 live 状态读取、零时钟调用）。 */
+  private emitNamespaceFailed(cause: ReplicationNamespaceFailedCause, timeoutMs?: number): void {
+    if (!this.observerOn) return;
+    this.host.emitObserver({
+      type: 'namespace-failed',
+      side: 'peer',
+      ...(cidField(this.host.connectionId())),
+      namespaceId: this.namespaceId,
+      cause,
+      ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+    });
   }
 
   private isTerminal(): boolean {
@@ -1483,16 +1553,7 @@ export class PeerNamespaceController {
 
   private armTimer(kind: TimerKind): void {
     this.clearTimer(kind);
-    const delay =
-      kind === 'open'
-        ? this.host.timeouts.openTimeoutMs
-        : kind === 'bootstrap'
-          ? this.host.timeouts.bootstrapTimeoutMs
-          : kind === 'reconcile'
-            ? this.host.timeouts.reconcileTimeoutMs
-            : kind === 'periodic-reconcile'
-              ? this.host.timeouts.reconcileIntervalMs
-              : this.host.timeouts.closeTimeoutMs;
+    const delay = this.host.timeouts[TIMER_DELAY_FIELD[kind]];
     this.timers[kind] = this.host.timer.setTimeout(() => {
       this.timers[kind] = undefined;
       this.onTimerFired(kind);
@@ -1527,7 +1588,9 @@ export class PeerNamespaceController {
       return;
     }
     // §5.1：timeout 只收口 namespace（零 wire 帧）
-    this.finalize('failed');
+    // issue #256：timer 族超时附稳定原因 + 配置上限（resolved 配置字段读，非 live 状态
+    // 读取/时钟调用）——open/bootstrap/reconcile 三类在单侧日志即可区分。
+    this.finalize('failed', TIMER_TIMEOUT_CAUSE[kind], this.host.timeouts[TIMER_DELAY_FIELD[kind]]);
     // issue #254：open/bootstrap/reconcile 超时 = §13.2 `NAMESPACE_TIMEOUT`
     // （retryable=reconnect）——failed 的既定恢复路径是连接重建（§16「等待连接重建」），
     // 而超时本身不拆连接；target 仍活跃（未 remove）而连接仍存活时，重建触发者只能

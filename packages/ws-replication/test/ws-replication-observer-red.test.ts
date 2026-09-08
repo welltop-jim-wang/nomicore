@@ -1138,7 +1138,7 @@ describe('T9：事件内容安全（safe-field）', () => {
     ['root', 'ROOT-SENTINEL-VALUE'],
   ];
 
-  /** 冻结白名单：逐 type 键集（21 型；键集契约 = 设计 §4.1 + api 型断言共同锁定）。 */
+  /** 冻结白名单：逐 type 键集（22 型；键集契约 = 设计 §4.1 + api 型断言共同锁定）。 */
   const ALLOWED_KEYS: ReadonlyMap<string, ReadonlySet<string>> = new Map([
     ['connection-state-changed', new Set(['type', 'side', 'connectionId', 'from', 'to'])],
     ['connection-backoff-scheduled', new Set(['type', 'side', 'attempt', 'delayMs', 'reason'])],
@@ -1163,6 +1163,9 @@ describe('T9：事件内容安全（safe-field）', () => {
     ['send-resumed', new Set(['type', 'side', 'connectionId', 'bufferedAmount'])],
     ['connection-failed', new Set(['type', 'side', 'connectionId', 'code', 'wsCloseCode'])],
     ['namespace-error', new Set(['type', 'side', 'connectionId', 'namespaceId', 'code', 'direction', 'terminalState'])],
+    // issue #256（append-only 第 22 型）：failed 终态边沿的稳定原因（cause 闭联合 +
+    // timeoutMs 有限数值——仅 timer 族 cause 在场）
+    ['namespace-failed', new Set(['type', 'side', 'connectionId', 'namespaceId', 'cause', 'timeoutMs'])],
     ['identity-conflicted', new Set(['type', 'side', 'connectionId', 'namespaceId', 'via'])],
     // issue #238（append-only 第 21 型）：连接域 event-loop 漂移采样（低频——cadence =
     // liveness pingIntervalMs；无 namespaceId——连接级判别信号）
@@ -1207,7 +1210,9 @@ describe('T9：事件内容安全（safe-field）', () => {
           // issue #238：帧级 sequence（uint32 非负）与四段差值/sendQueueMs/delayMs
           key === 'sequence' || key === 'sendQueueMs' || key === 'queueWaitMs' ||
           key === 'protectedCheckMs' || key === 'liveApplyMs' || key === 'dirtyNotifyMs' ||
-          key === 'delayMs'
+          key === 'delayMs' ||
+          // issue #256：timer 族到期的配置上限读数（有限非负）
+          key === 'timeoutMs'
         ) {
           expect(typeof value === 'number' && Number.isFinite(value) && value >= 0, `${label}: ${event.type}.${key}`).toBe(true);
         }
@@ -1282,7 +1287,7 @@ describe('T9：事件内容安全（safe-field）', () => {
     const all = [...run.hubEvents.events, ...run.peerEvents.events];
     expect(all.length).toBeGreaterThan(20);
     assertSafe(all, 'matrix');
-    // 全部 21 型中可达的 type 都出现（本矩阵覆盖的连接域 + 字节域 + degraded）
+    // 全部 22 型中可达的 type 都出现（本矩阵覆盖的连接域 + 字节域 + degraded）
     const types = new Set(all.map((e) => e.type));
     const expectedTypes = [
       'connection-state-changed', 'channel-state-changed', 'bootstrap-imported',

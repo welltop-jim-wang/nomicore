@@ -28,6 +28,7 @@ import type { DataSenderFacet } from './backpressure.js';
 import type {
   HubConnectionState,
   HubNamespaceState,
+  ReplicationNamespaceFailedCause,
   ReplicationObserverEvent,
   ReplicationTimer,
   ResolvedLimits,
@@ -166,7 +167,7 @@ export class HubNamespaceChannel {
           return out;
         } catch (err) {
           if (err instanceof RoundAborted) throw err;
-          this.applyOutcome(mapEncodeThrow(this.session));
+          this.applyOutcome(mapEncodeThrow(this.session), 'apply-rejected');
           throw new RoundAborted();
         }
       },
@@ -174,7 +175,7 @@ export class HubNamespaceChannel {
         this.applyStep2(update, step2Sequence, syncRoundId),
       onViolation: () => {
         this.sendNsError('SYNC_STATE_VIOLATION');
-        this.finalize('failed');
+        this.finalize('failed', 'protocol-violation');
       },
       onRoundSettled: () => this.onRoundSettled(),
     });
@@ -274,7 +275,7 @@ export class HubNamespaceChannel {
         authz = await this.host.authorize(this.host.peerInstanceId(), this.namespaceId);
       } catch {
         if (this.isOpenAborted()) { this.finishOpenSilently(); return; } // ★ 已静默：不向死连接发 INTERNAL_ERROR
-        this.finishOpenError('INTERNAL_ERROR');
+        this.finishOpenError('INTERNAL_ERROR', 'open-failed');
         return;
       }
       // D-H1（issue #171 §11.2）：authorize 恢复点**不拦截** registry.open——中止判别
@@ -282,7 +283,7 @@ export class HubNamespaceChannel {
       // 取得阶段完整执行，中止判别自 registry.open 恢复点起逐点生效。
       if (!authz.ok || !authz.permissions.read) {
         if (this.isOpenAborted()) { this.finishOpenSilently(); return; } // ★ 同上（未授权不泄露存在性亦适用死连接）
-        this.finishOpenError('NAMESPACE_UNAUTHORIZED');
+        this.finishOpenError('NAMESPACE_UNAUTHORIZED', 'open-failed');
         return;
       }
       let opened: Awaited<ReturnType<NamespaceRegistry['open']>>;
@@ -290,7 +291,7 @@ export class HubNamespaceChannel {
         opened = await this.host.registry.open(authz.localOwner, this.namespaceId);
       } catch {
         if (this.isOpenAborted()) { this.finishOpenSilently(); return; }
-        this.finishOpenError('INTERNAL_ERROR');
+        this.finishOpenError('INTERNAL_ERROR', 'open-failed');
         return;
       }
       if (this.isOpenAborted()) {
@@ -300,7 +301,7 @@ export class HubNamespaceChannel {
       }
       if (!opened.ok) {
         if (this.isOpenAborted()) { this.finishOpenSilently(); return; } // R1 #5：中止 + 拒绝（无资源可回收）
-        this.finishOpenError(opened.code === 'NAMESPACE_NOT_FOUND' ? 'NAMESPACE_NOT_FOUND' : 'INTERNAL_ERROR');
+        this.finishOpenError(opened.code === 'NAMESPACE_NOT_FOUND' ? 'NAMESPACE_NOT_FOUND' : 'INTERNAL_ERROR', 'open-failed');
         return;
       }
       this.lease = opened.lease;
@@ -313,13 +314,13 @@ export class HubNamespaceChannel {
         replication = status.runtime.replication;
       } catch {
         if (this.isOpenAborted()) { this.finishOpenSilently(); return; } // R1 #5：lease 已赋字 → 字段回收
-        this.finishOpenError('INTERNAL_ERROR');
+        this.finishOpenError('INTERNAL_ERROR', 'open-failed');
         return;
       }
       if (this.isOpenAborted()) { this.finishOpenSilently(); return; } // 已赋字：closeSessionAndRelease 兜底回收 this.lease
       if (replication.state !== 'enabled') {
         if (this.isOpenAborted()) { this.finishOpenSilently(); return; } // R1 #5
-        this.finishOpenError('REPLICATION_NOT_ENABLED');
+        this.finishOpenError('REPLICATION_NOT_ENABLED', 'replication-disabled');
         return;
       }
       const hubIdentity = {
@@ -336,12 +337,12 @@ export class HubNamespaceChannel {
       ) {
         if (this.isOpenAborted()) { this.finishOpenSilently(); return; } // R1 #5
         this.emitIdentityConflicted('open-mismatch'); // HB6
-        this.finishOpenError('REPLICATION_ID_MISMATCH');
+        this.finishOpenError('REPLICATION_ID_MISMATCH', 'open-failed');
         return;
       } else if (message.replicationEpoch !== hubIdentity.replicationEpoch) {
         if (this.isOpenAborted()) { this.finishOpenSilently(); return; } // R1 #5
         this.emitIdentityConflicted('open-mismatch'); // HB6
-        this.finishOpenError('REPLICATION_EPOCH_MISMATCH');
+        this.finishOpenError('REPLICATION_EPOCH_MISMATCH', 'open-failed');
         return;
       } else {
         mode = 1;
@@ -354,7 +355,7 @@ export class HubNamespaceChannel {
         });
       } catch {
         if (this.isOpenAborted()) { this.finishOpenSilently(); return; }
-        this.finishOpenError('INTERNAL_ERROR');
+        this.finishOpenError('INTERNAL_ERROR', 'session-open-failed');
         return;
       }
       if (this.isOpenAborted()) {
@@ -366,6 +367,7 @@ export class HubNamespaceChannel {
         if (this.isOpenAborted()) { this.finishOpenSilently(); return; } // R1 #5
         this.finishOpenError(
           sessionResult.code === 'REPLICATION_NOT_ENABLED' ? 'REPLICATION_NOT_ENABLED' : 'INTERNAL_ERROR',
+          sessionResult.code === 'REPLICATION_NOT_ENABLED' ? 'replication-disabled' : 'session-open-failed',
         );
         return;
       }
@@ -407,7 +409,7 @@ export class HubNamespaceChannel {
     }
   }
 
-  private finishOpenError(code: string): void {
+  private finishOpenError(code: string, cause: ReplicationNamespaceFailedCause): void {
     const waiters = this.openWaiters;
     this.openWaiters = [];
     for (const _waiter of waiters) {
@@ -417,6 +419,11 @@ export class HubNamespaceChannel {
     const targetState = toFinalState(terminalStateOf(code));
     if (this.state === 'opening' || !this.isTerminal()) {
       this.setState(targetState);
+      // issue #256：open 阶段 wire ERROR 终局同样登记 failed 原因（恰一——守卫保证仅在
+      // 真实迁移进 failed 时发射；与 namespace-error{sent} 互补：后者计 wire 帧）。
+      if (targetState === 'failed') {
+        this.emitNamespaceFailed(cause);
+      }
     }
     void this.closeSessionAndRelease();
     // §4.3 通知入口 3（R2-M5：函数尾部无条件调用；守卫跳过分支同样走到这里——
@@ -463,20 +470,23 @@ export class HubNamespaceChannel {
       try {
         const session = this.session;
         if (session === undefined) {
-          this.finalize('failed');
+          this.finalize('failed', 'session-missing');
           return;
         }
         // 空 state vector（y-protocols 规范编码 [0]）= 全量快照（§8.1 单帧基线）
         snapshot = session.encodeDiff(new Uint8Array([0]));
       } catch {
-        this.applyOutcome(mapEncodeThrow(this.session));
+        this.applyOutcome(mapEncodeThrow(this.session), 'apply-rejected');
         return;
       }
       if (snapshot.byteLength > this.host.limits.maxBootstrapBytes) {
         // §8 step 2：不分块、不 fallback、零 snapshot 帧（OPEN_OK 已答复——本 ERROR
         // 是 bootstrap 路径的收口信号，直接送达当前连接）
         this.sendNsError('BOOTSTRAP_TOO_LARGE');
-        this.finalize('failed');
+        // issue #256 评审修订：本地出站快照超 maxBootstrapBytes 是**本端**资源超限
+        // （非对端入站违例）——归 send-failed（编码面/出站超限族），防止把 Hub 自身
+        // 资源问题误聚合为对端 protocol-violation。
+        this.finalize('failed', 'send-failed');
         return;
       }
       // §8 step 3（R3/#8）：与 encodeDiff 同一同步段之后从自有 lease status **重读**
@@ -488,11 +498,15 @@ export class HubNamespaceChannel {
         if (status === undefined || status.runtime === null) throw new Error('lease released');
         identity2 = status.runtime.replication;
       } catch {
-        this.finishOpenError('INTERNAL_ERROR');
+        // issue #256 评审修订：OPEN_OK 已发、状态 bootstrapping——此处 lease 重读异常
+        // 不是 open 阶段失败（open-failed 语义不符），归 internal-error（未分类内部失败）。
+        this.finishOpenError('INTERNAL_ERROR', 'internal-error');
         return;
       }
       if (identity2.state !== 'enabled') {
-        this.finishOpenError('INTERNAL_ERROR');
+        // bootstrap 阶段身份重读检出 replication 未启用——cause 如实记
+        // replication-disabled（与 open 阶段检出同值，阶段由状态机上下文区分）。
+        this.finishOpenError('INTERNAL_ERROR', 'replication-disabled');
         return;
       }
       const seq = this.sendChecked({
@@ -517,7 +531,7 @@ export class HubNamespaceChannel {
       void _hubIdentity;
       this.armTimer('bootstrap');
     } catch {
-      this.finalize('failed');
+      this.finalize('failed', 'internal-error');
     }
   }
 
@@ -525,7 +539,7 @@ export class HubNamespaceChannel {
     if (this.state !== 'bootstrapping') {
       if (!this.isTerminal()) {
         this.sendNsError('NAMESPACE_STATE_VIOLATION');
-        this.finalize('failed');
+        this.finalize('failed', 'protocol-violation');
       }
       return;
     }
@@ -579,7 +593,7 @@ export class HubNamespaceChannel {
   onFieldViolation(code: string): void {
     if (this.isQuietState()) return;
     this.sendNsError(code);
-    this.finalize('failed');
+    this.finalize('failed', 'protocol-violation');
   }
 
   onUpdate(message: { update: Uint8Array; sequence: number }): void {
@@ -591,18 +605,18 @@ export class HubNamespaceChannel {
     if (!accepted) {
       // 无生命周期/opening/bootstrapping/首轮 reconciling → 真违例（§11.1/§7.2）
       this.sendNsError('NAMESPACE_STATE_VIOLATION');
-      this.finalize('failed');
+      this.finalize('failed', 'protocol-violation');
       return;
     }
     if (message.update.byteLength > this.host.limits.maxUpdateBytes) {
       this.sendNsError('UPDATE_TOO_LARGE');
-      this.finalize('failed');
+      this.finalize('failed', 'protocol-violation');
       return;
     }
     if (!this.submitPermission) {
       // §11.1 第 2 步：submit 门（UPDATE 专属；Step2 不设门）
       this.sendNsError('NAMESPACE_UNAUTHORIZED');
-      this.finalize('failed');
+      this.finalize('failed', 'protocol-violation');
       return;
     }
     void this.applyRemoteUpdate(message.update, message.sequence);
@@ -666,7 +680,12 @@ export class HubNamespaceChannel {
         terminalState: terminal,
       });
     }
-    this.finalize(terminal);
+    // issue #256：对端 ERROR 驱动的终局以 'remote-error' 标记——与本地失败零重复计数
+    if (terminal === 'failed') {
+      this.finalize('failed', 'remote-error');
+    } else {
+      this.finalize(terminal);
+    }
   }
 
   /** 连接关闭同步静默：先停接纳并摘订阅，再异步 drain/释放。 */
@@ -685,7 +704,7 @@ export class HubNamespaceChannel {
   terminateUnauthorized(): Promise<void> {
     if (this.isQuietState()) return Promise.resolve();
     this.sendNsError('NAMESPACE_UNAUTHORIZED'); // 既有（:770-772）→ namespaceErrorFrame（带 namespaceId）
-    this.finalize('failed'); // 既有（:791-796）：清 timer/终态/收口
+    this.finalize('failed', 'protocol-violation'); // 既有（:791-796）：清 timer/终态/收口
     return this.terminationSettled(); // §5.3
   }
 
@@ -760,7 +779,7 @@ export class HubNamespaceChannel {
     // §12.2 防御分支（理论不可达——bump 槽 E5.5 已同步整替）：disabled/异读 →
     // INTERNAL_ERROR 收口（F7 对齐；不产生 IDENTITY_CHANGED 假码）
     this.sendNsError('INTERNAL_ERROR');
-    this.finalize('failed');
+    this.finalize('failed', 'internal-error');
   }
 
   private onLocalResyncEdge(
@@ -885,7 +904,7 @@ export class HubNamespaceChannel {
   ): Promise<'ok' | 'failed'> {
     const session = this.session;
     if (session === undefined) {
-      if (!this.isTerminal()) this.finalize('failed');
+      if (!this.isTerminal()) this.finalize('failed', 'session-missing');
       return 'failed';
     }
     // §5.7：在调用 applyRemoteUpdate 前采样，完整覆盖同步接纳与 sequencer 排队；
@@ -904,6 +923,7 @@ export class HubNamespaceChannel {
       if (!result.ok) {
         this.applyOutcome(
           mapSessionRefusal(result.code, this.session, this.runtimeSnapshot(), 'hub'),
+          'apply-refused',
         );
         return 'failed';
       }
@@ -965,7 +985,7 @@ export class HubNamespaceChannel {
       });
       return 'ok';
     } catch {
-      this.applyOutcome(mapRejection(this.session, this.runtimeSnapshot(), 'hub'));
+      this.applyOutcome(mapRejection(this.session, this.runtimeSnapshot(), 'hub'), 'apply-rejected');
       return 'failed';
     } finally {
       this.pendingApplies.delete(pending);
@@ -985,18 +1005,34 @@ export class HubNamespaceChannel {
     }
   }
 
-  private applyOutcome(mapped: MappingOutcome): void {
+  private applyOutcome(
+    mapped: MappingOutcome,
+    // issue #256：终态原因由调用点提供；仅 failed 终局消费（conflicted/closed 忽略）。
+    cause: ReplicationNamespaceFailedCause,
+  ): void {
     switch (mapped.kind) {
-      case 'wire':
+      case 'wire': {
         this.sendNsError(mapped.code);
-        this.finalize(toFinalState(mapped.terminalState));
+        const final = toFinalState(mapped.terminalState);
+        if (final === 'failed') {
+          this.finalize('failed', cause);
+        } else {
+          this.finalize(final);
+        }
         return;
+      }
       case 'fence':
         this.oneShotTerminal();
         return;
-      case 'local':
-        this.finalize(toFinalState(mapped.terminalState));
+      case 'local': {
+        const final = toFinalState(mapped.terminalState);
+        if (final === 'failed') {
+          this.finalize('failed', cause);
+        } else {
+          this.finalize(final);
+        }
         return;
+      }
       default: {
         const never: never = mapped;
         void never;
@@ -1037,20 +1073,44 @@ export class HubNamespaceChannel {
           // 防御：ERROR 帧本身编码失败（极小帧，理论不可达）
         }
         if (message.kind !== 'ERROR') this.emitNsErrorSent(code); // HB2：编码面失败族；ERROR 自发射路径防双计
-        this.finalize('failed');
+        this.finalize('failed', 'send-failed');
       }
       return 0;
     }
   }
 
-  private finalize(state: 'failed' | 'conflicted' | 'closed'): void {
+  private finalize(state: 'failed', cause: ReplicationNamespaceFailedCause, timeoutMs?: number): void;
+  private finalize(state: 'conflicted' | 'closed'): void;
+  private finalize(
+    state: 'failed' | 'conflicted' | 'closed',
+    cause?: ReplicationNamespaceFailedCause,
+    timeoutMs?: number,
+  ): void {
     if (this.isTerminal()) return; // 终态不降级
     this.clearAllTimers();
     this.setState(state);
+    // issue #256：failed 终态边沿恰一可诊断原因事件（决策落定后发射；observer 缺省
+    // 零事件构造——cause/timeoutMs 实参 = 稳定字面量/resolved 配置字段）
+    if (state === 'failed' && cause !== undefined) {
+      this.emitNamespaceFailed(cause, timeoutMs);
+    }
     void this.settleClose();
     // §4.3 通知入口 1（R2-M5：函数尾部无条件调用——watchdog / violation /
     // terminateUnauthorized / error-mapping 全部经此；已终态早退情形先前入口已通知）
     this.notifySettled();
+  }
+
+  /** issue #256：namespace-failed（cause 闭联合；observer 缺省零事件）。 */
+  private emitNamespaceFailed(cause: ReplicationNamespaceFailedCause, timeoutMs?: number): void {
+    if (!this.observerOn) return;
+    this.host.emitObserver({
+      type: 'namespace-failed',
+      side: 'hub',
+      ...(cidField(this.host.connectionId())),
+      namespaceId: this.namespaceId,
+      cause,
+      ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+    });
   }
 
   /** issue #174 §4.3：终态一次性通知（记忆位保证每 channel 至多一次；重复通知幂等）。 */
@@ -1239,8 +1299,10 @@ export class HubNamespaceChannel {
       this.timers[kind] = undefined;
       if (this.isTerminal()) return;
       if (kind === 'bootstrap') {
-        // hub 侧 bootstrap timer：测试惰性；生产语义 = ns 收口
-        this.finalize('failed');
+        // hub 侧 bootstrap timer：生产语义 = ns 收口
+        // issue #256：稳定原因 + 配置上限（resolved 配置字段读，非 live 状态读取）；
+        // 回归锚 = ws-replication-issue256-namespace-failed.test.ts 场景 15
+        this.finalize('failed', 'bootstrap-timeout', this.host.timeouts.bootstrapTimeoutMs);
       }
     }, delay);
   }

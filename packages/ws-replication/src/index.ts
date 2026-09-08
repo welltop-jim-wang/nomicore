@@ -53,6 +53,7 @@ export type {
   ReplicationBackoff,
   ReplicationClock,
   ReplicationLimits,
+  ReplicationNamespaceFailedCause,
   ReplicationObserver,
   ReplicationObserverConnectionCode,
   ReplicationObserverEvent,

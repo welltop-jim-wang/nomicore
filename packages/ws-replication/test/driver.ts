@@ -13,13 +13,14 @@ import type {
   PeerConnectionState,
   PeerNamespaceState,
   PeerReplication,
+  ReplicationClock,
   ReplicationLimits,
   ReplicationObserver,
   ReplicationTarget,
   ReplicationTimeouts,
   ReplicationBackoff,
 } from '@nomicore/ws-replication';
-import type { NamespaceOwner } from '@nomicore/namespace-registry';
+import type { NamespaceOwner, NamespaceRegistry } from '@nomicore/namespace-registry';
 import {
   decodeMessage,
   encodeMessage,
@@ -198,6 +199,14 @@ export interface BootOptions {
   readonly hubObserver?: ReplicationObserver;
   /** issue #239 复现 seam：Peer 侧结构化 observer 直通（缺省不注入 = 零事件）。 */
   readonly peerObserver?: ReplicationObserver;
+  /** issue #256 零开销断言 seam：单调时源直通（生产 config `clock?: ReplicationClock`
+   *  同一注入面）——计数 spy 锚定「无 observer 零时钟调用」。 */
+  readonly hubClock?: ReplicationClock;
+  readonly peerClock?: ReplicationClock;
+  /** issue #256 故障注入 seam：registry 包装（open 拒绝/lease 代理/读取计数），
+   *  仅测试面——真实 Registry 行为不变，包装层只做计数或单次故障注入。 */
+  readonly wrapHubRegistry?: (registry: NamespaceRegistry) => NamespaceRegistry;
+  readonly wrapPeerRegistry?: (registry: NamespaceRegistry) => NamespaceRegistry;
 }
 
 export class Run {
@@ -502,13 +511,14 @@ export async function boot(opts: BootOptions = {}): Promise<Run> {
   };
   const hub = (opts.createHub ?? createHubReplication)({
     instanceId: HUB_INSTANCE,
-    registry: hubNode.registry,
+    registry: opts.wrapHubRegistry?.(hubNode.registry) ?? hubNode.registry,
     authorize: authorizer.authorize,
     timer: hubNode.scheduler,
     verifyToken: wrappedVerifier,
     ...(opts.limits !== undefined ? { limits: opts.limits } : {}),
     ...(opts.timeouts !== undefined ? { timeouts: opts.timeouts } : {}),
     ...(opts.hubObserver !== undefined ? { observer: opts.hubObserver } : {}),
+    ...(opts.hubClock !== undefined ? { clock: opts.hubClock } : {}),
   });
 
   const wires: Wire[] = [];
@@ -528,7 +538,7 @@ export async function boot(opts: BootOptions = {}): Promise<Run> {
   const peer = createPeerReplication({
     instanceId: opts.peerInstanceId ?? PEER_INSTANCE,
     hubInstanceId: HUB_INSTANCE,
-    registry: peerNode.registry,
+    registry: opts.wrapPeerRegistry?.(peerNode.registry) ?? peerNode.registry,
     dial,
     timer: peerNode.scheduler,
     targets: [{ namespaceId: nsId, localOwner: PEER_OWNER }],
@@ -538,6 +548,7 @@ export async function boot(opts: BootOptions = {}): Promise<Run> {
     ...(opts.backoff !== undefined ? { backoff: opts.backoff } : {}),
     ...(opts.random !== undefined ? { random: opts.random } : {}),
     ...(opts.peerObserver !== undefined ? { observer: opts.peerObserver } : {}),
+    ...(opts.peerClock !== undefined ? { clock: opts.peerClock } : {}),
   });
 
   const run = new Run(hubNode, peerNode, hub, peer, authorizer, hubFixture, nsId, hubRoot, verifyCalls);
