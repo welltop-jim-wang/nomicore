@@ -114,6 +114,17 @@ export type {
   BoundaryMutationPayload,
 } from './validate-patch.js';
 
+// Issue #272 / ADR-0016：读路径语义 schema 投影解析（公开同步纯函数；namespace-runtime
+// readData 组合消费）。解析语义与写侧路径守卫 drillStep 同构——union 静态 any-member
+// 扩展、Record keyPattern 正则实测（失配与引擎不可判定 fail-closed 收敛 NOT_FOUND）、
+// optional 游走透明展开/返回原样保留、ref 按名保留 + 传递闭包别名表、docs/aliasDocs
+// 三表同构切片；ref 缺失等可信域畸形沿 validate-patch 先例 throw InternalError（不进
+// 结果联合、无顶层 catch）；path 属敌意通道，形状违约经结果联合两枚稳定码结算（path
+// 为调用方数组新鲜副本）。同步、纯函数、零 memo；返回 valueSchema/aliases 与 derived
+// 共享节点（不可变契约），detached 深拷贝属 namespace-runtime 组合边界（ADR-0016）。
+export { resolveSchemaAtPath } from './resolve-schema-at-path.js';
+export type { ReadDataSchemaProjection, ResolveSchemaAtPathResult } from './resolve-schema-at-path.js';
+
 // issue #25 / F1：SchemaSource 接缝（ADR 0005 §1/§2）——FileSchemaSource 阶段态仓内文件源、
 // 方言断言助手与接缝层结构化错误；消费方（F2 生成器 / G dogfood / CI）经接缝取文本。
 export { FileSchemaSource, assertVfslDialect, SchemaSourceError } from './schemasource.js';
