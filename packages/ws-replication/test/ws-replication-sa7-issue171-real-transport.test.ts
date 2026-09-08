@@ -228,7 +228,7 @@ const realTimer: ReplicationTimer = {
   clearTimeout: (handle) => clearTimeout(handle as unknown as number),
 };
 
-/** 计数 timer（RT-F1 watchdog 空转观测：记录每次武装的延迟值）。 */
+/** 计数 timer（RT-F1 watchdog 空转观测：按延迟记录每次武装）。 */
 function makeCountingTimer(record: number[]): ReplicationTimer {
   return {
     setTimeout: (callback, delayMs) => {
@@ -237,6 +237,10 @@ function makeCountingTimer(record: number[]): ReplicationTimer {
     },
     clearTimeout: (handle) => clearTimeout(handle as unknown as number),
   };
+}
+
+function countTimerArms(record: readonly number[], delayMs: number): number {
+  return record.filter((armedDelayMs) => armedDelayMs === delayMs).length;
 }
 
 /** 带 observer 的 peer 节点（lease-released 官方观测面）。 */
@@ -464,12 +468,14 @@ describe('SA7 RT-F1（issue #171，SA4 §4.1）：真实 TCP + 真实 timer 下 
     await sleep(3 * ACK_MS + 60);
     expect(run.leaseReleased, 'deadline/本地 onClose 后仍恰一次 lease-released（零双重释放）').toEqual([0]);
 
-    // ── watchdog 零空转：采样窗口内零新增 timer 武装（泄漏时每 ACK_MS 重武装一次）──
-    const sampleStart = timerArms.length;
+    // ── watchdog 零空转：只统计其固定 ACK_MS 节奏。连接进入 backoff 后会合法武装
+    // backoff/reset timer；把所有 timer 混计会在 ready 持续时间跨过 resetAfterMs 边界时
+    // 产生时序 flaky，无法证明 watchdog 泄漏。──
+    const sampleStart = countTimerArms(timerArms, ACK_MS);
     await sleep(3 * ACK_MS + 60);
     expect(
-      timerArms.length - sampleStart,
-      'deadline 后 watchdog idle 自重武装链必须停止（采样窗口零新增武装）',
+      countTimerArms(timerArms, ACK_MS) - sampleStart,
+      'deadline 后 watchdog idle 自重武装链必须停止（采样窗口零新增 ACK_MS 武装）',
     ).toBe(0);
 
     const after = controllerProjectionOf(run);
