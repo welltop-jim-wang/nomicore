@@ -342,14 +342,18 @@ describe('importDoc 契约（FilePersistence 重启恢复，AC-6）', () => {
 // ═══════════════════════════════ 保持性守卫（基线应绿） ═══════════════════════════════
 
 describe('importDoc 保持性守卫（基线已满足，预期绿）', () => {
-  it('导入不新增跨 owner catalog：A/B 两分区同 docId 各自独立后，删除面仍未扩展（无 list/enumerate 公共方法）', async () => {
+  it('导入不新增跨 owner catalog：A/B 两分区同 docId 各自独立后，未受协调删除/枚举面仍未扩展（无 list/enumerate/removeDoc 公共方法）', async () => {
     const fx = makeMemoryImportFixture();
     const seam = fx.persistence as unknown as Record<string, unknown>;
-    // 0009/0010：Persistence 不提供跨 owner catalog 或 list/enumerate/delete 公共面
+    // 0009/0010：Persistence 不提供跨 owner catalog 或 list/enumerate/裸 removeDoc
+    // 公共面。issue #228（ADR-0006 显式修订节）：deleteDoc 是按 (owner, docId) 的
+    // 受管逻辑删除 seam（typed 错误族 + live-cell 状态机协调 + 幂等 ENOENT 容忍），
+    // 非跨 owner catalog、非 list/enumerate——本守卫的意图面（catalog/枚举/裸删）
+    // 不受影响，deleteDoc 断言自本票起翻转（SA7 动态守卫同款裁决）。
     expect('listDocs' in seam).toBe(false);
     expect('enumerate' in seam).toBe(false);
     expect('removeDoc' in seam).toBe(false);
-    expect('deleteDoc' in seam).toBe(false);
+    expect(typeof (seam as { deleteDoc?: unknown }).deleteDoc).toBe('function'); // 受管 seam 在场
     await fx.dispose();
   });
 });

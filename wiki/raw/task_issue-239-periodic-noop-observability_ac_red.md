@@ -69,7 +69,7 @@ append-only 注册 §23.3 属设计裁决）。
 | safe-digest append-only | hash 字段不强制；若设计落地 hash 必须按 §23.3 append-only 注册 documented safe digest + conformance 深扫（见 §2.3） |
 | observer gating / throw 隔离 | §23.7 conformance 面职责（§2.3），实现须扩展既有 conformance 测试 |
 | 泄漏禁令 | 深扫断言覆盖新增字段路径（§2.2-4） |
-| 不暴露 live Y.Doc（ADR-0012） | 漂移注入用 persistence stub peek 测试面 seam（与 SA5 复现同款），零生产代码改动 |
+| 不暴露 live Y.Doc（ADR-0014） | 漂移注入用 persistence stub peek 测试面 seam（与 SA5 复现同款），零生产代码改动 |
 | 不锁字节数 | §2.3 |
 
 ## 4. 漂移注入机制（探针实证，供后续 SA2/SA3 知悉——非契约）

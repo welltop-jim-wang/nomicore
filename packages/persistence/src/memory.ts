@@ -117,6 +117,21 @@ export class MemoryPersistence implements DocPersistence {
         await options.deleteSnapshot?.(key, signal)
         this.snapshots.delete(key)
       },
+      // issue #228（ADR-0006 修订节）：全副本移除——主 mirror（deleteSnapshot hook
+      // 若接线，纪律同 remove：read hook 接线而无 delete hook → loud 配置门）+ 独立
+      // archiveSnapshots 分区 delete（不经 hook——writeArchive 不经 hook 的分区纪律
+      // 对称）。resolve ⟺ 两处此后均缺席；ENOENT 语义 = Map delete 天然幂等。
+      removeKey: async (key, signal) => {
+        signal.throwIfAborted()
+        if (options.readSnapshot !== undefined && options.deleteSnapshot === undefined) {
+          throw new Error(
+            'MemoryPersistence deleteDoc requires the deleteSnapshot hook when readSnapshot is wired: an external read authority without an external delete path cannot be deleted honestly',
+          )
+        }
+        await options.deleteSnapshot?.(key, signal)
+        this.snapshots.delete(key)
+        this.archiveSnapshots.delete(key)
+      },
     }
     const io = options.wrapIo !== undefined ? options.wrapIo(baseIo) : baseIo
     const core = new PersistenceLifecycle(io, {
@@ -158,6 +173,12 @@ export class MemoryPersistence implements DocPersistence {
     docId: string,
   ): Promise<PersistedIdentityProbeResult> {
     return this.core.readPersistedReplicationIdentity(owner, docId)
+  }
+
+  /** issue #228 逻辑删除委托（ADR-0006 修订节）：主 mirror + 独立 archiveSnapshots
+   *  分区全清（deleteSnapshot hook 纪律同 remove）。 */
+  deleteDoc(owner: User, docId: string): Promise<Readonly<{ ok: true }>> {
+    return this.core.deleteDoc(owner, docId)
   }
 
   saveDoc(handle: DocHandle): Promise<void> {

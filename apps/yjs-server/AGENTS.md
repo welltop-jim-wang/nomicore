@@ -24,6 +24,14 @@ out of their owning packages.
 - Management verbs preserve the documented role gates and orchestration: Hub owns schema/epoch
   changes; Peer reset archives the replica, waits for channel settlement, then re-adds the target.
   Keep `peerOwners` consistent so retries remain reachable after partial failure.
+- Hub owns the terminal-delete verb `delete-namespace` (issue #228): role gate first (peer →
+  `unknown-op`), then argument gate (`invalid-op-args`, zero filesystem touch), known-set gate
+  (known namespaces before the deletion tombstone → `namespace-unknown`), single-flight
+  per-namespace. The orchestration is a compound workflow — `ok:true` means data AND diagnostic
+  logs are both logically deleted within the same reply cycle (ADR-0014-LOG L299); any segment
+  failure returns an honest failure code (`delete-namespace-failed` / `log-delete-failed` with
+  step/errno) and re-entrant retry is the only completion path; the process never exits because
+  of control input.
 - Root-level file persistence acquires the authoritative `<rootDir>/.nomicore-lock/`
   directory with exclusive `mkdir` and publishes `.nomicore-lock.json` as a diagnostic
   mirror; clean shutdown releases the directory, and a shared active root is rejected.

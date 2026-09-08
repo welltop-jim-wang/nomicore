@@ -659,6 +659,9 @@ describe('AC-6 close/fatal 竞态与 Memory persistence 恢复', () => {
     await (fx.reader as unknown as { dispose(): Promise<void> }).dispose();
   });
 
+  // 显式 per-test timeout（SA4 F-7 / SA7-F-1 备案的既有边际预算用例）：全量门禁负载下实测
+  // 6272ms > 默认 5000ms（基线空载即可达 4744ms，SA4 A/B 亲证；隔离复跑恒绿）。提高预算不
+  // 改变任何断言——仅消除门禁被既有负载型超时阻塞（issue #228 AC4 收尾轮，SA10 §7.1）。
   it('persistence-degraded：gate 通过后降级——enable 成功、后续 bump 被 RUNTIME_WRITE_DISABLED 拒绝零写入；恢复后 retry 覆盖、bump 成功；Memory 恢复可见', async () => {
     const fx = makeMemoryStoreFixture();
     const registry1 = makeRegistry(fx.writer);
@@ -705,7 +708,7 @@ describe('AC-6 close/fatal 竞态与 Memory persistence 恢复', () => {
     expect(repStatus(reopened).replicationId).toBe(id0);
     await registry2.shutdown();
     await (fx.reader as unknown as { dispose(): Promise<void> }).dispose();
-  });
+  }, 20_000);
 
   it('fatal committed-not-durable（committed-state recovery，非 File durability recovery）：bump 提交后 notify 失败 → 仅从失败 bump 的同一 live Y.Doc 编码克隆 seed 构造新 generation，facts 保留、bump 至 3；failed notifier persistence 不充当 durable/reopen 前提', async () => {
     // 注释声明：本用例验证的是 **committed-state recovery**——failed bump transaction 的

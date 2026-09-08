@@ -16,9 +16,15 @@
  * - 【红】`ReplicaPersistence` 必须暴露受控复制导入 seam（临时契约名 `importDoc`，
  *   待 SA1 冻结——行为锚：排他创建永久副本、duplicate 稳定分类、永不覆盖/合并）
  *   → 当前类型面无 → 红。
- * - 【绿（保持性守卫）】`DocPersistence` 不暴露未受身份守卫的通用删除/枚举/移动
- *   面（removeDoc/deleteDoc/listDocs/enumerateDocs/moveDoc——ADR 0006 排他纪律
- *   与 ADR 0010「Persistence 不增加跨 owner catalog」）→ 现契约已满足，防回潮。
+ * - 【issue #228（ADR-0006 修订节）】`ReplicaPersistence` 必须暴露逻辑删除 seam
+ *   `deleteDoc(owner, docId): Promise<{ok:true}>`（required 派生面；optional 建模
+ *   保住 13 个既有 stub 绿守卫——与 archiveDoc/importDoc 同款放置先例）。
+ * - 【绿（保持性守卫）】`DocPersistence` 不暴露**未受协调**的通用删除/枚举/移动面
+ *   （removeDoc/listDocs/enumerateDocs/moveDoc——ADR 0006 排他纪律与 ADR 0010
+ *   「Persistence 不增加跨 owner catalog」）。issue #228 的 `deleteDoc` 是 optional
+ *   成员且为受管 seam（typed 错误族 + live-cell 状态机协调 + 幂等 ENOENT 容忍），
+ *   与守卫禁止的裸旁路面正交——守卫按 optional 成员不可满足 required 形状的既有
+ *   语义自动保持绿。
  * - 【绿（保持性守卫）】既有 createDoc/loadDoc/saveDoc 公共面与 DOC_DUPLICATE
  *   稳定错误族不变（导入/归档必须复用而非替换既有排他与错误纪律；optional 成员
  *   下三成员字面量仍合法——零改动）。
@@ -53,12 +59,17 @@ type HasImportDoc<T> = T extends {
 
 type HasUnguardedStoreFace<T> = T extends
   | { readonly removeDoc: unknown }
-  | { readonly deleteDoc: unknown }
   | { readonly listDocs: unknown }
   | { readonly enumerateDocs: unknown }
   | { readonly moveDoc: unknown }
   ? true
   : false;
+
+type HasDeleteDoc<T> = T extends {
+  readonly deleteDoc: (owner: User, docId: string) => Promise<Readonly<{ ok: true }>>;
+}
+  ? true
+  : never;
 
 describe('类型面：ReplicaPersistence 归档 seam（AC-3/AC-5，phase 文档冻结名 archiveDoc；R-2 回流——设计 D-4：DocPersistence 新成员为 optional、required 保证面由派生接口 ReplicaPersistence 表达，锚指派生接口）', () => {
   it('ReplicaPersistence 暴露 archiveDoc(owner, docId, expectedReplicationIdentity)', () => {
@@ -72,8 +83,15 @@ describe('类型面：ReplicaPersistence 归档 seam（AC-3/AC-5，phase 文档�
   });
 });
 
+describe('类型面：issue #228 逻辑删除 seam（ADR-0006 修订节；同款 required 派生面锚）', () => {
+  it('ReplicaPersistence 暴露 deleteDoc(owner, docId): Promise<{ok:true}>（required 面）', () => {
+    const anchored: HasDeleteDoc<ReplicaPersistence> = true;
+    void anchored;
+  });
+});
+
 describe('类型面：Persistence 无未受身份守卫的删除/枚举旁路（AC-2/AC-5 保持性守卫）', () => {
-  it('DocPersistence 无 removeDoc/deleteDoc/listDocs/enumerateDocs/moveDoc 成员', () => {
+  it('DocPersistence 无 removeDoc/listDocs/enumerateDocs/moveDoc 裸旁路成员', () => {
     const guarded: HasUnguardedStoreFace<DocPersistence> extends true ? never : true = true;
     void guarded;
   });

@@ -740,6 +740,9 @@ export interface PersistenceIoFaults {
   /** Next primary-remove rejects with `reason`（R2：归档 remove 段故障注入——归档
    *  提交点已跨过后失败 → relocate-remove committed:true 路径）。 */
   failNextRemove(reason: unknown): void
+  /** issue #228：Next removeKey（deleteDoc 全副本移除）rejects with `reason`
+   *  （epoch 当前 → DocDeleteOperationalError——删除重试收敛路径的确定性故障注入面）。 */
+  failNextRemoveKey(reason: unknown): void
 }
 
 /**
@@ -778,6 +781,7 @@ export function createPersistenceIoFaultSeam(): PersistenceIoFaultSeam {
   let failRead: unknown = NO_FAULT
   let failWrite: unknown = NO_FAULT
   let failRemove: unknown = NO_FAULT
+  let failRemoveKey: unknown = NO_FAULT
   let holdRead: ArmedHold | undefined
   let holdReadValue: Uint8Array | undefined = undefined
   let holdWriteBeforeCommit: ArmedHold | undefined
@@ -787,6 +791,7 @@ export function createPersistenceIoFaultSeam(): PersistenceIoFaultSeam {
     failNextRead(reason) { failRead = reason },
     failNextWrite(reason) { failWrite = reason },
     failNextRemove(reason) { failRemove = reason },
+    failNextRemoveKey(reason) { failRemoveKey = reason },
     holdNextWriteBeforeCommit() {
       const armed = armHold()
       holdWriteBeforeCommit = armed
@@ -881,6 +886,22 @@ export function createPersistenceIoFaultSeam(): PersistenceIoFaultSeam {
       }
       await io.remove!(key, signal)
     },
+    // issue #228：全副本移除（deleteDoc）转发 + removeKey 故障槽（epoch 当前 →
+    // DocDeleteOperationalError 注入面）。内层缺席（旧式 stub io）时**不暴露**
+    // removeKey 成员——能力缺席语义原样透传（lifecycle capability gate 在
+    // deleteDoc 入口 loud 裁决，wrap 层不发明能力、不谎报删除）。
+    ...(io.removeKey !== undefined
+      ? {
+          async removeKey(key: string, signal: AbortSignal) {
+            const failure = failRemoveKey
+            if (failure !== NO_FAULT) {
+              failRemoveKey = NO_FAULT
+              throw failure
+            }
+            await io.removeKey!(key, signal)
+          },
+        }
+      : {}),
   })
 
   return { faults, wrap }

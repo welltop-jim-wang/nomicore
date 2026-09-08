@@ -7,6 +7,9 @@ import {
   DocArchiveOperationalError,
   DocCreateFatalError,
   DocCreateOperationalError,
+  DocDeleteActiveHandleError,
+  DocDeleteFatalError,
+  DocDeleteOperationalError,
   DocDuplicateError,
   DocImportIdentityError,
   DocLoadOperationalError,
@@ -69,6 +72,17 @@ export interface PersistenceIO {
    * archiveDoc 归入 committed:true fatal，重试收敛，§4.5.5）。不触碰归档区。
    */
   remove?(key: string, signal: AbortSignal): Promise<void>
+  /**
+   * issue #228（ADR-0006 修订节）：移除该 key 的**全部持久副本**——主键
+   * `.snapshot` + 同名 `.tmp` + 受控归档位 `{rootDir}/archive/users/{userId}/
+   * {docId}.snapshot`（+ tmp）。resolve ⟺ 主键与归档位此后均缺席；全程 ENOENT
+   * 容忍（fsp.rm force:true 逐处——幂等底座）；reject ⟹ 可能部分完成（删除重试
+   * 收敛——单调性：只前进不回退）。File 顺序：主键先（提交点）、归档位后；
+   * Memory：主 mirror（deleteSnapshot hook 若接线，纪律同 remove）+ 独立
+   * archiveSnapshots 分区 delete。**不复用** 既有 `remove`（归档流程语义 = 仅主键；
+   * 重载它会破坏归档「不触碰归档区」契约）。
+   */
+  removeKey?(key: string, signal: AbortSignal): Promise<void>
 }
 
 export type PersistenceStatus = 'ready' | 'persistence-degraded' | 'disposed'
@@ -122,6 +136,7 @@ type Cell =
   | { state: 'creating'; claim: KeyClaim }
   | { state: 'live'; entry: LiveEntry }
   | { state: 'archiving'; claim: KeyClaim } // Phase 5：归档排他 claim（settle 后置位，commit 段持守）
+  | { state: 'deleting'; claim: KeyClaim } // issue #228：删除排他 claim（settle 后置位，removeKey 段持守）
 
 const HANDLE_OWNER = new WeakMap<PersistenceHandle, PersistenceLifecycle>()
 const RELEASE = new WeakMap<PersistenceLifecycle, (handle: PersistenceHandle) => void>()
@@ -250,6 +265,13 @@ export class PersistenceLifecycle {
         await cell.claim.promise
         continue acquire
       }
+      if (cell?.state === 'deleting') {
+        // issue #228（M1）：删除在途 → 等待 claim 后重评估——删除结算后 key 缺席，
+        // create/import 探读 → 新建（删除后重建 = 新 namespace 的合法语义，非伪
+        // duplicate；绝不因删除在途而制造伪 duplicate，也绝不覆写 deleting cell）。
+        await cell.claim.promise
+        continue acquire
+      }
       if (cell?.state === 'reading') {
         // A pending load may reveal an already committed snapshot. Wait for the
         // evidence before creating: createDoc must never overwrite a document
@@ -359,6 +381,25 @@ export class PersistenceLifecycle {
   }
 
   /**
+   * issue #228 逻辑删除公共入口（ADR-0006 修订节；AD-5）：按 (owner, docId) 删除主键
+   * committed snapshot + 同 key 受控归档位（io.removeKey 全副本清空）；幂等（absent 与
+   * deleted 不可区分）。拒绝分类：live handle → DocDeleteActiveHandleError；运营拒绝 →
+   * DocDeleteOperationalError（重试收敛）；dispose/契约违约 → DocDeleteFatalError。
+   *
+   * 全程 inFlight 记账（与 archiveDoc 同款——dispose 的 allSettled 覆盖删除全程）。
+   * 复活向量封堵：(i) settle 取消全部定时器（未点火）或等待（已点火 in-flight flush）
+   * 后 removeKey——之后无任何定时器/句柄能再写该 key；(ii) cell 已驱逐，新 saveDoc 经
+   * assertOwnedHandle → 拒绝；(iii) 新 loadDoc/createDoc——删除后 key 缺席 →
+   * loadDoc null；createDoc 是新 namespace 的合法重建。
+   */
+  async deleteDoc(owner: User, docId: string): Promise<Readonly<{ ok: true }>> {
+    this.assertDeleteWritable() // 入口 disposed → DocDeleteFatalError('lifecycle-disposed')
+    this.assertDeleteIo() // io capability gate（入口同步段；removeKey 缺席 → bare loud Error）
+    const key = toKey(owner, docId)
+    return this.track(this.runDeleteDoc(key))
+  }
+
+  /**
    * R2 只读 committed-snapshot identity probe（设计 §3.3/§3.3.1）：
    * - 经 io.read 直读已提交主快照（owner 分区 key、abort signal 同款纪律）；
    * - detached 临时 Y.Doc 解码 → META.docId 校验（违约 = corrupt）→ 复制事实
@@ -450,7 +491,10 @@ export class PersistenceLifecycle {
         await cell.read.completion.catch(() => {})
         continue
       }
-      if (cell?.state === 'creating' || cell?.state === 'archiving') {
+      if (cell?.state === 'creating' || cell?.state === 'archiving' || cell?.state === 'deleting') {
+        // deleting（issue #228，M1）：删除在途 → 等待 claim 后重评估——结算后 cell
+        // 清理、主键缺席 → 归档 guard-read 得无 committed snapshot →
+        // DocArchiveDuplicateError（删除后归档 = 从未存在语义，幂等面一致）
         await cell.claim.promise
         continue
       }
@@ -531,6 +575,108 @@ export class PersistenceLifecycle {
   }
 
   /**
+   * 删除主体（issue #228；AD-5）：settle 环 → claim 环 → op 体（removeKey），成功与
+   * 失败路径全部以 identity 守卫清理 deleting cell（镜像 runArchiveDoc 范型）。
+   * 槽内不含同步重 fs（removeKey 经 fsp.rm promise 面）——调用点纪律与
+   * ADR-0014-LOG 首切片 amendment 的「同步重 fs 在 slot 外」不冲突（本 seam 无
+   * 同步 fs 段）。
+   */
+  private async runDeleteDoc(key: string): Promise<Readonly<{ ok: true }>> {
+    const epoch = this.epoch
+    for (;;) {
+      await this.settleEntryForDelete(key)
+      this.assertDeleteWritable() // dispose 竞态收口：settle 苏醒后、置 deleting cell 前重检
+      // （closed → DocDeleteFatalError('lifecycle-disposed')，无 cell 可清理）
+      const cell = this.cells.get(key)
+      if (cell?.state === 'reading') {
+        await cell.read.completion.catch(() => {})
+        continue
+      }
+      if (cell?.state === 'creating' || cell?.state === 'archiving' || cell?.state === 'deleting') {
+        await cell.claim.promise
+        continue
+      }
+      break // cell === undefined
+    }
+    const claim: KeyClaim = { promise: undefined! }
+    this.cells.set(key, { state: 'deleting', claim })
+    const op = (async () => {
+      try {
+        let removePromise: Promise<void>
+        try {
+          // io.removeKey! 非空断言由入口 assertDeleteIo 背书（io 构造期成型不可变）
+          removePromise = this.io.removeKey!(key, this.abortController.signal)
+        } catch (err) {
+          // 同步 throw = PersistenceIO 契约违约（禁同步 throw）→ loud fatal
+          throw new DocDeleteFatalError('adapter-violation', err)
+        }
+        try {
+          await removePromise
+        } catch (err) {
+          // 异步 reject：epoch 当前 → 运营失败（removeKey 全程 ENOENT 容忍——重试
+          // 收敛）；epoch 已终结（dispose 竞态）→ remove-aborted fatal（committed:false）
+          throw this.isCurrent(epoch)
+            ? new DocDeleteOperationalError(err)
+            : new DocDeleteFatalError('remove-aborted', err)
+        }
+        // 成功路径善后（identity 守卫镜像 runArchiveDoc）：绝不误删后来者新 cell
+        const done = this.cells.get(key)
+        if (done?.state === 'deleting' && done.claim === claim) this.cells.delete(key)
+        return Object.freeze({ ok: true as const })
+      } catch (err) {
+        // 失败路径善后（identity 守卫防 ABA；rethrow 原拒绝——分类不变）
+        const cur = this.cells.get(key)
+        if (cur?.state === 'deleting' && cur.claim === claim) {
+          this.cells.delete(key)
+        }
+        throw err
+      }
+    })()
+    claim.promise = op.then(() => undefined, () => undefined)
+    return op
+  }
+
+  /**
+   * 删除 settle 段（issue #228；AD-5 步骤 3 + SA2 M2 次序）：被删除的 doc **不需要**
+   * flush 持久化（与归档的「强制即时 flush」不同——删除语义下 flush 是纯浪费，且
+   * flush-then-remove 窗口更宽）：
+   *  - live 且 handles>0 → DocDeleteActiveHandleError（诚实拒绝，调用方释放后重试）；
+   *  - live 且零 handle：**cancel-then-evict**——先取消全部定时器（debounce/maxDirty/
+   *    retryTimer——含失败 flush 新武装的 retry 回退窗），再驱逐 cell；驱逐镜像
+   *    settleEntryForArchive 的 `entry.doc.destroy()`（内存卫生）；**绝不触发 flush**；
+   *  - flushing === true（在途 flush，已越过入口门会跑完 rename）→ 必须等待其结算
+   *    （经 archiveWaiters 通知面等待；flush().finally 无条件通知），结算后**重入循环**
+   *    重读状态——在途 flush 可能已重武装 debounce/maxDirty（flush finally 的
+   *    reschedule 臂），重入后 cancel-then-evict 吸收（SA2 M2：取消先于驱逐，次序
+   *    倒置 = 定时器在已驱逐 entry 上点火写回 = 复活）。
+   *  dispose 期：同步段 clearTimers + 通知 waiters + cells.clear ⟹ 重读见 cell 缺席
+   *  退出循环 → claim 段以 DocDeleteFatalError('lifecycle-disposed') 收口。
+   */
+  private async settleEntryForDelete(key: string): Promise<void> {
+    for (;;) {
+      const cell = this.cells.get(key)
+      if (cell === undefined || cell.state !== 'live') return // reading/creating/archiving/deleting 由调用环处理
+      const entry = cell.entry
+      if (entry.handles.size > 0) throw new DocDeleteActiveHandleError()
+      if (entry.flushing) {
+        // 在途 flush：等待其结算（含 dispose-abort 轮——通知点 1/2 同款）
+        await new Promise<void>((resolve) => {
+          entry.archiveWaiters.push(resolve)
+        })
+        continue // 重入重读（M2：flush finally 可能已重武装定时器）
+      }
+      // 零 handle、零在途 flush：cancel-then-evict（SA2 M2 次序）
+      this.clearTimers(entry)
+      const now = this.cells.get(key)
+      if (now === cell && now.state === 'live') {
+        this.cells.delete(key)
+        entry.doc.destroy()
+      }
+      return
+    }
+  }
+
+  /**
    * Phase 5 settle 段（§4.5.2）：「无有效 handle / Runtime generation」的完整语义——
    * 零-handle-but-dirty entry 若直接归档，pending flush 会在归档后把主键 snapshot
    * 写回（复活文档 + 击穿后续 importDoc 排他），故把该窗口显式排空：
@@ -577,6 +723,34 @@ export class PersistenceLifecycle {
     }
   }
 
+  /**
+   * issue #228 io capability gate（镜像 assertArchiveIo）：removeKey 缺席 → bare
+   * loud Error（io seam 契约违约通道——与「persistence is disposed」同款非 typed
+   * 通道；不伪装为 operational）。生产 Memory/File 恒具备；13 个旧 stub 永不触达
+   * 删除路径 ⟹ 永不触发 gate ⟹ 零回归。消费编排方（Registry）另有 capability 前置
+   * 门（loud branded fatal，先于一切破坏性动作——双门不冲突：本门保护 lifecycle
+   * 内部不变量，Registry 门保护编排面）。
+   */
+  private assertDeleteIo(): void {
+    if (typeof this.io.removeKey !== 'function') {
+      throw new Error(
+        'persistence adapter 缺少逻辑删除能力（removeKey）——删除编排要求支持 ReplicaPersistence 级 I/O seam',
+      )
+    }
+  }
+
+  /** 删除路径的 disposed 收口（issue #228）：入口与槽内重检点均以 typed
+   *  DocDeleteFatalError('lifecycle-disposed') 结算（与 archive/create 的 bare
+   *  Error 收口有意不同——删除编排方需要 typed 面映射 fatal，见 AD-6 步骤 5）。 */
+  private assertDeleteWritable(): void {
+    if (this.closed) {
+      throw new DocDeleteFatalError(
+        'lifecycle-disposed',
+        new Error('persistence lifecycle is disposed'),
+      )
+    }
+  }
+
   async saveDoc(handle: DocHandle): Promise<void> {
     this.assertWritable()
     const owned = this.assertOwnedHandle(handle)
@@ -603,7 +777,14 @@ export class PersistenceLifecycle {
     // Phase 5（SA2 MEDIUM-3）：archiving 态同样封死——归档在途时 seed 以 cells.set
     // 覆写 archiving cell 会令 relocate 继续 remove 主键而 live entry 仍在
     // （击穿 phase:63 前置「仅在无有效 handle 时执行」）。
-    if (cell?.state === 'reading' || cell?.state === 'creating' || cell?.state === 'archiving') {
+    // issue #228（M1）：deleting 态同款封死——删除在途时 seed 以 cells.set 覆写
+    // deleting cell 会令 removeKey 已结算后 live entry 仍在（内存复活）。
+    if (
+      cell?.state === 'reading' ||
+      cell?.state === 'creating' ||
+      cell?.state === 'archiving' ||
+      cell?.state === 'deleting'
+    ) {
       throw new Error('test seed requires an idle key cell')
     }
     const entry = this.createEntry(owner, docId, key, new Y.Doc())
@@ -678,6 +859,13 @@ export class PersistenceLifecycle {
       if (cell?.state === 'archiving') {
         // Phase 5（§4.5.1）：归档在途 → 等待 claim 后重评估（load 重读 → 归档后得
         // null——「归档后 loadDoc → null」跨实例成立）；绝不因归档在途而制造伪数据。
+        await cell.claim.promise
+        continue
+      }
+      if (cell?.state === 'deleting') {
+        // issue #228（M1）：删除在途 → 等待 claim 后重评估——删除结算后 cell 清理、
+        // key 缺席 → 重读 → null（「删除后 loadDoc → null」）；绝不因删除在途而制造
+        // 伪数据，也绝不覆写 deleting cell。
         await cell.claim.promise
         continue
       }

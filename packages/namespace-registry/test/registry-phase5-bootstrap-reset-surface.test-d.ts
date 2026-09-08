@@ -14,13 +14,16 @@
  *   0010 只称「内部受信任导入/受控复制导入能力」；行为锚：保留 Hub
  *   namespaceId、detached 完整 update 应用、META 复制身份核对先于 persistence
  *   ownership 转移、排他不覆盖不合并）→ 当前类型面无 → 红。
- * - 【绿（保持性守卫）】`NamespaceRegistry` 不暴露通用按 key 管理/删除面
- *   （removeNamespace/deleteNamespace/evict/closeNamespace/forceClose——
- *   ADR 0009 v1 公共面纪律 0009:114：不公开按 key close 或公共 list/entry
- *   status；resetReplica 是 ADR 0010 授权的新编排入口，不是通用管理面）；
- *   普通 create 仍不接受调用方 namespaceId（#131 冻结
- *   `NAMESPACE_CREATE_INVALID_INPUT` 四键输入拒绝——CreateNamespaceInput 恒
- *   三键）→ 现契约已满足。
+ * - 【绿（保持性守卫）】`NamespaceRegistry` 不暴露**通用逐出/按 key 优雅 close/
+ *   list** 面（removeNamespace/evictNamespace/closeNamespace/forceCloseNamespace/
+ *   listNamespaces——ADR 0009 v1 公共面纪律 0009:114：v1 不公开按 key close 或
+ *   公共 list/entry status；resetReplica 是 ADR 0010 授权的新编排入口，不是通用
+ *   管理面）。**issue #228（ADR-0009 显式修订节）**：`deleteNamespace` 是**终态
+ *   删除编排**（Runtime 关闭 + 持久删除 + 不可复活），与排除条款针对的逐出/复用
+ *   语义正交——自本票起从禁词表移出并作为正向 required 锚（语义区分由修订节逐字
+ *   声明）；其余未受协调管理面继续受守卫。普通 create 仍不接受调用方 namespaceId
+ *   （#131 冻结 `NAMESPACE_CREATE_INVALID_INPUT` 四键输入拒绝——CreateNamespaceInput
+ *   恒三键）→ 现契约已满足。
  *
  * 临时形状声明：`expectedLocalIdentity` 参数形状
  * `{ replicationId; replicationEpoch }` 为测试侧结构声明（N-1 待 SA1 定义
@@ -63,13 +66,22 @@ type HasImportReplica<T> = T extends {
 
 type HasGenericKeyManagement<T> = T extends
   | { readonly removeNamespace: unknown }
-  | { readonly deleteNamespace: unknown }
   | { readonly evictNamespace: unknown }
   | { readonly closeNamespace: unknown }
   | { readonly forceCloseNamespace: unknown }
   | { readonly listNamespaces: unknown }
   ? true
   : false;
+
+/** issue #228（ADR-0009 修订节）：终态删除编排 required 面（正向锚）。 */
+type HasDeleteNamespace<T> = T extends {
+  readonly deleteNamespace: (
+    owner: NamespaceOwner,
+    namespaceId: string,
+  ) => Promise<Readonly<{ ok: boolean }>>;
+}
+  ? true
+  : never;
 
 /** 普通 create 恒三键输入（#131 冻结：不带 namespaceId——调用方指定即拒）。 */
 type CreateInputIsThreeKeyed = CreateNamespaceInput extends {
@@ -95,9 +107,14 @@ describe('类型面：NamespaceRegistry resetReplica / importReplica（AC-1/AC-2
 });
 
 describe('类型面：Registry 无通用按 key 管理/删除面（AC-4 保持性守卫，ADR 0009 v1 公共面纪律）', () => {
-  it('NamespaceRegistry 无 removeNamespace/deleteNamespace/evict/closeNamespace/forceClose/listNamespaces 成员', () => {
+  it('NamespaceRegistry 无 removeNamespace/evictNamespace/closeNamespace/forceCloseNamespace/listNamespaces 成员（通用逐出/按 key 优雅 close/list 面——issue #228 起 deleteNamespace 移出禁词表）', () => {
     const guarded: HasGenericKeyManagement<NamespaceRegistry> extends true ? never : true = true;
     void guarded;
+  });
+
+  it('NamespaceRegistry 暴露 deleteNamespace(owner, namespaceId)（issue #228 终态删除编排；ADR-0009 修订节正向锚）', () => {
+    const anchored: HasDeleteNamespace<NamespaceRegistry> = true;
+    void anchored;
   });
 
   it('普通 create 输入恒三键（namespaceId 仅经注入受控 CSPRNG 生成——导入路径不改变 create 接纳）', () => {

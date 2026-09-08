@@ -228,7 +228,7 @@ const realTimer: ReplicationTimer = {
   clearTimeout: (handle) => clearTimeout(handle as unknown as number),
 };
 
-/** 计数 timer（RT-F1 watchdog 空转观测：记录每次武装的延迟值）。 */
+/** 计数 timer（RT-F1 watchdog 空转观测：按延迟记录每次武装）。 */
 function makeCountingTimer(record: number[]): ReplicationTimer {
   return {
     setTimeout: (callback, delayMs) => {
@@ -237,6 +237,10 @@ function makeCountingTimer(record: number[]): ReplicationTimer {
     },
     clearTimeout: (handle) => clearTimeout(handle as unknown as number),
   };
+}
+
+function countTimerArms(record: readonly number[], delayMs: number): number {
+  return record.filter((armedDelayMs) => armedDelayMs === delayMs).length;
 }
 
 /** 带 observer 的 peer 节点（lease-released 官方观测面）。 */
@@ -464,12 +468,14 @@ describe('SA7 RT-F1（issue #171，SA4 §4.1）：真实 TCP + 真实 timer 下 
     await sleep(3 * ACK_MS + 60);
     expect(run.leaseReleased, 'deadline/本地 onClose 后仍恰一次 lease-released（零双重释放）').toEqual([0]);
 
-    // ── watchdog 零空转：采样窗口内零新增 timer 武装（泄漏时每 ACK_MS 重武装一次）──
-    const sampleStart = timerArms.length;
+    // ── watchdog 零空转：只统计其固定 ACK_MS 节奏。连接进入 backoff 后会合法武装
+    // backoff/reset timer；把所有 timer 混计会在 ready 持续时间跨过 resetAfterMs 边界时
+    // 产生时序 flaky，无法证明 watchdog 泄漏。──
+    const sampleStart = countTimerArms(timerArms, ACK_MS);
     await sleep(3 * ACK_MS + 60);
     expect(
-      timerArms.length - sampleStart,
-      'deadline 后 watchdog idle 自重武装链必须停止（采样窗口零新增武装）',
+      countTimerArms(timerArms, ACK_MS) - sampleStart,
+      'deadline 后 watchdog idle 自重武装链必须停止（采样窗口零新增 ACK_MS 武装）',
     ).toBe(0);
 
     const after = controllerProjectionOf(run);
@@ -492,6 +498,16 @@ describe('SA7 RT-F1（issue #171，SA4 §4.1）：真实 TCP + 真实 timer 下 
     await waitUntil(
       'live 期 UPDATE 已上 wire（基线）',
       () => countKind(run.peerSide.sent, 'UPDATE') >= 1,
+      3_000,
+    );
+    // ── wire 静默同步（SA7-F-1/issue #228 AC4 收尾轮修复既有编排竞态）：注入帧序列 =
+    //    接收端已见最大 +1；若基线 UPDATE 的 hub UPDATE_ACK 仍在途（负载下 10ms 轮询间隙
+    //    内可未达），注入的 GOAWAY 会与真实 UPDATE_ACK 同序列竞速 → ACK_STATE_VIOLATION
+    //    → 连接 blocked（SA7 全量运行曾观测 'blocked' vs 'draining'）。先等 hub→peer
+    //    方向 ACK 全部到达（UPDATE_ACK ≥ 已发 UPDATE）再注入——断言与语义零改动。──
+    await waitUntil(
+      `wire 静默：基线 UPDATE 的 UPDATE_ACK 已到达 peer（UPDATE_ACK ${countKind(run.peerSide.received, 'UPDATE_ACK')} ≥ UPDATE ${countKind(run.peerSide.sent, 'UPDATE')}）`,
+      () => countKind(run.peerSide.received, 'UPDATE_ACK') >= countKind(run.peerSide.sent, 'UPDATE'),
       3_000,
     );
 
@@ -539,7 +555,7 @@ describe('SA7 RT-F1（issue #171，SA4 §4.1）：真实 TCP + 真实 timer 下 
     await run.peer.stop();
     await waitUntil('peer stopped', () => run.peer.getConnectionState() === 'stopped', 5_000);
     cleanupQueue.push(() => run.peerSide.socket.destroy());
-  });
+  }, 30_000);
 });
 
 // ═══════════════════════════ RT-C4 / RT-C4b：错配 CLOSE_OK 真 wire 形态 ═══════════════════════════

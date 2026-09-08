@@ -147,3 +147,19 @@ Phase 4使用独立integration PR。实施顺序为Clock capability、Persistenc
 
 1. **internal subpath 值导出扩为两键（§模块 L18 注记）**：`@nomicore/namespace-runtime/internal` 值导出由一键扩为两键——`createNamespaceRuntimeForRegistry`（本文 §模块 冻结 factory，不变）+ `openReplicationSessionCoreForRegistry(runtime, options)`（issue #134：复制会话宿主打开面）。消费边界不变（仍仅 Registry 生产代码，import 图审计谓词 `packages/namespace-registry/src/` 前缀零改动）；主 entry 值导出仍恰 `RuntimeWriteFatalError` 一键（runtime-acceptance-exports-audit 零改动）。
 2. **Lease 代理面与 released 通道表增补（§NamespaceLease L38 注记）**：`NamespaceLease` 增加第十四成员 `openReplicationSession(options)`（授权已在 ADR 0010「NamespaceLease 与 ReplicationSession」L73–79）。released 通道表新增一行：released lease 的 `openReplicationSession` 经返回 Promise 结算 `{ok:false, code:'NAMESPACE_LEASE_RELEASED', message: NAMESPACE_LEASE_RELEASED_MESSAGE}`（与四写同款——resolve 不 reject）。release 同步段调用既有活跃 session 的 `close()`（停接纳 + 退订 + 释放 slot；零新增方法面）；release 不追踪/取消已接纳 apply 槽（本文「release 不追踪」条款对 ReplicationSession 同样成立）。
+
+---
+
+## 修订节：issue #228（单 namespace 终态删除编排 deleteNamespace；ADR-0014-LOG「Host 执行数据删除请求时必须同时调用日志删除能力」的 Registry 半场）
+
+日期：2026-09-07；状态：已接受（演进经 SA8 前置门禁 B1 预授权 + 设计后复审 clear——「扩展冻结 v1 公共接口必须以显式 ADR 修订节备案」通道，先例 #64/#79/#133/#131/#134 同款）。
+
+1. **公共 Interface 增量（§公共 Interface 追加）**：Registry v1 公开面增加 `deleteNamespace(owner, namespaceId): Promise<{ok:true} | {ok:false, code, message}>`——**终态删除编排**（forceRelease 全部未决 lease → cancelIdleArm → close barrier（I2 记账）排空已接纳 sequencer slot → entry 移除 → `persistence.deleteDoc` 逻辑删除主键 committed snapshot 与同 key 受控归档位（ADR-0006 修订节）→ `{ok:true}`）。
+
+2. **与 v1 排除条款的语义区分（逐字声明）**：「v1 不公开 explicit eviction、按 key close」的排除针对**逐出/复用**语义（idle 保留 300s 到期逐出、优雅 close 后重 open 复用同一 namespace 生命周期面）；`deleteNamespace` 是**终态删除**（Runtime 关闭 + 持久删除 + 不可复活——删除后 open → NAMESPACE_NOT_FOUND、importReplica 可重建新 generation），语义正交，不构成对排除条款的违反。本方法仍是唯一按 key 的同步破坏性公共面（v1 不新增 list/entry status/lease count/queue/timer handle/公共 events）。
+
+3. **编排与原子性**：入口同步段停接纳检查（`REGISTRY_NOT_ACCEPTING`）→ 身份文法（`NAMESPACE_INVALID_IDENTITY`，零 entries/carriers/Persistence 访问）→ carrier per-key FIFO 接纳（与 open/create/import/reset 同款串行域——**并发 open 与 delete 在同 key 上严格序列化**：删除槽结算后迟来 open 得 NOT_FOUND，原子性由该串行域成立）。capability 前置门（`typeof persistence.deleteDoc !== 'function'` → loud branded `NamespaceRegistryFatalError('delete', 'lifecycle-slot-internal', false)` + observer `lifecycle-slot-failed`，先于一切破坏性动作——镜像 reset ②）。破坏性段镜像 reset ⑥的**同型减法**（减身份前置、减 reset fence、减 bootstrap）：forceRelease（在途 lease 后续操作得 `NAMESPACE_LEASE_RELEASED`；`forceReleasing` 抑制旗标使 last-release 不武装 idle）→ cancelIdleArm → close admission（I2：先赋值 closePromise 后翻相 closing；settle 双路 removeEntryAfterClose）→ await close。减 reset fence 论证：fence 防「破坏性转变后仍把旧 Runtime 当 live 证据/继续接纳写」；delete 的终态是关闭 + 删除，fence 窗口内新接纳写 slot 被 close barrier 排空且其 dirty 由 persistence settle-for-delete（取消定时器/等待在途 flush，不 flush 已删 doc）吸收——无处需要 fence。Runtime 公共面零改动（ADR-0008 无触碰；close 走既有 `runtime.close()`）。
+
+4. **owner 零存在性泄露与幂等优先**：live entry 的 owner 不符才返回 `NAMESPACE_NOT_FOUND`（镜像 open 第一谓词——不区分「属他人/不存在」）；absent（无 entry 且无数据）对**任意 owner** 返回 `{ok:true}`——**删除幂等优先于存在性回显**，非 Owner 输入零预言边界（该不对称为明示设计裁决）。单调性：删除一旦部分完成，重试只前进不回退（entry 缺席 → deleteDoc ENOENT 容忍重试 → 收敛），无任何路径把「已删」翻回「存在」。
+
+5. **失败与观测**：close 失败 / deleteDoc operational（`DocDeleteOperationalError`）→ `NAMESPACE_DELETE_FAILED`（observer `lifecycle-slot-failed` 记 cause；数据可能仍在——Host tombstone 置位后二次删除走幂等路径收敛）；`DocDeleteFatalError` / 其它 throw → branded fatal（committed:false 恒真——removeKey resolve 后无失败路径）。Registry observer/状态面零新增（`getStatus` 三态不动、不加公共事件——Host 层 `namespace-deleted` 走 app stdout 通道）。

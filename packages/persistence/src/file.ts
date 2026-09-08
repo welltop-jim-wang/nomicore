@@ -73,6 +73,10 @@ export class FilePersistence implements DocPersistence {
       // Phase 5（§4.9）：主键移除（ENOENT 容忍——fsp.rm force:true 幂等底座）；
       // 归档区路径子树分离，结构性不误删。
       remove: (key, signal) => this.removeCommittedSnapshot(key, signal),
+      // issue #228（ADR-0006 修订节）：全副本移除——主键 .snapshot/.tmp 先（提交
+      // 点）、受控归档位 .snapshot/.tmp 后；逐处 fsp.rm force:true（ENOENT 容忍幂等
+      // 底座）；resolve ⟺ 两处此后均缺席；reject ⟹ 可能部分完成（重试收敛）。
+      removeKey: (key, signal) => this.removeKeyCopies(key, signal),
     }
     const io = options.wrapIo !== undefined ? options.wrapIo(baseIo) : baseIo
     this.core = new PersistenceLifecycle(io, {
@@ -119,6 +123,13 @@ export class FilePersistence implements DocPersistence {
   ): Promise<PersistedIdentityProbeResult> {
     this.validateIdentity(owner, docId)
     return await this.core.readPersistedReplicationIdentity(owner, docId)
+  }
+
+  /** issue #228 逻辑删除委托（ADR-0006 修订节）：入口先 validateIdentity（SAFE_PATH_SEGMENT
+   *  双段同款）；主键 .snapshot/.tmp 先、受控归档位 .snapshot/.tmp 后全清（ENOENT 容忍）。 */
+  async deleteDoc(owner: User, docId: string): Promise<Readonly<{ ok: true }>> {
+    this.validateIdentity(owner, docId)
+    return await this.core.deleteDoc(owner, docId)
   }
 
   async saveDoc(handle: DocHandle): Promise<void> {
@@ -186,6 +197,21 @@ export class FilePersistence implements DocPersistence {
     signal.throwIfAborted()
     const { snapshotPath } = this.resolveSnapshotPaths(key)
     await fsp.rm(snapshotPath, { force: true })
+  }
+
+  /** issue #228 全副本移除（ADR-0006 修订节）：主键 .snapshot + .tmp 先（提交点）、
+   *  受控归档位 .snapshot + .tmp 后；逐处 fsp.rm force:true（ENOENT 容忍幂等底座）。
+   *  入口 abort 门（同 writeCommittedSnapshot 纪律）；已进入的 rm 逐处完整执行——
+   *  resolve ⟺ 两处此后均缺席（removeKey 契约）；reject ⟹ 可能部分完成（删除重试
+   *  收敛；单调性：只前进不回退——已删副本不会翻回存在）。 */
+  private async removeKeyCopies(key: string, signal: AbortSignal): Promise<void> {
+    signal.throwIfAborted()
+    const primary = this.resolveSnapshotPaths(key)
+    await fsp.rm(primary.snapshotPath, { force: true })
+    await fsp.rm(primary.tmpPath, { force: true })
+    const archived = this.resolveArchivePaths(key)
+    await fsp.rm(archived.snapshotPath, { force: true })
+    await fsp.rm(archived.tmpPath, { force: true })
   }
 
   private validateIdentity(owner: User, docId: string): void {

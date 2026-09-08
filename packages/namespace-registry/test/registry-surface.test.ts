@@ -270,7 +270,12 @@ describe('模块边界静态守卫（#112 设计 §2.M）：cordis import 白名
   /** 条 2：host 全局 timer API 三正则（transliterate persistence HOST_GLOBAL_TIMER）：
    * ① 裸调用（负向 lookbehind 排除 `scheduler.`/`timer.` 等属性调用与 property-signature
    *    成员位——`readonly setTimeout: (…) => unknown` 因 `:` 阻断 `\s*\(` 不命中）；
-   * ② 显式 `globalThis.…`；③ `Date.now(`。 */
+   * ② 显式 `globalThis.…`；③ `Date.now(`。
+   *
+   * 【issue #226 scheduler 注入】：三正则不含 `setImmediate`，因为它不是计时 API；
+   * diag-pump 通过 `DiagPumpDeps.defer` 消费显式 macrotask capability，Node 适配位于
+   * create-diagnostic.ts。守卫禁令仍针对业务/计时路径对系统 timer 的裸用
+   * （ADR-0009：idle/retention 等必须走注入 scheduler）。 */
   const HOST_GLOBAL_TIMER_BARE = /(?<![\w$.])(?:setTimeout|setInterval|clearTimeout|clearInterval)\s*\(/;
   const HOST_GLOBAL_TIMER_GLOBALTHIS = /\bglobalThis\s*\.\s*(?:setTimeout|setInterval|clearTimeout|clearInterval)\s*\(/;
   const DATE_NOW = /\bDate\s*\.\s*now\s*\(/;

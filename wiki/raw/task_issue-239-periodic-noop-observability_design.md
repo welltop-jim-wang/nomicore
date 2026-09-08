@@ -47,7 +47,7 @@
 | 不给 `update-sent`/`update-applied`/`update-acked`/`bootstrap-*`/`degraded-bypass-applied` 追加新字段 | 混淆面是 sync round 专属（AC 只要求 sync 两型）；append-only 以后可扩 |
 | 不设计任何跨连接/跨重启的 round 关联状态（无全局 round 映射、无持久化字段） | §21：进程重启丢弃 syncRoundId ⇒ 关联域 = 单连接代际（SA8 注记 4） |
 | 不把 `applyEffect` 塞进 session/lease status，不断言 noop round 无 dirty / 不置 unvalidated | ADR-0010 #134 R2-7 正交两维（SA8 注记 1）；`applyEffect` 只否定 SV 推进 |
-| 不暴露 live Y.Doc / raw session；SV 捕获只经 session 受控能力 `encodeStateVector` | ADR-0012 被否决方案；ADR-0010 L81-88 能力词汇 |
+| 不暴露 live Y.Doc / raw session；SV 捕获只经 session 受控能力 `encodeStateVector` | ADR-0014 被否决方案；ADR-0010 L81-88 能力词汇 |
 | 不扩 Runtime capability status；捕获/比较不进 Registry write sequencer 槽 | ADR-0008 L40/L101；§23.4「永不位于 sequencer 槽内」 |
 | 不给默认 metrics 加高基数 label（syncRoundId / hash 不入默认 label） | §23.6 + issue「avoid default metrics label」 |
 

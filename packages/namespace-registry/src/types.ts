@@ -31,6 +31,7 @@
  * 键集 + §2.H shutdown 聚合）。
  */
 import type { Clock } from '@nomicore/clock';
+import type { NamespaceDiagnosticChangeEmitter } from '@nomicore/namespace-diagnostic-log';
 import type { ReadLogicalValueResult } from '@nomicore/doc-runtime';
 import type {
   ActiveSchemaInfo,
@@ -121,6 +122,10 @@ export const NAMESPACE_IMPORT_EXPECTED_IDENTITY_INVALID_MESSAGE =
 // import 侧先例（单一真相源；零插值、零本地复制身份/输入值回显）。
 export const NAMESPACE_RESET_EXPECTED_IDENTITY_INVALID_MESSAGE =
   'NAMESPACE_RESET_EXPECTED_IDENTITY_INVALID: 期望本地复制身份（reset expectedLocalIdentity）不符合安全文法';
+// —— issue #228（ADR-0009 修订节）删除编排增量：稳定 message 单一真相源（零插值、
+//    零 identity/输入值回显——沿既有冻结文本纪律）——
+export const NAMESPACE_DELETE_FAILED_MESSAGE =
+  'NAMESPACE_DELETE_FAILED: namespace 删除编排发生运营故障';
 
 /** 复制身份引用（N-1 冻结形状）：自 @nomicore/persistence 转出（类型别名）。 */
 export type { ReplicationIdentityRef };
@@ -402,6 +407,40 @@ export type ResetReplicaIssue =
 export type ResetReplicaResult =
   | Readonly<{ ok: true }>
   | ResetReplicaIssue;
+
+// —— issue #228 删除编排增量（ADR-0009 修订节；Host namespace 数据删除工作流的
+//    Registry 侧编排 seam——ADR-0014-LOG L299 Host 联动义务的 Registry 半场）——
+
+/**
+ * deleteNamespace 领域窄 issue（issue #228）：common 窄 issue（InvalidIdentityIssue /
+ * RegistryNotAcceptingIssue）与编排专属拒绝（NOT_FOUND / DELETE_FAILED）。
+ * - `NAMESPACE_INVALID_IDENTITY`：owner.userId / namespaceId 不合安全文法（零
+ *   entries/carriers/Persistence 访问——镜像 open 身份门禁）；
+ * - `REGISTRY_NOT_ACCEPTING`：停机竞态（关闭/停止中不接纳删除编排）；
+ * - `NAMESPACE_NOT_FOUND`：**仅 live entry 的 owner 不符**（零存在性泄露——镜像 open
+ *   第一谓词；absent 输入的删除对任意 owner 均 {ok:true}，幂等优先于存在性回显，
+ *   ADR-0009 修订节明示该不对称）；
+ * - `NAMESPACE_DELETE_FAILED`：编排段运营失败（Runtime close 失败 / deleteDoc
+ *   operational——重试收敛；tombstone 置位后二次删除走幂等路径）。
+ * 内部故障经 branded NamespaceRegistryFatalError reject（operation='delete'、
+ * committed:false 恒真——removeKey resolve 后无失败路径）。
+ */
+export type DeleteNamespaceIssue =
+  | InvalidIdentityIssue
+  | RegistryNotAcceptingIssue
+  | Readonly<{
+      ok: false;
+      code: 'NAMESPACE_NOT_FOUND';
+      message: typeof NAMESPACE_NOT_FOUND_MESSAGE;
+    }>
+  | Readonly<{
+      ok: false;
+      code: 'NAMESPACE_DELETE_FAILED';
+      message: typeof NAMESPACE_DELETE_FAILED_MESSAGE;
+    }>;
+
+/** deleteNamespace 结果联合：成功为窄 {ok:true}（absent 与 deleted 不可区分）。 */
+export type DeleteNamespaceResult = Readonly<{ ok: true }> | DeleteNamespaceIssue;
 
 // —— Lease 代理能力的公开 alias（§3.2）：结构性表达 Runtime 能力，不转导 Runtime 名称 ——
 
@@ -685,6 +724,38 @@ export interface NamespaceRegistry {
     namespaceId: string,
     expectedLocalIdentity: ReplicationIdentityRef,
   ): Promise<ResetReplicaResult>;
+  /**
+   * issue #228（ADR-0009 修订节）单 namespace 终态删除编排：关闭（forceRelease +
+   * cancelIdleArm + close barrier 排空）+ Persistence 逻辑删除（`deleteDoc`——
+   * 主键与同 key 受控归档位全清，ADR-0006 修订节）。
+   *
+   * 语义：
+   * - **终态删除 ≠ eviction/按 key close（ADR-0009 v1 排除条款的语义区分）**：删除
+   *   是终态编排（Runtime 关闭 + 持久删除 + 不可复活），排除条款针对逐出/复用语义
+   *   （idle 保留、按 key 优雅 close 后重 open 复用）——两者正交，本方法为公共面
+   *   增量（Host 数据删除工作流的唯一同步路径；Registry 是唯一能同步关闭单
+   *   namespace Runtime 的层——idle 逐出最长 300s、shutdown 是全量操作，均不可用作
+   *   同步回执路径）。
+   * - **carrier per-key 串行**（与 open/create/import/reset 同款 FIFO 域）：并发
+   *   open 与 delete 在同 key 上严格序列化——删除槽结算后迟来 open 得
+   *   NAMESPACE_NOT_FOUND（原子性由该串行域成立）。
+   * - **幂等/零存在性泄露**：live entry 的 owner 不符 → NAMESPACE_NOT_FOUND（镜像
+   *   open 第一谓词——不区分「属他人/不存在」）；absent（无 entry 且无数据）→
+   *   {ok:true}（删除幂等优先于存在性回显；缺席输入对任意 owner 均 ok——非 Owner
+   *   输入零预言边界，ADR-0009 修订节明示）。
+   * - **capability 前置门**：`typeof persistence.deleteDoc !== 'function'` → loud
+   *   branded `NamespaceRegistryFatalError('delete', 'lifecycle-slot-internal', false)`
+   *   + observer `lifecycle-slot-failed`（镜像 reset ②，先于一切破坏性动作）。
+   * - 失败语义：close 失败 / deleteDoc operational → NAMESPACE_DELETE_FAILED（数据
+   *   可能仍在——Host tombstone 置位后二次删除重试收敛）；deleteDoc fatal / 其它
+   *   throw → branded fatal（committed:false 恒真）。成功后该 key 全部未决 lease 已
+   *   失效（forceRelease）、entry 移除、持久副本逻辑删除——随后 open → NOT_FOUND、
+   *   importReplica/bootstrap 可重建。
+   */
+  deleteNamespace(
+    owner: NamespaceOwner,
+    namespaceId: string,
+  ): Promise<DeleteNamespaceResult>;
   /** 同步 Registry 生命周期投影：恒三相（running/shutting-down/stopped）、恒冻结常量。 */
   getStatus(): NamespaceRegistryStatus;
   /**
@@ -706,6 +777,35 @@ export interface NamespaceRegistryShutdownFailure {
   readonly owner: Readonly<{ readonly userId: string }>;
   readonly namespaceId: string;
   readonly cause: unknown;
+}
+
+/**
+ * #150 诊断日志注入 seam（设计 §3.1/§5.1）：emitter 为 ADR-0011「Interface 与 seam」
+ * 节冻结小接口；initStream 为 `docs/adr/0014-vfsl-validated-jsonl-and-framed-sidecar-change-log.md`
+ * 定义的 stream 建立缝（genesis bytes 由 producer 供给、adapter 内部构造
+ * genesis-baseline——CONTEXT.md「producer 只供 bytes」，v1
+ * emission/sink 公共面无 genesis 构造路径）。两成员可选：缺 emitter = 日志禁用（本
+ * Registry 实例零诊断行为）；缺 initStream = 只记录 attempt、不建立 stream（Host
+ * 选择延迟初始化——AC5 场景）。
+ *
+ * #155（§4-D5/§4-D6）增量可选成员 `runtimeEmitterFor`：per-namespace emitter 的
+ * **数据键控**解析（消费方两族：open/create/import 三处 RuntimeFactory 第三参 +
+ * create 槽 initStream 后 #17/#18 的 `emitStreamOutcome`——C1 归因正确性论证）。
+ * 生产供应方（Host 管理器）恒返回良构 emitter（缓存命中/构造成功 → adapter.emitter；
+ * 构造不可用 → 丢弃桩）；返回 undefined / throw / 畸形形状 = seam 违约，被 Registry
+ * 隔离为「无诊断」，绝不影响 open/create/import 结果（ADR-0011 §A；§4-D11）。
+ *
+ * sync-only 契约（SA2 LOW 落实）：成员均为同步调用——`initStream` 必须同步完成并
+ * 返回 void；Host 若以 async 函数实现属违约（floating promise 处置责任在 Host）。
+ * 声明纪律说明：`NamespaceDiagnosticChangeEmitter` 是 ADR-0011「Interface 与 seam」
+ * 节明文要求业务模块依赖的小 emitter 接口（纯数据契约，非运行时对象/租约/文档类型），
+ * 且为纯 `import type`（零运行时绑定、零值级引入诊断包运行图——对齐 #149
+ * namespace-runtime/src/diagnostic.ts 同款先例）。
+ */
+export interface NamespaceRegistryDiagnosticLog {
+  readonly emitter: NamespaceDiagnosticChangeEmitter;
+  readonly initStream?: (namespaceId: string, genesisUpdateBytes: Uint8Array | undefined) => void;
+  readonly runtimeEmitterFor?: (namespaceId: string) => NamespaceDiagnosticChangeEmitter | undefined;
 }
 
 /**
@@ -751,9 +851,9 @@ export interface NamespaceReplicationObservabilityOptions {
  * `NAMESPACE_REGISTRY_SCHEDULER_REQUIRED: …`，零回显传入值；检查顺序在 clock 门禁
  * 之后）。`idleTimeoutMs` 可选（缺省 `DEFAULT_IDLE_TIMEOUT_MS = 300_000`；校验单点
  * resolveIdleTimeoutMs，registry.ts 模块级导出）。仅内部 observer seam 允许经构造
- * options 注入；observer throw 由 Registry 隔离，不得改变公开结果。
- * issue #238：`replicationObservability` 可选（复制观测注入；见上——非 session open
- * 输入，lease 2 键校验冻结面刻意不触碰）。
+ * options 注入；observer throw 由 Registry 隔离，不得改变公开结果。`diagnosticLog`
+ * 可选（#150：缺省 = 日志禁用，行为与既有完全一致；经编程面 options 注入，不经插件
+ * 配置——插件 config 键集冻结）。
  */
 export interface CreateNamespaceRegistryOptions {
   readonly clock: Clock;
@@ -769,6 +869,7 @@ export interface CreateNamespaceRegistryOptions {
    *  检查顺序在 randomBytes 之后）。生产 composition root（phase-5 切片 9）必须显式
    *  传入。 */
   readonly role?: InstanceRole;
-  /** 复制观测注入（issue #238；可选，缺省 dormant——零时钟读/零样本/零调度）。 */
   readonly replicationObservability?: NamespaceReplicationObservabilityOptions;
+  /** #150：可选 namespace 诊断变更日志（缺省 = 日志禁用，行为与既有完全一致）。 */
+  readonly diagnosticLog?: NamespaceRegistryDiagnosticLog;
 }

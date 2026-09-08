@@ -18,7 +18,7 @@
  */
 import { Context } from '@deepseek-ai/cordis';
 import TimerService from '@deepseek-ai/cordis-plugin-timer';
-import { createSystemClockPlugin } from '@nomicore/clock';
+import { createSystemClockPlugin, requireClock } from '@nomicore/clock';
 import { createInstancePlugin } from '@nomicore/instance';
 import {
   createFilePersistencePlugin,
@@ -27,10 +27,12 @@ import {
 import {
   createNamespaceRegistryPlugin,
   requireNomicoreRegistry,
+  type DeleteNamespaceResult,
   type NamespaceLease,
   type NamespaceRegistry,
   type ResetReplicaResult,
 } from '@nomicore/namespace-registry';
+import { deleteNamespaceDiagnosticLog } from '@nomicore/namespace-diagnostic-log';
 import {
   createHubReplicationPlugin,
   createPeerReplicationPlugin,
@@ -53,6 +55,10 @@ import {
 import { createStdoutEventSink, type EventSink } from './lifecycle.js';
 import { createPeerDial } from './transport/ws-client.js';
 import { createHubListenAdapter } from './transport/ws-server.js';
+import {
+  createHostDiagnosticsManager,
+  type HostDiagnosticsManager,
+} from './diagnostics.js';
 
 const OP_TIMEOUT_DEFAULT_MS = 30_000;
 const OP_TIMEOUT_MIN_MS = 1;
@@ -125,12 +131,21 @@ class AppHandle {
   private readonly bindings = new Map<string, Binding>();
   private readonly knownNamespaces = new Map<string, string>(); // nsId → ownerUserId（hub 侧）
   private readonly peerOwners = new Map<string, string>(); // nsId → ownerUserId（peer 侧）
+  /** issue #228（AD-2/G3）：删除 tombstone——nsId → ownerUserId（进程内幂等二删路径；
+   *  O1：hub 单进程生命周期内量级无害、重启清零；provision 重建重填 live 集后
+   *  known-set 优先于 tombstone——N5）。 */
+  private readonly deletedNamespaces = new Map<string, string>();
+  /** issue #228（AD-2/G4）：同 nsId 删除单飞（并发第二请求 await 首请求结算后重走
+   *  幂等路径；finally 清理——O3，绝不缓存旧结果）。 */
+  private readonly deleteInFlight = new Map<string, Promise<Readonly<Record<string, unknown>>>>();
 
   private registry: NamespaceRegistry | undefined;
   private persistenceFiber: { dispose(): Promise<unknown> } | undefined;
   private hubService: HubReplicationService | undefined;
   private peerService: PeerReplicationService | undefined;
   private hubListener: Awaited<ReturnType<HubListenAdapter['listen']>> | undefined;
+  /** #155：Host 诊断管理器（`config.diagnostics.enabled === true` 时构造；D7）。 */
+  private diagnostics: HostDiagnosticsManager | undefined;
 
   private stopPromise: Promise<void> | undefined;
   private bootPromise: Promise<void> | undefined;
@@ -194,10 +209,24 @@ class AppHandle {
     this.persistenceFiber = persistenceFiber;
     await persistenceFiber;
     if (this.stopRequested) return;
+    // #155（§5.2/§5.3）：Host 诊断管理器——本地旁路（不进 SCHEMA/META/ROOT/
+    // snapshot/wire，§6.2 结构性隔离）；clock fiber 就绪后、registry fiber 之前
+    // 构造；`now` = 注入 Clock（禁墙钟）。adapter 构造全部懒发生于 Registry
+    // open/create/import 槽（每 namespace 每进程至多一次，D3 成本注记）。
+    this.diagnostics =
+      this.config.diagnostics?.enabled === true
+        ? createHostDiagnosticsManager(this.config.diagnostics, {
+            sink: this.sink,
+            now: () => requireClock(this.ctx).now(),
+          })
+        : undefined;
     const registryFiber = ctx.plugin(
-      createNamespaceRegistryPlugin({
-        ...(this.config.idleTimeoutMs !== undefined ? { idleTimeoutMs: this.config.idleTimeoutMs } : {}),
-      }),
+      createNamespaceRegistryPlugin(
+        {
+          ...(this.config.idleTimeoutMs !== undefined ? { idleTimeoutMs: this.config.idleTimeoutMs } : {}),
+        },
+        this.diagnostics !== undefined ? { diagnosticLog: this.diagnostics.binding } : {},
+      ),
     );
     await registryFiber;
     if (this.stopRequested) return;
@@ -400,6 +429,12 @@ class AppHandle {
         await this.registry.shutdown();
       }
       this.sink({ event: 'registry-stopped' });
+      // 2b. #155（§5.3/§4-D7）：诊断管理器 O(1) 结构性收口——正序位置（registry
+      // shutdown 完成之后、file 排空窗之前）。Runtime close barrier 排空 ⇒ 全部 slot
+      // 释放后 emit 已发生；close 零 fs、零 await——Registry/Persistence 停机不被日志
+      // 无限延迟（结构性满足；未来 writer queue 切片的 drain 预算另行定义——§4-D7 备案）。
+      this.diagnostics?.close();
+      this.sink({ event: 'diagnostics-closed' });
       // 3. persistence fiber 卸载前：给 file adapter 的排空窗口——adapter 的 dirty
       // flush 走 debounce 调度（saveDoc → maxDirtyMs 内保证提交；dispose() 只
       // abort+destroy，**不冲刷 dirty**，file.ts:27「dispose and drain first」）。
@@ -423,6 +458,12 @@ class AppHandle {
         ...(error instanceof Error ? { message: error.message } : { message: String(error) }),
       });
       throw error;
+    } finally {
+      // #155（i2 修订）：幂等双保险——正序已关时零成本 no-op；registry.shutdown()
+      // throw 路径上也保证 diagnostics `closed` 置位后才 rethrow（adapter 无常驻
+      // fd/队列——实害为零，finally 仅兜底 closed 标志必然置位；顺序语义由正序
+      // 调用承担，finally 不定义顺序）。
+      this.diagnostics?.close();
     }
   }
 
@@ -482,6 +523,8 @@ class AppHandle {
         return this.opBumpEpoch(args);
       case 'reset-replica':
         return this.opResetReplica(args);
+      case 'delete-namespace':
+        return this.opDeleteNamespace(args);
       default:
         return { ok: false, code: 'unknown-op' };
     }
@@ -761,6 +804,115 @@ class AppHandle {
     this.peerOwners.set(namespaceId, ownerUserId);
     this.sink({ event: 'replica-reset', namespaceId });
     return { ok: true };
+  }
+
+  // ─────────────────────────────── issue #228 管理动词：delete-namespace ───────────────────────────────
+
+  /**
+   * issue #228（AD-2/AD-3/AD-8）`delete-namespace` 编排入口。门禁次序（全部先于
+   * 任何 fs 触达）：
+   * - G1 角色门：hub 专属（peer → unknown-op——peer 副本删除属 reset-replica
+   *   archive 语义，不在此面；registry 缺席 → unknown-op，镜像 opReplaceSchema）；
+   * - G2 参数门：namespaceId 不合 `NAMESPACE_ID_PATTERN` → `invalid-op-args`
+   *   （D3：零文件触达——参数门先于一切 IO）；
+   * - G3 known-set 门：knownNamespaces 命中 → 用该 owner；未命中但 tombstone
+   *   （deletedNamespaces）命中 → 用 tombstone owner（D2 幂等二删路径）；两者皆
+   *   未命中 → `namespace-unknown`（镜像 read/verify-write，零 fs）；
+   * - G4 单飞：同 nsId 并发第二请求 await 首请求（含失败）结算后**重走全路径**
+   *   （幂等性由两段删除的幂等性保证——O3，勿缓存旧结果）。
+   * 成功回执 `{ok:true}` ⟺ 同一回执周期内数据与诊断日志均完成逻辑删除（AD-8
+   * 复合谓词）；失败回执稳定码族：`invalid-op-args` / `namespace-unknown` /
+   * `delete-namespace-failed`（registry 数据段窄 issue/fatal 折叠——F2/F3/F4）/
+   * `log-delete-failed`（附 step/errno——F5 值域逐字透传包内 failed 形状，不发明
+   * 第二词表）。进程绝不因控制输入退出（M3：op 全程 try/catch 收编）。
+   */
+  private async opDeleteNamespace(args: Record<string, unknown>): Promise<Readonly<Record<string, unknown>>> {
+    // G1 角色门（hub 专属，peer → unknown-op）
+    if (this.role !== 'hub' || this.registry === undefined) return { ok: false, code: 'unknown-op' };
+    const { namespaceId } = args;
+    // G2 参数门禁 → invalid-op-args
+    if (typeof namespaceId !== 'string' || !NAMESPACE_ID_PATTERN.test(namespaceId)) {
+      return { ok: false, code: 'invalid-op-args' };
+    }
+    // G3 known-set 门（known 优先于 tombstone——N5：provision 重建重填 live 集）
+    const ownerUserId =
+      this.knownNamespaces.get(namespaceId) ?? this.deletedNamespaces.get(namespaceId);
+    if (ownerUserId === undefined) return { ok: false, code: 'namespace-unknown' };
+    // G4 单飞（O3）
+    const prior = this.deleteInFlight.get(namespaceId);
+    if (prior !== undefined) {
+      await prior.catch(() => undefined);
+    }
+    const run = this.runDeleteNamespace(namespaceId, ownerUserId);
+    this.deleteInFlight.set(namespaceId, run);
+    try {
+      return await run;
+    } finally {
+      if (this.deleteInFlight.get(namespaceId) === run) this.deleteInFlight.delete(namespaceId);
+    }
+  }
+
+  /**
+   * issue #228（AD-3）删除编排主体（stdin macrotask；不持任何 write slot/carrier
+   * 槽）。全序：① retirement（封 diag-pump 迟到重建）→ ② 摘除复制暴露（内存同步：
+   * bindings 中以 `\0+namespaceId` 结尾条目全删 + knownNamespaces.delete +
+   * tombstone 置位）→ ③ registry.deleteNamespace（carrier 槽内：关 Runtime →
+   * deleteDoc）→ ④ 诊断日志删除（槽外同步 fs——ADR-0014-LOG amendment 调用点
+   * 纪律；`{ok:true}` 复合谓词）→ ⑤ `namespace-deleted` 事件 + 回执。
+   */
+  private async runDeleteNamespace(
+    namespaceId: string,
+    ownerUserId: string,
+  ): Promise<Readonly<Record<string, unknown>>> {
+    try {
+      // ① retirement 先于一切（否则 registry close drain 期间 diag-pump 仍可重建
+      //    adapter——AD-4：retire 先于步骤 ③ 的 close barrier）
+      this.diagnostics?.retireNamespace(namespaceId);
+      // ② 摘除复制暴露（内存同步，先于 registry 删除——删除期间不得再建立新
+      //    channel/新 open 授权；AD-7）
+      const bindingSuffix = `\u0000${namespaceId}`;
+      for (const bindingKey of this.bindings.keys()) {
+        if (bindingKey.endsWith(bindingSuffix)) this.bindings.delete(bindingKey);
+      }
+      this.knownNamespaces.delete(namespaceId);
+      this.deletedNamespaces.set(namespaceId, ownerUserId);
+      // ③ registry.deleteNamespace（carrier per-key 串行域：forceRelease + close
+      //    drain + deleteDoc；typed 窄 issue / branded fatal 折叠——M3）
+      let deleted: DeleteNamespaceResult;
+      try {
+        deleted = await this.registry!.deleteNamespace({ userId: ownerUserId }, namespaceId);
+      } catch {
+        return { ok: false, code: 'delete-namespace-failed' }; // branded fatal（F4）
+      }
+      if (!deleted.ok) {
+        // 窄 issue 折叠（F2 停机竞态 / F3 close 失败或 deleteDoc operational——数据
+        // 可能仍在；tombstone 已置 → 二删走幂等路径收敛）
+        return { ok: false, code: 'delete-namespace-failed' };
+      }
+      // ④ 诊断日志逻辑删除（enabled:true 才存在日志面——诊断禁用分支：数据删除照常、
+      //    回执 ok:true，AD-2 注记）。同步 fs 在 registry 槽外（调用点纪律）。
+      if (this.config.diagnostics?.enabled === true) {
+        const logResult = deleteNamespaceDiagnosticLog({
+          rootDir: this.config.diagnostics.rootDir,
+          namespaceId,
+        });
+        if (logResult.status === 'failed') {
+          // F5：数据已删、日志可能半态——诚实失败回执（值域逐字透传，N3/O4）
+          return {
+            ok: false,
+            code: 'log-delete-failed',
+            step: logResult.step,
+            errno: logResult.code,
+          };
+        }
+      }
+      // ⑤ 生命周期事件（回执前发射）+ 成功回执
+      this.sink({ event: 'namespace-deleted', namespaceId });
+      return { ok: true };
+    } catch {
+      // M3：进程绝不因控制输入退出——任何意外 throw 收编为稳定失败码
+      return { ok: false, code: 'delete-namespace-failed' };
+    }
   }
 
   // ─────────────────────────────── 内部助手 ───────────────────────────────

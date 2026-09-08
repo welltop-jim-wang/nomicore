@@ -18,8 +18,13 @@ export {
   DocPersistedIdentityProbeCorruptError,
   DocPersistedIdentityProbeFatalError,
   DocPersistedIdentityProbeOperationalError,
+  // issue #228（ADR-0006 修订节）：逻辑删除错误族 + fatal phase 词表
+  DocDeleteActiveHandleError,
+  DocDeleteFatalError,
+  DocDeleteOperationalError,
   type CheckedReplicationIdentity,
   type DocCreateFatalPhase,
+  type DocDeleteFatalPhase,
   type DocPersistedIdentityProbeFatalPhase,
   provideNomicorePersistence,
   requireNomicorePersistence,
