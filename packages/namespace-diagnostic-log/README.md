@@ -321,5 +321,5 @@ deleteNamespaceDiagnosticLog({ rootDir, namespaceId })
   字段），不改业务结果。
 - 存储投影（inline/sidecar/segment/frame/offset/CRC/Base64）归 adapter；emitter 只做
   语义投影。本包内存 adapter 只产出 inline 形状，记录 JSON 与文件 JSONL 逐字段同构。
-- best-effort：进程中断的尝试直接缺失（不落 `result:'unknown'`；ADR 0011/0012 拼接
+- best-effort：进程中断的尝试直接缺失（不落 `result:'unknown'`；ADR 0011/0014 拼接
   结论 `§11-G3`）；replay 不得把缺失推断为任何结局。

@@ -26,6 +26,8 @@ The main entry exports `NamespaceRegistry`, `NamespaceLease`, result/status/erro
 
 `createNamespaceRegistryPlugin({ idleTimeoutMs? })` 只接受可选 `idleTimeoutMs`：它是最后一个 lease 释放后空闲 Runtime 的保留时间，默认值为 `300_000` ms，值必须是 `0..2147483647` 的有限整数，`0` 会立即安排回收。多余键（包括旧 `role`）或非法值会响亮拒绝。核心 `createNamespaceRegistry` 的 `role` option 仍保留给直接/内部测试；生产 Cordis plugin 始终读取 `requireNomicoreInstance(ctx).role`。
 
+可选第二参 `host: { diagnosticLog? }` 是编程面诊断注入通道（ADR 0011）：提供时 Registry 把 namespace create/生命周期结局尽力记入该诊断日志；缺省或形状畸形时 lenient 收敛为不注入，绝不影响 plugin apply。emitter 契约与 File adapter 见 [`@nomicore/namespace-diagnostic-log` README](../namespace-diagnostic-log/README.md)。
+
 ## Cordis service
 
 `createNamespaceRegistryPlugin()` provides `ctx.nomicoreRegistry`. Before publishing it, startup requires all four services and fails loudly when any is absent:
@@ -45,7 +47,7 @@ Expected open/create failures use narrow result issues such as `REGISTRY_NOT_ACC
 
 ## Contract and verification
 
-The normative contract is `CONTEXT.md`, ADR 0009, ADR 0010, and ADR 0014. Production Instance/Registry/transport ownership and the removal of Registry plugin role configuration are defined by ADR 0014. MemoryPersistence and FilePersistence run the same Registry acceptance contract, including FilePersistence restart/reopen.
+The normative contract is `CONTEXT.md`, ADR 0009, ADR 0010, and ADR 0012. Production Instance/Registry/transport ownership and the removal of Registry plugin role configuration are defined by ADR 0012; the optional namespace diagnostic change log wiring (`diagnosticLog`) is defined by ADR 0011 and ADR 0014. MemoryPersistence and FilePersistence run the same Registry acceptance contract, including FilePersistence restart/reopen.
 
 ```sh
 pnpm typecheck

@@ -38,6 +38,10 @@ When integrating Nomicore into an external Cordis host, changing plugin assembly
 
 When changing Hub/Peer replication, authentication, wire frames, connection or namespace state machines, backpressure, reconciliation, or shutdown drain, treat `docs/adr/0010-hub-peer-websocket-ydoc-replication.md` as the architecture and `docs/protocols/instance-replication-v1.md` as the normative wire contract; then read the nearest package or app `AGENTS.md`.
 
+### Namespace diagnostic change log
+
+When changing the diagnostic change log (emission, record schema, adapters, retention, replay, or Registry/Host diagnostic wiring), treat `docs/adr/0011-best-effort-namespace-diagnostic-change-log.md` and `docs/adr/0014-vfsl-validated-jsonl-and-framed-sidecar-change-log.md` as the normative contracts, and read `packages/namespace-diagnostic-log/AGENTS.md` before editing that package. The log is best-effort observability: emit never throws and never changes business outcomes, and lifecycle call sites stay outside the NamespaceRuntime write sequencer slot.
+
 ### Git worktrees
 
 Create all repository worktrees under the repository-local `.worktrees/` directory. Do not create routine worktrees beside the repository or under `/tmp`. See `.agents/WORKTREES.md`.

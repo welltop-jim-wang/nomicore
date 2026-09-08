@@ -168,6 +168,8 @@ Nomicore 不复制 Timer 配置。Persistence、Registry 和 replication plugins
 
 `createNamespaceRegistryPlugin(options)` 的唯一配置域是空闲 Runtime 保留时间；精确类型、默认值和拒绝规则以 [`@nomicore/namespace-registry` README](../../packages/namespace-registry/README.md) 与 `NamespaceRegistryPluginConfig` 类型为准。生产 plugin 从 `ctx.nomicoreInstance.role` 读取角色；旧 `role` 配置键属于未知键并被拒绝。
 
+可选第二参 `host: { diagnosticLog? }` 为宿主启用 namespace 诊断变更日志（ADR-0011 / ADR-0014）：宿主自行构造并持有 adapter（如 `createFileDiagnosticLog`），经该通道注入 Registry；缺省即不启用。日志是 best-effort observability 面，不参与业务提交；宿主负责在停机时于 Registry shutdown 之后、Persistence dispose 之前 O(1) 关闭它。契约与配置以 [`@nomicore/namespace-diagnostic-log` README](../../packages/namespace-diagnostic-log/README.md) 为准。
+
 ### WebSocket replication
 
 Hub 与 Peer 的配置面、adapter overrides、service readiness 与 lifecycle 见 [`@nomicore/ws-replication` README](../../packages/ws-replication/README.md)。Hub plugin 只有在 listener 建立后才发布 ready service；Peer ready 只表示 controller/dial loop 已启动，不表示已连接 Hub 或 namespace 已 live。
