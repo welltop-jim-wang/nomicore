@@ -18,6 +18,13 @@
 import { assertVfslDialect, SchemaSourceError } from './schemasource.js';
 import type { SchemaEnvelope } from './schemasource.js';
 import type { VfslIssue, VfslModule } from './ir.js';
+import {
+  SC1_ID_PREFIX,
+  isInScIdFamily,
+  isCanonicalSc1Id,
+  digestHexFromCanonicalSc1Id,
+} from './schema-id.js';
+import { digestHexFromSemanticFingerprint } from './fingerprint.js';
 
 /** 信封层错误码注册表（ENVELOPE 码空间——与 errors.ts 方言层 21 码互斥，见设计 §6.1）。 */
 export const EnvelopeErrCode = {
@@ -26,6 +33,8 @@ export const EnvelopeErrCode = {
   ENV_3: '3',      // 键类型错误（一条列全）
   ENV_4: '4',      // 未知方言（只读 loud-fail）
   ENV_5: '5',      // 多余键（严格封闭：恰含四键——issue #72 compile 入口专属）
+  ENV_6: '6',      // sc1- 内容寻址 id 非 canonical 格式（issue #266：格式错误稳定码）
+  ENV_7: '7',      // sc1- id digest 与 text 语义指纹不匹配（issue #266：语义不匹配稳定码）
   ENV_100: '100',  // 崩溃边界（意外异常——对齐 parseVfsl E100 兜底口径）
 } as const;
 
@@ -198,6 +207,55 @@ export function dialectIssueOrNull(envelope: SchemaEnvelope): SchemaEnvelopeIssu
 }
 
 /**
+ * #266（D3/D5）：sc1- 格式判定（模块内部，envelopeStrictGate 步骤⑤消费）。
+ * 保留族（`sc<digits>-`，大小写不敏感）内非 canonical → ENV_6 单条；canonical
+ * 放行至语义匹配步；族外（含 `mysc1-provisional-id`、`sc-` 与全部旧式标签）零触及
+ * （旧式兼容路径）。issue 构造经 makeEnvelopeIssue 唯一构造点（单行 sanitizer）。
+ */
+function sc1FormatIssueOrNull(id: string): SchemaEnvelopeIssue | null {
+  if (!isInScIdFamily(id)) {
+    return null; // 旧式路径：零触及
+  }
+  if (isCanonicalSc1Id(id)) {
+    return null; // canonical：放行至语义匹配步
+  }
+  return makeEnvelopeIssue(
+    EnvelopeErrCode.ENV_6,
+    `sc1- 内容寻址 schema ID 非 canonical 格式（期望 sc1- + 52 位小写 RFC 4648 Base32，无 padding、pad 位为零）: ${id}`,
+  );
+}
+
+/**
+ * #266（D5）：sc1- 语义匹配（内部导出，供 index.ts 在 parse 成功后、evaluate 前
+ * 消费——digest 比较需要 text 的规范 IR ⇒ 最早可判定点是 parse 成功）。
+ * 前置：envelopeStrictGate 已放行（族内 id 恒 canonical——非 canonical 已在步骤⑤
+ * 被拒）；此处只须再排除 legacy id（非 `sc1-` 前缀 = 无匹配义务，零触及）。
+ * digest 相等 → null；不等 → ENV_7 单条（单条纪律：#72 envelope 阶段恒单条延伸）。
+ * 前置不变式破坏（门未保证 canonical / 指纹格式异常）→ throw——由调用方
+ * compileSchemaEnvelope 顶层崩溃边界收编 ENV-100（实现缺陷通道，非 ENV_6 静默降级）。
+ */
+export function sc1MismatchIssueOrNull(
+  id: string,
+  semanticFingerprint: string,
+): SchemaEnvelopeIssue | null {
+  if (!id.startsWith(SC1_ID_PREFIX)) {
+    return null; // 旧式 id：无匹配义务
+  }
+  const idDigest = digestHexFromCanonicalSc1Id(id);
+  const expected = digestHexFromSemanticFingerprint(semanticFingerprint);
+  if (idDigest === null || expected === null) {
+    throw new Error('sc1- mismatch 检查前置不变式破坏（门未保证 canonical / 指纹格式异常）');
+  }
+  if (idDigest !== expected) {
+    return makeEnvelopeIssue(
+      EnvelopeErrCode.ENV_7,
+      `sc1- schema ID digest 与 text 语义指纹不匹配（内容寻址校验失败）: id=${idDigest} text=${expected}`,
+    );
+  }
+  return null;
+}
+
+/**
  * H1 编排前缀（形状 → 方言）单点（issue #54 / H3，D5）：validateEnvelopeShape
  * （ENV-1/2/3）→ dialectIssueOrNull（ENV-4）→ 成功交回**恰四键回显信封**（含 text）。
  * parseSchemaEnvelope（index.ts）与 getCompiled 编译缓存前探共用——校验决策点
@@ -219,13 +277,16 @@ export function envelopeTextGate(
 }
 
 /**
- * #72 严格编译前缀单点（形状 → 封闭 → 方言，设计 §3/§5）：validateEnvelopeShape 复用
- * （ENV-1/2/3，同类聚合 + 单读物化）→ 编译入口单 issue 坍缩（首条即全部：ENV-2 优先
- * 于 ENV-3，设计 §3.2）→ 严格封闭 ENV-5（own 字符串键恰为四键，含不可枚举；symbol
- * 键不在数据面，设计 §3.4）→ dialectIssueOrNull 复用（ENV-4）。
- * 与 envelopeTextGate（H1 容忍门）的差异面恰为 #72 的 AC 增量（恰四键 + 恒单条），
+ * #72 严格编译前缀单点（形状 → 封闭 → 方言 → sc1- 格式，设计 §3/§5 + #266 D5）：
+ * validateEnvelopeShape 复用（ENV-1/2/3，同类聚合 + 单读物化）→ 编译入口单 issue
+ * 坍缩（首条即全部：ENV-2 优先于 ENV-3，设计 §3.2）→ 严格封闭 ENV-5（own 字符串键
+ * 恰为四键，含不可枚举；symbol 键不在数据面，设计 §3.4）→ dialectIssueOrNull 复用
+ * （ENV-4）→ sc1FormatIssueOrNull（ENV_6，#266 追加步——方言断言后、parse 前，
+ * 仍在 envelope 相位；族外零触及）。
+ * 与 envelopeTextGate（H1 容忍门）的差异面 = #72 的 AC 增量（恰四键 + 恒单条）+
+ * #266 的 sc1- 格式步（义务面 = 完整 envelope 编译，D6——envelopeTextGate 不加此步），
  * 见设计 §3.5——两门共享底层决策点（validateEnvelopeShape + assertVfslDialect），
- * 差异是两票各自冻结的契约而非实现漂移。
+ * 差异是各票各自冻结的契约而非实现漂移。
  * 纯函数；对抗 getter/Proxy 可抛出——由公共入口（compileSchemaEnvelope）顶层崩溃
  * 边界收编 ENV-100。
  */
@@ -263,6 +324,13 @@ export function envelopeStrictGate(
   const dialect = dialectIssueOrNull(shape.envelope);
   if (dialect !== null) {
     return { ok: false, issues: [{ kind: 'envelope', issue: dialect }] };
+  }
+  // ⑤ sc1- 格式（#266，D5）：方言断言后、parse 前——保留族内非 canonical →
+  //    ENV_6 单条；族外零触及（旧式兼容）。`SC1-` 族 + 未知方言组合：④ 先出
+  //    （未知方言 = 全盘只读拒收，先于对 id 值域的任何裁定）。
+  const sc1Format = sc1FormatIssueOrNull(shape.envelope.id);
+  if (sc1Format !== null) {
+    return { ok: false, issues: [{ kind: 'envelope', issue: sc1Format }] };
   }
   return { ok: true, envelope: shape.envelope };
 }

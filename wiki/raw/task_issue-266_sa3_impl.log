@@ -1,0 +1,89 @@
+# SA3 实现轮验证原始日志 — issue #266（2026-09-08 dispatch sa-8d24cdfe-83e3-4f98-8220-e1e08637cdec, iteration 0, phase implementation）
+
+## 1. 改动文件清单（SA3 实际改动 = 4 项 src + 新建 sc1-failure-order-chain.test.ts + 两处测试侧修订 + 本日志；其余 untracked 为派发前 SA6/上游证据，SA3 未动）
+
+**SA3 生产改动（4 文件）：**
+```
+  M packages/vfsl/src/envelope.ts      # EnvelopeErrCode 追加 ENV_6/ENV_7；sc1FormatIssueOrNull
+                                       # （模块内部）+ sc1MismatchIssueOrNull（内部导出）；
+                                       # envelopeStrictGate 步骤⑤（方言后、parse 前）
+  M packages/vfsl/src/fingerprint.ts   # 追加内部导出 digestHexFromSemanticFingerprint（SA2 F2 异名）
+  M packages/vfsl/src/index.ts         # deriveSchemaIdentity + DeriveSchemaIdentityOk/Result 公共导出；
+                                       # compileSchemaEnvelope ③b（ENV_7，parse 后 evaluate 前）与
+                                       # ⑤ 指纹复用；vfslCrashIssue E100 单点；头注 D6 免责句（SA2 F4）
+  ?? packages/vfsl/src/schema-id.ts    # 新建：SC1_ID_PREFIX/保留族触发器/canonical 判定/Base32 编解码（零 import 叶子）
+```
+
+**SA3 测试侧改动：**
+```
+  ?? packages/vfsl/test/sc1-failure-order-chain.test.ts     # 新建（SA2 C1 顺序链 5 场景 T1.1–T1.5，
+                                                             #   含 evaluate mock；C3 边缘钉位 T2）
+  M  packages/vfsl/test/sc1-schema-id-envelope-validation.test.ts  # 仅锚更名：'sc1-fixture-anchor'
+                                                             #   → 'fixture-anchor'（SA6 修订轮路由，
+                                                             #   SA1 §14.1/SA2 F6/SA8 N3；一处字符串）
+  M  packages/vfsl/test/sc1-base32-ref.ts                   # 仅头注互斥 grep 守卫注记（SA2 F2）
+```
+
+**派发前已存在（SA3 零改动）：** wiki/raw/task_266_dispatch.md、task_issue-266.md、task_issue-266_conflict_report.md、
+task_issue-266_design.md、task_issue-266_design_conflict_recheck.md、task_issue-266_sa2_review.md、
+task_issue-266_sa6_contract.md、task_issue-266_sa6_red.log、task_issue-266_sa6_narrow_red.log、
+packages/vfsl/test/sc1-derive-schema-identity.test.ts（契约文件 2，零改动）。
+```
+
+## 2. 包级 tsc（packages/vfsl）
+```
+tsc exit: 0（零错误）
+```
+
+## 3. 三契约文件（含 evaluate mock 顺序链）
+```
+Testing types with tsc and vue-tsc is an experimental feature.
+Breaking changes might not follow SemVer, please pin Vitest's version when using it.
+
+ RUN  v3.2.7 /home/wangjian/nomicore-fix-issue-266
+
+ ✓ packages/vfsl/test/sc1-schema-id-envelope-validation.test.ts (25 tests) 13ms
+ ✓ packages/vfsl/test/sc1-failure-order-chain.test.ts (7 tests) 6ms
+ ✓ packages/vfsl/test/sc1-derive-schema-identity.test.ts (8 tests) 6ms
+
+ Test Files  3 passed (3)
+      Tests  40 passed (40)
+Type Errors  no errors
+   Start at  23:35:35
+   Duration  786ms (transform 158ms, setup 0ms, collect 275ms, tests 25ms, environment 0ms, prepare 137ms)
+
+```
+
+## 4. packages/vfsl/test/ 全目录（既有 557 绿 + 新契约全绿）
+```
+ ✓ packages/vfsl/test/sc1-derive-schema-identity.test.ts (8 tests) 6ms
+
+ Test Files  31 passed (31)
+      Tests  588 passed (588)
+Type Errors  no errors
+   Start at  23:35:41
+   Duration  53.92s (transform 359ms, setup 0ms, collect 1.16s, tests 48.95s, environment 4ms, prepare 1.28s)
+
+```
+
+## 5. sc1 三文件 3/3 连跑稳定性
+```
+      Tests  40 passed (40)
+Type Errors  no errors
+      Tests  40 passed (40)
+Type Errors  no errors
+      Tests  40 passed (40)
+Type Errors  no errors
+```
+
+## 6. 根门禁 pnpm typecheck
+```
+exit: 0（15 个 tsconfig 全过）
+```
+
+## 7. 根门禁 pnpm test（295 files / 3163 tests）
+```
+ Test Files  295 passed (295)
+      Tests  3163 passed (3163)
+Type Errors  no errors
+```

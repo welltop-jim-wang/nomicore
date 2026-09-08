@@ -30,9 +30,20 @@
  * - `compileSchemaEnvelope(input)` → `{ ok: true; envelope; module; derived;
  *   envelopeFingerprint; semanticFingerprint } | { ok: false; issues:
  *   SchemaParseIssue[] }`——严格封闭编译入口（issue #72 / ADR-0007）：信封恰四键
- *   严格封闭（ENV-5 拒多余键、envelope 阶段恒单条）→ 方言 → parseVfsl → evaluate
- *   → 双指纹（sha256:v1:<hex>，envelope/semantic 域分离）+ 递归深冻结五件套；
- *   同步、纯函数、无缓存（不读不写 compiledCache）、不抛错（顶层崩溃边界，ENV-100）；
+ *   严格封闭（ENV-5 拒多余键、envelope 阶段恒单条）→ 方言 → sc1- 格式（ENV-6，
+ *   #266）→ parseVfsl → sc1- 语义匹配（ENV-7，parse 成功后 evaluate 前，#266）→
+ *   evaluate → 双指纹（sha256:v1:<hex>，envelope/semantic 域分离）+ 递归深冻结
+ *   五件套；同步、纯函数、无缓存（不读不写 compiledCache）、不抛错（顶层崩溃
+ *   边界，ENV-100）；
+ * - `deriveSchemaIdentity(text)` → `{ ok: true; semanticFingerprint; schemaId } |
+ *   { ok: false; issues: VfslIssue[] }`——窄 Module interface（issue #266 / ADR 0015
+ *   L119-125）：VFSL text（上下文常量 lang=vfsl、version=1）→ semantic fingerprint
+ *   + `sc1-` 内容寻址 schema ID；parse-only（复用 parseVfslImplementation + semantic
+ *   指纹单生产者，不跑 evaluate、不读不写 compiledCache、非 REST endpoint）；
+ *   同步、纯函数、不抛错（崩溃边界与 parseVfsl 同款 E100）。
+ *   **sc1- 强校验义务面 = 完整 envelope 编译（compileSchemaEnvelope）；本文件
+ *   头注明示：`parseSchemaEnvelope` / `getCompiled` 不校验 sc1- id（#266 D6——
+ *   保守义务面，扩面须新决策）。**
  * - SchemaSource 接缝（issue #25 / ADR 0005 §1/§2）：`FileSchemaSource` 阶段态仓内
  *   文件源（读 Node fs——引擎包内**唯一**环境绑定面，浏览器/edge 不可用；DocSchemaSource
  *   终态另议）、`assertVfslDialect` 方言断言、`SchemaSourceError` 结构化错误。
@@ -48,14 +59,25 @@
 import { tokenize } from './tokenizer.js';
 import { parseModule, VfslSyntaxError } from './parser.js';
 import { analyze } from './semantic.js';
-import type { ParseVfslResult, VfslModule } from './ir.js';
+import type { ParseVfslResult, VfslIssue, VfslModule } from './ir.js';
 import type { DerivedSchema } from './derived.js';
-import { envelopeTextGate, envelopeStrictGate, vfslIssues, envelopeCrashIssue } from './envelope.js';
+import {
+  envelopeTextGate,
+  envelopeStrictGate,
+  vfslIssues,
+  envelopeCrashIssue,
+  sc1MismatchIssueOrNull,
+} from './envelope.js';
 import type { ParseSchemaEnvelopeResult, SchemaParseIssue } from './envelope.js';
 import type { SchemaEnvelope } from './schemasource.js';
 import { evaluate } from './evaluate.js';
 import { sha256Hex } from './sha256.js';
-import { envelopeFingerprintOf, semanticFingerprintOf } from './fingerprint.js';
+import {
+  envelopeFingerprintOf,
+  semanticFingerprintOf,
+  digestHexFromSemanticFingerprint,
+} from './fingerprint.js';
+import { SC1_ID_PREFIX, sc1IdFromDigestHex } from './schema-id.js';
 
 export type {
   VfslIssue,
@@ -141,6 +163,19 @@ export function parseVfsl(text: string): ParseVfslResult {
   return parseVfslImplementation(text);
 }
 
+/**
+ * VfslIssue 崩溃边界构造（E100 单点，模块内部）：`instanceof` 守卫 + 单行 message。
+ * parseVfslImplementation 与 deriveSchemaIdentity（#266 E100 镜像）共用——两公共
+ * 路径的崩溃边界 message/line/column 语义同款（SA6 H3 对位锚）。
+ */
+function vfslCrashIssue(err: unknown): VfslIssue {
+  return {
+    message: `VFSL-E100: 内部错误（意外异常）: ${err instanceof Error ? err.message : String(err)}`,
+    line: 1,
+    column: 1,
+  };
+}
+
 function parseVfslImplementation(text: string): ParseVfslResult {
   try {
     const tokens = tokenize(text);
@@ -152,16 +187,7 @@ function parseVfslImplementation(text: string): ParseVfslResult {
     }
     // 最终防线（设计 §15.4）：未预期异常 → 结构化 E100（崩溃边界转化，非虚假降级——
     // 不返回 ok:true、错误文本进 message）。该路径命中 = 实现缺陷，不得视为通过。
-    return {
-      ok: false,
-      issues: [
-        {
-          message: `VFSL-E100: 内部错误（意外异常）: ${err instanceof Error ? err.message : String(err)}`,
-          line: 1,
-          column: 1,
-        },
-      ],
-    };
+    return { ok: false, issues: [vfslCrashIssue(err)] };
   }
 }
 
@@ -193,6 +219,55 @@ export function parseSchemaEnvelope(input: unknown): ParseSchemaEnvelopeResult {
     // 崩溃边界（对齐 parseVfsl E100 最终防线，同款）：getter/Proxy 对抗输入等意外
     // 异常 → 独立 envelope issue（ENV-100），绝不外抛。命中 = 实现缺陷/对抗输入。
     return { ok: false, issues: [{ kind: 'envelope', issue: envelopeCrashIssue(err) }] };
+  }
+}
+
+// —— issue #266 / ADR 0015：窄 Module interface（deriveSchemaIdentity）——
+
+/**
+ * deriveSchemaIdentity ok 分支：恰两值 semanticFingerprint + schemaId（AC4 可观察锚
+ * = ok 分支精确键集——无 module/derived/validator/envelope/id 键）。
+ */
+export interface DeriveSchemaIdentityOk {
+  ok: true;
+  /** `sha256:v1:<64 小写 hex>`——ADR 0007 域分离格式（与既有 compileSchemaEnvelope 逐字节同源）。 */
+  semanticFingerprint: string;
+  /** `sc1-<52 位小写 RFC 4648 Base32>`——ADR 0015 冻结格式（同一 digest 的 canonical 编码）。 */
+  schemaId: string;
+}
+
+/** deriveSchemaIdentity 公共返回形状：失败面 = 原生 VfslIssue[]（无 envelope 包装）。 */
+export type DeriveSchemaIdentityResult =
+  | DeriveSchemaIdentityOk
+  | { ok: false; issues: VfslIssue[] };
+
+/**
+ * ADR 0015 L119-125 窄 Module interface（issue #266）：VFSL text（上下文常量
+ * lang=vfsl、version=1）→ semantic fingerprint + `sc1-` schema ID，或 VFSL issues。
+ * parse-only（D2）：复用 parseVfslImplementation（既有崩溃边界 E100 通道）+ 既有
+ * semantic 指纹单生产者——evaluate 不是身份输入，不跑 evaluate；不接收 provisional
+ * envelope ID（单参签名，`fn.length === 1`）；不暴露 IR/派生 schema/validator；
+ * 不是 REST endpoint；不读不写 compiledCache。
+ * 同步、纯函数、确定性、不抛错：顶层崩溃边界与 parseVfsl 同款 E100（vfslCrashIssue
+ * 单点镜像）。诚实边界：derive ok **不**承诺 evaluate ok——可求值性的权威门仍是
+ * 完整 envelope 编译（compileSchemaEnvelope / Registry create 消费）。
+ */
+export function deriveSchemaIdentity(text: string): DeriveSchemaIdentityResult {
+  try {
+    const parsed = parseVfslImplementation(text); // 复用：既有崩溃边界（E100 通道）
+    if (!parsed.ok) {
+      return { ok: false, issues: parsed.issues }; // 原生 VfslIssue[] 零损透传
+    }
+    const semanticFingerprint = semanticFingerprintOf('vfsl', 1, parsed.module);
+    const digest = digestHexFromSemanticFingerprint(semanticFingerprint);
+    if (digest === null) {
+      // 不可达：指纹格式冻结不变式破坏 = 实现缺陷，loud（catch 收编为 E100）
+      throw new Error(`semantic fingerprint 格式异常: ${semanticFingerprint}`);
+    }
+    return { ok: true, semanticFingerprint, schemaId: sc1IdFromDigestHex(digest) };
+  } catch (err) {
+    // 崩溃边界镜像 parseVfsl 最终防线（同款 E100 结构化 issue，vfslCrashIssue 单点）
+    return { ok: false, issues: [vfslCrashIssue(err)] };
   }
 }
 
@@ -306,6 +381,9 @@ export type CompileSchemaEnvelopeResult =
 /**
  * ADR-0007 组合入口：严格封闭信封 → envelope → dialect → parse → evaluate 五阶段
  * 结果联合；成功返回冻结五件套；internal 崩溃边界 ENV-100 绝不外抛。
+ * #266（ADR 0015 L144）追加两判定步：envelope 相位末步 sc1- 格式校验（ENV_6，
+ * 方言断言后、parse 前——envelopeStrictGate 步骤⑤）与 parse 成功后、evaluate 前
+ * 的 sc1- digest 语义匹配（ENV_7，步骤③b）；旧式 id 两路径均零触及（§11）。
  * 同步、纯函数、无缓存（设计 §8：不读不写 compiledCache，每次调用全新对象图）。
  * 编排实现见设计 §5；evaluate 经本文件顶部既有 import 绑定（vi.mock 锚定的模块图边，
  * 设计 §5.3），parse 与 getCompiled 同接缝（parseVfslImplementation）。
@@ -327,19 +405,35 @@ export function compileSchemaEnvelope(input: unknown): CompileSchemaEnvelopeResu
     if (!parsed.ok) {
       return { ok: false, issues: vfslIssues(parsed.issues) };
     }
+    // ③b sc1- 语义匹配（#266，D5）：parse 成功后、evaluate 前——digest 比较需要 text
+    //    规范 IR ⇒ 最早可判定点是 parse 成功；早出省去注定失败的求值、避免文本域 issue
+    //    掩盖信封完整性违规。门步骤⑤已保证族内 id 恒 canonical ⇒ startsWith('sc1-')
+    //    与门判定逻辑等价（SA2 S3），legacy id 零触及（指纹不提前算）。sc1- 路径算一次
+    //    指纹并在成功路径步骤⑤复用（不重算）。
+    let earlySemanticFingerprint: string | undefined;
+    if (gate.envelope.id.startsWith(SC1_ID_PREFIX)) {
+      earlySemanticFingerprint = semanticFingerprintOf(
+        gate.envelope.lang,
+        gate.envelope.version,
+        parsed.module,
+      );
+      const mismatch = sc1MismatchIssueOrNull(gate.envelope.id, earlySemanticFingerprint);
+      if (mismatch !== null) {
+        return { ok: false, issues: [{ kind: 'envelope', issue: mismatch }] };
+      }
+    }
     // ④ evaluate 阶段：经 './evaluate.js' 公共接缝（本文件顶部既有 import 绑定——
     //    vi.mock 锚定的模块图边，设计 §5.3）；失败原生数组零损透传（AC2-evaluate）
     const evaluated = evaluate(parsed.module);
     if (!evaluated.ok) {
       return { ok: false, issues: vfslIssues(evaluated.issues) };
     }
-    // ⑤ 双指纹（成功路径才有；冻结前计算——纯读取，字符串产物冻结无语义）
+    // ⑤ 双指纹（成功路径才有；冻结前计算——纯读取，字符串产物冻结无语义）：
+    //    sc1- 路径复用 ③b 已算指纹；legacy 路径保持现状（此处才算——成本剖面不变）
     const envelopeFingerprint = envelopeFingerprintOf(gate.envelope);
-    const semanticFingerprint = semanticFingerprintOf(
-      gate.envelope.lang,
-      gate.envelope.version,
-      parsed.module,
-    );
+    const semanticFingerprint =
+      earlySemanticFingerprint ??
+      semanticFingerprintOf(gate.envelope.lang, gate.envelope.version, parsed.module);
     // ⑥ 递归深冻结：一趟覆盖容器 + envelope + module + derived（设计 §7）；原地冻结
     //    保持共享引用；每次调用全新对象图（不触碰 compiledCache，设计 §8）
     const result: CompileSchemaEnvelopeOk = {

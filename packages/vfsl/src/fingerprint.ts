@@ -56,3 +56,22 @@ export function semanticFingerprintOf(lang: string, version: number, module: Vfs
   const canonical = JSON.stringify({ domain: SEMANTIC_DOMAIN_TAG, lang, version, module });
   return `${FINGERPRINT_PREFIX}${sha256Hex(canonical as string)}`;
 }
+
+/**
+ * semantic fingerprint → digest hex 段（64 位小写 hex）；非冻结格式返回 null。
+ * #266：`sc1-` payload 提取件——指纹格式知识保持本文件单源（前缀常量 FINGERPRINT_PREFIX
+ * 只在本文件定义，不在 index.ts/schema-id.ts 第二处硬编码）；仅 index.ts（deriveSchema
+ * 编排与 envelope mismatch 检查的构造点宿主）消费，不进入包公共面。
+ *
+ * 互斥 grep 守卫（SA2 F2）：与测试侧独立参考件 `sc1-base32-ref.ts` 的同义导出
+ * `digestHexFromFingerprint` **刻意异名**——防 IDE 自动导入/复制粘贴把测试参考件与
+ * 生产件混淆（两实现共享代码即防循环论证纪律静默失效）。两文件头注相互指认；
+ * 生产侧导出名 = digestHexFromSemanticFingerprint，参考件导出名 = digestHexFromFingerprint。
+ */
+export function digestHexFromSemanticFingerprint(fingerprint: string): string | null {
+  if (!fingerprint.startsWith(FINGERPRINT_PREFIX)) {
+    return null;
+  }
+  const hex = fingerprint.slice(FINGERPRINT_PREFIX.length);
+  return /^[0-9a-f]{64}$/.test(hex) ? hex : null;
+}
