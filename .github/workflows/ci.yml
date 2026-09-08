@@ -9,13 +9,52 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  # 单元测试分片总数。GitHub Actions 的 matrix 不支持变量展开，
+  # 修改此处时必须同步 test 作业的 matrix.shard 列表。
+  SHARD_COUNT: 6
+
 jobs:
+  # tsc 全量类型检查 + *.test-d.ts 类型检查测试：均为编译期产物，与 Node 版本无关，
+  # 单跑一份（取最低支持版本 Node 20），不再随 test 矩阵重复执行。
+  typecheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        # 版本取自根 package.json 的 packageManager 字段
+
+      - name: Install Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck (tsc)
+        run: pnpm typecheck
+
+      # 类型检查测试（*.test-d.ts）在此集中执行一次；test 分片作业用
+      # --typecheck.enabled=false 关掉，避免每个分片重复全量 tsc。
+      - name: Typecheck tests (*.test-d.ts)
+        run: NODE_OPTIONS=--conditions=nomicore-source pnpm exec vitest run --typecheck.only --passWithNoTests=false
+
+  # 单元测试：scripts/ci-test-shard.mjs 按 .github/ci/test-durations.json 的历史耗时
+  # 做 LPT 贪心装箱，把全部 *.test.ts 均分成 SHARD_COUNT 片（当前每片约 80s），
+  # Node 20/24 × 6 片并行。文件列表由磁盘枚举决定，新测试文件自动落入某片，
+  # 权重表漂移只影响均衡，不会漏跑。
   test:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         node: [20, 24]
+        # 与顶层 env.SHARD_COUNT 保持同步（matrix 不支持变量展开）
+        shard: [1, 2, 3, 4, 5, 6]
     steps:
       - uses: actions/checkout@v5
 
@@ -32,11 +71,34 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Typecheck
-        run: pnpm typecheck
+      # 空分片 = 分片脚本损坏，test -n 响亮失败而非静默假绿；
+      # --passWithNoTests=false 防文件过滤全部失配后的假绿。
+      - name: Test (shard ${{ matrix.shard }}/${{ env.SHARD_COUNT }})
+        run: |
+          files=$(node scripts/ci-test-shard.mjs ${{ matrix.shard }} ${{ env.SHARD_COUNT }})
+          test -n "$files"
+          NODE_OPTIONS=--conditions=nomicore-source pnpm exec vitest run $files --typecheck.enabled=false --passWithNoTests=false
 
-      - name: Test
-        run: pnpm test
+  # 独立可见的契约门禁（原 test 作业内的显式步骤，语义与注释保持不变）。
+  # 这些文件同时也在 test 分片的覆盖范围内，此处冗余执行为的是在工作流文件与
+  # 检查列表中保持单独可见。
+  contract-gates:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        # 版本取自根 package.json 的 packageManager 字段
+
+      - name: Install Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
 
       # Issue #56: make the persistence contract's Cordis service registration,
       # schedule defaults, and clock seam independently visible in CI.
@@ -55,16 +117,53 @@ jobs:
 
       # PR #84 owner review（issue #74 修订轮）：materializeRoot 专项存在性门禁——防测试
       # 文件被删/改名/未收集后静默假绿（vitest.config 默认 passWithNoTests=true）；
-      # --typecheck 同步覆盖测试文件类型面（与 persistence-contract 门禁 L43-44 同款）。
+      # --typecheck 同步覆盖测试文件类型面（与 persistence-contract 门禁同款）。
       - name: Materialize root tests
         run: pnpm exec vitest run packages/doc-runtime/test/materialize-root.test.ts --typecheck --passWithNoTests=false
 
-      # AC4（ADR 0005 §4）：全量重新生成 → 与仓内生成物逐字节 diff。
-      # 源漂移（schema 改了没重新生成）与生成器漂移（codegen 逻辑变了）双抓——
-      # 纯哈希比对抓不到后者，故必须全量重生成再 diff。
-      # 零领域集 = 响亮失败（exit 2，cli.ts §5.5）：防 domains/ 被误删/改名后的回归掩蔽。
+  # AC4（ADR 0005 §4）：全量重新生成 → 与仓内生成物逐字节 diff。
+  # 源漂移（schema 改了没重新生成）与生成器漂移（codegen 逻辑变了）双抓——
+  # 纯哈希比对抓不到后者，故必须全量重生成再 diff。
+  # 零领域集 = 响亮失败（exit 2，cli.ts §5.5）：防 domains/ 被误删/改名后的回归掩蔽。
+  codegen-freshness:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        # 版本取自根 package.json 的 packageManager 字段
+
+      - name: Install Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
       - name: Generated projection freshness (regen-diff)
         run: pnpm generate --check
+
+  # 打包与可复现性验证：脚本内部自行 pnpm run build，与测试/typecheck 无依赖，独立并行。
+  packaging:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        # 版本取自根 package.json 的 packageManager 字段
+
+      - name: Install Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
 
       # 普通 PR 验证当前源码能构建出结构合法的 tarball；不要把“与 registry 同版本
       # integrity 相等”或 npm 对已发布版本的 dry-run 拒绝当作源码 PR 门禁——版本提升
