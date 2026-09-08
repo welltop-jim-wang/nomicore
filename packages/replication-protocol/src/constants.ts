@@ -36,3 +36,10 @@ export const REPLICATION_ID_RE = /^[0-9a-f]{32}$/;
 
 /** instanceId 安全文法：小写字母开头，后续 [a-z0-9-]，总长 ≤ 63（ADR-0010）。 */
 export const INSTANCE_ID_RE = /^[a-z][a-z0-9-]{0,62}$/;
+
+/**
+ * HELLO `optionalCapabilities` capability bit：分块 UPDATE 传输协商（ADR 0013 冻结值，
+ * issue #242 切片 1 只冻结常量与交集语义——发送切片/接收 assembly 属后续切片）。
+ * HELLO/HELLO_ACK codec 零改动：bit 经既有 uint32 BE 字段承载，交集由 selectCapabilities 计算。
+ */
+export const CAP_CHUNKED_UPDATE = 0x00000001;

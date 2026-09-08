@@ -6,6 +6,7 @@
  * lib0/encoding，解码路径完全自研）。一切失败只抛 ProtocolError（code ∈ 错误注册表）。
  */
 export {
+  CAP_CHUNKED_UPDATE,
   DEFAULT_MAX_FRAME_BYTES,
   ENVELOPE_HEADER_BYTES,
   ENVELOPE_MAGIC,
@@ -45,6 +46,7 @@ export {
   type SyncStep1Msg,
   type SyncStep2Msg,
   type UpdateAckMsg,
+  type UpdateChunkMsg,
   type UpdateMsg,
 } from './messages.js';
 export { decodeFrame, encodeFrame, type DecodedFrame, type EncodeFrameInput, type FrameHeader, type FrameOptions } from './envelope.js';

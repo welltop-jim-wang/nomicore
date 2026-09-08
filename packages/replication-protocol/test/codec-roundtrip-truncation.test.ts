@@ -7,6 +7,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import {
+  CAP_CHUNKED_UPDATE,
   type DecodedMessage,
   ProtocolError,
   decodeMessage,
@@ -26,10 +27,11 @@ function expectProtocolError(fn: () => unknown, code: string): void {
 }
 
 describe('canonical encode/decode roundtrip（§22）', () => {
-  it('全部 17 种消息：encode(decode(bytes)) === bytes（逐字节 canonical，含 header）', () => {
+  it('全部 18 种消息（17 v1 + UPDATE_CHUNK）：encode(decode(bytes)) === bytes（逐字节 canonical，含 header）', () => {
     for (const g of GOLDEN) {
       const bytes = hexToBytes(g.frameHex);
-      const decoded = decodeMessage(bytes);
+      // UPDATE_CHUNK 帧需已协商 capability（issue #242 D-3 门控）；其余帧同选项亦合法。
+      const decoded = decodeMessage(bytes, { selectedCapabilities: CAP_CHUNKED_UPDATE });
       expect(decoded.header.messageType).toBe(g.messageType);
       expect(decoded.header.sequence).toBe(g.sequence);
       expect(decoded.header.flags).toBe(0);
@@ -41,9 +43,9 @@ describe('canonical encode/decode roundtrip（§22）', () => {
     }
   });
 
-  it('解码后字段与 fixture 消息完全一致（全部 17 种）', () => {
+  it('解码后字段与 fixture 消息完全一致（全部 18 种）', () => {
     for (const g of GOLDEN) {
-      const decoded = decodeMessage(hexToBytes(g.frameHex));
+      const decoded = decodeMessage(hexToBytes(g.frameHex), { selectedCapabilities: CAP_CHUNKED_UPDATE });
       expect(decoded.message).toEqual(g.message);
     }
   });
@@ -69,7 +71,7 @@ describe('canonical encode/decode roundtrip（§22）', () => {
   });
 });
 
-describe('每个 byte offset 截断（§22）：全部 17 种消息逐 offset', () => {
+describe('每个 byte offset 截断（§22）：全部 18 种消息逐 offset', () => {
   it('任意 offset 截断都被分类拒绝（0–3 → BAD_MAGIC，其余 → FRAME_LENGTH_MISMATCH），绝不静默接受', () => {
     for (const g of GOLDEN) {
       const bytes = hexToBytes(g.frameHex);

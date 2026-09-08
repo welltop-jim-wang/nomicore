@@ -1,0 +1,681 @@
+==== SA1 iteration 1 刷新（SA2 F2）：回归证据（无任何执行排除）====
+==== 精确可复现命令（未实施树，工作目录 = 任务 worktree 根；红灯文件在盘且被执行，失败如实可见）====
+$ NODE_OPTIONS=--conditions=nomicore-source pnpm exec vitest run --typecheck packages/replication-protocol
+==== 以下为该命令的原始输出（逐字），退出码见文末 ====
+
+Testing types with tsc and vue-tsc is an experimental feature.
+Breaking changes might not follow SemVer, please pin Vitest's version when using it.
+
+ RUN  v3.2.7 /home/wangjian/nomicore-fix-issue-242
+
+ ❯ packages/replication-protocol/test/codec-issue242-ac-red.test.ts (28 tests | 20 failed) 181ms
+   × AC1：UPDATE_CHUNK 全字段 golden 向量锁定 + canonical roundtrip（字段序 = ADR 0013） > 注册表：UPDATE_CHUNK=0x42、code→name 逆映射、scope=namespace/direction=either/ack=UPDATE_ACK；CAP_CHUNKED_UPDATE=0x00000001 35ms
+     → expected undefined to be 66 // Object.is equality
+   ✓ AC1：UPDATE_CHUNK 全字段 golden 向量锁定 + canonical roundtrip（字段序 = ADR 0013） > golden 向量与规范算术构造一致（buildFrameHex 链路自校验 + 锁定字面量） 0ms
+   × AC1：UPDATE_CHUNK 全字段 golden 向量锁定 + canonical roundtrip（字段序 = ADR 0013） > encodeMessage 输出与锁定 frame 逐字节一致（lib0 canonical：最短 LEB128 + varString/varUint8Array 长度前缀） 14ms
+     → UNSUPPORTED_MESSAGE_TYPE: unknown message kind
+   × AC1：UPDATE_CHUNK 全字段 golden 向量锁定 + canonical roundtrip（字段序 = ADR 0013） > decode（已协商）字段与 fixture 全等；header envelopeVersion=1/flags=0/reserved=0（envelope 面零变化） 1ms
+     → UNSUPPORTED_MESSAGE_TYPE: unknown message type 0x42
+   × AC1：UPDATE_CHUNK 全字段 golden 向量锁定 + canonical roundtrip（字段序 = ADR 0013） > canonical roundtrip：encode(decode(frame)) === frame（逐字节，含 header） 0ms
+     → UNSUPPORTED_MESSAGE_TYPE: unknown message type 0x42
+   ✓ AC1：UPDATE_CHUNK 全字段 golden 向量锁定 + canonical roundtrip（字段序 = ADR 0013） > 字段顺序锁定：varString(ns) → transferId → chunkIndex → chunkCount → totalBytes → varUint8Array(bytes) 18ms
+   × AC2：敌意输入全部被响亮拒绝（分类稳定，绝不未分类异常/越界分配） > 逐 byte offset 截断：0–3 → BAD_MAGIC，其余 → FRAME_LENGTH_MISMATCH（先于 payload 复制/分配） 21ms
+     → 实际错误码应为 FRAME_LENGTH_MISMATCH，消息：UNSUPPORTED_MESSAGE_TYPE: unknown message type 0x42: expected 'UNSUPPORTED_MESSAGE_TYPE' to be 'FRAME_LENGTH_MISMATCH' // Object.is equality
+   × AC2：敌意输入全部被响亮拒绝（分类稳定，绝不未分类异常/越界分配） > 非 canonical varUint / 超 8 字节 LEB128 / 超 uint32 域 → MALFORMED_FRAME 1ms
+     → 实际错误码应为 MALFORMED_FRAME，消息：UNSUPPORTED_MESSAGE_TYPE: unknown message type 0x42: expected 'UNSUPPORTED_MESSAGE_TYPE' to be 'MALFORMED_FRAME' // Object.is equality
+   × AC2：敌意输入全部被响亮拒绝（分类稳定，绝不未分类异常/越界分配） > 非法 UTF-8 / 非法 namespaceId 格式 → MALFORMED_FRAME 1ms
+     → 实际错误码应为 MALFORMED_FRAME，消息：UNSUPPORTED_MESSAGE_TYPE: unknown message type 0x42: expected 'UNSUPPORTED_MESSAGE_TYPE' to be 'MALFORMED_FRAME' // Object.is equality
+   × AC2：敌意输入全部被响亮拒绝（分类稳定，绝不未分类异常/越界分配） > payload 内尾随字节（header 长度同步调整）→ MALFORMED_FRAME（完全消费原则） 12ms
+     → 实际错误码应为 MALFORMED_FRAME，消息：UNSUPPORTED_MESSAGE_TYPE: unknown message type 0x42: expected 'UNSUPPORTED_MESSAGE_TYPE' to be 'MALFORMED_FRAME' // Object.is equality
+   × AC2：敌意输入全部被响亮拒绝（分类稳定，绝不未分类异常/越界分配） > 超声明 bytes：长度前缀超余量 / 巨额声明 → MALFORMED_FRAME，分配前拒绝（无越界分配） 1ms
+     → 实际错误码应为 MALFORMED_FRAME，消息：UNSUPPORTED_MESSAGE_TYPE: unknown message type 0x42: expected 'UNSUPPORTED_MESSAGE_TYPE' to be 'MALFORMED_FRAME' // Object.is equality
+   × AC2：敌意输入全部被响亮拒绝（分类稳定，绝不未分类异常/越界分配） > 单帧语义自洽拒绝：chunkCount=0 / chunkIndex≥chunkCount / transferId=0 / 空 bytes / bytes>totalBytes → MALFORMED_FRAME 18ms
+     → 实际错误码应为 MALFORMED_FRAME，消息：UNSUPPORTED_MESSAGE_TYPE: unknown message type 0x42: expected 'UNSUPPORTED_MESSAGE_TYPE' to be 'MALFORMED_FRAME' // Object.is equality
+   × AC2：敌意输入全部被响亮拒绝（分类稳定，绝不未分类异常/越界分配） > 字段限额复用 maxUpdateBytes：bytes 超限 → UPDATE_TOO_LARGE（encode/decode 同一判据，ADR 0013「chunk 大小复用 maxUpdateBytes」） 1ms
+     → 实际错误码应为 UPDATE_TOO_LARGE，消息：UNSUPPORTED_MESSAGE_TYPE: unknown message type 0x42: expected 'UNSUPPORTED_MESSAGE_TYPE' to be 'UPDATE_TOO_LARGE' // Object.is equality
+   × AC2：敌意输入全部被响亮拒绝（分类稳定，绝不未分类异常/越界分配） > encode 侧执行同一套字段规则（R9 对称：先验证后写） 1ms
+     → 实际错误码应为 MALFORMED_FRAME，消息：UNSUPPORTED_MESSAGE_TYPE: unknown message kind: expected 'UNSUPPORTED_MESSAGE_TYPE' to be 'MALFORMED_FRAME' // Object.is equality
+   ✓ AC3：CAP_CHUNKED_UPDATE 交集协商 + 未协商端 UNSUPPORTED_MESSAGE_TYPE connection fatal > selectCapabilities：optional 交集 / required 拒绝（既有纯函数，位 0x1 生效） 0ms
+   ✓ AC3：CAP_CHUNKED_UPDATE 交集协商 + 未协商端 UNSUPPORTED_MESSAGE_TYPE connection fatal > HELLO/HELLO_ACK 携带 capability bit 的字节级 roundtrip（uint32 BE 字段位置不变，envelope 面零变化） 16ms
+   ✓ AC3：CAP_CHUNKED_UPDATE 交集协商 + 未协商端 UNSUPPORTED_MESSAGE_TYPE connection fatal > 未协商（缺省选项 / selected=0 / 仅他位置位）解码 UPDATE_CHUNK → UNSUPPORTED_MESSAGE_TYPE connection fatal 0ms
+   × AC3：CAP_CHUNKED_UPDATE 交集协商 + 未协商端 UNSUPPORTED_MESSAGE_TYPE connection fatal > 已协商（本位置位，含多余位）解码成功且字段全等 0ms
+     → UNSUPPORTED_MESSAGE_TYPE: unknown message type 0x42
+   × AC3：CAP_CHUNKED_UPDATE 交集协商 + 未协商端 UNSUPPORTED_MESSAGE_TYPE connection fatal > selectedCapabilities 非法值 → CONNECTION_POLICY_VIOLATION（选项校验响亮，绝不 clamp） 1ms
+     → 实际错误码应为 CONNECTION_POLICY_VIOLATION，消息：UNSUPPORTED_MESSAGE_TYPE: unknown message type 0x42: expected 'UNSUPPORTED_MESSAGE_TYPE' to be 'CONNECTION_POLICY_VIOLATION' // Object.is equality
+   × AC3：CAP_CHUNKED_UPDATE 交集协商 + 未协商端 UNSUPPORTED_MESSAGE_TYPE connection fatal > 选项校验作用域=急切（对称 expectedSequence 先例，SA2 F3）：非 UPDATE_CHUNK 帧 + 非法 selectedCapabilities → CONNECTION_POLICY_VIOLATION 12ms
+     → 期望 ProtocolError(CONNECTION_POLICY_VIOLATION): expected undefined to be an instance of ProtocolError
+   ✓ AC3：CAP_CHUNKED_UPDATE 交集协商 + 未协商端 UNSUPPORTED_MESSAGE_TYPE connection fatal > v1 互通回落：v1 支持集（无该位）协商 selected=0 → 解码按未知消息码规则拒绝（新旧互不破译） 0ms
+   × AC4：两条 namespace 错误码注册表单点导出 + RESYNC reason 词表 append-only > UPDATE_TRANSFER_VIOLATION：fatal=true/retryable=no/terminalState=failed（对齐 SYNC_STATE_VIOLATION 先例） 7ms
+     → expected undefined to deeply equal { …(5) }
+   × AC4：两条 namespace 错误码注册表单点导出 + RESYNC reason 词表 append-only > UPDATE_TRANSFER_TOO_LARGE：fatal=true/retryable=config/terminalState=failed（对齐 SYNC_DIFF_TOO_LARGE 语义族） 5ms
+     → expected undefined to deeply equal { …(5) }
+   × AC4：两条 namespace 错误码注册表单点导出 + RESYNC reason 词表 append-only > 注册表 append-only：恰 22 条 namespace 码，既有 20 条不变（抽样锚点），条目冻结 1ms
+     → expected [ 'TARGET_NOT_REQUESTED', …(19) ] to have a length of 22 but got 20
+   ✓ AC4：两条 namespace 错误码注册表单点导出 + RESYNC reason 词表 append-only > lookupError 双向可见性：namespace 命中、connection 不可见（scope 隔离） 0ms
+   × AC4：两条 namespace 错误码注册表单点导出 + RESYNC reason 词表 append-only > ERROR wire roundtrip：scope/fatal/retryable 位由注册表推导（调用方不可覆盖） 1ms
+     → MALFORMED_FRAME: unknown error code for namespace scope: UPDATE_TRANSFER_VIOLATION
+   × AC4：两条 namespace 错误码注册表单点导出 + RESYNC reason 词表 append-only > ProtocolError 元数据导出：显式 namespace scope 消解（AC4 单点语义） 13ms
+     → expected 'connection' to be 'namespace' // Object.is equality
+   ✓ AC4：两条 namespace 错误码注册表单点导出 + RESYNC reason 词表 append-only > RESYNC_REQUIRED reasonCode 词表追加 UPDATE_TRANSFER_EXPIRED：roundtrip 锁定 + 空理由仍拒 1ms
+ ✓ packages/replication-protocol/test/codec-roundtrip-truncation.test.ts (8 tests) 356ms
+ ✓ packages/replication-protocol/test/codec-fuzz-property.test.ts (5 tests) 650ms
+ ✓ packages/replication-protocol/test/codec-malformed.test.ts (37 tests) 84ms
+ ✓ packages/replication-protocol/test/codec-messages-golden.test.ts (26 tests) 87ms
+ ✓ packages/replication-protocol/test/codec-registries.test.ts (13 tests) 66ms
+ ✓ packages/replication-protocol/test/codec-package-contract.test.ts (5 tests) 33ms
+ ✓ packages/replication-protocol/test/codec-version-interop.test.ts (25 tests) 35ms
+ ✓ packages/replication-protocol/test/codec-envelope.test.ts (13 tests) 20ms
+ ✓  TS  packages/replication-protocol/test/codec-api.test-d.ts (7 tests)
+
+⎯⎯⎯⎯⎯⎯ Failed Tests 20 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  packages/replication-protocol/test/codec-issue242-ac-red.test.ts > AC1：UPDATE_CHUNK 全字段 golden 向量锁定 + canonical roundtrip（字段序 = ADR 0013） > 注册表：UPDATE_CHUNK=0x42、code→name 逆映射、scope=namespace/direction=either/ack=UPDATE_ACK；CAP_CHUNKED_UPDATE=0x00000001
+AssertionError: expected undefined to be 66 // Object.is equality
+
+- Expected:
+66
+
++ Received:
+undefined
+
+ ❯ packages/replication-protocol/test/codec-issue242-ac-red.test.ts:175:40
+    173| describe('AC1：UPDATE_CHUNK 全字段 golden 向量锁定 + canonical roundtrip（字段序 =…
+    174|   it('注册表：UPDATE_CHUNK=0x42、code→name 逆映射、scope=namespace/direction=ei…
+    175|     expect(MESSAGE_TYPES.UPDATE_CHUNK).toBe(UPDATE_CHUNK_CODE);
+       |                                        ^
+    176|     expect(MESSAGE_NAMES[String(UPDATE_CHUNK_CODE)]).toBe('UPDATE_CHUN…
+    177|     expect(MESSAGE_REGISTRY.UPDATE_CHUNK).toEqual({
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/20]⎯
+
+ FAIL  packages/replication-protocol/test/codec-issue242-ac-red.test.ts > AC1：UPDATE_CHUNK 全字段 golden 向量锁定 + canonical roundtrip（字段序 = ADR 0013） > encodeMessage 输出与锁定 frame 逐字节一致（lib0 canonical：最短 LEB128 + varString/varUint8Array 长度前缀）
+ProtocolError: UNSUPPORTED_MESSAGE_TYPE: unknown message kind
+ ❯ encodePayload packages/replication-protocol/src/payloads.ts:724:13
+    722|       const never: never = message;
+    723|       void never;
+    724|       throw new ProtocolError('UNSUPPORTED_MESSAGE_TYPE', 'unknown mes…
+       |             ^
+    725|     }
+    726|   }
+ ❯ encodeMessage packages/replication-protocol/src/payloads.ts:747:3
+ ❯ packages/replication-protocol/test/codec-issue242-ac-red.test.ts:199:21
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/20]⎯
+
+ FAIL  packages/replication-protocol/test/codec-issue242-ac-red.test.ts > AC1：UPDATE_CHUNK 全字段 golden 向量锁定 + canonical roundtrip（字段序 = ADR 0013） > decode（已协商）字段与 fixture 全等；header envelopeVersion=1/flags=0/reserved=0（envelope 面零变化）
+ProtocolError: UNSUPPORTED_MESSAGE_TYPE: unknown message type 0x42
+ ❯ decodeFrame packages/replication-protocol/src/envelope.ts:111:11
+    109|   const messageType = bytes[5]!;
+    110|   if (MESSAGE_NAMES[messageType] === undefined) {
+    111|     throw new ProtocolError('UNSUPPORTED_MESSAGE_TYPE', `unknown messa…
+       |           ^
+    112|   }
+    113|   // 7. 帧大小上限（缺省 16 MiB；byteLength === maxFrameBytes 通过）
+ ❯ decodeMessage packages/replication-protocol/src/payloads.ts:734:31
+ ❯ decodeChunk packages/replication-protocol/test/codec-issue242-ac-red.test.ts:152:10
+ ❯ packages/replication-protocol/test/codec-issue242-ac-red.test.ts:206:17
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/20]⎯
+
+ FAIL  packages/replication-protocol/test/codec-issue242-ac-red.test.ts > AC1：UPDATE_CHUNK 全字段 golden 向量锁定 + canonical roundtrip（字段序 = ADR 0013） > canonical roundtrip：encode(decode(frame)) === frame（逐字节，含 header）
+ProtocolError: UNSUPPORTED_MESSAGE_TYPE: unknown message type 0x42
+ ❯ decodeFrame packages/replication-protocol/src/envelope.ts:111:11
+    109|   const messageType = bytes[5]!;
+    110|   if (MESSAGE_NAMES[messageType] === undefined) {
+    111|     throw new ProtocolError('UNSUPPORTED_MESSAGE_TYPE', `unknown messa…
+       |           ^
+    112|   }
+    113|   // 7. 帧大小上限（缺省 16 MiB；byteLength === maxFrameBytes 通过）
+ ❯ decodeMessage packages/replication-protocol/src/payloads.ts:734:31
+ ❯ decodeChunk packages/replication-protocol/test/codec-issue242-ac-red.test.ts:152:10
+ ❯ packages/replication-protocol/test/codec-issue242-ac-red.test.ts:219:17
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[4/20]⎯
+
+ FAIL  packages/replication-protocol/test/codec-issue242-ac-red.test.ts > AC2：敌意输入全部被响亮拒绝（分类稳定，绝不未分类异常/越界分配） > 逐 byte offset 截断：0–3 → BAD_MAGIC，其余 → FRAME_LENGTH_MISMATCH（先于 payload 复制/分配）
+AssertionError: 实际错误码应为 FRAME_LENGTH_MISMATCH，消息：UNSUPPORTED_MESSAGE_TYPE: unknown message type 0x42: expected 'UNSUPPORTED_MESSAGE_TYPE' to be 'FRAME_LENGTH_MISMATCH' // Object.is equality
+
+Expected: "FRAME_LENGTH_MISMATCH"
+Received: "UNSUPPORTED_MESSAGE_TYPE"
+
+ ❯ expectProtocolError packages/replication-protocol/test/codec-issue242-ac-red.test.ts:72:65
+     70|   expect(caught, `期望 ProtocolError(${code})`).toBeInstanceOf(ProtocolE…
+     71|   const err = caught as ProtocolError;
+     72|   expect(err.code, `实际错误码应为 ${code}，消息：${String(err.message)}`).toBe(c…
+       |                                                                 ^
+     73|   return err;
+     74| }
+ ❯ packages/replication-protocol/test/codec-issue242-ac-red.test.ts:243:7
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[5/20]⎯
+
+ FAIL  packages/replication-protocol/test/codec-issue242-ac-red.test.ts > AC2：敌意输入全部被响亮拒绝（分类稳定，绝不未分类异常/越界分配） > 非 canonical varUint / 超 8 字节 LEB128 / 超 uint32 域 → MALFORMED_FRAME
+AssertionError: 实际错误码应为 MALFORMED_FRAME，消息：UNSUPPORTED_MESSAGE_TYPE: unknown message type 0x42: expected 'UNSUPPORTED_MESSAGE_TYPE' to be 'MALFORMED_FRAME' // Object.is equality
+
+Expected: "MALFORMED_FRAME"
+Received: "UNSUPPORTED_MESSAGE_TYPE"
+
+ ❯ expectProtocolError packages/replication-protocol/test/codec-issue242-ac-red.test.ts:72:65
+     70|   expect(caught, `期望 ProtocolError(${code})`).toBeInstanceOf(ProtocolE…
+     71|   const err = caught as ProtocolError;
+     72|   expect(err.code, `实际错误码应为 ${code}，消息：${String(err.message)}`).toBe(c…
+       |                                                                 ^
+     73|   return err;
+     74| }
+ ❯ packages/replication-protocol/test/codec-issue242-ac-red.test.ts:249:5
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[6/20]⎯
+
+ FAIL  packages/replication-protocol/test/codec-issue242-ac-red.test.ts > AC2：敌意输入全部被响亮拒绝（分类稳定，绝不未分类异常/越界分配） > 非法 UTF-8 / 非法 namespaceId 格式 → MALFORMED_FRAME
+AssertionError: 实际错误码应为 MALFORMED_FRAME，消息：UNSUPPORTED_MESSAGE_TYPE: unknown message type 0x42: expected 'UNSUPPORTED_MESSAGE_TYPE' to be 'MALFORMED_FRAME' // Object.is equality
+
+Expected: "MALFORMED_FRAME"
+Received: "UNSUPPORTED_MESSAGE_TYPE"
+
+ ❯ expectProtocolError packages/replication-protocol/test/codec-issue242-ac-red.test.ts:72:65
+     70|   expect(caught, `期望 ProtocolError(${code})`).toBeInstanceOf(ProtocolE…
+     71|   const err = caught as ProtocolError;
+     72|   expect(err.code, `实际错误码应为 ${code}，消息：${String(err.message)}`).toBe(c…
+       |                                                                 ^
+     73|   return err;
+     74| }
+ ❯ packages/replication-protocol/test/codec-issue242-ac-red.test.ts:264:5
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[7/20]⎯
+
+ FAIL  packages/replication-protocol/test/codec-issue242-ac-red.test.ts > AC2：敌意输入全部被响亮拒绝（分类稳定，绝不未分类异常/越界分配） > payload 内尾随字节（header 长度同步调整）→ MALFORMED_FRAME（完全消费原则）
+AssertionError: 实际错误码应为 MALFORMED_FRAME，消息：UNSUPPORTED_MESSAGE_TYPE: unknown message type 0x42: expected 'UNSUPPORTED_MESSAGE_TYPE' to be 'MALFORMED_FRAME' // Object.is equality
+
+Expected: "MALFORMED_FRAME"
+Received: "UNSUPPORTED_MESSAGE_TYPE"
+
+ ❯ expectProtocolError packages/replication-protocol/test/codec-issue242-ac-red.test.ts:72:65
+     70|   expect(caught, `期望 ProtocolError(${code})`).toBeInstanceOf(ProtocolE…
+     71|   const err = caught as ProtocolError;
+     72|   expect(err.code, `实际错误码应为 ${code}，消息：${String(err.message)}`).toBe(c…
+       |                                                                 ^
+     73|   return err;
+     74| }
+ ❯ packages/replication-protocol/test/codec-issue242-ac-red.test.ts:281:5
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[8/20]⎯
+
+ FAIL  packages/replication-protocol/test/codec-issue242-ac-red.test.ts > AC2：敌意输入全部被响亮拒绝（分类稳定，绝不未分类异常/越界分配） > 超声明 bytes：长度前缀超余量 / 巨额声明 → MALFORMED_FRAME，分配前拒绝（无越界分配）
+AssertionError: 实际错误码应为 MALFORMED_FRAME，消息：UNSUPPORTED_MESSAGE_TYPE: unknown message type 0x42: expected 'UNSUPPORTED_MESSAGE_TYPE' to be 'MALFORMED_FRAME' // Object.is equality
+
+Expected: "MALFORMED_FRAME"
+Received: "UNSUPPORTED_MESSAGE_TYPE"
+
+ ❯ expectProtocolError packages/replication-protocol/test/codec-issue242-ac-red.test.ts:72:65
+     70|   expect(caught, `期望 ProtocolError(${code})`).toBeInstanceOf(ProtocolE…
+     71|   const err = caught as ProtocolError;
+     72|   expect(err.code, `实际错误码应为 ${code}，消息：${String(err.message)}`).toBe(c…
+       |                                                                 ^
+     73|   return err;
+     74| }
+ ❯ packages/replication-protocol/test/codec-issue242-ac-red.test.ts:286:5
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[9/20]⎯
+
+ FAIL  packages/replication-protocol/test/codec-issue242-ac-red.test.ts > AC2：敌意输入全部被响亮拒绝（分类稳定，绝不未分类异常/越界分配） > 单帧语义自洽拒绝：chunkCount=0 / chunkIndex≥chunkCount / transferId=0 / 空 bytes / bytes>totalBytes → MALFORMED_FRAME
+AssertionError: 实际错误码应为 MALFORMED_FRAME，消息：UNSUPPORTED_MESSAGE_TYPE: unknown message type 0x42: expected 'UNSUPPORTED_MESSAGE_TYPE' to be 'MALFORMED_FRAME' // Object.is equality
+
+Expected: "MALFORMED_FRAME"
+Received: "UNSUPPORTED_MESSAGE_TYPE"
+
+ ❯ expectProtocolError packages/replication-protocol/test/codec-issue242-ac-red.test.ts:72:65
+     70|   expect(caught, `期望 ProtocolError(${code})`).toBeInstanceOf(ProtocolE…
+     71|   const err = caught as ProtocolError;
+     72|   expect(err.code, `实际错误码应为 ${code}，消息：${String(err.message)}`).toBe(c…
+       |                                                                 ^
+     73|   return err;
+     74| }
+ ❯ packages/replication-protocol/test/codec-issue242-ac-red.test.ts:292:5
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[10/20]⎯
+
+ FAIL  packages/replication-protocol/test/codec-issue242-ac-red.test.ts > AC2：敌意输入全部被响亮拒绝（分类稳定，绝不未分类异常/越界分配） > 字段限额复用 maxUpdateBytes：bytes 超限 → UPDATE_TOO_LARGE（encode/decode 同一判据，ADR 0013「chunk 大小复用 maxUpdateBytes」）
+AssertionError: 实际错误码应为 UPDATE_TOO_LARGE，消息：UNSUPPORTED_MESSAGE_TYPE: unknown message type 0x42: expected 'UNSUPPORTED_MESSAGE_TYPE' to be 'UPDATE_TOO_LARGE' // Object.is equality
+
+Expected: "UPDATE_TOO_LARGE"
+Received: "UNSUPPORTED_MESSAGE_TYPE"
+
+ ❯ expectProtocolError packages/replication-protocol/test/codec-issue242-ac-red.test.ts:72:65
+     70|   expect(caught, `期望 ProtocolError(${code})`).toBeInstanceOf(ProtocolE…
+     71|   const err = caught as ProtocolError;
+     72|   expect(err.code, `实际错误码应为 ${code}，消息：${String(err.message)}`).toBe(c…
+       |                                                                 ^
+     73|   return err;
+     74| }
+ ❯ packages/replication-protocol/test/codec-issue242-ac-red.test.ts:301:5
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[11/20]⎯
+
+ FAIL  packages/replication-protocol/test/codec-issue242-ac-red.test.ts > AC2：敌意输入全部被响亮拒绝（分类稳定，绝不未分类异常/越界分配） > encode 侧执行同一套字段规则（R9 对称：先验证后写）
+AssertionError: 实际错误码应为 MALFORMED_FRAME，消息：UNSUPPORTED_MESSAGE_TYPE: unknown message kind: expected 'UNSUPPORTED_MESSAGE_TYPE' to be 'MALFORMED_FRAME' // Object.is equality
+
+Expected: "MALFORMED_FRAME"
+Received: "UNSUPPORTED_MESSAGE_TYPE"
+
+ ❯ expectProtocolError packages/replication-protocol/test/codec-issue242-ac-red.test.ts:72:65
+     70|   expect(caught, `期望 ProtocolError(${code})`).toBeInstanceOf(ProtocolE…
+     71|   const err = caught as ProtocolError;
+     72|   expect(err.code, `实际错误码应为 ${code}，消息：${String(err.message)}`).toBe(c…
+       |                                                                 ^
+     73|   return err;
+     74| }
+ ❯ packages/replication-protocol/test/codec-issue242-ac-red.test.ts:311:5
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[12/20]⎯
+
+ FAIL  packages/replication-protocol/test/codec-issue242-ac-red.test.ts > AC3：CAP_CHUNKED_UPDATE 交集协商 + 未协商端 UNSUPPORTED_MESSAGE_TYPE connection fatal > 已协商（本位置位，含多余位）解码成功且字段全等
+ProtocolError: UNSUPPORTED_MESSAGE_TYPE: unknown message type 0x42
+ ❯ decodeFrame packages/replication-protocol/src/envelope.ts:111:11
+    109|   const messageType = bytes[5]!;
+    110|   if (MESSAGE_NAMES[messageType] === undefined) {
+    111|     throw new ProtocolError('UNSUPPORTED_MESSAGE_TYPE', `unknown messa…
+       |           ^
+    112|   }
+    113|   // 7. 帧大小上限（缺省 16 MiB；byteLength === maxFrameBytes 通过）
+ ❯ decodeMessage packages/replication-protocol/src/payloads.ts:734:31
+ ❯ packages/replication-protocol/test/codec-issue242-ac-red.test.ts:389:16
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[13/20]⎯
+
+ FAIL  packages/replication-protocol/test/codec-issue242-ac-red.test.ts > AC3：CAP_CHUNKED_UPDATE 交集协商 + 未协商端 UNSUPPORTED_MESSAGE_TYPE connection fatal > selectedCapabilities 非法值 → CONNECTION_POLICY_VIOLATION（选项校验响亮，绝不 clamp）
+AssertionError: 实际错误码应为 CONNECTION_POLICY_VIOLATION，消息：UNSUPPORTED_MESSAGE_TYPE: unknown message type 0x42: expected 'UNSUPPORTED_MESSAGE_TYPE' to be 'CONNECTION_POLICY_VIOLATION' // Object.is equality
+
+Expected: "CONNECTION_POLICY_VIOLATION"
+Received: "UNSUPPORTED_MESSAGE_TYPE"
+
+ ❯ expectProtocolError packages/replication-protocol/test/codec-issue242-ac-red.test.ts:72:65
+     70|   expect(caught, `期望 ProtocolError(${code})`).toBeInstanceOf(ProtocolE…
+     71|   const err = caught as ProtocolError;
+     72|   expect(err.code, `实际错误码应为 ${code}，消息：${String(err.message)}`).toBe(c…
+       |                                                                 ^
+     73|   return err;
+     74| }
+ ❯ packages/replication-protocol/test/codec-issue242-ac-red.test.ts:397:5
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[14/20]⎯
+
+ FAIL  packages/replication-protocol/test/codec-issue242-ac-red.test.ts > AC3：CAP_CHUNKED_UPDATE 交集协商 + 未协商端 UNSUPPORTED_MESSAGE_TYPE connection fatal > 选项校验作用域=急切（对称 expectedSequence 先例，SA2 F3）：非 UPDATE_CHUNK 帧 + 非法 selectedCapabilities → CONNECTION_POLICY_VIOLATION
+AssertionError: 期望 ProtocolError(CONNECTION_POLICY_VIOLATION): expected undefined to be an instance of ProtocolError
+ ❯ expectProtocolError packages/replication-protocol/test/codec-issue242-ac-red.test.ts:70:47
+     68|     caught = e;
+     69|   }
+     70|   expect(caught, `期望 ProtocolError(${code})`).toBeInstanceOf(ProtocolE…
+       |                                               ^
+     71|   const err = caught as ProtocolError;
+     72|   expect(err.code, `实际错误码应为 ${code}，消息：${String(err.message)}`).toBe(c…
+ ❯ packages/replication-protocol/test/codec-issue242-ac-red.test.ts:406:5
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[15/20]⎯
+
+ FAIL  packages/replication-protocol/test/codec-issue242-ac-red.test.ts > AC4：两条 namespace 错误码注册表单点导出 + RESYNC reason 词表 append-only > UPDATE_TRANSFER_VIOLATION：fatal=true/retryable=no/terminalState=failed（对齐 SYNC_STATE_VIOLATION 先例）
+AssertionError: expected undefined to deeply equal { …(5) }
+
+- Expected:
+{
+  "code": "UPDATE_TRANSFER_VIOLATION",
+  "fatal": true,
+  "retryable": "no",
+  "scope": "namespace",
+  "terminalState": "failed",
+}
+
++ Received:
+undefined
+
+ ❯ packages/replication-protocol/test/codec-issue242-ac-red.test.ts:427:56
+    425| describe('AC4：两条 namespace 错误码注册表单点导出 + RESYNC reason 词表 append-only',…
+    426|   it('UPDATE_TRANSFER_VIOLATION：fatal=true/retryable=no/terminalState=…
+    427|     expect(NAMESPACE_ERRORS.UPDATE_TRANSFER_VIOLATION).toEqual({
+       |                                                        ^
+    428|       code: 'UPDATE_TRANSFER_VIOLATION',
+    429|       scope: 'namespace',
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[16/20]⎯
+
+ FAIL  packages/replication-protocol/test/codec-issue242-ac-red.test.ts > AC4：两条 namespace 错误码注册表单点导出 + RESYNC reason 词表 append-only > UPDATE_TRANSFER_TOO_LARGE：fatal=true/retryable=config/terminalState=failed（对齐 SYNC_DIFF_TOO_LARGE 语义族）
+AssertionError: expected undefined to deeply equal { …(5) }
+
+- Expected:
+{
+  "code": "UPDATE_TRANSFER_TOO_LARGE",
+  "fatal": true,
+  "retryable": "config",
+  "scope": "namespace",
+  "terminalState": "failed",
+}
+
++ Received:
+undefined
+
+ ❯ packages/replication-protocol/test/codec-issue242-ac-red.test.ts:437:56
+    435|
+    436|   it('UPDATE_TRANSFER_TOO_LARGE：fatal=true/retryable=config/terminalSt…
+    437|     expect(NAMESPACE_ERRORS.UPDATE_TRANSFER_TOO_LARGE).toEqual({
+       |                                                        ^
+    438|       code: 'UPDATE_TRANSFER_TOO_LARGE',
+    439|       scope: 'namespace',
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[17/20]⎯
+
+ FAIL  packages/replication-protocol/test/codec-issue242-ac-red.test.ts > AC4：两条 namespace 错误码注册表单点导出 + RESYNC reason 词表 append-only > 注册表 append-only：恰 22 条 namespace 码，既有 20 条不变（抽样锚点），条目冻结
+AssertionError: expected [ 'TARGET_NOT_REQUESTED', …(19) ] to have a length of 22 but got 20
+
+- Expected
++ Received
+
+- 22
++ 20
+
+ ❯ packages/replication-protocol/test/codec-issue242-ac-red.test.ts:447:43
+    445|
+    446|   it('注册表 append-only：恰 22 条 namespace 码，既有 20 条不变（抽样锚点），条目冻结', () => {
+    447|     expect(Object.keys(NAMESPACE_ERRORS)).toHaveLength(22);
+       |                                           ^
+    448|     expect(NAMESPACE_ERRORS.SYNC_STATE_VIOLATION).toMatchObject({ fata…
+    449|     expect(NAMESPACE_ERRORS.SYNC_DIFF_TOO_LARGE).toMatchObject({ fatal…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[18/20]⎯
+
+ FAIL  packages/replication-protocol/test/codec-issue242-ac-red.test.ts > AC4：两条 namespace 错误码注册表单点导出 + RESYNC reason 词表 append-only > ERROR wire roundtrip：scope/fatal/retryable 位由注册表推导（调用方不可覆盖）
+ProtocolError: MALFORMED_FRAME: unknown error code for namespace scope: UPDATE_TRANSFER_VIOLATION
+ ❯ throwMalformed packages/replication-protocol/src/canonical.ts:38:9
+     36| /** 抛出已分类 MALFORMED_FRAME（payload 级一切违规的统一出口；绝无未分类异常逃逸）。 */
+     37| export function throwMalformed(detail?: string): never {
+     38|   throw new ProtocolError('MALFORMED_FRAME', detail);
+       |         ^
+     39| }
+     40|
+ ❯ encodeError packages/replication-protocol/src/payloads.ts:314:5
+ ❯ encodePayload packages/replication-protocol/src/payloads.ts:693:14
+ ❯ encodeMessage packages/replication-protocol/src/payloads.ts:747:3
+ ❯ packages/replication-protocol/test/codec-issue242-ac-red.test.ts:471:28
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[19/20]⎯
+
+ FAIL  packages/replication-protocol/test/codec-issue242-ac-red.test.ts > AC4：两条 namespace 错误码注册表单点导出 + RESYNC reason 词表 append-only > ProtocolError 元数据导出：显式 namespace scope 消解（AC4 单点语义）
+AssertionError: expected 'connection' to be 'namespace' // Object.is equality
+
+Expected: "namespace"
+Received: "connection"
+
+ ❯ packages/replication-protocol/test/codec-issue242-ac-red.test.ts:495:23
+    493|   it('ProtocolError 元数据导出：显式 namespace scope 消解（AC4 单点语义）', () => {
+    494|     const err = new ProtocolError('UPDATE_TRANSFER_VIOLATION', 'chunk …
+    495|     expect(err.scope).toBe('namespace');
+       |                       ^
+    496|     expect(err.fatal).toBe(true);
+    497|     expect(err.retryable).toBe('no');
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[20/20]⎯
+
+⎯⎯⎯⎯⎯⎯ Unhandled Errors ⎯⎯⎯⎯⎯⎯
+
+Vitest caught 21 unhandled errors during the test run.
+This might cause false positive tests. Resolve unhandled errors to make sure your tests are not affected.
+
+⎯⎯⎯ Unhandled Source Error ⎯⎯⎯
+TypeCheckError: Module '"@nomicore/replication-protocol"' has no exported member 'CAP_CHUNKED_UPDATE'.
+ ❯ packages/replication-protocol/test/codec-issue242-ac-red.test.ts:30:3
+     28| import { describe, expect, it } from 'vitest';
+     29| import {
+     30|   CAP_CHUNKED_UPDATE,
+       |   ^
+     31|   MESSAGE_NAMES,
+     32|   MESSAGE_REGISTRY,
+
+
+⎯⎯⎯ Unhandled Source Error ⎯⎯⎯
+TypeCheckError: '"@nomicore/replication-protocol"' has no exported member named 'UpdateChunkMsg'. Did you mean 'UpdateAckMsg'?
+ ❯ packages/replication-protocol/test/codec-issue242-ac-red.test.ts:35:8
+     33|   MESSAGE_TYPES,
+     34|   NAMESPACE_ERRORS,
+     35|   type UpdateChunkMsg,
+       |        ^
+     36|   ProtocolError,
+     37|   decodeMessage,
+
+
+⎯⎯⎯ Unhandled Source Error ⎯⎯⎯
+TypeCheckError: Object literal may only specify known properties, and 'selectedCapabilities' does not exist in type 'DecodeOptions'.
+ ❯ packages/replication-protocol/test/codec-issue242-ac-red.test.ts:152:33
+    150| /** 已协商语境下的解码（等价 ws-replication 未来传入 selectedCapabilities 的调用形态）。 */
+    151| function decodeChunk(bytes: Uint8Array, extra?: { limits?: { maxUpdate…
+    152|   return decodeMessage(bytes, { selectedCapabilities: CAP_BIT, ...extr…
+       |                                 ^
+    153| }
+    154|
+
+
+⎯⎯⎯ Unhandled Source Error ⎯⎯⎯
+TypeCheckError: Property 'UPDATE_CHUNK' does not exist on type 'Readonly<Record<MessageName, number>>'. Did you mean 'UPDATE_ACK'?
+ ❯ packages/replication-protocol/test/codec-issue242-ac-red.test.ts:175:26
+    173| describe('AC1：UPDATE_CHUNK 全字段 golden 向量锁定 + canonical roundtrip（字段序 =…
+    174|   it('注册表：UPDATE_CHUNK=0x42、code→name 逆映射、scope=namespace/direction=ei…
+    175|     expect(MESSAGE_TYPES.UPDATE_CHUNK).toBe(UPDATE_CHUNK_CODE);
+       |                          ^
+    176|     expect(MESSAGE_NAMES[String(UPDATE_CHUNK_CODE)]).toBe('UPDATE_CHUN…
+    177|     expect(MESSAGE_REGISTRY.UPDATE_CHUNK).toEqual({
+
+
+⎯⎯⎯ Unhandled Source Error ⎯⎯⎯
+TypeCheckError: Property 'UPDATE_CHUNK' does not exist on type 'Readonly<Record<MessageName, MessageInfo>>'. Did you mean 'UPDATE_ACK'?
+ ❯ packages/replication-protocol/test/codec-issue242-ac-red.test.ts:177:29
+    175|     expect(MESSAGE_TYPES.UPDATE_CHUNK).toBe(UPDATE_CHUNK_CODE);
+    176|     expect(MESSAGE_NAMES[String(UPDATE_CHUNK_CODE)]).toBe('UPDATE_CHUN…
+    177|     expect(MESSAGE_REGISTRY.UPDATE_CHUNK).toEqual({
+       |                             ^
+    178|       code: UPDATE_CHUNK_CODE,
+    179|       scope: 'namespace',
+
+
+⎯⎯⎯ Unhandled Source Error ⎯⎯⎯
+TypeCheckError: Argument of type '{ selectedCapabilities number; } | undefined' is not assignable to parameter of type 'DecodeOptions | undefined'.
+  Object literal may only specify known properties, and 'selectedCapabilities' does not exist in type 'DecodeOptions'.
+ ❯ packages/replication-protocol/test/codec-issue242-ac-red.test.ts:376:75
+    374|     for (const selected of [undefined, 0, 0x00000002]) {
+    375|       const err = expectProtocolError(
+    376|         () => decodeMessage(frame, selected === undefined ? undefined …
+       |                                                                           ^
+    377|         'UNSUPPORTED_MESSAGE_TYPE',
+    378|       );
+
+
+⎯⎯⎯ Unhandled Source Error ⎯⎯⎯
+TypeCheckError: Object literal may only specify known properties, and 'selectedCapabilities' does not exist in type 'DecodeOptions'.
+ ❯ packages/replication-protocol/test/codec-issue242-ac-red.test.ts:389:39
+    387|   it('已协商（本位置位，含多余位）解码成功且字段全等', () => {
+    388|     const frame = chunkFrame(VECTOR_A);
+    389|     const d1 = decodeMessage(frame, { selectedCapabilities: CAP_BIT });
+       |                                       ^
+    390|     expect(d1.message).toEqual(VECTOR_A.message);
+    391|     const d2 = decodeMessage(frame, { selectedCapabilities: CAP_BIT | …
+
+
+⎯⎯⎯ Unhandled Source Error ⎯⎯⎯
+TypeCheckError: Object literal may only specify known properties, and 'selectedCapabilities' does not exist in type 'DecodeOptions'.
+ ❯ packages/replication-protocol/test/codec-issue242-ac-red.test.ts:391:39
+    389|     const d1 = decodeMessage(frame, { selectedCapabilities: CAP_BIT });
+    390|     expect(d1.message).toEqual(VECTOR_A.message);
+    391|     const d2 = decodeMessage(frame, { selectedCapabilities: CAP_BIT | …
+       |                                       ^
+    392|     expect(d2.message).toEqual(VECTOR_A.message);
+    393|   });
+
+
+⎯⎯⎯ Unhandled Source Error ⎯⎯⎯
+TypeCheckError: Object literal may only specify known properties, and 'selectedCapabilities' does not exist in type 'DecodeOptions'.
+ ❯ packages/replication-protocol/test/codec-issue242-ac-red.test.ts:397:54
+    395|   it('selectedCapabilities 非法值 → CONNECTION_POLICY_VIOLATION（选项校验响亮，绝不…
+    396|     const frame = chunkFrame(VECTOR_A);
+    397|     expectProtocolError(() => decodeMessage(frame, { selectedCapabilit…
+       |                                                      ^
+    398|     expectProtocolError(() => decodeMessage(frame, { selectedCapabilit…
+    399|     expectProtocolError(() => decodeMessage(frame, { selectedCapabilit…
+
+
+⎯⎯⎯ Unhandled Source Error ⎯⎯⎯
+TypeCheckError: Object literal may only specify known properties, and 'selectedCapabilities' does not exist in type 'DecodeOptions'.
+ ❯ packages/replication-protocol/test/codec-issue242-ac-red.test.ts:398:54
+    396|     const frame = chunkFrame(VECTOR_A);
+    397|     expectProtocolError(() => decodeMessage(frame, { selectedCapabilit…
+    398|     expectProtocolError(() => decodeMessage(frame, { selectedCapabilit…
+       |                                                      ^
+    399|     expectProtocolError(() => decodeMessage(frame, { selectedCapabilit…
+    400|   });
+
+
+⎯⎯⎯ Unhandled Source Error ⎯⎯⎯
+TypeCheckError: Object literal may only specify known properties, and 'selectedCapabilities' does not exist in type 'DecodeOptions'.
+ ❯ packages/replication-protocol/test/codec-issue242-ac-red.test.ts:399:54
+    397|     expectProtocolError(() => decodeMessage(frame, { selectedCapabilit…
+    398|     expectProtocolError(() => decodeMessage(frame, { selectedCapabilit…
+    399|     expectProtocolError(() => decodeMessage(frame, { selectedCapabilit…
+       |                                                      ^
+    400|   });
+    401|
+
+
+⎯⎯⎯ Unhandled Source Error ⎯⎯⎯
+TypeCheckError: Object literal may only specify known properties, and 'selectedCapabilities' does not exist in type 'DecodeOptions'.
+ ❯ packages/replication-protocol/test/codec-issue242-ac-red.test.ts:406:54
+    404|     // 钉死「急切校验」作用域（resolveExpectedSequence 先例），堵死「仅 UPDATE_CHUNK 路径惰性校…
+    405|     const hello = hexToBytes(buildFrameHex(0x01, 1, GOLDEN[0]!.payload…
+    406|     expectProtocolError(() => decodeMessage(hello, { selectedCapabilit…
+       |                                                      ^
+    407|     expectProtocolError(() => decodeMessage(hello, { selectedCapabilit…
+    408|     expectProtocolError(() => decodeMessage(hello, { selectedCapabilit…
+
+
+⎯⎯⎯ Unhandled Source Error ⎯⎯⎯
+TypeCheckError: Object literal may only specify known properties, and 'selectedCapabilities' does not exist in type 'DecodeOptions'.
+ ❯ packages/replication-protocol/test/codec-issue242-ac-red.test.ts:407:54
+    405|     const hello = hexToBytes(buildFrameHex(0x01, 1, GOLDEN[0]!.payload…
+    406|     expectProtocolError(() => decodeMessage(hello, { selectedCapabilit…
+    407|     expectProtocolError(() => decodeMessage(hello, { selectedCapabilit…
+       |                                                      ^
+    408|     expectProtocolError(() => decodeMessage(hello, { selectedCapabilit…
+    409|     // 合法选项值下同一帧正常解码（作用域钉死不引入假拒绝）
+
+
+⎯⎯⎯ Unhandled Source Error ⎯⎯⎯
+TypeCheckError: Object literal may only specify known properties, and 'selectedCapabilities' does not exist in type 'DecodeOptions'.
+ ❯ packages/replication-protocol/test/codec-issue242-ac-red.test.ts:408:54
+    406|     expectProtocolError(() => decodeMessage(hello, { selectedCapabilit…
+    407|     expectProtocolError(() => decodeMessage(hello, { selectedCapabilit…
+    408|     expectProtocolError(() => decodeMessage(hello, { selectedCapabilit…
+       |                                                      ^
+    409|     // 合法选项值下同一帧正常解码（作用域钉死不引入假拒绝）
+    410|     expect(decodeMessage(hello, { selectedCapabilities: 0 }).message.k…
+
+
+⎯⎯⎯ Unhandled Source Error ⎯⎯⎯
+TypeCheckError: Object literal may only specify known properties, and 'selectedCapabilities' does not exist in type 'DecodeOptions'.
+ ❯ packages/replication-protocol/test/codec-issue242-ac-red.test.ts:410:35
+    408|     expectProtocolError(() => decodeMessage(hello, { selectedCapabilit…
+    409|     // 合法选项值下同一帧正常解码（作用域钉死不引入假拒绝）
+    410|     expect(decodeMessage(hello, { selectedCapabilities: 0 }).message.k…
+       |                                   ^
+    411|   });
+    412|
+
+
+⎯⎯⎯ Unhandled Source Error ⎯⎯⎯
+TypeCheckError: Object literal may only specify known properties, and 'selectedCapabilities' does not exist in type 'DecodeOptions'.
+ ❯ packages/replication-protocol/test/codec-issue242-ac-red.test.ts:417:51
+    415|     expect(negotiation).toEqual({ ok: true, selected: 0 });
+    416|     expectProtocolError(
+    417|       () => decodeMessage(chunkFrame(VECTOR_A), { selectedCapabilities…
+       |                                                   ^
+    418|       'UNSUPPORTED_MESSAGE_TYPE',
+    419|     );
+
+
+⎯⎯⎯ Unhandled Source Error ⎯⎯⎯
+TypeCheckError: Property 'UPDATE_TRANSFER_VIOLATION' does not exist on type 'Readonly<Record<NamespaceErrorCode, ErrorInfo>>'.
+ ❯ packages/replication-protocol/test/codec-issue242-ac-red.test.ts:427:29
+    425| describe('AC4：两条 namespace 错误码注册表单点导出 + RESYNC reason 词表 append-only',…
+    426|   it('UPDATE_TRANSFER_VIOLATION：fatal=true/retryable=no/terminalState=…
+    427|     expect(NAMESPACE_ERRORS.UPDATE_TRANSFER_VIOLATION).toEqual({
+       |                             ^
+    428|       code: 'UPDATE_TRANSFER_VIOLATION',
+    429|       scope: 'namespace',
+
+
+⎯⎯⎯ Unhandled Source Error ⎯⎯⎯
+TypeCheckError: Property 'UPDATE_TRANSFER_TOO_LARGE' does not exist on type 'Readonly<Record<NamespaceErrorCode, ErrorInfo>>'.
+ ❯ packages/replication-protocol/test/codec-issue242-ac-red.test.ts:437:29
+    435|
+    436|   it('UPDATE_TRANSFER_TOO_LARGE：fatal=true/retryable=config/terminalSt…
+    437|     expect(NAMESPACE_ERRORS.UPDATE_TRANSFER_TOO_LARGE).toEqual({
+       |                             ^
+    438|       code: 'UPDATE_TRANSFER_TOO_LARGE',
+    439|       scope: 'namespace',
+
+
+⎯⎯⎯ Unhandled Source Error ⎯⎯⎯
+TypeCheckError: Property 'UPDATE_TRANSFER_VIOLATION' does not exist on type 'Readonly<Record<NamespaceErrorCode, ErrorInfo>>'.
+ ❯ packages/replication-protocol/test/codec-issue242-ac-red.test.ts:453:45
+    451|     expect(NAMESPACE_ERRORS.ACK_TIMEOUT).toMatchObject({ fatal: false,…
+    452|     expect(Object.isFrozen(NAMESPACE_ERRORS)).toBe(true);
+    453|     expect(Object.isFrozen(NAMESPACE_ERRORS.UPDATE_TRANSFER_VIOLATION)…
+       |                                             ^
+    454|   });
+    455|
+
+
+⎯⎯⎯ Unhandled Source Error ⎯⎯⎯
+TypeCheckError: Property 'UPDATE_TRANSFER_VIOLATION' does not exist on type 'Readonly<Record<NamespaceErrorCode, ErrorInfo>>'.
+ ❯ packages/replication-protocol/test/codec-issue242-ac-red.test.ts:457:89
+    455|
+    456|   it('lookupError 双向可见性：namespace 命中、connection 不可见（scope 隔离）', () => {
+    457|     expect(lookupError('namespace', 'UPDATE_TRANSFER_VIOLATION')).toBe…
+       |                                                                                         ^
+    458|     expect(lookupError('namespace', 'UPDATE_TRANSFER_TOO_LARGE')).toBe…
+    459|     expect(lookupError('connection', 'UPDATE_TRANSFER_VIOLATION')).toB…
+
+
+⎯⎯⎯ Unhandled Source Error ⎯⎯⎯
+TypeCheckError: Property 'UPDATE_TRANSFER_TOO_LARGE' does not exist on type 'Readonly<Record<NamespaceErrorCode, ErrorInfo>>'.
+ ❯ packages/replication-protocol/test/codec-issue242-ac-red.test.ts:458:89
+    456|   it('lookupError 双向可见性：namespace 命中、connection 不可见（scope 隔离）', () => {
+    457|     expect(lookupError('namespace', 'UPDATE_TRANSFER_VIOLATION')).toBe…
+    458|     expect(lookupError('namespace', 'UPDATE_TRANSFER_TOO_LARGE')).toBe…
+       |                                                                                         ^
+    459|     expect(lookupError('connection', 'UPDATE_TRANSFER_VIOLATION')).toB…
+    460|     expect(lookupError('connection', 'UPDATE_TRANSFER_TOO_LARGE')).toB…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯
+
+
+ Test Files  1 failed | 9 passed (10)
+      Tests  20 failed | 147 passed (167)
+Type Errors  no errors
+     Errors  21 errors
+   Start at  13:30:31
+   Duration  6.17s (transform 763ms, setup 0ms, collect 2.85s, tests 1.51s, environment 1ms, prepare 2.82s, typecheck 5.99s)
+
+
+==== 退出码：1（唯一失败文件 = 红灯契约文件，属预期红灯；Errors 21 = 红灯文件的类型层红灯，与 typecheck 日志同源）====
+==== 判读：既有 9 个测试文件（8 个 .test.ts + codec-api.test-d.ts）139 用例零失败；
+     红灯文件 28 用例中 20 失败（缺失实现）| 8 通过（跨翻转合法锚）；Tests 147 = 139 + 8。====
+
+==== 补充：全仓探测 run（同样无排除，供 SA3/SA4 参考）====
+$ NODE_OPTIONS=--conditions=nomicore-source pnpm exec vitest run --typecheck
+ Test Files  3 failed | 228 passed (231)
+      Tests  22 failed | 2372 passed (2394)
+Type Errors  no errors
+     Errors  23 errors
+   Duration  168.62s (transform 5.77s, setup 0ms, collect 44.80s, tests 388.19s, environment 67ms, prepare 20.06s, typecheck 4.38s)
+==== 退出码：1。3 个失败文件 = 本任务红灯契约文件（20 失败，预期）+ 2 个与本任务无关的先在环境性失败：
+     apps/yjs-server/test/stdin-error-chain-red.test.ts（T7-F1 加载竞态：process exited 134 / EAGAIN spawn CPU burner）与
+     packages/vfsl-codegen/test/generate-cli-check.test.ts（5000ms 超时）。二者均为已跟踪文件且与本任务产物无关
+     （git status：本任务仅新增未跟踪文件，零已跟踪文件修改）。隔离复跑二者：
+$ NODE_OPTIONS=--conditions=nomicore-source pnpm exec vitest run apps/yjs-server/test/stdin-error-chain-red.test.ts packages/vfsl-codegen/test/generate-cli-check.test.ts
+ Test Files  2 passed (2)
+      Tests  12 passed (12)
+==== 隔离复跑退出码：0（12/12 通过）→ 两失败为全仓并行负载下的环境性抖动，先在于本任务，非本任务回归。====

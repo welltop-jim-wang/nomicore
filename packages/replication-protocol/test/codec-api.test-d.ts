@@ -7,12 +7,15 @@
  */
 import { describe, expectTypeOf, it } from 'vitest';
 import {
+  type DecodeOptions,
   type DecodedMessage,
   type ErrorInfo,
   type FrameHeader,
   type MessageName,
   type ProtocolError,
   type ReplicationMessage,
+  type UpdateChunkMsg,
+  CAP_CHUNKED_UPDATE,
   CONNECTION_ERRORS,
   MESSAGE_REGISTRY,
   MESSAGE_TYPES,
@@ -32,10 +35,29 @@ describe('@nomicore/replication-protocol 类型契约', () => {
     expectTypeOf<DecodedMessage['message']>().toEqualTypeOf<ReplicationMessage>();
   });
 
-  it('message 判别键 kind 为 17 个注册名之一', () => {
+  it('message 判别键 kind 为 18 个注册名之一（issue #242 追加 UPDATE_CHUNK）', () => {
     expectTypeOf<ReplicationMessage['kind']>().toEqualTypeOf<MessageName>();
     expectTypeOf(MESSAGE_TYPES).toMatchTypeOf<Record<MessageName, number>>();
     expectTypeOf(MESSAGE_REGISTRY['UPDATE'].code).toEqualTypeOf<number>();
+  });
+
+  it('issue #242 类型面：UpdateChunkMsg 成员、CAP_CHUNKED_UPDATE 常量、DecodeOptions.selectedCapabilities', () => {
+    expectTypeOf<UpdateChunkMsg>().toMatchTypeOf<{
+      kind: 'UPDATE_CHUNK';
+      namespaceId: string;
+      transferId: number;
+      chunkIndex: number;
+      chunkCount: number;
+      totalBytes: number;
+      bytes: Uint8Array;
+    }>();
+    expectTypeOf<ReplicationMessage>().extract<{ kind: 'UPDATE_CHUNK' }>().toEqualTypeOf<UpdateChunkMsg>();
+    // 常量导出为数字型（字面量是否收窄取决于声明边界的 const 推断；值恒等 0x1 由运行时契约
+    // codec-issue242-ac-red.test.ts AC1 断言）
+    expectTypeOf<typeof CAP_CHUNKED_UPDATE>().toMatchTypeOf<number>();
+    expectTypeOf<DecodeOptions>().toMatchTypeOf<{ selectedCapabilities?: number }>();
+    // 既有消息成员不受扩容影响（append-only）
+    expectTypeOf<ReplicationMessage>().extract<{ kind: 'UPDATE' }>().toMatchTypeOf<{ kind: 'UPDATE'; update: Uint8Array }>();
   });
 
   it('encodeFrame/decodeFrame 的 header 形状为 20-byte 大端字段', () => {

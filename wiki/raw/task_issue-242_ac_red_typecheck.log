@@ -1,0 +1,33 @@
+==== SA1 iteration 1 刷新（SA2 F2）：类型层红灯证据 ====
+==== 精确可复现命令（未实施树，工作目录 = 任务 worktree 根）====
+$ pnpm exec tsc -p packages/replication-protocol/tsconfig.json
+==== 以下为该命令的原始输出（逐字），退出码见文末 ====
+
+packages/replication-protocol/test/codec-issue242-ac-red.test.ts(30,3): error TS2305: Module '"@nomicore/replication-protocol"' has no exported member 'CAP_CHUNKED_UPDATE'.
+packages/replication-protocol/test/codec-issue242-ac-red.test.ts(35,8): error TS2724: '"@nomicore/replication-protocol"' has no exported member named 'UpdateChunkMsg'. Did you mean 'UpdateAckMsg'?
+packages/replication-protocol/test/codec-issue242-ac-red.test.ts(152,33): error TS2353: Object literal may only specify known properties, and 'selectedCapabilities' does not exist in type 'DecodeOptions'.
+packages/replication-protocol/test/codec-issue242-ac-red.test.ts(175,26): error TS2551: Property 'UPDATE_CHUNK' does not exist on type 'Readonly<Record<MessageName, number>>'. Did you mean 'UPDATE_ACK'?
+packages/replication-protocol/test/codec-issue242-ac-red.test.ts(177,29): error TS2551: Property 'UPDATE_CHUNK' does not exist on type 'Readonly<Record<MessageName, MessageInfo>>'. Did you mean 'UPDATE_ACK'?
+packages/replication-protocol/test/codec-issue242-ac-red.test.ts(376,75): error TS2345: Argument of type '{ selectedCapabilities: number; } | undefined' is not assignable to parameter of type 'DecodeOptions | undefined'.
+  Object literal may only specify known properties, and 'selectedCapabilities' does not exist in type 'DecodeOptions'.
+packages/replication-protocol/test/codec-issue242-ac-red.test.ts(389,39): error TS2353: Object literal may only specify known properties, and 'selectedCapabilities' does not exist in type 'DecodeOptions'.
+packages/replication-protocol/test/codec-issue242-ac-red.test.ts(391,39): error TS2353: Object literal may only specify known properties, and 'selectedCapabilities' does not exist in type 'DecodeOptions'.
+packages/replication-protocol/test/codec-issue242-ac-red.test.ts(397,54): error TS2353: Object literal may only specify known properties, and 'selectedCapabilities' does not exist in type 'DecodeOptions'.
+packages/replication-protocol/test/codec-issue242-ac-red.test.ts(398,54): error TS2353: Object literal may only specify known properties, and 'selectedCapabilities' does not exist in type 'DecodeOptions'.
+packages/replication-protocol/test/codec-issue242-ac-red.test.ts(399,54): error TS2353: Object literal may only specify known properties, and 'selectedCapabilities' does not exist in type 'DecodeOptions'.
+packages/replication-protocol/test/codec-issue242-ac-red.test.ts(406,54): error TS2353: Object literal may only specify known properties, and 'selectedCapabilities' does not exist in type 'DecodeOptions'.
+packages/replication-protocol/test/codec-issue242-ac-red.test.ts(407,54): error TS2353: Object literal may only specify known properties, and 'selectedCapabilities' does not exist in type 'DecodeOptions'.
+packages/replication-protocol/test/codec-issue242-ac-red.test.ts(408,54): error TS2353: Object literal may only specify known properties, and 'selectedCapabilities' does not exist in type 'DecodeOptions'.
+packages/replication-protocol/test/codec-issue242-ac-red.test.ts(410,35): error TS2353: Object literal may only specify known properties, and 'selectedCapabilities' does not exist in type 'DecodeOptions'.
+packages/replication-protocol/test/codec-issue242-ac-red.test.ts(417,51): error TS2353: Object literal may only specify known properties, and 'selectedCapabilities' does not exist in type 'DecodeOptions'.
+packages/replication-protocol/test/codec-issue242-ac-red.test.ts(427,29): error TS2339: Property 'UPDATE_TRANSFER_VIOLATION' does not exist on type 'Readonly<Record<NamespaceErrorCode, ErrorInfo>>'.
+packages/replication-protocol/test/codec-issue242-ac-red.test.ts(437,29): error TS2339: Property 'UPDATE_TRANSFER_TOO_LARGE' does not exist on type 'Readonly<Record<NamespaceErrorCode, ErrorInfo>>'.
+packages/replication-protocol/test/codec-issue242-ac-red.test.ts(453,45): error TS2339: Property 'UPDATE_TRANSFER_VIOLATION' does not exist on type 'Readonly<Record<NamespaceErrorCode, ErrorInfo>>'.
+packages/replication-protocol/test/codec-issue242-ac-red.test.ts(457,89): error TS2339: Property 'UPDATE_TRANSFER_VIOLATION' does not exist on type 'Readonly<Record<NamespaceErrorCode, ErrorInfo>>'.
+packages/replication-protocol/test/codec-issue242-ac-red.test.ts(458,89): error TS2339: Property 'UPDATE_TRANSFER_TOO_LARGE' does not exist on type 'Readonly<Record<NamespaceErrorCode, ErrorInfo>>'.
+
+==== 退出码：2（tsc：存在类型错误）====
+==== 汇总：21 个错误全部位于 packages/replication-protocol/test/codec-issue242-ac-red.test.ts，
+     全部为缺失 API 面（TS2305/TS2724 导出缺失 CAP_CHUNKED_UPDATE/UpdateChunkMsg；TS2353/TS2345
+     DecodeOptions.selectedCapabilities；TS2339/TS2551 注册表 UPDATE_CHUNK/UPDATE_TRANSFER_*），
+     无任何测试自身逻辑的类型错误。====

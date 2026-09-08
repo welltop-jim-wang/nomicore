@@ -522,6 +522,12 @@ class PeerConnectionImpl implements PeerReplication {
       case 'GOAWAY':
         this.onGoaway(message);
         return;
+      case 'UPDATE_CHUNK':
+        // 类型兼容分支（issue #242 切片 1）：decodeInbound 缺省门控下构造性不可达——
+        // 未协商 ⇒ 消息层 UNSUPPORTED_MESSAGE_TYPE（1002）先于 dispatch。分类与 decode 层自镜像
+        // （wsCloseCodeFor('UNSUPPORTED_MESSAGE_TYPE') === 1002），为后续切片防误分发兜底。
+        this.connectionFatal('UNSUPPORTED_MESSAGE_TYPE', 1002);
+        return;
       default: {
         const never: never = message;
         void never;
