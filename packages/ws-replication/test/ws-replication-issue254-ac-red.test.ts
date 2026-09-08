@@ -24,7 +24,7 @@ import type {
 } from '@nomicore/ws-replication';
 import { decodeMessage } from '@nomicore/replication-protocol';
 import { advanceMs, boot, collectUnhandledRejections } from './driver.js';
-import { settle, settleUntil } from './harness.js';
+import { deferred, settle, settleUntil } from './harness.js';
 
 // ═══════════════════════════ 场景配置（全部虚拟时间；零 real sleep） ═══════════════════════════
 
@@ -250,6 +250,145 @@ describe('issue #254：周期 reconciliation 超时自愈红灯契约', () => {
 
   it('红灯 A2：同款死局在后续周期 round（先放行一个健康 round）同样必须自愈', async () => {
     await runTimeoutRecoveryScenario({ describe: 'A2', stallRound: 2 });
+  }, 60_000);
+
+  it('红灯 A3：延迟 apply 未排空时 reconcile timeout 不得启动新代 OPEN；释放 barrier 后旧 lease 恰一次释放且新 connectionId 完成 OPEN→reconcile→live', async () => {
+    const peerRec = makeRecorder();
+    const hubRec = makeRecorder();
+    const peerLeaseReleased: number[] = [];
+    const run = await boot({
+      peerReplica: 'same',
+      random: () => 0,
+      timeouts: TIMEOUTS,
+      backoff: BACKOFF,
+      peerObserver: peerRec.observer,
+      hubObserver: hubRec.observer,
+      peerRegistryObserver: (event: unknown): void => {
+        const observed = event as { readonly type?: string; readonly remainingLeases?: number };
+        if (observed.type === 'lease-released' && typeof observed.remainingLeases === 'number') {
+          peerLeaseReleased.push(observed.remainingLeases);
+        }
+      },
+    });
+    let cleanupGate: ReturnType<typeof deferred> | undefined;
+    try {
+      const initialPeerLive = peerRec.events.find(
+        (event): event is ChanEvent =>
+          event.type === 'channel-state-changed' &&
+          event.side === 'peer' &&
+          event.namespaceId === run.nsId &&
+          event.to === 'live',
+      );
+      const initialHubLive = hubRec.events.find(
+        (event): event is ChanEvent =>
+          event.type === 'channel-state-changed' &&
+          event.side === 'hub' &&
+          event.namespaceId === run.nsId &&
+          event.to === 'live',
+      );
+      expect(initialPeerLive?.connectionId).toBeDefined();
+      expect(initialHubLive?.connectionId).toBeDefined();
+
+      // 周期 round 进入 reconciling 后，将 peer 侧 round apply 卡在 dirty notification。
+      cleanupGate = deferred();
+      const savesBeforeRound = run.saveEvents('peer');
+      run.peerNode.persistence.saveGate = cleanupGate;
+      await advanceBoth(run, TIMEOUTS.reconcileIntervalMs!);
+      await run.waitNamespace('reconciling');
+      await settleUntil(
+        () => run.saveEvents('peer') > savesBeforeRound,
+        'peer round apply 已接纳并挂 dirty barrier',
+      );
+      await settle();
+      for (let step = 0; step < 4 && run.namespaceState() === 'reconciling'; step += 1) {
+        await advanceBoth(run, TIMEOUTS.reconcileTimeoutMs!);
+      }
+      expect(
+        peerRec.events.some(
+          (event) =>
+            event.type === 'channel-state-changed' &&
+            event.side === 'peer' &&
+            event.namespaceId === run.nsId &&
+            event.to === 'failed',
+        ),
+      ).toBe(true);
+      expect(run.connectionState()).toBe('backoff');
+      expect(run.wires, '旧 apply 未排空时不得拨出新连接').toHaveLength(1);
+
+      // 正确实现须等旧代 apply/session/lease cleanup barrier 后才允许新代 OPEN。
+      await advanceBoth(run, 1);
+      expect(run.wires, '旧 apply 未排空前不得拨出新连接').toHaveLength(1);
+      expect(peerLeaseReleased, '旧复制 lease 未越过 session.close barrier 前不得释放').toHaveLength(0);
+
+      run.peerNode.persistence.saveGate = undefined;
+      cleanupGate.resolve();
+      await settleUntil(() => peerLeaseReleased.length === 1, '旧复制 lease 释放恰一次');
+      await settleUntil(() => run.wires.length === 2, 'cleanup barrier 后才拨出新连接');
+      await run.waitConnection('ready');
+      await run.waitNamespace('live');
+      expect(peerLeaseReleased, '旧复制 lease 必须释放，且新代 OPEN 不应因旧 lease 阻塞').toContain(1);
+
+      const finalPeerLive = [...peerRec.events].reverse().find(
+        (event): event is ChanEvent =>
+          event.type === 'channel-state-changed' &&
+          event.side === 'peer' &&
+          event.namespaceId === run.nsId &&
+          event.to === 'live',
+      );
+      const finalHubLive = [...hubRec.events].reverse().find(
+        (event): event is ChanEvent =>
+          event.type === 'channel-state-changed' &&
+          event.side === 'hub' &&
+          event.namespaceId === run.nsId &&
+          event.to === 'live',
+      );
+      expect(finalPeerLive?.connectionId).toBeDefined();
+      expect(finalHubLive?.connectionId).toBeDefined();
+      expect(finalPeerLive?.connectionId).not.toBe(initialPeerLive?.connectionId);
+      expect(finalHubLive?.connectionId).not.toBe(initialHubLive?.connectionId);
+
+      for (const [side, events, oldId, newId] of [
+        ['peer', peerRec.events, initialPeerLive?.connectionId, finalPeerLive?.connectionId],
+        ['hub', hubRec.events, initialHubLive?.connectionId, finalHubLive?.connectionId],
+      ] as const) {
+        const oldTrail = events.filter(
+          (event): event is ChanEvent =>
+            event.type === 'channel-state-changed' &&
+            event.side === side &&
+            event.namespaceId === run.nsId &&
+            event.connectionId === oldId,
+        );
+        const newTrail = events.filter(
+          (event): event is ChanEvent =>
+            event.type === 'channel-state-changed' &&
+            event.side === side &&
+            event.namespaceId === run.nsId &&
+            event.connectionId === newId,
+        );
+        expect(
+          oldTrail.some((event) =>
+            side === 'peer' ? event.to === 'disconnected' : ['closed', 'failed'].includes(event.to),
+          ),
+          `${side} 旧 connectionId 必须收口`,
+        ).toBe(true);
+        if (side === 'peer') {
+          expect(newTrail.some((event) => event.to === 'opening'), 'peer 新 connectionId 必须重新 OPEN').toBe(true);
+        } else {
+          expect(
+            run.wire.peerToHub.map((bytes) => decodeMessage(bytes).message.kind),
+            'hub 新 connectionId 必须收到 OPEN_NAMESPACE',
+          ).toContain('OPEN_NAMESPACE');
+        }
+        expect(newTrail.some((event) => event.to === 'reconciling'), `${side} 新 connectionId 必须 reconcile`).toBe(true);
+        expect(newTrail.at(-1)?.to, `${side} 新 connectionId 最终 live`).toBe('live');
+      }
+      expect(run.wire.peerToHub.map((bytes) => decodeMessage(bytes).message.kind)).toContain('OPEN_NAMESPACE');
+      expect(run.rootValue('peer', 'n'), '延迟 apply 完成后的 peer 数据必须与 hub 收敛').toBe(run.rootValue('hub', 'n'));
+    } finally {
+      run.peerNode.persistence.saveGate = undefined;
+      cleanupGate?.resolve();
+      await run.peer.stop().catch(() => undefined);
+    }
   }, 60_000);
 
   it('绿负控 N1：round 在 reconcileTimeout 内保持进行中——不重叠、不重建、不重拨（issue 点名现有测试盲区）', async () => {

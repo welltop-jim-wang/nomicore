@@ -937,7 +937,19 @@ class PeerConnectionImpl implements PeerReplication {
     this.emitBackoffScheduled(reason, this.attempts, delay);
     this.backoffHandle = this.options.timer.setTimeout(() => {
       this.backoffHandle = undefined;
-      if (this.connStateValue === 'backoff') this.dialNow();
+      if (this.connStateValue !== 'backoff') return;
+      if (reason !== 'namespace-recovery') {
+        this.dialNow();
+        return;
+      }
+      // issue #254：恢复性重拨必须等待旧连接全部 namespace 的 lifecycle cleanup
+      // barrier；否则 full-jitter=0 时新 OPEN 可先于旧 session.close/lease.release。
+      const cleanupBarrier = Promise.allSettled(
+        [...this.controllers.values()].map((controller) => controller.waitForCleanup()),
+      );
+      void cleanupBarrier.then(() => {
+        if (this.connStateValue === 'backoff' && !this.stopping) this.dialNow();
+      });
     }, delay);
   }
 

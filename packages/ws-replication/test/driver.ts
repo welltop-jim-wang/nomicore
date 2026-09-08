@@ -191,6 +191,7 @@ export interface BootOptions {
    * 单次 queueMicrotask。 */
   readonly deferTask?: (task: () => void) => void;
   readonly hubRegistryObserver?: NonNullable<Parameters<typeof import('./harness.js').makeNode>[1]>;
+  readonly peerRegistryObserver?: NonNullable<Parameters<typeof import('./harness.js').makeNode>[1]>;
   readonly createHub?: typeof import('@nomicore/ws-replication').createHubReplication;
   /** issue #239 复现 seam：Hub 侧结构化 observer 直通（缺省不注入 = 零事件，
    *  与生产 config `observer?: ReplicationObserver` 同一注入面）。 */
@@ -474,7 +475,7 @@ export class Run {
  */
 export async function boot(opts: BootOptions = {}): Promise<Run> {
   const hubNode = makeNode('hub', opts.hubRegistryObserver);
-  const peerNode = makeNode('peer');
+  const peerNode = makeNode('peer', opts.peerRegistryObserver);
   const authorizer =
     opts.authorize !== undefined && typeof opts.authorize === 'function'
       ? spyOfAuthorizer(opts.authorize)

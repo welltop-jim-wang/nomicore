@@ -1363,6 +1363,11 @@ export class PeerNamespaceController {
     return run;
   }
 
+  /** 等待此前已排队的生命周期清理全部结算；连接层仅用于重拨 barrier。 */
+  waitForCleanup(): Promise<void> {
+    return this.cleanupTail;
+  }
+
   /** 清理入口（各失联/终局/停止事件调用）。
    *  R1（SA2 #1）：claim 于**排队前**在 caller 同步栈求值——原稿把 claimForDisposal()
    *  写进任务 lambda，等于任务**执行期**才捕获：T1 挂起（drain 屏障）期间 fatal 补排
