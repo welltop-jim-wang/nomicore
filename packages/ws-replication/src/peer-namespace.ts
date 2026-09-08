@@ -82,6 +82,26 @@ export interface PeerNamespaceHost {
 
 type TimerKind = 'open' | 'bootstrap' | 'reconcile' | 'periodic-reconcile' | 'close';
 
+/** §5.1 timer 族 → resolved 配置字段单映射（armTimer 延迟与 onTimerFired 的
+ *  timeoutMs 同源——避免两处级联漂移）。 */
+const TIMER_DELAY_FIELD = {
+  open: 'openTimeoutMs',
+  bootstrap: 'bootstrapTimeoutMs',
+  reconcile: 'reconcileTimeoutMs',
+  'periodic-reconcile': 'reconcileIntervalMs',
+  close: 'closeTimeoutMs',
+} as const satisfies Record<TimerKind, keyof ResolvedTimeouts>;
+
+/** issue #256：timer 族超时 → 稳定 cause 单映射（§13.2 `NAMESPACE_TIMEOUT` 本地映射族）。 */
+const TIMER_TIMEOUT_CAUSE: Record<
+  'open' | 'bootstrap' | 'reconcile',
+  ReplicationNamespaceFailedCause
+> = {
+  open: 'open-timeout',
+  bootstrap: 'bootstrap-timeout',
+  reconcile: 'reconcile-timeout',
+};
+
 /** 排队时（caller 同步栈）捕获的代际资源所有权（§D1，issue #171 Scope 2）：
  *  执行期只处置捕获对象——「先捕获、后处置」，迟到续体不得触碰当前代字段。
  *  R1（SA2 #3）：不含 epoch——代际判别由 runDisposal 的**身份守卫**（session
@@ -1298,22 +1318,28 @@ export class PeerNamespaceController {
     this.setState(state);
     // issue #256：failed 终态边沿恰一可诊断原因事件（isTerminal 早退保证终态不降级、
     // 不重复——closing 期/终态后迟到的 finalize 调用零事件）；决策落定后发射
-    // （setState 之后，§23.4），observer 缺省零事件构造（cause/timeoutMs 实参 =
-    // 稳定字面量/resolved 配置字段，无 live 状态读取、零时钟调用）。
-    if (state === 'failed' && cause !== undefined && this.observerOn) {
-      this.host.emitObserver({
-        type: 'namespace-failed',
-        side: 'peer',
-        ...(cidField(this.host.connectionId())),
-        namespaceId: this.namespaceId,
-        cause,
-        ...(timeoutMs !== undefined ? { timeoutMs } : {}),
-      });
+    // （setState 之后，§23.4）。
+    if (state === 'failed' && cause !== undefined) {
+      this.emitNamespaceFailed(cause, timeoutMs);
     }
     // E5 终局收口（SA2 R3 / §3.8 裁决 3）：failed/conflicted 也是收口终态——closeMemo
     // 的事件驱动结算不区分终态种类，一律 settle（AC3b/⑤c/⑤d 回归面已核查为零）。
     this.settleCloseMemo();
     void this.cleanupResources().catch(() => undefined);
+  }
+
+  /** issue #256：namespace-failed（cause 闭联合；observer 缺省零事件构造——
+   *  cause/timeoutMs 实参 = 稳定字面量/resolved 配置字段，无 live 状态读取、零时钟调用）。 */
+  private emitNamespaceFailed(cause: ReplicationNamespaceFailedCause, timeoutMs?: number): void {
+    if (!this.observerOn) return;
+    this.host.emitObserver({
+      type: 'namespace-failed',
+      side: 'peer',
+      ...(cidField(this.host.connectionId())),
+      namespaceId: this.namespaceId,
+      cause,
+      ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+    });
   }
 
   private isTerminal(): boolean {
@@ -1527,16 +1553,7 @@ export class PeerNamespaceController {
 
   private armTimer(kind: TimerKind): void {
     this.clearTimer(kind);
-    const delay =
-      kind === 'open'
-        ? this.host.timeouts.openTimeoutMs
-        : kind === 'bootstrap'
-          ? this.host.timeouts.bootstrapTimeoutMs
-          : kind === 'reconcile'
-            ? this.host.timeouts.reconcileTimeoutMs
-            : kind === 'periodic-reconcile'
-              ? this.host.timeouts.reconcileIntervalMs
-              : this.host.timeouts.closeTimeoutMs;
+    const delay = this.host.timeouts[TIMER_DELAY_FIELD[kind]];
     this.timers[kind] = this.host.timer.setTimeout(() => {
       this.timers[kind] = undefined;
       this.onTimerFired(kind);
@@ -1573,21 +1590,7 @@ export class PeerNamespaceController {
     // §5.1：timeout 只收口 namespace（零 wire 帧）
     // issue #256：timer 族超时附稳定原因 + 配置上限（resolved 配置字段读，非 live 状态
     // 读取/时钟调用）——open/bootstrap/reconcile 三类在单侧日志即可区分。
-    const timeoutMs =
-      kind === 'open'
-        ? this.host.timeouts.openTimeoutMs
-        : kind === 'bootstrap'
-          ? this.host.timeouts.bootstrapTimeoutMs
-          : this.host.timeouts.reconcileTimeoutMs;
-    this.finalize(
-      'failed',
-      kind === 'open'
-        ? 'open-timeout'
-        : kind === 'bootstrap'
-          ? 'bootstrap-timeout'
-          : 'reconcile-timeout',
-      timeoutMs,
-    );
+    this.finalize('failed', TIMER_TIMEOUT_CAUSE[kind], this.host.timeouts[TIMER_DELAY_FIELD[kind]]);
     // issue #254：open/bootstrap/reconcile 超时 = §13.2 `NAMESPACE_TIMEOUT`
     // （retryable=reconnect）——failed 的既定恢复路径是连接重建（§16「等待连接重建」），
     // 而超时本身不拆连接；target 仍活跃（未 remove）而连接仍存活时，重建触发者只能

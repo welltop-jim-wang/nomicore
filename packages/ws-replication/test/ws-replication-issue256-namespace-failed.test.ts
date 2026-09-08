@@ -19,17 +19,28 @@
  *      场景 9b：live 中连接断开 → disconnected 而非 failed；场景 1/3 另断言
  *      failed 后断线 + stop 全程恰一事件）；
  *   7. 无 observer 零回归（场景 10：零 observer 下 reconcile 超时自愈 live、零
- *      unhandled rejection——行为逐字节等价纪律的绿灯锚）。
+ *      unhandled rejection + spy 实测零时钟调用/零额外 lease 状态读取）；
+ *   8. 非 timer 族 cause 逐值回归（评审修订补全——场景 11 open-failed /
+ *      场景 12 replication-disabled / 场景 13 session-open-failed /
+ *      场景 14 send-failed（hub 本地快照超限，非 protocol-violation）/
+ *      场景 15 hub bootstrap-timeout 接线；session-missing 与 internal-error
+ *      为竞态防御/理论不可达兜底分支，覆盖矩阵见 §23.1 附表）。
  *
  * 红灯纪律：真实 yjs / Registry / Runtime；fake-duplex；注入 timer；零 real sleep。
  */
 import { describe, expect, it } from 'vitest';
 import * as Y from 'yjs';
 import type {
+  ReplicationClock,
   ReplicationNamespaceFailedCause,
   ReplicationObserver,
   ReplicationObserverEvent,
 } from '@nomicore/ws-replication';
+import type {
+  NamespaceLease,
+  NamespaceOwner,
+  NamespaceRegistry,
+} from '@nomicore/namespace-registry';
 import { decodeMessage } from '@nomicore/replication-protocol';
 import {
   advanceMs,
@@ -122,6 +133,51 @@ function isSyncApplied(bytes: Uint8Array): boolean {
 
 function isBootstrapSnapshot(bytes: Uint8Array): boolean {
   return decodeMessage(bytes).message.kind === 'BOOTSTRAP_SNAPSHOT';
+}
+
+function isBootstrapAck(bytes: Uint8Array): boolean {
+  return decodeMessage(bytes).message.kind === 'BOOTSTRAP_ACK';
+}
+
+/** 测试面 registry 包装（issue #256 故障注入/读取计数）：open 覆盖为委托 + wrap；
+ *  其余成员经原型链落回真实 registry（Registry 为冻结闭包对象——Proxy get 不可
+ *  覆盖、[[Set]] 赋值会被原型只读数据属性拒绝，故用 defineProperty 遮蔽）。 */
+function wrapRegistryOpen(
+  registry: NamespaceRegistry,
+  wrap: (lease: NamespaceLease) => NamespaceLease,
+): NamespaceRegistry {
+  const wrapped = Object.create(registry) as NamespaceRegistry;
+  Object.defineProperty(wrapped, 'open', {
+    value: async (owner: NamespaceOwner, namespaceId: string) => {
+      const result = await registry.open(owner, namespaceId);
+      return result.ok ? { ...result, lease: wrap(result.lease) } : result;
+    },
+  });
+  return wrapped;
+}
+
+/** 测试面 lease 代理（同款 Object.create + defineProperty 遮蔽）：getStatus 读取
+ *  计数钩子 / openReplicationSession 故障注入；其余成员落回真实 lease。 */
+function proxyLease(
+  lease: NamespaceLease,
+  hooks: { onGetStatus?: () => void; rejectOpenSession?: boolean },
+): NamespaceLease {
+  const wrapped = Object.create(lease) as NamespaceLease;
+  if (hooks.onGetStatus !== undefined) {
+    const onGetStatus = hooks.onGetStatus;
+    Object.defineProperty(wrapped, 'getStatus', {
+      value: () => {
+        onGetStatus();
+        return lease.getStatus();
+      },
+    });
+  }
+  if (hooks.rejectOpenSession === true) {
+    Object.defineProperty(wrapped, 'openReplicationSession', {
+      value: () => Promise.reject(new Error('session backend boom')),
+    });
+  }
+  return wrapped;
 }
 
 describe('issue #256：namespace-failed 终态原因可诊断性', () => {
@@ -516,30 +572,248 @@ describe('issue #256：namespace-failed 终态原因可诊断性', () => {
     expect(failedOf(peerRec.events, 'peer'), 'stop 后仍零').toHaveLength(0);
   }, 60_000);
 
-  // ═══════════ 场景 10：无 observer 零回归（零事件构造/零读取纪律的行为锚） ═══════════
-  it('场景 10：零 observer 注入 → reconcile 超时收口 failed 并自愈 live（行为与观测面完全解耦）', async () => {
+  // ═══════════ 场景 10：无 observer 零回归（spy 实测零时钟调用/零额外状态读取） ═══════════
+  it('场景 10：零 observer 注入 → reconcile 超时收口 failed 并自愈 live；spy 断言零时钟调用、零额外 lease 状态读取', async () => {
     const uh = collectUnhandledRejections();
+    let clockCalls = 0;
+    const spyClock: ReplicationClock = {
+      now: () => {
+        clockCalls += 1;
+        return 0;
+      },
+    };
+    let statusReads = 0;
     const run = await boot({
       peerReplica: 'same',
       timeouts: { reconcileIntervalMs: 200, reconcileTimeoutMs: 500 },
-      backoff: { baseMs: 50, maxMs: 400, resetAfterMs: 4_000 },
+      // backoff 窗口（8s）远大于测量窗口——failed 边沿断言在恢复性重建（重新 open
+      // 会合法读取 lease 状态）之前完成，测量窗口零污染。
+      backoff: { baseMs: 8_000, maxMs: 8_000, resetAfterMs: 30_000 },
       random: () => 0.5,
-      // 零 observer —— 无事件构造/无投影读取/零时钟调用（类型层 + finalize observerOn 门）
+      // 零 observer —— 行为解耦之外，本场景以 spy 实测零开销纪律：时钟注入但全程
+      // 不允许被调用；lease getStatus 计数锚定失败收口路径零新增状态读取（open 期
+      // 基线读取不计）。
+      peerClock: spyClock,
+      wrapPeerRegistry: (registry) =>
+        wrapRegistryOpen(registry, (lease) =>
+          proxyLease(lease, {
+            onGetStatus: () => {
+              statusReads += 1;
+            },
+          }),
+        ),
     });
     try {
       expect(run.namespaceState()).toBe('live');
+      const statusReadsAtLive = statusReads;
       run.wire.dropNextHubToPeer(isSyncApplied);
       await advanceMs(run, 200);
       await settle();
-      await advanceMs(run, 600);
+      await advanceMs(run, 600); // 烧满 reconcileTimeoutMs=500；重建在 fail+8s 窗口外
       await settle();
+      // 失败边沿瞬态（recovery 同步拆连接 → disconnected）——不设状态等待，直接断言
+      // 失败已发生且收口路径零时钟调用、零新增 lease 状态读取（事件构造被
+      //  observerOn 门短路，实参仅为稳定字面量与 resolved 配置字段）。
+      expect(
+        ['failed', 'disconnected'].includes(run.namespaceState() ?? ''),
+        'reconcile 超时已收口（failed 边沿或 recovery 拆连后的 disconnected 投影）',
+      ).toBe(true);
+      expect(clockCalls, '零 observer ⇒ 全程零时钟调用').toBe(0);
+      expect(statusReads - statusReadsAtLive, '失败收口零额外 lease 状态读取').toBe(0);
+      await advanceMs(run, 8_500); // 越过 backoff → 恢复性重建
       await settleUntil(() => run.namespaceState() === 'live', '场景 10: 无 observer 自愈 live');
       await run.writeHub({ n: 61 });
       await settleUntil(() => run.rootValue('peer', 'n') === 61, '场景 10: hub→peer 收敛');
+      expect(clockCalls, '自愈后仍零时钟调用').toBe(0);
       expect(uh.events).toEqual([]);
     } finally {
       await run.peer.stop().catch(() => undefined);
       uh.dispose();
     }
+  }, 60_000);
+
+  // ═══════════ 场景 11：peer 本地 registry.open 拒绝 → cause 'open-failed'（本地零 wire） ═══════════
+  it('场景 11：registry.open 单次 throw → peer namespace-failed{open-failed} 恰一，零 wire 零 namespace-error，failed 稳定等待', async () => {
+    const uh = collectUnhandledRejections();
+    const peerRec = makeRecorder();
+    let failOpen = true;
+    const run = await boot({
+      start: false,
+      backoff: { baseMs: 50, maxMs: 400, resetAfterMs: 500 },
+      random: () => 0.5,
+      peerObserver: peerRec.observer,
+      wrapPeerRegistry: (registry) => {
+        const wrapped = Object.create(registry) as NamespaceRegistry;
+        Object.defineProperty(wrapped, 'open', {
+          value: (owner: NamespaceOwner, namespaceId: string) => {
+            if (failOpen) {
+              failOpen = false;
+              return Promise.reject(new Error('registry backend down'));
+            }
+            return registry.open(owner, namespaceId);
+          },
+        });
+        return wrapped;
+      },
+    });
+    try {
+      run.peer.start();
+      await run.waitConnection('ready');
+      await run.waitNamespace('failed');
+      const failed1 = failedOf(peerRec.events, 'peer');
+      expect(failed1, 'registry.open 拒绝恰一终态原因事件').toHaveLength(1);
+      expect(failed1[0]!.cause).toBe('open-failed');
+      expect(failed1[0]!.timeoutMs).toBeUndefined();
+      expect(
+        nsErrorsOf(peerRec.events, 'peer'),
+        '本地 open 失败零 wire ⇒ 零 namespace-error',
+      ).toHaveLength(0);
+      assertFailedSafe(failed1, '场景 11');
+      // 界外（非 timer 族）：failed 稳定等待，零恢复性重建
+      const dials = run.dialCount;
+      await advanceMs(run, 2_000);
+      expect(run.dialCount).toBe(dials);
+      expect(run.namespaceState()).toBe('failed');
+      expect(uh.events).toEqual([]);
+    } finally {
+      await run.peer.stop().catch(() => undefined);
+      uh.dispose();
+    }
+    expect(failedOf(peerRec.events, 'peer'), 'stop 后仍恰一').toHaveLength(1);
+  }, 60_000);
+
+  // ═══════════ 场景 12：hub 副本 replication 未启用 → hub 'replication-disabled' ═══════════
+  it('场景 12：hub namespace 未启用 replication → hub namespace-failed{replication-disabled} + namespace-error{sent:REPLICATION_NOT_ENABLED}；peer remote-error', async () => {
+    const uh = collectUnhandledRejections();
+    const hubRec = makeRecorder();
+    const peerRec = makeRecorder();
+    const run = await boot({
+      hubEnabled: false,
+      waitFor: 'none',
+      hubObserver: hubRec.observer,
+      peerObserver: peerRec.observer,
+      random: () => 0.5,
+    });
+    try {
+      await run.waitNamespace('failed');
+      const hubFailed = failedOf(hubRec.events, 'hub');
+      expect(hubFailed, 'hub 检出未启用 replication 恰一终态原因事件').toHaveLength(1);
+      expect(hubFailed[0]!.cause).toBe('replication-disabled');
+      expect(hubFailed[0]!.timeoutMs).toBeUndefined();
+      const hubErrs = nsErrorsOf(hubRec.events, 'hub');
+      expect(
+        hubErrs.filter((e) => e.direction === 'sent' && e.code === 'REPLICATION_NOT_ENABLED'),
+      ).toHaveLength(1);
+      assertFailedSafe(hubFailed, '场景 12 hub');
+      // peer 侧：对端 terminal ERROR 驱动 → remote-error（与 hub 本地原因互补不重复）
+      const peerFailed = failedOf(peerRec.events, 'peer');
+      expect(peerFailed).toHaveLength(1);
+      expect(peerFailed[0]!.cause).toBe('remote-error');
+      assertFailedSafe(peerFailed, '场景 12 peer');
+      expect(uh.events).toEqual([]);
+    } finally {
+      await run.peer.stop().catch(() => undefined);
+      uh.dispose();
+    }
+  }, 60_000);
+
+  // ═══════════ 场景 13：peer openReplicationSession throw → 'session-open-failed' ═══════════
+  it('场景 13：lease.openReplicationSession throw → peer namespace-failed{session-open-failed} 恰一，零 wire', async () => {
+    const uh = collectUnhandledRejections();
+    const peerRec = makeRecorder();
+    const run = await boot({
+      peerReplica: 'same',
+      waitFor: 'none',
+      backoff: { baseMs: 50, maxMs: 400, resetAfterMs: 500 },
+      random: () => 0.5,
+      peerObserver: peerRec.observer,
+      wrapPeerRegistry: (registry) =>
+        wrapRegistryOpen(registry, (lease) => proxyLease(lease, { rejectOpenSession: true })),
+    });
+    try {
+      await run.waitNamespace('failed');
+      const failed1 = failedOf(peerRec.events, 'peer');
+      expect(failed1, 'session 开启失败恰一终态原因事件').toHaveLength(1);
+      expect(failed1[0]!.cause).toBe('session-open-failed');
+      expect(failed1[0]!.timeoutMs).toBeUndefined();
+      expect(
+        nsErrorsOf(peerRec.events, 'peer'),
+        '本地 session 开启失败零 wire',
+      ).toHaveLength(0);
+      assertFailedSafe(failed1, '场景 13');
+      expect(uh.events).toEqual([]);
+    } finally {
+      await run.peer.stop().catch(() => undefined);
+      uh.dispose();
+    }
+    expect(failedOf(peerRec.events, 'peer'), 'stop 后仍恰一').toHaveLength(1);
+  }, 60_000);
+
+  // ═══════════ 场景 14：hub 快照超 maxBootstrapBytes → 'send-failed'（评审修订锚） ═══════════
+  it('场景 14：BOOTSTRAP_TOO_LARGE（hub 本地出站快照超限）→ hub namespace-failed{send-failed}（非 protocol-violation）+ namespace-error{sent:BOOTSTRAP_TOO_LARGE}；peer remote-error', async () => {
+    const uh = collectUnhandledRejections();
+    const hubRec = makeRecorder();
+    const peerRec = makeRecorder();
+    const run = await boot({
+      limits: { maxBootstrapBytes: 8 }, // 快照必然超限——本端资源超限路径
+      waitFor: 'none',
+      hubObserver: hubRec.observer,
+      peerObserver: peerRec.observer,
+      random: () => 0.5,
+    });
+    try {
+      await run.waitNamespace('failed');
+      const hubFailed = failedOf(hubRec.events, 'hub');
+      expect(hubFailed, 'hub 本地快照超限恰一终态原因事件').toHaveLength(1);
+      expect(hubFailed[0]!.cause, '本端资源超限不得误聚合为对端 protocol-violation').toBe(
+        'send-failed',
+      );
+      const hubErrs = nsErrorsOf(hubRec.events, 'hub');
+      expect(
+        hubErrs.filter((e) => e.direction === 'sent' && e.code === 'BOOTSTRAP_TOO_LARGE'),
+      ).toHaveLength(1);
+      assertFailedSafe(hubFailed, '场景 14 hub');
+      // peer 侧：对端 terminal ERROR 驱动 → remote-error
+      const peerFailed = failedOf(peerRec.events, 'peer');
+      expect(peerFailed).toHaveLength(1);
+      expect(peerFailed[0]!.cause).toBe('remote-error');
+      assertFailedSafe(peerFailed, '场景 14 peer');
+      expect(uh.events).toEqual([]);
+    } finally {
+      await run.peer.stop().catch(() => undefined);
+      uh.dispose();
+    }
+  }, 60_000);
+
+  // ═══════════ 场景 15：BOOTSTRAP_ACK 丢失 → hub bootstrap-timeout（hub timer 接线锚） ═══════════
+  it('场景 15：BOOTSTRAP_ACK 被丢 → hub namespace-failed{bootstrap-timeout, timeoutMs} 恰一，零 wire（hub 侧 bootstrap timer 接线回归）', async () => {
+    const uh = collectUnhandledRejections();
+    const hubRec = makeRecorder();
+    const run = await boot({
+      start: false,
+      timeouts: { bootstrapTimeoutMs: 150 },
+      backoff: { baseMs: 50, maxMs: 500, resetAfterMs: 4_000 },
+      random: () => 0.5,
+      hubObserver: hubRec.observer,
+    });
+    try {
+      run.peer.start();
+      await run.waitConnection('ready');
+      run.wire.dropNextPeerToHub(isBootstrapAck); // ACK 永不到达 → hub bootstrap 悬挂
+      await run.waitNamespace('bootstrapping'); // peer 已收快照并回发 ACK（被丢）
+      await run.hubNode.scheduler.advanceBy(200); // 越过 bootstrapTimeoutMs=150（hub 独立调度器）
+      await settle();
+      const hubFailed = failedOf(hubRec.events, 'hub');
+      expect(hubFailed, 'hub bootstrap 超时恰一终态原因事件').toHaveLength(1);
+      expect(hubFailed[0]!.cause).toBe('bootstrap-timeout');
+      expect(hubFailed[0]!.timeoutMs, 'timeoutMs = 配置上限读数').toBe(150);
+      expect(nsErrorsOf(hubRec.events, 'hub'), 'timer 超时零 wire').toHaveLength(0);
+      assertFailedSafe(hubFailed, '场景 15');
+      expect(uh.events).toEqual([]);
+    } finally {
+      await run.peer.stop().catch(() => undefined);
+      uh.dispose();
+    }
+    expect(failedOf(hubRec.events, 'hub'), 'stop 后仍恰一').toHaveLength(1);
   }, 60_000);
 });

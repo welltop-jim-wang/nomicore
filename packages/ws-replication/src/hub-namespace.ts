@@ -483,7 +483,10 @@ export class HubNamespaceChannel {
         // §8 step 2：不分块、不 fallback、零 snapshot 帧（OPEN_OK 已答复——本 ERROR
         // 是 bootstrap 路径的收口信号，直接送达当前连接）
         this.sendNsError('BOOTSTRAP_TOO_LARGE');
-        this.finalize('failed', 'protocol-violation');
+        // issue #256 评审修订：本地出站快照超 maxBootstrapBytes 是**本端**资源超限
+        // （非对端入站违例）——归 send-failed（编码面/出站超限族），防止把 Hub 自身
+        // 资源问题误聚合为对端 protocol-violation。
+        this.finalize('failed', 'send-failed');
         return;
       }
       // §8 step 3（R3/#8）：与 encodeDiff 同一同步段之后从自有 lease status **重读**
@@ -495,10 +498,14 @@ export class HubNamespaceChannel {
         if (status === undefined || status.runtime === null) throw new Error('lease released');
         identity2 = status.runtime.replication;
       } catch {
-        this.finishOpenError('INTERNAL_ERROR', 'open-failed');
+        // issue #256 评审修订：OPEN_OK 已发、状态 bootstrapping——此处 lease 重读异常
+        // 不是 open 阶段失败（open-failed 语义不符），归 internal-error（未分类内部失败）。
+        this.finishOpenError('INTERNAL_ERROR', 'internal-error');
         return;
       }
       if (identity2.state !== 'enabled') {
+        // bootstrap 阶段身份重读检出 replication 未启用——cause 如实记
+        // replication-disabled（与 open 阶段检出同值，阶段由状态机上下文区分）。
         this.finishOpenError('INTERNAL_ERROR', 'replication-disabled');
         return;
       }
@@ -1292,8 +1299,9 @@ export class HubNamespaceChannel {
       this.timers[kind] = undefined;
       if (this.isTerminal()) return;
       if (kind === 'bootstrap') {
-        // hub 侧 bootstrap timer：测试惰性；生产语义 = ns 收口
-        // issue #256：稳定原因 + 配置上限（resolved 配置字段读，非 live 状态读取）
+        // hub 侧 bootstrap timer：生产语义 = ns 收口
+        // issue #256：稳定原因 + 配置上限（resolved 配置字段读，非 live 状态读取）；
+        // 回归锚 = ws-replication-issue256-namespace-failed.test.ts 场景 15
         this.finalize('failed', 'bootstrap-timeout', this.host.timeouts.bootstrapTimeoutMs);
       }
     }, delay);

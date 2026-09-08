@@ -263,17 +263,21 @@ export type ReplicationSendFailureReason = 'update-too-large' | 'send-frame-reje
  * - `open-timeout` / `bootstrap-timeout` / `reconcile-timeout`：§5.1 timer 族超时
  *   （§13.2 `NAMESPACE_TIMEOUT` retryable=reconnect 的本地映射；事件附 `timeoutMs` =
  *   配置上限——有限数值非时间戳）；
- * - `open-failed`：OPEN 阶段本地失败（registry.open throw/拒绝、lease 状态读取异常）；
+ * - `open-failed`：OPEN 阶段本地失败（registry.open throw/拒绝、未授权、身份/epoch
+ *   不匹配、open 阶段 lease 状态读取异常）；
  * - `session-open-failed`：openReplicationSession throw/拒绝；
- * - `replication-disabled`：本地副本存在但 replication 未启用（响亮终局，零 wire）；
+ * - `replication-disabled`：本地副本存在但 replication 未启用（open 或 bootstrap
+ *   阶段 lease 状态重读检出；响亮终局）；
  * - `session-missing`：apply/encode 路径 session 缺失（生命周期竞态防御分支）；
  * - `protocol-violation`：本地检出的协议违例（入站帧状态/身份/权限违例、字段级超限；
  *   伴随 wire ERROR——`namespace-error{direction:'sent'}` 携带对应稳定码）；
  * - `apply-refused`：session/Registry 结构化拒绝（ok:false  refusal 映射族）；
  * - `apply-rejected`：apply/encode/import 内部异常（throw/rejection 映射族）；
  * - `remote-error`：对端 namespace ERROR 帧驱动的终局（与本地失败零重复计数）；
- * - `send-failed`：codec 编码面超限/控制帧发送异常；
- * - `internal-error`：防御性兜底（理论不可达分支与未分类内部失败）。
+ * - `send-failed`：codec 编码面超限/本地出站超限（hub 快照超 maxBootstrapBytes——
+ *   本端资源超限，非对端违例）/控制帧发送异常；
+ * - `internal-error`：防御性兜底（理论不可达分支与未分类内部失败，含 bootstrap
+ *   阶段 lease 重读异常）。
  */
 export type ReplicationNamespaceFailedCause =
   | 'open-timeout'
