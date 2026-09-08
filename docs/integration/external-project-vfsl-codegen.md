@@ -80,12 +80,10 @@ pnpm add @deepseek-ai/cordis @deepseek-ai/cordis-plugin-timer yjs
 
 ## 3. 从宿主项目生成投影
 
-当前 codegen CLI 的 `--domains` 参数接收的是**包含 `domains/` 的宿主项目根目录**。在宿主根目录运行：
+当前 codegen CLI 的 `--domains` 参数接收的是**包含 `domains/` 的宿主项目根目录**。已发布的 `@nomicore/vfsl-codegen` 提供 `nomicore-generate` 命令，在宿主根目录直接运行：
 
 ```bash
-pnpm exec tsx \
-  /home/wangjian/nomicore/packages/vfsl-codegen/src/cli.ts \
-  --domains .
+pnpm exec nomicore-generate --domains .
 ```
 
 生成器会读取：
@@ -102,19 +100,19 @@ domains/inventory/generated.ts
 
 不要直接编辑 `generated.ts`。需要改变类型时修改 `schema.vfsl`，然后重新生成。
 
-可在宿主 `package.json` 中把本机路径封装为脚本：
+在宿主 `package.json` 中封装为脚本：
 
 ```json
 {
   "scripts": {
-    "nomicore:generate": "tsx /home/wangjian/nomicore/packages/vfsl-codegen/src/cli.ts --domains .",
-    "nomicore:generate:check": "tsx /home/wangjian/nomicore/packages/vfsl-codegen/src/cli.ts --domains . --check",
+    "nomicore:generate": "nomicore-generate --domains .",
+    "nomicore:generate:check": "nomicore-generate --domains . --check",
     "typecheck": "tsc --noEmit"
   }
 }
 ```
 
-绝对路径脚本仅用于本机联调，不应作为可移植的团队或 CI 契约。Nomicore 发布后，脚本应改为包提供的稳定 CLI 命令。
+纯使用场景不需要 Nomicore checkout；仅当验证尚未发布的仓库修改时，才按[本机包联调指南](local-package-linking.md)改用 checkout 内的 CLI 源码路径。
 
 若宿主强制生成物使用 semicolon-free TypeScript，可显式选择 `--semicolon-free`。生成与 freshness check 必须使用完全相同的格式标志：
 
@@ -198,9 +196,9 @@ import type {} from '../../../../domains/inventory/generated.js'
 将 projection **直接生成**到 package 允许的 source/type 目录，例如 `src/generated/nomicore-schema.ts`：
 
 ```bash
-pnpm generate --domains /path/to/host --domain inventory \
+pnpm exec nomicore-generate --domains /path/to/host --domain inventory \
   --out packages/inventory/src/generated/nomicore-schema.ts
-pnpm generate --domains /path/to/host --domain inventory \
+pnpm exec nomicore-generate --domains /path/to/host --domain inventory \
   --out packages/inventory/src/generated/nomicore-schema.ts --check
 ```
 

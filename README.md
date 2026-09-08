@@ -70,6 +70,8 @@ All `@nomicore/*` packages are publicly available on npm. Independent consumers 
 pnpm add @nomicore/namespace-registry @nomicore/persistence
 # To embed Hub/Peer replication:
 pnpm add @nomicore/instance @nomicore/clock @nomicore/ws-replication @nomicore/yjs-server
+# Optional best-effort namespace diagnostic change log:
+pnpm add @nomicore/namespace-diagnostic-log
 # To generate typed projections:
 pnpm add -D @nomicore/vfsl-codegen @nomicore/vfsl-protocol
 ```
@@ -144,16 +146,16 @@ Example `package.json` (use the filenames from the generated manifest):
   "dependencies": {
     "@nomicore/instance": "file:../nomicore/artifacts/local-packages/nomicore-instance-0.1.0.tgz",
     "@nomicore/clock": "file:../nomicore/artifacts/local-packages/nomicore-clock-0.1.0.tgz",
-    "@nomicore/persistence": "file:../nomicore/artifacts/local-packages/nomicore-persistence-0.2.2.tgz",
-    "@nomicore/namespace-registry": "file:../nomicore/artifacts/local-packages/nomicore-namespace-registry-0.1.6.tgz",
-    "@nomicore/replication-protocol": "file:../nomicore/artifacts/local-packages/nomicore-replication-protocol-0.1.0.tgz",
-    "@nomicore/ws-replication": "file:../nomicore/artifacts/local-packages/nomicore-ws-replication-0.1.3.tgz",
-    "@nomicore/yjs-server": "file:../nomicore/artifacts/local-packages/nomicore-yjs-server-0.1.1.tgz"
+    "@nomicore/persistence": "file:../nomicore/artifacts/local-packages/nomicore-persistence-0.2.3.tgz",
+    "@nomicore/namespace-registry": "file:../nomicore/artifacts/local-packages/nomicore-namespace-registry-0.1.9.tgz",
+    "@nomicore/replication-protocol": "file:../nomicore/artifacts/local-packages/nomicore-replication-protocol-0.1.1.tgz",
+    "@nomicore/ws-replication": "file:../nomicore/artifacts/local-packages/nomicore-ws-replication-0.1.4.tgz",
+    "@nomicore/yjs-server": "file:../nomicore/artifacts/local-packages/nomicore-yjs-server-0.1.3.tgz"
   }
 }
 ```
 
-The actual closure may also include `vfsl-protocol`, `vfsl`, `doc-runtime`, and `namespace-runtime`; use the package manager's report and `manifest.json`. Re-run the consumer's package-manager install after rebuilding tarballs so its lockfile captures the new files and integrity values.
+The actual closure may also include `vfsl-protocol`, `vfsl`, `doc-runtime`, `namespace-runtime`, and `namespace-diagnostic-log`; use the package manager's report and `manifest.json`. Re-run the consumer's package-manager install after rebuilding tarballs so its lockfile captures the new files and integrity values.
 
 ### 4. Verify tarball consumption
 

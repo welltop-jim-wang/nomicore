@@ -1,6 +1,6 @@
 /**
  * GENERATED FILE — DO NOT EDIT.
- * Generator: @nomicore/vfsl-codegen@0.1.2
+ * Generator: @nomicore/vfsl-codegen@0.1.3
  * Source hash: sha256:82e98fa1546b9548f32795dd51e9212eaf35e4731939a1c4db5c8f3b03b93c69
  * Regenerate with: pnpm generate
  */
