@@ -206,17 +206,27 @@ describe('applyValidatedMutation — committed fatal 契约面（AC-6：exact id
 });
 
 describe('applyValidatedMutation — 领域失败面不进入 fatal 通道（AC-3/W5 护栏）', () => {
-  it('ROOT 已损坏（逻辑不合法）→ 普通 mutation 失败：返回 ok:false + issues（领域联合），不 throw、非 fatal 形态', () => {
+  it('mutation 边界内已损坏（数组边界元素逻辑不合法）→ 普通 mutation 失败：返回 ok:false + issues（领域联合），不 throw、非 fatal 形态', () => {
     expect(typeof applyValidatedMutation).toBe('function');
-    // 绕过验证通道直接以 Yjs 写入损坏 ROOT（模拟外部注入/历史脏数据）——ADR-0007：
-    // 「当前 ROOT 已损坏时普通 mutation 失败，不承担 recovery」→ 领域失败必须是
-    // ok:false 联合（W5：不被 fatal 通道吞并）。
+    // 用例修订（issue #237 语义演进授权：Owner 2026-09-05T16:01Z 范围收敛 + ADR-0007
+    // 修订节「mutation 路径/边界内的损坏仍响亮失败」——见 docs/adr/0007 issue #237
+    // 修订节）：
+    // - 原形态「ROOT 已损坏（count 在路径外）+ 写 title」在路径级/边界级校验下
+    //   **合法转 ok:true**（触达面外损坏不再被普通写发现——E1/E3 声明的语义让渡）；
+    // - W5 意图（领域失败留在 ok:false 联合、不被 fatal 通道吞并）改为**边界内**损坏
+    //   形态锚定：目标数组边界内既有元素值非法 → array-insert 的 R4 整批校验响亮拒绝。
+    const W5_TEXT = 'type Item = { name: string; qty: number };\ntype ROOT = { items: YArray<Item>; tag: string };';
     const doc = new Y.Doc();
     const root = doc.getMap('ROOT');
-    root.set('title', 't');
-    root.set('count', 'not-a-number'); // 逻辑不合法（期望 number）
+    const seed = materializeRoot(derivedOf(W5_TEXT), { items: [{ name: 'a', qty: 1 }], tag: 'x' }, doc);
+    expect(seed.ok).toBe(true);
+    const items = root.get('items') as Y.Array<Y.Map<unknown>>;
+    // 绕过验证通道直接以 Yjs 写入数组边界内损坏元素（模拟外部注入/历史脏数据）
+    items.get(0)!.set('qty', 'not-a-number');
     const before = stateBytes(doc);
-    const result = (applyValidatedMutation as ApplyValidatedMutation)(DERIVED_TWO, doc, SET_TITLE_MUTATION);
+    const result = (applyValidatedMutation as ApplyValidatedMutation)(derivedOf(W5_TEXT), doc, {
+      op: 'array-insert', path: ['items'], index: 1, values: [{ name: 'b', qty: 2 }],
+    });
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.issues.length).toBeGreaterThan(0);

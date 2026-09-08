@@ -141,3 +141,25 @@ Runtime 实现前先完成以下 `@nomicore/doc-runtime` 契约演进：
 5. **status 字段**：在正文 status 列举（第 95 行）中补 `replication`；该域仅含持久 identity/epoch 的两态联合（`{state:'disabled'}` 或 `{state:'enabled'; replicationId; replicationEpoch}`），不含 session、网络、队列或 sync 状态。
 6. **失败与持久化真相**：`enableReplication()` / `bumpReplicationEpoch()` 的成功仍只表示 live commit + dirty notification 已登记，**不等于已落盘**（ADR 0006 dirty-not-durable）；notify failure 的 committed facts 不回滚，fatal 之后读取与 status 保留最后已提交事实；fatal 恢复只表述为 committed-state recovery，不作 durable restart 承诺。
 7. **关联权威**：复制字段格式、不可变性、epoch 上限与 hub-only 管理权以 ADR 0010 为权威；ADR 0008 仅规定 Runtime 的 sequencer 槽序、status 投影、构造期窄例外与失败通道。
+
+### issue #237 修订：ROOT write 镜像句同步（2026-09-06）
+
+本节是 ADR-0007 issue #237 修订节（路径级/边界级校验取代完整 ROOT 校验）在
+ADR-0008 的镜像句同步（授权链同上：issue #237 + Owner `welltop-jim-wang`
+2026-09-05T16:01Z 范围收敛评论 + ADR-0007 修订节为单一真相源）。除下列明示句
+外，正文其余条款（槽序 S1–S7、公共 interface/结果联合、active schema at slot、
+SCHEMA write 全量校验、fatal 通道、封装边界、status 观测面、「非空路径 mutation
+不重建完整 ROOT」）维持原文效力，零变化。
+
+1. **「ROOT write 与 SCHEMA write」节镜像句改写**（原文「每笔写按 ADR 0007 的
+   validated mutation 管线检查当前 ROOT、在普通 JSON 副本中模拟并校验完整
+   proposed ROOT、在事务前 detached 构造目标新值，再以一个 guarded Yjs
+   transaction 直接修改目标 carrier；事务后验证 live ROOT 与 proposed ROOT 一致」
+   → 修订为）：每笔写按 ADR 0007 的 validated mutation 管线沿 live carrier 与
+   derived structure 导航并校验**最近必要语义边界**（phase-1 前置假设：槽开始时
+   committed ROOT 已符合 active schema——logical values + carrier topology；无
+   baseline 状态机），在事务前 detached 构造目标新值，再以一个 guarded Yjs
+   transaction 直接修改目标 carrier（最小 edit）；事务后**只验证受影响边界与预期
+   一致**（O(1) 安装事实核 + O(boundary) 重投影核），不再无条件重新提取并校验
+   完整 ROOT。`set([])`（空路径整体替换）保持完整 ROOT 清空与重装形态，唯一
+   全量例外。

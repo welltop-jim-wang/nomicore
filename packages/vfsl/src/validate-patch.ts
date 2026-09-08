@@ -1,6 +1,9 @@
 /**
  * 路径级写入校验（issue #53 / H2）：validatePatch + 数组三操作——统一写入管线
- * （§7）判定核心的增量形态。ADR 0002「结构 → 值」两步判定：
+ * （§7）判定核心的增量形态。issue #237（mutation 边界规划与重建校验）在本文件
+ * 就地扩展两个纯函数接缝：planMutationBoundary（结构侧规划）与
+ * applyMutationAtBoundary（边界尺度重建 + 校验）——doc-runtime 写热路径消费，
+ * vfsl 保持无 Yjs 依赖。ADR 0002「结构 → 值」两步判定：
  *
  * ① 结构守卫（§3.2）：结构树节点集游走（ADR 0003 §3「任一成员出现即存在」；
  *    leaf / plain / xml-fragment 为终态拒绝下钻；数组越界归运行时）——只消费
@@ -683,4 +686,338 @@ export function validateDeleteFromArray(
     const rebuilt = rebuildOp(g.boundary.base, g.boundary.relPath, 'delete', undefined, index);
     return finish(derived, g.boundary, rebuilt);
   });
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// issue #237：mutation 边界规划 + 边界尺度重建/校验（doc-runtime 写热路径消费；
+// 纯结构/值语义，零 base 读与零 doc 状态——TOCTOU 面干净）
+// ═══════════════════════════════════════════════════════════════════════════
+
+/** mutation 词表操作（doc-runtime ValidatedMutation 四操作；与 validate-patch
+ *  内部 Op 不同：delete 是 map 键删除语义，array-* 是批量语义）。 */
+export type MutationBoundaryOp = 'set' | 'delete' | 'array-insert' | 'array-delete';
+
+/**
+ * 边界规划产物（phase-1 契约，JSDoc 即注释契约——SA2 裁决二建议 3）：
+ * prefix/relPath/node/kind 四元组。phase-1 不含 lazy-cursor 所需的中间 hop 结构
+ * 信息；后续演进走 additive v2（不破面）。
+ */
+export interface MutationBoundaryPlan {
+  /** 边界绝对位置（段数组；空 = ROOT 位——仅顶层 delete/顶层 Record 键可达）。 */
+  prefix: Array<string | number>;
+  /** 边界到目标的剩余段。 */
+  relPath: Array<string | number>;
+  /** 边界值 schema 节点（值树，已归一化：非 ref、非 optional）。 */
+  node: ValueSchema;
+  /** 边界种类：union = 穿越 union 位；record = Record map 位（动态键 set/delete）；
+   *  array = array-* 目标数组位；parent = delete 的父 map 位；target = 其余 set
+   *  目标位本身（整值替换，旧值不读）。 */
+  kind: 'union' | 'record' | 'array' | 'parent' | 'target';
+}
+
+type PlanResult = { ok: true; plan: MutationBoundaryPlan } | { ok: false; result: ValidateResult };
+
+/**
+ * 结构侧边界规划（R1–R6 × mutation 词表；§3.3 五规则的词表映射）：
+ * normalizePath（非空）→ 节点集游走（drillStep；union 穿越首次即冻结）→
+ * array-* 目标位 array 候选结构前置 → 终段段型规则（set/delete 终段禁数字下标、
+ * delete [] 拒）→ 按优先级定夺 boundary → descendValues 取边界值节点。
+ *
+ * 同步、纯函数、不抛错：零 base 读（在场/越界/键存在属调用方域规则，doc-runtime
+ * S4/S6 消费）——本接缝只消费 derived.structure/aliases/values；崩溃边界 E100 同
+ * validatePatch（顶层 run 收编）。
+ */
+export function planMutationBoundary(
+  derived: DerivedSchema,
+  path: unknown,
+  op: MutationBoundaryOp,
+): PlanResult {
+  return wrapPlan(() => {
+    const p = normalizePath(path);
+    if (!p.ok) return { ok: false, result: p.result };
+    const full = path as Array<string | number>;
+    if (derived.structure.kind !== 'root') {
+      throw new InternalError('结构树缺少 root 节点（手造派生物）');
+    }
+    // 终段段型规则（placeSet/placeDelete 现行拒绝域，issue #237 设计 R3）
+    const last = full[full.length - 1]!;
+    if (typeof last === 'number') {
+      if (op === 'set') {
+        return {
+          ok: false,
+          result: { ok: false, issues: [{ message: 'set 终态不支持数组下标', path: [...full] }] },
+        };
+      }
+      if (op === 'delete') {
+        return {
+          ok: false,
+          result: { ok: false, issues: [{ message: 'delete 禁止数组下标；请使用 array-delete', path: [...full] }] },
+        };
+      }
+    }
+    const sLens = structureLens(derived.aliases);
+    let S = new Set<StructureNode>([walkRefChain(derived.structure.node, sLens)]);
+    let boundaryAt: number | undefined; // 规则 1：第一个被穿越的 union 位（首次即冻结）
+    let finalViaRecord = false;
+    for (let i = 0; i < full.length; i++) {
+      const seg = full[i]!;
+      const isFinal = i === full.length - 1;
+      const drill = drillStep(S, seg, sLens);
+      if (drill.out.size === 0) {
+        return {
+          ok: false,
+          result: { ok: false, issues: [{ message: structureRejectMessage(drill.forms, seg), path: [...full] }] },
+        };
+      }
+      if (boundaryAt === undefined && drill.crossedUnion) boundaryAt = i;
+      if ((op === 'array-insert' || op === 'array-delete') && isFinal) {
+        const target = targetHasArrayCandidate(drill.out, sLens, seg);
+        if (!target.ok) {
+          return { ok: false, result: { ok: false, issues: [{ message: target.message, path: [...full] }] } };
+        }
+      }
+      if (isFinal) finalViaRecord = drill.viaRecord;
+      S = drill.out;
+    }
+    // —— 边界定夺（优先级命中即止；validate-patch §3.3 五规则 × mutation 词表）——
+    let prefix: Array<string | number>;
+    let relPath: Array<string | number>;
+    let kind: MutationBoundaryPlan['kind'];
+    if (boundaryAt !== undefined) {
+      prefix = full.slice(0, boundaryAt);
+      relPath = full.slice(boundaryAt);
+      kind = 'union';
+    } else if (op === 'array-insert' || op === 'array-delete') {
+      prefix = [...full];
+      relPath = [];
+      kind = 'array';
+    } else if (op === 'delete') {
+      prefix = full.slice(0, -1);
+      relPath = [last];
+      kind = finalViaRecord ? 'record' : 'parent';
+    } else {
+      // set
+      prefix = [...full];
+      relPath = [];
+      kind = 'target';
+      if (finalViaRecord) {
+        // 动态键 set 的边界升到 Record map 位（键 Pattern/键集随写入判定）
+        prefix = full.slice(0, -1);
+        relPath = [last];
+        kind = 'record';
+      }
+    }
+    const node = descendValues(derived.values, prefix);
+    return { ok: true, plan: { prefix, relPath, node, kind } };
+  });
+}
+
+/** wrapPlan 专用崩溃边界（与 run 同款 E100 文案；结果形状不同）。 */
+function wrapPlan(fn: () => PlanResult): PlanResult {
+  try {
+    return fn();
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    return { ok: false, result: { ok: false, issues: [{ message: `VFSL-E100: 内部错误（意外异常）: ${detail}`, path: [] }] } };
+  }
+}
+
+/**
+ * 边界尺度 mutation 载荷（与 doc-runtime ValidatedMutation 信封的字段名逐字对齐；
+ * 路径为边界内 relPath，由调用方把绝对 path 折算为 relPath 后传入）。
+ */
+export type BoundaryMutationPayload =
+  | { op: 'set'; value: unknown }
+  | { op: 'delete' }
+  | { op: 'array-insert'; index: number; values: readonly unknown[] }
+  | { op: 'array-delete'; index: number; count: number };
+
+type ApplyBoundaryResult =
+  | { ok: true; proposedBoundary: unknown }
+  | { ok: false; result: ValidateResult };
+
+/** 沿 relPath 取子（读取侧 Object.hasOwn 守卫——与 childValue 同纪律）。 */
+function relChild(v0: unknown, head: string | number, prefix: Array<string | number>): { kind: 'ok'; value: unknown } | { kind: 'issue'; path: Array<string | number>; message: string } {
+  if (typeof head === 'string') {
+    const obj = isPlainObject(v0) ? v0 : null;
+    if (obj === null) {
+      return {
+        kind: 'issue',
+        path: [...prefix],
+        message: `路径穿越缺失或类型不符的容器：段 "${head}" 需要 plain object，实际 ${jsonTypeOf(v0)}（字段级写入不自动创建/修复中间容器；请整体写入该容器值）`,
+      };
+    }
+    if (!Object.hasOwn(obj, head)) {
+      return { kind: 'issue', path: [...prefix], message: '中间容器缺失——不自动创建中间容器' };
+    }
+    return { kind: 'ok', value: obj[head] };
+  }
+  if (!Array.isArray(v0)) {
+    return {
+      kind: 'issue',
+      path: [...prefix],
+      message: `路径穿越缺失或类型不符的容器：段 "${head}" 需要 数组，实际 ${jsonTypeOf(v0)}（字段级写入不自动创建/修复中间容器；请整体写入该容器值）`,
+    };
+  }
+  if (!Number.isSafeInteger(head) || head < 0 || head >= v0.length) {
+    return { kind: 'issue', path: [...prefix], message: '数组下标越界或非整数下标' };
+  }
+  return { kind: 'ok', value: v0[head] };
+}
+
+/** relPath 尺度导航（域规则与 doc-runtime applyToJson/stepInto 逐条对齐；relPath 为
+ *  边界内剩余段，prefix 仅用于 issue path 折算）。 */
+function relNavigate(
+  root: unknown,
+  relPath: Array<string | number>,
+  prefix: Array<string | number>,
+): { kind: 'ok'; value: unknown } | { kind: 'issue'; issue: { message: string; path: Array<string | number> } } {
+  let cur = root;
+  for (let i = 0; i < relPath.length; i++) {
+    const r = relChild(cur, relPath[i]!, [...prefix, ...relPath.slice(0, i)]);
+    if (r.kind === 'issue') return { kind: 'issue', issue: { message: r.message, path: r.path } };
+    cur = r.value;
+  }
+  return { kind: 'ok', value: cur };
+}
+
+/** 拷贝式重建：沿 relPath 复制路径容器，在末端应用 transform（纯函数、零原地突变；
+ *  计算键展开防 '__proto__' 字面落原型）。 */
+function rebuildAlong(base: unknown, relPath: Array<string | number>, transform: (target: unknown) => unknown): unknown {
+  if (relPath.length === 0) return transform(base);
+  const head = relPath[0]!;
+  const rest = relPath.slice(1);
+  const rebuiltChild = rebuildAlong(relChildValue(base, head), rest, transform);
+  if (typeof head === 'number') {
+    const arr = base as unknown[];
+    return [...arr.slice(0, head), rebuiltChild, ...arr.slice(head + 1)];
+  }
+  return { ...(base as Record<string, unknown>), [head]: rebuiltChild };
+}
+
+/** rebuildAlong 内部取子（域规则已先行验证——此处只做拷贝导航；hasOwn 守卫同纪律）。 */
+function relChildValue(v0: unknown, head: string | number): unknown {
+  if (typeof head === 'number') return (v0 as unknown[])[head];
+  const obj = v0 as Record<string, unknown>;
+  return Object.hasOwn(obj, head) ? obj[head] : undefined;
+}
+
+/**
+ * 边界尺度重建 + 校验（issue #237 设计 §6.3）：在调用方局部提取的边界逻辑值
+ * boundaryBase 上按 relPath 应用 mutation 域规则（与 applyToJson/placeX 现行域规则
+ * 逐条对齐：不自动创建中间容器 / 不 clamp / 拒 no-op / set 终段禁数组下标 / 批量
+ * 整体一次重建），重建后整体过 plan.node 子 schema（validateSubtree 共享解释器），
+ * issue 按 plan.prefix rebase 为绝对路径。
+ *
+ * 同步、纯函数、不抛错：不修改 boundaryBase/derived；崩溃边界 E100（顶层收编）。
+ * 调用方（doc-runtime）负责：boundaryBase = 边界 live 的局部提取值（R6 target 种类
+ * relPath=[] 时 base 不被消费——整值替换语义）、nav 之前先行通过 S4/S5 的载体与
+ * 在场规则。
+ */
+export function applyMutationAtBoundary(
+  derived: DerivedSchema,
+  plan: MutationBoundaryPlan,
+  boundaryBase: unknown,
+  mutation: BoundaryMutationPayload,
+): ApplyBoundaryResult {
+  return wrapApply(() => {
+    // —— 域规则校验（先于重建；一切拒绝 = ok:false 单 issue 域）——
+    const issueAt = (message: string, rel: Array<string | number>): ApplyBoundaryResult => ({
+      ok: false,
+      result: {
+        ok: false,
+        issues: [{ message, path: [...plan.prefix, ...rel] }],
+      },
+    });
+    if (mutation.op === 'set') {
+      if (plan.relPath.length > 0) {
+        const parent = relNavigate(boundaryBase, plan.relPath.slice(0, -1), plan.prefix);
+        if (parent.kind === 'issue') {
+          return { ok: false, result: { ok: false, issues: [parent.issue] } };
+        }
+        if (!isPlainObject(parent.value)) {
+          return issueAt(
+            `路径穿越不可下钻终态——终段父节点非普通对象（实际 ${jsonTypeOf(parent.value)}）`,
+            plan.relPath.slice(0, -1),
+          );
+        }
+      }
+      const proposed = plan.relPath.length === 0
+        ? mutation.value
+        : rebuildAlong(boundaryBase, plan.relPath.slice(0, -1), (parent) => ({
+          ...(parent as Record<string, unknown>),
+          [plan.relPath[plan.relPath.length - 1]!]: mutation.value,
+        }));
+      return validateBoundary(derived, plan, proposed);
+    }
+    if (mutation.op === 'delete') {
+      if (plan.relPath.length === 0) return issueAt('delete 禁止删除边界根（整体删除不受支持）', []);
+      const parent = relNavigate(boundaryBase, plan.relPath.slice(0, -1), plan.prefix);
+      if (parent.kind === 'issue') {
+        return { ok: false, result: { ok: false, issues: [parent.issue] } };
+      }
+      const obj = isPlainObject(parent.value) ? parent.value : null;
+      const key = plan.relPath[plan.relPath.length - 1]!;
+      if (obj === null || typeof key !== 'string') {
+        return issueAt('delete 终段必须是普通对象的字符串键', plan.relPath.slice(0, -1));
+      }
+      if (!Object.hasOwn(obj, key)) {
+        return issueAt('delete 目标键不存在（拒绝 no-op）', plan.relPath);
+      }
+      const proposed = rebuildAlong(boundaryBase, plan.relPath.slice(0, -1), (parentValue) => {
+        const copy = { ...(parentValue as Record<string, unknown>) };
+        delete copy[key];
+        return copy;
+      });
+      return validateBoundary(derived, plan, proposed);
+    }
+    // array-insert / array-delete（批量整体一次重建；中间态不参与判定）
+    const target = relNavigate(boundaryBase, plan.relPath, plan.prefix);
+    if (target.kind === 'issue') {
+      return { ok: false, result: { ok: false, issues: [target.issue] } };
+    }
+    if (!Array.isArray(target.value)) {
+      return issueAt(`${mutation.op} 目标必须是数组`, plan.relPath);
+    }
+    const arr = target.value as unknown[];
+    if (mutation.op === 'array-insert') {
+      if (mutation.index > arr.length) {
+        return issueAt('array-insert index 越界（不 clamp）', [...plan.relPath, mutation.index]);
+      }
+      const proposed = rebuildAlong(boundaryBase, plan.relPath, (t) => {
+        const a = t as unknown[];
+        return [...a.slice(0, mutation.index), ...mutation.values, ...a.slice(mutation.index)];
+      });
+      return validateBoundary(derived, plan, proposed);
+    }
+    // array-delete
+    if (mutation.index >= arr.length || mutation.index + mutation.count > arr.length) {
+      return issueAt('array-delete 范围越界（不 clamp、不接受越界 no-op）', [...plan.relPath, mutation.index]);
+    }
+    const proposed = rebuildAlong(boundaryBase, plan.relPath, (t) => {
+      const a = t as unknown[];
+      return [...a.slice(0, mutation.index), ...a.slice(mutation.index + mutation.count)];
+    });
+    return validateBoundary(derived, plan, proposed);
+  });
+}
+
+/** 边界重建产物整体过 plan.node 子 schema；issue 按 prefix rebase（finish 同款）。 */
+function validateBoundary(derived: DerivedSchema, plan: MutationBoundaryPlan, rebuilt: unknown): ApplyBoundaryResult {
+  const sub = validateSubtree(derived.values, plan.node, rebuilt);
+  if (sub.ok) return { ok: true, proposedBoundary: rebuilt };
+  return {
+    ok: false,
+    result: { ok: false, issues: sub.issues.map((issue) => ({ message: issue.message, path: [...plan.prefix, ...issue.path] })) },
+  };
+}
+
+/** wrapApply 专用崩溃边界（E100 同款）。 */
+function wrapApply(fn: () => ApplyBoundaryResult): ApplyBoundaryResult {
+  try {
+    return fn();
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    return { ok: false, result: { ok: false, issues: [{ message: `VFSL-E100: 内部错误（意外异常）: ${detail}`, path: [] }] } };
+  }
 }
