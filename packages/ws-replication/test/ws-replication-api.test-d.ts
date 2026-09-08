@@ -35,6 +35,7 @@ import type {
   ReplicationBackoff,
   ReplicationClock,
   ReplicationLimits,
+  ReplicationNamespaceFailedCause,
   ReplicationObserver,
   ReplicationObserverConnectionCode,
   ReplicationObserverEvent,
@@ -235,7 +236,7 @@ describe('`@nomicore/ws-replication` observer seam（issue #177）', () => {
     >();
   });
 
-  it('事件 union：21 型字面量精确匹配（判别联合闭集，append-only；issue #238 增补）', () => {
+  it('事件 union：22 型字面量精确匹配（判别联合闭集，append-only；issue #238/#256 增补）', () => {
     expectTypeOf<ReplicationObserverEvent>().toEqualTypeOf<
       | { readonly type: 'connection-state-changed'; readonly side: ReplicationObserverSide; readonly connectionId?: string; readonly from: PeerConnectionState | HubConnectionState; readonly to: PeerConnectionState | HubConnectionState }
       | { readonly type: 'connection-backoff-scheduled'; readonly side: 'peer'; readonly attempt: number; readonly delayMs: number; readonly reason: 'dial-failed' | 'socket-closed' | 'hello-timeout' | 'pong-timeout' | 'connection-backpressure' | 'goaway-closed' | 'goaway-retry-hint' | 'namespace-recovery' }
@@ -256,10 +257,15 @@ describe('`@nomicore/ws-replication` observer seam（issue #177）', () => {
       | { readonly type: 'send-resumed'; readonly side: ReplicationObserverSide; readonly connectionId?: string; readonly bufferedAmount: number }
       | { readonly type: 'connection-failed'; readonly side: ReplicationObserverSide; readonly connectionId?: string; readonly code: ReplicationObserverConnectionCode; readonly wsCloseCode: number }
       | { readonly type: 'namespace-error'; readonly side: ReplicationObserverSide; readonly connectionId?: string; readonly namespaceId: string; readonly code: ReplicationObserverNamespaceCode; readonly direction: 'sent' | 'received'; readonly terminalState?: 'failed' | 'conflicted' | 'closed' }
+      // issue #256（append-only 第 22 型）
+      | { readonly type: 'namespace-failed'; readonly side: ReplicationObserverSide; readonly connectionId?: string; readonly namespaceId: string; readonly cause: ReplicationNamespaceFailedCause; readonly timeoutMs?: number }
       | { readonly type: 'identity-conflicted'; readonly side: ReplicationObserverSide; readonly connectionId?: string; readonly namespaceId: string; readonly via: 'open-mismatch' | 'fence' | 'identity-changed-frame' }
       // issue #238（append-only 第 21 型）
       | { readonly type: 'event-loop-delay-sampled'; readonly side: ReplicationObserverSide; readonly connectionId?: string; readonly delayMs: number }
     >();
+    // issue #256：namespace-failed 字段类型精确性（cause 闭联合；timeoutMs 可选有限数值）
+    expectTypeOf<Extract<ReplicationObserverEvent, { type: 'namespace-failed' }>['cause']>().toEqualTypeOf<ReplicationNamespaceFailedCause>();
+    expectTypeOf<Extract<ReplicationObserverEvent, { type: 'namespace-failed' }>['timeoutMs']>().toEqualTypeOf<number | undefined>();
     // issue #238：新字段在场/缺省类型精确性
     expectTypeOf<Extract<ReplicationObserverEvent, { type: 'update-applied' }>['sequence']>().toEqualTypeOf<number>();
     expectTypeOf<Extract<ReplicationObserverEvent, { type: 'update-applied' }>['queueWaitMs']>().toEqualTypeOf<number | undefined>();
@@ -285,6 +291,22 @@ describe('`@nomicore/ws-replication` observer seam（issue #177）', () => {
     expectTypeOf<Extract<ReplicationObserverEvent, { type: 'resync-required' }>['reason']>().toEqualTypeOf<ReplicationSendFailureReason | undefined>();
     // issue #231：update-dropped（第 20 型）——reason 当前唯一形态 update-too-large（必填，非可选）
     expectTypeOf<Extract<ReplicationObserverEvent, { type: 'update-dropped' }>['reason']>().toEqualTypeOf<'update-too-large'>();
+    // issue #256：namespace-failed 终态原因闭联合（13 值精确，append-only；无 string 松类型）
+    expectTypeOf<ReplicationNamespaceFailedCause>().toEqualTypeOf<
+      | 'open-timeout'
+      | 'bootstrap-timeout'
+      | 'reconcile-timeout'
+      | 'open-failed'
+      | 'session-open-failed'
+      | 'replication-disabled'
+      | 'session-missing'
+      | 'protocol-violation'
+      | 'apply-refused'
+      | 'apply-rejected'
+      | 'remote-error'
+      | 'send-failed'
+      | 'internal-error'
+    >();
   });
 
   it('side 判别精确性：hub 侧连接事件不含 peer 专属值；peer 专属事件 side 字面量', () => {

@@ -253,6 +253,43 @@ export type ReplicationObserverNamespaceCode =
  *    编码/发送异常折叠——修连接与背压状态机方向）。 */
 export type ReplicationSendFailureReason = 'update-too-large' | 'send-frame-rejected';
 
+/**
+ * issue #256（append-only）：`namespace-failed` 的终态原因闭联合——Peer/Hub namespace
+ * 进入 `failed` 终态的可诊断原因（本地零 wire 失败路径的唯一观测信号；wire 错误驱动
+ * 路径与 `namespace-error` 互补——前者计终态边沿、后者计 wire 帧，聚合口径以本事件
+ * 为准，`remote-error` 防止对端驱动的失败被误计为本地故障）。
+ *
+ * 成员语义：
+ * - `open-timeout` / `bootstrap-timeout` / `reconcile-timeout`：§5.1 timer 族超时
+ *   （§13.2 `NAMESPACE_TIMEOUT` retryable=reconnect 的本地映射；事件附 `timeoutMs` =
+ *   配置上限——有限数值非时间戳）；
+ * - `open-failed`：OPEN 阶段本地失败（registry.open throw/拒绝、lease 状态读取异常）；
+ * - `session-open-failed`：openReplicationSession throw/拒绝；
+ * - `replication-disabled`：本地副本存在但 replication 未启用（响亮终局，零 wire）；
+ * - `session-missing`：apply/encode 路径 session 缺失（生命周期竞态防御分支）；
+ * - `protocol-violation`：本地检出的协议违例（入站帧状态/身份/权限违例、字段级超限；
+ *   伴随 wire ERROR——`namespace-error{direction:'sent'}` 携带对应稳定码）；
+ * - `apply-refused`：session/Registry 结构化拒绝（ok:false  refusal 映射族）；
+ * - `apply-rejected`：apply/encode/import 内部异常（throw/rejection 映射族）；
+ * - `remote-error`：对端 namespace ERROR 帧驱动的终局（与本地失败零重复计数）；
+ * - `send-failed`：codec 编码面超限/控制帧发送异常；
+ * - `internal-error`：防御性兜底（理论不可达分支与未分类内部失败）。
+ */
+export type ReplicationNamespaceFailedCause =
+  | 'open-timeout'
+  | 'bootstrap-timeout'
+  | 'reconcile-timeout'
+  | 'open-failed'
+  | 'session-open-failed'
+  | 'replication-disabled'
+  | 'session-missing'
+  | 'protocol-violation'
+  | 'apply-refused'
+  | 'apply-rejected'
+  | 'remote-error'
+  | 'send-failed'
+  | 'internal-error';
+
 /** 单调时源（latency 观测专用；ADR 0009 Clock capability 同形窄面）。
  *  可选注入：缺省 = 全部 latency 字段 undefined（dormant，协议 §17 L494 缺面先例）。
  *  生产组合根应注入并在装配期对缺省做响亮断言（issue #164 双层纪律）。禁止实现内部
@@ -262,8 +299,9 @@ export interface ReplicationClock {
 }
 
 /**
- * 结构化 observer seam 事件（ADR 0010 L167 最小观测面全量映射；21 型，append-only——
- * issue #238 追加第 21 型 event-loop-delay-sampled 及四事件面 sequence/四段字段）。
+ * 结构化 observer seam 事件（ADR 0010 L167 最小观测面全量映射；22 型，append-only——
+ * issue #238 追加第 21 型 event-loop-delay-sampled 及四事件面 sequence/四段字段；
+ * issue #256 追加第 22 型 namespace-failed 及 cause/timeoutMs 字段）。
  *
  * Safe-field 纪律（协议文档 §23）：字段类别 = 稳定字面量（type/side/direction/via/
  * reason/cause/terminalState/from/to/reasonCode/channelState/connectionState）、受控标识
@@ -541,6 +579,24 @@ export type ReplicationObserverEvent =
       readonly code: ReplicationObserverNamespaceCode;
       readonly direction: 'sent' | 'received';
       readonly terminalState?: 'failed' | 'conflicted' | 'closed';
+    }
+  | {
+      // issue #256（append-only 第 22 型）：namespace 进入 `failed` 终态的可诊断原因。
+      // 计数不变量：每次 failed 终态边沿恰一事件（finalize 的 isTerminal 早退保证
+      // 终态不降级/不重复——closing 期/终态后的迟到 finalize 调用零事件）；事件在
+      // 决策落定后发射（setState 之后），observer 缺省零事件零分配。
+      // 与 namespace-error 互补不重复：本事件计终态边沿，namespace-error 计 wire
+      // ERROR 帧——wire 驱动路径两者各一（指标聚合以本事件 cause 为准）；本地零 wire
+      // 路径（timer 超时/本地 open/session 失败/local 终局）仅本事件。
+      readonly type: 'namespace-failed';
+      readonly side: ReplicationObserverSide;
+      readonly connectionId?: string;
+      readonly namespaceId: string;
+      /** 终态原因（闭联合；语义见 ReplicationNamespaceFailedCause 注释）。 */
+      readonly cause: ReplicationNamespaceFailedCause;
+      /** 仅 timer 族 cause（open/bootstrap/reconcile-timeout）在场：到期的配置上限
+       *  （openTimeoutMs/bootstrapTimeoutMs/reconcileTimeoutMs——有限数值，非时间戳）。 */
+      readonly timeoutMs?: number;
     }
   | {
       readonly type: 'identity-conflicted';

@@ -617,7 +617,7 @@ Peer→Hub update保护检查必须在同一 sequencer槽中：
 （附带可选 `clock?: ReplicationClock` 以观测 apply/ACK latency）。Seam 是**追加式
 （append-only）**：事件类型、reason/cause/via 词表、稳定码表只增不改；GA 后字段语义冻结。
 
-### 23.1 事件词汇（21 型，分类列示——issue #238 追加第 21 型 `event-loop-delay-sampled` 及四事件面 sequence/四段差值字段）
+### 23.1 事件词汇（22 型，分类列示——issue #238 追加第 21 型 `event-loop-delay-sampled` 及四事件面 sequence/四段差值字段；issue #256 追加第 22 型 `namespace-failed`）
 
 连接域：
 
@@ -671,6 +671,7 @@ auth / 背压 / resync：
 |---|---|---|
 | `connection-failed` | hub/peer | `connectionId?`、`code`（§23.2 闭联合）、`wsCloseCode` |
 | `namespace-error` | hub/peer | `connectionId?`、`namespaceId`、`code`（§23.2 闭联合）、`direction` ∈ {sent, received}、`terminalState?` ∈ {failed, conflicted, closed} |
+| `namespace-failed` | hub/peer | **issue #256 追加（append-only 第 22 型）**：`connectionId?`、`namespaceId`、`cause` ∈ {open-timeout, bootstrap-timeout, reconcile-timeout, open-failed, session-open-failed, replication-disabled, session-missing, protocol-violation, apply-refused, apply-rejected, remote-error, send-failed, internal-error}（`ReplicationNamespaceFailedCause` 闭联合，append-only；timer 族三值 = §13.2 `NAMESPACE_TIMEOUT` 的本地映射——open/bootstrap/reconcile 超时可仅凭单侧日志区分）、`timeoutMs?`（仅 timer 族 cause 在场：到期的配置上限 openTimeoutMs/bootstrapTimeoutMs/reconcileTimeoutMs——有限数值非时间戳）。**计数不变量**：每次 `failed` 终态边沿恰一事件（终态幂等早退保证——closing 期/终态后迟到的收口调用零事件）；事件在失败决策落定后发射（setState 之后，§23.4）。**与 `namespace-error` 互补不重复**：本事件计**终态边沿**，`namespace-error` 计 **wire ERROR 帧**——wire 错误驱动路径两者各一（失败聚合/告警路由以本事件 `cause` 为准）；本地零 wire 失败路径（timer 超时、本地 open/lease/session 失败、local 终局）仅本事件；`remote-error` 标记对端 ERROR 驱动的终局，防止被误计为本地故障。observer 缺省 = 零事件构造、零 live 状态读取、零时钟调用（cause/timeoutMs 实参仅为稳定字面量与 resolved 配置字段） |
 | `identity-conflicted` | hub/peer | `connectionId?`、`namespaceId`、`via` ∈ {open-mismatch, fence, identity-changed-frame} |
 
 **apply 成功路径互斥规则**（避免计数重复）：每笔成功 apply 恰一事件 = `update-applied`
@@ -701,6 +702,8 @@ issue #231）、受控标识（`namespaceId` 恒为 `^ns-[0-9a-f]{32}$`；`conne
 `queuedUpdateCount`/`queuedUpdateBytes`/`inFlightCount` 是计数；`bufferedAmount` 是
 adapter 水位读数；`applyLatencyMs`/`ackLatencyMs`/`sendQueueMs`/`queueWaitMs`/
 `protectedCheckMs`/`liveApplyMs`/`dirtyNotifyMs`/`delayMs` 是**差值**非绝对时间戳；
+`timeoutMs` 是 resolved 配置上限读数（issue #256，timer 族 cause 专属——有限取值
+集合的配置值，非时间戳非测量值）；
 `sequence` 是帧级有限数值（uint32，连接局部、不跨连接、不持久化——§10 非目标保持）——
 issue #238 追加字段全部落入上述两类）。
 
