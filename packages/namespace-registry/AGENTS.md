@@ -2,7 +2,7 @@
 
 ## Contract
 
-This package is the host-level owner of namespace runtimes, leases, replication sessions, idle retention, and shutdown. Read `README.md`, ADR 0009, ADR 0010, ADR 0014, and the relevant vocabulary in root `CONTEXT.md` before changing behavior.
+This package is the host-level owner of namespace runtimes, leases, replication sessions, idle retention, and shutdown. Read `README.md`, ADR 0009, ADR 0010, ADR 0012, and the relevant vocabulary in root `CONTEXT.md` before changing behavior; when touching diagnostic emission (`create-diagnostic.ts`, `diag-pump.ts`, `diagnosticLog` wiring), also read ADR 0011, ADR 0014, and `packages/namespace-diagnostic-log/AGENTS.md`.
 
 ## Boundaries
 

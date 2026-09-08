@@ -66,7 +66,7 @@ describe('ADR 0014 验收门槛 4：全部 result 判别分支落盘且通过冻
     expect(records[2]!.result).toEqual({ kind: 'fatal', committed: false })
     expect(records[3]!.result).toEqual({ kind: 'fatal', committed: true, effect: 'unknown' })
 
-    // rejected / fatal+committed:false 禁止携带 update（ADP 0012 §JSONL record 封闭对象）
+    // rejected / fatal+committed:false 禁止携带 update（ADR 0014 §JSONL record 封闭对象）
     for (const idx of [1, 2]) {
       expect('update' in (records[idx]!.result as object)).toBe(false)
       expect('base64' in (records[idx]!.result as object)).toBe(false)

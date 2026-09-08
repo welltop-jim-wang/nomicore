@@ -16,7 +16,7 @@
  * - 同步落盘：每 record 独立 open-append-close（`appendFileSync`），无队列、无
  *   batch、无 fsync、无常驻 fd（§4.3/J2；EISDIR 占位恢复语义的必要条件；
  *   R2 ADR-0014 amendment 把有界同步 append 显性化为首切片决策，write-slot 外接线
- *   为规范性条件——见 docs/adr/0012）；
+ *   为规范性条件——见 docs/adr/0014）；
  * - R2 提交点纪律（设计 §3.2/§3.2.1）：sequence 以 candidate 在「全部可失败准备门
  *   通过、即将进入 JSONL append 的提交分支」时取得并即刻物化；definitive pre-commit
  *   failure（open 期 EISDIR/EACCES/ENOENT，零字节可证明）不消耗 candidate 可复用；

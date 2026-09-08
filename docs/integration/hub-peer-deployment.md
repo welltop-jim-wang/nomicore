@@ -118,6 +118,13 @@ token、owner 值、Yjs bytes、SCHEMA/ROOT 内容。
 - `peer.targets` 精确两字段 `{namespaceId: ^ns-[0-9a-f]{32}$, ownerUserId}`，
   nsId 重复 → 拒；
 - `persistence.kind:'file'` 必须提供 `rootDir`；
+- `diagnostics`（可选块，hub/peer 均合法）：`enabled` 必填 boolean、`rootDir` 必填非空
+  string（`enabled:false` 亦必填，保持形状一致）；`updateCapture` 可选 boolean（缺省
+  false）、`inputPolicy` 可选 `'none'|'digest'|'redacted'|'full'`（缺省 `'digest'`）；
+  `retention.maxAgeMs` / `retention.maxBytesPerNamespace` 可选非负安全整数或 `null`
+  （显式关闭）；块内未知子键逐一报 `diagnostics.<key>` 精确路径。`enabled:true` 时
+  Host 构造诊断管理器并按 `{rootDir}/namespaces/{namespaceId}/` 布局落盘（ADR-0011 /
+  ADR-0014；日志为 best-effort，故障不影响业务结果）；
 - `limits`/`timeouts`/`backoff` 为正数校验的 Partial 透传（键集白名单）——
   值域语义以 `@nomicore/ws-replication` 冻结类型为准。
 

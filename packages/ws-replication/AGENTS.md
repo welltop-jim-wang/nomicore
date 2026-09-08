@@ -2,7 +2,7 @@
 
 ## Contract
 
-This package implements the Hub/Peer connection and namespace state machines over `@nomicore/replication-protocol`, plus role-specific Cordis plugins. Read ADR 0010, ADR 0014, and `docs/protocols/instance-replication-v1.md` before changing wire behavior, authentication, service ownership, lifecycle, backpressure, or reconciliation.
+This package implements the Hub/Peer connection and namespace state machines over `@nomicore/replication-protocol`, plus role-specific Cordis plugins. Read ADR 0010, ADR 0012, and `docs/protocols/instance-replication-v1.md` before changing wire behavior, authentication, service ownership, lifecycle, backpressure, or reconciliation.
 
 ## Boundaries
 

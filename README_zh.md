@@ -49,6 +49,7 @@ packages/
 ├── instance/               # instanceId + role service
 ├── persistence/            # Memory/File persistence
 ├── namespace-registry/     # Registry、lease 与 replication sessions
+├── namespace-diagnostic-log/ # 可选 best-effort 诊断变更日志
 ├── replication-protocol/   # instance replication v1 codec
 ├── ws-replication/         # Hub/Peer controllers 与 Cordis plugins
 └── dsh-persistence/        # DSH 开发/探针 profile

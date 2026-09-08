@@ -51,6 +51,7 @@ packages/
 ├── instance/               # instanceId + role service
 ├── persistence/            # Memory/File persistence
 ├── namespace-registry/     # Registry, leases, and replication sessions
+├── namespace-diagnostic-log/ # optional best-effort diagnostic change log
 ├── replication-protocol/   # instance replication v1 codec
 ├── ws-replication/         # Hub/Peer controllers and Cordis plugins
 └── dsh-persistence/        # DSH development/probe profile
