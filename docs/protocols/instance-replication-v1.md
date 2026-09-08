@@ -108,8 +108,9 @@ Yjs sync bytes 使用与锁定版本组合兼容的 `y-protocols/sync` 语义。
 | `0x33` | RESYNC_REQUIRED | namespace | either | Peer starts new round |
 | `0x40` | UPDATE | namespace | either | UPDATE_ACK |
 | `0x41` | UPDATE_ACK | namespace | either | none |
+| `0x42` | UPDATE_CHUNK | namespace | either | UPDATE_ACK |
 
-首版 `flags=0`，也没有必需的 optional capability。未来扩展只能在 HELLO 明确协商后使用，不得靠数值范围猜测。
+`UPDATE_CHUNK`（issue #242，ADR 0013）只有经 HELLO 协商 `CAP_CHUNKED_UPDATE` 后才能使用；未协商端必须按未知/未支持消息码规则以 connection fatal `UNSUPPORTED_MESSAGE_TYPE` 拒绝。v1 的 HELLO 仍发 `optionalCapabilities=0`，因此 v1 端永不分块、也拒绝任何 0x42 帧——新旧实现互不破译。首版 `flags=0`，也没有必需的 optional capability。未来扩展只能在 HELLO 明确协商后使用，不得靠数值范围猜测。
 
 ## 6. Connection payloads
 
@@ -125,6 +126,12 @@ Yjs sync bytes 使用与锁定版本组合兼容的 `y-protocols/sync` 语义。
 | requiredCapabilities | uint32 BE | v1 为 0 |
 | optionalCapabilities | uint32 BE | v1 为 0 |
 | connectionNonce | varUint8Array | 固定 16 bytes，由 Peer 随机生成 |
+
+capability bitset 词表（uint32 BE，append-only）：
+
+| Bit | Name | Meaning |
+|--:|---|---|
+| `0x00000001` | `CAP_CHUNKED_UPDATE` | 支持分块传输：单条 UPDATE 超过 `maxUpdateBytes` 时可拆为多个自描述 `UPDATE_CHUNK` 帧（issue #242，ADR 0013）；协商位由 `selectedCapabilities` 交集返回。未协商端收到 0x42 帧必须按未知消息码规则 connection fatal |
 
 Hub 选择双方共同支持的最高 protocol version。任一 required capability 不支持则拒绝。optional capabilities 取交集。
 
@@ -247,6 +254,13 @@ Peer 的首个 Step1 隐式开始 round；Hub 不自行开始 round。Hub 收到
 | namespaceId | varString | key |
 | reasonCode | varString | 稳定安全原因 |
 
+`reasonCode` 词表（本节首次定义枚举；append-only——新增 reason 必须先登记后发射，未知码按通用收口处理不构成新语义）：
+
+| reasonCode | Meaning | 现状登记 |
+|---|---|---|
+| `send-queue-overflow` | 本端未发送/分发出站队列溢出，需 state-vector 修复（既有发射点：hub-namespace / peer-namespace 溢出声明） | 既有既定 reason，首次成文登记 |
+| `UPDATE_TRANSFER_EXPIRED` | **issue #242 / ADR 0013**：分块 transfer assembly 超时（非终态；发射点 = 后续切片的 assembly timeout，本切片只冻结词表登记与 wire roundtrip） | 本规范追加登记 |
+
 任一端可声明当前增量连续性作废，但始终由 Peer用新 roundId 发起下一轮。发出后不再发送新 UPDATE；已接纳 update 正常 apply/ACK。Peer等待 in-flight 窗口收口后开始新 round；断线则重连后重新 OPEN/reconcile。
 
 协议 v1 执行周期 reconciliation。Peer 为每个 live namespace 持有一个 one-shot timer；`reconcileIntervalMs` 为正整数配置，缺省 300000 ms。timer 只在完整 round 收口并进入 live 后武装；到期时 Peer 直接进入 reconciling 并以新 roundId 发起 round，不发送 RESYNC_REQUIRED。round 进行期间不武装下一次周期 timer，因此不会出现重叠 round；期间发生的 queue overflow、ACK timeout 或显式 RESYNC_REQUIRED 仍按既有 pending-resync 规则合并为至多一个紧随其后的 round。连接断开、GOAWAY、remove/close、终态与 shutdown 必须清理 timer；重连后只有新连接代际重新 OPEN/reconcile 并进入 live 后才开始新的周期。
@@ -281,6 +295,21 @@ Hub 接收 Peer A update：
 重复或已包含的 Yjs update仍正常 ACK。每 namespace每方向采用可配置滑动窗口，默认 32 个 in-flight UPDATE。窗口满只暂停该 namespace发送，不阻塞本地写或其他 namespace。
 
 Unknown、类型不匹配或 namespace不匹配的 ackedSequence 属 connection fatal `ACK_STATE_VIOLATION`。
+
+### 10.3 UPDATE_CHUNK `0x42`
+
+分块传输（issue #242 / ADR 0013，切片 1 只冻结 wire 面）：单条 UPDATE 超过 `maxUpdateBytes` 且双方已协商 `CAP_CHUNKED_UPDATE` 时，发送端把完整 update 拆为多个自描述 chunk。单帧 payload 字段顺序：
+
+| Field | Encoding | Rule |
+|---|---|---|
+| namespaceId | varString | key（固定格式） |
+| transferId | varUint | uint32，(连接, 方向, namespace) 域内从 1 严格递增，不回绕；0 非法 |
+| chunkIndex | varUint | uint32，0-based，< chunkCount |
+| chunkCount | varUint | uint32，≥ 1 |
+| totalBytes | varUint | uint32，完整 update 字节数，≥ bytes.byteLength |
+| bytes | varUint8Array | 本分片，非空；大小复用 `maxUpdateBytes`（零新 frame 级上限） |
+
+codec 级单帧规则（encode/decode 同一套，违者 `MALFORMED_FRAME`）：namespaceId 格式、transferId ≥ 1、chunkIndex < chunkCount、chunkCount ≥ 1、bytes 非空且 ≤ totalBytes、bytes ≤ `maxUpdateBytes`（超限 `UPDATE_TOO_LARGE`）。跨帧规则（transferId 一致性/单调、chunkIndex === 已收数量、`totalBytes` 资源上限、实收 == totalBytes）与 assembly 状态机、ACK 复用（`UPDATE_ACK`，ackedSequence = 末 chunk 帧序）属后续切片；解码侧未协商（`selectedCapabilities` 无 bit 0）必须在 payload 解析前以 `UNSUPPORTED_MESSAGE_TYPE` connection fatal 拒绝（分类与 §5 未知消息码规则一致，close code 1002）。
 
 ## 11. Identity fencing
 
@@ -378,6 +407,10 @@ Encoder从 code registry导出 scope/fatal/retryable/terminalState，调用方�
 | ACK_TIMEOUT | no | resync | needs-resync |
 | NAMESPACE_TIMEOUT | yes | reconnect | failed |
 | INTERNAL_ERROR | yes | reconnect | failed |
+| UPDATE_TRANSFER_VIOLATION | yes | no | failed |
+| UPDATE_TRANSFER_TOO_LARGE | yes | config | failed |
+
+`UPDATE_TRANSFER_VIOLATION`（跨 chunk violation，对齐 `SYNC_STATE_VIOLATION` 先例）与 `UPDATE_TRANSFER_TOO_LARGE`（分块资源上限超限，对齐 `SYNC_DIFF_TOO_LARGE` 语义族）为 issue #242 / ADR 0013 追加：发射点属后续接收端 assembly 切片，本规范只登记稳定码与 wire 语义（fatal、terminal failed）。
 
 Wire永不携带 owner、token、SCHEMA、ROOT、update、stack、原始 cause或异常 message。内部 observer/trace保留 committed与exact cause，但协议只输出安全稳定字段。
 
@@ -602,6 +635,7 @@ Peer→Hub update保护检查必须在同一 sequencer槽中：
 - trailing bytes、非法UTF-8、非法namespaceId、错误optional/list count；
 - fuzz/property tests，decoder不得越界分配或抛出未分类异常；
 - 版本协商全矩阵和锁定Yjs/y-protocols/lib0组合的旧/新互通矩阵；
+- 分块传输（issue #242）：UPDATE_CHUNK 全字段 golden vectors、单帧语义自洽拒绝、未协商（无 `CAP_CHUNKED_UPDATE`）端对 0x42 帧按未知消息码 connection fatal 拒绝、`selectedCapabilities` 选项急切校验与 v1 回落（新旧互不破译）；
 - fake duplex transport上的connection、namespace、sync、resync、drain状态迁移；
 - 真实WebSocket + MemoryPersistence的1 Hub + 2 Peers收敛；
 - FilePersistence独立rootDir、bootstrap、archive/reset、进程重启、degraded旧snapshot恢复；
