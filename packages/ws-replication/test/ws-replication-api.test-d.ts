@@ -238,7 +238,7 @@ describe('`@nomicore/ws-replication` observer seam（issue #177）', () => {
   it('事件 union：21 型字面量精确匹配（判别联合闭集，append-only；issue #238 增补）', () => {
     expectTypeOf<ReplicationObserverEvent>().toEqualTypeOf<
       | { readonly type: 'connection-state-changed'; readonly side: ReplicationObserverSide; readonly connectionId?: string; readonly from: PeerConnectionState | HubConnectionState; readonly to: PeerConnectionState | HubConnectionState }
-      | { readonly type: 'connection-backoff-scheduled'; readonly side: 'peer'; readonly attempt: number; readonly delayMs: number; readonly reason: 'dial-failed' | 'socket-closed' | 'hello-timeout' | 'pong-timeout' | 'connection-backpressure' | 'goaway-closed' | 'goaway-retry-hint' }
+      | { readonly type: 'connection-backoff-scheduled'; readonly side: 'peer'; readonly attempt: number; readonly delayMs: number; readonly reason: 'dial-failed' | 'socket-closed' | 'hello-timeout' | 'pong-timeout' | 'connection-backpressure' | 'goaway-closed' | 'goaway-retry-hint' | 'namespace-recovery' }
       | { readonly type: 'goaway-received'; readonly side: 'peer'; readonly connectionId?: string; readonly reasonCode: 'SERVER_RESTARTING' | 'SERVER_SHUTTING_DOWN' | 'REAUTH_REQUIRED' | 'other'; readonly drainTimeoutMs: number; readonly retryAfterMs?: number }
       | { readonly type: 'channel-state-changed'; readonly side: ReplicationObserverSide; readonly connectionId?: string; readonly namespaceId: string; readonly from: PeerNamespaceState | HubNamespaceState; readonly to: PeerNamespaceState | HubNamespaceState }
       | { readonly type: 'bootstrap-snapshot-sent'; readonly side: 'hub'; readonly connectionId?: string; readonly namespaceId: string; readonly bytes: number }

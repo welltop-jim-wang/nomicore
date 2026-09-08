@@ -16,8 +16,9 @@ import type {
   SyncStep2Msg,
   SyncAppliedMsg,
 } from '@nomicore/replication-protocol';
+import type { ReplicationObserverEvent } from '@nomicore/ws-replication';
 import { decodeMessage } from '@nomicore/replication-protocol';
-import { boot, advanceMs } from './driver.js';
+import { boot, advanceMs, collectUnhandledRejections } from './driver.js';
 import { deferred, settle } from './harness.js';
 
 function asMsg<T extends { kind: string }>(frame: { message: { kind: string } } | undefined, kind: T["kind"]): T | undefined {
@@ -33,6 +34,18 @@ function errorCodes(decoded: Array<{ message: { kind: string } }>): string[] {
 
 function kindOf(bytes: Uint8Array): string {
   return decodeMessage(bytes).message.kind;
+}
+
+type ChanEvent = Extract<ReplicationObserverEvent, { type: 'channel-state-changed' }>;
+
+/** 事件流内该侧的 channel-state-changed 子集（有序）。 */
+function chanEdges(
+  events: readonly ReplicationObserverEvent[],
+  side: 'peer' | 'hub',
+): ChanEvent[] {
+  return events.filter(
+    (e): e is ChanEvent => e.type === 'channel-state-changed' && e.side === side,
+  );
 }
 
 describe('AC4：双向 reconciliation 与 SYNC_APPLIED 门禁', () => {
@@ -104,24 +117,64 @@ describe('AC4：双向 reconciliation 与 SYNC_APPLIED 门禁', () => {
     expect(run.namespaceState()).toBe('live');
   });
 
-  it('AC4/§9.3 缺少对端 SYNC_APPLIED：只差一个确认仍不进入 live；reconcile timeout 收口 failed', async () => {
+  it('AC4/§9.3 缺少对端 SYNC_APPLIED：只差一个确认仍不进入 live；reconcile timeout 收口 failed 后由本端重建连接回 live（issue #254 方向 A）', async () => {
+    const uh = collectUnhandledRejections();
+    const peerEvents: ReplicationObserverEvent[] = [];
+    const hubEvents: ReplicationObserverEvent[] = [];
     const run = await boot({
       start: false,
       peerReplica: { rootN: 5, ext: 7 },
       timeouts: { reconcileTimeoutMs: 200 },
+      backoff: { baseMs: 50, maxMs: 5_000, resetAfterMs: 10_000 },
+      random: () => 0,
+      peerObserver: (e) => peerEvents.push(e),
+      hubObserver: (e) => hubEvents.push(e),
     });
-    // 在第一个 hub→peer SYNC_APPLIED 处丢帧（= 对端确认不可达）
-    run.peer.start();
-    await run.waitConnection('ready');
-    run.wire.dropNextHubToPeer((bytes) => kindOf(bytes) === 'SYNC_APPLIED');
-    await run.waitNamespace('reconciling');
-    await run.waitPeerSent('SYNC_APPLIED', 1);
-    await settle();
-    // 已 apply 对端 Step2 并发出自己的 Applied —— 但没收到对端 Applied → 不得 live
-    expect(run.namespaceState()).toBe('reconciling');
-    // timeout → 收口
-    await advanceMs(run, 200);
-    await run.waitNamespace('failed');
+    try {
+      // 在第一个 hub→peer SYNC_APPLIED 处丢帧（= 对端确认不可达）
+      run.peer.start();
+      await run.waitConnection('ready');
+      run.wire.dropNextHubToPeer((bytes) => kindOf(bytes) === 'SYNC_APPLIED');
+      await run.waitNamespace('reconciling');
+      await run.waitPeerSent('SYNC_APPLIED', 1);
+      await settle();
+      // 已 apply 对端 Step2 并发出自己的 Applied —— 但没收到对端 Applied → 不得 live
+      expect(run.namespaceState()).toBe('reconciling');
+      // 越过 reconcileTimeoutMs → 收口 failed。issue #254：failed 是瞬态（轮询捕不到），
+      // 事件轨迹钉住迁移；随后本端触发连接重建（§16「failed 等待连接重建」的执行者）。
+      await advanceMs(run, 200);
+      const peerChans = chanEdges(peerEvents, 'peer');
+      expect(
+        peerChans.some((e) => e.from === 'reconciling' && e.to === 'failed'),
+        'reconcile timeout 必须收口 failed（§13.2 NAMESPACE_TIMEOUT 映射不变）',
+      ).toBe(true);
+      expect(
+        peerChans.some((e) => e.from === 'failed' && e.to === 'disconnected'),
+        '终态 failed 必须经断线投影 disconnected 后在新连接复活（AC3）',
+      ).toBe(true);
+      // 恢复：新代连接 ready → re-OPEN/reconcile → 双方回 live。
+      await run.waitConnection('ready');
+      await run.waitNamespace('live');
+      expect(run.wires.length, '自愈必须经连接重建（新 wire）').toBeGreaterThanOrEqual(2);
+      expect(run.dialCount, '自愈必须经重拨').toBeGreaterThanOrEqual(2);
+      // 同 wire 单 round 纪律：wire1 上恰一轮 SYNC_STEP1（超时前不重发、不重试）。
+      expect(
+        run.wires[0]!.peerToHub.map((b) => kindOf(b)).filter((k) => k === 'SYNC_STEP1'),
+        '同一连接内 round 不得重发',
+      ).toHaveLength(1);
+      // 新 wire 上必须 re-OPEN namespace 并重发 SYNC_STEP1（恢复 round）。
+      const lastKinds = run.wires[run.wires.length - 1]!.peerToHub.map((b) => kindOf(b));
+      expect(lastKinds).toContain('OPEN_NAMESPACE');
+      expect(lastKinds).toContain('SYNC_STEP1');
+      expect(
+        chanEdges(hubEvents, 'hub').some((e) => e.to === 'live'),
+        'hub 侧必须回到 live',
+      ).toBe(true);
+      expect(uh.events, '全程零 unhandled rejection（AC4 泄漏哨兵）').toEqual([]);
+    } finally {
+      await run.peer.stop().catch(() => undefined);
+      uh.dispose();
+    }
   });
 
   it('AC4/§9.2 错序：round 开始前的 SYNC_STEP2 → SYNC_STATE_VIOLATION（round 永不开始）', async () => {

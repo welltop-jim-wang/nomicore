@@ -441,6 +441,12 @@ GOAWAY原因：
 - 1002/1008：blocked；
 - 1011：继续 backoff，连续失败后降为低频并告警，不永久 blocked。
 
+issue #254 注记：`ready ├─ temporary-close → backoff` 的本端触发实例
+`namespace-recovery`——open/bootstrap/reconcile timer 超时使 target namespace 收口
+`failed` 且 target 仍活跃（§16）时，Peer 控制器经 §18 detach-close 序列（epoch 先
+失效 → close code 1001）触发，reason 串 'namespace-recovery' 属本地诊断（观测词表
+见 §23.1）；不新增状态机边。
+
 ### 15.2 Hub connection
 
 ```text
@@ -467,7 +473,13 @@ terminal protocol/policy/internal failure → failed
 
 - `closed`：正常 remove或connection drain；
 - `conflicted`：只能 reset或配置变化；
-- `failed`：等待连接重建或配置变化；
+- `failed`：等待连接重建或配置变化。当 failed 源于 open/bootstrap/reconcile timer
+  超时（§13.2 `NAMESPACE_TIMEOUT`，本地映射）且 target 仍被需要而连接仍存活时，由
+  Peer 控制器触发整连接重建：先使 connection epoch 失效再关闭传输（close code
+  1001，§18 纪律），经 §15.1 backoff 重连后重新 OPEN/reconcile（issue #254）。
+  wire ERROR 帧驱动的其他 `retryable=reconnect` failed（BOOTSTRAP_FAILED/
+  APPLY_FAILED/INTERNAL_ERROR 收帧）与 `retryable=config/no` 族不在该自动重建触发面
+  内——前者为显式未实现 follow-up（issue #254 设计 §13-1），后者保持本行等待语义；
 - socket断开时，控制器投影为 disconnected，立即停止 session、排空已接纳 apply并release Lease；target保留；
 - 断线期间不维持 update outbox或subscription，重连后从当前 Y.Doc state vector恢复；
 - Hub 对断开 Peer执行同样 session/Lease cleanup，不影响其他 Peer。
@@ -525,6 +537,8 @@ low-water < high-water
 工程缺省：`pingIntervalMs = 30_000`、`pongTimeoutMs = 10_000`；约束 `pongTimeoutMs < pingIntervalMs` 在配置解析期响亮验证（TypeError），绝不运行时 clamp。pong 超时按临时失败处理：先停止旧 liveness、退订旧 transport listener 并使 connection epoch 失效，再关闭传输（close code 1001）并经 backoff 重连；epoch 必须在调用可能同步重入的 transport `close()` 前失效。
 
 HELLO/pong timeout关闭连接。Open/bootstrap/reconcile/close/ACK timeout只收口 namespace；ACK timeout不重发同一 UPDATE，而进入 needs-resync并由新 state-vector round修复。
+
+Open/bootstrap/reconcile timeout 收口 namespace 为 `failed` 后，若 target 仍活跃且连接仍存活，Peer 必须触发连接重建——超时的直接收口对象是 namespace，重建是 `failed` 终态的既定恢复路径（§16；issue #254）。
 
 ## 19. Authorization
 
@@ -610,7 +624,7 @@ Peer→Hub update保护检查必须在同一 sequencer槽中：
 | type | side | 字段 |
 |---|---|---|
 | `connection-state-changed` | hub/peer | `connectionId?`、`from`、`to`（连接态；hub 仅 `handshaking/ready/draining/closed`，peer 为 §15 全 8 态） |
-| `connection-backoff-scheduled` | peer | `attempt`、`delayMs`、`reason` ∈ {dial-failed, socket-closed, hello-timeout, pong-timeout, connection-backpressure, goaway-closed, goaway-retry-hint} |
+| `connection-backoff-scheduled` | peer | `attempt`、`delayMs`、`reason` ∈ {dial-failed, socket-closed, hello-timeout, pong-timeout, connection-backpressure, goaway-closed, goaway-retry-hint, **namespace-recovery**}（issue #254 追加 `namespace-recovery`：timer 族 namespace 超时收口后的恢复性重建触发；reason 词表 7→8，append-only，事件类型 21 型不变） |
 | `goaway-received` | peer | `connectionId?`、`reasonCode` ∈ {SERVER_RESTARTING, SERVER_SHUTTING_DOWN, REAUTH_REQUIRED, **other**}（未知码一律折叠 `other`——对抗高基数注入）、`drainTimeoutMs`、`retryAfterMs?` |
 | `event-loop-delay-sampled` | hub/peer | **issue #238 追加（append-only 第 21 型；连接域低频采样）**：`connectionId?`、`delayMs`（= liveness ping timer 实际 fire 时刻 − 计划 fire 时刻，同一注入单调时钟域差值——event-loop 被同步长任务阻塞时到期 timer 统一后延，本值为停摆**下界信号**非精确测量；cadence = liveness `pingIntervalMs`，无新常驻 timer；gating = observer + clock + transport ping/onPong 三者齐备才武装，任一缺席 → 零状态零调度） |
 

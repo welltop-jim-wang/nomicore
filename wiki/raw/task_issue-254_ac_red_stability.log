@@ -1,0 +1,22 @@
+# issue #254 ac-red 10-run stability (each run: expected 2 failed [A1/A2] + 3 passed [N1-N3])
+# 2026-09-07T16:33:53Z
+run 1:       Tests  2 failed | 3 passed (5)
+run 1: Type Errors  no errors
+run 2:       Tests  2 failed | 3 passed (5)
+run 2: Type Errors  no errors
+run 3:       Tests  2 failed | 3 passed (5)
+run 3: Type Errors  no errors
+run 4:       Tests  2 failed | 3 passed (5)
+run 4: Type Errors  no errors
+run 5:       Tests  2 failed | 3 passed (5)
+run 5: Type Errors  no errors
+run 6:       Tests  2 failed | 3 passed (5)
+run 6: Type Errors  no errors
+run 7:       Tests  2 failed | 3 passed (5)
+run 7: Type Errors  no errors
+run 8:       Tests  2 failed | 3 passed (5)
+run 8: Type Errors  no errors
+run 9:       Tests  2 failed | 3 passed (5)
+run 9: Type Errors  no errors
+run 10:       Tests  2 failed | 3 passed (5)
+run 10: Type Errors  no errors

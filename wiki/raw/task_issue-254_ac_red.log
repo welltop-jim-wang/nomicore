@@ -1,0 +1,85 @@
+Testing types with tsc and vue-tsc is an experimental feature.
+Breaking changes might not follow SemVer, please pin Vitest's version when using it.
+
+ RUN  v3.2.7 /home/wangjian/nomicore-fix-issue-254
+
+ × packages/ws-replication/test/ws-replication-issue254-ac-red.test.ts > issue #254：周期 reconciliation 超时自愈红灯契约 > 红灯 A1：周期 reconcile 越过 reconcileTimeout 后必须自愈（首个周期 round 卡死） 64ms
+   → A1: 越过 reconcileTimeout 后必须在窗口内自愈至 live（AC1/AC2；当前实现=僵尸）：
+recovered=false（horizon 60s 虚拟时间）
+peer ns=failed conn=ready wires=1 dials=1
+rounds(2) hubLastChannel=live
+peer channel trail: targeted→opening@hub-omega-conn-0 | opening→reconciling@hub-omega-conn-0 | reconciling→live@hub-omega-conn-0 | live→reconciling@hub-omega-conn-0 | reconciling→failed@hub-omega-conn-0
+hub channel trail: opening→reconciling@hub-omega-conn-0 | reconciling→live@hub-omega-conn-0
+peer conn trail: stopped→disconnected | disconnected→connecting | connecting→handshaking | handshaking→ready: expected false to be true // Object.is equality
+ × packages/ws-replication/test/ws-replication-issue254-ac-red.test.ts > issue #254：周期 reconciliation 超时自愈红灯契约 > 红灯 A2：同款死局在后续周期 round（先放行一个健康 round）同样必须自愈 23ms
+   → A2: 越过 reconcileTimeout 后必须在窗口内自愈至 live（AC1/AC2；当前实现=僵尸）：
+recovered=false（horizon 60s 虚拟时间）
+peer ns=failed conn=ready wires=1 dials=1
+rounds(3) hubLastChannel=live
+peer channel trail: targeted→opening@hub-omega-conn-0 | opening→reconciling@hub-omega-conn-0 | reconciling→live@hub-omega-conn-0 | live→reconciling@hub-omega-conn-0 | reconciling→live@hub-omega-conn-0 | live→reconciling@hub-omega-conn-0 | reconciling→failed@hub-omega-conn-0
+hub channel trail: opening→reconciling@hub-omega-conn-0 | reconciling→live@hub-omega-conn-0
+peer conn trail: stopped→disconnected | disconnected→connecting | connecting→handshaking | handshaking→ready: expected false to be true // Object.is equality
+ ✓ packages/ws-replication/test/ws-replication-issue254-ac-red.test.ts > issue #254：周期 reconciliation 超时自愈红灯契约 > 绿负控 N1：round 在 reconcileTimeout 内保持进行中——不重叠、不重建、不重拨（issue 点名现有测试盲区） 6ms
+ ✓ packages/ws-replication/test/ws-replication-issue254-ac-red.test.ts > issue #254：周期 reconciliation 超时自愈红灯契约 > 绿负控 N2：健康周期 round（零丢帧）正常完成、cadence 再武装——不引入连接重建 churn 6ms
+ ✓ packages/ws-replication/test/ws-replication-issue254-ac-red.test.ts > issue #254：周期 reconciliation 超时自愈红灯契约 > 绿负控 N3（控制变量对照）：同款僵尸形成后，一旦连接被重建（本测试手工触发断线=修复将自动执行的同一动作）当前实现即可自愈——证明唯一缺口是「重建触发」，且 AC3 检查器对合法重建零误报 12ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 2 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  packages/ws-replication/test/ws-replication-issue254-ac-red.test.ts > issue #254：周期 reconciliation 超时自愈红灯契约 > 红灯 A1：周期 reconcile 越过 reconcileTimeout 后必须自愈（首个周期 round 卡死）
+AssertionError: A1: 越过 reconcileTimeout 后必须在窗口内自愈至 live（AC1/AC2；当前实现=僵尸）：
+recovered=false（horizon 60s 虚拟时间）
+peer ns=failed conn=ready wires=1 dials=1
+rounds(2) hubLastChannel=live
+peer channel trail: targeted→opening@hub-omega-conn-0 | opening→reconciling@hub-omega-conn-0 | reconciling→live@hub-omega-conn-0 | live→reconciling@hub-omega-conn-0 | reconciling→failed@hub-omega-conn-0
+hub channel trail: opening→reconciling@hub-omega-conn-0 | reconciling→live@hub-omega-conn-0
+peer conn trail: stopped→disconnected | disconnected→connecting | connecting→handshaking | handshaking→ready: expected false to be true // Object.is equality
+
+- Expected
++ Received
+
+- true
++ false
+
+ ❯ runTimeoutRecoveryScenario packages/ws-replication/test/ws-replication-issue254-ac-red.test.ts:216:7
+    214|       recovered,
+    215|       `${opts.describe}: 越过 reconcileTimeout 后必须在窗口内自愈至 live（AC1/AC2；当…
+    216|     ).toBe(true);
+       |       ^
+    217|
+    218|     // AC6：恢复路径 = 连接重建（新 wire 上 re-OPEN + reconcile）。
+ ❯ packages/ws-replication/test/ws-replication-issue254-ac-red.test.ts:248:5
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/2]⎯
+
+ FAIL  packages/ws-replication/test/ws-replication-issue254-ac-red.test.ts > issue #254：周期 reconciliation 超时自愈红灯契约 > 红灯 A2：同款死局在后续周期 round（先放行一个健康 round）同样必须自愈
+AssertionError: A2: 越过 reconcileTimeout 后必须在窗口内自愈至 live（AC1/AC2；当前实现=僵尸）：
+recovered=false（horizon 60s 虚拟时间）
+peer ns=failed conn=ready wires=1 dials=1
+rounds(3) hubLastChannel=live
+peer channel trail: targeted→opening@hub-omega-conn-0 | opening→reconciling@hub-omega-conn-0 | reconciling→live@hub-omega-conn-0 | live→reconciling@hub-omega-conn-0 | reconciling→live@hub-omega-conn-0 | live→reconciling@hub-omega-conn-0 | reconciling→failed@hub-omega-conn-0
+hub channel trail: opening→reconciling@hub-omega-conn-0 | reconciling→live@hub-omega-conn-0
+peer conn trail: stopped→disconnected | disconnected→connecting | connecting→handshaking | handshaking→ready: expected false to be true // Object.is equality
+
+- Expected
++ Received
+
+- true
++ false
+
+ ❯ runTimeoutRecoveryScenario packages/ws-replication/test/ws-replication-issue254-ac-red.test.ts:216:7
+    214|       recovered,
+    215|       `${opts.describe}: 越过 reconcileTimeout 后必须在窗口内自愈至 live（AC1/AC2；当…
+    216|     ).toBe(true);
+       |       ^
+    217|
+    218|     // AC6：恢复路径 = 连接重建（新 wire 上 re-OPEN + reconcile）。
+ ❯ packages/ws-replication/test/ws-replication-issue254-ac-red.test.ts:252:5
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/2]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  2 failed | 3 passed (5)
+Type Errors  no errors
+   Start at  00:33:52
+   Duration  1.23s (transform 610ms, setup 0ms, collect 824ms, tests 113ms, environment 0ms, prepare 57ms)

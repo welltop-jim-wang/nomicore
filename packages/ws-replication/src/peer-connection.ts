@@ -34,7 +34,8 @@ const defaultDefer = (task: () => void): void => queueMicrotask(task);
 
 const HANDSHAKE_OR_READY: ReadonlySet<PeerConnectionState> = new Set(['handshaking', 'ready']);
 
-/** 连接退避 reason 闭联合（§3.1；append-only）。 */
+/** 连接退避 reason 闭联合（§3.1；append-only）。issue #254 追加
+ *  `namespace-recovery`：timer 族 namespace 超时收口后由本端触发的恢复性重建。 */
 export type PeerBackoffReason =
   | 'dial-failed'
   | 'socket-closed'
@@ -42,7 +43,8 @@ export type PeerBackoffReason =
   | 'pong-timeout'
   | 'connection-backpressure'
   | 'goaway-closed'
-  | 'goaway-retry-hint';
+  | 'goaway-retry-hint'
+  | 'namespace-recovery';
 
 export function createPeerReplication(options: PeerReplicationOptions): PeerReplication {
   return new PeerConnectionImpl(options);
@@ -104,6 +106,8 @@ class PeerConnectionImpl implements PeerReplication {
       requestDataDrain: () => this.sender?.requestDrain(),
       connectionFatal: (code, wsCloseCode) => this.connectionFatal(code, wsCloseCode ?? 1002),
       connectionEpoch: () => this.connectionEpochValue,
+      // issue #254：timer 族 namespace 超时收口（finalize('failed')）后的恢复触发
+      requestConnectionRecovery: (namespaceId) => this.onNamespaceRecoveryRequested(namespaceId),
       deferTask: (task: () => void) => this.deferTask(task),
       observerPresent: () => this.observer() !== undefined,
       emitObserver: (event) => dispatchReplicationObserver(this.observer(), event),
@@ -631,7 +635,8 @@ class PeerConnectionImpl implements PeerReplication {
   }
 
   /**
-   * §18 R4 detach-close 序列（本地超时路径共用：pong-timeout / hello-timeout，issue #168）：
+   * §18 R4 detach-close 序列（本地超时路径共用：pong-timeout / hello-timeout，
+   * issue #168；namespace-recovery，issue #254）：
    * 停旧 liveness → 退订旧 transport 全部监听 → epoch 作废 → close(1001, reason)。
    * epoch 必须先于可能同步重入的 transport close() 失效（§18 次序纪律）；退订先行
    * + 订阅闭包 epoch 门 = 双保险，本地 close 零重入副作用。
@@ -643,7 +648,7 @@ class PeerConnectionImpl implements PeerReplication {
    */
   private detachCloseTimedOutTransport(
     transport: DuplexTransport,
-    reason: 'pong-timeout' | 'hello-timeout',
+    reason: 'pong-timeout' | 'hello-timeout' | 'namespace-recovery',
   ): boolean {
     if (this.transport !== transport) {
       throw new Error(
@@ -932,7 +937,19 @@ class PeerConnectionImpl implements PeerReplication {
     this.emitBackoffScheduled(reason, this.attempts, delay);
     this.backoffHandle = this.options.timer.setTimeout(() => {
       this.backoffHandle = undefined;
-      if (this.connStateValue === 'backoff') this.dialNow();
+      if (this.connStateValue !== 'backoff') return;
+      if (reason !== 'namespace-recovery') {
+        this.dialNow();
+        return;
+      }
+      // issue #254：恢复性重拨必须等待旧连接全部 namespace 的 lifecycle cleanup
+      // barrier；否则 full-jitter=0 时新 OPEN 可先于旧 session.close/lease.release。
+      const cleanupBarrier = Promise.allSettled(
+        [...this.controllers.values()].map((controller) => controller.waitForCleanup()),
+      );
+      void cleanupBarrier.then(() => {
+        if (this.connStateValue === 'backoff' && !this.stopping) this.dialNow();
+      });
     }, delay);
   }
 
@@ -966,6 +983,32 @@ class PeerConnectionImpl implements PeerReplication {
       this.rebuildPending = false;
       if (!this.stopping) this.dialNow();
     });
+  }
+
+  // ─────────────────────────────── 恢复性重建触发（issue #254） ───────────────────────────────
+
+  /**
+   * timer 族 namespace 超时收口后的恢复触发（PeerNamespaceHost facet 的实现侧单点）。
+   * 谓词（§13.2 timer 族 + target 活跃 + 连接存活）由调用点与下列门共同持有：
+   *  - stopping：stop() 轨道自有收口，重建零意义；
+   *  - connState !== 'ready'：断线/重连/backoff/blocked/draining 均已身处既有恢复
+   *    轨道——幂等门（同 tick 多 ns 超时：首个触发离开 ready，其余被吸收；GOAWAY
+   *    drain 期 timer 已被 onConnectionQuiesce 清除，本门为纵深）；
+   *  - transport 缺失/已关：onClose 竞态防御。
+   * 重建轨道 = detach-close（epoch 先失效 → close(1001)）+ onTemporaryFailure
+   * （§15.1 backoff 重拨）——与 pong/hello-timeout 既有轨道同构，不按 ns 分流：
+   * 任一 recoverable failed 即整连接重建（§16「addTarget 因本连接禁止重开而触发
+   * 整连接重建」同族先例）。
+   */
+  private onNamespaceRecoveryRequested(namespaceId: string): void {
+    void namespaceId; // 不按 ns 分流（见上）
+    if (this.stopping) return;
+    if (this.connStateValue !== 'ready') return;
+    const transport = this.transport;
+    if (transport === undefined || transport.closed) return;
+    if (this.detachCloseTimedOutTransport(transport, 'namespace-recovery')) {
+      this.onTemporaryFailure('namespace-recovery', true); // epoch 已失效 → 防重复递增
+    }
   }
 
   // ─────────────────────────────── timer 管理 ───────────────────────────────

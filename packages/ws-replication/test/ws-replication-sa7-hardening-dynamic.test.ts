@@ -657,6 +657,7 @@ interface LivenessBoot {
   readonly peer: PeerReplication;
   readonly peerNode: ReplicaNode;
   readonly wires: LivenessWire[];
+  readonly namespaceId: string;
 }
 
 async function bootLiveness(withFacets: boolean): Promise<LivenessBoot> {
@@ -692,7 +693,7 @@ async function bootLiveness(withFacets: boolean): Promise<LivenessBoot> {
     // 不触发零延迟重拨（delay = max(0, random()*cap)，random()=0 会同窗立即重拨回 ready）
     random: () => 0.99,
   });
-  return { peer, peerNode, wires };
+  return { peer, peerNode, wires, namespaceId: fixture.namespaceId };
 }
 
 /** 剥离 ping/onPong 面（缺面 dormant 路径——真实 WS 无活性钩子的降级形态）。 */
@@ -751,6 +752,14 @@ describe('SA7 D4（SA4 §六.3 N4）：WS ping/pong liveness 运行时行为', (
     const run = await bootLiveness(false);
     run.peer.start();
     await settleUntil(() => run.peer.getConnectionState() === 'ready', '连接 ready');
+    // 先让 namespace 收敛 live：fake scheduler 的 advanceBy 只按到期序触发 timer、
+    // 每个 timer 之间仅做 3 层微任务展开——若不先 settle，OPEN/OPEN_OK/bootstrap
+    // 微任务链走不完，open timer（5s）必先在推进窗内误触发。issue #254 后该超时
+    // 会合法地发起恢复性重建（连接离开 ready），淹没本用例的 liveness dormant 观测面。
+    await settleUntil(
+      () => run.peer.getNamespaceState(run.namespaceId) === 'live',
+      'ns 收敛 live',
+    );
     // 无 facet transport：活性循环不得武装——长时间推进零 ping（无面可计）且不因
     // 活性失联收口（dormant 降级，切片 9 前无宿主适配的正确形态）
     await run.peerNode.scheduler.advanceBy(41_000);

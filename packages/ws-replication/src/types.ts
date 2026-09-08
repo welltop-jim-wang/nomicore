@@ -296,7 +296,9 @@ export type ReplicationObserverEvent =
         | 'pong-timeout'
         | 'connection-backpressure'
         | 'goaway-closed'
-        | 'goaway-retry-hint';
+        | 'goaway-retry-hint'
+        // issue #254（append-only）：timer 族 namespace 超时收口后的恢复性重建
+        | 'namespace-recovery';
     }
   | {
       readonly type: 'goaway-received';
