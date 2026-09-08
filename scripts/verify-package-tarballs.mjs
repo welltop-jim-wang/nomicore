@@ -109,9 +109,14 @@ async function checkBin(packageRoot, bin, name) {
   if (bin === undefined) return
   const values = typeof bin === 'string' ? [bin] : Object.values(bin)
   for (const target of values) {
-    await readFile(join(packageRoot, String(target).replace(/^\.\//, ''))).catch(() => {
+    const content = await readFile(join(packageRoot, String(target).replace(/^\.\//, '')), 'utf8').catch(() => {
       throw new Error(`${name}: bin target missing from tarball: ${target}`)
     })
+    // bin 条目必须带 shebang：缺 `#!` 时 shell 会把 JS 当脚本解析（vfsl-codegen/yjs-server
+    // 曾因此发布出不可直接执行的 CLI）。tsc 保留源码首行 shebang，修复点在 src 而非 dist。
+    if (!content.startsWith('#!')) {
+      throw new Error(`${name}: bin target lacks a shebang line (#!...): ${target}`)
+    }
   }
 }
 

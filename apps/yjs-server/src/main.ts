@@ -1,5 +1,10 @@
+#!/usr/bin/env node
 /**
  * `@nomicore/yjs-server` CLI（设计 §3.1/§3.4/§3.6/§3.7）。
+ *
+ * 首行 shebang 是发布契约：`bin: nomicore-yjs-server` 指向编译产物
+ * `dist/main.js`，直接以命令形式执行时由它选择 node 解释器（发布验收
+ * checkBin 已钉死该红线）。
  *
  *  - `--config <path>`（或 env `NOMICORE_CONFIG`）读入 JSON 配置 → §3.2 同一全量
  *    校验器（违规 → `config-error` + violations + exit 1）；

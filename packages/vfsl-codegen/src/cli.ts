@@ -1,5 +1,10 @@
+#!/usr/bin/env node
 /**
  * CLI（§5）：`pnpm generate` / `pnpm generate --check`。
+ *
+ * 首行 shebang 是发布契约：`bin: nomicore-generate` 指向编译产物 `dist/cli.js`，
+ * 直接以命令形式执行（`pnpm exec nomicore-generate`）时由它选择 node 解释器；
+ * 删除或后移会让 shell 把 JS 当脚本解析（发布验收 checkBin 已钉死该红线）。
  *
  * 启动精简（R2/SA2 #8b）：模块级零重活（无顶层 await/大对象构造）、参数解析与错误
  * 早出先行；`@nomicore/vfsl` 全量导入（tsx 现场转译）是主要启动成本，不得再叠加

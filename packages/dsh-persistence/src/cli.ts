@@ -1,7 +1,10 @@
+#!/usr/bin/env node
 import { runPersistenceProbe } from './probe.js'
 
 /**
  * DSH 探针 CLI（AC8 可复制命令）：stdout=记录，stderr=错误。
+ * 首行 shebang 是发布契约（`bin: nomicore-dsh-persistence-probe` → dist/cli.js
+ * 直接执行时选择 node 解释器；发布验收 checkBin 已钉死）。
  * 退出码纪律：0 成功 / 1 领域失败（probe ok=false）/ 2 用法错误。
  * file 模式不清理 rootDir（快照是 AC8 要的可观察副作用）。
  */

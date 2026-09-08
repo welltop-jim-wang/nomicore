@@ -68,6 +68,8 @@ artifacts/local-packages/   # 本地集成 tarballs 和 manifest
 pnpm add @nomicore/namespace-registry @nomicore/persistence
 # 需要嵌入 Hub/Peer 时
 pnpm add @nomicore/instance @nomicore/clock @nomicore/ws-replication @nomicore/yjs-server
+# 可选 best-effort namespace 诊断变更日志
+pnpm add @nomicore/namespace-diagnostic-log
 # 需要生成类型投影时
 pnpm add -D @nomicore/vfsl-codegen @nomicore/vfsl-protocol
 ```
@@ -142,16 +144,16 @@ pnpm run pack:local -- /absolute/path/to/output
   "dependencies": {
     "@nomicore/instance": "file:../nomicore/artifacts/local-packages/nomicore-instance-0.1.0.tgz",
     "@nomicore/clock": "file:../nomicore/artifacts/local-packages/nomicore-clock-0.1.0.tgz",
-    "@nomicore/persistence": "file:../nomicore/artifacts/local-packages/nomicore-persistence-0.2.2.tgz",
-    "@nomicore/namespace-registry": "file:../nomicore/artifacts/local-packages/nomicore-namespace-registry-0.1.6.tgz",
-    "@nomicore/replication-protocol": "file:../nomicore/artifacts/local-packages/nomicore-replication-protocol-0.1.0.tgz",
-    "@nomicore/ws-replication": "file:../nomicore/artifacts/local-packages/nomicore-ws-replication-0.1.3.tgz",
-    "@nomicore/yjs-server": "file:../nomicore/artifacts/local-packages/nomicore-yjs-server-0.1.1.tgz"
+    "@nomicore/persistence": "file:../nomicore/artifacts/local-packages/nomicore-persistence-0.2.3.tgz",
+    "@nomicore/namespace-registry": "file:../nomicore/artifacts/local-packages/nomicore-namespace-registry-0.1.9.tgz",
+    "@nomicore/replication-protocol": "file:../nomicore/artifacts/local-packages/nomicore-replication-protocol-0.1.1.tgz",
+    "@nomicore/ws-replication": "file:../nomicore/artifacts/local-packages/nomicore-ws-replication-0.1.4.tgz",
+    "@nomicore/yjs-server": "file:../nomicore/artifacts/local-packages/nomicore-yjs-server-0.1.3.tgz"
   }
 }
 ```
 
-实际闭包还可能包含 `vfsl-protocol`、`vfsl`、`doc-runtime` 和 `namespace-runtime`；以 package manager 报告及 `manifest.json` 为准。更新 tarballs 后，在消费项目重新执行其 package manager install，确保 lockfile 指向新文件和内容。
+实际闭包还可能包含 `vfsl-protocol`、`vfsl`、`doc-runtime`、`namespace-runtime` 和 `namespace-diagnostic-log`；以 package manager 报告及 `manifest.json` 为准。更新 tarballs 后，在消费项目重新执行其 package manager install，确保 lockfile 指向新文件和内容。
 
 ### 4. 验证 tarball 消费
 

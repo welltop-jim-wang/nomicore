@@ -44,7 +44,7 @@ Generate projections in the independent host and use them to type-check business
    - one narrow assertion may bridge a successful runtime result to its projected type;
    - application call sites contain no `any`, source-deep imports, or live `Y.Doc` access.
 7. Preserve literal paths (`as const` for reused tuples). Verify negative cases: unknown paths, wrong values, and array operations on non-array nodes must fail host typecheck.
-8. Add host scripts equivalent to generation, freshness check, typecheck, and tests. Until a stable packaged CLI exists, keep absolute checkout paths explicitly marked as local-only configuration.
+8. Add host scripts equivalent to generation, freshness check, typecheck, and tests. Invoke the published CLI through the host package manager (`pnpm exec nomicore-generate …`); a Nomicore checkout is not needed for generation or freshness checks.
 
 ## Program wiring
 
@@ -71,9 +71,9 @@ Keep the ordinary build Program package-local. Create a separate `tsconfig.typec
 Generate the projection into the package's permitted source/type directory with the supported single-domain mode:
 
 ```bash
-pnpm generate --domains /path/to/host --domain <domain> \
+pnpm exec nomicore-generate --domains /path/to/host --domain <domain> \
   --out packages/<consumer>/src/generated/nomicore-schema.ts
-pnpm generate --domains /path/to/host --domain <domain> \
+pnpm exec nomicore-generate --domains /path/to/host --domain <domain> \
   --out packages/<consumer>/src/generated/nomicore-schema.ts --check
 ```
 
