@@ -39,7 +39,9 @@ export interface RuntimeState {
   schemaIssue?: Readonly<{ code: string; message: string }>;
   /** ready 时的 active schema 五字段身份（冻结；INV-N8 双指纹取自 compile 产物引用）。 */
   activeInfo?: Readonly<ActiveSchemaInfo>;
-  /** active schema tools（module/derived）——内部保留，永不进任何公共面（D8）。 */
+  /** active schema tools（module/derived）——内部保留（D8 封口按 ADR-0016 修订：
+   *  derived 只经 readData 语义 schema 投影的受控只读深拷贝进入公共面；
+   *  module/validator 仍永不进入公共面）。 */
   activeTools?: { module: VfslModule; derived: DerivedSchema };
   /** fatal 稳定摘要（冻结；一经置位永久为真——INV-N6）。 */
   fatal?: Readonly<{ code: string; message: string }>;

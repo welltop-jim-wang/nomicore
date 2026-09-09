@@ -784,12 +784,28 @@ describe('namespace-runtime 唯一 write sequencer 与 validated ROOT write（AC
     expect(updates.count).toBe(0);
     expect(stateBytes(doc)).toEqual(before);
 
-    // 全部写永久禁用 + 读取保留
+    // 全部写永久禁用 + 读取保留（read.enabled 面：lifecycle 仍接纳读）
     const status = runtime.getStatus();
     expect(status.rootWrite.enabled).toBe(false);
     expect(status.schemaWrite.enabled).toBe(false);
     expect(status.read.enabled).toBe(true);
     expect(status.fatal).not.toBeNull();
-    expect(readValue(runtime, ['n'])).toBe(1);
+    // 读面断言按 ADR-0016 组合契约（issue #273 / 设计 D4）改锚：readData 的 schema
+    // 通道消费 activeTools.derived——本 fixture 经 compile seam 注入的畸形派生物
+    // （structure 非 root）属**可信域畸形**（internal-bug 注入面，生产不可达：derived
+    // 恒为自身 P0/SCHEMA 写槽 compileSchemaEnvelope ok 产物）→ resolver 抛 InternalError
+    // 并逃逸读面（本仓唯一逃逸 throw 通道；敌意输入零 throw——D3b；loud 先例同
+    // getSchema 载体异型 SchemaProjectionError）。按构造名/message 匹配断言
+    // （InternalError 未从 @nomicore/vfsl 公共入口导出——SA8 移交项 2 / 设计 N-2）。
+    let readError: unknown = '(no throw)';
+    try {
+      readValue(runtime, ['n']);
+    } catch (e) {
+      readError = e;
+    }
+    expect((readError as { constructor?: { name?: string } }).constructor?.name).toBe('InternalError');
+    if (readError instanceof Error) {
+      expect(readError.message).toContain('root 节点'); // 结构树缺 root（手造派生物）
+    }
   });
 });

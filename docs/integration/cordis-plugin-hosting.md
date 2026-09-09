@@ -337,8 +337,10 @@ if (!created.ok) {
 const lease = created.lease
 const notesId = lease.namespaceId // 重新打开与后续引用的凭据
 
+// readData 成功分支恰三键（ADR 0016）：schema 为该路径的语义 schema 投影或 null，
+// null 不是读的失败（读的 ok 恒真）。
 console.log(lease.readData(['title']))
-// { ok: true, value: 'first' }
+// { ok: true, value: 'first', schema: { valueSchema, aliases, docs, aliasDocs } }
 
 const changed = await lease.mutateData({
   op: 'set',

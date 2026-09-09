@@ -163,3 +163,16 @@ SCHEMA write 全量校验、fatal 通道、封装边界、status 观测面、「
    一致**（O(1) 安装事实核 + O(boundary) 重投影核），不再无条件重新提取并校验
    完整 ROOT。`set([])`（空路径整体替换）保持完整 ROOT 清空与重装形态，唯一
    全量例外。
+
+### ADR 0016 修订：D8 封口与 readData 结果形状（2026-09-09）
+
+1. **D8 封口改写**：正文「P0 与 active schema」节「不暴露 module、derived 或
+   validator」及 active schema tools「内部保留，永不进任何公共面」修订为——
+   `derived` 只经 `readData` 语义 schema 投影的受控只读深拷贝进入公共面
+   （ADR 0016）；`module` 与 validator 仍永不进入公共面。
+2. **readData 成功分支形状**：`{ ok: true, value }` 演进为
+   `{ ok: true, value, schema: ReadDataSchemaProjection | null }`；载荷形态、
+   缺席语义（`null` 三情形、缺席吸收照常返 schema、空路径返 ROOT 值 schema）
+   与交付纪律（always-on、每次读深拷贝）以 ADR 0016 为权威。
+3. **原规则保持**：读取保持 schema 无关、不进 sequencer、失败通道
+   （`PATH_NOT_ALLOWED` / `RUNTIME_READ_DISABLED`）与读取保留不变量均不变。

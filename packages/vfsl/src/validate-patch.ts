@@ -59,8 +59,9 @@ function present(obj: Record<string, unknown>, k: string): boolean {
 
 // —— §4.1 共享解析核心的透镜实例（walkRefChain 参数化；报错文案逐字节对齐各自域）——
 
-/** 结构树透镜（本票新增；查表带 own 守卫）。 */
-function structureLens(aliases: Record<string, StructureNode>): RefChainLens<StructureNode> {
+/** 结构树透镜（本票新增；查表带 own 守卫）。模块级导出供 resolveSchemaAtPath
+ *  （Issue #272）包内复用（不经 index 公共面，非公共 API）。 */
+export function structureLens(aliases: Record<string, StructureNode>): RefChainLens<StructureNode> {
   return {
     isRef: (n): n is Extract<StructureNode, { kind: 'ref' }> => n.kind === 'ref',
     nameOf: (n) => (n as Extract<StructureNode, { kind: 'ref' }>).name,
@@ -96,8 +97,10 @@ interface Boundary {
 
 type GuardResult = { ok: true; boundary: Boundary } | { ok: false; result: ValidateResult };
 
-/** 单步结构下钻（R2 冻结③：对象身份去重 Set + 每步 visited——工作量界 O(路径长 × N)）。 */
-interface DrillResult {
+/** 单步结构下钻（R2 冻结③：对象身份去重 Set + 每步 visited——工作量界 O(路径长 × N)）。
+ *  模块级导出供 resolveSchemaAtPath（Issue #272 / ADR-0016 读投影解析）包内复用——
+ *  写读同构单源（不经 index 公共面，非公共 API）。 */
+export interface DrillResult {
   out: Set<StructureNode>;
   /** 尝试过的候选形态（拒绝消息取序用，R2 冻结④）。 */
   forms: Set<string>;
@@ -111,7 +114,10 @@ interface DrillResult {
   viaArray: boolean;
 }
 
-function drillStep(S: Set<StructureNode>, seg: string | number, lens: RefChainLens<StructureNode>): DrillResult {
+/** 单步结构下钻（R2 冻结③：对象身份去重 Set + 每步 visited——工作量界 O(路径长 × N)）。
+ *  模块级导出供 resolveSchemaAtPath（Issue #272 / ADR-0016 读投影解析）包内复用——
+ *  写读同构单源（不经 index 公共面，非公共 API）。 */
+export function drillStep(S: Set<StructureNode>, seg: string | number, lens: RefChainLens<StructureNode>): DrillResult {
   const out = new Set<StructureNode>();
   const visited = new Set<StructureNode>(); // 每步身份去重：一个节点每步至多展开一次
   const forms = new Set<string>();
