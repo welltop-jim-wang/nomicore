@@ -8,3 +8,4 @@
 1788927577320 | SA2 | design-review | SA8 revised-design recheck clear; issue comments: none (REST current read)
 1788928104985 | SA3 | implementation | SA2 revised design approved; issue comments: none (REST current read)
 1788929476675 | SA4 | implementation-review | SA3 implementation completed; issue comments: none (REST current read)
+1788930029214 | SA9/SA10 | final-verification | SA4 approved; base docs/adr-0016-readdata-schema verified at 1acd9e97; issue comments: none (REST current read)
