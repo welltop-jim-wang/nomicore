@@ -31,6 +31,7 @@ import {
 } from './update-transfer.js';
 import type { DataSenderFacet } from './backpressure.js';
 import type {
+  ChunkedUpdateAbortReason,
   PeerConnectionState,
   PeerNamespaceState,
   ReplicationNamespaceFailedCause,
@@ -76,6 +77,13 @@ export interface PeerNamespaceHost {
    *  触发面由调用点保证（仅 onTimerFired 尾部）；连接侧状态/stopping/transport 门
    *  由实现方持有（非 ready 态一律 no-op——既有恢复轨道接管）。 */
   requestConnectionRecovery(namespaceId: string): void;
+  /** issue #244（ADR 0013:62）：连接级入站方向（hub→peer）并发 assembly 准入——每
+   *  (连接, 入站方向) 上限 = limits.maxConcurrentAssembliesPerConnection（缺省 4）。
+   *  幂等：同一 ns 已占槽再询恒 true（重复首 chunk 防御由 assembler 状态机承接）。 */
+  tryBeginInboundAssembly(namespaceId: string): boolean;
+  /** issue #244：槽位归还（幂等 delete——busy→idle 全部出口经控制器 endAssemblyScope
+   *  单点汇入；连接代际清理随通道清理一并归还）。 */
+  endInboundAssembly(namespaceId: string): void;
   /** observer 是否在场（热路径纪律：无 observer 零事件构造/零投影读取/零时钟调用）。 */
   observerPresent(): boolean;
   /** observer 事件分发（隔离语义在 dispatchReplicationObserver 单点）。 */
@@ -91,16 +99,17 @@ export interface PeerNamespaceHost {
   now?(): number | undefined;
 }
 
-type TimerKind = 'open' | 'bootstrap' | 'reconcile' | 'periodic-reconcile' | 'close';
+type TimerKind = 'open' | 'bootstrap' | 'reconcile' | 'periodic-reconcile' | 'close' | 'assembly';
 
 /** §5.1 timer 族 → resolved 配置字段单映射（armTimer 延迟与 onTimerFired 的
- *  timeoutMs 同源——避免两处级联漂移）。 */
+ *  timeoutMs 同源——避免两处级联漂移）。issue #244：assembly 滑动 deadline 同族登记。 */
 const TIMER_DELAY_FIELD = {
   open: 'openTimeoutMs',
   bootstrap: 'bootstrapTimeoutMs',
   reconcile: 'reconcileTimeoutMs',
   'periodic-reconcile': 'reconcileIntervalMs',
   close: 'closeTimeoutMs',
+  assembly: 'assemblyTimeoutMs',
 } as const satisfies Record<TimerKind, keyof ResolvedTimeouts>;
 
 /** issue #256：timer 族超时 → 稳定 cause 单映射（§13.2 `NAMESPACE_TIMEOUT` 本地映射族）。 */
@@ -148,6 +157,7 @@ export class PeerNamespaceController {
     reconcile: undefined,
     'periodic-reconcile': undefined,
     close: undefined,
+    assembly: undefined, // issue #244：assembly 进度滑动 deadline（busy 期间武装）
   };
   private cleanupTail: Promise<void> = Promise.resolve();
   private closeMemo: Memoized | undefined;
@@ -176,6 +186,15 @@ export class PeerNamespaceController {
    *  RESYNC_REQUIRED；恢复 round 结算回 live 时清除并丢弃本 ns assembly（needs-resync 期
    *  经镜像门接纳的注定夭折首 chunk 的收口）。周期 round 不置位、结算不清除。 */
   private resyncEpisode = false;
+  /** issue #244（D3）：本控制器是否持有连接级入站并发槽——获取唯一点 = 首 chunk 准入
+   *  （tryBeginInboundAssembly）；归还唯一点 = endAssemblyScope（busy→idle 全出口）。
+   *  显式不变量守卫：漏归还即未来合法 transfer 误 VIOLATION。 */
+  private assemblySlotHeld = false;
+  /** issue #244（D5/R11）：收口中止 reason 一次性记忆位——置位于收口入口（同步段），由
+   *  收口链（runDisposal）上的 clear 消费后置 undefined；last-writer-wins（实际执行丢弃
+   *  的 teardown 即归类）。终局失败族（违例/ERROR/revoke → failed）不置位——该行可观测
+   *  信号 = namespace-error/namespace-failed（互补不重复）。 */
+  private teardownAbortReason: ChunkedUpdateAbortReason | undefined;
 
   /** 连接级 data 调度面（§6.1/§6.3）：pull 以 state==='live' 为门槛（deferred 队列
    *  仅在 resetForLive 后经 drain 放行——与 #136「flushQueued 只从 onAck/resetForLive
@@ -600,7 +619,8 @@ export class PeerNamespaceController {
     // issue #243（DD-4 挂点 1/F3）：收 RESYNC_REQUIRED ⇒ 全部丢弃（ADR 0013:58）——
     // 对端发送侧已随其 resync 边弃置在途 transfer（F6 后两方向对称），本端入站
     // assembly 必残缺：清除 + 置恢复周期标记（round 结算回 live 时消费）。
-    this.clearInboundAssembly();
+    // issue #244（D5）：reason = 矩阵 resync-declared 行（收对端声明边）。
+    this.clearInboundAssembly('resync-declared');
     this.resyncEpisode = true;
     this.emitResyncRequired('remote-declared'); // PN6
     this.maybeStartRecovery();
@@ -651,7 +671,7 @@ export class PeerNamespaceController {
       // busy 路径不做 ns 状态门（仅 quiet 静默前置）——round 期间在途 straggler chunk
       // 必须能落入存活 assembly（hub 收 STEP1 不迁出 live，下行 transfer 与周期 round
       // 并行是常态）；WS 有序可靠使错序/丢失结构性不可达 ⇒ 响亮 violation（ADR 拒绝理由 3）。
-      this.handleAssemblerResult(this.inboundAssembler.accept(message), sequence);
+      this.afterAssemblyAccept(this.inboundAssembler.accept(message), sequence);
       return;
     }
     if (chunkIndex !== 0) {
@@ -674,7 +694,35 @@ export class PeerNamespaceController {
       this.finalize('failed', 'protocol-violation');
       return;
     }
-    this.handleAssemblerResult(this.inboundAssembler.accept(message), sequence);
+    // issue #244（D2，AC2/AC3）：count 维度声明上界——分配前拒绝（peer 侧无 submit 门，
+    // 状态接纳门后即设门——hub 侧同款门在 submit 门后）。判定用 `>`：=== 上限恰被接纳。
+    if (message.chunkCount > this.host.limits.maxChunksPerUpdate) {
+      this.transferViolation('UPDATE_TRANSFER_TOO_LARGE');
+      return;
+    }
+    // issue #244（D3，AC3 + R10）：连接级并发槽获取——先于 accept（分配前）；超额 =
+    // 第 maxConcurrentAssembliesPerConnection+1 个并发首 chunk → VIOLATION（ns 级违例、
+    // 其余并发 assembly 零影响、连接保持 ready）。
+    if (!this.host.tryBeginInboundAssembly(this.namespaceId)) {
+      this.transferViolation('UPDATE_TRANSFER_VIOLATION');
+      return;
+    }
+    // SA4-1 修复：镜像旗标随槽位获取同步置位（accept 前）——endAssemblyScope 的归还
+    // 守卫（assemblySlotHeld）因此可达；单 chunk 即收齐/首 chunk 即违例时 afterAssembly
+    // Accept 的 !busy 出口在同一同步段内经 endAssemblyScope 幂等归还（获取-归还闭环）。
+    this.assemblySlotHeld = true;
+    this.afterAssemblyAccept(this.inboundAssembler.accept(message), sequence);
+  }
+
+  /** issue #244（D4）：accept 后收尾 + 结果分派——busy→idle 的槽/timer 唯一收尾点
+   *  （complete / 首 chunk 即违例 → 归还槽；more → 武装/重置进度滑动 deadline）。 */
+  private afterAssemblyAccept(result: UpdateChunkAcceptResult, sequence: number): void {
+    if (!this.inboundAssembler.busy) {
+      this.endAssemblyScope();
+    } else {
+      this.armTimer('assembly');
+    }
+    this.handleAssemblerResult(result, sequence);
   }
 
   private handleAssemblerResult(result: UpdateChunkAcceptResult, sequence: number): void {
@@ -701,7 +749,9 @@ export class PeerNamespaceController {
   }
 
   /** 违例动作（镜像 onFieldViolation 先例）：ns 级 ERROR 帧 + 终局 failed；assembly 复位。
-   *  两码均 terminal failed（VIOLATION = fatal/retryable no；TOO_LARGE = fatal/config）。 */
+   *  两码均 terminal failed（VIOLATION = fatal/retryable no；TOO_LARGE = fatal/config）。
+   *  失败族不发 chunked-update-aborted（可观测信号 = namespace-error/namespace-failed）——
+   *  clear 不带 reason。 */
   private transferViolation(
     code: 'UPDATE_TRANSFER_VIOLATION' | 'UPDATE_TRANSFER_TOO_LARGE',
   ): void {
@@ -710,12 +760,39 @@ export class PeerNamespaceController {
     this.finalize('failed', 'protocol-violation');
   }
 
+  /** issue #244（D3/D4）：assembly 作用域收尾单点（busy→idle 全出口唯一化）——清 timer +
+   *  归还连接级槽（assemblySlotHeld 守卫幂等）。 */
+  private endAssemblyScope(): void {
+    this.clearTimer('assembly');
+    if (!this.assemblySlotHeld) return;
+    this.assemblySlotHeld = false;
+    this.host.endInboundAssembly(this.namespaceId);
+  }
+
   /** 入站 assembly 清理挂点（DD-4 挂点表）：对端声明收帧边（onResyncReceived）、本端
    *  wire 声明发射点（declareLocalResync 漏斗内、记忆化门后）、恢复 round 结算回 live
    *  （resyncEpisode 标记门控）、连接收口/新连接会话建立（tryOpen/runDisposal）、
-   *  违例复位。终态/静默帧入口已静默丢弃，残余内存由收口路径释放。 */
-  private clearInboundAssembly(): void {
+   *  违例复位。终态/静默帧入口已静默丢弃，残余内存由收口路径释放。
+   *  issue #244（D5）：reason 在场 → busy 守卫下发射 chunked-update-aborted（快照先于
+   *  reset；决策落定后发射；observer 缺省零快照零构造）；reason 缺省 = 失败族零事件。 */
+  private clearInboundAssembly(reason?: ChunkedUpdateAbortReason): void {
+    const snapshot =
+      reason !== undefined && this.observerOn && this.inboundAssembler.busy
+        ? this.inboundAssembler.snapshot()
+        : undefined;
+    this.endAssemblyScope();
     this.inboundAssembler.reset();
+    if (snapshot !== undefined && reason !== undefined) {
+      this.host.emitObserver({
+        type: 'chunked-update-aborted',
+        side: 'peer',
+        namespaceId: this.namespaceId,
+        transferId: snapshot.transferId,
+        reason,
+        receivedChunks: snapshot.receivedChunks,
+        receivedBytes: snapshot.receivedBytes,
+      });
+    }
   }
 
   /** issue #243（DD-3.5）：UPDATE_CHUNK 帧出站（控制器侧包装：异常收敛返回 0 → 通道
@@ -730,6 +807,9 @@ export class PeerNamespaceController {
 
   onCloseRequest(message: { sequence: number }): void {
     if (this.isQuietState()) return;
+    // issue #244（D5）：通道级收口中止行——收 CLOSE_NAMESPACE = 通道 teardown 语义，
+    // 收口链（runDisposal）消费 busy assembly 时按本 reason 归类（恰一事件）。
+    this.teardownAbortReason = 'channel-teardown';
     this.clearAllTimers(); // §D5：进 closing 即清 open/bootstrap/reconcile 残留 timer（防静默期 fire → finalize('failed')）
     this.setState('closing');
     this.quiesceSync();
@@ -787,6 +867,9 @@ export class PeerNamespaceController {
       return; // §13.4：closing 期 terminal 帧只推进收口
     }
     this.emitIdentityConflicted('identity-changed-frame'); // PN8
+    // issue #244（R11）：epoch-fence 中止行——conflicted 族终局发 chunked-update-aborted
+    // {epoch-fence}（ADR 词表要求；与 identity-conflicted 互补不重复；failed 族不置位）。
+    this.teardownAbortReason = 'epoch-fence';
     this.finalize('conflicted');
   }
 
@@ -823,6 +906,10 @@ export class PeerNamespaceController {
       return this.closeMemo?.get() ?? Promise.resolve();
     }
     this.intent = 'removed';
+    // issue #244（D5）：本端 removeTarget = 通道级收口中止行（CLOSE_NAMESPACE 发送方）；
+    // 收口链（ensureCloseMemo/cleanupResources → runDisposal）消费 busy assembly 时按本
+    // reason 归类（R5a 对称语义；hub 侧无 removeTarget——hub 通道经收 CLOSE 或连接收口）。
+    this.teardownAbortReason = 'channel-teardown';
     switch (this.state) {
       case 'targeted':
       case 'disconnected':
@@ -926,6 +1013,10 @@ export class PeerNamespaceController {
    *  §13.3/§14.1：failed 等待连接重建——断线投影 disconnected 后重连重 OPEN）。
    *  §D5.1（issue #171）：全分支同步段 clearAllTimers + 摘订阅 + 处置排队（claim 化）。 */
   onConnectionLost(): void {
+    // issue #244（D5/R5b/R13）：连接级 teardown 中止行——断线/GOAWAY drain deadline
+    // close/backoff 收口全部经本方法（或其全量层）汇入；收口链 clear 消费时按
+    // connection-teardown 归类（GOAWAY 无独立 reason，六值词表行 = connection-teardown）。
+    this.teardownAbortReason = 'connection-teardown';
     this.clearTimer('periodic-reconcile');
     if (this.state === 'closed' || this.state === 'conflicted') return; // 终态保持
     this.clearAllTimers(); // ★ RC3：断线同步段清全部 timer（open/bootstrap/reconcile/close）
@@ -967,6 +1058,10 @@ export class PeerNamespaceController {
   /** 连接 blocked（fatal）：**全量**静默 = 轻量段 + 处置排队。 */
   onConnectionFatal(): void {
     if (this.isTerminal()) return;
+    // issue #244（D5/R13）：fatal 收口 = connection-teardown 行（GOAWAY drain deadline/
+    // connection fatal 合流；light 层 onConnectionQuiesce 只清 timer 不处置——实际处置
+    // 在本全量层，reason 此处置位）。
+    this.teardownAbortReason = 'connection-teardown';
     const wasClosing = this.state === 'closing';
     this.onConnectionQuiesce();
     if (wasClosing) {
@@ -981,6 +1076,9 @@ export class PeerNamespaceController {
 
   /** stop()：一律收口为 closed（本地，零 wire）。 */
   onConnectionStopped(): Promise<void> {
+    // issue #244（D5/R13）：stop/停机收口 = connection-teardown 行（R13 口径：
+    // stop 属连接级收口族，六值词表行 = connection-teardown）。
+    this.teardownAbortReason = 'connection-teardown';
     this.clearAllTimers();
     this.intent = 'removed';
     if (!this.isTerminal()) {
@@ -1033,9 +1131,10 @@ export class PeerNamespaceController {
     // 首 chunk（发送端将在 RESYNC 送达后弃置该 transfer）若不清除，恢复后新 transferId
     // 到达会撞 busy 冲突 → 误判 VIOLATION。周期 round 不置标记、结算不清除（hub→peer
     // 下行 transfer 与周期 round 并行时 assembly 必须跨 round 存活）。
+    // issue #244（D5）：结算时按 resync-declared 行归类（doomed 残渣）。
     if (this.resyncEpisode) {
       this.resyncEpisode = false;
-      this.clearInboundAssembly();
+      this.clearInboundAssembly('resync-declared');
     }
     this.watchdog.onEvent();
     this.armTimer('periodic-reconcile');
@@ -1104,7 +1203,11 @@ export class PeerNamespaceController {
     // 清本端入站 assembly + 置恢复周期标记（重复声明被记忆化吞掉不重复置位）。
     // 挂点语义 = 「本端任何 wire RESYNC_REQUIRED 发射点」（静态判据：sendChecked
     // RESYNC 发射点 == {peer 本漏斗, hub declareHubResync}）。
-    this.clearInboundAssembly();
+    // issue #244（D5/R11）：reason 接线 = 矩阵行判别——connection-shed 行 → 'shed'
+    // （live 通道的连接级背压弃置；非 live 通道只置 pendingResync、不清 assembly =
+    // 正确行为）；其余声明（queue-overflow/send-failed/ack-timeout/session-fanout-
+    // overflow）→ 'resync-declared'。
+    this.clearInboundAssembly(cause === 'connection-shed' ? 'shed' : 'resync-declared');
     this.resyncEpisode = true;
     this.sendChecked({
       kind: 'RESYNC_REQUIRED',
@@ -1420,6 +1523,8 @@ export class PeerNamespaceController {
       case 'fence':
         // peer 侧防御性对称保留：命中即按 conflicted 终局收口（零 wire）
         this.emitIdentityConflicted('fence'); // PN9：apply 期围栏
+        // issue #244（R11）：apply 期围栏 = epoch-fence 中止行（conflicted 族发事件）
+        this.teardownAbortReason = 'epoch-fence';
         this.finalize('conflicted');
         return;
       case 'local': {
@@ -1649,8 +1754,12 @@ export class PeerNamespaceController {
       this.watchdog.teardown();
       this.round.teardown();
       this.channel.teardown();
-      // issue #243（DD-4 清理挂点/终态单点）：资源处置随带释放本代 assembly（纯易失内存）
-      this.clearInboundAssembly();
+      // issue #243（DD-4 清理挂点/终态单点）：资源处置随带释放本代 assembly（纯易失内存）。
+      // issue #244（D5）：消费收口入口置位的 teardownAbortReason（一次性——消费即清；
+      // busy 守卫保证每 assembly 至多一事件；失败族入口未置位 → 无 reason → 零事件）。
+      const teardownReason = this.teardownAbortReason;
+      this.teardownAbortReason = undefined;
+      this.clearInboundAssembly(teardownReason);
       this.resyncEpisode = false;
     }
   }
@@ -1805,14 +1914,44 @@ export class PeerNamespaceController {
     }
   }
 
+  /** issue #244（D4，AC4）：assembly 停滞超时（进度滑动 deadline，每收一 chunk 重置）——
+   *  弃 partial + 出向 RESYNC_REQUIRED{UPDATE_TRANSFER_EXPIRED}（切片 1 已登记词表；
+   *  独立发射点而非并入 resync 漏斗——漏斗 reasonCode 硬编码 send-queue-overflow 且被
+   *  resyncDeclared 记忆化）。不发 resync-required observer 事件（ADR 未为该行定义
+   *  cause；本行可观测信号 = aborted{timeout} + wire 帧）。peer 版尾行：本端即 round
+   *  发起者——maybeStartRecovery 立即开新 round（§9.4 收口语义）。 */
+  private onAssemblyTimeout(): void {
+    if (!this.inboundAssembler.busy) return; // clear 后 stale fire 零副作用
+    this.clearInboundAssembly('timeout'); // 弃 partial + 归还槽 + 清 timer + aborted{timeout}
+    if (this.isQuietState() || this.state === 'disconnected') {
+      return; // 防御（收口已杀 timer，结构性不可达）——零 wire
+    }
+    this.sendChecked({
+      kind: 'RESYNC_REQUIRED',
+      namespaceId: this.namespaceId,
+      reasonCode: 'UPDATE_TRANSFER_EXPIRED', // 切片 1 已登记词表；codec 自由安全字符串
+    });
+    if (this.isQuietState()) {
+      return; // sendChecked 失败已 finalize（failed/closing 零复活；disconnected 不可达——清 timer 先行）
+    }
+    this.setState('needs-resync');
+    this.resyncEpisode = true; // round 结算回 live 时的幂等清理标记（既有语义）
+    this.maybeStartRecovery();
+  }
+
   private clearAllTimers(): void {
-    (['open', 'bootstrap', 'reconcile', 'periodic-reconcile', 'close'] as const).forEach((kind) => this.clearTimer(kind));
+    (['open', 'bootstrap', 'reconcile', 'periodic-reconcile', 'close', 'assembly'] as const).forEach((kind) => this.clearTimer(kind));
   }
 
   private onTimerFired(kind: TimerKind): void {
     if (this.isTerminal()) return;
     if (kind === 'periodic-reconcile') {
       this.startPeriodicReconcile();
+      return;
+    }
+    if (kind === 'assembly') {
+      // issue #244：assembly 滑动 deadline 专属分派（非 timer 族 failed 收口）
+      this.onAssemblyTimeout();
       return;
     }
     if (kind === 'close') {

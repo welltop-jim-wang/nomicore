@@ -1,0 +1,91 @@
+SA3 iteration-2 (SA4-2 repair: dual-key chain activation gate) verification evidence — issue #244
+Worktree: nomicore-fix-issue-244 (branch mabf/issue-244, base HEAD e2178f3; carries iteration-0/1 implementation tree)
+Dispatch: sa-3d23be4d-34ac-4869-af41-09ed8e606c43 (mabf-sa3 / implementation / iteration 2)
+All commands run from worktree root. Virtual-time tests; zero real sleep.
+
+==========================================================================
+[1] PRE-FIX RED BASELINE — SA6-supplemented contract (14 cases incl. R1c/N5/N6),
+    file untouched by SA3 (DENY), current tree = single-key gate
+    Command:
+    $ NODE_OPTIONS=--conditions=nomicore-source pnpm exec vitest run \
+        packages/ws-replication/test/ws-replication-issue244-ac-red.test.ts --reporter=dot
+    Result: Test Files 1 failed (1); Tests 1 failed | 13 passed (14);
+    Type Errors no errors; Duration 902ms
+
+    FAIL: 红灯 R1c — 显式 maxChunksPerUpdate（无 chunked 字节键）必须激活合并值链校验
+      AssertionError at ws-replication-issue244-ac-red.test.ts:726:
+      显式 maxChunksPerUpdate=4 + 缺省 envelope 4MiB 必须构造期 TypeError
+      (链②：4MiB > 4×512KiB=2MiB；现行单键门静默接受)
+      -> createHubReplication(hubOptionsWith({ maxChunksPerUpdate: 4 })) did NOT throw
+      (test also asserts the peer entry at :727-729)
+    PASS: R1a R1b R2 R3 R4 R5a R5b N1 N2 N3 N4 N5 N6
+    -> red localized exactly on the missing count-key activation (single-key gate
+       hub-connection.ts / peer-connection.ts), chain machinery unaffected.
+
+==========================================================================
+[2] FIX applied (iteration-2 delta — 3 production/doc files + this evidence):
+      packages/ws-replication/src/hub-connection.ts   — activation gate widened:
+        single-key hasOwnProperty('maxChunkedUpdateBytes') → dual-key
+        hasOwnProperty('maxChunkedUpdateBytes') || hasOwnProperty('maxChunksPerUpdate')
+        (comment + condition; merged-value validateChunkedTransferChain unchanged)
+      packages/ws-replication/src/peer-connection.ts  — symmetric
+      packages/ws-replication/src/validate.ts         — validateChunkedTransferChain
+        header comment "调用契约" section restated as dual-key gate (SA4-2 wording),
+        N5/N6 non-retroactivity note; zero behavior change
+      docs/protocols/instance-replication-v1.md       — §17 chain-activation note:
+        single-key "显式配置 maxChunkedUpdateBytes 时响亮生效" → dual-key
+        "maxChunkedUpdateBytes **或** maxChunksPerUpdate（…分块族操作数键）时响亮生效
+        （非追溯性）" (design §7-D8 item 1 wording)
+    Contract file, slot-reclaim regression file, SA4-1 slot lifecycle code: NOT touched.
+
+==========================================================================
+[3] POST-FIX GREEN — contract 14/14 + slot-reclaim REG 3/3 (single run)
+    Command:
+    $ NODE_OPTIONS=--conditions=nomicore-source pnpm exec vitest run \
+        packages/ws-replication/test/ws-replication-issue244-ac-red.test.ts \
+        packages/ws-replication/test/ws-replication-issue244-slot-reclaim-regression.test.ts \
+        --reporter=dot
+    Result: Test Files 2 passed (2); Tests 17 passed (17);
+    Type Errors no errors; Duration 1.33s
+    (R1c hub+peer both TypeError now; R1a/R1b/N1 unchanged green; N5/N6 green —
+     non-retroactivity boundary and activation-key-set closure preserved;
+     REG1–REG3 green — SA4-1 slot lifecycle fix not regressed)
+
+==========================================================================
+[4] Determinism — 3 consecutive runs of [3]:
+    run 1/2/3 each: Test Files 2 passed (2); Tests 17 passed (17);
+    Type Errors no errors
+
+==========================================================================
+[5] Full package regression
+    Command:
+    $ NODE_OPTIONS=--conditions=nomicore-source pnpm exec vitest run \
+        packages/ws-replication/test --reporter=dot
+    Result: Test Files 62 passed (62); Tests 451 passed (451);
+    Type Errors no errors; Duration 40.36s
+    (451 = iteration-1 448 + contract supplement R1c/N5/N6 +3; zero green-file flip)
+
+==========================================================================
+[6] Package typecheck
+    Command: $ pnpm exec tsc -p packages/ws-replication/tsconfig.json
+    Result: exit 0 (TSC_OK, clean)
+
+==========================================================================
+[7] Root typecheck (module AGENTS gate; 14 tsc projects incl. ws-replication)
+    Command: $ pnpm typecheck
+    Result: exit 0 (clean, all 14 projects)
+
+==========================================================================
+[8] Root test (module AGENTS gate; vitest --typecheck full repo)
+    Command: $ pnpm test
+    Result: Test Files 300 passed (300); Tests 3214 passed (3214);
+    Type Errors no errors; exit 0 (Duration 556.59s)
+    (3214 = iteration-1 3211 + contract supplement R1c/N5/N6 +3)
+
+==========================================================================
+[9] Hygiene
+    Command: $ git diff --check
+    Result: exit 0 (no whitespace errors)
+    Stale-single-key-wording sweep: zero remaining single-key phrasing in
+    packages/ws-replication/src/** or docs/protocols/instance-replication-v1.md
+    (dual-key phrasing at all four sites verified).

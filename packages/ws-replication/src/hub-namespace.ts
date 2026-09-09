@@ -31,6 +31,7 @@ import {
 } from './update-transfer.js';
 import type { DataSenderFacet } from './backpressure.js';
 import type {
+  ChunkedUpdateAbortReason,
   HubConnectionState,
   HubNamespaceState,
   ReplicationNamespaceFailedCause,
@@ -73,6 +74,13 @@ export interface HubChannelHost {
   /** channel 进入终态（closed/conflicted/failed）的一次性通知——连接 drain 窗口
    *  提前完成观测（issue #174 §4.3）；非 drain 期调用方 no-op。 */
   onChannelSettled(namespaceId: string): void;
+  /** issue #244（ADR 0013:62）：连接级入站方向（peer→hub）并发 assembly 准入——每
+   *  (连接, 入站方向) 上限 = limits.maxConcurrentAssembliesPerConnection（缺省 4）。
+   *  幂等：同一 ns 已占槽再询恒 true（重复首 chunk 防御由 assembler 状态机承接）。 */
+  tryBeginInboundAssembly(namespaceId: string): boolean;
+  /** issue #244：槽位归还（幂等 delete——busy→idle 全部出口经通道 endAssemblyScope
+   *  单点汇入；连接消亡时集合随连接对象生命周期释放，无独立清理面）。 */
+  endInboundAssembly(namespaceId: string): void;
   /** observer 是否在场（热路径纪律：无 observer 零事件构造/零投影读取/零时钟调用）。 */
   observerPresent(): boolean;
   /** observer 事件分发（隔离语义在 dispatchReplicationObserver 单点）。 */
@@ -88,7 +96,7 @@ export interface HubChannelHost {
   now?(): number | undefined;
 }
 
-type TimerKind = 'bootstrap' | 'close';
+type TimerKind = 'bootstrap' | 'close' | 'assembly';
 
 export class HubNamespaceChannel {
   state: HubChannelState = 'opening';
@@ -111,6 +119,7 @@ export class HubNamespaceChannel {
   private timers: Record<TimerKind, unknown | undefined> = {
     bootstrap: undefined,
     close: undefined,
+    assembly: undefined, // issue #244：assembly 进度滑动 deadline（busy 期间武装）
   };
   private cleanupTail: Promise<void> = Promise.resolve();
   private closeQueue: Promise<void> = Promise.resolve();
@@ -129,6 +138,15 @@ export class HubNamespaceChannel {
   /** issue #243（F3）：恢复周期标记——置位 = 收对端 RESYNC 或本端漏斗真实发射 wire
    *  RESYNC_REQUIRED；恢复 round 结算回 live 时清除并丢弃本通道 assembly。 */
   private resyncEpisode = false;
+  /** issue #244（D3）：本通道是否持有连接级入站并发槽——获取唯一点 = 首 chunk 准入
+   *  （tryBeginInboundAssembly）；归还唯一点 = endAssemblyScope（busy→idle 全出口）。
+   *  显式不变量守卫：漏归还即未来合法 transfer 误 VIOLATION。 */
+  private assemblySlotHeld = false;
+  /** issue #244（D5/R11）：收口中止 reason 一次性记忆位——置位于收口入口（同步段），由
+   *  收口链上的 clear 消费后置 undefined；last-writer-wins（实际执行丢弃的 teardown 即
+   *  归类——CLOSE 在途时连接先断 → 后置位覆盖）。终局失败族（违例/ERROR/revoke → failed）
+   *  不置位——该行可观测信号 = namespace-error/namespace-failed（互补不重复）。 */
+  private teardownAbortReason: ChunkedUpdateAbortReason | undefined;
 
   /** 连接级 data 调度面（§6.1/§6.3）：pull 以 state==='live' 为门槛；shed 按通道
    *  live 性分派（live → declareHubResync 声明并等待；非 live → pendingResync）。 */
@@ -655,7 +673,7 @@ export class HubNamespaceChannel {
     if (this.inboundAssembler.busy) {
       // busy 路径不做 ns 状态门（仅 quiet 静默前置）——hub 收 STEP1 不迁出 live，
       // 跨 round 的合法 chunk 流量是常态；WS 有序可靠使错序/丢失结构性不可达 ⇒ 响亮。
-      this.handleAssemblerResult(this.inboundAssembler.accept(message), sequence);
+      this.afterAssemblyAccept(this.inboundAssembler.accept(message), sequence);
       return;
     }
     if (chunkIndex !== 0) {
@@ -681,7 +699,39 @@ export class HubNamespaceChannel {
       this.finalize('failed', 'protocol-violation');
       return;
     }
-    this.handleAssemblerResult(this.inboundAssembler.accept(message), sequence);
+    // issue #244（D2，AC2/AC3）：count 维度声明上界——分配前拒绝（与 totalBytes 维度
+    // 的 assembler validateFirst 封顶合成二维上界；分类 = 声明超资源上限族 TOO_LARGE，
+    // ADR 0013:80——K4 totalBytes 同族先例）。判定用 `>`：chunkCount === 上限恰被接纳
+    // （N2 off-by-one 守卫）。busy 路径不需此门：跨帧 chunkCount 逐字节一致由 assembler
+    // 强制（漂移 → VIOLATION）。
+    if (message.chunkCount > this.host.limits.maxChunksPerUpdate) {
+      this.transferViolation('UPDATE_TRANSFER_TOO_LARGE');
+      return;
+    }
+    // issue #244（D3，AC3 + R10）：连接级并发槽获取——先于 accept（分配前）；超额 =
+    // 第 maxConcurrentAssembliesPerConnection+1 个并发首 chunk → VIOLATION（ns 级违例、
+    // 其余并发 assembly 零影响、连接保持 ready）。幂等：同一 ns 已占槽恒 true。
+    if (!this.host.tryBeginInboundAssembly(this.namespaceId)) {
+      this.transferViolation('UPDATE_TRANSFER_VIOLATION');
+      return;
+    }
+    // SA4-1 修复：镜像旗标随槽位获取同步置位（accept 前）——endAssemblyScope 的归还
+    // 守卫（assemblySlotHeld）因此可达；单 chunk 即收齐/首 chunk 即违例时 afterAssembly
+    // Accept 的 !busy 出口在同一同步段内经 endAssemblyScope 幂等归还（获取-归还闭环）。
+    this.assemblySlotHeld = true;
+    this.afterAssemblyAccept(this.inboundAssembler.accept(message), sequence);
+  }
+
+  /** issue #244（D4）：accept 后收尾 + 结果分派——busy→idle 的槽/timer 唯一收尾点
+   *  （complete / 首 chunk 即违例：assembler 未 busy 或已自复位 → 归还槽；more → 武装/
+   *  重置进度滑动 deadline）。busy 路径同样经本方法包装（每收一 chunk 重置滑动窗口）。 */
+  private afterAssemblyAccept(result: UpdateChunkAcceptResult, sequence: number): void {
+    if (!this.inboundAssembler.busy) {
+      this.endAssemblyScope();
+    } else {
+      this.armTimer('assembly');
+    }
+    this.handleAssemblerResult(result, sequence);
   }
 
   private handleAssemblerResult(result: UpdateChunkAcceptResult, sequence: number): void {
@@ -707,7 +757,9 @@ export class HubNamespaceChannel {
     }
   }
 
-  /** 违例动作（镜像 onFieldViolation 先例）：ns 级 ERROR 帧 + 终局 failed；assembly 复位。 */
+  /** 违例动作（镜像 onFieldViolation 先例）：ns 级 ERROR 帧 + 终局 failed；assembly 复位。
+   *  失败族不发 chunked-update-aborted（可观测信号 = namespace-error/namespace-failed，
+   *  互补不重复）——clear 不带 reason。 */
   private transferViolation(
     code: 'UPDATE_TRANSFER_VIOLATION' | 'UPDATE_TRANSFER_TOO_LARGE',
   ): void {
@@ -716,11 +768,39 @@ export class HubNamespaceChannel {
     this.finalize('failed', 'protocol-violation');
   }
 
+  /** issue #244（D3/D4）：assembly 作用域收尾单点（busy→idle 全出口唯一化）——清 timer +
+   *  归还连接级槽（assemblySlotHeld 守卫幂等）。出口全集：complete / 首 chunk 即违例
+   *  （afterAssemblyAccept）、busy 违例 / 超时 / 全部清理挂点（clearInboundAssembly）。 */
+  private endAssemblyScope(): void {
+    this.clearTimer('assembly');
+    if (!this.assemblySlotHeld) return;
+    this.assemblySlotHeld = false;
+    this.host.endInboundAssembly(this.namespaceId);
+  }
+
   /** 入站 assembly 清理挂点（DD-4 挂点表）：对端声明收帧边（onResyncReceived）、本端
    *  wire 声明发射点（declareHubResync 漏斗内、记忆化门后）、恢复 round 结算回 live
-   *  （resyncEpisode 标记门控）、通道收口（closeSessionAndRelease）、违例复位。 */
-  private clearInboundAssembly(): void {
+   *  （resyncEpisode 标记门控）、通道收口（closeSessionAndRelease）、违例复位。
+   *  issue #244（D5）：reason 在场 → busy 守卫下发射 chunked-update-aborted（快照先于
+   *  reset；决策落定后发射；observer 缺省零快照零构造）；reason 缺省 = 失败族零事件。 */
+  private clearInboundAssembly(reason?: ChunkedUpdateAbortReason): void {
+    const snapshot =
+      reason !== undefined && this.observerOn && this.inboundAssembler.busy
+        ? this.inboundAssembler.snapshot()
+        : undefined;
+    this.endAssemblyScope();
     this.inboundAssembler.reset();
+    if (snapshot !== undefined && reason !== undefined) {
+      this.host.emitObserver({
+        type: 'chunked-update-aborted',
+        side: 'hub',
+        namespaceId: this.namespaceId,
+        transferId: snapshot.transferId,
+        reason,
+        receivedChunks: snapshot.receivedChunks,
+        receivedBytes: snapshot.receivedBytes,
+      });
+    }
   }
 
   /** issue #243（DD-3.5）：UPDATE_CHUNK 帧出站（控制器侧包装：异常收敛返回 0 → 通道
@@ -744,6 +824,9 @@ export class HubNamespaceChannel {
 
   onCloseRequest(message: { sequence: number }): void {
     if (this.isTerminal() || this.state === 'closing') return;
+    // issue #244（D5/R5a）：通道级收口中止行——收 CLOSE_NAMESPACE = 通道 teardown 语义，
+    // 收口链（closeSessionAndRelease）消费 busy assembly 时按本 reason 归类（恰一事件）。
+    this.teardownAbortReason = 'channel-teardown';
     // 帧分发同步段即停接纳，消除异步 closeQueue 前继续接收 UPDATE/Step 的竞态窗口。
     this.setState('closing');
     this.clearAllTimers(); // §D8.5（issue #171）：peer 发起 CLOSE 时 open/bootstrap timer 残留同理清理
@@ -775,8 +858,9 @@ export class HubNamespaceChannel {
     this.setState('needs-resync');
     // issue #243（DD-4 挂点 1/F3）：收 RESYNC_REQUIRED ⇒ 全部丢弃（ADR 0013:58）——
     // 对端发送侧已随其 resync 边弃置在途 transfer，本通道入站 assembly 必残缺：清除 +
-    // 置恢复周期标记（round 结算回 live 时消费）。
-    this.clearInboundAssembly();
+    // 置恢复周期标记（round 结算回 live 时消费）。issue #244（D5）：reason = 矩阵
+    // resync-declared 行（收对端声明边）。
+    this.clearInboundAssembly('resync-declared');
     this.resyncEpisode = true;
     this.emitResyncRequired('remote-declared'); // HB8：收 RESYNC_REQUIRED（对端声明本端化）
   }
@@ -824,8 +908,12 @@ export class HubNamespaceChannel {
     return this.terminationSettled(); // §5.3
   }
 
-  /** 连接关闭（socket 断开 / Hub 停机）：全量 cleanup。 */
+  /** 连接关闭（socket 断开 / Hub 停机）：全量 cleanup。
+   *  issue #244（D5/R5b/R13）：连接级 teardown 中止行——hub close/断线/GOAWAY drain
+   *  deadline/stop 全部经 cleanupAll → 本方法汇入；收口链 clear 消费时按
+   *  connection-teardown 归类（GOAWAY 无独立 reason，六值词表行 = connection-teardown）。 */
   onConnectionClosed(): Promise<void> {
+    this.teardownAbortReason = 'connection-teardown';
     this.quiesceConnection();
     return this.closeQueue.then(async () => {
       await this.drainPendingApplies();
@@ -889,6 +977,9 @@ export class HubNamespaceChannel {
         replicationEpoch: identity.replicationEpoch,
       });
       this.emitIdentityConflicted('fence'); // HB5：epoch fence
+      // issue #244（R11）：epoch-fence 中止行——conflicted 族终局发 chunked-update-aborted
+      // {epoch-fence}（ADR 词表要求；与 identity-conflicted 互补不重复；failed 族不置位）。
+      this.teardownAbortReason = 'epoch-fence';
       this.finalize('conflicted');
       return;
     }
@@ -924,7 +1015,11 @@ export class HubNamespaceChannel {
     // issue #243（DD-4 挂点 2/F7）：本端 wire RESYNC_REQUIRED 发射点全集 = 本漏斗
     //（hub 侧本就单漏斗：session 边沿/溢出与发送失败/ack-timeout 三调用点）——记忆化门
     // 后置位/清理：声明真实发射才清本通道入站 assembly + 置恢复周期标记。
-    this.clearInboundAssembly();
+    // issue #244（D5/R11）：reason 接线 = 矩阵行判别——connection-shed 行 → 'shed'（live
+    // 通道的连接级背压弃置；非 live 通道只置 pendingResync、不清 assembly = 正确行为：
+    // needs-resync/reconciling 期接纳的入站 transfer 是合法跨 round 流量）；其余声明
+    //（queue-overflow/send-failed/ack-timeout/session-fanout-overflow）→ 'resync-declared'。
+    this.clearInboundAssembly(cause === 'connection-shed' ? 'shed' : 'resync-declared');
     this.resyncEpisode = true;
     this.sendChecked({
       kind: 'RESYNC_REQUIRED',
@@ -1175,9 +1270,10 @@ export class HubNamespaceChannel {
     // issue #243（F3）：恢复 round 结算回 live——needs-resync/reconciling 期接纳的注定
     // 夭折首 chunk 的 assembly 收口（周期 round 不置标记、结算不清除——跨 round 的合法
     // hub→peer 下行 transfer 在 hub 侧同样存在，busy assembly 必须存活）。
+    // issue #244（D5）：结算时按 resync-declared 行归类（doomed 残渣）。
     if (this.resyncEpisode) {
       this.resyncEpisode = false;
-      this.clearInboundAssembly();
+      this.clearInboundAssembly('resync-declared');
     }
     this.watchdog.onEvent();
   }
@@ -1307,8 +1403,12 @@ export class HubNamespaceChannel {
     this.watchdog.teardown();
     this.round.teardown();
     this.channel.teardown();
-    // issue #243（DD-4 清理挂点/终态单点）：通道收口随带释放本代 assembly（纯易失内存）
-    this.clearInboundAssembly();
+    // issue #243（DD-4 清理挂点/终态单点）：通道收口随带释放本代 assembly（纯易失内存）。
+    // issue #244（D5）：消费收口入口置位的 teardownAbortReason（一次性——消费即清；
+    // busy 守卫保证每 assembly 至多一事件；失败族入口未置位 → 无 reason → 零事件）。
+    const teardownReason = this.teardownAbortReason;
+    this.teardownAbortReason = undefined;
+    this.clearInboundAssembly(teardownReason);
     this.resyncEpisode = false;
     try {
       if (session !== undefined) {
@@ -1425,7 +1525,12 @@ export class HubNamespaceChannel {
 
   private armTimer(kind: TimerKind): void {
     this.clearTimer(kind);
-    const delay = kind === 'bootstrap' ? this.host.timeouts.bootstrapTimeoutMs : this.host.timeouts.closeTimeoutMs;
+    const delay =
+      kind === 'bootstrap'
+        ? this.host.timeouts.bootstrapTimeoutMs
+        : kind === 'assembly'
+          ? this.host.timeouts.assemblyTimeoutMs // issue #244：assembly 滑动 deadline
+          : this.host.timeouts.closeTimeoutMs;
     this.timers[kind] = this.host.timer.setTimeout(() => {
       this.timers[kind] = undefined;
       if (this.isTerminal()) return;
@@ -1434,8 +1539,29 @@ export class HubNamespaceChannel {
         // issue #256：稳定原因 + 配置上限（resolved 配置字段读，非 live 状态读取）；
         // 回归锚 = ws-replication-issue256-namespace-failed.test.ts 场景 15
         this.finalize('failed', 'bootstrap-timeout', this.host.timeouts.bootstrapTimeoutMs);
+      } else if (kind === 'assembly') {
+        this.onAssemblyTimeout();
       }
     }, delay);
+  }
+
+  /** issue #244（D4，AC4）：assembly 停滞超时（进度滑动 deadline，每收一 chunk 重置）——
+   *  弃 partial + 出向 RESYNC_REQUIRED{UPDATE_TRANSFER_EXPIRED}（切片 1 已登记词表；
+   *  独立发射点而非并入 resync 漏斗：漏斗 reasonCode 硬编码 send-queue-overflow 且被
+   *  resyncDeclared 记忆化——并入即错码或被吞）。不发 resync-required observer 事件
+   *  （ADR 未为该行定义 cause；本行可观测信号 = aborted{timeout} + wire 帧）。 */
+  private onAssemblyTimeout(): void {
+    if (!this.inboundAssembler.busy) return; // clear 后 stale fire 零副作用
+    this.clearInboundAssembly('timeout'); // 弃 partial + 归还槽 + 清 timer + aborted{timeout}
+    if (this.isQuietState()) return; // 防御（closing 已杀 timer，结构性不可达）——零 wire
+    this.sendChecked({
+      kind: 'RESYNC_REQUIRED',
+      namespaceId: this.namespaceId,
+      reasonCode: 'UPDATE_TRANSFER_EXPIRED', // 切片 1 已登记词表；codec 自由安全字符串
+    });
+    if (this.isQuietState()) return; // sendChecked 失败已 finalize（failed 终态零复活）
+    this.setState('needs-resync');
+    this.resyncEpisode = true; // round 结算回 live 时的幂等清理标记（既有语义）
   }
 
   private clearTimer(kind: TimerKind): void {
@@ -1447,7 +1573,7 @@ export class HubNamespaceChannel {
   }
 
   private clearAllTimers(): void {
-    (['bootstrap', 'close'] as const).forEach((kind) => this.clearTimer(kind));
+    (['bootstrap', 'close', 'assembly'] as const).forEach((kind) => this.clearTimer(kind));
   }
 }
 
