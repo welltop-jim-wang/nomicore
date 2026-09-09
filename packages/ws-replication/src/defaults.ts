@@ -26,6 +26,9 @@ export const DEFAULT_REPLICATION_LIMITS: Readonly<ReplicationLimits> = Object.fr
   highWater: 512 * 1024,
   maxQueuedControlBytes: 8 * 1024 * 1024,
   maxChunkedUpdateBytes: 4 * 1024 * 1024, // issue #243（ADR 0013 配置表值：协商分块传输上界）
+  // issue #244（ADR 0013 配置表值）：分块数申报上界 / 连接级并发 assembly 上界
+  maxChunksPerUpdate: 64,
+  maxConcurrentAssembliesPerConnection: 4,
 });
 
 /** 冻结默认 timeouts（§2 注释值；与 harness CONTRACT_TIMEOUTS 逐值一致）。
@@ -41,6 +44,7 @@ export const DEFAULT_REPLICATION_TIMEOUTS: Readonly<ReplicationTimeouts> = Objec
   ackTimeoutMs: 10_000,
   pingIntervalMs: 30_000,
   pongTimeoutMs: 10_000,
+  assemblyTimeoutMs: 30_000, // issue #244（ADR 0013 配置表值：assembly 进度滑动 deadline）
 });
 
 /** 冻结默认 backoff（§2 注释值；与 harness CONTRACT_BACKOFF 逐值一致）。 */

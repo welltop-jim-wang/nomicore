@@ -266,6 +266,10 @@ describe('`@nomicore/ws-replication` observer seam（issue #177）', () => {
       // issue #287（append-only 第 23/24 型；ADR 0018 §4 schema re-arm 域，peer 专属）
       | { readonly type: 'schema-rearm-applied'; readonly side: 'peer'; readonly connectionId?: string; readonly namespaceId: string; readonly semanticFingerprint: string; readonly updatedAt: string | null }
       | { readonly type: 'schema-rearm-failed'; readonly side: 'peer'; readonly connectionId?: string; readonly namespaceId: string; readonly code: 'NSRT-FATAL-SCHEMA-REARM-INVALID' | 'NSRT-FATAL-SCHEMA-REARM-INTERNAL' }
+      // issue #244（append-only 第 25 型；reason = ChunkedUpdateAbortReason 六值闭集——
+      // 该别名经 types.ts 模块级导出、不经 index.ts 重导出，此处按结构展开比对）
+      | { readonly type: 'chunked-update-aborted'; readonly side: ReplicationObserverSide; readonly namespaceId: string; readonly transferId: number; readonly reason: 'timeout' | 'shed' | 'resync-declared' | 'channel-teardown' | 'connection-teardown' | 'epoch-fence'; readonly receivedChunks: number; readonly receivedBytes: number }
+
     >();
     // issue #256：namespace-failed 字段类型精确性（cause 闭联合；timeoutMs 可选有限数值）
     expectTypeOf<Extract<ReplicationObserverEvent, { type: 'namespace-failed' }>['cause']>().toEqualTypeOf<ReplicationNamespaceFailedCause>();
@@ -283,6 +287,18 @@ describe('`@nomicore/ws-replication` observer seam（issue #177）', () => {
       'NSRT-FATAL-SCHEMA-REARM-INVALID' | 'NSRT-FATAL-SCHEMA-REARM-INTERNAL'
     >();
     expectTypeOf<Extract<ReplicationObserverEvent, { type: 'schema-rearm-failed' }>['code']>().toEqualTypeOf<ReplicationObserverSchemaRearmCode>();
+    // issue #244：chunked-update-aborted 字段类型精确性（side 信封 + reason 六值闭集 + 计数）
+    expectTypeOf<Extract<ReplicationObserverEvent, { type: 'chunked-update-aborted' }>['reason']>().toEqualTypeOf<
+      | 'timeout'
+      | 'shed'
+      | 'resync-declared'
+      | 'channel-teardown'
+      | 'connection-teardown'
+      | 'epoch-fence'
+    >();
+    expectTypeOf<Extract<ReplicationObserverEvent, { type: 'chunked-update-aborted' }>['side']>().toEqualTypeOf<ReplicationObserverSide>();
+    expectTypeOf<Extract<ReplicationObserverEvent, { type: 'chunked-update-aborted' }>['receivedChunks']>().toEqualTypeOf<number>();
+
   });
 
   it('稳定码闭联合：ConnectionErrorCode(17) ∪ 2 内部码；NamespaceErrorCode(20) ∪ 1 内部码（同源 append-only）', () => {

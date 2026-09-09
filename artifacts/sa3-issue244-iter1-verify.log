@@ -1,0 +1,78 @@
+SA3 iteration-1 (SA4-1 rework) verification evidence — issue #244
+Worktree: nomicore-fix-issue-244 (branch mabf/issue-244, base HEAD e2178f3)
+All commands run from worktree root. Virtual-time tests; zero real sleep.
+
+==========================================================================
+[1] PRE-FIX RED — new regression file (written before any source change)
+    Command:
+    $ NODE_OPTIONS=--conditions=nomicore-source pnpm exec vitest run \
+        packages/ws-replication/test/ws-replication-issue244-slot-reclaim-regression.test.ts
+    Result: 3 failed (3), Type Errors no errors
+
+    REG1 (hub inbound, peer→hub, 6 sequential distinct ns):
+      AssertionError: SA4-1 回归：ns-e（第 5 个 distinct ns 的串行 transfer）——
+      已完成 4 笔串行 transfer 后，新 namespace 的合法首 chunk 不得误
+      UPDATE_TRANSFER_VIOLATION: expected [ 'UPDATE_TRANSFER_VIOLATION' ]
+      to have a length of +0 but got 1
+    REG2 (peer inbound, hub→peer, 6 sequential distinct ns):
+      AssertionError: … same failure shape at ns-e（第 5 个 distinct ns 的串行下行 transfer）
+      expected [ 'UPDATE_TRANSFER_VIOLATION' ] to have a length of +0 but got 1
+    REG3 (peer inbound, gen1 completes a..d → closePeerSide(1006) → redial →
+      gen2 transfer on new ns e):
+      AssertionError: … 代际 2 新 ns-e（第 5 个 distinct ns）…
+      expected [ 'UPDATE_TRANSFER_VIOLATION' ] to have a length of +0 but got 1
+
+    → All three red for exactly the SA4-1 symptom: after 4 sequential completed
+      transfers across distinct namespaces the 5th legal first chunk is mis-
+      rejected UPDATE_TRANSFER_VIOLATION (slots never returned).
+
+==========================================================================
+[2] FIX applied (2 production files):
+      packages/ws-replication/src/hub-namespace.ts  — idle first-chunk path:
+        after tryBeginInboundAssembly()===true → this.assemblySlotHeld = true
+      packages/ws-replication/src/peer-namespace.ts — symmetric
+
+==========================================================================
+[3] POST-FIX GREEN — regression file
+    Command: (same as [1])
+    Result: Test Files 1 passed (1); Tests 3 passed (3); Type Errors no errors
+    (REG1 68ms / REG2 26ms / REG3 25ms — all converge, zero VIOLATION,
+     per-ns exactly one apply, chunked path verified ≥2–3 frames per ns)
+
+==========================================================================
+[4] SA6 acceptance contract (frozen red contract, unmodified)
+    Command:
+    $ NODE_OPTIONS=--conditions=nomicore-source pnpm exec vitest run \
+        packages/ws-replication/test/ws-replication-issue244-ac-red.test.ts
+    Result: Test Files 1 passed (1); Tests 11 passed (11); Type Errors no errors
+    (R1a R1b R2 R3 R4 R5a R5b N1 N2 N3 N4 all green)
+
+==========================================================================
+[5] Full package regression
+    Command:
+    $ NODE_OPTIONS=--conditions=nomicore-source pnpm exec vitest run \
+        packages/ws-replication/test
+    Result: Test Files 62 passed (62); Tests 448 passed (448);
+    Type Errors no errors; Duration 35.96s
+    (61 files/445 tests from iteration 0 + 1 new regression file/3 tests)
+
+==========================================================================
+[6] Package typecheck
+    Command: $ pnpm exec tsc -p packages/ws-replication/tsconfig.json
+    Result: exit 0 (clean)
+
+==========================================================================
+[7] Root typecheck (module AGENTS gate for lifecycle/wire changes)
+    Command: $ pnpm typecheck   (14 tsc projects incl. ws-replication)
+    Result: exit 0 (clean)
+
+==========================================================================
+[8] Root test (module AGENTS gate; vitest --typecheck full repo)
+    Command: $ pnpm test
+    Result: Test Files 300 passed (300); Tests 3211 passed (3211);
+    Type Errors no errors; exit 0 (Duration 555.70s)
+
+==========================================================================
+[9] Regression determinism — 3 consecutive post-fix runs of the new file:
+    run 1/2/3 each: Test Files 1 passed (1); Tests 3 passed (3);
+    Type Errors no errors
