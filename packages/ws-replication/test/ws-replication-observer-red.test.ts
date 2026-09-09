@@ -745,6 +745,7 @@ describe('T5：背压 / resync 事件', () => {
         maxQueuedUpdateBytes: 4 * 1024 * 1024, maxQueuedUpdateCount: 256,
         maxInFlightUpdates: 32, maxQueuedBytesPerConnection: 8 * 1024 * 1024,
         lowWater: 64 * 1024, highWater: 512 * 1024, maxQueuedControlBytes: 8 * 1024 * 1024,
+        maxChunkedUpdateBytes: 4 * 1024 * 1024, // issue #243：slice 2 新增字段（缺省值）
       },
       timer: timer as never,
       ackTimeoutMs: 10_000,

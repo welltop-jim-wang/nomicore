@@ -12,6 +12,7 @@
 import * as Y from 'yjs';
 import type { ReplicationMessage } from '@nomicore/replication-protocol';
 import { safeNow } from './observer.js';
+import { chunkBounds, chunkCountOf, type ChunkedTransferPiece } from './update-transfer.js';
 import type {
   ReplicationSendFailureReason,
   ResolvedLimits,
@@ -23,6 +24,10 @@ export interface UpdateChannelHost {
   readonly ackTimeoutMs: number;
   /** 发送 UPDATE 帧；返回分配的帧序。 */
   readonly sendUpdateFrame: (bytes: Uint8Array) => number;
+  /** issue #243（DD-3.5）：发送 UPDATE_CHUNK 帧（与 UPDATE 同一 data 出站点）；返回分配的帧序。 */
+  readonly sendUpdateChunkFrame: (chunk: ChunkedTransferPiece) => number;
+  /** issue #243（DD-1.5）：wire 协商位判据——true 才允许分块出站（发送门）。 */
+  readonly chunkedSendEnabled: () => boolean;
   /** 本端声明 RESYNC（§10.2 溢出/ACK timeout/session 溢出边沿）：ns → needs-resync + RESYNC 帧。
    *  cause 为 resync 子因判别（§6.5 U1：live 溢出 / 发送失败）。
    *  issue #231：send-failed 附带惰性失败明细（仅 observer 在场时求值——无 observer
@@ -37,8 +42,10 @@ export interface UpdateChannelHost {
   readonly noteUpdateDropped: (detail: () => UpdateSendFailureDetail) => void;
   /** 非 live 溢出（§5.3）：丢弃未发送 + 置 pendingResync（round 完成时再开 round）。 */
   readonly notePendingResync: () => void;
-  /** ACK timeout（§10.4）：弃置 in-flight + needs-resync + 立即新 round。 */
-  readonly onAckTimeout: () => void;
+  /** ACK timeout（§10.4）：弃置 in-flight + needs-resync + 立即新 round。issue #243（F6）：
+   *  参数 = 弃置时刻是否有在途 chunked transfer（abandonInFlight 于显式清除前捕获）——
+   *  peer 控制器据此决定补发 wire RESYNC_REQUIRED（仅协商连接可触达）。 */
+  readonly onAckTimeout: (abortedTransfer: boolean) => void;
   /** 单笔 ACK 收妥记账（§6.5 U2/U3）：bytes = 在途帧载荷长度；latencyMs = ACK 时刻 − 发送时刻
    *  （clock 缺省/无 observer 时 undefined）；sequence = 被 ACK 帧序（= wire
    *  UPDATE_ACK.ackedSequence——issue #238 三事件面关联键）。 */
@@ -69,6 +76,19 @@ interface QueuedItem {
   readonly queuedAt?: number;
 }
 
+/**
+ * issue #243（DD-3）：在途 chunked transfer 状态。载体 = 队列项本身（保持 queued[0]，
+ * 末 chunk 出站才 shift）——守恒不变量：`activeTransfer ≠ undefined ⇒ queued[0] === 载体项`。
+ */
+interface ActiveTransferState {
+  readonly item: QueuedItem;
+  readonly transferId: number;
+  /** 下一待发 chunk 下标（0-based；严格递增，不回绕）。 */
+  chunkIndex: number;
+  readonly totalBytes: number;
+  readonly chunkCount: number;
+}
+
 export class UpdateChannel {
   /** 在途记账（§6.5 U2）：值形状 = {载荷字节数, 发送时刻}——纯内部记账，消费方仅
    *  size/keys/get/delete/clear，行为等价。sentAt 仅作差（clock 缺省 → undefined）。 */
@@ -80,11 +100,23 @@ export class UpdateChannel {
   needsResync = false;
   private ackTimerHandle: unknown | undefined;
   private ackTimerArmed = false;
+  /** issue #243（DD-3.2）：在途 chunked transfer（每 (ns,方向) 至多 1 个；惰性切片）。 */
+  private activeTransfer: ActiveTransferState | undefined;
+  /** issue #243（DD-3.2）：transferId 计数——(ns, 方向, 连接) 域内自 1 严格递增；resync/
+   *  终态不复位；teardown（连接收口/新连接会话建立）归 1（新作用域，ADR 0013:32）。 */
+  private nextTransferId = 1;
 
   constructor(private readonly host: UpdateChannelHost) {}
 
   get inFlightCount(): number {
     return this.inFlight.size;
+  }
+
+  /** issue #243（DD-3.6）：有效占用口径（唯一口径）——裸在途 + 在途 transfer 槽。
+   *  无 transfer 时与 v1 裸口径同义（未协商连接恒满足）；「直发逐字节不变」的适用域 =
+   *  无 activeTransfer 组态。包内只读访问器，不经 src/index.ts 导出。 */
+  effectiveInFlightCount(): number {
+    return this.inFlight.size + (this.activeTransfer !== undefined ? 1 : 0);
   }
 
   get queuedCount(): number {
@@ -102,17 +134,29 @@ export class UpdateChannel {
     // issue #238 §5.4：入队时刻记账（仅 clock 在场读数——safeNow 折叠；直发路径同
     // 口径：帧内最旧业务项入队时刻 = 本交付时刻）
     const queuedAt = safeNow(() => this.host.now?.());
+    // issue #243（DD-2.3/DD-3.3，F1 修订）：chunkable 判定 = 已协商 ∧ 超 maxUpdateBytes
+    // ∧ ≤ maxChunkedUpdateBytes ∧ transferId 域未耗尽——未协商连接恒 false，与 v1
+    // 逐字节一致（改道范围收窄到「已协商 ∧ 可分块」项）。
+    const chunkable = this.isChunkable(bytes);
+    // issue #243：chunkable 项在窗口空位 ∧ 闸门开时也不进直发——改道入有界队列，
+    // 出队时刻惰性切片（DD-3.3 行 2）。此时窗口空位存在、闸门开，若无既有 ACK/恢复
+    // 触发点，出队只能依赖入队后的连接级 drain（requestDrain 门内自判 paused）——
+    // 该请求必须在 push + wheel 登记之后发起（drain 才能取到本项）。
+    let drainAfterQueue = false;
     if (mode === 'live') {
       // F1（SA4 修复，2026-08-29）：闸门检查**先行**——dataGateOpen 非纯读（暂停段
       // 撤压时 observeWater → resume → 同步 drainData 重入消费窗口空位）；闸门先求值
       // 完成后窗口检查读的是 drain 后真值，直发条件（窗口有空位 ∧ 闸门开）在发送
       // 时刻成立（协议 §10.2 / 设计 §4.1）。
-      if (this.host.dataGateOpen() && this.inFlight.size < this.host.limits.maxInFlightUpdates) {
+      const gateOpen = this.host.dataGateOpen();
+      const windowHasRoom = this.effectiveInFlightCount() < this.host.limits.maxInFlightUpdates;
+      if (gateOpen && windowHasRoom && !chunkable) {
         this.sendAndRegister(bytes, queuedAt);
         return;
       }
+      if (chunkable && gateOpen && windowHasRoom) drainAfterQueue = true;
     }
-    // 到此处：窗口满（live）或闸门关（live）或 deferred → 入有界队列
+    // 到此处：窗口满（live）或闸门关（live）或 deferred 或 chunkable → 入有界队列
     if (this.overflows(bytes)) {
       this.discardQueued();
       if (mode === 'live') {
@@ -127,6 +171,7 @@ export class UpdateChannel {
     this.queuedByteCount += bytes.byteLength;
     // §4.4：入队成功后通知连接级（RR wheel 登记 + 连接总压检查）。
     this.host.onDataQueued();
+    if (drainAfterQueue) this.host.requestDataDrain();
   }
 
   /** ACK 簿记（§10.3）：返回 'ok' | 'zombie' | 'violation'（never-sent → 连接级 fatal）。 */
@@ -184,6 +229,29 @@ export class UpdateChannel {
   private discardQueued(): void {
     this.queued.length = 0;
     this.queuedByteCount = 0;
+    // issue #243（DD-3.7，F2）：结构性单点——discardQueued 是全部「队列清空」路径的
+    // 汇聚点，内联清除使任何清队列路径自动终止在途 chunked transfer（载体随队列消失；
+    // needsResync ⇒ 无 activeTransfer 推论由此闭环）。abandonInFlight（ACK timeout）不
+    // 经本路径——其载体保留、走显式清除（DD-3.7）。
+    this.clearActiveTransfer();
+  }
+
+  /** issue #243（DD-3.7）：唯一清除点（私有；discardQueued 内联 + abandonInFlight 显式
+   *  + 末 chunk 结算内联）。只清状态——载体队列项的去留由调用路径决定。 */
+  private clearActiveTransfer(): void {
+    this.activeTransfer = undefined;
+  }
+
+  /** issue #243（DD-2.3）：可分块判据——「已协商 ∧ 超限 ∧ ≤ maxChunkedUpdateBytes ∧
+   *  transferId 域未耗尽」。未协商连接恒 false（v1 逐字节：超限判定仍在 deliver/drain
+   *  sendAndRegister 时刻原样进行）。 */
+  private isChunkable(bytes: Uint8Array): boolean {
+    return (
+      bytes.byteLength > this.host.limits.maxUpdateBytes &&
+      bytes.byteLength <= this.host.limits.maxChunkedUpdateBytes &&
+      this.nextTransferId <= 0xffffffff &&
+      this.host.chunkedSendEnabled()
+    );
   }
 
   /** issue #231：失败时刻计数采样（调用点纪律 = 先采样、后 discardQueued——丢弃后
@@ -265,33 +333,119 @@ export class UpdateChannel {
   /**
    * 连接级 data 出队：取一帧发送（§4.5/§6.2，issue #137）。
    *
-   * 入口前置五条（R2 钉死，SA2 #5——任一不满足 → 返回 false 且不消费队列项）：
+   * 入口前置（R2 钉死，SA2 #5——任一不满足 → 返回 false 且不消费队列项）：
    *  ① 控制器 state === 'live'（facet 层门，§6.3——本方法不含该门）；
    *  ② channel !needsResync；
-   *  ③ inFlight.size < maxInFlightUpdates（窗口空位——原 flushQueued 循环条件移入
-   *     单帧前置，无循环可依托，超窗发射风险以本前置杜绝）；
+   *  ③a in-flight transfer 在场：仅查 dataGateOpen（槽已自持，不查窗口空位，DD-3.4）——
+   *     发下一 chunk（末 chunk 出站 shift 载体并注册 inFlight）；
+   *  ③b 否则 effectiveInFlightCount() < maxInFlightUpdates（窗口空位——有效占用口径，
+   *     无 transfer 时与 v1 裸口径同义）；
    *  ④ queued.length > 0；
    *  ⑤ host.dataGateOpen()（闸门开）。
    *
-   * 取帧（§5 合并策略）：queuedCount > avail → 贪心 Y.mergeUpdates 合并一帧（累计
-   * 原始字节 ≤ maxUpdateBytes，至少一项）；否则逐笔一帧。**出队核减 = 被取出各项的
-   * 入账字节数之和**（合并产物实长只用于 inFlight 记账与本帧 maxUpdateBytes 判据）。
+   * 取帧（§5 合并策略）：队首可分块 → 在 queued[0] 上初始化 transfer（不经 takeItems、
+   * 不 shift）并出 chunk 0；队首超限但不可分块 → 走既有取帧-超限分支原样（消费即进展）；
+   * 队首不超限 → 贪心 Y.mergeUpdates 合并（累计原始字节 ≤ maxUpdateBytes，至少一项）。
+   * **出队核减 = 被取出各项的入账字节数之和**；transfer 载体整项保留至末 chunk 出站
+   * （R4 保守记账，压力方向安全）。
    *
    * 返回值语义（R3 钉死，SA2 R2-N1·方案 A——「消费即进展」）：true ⇔ 消费了 ≥1
-   * 队列项（F4 丢弃也是进展）；false ⇔ 前置任一不满足（未消费）。与 #136
-   * flushQueued 循环（F4 后继续消费下一项）逐语义对齐——超限项消费后，同一次
-   * drain 的后续 pass 即拉到合法项，不依赖任何未来触发点。
+   * 队列项或发送了 1 个中间 chunk（F4 丢弃也是进展）；false ⇔ 前置任一不满足（未消费）。
    */
   pullAndSendOne(): boolean {
     if (this.needsResync) return false;
-    if (this.inFlight.size >= this.host.limits.maxInFlightUpdates) return false;
+    if (this.activeTransfer !== undefined) {
+      // F2 不变量：needsResync ⇒ 无 activeTransfer（全部置位路径经清除点）——此处
+      // needsResync 已早退；防御性保持 queued 非空（守恒不变量，结构性恒成立）。
+      if (this.queued.length === 0) {
+        this.clearActiveTransfer();
+        return false;
+      }
+      if (!this.host.dataGateOpen()) return false;
+      return this.sendOneChunk();
+    }
+    if (this.effectiveInFlightCount() >= this.host.limits.maxInFlightUpdates) return false;
     if (this.queued.length === 0) return false;
     if (!this.host.dataGateOpen()) return false;
+    if (this.isChunkable(this.queued[0]!.bytes)) {
+      this.startTransfer(this.queued[0]!);
+      return this.sendOneChunk();
+    }
     const items = this.takeItems();
     const frame = this.mergeItems(items);
     // issue #238 §5.4：合并帧 sendQueueMs 口径 = 帧内最旧业务项入队时刻（takeItems
     // 按 FIFO shift——首项即最旧）
     this.sendAndRegister(frame, items[0]?.queuedAt);
+    return true;
+  }
+
+  /** issue #243（DD-3.2）：在 queued[0]（= 载体项，不 shift）上初始化 transfer。调用方
+   *  前置已确认窗口空位（有效占用口径）与 chunkable 判据。transferId 自 1 严格递增。 */
+  private startTransfer(item: QueuedItem): void {
+    const totalBytes = item.bytes.byteLength;
+    this.activeTransfer = {
+      item,
+      transferId: this.nextTransferId,
+      chunkIndex: 0,
+      totalBytes,
+      chunkCount: chunkCountOf(totalBytes, this.host.limits.maxUpdateBytes),
+    };
+    this.nextTransferId += 1; // uint32 域：chunkable 判据已保证 ≤ 0xffffffff（不回绕）
+  }
+
+  /** issue #243（DD-3.5/3.6）：发出下一 chunk。返回 true ⇔ 本次调用取得进展（中间
+   *  chunk 出站 / 末 chunk 结算 / 失败弃置均算进展——drain 循环「消费即进展」语义）。
+   *
+   *  末 chunk 出站：shift 载体 + 核减记账 → inFlight.set(末 chunk 帧序, {bytes: 总长,
+   *  出站时刻}) → armAckTimer → 清 activeTransfer（槽位 1→1 转换，任意时刻
+   *  effectiveInFlightCount ≤ max 且裸 inFlight.size ≤ max）→ noteUpdateSent{末序,总长}。
+   *  中间 chunk：不注册 inFlight、不挂 timer、不发射 update-sent（#245 归 chunked 事件）。
+   *  出站拒绝（seq ≤ 0）：与单帧失败同构——采样失败明细 → discardQueued（transfer 随
+   *  队列一并终止）→ needsResync → declareLocalResync('send-failed')。 */
+  private sendOneChunk(): boolean {
+    const transfer = this.activeTransfer!;
+    const maxChunk = this.host.limits.maxUpdateBytes;
+    const { start, end } = chunkBounds(transfer.totalBytes, maxChunk, transfer.chunkIndex);
+    const seq = this.host.sendUpdateChunkFrame({
+      transferId: transfer.transferId,
+      chunkIndex: transfer.chunkIndex,
+      chunkCount: transfer.chunkCount,
+      totalBytes: transfer.totalBytes,
+      bytes: transfer.item.bytes.subarray(start, end),
+    });
+    if (seq <= 0) {
+      // issue #231 同款纪律：失败明细先于 discardQueued 采样（丢弃后计数恒零）。
+      const detail = this.captureFailureDetail('send-frame-rejected', transfer.totalBytes);
+      this.discardQueued();
+      this.needsResync = true;
+      this.host.declareLocalResync('send-failed', detail);
+      return true;
+    }
+    const sentAt = safeNow(() => this.host.now?.());
+    const sendQueueMs =
+      sentAt !== undefined && transfer.item.queuedAt !== undefined
+        ? sentAt - transfer.item.queuedAt
+        : undefined;
+    const isLast = transfer.chunkIndex + 1 >= transfer.chunkCount;
+    if (isLast) {
+      // 载体出队核减 = 整项入账字节（R4：transfer 期间保守超计至末 chunk）。守恒不变量
+      // （queued[0] === 载体项）由「初始化不 shift / 仅末 chunk 结算 shift」结构性保证。
+      const head = this.queued.shift()!;
+      this.queuedByteCount -= head.bytes.byteLength;
+      this.inFlight.set(seq, {
+        bytes: transfer.totalBytes,
+        ...(sentAt !== undefined ? { sentAt } : {}),
+      });
+      this.activeTransfer = undefined;
+      this.host.noteUpdateSent({
+        sequence: seq,
+        bytes: transfer.totalBytes,
+        ...(sendQueueMs !== undefined ? { sendQueueMs } : {}),
+      });
+      this.armAckTimer();
+    } else {
+      transfer.chunkIndex += 1;
+    }
     return true;
   }
 
@@ -336,24 +490,35 @@ export class UpdateChannel {
     this.needsResync = true;
   }
 
-  /** 全部 in-flight 弃置（§10.4 ACK timeout）：迟至 ACK 良性；窗口视为收口。 */
+  /** 全部 in-flight 弃置（§10.4 ACK timeout）：迟至 ACK 良性；窗口视为收口。
+   *  issue #243（DD-3.7/F6）：入口先捕获 `abortedTransfer = (activeTransfer 在场)`
+   *  （于显式清除之前），再显式清 transfer（载体保留 queued[0]——v1 冻结队列跨
+   *  ack-timeout 保留、恢复后续排语义不变，不得改 discardQueued），随后以
+   *  `onAckTimeout(abortedTransfer)` 上抛：hub 控制器既有漏斗声明不变；peer 控制器在
+   *  true 时经漏斗补发 wire RESYNC_REQUIRED（仅协商连接可触达），false 时 PN6b 原体。 */
   abandonInFlight(): void {
+    const abortedTransfer = this.activeTransfer !== undefined;
     for (const seq of this.inFlight.keys()) {
       this.zombieSeqs.add(seq);
     }
     this.inFlight.clear();
     this.disarmAckTimer();
     this.needsResync = true;
-    this.host.onAckTimeout();
+    this.clearActiveTransfer(); // 显式清除（不弃队列——载体保留）
+    this.host.onAckTimeout(abortedTransfer);
   }
 
-  /** 连接收口：全部在途按迟至 ACK 弃置处理（连接死亡，zombie 记账无意义——清空）。 */
+  /** 连接收口：全部在途按迟至 ACK 弃置处理（连接死亡，zombie 记账无意义——清空）。
+   *  issue #243（DD-3.2）：nextTransferId 归 1——teardown = 连接收口/新连接会话建立的
+   *  标记，transferId 作用域 = (连接, 方向, ns)（ADR 0013:32；旧作用域 assembly 随连接
+   *  拆除即弃，无跨作用域歧义）。 */
   teardown(): void {
     this.disarmAckTimer();
     this.inFlight.clear();
     this.zombieSeqs.clear();
     this.discardQueued();
     this.needsResync = true;
+    this.nextTransferId = 1;
   }
 
   /** 当前最老在途序列；Map 保持实际发送插入序。 */

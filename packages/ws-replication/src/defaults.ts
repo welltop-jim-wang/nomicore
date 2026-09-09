@@ -25,6 +25,7 @@ export const DEFAULT_REPLICATION_LIMITS: Readonly<ReplicationLimits> = Object.fr
   lowWater: 64 * 1024,
   highWater: 512 * 1024,
   maxQueuedControlBytes: 8 * 1024 * 1024,
+  maxChunkedUpdateBytes: 4 * 1024 * 1024, // issue #243（ADR 0013 配置表值：协商分块传输上界）
 });
 
 /** 冻结默认 timeouts（§2 注释值；与 harness CONTRACT_TIMEOUTS 逐值一致）。

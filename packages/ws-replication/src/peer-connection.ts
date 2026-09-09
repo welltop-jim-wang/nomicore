@@ -3,7 +3,7 @@
  * （§4.3/§4.4/§14）。目标级状态机见 peer-namespace.ts。
  */
 import type { DuplexTransport } from './types.js';
-import type { ReplicationMessage } from '@nomicore/replication-protocol';
+import { CAP_CHUNKED_UPDATE, type ReplicationMessage } from '@nomicore/replication-protocol';
 import {
   decodeInbound,
   OutboundQueue,
@@ -12,6 +12,7 @@ import {
 } from './frame-io.js';
 import { PeerNamespaceController, type PeerNamespaceHost } from './peer-namespace.js';
 import { ConnectionSender } from './backpressure.js';
+import type { ChunkedTransferPiece } from './update-transfer.js';
 import { startLiveness } from './liveness.js';
 import { dispatchReplicationObserver, safeNow, stableConnectionCode, stableNamespaceCode } from './observer.js';
 import type { NamespaceRegistry } from '@nomicore/namespace-registry';
@@ -80,6 +81,11 @@ class PeerConnectionImpl implements PeerReplication {
   private readonly deferTask: (task: () => void) => void;
   /** 协议 §6.2 专用 observability id（HELLO_ACK 捕获；握手完成前 undefined——事件可选字段）。 */
   private connectionIdValue: string | undefined;
+  /** issue #243（DD-1.3/F5）：会话协商状态——peer 在 onHelloAck 身份校验通过后**逐字**
+   *  捕获 HELLO_ACK.selectedCapabilities（不与本地 offered 记忆求交；交集是 hub 侧
+   *  onHello 单点职责，wire 协商位即权威结果）。dialNow 重建先复位 0（新握手前不得
+   *  残留旧代协商位）。 */
+  private negotiatedCapabilitiesValue = 0;
 
   constructor(private readonly options: PeerReplicationOptions) {
     validatePeerOptions(options);
@@ -101,6 +107,10 @@ class PeerConnectionImpl implements PeerReplication {
       hubInstanceId: options.hubInstanceId,
       sendControl: (message) => this.sendControl(message),
       sendData: (namespaceId, bytes) => this.sendData(namespaceId, bytes),
+      // issue #243（DD-3.5）：UPDATE_CHUNK 与 UPDATE 同一 data 出站点（水位闸门 +
+      // 单帧守卫 + 统一账本投影 + OutboundQueue.emit 序列单点分配）
+      sendUpdateChunk: (namespaceId, chunk) => this.sendUpdateChunk(namespaceId, chunk),
+      chunkedUpdateNegotiated: () => this.isChunkedNegotiated(),
       dataGateOpen: () => this.sender?.dataGateOpen() ?? true,
       onDataQueued: (namespaceId) => this.sender?.onDataQueued(namespaceId),
       requestDataDrain: () => this.sender?.requestDrain(),
@@ -291,6 +301,7 @@ class PeerConnectionImpl implements PeerReplication {
     this.stopLivenessNow();
     this.unsubscribeTransport();
     this.connectionEpochValue += 1;
+    this.negotiatedCapabilitiesValue = 0; // issue #243：新握手前复位（新连接作用域）
     const epoch = this.connectionEpochValue;
     this.setState('connecting');
     let transport: DuplexTransport;
@@ -334,7 +345,8 @@ class PeerConnectionImpl implements PeerReplication {
       expectedHubInstanceId: this.options.hubInstanceId,
       protocolVersions: [1],
       requiredCapabilities: 0,
-      optionalCapabilities: 0,
+      // issue #243（DD-1.1）：opt-in 旋钮——chunkedUpdate: true 才置位（缺省 v1）。
+      optionalCapabilities: this.options.chunkedUpdate === true ? CAP_CHUNKED_UPDATE : 0,
       connectionNonce: this.nonce,
     });
     this.setState('handshaking');
@@ -365,6 +377,10 @@ class PeerConnectionImpl implements PeerReplication {
       decoded = decodeInbound(bytes, {
         expectedSequence: this.expectedSeq,
         maxFrameBytes: this.limits.maxFrameBytes,
+        // issue #243（DD-1.4）：decode 门控透传——握手期 0（未定），ready 后 = 逐字捕获的
+        // selectedCapabilities。未协商（0）时 UPDATE_CHUNK 在 payload 解析前抛
+        // UNSUPPORTED_MESSAGE_TYPE（slice 1 冻结门控，connection fatal 1002）。
+        selectedCapabilities: this.negotiatedCapabilitiesValue,
       });
     } catch (err) {
       // §4.1/§18.8（ADR 0010 L147 字面）：入站帧 sequence ≠ 期望值——无论 gap、repeat
@@ -404,6 +420,8 @@ class PeerConnectionImpl implements PeerReplication {
     protocolVersion: number;
     connectionNonce: Uint8Array;
     connectionId: string;
+    // issue #243（DD-1.3/F5）：HELLO_ACK 携带 hub 单点交集结果
+    selectedCapabilities: number;
   }): void {
     if (
       message.hubInstanceId !== this.options.hubInstanceId ||
@@ -413,6 +431,10 @@ class PeerConnectionImpl implements PeerReplication {
       this.connectionFatal('INSTANCE_IDENTITY_MISMATCH', 1008);
       return;
     }
+    // issue #243（F5）：身份校验通过后、setState('ready') 前——逐字捕获 hub 侧交集
+    // 结果（不与本地 offered 求交；本地旋钮关而 wire 已置位时仍消费 wire 位——与
+    // SA6 冻结 fixture 的 wire 代理协商上下文相容，A1 判据 = wire 协商位）。
+    this.negotiatedCapabilitiesValue = message.selectedCapabilities >>> 0;
     this.connectionIdValue = message.connectionId; // P2：受控 observability id（协议 §6.2）
     this.clearHello();
     this.setState('ready');
@@ -523,10 +545,10 @@ class PeerConnectionImpl implements PeerReplication {
         this.onGoaway(message);
         return;
       case 'UPDATE_CHUNK':
-        // 类型兼容分支（issue #242 切片 1）：decodeInbound 缺省门控下构造性不可达——
-        // 未协商 ⇒ 消息层 UNSUPPORTED_MESSAGE_TYPE（1002）先于 dispatch。分类与 decode 层自镜像
-        // （wsCloseCodeFor('UNSUPPORTED_MESSAGE_TYPE') === 1002），为后续切片防误分发兜底。
-        this.connectionFatal('UNSUPPORTED_MESSAGE_TYPE', 1002);
+        // issue #243（DD-5）：切片 1 的类型兼容占位替换——协商位透传正确时本分支
+        // 构造性可到达（未协商仍由 decode 门控在 payload 解析前收口 1002）；转发
+        // 控制器做 detached assembly（withController 对未知 ns 回 NAMESPACE_STATE_VIOLATION）。
+        this.withController(message.namespaceId, (c) => c.onHubUpdateChunk({ ...message, sequence }));
         return;
       default: {
         const never: never = message;
@@ -731,6 +753,29 @@ class PeerConnectionImpl implements PeerReplication {
       namespaceId,
       update: bytes,
     });
+  }
+
+  /** issue #243（DD-3.5）：UPDATE_CHUNK 帧发送路径——与 UPDATE 同一 data 出站点
+   *  （ready 门 + 水位闸门 + 单帧守卫 + 统一账本投影，序列由 OutboundQueue.emit 分配）。
+   *  wire 协商位由控制器侧 chunkable 判据保证；本方法以 negotiated 位做纵深防御。 */
+  private sendUpdateChunk(namespaceId: string, chunk: ChunkedTransferPiece): number {
+    if (this.outbound === undefined || this.sender === undefined) return 0;
+    if (this.connStateValue !== 'ready') return 0;
+    if (!this.isChunkedNegotiated()) return 0;
+    return this.sender.tryEmitData({
+      kind: 'UPDATE_CHUNK',
+      namespaceId,
+      transferId: chunk.transferId,
+      chunkIndex: chunk.chunkIndex,
+      chunkCount: chunk.chunkCount,
+      totalBytes: chunk.totalBytes,
+      bytes: chunk.bytes,
+    });
+  }
+
+  /** issue #243（DD-1.5）：wire 协商交集位判据（发送门与 decode 门共用同一判据）。 */
+  private isChunkedNegotiated(): boolean {
+    return (this.negotiatedCapabilitiesValue & CAP_CHUNKED_UPDATE) !== 0;
   }
 
   /** ConnectionSender 宿主：control 出站（无水位门；保留额度判据在 sender 侧）。 */
