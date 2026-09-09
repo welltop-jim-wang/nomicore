@@ -42,6 +42,7 @@ import {
   validateInstanceId,
   validateLimits,
   validateTimeouts,
+  validateChunkedTransferChain,
 } from './validate.js';
 
 /**
@@ -191,6 +192,18 @@ class HubReplicationImpl implements HubReplication {
     const timeouts = resolveTimeouts(options.timeouts);
     validateLimits(limits);
     validateTimeouts(timeouts);
+    // issue #244（D1，SA4-2 收口）：跨字段响亮链——仅当调用方显式表达任一「分块族链上
+    // 键」（maxChunkedUpdateBytes ∨ maxChunksPerUpdate，两链不等式的操作数键）时对合并
+    // 结果校验两链（R1a/N1 + R1c 转绿判据——{maxChunksPerUpdate: 4} + 缺省 envelope 亦
+    // 激活：链② 4MiB > 4×512KiB=2MiB；缺省值自洽由 DEFAULT 构造成立：4MiB ≤ 4MiB ∧
+    // 4MiB ≤ 64×512KiB=32MiB；仅显式既有键不激活 = 非追溯性，N5/N6 锁定，见 validate.ts）。
+    if (
+      options.limits != null &&
+      (Object.prototype.hasOwnProperty.call(options.limits, 'maxChunkedUpdateBytes') ||
+        Object.prototype.hasOwnProperty.call(options.limits, 'maxChunksPerUpdate'))
+    ) {
+      validateChunkedTransferChain(limits);
+    }
     this.limits = limits;
     this.timeouts = timeouts;
     this.internals = {
@@ -450,6 +463,10 @@ class HubConnectionImpl implements HubConnection {
   private reauthRequested = false;
   /** issue #175：reauth drain deadline 句柄（§8 timer 纪律：必须可清——stale fire 零副作用）。 */
   private reauthDeadlineHandle: unknown | undefined;
+  /** issue #244（D3）：连接级入站方向（peer→hub）并发 assembly 槽位——每 (连接, 入站
+   *  方向) 上限 = limits.maxConcurrentAssembliesPerConnection（缺省 4）。集合随连接对象
+   *  生命周期消亡，无独立清理面；通道 busy→idle 经 endInboundAssembly 幂等归还。 */
+  private readonly inboundAssemblySlots = new Set<string>();
 
   constructor(
     private readonly hub: HubInternals,
@@ -499,6 +516,22 @@ class HubConnectionImpl implements HubConnection {
       requestDataDrain: () => this.sender.requestDrain(),
       connectionFatal: (code, wsCloseCode) => this.connectionFatal(code, wsCloseCode ?? 1002),
       onChannelSettled: (_namespaceId) => this.maybeFinishDrainEarly(),
+      // issue #244（D3）：连接级并发 assembly 准入——幂等（同 ns 已占槽恒 true；
+      // 重复首 chunk 防御由 assembler 状态机承接）+ 满额拒纳（缺省 4 → 第 5 个 → VIOLATION）
+      tryBeginInboundAssembly: (namespaceId) => {
+        if (this.inboundAssemblySlots.has(namespaceId)) return true;
+        if (
+          this.inboundAssemblySlots.size >=
+          hub.limits.maxConcurrentAssembliesPerConnection
+        ) {
+          return false;
+        }
+        this.inboundAssemblySlots.add(namespaceId);
+        return true;
+      },
+      endInboundAssembly: (namespaceId) => {
+        this.inboundAssemblySlots.delete(namespaceId); // 幂等（重复 clear/多挂点汇合零副作用）
+      },
       observerPresent: () => this.connectionObserver() !== undefined,
       emitObserver: (event) => dispatchReplicationObserver(this.connectionObserver(), event),
       connectionId: () => this.connectionIdValue,

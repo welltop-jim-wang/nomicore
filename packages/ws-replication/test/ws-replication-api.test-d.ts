@@ -262,6 +262,9 @@ describe('`@nomicore/ws-replication` observer seam（issue #177）', () => {
       | { readonly type: 'identity-conflicted'; readonly side: ReplicationObserverSide; readonly connectionId?: string; readonly namespaceId: string; readonly via: 'open-mismatch' | 'fence' | 'identity-changed-frame' }
       // issue #238（append-only 第 21 型）
       | { readonly type: 'event-loop-delay-sampled'; readonly side: ReplicationObserverSide; readonly connectionId?: string; readonly delayMs: number }
+      // issue #244（append-only 第 23 型；reason = ChunkedUpdateAbortReason 六值闭集——
+      // 该别名经 types.ts 模块级导出、不经 index.ts 重导出，此处按结构展开比对）
+      | { readonly type: 'chunked-update-aborted'; readonly side: ReplicationObserverSide; readonly namespaceId: string; readonly transferId: number; readonly reason: 'timeout' | 'shed' | 'resync-declared' | 'channel-teardown' | 'connection-teardown' | 'epoch-fence'; readonly receivedChunks: number; readonly receivedBytes: number }
     >();
     // issue #256：namespace-failed 字段类型精确性（cause 闭联合；timeoutMs 可选有限数值）
     expectTypeOf<Extract<ReplicationObserverEvent, { type: 'namespace-failed' }>['cause']>().toEqualTypeOf<ReplicationNamespaceFailedCause>();
@@ -271,6 +274,17 @@ describe('`@nomicore/ws-replication` observer seam（issue #177）', () => {
     expectTypeOf<Extract<ReplicationObserverEvent, { type: 'update-applied' }>['queueWaitMs']>().toEqualTypeOf<number | undefined>();
     expectTypeOf<Extract<ReplicationObserverEvent, { type: 'update-sent' }>['sendQueueMs']>().toEqualTypeOf<number | undefined>();
     expectTypeOf<Extract<ReplicationObserverEvent, { type: 'event-loop-delay-sampled' }>['delayMs']>().toEqualTypeOf<number>();
+    // issue #244：chunked-update-aborted 字段类型精确性（side 信封 + reason 六值闭集 + 计数）
+    expectTypeOf<Extract<ReplicationObserverEvent, { type: 'chunked-update-aborted' }>['reason']>().toEqualTypeOf<
+      | 'timeout'
+      | 'shed'
+      | 'resync-declared'
+      | 'channel-teardown'
+      | 'connection-teardown'
+      | 'epoch-fence'
+    >();
+    expectTypeOf<Extract<ReplicationObserverEvent, { type: 'chunked-update-aborted' }>['side']>().toEqualTypeOf<ReplicationObserverSide>();
+    expectTypeOf<Extract<ReplicationObserverEvent, { type: 'chunked-update-aborted' }>['receivedChunks']>().toEqualTypeOf<number>();
   });
 
   it('稳定码闭联合：ConnectionErrorCode(17) ∪ 2 内部码；NamespaceErrorCode(20) ∪ 1 内部码（同源 append-only）', () => {

@@ -35,9 +35,17 @@ export interface ReplicationLimits {
                                           // 必须 ≥ maxBootstrapBytes + 协议开销（validate 启动期响亮验证）；
                                           // 耗尽 = CONNECTION_BACKPRESSURE（close 1011）
   /** issue #243（slice 2，ADR 0013 配置表）：协商 CAP_CHUNKED_UPDATE 后单笔 UPDATE 分块传输的
-   *  发送上界 = 接收端首 chunk `totalBytes` 校验上界（D1：分配前校验）。4 MiB 缺省。跨字段
-   *  响亮链（≤ maxQueuedUpdateBytes 等）与 #244 其余三配置一起交付——本字段只做形状校验。 */
+   *  发送上界 = 接收端首 chunk `totalBytes` 校验上界（D1：分配前校验）。4 MiB 缺省。 */
   readonly maxChunkedUpdateBytes: number; // 4 MiB
+  /** issue #244（slice 3，ADR 0013 配置表）：单笔 chunked transfer 的 `chunkCount` 申报上界
+   *  （首 chunk 分配前拒绝——count 维度与 maxChunkedUpdateBytes 的 totalBytes 维度构成二维
+   *  声明上界）。64 缺省；约束 ≥ 1（validateLimits 启动期响亮校验，零运行时 clamp）。 */
+  readonly maxChunksPerUpdate: number; // 64
+  /** issue #244（slice 3，ADR 0013 配置表）：连接级每入站方向并发 assembly 上界（每
+   *  (连接, 入站方向) 独立计数——多 ns 聚合内存上界 = 本值 × maxChunkedUpdateBytes）。
+   *  4 缺省；约束 ≥ 1；超额 = 到达首 chunk 的 ns 收 `UPDATE_TRANSFER_VIOLATION`（简报显式
+   *  裁决），其余并发 assembly 不受影响（ns 级违例、连接保持 ready）。 */
+  readonly maxConcurrentAssembliesPerConnection: number; // 4
 }
 
 export interface ReplicationTimeouts {
@@ -53,6 +61,11 @@ export interface ReplicationTimeouts {
   readonly pingIntervalMs?: number;
   /** pong 超时（PONG 未复 → 活性失联收口）。缺省 10_000；必须 < pingIntervalMs。 */
   readonly pongTimeoutMs?: number;
+  /** issue #244（ADR 0013 配置表）：接收端 chunked transfer assembly 的进度滑动 deadline
+   *  （每收一 chunk 重置；停滞超时 → 弃 partial + `RESYNC_REQUIRED{UPDATE_TRANSFER_EXPIRED}`）。
+   *  30_000 缺省；容器裁决 = timeouts（时长上界，与 ackTimeoutMs 同族；ADR 配置表未冻结
+   *  容器）。约束 = 有限正整数（validateTimeouts 启动期响亮校验，零运行时 clamp）。 */
+  readonly assemblyTimeoutMs?: number;
 }
 
 export interface ReplicationBackoff {
@@ -311,9 +324,10 @@ export interface ReplicationClock {
 }
 
 /**
- * 结构化 observer seam 事件（ADR 0010 L167 最小观测面全量映射；22 型，append-only——
+ * 结构化 observer seam 事件（ADR 0010 L167 最小观测面全量映射；23 型，append-only——
  * issue #238 追加第 21 型 event-loop-delay-sampled 及四事件面 sequence/四段字段；
- * issue #256 追加第 22 型 namespace-failed 及 cause/timeoutMs 字段）。
+ * issue #256 追加第 22 型 namespace-failed 及 cause/timeoutMs 字段；
+ * issue #244 追加第 23 型 chunked-update-aborted 及 ChunkedUpdateAbortReason 词表）。
  *
  * Safe-field 纪律（协议文档 §23）：字段类别 = 稳定字面量（type/side/direction/via/
  * reason/cause/terminalState/from/to/reasonCode/channelState/connectionState）、受控标识
@@ -325,6 +339,16 @@ export interface ReplicationClock {
  * 事件**不得**包含：token、owner 值、Yjs bytes（Uint8Array/ArrayBuffer/DataView）、
  * SCHEMA/ROOT 内容、原始 cause（Error/message/stack）、任意不受控高基数自由文本。
  */
+/** issue #244：partial assembly 被丢弃的原因（ADR 0013 L92 observer seam 冻结六值闭集，
+ *  与中止矩阵各行一一平行；append-only，只增不改）。safe-field：稳定字面量。 */
+export type ChunkedUpdateAbortReason =
+  | 'timeout'
+  | 'shed'
+  | 'resync-declared'
+  | 'channel-teardown'
+  | 'connection-teardown'
+  | 'epoch-fence';
+
 export type ReplicationObserverEvent =
   // ── 连接域（低频：仅真实迁移）──
   | {
@@ -633,6 +657,30 @@ export type ReplicationObserverEvent =
       readonly connectionId?: string;
       /** 漂移下界信号（ms；差值非绝对时间戳）。 */
       readonly delayMs: number;
+    }
+  // ── issue #244（append-only 第 23 型；ADR 0013 observer seam reason 词表六值与中止
+  //    矩阵一一平行——SA2 R11/R12 裁决：shed/epoch-fence 行接线并入本切片，side 为
+  //    §23 结构信封字段（22 型惯例），域键集逐字 ADR L92（无 connectionId））──
+  | {
+      /**
+       * 分块 transfer 的 partial assembly 被丢弃（中止/违例清理矩阵的观测投影）。
+       * 发射端 = 丢弃 partial 的一端（接收方语义——timeout 停滞方弃置、shed/RESYNC
+       * 声明/CLOSE 收口/断线/epoch fence 的实际处置方）；receivedChunks/receivedBytes =
+       * 已收进度（长度/计数 safe-field，非内容）。
+       *
+       * 计数不变量：每笔 busy→aborted 边沿恰一事件（busy 守卫——重复 clear/多清理挂点
+       * 汇合至多一事件；fire 后竞态 clear 由 stale 零副作用吸收）；事件在决策落定后发射。
+       * 终局失败族（违例/远端 ERROR/revoke → failed）不发本事件——该行的可观测信号是
+       * `namespace-error`/`namespace-failed`（互补不重复）；`conflicted` 族 fence 终局
+       * 经本事件登记（ADR 词表行）。observer 缺省 = 零事件构造、零快照读取。
+       */
+      readonly type: 'chunked-update-aborted';
+      readonly side: ReplicationObserverSide;
+      readonly namespaceId: string;
+      readonly transferId: number;
+      readonly reason: ChunkedUpdateAbortReason;
+      readonly receivedChunks: number;
+      readonly receivedBytes: number;
     };
 
 /**
@@ -663,6 +711,7 @@ export interface ResolvedLimits extends ReplicationLimits {}
 export interface ResolvedTimeouts extends ReplicationTimeouts {
   readonly pingIntervalMs: number; // resolve 后必填（DEFAULT 提供缺省；§5.1）
   readonly pongTimeoutMs: number;
+  readonly assemblyTimeoutMs: number; // issue #244：resolve 后必填（DEFAULT 提供缺省）
 }
 export interface ResolvedBackoff extends ReplicationBackoff {}
 

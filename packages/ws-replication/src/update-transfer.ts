@@ -85,6 +85,19 @@ export class UpdateChunkAssembler {
     return this.buffer !== undefined;
   }
 
+  /** issue #244：进度快照（中止事件构造前捕获；idle → undefined——无快照即零事件载荷）。
+   *  只投影计数/长度/受控 transferId（长度/计数 safe-field，非内容）；reset 前调用。 */
+  snapshot():
+    | { readonly transferId: number; readonly receivedChunks: number; readonly receivedBytes: number }
+    | undefined {
+    if (this.buffer === undefined) return undefined;
+    return {
+      transferId: this.transferIdValue,
+      receivedChunks: this.receivedCount,
+      receivedBytes: this.receivedBytes,
+    };
+  }
+
   /** 弃置（连接收口/声明边沿/恢复结算/残渣收口）：零副作用，可随时调用。 */
   reset(): void {
     this.buffer = undefined;

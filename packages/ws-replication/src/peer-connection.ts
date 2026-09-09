@@ -29,7 +29,13 @@ import type {
 } from './types.js';
 import type { ReplicationTimer } from './types.js';
 import { resolveBackoff, resolveLimits, resolveTimeouts } from './defaults.js';
-import { validatePeerOptions, validateLimits, validateTimeouts, validateBackoff } from './validate.js';
+import {
+  validateBackoff,
+  validateChunkedTransferChain,
+  validateLimits,
+  validatePeerOptions,
+  validateTimeouts,
+} from './validate.js';
 
 const defaultDefer = (task: () => void): void => queueMicrotask(task);
 
@@ -86,6 +92,11 @@ class PeerConnectionImpl implements PeerReplication {
    *  onHello 单点职责，wire 协商位即权威结果）。dialNow 重建先复位 0（新握手前不得
    *  残留旧代协商位）。 */
   private negotiatedCapabilitiesValue = 0;
+  /** issue #244（D3）：连接级入站方向（hub→peer）并发 assembly 槽位——每 (连接, 入站
+   *  方向) 上限 = limits.maxConcurrentAssembliesPerConnection（缺省 4）。peer 单 Hub
+   *  连接实例跨拨号代际存活：槽随控制器清理归还（endInboundAssembly）——断线代际的
+   *  busy assembly 在 runDisposal/新会话建立时清槽，无跨代际泄漏面。 */
+  private readonly inboundAssemblySlots = new Set<string>();
 
   constructor(private readonly options: PeerReplicationOptions) {
     validatePeerOptions(options);
@@ -95,6 +106,18 @@ class PeerConnectionImpl implements PeerReplication {
     validateLimits(limits);
     validateTimeouts(timeouts);
     validateBackoff(backoff);
+    // issue #244（D1，SA4-2 收口）：跨字段响亮链——仅当调用方显式表达任一「分块族链上
+    // 键」（maxChunkedUpdateBytes ∨ maxChunksPerUpdate，两链不等式的操作数键）时对合并
+    // 结果校验两链（R1a/N1 + R1c 转绿判据——{maxChunksPerUpdate: 4} + 缺省 envelope 亦
+    // 激活：链② 4MiB > 4×512KiB=2MiB；缺省值自洽由 DEFAULT 构造成立：4MiB ≤ 4MiB ∧
+    // 4MiB ≤ 64×512KiB=32MiB；仅显式既有键不激活 = 非追溯性，N5/N6 锁定，见 validate.ts）。
+    if (
+      options.limits != null &&
+      (Object.prototype.hasOwnProperty.call(options.limits, 'maxChunkedUpdateBytes') ||
+        Object.prototype.hasOwnProperty.call(options.limits, 'maxChunksPerUpdate'))
+    ) {
+      validateChunkedTransferChain(limits);
+    }
     this.limits = limits;
     this.timeouts = timeouts;
     this.backoff = backoff;
@@ -118,6 +141,19 @@ class PeerConnectionImpl implements PeerReplication {
       connectionEpoch: () => this.connectionEpochValue,
       // issue #254：timer 族 namespace 超时收口（finalize('failed')）后的恢复触发
       requestConnectionRecovery: (namespaceId) => this.onNamespaceRecoveryRequested(namespaceId),
+      // issue #244（D3）：连接级并发 assembly 准入——幂等（同 ns 已占槽恒 true；
+      // 重复首 chunk 防御由 assembler 状态机承接）+ 满额拒纳（缺省 4 → 第 5 个 → VIOLATION）
+      tryBeginInboundAssembly: (namespaceId) => {
+        if (this.inboundAssemblySlots.has(namespaceId)) return true;
+        if (this.inboundAssemblySlots.size >= limits.maxConcurrentAssembliesPerConnection) {
+          return false;
+        }
+        this.inboundAssemblySlots.add(namespaceId);
+        return true;
+      },
+      endInboundAssembly: (namespaceId) => {
+        this.inboundAssemblySlots.delete(namespaceId); // 幂等（重复 clear/多挂点汇合零副作用）
+      },
       deferTask: (task: () => void) => this.deferTask(task),
       observerPresent: () => this.observer() !== undefined,
       emitObserver: (event) => dispatchReplicationObserver(this.observer(), event),
