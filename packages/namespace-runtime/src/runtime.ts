@@ -40,7 +40,7 @@ import type { DocHandle, ReplicationIdentityRef } from '@nomicore/persistence';
 import { readLogicalValueAtPath } from '@nomicore/doc-runtime';
 import type { ReadLogicalValueResult } from '@nomicore/doc-runtime';
 import { compileSchemaEnvelope } from '@nomicore/vfsl';
-import type { CompileSchemaEnvelopeResult, SchemaEnvelope } from '@nomicore/vfsl';
+import type { CompileSchemaEnvelopeResult, ReadDataSchemaProjection, SchemaEnvelope } from '@nomicore/vfsl';
 import type { DiagnosticIssue, NamespaceDiagnosticChangeEmitter } from '@nomicore/namespace-diagnostic-log';
 import {
   NamespaceRuntimeConstructionError,
@@ -50,6 +50,7 @@ import {
 } from './errors.js';
 import { runP0 } from './p0.js';
 import type { ActiveSchemaInfo, P0Env, RuntimeState } from './p0.js';
+import { projectReadDataSchema } from './read-schema-projection.js';
 import { projectMetadata, projectSchemaEnvelope } from './projection.js';
 import { WriteSequencer } from './sequencer.js';
 import { buildStatus } from './status.js';
@@ -113,9 +114,19 @@ export interface RuntimeReadDisabledResult {
   readonly message: string;
 }
 
-/** read 结果联合（#92 宽化）：ready 期透传 ReadLogicalValueResult 逐字节不变；
- *  closing/closed 期返回 RuntimeReadDisabledResult 新分支（加法扩展，ok 判别兼容）。 */
-export type NamespaceRuntimeReadDataResult = ReadLogicalValueResult | RuntimeReadDisabledResult;
+/** read 失败成员（PATH_NOT_ALLOWED）：doc-runtime 单源派生——doc-runtime 保持 schema
+ *  无关（负控/类型守卫双锚），失败形状以 doc-runtime 为准，不复制第二份（D1）。 */
+type ReadLogicalValueFailure = Extract<ReadLogicalValueResult, { ok: false }>;
+
+/** read 结果联合（issue #273 / ADR-0016）：ready 期成功分支 = { ok:true, value, schema }
+ *  ——value 为 doc-runtime 值透传（值缺席显式 undefined，value 键恒在场）、schema 为该
+ *  路径语义投影（ReadDataSchemaProjection | null，双域契约见 read-schema-projection.ts
+ *  模块头注与 readData JSDoc；ok 成员恰三键）；失败分支 = doc-runtime PATH_NOT_ALLOWED
+ *  原样（不带 schema 键）+ closing/closed 期 RuntimeReadDisabledResult（#92，原样）。 */
+export type NamespaceRuntimeReadDataResult =
+  | { ok: true; value: unknown; schema: ReadDataSchemaProjection | null }
+  | ReadLogicalValueFailure
+  | RuntimeReadDisabledResult;
 
 /** Runtime 公共形状（D2 十键协议；键集/形状即公共契约——AC2/AC6/AC8 锚定）。 */
 export interface NamespaceRuntime {
@@ -123,7 +134,19 @@ export interface NamespaceRuntime {
   readonly owner: Readonly<{ userId: string }>;
   /** namespaceId（= handle.docId，string 原始值天然不可变）。 */
   readonly namespaceId: string;
-  /** 透传 readLogicalValueAtPath(doc, path) 的同步结果联合（D3 零包装，ready 期）；
+  /** readData 成功分支组合读（issue #273 / ADR-0016）：`value` 为
+   *  readLogicalValueAtPath 的值透传（读取保持 schema 无关、不进 sequencer、失败通道
+   *  与读取保留不变量不变——ADR-0008 修订节第 3 条），`schema` 为该路径的语义 schema
+   *  投影（值语义子树 + 传递闭包别名表 + docs/aliasDocs 注释切片；每次读 detached
+   *  深拷贝——可变普通副本、不冻结、零缓存，调用方 mutation 绝不交叉污染 runtime 的活
+   *  schema 与后续读数）。always-on：无 opt-in 开关、无新增公共方法/参数。
+   *  `schema: null` 单义（不是读的失败，读的 ok 恒真）覆盖：① 无 active schema
+   *  （preparing/unavailable/fatal）；② 路径偏离 schema（raw 复制可产生 schema 外
+   *  数据）；③ 静态解析失败。路径合法但值缺席（value 显式 undefined）时 schema 照常
+   *  返回（路径键控）；空路径 [] 返回 ROOT 值 schema 投影。
+   *  错误双域划界（D4；敌意/异态 path → schema:null 收敛、绝不外抛；`InternalError`
+   *  ——可信域畸形 derived——→ throw 逃逸，internal-bug-only、生产不可达——唯一逃逸
+   *  throw 通道；敌意输入零 throw）。
    *  lifecycle≠ready 期返回 RuntimeReadDisabledResult（同步、非抛、非 Promise——
    *  D4 lifecycle gate 即时生效，不等待已接纳任务排空）。 */
   readonly readData: (path: readonly (string | number)[]) => NamespaceRuntimeReadDataResult;
@@ -436,13 +459,18 @@ export function createNamespaceRuntimeWithSeam(input: NamespaceRuntimeSeamInput)
     owner,
     namespaceId: docId,
     readData: (path) => {
-      // D4 lifecycle gate 在透传**之前**：closing/closed 期同步结果联合拒绝（非抛、
-      // 非 Promise、零触碰 live Y.Doc——RED 锚 case 2/4 三重锁）；ready 期透传分支
-      // 逐字节不变（既有 read 锚零回归）
+      // D4 lifecycle gate 在组合**之前**：closing/closed 期同步结果联合拒绝（非抛、
+      // 非 Promise、零触碰 live Y.Doc——RED 锚 case 2/4 三重锁）。ready 期 = ADR-0016
+      // 组合（D2）：值读先行 → 失败短路（零 schema 工作，失败对象不带 schema 键）→
+      // 成功恰三键 { ok, value, schema }（schema 由 read-schema-projection.ts 产出：
+      // D3a 状态守卫 → D3b 敌意 path 规范化 → resolver → D5 深拷贝；双域处置见模块头注）
       const lifecycle = state.lifecycle;
-      return lifecycle === 'ready'
-        ? readLogicalValueAtPath(doc, path)
-        : readDisabled(lifecycle, path);
+      if (lifecycle !== 'ready') {
+        return readDisabled(lifecycle, path);
+      }
+      const result = readLogicalValueAtPath(doc, path);
+      if (!result.ok) return result; // 失败短路：PATH_NOT_ALLOWED 原样透传
+      return { ok: true, value: result.value, schema: projectReadDataSchema(state, path) };
     },
     getSchema: () => {
       // D2（#93 rev2，SA8 裁决 B）：数据投影 getter 停接纳——key 仅 lifecycle（裁决 H：

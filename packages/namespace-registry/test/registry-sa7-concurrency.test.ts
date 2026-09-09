@@ -164,7 +164,8 @@ class CountingRuntime implements NamespaceRuntime {
   constructor(readonly marker: string, readonly namespaceId: string) {}
 
   readData() {
-    return { ok: true as const, value: this.marker };
+    // typed stub（D7）：无 activeTools → schema:null 是诚实语义（缺键即 TS2322 类型锁）
+    return { ok: true as const, value: this.marker, schema: null };
   }
 
   getSchema(): null {

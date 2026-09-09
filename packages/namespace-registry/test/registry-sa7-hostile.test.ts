@@ -162,7 +162,8 @@ class ObservableRuntime implements NamespaceRuntime {
   ) {}
 
   readData() {
-    return { ok: true as const, value: this.marker };
+    // typed stub（D7）：无 activeTools → schema:null 是诚实语义（缺键即 TS2322 类型锁）
+    return { ok: true as const, value: this.marker, schema: null };
   }
 
   getSchema(): null {
@@ -419,7 +420,7 @@ describe('SA7 敌意注入（攻击面 3）：确定性、零 real sleep', () =>
       // 全链驱动：open（carrier 事件 throw）→ release（lease-released/entry-idle throw）→
       // advance（close）→ 再 open（全新 generation）。
       const lease1 = okLease(await registry.open({ userId: 'u-hostile' }, 'ns-h3'));
-      expect(lease1.readData(['n'])).toEqual({ ok: true, value: 'R-H3' });
+      expect(lease1.readData(['n'])).toEqual({ ok: true, value: 'R-H3', schema: null });
       await lease1.release();
       expect(scheduler.pending()).toBe(1);
       await scheduler.advanceBy(300_000);

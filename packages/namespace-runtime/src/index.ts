@@ -5,6 +5,11 @@
  * lifecycle 三态）；read 结果联合 +RuntimeReadDisabledResult 分支（closing/closed 期
  * 停接纳）。
  *
+ * #273 增量（ADR-0016）：readData 成功分支形状演进为 { ok:true, value, schema }——
+ * schema 为路径语义投影（ReadDataSchemaProjection | null，每次读 detached 深拷贝、
+ * always-on 零开关）；失败分支（PATH_NOT_ALLOWED / RUNTIME_READ_DISABLED）与十二键
+ * 键集不变；类型导出键集不变（NamespaceRuntimeReadDataResult 形状随组合面演进）。
+ *
  * #132 增量：Runtime 十二键（+enableReplication/bumpReplicationEpoch 复制管理操作键）；
  * getStatus 八键（+replication 复制域）；type-only 追加五个复制管理类型（值导出面仍
  * 恰一键——REPLICATION_ID_PATTERN 等值导出不进本入口）。
