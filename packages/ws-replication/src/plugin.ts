@@ -122,6 +122,8 @@ export interface PeerReplicationPluginConfig {
   readonly limits?: Readonly<Partial<ReplicationLimits>>;
   readonly timeouts?: Readonly<Partial<ReplicationTimeouts>>;
   readonly backoff?: Readonly<Partial<ReplicationBackoff>>;
+  /** issue #243：opt-in 协商旋钮透传（同 PeerReplicationOptions.chunkedUpdate 语义）。 */
+  readonly chunkedUpdate?: boolean;
 }
 
 export interface PeerReplicationPluginOverrides {
@@ -135,6 +137,7 @@ export interface PeerReplicationPluginOverrides {
   readonly limits?: Readonly<Partial<ReplicationLimits>>;
   readonly timeouts?: Readonly<Partial<ReplicationTimeouts>>;
   readonly backoff?: Readonly<Partial<ReplicationBackoff>>;
+  readonly chunkedUpdate?: boolean;
 }
 
 declare module '@deepseek-ai/cordis' {
@@ -145,10 +148,10 @@ declare module '@deepseek-ai/cordis' {
 }
 
 const HUB_CONFIG_KEYS = new Set(['listen', 'tokens', 'authorization', 'limits', 'timeouts']);
-const PEER_CONFIG_KEYS = new Set(['expectedHubInstanceId', 'hubUrl', 'token', 'targets', 'limits', 'timeouts', 'backoff']);
+const PEER_CONFIG_KEYS = new Set(['expectedHubInstanceId', 'hubUrl', 'token', 'targets', 'limits', 'timeouts', 'backoff', 'chunkedUpdate']);
 const HUB_OVERRIDE_KEYS = new Set(['verifyToken', 'authorize', 'listen', 'observer', 'tokens', 'authorization', 'limits', 'timeouts']);
-const PEER_OVERRIDE_KEYS = new Set(['dial', 'createDial', 'observer', 'random', 'deferTask', 'targets', 'limits', 'timeouts', 'backoff']);
-const LIMIT_KEYS = new Set(['maxFrameBytes', 'maxBootstrapBytes', 'maxSyncDiffBytes', 'maxUpdateBytes', 'maxQueuedUpdateBytes', 'maxQueuedUpdateCount', 'maxInFlightUpdates', 'maxQueuedBytesPerConnection', 'lowWater', 'highWater', 'maxQueuedControlBytes']);
+const PEER_OVERRIDE_KEYS = new Set(['dial', 'createDial', 'observer', 'random', 'deferTask', 'targets', 'limits', 'timeouts', 'backoff', 'chunkedUpdate']);
+const LIMIT_KEYS = new Set(['maxFrameBytes', 'maxBootstrapBytes', 'maxSyncDiffBytes', 'maxUpdateBytes', 'maxQueuedUpdateBytes', 'maxQueuedUpdateCount', 'maxInFlightUpdates', 'maxQueuedBytesPerConnection', 'lowWater', 'highWater', 'maxQueuedControlBytes', 'maxChunkedUpdateBytes']);
 const TIMEOUT_KEYS = new Set(['helloTimeoutMs', 'openTimeoutMs', 'bootstrapTimeoutMs', 'reconcileTimeoutMs', 'reconcileIntervalMs', 'closeTimeoutMs', 'ackTimeoutMs', 'pingIntervalMs', 'pongTimeoutMs']);
 const BACKOFF_KEYS = new Set(['baseMs', 'maxMs', 'resetAfterMs']);
 const INSTANCE_ID = /^[a-z][a-z0-9-]{0,62}$/;
@@ -335,6 +338,8 @@ function validatePeerConfig(config: PeerReplicationPluginConfig, overrides: Peer
   if (overrides.observer !== undefined && typeof overrides.observer !== 'function') throw new TypeError('peer replication overrides: invalid observer adapter');
   if (overrides.random !== undefined && typeof overrides.random !== 'function') throw new TypeError('peer replication overrides: invalid random adapter');
   if (overrides.deferTask !== undefined && typeof overrides.deferTask !== 'function') throw new TypeError('peer replication overrides: invalid defer adapter');
+  if (config.chunkedUpdate !== undefined && typeof config.chunkedUpdate !== 'boolean') throw new TypeError('peer replication config: invalid chunkedUpdate');
+  if (overrides.chunkedUpdate !== undefined && typeof overrides.chunkedUpdate !== 'boolean') throw new TypeError('peer replication overrides: invalid chunkedUpdate');
 }
 
 export function requireHubReplication(ctx: Context): HubReplicationService {
@@ -448,6 +453,7 @@ export function createPeerReplicationPlugin(
   const limits = mergeNested(config.limits, overrides.limits);
   const timeouts = mergeNested(config.timeouts, overrides.timeouts);
   const backoff = mergeNested(config.backoff, overrides.backoff);
+  const chunkedUpdate = overrides.chunkedUpdate ?? config.chunkedUpdate; // issue #243
   const targets = overrides.targets ?? config.targets ?? [];
   const dial = overrides.dial ?? overrides.createDial!({ hubUrl: config.hubUrl!, token: config.token! });
   if (typeof dial !== 'function') throw new TypeError('peer replication config: dial factory returned an invalid adapter');
@@ -480,6 +486,7 @@ export function createPeerReplicationPlugin(
         ...(overrides.observer === undefined ? {} : { observer: overrides.observer }),
         ...(overrides.random === undefined ? {} : { random: overrides.random }),
         ...(overrides.deferTask === undefined ? {} : { deferTask: overrides.deferTask }),
+        ...(chunkedUpdate === undefined ? {} : { chunkedUpdate }),
       });
       replication.start();
       const stop = (): Promise<void> => stopPromise ??= (async () => {

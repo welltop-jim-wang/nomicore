@@ -95,6 +95,7 @@ export function validatePeerOptions(
     registry: unknown;
     dial: unknown;
     timer: unknown;
+    chunkedUpdate?: unknown; // issue #243：opt-in 旋钮形状门
     deferTask?: unknown;
     observer?: unknown;
     clock?: unknown;
@@ -117,6 +118,13 @@ export function validatePeerOptions(
     (options.timer as { clearTimeout?: unknown }).clearTimeout,
     'timer.clearTimeout',
   );
+  if (options.chunkedUpdate !== undefined) {
+    assertCollKind(
+      typeof options.chunkedUpdate === 'boolean',
+      'chunkedUpdate',
+      'chunkedUpdate 必须是 boolean',
+    );
+  }
   if (options.deferTask !== undefined) {
     assertCallable(options.deferTask, 'deferTask');
   }
@@ -141,6 +149,7 @@ export function validateLimits(limits: ReplicationLimits): void {
   positiveSafeInteger(limits.lowWater, 'lowWater');
   positiveSafeInteger(limits.highWater, 'highWater');
   positiveSafeInteger(limits.maxQueuedControlBytes, 'maxQueuedControlBytes');
+  positiveSafeInteger(limits.maxChunkedUpdateBytes, 'maxChunkedUpdateBytes'); // issue #243（slice 2：形状门；跨字段链归 #244）
 
   const budget = limits.maxFrameBytes - PROTOCOL_OVERHEAD_BYTES;
   assertCollKind(
