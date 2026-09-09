@@ -56,14 +56,20 @@ export function namespaceErrorFrame(
   };
 }
 
-/** 入站解码（含 expectedSequence；序列检查先于一切 payload 处理）。 */
+/** 入站解码（含 expectedSequence；序列检查先于一切 payload 处理）。issue #243（slice 2）：
+ *  `selectedCapabilities` = 本端会话已协商 capability 位（握手完成前 0）——透传 codec
+ *  DecodeOptions：UPDATE_CHUNK 未协商时在 payload 解析前抛 UNSUPPORTED_MESSAGE_TYPE
+ *  （connection fatal 1002，slice 1 冻结门控）。 */
 export function decodeInbound(
   bytes: Uint8Array,
-  options: { expectedSequence: number; maxFrameBytes: number },
+  options: { expectedSequence: number; maxFrameBytes: number; selectedCapabilities?: number },
 ): { header: { sequence: number }; message: ReplicationMessage } {
   return decodeMessage(bytes, {
     expectedSequence: options.expectedSequence,
     maxFrameBytes: options.maxFrameBytes,
+    ...(options.selectedCapabilities === undefined
+      ? {}
+      : { selectedCapabilities: options.selectedCapabilities }),
   });
 }
 

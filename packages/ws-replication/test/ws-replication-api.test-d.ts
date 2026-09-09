@@ -331,6 +331,15 @@ describe('`@nomicore/ws-replication` observer seam（issue #177）', () => {
     expectTypeOf<Extract<ReplicationObserverEvent, { type: 'auth-upgrade-rejected' }>['side']>().toEqualTypeOf<'hub'>();
   });
 
+  it('issue #243：chunkedUpdate 旋钮与 maxChunkedUpdateBytes 限额的公共类型面（additive）', () => {
+    // PeerReplicationOptions.chunkedUpdate（可选 boolean；缺省 = v1）
+    expectTypeOf<NonNullable<PeerReplicationOptions['chunkedUpdate']>>().toEqualTypeOf<boolean>();
+    expectTypeOf<PeerReplicationOptions['chunkedUpdate']>().toEqualTypeOf<boolean | undefined>();
+    // ReplicationLimits.maxChunkedUpdateBytes（必填 number——缺省 4 MiB）
+    expectTypeOf<ReplicationLimits['maxChunkedUpdateBytes']>().toEqualTypeOf<number>();
+    expectTypeOf<typeof DEFAULT_REPLICATION_LIMITS['maxChunkedUpdateBytes']>().toEqualTypeOf<number>();
+  });
+
   it('观察面不回传控制能力：回调返回 void；事件对象全部 primitive 字段（无函数/对象引用字段）', () => {
     expectTypeOf<ReplicationObserver>().returns.toBeVoid();
     expectTypeOf<ReplicationObserverEvent>().toMatchTypeOf<{ readonly type: string }>();

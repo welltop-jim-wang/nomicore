@@ -34,6 +34,10 @@ export interface ReplicationLimits {
   readonly maxQueuedControlBytes: number; // 8 MiB——控制帧独立保留额度（协议 §17：未冲刷控制字节口径）；
                                           // 必须 ≥ maxBootstrapBytes + 协议开销（validate 启动期响亮验证）；
                                           // 耗尽 = CONNECTION_BACKPRESSURE（close 1011）
+  /** issue #243（slice 2，ADR 0013 配置表）：协商 CAP_CHUNKED_UPDATE 后单笔 UPDATE 分块传输的
+   *  发送上界 = 接收端首 chunk `totalBytes` 校验上界（D1：分配前校验）。4 MiB 缺省。跨字段
+   *  响亮链（≤ maxQueuedUpdateBytes 等）与 #244 其余三配置一起交付——本字段只做形状校验。 */
+  readonly maxChunkedUpdateBytes: number; // 4 MiB
 }
 
 export interface ReplicationTimeouts {
@@ -170,6 +174,10 @@ export interface PeerReplicationOptions {
   readonly timeouts?: Readonly<Partial<ReplicationTimeouts>>;
   readonly backoff?: Readonly<Partial<ReplicationBackoff>>;
   readonly random?: () => number; // 缺省 () => Math.random()
+  /** issue #243（slice 2）：peer 侧 opt-in 旋钮——true 时 HELLO.optionalCapabilities 置位
+   *  CAP_CHUNKED_UPDATE（发起协商；最终交集由 hub 在 onHello 单点计算，peer 逐字消费
+   *  HELLO_ACK.selectedCapabilities——wire 协商位是唯一行为判据）。缺省 false = v1 逐字节。 */
+  readonly chunkedUpdate?: boolean;
   /** 可观测性延迟 seam（§5.2）：恢复/重建的异步调度点。缺省 = 单次 queueMicrotask。 */
   readonly deferTask?: (task: () => void) => void;
   /** 结构化观测 seam（ADR 0010 L167）：同步回调；throw 由 dispatchReplicationObserver

@@ -24,6 +24,11 @@ import {
 import type { NamespaceAuthorization } from './types.js';
 import { RoundAborted, RoundEngine } from './round-engine.js';
 import { UpdateChannel } from './update-channel.js';
+import {
+  UpdateChunkAssembler,
+  type ChunkedTransferPiece,
+  type UpdateChunkAcceptResult,
+} from './update-transfer.js';
 import type { DataSenderFacet } from './backpressure.js';
 import type {
   HubConnectionState,
@@ -54,6 +59,10 @@ export interface HubChannelHost {
   sendControl(message: ReplicationMessage): number;
   /** data 帧（UPDATE）发送路径（§6.3，issue #137）：连接级水位闸门 + data 出队。 */
   sendData(namespaceId: string, bytes: Uint8Array): number;
+  /** issue #243（DD-3.5）：UPDATE_CHUNK 帧发送路径（与 UPDATE 同一 data 出站点）。 */
+  sendUpdateChunk(namespaceId: string, chunk: ChunkedTransferPiece): number;
+  /** issue #243（DD-1.5）：wire 协商位判据（本连接会话 negotiated 位）。 */
+  chunkedUpdateNegotiated(): boolean;
   /** 连接级 data 水位闸门（§4.2，issue #137）。 */
   dataGateOpen(): boolean;
   /** data 入队通知（§4.4 连接总压/wheel 登记，issue #137）。 */
@@ -114,6 +123,12 @@ export class HubNamespaceChannel {
   private readonly onOwnedBound: (bytes: Uint8Array) => void;
   /** 构造期捕获的 observer 在场标记（options 注入后不可变——热路径判空零调用）。 */
   private readonly observerOn: boolean;
+  /** issue #243（DD-4）：本通道入站方向（peer→hub）的 detached assembly——纯易失，
+   *  作用域 = (连接, ns)（通道不跨连接存活）；连接收口/恢复结算/声明边沿 reset。 */
+  private readonly inboundAssembler: UpdateChunkAssembler;
+  /** issue #243（F3）：恢复周期标记——置位 = 收对端 RESYNC 或本端漏斗真实发射 wire
+   *  RESYNC_REQUIRED；恢复 round 结算回 live 时清除并丢弃本通道 assembly。 */
+  private resyncEpisode = false;
 
   /** 连接级 data 调度面（§6.1/§6.3）：pull 以 state==='live' 为门槛；shed 按通道
    *  live 性分派（live → declareHubResync 声明并等待；非 live → pendingResync）。 */
@@ -180,16 +195,22 @@ export class HubNamespaceChannel {
       onRoundSettled: () => this.onRoundSettled(),
     });
     this.round.bind(namespaceId);
+    this.inboundAssembler = new UpdateChunkAssembler({
+      maxUpdateBytes: host.limits.maxUpdateBytes,
+      maxChunkedUpdateBytes: host.limits.maxChunkedUpdateBytes,
+    });
     this.channel = new UpdateChannel({
       limits: host.limits,
       ackTimeoutMs: host.timeouts.ackTimeoutMs,
       sendUpdateFrame: (bytes) => this.sendUpdateFrame(bytes),
+      sendUpdateChunkFrame: (chunk) => this.sendUpdateChunkFrame(chunk),
+      chunkedSendEnabled: () => this.host.chunkedUpdateNegotiated(),
       declareLocalResync: (cause, failureDetail) => this.onLocalResyncEdge(cause, failureDetail),
       noteUpdateDropped: (detail) => this.noteUpdateDropped(detail),
       notePendingResync: () => {
         this.pendingResync = true;
       },
-      onAckTimeout: () => this.onAckTimeoutFired(),
+      onAckTimeout: (_abortedTransfer) => this.onAckTimeoutFired(),
       onUpdateAcked: (info) => this.onUpdateAcked(info),
       noteUpdateSent: (info) => this.onUpdateSent(info),
       now: () => this.host.now?.(),
@@ -622,6 +643,96 @@ export class HubNamespaceChannel {
     void this.applyRemoteUpdate(message.update, message.sequence);
   }
 
+  // ─────────────────────────────── 入站 UPDATE_CHUNK（issue #243 DD-4/DD-5） ───────────────────────────────
+
+  /** 连接层 dispatch：peer→hub 方向 chunk 帧（envelope sequence 已附）。接收管线：
+   *  静默门 → busy/残渣/首 chunk 判别 →（首 chunk 状态接纳门 + submit 门镜像 onUpdate）
+   *  → assembler 校验/重组 → 收齐后恰一次 sequenced apply + dirty + UPDATE_ACK。 */
+  onUpdateChunk(message: ChunkedTransferPiece & { sequence: number }): void {
+    // §11.1 第 1 步：closing/终态静默忽略（零副作用）
+    if (this.isQuietState()) return;
+    const { chunkIndex, sequence } = message;
+    if (this.inboundAssembler.busy) {
+      // busy 路径不做 ns 状态门（仅 quiet 静默前置）——hub 收 STEP1 不迁出 live，
+      // 跨 round 的合法 chunk 流量是常态；WS 有序可靠使错序/丢失结构性不可达 ⇒ 响亮。
+      this.handleAssemblerResult(this.inboundAssembler.accept(message), sequence);
+      return;
+    }
+    if (chunkIndex !== 0) {
+      // idle ∧ chunkIndex>0 = 残渣形态（F3）——needs-resync/reconciling 良性丢弃
+      //（合法恢复语义）；live 及其余状态 = 协议内不可达防御（F2/F3/F6/F7 闭合后）→ fail-loud。
+      if (this.state === 'needs-resync' || this.state === 'reconciling') return;
+      this.transferViolation('UPDATE_TRANSFER_VIOLATION');
+      return;
+    }
+    // idle 首 chunk：状态接纳门镜像 onUpdate（在首 chunk 时刻判定；busy 后续不再复查）
+    const accepted =
+      this.state === 'live' ||
+      this.state === 'needs-resync' ||
+      (this.state === 'reconciling' && this.round.wasLive);
+    if (!accepted) {
+      this.sendNsError('NAMESPACE_STATE_VIOLATION');
+      this.finalize('failed', 'protocol-violation');
+      return;
+    }
+    if (!this.submitPermission) {
+      // hub submit 门（镜像 onUpdate；apply 前拒绝——首 chunk 即判，权限 open 期冻结）
+      this.sendNsError('NAMESPACE_UNAUTHORIZED');
+      this.finalize('failed', 'protocol-violation');
+      return;
+    }
+    this.handleAssemblerResult(this.inboundAssembler.accept(message), sequence);
+  }
+
+  private handleAssemblerResult(result: UpdateChunkAcceptResult, sequence: number): void {
+    switch (result.outcome) {
+      case 'more':
+        return;
+      case 'violation':
+        this.transferViolation(result.code);
+        return;
+      case 'complete': {
+        // 收齐（Σbytes === totalBytes 已在 assembler 精确核对）→ 恰一次 sequenced apply
+        // ——复用既有管线（trusted apply + dirty + update-applied + UPDATE_ACK + 经 session
+        // owned-update fan-out 广播其他 Peer，applyOrigin 回声抑制不回送来源——B7 零新机制）。
+        // 重组失败一律先于 apply：live Y.Doc 零写入（AC3）。
+        void this.applyRemoteUpdate(result.bytes, sequence);
+        return;
+      }
+      default: {
+        const never: never = result;
+        void never;
+        return;
+      }
+    }
+  }
+
+  /** 违例动作（镜像 onFieldViolation 先例）：ns 级 ERROR 帧 + 终局 failed；assembly 复位。 */
+  private transferViolation(
+    code: 'UPDATE_TRANSFER_VIOLATION' | 'UPDATE_TRANSFER_TOO_LARGE',
+  ): void {
+    this.clearInboundAssembly();
+    this.sendNsError(code);
+    this.finalize('failed', 'protocol-violation');
+  }
+
+  /** 入站 assembly 清理挂点（DD-4 挂点表）：对端声明收帧边（onResyncReceived）、本端
+   *  wire 声明发射点（declareHubResync 漏斗内、记忆化门后）、恢复 round 结算回 live
+   *  （resyncEpisode 标记门控）、通道收口（closeSessionAndRelease）、违例复位。 */
+  private clearInboundAssembly(): void {
+    this.inboundAssembler.reset();
+  }
+
+  /** issue #243（DD-3.5）：UPDATE_CHUNK 帧出站（控制器侧包装：异常收敛返回 0 → 通道
+   *  F4 消费即弃置 + send-failed 声明；与 sendUpdateFrame 同款 try/catch 纪律）。 */
+  private sendUpdateChunkFrame(chunk: ChunkedTransferPiece): number {
+    try {
+      return this.host.sendUpdateChunk(this.namespaceId, chunk);
+    } catch {
+      return 0;
+    }
+  }
+
   onUpdateAck(message: { ackedSequence: number }): void {
     if (this.isQuietState()) return;
     const outcome = this.channel.onAck(message.ackedSequence);
@@ -662,6 +773,11 @@ export class HubNamespaceChannel {
     if (this.isQuietState()) return;
     this.channel.markResyncReceived();
     this.setState('needs-resync');
+    // issue #243（DD-4 挂点 1/F3）：收 RESYNC_REQUIRED ⇒ 全部丢弃（ADR 0013:58）——
+    // 对端发送侧已随其 resync 边弃置在途 transfer，本通道入站 assembly 必残缺：清除 +
+    // 置恢复周期标记（round 结算回 live 时消费）。
+    this.clearInboundAssembly();
+    this.resyncEpisode = true;
     this.emitResyncRequired('remote-declared'); // HB8：收 RESYNC_REQUIRED（对端声明本端化）
   }
 
@@ -805,6 +921,11 @@ export class HubNamespaceChannel {
     if (this.isQuietState()) return;
     if (this.resyncDeclared) return;
     this.resyncDeclared = true;
+    // issue #243（DD-4 挂点 2/F7）：本端 wire RESYNC_REQUIRED 发射点全集 = 本漏斗
+    //（hub 侧本就单漏斗：session 边沿/溢出与发送失败/ack-timeout 三调用点）——记忆化门
+    // 后置位/清理：声明真实发射才清本通道入站 assembly + 置恢复周期标记。
+    this.clearInboundAssembly();
+    this.resyncEpisode = true;
     this.sendChecked({
       kind: 'RESYNC_REQUIRED',
       namespaceId: this.namespaceId,
@@ -1051,6 +1172,13 @@ export class HubNamespaceChannel {
     this.setState('live');
     this.channel.resetForLive();
     this.resyncDeclared = false; // 恢复周期完成：恢复声明记忆化清零
+    // issue #243（F3）：恢复 round 结算回 live——needs-resync/reconciling 期接纳的注定
+    // 夭折首 chunk 的 assembly 收口（周期 round 不置标记、结算不清除——跨 round 的合法
+    // hub→peer 下行 transfer 在 hub 侧同样存在，busy assembly 必须存活）。
+    if (this.resyncEpisode) {
+      this.resyncEpisode = false;
+      this.clearInboundAssembly();
+    }
     this.watchdog.onEvent();
   }
 
@@ -1179,6 +1307,9 @@ export class HubNamespaceChannel {
     this.watchdog.teardown();
     this.round.teardown();
     this.channel.teardown();
+    // issue #243（DD-4 清理挂点/终态单点）：通道收口随带释放本代 assembly（纯易失内存）
+    this.clearInboundAssembly();
+    this.resyncEpisode = false;
     try {
       if (session !== undefined) {
         await session.close();
