@@ -84,11 +84,12 @@ describe('SA7 补充锚：外部边界与登记态行为（SA4 动态清单 #4/#
     }
     expect(caught).toBeInstanceOf(RangeError);
 
-    // 其余读取面不受影响（同一 runtime 上照常工作）
+    // 其余读取面不受影响（同一 runtime 上照常工作）；成功分支为 ADR-0016 组合形状
+    // { ok, value, schema }——值语义用 toMatchObject 锚（D7：P0 时序不敏感分类）
     const env = runtime.getSchema();
     expect(env).not.toBeNull();
     expect(Object.keys(env as object).sort()).toEqual(['id', 'lang', 'text', 'version']);
-    expect(runtime.readData(['n'])).toEqual({ ok: true, value: 'str' });
+    expect(runtime.readData(['n'])).toMatchObject({ ok: true, value: 'str' });
     // fatal 零污染：循环值是 META 投影问题，不升级 internal fault
     const st = runtime.getStatus();
     expect(st.fatal).toBeNull();
@@ -124,8 +125,9 @@ describe('SA7 补充锚：外部边界与登记态行为（SA4 动态清单 #4/#
     expect(after.schema.state).toBe('ready');
     expect(after.fatal).toBeNull();
 
-    // 读取面照常：同一 live Y.Doc 引用，值不变、不崩
-    expect(runtime.readData(['n'])).toEqual({ ok: true, value: 'str' });
+    // 读取面照常：同一 live Y.Doc 引用，值不变、不崩（成功分支 ADR-0016 组合形状——
+    // 值语义 toMatchObject 锚，D7）
+    expect(runtime.readData(['n'])).toMatchObject({ ok: true, value: 'str' });
     const env = runtime.getSchema();
     expect(env?.lang).toBe('vfsl');
     const meta = runtime.getMetadata();

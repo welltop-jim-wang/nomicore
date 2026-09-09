@@ -32,15 +32,14 @@
  */
 import type { Clock } from '@nomicore/clock';
 import type { NamespaceDiagnosticChangeEmitter } from '@nomicore/namespace-diagnostic-log';
-import type { ReadLogicalValueResult } from '@nomicore/doc-runtime';
 import type {
   ActiveSchemaInfo,
   BumpReplicationEpochResult,
   EnableReplicationResult,
   MutateDataResult,
+  NamespaceRuntimeReadDataResult,
   ReplaceSchemaInput,
   ReplaceSchemaResult,
-  RuntimeReadDisabledResult,
 } from '@nomicore/namespace-runtime';
 import type { ReplicationIdentityRef, YjsDoc } from '@nomicore/persistence';
 import type { SchemaEnvelope } from '@nomicore/vfsl';
@@ -444,10 +443,10 @@ export type DeleteNamespaceResult = Readonly<{ ok: true }> | DeleteNamespaceIssu
 
 // —— Lease 代理能力的公开 alias（§3.2）：结构性表达 Runtime 能力，不转导 Runtime 名称 ——
 
-/** lease.read 结果 = runtime read 正常联合 | released issue。 */
+/** lease.read 结果 = runtime read 正常联合（ADR-0016 形状：成功分支带语义 schema
+ *  投影）| released issue——别名跟随 runtime（D6，lease.ts Equal 锁强制）。 */
 export type NamespaceLeaseReadDataResult =
-  | ReadLogicalValueResult
-  | RuntimeReadDisabledResult
+  | NamespaceRuntimeReadDataResult
   | NamespaceLeaseReleasedIssue;
 
 /** lease.getSchema 结果（runtime 同签名：载体缺席 → null）。 */

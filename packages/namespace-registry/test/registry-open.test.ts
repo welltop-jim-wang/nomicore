@@ -181,7 +181,7 @@ function makeRuntime(overrides: {
   return {
     owner: overrides.owner ?? { userId: 'runtime-owner' },
     namespaceId: overrides.namespaceId ?? 'runtime-ns',
-    readData: overrides.readData ?? (() => ({ ok: true, value: 'runtime-value' })),
+    readData: overrides.readData ?? (() => ({ ok: true, value: 'runtime-value', schema: null })),
     getSchema: () => null,
     getMetadata: () => ({ marker: 'meta' }),
     getActiveSchema: () => null,
@@ -352,8 +352,9 @@ describe('identity 分支（§4/§6.1）：最小安全规则 + 零访问', () =
     const lease = okLease(result);
     expect(lease.namespaceId).toBe(docId);
     expect(lease.owner).toEqual({ userId: owner.userId });
-    // 真实 Runtime 构造（生产内部 factory 默认路径）：read 对已提交 ROOT 可用
-    expect(lease.readData(['n'])).toEqual({ ok: true, value: 42 });
+    // 真实 Runtime 构造（生产内部 factory 默认路径）：read 对已提交 ROOT 可用；
+    // 成功分支 ADR-0016 组合形状——值语义 toMatchObject 锚（D7）
+    expect(lease.readData(['n'])).toMatchObject({ ok: true, value: 42 });
     await lease.release();
   });
 });
@@ -800,7 +801,7 @@ describe('capability：fatal/unavailable/degraded Runtime 均可 open 并透传�
     persistence.queueLoad({ result: new StubHandle({ userId: 'u' }, 'k') });
     const registry = createNamespaceRegistryForTesting(persistence, {
       clock: manualClock(), scheduler: createRegistryTestScheduler(), randomBytes: TEST_RANDOM_BYTES,
-      runtimeFactory: () => makeRuntime({ status: () => runtimeStatus, readData: () => ({ ok: true, value: 'still-readable' }) }),
+      runtimeFactory: () => makeRuntime({ status: () => runtimeStatus, readData: () => ({ ok: true, value: 'still-readable', schema: null }) }),
     });
     const result = await registry.open({ userId: 'u' }, 'k');
     const lease = okLease(result);
@@ -812,7 +813,7 @@ describe('capability：fatal/unavailable/degraded Runtime 均可 open 并透传�
       expect(projected.runtime.schemaWrite.enabled).toBe(false);
       expect(projected.runtime.read.enabled).toBe(true);
     }
-    expect(lease.readData(['x'])).toEqual({ ok: true, value: 'still-readable' }); // 读取保留
+    expect(lease.readData(['x'])).toEqual({ ok: true, value: 'still-readable', schema: null }); // 读取保留
     expect(lease.getActiveSchema()).toBeNull();
     await lease.release();
   });
@@ -854,7 +855,7 @@ describe('publish 时机：factory 返回即成功，不等待 P0（§6/AC4）',
       clock: manualClock(), scheduler: createRegistryTestScheduler(), randomBytes: TEST_RANDOM_BYTES,
       runtimeFactory: () =>
         makeRuntime({
-          readData: () => ({ ok: true, value: 'pre-p0-value' }),
+          readData: () => ({ ok: true, value: 'pre-p0-value', schema: null }),
           status: () => ({
             lifecycle: 'ready',
             read: { enabled: true },
@@ -876,7 +877,7 @@ describe('publish 时机：factory 返回即成功，不等待 P0（§6/AC4）',
     if (st.lease === 'active') {
       expect(st.runtime.schema.state).toBe('preparing'); // P0 未结算的忠实投影
     }
-    expect(lease.readData(['a'])).toEqual({ ok: true, value: 'pre-p0-value' });
+    expect(lease.readData(['a'])).toEqual({ ok: true, value: 'pre-p0-value', schema: null });
     p0Gate.resolve();
     await lease.release();
   });
