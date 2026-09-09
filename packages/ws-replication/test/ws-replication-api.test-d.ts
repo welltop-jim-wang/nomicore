@@ -236,7 +236,7 @@ describe('`@nomicore/ws-replication` observer seam（issue #177）', () => {
     >();
   });
 
-  it('事件 union：22 型字面量精确匹配（判别联合闭集，append-only；issue #238/#256 增补）', () => {
+  it('事件 union：26 型字面量精确匹配（判别联合闭集，append-only；issue #238/#256/#244/#245 增补）', () => {
     expectTypeOf<ReplicationObserverEvent>().toEqualTypeOf<
       | { readonly type: 'connection-state-changed'; readonly side: ReplicationObserverSide; readonly connectionId?: string; readonly from: PeerConnectionState | HubConnectionState; readonly to: PeerConnectionState | HubConnectionState }
       | { readonly type: 'connection-backoff-scheduled'; readonly side: 'peer'; readonly attempt: number; readonly delayMs: number; readonly reason: 'dial-failed' | 'socket-closed' | 'hello-timeout' | 'pong-timeout' | 'connection-backpressure' | 'goaway-closed' | 'goaway-retry-hint' | 'namespace-recovery' }
@@ -265,6 +265,11 @@ describe('`@nomicore/ws-replication` observer seam（issue #177）', () => {
       // issue #244（append-only 第 23 型；reason = ChunkedUpdateAbortReason 六值闭集——
       // 该别名经 types.ts 模块级导出、不经 index.ts 重导出，此处按结构展开比对）
       | { readonly type: 'chunked-update-aborted'; readonly side: ReplicationObserverSide; readonly namespaceId: string; readonly transferId: number; readonly reason: 'timeout' | 'shed' | 'resync-declared' | 'channel-teardown' | 'connection-teardown' | 'epoch-fence'; readonly receivedChunks: number; readonly receivedBytes: number }
+      // issue #245（append-only 第 24–26 型；ADR 0013 L89–91 域键集逐字 + §23 side 信封——
+      // R22 裁决：无 sequence/四段差值/效果组键；sent 恒无 latency 键）
+      | { readonly type: 'chunked-update-sent'; readonly side: ReplicationObserverSide; readonly connectionId?: string; readonly namespaceId: string; readonly transferId: number; readonly chunkCount: number; readonly totalBytes: number }
+      | { readonly type: 'chunked-update-applied'; readonly side: ReplicationObserverSide; readonly connectionId?: string; readonly namespaceId: string; readonly bytes: number; readonly chunkCount: number; readonly applyLatencyMs?: number }
+      | { readonly type: 'chunked-update-acked'; readonly side: ReplicationObserverSide; readonly connectionId?: string; readonly namespaceId: string; readonly bytes: number; readonly ackLatencyMs?: number }
     >();
     // issue #256：namespace-failed 字段类型精确性（cause 闭联合；timeoutMs 可选有限数值）
     expectTypeOf<Extract<ReplicationObserverEvent, { type: 'namespace-failed' }>['cause']>().toEqualTypeOf<ReplicationNamespaceFailedCause>();
@@ -285,6 +290,17 @@ describe('`@nomicore/ws-replication` observer seam（issue #177）', () => {
     >();
     expectTypeOf<Extract<ReplicationObserverEvent, { type: 'chunked-update-aborted' }>['side']>().toEqualTypeOf<ReplicationObserverSide>();
     expectTypeOf<Extract<ReplicationObserverEvent, { type: 'chunked-update-aborted' }>['receivedChunks']>().toEqualTypeOf<number>();
+    // issue #245：三新型字段类型精确性（transferId/chunkCount/totalBytes/bytes = 有限数值；
+    // latency 可选——时钟折叠两态在类型面 = number | undefined 缺省可选）
+    expectTypeOf<Extract<ReplicationObserverEvent, { type: 'chunked-update-sent' }>['transferId']>().toEqualTypeOf<number>();
+    expectTypeOf<Extract<ReplicationObserverEvent, { type: 'chunked-update-sent' }>['chunkCount']>().toEqualTypeOf<number>();
+    expectTypeOf<Extract<ReplicationObserverEvent, { type: 'chunked-update-sent' }>['totalBytes']>().toEqualTypeOf<number>();
+    expectTypeOf<Extract<ReplicationObserverEvent, { type: 'chunked-update-sent' }>['side']>().toEqualTypeOf<ReplicationObserverSide>();
+    expectTypeOf<Extract<ReplicationObserverEvent, { type: 'chunked-update-applied' }>['bytes']>().toEqualTypeOf<number>();
+    expectTypeOf<Extract<ReplicationObserverEvent, { type: 'chunked-update-applied' }>['chunkCount']>().toEqualTypeOf<number>();
+    expectTypeOf<Extract<ReplicationObserverEvent, { type: 'chunked-update-applied' }>['applyLatencyMs']>().toEqualTypeOf<number | undefined>();
+    expectTypeOf<Extract<ReplicationObserverEvent, { type: 'chunked-update-acked' }>['bytes']>().toEqualTypeOf<number>();
+    expectTypeOf<Extract<ReplicationObserverEvent, { type: 'chunked-update-acked' }>['ackLatencyMs']>().toEqualTypeOf<number | undefined>();
   });
 
   it('稳定码闭联合：ConnectionErrorCode(17) ∪ 2 内部码；NamespaceErrorCode(20) ∪ 1 内部码（同源 append-only）', () => {

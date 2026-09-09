@@ -48,15 +48,24 @@ export interface UpdateChannelHost {
   readonly onAckTimeout: (abortedTransfer: boolean) => void;
   /** 单笔 ACK 收妥记账（§6.5 U2/U3）：bytes = 在途帧载荷长度；latencyMs = ACK 时刻 − 发送时刻
    *  （clock 缺省/无 observer 时 undefined）；sequence = 被 ACK 帧序（= wire
-   *  UPDATE_ACK.ackedSequence——issue #238 三事件面关联键）。 */
+   *  UPDATE_ACK.ackedSequence——issue #238 三事件面关联键）。
+   *  issue #245（DD3）：chunked = 本 ACK 结算的是分块 transfer 的末 chunk 条目（发送侧
+   *  据此改道发 chunked-update-acked；普通帧条目不携带该标记——普通路径逐字节不变）。 */
   readonly onUpdateAcked: (
-    info: Readonly<{ bytes: number; latencyMs?: number; sequence: number }>,
+    info: Readonly<{ bytes: number; latencyMs?: number; sequence: number; chunked?: true }>,
   ) => void;
   /** 帧实际出站记账（issue #238 §5.4）：seq>0 的每帧恰一通知（update-sent 发射信息）——
    *  sendQueueMs = 帧出队时刻 − 帧内最旧业务项入队时刻（clock 缺省时 undefined）。
-   *  发射方（namespace facet）自行做 observer 在场门。 */
+   *  发射方（namespace facet）自行做 observer 在场门。
+   *  issue #245（DD3）：chunked 组仅末 chunk 结算通知携带（= 分块 transfer 完成出站——
+   *  中间 chunk 保持零通知）；发送侧据此改道发 chunked-update-sent。 */
   readonly noteUpdateSent: (
-    info: Readonly<{ sequence: number; bytes: number; sendQueueMs?: number }>,
+    info: Readonly<{
+      sequence: number;
+      bytes: number;
+      sendQueueMs?: number;
+      chunked?: Readonly<{ transferId: number; chunkCount: number }>;
+    }>,
   ) => void;
   /** 单调时源（仅作差；控制器绑定 clock——无 clock 时返回 undefined）。 */
   readonly now?: () => number | undefined;
@@ -91,8 +100,13 @@ interface ActiveTransferState {
 
 export class UpdateChannel {
   /** 在途记账（§6.5 U2）：值形状 = {载荷字节数, 发送时刻}——纯内部记账，消费方仅
-   *  size/keys/get/delete/clear，行为等价。sentAt 仅作差（clock 缺省 → undefined）。 */
-  readonly inFlight = new Map<number, { readonly bytes: number; readonly sentAt?: number }>();
+   *  size/keys/get/delete/clear，行为等价。sentAt 仅作差（clock 缺省 → undefined）。
+   *  issue #245（DD3）：chunked = 末 chunk 条目标记（分块 transfer 的 ACK 结算判据——
+   *  改道发 chunked-update-acked；普通帧条目不携带）。 */
+  readonly inFlight = new Map<
+    number,
+    { readonly bytes: number; readonly sentAt?: number; readonly chunked?: true }
+  >();
   readonly zombieSeqs = new Set<number>();
   private readonly queued: QueuedItem[] = [];
   private queuedByteCount = 0;
@@ -195,6 +209,8 @@ export class UpdateChannel {
         bytes: entry.bytes,
         sequence,
         ...(latencyMs !== undefined ? { latencyMs } : {}),
+        // issue #245（DD3）：末 chunk 条目标记透传——facet 据此改道发 chunked-update-acked
+        ...(entry.chunked !== undefined ? { chunked: true as const } : {}),
       });
       if (this.queued.length > 0) this.host.requestDataDrain(); // §6.2：原同步 flush 循环 → 连接级 drain
       return 'ok';
@@ -397,9 +413,12 @@ export class UpdateChannel {
    *  chunk 出站 / 末 chunk 结算 / 失败弃置均算进展——drain 循环「消费即进展」语义）。
    *
    *  末 chunk 出站：shift 载体 + 核减记账 → inFlight.set(末 chunk 帧序, {bytes: 总长,
-   *  出站时刻}) → armAckTimer → 清 activeTransfer（槽位 1→1 转换，任意时刻
-   *  effectiveInFlightCount ≤ max 且裸 inFlight.size ≤ max）→ noteUpdateSent{末序,总长}。
-   *  中间 chunk：不注册 inFlight、不挂 timer、不发射 update-sent（#245 归 chunked 事件）。
+   *  出站时刻, chunked: true}) → armAckTimer → 清 activeTransfer（槽位 1→1 转换，任意
+   *  时刻 effectiveInFlightCount ≤ max 且裸 inFlight.size ≤ max）→ noteUpdateSent{末序,
+   *  总长, chunked 组}（issue #245：facet 改道发 chunked-update-sent——transfer 完成出站
+   *  恰一，非逐 chunk）。
+   *  中间 chunk：不注册 inFlight、不挂 timer、零 noteUpdateSent 通知（#245：chunked 族
+   *  事件只在完成出站时刻发射，中间 chunk 零事件——B1 不变）。
    *  出站拒绝（seq ≤ 0）：与单帧失败同构——采样失败明细 → discardQueued（transfer 随
    *  队列一并终止）→ needsResync → declareLocalResync('send-failed')。 */
   private sendOneChunk(): boolean {
@@ -422,10 +441,6 @@ export class UpdateChannel {
       return true;
     }
     const sentAt = safeNow(() => this.host.now?.());
-    const sendQueueMs =
-      sentAt !== undefined && transfer.item.queuedAt !== undefined
-        ? sentAt - transfer.item.queuedAt
-        : undefined;
     const isLast = transfer.chunkIndex + 1 >= transfer.chunkCount;
     if (isLast) {
       // 载体出队核减 = 整项入账字节（R4：transfer 期间保守超计至末 chunk）。守恒不变量
@@ -435,12 +450,19 @@ export class UpdateChannel {
       this.inFlight.set(seq, {
         bytes: transfer.totalBytes,
         ...(sentAt !== undefined ? { sentAt } : {}),
+        // issue #245（DD3）：末 chunk 条目标记——ACK 结算改道判据
+        chunked: true,
       });
       this.activeTransfer = undefined;
+      // issue #245（R21/DD3）：改道——携带 chunked 上下文组，facet 据此发
+      // chunked-update-sent（transferId/chunkCount/totalBytes；bytes = totalBytes 既有语义）。
+      // R27 定死：本路径不计算/不携带 sendQueueMs——sendOneChunk 只服务 chunked transfer，
+      // chunked 族事件键集不含该字段（DD1 排除），其计算为死代码（普通帧路径
+      // sendAndRegister 的 sendQueueMs 逐字节不变——N1/N3 锚）。
       this.host.noteUpdateSent({
         sequence: seq,
         bytes: transfer.totalBytes,
-        ...(sendQueueMs !== undefined ? { sendQueueMs } : {}),
+        chunked: { transferId: transfer.transferId, chunkCount: transfer.chunkCount },
       });
       this.armAckTimer();
     } else {
