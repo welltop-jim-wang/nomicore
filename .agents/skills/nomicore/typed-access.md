@@ -40,7 +40,7 @@ Generate projections in the independent host and use them to type-check business
 5. Review generated diffs. Modify `schema.vfsl` or the generator contract—not `generated.ts`—when output is wrong.
 6. Keep runtime validation and static typing distinct:
    - business code uses generated `VfslPathMap`, `PathAt`, `PathValue`, `PathPatchValue`, and `PathElementValue` through a host-owned adapter;
-   - the adapter calls public `NamespaceLease.readData()` and `mutateData()`;
+   - the adapter calls public `NamespaceLease.readData()` (a successful read returns `{ ok, value, schema }` — see [Read result: value plus semantic schema projection](#read-result-value-plus-semantic-schema-projection)) and `mutateData()`;
    - one narrow assertion may bridge a successful runtime result to its projected type;
    - application call sites contain no `any`, source-deep imports, or live `Y.Doc` access.
 7. Preserve literal paths (`as const` for reused tuples). Verify negative cases: unknown paths, wrong values, and array operations on non-array nodes must fail host typecheck.
@@ -104,6 +104,22 @@ const missing: Missing = 'x'
 ```
 
 Use paths and values from the actual schema. A guard is complete only when both a known path resolves to its exact value type and an unknown path fails closed. Also inspect `--listFilesOnly` output for the exact generated file.
+
+## Read result: value plus semantic schema projection
+
+Every successful `readData(path)` returns `{ ok: true, value, schema }` ([ADR 0016](../../../docs/adr/0016-readdata-semantic-schema-projection.md); see the 语义 schema 投影 entry in `CONTEXT.md`): besides the plain logical value, `schema` carries the path's semantic schema projection — the semantics an agent consumer needs to interpret the value (value domains, literal unions, constraints) and to prepare a follow-up write.
+
+The projection (`ReadDataSchemaProjection`) has four keys:
+
+- `valueSchema` — the value-semantics subtree at the path end (refs kept by name, not inlined);
+- `aliases` — the transitive closure of aliases referenced by `valueSchema` (self-contained, recursion-safe);
+- `docs` / `aliasDocs` — the relevant slices of the derived schema documentation tables.
+
+The keys of `docs` and `aliasDocs` are isomorphic to the derived schema documentation tables: absolute syntax paths plus `'<item>'` / `'<key>'` / `'<member N>'` synthetic segments, with alias-internal docs anchored by alias name.
+
+`schema` is `null` when there is no active schema, the path strays outside the schema, or static resolution fails. A null schema is not a read failure: `ok` stays true. Treat a null projection as "no semantics available for this path", not as an error. Every read returns a detached deep copy; do not cache or share projections across reads.
+
+When a read is followed by a write, use the schema projection returned with the value to interpret the value's domain and construct a legal `mutateData()` mutation (minimal, mergeable, semantic — next section). Static `PathAt` / `PathPatchValue` types remain the compile-time authority; the runtime projection serves dynamically read values and agent-style consumers that must interpret data without generated types.
 
 ## Mutation policy: minimal, mergeable, semantic
 
