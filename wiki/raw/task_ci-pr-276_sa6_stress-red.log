@@ -1,0 +1,36 @@
+=== GENUINE DOUBLE-ACQUIRE RED on attempt 1 ===
+
+ RUN  v3.2.7 /home/wangjian/nomicore-fix-issue-266
+
+ ❯ apps/yjs-server/test/root-lock-stale-reclaim-race-stress.test.ts (3 tests | 1 failed) 4273ms
+   ✓ root lock stale-reclaim race — single live owner under loaded real-process contention > sequential handover always yields exactly one owner (negative control) 10ms
+   ✓ root lock stale-reclaim race — single live owner under loaded real-process contention > a live owner repels every contender: zero acquired, all rejected (negative control)  572ms
+   × root lock stale-reclaim race — single live owner under loaded real-process contention > real-process stale reclaim over 6 loaded rounds: exactly one live owner per round (the CI red assertion — "expected acquired to have a length of 1 but got 2" — per round) 3690ms
+     → expected [ { type: 'acquired', …(1) }, …(1) ] to have a length of 1 but got 2
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  apps/yjs-server/test/root-lock-stale-reclaim-race-stress.test.ts > root lock stale-reclaim race — single live owner under loaded real-process contention > real-process stale reclaim over 6 loaded rounds: exactly one live owner per round (the CI red assertion — "expected acquired to have a length of 1 but got 2" — per round)
+AssertionError: expected [ { type: 'acquired', …(1) }, …(1) ] to have a length of 1 but got 2
+
+- Expected
++ Received
+
+- 1
++ 2
+
+ ❯ apps/yjs-server/test/root-lock-stale-reclaim-race-stress.test.ts:166:28
+    164|           const rejected = messages.filter((m) => m.type === 'rejected…
+    165|           // THE single-owner invariant (the assertion CI saw fail wit…
+    166|           expect(acquired).toHaveLength(1);
+       |                            ^
+    167|           expect(rejected).toHaveLength(CONTENDERS - 1);
+    168|           expect(rejected.every((m) => /held|unsupported/.test(m.messa…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 2 passed (3)
+   Start at  10:00:18
+   Duration  8.14s (transform 2.05s, setup 0ms, collect 3.32s, tests 4.27s, environment 0ms, prepare 204ms)

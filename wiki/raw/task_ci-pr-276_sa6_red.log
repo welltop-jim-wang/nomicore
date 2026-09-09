@@ -1,0 +1,51 @@
+# SA6 red evidence — PR #276 `test (24, 4)` root-lock double-owner race (head 334494d)
+
+Evidence files (all captured on production `acquireRootLock` from
+`apps/yjs-server/src/lifecycle.ts` at HEAD 334494d, executed by real forked worker
+processes via `test/fixtures/root-lock-worker.ts`, Node v24.13.0):
+
+1. `task_ci-pr-276_sa6_ci-fail.log` — GitHub Actions run 34296011254 job 102292700330
+   (`test (24, 4)`), `--log-failed` full extract: the original red
+   (expected acquired length 1, got 2; assertion at root-lock-atomic-reclaim-red.test.ts:104).
+
+2. Local CI-shaped driver, stream `ci`, round 10/40 (heavy ambient churn present):
+   two workers `cci-10-2` and `cci-10-3` both reported `acquired` in the same
+   millisecond with fully overlapping 2000 ms hold windows (real-process overlap):
+
+```
+--- OVERLAP dump stream=ci acquired=2 ---
+overlap intervals: [{"instanceId":"cci-10-2","windowMs":[1788917827056,1788917829056]},
+                    {"instanceId":"cci-10-3","windowMs":[1788917827056,1788917829056]}]
+rootDir: /tmp/rl-race-i8if6U
+.nomicore-lock.json: {"instanceId":"cci-10-2","pid":1902626,"nonce":"a7536b05-6276-423b-aea4-8c776125ef7a"}
+```
+
+3. Local CI-shaped driver, stream `amb`, round 7/200 (loaded by concurrent stress-run):
+   two workers `camb-7-0` and `camb-7-1` both reported `acquired`; collection at
+   +764 ms << 5000 ms hold => overlapping owner holds:
+
+```
+--- DOUBLE-ACQUIRE dump stream=amb acquired=["camb-7-0","camb-7-1"] ---
+rootDir: /tmp/rl-race-eV5ACM
+canonical/ owner.json: {"instanceId":"camb-7-0","pid":1962842,"nonce":"ba9dccfb-6500-4c12-a120-cfb78b3a9dae"}
+.nomicore-lock.json: {"instanceId":"camb-7-0","pid":1962842,"nonce":"ba9dccfb-6500-4c12-a120-cfb78b3a9dae"}
+collectionMs=764
+```
+
+4. Empty-owner window mechanism support (strace, no code change): Node
+   `writeFileSync(path, data, { flag: 'wx' })` performs two system calls —
+   `openat(..., O_CREAT|O_EXCL|...)` (creates the file EMPTY) followed later by
+   `write(2)` of the payload. Between them the canonical `owner.json` exists but
+   parses as empty => a stale reaper can judge a live acquirer's freshly mkdir'd
+   directory as stale (readOwner returns ''), detach it with `renameSync`, and the
+   preempted acquirer's fd write + rootDir-level diagnostic-mirror publish still
+   succeed, so BOTH processes complete `acquireRootLock` as owners
+   (lifecycle.ts L122-131: success = mkdir + owner write + mirror publish with no
+   post-write re-verification that canonical still names this handle).
+
+Rate profile (CI-shaped rounds, real workers, production code):
+  idle machine:          0 doubles / ~500+ rounds (incl. 60 sequential vitest runs)
+  loaded machine:        2 doubles / ~240 driver rounds (~0.8%)
+  CI runner (observed):  1 failure / ~18 single-round canary executions
+  => preemption-of-the-owner-in-the-create->write-gap is the trigger; probability
+     scales with CPU contention (GitHub-hosted runners' noise suffices to fire).

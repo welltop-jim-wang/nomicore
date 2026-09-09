@@ -34,8 +34,13 @@ out of their owning packages.
   step/errno) and re-entrant retry is the only completion path; the process never exits because
   of control input.
 - Root-level file persistence acquires the authoritative `<rootDir>/.nomicore-lock/`
-  directory with exclusive `mkdir` and publishes `.nomicore-lock.json` as a diagnostic
-  mirror; clean shutdown releases the directory, and a shared active root is rejected.
+  directory by atomically renaming a complete private staging directory into place
+  (the canonical name is first observable with its full `owner.json`); publication
+  and stale reclaim serialize on the `.reap-claim` mutual-exclusion gate, whose
+  wait is bounded — one unchanged holder occupancy times out to a loud failure
+  instead of an unbounded silent wait. `.nomicore-lock.json` is published as a
+  diagnostic mirror; clean shutdown releases the directory, and a shared active
+  root is rejected.
 
 ## Verification
 
