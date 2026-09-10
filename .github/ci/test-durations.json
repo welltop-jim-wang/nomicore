@@ -12,7 +12,7 @@
     "apps/yjs-server/test/host-namespace-delete-sa7-dynamic.test.ts": 83152,
     "apps/yjs-server/test/host-namespace-delete-under-replication.test.ts": 23459,
     "apps/yjs-server/test/host-trusted-replication-diagnostics.test.ts": 8184,
-    "apps/yjs-server/test/hub-restart-static-target-red.test.ts": 19965,
+    "apps/yjs-server/test/hub-restart-static-target-red.test.ts": 45000,
     "apps/yjs-server/test/issue164-sa7-dynamic.test.ts": 1157,
     "apps/yjs-server/test/issue164-slice9-red.test.ts": 7537,
     "apps/yjs-server/test/issue164-transport-faces-red.test.ts": 21,
