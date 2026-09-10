@@ -176,3 +176,29 @@ SCHEMA write 全量校验、fatal 通道、封装边界、status 观测面、「
    与交付纪律（always-on、每次读深拷贝）以 ADR 0016 为权威。
 3. **原规则保持**：读取保持 schema 无关、不进 sequencer、失败通道
    （`PATH_NOT_ALLOWED` / `RUNTIME_READ_DISABLED`）与读取保留不变量均不变。
+
+### ADR 0017 修订：schema 生命周期元数据（META.schema.updatedAt，2026-09-10）
+
+本节登记 issue #282 / ADR 0017 对本 ADR 的四处修订；规范细节（时钟权威、legacy
+兼容、开放问题裁决）以 ADR 0017 为权威。除下列明示条款外，正文其余条款维持
+原文效力。
+
+1. **META 值域修订**：正文「`getMetadata()` 深拷贝顶层 `META` Y.Map 的全部键；
+   META 是开放键空间，但值只允许 JSON-compatible plain value，不允许嵌套 Yjs
+   shared type」修订为——嵌套 **Y.Map** 合法化（递归深拷贝为 plain object），
+   首个合法实例是 `META.schema` 生命周期元数据载体；其余嵌套 Yjs shared type
+   （Y.Array/Y.Text/Y.Xml* 等）维持禁止（投影 loud 拒绝）。
+2. **`getActiveSchema()` 六键投影**：正文「`getActiveSchema()` 返回当前已安装
+   schema tools 的 `lang/version/id` 与 envelope/semantic fingerprints」加性扩展
+   第六键 `updatedAt: string | null`——当前 active schema generation 的安装时间
+   （UTC ISO 8601）或 `null`（legacy/损坏，诚实缺席）。
+3. **SCHEMA write 事务语义**：正文「在一个 transaction 中原子替换 SCHEMA 与必要
+   的 ROOT generation」扩展为——同一 transaction 同时提交 `META.schema.updatedAt`
+   （嵌套 Y.Map；既有载体原实例复用，缺席/异型修复性安装）。每次提交都推进
+   `updatedAt`（含语义等价/仅格式差异的替换）；零写入结局不推进；提交后
+   dirty notification 失败时时间戳随 committed generation 保留。genesis 的
+   `updatedAt` 等于 `META.createdAt`（同一捕获时钟瞬间）。
+4. **genesis META 形状**：初始文档 META 顶层由严格二键（docId/createdAt）演进为
+   严格三键（docId/createdAt/schema）；「v1 不提供 META 写」句的例外清单在既有
+   复制保留字段管理写（issue #132）之外追加——`META.schema.updatedAt` 仅由
+   SCHEMA write 事务与 genesis 安装写入，无其他公共写入口。

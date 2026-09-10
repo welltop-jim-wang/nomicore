@@ -8,7 +8,9 @@
  *     Y.AbstractType/类实例/Uint8Array）时，公共模式 loud throw
  *     （SchemaProjectionError，code NSRT-SCHEMA-E1），P0 模式键省略
  *     （live 引用绝不进 compile 输入——缺键由 ENV-2 收编 → 数据级 unavailable）；
- *   · META 值域违规（嵌套 Yjs shared type / bigint / undefined / function / symbol /
+ *   · META 值域违规（嵌套 Yjs shared type——**Y.Map 除外**（issue #282 / ADR-0017：
+ *     META.schema 生命周期元数据载体，递归深拷贝为 plain object）/ bigint /
+ *     undefined / function / symbol /
  *     non-finite number / 非 plain 原型对象）loud throw（MetaProjectionError，
  *     code NSRT-META-E1），绝不静默跳键。
  *
@@ -126,6 +128,34 @@ function isPrimitiveValue(v: unknown): boolean {
 }
 
 /**
+ * 【issue #282 / ADR-0017】schema 生命周期时间戳投影（`META.schema.updatedAt`）：
+ * P0 安装 active schema 身份时单次读取（与 SCHEMA 四键投影同槽同事务外观测窗）。
+ * 诚实缺席语义（绝不伪造时间戳）：
+ * - META 载体缺席/异型、`schema` 键缺席（legacy 命名空间——本特性前创建）、
+ *   `schema` 非 Y.Map（损坏）、`updatedAt` 非 string（损坏）→ 一律 `null`；
+ * - 仅「嵌套 Y.Map 且 updatedAt 为 string」视为可信派生，原样带出。
+ * 本函数不是验证器：不修复、不抛错（P0 数据级观测——时间戳缺席绝不拖垮
+ * schema 可用性分级）。
+ */
+export function projectSchemaUpdatedAt(doc: Y.Doc): string | null {
+  if (!doc.share.has('META')) {
+    return null; // 载体缺席（生产路径不可达；不惰性 getMap——零副作用）
+  }
+  let meta: Y.Map<unknown>;
+  try {
+    meta = doc.getMap('META');
+  } catch {
+    return null; // 载体异型 → 无可信派生
+  }
+  const schemaMeta = meta.get('schema');
+  if (!(schemaMeta instanceof Y.Map)) {
+    return null; // legacy 缺席 / 损坏异型 → 无可信派生
+  }
+  const updatedAt = schemaMeta.get('updatedAt');
+  return typeof updatedAt === 'string' ? updatedAt : null;
+}
+
+/**
  * META 全键深拷贝（D5，R2 修订）。三分支：
  * ① 载体缺席 → 抛 MetaProjectionError（NSRT-META-E2）；
  * ② 载体异型 → 抛 MetaProjectionError（NSRT-META-E2，message 含观测载体异常信息）；
@@ -182,8 +212,18 @@ function copyMetaValue(v: unknown, keyPath: string): unknown {
   if (typeof v === 'bigint' || typeof v === 'undefined' || typeof v === 'function' || typeof v === 'symbol') {
     throw metaValueError(keyPath, `值域违规：${typeof v}`);
   }
+  // 【issue #282 / ADR-0017】嵌套 Y.Map 合法化（META.schema 生命周期元数据载体）：
+  //  递归深拷贝为 plain object（子键写入经 putPlainKey——proto-key 安全纪律沿顶层
+  //  同族）；其余嵌套 Yjs shared type（Y.Array/Y.Text/Y.Xml* 等）维持 loud 拒绝。
+  if (v instanceof Y.Map) {
+    const out: Record<string, unknown> = {};
+    for (const k of (v as Y.Map<unknown>).keys()) {
+      putPlainKey(out, k, copyMetaValue((v as Y.Map<unknown>).get(k), `${keyPath}.${k}`));
+    }
+    return out;
+  }
   if (v instanceof Y.AbstractType) {
-    throw metaValueError(keyPath, `嵌套 Yjs shared type（${yjsFamilyWord(v)}）`); // AC4：plain 域禁嵌套 Yjs
+    throw metaValueError(keyPath, `嵌套 Yjs shared type（${yjsFamilyWord(v)}）`); // AC4：plain 域禁嵌套 Yjs（Y.Map 除外）
   }
   if (Array.isArray(v)) {
     const out: unknown[] = [];

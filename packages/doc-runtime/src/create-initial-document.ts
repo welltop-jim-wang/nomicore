@@ -5,8 +5,10 @@
  * 职责边界（冻结）：doc-runtime 负责全部 Yjs 机械——自持 `new Y.Doc()`（Registry
  * 永不获得失败时的 partial doc）、prepare（envelope/META 形状、derived 不变量、
  * 原样封闭校验、detached 构造）、fresh-map 空置断言、**恰一个** transactGuarded
- * 事务（SCHEMA 严格四键 + META 严格二键 + ROOT clear+安装）、三组写后核验
- * （verifySchemaFourKeys / verifyMetaTwoKeys / verifyInstall / verifySnapshotIntact
+ * 事务（SCHEMA 严格四键 + META 严格三键——docId/createdAt + 嵌套 schema Y.Map
+ * {updatedAt}（issue #282 / ADR-0017：genesis updatedAt 与 createdAt 同一捕获
+ * 时钟瞬间）+ ROOT clear+安装）、三组写后核验
+ * （verifySchemaFourKeys / verifyMetaGenesis / verifyInstall / verifySnapshotIntact
  * 镜像——复用/镜像既有 install-verify 机械，不复制构造规则）。Registry 负责 schema
  * 编译、createdAt 生成、结果映射、Persistence 与 Runtime。
  *
@@ -103,12 +105,18 @@ export function createInitialDocument(input: CreateInitialDocumentInput): Create
     metaMap.clear();
     metaMap.set('docId', input.meta.docId);
     metaMap.set('createdAt', input.meta.createdAt);
+    // 【issue #282】genesis schema 生命周期元数据：META.schema 嵌套 Y.Map，updatedAt
+    // 与 META.createdAt 同一字符串（同一捕获时钟瞬间——Registry 单点读钟产物复用，
+    // 零额外读数；「当前 schema generation 安装时间」在创世即等于命名空间创建时间）。
+    const schemaMeta = new Y.Map<unknown>();
+    schemaMeta.set('updatedAt', input.meta.createdAt);
+    metaMap.set('schema', schemaMeta);
     rootMap.clear();
     for (const [key, value] of entries) rootMap.set(key, value);
   });
 
   verifySchemaFourKeys(schemaMap, input.envelope);
-  verifyMetaTwoKeys(metaMap, input.meta);
+  verifyMetaGenesis(metaMap, input.meta);
   verifyInstall({ rootMap, entries });
   // ④ ⑥：共享 verifySnapshotIntact（同模块同源——install-verify 的 scratch-仲裁：
   //    compare = extract(real) ≡ extract(scratch)，scratch = 同一输入同一管线在一次性
@@ -267,15 +275,15 @@ function verifySchemaFourKeys(schemaMap: Y.Map<unknown>, envelope: SchemaEnvelop
 
 /** ③-2 ⑤-M：META 写后顶层完整性校验（size===2 + docId/createdAt 严格同一；对称补齐
  * verifySchemaFourKeys 的诚实性）。偏离 → throw post-commit-verification,true。 */
-function verifyMetaTwoKeys(
+function verifyMetaGenesis(
   metaMap: Y.Map<unknown>,
   meta: { readonly docId: string; readonly createdAt: string },
 ): void {
-  if (metaMap.size !== 2) {
+  if (metaMap.size !== 3) {
     throw new DocRuntimeFatalError(
       'post-commit-verification',
       true,
-      `DOCRT-E201: META 顶层安装完整性偏离：期望 2 个键，事务提交后实际 ${metaMap.size} 个` +
+      `DOCRT-E201: META 顶层安装完整性偏离：期望 3 个键，事务提交后实际 ${metaMap.size} 个` +
         `（实际键集：${JSON.stringify([...metaMap.keys()])}）——疑似 observer 同步重入修改 META；` +
         `写入已提交，不回滚、不补偿，doc 保持 observer 留下的实际状态`,
     );
@@ -293,5 +301,16 @@ function verifyMetaTwoKeys(
           `疑似 observer 覆写或删除后重插异值；写入已提交，不回滚、不补偿，doc 保持 observer 留下的实际状态`,
       );
     }
+  }
+  // 【issue #282】嵌套 schema Y.Map 写后核验：载体必须是 Y.Map、恰一键、updatedAt 与
+  //  createdAt 严格同一（genesis 契约——同一捕获时钟瞬间，见 ADR-0017）。
+  const schemaMeta = metaMap.get('schema');
+  if (!(schemaMeta instanceof Y.Map) || schemaMeta.size !== 1 || schemaMeta.get('updatedAt') !== meta.createdAt) {
+    throw new DocRuntimeFatalError(
+      'post-commit-verification',
+      true,
+      'DOCRT-E201: META.schema 生命周期元数据安装完整性偏离：期望恰一键 {updatedAt === createdAt} 的嵌套 Y.Map——' +
+        '疑似 observer 同步重入修改 META.schema；写入已提交，不回滚、不补偿，doc 保持 observer 留下的实际状态',
+    );
   }
 }

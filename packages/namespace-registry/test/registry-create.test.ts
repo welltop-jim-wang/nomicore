@@ -403,7 +403,7 @@ function makeMarkerRuntime(marker: string, namespaceId: string): any {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 describe('create 成功全链（§3/§5/§6/§9）：manual Clock 精确 createdAt + Persistence 收文档 + 单事务 + P0 seam', () => {
-  it('默认工厂全链：create 成功、createdAt 精确锚、SCHEMA 四键/META 二键/ROOT 完整、afterTransaction 恰 1、Clock 恰读 1', async () => {
+  it('默认工厂全链：create 成功、createdAt 精确锚、SCHEMA 四键/META 三键（含嵌套 schema Y.Map）/ROOT 完整、afterTransaction 恰 1、Clock 恰读 1', async () => {
     const persistence = new CreateStubPersistence();
     const clock = makeManualClock(FIXED_MS);
     const { probe, restore } = installDocProbe();
@@ -435,10 +435,13 @@ describe('create 成功全链（§3/§5/§6/§9）：manual Clock 精确 created
       expect(schemaMap.get('id')).toBe('ns-1');
       expect(schemaMap.get('text')).toBe(GOOD_ENVELOPE.text);
       const metaMap = captured.doc.getMap('META');
-      expect(metaMap.size).toBe(2);
-      expect([...metaMap.keys()].sort()).toEqual(['createdAt', 'docId']);
+      expect(metaMap.size).toBe(3); // issue #282：docId/createdAt + 嵌套 schema Y.Map
+      expect([...metaMap.keys()].sort()).toEqual(['createdAt', 'docId', 'schema']);
       expect(metaMap.get('docId')).toBe(src.id(1)); // docId = namespaceId（§6 生成 ID）
       expect(metaMap.get('createdAt')).toBe(FIXED_ISO);
+      const schemaMetaMap = metaMap.get('schema');
+      expect(schemaMetaMap).toBeInstanceOf(Y.Map);
+      expect((schemaMetaMap as Y.Map<unknown>).get('updatedAt')).toBe(FIXED_ISO); // genesis 同一捕获时钟瞬间
       const rootMap = captured.doc.getMap('ROOT');
       expect(rootMap.get('n')).toBe(42);
 

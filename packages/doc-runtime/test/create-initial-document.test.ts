@@ -250,7 +250,7 @@ describe('createInitialDocument 三分支红灯（§6/§9 R2-H1）', () => {
 });
 
 describe('createInitialDocument 成功面（§6/§9：单事务、SCHEMA/META/ROOT 内容与空置、读回）', () => {
-  it('成功：恰一 transaction、fresh-map 空置、SCHEMA 四键/META 二键/ROOT 完整、verify 后读回', () => {
+  it('成功：恰一 transaction、fresh-map 空置、SCHEMA 四键/META 三键（含嵌套 schema Y.Map）/ROOT 完整、verify 后读回', () => {
     const fn = createInitialDocument as (i: CreateInitialDocumentInput) => CreateInitialDocumentResult;
     const { probe, restore } = installDocProbe();
     activeRestore = restore;
@@ -275,12 +275,17 @@ describe('createInitialDocument 成功面（§6/§9：单事务、SCHEMA/META/RO
     expect(schemaMap.get('version')).toBe(1);
     expect(schemaMap.get('id')).toBe('seam-ns-1');
     expect(schemaMap.get('text')).toBe(ENVELOPE.text);
-    // META 严格二键
+    // META 严格三键（issue #282 / ADR-0017：docId/createdAt + 嵌套 schema Y.Map）
     const metaMap = doc.getMap('META');
-    expect(metaMap.size).toBe(2);
-    expect([...metaMap.keys()].sort()).toEqual(['createdAt', 'docId']);
+    expect(metaMap.size).toBe(3);
+    expect([...metaMap.keys()].sort()).toEqual(['createdAt', 'docId', 'schema']);
     expect(metaMap.get('docId')).toBe(DOC_ID);
     expect(metaMap.get('createdAt')).toBe(CREATED_AT);
+    // META.schema 嵌套 Y.Map：恰一键 {updatedAt === createdAt}（genesis 同一捕获时钟瞬间）
+    const schemaMeta = metaMap.get('schema');
+    expect(schemaMeta).toBeInstanceOf(Y.Map);
+    expect((schemaMeta as Y.Map<unknown>).size).toBe(1);
+    expect((schemaMeta as Y.Map<unknown>).get('updatedAt')).toBe(CREATED_AT);
     // ROOT 完整内容
     const rootMap = doc.getMap('ROOT');
     expect(rootMap.get('n')).toBe(42);

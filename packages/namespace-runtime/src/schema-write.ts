@@ -10,13 +10,18 @@
  *  S3 槽起点输入快照 + 输入形状检查（共享受控 snapshotter——R2 四查次序原样）
  *  S4 proposed 编译（seam 注入 compile 路由；**零读 state 的 active 域**——
  *      AC1/AC8：不依赖当前 schema 可编译，P0 unavailable 照常入槽执行）
- *  S5 组合 seam replaceSchemaAndRoot（唯一 Y.Doc 写入口：验证+构造+单事务+写后校验）
+ *  S4.5 【issue #282】schema 生命周期时间戳捕获（槽内单点读钟 → UTC ISO 8601；
+ *      读数非法/抛出 → write-slot-internal committed:false 零写入）
+ *  S5 组合 seam replaceSchemaAndRoot（唯一 Y.Doc 写入口：验证+构造+单事务+写后校验；
+ *      【issue #282】同事务写入 META.schema.updatedAt——SCHEMA 与其生命周期元数据
+ *      原子提交，复制时随 generation 同行）
  *  S5.5 installActive（transaction 返回后**同步**执行、await notifyDirty 之前——AC6）
  *  S6 同槽 await notifyDirty（完成信号 = live commit + dirty 登记两者）
  *  S7 槽释放（promise settle；sequencer 自动放行下一项）
  *
  * fatal 分类（D9 表唯一裁决点 = 本槽 catch 位置；延续「分类权归捕获位置」）：
- *  - S2 getStatus 抛错 → write-slot-internal committed:false；
+ *  - S2 getStatus 抛错 / S4.5 时钟读数非法或抛出（issue #282）→ write-slot-internal
+ *    committed:false；
  *  - S4 compile 抛出 / ok:false 零 issues / 畸形 ok:true（守卫 throw——含 envelope 恰
  *    四键封闭/四值型违规，R1.1/A1）→ **schema-compile-throw** committed:false
  *    （结构上先于一切 doc 写——诚实零写入；与 write-slot-internal 区分诊断面）；
@@ -76,6 +81,10 @@ export interface SchemaWriteEnv {
   readonly notifyDirty: (() => Promise<void>) | undefined;
   /** proposed 编译步（构造栈 V3b 捕获——同一 seam 注入同时服务 P0 与 SCHEMA 写槽，D10）。 */
   readonly compile: (envelope: SchemaEnvelope) => CompileSchemaEnvelopeResult;
+  /** 【issue #282】schema 生命周期时钟（epoch-ms 读数；构造栈解析 = 注入 clock seam
+   *  或 Date.now 缺省——Registry 生产装配恒注入 Instance Clock，保持单时钟权威）。
+   *  S4.5 单点读取产生 META.schema.updatedAt（UTC ISO 8601）。 */
+  readonly clock: () => number;
 }
 
 /**
@@ -204,6 +213,24 @@ export async function runSchemaWriteSlot(env: SchemaWriteEnv, input: unknown, di
     return rejectWithWriteFatal(env, false, 'schema-compile-throw', err, 'schema');
   }
 
+  // ── S4.5 schema 生命周期时间戳捕获（issue #282 / ADR-0017：槽内单点读钟，晚于
+  //   compile 成功、早于事务——读数非法/时钟抛出 → internal fault committed:false
+  //   （零写入，phase 复用 'write-slot-internal' 闭集）；合法读数 → UTC ISO 8601
+  //   字符串，随 S5 同事务写入 META.schema.updatedAt 并喂 S5.5 installActive）──
+  let schemaUpdatedAt: string;
+  try {
+    const ms = env.clock();
+    if (typeof ms !== 'number' || !Number.isFinite(ms) || Math.abs(ms) > 8.64e15) {
+      throw new Error(
+        `schema 生命周期时钟读数非法：${typeof ms === 'number' ? String(ms) : typeof ms}`,
+      );
+    }
+    schemaUpdatedAt = new Date(ms).toISOString();
+  } catch (err) {
+    diagFatalCapGate(diag, FATAL_SCHEMA_WRITE_INTERNAL_CODE);
+    return rejectWithWriteFatal(env, false, 'write-slot-internal', err, 'schema');
+  }
+
   // ── S5 组合 seam（唯一 Y.Doc 写入口：验证+构造+单事务+写后校验）────────
   const plan: SchemaRootPlan = shape.hasRoot
     ? { kind: 'replace-root', snapshot: shape.root }
@@ -221,6 +248,7 @@ export async function runSchemaWriteSlot(env: SchemaWriteEnv, input: unknown, di
       envelope: compiled.envelope,
       derived: compiled.derived,
       root: plan,
+      schemaUpdatedAt, // 【issue #282】同事务写入 META.schema.updatedAt
     });
   } catch (err) {
     // D9 fatal 分类：doc-runtime branded 透传 committed/phase 事实；未知异常保守
@@ -246,9 +274,11 @@ export async function runSchemaWriteSlot(env: SchemaWriteEnv, input: unknown, di
   }
 
   // ── S5.5 安装新 active tools（AC6：transaction 返回后同步、await notifyDirty 之前）──
-  //  五字段身份 + tools + 状态迁回 'ready' + delete schemaIssue——getActiveSchema/
+  //  六字段身份（含 updatedAt = 本槽写入 META.schema.updatedAt 的同一字符串——
+  //  issue #282：post-transaction/pre-dirty 观测窗内公共投影即对应新 committed
+  //  generation）+ tools + 状态迁回 'ready' + delete schemaIssue——getActiveSchema/
   //  getSchema/read 自此观察新 generation（notifier 挂住窗口内可观测——锚 9）
-  installActive(compiled, env.state);
+  installActive(compiled, env.state, schemaUpdatedAt);
 
   // ── S6 同槽 await notifyDirty（完成信号 = live commit + dirty 登记两者）──
   try {
