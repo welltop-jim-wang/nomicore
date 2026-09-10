@@ -63,6 +63,7 @@ export type {
   ReplicationApplyStages,
   ReplicationIdentityRef,
   ReplicationObservabilitySlotSample,
+  ReplicationSchemaRearmOutcome,
   ReplicationSession,
   ReplicationSessionApplyRefusalCode,
   ReplicationSessionApplyResult,

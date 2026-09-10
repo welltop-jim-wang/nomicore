@@ -25,6 +25,7 @@ import type {
   RuntimeReplicationSessionOptions,
   RuntimeReplicationSessionStatus,
 } from './replication-session.js';
+import type { RuntimeReplicationSchemaRearmOutcome } from './schema-rearm.js';
 
 /**
  * 构造生产 NamespaceRuntime（ADR-0009 冻结名）。
@@ -70,4 +71,7 @@ export type {
   RuntimeReplicationSessionOptions,
   RuntimeReplicationSessionStatus,
 };
+/** 【issue #286 / ADR 0018】apply 结果的 detached re-arm outcome 投影类型
+ *  （registry 侧镜像 = ReplicationSchemaRearmOutcome，Equal 锁经 apply 结果类型传递）。 */
+export type { RuntimeReplicationSchemaRearmOutcome };
 export type { RuntimeForRegistryDiagnostic } from './runtime.js';
