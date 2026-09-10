@@ -76,11 +76,30 @@ export function stableNamespaceCode(raw: string): ReplicationObserverNamespaceCo
     : 'INTERNAL_ERROR';
 }
 
-/** issue #287：re-arm fatal 码 → `schema-rearm-failed.code` 闭联合取值。
- *  与 `stableNamespaceCode` 同源白名单（同一次折叠、同一 INTERNAL_ERROR 兜底）——
- *  独立函数只为类型收窄（事件字段的类型是双码闭联合，而 Runtime 产出面已是该双码）。 */
+/** issue #287：re-arm fatal 码白名单（ADR 0018 §3 双码——namespace-runtime `errors.ts`
+ *  注册表成员）。取值面由 `satisfies ReplicationObserverSchemaRearmCode[]` 与本包事件
+ *  类型逐值锁死：**新增码而漏改本函数 → 编译期红**（杜绝「事件 code 溢出闭合并对
+ *  Runtime 事实说谎」的静默漂移）。 */
+function isSchemaRearmCode(raw: string): raw is ReplicationObserverSchemaRearmCode {
+  const whitelist = [
+    'NSRT-FATAL-SCHEMA-REARM-INVALID',
+    'NSRT-FATAL-SCHEMA-REARM-INTERNAL',
+  ] satisfies ReplicationObserverSchemaRearmCode[];
+  return (whitelist as readonly string[]).includes(raw);
+}
+
+/** issue #287：re-arm fatal 码 → `schema-rearm-failed.code` 闭联合取值；非白名单成员折叠
+ *  `INTERNAL_ERROR`（namespace 域既有折叠成员——观测面绝不对 Runtime 事实说谎）。
+ *
+ *  唯一一处 `as`：`INTERNAL_ERROR` 属 namespace 域白名单（§23.2「未知码折叠规则」既有
+ *  成员）而非本事件的双码闭联合——折叠分支的产出面是「namespace 域稳定码」这一更宽面
+ *  的成员，事件字段类型是它的子集，故需一次显式断言（非收窄断言：不透传任何未经白名单
+ *  的输入，只是把已注册的折叠成员放进子集类型）。
+ *
+ *  运行期：`code` 实参恒为本双码（Runtime `schemaRearm.code` 类型即闭联合）——兜底分支是
+ *  结构性防御，不是可达路径。 */
 export function stableSchemaRearmCode(raw: string): ReplicationObserverSchemaRearmCode {
-  return stableNamespaceCode(raw) as ReplicationObserverSchemaRearmCode;
+  return isSchemaRearmCode(raw) ? raw : ('INTERNAL_ERROR' as ReplicationObserverSchemaRearmCode);
 }
 
 /** 条件附着展开（exactOptionalPropertyTypes 兼容）：connectionId 缺省 = 字段不存在
