@@ -171,3 +171,15 @@ _Avoid_: attempt-started、result `'unknown'`、跨 stream genesis
 
 **authority 规则**:
 旧系统的 `__authority__` manifest（enum / range / conditional / state-machine 等不变式）。**本仓库范围外**（ADR-0002）。
+
+**problem shape**:
+REST 错误 response 的固定 JSON 形状：恒为 object，键集 ⊆ `{code, message, issues?, issuesTruncated?}`；`code` 为稳定 UPPER_SNAKE（客户端只按 code 分支），`message` 为人读文案（不保证逐字稳定），`issues` 仅 422 携带，`issuesTruncated` 仅在确实截断时出现（不输出 `false`），403/405 与 4xx/422 共用同一形状。未映射结局（body 读取 abort、Registry fatal、503/500 族）不产生 problem，仍以 rejection 结算。
+_Avoid_: RFC 7807/9457 `application/problem+json` 的 `status`/`title`/`detail` 键、未评审的额外顶层键、以 message 文本承担客户端分支
+
+**REST issue**:
+422 problem 的 `issues[]` 元素——底层 VFSL/Registry 诊断逐字段 verbatim 投影出的受控、可 JSON 序列化对象：键集 ⊆ `{code, message, line, column, path}`，`code` 为稳定 UPPER_SNAKE（schema 族 `SCHEMA_ISSUE` / ROOT 族 `ROOT_ISSUE`），`message` 非空且受 UTF-8 byte 上限约束，定位为成对正整数 `line`/`column` 或 `(string | number)[]` `path`（两者互斥），不返回 schema/root 片段。
+_Avoid_: 透传 parser 源码位置或源码 excerpt、按 message 文本反推 code、深克隆或改写底层诊断
+
+**issuesTruncated**:
+problem shape 的可选布尔键，`true` 表示 `issues` 因数量或总 byte 预算被截断；仅在确实截断时出现（未截断时省略该键，不输出 `false`），且 `true` 必伴随 `issues` 数组。
+_Avoid_: `issuesTruncated: false`、用被截断的 issues 数组长度暗示截断事实
