@@ -1,0 +1,14 @@
+== grep 提议 docs/ CONTEXT.md ==
+exit=1
+== 状态：提议 ADR ==
+exit=1
+== ADR 0013 提议 CONTEXT ==
+exit=1
+== 属后续切片 ==
+exit=1
+== 后续切片承接 ==
+exit=1
+== ADR0010 chunked refs ==
+exit=1
+== git diff --check ==
+exit=0

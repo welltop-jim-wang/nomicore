@@ -1,7 +1,7 @@
 # ADR 0013：大型 live UPDATE 的有界分块复制传输
 
 日期：2026-09-02
-状态：提议（issue #233 base PR；接受后 wire 冻结值以 `docs/protocols/instance-replication-v1.md` 修订为唯一权威，本文不先行改冻结契约）
+状态：已接受（issue #233 切片 1–5 落地：#242/#243/#244/#245/#246，接受日期 2026-09-10；wire 冻结值——消息码 `0x42`、UPDATE_CHUNK payload 字段序、capability/错误码/reason 词表锁定值——以 `docs/protocols/instance-replication-v1.md` 为唯一权威；配置表与设计理据权威保留于本文「资源上限与配置链」。observer 事件词表为 local seam 词表（协议 §23，非 wire 契约），随协议文档登记维护。）
 
 ## 背景
 
@@ -119,4 +119,4 @@ throw 隔离、决策落定后发射、无 observer 逐字节等价——全部�
 
 ## 取代与关联
 
-本 ADR 扩展 ADR 0010 的 live UPDATE 路径，不改变其 ACK durability 语义、identity fencing、backpressure 分层或停机顺序；与 `docs/protocols/instance-replication-v1.md` 的关系为「接受后以该文档修订为唯一 wire 权威」。关联 issue：#233（本设计来源与验收标准）、#230（大 update 来源收敛，已修复）、#231（超限观测，已修复）、#232（reconciliation 回声调查，独立进行）。现状实测证据：`packages/ws-replication/test/ws-replication-issue233-repro.test.ts`。
+本 ADR 扩展 ADR 0010 的 live UPDATE 路径，不改变其 ACK durability 语义、identity fencing、backpressure 分层或停机顺序；与 `docs/protocols/instance-replication-v1.md` 的关系为已生效的两层权威边界：wire 冻结值（消息码、UPDATE_CHUNK payload 字段序、capability/错误码/reason 词表锁定值）以该协议文档为唯一权威；配置语义、设计理据与拒绝备选方案权威保留于本文（配置表见「资源上限与配置链」）。observer 事件词表按协议 §23 定位为 local seam 词表（非 wire 契约），随协议文档登记维护。ADR 0010 关系为扩展而非修订。关联 issue：#233（本设计来源与验收标准）、#230（大 update 来源收敛，已修复）、#231（超限观测，已修复）、#232（reconciliation 回声调查，独立进行）。现状实测证据：`packages/ws-replication/test/ws-replication-issue233-repro.test.ts`。
