@@ -104,7 +104,12 @@ describe('root lock atomic ownership', () => {
     expect(acquired).toHaveLength(1);
     const rejected = messages.filter(({ type }) => type === 'rejected');
     expect(rejected).toHaveLength(11);
-    expect(rejected.every(({ message }) => /held|unsupported/.test(message ?? ''))).toBe(true);
+    // 失败时把实际拒绝原因原样打印出来（CI 上该断言曾间歇红，但只报 "expected false to
+    // be true"，无法判断是哪种 message 泄漏；诊断信息不改变断言语义）。
+    expect(
+      rejected.every(({ message }) => /held|unsupported/.test(message ?? '')),
+      `非「持有/不支持」拒绝原因：${JSON.stringify(rejected.map(({ message }) => message))}`,
+    ).toBe(true);
     // Assert overlap, not eventual sequential ownership: the winner must still
     // own the canonical directory when every contender has reported.
     expect(readPayload(root).instanceId).toBe(acquired[0]?.instanceId);
