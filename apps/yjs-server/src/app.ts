@@ -226,6 +226,10 @@ class AppHandle {
     if (this.onFatalError === 'stay') return;
     // 停机已在飞（SIGTERM/SIGINT/shutdown 动词/换装）时不劫持退出码——fatal 策略
     // 只负责「运行期致命事实」的停机动机，不覆盖运维显式停机的退出码语义。
+    // 原子性根据：本方法从本检查到闩锁登记、stop() 调用全程同步（observer 是同步
+    // 回调），stop() 又在首个 await 之前同步置位 stopRequested——事件循环无法在
+    // 其中插入信号处理器，两动机以「谁的回调先运行」决序，两种序下退出码语义均
+    // 正确（fatal 先 → 停机后 exit 1；停机先 → 本检查拦截，不劫持 exit 0）。
     if (this.stopRequested) return;
     if (this.fatalShutdownStarted) return;
     this.fatalShutdownStarted = true;
