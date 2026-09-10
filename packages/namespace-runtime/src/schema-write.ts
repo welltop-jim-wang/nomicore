@@ -15,7 +15,9 @@
  *  S5 组合 seam replaceSchemaAndRoot（唯一 Y.Doc 写入口：验证+构造+单事务+写后校验；
  *      【issue #282】同事务写入 META.schema.updatedAt——SCHEMA 与其生命周期元数据
  *      原子提交，复制时随 generation 同行）
- *  S5.5 installActive（transaction 返回后**同步**执行、await notifyDirty 之前——AC6）
+ *  S5.5 事务后 compile+install 共享段（transaction 返回后**同步**执行、await
+ *      notifyDirty 之前——AC6；【issue #286】收敛进 schema-rearm.ts
+ *      syncActiveSchemaFromCommittedDoc，与 peer apply 槽 R5.6 re-arm 同一段逻辑）
  *  S6 同槽 await notifyDirty（完成信号 = live commit + dirty 登记两者）
  *  S7 槽释放（promise settle；sequencer 自动放行下一项）
  *
@@ -28,6 +30,8 @@
  *  - S5 seam 抛 DocRuntimeFatalError（E201/E203/E204）→ 透传 committed/phase；
  *  - S5 seam 抛未知异常（含结构性不可达的 E202 误用）→ unknown-pipeline-throw
  *    committed:true（ADR 过报方向强制）；
+ *  - S5.5 共享段重编译违约（结构性不可达——S4 已编译通过同一信封；issue #286）
+ *    → schema-compile-throw committed:true（编译通道违约族，保守过报方向）；
  *  - S6 notifyDirty rejection → notify-dirty-failed committed:true（新 tools 已装、
  *    与 committed generation 一致——诚实状态，不回滚不卸载）。
  *  一律 markWriteFatal（SCHEMA 写槽独立摘要码 NSRT-FATAL-SCHEMA-WRITE-INTERNAL——
@@ -46,8 +50,9 @@ import {
   RUNTIME_WRITE_DISABLED_CODE,
   RuntimeWriteFatalError,
 } from './errors.js';
-import { assertCompiledShape, installActive, toIssueSummary } from './p0.js';
+import { assertCompiledShape, toIssueSummary } from './p0.js';
 import type { RuntimeState } from './p0.js';
+import { syncActiveSchemaFromCommittedDoc } from './schema-rearm.js';
 import {
   disabled,
   markWriteFatal,
@@ -273,12 +278,32 @@ export async function runSchemaWriteSlot(env: SchemaWriteEnv, input: unknown, di
     return { ok: false, issues: result.issues }; // 领域失败透传（零写入由 seam 承诺）
   }
 
-  // ── S5.5 安装新 active tools（AC6：transaction 返回后同步、await notifyDirty 之前）──
-  //  六字段身份（含 updatedAt = 本槽写入 META.schema.updatedAt 的同一字符串——
-  //  issue #282：post-transaction/pre-dirty 观测窗内公共投影即对应新 committed
-  //  generation）+ tools + 状态迁回 'ready' + delete schemaIssue——getActiveSchema/
-  //  getSchema/read 自此观察新 generation（notifier 挂住窗口内可观测——锚 9）
-  installActive(compiled, env.state, schemaUpdatedAt);
+  // ── S5.5 事务后 compile+install 共享段（AC6：transaction 返回后同步、await
+  //   notifyDirty 之前）──────────────────────────────────────────────────
+  //  【issue #286 / ADR 0018 §1】预重构：原 installActive 直调段收敛进共享段
+  //  syncActiveSchemaFromCommittedDoc（schema-rearm.ts——从已提交 doc 四键投影重编译 +
+  //  形状守卫 + 原子安装 + updatedAt 投影），与 peer apply 槽 R5.6 re-arm 同一段逻辑
+  //  （两侧词汇对称）。S5 提交的恰是 S4 compiled.envelope 四键 ⇒ 重编译输入与 S4 逐
+  //  字节同源（真实 compile 确定性 ⇒ 产物同一）；updatedAt 投影自本槽事务写入的
+  //  META.schema.updatedAt（同一字符串）——观测面与重构前逐字节一致（六字段身份 +
+  //  tools + 状态迁回 'ready' + delete schemaIssue，notifier 挂起窗口内可观测——锚 9）。
+  const sync = syncActiveSchemaFromCommittedDoc({ doc: env.doc, state: env.state, compile: env.compile });
+  if (sync.kind !== 'installed') {
+    // 提交后段违约（S4 已对同一信封编译成功——重编译失败结构性不可达，仅注入 seam
+    //    违约/未来回归可达）：保守 fatal committed:true（事务已提交——过报方向强制），
+    //    phase 归 schema-compile-throw（编译通道违约族）；工具保持旧的不动（共享段
+    //    失败路径不触碰 active 域）
+    diagFatalTx(diag, FATAL_SCHEMA_WRITE_INTERNAL_CODE, true, 'schema-compile-throw', capturedUpdate);
+    return rejectWithWriteFatal(
+      env,
+      true,
+      'schema-compile-throw',
+      sync.kind === 'internal'
+        ? sync.cause
+        : new Error('SCHEMA 写槽事务后重编译结果失败——S4/S5.5 编译不对称（结构性不可达）'),
+      'schema',
+    );
+  }
 
   // ── S6 同槽 await notifyDirty（完成信号 = live commit + dirty 登记两者）──
   try {

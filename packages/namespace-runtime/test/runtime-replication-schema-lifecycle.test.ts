@@ -17,6 +17,7 @@
 import { describe, expect, it } from 'vitest';
 import * as Y from 'yjs';
 import type { DocHandle, User } from '@nomicore/persistence';
+import { compileSchemaEnvelope } from '@nomicore/vfsl';
 import type { NamespaceRuntime } from '../src/index.js';
 import { createNamespaceRuntimeWithSeam } from '../src/runtime.js';
 import { openReplicationSessionCoreForRegistry } from '../src/replication-session.js';
@@ -29,6 +30,12 @@ const TEXT_V2 = 'type ROOT = { n: number; a: string; b: boolean; };';
 const REP_ID = 'a'.repeat(32);
 const T0_ISO = new Date(1_700_000_000_000).toISOString();
 const HUB_T_ISO = new Date(1_700_000_555_555).toISOString(); // Hub 起源时间戳
+
+/** TEXT_V2（id ns-2）的编译产物语义指纹（前置：真实 vfsl 编译必须成功）。 */
+const ENV2 = { lang: 'vfsl', version: 1, id: 'ns-2', text: TEXT_V2 } as const;
+const COMPILED_V2 = compileSchemaEnvelope(ENV2);
+if (!COMPILED_V2.ok) throw new Error('前置失败：TEXT_V2 应编译成功');
+const V2_SEMANTIC_FP = COMPILED_V2.semanticFingerprint;
 
 /** 种子文档（SCHEMA 信封 + META docId/createdAt + 复制保留字段 + 可选 genesis META.schema）。 */
 function seedDoc(opts: { schemaLifecycle?: 'genesis' | 'legacy' } = {}): Y.Doc {
@@ -100,7 +107,16 @@ describe('issue #282：peer 侧 META 白名单 {schema}——生命周期元数�
     const session = await openReadySession(runtime, 'peer');
 
     const result = await session.applyRemoteUpdate(makeRemoteUpdate(doc, mutateAsHubSchemaReplacement));
-    expect(result).toEqual({ ok: true });
+    // 【issue #286】SCHEMA text 变化 ⇒ 同槽 re-arm：detached outcome 随 ok:true 携带
+    // （语义指纹 = TEXT_V2 编译产物；updatedAt 投影自复制来的 META.schema——Hub 起源值）
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.schemaRearm).toEqual({
+        kind: 'applied',
+        semanticFingerprint: V2_SEMANTIC_FP,
+        updatedAt: HUB_T_ISO,
+      });
+    }
 
     // SCHEMA 收敛
     expect(doc.getMap('SCHEMA').get('id')).toBe('ns-2');
@@ -122,7 +138,15 @@ describe('issue #282：peer 侧 META 白名单 {schema}——生命周期元数�
     const session = await openReadySession(runtime, 'peer');
 
     const result = await session.applyRemoteUpdate(makeRemoteUpdate(doc, mutateAsHubSchemaReplacement));
-    expect(result).toEqual({ ok: true });
+    // 【issue #286】legacy peer 同样 re-arm：安装成功，updatedAt 投影 Hub 起源值
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.schemaRearm).toEqual({
+        kind: 'applied',
+        semanticFingerprint: V2_SEMANTIC_FP,
+        updatedAt: HUB_T_ISO,
+      });
+    }
     const schemaMeta = doc.getMap('META').get('schema');
     expect(schemaMeta).toBeInstanceOf(Y.Map);
     expect((schemaMeta as Y.Map<unknown>).get('updatedAt')).toBe(HUB_T_ISO);

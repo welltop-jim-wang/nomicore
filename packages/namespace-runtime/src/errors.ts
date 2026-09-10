@@ -156,6 +156,27 @@ export const FATAL_REPLICATION_APPLY_WRITE_INTERNAL_CODE = 'NSRT-FATAL-REPLICATI
 export const FATAL_REPLICATION_APPLY_WRITE_INTERNAL_MESSAGE =
   'REPLICATION apply internal fault：会话 apply 管线产生结果联合之外的 internal fatal；该 fatal 已永久禁用本 Runtime 的全部写能力，读取仍保留。' as const;
 
+/** 【issue #286 / ADR 0018 §3】peer apply 槽提交后 schema re-arm 编译结果失败稳定码
+ *  （append-only）：带稳定 schema issue 摘要（toIssueSummary 派生——SCHEMA_TEXT_INVALID /
+ *  SCHEMA_ENVELOPE_* 族，非原始异常文本）。结算 = 该 Runtime 写永久禁用、读保留、
+ *  tools 保持旧的不动、apply 已提交事实不回滚、同一文本不自动重试。 */
+export const FATAL_SCHEMA_REARM_INVALID_CODE = 'NSRT-FATAL-SCHEMA-REARM-INVALID' as const;
+
+/** re-arm 编译结果失败稳定 message 基座（不含原始异常文本/stack——INV-N7；结算时于
+ *  尾部追加「schema issue 摘要：<code>: <message>」稳定派生段——ADR 0018 §3 明文
+ *  「带稳定 schema issue 摘要」，摘要源 = vfsl 结果联合内 issue，非异常对象）。 */
+export const FATAL_SCHEMA_REARM_INVALID_MESSAGE =
+  'SCHEMA re-arm invalid：peer apply 槽提交后段对已复制提交的 SCHEMA 编译结果失败（版本偏移/字节损坏——确定性不可自愈）；该 fatal 已永久禁用本 Runtime 的全部写能力，读取仍保留；tools 保持旧的不动，apply 已提交事实不回滚，同一文本不自动重试。' as const;
+
+/** 【issue #286 / ADR 0018 §3】re-arm result union 之外内部异常稳定码（append-only）：
+ *  compile throw / ok:false 零 issues / 畸形 ok:true 守卫触发。 */
+export const FATAL_SCHEMA_REARM_INTERNAL_CODE = 'NSRT-FATAL-SCHEMA-REARM-INTERNAL' as const;
+
+/** re-arm 内部异常稳定 message（恒定文案：不含任何原始异常文本/stack/cause——INV-N7；
+ *  原始异常仅进包内诊断锚点 state.fatalCause）。 */
+export const FATAL_SCHEMA_REARM_INTERNAL_MESSAGE =
+  'SCHEMA re-arm internal fault：peer apply 槽提交后段编译通道产生结果联合之外的内部异常；该 fatal 已永久禁用本 Runtime 的全部写能力，读取仍保留；tools 保持旧的不动，apply 已提交事实不回滚，同一文本不自动重试。' as const;
+
 /** META 复制保留字段损坏错误（拒绝虚假降级立法；类不导出——index 不 re-export，
  *  code+message 字符串消费，沿 MetaProjectionError 先例）。 */
 export const REPLICATION_META_CORRUPT_CODE = 'NSRT-REPLICATION-META-CORRUPT' as const;
