@@ -436,3 +436,18 @@ drain。实现证据：`packages/ws-replication/src/*`（PR #165 round 2）。
 5. **混版本滚转注记**：旧版本 peer（白名单空集实现）收到新版本 hub 的 SCHEMA
    替换更新会以 `REPLICATION_PROTECTED_FIELDS_CHANGED` 拒绝并标记 needs-resync；
    部署应先升级 peer 侧或同时升级。
+
+### ADR 0018 修订：peer schema 热重装（schema re-arm，2026-09-10）
+
+正文「SCHEMA 与 META 权限」节「peer 收到增量 SCHEMA 后，其当前 Runtime 的 active
+schema 不会热切换；在该 Peer 上按新字段发起本地业务写之前，必须通过受控
+reset/re-bootstrap 或进程重启重新物化 Runtime」一句**废止**，由 ADR 0018 取代：
+
+1. peer 的 hub→peer 复制 apply 槽在 live 事务提交后、`notifyDirty` 前执行 schema
+   同步段：检测 SCHEMA 四键投影变化（与槽开始快照比对），变化即编译新 SCHEMA
+   并原子安装新 active schema tools——strict FIFO 不变量零改动，无新槽类型；
+2. re-arm 失败 = fatal 类（`NSRT-FATAL-SCHEMA-REARM-INVALID` /
+   `NSRT-FATAL-SCHEMA-REARM-INTERNAL`）：该 Runtime 写永久禁用、读保留，peer
+   主动 CLOSE_NAMESPACE 该 channel，不自动重试；
+3. reset/re-bootstrap 与进程重启降级为运维兜底路径（epoch 冲突、副本修复等
+   既定用途不变）；规范细节以 ADR 0018 为权威。

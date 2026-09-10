@@ -90,7 +90,11 @@ _Avoid_: mutation queue（范围过窄，容易让 SCHEMA/META 管理写建立�
 Runtime 发布前已进入写序列器队首的 schema 准备任务；只投影并编译 SCHEMA、构造 active schema tools，不读取或验证 ROOT。Runtime 发布后读取立即可用，早期写排在 P0 后。
 
 **active schema**:
-NamespaceRuntime 当前安装、供 ROOT write 使用的已编译 schema tools 及身份；SCHEMA write 的 transaction 成功后同步切换，不等同于对 live SCHEMA 的即时读取。
+NamespaceRuntime 当前安装、供 ROOT write 使用的已编译 schema tools 及身份；SCHEMA write 的 transaction 成功后（Hub）或复制 apply 槽的 schema re-arm 成功后（Peer）同步切换，不等同于对 live SCHEMA 的即时读取。
+
+**schema re-arm（schema 热重装）**:
+Peer 的复制 apply 槽在提交 SCHEMA 变化后同步执行的 schema 重装：编译新 SCHEMA、构造并原子安装 active schema tools，随后才 dirty/ACK；失败属 fatal 类（写永久禁用、读保留），Peer 主动关闭该 namespace channel。见 ADR 0018。
+_Avoid_: hot reload、热更新（暗示不经写序列器的异步切换）、schema migration（本机制不变换数据）
 
 **停接纳（stop-acceptance）**:
 close 首次调用同步进入 `closing` 后，capability 槽立即停止接纳新调用：readData 同步结果联合返回 `RUNTIME_READ_DISABLED` 分支（lifecycle 失败不是路径缺陷，不借用路径失败码）；三个数据投影 getter（getSchema / getMetadata / getActiveSchema）与 readData 同属停接纳范围——同步 loud throw 稳定码 `RUNTIME_READ_DISABLED`（getter 返回类型非结果联合，拒绝通道为 throw；message 区分 getter 域与 lifecycle 值）；mutateData/replaceSchema 经 Promise settle 含 `RUNTIME_WRITE_DISABLED` 的零写入结果——该码与 fatal 后排队写、写前 writable gate（handle 非 ready：persistence-degraded / released / disposed）、notifyDirty 未绑定共用同一码族，message 文案区分域；close 前已接纳任务仍无条件排空。internal fatal 只永久禁写并保留读取，不触发 readData/getter 停接纳。getStatus 全生命周期可用（生命周期观测面，非数据投影），不在停接纳范围。

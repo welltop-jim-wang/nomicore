@@ -617,7 +617,7 @@ Peer→Hub update保护检查必须在同一 sequencer槽中：
 （附带可选 `clock?: ReplicationClock` 以观测 apply/ACK latency）。Seam 是**追加式
 （append-only）**：事件类型、reason/cause/via 词表、稳定码表只增不改；GA 后字段语义冻结。
 
-### 23.1 事件词汇（22 型，分类列示——issue #238 追加第 21 型 `event-loop-delay-sampled` 及四事件面 sequence/四段差值字段；issue #256 追加第 22 型 `namespace-failed`）
+### 23.1 事件词汇（24 型，分类列示——issue #238 追加第 21 型 `event-loop-delay-sampled` 及四事件面 sequence/四段差值字段；issue #256 追加第 22 型 `namespace-failed`；ADR 0018 追加第 23/24 型 `schema-rearm-applied` / `schema-rearm-failed`）
 
 连接域：
 
@@ -701,6 +701,14 @@ auth / 背压 / resync：
 帧伴随路径）与 `namespace-error` 各计一次（帧 vs 终态边沿，聚合以本表 cause 为准）；
 本地零 wire 行仅 `namespace-failed` 一事件；`failed` 入口到 cause 的映射为编译期
 强制（`finalize('failed', cause)` 重载签名），新增入口必须登记本表。
+
+schema re-arm 域（ADR 0018；peer 专属——hub 的 apply 槽结构性不可能观测到 SCHEMA
+投影变化）：
+
+| type | side | 字段 |
+|---|---|---|
+| `schema-rearm-applied` | peer | `connectionId?`、`namespaceId`、`semanticFingerprint`（新安装 active schema 的语义指纹——§23.3 documented safe digest）、`updatedAt`（投影自复制来的 `META.schema`，诚实缺席为 `null`——peer 永不读本地时钟生成）。**计数不变量**：每次 re-arm 成功安装恰一事件（含纯格式差异的 fingerprint 不变安装——与 ADR 0017「每次提交都推进 updatedAt」对齐）；事件在 apply 槽提交后段安装完成、`notifyDirty` 之前发射 |
+| `schema-rearm-failed` | peer | `connectionId?`、`namespaceId`、`code` ∈ {`NSRT-FATAL-SCHEMA-REARM-INVALID`, `NSRT-FATAL-SCHEMA-REARM-INTERNAL`}（ADR 0018 双码——前者带稳定 schema issue 摘要键，后者为内部异常折叠；均不含 schema 文本/ROOT/堆栈）。**计数不变量**：每次 re-arm fatal 置位恰一事件；伴随行为 = 该 namespace channel 主动 CLOSE_NAMESPACE（`closed` 终态），schema 类根因告警路由以本事件为准（`namespace-failed{cause: session-open-failed}` 在后续重连路径可出现，语义不含「schema 编译失败」） |
 
 ### 23.2 稳定码闭联合（append-only）
 
