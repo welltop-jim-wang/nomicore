@@ -7,11 +7,12 @@ import type { ReplicationMessage } from '@nomicore/replication-protocol';
 import type {
   NamespaceLease,
   NamespaceRegistry,
+  ReplicationSchemaRearmOutcome,
   ReplicationSession,
 } from '@nomicore/namespace-registry';
 import { FenceWatchdog, type WatchdogPredicate } from './fence-watchdog.js';
 import { namespaceErrorFrame } from './frame-io.js';
-import { cidField, safeStateVector, sendFailureContext, stableNamespaceCode, stateVectorBytesEqual, stateVectorSafeDigest } from './observer.js';
+import { cidField, safeStateVector, sendFailureContext, stableNamespaceCode, stableSchemaRearmCode, stateVectorBytesEqual, stateVectorSafeDigest } from './observer.js';
 import { Memoized } from './lifecycle-queue.js';
 import {
   mapEncodeThrow,
@@ -29,6 +30,7 @@ import type {
   PeerNamespaceState,
   ReplicationNamespaceFailedCause,
   ReplicationObserverEvent,
+  ReplicationObserverSchemaRearmCode,
   ReplicationTarget,
   ReplicationTimer,
   ResolvedLimits,
@@ -141,6 +143,13 @@ export class PeerNamespaceController {
   private cleanupTail: Promise<void> = Promise.resolve();
   private closeMemo: Memoized | undefined;
   private closeSequence: number | undefined;
+  /** 【issue #287 / ADR 0018 §3】re-arm fatal → 主动 CLOSE_NAMESPACE 的恰一次闩锁。
+   *  置位时机 = 本控制器观察到 re-arm fatal outcome 的同步段（发射 observer 事件 + 触发
+   *  收口）。语义 = 「对本 namespace 的 fatal 收口动作已启动」——CLOSE_NAMESPACE 恰一帧
+   *  （与 `removeTarget` 的幂等合流双保险），后续同 namespace 的迟到 re-arm 失败 outcome
+   *  零新帧、零新收口、零新事件（`schema-rearm-failed` 计数不变量 = 每次 re-arm fatal
+   *  置位恰一事件；Runtime 侧「同一文本不自动重试」是主要保证，本闩为通道侧同向防御）。 */
+  private rearmFatalClosed = false;
   /** R3（SA4）：close 承诺的事件驱动结算器——settleCloseMemo 触发前 removeTarget 的
    *  promise 保持 pending（零轮询环；AC3b closeSettled===false 锚语义）。 */
   private closeSettleResolve: (() => void) | undefined;
@@ -1181,6 +1190,18 @@ export class PeerNamespaceController {
           }
         }
       }
+      // ── issue #287 / ADR 0018 §4：re-arm outcome 的通道侧结算（observer 事件 +
+      //    fatal 主动收口）──
+      //  位置纪律：apply 槽已结算（ok:true）、`getActiveSchema()` 已切换（安装发生在槽内
+      //  R5.6，ADR 0018 §1）之后——§23.4「决策落定后发射」。观察无条件（不因
+      //  observerOn/degraded/closing 而静默）：re-arm 是已提交的 Runtime 事实，事件与
+      //  收口动作必须与该事实同真——若把它挂进 observer 分支，则「无 observer 时 fatal
+      //  渠道不关闭」会让通道停留在旧 tools 继续收敛未校验写（ADR 0018 §3 明文拒绝的
+      //  状态）。事件构造本身仍在 emitSchemaRearm* 内部做 observer 缺席短路——「无
+      //  observer = 零事件构造/零 live 读取/零时钟调用」纪律不破（§23.1/§23.4）。
+      if (result.schemaRearm !== undefined) {
+        this.settleSchemaRearm(result.schemaRearm);
+      }
       if (isStep2) return 'ok'; // SYNC_APPLIED 由 applyStep2 发送（§9.1.4）
       if (this.isQuietState() || this.host.connectionEpoch() !== epoch) {
         return 'ok'; // closing/终态 或 连接已重建（§13.4 迟到纪律）：ACK 不再发出
@@ -1339,6 +1360,77 @@ export class PeerNamespaceController {
       namespaceId: this.namespaceId,
       cause,
       ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+    });
+  }
+
+  // ── issue #287 / ADR 0018 §3–§4：re-arm 通道侧结算（observer 事件 + fatal 主动收口）──
+
+  /**
+   * re-arm outcome 的通道侧结算单点（协议 §23.1 第 23/24 型）。
+   *
+   * 成功（`kind:'applied'`）：恰一 `schema-rearm-applied` 事件——新 semanticFingerprint
+   * + 复制来的 updatedAt（诚实缺席 null）。纯格式差异的 fingerprint 不变安装同样发射
+   * （ADR 0017「每次提交都推进」对齐，不据 fingerprint 跳过）。
+   *
+   * 失败（`kind:'failed'`）：恰一 `schema-rearm-failed` 事件（稳定双码之一）+ **本
+   * namespace channel 主动 CLOSE_NAMESPACE**（ADR 0018 §3：诚实快速失败、双侧资源立即
+   * 释放、`closed` 终态、重连不自动重开、不产生重试循环）。收口动作经既有唯一
+   * CLOSE_NAMESPACE 发送点 `removeTarget()`——**不是新机制**：它同时保证「恰一帧」
+   * （Memoized 幂等合流 + closing/终态早退）、「不自动重开」（`intent='removed'` 令
+   * `onConnectionReady`/`openActiveTargets` 跳过）、「资源立即释放」（drain 已接纳 apply
+   * → 处置 session/lease）三个契约。恢复入口保持 ADR 0018 §3 的三条：显式 re-add、
+   * reset-replica、进程重启。
+   *
+   * 形态选择说明：fatal **不**走 `applyOutcome` 的 `kind:'local'` 终局（那会 `finalize`
+   * 为 `failed` 终态 + `namespace-failed` 事件——那是「本笔 apply 失败」的语义，而本
+   * 事实是「apply 已成功提交、Runtime 已 fatal」）；也**不**走 `kind:'wire'`（那会发
+   * namespace ERROR 帧）。ADR 0018 §3 明文动作是 CLOSE_NAMESPACE，故此处直连
+   * `removeTarget()`。
+   *
+   * 静默纪律：observer 缺席 ⇒ 事件构造短路（零字段读取）；收口动作照常执行（re-arm
+   * fatal 的通道关闭是行为契约而非观测面——与 §23.1「observer 缺省零事件」不冲突）。
+   *
+   *  闩锁顺序（issue #287 复审修正）：`rearmFatalClosed` 判定**先于发射与收口**——闩锁
+   *  是「恰一」的判据本身，不是收口的附带物。置于发射之后，迟到的第二个 failed outcome
+   *  （`closed` 通道仍可接纳迟到的入站 UPDATE 并照常 apply，fatal 重复置位）会产出第二发
+   *  `schema-rearm-failed`，与 §23.1 计数不变量「每次 re-arm fatal 置位恰一事件」背离；
+   *  本处不依赖「通道已关闭」这一外部性质来保证计数。
+   */
+  private settleSchemaRearm(outcome: ReplicationSchemaRearmOutcome): void {
+    if (outcome.kind === 'applied') {
+      this.emitSchemaRearmApplied(outcome.semanticFingerprint, outcome.updatedAt);
+      return;
+    }
+    if (this.rearmFatalClosed) return; // 恰一次：迟到失败 outcome 零新事件、零新帧、零新收口
+    this.rearmFatalClosed = true;
+    this.emitSchemaRearmFailed(outcome.code);
+    void this.removeTarget().catch(() => undefined); // 任务体结构性零 throw（防御 seam 偏差）
+  }
+
+  /** 第 23 型：re-arm 安装成功（字段 = §23.3 安全清单内的 fingerprint/updatedAt——
+   *  operation 恒 peer、零 schema 文本、零 ROOT、零 live 引用）。 */
+  private emitSchemaRearmApplied(semanticFingerprint: string, updatedAt: string | null): void {
+    if (!this.observerOn) return;
+    this.host.emitObserver({
+      type: 'schema-rearm-applied',
+      side: 'peer',
+      ...(cidField(this.host.connectionId())),
+      namespaceId: this.namespaceId,
+      semanticFingerprint,
+      updatedAt,
+    });
+  }
+
+  /** 第 24 型：re-arm fatal 置位（code = ADR 0018 §3 稳定双码；稳定 issue 摘要留在
+   *  Runtime `getStatus()` fatal 摘要，不入事件——§23.3 禁止 SCHEMA 内容/原始 cause）。 */
+  private emitSchemaRearmFailed(code: ReplicationObserverSchemaRearmCode): void {
+    if (!this.observerOn) return;
+    this.host.emitObserver({
+      type: 'schema-rearm-failed',
+      side: 'peer',
+      ...(cidField(this.host.connectionId())),
+      namespaceId: this.namespaceId,
+      code: stableSchemaRearmCode(code),
     });
   }
 

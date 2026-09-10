@@ -532,8 +532,40 @@ export interface ReplicationApplyStages {
   readonly dirtyNotifyMs: number;
 }
 
+/**
+ * 【issue #286 / ADR 0018 §1–§3】peer apply 槽 schema re-arm 的 detached outcome 投影
+ * （registry 侧镜像——与 runtime 侧 schema-rearm.ts RuntimeReplicationSchemaRearmOutcome
+ * 逐字段同形，lease.ts Equal 锁经 apply 结果类型传递）。纯冻结数据：string/null/稳定码
+ * 字面量，零 live 对象。供 ws-replication 层发射协议 §23.1 第 23/24 型 observer 事件
+ * 与触发 channel 关闭。re-arm 失败不失败 apply 槽本身（ADR 0008 修订节第 3 条）：
+ * fatal 已在 Runtime 置位（写永久禁用、读保留），apply 已提交事实不回滚。
+ */
+export type ReplicationSchemaRearmOutcome =
+  | Readonly<{
+      /** 安装成功（含纯格式差异的 fingerprint 不变安装——ADR 0017「每次提交都推进
+       *  updatedAt」对齐）。 */
+      readonly kind: 'applied';
+      /** 新安装 active schema 的语义指纹。 */
+      readonly semanticFingerprint: string;
+      /** 投影自复制来的 META.schema（诚实缺席 = null；peer 永不读本地时钟生成）。 */
+      readonly updatedAt: string | null;
+    }>
+  | Readonly<{
+      /** re-arm fatal 已置位（写永久禁用、读保留；tools 保持旧的不动）。 */
+      readonly kind: 'failed';
+      readonly code: 'NSRT-FATAL-SCHEMA-REARM-INVALID' | 'NSRT-FATAL-SCHEMA-REARM-INTERNAL';
+      /** 稳定 schema issue 摘要（仅 INVALID 在场）。 */
+      readonly issue?: Readonly<{ code: string; message: string }>;
+    }>;
+
 export type ReplicationSessionApplyResult =
-  | Readonly<{ ok: true; stages?: Readonly<ReplicationApplyStages> }>
+  | Readonly<{
+      ok: true;
+      stages?: Readonly<ReplicationApplyStages>;
+      /** 【issue #286】detached re-arm outcome——仅 peer 角色且本槽提交引起 SCHEMA
+       *  `text` 变化时在场（hub 角色结构性不在场）。 */
+      schemaRearm?: ReplicationSchemaRearmOutcome;
+    }>
   | Readonly<{ ok: false; code: ReplicationSessionApplyRefusalCode; message: string }>;
 
 /** session 独立状态查询面（O-11 冻结词汇；Runtime status 的 replication 域仍只含两态

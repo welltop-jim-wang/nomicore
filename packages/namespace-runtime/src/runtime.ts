@@ -439,6 +439,7 @@ export function createNamespaceRuntimeWithSeam(input: NamespaceRuntimeSeamInput)
     notifyDirty: captured.notifyDirty,
     fanout,
     diagEnv,
+    compile, // 【issue #286】apply 槽 R5.6 re-arm 共享段消费（V3b 同一捕获局部量）
     ...(obsStageClock !== undefined ? { stageClock: obsStageClock } : {}),
   };
 

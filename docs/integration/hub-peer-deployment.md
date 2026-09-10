@@ -118,6 +118,18 @@ token、owner 值、Yjs bytes、SCHEMA/ROOT 内容。
 - `peer.targets` 精确两字段 `{namespaceId: ^ns-[0-9a-f]{32}$, ownerUserId}`，
   nsId 重复 → 拒；
 - `persistence.kind:'file'` 必须提供 `rootDir`；
+- `onFatalError`（可选，hub/peer 均合法）：`'exit' | 'stay'`，缺省 `'exit'`
+  （ADR 0018 §4）——fatal 类 observer 事件到达时，直通 NDJSON 记录先于一切停机
+  动作，随后 `exit` 模式经单一拆卸链有序停机并非零退出（编排层按既定策略重启；
+  ADR 0018 §5 的 P0 不对称保证重启后停在「写禁用、读可用、复制照常」的降级态，
+  不形成 crashloop），`stay` 模式仅记录、进程继续（fatal 是 namespace 粒度，
+  不株连同进程其他 namespace，供多 namespace 宿主自行编排）。fatal 类判据 =
+  「observer 事件无歧义断言 Runtime fatal 已置位」，当前恰好覆盖
+  `schema-rearm-failed` 一型（`namespace-failed` 全 cause 均**不**属 fatal 类——
+  observer 层无法区分 Runtime fatal 与正常运维终局，如 delete-namespace×活跃
+  复制的 `apply-rejected` 收口；唯一审计点 = `apps/yjs-server/src/fatal-policy.ts`）。
+  退出动作经注入 seam（main.ts 注入 `process.exit`；库代码零 `process.exit`）。
+  非法值在配置校验期响亮拒绝；
 - `diagnostics`（可选块，hub/peer 均合法）：`enabled` 必填 boolean、`rootDir` 必填非空
   string（`enabled:false` 亦必填，保持形状一致）；`updateCapture` 可选 boolean（缺省
   false）、`inputPolicy` 可选 `'none'|'digest'|'redacted'|'full'`（缺省 `'digest'`）；
@@ -151,7 +163,7 @@ token、owner 值、Yjs bytes、SCHEMA/ROOT 内容。
 | `remove-target` | peer | `namespaceId` | 幂等；未知 nsId = ok 回执、无副作用 |
 | `notify-auth-changed` | peer | — | **hub 正常重启/SIGHUP 换装完成且 peer 自身 token 未变**时的连接级恢复入口（透传公共 API `PeerReplication.notifyAuthChanged()`；仅 `blocked` 态生效，其余态文档化 no-op） |
 | `request-reauth` | hub | `instanceIdentity` | 对指定认证实例的全部连接发 GOAWAY(REAUTH_REQUIRED)（issue #175 公共 seam 演示） |
-| `replace-schema` | hub | `namespaceId, schema, root?` | 本地 SCHEMA 写槽替换并单向传播（ADR 0010：SCHEMA 只允许 hub 本地修改）。`ok` 仅表示本地写槽完成——**不承诺**传播已发生或 dirty 已落盘（fenced/needs-resync 通道由复制状态机自行修复或等待运维 reset）。Peer 收到增量 SCHEMA 后，其当前 Runtime 的 active schema 不会热切换；在该 Peer 上按新字段发起本地业务写之前，必须通过受控 reset/re-bootstrap 或进程重启重新物化 Runtime，否则写入会诚实返回 `write-failed`。`root` 为可选 **plain JSON 对象**（ROOT 恒 Y.Map 物化）；`null`/数组/标量不是「未提供」而是 `invalid-op-args`（与 schema 形状错同码族，`write-failed` 只留给真实写失败）。不带 `root` 走引擎 keep-root 分支：**保留的旧 root 必须通过新 schema 校验**——schema 演进**新增必填字段**而旧 root 缺该字段时会响亮拒绝（折叠 `write-failed`），此时必须同时提供合规 `root`（满足新 SCHEMA 的完整 ROOT 对象）；兼容演进（新增可选字段 `?:`/放宽类型）不带 `root` 即成功 |
+| `replace-schema` | hub | `namespaceId, schema, root?` | 本地 SCHEMA 写槽替换并单向传播（ADR 0010：SCHEMA 只允许 hub 本地修改）。`ok` 仅表示本地写槽完成——**不承诺**传播已发生或 dirty 已落盘（fenced/needs-resync 通道由复制状态机自行修复或等待运维 reset）。Peer 收到增量 SCHEMA 后，其复制 apply 槽在提交后同步执行 **schema re-arm**（ADR 0018：编译新 SCHEMA 并原子安装 active schema tools，随后才 dirty/ACK）——业务写在 re-arm 成功后即可按新 schema 校验，无需 reset/重启；re-arm 编译失败属 fatal 类（`NSRT-FATAL-SCHEMA-REARM-INVALID` / `-INTERNAL`，该 Runtime 写永久禁用、读保留，Peer 主动关闭该 channel），standalone 默认 `onFatalError: 'exit'` log 后有序停机，编排层重启后进入「P0 结果失败、写禁用、复制照常」的降级态（无 crashloop），修复路径 = 修正版本/schema 后 reset-replica 或重启。`root` 为可选 **plain JSON 对象**（ROOT 恒 Y.Map 物化）；`null`/数组/标量不是「未提供」而是 `invalid-op-args`（与 schema 形状错同码族，`write-failed` 只留给真实写失败）。不带 `root` 走引擎 keep-root 分支：**保留的旧 root 必须通过新 schema 校验**——schema 演进**新增必填字段**而旧 root 缺该字段时会响亮拒绝（折叠 `write-failed`），此时必须同时提供合规 `root`（满足新 SCHEMA 的完整 ROOT 对象）；兼容演进（新增可选字段 `?:`/放宽类型）不带 `root` 即成功 |
 | `bump-epoch` | hub | `namespaceId` | 提升权威复制代际（epoch 递增，身份不变）。回执成功携带 `replicationEpoch`；`ok` = epoch 已提交，**fencing 是异步传播**（上界 `ackTimeoutMs`，缺省 10s）——双 peer 的 `identity-conflicted` 事件在回执之后观测 |
 | `reset-replica` | peer | `namespaceId, ownerUserId, expectedReplicationId, expectedReplicationEpoch` | 受控副本重置（ADR 0010 #133 round-2 guarded reset）：registry 双源严格核对（mismatch → `NAMESPACE_RESET_IDENTITY_MISMATCH`、零通道动作）→ 通过后归档本地副本 → 收口旧 channel（**等 controller 收口结算完成**——CLOSE_OK/closeTimeout 兜底 ≤5s；结算超限 → `reset-replica-failed` 诚实回执）→ 重引导入队。`ok` = 归档完成 + 重引导已入队（编排确保全部交错下 addTarget 前 controller 已离开 closing——见「管理动词」）；重引导链随后的失败走既有 channel/连接 observer 事件，恢复入口 = `add-target`（终态通道不被幂等短路拦截）。重复调用（同 expected）→ `NAMESPACE_NOT_FOUND`（reset 成功不可重放，属正确行为） |
 
@@ -174,6 +186,9 @@ fatal / 结构性防御边界 / 旧通道收口结算超限；`delete-namespace-
 
 `replace-schema` / `bump-epoch` / `reset-replica` 是 Phase 5 收口的管理动词面，
 宿主编排（composition root）职责，不引入新引擎语义；`packages/**` 零改动。
+schema 升级的端到端流程（先兼容代码 → Hub 替换 → Peer 自动 re-arm → 收敛确认 →
+开新写路径）、收敛判据与 re-arm fatal 处置手册见
+[schema-evolution.md](schema-evolution.md)。
 `delete-namespace`（issue #228）是同族的**终态删除编排**动词：Hub 拥有（peer →
 `unknown-op`——peer 副本删除属 `reset-replica` archive 语义）；它消费 Registry
 `deleteNamespace`（ADR-0009 修订节）与 Persistence `deleteDoc`（ADR-0006 修订节）
@@ -257,6 +272,9 @@ HTTP/Upgrade 接纳，再关闭 replication transport 并等待已接纳 apply �
 依次执行 Registry shutdown、Persistence dispose、Timer/Clock teardown。NDJSON 事件序 =
 `replication-drained → registry-stopped → persistence-disposed → app-stopped`；
 全程总超时保护（超时 `exit(1)`）。`stop()` 幂等（single-flight）。
+`onFatalError:'exit'`（缺省）下 fatal 类 observer 事件触发同一条拆卸链：NDJSON
+序 = 原事件直通（如 `schema-rearm-failed`）→ `fatal-shutdown{trigger,namespaceId?}`
+标记 → 上述四事件 → 非零退出（issue #288 / ADR 0018 §4）。
 
 ## hub 正常重启 ⇒ peer 自动恢复
 

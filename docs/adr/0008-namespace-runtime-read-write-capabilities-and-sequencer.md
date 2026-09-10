@@ -202,3 +202,19 @@ SCHEMA write 全量校验、fatal 通道、封装边界、status 观测面、「
    严格三键（docId/createdAt/schema）；「v1 不提供 META 写」句的例外清单在既有
    复制保留字段管理写（issue #132）之外追加——`META.schema.updatedAt` 仅由
    SCHEMA write 事务与 genesis 安装写入，无其他公共写入口。
+
+### ADR 0018 修订：replication apply 槽的提交后 schema 同步段（2026-09-10）
+
+1. **apply 槽序扩展**：peer 角色 hub→peer 复制 apply 槽在「单 Yjs transaction
+   → 同步投影」之后、`await notifyDirty()` 之前插入 schema 同步段——比对
+   SCHEMA 四键投影与槽开始快照，`text` 字节不等则编译新 SCHEMA、构造并原子
+   安装新 active schema tools。不产生新槽类型、不引入优先级，strict FIFO
+   不变量不变；正文「同一 live Y.Doc 的所有写必须串行」与「ROOT write 在槽
+   开始时使用当时 active schema」条款据此覆盖 re-arm 切换点之后的全部后续槽。
+2. **fatal 注册表追加**（`packages/namespace-runtime/src/errors.ts`，
+   append-only）：`NSRT-FATAL-SCHEMA-REARM-INVALID`（编译结果失败，带稳定
+   schema issue 摘要）、`NSRT-FATAL-SCHEMA-REARM-INTERNAL`（result union 之外
+   的内部异常）——结算沿用正文 fatal 语义（写永久禁用、读保留、status 诚实
+   透出）；apply 已提交事实不回滚（raw replication 零回滚不变量）。
+3. **失败语义归属**：re-arm 失败发生在 apply 槽提交后段，不失败 apply 槽
+   本身；规范细节、宿主通知与恢复路径以 ADR 0018 为权威。

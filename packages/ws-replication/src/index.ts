@@ -58,6 +58,7 @@ export type {
   ReplicationObserverConnectionCode,
   ReplicationObserverEvent,
   ReplicationObserverNamespaceCode,
+  ReplicationObserverSchemaRearmCode,
   ReplicationObserverSide,
   ReplicationSendFailureReason,
   ReplicationTarget,

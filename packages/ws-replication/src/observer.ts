@@ -18,6 +18,7 @@ import {
   CONNECTION_ERRORS,
   NAMESPACE_ERRORS,
 } from '@nomicore/replication-protocol';
+import { SCHEMA_REARM_CODES } from './types.js';
 import type {
   HubConnectionState,
   HubNamespaceState,
@@ -27,6 +28,7 @@ import type {
   ReplicationObserverConnectionCode,
   ReplicationObserverEvent,
   ReplicationObserverNamespaceCode,
+  ReplicationObserverSchemaRearmCode,
   UpdateSendFailureDetail,
 } from './types.js';
 
@@ -50,7 +52,15 @@ const CONNECTION_OBSERVER_CODES: ReadonlySet<string> = new Set<string>([
   'OUTBOUND_SEQUENCE_EXHAUSTED',
 ]);
 
-/** namespace 域白名单（注册表键 + 内部码；运行期闭联合判据）。 */
+/** namespace 域白名单（注册表键 + 内部码；运行期闭联合判据）。
+ *  **不含** re-arm 双码（issue #287 复审修正）：ADR 0018 §3 的 `NSRT-FATAL-SCHEMA-REARM-*`
+ *  属 schema re-arm 域——`schema-rearm-failed.code` 经 `stableSchemaRearmCode` 折叠，
+ *  该域取值面是 `ReplicationObserverSchemaRearmCode`（双码闭联合），既不是 §13.2 wire
+ *  注册表成员，也不在本白名单/`ReplicationObserverNamespaceCode` 里。把双码塞进本集合
+ *  只会让 namespace 域闭联合的**运行期判据**静默变宽：`namespace-error` /
+ *  `namespace-failed` / `connection-failed` 的 `code` 字段会接受两个协议注册表外、
+ *  导出类型外的取值，而 §23.2 与 api 型断言（`ws-replication-api.test-d.ts`）都钉死
+ *  「20 码 ∪ 1 内部码」——两处真话、一处更宽，属漂移。 */
 const NAMESPACE_OBSERVER_CODES: ReadonlySet<string> = new Set<string>([
   ...Object.keys(NAMESPACE_ERRORS),
   'IDENTITY_CHANGED',
@@ -68,6 +78,33 @@ export function stableNamespaceCode(raw: string): ReplicationObserverNamespaceCo
   return NAMESPACE_OBSERVER_CODES.has(raw)
     ? (raw as ReplicationObserverNamespaceCode)
     : 'INTERNAL_ERROR';
+}
+
+/** issue #287：re-arm fatal 码白名单 = **词表本体的复用**（`types.ts` 的
+ *  `SCHEMA_REARM_CODES`，与事件类型同源派生）——本域没有第二份字面量，故不存在「白名单
+ *  与闭联合漂移」这一类缺陷（复审修正：初版在此手抄一份并靠 `satisfies` 锁上界，
+ *  实际只锁「白名单 ⊆ 类型」；从词表删成员后 `tsc` 与全包用例皆绿，反向漂移不可见）。 */
+function isSchemaRearmCode(raw: string): raw is ReplicationObserverSchemaRearmCode {
+  return SCHEMA_REARM_CODES.some((code) => code === raw);
+}
+
+/** issue #287：re-arm fatal 码 → `schema-rearm-failed.code` 闭联合取值。
+ *
+ *  实参面即闭联合本身（Runtime `schemaRearm.code` 类型 = 双码，经
+ *  `@nomicore/namespace-registry` 镜像面逐字同源），故本函数**没有**「未知码折叠
+ *  `INTERNAL_ERROR`」分支：本域的协议词表（§23.1 第 24 型）就是双码，而 `INTERNAL_ERROR`
+ *  属 namespace 域白名单、**不是**本事件 code 的成员（types.ts 明文「未知折叠
+ *  INTERNAL_ERROR 不适用——Runtime 侧产出面即本双码」）。初版实现折叠到它需要对事件
+ *  类型撒谎（`'INTERNAL_ERROR' as …`，断言出的值不在其声明的闭联合内），且该分支不可达、
+ *  不可测（本 PR 复审修正）。
+ *
+ *  兜底方向 = 域内失败关闭：白名单守卫是纵深防御（防类型面外调用点），未命中时返回
+ *  词表首码——域内取值、total 函数、绝不 throw（观测面失败不改变业务结果），也绝不
+ *  产出域外取值。 */
+export function stableSchemaRearmCode(
+  raw: ReplicationObserverSchemaRearmCode,
+): ReplicationObserverSchemaRearmCode {
+  return isSchemaRearmCode(raw) ? raw : SCHEMA_REARM_CODES[0];
 }
 
 /** 条件附着展开（exactOptionalPropertyTypes 兼容）：connectionId 缺省 = 字段不存在

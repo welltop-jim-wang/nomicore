@@ -6,8 +6,10 @@
  * wiki/raw/task_namespace-lease-replication-session_design.md §4，R1 定稿）。
  *
  * 模块职责边界：一切需要 doc/handle/state/sequencer/notifyDirty 的机制——gate、
- * scratch 预演检查、apply 槽 R1–R7、SV/diff、扇出、session 终态机。公共 Runtime
- * 对象零改动（仍恰十二键、Object.freeze、index 值导出仍恰一键——D-12）；本模块
+ * scratch 预演检查、apply 槽 R1–R7（【issue #286 / ADR 0018】含 R5.6 peer 专属
+ * 提交后 schema 同步段——re-arm，规范权威 ADR 0018 §1–§3）、SV/diff、扇出、
+ * session 终态机。公共 Runtime 对象零改动（仍恰十二键、Object.freeze、index 值
+ * 导出仍恰一键——D-12）；本模块
  * 只经 `@nomicore/namespace-runtime/internal` 第二值导出
  * `openReplicationSessionCoreForRegistry` 被 Registry 生产代码消费，index.ts 零
  * re-export。
@@ -36,6 +38,9 @@
  */
 import * as Y from 'yjs';
 import type { DocHandle, DocHandleStatus } from '@nomicore/persistence';
+import type { CompileSchemaEnvelopeResult, SchemaEnvelope } from '@nomicore/vfsl';
+import { rearmPeerActiveSchema, snapshotSchemaFourKeys } from './schema-rearm.js';
+import type { RuntimeReplicationSchemaRearmOutcome, SchemaFourKeySnapshot } from './schema-rearm.js';
 import {
   FATAL_REPLICATION_APPLY_WRITE_INTERNAL_CODE,
   REPLICATION_EPOCH_CONFLICTED_CODE,
@@ -102,7 +107,18 @@ export interface RuntimeReplicationApplyStages {
 }
 
 export type RuntimeReplicationSessionApplyResult =
-  | Readonly<{ ok: true; stages?: Readonly<RuntimeReplicationApplyStages> }>
+  | Readonly<{
+      ok: true;
+      stages?: Readonly<RuntimeReplicationApplyStages>;
+      /** 【issue #286 / ADR 0018 §1–§3】peer apply 槽 R5.6 schema 同步段的 detached
+       *  re-arm outcome 投影（成功：新 semanticFingerprint + updatedAt；失败：稳定码
+       *  + INVALID 时稳定 schema issue 摘要）——供 ws-replication 层发射 observer
+       *  事件与触发 channel 关闭；纯冻结数据，零 live 对象。仅 peer 角色且本槽
+       *  提交引起 SCHEMA `text` 变化时在场（hub 角色结构性不在场——peer→hub 方向
+       *  protected-field 检查拒绝一切 SCHEMA 变化）。re-arm 失败不失败 apply 槽
+       *  本身（ADR 0008 修订节第 3 条）：apply 已提交事实不回滚，fatal 已置位。 */
+      schemaRearm?: RuntimeReplicationSchemaRearmOutcome;
+    }>
   | Readonly<{ ok: false; code: RuntimeReplicationSessionApplyRefusalCode; message: string }>;
 
 /** session 独立状态查询面（O-11 冻结词汇；Runtime status 的 replication 域仍只含两态
@@ -330,6 +346,9 @@ export interface RuntimeReplicationHost {
   readonly fanout: SessionFanout;
   readonly diagEnv: ReturnType<typeof import('./diagnostic.js').buildDiagnosticEnv>;
   readonly stageClock?: { now(): number };
+  /** 【issue #286】re-arm 编译步（构造栈 V3b 捕获局部量——与 P0/SCHEMA 写槽同一
+   *  seam 注入；apply 槽 R5.6 共享段消费，INV-N14 纪律延续）。 */
+  readonly compile: (envelope: SchemaEnvelope) => CompileSchemaEnvelopeResult;
 }
 
 /** 模块级 host 登记（WeakMap——以 runtime 对象引用为键；不触碰 runtime 对象本身，
@@ -619,9 +638,12 @@ function createSessionCore(
 // ─────────────────────────────── apply 槽 R1–R7（§4.4） ───────────────────────────────
 
 /**
- * 会话 apply 槽（ADR 0010 L96–103 六步逐位对应；与 S/E 槽同构——差异见设计 §4.4 表）。
+ * 会话 apply 槽（ADR 0010 L96–103 六步逐位对应；与 S/E 槽同构——差异见设计 §4.4 表；
+ * 【issue #286 / ADR 0018 §1】R5.5 同步投影之后、R6 之前插入 R5.6 peer 专属 schema
+ * 同步段——strict FIFO 不变量零改动：无新槽类型、无优先级、无插队）。
  * async——同步段无可抛点，一切可预期拒绝经 ok:false 结果结算，internal fatal 经
- * RuntimeWriteFatalError rejection（committed 诚实）。
+ * RuntimeWriteFatalError rejection（committed 诚实）；re-arm 失败不失败本槽
+ * （fatal 置位 + detached outcome 随 ok:true 结果携带——ADR 0008 修订节第 3 条）。
  */
 async function runSessionApplySlot(
   host: RuntimeReplicationHost,
@@ -641,6 +663,13 @@ async function runSessionApplySlot(
     }
   };
   const slotStart = stageNow();
+  // ── 槽开始 SCHEMA 四键快照（ADR 0018 §1 / ADR 0008 修订节第 1 条「比对 SCHEMA
+  //    四键投影与槽开始快照」）：仅 peer 会话捕获（hub 角色结构性无 re-arm——
+  //    peer→hub 方向 protected-field 检查拒绝一切 SCHEMA 变化，快照是纯浪费）；
+  //    纯读零副作用。R1–R5 全同步无 await（JS run-to-completion），槽开始与 R5 前
+  //    捕获等价——取槽开始以贴合 ADR 措辞。
+  const schemaBefore: SchemaFourKeySnapshot | undefined =
+    ctx.localRole === 'peer' ? snapshotSchemaFourKeys(host.doc) : undefined;
   // ── R1 fatal gate（零输入访问；零 doc 访问）──────────────────────────────
   if (host.state.fatal !== undefined) {
     const message = writeDisabledMessage('fatal');
@@ -759,6 +788,34 @@ async function runSessionApplySlot(
   // 诚实方向：session 无法证明 ROOT 重新合法——只置不清）
   coreState.memoryCaughtUp = true; // 首次 apply 成功后不回落（INV-S16）
 
+  // ── R5.6 schema re-arm（issue #286 / ADR 0018 §1–§3：peer 专属提交后同步段；
+  //    位置 =「单 Yjs transaction → 同步投影」之后、await notifyDirty 之前——ADR 0008
+  //    修订节第 1 条）────────────────────────────────────────────────────
+  //  检测成本纪律：`text` 不等才进入编译（四键直比的唯一起行为判据——不为每次
+  //  apply 付编译成本；lang/version/id 差异而无 text 变化不产生新 tools）。失败
+  //  不失败本槽（ADR 0008 修订节第 3 条）：fatal 置位由 rearmPeerActiveSchema 单点
+  //  完成（双码；tools 保持旧的不动），已提交事实不回滚，槽继续 dirty/ACK 照常，
+  //  detached outcome 随 ok:true 结果携带（供 ws-replication 层发射 observer 事件
+  //  与触发 channel 关闭）。
+  let rearmOutcome: RuntimeReplicationSchemaRearmOutcome | undefined;
+  if (schemaBefore !== undefined) {
+    const schemaAfter = snapshotSchemaFourKeys(host.doc);
+    if (schemaBefore.text !== schemaAfter.text) {
+      rearmOutcome = rearmPeerActiveSchema({ doc: host.doc, state: host.state, compile: host.compile });
+      if (rearmOutcome.kind === 'failed') {
+        // 【issue #286】fatal + diag 配对（沿本槽兄弟 fatal 点与 schema-write S5.5
+        // 提交后违约同款记录形态）：committed:true + effect 由已捕获 update 裁决
+        // （apply 事实已提交——诚实；fatal 是 Runtime 态而非本笔拒绝）。Stage 封闭
+        // 枚举无 re-arm 值，提交后段归 'transaction' 阶段 + sourcePhase 区分；码族
+        // NSRT-FATAL-SCHEMA-* → sourceModule 缺省 'runtime'（沿 SCHEMA 写槽 fatal
+        // 先例）。结局单点写入「最后一个结局点胜」：后续 R6 dirty fatal 照常覆盖。
+        // update 实参与 R5 兄弟 fatal 点（775 行）同形——直传 capturedUpdate 局部量，
+        // 不经 diag.updateBytes 侧通道（两者此处等价，同形防漂移）。
+        diagFatalTx(diag, rearmOutcome.code, true, 'schema-rearm', capturedUpdate);
+      }
+    }
+  }
+
   const dirtyStart = stageNow();
 
   // ── R6 同槽 await notifyDirty（bypass 路径同样调用——ADR 0010 L135「仍调用
@@ -768,7 +825,10 @@ async function runSessionApplySlot(
   } catch (err) {
     // 写已提交而登记通道损坏——诚实 fatal（committed:true）；不重试
     diagDirtyFatal(diag, FATAL_REPLICATION_APPLY_WRITE_INTERNAL_CODE, 'replication');
-    markWriteFatal(host, err, 'replication-apply');
+    // 【issue #286】首 fatal 优先：R5.6 re-arm 可能已置位 fatal（双码摘要含稳定
+    // schema issue 信息）——不被 notify-dirty fatal 覆盖（status 诊断不失真）；
+    // fatalCause 同理不被替换（re-arm INTERNAL 的原始异常锚点保留）
+    if (host.state.fatal === undefined) markWriteFatal(host, err, 'replication-apply');
     throw new RuntimeWriteFatalError(
       'notify-dirty-failed',
       true,
@@ -793,7 +853,14 @@ async function runSessionApplySlot(
       : undefined;
 
   // ── R7 槽释放（promise settle；sequencer 自动放行下一项）─────────────────
-  return stages === undefined ? { ok: true } : { ok: true, stages };
+  // 【issue #286】re-arm outcome 条件展开（exactOptionalPropertyTypes——键存在 ⟺
+  // 本槽提交引起 SCHEMA text 变化且为 peer 角色；ADR 0018 §1「ACK 语义附带 active
+  // schema 已同步切换」的读取点）
+  const okResult =
+    stages === undefined
+      ? Object.freeze({ ok: true as const })
+      : Object.freeze({ ok: true as const, stages });
+  return rearmOutcome === undefined ? okResult : Object.freeze({ ...okResult, schemaRearm: rearmOutcome });
 }
 
 // ─────────────────────────────── 受保护字段检查实现（§4.6） ───────────────────────────────

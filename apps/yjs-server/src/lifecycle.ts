@@ -81,24 +81,43 @@ function readOwner(lockDirectory: string): string {
   }
 }
 
+/**
+ * Publish the legacy compatibility mirror (best-effort diagnostic surface).
+ *
+ * The mirror is NOT the ownership token — the lock directory is — and every
+ * contender publishes it, so it is subject to concurrent churn: another
+ * contender can unlink it between our read and our write (or between our read
+ * and our unlink). Those collisions surface as `ENOENT`, are benign, and must
+ * not fail acquisition; they simply re-loop. Real filesystem faults (`EACCES`/
+ * `EPERM`, single-writer `EEXIST`) keep their loud/retry semantics. Without the
+ * `ENOENT` re-loop, a 12-contender stale-reclaim race intermittently fails with
+ * `cannot write .nomicore-lock.json in rootDir (ENOENT)` instead of the
+ * documented "shared file persistence root is unsupported" rejection.
+ */
 function publishLegacyMirror(rootDir: string, payload: string): void {
-  try {
-    writeFileSync(legacyLockPath(rootDir), payload, { flag: 'wx' });
-  } catch (error) {
-    const errno = (error as NodeJS.ErrnoException).code;
-    if (errno === 'EEXIST') {
-      try {
-        unlinkSync(legacyLockPath(rootDir));
-        writeFileSync(legacyLockPath(rootDir), payload, { flag: 'wx' });
-        return;
-      } catch (retryError) {
-        const retryErrno = (retryError as NodeJS.ErrnoException).code;
-        if (retryErrno === 'EACCES' || retryErrno === 'EPERM') throw loudUnwritable(retryErrno);
-        throw retryError;
+  for (;;) {
+    try {
+      writeFileSync(legacyLockPath(rootDir), payload, { flag: 'wx' });
+      return;
+    } catch (error) {
+      const errno = (error as NodeJS.ErrnoException).code;
+      if (errno === 'EEXIST') {
+        try {
+          unlinkSync(legacyLockPath(rootDir));
+        } catch (unlinkError) {
+          const unlinkErrno = (unlinkError as NodeJS.ErrnoException).code;
+          if (unlinkErrno === 'EACCES' || unlinkErrno === 'EPERM') {
+            throw loudUnwritable(unlinkErrno);
+          }
+          // A concurrent contender already removed the mirror; re-loop into the
+          // exclusive write instead of failing acquisition on a benign removal.
+          continue;
+        }
+        continue;
       }
+      if (errno === 'EACCES' || errno === 'EPERM') throw loudUnwritable(errno);
+      throw error;
     }
-    if (errno === 'EACCES' || errno === 'EPERM') throw loudUnwritable(errno);
-    throw error;
   }
 }
 

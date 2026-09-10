@@ -59,6 +59,11 @@ import {
   createHostDiagnosticsManager,
   type HostDiagnosticsManager,
 } from './diagnostics.js';
+import {
+  DEFAULT_ON_FATAL_ERROR,
+  isFatalObserverEvent,
+  type OnFatalErrorPolicy,
+} from './fatal-policy.js';
 
 const OP_TIMEOUT_DEFAULT_MS = 30_000;
 const OP_TIMEOUT_MIN_MS = 1;
@@ -113,6 +118,14 @@ export interface NomicoreApp {
 
 export interface CreateNomicoreAppOptions {
   readonly emitter?: EventSink;
+  /**
+   * issue #288（ADR 0018 §4）：fatal 退出动作的注入 seam——`onFatalError:'exit'`
+   * （缺省）下有序停机完成后经本回调非零退出。生产 CLI（main.ts）注入
+   * `(code) => process.exit(code)`（与 shutdown-watchdog 的 exit 注入先例同款）；
+   * 测试注入 spy（绝不调真 `process.exit`）。缺省 = 有序停机照跑但不执行退出动作
+   * （嵌入式宿主自行编排进程生命周期；库代码零 `process.exit` 不变）。
+   */
+  readonly exit?: (code: number) => void;
 }
 
 export function createNomicoreApp(
@@ -121,7 +134,7 @@ export function createNomicoreApp(
 ): NomicoreApp {
   const config = parseAppConfig(rawConfig);
   const sink = options.emitter ?? createStdoutEventSink();
-  return new AppHandle(config, sink).publicFace();
+  return new AppHandle(config, sink, options.exit).publicFace();
 }
 
 class AppHandle {
@@ -152,11 +165,20 @@ class AppHandle {
   /** 停机请求标志：boot 在每个 await 边界检查——停机中的 boot 静默取消（不抛
    *  未处理拒绝；SIGTERM 落在 boot 窗口 ⇒ 干净 exit 0 而非 boot 失败 exit 1）。 */
   private stopRequested = false;
+  /** issue #288：fatal 策略（缺省展开单点——config 层不展开，见 config.ts 注记）。 */
+  private readonly onFatalError: OnFatalErrorPolicy;
+  /** issue #288：退出动作注入 seam；缺省 no-op（嵌入式宿主自行编排进程生命周期）。 */
+  private readonly exit: (code: number) => void;
+  /** issue #288：fatal 停机的进程级单飞闩锁（多 namespace 并发 fatal / stop() 已单飞
+   *  之外，保证 exit 恰一次调用、`fatal-shutdown` 恰一事件）。 */
+  private fatalShutdownStarted = false;
 
-  constructor(config: AppConfig, sink: EventSink) {
+  constructor(config: AppConfig, sink: EventSink, exit?: (code: number) => void) {
     this.config = config;
     this.sink = sink;
     this.ctx = new Context();
+    this.onFatalError = config.onFatalError ?? DEFAULT_ON_FATAL_ERROR;
+    this.exit = exit ?? (() => undefined);
   }
 
   publicFace(): NomicoreApp {
@@ -177,11 +199,50 @@ class AppHandle {
 
   // ─────────────────────────────── 观测 ───────────────────────────────
 
-  /** 复制域事件：包判别联合 → NDJSON（type 字段改名为 event；其余字段直通——包已脱敏）。 */
+  /** 复制域事件：包判别联合 → NDJSON（type 字段改名为 event；其余字段直通——包已脱敏）。
+   *  issue #288（ADR 0018 §4）：直通 NDJSON **之后**识别 fatal 类事件并执行
+   *  `onFatalError` 宿主策略——记录严格先于停机动作。 */
   private readonly observer: ReplicationObserver = (event) => {
     const { type, ...rest } = event;
     this.sink({ event: type, ...rest });
+    this.applyFatalPolicy(event);
   };
+
+  /**
+   * issue #288：fatal 类事件的宿主动作（ADR 0018 §4）。
+   *
+   * - `'stay'`：仅落 NDJSON（上面的直通即全部动作），进程继续——fatal 是 namespace
+   *   粒度，不株连同进程其他 namespace；
+   * - `'exit'`：`fatal-shutdown` 标记事件（先于一切拆卸事件）→ `stop()` 单一拆卸链
+   *   有序停机（停止接纳 → 排空已接纳 apply → close；幂等 single-flight）→ 经注入
+   *   seam 非零退出（停机失败同样 exit 1——fatal 语义下绝不以 0 退出）。
+   *   进程级单飞：多 namespace 并发 fatal / 与信号停机竞态只产生一次退出动作。
+   *
+   * observer 是同步回调（返回值被包忽略），停机/退出因此在微任务续体执行；observer
+   * throw 隔离纪律不破（本函数体零 throw 路径）。
+   */
+  private applyFatalPolicy(event: Parameters<ReplicationObserver>[0]): void {
+    if (!isFatalObserverEvent(event)) return;
+    if (this.onFatalError === 'stay') return;
+    // 停机已在飞（SIGTERM/SIGINT/shutdown 动词/换装）时不劫持退出码——fatal 策略
+    // 只负责「运行期致命事实」的停机动机，不覆盖运维显式停机的退出码语义。
+    // 原子性根据：本方法从本检查到闩锁登记、stop() 调用全程同步（observer 是同步
+    // 回调），stop() 又在首个 await 之前同步置位 stopRequested——事件循环无法在
+    // 其中插入信号处理器，两动机以「谁的回调先运行」决序，两种序下退出码语义均
+    // 正确（fatal 先 → 停机后 exit 1；停机先 → 本检查拦截，不劫持 exit 0）。
+    if (this.stopRequested) return;
+    if (this.fatalShutdownStarted) return;
+    this.fatalShutdownStarted = true;
+    this.sink({
+      event: 'fatal-shutdown',
+      trigger: event.type,
+      ...('namespaceId' in event ? { namespaceId: event.namespaceId } : {}),
+    });
+    void this.stop().then(
+      () => this.exit(1),
+      () => this.exit(1),
+    );
+  }
 
   // ─────────────────────────────── 启动 ───────────────────────────────
 

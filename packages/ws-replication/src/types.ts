@@ -294,6 +294,38 @@ export type ReplicationNamespaceFailedCause =
   | 'send-failed'
   | 'internal-error';
 
+/**
+ * 【issue #287 / ADR 0018 §3–§4】`schema-rearm-failed` 的稳定双码**唯一真值源**
+ * （append-only；数组即词表，闭联合由它派生——见下）。
+ *
+ * 两码是 namespace-runtime `errors.ts` 注册表的既有成员（ADR 0018 §3「errors.ts 注册表
+ * append-only 追加双码」）；ws-replication 侧仅消费 `ReplicationSchemaRearmOutcome.code`
+ * 投影（`@nomicore/namespace-registry` 类型面逐字同源），**不**新增错误码、不新增 wire
+ * 语义——事件是既有 runtime fatal 事实的观测投影（协议 §23.1 第 24 型）。
+ *
+ * - `NSRT-FATAL-SCHEMA-REARM-INVALID`：re-arm 编译**结果失败**（Hub 提交前已编译成功的
+ *   同一文本在 peer 侧失败 = 版本偏移/字节损坏；稳定 schema issue 摘要留在 Runtime
+ *   `getStatus()` fatal 摘要，不进事件——事件字段遵守 §23.3 安全清单，无 schema 文本）；
+ * - `NSRT-FATAL-SCHEMA-REARM-INTERNAL`：re-arm 结果联合之外的内部异常（compile throw /
+ *   畸形 ok:true 等结构性不可达分支）。
+ *
+ * **判据面与词表同源（复审修正）**：`observer.ts` 的运行期白名单**复用本数组**
+ * （`SCHEMA_REARM_CODES.some(...)`），不再手抄一份字面量——初版两处各写一份，`satisfies`
+ * 只锁「白名单 ⊆ 类型」这一上界，删掉一词表成员后 `tsc` 与全包用例皆绿（实测），
+ * 「新增码漏改即编译期红」因此单向、可被反向漂移绕过。以本数组为唯一真值源后，
+ * 增删词表成员同时改变类型与判据，双向不可能再漂移。
+ */
+export const SCHEMA_REARM_CODES = [
+  'NSRT-FATAL-SCHEMA-REARM-INVALID',
+  'NSRT-FATAL-SCHEMA-REARM-INTERNAL',
+] as const;
+
+/**
+ * `schema-rearm-failed.code` 的闭联合 = 词表数组的元素类型（同源派生，见
+ * `SCHEMA_REARM_CODES`）。
+ */
+export type ReplicationObserverSchemaRearmCode = (typeof SCHEMA_REARM_CODES)[number];
+
 /** 单调时源（latency 观测专用；ADR 0009 Clock capability 同形窄面）。
  *  可选注入：缺省 = 全部 latency 字段 undefined（dormant，协议 §17 L494 缺面先例）。
  *  生产组合根应注入并在装配期对缺省做响亮断言（issue #164 双层纪律）。禁止实现内部
@@ -303,9 +335,11 @@ export interface ReplicationClock {
 }
 
 /**
- * 结构化 observer seam 事件（ADR 0010 L167 最小观测面全量映射；22 型，append-only——
+ * 结构化 observer seam 事件（ADR 0010 L167 最小观测面全量映射；24 型，append-only——
  * issue #238 追加第 21 型 event-loop-delay-sampled 及四事件面 sequence/四段字段；
- * issue #256 追加第 22 型 namespace-failed 及 cause/timeoutMs 字段）。
+ * issue #256 追加第 22 型 namespace-failed 及 cause/timeoutMs 字段；issue #287 追加
+ * 第 23/24 型 schema-rearm-applied / schema-rearm-failed——协议 §23.1 schema re-arm 域，
+ * ADR 0018 §4）。
  *
  * Safe-field 纪律（协议文档 §23）：字段类别 = 稳定字面量（type/side/direction/via/
  * reason/cause/terminalState/from/to/reasonCode/channelState/connectionState）、受控标识
@@ -313,6 +347,13 @@ export interface ReplicationClock {
  * 握手完成前 undefined）、稳定错误码（闭联合，未知折叠 INTERNAL_ERROR）、有限数值
  * （bytes/updateBytes/maxUpdateBytes/queuedUpdateCount/queuedUpdateBytes/inFlightCount/
  * bufferedAmount 是长度/计数/水位读数不是内容；latency 是差值非绝对时间戳）。
+ * issue #287 追加字段的类别登记（复审修正：`updatedAt` **不是**既有类别，须显式登记）：
+ * `semanticFingerprint` 属 §23.3 documented safe digest（`sha256:v1:<64 位小写 hex>`——
+ * 与 `stateVector*Hash` 的 16 位 hex 同属 digest 族但文法不同）、`code` 属稳定错误码
+ * 闭联合；`updatedAt` 为 issue #287 在 §23.3 新登记的**受控投影元数据字符串**（源 =
+ * Hub 起源、经复制到达的 `META.schema.updatedAt` 原文，**非本地时钟读数**、peer 永不
+ * 生成它；缺席恒 `null`）——登记前 §23.3 无此类别，且 §23.4「绝对时间戳不入事件」
+ * 针对本地时钟读数，复制来的原始字符串不越界。
  *
  * 事件**不得**包含：token、owner 值、Yjs bytes（Uint8Array/ArrayBuffer/DataView）、
  * SCHEMA/ROOT 内容、原始 cause（Error/message/stack）、任意不受控高基数自由文本。
@@ -625,6 +666,67 @@ export type ReplicationObserverEvent =
       readonly connectionId?: string;
       /** 漂移下界信号（ms；差值非绝对时间戳）。 */
       readonly delayMs: number;
+    }
+  // ── issue #287（append-only 第 23/24 型；协议 §23.1 schema re-arm 域，peer 专属）──
+  | {
+      /**
+       * peer apply 槽提交后 schema re-arm **安装成功**（ADR 0018 §1–§2/§4）。
+       *
+       * 计数不变量：每次 re-arm 成功安装恰一事件——含纯格式/注释差异的安装
+       * （semanticFingerprint 不变但 `updatedAt` 照常推进：ADR 0017「每次提交都推进」
+       * 对齐，不据 fingerprint 跳过）。多 Peer 滚动升级的「全部 Peer 已 applied」收敛
+       * 判据读取点 = 本事件。
+       *
+       * 发射点：apply 槽提交后段安装完成、槽结算续体（§23.4 决策落定后发射纪律；
+       * ACK/SYNC_APPLIED 语义因此附带「active schema 已同步切换」——应用方收到
+       * ACK 后读 `getActiveSchema()` 即得确定性确认）。**注意**：槽内 R5.6 安装段在
+       * `await notifyDirty()`（R6）**之前**，但本事件的发射点在 ws-replication 层
+       * apply 结算续体（槽已结算、dirty 已登记）——即**晚于** R6；ADR 0018 §4
+       * 「决策落定后发射」为权威口径。
+       *
+       * hub 侧结构性不可能：peer→hub 方向 protected-field 检查拒绝一切 SCHEMA 变化，
+       * hub 的 apply 槽永不观测到 SCHEMA 投影变化 ⟹ 本事件恒 `side:'peer'`
+       * （conformance 反向断言见 `ws-replication-issue287-schema-rearm.test.ts`）。
+       */
+      readonly type: 'schema-rearm-applied';
+      readonly side: 'peer';
+      readonly connectionId?: string;
+      readonly namespaceId: string;
+      /** 新安装 active schema 的语义指纹（§23.3 documented safe digest——带版本的
+       *  domain separation 外显格式 `sha256:v1:<64 位小写 hex>`，非 schema 文本；
+       *  §23.3 注册的定长 digest 族与 `stateVectorBeforeHash`（16 位小写 hex）**不同
+       *  形态**，勿混用文法）。 */
+      readonly semanticFingerprint: string;
+      /** 投影自**复制来的** `META.schema`（peer 永不读本地时钟生成它——ADR 0018 §2 /
+       *  ADR 0010 issue #282 修订第 3 条）；诚实缺席（legacy/损坏）为 `null`。 */
+      readonly updatedAt: string | null;
+    }
+  | {
+      /**
+       * peer apply 槽提交后 schema re-arm **fatal 置位**（ADR 0018 §3–§4）。
+       *
+       * 计数不变量：每次 re-arm fatal 置位恰一事件——收口闩锁（`rearmFatalClosed`）为
+       * 判据本身（通道关闭后的迟到 failed outcome 零新事件），不依赖「通道已关闭」这一
+       * 外部性质。伴随行为 = **本 namespace channel 主动发
+       * CLOSE_NAMESPACE → `closed` 终态**（诚实快速失败，双侧资源立即释放；重连不
+       * 自动重开——恢复入口 = 显式 re-add / reset-replica / 进程重启，不产生重试循环）。
+       *
+       * schema 类根因告警路由以本事件为准：fatal 后的重开路径（显式 re-add / 新连接
+       * 对 `failed` 终态的每连接恰一次重试）会出现
+       * `namespace-failed{cause:'session-open-failed'}`（Runtime fatal 门拒绝
+       * `openReplicationSession`；每连接恰一、安静终局），其语义**不含**「schema 编译失败」。
+       *
+       * 事件不含 schema 文本/ROOT/堆栈；稳定 schema issue 摘要留在 Runtime
+       * `getStatus()` fatal 摘要（§23.3 安全清单：不允许 SCHEMA 内容与原始 cause）。
+       */
+      readonly type: 'schema-rearm-failed';
+      readonly side: 'peer';
+      readonly connectionId?: string;
+      readonly namespaceId: string;
+      /** ADR 0018 §3 稳定双码之一（schema re-arm 域**独立**闭联合成员，§23.3 明文不并入
+       *  §23.2 namespace 域白名单；未知折叠 INTERNAL_ERROR 不适用——Runtime 侧产出面
+       *  即本双码）。 */
+      readonly code: ReplicationObserverSchemaRearmCode;
     };
 
 /**

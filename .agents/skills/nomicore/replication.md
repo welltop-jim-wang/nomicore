@@ -47,7 +47,7 @@ The package manager resolves the published Registry/Runtime/Persistence/Clock/VF
 
 - Hub graceful restart sends GOAWAY and can leave Peer `blocked`. After Hub is ready, invoke `notify-auth-changed` when Peer credentials/config are unchanged, or restart/reload Peer when they changed.
 - Hub hard failure does not send GOAWAY; Peer uses backoff to reconnect automatically.
-- SCHEMA replacement is Hub-only. A Peer may require controlled reset/re-bootstrap or restart before local business writes use newly introduced fields.
+- SCHEMA replacement is Hub-only. Per ADR 0018, a Peer's replication apply slot re-arms its active schema synchronously after committing a replicated SCHEMA change (no reset/restart needed); a failed re-arm is fatal-class (writes permanently disabled, reads retained, channel actively closed) and the standalone server defaults to log-and-exit (`onFatalError`). Controlled reset/re-bootstrap or restart remains the operational fallback.
 - Epoch bump fences old replicas asynchronously. Recover a conflicted Peer with guarded `reset-replica` using its expected old replication identity, then observe bootstrap to the new epoch.
 - A Peer target re-add after terminal state rebuilds the whole connection; other namespaces on that connection may briefly reconnect.
 - Peer target persistence belongs to the host; `addTarget()` / `removeTarget()` mutate only the current process.

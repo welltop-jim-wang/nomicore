@@ -40,6 +40,7 @@ import type {
   ReplicationObserverConnectionCode,
   ReplicationObserverEvent,
   ReplicationObserverNamespaceCode,
+  ReplicationObserverSchemaRearmCode,
   ReplicationObserverSide,
   ReplicationSendFailureReason,
   ReplicationTarget,
@@ -262,6 +263,9 @@ describe('`@nomicore/ws-replication` observer seam（issue #177）', () => {
       | { readonly type: 'identity-conflicted'; readonly side: ReplicationObserverSide; readonly connectionId?: string; readonly namespaceId: string; readonly via: 'open-mismatch' | 'fence' | 'identity-changed-frame' }
       // issue #238（append-only 第 21 型）
       | { readonly type: 'event-loop-delay-sampled'; readonly side: ReplicationObserverSide; readonly connectionId?: string; readonly delayMs: number }
+      // issue #287（append-only 第 23/24 型；ADR 0018 §4 schema re-arm 域，peer 专属）
+      | { readonly type: 'schema-rearm-applied'; readonly side: 'peer'; readonly connectionId?: string; readonly namespaceId: string; readonly semanticFingerprint: string; readonly updatedAt: string | null }
+      | { readonly type: 'schema-rearm-failed'; readonly side: 'peer'; readonly connectionId?: string; readonly namespaceId: string; readonly code: 'NSRT-FATAL-SCHEMA-REARM-INVALID' | 'NSRT-FATAL-SCHEMA-REARM-INTERNAL' }
     >();
     // issue #256：namespace-failed 字段类型精确性（cause 闭联合；timeoutMs 可选有限数值）
     expectTypeOf<Extract<ReplicationObserverEvent, { type: 'namespace-failed' }>['cause']>().toEqualTypeOf<ReplicationNamespaceFailedCause>();
@@ -271,6 +275,14 @@ describe('`@nomicore/ws-replication` observer seam（issue #177）', () => {
     expectTypeOf<Extract<ReplicationObserverEvent, { type: 'update-applied' }>['queueWaitMs']>().toEqualTypeOf<number | undefined>();
     expectTypeOf<Extract<ReplicationObserverEvent, { type: 'update-sent' }>['sendQueueMs']>().toEqualTypeOf<number | undefined>();
     expectTypeOf<Extract<ReplicationObserverEvent, { type: 'event-loop-delay-sampled' }>['delayMs']>().toEqualTypeOf<number>();
+    // issue #287：re-arm 两型字段类型精确性（updatedAt 诚实缺席为 null 而非 undefined；
+    // code 闭联合无 string 松类型）
+    expectTypeOf<Extract<ReplicationObserverEvent, { type: 'schema-rearm-applied' }>['updatedAt']>().toEqualTypeOf<string | null>();
+    expectTypeOf<Extract<ReplicationObserverEvent, { type: 'schema-rearm-applied' }>['semanticFingerprint']>().toEqualTypeOf<string>();
+    expectTypeOf<ReplicationObserverSchemaRearmCode>().toEqualTypeOf<
+      'NSRT-FATAL-SCHEMA-REARM-INVALID' | 'NSRT-FATAL-SCHEMA-REARM-INTERNAL'
+    >();
+    expectTypeOf<Extract<ReplicationObserverEvent, { type: 'schema-rearm-failed' }>['code']>().toEqualTypeOf<ReplicationObserverSchemaRearmCode>();
   });
 
   it('稳定码闭联合：ConnectionErrorCode(17) ∪ 2 内部码；NamespaceErrorCode(20) ∪ 1 内部码（同源 append-only）', () => {
