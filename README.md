@@ -29,13 +29,14 @@ See [`CONTEXT.md`](CONTEXT.md) for authoritative terminology, [`docs/adr/`](docs
 2. Namespace writes must use the generated `VfslPathMap` projection and a projection-aware typecheck. Route writes through a host-owned typed adapter over `NamespaceLease.mutateData()`. Runtime SCHEMA validation does not replace compile-time path/value checking.
 3. Business mutations should be minimal, mergeable, and semantic. Do not read and replace an entire ROOT or parent object when updating one leaf.
 4. A File Persistence `rootDir` is private to one process; it is not a shared database directory. Cross-process changes must use the owner application's API or Hub/Peer replication between independent roots. Never open the same root concurrently or edit snapshots directly.
-5. Only a Hub may replace SCHEMA through an existing namespace lease. After replacement, regenerate the type projection and coordinate Peer reset/re-bootstrap or restart as documented.
+5. Only a Hub may replace SCHEMA through an existing namespace lease. After replacement, regenerate the type projection and confirm each Peer has re-armed (the `schema-rearm-applied` event or a matching `getActiveSchema()` fingerprint) before enabling writers that use new paths; Peer reset/restart is only the operational fallback.
 
 Related guides:
 
 - [VFSL code generation and type-safe access in external projects](docs/integration/external-project-vfsl-codegen.md)
 - [Hosting Nomicore in a third-party Cordis application](docs/integration/cordis-plugin-hosting.md)
 - [Standalone Hub/Peer deployment and operations](docs/integration/hub-peer-deployment.md)
+- [Schema evolution upgrade runbook](docs/integration/schema-evolution.md)
 - [Local source linking](docs/integration/local-package-linking.md)
 
 ## Packages and repository layout

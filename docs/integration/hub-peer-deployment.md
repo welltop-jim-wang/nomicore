@@ -186,6 +186,9 @@ fatal / 结构性防御边界 / 旧通道收口结算超限；`delete-namespace-
 
 `replace-schema` / `bump-epoch` / `reset-replica` 是 Phase 5 收口的管理动词面，
 宿主编排（composition root）职责，不引入新引擎语义；`packages/**` 零改动。
+schema 升级的端到端流程（先兼容代码 → Hub 替换 → Peer 自动 re-arm → 收敛确认 →
+开新写路径）、收敛判据与 re-arm fatal 处置手册见
+[schema-evolution.md](schema-evolution.md)。
 `delete-namespace`（issue #228）是同族的**终态删除编排**动词：Hub 拥有（peer →
 `unknown-op`——peer 副本删除属 `reset-replica` archive 语义）；它消费 Registry
 `deleteNamespace`（ADR-0009 修订节）与 Persistence `deleteDoc`（ADR-0006 修订节）

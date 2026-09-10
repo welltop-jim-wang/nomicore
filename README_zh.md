@@ -27,13 +27,14 @@ Nomicore 是以 Yjs 为载体的自描述 Namespace 运行时。每个 Namespace
 2. Namespace 写入必须使用生成的 `VfslPathMap` 投影和 projection-aware typecheck，通过宿主 typed adapter 调用 `NamespaceLease.mutateData()`。运行时 SCHEMA 校验不能代替编译期路径和值检查。
 3. 业务 mutation 应最小、可合并、有语义；修改一个叶子时不要读取并替换整个 ROOT 或父对象。
 4. File Persistence `rootDir` 是单进程私有存储，不是共享数据库。跨进程数据修改使用拥有者业务接口或不同 root 之间的 Hub/Peer replication；不得并发打开同一 root 或直接编辑 snapshot。
-5. SCHEMA replacement 只由 Hub 通过 existing namespace lease 执行。更新后需刷新类型投影，并按文档协调 Peer reset/re-bootstrap 或重启。
+5. SCHEMA replacement 只由 Hub 通过 existing namespace lease 执行。更新后需刷新类型投影，并逐台确认 Peer 已 re-arm（`schema-rearm-applied` 事件或与 Hub 一致的 `getActiveSchema()` 指纹）再启用新路径写；Peer reset/重启仅为运维兜底。
 
 相关指南：
 
 - [外部项目 VFSL Codegen 与类型安全访问](docs/integration/external-project-vfsl-codegen.md)
 - [第三方 Cordis Host 装配](docs/integration/cordis-plugin-hosting.md)
 - [Hub/Peer standalone 部署与运维](docs/integration/hub-peer-deployment.md)
+- [Schema 演进升级 runbook](docs/integration/schema-evolution.md)
 - [本机源码 linking](docs/integration/local-package-linking.md)
 
 ## 包与目录
