@@ -78,7 +78,10 @@ closed/conflicted 等显式 re-add），不产生重试循环。恢复入口保�
 
 - **推送**：observer 注册表（协议 §23.1）append 两型——`schema-rearm-applied`
   与 `schema-rearm-failed`（peer 专属；字段遵守 §23.3 safe-field 清单：
-  namespaceId、稳定码、fingerprint，不含 schema 文本/ROOT/堆栈）；成功事件是
+  namespaceId、稳定码、`semanticFingerprint`（`sha256:v1:<64 位小写 hex>`
+  documented safe digest）、`updatedAt`（复制来的 `META.schema.updatedAt` 原文，
+  缺席 `null`；§23.3 本域登记为「受控投影元数据字符串」——不读任何本地时钟），
+  不含 schema 文本/ROOT/堆栈）；成功事件是
   多 Peer 滚动升级「全部 Peer 已 applied」收敛判据的读取点；
 - **拉取**：`lease.getStatus()` fatal 摘要与 `getActiveSchema()` fingerprint。
 
@@ -149,5 +152,8 @@ re-arm fatal 经 exit 重启后，P0 编译同一 SCHEMA 仍是**结果失败而
   close/reset 交错、updatedAt 投影、P0 失败 Runtime 自愈、Hub 不触发
   conformance；
 - observer 词汇 22 → 24 型；`namespace-failed{cause: session-open-failed}`
-  在 fatal 重连路径仍会出现，告警路由应以 `schema-rearm-failed` 为 schema
+  在 fatal 后的重开路径仍会出现——显式 re-add（或其后新连接对 `failed`
+  终态的每连接恰一次重试）触发 `openReplicationSession` 被 Runtime fatal
+  门拒绝，每次连接恰一事件、`failed` 安静终局（连接内零重试循环）；其语义
+  不含「schema 编译失败」，告警路由应以 `schema-rearm-failed` 为 schema
   类根因判据。
