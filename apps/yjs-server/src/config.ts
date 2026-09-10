@@ -45,6 +45,14 @@ export interface AppConfig {
   readonly peer?: PeerConfig;
   /** #155：Host 本地旁路诊断配置（hub/peer 通用；缺省 = 既有行为逐字节不变）。 */
   readonly diagnostics?: Readonly<DiagnosticsConfig>;
+  /**
+   * issue #288 / ADR 0018 §4：fatal 类 observer 事件的宿主策略。缺省（键缺席）=
+   * `'exit'`（ADR 0018 §4 明文默认）——config 层不展开缺省（「config 是操作员意图的
+   * 忠实载体」惯例，与 diagnostics 缺省同纪律），缺省展开单点 = app.ts
+   * `DEFAULT_ON_FATAL_ERROR`。`'stay'` 供多 namespace 宿主自行编排（fatal 是
+   * namespace 粒度，不株连其他 namespace）。
+   */
+  readonly onFatalError?: 'exit' | 'stay';
 }
 
 export type PersistenceConfig =
@@ -670,7 +678,7 @@ export function parseAppConfig(raw: unknown): AppConfig {
     throw new ConfigValidationError([{ path: '$', reason: 'config must be a plain JSON object' }]);
   }
   for (const key of Object.keys(raw)) {
-    if (key !== 'role' && key !== 'instanceId' && key !== 'persistence' && key !== 'idleTimeoutMs' && key !== 'limits' && key !== 'timeouts' && key !== 'backoff' && key !== 'hub' && key !== 'peer' && key !== 'diagnostics') {
+    if (key !== 'role' && key !== 'instanceId' && key !== 'persistence' && key !== 'idleTimeoutMs' && key !== 'limits' && key !== 'timeouts' && key !== 'backoff' && key !== 'hub' && key !== 'peer' && key !== 'diagnostics' && key !== 'onFatalError') {
       violations.push({ path: key, reason: `unknown top-level key: ${key}` });
     }
   }
@@ -687,6 +695,18 @@ export function parseAppConfig(raw: unknown): AppConfig {
   validatePartialNumberBlock(raw.timeouts, 'timeouts', TIMEOUT_KEYS, 'timeouts', violations);
   validatePartialNumberBlock(raw.backoff, 'backoff', BACKOFF_KEYS, 'backoff', violations);
   const diagnostics = validateDiagnostics(raw.diagnostics, violations);
+  // issue #288（AC1）：`onFatalError` 二值枚举校验——非法值在配置校验期响亮拒绝
+  // （严格 JSON 配置惯例；缺省展开不在本层，见 AppConfig.onFatalError 注记）。
+  if (
+    raw.onFatalError !== undefined &&
+    raw.onFatalError !== 'exit' &&
+    raw.onFatalError !== 'stay'
+  ) {
+    violations.push({
+      path: 'onFatalError',
+      reason: `onFatalError must be one of 'exit' | 'stay'（缺省 = 'exit'，ADR 0018 §4）`,
+    });
+  }
 
   const hasHub = raw.hub !== undefined;
   const hasPeer = raw.peer !== undefined;
@@ -727,6 +747,7 @@ export function parseAppConfig(raw: unknown): AppConfig {
     ...(hub !== undefined ? { hub } : {}),
     ...(peer !== undefined ? { peer } : {}),
     ...(diagnostics !== undefined ? { diagnostics } : {}),
+    ...(raw.onFatalError !== undefined ? { onFatalError: raw.onFatalError as 'exit' | 'stay' } : {}),
   };
   return deepFreeze(config);
 }

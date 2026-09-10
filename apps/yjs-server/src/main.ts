@@ -135,7 +135,7 @@ async function reload(state: CliState): Promise<void> {
       }
     }
     try {
-      state.app = createNomicoreApp(nextConfig, { emitter: state.sink });
+      state.app = createNomicoreApp(nextConfig, { emitter: state.sink, exit: (code) => process.exit(code) });
       await state.app.ready;
     } catch (error) {
       failBoot(state, `reload failed after teardown (process supervisor restart advised): ${error instanceof Error ? error.message : String(error)}`);
@@ -200,7 +200,9 @@ function main(): void {
   const state: CliState = {
     sink,
     configPath,
-    app: createNomicoreApp(config, { emitter: sink }),
+    // issue #288：fatal 退出动作经注入 seam（库代码零 process.exit——main.ts 是
+    // 唯一的 process.exit 宿主层；与 shutdown-watchdog 的 exit 注入先例同款）。
+    app: createNomicoreApp(config, { emitter: sink, exit: (code) => process.exit(code) }),
     lock,
     shuttingDown: false,
     reloading: false,

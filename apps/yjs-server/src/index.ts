@@ -67,6 +67,10 @@ export type {
 } from './diagnostic-replay.js';
 export { createNomicoreApp } from './app.js';
 export type { CreateNomicoreAppOptions, NomicoreApp } from './app.js';
+// issue #288（ADR 0018 §4）：fatal 类事件判据与策略缺省——嵌入式宿主/测试复用同一
+// 判据单点，不在宿主侧抄第二份分类表。
+export { DEFAULT_ON_FATAL_ERROR, isFatalObserverEvent } from './fatal-policy.js';
+export type { OnFatalErrorPolicy } from './fatal-policy.js';
 export { acquireRootLock, createStdoutEventSink, ROOT_LOCK_FILE_NAME, STABLE_OP_ERROR_CODES } from './lifecycle.js';
 export type { EventSink, RootLockHandle } from './lifecycle.js';
 

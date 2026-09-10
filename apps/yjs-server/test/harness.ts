@@ -627,8 +627,131 @@ export function readRootValue(doc: Y.Doc): unknown {
   return (doc.getMap('ROOT') as unknown as Map<string, unknown>).get('n');
 }
 
-// ═══════════════════════════ FS5b 文法违规原始帧（SA4 缺陷 A 回流） ═══════════════════════════
+// ═══════════════════════════ issue #288：一次性字节损坏 TCP 代理 ═══════════════════════════
 
+/**
+ * 「对端复制来的 SCHEMA 文本在 peer 侧字节损坏」（ADR 0018 §3 版本偏移/字节损坏场景）
+ * 的真实 wire 复现器：peer（被测 app）拨号本代理，代理转发到真实 hub；hub→peer 方向
+ * 的字节流中**首个** `marker` 出现处被同长替换为 `replacement`（与 `patchAsciiOnce`
+ * 同纪律——同长替换保持 WS 帧结构/长度前缀/Yjs 编码全部合法，仅内容字节损坏）。
+ *
+ * 实现要点：
+ * - 仅处理 server→client 方向（hub→peer 帧未掩码；peer→hub 方向原样直通——掩码帧
+ *   不触碰）；
+ * - HTTP Upgrade 握手头（至 `\r\n\r\n`）零缓冲直通，之后进入逐帧模式：累积到
+ *   **完整** WS 帧才转发（server 帧未掩码；等待的是「帧的其余部分」而非「下一
+ *   分片」，不会与对端形成等待死锁）；marker 恒落在单帧 payload 内（协议契约：
+ *   一条二进制消息 = 一帧），同长替换保持帧头/长度前缀/Yjs 编码全部合法；
+ * - 命中一次后解除武装，后续帧零改动直通。
+ */
+export class CorruptOnceProxy {
+  private readonly server: net.Server;
+  private readonly sockets = new Set<net.Socket>();
+  /** 实际监听端口（listen() 返回后可用）。 */
+  port: number | undefined;
+  /** 是否已执行损坏（断言辅助——未命中说明场景未真正驱动）。 */
+  patched = false;
+
+  constructor(
+    private readonly targetPort: number,
+    private readonly marker: Buffer,
+    private readonly replacement: Buffer,
+  ) {
+    if (marker.length !== replacement.length) {
+      throw new Error('CorruptOnceProxy 要求同长替换（保持帧结构合法）');
+    }
+    this.server = net.createServer((downstream) => {
+      const upstream = net.connect({ host: '127.0.0.1', port: this.targetPort });
+      this.sockets.add(downstream);
+      this.sockets.add(upstream);
+      downstream.on('data', (chunk) => upstream.write(chunk));
+      let buf: Buffer = Buffer.alloc(0);
+      let headersDone = false;
+      let armed = true;
+      upstream.on('data', (chunk: Buffer) => {
+        buf = Buffer.concat([buf, chunk]);
+        if (!headersDone) {
+          const end = buf.indexOf('\r\n\r\n');
+          if (end < 0) return; // 握手头未齐——等齐（同一响应内必齐）
+          downstream.write(buf.subarray(0, end + 4));
+          buf = buf.subarray(end + 4);
+          headersDone = true;
+        }
+        for (;;) {
+          const frame = takeWholeServerFrame(buf);
+          if (frame === undefined) return; // 等帧的其余部分（对端正在发送，无死锁）
+          buf = frame.rest;
+          if (armed) {
+            const idx = frame.raw.indexOf(this.marker);
+            if (idx >= 0) {
+              downstream.write(
+                Buffer.concat([
+                  frame.raw.subarray(0, idx),
+                  this.replacement,
+                  frame.raw.subarray(idx + this.marker.length),
+                ]),
+              );
+              this.patched = true;
+              armed = false;
+              continue;
+            }
+          }
+          downstream.write(frame.raw);
+        }
+      });
+      downstream.on('close', () => upstream.destroy());
+      upstream.on('close', () => downstream.destroy());
+      downstream.on('error', () => upstream.destroy());
+      upstream.on('error', () => downstream.destroy());
+    });
+  }
+
+  listen(): Promise<number> {
+    return new Promise((resolve, reject) => {
+      this.server.on('error', reject);
+      this.server.listen(0, '127.0.0.1', () => {
+        const address = this.server.address();
+        if (address === null || typeof address === 'string') {
+          reject(new Error('proxy no tcp address'));
+          return;
+        }
+        this.port = address.port;
+        resolve(address.port);
+      });
+    });
+  }
+
+  async close(): Promise<void> {
+    for (const socket of this.sockets) socket.destroy();
+    await new Promise<void>((resolve) => {
+      this.server.close(() => resolve());
+    });
+  }
+}
+
+/** 取一整个 server→client WS 帧（FIN 任意、未掩码；不完整 → undefined）。 */
+function takeWholeServerFrame(buf: Buffer): { raw: Buffer; rest: Buffer } | undefined {
+  if (buf.length < 2) return undefined;
+  const b1 = buf[1]!;
+  if ((b1 & 0x80) !== 0) throw new Error('server 帧形态违约：不应对 downstream 掩码');
+  let len = b1 & 0x7f;
+  let offset = 2;
+  if (len === 126) {
+    if (buf.length < 4) return undefined;
+    len = buf.readUInt16BE(2);
+    offset = 4;
+  } else if (len === 127) {
+    if (buf.length < 10) return undefined;
+    const big = buf.readBigUInt64BE(2);
+    if (big > BigInt(0x7fffffff)) throw new Error('服务端帧长度越界');
+    len = Number(big);
+    offset = 10;
+  }
+  if (buf.length < offset + len) return undefined;
+  return { raw: buf.subarray(0, offset + len), rest: buf.subarray(offset + len) };
+}
+
+// ═══════════════════════════ FS5b 文法违规原始帧（SA4 缺陷 A 回流） ═══════════════════════════
 /**
  * 构造「帧结构完全合法、instanceId 文法非法」的 HELLO 原始帧（FS5b 专用）。
  *
