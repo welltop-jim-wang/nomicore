@@ -55,7 +55,13 @@ export function geometryConsistent(
 /** 收帧结果。 */
 export type UpdateChunkAcceptResult =
   | { readonly outcome: 'more' }
-  | { readonly outcome: 'complete'; readonly bytes: Uint8Array }
+  | {
+      readonly outcome: 'complete';
+      readonly bytes: Uint8Array;
+      /** issue #245（DD4）：wire 申报 chunkCount（reset 前捕获）——chunked-update-applied
+       *  事件的 chunkCount 事实源。不携带 transferId/totalBytes：成功型键集无需（DD1）。 */
+      readonly chunkCount: number;
+    }
   | {
       readonly outcome: 'violation';
       readonly code: 'UPDATE_TRANSFER_VIOLATION' | 'UPDATE_TRANSFER_TOO_LARGE';
@@ -166,9 +172,13 @@ export class UpdateChunkAssembler {
       this.reset();
       return violation();
     }
+    // issue #245（DD4）：reset 前捕获 declaredChunkCount——complete 消费方需要
+    // chunkCount（chunked-update-applied 字段事实源）；Σbytes === totalBytes 的
+    // 既有不变量保持不变（bytes.byteLength === declaredTotalBytes）。
+    const chunkCount = this.declaredChunkCount;
     const bytes = buffer;
     this.reset();
-    return { outcome: 'complete', bytes };
+    return { outcome: 'complete', bytes, chunkCount };
   }
 
   private validateFirst(

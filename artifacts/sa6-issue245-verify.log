@@ -1,0 +1,66 @@
+# SA6 验证证据日志 — issue #245（issue #233 切片 4：分块传输 observer 事件）
+
+- worktree：`nomicore-fix-issue-245`（HEAD `733b3a7`，branch `mabf/issue-245`，upstream = origin/feat/issue-233-chunked-update-base 同 commit）
+- node v24.13.0 / pnpm 10.28.2 / vitest 3.2.7 / typescript 5.9.3
+- 运行对象：实现基线树（无任何生产实现改动；工作树仅新增契约文件与报告产物）
+
+## 1) 契约文件类型面（package tsconfig；TSC_OK）
+
+```
+$ NODE_OPTIONS=--conditions=nomicore-source pnpm exec tsc -p packages/ws-replication/tsconfig.json
+（零错误，exit 0）
+```
+
+## 2) 契约文件运行（红 = R1–R5 目标断言；绿 = N1–N5 负控）
+
+最终代码 12 次连续独立运行失败集逐名一致（下述格式）；此前一次 N3 跨运行 flake 已定位并
+归一（wire 摘要含 Yjs 编码总长 20027/20029——随机 doc client id 所致；改 kind#seq 语义摘要后
+零 flake；见报告 §9 对照 5）。
+
+```
+$ NODE_OPTIONS=--conditions=nomicore-source pnpm exec vitest run packages/ws-replication/test/ws-replication-issue245-ac-red.test.ts --reporter=verbose
+ ✓ 绿 N1（…普通族键集逐字不变…）                      43ms
+ ✓ 绿 N2（…零时钟调用…）                              11ms
+ ✓ 绿 N3（…throw 隔离等价…）                          18ms
+ ✓ 绿 N4（…aborted 键集/六 reason 闭集/恰一…）          9ms
+ ✓ 绿 N5（…degraded × chunked 互斥单事件…）             7ms
+ × 红 R1 → AssertionError: AC-sent：transfer 完成出站必须恰一发 chunked-update-sent
+   （当前 0——三成功型事件未实现/改道未落地；中间 chunk 已证零发射）: expected +0 to be 1
+ × 红 R2 → AssertionError: AC4：分块 apply 必须发 chunked-update-applied 恰一
+   （当前 0——仍发 update-applied，第四形态改道未落地）: expected +0 to be 1
+ × 红 R3 → AssertionError: AC-acked：末 chunk ACK 收妥必须恰一发 chunked-update-acked
+   （当前 0——仍发 update-acked，改道未落地）: expected +0 to be 1
+ × 红 R4 → AssertionError: 方向镜像：hub 出站 transfer 完成必须恰一发 chunked-update-sent{side:hub}
+   （当前 0）: expected +0 to be 1
+ × 红 R5 → AssertionError: AC3：clock 在场时 chunked-update-applied 必须恰一（当前 0）
+   : expected +0 to be 1
+ Test Files  1 failed (1)
+      Tests  5 failed | 5 passed (10)
+Type Errors  no errors
+```
+
+失败集稳定性：最终代码 12/12 次 = {R1, R2, R3, R4, R5}（每次恰 5 failed | 5 passed，Type Errors no errors）。
+红灯归因：R1–R5 全部失败于「三成功型事件必须存在恰一」的存在性断言——失败点 = 现行实现能力缺口
+（成功三型零实现 + 分块路径仍发普通族），非 fixture/环境/超时/测试入口（同批绿负控 N1–N5 在
+完全相同的 fixture 形态下全绿；N4 证明同一观察/键集断言机制能检测已交付的 chunked-update-aborted）。
+
+## 3) 全包回归（无存量绿面翻转）
+
+```
+$ NODE_OPTIONS=--conditions=nomicore-source pnpm exec vitest run packages/ws-replication/test
+ Test Files  1 failed | 63 passed (64)     # 唯一失败文件 = 本契约文件（仅其红 R1–R5）
+      Tests  5 failed | 467 passed (472)   # 既有 462 项全绿；新增 10 项 = 5 红（预期）+ 5 绿
+Type Errors  no errors
+（Duration 53.47s）
+```
+
+## 4) 诊断运行证据摘录（现行实现分块路径行为锚）
+
+- `update-channel.ts:399-445`：末 chunk 出站才 `noteUpdateSent({sequence:末序, bytes:总长})`；
+  中间 chunk 不注册 inFlight/不挂 timer/不发射（L402 注释明文「#245 归 chunked 事件」）。
+- 组装 apply 成功（isStep2=false 统一管线）：hub-namespace.ts:1192 / peer-namespace.ts:1425
+  发 `update-applied`；ACK 结算：hub-namespace.ts:1061 / peer-namespace.ts:1275 发 `update-acked`
+  （bytes = inFlight 记账总长）。→ 契约红 R1–R5 的「改道未落地」缺口即此。
+- `types.ts`：observer 判别联合 23 型；chunked 族仅第 23 型 `chunked-update-aborted`
+  （L664–684，side 信封 + ADR L92 域键集）；三成功型零成员。
+- 协议 §23.1 L725：成功路径三型为 #245 计划项（不登记为已实现行为）——文档-行为登记口径一致。

@@ -356,12 +356,15 @@ export interface ReplicationClock {
 }
 
 /**
- * 结构化 observer seam 事件（ADR 0010 L167 最小观测面全量映射；25 型，append-only——
+ * 结构化 observer seam 事件（ADR 0010 L167 最小观测面全量映射；28 型，append-only——
  * issue #238 追加第 21 型 event-loop-delay-sampled 及四事件面 sequence/四段字段；
  * issue #256 追加第 22 型 namespace-failed 及 cause/timeoutMs 字段；issue #287 追加
  * 第 23/24 型 schema-rearm-applied / schema-rearm-failed——协议 §23.1 schema re-arm 域，
  * ADR 0018 §4；issue #244 追加第 25 型 chunked-update-aborted 及
- * ChunkedUpdateAbortReason 词表）。
+ * ChunkedUpdateAbortReason 词表；issue #245 追加第 26–28 型
+ * chunked-update-sent/applied/acked——ADR 0013 L89–91 域键集逐字 + §23 side 信封；
+ * 改道裁决（SA8 R21）：分块 transfer 的成功结算从普通族改道至 chunked 族）。
+
  *
  * Safe-field 纪律（协议文档 §23）：字段类别 = 稳定字面量（type/side/direction/via/
  * reason/cause/terminalState/from/to/reasonCode/channelState/connectionState）、受控标识
@@ -783,6 +786,63 @@ export type ReplicationObserverEvent =
       readonly reason: ChunkedUpdateAbortReason;
       readonly receivedChunks: number;
       readonly receivedBytes: number;
+    }
+  // ── issue #245（append-only 第 26–28 型；ADR 0013 L89–91 域键集逐字 + §23 side 信封。
+  //    R22 裁决：无 sequence/四段差值/效果组/sendQueueMs——chunked 族关联键 = transferId
+  //    （sent/aborted）+ wire UPDATE_CHUNK 帧申报；扩展 = append-only 键追加，须显式
+  //    裁决 + 协议 §23.1 登记。键集冻结语义：connectionId 握手后在场；sent 恒无任何
+  //    latency 键（clock 在场也不加）；applied/acked 的 latency 键随 clock 在场/缺省
+  //    两态（无 clock 整键缺失，非 undefined 值——§23.4）。计数不变量：每笔完成的
+  //    transfer → sent 恰一（末 chunk 出站时刻，非逐 chunk）＋（发送端）acked 恰一（单
+  //    ACK = 末 chunk 帧序）；每笔组装 apply 成功 → 互斥四形态恰一（UPDATE_CHUNK 来源 ∧
+  //    非 Step2 ∧ 非 degraded——degraded 期维持 degraded-bypass-applied 胜出，R23）。
+  //    中止 transfer 结构性不可达任一成功结算点（与 aborted 互斥）。事件在决策落定后
+  //    发射；observer 缺省 = 零事件构造、零投影读取、零时钟调用）──
+  | {
+      /**
+       * 分块 transfer 完成出站（末 chunk 帧已交宿主发送且注册在途）恰一；中间 chunk
+       * 零事件（非逐 chunk、非 transfer 起始发射——ADR L89「完成出站时一次」）。
+       * 发射端 = 发送侧 facet；改道：本结算点不再发普通族 update-sent（R21）。
+       * 字段 = wire UPDATE_CHUNK 申报投影：transferId/chunkCount/totalBytes（长度/计数
+       * safe-field，非内容；无 sequence——帧级关联键为普通族专属，DD1 排除）。
+       */
+      readonly type: 'chunked-update-sent';
+      readonly side: ReplicationObserverSide;
+      readonly connectionId?: string;
+      readonly namespaceId: string;
+      readonly transferId: number;
+      readonly chunkCount: number;
+      readonly totalBytes: number;
+    }
+  | {
+      /**
+       * 组装 apply 成功结算——apply 成功路径互斥规则第四形态：每笔成功 apply 恰一事件
+       * （UPDATE_CHUNK 来源 ∧ 非 Step2 ∧ 非 degraded；degraded 判别先于本型，R23 裁决）。
+       * 发射端 = 接收侧 facet；改道：本结算点不再发普通族 update-applied（R21）。
+       * bytes === wire 声明 totalBytes（assembler Σbytes 精确核对不变量——长度非内容）；
+       * chunkCount = wire 申报。无 transferId/sequence/stages 键（DD1 排除）。
+       */
+      readonly type: 'chunked-update-applied';
+      readonly side: ReplicationObserverSide;
+      readonly connectionId?: string;
+      readonly namespaceId: string;
+      readonly bytes: number;
+      readonly chunkCount: number;
+      readonly applyLatencyMs?: number;
+    }
+  | {
+      /**
+       * 末 chunk 帧序的单 ACK 收妥结算（发送侧；zombie 迟到 ACK 零事件——弃置 transfer
+       * 零成功型事件，与 aborted 互斥不变量一致）。改道：本结算点不再发普通族
+       * update-acked（R21）。bytes = wire totalBytes（inFlight 记账总长）；ackLatencyMs
+       * = ACK 处理时刻 − 末 chunk 出站时刻（clock 缺省/无 observer 时字段缺失）。
+       */
+      readonly type: 'chunked-update-acked';
+      readonly side: ReplicationObserverSide;
+      readonly connectionId?: string;
+      readonly namespaceId: string;
+      readonly bytes: number;
+      readonly ackLatencyMs?: number;
 
     };
 
