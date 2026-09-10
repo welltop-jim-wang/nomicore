@@ -42,7 +42,7 @@ import {
   type ReplicaNode,
   type Wire,
 } from './harness.js';
-import { stableConnectionCode, stableNamespaceCode } from '../src/observer.js';
+import { stableConnectionCode, stableNamespaceCode, stableSchemaRearmCode } from '../src/observer.js';
 import { safeStateVector, stateVectorBytesEqual, stateVectorSafeDigest } from '@nomicore/ws-replication/testing';
 import { ConnectionSender, type ConnectionSenderHost } from '../src/backpressure.js';
 
@@ -968,6 +968,20 @@ describe('T7：稳定错误码闭联合', () => {
     expect(stableNamespaceCode('NAMESPACE_UNAUTHORIZED')).toBe('NAMESPACE_UNAUTHORIZED');
     expect(stableNamespaceCode('IDENTITY_CHANGED')).toBe('IDENTITY_CHANGED');
     expect(stableNamespaceCode('SOME-JUNK')).toBe('INTERNAL_ERROR');
+    // issue #287 复审：schema re-arm 双码属**本域独立闭联合**
+    // （`ReplicationObserverSchemaRearmCode` / `schema-rearm-failed.code`），**不**并入
+    // namespace 域白名单——namespace 域词表 = §13.2 全 20 码 ∪ `IDENTITY_CHANGED`
+    // （协议 §23.2 / `ws-replication-api.test-d.ts` 两处均已钉死）。若把双码塞进该白名单，
+    // namespace 域闭联合的运行期判据会静默宽于文档与导出类型（本 PR 初版即如此）。
+    expect(stableNamespaceCode('NSRT-FATAL-SCHEMA-REARM-INVALID')).toBe('INTERNAL_ERROR');
+    expect(stableNamespaceCode('NSRT-FATAL-SCHEMA-REARM-INTERNAL')).toBe('INTERNAL_ERROR');
+    // 同一双码在本域内原样通过（域判别单点——两函数各管一域，互不越界）
+    expect(stableSchemaRearmCode('NSRT-FATAL-SCHEMA-REARM-INVALID')).toBe(
+      'NSRT-FATAL-SCHEMA-REARM-INVALID',
+    );
+    expect(stableSchemaRearmCode('NSRT-FATAL-SCHEMA-REARM-INTERNAL')).toBe(
+      'NSRT-FATAL-SCHEMA-REARM-INTERNAL',
+    );
   });
 
   it('坏 magic → connection-failed{MALFORMED_FRAME, 1002} + blocked/closed', async () => {
@@ -1138,7 +1152,8 @@ describe('T9：事件内容安全（safe-field）', () => {
     ['root', 'ROOT-SENTINEL-VALUE'],
   ];
 
-  /** 冻结白名单：逐 type 键集（22 型；键集契约 = 设计 §4.1 + api 型断言共同锁定）。 */
+  /** 冻结白名单：逐 type 键集（24 型——issue #256 第 22 型 + issue #287 第 23/24 型；
+   *  键集契约 = 设计 §4.1 + api 型断言共同锁定）。 */
   const ALLOWED_KEYS: ReadonlyMap<string, ReadonlySet<string>> = new Map([
     ['connection-state-changed', new Set(['type', 'side', 'connectionId', 'from', 'to'])],
     ['connection-backoff-scheduled', new Set(['type', 'side', 'attempt', 'delayMs', 'reason'])],
@@ -1292,7 +1307,8 @@ describe('T9：事件内容安全（safe-field）', () => {
     const all = [...run.hubEvents.events, ...run.peerEvents.events];
     expect(all.length).toBeGreaterThan(20);
     assertSafe(all, 'matrix');
-    // 全部 22 型中可达的 type 都出现（本矩阵覆盖的连接域 + 字节域 + degraded）
+    // 全部 24 型中本矩阵可达的 type 都出现（覆盖连接域 + 字节域 + degraded；
+    // 第 23/24 型 re-arm 域需 replaceSchema/fatal 注入，不在本矩阵可达面）
     const types = new Set(all.map((e) => e.type));
     const expectedTypes = [
       'connection-state-changed', 'channel-state-changed', 'bootstrap-imported',

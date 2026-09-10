@@ -24,7 +24,7 @@
  * 自愈/bypass/角色不对称）；本文件只钉「通道行为」——事件、主动关闭、追赶、零开销。
  */
 import { describe, expect, it } from 'vitest';
-import type * as Y from 'yjs';
+import * as Y from 'yjs';
 import type {
   ReplicationClock,
   ReplicationObserver,
@@ -280,8 +280,15 @@ describe('issue #287 AC2/AC5：fatal —— schema-rearm-failed 恰一 + 主动 
       expect(allowed.has(key), `意外键 ${key}`).toBe(true);
     }
     const serialized = JSON.stringify(failures[0]);
-    expect(serialized.includes(TEXT_V2), '不含 schema 文本').toBe(false);
+    // 腐坏 SCHEMA 文本零外溢：断言面必须是**本用例真正注入的**文本（TEXT_BAD）——
+    // 初版断言 TEXT_V2（本用例从未出现的字符串）恒真，对泄漏无可判伪力（复审修正）。
+    // `type ROOT` 面保留为补充判据（两段 fixture 文本的公共前缀）。
+    expect(serialized.includes(TEXT_BAD), '不含被注入的腐坏 schema 文本').toBe(false);
     expect(serialized.includes('type ROOT'), '不含 SCHEMA 内容').toBe(false);
+    // Runtime fatal 摘要同样不进事件（稳定 issue 摘要留在 getStatus()）——事件树深扫
+    const fatalSummaryLeak = JSON.stringify(peer.events);
+    expect(fatalSummaryLeak.includes(TEXT_BAD), '全事件面零 schema 文本').toBe(false);
+    expect(fatalSummaryLeak.includes('re-arm invalid'), '零 Runtime fatal message 文本').toBe(false);
     expect(peer.rearm().length, 'fatal ⇒ 恰一 re-arm 事件（无 applied）').toBe(1);
     expect(peer.of('schema-rearm-applied')).toEqual([]);
 
@@ -298,6 +305,51 @@ describe('issue #287 AC2/AC5：fatal —— schema-rearm-failed 恰一 + 主动 
     expect(peer.of('connection-failed'), '零 connection-failed').toEqual([]);
 
     rejections.dispose();
+    await run.peer.stop();
+    await settle();
+  });
+
+  it('fatal 收口后 closed 通道上的迟到 UPDATE 静默忽略：零新事件、零新 CLOSE_NAMESPACE 帧、零新收口', async () => {
+    const peer = new Collector();
+    const run = await boot({ peerObserver: peer.observer });
+    const rejections = collectUnhandledRejections();
+
+    await injectRearmFatalSchema(run);
+    const closeFramesAfterFatal = run.peerFramesAll('CLOSE_NAMESPACE').length;
+    expect(closeFramesAfterFatal, 'fatal 收口恰一 CLOSE_NAMESPACE 帧').toBe(1);
+
+    // —— 迟到的第二笔 re-arm 失败 UPDATE：通道已 closed + intent='removed'。
+    //    §11.3 + §D7 `isInboundQuiet()` 在**帧分发入口**静默忽略（终态/失联域），故本笔
+    //    连 apply 槽都不会进——「恰一事件/恰一帧」在此由入站静默门保证，不是收口闩锁在
+    //    兜底（闩锁的语义见 peer-namespace `rearmFatalClosed` 注释：为**同槽竞态**等
+    //    非入站路径的重复 failed outcome 提供同向防御）。
+    //    本用例钉的本文件此前未覆盖的契约面：迟到帧零 wire 反噬（既无第二 CLOSE_NAMESPACE
+    //    帧，也无 NAMESPACE_STATE_VIOLATION 引发的 namespace-failed / failed 终态降级）。
+    //    此处不复用 `injectRearmFatalSchema`——它等待 'closing' 边沿，而本场景是**已经**
+    //    closed 的通道（无新闭包 edge），只需注入 + 排空。
+    await settle(); // 注入前静默（序列记账）
+    const rearmBefore = peer.rearm().length;
+    injectPeerUpdate(run, (doc) => {
+      doc.getMap('SCHEMA').set('text', TEXT_BAD);
+    });
+    await settle();
+
+    // §23.1 计数不变量「每次 re-arm fatal 置位恰一事件」的入站面锚：迟到帧既不改状态、
+    // 也不重发事件/帧（闩锁与入站静默门同向；本条钉可观测面，不声称闩锁是唯一保证）。
+    expect(
+      peer.of('schema-rearm-failed').length,
+      '迟到失败 outcome 零新事件（恰一闩锁）',
+    ).toBe(1);
+    expect(peer.rearm().length, 're-arm 事件总数恒一').toBe(rearmBefore);
+    expect(
+      run.peerFramesAll('CLOSE_NAMESPACE').length,
+      '零新 CLOSE_NAMESPACE 帧（零新收口）',
+    ).toBe(closeFramesAfterFatal);
+    expect(run.namespaceState(), '仍 closed 终态').toBe('closed');
+    expect(peer.of('namespace-failed'), '迟到路径亦零 namespace-failed').toEqual([]);
+    expect(rejections.events, '零 unhandled rejection').toEqual([]);
+    rejections.dispose();
+
     await run.peer.stop();
     await settle();
   });
@@ -456,9 +508,45 @@ describe('issue #287 AC6：角色不对称——hub 侧永不发射 re-arm 事�
     await run.peer.stop();
     await settle();
   });
-});
 
-// ═══════════════════════════ AC5：observer 缺省纪律 ═══════════════════════════
+  it('AC4 因果面：peer→hub 的 SCHEMA 变化被 protected-field 检查拒绝 → hub 观测面零 re-arm 事件、hub SCHEMA 投影不变', async () => {
+    // 上一条只断「hub 的事件集为空」——空集在没有 peer→hub SCHEMA 变更尝试时也会绿。
+    // 本条把 ADR 0018 §6 / 协议 AC4 的**因果**打实：peer 侧对 SCHEMA 容器的任何改动在
+    // hub 的 apply 槽被 `PROTECTED_FIELD_MUTATION` 整体拒绝（零写入），故 hub 的
+    // `schemaBefore.text !== schemaAfter.text` 永不成立、re-arm 结算点结构性不可达。
+    const hub = new Collector();
+    const peer = new Collector();
+    const run = await boot({ hubObserver: hub.observer, peerObserver: peer.observer });
+    const hubLease = run.hubFixture?.lease;
+    if (hubLease === undefined) throw new Error('无 hub fixture lease');
+
+    const genesis = String(snapshot(run, 'hub').getMap('SCHEMA').get('text'));
+
+    // peer 侧改动 SCHEMA（原始 doc 篡改——模拟对端复制来的非法变更；真实增量报文 =
+    // 相对 hub 状态向量的 diff，沿既有 issue #256 场景 5 同款构造）
+    const clone = snapshot(run, 'peer');
+    (clone.getMap('SCHEMA') as unknown as Map<string, unknown>).set('text', TEXT_BAD);
+    const evil = Y.encodeStateAsUpdate(clone, run.stateVectorOf('peer'));
+    run.injectPeer({ kind: 'UPDATE', namespaceId: run.nsId, update: evil });
+    await settle();
+
+    // hub 侧保护检查拒绝：PROTECTED_FIELD_MUTATION（零 live 写入）
+    const hubErrors = hub.of('namespace-error').filter((e) => e.direction === 'sent');
+    expect(
+      hubErrors.map((e) => e.code),
+      `hub 应回 PROTECTED_FIELD_MUTATION，实际 ${JSON.stringify(hubErrors)}`,
+    ).toContain('PROTECTED_FIELD_MUTATION');
+    // hub SCHEMA 投影不变（拒绝 = 零写入）
+    expect(snapshot(run, 'hub').getMap('SCHEMA').get('text'), 'hub SCHEMA 未被污染').toBe(genesis);
+    // 因果结论：hub 侧零 re-arm 事件（apply 槽结构性不可能观测 SCHEMA 投影变化）
+    expect(hub.rearm(), 'hub 侧零 re-arm 事件（含被拒绝的 peer SCHEMA 变更）').toEqual([]);
+    // hub 侧 active schema 身份亦不动
+    expect(hubLease.getActiveSchema()?.semanticFingerprint).toBeDefined();
+
+    await run.peer.stop();
+    await settle();
+  });
+});
 
 describe('issue #287 AC7：observer 缺省——零事件构造、零时钟调用；re-arm 行为不依赖观测面', () => {
   it('无 observer：成功路径照常安装（peer getActiveSchema 已切换）且全程零时钟调用', async () => {

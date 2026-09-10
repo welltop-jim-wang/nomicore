@@ -30,6 +30,7 @@ import type {
   PeerNamespaceState,
   ReplicationNamespaceFailedCause,
   ReplicationObserverEvent,
+  ReplicationObserverSchemaRearmCode,
   ReplicationTarget,
   ReplicationTimer,
   ResolvedLimits,
@@ -1388,15 +1389,21 @@ export class PeerNamespaceController {
    *
    * 静默纪律：observer 缺席 ⇒ 事件构造短路（零字段读取）；收口动作照常执行（re-arm
    * fatal 的通道关闭是行为契约而非观测面——与 §23.1「observer 缺省零事件」不冲突）。
+   *
+   *  闩锁顺序（issue #287 复审修正）：`rearmFatalClosed` 判定**先于发射与收口**——闩锁
+   *  是「恰一」的判据本身，不是收口的附带物。置于发射之后，迟到的第二个 failed outcome
+   *  （`closed` 通道仍可接纳迟到的入站 UPDATE 并照常 apply，fatal 重复置位）会产出第二发
+   *  `schema-rearm-failed`，与 §23.1 计数不变量「每次 re-arm fatal 置位恰一事件」背离；
+   *  本处不依赖「通道已关闭」这一外部性质来保证计数。
    */
   private settleSchemaRearm(outcome: ReplicationSchemaRearmOutcome): void {
     if (outcome.kind === 'applied') {
       this.emitSchemaRearmApplied(outcome.semanticFingerprint, outcome.updatedAt);
       return;
     }
-    this.emitSchemaRearmFailed(outcome.code);
-    if (this.rearmFatalClosed) return; // 恰一次：后续迟到失败 outcome 零新帧、零新收口
+    if (this.rearmFatalClosed) return; // 恰一次：迟到失败 outcome 零新事件、零新帧、零新收口
     this.rearmFatalClosed = true;
+    this.emitSchemaRearmFailed(outcome.code);
     void this.removeTarget().catch(() => undefined); // 任务体结构性零 throw（防御 seam 偏差）
   }
 
@@ -1416,7 +1423,7 @@ export class PeerNamespaceController {
 
   /** 第 24 型：re-arm fatal 置位（code = ADR 0018 §3 稳定双码；稳定 issue 摘要留在
    *  Runtime `getStatus()` fatal 摘要，不入事件——§23.3 禁止 SCHEMA 内容/原始 cause）。 */
-  private emitSchemaRearmFailed(code: string): void {
+  private emitSchemaRearmFailed(code: ReplicationObserverSchemaRearmCode): void {
     if (!this.observerOn) return;
     this.host.emitObserver({
       type: 'schema-rearm-failed',
