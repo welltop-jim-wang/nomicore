@@ -222,7 +222,11 @@ describe('issue #229：Hub 正常重启后 Peer 自动恢复静态 target', () =
             hub: { url: `ws://127.0.0.1:${port}/replication`, hubInstanceId: 'hub-1', token: 'token-1' },
             targets: [{ namespaceId, ownerUserId: 'alice' }],
           },
-          backoff: { baseMs: 5_000, maxMs: 5_000, resetAfterMs: 60_000 },
+          // backoff 窗口必须显著大于 CI 上 tsx 冷启动重启 Hub 的最坏耗时：backoff 计时
+          // 自 connection-backoff-scheduled 起算，其后还要 spawn hubV2b 并等 ready 才查
+          // Peer status；5s 在满载 CI 分片上会被重拨抢先（status 观察到 ready 而非 backoff）。
+          // 30s 留出数倍余量；恢复段等待上限（live 60s / read 30s）仍覆盖重拨时刻。
+          backoff: { baseMs: 30_000, maxMs: 30_000, resetAfterMs: 60_000 },
         }),
       ]);
       await waitForEvent(peerProc, (e) => e.event === 'ready', 60_000, 'peer ready');
@@ -254,18 +258,41 @@ describe('issue #229：Hub 正常重启后 Peer 自动恢复静态 target', () =
       expect(peerProc.exitCode).toBeNull();
 
       // ── 同 rootDir、同 endpoint 重启 Hub；Peer target/凭据/配置均不变化，也不发恢复命令 ──
-      const hubV2b = spawnApp(['--config', configV2Path]);
-      await waitForEvent(hubV2b, (e) => e.event === 'ready', 60_000, 'hub v2 ready (restart)');
-
-      // 在 Peer 尚处于 backoff/disconnected 时立即写 Hub；长 backoff 配置保证写入先于重拨。
-      const statusBeforeWrite = await sendOp(peerProc, { op: 'status' }, 20_000);
-      expect(statusBeforeWrite.connectionState).toBe('backoff');
-      const disconnectedWrite = await sendOp(
-        hubV2b,
-        { op: 'verify-write', namespaceId, set: ['count'], path: ['count'], value: 11, timeoutMs: 30_000 },
-        60_000,
-      );
-      expect(disconnectedWrite.ok).toBe(true);
+      // 全抖动 backoff（实际重拨 delay = random() × cap，下界 0）下重拨落点不可控：
+      // 若重拨恰好落在 Hub ready 之后、断线期写入之前的毫秒级窗口内，Peer 会抢先回到
+      // ready（CI 观测：status 断言期望 backoff 实得 ready），「断线期 Hub 写」fixture
+      // 即失效。因此把「重启 → 查 status → 落写」做成最多 3 轮的重试：只在确认 Peer 仍
+      // 处 backoff 的那一轮落写；单轮失败概率 ~1%（30s cap 下窗口占比），3 轮可忽略。
+      // 任一轮 Peer 抢先重连则关掉该轮 Hub、等 Peer 重新 backoff 后再试——断言不降级。
+      let hubV2b: Proc | undefined;
+      let disconnectedWrite: Record<string, unknown> | undefined;
+      for (let attempt = 1; attempt <= 3 && disconnectedWrite === undefined; attempt++) {
+        const hubRestart = spawnApp(['--config', configV2Path]);
+        await waitForEvent(hubRestart, (e) => e.event === 'ready', 60_000, `hub v2 ready (restart #${attempt})`);
+        // 在 Peer 尚处于 backoff/disconnected 时立即写 Hub；30s backoff cap 保证绝大多数
+        // 轮次写入先于重拨。
+        const statusBeforeWrite = await sendOp(peerProc, { op: 'status' }, 20_000);
+        if (statusBeforeWrite.connectionState !== 'backoff') {
+          const retryOffset = peerProc.events.length;
+          await signalAndExpectExit(hubRestart, 'SIGTERM', 30_000, 0, `hub v2 (restart #${attempt})`);
+          await waitForEvent(
+            peerProc,
+            (e) => e.event === 'connection-backoff-scheduled',
+            30_000,
+            `peer backoff after restart #${attempt} teardown`,
+            retryOffset,
+          );
+          continue;
+        }
+        hubV2b = hubRestart;
+        disconnectedWrite = await sendOp(
+          hubV2b,
+          { op: 'verify-write', namespaceId, set: ['count'], path: ['count'], value: 11, timeoutMs: 30_000 },
+          60_000,
+        );
+      }
+      expect(hubV2b, '3 轮重启内未能赶上 Peer backoff 窗口完成断线期写入').toBeDefined();
+      expect(disconnectedWrite?.ok).toBe(true);
 
       // 不重启 Peer、不 re-add target、不 notify-auth-changed、不改配置；等待既有静态 target 自动恢复。
       await waitForEvent(
@@ -286,7 +313,7 @@ describe('issue #229：Hub 正常重启后 Peer 自动恢复静态 target', () =
       expect(recoveredRead?.value).toBe(11);
 
       await signalAndExpectExit(peerProc, 'SIGTERM', 30_000, 0, 'peer');
-      await signalAndExpectExit(hubV2b, 'SIGTERM', 30_000, 0, 'hub v2 (restart)');
+      await signalAndExpectExit(hubV2b!, 'SIGTERM', 30_000, 0, 'hub v2 (restart)');
     },
     240_000,
   );
