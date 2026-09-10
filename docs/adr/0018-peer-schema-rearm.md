@@ -152,5 +152,8 @@ re-arm fatal 经 exit 重启后，P0 编译同一 SCHEMA 仍是**结果失败而
   close/reset 交错、updatedAt 投影、P0 失败 Runtime 自愈、Hub 不触发
   conformance；
 - observer 词汇 22 → 24 型；`namespace-failed{cause: session-open-failed}`
-  在 fatal 重连路径仍会出现，告警路由应以 `schema-rearm-failed` 为 schema
+  在 fatal 后的重开路径仍会出现——显式 re-add（或其后新连接对 `failed`
+  终态的每连接恰一次重试）触发 `openReplicationSession` 被 Runtime fatal
+  门拒绝，每次连接恰一事件、`failed` 安静终局（连接内零重试循环）；其语义
+  不含「schema 编译失败」，告警路由应以 `schema-rearm-failed` 为 schema
   类根因判据。

@@ -409,6 +409,77 @@ describe('issue #287 AC2/AC5：fatal —— schema-rearm-failed 恰一 + 主动 
     await run.peer.stop();
     await settle();
   });
+
+  it('AC5：fatal Runtime 复用——re-add 后 openReplicationSession 被 fatal 门拒绝 → namespace-failed{session-open-failed} 恰一 + failed 安静终局（连接内零重试、零事件风暴）；重连每连接恰一次重试且同样安静', async () => {
+    const peer = new Collector();
+    const run = await boot({ peerObserver: peer.observer });
+    const rejections = collectUnhandledRejections();
+
+    await injectRearmFatalSchema(run);
+    const opensAfterFatal = run.peerFramesAll('OPEN_NAMESPACE').length;
+
+    // 显式 re-add（ADR 0018 §3 恢复入口）→ intent 回 active → startOpen → registry.open
+    // 成功 → OPEN_NAMESPACE 上线 → hub OPEN_OK → peer openReplicationSession 被 Runtime
+    // fatal 门拒绝（RUNTIME_WRITE_DISABLED → session-open-failed，§23.2 覆盖矩阵场景 13）
+    run.peer.addTarget({ namespaceId: run.nsId, localOwner: PEER_OWNER });
+    await settleUntil(
+      () => peer.of('namespace-failed').length >= 1,
+      `re-add 后 session-open-failed 结算，当前事件 ${JSON.stringify(peer.events.map((e) => e.type))}`,
+    );
+    await settle();
+
+    // ADR 0018 Consequences：session-open-failed 在 fatal 后的重开路径**仍会出现**——
+    // 语义不含「schema 编译失败」（schema 类根因告警路由以 schema-rearm-failed 为准）
+    expect(run.namespaceState(), 'session 打不开 → failed 终态').toBe('failed');
+    const firstFail = peer.of('namespace-failed');
+    expect(firstFail.length, `恰一 namespace-failed，实际 ${JSON.stringify(firstFail)}`).toBe(1);
+    expect(firstFail[0]!.cause).toBe('session-open-failed');
+
+    // 安静终局①（连接内）：推进全部 timer 族（open/bootstrap/reconcile 上限之外）——
+    // 零新 OPEN_NAMESPACE（无连接内重试循环）、零新事件
+    await advanceMs(run, 30_000);
+    await settle();
+    expect(run.peerFramesAll('OPEN_NAMESPACE').length, '连接内零重试').toBe(
+      opensAfterFatal + 1,
+    );
+    expect(peer.of('namespace-failed').length, '零事件风暴').toBe(1);
+    expect(run.namespaceState()).toBe('failed');
+    expect(rejections.events, '零 unhandled rejection').toEqual([]);
+
+    // 安静终局②（重连）：FSM 不变量「failed 终态在新连接上重开」——每次连接恰一次
+    // 重试，仍被 fatal 门拒绝 → 同样安静；ADR Consequences「仍会出现」的重连面
+    run.wire.closePeerSide(1006, 'socket-lost');
+    await settleUntil(
+      () => run.peer.getConnectionState() !== 'ready',
+      `断连可观测，当前 ${run.peer.getConnectionState()}`,
+    );
+    await advanceMs(run, 200); // backoff 首拨段（默认 base=100）
+    await run.waitConnection('ready');
+    await settleUntil(
+      () => peer.of('namespace-failed').length >= 2,
+      '重连后恰一次重试并再结算 session-open-failed',
+    );
+    await settle();
+    expect(run.peerFramesAll('OPEN_NAMESPACE').length, '重连恰一次重试').toBe(
+      opensAfterFatal + 2,
+    );
+    expect(peer.of('namespace-failed').length).toBe(2);
+    expect(peer.of('namespace-failed')[1]!.cause).toBe('session-open-failed');
+
+    await advanceMs(run, 30_000);
+    await settle();
+    expect(run.peerFramesAll('OPEN_NAMESPACE').length, '重连后连接内零热循环').toBe(
+      opensAfterFatal + 2,
+    );
+    expect(peer.of('namespace-failed').length, '重连后零新失败事件').toBe(2);
+    expect(peer.rearm().length, '全程 re-arm 事件恒一（fatal 那次）').toBe(1);
+    expect(run.peer.getConnectionState(), '连接不被株连').toBe('ready');
+    expect(rejections.events, '零 unhandled rejection').toEqual([]);
+    rejections.dispose();
+
+    await run.peer.stop();
+    await settle();
+  });
 });
 
 // ═══════════════════════════ AC3：断连追赶 ═══════════════════════════

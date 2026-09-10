@@ -708,7 +708,7 @@ schema re-arm 域（ADR 0018；peer 专属——hub 的 apply 槽结构性不可
 | type | side | 字段 |
 |---|---|---|
 | `schema-rearm-applied` | peer | `connectionId?`、`namespaceId`、`semanticFingerprint`（新安装 active schema 的语义指纹——§23.3 documented safe digest）、`updatedAt`（投影自复制来的 `META.schema`，诚实缺席为 `null`——peer 永不读本地时钟生成）。**计数不变量**：每次 re-arm 成功安装恰一事件（含纯格式差异的 fingerprint 不变安装——与 ADR 0017「每次提交都推进 updatedAt」对齐）；事件在 ws-replication 层 apply **结算续体**发射（槽已结算、`notifyDirty` 已完成——**晚于**槽内 R6；槽内 R5.6 安装段早于 R6 是 ADR 0018 §1 的**安装**位置，不是发射位置，勿混） |
-| `schema-rearm-failed` | peer | `connectionId?`、`namespaceId`、`code` ∈ {`NSRT-FATAL-SCHEMA-REARM-INVALID`, `NSRT-FATAL-SCHEMA-REARM-INTERNAL`}（ADR 0018 双码——前者带稳定 schema issue 摘要键，后者为内部异常折叠；均不含 schema 文本/ROOT/堆栈）。**计数不变量**：每次 re-arm fatal 置位恰一事件（收口闩锁为判据本身——通道关闭后迟到的 failed outcome 零新事件；不依赖「通道已关闭」这一外部性质）；伴随行为 = 该 namespace channel 主动 CLOSE_NAMESPACE（`closed` 终态），schema 类根因告警路由以本事件为准（`namespace-failed{cause: session-open-failed}` 在后续重连路径可出现，语义不含「schema 编译失败」） |
+| `schema-rearm-failed` | peer | `connectionId?`、`namespaceId`、`code` ∈ {`NSRT-FATAL-SCHEMA-REARM-INVALID`, `NSRT-FATAL-SCHEMA-REARM-INTERNAL`}（ADR 0018 双码——前者带稳定 schema issue 摘要键，后者为内部异常折叠；均不含 schema 文本/ROOT/堆栈）。**计数不变量**：每次 re-arm fatal 置位恰一事件（收口闩锁为判据本身——通道关闭后迟到的 failed outcome 零新事件；不依赖「通道已关闭」这一外部性质）；伴随行为 = 该 namespace channel 主动 CLOSE_NAMESPACE（`closed` 终态），schema 类根因告警路由以本事件为准（`namespace-failed{cause: session-open-failed}` 在 fatal 后的重开路径（显式 re-add、或其后新连接对 `failed` 终态的每连接恰一次重试）可出现——Runtime fatal 门拒绝 `openReplicationSession`，每次连接恰一事件、`failed` 安静终局；语义不含「schema 编译失败」） |
 
 ### 23.2 稳定码闭联合（append-only）
 

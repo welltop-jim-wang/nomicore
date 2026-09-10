@@ -711,8 +711,10 @@ export type ReplicationObserverEvent =
        * CLOSE_NAMESPACE → `closed` 终态**（诚实快速失败，双侧资源立即释放；重连不
        * 自动重开——恢复入口 = 显式 re-add / reset-replica / 进程重启，不产生重试循环）。
        *
-       * schema 类根因告警路由以本事件为准：后续重连路径可能出现的
-       * `namespace-failed{cause:'session-open-failed'}` 语义**不含**「schema 编译失败」。
+       * schema 类根因告警路由以本事件为准：fatal 后的重开路径（显式 re-add / 新连接
+       * 对 `failed` 终态的每连接恰一次重试）会出现
+       * `namespace-failed{cause:'session-open-failed'}`（Runtime fatal 门拒绝
+       * `openReplicationSession`；每连接恰一、安静终局），其语义**不含**「schema 编译失败」。
        *
        * 事件不含 schema 文本/ROOT/堆栈；稳定 schema issue 摘要留在 Runtime
        * `getStatus()` fatal 摘要（§23.3 安全清单：不允许 SCHEMA 内容与原始 cause）。
@@ -721,8 +723,9 @@ export type ReplicationObserverEvent =
       readonly side: 'peer';
       readonly connectionId?: string;
       readonly namespaceId: string;
-      /** ADR 0018 §3 稳定双码之一（namespace 域闭联合成员；未知折叠 INTERNAL_ERROR 不适用
-       *  ——Runtime 侧产出面即本双码）。 */
+      /** ADR 0018 §3 稳定双码之一（schema re-arm 域**独立**闭联合成员，§23.3 明文不并入
+       *  §23.2 namespace 域白名单；未知折叠 INTERNAL_ERROR 不适用——Runtime 侧产出面
+       *  即本双码）。 */
       readonly code: ReplicationObserverSchemaRearmCode;
     };
 
