@@ -347,9 +347,12 @@ function expectInitialDoc(doc: Y.Doc, namespaceId: string): void {
   expect(sc.get('id')).toBe('ns-1');
   expect(sc.get('text')).toBe(ENVELOPE.text);
   const meta = doc.getMap('META');
-  expect(meta.size).toBe(2);
+  expect(meta.size).toBe(3); // issue #282：docId/createdAt + 嵌套 schema Y.Map
   expect(meta.get('docId')).toBe(namespaceId);
   expect(meta.get('createdAt')).toBe(NOW_ISO);
+  const schemaMeta = meta.get('schema');
+  expect(schemaMeta).toBeInstanceOf(Y.Map);
+  expect((schemaMeta as Y.Map<unknown>).get('updatedAt')).toBe(NOW_ISO); // genesis：同一捕获时钟瞬间
   const root = doc.getMap('ROOT');
   expect(root.size).toBe(2);
   expect(root.get('n')).toBe(1);

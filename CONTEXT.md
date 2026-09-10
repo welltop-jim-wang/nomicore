@@ -30,6 +30,10 @@ _Avoid_: 已关闭 Runtime、无人引用即可立即销毁
 namespace 创建提交时由生命周期层生成的 UTC ISO 8601 字符串，存于 `META.createdAt`；调用方不提供，Persistence 只保存而不解释或校验。
 _Avoid_: Unix 时间戳、调用方自报创建时间
 
+**schema 更新时间（schemaUpdatedAt）**:
+当前 schema generation 成功安装的时间，UTC ISO 8601 字符串，存于嵌套 `META.schema` Y.Map 的 `updatedAt` 键（ADR-0017）：genesis 等于 `META.createdAt`（同一捕获时钟瞬间），此后每次成功的 `replaceSchema()` 在同一事务内推进（含语义等价/仅格式差异的替换——以事务提交为准，不据语义指纹推断）；经 `getActiveSchema().updatedAt` 公共投影暴露，legacy 命名空间（无 `META.schema` 载体）为 `null`（诚实缺席，不伪造派生）。它不是 namespace 创建时间，也不是 schema 内容的哈希。
+_Avoid_: 复用 `META.createdAt` 充当 schema 安装时间、Unix 时间戳、本地接收时刻盖戳（peer 收敛的是 hub 起源值）
+
 **Data**:
 调用方在 namespace 中读写的、受 Schema 约束的业务事实。公共消费面以 `readData(path)` / `mutateData(mutation)` 表达最小、可合并且有语义的变更；`readData` 成功时同步返回值与其语义 schema 投影（ADR-0016）；Data 不包含 Schema 身份或 Metadata 生命周期事实。
 _Avoid_: 把 Data 当成必须整体读写的 ROOT 快照、在业务代码中暴露 Y.Doc 载体

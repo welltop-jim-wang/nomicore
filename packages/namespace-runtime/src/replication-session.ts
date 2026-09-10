@@ -349,15 +349,22 @@ export function registerReplicationHost(runtime: NamespaceRuntime, host: Runtime
  *  对 ADR L105 最小集（SCHEMA+保留字段）的收紧而非放宽：docId/createdAt 是 Registry
  *  身份元数据、本切片无任何合法 raw 路径修改非保留 META（L121 未决定），对称谓词可测
  *  性与防篡改性均更优；ADR 0010 增补节已登记）；peer session（接收 hub→peer update）：
- *  META 全键保护；SCHEMA/ROOT 放行（L105「允许同步 ROOT、SCHEMA」）。 */
+ *  META 保护**除白名单外全键**（issue #282 / ADR-0017：白名单 = {'schema'}——schema
+ *  生命周期元数据 META.schema 随 SCHEMA generation 同行，hub→peer 必须放行，否则
+ *  SCHEMA 与其 updatedAt 在 peer 侧结构性分叉）；SCHEMA/ROOT 放行（L105「允许同步
+ *  ROOT、SCHEMA」）。 */
 const RAW_PROTECTED_FIELDS = Object.freeze({
   hub: Object.freeze({ schema: true, meta: true }),
   peer: Object.freeze({ schema: false, meta: true }),
 } as const);
 
-// 【R2-12（§13.1）】PEER_ALLOWED_META_KEYS 空占位已删除：空集是**语义冻结**（ADR 0010
-// 修订节「peer 允许的 META 白名单首版 = 空集 ⟺ META 全键保护」——ADR 文字即真相源，
-// 非代码常量义务）；运行时零差分、零引用（grep 全域复核）。
+/** 【issue #282 / ADR-0017】peer 侧 META 白名单（首版空集 ⟺ 全键保护的修订——ADR
+ *  0010 增补节登记）：'schema' 是 schema 生命周期元数据键（嵌套 Y.Map {updatedAt}），
+ *  由 hub 的 SCHEMA 写事务与 SCHEMA 四键原子提交、随 generation 复制同行；peer 本地
+ *  永不写它（不以本地接收时刻盖戳——Hub 起源时间戳原样收敛）。白名单语义 = 该键的
+ *  增/改/删不参与受保护相等判据（与 SCHEMA 容器在 peer 侧的放行同族——hub 是
+ *  hub→peer 方向 schema 域唯一权威）。hub 侧白名单恒为空（全键保护不变）。 */
+const PEER_ALLOWED_META_KEYS: ReadonlySet<string> = new Set(['schema']);
 
 // ─────────────────────────────── 会话 core 状态与工厂（§4.3） ───────────────────────────────
 
@@ -820,18 +827,24 @@ function protectedContentEvaluated(
   }
   const rules = RAW_PROTECTED_FIELDS[localRole];
   if (rules.schema && !protectedMapEqual(liveDoc, scratch, 'SCHEMA')) return 'changed';
-  if (rules.meta && !protectedMapEqual(liveDoc, scratch, 'META')) return 'changed';
+  // 【issue #282】peer 侧 META 判据带白名单（{'schema'}——schema 生命周期元数据随
+  //  generation 同行）；hub 侧白名单为空（全键保护不变）
+  const allowedMetaKeys = localRole === 'peer' ? PEER_ALLOWED_META_KEYS : undefined;
+  if (rules.meta && !protectedMapEqual(liveDoc, scratch, 'META', allowedMetaKeys)) return 'changed';
   return 'equal';
 }
 
 /** 单容器全键值内容投影相等（判据 (a)）。载体在场经 share.has 判别（零惰性 getMap）；
  *  载体异型（同名非 Y.Map）保守 'changed'（契约外形态不得经 raw 入容器——O-12 保守读法）。
  *  键集先行（存在性——长度判别）+ 逐键值比较（round-1 结构保留，仅替换值判等函数为
- *  protectedValueEqual——R2-4）。 */
+ *  protectedValueEqual——R2-4）。
+ *  【issue #282】allowedKeys（仅 META 白名单域使用）：白名单键在两侧键集中同时剔除后
+ *  再比较——其增/改/删不构成「受保护内容变化」（ADR-0017 授权语义）。 */
 function protectedMapEqual(
   live: Y.Doc,
   scratch: Y.Doc,
   name: 'SCHEMA' | 'META',
+  allowedKeys?: ReadonlySet<string>,
 ): boolean {
   const liveHas = live.share.has(name);
   const scratchHas = scratch.share.has(name);
@@ -845,8 +858,8 @@ function protectedMapEqual(
   } catch {
     return false;
   }
-  const liveKeys = [...liveMap.keys()];
-  const scratchKeys = [...scratchMap.keys()];
+  const liveKeys = [...liveMap.keys()].filter((k) => allowedKeys === undefined || !allowedKeys.has(k));
+  const scratchKeys = [...scratchMap.keys()].filter((k) => allowedKeys === undefined || !allowedKeys.has(k));
   if (liveKeys.length !== scratchKeys.length) return false;
   for (const key of scratchKeys) {
     if (!protectedValueEqual(liveMap.get(key), scratchMap.get(key))) return false;

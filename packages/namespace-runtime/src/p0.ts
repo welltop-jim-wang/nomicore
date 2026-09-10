@@ -29,7 +29,7 @@ import type {
   VfslModule,
 } from '@nomicore/vfsl';
 import { FATAL_P0_INTERNAL_CODE, FATAL_P0_INTERNAL_MESSAGE } from './errors.js';
-import { projectSchemaEnvelope } from './projection.js';
+import { projectSchemaEnvelope, projectSchemaUpdatedAt } from './projection.js';
 import type { NamespaceRuntimeReplicationStatus } from './replication-write.js';
 
 /** Runtime 可变运行态（闭包私有；唯一可变源——P0 终态迁移单点写入，JS 单线程无竞态）。 */
@@ -37,7 +37,8 @@ export interface RuntimeState {
   schemaState: 'preparing' | 'ready' | 'unavailable';
   /** unavailable 时的稳定 issue 摘要（冻结 {code,message} 纯字符串对；INV-N7）。 */
   schemaIssue?: Readonly<{ code: string; message: string }>;
-  /** ready 时的 active schema 五字段身份（冻结；INV-N8 双指纹取自 compile 产物引用）。 */
+  /** ready 时的 active schema 六字段身份（冻结；INV-N8 双指纹取自 compile 产物引用，
+   *  updatedAt 取自 META.schema 投影/写槽提交值——issue #282）。 */
   activeInfo?: Readonly<ActiveSchemaInfo>;
   /** active schema tools（module/derived）——内部保留（D8 封口按 ADR-0016 修订：
    *  derived 只经 readData 语义 schema 投影的受控只读深拷贝进入公共面；
@@ -61,13 +62,20 @@ export interface RuntimeState {
   replication: NamespaceRuntimeReplicationStatus;
 }
 
-/** active schema 身份投影（D8）：五键恰好；module/derived/validator 永不出现。 */
+/** active schema 身份投影（D8；issue #282 / ADR-0017 扩展为六键——加性第六键
+ *  `updatedAt`）：module/derived/validator 永不出现。
+ *  `updatedAt` 是当前 active schema generation 的安装时间（UTC ISO 8601 字符串），
+ *  与 `META.schema.updatedAt` 同源：genesis 等于 META.createdAt（同一捕获时钟瞬间），
+ *  此后每次成功的 replaceSchema 在提交事务内推进（含语义等价/仅格式差异的替换——
+ *  时间戳描述提交的 generation，不据语义指纹推断）。legacy 命名空间（本特性前创建，
+ *  无 META.schema 载体）或元数据损坏 → `null`（诚实缺席——绝不伪造派生）。 */
 export interface ActiveSchemaInfo {
   readonly lang: string;
   readonly version: number;
   readonly id: string;
   readonly envelopeFingerprint: string;
   readonly semanticFingerprint: string;
+  readonly updatedAt: string | null;
 }
 
 /** P0 槽体运行时环境（构造栈一次成型——INV-N14：纯数据闭包，thunk/槽体零读 seam 输入）。 */
@@ -106,7 +114,9 @@ export async function runP0(env: P0Env): Promise<void> {
       //    fault 分级，loud）：envelope 三身份字段 + 双指纹 + module/derived 存在且
       //    类型正确，否则 throw → ⑦
       assertCompiledShape(result);
-      installActive(result, env.state);
+      // 【issue #282】updatedAt 与四键投影同槽读取（P0 观测窗内 doc 无并发写——
+      //  sequencer 队首，JS run-to-completion）；legacy/损坏 → null（诚实缺席）
+      installActive(result, env.state, projectSchemaUpdatedAt(env.doc));
     } else {
       // ⑥ 正常 compile failure → unavailable（结果联合内的失败，非 fatal）
       if (result.issues.length === 0) {
@@ -154,11 +164,15 @@ export function toIssueSummary(issue: SchemaParseIssue): { code: string; message
   };
 }
 
-/** D8 installActive：五字段冻结身份 + 内部 tools 保留；state → 'ready'（终态锁定）。
+/** D8 installActive：六字段冻结身份 + 内部 tools 保留；state → 'ready'（终态锁定）。
  *  @internal 导出（issue #91）：SCHEMA 写槽 S5.5 复用为「安装 active schema 单点」。
  *  增补 `delete state.schemaIssue`（恢复卫生——P0 unavailable 摘要不残留；P0 调用点
- *  preparing→ready 时该字段恒 undefined → no-op，零回归）。 */
-export function installActive(compiled: CompileSchemaEnvelopeOk, state: RuntimeState): void {
+ *  preparing→ready 时该字段恒 undefined → no-op，零回归）。
+ *  【issue #282】第三参 `updatedAt`：P0 传 doc 投影值（projectSchemaUpdatedAt——
+ *  legacy/损坏 null）；SCHEMA 写槽传本槽写入 META.schema.updatedAt 的同一字符串
+ *  （与已提交 generation 逐字节一致——post-transaction/pre-dirty 观测窗内公共
+ *  投影即对应新 generation）。 */
+export function installActive(compiled: CompileSchemaEnvelopeOk, state: RuntimeState, updatedAt: string | null): void {
   const info = Object.freeze({
     lang: compiled.envelope.lang,
     version: compiled.envelope.version,
@@ -166,6 +180,7 @@ export function installActive(compiled: CompileSchemaEnvelopeOk, state: RuntimeS
     envelopeFingerprint: compiled.envelopeFingerprint, // 直接引用，零重算——
     semanticFingerprint: compiled.semanticFingerprint, // 「与 compileSchemaEnvelope
     // 产物逐字节一致」的结构性保证
+    updatedAt, // 【issue #282】schema 生命周期时间戳（诚实缺席 = null）
   });
   state.activeInfo = info;
   state.activeTools = { module: compiled.module, derived: compiled.derived }; // 内部保留

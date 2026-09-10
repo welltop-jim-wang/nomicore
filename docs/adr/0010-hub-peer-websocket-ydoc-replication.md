@@ -408,3 +408,31 @@ drain。实现证据：`packages/ws-replication/src/*`（PR #165 round 2）。
    注记、§23.1 reason 词表——均标 issue #254；本任务 SA8 冲突门禁及设计后复审
    verdict 均为 `clear`（`wiki/raw/task_issue-254_sa8_gate.md` /
    `task_issue-254_sa8_recheck.md`，历史证据非规范）。
+
+### issue #282 修订：peer 侧 META 白名单 {'schema'}（schema 生命周期元数据随 generation 同行，2026-09-10）
+
+本节登记 ADR 0017 对本 ADR 复制保护规则的修订；规范细节以 ADR 0017 为权威。除
+下列明示条款外，正文与此前修订节其余条款维持原文效力。
+
+1. **白名单修订**：「受保护字段判据（O-12 冻结）」节「peer 允许的 META 白名单
+   **首版 = 空集**（⟺ META 全键保护）」修订为——peer 侧（接收 hub→peer update）
+   META 白名单 = **`{ 'schema' }`**：`META.schema` 是 schema 生命周期元数据键
+   （嵌套 Y.Map `{ updatedAt }`，ADR 0017），由 hub 的 SCHEMA 写事务与 SCHEMA
+   四键**同一事务**提交；其增/改/删不参与 peer 侧受保护相等判据（与 SCHEMA 容器
+   在 peer 侧的放行同族——hub 是 hub→peer 方向 schema 域唯一权威）。若不放行，
+   SCHEMA 与其 `updatedAt` 在 peer 侧结构性分叉。
+2. **不变条款**：hub 侧（接收 peer→hub）SCHEMA 全容器 + META **全键**保护不变
+   （含 `META.schema`——peer 永不经 raw 获得写生命周期元数据的通道）；peer 侧
+   白名单外 META 键（docId/createdAt/replicationId/replicationEpoch/任意自定义键）
+   维持全键保护；判据 (a) 内容投影相等、结构值规范化深比较、「删后同值重写允许」
+   均不变；raw caller 不得逐次自定义受保护字段集合不变。
+3. **peer 不盖本地接收时刻**：peer 的 `replaceSchema()` 在 Lease 接纳段被角色权限
+   拒绝（正文「SCHEMA 与 META 权限」节），peer 写路径不存在读取本地时钟产生
+   `updatedAt` 的通道；peer 收敛值与 hub 起源时间戳逐字节一致。
+4. **踩坑注记修订**：「META 触碰的管理写（enable/bump）字节不得经 raw 回灌对端」
+   句的适用范围**不含** SCHEMA 写事务——后者对 `META.schema` 的触碰正是必须经
+   raw 复制同行的载荷（本修订第 1 条）；enable/bump 对复制保留字段的触碰维持
+   原句（epoch 传播走控制面）。
+5. **混版本滚转注记**：旧版本 peer（白名单空集实现）收到新版本 hub 的 SCHEMA
+   替换更新会以 `REPLICATION_PROTECTED_FIELDS_CHANGED` 拒绝并标记 needs-resync；
+   部署应先升级 peer 侧或同时升级。

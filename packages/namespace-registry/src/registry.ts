@@ -831,7 +831,14 @@ export function createRegistryInternal(
 
   function runtimeOptionsFor(namespaceId: string): RegistryRuntimeOptions | undefined {
     const diagnostic = resolveRuntimeDiag(namespaceId);
-    if (replicationObservabilityOptions === undefined) return diagnostic;
+    // 【issue #282 / ADR-0017】schema 生命周期时钟恒注入（META.schema.updatedAt 的单
+    //  时钟权威 = Registry Instance Clock；读取发生在 Runtime SCHEMA 写槽 S4.5，非本
+    //  装配点——此处只绑定闭包）。诊断缺席时第三参仍携带 clock（legacy Host 行为不变
+    //  ——此前 runtime 不消费该字段；两参测试 factory 对三参可选签名兼容）。
+    const schemaLifecycleClock = (): number => clock.now();
+    if (replicationObservabilityOptions === undefined) {
+      return { ...(diagnostic ?? {}), clock: schemaLifecycleClock };
+    }
     const replicationObservability: RuntimeReplicationObservabilitySeam = {
       ...(replicationObservabilityOptions.stageClock !== undefined
         ? { stageClock: replicationObservabilityOptions.stageClock }
@@ -847,6 +854,7 @@ export function createRegistryInternal(
     };
     return {
       ...(diagnostic ?? {}),
+      clock: schemaLifecycleClock,
       replicationObservability,
     };
   }

@@ -161,7 +161,9 @@ export interface NamespaceRuntime {
    *  RUNTIME_READ_DISABLED，包内类）——close 停接纳覆盖全部公共数据投影；getStatus
    *  不受影响（全生命周期观测面）。 */
   readonly getMetadata: () => Record<string, unknown>;
-  /** active schema 五字段身份（D8；preparing/unavailable/fatal 期 null）。
+  /** active schema 六字段身份（D8 + issue #282 加性第六键 `updatedAt`——当前 active
+   *  schema generation 的安装时间（UTC ISO 8601）或 null（legacy/损坏，诚实缺席）；
+   *  preparing/unavailable/fatal 期整体 null）。
    *  lifecycle≠ready（closing/closed）期同步 throw RuntimeReadDisabledError（code
    *  RUNTIME_READ_DISABLED，包内类）——close 停接纳覆盖全部公共数据投影；getStatus
    *  不受影响（全生命周期观测面）。 */
@@ -383,7 +385,17 @@ export function createNamespaceRuntimeWithSeam(input: NamespaceRuntimeSeamInput)
 
   // V3c'' schemaWriteEnv 一次成型（D10 零新增注入点：同一批捕获局部量——compile 与
   //   writeEnv 共源的既有 seam 字段同时服务 P0 与 SCHEMA 写槽）
-  const schemaWriteEnv: SchemaWriteEnv = { doc, handle, state, notifyDirty: captured.notifyDirty, compile };
+  // 【issue #282】clock 解析：注入 clock seam 优先（Registry 生产装配恒注入 Instance
+  //   Clock——单时钟权威），缺省 Date.now（seam 直构/legacy 两参工厂路径——updatedAt
+  //   为系统时钟读数，诚实记录安装时间）；S4.5 单点读取、读数校验在槽内。
+  const schemaWriteEnv: SchemaWriteEnv = {
+    doc,
+    handle,
+    state,
+    notifyDirty: captured.notifyDirty,
+    compile,
+    clock: captured.clock ?? Date.now,
+  };
 
   // V3c''' closeEnv 一次成型（D2/D3：barrier 纯数据闭包——release 槽体零读 seam 输入）
   const closeEnv: CloseEnv = { handle, state };

@@ -448,7 +448,103 @@ export async function createInventoryNamespace(registry: NamespaceRegistry) {
 
 部署时必须把 `schema.vfsl` 作为宿主应用资源一并交付，或在构建阶段以不产生第二份可独立维护副本的方式嵌入。`generated.ts` 只提供静态类型，不能代替运行时 SCHEMA 文本。
 
-## 9. 宿主项目的验证流程
+## 9. 本地 `.vfsl` 指纹对比（检测 namespace schema 漂移）
+
+部署或启动时，宿主经常需要回答两个问题：namespace 里存储的 schema 与本地
+`schema.vfsl` 是否**语义**不同？namespace 当前 schema generation 是何时安装的？
+本节规范第一个问题的计算路径（ADR-0017）；第二个问题读取
+`getActiveSchema().updatedAt`（见下文「四个事实不要混淆」）。
+
+**比较源文本是错误做法**：格式与普通注释不是 schema 变化。正确做法是复用
+Nomicore 的公共编译 API 计算 `semanticFingerprint`——与 Runtime 安装 schema
+时使用的是**同一份**规范化与散列实现：
+
+```ts
+import { readFile } from 'node:fs/promises'
+import { compileSchemaEnvelope } from '@nomicore/vfsl'
+import type { NamespaceLease } from '@nomicore/namespace-registry'
+
+export async function localSemanticFingerprint(schemaUrl: URL): Promise<string> {
+  const compiled = compileSchemaEnvelope({
+    lang: 'vfsl',
+    version: 1,
+    id: 'inventory@1',
+    text: await readFile(schemaUrl, 'utf8'),
+  })
+  if (!compiled.ok) {
+    // 编译失败必须显式处理：compiled.issues 是结构化失败面。
+    // 绝不退化为「文本散列对比」——文本散列不是语义指纹。
+    throw new Error(
+      `本地 schema 编译失败：${compiled.issues.map((i) => JSON.stringify(i)).join('; ')}`,
+    )
+  }
+  return compiled.semanticFingerprint
+}
+
+export async function schemaDrifted(lease: NamespaceLease, schemaUrl: URL): Promise<boolean> {
+  const remote = lease.getActiveSchema()
+  if (remote === null) return true // preparing/unavailable/fatal：远端无 active schema
+  return (await localSemanticFingerprint(schemaUrl)) !== remote.semanticFingerprint
+}
+```
+
+规则（规范性）：
+
+- **比较 `semanticFingerprint` 判定 VFSL 语义变化**：它忽略格式与普通注释、排除
+  信封 `id`，但包含 JSDoc、声明顺序与其他 VFSL 语义。
+- **只有需要精确信封同一性时才比较 `envelopeFingerprint`**：它包含源文本与 `id`，
+  重新格式化 schema 文件就会改变它——不要用它判断「语义是否变化」。
+- **指纹字符串不透明**：格式含版本化域前缀（`sha256:v1:`）。消费方只做整体相等
+  比较；不得自行实现 SHA/canonical-IR 逻辑，不得解析或截断前缀。
+- **本地信封必须使用与安装目标一致的方言**（`lang`/`version`）。语义同一性排除
+  `id`；关心 schema 谱系的项目应把 `id` 相等作为**独立的策略检查**，不要假设
+  语义相同意味着 `id` 相同。
+- **对比不触发动作**：下面的启动示例只产出决策提示。是否 `replaceSchema()`、是否
+  需要数据迁移，是宿主自己的发布策略——对比结果绝不能静默替换 namespace schema
+  （替换是内容变更，且每次成功提交都会推进 `updatedAt`）。
+
+启动/部署时对比并决策的完整示例：
+
+```ts
+export async function checkSchemaOnBoot(lease: NamespaceLease, schemaUrl: URL): Promise<void> {
+  const remote = lease.getActiveSchema()
+  const localCompiled = compileSchemaEnvelope({
+    lang: 'vfsl',
+    version: 1,
+    id: 'inventory@1',
+    text: await readFile(schemaUrl, 'utf8'),
+  })
+  if (!localCompiled.ok) {
+    throw new Error('本地 schema 无法编译——禁止部署，先修复 schema.vfsl')
+  }
+  if (remote === null) {
+    console.warn('namespace 尚无 active schema（preparing/unavailable）——按运维流程处理')
+    return
+  }
+  if (localCompiled.semanticFingerprint === remote.semanticFingerprint) {
+    if (localCompiled.envelope.id !== remote.id) {
+      console.warn('语义一致但 schema id 不同——谱系策略检查（按需告警）')
+    }
+    return // 无漂移
+  }
+  console.warn(
+    `schema 语义漂移：本地 ${localCompiled.semanticFingerprint} ≠ 远端 ${remote.semanticFingerprint}` +
+      `（远端 generation 安装于 ${remote.updatedAt ?? '未知（legacy namespace）'}）。` +
+      '需要人工决策：replaceSchema 升级、数据迁移，或回滚本地 schema。',
+  )
+}
+```
+
+**四个事实不要混淆**（`getActiveSchema()` 的六键投影）：
+
+| 事实 | 含义 | 变化时机 |
+| --- | --- | --- |
+| `id` | 信封谱系标签（如 `inventory@1`） | 每次替换由调用方给定；不参与语义同一性 |
+| `semanticFingerprint` | VFSL 语义身份（排除 `id`、忽略格式/普通注释） | 语义变化才变 |
+| `envelopeFingerprint` | 精确信封身份（含源文本与 `id`） | 任一信封键变化（含重排版） |
+| `updatedAt` | 当前 generation 的**安装时间**（UTC ISO 8601） | 每次成功提交的替换都推进；legacy 为 `null` |
+
+## 10. 宿主项目的验证流程
 
 每次修改 schema 后，在宿主项目执行：
 
@@ -468,7 +564,7 @@ pnpm test
 - 所有 namespace 路径和值通过宿主 TypeScript typecheck；
 - 业务测试仍覆盖运行时失败结果和零写入行为。
 
-## 10. 多领域限制
+## 11. 多领域限制
 
 每个 `generated.ts` 都通过 module augmentation 增广同一个 `VfslPathMap`。因此，若一个 TypeScript program 同时包含多个领域，而它们的 ROOT 顶层字段同名但类型不兼容，TypeScript 会报告声明合并冲突；即使不冲突，全局表也表示这些领域路径的并集，而不是某一个 namespace 的独立类型。
 
@@ -480,7 +576,7 @@ pnpm test
 
 在 Nomicore 提供按 schema/domain 参数化的独立生成类型之前，不应声称单个 `VfslPathMap` 能静态区分多个不同 namespace schema。
 
-## 11. 职责边界
+## 12. 职责边界
 
 宿主项目负责：
 
