@@ -1,0 +1,73 @@
+== #233 in full run ==
+379:stdout | packages/ws-replication/test/ws-replication-issue233-repro.test.ts > issue #233 复现：超限 UPDATE 丢弃 + 全量 reconciliation 回退（现状刻画） > R1：单笔 20KB 合法写 → 零 UPDATE / resync 声明 / 同一载荷改走控制帧全量 diff
+440:stdout | packages/ws-replication/test/ws-replication-issue233-repro.test.ts > issue #233 复现：超限 UPDATE 丢弃 + 全量 reconciliation 回退（现状刻画） > R2：连续两笔大写 → 两轮 resync（持续大写重复触发完整 round）
+443:stdout | packages/ws-replication/test/ws-replication-issue233-repro.test.ts > issue #233 复现：超限 UPDATE 丢弃 + 全量 reconciliation 回退（现状刻画） > R3：diff 超 maxSyncDiffBytes → SYNC_DIFF_TOO_LARGE → namespace 终局 failed（大文档致命尾部）
+446: ✓ packages/ws-replication/test/ws-replication-issue233-repro.test.ts (3 tests) 47ms
+== git status ==
+ M CONTEXT.md
+ M docs/adr/0013-chunked-live-update-transfer.md
+ M docs/protocols/instance-replication-v1.md
+?? artifacts/sa3-issue246-doc-checks-iter1.log
+?? artifacts/sa3-issue246-doc-checks-iter2.log
+?? artifacts/sa3-issue246-doc-checks-iter3.log
+?? artifacts/sa3-issue246-doc-checks.log
+?? artifacts/sa3-issue246-f1-evidence-iter2.log
+?? artifacts/sa3-issue246-f1-fix-iter2.log
+?? artifacts/sa3-issue246-f1-fix-iter3.log
+?? artifacts/sa3-issue246-fileA-green-iter1.log
+?? artifacts/sa3-issue246-fileA-green-iter3.log
+?? artifacts/sa3-issue246-fileA-red-iter1.log
+?? artifacts/sa3-issue246-fileA-red-iter3.log
+?? artifacts/sa3-issue246-fileA-red.log
+?? artifacts/sa3-issue246-fileB-20x-iter1.log
+?? artifacts/sa3-issue246-fileB-20x-iter2.log
+?? artifacts/sa3-issue246-fileB-20x-iter3.log
+?? artifacts/sa3-issue246-fileB-20x.log
+?? artifacts/sa3-issue246-fileB-green-iter1.log
+?? artifacts/sa3-issue246-fileB-green-iter2.log
+?? artifacts/sa3-issue246-fileB-green-iter3.log
+?? artifacts/sa3-issue246-fileB-green.log
+?? artifacts/sa3-issue246-green.log
+?? artifacts/sa3-issue246-pnpm-test-iter0-lost.log
+?? artifacts/sa3-issue246-pnpm-test-iter1.log
+?? artifacts/sa3-issue246-pnpm-test-iter2.log
+?? artifacts/sa3-issue246-pnpm-test-iter3.log
+?? artifacts/sa3-issue246-pnpm-test.log
+?? artifacts/sa3-issue246-typecheck-iter1.log
+?? artifacts/sa3-issue246-typecheck-iter2.log
+?? artifacts/sa3-issue246-typecheck-iter3.log
+?? artifacts/sa3-issue246-typecheck.log
+?? artifacts/sa8-conflict-gate-issue-246.md
+?? packages/replication-protocol/test/codec-issue246-doc-contract.test.ts
+?? packages/ws-replication/test/ws-replication-issue246-interop-matrix.test.ts
+?? wiki/raw/task_issue-246.md
+?? wiki/raw/task_issue-246_design.md
+?? wiki/raw/task_issue-246_dispatch.md
+?? wiki/raw/task_issue-246_sa2_review.md
+?? wiki/raw/task_issue-246_sa3_impl.md
+?? wiki/raw/task_issue-246_sa4_review.md
+== git diff --stat ==
+ CONTEXT.md                                    |  8 +++++--
+ docs/adr/0013-chunked-live-update-transfer.md |  4 ++--
+ docs/protocols/instance-replication-v1.md     | 32 +++++++++++++++++++++++----
+ 3 files changed, 36 insertions(+), 8 deletions(-)
+== src changes (must be empty) ==
+== DENY files changed (must be empty) ==
+== skip/only/todo ==
+grep_exit=1
+== console.log in test files ==
+packages/ws-replication/test/ws-replication-issue246-interop-matrix.test.ts:0
+packages/replication-protocol/test/codec-issue246-doc-contract.test.ts:0
+== assertV1Fallback calls ==
+513:    await assertV1Fallback(session, 'peerToHub');
+514:    await assertV1Fallback(session, 'hubToPeer');
+564:    await assertV1Fallback(baseline, 'peerToHub');
+565:    await assertV1Fallback(stripped, 'peerToHub');
+566:    await assertV1Fallback(baseline, 'hubToPeer');
+567:    await assertV1Fallback(stripped, 'hubToPeer');
+== hash recheck ==
+docs/protocols/instance-replication-v1.md: OK
+docs/adr/0013-chunked-live-update-transfer.md: OK
+CONTEXT.md: OK
+packages/ws-replication/test/ws-replication-issue246-interop-matrix.test.ts: OK
+packages/replication-protocol/test/codec-issue246-doc-contract.test.ts: OK

@@ -1,0 +1,24 @@
+# issue #246 SA3 文档验证（AC5；iteration 1 重跑）
+
+$ grep -rn "提议" docs/ CONTEXT.md   # N2 全局；期望零命中
+exit=1
+
+$ grep -n "状态：提议" docs/adr/0013-*.md
+exit=1
+
+$ grep -n "ADR 0013 提议" CONTEXT.md
+exit=1
+
+$ grep -n "属后续切片" docs/protocols/instance-replication-v1.md
+exit=1
+
+$ grep -n "后续切片承接" CONTEXT.md
+exit=1
+
+$ grep -nE "UPDATE_CHUNK|CAP_CHUNKED|分块" docs/adr/0010-*.md   # 期望零命中
+exit=1
+
+$ git diff --check
+exit=0
+
+# 说明：grep 无命中时 exit=1（期望），有命中时 exit=0 并列出命中行。

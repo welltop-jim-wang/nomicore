@@ -155,16 +155,20 @@ Trusted raw Yjs update 已在 sequencer 中提交并登记 dirty，但未执行�
 _Avoid_: validated replication、apply 后校验失败自动 rollback
 
 **分块复制传输（chunked replication transfer）**:
-（ADR 0013 提议）单个超过 `maxUpdateBytes` 的 live Yjs update 经协商 capability 后拆为多个自描述 `UPDATE_CHUNK` wire 帧的易失传输；以 (连接, 方向, namespaceId, transferId) 为作用域，接收端在有界 detached buffer 完整重组后执行一次 sequenced trusted apply 并以单 ACK 结算。partial assembly 绝不写入 live Y.Doc，中断即丢弃并回退 state-vector reconciliation。
+（ADR 0013 已接受）单个超过 `maxUpdateBytes` 的 live Yjs update 经协商 capability 后拆为多个自描述 `UPDATE_CHUNK` wire 帧的易失传输；以 (连接, 方向, namespaceId, transferId) 为作用域，接收端在有界 detached buffer 完整重组后执行一次 sequenced trusted apply 并以单 ACK 结算。partial assembly 绝不写入 live Y.Doc，中断即丢弃并回退 state-vector reconciliation。
 _Avoid_: 逐片 apply 到 live Y.Doc、跨重连保留 partial chunks、以提高 `maxUpdateBytes` 代替分块、把 transferId 当跨连接持久标识
 
 **UPDATE_CHUNK**:
-分块传输的单帧消息（wire 码 `0x42`），payload 为 namespaceId/transferId/chunkIndex/chunkCount/totalBytes/bytes 六个自描述字段（字段序 = ADR 0013）；codec 只做单帧无状态编解码与语义自洽校验，跨帧一致性/顺序/总量与重组属接收端 assembly 状态机（issue #242 切片 1 冻结 wire 面，后续切片承接状态机）。
+分块传输的单帧消息（wire 码 `0x42`），payload 为 namespaceId/transferId/chunkIndex/chunkCount/totalBytes/bytes 六个自描述字段（字段序 = ADR 0013）；codec 只做单帧无状态编解码与语义自洽校验，跨帧一致性/顺序/总量与重组属接收端 assembly 状态机——跨帧规则与 assembly 状态机为协议 §10.3 契约（issue #243–#245 落地、issue #246 收口），wire 权威见 `docs/protocols/instance-replication-v1.md`。
 _Avoid_: 在 codec 层承载连接级 assembly 状态、把单个 chunk 当独立 UPDATE apply
 
 **CAP_CHUNKED_UPDATE**:
 HELLO 协商 capability bit `0x00000001`（uint32 BE bitset）；双方 optional 交集经 `selectedCapabilities` 生效。未协商端收到 UPDATE_CHUNK 必须按未知/未支持消息码规则以 connection fatal 拒绝——新旧实现互不破译（issue #242 / ADR 0013）。
 _Avoid_: 把未协商的 0x42 帧当普通帧静默解码、未协商就发送分块
+
+**实现代际（implementation generation）**:
+端点的实现代际，与协议版本正交、**非 protocol 版本**语义——`envelopeVersion` 恒 1、HELLO `protocolVersions` 不因代际变化（协议 §3 两层版本独立）；代际差异仅在 HELLO capability 协商的 wire 位上可见。v1 代际 = 不含 `CAP_CHUNKED_UPDATE` 的旧实现（HELLO 恒发 `optionalCapabilities=0`，收到 `0x42` 帧按未知消息码 connection fatal 拒绝）；v2 代际 = 支持 `CAP_CHUNKED_UPDATE` 的现实现。协议 §22 互通矩阵按代际组合刻画回落行为（v1 peer ↔ v2 hub、v2 peer ↔ v1 hub、v2 ↔ v2 协商分块）。
+_Avoid_: 把 v2 代际误读为协议版本 2 / 用代际推断 `envelopeVersion` 或 `protocolVersions` 变化
 
 **实例角色（instance role）**:
 实例身份中不可变的 hub/peer 拓扑角色；生产 composition root 配置一次，由 Instance service 同时提供给 Registry 与 transport。peer 实例的本地 replaceSchema/enableReplication/bumpReplicationEpoch 以稳定角色权限错误拒绝，session 的 localRole 必须等于实例角色。
