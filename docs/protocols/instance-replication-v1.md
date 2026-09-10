@@ -15,6 +15,7 @@
 - **ReplicationSession**：由 NamespaceLease 打开的可信 duplex raw Yjs 复制会话，不暴露 live Y.Doc。
 - **连接序号**：单条 WS 连接上每个发送方向独立的 uint32 sequence，只用于在线顺序、关联与断言，不跨重连持久化。
 - **同步轮次**：Peer 发起的一轮双向 state-vector reconciliation，以 uint32 `syncRoundId` 标识，不回绕。
+- **实现代际（implementation generation）**：端点的实现代际，与协议版本正交，**非 protocol 版本**语义——`envelopeVersion` 恒 1、HELLO `protocolVersions` 不因代际变化（§3 两层版本独立）；代际差异仅在 HELLO capability 协商的 wire 位上可见。v1 代际 = 不含 `CAP_CHUNKED_UPDATE` 的旧实现（HELLO 恒发 `optionalCapabilities=0`，收到 `0x42` 帧按未知消息码 `UNSUPPORTED_MESSAGE_TYPE` connection fatal 拒绝）；v2 代际 = 支持 `CAP_CHUNKED_UPDATE`（§6.1）的现实现。§22 互通矩阵按代际组合刻画回落行为；不得用代际推断 `envelopeVersion` 或 `protocolVersions` 变化。
 
 协议保持以下不变量：
 
@@ -110,7 +111,7 @@ Yjs sync bytes 使用与锁定版本组合兼容的 `y-protocols/sync` 语义。
 | `0x41` | UPDATE_ACK | namespace | either | none |
 | `0x42` | UPDATE_CHUNK | namespace | either | UPDATE_ACK |
 
-`UPDATE_CHUNK`（issue #242，ADR 0013）只有经 HELLO 协商 `CAP_CHUNKED_UPDATE` 后才能使用；未协商端必须按未知/未支持消息码规则以 connection fatal `UNSUPPORTED_MESSAGE_TYPE` 拒绝。v1 的 HELLO 仍发 `optionalCapabilities=0`，因此 v1 端永不分块、也拒绝任何 0x42 帧——新旧实现互不破译。首版 `flags=0`，也没有必需的 optional capability。未来扩展只能在 HELLO 明确协商后使用，不得靠数值范围猜测。
+`UPDATE_CHUNK`（issue #242，ADR 0013）只有经 HELLO 协商 `CAP_CHUNKED_UPDATE` 后才能使用；未协商端必须按未知/未支持消息码规则以 connection fatal `UNSUPPORTED_MESSAGE_TYPE` 拒绝。v1 代际的 HELLO 仍发 `optionalCapabilities=0`，因此 v1 代际端永不分块、也拒绝任何 0x42 帧——新旧实现互不破译（实现代际定义见 §1）。首版 `flags=0`，也没有必需的 optional capability。未来扩展只能在 HELLO 明确协商后使用，不得靠数值范围猜测。
 
 ## 6. Connection payloads
 
@@ -298,7 +299,7 @@ Unknown、类型不匹配或 namespace不匹配的 ackedSequence 属 connection 
 
 ### 10.3 UPDATE_CHUNK `0x42`
 
-分块传输（issue #242 / ADR 0013，切片 1 只冻结 wire 面）：单条 UPDATE 超过 `maxUpdateBytes` 且双方已协商 `CAP_CHUNKED_UPDATE` 时，发送端把完整 update 拆为多个自描述 chunk。单帧 payload 字段顺序：
+分块传输（issue #242–#246 / ADR 0013；跨帧规则与 assembly 状态机由 issue #243–#245 落地，issue #246 收口为本节完整 wire 契约）：单条 UPDATE 超过 `maxUpdateBytes` 且双方已协商 `CAP_CHUNKED_UPDATE` 时，发送端把完整 update 拆为多个自描述 chunk。单帧 payload 字段顺序：
 
 | Field | Encoding | Rule |
 |---|---|---|
@@ -309,7 +310,29 @@ Unknown、类型不匹配或 namespace不匹配的 ackedSequence 属 connection 
 | totalBytes | varUint | uint32，完整 update 字节数，≥ bytes.byteLength |
 | bytes | varUint8Array | 本分片，非空；大小复用 `maxUpdateBytes`（零新 frame 级上限） |
 
-codec 级单帧规则（encode/decode 同一套，违者 `MALFORMED_FRAME`）：namespaceId 格式、transferId ≥ 1、chunkIndex < chunkCount、chunkCount ≥ 1、bytes 非空且 ≤ totalBytes、bytes ≤ `maxUpdateBytes`（超限 `UPDATE_TOO_LARGE`）。跨帧规则（transferId 一致性/单调、chunkIndex === 已收数量、`totalBytes` 资源上限、实收 == totalBytes）与 assembly 状态机、ACK 复用（`UPDATE_ACK`，ackedSequence = 末 chunk 帧序）属后续切片；解码侧未协商（`selectedCapabilities` 无 bit 0）必须在 payload 解析前以 `UNSUPPORTED_MESSAGE_TYPE` connection fatal 拒绝（分类与 §5 未知消息码规则一致，close code 1002）。
+codec 级单帧规则（encode/decode 同一套，违者 `MALFORMED_FRAME`）：namespaceId 格式、transferId ≥ 1、chunkIndex < chunkCount、chunkCount ≥ 1、bytes 非空且 ≤ totalBytes、bytes ≤ `maxUpdateBytes`（超限 `UPDATE_TOO_LARGE`）。
+
+**transfer 身份**：`transferId` 为 uint32，作用域 = (连接, 方向, namespaceId)，在同一作用域内从 1 严格递增、不回绕；0 非法（单帧规则已载，跨帧节重申域语义）。同一 transfer 内 `chunkIndex`/`chunkCount`/`totalBytes` 的声明逐字节一致。
+
+**发送端规则**：
+
+- 仅当 `bytes.byteLength > maxUpdateBytes` ∧ 已协商 `CAP_CHUNKED_UPDATE` ∧ channel live 时进入分块；切片在出队发送时刻惰性进行（队列持完整 update，`maxQueuedUpdateBytes`/`maxQueuedUpdateCount` 记账口径不变）。
+- 每帧独立消费本发送方向 sequence，独立受 dataGateOpen 与 round-robin 每轮每 namespace 一帧调度（窗口空位允许时小 UPDATE 可穿插）。
+- 整笔 transfer 占 1 个 in-flight 窗口槽直至末 chunk 的 ACK；ACK 计时锚 = 末 chunk 出站时刻（`ackTimeoutMs` 语义不变）。
+- 中止复用既有机制（连接 shed / 队列溢出 / ACK timeout / RESYNC_REQUIRED / 终态）：未完成 transfer 的余下 chunk 不再出站，已出站前缀由接收端按丢弃路径清理。
+
+**接收端规则**：
+
+- assembly 纯易失，作用域 = (连接, 方向, namespaceId, transferId)；连接断开、namespace close/终态、GOAWAY drain、epoch fence、RESYNC_REQUIRED ⇒ 全部丢弃（partial 绝不进入 live 路径）。
+- 首 chunk 在分配前完成二维声明上界校验（`totalBytes` ≤ `maxChunkedUpdateBytes` ∧ `chunkCount` ≤ `maxChunksPerUpdate`）与几何一致校验（`totalBytes` ≤ `chunkCount` × `maxUpdateBytes` ∧ `chunkCount` ≥ 1），通过后按已验证上界一次性分配 detached buffer。
+- 后续 chunk 要求 `transferId`/`totalBytes`/`chunkCount` 与首 chunk 逐字节一致 ∧ `chunkIndex === 已收数量` ∧ `bytes.byteLength` ≤ `maxUpdateBytes` ∧ Σbytes ≤ `totalBytes`。
+- 收齐 ⇒ 长度精确核对（Σbytes === `totalBytes`）⇒ **一次** sequenced `applyRemoteUpdate()` + dirty notification ⇒ `UPDATE_ACK`（ackedSequence = 末 chunk 帧序）；重组失败一律发生在 apply 之前，live Y.Doc 零写入。
+- 错误码三分类映射（与 §13.2 注册表逐字同向，不得合并叙述）：
+  - 首 chunk 声明超限（`totalBytes` > `maxChunkedUpdateBytes` ∨ `chunkCount` > `maxChunksPerUpdate`）⇒ namespace ERROR `UPDATE_TRANSFER_TOO_LARGE`（fatal、retryable config、terminal failed）；
+  - 几何不一致 / 后续帧跨帧违例（transferId/totalBytes/chunkCount 不一致、`chunkIndex` ≠ 已收数量、bytes 超 `maxUpdateBytes`、Σbytes 超 `totalBytes`、收齐核对失败）/ 连接级并发 assembly 超 `maxConcurrentAssembliesPerConnection` ⇒ namespace ERROR `UPDATE_TRANSFER_VIOLATION`（fatal、retryable no、terminal failed；并发超额为 ns 级、连接保持 ready）；
+  - assembly 停滞超 `assemblyTimeoutMs`（每收一 chunk 重置的进度滑动 deadline 到期）⇒ 丢弃 partial + `RESYNC_REQUIRED{reasonCode: UPDATE_TRANSFER_EXPIRED}`（非终态）。
+
+解码侧未协商（`selectedCapabilities` 无 bit 0）必须在 payload 解析前以 `UNSUPPORTED_MESSAGE_TYPE` connection fatal 拒绝（分类与 §5 未知消息码规则一致，close code 1002）。
 
 ## 11. Identity fencing
 
@@ -650,7 +673,8 @@ Peer→Hub update保护检查必须在同一 sequencer槽中：
 - trailing bytes、非法UTF-8、非法namespaceId、错误optional/list count；
 - fuzz/property tests，decoder不得越界分配或抛出未分类异常；
 - 版本协商全矩阵和锁定Yjs/y-protocols/lib0组合的旧/新互通矩阵；
-- 分块传输（issue #242）：UPDATE_CHUNK 全字段 golden vectors、单帧语义自洽拒绝、未协商（无 `CAP_CHUNKED_UPDATE`）端对 0x42 帧按未知消息码 connection fatal 拒绝、`selectedCapabilities` 选项急切校验与 v1 回落（新旧互不破译）；
+- 分块传输（issue #242）：UPDATE_CHUNK 全字段 golden vectors、单帧语义自洽拒绝、未协商（无 `CAP_CHUNKED_UPDATE`）端对 0x42 帧按未知消息码 connection fatal 拒绝、`selectedCapabilities` 选项急切校验与 v1 代际回落（新旧互不破译；实现代际定义见 §1）；资产锚 = `0x42` 锁定值与 UPDATE_CHUNK 全字段 golden vectors `packages/replication-protocol/test/codec-messages-golden.test.ts`、未协商 0x42 拒绝与 `CAP_CHUNKED_UPDATE=0x00000001` 锁定值 `packages/replication-protocol/test/codec-issue242-ac-red.test.ts`；
+- 实现代际互通矩阵（issue #246；ADR 0013 已接受，代际定义见 §1）：传输层全组合——v1 peer ↔ v2 hub、v2 peer ↔ v1 hub（未协商 ⇒ 超限丢弃 + reconciliation 的 v1 行为逐字节保持；等同性以三层确定性断言承载：`kind#sequence` 序列全等、确定性字段帧逐字段相等、Yjs 承载帧按 kind+计数——跨会话字节/长度全等因 Yjs 随机 doc client id 不适用）、v2 ↔ v2（协商分块）；v1 基线 = issue #233 刻画测试 `packages/ws-replication/test/ws-replication-issue233-repro.test.ts`；codec 层锚 = 版本协商全矩阵 + 锁定组合 golden 旧字节互通 `packages/replication-protocol/test/codec-version-interop.test.ts`；传输层锚 = `packages/ws-replication/test/ws-replication-issue246-interop-matrix.test.ts`；
 - fake duplex transport上的connection、namespace、sync、resync、drain状态迁移；
 - 真实WebSocket + MemoryPersistence的1 Hub + 2 Peers收敛；
 - FilePersistence独立rootDir、bootstrap、archive/reset、进程重启、degraded旧snapshot恢复；

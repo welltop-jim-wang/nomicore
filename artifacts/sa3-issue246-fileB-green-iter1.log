@@ -1,0 +1,89 @@
+=== issue #246 File B（传输层互通矩阵） ===
+$ NODE_OPTIONS=--conditions=nomicore-source pnpm exec vitest run packages/ws-replication/test/ws-replication-issue246-interop-matrix.test.ts
+Testing types with tsc and vue-tsc is an experimental feature.
+Breaking changes might not follow SemVer, please pin Vitest's version when using it.
+
+ RUN  v3.2.7 /home/wangjian/nomicore-fix-issue-246
+
+ ✓ packages/ws-replication/test/ws-replication-issue246-interop-matrix.test.ts (4 tests) 63ms
+
+ Test Files  1 passed (1)
+      Tests  4 passed (4)
+Type Errors  no errors
+   Start at  00:07:35
+   Duration  871ms (transform 478ms, setup 0ms, collect 652ms, tests 63ms, environment 0ms, prepare 46ms)
+
+exit=0
+
+=== issue #233 v1 基线刻画（AC3 末句：继续全绿） ===
+$ NODE_OPTIONS=--conditions=nomicore-source pnpm exec vitest run packages/ws-replication/test/ws-replication-issue233-repro.test.ts
+Testing types with tsc and vue-tsc is an experimental feature.
+Breaking changes might not follow SemVer, please pin Vitest's version when using it.
+
+ RUN  v3.2.7 /home/wangjian/nomicore-fix-issue-246
+
+  "scenario": "R1 single 20KB write, maxUpdateBytes=8192",
+  "updateFramesCarryingBigWrite": 0,
+  "resyncRounds": 1,
+  "step2DiffBytesPeerToHub": [
+    2,
+    20029
+  ],
+  "wire": {
+    "peerToHub": {
+      "OPEN_NAMESPACE": {
+        "count": 1,
+        "bytes": 59
+      },
+      "BOOTSTRAP_ACK": {
+        "count": 1,
+        "bytes": 57
+      },
+      "SYNC_STEP1": {
+        "count": 2,
+        "bytes": 136
+      },
+      "SYNC_STEP2": {
+        "count": 2,
+        "bytes": 20151
+      },
+      "SYNC_APPLIED": {
+        "count": 2,
+        "bytes": 116
+      },
+      "RESYNC_REQUIRED": {
+        "count": 1,
+        "bytes": 76
+    },
+    "hubToPeer": {
+      "OPEN_OK": {
+        "count": 1,
+        "bytes": 91
+      },
+      "BOOTSTRAP_SNAPSHOT": {
+        "count": 1,
+        "bytes": 437
+      },
+      "SYNC_STEP1": {
+        "count": 2,
+        "bytes": 130
+      },
+      "SYNC_STEP2": {
+        "count": 2,
+        "bytes": 122
+      },
+      "SYNC_APPLIED": {
+        "count": 2,
+        "bytes": 116
+
+
+
+ ✓ packages/ws-replication/test/ws-replication-issue233-repro.test.ts (3 tests) 48ms
+
+ Test Files  1 passed (1)
+      Tests  3 passed (3)
+Type Errors  no errors
+   Start at  00:07:36
+   Duration  872ms (transform 490ms, setup 0ms, collect 678ms, tests 48ms, environment 0ms, prepare 44ms)
+
+exit=0
