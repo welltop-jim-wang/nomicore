@@ -27,6 +27,7 @@ import type {
   ReplicationObserverConnectionCode,
   ReplicationObserverEvent,
   ReplicationObserverNamespaceCode,
+  ReplicationObserverSchemaRearmCode,
   UpdateSendFailureDetail,
 } from './types.js';
 
@@ -50,10 +51,15 @@ const CONNECTION_OBSERVER_CODES: ReadonlySet<string> = new Set<string>([
   'OUTBOUND_SEQUENCE_EXHAUSTED',
 ]);
 
-/** namespace 域白名单（注册表键 + 内部码；运行期闭联合判据）。 */
+/** namespace 域白名单（注册表键 + 内部码；运行期闭联合判据）。
+ *  issue #287：ADR 0018 §3 的 re-arm 双码是 namespace-runtime `errors.ts` 注册表成员
+ *  （peer apply 槽提交后段的 runtime fatal）——`schema-rearm-failed.code` 经此折叠，
+ *  与 Runtime 侧产出面逐字一致（两码恒命中白名单，无折叠路径）。 */
 const NAMESPACE_OBSERVER_CODES: ReadonlySet<string> = new Set<string>([
   ...Object.keys(NAMESPACE_ERRORS),
   'IDENTITY_CHANGED',
+  'NSRT-FATAL-SCHEMA-REARM-INVALID',
+  'NSRT-FATAL-SCHEMA-REARM-INTERNAL',
 ]);
 
 /** 任意 string（异常携带码）→ 连接域稳定码；未知折叠 INTERNAL_ERROR。 */
@@ -68,6 +74,13 @@ export function stableNamespaceCode(raw: string): ReplicationObserverNamespaceCo
   return NAMESPACE_OBSERVER_CODES.has(raw)
     ? (raw as ReplicationObserverNamespaceCode)
     : 'INTERNAL_ERROR';
+}
+
+/** issue #287：re-arm fatal 码 → `schema-rearm-failed.code` 闭联合取值。
+ *  与 `stableNamespaceCode` 同源白名单（同一次折叠、同一 INTERNAL_ERROR 兜底）——
+ *  独立函数只为类型收窄（事件字段的类型是双码闭联合，而 Runtime 产出面已是该双码）。 */
+export function stableSchemaRearmCode(raw: string): ReplicationObserverSchemaRearmCode {
+  return stableNamespaceCode(raw) as ReplicationObserverSchemaRearmCode;
 }
 
 /** 条件附着展开（exactOptionalPropertyTypes 兼容）：connectionId 缺省 = 字段不存在

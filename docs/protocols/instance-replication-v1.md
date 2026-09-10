@@ -763,6 +763,14 @@ issue #238 追加字段全部落入上述两类）。
 - 事件在**决策已落定之后**发射（状态已写入 / close 已判定 / 帧已入队或已收 /
   apply promise 已结算）；发射点均位于 ws-replication 层帧分发同步段或 apply 结算
   续体，永不位于 Registry write sequencer 槽内。
+- **schema re-arm 域的发射点与「行为/观测」分层（issue #287 登记）**：第 23/24 型在
+  peer apply 结算续体发射（`getActiveSchema()` 已在槽内切换之后），与其余事件同点纪律。
+  该域额外区分两类后果——**事件构造**依赖 observer 在场（缺省 = 零事件构造、零字段
+  读取、零时钟调用，与全 seam 同纪律）；而 `schema-rearm-failed` 的**伴随行为**（该
+  namespace 主动 CLOSE_NAMESPACE → `closed` 终态、重连不自动重开）是行为契约，
+  **无条件执行**。若把它挂在 observer 分支，无 observer 的部署会让通道停留在旧 tools
+  继续收敛未校验写——正是 ADR 0018 §3 明文拒绝的状态。故「无 observer = 逐字节等价」
+  在本域的范围是**事件与读取面**，不含该关闭动作。
 - `clock?: ReplicationClock`（`{ now(): number }`，单调时源）：`applyLatencyMs` =
   apply 成功续体时刻 − 进入 apply 时刻（**含 write sequencer 排队等待**）；
   `ackLatencyMs` = 收到 UPDATE_ACK 时刻 − 帧实际出队发送时刻（含对端 sequencer +
@@ -867,3 +875,17 @@ clock-throw 折叠（throw 时源 → 四段缺席、协议路径正常、零 un
 `queueDepthAtStart`、namespaceId 盖戳）；observer+clock+stageClock 在场/缺席两构型
 wire 帧协议语义序列全等（Yjs 载荷含随机 doc client id——按本仓库 conformance 惯例以
 kind#seq 语义摘要判定，观测零 wire 扰动）。
+
+**issue #287 追加（schema re-arm 域）**：注入 transport 全链路（hub `replaceSchema` →
+peer 收 UPDATE → 恰一 `schema-rearm-applied`，字段 `semanticFingerprint` 与 Hub
+`getActiveSchema()` 逐值一致、`updatedAt` = Hub 起源时间戳；键集冻结白名单）；纯格式差异
+提交也照常发射（fingerprint 不变、`updatedAt` 推进）；`META.schema` 载体被抹除 → 事件
+`updatedAt === null`（诚实缺席，peer 永不读本地时钟）；fatal 路径恰一
+`schema-rearm-failed` + 该 namespace 恰一 CLOSE_NAMESPACE 帧 + `closed` 终态 + 零
+`namespace-failed`（本事实不是「本笔 apply 失败」——apply 已成功提交）；重连后通道仍
+`closed`、零新 OPEN_NAMESPACE、零新 re-arm 事件（不产生重试循环），显式 re-add 是恢复
+入口；断连追赶（离线窗口丢失的 schema 变更由重连 reconcile 的 Step2 apply 激活 re-arm，
+无新增通知帧类型）；**hub 侧反向断言**（全生命周期零 re-arm 事件——peer→hub 方向
+protected-field 检查拒绝一切 SCHEMA 变化，hub apply 槽结构性不可能观测该变化）；无
+observer 下成功与 fatal 两路径的通道行为全等且全程零时钟调用。回归锚 =
+`packages/ws-replication/test/ws-replication-issue287-schema-rearm.test.ts`。

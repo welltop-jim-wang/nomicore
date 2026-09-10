@@ -1170,6 +1170,11 @@ describe('T9：事件内容安全（safe-field）', () => {
     // issue #238（append-only 第 21 型）：连接域 event-loop 漂移采样（低频——cadence =
     // liveness pingIntervalMs；无 namespaceId——连接级判别信号）
     ['event-loop-delay-sampled', new Set(['type', 'side', 'connectionId', 'delayMs'])],
+    // issue #287（append-only 第 23/24 型；ADR 0018 §4 schema re-arm 域，peer 专属）：
+    // 成功 = 新 semanticFingerprint + 复制来的 updatedAt（诚实缺席 null）；失败 = 稳定双码
+    // ——两型均零 schema 文本、零 ROOT、零堆栈（§23.3 safe-field 清单）
+    ['schema-rearm-applied', new Set(['type', 'side', 'connectionId', 'namespaceId', 'semanticFingerprint', 'updatedAt'])],
+    ['schema-rearm-failed', new Set(['type', 'side', 'connectionId', 'namespaceId', 'code'])],
   ]);
 
   function assertSafe(events: readonly ReplicationObserverEvent[], label: string): void {
