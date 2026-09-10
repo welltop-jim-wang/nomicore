@@ -56,18 +56,27 @@ export interface SchemaFourKeySnapshot {
   readonly text: unknown;
 }
 
+/** 载体缺席/异型的恒定快照（单点冻结字面量——present:false，四值恒 undefined）。 */
+const ABSENT_SCHEMA_SNAPSHOT: SchemaFourKeySnapshot = Object.freeze({
+  present: false,
+  lang: undefined,
+  version: undefined,
+  id: undefined,
+  text: undefined,
+});
+
 /** 四键快照（纯读；share.has 判别载体在场——零惰性 getMap 副作用；载体异型 getMap
  *  throw 收编为 present:false 缺席态——保守不触发 re-arm，异型面由公共读取
  *  NSRT-SCHEMA-E2 负责响亮）。 */
 export function snapshotSchemaFourKeys(doc: Y.Doc): SchemaFourKeySnapshot {
   if (!doc.share.has('SCHEMA')) {
-    return Object.freeze({ present: false, lang: undefined, version: undefined, id: undefined, text: undefined });
+    return ABSENT_SCHEMA_SNAPSHOT;
   }
   let sc: Y.Map<unknown>;
   try {
     sc = doc.getMap('SCHEMA');
   } catch {
-    return Object.freeze({ present: false, lang: undefined, version: undefined, id: undefined, text: undefined });
+    return ABSENT_SCHEMA_SNAPSHOT;
   }
   return Object.freeze({
     present: true,
@@ -177,6 +186,17 @@ export type RuntimeReplicationSchemaRearmOutcome =
       readonly issue?: Readonly<{ code: string; message: string }>;
     }>;
 
+/** INTERNAL fatal 置位单点（恒定文案 + detached failed outcome；原始异常仅进包内
+ *  诊断锚点 state.fatalCause——沿 P0 ⑦ 先例，不进任何公共面）。 */
+function setRearmInternalFatal(state: RuntimeState, cause: unknown): RuntimeReplicationSchemaRearmOutcome {
+  state.fatal = Object.freeze({
+    code: FATAL_SCHEMA_REARM_INTERNAL_CODE,
+    message: FATAL_SCHEMA_REARM_INTERNAL_MESSAGE,
+  });
+  state.fatalCause = cause;
+  return Object.freeze({ kind: 'failed', code: FATAL_SCHEMA_REARM_INTERNAL_CODE });
+}
+
 /**
  * peer apply 槽 R5.6 schema 同步段驱动（ADR 0018 §1–§3）。仅在「槽开始快照与提交后
  * 快照 text 不等」时由 apply 槽调用；fatal 置位单点：
@@ -199,12 +219,7 @@ export function rearmPeerActiveSchema(env: CommittedSchemaSyncEnv): RuntimeRepli
     const first = sync.issues[0];
     if (first === undefined) {
       // 结构性不可达（compile-failed 恒非空 issues）——防御折叠进 INTERNAL
-      env.state.fatal = Object.freeze({
-        code: FATAL_SCHEMA_REARM_INTERNAL_CODE,
-        message: FATAL_SCHEMA_REARM_INTERNAL_MESSAGE,
-      });
-      env.state.fatalCause = new Error('compile-failed 零 issues——内部不变量破坏');
-      return Object.freeze({ kind: 'failed', code: FATAL_SCHEMA_REARM_INTERNAL_CODE });
+      return setRearmInternalFatal(env.state, new Error('compile-failed 零 issues——内部不变量破坏'));
     }
     const summary = Object.freeze(toIssueSummary(first));
     env.state.fatal = Object.freeze({
@@ -213,10 +228,5 @@ export function rearmPeerActiveSchema(env: CommittedSchemaSyncEnv): RuntimeRepli
     });
     return Object.freeze({ kind: 'failed', code: FATAL_SCHEMA_REARM_INVALID_CODE, issue: summary });
   }
-  env.state.fatal = Object.freeze({
-    code: FATAL_SCHEMA_REARM_INTERNAL_CODE,
-    message: FATAL_SCHEMA_REARM_INTERNAL_MESSAGE,
-  });
-  env.state.fatalCause = sync.cause; // 包内诊断锚点（不进任何公共面——沿 P0 ⑦ 先例）
-  return Object.freeze({ kind: 'failed', code: FATAL_SCHEMA_REARM_INTERNAL_CODE });
+  return setRearmInternalFatal(env.state, sync.cause);
 }

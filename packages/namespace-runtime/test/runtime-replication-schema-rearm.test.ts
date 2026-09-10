@@ -14,7 +14,11 @@
  * - apply 结果 ok:true 分支携带 detached re-arm outcome（成功/失败两态），零 live
  *   对象泄漏（冻结纯数据、JSON 往返安全）；
  * - hub 角色 apply 槽结构性不触发 re-arm（钉死）；peer 无 SCHEMA 变化的 apply 不
- *   触发编译（检测成本纪律：text 字节不等才编译）。
+ *   触发编译（检测成本纪律：text 字节不等才编译）；
+ * - updatedAt 诚实缺席：复制来的 META.schema 缺席 → 投影 null（peer 永不读本地
+ *   时钟兜底——ADR 0018 §2 / ADR 0010 issue #282 修订第 3 条）；
+ * - fatal + diag 配对（沿本槽兄弟 fatal 点先例）：re-arm fatal 落一条
+ *   replication-apply fatal 记录（committed:true + sourcePhase 'schema-rearm'）。
  *
  * 驱动面沿 runtime-replication-schema-lifecycle.test.ts 先例：包内 seam 直构
  * runtime + openReplicationSessionCoreForRegistry 直取 core。
@@ -34,6 +38,13 @@ import {
   FATAL_SCHEMA_REARM_INVALID_CODE,
   FATAL_SCHEMA_REARM_INVALID_MESSAGE,
 } from '../src/errors.js';
+// 诊断记录消费（fatal + diag 配对钉死）：本包不依赖 @nomicore/namespace-diagnostic-log，
+// 沿 runtime-replication-diagnostic-red.test.ts 相对路径 import 先例。
+import {
+  createBoundedMemoryDiagnosticLog,
+  type AttemptRecord,
+  type NamespaceDiagnosticChangeEmitter,
+} from '../../namespace-diagnostic-log/src/index.js';
 
 const OWNER: User = { userId: 'u-alice' };
 const TEXT_V1 = 'type ROOT = { n: number; a: string; };';
@@ -87,6 +98,9 @@ function makeRuntime(
   doc: Y.Doc,
   opts: {
     compile?: (envelope: SchemaEnvelope) => CompileSchemaEnvelopeResult;
+    /** 诊断 emitter/clock 成对注入（#149 §5.2 配对纪律——observedAt 唯一来源）。 */
+    diagnosticEmitter?: NamespaceDiagnosticChangeEmitter;
+    clock?: () => number;
   } = {},
 ): RuntimeKit {
   let statusFn: () => DocHandleStatus = () => 'ready';
@@ -105,6 +119,8 @@ function makeRuntime(
       return Promise.resolve();
     },
     ...(opts.compile !== undefined ? { compile: opts.compile } : {}),
+    ...(opts.diagnosticEmitter !== undefined ? { diagnosticEmitter: opts.diagnosticEmitter } : {}),
+    ...(opts.clock !== undefined ? { clock: opts.clock } : {}),
   });
   return { runtime, setStatus: (fn) => { statusFn = fn; }, notifyCount: () => notifyCalls };
 }
@@ -202,6 +218,32 @@ describe('issue #286 AC1/AC2：成功路径——同槽切换 + 后续写按新 
     expect(active?.semanticFingerprint).toBe(COMPILED_V1.semanticFingerprint);
     expect(active?.envelopeFingerprint).toBe(COMPILED_V1_FMT.envelopeFingerprint); // 信封指纹随字节更新
     expect(active?.updatedAt).toBe(HUB_T_ISO);
+    await runtime.close();
+  });
+
+  it('AC2 补充：复制来的 META.schema 缺席 → updatedAt 投影 null（诚实缺席；peer 永不读本地时钟兜底）', async () => {
+    const doc = seedDoc();
+    doc.getMap('META').delete('schema'); // legacy 对端：无生命周期元数据载体
+    const { runtime } = makeRuntime(doc);
+    const session = await openReadySession(runtime, 'peer');
+    // P0 投影即 null（#282 legacy/损坏 → null 既有语义），re-arm 沿用同一投影单点
+    expect(runtime.getActiveSchema()?.updatedAt).toBeNull();
+
+    // 远端只换 SCHEMA text，不写 META.schema——apply 后载体仍缺席
+    const result = await session.applyRemoteUpdate(
+      makeRemoteUpdate(doc, (replica) => {
+        replica.getMap('SCHEMA').set('text', TEXT_V2);
+      }),
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('unreachable');
+    // 诚实缺席：outcome 与 active 身份均投影 null，不以本地时钟兜底（ADR 0018 §2）
+    expect(result.schemaRearm).toEqual({
+      kind: 'applied',
+      semanticFingerprint: COMPILED_V2.semanticFingerprint,
+      updatedAt: null,
+    });
+    expect(runtime.getActiveSchema()?.updatedAt).toBeNull();
     await runtime.close();
   });
 
@@ -320,6 +362,39 @@ describe('issue #286 AC3：fatal 双码完整路径', () => {
     expect(write.ok).toBe(false);
     expect(runtime.getActiveSchema()?.semanticFingerprint).toBe(COMPILED_V1.semanticFingerprint);
     expect(runtime.readData(['n'])).toMatchObject({ ok: true, value: 1 });
+    await runtime.close();
+  });
+
+  it('诊断配对：re-arm fatal 落一条 replication-apply fatal 记录（committed:true / sourcePhase schema-rearm / 码透出）', async () => {
+    const log = createBoundedMemoryDiagnosticLog({ inputPolicy: 'digest', updateCapture: true });
+    const doc = seedDoc();
+    const { runtime } = makeRuntime(doc, {
+      diagnosticEmitter: log.emitter,
+      clock: () => 1_700_000_000_000, // 注入 Clock：observedAt 唯一来源（#149 §5.2）
+    });
+    const session = await openReadySession(runtime, 'peer');
+
+    const result = await session.applyRemoteUpdate(
+      makeRemoteUpdate(doc, (replica) => mutateAsHubSchemaReplacement(replica, TEXT_BAD)),
+    );
+    // apply 槽本身不失败（fatal 是 Runtime 态，非本笔拒绝）
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('unreachable');
+    expect(result.schemaRearm?.kind).toBe('failed');
+
+    // fatal + diag 配对（沿本槽兄弟 fatal 点先例）：恰一条 attempt 记录，诚实
+    // committed:true + effect update（apply 事实已提交），Stage 封闭枚举归
+    // 'transaction' 阶段 + sourcePhase 'schema-rearm' 区分提交后段
+    await expect
+      .poll(() => log.records().filter((r) => r.recordKind === 'attempt').length, { interval: 5, timeout: 3_000 })
+      .toBe(1);
+    const rec = log.records().filter((r): r is AttemptRecord => r.recordKind === 'attempt')[0];
+    if (rec === undefined) throw new Error('attempt 记录缺失（poll 已保证非空——不可达防御）');
+    expect(rec.operation).toBe('replication-apply');
+    expect(rec.stage).toBe('transaction');
+    expect(rec.sourcePhase).toBe('schema-rearm');
+    expect(rec.code).toBe(FATAL_SCHEMA_REARM_INVALID_CODE);
+    expect(rec.result).toMatchObject({ kind: 'fatal', committed: true, effect: 'update' });
     await runtime.close();
   });
 });
