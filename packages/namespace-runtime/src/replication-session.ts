@@ -809,7 +809,9 @@ async function runSessionApplySlot(
         // 枚举无 re-arm 值，提交后段归 'transaction' 阶段 + sourcePhase 区分；码族
         // NSRT-FATAL-SCHEMA-* → sourceModule 缺省 'runtime'（沿 SCHEMA 写槽 fatal
         // 先例）。结局单点写入「最后一个结局点胜」：后续 R6 dirty fatal 照常覆盖。
-        diagFatalTx(diag, rearmOutcome.code, true, 'schema-rearm', diag?.updateBytes);
+        // update 实参与 R5 兄弟 fatal 点（775 行）同形——直传 capturedUpdate 局部量，
+        // 不经 diag.updateBytes 侧通道（两者此处等价，同形防漂移）。
+        diagFatalTx(diag, rearmOutcome.code, true, 'schema-rearm', capturedUpdate);
       }
     }
   }
