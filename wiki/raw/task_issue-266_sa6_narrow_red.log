@@ -1,0 +1,131 @@
+Testing types with tsc and vue-tsc is an experimental feature.
+Breaking changes might not follow SemVer, please pin Vitest's version when using it.
+
+ RUN  v3.2.7 /home/wangjian/nomicore-fix-issue-266
+
+ ❯ packages/vfsl/test/sc1-derive-schema-identity.test.ts (8 tests | 8 failed) 8ms
+   × deriveSchemaIdentity — 窄接口形状与确定性派生（红灯：导出尚不存在） > 红灯：@nomicore/vfsl 公共导出单参函数（不接受 provisional envelope ID：fn.length === 1） 5ms
+     → expected 'undefined' to be 'function' // Object.is equality
+   × deriveSchemaIdentity — 窄接口形状与确定性派生（红灯：导出尚不存在） > 红灯：合法 text → ok:true，恰 {ok, semanticFingerprint, schemaId} 三键，双值格式冻结 0ms
+     → (0 , deriveSchemaIdentity) is not a function
+   × deriveSchemaIdentity — 窄接口形状与确定性派生（红灯：导出尚不存在） > 红灯：schemaId payload = semanticFingerprint digest 的 canonical Base32（一一重编码，独立参考件双向） 0ms
+     → (0 , deriveSchemaIdentity) is not a function
+   × deriveSchemaIdentity — 窄接口形状与确定性派生（红灯：导出尚不存在） > 红灯：确定性——同 text 重复调用产出逐字节一致的 fingerprint/schemaId 0ms
+     → (0 , deriveSchemaIdentity) is not a function
+   × deriveSchemaIdentity — 空白/普通注释稳定，JSDoc/声明顺序敏感（红灯：导出尚不存在） > 红灯：空白与普通注释（// 与 /* */）不改变 fingerprint 与 schemaId 0ms
+     → (0 , deriveSchemaIdentity) is not a function
+   × deriveSchemaIdentity — 空白/普通注释稳定，JSDoc/声明顺序敏感（红灯：导出尚不存在） > 红灯：JSDoc 变化改变 fingerprint 与 schemaId（ADR 0007：docs 原文进入 IR） 0ms
+     → (0 , deriveSchemaIdentity) is not a function
+   × deriveSchemaIdentity — 空白/普通注释稳定，JSDoc/声明顺序敏感（红灯：导出尚不存在） > 红灯：声明顺序变化改变 fingerprint 与 schemaId（其余语义等价） 0ms
+     → (0 , deriveSchemaIdentity) is not a function
+   × deriveSchemaIdentity — parse 失败返回原生 VFSL issues（红灯：导出尚不存在） > 红灯：非法 text → ok:false 且恰 {ok, issues} 两键，issues 与 parseVfsl 深相等 0ms
+     → (0 , deriveSchemaIdentity) is not a function
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 8 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  packages/vfsl/test/sc1-derive-schema-identity.test.ts > deriveSchemaIdentity — 窄接口形状与确定性派生（红灯：导出尚不存在） > 红灯：@nomicore/vfsl 公共导出单参函数（不接受 provisional envelope ID：fn.length === 1）
+AssertionError: expected 'undefined' to be 'function' // Object.is equality
+
+Expected: "function"
+Received: "undefined"
+
+ ❯ packages/vfsl/test/sc1-derive-schema-identity.test.ts:123:41
+    121| describe('deriveSchemaIdentity — 窄接口形状与确定性派生（红灯：导出尚不存在）', () => {
+    122|   it('红灯：@nomicore/vfsl 公共导出单参函数（不接受 provisional envelope ID：fn.length…
+    123|     expect(typeof deriveSchemaIdentity).toBe('function'); // 当前 import…
+       |                                         ^
+    124|     expect(deriveSchemaIdentity.length).toBe(1); // text-only 签名（H1）
+    125|   });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/8]⎯
+
+ FAIL  packages/vfsl/test/sc1-derive-schema-identity.test.ts > deriveSchemaIdentity — 窄接口形状与确定性派生（红灯：导出尚不存在） > 红灯：合法 text → ok:true，恰 {ok, semanticFingerprint, schemaId} 三键，双值格式冻结
+TypeError: (0 , deriveSchemaIdentity) is not a function
+ ❯ packages/vfsl/test/sc1-derive-schema-identity.test.ts:128:31
+    126|
+    127|   it('红灯：合法 text → ok:true，恰 {ok, semanticFingerprint, schemaId} 三键，双值…
+    128|     const r = expectDerivedOk(deriveSchemaIdentity(TEXT_A) as unknown …
+       |                               ^
+    129|     expect(r.semanticFingerprint).toMatch(/^sha256:v1:[0-9a-f]{64}$/);…
+    130|     expect(r.schemaId).toMatch(/^sc1-[a-z2-7]{52}$/); // ADR 0015 冻结格式…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/8]⎯
+
+ FAIL  packages/vfsl/test/sc1-derive-schema-identity.test.ts > deriveSchemaIdentity — 窄接口形状与确定性派生（红灯：导出尚不存在） > 红灯：schemaId payload = semanticFingerprint digest 的 canonical Base32（一一重编码，独立参考件双向）
+TypeError: (0 , deriveSchemaIdentity) is not a function
+ ❯ packages/vfsl/test/sc1-derive-schema-identity.test.ts:140:31
+    138|
+    139|   it('红灯：schemaId payload = semanticFingerprint digest 的 canonical Bas…
+    140|     const r = expectDerivedOk(deriveSchemaIdentity(TEXT_A) as unknown …
+       |                               ^
+    141|     const digest = digestHexFromFingerprint(r.semanticFingerprint);
+    142|     expect(digest).not.toBeNull();
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/8]⎯
+
+ FAIL  packages/vfsl/test/sc1-derive-schema-identity.test.ts > deriveSchemaIdentity — 窄接口形状与确定性派生（红灯：导出尚不存在） > 红灯：确定性——同 text 重复调用产出逐字节一致的 fingerprint/schemaId
+TypeError: (0 , deriveSchemaIdentity) is not a function
+ ❯ packages/vfsl/test/sc1-derive-schema-identity.test.ts:151:31
+    149|
+    150|   it('红灯：确定性——同 text 重复调用产出逐字节一致的 fingerprint/schemaId', () => {
+    151|     const a = expectDerivedOk(deriveSchemaIdentity(TEXT_A) as unknown …
+       |                               ^
+    152|     const b = expectDerivedOk(deriveSchemaIdentity(TEXT_A) as unknown …
+    153|     expect(b.schemaId).toBe(a.schemaId);
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[4/8]⎯
+
+ FAIL  packages/vfsl/test/sc1-derive-schema-identity.test.ts > deriveSchemaIdentity — 空白/普通注释稳定，JSDoc/声明顺序敏感（红灯：导出尚不存在） > 红灯：空白与普通注释（// 与 /* */）不改变 fingerprint 与 schemaId
+TypeError: (0 , deriveSchemaIdentity) is not a function
+ ❯ packages/vfsl/test/sc1-derive-schema-identity.test.ts:164:34
+    162| describe('deriveSchemaIdentity — 空白/普通注释稳定，JSDoc/声明顺序敏感（红灯：导出尚不存在）', (…
+    163|   it('红灯：空白与普通注释（// 与 /* */）不改变 fingerprint 与 schemaId', () => {
+    164|     const base = expectDerivedOk(deriveSchemaIdentity(TEXT_A) as unkno…
+       |                                  ^
+    165|     expect(referenceFingerprint(TEXT_A_WS)).toBe(FP_A); // fixture 前提（…
+    166|     for (const variant of [TEXT_A_WS, TEXT_A_COMMENT_SLASH, TEXT_A_COM…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[5/8]⎯
+
+ FAIL  packages/vfsl/test/sc1-derive-schema-identity.test.ts > deriveSchemaIdentity — 空白/普通注释稳定，JSDoc/声明顺序敏感（红灯：导出尚不存在） > 红灯：JSDoc 变化改变 fingerprint 与 schemaId（ADR 0007：docs 原文进入 IR）
+TypeError: (0 , deriveSchemaIdentity) is not a function
+ ❯ packages/vfsl/test/sc1-derive-schema-identity.test.ts:174:34
+    172|
+    173|   it('红灯：JSDoc 变化改变 fingerprint 与 schemaId（ADR 0007：docs 原文进入 IR）', ()…
+    174|     const bare = expectDerivedOk(deriveSchemaIdentity(TEXT_A) as unkno…
+       |                                  ^
+    175|     const docA = expectDerivedOk(deriveSchemaIdentity(TEXT_A_JSDOC_1) …
+    176|     const docB = expectDerivedOk(deriveSchemaIdentity(TEXT_A_JSDOC_2) …
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[6/8]⎯
+
+ FAIL  packages/vfsl/test/sc1-derive-schema-identity.test.ts > deriveSchemaIdentity — 空白/普通注释稳定，JSDoc/声明顺序敏感（红灯：导出尚不存在） > 红灯：声明顺序变化改变 fingerprint 与 schemaId（其余语义等价）
+TypeError: (0 , deriveSchemaIdentity) is not a function
+ ❯ packages/vfsl/test/sc1-derive-schema-identity.test.ts:185:32
+    183|
+    184|   it('红灯：声明顺序变化改变 fingerprint 与 schemaId（其余语义等价）', () => {
+    185|     const o1 = expectDerivedOk(deriveSchemaIdentity(TEXT_ORDER_1) as u…
+       |                                ^
+    186|     const o2 = expectDerivedOk(deriveSchemaIdentity(TEXT_ORDER_2) as u…
+    187|     expect(FP_ORDER_1).not.toBe(FP_ORDER_2); // fixture 前提
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[7/8]⎯
+
+ FAIL  packages/vfsl/test/sc1-derive-schema-identity.test.ts > deriveSchemaIdentity — parse 失败返回原生 VFSL issues（红灯：导出尚不存在） > 红灯：非法 text → ok:false 且恰 {ok, issues} 两键，issues 与 parseVfsl 深相等
+TypeError: (0 , deriveSchemaIdentity) is not a function
+ ❯ packages/vfsl/test/sc1-derive-schema-identity.test.ts:204:15
+    202|       throw new Error('fixture 自检失败：TEXT_BAD 应 parse 失败');
+    203|     }
+    204|     const r = deriveSchemaIdentity(TEXT_BAD) as unknown as DerivedResu…
+       |               ^
+    205|     expect(r.ok).toBe(false);
+    206|     if (r.ok) {
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[8/8]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  8 failed (8)
+Type Errors  no errors
+   Start at  22:40:35
+   Duration  318ms (transform 137ms, setup 0ms, collect 170ms, tests 8ms, environment 0ms, prepare 43ms)

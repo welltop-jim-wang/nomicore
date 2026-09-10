@@ -1,0 +1,124 @@
+test (24, 4)	Test (shard 4/6)	﻿2026-09-09T00:40:49.8113463Z ##[group]Run files=$(node scripts/ci-test-shard.mjs 4 6)
+test (24, 4)	Test (shard 4/6)	2026-09-09T00:40:49.8113951Z [36;1mfiles=$(node scripts/ci-test-shard.mjs 4 6)[0m
+test (24, 4)	Test (shard 4/6)	2026-09-09T00:40:49.8114310Z [36;1mtest -n "$files"[0m
+test (24, 4)	Test (shard 4/6)	2026-09-09T00:40:49.8114892Z [36;1mNODE_OPTIONS=--conditions=nomicore-source pnpm exec vitest run $files --typecheck.enabled=false --passWithNoTests=false[0m
+test (24, 4)	Test (shard 4/6)	2026-09-09T00:40:49.8150897Z shell: /usr/bin/bash -e {0}
+test (24, 4)	Test (shard 4/6)	2026-09-09T00:40:49.8151163Z env:
+test (24, 4)	Test (shard 4/6)	2026-09-09T00:40:49.8151382Z   SHARD_COUNT: 6
+test (24, 4)	Test (shard 4/6)	2026-09-09T00:40:49.8151661Z   PNPM_HOME: /home/runner/setup-pnpm/node_modules/.bin
+test (24, 4)	Test (shard 4/6)	2026-09-09T00:40:49.8151984Z ##[endgroup]
+test (24, 4)	Test (shard 4/6)	2026-09-09T00:40:49.8556949Z shard 4/6: 49 files, ~84s estimated
+test (24, 4)	Test (shard 4/6)	2026-09-09T00:40:50.5627108Z
+test (24, 4)	Test (shard 4/6)	2026-09-09T00:40:50.5632729Z [1m[46m RUN [49m[22m [36mv3.2.7 [39m[90m/home/runner/work/nomicore/nomicore[39m
+test (24, 4)	Test (shard 4/6)	2026-09-09T00:40:50.5633562Z
+test (24, 4)	Test (shard 4/6)	2026-09-09T00:40:54.2957406Z  [32m✓[39m packages/namespace-registry/test/registry-phase5-replication-session-red.test.ts [2m([22m[2m22 tests[22m[2m)[22m[33m 2672[2mms[22m[39m
+test (24, 4)	Test (shard 4/6)	2026-09-09T00:40:54.2960896Z    [33m[2m✓[22m[39m AC-5 peer degraded 只允许 hub→peer trusted apply；O-5 补锚 (a)(b)[2m > [22mpeer persistence-degraded：业务写禁用（RUNTIME_WRITE_DISABLED）；hub→peer apply 允许（内存生效 + saveDoc 仍登记 + 内存/磁盘可区分） [33m 1300[2mms[22m[39m
+test (24, 4)	Test (shard 4/6)	2026-09-09T00:40:54.2964384Z    [33m[2m✓[22m[39m AC-5 peer degraded 只允许 hub→peer trusted apply；O-5 补锚 (a)(b)[2m > [22m补锚 (a)：hub persistence-degraded 拒绝 peer→hub raw apply；读取、身份检查和 state-vector 交换保留 [33m 1224[2mms[22m[39m
+test (24, 4)	Test (shard 4/6)	2026-09-09T00:40:54.7145325Z  [32m✓[39m packages/namespace-runtime/test/runtime-replication-session.test.ts [2m([22m[2m30 tests[22m[2m)[22m[32m 100[2mms[22m[39m
+test (24, 4)	Test (shard 4/6)	2026-09-09T00:40:56.3592054Z  [32m✓[39m packages/namespace-registry/test/registry-phase5-replication-red.test.ts [2m([22m[2m16 tests[22m[2m)[22m[33m 1311[2mms[22m[39m
+test (24, 4)	Test (shard 4/6)	2026-09-09T00:40:56.3594231Z    [33m[2m✓[22m[39m AC-6 close/fatal 竞态与 Memory persistence 恢复[2m > [22mpersistence-degraded：gate 通过后降级——enable 成功、后续 bump 被 RUNTIME_WRITE_DISABLED 拒绝零写入；恢复后 retry 覆盖、bump 成功；Memory 恢复可见 [33m 1178[2mms[22m[39m
+test (24, 4)	Test (shard 4/6)	2026-09-09T00:40:59.4463395Z  [32m✓[39m packages/namespace-runtime/test/runtime-replace-schema-sa7-dynamic.test.ts [2m([22m[2m11 tests[22m[2m)[22m[33m 2782[2mms[22m[39m
+test (24, 4)	Test (shard 4/6)	2026-09-09T00:40:59.4467542Z    [33m[2m✓[22m[39m SA7 动态验证 — T3.4（rev2）：深 doc × keep-root → E 层吸收为领域失败 + 零写入 + fatal 零置位 + provide-root 修复通道开放[2m > [22m深 doc × keep-root replaceSchema({schema: ENV_DEEP}) → resolved ok:false（/DOCRT-E100|VFSL-E100|校验工作预算耗尽/）+ 零写入 + fatal 零置位 + 写位未禁（运行时修复通道开放）；同 runtime provide-root 修复尝试的实测结果按 SA6 偏差锚登记（见注释） [33m 2698[2mms[22m[39m
+test (24, 4)	Test (shard 4/6)	2026-09-09T00:41:00.0275972Z  [32m✓[39m packages/namespace-registry/test/registry-sa7-phase5-bootstrap-reset-dynamic.test.ts [2m([22m[2m10 tests[22m[2m)[22m[32m 245[2mms[22m[39m
+test (24, 4)	Test (shard 4/6)	2026-09-09T00:41:00.4484231Z  [32m✓[39m packages/namespace-registry/test/registry-phase5-replication-session-round2-red.test.ts [2m([22m[2m12 tests[22m[2m)[22m[32m 74[2mms[22m[39m
+test (24, 4)	Test (shard 4/6)	2026-09-09T00:41:01.2614912Z  [32m✓[39m packages/ws-replication/test/ws-replication-issue137-r2-red.test.ts [2m([22m[2m9 tests[22m[2m)[22m[32m 197[2mms[22m[39m
+test (24, 4)	Test (shard 4/6)	2026-09-09T00:41:01.5785630Z  [32m✓[39m packages/doc-runtime/test/read-logical-value-at-path-schema-independent.test.ts [2m([22m[2m33 tests[22m[2m)[22m[32m 42[2mms[22m[39m
+test (24, 4)	Test (shard 4/6)	2026-09-09T00:41:01.8602317Z  [32m✓[39m packages/vfsl/test/compile-schema-envelope.test.ts [2m([22m[2m28 tests[22m[2m)[22m[32m 32[2mms[22m[39m
+test (24, 4)	Test (shard 4/6)	2026-09-09T00:41:02.2890065Z  [32m✓[39m packages/dsh-persistence/test/dsh-profile-acceptance.test.ts [2m([22m[2m12 tests[22m[2m)[22m[32m 144[2mms[22m[39m
+test (24, 4)	Test (shard 4/6)	2026-09-09T00:41:02.7025485Z  [32m✓[39m packages/namespace-registry/test/registry-plugin.test.ts [2m([22m[2m9 tests[22m[2m)[22m[32m 81[2mms[22m[39m
+test (24, 4)	Test (shard 4/6)	2026-09-09T00:41:03.1943679Z  [32m✓[39m packages/ws-replication/test/ws-replication-issue238-segmented-observation.test.ts [2m([22m[2m8 tests[22m[2m)[22m[32m 128[2mms[22m[39m
+test (24, 4)	Test (shard 4/6)	2026-09-09T00:41:03.5149707Z  [32m✓[39m packages/doc-runtime/test/transaction-fatal-materialize-contract.test.ts [2m([22m[2m16 tests[22m[2m)[22m[32m 26[2mms[22m[39m
+test (24, 4)	Test (shard 4/6)	2026-09-09T00:41:39.9358215Z  [32m✓[39m apps/yjs-server/test/stdin-error-chain-red.test.ts [2m([22m[2m4 tests[22m[2m)[22m[33m 36215[2mms[22m[39m
+test (24, 4)	Test (shard 4/6)	2026-09-09T00:41:39.9361505Z    [33m[2m✓[22m[39m T7 stdin error chain + F1 verify-write bounded materialization wait (design §5-T7 / SA7 §2.5)[2m > [22merror chain: malformed-line / unknown-op / namespace-unknown; verify-write on a never-live known ns waits to the bounded deadline then verify-write-timeout (never a ~50ms write-failed) [33m 8002[2mms[22m[39m
+test (24, 4)	Test (shard 4/6)	2026-09-09T00:41:39.9364022Z    [33m[2m✓[22m[39m T7 stdin error chain + F1 verify-write bounded materialization wait (design §5-T7 / SA7 §2.5)[2m > [22mF1 race: verify-write fired immediately after peer ready (zero settle) converges for a live namespace — fresh peer per round, concurrent burst [33m 7897[2mms[22m[39m
+test (24, 4)	Test (shard 4/6)	2026-09-09T00:41:39.9366323Z    [33m[2m✓[22m[39m T7 stdin error chain + F1 verify-write bounded materialization wait (design §5-T7 / SA7 §2.5)[2m > [22mF1 race (deterministic window): verify-write issued while the hub is down stays in bounded wait (zero fast replies), then converges once the hub restarts [33m 13521[2mms[22m[39m
+test (24, 4)	Test (shard 4/6)	2026-09-09T00:41:39.9369361Z    [33m[2m✓[22m[39m T7 stdin error chain + F1 verify-write bounded materialization wait (design §5-T7 / SA7 §2.5)[2m > [22mF1 race under load: verify-write fired immediately after peer ready while CPU burners contend — must converge, not fast write-failed (SA7 loaded repro shape) [33m 6794[2mms[22m[39m
+test (24, 4)	Test (shard 4/6)	2026-09-09T00:41:40.1822163Z  [32m✓[39m packages/replication-protocol/test/codec-malformed.test.ts [2m([22m[2m37 tests[22m[2m)[22m[32m 17[2mms[22m[39m
+test (24, 4)	Test (shard 4/6)	2026-09-09T00:41:40.4395724Z  [32m✓[39m packages/vfsl/test/sc1-schema-id-envelope-validation.test.ts [2m([22m[2m25 tests[22m[2m)[22m[32m 20[2mms[22m[39m
+test (24, 4)	Test (shard 4/6)	2026-09-09T00:42:04.4866719Z  [32m✓[39m apps/yjs-server/test/host-namespace-delete-under-replication.test.ts [2m([22m[2m1 test[22m[2m)[22m[33m 23851[2mms[22m[39m
+test (24, 4)	Test (shard 4/6)	2026-09-09T00:42:04.4869408Z    [33m[2m✓[22m[39m issue #228 — T-H5 删除×复制：活跃 peer channel（trusted 复制中）发起 delete-namespace（AD-7/R-2 行为锚）[2m > [22mhub 与 peer channel 达 live 且双向收敛后 delete → ack ok 且数据/日志全清；channel 失败收口（hub 事件终态、进程不崩）；重试/收口窗口内无快照复活、无日志重建；hub 健康直至干净停机 [33m 23849[2mms[22m[39m
+test (24, 4)	Test (shard 4/6)	2026-09-09T00:42:20.2257740Z  [32m✓[39m apps/yjs-server/test/host-diagnostic-retention-sweep.test.ts [2m([22m[2m1 test[22m[2m)[22m[33m 15354[2mms[22m[39m
+test (24, 4)	Test (shard 4/6)	2026-09-09T00:42:20.2260930Z    [33m[2m✓[22m[39m issue #228 — T-H7 retention 透传：config retention → 构造期 sweep：关闭段（前代 generation）被删、open group 不删（AC2 retention host 级锚）[2m > [22mboot1（provision + 写）干净停机 → 预置前代旧流（真记录拷贝、observedAt 远古化）→ boot2（同根、直引恢复 + retention）续写触发 sweepOnOpen：retention-swept{deletedGroups≥1} 事件、旧流组文件消失、当前流 strict 全绿且 sequence 连续（开组零损伤）、业务读写照常 [33m 15353[2mms[22m[39m
+test (24, 4)	Test (shard 4/6)	2026-09-09T00:42:20.5969945Z  [32m✓[39m packages/namespace-registry/test/registry-sa7-concurrency.test.ts [2m([22m[2m4 tests[22m[2m)[22m[32m 65[2mms[22m[39m
+test (24, 4)	Test (shard 4/6)	2026-09-09T00:42:21.0686629Z  [32m✓[39m packages/ws-replication/test/ws-replication-r3-r4-regressions.test.ts [2m([22m[2m11 tests[22m[2m)[22m[32m 131[2mms[22m[39m
+test (24, 4)	Test (shard 4/6)	2026-09-09T00:42:21.4559053Z  [32m✓[39m packages/namespace-registry/test/registry-delete-orchestration.test.ts [2m([22m[2m9 tests[22m[2m)[22m[32m 56[2mms[22m[39m
+test (24, 4)	Test (shard 4/6)	2026-09-09T00:42:21.7500116Z  [32m✓[39m packages/doc-runtime/test/create-initial-document.test.ts [2m([22m[2m9 tests[22m[2m)[22m[32m 24[2mms[22m[39m
+test (24, 4)	Test (shard 4/6)	2026-09-09T00:42:22.1370849Z  [32m✓[39m packages/ws-replication/test/ws-replication-sa7-issue170-minor3-observation.test.ts [2m([22m[2m1 test[22m[2m)[22m[32m 49[2mms[22m[39m
+test (24, 4)	Test (shard 4/6)	2026-09-09T00:42:22.5682669Z  [32m✓[39m packages/ws-replication/test/ws-replication-plugin.test.ts [2m([22m[2m15 tests[22m[2m)[22m[32m 93[2mms[22m[39m
+test (24, 4)	Test (shard 4/6)	2026-09-09T00:42:22.8171979Z  [32m✓[39m packages/vfsl/test/schemasource-seam.test.ts [2m([22m[2m13 tests[22m[2m)[22m[32m 35[2mms[22m[39m
+test (24, 4)	Test (shard 4/6)	2026-09-09T00:42:23.3450680Z  [32m✓[39m packages/namespace-runtime/test/runtime-mutate-issue-237-hot-path-red.test.ts [2m([22m[2m4 tests[22m[2m)[22m[32m 246[2mms[22m[39m
+test (24, 4)	Test (shard 4/6)	2026-09-09T00:42:24.4754037Z  [32m✓[39m packages/vfsl/test/parse-vfsl-sa7-supplementary.test.ts [2m([22m[2m8 tests[22m[2m)[22m[33m 906[2mms[22m[39m
+test (24, 4)	Test (shard 4/6)	2026-09-09T00:42:24.4756191Z    [33m[2m✓[22m[39m SA7 补充 — 资源界 / 必终止 / 声明序不变性（设计 §11 SA7 动态验证位）[2m > [22mT-l：20k 裸引用链 + Record 键 → ok:true（栈安全回归，无 RangeError、无挂起） [33m 308[2mms[22m[39m
+test (24, 4)	Test (shard 4/6)	2026-09-09T00:42:24.4758516Z    [33m[2m✓[22m[39m SA7 补充 — fuzz 烟雾（SA4 动态审核重点 #3：不抛异常 / 二态 union / 兜底通道不可达）[2m > [22mfixture 变异/截断：3000 组 + 全前缀截断全部落契约内 [33m 321[2mms[22m[39m
+test (24, 4)	Test (shard 4/6)	2026-09-09T00:42:24.8863911Z  [32m✓[39m packages/namespace-diagnostic-log/test/file-adapter-read-session.test.ts [2m([22m[2m9 tests[22m[2m)[22m[32m 142[2mms[22m[39m
+test (24, 4)	Test (shard 4/6)	2026-09-09T00:42:25.1574283Z  [32m✓[39m packages/persistence/test/file-persistence-sa7-dynamic.test.ts [2m([22m[2m4 tests[22m[2m)[22m[32m 39[2mms[22m[39m
+test (24, 4)	Test (shard 4/6)	2026-09-09T00:42:25.4137562Z  [32m✓[39m packages/persistence/test/doc-delete-semantics.test.ts [2m([22m[2m7 tests[22m[2m)[22m[32m 20[2mms[22m[39m
+test (24, 4)	Test (shard 4/6)	2026-09-09T00:42:25.8541300Z  [32m✓[39m packages/ws-replication/test/ws-replication-spec-b1-b2-red.test.ts [2m([22m[2m5 tests[22m[2m)[22m[32m 100[2mms[22m[39m
+test (24, 4)	Test (shard 4/6)	2026-09-09T00:42:26.2866610Z  [32m✓[39m packages/ws-replication/test/ws-replication-sa6-hardening-g1-g2-red.test.ts [2m([22m[2m5 tests[22m[2m)[22m[32m 75[2mms[22m[39m
+test (24, 4)	Test (shard 4/6)	2026-09-09T00:42:26.6784365Z  [32m✓[39m packages/namespace-diagnostic-log/test/file-adapter-genesis-results.test.ts [2m([22m[2m9 tests[22m[2m)[22m[32m 141[2mms[22m[39m
+test (24, 4)	Test (shard 4/6)	2026-09-09T00:42:27.1672817Z  [32m✓[39m packages/namespace-runtime/test/runtime-replace-schema-persistence.test.ts [2m([22m[2m2 tests[22m[2m)[22m[32m 194[2mms[22m[39m
+test (24, 4)	Test (shard 4/6)	2026-09-09T00:42:27.4816414Z  [32m✓[39m packages/namespace-runtime/test/runtime-public-surface-ownership.test.ts [2m([22m[2m6 tests[22m[2m)[22m[32m 30[2mms[22m[39m
+test (24, 4)	Test (shard 4/6)	2026-09-09T00:42:27.8390496Z  [32m✓[39m packages/namespace-diagnostic-log/test/strict-reader-materialize-unknown.test.ts [2m([22m[2m4 tests[22m[2m)[22m[32m 116[2mms[22m[39m
+test (24, 4)	Test (shard 4/6)	2026-09-09T00:42:28.1261863Z  [32m✓[39m packages/doc-runtime/test/extract-union-trial.test.ts [2m([22m[2m8 tests[22m[2m)[22m[32m 19[2mms[22m[39m
+test (24, 4)	Test (shard 4/6)	2026-09-09T00:42:28.5865711Z  [32m✓[39m packages/ws-replication/test/ws-replication-ac5-live.test.ts [2m([22m[2m7 tests[22m[2m)[22m[32m 114[2mms[22m[39m
+test (24, 4)	Test (shard 4/6)	2026-09-09T00:42:28.8464397Z  [32m✓[39m packages/replication-protocol/test/codec-version-interop.test.ts [2m([22m[2m25 tests[22m[2m)[22m[32m 18[2mms[22m[39m
+test (24, 4)	Test (shard 4/6)	2026-09-09T00:42:30.3078900Z  [32m✓[39m packages/vfsl-codegen/test/generate-alias-collision-guard.test.ts [2m([22m[2m4 tests[22m[2m)[22m[33m 608[2mms[22m[39m
+test (24, 4)	Test (shard 4/6)	2026-09-09T00:42:30.3080700Z    [33m[2m✓[22m[39m AC-3 — CLI 端到端：碰撞域响亮失败（exit 2 + 结构化 stderr，非 exit 0 静默产出）[2m > [22mpnpm generate 对碰撞域 → exit 2，stderr 含独立错误码与碰撞别名 [33m 595[2mms[22m[39m
+test (24, 4)	Test (shard 4/6)	2026-09-09T00:42:31.7878849Z  [31m❯[39m apps/yjs-server/test/root-lock-atomic-reclaim-red.test.ts [2m([22m[2m7 tests[22m[2m | [22m[31m1 failed[39m[2m)[22m[33m 1017[2mms[22m[39m
+test (24, 4)	Test (shard 4/6)	2026-09-09T00:42:31.7880560Z    [32m✓[39m root lock atomic ownership[2m > [22mnormal acquire publishes diagnostics and release is idempotent[32m 4[2mms[22m[39m
+test (24, 4)	Test (shard 4/6)	2026-09-09T00:42:31.7881675Z    [32m✓[39m root lock atomic ownership[2m > [22mlive owner diagnostics distinguish same instance and shared root[32m 1[2mms[22m[39m
+test (24, 4)	Test (shard 4/6)	2026-09-09T00:42:31.7882701Z    [32m✓[39m root lock atomic ownership[2m > [22mrecovers a directory lock left by a dead process[32m 141[2mms[22m[39m
+test (24, 4)	Test (shard 4/6)	2026-09-09T00:42:31.7884074Z [31m   [31m×[31m root lock atomic ownership[2m > [22mreal-process stale reclaim race has exactly one live owner[39m[33m 866[2mms[22m[39m
+test (24, 4)	Test (shard 4/6)	2026-09-09T00:42:31.7885393Z [31m     → expected [ { type: 'acquired', …(1) }, …(1) ] to have a length of 1 but got 2[39m
+test (24, 4)	Test (shard 4/6)	2026-09-09T00:42:31.7886805Z    [32m✓[39m root lock atomic ownership[2m > [22mlate release cannot remove a successor directory lock[32m 2[2mms[22m[39m
+test (24, 4)	Test (shard 4/6)	2026-09-09T00:42:31.7887872Z    [32m✓[39m root lock atomic ownership[2m > [22munwritable root is loud[32m 1[2mms[22m[39m
+test (24, 4)	Test (shard 4/6)	2026-09-09T00:42:31.7889175Z    [32m✓[39m root lock atomic ownership[2m > [22mlegacy malformed mirror cannot become the ownership token[32m 1[2mms[22m[39m
+test (24, 4)	Test (shard 4/6)	2026-09-09T00:42:32.4636340Z  [32m✓[39m packages/namespace-registry/test/registry-node-dispose.test.ts [2m([22m[2m2 tests[22m[2m)[22m[32m 10[2mms[22m[39m
+test (24, 4)	Test (shard 4/6)	2026-09-09T00:42:32.6884893Z  [32m✓[39m packages/vfsl/test/docscope-sha256.test.ts [2m([22m[2m13 tests[22m[2m)[22m[32m 13[2mms[22m[39m
+test (24, 4)	Test (shard 4/6)	2026-09-09T00:42:33.0210276Z  [32m✓[39m packages/namespace-registry/test/registry-persistence-contract.test.ts [2m([22m[2m2 tests[22m[2m)[22m[32m 37[2mms[22m[39m
+test (24, 4)	Test (shard 4/6)	2026-09-09T00:42:33.5176800Z  [32m✓[39m apps/yjs-server/test/ordered-shutdown-red.test.ts [2m([22m[2m2 tests[22m[2m)[22m[33m 312[2mms[22m[39m
+test (24, 4)	Test (shard 4/6)	2026-09-09T00:42:33.8248736Z  [32m✓[39m packages/namespace-registry/test/registry-entry-removal-guard.test.ts [2m([22m[2m7 tests[22m[2m)[22m[32m 9[2mms[22m[39m
+test (24, 4)	Test (shard 4/6)	2026-09-09T00:42:34.0176761Z  [32m✓[39m packages/clock/test/clock-surface.test.ts [2m([22m[2m5 tests[22m[2m)[22m[32m 8[2mms[22m[39m
+test (24, 4)	Test (shard 4/6)	2026-09-09T00:42:34.4459844Z  [32m✓[39m packages/ws-replication/test/ws-replication-periodic-reconcile.test.ts [2m([22m[2m5 tests[22m[2m)[22m[32m 85[2mms[22m[39m
+test (24, 4)	Test (shard 4/6)	2026-09-09T00:42:34.8835484Z  [32m✓[39m packages/ws-replication/test/ws-replication-issue230-incremental-mutation.test.ts [2m([22m[2m2 tests[22m[2m)[22m[32m 97[2mms[22m[39m
+test (24, 4)	Test (shard 4/6)	2026-09-09T00:42:34.9018437Z
+test (24, 4)	Test (shard 4/6)	2026-09-09T00:42:34.9019238Z [31m⎯⎯⎯⎯⎯⎯⎯[39m[1m[41m Failed Tests 1 [49m[22m[31m⎯⎯⎯⎯⎯⎯⎯[39m
+test (24, 4)	Test (shard 4/6)	2026-09-09T00:42:34.9019585Z
+test (24, 4)	Test (shard 4/6)	2026-09-09T00:42:34.9025345Z [41m[1m FAIL [22m[49m apps/yjs-server/test/root-lock-atomic-reclaim-red.test.ts[2m > [22mroot lock atomic ownership[2m > [22mreal-process stale reclaim race has exactly one live owner
+test (24, 4)	Test (shard 4/6)	2026-09-09T00:42:34.9046501Z [31m[1mAssertionError[22m: expected [ { type: 'acquired', …(1) }, …(1) ] to have a length of 1 but got 2[39m
+test (24, 4)	Test (shard 4/6)	2026-09-09T00:42:34.9047663Z
+test (24, 4)	Test (shard 4/6)	2026-09-09T00:42:34.9048479Z [32m- Expected[39m
+test (24, 4)	Test (shard 4/6)	2026-09-09T00:42:34.9049019Z [31m+ Received[39m
+test (24, 4)	Test (shard 4/6)	2026-09-09T00:42:34.9049269Z
+test (24, 4)	Test (shard 4/6)	2026-09-09T00:42:34.9049466Z [32m- 1[39m
+test (24, 4)	Test (shard 4/6)	2026-09-09T00:42:34.9049850Z [31m+ 2[39m
+test (24, 4)	Test (shard 4/6)	2026-09-09T00:42:34.9050059Z
+test (24, 4)	Test (shard 4/6)	2026-09-09T00:42:34.9050925Z [36m [2m❯[22m apps/yjs-server/test/root-lock-atomic-reclaim-red.test.ts:[2m104:22[22m[39m
+test (24, 4)	Test (shard 4/6)	2026-09-09T00:42:34.9100543Z     [90m102| [39m    [35mconst[39m messages [33m=[39m [35mawait[39m [33mPromise[39m[33m.[39m[34mall[39m(workers[33m.[39m[34mmap[39m(nextMessage))[33m;[39m
+test (24, 4)	Test (shard 4/6)	2026-09-09T00:42:34.9102672Z     [90m103| [39m    const acquired = messages.filter(({ type }) => type === 'acquired'…
+test (24, 4)	Test (shard 4/6)	2026-09-09T00:42:34.9104040Z     [90m104| [39m    [34mexpect[39m(acquired)[33m.[39m[34mtoHaveLength[39m([34m1[39m)[33m;[39m
+test (24, 4)	Test (shard 4/6)	2026-09-09T00:42:34.9105051Z     [90m   | [39m                     [31m^[39m
+test (24, 4)	Test (shard 4/6)	2026-09-09T00:42:34.9106051Z     [90m105| [39m    const rejected = messages.filter(({ type }) => type === 'rejected'…
+test (24, 4)	Test (shard 4/6)	2026-09-09T00:42:34.9107371Z     [90m106| [39m    [34mexpect[39m(rejected)[33m.[39m[34mtoHaveLength[39m([34m11[39m)[33m;[39m
+test (24, 4)	Test (shard 4/6)	2026-09-09T00:42:34.9108265Z
+test (24, 4)	Test (shard 4/6)	2026-09-09T00:42:34.9108741Z [31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯[22m[39m
+test (24, 4)	Test (shard 4/6)	2026-09-09T00:42:34.9109117Z
+test (24, 4)	Test (shard 4/6)	2026-09-09T00:42:34.9109153Z
+test (24, 4)	Test (shard 4/6)	2026-09-09T00:42:34.9114048Z [2m Test Files [22m [1m[31m1 failed[39m[22m[2m | [22m[1m[32m48 passed[39m[22m[90m (49)[39m
+test (24, 4)	Test (shard 4/6)	2026-09-09T00:42:34.9120233Z [2m      Tests [22m [1m[31m1 failed[39m[22m[2m | [22m[1m[32m497 passed[39m[22m[90m (498)[39m
+test (24, 4)	Test (shard 4/6)	2026-09-09T00:42:34.9121628Z [2m   Start at [22m 00:40:50
+test (24, 4)	Test (shard 4/6)	2026-09-09T00:42:34.9123614Z [2m   Duration [22m 104.34s[2m (transform 1.47s, setup 0ms, collect 7.43s, tests 88.10s, environment 9ms, prepare 2.87s)[22m
+test (24, 4)	Test (shard 4/6)	2026-09-09T00:42:34.9125137Z
+test (24, 4)	Test (shard 4/6)	2026-09-09T00:42:34.9143247Z
+test (24, 4)	Test (shard 4/6)	2026-09-09T00:42:34.9175977Z ##[error]AssertionError: expected [ { type: 'acquired', …(1) }, …(1) ] to have a length of 1 but got 2
+test (24, 4)	Test (shard 4/6)
+test (24, 4)	Test (shard 4/6)	- Expected
+test (24, 4)	Test (shard 4/6)	+ Received
+test (24, 4)	Test (shard 4/6)
+test (24, 4)	Test (shard 4/6)	- 1
+test (24, 4)	Test (shard 4/6)	+ 2
+test (24, 4)	Test (shard 4/6)
+test (24, 4)	Test (shard 4/6)	 ❯ apps/yjs-server/test/root-lock-atomic-reclaim-red.test.ts:104:22
+test (24, 4)	Test (shard 4/6)
+test (24, 4)	Test (shard 4/6)
+test (24, 4)	Test (shard 4/6)	2026-09-09T00:42:35.0460408Z ##[error]Process completed with exit code 1.

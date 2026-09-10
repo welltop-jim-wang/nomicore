@@ -231,17 +231,31 @@ SIGHUP 换装（restart-only，见下）。
 
 ## 锁文件与共享 root
 
-file 模式启动时以 `rootDir/.nomicore-lock/` 非空目录作为权威锁（`mkdir`
-是唯一获取线性化点），目录内 `owner.json` 写入 `{instanceId, pid, nonce}`；同时
-刷新 `rootDir/.nomicore-lock.json` 诊断镜像，供运维读取。adapter 只触
-`users/`、`archive/users/` 受控子树，零干扰。语义：
+file 模式启动时以 `rootDir/.nomicore-lock/` 非空目录作为权威锁。获取 = 先在 rootDir
+顶层私有 staging 目录（`.nomicore-lock.acquire-<uuid>`）内构建完整 `owner.json`
+`{instanceId, pid, nonce}`，再以单次原子 `rename` 发布到权威目录（canonical 名称
+首次可观察即含完整 owner.json；发布与 stale 回收均经 `rootDir/.nomicore-lock.reap-claim`
+互斥门串行——挂名原子、死持有者单胜者接管、门等待有界：同一持有者连续占用超过
+5000ms 即 loud 失败，绝不无界等待）；同时刷新 `rootDir/.nomicore-lock.json` 诊断
+镜像，供运维读取。adapter 只触 `users/`、`archive/users/` 受控子树，零干扰。语义：
 
 - 权威锁存在且 pid 存活 → loud `exit(1)`：同 pid/instanceId = 同实例未干净停机；
   不同实例 = **共享活跃 root unsupported**（每个进程必须独立 rootDir；
   hub 与 peer 各自 rootDir，两个 peer 也各自 rootDir）；
-- pid 已死 = stale 回收：竞争者以原子 `rename` 将权威目录移到唯一墓碑路径，
-  再以 `mkdir` 竞争新的权威目录；竞争败者重读胜者 owner 后 loud `exit(1)`。
-  EACCES/EPERM → loud `exit(1)`（rootDir 可写性是 file 模式前置条件）；
+- pid 已死 = stale 回收：竞争者持互斥门后重读 dead owner，以原子 `rename` 将权威
+  目录移到唯一墓碑路径（`.nomicore-lock.reap-<uuid>`），删除前比对墓碑内容，再
+  回环以 `rename` 竞争发布新的权威目录；竞争败者重读胜者 owner 后 loud `exit(1)`。
+  EACCES/EPERM → loud `exit(1)`（rootDir 可写性是 file 模式前置条件）。非 POSIX
+  （Windows）上目录替换经 libuv 映射、语义不同：CAS 争用可正确归因，句柄滞留时
+  以 loud `exit(1)` 失败，stale 自动回收不保证成功——诊断准确性是承诺，回收成功
+  率不是；其余 transient 名族（`.nomicore-lock.reap-claim`、`.nomicore-lock.reap-claim.staging-<uuid>`、
+  `.nomicore-lock.reap-claim.reaped-<uuid>`、`.nomicore-lock.reap-<uuid>`、
+  `.nomicore-lock.release-<uuid>`）确认无进程使用该 rootDir 后可手工删除；
+- **claim 卡死症状 → 处置**：获取失败文案含 `reap-claim … still occupied by a live
+  pid … 5000ms` 时，先以 `ps` 核实该 pid；确认其不是活跃回收者且该 root 无进程
+  使用后删除 `.nomicore-lock.reap-claim` 即恢复（5000ms 以单调时钟计量，不含系统
+  挂起时长——挂起/重度调度饥饿下从墙钟看等待可能长于 5000ms 才触发）。该 claim
+  卡死形态不在下面的「pid 复用误判」句覆盖范围内——该句只针对权威 `.nomicore-lock/`；
 - release 先以原子 `rename` 摘走权威目录，只在墓碑 owner 等于本 handle payload
   时删除；迟到 handle 无法按 canonical 路径删除后继者的目录；
 - `.nomicore-lock.json` 只是诊断镜像，不是所有权 token；
