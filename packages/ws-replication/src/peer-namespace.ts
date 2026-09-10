@@ -728,7 +728,11 @@ export class PeerNamespaceController {
         // ——复用既有管线（applyRemoteUpdate：trusted apply + dirty + update-applied +
         // UPDATE_ACK{ackedSequence=末 chunk 帧序}）。重组失败一律先于 apply：live Y.Doc
         // 零写入（AC3）。
-        void this.applyRemoteUpdate(result.bytes, sequence);
+        // issue #245（DD5）：第 5 参 chunked 携带 assembler 申报 chunkCount——apply 结算
+        // 据此改道发 chunked-update-applied（第四形态；degraded 判别先行胜出——R23）。
+        void this.applyRemoteUpdate(result.bytes, sequence, false, undefined, {
+          chunkCount: result.chunkCount,
+        });
         return;
       }
       default: {
@@ -1266,11 +1270,25 @@ export class PeerNamespaceController {
 
   /** PN12：本出向 UPDATE 被对端 ACK 收妥（数据来自 UpdateChannel 记账；issue #238：
    *  sequence = 被 ACK 帧序 = wire ackedSequence——与对端 update-applied{sequence}
-   *  构成回程闭环）。 */
+   *  构成回程闭环）。
+   *  issue #245（R21/DD3）：info.chunked 在场 = 该 ACK 结算分块 transfer 的末 chunk 条目
+   *  → 改道发 chunked-update-acked（无 sequence 键——DD1）；普通帧条目（chunked 缺省）
+   *  → 既有 update-acked 发射体逐字节不变（N1 锚）。 */
   private onUpdateAcked(
-    info: Readonly<{ bytes: number; latencyMs?: number; sequence: number }>,
+    info: Readonly<{ bytes: number; latencyMs?: number; sequence: number; chunked?: true }>,
   ): void {
     if (!this.observerOn) return;
+    if (info.chunked !== undefined) {
+      this.host.emitObserver({
+        type: 'chunked-update-acked',
+        side: 'peer',
+        ...(cidField(this.host.connectionId())),
+        namespaceId: this.namespaceId,
+        bytes: info.bytes,
+        ...(info.latencyMs !== undefined ? { ackLatencyMs: info.latencyMs } : {}),
+      });
+      return;
+    }
     this.host.emitObserver({
       type: 'update-acked',
       side: 'peer',
@@ -1283,11 +1301,32 @@ export class PeerNamespaceController {
   }
 
   /** PN10：本出向 UPDATE 帧实际出站记账事件（issue #238——seq>0 每帧恰一；含帧级
-   *  sequence 与发送队列等待差值）。 */
+   *  sequence 与发送队列等待差值）。
+   *  issue #245（R21/DD3）：info.chunked 在场 = 分块 transfer 完成出站（末 chunk 结算，
+   *  bytes = totalBytes）→ 改道发 chunked-update-sent（transferId/chunkCount/totalBytes，
+   *  无 sequence/latency 键——DD1）；普通帧（chunked 缺省）→ 既有 update-sent 发射体
+   *  逐字节不变（N1 锚）。 */
   private onUpdateSent(
-    info: Readonly<{ sequence: number; bytes: number; sendQueueMs?: number }>,
+    info: Readonly<{
+      sequence: number;
+      bytes: number;
+      sendQueueMs?: number;
+      chunked?: Readonly<{ transferId: number; chunkCount: number }>;
+    }>,
   ): void {
     if (!this.observerOn) return;
+    if (info.chunked !== undefined) {
+      this.host.emitObserver({
+        type: 'chunked-update-sent',
+        side: 'peer',
+        ...(cidField(this.host.connectionId())),
+        namespaceId: this.namespaceId,
+        transferId: info.chunked.transferId,
+        chunkCount: info.chunked.chunkCount,
+        totalBytes: info.bytes, // 末 chunk 结算时 bytes = totalBytes（通道记账语义）
+      });
+      return;
+    }
     this.host.emitObserver({
       type: 'update-sent',
       side: 'peer',
@@ -1326,14 +1365,18 @@ export class PeerNamespaceController {
     return outcome === 'ok' ? 'ok' : 'aborted';
   }
 
-  /** 统一 apply 管线（§11.1/§11.3 镜像：UPDATE / Step2 diff）。
+  /** 统一 apply 管线（§11.1/§11.3 镜像：UPDATE / Step2 diff / chunked 组装）。
    *  第四参 `syncRoundId`（issue #239）：isStep2 时恒在（帧携带 wire roundId 的显式
-   *  透传投影，D2）——UPDATE 路径（isStep2=false）零投影。 */
+   *  透传投影，D2）——UPDATE 路径（isStep2=false）零投影。
+   *  第五参 `chunked`（issue #245，DD5）：唯一调用点 = 双侧 handleAssemblerResult 'complete'
+   *  分支（assembler 收齐的 UPDATE_CHUNK 组装结果——apply 成功路径互斥规则第四形态的
+   *  来源判别；onHubUpdate/applyStep2 既有调用点不传第 5 参——普通路径逐字节不变）。 */
   private async applyRemoteUpdate(
     update: Uint8Array,
     sequence: number,
     isStep2 = false,
     syncRoundId?: number,
+    chunked?: Readonly<{ chunkCount: number }>,
   ): Promise<'ok' | 'failed'> {
     const session = this.session;
     if (session === undefined) {
@@ -1420,6 +1463,20 @@ export class PeerNamespaceController {
               syncRoundId: syncRoundId!,
               encodedUpdateBytes: update.byteLength,
               ...(effect !== undefined ? effect : {}),
+            });
+          } else if (chunked !== undefined) {
+            // issue #245（R21/DD2 第四形态）：分块组装 apply 成功改道（degraded 判别在
+            // 上方外层先行胜出——R23 裁决：degraded 窗口任意来源 = degraded-bypass-applied）。
+            // 独立字段组，不得展开 base（base 含 sequence/stages——DD1 排除项；键集冻结
+            // = ADR L90 + §23 信封）；applyLatencyMs 沿用 t0/t1 既有采样点（两态纪律不变）。
+            this.host.emitObserver({
+              type: 'chunked-update-applied',
+              side: 'peer',
+              ...cidField(this.host.connectionId()),
+              namespaceId: this.namespaceId,
+              bytes: update.byteLength, // = wire 声明 totalBytes（assembler Σbytes 核对不变量）
+              chunkCount: chunked.chunkCount,
+              ...(applyLatencyMs !== undefined ? { applyLatencyMs } : {}),
             });
           } else {
             this.host.emitObserver({ type: 'update-applied', ...base });
