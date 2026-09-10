@@ -100,8 +100,12 @@ CLOSE_NAMESPACE（channel 进 `closed` 终态，重连不自动重开）；恰�
    Peer 编译失败不应发生——先核对 Hub 与各 Peer 的部署版本，版本偏移是首嫌。
 2. 取事件的稳定码；`INVALID` 时结合该 Peer `getStatus()` fatal 摘要中的 schema
    issue 摘要定位编译失败点。
-3. 排除字节损坏：比对 Hub 侧 `getActiveSchema()` 的 `envelopeFingerprint` 与该
-   Peer 实际收到的 SCHEMA 信封。
+3. 排除字节损坏：以 Hub 侧 `getActiveSchema()` 的 `envelopeFingerprint` 为发送方
+   基准。注意 fatal 后 Peer 的 active schema 保持旧 generation（tools 不动，
+   ADR 0018 §3），其 `getActiveSchema()` **不**反映刚收到的新 SCHEMA——Peer 侧
+   判据用 `getStatus()` fatal 摘要中的稳定 schema issue 摘要（fatal 后读保留，
+   可正常拉取）定位编译失败相位：同版本下文本/解析类失败即指向传输或落盘字节
+   损坏，语义类失败回到步骤 1 的版本偏移方向。
 
 ### 4.3 修复与恢复
 
