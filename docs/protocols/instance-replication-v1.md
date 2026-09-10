@@ -666,7 +666,7 @@ Peer→Hub update保护检查必须在同一 sequencer槽中：
 （附带可选 `clock?: ReplicationClock` 以观测 apply/ACK latency）。Seam 是**追加式
 （append-only）**：事件类型、reason/cause/via 词表、稳定码表只增不改；GA 后字段语义冻结。
 
-### 23.1 事件词汇（25 型，分类列示——issue #238 追加第 21 型 `event-loop-delay-sampled` 及四事件面 sequence/四段差值字段；issue #256 追加第 22 型 `namespace-failed`；ADR 0018 追加第 23/24 型 `schema-rearm-applied` / `schema-rearm-failed`；issue #244 追加第 25 型 `chunked-update-aborted` 及 `ChunkedUpdateAbortReason` 词表）
+### 23.1 事件词汇（28 型，分类列示——issue #238 追加第 21 型 `event-loop-delay-sampled` 及四事件面 sequence/四段差值字段；issue #256 追加第 22 型 `namespace-failed`；ADR 0018 追加第 23/24 型 `schema-rearm-applied` / `schema-rearm-failed`；issue #244 追加第 25 型 `chunked-update-aborted` 及 `ChunkedUpdateAbortReason` 词表；issue #245 追加第 26–28 型 `chunked-update-sent`/`chunked-update-applied`/`chunked-update-acked`——ADR 0013 L89–91 域键集 + §23 信封，分块 transfer 成功结算从普通族改道而来）
 
 连接域：
 
@@ -695,6 +695,9 @@ bootstrap / reconcile / updates 字节与 latency（每帧粒度；次数 = 事�
 | `update-applied` | hub/peer | `connectionId?`、`namespaceId`、`bytes`、`applyLatencyMs?`；**issue #238 追加（append-only）**：`sequence`（触发帧 = UPDATE 帧 envelope sequence，恒在场）、`queueWaitMs?`/`protectedCheckMs?`/`liveApplyMs?`/`dirtyNotifyMs?`（四段差值，同上在场纪律） |
 | `update-acked` | hub/peer | `connectionId?`、`namespaceId`、`bytes`、`ackLatencyMs?`；**issue #238 追加（append-only）**：`sequence`（= wire `UPDATE_ACK.ackedSequence`，恒在场——回指被 ACK 帧；与 `update-sent{sequence}`/对端 `update-applied{sequence}` 构成三事件面闭环） |
 | `degraded-bypass-applied` | peer（专属） | `connectionId?`、`namespaceId`、`bytes`（§20 peer degraded 内存 apply）；**issue #238 追加（append-only）**：`sequence`（触发帧 envelope sequence，恒在场——按 §23.5 既有纪律不携时延字段） |
+| `chunked-update-sent` | hub/peer | **issue #245 追加（append-only 第 26 型；ADR 0013 L89 域键集逐字 + §23 信封）**：`connectionId?`（握手后在场——分块结构性仅在握手后）、`namespaceId`、`transferId`、`chunkCount`、`totalBytes`（wire `UPDATE_CHUNK` 申报投影：受控 transferId + 计数/长度 safe-field，非内容）。**语义**：分块 transfer **完成出站时恰一**（末 chunk 帧已交宿主发送且注册在途——发射点 = 末 chunk 结算记账点），**非逐 chunk**、非 transfer 起始发射（中间 chunk 零事件）。**改道（R21）**：分块 transfer 窗口内对应普通族 `update-sent` 归零——本事件取代之。**恒无任何 latency/差值键**（clock 在场也不加——DD1 裁决；键集冻结 = 无 `sequence`/`sendQueueMs`）。**计数不变量**：每笔完成的出站 transfer 恰一事件（末 chunk 结算结构性单点——activeTransfer 生命周期）；中止 transfer 到不了本结算点 → 与 `chunked-update-aborted` 互斥 |
+| `chunked-update-applied` | hub/peer | **issue #245 追加（append-only 第 27 型；ADR 0013 L90 域键集逐字 + §23 信封）**：`connectionId?`、`namespaceId`、`bytes`（= wire 声明 `totalBytes`——assembler Σbytes 精确核对不变量，长度非内容）、`chunkCount`（wire 申报）、`applyLatencyMs?`（t0/t1 既有采样点——clock 缺省/无 observer 时**整键缺失**，非 undefined 值）。**语义**：UPDATE_CHUNK 组装收齐的 apply 成功结算——apply 成功路径互斥规则第四形态（见下）；**改道（R21）**：该结算点不再发普通族 `update-applied`（窗口内归零）。**键集冻结**：无 `transferId`/`sequence`/四段差值/效果组键（DD1） |
+| `chunked-update-acked` | hub/peer | **issue #245 追加（append-only 第 28 型；ADR 0013 L91 域键集逐字 + §23 信封）**：`connectionId?`、`namespaceId`、`bytes`（= wire `totalBytes`——末 chunk inFlight 记账总长）、`ackLatencyMs?`（ACK 处理时刻 − 末 chunk 出站时刻——clock 缺省/无 observer 时**整键缺失**）。**语义**：末 chunk 帧序的单 ACK 收妥结算（发送侧）；**改道（R21）**：该结算点不再发普通族 `update-acked`（窗口内归零）。**计数不变量**：每笔完成的出站 transfer 恰一事件；ACK timeout 弃置后 zombie 迟到 ACK 零事件（弃置 transfer 零成功型事件——与 aborted 互斥不变量一致）。**键集冻结**：无 `sequence` 键（帧级关联键为普通族专属——DD1） |
 
 **issue #239 语义注记**：发送不推进发送方 state vector，`sync-step2-sent` 不携带效果
 字段组。Yjs 空 diff 编码结构性非零（§9.2 允许空 diff），`bytes > 0 ∧ applyEffect='noop'
@@ -722,11 +725,15 @@ auth / 背压 / resync：
 | `namespace-error` | hub/peer | `connectionId?`、`namespaceId`、`code`（§23.2 闭联合）、`direction` ∈ {sent, received}、`terminalState?` ∈ {failed, conflicted, closed} |
 | `namespace-failed` | hub/peer | **issue #256 追加（append-only 第 22 型）**：`connectionId?`、`namespaceId`、`cause` ∈ {open-timeout, bootstrap-timeout, reconcile-timeout, open-failed, session-open-failed, replication-disabled, session-missing, protocol-violation, apply-refused, apply-rejected, remote-error, send-failed, internal-error}（`ReplicationNamespaceFailedCause` 闭联合，append-only；timer 族三值 = §13.2 `NAMESPACE_TIMEOUT` 的本地映射——open/bootstrap/reconcile 超时可仅凭单侧日志区分）、`timeoutMs?`（仅 timer 族 cause 在场：到期的配置上限 openTimeoutMs/bootstrapTimeoutMs/reconcileTimeoutMs——有限数值非时间戳）。**计数不变量**：每次 `failed` 终态边沿恰一事件（终态幂等早退保证——closing 期/终态后迟到的收口调用零事件）；事件在失败决策落定后发射（setState 之后，§23.4）。**与 `namespace-error` 互补不重复**：本事件计**终态边沿**，`namespace-error` 计 **wire ERROR 帧**——wire 错误驱动路径两者各一（失败聚合/告警路由以本事件 `cause` 为准）；本地零 wire 失败路径（timer 超时、本地 open/lease/session 失败、local 终局）仅本事件；`remote-error` 标记对端 ERROR 驱动的终局，防止被误计为本地故障。observer 缺省 = 零事件构造、零 live 状态读取、零时钟调用（cause/timeoutMs 实参仅为稳定字面量与 resolved 配置字段）。cause × `failed` 入口覆盖矩阵见本节附表 |
 | `identity-conflicted` | hub/peer | `connectionId?`、`namespaceId`、`via` ∈ {open-mismatch, fence, identity-changed-frame} |
-| `chunked-update-aborted` | hub/peer | **issue #244 追加（append-only 第 25 型；ADR 0013 observer seam reason 词表六值与中止矩阵一一平行）**：`namespaceId`、`transferId`、`reason` ∈ {timeout, shed, resync-declared, channel-teardown, connection-teardown, epoch-fence}（`ChunkedUpdateAbortReason` 闭联合，append-only）、`receivedChunks`、`receivedBytes`（已收进度：长度/计数 safe-field，非内容）。**发射端 = 丢弃 partial assembly 的一端**（接收方语义：timeout 停滞方弃置、shed/RESYNC 声明/CLOSE 收口/断线/epoch fence 的实际处置方——GOAWAY 无独立 reason，其 drain 收口归 `connection-teardown` 行；收口入口置位 + 收口链消费 = last-writer-wins）。**计数不变量**：每笔 busy→aborted 边沿恰一事件（busy 守卫——重复 clear/多清理挂点汇合至多一事件；stale fire 零副作用）；事件在决策落定后发射（§23.4）。**终局失败族不发本事件**（违例/远端 ERROR/revoke → failed 的可观测信号 = `namespace-error`/`namespace-failed`，互补不重复）；`conflicted` 族 fence 终局经本事件登记。成功路径三型（sent/applied/acked）为 #245 计划项，本切片不登记为已实现行为。observer 缺省 = 零事件构造、零快照读取。接线行：timeout / channel-teardown（CLOSE_NAMESPACE 收口）/ connection-teardown（断线/GOAWAY drain/stop）/ resync-declared（收对端 RESYNC、本端 wire 声明边、恢复 round 结算残渣）/ shed（live 通道连接级背压弃置）/ epoch-fence（hub one-shot 终结器、peer identity-changed/apply 期围栏）；**动态断言**（shed/epoch-fence/GOAWAY/queue-overflow/resync-declared 行 + `side` 双侧覆盖）归 SA7 动态验证面 |
+| `chunked-update-aborted` | hub/peer | **issue #244 追加（append-only 第 25 型；ADR 0013 observer seam reason 词表六值与中止矩阵一一平行）**：`namespaceId`、`transferId`、`reason` ∈ {timeout, shed, resync-declared, channel-teardown, connection-teardown, epoch-fence}（`ChunkedUpdateAbortReason` 闭联合，append-only）、`receivedChunks`、`receivedBytes`（已收进度：长度/计数 safe-field，非内容）。**发射端 = 丢弃 partial assembly 的一端**（接收方语义：timeout 停滞方弃置、shed/RESYNC 声明/CLOSE 收口/断线/epoch fence 的实际处置方——GOAWAY 无独立 reason，其 drain 收口归 `connection-teardown` 行；收口入口置位 + 收口链消费 = last-writer-wins）。**计数不变量**：每笔 busy→aborted 边沿恰一事件（busy 守卫——重复 clear/多清理挂点汇合至多一事件；stale fire 零副作用）；事件在决策落定后发射（§23.4）。**终局失败族不发本事件**（违例/远端 ERROR/revoke → failed 的可观测信号 = `namespace-error`/`namespace-failed`，互补不重复）；`conflicted` 族 fence 终局经本事件登记。成功路径三型（sent/applied/acked）已由 issue #245 落地（第 26–28 型，本表上列）——中止与成功路径互斥（中止 transfer 结构性不可达任一成功结算点，反之亦然）。observer 缺省 = 零事件构造、零快照读取。接线行：timeout / channel-teardown（CLOSE_NAMESPACE 收口）/ connection-teardown（断线/GOAWAY drain/stop）/ resync-declared（收对端 RESYNC、本端 wire 声明边、恢复 round 结算残渣）/ shed（live 通道连接级背压弃置）/ epoch-fence（hub one-shot 终结器、peer identity-changed/apply 期围栏）；**动态断言**（shed/epoch-fence/GOAWAY/queue-overflow/resync-declared 行 + `side` 双侧覆盖）归 SA7 动态验证面 |
+
 
 **apply 成功路径互斥规则**（避免计数重复）：每笔成功 apply 恰一事件 = `update-applied`
-（UPDATE 且非 degraded）／`sync-diff-applied`（Step2 且非 degraded）／
-`degraded-bypass-applied`（degraded，任意来源）三选一。
+（UPDATE 帧且非 degraded）／`sync-diff-applied`（Step2 且非 degraded）／
+`chunked-update-applied`（UPDATE_CHUNK 组装收齐 ∧ 非 Step2 ∧ 非 degraded——issue #245
+第四形态）／`degraded-bypass-applied`（degraded，任意来源——含分块 apply：degraded
+判别先于 chunked 判别胜出，R23）四选一。`isStep2 ∧ chunked` 结构性不可达（Step2 diff
+经 `SYNC_STEP2` 控制帧直达，assembler 只收 `UPDATE_CHUNK` 数据帧——两入口不相交）。
 
 **`namespace-failed` cause × `failed` 入口覆盖矩阵**（issue #256 验收交付物；
 回归锚 = `ws-replication-issue256-namespace-failed.test.ts` 场景号）：
@@ -971,3 +978,33 @@ observer 下成功与 fatal 两路径的通道行为全等（通道行为不依�
 namespace 域白名单**（`stableNamespaceCode('NSRT-FATAL-SCHEMA-REARM-INVALID') ===
 'INTERNAL_ERROR'`，域判别单点）。回归锚 =
 `packages/ws-replication/test/ws-replication-issue287-schema-rearm.test.ts`。
+**issue #245 追加（AC6 两具名子项，必交付）**：
+- **事件矩阵 key-set 冻结子项**：全事件矩阵加一条协商分块写腿（peer `chunkedUpdate:
+  true` opt-in + 8KiB `maxUpdateBytes` 低限——大写 ≈20KB → 3 chunk，限内小写仍走普通族，
+  双族并存）；白名单（`ws-replication-observer-red.test.ts` T9 `ALLOWED_KEYS`）追加
+  chunked 三型行（键集 = §23.1 上列逐字），数值键清单追加 `transferId`/`chunkCount`/
+  `totalBytes`（有限非负）；矩阵 `expectedTypes` 追加三新型——**白名单行不得为死行**
+  （矩阵腿必须真实激发三型）。纪律（R26）：矩阵 chunked 腿在收口相位（GOAWAY 注入 /
+  wire close / `stop()`）**之前**完整收敛——收口后在途中止会观测
+  `chunked-update-aborted`，而矩阵白名单不含该型（`assertSafe` 对无白名单类型响亮红）；
+  若未来矩阵确需覆盖收口后在途中止，须同步补 aborted 白名单行 +
+  `receivedChunks`/`receivedBytes` 数值键（「观测集 ⊆ 白名单覆盖」与「白名单行不得为
+  死行」对称）。key-set 冻结的 exact-keyset 断言以契约文件
+  `ws-replication-issue245-ac-red.test.ts` R1–R5 为行为面双保险。
+- **时钟折叠策略子项（§23.4 两态纪律在 chunked 族的正典可执行验收——T12 两用例分块腿，
+  必交付，不得降级为 follow-up 或以契约文件替代 AC 指名位置）**：
+  (d-i) T12「注入 clock」用例分块腿：saveGate 门闩确定性——`chunked-update-applied.
+  applyLatencyMs` 与 `chunked-update-acked.ackLatencyMs` **在场**（`in === true`）、
+  `Number.isFinite`、**≥ 0**（门闩确定性下可断言精确值）；`chunked-update-sent` 键集
+  **恒无任何 latency 键**（clock 在场也不加——DD1）；
+  (d-ii) T12「无 clock」用例分块腿：手工无 clock 构型下三 chunked 成功型事件**仍发**
+  （时钟缺面不抑制事件，仅抑制键），`applyLatencyMs`/`ackLatencyMs` **整键缺失**
+  （`in === false`——field 缺失非 undefined 值，§23.4 L811 纪律）。
+  两腿与矩阵腿（缺省 ManualClock = 在场态通用数值检查）合并 = chunked 族「无 clock 时
+  latency 字段缺失、有 clock 时 ≥ 0」的完整两态覆盖。
+- **degraded × chunked 互斥断言**：degraded 窗口 hub→peer 分块 apply——每笔成功 apply
+  恰一互斥事件增量 = `degraded-bypass-applied`（degraded 判别先于 chunked 判别胜出，
+  R23），零 `update-applied`/零 `chunked-update-applied` 双发、零 aborted（transfer
+  完整收敛）；发送侧 hub 的 `chunked-update-sent`/`chunked-update-acked` 恰一不受接收侧
+  degraded 影响（R21 改道无 degraded 例外）。
+

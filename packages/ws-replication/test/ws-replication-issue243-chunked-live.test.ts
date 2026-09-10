@@ -4,8 +4,9 @@
  *
  * 本文件承载设计 §11/§12 的实现轮证据：
  *  - knob-off 缺省（HELLO optionalCapabilities=0，v1 逐字节——与冻结 NC2/R1-R3 互补）；
- *  - knob-on 全链路（P1/P2 同构镜像：零 wire 代理、真协商位）+ N2 三事件面配对
- *    （update-sent/update-acked/update-applied：sequence=末 chunk 帧序、bytes=totalBytes）；
+ *  - knob-on 全链路（P1/P2 同构镜像：零 wire 代理、真协商位）+ N2 chunked 族三事件配对
+ *    （issue #245 改道：chunked-update-sent/acked/applied——transferId/chunkCount/
+ *    totalBytes = wire 申报、无 sequence 键；普通族三事件改道归零）；
  *  - hub→peer 方向镜像（hub 业务写 → hub 通道分块下行，DD-3 双侧对称实现共用面）；
  *  - P4-S（协商但 bytes > maxChunkedUpdateBytes → 回退 v1：deliver 时刻丢弃 + send-failed/
  *    update-too-large，零 chunk 帧——D2 隐含回退）；P4-R（首 chunk 超上界申报 →
@@ -554,7 +555,7 @@ describe('issue #243 切片 2 实现轮：协商 CAP_CHUNKED_UPDATE 分块 live 
     }
   });
 
-  it('K1（knob-on 镜像 P1/P2 + N2 事件配对）：协商位经真握手建立；超限 update 分块 live 传输——hub 收敛、零 resync、单 ACK=末 chunk 序、update-sent/acked/applied 三事件配对', async () => {
+  it('K1（knob-on 镜像 P1/P2 + N2 事件配对）：协商位经真握手建立；超限 update 分块 live 传输——hub 收敛、零 resync、单 ACK=末 chunk 序、chunked-update-sent/acked/applied 三事件配对（issue #245 改道：普通族归零）', async () => {
     const ctx = await bootChunked({ knob: true });
     try {
       const wire = ctx.getWire();
@@ -611,7 +612,9 @@ describe('issue #243 切片 2 实现轮：协商 CAP_CHUNKED_UPDATE 分块 live 
       const savesAfter = ctx.hubNode.persistence.saveEvents.filter((e) => e.docId === ctx.nsId).length;
       expect(savesAfter - savesBefore).toBe(1);
 
-      // AC5 + N2：单 ACK；ackedSequence = 末 chunk 帧序；三事件面配对（序列关联键）
+      // AC5 + N2：单 ACK；ackedSequence = 末 chunk 帧序；chunked 族三事件配对
+      // （issue #245 改道 [R21]：分块 transfer 的成功三结算走 chunked 族——transferId/
+      // chunkCount/totalBytes = wire 申报、无 sequence/latency 键 [DD1]；普通族归零）
       const lastChunkSeq = ctx
         .frames('peerToHub')
         .filter((f) => f.message.kind === 'UPDATE_CHUNK')
@@ -620,25 +623,37 @@ describe('issue #243 切片 2 实现轮：协商 CAP_CHUNKED_UPDATE 分块 live 
       expect(acks).toHaveLength(1);
       expect(acks[0]!.ackedSequence).toBe(lastChunkSeq);
       const totalBytes = chunks[0]!.totalBytes;
-      const sent = ctx.peerEvents.filter(
-        (e): e is Extract<ReplicationObserverEvent, { type: 'update-sent' }> => e.type === 'update-sent',
+      const chunkCount = chunks[0]!.chunkCount;
+      const transferId = chunks[0]!.transferId;
+      const sentChunked = ctx.peerEvents.filter(
+        (e): e is Extract<ReplicationObserverEvent, { type: 'chunked-update-sent' }> =>
+          e.type === 'chunked-update-sent',
       );
-      const sentFinal = sent.find((e) => e.sequence === lastChunkSeq);
-      expect(sentFinal).toBeDefined();
-      expect(sentFinal!.bytes).toBe(totalBytes);
-      expect(sent.length, '中间 chunk 不发射 update-sent（仅末 chunk）').toBe(1);
-      const acked = ctx.peerEvents.find(
-        (e): e is Extract<ReplicationObserverEvent, { type: 'update-acked' }> =>
-          e.type === 'update-acked' && e.sequence === lastChunkSeq,
+      expect(sentChunked, 'transfer 完成出站恰一发 chunked-update-sent（中间 chunk 零发射）').toHaveLength(1);
+      expect(sentChunked[0]!.transferId, 'transferId 必须 = wire 申报').toBe(transferId);
+      expect(sentChunked[0]!.chunkCount, 'chunkCount 必须 = wire 申报').toBe(chunkCount);
+      expect(sentChunked[0]!.totalBytes, 'totalBytes 必须 = wire 申报').toBe(totalBytes);
+      expect('sequence' in sentChunked[0]!, 'chunked-update-sent 无 sequence 键（DD1 排除）').toBe(false);
+      const ackedChunked = ctx.peerEvents.filter(
+        (e): e is Extract<ReplicationObserverEvent, { type: 'chunked-update-acked' }> =>
+          e.type === 'chunked-update-acked',
       );
-      expect(acked).toBeDefined();
-      expect(acked!.bytes).toBe(totalBytes);
-      const applied = ctx.hubEvents.find(
-        (e): e is Extract<ReplicationObserverEvent, { type: 'update-applied' }> =>
-          e.type === 'update-applied' && e.sequence === lastChunkSeq,
+      expect(ackedChunked, 'ACK 收妥恰一发 chunked-update-acked').toHaveLength(1);
+      expect(ackedChunked[0]!.bytes, 'acked.bytes = wire totalBytes').toBe(totalBytes);
+      expect('sequence' in ackedChunked[0]!, 'chunked-update-acked 无 sequence 键（DD1 排除）').toBe(false);
+      const appliedChunked = ctx.hubEvents.filter(
+        (e): e is Extract<ReplicationObserverEvent, { type: 'chunked-update-applied' }> =>
+          e.type === 'chunked-update-applied',
       );
-      expect(applied).toBeDefined();
-      expect(applied!.bytes).toBe(totalBytes);
+      expect(appliedChunked, '组装 apply 恰一发 chunked-update-applied').toHaveLength(1);
+      expect(appliedChunked[0]!.bytes, 'applied.bytes = wire totalBytes').toBe(totalBytes);
+      expect(appliedChunked[0]!.chunkCount, 'applied.chunkCount = wire 申报').toBe(chunkCount);
+      expect('sequence' in appliedChunked[0]!, 'chunked-update-applied 无 sequence 键（DD1 排除）').toBe(false);
+      // 普通族三事件改道归零（R21：分块 transfer 窗口内零 update-sent/acked/applied）
+      for (const type of ['update-sent', 'update-acked'] as const) {
+        expect(ctx.peerEvents.filter((e) => e.type === type), `peer 零普通族 ${type}`).toHaveLength(0);
+      }
+      expect(ctx.hubEvents.filter((e) => e.type === 'update-applied'), 'hub 零普通族 update-applied').toHaveLength(0);
 
       expect(ctx.peer.getNamespaceState(ctx.nsId)).toBe('live');
       expect(ctx.peer.getConnectionState()).toBe('ready');

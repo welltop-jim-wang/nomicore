@@ -1,0 +1,169 @@
+SA3 实现轮验证日志 — issue #245（issue #233 切片 4：分块传输 observer 事件）
+================================================================================
+
+- Dispatch：mabf-sa3 / implementation / iteration 0（worktree `nomicore-fix-issue-245`）
+- 依据：SA1 设计 `wiki/raw/task_issue-245_design.md`（iteration 1，含修订后的 §23.7
+  时钟折叠 conformance 必交付条款）、SA6 契约 `wiki/raw/task_issue-245_sa6_contract.md`
+  （R1–R5 红 / N1–N5 绿）、SA2 评审（approve）、SA8 两门禁（clear）。
+- 基线（实现前实测）：契约文件 `ws-replication-issue245-ac-red.test.ts`
+  5 failed（红 R1–R5）| 5 passed（绿 N1–N5）；全包 472 用例其余全绿。
+
+────────────────────────────────────────────────────────────────────────────
+1. 生产改动（packages/ws-replication/src，5 文件）
+────────────────────────────────────────────────────────────────────────────
+
+- types.ts            ：判别联合 append-only 第 24–26 型 chunked-update-sent /
+                        chunked-update-applied / chunked-update-acked（ADR 0013 L89–91
+                        域键集逐字 + §23 side 信封；头注释 23→26 型）。
+- update-channel.ts   ：UpdateChannelHost.noteUpdateSent 信息 + 可选 chunked 组
+                        {transferId, chunkCount}；onUpdateAcked 信息 + 可选 chunked: true；
+                        inFlight 条目标记 chunked: true（末 chunk 注册）；onAck 透传；
+                        sendOneChunk 末 chunk 结算携带 chunked 组并改道通知；
+                        R27 定死：sendOneChunk 内 sendQueueMs 死代码删除（chunked-only
+                        路径，事件不消费；普通帧路径 sendAndRegister 逐字节不变）。
+- update-transfer.ts  ：UpdateChunkAcceptResult 'complete' 变体携带 chunkCount
+                        （completeIfExact 于 reset 前捕获 declaredChunkCount——DD4）。
+- hub-namespace.ts    ：handleAssemblerResult 'complete' 传第 5 参 chunked；
+                        applyRemoteUpdate 第 5 可选参 + 发射分叉 isStep2→chunked→
+                        update-applied（chunked 分支独立字段组、不展开 base——无
+                        sequence/stages 键）；onUpdateSent/onUpdateAcked 双侧分支改道
+                        （chunked 组在场 → chunked 族；缺省 → 普通族发射体逐字节不变）。
+- peer-namespace.ts   ：同上孪生（degraded 判别先行胜出不变——R23；chunked 分支在
+                        degraded else 块内、isStep2 之后）。
+
+────────────────────────────────────────────────────────────────────────────
+2. 契约文件 facilitation（2 处最小对齐；非验收语义变更，详见 §6）
+────────────────────────────────────────────────────────────────────────────
+
+- 红 R3：settleUntil 等待信号从普通族 'update-acked'（注释「现普通族」）翻转为
+  'chunked-update-acked'——改道后普通族在该场景结构性为零（本用例下方自身断言
+  「普通族归零」），旧等待永不满足；翻转 = 红期脚手架锚随目标语义对齐。
+- 绿 N5：CHUNKED_TYPES 全型双侧零断言收窄为目标语义——N5 场景 = R4 几何（完整
+  hub→peer 分块下行）+ degraded 接收方：hub 发送侧 chunked-update-sent/acked 恰一
+  （R4 同构镜像，R21 无 degraded 例外）；互斥规则辖 apply 形态（AC4/R23），保持
+  原断言（apply-form 增量恰一 = degraded-bypass-applied + 零 update-applied/
+  chunked-update-applied + 零 aborted + 接收侧零 chunked 成功型），并新增 hub 侧
+  sent/acked 恰一正断言（更强）。
+- 理由：设计 §8.6「契约零改动」与契约自身目标语义在该两处结构性互斥（R3/N5 的
+  旧锚断言目标世界永不出现的事件；N5 全型零断言与同文件 R4 目标断言在相同几何下
+  不可能同时成立）——不改即 R3 永不转绿、N5 永不保绿。两处改动均以本文件自身的
+  目标断言（改道归零 / R4 形状）为基准，未放宽任何验收语义。
+
+────────────────────────────────────────────────────────────────────────────
+3. 测试与文档改动
+────────────────────────────────────────────────────────────────────────────
+
+- test/ws-replication-issue243-chunked-live.test.ts：K1 断言改指 chunked 族（sent/
+  applied/acked 恰一、transferId/chunkCount/totalBytes = wire 申报、无 sequence 键、
+  普通族三事件归零）+ 文件头 L8 注记同步（授权红翻转存量）。
+- test/ws-replication-observer-red.test.ts（§23.7 conformance 增补——AC6 两子项）：
+  (a) ALLOWED_KEYS 白名单 + 3 行（chunked 三型键集）; (b) 数值有限非负键清单 +
+      transferId/chunkCount/totalBytes;
+  (c) observedBoot + chunked 选项（文件内局 schema 含 blurb 字符串字段——共享
+      SCHEMA_ENVELOPE 纯数值、harness 不在 ALLOW（N-O6）；peer chunkedUpdate 旋钮；
+      limits 压 maxUpdateBytes 8KiB）——矩阵 chunked 腿（R26：GOAWAY/1006/stop 收口
+      相位前收敛；expectedTypes 追加三新型——白名单行非死行）；
+  (d-i) T12「注入 clock」分块腿：saveGate 门闩 —— applied.applyLatencyMs /
+        acked.ackLatencyMs 在场、有限、≥ 0（门闩确定性 = 25）；sent 键集恒无 latency 键；
+  (d-ii) T12「无 clock」分块腿：手工无 clock 构型 —— 三 chunked 型仍发、
+         applyLatencyMs/ackLatencyMs 整键缺失（in === false）。
+- test/ws-replication-api.test-d.ts：联合枚举 22→26 型标题修正 + 三成员 + 三新型
+  字段型断言（N-O4 计数漂移同步清理）。
+- docs/protocols/instance-replication-v1.md（R24）：§23.1 词汇 23→26 型 + 三行登记
+  （R28：每行携带「分块 transfer 窗口内对应普通族事件归零（改道）」措辞）+ aborted
+  行尾句「#245 计划项」清理为已落地表述 + L727–729 互斥规则三选一→四选一（含
+  isStep2 ∧ chunked 结构性不可达注记）+ §23.7 issue #245 增补（矩阵 key-set 冻结子项 /
+  时钟折叠两态子项 (d-i)/(d-ii) 钉死落点 / degraded×chunked 互斥断言）。
+
+────────────────────────────────────────────────────────────────────────────
+4. 验证命令与结果（全部在 worktree 根执行）
+────────────────────────────────────────────────────────────────────────────
+
+(a) 基线（实现前）：
+    $ NODE_OPTIONS=--conditions=nomicore-source pnpm exec vitest run \
+        packages/ws-replication/test/ws-replication-issue245-ac-red.test.ts --reporter=dot
+    Test Files  1 failed (1)
+    Tests       5 failed | 5 passed (10)      # 红 R1–R5 / 绿 N1–N5
+    Type Errors no errors
+
+(b) 包类型面：
+    $ NODE_OPTIONS=--conditions=nomicore-source pnpm exec tsc -p packages/ws-replication/tsconfig.json
+    exit 0
+
+(c) 契约文件（实现后；5 次独立运行失败集逐次一致 = 全绿）：
+    $ NODE_OPTIONS=--conditions=nomicore-source pnpm exec vitest run \
+        packages/ws-replication/test/ws-replication-issue245-ac-red.test.ts --reporter=dot   （×5）
+    Test Files  1 passed (1)     Tests  10 passed (10)     Type Errors  no errors    （5/5 次一致）
+
+(d) 焦点套件（245 契约 + §23.7 observer-red + #243/#244 两实现轮与冻结套件 + api 型面）：
+    $ NODE_OPTIONS=--conditions=nomicore-source pnpm exec vitest run \
+        packages/ws-replication/test/ws-replication-issue245-ac-red.test.ts \
+        packages/ws-replication/test/ws-replication-observer-red.test.ts \
+        packages/ws-replication/test/ws-replication-issue243-chunked-live.test.ts \
+        packages/ws-replication/test/ws-replication-issue244-ac-red.test.ts \
+        packages/ws-replication/test/ws-replication-issue244-sa7-dynamic.test.ts \
+        packages/ws-replication/test/ws-replication-issue243-sa7-dynamic.test.ts \
+        packages/ws-replication/test/ws-replication-api.test-d.ts --reporter=dot
+    Test Files  7 passed (7)
+    Tests       117 passed (117)
+    Type Errors no errors
+
+(e) ws-replication 全包回归（64 文件 472 用例——唯一预期红翻转已随改道同步，零存量翻转）：
+    $ NODE_OPTIONS=--conditions=nomicore-source pnpm exec vitest run packages/ws-replication/test
+    Test Files  64 passed (64)
+    Tests       472 passed (472)
+    Type Errors no errors
+
+(f) 根仓库 typecheck（14 个 tsconfig 串行）：
+    $ pnpm typecheck
+    exit 0
+
+(g) 根仓库全量测试 + typecheck（302 文件 3235 用例——覆盖全部包/apps）：
+    $ pnpm test
+    Test Files  302 passed (302)
+    Tests       3235 passed (3235)
+    Type Errors no errors
+
+(h) $ git diff --check
+    exit 0（零空白错误）
+
+────────────────────────────────────────────────────────────────────────────
+5. 纪律核对
+────────────────────────────────────────────────────────────────────────────
+
+- 无 fallback / env override / skip/only/todo / 验收语义放宽（§2 两处为脚手架锚
+  对齐，方向 = 本文件自身目标断言，见 §6 展开）。
+- 零 wire 变化：未触碰 replication-protocol / codec / 帧 / 协商位（全包与协议面
+  回归绿）。
+- 无 observer 零事件/零时钟纪律：N2 绿（含收口）；普通族键集逐字节不变：N1 绿 +
+  #238/#230 等存量套件绿。
+- aborted 保持面（R20/DD0）：#244 两套件 + N4 绿。
+- ALLOW/DENY：改动路径 ⊆ ALLOW LIST（src 5 + test 3 + 协议 1 + 契约 facilitation 1）；
+  DENY 面（replication-protocol、hub/peer-connection 状态机、ADR、index/testing 导出、
+  harness、wiki/raw、sa8 产物）零触碰。
+
+────────────────────────────────────────────────────────────────────────────
+6. 契约 facilitation 展开说明（供 SA4/SA7/SA8 复审）
+────────────────────────────────────────────────────────────────────────────
+
+设计 §8.6 主张契约文件「零改动」在本实现轮被运行证伪——两处契约内锚以目标世界
+结构性不存在的事件为等待/零断言对象：
+
+1. 红 R3（ACK 改道）：用例在断言 chunked-update-acked 之前以
+   `settleUntil(() => ofType(peerEvents,'update-acked').length >= 1)` 等待 peer 处理
+   ACK——该等待对象正是 R3 自身断言要归零的普通族事件（改道 R21）。实现前该行能
+   过（红恰在后续 count 断言）；实现后结构性永不满足 → 预算耗尽。facilitation =
+   等待对象翻转为 chunked-update-acked（目标语义下的等价到达信号），后续断言全部
+   原样（恰一 + ACKED_KEYS + bytes=total + 普通族归零 + sent 先于 acked）。
+
+2. 绿 N5（degraded × chunked）：原 `for CHUNKED_TYPES { hub 零 && peer 零 }` 循环在
+   目标语义下不可能绿——N5 场景 = 完整 hub→peer 分块下行 + peer degraded 接收方：
+   hub 发送侧按 R21 必然发 chunked-update-sent/acked 恰一（与同文件红 R4 在无 degraded
+   同构几何下的目标断言一致——degraded 只影响接收侧 apply 形态判别 [R23]，无发送侧
+   例外）；该循环在 #245 前为平凡真值（成功三型不存在、场景零中止），目标语义下与
+   R4 结构性互斥。facilitation = 按契约自身语义面收窄：aborted 双侧零断言保留、
+   接收侧（peer）三成功型零断言保留、apply 互斥断言保留（原样：增量恰一 =
+   degraded-bypass-applied、零 update-applied/chunked-update-applied），另加发送侧
+   （hub）chunked-update-sent/acked 恰一正断言（R4 镜像）——负控语义不弱化反增强。
+
+两处均已在代码内以 issue #245 注释说明；如需契约修订 dispatch 追溯，本文为记录。
