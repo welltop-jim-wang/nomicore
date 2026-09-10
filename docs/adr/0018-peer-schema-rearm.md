@@ -88,11 +88,25 @@ closed/conflicted 等显式 re-add），不产生重试循环。恢复入口保�
 ADR 0008「v1 不提供公共事件订阅」边界不破：不加 lease 级 promise/事件。
 
 standalone `@nomicore/yjs-server` 新增配置 `onFatalError: 'exit' | 'stay'`，
-默认 `'exit'`：observer 适配器识别 fatal 类事件（含本 ADR 的
-`schema-rearm-failed` 与既有 fatal 类）→ 先落 NDJSON 记录 → 有序停机并非零
-退出。`'stay'` 供多 namespace 宿主自行编排（fatal 是 namespace 粒度，不株连
-其他 namespace）。embedded Cordis host 的通知与动作完全归宿主适配器，库代码
-零 `process.exit`。
+默认 `'exit'`：observer 适配器识别 fatal 类事件 → 先落 NDJSON 记录 → 有序
+停机并非零退出。`'stay'` 供多 namespace 宿主自行编排（fatal 是 namespace
+粒度，不株连其他 namespace）。embedded Cordis host 的通知与动作完全归宿主
+适配器，库代码零 `process.exit`。
+
+fatal 类判据（issue #288 实现期审计修订，替代本节初版「含本 ADR 的
+`schema-rearm-failed` 与既有 fatal 类」措辞——初版预设「既有 fatal 类已在
+observer 推送面上」，审计证否）：判据语义 = 「observer 事件**无歧义断言
+Runtime fatal 已置位**」。replication observer 24 型词汇中当前恰好只有
+`schema-rearm-failed` 满足——它是该语义进入 observer 推送面的第一型；既有
+`NSRT-FATAL-*` 族（ADR 0008）的宿主面是 `lease.getStatus()` fatal 摘要与
+控制动词回执（拉取/应答 seam），不在推送面上。`namespace-failed` 全 cause
+均**不**收入：observer 层无法区分「Runtime fatal 置位」与正常运维/可自愈
+终局——delete-namespace×活跃复制的既定运维路径会在 hub 侧产生
+`namespace-failed{apply-rejected}`（'lease released' 收口，issue #228
+AD-7/R-2「进程不崩」契约锚），误收即把正常运维误判为进程级 fatal，且
+配置/协议类终局重启不修复 → crashloop。判据表唯一审计点 =
+`apps/yjs-server/src/fatal-policy.ts`（逐型排除根据在其头注）；未来 observer
+词汇 append 同语义事件型时在同处登记（append-only 纪律与 §23.1 同源）。
 
 ### 5. P0 不对称（crashloop 防护）
 

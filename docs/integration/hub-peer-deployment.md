@@ -118,6 +118,18 @@ token、owner 值、Yjs bytes、SCHEMA/ROOT 内容。
 - `peer.targets` 精确两字段 `{namespaceId: ^ns-[0-9a-f]{32}$, ownerUserId}`，
   nsId 重复 → 拒；
 - `persistence.kind:'file'` 必须提供 `rootDir`；
+- `onFatalError`（可选，hub/peer 均合法）：`'exit' | 'stay'`，缺省 `'exit'`
+  （ADR 0018 §4）——fatal 类 observer 事件到达时，直通 NDJSON 记录先于一切停机
+  动作，随后 `exit` 模式经单一拆卸链有序停机并非零退出（编排层按既定策略重启；
+  ADR 0018 §5 的 P0 不对称保证重启后停在「写禁用、读可用、复制照常」的降级态，
+  不形成 crashloop），`stay` 模式仅记录、进程继续（fatal 是 namespace 粒度，
+  不株连同进程其他 namespace，供多 namespace 宿主自行编排）。fatal 类判据 =
+  「observer 事件无歧义断言 Runtime fatal 已置位」，当前恰好覆盖
+  `schema-rearm-failed` 一型（`namespace-failed` 全 cause 均**不**属 fatal 类——
+  observer 层无法区分 Runtime fatal 与正常运维终局，如 delete-namespace×活跃
+  复制的 `apply-rejected` 收口；唯一审计点 = `apps/yjs-server/src/fatal-policy.ts`）。
+  退出动作经注入 seam（main.ts 注入 `process.exit`；库代码零 `process.exit`）。
+  非法值在配置校验期响亮拒绝；
 - `diagnostics`（可选块，hub/peer 均合法）：`enabled` 必填 boolean、`rootDir` 必填非空
   string（`enabled:false` 亦必填，保持形状一致）；`updateCapture` 可选 boolean（缺省
   false）、`inputPolicy` 可选 `'none'|'digest'|'redacted'|'full'`（缺省 `'digest'`）；
@@ -257,6 +269,9 @@ HTTP/Upgrade 接纳，再关闭 replication transport 并等待已接纳 apply �
 依次执行 Registry shutdown、Persistence dispose、Timer/Clock teardown。NDJSON 事件序 =
 `replication-drained → registry-stopped → persistence-disposed → app-stopped`；
 全程总超时保护（超时 `exit(1)`）。`stop()` 幂等（single-flight）。
+`onFatalError:'exit'`（缺省）下 fatal 类 observer 事件触发同一条拆卸链：NDJSON
+序 = 原事件直通（如 `schema-rearm-failed`）→ `fatal-shutdown{trigger,namespaceId?}`
+标记 → 上述四事件 → 非零退出（issue #288 / ADR 0018 §4）。
 
 ## hub 正常重启 ⇒ peer 自动恢复
 
