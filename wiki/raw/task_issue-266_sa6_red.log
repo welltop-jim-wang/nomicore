@@ -1,0 +1,167 @@
+Testing types with tsc and vue-tsc is an experimental feature.
+Breaking changes might not follow SemVer, please pin Vitest's version when using it.
+
+ RUN  v3.2.7 /home/wangjian/nomicore-fix-issue-266
+
+ ❯ packages/vfsl/test/sc1-schema-id-envelope-validation.test.ts (25 tests | 16 failed) 20ms
+   ✓ sc1- envelope 校验 — 参考件自检（RFC 4648 §10 KAT + 256-bit canonical） > RFC 4648 §10 KAT：小写去 padding 编码逐字命中 1ms
+   ✓ sc1- envelope 校验 — 参考件自检（RFC 4648 §10 KAT + 256-bit canonical） > 解码往返：KAT 编码解回原 hex；非 canonical 输入（大写/`=`/非法字符/pad 位非零）拒绝 0ms
+   ✓ sc1- envelope 校验 — 参考件自检（RFC 4648 §10 KAT + 256-bit canonical） > 256-bit digest canonical：32 bytes → 恰 52 字无 padding，往返恒真；末字符 ∈ {a,q} 2ms
+   × sc1- envelope 校验 — 语义不匹配拒绝（红灯：当前实现放行 ok:true） > 红灯：canonical sc1- id 编码了另一文本的 digest（ID_B + TEXT_A）→ ok:false 单条 envelope issue 5ms
+     → expected true to be false // Object.is equality
+   × sc1- envelope 校验 — 语义不匹配拒绝（红灯：当前实现放行 ok:true） > 红灯：canonical sc1- id 编码了裸文本 digest，但 text 带 JSDoc（ID_A + TEXT_A_JSDOC）→ ok:false 1ms
+     → expected true to be false // Object.is equality
+   × sc1- envelope 校验 — canonical 格式错误拒绝（红灯：当前实现放行 ok:true） > 红灯：前缀大小写错误 SC1- → ok:false 单条 envelope issue（格式码） 1ms
+     → expected true to be false // Object.is equality
+   × sc1- envelope 校验 — canonical 格式错误拒绝（红灯：当前实现放行 ok:true） > 红灯：前缀大小写错误 Sc1- → ok:false 单条 envelope issue（格式码） 0ms
+     → expected true to be false // Object.is equality
+   × sc1- envelope 校验 — canonical 格式错误拒绝（红灯：当前实现放行 ok:true） > 红灯：前缀大小写错误 sC1- → ok:false 单条 envelope issue（格式码） 1ms
+     → expected true to be false // Object.is equality
+   × sc1- envelope 校验 — canonical 格式错误拒绝（红灯：当前实现放行 ok:true） > 红灯：格式版本错误 sc2- → ok:false 单条 envelope issue（格式码） 1ms
+     → expected true to be false // Object.is equality
+   × sc1- envelope 校验 — canonical 格式错误拒绝（红灯：当前实现放行 ok:true） > 红灯：空 payload → ok:false 单条 envelope issue（格式码） 1ms
+     → expected true to be false // Object.is equality
+   × sc1- envelope 校验 — canonical 格式错误拒绝（红灯：当前实现放行 ok:true） > 红灯：payload 过短（51 字符） → ok:false 单条 envelope issue（格式码） 0ms
+     → expected true to be false // Object.is equality
+   × sc1- envelope 校验 — canonical 格式错误拒绝（红灯：当前实现放行 ok:true） > 红灯：payload 过长（53 字符） → ok:false 单条 envelope issue（格式码） 0ms
+     → expected true to be false // Object.is equality
+   × sc1- envelope 校验 — canonical 格式错误拒绝（红灯：当前实现放行 ok:true） > 红灯：payload 大写（非 canonical） → ok:false 单条 envelope issue（格式码） 0ms
+     → expected true to be false // Object.is equality
+   × sc1- envelope 校验 — canonical 格式错误拒绝（红灯：当前实现放行 ok:true） > 红灯：payload 带 = padding → ok:false 单条 envelope issue（格式码） 0ms
+     → expected true to be false // Object.is equality
+   × sc1- envelope 校验 — canonical 格式错误拒绝（红灯：当前实现放行 ok:true） > 红灯：payload 非法字符 1/0/8/- → ok:false 单条 envelope issue（格式码） 0ms
+     → expected true to be false // Object.is equality
+   × sc1- envelope 校验 — canonical 格式错误拒绝（红灯：当前实现放行 ok:true） > 红灯：payload 内嵌空白 → ok:false 单条 envelope issue（格式码） 0ms
+     → expected true to be false // Object.is equality
+   × sc1- envelope 校验 — canonical 格式错误拒绝（红灯：当前实现放行 ok:true） > 红灯：payload pad 位非零（末字符 m=01100） → ok:false 单条 envelope issue（格式码） 0ms
+     → expected true to be false // Object.is equality
+   × sc1- envelope 校验 — canonical 格式错误拒绝（红灯：当前实现放行 ok:true） > 红灯：canonical 格式错误与文本内容无关——合法文本 + 格式错 id 仍拒绝（ID_A payload 改一字） 0ms
+     → expected true to be false // Object.is equality
+   × sc1- envelope 校验 — 稳定互异 issue code（红灯：当前实现无此失败路径） > 红灯：格式错与语义不匹配两模式各自 code 稳定（重复调用相等）、互不相同、非既有码别名 0ms
+     → expected true to be false // Object.is equality
+   ✓ sc1- envelope 校验 — 旧式 SCHEMA id 兼容（负控，恒绿） > 旧式 id（仓内真实形态/ADR 0006 例举/普通测试 id）全部照常编译成功 1ms
+   ✓ sc1- envelope 校验 — 旧式 SCHEMA id 兼容（负控，恒绿） > 含 `sc1` 子串但非 `sc1-` 前缀的 id 仍走旧式路径（前缀匹配精确） 0ms
+   ✓ sc1- envelope 校验 — canonical 匹配正例（验收锚） > 逐字匹配：ID_A + TEXT_A → ok:true，指纹与 id payload 的 digest 一一对应 0ms
+   ✓ sc1- envelope 校验 — canonical 匹配正例（验收锚） > trivia 稳定：空白/普通注释变体文本与 ID_A 语义指纹一致 → 编译成功（ADR 0015 L137） 1ms
+   ✓ sc1- envelope 校验 — canonical 匹配正例（验收锚） > JSDoc 敏感自洽：ID_JSDOC + TEXT_A_JSDOC 匹配成功（与红灯 1 的交叉验证） 0ms
+   ✓ sc1- envelope 校验 — parse 失败不被误报为语义不匹配（绿锚） > TEXT_BAD + canonical ID_A → ok:false，原生 vfsl issues 与 parseVfsl 同输入深相等，零 envelope 码 0ms
+
+⎯⎯⎯⎯⎯⎯ Failed Tests 16 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  packages/vfsl/test/sc1-schema-id-envelope-validation.test.ts > sc1- envelope 校验 — 语义不匹配拒绝（红灯：当前实现放行 ok:true） > 红灯：canonical sc1- id 编码了另一文本的 digest（ID_B + TEXT_A）→ ok:false 单条 envelope issue
+AssertionError: expected true to be false // Object.is equality
+
+- Expected
++ Received
+
+- false
++ true
+
+ ❯ expectSingleEnvelopeIssue packages/vfsl/test/sc1-schema-id-envelope-validation.test.ts:109:16
+    107| /** envelope 单 issue 收窄断言助手（compileSchemaEnvelope envelope 阶段恒单条，issue…
+    108| function expectSingleEnvelopeIssue(r: CompileResult): { code: string; …
+    109|   expect(r.ok).toBe(false);
+       |                ^
+    110|   if (r.ok) {
+    111|     throw new Error('fixture 应为 ok:false（sc1- 校验失败目标）');
+ ❯ packages/vfsl/test/sc1-schema-id-envelope-validation.test.ts:194:19
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/16]⎯
+
+ FAIL  packages/vfsl/test/sc1-schema-id-envelope-validation.test.ts > sc1- envelope 校验 — 语义不匹配拒绝（红灯：当前实现放行 ok:true） > 红灯：canonical sc1- id 编码了裸文本 digest，但 text 带 JSDoc（ID_A + TEXT_A_JSDOC）→ ok:false
+AssertionError: expected true to be false // Object.is equality
+
+- Expected
++ Received
+
+- false
++ true
+
+ ❯ expectSingleEnvelopeIssue packages/vfsl/test/sc1-schema-id-envelope-validation.test.ts:109:16
+    107| /** envelope 单 issue 收窄断言助手（compileSchemaEnvelope envelope 阶段恒单条，issue…
+    108| function expectSingleEnvelopeIssue(r: CompileResult): { code: string; …
+    109|   expect(r.ok).toBe(false);
+       |                ^
+    110|   if (r.ok) {
+    111|     throw new Error('fixture 应为 ok:false（sc1- 校验失败目标）');
+ ❯ packages/vfsl/test/sc1-schema-id-envelope-validation.test.ts:201:19
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/16]⎯
+
+ FAIL  packages/vfsl/test/sc1-schema-id-envelope-validation.test.ts > sc1- envelope 校验 — canonical 格式错误拒绝（红灯：当前实现放行 ok:true） > 红灯：前缀大小写错误 SC1- → ok:false 单条 envelope issue（格式码）
+ FAIL  packages/vfsl/test/sc1-schema-id-envelope-validation.test.ts > sc1- envelope 校验 — canonical 格式错误拒绝（红灯：当前实现放行 ok:true） > 红灯：前缀大小写错误 Sc1- → ok:false 单条 envelope issue（格式码）
+ FAIL  packages/vfsl/test/sc1-schema-id-envelope-validation.test.ts > sc1- envelope 校验 — canonical 格式错误拒绝（红灯：当前实现放行 ok:true） > 红灯：前缀大小写错误 sC1- → ok:false 单条 envelope issue（格式码）
+ FAIL  packages/vfsl/test/sc1-schema-id-envelope-validation.test.ts > sc1- envelope 校验 — canonical 格式错误拒绝（红灯：当前实现放行 ok:true） > 红灯：格式版本错误 sc2- → ok:false 单条 envelope issue（格式码）
+ FAIL  packages/vfsl/test/sc1-schema-id-envelope-validation.test.ts > sc1- envelope 校验 — canonical 格式错误拒绝（红灯：当前实现放行 ok:true） > 红灯：空 payload → ok:false 单条 envelope issue（格式码）
+ FAIL  packages/vfsl/test/sc1-schema-id-envelope-validation.test.ts > sc1- envelope 校验 — canonical 格式错误拒绝（红灯：当前实现放行 ok:true） > 红灯：payload 过短（51 字符） → ok:false 单条 envelope issue（格式码）
+ FAIL  packages/vfsl/test/sc1-schema-id-envelope-validation.test.ts > sc1- envelope 校验 — canonical 格式错误拒绝（红灯：当前实现放行 ok:true） > 红灯：payload 过长（53 字符） → ok:false 单条 envelope issue（格式码）
+ FAIL  packages/vfsl/test/sc1-schema-id-envelope-validation.test.ts > sc1- envelope 校验 — canonical 格式错误拒绝（红灯：当前实现放行 ok:true） > 红灯：payload 大写（非 canonical） → ok:false 单条 envelope issue（格式码）
+ FAIL  packages/vfsl/test/sc1-schema-id-envelope-validation.test.ts > sc1- envelope 校验 — canonical 格式错误拒绝（红灯：当前实现放行 ok:true） > 红灯：payload 带 = padding → ok:false 单条 envelope issue（格式码）
+ FAIL  packages/vfsl/test/sc1-schema-id-envelope-validation.test.ts > sc1- envelope 校验 — canonical 格式错误拒绝（红灯：当前实现放行 ok:true） > 红灯：payload 非法字符 1/0/8/- → ok:false 单条 envelope issue（格式码）
+ FAIL  packages/vfsl/test/sc1-schema-id-envelope-validation.test.ts > sc1- envelope 校验 — canonical 格式错误拒绝（红灯：当前实现放行 ok:true） > 红灯：payload 内嵌空白 → ok:false 单条 envelope issue（格式码）
+ FAIL  packages/vfsl/test/sc1-schema-id-envelope-validation.test.ts > sc1- envelope 校验 — canonical 格式错误拒绝（红灯：当前实现放行 ok:true） > 红灯：payload pad 位非零（末字符 m=01100） → ok:false 单条 envelope issue（格式码）
+AssertionError: expected true to be false // Object.is equality
+
+- Expected
++ Received
+
+- false
++ true
+
+ ❯ expectSingleEnvelopeIssue packages/vfsl/test/sc1-schema-id-envelope-validation.test.ts:109:16
+    107| /** envelope 单 issue 收窄断言助手（compileSchemaEnvelope envelope 阶段恒单条，issue…
+    108| function expectSingleEnvelopeIssue(r: CompileResult): { code: string; …
+    109|   expect(r.ok).toBe(false);
+       |                ^
+    110|   if (r.ok) {
+    111|     throw new Error('fixture 应为 ok:false（sc1- 校验失败目标）');
+ ❯ packages/vfsl/test/sc1-schema-id-envelope-validation.test.ts:226:19
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/16]⎯
+
+ FAIL  packages/vfsl/test/sc1-schema-id-envelope-validation.test.ts > sc1- envelope 校验 — canonical 格式错误拒绝（红灯：当前实现放行 ok:true） > 红灯：canonical 格式错误与文本内容无关——合法文本 + 格式错 id 仍拒绝（ID_A payload 改一字）
+AssertionError: expected true to be false // Object.is equality
+
+- Expected
++ Received
+
+- false
++ true
+
+ ❯ expectSingleEnvelopeIssue packages/vfsl/test/sc1-schema-id-envelope-validation.test.ts:109:16
+    107| /** envelope 单 issue 收窄断言助手（compileSchemaEnvelope envelope 阶段恒单条，issue…
+    108| function expectSingleEnvelopeIssue(r: CompileResult): { code: string; …
+    109|   expect(r.ok).toBe(false);
+       |                ^
+    110|   if (r.ok) {
+    111|     throw new Error('fixture 应为 ok:false（sc1- 校验失败目标）');
+ ❯ packages/vfsl/test/sc1-schema-id-envelope-validation.test.ts:234:19
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[4/16]⎯
+
+ FAIL  packages/vfsl/test/sc1-schema-id-envelope-validation.test.ts > sc1- envelope 校验 — 稳定互异 issue code（红灯：当前实现无此失败路径） > 红灯：格式错与语义不匹配两模式各自 code 稳定（重复调用相等）、互不相同、非既有码别名
+AssertionError: expected true to be false // Object.is equality
+
+- Expected
++ Received
+
+- false
++ true
+
+ ❯ expectSingleEnvelopeIssue packages/vfsl/test/sc1-schema-id-envelope-validation.test.ts:109:16
+    107| /** envelope 单 issue 收窄断言助手（compileSchemaEnvelope envelope 阶段恒单条，issue…
+    108| function expectSingleEnvelopeIssue(r: CompileResult): { code: string; …
+    109|   expect(r.ok).toBe(false);
+       |                ^
+    110|   if (r.ok) {
+    111|     throw new Error('fixture 应为 ok:false（sc1- 校验失败目标）');
+ ❯ packages/vfsl/test/sc1-schema-id-envelope-validation.test.ts:246:21
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[5/16]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  16 failed | 9 passed (25)
+Type Errors  no errors
+   Start at  22:40:34
+   Duration  345ms (transform 144ms, setup 0ms, collect 179ms, tests 20ms, environment 0ms, prepare 46ms)
