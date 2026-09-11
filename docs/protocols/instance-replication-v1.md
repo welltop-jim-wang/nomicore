@@ -15,7 +15,7 @@
 - **ReplicationSession**：由 NamespaceLease 打开的可信 duplex raw Yjs 复制会话，不暴露 live Y.Doc。
 - **连接序号**：单条 WS 连接上每个发送方向独立的 uint32 sequence，只用于在线顺序、关联与断言，不跨重连持久化。
 - **同步轮次**：Peer 发起的一轮双向 state-vector reconciliation，以 uint32 `syncRoundId` 标识，不回绕。
-- **实现代际（implementation generation）**：端点的实现代际，与协议版本正交，**非 protocol 版本**语义——`envelopeVersion` 恒 1、HELLO `protocolVersions` 不因代际变化（§3 两层版本独立）；代际差异仅在 HELLO capability 协商的 wire 位上可见。v1 代际 = 不含 `CAP_CHUNKED_UPDATE` 的旧实现（HELLO 恒发 `optionalCapabilities=0`，收到 `0x42` 帧按未知消息码 `UNSUPPORTED_MESSAGE_TYPE` connection fatal 拒绝）；v2 代际 = 支持 `CAP_CHUNKED_UPDATE`（§6.1）的现实现。§22 互通矩阵按代际组合刻画回落行为；不得用代际推断 `envelopeVersion` 或 `protocolVersions` 变化。
+- **实现代际（implementation generation）**：端点的实现代际，与协议版本正交，**非 protocol 版本**语义——`envelopeVersion` 恒 1、HELLO `protocolVersions` 不因代际变化（§3 两层版本独立）；代际差异仅在 HELLO capability 协商的 wire 位上可见。v1 代际 = 不含 `CAP_CHUNKED_UPDATE` 的旧实现（HELLO 恒发 `optionalCapabilities=0`，收到 `0x42` 帧按未知消息码 `UNSUPPORTED_MESSAGE_TYPE` connection fatal 拒绝）；v2 代际 = 支持 `CAP_CHUNKED_UPDATE`（§6.1）的实现；v2+sync 代际 = 再支持 `CAP_CHUNKED_SYNC`（§6.1）的实现——两个 capability 位独立协商，可观察行为分三档（v1 / v2 / v2+sync）。§22 互通矩阵按代际组合刻画回落行为；不得用代际推断 `envelopeVersion` 或 `protocolVersions` 变化。
 
 协议保持以下不变量：
 
@@ -24,7 +24,7 @@
 3. 每个 namespace frame 直接携带 namespaceId，不使用 channelId、owner 或 session nonce。
 4. 同一连接内，同一 namespaceId 只允许一个生命周期；closed、conflicted 或 failed 后不得重新 open，重新 add 必须重建连接。
 5. HELLO_ACK 前不得发送 namespace frame。
-6. UPDATE、SYNC_STEP2 和 BOOTSTRAP_SNAPSHOT 的 bytes 在 live apply 前受大小限制。
+6. UPDATE、SYNC_STEP2 和 BOOTSTRAP_SNAPSHOT 的 bytes 在 live apply 前受大小限制（单帧上限；协商分块时另受聚合上限约束，完整重组后执行一次 apply——分块不改变本不变量）。
 7. 所有远端 apply 进入本地 namespace 的唯一 write sequencer，并在槽内完成 dirty notification。
 8. ACK 表示 sequenced live apply + dirty notification，不表示物理 flush、其他副本确认或 quorum durability。
 9. Origin 只用于回声抑制；重连、bootstrap 竞态和队列丢弃均由 state-vector reconciliation 修复。
@@ -113,6 +113,8 @@ Yjs sync bytes 使用与锁定版本组合兼容的 `y-protocols/sync` 语义。
 
 `UPDATE_CHUNK`（issue #242，ADR 0013）只有经 HELLO 协商 `CAP_CHUNKED_UPDATE` 后才能使用；未协商端必须按未知/未支持消息码规则以 connection fatal `UNSUPPORTED_MESSAGE_TYPE` 拒绝。v1 代际的 HELLO 仍发 `optionalCapabilities=0`，因此 v1 代际端永不分块、也拒绝任何 0x42 帧——新旧实现互不破译（实现代际定义见 §1）。首版 `flags=0`，也没有必需的 optional capability。未来扩展只能在 HELLO 明确协商后使用，不得靠数值范围猜测。
 
+`UPDATE_CHUNK` 的 payload 形态随 `CAP_CHUNKED_SYNC` 协商切换（issue #295，append-only，无新消息码）：当且仅当双方均协商 `CAP_CHUNKED_SYNC` 时，`0x42` payload 以 `kind varUint` 为首字段，`kind ∈ {0=live-update, 1=snapshot, 2=sync-diff}`，其后为既有六字段序（namespaceId/transferId/chunkIndex/chunkCount/totalBytes/bytes）；`kind=1` 时 `chunkIndex=0` 的帧在 `totalBytes` 之后、`bytes` 之前追加绑定块 `replicationId varString + replicationEpoch varUint`，`kind=2` 时 `chunkIndex=0` 的帧同位追加 `syncRoundId varUint`；`chunkIndex>0` 的帧无绑定块，凭 (连接, 方向, namespaceId, transferId) 归属既有 assembly。仅协商 `CAP_CHUNKED_UPDATE`（未协商 `CAP_CHUNKED_SYNC`）的对端之间 `0x42` 保持旧六字段形态逐字节不变；发送方仅当 `CAP_CHUNKED_SYNC` 协商成功才发送新形态帧（发送端 gating，未协商端对新形态帧结构性不可达）。`transferId` 在 (连接, 方向, namespace) 作用域内从 1 严格递增、不回绕的语义不变，三种 kind 共用同一计数器。v1 代际端收到 `0x42` 照旧 `UNSUPPORTED_MESSAGE_TYPE` connection fatal。
+
 ## 6. Connection payloads
 
 ### 6.1 HELLO `0x01`
@@ -133,6 +135,7 @@ capability bitset 词表（uint32 BE，append-only）：
 | Bit | Name | Meaning |
 |--:|---|---|
 | `0x00000001` | `CAP_CHUNKED_UPDATE` | 支持分块传输：单条 UPDATE 超过 `maxUpdateBytes` 时可拆为多个自描述 `UPDATE_CHUNK` 帧（issue #242，ADR 0013）；协商位由 `selectedCapabilities` 交集返回。未协商端收到 0x42 帧必须按未知消息码规则 connection fatal |
+| `0x00000002` | `CAP_CHUNKED_SYNC` | 支持 sync 段分块传输（issue #295）：BOOTSTRAP_SNAPSHOT 载荷与 SYNC_STEP2 diff 超过既有单帧上限时可拆为 `kind=1`/`kind=2` 的自描述 chunk 帧序列（§5 形态切换、§8.1、§9.2、§10.3）；协商位由 `selectedCapabilities` 交集返回，与 `CAP_CHUNKED_UPDATE` 独立取交集、互不影响。未协商端该连接上 bootstrap/sync 行为保持 v1（单帧上限 + 既有 terminal 错误） |
 
 Hub 选择双方共同支持的最高 protocol version。任一 required capability 不支持则拒绝。optional capabilities 取交集。
 
@@ -193,9 +196,11 @@ Mode 必须与 OPEN 声明和身份比较一致。OPEN_OK 之前不得收发该 
 | namespaceId | varString | key |
 | replicationId | varString | 与 OPEN_OK 一致 |
 | replicationEpoch | varUint | 与 OPEN_OK 一致 |
-| snapshot | varUint8Array | 完整 `Y.encodeStateAsUpdate`，不分块 |
+| snapshot | varUint8Array | 完整 `Y.encodeStateAsUpdate`，单帧不分块（协商 `CAP_CHUNKED_SYNC` 后超单帧上限的载荷改经 §10.3 `kind=1` chunk 序列传输） |
 
 Hub 在 namespace write sequencer 中编码一致基线，不等待网络发送。超过 `maxBootstrapBytes` 返回 `BOOTSTRAP_TOO_LARGE` 并终止 namespace；v1 不分块、不 fallback HTTP。
+
+双方协商 `CAP_CHUNKED_SYNC` 时（issue #295），超过 `maxBootstrapBytes` 的 snapshot 不再直接 terminal：Hub 以 `kind=1` 的 UPDATE_CHUNK 序列经 data 路径传输——切片在出队发送时刻惰性进行（队列持完整 snapshot），每帧独立消费本发送方向 sequence、独立受 dataGateOpen 与 round-robin 每轮每 namespace 一帧调度，整笔 transfer 占 1 个 in-flight 窗口槽直至 BOOTSTRAP_ACK（发送端规则与 §10.3 逐字同构）；control 保留额度不承载任何 chunk。接收端 assembly 纯易失、作用域 = (连接, 方向, namespaceId, transferId)，此阶段尚无 Lease/ReplicationSession，记账挂在 namespaceId（OPEN_NAMESPACE 起已知）与连接级并发上限上。首 chunk 分配前校验 `totalBytes` ≤ `maxChunkedBootstrapBytes` ∧ `chunkCount` ≤ `maxChunksPerUpdate`（超限 → namespace ERROR `SNAPSHOT_TRANSFER_TOO_LARGE`，fatal、retryable config、terminal failed）；几何不一致或跨帧元数据违例 → `SNAPSHOT_TRANSFER_VIOLATION`（fatal、retryable no、terminal failed）；绑定块 `replicationId`/`replicationEpoch` 与 OPEN_OK 不一致 → 既有 `REPLICATION_ID_MISMATCH`/`REPLICATION_EPOCH_MISMATCH`。收齐并长度精确核对后执行**一次**排他复制导入（与单帧路径同一导入语义），随后以 BOOTSTRAP_ACK 结算。assembly 停滞超 `assemblyTimeoutMs` → 弃 partial，namespace 收口对齐 `BOOTSTRAP_FAILED` 语义族终局（terminal failed；此时尚无可 reconcile 的 session，恢复路径沿用 §16/§18 既有规则）。未协商 `CAP_CHUNKED_SYNC` 的组合行为逐字节不变：单帧、`maxBootstrapBytes` 上限、超限 `BOOTSTRAP_TOO_LARGE`。
 
 Peer 在 detached Y.Doc apply snapshot、核对 namespace META identity、以 target 的 local owner执行排他复制导入，再打开 Lease/ReplicationSession。并发 duplicate 不覆盖、不自动改为 merge，返回 `BOOTSTRAP_FAILED`。
 
@@ -204,9 +209,9 @@ Peer 在 detached Y.Doc apply snapshot、核对 namespace META identity、以 ta
 | Field | Encoding | Rule |
 |---|---|---|
 | namespaceId | varString | key |
-| ackedSequence | varUint | BOOTSTRAP_SNAPSHOT sequence |
+| ackedSequence | varUint | BOOTSTRAP_SNAPSHOT sequence（分块 snapshot 时为末 chunk 帧序） |
 
-ACK 只表示本地导入和 Runtime/Session 建立完成。Peer 随后以新的 syncRoundId 发起双向 reconciliation，修复 snapshot 编码与安装之间的竞态。
+ACK 只表示本地导入和 Runtime/Session 建立完成——分块路径下同：重组导入完成后才发出，durability 含义不变。Peer 随后以新的 syncRoundId 发起双向 reconciliation，修复 snapshot 编码与安装之间的竞态。分块 snapshot（`kind=1` chunk 序列）安装后的竞态修复不变，同一机制覆盖；epoch fence 于 chunk 传输期间发生则 partial assembly 整体丢弃（纯易失、零 durable 残留），不起用旧 epoch 基线。
 
 ## 9. 双向 reconciliation
 
@@ -229,7 +234,9 @@ Peer 的首个 Step1 隐式开始 round；Hub 不自行开始 round。Hub 收到
 | relatedStep1Sequence | varUint | 被响应 Step1 的 sequence |
 | update | varUint8Array | 按对端 state vector编码的 diff，允许空 diff |
 
-超过 `maxSyncDiffBytes` 返回 `SYNC_DIFF_TOO_LARGE`；不 fallback bootstrap、不自动拆分。收到后在 sequencer中 apply + dirty，随后发 SYNC_APPLIED。
+未协商 `CAP_CHUNKED_SYNC` 时，超过 `maxSyncDiffBytes` 返回 `SYNC_DIFF_TOO_LARGE`；不 fallback bootstrap、不自动拆分。收到后在 sequencer中 apply + dirty，随后发 SYNC_APPLIED。
+
+双方协商 `CAP_CHUNKED_SYNC` 时（issue #295），超过 `maxSyncDiffBytes` 的 diff 以 `kind=2` 的 UPDATE_CHUNK 序列经 data 路径传输（发送端规则与 §10.3 逐字同构：惰性切片、逐帧独立 sequence 与调度、整笔占 1 个 in-flight 窗口槽直至 SYNC_APPLIED）。首 chunk 绑定块 `syncRoundId` 必须与该 round 一致，不符 → `SYNC_STATE_VIOLATION`（既有码）；后续 chunk 凭 (连接, 方向, namespaceId, transferId) 归属。接收端首 chunk 分配前校验 `totalBytes` ≤ `maxChunkedSyncDiffBytes` ∧ `chunkCount` ≤ `maxChunksPerUpdate`（超限 → namespace ERROR `SYNC_TRANSFER_TOO_LARGE`，fatal、retryable config、terminal failed）；几何不一致或跨帧元数据违例 → `SYNC_TRANSFER_VIOLATION`（fatal、retryable no、terminal failed）。收齐核对后在 sequencer 中执行**一次** apply + dirty，随后发 SYNC_APPLIED——apply 完成后才结算的时序锚与 durability 含义不变。assembly 停滞超 `assemblyTimeoutMs` → 弃 partial + `RESYNC_REQUIRED{SYNC_TRANSFER_EXPIRED}`（非终态，§9.4）。未协商 `CAP_CHUNKED_SYNC` 的组合行为逐字节不变。
 
 ### 9.3 SYNC_APPLIED `0x32`
 
@@ -237,7 +244,7 @@ Peer 的首个 Step1 隐式开始 round；Hub 不自行开始 round。Hub 收到
 |---|---|---|
 | namespaceId | varString | key |
 | syncRoundId | varUint | 当前 round |
-| ackedSequence | varUint | SYNC_STEP2 sequence |
+| ackedSequence | varUint | SYNC_STEP2 sequence（分块 diff 时为末 chunk 帧序——单 ACK 结算，对齐 §10.3） |
 
 每端维护：
 
@@ -261,6 +268,7 @@ Peer 的首个 Step1 隐式开始 round；Hub 不自行开始 round。Hub 收到
 |---|---|---|
 | `send-queue-overflow` | 本端未发送/分发出站队列溢出，需 state-vector 修复（既有发射点：hub-namespace / peer-namespace 溢出声明） | 既有既定 reason，首次成文登记 |
 | `UPDATE_TRANSFER_EXPIRED` | **issue #242 / ADR 0013**：分块 transfer assembly 超时（非终态；每收一 chunk 重置的进度滑动 deadline 到期 → 接收方弃 partial 后声明）。**issue #244 发射点已落地**：接收端 assembly timeout（busy assembly 持有方，hub/peer 对称；词表登记 + wire roundtrip 自切片 1 冻结） | 本规范追加登记 |
+| `SYNC_TRANSFER_EXPIRED` | **issue #295**：sync 段分块 diff（`kind=2`）assembly 超时（非终态；进度滑动 deadline 到期 → 接收方弃 partial 后声明，对齐 `UPDATE_TRANSFER_EXPIRED` 先例；对端按本节收口并开恢复 round） | 本规范追加登记 |
 
 任一端可声明当前增量连续性作废，但始终由 Peer用新 roundId 发起下一轮。发出后不再发送新 UPDATE；已接纳 update 正常 apply/ACK。Peer等待 in-flight 窗口收口后开始新 round；断线则重连后重新 OPEN/reconcile。
 
@@ -312,6 +320,8 @@ Unknown、类型不匹配或 namespace不匹配的 ackedSequence 属 connection 
 
 codec 级单帧规则（encode/decode 同一套，违者 `MALFORMED_FRAME`）：namespaceId 格式、transferId ≥ 1、chunkIndex < chunkCount、chunkCount ≥ 1、bytes 非空且 ≤ totalBytes、bytes ≤ `maxUpdateBytes`（超限 `UPDATE_TOO_LARGE`）。
 
+**形态切换（issue #295）**：上表为仅协商 `CAP_CHUNKED_UPDATE` 时的六字段形态，逐字节冻结不动。当且仅当双方再协商 `CAP_CHUNKED_SYNC` 时，payload 以 `kind varUint` 为首字段（`0=live-update` / `1=snapshot` / `2=sync-diff`），其后字段序不变；`kind=1` 的首 chunk（`chunkIndex=0`）在 `totalBytes` 之后、`bytes` 之前追加绑定块 `replicationId varString + replicationEpoch varUint`，`kind=2` 的首 chunk 同位追加 `syncRoundId varUint`；`chunkIndex>0` 的帧无绑定块。codec 级单帧规则追加：`kind ∈ {0,1,2}`、绑定块当且仅当 `kind≠0 ∧ chunkIndex=0` 时存在（违者 `MALFORMED_FRAME`）。三种 kind 共用同一 `transferId` 计数器，作用域语义不变。发送方仅当 `CAP_CHUNKED_SYNC` 协商成功才发送新形态帧（发送端 gating）；v1 代际端收到 `0x42` 照旧 `UNSUPPORTED_MESSAGE_TYPE` connection fatal。kind≠0 的 transfer 规则（发送端惰性切片、data 路径逐帧调度、接收端二维校验 + 一次性分配 + 纯易失 assembly）与本节逐字同构；kind 相关的聚合上限、绑定块核对与终局语义分别由 §8.1（snapshot）与 §9.2（sync-diff）定义。
+
 **transfer 身份**：`transferId` 为 uint32，作用域 = (连接, 方向, namespaceId)，在同一作用域内从 1 严格递增、不回绕；0 非法（单帧规则已载，跨帧节重申域语义）。同一 transfer 内 `chunkIndex`/`chunkCount`/`totalBytes` 的声明逐字节一致。
 
 **发送端规则**：
@@ -327,7 +337,7 @@ codec 级单帧规则（encode/decode 同一套，违者 `MALFORMED_FRAME`）：
 - 首 chunk 在分配前完成二维声明上界校验（`totalBytes` ≤ `maxChunkedUpdateBytes` ∧ `chunkCount` ≤ `maxChunksPerUpdate`）与几何一致校验（`totalBytes` ≤ `chunkCount` × `maxUpdateBytes` ∧ `chunkCount` ≥ 1），通过后按已验证上界一次性分配 detached buffer。
 - 后续 chunk 要求 `transferId`/`totalBytes`/`chunkCount` 与首 chunk 逐字节一致 ∧ `chunkIndex === 已收数量` ∧ `bytes.byteLength` ≤ `maxUpdateBytes` ∧ Σbytes ≤ `totalBytes`。
 - 收齐 ⇒ 长度精确核对（Σbytes === `totalBytes`）⇒ **一次** sequenced `applyRemoteUpdate()` + dirty notification ⇒ `UPDATE_ACK`（ackedSequence = 末 chunk 帧序）；重组失败一律发生在 apply 之前，live Y.Doc 零写入。
-- 错误码三分类映射（与 §13.2 注册表逐字同向，不得合并叙述）：
+- 错误码三分类映射（与 §13.2 注册表逐字同向，不得合并叙述；`kind=1`/`kind=2` 时本映射的 `UPDATE_*` 码按 §8.1/§9.2 替换为 `SNAPSHOT_*`/`SYNC_*` 对应码，`totalBytes` 聚合上限按 kind 分别取 `maxChunkedBootstrapBytes`/`maxChunkedSyncDiffBytes`，分类结构不变）：
   - 首 chunk 声明超限（`totalBytes` > `maxChunkedUpdateBytes` ∨ `chunkCount` > `maxChunksPerUpdate`）⇒ namespace ERROR `UPDATE_TRANSFER_TOO_LARGE`（fatal、retryable config、terminal failed）；
   - 几何不一致 / 后续帧跨帧违例（transferId/totalBytes/chunkCount 不一致、`chunkIndex` ≠ 已收数量、bytes 超 `maxUpdateBytes`、Σbytes 超 `totalBytes`、收齐核对失败）/ 连接级并发 assembly 超 `maxConcurrentAssembliesPerConnection` ⇒ namespace ERROR `UPDATE_TRANSFER_VIOLATION`（fatal、retryable no、terminal failed；并发超额为 ns 级、连接保持 ready）；
   - assembly 停滞超 `assemblyTimeoutMs`（每收一 chunk 重置的进度滑动 deadline 到期）⇒ 丢弃 partial + `RESYNC_REQUIRED{reasonCode: UPDATE_TRANSFER_EXPIRED}`（非终态）。
@@ -432,8 +442,14 @@ Encoder从 code registry导出 scope/fatal/retryable/terminalState，调用方�
 | INTERNAL_ERROR | yes | reconnect | failed |
 | UPDATE_TRANSFER_VIOLATION | yes | no | failed |
 | UPDATE_TRANSFER_TOO_LARGE | yes | config | failed |
+| SNAPSHOT_TRANSFER_VIOLATION | yes | no | failed |
+| SNAPSHOT_TRANSFER_TOO_LARGE | yes | config | failed |
+| SYNC_TRANSFER_VIOLATION | yes | no | failed |
+| SYNC_TRANSFER_TOO_LARGE | yes | config | failed |
 
 `UPDATE_TRANSFER_VIOLATION`（跨 chunk violation，对齐 `SYNC_STATE_VIOLATION` 先例）与 `UPDATE_TRANSFER_TOO_LARGE`（分块资源上限超限，对齐 `SYNC_DIFF_TOO_LARGE` 语义族）为 issue #242 / ADR 0013 追加。**issue #244 发射点已落地**：接收端首 chunk 声明超资源上限（`totalBytes` 超 `maxChunkedUpdateBytes` / `chunkCount` 超 `maxChunksPerUpdate`）→ `UPDATE_TRANSFER_TOO_LARGE`；跨帧元数据违例与连接级并发 assembly 超额（第 `maxConcurrentAssembliesPerConnection`+1 个并发首 chunk，简报显式裁决）→ `UPDATE_TRANSFER_VIOLATION`。两码均 fatal、terminal failed（VIOLATION retryable no / TOO_LARGE retryable config）。
+
+issue #295 追加四码（sync 段分块传输，`CAP_CHUNKED_SYNC`）：`SNAPSHOT_TRANSFER_VIOLATION`/`SYNC_TRANSFER_VIOLATION` 对齐 `SYNC_STATE_VIOLATION` 先例（跨 chunk 元数据违例、几何不一致、连接级并发 assembly 超额），`SNAPSHOT_TRANSFER_TOO_LARGE`/`SYNC_TRANSFER_TOO_LARGE` 对齐 `SYNC_DIFF_TOO_LARGE` 语义族（首 chunk 声明超聚合上限 `maxChunkedBootstrapBytes`/`maxChunkedSyncDiffBytes`）。连接级 §13.1 零新增。
 
 Wire永不携带 owner、token、SCHEMA、ROOT、update、stack、原始 cause或异常 message。内部 observer/trace保留 committed与exact cause，但协议只输出安全稳定字段。
 
@@ -537,6 +553,7 @@ terminal protocol/policy/internal failure → failed
   APPLY_FAILED/INTERNAL_ERROR 收帧）与 `retryable=config/no` 族不在该自动重建触发面
   内——前者为显式未实现 follow-up（issue #254 设计 §13-1），后者保持本行等待语义；
 - socket断开时，控制器投影为 disconnected，立即停止 session、排空已接纳 apply并release Lease；target保留；
+- `bootstrapping`/`reconciling` 在协商 `CAP_CHUNKED_SYNC` 的连接上可承载分块 snapshot/diff 传输（§8.1/§9.2）；分块不新增状态，assembly 进度对状态机不可见；
 - 断线期间不维持 update outbox或subscription，重连后从当前 Y.Doc state vector恢复；
 - Hub 对断开 Peer执行同样 session/Lease cleanup，不影响其他 Peer。
 
@@ -557,10 +574,12 @@ Target controller用单一生命周期队列串行化 removeTarget、socket clos
 
 分块传输配置（issue #242 / ADR 0013 配置表为权威；安全缺省、启动期响亮验证、绝不运行时 clamp）：
 
-- `maxChunkedUpdateBytes`（缺省 4 MiB）：单笔 chunked transfer 的 `totalBytes` 申报上界（首 chunk 分配前校验）；
-- `maxChunksPerUpdate`（缺省 64，约束 ≥ 1）：单笔 chunked transfer 的 `chunkCount` 申报上界（首 chunk 分配前拒绝）；
-- `maxConcurrentAssembliesPerConnection`（缺省 4，约束 ≥ 1）：连接级每入站方向并发 assembly 上界（多 ns 聚合内存上界 = 本值 × `maxChunkedUpdateBytes`；超额 → `UPDATE_TRANSFER_VIOLATION`，ns 级、连接不拆）；
-- `assemblyTimeoutMs`（缺省 30_000，约束 = 有限正整数；容器 = timeouts）：接收端 assembly 进度滑动 deadline（每收一 chunk 重置；停滞超时 → 弃 partial + `RESYNC_REQUIRED{UPDATE_TRANSFER_EXPIRED}`，非终态）。
+- `maxChunkedUpdateBytes`（缺省 4 MiB）：单笔 chunked live-update transfer 的 `totalBytes` 申报上界（首 chunk 分配前校验）；
+- `maxChunkedBootstrapBytes`（缺省 4 MiB；issue #295）：单笔 chunked snapshot transfer 的 `totalBytes` 申报上界（超限 → `SNAPSHOT_TRANSFER_TOO_LARGE`）；
+- `maxChunkedSyncDiffBytes`（缺省 4 MiB；issue #295）：单笔 chunked sync-diff transfer 的 `totalBytes` 申报上界（超限 → `SYNC_TRANSFER_TOO_LARGE`）；
+- `maxChunksPerUpdate`（缺省 64，约束 ≥ 1）：单笔 chunked transfer 的 `chunkCount` 申报上界（首 chunk 分配前拒绝）；issue #295 起语义推广为 kind 无关（live-update/snapshot/sync-diff 共用本键），键名不变、存量配置兼容；
+- `maxConcurrentAssembliesPerConnection`（缺省 4，约束 ≥ 1）：连接级每入站方向并发 assembly 上界，kind 无关聚合（多 ns 聚合内存上界 = 本值 × max(`maxChunkedUpdateBytes`, `maxChunkedBootstrapBytes`, `maxChunkedSyncDiffBytes`)；超额 → `UPDATE_TRANSFER_VIOLATION`/`SNAPSHOT_TRANSFER_VIOLATION`/`SYNC_TRANSFER_VIOLATION`（按 kind），ns 级、连接不拆）；
+- `assemblyTimeoutMs`（缺省 30_000，约束 = 有限正整数；容器 = timeouts）：接收端 assembly 进度滑动 deadline（每收一 chunk 重置），kind 无关；停滞超时按 kind 收口：live-update → 弃 partial + `RESYNC_REQUIRED{UPDATE_TRANSFER_EXPIRED}`（非终态）；sync-diff → 弃 partial + `RESYNC_REQUIRED{SYNC_TRANSFER_EXPIRED}`（非终态）；snapshot → 弃 partial + `BOOTSTRAP_FAILED` 语义族终局（terminal failed，§18）。
 
 未发送队列任一上限超出：丢弃全部未发送增量，标记 needs-resync，停止新 UPDATE。已发送窗口等待 ACK或连接断开；窗口收口后由 Peer开始新 reconciliation。
 
@@ -580,6 +599,8 @@ maxQueuedControlBytes >= maxBootstrapBytes + protocol overhead
 maxQueuedBytesPerConnection >= highWater   # 既有链式不变量（validate.ts 已实现，文档补记）
 maxChunkedUpdateBytes <= maxQueuedUpdateBytes          # issue #244 跨字段链①
 maxChunkedUpdateBytes <= maxChunksPerUpdate * maxUpdateBytes   # issue #244 跨字段链②
+maxChunkedBootstrapBytes <= maxChunksPerUpdate * maxUpdateBytes  # issue #295 链②同形态
+maxChunkedSyncDiffBytes <= maxChunksPerUpdate * maxUpdateBytes   # issue #295 链②同形态
 maxChunksPerUpdate >= 1                            # issue #244
 maxConcurrentAssembliesPerConnection >= 1          # issue #244
 assemblyTimeoutMs 是有限安全整数且 > 0             # issue #244
@@ -590,6 +611,8 @@ low-water < high-water
 不得运行时 clamp。
 
 issue #244 跨字段链①/② 在合并配置上校验；调用方**显式配置** `maxChunkedUpdateBytes` **或** `maxChunksPerUpdate`（两链不等式的分块族操作数键）时响亮生效；缺省值自洽由配置表缺省构造成立（4 MiB ≤ 4 MiB ∧ 4 MiB ≤ 64 × 512 KiB）；仅下调既有键、未表达分块族键的存量配置不把缺省误判为用户配置错误（非追溯性）。
+
+issue #295 追加键同纪律：调用方显式配置 `maxChunkedBootstrapBytes`/`maxChunkedSyncDiffBytes` 时对应链式校验响亮生效，缺省自洽（4 MiB ≤ 64 × 512 KiB）；未表达新键的存量配置不误判。协商 `CAP_CHUNKED_SYNC` 后 snapshot 不再占用 control 保留额度，但 `maxQueuedControlBytes >= maxBootstrapBytes + 协议开销` 的启动校验**原样保留**——配置校验先于 HELLO、无法预知对端能力，且未协商回落路径仍需要该不变量。
 
 ## 18. Timeout
 
@@ -602,7 +625,7 @@ issue #244 跨字段链①/② 在合并配置上校验；调用方**显式配�
 - `reconcileIntervalMs`（缺省 `300_000`）；
 - `closeTimeoutMs`；
 - `ackTimeoutMs`；
-- `assemblyTimeoutMs`（issue #244，缺省 `30_000`）：分块 transfer assembly 的进度滑动 deadline——每收一 chunk 重置；停滞超时 → 接收方弃 partial（纯易失）+ 出向 `RESYNC_REQUIRED{reasonCode: UPDATE_TRANSFER_EXPIRED}`（非终态；对端按 §9.4 收口并开恢复 round 收敛，零 failed 终局）；
+- `assemblyTimeoutMs`（issue #244，缺省 `30_000`）：分块 transfer assembly 的进度滑动 deadline——每收一 chunk 重置；issue #295 起适用对象扩展到 sync 段 assembly（kind 无关同一键）。停滞超时按 kind 收口：live-update → 接收方弃 partial（纯易失）+ 出向 `RESYNC_REQUIRED{reasonCode: UPDATE_TRANSFER_EXPIRED}`（非终态；对端按 §9.4 收口并开恢复 round 收敛，零 failed 终局）；sync-diff → 弃 partial + 出向 `RESYNC_REQUIRED{reasonCode: SYNC_TRANSFER_EXPIRED}`（非终态，同上）；snapshot → 弃 partial + namespace 收口对齐 `BOOTSTRAP_FAILED` 语义族（terminal failed；此时尚无 Lease/ReplicationSession 可 reconcile，恢复路径沿用 §16/§18 既有规则）；
 - WS ping interval/pong timeout。
 
 工程缺省：`pingIntervalMs = 30_000`、`pongTimeoutMs = 10_000`；约束 `pongTimeoutMs < pingIntervalMs` 在配置解析期响亮验证（TypeError），绝不运行时 clamp。pong 超时按临时失败处理：先停止旧 liveness、退订旧 transport listener 并使 connection epoch 失效，再关闭传输（close code 1001）并经 backoff 重连；epoch 必须在调用可能同步重入的 transport `close()` 前失效。
@@ -675,6 +698,7 @@ Peer→Hub update保护检查必须在同一 sequencer槽中：
 - 版本协商全矩阵和锁定Yjs/y-protocols/lib0组合的旧/新互通矩阵；
 - 分块传输（issue #242）：UPDATE_CHUNK 全字段 golden vectors、单帧语义自洽拒绝、未协商（无 `CAP_CHUNKED_UPDATE`）端对 0x42 帧按未知消息码 connection fatal 拒绝、`selectedCapabilities` 选项急切校验与 v1 代际回落（新旧互不破译；实现代际定义见 §1）；资产锚 = `0x42` 锁定值与 UPDATE_CHUNK 全字段 golden vectors `packages/replication-protocol/test/codec-messages-golden.test.ts`、未协商 0x42 拒绝与 `CAP_CHUNKED_UPDATE=0x00000001` 锁定值 `packages/replication-protocol/test/codec-issue242-ac-red.test.ts`；
 - 实现代际互通矩阵（issue #246；ADR 0013 已接受，代际定义见 §1）：传输层全组合——v1 peer ↔ v2 hub、v2 peer ↔ v1 hub（未协商 ⇒ 超限丢弃 + reconciliation 的 v1 行为逐字节保持；等同性以三层确定性断言承载：`kind#sequence` 序列全等、确定性字段帧逐字段相等、Yjs 承载帧按 kind+计数——跨会话字节/长度全等因 Yjs 随机 doc client id 不适用）、v2 ↔ v2（协商分块）；v1 基线 = issue #233 刻画测试 `packages/ws-replication/test/ws-replication-issue233-repro.test.ts`；codec 层锚 = 版本协商全矩阵 + 锁定组合 golden 旧字节互通 `packages/replication-protocol/test/codec-version-interop.test.ts`；传输层锚 = `packages/ws-replication/test/ws-replication-issue246-interop-matrix.test.ts`；
+- 分块 sync 传输（issue #295）：`CAP_CHUNKED_SYNC` 协商全矩阵——双方协商 ⇒ snapshot/diff 可分块（`kind=1`/`kind=2` chunk 序列经 data 路径，受 window/backpressure 记账）；任一未协商 ⇒ 该连接 bootstrap/sync 行为回落 v1（单帧 `maxBootstrapBytes`/`maxSyncDiffBytes` 上限 + 既有 `BOOTSTRAP_TOO_LARGE`/`SYNC_DIFF_TOO_LARGE` terminal 错误），v1 组合逐字节不变；`CAP_CHUNKED_SYNC` 与 `CAP_CHUNKED_UPDATE` 两 bit 独立取交集、互不影响（v2-only 组合 live update 可分块而 sync 段保持 v1）。`0x42` 新形态（kind 首字段 + 首 chunk 绑定块）的 golden vectors 与传输层互通测试资产由实现 ticket 交付，本规范不预设其存在；
 - fake duplex transport上的connection、namespace、sync、resync、drain状态迁移；
 - 真实WebSocket + MemoryPersistence的1 Hub + 2 Peers收敛；
 - FilePersistence独立rootDir、bootstrap、archive/reset、进程重启、degraded旧snapshot恢复；
@@ -690,7 +714,7 @@ Peer→Hub update保护检查必须在同一 sequencer槽中：
 （附带可选 `clock?: ReplicationClock` 以观测 apply/ACK latency）。Seam 是**追加式
 （append-only）**：事件类型、reason/cause/via 词表、稳定码表只增不改；GA 后字段语义冻结。
 
-### 23.1 事件词汇（28 型，分类列示——issue #238 追加第 21 型 `event-loop-delay-sampled` 及四事件面 sequence/四段差值字段；issue #256 追加第 22 型 `namespace-failed`；ADR 0018 追加第 23/24 型 `schema-rearm-applied` / `schema-rearm-failed`；issue #244 追加第 25 型 `chunked-update-aborted` 及 `ChunkedUpdateAbortReason` 词表；issue #245 追加第 26–28 型 `chunked-update-sent`/`chunked-update-applied`/`chunked-update-acked`——ADR 0013 L89–91 域键集 + §23 信封，分块 transfer 成功结算从普通族改道而来）
+### 23.1 事件词汇（36 型，分类列示——issue #238 追加第 21 型 `event-loop-delay-sampled` 及四事件面 sequence/四段差值字段；issue #256 追加第 22 型 `namespace-failed`；ADR 0018 追加第 23/24 型 `schema-rearm-applied` / `schema-rearm-failed`；issue #244 追加第 25 型 `chunked-update-aborted` 及 `ChunkedUpdateAbortReason` 词表；issue #245 追加第 26–28 型 `chunked-update-sent`/`chunked-update-applied`/`chunked-update-acked`——ADR 0013 L89–91 域键集 + §23 信封，分块 transfer 成功结算从普通族改道而来；issue #295 追加第 29–36 型 `chunked-snapshot-sent`/`-applied`/`-acked`/`-aborted` 与 `chunked-sync-sent`/`-applied`/`-acked`/`-aborted`——sync 段分块传输观测，字段集对齐既有 chunked-update-* 四型）
 
 连接域：
 
@@ -722,6 +746,12 @@ bootstrap / reconcile / updates 字节与 latency（每帧粒度；次数 = 事�
 | `chunked-update-sent` | hub/peer | **issue #245 追加（append-only 第 26 型；ADR 0013 L89 域键集逐字 + §23 信封）**：`connectionId?`（握手后在场——分块结构性仅在握手后）、`namespaceId`、`transferId`、`chunkCount`、`totalBytes`（wire `UPDATE_CHUNK` 申报投影：受控 transferId + 计数/长度 safe-field，非内容）。**语义**：分块 transfer **完成出站时恰一**（末 chunk 帧已交宿主发送且注册在途——发射点 = 末 chunk 结算记账点），**非逐 chunk**、非 transfer 起始发射（中间 chunk 零事件）。**改道（R21）**：分块 transfer 窗口内对应普通族 `update-sent` 归零——本事件取代之。**恒无任何 latency/差值键**（clock 在场也不加——DD1 裁决；键集冻结 = 无 `sequence`/`sendQueueMs`）。**计数不变量**：每笔完成的出站 transfer 恰一事件（末 chunk 结算结构性单点——activeTransfer 生命周期）；中止 transfer 到不了本结算点 → 与 `chunked-update-aborted` 互斥 |
 | `chunked-update-applied` | hub/peer | **issue #245 追加（append-only 第 27 型；ADR 0013 L90 域键集逐字 + §23 信封）**：`connectionId?`、`namespaceId`、`bytes`（= wire 声明 `totalBytes`——assembler Σbytes 精确核对不变量，长度非内容）、`chunkCount`（wire 申报）、`applyLatencyMs?`（t0/t1 既有采样点——clock 缺省/无 observer 时**整键缺失**，非 undefined 值）。**语义**：UPDATE_CHUNK 组装收齐的 apply 成功结算——apply 成功路径互斥规则第四形态（见下）；**改道（R21）**：该结算点不再发普通族 `update-applied`（窗口内归零）。**键集冻结**：无 `transferId`/`sequence`/四段差值/效果组键（DD1） |
 | `chunked-update-acked` | hub/peer | **issue #245 追加（append-only 第 28 型；ADR 0013 L91 域键集逐字 + §23 信封）**：`connectionId?`、`namespaceId`、`bytes`（= wire `totalBytes`——末 chunk inFlight 记账总长）、`ackLatencyMs?`（ACK 处理时刻 − 末 chunk 出站时刻——clock 缺省/无 observer 时**整键缺失**）。**语义**：末 chunk 帧序的单 ACK 收妥结算（发送侧）；**改道（R21）**：该结算点不再发普通族 `update-acked`（窗口内归零）。**计数不变量**：每笔完成的出站 transfer 恰一事件；ACK timeout 弃置后 zombie 迟到 ACK 零事件（弃置 transfer 零成功型事件——与 aborted 互斥不变量一致）。**键集冻结**：无 `sequence` 键（帧级关联键为普通族专属——DD1） |
+| `chunked-snapshot-sent` | hub | **issue #295 追加（append-only 第 29 型；字段集对齐 `chunked-update-sent`）**：`connectionId?`、`namespaceId`、`transferId`、`chunkCount`、`totalBytes`（wire 申报投影：受控标识 + 计数/长度 safe-field，非内容）。**语义**：分块 snapshot transfer（`kind=1`）完成出站时恰一（末 chunk 结算记账点），非逐 chunk。**改道（R21 平移）**：该结算点不再发普通族 `bootstrap-snapshot-sent`（窗口内归零）。**恒无任何 latency 键**；与 `chunked-snapshot-aborted` 互斥 |
+| `chunked-snapshot-applied` | peer | **issue #295 追加（append-only 第 30 型；字段集对齐 `chunked-update-applied`）**：`connectionId?`、`namespaceId`、`bytes`（= wire 声明 `totalBytes`——assembler Σbytes 精确核对不变量）、`chunkCount`、`applyLatencyMs?`（clock 缺省/无 observer 时整键缺失）。**语义**：`kind=1` 组装收齐的排他复制导入成功结算；**改道**：该结算点不再发普通族 `bootstrap-imported`（窗口内归零）。**键集冻结**：无 `transferId`/`sequence`/四段差值/效果组键 |
+| `chunked-snapshot-acked` | hub | **issue #295 追加（append-only 第 31 型；字段集对齐 `chunked-update-acked`）**：`connectionId?`、`namespaceId`、`bytes`（= wire `totalBytes`）、`ackLatencyMs?`（clock 缺省/无 observer 时整键缺失）。**语义**：末 chunk 帧序的单 BOOTSTRAP_ACK 收妥结算（发送侧 hub）；普通族无对应事件——本型为分块路径独有观测点，无改道。**计数不变量**：每笔完成的出站 transfer 恰一事件；与 aborted 互斥。**键集冻结**：无 `sequence` 键 |
+| `chunked-sync-sent` | hub/peer | **issue #295 追加（append-only 第 32 型；字段集对齐 `chunked-update-sent`）**：`connectionId?`、`namespaceId`、`transferId`、`chunkCount`、`totalBytes`，另携 `syncRoundId`（本 transfer 所属 round 的 wire 投影，§9.1–9.3；uint32、单连接代际内单调——issue #239 safe-field 先例）。**语义**：分块 sync-diff transfer（`kind=2`）完成出站时恰一。**改道**：该结算点不再发普通族 `sync-step2-sent`（窗口内归零）。**恒无任何 latency 键**；与 `chunked-sync-aborted` 互斥 |
+| `chunked-sync-applied` | hub/peer | **issue #295 追加（append-only 第 33 型；字段集对齐 `chunked-update-applied`）**：`connectionId?`、`namespaceId`、`bytes`（= wire `totalBytes`）、`chunkCount`、`syncRoundId`（被 apply transfer 的 roundId 投影）、`applyLatencyMs?`（同在场纪律）。**语义**：`kind=2` 组装收齐的 Step2 diff apply 成功结算；**改道**：该结算点不再发普通族 `sync-diff-applied`（窗口内归零）。**键集冻结**：无 `transferId`/`sequence`/四段差值/效果组键 |
+| `chunked-sync-acked` | hub/peer | **issue #295 追加（append-only 第 34 型；字段集对齐 `chunked-update-acked`）**：`connectionId?`、`namespaceId`、`bytes`（= wire `totalBytes`）、`ackLatencyMs?`（同在场纪律）。**语义**：末 chunk 帧序的单 SYNC_APPLIED 收妥结算（发送侧）；普通族无对应事件——本型为分块路径独有观测点，无改道。**计数不变量**：每笔完成的出站 transfer 恰一事件；与 aborted 互斥。**键集冻结**：无 `sequence`/`syncRoundId` 键 |
 
 **issue #239 语义注记**：发送不推进发送方 state vector，`sync-step2-sent` 不携带效果
 字段组。Yjs 空 diff 编码结构性非零（§9.2 允许空 diff），`bytes > 0 ∧ applyEffect='noop'
@@ -750,14 +780,21 @@ auth / 背压 / resync：
 | `namespace-failed` | hub/peer | **issue #256 追加（append-only 第 22 型）**：`connectionId?`、`namespaceId`、`cause` ∈ {open-timeout, bootstrap-timeout, reconcile-timeout, open-failed, session-open-failed, replication-disabled, session-missing, protocol-violation, apply-refused, apply-rejected, remote-error, send-failed, internal-error}（`ReplicationNamespaceFailedCause` 闭联合，append-only；timer 族三值 = §13.2 `NAMESPACE_TIMEOUT` 的本地映射——open/bootstrap/reconcile 超时可仅凭单侧日志区分）、`timeoutMs?`（仅 timer 族 cause 在场：到期的配置上限 openTimeoutMs/bootstrapTimeoutMs/reconcileTimeoutMs——有限数值非时间戳）。**计数不变量**：每次 `failed` 终态边沿恰一事件（终态幂等早退保证——closing 期/终态后迟到的收口调用零事件）；事件在失败决策落定后发射（setState 之后，§23.4）。**与 `namespace-error` 互补不重复**：本事件计**终态边沿**，`namespace-error` 计 **wire ERROR 帧**——wire 错误驱动路径两者各一（失败聚合/告警路由以本事件 `cause` 为准）；本地零 wire 失败路径（timer 超时、本地 open/lease/session 失败、local 终局）仅本事件；`remote-error` 标记对端 ERROR 驱动的终局，防止被误计为本地故障。observer 缺省 = 零事件构造、零 live 状态读取、零时钟调用（cause/timeoutMs 实参仅为稳定字面量与 resolved 配置字段）。cause × `failed` 入口覆盖矩阵见本节附表 |
 | `identity-conflicted` | hub/peer | `connectionId?`、`namespaceId`、`via` ∈ {open-mismatch, fence, identity-changed-frame} |
 | `chunked-update-aborted` | hub/peer | **issue #244 追加（append-only 第 25 型；ADR 0013 observer seam reason 词表六值与中止矩阵一一平行）**：`namespaceId`、`transferId`、`reason` ∈ {timeout, shed, resync-declared, channel-teardown, connection-teardown, epoch-fence}（`ChunkedUpdateAbortReason` 闭联合，append-only）、`receivedChunks`、`receivedBytes`（已收进度：长度/计数 safe-field，非内容）。**发射端 = 丢弃 partial assembly 的一端**（接收方语义：timeout 停滞方弃置、shed/RESYNC 声明/CLOSE 收口/断线/epoch fence 的实际处置方——GOAWAY 无独立 reason，其 drain 收口归 `connection-teardown` 行；收口入口置位 + 收口链消费 = last-writer-wins）。**计数不变量**：每笔 busy→aborted 边沿恰一事件（busy 守卫——重复 clear/多清理挂点汇合至多一事件；stale fire 零副作用）；事件在决策落定后发射（§23.4）。**终局失败族不发本事件**（违例/远端 ERROR/revoke → failed 的可观测信号 = `namespace-error`/`namespace-failed`，互补不重复）；`conflicted` 族 fence 终局经本事件登记。成功路径三型（sent/applied/acked）已由 issue #245 落地（第 26–28 型，本表上列）——中止与成功路径互斥（中止 transfer 结构性不可达任一成功结算点，反之亦然）。observer 缺省 = 零事件构造、零快照读取。接线行：timeout / channel-teardown（CLOSE_NAMESPACE 收口）/ connection-teardown（断线/GOAWAY drain/stop）/ resync-declared（收对端 RESYNC、本端 wire 声明边、恢复 round 结算残渣）/ shed（live 通道连接级背压弃置）/ epoch-fence（hub one-shot 终结器、peer identity-changed/apply 期围栏）；**动态断言**（shed/epoch-fence/GOAWAY/queue-overflow/resync-declared 行 + `side` 双侧覆盖）归 SA7 动态验证面 |
+| `chunked-snapshot-aborted` | hub/peer | **issue #295 追加（append-only 第 35 型；字段集对齐 `chunked-update-aborted`）**：`namespaceId`、`transferId`、`reason` ∈ 既有 `ChunkedUpdateAbortReason` 闭联合（零新词）、`receivedChunks`、`receivedBytes`。发射端 = 丢弃 partial assembly 的一端；busy→aborted 边沿恰一、决策落定后发射、终局失败族不发本事件（`SNAPSHOT_TRANSFER_*`/`BOOTSTRAP_FAILED` 族的可观测信号 = `namespace-error`/`namespace-failed`）——纪律与 `chunked-update-aborted` 逐字同构 |
+| `chunked-sync-aborted` | hub/peer | **issue #295 追加（append-only 第 36 型；字段集对齐 `chunked-update-aborted`）**：`namespaceId`、`transferId`、`reason` ∈ 既有 `ChunkedUpdateAbortReason` 闭联合（零新词）、`receivedChunks`、`receivedBytes`。纪律同上；终局失败族（`SYNC_TRANSFER_*`）不发本事件 |
 
 
 **apply 成功路径互斥规则**（避免计数重复）：每笔成功 apply 恰一事件 = `update-applied`
-（UPDATE 帧且非 degraded）／`sync-diff-applied`（Step2 且非 degraded）／
-`chunked-update-applied`（UPDATE_CHUNK 组装收齐 ∧ 非 Step2 ∧ 非 degraded——issue #245
-第四形态）／`degraded-bypass-applied`（degraded，任意来源——含分块 apply：degraded
-判别先于 chunked 判别胜出，R23）四选一。`isStep2 ∧ chunked` 结构性不可达（Step2 diff
-经 `SYNC_STEP2` 控制帧直达，assembler 只收 `UPDATE_CHUNK` 数据帧——两入口不相交）。
+（UPDATE 帧且非 degraded）／`sync-diff-applied`（Step2 单帧且非 degraded）／
+`chunked-update-applied`（kind=0 UPDATE_CHUNK 组装收齐 ∧ 非 degraded——issue #245
+第四形态）／`chunked-sync-applied`（kind=2 组装收齐的 Step2 diff apply 且非
+degraded——issue #295 第五形态，R21 改道平移：该结算点不再发 `sync-diff-applied`）／
+`chunked-snapshot-applied`（kind=1 组装收齐的排他复制导入——issue #295 第六形态，
+改道：不再发 `bootstrap-imported`）／`degraded-bypass-applied`（degraded，任意来源
+——含分块 apply：degraded 判别先于 chunked 判别胜出，R23）六选一。issue #295 前
+「`isStep2 ∧ chunked` 结构性不可达」的表述随 `CAP_CHUNKED_SYNC` 失效：协商后 Step2
+diff 可经 kind=2 chunk 序列到达，此时 chunked 判别先于单帧 Step2 判别胜出（互斥规则
+同上）；未协商组合两入口仍不相交。
 
 **`namespace-failed` cause × `failed` 入口覆盖矩阵**（issue #256 验收交付物；
 回归锚 = `ws-replication-issue256-namespace-failed.test.ts` 场景号）：
@@ -797,7 +834,7 @@ schema re-arm 域（ADR 0018；peer 专属——hub 的 apply 槽结构性不可
   `ConnectionErrorCode` 同源）＋ **本 seam 登记的内部码**：
   - `PONG_TIMEOUT`（hub 活性失联；无 wire 帧——本地内部路径）；
   - `OUTBOUND_SEQUENCE_EXHAUSTED`（双端出站 uint32 耗尽；无 wire 帧）。
-- **namespace 域** `ReplicationObserverNamespaceCode` = 协议 §13.2 全 20 码（codec
+- **namespace 域** `ReplicationObserverNamespaceCode` = 协议 §13.2 全部 namespace 错误码（codec
   `NamespaceErrorCode` 同源）＋ **内部码**：
   - `IDENTITY_CHANGED`（§11 fence 帧方向标注；消息名作稳定字符串）。
 - **未知码折叠规则**：异常携带任意 string 时经白名单匹配（注册表键 + 上述内部码），
@@ -846,7 +883,7 @@ issue #238 追加字段全部落入上述两类）。
   相同），不属 §23.4「绝对时间戳不入事件」（该条约束的是**本地时钟读数**，本字段不读
   任何本地时钟），也不属「不受控高基数字段」（源受控、跨副本一致）；
 - `code` = ADR 0018 §3 稳定双码，属本域**独立**闭联合（`ReplicationObserverSchemaRearmCode`），
-  **不并入 §23.2 的 namespace 域白名单**（§13.2 20 码 ∪ 1 内部码）：本域词表无「未知码
+  **不并入 §23.2 的 namespace 域白名单**（§13.2 全部 namespace 错误码 ∪ 1 内部码）：本域词表无「未知码
   折叠 `INTERNAL_ERROR`」语义（Runtime 侧产出面即双码），把双码塞进 namespace 域只会让
   该闭联合的运行期判据宽于本节文档与导出类型（issue #287 复审修正）。词表**唯一真值源**
   = `SCHEMA_REARM_CODES` 数组（事件类型与运行期白名单均由其派生，双向漂移均编译期红；
