@@ -47,13 +47,15 @@ export interface RoundHost {
   /** Step2 diff 应用（含错误映射）。resolve 'ok' 表示已 apply 并已发 SYNC_APPLIED。
    *  第三参 `syncRoundId`（issue #239）：帧携带的 wire roundId 的显式透传投影——
    *  onStep2 已在调用前校验 `message.syncRoundId === currentRound`，纯参数化、零
-   *  状态机逻辑变化。第四参 `form`（issue #295 切片 2，M1）：'syncChunked' = 分块
-   *  diff 收齐后的**一次** apply（普通族 sync-diff-applied 发射窗口内归零）。 */
+   *  状态机逻辑变化。第四参 `form`（issue #295 切片 2 M1；issue #301 结构化携
+   *  chunkCount）：`{ form:'syncChunked'; chunkCount }` = 分块 diff 收齐后的**一次**
+   *  apply（普通族 sync-diff-applied 发射窗口内归零；chunkCount = wire 申报投影，
+   *  供给 `chunked-sync-applied` 第五形态）。 */
   readonly applyStep2: (
     update: Uint8Array,
     step2Sequence: number,
     syncRoundId: number,
-    form?: 'syncChunked',
+    form?: Readonly<{ form: 'syncChunked'; chunkCount: number }>,
   ) => Promise<'ok' | 'aborted'>;
   /** 违例（SYNC_STATE_VIOLATION → ERROR + ns failed 终局）。 */
   readonly onViolation: (detail: string) => void;
@@ -220,12 +222,20 @@ export class RoundEngine {
 
   /** 组装收齐后调用 = 既有 `applyStep2Safely` 的暴露形态（结算单点与锚值逻辑不变）：
    *  apply 成功 → remoteDiffAppliedLocally + checkSettled；SYNC_APPLIED 由宿主
-   *  `applyStep2(..., 'syncChunked')` 以 `ackedSequence = lastChunkSequence` 发出
-   *  （M1：普通族 sync-diff-applied 在本形态下不发射）。 */
-  async completeChunkedStep2(update: Uint8Array, lastChunkSequence: number): Promise<void> {
+   *  `applyStep2(..., {form:'syncChunked', chunkCount})` 以 `ackedSequence = lastChunkSequence`
+   *  发出（M1：普通族 sync-diff-applied 在本形态下不发射；issue #301：chunkCount =
+   *  assembler 申报投影，供给 `chunked-sync-applied` 事件字段）。 */
+  async completeChunkedStep2(
+    update: Uint8Array,
+    lastChunkSequence: number,
+    chunkCount: number,
+  ): Promise<void> {
     const syncRoundId = this.chunkedStep2RoundId ?? this.state.currentRound;
     this.chunkedStep2RoundId = undefined;
-    await this.applyStep2Safely(update, lastChunkSequence, syncRoundId, 'syncChunked');
+    await this.applyStep2Safely(update, lastChunkSequence, syncRoundId, {
+      form: 'syncChunked',
+      chunkCount,
+    });
   }
 
   /** 本端 kind=2 分块 Step2 的末 chunk 出站（宿主回调，**与末 chunk 出站同一同步栈**——
@@ -266,7 +276,7 @@ export class RoundEngine {
     update: Uint8Array,
     step2Sequence: number,
     syncRoundId: number,
-    form?: 'syncChunked',
+    form?: Readonly<{ form: 'syncChunked'; chunkCount: number }>,
   ): Promise<void> {
     const outcome = await this.host.applyStep2(update, step2Sequence, syncRoundId, form);
     if (outcome === 'ok') {

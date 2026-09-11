@@ -1,0 +1,13 @@
+
+ RUN  v3.2.7 /home/wangjian/nomicore-fix-issue-301
+
+ ✓ packages/ws-replication/test/ws-replication-observer-red.test.ts (32 tests) 180ms
+ ✓ packages/ws-replication/test/ws-replication-issue300-chunked-sync-ac-red.test.ts (12 tests) 110ms
+ ✓ packages/ws-replication/test/ws-replication-issue244-sa7-dynamic.test.ts (11 tests) 152ms
+ ✓ packages/ws-replication/test/ws-replication-issue244-ac-red.test.ts (14 tests) 98ms
+ ✓ packages/ws-replication/test/ws-replication-issue300-bulk-edge-ac.test.ts (6 tests) 48ms
+
+ Test Files  5 passed (5)
+      Tests  75 passed (75)
+   Start at  03:44:12
+   Duration  2.56s (transform 602ms, setup 0ms, collect 1.31s, tests 588ms, environment 1ms, prepare 203ms)

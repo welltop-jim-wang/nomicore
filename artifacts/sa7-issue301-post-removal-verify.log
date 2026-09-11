@@ -1,0 +1,10 @@
+
+ RUN  v3.2.7 /home/wangjian/nomicore-fix-issue-301
+
+ ✓ packages/ws-replication/test/ws-replication-issue301-chunked-completeness-ac-red.test.ts (17 tests) 159ms
+ ✓ packages/ws-replication/test/ws-replication-issue244-sa7-dynamic.test.ts (11 tests) 158ms
+
+ Test Files  2 passed (2)
+      Tests  28 passed (28)
+   Start at  03:44:37
+   Duration  1.48s (transform 557ms, setup 0ms, collect 877ms, tests 318ms, environment 0ms, prepare 90ms)

@@ -39,6 +39,17 @@ export interface BulkTransferBinding {
   readonly syncRoundId?: number;
 }
 
+/** 末 chunk 出站结算记录（issue #301）：`chunked-{snapshot,sync}-sent` 事件字段事实源
+ *  （末 chunk 出站时刻构造）与 `-acked` 事件 bytes 的事实源（settle 时刻构造）。
+ *  单点取值——控制器不自记 second source（设计 OD2 备选④拒绝）。 */
+export interface BulkTransferOutboundSettlement {
+  /** 末 chunk 帧序（wire 结算锚；sent 事件不携带——仅发送侧锚赋值消费）。 */
+  readonly lastChunkSequence: number;
+  readonly transferId: number;
+  readonly chunkCount: number;
+  readonly totalBytes: number;
+}
+
 /** 入队请求（一次性；含宿主侧结算/中止回调）。 */
 export interface BulkTransferRequest {
   readonly kind: 1 | 2;
@@ -46,8 +57,18 @@ export interface BulkTransferRequest {
   readonly payload: Uint8Array;
   /** 首 chunk 绑定块（kind 语义；由调用方保证与 payload 匹配）。 */
   readonly binding: BulkTransferBinding;
-  /** 末 chunk 出站回调（**同一同步调用栈**——结算锚赋值先于任何合法 ACK 到达）。 */
-  readonly onLastChunkSent: (lastChunkSequence: number) => void;
+  /** 末 chunk 出站回调（**同一同步调用栈**——结算锚赋值先于任何合法 ACK 到达）。
+   *  issue #301：第 2 参 = 结算记录（transferId/chunkCount/totalBytes 供给 sent 事件）。
+   *  形态实现说明（SA3 偏差登记，见实现报告）：设计 OD2 原拟把唯一参数从 `number`
+   *  替换为结算记录；但 DENY 冻结的回归锚
+   *  `test/ws-replication-issue300-bulk-edge-ac.test.ts` L195 直接把该参数绑定到
+   *  `number | undefined`——替换即令 `tsc -p packages/ws-replication/tsconfig.json`
+   *  TS2322 失败且不可修改该文件。故改为**追加第 2 参**（TS 允许实参回调省略尾参，
+   *  既有绑定类型不变）：名字、发射点、单点事实源与事件字段全部与设计一致。 */
+  readonly onLastChunkSent: (
+    lastChunkSequence: number,
+    settlement: BulkTransferOutboundSettlement,
+  ) => void;
   /** 出站被拒（M5）回调：失败明细供给器（仅 observer 在场时求值）；宿主按 kind 收口。 */
   readonly onSendRejected: (detail: () => UpdateSendFailureDetail) => void;
   /** kind=2 自持 ACK timer 超时回调（载体已弃置归 idle）；宿主按 kind 收口。 */
@@ -80,6 +101,8 @@ interface BulkTransferState {
   phase: 'queued' | 'active' | 'awaiting-ack';
   transferId: number;
   nextChunkIndex: number;
+  /** issue #301：末 chunk 出站帧序（末 chunk 分支赋值的结算事实源；awaiting-ack 恒已置位）。 */
+  lastChunkSequence: number;
 }
 
 export class BulkTransferSender {
@@ -126,6 +149,7 @@ export class BulkTransferSender {
       phase: 'queued',
       transferId: 0,
       nextChunkIndex: 0,
+      lastChunkSequence: 0,
     };
   }
 
@@ -188,17 +212,24 @@ export class BulkTransferSender {
     if (state.nextChunkIndex >= state.chunkCount) {
       // 末 chunk：结算锚（同步回调）+ kind=2 自持 ACK timer（kind=1 由宿主 bootstrap timer 覆盖）
       state.phase = 'awaiting-ack';
-      state.request.onLastChunkSent(seq);
+      state.lastChunkSequence = seq;
+      state.request.onLastChunkSent(seq, this.settlementOf(state));
       if (state.request.kind === 2) this.armAckTimer();
     }
     return true;
   }
 
-  /** ACK 结算（BOOTSTRAP_ACK / SYNC_APPLIED 收妥）：awaiting-ack 且 kind 匹配 → idle。 */
-  settle(kind: 1 | 2): void {
+  /** ACK 结算（BOOTSTRAP_ACK / SYNC_APPLIED 收妥）：awaiting-ack 且 kind 匹配 → idle。
+   *  issue #301：返回被结算载体的结算记录（`chunked-{snapshot,sync}-acked` 的 bytes 事实源）；
+   *  无载体/kind 不匹配/非 awaiting-ack（zombie 迟到 ACK、单帧路径）→ undefined（零事件）。 */
+  settle(kind: 1 | 2): BulkTransferOutboundSettlement | undefined {
     const state = this.current;
-    if (state === undefined || state.request.kind !== kind || state.phase !== 'awaiting-ack') return;
+    if (state === undefined || state.request.kind !== kind || state.phase !== 'awaiting-ack') {
+      return undefined;
+    }
+    const settled = this.settlementOf(state);
     this.disposeCurrent();
+    return settled;
   }
 
   /** resync-declared 边沿（M2）：载体弃置 + 归 idle + 拆 timer（此后本方向零新增 kind≠0 出站）。 */
@@ -241,6 +272,16 @@ export class BulkTransferSender {
       this.host.clearTimer(this.ackTimerHandle);
       this.ackTimerHandle = undefined;
     }
+  }
+
+  /** 结算记录构造单点（issue #301）：末 chunk 出站与 ACK 结算两处同源投影，零额外读取。 */
+  private settlementOf(state: BulkTransferState): BulkTransferOutboundSettlement {
+    return {
+      lastChunkSequence: state.lastChunkSequence,
+      transferId: state.transferId,
+      chunkCount: state.chunkCount,
+      totalBytes: state.totalBytes,
+    };
   }
 
   /** M5 失败明细（失败时刻采样；丢弃后计数恒零——采样必须先于 disposeCurrent）。 */
