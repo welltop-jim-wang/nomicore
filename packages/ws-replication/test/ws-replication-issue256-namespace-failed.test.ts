@@ -749,13 +749,20 @@ describe('issue #256：namespace-failed 终态原因可诊断性', () => {
     expect(failedOf(peerRec.events, 'peer'), 'stop 后仍恰一').toHaveLength(1);
   }, 60_000);
 
-  // ═══════════ 场景 14：hub 快照超 maxBootstrapBytes → 'send-failed'（评审修订锚） ═══════════
-  it('场景 14：BOOTSTRAP_TOO_LARGE（hub 本地出站快照超限）→ hub namespace-failed{send-failed}（非 protocol-violation）+ namespace-error{sent:BOOTSTRAP_TOO_LARGE}；peer remote-error', async () => {
+  // ═══════════ 场景 14：hub 快照超聚合上限 → 'send-failed'（issue #300/R45 改写锚） ═══════════
+  // issue #300 切片 2 + SA2-M4：断言面从 v1 保持码 BOOTSTRAP_TOO_LARGE 平移到协商路径的
+  // 超聚合上限码 SNAPSHOT_TRANSFER_TOO_LARGE（协议 §23.3 send-failed 行的本端资源超限入口）。
+  // 三要素：① 连接协商 CAP_CHUNKED_UPDATE（driver `chunkedUpdate: true`——peer 单旋钮决定
+  // 协商、hub 恒支持）；② 构型 = `len > maxChunkedBootstrapBytes`（maxBootstrapBytes=8、
+  // maxChunkedBootstrapBytes=16，链② 16 ≤ 64×512KiB 满足）；③ 断言新码 + send-failed 终局。
+  it('场景 14：SNAPSHOT_TRANSFER_TOO_LARGE（hub 本地出站快照超聚合上限）→ hub namespace-failed{send-failed}（非 protocol-violation）+ namespace-error{sent:SNAPSHOT_TRANSFER_TOO_LARGE}；peer remote-error', async () => {
     const uh = collectUnhandledRejections();
     const hubRec = makeRecorder();
     const peerRec = makeRecorder();
     const run = await boot({
-      limits: { maxBootstrapBytes: 8 }, // 快照必然超限——本端资源超限路径
+      // 快照必然超单帧上限且超聚合上限——协商路径的本端资源超限收口（D4 三分叉第三支）
+      limits: { maxBootstrapBytes: 8, maxChunkedBootstrapBytes: 16 },
+      chunkedUpdate: true, // ★ M4：协商前提（未协商则落 v1 保持码，见互通矩阵）
       waitFor: 'none',
       hubObserver: hubRec.observer,
       peerObserver: peerRec.observer,
@@ -770,8 +777,12 @@ describe('issue #256：namespace-failed 终态原因可诊断性', () => {
       );
       const hubErrs = nsErrorsOf(hubRec.events, 'hub');
       expect(
-        hubErrs.filter((e) => e.direction === 'sent' && e.code === 'BOOTSTRAP_TOO_LARGE'),
+        hubErrs.filter((e) => e.direction === 'sent' && e.code === 'SNAPSHOT_TRANSFER_TOO_LARGE'),
       ).toHaveLength(1);
+      expect(
+        hubErrs.filter((e) => e.code === 'BOOTSTRAP_TOO_LARGE'),
+        '协商路径不得回落 v1 保持码（BOOTSTRAP_TOO_LARGE 保留注册表但单帧路径不再触发）',
+      ).toHaveLength(0);
       assertFailedSafe(hubFailed, '场景 14 hub');
       // peer 侧：对端 terminal ERROR 驱动 → remote-error
       const peerFailed = failedOf(peerRec.events, 'peer');

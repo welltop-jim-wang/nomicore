@@ -531,7 +531,7 @@ export const CONNECTION_ERROR_TABLE: Record<
   INTERNAL_ERROR: { fatal: true, retryable: 'yes', wsCloseCode: 1011 },
 };
 
-/** namespace 错误注册表（§13.2）：code → { fatal, retryable, terminalState }（22 条） */
+/** namespace 错误注册表（§13.2）：code → { fatal, retryable, terminalState }（26 条） */
 export const NAMESPACE_ERROR_TABLE: Record<
   string,
   { fatal: boolean; retryable: string; terminalState: string }
@@ -556,7 +556,12 @@ export const NAMESPACE_ERROR_TABLE: Record<
   ACK_TIMEOUT: { fatal: false, retryable: 'resync', terminalState: 'needs-resync' },
   NAMESPACE_TIMEOUT: { fatal: true, retryable: 'reconnect', terminalState: 'failed' },
   INTERNAL_ERROR: { fatal: true, retryable: 'reconnect', terminalState: 'failed' },
-  // issue #242（ADR 0013）：分块传输语义错误码（22 条）
+  // issue #242（ADR 0013）：分块传输语义错误码
   UPDATE_TRANSFER_VIOLATION: { fatal: true, retryable: 'no', terminalState: 'failed' },
   UPDATE_TRANSFER_TOO_LARGE: { fatal: true, retryable: 'config', terminalState: 'failed' },
+  // issue #295 切片 2（ADR 0019 / 协议 §13.2 L445–448）：snapshot/sync-diff 分块传输四码
+  SNAPSHOT_TRANSFER_VIOLATION: { fatal: true, retryable: 'no', terminalState: 'failed' },
+  SNAPSHOT_TRANSFER_TOO_LARGE: { fatal: true, retryable: 'config', terminalState: 'failed' },
+  SYNC_TRANSFER_VIOLATION: { fatal: true, retryable: 'no', terminalState: 'failed' },
+  SYNC_TRANSFER_TOO_LARGE: { fatal: true, retryable: 'config', terminalState: 'failed' },
 };
