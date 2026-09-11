@@ -5,6 +5,7 @@ import {
   renameSync,
   rmSync,
   rmdirSync,
+  statSync,
   unlinkSync,
   writeFileSync,
 } from 'node:fs';
@@ -82,6 +83,65 @@ function readOwner(lockDirectory: string): string {
 }
 
 /**
+ * Grace window for a freshly mkdir'd lock directory to publish `owner.json`.
+ * `mkdir` is the acquisition linearization point, so the winner owns the
+ * canonical directory *before* its owner payload becomes visible; a
+ * concurrent contender reading in that window observes a missing/empty
+ * `owner.json`. Treating that as "dead owner" detaches the live acquirer's
+ * directory and produces two live owners (the 12-contender stale-reclaim
+ * race intermittent CI failure). Only a directory that stays owner-less past
+ * this grace window — its creator crashed between mkdir and write — is
+ * stale and reclaimable.
+ */
+const OWNER_PUBLISH_GRACE_MS = 5_000;
+const OWNER_PUBLISH_POLL_MS = 10;
+
+function sleepSync(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+/**
+ * Read the lock directory owner, absorbing the mkdir→owner.json publication
+ * window. Returns '' only when the directory vanished or stayed owner-less
+ * past the publication grace window (creator crashed mid-acquisition).
+ */
+function readOwnerSettled(lockDirectory: string): string {
+  for (;;) {
+    const raw = readOwner(lockDirectory);
+    if (raw !== '') return raw;
+    try {
+      if (Date.now() - statSync(lockDirectory).mtimeMs > OWNER_PUBLISH_GRACE_MS) return '';
+    } catch {
+      return '';
+    }
+    sleepSync(OWNER_PUBLISH_POLL_MS);
+  }
+}
+
+/**
+ * Read a claim file, absorbing the create→write publication window the same
+ * way readOwnerSettled does for the lock directory. Returns '' only when the
+ * file vanished or stayed empty past the grace window (writer crashed).
+ */
+function readClaimSettled(claimPath: string): string {
+  for (;;) {
+    let raw = '';
+    try {
+      raw = readFileSync(claimPath, 'utf8');
+    } catch {
+      return '';
+    }
+    if (raw !== '') return raw;
+    try {
+      if (Date.now() - statSync(claimPath).mtimeMs > OWNER_PUBLISH_GRACE_MS) return '';
+    } catch {
+      return '';
+    }
+    sleepSync(OWNER_PUBLISH_POLL_MS);
+  }
+}
+
+/**
  * Publish the legacy compatibility mirror (best-effort diagnostic surface).
  *
  * The mirror is NOT the ownership token — the lock directory is — and every
@@ -155,7 +215,7 @@ export function acquireRootLock(rootDir: string, instanceId: string): RootLockHa
       if (errno !== 'EEXIST') throw error;
     }
 
-    const raw = readOwner(canonical);
+    const raw = readOwnerSettled(canonical);
     const held = heldError(instanceId, raw);
     if (held !== undefined) throw held;
 
@@ -168,9 +228,12 @@ export function acquireRootLock(rootDir: string, instanceId: string): RootLockHa
     } catch (error) {
       const errno = (error as NodeJS.ErrnoException).code;
       if (errno === 'EEXIST') {
-        const claimRaw = (() => {
-          try { return readFileSync(reapClaim, 'utf8'); } catch { return ''; }
-        })();
+        const claimRaw = readClaimSettled(reapClaim);
+        if (claimRaw === '') {
+          // Claim vanished or its writer crashed mid-create; reclaim it.
+          try { unlinkSync(reapClaim); } catch { /* already gone */ }
+          continue;
+        }
         if (heldError(instanceId, claimRaw) !== undefined) continue;
         try { unlinkSync(reapClaim); } catch { /* another contender changed it */ }
         continue;
@@ -182,7 +245,7 @@ export function acquireRootLock(rootDir: string, instanceId: string): RootLockHa
     const tombstone = join(rootDir, `${ROOT_LOCK_DIRECTORY_NAME}.reap-${randomUUID()}`);
     try {
       try {
-        const claimedRaw = readOwner(canonical);
+        const claimedRaw = readOwnerSettled(canonical);
         const claimedHeld = heldError(instanceId, claimedRaw);
         if (claimedHeld !== undefined) throw claimedHeld;
         if (claimedRaw !== raw) continue;

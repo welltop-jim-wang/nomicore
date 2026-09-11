@@ -257,6 +257,11 @@ file 模式启动时以 `rootDir/.nomicore-lock/` 非空目录作为权威锁（
 - pid 已死 = stale 回收：竞争者以原子 `rename` 将权威目录移到唯一墓碑路径，
   再以 `mkdir` 竞争新的权威目录；竞争败者重读胜者 owner 后 loud `exit(1)`。
   EACCES/EPERM → loud `exit(1)`（rootDir 可写性是 file 模式前置条件）；
+- **owner 发布窗口**：`mkdir` 是获取线性化点，胜者在 `owner.json` 落盘前
+  已经持有权威目录；窗口内目录「存在但 owner 缺失」是发布进行中，绝不是
+  stale 信号。竞争者必须等待发布完成（以目录年龄 5s 宽限区分「创建者在
+  mkdir 与写 owner 之间崩溃」的真空目录，只有超过宽限仍无 owner 的目录
+  才可按 stale 回收）；
 - release 先以原子 `rename` 摘走权威目录，只在墓碑 owner 等于本 handle payload
   时删除；迟到 handle 无法按 canonical 路径删除后继者的目录；
 - `.nomicore-lock.json` 只是诊断镜像，不是所有权 token；
