@@ -1,20 +1,19 @@
-# SA9 标准审查报告 — Issue #269：REST create 的 Registry 失败语义、取消边界与双 observer 契约（rebase 后复审）
+# SA9 标准审查报告 — Issue #269 任务树（iteration 2：CI-stability 修复 + #269 既有交付的最终复审）
 
-> 阶段：standards-review（SA9，**iteration 1 — 对 rebase 后交付的复审**）。派发：`sa-1fb557bf-316c-4389-b585-78f7bd382b95`（mabf-sa9）。
+> 阶段：standards-review（SA9，**iteration 2 — 对新 head 的 fresh final review**）。派发：`sa-1a4b1c20-e54b-4d00-b79f-724d2b2a0dba`（mabf-sa9）。
 > **Verdict：approve**（0 BLOCKER / 0 MAJOR；3 条 MINOR 非阻断观察，§10）。
 > 审查对象：worktree `/home/wangjian/nomicore-fix-issue-269`，branch `mabf/issue-269`，HEAD
-> `c739770ff90a8d06ce8bba35dfd25d514cd7994c`（docs-only）；实现 commit `25b41dc`
-> （`feat(namespace-api): map REST create failures`）rebase 在 Parent PR 当前 base `209b046`
-> （`feat(namespace-api): validate REST namespace creation (#297)`，即 #268 落地内容）之上——
-> **本次审查重点含对 base 的语义冲突解决（SA3 D1–D4）**。
-> 本报告**原位重写** iteration 0 的 SA9 报告（其对象为 #267 骨架上的未提交 diff，HEAD `0b06050`）；
-> 全部行号/哈希锚点按合入后源码重测。
-> Issue-comment REST snapshot 为空（dispatch 明示；SA8 两轮/SA6/SA3/SA4 多源一致）——无 owner 评论级要求。
-> 方法：纯静态独立复核（读 issue 正文、ADR、设计/SA2/SA3(iter1)/SA4/SA6/SA8 产物、合入实现全文、
-> 两侧冻结测试、`git diff`/sha256/grep 实测）；未修改任何代码/设计/测试，未运行测试，未启动服务。
+> `296e6462e2b843149667ad22e481d427a6b99a26`（`test(ci): stabilize issue 229 hub restart backoff`）。
+> 审查范围 = (a) 最终 CI-stability 修复（`296e646`，1 个测试文件 + 2 份 SA 报告）+ (b) 既有 #269 交付
+> （实现 `1e4ae72` rebase 于 #270 落地后的 base `f2de805` 之上）。
+> Owner 要求来源：issue #269 comment `5629026278`（welltop-jim-wang，updated `2026-09-11T03:31:05Z`）——
+> 本评审经 `gh api` 只读复核原文，与 dispatch 转述一致（§2 逐字口径）。
+> 本报告**原位重写** iteration 1 的 SA9 报告（其对象为 HEAD `c739770`/实现 `25b41dc` on `209b046`，
+> verdict approve；原文存于 git 历史 commit `abcabfe`）。全部行号/哈希锚点按当前 HEAD 重测。
+> 方法：纯静态独立复核（read/grep/git diff/git show/sha256sum/`git diff --check`/`gh api` 只读）；
+> 未修改任何代码/设计/测试，未运行测试，未启动服务，未调度其他 SA。
 > 审查口径：只判断**标准与仓库质量**（AGENTS/ADR/模块责任/惯例/单一事实源/生命周期对称性/文件范围/
-> 测试质量/冲突解决的忠实性）；Issue 需求完整实现属 SA10（其 iteration-1 `approve` 产物已存在于
-> `wiki/raw/task_issue-269_sa10_spec.md`，结论独立、不构成本评审输入依赖）。
+> 测试质量/owner 要求的落实）；Issue 需求完整实现属 SA10，不构成本评审内容。
 
 ---
 
@@ -22,133 +21,132 @@
 
 | 输入 | 位置 | 状态 |
 |---|---|---|
-| 任务简报（issue body + AC1–AC6，Comments 空） | `wiki/raw/task_issue-269.md`、`task_issue-269_dispatch.md` | 已读 |
-| SA1 设计 | `wiki/raw/task_issue-269_design.md` | 已全文读（§7.1 T1–T11/§7.3/§7.4/§7.6/§11 ALLOW-DENY） |
-| SA2 设计评审 | `wiki/raw/task_issue-269_sa2_review.md` | `approve`（0 BLOCKER/MAJOR；OBS-1~4） |
-| SA3 实现报告（iteration 1，rebase 版） | `wiki/raw/task_issue-269_sa3_impl.md` | 已全文读；冲突解决表、D1–D4、F0–F4/E1–E4 声明与实测逐项吻合（§8/§9） |
-| SA4 实现审查（iteration 0） | `wiki/raw/task_issue-269_sa4_review.md` | `approve`（OBS-A/B） |
-| SA6 冻结契约 | `wiki/raw/task_issue-269_sa6_contract.md` + 5 测试文件 | sha256 5/5 实测逐字节一致（§9） |
-| SA8 门禁两轮 | `artifacts/sa8-conflict-report-issue-269{,-design-recheck}.md` | clear / clear（均针对 rebase 前设计；rebase 后无新门禁，见 §10-MINOR-1） |
-| Parent base（#268）产物 | `wiki/raw/task_issue-268{,_design,_sa6_contract,_sa4_review,_sa9_standards}.md` | 已读 D4/H8/§15 裁决点（§5 专项） |
-| 合入实现源码 | `packages/namespace-api/src/{create-namespace,rest,index,request-body,rest-problem}.ts` | 全文读 + `git diff 209b046..25b41dc` 与 `git diff 7b40f50..25b41dc` 逐行 |
-| 包契约文档 | `packages/namespace-api/{AGENTS.md,README.md}` | diff 逐行 |
-| 规范基准 | 根 `AGENTS.md`、包 `AGENTS.md`、ADR 0015/0009/0010/0012、`CONTEXT.md`、根 `vitest.config.ts` | 已读并核对 |
-| ADR-0015 锚定 | rebase 未触碰 `docs/adr/**`（`git diff 209b046..HEAD` 零命中） | ✅ |
+| Owner 评论（裁决原文） | GitHub issue #269 comment `5629026278` | `gh api` 只读实测，updated_at `2026-09-11T03:31:05Z`，与 dispatch 转述逐字一致 |
+| 任务简报/派发日志 | `wiki/raw/task_issue-269.md`、`task_issue-269_dispatch.md` | 已读 |
+| SA3 实现报告（iteration 2 + iteration 1 归档） | `wiki/raw/task_issue-269_sa3_impl.md` | 已全文读；V1–V7、D7–D9、Changed paths 逐项核对 |
+| SA4 实现审查（iteration 2 + iteration 1 归档） | `wiki/raw/task_issue-269_sa4_review.md` | `approve`（0 BLOCKER/MAJOR；3 观察 + 2 项 Controller 收尾义务） |
+| SA6 冻结契约 / SA1 设计 / SA2 评审 / SA8 两轮门禁 | `wiki/raw/task_issue-269_sa6_contract.md` 等；`artifacts/sa8-conflict-report-issue-269{,-design-recheck}.md` | 已读；冻结哈希实测（§7） |
+| 被修测试 | `apps/yjs-server/test/hub-restart-static-target-red.test.ts`（362 行） | 全文读 + vs `f2de805` 版逐行 diff + 断言清单对位 |
+| 协议与实现锚点（只读） | `docs/protocols/instance-replication-v1.md` §15；`packages/ws-replication/src/peer-connection.ts`；`apps/yjs-server/src/app.ts` | 行号/语义实测吻合（§6） |
+| #269 合入实现 | `packages/namespace-api/src/{create-namespace,rest,index,request-body,rest-problem}.ts` | diff 哈希比对 + 冻结测试 sha256 重测（§7） |
+| 规范基准 | 根 `AGENTS.md`、`apps/AGENTS.md`、`apps/yjs-server/AGENTS.md`、`packages/namespace-api/AGENTS.md`、ADR 0015/0010、`CONTEXT.md` | 已读并核对 |
 
 ---
 
-## 2. 仓库 AGENTS 合规
+## 2. Owner 评论 5629026278 逐字口径与落实总表
 
-| 条款 | 核验（合入后实测） | 结论 |
-|---|---|---|
-| 模块指导（改动前读最近嵌套 AGENTS.md 并守其边界） | 包 `AGENTS.md` Boundaries 逐条核验：create-namespace.ts 保持包私有（`package.json` exports 实测恰 `.`/`./rest`，未动；`index.ts` 只 re-export 六个公共类型/`createRestRouter`，未 re-export 编排或 `ResolvedRestRouterLimits`/`CreateNamespaceOrchestrationDeps`；grep 实测测试零私有模块 import）；构造 TypeError 门与双 observer 显式注入保持（rest.ts L301–325）；role 单真相零触碰（L307–309 不变）；固定顺序未 reorder（route→method→role→step3→step4/5→derive→create→DTO→release→201，L336–391 + create-namespace.ts L227–331）；201 恰两键/无 Location/release 失败仍 201 逐字保持 | ✅ |
-| 冻结验收契约纪律（「do not edit it to accommodate an implementation」） | #269 五文件 sha256 = SA6 §13.4 逐字节（§9）；base(#268) 6 文件 + #267 legacy 5 文件与 `209b046` 逐字节一致（11/11 SAME，§9）；两侧契约零改写 | ✅ |
-| Typed Namespace writes 强制条款 | 不适用：经 `Registry.create({owner,schema,root})` 公共创建 API（恰三键，L262–265），非 `mutateData()` 写路径；无 `any`/cast 散布、无 live Y.Doc、无 snapshot 编辑 | ✅（不适用，无违反） |
-| Third-party plugin hosting / Cordis | 不适用：普通 Module、非 plugin（rest.ts L4–7 保持该表述） | ✅ |
-| Instance replication（ADR 0010/protocols） | 零触碰；README/AGENTS 保持「新 namespace 保持 replication-disabled」表述 | ✅ |
-| Namespace diagnostic change log（ADR 0011/0014） | 不适用但同向：grep 实测 `packages/namespace-api/{src,test}` 无 `diagnostic-log` 引用；「emit never throws」纪律经 `emitMetrics`/`emitDiagnostic` helper 复用（create-namespace.ts L136–156） | ✅ |
-| `docs/AGENTS.md`「行为变更须同步全部规范性文档」 | 合入后包 AGENTS.md/README 已重写为两票合一的单一事实陈述（deferral 清单合并、observers/失败映射/取消边界条目与实现一致；`docs/adr/**` 未触碰——ADR-0015 状态治理归父 PR #158，DENY 遵守）；`CONTEXT.md` 无新域术语（事件 kind/code/outcome 均为 ADR 0015 既有词汇） | ✅（措辞精度见 §10-MINOR-2/3） |
+Owner 原文（`gh api` 实测）四句裁决 + 一句范围限定，落实矩阵：
 
-## 3. ADR 合规（合入后行号实测）
-
-| ADR 条款 | 实现锚点 | 结论 |
-|---|---|---|
-| 0015 L113（body 读取尊重 `Request.signal`、中断后 Registry 零触达；调用后等待 settle 并 release） | 共享 seam 三道闸门（create-namespace.ts L193 入口同步判定 → L195 委托 `readBoundedBodyText`［其内部 L51/L67–72/L81/L84 观察 signal］→ L196/L200 结算处再核对）；接纳点（L262–266）后源码零 `signal` 读取（grep 实测 signal 仅出现于 L192–208 与注释/私有类）；`await lease.release()` 恰一次（L316） | ✅ |
-| 0015 L113 排序不变量（读取段内 abort 优先于 413，R3/C5） | 入口判定先于 `readBoundedBodyText` 内任何读取期检查（含 Content-Length 413 早拒，request-body.ts L54–60）；读取循环内 aborted 判定（L84）先于 byte 超限判定（L89）；seam catch（L198–202）把「读取失败且 signal 已 aborted」统一归 abort——三层结构性保证 abort 优先 | ✅ |
-| 0015 L150–159 固定执行顺序 | 未 reorder；step 3（owner/query/媒体层，rest.ts L353–379）在 step 4 之前保持 base 冻结顺序 | ✅ |
-| 0015 L161（release 失败仍 201、diagnostic 上报 owner/namespaceId/exact cause、不重复调用） | L315–325：catch 仅发射 `lease-release-failure`（cause=release 异常引用、namespaceId=release 前 DTO 副本 string）后仍 201；无重试无二次调用 | ✅ |
-| 0015 L175–178 失败映射四分支 | T1 503 逐字 code（L293–294）；T2 500 FAILED（L295–296）；T6 committed:true → OUTCOME_UNKNOWN（L278–279）；T7 committed:false → INTERNAL_ERROR（L280，R1）；T8 unknown → INTERNAL_ERROR（L282–283） | ✅ |
-| 0015 L180（INVALID_INPUT/ALREADY_EXISTS → 安全 500 + diagnostic） | L297–302：合并分支 → `unknown-exception` diagnostic（cause=issue 对象引用）+ 500 `INTERNAL_ERROR`；`NAMESPACE_ALREADY_EXISTS` 不透传 | ✅ |
-| 0015 L182（不发明重试/幂等面） | 未发明 `Retry-After`/Idempotency-Key/自动重试；`NAMESPACE_INVALID_IDENTITY` 保持 fail-loud rejection（L303–305），不抢跑 | ✅ |
-| 0015 L186（双 observer 显式注入、throw 隔离） | 构造门 `typeof === 'function'` 不变（rest.ts L318–325）；全部发射点（L172/L207/L270–277/L282/L301/L319–324/L326）一律经同步 try/catch helper，无裸调用（grep 实测） | ✅ |
-| 0015 L188（metrics 低基数、无敏感字段） | `RestMetricsEvent` 键集恰 `{operation, outcome, code?, status?}`（rest.ts L61–68）；operation 恒 `'namespace-create'`（L104）；无 owner/namespaceId/issues/schema/root/cause | ✅ |
-| 0015 L190（diagnostic 三类 kind、exact cause、不带 schema/root/完整 issues；Host 负责访问控制/采样/脱敏） | `RestDiagnosticEvent` 三类 kind + `cause: unknown` exact 引用（rest.ts L85–93）；operation/phase/committed 仅 registry-fatal、namespaceId 仅 lease-release-failure；无 `issues` 键；Host 义务写入类型注释（L83）与 README，未挪进 router | ✅ |
-| 0015 L103–113 limits（七默认值、Partial 覆盖、未知键/越界 TypeError、跨字段不变量） | 默认值逐字（rest.ts L137–145）；白名单/正安全整数门不变（L182–203）；跨字段不变量 `maxSchemaTextBytes <= maxBodyBytes` 对**有效配置恒成立**——判定口径经 D1 收敛（§5 专项）；冻结有效值（L217） | ✅（判定口径变化见 §5/§10-MINOR-1） |
-| 0015 L165/完整 problem shape 归属 | 5xx body 保持最小 `{code}`（errorResponse L162–174）；4xx/422 固定 problem shape 沿用 base `rest-problem.ts`，零重新实现 | ✅ |
-| ADR 0012 role 单真相 | 零触碰；无第二 role 源 | ✅ |
-| ADR 0009/0010 Registry 语义 | 零触碰（diff 范围外）；判别输入全部公共面（窄 code switch / `instanceof NamespaceRegistryFatalError` + `.committed` / catch-all） | ✅ |
-
-## 4. 模块责任
-
-| 行为 | 应有归属 | 实际位置（合入后） | 结论 |
+| # | Owner 要求（逐字要点） | 实测证据 | 结论 |
 |---|---|---|---|
-| HTTP 失败投影（503/500 code/status/body/metrics 分类） | REST Adapter | `create-namespace.ts`（包私有） | ✅ Registry 语义零改动 |
-| committed 事实 | Registry（唯一事实源） | REST 只读 `fatal.committed`（L278），不从 phase 推断、无影子字段 | ✅ |
-| abort 观察/读取机制 | 共享读取 seam：signal 语义 #269、有界读取机制 #268 | seam（create-namespace.ts L187–203）只做三道闸门与 abort 分类/发射；读取机制单一复用 base `readBoundedBodyText`（D3）——**无第二读取路径、无平行 race** | ✅ |
-| 4xx/422/limits 执行 | #268（base 已落地） | 原样复用 base 的 `request-body.ts`/`rest-problem.ts`/step 3–5 分发；两文件零 diff（§8） | ✅ |
-| listener/装配/连接生命周期 | 未来 server（#270） | abort 以有界 rejection 结算、不伪造 HTTP status；`RestBodyReadAbortedError` 私有不导出（L115 无 export）；rejection message/cause 承接 base 既约事实（D2） | ✅ |
-| 访问控制/采样/脱敏 | Host | 类型注释 + README 明示，router 不承担 | ✅ |
+| ① | **允许**修正该用例对 backoff 时序的假设；根因 = full jitter `delay = random() × cap`、`cap = min(maxMs, baseMs·2^(attempt−1))`，帽值**不提供延迟下界**；「长 backoff 配置保证写入先于重拨」前提在 CI 负载下不成立 | 根因与规范/实现三方一致：协议 §15（`docs/protocols/instance-replication-v1.md` L426–431 实测：`cap = min(maxBackoffMs, baseBackoffMs * 2^attempt)`、`delay = random(0, cap)`）；实现 `peer-connection.ts` L937–941 实测（`cap = Math.min(maxMs, baseMs * 2^(attempts-1))`、`delay = Math.max(0, random() * cap)`）。修复正是「修正时序假设」：等已武装窗口（L314–320）+ 实测派生帽值（L257–265），**未触碰任何生产代码** | ✅ 落实 |
+| ②a | **必须保留全部既有断言**（不得删除、放宽或 skip 任何 `expect`），只让时序可判定 | 断言清单 13 ↔ 13 逐条对位（§3）；零 `.skip`/`.only`/`.todo`；`it` 超时 `240_000` 未动；受保护断言逐字保留 | ✅ 落实 |
+| ②b | 提交信息与 PR 说明明确披露：#229 用例 flake 收敛、CI 稳定性修复、**非本票功能改动** | commit `296e646` message `test(ci): stabilize issue 229 hub restart backoff`——`test(ci)` 类型 + 指向 229，无 #269 功能声称；diff 内 SA3 iteration-2 章节（「CI 失败修复」「为什么是测试面修复而非生产代码修复」）与 SA4 iteration-2（§1/§3 Owner ②b 行）均逐字作此定性。**PR 说明披露尚无载体**——Controller 收尾义务（SA4 §11-R2 同判），不属代码面 | ✅（diff 面落实；PR 面为交付收尾义务，§10-MINOR-3） |
+| ③ | 提交前清除临时诊断输出：工作树不得残留 `[tmp-diag]`/`[tmp-gate]` 调试 console.log 与临时探针脚本 | 全仓 grep `tmp-diag\|tmp-gate\|tmp_diag\|tmp_gate` 仅 4 命中且全部位于 wiki 报告对该要求自身的文字引用；被修测试与相关 src 零 `console.`/`debugger`；`git status --porcelain` 空、0 untracked；HEAD commit 恰 3 路径（§4） | ✅ 落实 |
+| ④ | 该文件改动使此前 SA9/SA10 评审头失效，**须对新 head 重跑最终评审组（SA9 + SA10）**后再交付 | 本报告即 SA9 重跑（iteration 2，对象 HEAD `296e646`）；SA10 iteration-2 尚未派发（`task_issue-269_sa10_spec.md` 最后更新于 `abcabfe`，早于 `296e646`）——Controller 派发声索，非本评审缺陷（§10-MINOR-3） | ✅（SA9 半侧落实） |
+| 范围 | 「除此之外本轮修复不做任何额外改动」 | `git show 296e646 --name-only` 恰 3 路径：owner 逐字点名的测试文件 + SA3/SA4 角色固定报告产物；零生产代码、零 `.github/**`、零其它测试、零 `test-durations.json` | ✅ 落实 |
 
-## 5. 语义冲突解决专项（dispatch 点名：rebase 对 Parent PR base 的冲突解决）
+---
 
-冲突两侧与解决（SA3 冲突解决表 + D1–D4）逐条独立复核：
+## 3. 断言保留专项（Owner ②a）
 
-| # | 裁决 | 复核 | 结论 |
+修复前（`git show f2de805:…` 版）与修复后（HEAD 版）`expect(` 清单逐条对位：
+
+| 断言（语义） | 前行号 | 后行号 | 对位 |
 |---|---|---|---|
-| D1 | `resolveLimits` 跨字段门从「合并默认后的有效值矛盾即 TypeError」收敛为「两键显式矛盾 TypeError；单键时默认值按不变量向显式值收敛」 | **冲突真实性**：base 实现（`git show 209b046:rest.ts` 实测）对合并后有效值判定，`{maxBodyBytes:16}` 会因默认 schema 上限 256 KiB > 16 而构造 TypeError；#269 冻结 C5（sha256 实测逐字节一致）以 `limits:{maxBodyBytes:16}` 构造并要求 aborted 非 413。SA3 F1a 首跑失败（C5 构造期 TypeError）与此推导一致——冲突真实。**解决正确性**：收敛后两键显式矛盾仍 TypeError（base AC2 `{1024,2048}` 拒 / `{1024,1024}` 允，rest.ts L206–209 实测满足）；单键收敛使 ADR L113 不变量对有效配置恒成立（bodyExplicit → `min` 压缩 schema 上限 L210–212；schemaTextExplicit → `max` 抬升 body 上限 L213–215）；C5 构造路径静态推导可达 gate①（harness `jsonRequest` 带 `content-type: application/json`，过 step 3；pre-aborted → abortSettle，零触达、非 413）。**未弱化任何冻结断言、未新增 env override/fallback、确定性、文档同步**（rest.ts L37–41/L113/L165–175、README L9、AGENTS.md 对应条目一致）。**偏离披露**：#268 设计 D4 曾采纳「合并默认后的有效值」读法（其 SA6 §15 裁决点 4 预留「若设计采用只校验显式给出的键，须补充/回写边界用例」）；D1 实为该预留情形的触发，但未走 #268 修订轮、未补边界用例——见 §10-MINOR-1 | 必要且忠实（治理残余见 MINOR-1） |
-| D2 | abort rejection 形状承接 base 既约事实（`ABORTED_BODY_READ_MESSAGE` + `signal.reason` 作 cause），类名私有不导出 | `rest-create-body-read.test.ts` D6 逐字断言该 message（L98/L113 实测）；harness/契约对 rejection 值形状不作私有类判别（H-A 明示非契约面）；message 常量单一来源（request-body.ts L20 定义、create-namespace.ts L53 import——无第二份字符串） | ✅ |
-| D3 | 读取段不自建 `Promise.race`，复用 base `readBoundedBodyText`（其内部已观察 signal：`reader.cancel()` 使挂起读有界结算） | base 读取器 aborted 判定先于超限判定（request-body.ts L84 vs L89），监听器 add↔finally remove 对称（L72/L98）；seam 保留入口/结算两道闸门与 abort 分类——排序不变量结构性成立（§3 L113 行）；「读返回→`registry.create` 之间仅同步代码」实测成立（JSON.parse/`assertTopLevelShape`/`utf8ByteLength`/`assertPostParseResourceLimits`/`deriveSchemaIdentity`/envelope 组装全同步，L228–259）；单一读取机制，无平行路径 | ✅ |
-| D4 | `CreateNamespaceOrchestrationDeps` 从私有模块 export 并新增 `limits` 字段 | 模块包私有性由 `package.json` exports 结构性保证（实测恰 `.`/`./rest`）；不被 `index.ts` re-export（实测）；唯一调用方 rest.ts 同票更新 | ✅ |
+| `signalAndExpectExit` helper 内 `expect(code, msg).toBe(expectedCode)` | L122 | L168 | ✅ 逐字 |
+| `expect(namespaceId).toMatch(/^ns-[0-9a-f]{32}$/)` | L193 | L239 | ✅ 逐字 |
+| `expect(baselineWrite.ok).toBe(true)` | L232 | L285 | ✅ 逐字 |
+| `expect(baselineRead.ok).toBe(true)` / `.value).toBe(7)` | L234/235 | L287/288 | ✅ 逐字 |
+| `expect(shutdownEvents.some(backoff-scheduled), JSON.stringify(…)).toBe(true)` | L248–251 | L301–304 | ✅ 逐字 |
+| `expect(…goaway-received…).toBe(false)` | L252 | L305 | ✅ 逐字 |
+| `expect(…state-changed && to==='blocked'…).toBe(false)` | L253 | L306 | ✅ 逐字 |
+| `expect(peerProc.exitCode).toBeNull()` | L254 | L307 | ✅ 逐字 |
+| **`expect(statusBeforeWrite.connectionState).toBe('backoff')`**（CI 失败点） | L262 | L327–330 | ✅ 保留——实际值/匹配器/期望值逐字不变；仅新增第二参失败消息（vitest `expect(actual, message)` 签名，判定语义零变化，§10-MINOR-2 透明记录） |
+| `expect(disconnectedWrite.ok).toBe(true)` | L268 | L336 | ✅ 逐字 |
+| `expect(recoveredRead?.ok).toBe(true)` / `.value).toBe(11)` | L285/286 | L354/355 | ✅ 逐字 |
+| 四次 `signalAndExpectExit(..., 0, ...)`（hub v1 / hub v2 / peer / hub v2b，exit 0） | L195/239/288/289 | L241/292/357/358 | ✅ 逐字 |
 
-**base 行为保持**：step 3/4/5 的 4xx/413/415/422 与 limits 执行、`RestProblemFailure` 通道、
-malformed JSON 通用 400（不透传平台 SyntaxError 位置）逐字沿用 base；`NAMESPACE_SCHEMA_INVALID` /
-`NAMESPACE_ROOT_INVALID` 的 422 映射（L287–292）为 base 语义保留。#269 叠加面（T1–T4/T6–T8 映射、
-abort 结算、双 observer 事件、release diagnostic）与 rebase 前经 SA4/SA9(iter0) 批准的实现逐分支同构
-（`git diff 7b40f50..25b41dc` 实测：映射/发射/释放段零语义变化，仅读取 seam 与 4xx 族结算方式随 base 替换）。
+- **零删除、零放宽、零 skip**：13 ↔ 13；`grep` 全文件零 `.skip`/`.only`/`.todo`；matcher 与期望值零变化；`it(` 第三参超时 `240_000` 前后一致（前版 L291 实测）。
+- **非断言编排参数变化**（不属于「断言」范畴，逐一登记并判定）：
+  1. peer 配置 `backoff.baseMs/maxMs`：`5_000/5_000` → `backoffCapMs`（= 2× 实测重启预算，L262–265/L278）。这是进程配置/时序前提，不是 expect；改动方向是让「写入先于重拨」的前提**由概率事件变为可判定事实**，与被保留的 `toBe('backoff')` 断言同向加强，非弱化。
+  2. live 恢复等待上界 `60_000` → `backoffCapMs + 30_000`（L343）。等待上界是失败期限而非行为断言（断言仍是「live 事件必然发生」）；派生界在快环境下**更紧**（如 cap 6s ⇒ 36s < 60s），慢环境下放大但有 240s 用例超时兜底——上界修正，非断言弱化。
+  3. 重启前新增 `waitForArmedBackoffWindow` 等待（L314–320）与失败消息增强——纯加固：超时/进程退出均带诊断**响亮失败**（L148–160），无静默放行路径。
+  4. 注释更新（删除「长 backoff 配置保证写入先于重拨」的错误前提表述，替换为 full-jitter 事实描述）——注释非断言，且新表述与协议 §15 一致。
 
-## 6. 既有架构惯例
-
-- **最小 problem body**：`errorResponse` 与 base 403/405（经 `rest-problem.ts` 的固定形状）同族；5xx 保持 `{code}` 最小面，未发明 message/issue 投影。✅
-- **observer 隔离先例**：`emitMetrics`/`emitDiagnostic` 与 registry.ts `dispatchObserver` 同向纪律（同步 try/catch、隔离不改业务结局）；helper 化使全分支隔离成为结构保证。✅
-- **构造惯例**：读取 → 校验 → 复制 → 冻结（rest.ts L300–334）；`resolveLimits` 保持 plain `TypeError`（无 branded 错误发明）、白名单 + 正安全整数门 + 冻结；router 构造后零状态。✅
-- **类型面惯例**：事件类型定义于公共 `rest.ts`、`index.ts` type re-export；`create-namespace.ts` 以 `import type` 反向引用（L58）——类型环安全擦除，运行时依赖保持单向。✅
-- **公共面扩张克制**：exports 白名单未动；新增导出仅两个事件类型经既有入口流出。✅
-- **头注纪律**：两源文件头注重写为三票合一事实（切片边界、取消边界、观测口径），无残留「延后至 #269」失效表述；base 私有模块头注（request-body.ts/rest-problem.ts）未动且仍准确。✅
-- **TS 兼容惯例**：observer 签名事件化为类型层加法；#267 冻结零参 `NOOP_OBSERVER` 按少参可赋值规则保持编译（SA3 F1/F3 的 `--typecheck` 0 error 证据）。✅
-
-## 7. 单一事实源与生命周期对称性
-
-| 事实 | 唯一来源 | 结论 |
-|---|---|---|
-| committed | `NamespaceRegistryFatalError.committed`（REST 零复制零推断） | ✅ |
-| metrics `code` | 与 response body code 同源（同一 `errorResponse` 调用点构造，发射与返回原子） | ✅ |
-| owner | route 捕获段 → 单一 `Object.freeze` 对象（L224），Registry 输入与 diagnostic 事件共享同一不可变引用 | ✅ |
-| namespaceId | Registry lease → release 前 DTO string 副本 | ✅ |
-| abort message/cause | `ABORTED_BODY_READ_MESSAGE`（request-body.ts 单点定义）+ `signal.reason`；seam 与读取器双通道同形 | ✅ |
-| limits 有效值 | `DEFAULT_LIMITS` 单点 + `resolveLimits` 单点收敛；config 冻结后 handle 零解引用失败可能 | ✅ |
-| 事件形状 | `RestMetricsEvent`/`RestDiagnosticEvent` 单一定义点（rest.ts） | ✅ |
-
-| 获取/开始 | 释放/结束 | 结论 |
-|---|---|---|
-| abort 监听器（request-body.ts L72，once） | `finally` 无条件 removeEventListener（L98） | ✅ 对称（seam 自身零监听器——D3 后读取器全权拥有） |
-| lease acquire（create 成功） | 恰一次 `await lease.release()`；失败不重试不二次调用 + diagnostic | ✅ |
-| 构造校验 | plain `TypeError` fail loud；无部分构造资源 | ✅ |
-| 定时器/队列/worker/缓存 | 无新增；router 构造后零状态 | ✅ |
-
-## 8. 文件范围
-
-`git diff 209b046..HEAD --stat` 实测：两 commit 共 21 文件——5 个包源/文档文件
-（create-namespace.ts/rest.ts/index.ts/AGENTS.md/README.md，323+/69−）+ 5 个 SA6 冻结测试新增 +
-11 个 wiki/artifacts 文档件。工作树 clean（`git status --porcelain` 空，exit 0）；无冲突标记
-（`<<<<<<<`/`=======`/`>>>>>>>` 扫描 0 命中）；`git diff --check 209b046 HEAD` 零输出。
+## 4. 临时产物清除专项（Owner ③）
 
 | 检查 | 实测 | 结论 |
 |---|---|---|
-| ALLOW 遵守 | 5 个实现文件与设计 §11 ALLOW 逐行对应；rebase 必要的合并语义（读取 seam 复用、limits 接线、D1 收敛）已作为 D1–D4 在 SA3 Deviations 集中披露——D1 的 `resolveLimits` 语义收敛超出原 ALLOW 行 2 的枚举目的，属 rebase 冲突解决的必要扩张，透明披露而非静默 | ✅（披露充分；治理残余 §10-MINOR-1） |
-| DENY 遵守 | `test/**` 既有 11 文件与 base 逐字节一致；`namespace-registry/**`、`vfsl/**`、`persistence/**`、`package.json`、`docs/adr/**`、`CONTEXT.md`、`docs/protocols/**` 零改动；`request-body.ts`/`rest-problem.ts` 与 base 零 diff（未改 base 私有实现、未新增其导出消费面） | ✅ |
-| 无 scope creep | 未发明 `Retry-After`、abort HTTP status、5xx message、第二读取路径、新公共子路径；未重新实现任何 4xx/422/limits 语义 | ✅ |
+| `[tmp-diag]`/`[tmp-gate]`（含 `tmp_diag`/`tmp_gate` 变体） | 全仓 grep 4 命中，全部位于 `wiki/raw/task_issue-269_sa{3,4}_*.md` 对要求自身的文字描述；代码面 0 命中 | ✅ |
+| `tmp-phase`/`console.`/`debugger` | 被修测试、`apps/yjs-server/src/`、`packages/namespace-api/src/` 0 命中 | ✅ |
+| 临时探针脚本 | `git status --porcelain` 空、`git ls-files --others --exclude-standard` 空；`scripts/` 仅既有发布/CI 脚本（branch diff 零触碰）；SA3 V1/V4 声明的探针与临时诊断均为仓库外/已移除，diff 中不可见 | ✅ |
+| 工作树卫生 | `git diff --check f2de805 HEAD` 零输出；冲突标记扫描 0 命中 | ✅ |
+
+## 5. 披露定性专项（Owner ②b）
+
+- **commit 面**：`296e646` 全 message 仅一行 `test(ci): stabilize issue 229 hub restart backoff`（`git log -1 --format=%B` 实测）。conventional 类型 `test(ci)` 表明测试/CI 面、subject 指向 issue 229 与 stabilize——定性为 #229 flake/CI-stability 修复，**不含任何 #269 功能声称**。与 SA3 suggested message（`fix(#229): …`）措辞不同但定性等价且同属合规表述。
+- **diff 内文档面**：SA3 报告 iteration-2 章节标题「CI 失败修复」、根因节、「为什么是测试面修复而非生产代码修复」节、suggested commit message 节；SA4 报告 §1 标题「iteration 2：CI flake 修复」、§3 Owner ②b 行——两报告均把本改动定性为 #229 用例 flake 收敛/CI 稳定性修复，并明示与 #269 功能面无文件面重叠（SA3 Inputs 表「与本修复无文件面重叠」实测成立：`296e646` 不触碰 `packages/namespace-api/**`）。
+- **PR 说明面**：仓库/diff 外载体，Controller 交付收尾义务（SA4 §11-R2 同判）——§10-MINOR-3 登记，不阻断本评审。
+
+## 6. 修复正确性与标准符合性（纯静态复核）
+
+**根因—方案—规范三方一致性**：
+
+| 锚点 | 实测 | 结论 |
+|---|---|---|
+| 协议 §15（`docs/protocols/instance-replication-v1.md` L426–431） | `cap = min(maxBackoffMs, baseBackoffMs * 2^attempt)`、`delay = random(0, cap)`；「Scheduler和random必须注入测试 seam」（包内 seam） | 与 owner 根因裁决逐字同构 |
+| `peer-connection.ts` L937–941 | `cap`/`delay` 公式实测一致；`attempts` 已递增后发射 | 帽值无下界成立 |
+| `setState`（L1066–1077） | 连接 FSM 唯一迁移点，同态早退、边沿 exactly-once 发射 `connection-state-changed` | helper「superseded」判据的事件源可靠 |
+| `onTemporaryFailure`（L913–953） | backoff/blocked 态早退 ⇒ 任一时刻至多一个已武装 timer；`setState('backoff')` **先于** `emitBackoffScheduled`（L937 vs L942）⇒ 同次武装的入态事件不会误判 supersede | 「最新一条已武装」判据成立 |
+| `dialNow`（L286–296） | 同步 `setState('connecting')`（L295）先于 dial ⇒ timer fire 必然产生后续 state-changed | 「窗口过期必可观测」成立 |
+| `emitBackoffScheduled`（L138–151） | `delayMs` 在事件载荷内 | helper 可读取 |
+| `app.ts` L210 / L707 | observer `type`→`event` 改名直通其余字段；`status` op 返回 `connectionState: peerService.status.connection` | 测试观测面与状态回执语义吻合 |
+
+**helper 语义**（L130–163）：倒序取最新 `connection-backoff-scheduled`，要求未被后续 `connection-state-changed` 取代且 `delayMs ≥ minDelayMs`；不满足则等下一次武装；进程退出/超时均抛带 stderr 与已观测 delayMs 列表的诊断错误。20ms 轮询、无 timer/监听器/资源——纯轮询，与同文件 `waitForEvent`/`waitForExit`/`sendOp` 风格同构（惯例一致）。观测滞后（管道 + 轮询 ≤ 数十 ms）相对 `delayMs ≥ 预算 ≥ 4s` 的窗口可忽略；「timer 已 fire 而事件未观测到」的竞争窗口不构成实际风险（helper 返回时距武装仅 ms 级，远小于 delayMs 下界）。
+
+**标准维度**：
+
+| 维度 | 实测 | 结论 |
+|---|---|---|
+| 模块责任 | full-jitter 重拨语义归 `packages/ws-replication`（协议 §15 规范行为）——**零改动**；失效的是测试对「帽值 ⇒ 下界」的错误推断，修在测试自身。未为变绿给生产加确定性 jitter/env override/延迟下界旁路 | ✅ |
+| `apps/yjs-server/AGENTS.md` 边界 | 测试仅消费 stdout 严格 NDJSON 生命周期事件通道与 stdin 控制面（文档化观测面）；经 `spawnApp` 起真实进程，无 package-internal subpath、无 testing seam、无 DSH profile；单进程单 role 保持；未动 teardown/授权/锁面 | ✅ |
+| 单一事实源 | 武装窗口事实 = 进程事件流（与进程内 timer 同源发射，无第二份状态推导）；boot 预算 = 同 config 同 rootDir 实测；无 marker 文件/旁路 RPC | ✅ |
+| 生命周期对称性 | helper 零资源获取（纯轮询）；`afterEach` 既有 SIGKILL + tmpdir 清理未动；无新增定时器/监听器/队列 | ✅ |
+| 验证门（app AGENTS「Verification」） | SA3 V5 根 `pnpm typecheck` exit 0、V6 `vitest run apps/yjs-server/test` 30 文件/162 用例全绿、V3 修复后 10/10——SA9 纪律不复跑，动态证据以 SA3 声明 + 本评审静态语义核验为准；静态可证面全部成立 | ✅（静态面） |
+| ADR/协议面 | ADR 0010/协议 v1 零触碰；修复使测试**对齐**规范而非偏离 | ✅ |
+
+## 7. 既有 #269 交付在新 head 下的再确认
+
+base 移动：`209b046`（#268）→ `f2de805`（#270 Server 集成，#303）。逐项重测：
+
+| 检查 | 实测 | 结论 |
+|---|---|---|
+| #269 实现 diff 不变性 | `git diff f2de805..1e4ae72 -- packages/namespace-api/{src,AGENTS.md,README.md,package.json}` 的 sha256 = `57474750…`，与 iteration-1 批准的 `git diff 209b046..25b41dc` 同值——**实现逐字节同 diff** | ✅ |
+| base 移动对 namespace-api 的影响 | `git diff 209b046..f2de805 -- packages/namespace-api` 为空——#270 未触碰该包，零语义冲突面 | ✅ |
+| #269 五件 SA6 冻结测试 | sha256 重测 = SA6 §13.4 逐字节（harness `14062b3d…`/support `9f9688ab…`/mapping `14465a40…`/abort `2f298a8e…`/observer `dbf8778a…`） | ✅ |
+| base(#268)/legacy(#267) 11 件测试 | 逐一 vs `f2de805` blob sha256：11/11 SAME | ✅ |
+| iteration-1 标准结论的承继 | AGENTS（根/包两级）、ADR 0015（L103–113/L150–161/L175–182/L186–190）、模块责任、D1–D4 冲突解决忠实性、单一事实源、生命周期对称性、文件范围、测试质量——实现与冻结测试字节均未变，iteration-1 approve 的代码面结论在新 base 上继续成立；本评审不重述其逐条证据（见 git 历史 `abcabfe` 中 iteration-1 报告） | ✅ |
+| `git diff --check f2de805 HEAD` / 冲突标记 / 工作树 | 零输出 / 0 命中 / clean | ✅ |
+| 全 branch 文件范围（22 文件） | 1 个 app 测试（本轮修复）+ 5 个 namespace-api 源/文档 + 5 个 #269 冻结测试 + 11 个 wiki/artifacts 文档件；`scripts/`/`.scratch/`/`.github/`/`docs/`/其它包零改动 | ✅ |
+
+## 8. 文件范围（本轮修复）
+
+| 检查 | 实测 | 结论 |
+|---|---|---|
+| Owner 范围限定（「除此之外不做任何额外改动」） | `296e646` 恰 3 路径：owner 逐字点名的 `apps/yjs-server/test/hub-restart-static-target-red.test.ts`（+73/−4）+ SA3/SA4 角色固定报告产物 | ✅ |
+| DENY 面 | `packages/**`（含 ws-replication/namespace-api）、`apps/yjs-server/src/**`、其它 `apps/yjs-server/test/**`、`.github/**`（`test-durations.json` 条目 `19965` 原值）、`docs/**`、tsconfig/package.json——零 diff | ✅ |
+| 无 scope creep | 未发明生产时序旁路、env 开关、新配置键、新事件、新断言族；未顺手改任何不相关文件 | ✅ |
 
 ## 9. 测试质量标准
 
 | 检查 | 实测 | 结论 |
 |---|---|---|
-| #269 冻结完整性 | 5 文件 sha256 = SA6 §13.4 逐字节（harness `14062b3d…` / support `9f9688ab…` / mapping `14465a40…` / abort `2f298a8e…` / observer `dbf8778a…`） | ✅ |
-| base/legacy 冻结完整性 | 11 文件（#268 六件 + #267 五件）与 `209b046` 逐一 sha256 SAME | ✅ |
-| 无弱化 | 全测试目录 grep 零 `.skip`/`.only`/`.todo` | ✅ |
-| 行为级断言 | 断言 HTTP status/body code/content-type、observer 实参（键白名单/词表/哨兵/引用相等）、Registry seam 触达计数、release 计数与 lease 状态；无源码文本断言（SA4 §9 结论在合入后仍成立：测试字节未变） | ✅ |
-| 计数口径 | `it(` 计数 mapping 9 + abort 5 + observer 6 + support 9 = 29，与 SA6 一致 | ✅ |
-| runner 入口真实性 | 根 `vitest.config.ts` include `packages/*/test/**/*.test.ts` 覆盖新文件；harness 非 `.test.ts` 不被收集；SA3 F1 报告 `vitest run --typecheck` 125/125 绿 ×8（35 legacy + 61 base + 29 #269）、F2–F4 tsc 0 error——SA9 纪律不复跑，动态证据以 SA3 声明 + 本评审静态语义核验（§5 C5 推导、发射矩阵逐分支核对）为准 | ✅（静态可证部分全部成立） |
-| 合入后断言相容性 | D6 跨分支矩阵计数（1 succeeded/1 unavailable/5 failed/1 aborted）与合入实现逐路径对上（T1–T4/T6–T8 经 `errorResponse`、T9 经 `abortSettle`、T10/T11 成功点；4xx/422/403/405 零发射）；base D6 的 abort message/cause 断言与 D2 承接一致；C5 构造路径与 D1 收敛一致（§5） | ✅ |
+| 行为级断言 | 断言进程事件流（backoff-scheduled/state-changed/channel live）、status 回执、读值收敛、exit code；无源码文本断言 | ✅ |
+| 响亮失败 | 所有等待（含新 helper）超时/进程退出均抛含 `what`+stderr（+ 观测 delayMs 列表）的错误；无静默放行/无 catch 吞没 | ✅ |
+| 确定性改善方向 | 把概率性前提（随机延迟恰好够长）替换为可判定前提（等到已武装且 ≥ 实测预算的窗口）；预算公式（boot×2 + 2s，500ms 上取整）与帽 = 2×预算（单次武装命中 ≈ 50%，期望等待最短）数学成立 | ✅ |
+| flake 残余披露 | SA3 Deferred verification 诚实登记：CI 复跑待 Controller；慢环境 boot 超预算时以带时间信息的断言消息响亮失败而非静默通过 | ✅ |
+| 冻结契约纪律 | #269 五件 sha256 未变；base/legacy 11 件逐字节未变；被修文件非任何 SA6 冻结对象（SA4 §1 历史契约核查：本 worktree 无该文件当前版本的 sha 冻结契约；其语义基线为 `main` 的 `b551791`，pre-image blob `2ec6e69` 与 owner 评论引用吻合） | ✅ |
 
 ## 10. Findings
 
@@ -156,21 +154,22 @@ abort 结算、双 observer 事件、release diagnostic）与 rebase 前经 SA4/
 
 | ID | 级别 | 观察 | 建议 |
 |---|---|---|---|
-| MINOR-1（本轮新增，治理面） | MINOR | D1 收敛是对 #268 已批准设计 D4「合并默认后的有效值判定」读法的语义替换。#268 SA6 契约 §15 裁决点 4 为该情形预留的救济是「补充/回写边界用例」；本轮未走 #268 修订轮、未新增钉死收敛后有效值的边界用例（C5 仅钉 `{maxBodyBytes:16}` 可构造 + abort 行为，base AC2 仅钉两键显式矛盾；收敛后的有效值如 schema 上限被压缩至 16 无直接断言）。两侧冻结断言零弱化、ADR L113 不变量对有效配置恒成立、活文档（包 AGENTS.md/README/rest.ts 头注）三处一致；陈旧表述仅存于 #268 的历史设计/评审件（`task_issue-268_design.md` D4、`task_issue-268_sa4_review.md` L73/L89 的「`{maxBodyBytes:64}` 亦拒」），设计文档按迭代存档属历史记录，不构成活契约矛盾 | 经 #268 修订轮或 ADR-0015 接受时的折入（SA3 Deferred verification 已登记 L-1 口径）正式化 D1；后续契约修订轮补「单键收敛后有效值」边界断言；SA8 对 rebase 后语义可做一轮确认门禁 |
-| MINOR-2（承 iter-0 SA9 MINOR-2，仍未落实） | MINOR | README L12「（**后两者**上报 diagnostic）」与 AGENTS.md「(**the latter** with a diagnostic report)」对 diagnostic 覆盖面欠述：实现中 fatal 两分支（committed:true → OUTCOME_UNKNOWN 与 committed:false → INTERNAL_ERROR）同样先发射 `registry-fatal` diagnostic（L270–277 实测），并非只有 unknown/违例分支上报。方向为保守欠述（实现多于文档所述），非危险夸大；同一文档 observer 条目（至多一个、三类 kind）与冻结契约（B3/B4/D5(a)(b)）锁定真实行为 | 后续文档修订轮把映射条补为「四类 5xx 结局均在 Response 前发射对应 diagnostic（503/FAILED 除外）」或等价精确表述 |
-| MINOR-3（本轮新增，措辞级） | MINOR | `create-namespace.ts` 头注观测段仍写「**每请求**恰一个低基数 metrics 事件」，对 403/405/未匹配/4xx/422/unmapped 路径不成立（同段下一句已限定「4xx/422 零发射」，AGENTS.md/README 已用精确口径「失败映射拥有的每条终局路径」——源码头注未同步该修正） | 后续文档修订轮把头注改为「失败映射拥有的终局路径与成功/abort 结算恰一事件；4xx/422 与 403/405 过渡期零事件」 |
+| MINOR-1 | MINOR | 动态帽值的病态尾部：`it` 超时 `240_000` 未动，而 `backoffCapMs = 2×(boot实测×2 + 2s)`；若 hub v2 boot 逼近其自身 60s 等待上界，cap ≈ 244s，派生的 live 等待界（cap+30s）单独即可超过用例超时。性质为响亮超时失败（非静默通过），且需要 boot 慢到近 60s 的病态环境（CI 实测该用例 13.4s、本机 18–24s）；SA3 已在 Deferred verification 披露慢环境残余风险 | 后续可调：给 cap 设上限或对 `it` 超时做同公式派生；不属本轮阻塞 |
+| MINOR-2 | MINOR | 受保护断言 `expect(statusBeforeWrite.connectionState).toBe('backoff')` 的调用文本新增了第二参（失败消息）。vitest `expect(actual, message)` 语义下判定零变化（同 actual/同 matcher/同期望值），不满足「删除/放宽/skip」任一项；但与 owner「保留全部既有断言」的最严格文本读法存在一处调用点字面差异，透明登记 | 无需行动；若 Controller 要求逐字还原，删除第二参亦为等价语义 |
+| MINOR-3 | MINOR（流程面） | Owner ②b 的 **PR 说明**披露与 ④ 的 **SA10 重跑**尚无载体：`task_issue-269_sa10_spec.md` 最后更新于 `abcabfe`（早于 `296e646`），SA10 iteration-2 未派发；PR 说明在仓库/diff 之外。两者均为 Controller 交付收尾义务（SA4 §11-R2/R3 同判），非本 diff 的代码/文档缺陷 | Controller 在交付前派发 SA10 iteration-2 并在 PR 说明写入「#229 flake 收敛 / CI 稳定性修复，非 #269 功能改动」 |
 
 ## 11. 结论
 
-Rebase 后的 #269 交付符合仓库 AGENTS（根/包两级）、ADR 0015（L103–113/L150–161/L175–182/L186–190
-逐条实测）与 ADR 0009/0010/0012（零触碰）；模块责任归位正确（HTTP 投影归 Adapter、committed 归
-Registry、读取机制单一共用、4xx/422 归 base、server 面归 #270、脱敏归 Host）；对 Parent PR base 的
-语义冲突解决（D1–D4）真实、必要、透明披露且双侧冻结契约逐字节保持；既有惯例（最小 problem body、
-observer 隔离、构造冻结、类型面/导出面克制、头注纪律、TS 加法兼容）全部保持；单一事实源与生命周期
-对称性无缺口；文件范围零越界（D1 属披露的冲突解决必要扩张）；测试质量达仓内标准。
-三条 MINOR 均为治理/措辞级残余（D1 的修订轮正式化、diagnostic 覆盖面欠述、源码头注概括句），不影响
-代码正确性、冻结契约或合并安全性。**Verdict：approve。**
+最终 CI-stability 修复（`296e646`）符合 owner 评论 5629026278 的全部仓库面要求：①根因与协议 §15/实现三方一致、
+修复方向为测试面时序前提确定化且生产代码零触碰；②既有断言 13 ↔ 13 逐条保留、零删除/放宽/skip（受保护断言
+仅新增诊断消息第二参，判定语义不变），commit 与 diff 内 SA 报告均定性为 #229 flake/CI-stability 修复而非 #269
+功能；③`[tmp-diag]`/`[tmp-gate]`/探针脚本零残留、工作树 clean；④SA9 半侧由本报告落实（SA10 重跑为 Controller
+收尾义务）。修复本身符合 `apps/yjs-server` AGENTS 边界（仅消费文档化 NDJSON 观测面、无私有 seam）、模块责任
+（jitter 语义归 ws-replication，未为测试改规范行为）、单一事实源与生命周期对称性、文件范围零越界、测试质量
+达仓内标准（行为断言、响亮失败、诚实披露残余风险）。既有 #269 交付在新 base `f2de805` 上逐字节保持（实现 diff
+sha256 同值、16 件冻结/基线测试全部 SAME），iteration-1 的 approve 结论继续成立。三条 MINOR 均为非阻断观察。
+**Verdict：approve。**
 
 ---
 
-*证据边界：本评审为纯静态（read/grep/git diff/git show/sha256sum/git diff --check）；未修改任何实现、设计或测试；未运行测试/服务/临时进程；未调度其他 SA。本报告为 SA9 唯一产物（`wiki/raw/task_issue-269_sa9_standards.md`，iteration 1 原位重写）。*
+*证据边界：本评审为纯静态（read/grep/git diff/git show/sha256sum/git diff --check/`gh api` 只读）；未修改任何实现、设计或测试；未运行测试/服务/临时进程；未调度其他 SA。本报告为 SA9 唯一产物（`wiki/raw/task_issue-269_sa9_standards.md`，iteration 2 原位重写；iteration 1 原文见 git 历史 commit `abcabfe`）。*

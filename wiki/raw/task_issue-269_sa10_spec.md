@@ -1,5 +1,139 @@
 # SA10 Spec 审查报告 — Issue #269：REST create 的 Registry 失败语义、取消边界与双 observer 契约
 
+> 阶段：spec-review（**iteration 2 — CI 稳定性修复落盘后、新 head 上的 fresh final review**）。
+> 派发：`sa-38d200b0-f131-4f9c-ae2c-ad5017c83a69`（mabf-sa10，iteration 2）。
+> 审查对象：worktree `/home/wangjian/nomicore-fix-issue-269`，branch `mabf/issue-269`，HEAD
+> `296e6462e2b843149667ad22e481d427a6b99a26`（`test(ci): stabilize issue 229 hub restart backoff`）。
+> 链：`209b046`（#268）→ `f2de805`（#270 Server 集成 (#303)）→ `1e4ae72`（#269 实现，
+> `feat(namespace-api): map REST create failures`）→ `a45ffae`（SA8 文档）→ `abcabfe`（iteration-1
+> SA9/SA10 记录）→ `296e646`（本轮 CI 修复）。工作树 clean（`git status --porcelain
+> --untracked-files=all` 空，0 untracked）。
+> Owner 要求口径：issue #269 comment `5629026278`（welltop-jim-wang，updated
+> `2026-09-11T03:31:05Z`）——**本轮 SA10 经 `gh api
+> repos/welltop-jim-wang/nomicore/issues/comments/5629026278` 只读取得原文逐字核验**，4 条口径 +
+> 收尾句「除此之外本轮修复不做任何额外改动」（§3 逐条判定）。
+> 方法：纯静态独立复核（读 owner 评论原文/issue 正文/SA3 iter-2/SA4 iter-2/SA6/SA9 产物 + `git
+> show`/`git diff`/sha256/grep 实测）；未修改任何代码/设计/测试，未运行测试，未启动服务，未执行
+> git 写操作，未调度其他 SA。
+> **iteration 1（归档：rebase 后复审，`approve`）原文保留在文末。**
+
+## 1. 裁决
+
+**verdict: `approve`** —— Owner 评论 4 条口径逐条核验：①（许可面）修复严格落在点名的测试文件内、
+生产代码零改动；②a（断言保留）**met**：13↔13 条 `expect` 逐条对位、matcher 与期望值逐字不变、
+无删除/放宽/skip/only/todo；③（临时诊断清除）**met**：代码面 0 残留、工作树 0 探针脚本；
+②b（披露）commit 半项**实质满足**（`test(ci): stabilize issue 229 hub restart backoff` 将改动定性为
+#229 用例的 CI 稳定性收敛而非 #269 功能），PR 说明半项尚无载体、列入 §7-P6 交付义务；④（新 head
+重跑 SA9/SA10）本报告即 SA10 半项的 fresh review，SA9 半项列入 §7-P7 派发义务。既有 #269 交付在
+新 head 上**逐字节维持** iteration-1 approve 的实现内容（`git diff 25b41dc 1e4ae72 -- packages/`
+为空），冻结测试 sha256 5/5 与 SA6 §13.4 一致，AC1–AC6 判定原样成立（§5）。无遗漏、无部分实现、
+无错误实现、无 scope creep。3 条 MINOR（§6，含前轮承继 1 条）不阻断 approve。
+
+## 2. 审查输入与证据链
+
+| 输入 | 位置 | 核验 |
+|---|---|---|
+| Owner 评论（裁决来源） | GitHub issue #269 comment `5629026278`（updated `2026-09-11T03:31:05Z`） | `gh api` 只读取得原文；与 dispatch 转述及 SA4 iter-2 引用逐字一致 |
+| Issue 正文 + AC1–AC6 | `wiki/raw/task_issue-269.md` | 已读；Comments 节空（评论快照外的 owner 口径以 5629026278 为准） |
+| 本轮修复 commit | `296e646`（`git show` 逐行） | 恰 3 路径：被点名测试 +73/−4、`sa3_impl.md` +146、`sa4_review.md` +334/−96；pre-image blob `2ec6e694…` 与 owner 引用的 main sha 吻合 |
+| SA3 实现报告 iteration 2 | `wiki/raw/task_issue-269_sa3_impl.md` | 根因/修复面/V1–V7/D7–D9 已读；静态可复核面（范围、清理、pre-image）实测吻合 |
+| SA4 实现审查 iteration 2 | `wiki/raw/task_issue-269_sa4_review.md` | `approve`（0 BLOCKER/MAJOR）；其 §9 断言对位表经本轮独立重测确认 |
+| SA6 验收契约 | `wiki/raw/task_issue-269_sa6_contract.md` §13.4 | 5 个 #269 冻结测试 sha256 本轮重测逐字节一致（§5） |
+| SA9 标准审查 | `wiki/raw/task_issue-269_sa9_standards.md` | 记录版为 iteration 1（head `c739770`）；对 `296e646` 的 SA9 复审尚无记录产物 → §7-P7 |
+| 协议/实现锚点（只读） | `docs/protocols/instance-replication-v1.md` §15；`packages/ws-replication/src/peer-connection.ts` | full jitter `delay = random(0, cap)` 无下界——与 owner 根因裁决、SA3/SA4 判定一致 |
+| 被修测试 | `apps/yjs-server/test/hub-restart-static-target-red.test.ts`（pre `2ec6e69` vs post `84a100d` 全文 + 逐行 diff） | 断言对位、结构面、清理面全部实测（§3/§4） |
+| 既有 #269 交付 | `packages/namespace-api/**`（HEAD 版） | 与前轮 approve 的 `25b41dc` 内容逐字节一致（`git diff 25b41dc 1e4ae72 -- packages/` 空）；关键行号锚点重测（§5） |
+
+**diff 范围实测**（`f2de805..HEAD`，当前 base 之上全部代码面）：恰 11 个路径 ——
+`packages/namespace-api/` 5 modified（`src/create-namespace.ts`、`src/rest.ts`、`src/index.ts`、
+`AGENTS.md`、`README.md`）+ 5 added（#269 冻结测试 4 test + 1 harness）+
+`apps/yjs-server/test/hub-restart-static-target-red.test.ts`（本轮修复）。`.github/**`（含
+`ci/test-durations.json` 条目 `19965`）、`docs/**`、`CONTEXT.md`、`package.json`、
+`pnpm-lock.yaml`、`packages/ws-replication/**`、`apps/yjs-server/src/**` 零改动。
+
+## 3. Owner 评论 5629026278 逐条判定
+
+| Owner 口径（原文要点） | 判定 | 实测证据 |
+|---|---|---|
+| ① **允许**：修正该用例对 backoff 时序的假设（根因 full jitter 无下界） | **落实且未越界** | 修复全部在许可面内：新增 `waitForArmedBackoffWindow`（L130–163，等「最新一条已武装且 `delayMs ≥ minDelayMs`、未被后续 `connection-state-changed` 取代」的窗口，超时/进程退出皆响亮 throw）；backoff 帽值由硬编码 `5_000/5_000` 改为运行期实测派生（L257 `hubV2BootStartedAt`、L262 预算 = 首测 boot×2+2s 上取整 500ms、L265 `backoffCapMs = 2×预算`、L278 配置消费）；重启前先取已武装窗口（L314–320）。**生产代码零改动**（`packages/**`、`apps/yjs-server/src/**` 零 diff）——full jitter 为协议 §15 规范行为，未为测试加下界/env override/确定性旁路，与 owner 根因表述同构 |
+| ②a **必须保留全部既有断言**（不得删除、放宽或 skip 任何 `expect`），只让时序可判定 | **met** | `expect(` 计数 13→13；逐条对位（pre L122/193/232/234/235/248–251/252/253/254/262/268/285/286 ↔ post L168/239/285/287/288/301–304/305/306/307/327–330/336/354/355），**matcher 与期望值逐字不变**。唯一语法增量：受保护断言 `expect(statusBeforeWrite.connectionState).toBe('backoff')` 新增 vitest 第二参诊断消息（post L327–330，`Hub restart took <ms> of the armed <ms> backoff window`）——actual/matcher/expected 三要素逐字保留，第二参仅提升失败可诊断性，不改变判定语义（非删除/放宽/skip）。结构面：无 `.skip`/`.only`/`.todo`（grep 0 命中）；单一 describe/it；`it` 超时 `240_000`（post L360）未动；`afterEach` SIGKILL+tmpdir 清理未动 |
+| ②b 改动须在**提交信息与 PR 说明**明确披露：#229 用例 flake 收敛、属 CI 稳定性修复、而非本票功能改动 | **commit 半项实质满足；PR 半项尚无载体（§7-P6）** | commit message 实测为单行 `test(ci): stabilize issue 229 hub restart backoff`：type/scope `test(ci)` + issue 229 定位，将改动定性为 #229 测试的 CI 稳定性收敛而非 #269 功能（分支为 `mabf/issue-269`，消息未挂靠 269 功能语义）——定性披露成立。注意：SA3 staged 的带正文 `fix(#229): …`（含根因/保留面/上界修正三段说明）**未被采用**，commit 无正文——根因与保留面的完整披露须由 PR 说明补足（MINOR M-2 + §7-P6） |
+| ③ **提交前必须清除临时诊断输出**（`[tmp-diag]`/`[tmp-gate]` 调试 console.log 与临时探针脚本） | **met** | 仓面 grep `tmp-diag\|tmp-gate\|tmp-phase`（`*.ts`/`*.mjs`/`*.js`，排除 node_modules）**0 命中**；post 测试文件 `console.`/`debugger` **0 命中**（diff 内亦无新增）；工作树 `git status --porcelain --untracked-files=all` 为空、**0 untracked 探针脚本**；wiki 中仅存的 `tmp-gate\|tmp-diag` 字样是 SA3 V7 的清理核验记录文本，非诊断输出。SA3 V4 声明的临时诊断打印在落盘代码中不可见 |
+| ④ 该文件改动使此前 SA9/SA10 评审头失效，**须对新的 head 重跑最终评审组（SA9 + SA10）** | **SA10 半项由本报告履行；SA9 半项待派发（§7-P7）** | 本报告即对 head `296e646` 的 fresh SA10 spec-review（iteration 2）。仓内 SA9 记录版仍为其 iteration 1（head `c739770`），对 `296e646` 的 SA9 复审尚无产物——Controller 派发义务，非本 diff 的 spec 缺陷 |
+| 收尾句「除此之外本轮修复不做任何额外改动」 | **代码面 met** | commit `296e646` 恰 3 路径：owner 点名测试 + 2 个 wiki 角色产物（SA3/SA4 报告原位更新，MABF 流程记录、非行为改动）；`.github/**`、`docs/**`、生产源码、其它测试、`test-durations.json` 零改动。wiki 产物与修复同 commit 落盘（前轮惯例为 docs-only 分离 commit）记 MINOR M-3 |
+
+## 4. CI 修复的 spec 合规专项（修复语义独立复核）
+
+- **根因三方一致**：协议 §15（L426–431）`cap = min(maxBackoffMs, baseBackoffMs·2^attempt)`、
+  `delay = random(0, cap)`；`peer-connection.ts` L940–941 实测同构；owner 评论 ① 同文。旧断言前提
+  「帽值 ⇒ 延迟下界」不成立，失效的是测试推断，修在测试——责任归属正确。
+- **「只让时序可判定」的边界保持**：修复把「随机窗口内的瞬态观测」改为「已武装窗口内的确定前提」
+  （先等 `delayMs ≥ 预算` 的 armed 窗口 → 再 spawn Hub v2b → status 断言），断言语义逐字保留；SA3
+  D8 拒绝的「放宽为 `not.toBe('ready')`」方案未被采用——无放宽路径。
+- **许可面内的时序参数变化（均非断言）**：backoff 配置帽值 5000/5000 → 派生 `backoffCapMs`（owner
+  ① 明示允许）；`channel-state-changed → live` 等待上界 `60_000` → `backoffCapMs + 30_000`
+  （post L343）——等待失败期限的派生修正，不断言任何行为；helper 超时 90s（L318）与进程退出
+  均为响亮 throw，无静默放行。
+- **事件面消费合规**：helper 只读进程事件流（`connection-backoff-scheduled.delayMs` 带 `typeof`
+  守卫、`connection-state-changed` supersede 判据），不改变被测系统；`afterEach` 清理对称未动。
+
+## 5. 既有 #269 交付在新 head 上的维持性核验（AC1–AC6 carry-over）
+
+新 base `f2de805`（#270 Server 集成 (#303)）对 `packages/namespace-api/**` **零触碰**（`git show
+f2de805 --name-only` 实测 0 命中）；#269 实现 commit 内容由 `25b41dc` 重放为 `1e4ae72`，
+`git diff 25b41dc 1e4ae72 -- packages/` **为空**（两 commit 间全部差异仅为新 base 带入的 #270
+wiki 证据文件）。因此 iteration-1 的 AC 逐条判定在新 head 上原样成立，本轮重测锚点：
+
+| 复核项 | 实测 |
+|---|---|
+| 冻结测试完整性 | sha256 5/5 与 SA6 §13.4 逐字节一致：harness `14062b3d…`、support `9f9688ab…`、mapping `14465a40…`、abort `2f298a8e…`、observer `dbf8778a…` |
+| 测试目录 delta | `git diff 209b046 HEAD --name-status -- packages/namespace-api/test/`：恰 5 `A`、0 `M` |
+| AC1 失败映射锚点 | `create-namespace.ts`：fatal `instanceof` + `error.committed` 唯一二分（L268/L278）；503 `REGISTRY_NOT_ACCEPTING`（L293–294）；500 `NAMESPACE_CREATE_FAILED`（L295–296）；unknown → 500 `INTERNAL_ERROR`（L282–283 区） |
+| AC2 内部契约违例 | L297–302：`NAMESPACE_CREATE_INVALID_INPUT`/`NAMESPACE_ALREADY_EXISTS` → diagnostic `unknown-exception` + 500 `INTERNAL_ERROR`，不透传 |
+| AC3 取消边界 | 三道闸门 L193/L196/L200 + `abortSettle` L206；接纳点注释与零 signal 观察保持；`await lease.release()` 恰一次 L316 |
+| AC4/AC5 observer 契约 | `rest.ts` 构造门 L318–325（双 observer `typeof === 'function'` 否则 TypeError）；`RestMetricsEvent` L61/`RestDiagnosticEvent` L85；成功 metrics L326（`create-namespace.ts`） |
+| D1 limits 跨字段口径 | `rest.ts` L208：两键显式矛盾 TypeError 文案在位（rebase 裁决保持） |
+| 旁证 | `apps/yjs-server/src/rest-hosting.ts`（#270，base 侧）经 `request-body.ts`/`create-namespace.ts` 消费 abort 语义——base 对 #269 契约面为加法消费，无改写 |
+
+结论：AC1–AC6 全部维持 **met**（逐条判定表见文末归档的 iteration-1 §3）；本轮 CI 修复不触及
+`packages/namespace-api/**`，不改变任何冻结断言、映射语义或观测面。
+
+## 6. MINOR 观察（非阻断）
+
+| ID | 观察 | 处置建议 |
+|---|---|---|
+| M-1（承 iteration-1 M-1 / SA9 MINOR-2，仍开放） | 包 AGENTS.md 映射条与 README L12 对 diagnostic 覆盖面欠述（fatal 两分支同样先发射 `registry-fatal` diagnostic，文档仅提 unknown/违例）；方向为保守欠述，冻结契约（B3/B4/D5）锁定真实行为 | 后续文档修订轮补精确表述；不阻断 |
+| M-2（新） | commit `296e646` 为单行 subject，未采用 SA3 staged 的带正文 `fix(#229): …` 消息（其正文含根因、保留面、live 上界修正三段披露）。owner ②b 的 commit 半项在**定性**层面成立（`test(ci)` + issue 229），但正文级披露缺席 | PR 说明必须承载完整披露（根因 = full jitter 无下界、断言逐字保留、仅测试面），见 §7-P6 |
+| M-3（新） | wiki 角色产物（SA3/SA4 报告原位更新）与测试修复同 commit 落盘（`296e646` 含 3 路径）；均为非行为流程记录，不违反 owner「不做任何额外改动」的代码面口径，但与前轮 docs-only 分离 commit（`a45ffae`/`abcabfe`）的惯例不同 | 后续可按「代码修复与 wiki 记录分离」惯例拆分；不阻断 |
+
+## 7. PR 必须披露的未达成/延后项（披露义务，非本票 AC 缺口）
+
+| # | 事项 | 去向 | 依据 |
+|---|---|---|---|
+| P1 | metrics `rejected` outcome 发射策略未实现（403/405/4xx/422 族零事件）；5xx body 无 `message`；未映射窄 issue 保持 fail-loud rejection | 后续错误契约票 | 设计 §1 非目标/§7.4.2 D-4；包 AGENTS.md Deferred 节 |
+| P2 | D1 limits 跨字段口径变化（两键显式矛盾 TypeError；单键时默认值按不变量收敛）须向 reviewer 显式披露 | PR 描述 + ADR 折入（P3） | SA3 iter-1 D1/F1a；rest.ts L166–174 |
+| P3 | ADR-0015 正式接受时须折入 R1/H-A/R3 与 L-1；接受前若被修订须重过 SA8 门禁 | 父 PR #158 治理 | SA8 OBS-1/OBS-R1-1；SA2 OBS-3 |
+| P4 | 合并前动态验证复跑：SA3 iter-1 的 125/125 ×8 与 tsc 0 error、iter-2 的 V3（10/10）/V5/V6（162）均为其实跑声明，SA10 纪律下未复跑；CI Node 20/24 两腿首跑需确认 | 合并前 gate / CI | SA4 §11-R1/R4 |
+| P5（较 iteration-1 更新） | server 装配面已由 base 上的 #270（`f2de805`：REST/WebSocket 共享 Registry + 有序停止 + drain abort 端到端）落地；「abort rejection 公共判别子（`RestBodyReadAbortedError` 包内私有）」的收口方式已由 #270 侧以 `rest-request-failed` 事件面处理——该私有判别子是否仍需加法导出属 #270/后续票的口径，非本票阻断项 | #270 已落地（base）/后续票 | git 历史 + `task_issue-270_sa10_spec.md` 例 2 |
+| P6（新，owner ②b PR 半项） | **PR 说明必须明确披露**：`296e646` 是 #229 用例的 flake 收敛 / CI 稳定性修复，而非 #269 功能改动；commit message 已作定性（M-2），PR body 须补足根因与「全部断言逐字保留、无 skip/弱化」的完整披露 | Controller 收尾（PR body） | owner 评论 ②；SA4 §11-R2 |
+| P7（新，owner ④ SA9 半项） | 新 head `296e646` 的 SA9 standards 复审须完成方可交付（本报告已履行 SA10 半项） | Controller 派发 | owner 评论 ④；SA4 §11-R3 |
+| P8（新，承 SA4 R4/R5） | CI 复跑确认：shard 2/6 × Node 20/24 两腿全绿、不再出现 `handshaking ≠ backoff`；慢 runner 尾巴风险（v2b boot > 2×实测+2s）将以带时间数据的断言消息响亮失败，届时调预算边际系数而非动断言 | Controller push 后 Actions | SA3 Deferred；SA4 §11-R4/R5、OBS-C |
+
+## 8. 结论
+
+本轮 CI 修复（`296e646`）对 owner 评论 `5629026278` 的口径**逐条落实**：许可面（①）内修复、
+断言零删除/零放宽/零 skip（②a，13↔13 逐条对位、唯一语法增量为 vitest 诊断消息第二参）、临时
+诊断与探针零残留（③）、commit 定性披露成立且 PR 半项已登记交付义务（②b）、本报告履行新 head
+SA10 复审（④ SA9 半项待派发）；代码面无任何额外改动。既有 #269 交付在新 head 上与前轮 approve
+内容逐字节一致，AC1–AC6 维持 met，冻结契约零触碰。无遗漏、无部分实现、无错误实现、无 scope
+creep。§6 三条 MINOR 不阻断；§7 八项为 PR/交付披露义务而非本票缺口。
+
+**verdict: approve**
+
+---
+
+# Iteration 1（归档）：rebase 后复审
+
 > 阶段：spec-review（**iteration 1 — rebase 后复审**）。派发：`sa-4c9594c5-6991-4677-9428-2a014a3e1925`（mabf-sa10）。
 > 审查对象：worktree `/home/wangjian/nomicore-fix-issue-269`，branch `mabf/issue-269`，HEAD
 > `c739770ff90a8d06ce8bba35dfd25d514cd7994c`（`docs(issue-269): add SA8 conflict-gate reports…`）；
@@ -11,6 +145,8 @@
 > 测试全文/关键面 + `git diff`/sha256 实测）；未修改任何代码/设计/测试，未运行测试，未启动服务。
 > Owner 要求口径：Issue-comment REST snapshot 为空（dispatch 明示；SA8 两轮/SA6/SA3/SA4 多源一致）——
 > 无评论级 owner 要求；验收口径 = issue body What to build 三段 + AC1–AC6。
+> **该迭代结论 `approve`；iteration 2 复核：#269 实现内容在新 head 上与 `25b41dc` 逐字节一致
+> （`git diff 25b41dc 1e4ae72 -- packages/` 为空），以下判定全部仍然有效。**
 
 ## 1. 裁决
 
