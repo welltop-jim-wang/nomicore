@@ -1,0 +1,70 @@
+Testing types with tsc and vue-tsc is an experimental feature.
+Breaking changes might not follow SemVer, please pin Vitest's version when using it.
+
+ RUN  v3.2.7 /home/wangjian/nomicore-fix-issue-299
+
+stdout | packages/replication-protocol/test/sa7-299-codec-probe.test.ts > SA7 探针：issue #299 codec 数据流观察（临时） > 路由②：kind=1/2 绑定块解码跳点 + 往返逐字节
+[SA7-DATAFLOW] route2-decode | KIND1_FIRST | {"transferKind":1,"transferId":1,"chunkIndex":0,"replicationId":"a1b2c3d4e5f60718293a4b5c6d7e8f90","replicationEpoch":1,"hasOwnReplicationId":true}
+[SA7-DATAFLOW] route2-decode | KIND2_FIRST | {"transferKind":2,"transferId":9,"chunkIndex":0,"syncRoundId":5}
+[SA7-DATAFLOW] route2-decode | KIND0_FIRST | {"transferKind":0,"hasOwnReplicationId":false,"hasOwnSyncRoundId":false}
+[SA7-DATAFLOW] roundtrip | KIND0 | {"lossless":true}
+[SA7-DATAFLOW] roundtrip | KIND1 | {"lossless":true}
+[SA7-DATAFLOW] roundtrip | KIND2 | {"lossless":true}
+
+stdout | packages/replication-protocol/test/sa7-299-codec-probe.test.ts > SA7 探针：issue #299 codec 数据流观察（临时） > 路由②：encode 出站 wire 首字节观察（kind 首字段恒在）
+[SA7-DATAFLOW] route1-encode | wire-bytes | {"envelopeBytes":20,"payloadFirstByte":1,"payloadHexHead":"01236e732d30"}
+[SA7-DATAFLOW] route1-encode | kind2-canonical-rebuild | {"equalsFrozenVector":true}
+
+stdout | packages/replication-protocol/test/sa7-299-codec-probe.test.ts > SA7 探针：issue #299 codec 数据流观察（临时） > 路由②错误面：kind 非法 / 旧六字段形态收敛分类
+[SA7-DATAFLOW] route2-error | classification | {"kind3":"ProtocolError:MALFORMED_FRAME(MALFORMED_FRAME: transferKind must be 0|1|2)","oldSixField":"ProtocolError:MALFORMED_FRAME(MALFORMED_FRAME: transferKind must be 0|1|2)"}
+
+stdout | packages/replication-protocol/test/sa7-299-codec-probe.test.ts > SA7 探针：issue #299 codec 数据流观察（临时） > 路由②保持面：协商门先于 payload 解析（N1）
+[SA7-DATAFLOW] route2-preserved | negotiation-gate | {"selectedCapabilities0":"ProtocolError:UNSUPPORTED_MESSAGE_TYPE(UNSUPPORTED_MESSAGE_TYPE: UPDATE_CHUNK requires negotiated CAP_CHUNKED_UPDATE (0x42 rejected by non-negotiating endpoint))"}
+
+stdout | packages/replication-protocol/test/sa7-299-codec-probe.test.ts > SA7 探针：issue #299 codec 数据流观察（临时） > AC4：transferId 值域三 kind 一致（0 拒 / 0xffffffff 收）
+[SA7-DATAFLOW] ac4-transferId | three-kinds | {"kind0-tid0":"ProtocolError:MALFORMED_FRAME(MALFORMED_FRAME: transferId must be a uint32 >= 1)","kind0-tid-u32max":"4294967295","kind1-tid0":"ProtocolError:MALFORMED_FRAME(MALFORMED_FRAME: transferId must be a uint32 >= 1)","kind1-tid-u32max":"4294967295","kind2-tid0":"ProtocolError:MALFORMED_FRAME(MALFORMED_FRAME: transferId must be a uint32 >= 1)","kind2-tid-u32max":"4294967295"}
+
+ ✓ packages/replication-protocol/test/sa7-299-codec-probe.test.ts (5 tests) 6ms
+
+ Test Files  1 passed (1)
+      Tests  5 passed (5)
+Type Errors  no errors
+   Start at  14:34:15
+   Duration  269ms (transform 93ms, setup 0ms, collect 109ms, tests 6ms, environment 0ms, prepare 47ms)
+
+Testing types with tsc and vue-tsc is an experimental feature.
+Breaking changes might not follow SemVer, please pin Vitest's version when using it.
+
+ RUN  v3.2.7 /home/wangjian/nomicore-fix-issue-299
+
+stdout | packages/replication-protocol/test/sa7-299-codec-probe.test.ts > SA7 探针：issue #299 codec 数据流观察（临时） > 路由②：kind=1/2 绑定块解码跳点 + 往返逐字节
+[SA7-DATAFLOW] route2-decode | KIND1_FIRST | {"transferKind":1,"transferId":1,"chunkIndex":0,"replicationId":"a1b2c3d4e5f60718293a4b5c6d7e8f90","replicationEpoch":1,"hasOwnReplicationId":true}
+[SA7-DATAFLOW] route2-decode | KIND2_FIRST | {"transferKind":2,"transferId":9,"chunkIndex":0,"syncRoundId":5}
+[SA7-DATAFLOW] route2-decode | KIND0_FIRST | {"transferKind":0,"hasOwnReplicationId":false,"hasOwnSyncRoundId":false}
+[SA7-DATAFLOW] roundtrip | KIND0 | {"lossless":true}
+[SA7-DATAFLOW] roundtrip | KIND1 | {"lossless":true}
+[SA7-DATAFLOW] roundtrip | KIND2 | {"lossless":true}
+
+stdout | packages/replication-protocol/test/sa7-299-codec-probe.test.ts > SA7 探针：issue #299 codec 数据流观察（临时） > 路由②：encode 出站 wire 首字节观察（kind 首字段恒在）
+[SA7-DATAFLOW] route1-encode | wire-bytes | {"envelopeBytes":20,"payloadFirstByte":1,"payloadHexHead":"01236e732d30"}
+[SA7-DATAFLOW] route1-encode | kind2-canonical-rebuild | {"equalsFrozenVector":true}
+
+stdout | packages/replication-protocol/test/sa7-299-codec-probe.test.ts > SA7 探针：issue #299 codec 数据流观察（临时） > 路由②错误面：kind 非法 / 旧六字段形态收敛分类
+[SA7-DATAFLOW] route2-error | classification | {"kind3":"ProtocolError:MALFORMED_FRAME(MALFORMED_FRAME: transferKind must be 0|1|2)","oldSixField":"ProtocolError:MALFORMED_FRAME(MALFORMED_FRAME: transferKind must be 0|1|2)"}
+
+stdout | packages/replication-protocol/test/sa7-299-codec-probe.test.ts > SA7 探针：issue #299 codec 数据流观察（临时） > 路由②保持面：协商门先于 payload 解析（N1）
+[SA7-DATAFLOW] route2-preserved | negotiation-gate | {"selectedCapabilities0":"ProtocolError:UNSUPPORTED_MESSAGE_TYPE(UNSUPPORTED_MESSAGE_TYPE: UPDATE_CHUNK requires negotiated CAP_CHUNKED_UPDATE (0x42 rejected by non-negotiating endpoint))"}
+
+stdout | packages/replication-protocol/test/sa7-299-codec-probe.test.ts > SA7 探针：issue #299 codec 数据流观察（临时） > AC4：transferId 值域三 kind 一致（0 拒 / 0xffffffff 收）
+[SA7-DATAFLOW] ac4-transferId | three-kinds | {"kind0-tid0":"ProtocolError:MALFORMED_FRAME(MALFORMED_FRAME: transferId must be a uint32 >= 1)","kind0-tid-u32max":"4294967295","kind1-tid0":"ProtocolError:MALFORMED_FRAME(MALFORMED_FRAME: transferId must be a uint32 >= 1)","kind1-tid-u32max":"4294967295","kind2-tid0":"ProtocolError:MALFORMED_FRAME(MALFORMED_FRAME: transferId must be a uint32 >= 1)","kind2-tid-u32max":"4294967295"}
+
+stdout | packages/replication-protocol/test/sa7-299-codec-probe.test.ts > SA7 探针：issue #299 扩展 fuzz 属性（种子外溢抽查，临时） > 扩展轮次：随机 kind/presence 组合 encode→decode 逐字段一致 + 再编码逐字节一致
+[SA7-DATAFLOW] fuzz-extended | property | {"rounds":5000,"violations":0}
+
+ ✓ packages/replication-protocol/test/sa7-299-codec-probe.test.ts (6 tests) 114ms
+
+ Test Files  1 passed (1)
+      Tests  6 passed (6)
+Type Errors  no errors
+   Start at  14:35:17
+   Duration  383ms (transform 93ms, setup 0ms, collect 112ms, tests 114ms, environment 0ms, prepare 48ms)

@@ -1,0 +1,35 @@
+Testing types with tsc and vue-tsc is an experimental feature.
+Breaking changes might not follow SemVer, please pin Vitest's version when using it.
+
+ RUN  v3.2.7 /home/wangjian/nomicore-fix-issue-299
+
+stdout | packages/ws-replication/test/sa7-299-config-probe.test.ts > SA7 探针：issue #299 配置链数据流（临时） > 路由③：resolve → 值门 → #244 家族门 → #295 两窄门 的逐构型观察（hub/peer 双入口）
+[SA7-DATAFLOW] route3-config | bootstrap=40MiB（>缺省 product 32MiB） | {"want":"reject","hub":"limits: maxChunkedBootstrapBytes(41943040) 必须 ≤ maxChunksPerUpdate(64) × maxUpdateBytes(524288)","peer":"limits: maxChunkedBootstrapBytes(41943040) 必须 ≤ maxChunksPerUpdate(64) × maxUpdateBytes(524288)"}
+[SA7-DATAFLOW] route3-config | sync=40MiB（>缺省 product 32MiB） | {"want":"reject","hub":"limits: maxChunkedSyncDiffBytes(41943040) 必须 ≤ maxChunksPerUpdate(64) × maxUpdateBytes(524288)","peer":"limits: maxChunkedSyncDiffBytes(41943040) 必须 ≤ maxChunksPerUpdate(64) × maxUpdateBytes(524288)"}
+[SA7-DATAFLOW] route3-config | 族内 bootstrap=2MiB（=product 等号） | {"want":"accept","hub":"ACCEPTED","peer":"ACCEPTED"}
+[SA7-DATAFLOW] route3-config | 族内 bootstrap=2MiB+1（off-by-one） | {"want":"reject","hub":"limits: maxChunkedBootstrapBytes(2097153) 必须 ≤ maxChunksPerUpdate(4) × maxUpdateBytes(524288)","peer":"limits: maxChunkedBootstrapBytes(2097153) 必须 ≤ maxChunksPerUpdate(4) × maxUpdateBytes(524288)"}
+[SA7-DATAFLOW] route3-config | 族内 sync=2MiB+1（off-by-one） | {"want":"reject","hub":"limits: maxChunkedSyncDiffBytes(2097153) 必须 ≤ maxChunksPerUpdate(4) × maxUpdateBytes(524288)","peer":"limits: maxChunkedSyncDiffBytes(2097153) 必须 ≤ maxChunksPerUpdate(4) × maxUpdateBytes(524288)"}
+[SA7-DATAFLOW] route3-config | 族内仅 sync=2MiB 显式（bootstrap 缺省 4MiB>product 不得被联动误判） | {"want":"accept","hub":"ACCEPTED","peer":"ACCEPTED"}
+[SA7-DATAFLOW] route3-config | 族内仅 bootstrap=2MiB 显式（镜像） | {"want":"accept","hub":"ACCEPTED","peer":"ACCEPTED"}
+[SA7-DATAFLOW] route3-config | 显式 maxChunksPerUpdate=1（#244 链②承载，R35） | {"want":"reject","hub":"limits: maxChunkedUpdateBytes(4194304) 必须 ≤ maxChunksPerUpdate(1) × maxUpdateBytes(524288)","peer":"limits: maxChunkedUpdateBytes(4194304) 必须 ≤ maxChunksPerUpdate(1) × maxUpdateBytes(524288)"}
+[SA7-DATAFLOW] route3-config | 显式 maxChunksPerUpdate=8（等号覆盖缺省 envelope） | {"want":"accept","hub":"ACCEPTED","peer":"ACCEPTED"}
+[SA7-DATAFLOW] route3-config | 仅 maxUpdateBytes=32KiB（存量非链键，非追溯性） | {"want":"accept","hub":"ACCEPTED","peer":"ACCEPTED"}
+[SA7-DATAFLOW] route3-config | 零分块族键存量配置 | {"want":"accept","hub":"ACCEPTED","peer":"ACCEPTED"}
+[SA7-DATAFLOW] route3-config | bootstrap=0（值门） | {"want":"reject","hub":"maxChunkedBootstrapBytes: maxChunkedBootstrapBytes 必须为正有限安全整数","peer":"maxChunkedBootstrapBytes: maxChunkedBootstrapBytes 必须为正有限安全整数"}
+[SA7-DATAFLOW] route3-config | bootstrap=1.5（值门） | {"want":"reject","hub":"maxChunkedBootstrapBytes: maxChunkedBootstrapBytes 必须为正有限安全整数","peer":"maxChunkedBootstrapBytes: maxChunkedBootstrapBytes 必须为正有限安全整数"}
+[SA7-DATAFLOW] route3-config | sync=-1（值门） | {"want":"reject","hub":"maxChunkedSyncDiffBytes: maxChunkedSyncDiffBytes 必须为正有限安全整数","peer":"maxChunkedSyncDiffBytes: maxChunkedSyncDiffBytes 必须为正有限安全整数"}
+[SA7-DATAFLOW] route3-config | control reserve 不足（保持面 C6） | {"want":"reject","hub":"limits: maxQueuedControlBytes(4194304) 必须 ≥ maxBootstrapBytes(4194304) + 128","peer":"limits: maxQueuedControlBytes(4194304) 必须 ≥ maxBootstrapBytes(4194304) + 128"}
+[SA7-DATAFLOW] route3-config | defaults | {"maxChunkedBootstrapBytes":4,"maxChunkedSyncDiffBytes":4,"keyCount":16}
+
+stdout | packages/ws-replication/test/sa7-299-config-probe.test.ts > SA7 探针：issue #299 配置链数据流（临时） > 路由③插件路径：allowlist 接纳 + apply 继承链②违例响亮 + 无 ready 服务
+[SA7-DATAFLOW] route3-plugin | valid-new-keys | {"apply":"ACCEPTED","serviceState":"ready"}
+[SA7-DATAFLOW] route3-plugin | violating-new-key | {"apply":"TypeError: limits: maxChunkedBootstrapBytes(41943040) 必须 ≤ maxChunksPerUpdate(64) × maxUpdateBytes(524288)","serviceLookup":"Error: required Cordis service \"nomicorePeerReplication\" is unavailable"}
+[SA7-DATAFLOW] route3-plugin | hub-plugin-config | {"construct":"ACCEPTED"}
+
+ ✓ packages/ws-replication/test/sa7-299-config-probe.test.ts (2 tests) 10ms
+
+ Test Files  1 passed (1)
+      Tests  2 passed (2)
+Type Errors  no errors
+   Start at  14:34:29
+   Duration  844ms (transform 491ms, setup 0ms, collect 679ms, tests 10ms, environment 0ms, prepare 50ms)
