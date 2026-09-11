@@ -151,23 +151,23 @@ Trusted raw Yjs update 已在 sequencer 中提交并登记 dirty，但未执行�
 _Avoid_: validated replication、apply 后校验失败自动 rollback
 
 **分块复制传输（chunked replication transfer）**:
-（ADR 0013 已接受；ADR 0019 扩展）超过单帧上限的复制载荷经协商 capability 后拆为多个自描述 `UPDATE_CHUNK` wire 帧的易失传输，kind 三态：live-update（ADR 0013，`CAP_CHUNKED_UPDATE`）、snapshot（BOOTSTRAP_SNAPSHOT 基线）与 sync-diff（SYNC_STEP2 diff）（ADR 0019，`CAP_CHUNKED_SYNC`）；以 (连接, 方向, namespaceId, transferId) 为作用域，三种 kind 共用同一 transferId 计数器，接收端在有界 detached buffer 完整重组后执行一次 sequenced trusted apply（snapshot 为排他复制导入）并以单 ACK 结算。partial assembly 绝不写入 live Y.Doc，中断即丢弃并回退 state-vector reconciliation。
+（ADR 0013 已接受；ADR 0019 扩展）超过单帧上限的复制载荷拆为多个自描述 `UPDATE_CHUNK` wire 帧的易失传输，kind 三态：live-update（ADR 0013，经 `CAP_CHUNKED_UPDATE` 协商）、snapshot（BOOTSTRAP_SNAPSHOT 基线）与 sync-diff（SYNC_STEP2 diff）（ADR 0019，同版本部署假设下的恒用机制、无协商）；以 (连接, 方向, namespaceId, transferId) 为作用域，三种 kind 共用同一 transferId 计数器，接收端在有界 detached buffer 完整重组后执行一次 sequenced trusted apply（snapshot 为排他复制导入）并以单 ACK 结算。partial assembly 绝不写入 live Y.Doc，中断即丢弃并回退 state-vector reconciliation。
 _Avoid_: 逐片 apply 到 live Y.Doc、跨重连保留 partial chunks、以提高单帧上限代替分块、把 transferId 当跨连接持久标识
 
 **UPDATE_CHUNK**:
-分块传输的单帧消息（wire 码 `0x42`），payload 为 namespaceId/transferId/chunkIndex/chunkCount/totalBytes/bytes 六个自描述字段（字段序 = ADR 0013）；双方协商 `CAP_CHUNKED_SYNC` 后形态切换为 kind 首字段 + 既有五字段 + 首 chunk 绑定块（kind=snapshot 携 replicationId/replicationEpoch，kind=sync-diff 携 syncRoundId）（ADR 0019）。codec 只做单帧无状态编解码与语义自洽校验，跨帧一致性/顺序/总量与重组属接收端 assembly 状态机——跨帧规则与 assembly 状态机为协议 §10.3 契约（issue #243–#245 落地、issue #246 收口），wire 权威见 `docs/protocols/instance-replication-v1.md`。
+分块传输的单帧消息（wire 码 `0x42`），payload 恒为 kind 首字段 + namespaceId/transferId/chunkIndex/chunkCount/totalBytes/bytes 五字段 + 首 chunk 绑定块（kind=snapshot 携 replicationId/replicationEpoch，kind=sync-diff 携 syncRoundId，仅 chunkIndex=0）（ADR 0019 单形态；ADR 0013 的六字段旧形态随未发布分支作废）。codec 只做单帧无状态编解码与语义自洽校验，跨帧一致性/顺序/总量与重组属接收端 assembly 状态机——跨帧规则与 assembly 状态机为协议 §10.3 契约（issue #243–#245 落地、issue #246 收口），wire 权威见 `docs/protocols/instance-replication-v1.md`。
 _Avoid_: 在 codec 层承载连接级 assembly 状态、把单个 chunk 当独立 UPDATE apply
 
 **CAP_CHUNKED_UPDATE**:
 HELLO 协商 capability bit `0x00000001`（uint32 BE bitset）；双方 optional 交集经 `selectedCapabilities` 生效。未协商端收到 UPDATE_CHUNK 必须按未知/未支持消息码规则以 connection fatal 拒绝——新旧实现互不破译（issue #242 / ADR 0013）。
 _Avoid_: 把未协商的 0x42 帧当普通帧静默解码、未协商就发送分块
 
-**CAP_CHUNKED_SYNC**:
-HELLO 协商 capability bit `0x00000002`；协商机制同 `CAP_CHUNKED_UPDATE`，两 bit 独立取交集。协商生效后 0x42 切换为带 kind 首字段的新形态，BOOTSTRAP_SNAPSHOT 与 SYNC_STEP2 diff 可以 kind=snapshot/sync-diff 分块传输，聚合上限为 `maxChunkedBootstrapBytes`/`maxChunkedSyncDiffBytes`；任一未协商则该连接 bootstrap/sync 行为回落 v1 单帧语义（超限仍 `BOOTSTRAP_TOO_LARGE`/`SYNC_DIFF_TOO_LARGE` terminal）。发送方仅当协商成功才发新形态帧（ADR 0019 / issue #295）。
-_Avoid_: 未协商就发送带 kind 形态的 0x42 帧、用两个独立 capability bit 分别覆盖 snapshot 与 diff、重定义 `maxBootstrapBytes`/`maxSyncDiffBytes` 为聚合上限
+**同版本部署假设（same-version deployment）**:
+Hub 与 Peer 按同版本部署运行、不承诺跨代际 wire 互通的部署前提（ADR 0019）；sync 段分块（kind=snapshot/sync-diff）因此不设 capability 协商、恒用启用，跨版本混跑的非互破译由既有消息码/版本握手响亮拒绝承载。
+_Avoid_: 为历史 wire 形态保留双形态切换或发送端 gating、新旧互通矩阵测试
 
 **实现代际（implementation generation）**:
-端点的实现代际，与协议版本正交、**非 protocol 版本**语义——`envelopeVersion` 恒 1、HELLO `protocolVersions` 不因代际变化（协议 §3 两层版本独立）；代际差异仅在 HELLO capability 协商的 wire 位上可见。v1 代际 = 不含 `CAP_CHUNKED_UPDATE` 的旧实现（HELLO 恒发 `optionalCapabilities=0`，收到 `0x42` 帧按未知消息码 connection fatal 拒绝）；v2 代际 = 支持 `CAP_CHUNKED_UPDATE` 的实现；ADR 0019 起可观察行为再细分 v2-only 与 v2+sync（追加 `CAP_CHUNKED_SYNC`），代际差异仍仅在 capability 协商位上可见。协议 §22 互通矩阵按代际组合刻画回落行为（v1 peer ↔ v2 hub、v2 peer ↔ v1 hub、v2 ↔ v2 协商分块）。
+端点的实现代际，与协议版本正交、**非 protocol 版本**语义——`envelopeVersion` 恒 1、HELLO `protocolVersions` 不因代际变化（协议 §3 两层版本独立）；代际差异仅在 HELLO capability 协商的 wire 位上可见。v1 代际 = 不含 `CAP_CHUNKED_UPDATE` 的旧实现（HELLO 恒发 `optionalCapabilities=0`，收到 `0x42` 帧按未知消息码 connection fatal 拒绝）；v2 代际 = 支持 `CAP_CHUNKED_UPDATE` 的现实现。协议 §22 互通矩阵按代际组合刻画回落行为（v1 peer ↔ v2 hub、v2 peer ↔ v1 hub、v2 ↔ v2 协商分块）。
 _Avoid_: 把 v2 代际误读为协议版本 2 / 用代际推断 `envelopeVersion` 或 `protocolVersions` 变化
 
 **实例角色（instance role）**:

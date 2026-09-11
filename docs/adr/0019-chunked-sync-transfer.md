@@ -1,7 +1,7 @@
-# ADR 0019：BOOTSTRAP_SNAPSHOT 与 SYNC_STEP2 的有界分块复制传输（CAP_CHUNKED_SYNC）
+# ADR 0019：BOOTSTRAP_SNAPSHOT 与 SYNC_STEP2 的有界分块复制传输
 
 日期：2026-09-15
-状态：已接受（issue #295 设计冻结；wire 冻结值——capability bit、0x42 双形态字段序、错误码/reason 词表锁定值——以 `docs/protocols/instance-replication-v1.md` 为唯一权威；配置语义与设计理据权威保留于本文。）
+状态：已接受（issue #295 设计冻结；wire 冻结值——0x42 单形态字段序、错误码/reason 词表锁定值——以 `docs/protocols/instance-replication-v1.md` 为唯一权威；配置语义与设计理据权威保留于本文。）
 
 ## 背景
 
@@ -9,19 +9,20 @@ ADR 0013 冻结了 live UPDATE 的分块传输，并把 SYNC_STEP2 diff 与 BOOT
 
 ## 决策
 
-将 ADR 0013 的 transfer 机制平移到 bootstrap 与 sync round 路径，作为协议 append-only 演进：未协商端 v1 行为逐字节不变，超限仍 `BOOTSTRAP_TOO_LARGE` / `SYNC_DIFF_TOO_LARGE`。
+将 ADR 0013 的 transfer 机制平移到 bootstrap 与 sync round 路径，作为**恒用机制**（非协商能力）：超过单帧上限的 snapshot / diff 一律分块传输。
 
-### 协商：单一 capability bit
+### 部署假设：同版本部署，无向前兼容义务
 
-- HELLO `optionalCapabilities` 追加 bit `0x00000002 = CAP_CHUNKED_SYNC`，交集语义不变；单一 bit 同时覆盖 snapshot 与 sync-diff——两者的发送端切片器、接收端重组器、配置链是同一套，拆开只会制造无对应实现差异的互通矩阵组合。
-- 互通矩阵保持两格：双方均协商 ⇒ bootstrap/sync 可分块；任一未协商 ⇒ 该连接上 bootstrap/sync 回落 v1（单帧上限 + 既有 terminal 错误）。与 `CAP_CHUNKED_UPDATE` 独立取交集；实现代际的可观察行为由此扩展为三档（v1 / v2 / v2+sync），「不得用代际推断 envelopeVersion 或 protocolVersions 变化」不变。
+- Hub 与 Peer 按**同版本部署**运行；本 ADR 不承诺与任何历史 wire 形态互通。ADR 0013 引入的 `CAP_CHUNKED_UPDATE` 协商与 v1 回落行为是已实现的既有内容，不在本 ADR 修订范围；但 sync 段分块**不新增 capability bit、不做协商、不做发送端 gating**。
+- 依据：PR #241（v2 代际）尚未合入 main，支持旧六字段形态 0x42 的实现从未部署——不存在新旧混跑的存量。为不存在的部署矩阵维护双形态切换与 gating 是纯设计税。
+- 跨版本混跑的非互破译仍由既有机制承载（未知消息码 connection fatal、protocolVersions 握手），不需要为本 ADR 新增任何兼容面。
 
-### 消息形态：0x42 增加 kind 首字段，协商切换（拒绝新增消息码）
+### 消息形态：0x42 恒为 kind 首字段单形态（拒绝新增消息码、拒绝双形态切换）
 
-当且仅当双方协商 `CAP_CHUNKED_SYNC`，UPDATE_CHUNK（0x42）payload 形态切换为：
+UPDATE_CHUNK（0x42）payload 恒为：
 
 ```text
-0x42 UPDATE_CHUNK (namespace)，CAP_CHUNKED_SYNC 协商后形态
+0x42 UPDATE_CHUNK (namespace)
   kind         varUint          // 0=live-update, 1=snapshot, 2=sync-diff
   namespaceId  varString        // 以下五字段序与 ADR 0013 冻结形态一致
   transferId   varUint          // 三种 kind 共用同一 (连接, 方向, namespace) 域计数器
@@ -32,9 +33,8 @@ ADR 0013 冻结了 live UPDATE 的分块传输，并把 SYNC_STEP2 diff 与 BOOT
   bytes        varUint8Array    // ≤ maxUpdateBytes（复用为 maxChunkBytes）
 ```
 
-- 仅协商 `CAP_CHUNKED_UPDATE` 的对端之间，0x42 保持旧六字段形态逐字节不变；发送方仅当 `CAP_CHUNKED_SYNC` 协商成功才发新形态帧，接收端对旧形态帧零新行为——gating 全部落在发送端，错误码注册表因此零新增连接级条目。
-- 代价明账：0x42 的 wire 形态随协商结果切换，这是复用单消息码躲不掉的事实；能力协商在 HELLO 完成、先于一切数据帧，形态切换有确定锚点。
-- kind 放首位对齐「首 chunk 自描述、恶意声明在第一个字节流入前即可拒绝」的既有精神。
+- ADR 0013 冻结的六字段形态作废：该形态随 PR #241 同分支演进、从未发布，golden vectors 在本分支内改写为单形态，无兼容代价。
+- kind 放首位对齐「首 chunk 自描述、恶意声明在第一个字节流入前即可拒绝」的既有精神；codec 单帧规则追加 `kind ∈ {0,1,2}`、绑定块当且仅当 `kind≠0 ∧ chunkIndex=0` 时存在（违者 `MALFORMED_FRAME`）。
 
 ### round / epoch 绑定：首 chunk 自描述绑定块
 
@@ -45,13 +45,13 @@ ADR 0013 冻结了 live UPDATE 的分块传输，并把 SYNC_STEP2 diff 与 BOOT
 ### ACK、发送端、接收端、记账：逐条平移 ADR 0013
 
 - ACK：重组 + 长度校验 + 一次 sequenced apply / 排他复制导入完成后才发 BOOTSTRAP_ACK / SYNC_APPLIED——ACK = 已落 live Y.Doc 的 durability 含义逐字不变；整笔 transfer 一次 ACK。
-- 发送端：chunk 逐帧经 data 路径出站（独立 sequence、dataGateOpen 与 round-robin 调度、整笔占 1 个 in-flight 窗口槽、队列持完整载荷出队惰性切片）；control reserve 不承载任何 chunk——R1 揭示的 control 路径绕行在协商端消除。
-- 接收端：首 chunk 校验（totalBytes ≤ 聚合上限、chunkCount ≤ maxChunksPerUpdate、totalBytes ≤ chunkCount × maxUpdateBytes、chunkCount ≥ 1）通过后按已验证上界一次性分配 detached buffer；重组失败一律发生在 apply 之前，live Y.Doc 零写入；assembly 纯易失，丢弃触发面与 ADR 0013 相同。
+- 发送端：chunk 逐帧经 data 路径出站（独立 sequence、dataGateOpen 与 round-robin 调度、整笔占 1 个 in-flight 窗口槽、队列持完整载荷出队惰性切片）；control reserve 不承载任何 chunk——R1 揭示的 control 路径绕行消除。未超单帧上限的 snapshot / diff 仍走单帧 BOOTSTRAP_SNAPSHOT / SYNC_STEP2 路径（触发条件，非兼容回落）。
+- 接收端：首 chunk 校验（totalBytes ≤ 按 kind 的聚合上限、chunkCount ≤ maxChunksPerUpdate、totalBytes ≤ chunkCount × maxUpdateBytes、chunkCount ≥ 1）通过后按已验证上界一次性分配 detached buffer；重组失败一律发生在 apply 之前，live Y.Doc 零写入；assembly 纯易失，丢弃触发面与 ADR 0013 相同。
 - 记账：assembly 作用域与并发上限的定义逐字沿用（每 (namespace, 方向) 至多 1 个 + 连接级 `maxConcurrentAssembliesPerConnection`）。bootstrap 期间虽无 Lease，namespaceId 自 OPEN_NAMESPACE 起已知，协议层按 namespaceId 记账不需要 Lease 存在。
 
 ### 资源上限与配置链
 
-新增配置均有安全缺省、启动期响亮验证、绝不运行时 clamp；既有键语义不动（append-only）：
+新增配置均有安全缺省、启动期响亮验证、绝不运行时 clamp：
 
 | 配置 | 缺省 | 约束 |
 |---|---|---|
@@ -60,8 +60,8 @@ ADR 0013 冻结了 live UPDATE 的分块传输，并把 SYNC_STEP2 diff 与 BOOT
 
 - `maxChunksPerUpdate` / `maxConcurrentAssembliesPerConnection` / `assemblyTimeoutMs` 三个机制键语义推广为 kind 无关，**键名不变**（存量配置兼容；`maxChunksPerUpdate` 名留 "Update" 是兼容代价，语义见协议 §17）。
 - chunk 大小继续复用 `maxUpdateBytes`（零新 frame 级上限）。内存上界 = `maxConcurrentAssembliesPerConnection × max(maxChunkedUpdateBytes, maxChunkedBootstrapBytes, maxChunkedSyncDiffBytes)`。
-- `maxQueuedControlBytes ≥ maxBootstrapBytes + 协议开销` 的启动校验**原样保留**：配置校验先于 HELLO、无法预知对端能力，且未协商回落路径仍需要该保证。
-- 协商端超限判定从单帧移到首 chunk 声明校验（聚合上限），错误码语义族不变；未协商端仍按单帧上限判定。
+- `maxQueuedControlBytes ≥ maxBootstrapBytes + 协议开销` 的启动校验**原样保留**：未超上限的 snapshot 仍以单帧 control 帧承载，该不变量对单帧路径仍然必要。
+- 超限判定在首 chunk 声明校验（聚合上限）完成；`maxBootstrapBytes` / `maxSyncDiffBytes` 保持单帧路径上限语义。
 
 ### 错误码与词表（append-only）
 
@@ -75,8 +75,8 @@ ADR 0013 冻结了 live UPDATE 的分块传输，并把 SYNC_STEP2 diff 与 BOOT
 
 | type | 字段 |
 |---|---|
-| `chunked-snapshot-sent` / `chunked-sync-sent` | `connectionId?`、`namespaceId`、`transferId`、`chunkCount`、`totalBytes` |
-| `chunked-snapshot-applied` / `chunked-sync-applied` | `connectionId?`、`namespaceId`、`bytes`、`chunkCount`、`applyLatencyMs?` |
+| `chunked-snapshot-sent` / `chunked-sync-sent` | `connectionId?`、`namespaceId`、`transferId`、`chunkCount`、`totalBytes`（sync 族另携 `syncRoundId`） |
+| `chunked-snapshot-applied` / `chunked-sync-applied` | `connectionId?`、`namespaceId`、`bytes`、`chunkCount`、`applyLatencyMs?`（sync 族另携 `syncRoundId`） |
 | `chunked-snapshot-acked` / `chunked-sync-acked` | `connectionId?`、`namespaceId`、`bytes`、`ackLatencyMs?` |
 | `chunked-snapshot-aborted` / `chunked-sync-aborted` | `namespaceId`、`transferId`、`reason`（复用既有枚举，零新词）、`receivedChunks`、`receivedBytes` |
 
@@ -84,30 +84,33 @@ throw 隔离、决策落定后发射、无 observer 逐字节等价——沿用 
 
 ### 明确拒绝的备选方案
 
-1. **新增 SNAPSHOT_CHUNK / SYNC_CHUNK 消息码**：snapshot 与 diff 的生命周期挂钩点不同（bootstrap epoch vs sync round），独立码位本可让状态机断言更响亮；但新增码位会让同一套重组/记账/配置机制在 spec 里重复表述三遍，而共享只应发生在实现层——复用 0x42 + kind 以一次形态切换的代价，换取单一 transfer 机制的唯一权威表述，生命周期差异由首 chunk 绑定块承载。
-2. **通用 TRANSFER_CHUNK 码（kind 含 live-update）**：给已冻结的 live-update 路径开兼容门，不进则退。
-3. **kind 追加为尾字段 / 隐式编码进既有字段**：尾字段改变旧端对帧长的既有解析；隐式编码违反 wire 值自描述纪律。
-4. **snapshot/diff 各立 capability bit**：实现差为零，互通矩阵白白翻倍（ADR 0013 非目标条款预设的即单数 capability）。
-5. **chunk 逐帧携带 round/epoch，或纯顺序绑定**：逐帧重复语义冗余；纯顺序绑定使帧归属依赖解析上下文，与自描述精神相悖。
-6. **重定义 `maxBootstrapBytes` / `maxSyncDiffBytes` 为聚合上限**：对既有键做语义修订违反 append-only 纪律；旧键保持单帧语义服务未协商回落路径，聚合上限另立新键。
-7. **复用 UPDATE_TRANSFER_* 错误码跨 kind**：bootstrap 与 update 语境的排障路径不同，协议码位本按主题分段，分族保持 §13.2 可读。
+1. **`CAP_CHUNKED_SYNC` capability 协商 + 0x42 双形态切换 + 发送端 gating**（本 ADR 初稿方案）：全部复杂度为「新旧混跑逐字节不变」服务，而 PR #241 未合 main、旧形态从未部署——为不存在的部署矩阵付设计税。同版本部署假设下单形态恒用即可，跨版本非互破译由既有消息码/版本握手承载。
+2. **新增 SNAPSHOT_CHUNK / SYNC_CHUNK 消息码**：新增码位会让同一套重组/记账/配置机制在 spec 里重复表述三遍；复用 0x42 + kind 保持单一 transfer 机制的唯一权威表述，生命周期差异由首 chunk 绑定块承载。
+3. **通用 TRANSFER_CHUNK 码（kind 含 live-update）**：给已实现的 live-update 路径开第二入口，无收益。
+4. **kind 追加为尾字段 / 隐式编码进既有字段**：尾字段位置违反「恶意声明在第一个字节流入前即可拒绝」的拒绝路径精神；隐式编码违反 wire 值自描述纪律。
+5. **snapshot/diff 各立开关**：实现差为零——两者共享同一套切片器/重组器/配置链。
+6. **chunk 逐帧携带 round/epoch，或纯顺序绑定**：逐帧重复语义冗余；纯顺序绑定使帧归属依赖解析上下文，与自描述精神相悖。
+7. **重定义 `maxBootstrapBytes` / `maxSyncDiffBytes` 为聚合上限**：旧键保持单帧路径上限语义，聚合上限另立新键，两类上限各司其职、配置链可读。
+8. **复用 UPDATE_TRANSFER_* 错误码跨 kind**：bootstrap 与 update 语境的排障路径不同，协议码位本按主题分段，分族保持 §13.2 可读。
 
 ## 后果
 
 - 大于单帧上限、不超过新聚合上限的 snapshot / sync diff 可完成初始同步与恢复同步，「上限内合法文档永久失同步」的终局失败路径消除（issue #295 核心验收）。
-- 协商端 snapshot/diff 传输字节纳入 data 路径 backpressure 记账，control reserve 只承载纯控制帧——R1 的结构性绕行修复。
-- 协议面 append-only：1 个 capability bit、0 个新消息码（0x42 双形态）、4 个 namespace 错误码、1 个 RESYNC reason、8 个 observer 事件类型；v1 / v2-only 端全部不可达新行为。
-- 落地时修订 `docs/protocols/instance-replication-v1.md`（§1、§5、§6.1、§8、§9、§13.2、§16、§17、§18、§22、§23）与 CONTEXT.md「分块复制传输」词汇；golden vectors 与新旧互通矩阵测试随实现 ticket 补齐（codec 锁定测试参照 issue #242 AC 先例）。
-- 复现刻画测试（R1/R3）保留为现状基线；实现落地后以协商分块构型新增收敛绿灯测试，不改刻画文件。
+- snapshot/diff 分块传输字节纳入 data 路径 backpressure 记账，control reserve 只承载纯控制帧与小载荷单帧路径——R1 的结构性绕行修复。
+- 协议面：0 个新消息码（0x42 单形态改写）、0 个新 capability bit、4 个 namespace 错误码、1 个 RESYNC reason、8 个 observer 事件类型；#242 的 0x42 golden vectors 在本分支内改写为单形态。
+- 落地时修订 `docs/protocols/instance-replication-v1.md`（§1、§5、§8、§9、§10.3、§13.2、§16、§17、§18、§22、§23）与 CONTEXT.md「分块复制传输」词汇；golden vectors 随实现 ticket 补齐。
+- **`BOOTSTRAP_TOO_LARGE` / `SYNC_DIFF_TOO_LARGE` 成为死码**：超限载荷改道分块后单帧路径不再触发两码；两码保留于错误码注册表（append-only，不删除），但协议不再为其保留任何触发路径——§23 `namespace-failed` 覆盖矩阵的对应行改挂 `SNAPSHOT_TRANSFER_TOO_LARGE`。
+- 复现刻画测试（R1/R3）保留为现状基线；实现落地后以分块构型新增收敛绿灯测试，不改刻画文件。
 
 ## 非目标
 
+- 向前/向后兼容与新旧互通矩阵：同版本部署假设下显式放弃，不为历史 wire 形态保留任何实现或测试面；
 - 以提高 `maxBootstrapBytes` / `maxSyncDiffBytes` 代替协议设计；
 - 跨进程重启持久化 partial chunks（沿用 ADR 0013）；
 - 逐片 apply 到 live Y.Doc（沿用 ADR 0013）；
-- 改变 live UPDATE 分块已冻结的 wire 值（仅 CAP_CHUNKED_UPDATE 协商时 0x42 形态逐字节不变）；
+- 修订 ADR 0013 已实现的 `CAP_CHUNKED_UPDATE` 协商与 v1 回落行为（既有内容，不在本 ADR 范围）；
 - awareness/presence、多 hub、客户端 y-websocket 兼容（沿用 ADR 0010 非目标）。
 
 ## 取代与关联
 
-本 ADR 扩展 ADR 0013 的 transfer 机制到 bootstrap 与 sync round 路径，并将其非目标条款「SYNC_STEP2 diff 与 BOOTSTRAP_SNAPSHOT 分块」显式移除（该条款由本文接替）；ADR 0013 的 ACK durability 语义、assembly 易失性纪律、配置链模式、observer 纪律全部沿用，关系为扩展而非修订。与 `docs/protocols/instance-replication-v1.md` 的两层权威边界同 ADR 0013：wire 冻结值以协议文档为唯一权威，配置语义与设计理据权威保留于本文。关联 issue：#295（本设计来源与验收标准）、#233 / PR #241（live UPDATE 分块，本 ADR 的机制来源）；基线架构 ADR 0010 不变。现状实测证据：`packages/ws-replication/test/ws-replication-issue233-repro.test.ts`（R1/R3）。
+本 ADR 扩展 ADR 0013 的 transfer 机制到 bootstrap 与 sync round 路径，并将其非目标条款「SYNC_STEP2 diff 与 BOOTSTRAP_SNAPSHOT 分块」显式移除（该条款由本文接替）；ADR 0013 的 ACK durability 语义、assembly 易失性纪律、配置链模式、observer 纪律全部沿用，关系为扩展而非修订。本 ADR 同时显式偏离 ADR 0013 的「未协商端逐字节不变」纪律——偏离范围仅限 sync 段分块（无部署存量），live UPDATE 路径的既有协商行为不动。与 `docs/protocols/instance-replication-v1.md` 的两层权威边界同 ADR 0013：wire 冻结值以协议文档为唯一权威，配置语义与设计理据权威保留于本文。关联 issue：#295（本设计来源与验收标准，其中 AC2「未协商组合逐字节不变」由本 ADR 的同版本部署假设显式取代）、#233 / PR #241（live UPDATE 分块，本 ADR 的机制来源）；基线架构 ADR 0010 不变。现状实测证据：`packages/ws-replication/test/ws-replication-issue233-repro.test.ts`（R1/R3）。
