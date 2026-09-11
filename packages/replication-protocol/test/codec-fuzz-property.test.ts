@@ -140,16 +140,31 @@ describe('property：seeded 随机合法消息 roundtrip', () => {
       case 17:
         return { kind: 'UPDATE', namespaceId: NS, update: randomBytes() };
       case 18: {
-        // issue #242：UPDATE_CHUNK 分支（单帧语义自洽：transferId≥1、index<count、count≥1、
-        // 非空 bytes、bytes≤totalBytes）。
+        // issue #242/#295：UPDATE_CHUNK 分支（单形态：kind 首字段 + 绑定块当且仅当
+        // kind≠0 ∧ chunkIndex=0；单帧语义自洽：transferId≥1、index<count、count≥1、
+        // 非空 bytes、bytes≤totalBytes）。生成器覆盖三 kind × 绑定块 presence 组合。
         const bytes = randomChunkBytes();
+        const chunkCount = 1 + Math.floor(rand() * 10);
+        const chunkIndex = Math.floor(rand() * chunkCount);
+        const transferKind = Math.floor(rand() * 3) as 0 | 1 | 2;
+        const binding: Record<string, unknown> =
+          transferKind === 1 && chunkIndex === 0
+            ? {
+                replicationId: Array.from({ length: 32 }, () => Math.floor(rand() * 16).toString(16)).join(''),
+                replicationEpoch: Math.floor(rand() * 1000),
+              }
+            : transferKind === 2 && chunkIndex === 0
+              ? { syncRoundId: Math.floor(rand() * 1000) }
+              : {};
         return {
           kind: 'UPDATE_CHUNK',
+          transferKind,
           namespaceId: NS,
           transferId: 1 + Math.floor(rand() * 1000),
-          chunkIndex: 0,
-          chunkCount: 1 + Math.floor(rand() * 10),
+          chunkIndex,
+          chunkCount,
           totalBytes: bytes.byteLength + Math.floor(rand() * 1000),
+          ...binding,
           bytes,
         };
       }

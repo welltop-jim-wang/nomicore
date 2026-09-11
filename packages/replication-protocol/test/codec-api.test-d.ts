@@ -15,6 +15,7 @@ import {
   type ProtocolError,
   type ReplicationMessage,
   type UpdateChunkMsg,
+  type UpdateChunkTransferKind,
   CAP_CHUNKED_UPDATE,
   CONNECTION_ERRORS,
   MESSAGE_REGISTRY,
@@ -50,6 +51,15 @@ describe('@nomicore/replication-protocol 类型契约', () => {
       chunkCount: number;
       totalBytes: number;
       bytes: Uint8Array;
+    }>();
+    // issue #295：wire kind 首字段必填、三态命名类型；绑定块成员可选（存在性由 codec 裁决）
+    expectTypeOf<UpdateChunkMsg['transferKind']>().toEqualTypeOf<UpdateChunkTransferKind>();
+    expectTypeOf<UpdateChunkTransferKind>().toEqualTypeOf<0 | 1 | 2>();
+    expectTypeOf<UpdateChunkMsg>().toMatchTypeOf<{
+      transferKind: UpdateChunkTransferKind;
+      replicationId?: string;
+      replicationEpoch?: number;
+      syncRoundId?: number;
     }>();
     expectTypeOf<ReplicationMessage>().extract<{ kind: 'UPDATE_CHUNK' }>().toEqualTypeOf<UpdateChunkMsg>();
     // 常量导出为数字型（字面量是否收窄取决于声明边界的 const 推断；值恒等 0x1 由运行时契约

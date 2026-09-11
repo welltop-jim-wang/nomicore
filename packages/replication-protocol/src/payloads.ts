@@ -650,17 +650,27 @@ function encodeUpdateAck(writer: PayloadWriter, msg: UpdateAckMsg): void {
 
 // ---------------------------------------------------------------- UPDATE_CHUNK 0x42
 //
-// issue #242（ADR 0013）：自描述分块 UPDATE 单帧。字段序（唯一权威 = ADR 0013 表序）：
-// namespaceId(varString) → transferId(varUint, uint32) → chunkIndex(varUint, uint32)
-// → chunkCount(varUint, uint32) → totalBytes(varUint, uint32) → bytes(varUint8Array)。
+// issue #295 切片 1（ADR 0019 / 协议 §10.3）：kind 首字段单形态。字段序（唯一权威 = 协议
+// §10.3 字段表 + §10.3「单形态」段）：kind(varUint, 0=live-update/1=snapshot/2=sync-diff)
+// → namespaceId(varString) → transferId(varUint, uint32) → chunkIndex(varUint, uint32)
+// → chunkCount(varUint, uint32) → totalBytes(varUint, uint32) → [绑定块] → bytes(varUint8Array)。
+// 绑定块当且仅当 kind≠0 ∧ chunkIndex=0 存在，位置 = totalBytes 之后、bytes 之前：
+// kind=1 → replicationId(varString) + replicationEpoch(varUint)；kind=2 → syncRoundId(varUint)。
 // 单帧语义自洽规则（decode/encode 同一套，R9 对称；违规 → MALFORMED_FRAME）：
+// kind ∈ {0,1,2}；绑定块当且仅当 kind≠0 ∧ chunkIndex=0（encode 侧严格拒绝，不做归一化）；
 // transferId ≥ 1；chunkIndex < chunkCount；chunkCount ≥ 1；bytes 非空；
 // totalBytes ≥ bytes.byteLength。字段限额复用 maxUpdateBytes（超限 → UPDATE_TOO_LARGE，
-// ADR 0013「chunk 大小复用 maxUpdateBytes」）。跨帧规则（transferId 一致性/单调、
-// chunkIndex === 已收数量、totalBytes ≤ maxChunkedUpdateBytes、实收 == totalBytes）
-// 属接收端 assembly 状态机（后续切片），codec 无状态、不承载。
+// kind 无关）。绑定块**内容**核对（REPLICATION_ID_MISMATCH 等）与跨帧规则（transferId
+// 一致性/单调、chunkIndex === 已收数量、实收 == totalBytes）属接收端 assembly 状态机与
+// §8.1/§9.2 后续切片，codec 无状态、不承载（ADR 0019 同版本部署假设，无旧形态兼容面）。
 
 function decodeUpdateChunk(reader: CanonicalReader, limits: FieldLimits | undefined): UpdateChunkMsg {
+  // kind 首字段先行：非法值在首个字节流入处即拒绝（ADR 0019「恶意声明在第一个字节流入前
+  // 即可拒绝」）；ADR 0013 六字段旧形态首字节 0x23=35 与 {0,1,2} 不相交 → 自动作废。
+  const transferKind = reader.readVarUint();
+  if (transferKind !== 0 && transferKind !== 1 && transferKind !== 2) {
+    throwMalformed('transferKind must be 0|1|2');
+  }
   const namespaceId = reader.readVarString();
   checkNamespaceId(namespaceId);
   const transferId = reader.readVarUint32();
@@ -676,6 +686,19 @@ function decodeUpdateChunk(reader: CanonicalReader, limits: FieldLimits | undefi
     throwMalformed('chunkIndex must be < chunkCount');
   }
   const totalBytes = reader.readVarUint32();
+  // 绑定块（当且仅当 kind≠0 ∧ chunkIndex=0；仅按 wire 位置读取——缺块/越位/尾随经
+  // canonical reader 的缓冲欠载与全消费检查收敛为 MALFORMED_FRAME，无需额外分支）。
+  let replicationId: string | undefined;
+  let replicationEpoch: number | undefined;
+  let syncRoundId: number | undefined;
+  if (transferKind !== 0 && chunkIndex === 0) {
+    if (transferKind === 1) {
+      replicationId = reader.readVarString();
+      replicationEpoch = reader.readVarUint();
+    } else {
+      syncRoundId = reader.readVarUint();
+    }
+  }
   const bytes = reader.readVarUint8ArrayCopy();
   if (bytes.byteLength < 1) {
     throwMalformed('bytes must not be empty');
@@ -687,10 +710,27 @@ function decodeUpdateChunk(reader: CanonicalReader, limits: FieldLimits | undefi
   if (maxUpdate !== undefined && bytes.byteLength > maxUpdate) {
     throw new ProtocolError('UPDATE_TOO_LARGE', `bytes ${bytes.byteLength} exceeds maxUpdateBytes ${maxUpdate}`);
   }
-  return { kind: 'UPDATE_CHUNK', namespaceId, transferId, chunkIndex, chunkCount, totalBytes, bytes };
+  return {
+    kind: 'UPDATE_CHUNK',
+    transferKind,
+    namespaceId,
+    transferId,
+    chunkIndex,
+    chunkCount,
+    totalBytes,
+    ...(replicationId === undefined ? {} : { replicationId }),
+    ...(replicationEpoch === undefined ? {} : { replicationEpoch }),
+    ...(syncRoundId === undefined ? {} : { syncRoundId }),
+    bytes,
+  };
 }
 
 function encodeUpdateChunk(writer: PayloadWriter, msg: UpdateChunkMsg, limits: FieldLimits | undefined): void {
+  // kind 值域（D1 类型面已收窄；JS 调用方/cast 防御）。
+  if (!Number.isSafeInteger(msg.transferKind) || msg.transferKind < 0 || msg.transferKind > 2) {
+    throwMalformed('transferKind must be 0|1|2');
+  }
+  const transferKind = msg.transferKind as 0 | 1 | 2;
   checkNamespaceId(msg.namespaceId);
   if (!Number.isSafeInteger(msg.transferId) || msg.transferId < 1 || msg.transferId > 0xffffffff) {
     throwMalformed('transferId must be a uint32 >= 1');
@@ -707,6 +747,42 @@ function encodeUpdateChunk(writer: PayloadWriter, msg: UpdateChunkMsg, limits: F
   if (!Number.isSafeInteger(msg.totalBytes) || msg.totalBytes < 0 || msg.totalBytes > 0xffffffff) {
     throwMalformed('totalBytes must fit in uint32');
   }
+  // 绑定块 iff 严格拒绝（R9 对称：encode/decode 同一套单帧规则；不做 writer 归一化，
+  // 丢弃或补默认会静默改写调用方输入并破坏 decode→encode→decode 等价）。
+  const hasReplicationId = msg.replicationId !== undefined;
+  const hasReplicationEpoch = msg.replicationEpoch !== undefined;
+  const hasSyncRoundId = msg.syncRoundId !== undefined;
+  const bindingAtFirstChunk = transferKind !== 0 && msg.chunkIndex === 0;
+  if (transferKind === 0) {
+    if (hasReplicationId || hasReplicationEpoch || hasSyncRoundId) {
+      throwMalformed('binding block members must be absent when transferKind=0');
+    }
+  } else if (!bindingAtFirstChunk) {
+    if (hasReplicationId || hasReplicationEpoch || hasSyncRoundId) {
+      throwMalformed('binding block members must be absent when chunkIndex > 0');
+    }
+  } else if (transferKind === 1) {
+    if (!hasReplicationId || typeof msg.replicationId !== 'string') {
+      throwMalformed('replicationId is required for transferKind=1 first chunk');
+    }
+    if (
+      !hasReplicationEpoch ||
+      !Number.isSafeInteger(msg.replicationEpoch) ||
+      (msg.replicationEpoch as number) < 0
+    ) {
+      throwMalformed('replicationEpoch must be a non-negative safe integer for transferKind=1 first chunk');
+    }
+    if (hasSyncRoundId) {
+      throwMalformed('syncRoundId must be absent for transferKind=1');
+    }
+  } else {
+    if (hasReplicationId || hasReplicationEpoch) {
+      throwMalformed('replicationId/replicationEpoch must be absent for transferKind=2');
+    }
+    if (!hasSyncRoundId || !Number.isSafeInteger(msg.syncRoundId) || (msg.syncRoundId as number) < 0) {
+      throwMalformed('syncRoundId must be a non-negative safe integer for transferKind=2 first chunk');
+    }
+  }
   if (!(msg.bytes instanceof Uint8Array) || msg.bytes.byteLength < 1) {
     throwMalformed('bytes must be a non-empty Uint8Array');
   }
@@ -717,11 +793,21 @@ function encodeUpdateChunk(writer: PayloadWriter, msg: UpdateChunkMsg, limits: F
   if (maxUpdate !== undefined && msg.bytes.byteLength > maxUpdate) {
     throw new ProtocolError('UPDATE_TOO_LARGE', `bytes ${msg.bytes.byteLength} exceeds maxUpdateBytes ${maxUpdate}`);
   }
+  // 写序 = 读序镜像（D3/D4）。
+  writer.writeVarUint(transferKind, 'transferKind');
   writer.writeVarString(msg.namespaceId, 'namespaceId');
   writer.writeVarUint32(msg.transferId, 'transferId');
   writer.writeVarUint32(msg.chunkIndex, 'chunkIndex');
   writer.writeVarUint32(msg.chunkCount, 'chunkCount');
   writer.writeVarUint32(msg.totalBytes, 'totalBytes');
+  if (bindingAtFirstChunk) {
+    if (transferKind === 1) {
+      writer.writeVarString(msg.replicationId as string, 'replicationId');
+      writer.writeVarUint(msg.replicationEpoch as number, 'replicationEpoch');
+    } else {
+      writer.writeVarUint(msg.syncRoundId as number, 'syncRoundId');
+    }
+  }
   writer.writeVarUint8Array(msg.bytes);
 }
 

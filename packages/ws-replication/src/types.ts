@@ -46,6 +46,15 @@ export interface ReplicationLimits {
    *  4 缺省；约束 ≥ 1；超额 = 到达首 chunk 的 ns 收 `UPDATE_TRANSFER_VIOLATION`（简报显式
    *  裁决），其余并发 assembly 不受影响（ns 级违例、连接保持 ready）。 */
   readonly maxConcurrentAssembliesPerConnection: number; // 4
+  /** issue #295（slice 1，ADR 0019 配置表）：单笔 chunked snapshot transfer 的 `totalBytes`
+   *  申报上界（接收端首 chunk 分配前校验，kind=1）。4 MiB 缺省；约束
+   *  `≤ maxChunksPerUpdate × maxUpdateBytes`（链②：调用方显式表达本键时启动期响亮校验，
+   *  违例构造期 TypeError，零运行时 clamp）。 */
+  readonly maxChunkedBootstrapBytes: number; // 4 MiB
+  /** issue #295（slice 1，ADR 0019 配置表）：单笔 chunked sync-diff transfer 的 `totalBytes`
+   *  申报上界（接收端首 chunk 分配前校验，kind=2）。4 MiB 缺省；约束同 bootstrap 链②
+   *  （各自新键显式表达时响亮生效）。 */
+  readonly maxChunkedSyncDiffBytes: number; // 4 MiB
 }
 
 export interface ReplicationTimeouts {

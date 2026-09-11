@@ -2,7 +2,8 @@
  * 红灯验收契约 — issue #242：UPDATE_CHUNK codec 与 CAP_CHUNKED_UPDATE 协商（issue #233 切片 1）。
  *
  * 契约锚点：
- * - ADR 0013（docs/adr/0013-chunked-live-update-transfer.md）——UPDATE_CHUNK 字段顺序唯一权威：
+ * - ADR 0013（docs/adr/0013-chunked-live-update-transfer.md）+ ADR 0019（issue #295）——UPDATE_CHUNK
+ *   字段顺序唯一权威（issue #295 起单形态，协议 §10.3）：kind(varUint, 0=live-update) →
  *   namespaceId(varString) → transferId(varUint) → chunkIndex(varUint) → chunkCount(varUint)
  *   → totalBytes(varUint) → bytes(varUint8Array)；HELLO 追加 capability bit 0x00000001；
  *   namespace 错误码 UPDATE_TRANSFER_VIOLATION（fatal/no/failed）与
@@ -79,16 +80,17 @@ interface ChunkVector {
   name: string;
   sequence: number;
   message: UpdateChunkMsg;
-  /** lib0 canonical payload（字段顺序 = ADR 0013 表序）。 */
+  /** lib0 canonical payload（字段顺序 = ADR 0019 / 协议 §10.3 单形态序：kind → ns → …）。 */
   payloadHex: string;
 }
 
-/** 向量 A：单字节 varUint 基本形态（transferId=1, index=0, count=3, totalBytes=600, 3 字节载荷）。 */
+/** 向量 A：单字节 varUint 基本形态（kind=0, transferId=1, index=0, count=3, totalBytes=600, 3 字节载荷）。 */
 const VECTOR_A: ChunkVector = {
   name: 'UPDATE_CHUNK_BASIC',
   sequence: 19,
   message: {
     kind: 'UPDATE_CHUNK',
+    transferKind: 0,
     namespaceId: NS,
     transferId: 1,
     chunkIndex: 0,
@@ -96,15 +98,16 @@ const VECTOR_A: ChunkVector = {
     totalBytes: 600,
     bytes: Uint8Array.from([0x0a, 0x0b, 0x0c]),
   },
-  payloadHex: NS_HEX + '01' + '00' + '03' + 'd804' + '03' + '0a0b0c',
+  payloadHex: '00' + NS_HEX + '01' + '00' + '03' + 'd804' + '03' + '0a0b0c',
 };
 
-/** 向量 B：多字节 LEB128 形态（300/63/64/4 MiB，5 字节载荷）。 */
+/** 向量 B：多字节 LEB128 形态（kind=0, 300/63/64/4 MiB，5 字节载荷）。 */
 const VECTOR_B: ChunkVector = {
   name: 'UPDATE_CHUNK_MULTIBYTE',
   sequence: 20,
   message: {
     kind: 'UPDATE_CHUNK',
+    transferKind: 0,
     namespaceId: NS,
     transferId: 300,
     chunkIndex: 63,
@@ -112,15 +115,16 @@ const VECTOR_B: ChunkVector = {
     totalBytes: 4194304,
     bytes: Uint8Array.from([0xde, 0xad, 0xbe, 0xef, 0x01]),
   },
-  payloadHex: NS_HEX + 'ac02' + '3f' + '40' + '80808002' + '05' + 'deadbeef01',
+  payloadHex: '00' + NS_HEX + 'ac02' + '3f' + '40' + '80808002' + '05' + 'deadbeef01',
 };
 
-/** 向量 C：uint32 上界形态（0xffffffff / 0xfffffffe / 0xffffffff / 0xffffffff，1 字节载荷）。 */
+/** 向量 C：uint32 上界形态（kind=0, 0xffffffff / 0xfffffffe / 0xffffffff / 0xffffffff，1 字节载荷）。 */
 const VECTOR_C: ChunkVector = {
   name: 'UPDATE_CHUNK_U32_MAX',
   sequence: 21,
   message: {
     kind: 'UPDATE_CHUNK',
+    transferKind: 0,
     namespaceId: NS,
     transferId: 0xffffffff,
     chunkIndex: 0xfffffffe,
@@ -128,19 +132,19 @@ const VECTOR_C: ChunkVector = {
     totalBytes: 0xffffffff,
     bytes: Uint8Array.from([0xff]),
   },
-  payloadHex: NS_HEX + 'ffffffff0f' + 'feffffff0f' + 'ffffffff0f' + 'ffffffff0f' + '01' + 'ff',
+  payloadHex: '00' + NS_HEX + 'ffffffff0f' + 'feffffff0f' + 'ffffffff0f' + 'ffffffff0f' + '01' + 'ff',
 };
 
 const VECTORS = [VECTOR_A, VECTOR_B, VECTOR_C];
 
-/** 锁定的完整 frame（20-byte 大端头 + payload；头由规范纯算术构造）。 */
+/** 锁定的完整 frame（20-byte 大端头 + payload；头由规范纯算术构造，payloadLength 随单形态 +1 字节）。 */
 const PINNED_FRAME_HEX: Record<string, string> = {
   UPDATE_CHUNK_BASIC:
-    '4e4d435201420000000000130000002d00000000' + VECTOR_A.payloadHex,
+    '4e4d435201420000000000130000002e00000000' + VECTOR_A.payloadHex,
   UPDATE_CHUNK_MULTIBYTE:
-    '4e4d435201420000000000140000003200000000' + VECTOR_B.payloadHex,
+    '4e4d435201420000000000140000003300000000' + VECTOR_B.payloadHex,
   UPDATE_CHUNK_U32_MAX:
-    '4e4d435201420000000000150000003a00000000' + VECTOR_C.payloadHex,
+    '4e4d435201420000000000150000003b00000000' + VECTOR_C.payloadHex,
 };
 
 function chunkFrame(v: ChunkVector): Uint8Array {
@@ -152,9 +156,17 @@ function decodeChunk(bytes: Uint8Array, extra?: { limits?: { maxUpdateBytes?: nu
   return decodeMessage(bytes, { selectedCapabilities: CAP_BIT, ...extra });
 }
 
-/** 敌意 payload 构造：默认为向量 A 的字段，逐字段覆盖。 */
-function hostilePayload(overrides: Partial<Record<'nsHex' | 'transferIdHex' | 'chunkIndexHex' | 'chunkCountHex' | 'totalBytesHex' | 'tailHex', string>>): string {
+/**
+ * 敌意 payload 构造：默认为向量 A 的字段，逐字段覆盖。
+ * 缺省 `kindHex='00'`（合法 kind=0 首字段）——单形态下无前缀 payload 的首字节
+ * （0x23=35 ∉ {0,1,2}）会在 kind 门被偶然拒绝，字段级规则不再被抵达（伪绿）；
+ * 缺省合法 kind 前缀保证非 canonical varUint / 非法 UTF-8 / 超声明 bytes / 单帧自洽 /
+ * 尾随等被测规则仍被实际执行；kind 变量可经 `kindHex` 覆盖（kind≠0 语义面由
+ * codec-issue299-ac-red.test.ts 契约向量锁定，不在本文件扩张）。
+ */
+function hostilePayload(overrides: Partial<Record<'kindHex' | 'nsHex' | 'transferIdHex' | 'chunkIndexHex' | 'chunkCountHex' | 'totalBytesHex' | 'tailHex', string>>): string {
   return (
+    (overrides.kindHex ?? '00') +
     (overrides.nsHex ?? NS_HEX) +
     (overrides.transferIdHex ?? '01') +
     (overrides.chunkIndexHex ?? '00') +
@@ -170,7 +182,7 @@ function hostileFrame(payloadHex: string, sequence = 19): Uint8Array {
 
 // ================================================================ AC1：golden vectors + canonical roundtrip
 
-describe('AC1：UPDATE_CHUNK 全字段 golden 向量锁定 + canonical roundtrip（字段序 = ADR 0013）', () => {
+describe('AC1：UPDATE_CHUNK 全字段 golden 向量锁定 + canonical roundtrip（字段序 = ADR 0019 / §10.3 单形态）', () => {
   it('注册表：UPDATE_CHUNK=0x42、code→name 逆映射、scope=namespace/direction=either/ack=UPDATE_ACK；CAP_CHUNKED_UPDATE=0x00000001', () => {
     expect(MESSAGE_TYPES.UPDATE_CHUNK).toBe(UPDATE_CHUNK_CODE);
     expect(MESSAGE_NAMES[String(UPDATE_CHUNK_CODE)]).toBe('UPDATE_CHUNK');
@@ -222,11 +234,11 @@ describe('AC1：UPDATE_CHUNK 全字段 golden 向量锁定 + canonical roundtrip
     }
   });
 
-  it('字段顺序锁定：varString(ns) → transferId → chunkIndex → chunkCount → totalBytes → varUint8Array(bytes)', () => {
-    expect(VECTOR_A.payloadHex.startsWith(NS_HEX)).toBe(true);
-    expect(VECTOR_A.payloadHex.slice(NS_HEX.length)).toBe('01' + '00' + '03' + 'd804' + '03' + '0a0b0c');
-    expect(VECTOR_B.payloadHex.slice(NS_HEX.length)).toBe('ac02' + '3f' + '40' + '80808002' + '05' + 'deadbeef01');
-    expect(VECTOR_C.payloadHex.slice(NS_HEX.length)).toBe(
+  it('字段顺序锁定：kind(varUint) → varString(ns) → transferId → chunkIndex → chunkCount → totalBytes → varUint8Array(bytes)', () => {
+    expect(VECTOR_A.payloadHex.startsWith('00' + NS_HEX)).toBe(true);
+    expect(VECTOR_A.payloadHex.slice(2 + NS_HEX.length)).toBe('01' + '00' + '03' + 'd804' + '03' + '0a0b0c');
+    expect(VECTOR_B.payloadHex.slice(2 + NS_HEX.length)).toBe('ac02' + '3f' + '40' + '80808002' + '05' + 'deadbeef01');
+    expect(VECTOR_C.payloadHex.slice(2 + NS_HEX.length)).toBe(
       'ffffffff0f' + 'feffffff0f' + 'ffffffff0f' + 'ffffffff0f' + '01' + 'ff',
     );
   });

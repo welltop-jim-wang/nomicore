@@ -754,6 +754,7 @@ describe('issue #244 切片 3：分块传输有界性加固与中止清理矩阵
       const frame = encodeMessage(
         {
           kind: 'UPDATE_CHUNK',
+          transferKind: 0, // issue #295：单形态 kind 首字段（live-update 路径）
           namespaceId: ctx.nsId,
           transferId: 1,
           chunkIndex: 0,
@@ -1048,6 +1049,7 @@ describe('issue #244 切片 3：分块传输有界性加固与中止清理矩阵
       const frame = encodeMessage(
         {
           kind: 'UPDATE_CHUNK',
+          transferKind: 0, // issue #295：单形态 kind 首字段（live-update 路径）
           namespaceId: ctx.nsId,
           transferId: 1,
           chunkIndex: 0,

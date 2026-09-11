@@ -42,6 +42,8 @@ import {
   validateInstanceId,
   validateLimits,
   validateTimeouts,
+  validateChunkedBootstrapChain,
+  validateChunkedSyncDiffChain,
   validateChunkedTransferChain,
 } from './validate.js';
 
@@ -203,6 +205,15 @@ class HubReplicationImpl implements HubReplication {
         Object.prototype.hasOwnProperty.call(options.limits, 'maxChunksPerUpdate'))
     ) {
       validateChunkedTransferChain(limits);
+    }
+    // issue #295（D6 裁决，SA8 R38）：两条聚合上限链②各自独立——仅当调用方**显式表达
+    // 对应新键**时对合并结果校验（协议 §17「显式配置…时对应链式校验响亮生效；未表达新键
+    // 的存量配置不误判」；#244 家族门与链①原样保留在上方块内）。
+    if (options.limits != null && Object.prototype.hasOwnProperty.call(options.limits, 'maxChunkedBootstrapBytes')) {
+      validateChunkedBootstrapChain(limits);
+    }
+    if (options.limits != null && Object.prototype.hasOwnProperty.call(options.limits, 'maxChunkedSyncDiffBytes')) {
+      validateChunkedSyncDiffChain(limits);
     }
     this.limits = limits;
     this.timeouts = timeouts;
@@ -1011,6 +1022,9 @@ class HubConnectionImpl implements HubConnection {
     if (!this.isChunkedNegotiated()) return 0;
     return this.sender.tryEmitData({
       kind: 'UPDATE_CHUNK',
+      // issue #295 切片 1：单形态 kind 首字段——live-update 路径本切片唯一 kind
+      // （kind=1/2 发送端属 §8.1/§9.2 后续切片）。
+      transferKind: 0,
       namespaceId,
       transferId: chunk.transferId,
       chunkIndex: chunk.chunkIndex,

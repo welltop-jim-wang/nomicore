@@ -372,6 +372,11 @@ describe('`@nomicore/ws-replication` observer seam（issue #177）', () => {
     // ReplicationLimits.maxChunkedUpdateBytes（必填 number——缺省 4 MiB）
     expectTypeOf<ReplicationLimits['maxChunkedUpdateBytes']>().toEqualTypeOf<number>();
     expectTypeOf<typeof DEFAULT_REPLICATION_LIMITS['maxChunkedUpdateBytes']>().toEqualTypeOf<number>();
+    // issue #295：两聚合上限键进入公共类型面（必填 number；缺省 4 MiB 经 DEFAULT 提供）
+    expectTypeOf<ReplicationLimits['maxChunkedBootstrapBytes']>().toEqualTypeOf<number>();
+    expectTypeOf<ReplicationLimits['maxChunkedSyncDiffBytes']>().toEqualTypeOf<number>();
+    expectTypeOf<typeof DEFAULT_REPLICATION_LIMITS['maxChunkedBootstrapBytes']>().toEqualTypeOf<number>();
+    expectTypeOf<typeof DEFAULT_REPLICATION_LIMITS['maxChunkedSyncDiffBytes']>().toEqualTypeOf<number>();
   });
 
   it('观察面不回传控制能力：回调返回 void；事件对象全部 primitive 字段（无函数/对象引用字段）', () => {
