@@ -12,14 +12,21 @@
  * `peer.start()`（peer）——任何网络端点开启之前授权查找已完备（硬崩溃 backoff
  * 重拨/首拨/显式恢复重拨命中 boot 窗口时，authorize 不可能 miss）。
  *
- * 停机（§3.6 单一拆卸链）：宿主显式执行复制 drain → registry shutdown →
- * persistence dispose → timer/clock teardown；复制插件不另注册重复 disposer；
- * `stop()` 幂等（single-flight promise）。
+ * 停机（§3.6 单一拆卸链）：宿主显式执行复制 drain（含包内 apply 排空 + close session →
+ * release lease）→ 已接纳 REST 工作有界排空（issue #270，ADR 0015 L210；boot 窗口未构造
+ * 时跳过）→ registry shutdown → persistence dispose → timer/clock teardown；复制插件不
+ * 另注册重复 disposer；`stop()` 幂等（single-flight promise）。
+ *
+ * REST hosting（issue #270，ADR 0015 L18–32）：hub listener 经 raw path 分流承载 REST
+ * route family（REST 优先，`matched:false` 回落 `/healthz`+404；upgrade 维持 `/replication`
+ * 单一门）；REST router 由组合根以**同一个** `this.registry` 引用 + Instance role +
+ * 显式 no-op observer 构造一次注入，不经 Cordis Context 查找、不运行时替换。
  */
 import { Context } from '@deepseek-ai/cordis';
 import TimerService from '@deepseek-ai/cordis-plugin-timer';
 import { createSystemClockPlugin, requireClock } from '@nomicore/clock';
-import { createInstancePlugin } from '@nomicore/instance';
+import { createInstancePlugin, requireNomicoreInstance } from '@nomicore/instance';
+import { createRestRouter } from '@nomicore/namespace-api';
 import {
   createFilePersistencePlugin,
   createMemoryPersistencePlugin,
@@ -55,6 +62,7 @@ import {
 import { createStdoutEventSink, type EventSink } from './lifecycle.js';
 import { createPeerDial } from './transport/ws-client.js';
 import { createHubListenAdapter } from './transport/ws-server.js';
+import { createRestHosting, type RestHosting } from './rest-hosting.js';
 import {
   createHostDiagnosticsManager,
   type HostDiagnosticsManager,
@@ -75,6 +83,11 @@ const DRAIN_MARGIN_MS = 500;
 const DEFAULT_PEER_CLOSE_TIMEOUT_MS = 5_000;
 /** reset 编排 controller 收口结算预算的边距（closeTimeout 兜底之外的保守余量）。 */
 const RESET_SETTLE_MARGIN_MS = 2_000;
+/**
+ * 已接纳 REST 工作的有界排空预算（模块常量，零新增配置键——issue #270 §7-D4 步 4）。
+ * 上界 < main.ts 停机 watchdog（60s）；无 in-flight 时即时返回（N2 有界锚）。
+ */
+const REST_DRAIN_BUDGET_MS = 10_000;
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -107,6 +120,13 @@ export interface NomicoreApp {
   stop(): Promise<void>;
   /** stdout NDJSON 事件面（进程内宿主测试用）。 */
   readonly sink: EventSink;
+  /**
+   * 组合根持有的唯一 `NamespaceRegistry` 引用（issue #270 AC1 观测面，ADR 0015 L20）：
+   * registry fiber 就绪前/启动失败为 `undefined`；就绪后终生同一实例（REST router 与
+   * WebSocket Module 构造注入的即该实例，无任何运行时替换路径）；`stop()` 后不清空
+   * （`getStatus().state === 'stopped'` 可观测）。消费面 = `main.ts` + 进程内宿主测试。
+   */
+  readonly registry: NamespaceRegistry | undefined;
   /** stdin NDJSON 控制通道：输入一行，回执一行（每行恰一回执；进程不因控制输入退出）。 */
   handleControlLine(line: string): Promise<Readonly<Record<string, unknown>> | undefined>;
 }
@@ -144,6 +164,9 @@ class AppHandle {
   private hubService: HubReplicationService | undefined;
   private peerService: PeerReplicationService | undefined;
   private hubListener: Awaited<ReturnType<HubListenAdapter['listen']>> | undefined;
+  /** issue #270：plain-HTTP 分流 + 已接纳 REST 工作记账（boot 窗口为 undefined——与
+   *  `hubService`/`hubListener` 同款可选生命周期，停机链以 optional chaining 消费）。 */
+  private restHost: RestHosting | undefined;
   /** #155：Host 诊断管理器（`config.diagnostics.enabled === true` 时构造；D7）。 */
   private diagnostics: HostDiagnosticsManager | undefined;
 
@@ -166,6 +189,10 @@ class AppHandle {
       stop: () => handle.stop(),
       get sink() {
         return handle.sink;
+      },
+      get registry() {
+        // 观测面 = boot 时 `requireNomicoreRegistry(ctx)` 取得的同一实例（boot 前 undefined）。
+        return handle.registry;
       },
       handleControlLine: (line: string) => handle.handleControlLine(line),
     };
@@ -280,9 +307,36 @@ class AppHandle {
     }
     if (this.stopRequested) return;
 
+    // issue #270（AC1/AC2/AC3）：REST 与 WebSocket Module 共享**同一个** Registry 引用
+    // （构造注入 `this.registry`，此后零再赋值路径——不经 Cordis Context 查找、不运行时
+    // 替换）；role 单真相自 Instance service 读取（ADR 0012 L33）；两个同步 void observer
+    // 显式注入 no-op（ADR 0015 L186——漏注入由 createRestRouter 构造期 TypeError → ready
+    // reject，fail loud）。restRouter/restHost 构造一次、终生冻结；boot 窗口（本行之前）
+    // 停机时 restHost === undefined，停机链步 4 经 optional chaining 跳过。
+    const registry = this.registry;
+    if (registry === undefined) throw new Error('registry unavailable after fiber ready');
+    const restRouter = createRestRouter({
+      role: requireNomicoreInstance(this.ctx).role,
+      registry,
+      metricsObserver: () => {},
+      diagnosticObserver: () => {},
+    });
+    this.restHost = createRestHosting({
+      restRouter,
+      isStopping: () => this.stopRequested,
+      onRejection: (error) => {
+        this.sink({
+          event: 'rest-request-failed',
+          ...(error instanceof Error ? { message: error.message } : { message: String(error) }),
+        });
+      },
+    });
+    const restHost = this.restHost;
+
     // Package plugin owns the listener/controller, but is not installed until every
-    // provision-derived authorization binding is complete.
-    const listenAdapter = createHubListenAdapter();
+    // provision-derived authorization binding is complete. The listener carries the
+    // composition-root plain-HTTP hook (REST family first；`matched:false` → /healthz/404).
+    const listenAdapter = createHubListenAdapter({ handleRequest: restHost.handle });
     const hubPlugin = createHubReplicationPlugin(
       {
         listen: {
@@ -423,6 +477,15 @@ class AppHandle {
       if (this.peerService !== undefined) {
         await this.peerService.stop();
       }
+      // 1b. issue #270（AC3 步 4，ADR 0015 L210）：已接纳 REST 工作的有界排空——包级 WS
+      // 停机（上一步 `hubService.stop()` 内已完成已接纳 apply 排空 + close session →
+      // release lease）**之后**、`registry.shutdown()` 之前等待 handlePlain 入口已登记的
+      // in-flight 请求结算（T3 的 100-continue 已接纳 create 在此窗口内完成 201）。
+      // boot 窗口守卫（F2）：restHost 在 bootHub 中段才构造——停机请求落于 boot 窗口时
+      // 为 undefined，optional chaining 使该步跳过（与同函数既有 optional 纪律一致，
+      // 保证 boot 中途 stop 干净结算，不产生 app-stop-failed）。预算尽则逐个 abort
+      // （诚实传输层失败）后即继续；registry.shutdown() 的已接纳槽结算为第二道保障。
+      await this.restHost?.drain(REST_DRAIN_BUDGET_MS);
       this.sink({ event: 'replication-drained' });
       // 2. registry shutdown（lease release、已接纳 apply 排空、idle runtime 回收）。
       if (this.registry !== undefined) {
