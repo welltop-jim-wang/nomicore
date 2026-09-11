@@ -12,14 +12,17 @@
  * 零独立 role 配置源；类型只认 `InstanceRole` 联合（自 `@nomicore/namespace-registry`
  * 公共 re-export 导入，与 `@nomicore/instance` 同一联合）。
  *
- * **切片边界（issue #268；剩余未映射结局仍 fail loud）**：本版实现 step 1–2（route/
- * method 匹配 + role gate）、step 3（owner/query/Content-Type/Encoding 检查）与
- * step 4–10（有界读取 + 严格 UTF-8 + 平台 JSON + 形状/资源检查 + 成功路径），
- * 4xx/422 一律经 `./rest-problem.js` 构造固定 problem shape。仍以 rejection 结算的
- * 未映射结局：body 读取阶段 abort、Registry fatal、503 `REGISTRY_NOT_ACCEPTING` 与
- * 安全 500 族（`NAMESPACE_CREATE_FAILED`/`NAMESPACE_CREATE_OUTCOME_UNKNOWN`/
- * `INTERNAL_ERROR`、`NAMESPACE_CREATE_INVALID_INPUT`/`NAMESPACE_ALREADY_EXISTS`）——
- * 后续票收敛；observer **事件**契约（FR-4）亦延后（本版零发射）。
+ * **切片边界（#267 骨架 → #268 入站校验 → #269 失败语义/取消/观测）**：step 1–2（route/
+ * method 匹配 + role gate）与 step 6–10 的成功路径来自 #267；#268 叠加 step 3（owner/
+ * query/Content-Type/Encoding 检查）与 step 4–5（有界读取 + 严格 UTF-8 + 平台 JSON +
+ * 形状/资源检查 + limits），4xx/422 一律经 `./rest-problem.js` 构造固定 problem shape；
+ * #269 叠加 **Registry 失败映射**（503 / 500 `NAMESPACE_CREATE_FAILED` / 500
+ * `NAMESPACE_CREATE_OUTCOME_UNKNOWN` / 500 `INTERNAL_ERROR`）、**body 读取阶段的
+ * `Request.signal` 取消边界**（中断以有界 `handle` rejection 结算，Registry 零触达）
+ * 与 **observer 事件发射**（metrics 低基数事件 / diagnostic 三类事件，ADR 0015
+ * L186–190）。仍未映射的窄 issue（如 `NAMESPACE_INVALID_IDENTITY`）保持 `handle`
+ * rejection；metrics `rejected` outcome 的发射策略（含 4xx/422 族）归后续票。
+ * 读取段内 abort 优先于 413 的排序不变量由 `src/create-namespace.ts` 的共享读取 seam 保证。
  */
 import type { InstanceRole, NamespaceRegistry } from '@nomicore/namespace-registry';
 import { orchestrateCreateNamespace, type ResolvedRestRouterLimits } from './create-namespace.js';
@@ -33,7 +36,9 @@ import {
 
 /**
  * 资源 limits 构造面（ADR 0015 L22–28 五项构造注入之一）。Host 用 Partial 覆盖默认值；
- * 未知键与越界值在**构造时**抛普通 `TypeError`；有效值为七键合并默认后的冻结对象。
+ * 未知键与越界值在**构造时**抛普通 `TypeError`；有效值为七键合并默认后的冻结对象，且
+ * 恒满足 `maxSchemaTextBytes <= maxBodyBytes`（只给出一键时默认值向显式值收敛，两键都
+ * 显式给出且矛盾时抛 `TypeError`——见 `resolveLimits`）。
  */
 export interface RestRouterLimits {
   readonly maxBodyBytes?: number;
@@ -46,22 +51,66 @@ export interface RestRouterLimits {
 }
 
 /**
+ * metrics-safe observer 事件（ADR 0015 L188）：**低基数、无敏感字段**。
+ *
+ * 键集恰为 `{operation, outcome, code?, status?}`——绝不携带 owner、namespaceId、
+ * issues、schema/root 或 cause。`operation` 为同一 router 恒定的常量
+ * （`'namespace-create'`）；`code` 出现时必须等于同一 Response body 的稳定 code；
+ * abort 无 Response 因而无 `code` 无 `status`；成功（2xx）不携带 `code`。
+ */
+export interface RestMetricsEvent {
+  readonly operation: string;
+  readonly outcome: 'succeeded' | 'rejected' | 'unavailable' | 'failed' | 'aborted';
+  /** 非 2xx 且非 abort 时出现；必须等于 response body 的稳定 code。 */
+  readonly code?: string;
+  /** 存在 HTTP Response 时出现（abort 无 status）。 */
+  readonly status?: number;
+}
+
+/**
+ * diagnostic observer 事件（ADR 0015 L161/L190）：**敏感运维面**，仅三类 kind。
+ *
+ * - `kind`：`registry-fatal`（Registry branded fatal）| `unknown-exception`
+ *   （unknown exception 与内部契约违例，ADR 0015 L178 同类分组）|
+ *   `lease-release-failure`（Lease release 失败，仍 201）。
+ * - `cause` 恒为「跨过边界的那颗错误对象」的 **exact 引用**——router 不序列化、
+ *   不改写、不展开字段。
+ * - 可选字段只在其事实来源诚实可得时出现：`operation`/`phase`/`committed` 取自
+ *   branded fatal（仅 `registry-fatal`）；`namespaceId` 取自 release 前的 DTO 副本
+ *   （仅 `lease-release-failure`）；`owner` 为本请求提交给 `Registry.create` 的 owner。
+ * - **绝不携带** schema 原文、root 或完整 validation issues。
+ *
+ * Host 须把该 Adapter 视为敏感运维接口，自行负责访问控制、采样与脱敏（ADR 0015 L190）。
+ */
+export interface RestDiagnosticEvent {
+  readonly kind: 'registry-fatal' | 'unknown-exception' | 'lease-release-failure';
+  readonly cause: unknown;
+  readonly owner?: Readonly<{ userId: string }>;
+  readonly operation?: string;
+  readonly phase?: string;
+  readonly committed?: boolean;
+  readonly namespaceId?: string;
+}
+
+/**
  * 构造选项（ADR 0015 L22–28）。构造时同步完成读取 → 校验 → 复制 → 冻结；之后零动态更新。
  * 构造配置错误一律抛普通 `TypeError`（不承诺稳定文案，ADR 0015 L30）。
  *
  * `metricsObserver` / `diagnosticObserver` 必须显式注入——传 no-op 也必须是显式决定
- * （ADR 0015 L186；B-2）。本票不发射任何事件（事件发射契约属 FR-4）：零参 `() => void`
- * 签名使后续事件化收窄（增加参数）不破坏既有少参调用方。
+ * （ADR 0015 L186；B-2）。两个 observer 均为同步 void 事件回调：事件类型见
+ * `RestMetricsEvent` / `RestDiagnosticEvent`；observer throw 一律隔离，不改变 HTTP 结果
+ * （ADR 0015 L186）。零参 `() => void`（显式 no-op）与 `(...args) => void` 记录器按
+ * TS 少参函数可赋值规则保持兼容。
  */
 export interface RestRouterOptions {
   /** 值必须同源自 composition root 的 Instance identity（ADR 0012；禁止第二配置源）。 */
   readonly role: InstanceRole;
   readonly registry: NamespaceRegistry;
-  /** 同步 void observer；事件契约延后（本票零发射）。 */
-  readonly metricsObserver: () => void;
-  /** 同步 void observer；事件契约延后（本票零发射）。 */
-  readonly diagnosticObserver: () => void;
-  /** Partial 覆盖默认 limits；未知键/越界值/跨字段违约在构造时抛普通 `TypeError`。 */
+  /** 同步 void observer：每请求恰一个低基数 metrics 事件（ADR 0015 L188）。 */
+  readonly metricsObserver: (event: RestMetricsEvent) => void;
+  /** 同步 void observer：仅三类敏感 diagnostic 事件（ADR 0015 L190）。 */
+  readonly diagnosticObserver: (event: RestDiagnosticEvent) => void;
+  /** Partial 覆盖默认 limits；未知键/越界值，以及两键显式给出时的跨字段矛盾，构造时抛普通 `TypeError`。 */
   readonly limits?: RestRouterLimits;
 }
 
@@ -108,14 +157,21 @@ const LIMIT_KEYS = [
 interface RestRouterConfig {
   readonly role: InstanceRole;
   readonly registry: NamespaceRegistry;
-  readonly metricsObserver: () => void;
-  readonly diagnosticObserver: () => void;
+  readonly metricsObserver: (event: RestMetricsEvent) => void;
+  readonly diagnosticObserver: (event: RestDiagnosticEvent) => void;
   readonly limits: ResolvedRestRouterLimits;
 }
 
 /**
  * limits 构造门（ADR 0015 L103–113）：Partial 覆盖 + 未知键/越界值 TypeError +
- * 合并默认后的跨字段不变量 `maxSchemaTextBytes <= maxBodyBytes` + 冻结有效值。
+ * 跨字段不变量 `maxSchemaTextBytes <= maxBodyBytes`（对**有效值**恒成立）+ 冻结有效值。
+ *
+ * 跨字段不变量（#268 AC2）的判定口径：错误门守卫的是调用方的**矛盾指令**——两键都被
+ * 显式给出且 `maxSchemaTextBytes > maxBodyBytes` ⇒ TypeError；只给出一键时，另一键的
+ * 默认值按不变量向显式值**收敛**（schemaText 必须装进 body：显式 body 上限压缩默认
+ * schema 上限；显式 schema 上限抬升默认 body 上限），既不静默接受违反 ADR 的有效配置，
+ * 也不因不可达的默认值组合拒绝调用方（#269 C5 契约要求 `{maxBodyBytes: 16}` 可构造，
+ * 且读取段内 abort 仍先于 413）。
  */
 function resolveLimits(candidate: unknown): ResolvedRestRouterLimits {
   if (candidate === undefined) return DEFAULT_LIMITS;
@@ -145,8 +201,18 @@ function resolveLimits(candidate: unknown): ResolvedRestRouterLimits {
     }
     resolved[key] = value;
   }
-  if (resolved.maxSchemaTextBytes > resolved.maxBodyBytes) {
-    throw new TypeError('limits.maxSchemaTextBytes 不得大于 maxBodyBytes（按合并默认后的有效值判定）');
+  const bodyExplicit = record['maxBodyBytes'] !== undefined;
+  const schemaTextExplicit = record['maxSchemaTextBytes'] !== undefined;
+  if (bodyExplicit && schemaTextExplicit) {
+    if (resolved.maxSchemaTextBytes > resolved.maxBodyBytes) {
+      throw new TypeError('limits.maxSchemaTextBytes 不得大于 maxBodyBytes（两键显式给出时的矛盾指令）');
+    }
+  } else if (bodyExplicit) {
+    // 显式 body 上限压缩默认 schema 上限：schemaText 必须装进 body，默认值不可达。
+    resolved.maxSchemaTextBytes = Math.min(resolved.maxSchemaTextBytes, resolved.maxBodyBytes);
+  } else if (schemaTextExplicit) {
+    // 显式 schema 上限抬升默认 body 上限：schemaText 必须装得进 body。
+    resolved.maxBodyBytes = Math.max(resolved.maxBodyBytes, resolved.maxSchemaTextBytes);
   }
   return Object.freeze({ ...resolved });
 }
@@ -224,10 +290,12 @@ function roleForbiddenResponse(): Response {
  * 构造 REST router（ADR 0015 L22–32）：读取 → 校验 → 复制 → 冻结。
  *
  * 判定顺序（B-3，不可 reorder）：raw path 匹配 → method gate（405）→ role gate（403）→
- * step 3 owner/query/Content-Type/Content-Encoding → step 4 有界读取 → step 5 形状/
- * 资源检查 → 派生身份 → `Registry.create` → DTO 复制 → 恰一次 `lease.release()` → 201。
- * Peer 在 role gate 前零 owner 解码、零 body 成员调用、零 Registry 触达；step 3 失败
- * 同样零 body 读取与零 Registry 触达。
+ * step 3 owner/query/Content-Type/Content-Encoding → step 4 有界读取（读取段内
+ * `Request.signal` abort 优先于任何读取期检查，含 413）→ step 5 形状/资源检查 →
+ * 派生身份 → `Registry.create` → DTO 复制 → 恰一次 `lease.release()` → 201。Peer 在
+ * role gate 前零 owner 解码、零 body 成员调用、零 Registry 触达；step 3 失败同样零 body
+ * 读取与零 Registry 触达；body 读取阶段 abort 以有界 rejection 结算且 Registry 零触达；
+ * Registry 接纳后不再观察 signal（不传播客户端取消，等待 create settle 与 release）。
  */
 export function createRestRouter(options: RestRouterOptions): RestRouter {
   const candidate: unknown = options;
@@ -311,7 +379,14 @@ export function createRestRouter(options: RestRouterOptions): RestRouter {
     }
     return {
       matched: true,
-      response: await orchestrateCreateNamespace(config.registry, ownerUserId, request, config.limits),
+      response: await orchestrateCreateNamespace({
+        registry: config.registry,
+        ownerUserId,
+        request,
+        limits: config.limits,
+        metricsObserver: config.metricsObserver,
+        diagnosticObserver: config.diagnosticObserver,
+      }),
     };
   }
 

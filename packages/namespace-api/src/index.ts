@@ -6,7 +6,9 @@
  */
 export { createRestRouter } from './rest.js';
 export type {
+  RestDiagnosticEvent,
   RestHandledResult,
+  RestMetricsEvent,
   RestRouter,
   RestRouterLimits,
   RestRouterOptions,

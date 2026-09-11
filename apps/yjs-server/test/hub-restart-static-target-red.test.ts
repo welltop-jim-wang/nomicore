@@ -116,6 +116,52 @@ async function waitForExit(proc: Proc, timeoutMs: number, what: string): Promise
   return proc.exitCode;
 }
 
+/**
+ * 等待一条「已武装且足够长」的 backoff 定时器事件，返回其 `delayMs`。
+ *
+ * 协议 §15 规定 Peer 重拨延迟是 full jitter：`delay = random(0, cap)`——因此
+ * `backoff.baseMs/maxMs` 只定义抖动帽，**不提供延迟下界**。Hub 重启（进程 boot +
+ * 状态查询 + 写操作）必须整体落在**已武装**的 delayMs 窗口内，否则 Peer 的重拨会与
+ * 写操作竞争，连接态可能是 connecting/handshaking/ready（CI shard 2/6 实测在 Hub
+ * ready 后立即查询就观测到 handshaking）。这里以事件流中最新一条
+ * connection-backoff-scheduled 为准，并要求它未被后续 connection-state-changed
+ * 取代（即定时器尚未 fire）；不满足则等下一次武装。
+ */
+async function waitForArmedBackoffWindow(
+  proc: Proc,
+  fromIndex: number,
+  minDelayMs: number,
+  timeoutMs: number,
+  what: string,
+): Promise<number> {
+  const start = Date.now();
+  for (;;) {
+    const events = proc.events.slice(fromIndex);
+    for (let i = events.length - 1; i >= 0; i -= 1) {
+      const event = events[i];
+      if (event === undefined || event.event !== 'connection-backoff-scheduled') continue;
+      const superseded = events.slice(i + 1).some((e) => e.event === 'connection-state-changed');
+      const delayMs = event.delayMs;
+      if (!superseded && typeof delayMs === 'number' && delayMs >= minDelayMs) return delayMs;
+      break; // 最新一条武装不满足 ⇒ 等它 fire 后的下一次武装
+    }
+    if (proc.exitCode !== null) {
+      throw new Error(
+        `process exited with code ${proc.exitCode} before ${what}\nstderr:\n${proc.stderr.join('')}`,
+      );
+    }
+    if (Date.now() - start > timeoutMs) {
+      const observed = events
+        .filter((e) => e.event === 'connection-backoff-scheduled')
+        .map((e) => e.delayMs);
+      throw new Error(
+        `timeout ${timeoutMs}ms waiting for ${what} (observed delayMs: ${JSON.stringify(observed)})\nstderr:\n${proc.stderr.join('')}`,
+      );
+    }
+    await sleep(20);
+  }
+}
+
 async function signalAndExpectExit(proc: Proc, signal: NodeJS.Signals, timeoutMs: number, expectedCode: number, what: string): Promise<void> {
   proc.child.kill(signal);
   const code = await waitForExit(proc, timeoutMs, what);
@@ -208,8 +254,15 @@ describe('issue #229：Hub 正常重启后 Peer 自动恢复静态 target', () =
         },
       };
       const configV2Path = writeConfig(makeTmpDir(), hubV2Config);
+      const hubV2BootStartedAt = Date.now();
       const hubV2 = spawnApp(['--config', configV2Path]);
       await waitForEvent(hubV2, (e) => e.event === 'ready', 60_000, 'hub v2 ready');
+      // Hub 重启预算：v2b 与 v2 同 config、同 rootDir，实测 boot × 2（v2b 在运行中的 Peer
+      // 竞争下可能更慢）+ 2s 状态查询与写操作余量（四舍五入到 500ms）。
+      const hubRestartBudgetMs = Math.ceil(((Date.now() - hubV2BootStartedAt) * 2 + 2_000) / 500) * 500;
+      // full jitter（delay = random(0, cap)）下帽值取 2× 预算，使「已武装 delayMs ≥ 预算」
+      // 以约 50% 概率出现——见 waitForArmedBackoffWindow。
+      const backoffCapMs = hubRestartBudgetMs * 2;
 
       // ── peer：配置态静态 targets（不经 add-target）──
       const peerProc = spawnApp([
@@ -222,7 +275,7 @@ describe('issue #229：Hub 正常重启后 Peer 自动恢复静态 target', () =
             hub: { url: `ws://127.0.0.1:${port}/replication`, hubInstanceId: 'hub-1', token: 'token-1' },
             targets: [{ namespaceId, ownerUserId: 'alice' }],
           },
-          backoff: { baseMs: 5_000, maxMs: 5_000, resetAfterMs: 60_000 },
+          backoff: { baseMs: backoffCapMs, maxMs: backoffCapMs, resetAfterMs: 60_000 },
         }),
       ]);
       await waitForEvent(peerProc, (e) => e.event === 'ready', 60_000, 'peer ready');
@@ -254,12 +307,27 @@ describe('issue #229：Hub 正常重启后 Peer 自动恢复静态 target', () =
       expect(peerProc.exitCode).toBeNull();
 
       // ── 同 rootDir、同 endpoint 重启 Hub；Peer target/凭据/配置均不变化，也不发恢复命令 ──
+      // full jitter 下重拨可在任意时刻发生（CI shard 2/6：Hub ready 后立即查询就观测到
+      // handshaking），故先等到一条**已武装且覆盖重启预算**的 backoff 定时器事件再启动
+      // Hub：Hub boot + 状态查询 + 写操作整体落在该 backoff 窗口内（窗口未过期 ⇒ 下面的
+      // connectionState 必为 backoff）。
+      const armedDelayMs = await waitForArmedBackoffWindow(
+        peerProc,
+        peerEventOffset,
+        hubRestartBudgetMs,
+        90_000,
+        `peer armed backoff window >= ${hubRestartBudgetMs}ms before Hub restart`,
+      );
+      const hubV2bBootStartedAt = Date.now();
       const hubV2b = spawnApp(['--config', configV2Path]);
       await waitForEvent(hubV2b, (e) => e.event === 'ready', 60_000, 'hub v2 ready (restart)');
 
-      // 在 Peer 尚处于 backoff/disconnected 时立即写 Hub；长 backoff 配置保证写入先于重拨。
+      // 在 Peer 尚处于 backoff 时立即写 Hub。
       const statusBeforeWrite = await sendOp(peerProc, { op: 'status' }, 20_000);
-      expect(statusBeforeWrite.connectionState).toBe('backoff');
+      expect(
+        statusBeforeWrite.connectionState,
+        `Hub restart took ${Date.now() - hubV2bBootStartedAt}ms of the armed ${armedDelayMs}ms backoff window`,
+      ).toBe('backoff');
       const disconnectedWrite = await sendOp(
         hubV2b,
         { op: 'verify-write', namespaceId, set: ['count'], path: ['count'], value: 11, timeoutMs: 30_000 },
@@ -268,10 +336,11 @@ describe('issue #229：Hub 正常重启后 Peer 自动恢复静态 target', () =
       expect(disconnectedWrite.ok).toBe(true);
 
       // 不重启 Peer、不 re-add target、不 notify-auth-changed、不改配置；等待既有静态 target 自动恢复。
+      // 上界 = 已武装延迟（≤ backoffCapMs，其中预算部分已被 Hub 重启消耗）+ OPEN/reconcile 余量。
       await waitForEvent(
         peerProc,
         (e) => e.event === 'channel-state-changed' && e.namespaceId === namespaceId && e.to === 'live',
-        60_000,
+        backoffCapMs + 30_000,
         'peer target live after hub restart',
         peerEventOffset,
       );
