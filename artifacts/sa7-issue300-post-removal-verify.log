@@ -1,0 +1,80 @@
+
+ RUN  v3.2.7 /home/wangjian/nomicore-fix-issue-300
+
+ ✓ packages/ws-replication/test/ws-replication-issue243-real-transport.test.ts (1 test) 371ms
+   ✓ issue #243 AC7：真实 TCP + MemoryPersistence 1 Hub + 2 Peers（协商分块 + fan-out 分块镜像） > A 超限写 → hub 分块收齐 apply + 单 ACK；hub fan-out 分块到 B；回声抑制不回送 A  370ms
+ ✓ packages/ws-replication/test/ws-replication-issue300-chunked-sync-ac-red.test.ts (12 tests) 112ms
+stdout | packages/ws-replication/test/ws-replication-issue233-repro.test.ts > issue #233 复现：超限 UPDATE 丢弃 + 全量 reconciliation 回退（现状刻画） > R1：单笔 20KB 合法写 → 零 UPDATE / resync 声明 / 同一载荷改走控制帧全量 diff
+[issue233 repro R1] {
+  "scenario": "R1 single 20KB write, maxUpdateBytes=8192",
+  "updateFramesCarryingBigWrite": 0,
+  "resyncRounds": 1,
+  "step2DiffBytesPeerToHub": [
+    2,
+    20029
+  ],
+  "wire": {
+    "peerToHub": {
+      "OPEN_NAMESPACE": {
+        "count": 1,
+        "bytes": 59
+      },
+      "BOOTSTRAP_ACK": {
+        "count": 1,
+        "bytes": 57
+      },
+      "SYNC_STEP1": {
+        "count": 2,
+        "bytes": 136
+      },
+      "SYNC_STEP2": {
+        "count": 2,
+        "bytes": 20151
+      },
+      "SYNC_APPLIED": {
+        "count": 2,
+        "bytes": 116
+      },
+      "RESYNC_REQUIRED": {
+        "count": 1,
+        "bytes": 76
+      }
+    },
+    "hubToPeer": {
+      "OPEN_OK": {
+        "count": 1,
+        "bytes": 91
+      },
+      "BOOTSTRAP_SNAPSHOT": {
+        "count": 1,
+        "bytes": 497
+      },
+      "SYNC_STEP1": {
+        "count": 2,
+        "bytes": 130
+      },
+      "SYNC_STEP2": {
+        "count": 2,
+        "bytes": 122
+      },
+      "SYNC_APPLIED": {
+        "count": 2,
+        "bytes": 116
+      }
+    }
+  }
+}
+
+stdout | packages/ws-replication/test/ws-replication-issue233-repro.test.ts > issue #233 复现：超限 UPDATE 丢弃 + 全量 reconciliation 回退（现状刻画） > R2：连续两笔大写 → 两轮 resync（持续大写重复触发完整 round）
+[issue233 repro R2] {"scenario":"R2 two consecutive 20KB writes","resyncRounds":2,"step2DiffBytesPeerToHub":[2,20028,20034],"wire":{"peerToHub":{"OPEN_NAMESPACE":{"count":1,"bytes":59},"BOOTSTRAP_ACK":{"count":1,"bytes":57},"SYNC_STEP1":{"count":3,"bytes":205},"SYNC_STEP2":{"count":3,"bytes":40245},"SYNC_APPLIED":{"count":3,"bytes":174},"RESYNC_REQUIRED":{"count":2,"bytes":152}},"hubToPeer":{"OPEN_OK":{"count":1,"bytes":91},"BOOTSTRAP_SNAPSHOT":{"count":1,"bytes":497},"SYNC_STEP1":{"count":3,"bytes":200},"SYNC_STEP2":{"count":3,"bytes":191},"SYNC_APPLIED":{"count":3,"bytes":174}}}}
+
+stdout | packages/ws-replication/test/ws-replication-issue233-repro.test.ts > issue #233 复现：超限 UPDATE 丢弃 + 全量 reconciliation 回退（现状刻画） > R3：diff 超 maxSyncDiffBytes → SYNC_DIFF_TOO_LARGE → namespace 终局 failed（大文档致命尾部）
+[issue233 repro R3] {"scenario":"R3 100KB write, maxSyncDiffBytes=32768","namespaceTerminalState":"failed","connectionState":"ready","wire":{"peerToHub":{"OPEN_NAMESPACE":{"count":1,"bytes":59},"BOOTSTRAP_ACK":{"count":1,"bytes":57},"SYNC_STEP1":{"count":2,"bytes":136},"SYNC_STEP2":{"count":1,"bytes":61},"SYNC_APPLIED":{"count":1,"bytes":58},"RESYNC_REQUIRED":{"count":1,"bytes":76},"ERROR":{"count":1,"bytes":117}},"hubToPeer":{"OPEN_OK":{"count":1,"bytes":91},"BOOTSTRAP_SNAPSHOT":{"count":1,"bytes":497},"SYNC_STEP1":{"count":2,"bytes":130},"SYNC_STEP2":{"count":2,"bytes":122},"SYNC_APPLIED":{"count":1,"bytes":58}}}}
+
+ ✓ packages/ws-replication/test/ws-replication-issue233-repro.test.ts (3 tests) 49ms
+ ✓ packages/ws-replication/test/ws-replication-issue300-bulk-edge-ac.test.ts (6 tests) 47ms
+
+ Test Files  4 passed (4)
+      Tests  22 passed (22)
+   Start at  00:55:19
+   Duration  2.23s (transform 542ms, setup 0ms, collect 1.12s, tests 578ms, environment 0ms, prepare 175ms)

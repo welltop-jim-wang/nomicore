@@ -458,14 +458,62 @@ describe('AC4：两条 namespace 错误码注册表单点导出 + RESYNC reason 
     });
   });
 
-  it('注册表 append-only：恰 22 条 namespace 码，既有 20 条不变（抽样锚点），条目冻结', () => {
-    expect(Object.keys(NAMESPACE_ERRORS)).toHaveLength(22);
+  it('注册表 append-only：恰 26 条 namespace 码，既有条目不变（抽样锚点），条目冻结', () => {
+    expect(Object.keys(NAMESPACE_ERRORS)).toHaveLength(26);
     expect(NAMESPACE_ERRORS.SYNC_STATE_VIOLATION).toMatchObject({ fatal: true, retryable: 'no', terminalState: 'failed' });
     expect(NAMESPACE_ERRORS.SYNC_DIFF_TOO_LARGE).toMatchObject({ fatal: true, retryable: 'config', terminalState: 'failed' });
     expect(NAMESPACE_ERRORS.UPDATE_TOO_LARGE).toMatchObject({ fatal: true, retryable: 'config', terminalState: 'failed' });
     expect(NAMESPACE_ERRORS.ACK_TIMEOUT).toMatchObject({ fatal: false, retryable: 'resync', terminalState: 'needs-resync' });
     expect(Object.isFrozen(NAMESPACE_ERRORS)).toBe(true);
     expect(Object.isFrozen(NAMESPACE_ERRORS.UPDATE_TRANSFER_VIOLATION)).toBe(true);
+    expect(Object.isFrozen(NAMESPACE_ERRORS.SNAPSHOT_TRANSFER_TOO_LARGE)).toBe(true);
+  });
+
+  it('issue #295 切片 2 四码首登（协议 §13.2 L445–448 冻结元数据逐字）：SNAPSHOT_/SYNC_TRANSFER_{VIOLATION,TOO_LARGE}', () => {
+    expect(NAMESPACE_ERRORS.SNAPSHOT_TRANSFER_VIOLATION).toEqual({
+      code: 'SNAPSHOT_TRANSFER_VIOLATION',
+      scope: 'namespace',
+      fatal: true,
+      retryable: 'no',
+      terminalState: 'failed',
+    });
+    expect(NAMESPACE_ERRORS.SNAPSHOT_TRANSFER_TOO_LARGE).toEqual({
+      code: 'SNAPSHOT_TRANSFER_TOO_LARGE',
+      scope: 'namespace',
+      fatal: true,
+      retryable: 'config',
+      terminalState: 'failed',
+    });
+    expect(NAMESPACE_ERRORS.SYNC_TRANSFER_VIOLATION).toEqual({
+      code: 'SYNC_TRANSFER_VIOLATION',
+      scope: 'namespace',
+      fatal: true,
+      retryable: 'no',
+      terminalState: 'failed',
+    });
+    expect(NAMESPACE_ERRORS.SYNC_TRANSFER_TOO_LARGE).toEqual({
+      code: 'SYNC_TRANSFER_TOO_LARGE',
+      scope: 'namespace',
+      fatal: true,
+      retryable: 'config',
+      terminalState: 'failed',
+    });
+    expect(lookupError('namespace', 'SNAPSHOT_TRANSFER_VIOLATION')).toBe(
+      NAMESPACE_ERRORS.SNAPSHOT_TRANSFER_VIOLATION,
+    );
+    expect(lookupError('namespace', 'SYNC_TRANSFER_TOO_LARGE')).toBe(NAMESPACE_ERRORS.SYNC_TRANSFER_TOO_LARGE);
+    expect(lookupError('connection', 'SNAPSHOT_TRANSFER_TOO_LARGE')).toBeUndefined();
+    // ERROR wire roundtrip：四码均可编码上线并可解码回等值帧（D12 发射面前置）
+    for (const code of [
+      'SNAPSHOT_TRANSFER_VIOLATION',
+      'SNAPSHOT_TRANSFER_TOO_LARGE',
+      'SYNC_TRANSFER_VIOLATION',
+      'SYNC_TRANSFER_TOO_LARGE',
+    ] as const) {
+      const frame = { kind: 'ERROR' as const, code, namespaceId: NS, safeMessage: `protocol error: ${code}` };
+      const bytes = encodeMessage(frame, { sequence: 21 });
+      expect(decodeMessage(bytes).message).toEqual(frame);
+    }
   });
 
   it('lookupError 双向可见性：namespace 命中、connection 不可见（scope 隔离）', () => {

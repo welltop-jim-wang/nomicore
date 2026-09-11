@@ -804,23 +804,41 @@ class PeerConnectionImpl implements PeerReplication {
 
   /** issue #243（DD-3.5）：UPDATE_CHUNK 帧发送路径——与 UPDATE 同一 data 出站点
    *  （ready 门 + 水位闸门 + 单帧守卫 + 统一账本投影，序列由 OutboundQueue.emit 分配）。
-   *  wire 协商位由控制器侧 chunkable 判据保证；本方法以 negotiated 位做纵深防御。 */
+   *  issue #295 切片 2（D5/C6）：kind 首字段与绑定块透传 piece（kind=0 逐字节等价）。
+   *  wire 协商位由控制器侧改道判据保证；本方法以 negotiated 位做纵深防御。 */
   private sendUpdateChunk(namespaceId: string, chunk: ChunkedTransferPiece): number {
     if (this.outbound === undefined || this.sender === undefined) return 0;
     if (this.connStateValue !== 'ready') return 0;
     if (!this.isChunkedNegotiated()) return 0;
-    return this.sender.tryEmitData({
-      kind: 'UPDATE_CHUNK',
-      // issue #295 切片 1：单形态 kind 首字段——live-update 路径本切片唯一 kind
-      // （kind=1/2 发送端属 §8.1/§9.2 后续切片）。
-      transferKind: 0,
+    const transferKind = chunk.transferKind ?? 0;
+    const base = {
+      kind: 'UPDATE_CHUNK' as const,
+      // issue #295 切片 2：单形态 kind 首字段透传（kind=0 恒定逐字节等价）
+      transferKind,
       namespaceId,
       transferId: chunk.transferId,
       chunkIndex: chunk.chunkIndex,
       chunkCount: chunk.chunkCount,
       totalBytes: chunk.totalBytes,
       bytes: chunk.bytes,
-    });
+    };
+    // 绑定块透传（kind≠0 ∧ chunkIndex=0）；缺失成员由 codec 单形态规则响亮拒绝（MALFORMED_FRAME）
+    if (
+      transferKind === 1 &&
+      chunk.chunkIndex === 0 &&
+      chunk.replicationId !== undefined &&
+      chunk.replicationEpoch !== undefined
+    ) {
+      return this.sender.tryEmitData({
+        ...base,
+        replicationId: chunk.replicationId,
+        replicationEpoch: chunk.replicationEpoch,
+      });
+    }
+    if (transferKind === 2 && chunk.chunkIndex === 0 && chunk.syncRoundId !== undefined) {
+      return this.sender.tryEmitData({ ...base, syncRoundId: chunk.syncRoundId });
+    }
+    return this.sender.tryEmitData(base);
   }
 
   /** issue #243（DD-1.5）：wire 协商交集位判据（发送门与 decode 门共用同一判据）。 */

@@ -203,6 +203,10 @@ export interface BootOptions {
    *  同一注入面）——计数 spy 锚定「无 observer 零时钟调用」。 */
   readonly hubClock?: ReplicationClock;
   readonly peerClock?: ReplicationClock;
+  /** issue #300（SA2-M4）：可选 CAP_CHUNKED_UPDATE 协商旋钮——`true` 时 peer 以
+   *  optionalCapabilities 置位（hub 恒支持），本 driver 建立的连接即为**已协商**形态；
+   *  undefined = 零传（既有测试的连接恒未协商，逐字节不变）。 */
+  readonly chunkedUpdate?: boolean;
   /** issue #256 故障注入 seam：registry 包装（open 拒绝/lease 代理/读取计数），
    *  仅测试面——真实 Registry 行为不变，包装层只做计数或单次故障注入。 */
   readonly wrapHubRegistry?: (registry: NamespaceRegistry) => NamespaceRegistry;
@@ -549,6 +553,8 @@ export async function boot(opts: BootOptions = {}): Promise<Run> {
     ...(opts.random !== undefined ? { random: opts.random } : {}),
     ...(opts.peerObserver !== undefined ? { observer: opts.peerObserver } : {}),
     ...(opts.peerClock !== undefined ? { clock: opts.peerClock } : {}),
+    // issue #300（SA2-M4）：条件展开——undefined 零传（既有测试零影响）
+    ...(opts.chunkedUpdate !== undefined ? { chunkedUpdate: opts.chunkedUpdate } : {}),
   });
 
   const run = new Run(hubNode, peerNode, hub, peer, authorizer, hubFixture, nsId, hubRoot, verifyCalls);

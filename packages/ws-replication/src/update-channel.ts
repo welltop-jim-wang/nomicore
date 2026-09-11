@@ -77,6 +77,9 @@ export interface UpdateChannelHost {
   readonly onDataQueued: () => void;
   /** 请求连接级 drain（§4.5；issue #137）：ACK 空位/恢复/resetForLive 触发。 */
   readonly requestDataDrain: () => void;
+  /** issue #295 切片 2（SA2-M3）：本方向 kind=1/2 分块载荷发送器是否有待发工作
+   *  （channel 队列为空的窗口空位唤醒路径）。缺省 = false（kind=0 热路径逐字节同义）。 */
+  readonly hasBulkTransferWork?: () => boolean;
 }
 
 interface QueuedItem {
@@ -131,6 +134,26 @@ export class UpdateChannel {
    *  无 activeTransfer 组态。包内只读访问器，不经 src/index.ts 导出。 */
   effectiveInFlightCount(): number {
     return this.inFlight.size + (this.activeTransfer !== undefined ? 1 : 0);
+  }
+
+  /** issue #295 切片 2（D7）：本方向是否有在途 kind=0 chunked transfer——facet 三段仲裁
+   *  的 ① 位（kind=0 transfer 走完前不放行 kind≠0 出站）。包内只读访问器。 */
+  hasActiveTransfer(): boolean {
+    return this.activeTransfer !== undefined;
+  }
+
+  /** issue #295 切片 2（D2/R42）：三 kind 共用同一 (连接, 方向, ns) transferId 计数器——
+   *  kind=1/2 发送器（BulkTransferSender）在首 chunk 出站时刻消费本方法；kind=0 的
+   *  `startTransfer` 仍走同一 `nextTransferId`。包内方法，不经 src/index.ts 导出。 */
+  allocateTransferId(): number {
+    const id = this.nextTransferId;
+    this.nextTransferId += 1;
+    return id;
+  }
+
+  /** issue #295 切片 2（D0）：transferId 域未尽（uint32 不回绕）——改道判据的组成部分。 */
+  transferIdAvailable(): boolean {
+    return this.nextTransferId <= 0xffffffff;
   }
 
   get queuedCount(): number {
@@ -212,7 +235,9 @@ export class UpdateChannel {
         // issue #245（DD3）：末 chunk 条目标记透传——facet 据此改道发 chunked-update-acked
         ...(entry.chunked !== undefined ? { chunked: true as const } : {}),
       });
-      if (this.queued.length > 0) this.host.requestDataDrain(); // §6.2：原同步 flush 循环 → 连接级 drain
+      if (this.queued.length > 0 || this.host.hasBulkTransferWork?.() === true) {
+        this.host.requestDataDrain(); // §6.2：原同步 flush 循环 → 连接级 drain（M3：bulk 载体窗口空位唤醒）
+      }
       return 'ok';
     }
     if (this.zombieSeqs.has(sequence)) {
@@ -265,7 +290,7 @@ export class UpdateChannel {
     return (
       bytes.byteLength > this.host.limits.maxUpdateBytes &&
       bytes.byteLength <= this.host.limits.maxChunkedUpdateBytes &&
-      this.nextTransferId <= 0xffffffff &&
+      this.transferIdAvailable() &&
       this.host.chunkedSendEnabled()
     );
   }
@@ -401,12 +426,12 @@ export class UpdateChannel {
     const totalBytes = item.bytes.byteLength;
     this.activeTransfer = {
       item,
-      transferId: this.nextTransferId,
+      // issue #295 切片 2（D2）：单点分配（kind=0 与 kind=1/2 共用同一计数器）
+      transferId: this.allocateTransferId(),
       chunkIndex: 0,
       totalBytes,
       chunkCount: chunkCountOf(totalBytes, this.host.limits.maxUpdateBytes),
     };
-    this.nextTransferId += 1; // uint32 域：chunkable 判据已保证 ≤ 0xffffffff（不回绕）
   }
 
   /** issue #243（DD-3.5/3.6）：发出下一 chunk。返回 true ⇔ 本次调用取得进展（中间
@@ -426,6 +451,8 @@ export class UpdateChannel {
     const maxChunk = this.host.limits.maxUpdateBytes;
     const { start, end } = chunkBounds(transfer.totalBytes, maxChunk, transfer.chunkIndex);
     const seq = this.host.sendUpdateChunkFrame({
+      // issue #295 切片 2（D5）：kind=0 出站 piece 显式携首字段（wire 字节不变——codec 本就编 0）
+      transferKind: 0,
       transferId: transfer.transferId,
       chunkIndex: transfer.chunkIndex,
       chunkCount: transfer.chunkCount,
