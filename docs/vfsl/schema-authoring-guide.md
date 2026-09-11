@@ -136,13 +136,14 @@ VFSL v1 常用值类型：
 type Primitive = string | number | boolean | null | unknown;
 type Status = "draft" | "published";
 type Port = 80 | 443;
+type Level = -1 | 0.5 | 2;
 type Slug = string & Pattern<"^[a-z0-9-]+$">;
 type OptionalField = { description?: string };
 ```
 
 注意：
 
-- 数字字面量仅支持无符号十进制整数；
+- 数字字面量支持可选负号与十进制小数（负号须紧邻数字）；`.5` / `1.` / 指数记号 / `-0` 均 → VFSL-E100；小数按 IEEE-754 双精度解释，枚举成员相等语义为 f64 严格相等；
 - 字符串只支持 `\"` 和 `\\` 转义，正则里的 `\d` 在 schema 文本中写成 `\\d`；
 - `Pattern` 只写作 `string & Pattern<"...">`，锚定需显式写 `^` 和 `$`；
 - Pattern 的 ECMAScript 正则合法性在运行时语义校验阶段暴露；
@@ -213,7 +214,7 @@ JSDoc 必须紧邻类型别名、对象字段、标记类型或联合成员才�
 
 ## v1 语法护栏
 
-只使用以下构造：类型别名、封闭对象、可选字段、原始类型、字符串或整数文字、联合、数组、`Record`、六个标准标记和注释。
+只使用以下构造：类型别名、封闭对象、可选字段、原始类型、字符串或数字文字（可选负号与十进制小数；负号须紧邻数字）、联合、数组、`Record`、六个标准标记和注释。
 
 以下 TypeScript 构造不属于 VFSL v1：`interface`、`extends`、泛型别名、函数类型、tuple、enum、索引签名、`readonly`、`keyof`、条件类型、映射类型、交叉类型（Pattern 特例除外）以及括号分组。标记拼写严格区分大小写：`YMap`、`YArray`、`YPlainArray`、`YLeaf`、`YXmlFragment`、`Pattern`。
 

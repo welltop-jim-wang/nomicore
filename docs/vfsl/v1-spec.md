@@ -60,7 +60,7 @@ LineComment   = "//", { char }, eol ;
 BlockComment  = "/*", { char }, "*/" ;
 DocComment    = "/**", { char }, "*/" ;
 StringLiteral = '"', { char }, '"' ;
-NumberLiteral = digit, { digit } ;
+NumberLiteral = [ "-" ], digit, { digit }, [ ".", digit, { digit } ] ;
 Ident         = letter, { letter | digit | "_" } ;
 ```
 
@@ -80,8 +80,14 @@ Ident         = letter, { letter | digit | "_" } ;
 6. **字符串字面量**：以 `"` 界定，不得跨行（未闭合 → VFSL-E201）；仅认 `\"` 与
    `\\` 两个转义（`\"`→`"`、`\\`→`\`），其余任何 `\x` 序列非法（→ VFSL-E202）。
    正则实参中的反斜杠须按此规则双写（正则 `\d` 写作 `\\d`）。
-7. **数字字面量**：仅无符号十进制整数。负数、小数、其他进制不在 v1 子集
-   （→ VFSL-E100）。
+7. **数字字面量**：可选负号 + 十进制整数 + 可选小数部（`[ "-" ] digit { digit } [ "." digit { digit } ]`）。
+   负号与小数点两侧的数字均必填，且负号须**紧邻**数字：裸 `-`、`- 1`、`-/*c*/1`、`.5`、
+   `1.`、`1..5` 均 → VFSL-E100；指数记号（`1e3`、`1.5E-2`）与其他进制不做（→ VFSL-E100）。
+   字面量按 IEEE-754 双精度解释与归一，精度丢失是 f64 语义而非拒绝条件（如
+   `9007199254740993` ≡ `9007199254740992`、`0.99999999999999999` ≡ `1`；前导零合法，
+   `00.5` ≡ `0.5`）。枚举成员的相等语义为 **f64 严格相等**（零 epsilon）。字面量超出双精度
+   上限（含负值）→ VFSL-E100（实现值域上限，非方言判定）；`-0` 字面量（含值为 -0 的小数
+   下溢形态）→ VFSL-E100，请改写为 `0`（ADR 0020 决策 3 修订句）。
 8. **字面量联合成员种类**：v1 冻结为字符串字面量与数字字面量两类；`true` /
    `false` / `null` 字面量不进入 LiteralType（布尔与空值语义由原始类型
    `boolean` / `null` 表达）。`true` / `false` 词法上是普通 Ident（不在保留名
@@ -104,6 +110,7 @@ Ident         = letter, { letter | digit | "_" } ;
 
 ```ts
 type Port = 80 | 443;
+type Level = -1 | 0.5 | 2;
 type Name = string & Pattern<"^[a-z]+$">;
 type Pair = { first: string; second?: number };
 type Names = Name[];
@@ -115,7 +122,6 @@ type Index = Record<string, Port>;
 ```ts
 type A = ( string | number )[];    // VFSL-E100：括号分组不在子集
 type B = string & Pattern<"a\d">;  // VFSL-E202：非法转义（须写 \\d）
-type C = -1 | 1;                   // VFSL-E100：负数字面量不在子集
 type D = true | false;             // VFSL-E301：true/false 未声明（布尔字面量不进入 LiteralType，注记 8；按未知名报错）
 ```
 
@@ -355,7 +361,7 @@ E301 / E304 / E306 / E307 / E309 / E310 / E311（全部引用 / 语义层错误�
 
 | 错误码 | 条件 | 定位锚 |
 | --- | --- | --- |
-| VFSL-E100 | 越界语法：不可从 §2 文法推导的任何构造（括号分组、负数 / 小数字面量、裸 Pattern、裸标记 / 保留名误用（判定顺序第 7 条）、未知记号等；判定顺序见 §4） | 构造起点记号 |
+| VFSL-E100 | 越界语法：不可从 §2 文法推导的任何构造（括号分组、`-0` 字面量、`.5` / `1.` 形态、指数记号、裸 Pattern、裸标记 / 保留名误用（判定顺序第 7 条）、未知记号等；判定顺序见 §4） | 构造起点记号 |
 | VFSL-E101 | `any` 类型 | `any` 记号 |
 | VFSL-E102 | 自定义泛型参数 | 泛型参数表 `<` |
 | VFSL-E103 | 条件类型 | `extends` 记号 |

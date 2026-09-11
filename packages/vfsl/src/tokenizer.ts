@@ -58,6 +58,11 @@ function isIdentChar(cp: number): boolean {
   return isAsciiLetter(cp) || (cp >= 0x30 && cp <= 0x39) || cp === 0x5f; // [A-Za-z0-9_]
 }
 
+/** 码元级 digit 判定（charCodeAt 越界返回 NaN → false：末位 `-` / 末尾 `.` 不进数字分支）。 */
+function isDigitCodeUnit(code: number): boolean {
+  return code >= 0x30 && code <= 0x39;
+}
+
 export function tokenize(text: string): Token[] {
   const tokens: Token[] = [];
   let i = 0; // 码元游标（代理对按 2 码元推进，column 恒按码点计）
@@ -197,19 +202,37 @@ export function tokenize(text: string): Token[] {
       continue;
     }
 
-    // —— 数字字面量（[0-9]+，无符号十进制整数）——
-    if (cp >= 0x30 && cp <= 0x39) {
+    // —— 数字字面量（[ "-" ] [0-9]+ [ "." [0-9]+ ]，ADR 0020 决策 3 / v1-spec §2 注记 7）——
+    // 负号仅在**紧邻** digit 时进入本分支（单码元前看于原始文本码元，不跳过空白/注释）：
+    // `- 1` / `-/*c*/1` / 裸 `-`（含 EOF 前一位，charCodeAt 越界为 NaN）仍走下方未知字符
+    // E100 路径——锚位、消息、trivia 语义全部不变。
+    if ((cp >= 0x30 && cp <= 0x39) || (cp === 0x2d && isDigitCodeUnit(text.charCodeAt(i + 1)))) {
       const startLine = line;
       const startCol = column;
       let raw = '';
-      while (i < text.length) {
-        const c = text.codePointAt(i)!;
-        if (c < 0x30 || c > 0x39) break;
-        raw += String.fromCodePoint(c);
+      if (cp === 0x2d) {
+        raw += '-';
         i += 1;
         column += 1;
       }
-      // 记号值 = 双精度数值（超域为 Infinity，parser 判 E100，§7.3）
+      while (i < text.length && isDigitCodeUnit(text.charCodeAt(i))) {
+        raw += text[i];
+        i += 1;
+        column += 1;
+      }
+      // 小数部：仅当 `.` 两侧皆 digit 时消费（`.5` / `1.` / `1..5` 不吞，维持既有锚位）；
+      // 每记号至多一个 `.`（第二个 `.` 落未知字符路径）。
+      if (text[i] === '.' && isDigitCodeUnit(text.charCodeAt(i + 1))) {
+        raw += '.';
+        i += 1;
+        column += 1;
+        while (i < text.length && isDigitCodeUnit(text.charCodeAt(i))) {
+          raw += text[i];
+          i += 1;
+          column += 1;
+        }
+      }
+      // 记号值 = 双精度数值（超域为 Infinity，parser 判 E100，§7.3）；value 保留原文（含 `-`）
       emit({ kind: 'number', value: raw, num: Number(raw), line: startLine, column: startCol });
       continue;
     }
@@ -273,7 +296,8 @@ export function tokenize(text: string): Token[] {
       continue;
     }
 
-    // —— 未知字符 → E100（`$`、`-`、`.`、非 ASCII、文本中部 U+FEFF 等）——
+    // —— 未知字符 → E100（`$`、未随 digit 的 `-`、未跟 digit 的 `.`、非 ASCII、
+    //    文本中部 U+FEFF 等）——
     fail('100', `未知记号: ${ch}`, line, column);
     break scan;
   }
