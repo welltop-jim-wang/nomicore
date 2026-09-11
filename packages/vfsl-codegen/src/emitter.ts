@@ -22,8 +22,8 @@ import type {
 } from '@nomicore/vfsl';
 import { buildHeader } from './header.js';
 import { PROTOCOL_EXPORT_NAMES, PROTOCOL_IMPORT_LINE } from './protocol-surface.js';
-import { projectValue } from './valuetype.js';
-import { tsdocLines } from './docs.js';
+import { projectUnionMembers, projectValue } from './valuetype.js';
+import { tsdocInline, tsdocLines } from './docs.js';
 
 export interface GenerateProjectionOptions {
   /** 源文本（仅用于头注哈希；缺失时头注写 `sha256:<未提供>`，仍确定性）。 */
@@ -117,13 +117,19 @@ export class AliasProtocolExportCollisionError extends Error {
   }
 }
 
-/** 发射上下文：派生 schema 七槽的只读视图 + 输出格式开关（纯函数，无状态）。 */
+/** 发射上下文：派生 schema 八槽（第八槽 memberDocs 条件在场）的只读视图 + 输出格式开关（纯函数，无状态）。 */
 interface EmitTables {
   aliases: Record<string, StructureNode>;
   values: Record<string, ValueSchema>;
   aliasDocs: Record<string, string[]>;
   fieldDocs: Record<string, string[]>;
   markerDocs: Record<string, string[]>;
+  /**
+   * 成员级文档注释（ADR 0019 决策 5，issue #307 消费）：条件稀疏——整键仅在模块至少
+   * 一名成员携带 doc 时在场，且只收非空条目。无 M4 输入的存量派生物此槽为 undefined，
+   * 四个发射位因此输出零新字节（逐字节不变）。
+   */
+  memberDocs: Record<string, string[]> | undefined;
   /** 无分号模式（issue #222，见 GenerateProjectionOptions.semicolonFree）。 */
   readonly semicolonFree: boolean;
 }
@@ -141,7 +147,7 @@ function assertNoProtocolNameCollision(aliases: Record<string, StructureNode>): 
 
 /**
  * §3.0 纯发射器：同输入逐字节同输出（CI regen-diff 前提）。
- * 输入 = evaluate 的派生 schema 七槽（输入形状冻结，不得改）；opts.sourceText 仅入头注哈希。
+ * 输入 = evaluate 的派生 schema 八槽（输入形状冻结，不得改）；opts.sourceText 仅入头注哈希。
  */
 export function generateProjection(derived: DerivedSchema, opts?: GenerateProjectionOptions): string {
   const tables: EmitTables = {
@@ -150,6 +156,8 @@ export function generateProjection(derived: DerivedSchema, opts?: GenerateProjec
     aliasDocs: derived.aliasDocs,
     fieldDocs: derived.fieldDocs,
     markerDocs: derived.markerDocs,
+    // 第四张 docs 表（#307 D1）：逐字引用，不复制、不规范化；四个发射位唯一数据入口。
+    memberDocs: derived.memberDocs,
     semicolonFree: opts?.semicolonFree === true,
   };
 
@@ -219,7 +227,35 @@ function emitAlias(name: string, tables: EmitTables): string {
     const common = unionKind(node, tables, name);
     // 无分号模式：map 成员字面量多行化后以 `  | ` 列为基准缩进（内层 +2、闭括号对齐 `|` 列）
     const members = emitUnionBodyMembers(node, value, name, tables, tables.semicolonFree ? '  ' : '', common);
-    return `${head}export type ${name} =\n  | ${members.join('\n  | ')}${term}`;
+    // #307 发射位 1（ADR 0019 决策 6.1）：成员 doc 块位于对应 `  | ` 成员行上方（缩进与 `|` 列
+    // 对齐）；无 doc 时 lines 装配与既有 `  | ${members.join('\n  | ')}` 逐字节相同。
+    const lines: string[] = [];
+    members.forEach((text, i) => {
+      const memberDoc = memberBlock(tables, name, i, '  ');
+      if (memberDoc !== '') lines.push(memberDoc);
+      lines.push(`  | ${text}`);
+    });
+    return `${head}export type ${name} =\n${lines.join('\n')}${term}`;
+  }
+  // #307 发射位 2（ADR 0019 决策 6.2）：坍缩别名（leaf×enum / leaf×union，含标量联合）
+  // 有成员 doc 条目时转多行逐成员布局。W1 判据（SA6 §12.2）= 该位点 `<member N>` 键在
+  // memberDocs 表中存在非空条目，N 覆盖值侧成员序号——不按值侧 kind / 成员数量推测；
+  // 按位点独立。闸门闭合（无 M4 输入、M3 优先位、全部成员无条目、非 leaf 结构形）
+  // → 既有单行路径逐字保留。成员文本由 projectUnionMembers 分段（与单行形态严格同源）。
+  const memberCount = value.kind === 'enum' ? value.values.length : value.kind === 'union' ? value.members.length : 0;
+  if (node.kind === 'leaf' && memberCount > 0) {
+    const gated = Array.from({ length: memberCount }, (_, i) => memberDocsAt(tables, name, i)).some(
+      (d) => d !== undefined,
+    );
+    if (gated) {
+      const lines: string[] = [];
+      projectUnionMembers(value, tables.values).forEach((text, i) => {
+        const memberDoc = memberBlock(tables, name, i, '  ');
+        if (memberDoc !== '') lines.push(memberDoc);
+        lines.push(`  | ${text}`);
+      });
+      return `${head}export type ${name} =\n${lines.join('\n')}${term}`;
+    }
   }
   return `${head}export type ${name} = ${emitInner(node, value, name, tables, '')}${term}`;
 }
@@ -290,12 +326,23 @@ function emitInner(node: StructureNode, value: ValueSchema, path: string, tables
       if (value.kind !== 'union') throw desync(node, value, path);
       // §3.2 union 行（R3）：成员结构 kind 全员同形 → 该 kind；异形 → 响亮拒绝
       const common = unionKind(node, tables, path);
-      return emitUnionBodyMembers(node, value, path, tables, indent, common).join(' | ');
+      // #307 发射位 3（ADR 0019 决策 6.3）：成员 doc 行内前置（`/** d */ Member | …`），
+      // 紧跟成员起点；`|` join 文法不变。无 doc 成员前缀为空串 → 输出逐字节同既有。
+      return emitUnionBodyMembers(node, value, path, tables, indent, common)
+        .map((text, i) => memberInlinePrefix(tables, path, i) + text)
+        .join(' | ');
     }
     case 'leaf': {
       // scalar / enum / pattern / 标量联合（可空叶 = 值侧标量联合 → T | null）
       if (value.kind !== 'scalar' && value.kind !== 'enum' && value.kind !== 'pattern' && value.kind !== 'union') {
         throw desync(node, value, path);
+      }
+      // #307 发射位 4（ADR 0019 决策 6.4）：内联枚举 / 标量联合成员 doc 同行内前置。
+      // scalar / pattern 无成员边界 → 原样；无 doc 前缀为空串 → 输出逐字节同既有。
+      if (value.kind === 'enum' || value.kind === 'union') {
+        return projectUnionMembers(value, tables.values)
+          .map((text, i) => memberInlinePrefix(tables, path, i) + text)
+          .join(' | ');
       }
       return projectValue(value, tables.values);
     }
@@ -368,6 +415,32 @@ function emitUnionBodyMembers(
     }
     return emitInner(m, memberValue, memberPath, tables, indent);
   });
+}
+
+// ---------------------------------------------------------------------------
+// 成员 doc 查键与渲染（#307：ADR 0019 决策 6 四发射位的唯一 doc 查找点全集）
+// ---------------------------------------------------------------------------
+
+/**
+ * 成员 doc 单点查键（#307 D1）：只按发射位语法路径 + 声明序索引查 `${path}.<member ${i}>`，
+ * 绝不枚举表（键序与实现无关，确定性由声明序循环保证）。空数组条目视同缺席（W1 判据
+ * 「存在非空条目」；合法派生物由 evaluate 冻结契约保证只收非空条目，此处为手造 derived
+ * 的稳健性收口：不产出孤立空格字节）。
+ */
+function memberDocsAt(tables: EmitTables, path: string, i: number): readonly string[] | undefined {
+  const docs = tables.memberDocs?.[`${path}.<member ${i}>`];
+  return docs !== undefined && docs.length > 0 ? docs : undefined;
+}
+
+/** 块位成员 doc（#307 W2，发射位 1/2）：每条 doc 一块、逐行叠加；无条目 → ''（不产行）。 */
+function memberBlock(tables: EmitTables, path: string, i: number, indent: string): string {
+  return tsdocLines(memberDocsAt(tables, path, i), indent, tables);
+}
+
+/** 行内位成员 doc（#307 W2，发射位 3/4）：逐块单空格串联 + 尾单空格（紧跟成员起点）；无条目 → ''。 */
+function memberInlinePrefix(tables: EmitTables, path: string, i: number): string {
+  const docs = memberDocsAt(tables, path, i);
+  return docs === undefined ? '' : `${tsdocInline(docs, tables)} `;
 }
 
 // ---------------------------------------------------------------------------
