@@ -806,6 +806,8 @@ describe('T5：背压 / resync 事件', () => {
         maxChunkedUpdateBytes: 4 * 1024 * 1024, // issue #243：slice 2 新增字段（缺省值）
         maxChunksPerUpdate: 64, // issue #244：slice 3 新增字段（缺省值）
         maxConcurrentAssembliesPerConnection: 4, // issue #244：slice 3 新增字段（缺省值）
+        maxChunkedBootstrapBytes: 4 * 1024 * 1024, // issue #295：slice 1 新增字段（缺省值）
+        maxChunkedSyncDiffBytes: 4 * 1024 * 1024, // issue #295：slice 1 新增字段（缺省值）
       },
       timer: timer as never,
       ackTimeoutMs: 10_000,

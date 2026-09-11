@@ -153,6 +153,9 @@ export function validateLimits(limits: ReplicationLimits): void {
   // issue #244（slice 3）：分块传输两新上限键值门（约束 ≥ 1，ADR 0013 配置表）
   positiveSafeInteger(limits.maxChunksPerUpdate, 'maxChunksPerUpdate');
   positiveSafeInteger(limits.maxConcurrentAssembliesPerConnection, 'maxConcurrentAssembliesPerConnection');
+  // issue #295（slice 1）：snapshot / sync-diff 聚合上限两键值门（正有限安全整数；缺省 4 MiB 恒合法）
+  positiveSafeInteger(limits.maxChunkedBootstrapBytes, 'maxChunkedBootstrapBytes');
+  positiveSafeInteger(limits.maxChunkedSyncDiffBytes, 'maxChunkedSyncDiffBytes');
 
   const budget = limits.maxFrameBytes - PROTOCOL_OVERHEAD_BYTES;
   assertCollKind(
@@ -227,6 +230,36 @@ export function validateChunkedTransferChain(limits: ReplicationLimits): void {
     limits.maxChunkedUpdateBytes <= limits.maxChunksPerUpdate * limits.maxUpdateBytes,
     'limits',
     `maxChunkedUpdateBytes(${limits.maxChunkedUpdateBytes}) 必须 ≤ maxChunksPerUpdate(${limits.maxChunksPerUpdate}) × maxUpdateBytes(${limits.maxUpdateBytes})`,
+  );
+}
+
+/**
+ * issue #295（slice 1，ADR 0019 配置表 / 协议 §17）：chunked snapshot 聚合上限链②
+ * `maxChunkedBootstrapBytes ≤ maxChunksPerUpdate × maxUpdateBytes`（≤ 含等号；绝不运行时 clamp）。
+ *
+ * 激活门（D6 裁决，与 `validateChunkedTransferChain` 的 #244 家族门同构但**各自独立**）：
+ * 仅当调用方**显式表达 `maxChunkedBootstrapBytes`** 时对合并结果校验本链——协议 §17
+ * 「显式配置 … 时**对应**链式校验响亮生效；未表达新键的存量配置不误判」；每条 #295 链只由
+ * 自身新键激活（SA8 R38 / 设计 D6 窄门；宽门会与锁定契约 C2/C3 边界族数学冲突）。
+ */
+export function validateChunkedBootstrapChain(limits: ReplicationLimits): void {
+  assertCollKind(
+    limits.maxChunkedBootstrapBytes <= limits.maxChunksPerUpdate * limits.maxUpdateBytes,
+    'limits',
+    `maxChunkedBootstrapBytes(${limits.maxChunkedBootstrapBytes}) 必须 ≤ maxChunksPerUpdate(${limits.maxChunksPerUpdate}) × maxUpdateBytes(${limits.maxUpdateBytes})`,
+  );
+}
+
+/**
+ * issue #295（slice 1，ADR 0019 配置表 / 协议 §17）：chunked sync-diff 聚合上限链②
+ * `maxChunkedSyncDiffBytes ≤ maxChunksPerUpdate × maxUpdateBytes`（同形态、同纪律）。
+ * 激活门 = 显式表达 `maxChunkedSyncDiffBytes`（见上）。
+ */
+export function validateChunkedSyncDiffChain(limits: ReplicationLimits): void {
+  assertCollKind(
+    limits.maxChunkedSyncDiffBytes <= limits.maxChunksPerUpdate * limits.maxUpdateBytes,
+    'limits',
+    `maxChunkedSyncDiffBytes(${limits.maxChunkedSyncDiffBytes}) 必须 ≤ maxChunksPerUpdate(${limits.maxChunksPerUpdate}) × maxUpdateBytes(${limits.maxUpdateBytes})`,
   );
 }
 

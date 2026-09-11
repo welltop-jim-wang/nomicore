@@ -1,0 +1,458 @@
+Testing types with tsc and vue-tsc is an experimental feature.
+Breaking changes might not follow SemVer, please pin Vitest's version when using it.
+
+ RUN  v3.2.7 /home/wangjian/nomicore-fix-issue-299
+
+ ❯ packages/replication-protocol/test/codec-issue299-ac-red.test.ts (17 tests | 14 failed) 39ms
+   × issue #299 切片 1：0x42 UPDATE_CHUNK kind 首字段单形态 codec（红灯契约） > 红灯 R1（AC1）：kind=0 live-update 单形态——kind 首字段 + 五字段序 + decode→encode 逐字节无损 11ms
+     → MALFORMED_FRAME: invalid namespaceId
+   × issue #299 切片 1：0x42 UPDATE_CHUNK kind 首字段单形态 codec（红灯契约） > 红灯 R2（AC1）：kind=0 非首 chunk（idx=2）单形态往返无损 1ms
+     → MALFORMED_FRAME: invalid namespaceId
+   × issue #299 切片 1：0x42 UPDATE_CHUNK kind 首字段单形态 codec（红灯契约） > 红灯 R3（AC1）：kind=1 snapshot 首 chunk 携绑定块 replicationId+replicationEpoch 编解码无损 9ms
+     → MALFORMED_FRAME: invalid namespaceId
+   × issue #299 切片 1：0x42 UPDATE_CHUNK kind 首字段单形态 codec（红灯契约） > 红灯 R4（AC1）：kind=2 sync-diff 首 chunk 携绑定块 syncRoundId 编解码无损；非首 chunk 无绑定块 0ms
+     → MALFORMED_FRAME: invalid namespaceId
+   × issue #299 切片 1：0x42 UPDATE_CHUNK kind 首字段单形态 codec（红灯契约） > 红灯 R5（AC1 旧形态作废）：ADR 0013 六字段 payload 必须 MALFORMED_FRAME（kind 首字段恒在，无形态兼容面） 6ms
+     → ADR 0013 旧形态：期望 ProtocolError(MALFORMED_FRAME): expected undefined to be an instance of ProtocolError
+   × issue #299 切片 1：0x42 UPDATE_CHUNK kind 首字段单形态 codec（红灯契约） > 红灯 R6（AC1 golden vectors 改写冻结）：仓内 UPDATE_CHUNK golden fixtures 必须全部为单形态且逐字节往返 3ms
+     → UPDATE_CHUNK_BASIC：payload 首字节必须是 kind ∈ {0,1,2}（单形态），实际 0x23: expected false to be true // Object.is equality
+   × issue #299 切片 1：0x42 UPDATE_CHUNK kind 首字段单形态 codec（红灯契约） > 红灯 R7（AC2）：kind ∉ {0,1,2}（3 / 127）→ MALFORMED_FRAME 0ms
+     → MALFORMED_FRAME: invalid namespaceId
+   × issue #299 切片 1：0x42 UPDATE_CHUNK kind 首字段单形态 codec（红灯契约） > 红灯 R8（AC2）：kind=1 首 chunk 缺绑定块 → MALFORMED_FRAME 0ms
+     → MALFORMED_FRAME: invalid namespaceId
+   × issue #299 切片 1：0x42 UPDATE_CHUNK kind 首字段单形态 codec（红灯契约） > 红灯 R9（AC2）：绑定块位置违例——kind=1 首 chunk 绑定块写在 bytes 之后 / 非首 chunk 携带 → MALFORMED_FRAME 1ms
+     → MALFORMED_FRAME: invalid namespaceId
+   × issue #299 切片 1：0x42 UPDATE_CHUNK kind 首字段单形态 codec（红灯契约） > 红灯 R10（AC2）：绑定块越位——kind=2 非首 chunk 携带绑定块、kind=0 携带绑定块字节 → MALFORMED_FRAME 1ms
+     → MALFORMED_FRAME: invalid namespaceId
+   × issue #299 切片 1：0x42 UPDATE_CHUNK kind 首字段单形态 codec（红灯契约） > 红灯 R11（AC4）：transferId=0 在三种 kind 上一致 MALFORMED_FRAME（作用域计数器从 1 严格递增） 0ms
+     → MALFORMED_FRAME: invalid namespaceId
+   × issue #299 切片 1：0x42 UPDATE_CHUNK kind 首字段单形态 codec（红灯契约） > 红灯 R12（AC4）：transferId uint32 上界 0xffffffff 在三种 kind 上一致被接纳且逐字节无损 0ms
+     → MALFORMED_FRAME: invalid namespaceId
+   × issue #299 切片 1：0x42 UPDATE_CHUNK kind 首字段单形态 codec（红灯契约） > 红灯 R13（AC2 kind 无关字段限额）：kind=1/2 chunk 的 bytes 复用 maxUpdateBytes——超限 → UPDATE_TOO_LARGE 0ms
+     → MALFORMED_FRAME: invalid namespaceId
+   × issue #299 切片 1：0x42 UPDATE_CHUNK kind 首字段单形态 codec（红灯契约） > 红灯 R14（AC2 编码侧对称校验 R9）：decode 产物被改写为违例字段后 encode 必须 MALFORMED_FRAME（先验证后写） 0ms
+     → MALFORMED_FRAME: invalid namespaceId
+   ✓ issue #299 切片 1：0x42 UPDATE_CHUNK kind 首字段单形态 codec（红灯契约） > 负控 N1（形态无关·SA8 R34）：未协商 CAP_CHUNKED_UPDATE 的 0x42 帧在 payload 解析前 UNSUPPORTED_MESSAGE_TYPE 1ms
+   ✓ issue #299 切片 1：0x42 UPDATE_CHUNK kind 首字段单形态 codec（红灯契约） > 负控 N2（形态无关）：selectedCapabilities 非法值急切 CONNECTION_POLICY_VIOLATION 0ms
+   ✓ issue #299 切片 1：0x42 UPDATE_CHUNK kind 首字段单形态 codec（红灯契约） > 负控 N3（改写不波及它域）：UPDATE 0x40 逐字节往返回归 1ms
+ ❯ packages/ws-replication/test/ws-replication-issue299-ac-red.test.ts (7 tests | 5 failed) 27ms
+   × issue #299 切片 1：snapshot/sync-diff 聚合上限配置链（红灯契约） > 红灯 C1（AC3 缺省面）：两聚合上限键缺省各 4 MiB 进入冻结 DEFAULT_REPLICATION_LIMITS；既有三键键名/缺省不变 8ms
+     → maxChunkedBootstrapBytes 缺省必须为 4194304（当前键未实现）: expected undefined to be 4194304 // Object.is equality
+   × issue #299 切片 1：snapshot/sync-diff 聚合上限配置链（红灯契约） > 红灯 C2（AC3 链②·bootstrap 隔离违例）：显式 maxChunkedBootstrapBytes ≤ maxChunksPerUpdate × maxUpdateBytes——越界 TypeError、恰好等号合法、off-by-one 拒绝、非法值拒绝 1ms
+     → maxChunkedBootstrapBytes=40MiB > 64×512KiB=32MiB（hub 入口）
+   × issue #299 切片 1：snapshot/sync-diff 聚合上限配置链（红灯契约） > 红灯 C3（AC3 链②·sync-diff 隔离违例）：显式 maxChunkedSyncDiffBytes 同上——越界 TypeError、恰好等号合法、off-by-one 拒绝、非法值拒绝 1ms
+     → maxChunkedSyncDiffBytes=40MiB > 32MiB（hub 入口）
+   × issue #299 切片 1：snapshot/sync-diff 聚合上限配置链（红灯契约） > 红灯 C4（AC3 两键联立）：两新键各自独立生效——同为界内接纳；任一越界即使另一键在界内也 TypeError 2ms
+     → bootstrap=2MiB（界内）∧ sync=2MiB+1（越界）（hub 入口）
+   ✓ issue #299 切片 1：snapshot/sync-diff 聚合上限配置链（红灯契约） > 负控 C5（AC3 非追溯性 + SA8 R35 门宽）：显式 maxChunksPerUpdate 仍是链激活键；未表达分块族键的存量配置不误判 2ms
+   ✓ issue #299 切片 1：snapshot/sync-diff 聚合上限配置链（红灯契约） > 负控 C6（AC3 control reserve 原样保留）：maxQueuedControlBytes ≥ maxBootstrapBytes + 128 启动期响亮（违例 / 边界合法） 8ms
+   × issue #299 切片 1：snapshot/sync-diff 聚合上限配置链（红灯契约） > 红灯 C7（AC3 配置链接入·插件 allowlist）：两新键必须被 hub/peer 插件配置严格 allowlist 接纳，且链②违例经插件装配路径响亮拒绝 3ms
+     → hub 插件 limits allowlist 必须接纳两新键（当前抛 invalid configuration）: expected [Function] to not throw an error but 'TypeError: hub replication limits: in…' was thrown
+ ❯  TS  packages/ws-replication/test/ws-replication-issue299-api.test-d.ts (2 tests | 2 failed)
+   × issue #299 类型面：聚合上限两键进入 ReplicationLimits > 两键为必填 number（与既有分块键同形；缺省值由 DEFAULT_REPLICATION_LIMITS 提供）
+     → Property 'maxChunkedBootstrapBytes' does not exist on type 'ReplicationLimits'.
+     → Property 'maxChunkedSyncDiffBytes' does not exist on type 'ReplicationLimits'.
+     → Property 'maxChunkedBootstrapBytes' does not exist on type 'Readonly<ReplicationLimits>'.
+     → Property 'maxChunkedSyncDiffBytes' does not exist on type 'Readonly<ReplicationLimits>'.
+   × issue #299 类型面：聚合上限两键进入 ReplicationLimits > 两键可经 Partial<ReplicationLimits> 覆盖（配置链入口类型不变、无逐 kind 变体键）
+     → Object literal may only specify known properties, but 'maxChunkedBootstrapBytes' does not exist in type 'Partial<ReplicationLimits>'. Did you mean to write 'maxBootstrapBytes'?
+
+⎯⎯⎯⎯⎯⎯ Failed Tests 21 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  packages/replication-protocol/test/codec-issue299-ac-red.test.ts > issue #299 切片 1：0x42 UPDATE_CHUNK kind 首字段单形态 codec（红灯契约） > 红灯 R1（AC1）：kind=0 live-update 单形态——kind 首字段 + 五字段序 + decode→encode 逐字节无损
+ProtocolError: MALFORMED_FRAME: invalid namespaceId
+ ❯ throwMalformed packages/replication-protocol/src/canonical.ts:38:9
+     36| /** 抛出已分类 MALFORMED_FRAME（payload 级一切违规的统一出口；绝无未分类异常逃逸）。 */
+     37| export function throwMalformed(detail?: string): never {
+     38|   throw new ProtocolError('MALFORMED_FRAME', detail);
+       |         ^
+     39| }
+     40|
+ ❯ checkNamespaceId packages/replication-protocol/src/payloads.ts:62:5
+ ❯ decodeUpdateChunk packages/replication-protocol/src/payloads.ts:665:3
+ ❯ decodePayload packages/replication-protocol/src/payloads.ts:767:14
+ ❯ decodeMessage packages/replication-protocol/src/payloads.ts:838:19
+ ❯ decodeChunk packages/replication-protocol/test/codec-issue299-ac-red.test.ts:178:10
+ ❯ packages/replication-protocol/test/codec-issue299-ac-red.test.ts:231:21
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/24]⎯
+
+ FAIL  packages/replication-protocol/test/codec-issue299-ac-red.test.ts > issue #299 切片 1：0x42 UPDATE_CHUNK kind 首字段单形态 codec（红灯契约） > 红灯 R2（AC1）：kind=0 非首 chunk（idx=2）单形态往返无损
+ProtocolError: MALFORMED_FRAME: invalid namespaceId
+ ❯ throwMalformed packages/replication-protocol/src/canonical.ts:38:9
+     36| /** 抛出已分类 MALFORMED_FRAME（payload 级一切违规的统一出口；绝无未分类异常逃逸）。 */
+     37| export function throwMalformed(detail?: string): never {
+     38|   throw new ProtocolError('MALFORMED_FRAME', detail);
+       |         ^
+     39| }
+     40|
+ ❯ checkNamespaceId packages/replication-protocol/src/payloads.ts:62:5
+ ❯ decodeUpdateChunk packages/replication-protocol/src/payloads.ts:665:3
+ ❯ decodePayload packages/replication-protocol/src/payloads.ts:767:14
+ ❯ decodeMessage packages/replication-protocol/src/payloads.ts:838:19
+ ❯ decodeChunk packages/replication-protocol/test/codec-issue299-ac-red.test.ts:178:10
+ ❯ packages/replication-protocol/test/codec-issue299-ac-red.test.ts:245:33
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/24]⎯
+
+ FAIL  packages/replication-protocol/test/codec-issue299-ac-red.test.ts > issue #299 切片 1：0x42 UPDATE_CHUNK kind 首字段单形态 codec（红灯契约） > 红灯 R3（AC1）：kind=1 snapshot 首 chunk 携绑定块 replicationId+replicationEpoch 编解码无损
+ProtocolError: MALFORMED_FRAME: invalid namespaceId
+ ❯ throwMalformed packages/replication-protocol/src/canonical.ts:38:9
+     36| /** 抛出已分类 MALFORMED_FRAME（payload 级一切违规的统一出口；绝无未分类异常逃逸）。 */
+     37| export function throwMalformed(detail?: string): never {
+     38|   throw new ProtocolError('MALFORMED_FRAME', detail);
+       |         ^
+     39| }
+     40|
+ ❯ checkNamespaceId packages/replication-protocol/src/payloads.ts:62:5
+ ❯ decodeUpdateChunk packages/replication-protocol/src/payloads.ts:665:3
+ ❯ decodePayload packages/replication-protocol/src/payloads.ts:767:14
+ ❯ decodeMessage packages/replication-protocol/src/payloads.ts:838:19
+ ❯ decodeChunk packages/replication-protocol/test/codec-issue299-ac-red.test.ts:178:10
+ ❯ packages/replication-protocol/test/codec-issue299-ac-red.test.ts:252:33
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/24]⎯
+
+ FAIL  packages/replication-protocol/test/codec-issue299-ac-red.test.ts > issue #299 切片 1：0x42 UPDATE_CHUNK kind 首字段单形态 codec（红灯契约） > 红灯 R4（AC1）：kind=2 sync-diff 首 chunk 携绑定块 syncRoundId 编解码无损；非首 chunk 无绑定块
+ProtocolError: MALFORMED_FRAME: invalid namespaceId
+ ❯ throwMalformed packages/replication-protocol/src/canonical.ts:38:9
+     36| /** 抛出已分类 MALFORMED_FRAME（payload 级一切违规的统一出口；绝无未分类异常逃逸）。 */
+     37| export function throwMalformed(detail?: string): never {
+     38|   throw new ProtocolError('MALFORMED_FRAME', detail);
+       |         ^
+     39| }
+     40|
+ ❯ checkNamespaceId packages/replication-protocol/src/payloads.ts:62:5
+ ❯ decodeUpdateChunk packages/replication-protocol/src/payloads.ts:665:3
+ ❯ decodePayload packages/replication-protocol/src/payloads.ts:767:14
+ ❯ decodeMessage packages/replication-protocol/src/payloads.ts:838:19
+ ❯ decodeChunk packages/replication-protocol/test/codec-issue299-ac-red.test.ts:178:10
+ ❯ packages/replication-protocol/test/codec-issue299-ac-red.test.ts:262:31
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[4/24]⎯
+
+ FAIL  packages/replication-protocol/test/codec-issue299-ac-red.test.ts > issue #299 切片 1：0x42 UPDATE_CHUNK kind 首字段单形态 codec（红灯契约） > 红灯 R5（AC1 旧形态作废）：ADR 0013 六字段 payload 必须 MALFORMED_FRAME（kind 首字段恒在，无形态兼容面）
+AssertionError: ADR 0013 旧形态：期望 ProtocolError(MALFORMED_FRAME): expected undefined to be an instance of ProtocolError
+ ❯ expectProtocolError packages/replication-protocol/test/codec-issue299-ac-red.test.ts:200:56
+    198|   }
+    199|   const prefix = label === '' ? '' : `${label}：`;
+    200|   expect(caught, `${prefix}期望 ProtocolError(${code})`).toBeInstanceOf(…
+       |                                                        ^
+    201|   const err = caught as ProtocolError;
+    202|   expect(err.code, `${prefix}实际错误码应为 ${code}，消息：${String(err.message)}…
+ ❯ packages/replication-protocol/test/codec-issue299-ac-red.test.ts:275:5
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[5/24]⎯
+
+ FAIL  packages/replication-protocol/test/codec-issue299-ac-red.test.ts > issue #299 切片 1：0x42 UPDATE_CHUNK kind 首字段单形态 codec（红灯契约） > 红灯 R6（AC1 golden vectors 改写冻结）：仓内 UPDATE_CHUNK golden fixtures 必须全部为单形态且逐字节往返
+AssertionError: UPDATE_CHUNK_BASIC：payload 首字节必须是 kind ∈ {0,1,2}（单形态），实际 0x23: expected false to be true // Object.is equality
+
+- Expected
++ Received
+
+- true
++ false
+
+ ❯ packages/replication-protocol/test/codec-issue299-ac-red.test.ts:290:9
+    288|         kindByte === KIND_LIVE_UPDATE || kindByte === KIND_SNAPSHOT ||…
+    289|         `${golden.name}：payload 首字节必须是 kind ∈ {0,1,2}（单形态），实际 0x${(kin…
+    290|       ).toBe(true);
+       |         ^
+    291|       expect(reencodeHex(golden.frameHex), `${golden.name} golden 必须单形…
+    292|         golden.frameHex,
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[6/24]⎯
+
+ FAIL  packages/replication-protocol/test/codec-issue299-ac-red.test.ts > issue #299 切片 1：0x42 UPDATE_CHUNK kind 首字段单形态 codec（红灯契约） > 红灯 R7（AC2）：kind ∉ {0,1,2}（3 / 127）→ MALFORMED_FRAME
+ProtocolError: MALFORMED_FRAME: invalid namespaceId
+ ❯ throwMalformed packages/replication-protocol/src/canonical.ts:38:9
+     36| /** 抛出已分类 MALFORMED_FRAME（payload 级一切违规的统一出口；绝无未分类异常逃逸）。 */
+     37| export function throwMalformed(detail?: string): never {
+     38|   throw new ProtocolError('MALFORMED_FRAME', detail);
+       |         ^
+     39| }
+     40|
+ ❯ checkNamespaceId packages/replication-protocol/src/payloads.ts:62:5
+ ❯ decodeUpdateChunk packages/replication-protocol/src/payloads.ts:665:3
+ ❯ decodePayload packages/replication-protocol/src/payloads.ts:767:14
+ ❯ decodeMessage packages/replication-protocol/src/payloads.ts:838:19
+ ❯ decodeChunk packages/replication-protocol/test/codec-issue299-ac-red.test.ts:178:10
+ ❯ expectValidChunk packages/replication-protocol/test/codec-issue299-ac-red.test.ts:216:31
+ ❯ packages/replication-protocol/test/codec-issue299-ac-red.test.ts:298:5
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[7/24]⎯
+
+ FAIL  packages/replication-protocol/test/codec-issue299-ac-red.test.ts > issue #299 切片 1：0x42 UPDATE_CHUNK kind 首字段单形态 codec（红灯契约） > 红灯 R8（AC2）：kind=1 首 chunk 缺绑定块 → MALFORMED_FRAME
+ProtocolError: MALFORMED_FRAME: invalid namespaceId
+ ❯ throwMalformed packages/replication-protocol/src/canonical.ts:38:9
+     36| /** 抛出已分类 MALFORMED_FRAME（payload 级一切违规的统一出口；绝无未分类异常逃逸）。 */
+     37| export function throwMalformed(detail?: string): never {
+     38|   throw new ProtocolError('MALFORMED_FRAME', detail);
+       |         ^
+     39| }
+     40|
+ ❯ checkNamespaceId packages/replication-protocol/src/payloads.ts:62:5
+ ❯ decodeUpdateChunk packages/replication-protocol/src/payloads.ts:665:3
+ ❯ decodePayload packages/replication-protocol/src/payloads.ts:767:14
+ ❯ decodeMessage packages/replication-protocol/src/payloads.ts:838:19
+ ❯ decodeChunk packages/replication-protocol/test/codec-issue299-ac-red.test.ts:178:10
+ ❯ expectValidChunk packages/replication-protocol/test/codec-issue299-ac-red.test.ts:216:31
+ ❯ packages/replication-protocol/test/codec-issue299-ac-red.test.ts:304:5
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[8/24]⎯
+
+ FAIL  packages/replication-protocol/test/codec-issue299-ac-red.test.ts > issue #299 切片 1：0x42 UPDATE_CHUNK kind 首字段单形态 codec（红灯契约） > 红灯 R9（AC2）：绑定块位置违例——kind=1 首 chunk 绑定块写在 bytes 之后 / 非首 chunk 携带 → MALFORMED_FRAME
+ProtocolError: MALFORMED_FRAME: invalid namespaceId
+ ❯ throwMalformed packages/replication-protocol/src/canonical.ts:38:9
+     36| /** 抛出已分类 MALFORMED_FRAME（payload 级一切违规的统一出口；绝无未分类异常逃逸）。 */
+     37| export function throwMalformed(detail?: string): never {
+     38|   throw new ProtocolError('MALFORMED_FRAME', detail);
+       |         ^
+     39| }
+     40|
+ ❯ checkNamespaceId packages/replication-protocol/src/payloads.ts:62:5
+ ❯ decodeUpdateChunk packages/replication-protocol/src/payloads.ts:665:3
+ ❯ decodePayload packages/replication-protocol/src/payloads.ts:767:14
+ ❯ decodeMessage packages/replication-protocol/src/payloads.ts:838:19
+ ❯ decodeChunk packages/replication-protocol/test/codec-issue299-ac-red.test.ts:178:10
+ ❯ expectValidChunk packages/replication-protocol/test/codec-issue299-ac-red.test.ts:216:31
+ ❯ packages/replication-protocol/test/codec-issue299-ac-red.test.ts:309:5
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[9/24]⎯
+
+ FAIL  packages/replication-protocol/test/codec-issue299-ac-red.test.ts > issue #299 切片 1：0x42 UPDATE_CHUNK kind 首字段单形态 codec（红灯契约） > 红灯 R10（AC2）：绑定块越位——kind=2 非首 chunk 携带绑定块、kind=0 携带绑定块字节 → MALFORMED_FRAME
+ProtocolError: MALFORMED_FRAME: invalid namespaceId
+ ❯ throwMalformed packages/replication-protocol/src/canonical.ts:38:9
+     36| /** 抛出已分类 MALFORMED_FRAME（payload 级一切违规的统一出口；绝无未分类异常逃逸）。 */
+     37| export function throwMalformed(detail?: string): never {
+     38|   throw new ProtocolError('MALFORMED_FRAME', detail);
+       |         ^
+     39| }
+     40|
+ ❯ checkNamespaceId packages/replication-protocol/src/payloads.ts:62:5
+ ❯ decodeUpdateChunk packages/replication-protocol/src/payloads.ts:665:3
+ ❯ decodePayload packages/replication-protocol/src/payloads.ts:767:14
+ ❯ decodeMessage packages/replication-protocol/src/payloads.ts:838:19
+ ❯ decodeChunk packages/replication-protocol/test/codec-issue299-ac-red.test.ts:178:10
+ ❯ expectValidChunk packages/replication-protocol/test/codec-issue299-ac-red.test.ts:216:31
+ ❯ packages/replication-protocol/test/codec-issue299-ac-red.test.ts:316:5
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[10/24]⎯
+
+ FAIL  packages/replication-protocol/test/codec-issue299-ac-red.test.ts > issue #299 切片 1：0x42 UPDATE_CHUNK kind 首字段单形态 codec（红灯契约） > 红灯 R11（AC4）：transferId=0 在三种 kind 上一致 MALFORMED_FRAME（作用域计数器从 1 严格递增）
+ProtocolError: MALFORMED_FRAME: invalid namespaceId
+ ❯ throwMalformed packages/replication-protocol/src/canonical.ts:38:9
+     36| /** 抛出已分类 MALFORMED_FRAME（payload 级一切违规的统一出口；绝无未分类异常逃逸）。 */
+     37| export function throwMalformed(detail?: string): never {
+     38|   throw new ProtocolError('MALFORMED_FRAME', detail);
+       |         ^
+     39| }
+     40|
+ ❯ checkNamespaceId packages/replication-protocol/src/payloads.ts:62:5
+ ❯ decodeUpdateChunk packages/replication-protocol/src/payloads.ts:665:3
+ ❯ decodePayload packages/replication-protocol/src/payloads.ts:767:14
+ ❯ decodeMessage packages/replication-protocol/src/payloads.ts:838:19
+ ❯ decodeChunk packages/replication-protocol/test/codec-issue299-ac-red.test.ts:178:10
+ ❯ expectValidChunk packages/replication-protocol/test/codec-issue299-ac-red.test.ts:216:31
+ ❯ packages/replication-protocol/test/codec-issue299-ac-red.test.ts:323:5
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[11/24]⎯
+
+ FAIL  packages/replication-protocol/test/codec-issue299-ac-red.test.ts > issue #299 切片 1：0x42 UPDATE_CHUNK kind 首字段单形态 codec（红灯契约） > 红灯 R12（AC4）：transferId uint32 上界 0xffffffff 在三种 kind 上一致被接纳且逐字节无损
+ProtocolError: MALFORMED_FRAME: invalid namespaceId
+ ❯ throwMalformed packages/replication-protocol/src/canonical.ts:38:9
+     36| /** 抛出已分类 MALFORMED_FRAME（payload 级一切违规的统一出口；绝无未分类异常逃逸）。 */
+     37| export function throwMalformed(detail?: string): never {
+     38|   throw new ProtocolError('MALFORMED_FRAME', detail);
+       |         ^
+     39| }
+     40|
+ ❯ checkNamespaceId packages/replication-protocol/src/payloads.ts:62:5
+ ❯ decodeUpdateChunk packages/replication-protocol/src/payloads.ts:665:3
+ ❯ decodePayload packages/replication-protocol/src/payloads.ts:767:14
+ ❯ decodeMessage packages/replication-protocol/src/payloads.ts:838:19
+ ❯ decodeChunk packages/replication-protocol/test/codec-issue299-ac-red.test.ts:178:10
+ ❯ packages/replication-protocol/test/codec-issue299-ac-red.test.ts:337:35
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[12/24]⎯
+
+ FAIL  packages/replication-protocol/test/codec-issue299-ac-red.test.ts > issue #299 切片 1：0x42 UPDATE_CHUNK kind 首字段单形态 codec（红灯契约） > 红灯 R13（AC2 kind 无关字段限额）：kind=1/2 chunk 的 bytes 复用 maxUpdateBytes——超限 → UPDATE_TOO_LARGE
+ProtocolError: MALFORMED_FRAME: invalid namespaceId
+ ❯ throwMalformed packages/replication-protocol/src/canonical.ts:38:9
+     36| /** 抛出已分类 MALFORMED_FRAME（payload 级一切违规的统一出口；绝无未分类异常逃逸）。 */
+     37| export function throwMalformed(detail?: string): never {
+     38|   throw new ProtocolError('MALFORMED_FRAME', detail);
+       |         ^
+     39| }
+     40|
+ ❯ checkNamespaceId packages/replication-protocol/src/payloads.ts:62:5
+ ❯ decodeUpdateChunk packages/replication-protocol/src/payloads.ts:665:3
+ ❯ decodePayload packages/replication-protocol/src/payloads.ts:767:14
+ ❯ decodeMessage packages/replication-protocol/src/payloads.ts:838:19
+ ❯ decodeChunk packages/replication-protocol/test/codec-issue299-ac-red.test.ts:178:10
+ ❯ expectValidChunk packages/replication-protocol/test/codec-issue299-ac-red.test.ts:216:31
+ ❯ packages/replication-protocol/test/codec-issue299-ac-red.test.ts:344:5
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[13/24]⎯
+
+ FAIL  packages/replication-protocol/test/codec-issue299-ac-red.test.ts > issue #299 切片 1：0x42 UPDATE_CHUNK kind 首字段单形态 codec（红灯契约） > 红灯 R14（AC2 编码侧对称校验 R9）：decode 产物被改写为违例字段后 encode 必须 MALFORMED_FRAME（先验证后写）
+ProtocolError: MALFORMED_FRAME: invalid namespaceId
+ ❯ throwMalformed packages/replication-protocol/src/canonical.ts:38:9
+     36| /** 抛出已分类 MALFORMED_FRAME（payload 级一切违规的统一出口；绝无未分类异常逃逸）。 */
+     37| export function throwMalformed(detail?: string): never {
+     38|   throw new ProtocolError('MALFORMED_FRAME', detail);
+       |         ^
+     39| }
+     40|
+ ❯ checkNamespaceId packages/replication-protocol/src/payloads.ts:62:5
+ ❯ decodeUpdateChunk packages/replication-protocol/src/payloads.ts:665:3
+ ❯ decodePayload packages/replication-protocol/src/payloads.ts:767:14
+ ❯ decodeMessage packages/replication-protocol/src/payloads.ts:838:19
+ ❯ decodeChunk packages/replication-protocol/test/codec-issue299-ac-red.test.ts:178:10
+ ❯ packages/replication-protocol/test/codec-issue299-ac-red.test.ts:359:30
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[14/24]⎯
+
+ FAIL  packages/ws-replication/test/ws-replication-issue299-ac-red.test.ts > issue #299 切片 1：snapshot/sync-diff 聚合上限配置链（红灯契约） > 红灯 C1（AC3 缺省面）：两聚合上限键缺省各 4 MiB 进入冻结 DEFAULT_REPLICATION_LIMITS；既有三键键名/缺省不变
+AssertionError: maxChunkedBootstrapBytes 缺省必须为 4194304（当前键未实现）: expected undefined to be 4194304 // Object.is equality
+
+- Expected:
+4194304
+
++ Received:
+undefined
+
+ ❯ packages/ws-replication/test/ws-replication-issue299-ac-red.test.ts:191:7
+    189|       limitsRecord.maxChunkedBootstrapBytes,
+    190|       `maxChunkedBootstrapBytes 缺省必须为 ${DEFAULT_CHUNKED_BOOTSTRAP_BYTE…
+    191|     ).toBe(DEFAULT_CHUNKED_BOOTSTRAP_BYTES);
+       |       ^
+    192|     expect(
+    193|       limitsRecord.maxChunkedSyncDiffBytes,
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[15/24]⎯
+
+ FAIL  packages/ws-replication/test/ws-replication-issue299-ac-red.test.ts > issue #299 切片 1：snapshot/sync-diff 聚合上限配置链（红灯契约） > 红灯 C2（AC3 链②·bootstrap 隔离违例）：显式 maxChunkedBootstrapBytes ≤ maxChunksPerUpdate × maxUpdateBytes——越界 TypeError、恰好等号合法、off-by-one 拒绝、非法值拒绝
+AssertionError: maxChunkedBootstrapBytes=40MiB > 64×512KiB=32MiB（hub 入口）
+ ❯ expectBothEntryPointsTypeError packages/ws-replication/test/ws-replication-issue299-ac-red.test.ts:132:82
+    130|   label: string,
+    131| ): void {
+    132|   expect(() => createHubReplication(hubOptionsWith(limits)), `${label}…
+       |                                                                                  ^
+    133|   expect(
+    134|     () => createPeerReplication(peerOptionsWith(limits)),
+ ❯ packages/ws-replication/test/ws-replication-issue299-ac-red.test.ts:254:5
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[16/24]⎯
+
+ FAIL  packages/ws-replication/test/ws-replication-issue299-ac-red.test.ts > issue #299 切片 1：snapshot/sync-diff 聚合上限配置链（红灯契约） > 红灯 C3（AC3 链②·sync-diff 隔离违例）：显式 maxChunkedSyncDiffBytes 同上——越界 TypeError、恰好等号合法、off-by-one 拒绝、非法值拒绝
+AssertionError: maxChunkedSyncDiffBytes=40MiB > 32MiB（hub 入口）
+ ❯ expectBothEntryPointsTypeError packages/ws-replication/test/ws-replication-issue299-ac-red.test.ts:132:82
+    130|   label: string,
+    131| ): void {
+    132|   expect(() => createHubReplication(hubOptionsWith(limits)), `${label}…
+       |                                                                                  ^
+    133|   expect(
+    134|     () => createPeerReplication(peerOptionsWith(limits)),
+ ❯ packages/ws-replication/test/ws-replication-issue299-ac-red.test.ts:282:5
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[17/24]⎯
+
+ FAIL  packages/ws-replication/test/ws-replication-issue299-ac-red.test.ts > issue #299 切片 1：snapshot/sync-diff 聚合上限配置链（红灯契约） > 红灯 C4（AC3 两键联立）：两新键各自独立生效——同为界内接纳；任一越界即使另一键在界内也 TypeError
+AssertionError: bootstrap=2MiB（界内）∧ sync=2MiB+1（越界）（hub 入口）
+ ❯ expectBothEntryPointsTypeError packages/ws-replication/test/ws-replication-issue299-ac-red.test.ts:132:82
+    130|   label: string,
+    131| ): void {
+    132|   expect(() => createHubReplication(hubOptionsWith(limits)), `${label}…
+       |                                                                                  ^
+    133|   expect(
+    134|     () => createPeerReplication(peerOptionsWith(limits)),
+ ❯ packages/ws-replication/test/ws-replication-issue299-ac-red.test.ts:313:5
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[18/24]⎯
+
+ FAIL  packages/ws-replication/test/ws-replication-issue299-ac-red.test.ts > issue #299 切片 1：snapshot/sync-diff 聚合上限配置链（红灯契约） > 红灯 C7（AC3 配置链接入·插件 allowlist）：两新键必须被 hub/peer 插件配置严格 allowlist 接纳，且链②违例经插件装配路径响亮拒绝
+AssertionError: hub 插件 limits allowlist 必须接纳两新键（当前抛 invalid configuration）: expected [Function] to not throw an error but 'TypeError: hub replication limits: in…' was thrown
+
+- Expected:
+undefined
+
++ Received:
+"TypeError: hub replication limits: invalid configuration"
+
+ ❯ packages/ws-replication/test/ws-replication-issue299-ac-red.test.ts:399:11
+    397|         ),
+    398|       'hub 插件 limits allowlist 必须接纳两新键（当前抛 invalid configuration）',
+    399|     ).not.toThrow();
+       |           ^
+    400|     // (2) peer 插件配置同样接纳
+    401|     const accepted = createPeerReplicationPlugin(
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[19/24]⎯
+
+ FAIL  packages/ws-replication/test/ws-replication-issue299-api.test-d.ts > issue #299 类型面：聚合上限两键进入 ReplicationLimits > 两键为必填 number（与既有分块键同形；缺省值由 DEFAULT_REPLICATION_LIMITS 提供）
+TypeCheckError: Property 'maxChunkedBootstrapBytes' does not exist on type 'ReplicationLimits'.
+ ❯ packages/ws-replication/test/ws-replication-issue299-api.test-d.ts:22:36
+     20| describe('issue #299 类型面：聚合上限两键进入 ReplicationLimits', () => {
+     21|   it('两键为必填 number（与既有分块键同形；缺省值由 DEFAULT_REPLICATION_LIMITS 提供）', () =…
+     22|     expectTypeOf<ReplicationLimits['maxChunkedBootstrapBytes']>().toEq…
+       |                                    ^
+     23|     expectTypeOf<ReplicationLimits['maxChunkedSyncDiffBytes']>().toEqu…
+     24|     expectTypeOf<
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[20/24]⎯
+
+ FAIL  packages/ws-replication/test/ws-replication-issue299-api.test-d.ts > issue #299 类型面：聚合上限两键进入 ReplicationLimits > 两键为必填 number（与既有分块键同形；缺省值由 DEFAULT_REPLICATION_LIMITS 提供）
+TypeCheckError: Property 'maxChunkedSyncDiffBytes' does not exist on type 'ReplicationLimits'.
+ ❯ packages/ws-replication/test/ws-replication-issue299-api.test-d.ts:23:36
+     21|   it('两键为必填 number（与既有分块键同形；缺省值由 DEFAULT_REPLICATION_LIMITS 提供）', () =…
+     22|     expectTypeOf<ReplicationLimits['maxChunkedBootstrapBytes']>().toEq…
+     23|     expectTypeOf<ReplicationLimits['maxChunkedSyncDiffBytes']>().toEqu…
+       |                                    ^
+     24|     expectTypeOf<
+     25|       (typeof DEFAULT_REPLICATION_LIMITS)['maxChunkedBootstrapBytes']
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[21/24]⎯
+
+ FAIL  packages/ws-replication/test/ws-replication-issue299-api.test-d.ts > issue #299 类型面：聚合上限两键进入 ReplicationLimits > 两键为必填 number（与既有分块键同形；缺省值由 DEFAULT_REPLICATION_LIMITS 提供）
+TypeCheckError: Property 'maxChunkedBootstrapBytes' does not exist on type 'Readonly<ReplicationLimits>'.
+ ❯ packages/ws-replication/test/ws-replication-issue299-api.test-d.ts:25:43
+     23|     expectTypeOf<ReplicationLimits['maxChunkedSyncDiffBytes']>().toEqu…
+     24|     expectTypeOf<
+     25|       (typeof DEFAULT_REPLICATION_LIMITS)['maxChunkedBootstrapBytes']
+       |                                           ^
+     26|     >().toEqualTypeOf<number>();
+     27|     expectTypeOf<
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[22/24]⎯
+
+ FAIL  packages/ws-replication/test/ws-replication-issue299-api.test-d.ts > issue #299 类型面：聚合上限两键进入 ReplicationLimits > 两键为必填 number（与既有分块键同形；缺省值由 DEFAULT_REPLICATION_LIMITS 提供）
+TypeCheckError: Property 'maxChunkedSyncDiffBytes' does not exist on type 'Readonly<ReplicationLimits>'.
+ ❯ packages/ws-replication/test/ws-replication-issue299-api.test-d.ts:28:43
+     26|     >().toEqualTypeOf<number>();
+     27|     expectTypeOf<
+     28|       (typeof DEFAULT_REPLICATION_LIMITS)['maxChunkedSyncDiffBytes']
+       |                                           ^
+     29|     >().toEqualTypeOf<number>();
+     30|   });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[23/24]⎯
+
+ FAIL  packages/ws-replication/test/ws-replication-issue299-api.test-d.ts > issue #299 类型面：聚合上限两键进入 ReplicationLimits > 两键可经 Partial<ReplicationLimits> 覆盖（配置链入口类型不变、无逐 kind 变体键）
+TypeCheckError: Object literal may only specify known properties, but 'maxChunkedBootstrapBytes' does not exist in type 'Partial<ReplicationLimits>'. Did you mean to write 'maxBootstrapBytes'?
+ ❯ packages/ws-replication/test/ws-replication-issue299-api.test-d.ts:35:7
+     33|     // 配置覆盖入口（hub/peer/插件 limits 的公共类型）：显式两键字面量必须无 cast 通过
+     34|     const override = {
+     35|       maxChunkedBootstrapBytes: 4 * 1024 * 1024,
+       |       ^
+     36|       maxChunkedSyncDiffBytes: 4 * 1024 * 1024,
+     37|     } satisfies Partial<ReplicationLimits>;
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[24/24]⎯
+
+
+ Test Files  3 failed (3)
+      Tests  21 failed | 5 passed (26)
+Type Errors  2 failed
+   Start at  12:58:00
+   Duration  1.93s (transform 690ms, setup 0ms, collect 994ms, tests 67ms, environment 0ms, prepare 128ms, typecheck 1.89s)

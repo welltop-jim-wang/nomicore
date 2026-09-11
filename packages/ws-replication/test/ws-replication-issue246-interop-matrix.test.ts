@@ -659,6 +659,7 @@ describe('issue #246 实现代际互通矩阵（ADR 0013 L25；未协商 ⇒ v1 
     const chunkFrame = encodeMessage(
       {
         kind: 'UPDATE_CHUNK',
+        transferKind: 0, // issue #295：单形态 kind 首字段（live-update 路径）
         namespaceId: NS_MAIN,
         transferId: 1,
         chunkIndex: 0,

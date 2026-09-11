@@ -1,0 +1,8 @@
+=== SA6 issue#299 existing-suite baseline (HEAD eb380d7) 2026-09-11T04:54:25Z ===
+ ✓ packages/ws-replication/test/ws-replication-issue243-chunked-live.test.ts (16 tests) 141ms
+ ✓ packages/ws-replication/test/ws-replication-issue244-ac-red.test.ts (14 tests) 100ms
+ ✓ packages/ws-replication/test/ws-replication-plugin.test.ts (15 tests) 80ms
+ Test Files  3 passed (3)
+      Tests  45 passed (45)
+Type Errors  no errors
+   Duration  1.83s (transform 591ms, setup 0ms, collect 1.07s, tests 321ms, environment 0ms, prepare 143ms)

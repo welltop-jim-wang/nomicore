@@ -1,0 +1,28 @@
+Testing types with tsc and vue-tsc is an experimental feature.
+Breaking changes might not follow SemVer, please pin Vitest's version when using it.
+
+ RUN  v3.2.7 /home/wangjian/nomicore-fix-issue-299
+
+stdout | packages/ws-replication/test/sa7-299-transport-probe.test.ts > SA7 探针：issue #299 传输层数据流（临时） > T1 路由①：出站 live-update 分块 wire 首字节/transferKind/绑定块缺失 + 两次 transfer 共用递增计数器
+[SA7-DATAFLOW] route1-wire | transfer1 | {"chunkFrames":3,"payloadFirstBytes":[0,0,0],"transferKinds":[0],"transferId":1,"bindingMembersSeen":false,"chunkIndexes":[0,1,2],"sumBytesEqualsTotal":true}
+
+stdout | packages/ws-replication/test/sa7-299-transport-probe.test.ts > SA7 探针：issue #299 传输层数据流（临时） > T1 路由①：出站 live-update 分块 wire 首字节/transferKind/绑定块缺失 + 两次 transfer 共用递增计数器
+[SA7-DATAFLOW] route1-wire | transfer2-counter | {"transfer1Id":1,"transfer2Id":2,"increment":1,"transfer2Kinds":[0]}
+
+stdout | packages/ws-replication/test/sa7-299-transport-probe.test.ts > SA7 探针：issue #299 传输层数据流（临时） > T2 路由②错误流：入站 kind=3 违例帧 → MALFORMED_FRAME 连接 fatal(1002) + blocked 终态
+[SA7-DATAFLOW] route2-error-transport | inject | {"sequence":7,"payloadHexHead":"03236e73"}
+
+stdout | packages/ws-replication/test/sa7-299-transport-probe.test.ts > SA7 探针：issue #299 传输层数据流（临时） > T2 路由②错误流：入站 kind=3 违例帧 → MALFORMED_FRAME 连接 fatal(1002) + blocked 终态
+[SA7-DATAFLOW] route2-error-transport | observed | {"hubErrorCodes":["MALFORMED_FRAME"],"peerSideCloseInfo":{"code":1002,"reason":"protocol-error"},"peerConnectionState":"blocked","peerNamespaceState":"disconnected","hubSideClosed":true}
+[SA7-DATAFLOW] route2-error-transport | cleanup-face | {"updateAcksTotal":0}
+
+stdout | packages/ws-replication/test/sa7-299-transport-probe.test.ts > SA7 探针：issue #299 传输层数据流（临时） > T3 路由②保持面：未协商连接上注入合法 kind=0 chunk → UNSUPPORTED_MESSAGE_TYPE fatal(1002)
+[SA7-DATAFLOW] route2-preserved-transport | unnegotiated-chunk | {"hubErrorCodes":["UNSUPPORTED_MESSAGE_TYPE"],"peerSideCloseInfo":{"code":1002,"reason":"protocol-error"},"peerConnectionState":"blocked","hubAppliedWrite":"seed"}
+
+ ✓ packages/ws-replication/test/sa7-299-transport-probe.test.ts (3 tests) 46ms
+
+ Test Files  1 passed (1)
+      Tests  3 passed (3)
+Type Errors  no errors
+   Start at  14:34:23
+   Duration  900ms (transform 503ms, setup 0ms, collect 705ms, tests 46ms, environment 0ms, prepare 46ms)
