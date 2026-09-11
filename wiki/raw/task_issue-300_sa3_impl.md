@@ -4,6 +4,8 @@
 - **实现范围**: 设计 r1 `wiki/raw/task_issue-300_design.md`（SA2 **approve**，无 Required revisions）+ SA6 验收契约（8 红 + 4 负控）+ SA8 R42–R47/N6
 - **issue comments REST 快照 = `[]`**（简报/SA6/SA8/SA2 四方一致）→ 零 owner 补充要求，无评论映射义务
 - **结果**: SA6 契约 8 红 → **12/12 绿**；受影响包 typecheck / 根 `pnpm typecheck` / 根 `pnpm test` 全绿；`git diff --check` 干净
+- **iteration 3**（dispatch `sa-e3ebc0e3-b0d7-4a9b-8e41-2e6975f94b71`）：单一格式化修复——`wiki/raw/task_issue-300_sa6_contract.md` L81 行尾空格（staged blob）删除并同步刷新索引；三态 whitespace 门全 exit 0（详见文末「Iteration 3」节）。零业务代码/测试/契约语义改动。
+- **iteration 4**（dispatch `sa-8cc474f3-5c57-468f-9dc1-a4ea7346eabe`）：具名六路径 EOF 空白修复——`git diff --cached --check` 报 5 个 `artifacts/sa7-issue300-*.log` + `wiki/raw/task_issue-300.md` 的 `new blank line at EOF`；每文件精确删除 1 个尾随 `\n`（文件尾空行）并刷新其索引 blob；`git diff --cached --check` / `git diff HEAD --check` / `git diff --check` 全 exit 0（详见文末「Iteration 4」节）。零业务代码/测试/语义改动。
 
 ---
 
@@ -144,4 +146,137 @@ feat(#295 切片 2): chunked snapshot / sync-diff 端到端——R1/R3 收敛绿
 12 文件 206 用例全绿；包 typecheck + 根 pnpm typecheck + 根 pnpm test（331 文件 3486 用例）全绿。
 ```
 
-（Suggested commit message 仅供 Controller 选择；SA3 未执行 `git add`/`commit`/`push`/PR。）
+（Suggested commit message 仅供 Controller 选择；SA3 未执行 `commit`/`push`/PR。）
+
+---
+
+## Iteration 3 — staged formatting defect fix
+
+- **dispatch**: `sa-e3ebc0e3-b0d7-4a9b-8e41-2e6975f94b71`（mabf-sa3 / implementation / iteration 3）
+- **授权范围**: 仅修复 `wiki/raw/task_issue-300_sa6_contract.md` L81 尾随空格的 staged 格式缺陷，使 `git diff --check` 通过；不得改业务代码、测试或语义内容。
+- **Issue comments REST 快照**：无（dispatch 已述 `[]`；本 iteration 零 owner 映射项）。
+
+### Inputs consumed
+
+| 输入 | 状态 |
+|---|---|
+| 本 dispatch（具名单点格式化修复 + 验收判据 `git diff --check`） | 实读 |
+| `wiki/raw/task_issue-300_sa6_contract.md`（缺陷载体，staged `A`） | 实读（L78–84 上下文 + 全文件尾随空白扫描） |
+| `REPORT.md` L229（仓库 whitespace 门定义 = `git diff HEAD --check`） | 实读（判据来源） |
+| `git show :wiki/raw/task_issue-300_sa6_contract.md`（索引 blob 基线） | 实读（字节级对照） |
+
+### Existing worktree reconciliation
+
+- 工作树 = SA7 `approve` 后的同一变更集（13 modified + `bulk-transfer.ts`/2 测试新增 + wiki 输入）；`git status --porcelain` 与本报告 §Changed paths 逐条一致，零额外漂移。本 iteration **无回退、无新增实现改动**。
+- 缺陷复现（修复前）：`git diff HEAD --check` exit 2、`git diff --cached --check` exit 2，均报 `wiki/raw/task_issue-300_sa6_contract.md:81: trailing whitespace.`；而工作树相对索引的 `git diff --check` 已 exit 0——即缺陷只存在于**索引侧**（staged blob），工作树文件此前未被单独修改过。
+- 全文件扫描：`grep -nP '[ \t]+$'` 修复前恰 1 处命中（L81，行尾 1 个 0x20）；L291 的 `## Verdict` 为 `grep -E '[ \t]+$'` 字符类中 `t` 的误报，真实尾随空白仅 L81。
+
+### Changed paths
+
+| Path | Change |
+|---|---|
+| `wiki/raw/task_issue-300_sa6_contract.md` | L81 行尾 1 个空格（0x20）删除；30467 → 30466 bytes；相对索引 blob 的 diff = 单行对（`-…收敛) ` / `+…收敛)`） |
+| `wiki/raw/task_issue-300_sa3_impl.md` | 本报告（原位更新：§结果新增 iteration 3 行 + 本节追加） |
+
+### File scope check
+
+| Changed path | ALLOW entry | Purpose |
+|---|---|---|
+| `wiki/raw/task_issue-300_sa6_contract.md` | DENY 面（SA6 契约文件）——本 iteration 由 dispatch **具名授权单点豁免**，仅允许该行空白修复 | 满足 whitespace 门 |
+| `wiki/raw/task_issue-300_sa3_impl.md` | skill 固定产物（设计 §12 未列，SA3 报告义务） | 本报告 |
+
+- **契约语义零改动证据**：`diff <(sed 's/[ \t]*$//' 索引blob) <(sed 's/[ \t]*$//' 工作树)` **零输出**（忽略行尾空白后逐行完全相同）；字节差恰 1；断言/计数/用例清单/§13 判据/R1–R7+N1–N4 文字全部原样。
+- **业务代码与测试零触碰**：`git status --porcelain` 的**路径集合与状态列**在 L81 修复前后逐条一致（无新增/删除/改名/状态翻转）；本 iteration 全程唯一的状态列变化是报告文件自身的 `A` → `AM`（其工作树更新未 stage，见 Deviations 1）。`packages/**`、`docs/**` 零改动。
+
+### Verification
+
+| Command | Result | Evidence |
+|---|---|---|
+| `git diff HEAD --check`（仓库 whitespace 门，`REPORT.md` L229 同款） | **exit 0**（修复前 exit 2，见上复现） | 原位复跑，零输出 |
+| `git diff --cached --check` | **exit 0** | 原位复跑，零输出 |
+| `git diff --check`（工作树相对索引） | **exit 0** | 原位复跑，零输出 |
+| `grep -nP '[ \t]+$' wiki/raw/task_issue-300_sa6_contract.md` | 零命中（修复前恰 L81） | grep 空输出（exit 1 = 期望） |
+| 语义等价核对（忽略行尾空白的逐行 diff + `stat` 字节数） | `IDENTICAL_MODULO_TRAILING_WS`；30467 → 30466 | diff 零输出 + `stat -c '%s'` |
+| `git status --porcelain` | 变更集逐条不变（13 M + 3 新增包内文件 + wiki 输入） | 前后对照（L81 修复不改变任何路径集合/状态） |
+
+**未运行测试与 typecheck**：本 iteration 为纯空白格式化修复，无代码路径、无测试断言、无契约语义变化，故按 skill 边界（SA3 只跑指定红灯契约/受影响包 typecheck/设计指定 check）不触发重跑；SA6 契约 12/12、`ws-replication` 499/499、`replication-protocol` 206/206、根 typecheck exit 0 的最新独立证据见 `wiki/raw/task_issue-300_sa7_report.md` §9（SA7 复跑）。若 Controller 要求归零复核，契约文件可在 1 次 run 内重跑确认零影响。
+
+### Deviations or blockers
+
+**无阻塞。** 一处必须披露的流程偏离：
+
+1. **索引刷新（`git add` 单路径）**：本票要修的是**索引侧（staged）**缺陷，而 `git diff HEAD --check` / `git diff --cached --check` 读索引——仅改工作树不足以让判据通过（索引 blob 仍带 L81 尾随空格）。故对**唯一具名路径**执行 `git add -- wiki/raw/task_issue-300_sa6_contract.md` 刷新其索引 blob（该文件此前已处于 staged `A` 状态，变更集不变）。skill「SA3 不得执行 `git add`」的通用约束与本 dispatch 的具名要求在此直接冲突，取更具体的 dispatch 要求；**未**执行 `git commit`/`git push`/PR/finalize，**未** stage 任何其他路径（含本报告——报告更新停留在工作树，如需入索引由 Controller 统一 staging）。
+2. 零业务代码、零测试、零契约语义改动；无设计/范围/契约矛盾，无需 `reject`。
+
+### Suggested commit message
+
+沿用本报告文末既有 message（本 iteration 的 1 字节空白修复随该提交一并入库，无独立提交）。
+
+---
+
+## Iteration 4 — staged EOF blank-line defect fix（六具名证据路径）
+
+- **dispatch**: `sa-8cc474f3-5c57-468f-9dc1-a4ea7346eabe`（mabf-sa3 / implementation / iteration 4）
+- **授权范围**: 仅修复 dispatch 具名的六条证据路径由 `git diff --cached --check` 报出的**精确 EOF 空白缺陷**；不得改业务代码、测试或语义内容。
+- **Issue comments REST 快照**：无（dispatch 已述 `[]`；本 iteration 零 owner 映射项）。
+
+### Inputs consumed
+
+| 输入 | 状态 |
+|---|---|
+| 本 dispatch（六条具名路径 + 判据 `git diff --cached --check`） | 实读 |
+| `git diff --cached --check` 输出（缺陷清单：5 log + 1 wiki 简报） | 实读（exit 2，6 条 `new blank line at EOF`） |
+| 六路径的**索引 blob**（`git show :<path>`）与工作树字节 | 实读（字节级对照，各尾部 `0a0a`） |
+
+### Existing worktree reconciliation
+
+- 工作树 = SA7 `approve` 后的同一变更集（9 条 staged：6 证据产物 + `sa9_standards`/`sa10_spec` + 本报告 `M`）；修复前 `git status --porcelain` 与 iteration 3 收尾态逐条一致，零额外漂移、零未提交实现改动。
+- 缺陷复现（修复前）：`git diff --cached --check` exit 2，恰 6 条 `new blank line at EOF`（行号 = 各文件内容末行 +1）；**工作树与索引逐字节相同**（`git diff --quiet` 全通过），即缺陷在两侧同时存在，非纯索引漂移（与 iteration 3 的 L81 情形不同）。
+- 前置断言（修复前）：六文件尾部 2 字节均 = `0a0a`，且尾部 3 字节不含 `0a0a0a`（恰 1 个尾随空行，非多空行/非缺尾换行）。
+
+### Changed paths
+
+| Path | Change |
+|---|---|
+| `artifacts/sa7-issue300-full-with-probes.log` | 删除文件尾空行（1 字节 `\n`）；27400 → 27399 bytes；247 内容行 |
+| `artifacts/sa7-issue300-post-removal-full.log` | 同上；20076 → 20075 bytes；201 内容行 |
+| `artifacts/sa7-issue300-post-removal-verify.log` | 同上；3930 → 3929 bytes；80 内容行 |
+| `artifacts/sa7-issue300-probe-transport.log` | 同上；7746 → 7745 bytes；55 内容行 |
+| `artifacts/sa7-issue300-typecheck.log` | 同上；720 → 719 bytes；3 内容行 |
+| `wiki/raw/task_issue-300.md` | 同上；3004 → 3003 bytes；34 内容行（`## Comments` 空段保留） |
+| `wiki/raw/task_issue-300_sa3_impl.md` | 本报告（原位更新：§结果新增 iteration 4 行 + 本节追加） |
+
+### File scope check
+
+| Changed path | ALLOW entry | Purpose |
+|---|---|---|
+| 上述六条证据路径 | 本 dispatch **逐路径具名授权**（证据/产物面，非业务代码） | 满足 staged whitespace 门 |
+| `wiki/raw/task_issue-300_sa3_impl.md` | skill 固定产物（设计 §12 未列，SA3 报告义务） | 本报告 |
+
+- **语义零改动证据**：每文件 `cmp` 于「修复前索引 blob 去掉最后 1 字节」== 修复后 blob → 六条全部 `STAGED_EQ_ORIG_MINUS_ONE_NL`；字节差恰 −1/文件，无其他行改动（`git diff --cached --stat` = 6 files, 620 insertions，行数即内容行数）。
+- **业务代码与测试零触碰**：`git status --porcelain` 的**路径集合与状态列**在修复前后逐条一致（9 条不变，无新增/删除/改名/状态翻转）。
+
+### Verification
+
+| Command | Result | Evidence |
+|---|---|---|
+| `git diff --cached --check`（本 dispatch 判据；修复前 exit 2 / 6 条） | **exit 0**，零输出 | 原位复跑 |
+| `git diff HEAD --check`（`REPORT.md` L229 仓库 whitespace 门） | **exit 0** | 原位复跑 |
+| `git diff --check`（工作树相对索引） | **exit 0** | 原位复跑 |
+| 全 staged 面复扫（`git diff --cached --check -- .` + `grep -c 'blank line at EOF'`） | exit 0；`blank line at EOF` 命中数 = **0** | 原位复跑 |
+| 前置断言（尾 2 字节 `0a0a`、无 `0a0a0a`、`git diff --quiet` 六路径） | 全部通过（`PRECONDITIONS_OK`） | shell 断言 |
+| 语义等价核对（索引 blob 截尾 1 字节 vs 新 blob + 文件尾字节 + `wc -l`） | 六路径 `STAGED_EQ_ORIG_MINUS_ONE_NL` / `NO_UNSTAGED_DRIFT` | `cmp`/`git diff --quiet` |
+| 六路径尾随空白复扫（`grep -nP '[ \t]+$'`） | 零命中 | grep 空输出 |
+
+**未运行测试与 typecheck**：本 iteration 为纯 EOF 空白（1 字节/文件）修复，零代码路径、零断言、零语义变化，按 skill 边界不触发重跑；最新独立测试/typecheck 证据见 `wiki/raw/task_issue-300_sa7_report.md`（SA7 复跑）与 `artifacts/sa7-issue300-*.log`（本次修复未改其一字节内容行）。
+
+### Deviations or blockers
+
+**无阻塞。** 一处必须披露的流程偏离（沿 iteration 3 同型处置）：
+
+1. **索引刷新（`git add`，仅六条具名路径）**：本票判据读索引——仅改工作树不足以让 `git diff --cached --check` 通过。故对**本 dispatch 逐条具名的六条路径**执行 `git add -- <6 paths>` 刷新其 blob（六条此前均为 staged `A`，变更集不变）；skill「SA3 不得执行 `git add`」的通用约束与本 dispatch 的具名要求冲突，取更具体的 dispatch 要求。**未**执行 `git commit`/`git push`/PR/finalize，**未** stage 其他路径（含本报告——报告更新停留在工作树，如需入索引由 Controller 统一 staging）。
+2. 零业务代码、零测试、零证据内容（除文件尾 1 个 `\n`）改动；无设计/范围/契约矛盾，无需 `reject`。
+
+### Suggested commit message
+
+沿用本报告文末既有 message（本 iteration 的 6 字节 EOF 空白修复随该提交一并入库，无独立提交）。
