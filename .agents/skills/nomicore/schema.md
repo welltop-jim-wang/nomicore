@@ -2,6 +2,10 @@
 
 Author the schema inside the independent host repository. Treat it as the single source for runtime SCHEMA and generated TypeScript.
 
+## Semantics are part of the data contract
+
+A downstream agent reading namespace data through `readData()` receives three things together: the data value, its formal schema projection, and the doc semantics mounted on that schema (数据口径). Only the three combined make the data fully interpretable—a bare `"archived"` says nothing about being terminal and read-only; the member doc does. Write every JSDoc for that consumer: state the domain meaning, units, lifecycle, and edge-case conventions the type alone cannot express, at the alias, field, marker, and union/enum member level. A schema that validates but carries thin semantics ships ambiguity to every future reader.
+
 ## Process
 
 1. Read the host's domain requirements, terminology, existing schema/tests, and its nearest agent instructions.
@@ -36,4 +40,4 @@ Author the schema inside the independent host repository. Treat it as the single
 
 ## Completion gate
 
-Complete when the schema command exits 0, representative ROOT data validates when available, ROOT contains only domain data, every carrier matches required mutation granularity, and the host has exactly one editable schema source for that domain.
+Complete when the schema command exits 0, representative ROOT data validates when available, ROOT contains only domain data, every carrier matches required mutation granularity, every enum/union member and non-obvious field carries its 数据口径 as mounted JSDoc, and the host has exactly one editable schema source for that domain.
