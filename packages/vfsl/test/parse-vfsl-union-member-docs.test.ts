@@ -2,9 +2,9 @@
  * SA6 红灯契约 — issue #306（M4 联合成员文档注释：解析挂载 + IR `memberDocs`）。
  *
  * 契约来源：ADR 0019 决策 1/2/3/4/9（docs/adr/0019-vfsl-union-member-docs.md）+
- * issue #306 What-to-build / AC1 / AC2 / AC4。v1-spec §5 现行「三锚位 + E305」文本由
- * ADR 0019 显式授权修订（#309 与实现同支落地）——本文件断言的是 ADR 决策面的目标行为，
- * 不是现文行为。
+ * issue #306 What-to-build / AC1 / AC2 / AC4。v1-spec §5 修订前的旧挂载文本（M4 之前
+ * 仅 M1/M2/M3）已由 ADR 0019 显式授权修订（#309 已随实现同支落地，§5 现为四类锚位正文）
+ * ——本文件断言的是 ADR 决策面的行为，不是修订前现文行为。
  *
  * 基线（录制于实现前 HEAD 91c4add，`parseVfsl` 现行为）：
  * - M4 全部正例当前 ok:false VFSL-E305（成员 doc 无锚位回收）→ 本文件相应用例红；

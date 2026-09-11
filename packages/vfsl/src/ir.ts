@@ -56,7 +56,7 @@ export type VfslType =
   | { kind: 'record'; key: VfslType; value: VfslType } // Record<K, V>，键约束原样入 IR（#6）
   | {
       // 标记类型及其包裹目标（不折叠，AC1 可区分性锚）（#6）；marker 保留源拼写
-      // （大小写是契约）；docs 挂标记记号处（#7 JSDoc 三锚位之一；无 doc 为空数组，
+      // （大小写是契约）；docs 挂标记记号处（#7 JSDoc M1/M2/M3 锚位之一；无 doc 为空数组，
       // 必填——与 alias/field 的 §7.2 约定同构）。
       kind: 'marker';
       marker: 'YMap' | 'YArray' | 'YPlainArray' | 'YLeaf' | 'YXmlFragment';

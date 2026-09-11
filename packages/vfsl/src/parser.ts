@@ -171,7 +171,7 @@ class Parser {
     return this.dangling.splice(this.dangling.length - n, n).map((d) => d.body);
   }
 
-  // —— M4 联合成员 doc 的延迟回收（ADR 0019 决策 1/4；不触碰 claimDocs 与三锚位）——
+  // —— M4 联合成员 doc 的延迟回收（ADR 0019 决策 1/4；不触碰 claimDocs 与既有 M1/M2/M3 锚位）——
 
   /** 附着点 A（前导 `|` 记号锚）：刚消费的 `|` 记号的 leadDocs 是**后继成员**的
    * 候选 doc。记录区间下标与 DocLead 引用（结算时按 `===` 核对，O-1 红线）。 */
@@ -516,7 +516,7 @@ class Parser {
   // —— 标记类型（已确认标记拼写 + peek '<'；锚 tok = 标记名记号）——
   private parseMarkerType(tok: Token): AstType {
     // M3 回收（#7 §4.2 同步性——parseIdentType 由 parsePrimaryType 的 case 'ident'
-    // 直通，中间零次 next()，depositedByLast 未被重置；docs 挂标记记号处，三锚位之一）
+    // 直通，中间零次 next()，depositedByLast 未被重置；docs 挂标记记号处，M1/M2/M3 锚位之一）
     const docs = this.claimDocs();
     this.depth += 1;
     if (this.depth > MAX_TYPE_NESTING) {

@@ -97,8 +97,11 @@ Yjs 物化含义、写入粒度与 PATCH 可否下钻。
 ## 4. 注释规则
 
 - `//` 与 `/* */` 忽略：不产生任何 IR 节点。
-- `/** */` 原文捕获：注释内容逐字保留，挂载到相邻 IR 节点——类型别名处、
-  属性处、标记类型处；不受标记语法干扰。
+- `/** */` 原文捕获：注释内容逐字保留，挂载到相邻 IR 节点——四类锚位：类型别名处、
+  属性处、标记类型处、联合成员处；不受标记语法干扰。
+- 联合成员锚位：前导 `|` 锚位（doc 紧邻 `|` 之前挂其后成员）或首成员起始记号锚位；
+  连续多条 doc 同挂同一成员；单成员坍缩维持 E305（既有不变）；`|` 夹缝 doc 不属
+  联合成员锚位（非标记成员 E305，既有不变）；标记锚位优先、不双挂。
 - `@tag` 不做机器解析，原文保留（ADR-0001：本方言无机器标签）。
 
 ## 5. 大小写契约
@@ -146,14 +149,14 @@ type Audit = YMap<{
 /** 资产实体：按 kind 判别的封闭联合 */
 type AssetEntity =
   | { kind: "image"; url: YLeaf<string>; width: YLeaf<number>; height: YLeaf<number>; audit: Audit }
-  | { kind: "text"; body: YLeaf<string>; audit: Audit }
+  | { kind: "text"; body: YXmlFragment<{ paragraphs: YArray<YLeaf<string>> }>; audit: Audit }
   | { kind: "file"; name: YLeaf<string>; size: YLeaf<number>; tags: YArray<YLeaf<string>>; audit: Audit };
 
-/** 附件：与 Yjs 无关的纯数组 */
+/** 附件：与 Yjs 同步无关的纯值数组 */
 type Attachments = YPlainArray<YLeaf<string>>;
 
-/** AssetsDoc：命名空间根文档，assets 键集受 AssetId 的 Pattern 约束 */
-type AssetsDoc = YXmlFragment<{
+/** ROOT：命名空间根文档，assets 键集受 AssetId 的 Pattern 约束 */
+type ROOT = YMap<{
   assets: Record<AssetId, AssetEntity>;
   attachments: Attachments;
   audit: Audit;
