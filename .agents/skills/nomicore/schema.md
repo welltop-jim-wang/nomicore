@@ -15,6 +15,8 @@ Author the schema inside the independent host repository. Treat it as the single
    ```
 
    The id base must equal `<domain>`. Define exactly one map-shaped `ROOT`. Keep SCHEMA identity and META lifecycle facts out of ROOT. Choose carriers by synchronization/write granularity and document non-obvious domain meaning with adjacent JSDoc.
+
+   Document every enum/union member with its own JSDoc (ADR 0019, M4 anchor): place the doc immediately before the member's leading `|`—or before the first member when it has no leading `|`—so per-member meaning reaches the IR, derived schema, generated TSDoc, and readData projections. Keep docs out of the `| /** d */ "b"` gap and off single-member unions (both fail VFSL-E305); express those at alias level instead.
 4. Validate directly from the Nomicore checkout before code generation:
 
    ```bash

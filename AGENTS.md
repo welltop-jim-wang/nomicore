@@ -20,7 +20,7 @@ Before changing files under `packages/`, `domains/`, `apps/`, or `docs/`, read t
 
 ### Schema authoring
 
-When creating or editing `domains/*/schema.vfsl`, follow `docs/vfsl/schema-authoring-guide.md` for modeling, VFSL v1 syntax, carrier selection, generation, and validation.
+When creating or editing `domains/*/schema.vfsl`, follow `docs/vfsl/schema-authoring-guide.md` for modeling, VFSL v1 syntax, carrier selection, doc-comment anchors (including per-member union/enum docs, ADR 0019), generation, and validation.
 
 ### Nomicore integration skill
 
