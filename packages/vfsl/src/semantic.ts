@@ -2,7 +2,7 @@
  * 引用 / 语义层（设计 §6）：仅当模块全量解析成功才进入。
  *
  * 五项检查全量收集、不做短路（§6.1）：
- * - E305 悬空文档注释：doc 挂靠的记号非声明性起点（M1/M2/M3 三锚位之外）→ 候选，
+ * - E305 悬空文档注释：doc 挂靠的记号非声明性起点（M1/M2/M3 锚位与 M4 联合成员锚位之外）→ 候选，
  *   锚注释起始（由 tokenizer 的 DocLead 自带）；严格相邻语义——不相邻即不再挂载；
  * - E302 重复声明：按名分组，每个第二次及以后的出现产出 issue（锚声明名记号）；
  * - E301 未知名引用：声明集合 = 全模块全部声明名的并集（前向引用天然合法）；
@@ -73,7 +73,7 @@ export function analyze(aliases: AstAlias[], dangling: Array<{ line: number; col
       candidate(
         makeIssue(
           ErrCode.E305,
-          '悬空文档注释：未紧邻可挂载的声明性节点（类型别名 / 属性 / 标记类型），且不相邻即不再挂载',
+          '悬空文档注释：未紧邻可挂载的声明性节点（类型别名 / 属性 / 标记类型 / 联合成员），且不相邻即不再挂载',
           d.line,
           d.column,
         ),
@@ -219,8 +219,14 @@ function toIRType(t: AstType): VfslType {
           type: toIRType(f.type),
         })),
       };
-    case 'union':
-      return { kind: 'union', members: t.members.map(toIRType) };
+    case 'union': {
+      // ADR 0019 决策 4：条件键——全体成员均无 doc 时整键不存在（存量 IR / 指纹
+      // 逐字节稳定）；键序 kind → members → memberDocs。AST memberDocs 必填等长。
+      const members = t.members.map(toIRType);
+      return t.memberDocs.some((d) => d.length > 0)
+        ? { kind: 'union', members, memberDocs: t.memberDocs }
+        : { kind: 'union', members };
+    }
     case 'array':
       return { kind: 'array', element: toIRType(t.element) };
     case 'record':

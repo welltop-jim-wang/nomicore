@@ -81,6 +81,14 @@ export interface DerivedSchema {
   fieldDocs: Record<string, string[]>;
   /** 标记级文档注释原文：标记所处语法路径 → marker.docs 逐字继承；同路径嵌套标记按源序串联（§3.3）。 */
   markerDocs: Record<string, string[]>;
+  /**
+   * 成员级文档注释原文（ADR 0019 决策 5，显式修订 ADR 0003 docs 表条款）：键 = 成员
+   * 语法路径（既有 `<member N>` 合成段，N 从 0 起声明序），值 = 成员 doc 逐字继承。
+   * **条件稀疏**：仅当模块至少一名成员携带 doc 时整键在场，且表内只收非空条目——
+   * 这与 aliasDocs/fieldDocs/markerDocs 的全量立行惯例不同（差异常态化、非疏漏），
+   * 目的是无成员 doc 的存量派生物逐字节不变（第八键居末）。
+   */
+  memberDocs?: Record<string, string[]>;
 }
 
 export type EvaluateResult =

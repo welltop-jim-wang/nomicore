@@ -1,5 +1,5 @@
-import { fork, type ChildProcess } from 'node:child_process';
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { fork, spawn, type ChildProcess } from 'node:child_process';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -116,6 +116,31 @@ describe('root lock atomic ownership', () => {
     for (const worker of workers) worker.kill('SIGTERM');
     await Promise.all(workers.map(exited));
   }, 15_000);
+
+  it('never reclaims a directory whose owner.json is still being published', async () => {
+    const root = makeRootDir();
+    // 模拟获取者在 mkdir（获取线性化点）与 owner.json 写入之间被调度掐断的窗口：
+    // 目录已存在（所有权 token 已发放）但 owner 尚未发布。此窗口绝不是「死锁
+    // 回收」信号——回收会摘掉存活获取者的目录，产生两个 live owner（#305 CI
+    // 间歇红的根因）。发布必须来自独立进程：等待发布的竞争者会同步阻塞事件
+    // 循环，同进程 setTimeout 永远不会有 firing 机会。
+    mkdirSync(join(root, '.nomicore-lock'));
+    const ownerFile = join(root, '.nomicore-lock', 'owner.json');
+    const payload = JSON.stringify({ instanceId: 'publisher', pid: process.pid, nonce: 'n' });
+    const publisher = spawn(process.execPath, [
+      '-e',
+      `setTimeout(() => { require('node:fs').writeFileSync(${JSON.stringify(ownerFile)}, ${JSON.stringify(payload)}); }, 200)`,
+    ]);
+    try {
+      // 竞争者必须等待发布完成后按「存活 owner」拒绝，而不是回收接管。
+      expect(() => acquireRootLock(root, 'contender')).toThrow(/unsupported/);
+      const owner = JSON.parse(readFileSync(ownerFile, 'utf8')) as Record<string, unknown>;
+      expect(owner.instanceId).toBe('publisher');
+    } finally {
+      publisher.kill('SIGKILL');
+      await new Promise((resolve) => publisher.once('exit', resolve));
+    }
+  }, 10_000);
 
   it('late release cannot remove a successor directory lock', () => {
     const root = makeRootDir();

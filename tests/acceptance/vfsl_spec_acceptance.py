@@ -31,7 +31,10 @@ VFSL v1 方言规格文档 — issue #4 验收机制（SA6 红灯锚点）
                       interface 继承 / 递归·循环引用；
             错误类型须为结构化错误码（VFSL- 前缀），行列信息非空
   注释规则: 含 `//`、`/* */`、`/** */` 三态，忽略 / 原文 / 捕获 / 挂载，
-            挂载目标: 类型别名 / 属性 / 标记类型；@tag 不机器解析（原文保留）
+            挂载目标: 类型别名 / 属性 / 标记类型 / 联合成员；@tag 不机器解析（原文保留）
+            §5 M4 子规则: 四类锚位 / 前导 `|` 锚位 / 首成员起始记号 /
+                          连续同一成员 / 坍缩 E305 / 夹缝 E305 /
+                          标记优先不双挂 / 既有不变
   大小写契约: 六个标记的标准拼写 + 变体按未知名报错（含"未知名"字样）
   信封形状: `{ "lang": "vfsl", "version": 1, "id", "text" }`，
             只消费 text；信封解析与方言路由出范围（含"出范围"/out of scope
@@ -318,7 +321,7 @@ def fixture_problems(content):
     bad = sorted(t for t in iset if re.match(r"Y[A-Z]", t) and t not in set(CANONICAL_MARKERS))
     if bad:
         problems.append(f"标记大小写变体（契约: 按未知名报错）: {bad}")
-    for ident in ["AssetId", "Audit", "AssetEntity", "AssetsDoc"]:
+    for ident in ["AssetId", "Audit", "AssetEntity", "ROOT"]:
         if ident not in iset:
             problems.append(f"缺少 {ident}")
     if "vfs3" not in iset and "vfs3" not in jsdoc_text:
@@ -475,7 +478,7 @@ def run_checks(spec):
     else:
         txt = join_sec(s)
         need = ["//", "/* */", "/** */", "忽略", "原文", "捕获", "挂载",
-                "类型别名", "属性", "标记", "@tag", "机器"]
+                "类型别名", "属性", "标记", "联合成员", "@tag", "机器"]
         miss = [k for k in need if k not in txt]
         results.append(("G10", "注释规则", not miss,
                         "缺失要素: " + ", ".join(miss) if miss else "注释三态/捕获挂载/@tag 规则齐备"))
@@ -552,7 +555,22 @@ def run_checks(spec):
         content = "\n".join(b["content"] for b in vfsl_blocks)
         problems = fixture_problems(content)
         results.append(("G16", "fixture 构造覆盖", not problems,
-                        "；".join(problems) if problems else "六标记/AssetId/Audit/AssetEntity/AssetsDoc/联合/可选/数组/Pattern/Record/JSDoc 构造齐备"))
+                        "；".join(problems) if problems else "六标记/AssetId/Audit/AssetEntity/ROOT/联合/可选/数组/Pattern/Record/JSDoc 构造齐备"))
+
+    # G17 §5 M4 挂载子规则（四类锚位 + 联合成员；issue #309）
+    s5 = find_sec(lambda t: "注释" in t)
+    G17_NEED = [
+        ("四类", "锚位"), ("联合成员",), ("前导", "|", "锚位"),
+        ("首成员", "起始记号"), ("连续", "同一成员"), ("坍缩", "E305"),
+        ("夹缝", "E305"), ("标记", "优先", "不双挂"), ("既有", "不变"),
+    ]
+    if s5 is None:
+        results.append(("G17", "§5 M4 挂载子规则", False, "缺少含「注释」的章节"))
+    else:
+        txt5 = join_sec(s5)
+        miss = ["+".join(t) for t in G17_NEED if not all(k in txt5 for k in t)]
+        results.append(("G17", "§5 M4 挂载子规则", not miss,
+                        "缺失要素: " + ", ".join(miss) if miss else "四类锚位 + M4 子规则 9 项齐备"))
 
     return results
 

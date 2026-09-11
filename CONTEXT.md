@@ -50,6 +50,10 @@ _Avoid_: 隐式根、汇点推导（被否决的根指定方案，ADR-0003）、
 `YMap` / `YArray` / `YPlainArray` / `YLeaf` / `YXmlFragment` / `Pattern`；tsc 视角恒等别名，引擎视角是 Yjs 物化语义标记。
 _Avoid_: `YLEaf`、`yleaf` 等变体拼写——大小写是契约的一部分
 
+**挂载锚位（mount anchor）**:
+文档注释（`/** */`）挂靠的声明性节点位置，共四类：类型别名（M1，声明处）、属性（M2，对象字段处）、标记类型（M3，记号处）、联合成员（M4，前导 `|` 记号或首成员起始记号；ADR 0019）。挂载是纯文档性质：doc 进 IR/派生表/生成物/投影切片（发射位与界线见 ADR 0019 决策 6——`YPlainArray` 纯值子树与 `YXmlFragment` 不透明实参内无发射位），但不进校验与物化语义（ADR 0001）。
+_Avoid_: 把 M4 成员 doc 当校验或物化规则的输入（无机器标签）；把「锚位」误解为 tokenizer 实现细节（它是 v1-spec §5 的规范概念）
+
 **结构树（structure tree）**:
 Yjs 物化语义（kind / storage / opaque），供路径下钻守卫；与值语义正交。
 

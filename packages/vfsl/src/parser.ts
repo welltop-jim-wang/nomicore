@@ -38,7 +38,9 @@ export type AstType =
   | { kind: 'ref'; name: string; pos: Pos } // TypeRef（E301/E106 锚点）
   | { kind: 'generic-diag'; name: string; namePos: Pos; ltPos: Pos } // 判定顺序第 6 条延迟构造（§5.4）
   | { kind: 'object'; fields: AstField[]; pos: Pos }
-  | { kind: 'union'; members: AstType[]; pos: Pos }
+  // 联合节点（M4 成员 doc 挂载，ADR 0019 决策 4）：memberDocs 必填、与 members 等长
+  // （无 doc 成员为空数组）；坍缩路径不产 union 节点（无携带者，doc 留 dangling → E305）
+  | { kind: 'union'; members: AstType[]; pos: Pos; memberDocs: string[][] }
   | { kind: 'array'; element: AstType; pos: Pos } // T[]；pos = 构造起始（primary 起点）
   | { kind: 'record'; key: AstType; value: AstType; pos: Pos } // pos = 'Record' 记号
   // 标记类型（EBNF Marker 产生式，§4.3）：pos 保留——E304 锚点是「标记记号」；
@@ -94,6 +96,20 @@ function posOf(t: Token): Pos {
 /** 节点锚点位置：generic-diag 无单一 pos（携带 namePos/ltPos），取 namePos（§5.1/§5.4）。 */
 function nodePos(t: AstType): Pos {
   return t.kind === 'generic-diag' ? t.namePos : t.pos;
+}
+
+/**
+ * M4 联合成员 doc 的延迟回收记录（ADR 0019 决策 4「记录位置 + 终局核对」；parser
+ * 私有，不导出、不构成契约）。
+ *
+ * - `start`：记录时刻 `leads` 首条在 dangling 中的下标；
+ * - `leads`：该锚记号携带的 DocLead **引用**数组——不是副本（SA8 设计后复查 O-1
+ *   实现红线）：「引用同一性核对」是 M3 优先不双挂的判定依据，拷贝/重建 DocLead
+ *   会使核对恒失配（假 E305）或恒配（双挂）。
+ */
+interface M4Pending {
+  start: number;
+  leads: DocLead[];
 }
 
 /** parseModule 内部返回结构（§4.4，不构成公共契约）：dangling 只保留 E305 锚点行列。 */
@@ -153,6 +169,54 @@ class Parser {
     this.depositedByLast = 0;
     this.claimed += n;
     return this.dangling.splice(this.dangling.length - n, n).map((d) => d.body);
+  }
+
+  // —— M4 联合成员 doc 的延迟回收（ADR 0019 决策 1/4；不触碰 claimDocs 与既有 M1/M2/M3 锚位）——
+
+  /** 附着点 A（前导 `|` 记号锚）：刚消费的 `|` 记号的 leadDocs 是**后继成员**的
+   * 候选 doc。记录区间下标与 DocLead 引用（结算时按 `===` 核对，O-1 红线）。 */
+  private recordPipeAnchor(): M4Pending {
+    const n = this.depositedByLast; // next() 刚消费 `|` 时的沉积条数（尚未 splice）
+    return { start: this.dangling.length - n, leads: this.dangling.slice(this.dangling.length - n) };
+  }
+
+  /** 附着点 B（成员起始记号锚）：仅当首成员无前导 `|`——peek 所指即成员起始记号，
+   *  其 leadDocs 是首成员的候选 doc。取引用（消费前快照下标，O-1 红线）。 */
+  private recordStartAnchor(): M4Pending {
+    const tok = this.peek();
+    return { start: this.dangling.length, leads: tok?.leadDocs ?? [] };
+  }
+
+  /**
+   * M4 结算（ADR 0019 决策 4 末段「终局核对」）：仅当 members ≥ 2 时调用，按成员
+   * **逆序**逐个核对——`dangling[start .. start+len)` 与 `leads` 逐位引用同一（`===`）
+   * 才回收（splice + claimed 记账）并把 body 逐字挂该成员；任一位失配或区间越界 =
+   * 已被 M3 等内部锚位回收 → 该成员无 doc、dangling 不动。
+   *
+   * 逆序是正确性前提（SA8 设计后复查 O-2 实现红线）：先结算高下标者不影响更低下标
+   * 的记录区间；正序 splice 会使后续记录下标左移 → 同一性核对假性失配（假 E305）。
+   * 同理不得在结算前插入任何中段 splice、不得改 next() 的尾部追加次序。
+   */
+  private settleMemberDocs(pendings: M4Pending[]): string[][] {
+    const memberDocs: string[][] = pendings.map((): string[] => []);
+    for (let i = pendings.length - 1; i >= 0; i -= 1) {
+      const { start, leads } = pendings[i]!;
+      const n = leads.length;
+      if (n === 0) continue;
+      if (start < 0 || start + n > this.dangling.length) continue;
+      let same = true;
+      for (let k = 0; k < n; k += 1) {
+        if (this.dangling[start + k] !== leads[k]) {
+          same = false;
+          break;
+        }
+      }
+      if (!same) continue;
+      this.dangling.splice(start, n);
+      this.claimed += n;
+      memberDocs[i] = leads.map((d) => d.body);
+    }
+    return memberDocs;
   }
 
   private peekPunct(value: string): boolean {
@@ -252,20 +316,42 @@ class Parser {
     return this.parseUnionType();
   }
 
+  /**
+   * 联合解析 + M4 成员 doc 延迟回收（ADR 0019 决策 1/2/4）。
+   *
+   * 附着点两条子规则（零 tokenizer 改动）：前导 `|` 与成员分隔 `|` 记号的 leadDocs
+   * 归**后继成员**（A）；首成员无前导 `|` 时其起始记号的 leadDocs 归首成员（B）。
+   * `|` 与成员之间的夹缝 doc 挂在成员起始记号上、不属 A/B 任一记录——非标记成员
+   * 无人回收 → E305 维持；成员起始记号为标记名时由既有 M3 claimDocs 回收（决策 3）。
+   *
+   * 结算延迟到出口（坍缩判定须扫到表达式末尾）：members === 1 坍缩整条不回收，
+   * doc 留 dangling → E305（决策 2）。
+   */
   private parseUnionType(): AstType {
-    let members: AstType[] = [];
+    const members: AstType[] = [];
+    /** 每成员一条记录（下标与 members 对齐，恒等长）。 */
+    const pendings: M4Pending[] = [];
     if (this.peekPunct('|')) {
-      this.next();
+      this.next(); // 前导 '|'（附着点 A）
+      pendings.push(this.recordPipeAnchor());
+    } else {
+      pendings.push(this.recordStartAnchor()); // 附着点 B：首成员起始记号
     }
     members.push(this.parsePostfixType());
     while (this.peekPunct('|')) {
-      this.next();
+      this.next(); // 成员分隔 '|'（附着点 A：成员 1..n-1 恒有前导 '|'）
+      pendings.push(this.recordPipeAnchor());
       members.push(this.parsePostfixType());
     }
     if (members.length === 1) {
-      return members[0]!; // 单成员联合坍缩（§7.3）
+      return members[0]!; // 单成员联合坍缩（§7.3）；M4 不结算（决策 2）
     }
-    return { kind: 'union', members, pos: nodePos(members[0]!) };
+    return {
+      kind: 'union',
+      members,
+      pos: nodePos(members[0]!),
+      memberDocs: this.settleMemberDocs(pendings),
+    };
   }
 
   // —— 后缀类型（ArrayType 位：`[]` 正常消费为 array 节点，§4.2）——
@@ -430,7 +516,7 @@ class Parser {
   // —— 标记类型（已确认标记拼写 + peek '<'；锚 tok = 标记名记号）——
   private parseMarkerType(tok: Token): AstType {
     // M3 回收（#7 §4.2 同步性——parseIdentType 由 parsePrimaryType 的 case 'ident'
-    // 直通，中间零次 next()，depositedByLast 未被重置；docs 挂标记记号处，三锚位之一）
+    // 直通，中间零次 next()，depositedByLast 未被重置；docs 挂标记记号处，M1/M2/M3 锚位之一）
     const docs = this.claimDocs();
     this.depth += 1;
     if (this.depth > MAX_TYPE_NESTING) {
