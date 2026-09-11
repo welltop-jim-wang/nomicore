@@ -117,6 +117,8 @@ The projection (`ReadDataSchemaProjection`) has four keys:
 
 The keys of `docs` and `aliasDocs` are isomorphic to the derived schema documentation tables: absolute syntax paths plus `'<item>'` / `'<key>'` / `'<member N>'` synthetic segments, with alias-internal docs anchored by alias name.
 
+Interpret every read as a triad—value + formal schema + 数据口径. Before acting on a value, read the `docs` entries at the path's own key and its synthetic descendants, plus the relevant `aliasDocs`: field docs carry units and lifecycle, `'<member N>'` docs state each union/enum literal's domain meaning (whether `'archived'` is terminal and read-only), and alias docs state the alias-level contract. These mounted docs are the authoritative 数据口径 the schema author wrote for you; prefer them over inference from value shape or key names, and treat a point the docs stay silent on as unspecified rather than guessing.
+
 `schema` is `null` when there is no active schema, the path strays outside the schema, or static resolution fails. A null schema is not a read failure: `ok` stays true. Treat a null projection as "no semantics available for this path", not as an error. Every read returns a detached deep copy; do not cache or share projections across reads.
 
 When a read is followed by a write, use the schema projection returned with the value to interpret the value's domain and construct a legal `mutateData()` mutation (minimal, mergeable, semantic — next section). Static `PathAt` / `PathPatchValue` types remain the compile-time authority; the runtime projection serves dynamically read values and agent-style consumers that must interpret data without generated types.
