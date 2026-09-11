@@ -27,7 +27,9 @@ export function projectValue(
     case 'scalar':
       return v.type;
     case 'enum':
-      return v.values.map((lit) => (typeof lit === 'string' ? `'${lit}'` : String(lit))).join(' | ');
+    case 'union':
+      // 单行形态 = 成员逐段投影以 ` | ` 连接（#307 D6：分段与单行同源，见 projectUnionMembers）
+      return projectUnionMembers(v, values, stack).join(' | ');
     case 'pattern':
       return 'string';
     case 'xml':
@@ -41,8 +43,6 @@ export function projectValue(
       }
       return `{ ${v.fields.map((f) => projectField(f, values, stack)).join('; ')} }`;
     }
-    case 'union':
-      return v.members.map((m) => projectValue(m, values, stack)).join(' | ');
     case 'optional':
       return projectValue(v.value, values, stack);
     case 'ref': {
@@ -54,6 +54,26 @@ export function projectValue(
       return projectValue(target, values, [...stack, v.name]);
     }
   }
+}
+
+/**
+ * 值侧联合成员逐段投影（#307 D6）：enum → 字面量段（声明序）；union → 逐成员投影段。
+ * 与 projectValue 的单行形态严格同源（`projectUnionMembers(...).join(' | ')` 即单行），
+ * 故坍缩位多行布局的每一段与既有单行输出不可能漂移。
+ * 非联合形值是内部误用（两个调用点均已被 enum/union 分支条件约束）→ 响亮拒绝。
+ */
+export function projectUnionMembers(
+  v: ValueSchema,
+  values: Record<string, ValueSchema>,
+  stack: readonly string[] = [],
+): string[] {
+  if (v.kind === 'enum') {
+    return v.values.map((lit) => (typeof lit === 'string' ? `'${lit}'` : String(lit)));
+  }
+  if (v.kind === 'union') {
+    return v.members.map((m) => projectValue(m, values, stack));
+  }
+  throw new Error(`projectUnionMembers: 非联合形值（kind=${v.kind}）`);
 }
 
 /** 对象字段投影：optional 包装 → `'name'?: …`（可选性在字段位以 ?: 表达）。 */
