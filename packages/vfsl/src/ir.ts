@@ -42,7 +42,16 @@ export type VfslType =
   | { kind: 'literal'; value: string | number } // JSON 天然区分 "80" 与 80
   | { kind: 'ref'; name: string }
   | { kind: 'object'; fields: VfslField[] }
-  | { kind: 'union'; members: VfslType[] }
+  | {
+      // 联合（ADR 0019 决策 4）。memberDocs 为**条件键**：仅当至少一名成员携带 doc
+      // 时在场，与 members 等长对齐（无 doc 成员为空数组）；全体成员均无 doc 时整键
+      // 不存在。指纹纪律：本键参与 semantic 指纹输入（fingerprint.ts 单一生产者），
+      // 条件附加是存量 `sha256:v1:` 指纹逐字节稳定的构造保证（非风格选择）——不得补
+      // 空槽、不得二次规范化、键插入序恒为 kind → members → memberDocs。
+      kind: 'union';
+      members: VfslType[];
+      memberDocs?: string[][];
+    }
   | { kind: 'array'; element: VfslType } // T[]（#6）
   | { kind: 'record'; key: VfslType; value: VfslType } // Record<K, V>，键约束原样入 IR（#6）
   | {

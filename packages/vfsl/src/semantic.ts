@@ -73,7 +73,7 @@ export function analyze(aliases: AstAlias[], dangling: Array<{ line: number; col
       candidate(
         makeIssue(
           ErrCode.E305,
-          '悬空文档注释：未紧邻可挂载的声明性节点（类型别名 / 属性 / 标记类型），且不相邻即不再挂载',
+          '悬空文档注释：未紧邻可挂载的声明性节点（类型别名 / 属性 / 标记类型 / 联合成员），且不相邻即不再挂载',
           d.line,
           d.column,
         ),
@@ -219,8 +219,14 @@ function toIRType(t: AstType): VfslType {
           type: toIRType(f.type),
         })),
       };
-    case 'union':
-      return { kind: 'union', members: t.members.map(toIRType) };
+    case 'union': {
+      // ADR 0019 决策 4：条件键——全体成员均无 doc 时整键不存在（存量 IR / 指纹
+      // 逐字节稳定）；键序 kind → members → memberDocs。AST memberDocs 必填等长。
+      const members = t.members.map(toIRType);
+      return t.memberDocs.some((d) => d.length > 0)
+        ? { kind: 'union', members, memberDocs: t.memberDocs }
+        : { kind: 'union', members };
+    }
     case 'array':
       return { kind: 'array', element: toIRType(t.element) };
     case 'record':
