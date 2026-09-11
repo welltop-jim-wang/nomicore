@@ -1,7 +1,9 @@
 /**
  * Hub 侧真实 WebSocket 传输适配（设计 §3.3）：
  *
- *  - `node:http` 服务器：`GET /healthz` → 200，其余普通请求 → 404；
+ *  - `node:http` 服务器：`GET /healthz` → 200，其余普通请求 → 404；组合根可经可选
+ *    `handleRequest` 钩子接管 plain-HTTP 面（issue #270 raw-path 分流：REST family
+ *    优先，`matched:false` 时仍回落下面的 /healthz+404 缺省路径）；
  *  - `WebSocketServer({noServer:true})` 经 `upgrade` 事件接管；路径 ≠
  *    `/replication` → upgrade 前 404；路径相符则由 composition root 提供的
  *    `authenticate` 单点验证 Bearer token，缺失/拒绝分别在 upgrade 前返回 401/403；
@@ -12,7 +14,7 @@
  * 安全纪律：`ws` socket 悬挂 `error` 监听（否则 socket 错误会以 uncaught
  * exception 击穿进程——错误面由包的 close 分类处理）。
  */
-import { createServer, type IncomingMessage, type Server } from 'node:http';
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { Duplex } from 'node:stream';
 import { WebSocketServer, WebSocket, type RawData } from 'ws';
 import type {
@@ -138,6 +140,9 @@ function notifyAdapter(observer: NodeHubAdapterObserver | undefined, event: Node
   }
 }
 
+/** Plain-HTTP 请求钩子（app-owned 分流面；不改变 upgrade 语义）。 */
+export type HubPlainRequestHandler = (req: IncomingMessage, res: ServerResponse) => void;
+
 export interface HubWsServerOptions {
   readonly host: string;
   readonly port: number; // 0 = ephemeral（实际端口经返回对象读取）
@@ -145,6 +150,11 @@ export interface HubWsServerOptions {
   readonly authenticate: (token: string) => Promise<UpgradeIdentity | undefined>;
   readonly accept: (transport: DuplexTransport, identity: UpgradeIdentity) => void;
   readonly observer?: NodeHubAdapterObserver;
+  /**
+   * 普通（非 upgrade）请求委托钩子：存在时完全接管 plain-HTTP 面（REST family 优先 +
+   * `matched:false` 回落自有 /healthz+404）；缺省路径保持原字节行为（issue #270 §7-D3）。
+   */
+  readonly handleRequest?: HubPlainRequestHandler;
 }
 
 export interface HubWsServer {
@@ -158,7 +168,12 @@ export interface HubWsServer {
  * `accept` 持 token（缺头 = `undefined`——`missing-token` 拒绝在包内完成）。
  */
 export async function startHubWsServer(options: HubWsServerOptions): Promise<HubWsServer> {
+  const handleRequest = options.handleRequest;
   const server = createServer((req, res) => {
+    if (handleRequest !== undefined) {
+      handleRequest(req, res);
+      return;
+    }
     if (req.method === 'GET' && req.url === '/healthz') {
       res.writeHead(200, { 'content-type': 'text/plain' });
       res.end('ok\n');
@@ -252,6 +267,7 @@ export async function startHubWsServer(options: HubWsServerOptions): Promise<Hub
 /** Public Node HTTP + `ws` adapter for `createHubReplicationPlugin(..., { listen })`. */
 export function createNodeHubListenAdapter(
   observer?: NodeHubAdapterObserver,
+  handleRequest?: HubPlainRequestHandler,
 ): HubListenAdapter {
   let active = false;
   return {
@@ -259,7 +275,11 @@ export function createNodeHubListenAdapter(
       if (active) throw new Error('hub listener already active');
       active = true;
       try {
-        const listener = await startHubWsServer({ ...options, ...(observer === undefined ? {} : { observer }) });
+        const listener = await startHubWsServer({
+          ...options,
+          ...(observer === undefined ? {} : { observer }),
+          ...(handleRequest === undefined ? {} : { handleRequest }),
+        });
         let closed = false;
         return {
           ...(listener.port === undefined ? {} : { port: listener.port }),
@@ -286,8 +306,16 @@ export interface AppHubListenAdapter extends HubListenAdapter {
   readonly listener: HubListener | undefined;
 }
 
-export function createHubListenAdapter(): AppHubListenAdapter {
-  const nodeAdapter = createNodeHubListenAdapter();
+export interface AppHubListenAdapterOptions {
+  /**
+   * 组合根 plain-HTTP 分流钩子（issue #270）：存在时 hub listener 的普通请求全部委托
+   * 该钩子（REST family 优先 + `matched:false` 回落）；缺省保持原 /healthz+404 行为。
+   */
+  readonly handleRequest?: HubPlainRequestHandler;
+}
+
+export function createHubListenAdapter(options: AppHubListenAdapterOptions = {}): AppHubListenAdapter {
+  const nodeAdapter = createNodeHubListenAdapter(undefined, options.handleRequest);
   let listener: HubListener | undefined;
   return {
     get listener(): HubListener | undefined {

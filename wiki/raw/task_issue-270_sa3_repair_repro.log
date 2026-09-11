@@ -1,0 +1,40 @@
+Testing types with tsc and vue-tsc is an experimental feature.
+Breaking changes might not follow SemVer, please pin Vitest's version when using it.
+
+ RUN  v3.2.7 /home/wangjian/nomicore-fix-issue-270
+
+ ❯ apps/yjs-server/test/rest-hosting-prerebase-repro.test.ts (4 tests | 1 failed) 10046ms
+   × issue #270 rest-hosting 行为（SA3） > 例 1（D8）：canonical path 畸形 JSON body → 500 + rest-request-failed 恰一次，进程与后续请求不受影响 29ms
+     → router rejection 应映射为 500 占位，实际 400 {"code":"MALFORMED_JSON","message":"JSON 解析失败"}: expected 400 to be 500 // Object.is equality
+   ✓ issue #270 rest-hosting 行为（SA3） > 例 2（D4）：drain 预算尽时 abort 已接纳请求——有界停机 + 客户端传输层失败 + app-stopped 恰一次  10009ms
+   ✓ issue #270 rest-hosting 行为（SA3） > 例 3（F2）：boot 窗口（未 await ready）stop() 干净结算——drain 步跳过不致 TypeError 2ms
+   ✓ issue #270 rest-hosting 行为（SA3） > 例 4（O1）：回落路由保持精确等值语义——GET /healthz?x=1 → 404（/healthz 仍 200） 6ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  apps/yjs-server/test/rest-hosting-prerebase-repro.test.ts > issue #270 rest-hosting 行为（SA3） > 例 1（D8）：canonical path 畸形 JSON body → 500 + rest-request-failed 恰一次，进程与后续请求不受影响
+AssertionError: router rejection 应映射为 500 占位，实际 400 {"code":"MALFORMED_JSON","message":"JSON 解析失败"}: expected 400 to be 500 // Object.is equality
+
+- Expected
++ Received
+
+- 500
++ 400
+
+ ❯ apps/yjs-server/test/rest-hosting-prerebase-repro.test.ts:45:11
+     43|           malformed.status,
+     44|           `router rejection 应映射为 500 占位，实际 ${malformed.status} ${malfo…
+     45|         ).toBe(500);
+       |           ^
+     46|         expect(String(malformed.headers['content-type'] ?? '')).toCont…
+     47|         expect(
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 3 passed (4)
+Type Errors  no errors
+   Start at  10:24:43
+   Duration  11.03s (transform 597ms, setup 0ms, collect 839ms, tests 10.05s, environment 0ms, prepare 45ms)
+

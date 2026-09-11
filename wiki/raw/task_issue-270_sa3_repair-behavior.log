@@ -1,0 +1,30 @@
+===== behavior run 1 =====
+Testing types with tsc and vue-tsc is an experimental feature.
+Breaking changes might not follow SemVer, please pin Vitest's version when using it.
+
+ RUN  v3.2.7 /home/wangjian/nomicore-fix-issue-270
+
+ ✓ apps/yjs-server/test/rest-hosting-behavior.test.ts (5 tests) 10068ms
+   ✓ issue #270 rest-hosting 行为（SA3） > 例 2（D4 + D8 端到端）：drain 预算尽 abort 已接纳请求——有界停机 + 传输层失败 + 真实 rejection 事件 + app-stopped 恰一次  10017ms
+
+ Test Files  1 passed (1)
+      Tests  5 passed (5)
+Type Errors  no errors
+   Start at  10:23:09
+   Duration  11.07s (transform 620ms, setup 0ms, collect 860ms, tests 10.07s, environment 0ms, prepare 43ms)
+
+===== behavior run 2 =====
+Testing types with tsc and vue-tsc is an experimental feature.
+Breaking changes might not follow SemVer, please pin Vitest's version when using it.
+
+ RUN  v3.2.7 /home/wangjian/nomicore-fix-issue-270
+
+ ✓ apps/yjs-server/test/rest-hosting-behavior.test.ts (5 tests) 10071ms
+   ✓ issue #270 rest-hosting 行为（SA3） > 例 2（D4 + D8 端到端）：drain 预算尽 abort 已接纳请求——有界停机 + 传输层失败 + 真实 rejection 事件 + app-stopped 恰一次  10017ms
+
+ Test Files  1 passed (1)
+      Tests  5 passed (5)
+Type Errors  no errors
+   Start at  10:23:21
+   Duration  11.09s (transform 625ms, setup 0ms, collect 866ms, tests 10.07s, environment 0ms, prepare 48ms)
+

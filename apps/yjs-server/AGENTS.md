@@ -11,15 +11,24 @@ out of their owning packages.
 
 ## Boundaries
 
-- Consume only package public exports (`@nomicore/{instance,clock,persistence,namespace-registry,namespace-diagnostic-log,ws-replication}`);
+- Consume only package public exports (`@nomicore/{instance,clock,persistence,namespace-registry,namespace-api,namespace-diagnostic-log,ws-replication}`);
   no package-internal subpaths, no testing seams, no DSH profiles.
 - One static role per process (`role: 'hub' | 'peer'`); never both.
 - Authorization bindings are built before any network endpoint accepts. The deployable
   Hub verifies each bearer token exactly once before HTTP Upgrade, then passes only the
   resulting trusted `peerInstanceId` through the package's public `acceptTrusted` seam;
   adapters never interpret credentials or re-run the verifier.
-- Single disposal chain: replication drain → registry shutdown → diagnostics O(1) close →
-  persistence dispose → timer/clock teardown. Never trigger a second concurrent teardown chain.
+- Single disposal chain: replication drain (the package-level WebSocket stop completes the
+  admitted-apply drain and close session → release lease inside `hubService.stop()`) → bounded
+  drain of already-admitted REST work (skipped while the host is still unconstructed during
+  boot) → registry shutdown → diagnostics O(1) close → persistence dispose → timer/clock
+  teardown. Never trigger a second concurrent teardown chain.
+- The Hub listener owns raw-path route-family selection (ADR 0015): plain requests are
+  REST-first and fall back to the listener's own `/healthz`/404 surface when the router
+  reports `matched:false`, while upgrades keep the single `/replication` gate; the REST
+  router is constructed once from the shared Registry reference and the Instance role. The
+  stopping-intake `503` and the temporary HTTP rejection `500` are transport-layer
+  placeholders, not terminal error-contract shapes (FR-3 converges them).
 - stdout is a strict NDJSON lifecycle-event channel; stdin is the NDJSON control channel
   (one reply per line; the process never exits or crashes because of control input).
 - Management verbs preserve the documented role gates and orchestration: Hub owns schema/epoch

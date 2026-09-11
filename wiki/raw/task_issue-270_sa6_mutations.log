@@ -1,0 +1,469 @@
+=== SA6 issue #270 定点变异矩阵（临时绿灯模拟件 + 逐例单点变异；模拟件已回退） ===
+
+############ mut-m1-second-registry ############
+Testing types with tsc and vue-tsc is an experimental feature.
+Breaking changes might not follow SemVer, please pin Vitest's version when using it.
+
+ RUN  v3.2.7 /home/wangjian/nomicore-fix-issue-270
+
+ ❯ apps/yjs-server/test/issue270-server-integration-red.test.ts (4 tests | 2 failed) 1171ms
+   × issue #270 AC1 — REST 与 WebSocket Module 共享同一个 Registry 引用 > T1-A：REST create 的 namespace 可在组合根同一 Registry 上 reopen（第二 Registry 反证） 41ms
+     → promise rejected "Error: 契约违例：Registry.open(rest-owner-270,…" instead of resolving
+   ✓ issue #270 AC1 — REST 与 WebSocket Module 共享同一个 Registry 引用 > T1-B：WS 复制会话所在 Runtime 可由组合根 Registry 的 lease 写入并 bootstrap 观测 39ms
+   ✓ issue #270 AC2 — raw path 分流 REST 与 WebSocket route family > T2：同一 listener 上 REST 路径走 REST route family、/replication 走 WebSocket route family 16ms
+   × issue #270 AC3 — 有序停止（intake → settle → Lease/Session → Registry/Persistence） > T3：停止 intake 后已接纳 REST create 完成、新请求不再被接纳、WS Session 1001 关闭、Registry/Persistence 有序停止 1075ms
+     → promise rejected "Error: 契约违例：Registry.open(rest-owner-270,…" instead of resolving
+ ✓ apps/yjs-server/test/issue270-regression-anchors.test.ts (3 tests) 746ms
+   ✓ issue #270 回归锚（contract must not break） > N2（SA8 A3）：诊断启用 + file persistence 下 stop() 有界且单一拆卸链  525ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 2 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  apps/yjs-server/test/issue270-server-integration-red.test.ts > issue #270 AC1 — REST 与 WebSocket Module 共享同一个 Registry 引用 > T1-A：REST create 的 namespace 可在组合根同一 Registry 上 reopen（第二 Registry 反证）
+AssertionError: promise rejected "Error: 契约违例：Registry.open(rest-owner-270,…" instead of resolving
+ ❯ apps/yjs-server/test/issue270-server-integration-red.test.ts:79:9
+     77|         await expect(
+     78|           openAndReadValue(reg, 'rest-owner-270', firstBody.namespaceI…
+     79|         ).resolves.toBe(ROOT_VALUE.title);
+       |         ^
+     80|
+     81|         // 敏感度反证：独立第二 Registry 上同一 namespaceId 必须 NAMESPACE_NOT_FOUND。
+
+Caused by: Error: 契约违例：Registry.open(rest-owner-270, ns-00000000000000000000000000000001) 应成功，实际 {"ok":false,"code":"NAMESPACE_NOT_FOUND","message":"NAMESPACE_NOT_FOUND: namespace 不存在"}
+ ❯ openAndReadValue apps/yjs-server/test/issue270-contract-support.ts:249:11
+ ❯ apps/yjs-server/test/issue270-server-integration-red.test.ts:77:9
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/2]⎯
+
+ FAIL  apps/yjs-server/test/issue270-server-integration-red.test.ts > issue #270 AC3 — 有序停止（intake → settle → Lease/Session → Registry/Persistence） > T3：停止 intake 后已接纳 REST create 完成、新请求不再被接纳、WS Session 1001 关闭、Registry/Persistence 有序停止
+AssertionError: promise rejected "Error: 契约违例：Registry.open(rest-owner-270,…" instead of resolving
+ ❯ apps/yjs-server/test/issue270-server-integration-red.test.ts:315:11
+    313|               ['title'],
+    314|             ),
+    315|           ).resolves.toBe(ROOT_VALUE.title);
+       |           ^
+    316|         } finally {
+    317|           await restarted.stop();
+
+Caused by: Error: 契约违例：Registry.open(rest-owner-270, ns-00000000000000000000000000000001) 应成功，实际 {"ok":false,"code":"NAMESPACE_NOT_FOUND","message":"NAMESPACE_NOT_FOUND: namespace 不存在"}
+ ❯ openAndReadValue apps/yjs-server/test/issue270-contract-support.ts:249:11
+ ❯ apps/yjs-server/test/issue270-server-integration-red.test.ts:308:11
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/2]⎯
+
+
+ Test Files  1 failed | 1 passed (2)
+      Tests  2 failed | 5 passed (7)
+Type Errors  no errors
+   Start at  08:20:54
+   Duration  3.22s (transform 620ms, setup 0ms, collect 1.02s, tests 1.92s, environment 0ms, prepare 86ms)
+
+
+############ mut-m2-route-family ############
+Testing types with tsc and vue-tsc is an experimental feature.
+Breaking changes might not follow SemVer, please pin Vitest's version when using it.
+
+ RUN  v3.2.7 /home/wangjian/nomicore-fix-issue-270
+
+ ❯ apps/yjs-server/test/issue270-server-integration-red.test.ts (4 tests | 1 failed) 1171ms
+   ✓ issue #270 AC1 — REST 与 WebSocket Module 共享同一个 Registry 引用 > T1-A：REST create 的 namespace 可在组合根同一 Registry 上 reopen（第二 Registry 反证） 41ms
+   ✓ issue #270 AC1 — REST 与 WebSocket Module 共享同一个 Registry 引用 > T1-B：WS 复制会话所在 Runtime 可由组合根 Registry 的 lease 写入并 bootstrap 观测 34ms
+   × issue #270 AC2 — raw path 分流 REST 与 WebSocket route family > T2：同一 listener 上 REST 路径走 REST route family、/replication 走 WebSocket route family 18ms
+     → expected 405 to be 404 // Object.is equality
+   ✓ issue #270 AC3 — 有序停止（intake → settle → Lease/Session → Registry/Persistence） > T3：停止 intake 后已接纳 REST create 完成、新请求不再被接纳、WS Session 1001 关闭、Registry/Persistence 有序停止  1076ms
+ ❯ apps/yjs-server/test/issue270-regression-anchors.test.ts (3 tests | 1 failed) 752ms
+   ✓ issue #270 回归锚（contract must not break） > N1（AC4）：零 REST 请求下 WebSocket Module 直接复制 provision namespace 并双向收敛 211ms
+   ✓ issue #270 回归锚（contract must not break） > N2（SA8 A3）：诊断启用 + file persistence 下 stop() 有界且单一拆卸链  525ms
+   × issue #270 回归锚（contract must not break） > N3（AC2 既有面）：listener 基础路由与 WebSocket 凭据门不得被 REST 集成破坏 15ms
+     → expected 405 to be 404 // Object.is equality
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 2 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  apps/yjs-server/test/issue270-regression-anchors.test.ts > issue #270 回归锚（contract must not break） > N3（AC2 既有面）：listener 基础路由与 WebSocket 凭据门不得被 REST 集成破坏
+AssertionError: expected 405 to be 404 // Object.is equality
+
+- Expected
++ Received
+
+- 404
++ 405
+
+ ❯ apps/yjs-server/test/issue270-regression-anchors.test.ts:154:39
+    152|
+    153|       const plainUpgradePath = await httpRequest(hub.port, 'GET', UPGR…
+    154|       expect(plainUpgradePath.status).toBe(404);
+       |                                       ^
+    155|
+    156|       // 非 REST 路径不得被 REST route family 接管（否则会得到 405 等 REST 语义）。
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/2]⎯
+
+ FAIL  apps/yjs-server/test/issue270-server-integration-red.test.ts > issue #270 AC2 — raw path 分流 REST 与 WebSocket route family > T2：同一 listener 上 REST 路径走 REST route family、/replication 走 WebSocket route family
+AssertionError: expected 405 to be 404 // Object.is equality
+
+- Expected
++ Received
+
+- 404
++ 405
+
+ ❯ apps/yjs-server/test/issue270-server-integration-red.test.ts:196:41
+    194|         // WebSocket route family：普通 HTTP 请求到 /replication → 404（非 RES…
+    195|         const plainUpgradePath = await httpRequest(hub.port, 'GET', UP…
+    196|         expect(plainUpgradePath.status).toBe(404);
+       |                                         ^
+    197|
+    198|         // 既有锚（不得破坏）：/healthz 200。
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/2]⎯
+
+
+ Test Files  2 failed (2)
+      Tests  2 failed | 5 passed (7)
+Type Errors  no errors
+   Start at  08:21:09
+   Duration  3.24s (transform 637ms, setup 0ms, collect 1.04s, tests 1.92s, environment 0ms, prepare 87ms)
+
+
+############ mut-m3-no-drain ############
+Testing types with tsc and vue-tsc is an experimental feature.
+Breaking changes might not follow SemVer, please pin Vitest's version when using it.
+
+ RUN  v3.2.7 /home/wangjian/nomicore-fix-issue-270
+
+stderr | apps/yjs-server/test/issue270-server-integration-red.test.ts > issue #270 AC3 — 有序停止（intake → settle → Lease/Session → Registry/Persistence） > T3：停止 intake 后已接纳 REST create 完成、新请求不再被接纳、WS Session 1001 关闭、Registry/Persistence 有序停止
+TEMP-SA6-HANDLER-ERROR Error: unmapped registry issue: REGISTRY_NOT_ACCEPTING
+    at orchestrateCreateNamespace (/home/wangjian/nomicore-fix-issue-270/packages/namespace-api/src/create-namespace.ts:62:11)
+    at processTicksAndRejections (node:internal/process/task_queues:103:5)
+    at Object.handle (/home/wangjian/nomicore-fix-issue-270/packages/namespace-api/src/rest.ts:174:17)
+    at Object.handleHttpRequest (/home/wangjian/nomicore-fix-issue-270/apps/yjs-server/src/app.ts:331:22)
+    at /home/wangjian/nomicore-fix-issue-270/apps/yjs-server/src/transport/ws-server.ts:167:15 {
+  [cause]: {
+    ok: false,
+    code: 'REGISTRY_NOT_ACCEPTING',
+    message: 'REGISTRY_NOT_ACCEPTING: Registry 当前不接纳 namespace 操作'
+  }
+}
+
+ ❯ apps/yjs-server/test/issue270-server-integration-red.test.ts (4 tests | 1 failed) 646ms
+   ✓ issue #270 AC1 — REST 与 WebSocket Module 共享同一个 Registry 引用 > T1-A：REST create 的 namespace 可在组合根同一 Registry 上 reopen（第二 Registry 反证） 42ms
+   ✓ issue #270 AC1 — REST 与 WebSocket Module 共享同一个 Registry 引用 > T1-B：WS 复制会话所在 Runtime 可由组合根 Registry 的 lease 写入并 bootstrap 观测 35ms
+   ✓ issue #270 AC2 — raw path 分流 REST 与 WebSocket route family > T2：同一 listener 上 REST 路径走 REST route family、/replication 走 WebSocket route family 16ms
+   × issue #270 AC3 — 有序停止（intake → settle → Lease/Session → Registry/Persistence） > T3：停止 intake 后已接纳 REST create 完成、新请求不再被接纳、WS Session 1001 关闭、Registry/Persistence 有序停止 552ms
+     → 已接纳 REST create 应在 drain 期间完成 201，实际 404 not found
+ : expected 404 to be 201 // Object.is equality
+ ✓ apps/yjs-server/test/issue270-regression-anchors.test.ts (3 tests) 650ms
+   ✓ issue #270 回归锚（contract must not break） > N2（SA8 A3）：诊断启用 + file persistence 下 stop() 有界且单一拆卸链  525ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  apps/yjs-server/test/issue270-server-integration-red.test.ts > issue #270 AC3 — 有序停止（intake → settle → Lease/Session → Registry/Persistence） > T3：停止 intake 后已接纳 REST create 完成、新请求不再被接纳、WS Session 1001 关闭、Registry/Persistence 有序停止
+AssertionError: 已接纳 REST create 应在 drain 期间完成 201，实际 404 not found
+ : expected 404 to be 201 // Object.is equality
+
+- Expected
++ Received
+
+- 201
++ 404
+
+ ❯ apps/yjs-server/test/issue270-server-integration-red.test.ts:267:11
+    265|           response.status,
+    266|           `已接纳 REST create 应在 drain 期间完成 201，实际 ${response.status} ${r…
+    267|         ).toBe(201);
+       |           ^
+    268|         const createdNamespaceId = parseCreated(response.body).namespa…
+    269|         expect(createdNamespaceId).toMatch(NAMESPACE_ID_PATTERN);
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed | 1 passed (2)
+      Tests  1 failed | 6 passed (7)
+Type Errors  no errors
+   Start at  08:21:12
+   Duration  2.62s (transform 629ms, setup 0ms, collect 1.04s, tests 1.30s, environment 0ms, prepare 91ms)
+
+
+############ mut-m4-observer-injection ############
+Testing types with tsc and vue-tsc is an experimental feature.
+Breaking changes might not follow SemVer, please pin Vitest's version when using it.
+
+ RUN  v3.2.7 /home/wangjian/nomicore-fix-issue-270
+
+ ❯ apps/yjs-server/test/issue270-server-integration-red.test.ts (4 tests | 4 failed) 571ms
+   × issue #270 AC1 — REST 与 WebSocket Module 共享同一个 Registry 引用 > T1-A：REST create 的 namespace 可在组合根同一 Registry 上 reopen（第二 Registry 反证） 13ms
+     → diagnosticObserver 必须显式注入（no-op 须显式）
+   × issue #270 AC1 — REST 与 WebSocket Module 共享同一个 Registry 引用 > T1-B：WS 复制会话所在 Runtime 可由组合根 Registry 的 lease 写入并 bootstrap 观测 15ms
+     → diagnosticObserver 必须显式注入（no-op 须显式）
+   × issue #270 AC2 — raw path 分流 REST 与 WebSocket route family > T2：同一 listener 上 REST 路径走 REST route family、/replication 走 WebSocket route family 2ms
+     → diagnosticObserver 必须显式注入（no-op 须显式）
+   × issue #270 AC3 — 有序停止（intake → settle → Lease/Session → Registry/Persistence） > T3：停止 intake 后已接纳 REST create 完成、新请求不再被接纳、WS Session 1001 关闭、Registry/Persistence 有序停止 540ms
+     → diagnosticObserver 必须显式注入（no-op 须显式）
+ ❯ apps/yjs-server/test/issue270-regression-anchors.test.ts (3 tests | 3 failed) 552ms
+   × issue #270 回归锚（contract must not break） > N1（AC4）：零 REST 请求下 WebSocket Module 直接复制 provision namespace 并双向收敛 25ms
+     → diagnosticObserver 必须显式注入（no-op 须显式）
+   × issue #270 回归锚（contract must not break） > N2（SA8 A3）：诊断启用 + file persistence 下 stop() 有界且单一拆卸链 524ms
+     → diagnosticObserver 必须显式注入（no-op 须显式）
+   × issue #270 回归锚（contract must not break） > N3（AC2 既有面）：listener 基础路由与 WebSocket 凭据门不得被 REST 集成破坏 2ms
+     → diagnosticObserver 必须显式注入（no-op 须显式）
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 7 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  apps/yjs-server/test/issue270-regression-anchors.test.ts > issue #270 回归锚（contract must not break） > N1（AC4）：零 REST 请求下 WebSocket Module 直接复制 provision namespace 并双向收敛
+TypeError: diagnosticObserver 必须显式注入（no-op 须显式）
+ ❯ createRestRouter packages/namespace-api/src/rest.ts:143:11
+    141|   const diagnosticObserverCandidate: unknown = diagnosticObserver;
+    142|   if (typeof diagnosticObserverCandidate !== 'function') {
+    143|     throw new TypeError('diagnosticObserver 必须显式注入（no-op 须显式）');
+       |           ^
+    144|   }
+    145|   // 复制 + 冻结：role 等值读入（构造后改写调用方 options 不改变行为）；limits 存在时
+ ❯ AppHandle.bootHub apps/yjs-server/src/app.ts:300:23
+ ❯ AppHandle.boot apps/yjs-server/src/app.ts:248:7
+ ❯ startHubApp apps/yjs-server/test/issue270-contract-support.ts:145:5
+ ❯ apps/yjs-server/test/issue270-regression-anchors.test.ts:49:19
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/7]⎯
+
+ FAIL  apps/yjs-server/test/issue270-regression-anchors.test.ts > issue #270 回归锚（contract must not break） > N2（SA8 A3）：诊断启用 + file persistence 下 stop() 有界且单一拆卸链
+TypeError: diagnosticObserver 必须显式注入（no-op 须显式）
+ ❯ createRestRouter packages/namespace-api/src/rest.ts:143:11
+    141|   const diagnosticObserverCandidate: unknown = diagnosticObserver;
+    142|   if (typeof diagnosticObserverCandidate !== 'function') {
+    143|     throw new TypeError('diagnosticObserver 必须显式注入（no-op 须显式）');
+       |           ^
+    144|   }
+    145|   // 复制 + 冻结：role 等值读入（构造后改写调用方 options 不改变行为）；limits 存在时
+ ❯ AppHandle.bootHub apps/yjs-server/src/app.ts:300:23
+ ❯ AppHandle.boot apps/yjs-server/src/app.ts:248:18
+ ❯ startHubApp apps/yjs-server/test/issue270-contract-support.ts:145:5
+ ❯ apps/yjs-server/test/issue270-regression-anchors.test.ts:103:19
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/7]⎯
+
+ FAIL  apps/yjs-server/test/issue270-regression-anchors.test.ts > issue #270 回归锚（contract must not break） > N3（AC2 既有面）：listener 基础路由与 WebSocket 凭据门不得被 REST 集成破坏
+TypeError: diagnosticObserver 必须显式注入（no-op 须显式）
+ ❯ createRestRouter packages/namespace-api/src/rest.ts:143:11
+    141|   const diagnosticObserverCandidate: unknown = diagnosticObserver;
+    142|   if (typeof diagnosticObserverCandidate !== 'function') {
+    143|     throw new TypeError('diagnosticObserver 必须显式注入（no-op 须显式）');
+       |           ^
+    144|   }
+    145|   // 复制 + 冻结：role 等值读入（构造后改写调用方 options 不改变行为）；limits 存在时
+ ❯ AppHandle.bootHub apps/yjs-server/src/app.ts:300:23
+ ❯ AppHandle.boot apps/yjs-server/src/app.ts:248:18
+ ❯ startHubApp apps/yjs-server/test/issue270-contract-support.ts:145:5
+ ❯ apps/yjs-server/test/issue270-regression-anchors.test.ts:145:17
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/7]⎯
+
+ FAIL  apps/yjs-server/test/issue270-server-integration-red.test.ts > issue #270 AC1 — REST 与 WebSocket Module 共享同一个 Registry 引用 > T1-A：REST create 的 namespace 可在组合根同一 Registry 上 reopen（第二 Registry 反证）
+TypeError: diagnosticObserver 必须显式注入（no-op 须显式）
+ ❯ createRestRouter packages/namespace-api/src/rest.ts:143:11
+    141|   const diagnosticObserverCandidate: unknown = diagnosticObserver;
+    142|   if (typeof diagnosticObserverCandidate !== 'function') {
+    143|     throw new TypeError('diagnosticObserver 必须显式注入（no-op 须显式）');
+       |           ^
+    144|   }
+    145|   // 复制 + 冻结：role 等值读入（构造后改写调用方 options 不改变行为）；limits 存在时
+ ❯ AppHandle.bootHub apps/yjs-server/src/app.ts:300:23
+ ❯ AppHandle.boot apps/yjs-server/src/app.ts:248:18
+ ❯ startHubApp apps/yjs-server/test/issue270-contract-support.ts:145:5
+ ❯ apps/yjs-server/test/issue270-server-integration-red.test.ts:62:19
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[4/7]⎯
+
+ FAIL  apps/yjs-server/test/issue270-server-integration-red.test.ts > issue #270 AC1 — REST 与 WebSocket Module 共享同一个 Registry 引用 > T1-B：WS 复制会话所在 Runtime 可由组合根 Registry 的 lease 写入并 bootstrap 观测
+TypeError: diagnosticObserver 必须显式注入（no-op 须显式）
+ ❯ createRestRouter packages/namespace-api/src/rest.ts:143:11
+    141|   const diagnosticObserverCandidate: unknown = diagnosticObserver;
+    142|   if (typeof diagnosticObserverCandidate !== 'function') {
+    143|     throw new TypeError('diagnosticObserver 必须显式注入（no-op 须显式）');
+       |           ^
+    144|   }
+    145|   // 复制 + 冻结：role 等值读入（构造后改写调用方 options 不改变行为）；limits 存在时
+ ❯ AppHandle.bootHub apps/yjs-server/src/app.ts:300:23
+ ❯ AppHandle.boot apps/yjs-server/src/app.ts:248:7
+ ❯ startHubApp apps/yjs-server/test/issue270-contract-support.ts:145:5
+ ❯ apps/yjs-server/test/issue270-server-integration-red.test.ts:115:19
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[5/7]⎯
+
+ FAIL  apps/yjs-server/test/issue270-server-integration-red.test.ts > issue #270 AC2 — raw path 分流 REST 与 WebSocket route family > T2：同一 listener 上 REST 路径走 REST route family、/replication 走 WebSocket route family
+TypeError: diagnosticObserver 必须显式注入（no-op 须显式）
+ ❯ createRestRouter packages/namespace-api/src/rest.ts:143:11
+    141|   const diagnosticObserverCandidate: unknown = diagnosticObserver;
+    142|   if (typeof diagnosticObserverCandidate !== 'function') {
+    143|     throw new TypeError('diagnosticObserver 必须显式注入（no-op 须显式）');
+       |           ^
+    144|   }
+    145|   // 复制 + 冻结：role 等值读入（构造后改写调用方 options 不改变行为）；limits 存在时
+ ❯ AppHandle.bootHub apps/yjs-server/src/app.ts:300:23
+ ❯ AppHandle.boot apps/yjs-server/src/app.ts:248:18
+ ❯ startHubApp apps/yjs-server/test/issue270-contract-support.ts:145:5
+ ❯ apps/yjs-server/test/issue270-server-integration-red.test.ts:172:19
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[6/7]⎯
+
+ FAIL  apps/yjs-server/test/issue270-server-integration-red.test.ts > issue #270 AC3 — 有序停止（intake → settle → Lease/Session → Registry/Persistence） > T3：停止 intake 后已接纳 REST create 完成、新请求不再被接纳、WS Session 1001 关闭、Registry/Persistence 有序停止
+TypeError: diagnosticObserver 必须显式注入（no-op 须显式）
+ ❯ createRestRouter packages/namespace-api/src/rest.ts:143:11
+    141|   const diagnosticObserverCandidate: unknown = diagnosticObserver;
+    142|   if (typeof diagnosticObserverCandidate !== 'function') {
+    143|     throw new TypeError('diagnosticObserver 必须显式注入（no-op 须显式）');
+       |           ^
+    144|   }
+    145|   // 复制 + 冻结：role 等值读入（构造后改写调用方 options 不改变行为）；limits 存在时
+ ❯ AppHandle.bootHub apps/yjs-server/src/app.ts:300:23
+ ❯ AppHandle.boot apps/yjs-server/src/app.ts:248:7
+ ❯ startHubApp apps/yjs-server/test/issue270-contract-support.ts:145:5
+ ❯ apps/yjs-server/test/issue270-server-integration-red.test.ts:237:19
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[7/7]⎯
+
+
+ Test Files  2 failed (2)
+      Tests  7 failed (7)
+Type Errors  no errors
+   Start at  08:21:19
+   Duration  2.41s (transform 614ms, setup 0ms, collect 1.02s, tests 1.12s, environment 0ms, prepare 85ms)
+
+
+############ mut-m5-registry-before-drain ############
+Testing types with tsc and vue-tsc is an experimental feature.
+Breaking changes might not follow SemVer, please pin Vitest's version when using it.
+
+ RUN  v3.2.7 /home/wangjian/nomicore-fix-issue-270
+
+stderr | apps/yjs-server/test/issue270-server-integration-red.test.ts > issue #270 AC3 — 有序停止（intake → settle → Lease/Session → Registry/Persistence） > T3：停止 intake 后已接纳 REST create 完成、新请求不再被接纳、WS Session 1001 关闭、Registry/Persistence 有序停止
+TEMP-SA6-HANDLER-ERROR Error: unmapped registry issue: REGISTRY_NOT_ACCEPTING
+    at orchestrateCreateNamespace (/home/wangjian/nomicore-fix-issue-270/packages/namespace-api/src/create-namespace.ts:62:11)
+    at processTicksAndRejections (node:internal/process/task_queues:103:5)
+    at Object.handle (/home/wangjian/nomicore-fix-issue-270/packages/namespace-api/src/rest.ts:174:17)
+    at Object.handleHttpRequest (/home/wangjian/nomicore-fix-issue-270/apps/yjs-server/src/app.ts:331:22)
+    at /home/wangjian/nomicore-fix-issue-270/apps/yjs-server/src/transport/ws-server.ts:167:15 {
+  [cause]: {
+    ok: false,
+    code: 'REGISTRY_NOT_ACCEPTING',
+    message: 'REGISTRY_NOT_ACCEPTING: Registry 当前不接纳 namespace 操作'
+  }
+}
+
+ ❯ apps/yjs-server/test/issue270-server-integration-red.test.ts (4 tests | 1 failed) 651ms
+   ✓ issue #270 AC1 — REST 与 WebSocket Module 共享同一个 Registry 引用 > T1-A：REST create 的 namespace 可在组合根同一 Registry 上 reopen（第二 Registry 反证） 42ms
+   ✓ issue #270 AC1 — REST 与 WebSocket Module 共享同一个 Registry 引用 > T1-B：WS 复制会话所在 Runtime 可由组合根 Registry 的 lease 写入并 bootstrap 观测 35ms
+   ✓ issue #270 AC2 — raw path 分流 REST 与 WebSocket route family > T2：同一 listener 上 REST 路径走 REST route family、/replication 走 WebSocket route family 16ms
+   × issue #270 AC3 — 有序停止（intake → settle → Lease/Session → Registry/Persistence） > T3：停止 intake 后已接纳 REST create 完成、新请求不再被接纳、WS Session 1001 关闭、Registry/Persistence 有序停止 557ms
+     → 已接纳 REST create 应在 drain 期间完成 201，实际 404 not found
+ : expected 404 to be 201 // Object.is equality
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  apps/yjs-server/test/issue270-server-integration-red.test.ts > issue #270 AC3 — 有序停止（intake → settle → Lease/Session → Registry/Persistence） > T3：停止 intake 后已接纳 REST create 完成、新请求不再被接纳、WS Session 1001 关闭、Registry/Persistence 有序停止
+AssertionError: 已接纳 REST create 应在 drain 期间完成 201，实际 404 not found
+ : expected 404 to be 201 // Object.is equality
+
+- Expected
++ Received
+
+- 201
++ 404
+
+ ❯ apps/yjs-server/test/issue270-server-integration-red.test.ts:267:11
+    265|           response.status,
+    266|           `已接纳 REST create 应在 drain 期间完成 201，实际 ${response.status} ${r…
+    267|         ).toBe(201);
+       |           ^
+    268|         const createdNamespaceId = parseCreated(response.body).namespa…
+    269|         expect(createdNamespaceId).toMatch(NAMESPACE_ID_PATTERN);
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 3 passed (4)
+Type Errors  no errors
+   Start at  08:22:14
+   Duration  1.85s (transform 685ms, setup 0ms, collect 931ms, tests 651ms, environment 0ms, prepare 77ms)
+
+
+############ mut-m6-role-source ############
+Testing types with tsc and vue-tsc is an experimental feature.
+Breaking changes might not follow SemVer, please pin Vitest's version when using it.
+
+ RUN  v3.2.7 /home/wangjian/nomicore-fix-issue-270
+
+ ❯ apps/yjs-server/test/issue270-server-integration-red.test.ts (4 tests | 3 failed) 641ms
+   × issue #270 AC1 — REST 与 WebSocket Module 共享同一个 Registry 引用 > T1-A：REST create 的 namespace 可在组合根同一 Registry 上 reopen（第二 Registry 反证） 29ms
+     → REST create 应 201，实际 403 {"code":"INSTANCE_ROLE_FORBIDDEN"}: expected 403 to be 201 // Object.is equality
+   ✓ issue #270 AC1 — REST 与 WebSocket Module 共享同一个 Registry 引用 > T1-B：WS 复制会话所在 Runtime 可由组合根 Registry 的 lease 写入并 bootstrap 观测 44ms
+   × issue #270 AC2 — raw path 分流 REST 与 WebSocket route family > T2：同一 listener 上 REST 路径走 REST route family、/replication 走 WebSocket route family 10ms
+     → REST create 应 201，实际 403 {"code":"INSTANCE_ROLE_FORBIDDEN"}: expected 403 to be 201 // Object.is equality
+   × issue #270 AC3 — 有序停止（intake → settle → Lease/Session → Registry/Persistence） > T3：停止 intake 后已接纳 REST create 完成、新请求不再被接纳、WS Session 1001 关闭、Registry/Persistence 有序停止 558ms
+     → 已接纳 REST create 应在 drain 期间完成 201，实际 403 {"code":"INSTANCE_ROLE_FORBIDDEN"} : expected 403 to be 201 // Object.is equality
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 3 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  apps/yjs-server/test/issue270-server-integration-red.test.ts > issue #270 AC1 — REST 与 WebSocket Module 共享同一个 Registry 引用 > T1-A：REST create 的 namespace 可在组合根同一 Registry 上 reopen（第二 Registry 反证）
+AssertionError: REST create 应 201，实际 403 {"code":"INSTANCE_ROLE_FORBIDDEN"}: expected 403 to be 201 // Object.is equality
+
+- Expected
++ Received
+
+- 201
++ 403
+
+ ❯ apps/yjs-server/test/issue270-server-integration-red.test.ts:72:84
+     70|           body: createBody(ROOT_VALUE),
+     71|         });
+     72|         expect(first.status, `REST create 应 201，实际 ${first.status} ${f…
+       |                                                                                    ^
+     73|         const firstBody = parseCreated(first.body);
+     74|         expect(firstBody.namespaceId).toMatch(NAMESPACE_ID_PATTERN);
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/3]⎯
+
+ FAIL  apps/yjs-server/test/issue270-server-integration-red.test.ts > issue #270 AC2 — raw path 分流 REST 与 WebSocket route family > T2：同一 listener 上 REST 路径走 REST route family、/replication 走 WebSocket route family
+AssertionError: REST create 应 201，实际 403 {"code":"INSTANCE_ROLE_FORBIDDEN"}: expected 403 to be 201 // Object.is equality
+
+- Expected
++ Received
+
+- 201
++ 403
+
+ ❯ apps/yjs-server/test/issue270-server-integration-red.test.ts:179:90
+    177|           body: createBody(ROOT_VALUE),
+    178|         });
+    179|         expect(created.status, `REST create 应 201，实际 ${created.status}…
+       |                                                                                          ^
+    180|         expect(String(created.headers['content-type'] ?? '')).toContai…
+    181|         expect(parseCreated(created.body).namespaceId).toMatch(NAMESPA…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/3]⎯
+
+ FAIL  apps/yjs-server/test/issue270-server-integration-red.test.ts > issue #270 AC3 — 有序停止（intake → settle → Lease/Session → Registry/Persistence） > T3：停止 intake 后已接纳 REST create 完成、新请求不再被接纳、WS Session 1001 关闭、Registry/Persistence 有序停止
+AssertionError: 已接纳 REST create 应在 drain 期间完成 201，实际 403 {"code":"INSTANCE_ROLE_FORBIDDEN"} : expected 403 to be 201 // Object.is equality
+
+- Expected
++ Received
+
+- 201
++ 403
+
+ ❯ apps/yjs-server/test/issue270-server-integration-red.test.ts:267:11
+    265|           response.status,
+    266|           `已接纳 REST create 应在 drain 期间完成 201，实际 ${response.status} ${r…
+    267|         ).toBe(201);
+       |           ^
+    268|         const createdNamespaceId = parseCreated(response.body).namespa…
+    269|         expect(createdNamespaceId).toMatch(NAMESPACE_ID_PATTERN);
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/3]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  3 failed | 1 passed (4)
+Type Errors  no errors
+   Start at  08:22:39
+   Duration  1.81s (transform 715ms, setup 0ms, collect 996ms, tests 641ms, environment 0ms, prepare 54ms)
