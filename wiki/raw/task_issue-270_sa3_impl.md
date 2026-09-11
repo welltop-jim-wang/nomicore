@@ -1,150 +1,174 @@
 # SA3 Implementation Report — issue #270：Server 集成验收（REST 与 WebSocket 共享 Registry + 有序停止）
 
-> 阶段：implementation（iteration 0 —— 首次实现轮）。Dispatch：`sa-33fd87ef-705d-45b1-a740-2f034459a9ae`（mabf-sa3）。
-> 依据：SA1 设计 `wiki/raw/task_issue-270_design.md`（iteration 1 修订轮，逐条落实 SA2 F1–F4）、
-> SA2 评审 `wiki/raw/task_issue-270_sa2_review.md`（verdict `approve`，0 BLOCKER/MAJOR）、
-> SA6 红灯契约 `wiki/raw/task_issue-270_sa6_contract.md`（verdict `approve`，冻结 3 文件）、
-> SA8 门禁 `task_issue-270_sa8_gate.md` + 设计后复审 `task_issue-270_sa8_recheck.md`（均 `clear`）。
-> Issue comments REST 快照（dispatch 前）= `[]`——无 Owner 追加要求。
-> 基线：HEAD `0b06050`（branch `mabf/issue-270`）。SA3 未执行 commit/push/PR。
+> 阶段：implementation（**iteration 1 —— rebase 后确定性失败修复轮**）。Dispatch：
+> `sa-8f4da41a-4f5e-4ad3-b2f4-99716dd233f2`（mabf-sa3）。
+> 触发：最终 rebase 提交 `8e550d4`（父 = `209b046`，即 #268「validate REST namespace creation
+> (#297)」）使 SA3 自有行为测试**例 1** 的驱动前提失效——#268 后畸形 JSON 在 package 内被映射为
+> matched `400 MALFORMED_JSON` problem Response，不再抵达 D8 rejection 路径；SA10 spec-review
+> `B-1`（`reject`）与 SA9 standards `S9-1`（MAJOR，`reject`）同点位识别该确定性红，并一致裁定
+> 修复面 = 测试/证据对齐（不动生产实现、不动冻结契约、不做架构改动）。
+> 本轮动作：例 1 对齐**当前父契约**（matched 400 problem 原样透传），D8 rejection 覆盖重定向到
+> 仍以 rejection 结算的驱动（bridge 级 rejecting router 锚定 500 占位响应的字节面；端到端
+> drain abort 锚定真实 rejection → sink 事件），生产实现与 SA6 冻结契约**零字节改动**。
+> 依据：SA1 设计（iteration 1）§7-D8/§11 ALLOW LIST/§12；SA6 §12/§13.4（冻结三文件哈希）；
+> SA8 gate/recheck（A1–A3、R1/R2、5 条重开条件）；SA10 §6「所需修订」方向；SA9 §2.4「修复方向」。
+> Issue comments REST 快照（dispatch 前）= `[]`——无 Owner 追加要求、无评论 ID 锚定义务。
+> 基线：HEAD `8e550d4`（branch `mabf/issue-270` 未变）；工作树仅本报告所述测试文件被修改
+> （**未 commit**）。
 
 ## Inputs consumed
 
 | 输入 | 位置 | 用途 |
 |---|---|---|
 | 任务简报（Issue #270 body；comments `[]`） | `wiki/raw/task_issue-270.md` | AC1–AC4 口径 |
-| SA1 设计（iteration 1 修订轮） | `wiki/raw/task_issue-270_design.md`（512 行，全文） | §7-D1–D8 决策、§8 装配序/停机状态机、§11 ALLOW/DENY、§12 行为测试四例、§13 FR-3 登记、§14 F1–F4 映射 |
-| SA2 设计评审 | `wiki/raw/task_issue-270_sa2_review.md`（全文） | F1–F4 落实核验、O1/O7/O8 实现注记 |
-| SA6 验收契约 + 红灯/绿灯/变异证据 | `task_issue-270_sa6_contract.md`（全文）、`task_issue-270_sa6_red.log` | 冻结断言语义；红灯基线；§13.4 哈希 |
-| SA8 前置门禁 + 设计后复审 | `task_issue-270_sa8_gate.md`、`task_issue-270_sa8_recheck.md` | A1/A2/A3、R1/R2、5 条重开条件 |
+| SA1 设计（iteration 1） | `wiki/raw/task_issue-270_design.md` | §7-D1–D8、§8 装配序/停机状态机、§11 ALLOW/DENY、§12 行为测试面、§13 FR-3 登记 |
+| SA2 设计评审 | `wiki/raw/task_issue-270_sa2_review.md` | F1–F4 闭合状态、O1/O7/O8 实现注记 |
+| SA6 验收契约（冻结基线） | `wiki/raw/task_issue-270_sa6_contract.md`（§12.3 测试路径、§13.4 哈希、§14 runner） | 冻结契约边界与哈希基准 |
+| SA8 前置门禁 + 设计后复审 | `wiki/raw/task_issue-270_sa8_gate.md`、`task_issue-270_sa8_recheck.md` | A1/A2/A3、R1/R2、5 条重开条件 |
+| **SA10 spec-review（本轮触发输入）** | `wiki/raw/task_issue-270_sa10_spec.md`（§3 例 1 行、§6 B-1、§7 重验要求） | 失败事实链与修订方向 |
+| **SA9 standards-review（本轮触发输入）** | `wiki/raw/task_issue-270_sa9_standards.md`（§2 S9-1、§2.3 影响面、§2.4 修复方向、§9 S9-2） | 失败事实链、影响面限定、设计前提失效登记 |
+| SA4 动态评审 | `wiki/raw/task_issue-270_sa4_review.md` | D8/例 1 旧证据行（其基线 `0b06050`，已时态失效）；O-A..O-E |
+| 现行源码/契约（只读） | `packages/namespace-api/src/{rest,create-namespace,request-body,rest-problem}.ts`、`apps/yjs-server/src/rest-hosting.ts`、`apps/yjs-server/src/app.ts`、`packages/namespace-registry/src/registry.ts` | 父契约事实：畸形 JSON → 400 `MALFORMED_JSON`；剩余 rejection 族（body 读取 abort、Registry fatal、503/500）与普通 create 的候选重试语义 |
 | 冻结契约三文件（只读） | `apps/yjs-server/test/issue270-{contract-support,server-integration-red,regression-anchors}.ts` | sha256 逐字节核验（见 §Verification） |
-| 源码基线 | `apps/yjs-server/src/{app,index,main}.ts`、`src/transport/ws-server.ts`、`packages/namespace-api/src/{rest,create-namespace,index}.ts`、`packages/instance/src/index.ts`、`vitest.config.ts`、根/应用 tsconfig、`pnpm-lock.yaml` | 事实锚 C1–C11 复核与实现 |
-| decisions | `docs/adr/0015`（L18–32/L186/L210）、`docs/protocols/instance-replication-v1.md` §21、`apps/AGENTS.md`、`apps/yjs-server/AGENTS.md`、`packages/namespace-api/AGENTS.md` | 边界与停机次序 |
 
 ## Existing worktree reconciliation
 
-- 实现开始前 `git status --short`：生产代码零改动（HEAD `0b06050`）；仅 SA6 契约 3 文件与
-  `wiki/raw/*` 证据未跟踪；SA6 临时绿灯模拟件已逐字节回退（SA6 §16）。
-- **无既有 `wiki/raw/task_issue-270_sa3_impl.md`、无未提交实现**——本轮为首个 SA3 实现轮，
-  无「过时/冲突实现」需要修正或删除。
-- `apps/yjs-server/test/rest-hosting-behavior.test.ts` 实现前不存在（SA2 §11 已核）；本轮新建，
-  与 DENY glob `issue270-*.ts` 零相交。
-- 冻结契约三文件在本轮全程零字节改动（哈希见 §Verification），deny 面（`packages/**`、
-  `main.ts`、`index.ts`、`vitest.config.ts`、`docs/**`）零触达。
+- 起始状态：HEAD `8e550d4`（rebase 后最终提交），`git status --short` 对 tracked 文件 clean
+  （仅 `wiki/raw/*` 证据未跟踪）。
+- **确定性失败复现（修复前，最终提交字节）**：以 `git show 8e550d4:…rest-hosting-behavior.test.ts`
+  写入临时探针文件 `apps/yjs-server/test/rest-hosting-prerebase-repro.test.ts` 实跑 →
+  `Tests 1 failed | 3 passed (4)`，例 1 断言 `expected 400 to be 500`，实际 body
+  `{"code":"MALFORMED_JSON","message":"JSON 解析失败"}`（原始输出
+  `wiki/raw/task_issue-270_sa3_repair_repro.log`）。探针文件已删除（零残留，见 §File scope check）。
+- 生产实现（`app.ts`/`rest-hosting.ts`/`transport/ws-server.ts`/`package.json`/`pnpm-lock.yaml`/
+  `AGENTS.md`）与 SA6 冻结契约三文件在本轮**零字节改动**（哈希复核见 §Verification）；SA9 §2.3 /
+  SA10 §2 已静态确认生产实现对 #268 后 router 的集成正确——缺陷仅在非冻结行为测试的驱动选择。
+- 报告原位更新：上一版描述 iteration 0（基线 `0b06050`）的实施与绿色证据；本版只描述**当前**
+  实现状态（生产面与 iteration 0 相同、未改）与**当前**验证结果；旧日志
+  `task_issue-270_sa3_{contract,app-suite,typecheck,root-typecheck}.log` 为 rebase 前基线产物，
+  已被本轮 `task_issue-270_sa3_repair_*.log` 取代（未删除，仅标注时态失效）。
 
 ## Changed paths
 
 | Path | Design section | Change |
 |---|---|---|
-| `apps/yjs-server/src/app.ts` | §7-D1/D2/D4/D5/D6/D8、§8 装配序/停机状态机、§11 ALLOW 行 1 | `NomicoreApp`/`publicFace` 增加 `registry` getter（`NamespaceRegistry \| undefined`）；私有字段 `restHost`；`bootHub` 以 Instance role + **同一** `this.registry` + 显式 no-op observer 构造 `restRouter`/`restHost`，并把 `handleRequest` 传入 `createHubListenAdapter`；`performStop` 在包级 WS 停机之后、`replication-drained` 之前插入 `await this.restHost?.drain(REST_DRAIN_BUDGET_MS)`；新增 `REST_DRAIN_BUDGET_MS = 10_000` 常量与 `rest-request-failed` sink 事件；新增 `@nomicore/namespace-api`/`requireNomicoreInstance` 导入；头注同步 |
-| `apps/yjs-server/src/rest-hosting.ts`（新增，196 行） | §8 新模块、§7-D3/D4/D8 | plain-HTTP 总入口（intake 门 503 → REST family 优先 → `matched:false` 回落 `/healthz`+404，精确等值含 query）＋ in-flight 记账/abort ＋ 有界 `drain`（幂等）＋ rejection→观测+`500 text/plain` 占位 ＋ 观测 try/catch 隔离 |
-| `apps/yjs-server/src/transport/ws-server.ts` | §8「ws-server.ts 增量（最小）」、§7-D3 | `HubPlainRequestHandler` 类型 + `HubWsServerOptions.handleRequest?` + `createServer` 委托；`createNodeHubListenAdapter(observer?, handleRequest?)` 与 `createHubListenAdapter(options?)` 透传；缺省 `/healthz`+404 路径逐字节不变（upgrade 面零改动） |
-| `apps/yjs-server/package.json` | §7-D7、§11 ALLOW 行 4 | dependencies 增加 `"@nomicore/namespace-api": "workspace:*"` |
-| `pnpm-lock.yaml` | §11 ALLOW 行 5 | `apps/yjs-server` importers 段增加 `@nomicore/namespace-api → link:../../packages/namespace-api` |
-| `apps/yjs-server/AGENTS.md` | §11 ALLOW 行 6（受 F1/R1 + F4/R2(c) 措辞约束） | Role 消费面补 `namespace-api`；单拆卸链句补「包级 WS 停机（含包内 apply 排空 + close session → release lease）→ 已接纳 REST 工作有界排空（boot 窗口跳过）→ registry shutdown」；新增 raw-path 分流句并显式声明 503/500 为 transport 占位、非终态错误契约形状 |
-| `apps/yjs-server/test/rest-hosting-behavior.test.ts`（新增，153 行） | §11 ALLOW 行 7、§12 行为测试四例 | 例 1 D8 rejection→500 + 事件恰一次；例 2 D4 drain 超时（有界 + socket abort + `app-stopped` 恰一次，20s per-test timeout——O7）；例 3 F2 boot 窗口早停；例 4 O1 `/healthz?x=1` → 404 |
-| `wiki/raw/task_issue-270_sa3_impl.md`（本文件） | 技能固定产物 | 实现报告 |
-| `wiki/raw/task_issue-270_sa3_{contract,app-suite,typecheck,root-typecheck}.log` | 技能固定产物（证据） | 原始命令输出 |
+| `apps/yjs-server/test/rest-hosting-behavior.test.ts` | §11 ALLOW 行 7（同一文件）、§12 行为测试面 | **例 1 重写**为当前父契约面：#268 后畸形 JSON → `400` `application/json` `MALFORMED_JSON` problem（无 `issues`）原样透传，`rest-request-failed` **0** 次，后续合法 create 仍 201；**新增例 1b**（bridge 级 D8 rejection 契约）：`createRestHosting` + rejecting router → 客户端 `500 text/plain` 非空占位、`onRejection` 收到同一 rejection 恰一次、结算后 `drain` 无残留工作即时返回；**例 2 追加** D8 端到端断言：drain abort 使挂起 body 读取以流错误结算 → 真实 router rejection 经 sink `rest-request-failed` 恰一次（含非空 `message`）；例 3（F2）/例 4（O1）未改 |
+| `wiki/raw/task_issue-270_sa3_impl.md`（本文件） | 技能固定产物 | 原位更新为修复轮报告 |
+| `wiki/raw/task_issue-270_sa3_repair-behavior.log` | 技能固定产物（证据） | 修订后行为套件 2 次复跑原始输出 |
+| `wiki/raw/task_issue-270_sa3_repair-contract.log` | 技能固定产物（证据） | 冻结契约三件套 + 行为套件 `--typecheck` 原始输出 |
+| `wiki/raw/task_issue-270_sa3_repair_repro.log` | 技能固定产物（证据） | 修复前最终提交字节的确定性红复现原始输出 |
+| `wiki/raw/task_issue-270_sa3_repair_typecheck.log` / `_root-typecheck.log` / `_app-suite.log` | 技能固定产物（证据） | app typecheck / 根 typecheck、全 app 套件原始输出 |
 
-## SA2 Finding 落实
+**生产源码零改动**：本轮不修改任何 `apps/yjs-server/src/**`、`packages/**`、`docs/**`、
+`apps/yjs-server/AGENTS.md`、`package.json`/lockfile —— 修复完全落在测试与证据面。
 
-| Finding ID | 本轮实现 | Result |
+## SA2 Finding 落实（F1–F4 / O 项：状态延续 + 本轮影响）
+
+| Finding ID | 实现状态（未变） | 本轮证据 |
 |---|---|---|
-| **F1** 停机次序文档失真 | 实现严格按 §8 实际执行序：`hubService.stop()`（包内 ②③ 一次完成：已接纳 apply 排空 + close session → release lease）→ 步 4 `restHost?.drain` → `replication-drained` → `registry.shutdown()` → `persistenceFiber.dispose()`；`app.ts` 步 4 注释显式写「包级 WS 停机**之后**、registry.shutdown() 之前」；`AGENTS.md` 同款措辞（不称 REST 排空先于 session/lease 收口、不归入 §21 ②） | ✓ 落实（设计 §6/§7-D4/§8/§11 四处表述在实现与文档中一致） |
-| **F2** boot 窗口停机未防护 | 步 4 为 `await this.restHost?.drain(REST_DRAIN_BUDGET_MS)`（optional chaining，与同函数既有 guard 纪律一致）；`restHost` 在 bootHub 中段（provision 之后、plugin install 之前）构造一次冻结 | ✓ 落实：行为测试例 3（不 await `ready` 即 `stop()`）绿——`stop()` resolve、`app-stop-failed` 0 次、事件链收敛 `app-stopped` |
-| **F3** 行为测试无 ALLOW 落点 | 四例行为测试全部落位新增 `apps/yjs-server/test/rest-hosting-behavior.test.ts`（非 `issue270-*` 命名，与 DENY glob 零相交） | ✓ 落实：四例全绿；冻结契约文件哈希不变 |
-| **F4** 503/500 表面收敛未登记 | 实现注释登记：503 = server transport 层拒绝（非 router 错误契约成员）；500 = FR-3 加法替换的 `text/plain` 占位；`AGENTS.md` 显式声明两者非终态形状（不固化 body 语义） | ✓ 落实（对应设计 §13 (a)(b)(c)） |
-| O1（回落精确匹配） | `req.method === 'GET' && req.url === '/healthz'` 精确等值；行为测试例 4 | ✓ 绿 |
-| O7（例 2 超时预算） | 例 2 使用 `it(..., 20_000)`，实测 10 008 ms | ✓ |
-| O8（方法引用传递） | `createRestHosting` 为闭包工厂，`handle` 不依赖 `this`；`createHubListenAdapter({handleRequest: restHost.handle})` 安全 | ✓ |
+| **F1** 停机次序文档失真 | 实现严格按 §8 执行序；`AGENTS.md` 同款措辞 | 例 2/例 3 事件链断言保持绿（§Verification） |
+| **F2** boot 窗口停机未防护 | `restHost?.drain` optional 守卫 | 例 3 保持绿 |
+| **F3** 行为测试无 ALLOW 落点 | 四例（现五例）全部落位 `rest-hosting-behavior.test.ts`（非 `issue270-*` 命名） | 本轮修改仍在该 ALLOW 行内，DENY glob 零相交 |
+| **F4** 503/500 表面收敛未登记 | 503/500 = transport 占位；测试不固化 body 形状 | 例 1b 只断言 `text/plain` + **非空** body，不断言 `internal error\n` 字面量（F4-(c) 保持） |
+| O1（回落精确匹配）/ O7（例 2 超时预算）/ O8（方法引用传递） | 落实 | 例 4 / 例 2 `it(..., 20_000)` 保持 |
+
+### 本轮修复映射（两份最终评审的 finding → 动作）
+
+| Finding | 评审要求 | 本轮动作 | 结果 |
+|---|---|---|---|
+| **SA10 B-1（BLOCKER）** | 「或改断言为 #297 冻结的 400 `MALFORMED_JSON` problem 契约，并将 D8 的 rejection 覆盖重定向到仍未映射的驱动」「修订后须以新基座重跑全量证据」 | 例 1 重写为 400 problem 契约断言；D8 覆盖重定向到 rejecting router（500 占位字节面）＋ drain abort（端到端事件面）；新基座全量重跑（§Verification） | 例 1 转绿；D8 无覆盖缺口；证据全部为本提交字节 |
+| **SA9 S9-1（MAJOR）** | 「例 1 须改用在新基线下仍抵达 D8 rejection 的触发器，并把断言对齐到新基线行为」 | 同上 | 同上；另登记 S9-2（设计前提注记）为上游遗留，见 §Deviations |
+| SA10 P-2 / SA9 S9-2（设计前提失效） | 设计 §2-C5/§7-D8/§12 与 SA4 D8 行的「骨架不产生 HTTP 错误 Response」对最终基线为假 | **SA3 不修改设计/契约文件**（技能：范围外不得改设计；冻结契约须走 SA6 修订轮）。以本报告登记该事实漂移，供设计/契约所有者注记 | 已登记（§Deviations 1） |
+| SA10 §7 / SA9 证据新鲜度 | 修订后须在新基座重跑：契约三件套 + 行为用例 + 全 app 套件 + 根 typecheck | 全部重跑并落盘原始日志 | 全绿（12/12 + 174/174 + 双 typecheck exit 0） |
 
 ## File scope check
 
 | Changed path | ALLOW entry | Purpose |
 |---|---|---|
-| `apps/yjs-server/src/app.ts` | §11 ALLOW 行 1（逐项命中） | 观测面/装配/排空/事件/常量 |
-| `apps/yjs-server/src/rest-hosting.ts` | §11 ALLOW 行 2（新增） | D3/D4/D8 承载模块 |
-| `apps/yjs-server/src/transport/ws-server.ts` | §11 ALLOW 行 3 | `handleRequest` 注入面；缺省路径不变 |
-| `apps/yjs-server/package.json` | §11 ALLOW 行 4 | D7 依赖解析 |
-| `pnpm-lock.yaml` | §11 ALLOW 行 5 | 依赖连动 |
-| `apps/yjs-server/AGENTS.md` | §11 ALLOW 行 6 | 规范文档同步（F1/F4 措辞约束） |
-| `apps/yjs-server/test/rest-hosting-behavior.test.ts` | §11 ALLOW 行 7（新增） | §12 行为测试四例 |
-| `wiki/raw/task_issue-270_sa3_impl.md` + `task_issue-270_sa3_*.log` | 技能固定产物（实现报告与验证证据） | 报告/证据 |
+| `apps/yjs-server/test/rest-hosting-behavior.test.ts` | §11 ALLOW 行 7（既有条目，本轮为**修改**而非新增路径） | 父契约对齐 + D8 rejection 覆盖重定向 |
+| `wiki/raw/task_issue-270_sa3_impl.md` | 技能固定产物（实现报告） | 原位更新 |
+| `wiki/raw/task_issue-270_sa3_repair_*.log`（5 份） | 技能固定产物（验证证据） | 原始命令输出 |
 
-DENY 面核验：`git status --short` 对 `packages/**`、`docs/**`、`apps/yjs-server/src/main.ts`、
-`apps/yjs-server/src/index.ts`、`vitest.config.ts` 零条目；`apps/yjs-server/test/issue270-*.ts`
-三文件哈希与 SA6 §13.4 逐字节一致（未修改）。
+- DENY 面核验：`packages/**`、`docs/**`、`apps/yjs-server/src/main.ts`、`src/index.ts`、
+  `vitest.config.ts` 零条目；`apps/yjs-server/test/issue270-*.ts` 冻结三文件 sha256 与 SA6 §13.4
+  **逐字节一致**（本轮复算，见 §Verification）。
+- 临时探针 `apps/yjs-server/test/rest-hosting-prerebase-repro.test.ts`（复现用）已删除：
+  `ls apps/yjs-server/test | grep -i prerebase` 零命中；当前 app 套件 33 个 `*.test.ts`
+  = SA6 §14 的 30 个非本票文件 + 2 个本票契约测试文件 + 1 个本票行为测试文件
+  （`issue270-contract-support.ts` 为 fixture，不被收集）——无探针残留被收集。
+- 未执行 commit/push/PR/finalize；未新增 skip/only/todo/env override（grep 零命中）。
+- 本轮终态指纹（供复审独立复算）：`apps/yjs-server/test/rest-hosting-behavior.test.ts`
+  = 233 行、sha256 `b3041b1f832b0bd1a39f637202a72cab946585703d8714febc38175420d75f31`
+  （diff = +103/−23）；生产源码与冻结契约零 diff。
 
 ## Verification
 
-| Command | Result | Evidence |
-|---|---|---|
-| `NODE_OPTIONS=--conditions=nomicore-source node_modules/.bin/vitest run apps/yjs-server/test/issue270-server-integration-red.test.ts apps/yjs-server/test/issue270-regression-anchors.test.ts`（实现前基线） | `Test Files 1 failed \| 1 passed (2)` / `Tests 4 failed \| 3 passed (7)` / `Type Errors no errors`（T1-A/T1-B/T2/T3 红；与 SA6 §13.1 逐位一致） | 本会话实测（09:37）；原始基线 `task_issue-270_sa6_red.log` |
-| `NODE_OPTIONS=--conditions=nomicore-source node_modules/.bin/vitest run --typecheck apps/yjs-server/test/issue270-server-integration-red.test.ts apps/yjs-server/test/issue270-regression-anchors.test.ts apps/yjs-server/test/rest-hosting-behavior.test.ts` | **`Test Files 3 passed (3)` / `Tests 11 passed (11)` / `Type Errors no errors`（exit 0）**——SA6 红灯契约 4/4 转绿、恒绿锚 N1–N3 保持、行为测试 4/4 绿 | `wiki/raw/task_issue-270_sa3_contract.log` |
-| `tsc -p apps/yjs-server/tsconfig.json` | exit 0（空输出） | `wiki/raw/task_issue-270_sa3_typecheck.log` |
-| `pnpm typecheck`（根链：14 包 + app） | exit 0（含 `packages/namespace-api` 与 `apps/yjs-server`） | `wiki/raw/task_issue-270_sa3_root-typecheck.log` |
-| `NODE_OPTIONS=--conditions=nomicore-source node_modules/.bin/vitest run apps/yjs-server/test`（设计 §12 回归行） | **`Test Files 33 passed (33)` / `Tests 173 passed (173)` / `Type Errors no errors`（429s）**——含直用 adapter 的既有测试（`ws-server-upgrade-admission`、`node-hub-peer-live`、`ws-replication-issue190-sa7-real-transport`）与 `hub-restart-static-target-red`（本轮未现 #229 flake） | `wiki/raw/task_issue-270_sa3_app-suite.log` |
-| 冻结契约哈希 | `5cea9d4e…`/`06e0bfe3…`/`2060e130…` 与 SA6 §13.4 逐字节一致 | `sha256sum`（本会话） |
-| `grep -nE '\.(only\|skip\|todo)\(\|process\.env'` 新增行为测试 | 无命中（exit 1） | 本会话 |
-| 静态生成/check | 设计未指定（本票零 VFSL schema/codegen 变更） | — |
+| # | Command | Result | Evidence |
+|---|---|---|---|
+| 1 | 修复前复现（最终提交 `8e550d4` 的测试字节，临时探针）：`vitest run --typecheck apps/yjs-server/test/rest-hosting-prerebase-repro.test.ts` | **`Test Files 1 failed (1)` / `Tests 1 failed \| 3 passed (4)`**；例 1 `expected 400 to be 500`（实际 body `{"code":"MALFORMED_JSON",…}`）——确定性红，与 SA10 B-1 / SA9 S9-1 事实链一致 | `task_issue-270_sa3_repair_repro.log` |
+| 2 | `vitest run --typecheck apps/yjs-server/test/rest-hosting-behavior.test.ts`（修订后复跑 2 次） | **两次均 `Test Files 1 passed (1)` / `Tests 5 passed (5)` / `Type Errors no errors`**（例 1、1b、2、3、4；11.07s / 11.09s） | `task_issue-270_sa3_repair-behavior.log` |
+| 3 | `vitest run --typecheck apps/yjs-server/test/issue270-server-integration-red.test.ts apps/yjs-server/test/issue270-regression-anchors.test.ts apps/yjs-server/test/rest-hosting-behavior.test.ts` | **`Test Files 3 passed (3)` / `Tests 12 passed (12)` / `Type Errors no errors`（exit 0）**——SA6 冻结契约 T1-A/T1-B/T2/T3（4）+ 恒绿锚 N1/N2/N3（3）+ 行为 5 例；测试字节零改动 | `task_issue-270_sa3_repair-contract.log` |
+| 4 | `tsc -p apps/yjs-server/tsconfig.json` | exit 0（空输出） | `task_issue-270_sa3_repair_typecheck.log` |
+| 5 | `pnpm typecheck`（根链：14 包 + app，含 `packages/namespace-api`） | exit 0 | `task_issue-270_sa3_repair_root-typecheck.log` |
+| 6 | `NODE_OPTIONS=--conditions=nomicore-source node_modules/.bin/vitest run apps/yjs-server/test`（全 app 套件） | **`Test Files 33 passed (33)` / `Tests 174 passed (174)` / `Type Errors no errors`（427.70s，exit 0）**——含 `rest-hosting-behavior`（5）、冻结契约（4+3）、直用 adapter 的既有套件与 `hub-restart-static-target-red`（本轮未现 #229 flake） | `task_issue-270_sa3_repair_app-suite.log` |
+| 7 | 冻结契约哈希：`sha256sum` 三文件 | `5cea9d4e…` / `06e0bfe3…` / `2060e130…` 与 SA6 §13.4 **逐字节一致** | 本会话（见 §File scope check） |
+| 8 | `grep -nE '\.(only\|skip\|todo)\(\|process\.env' apps/yjs-server/test/rest-hosting-behavior.test.ts` | 零命中（exit 1） | 本会话 |
+| 9 | 静态生成/check | 设计未指定（本票零 VFSL schema/codegen 变更） | — |
 
-红灯转绿归因：契约红点仅来自两个能力缺口（组合根无 REST route family、无共享 Registry 观测面）
-＋ AC3 排空缺失；实现后 T1-A/T1-B/T2/T3 全部转绿，且未修改任何契约断言。
+红灯→转绿归因（本修复轮）：唯一红点 = 例 1 的驱动前提被 #268 合法演进推翻；修订后例 1 断言当前
+父契约、D8 由例 1b（bridge 级 500 占位字节面）与例 2（端到端 rejection → sink 事件）双重锚定，
+**未删除任何断言面、未弱化 AC1–AC4 与冻结契约**（冻结三文件字节不变、12/12 绿）。
+
+### D8 rejection 覆盖为何需要两个 seam（诚实边界声明）
+
+- #268 后，router 仍以 rejection 结算的结局 = body 读取期 abort、Registry fatal、503/500 族
+  （`packages/namespace-api/AGENTS.md` / `rest.ts:15-22`）。在「合法输入 + 内存 Persistence +
+  未停机」的组合根上，这些结局**无法确定性驱动**：普通 create 的 entry/Doc 碰撞是候选级内部重试
+  （`registry.ts:1390-1405,1505-1522`），非法 root/schema 是 mapped 422，abort 必然销毁客户端
+  socket 而无法观测 500 响应字节。
+- 因此：**500 占位响应字节面**在 `createRestHosting` 的公开 `RestRouter` 依赖 seam 上锚定
+  （例 1b：真实 `http.createServer` + 真实 TCP + 真实 socket，仅 router 为 rejecting 替身——
+  被测对象是 bridge，替身是其声明依赖，非 mock 被测对象）；**端到端真实 rejection 可达性**在真实
+  组合根上由 drain abort 锚定（例 2：真实 router 流错误 rejection → 真实 sink 事件恰一次）。
+- 未固化 500 body 字面量（F4-(c)：只断言 `text/plain` + 非空）。
 
 ## Deferred verification
 
-- SA4/SA7 的动态与真实环境验收（含 SA6 §14 三角验证口径下的 #229 `hub-restart-static-target-red`
-  时序 flake 监测；本轮全量 app 套件该用例通过）。
-- 根 `pnpm test`（全仓 vitest 含 `--typecheck`，覆盖 packages/domains）——SA3 只跑受影响 app 套件；
-  根 `pnpm typecheck` 已跑（exit 0）。
+- SA4/SA7 的最终动态与真实环境验收；#229 `hub-restart-static-target-red` 时序 flake 监测
+  （本轮全量 app 套件该用例通过）。
+- 根 `pnpm test`（全仓 vitest，含 packages/domains）——SA3 范围外；受影响 app 套件与根
+  `pnpm typecheck` 已跑。
+- 设计/契约侧事实漂移注记（SA10 P-2 / SA9 S9-2）：设计 §2-C5/§7-D8/§12 与 SA4 §4/§9 的
+  「骨架不产生 HTTP 错误 Response」前提需由设计/契约所有者走修订轮注记（SA3 不修改设计文件）。
 - FR-1/FR-3/FR-4 follow-up（limits/`Request.signal`、problem shape 收敛、observer 事件发射）、
   peer REST listener、REST owner authorization、drain 预算可配置化（设计 §13 已登记）。
-- matched 早返回不消费 body 的 keep-alive socket 处置（SA2 O2 → 随 FR-1 limits 票登记）。
 
 ## Deviations or blockers
 
-无阻塞。实现与设计一致的说明与两处实现层细节（不改变设计语义）：
+无阻塞。三点需披露：
 
-1. **行为测试复用冻结 fixture（只读）**：`rest-hosting-behavior.test.ts` 从
-   `issue270-contract-support.ts` 导入真实组合根启动器/HTTP 客户端/记录 sink（未修改该文件，
-   哈希不变），避免第二套 harness 漂移；例 3 因需「不 await ready」而直接用 `createNomicoreApp`。
-2. **占位 body 字面量**：设计未固定 503/500 的 body 文本——实现取 `service unavailable\n` /
-   `internal error\n`（`text/plain`，与 listener 既有小写风格一致）；行为测试只断言状态/类型/事件，
-   不固化 body 形状（F4-(c)）。FR-3 落地时按设计 §13 (b) 加法替换。
-3. **`handle` 兜底 `.catch`**：异步主体除设计要求的 `void (async …)()` 包裹与
-   `onRejection` try/catch 隔离外，另加结构性兜底 `.catch → notifyRejection`——不外抛到
-   EventEmitter 上下文，且意外错误仍经 `rest-request-failed` 可观测（非静默降级）。
-4. **deny 面零触碰**：`packages/**`、`main.ts`、`index.ts`、`vitest.config.ts`、`docs/**`、
-   SA6 冻结契约三文件与上游 wiki 输入均未修改。
+1. **设计前提漂移登记（不修设计文件）**：设计 §2-C5/§7-D8/§12 例 1 与 SA4 D8/§9 行声明的
+   「骨架契约：未映射结局一律 rejection、不产生 HTTP 错误 Response」对最终基线 `209b046` 已不成立
+   （4xx/422 族已 mapped）。SA3 严格在 ALLOW 内动作，**未修改** `task_issue-270_design.md` 或任何
+   冻结契约文件；该注记属设计/SA6 修订轮职责（SA10 P-2、SA9 S9-2）。本修复按两份最终评审给出的
+   修订方向执行，未改变 AC1–AC4 验收语义。
+2. **例 1b 的注入 seam**：为在 #268 后仍锚定 500 占位响应字节，例 1b 以 rejecting `RestRouter`
+   作为 bridge 的声明依赖替身（真实 HTTP server/socket；被测对象 `createRestHosting` 未被 mock）；
+   端到端可达性由例 2 用真实组合根闭合。若评审认为该 seam 需改由其他合法驱动替代，请回退至设计
+   修订轮裁定（不影响生产实现）。
+3. **证据文件命名**：旧 `task_issue-270_sa3_*.log`（rebase 前基线）保留但时态失效；本轮证据统一
+   为 `task_issue-270_sa3_repair_*.log`。
 
 ## Suggested commit message
 
 ```
-fix(#270): 组合根承载 REST route family + 共享 Registry 观测面 + 已接纳 REST 工作有序排空
+test(#270): 行为验收对齐 #268 父契约——畸形 JSON 400 透传 + D8 rejection 覆盖重定向
 
-- app.ts：NomicoreApp.registry 观测面（同一 Registry 引用，构造后零替换）；hub 组合根以
-  Instance role + 显式 no-op observer 构造 REST router，经 listener handleRequest 钩子按 raw
-  path 分流（REST 优先，matched:false 回落 /healthz+404）；performStop 在包级 WS 停机之后、
-  registry.shutdown() 之前有界排空已接纳 REST 工作（restHost?.drain，boot 窗口跳过）
-- rest-hosting.ts（新增）：intake 门 503、REST→Response 写回、rejection→rest-request-failed+500
-  占位、in-flight 记账与超时 abort、幂等 drain
-- transport/ws-server.ts：可选 handleRequest 注入面（缺省 /healthz+404 字节不变）
-- 依赖/锁文件/AGENTS.md 同步；行为测试四例（D8/D4/F2/O1）落位 rest-hosting-behavior.test.ts
+- 例 1：畸形 JSON 现由 router 映射为 matched 400 MALFORMED_JSON problem Response（#268）；
+  断言改为 400 + application/json + problem code/message + 零 rest-request-failed，并保留
+  后续合法 create 201 的存活断言
+- 例 1b（新）：createRestHosting 注入 rejecting router → 500 text/plain 占位 + onRejection
+  恰一次 + 结算后 drain 即时返回（D8 占位响应字节面）
+- 例 2：追加 D8 端到端断言——drain abort 的真实 rejection 经 sink rest-request-failed 恰一次
+- 生产实现、冻结契约三文件（sha256 不变）、AC1–AC4 语义零改动
 ```
-
-## 附：实现要点对照（可选审计索引）
-
-| 设计条款 | 实现位置 |
-|---|---|
-| §7-D1 共享引用 / 零 Cordis Context 查找 | `app.ts` bootHub：`const registry = this.registry` → `createRestRouter({registry, …})`（构造一次冻结） |
-| §7-D2 观测面（`\| undefined`） | `app.ts`：`NomicoreApp.registry` 接口 + `publicFace()` getter 委托私有字段 |
-| §7-D3 raw path 分流 / 回落精确等值 | `rest-hosting.ts` `dispatch`（`outcome.matched` 判别 + `req.url === '/healthz'`） |
-| §7-D3 Request/Response 适配（流透传、不预读） | `rest-hosting.ts` `toWebRequest`（`Readable.toWeb` + `duplex:'half'`；GET/HEAD 无 body）与 Response 写回段 |
-| §7-D3 upgrade 单一门零改动 | `ws-server.ts` upgrade 段未触碰；`HubListenAdapter` 包契约零改动 |
-| §7-D4 步 0–7 | `app.ts` `stop()`（步 0）+ `performStop()`（步 1–7 单链） |
-| §7-D4 接纳判定/abort/幂等 | `rest-hosting.ts` `register`/`runDrain`/`drain` |
-| §7-D5 observer 显式 no-op | `app.ts` bootHub `metricsObserver/diagnosticObserver: () => {}` |
-| §7-D6 role 单真相 | `app.ts` bootHub `requireNomicoreInstance(this.ctx).role` |
-| §7-D7 根入口导入 + workspace 依赖 | `app.ts` import；`package.json`；`pnpm-lock.yaml` |
-| §7-D8 rejection 处置 | `rest-hosting.ts` dispatch catch（`notifyRejection` + `writePlain(500)`）；`app.ts` `rest-request-failed` |
-| §9 单链/幂等/无静默 fallback | `stop()` 单飞不变；`drain()` 幂等；F2 守卫为 boot 窗口事实生命周期（非运行期 fallback） |
