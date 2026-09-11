@@ -1,5 +1,151 @@
 # SA3 Implementation Report
 
+> 本文件覆盖 issue #269 的两次 SA3 迭代：
+> **iteration 2（本次：GitHub CI shard 2/6 失败修复）** 见下；**iteration 1（归档：#269 REST 实现 + rebase，
+> 已提交）** 原文保留在文末「Iteration 1（归档）」。
+> 本次派发：`sa-3354cb58-9000-44d5-9c1a-6c7539d8bb65`（mabf-sa3，phase=implementation，iteration=2）；
+> Worktree：`/home/wangjian/nomicore-fix-issue-269`（branch `mabf/issue-269`，HEAD `e84c160`，起手 clean）。
+
+## Iteration 2 — CI 失败修复：`hub-restart-static-target-red` 的 backoff 窗口竞争
+
+### Inputs consumed
+
+| 输入 | 位置 | 使用 |
+|---|---|---|
+| 本次 dispatch | Host 提示词（iteration 2 / `sa-3354cb58…`） | 业务工作 = 修复具体 CI 失败并保留测试意图、不得弱化/skip/mask；comments 快照 `[]`（无 owner 要求）；要求最小安全语义修复 + 聚焦证据 + changed paths |
+| 失败证据（CI） | Actions run `34556608627`，job `test (20, 2)`（id `103130502187`） | `apps/yjs-server/test/hub-restart-static-target-red.test.ts:262` → `AssertionError: expected 'handshaking' to be 'backoff'`；该测试 13380ms；分片汇总 `Test Files 1 failed | 47 passed`、`Tests 1 failed | 459 passed` |
+| 任务简报 | `wiki/raw/task_issue-269.md` | issue #269（REST create）业务上下文；与本修复无文件面重叠（本修复不触碰 `packages/namespace-api/**`） |
+| 上游实现/评审/契约 | `wiki/raw/task_issue-269_{design,sa2_review,sa6_contract,sa4_review,sa3_impl}.md` | 确认 #269 的 29 冻结用例、实现面与 ALLOW/DENY（iteration 1 §11）均不在本修复范围内；本修复不改变其任何断言 |
+| 协议契约（只读） | `docs/protocols/instance-replication-v1.md` §15（L426-431） | 重拨延迟 full jitter：`cap = min(maxBackoffMs, baseBackoffMs * 2^attempt)`、`delay = random(0, cap)`；只有 ready 稳定超过 `resetAfterMs` 才清零 attempt |
+| 实现（只读） | `packages/ws-replication/src/peer-connection.ts:913-953`（`onTemporaryFailure`）、`:1067-1077`（`setState` 迁移事件）、`:138-151`（`connection-backoff-scheduled` 发射） | 根因判定：`delay = max(0, random() * cap)` 无下界；每次定时器 fire 都发 `connection-state-changed`（窗口新鲜度可观测） |
+| 被修对象 | `apps/yjs-server/test/hub-restart-static-target-red.test.ts`（issue #229 回归） | 唯一 changed path（测试面；无生产代码改动） |
+
+未派发本修复的 SA1 设计 / SA2 评审 / SA6 红灯契约（dispatch 直接指定修复对象与约束）：不发明架构、不改验收语义，
+只做「让第 262 行断言的**前提**成为确定事实」的最小修复。
+
+### Root cause
+
+旧第 260-262 行假设「`backoff: { baseMs: 5_000, maxMs: 5_000 }` ⇒ Peer 在 Hub 重启窗口内必然仍处
+`backoff`，从而保证写入先于重拨」。该假设与协议 §15 的 full jitter 直接矛盾：`peer-connection.ts:933-935`
+的实际延迟是 `delay = max(0, random() * min(maxMs, baseMs * 2 ** (attempts - 1)))`——帽值 5s 只给**上界**，
+**没有下界**（可以接近 0）。因此：
+
+- Hub v2b boot 期间，Peer 按随机延迟反复拨号；端口未开 ⇒ `backoff → connecting → handshaking → backoff`
+  （本机 ~1ms 内失败）；
+- Hub `listen` 一旦完成，**同一次拨号**即可停留在 `handshaking` 直到 HELLO_ACK；
+- 测试在 `waitForEvent(hubV2b, 'ready')` 后立即取 `status`，于是在 CI（慢 runner + 冷 tsx）间歇观测到
+  `handshaking`（run `34556608627`），断言失败。
+
+**探针证据（临时脚本，仓库外；旧配置 `baseMs=maxMs=5000`，Hub SIGTERM 后 20s 事件面）**：
+
+```text
+delayMs values: [579, 848, 2580, 2121, 979, 4158, 1708, 4366, 1958, 12, 2863]
+transitions: ready→backoff, 随后 10 轮 backoff→connecting→handshaking→backoff（每次间隔即随机延迟）
+```
+
+即：5s 帽配置下延迟在 `[0,5000)` 均匀分布（含 12ms 样本），第 262 行断言的 `backoff` 只是随机窗口里的
+一个瞬态，不是不变量。CI 失败与本地偶发差异由此可解释（本地 hub boot ~0.35-0.5s，命中窗口概率高）。
+
+### Fix（测试面最小语义修复；第 262 行断言文本与语义均未改）
+
+1. 新增 helper `waitForArmedBackoffWindow(proc, fromIndex, minDelayMs, timeoutMs, what)`：以事件流中
+   **最新**一条 `connection-backoff-scheduled` 为准，要求 `delayMs ≥ minDelayMs` 且**未被后续
+   `connection-state-changed` 取代**（即定时器尚未 fire，窗口仍新鲜），返回该 `delayMs`；不满足则等下一次
+   武装；超时以诊断错误（含已观测 `delayMs` 列表 + stderr）**响亮失败**，绝不静默放行或跳过。
+2. Peer 的 backoff 帽值改为运行期实测而非硬编码：`hubRestartBudgetMs = ceil((hubV2 boot 实测 × 2 + 2s)/500ms)*500ms`
+   （v2b 与 v2 同 config/同 rootDir；×2 覆盖「运行中 Peer 竞争下更慢」的边际，+2s 为 status 查询与
+   verify-write 余量）；`backoffCapMs = 2 × hubRestartBudgetMs`；peer 配置改为
+   `backoff: { baseMs: backoffCapMs, maxMs: backoffCapMs, resetAfterMs: 60_000 }`。full jitter 下
+   「已武装 delayMs ≥ 预算」以约 50% 概率出现（帽子=2×预算时等待期望最短），并保证预算内可完成重启。
+3. 重启 Hub **之前**先取窗口：`armedDelayMs = await waitForArmedBackoffWindow(peer, peerEventOffset, hubRestartBudgetMs, 90s, …)`，
+   然后 `spawn hub v2b → waitForEvent('ready') → status → expect(connectionState).toBe('backoff') → verify-write(11)`。
+   窗口覆盖 `boot + status + 写`，故断言的**前提**（Peer 处于已武装 backoff）成为确定事实；断言文本与
+   「写发生在断线窗口内」的语义完全保留，仅把失败消息升级为 `Hub restart took <ms> of the armed <ms> backoff window`。
+4. 后续 `channel-state-changed → live` 的等待上界由硬编码 60s 改为 `backoffCapMs + 30s`：Peer 只能在已武装延迟
+   （≤ cap，其中预算部分已被重启消耗）内重拨，原上界在慢环境下可能小于 2×预算；属上界修正，非断言弱化。
+5. 重启窗口与 Peer target/凭据/配置不变、不发恢复命令等既有断言（`goaway-received` 缺席、无 `blocked`、
+   `peerProc.exitCode === null`、不 re-add / 不 notify-auth-changed / 不改配置）逐条保留。
+
+**为什么是测试面修复而非生产代码修复**：full jitter 是协议 §15 / ADR-0010 的规范行为（上限抖动即抗惊群），
+Peer 在 Hub boot 期间重拨并瞬时进入 `handshaking` 是**正确**语义；不可为让测试变绿而给生产加确定性 jitter、
+env override 或下界（那会改变规范行为）。失效的是测试对「帽值 ⇒ 延迟下界」的错误推断，故修在测试。
+
+### Changed paths
+
+| Path | Scope | Change |
+|---|---|---|
+| `apps/yjs-server/test/hub-restart-static-target-red.test.ts` | dispatch 指定修复对象（测试面） | +73 / -4：新增 `waitForArmedBackoffWindow` helper；backoff 帽值改为实测预算派生；重启前取已武装窗口后再启动 Hub；live 等待上界改为 `backoffCapMs + 30s`；注释与失败消息同步（断言文本未变） |
+| `wiki/raw/task_issue-269_sa3_impl.md` | SA3 报告（原位更新） | 本文件：新增 iteration 2 章节，iteration 1 原文保留为归档 |
+
+未改动：`packages/**`（含 `packages/ws-replication/**`、`packages/namespace-api/**`）、`apps/yjs-server/src/**`、
+其它 `apps/yjs-server/test/**`、`.github/**`、`docs/**`、`tsconfig*`、`package.json`、`.github/ci/test-durations.json`。
+
+### File scope check
+
+| Changed path | 授权来源 | Purpose |
+|---|---|---|
+| `apps/yjs-server/test/hub-restart-static-target-red.test.ts` | 本次 dispatch 逐字点名该文件为修复对象（本修复无 SA1 ALLOW 列表） | 让第 262 行断言的前提确定化；断言/验收语义逐条保留 |
+| `wiki/raw/task_issue-269_sa3_impl.md` | SA3 角色固定产物（`sa3-implement-fix` skill） | 原位更新实现报告 |
+
+范围结论：2 个 path，**无 ALLOW 扩张**（未新增/修改任何生产代码或其它测试；未触碰 iteration 1 的 ALLOW/DENY 面）。
+
+### Verification
+
+| # | Command | Result | Evidence |
+|---|---|---|---|
+| V1 | 根因探针（仓库外临时脚本，旧配置 `baseMs=maxMs=5000`）：Hub v1 provision → Hub v2 → Peer 静态 target live → SIGTERM Hub → 采集 20s 事件面 | 采集到 11 条 `connection-backoff-scheduled`，`delayMs = [579, 848, 2580, 2121, 979, 4158, 1708, 4366, 1958, 12, 2863]`，10 轮 `backoff→connecting→handshaking→backoff` | 证明「5s 帽 ⇒ 延迟下界」不成立，第 262 行探查的是瞬态 |
+| V2 | 修复前基线：`NODE_OPTIONS=--conditions=nomicore-source vitest run apps/yjs-server/test/hub-restart-static-target-red.test.ts --typecheck.enabled=false` × 6 | 6/6 通过（本机 hub boot 快，未复现 CI 时序；与 CI 失败不矛盾，见 V1） | 本机 wall 21-23s/次 |
+| V3 | 修复后：同一命令 × 10（4 + 6 连续） | **10/10 通过**（exit 0）；wall 18-24s/次 | 稳定性证据；CI 日志中的 `handshaking` 观测不再出现 |
+| V4 | 修复后带临时诊断（`hubRestartBudgetMs` / `armedDelayMs` / 重启耗时 / 状态，证据采集后已移除） | `hubRestartBudgetMs=3000`、`backoffCapMs=6000`；`armedDelayMs ∈ {3343,3565,3793,3839,5103,5222,5754,5881}`；Hub 重启 `restartElapsedMs = 451-510ms`；`state = backoff`（全部样本） | 证明窗口（≥3000ms）显著覆盖实际重启耗时（≈0.5s），断言前提确定成立 |
+| V5 | `pnpm typecheck`（根，15 包链式 tsc，含 `apps/yjs-server/tsconfig.json`） | exit 0（0 error） | 类型门 |
+| V6 | `NODE_OPTIONS=--conditions=nomicore-source vitest run apps/yjs-server/test --typecheck.enabled=false`（app 全量包验证入口） | `Test Files 30 passed (30)`、`Tests 162 passed (162)`（含被修测试） | 无同包回归；该套件亦覆盖 `stdin-error-chain-red`（同款 hub 重启 + peer 重拨路径） |
+| V7 | `git diff --stat` / `git status --short` | 仅 1 个测试文件 modified（+73/-4）+ 本报告；无临时诊断代码残留（`grep -n "tmp-gate\|tmp-diag\|tmp-phase"` 0 命中） | 范围与清理核对 |
+
+修复前后关键点对照（同一断言，两种前提）：
+
+```text
+修复前：hub v2b ready ──► status（Peer 可能在随机重拨窗口：backoff|connecting|handshaking|ready）──► 间歇失败
+修复后：等 armed delayMs ≥ 预算 ──► spawn hub v2b ──► status（窗口未过期 ⇒ 必为 backoff）──► verify-write
+```
+
+### Deferred verification
+
+- **CI 复跑**：本修复需 Controller 在 GitHub CI（shard 2/6，Node 20 与 24 两腿）复跑确认；SA3 不执行 push/CI。
+- **全仓 `pnpm test`**：非 SA3 范围（改动面为单测试文件）；已执行 app 包全量（V6）+ 根类型门（V5）。
+- **`.github/ci/test-durations.json` 权重**：该文件仅供分片均衡（漂移不影响正确性/不漏跑）。既有条目
+  `apps/yjs-server/test/hub-restart-static-target-red.test.ts: 19965ms` 与本机新耗时 18-24s 同量级，漂移可忽略；
+  若需刷新，按 `scripts/ci-test-shard.mjs --update` 在空闲机/全量报告上执行（不属本次最小修复）。
+- **慢环境残余风险**：若某环境 Hub 二次 boot > `hubRestartBudgetMs`（= 首次实测 × 2 + 2s），第 262 行会以
+  带时间信息的断言消息响亮失败（而非静默通过）；此时应上调预算公式的边际系数，属后续可调项，非本次阻塞。
+
+### Deviations or blockers
+
+- **无阻塞**。一处需显式声明的范围事实（D7）：本次修复无 SA1 设计/ALLOW 列表（dispatch 未派发），
+  授权来源是 dispatch 逐字点名的修复对象；改动严格限定在该测试文件 + SA3 报告，未触碰任何生产代码。
+- **D8（测试面语义选择）**：选择「等已武装窗口再重启 Hub」而不是「把 `toBe('backoff')` 放宽为
+  `not.toBe('ready')`」——后者会弱化断言且仍留毫秒级竞争窗口；本方案保持断言逐字不变并让前提确定成立。
+- **D9（时间成本）**：修复后本机 18-24s（原 21-23s wall，CI 原 13.4s）。CI 上 cap 由实测 boot 派生，
+  等待期望 ≈ 2×预算（约 +10-20s），仍在 240s 用例超时与 90s 窗口超时内。
+
+### Suggested commit message
+
+```
+fix(#229): 消除 hub-restart-static-target 的 backoff 窗口竞争（CI shard 2/6）
+
+- 根因：Peer 重拨延迟是协议 §15 full jitter（delay = random(0, cap)），
+  5s 帽值不提供延迟下界；旧断言假设 Hub 重启窗口内必然仍处 backoff，
+  CI 上在 Hub ready 后立即查询观测到 handshaking
+- 修复（仅测试面）：新增 waitForArmedBackoffWindow，等最新一条已武装且
+  delayMs ≥ 实测重启预算的 connection-backoff-scheduled 事件后再启动 Hub；
+  预算 = 首次 boot 实测 × 2 + 2s，抖动帽 = 2×预算
+- 保留：backoff 断言逐字不变、无 skip/弱化；断线期写 + 自动恢复 + 收敛语义不变
+- live 事件等待上界改为 backoffCapMs + 30s（Peer 只能在已武装延迟内重拨）
+```
+
+---
+
+# Iteration 1（归档）：#269 REST create 实现与 rebase
+
 > 阶段：implementation（iteration 1）。派发：`sa-ea0d25aa-639d-4cba-93da-f1bb19896bef`（mabf-sa3）。
 > Worktree：`/home/wangjian/nomicore-fix-issue-269`，branch `mabf/issue-269`。
 > **本迭代业务工作：把 #269 实现（`7b40f50`）rebase 到当前 Parent PR base `209b046`
