@@ -69,6 +69,9 @@ export function evaluate(module: VfslModule): EvaluateResult {
         aliasDocs: docs.aliasDocs,
         fieldDocs: docs.fieldDocs,
         markerDocs: docs.markerDocs,
+        // ADR 0019 决策 5：条件稀疏第八键（居末）——无成员 doc 时整键缺席，
+        // 存量键集合/键序与逐字节摘要不变。
+        ...(Object.keys(docs.memberDocs).length > 0 ? { memberDocs: docs.memberDocs } : {}),
       },
     };
   } catch (err) {
@@ -333,18 +336,36 @@ function keyPatternOf(keyType: VfslType, ctx: Ctx): string | undefined {
   throw new InternalError(`E306 不变量: Record 键非 string 形（${r.kind}）`);
 }
 
-// —— docs 三表收集（ADR 0005 §3 落地；IR 全子树一遍遍历，ref 终态不展开）——
+// —— docs 表收集（ADR 0005 §3 落地；IR 全子树一遍遍历，ref 终态不展开）——
 
 interface DocsTables {
   aliasDocs: Record<string, string[]>;
   fieldDocs: Record<string, string[]>;
   markerDocs: Record<string, string[]>;
+  /** ADR 0019 决策 5：条件稀疏成员表（键 = `<member N>` 路径；只收非空条目）。 */
+  memberDocs: Record<string, string[]>;
 }
 
 /** 手造 IR loud 边界守卫（§3.4）：三锚统一写入入口——缺失/非数组抛 TypeError（→ E100），禁止静默规范化。 */
 function put(table: Record<string, string[]>, key: string, docs: string[]): void {
   if (!Array.isArray(docs)) throw new TypeError(`docs 槽缺失或非数组（手造 IR）：${key}`);
   table[key] = docs; // 单值位：逐字引用（§4.2 纯度注）
+}
+
+/**
+ * 手造 IR `memberDocs` loud 守卫（ADR 0019 决策 5 §3.4 守卫族同族延伸）：键在场
+ * （`!== undefined`）即必须是「与 members 等长的数组的数组」；缺席 = 合法存量形状
+ * （条件键）。禁止静默规范化（`?? []` / 忽略）——四类畸形（整体非数组 / 短于 / 长于 /
+ * 元素非数组）统一 TypeError → evaluate 顶层 catch → 恰一条 E100、无 derived 载荷。
+ * 与 put/appendDocs 的有意不对称：三槽 docs 在 IR 是必填槽（缺失即 loud），memberDocs
+ * 是条件键（缺席合法、在场才校验）。口径一致：只判形状，不校验元素字符串性。
+ */
+function guardMemberDocs(t: Extract<VfslType, { kind: 'union' }>): void {
+  const md: unknown = (t as { memberDocs?: unknown }).memberDocs;
+  if (md === undefined) return; // 键缺席：合法（条件稀疏）
+  if (!Array.isArray(md) || md.length !== t.members.length || !md.every((d) => Array.isArray(d))) {
+    throw new TypeError('memberDocs 畸形（手造 IR）：期望与 members 等长的数组的数组');
+  }
 }
 
 /** §3.3 同路径嵌套标记按源序串联（守卫同 §3.4）。 */
@@ -354,7 +375,7 @@ function appendDocs(table: Record<string, string[]>, key: string, docs: string[]
 }
 
 function collectDocs(module: VfslModule): DocsTables {
-  const tables: DocsTables = { aliasDocs: {}, fieldDocs: {}, markerDocs: {} };
+  const tables: DocsTables = { aliasDocs: {}, fieldDocs: {}, markerDocs: {}, memberDocs: {} };
   for (const a of module.aliases) {
     put(tables.aliasDocs, a.name, a.docs); // 声明序 → 表插入序（确定性，同 aliases 表）
     walkDocs(a.type, a.name, tables);
@@ -378,7 +399,14 @@ function walkDocs(t: VfslType, path: string, tables: DocsTables): void {
       }
       return;
     case 'union':
-      t.members.forEach((m, i) => walkDocs(m, `${path}.<member ${i}>`, tables));
+      // ADR 0019 决策 5：先过手造 IR 守卫（畸形 → E100），再按声明序收非空成员 doc
+      // （键 = 既有 `<member N>` 合成段文法），随后照旧递归成员（停点不变）。
+      guardMemberDocs(t);
+      t.members.forEach((m, i) => {
+        const docs = t.memberDocs?.[i];
+        if (docs !== undefined && docs.length > 0) put(tables.memberDocs, `${path}.<member ${i}>`, docs);
+        walkDocs(m, `${path}.<member ${i}>`, tables);
+      });
       return;
     case 'array':
       walkDocs(t.element, `${path}.<item>`, tables);
