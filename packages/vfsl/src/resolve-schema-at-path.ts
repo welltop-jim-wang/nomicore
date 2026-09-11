@@ -51,7 +51,10 @@ export interface ReadDataSchemaProjection {
   readonly valueSchema: ValueSchema;
   /** 传递闭包内被 valueSchema 引用到的别名（自包含、递归安全、JSON 可序列化）。 */
   readonly aliases: Record<string, ValueSchema>;
-  /** fieldDocs/markerDocs 的相关切片：脊柱、终端子树后代、闭包别名内部的注释。 */
+  /**
+   * fieldDocs/markerDocs/memberDocs 的相关切片（ADR 0019 §7 三来源）：脊柱、终端子树
+   * 后代、闭包别名内部的注释；合并序 field → marker → member 末位。
+   */
   readonly docs: Record<string, readonly string[]>;
   /** aliasDocs 的相关切片（按别名名）。 */
   readonly aliasDocs: Record<string, readonly string[]>;
@@ -418,11 +421,15 @@ function collectAliasClosure(
 /**
  * docs/aliasDocs 切片（§8.6，D2/D3）：选键 = 脊柱键集合 ∪ 终点候选子树后代键
  * （k === p || k.startsWith(p + '.')）∪ 闭包别名内部键（k === a || k.startsWith(
- * a + '.')）——键不发明、内容逐字；`docs[k] = [...fieldDocs[k], ...markerDocs[k]]`
- *（field 在前 marker 在后），合并为空则过滤（空条目不进切片）；`aliasDocs[a]` 仅
- * 闭包别名、浅拷贝。键序 = 表声明序扫描（fieldDocs 后 markerDocs，去重并入），
- * 逐调用确定。前缀匹配安全性：语法段（标识符、'<key>'/'<item>'/'<member N>'）均
- * 不含 '.'——'ROOT.a' 与 'ROOT.abc' 不串。
+ * a + '.')）——键不发明、内容逐字；合并内容
+ * `docs[k] = [...fieldDocs[k], ...markerDocs[k], ...memberDocs[k]]`
+ * （field → marker → member 末位；fieldDocs 在 `<member N>` 键上恒无条目，实际合并 =
+ * marker 在前 member 在后——ADR 0019 §7），合并为空则过滤（空条目不进切片）；
+ * `aliasDocs[a]` 仅闭包别名、浅拷贝。键序 = 表声明序扫描（fieldDocs → markerDocs →
+ * memberDocs 条件键，去重并入；memberDocs 缺席即整遍跳过），逐调用确定。memberDocs
+ * 属条件稀疏表（ADR 0019 决策 5）：缺席是合法存量形状，在场但表级畸形 →
+ * InternalError（可信域 loud，见内联守卫）。前缀匹配安全性：语法段（标识符、
+ * '<key>'/'<item>'/'<member N>'）均不含 '.'——'ROOT.a' 与 'ROOT.abc' 不串。
  */
 function sliceDocs(
   derived: DerivedSchema,
@@ -444,15 +451,40 @@ function sliceDocs(
     return false;
   };
 
+  // 第三来源（ADR 0019 §7）：memberDocs 条件稀疏键——缺席 → 整遍扫描跳过（不使用 M4 的
+  // 投影输出逐字节不变）。在场但表级畸形（null / 非对象 / 数组）→ InternalError：这是本
+  // 函数新增的访问路径，裸扫会泄漏 `Object.keys(null)` 型 TypeError；**不得**把该键加入
+  // 函数头必填键清单（SA8 F3.1：无 memberDocs 键的手造派生 schema 须照常解析）。
+  const rawMemberDocs: unknown = derived.memberDocs;
+  if (
+    rawMemberDocs !== undefined &&
+    (rawMemberDocs === null || typeof rawMemberDocs !== 'object' || Array.isArray(rawMemberDocs))
+  ) {
+    throw new InternalError('memberDocs 畸形（可信域契约：在场须为 Record<string, string[]>）');
+  }
+  const memberDocs = rawMemberDocs as Record<string, string[]> | undefined;
+
+  // 三源合并单点（ADR 0019 §7）：field → marker → member 末位；空合并由各扫描处过滤。
+  const merged = (k: string): string[] => [
+    ...(derived.fieldDocs[k] ?? []),
+    ...(derived.markerDocs[k] ?? []),
+    ...(memberDocs?.[k] ?? []),
+  ];
+
   const docs: Record<string, readonly string[]> = {};
   for (const k of Object.keys(derived.fieldDocs)) {
     if (!want(k)) continue;
-    const content = [...(derived.fieldDocs[k] ?? []), ...(derived.markerDocs[k] ?? [])];
+    const content = merged(k);
     if (content.length > 0) docs[k] = content;
   }
   for (const k of Object.keys(derived.markerDocs)) {
-    if (docs[k] !== undefined || !want(k)) continue;
-    const content = [...(derived.fieldDocs[k] ?? []), ...(derived.markerDocs[k] ?? [])];
+    if (docs[k] !== undefined || !want(k)) continue; // 去重并入（fieldDocs 已出的键跳过）
+    const content = merged(k);
+    if (content.length > 0) docs[k] = content;
+  }
+  for (const k of memberDocs !== undefined ? Object.keys(memberDocs) : []) {
+    if (docs[k] !== undefined || !want(k)) continue; // 去重并入（前两遍已出的键跳过）
+    const content = merged(k);
     if (content.length > 0) docs[k] = content;
   }
   const aliasDocs: Record<string, readonly string[]> = {};

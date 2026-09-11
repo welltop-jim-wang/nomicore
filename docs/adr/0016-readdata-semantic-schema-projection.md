@@ -96,3 +96,23 @@ resolveSchemaAtPath(
 ## 取代关系
 
 修订 ADR 0008「P0 与 active schema」节中 D8 封口句（见 Consequences 第一条）。ADR 0008 的其余决策——schema 无关读取、单 write sequencer、读取保留不变量、失败通道——继续有效。ADR 0003 的派生 schema 形状与 ADR 0010 的 raw 复制例外不变。
+
+### ADR 0019 修订：docs 切片并入 memberDocs 第三来源（2026-09-11，issue #308）
+
+授权链：ADR 0019（2026-09-11，已接受）决策 7 显式修订本 ADR 的 docs 切片条款；
+issue #308 正文括注「修订 ADR 0016 切片条款」。除下列明示条款外，正文其余条款
+维持原文效力（「考虑的备选」节为决策时历史记录，不随条款改写）。
+
+1. **投影体 docs 条款改写**：正文「投影体」节 docs 注释「fieldDocs/markerDocs
+   的相关切片：脊柱、终端子树后代、闭包别名内部的注释」修订为——三来源
+   （fieldDocs/markerDocs/**memberDocs** 的相关切片）；合并内容
+   `docs[k] = [...fieldDocs[k], ...markerDocs[k], ...memberDocs[k]]`
+   （member 末位；fieldDocs 在 `<member N>` 键上恒无条目，实际合并 = marker 在前
+   member 在后）；空条目过滤与选键规则（脊柱 ∪ 终点子树后代 ∪ 闭包别名内部）
+   不变。
+2. **键规约措辞改写**：正文「`docs`/`aliasDocs` 的键规约与 `DerivedSchema`
+   文档三表完全同构」修订为「文档四表」——memberDocs 条件稀疏（在场时只含
+   非空条目，与切片空过滤相容；ADR 0019 决策 5）。
+3. **影响面**：仅使用 M4 的 schema 产生新切片内容；不使用 M4 的投影输出逐字节
+   不变；投影返回四件套形状与 namespace-runtime detached 克隆零改动。权威 =
+   ADR 0019 决策 7。
