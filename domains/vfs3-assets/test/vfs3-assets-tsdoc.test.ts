@@ -1,12 +1,12 @@
 /**
  * SA6 红灯测试 — domains/vfs3-assets 领域包 dogfood（issue #27）· AC1 包结构/纯类型 +
- * AC5 docs 三锚位 TSDoc 断言。
+ * AC5 docs 锚位（别名/字段/标记位）TSDoc 断言。
  *
  * 契约来源：
  * - AC1：ADR 0005 §5 领域包组成 = schema.vfsl + generated.ts + index.ts（增广挂载）+
  *   test/ + package.json（纯类型）；「纯类型」类比 ADR 0004 D3——类型空间产物，运行时为空模块；
  * - AC5：ADR 0005 §3（派生 schema 必须携带 docs）+ §4（生成物入仓）——生成物中
- *   别名/字段/标记位三锚位的 fixture JSDoc 全部出现在 TSDoc 注释上
+ *   别名/字段/标记位锚位的 fixture JSDoc 全部出现在 TSDoc 注释上
  *   （F2 评审证据缺口，#46 Spec 轴，本票补齐）。
  *
  * 断言纪律（为什么不构成「源码 grep 伪测试」）：
@@ -67,7 +67,7 @@ describe('AC1 — 包结构符合 ADR 0005 §5', () => {
 });
 
 // ---------------------------------------------------------------------------
-// AC5 — docs 三锚位 TSDoc
+// AC5 — docs 锚位（别名/字段/标记位）
 // ---------------------------------------------------------------------------
 
 /** 经 SchemaSource 接缝取本领域信封（ADR 0001 脚手架纪律），parse + evaluate 出派生 schema。 */
@@ -123,7 +123,7 @@ function findAlias(sf: ts.SourceFile, name: string): ts.TypeAliasDeclaration {
   return decl;
 }
 
-describe('AC5 — docs 三锚位：fixture JSDoc 全部以 TSDoc 挂载到生成物对应声明', () => {
+describe('AC5 — docs 锚位（别名/字段/标记位）：fixture JSDoc 全部以 TSDoc 挂载到生成物对应声明', () => {
   it('别名位：aliasDocs 每条非空 JSDoc 逐字挂到对应别名声明（ROOT → VfslPathMap 增广接口）', async () => {
     const derived = await loadDerived();
     const sf = ts.createSourceFile(generatedPath, readFileSync(generatedPath, 'utf8'), ts.ScriptTarget.ES2022, true);

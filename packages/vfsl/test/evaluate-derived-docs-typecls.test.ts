@@ -67,7 +67,7 @@ type ROOT = YMap<{
 }>;
 `.trim();
 
-// —— 合成模块：三锚位全覆盖（联合成员内字段位 / 标记实参内字段位 / 别名体与字段类型标记位）——
+// —— 合成模块：M1/M2/M3 锚位全覆盖（联合成员内字段位 / 标记实参内字段位 / 别名体与字段类型标记位）——
 
 const SYNTH = `
 /** 联合实体 */
@@ -116,7 +116,7 @@ function slot(derived: unknown, table: 'aliasDocs' | 'fieldDocs' | 'markerDocs',
 
 // —— 契约断言 ——
 
-describe('evaluate — 派生 schema 携带 docs（ADR 0005 §3 三锚位）', () => {
+describe('evaluate — 派生 schema 携带 docs（ADR 0005 §3 M1/M2/M3 锚位）', () => {
   it('AC6：§10 fixture 各别名 docs 与 IR 逐字一致（含 ROOT/Audit/AssetId 具名锚）', () => {
     const module = parseOk(FIXTURE);
     const derived = evaluateModule(FIXTURE);
