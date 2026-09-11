@@ -410,11 +410,12 @@ describe('AC7 排除面边界：文本侧 -0 仍 E100、int/range 三形态仍 E
   }
 
   it.each(['type ROOT = { e: -0 };', 'type ROOT = { e: -0 | 1 };', 'type ROOT = { e: -0.0 };'])(
-    '-0 字面量仍 E100「未知记号: -」：%s',
+    '-0 字面量仍 E100 且锚该字面量、消息引导写 0（ADR 0021 决策 2；字面量拓宽后不再走「未知记号: -」）：%s',
     (text) => {
       const issue = singleParseIssue(text);
       expect(issue.message).toMatch(/^VFSL-E100: /);
-      expect(issue.message).toContain('未知记号: -');
+      expect(issue.message).toContain('数字字面量 -0 不在可写值域');
+      expect(issue.message).toContain('请改写为 0');
     },
   );
 

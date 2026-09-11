@@ -418,6 +418,13 @@ class Parser {
         if (tok.num === undefined || !Number.isFinite(tok.num)) {
           throw this.err(ErrCode.E100, '数字字面量超出可序列化数值域（双精度上限 ≈1.8e308；实现值域上限，非方言判定）', tok);
         }
+        // 【#314 · ADR 0020 决策 3 修订句】-0 字面量解析期 E100：**值判定**（Object.is）
+        // 覆盖 `-0`/`-0.0`/`-00` 与小数下溢形态（`-0.` + 323 个 0 + 1 → f64 下溢为 -0）；
+        // 文本判定会漏掉下溢形态，`=== 0` / `Number.isNaN` 会误拒非零次正规（-1e-323）。
+        // 锚恒为该 number 记号起点（`-` 所在列）。防 `JSON.stringify(-0) → "0"` 在 IR/指纹层静默坍缩。
+        if (Object.is(tok.num, -0)) {
+          throw this.err(ErrCode.E100, '数字字面量 -0 不在可写值域（负零解析期拒绝，ADR 0020 决策 3）；请改写为 0', tok);
+        }
         return { kind: 'literal', value: tok.num, pos: posOf(tok) };
       case 'ident':
         return this.parseIdentType(tok);
