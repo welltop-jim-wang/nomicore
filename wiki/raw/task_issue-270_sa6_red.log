@@ -1,0 +1,92 @@
+Testing types with tsc and vue-tsc is an experimental feature.
+Breaking changes might not follow SemVer, please pin Vitest's version when using it.
+
+ RUN  v3.2.7 /home/wangjian/nomicore-fix-issue-270
+
+ ❯ apps/yjs-server/test/issue270-server-integration-red.test.ts (4 tests | 4 failed) 600ms
+   × issue #270 AC1 — REST 与 WebSocket Module 共享同一个 Registry 引用 > T1-A：REST create 的 namespace 可在组合根同一 Registry 上 reopen（第二 Registry 反证） 17ms
+     → 能力缺口（issue #270 AC1）：组合根 `NomicoreApp` 未暴露共享的 Registry 观测面 （`readonly registry: NamespaceRegistry`，ready 后可用）——集成测试无法证明 REST 与 WebSocket Module 持有同一个 NamespaceRegistry 引用。: expected undefined to be defined
+   × issue #270 AC1 — REST 与 WebSocket Module 共享同一个 Registry 引用 > T1-B：WS 复制会话所在 Runtime 可由组合根 Registry 的 lease 写入并 bootstrap 观测 16ms
+     → 能力缺口（issue #270 AC1）：组合根 `NomicoreApp` 未暴露共享的 Registry 观测面 （`readonly registry: NamespaceRegistry`，ready 后可用）——集成测试无法证明 REST 与 WebSocket Module 持有同一个 NamespaceRegistry 引用。: expected undefined to be defined
+   × issue #270 AC2 — raw path 分流 REST 与 WebSocket route family > T2：同一 listener 上 REST 路径走 REST route family、/replication 走 WebSocket route family 10ms
+     → REST create 应 201，实际 404 not found
+: expected 404 to be 201 // Object.is equality
+   × issue #270 AC3 — 有序停止（intake → settle → Lease/Session → Registry/Persistence） > T3：停止 intake 后已接纳 REST create 完成、新请求不再被接纳、WS Session 1001 关闭、Registry/Persistence 有序停止 555ms
+     → 已接纳 REST create 应在 drain 期间完成 201，实际 404 not found
+ : expected 404 to be 201 // Object.is equality
+ ✓ apps/yjs-server/test/issue270-regression-anchors.test.ts (3 tests) 745ms
+   ✓ issue #270 回归锚（contract must not break） > N2（SA8 A3）：诊断启用 + file persistence 下 stop() 有界且单一拆卸链  525ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 4 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  apps/yjs-server/test/issue270-server-integration-red.test.ts > issue #270 AC1 — REST 与 WebSocket Module 共享同一个 Registry 引用 > T1-A：REST create 的 namespace 可在组合根同一 Registry 上 reopen（第二 Registry 反证）
+AssertionError: 能力缺口（issue #270 AC1）：组合根 `NomicoreApp` 未暴露共享的 Registry 观测面 （`readonly registry: NamespaceRegistry`，ready 后可用）——集成测试无法证明 REST 与 WebSocket Module 持有同一个 NamespaceRegistry 引用。: expected undefined to be defined
+ ❯ apps/yjs-server/test/issue270-server-integration-red.test.ts:65:45
+     63|       try {
+     64|         const registry = appRegistry(hub.app) as NamespaceRegistry | u…
+     65|         expect(registry, REGISTRY_SEAM_GAP).toBeDefined();
+       |                                             ^
+     66|         const reg = registry as NamespaceRegistry;
+     67|         expect(reg.getStatus().state).toBe('running');
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/4]⎯
+
+ FAIL  apps/yjs-server/test/issue270-server-integration-red.test.ts > issue #270 AC1 — REST 与 WebSocket Module 共享同一个 Registry 引用 > T1-B：WS 复制会话所在 Runtime 可由组合根 Registry 的 lease 写入并 bootstrap 观测
+AssertionError: 能力缺口（issue #270 AC1）：组合根 `NomicoreApp` 未暴露共享的 Registry 观测面 （`readonly registry: NamespaceRegistry`，ready 后可用）——集成测试无法证明 REST 与 WebSocket Module 持有同一个 NamespaceRegistry 引用。: expected undefined to be defined
+ ❯ apps/yjs-server/test/issue270-server-integration-red.test.ts:120:45
+    118|       try {
+    119|         const registry = appRegistry(hub.app) as NamespaceRegistry | u…
+    120|         expect(registry, REGISTRY_SEAM_GAP).toBeDefined();
+       |                                             ^
+    121|         const reg = registry as NamespaceRegistry;
+    122|         const namespaceId = hub.provisionedNamespaceId;
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/4]⎯
+
+ FAIL  apps/yjs-server/test/issue270-server-integration-red.test.ts > issue #270 AC2 — raw path 分流 REST 与 WebSocket route family > T2：同一 listener 上 REST 路径走 REST route family、/replication 走 WebSocket route family
+AssertionError: REST create 应 201，实际 404 not found
+: expected 404 to be 201 // Object.is equality
+
+- Expected
++ Received
+
+- 201
++ 404
+
+ ❯ apps/yjs-server/test/issue270-server-integration-red.test.ts:179:90
+    177|           body: createBody(ROOT_VALUE),
+    178|         });
+    179|         expect(created.status, `REST create 应 201，实际 ${created.status}…
+       |                                                                                          ^
+    180|         expect(String(created.headers['content-type'] ?? '')).toContai…
+    181|         expect(parseCreated(created.body).namespaceId).toMatch(NAMESPA…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/4]⎯
+
+ FAIL  apps/yjs-server/test/issue270-server-integration-red.test.ts > issue #270 AC3 — 有序停止（intake → settle → Lease/Session → Registry/Persistence） > T3：停止 intake 后已接纳 REST create 完成、新请求不再被接纳、WS Session 1001 关闭、Registry/Persistence 有序停止
+AssertionError: 已接纳 REST create 应在 drain 期间完成 201，实际 404 not found
+ : expected 404 to be 201 // Object.is equality
+
+- Expected
++ Received
+
+- 201
++ 404
+
+ ❯ apps/yjs-server/test/issue270-server-integration-red.test.ts:267:11
+    265|           response.status,
+    266|           `已接纳 REST create 应在 drain 期间完成 201，实际 ${response.status} ${r…
+    267|         ).toBe(201);
+       |           ^
+    268|         const createdNamespaceId = parseCreated(response.body).namespa…
+    269|         expect(createdNamespaceId).toMatch(NAMESPACE_ID_PATTERN);
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[4/4]⎯
+
+
+ Test Files  1 failed | 1 passed (2)
+      Tests  4 failed | 3 passed (7)
+Type Errors  no errors
+   Start at  08:21:25
+   Duration  2.63s (transform 605ms, setup 0ms, collect 1.01s, tests 1.34s, environment 0ms, prepare 85ms)
+

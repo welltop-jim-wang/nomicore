@@ -1,0 +1,18 @@
+Testing types with tsc and vue-tsc is an experimental feature.
+Breaking changes might not follow SemVer, please pin Vitest's version when using it.
+
+ RUN  v3.2.7 /home/wangjian/nomicore-fix-issue-270
+
+ ✓ apps/yjs-server/test/rest-hosting-behavior.test.ts (4 tests) 10055ms
+   ✓ issue #270 rest-hosting 行为（SA3） > 例 2（D4）：drain 预算尽时 abort 已接纳请求——有界停机 + 客户端传输层失败 + app-stopped 恰一次  10007ms
+ ✓ apps/yjs-server/test/issue270-server-integration-red.test.ts (4 tests) 1177ms
+   ✓ issue #270 AC3 — 有序停止（intake → settle → Lease/Session → Registry/Persistence） > T3：停止 intake 后已接纳 REST create 完成、新请求不再被接纳、WS Session 1001 关闭、Registry/Persistence 有序停止  1076ms
+ ✓ apps/yjs-server/test/issue270-regression-anchors.test.ts (3 tests) 749ms
+   ✓ issue #270 回归锚（contract must not break） > N2（SA8 A3）：诊断启用 + file persistence 下 stop() 有界且单一拆卸链  525ms
+
+ Test Files  3 passed (3)
+      Tests  11 passed (11)
+Type Errors  no errors
+   Start at  09:42:12
+   Duration  13.56s (transform 613ms, setup 0ms, collect 1.18s, tests 11.98s, environment 0ms, prepare 130ms)
+
