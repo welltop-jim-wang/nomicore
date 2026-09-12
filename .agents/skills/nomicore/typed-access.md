@@ -162,6 +162,26 @@ The same rule applies below ROOT: replacing an entire map/object after changing 
 
 Current validated operations are `set`, `delete`, `array-insert`, and `array-delete`. `array-insert` takes `values: readonly unknown[]`. There is no atomic `array-append` operation; a read-length-then-insert helper has concurrency semantics that the host must judge explicitly.
 
+### Guarded mutations (ADR 0025)
+
+Every operation may carry an optional `guard` precondition — a single condition object evaluated inside the write-sequencer slot against the committed current logical value, before the mutation pipeline runs:
+
+```ts
+await lease.mutateData({
+  op: 'set',
+  path: ['tasks', taskId, 'status'],
+  value: 'reviewing',
+  guard: { path: ['tasks', taskId, 'status'], equals: 'draft' },
+})
+```
+
+- `{ path, equals }` — the path's current projected logical value must be structurally equal (undefined-key-filtered) to `equals`. A missing key, an unreadable path (`PATH_NOT_ALLOWED`), and an absorbed `undefined` all count as *not equal*.
+- `{ path, absent: true }` — the path must currently hold no value (missing key or unreadable path both satisfy); use for create-if-absent.
+
+A failed guard is a zero-write rejection carrying the stable code `MUTATION_GUARD_MISMATCH` — a retryable CAS contention. A malformed guard shape (wrong keys, missing path, `absent` not literal `true`, guard path `[]`, non-finite numbers in `equals`) is an uncoded envelope error — a caller bug, not retryable. Atomicity comes from the per-namespace write sequencer: the check and the commit share one FIFO slot; it does not come from a Yjs transaction. Guards constrain only ordinary controlled writes on this instance — replicated applies and cross-instance merges are not intercepted (ADR 0025 boundaries).
+
+Express dynamic domain rules (state-machine transitions, monotonic version bumps, no-rollback timestamps) as read current value → `guard` `equals` old value → write new value, with the retry loop in the host adapter. The transition table stays in adapter code; the engine only asserts values. Guard path segments follow the same discipline as mutation paths (`string` keys, `number` array indices); a guard path may not be `[]`.
+
 Array element paths use numeric segments. Keep `['assignments', 0, 'headSha']` or `['assignments', index, 'headSha']` with `index: number`; reject `['assignments', '0', 'headSha']`, `String(index)`, and template-string indices. A string segment means an object/Record key. Add a negative type fixture for every typed adapter that writes through an array, proving the numeric-looking string form fails compilation.
 
 The runtime SCHEMA passed to Registry creation or an existing namespace's `replaceSchema()` must come from the same `schema.vfsl`. Generated types do not replace that text. For an existing namespace, complete the Hub/Peer rollout in [schema-evolution.md](schema-evolution.md) before publishing writers that use changed paths.
