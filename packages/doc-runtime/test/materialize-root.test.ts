@@ -60,9 +60,10 @@
  *   insert extra / 组合），偏离 → throw `DOCRT-E201`（F11：不回滚、不补偿、不返回 ok:false）。
  *   R1 组 E201 偏离检测用例在 SA3 实现 ⑤ 之前为**行为性红灯**（现实现④后无条件返回 ok:true）。
  * - RAC-2（RD2）：detached 构造失败（逻辑校验已通过）→ ok:false + 恰 1 issue + 0 update +
- *   state 字节不变（原子性主锚，§3.3）；10 行矩阵（unknown 位 Date/bigint/NaN/±Infinity/
- *   Y.Map/Y.Array/数组内 undefined + number 标量位 NaN）；XML attr-`"` 构造期拒绝行
- *   （原 C-8/X-F9）已按 issue #94 AC-⑥ 删除——新契约见 test/xml-attr-quote-domain.test.ts。
+ *   state 字节不变（原子性主锚，§3.3）；8 行矩阵（unknown 位 Date/bigint/NaN/±Infinity/
+ *   Y.Map/Y.Array/数组内 undefined）；XML attr-`"` 构造期拒绝行（原 C-8/X-F9）已按 issue #94
+ *   AC-⑥ 删除——新契约见 test/xml-attr-quote-domain.test.ts；number 标量位 NaN 行（原 C-7）
+ *   已按 ADR 0021 值域收窄迁移至下方 R2b 逻辑失败用例（收窄后 NaN 在 ① 逻辑校验即被拒）。
  * - RAC-3（RD3）：xml-parse 表驱动 17 成功 + 8 逻辑失败；成功行断言**语义等价**（W2：
  *   测试局部 `expectXmlSemanticallyEqual` 比较器——canonical 解析 + 属性排序无关 + 引号归一
  *   + last-wins），禁逐字断言。attr 值含 `"` 的「有意 materialization 约束」是 issue #94
@@ -838,7 +839,9 @@ describe('materializeRoot — R2（rev1/RAC-2）：detached 构造失败 → ok:
     { name: 'C-5a unknown 位 Y.Map 实例（内嵌 Y 类型）', vfsl: 'type ROOT = { u: unknown };', makeSnapshot: () => ({ u: new Y.Map() }) },
     { name: 'C-5b unknown 位 Y.Array 实例（内嵌 Y 类型）', vfsl: 'type ROOT = { u: unknown };', makeSnapshot: () => ({ u: new Y.Array() }) },
     { name: 'C-6 unknown[] 数组内 undefined', vfsl: 'type ROOT = { u: unknown; arr: unknown[] };', makeSnapshot: () => ({ u: 1, arr: [undefined] }) },
-    { name: 'C-7 number 标量位 NaN（typeof NaN === number 过 ①）', vfsl: 'type ROOT = { n: number };', makeSnapshot: () => ({ n: NaN }) },
+    // C-7（number 标量位 NaN）已按 ADR 0021 值域收窄迁移：NaN 在 ① 逻辑校验即被拒，
+    // 「① 通过 → ② 构造域拒绝」支路对 number 叶结构性不可达（这正是收窄要的闭合性质）。
+    // 迁移用例见下方 R2b（issue #319 / D-H）——不放宽任何拒绝、不删除覆盖。
     // C-8/X-F9（XML 属性值含双引号 → 构造期拒绝）已按 issue #94 AC-⑥ 删除/改写：该契约将
     // 「extract 侧 yjs 零转义序列化表示缺陷」前移为输入域收窄，与 VFSL wellFormedXml 宽域
     // 不一致（SA5 根因，见 wiki/raw/20260823-bug-xml-attr-quote-domain.md）。新契约见
@@ -867,6 +870,47 @@ describe('materializeRoot — R2（rev1/RAC-2）：detached 构造失败 → ok:
       expect(Array.isArray(issue?.path)).toBe(true);
     }
     // (4) 零写入双证（原子性主锚，§3.3）：0 update 事件 + Y.encodeStateAsUpdate 逐字节不变
+    expect(events.count).toBe(0);
+    expect(stateBytes(doc)).toEqual(before);
+  });
+});
+
+// —— issue #319 / D-H（SA2 F1）：原 RAC-2 C-7 行迁移——number 标量位 NaN 的新失败面——
+//
+// ADR 0021 收窄后 NaN @ number 叶在 ① 逻辑校验即被拒（旧语义下走 ② detached 构造域），
+// 断言按同文件 R3 逻辑失败模板重锚：direct validate ok:false 恰 1 issue → materialize
+// ok:false 恰 1 issue（引用零损透传 toEqual）+ 0 update + state 字节不变。
+// 迁移语义：保留「NaN @ number 位在 doc-runtime 接缝 loud 失败 + 零写入」锚；构造域支路
+// 继续由 RAC-2 的 unknown 位行（C-3/C-4a/C-4b）结构性覆盖。
+
+describe('materializeRoot — R2b（issue #319/D-H 迁移）：number 标量位 NaN → ① 逻辑校验拒绝（零损透传 + 零写入）', () => {
+  it('C-7 迁移：直调 ok:false 恰 1 条（path [n] + 收窄消息）→ materialize ok:false issues toEqual 直调 + 0 update + state 字节不变', () => {
+    const derived = derivedOf('type ROOT = { n: number };');
+    const snapshot = { n: NaN };
+    // 新失败面（① 逻辑校验）：ADR 0021 收窄后 NaN 在此即拒
+    const direct = validateLogicalSnapshot(derived, snapshot);
+    expect(direct.ok).toBe(false);
+    let directIssues: MaterializeIssue[] = [];
+    if (!direct.ok) {
+      expect(direct.issues).toHaveLength(1); // 单标量违例
+      directIssues = direct.issues;
+      const issue = direct.issues[0]!;
+      expect(issue.path).toEqual(['n']);
+      expect(issue.message).toContain('期望 number（有限数且非 -0）'); // ADR 0021 决策 3 域短语
+      expect(issue.message.startsWith('类型不匹配：')).toBe(false); // 非 typeof 分支
+      expect(issue.message.startsWith('VFSL-E100')).toBe(false); // 非崩溃收编
+      expect(issue.message).toMatch(/NaN\s*[。.]?$/); // 尾值字面量
+    }
+    const doc = new Y.Doc();
+    const before = stateBytes(doc);
+    const events = countUpdates(doc);
+    const result = materializeRoot(derived, snapshot, doc) as MaterializeResult;
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.issues).toHaveLength(1);
+      expect(result.issues).toEqual(directIssues); // 引用零损透传（同 R3 逻辑失败模板的 D2/F1 锚）
+    }
+    // 零写入双证：0 update 事件 + Y.encodeStateAsUpdate 逐字节不变
     expect(events.count).toBe(0);
     expect(stateBytes(doc)).toEqual(before);
   });
