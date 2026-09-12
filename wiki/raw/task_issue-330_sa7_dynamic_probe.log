@@ -1,0 +1,67 @@
+# SA7 dynamic-verify probe — Issue #330 (worktree /home/wangjian/nomicore-fix-issue-330, branch mabf/issue-330, HEAD 83581b3 + uncommitted impl diff)
+# Driver: packages/ws-replication/.sa7-probe-issue-330.ts (temporary, deleted after capture; re-run key scenarios post-removal via the three checked-in guard-proxy test files)
+# Run: NODE_OPTIONS=--conditions=nomicore-source ../../node_modules/.bin/tsx .sa7-probe-issue-330.ts  (cwd packages/ws-replication; Node v24.13.0)
+# Probe-fix iterations before this capture: 4 (import/envelope-expectation/composition fixes in the DRIVER only; no production or test code touched)
+{"check":"A1 sensitivity positive control (frozen data member throws)","expected":"THROW:TypeError","actual":"THROW:TypeError","result":"PASS"}
+{"check":"A2 honest proxy negative control (no throw on frozen data)","expected":true,"actual":true,"result":"PASS"}
+{"check":"B1 systemClock.now descriptor","expected":{"kind":"accessor","hasGet":true,"set":"undefined","configurable":false,"enumerable":true},"actual":{"kind":"accessor","hasGet":true,"set":"undefined","configurable":false,"enumerable":true},"result":"PASS"}
+{"check":"B2 guard-proxy hop observation systemClock.now()","expected":"trap>=1, wrap>=1, call-through within Date.now() bracket","actual":{"trapCalls":1,"functionWraps":1,"nonFnPassthrough":0,"reading":1789194168570,"bracket":true},"result":"PASS"}
+{"check":"B3 systemClock sweep via fresh guard proxy","expected":{"now":"ACCESS_OK"},"actual":{"now":"ACCESS_OK"},"result":"PASS"}
+{"check":"B4 stable closure identity systemClock.now (direct, cached ref)","expected":{"sameRef":true,"cachedStable":true},"actual":{"sameRef":true,"cachedStable":true},"result":"PASS"}
+{"check":"B5 systemClock hostile posture (assign/redefine/strict-delete all TypeError)","expected":{"assign":true,"redefine":true,"del":true},"actual":{"assign":true,"redefine":true,"del":true},"result":"PASS"}
+{"check":"B6 systemClock key order + isFrozen + JSON.stringify","expected":{"keys":["now"],"frozen":true,"json":"{}"},"actual":{"keys":["now"],"frozen":true,"json":"{}"},"result":"PASS"}
+{"check":"B7 ManualClock guard sweep (3 members)","expected":{"now":"ACCESS_OK","set":"ACCESS_OK","advance":"ACCESS_OK"},"actual":{"now":"ACCESS_OK","set":"ACCESS_OK","advance":"ACCESS_OK"},"result":"PASS"}
+{"check":"B8 ManualClock call-through + loud validation passthrough","expected":{"set":250,"advance":255,"nanSetThrows":"RangeError","stringSetThrows":"TypeError","readingUnchanged":true},"actual":{"set":250,"advance":255,"nanSetThrows":"RangeError","stringSetThrows":"TypeError","readingUnchanged":true},"result":"PASS"}
+{"check":"B9 ManualClock stable closures per instance + cross-instance isolation","expected":{"identityStable":[true,true,true],"distinctClosuresPerInstance":true,"c2Untouched":500},"actual":{"identityStable":[true,true,true],"distinctClosuresPerInstance":true,"c2Untouched":500},"result":"PASS"}
+{"check":"B10 ManualClock key order + isFrozen","expected":{"keys":["now","set","advance"],"frozen":true},"actual":{"keys":["now","set","advance"],"frozen":true},"result":"PASS"}
+{"check":"B11 systemClock published via ctx.provide identity (requireClock === systemClock)","expected":true,"actual":true,"result":"PASS"}
+{"check":"B12 published systemClock guard access","expected":"ACCESS_OK","actual":"ACCESS_OK","result":"PASS"}
+{"check":"B13 ManualClock published identity + guard call-through","expected":{"same":true,"now":1700000123456},"actual":{"same":true,"now":1700000123456},"result":"PASS"}
+{"check":"C1 assertClockShape gate passes with accessor clock (composition completed)","expected":"registry service resolved","actual":"registry service resolved","result":"PASS"}
+{"check":"C2 require channel stable identity (requireNomicoreRegistry twice)","expected":true,"actual":true,"result":"PASS"}
+{"check":"C3 service name constant","expected":"nomicoreRegistry","actual":"nomicoreRegistry","result":"PASS"}
+{"check":"C4 registry guard sweep 7 members","expected":{"open":"ACCESS_OK","create":"ACCESS_OK","importReplica":"ACCESS_OK","resetReplica":"ACCESS_OK","deleteNamespace":"ACCESS_OK","getStatus":"ACCESS_OK","shutdown":"ACCESS_OK"},"actual":{"open":"ACCESS_OK","create":"ACCESS_OK","importReplica":"ACCESS_OK","resetReplica":"ACCESS_OK","deleteNamespace":"ACCESS_OK","getStatus":"ACCESS_OK","shutdown":"ACCESS_OK"},"result":"PASS"}
+{"check":"C5 registry descriptor posture (7/7 accessor, get fn, no set, non-config, enumerable, frozen)","expected":"all accessor posture","actual":{"postureAllAccessor":true,"sample":{"kind":"accessor","hasGet":true,"set":"undefined","configurable":false,"enumerable":true}},"result":"PASS"}
+{"check":"C6 registry key order","expected":["open","create","importReplica","resetReplica","deleteNamespace","getStatus","shutdown"],"actual":["open","create","importReplica","resetReplica","deleteNamespace","getStatus","shutdown"],"result":"PASS"}
+{"check":"C7 open(missing) direct vs proxied deep-equal (NAMESPACE_NOT_FOUND)","expected":{"ok":false,"code":"NAMESPACE_NOT_FOUND","message":"*"},"actual":{"ok":false,"code":"NAMESPACE_NOT_FOUND","message":"NAMESPACE_NOT_FOUND: namespace 不存在"},"result":"PASS"}
+{"check":"C8 create/import/reset/delete hostile input: proxied === direct issue envelope, zero side effects","expected":"all equal + ok:false","actual":{"create":{"ok":false,"code":"NAMESPACE_INVALID_IDENTITY","field":"owner.userId","message":"NAMESPACE_INVALID_IDENTITY: owner.userId 或 namespaceId 不符合安全文法"},"importEq":true,"resetEq":true,"deleteEq":true},"result":"PASS"}
+{"check":"C9 getStatus proxied === direct frozen constant ref","expected":true,"actual":true,"result":"PASS"}
+{"check":"C10 registry stable closures (7/7 self-identical, cached ref stable)","expected":{"all":true,"cachedStable":true},"actual":{"all":true,"cachedStable":true},"result":"PASS"}
+{"check":"C11 shutdown FSM running->shutting-down->stopped (sync acceptance flip, post-settle stopped)","expected":["running","shutting-down","stopped"],"actual":["running","shutting-down","stopped"],"result":"PASS"}
+{"check":"C12 shutdown exact-same-Promise via guard proxy (3-way identity)","expected":true,"actual":true,"result":"PASS"}
+{"check":"C13 post-shutdown open returns NOT_ACCEPTING (direct === proxied, old gate holds)","expected":{"ok":false,"code":"REGISTRY_NOT_ACCEPTING","message":"*"},"actual":{"ok":false,"code":"REGISTRY_NOT_ACCEPTING","message":"REGISTRY_NOT_ACCEPTING: Registry 当前不接纳 namespace 操作"},"result":"PASS"}
+{"check":"C14 shutdown after settle still same cached promise","expected":true,"actual":true,"result":"PASS"}
+{"check":"C15 registry hostile posture after shutdown (assign/redefine/delete rejected, no revival)","expected":{"assign":true,"redefine":true,"del":true},"actual":{"assign":true,"redefine":true,"del":true},"result":"PASS"}
+{"check":"C16 after fiber.dispose registry provide revoked; frozen accessor surface unchanged","expected":{"revoked":true,"postureHolds":true},"actual":{"revoked":true,"postureHolds":true},"result":"PASS"}
+{"check":"D1 hub composed with accessor systemClock (clock consumption path preserved)","expected":true,"actual":true,"result":"PASS"}
+{"check":"D2 hub require channel stable identity","expected":true,"actual":true,"result":"PASS"}
+{"check":"D3 hub service name constant","expected":"nomicoreHubReplication","actual":"nomicoreHubReplication","result":"PASS"}
+{"check":"D4 hub guard sweep (status/requestReauth/stop)","expected":{"status":"ACCESS_OK","requestReauth":"ACCESS_OK","stop":"ACCESS_OK"},"actual":{"status":"ACCESS_OK","requestReauth":"ACCESS_OK","stop":"ACCESS_OK"},"result":"PASS"}
+{"check":"D5 hub status via guard deep-equal direct snapshot","expected":{"state":"ready","connections":0},"actual":{"state":"ready","connections":0},"result":"PASS"}
+{"check":"D6 hub descriptor posture 3/3 accessor + frozen","expected":true,"actual":true,"result":"PASS"}
+{"check":"D7 hub key order","expected":["status","requestReauth","stop"],"actual":["status","requestReauth","stop"],"result":"PASS"}
+{"check":"D8 hub stable closures (fn members)","expected":[true,true],"actual":[true,true],"result":"PASS"}
+{"check":"D9 hub requestReauth via guard resolves (no connections, zero side effect)","expected":"resolved","actual":"resolved","result":"PASS"}
+{"check":"D10 hub stop cached Promise (3-way identity via guard)","expected":true,"actual":true,"result":"PASS"}
+{"check":"D11 hub status ready->stopped via guard","expected":{"state":"stopped","connections":0},"actual":{"state":"stopped","connections":0},"result":"PASS"}
+{"check":"D12 hub listener closed exactly once across explicit stop + fiber.dispose (idempotent teardown)","expected":{"afterStop":1,"afterDispose":1},"actual":{"afterStop":1,"afterDispose":1},"result":"PASS"}
+{"check":"D13 hub teardown ordering: service still provided while stop drains; revoked after dispose","expected":{"serviceDuringClose":"defined","revokedAfterDispose":true},"actual":{"serviceDuringClose":"defined","revokedAfterDispose":true},"result":"PASS"}
+{"check":"D14 hub posture holds after teardown (no old path revival)","expected":{"assign":true,"redefine":true,"del":true},"actual":{"assign":true,"redefine":true,"del":true},"result":"PASS"}
+{"check":"D15 hub stop after teardown resolves via cached promise","expected":"resolved","actual":"resolved","result":"PASS"}
+{"check":"E1 peer composed with accessor systemClock through clock wrapper (preserved route)","expected":true,"actual":true,"result":"PASS"}
+{"check":"E2 peer service name constant","expected":"nomicorePeerReplication","actual":"nomicorePeerReplication","result":"PASS"}
+{"check":"E3 peer guard sweep (6 members)","expected":{"status":"ACCESS_OK","addTarget":"ACCESS_OK","removeTarget":"ACCESS_OK","notifyAuthChanged":"ACCESS_OK","waitForLive":"ACCESS_OK","stop":"ACCESS_OK"},"actual":{"status":"ACCESS_OK","addTarget":"ACCESS_OK","removeTarget":"ACCESS_OK","notifyAuthChanged":"ACCESS_OK","waitForLive":"ACCESS_OK","stop":"ACCESS_OK"},"result":"PASS"}
+{"check":"E4 peer status via guard (snapshot value getter; state+connection fields)","expected":{"state":"ready","connection":"connecting|handshaking"},"actual":{"state":"ready","connection":"handshaking"},"result":"PASS"}
+{"check":"E5 peer descriptor posture 6/6 accessor + frozen","expected":true,"actual":true,"result":"PASS"}
+{"check":"E6 peer key order","expected":["status","addTarget","removeTarget","notifyAuthChanged","waitForLive","stop"],"actual":["status","addTarget","removeTarget","notifyAuthChanged","waitForLive","stop"],"result":"PASS"}
+{"check":"E7 peer stable closures (5 fn members; status is snapshot getter by design)","expected":[true,true,true,true,true],"actual":[true,true,true,true,true],"result":"PASS"}
+{"check":"E8 peer addTarget/notifyAuthChanged/removeTarget call-through","expected":"no-throw + removeTarget resolved","actual":{"addOk":true,"removeResolved":true},"result":"PASS"}
+{"check":"E9 peer waitForLive armed injected timer, stop() settles with peer replication stopped","expected":{"armed":true,"rejects":"peer replication stopped"},"actual":{"armed":true,"rejects":true,"msg":"peer replication stopped","cancelCalls":3},"result":"PASS"}
+{"check":"E10 peer stop cached Promise identity via guard","expected":true,"actual":true,"result":"PASS"}
+{"check":"E11 peer status stopped after stop","expected":{"state":"stopped","connection":"stopped"},"actual":{"state":"stopped","connection":"stopped"},"result":"PASS"}
+{"check":"E12 peer post-stop removeTarget resolves via closure no-op","expected":"resolved","actual":"resolved","result":"PASS"}
+{"check":"E13 peer posture holds after stop","expected":{"assign":true,"redefine":true,"del":true},"actual":{"assign":true,"redefine":true,"del":true},"result":"PASS"}
+{"check":"E14 peer provide revoked after fiber.dispose; frozen accessor surface unchanged","expected":{"revoked":true,"postureHolds":true},"actual":{"revoked":true,"postureHolds":true},"result":"PASS"}
+{"check":"F1 excluded nomicoreInstance stays frozen pure-data (guard access OK, untouched by change)","expected":{"frozen":true,"kind":"data","access":"ACCESS_OK"},"actual":{"frozen":true,"kind":"data","access":"ACCESS_OK"},"result":"PASS"}
+{"check":"F2 excluded nomicorePersistence stays class prototype (non-frozen, guard access OK)","expected":{"access":"ACCESS_OK"},"actual":{"access":"ACCESS_OK"},"result":"PASS"}
+{"summary":true,"passed":62,"failed":0,"total":62}

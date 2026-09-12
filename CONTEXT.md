@@ -126,6 +126,10 @@ JSDoc 首行自由文本 + `@tag` 半结构化标签；全部为文档性质，�
 参与 Nomicore 复制拓扑的稳定、不可变实例身份，由安全文法 `instanceId` 与静态 `role`（Hub/Peer）组成；同一部署实例跨进程重启保持不变，是 Registry 与 transport 共同消费的单一身份事实。它不是 namespaceId、owner、SCHEMA id、connectionId、PID 或 hostname。
 _Avoid_: 每次启动随机生成、Registry 与 transport 各自配置一份 role/instanceId、运行期切换身份
 
+**服务表面（service surface）**:
+经 `ctx.provide` 发布的 Cordis 服务对象（`nomicoreRegistry`/`nomicoreHubReplication`/`nomicorePeerReplication`/`clock`/`nomicoreInstance`/`nomicorePersistence` 等）。凡含函数成员的对象字面量形态服务，函数成员一律以访问器属性（getter 返回稳定闭包）构造并保留 `Object.freeze`，使消费方可以用返回包装闭包的 Proxy 合法包装（ECMA-262 `[[Get]]` 不变量只约束不可写不可配置数据属性，ADR 0023）；纯数据服务对象与 class 实例（原型方法）天然合规。服务方法返回的对象（lease/session 等）不是服务表面，不适用本纪律。
+_Avoid_: 冻结对象字面量 + 数据属性方法（触发消费方 Proxy 不变量 TypeError）、为可包装性去掉 `Object.freeze`
+
 **Hub（中心实例）**:
 静态星型复制拓扑中接受 peer WebSocket 连接、转发 Yjs updates、管理 SCHEMA 与复制身份的完整 Nomicore 实例；Hub 也是可接受本地 ROOT 业务写的副本，不是 ROOT 唯一写者，也不表示自动选举的 leader。
 _Avoid_: master、leader（会误示单写权威或选举语义）、只转发而不持有完整副本的中继

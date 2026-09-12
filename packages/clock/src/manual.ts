@@ -31,24 +31,28 @@ function assertTime(label: string, value: number): number {
 
 export function createManualClock(initialMs = 0): ManualClock {
   let current = assertTime('initialMs', initialMs)
+  // 稳定闭包（ADR 0023）：工厂作用域内各提一次，捕获本实例 current。
+  const now = (): number => current
+  const set = (timeMs: number): void => {
+    current = assertTime('timeMs', timeMs)
+  }
+  const advance = (deltaMs: number): void => {
+    if (typeof deltaMs !== 'number') {
+      throw new TypeError('manual clock deltaMs must be a number (milliseconds)')
+    }
+    if (!Number.isFinite(deltaMs) || deltaMs < 0) {
+      throw new RangeError('manual clock deltaMs must be a finite non-negative number')
+    }
+    const next = current + deltaMs
+    if (!Number.isFinite(next)) {
+      throw new RangeError('manual clock advance overflows the finite number range')
+    }
+    current = next
+  }
   return Object.freeze({
-    now: () => current,
-    set(timeMs: number) {
-      current = assertTime('timeMs', timeMs)
-    },
-    advance(deltaMs: number) {
-      if (typeof deltaMs !== 'number') {
-        throw new TypeError('manual clock deltaMs must be a number (milliseconds)')
-      }
-      if (!Number.isFinite(deltaMs) || deltaMs < 0) {
-        throw new RangeError('manual clock deltaMs must be a finite non-negative number')
-      }
-      const next = current + deltaMs
-      if (!Number.isFinite(next)) {
-        throw new RangeError('manual clock advance overflows the finite number range')
-      }
-      current = next
-    },
+    get now() { return now },
+    get set() { return set },
+    get advance() { return advance },
   })
 }
 
