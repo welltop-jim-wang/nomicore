@@ -1,0 +1,89 @@
+
+> nomicore@0.1.0 pack:local /home/wangjian/nomicore-fix-issue-330
+> node scripts/build-local-packages.mjs
+
+
+> @nomicore/vfsl-protocol@0.1.4 build /home/wangjian/nomicore-fix-issue-330/packages/vfsl-protocol
+> node ../../scripts/build-package.mjs
+
+gzip: warning: GZIP environment variable is deprecated; use an alias or script
+@nomicore/vfsl-protocol@0.1.4 -> /home/wangjian/nomicore-fix-issue-330/artifacts/local-packages/nomicore-vfsl-protocol-0.1.4.tgz
+
+> @nomicore/vfsl@0.2.4 build /home/wangjian/nomicore-fix-issue-330/packages/vfsl
+> node ../../scripts/build-package.mjs
+
+gzip: warning: GZIP environment variable is deprecated; use an alias or script
+@nomicore/vfsl@0.2.4 -> /home/wangjian/nomicore-fix-issue-330/artifacts/local-packages/nomicore-vfsl-0.2.4.tgz
+
+> @nomicore/vfsl-codegen@0.1.3 build /home/wangjian/nomicore-fix-issue-330/packages/vfsl-codegen
+> node ../../scripts/build-package.mjs
+
+gzip: warning: GZIP environment variable is deprecated; use an alias or script
+@nomicore/vfsl-codegen@0.1.3 -> /home/wangjian/nomicore-fix-issue-330/artifacts/local-packages/nomicore-vfsl-codegen-0.1.3.tgz
+
+> @nomicore/doc-runtime@0.1.13 build /home/wangjian/nomicore-fix-issue-330/packages/doc-runtime
+> node ../../scripts/build-package.mjs
+
+gzip: warning: GZIP environment variable is deprecated; use an alias or script
+@nomicore/doc-runtime@0.1.13 -> /home/wangjian/nomicore-fix-issue-330/artifacts/local-packages/nomicore-doc-runtime-0.1.13.tgz
+
+> @nomicore/clock@0.1.0 build /home/wangjian/nomicore-fix-issue-330/packages/clock
+> node ../../scripts/build-package.mjs
+
+gzip: warning: GZIP environment variable is deprecated; use an alias or script
+@nomicore/clock@0.1.0 -> /home/wangjian/nomicore-fix-issue-330/artifacts/local-packages/nomicore-clock-0.1.0.tgz
+
+> @nomicore/instance@0.1.0 build /home/wangjian/nomicore-fix-issue-330/packages/instance
+> node ../../scripts/build-package.mjs
+
+gzip: warning: GZIP environment variable is deprecated; use an alias or script
+@nomicore/instance@0.1.0 -> /home/wangjian/nomicore-fix-issue-330/artifacts/local-packages/nomicore-instance-0.1.0.tgz
+
+> @nomicore/persistence@0.2.3 build /home/wangjian/nomicore-fix-issue-330/packages/persistence
+> node ../../scripts/build-package.mjs
+
+gzip: warning: GZIP environment variable is deprecated; use an alias or script
+@nomicore/persistence@0.2.3 -> /home/wangjian/nomicore-fix-issue-330/artifacts/local-packages/nomicore-persistence-0.2.3.tgz
+
+> @nomicore/dsh-persistence@0.2.2 build /home/wangjian/nomicore-fix-issue-330/packages/dsh-persistence
+> node ../../scripts/build-package.mjs
+
+gzip: warning: GZIP environment variable is deprecated; use an alias or script
+@nomicore/dsh-persistence@0.2.2 -> /home/wangjian/nomicore-fix-issue-330/artifacts/local-packages/nomicore-dsh-persistence-0.2.2.tgz
+
+> @nomicore/namespace-diagnostic-log@0.1.8 build /home/wangjian/nomicore-fix-issue-330/packages/namespace-diagnostic-log
+> node ../../scripts/build-package.mjs
+
+gzip: warning: GZIP environment variable is deprecated; use an alias or script
+@nomicore/namespace-diagnostic-log@0.1.8 -> /home/wangjian/nomicore-fix-issue-330/artifacts/local-packages/nomicore-namespace-diagnostic-log-0.1.8.tgz
+
+> @nomicore/namespace-runtime@0.1.12 build /home/wangjian/nomicore-fix-issue-330/packages/namespace-runtime
+> node ../../scripts/build-package.mjs
+
+gzip: warning: GZIP environment variable is deprecated; use an alias or script
+@nomicore/namespace-runtime@0.1.12 -> /home/wangjian/nomicore-fix-issue-330/artifacts/local-packages/nomicore-namespace-runtime-0.1.12.tgz
+
+> @nomicore/namespace-registry@0.1.10 build /home/wangjian/nomicore-fix-issue-330/packages/namespace-registry
+> node ../../scripts/build-package.mjs
+
+gzip: warning: GZIP environment variable is deprecated; use an alias or script
+@nomicore/namespace-registry@0.1.10 -> /home/wangjian/nomicore-fix-issue-330/artifacts/local-packages/nomicore-namespace-registry-0.1.10.tgz
+
+> @nomicore/replication-protocol@0.1.2 build /home/wangjian/nomicore-fix-issue-330/packages/replication-protocol
+> node ../../scripts/build-package.mjs
+
+gzip: warning: GZIP environment variable is deprecated; use an alias or script
+@nomicore/replication-protocol@0.1.2 -> /home/wangjian/nomicore-fix-issue-330/artifacts/local-packages/nomicore-replication-protocol-0.1.2.tgz
+
+> @nomicore/ws-replication@0.1.5 build /home/wangjian/nomicore-fix-issue-330/packages/ws-replication
+> node ../../scripts/build-package.mjs
+
+gzip: warning: GZIP environment variable is deprecated; use an alias or script
+@nomicore/ws-replication@0.1.5 -> /home/wangjian/nomicore-fix-issue-330/artifacts/local-packages/nomicore-ws-replication-0.1.5.tgz
+
+> @nomicore/yjs-server@0.1.4 build /home/wangjian/nomicore-fix-issue-330/apps/yjs-server
+> node ../../scripts/build-package.mjs
+
+gzip: warning: GZIP environment variable is deprecated; use an alias or script
+@nomicore/yjs-server@0.1.4 -> /home/wangjian/nomicore-fix-issue-330/artifacts/local-packages/nomicore-yjs-server-0.1.4.tgz
+/home/wangjian/nomicore-fix-issue-330/artifacts/local-packages

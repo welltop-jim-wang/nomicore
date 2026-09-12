@@ -1,13 +1,16 @@
 import type { Context } from '@deepseek-ai/cordis'
 import { provideClock, type Clock } from './contract.js'
 
+/** 稳定闭包（ADR 0023）：模块级单例提一次，getter 恒返回同一函数实例。 */
+const nowImpl = (): number => Date.now()
+
 /**
  * Production wall-clock provider：直接委托 `Date.now()`。
  * 冻结单例——运行时键面恰为 `now`，无调度成员（issue #106 AC5）。
  * 不承诺单调：读数随系统 wall clock，可能被 NTP 校正回跳。
  */
 export const systemClock: Clock = Object.freeze({
-  now: () => Date.now(),
+  get now() { return nowImpl },
 })
 
 /**

@@ -1,0 +1,230 @@
+Testing types with tsc and vue-tsc is an experimental feature.
+Breaking changes might not follow SemVer, please pin Vitest's version when using it.
+
+ RUN  v3.2.7 /home/wangjian/nomicore-fix-issue-330
+
+ ❯ packages/ws-replication/test/ws-replication-guard-proxy-consumption.test.ts (2 tests | 2 failed) 15ms
+   × nomicoreHubReplication：guard-proxy 合法消费（Issue #330 AC2 / ADR 0023） > status/requestReauth/stop 经 guard Proxy 访问与调用直通，stop 缓存 Promise 恒等 11ms
+     → expected { status: 'ACCESS_OK', …(2) } to deeply equal { status: 'ACCESS_OK', …(2) }
+   × nomicorePeerReplication：guard-proxy 合法消费（Issue #330 AC2 / ADR 0023） > 全部成员经 guard Proxy 访问与调用直通，waitForLive 由 stop 触发 settle 4ms
+     → expected { status: 'ACCESS_OK', …(5) } to deeply equal { status: 'ACCESS_OK', …(5) }
+ ❯ packages/namespace-registry/test/registry-guard-proxy-consumption.test.ts (2 tests | 2 failed) 14ms
+   × nomicoreRegistry：guard-proxy 合法消费（Issue #330 AC1 / ADR 0023） > 七个成员经 guard Proxy 访问不抛、调用行为直通 12ms
+     → expected { open: 'THROW:TypeError', …(6) } to deeply equal { open: 'ACCESS_OK', …(6) }
+   × nomicoreRegistry：guard-proxy 合法消费（Issue #330 AC1 / ADR 0023） > shutdown 经 guard Proxy 返回同一缓存 Promise（AC12 幂等锚），freeze 姿态不变 2ms
+     → 'get' on proxy: property 'shutdown' is a read-only and non-configurable data property on the proxy target but the proxy did not return its actual value (expected 'shutdown() {
+      if (shutdownPromise !== void 0) return shutdownPromise;
+      acceptance = "shutting-down";
+...<omitted>... }' but got '(...args) => Reflect.apply(value, receiver, args)')
+ ❯ packages/clock/test/clock-guard-proxy-consumption.test.ts (4 tests | 4 failed) 13ms
+   × systemClock：guard-proxy 合法消费（Issue #330 AC3 / ADR 0023） > now 经 guard Proxy 访问与调用直通，冻结姿态与键面不变 7ms
+     → expected { now: 'THROW:TypeError' } to deeply equal { now: 'ACCESS_OK' }
+   × systemClock：guard-proxy 合法消费（Issue #330 AC3 / ADR 0023） > 经 createSystemClockPlugin 发布后（requireClock 取得）仍可被 guard Proxy 消费 3ms
+     → expected { now: 'THROW:TypeError' } to deeply equal { now: 'ACCESS_OK' }
+   × ManualClock：guard-proxy 合法消费（Issue #330 AC3 / ADR 0023） > now/set/advance 经 guard Proxy 访问与调用直通，loud 校验语义透传 1ms
+     → expected { now: 'THROW:TypeError', …(2) } to deeply equal { now: 'ACCESS_OK', …(2) }
+   × ManualClock：guard-proxy 合法消费（Issue #330 AC3 / ADR 0023） > 经 createManualClockPlugin 发布后（requireClock 取得）仍可被 guard Proxy 消费 1ms
+     → expected { now: 'THROW:TypeError', …(2) } to deeply equal { now: 'ACCESS_OK', …(2) }
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 8 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  packages/clock/test/clock-guard-proxy-consumption.test.ts > systemClock：guard-proxy 合法消费（Issue #330 AC3 / ADR 0023） > now 经 guard Proxy 访问与调用直通，冻结姿态与键面不变
+AssertionError: expected { now: 'THROW:TypeError' } to deeply equal { now: 'ACCESS_OK' }
+
+- Expected
++ Received
+
+  {
+-   "now": "ACCESS_OK",
++   "now": "THROW:TypeError",
+  }
+
+ ❯ packages/clock/test/clock-guard-proxy-consumption.test.ts:88:60
+     86|
+     87|     // 逐成员访问：改造前 1/1 THROW:TypeError，改造后全 ACCESS_OK
+     88|     expect(sweepMemberAccess(systemClock, SYSTEM_MEMBERS)).toEqual(acc…
+       |                                                            ^
+     89|
+     90|     const guarded = guardProxy(systemClock)
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/8]⎯
+
+ FAIL  packages/clock/test/clock-guard-proxy-consumption.test.ts > systemClock：guard-proxy 合法消费（Issue #330 AC3 / ADR 0023） > 经 createSystemClockPlugin 发布后（requireClock 取得）仍可被 guard Proxy 消费
+AssertionError: expected { now: 'THROW:TypeError' } to deeply equal { now: 'ACCESS_OK' }
+
+- Expected
++ Received
+
+  {
+-   "now": "ACCESS_OK",
++   "now": "THROW:TypeError",
+  }
+
+ ❯ packages/clock/test/clock-guard-proxy-consumption.test.ts:113:58
+    111|     expectHonestProxyPassthrough(published, 'now')
+    112|
+    113|     expect(sweepMemberAccess(published, SYSTEM_MEMBERS)).toEqual(acces…
+       |                                                          ^
+    114|
+    115|     const guarded = guardProxy(published)
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/8]⎯
+
+ FAIL  packages/clock/test/clock-guard-proxy-consumption.test.ts > ManualClock：guard-proxy 合法消费（Issue #330 AC3 / ADR 0023） > now/set/advance 经 guard Proxy 访问与调用直通，loud 校验语义透传
+AssertionError: expected { now: 'THROW:TypeError', …(2) } to deeply equal { now: 'ACCESS_OK', …(2) }
+
+- Expected
++ Received
+
+  {
+-   "advance": "ACCESS_OK",
+-   "now": "ACCESS_OK",
+-   "set": "ACCESS_OK",
++   "advance": "THROW:TypeError",
++   "now": "THROW:TypeError",
++   "set": "THROW:TypeError",
+  }
+
+ ❯ packages/clock/test/clock-guard-proxy-consumption.test.ts:135:54
+    133|
+    134|     // 逐成员访问：改造前 3/3 THROW:TypeError，改造后全 ACCESS_OK
+    135|     expect(sweepMemberAccess(clock, MANUAL_MEMBERS)).toEqual(accessOk(…
+       |                                                      ^
+    136|
+    137|     const guarded = guardProxy(clock)
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/8]⎯
+
+ FAIL  packages/clock/test/clock-guard-proxy-consumption.test.ts > ManualClock：guard-proxy 合法消费（Issue #330 AC3 / ADR 0023） > 经 createManualClockPlugin 发布后（requireClock 取得）仍可被 guard Proxy 消费
+AssertionError: expected { now: 'THROW:TypeError', …(2) } to deeply equal { now: 'ACCESS_OK', …(2) }
+
+- Expected
++ Received
+
+  {
+-   "advance": "ACCESS_OK",
+-   "now": "ACCESS_OK",
+-   "set": "ACCESS_OK",
++   "advance": "THROW:TypeError",
++   "now": "THROW:TypeError",
++   "set": "THROW:TypeError",
+  }
+
+ ❯ packages/clock/test/clock-guard-proxy-consumption.test.ts:175:58
+    173|     expectHonestProxyPassthrough(published, 'advance')
+    174|
+    175|     expect(sweepMemberAccess(published, MANUAL_MEMBERS)).toEqual(acces…
+       |                                                          ^
+    176|
+    177|     const guarded = guardProxy(published)
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[4/8]⎯
+
+ FAIL  packages/namespace-registry/test/registry-guard-proxy-consumption.test.ts > nomicoreRegistry：guard-proxy 合法消费（Issue #330 AC1 / ADR 0023） > 七个成员经 guard Proxy 访问不抛、调用行为直通
+AssertionError: expected { open: 'THROW:TypeError', …(6) } to deeply equal { open: 'ACCESS_OK', …(6) }
+
+- Expected
++ Received
+
+  {
+-   "create": "ACCESS_OK",
+-   "deleteNamespace": "ACCESS_OK",
+-   "getStatus": "ACCESS_OK",
+-   "importReplica": "ACCESS_OK",
+-   "open": "ACCESS_OK",
+-   "resetReplica": "ACCESS_OK",
+-   "shutdown": "ACCESS_OK",
++   "create": "THROW:TypeError",
++   "deleteNamespace": "THROW:TypeError",
++   "getStatus": "THROW:TypeError",
++   "importReplica": "THROW:TypeError",
++   "open": "THROW:TypeError",
++   "resetReplica": "THROW:TypeError",
++   "shutdown": "THROW:TypeError",
+  }
+
+ ❯ packages/namespace-registry/test/registry-guard-proxy-consumption.test.ts:119:59
+    117|
+    118|     // 逐成员访问：改造前 7/7 THROW:TypeError，改造后全 ACCESS_OK
+    119|     expect(sweepMemberAccess(registry, REGISTRY_MEMBERS)).toEqual(acce…
+       |                                                           ^
+    120|
+    121|     const guarded = guardProxy(registry)
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[5/8]⎯
+
+ FAIL  packages/namespace-registry/test/registry-guard-proxy-consumption.test.ts > nomicoreRegistry：guard-proxy 合法消费（Issue #330 AC1 / ADR 0023） > shutdown 经 guard Proxy 返回同一缓存 Promise（AC12 幂等锚），freeze 姿态不变
+TypeError: 'get' on proxy: property 'shutdown' is a read-only and non-configurable data property on the proxy target but the proxy did not return its actual value (expected 'shutdown() {
+      if (shutdownPromise !== void 0) return shutdownPromise;
+      acceptance = "shutting-down";
+...<omitted>... }' but got '(...args) => Reflect.apply(value, receiver, args)')
+ ❯ packages/namespace-registry/test/registry-guard-proxy-consumption.test.ts:176:20
+    174|
+    175|     const first = registry.shutdown()
+    176|     expect(guarded.shutdown()).toBe(first)
+       |                    ^
+    177|     expect(guarded.shutdown()).toBe(guarded.shutdown())
+    178|     await first
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[6/8]⎯
+
+ FAIL  packages/ws-replication/test/ws-replication-guard-proxy-consumption.test.ts > nomicoreHubReplication：guard-proxy 合法消费（Issue #330 AC2 / ADR 0023） > status/requestReauth/stop 经 guard Proxy 访问与调用直通，stop 缓存 Promise 恒等
+AssertionError: expected { status: 'ACCESS_OK', …(2) } to deeply equal { status: 'ACCESS_OK', …(2) }
+
+- Expected
++ Received
+
+  {
+-   "requestReauth": "ACCESS_OK",
++   "requestReauth": "THROW:TypeError",
+    "status": "ACCESS_OK",
+-   "stop": "ACCESS_OK",
++   "stop": "THROW:TypeError",
+  }
+
+ ❯ packages/ws-replication/test/ws-replication-guard-proxy-consumption.test.ts:130:53
+    128|
+    129|     // 逐成员访问：改造前 status 已绿、requestReauth/stop THROW；改造后全 ACCESS_OK
+    130|     expect(sweepMemberAccess(service, HUB_MEMBERS)).toEqual(accessOk(H…
+       |                                                     ^
+    131|
+    132|     const guarded = guardProxy(service)
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[7/8]⎯
+
+ FAIL  packages/ws-replication/test/ws-replication-guard-proxy-consumption.test.ts > nomicorePeerReplication：guard-proxy 合法消费（Issue #330 AC2 / ADR 0023） > 全部成员经 guard Proxy 访问与调用直通，waitForLive 由 stop 触发 settle
+AssertionError: expected { status: 'ACCESS_OK', …(5) } to deeply equal { status: 'ACCESS_OK', …(5) }
+
+- Expected
++ Received
+
+  {
+-   "addTarget": "ACCESS_OK",
+-   "notifyAuthChanged": "ACCESS_OK",
+-   "removeTarget": "ACCESS_OK",
++   "addTarget": "THROW:TypeError",
++   "notifyAuthChanged": "THROW:TypeError",
++   "removeTarget": "THROW:TypeError",
+    "status": "ACCESS_OK",
+-   "stop": "ACCESS_OK",
+-   "waitForLive": "ACCESS_OK",
++   "stop": "THROW:TypeError",
++   "waitForLive": "THROW:TypeError",
+  }
+
+ ❯ packages/ws-replication/test/ws-replication-guard-proxy-consumption.test.ts:172:54
+    170|
+    171|     // 逐成员访问：改造前除 status 外 5/5 THROW；改造后全 ACCESS_OK
+    172|     expect(sweepMemberAccess(service, PEER_MEMBERS)).toEqual(accessOk(…
+       |                                                      ^
+    173|
+    174|     const guarded = guardProxy(service)
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[8/8]⎯
+
+
+ Test Files  3 failed (3)
+      Tests  8 failed (8)
+Type Errors  no errors
+   Start at  13:29:17
+   Duration  1.25s (transform 516ms, setup 0ms, collect 815ms, tests 42ms, environment 0ms, prepare 124ms)
