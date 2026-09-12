@@ -24,6 +24,8 @@ import type { NamespaceLease } from '@nomicore/namespace-registry';
 import type { RegistryTimeoutScheduler } from '@nomicore/namespace-registry';
 import { createNamespaceRegistryForTesting, createRegistryTestScheduler } from '@nomicore/namespace-registry/testing';
 import type { RegistryObserverEvent } from '../src/observer.js';
+// issue #333 T0：readData 成功分支恰三键形状的统一断言/构造面。
+import { expectReadDataOk, readDataOk } from '../../namespace-runtime/test/helpers/readdata-ok-shape.js';
 
 // ── 确定性并发原语（禁 real sleep）────────────────────────────────────────────
 
@@ -162,8 +164,9 @@ class ObservableRuntime implements NamespaceRuntime {
   ) {}
 
   readData() {
-    // typed stub（D7）：无 activeTools → schema:null 是诚实语义（缺键即 TS2322 类型锁）
-    return { ok: true as const, value: this.marker, schema: null };
+    // typed stub（D7）：无 activeTools → schema:null 是诚实语义（缺键即 TS2322 类型锁——
+    // 锁由共享构造 readDataOk 的精确返回类型 ReadDataOkShape 保留）
+    return readDataOk(this.marker, null);
   }
 
   getSchema(): null {
@@ -420,7 +423,7 @@ describe('SA7 敌意注入（攻击面 3）：确定性、零 real sleep', () =>
       // 全链驱动：open（carrier 事件 throw）→ release（lease-released/entry-idle throw）→
       // advance（close）→ 再 open（全新 generation）。
       const lease1 = okLease(await registry.open({ userId: 'u-hostile' }, 'ns-h3'));
-      expect(lease1.readData(['n'])).toEqual({ ok: true, value: 'R-H3', schema: null });
+      expectReadDataOk(lease1.readData(['n']), { value: 'R-H3', schema: null });
       await lease1.release();
       expect(scheduler.pending()).toBe(1);
       await scheduler.advanceBy(300_000);

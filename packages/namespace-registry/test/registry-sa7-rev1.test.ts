@@ -44,6 +44,8 @@ import type { NamespaceRuntime, NamespaceRuntimeStatus } from '@nomicore/namespa
 import { NamespaceRegistryShutdownError } from '@nomicore/namespace-registry';
 import type { NamespaceLease, RegistryTimeoutScheduler } from '@nomicore/namespace-registry';
 import { createNamespaceRegistryForTesting, createRegistryTestScheduler } from '@nomicore/namespace-registry/testing';
+// issue #333 T0：readData 成功分支恰三键形状的统一断言/构造面。
+import { expectReadDataOk, readDataOk } from '../../namespace-runtime/test/helpers/readdata-ok-shape.js';
 import { createNamespaceRegistryPlugin } from '@nomicore/namespace-registry';
 import { createCordisRegistryScheduler } from '../src/plugin.js';
 import { Context } from '@deepseek-ai/cordis';
@@ -207,8 +209,9 @@ class ObservableRuntime implements NamespaceRuntime {
   ) {}
 
   readData() {
-    // typed stub（D7）：无 activeTools → schema:null 是诚实语义（缺键即 TS2322 类型锁）
-    return { ok: true as const, value: this.marker, schema: null };
+    // typed stub（D7）：无 activeTools → schema:null 是诚实语义（缺键即 TS2322 类型锁——
+    // 锁由共享构造 readDataOk 的精确返回类型 ReadDataOkShape 保留）
+    return readDataOk(this.marker, null);
   }
 
   getSchema(): null {
@@ -544,7 +547,7 @@ describe('SA7 rev1 补充动态（P1 floating-window / Persistence unload drain 
       const lease2 = okLease(await registry.open({ userId: 'u-sa7-rev1' }, 'k'));
       expect(persistence.loadCalls.length).toBe(2);
       expect(runtimes.length).toBe(2);
-      expect(lease2.readData(['x'])).toEqual({ ok: true, value: 'R2', schema: null });
+      expectReadDataOk(lease2.readData(['x']), { value: 'R2', schema: null });
       // 清扫：release → 重武装（真实桥第二枚 native timer）→ shutdown 同步取消
       // （registry 的 clearTimeout 路径走真实 disposer）+ 关闭 R2。
       await lease2.release();
@@ -621,7 +624,7 @@ describe('SA7 rev1 补充动态（P1 floating-window / Persistence unload drain 
       const lease2 = okLease(await registry.open({ userId: 'u-sa7-rev1' }, 'k'));
       expect(persistence.loadCalls.length).toBe(2);
       expect(runtimes.length).toBe(2);
-      expect(lease2.readData(['x'])).toEqual({ ok: true, value: 'R2', schema: null });
+      expectReadDataOk(lease2.readData(['x']), { value: 'R2', schema: null });
       // 清扫：release → 重武装 → shutdown 同步取消 native timer + 关闭 R2。
       await lease2.release();
       await registry.shutdown();
@@ -684,7 +687,7 @@ describe('SA7 rev1 补充动态（P1 floating-window / Persistence unload drain 
       const lease2 = okLease(await registry.open({ userId: 'u-sa7-rev1' }, 'k'));
       expect(persistence.loadCalls.length).toBe(2);
       expect(runtimes.length).toBe(2);
-      expect(lease2.readData(['x'])).toEqual({ ok: true, value: 'R2', schema: null });
+      expectReadDataOk(lease2.readData(['x']), { value: 'R2', schema: null });
       await lease2.release();
       await scheduler.advanceBy(300_000);
       await flushMicrotasks();
