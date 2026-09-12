@@ -2176,107 +2176,117 @@ export function createRegistryInternal(
     }
   }
 
+  // ADR 0023：函数成员以访问器属性构造（getter 返回稳定闭包），冻结服务才可被
+  // 返回包装闭包的 Proxy 合法消费；方法体、闭包封装与内部状态机一行不动。
+  const open = async (owner: unknown, namespaceId: unknown): Promise<OpenNamespaceResult> => {
+    // #112 逻辑门迁移（§2.D）：停接纳检查在**公共入口同步段**（async 函数体首语句、
+    // 调用方 tick 内执行）——先于一切输入访问（AC9「不访问新输入」：zero
+    // descriptor/Proxy trap 执行、零 Persistence/Runtime/carrier）。
+    if (acceptance !== 'running') return NOT_ACCEPTING_ISSUE;
+    // §6.1：身份算法同步先行——invalid 零 entries/carriers/Persistence/Runtime 访问。
+    const outcome = validateOpenIdentity(owner, namespaceId);
+    if (!outcome.ok) {
+      return outcome.issue;
+    }
+    // §6.2：同步取得 carrier 并接纳 lifecycle slot（已接纳槽按自身事实完整结算——
+    // ADR-0009:99「等待此前已接纳的 lifecycle 操作结算」）。
+    return admitOpenSlot(outcome.identity);
+  };
+  const create = async (input: unknown): Promise<CreateNamespaceResult> => {
+    // #112 逻辑门迁移（§2.D）：停接纳先于 acceptCreateIdentity（零 descriptor/Proxy
+    // trap 执行，AC9）。公共 typed / 实现 unknown 双层签名说明见 #111 冻结文本。
+    if (acceptance !== 'running') {
+      // #226：公共入口拒绝在 namespaceId 生成之前——无归属可用 → 恒同步共享通道
+      // （非缺陷 A 对象；SA1 设计 §7.2）。
+      diag.emitEarlyOutcome(undefined, {
+        stage: 'acceptance',
+        code: 'REGISTRY_NOT_ACCEPTING',
+        result: { kind: 'rejected' },
+        input: { status: 'not-accessed' },
+      });
+      return NOT_ACCEPTING_ISSUE;
+    }
+    const admission = acceptCreateIdentity(input);
+    if (!admission.ok) {
+      diag.emitEarlyOutcome(undefined, {
+        stage: 'identity',
+        code: admission.issue.code,
+        result: { kind: 'rejected' },
+        input: { status: 'not-accessed' },
+      });
+      return admission.issue;
+    }
+    return orchestrateCreate(admission.owner, input);
+  };
+  const importReplica = async (
+    owner: unknown,
+    namespaceId: unknown,
+    doc: unknown,
+    expectedReplicationIdentity: unknown,
+  ): Promise<ImportReplicaResult> => {
+    if (acceptance !== 'running') return NOT_ACCEPTING_ISSUE;
+    const outcome = validateOpenIdentity(owner, namespaceId);
+    if (!outcome.ok) return outcome.issue;
+    const expectedOutcome = snapshotReplicationIdentityRef(expectedReplicationIdentity);
+    if (!expectedOutcome.ok) return IMPORT_EXPECTED_IDENTITY_INVALID_ISSUE;
+    return admitImportSlot(outcome.identity, doc as YjsDoc, expectedOutcome.value);
+  };
+  const resetReplica = async (
+    owner: unknown,
+    namespaceId: unknown,
+    expectedLocalIdentity: unknown,
+  ): Promise<ResetReplicaResult> => {
+    if (acceptance !== 'running') return NOT_ACCEPTING_ISSUE;
+    const outcome = validateOpenIdentity(owner, namespaceId);
+    if (!outcome.ok) return outcome.issue;
+    const expectedOutcome = snapshotReplicationIdentityRef(expectedLocalIdentity);
+    if (!expectedOutcome.ok) return RESET_EXPECTED_IDENTITY_INVALID_ISSUE;
+    return admitResetSlot(outcome.identity, expectedOutcome.value);
+  };
+  const deleteNamespace = async (owner: unknown, namespaceId: unknown): Promise<DeleteNamespaceResult> => {
+    // issue #228（ADR-0009 修订节）：停接纳检查在公共入口同步段（同款纪律——
+    // 先于一切输入访问）；身份文法同步先行（invalid 零 entries/carriers/
+    // Persistence 访问——镜像 open 门禁；namespaceId 即内部 key 单成分）。
+    if (acceptance !== 'running') return NOT_ACCEPTING_ISSUE;
+    const outcome = validateOpenIdentity(owner, namespaceId);
+    if (!outcome.ok) return outcome.issue;
+    return admitDeleteSlot(outcome.identity);
+  };
+  const getStatus = (): NamespaceRegistryStatus => {
+    // §2.E：恒三相冻结常量投影（不暴露 entry/lease/queue/timer 任何内部计面）。
+    return acceptance === 'running'
+      ? RUNNING_STATUS
+      : acceptance === 'shutting-down'
+        ? SHUTTING_DOWN_STATUS
+        : STOPPED_STATUS;
+  };
+  // 非 async 方法：精确返回缓存的 shutdownPromise 实例（async 包装会新建 Promise，
+  // 破坏 AC12「并发/重复调用 exact same Promise」——§7 测试 20 幂等锚）。
+  const shutdown = (): Promise<void> => {
+    // §2.D 首次 shutdown 的同步段（原子，run-to-completion）：
+    // ① 同步停接纳（后续 open/create 立即可观测 NOT_ACCEPTING）；
+    // ② 取消全部 idle timer（不再有自发 close）；
+    // ③ 缓存并返回同一 Promise（AC12 幂等 same-Promise，含已 reject 实例）。
+    if (shutdownPromise !== undefined) return shutdownPromise;
+    acceptance = 'shutting-down';
+    for (const entry of entries.values()) {
+      if (entry.phase === 'idle' && entry.idleTimerHandle !== undefined) {
+        scheduler.clearTimeout(entry.idleTimerHandle);
+        entry.idleTimerHandle = undefined;
+      }
+    }
+    shutdownPromise = runShutdown();
+    return shutdownPromise;
+  };
+
   const registry: NamespaceRegistry = Object.freeze({
-    async open(owner: unknown, namespaceId: unknown): Promise<OpenNamespaceResult> {
-      // #112 逻辑门迁移（§2.D）：停接纳检查在**公共入口同步段**（async 函数体首语句、
-      // 调用方 tick 内执行）——先于一切输入访问（AC9「不访问新输入」：zero
-      // descriptor/Proxy trap 执行、零 Persistence/Runtime/carrier）。
-      if (acceptance !== 'running') return NOT_ACCEPTING_ISSUE;
-      // §6.1：身份算法同步先行——invalid 零 entries/carriers/Persistence/Runtime 访问。
-      const outcome = validateOpenIdentity(owner, namespaceId);
-      if (!outcome.ok) {
-        return outcome.issue;
-      }
-      // §6.2：同步取得 carrier 并接纳 lifecycle slot（已接纳槽按自身事实完整结算——
-      // ADR-0009:99「等待此前已接纳的 lifecycle 操作结算」）。
-      return admitOpenSlot(outcome.identity);
-    },
-    async create(input: unknown): Promise<CreateNamespaceResult> {
-      // #112 逻辑门迁移（§2.D）：停接纳先于 acceptCreateIdentity（零 descriptor/Proxy
-      // trap 执行，AC9）。公共 typed / 实现 unknown 双层签名说明见 #111 冻结文本。
-      if (acceptance !== 'running') {
-        // #226：公共入口拒绝在 namespaceId 生成之前——无归属可用 → 恒同步共享通道
-        // （非缺陷 A 对象；SA1 设计 §7.2）。
-        diag.emitEarlyOutcome(undefined, {
-          stage: 'acceptance',
-          code: 'REGISTRY_NOT_ACCEPTING',
-          result: { kind: 'rejected' },
-          input: { status: 'not-accessed' },
-        });
-        return NOT_ACCEPTING_ISSUE;
-      }
-      const admission = acceptCreateIdentity(input);
-      if (!admission.ok) {
-        diag.emitEarlyOutcome(undefined, {
-          stage: 'identity',
-          code: admission.issue.code,
-          result: { kind: 'rejected' },
-          input: { status: 'not-accessed' },
-        });
-        return admission.issue;
-      }
-      return orchestrateCreate(admission.owner, input);
-    },
-    async importReplica(
-      owner: unknown,
-      namespaceId: unknown,
-      doc: unknown,
-      expectedReplicationIdentity: unknown,
-    ): Promise<ImportReplicaResult> {
-      if (acceptance !== 'running') return NOT_ACCEPTING_ISSUE;
-      const outcome = validateOpenIdentity(owner, namespaceId);
-      if (!outcome.ok) return outcome.issue;
-      const expectedOutcome = snapshotReplicationIdentityRef(expectedReplicationIdentity);
-      if (!expectedOutcome.ok) return IMPORT_EXPECTED_IDENTITY_INVALID_ISSUE;
-      return admitImportSlot(outcome.identity, doc as YjsDoc, expectedOutcome.value);
-    },
-    async resetReplica(
-      owner: unknown,
-      namespaceId: unknown,
-      expectedLocalIdentity: unknown,
-    ): Promise<ResetReplicaResult> {
-      if (acceptance !== 'running') return NOT_ACCEPTING_ISSUE;
-      const outcome = validateOpenIdentity(owner, namespaceId);
-      if (!outcome.ok) return outcome.issue;
-      const expectedOutcome = snapshotReplicationIdentityRef(expectedLocalIdentity);
-      if (!expectedOutcome.ok) return RESET_EXPECTED_IDENTITY_INVALID_ISSUE;
-      return admitResetSlot(outcome.identity, expectedOutcome.value);
-    },
-    async deleteNamespace(owner: unknown, namespaceId: unknown): Promise<DeleteNamespaceResult> {
-      // issue #228（ADR-0009 修订节）：停接纳检查在公共入口同步段（同款纪律——
-      // 先于一切输入访问）；身份文法同步先行（invalid 零 entries/carriers/
-      // Persistence 访问——镜像 open 门禁；namespaceId 即内部 key 单成分）。
-      if (acceptance !== 'running') return NOT_ACCEPTING_ISSUE;
-      const outcome = validateOpenIdentity(owner, namespaceId);
-      if (!outcome.ok) return outcome.issue;
-      return admitDeleteSlot(outcome.identity);
-    },
-    getStatus(): NamespaceRegistryStatus {
-      // §2.E：恒三相冻结常量投影（不暴露 entry/lease/queue/timer 任何内部计面）。
-      return acceptance === 'running'
-        ? RUNNING_STATUS
-        : acceptance === 'shutting-down'
-          ? SHUTTING_DOWN_STATUS
-          : STOPPED_STATUS;
-    },
-    // 非 async 方法：精确返回缓存的 shutdownPromise 实例（async 包装会新建 Promise，
-    // 破坏 AC12「并发/重复调用 exact same Promise」——§7 测试 20 幂等锚）。
-    shutdown(): Promise<void> {
-      // §2.D 首次 shutdown 的同步段（原子，run-to-completion）：
-      // ① 同步停接纳（后续 open/create 立即可观测 NOT_ACCEPTING）；
-      // ② 取消全部 idle timer（不再有自发 close）；
-      // ③ 缓存并返回同一 Promise（AC12 幂等 same-Promise，含已 reject 实例）。
-      if (shutdownPromise !== undefined) return shutdownPromise;
-      acceptance = 'shutting-down';
-      for (const entry of entries.values()) {
-        if (entry.phase === 'idle' && entry.idleTimerHandle !== undefined) {
-          scheduler.clearTimeout(entry.idleTimerHandle);
-          entry.idleTimerHandle = undefined;
-        }
-      }
-      shutdownPromise = runShutdown();
-      return shutdownPromise;
-    },
+    get open() { return open },
+    get create() { return create },
+    get importReplica() { return importReplica },
+    get resetReplica() { return resetReplica },
+    get deleteNamespace() { return deleteNamespace },
+    get getStatus() { return getStatus },
+    get shutdown() { return shutdown },
   });
   return registry;
 }

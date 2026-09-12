@@ -428,12 +428,16 @@ export function createHubReplicationPlugin(
           replication = undefined;
         }
       })();
+      // ADR 0023：函数成员以访问器属性构造（getter 返回稳定闭包），冻结服务
+      // 才可被返回包装闭包的 Proxy 合法消费（Proxy [[Get]] 不变量）。
+      const requestReauth = (instanceId: string): Promise<void> =>
+        replication?.requestReauth(instanceId) ?? Promise.resolve();
       const service: HubReplicationService = Object.freeze({
         get status(): HubReplicationStatus {
           return { state: stopped ? 'stopped' : 'ready', connections: replication?.connections.length ?? 0 };
         },
-        requestReauth: (instanceId: string) => replication?.requestReauth(instanceId) ?? Promise.resolve(),
-        stop,
+        get requestReauth() { return requestReauth },
+        get stop() { return stop },
       });
       ctx.effect(function* () {
         // Re-parent the provide disposer into this ordered effect. Cordis then runs
@@ -502,6 +506,33 @@ export function createPeerReplicationPlugin(
           replication = undefined;
         }
       })();
+      // ADR 0023：函数成员以访问器属性构造（getter 返回稳定闭包）；waitForLive
+      // 闭包捕获 liveWaits/replication/stopped/timer，仍在 apply 作用域内提一次。
+      const addTarget = (target: ReplicationTarget): void => { replication?.addTarget(target) };
+      const removeTarget = (namespaceId: string): Promise<void> =>
+        replication?.removeTarget(namespaceId) ?? Promise.resolve();
+      const notifyAuthChanged = (): void => { replication?.notifyAuthChanged() };
+      const waitForLive = (namespaceId: string): Promise<void> => new Promise<void>((resolve, reject) => {
+        let settled = false;
+        const wait = {
+          handle: undefined as unknown,
+          reject: (error: Error): void => settle(() => reject(error)),
+        };
+        const settle = (complete: () => void): void => {
+          if (settled) return;
+          settled = true;
+          if (liveWaits.delete(wait)) timer.clearTimeout(wait.handle);
+          complete();
+        };
+        const check = (): void => {
+          const current = replication;
+          if (current === undefined || stopped) { wait.reject(new Error('peer replication stopped')); return; }
+          if (current.getNamespaceState(namespaceId) === 'live') { settle(resolve); return; }
+          wait.handle = timer.setTimeout(check, 25);
+          liveWaits.add(wait);
+        };
+        check();
+      });
       const service: PeerReplicationService = Object.freeze({
         get status(): PeerReplicationStatus {
           const current = replication;
@@ -511,31 +542,11 @@ export function createPeerReplicationPlugin(
             getNamespaceState: (namespaceId) => current?.getNamespaceState(namespaceId),
           };
         },
-        addTarget: (target: ReplicationTarget) => replication?.addTarget(target),
-        removeTarget: (namespaceId: string) => replication?.removeTarget(namespaceId) ?? Promise.resolve(),
-        notifyAuthChanged: () => replication?.notifyAuthChanged(),
-        waitForLive: (namespaceId: string) => new Promise<void>((resolve, reject) => {
-          let settled = false;
-          const wait = {
-            handle: undefined as unknown,
-            reject: (error: Error): void => settle(() => reject(error)),
-          };
-          const settle = (complete: () => void): void => {
-            if (settled) return;
-            settled = true;
-            if (liveWaits.delete(wait)) timer.clearTimeout(wait.handle);
-            complete();
-          };
-          const check = (): void => {
-            const current = replication;
-            if (current === undefined || stopped) { wait.reject(new Error('peer replication stopped')); return; }
-            if (current.getNamespaceState(namespaceId) === 'live') { settle(resolve); return; }
-            wait.handle = timer.setTimeout(check, 25);
-            liveWaits.add(wait);
-          };
-          check();
-        }),
-        stop,
+        get addTarget() { return addTarget },
+        get removeTarget() { return removeTarget },
+        get notifyAuthChanged() { return notifyAuthChanged },
+        get waitForLive() { return waitForLive },
+        get stop() { return stop },
       });
       ctx.effect(function* () {
         // Re-parent provide so reverse-yield disposal drains before revocation.
