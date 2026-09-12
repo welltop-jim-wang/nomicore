@@ -32,6 +32,11 @@ export function projectValue(
       return projectUnionMembers(v, values, stack).join(' | ');
     case 'pattern':
       return 'string';
+    case 'int':
+    case 'range':
+      // ADR 0020 决策 7：数值约束叶原样发射 number（与 pattern → string 镜像；
+      // 品牌类型明确不做，留独立 ADR）。判定语义在 validate，生成器不重推导。
+      return 'number';
     case 'xml':
       return 'string';
     case 'array':

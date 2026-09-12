@@ -287,7 +287,7 @@ function matchValueNode(ctx: MatchCtx, node: ValueSchema, anchor: string): void 
       return;
     }
     default:
-      return; // enum/pattern/scalar/xml：值级终态，无匹配（ref/optional 已在规范化中解完）
+      return; // enum/pattern/scalar/int/range/xml：值级终态，无匹配（ref/optional 已在规范化中解完）
   }
 }
 
@@ -411,7 +411,7 @@ function collectAliasClosure(
         return;
       }
       default:
-        return; // enum/pattern/scalar/xml 终态
+        return; // enum/pattern/scalar/int/range/xml 终态
     }
   };
   visit(root);
