@@ -3,7 +3,12 @@
  * （§4.2/§6/§15.2）。per-(connection, namespace) 通道见 hub-namespace.ts。
  */
 import type { DuplexTransport, HubUpgradeRequest, UpgradeIdentity } from './types.js';
-import { selectProtocolVersion, type ReplicationMessage } from '@nomicore/replication-protocol';
+import {
+  CAP_CHUNKED_UPDATE,
+  selectCapabilities,
+  selectProtocolVersion,
+  type ReplicationMessage,
+} from '@nomicore/replication-protocol';
 import {
   decodeInbound,
   namespaceFieldViolation,
@@ -15,6 +20,7 @@ import {
 import { startLiveness } from './liveness.js';
 import { HubNamespaceChannel, type HubChannelHost } from './hub-namespace.js';
 import { ConnectionSender } from './backpressure.js';
+import type { ChunkedTransferPiece } from './update-transfer.js';
 import { dispatchReplicationObserver, safeNow, stableConnectionCode } from './observer.js';
 import type { NamespaceRegistry } from '@nomicore/namespace-registry';
 import type {
@@ -36,6 +42,9 @@ import {
   validateInstanceId,
   validateLimits,
   validateTimeouts,
+  validateChunkedBootstrapChain,
+  validateChunkedSyncDiffChain,
+  validateChunkedTransferChain,
 } from './validate.js';
 
 /**
@@ -50,6 +59,11 @@ import {
  * R3 N1（同步重放型 transport 句柄安全）——wiki/raw 非规范，仅沿革记录。
  */
 const MAX_EARLY_FRAMES = 16;
+
+/** issue #243（DD-1.2）：hub 支持集（编译期冻结常量，源自 replication-protocol
+ *  CAP_CHUNKED_UPDATE=0x1）。onHello 以 selectCapabilities(required, optional,
+ *  SUPPORTED) 单点计算交集——hub 侧零配置门（ADR「取交集」字面）。 */
+const HUB_SUPPORTED_CAPABILITIES = CAP_CHUNKED_UPDATE;
 
 /**
  * issue #190：两 upgrade 入口（accept 门 3 / acceptTrusted 门 2）共享的有界早到帧
@@ -180,6 +194,27 @@ class HubReplicationImpl implements HubReplication {
     const timeouts = resolveTimeouts(options.timeouts);
     validateLimits(limits);
     validateTimeouts(timeouts);
+    // issue #244（D1，SA4-2 收口）：跨字段响亮链——仅当调用方显式表达任一「分块族链上
+    // 键」（maxChunkedUpdateBytes ∨ maxChunksPerUpdate，两链不等式的操作数键）时对合并
+    // 结果校验两链（R1a/N1 + R1c 转绿判据——{maxChunksPerUpdate: 4} + 缺省 envelope 亦
+    // 激活：链② 4MiB > 4×512KiB=2MiB；缺省值自洽由 DEFAULT 构造成立：4MiB ≤ 4MiB ∧
+    // 4MiB ≤ 64×512KiB=32MiB；仅显式既有键不激活 = 非追溯性，N5/N6 锁定，见 validate.ts）。
+    if (
+      options.limits != null &&
+      (Object.prototype.hasOwnProperty.call(options.limits, 'maxChunkedUpdateBytes') ||
+        Object.prototype.hasOwnProperty.call(options.limits, 'maxChunksPerUpdate'))
+    ) {
+      validateChunkedTransferChain(limits);
+    }
+    // issue #295（D6 裁决，SA8 R38）：两条聚合上限链②各自独立——仅当调用方**显式表达
+    // 对应新键**时对合并结果校验（协议 §17「显式配置…时对应链式校验响亮生效；未表达新键
+    // 的存量配置不误判」；#244 家族门与链①原样保留在上方块内）。
+    if (options.limits != null && Object.prototype.hasOwnProperty.call(options.limits, 'maxChunkedBootstrapBytes')) {
+      validateChunkedBootstrapChain(limits);
+    }
+    if (options.limits != null && Object.prototype.hasOwnProperty.call(options.limits, 'maxChunkedSyncDiffBytes')) {
+      validateChunkedSyncDiffChain(limits);
+    }
     this.limits = limits;
     this.timeouts = timeouts;
     this.internals = {
@@ -432,10 +467,17 @@ class HubConnectionImpl implements HubConnection {
   private readonly channelHost: HubChannelHost;
   private readonly transportSubscribers: Array<() => void> = [];
   private stopLiveness: (() => void) | undefined;
+  /** issue #243（DD-1.2）：本连接的会话协商状态——onHello 单点计算后捕获（HELLO 前 0）。
+   *  连接对象单握手生命周期，无复位面。 */
+  private negotiatedCapabilitiesValue = 0;
   /** issue #175：reauth 已发起（连接级幂等守卫——重复 requestReauth 零重复 GOAWAY）。 */
   private reauthRequested = false;
   /** issue #175：reauth drain deadline 句柄（§8 timer 纪律：必须可清——stale fire 零副作用）。 */
   private reauthDeadlineHandle: unknown | undefined;
+  /** issue #244（D3）：连接级入站方向（peer→hub）并发 assembly 槽位——每 (连接, 入站
+   *  方向) 上限 = limits.maxConcurrentAssembliesPerConnection（缺省 4）。集合随连接对象
+   *  生命周期消亡，无独立清理面；通道 busy→idle 经 endInboundAssembly 幂等归还。 */
+  private readonly inboundAssemblySlots = new Set<string>();
 
   constructor(
     private readonly hub: HubInternals,
@@ -477,11 +519,30 @@ class HubConnectionImpl implements HubConnection {
       authorize: (instanceIdentity, namespaceId) => hub.authorize(instanceIdentity, namespaceId),
       sendControl: (message) => this.sendControlChecked(message),
       sendData: (namespaceId, bytes) => this.sendData(namespaceId, bytes),
+      // issue #243（DD-3.5）：UPDATE_CHUNK 与 UPDATE 同一 data 出站点
+      sendUpdateChunk: (namespaceId, chunk) => this.sendUpdateChunk(namespaceId, chunk),
+      chunkedUpdateNegotiated: () => this.isChunkedNegotiated(),
       dataGateOpen: () => this.sender.dataGateOpen(),
       onDataQueued: (namespaceId) => this.sender.onDataQueued(namespaceId),
       requestDataDrain: () => this.sender.requestDrain(),
       connectionFatal: (code, wsCloseCode) => this.connectionFatal(code, wsCloseCode ?? 1002),
       onChannelSettled: (_namespaceId) => this.maybeFinishDrainEarly(),
+      // issue #244（D3）：连接级并发 assembly 准入——幂等（同 ns 已占槽恒 true；
+      // 重复首 chunk 防御由 assembler 状态机承接）+ 满额拒纳（缺省 4 → 第 5 个 → VIOLATION）
+      tryBeginInboundAssembly: (namespaceId) => {
+        if (this.inboundAssemblySlots.has(namespaceId)) return true;
+        if (
+          this.inboundAssemblySlots.size >=
+          hub.limits.maxConcurrentAssembliesPerConnection
+        ) {
+          return false;
+        }
+        this.inboundAssemblySlots.add(namespaceId);
+        return true;
+      },
+      endInboundAssembly: (namespaceId) => {
+        this.inboundAssemblySlots.delete(namespaceId); // 幂等（重复 clear/多挂点汇合零副作用）
+      },
       observerPresent: () => this.connectionObserver() !== undefined,
       emitObserver: (event) => dispatchReplicationObserver(this.connectionObserver(), event),
       connectionId: () => this.connectionIdValue,
@@ -609,6 +670,9 @@ class HubConnectionImpl implements HubConnection {
       decoded = decodeInbound(bytes, {
         expectedSequence: this.expectedSeq,
         maxFrameBytes: this.hub.limits.maxFrameBytes,
+        // issue #243（DD-1.4）：decode 门控透传——握手期 0，ready 后 = onHello 捕获的
+        // selectCapabilities 交集结果。
+        selectedCapabilities: this.negotiatedCapabilitiesValue,
       });
     } catch (err) {
       const code = (err as { code?: string }).code ?? 'MALFORMED_FRAME';
@@ -635,6 +699,7 @@ class HubConnectionImpl implements HubConnection {
     expectedHubInstanceId: string;
     protocolVersions: number[];
     requiredCapabilities: number;
+    optionalCapabilities: number;
     connectionNonce: Uint8Array;
   }): void {
     if (this.state !== 'handshaking') {
@@ -656,10 +721,19 @@ class HubConnectionImpl implements HubConnection {
       this.connectionFatal('UNSUPPORTED_PROTOCOL_VERSION', 1002);
       return;
     }
-    if (message.requiredCapabilities !== 0) {
+    // issue #243（DD-1.2）：capability 交集单点（replace 原 requiredCapabilities!==0 直判）——
+    // required 超集（ok=false）→ 既有 UNSUPPORTED_CAPABILITY 拒绝；否则 selected =
+    // optional ∩ SUPPORTED 写入 HELLO_ACK 并捕获为会话协商状态。
+    const negotiated = selectCapabilities(
+      message.requiredCapabilities,
+      message.optionalCapabilities,
+      HUB_SUPPORTED_CAPABILITIES,
+    );
+    if (!negotiated.ok) {
       this.connectionFatal('UNSUPPORTED_CAPABILITY', 1002);
       return;
     }
+    this.negotiatedCapabilitiesValue = negotiated.selected;
     this.peerInstanceId = this.authenticatedInstanceId;
     this.connectionIdValue = `${this.hub.instanceId}-conn-${this.connId}`;
     this.setConnState('ready');
@@ -704,7 +778,7 @@ class HubConnectionImpl implements HubConnection {
       kind: 'HELLO_ACK',
       hubInstanceId: this.hub.instanceId,
       protocolVersion: version,
-      selectedCapabilities: 0,
+      selectedCapabilities: this.negotiatedCapabilitiesValue, // issue #243：交集结果（缺省 0 = v1）
       connectionNonce: message.connectionNonce,
       connectionId,
     });
@@ -725,6 +799,8 @@ class HubConnectionImpl implements HubConnection {
         case 'SYNC_STEP2':
         case 'RESYNC_REQUIRED':
         case 'UPDATE':
+        case 'UPDATE_CHUNK': // issue #243（DD-5）：chunk 帧与会启动新协议工作的 namespace 帧
+          // 同列——reauth drain 窗口不得进入 channel（防注入在 drain 期开新 assembly）。
           return;
         default:
           break;
@@ -786,6 +862,12 @@ class HubConnectionImpl implements HubConnection {
         return;
       case 'GOAWAY':
         this.connectionFatal('CONNECTION_POLICY_VIOLATION', 1008);
+        return;
+      case 'UPDATE_CHUNK':
+        // issue #243（DD-5）：切片 1 的类型兼容占位替换——协商位透传正确时本分支可
+        // 到达（未协商仍由 decode 门控收口 1002）；转发通道做 detached assembly
+        //（withChannel 对未知 ns 回 NAMESPACE_STATE_VIOLATION ERROR）。
+        this.withChannel(message.namespaceId, (c) => c.onUpdateChunk({ ...message, sequence }));
         return;
       default: {
         const never: never = message;
@@ -932,6 +1014,48 @@ class HubConnectionImpl implements HubConnection {
       namespaceId,
       update: bytes,
     });
+  }
+
+  /** issue #243（DD-3.5）：UPDATE_CHUNK 帧发送路径——与 UPDATE 同一 data 出站点。
+   *  issue #295 切片 2（D5/C6）：kind 首字段与绑定块透传 piece（kind=0 逐字节等价——
+   *  codec 本就编 0 且零绑定成员）。wire 协商位由控制器侧改道判据保证；本方法以
+   *  negotiated 位做纵深防御。 */
+  private sendUpdateChunk(namespaceId: string, chunk: ChunkedTransferPiece): number {
+    if (!this.isChunkedNegotiated()) return 0;
+    const transferKind = chunk.transferKind ?? 0;
+    const base = {
+      kind: 'UPDATE_CHUNK' as const,
+      // issue #295 切片 2：单形态 kind 首字段透传（kind=0 恒定逐字节等价）
+      transferKind,
+      namespaceId,
+      transferId: chunk.transferId,
+      chunkIndex: chunk.chunkIndex,
+      chunkCount: chunk.chunkCount,
+      totalBytes: chunk.totalBytes,
+      bytes: chunk.bytes,
+    };
+    // 绑定块透传（kind≠0 ∧ chunkIndex=0）；缺失成员由 codec 单形态规则响亮拒绝（MALFORMED_FRAME）
+    if (
+      transferKind === 1 &&
+      chunk.chunkIndex === 0 &&
+      chunk.replicationId !== undefined &&
+      chunk.replicationEpoch !== undefined
+    ) {
+      return this.sender.tryEmitData({
+        ...base,
+        replicationId: chunk.replicationId,
+        replicationEpoch: chunk.replicationEpoch,
+      });
+    }
+    if (transferKind === 2 && chunk.chunkIndex === 0 && chunk.syncRoundId !== undefined) {
+      return this.sender.tryEmitData({ ...base, syncRoundId: chunk.syncRoundId });
+    }
+    return this.sender.tryEmitData(base);
+  }
+
+  /** issue #243（DD-1.5）：wire 协商交集位判据（发送门与 decode 门共用同一判据）。 */
+  private isChunkedNegotiated(): boolean {
+    return (this.negotiatedCapabilitiesValue & CAP_CHUNKED_UPDATE) !== 0;
   }
 
   /** §4.2 鸭子类型读取 transport.bufferedAmount（属性形态；缺失/非法 → 0=无压力）。 */

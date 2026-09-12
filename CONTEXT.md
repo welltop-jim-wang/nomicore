@@ -154,6 +154,26 @@ _Avoid_: 裸 Y.Doc WS handler、绕过本地 write sequencer 的 apply、把网�
 Trusted raw Yjs update 已在 sequencer 中提交并登记 dirty，但未执行完整 VFSL ROOT 预校验的复制状态；它可能留下文档路径/边界之外的非法数据——后续普通业务写按路径级/边界级校验工作：其导航路径与语义边界内的非法数据（不含被 set 整值替换的目标位旧值——该位由合法写入修复）仍会被响亮拒绝，触达面外的非法数据不再被普通写发现（ADR-0010 issue #237 修订节；合法性重建与 carrier 覆盖面审计已登记 follow-up）。不表示 transaction 可回滚或 raw update 享有 zero-write 保证。
 _Avoid_: validated replication、apply 后校验失败自动 rollback
 
+**分块复制传输（chunked replication transfer）**:
+（ADR 0013 已接受；ADR 0022 扩展）超过单帧上限的复制载荷拆为多个自描述 `UPDATE_CHUNK` wire 帧的易失传输，kind 三态：live-update（ADR 0013，经 `CAP_CHUNKED_UPDATE` 协商）、snapshot（BOOTSTRAP_SNAPSHOT 基线）与 sync-diff（SYNC_STEP2 diff）（ADR 0022，同版本部署假设下的恒用机制、不新增协商面；发送端复用既有 `CAP_CHUNKED_UPDATE` 交集位做改道门，未协商组合保留既有终局码）；以 (连接, 方向, namespaceId, transferId) 为作用域，三种 kind 共用同一 transferId 计数器，接收端在有界 detached buffer 完整重组后执行一次 sequenced trusted apply（snapshot 为排他复制导入）并以单 ACK 结算。partial assembly 绝不写入 live Y.Doc，中断即丢弃并回退 state-vector reconciliation。
+_Avoid_: 逐片 apply 到 live Y.Doc、跨重连保留 partial chunks、以提高单帧上限代替分块、把 transferId 当跨连接持久标识
+
+**UPDATE_CHUNK**:
+分块传输的单帧消息（wire 码 `0x42`），payload 自 ADR 0022 起恒为 kind 首字段单形态（kind 三态见「分块复制传输」；字段序与首 chunk 绑定块规则以协议 §10.3 为唯一权威，ADR 0013 的六字段旧形态随未发布分支作废）。codec 只做单帧无状态编解码与语义自洽校验，跨帧一致性/顺序/总量与重组属接收端 assembly 状态机——跨帧规则与 assembly 状态机为协议 §10.3 契约（issue #243–#245 落地、issue #246 收口），wire 权威见 `docs/protocols/instance-replication-v1.md`。
+_Avoid_: 在 codec 层承载连接级 assembly 状态、把单个 chunk 当独立 UPDATE apply
+
+**CAP_CHUNKED_UPDATE**:
+HELLO 协商 capability bit `0x00000001`（uint32 BE bitset）；双方 optional 交集经 `selectedCapabilities` 生效。未协商端收到 UPDATE_CHUNK 必须按未知/未支持消息码规则以 connection fatal 拒绝——新旧实现互不破译（issue #242 / ADR 0013）。
+_Avoid_: 把未协商的 0x42 帧当普通帧静默解码、未协商就发送分块
+
+**同版本部署假设（same-version deployment）**:
+Hub 与 Peer 按同版本部署运行、不承诺跨代际 wire 互通的部署前提（ADR 0022）；sync 段分块（kind=snapshot/sync-diff）因此不新增 capability 协商面即恒用启用（发送端复用既有 `CAP_CHUNKED_UPDATE` 交集位做改道门属纵深防御，非新协商面），跨版本混跑的非互破译由既有消息码/版本握手响亮拒绝承载。
+_Avoid_: 为历史 wire 形态保留双形态切换或新增 capability、新旧互通矩阵测试
+
+**实现代际（implementation generation）**:
+端点的实现代际，与协议版本正交、**非 protocol 版本**语义——`envelopeVersion` 恒 1、HELLO `protocolVersions` 不因代际变化（协议 §3 两层版本独立）；代际差异仅在 HELLO capability 协商的 wire 位上可见。v1 代际 = 不含 `CAP_CHUNKED_UPDATE` 的旧实现（HELLO 恒发 `optionalCapabilities=0`，收到 `0x42` 帧按未知消息码 connection fatal 拒绝）；v2 代际 = 支持 `CAP_CHUNKED_UPDATE` 的现实现。协议 §22 互通矩阵按代际组合刻画回落行为（v1 peer ↔ v2 hub、v2 peer ↔ v1 hub、v2 ↔ v2 协商分块）。
+_Avoid_: 把 v2 代际误读为协议版本 2 / 用代际推断 `envelopeVersion` 或 `protocolVersions` 变化
+
 **实例角色（instance role）**:
 实例身份中不可变的 hub/peer 拓扑角色；生产 composition root 配置一次，由 Instance service 同时提供给 Registry 与 transport。peer 实例的本地 replaceSchema/enableReplication/bumpReplicationEpoch 以稳定角色权限错误拒绝，session 的 localRole 必须等于实例角色。
 _Avoid_: 运行期角色切换、Registry 与 transport 分别配置角色、peer 本地修改 SCHEMA 或复制身份

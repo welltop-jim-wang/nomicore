@@ -1,0 +1,35 @@
+=== P1: package vitest run --typecheck packages/replication-protocol ===
+CMD: NODE_OPTIONS=--conditions=nomicore-source pnpm exec vitest run --typecheck packages/replication-protocol
+EXIT: 0
+ Test Files  10 passed (10)
+      Tests  169 passed (169)
+Type Errors  no errors
+
+=== P2: package tsc ===
+CMD: pnpm exec tsc -p packages/replication-protocol/tsconfig.json
+EXIT: 0
+
+=== P3: root typecheck ===
+CMD: pnpm typecheck
+EXIT: 0
+
+
+=== P4: root test ===
+CMD: pnpm test
+EXIT: 1 (see attribution below)
+ Test Files  1 failed | 230 passed (231)
+      Tests  1 failed | 2395 passed (2396)
+Type Errors  no errors
+   Duration  158.95s (transform 5.16s, setup 0ms, collect 48.85s, tests 354.83s, environment 62ms, prepare 22.64s, typecheck 4.68s)
+
+--- failing file (only) ---
+   × T7 stdin error chain + F1 verify-write bounded materialization wait (design §5-T7 / SA7 §2.5) > F1 race: verify-write fired immediately after peer ready (zero settle) converges for a live namespace — fresh peer per round, concurrent burst 5042ms
+stdout | packages/ws-replication/test/ws-replication-sa7-r1-transport-auth.test.ts > issue #138 SA7 R1：真实 TCP 认证窗口动态验证（SA4 D3/D4/D5） > D3-①条数界：未认证 socket 灌 40×1MiB → 第 17 帧即 close(1008)、零分配、后续帧零驻留（40MiB 上 wire 活外部内存增量 ≤24MiB）
+stdout | packages/ws-replication/test/ws-replication-sa7-r1-transport-auth.test.ts > issue #138 SA7 R1：真实 TCP 认证窗口动态验证（SA4 D3/D4/D5） > D3-②封顶+回收：认证等待 helloTimeoutMs(2s) 到点 close(1008/upgrade-timeout)；16×1MiB 早到帧活外部内存驻留有界（8–40MiB ≪ 128MiB 结构界）、迟归验证器不复活、放行后驻留释放过半
+ FAIL  apps/yjs-server/test/stdin-error-chain-red.test.ts > T7 stdin error chain + F1 verify-write bounded materialization wait (design §5-T7 / SA7 §2.5) > F1 race: verify-write fired immediately after peer ready (zero settle) converges for a live namespace — fresh peer per round, concurrent burst
+
+=== P4 isolation rerun of the pre-existing environmental failure ===
+CMD: NODE_OPTIONS=--conditions=nomicore-source pnpm exec vitest run apps/yjs-server/test/stdin-error-chain-red.test.ts
+EXIT: 0
+ Test Files  1 passed (1)
+      Tests  4 passed (4)

@@ -31,6 +31,7 @@ import {
   SCHEMA_ENVELOPE,
   bytesToHex,
   deferred,
+  leaseReplication,
   makeHubNamespace,
   makeNode,
   makeSeedDoc,
@@ -48,6 +49,13 @@ import { ConnectionSender, type ConnectionSenderHost } from '../src/backpressure
 
 const TEST_TOKEN = 'tok-test-4f2b8a1c9d3e';
 const NS_RE = /^ns-[0-9a-f]{32}$/;
+
+/** issue #245 矩阵/T12 分块腿大写（编码后 ≈20,029B > maxUpdateBytes 8KiB → 3 chunk；
+ *  契约文件 ws-replication-issue245-ac-red LIMITS/BIG 同款几何——§8.6(c)/(d) 构型纪律）。
+ *  共享 SCHEMA_ENVELOPE（harness）为纯数值 ROOT 字段——20KB 字符串写须经文件内局
+ *  schema（blurb?: string，见 observedBoot chunked 选项与 T12 无 clock 手工构型；
+ *  N-O6：file-local schema 先例 = 本文件 sentinel 用例直接 registry.create）。 */
+const CHUNKED_BIG = 'z'.repeat(20_000);
 
 // ═══════════════════════════ 确定性时钟（仅作差；事件不含绝对时间戳） ═══════════════════════════
 
@@ -102,8 +110,8 @@ export interface ObservedSetup {
   readonly peerEvents: Collector;
   readonly hubClock: ReplicationClock;
   readonly peerClock: ReplicationClock;
-  writeHub(update: Readonly<{ n?: number; extra?: number }>): Promise<void>;
-  writePeer(update: Readonly<{ n?: number; extra?: number }>): Promise<void>;
+  writeHub(update: Readonly<{ n?: number; extra?: number; blurb?: string }>): Promise<void>;
+  writePeer(update: Readonly<{ n?: number; extra?: number; blurb?: string }>): Promise<void>;
   rootValue(side: 'hub' | 'peer', key: string): unknown;
   setDegraded(side: 'hub' | 'peer', degraded: boolean): void;
   injectHubFrame(message: ReplicationMessage): void;
@@ -131,12 +139,49 @@ interface ObservedOptions {
   /** 覆盖默认确定性时钟（B1 throw 时钟锚） */
   readonly hubClock?: ReplicationClock;
   readonly peerClock?: ReplicationClock;
+  /** issue #245（§8.6(c)/(d-i) 构型）：协商分块腿选项——hub fixture 换用文件内局 schema
+   *  （追加 `blurb?: string` 字符串字段——共享 SCHEMA_ENVELOPE 纯数值无法承载 20KB 写；
+   *  harness 不在本任务 ALLOW，不得为加字符串字段改共享 fixture），peer 以 chunkedUpdate:
+   *  true 发起 CAP_CHUNKED_UPDATE 协商，两侧 limits 压低 maxUpdateBytes（缺省 8KiB）——
+   *  大写（CHUNKED_BIG ≈20KB → 3 chunk）走 chunked 族、限内小写仍走普通族（双族并存）。
+   *  除该选项外的全部既有用例零行为变化。 */
+  readonly chunked?: Readonly<{ maxUpdateBytes?: number }>;
 }
 
 async function observedBoot(opts: ObservedOptions = {}): Promise<ObservedSetup> {
   const hubNode = makeNode('hub');
   const peerNode = makeNode('peer');
-  const fixture = await makeHubNamespace(hubNode, { owner: HUB_OWNER, root: { n: 42, extra: 77 } });
+  // issue #245：chunked 选项 → hub fixture 直建文件内局 schema（数值 + blurb 字符串字段；
+  // 复制身份经 enableReplication 后读投影——makeHubNamespace 同构，仅 schema 不同）。
+  const chunkedOpt = opts.chunked;
+  let fixture: HubNamespaceFixture;
+  if (chunkedOpt !== undefined) {
+    const lease = okLease(
+      await hubNode.registry.create({
+        owner: HUB_OWNER,
+        schema: {
+          ...SCHEMA_ENVELOPE,
+          id: 'ws-observer-issue245-chunked',
+          text: 'type ROOT = { n: number; extra?: number; blurb?: string; };\n',
+        },
+        root: { n: 42, extra: 77 },
+      }),
+    );
+    await schemaReady(lease);
+    const enabled = await lease.enableReplication();
+    if (!enabled.ok) throw new Error(`enableReplication 失败：${JSON.stringify(enabled)}`);
+    const repl = leaseReplication(lease);
+    fixture = {
+      namespaceId: lease.namespaceId,
+      lease,
+      identity:
+        repl.state === 'enabled'
+          ? { replicationId: repl.replicationId, replicationEpoch: repl.replicationEpoch }
+          : { replicationId: '', replicationEpoch: 0 },
+    };
+  } else {
+    fixture = await makeHubNamespace(hubNode, { owner: HUB_OWNER, root: { n: 42, extra: 77 } });
+  }
   const nsId = fixture.namespaceId;
   const hubEvents = new Collector();
   const peerEvents = new Collector();
@@ -144,6 +189,12 @@ async function observedBoot(opts: ObservedOptions = {}): Promise<ObservedSetup> 
     opts.hubClock ?? new ManualClock(opts.startClockValue ?? 1_000);
   const peerClock: ReplicationClock =
     opts.peerClock ?? new ManualClock(opts.startClockValue ?? 1_000);
+  // issue #245：chunked 选项压 maxUpdateBytes（缺省 8KiB——CHUNKED_BIG → 3 chunk；调用方
+  // 显式 limits 优先于该缺省键）。其余用例（chunked 缺省）零变化。
+  const mergedLimits =
+    chunkedOpt !== undefined
+      ? { ...(opts.limits ?? {}), maxUpdateBytes: chunkedOpt.maxUpdateBytes ?? 8 * 1024 }
+      : opts.limits;
 
   const authorizer = async (
     _instanceIdentity: string,
@@ -164,7 +215,7 @@ async function observedBoot(opts: ObservedOptions = {}): Promise<ObservedSetup> 
       token === TEST_TOKEN ? { ok: true, instanceId: PEER_INSTANCE } : { ok: false },
     observer: opts.hubObserver ?? hubEvents.observer,
     clock: hubClock,
-    ...(opts.limits !== undefined ? { limits: opts.limits } : {}),
+    ...(mergedLimits !== undefined ? { limits: mergedLimits } : {}),
     ...(opts.timeouts !== undefined ? { timeouts: opts.timeouts } : {}),
   });
 
@@ -185,10 +236,13 @@ async function observedBoot(opts: ObservedOptions = {}): Promise<ObservedSetup> 
     targets: [{ namespaceId: nsId, localOwner: PEER_OWNER }],
     observer: opts.peerObserver ?? peerEvents.observer,
     clock: peerClock,
-    ...(opts.limits !== undefined ? { limits: opts.limits } : {}),
+    ...(mergedLimits !== undefined ? { limits: mergedLimits } : {}),
     ...(opts.timeouts !== undefined ? { timeouts: opts.timeouts } : {}),
     ...(opts.backoff !== undefined ? { backoff: opts.backoff } : {}),
     ...(opts.random !== undefined ? { random: opts.random } : {}),
+    // issue #245：chunked 选项 → peer opt-in 旋钮（HELLO.optionalCapabilities 置位——协商
+    // 位经真握手建立，chunkable 判据 = 已协商 ∧ 超限；缺省 false = v1 逐字节不变）
+    ...(chunkedOpt !== undefined ? { chunkedUpdate: true } : {}),
   });
 
   // peer 预置副本（reconcile 前置）——以 hub 实况快照为基底（struct 同源，diff 只含增量；
@@ -223,7 +277,9 @@ async function observedBoot(opts: ObservedOptions = {}): Promise<ObservedSetup> 
     peer.start();
   }
 
-  const writePeer = async (update: Readonly<{ n?: number; extra?: number }>): Promise<void> => {
+  const writePeer = async (
+    update: Readonly<{ n?: number; extra?: number; blurb?: string }>,
+  ): Promise<void> => {
     const lease = okLease(await peerNode.registry.open(PEER_OWNER, nsId));
     await schemaReady(lease);
     for (const [key, value] of Object.entries(update)) {
@@ -232,7 +288,9 @@ async function observedBoot(opts: ObservedOptions = {}): Promise<ObservedSetup> 
     }
     await lease.release();
   };
-  const writeHub = async (update: Readonly<{ n?: number; extra?: number }>): Promise<void> => {
+  const writeHub = async (
+    update: Readonly<{ n?: number; extra?: number; blurb?: string }>,
+  ): Promise<void> => {
     for (const [key, value] of Object.entries(update)) {
       const result = await fixture.lease.mutateData({ op: 'set', path: [key], value });
       if (!result.ok) throw new Error(`hub 业务写失败：${JSON.stringify(result)}`);
@@ -745,6 +803,11 @@ describe('T5：背压 / resync 事件', () => {
         maxQueuedUpdateBytes: 4 * 1024 * 1024, maxQueuedUpdateCount: 256,
         maxInFlightUpdates: 32, maxQueuedBytesPerConnection: 8 * 1024 * 1024,
         lowWater: 64 * 1024, highWater: 512 * 1024, maxQueuedControlBytes: 8 * 1024 * 1024,
+        maxChunkedUpdateBytes: 4 * 1024 * 1024, // issue #243：slice 2 新增字段（缺省值）
+        maxChunksPerUpdate: 64, // issue #244：slice 3 新增字段（缺省值）
+        maxConcurrentAssembliesPerConnection: 4, // issue #244：slice 3 新增字段（缺省值）
+        maxChunkedBootstrapBytes: 4 * 1024 * 1024, // issue #295：slice 1 新增字段（缺省值）
+        maxChunkedSyncDiffBytes: 4 * 1024 * 1024, // issue #295：slice 1 新增字段（缺省值）
       },
       timer: timer as never,
       ackTimeoutMs: 10_000,
@@ -1152,8 +1215,13 @@ describe('T9：事件内容安全（safe-field）', () => {
     ['root', 'ROOT-SENTINEL-VALUE'],
   ];
 
-  /** 冻结白名单：逐 type 键集（24 型——issue #256 第 22 型 + issue #287 第 23/24 型；
-   *  键集契约 = 设计 §4.1 + api 型断言共同锁定）。 */
+  /** 冻结白名单：逐 type 键集（28 型——issue #256 第 22 型 + issue #287 第 23/24 型 +
+   *  issue #244 第 25 型 + issue #245 第 26–28 型；键集契约 = 设计 §4.1 + api 型断言
+   *  共同锁定）。
+   *  issue #245：chunked 族三成功型行 = ADR 0013 L89–91 域键集 + §23 信封（connectionId?
+   *  握手后在场；applied/acked 的 latency 键 = clock 两态可选——矩阵在注入 clock 下运行，
+   *  白名单按可并集冻结；exact-keyset 由契约文件 R1–R5 与下方 T12 两态分块腿钉死）。
+   *  chunked-update-aborted 不入白名单（R26：矩阵无中止场景——收口后在途中止会响亮红）。 */
   const ALLOWED_KEYS: ReadonlyMap<string, ReadonlySet<string>> = new Map([
     ['connection-state-changed', new Set(['type', 'side', 'connectionId', 'from', 'to'])],
     ['connection-backoff-scheduled', new Set(['type', 'side', 'attempt', 'delayMs', 'reason'])],
@@ -1190,6 +1258,13 @@ describe('T9：事件内容安全（safe-field）', () => {
     // ——两型均零 schema 文本、零 ROOT、零堆栈（§23.3 safe-field 清单）
     ['schema-rearm-applied', new Set(['type', 'side', 'connectionId', 'namespaceId', 'semanticFingerprint', 'updatedAt'])],
     ['schema-rearm-failed', new Set(['type', 'side', 'connectionId', 'namespaceId', 'code'])],
+    // issue #245（append-only 第 26–28 型；ADR 0013 L89–91 域键集逐字 + §23 side 信封——
+    // R22 裁决：无 sequence/四段差值/效果组键；sent 恒无 latency 键；applied/acked 的
+    // latency 键随 clock 在场/缺省两态。键集冻结亦经契约文件 R1–R5 exact-keyset 断言）
+    ['chunked-update-sent', new Set(['type', 'side', 'connectionId', 'namespaceId', 'transferId', 'chunkCount', 'totalBytes'])],
+    ['chunked-update-applied', new Set(['type', 'side', 'connectionId', 'namespaceId', 'bytes', 'chunkCount', 'applyLatencyMs'])],
+    ['chunked-update-acked', new Set(['type', 'side', 'connectionId', 'namespaceId', 'bytes', 'ackLatencyMs'])],
+
   ]);
 
   function assertSafe(events: readonly ReplicationObserverEvent[], label: string): void {
@@ -1232,7 +1307,10 @@ describe('T9：事件内容安全（safe-field）', () => {
           key === 'protectedCheckMs' || key === 'liveApplyMs' || key === 'dirtyNotifyMs' ||
           key === 'delayMs' ||
           // issue #256：timer 族到期的配置上限读数（有限非负）
-          key === 'timeoutMs'
+          key === 'timeoutMs' ||
+          // issue #245：chunked 族长度/计数/受控 transferId（wire UPDATE_CHUNK 申报投影——
+          // transferId uint32 连接代际内递增；chunkCount ≥ 1；totalBytes 长度非内容）
+          key === 'transferId' || key === 'chunkCount' || key === 'totalBytes'
         ) {
           expect(typeof value === 'number' && Number.isFinite(value) && value >= 0, `${label}: ${event.type}.${key}`).toBe(true);
         }
@@ -1284,9 +1362,14 @@ describe('T9：事件内容安全（safe-field）', () => {
     }
   }
 
-  it('全矩阵事件：键集 ⊆ 冻结白名单；零 sentinel；零二进制/Error；namespaceId 文法；数值有限', async () => {
+  it('全矩阵事件：键集 ⊆ 冻结白名单；零 sentinel；零二进制/Error；namespaceId 文法；数值有限（issue #245：+ 协商分块腿——三新型真实激发、key-set 白名单行非死行）', async () => {
     // 场景矩阵：成功（bootstrap/live/双向写）+ degrade + 敌意 GOAWAY + 断线重连 + stop
-    const run = await observedBoot();
+    // issue #245（S12）：chunked 选项 = 协商位开 + 8KiB 单帧限——限内小写走普通族、
+    // CHUNKED_BIG 大写走 chunked 族（expectedTypes 双族并存；白名单三新行必须被真实
+    // 激发——非死行）。R26 纪律：分块腿在收口相位（GOAWAY 注入/wire close 1006/
+    // peer.stop()）之前完整收敛——收口后在途中止会观测 chunked-update-aborted（白名单
+    // 不含该型 → 响亮红）。
+    const run = await observedBoot({ chunked: {} });
     await waitFor(() => run.peer.getNamespaceState(run.nsId) === 'live', 'live');
     await run.writeHub({ extra: 11 });
     await run.writePeer({ n: 12 });
@@ -1297,6 +1380,18 @@ describe('T9：事件内容安全（safe-field）', () => {
     run.setDegraded('peer', false);
     await run.writeHub({ extra: 33 });
     await settle();
+    // ── issue #245 矩阵 chunked 腿（peer→hub 分块大写：3 chunk；sent/acked = peer、
+    // applied = hub——side 双侧经契约 R1–R5/R4 exact-keyset 另行钉死，本腿只做激发与
+    // 安全面）──
+    await run.writePeer({ blurb: CHUNKED_BIG });
+    await waitFor(
+      () =>
+        run.rootValue('hub', 'blurb') === CHUNKED_BIG &&
+        run.peerEvents.of('chunked-update-sent').length >= 1 &&
+        run.peerEvents.of('chunked-update-acked').length >= 1 &&
+        run.hubEvents.of('chunked-update-applied').length >= 1,
+      '矩阵 chunked 腿收敛（三新型齐备——白名单行非死行）',
+    );
     run.injectHubFrame({ kind: 'GOAWAY', reasonCode: 'HOSTILE-GOAWAY-SENTINEL', drainTimeoutMs: 5 });
     await settle();
     run.wire.closePeerSide(1006, 'close-reason-SENTINEL-55');
@@ -1307,13 +1402,17 @@ describe('T9：事件内容安全（safe-field）', () => {
     const all = [...run.hubEvents.events, ...run.peerEvents.events];
     expect(all.length).toBeGreaterThan(20);
     assertSafe(all, 'matrix');
-    // 全部 24 型中本矩阵可达的 type 都出现（覆盖连接域 + 字节域 + degraded；
-    // 第 23/24 型 re-arm 域需 replaceSchema/fatal 注入，不在本矩阵可达面）
+    // 全部 28 型中本矩阵可达的 type 都出现（本矩阵覆盖连接域 + 字节域 + degraded +
+    // chunked；第 23/24 型 re-arm 域需 replaceSchema/fatal 注入，不在本矩阵可达面；
+    // 第 25 型 chunked-update-aborted 无中止场景——R26）
+
     const types = new Set(all.map((e) => e.type));
     const expectedTypes = [
       'connection-state-changed', 'channel-state-changed', 'bootstrap-imported',
       'bootstrap-snapshot-sent', 'update-sent', 'update-applied', 'goaway-received',
       'connection-backoff-scheduled', 'degraded-bypass-applied',
+      // issue #245：矩阵 chunked 腿真实激发三新型（不得为死行）
+      'chunked-update-sent', 'chunked-update-applied', 'chunked-update-acked',
     ] as const;
     for (const t of expectedTypes) {
       expect(types.has(t), `缺事件 ${t}`).toBe(true);
@@ -1500,11 +1599,11 @@ describe('issue #239 helpers（@nomicore/ws-replication/testing）：safeStateVe
 // ═══════════════════════════ T12：bytes in/out + latency ═══════════════════════════
 
 describe('T12：per-frame bytes 与 apply/ACK latency', () => {
-  it('注入 clock：update-applied.applyLatencyMs 含 sequencer 排队（saveGate 门闩）；update-acked.ackLatencyMs 含对端处理', async () => {
-    const run = await observedBoot();
+  it('注入 clock：update-applied.applyLatencyMs 含 sequencer 排队（saveGate 门闩）；update-acked.ackLatencyMs 含对端处理；issue #245 分块腿——chunked 两型 latency 在场且 = 25、sent 恒无 latency 键（§8.6.1(d-i) 必交付）', async () => {
+    const run = await observedBoot({ chunked: {} });
     await waitFor(() => run.peer.getNamespaceState(run.nsId) === 'live', 'live');
 
-    // 挂 hub apply（saveDoc）→ 用门闩确定性制造延迟
+    // ── 普通族小写腿（既有）：挂 hub apply（saveDoc）→ 用门闩确定性制造延迟 ──
     run.hubNode.persistence.saveGate = deferred();
     await run.writePeer({ n: 30 });
     await settle();
@@ -1530,14 +1629,90 @@ describe('T12：per-frame bytes 与 apply/ACK latency', () => {
     >;
     expect(acked.ackLatencyMs).toBe(25);
     expect(acked.bytes).toBe(applied.bytes);
+
+    // ── issue #245 分块腿（§8.6.1(d-i) 必交付——AC6「时钟折叠策略」注入 clock 态：
+    //     chunked-update-applied.applyLatencyMs / chunked-update-acked.ackLatencyMs 在场
+    //     （in === true）、Number.isFinite、≥ 0（门闩确定性下精确 = 25——同上方普通族
+    //     用例机制；分块 apply 经 assembler complete → 同一 applyRemoteUpdate → 同一
+    //     sequencer/save 管线，saveGate 门闩同样生效）；chunked-update-sent 键集恒无
+    //     latency 键（clock 在场也不加——DD1 裁决）──
+    run.hubNode.persistence.saveGate = deferred();
+    await run.writePeer({ blurb: CHUNKED_BIG });
+    await settle();
+    // 分块 transfer 完成出站（末 chunk sentAt 已记）且 hub apply 已挂门闩（t0 已捕获）
+    expect(run.peerEvents.of('chunked-update-sent').length, '分块 sent 恰一（完成出站）').toBe(1);
+    expect(
+      run.hubEvents.of('chunked-update-applied').length,
+      '门闩悬挂期 chunked-update-applied 不得先行结算（发射点 = 决策落定后）',
+    ).toBe(0);
+    (run.hubClock as ManualClock).advance(25);
+    (run.peerClock as ManualClock).advance(25);
+    const gate2 = run.hubNode.persistence.saveGate;
+    run.hubNode.persistence.saveGate = undefined;
+    if (gate2 !== undefined) gate2.resolve();
+    await settle();
+
+    const appliedChunked = run.hubEvents.lastOf('chunked-update-applied') as Extract<
+      ReplicationObserverEvent,
+      { type: 'chunked-update-applied' }
+    >;
+    expect(appliedChunked, 'chunked-update-applied 必须已发').toBeDefined();
+    expect(
+      Object.prototype.hasOwnProperty.call(appliedChunked!, 'applyLatencyMs'),
+      'applyLatencyMs 在场（in === true——clock 注入）',
+    ).toBe(true);
+    expect(Number.isFinite(appliedChunked!.applyLatencyMs)).toBe(true);
+    expect(appliedChunked!.applyLatencyMs! >= 0).toBe(true);
+    expect(appliedChunked!.applyLatencyMs).toBe(25); // 门闩确定性（既有普通族用例同款）
+    expect(appliedChunked!.chunkCount, 'applied.chunkCount = wire 申报').toBe(3);
+    const ackedChunked = run.peerEvents.lastOf('chunked-update-acked') as Extract<
+      ReplicationObserverEvent,
+      { type: 'chunked-update-acked' }
+    >;
+    expect(ackedChunked, 'chunked-update-acked 必须已发').toBeDefined();
+    expect(
+      Object.prototype.hasOwnProperty.call(ackedChunked!, 'ackLatencyMs'),
+      'ackLatencyMs 在场（in === true——clock 注入）',
+    ).toBe(true);
+    expect(Number.isFinite(ackedChunked!.ackLatencyMs)).toBe(true);
+    expect(ackedChunked!.ackLatencyMs! >= 0).toBe(true);
+    expect(ackedChunked!.ackLatencyMs).toBe(25);
+    expect(ackedChunked!.bytes).toBe(appliedChunked!.bytes);
+    const sentChunked = run.peerEvents.lastOf('chunked-update-sent') as Extract<
+      ReplicationObserverEvent,
+      { type: 'chunked-update-sent' }
+    >;
+    expect(sentChunked, 'chunked-update-sent 必须已发').toBeDefined();
+    expect('applyLatencyMs' in sentChunked!, 'sent 键集无 applyLatencyMs（clock 在场也不加）').toBe(false);
+    expect('ackLatencyMs' in sentChunked!, 'sent 键集无 ackLatencyMs（clock 在场也不加）').toBe(false);
   });
 
-  it('无 clock：latency 字段不存在、事件仍发（dormant 缺面）', async () => {
+  it('无 clock：latency 字段不存在、事件仍发（dormant 缺面）；issue #245 分块腿——chunked 三型仍发且两 latency 键整键缺失（§8.6.1(d-ii) 必交付）', async () => {
     const hubEvents = new Collector();
     const peerEvents = new Collector();
     const hubNode = makeNode('hub');
     const peerNode = makeNode('peer');
-    const fixture = await makeHubNamespace(hubNode, { owner: HUB_OWNER });
+    // issue #245：hub fixture 直建文件内局 schema（含 blurb 字符串字段——CHUNKED_BIG 写
+    // 命中分块几何；makeHubNamespace 的共享 SCHEMA_ENVELOPE 纯数值——harness 不在本任务
+    // ALLOW。手工构型与下方 createHubReplication/createPeerReplication 均「无 clock」
+    // （L1531/L1545 注释锚同款——时钟缺面不抑制事件，仅抑制键）。
+    const created = okLease(
+      await hubNode.registry.create({
+        owner: HUB_OWNER,
+        schema: {
+          ...SCHEMA_ENVELOPE,
+          id: 'ws-observer-issue245-noclock',
+          text: 'type ROOT = { n: number; blurb?: string; };\n',
+        },
+        root: { n: 42 },
+      }),
+    );
+    await schemaReady(created);
+    const enabled = await created.enableReplication();
+    if (!enabled.ok) throw new Error(`enableReplication 失败：${JSON.stringify(enabled)}`);
+    const nsId = created.namespaceId;
+    // 协商分块构型（同契约文件 LIMITS 几何：8KiB 单帧限——CHUNKED_BIG ≈20KB → 3 chunk）
+    const chunkedLimits = { maxUpdateBytes: 8 * 1024 };
     const hub = createHubReplication({
       instanceId: HUB_INSTANCE,
       registry: hubNode.registry,
@@ -1546,6 +1721,7 @@ describe('T12：per-frame bytes 与 apply/ACK latency', () => {
       verifyToken: async (token) =>
         token === TEST_TOKEN ? { ok: true, instanceId: PEER_INSTANCE } : { ok: false },
       observer: hubEvents.observer,
+      limits: chunkedLimits,
       // 无 clock
     });
     const wire = makeWire();
@@ -1558,13 +1734,18 @@ describe('T12：per-frame bytes 与 apply/ACK latency', () => {
         return wire.peerEnd;
       },
       timer: peerNode.scheduler,
-      targets: [{ namespaceId: fixture.namespaceId, localOwner: PEER_OWNER }],
+      targets: [{ namespaceId: nsId, localOwner: PEER_OWNER }],
       observer: peerEvents.observer,
+      limits: chunkedLimits,
+      // issue #245：opt-in 协商旋钮（缺省 false = v1 逐字节——普通族小写腿不受影响）
+      chunkedUpdate: true,
       // 无 clock
     });
     peer.start();
-    await waitFor(() => peer.getNamespaceState(fixture.namespaceId) === 'live', 'live');
-    const lease = okLease(await peerNode.registry.open(PEER_OWNER, fixture.namespaceId));
+    await waitFor(() => peer.getNamespaceState(nsId) === 'live', 'live');
+
+    // ── 普通族小写腿（既有）：latency 字段整键缺失、事件仍发 ──
+    const lease = okLease(await peerNode.registry.open(PEER_OWNER, nsId));
     await schemaReady(lease);
     const result = await lease.mutateData({ op: 'set', path: ['n'], value: 9 });
     if (!result.ok) throw new Error(`写失败：${JSON.stringify(result)}`);
@@ -1584,6 +1765,40 @@ describe('T12：per-frame bytes 与 apply/ACK latency', () => {
     >;
     expect('ackLatencyMs' in acked).toBe(false);
     expect(acked.bytes).toBe(applied.bytes);
+
+    // ── issue #245 分块腿（§8.6.1(d-ii) 必交付）：无 clock 态下三 chunked 成功型事件
+    //     仍发（时钟缺面不抑制事件——仅抑制键）；applyLatencyMs/ackLatencyMs 整键缺失
+    //     （in === false，§23.4 L811「field 缺失，非 undefined 值」纪律）──
+    const lease2 = okLease(await peerNode.registry.open(PEER_OWNER, nsId));
+    await schemaReady(lease2);
+    const bigResult = await lease2.mutateData({ op: 'set', path: ['blurb'], value: CHUNKED_BIG });
+    if (!bigResult.ok) throw new Error(`大写写失败：${JSON.stringify(bigResult)}`);
+    await lease2.release();
+    await waitFor(
+      () =>
+        peerEvents.of('chunked-update-acked').length >= 1 &&
+        hubEvents.of('chunked-update-applied').length >= 1,
+      '分块腿收敛（chunked-update-applied/acked 到达）',
+    );
+    const sentChunked = peerEvents.lastOf('chunked-update-sent') as Extract<
+      ReplicationObserverEvent,
+      { type: 'chunked-update-sent' }
+    >;
+    const appliedChunked = hubEvents.lastOf('chunked-update-applied') as Extract<
+      ReplicationObserverEvent,
+      { type: 'chunked-update-applied' }
+    >;
+    const ackedChunked = peerEvents.lastOf('chunked-update-acked') as Extract<
+      ReplicationObserverEvent,
+      { type: 'chunked-update-acked' }
+    >;
+    expect(sentChunked, '无 clock 态 chunked-update-sent 仍发').toBeDefined();
+    expect(appliedChunked, '无 clock 态 chunked-update-applied 仍发').toBeDefined();
+    expect(ackedChunked, '无 clock 态 chunked-update-acked 仍发').toBeDefined();
+    expect('applyLatencyMs' in appliedChunked!, '无 clock：applyLatencyMs 整键缺失（in === false）').toBe(false);
+    expect('ackLatencyMs' in ackedChunked!, '无 clock：ackLatencyMs 整键缺失（in === false）').toBe(false);
+    expect('applyLatencyMs' in sentChunked!, 'sent 恒无 applyLatencyMs').toBe(false);
+    expect(ackedChunked!.bytes).toBe(appliedChunked!.bytes);
   });
 });
 

@@ -1,12 +1,13 @@
 /**
  * 消息注册表（append-only、冻结）+ ReplicationMessage 判别联合。
  *
- * 权威来源：docs/protocols/instance-replication-v1.md §5（17 条消息的 code/scope/direction/ack）。
+ * 权威来源：docs/protocols/instance-replication-v1.md §5（18 条消息的 code/scope/direction/ack；
+ * issue #242 追加第 18 条 UPDATE_CHUNK(0x42)，ADR 0013 冻结值）。
  * codec 不强制 direction/ack——只在注册表暴露元数据供 ws-replication 状态机使用。
  * 所有注册表对象与条目对象 Object.freeze。
  */
 
-/** 消息名联合（恰 17 个 v1 消息）。 */
+/** 消息名联合（17 个 v1 消息 + UPDATE_CHUNK）。 */
 export type MessageName =
   | 'HELLO'
   | 'HELLO_ACK'
@@ -24,7 +25,8 @@ export type MessageName =
   | 'SYNC_APPLIED'
   | 'RESYNC_REQUIRED'
   | 'UPDATE'
-  | 'UPDATE_ACK';
+  | 'UPDATE_ACK'
+  | 'UPDATE_CHUNK';
 
 /** 消息作用域：connection / namespace / either。 */
 export type MessageScope = 'connection' | 'namespace' | 'either';
@@ -58,12 +60,13 @@ const _messageTypes: Record<MessageName, number> = {
   RESYNC_REQUIRED: 0x33,
   UPDATE: 0x40,
   UPDATE_ACK: 0x41,
+  UPDATE_CHUNK: 0x42,
 };
 
-/** name → code（17 键，冻结）。 */
+/** name → code（18 键，冻结）。 */
 export const MESSAGE_TYPES: Readonly<Record<MessageName, number>> = Object.freeze(_messageTypes);
 
-/** code（数字字符串键）→ name 精确逆映射（17 键，冻结）。 */
+/** code（数字字符串键）→ name 精确逆映射（18 键，冻结）。 */
 export const MESSAGE_NAMES: Readonly<Record<string, MessageName>> = Object.freeze(
   Object.fromEntries(
     Object.entries(_messageTypes).map(([name, code]): [string, MessageName] => [String(code), name as MessageName]),
@@ -92,9 +95,10 @@ const _messageRegistry: Record<MessageName, MessageInfo> = {
   RESYNC_REQUIRED: messageInfo(0x33, 'namespace', 'either', 'peer-starts-new-round'),
   UPDATE: messageInfo(0x40, 'namespace', 'either', 'UPDATE_ACK'),
   UPDATE_ACK: messageInfo(0x41, 'namespace', 'either', 'none'),
+  UPDATE_CHUNK: messageInfo(0x42, 'namespace', 'either', 'UPDATE_ACK'),
 };
 
-/** name → MessageInfo（17 键，冻结）。 */
+/** name → MessageInfo（18 键，冻结）。 */
 export const MESSAGE_REGISTRY: Readonly<Record<MessageName, MessageInfo>> = Object.freeze(_messageRegistry);
 
 // ---------------------------------------------------------------- 消息类型（= fixtures 17 个 interface 形状）
@@ -222,7 +226,42 @@ export interface UpdateAckMsg {
   ackedSequence: number;
 }
 
-/** 17 成员判别联合，kind 为判别键（成员形状 = test/fixtures.ts 的 17 个 interface）。 */
+/**
+ * 0x42 UPDATE_CHUNK wire kind 首字段（ADR 0022 / 协议 §10.3）：
+ * 0=live-update / 1=snapshot / 2=sync-diff。单形态恒在（编码/解码双向校验 ∈ {0,1,2}）。
+ */
+export type UpdateChunkTransferKind = 0 | 1 | 2;
+
+/**
+ * 分块 UPDATE 的自描述单帧（ADR 0022 / 协议 §10.3 单形态字段序 = wire 序）。
+ * 单帧语义自洽规则（kind ∈ {0,1,2}、绑定块当且仅当 kind≠0 ∧ chunkIndex=0、transferId ≥ 1、
+ * chunkIndex < chunkCount、非空 bytes、bytes ≤ totalBytes）由 codec 校验（MALFORMED_FRAME）；
+ * 跨帧一致性/顺序/总量校验与绑定块内容核对属接收端 assembly / 后续切片，codec 无状态、不承载。
+ */
+export interface UpdateChunkMsg {
+  kind: 'UPDATE_CHUNK';
+  /** wire kind 首字段（单形态恒在；与判别键 `kind` 异名）。 */
+  transferKind: UpdateChunkTransferKind;
+  namespaceId: string;
+  /** uint32，(连接, 方向, namespace) 域内从 1 严格递增，三种 kind 共用同一计数器（ADR 0022）。 */
+  transferId: number;
+  /** uint32，0-based。 */
+  chunkIndex: number;
+  /** uint32，≥ 1。 */
+  chunkCount: number;
+  /** uint32，完整 update 字节数，≥ bytes.byteLength。 */
+  totalBytes: number;
+  /** kind=1 首 chunk 绑定块成员（当且仅当 transferKind=1 ∧ chunkIndex=0 出现）。 */
+  replicationId?: string;
+  /** kind=1 首 chunk 绑定块成员（当且仅当 transferKind=1 ∧ chunkIndex=0 出现）。 */
+  replicationEpoch?: number;
+  /** kind=2 首 chunk 绑定块成员（当且仅当 transferKind=2 ∧ chunkIndex=0 出现）。 */
+  syncRoundId?: number;
+  /** 本分片（非空），≤ maxUpdateBytes（复用 UPDATE 字段限额）。 */
+  bytes: Uint8Array;
+}
+
+/** 18 成员判别联合，kind 为判别键（成员形状 = test/fixtures.ts 的 18 个 interface）。 */
 export type ReplicationMessage =
   | HelloMsg
   | HelloAckMsg
@@ -240,4 +279,5 @@ export type ReplicationMessage =
   | SyncAppliedMsg
   | ResyncRequiredMsg
   | UpdateMsg
-  | UpdateAckMsg;
+  | UpdateAckMsg
+  | UpdateChunkMsg;

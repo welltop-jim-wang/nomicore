@@ -12,6 +12,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import {
+  CAP_CHUNKED_UPDATE,
   CONNECTION_ERRORS,
   NAMESPACE_ERRORS,
   ProtocolError,
@@ -93,8 +94,12 @@ describe('property：seeded 随机合法消息 roundtrip', () => {
   const SYNC_CODES = ['SYNC_STATE_VIOLATION', 'UPDATE_TOO_LARGE', 'BOOTSTRAP_TOO_LARGE'];
 
   function randomMessage(rand: () => number): Record<string, unknown> {
-    const pick = Math.floor(rand() * 19);
+    // 20 分支：17 个 v1 消息 + UPDATE（原文）+ UPDATE_CHUNK（issue #242 追加）+ UPDATE_ACK（default）。
+    const pick = Math.floor(rand() * 20);
     const randomBytes = () => Uint8Array.from({ length: Math.floor(rand() * 64) }, () => Math.floor(rand() * 256));
+    // UPDATE_CHUNK.bytes 非空 + totalBytes ≥ bytes.byteLength（单帧语义自洽规则，ADR 0013）。
+    const randomChunkBytes = () =>
+      Uint8Array.from({ length: 1 + Math.floor(rand() * 63) }, () => Math.floor(rand() * 256));
     // §6.1：connectionNonce 固定 16 字节（HELLO/HELLO_ACK 不得用 randomBytes 生成长度）
     const fixedNonce = () => Uint8Array.from({ length: 16 }, (_, i) => i);
     switch (pick) {
@@ -134,6 +139,35 @@ describe('property：seeded 随机合法消息 roundtrip', () => {
         return { kind: 'RESYNC_REQUIRED', namespaceId: NS, reasonCode: 'ACK_TIMEOUT' };
       case 17:
         return { kind: 'UPDATE', namespaceId: NS, update: randomBytes() };
+      case 18: {
+        // issue #242/#295：UPDATE_CHUNK 分支（单形态：kind 首字段 + 绑定块当且仅当
+        // kind≠0 ∧ chunkIndex=0；单帧语义自洽：transferId≥1、index<count、count≥1、
+        // 非空 bytes、bytes≤totalBytes）。生成器覆盖三 kind × 绑定块 presence 组合。
+        const bytes = randomChunkBytes();
+        const chunkCount = 1 + Math.floor(rand() * 10);
+        const chunkIndex = Math.floor(rand() * chunkCount);
+        const transferKind = Math.floor(rand() * 3) as 0 | 1 | 2;
+        const binding: Record<string, unknown> =
+          transferKind === 1 && chunkIndex === 0
+            ? {
+                replicationId: Array.from({ length: 32 }, () => Math.floor(rand() * 16).toString(16)).join(''),
+                replicationEpoch: Math.floor(rand() * 1000),
+              }
+            : transferKind === 2 && chunkIndex === 0
+              ? { syncRoundId: Math.floor(rand() * 1000) }
+              : {};
+        return {
+          kind: 'UPDATE_CHUNK',
+          transferKind,
+          namespaceId: NS,
+          transferId: 1 + Math.floor(rand() * 1000),
+          chunkIndex,
+          chunkCount,
+          totalBytes: bytes.byteLength + Math.floor(rand() * 1000),
+          ...binding,
+          bytes,
+        };
+      }
       default:
         return { kind: 'UPDATE_ACK', namespaceId: NS, ackedSequence: Math.floor(rand() * 1000) };
     }
@@ -144,7 +178,8 @@ describe('property：seeded 随机合法消息 roundtrip', () => {
     for (let i = 0; i < 300; i++) {
       const msg = randomMessage(rand);
       const bytes = encodeMessage(msg as never, { sequence: 1 });
-      const decoded = decodeMessage(bytes);
+      // 已协商解码（UPDATE_CHUNK 帧需 CAP_CHUNKED_UPDATE 位，issue #242 D-3 门控）
+      const decoded = decodeMessage(bytes, { selectedCapabilities: CAP_CHUNKED_UPDATE });
       const actual = decoded.message as unknown as Record<string, unknown>;
       expect(actual.kind, `迭代 ${i}`).toBe(msg.kind);
       for (const [k, v] of Object.entries(msg)) {

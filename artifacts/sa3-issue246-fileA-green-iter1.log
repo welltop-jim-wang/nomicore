@@ -1,0 +1,16 @@
+=== issue #246 File A 实现后（docs/ADR/CONTEXT 修订在位） ===
+$ NODE_OPTIONS=--conditions=nomicore-source pnpm exec vitest run packages/replication-protocol/test/codec-issue246-doc-contract.test.ts
+Testing types with tsc and vue-tsc is an experimental feature.
+Breaking changes might not follow SemVer, please pin Vitest's version when using it.
+
+ RUN  v3.2.7 /home/wangjian/nomicore-fix-issue-246
+
+ ✓ packages/replication-protocol/test/codec-issue246-doc-contract.test.ts (22 tests) 7ms
+
+ Test Files  1 passed (1)
+      Tests  22 passed (22)
+Type Errors  no errors
+   Start at  00:07:23
+   Duration  242ms (transform 76ms, setup 0ms, collect 91ms, tests 7ms, environment 0ms, prepare 43ms)
+
+exit=0

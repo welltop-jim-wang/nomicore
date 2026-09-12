@@ -85,8 +85,8 @@ describe('固定 envelope：20-byte 大端 NMCR 头（§3）', () => {
     expect(bytesToHex(decoded.payload)).toBe(HELLO.payloadHex);
   });
 
-  it('decodeFrame 按消息注册表验证 messageType（0x00/0x05/0x42 → UNSUPPORTED_MESSAGE_TYPE）', () => {
-    for (const bad of [0x00, 0x05, 0x42]) {
+  it('decodeFrame 按消息注册表验证 messageType（0x00/0x05/0x43 → UNSUPPORTED_MESSAGE_TYPE；0x42 已注册为 UPDATE_CHUNK）', () => {
+    for (const bad of [0x00, 0x05, 0x43]) {
       const bytes = hexToBytes(buildFrameHex(bad, 1, HELLO.payloadHex));
       expectProtocolError(() => decodeFrame(bytes), 'UNSUPPORTED_MESSAGE_TYPE');
     }

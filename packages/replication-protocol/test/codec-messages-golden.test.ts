@@ -10,6 +10,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import {
+  CAP_CHUNKED_UPDATE,
   type DecodedMessage,
   ProtocolError,
   decodeMessage,
@@ -28,7 +29,8 @@ const GOLDEN_BY_NAME = new Map(GOLDEN.map((g) => [g.name, g]));
 function decodeGolden(name: string): DecodedMessage {
   const g = GOLDEN_BY_NAME.get(name);
   if (!g) throw new Error(`unknown golden ${name}`);
-  const decoded = decodeMessage(hexToBytes(g.frameHex));
+  // UPDATE_CHUNK 帧必须带已协商 capability（issue #242 D-3 门控）；对其它帧同选项亦合法。
+  const decoded = decodeMessage(hexToBytes(g.frameHex), { selectedCapabilities: CAP_CHUNKED_UPDATE });
   expect(decoded.header.sequence).toBe(g.sequence);
   expect(decoded.header.messageType).toBe(g.messageType);
   expect(decoded.header.payloadLength).toBe(g.payloadHex.length / 2);
@@ -46,9 +48,9 @@ function expectProtocolError(fn: () => unknown, code: string): void {
   expect((caught as ProtocolError).code).toBe(code);
 }
 
-describe('全部 v1 消息 payload 的 byte-level golden vectors（§5–§13）', () => {
-  it('注册表恰好 17 个 v1 消息，每种的 encodeMessage 输出与 golden frame 逐字节一致', () => {
-    expect(GOLDEN).toHaveLength(18);
+describe('全部 v1 消息 payload 的 byte-level golden vectors（§5–§13；issue #242 追加 UPDATE_CHUNK 3 向量）', () => {
+  it('注册表恰好 18 个 v1 消息（17 + UPDATE_CHUNK），每种的 encodeMessage 输出与 golden frame 逐字节一致', () => {
+    expect(GOLDEN).toHaveLength(21);
     for (const g of GOLDEN) {
       const bytes = encodeMessage(g.message, { sequence: g.sequence });
       const hex = Array.from(bytes)
@@ -229,6 +231,17 @@ describe('全部 v1 消息 payload 的 byte-level golden vectors（§5–§13）
     if (d.message.kind !== 'UPDATE_ACK') return;
     expect(d.message.namespaceId).toBe('ns-0123456789abcdef0123456789abcdef');
     expect(d.message.ackedSequence).toBe(6);
+  });
+
+  it('UPDATE_CHUNK — kind → ns → transferId → chunkIndex → chunkCount → totalBytes → bytes（issue #242 三向量，已协商解码；issue #295 单形态）', () => {
+    for (const name of ['UPDATE_CHUNK_BASIC', 'UPDATE_CHUNK_MULTIBYTE', 'UPDATE_CHUNK_U32_MAX'] as const) {
+      const g = GOLDEN_BY_NAME.get(name)!;
+      const d = decodeGolden(name);
+      expect(d.message, name).toEqual(g.message);
+    }
+    // 未协商（缺省）下 UPDATE_CHUNK 帧必须被拒绝——由 codec-issue242-ac-red.test.ts AC3 覆盖；
+    // 此处仅锚定已协商解码 + 消息码 0x42。
+    expect(GOLDEN_BY_NAME.get('UPDATE_CHUNK_BASIC')!.messageType).toBe(0x42);
   });
 
   it('encodeMessage 用注册表推导 ERROR 元数据：调用方无法覆盖 fatal/retryable', () => {

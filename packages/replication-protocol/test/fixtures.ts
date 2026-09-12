@@ -180,6 +180,22 @@ export interface UpdateAckMsg {
   namespaceId: string;
   ackedSequence: number;
 }
+export interface UpdateChunkMsg {
+  kind: 'UPDATE_CHUNK';
+  /** wire kind 首字段（ADR 0022 / 协议 §10.3 单形态）：0=live-update / 1=snapshot / 2=sync-diff。 */
+  transferKind: 0 | 1 | 2;
+  namespaceId: string;
+  transferId: number;
+  chunkIndex: number;
+  chunkCount: number;
+  totalBytes: number;
+  /** kind=1 首 chunk 绑定块成员。 */
+  replicationId?: string;
+  replicationEpoch?: number;
+  /** kind=2 首 chunk 绑定块成员。 */
+  syncRoundId?: number;
+  bytes: Uint8Array;
+}
 
 export type FixtureMessage =
   | HelloMsg
@@ -198,7 +214,8 @@ export type FixtureMessage =
   | SyncAppliedMsg
   | ResyncRequiredMsg
   | UpdateMsg
-  | UpdateAckMsg;
+  | UpdateAckMsg
+  | UpdateChunkMsg;
 
 export interface GoldenFixture {
   name: string;
@@ -345,6 +362,42 @@ export const GOLDEN: GoldenFixture[] = [
     namespaceId: NS,
     ackedSequence: 6,
   }, '236e732d303132333435363738396162636465663031323334353637383961626364656606'),
+  // issue #295 切片 1（ADR 0022 / 协议 §10.3）：UPDATE_CHUNK(0x42) golden 改写为 kind 首字段
+  // 单形态——字段序 kind(varUint) → namespaceId → transferId → chunkIndex → chunkCount →
+  // totalBytes → bytes（payload 字面量与红灯契约 codec-issue242-ac-red.test.ts 的三条向量
+  // 逐字一致；首 chunk 绑定块形态由 codec-issue299-ac-red.test.ts 冻结向量锁定）。
+  // kind 分配：BASIC=0（live-update 首 chunk）/ MULTIBYTE=1（snapshot 非首 chunk，无绑定块）/
+  // U32_MAX=2（sync-diff 非首 chunk，无绑定块）——kind 0/1/2 全覆盖。
+  fixture('UPDATE_CHUNK_BASIC', 0x42, 19, {
+    kind: 'UPDATE_CHUNK',
+    transferKind: 0,
+    namespaceId: NS,
+    transferId: 1,
+    chunkIndex: 0,
+    chunkCount: 3,
+    totalBytes: 600,
+    bytes: Uint8Array.from([0x0a, 0x0b, 0x0c]),
+  }, '00' + '236e732d3031323334353637383961626364656630313233343536373839616263646566010003d804030a0b0c'),
+  fixture('UPDATE_CHUNK_MULTIBYTE', 0x42, 20, {
+    kind: 'UPDATE_CHUNK',
+    transferKind: 1,
+    namespaceId: NS,
+    transferId: 300,
+    chunkIndex: 63,
+    chunkCount: 64,
+    totalBytes: 4194304,
+    bytes: Uint8Array.from([0xde, 0xad, 0xbe, 0xef, 0x01]),
+  }, '01' + '236e732d3031323334353637383961626364656630313233343536373839616263646566ac023f408080800205deadbeef01'),
+  fixture('UPDATE_CHUNK_U32_MAX', 0x42, 21, {
+    kind: 'UPDATE_CHUNK',
+    transferKind: 2,
+    namespaceId: NS,
+    transferId: 0xffffffff,
+    chunkIndex: 0xfffffffe,
+    chunkCount: 0xffffffff,
+    totalBytes: 0xffffffff,
+    bytes: Uint8Array.from([0xff]),
+  }, '02' + '236e732d3031323334353637383961626364656630313233343536373839616263646566ffffffff0ffeffffff0fffffffff0fffffffff0f01ff'),
 ];
 
 export const HELLO = GOLDEN[0]!.message as HelloMsg;
@@ -385,6 +438,7 @@ export const MESSAGE_TABLE: Record<string, number> = {
   RESYNC_REQUIRED: 0x33,
   UPDATE: 0x40,
   UPDATE_ACK: 0x41,
+  UPDATE_CHUNK: 0x42,
 };
 
 /** 消息作用域（§5 scope 列）：connection / namespace / either */
@@ -406,6 +460,7 @@ export const MESSAGE_SCOPE: Record<string, 'connection' | 'namespace' | 'either'
   RESYNC_REQUIRED: 'namespace',
   UPDATE: 'namespace',
   UPDATE_ACK: 'namespace',
+  UPDATE_CHUNK: 'namespace',
 };
 
 /** 消息方向（§5 direction 列） */
@@ -427,6 +482,7 @@ export const MESSAGE_DIRECTION: Record<string, 'peer-to-hub' | 'hub-to-peer' | '
   RESYNC_REQUIRED: 'either',
   UPDATE: 'either',
   UPDATE_ACK: 'either',
+  UPDATE_CHUNK: 'either',
 };
 
 /** 消息结果/ack 语义（§5 Result/ack 列） */
@@ -448,6 +504,7 @@ export const MESSAGE_ACK: Record<string, string> = {
   RESYNC_REQUIRED: 'peer-starts-new-round',
   UPDATE: 'UPDATE_ACK',
   UPDATE_ACK: 'none',
+  UPDATE_CHUNK: 'UPDATE_ACK', // issue #242：ACK 复用 UPDATE_ACK（ackedSequence = 末 chunk 帧序，ADR 0013）
 };
 
 /** 连接错误注册表（§13.1）：code → { fatal, retryable, wsCloseCode } */
@@ -474,7 +531,7 @@ export const CONNECTION_ERROR_TABLE: Record<
   INTERNAL_ERROR: { fatal: true, retryable: 'yes', wsCloseCode: 1011 },
 };
 
-/** namespace 错误注册表（§13.2）：code → { fatal, retryable, terminalState } */
+/** namespace 错误注册表（§13.2）：code → { fatal, retryable, terminalState }（26 条） */
 export const NAMESPACE_ERROR_TABLE: Record<
   string,
   { fatal: boolean; retryable: string; terminalState: string }
@@ -499,4 +556,12 @@ export const NAMESPACE_ERROR_TABLE: Record<
   ACK_TIMEOUT: { fatal: false, retryable: 'resync', terminalState: 'needs-resync' },
   NAMESPACE_TIMEOUT: { fatal: true, retryable: 'reconnect', terminalState: 'failed' },
   INTERNAL_ERROR: { fatal: true, retryable: 'reconnect', terminalState: 'failed' },
+  // issue #242（ADR 0013）：分块传输语义错误码
+  UPDATE_TRANSFER_VIOLATION: { fatal: true, retryable: 'no', terminalState: 'failed' },
+  UPDATE_TRANSFER_TOO_LARGE: { fatal: true, retryable: 'config', terminalState: 'failed' },
+  // issue #295 切片 2（ADR 0022 / 协议 §13.2 L445–448）：snapshot/sync-diff 分块传输四码
+  SNAPSHOT_TRANSFER_VIOLATION: { fatal: true, retryable: 'no', terminalState: 'failed' },
+  SNAPSHOT_TRANSFER_TOO_LARGE: { fatal: true, retryable: 'config', terminalState: 'failed' },
+  SYNC_TRANSFER_VIOLATION: { fatal: true, retryable: 'no', terminalState: 'failed' },
+  SYNC_TRANSFER_TOO_LARGE: { fatal: true, retryable: 'config', terminalState: 'failed' },
 };

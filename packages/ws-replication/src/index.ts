@@ -36,6 +36,7 @@ export type {
 } from './plugin.js';
 
 export type {
+  ChunkedUpdateAbortReason,
   DuplexTransport,
   HubConnection,
   HubConnectionState,

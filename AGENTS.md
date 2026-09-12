@@ -36,7 +36,7 @@ When integrating Nomicore into an external Cordis host, changing plugin assembly
 
 ### Instance replication
 
-When changing Hub/Peer replication, authentication, wire frames, connection or namespace state machines, backpressure, reconciliation, or shutdown drain, treat `docs/adr/0010-hub-peer-websocket-ydoc-replication.md` as the architecture and `docs/protocols/instance-replication-v1.md` as the normative wire contract; then read the nearest package or app `AGENTS.md`.
+When changing Hub/Peer replication, authentication, wire frames, connection or namespace state machines, backpressure, reconciliation, or shutdown drain, treat `docs/adr/0010-hub-peer-websocket-ydoc-replication.md` as the architecture and `docs/protocols/instance-replication-v1.md` as the normative wire contract; then read the nearest package or app `AGENTS.md`. When changing chunked transfer (UPDATE_CHUNK framing, capability negotiation, assembly limits, transfer error codes, or chunked-* observer events), also treat `docs/adr/0013-chunked-live-update-transfer.md` and `docs/adr/0022-chunked-sync-transfer.md` as the design contracts.
 
 ### Namespace diagnostic change log
 

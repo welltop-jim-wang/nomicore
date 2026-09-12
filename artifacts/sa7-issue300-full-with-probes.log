@@ -1,0 +1,247 @@
+
+ RUN  v3.2.7 /home/wangjian/nomicore-fix-issue-300
+
+stdout | packages/ws-replication/test/ws-replication-sa7-r1-transport-auth.test.ts > issue #138 SA7 R1：真实 TCP 认证窗口动态验证（SA4 D3/D4/D5） > D3-①条数界：未认证 socket 灌 40×1MiB → 第 17 帧即 close(1008)、零分配、后续帧零驻留（40MiB 上 wire 活外部内存增量 ≤24MiB）
+[SA7-DIAG] D3-① flood40MiB framesParsed=17 extDeltaAfterClose=17.1MiB rssDelta=98.1MiB
+
+stdout | packages/ws-replication/test/ws-replication-sa7-r1-transport-auth.test.ts > issue #138 SA7 R1：真实 TCP 认证窗口动态验证（SA4 D3/D4/D5） > D3-②封顶+回收：认证等待 helloTimeoutMs(2s) 到点 close(1008/upgrade-timeout)；16×1MiB 早到帧活外部内存驻留有界（8–40MiB ≪ 128MiB 结构界）、迟归验证器不复活、放行后驻留释放过半
+[SA7-DIAG] D3-② cap16MiB extHeldDelta=17.0MiB extReleasedDelta=1.0MiB rssRawPeak=24.3MiB rssSteady=23.8MiB rssFinal=-0.2MiB gc=expose-gc
+
+ ✓ packages/ws-replication/test/ws-replication-sa7-r1-transport-auth.test.ts (5 tests) 4122ms
+   ✓ issue #138 SA7 R1：真实 TCP 认证窗口动态验证（SA4 D3/D4/D5） > D3-①条数界：未认证 socket 灌 40×1MiB → 第 17 帧即 close(1008)、零分配、后续帧零驻留（40MiB 上 wire 活外部内存增量 ≤24MiB）  977ms
+   ✓ issue #138 SA7 R1：真实 TCP 认证窗口动态验证（SA4 D3/D4/D5） > D3-②封顶+回收：认证等待 helloTimeoutMs(2s) 到点 close(1008/upgrade-timeout)；16×1MiB 早到帧活外部内存驻留有界（8–40MiB ≪ 128MiB 结构界）、迟归验证器不复活、放行后驻留释放过半  2525ms
+ ✓ packages/ws-replication/test/ws-replication-sa7-issue171-real-transport.test.ts (4 tests) 3642ms
+   ✓ SA7 RT-F1（issue #171，SA4 §4.1）：真实 TCP + 真实 timer 下 GOAWAY drain 窗口 removeTarget——deadline 关 socket 触发本地 onClose 后资源收口恰一次 > RT-F1：live → GOAWAY(RESTARTING) → 窗口内 removeTarget → deadline close(1001) 本地 onClose → lease-released 恰一次 + watchdog 零空转 + 字段清空  1795ms
+   ✓ SA7 RT-F1（issue #171，SA4 §4.1）：真实 TCP + 真实 timer 下 GOAWAY drain 窗口 removeTarget——deadline 关 socket 触发本地 onClose 后资源收口恰一次 > RT-G5：GOAWAY 收帧同步静默——drain 窗口内 peer 业务写零 UPDATE 出站；deadline 才关 transport；deadline 全量层处置 lease 恰一次  1548ms
+ ✓ packages/ws-replication/test/ws-replication-sa7-issue169-dynamic.test.ts (2 tests) 2305ms
+   ✓ issue #169 SA7-D2（SA4 动态重点 2）：Δ≡0 write-through-0 悬崖——真实 TCP 长寿命连接饱和签名 > D2：帧间 settle 节奏下累计 data 超过 cap → data 准入恒拒（RESYNC_REQUIRED 恢复环）/ UPDATE 字节平 / 零 1011、零 close（无终局信号）  2295ms
+ ✓ packages/ws-replication/test/ws-replication-sa7-175-dynamic.test.ts (6 tests) 2155ms
+   ✓ issue #175 SA7：主动 reauth 生命周期动态验证（SA4 六项动态重点） > D1（SA4 重点 1）：真实 TCP——requestReauth 后 peer 原始 socket 先收 GOAWAY(REAUTH_REQUIRED, drain>0) 再 socket-close；hub close=(1001,"hub-reauth")；全 wire 字节零 token；收口后 blocked 保持零重拨  2127ms
+ ✓ packages/ws-replication/test/ws-replication-sa7-issue170-real-transport.test.ts (2 tests) 1511ms
+   ✓ SA7 issue #170 真实 transport：pong 超时收口 → backoff 重拨 → hub 只留新连接 → 数据收敛（真实 TCP + 真实 timer） > 真实链路：死对端 pong 超时 close(1001) → 重拨后 hub.connections===1、旧传输零僵尸 ping/零 ws 抛错、新代健康、写值收敛  940ms
+   ✓ SA7 issue #170 真实 transport：pong 超时收口 → backoff 重拨 → hub 只留新连接 → 数据收敛（真实 TCP + 真实 timer） > A4 故障注入：适配器 ping() 首调抛错（socket 仍开放）→ liveness catch 吸收 → close(1001,pong-timeout) + backoff → 重连健康收敛（零未捕获异常）  570ms
+ ✓ packages/ws-replication/test/ws-replication-sa7-r2-transport.test.ts (2 tests) 1032ms
+   ✓ issue #137 R2 SA7：真实 transport control 额度边界抽样（真实 TCP + 真实 bufferedAmount） > A（存活侧）：真实暂停段 + 缺省 8MiB 额度内 control 流量（4 ns × 32 ACK = 128 ≈ 7.3KiB）——全部上 wire、零 ERROR、连接 ready  403ms
+   ✓ issue #137 R2 SA7：真实 transport control 额度边界抽样（真实 TCP + 真实 bufferedAmount） > B（耗尽侧）：真实暂停段 + 跨越显式 64KiB 对照额度的 control 流量（40 ns × 32 ACK = 1280 ≈ 73KiB）——恰 1 ERROR(CONNECTION_BACKPRESSURE) + close(1011) + peer backoff  627ms
+stdout | packages/ws-replication/test/sa7-300-real-transport-probe.test.ts > SA7 issue #300 真实 TCP 动态探针：kind=1 bootstrap + kind=2 双向恢复 diff > RT：100KB 文档经 kind=1 分块 bootstrap（双 peer）；100KB 恢复写经 kind=2 分块上行收敛 + kind=2 分块下行收敛；单 ACK 锚末 chunk 帧序
+[SA7-DATAFLOW] route=rt-bootstrap-k1 step=observed hubToAK1Chunks=13 hubToBK1Chunks=13 aAcks=[3] aAckedSeq=[15] aLastK1Seq=15 bAckedSeq=[15] bLastK1Seq=15 aBlurbHead=zzzz bBlurbHead=zzzz
+
+stdout | packages/ws-replication/test/sa7-300-real-transport-probe.test.ts > SA7 issue #300 真实 TCP 动态探针：kind=1 bootstrap + kind=2 双向恢复 diff > RT：100KB 文档经 kind=1 分块 bootstrap（双 peer）；100KB 恢复写经 kind=2 分块上行收敛 + kind=2 分块下行收敛；单 ACK 锚末 chunk 帧序
+[SA7-DATAFLOW] route=rt-recovery-k2 step=observed aK2UpChunks=13 aK2UpTotalBytes=100029 hubToBK2Chunks=13 hubToBK2TotalBytes=100029 hubToAApplied=[[1,5],[2,21]] aLastK2Seq=21 bApplied=[[1,17],[2,33]] bLastK2Seq=undefined errorsAll=[] aState=live bState=live
+
+ ✓ packages/ws-replication/test/sa7-300-real-transport-probe.test.ts (1 test) 403ms
+   ✓ SA7 issue #300 真实 TCP 动态探针：kind=1 bootstrap + kind=2 双向恢复 diff > RT：100KB 文档经 kind=1 分块 bootstrap（双 peer）；100KB 恢复写经 kind=2 分块上行收敛 + kind=2 分块下行收敛；单 ACK 锚末 chunk 帧序  402ms
+ ✓ packages/ws-replication/test/ws-replication-issue287-real-transport.test.ts (1 test) 372ms
+   ✓ issue #287 real-transport 抽样：真实 TCP 链路的 schema re-arm 全链路 > hub replaceSchema → 真实 wire UPDATE → peer 恰一 schema-rearm-applied（§23.3 字段面）→ 新 tools 业务写收敛；hub 侧零 re-arm 事件  371ms
+ ✓ packages/ws-replication/test/ws-replication-issue243-real-transport.test.ts (1 test) 374ms
+   ✓ issue #243 AC7：真实 TCP + MemoryPersistence 1 Hub + 2 Peers（协商分块 + fan-out 分块镜像） > A 超限写 → hub 分块收齐 apply + 单 ACK；hub fan-out 分块到 B；回声抑制不回送 A  373ms
+ ✓ packages/ws-replication/test/ws-replication-sa6-hardening-g3-g4-red.test.ts (16 tests) 188ms
+ ✓ packages/ws-replication/test/ws-replication-issue137-r2-red.test.ts (9 tests) 123ms
+ ✓ packages/ws-replication/test/ws-replication-observer-red.test.ts (32 tests) 179ms
+ ✓ packages/ws-replication/test/ws-replication-issue244-sa7-dynamic.test.ts (11 tests) 177ms
+ ✓ packages/ws-replication/test/ws-replication-issue231-send-failure.test.ts (10 tests) 169ms
+ ✓ packages/ws-replication/test/ws-replication-issue254-timeout-recovery.test.ts (5 tests) 166ms
+ ✓ packages/ws-replication/test/ws-replication-issue243-chunked-live.test.ts (16 tests) 144ms
+ ✓ packages/ws-replication/test/ws-replication-issue172-contract-anchors.test.ts (16 tests) 179ms
+ ✓ packages/ws-replication/test/ws-replication-auth-lifecycle-red.test.ts (20 tests) 186ms
+ ✓ packages/ws-replication/test/ws-replication-issue244-slot-reclaim-regression.test.ts (3 tests) 162ms
+ ✓ packages/ws-replication/test/ws-replication-issue300-chunked-sync-ac-red.test.ts (12 tests) 119ms
+ ✓ packages/ws-replication/test/ws-replication-review-revisions-r1-r7-red.test.ts (14 tests) 120ms
+ ✓ packages/ws-replication/test/ws-replication-sa7-issue137-dynamic.test.ts (8 tests) 118ms
+ ✓ packages/ws-replication/test/ws-replication-issue287-schema-rearm.test.ts (13 tests) 134ms
+ ✓ packages/ws-replication/test/ws-replication-issue256-namespace-failed.test.ts (16 tests) 145ms
+ ✓ packages/ws-replication/test/ws-replication-issue245-ac-red.test.ts (10 tests) 130ms
+ ✓ packages/ws-replication/test/ws-replication-r3-r4-regressions.test.ts (11 tests) 177ms
+ ✓ packages/ws-replication/test/ws-replication-issue244-ac-red.test.ts (14 tests) 103ms
+stdout | packages/ws-replication/test/sa7-300-transport-probe.test.ts > SA7 issue #300 动态探针：ACK/timeout/resync 失败路径 + 协商门 + 计数器 > T1：kind=2 发送端自持 ACK 超时 → 载体弃置 + declareLocalResync(ack-timeout) → RESYNC_REQUIRED；同 transferId 零新增 chunk；非终态
+[SA7-DATAFLOW] route=t1-ack-timeout step=pre-advance transferId=1 chunksBefore=13 droppedApplied=1 peerState=reconciling hubValue=qqqqqq
+
+stdout | packages/ws-replication/test/sa7-300-transport-probe.test.ts > SA7 issue #300 动态探针：ACK/timeout/resync 失败路径 + 协商门 + 计数器 > T1：kind=2 发送端自持 ACK 超时 → 载体弃置 + declareLocalResync(ack-timeout) → RESYNC_REQUIRED；同 transferId 零新增 chunk；非终态
+[SA7-DATAFLOW] route=t1-ack-timeout step=post-advance resyncCount=1 chunksAfter=13 sameTransferIdAfter=13 peerState=reconciling connState=ready errorsP2H=[] errorsH2P=[] tailP2H=["UPDATE_CHUNK","UPDATE_CHUNK","UPDATE_CHUNK","UPDATE_CHUNK","UPDATE_CHUNK","SYNC_APPLIED"]
+[SA7-DATAFLOW] route=t1-ack-timeout step=observer resyncCauses=["send-failed"]
+
+stdout | packages/ws-replication/test/sa7-300-transport-probe.test.ts > SA7 issue #300 动态探针：ACK/timeout/resync 失败路径 + 协商门 + 计数器 > T2：kind=1 接收端 assembly 停滞（后续 chunk 全丢）→ busyKind=1 选路：BOOTSTRAP_FAILED + failed/bootstrap-timeout；零写入
+[SA7-DATAFLOW] route=t2-assembly-timeout-k1 step=pre-advance arrivedChunks=1 peerState=bootstrapping peerDocPresent=false dropped=12
+
+stdout | packages/ws-replication/test/sa7-300-transport-probe.test.ts > SA7 issue #300 动态探针：ACK/timeout/resync 失败路径 + 协商门 + 计数器 > T2：kind=1 接收端 assembly 停滞（后续 chunk 全丢）→ busyKind=1 选路：BOOTSTRAP_FAILED + failed/bootstrap-timeout；零写入
+[SA7-DATAFLOW] route=t2-assembly-timeout-k1 step=post-advance codes=["BOOTSTRAP_FAILED"] peerState=failed peerDocPresent=false hubState=see-hub-ns-state-via-wire hubErrors=[]
+[SA7-DATAFLOW] route=t2-assembly-timeout-k1 step=observer failedCause=bootstrap-timeout failedTimeoutMs=5000
+
+stdout | packages/ws-replication/test/sa7-300-transport-probe.test.ts > SA7 issue #300 动态探针：ACK/timeout/resync 失败路径 + 协商门 + 计数器 > T3：kind=2 接收端 assembly 停滞（data 闸门暂停使 chunk 流中断）→ busyKind=2 选路：RESYNC_REQUIRED{SYNC_TRANSFER_EXPIRED} + needs-resync（非终态、零 ERROR）
+[SA7-DATAFLOW] route=t3-assembly-timeout-k2 step=pre-advance arrivedChunks=1 hubValue=seed peerState=reconciling
+
+stdout | packages/ws-replication/test/sa7-300-transport-probe.test.ts > SA7 issue #300 动态探针：ACK/timeout/resync 失败路径 + 协商门 + 计数器 > T3：kind=2 接收端 assembly 停滞（data 闸门暂停使 chunk 流中断）→ busyKind=2 选路：RESYNC_REQUIRED{SYNC_TRANSFER_EXPIRED} + needs-resync（非终态、零 ERROR）
+[SA7-DATAFLOW] route=t3-assembly-timeout-k2 step=post-advance resyncReasons=["SYNC_TRANSFER_EXPIRED"] peerState=needs-resync connState=ready errorsH2P=[] errorsP2H=[]
+
+stdout | packages/ws-replication/test/sa7-300-transport-probe.test.ts > SA7 issue #300 动态探针：ACK/timeout/resync 失败路径 + 协商门 + 计数器 > T4：completeChunkedStep2 round 回退分支（SA4 §11-4）——busy assembly 期间注入新 round STEP1（无 RESYNC 前驱）后补残 chunk：apply 一次、无数据损坏、结算 round 回退
+[SA7-DATAFLOW] route=t4-round-fallback step=captured-real-transfer bindingRound1=2 realTransferId=1 chunkCount=13 totalBytes=100029
+
+stdout | packages/ws-replication/test/sa7-300-transport-probe.test.ts > SA7 issue #300 动态探针：ACK/timeout/resync 失败路径 + 协商门 + 计数器 > T4：completeChunkedStep2 round 回退分支（SA4 §11-4）——busy assembly 期间注入新 round STEP1（无 RESYNC 前驱）后补残 chunk：apply 一次、无数据损坏、结算 round 回退
+[SA7-DATAFLOW] route=t4-round-fallback step=post-injection hubValue=qqqqqq appliedRounds=[4] appliedAcked=[37] lastCraftChunkSeq=37 bindingRound1=2 round2=3 round3=4 errorsH2P=[] errorsP2H=[] connState=ready peerState=live
+
+stdout | packages/ws-replication/test/sa7-300-transport-probe.test.ts > SA7 issue #300 动态探针：ACK/timeout/resync 失败路径 + 协商门 + 计数器 > T5：协商门（v1 未协商组合保持）——超限 snapshot → BOOTSTRAP_TOO_LARGE；超限恢复 diff → SYNC_DIFF_TOO_LARGE；两构型零 0x42 chunk
+[SA7-DATAFLOW] route=t5-negotiation-gate step=v1-snapshot codesHub=["BOOTSTRAP_TOO_LARGE"] peerState=failed chunksP2H=0 chunksH2P=0
+
+stdout | packages/ws-replication/test/sa7-300-transport-probe.test.ts > SA7 issue #300 动态探针：ACK/timeout/resync 失败路径 + 协商门 + 计数器 > T5：协商门（v1 未协商组合保持）——超限 snapshot → BOOTSTRAP_TOO_LARGE；超限恢复 diff → SYNC_DIFF_TOO_LARGE；两构型零 0x42 chunk
+[SA7-DATAFLOW] route=t5-negotiation-gate step=v1-diff codesPeer=["SYNC_DIFF_TOO_LARGE"] peerState=failed chunksP2H=0
+
+stdout | packages/ws-replication/test/sa7-300-transport-probe.test.ts > SA7 issue #300 动态探针：ACK/timeout/resync 失败路径 + 协商门 + 计数器 > T6：transferId 单计数器（R42）——kind=0 → kind=2 → kind=0 跨 kind 严格 +1 递增、无重复无跳号
+[SA7-DATAFLOW] route=t6-transfer-id-counter step=observed idA=1 idB=2 idC=3 uniqueTransferIds=[1,2,3] totalChunkFrames=19 peerLiveFinal=live
+
+stdout | packages/ws-replication/test/sa7-300-transport-probe.test.ts > SA7 issue #300 动态探针：ACK/timeout/resync 失败路径 + 协商门 + 计数器 > T7：BulkTransferSender 自持 ACK timer 单元动态——kind=2 末 chunk 出站锚武装（kind=1 零武装）；超时弃载体 + 回调恰一次；settle/abort 拆 timer
+[SA7-DATAFLOW] route=t7-bulk-ack-timer step=observed k2ArmedAtLastChunk=true k2DelayMs=5000 kind1Armed=0 settleCleared=1 resyncCleared=1
+
+ ✓ packages/ws-replication/test/sa7-300-transport-probe.test.ts (7 tests) 99ms
+ ✓ packages/ws-replication/test/ws-replication-sa7-dynamic.test.ts (6 tests) 91ms
+ ✓ packages/ws-replication/test/ws-replication-ac7-faults.test.ts (12 tests) 100ms
+ ✓ packages/ws-replication/test/ws-replication-issue238-segmented-observation.test.ts (8 tests) 99ms
+ ✓ packages/ws-replication/test/ws-replication-issue254-ac-red.test.ts (6 tests) 88ms
+ ✓ packages/ws-replication/test/ws-replication-sa7-hardening-dynamic.test.ts (8 tests) 85ms
+ ✓ packages/ws-replication/test/ws-replication-issue176-red.test.ts (9 tests) 105ms
+ ✓ packages/ws-replication/test/ws-replication-issue230-incremental-mutation.test.ts (2 tests) 127ms
+ ✓ packages/ws-replication/test/ws-replication-reauth-lifecycle-red.test.ts (7 tests) 87ms
+ ✓ packages/ws-replication/test/ws-replication-plugin.test.ts (15 tests) 91ms
+ ✓ packages/ws-replication/test/ws-replication-ac6-resync-close.test.ts (7 tests) 99ms
+ ✓ packages/ws-replication/test/ws-replication-ac5-live.test.ts (7 tests) 110ms
+ ✓ packages/ws-replication/test/ws-replication-issue137-ac1-ac7-red.test.ts (4 tests) 88ms
+ ✓ packages/ws-replication/test/ws-replication-issue246-interop-matrix.test.ts (4 tests) 90ms
+ ✓ packages/ws-replication/test/ws-replication-spec-b1-b2-red.test.ts (5 tests) 71ms
+ ✓ packages/ws-replication/test/ws-replication-sa7-round2-dynamic.test.ts (6 tests) 70ms
+ ✓ packages/ws-replication/test/ws-replication-ac1-ac2-open.test.ts (12 tests) 67ms
+ ✓ packages/ws-replication/test/ws-replication-issue243-ac-red.test.ts (6 tests) 63ms
+stdout | packages/ws-replication/test/ws-replication-issue239-repro.test.ts > issue #239：periodic reconciliation 语义 no-op 可观测（修复后语义，翻转断言） > 场景 1：已收敛副本 7 轮 periodic round —— bytes 恒非零但观察面明确报全 noop（roundId 关联 + 效果组）
+[issue239 repro] no-op round 1: hub sent/applied = [10]/[10] B, peer sent/applied = [10]/[10] B
+
+stdout | packages/ws-replication/test/ws-replication-issue239-repro.test.ts > issue #239：periodic reconciliation 语义 no-op 可观测（修复后语义，翻转断言） > 场景 1：已收敛副本 7 轮 periodic round —— bytes 恒非零但观察面明确报全 noop（roundId 关联 + 效果组）
+[issue239 repro] no-op round 2: hub sent/applied = [10]/[10] B, peer sent/applied = [10]/[10] B
+
+stdout | packages/ws-replication/test/ws-replication-issue239-repro.test.ts > issue #239：periodic reconciliation 语义 no-op 可观测（修复后语义，翻转断言） > 场景 1：已收敛副本 7 轮 periodic round —— bytes 恒非零但观察面明确报全 noop（roundId 关联 + 效果组）
+[issue239 repro] no-op round 3: hub sent/applied = [10]/[10] B, peer sent/applied = [10]/[10] B
+
+stdout | packages/ws-replication/test/ws-replication-issue239-repro.test.ts > issue #239：periodic reconciliation 语义 no-op 可观测（修复后语义，翻转断言） > 场景 1：已收敛副本 7 轮 periodic round —— bytes 恒非零但观察面明确报全 noop（roundId 关联 + 效果组）
+[issue239 repro] no-op round 4: hub sent/applied = [10]/[10] B, peer sent/applied = [10]/[10] B
+
+stdout | packages/ws-replication/test/ws-replication-issue239-repro.test.ts > issue #239：periodic reconciliation 语义 no-op 可观测（修复后语义，翻转断言） > 场景 1：已收敛副本 7 轮 periodic round —— bytes 恒非零但观察面明确报全 noop（roundId 关联 + 效果组）
+[issue239 repro] no-op round 5: hub sent/applied = [10]/[10] B, peer sent/applied = [10]/[10] B
+
+stdout | packages/ws-replication/test/ws-replication-issue239-repro.test.ts > issue #239：periodic reconciliation 语义 no-op 可观测（修复后语义，翻转断言） > 场景 1：已收敛副本 7 轮 periodic round —— bytes 恒非零但观察面明确报全 noop（roundId 关联 + 效果组）
+[issue239 repro] no-op round 6: hub sent/applied = [10]/[10] B, peer sent/applied = [10]/[10] B
+
+stdout | packages/ws-replication/test/ws-replication-issue239-repro.test.ts > issue #239：periodic reconciliation 语义 no-op 可观测（修复后语义，翻转断言） > 场景 1：已收敛副本 7 轮 periodic round —— bytes 恒非零但观察面明确报全 noop（roundId 关联 + 效果组）
+[issue239 repro] no-op round 7: hub sent/applied = [10]/[10] B, peer sent/applied = [10]/[10] B
+[issue239 repro] no-op 事件字段形状（去重）: ["connectionId,from,side,to,type","connectionId,from,namespaceId,side,to,type","bytes,connectionId,encodedUpdateBytes,namespaceId,side,syncRoundId,type","applyEffect,bytes,connectionId,encodedUpdateBytes,namespaceId,sequence,side,stateVectorAfterHash,stateVectorBeforeHash,stateVectorChanged,syncRoundId,type","from,side,to,type"]
+
+stdout | packages/ws-replication/test/ws-replication-issue239-repro.test.ts > issue #239：periodic reconciliation 语义 no-op 可观测（修复后语义，翻转断言） > 场景 2：静默漂移修复 round —— 观察面必须报 changed（与实测 SV 增量一一对应）；修复后 next round 回 noop（非粘滞）
+[issue239 repro] drift-repair round: hub sent/applied = [36]/[10] B, peer sent/applied = [10]/[36] B
+
+stdout | packages/ws-replication/test/ws-replication-issue239-repro.test.ts > issue #239：periodic reconciliation 语义 no-op 可观测（修复后语义，翻转断言） > 场景 2：静默漂移修复 round —— 观察面必须报 changed（与实测 SV 增量一一对应）；修复后 next round 回 noop（非粘滞）
+[issue239 repro] 修复后 no-op 事件字段形状（去重）: ["bytes,connectionId,encodedUpdateBytes,namespaceId,side,syncRoundId,type","applyEffect,bytes,connectionId,encodedUpdateBytes,namespaceId,sequence,side,stateVectorAfterHash,stateVectorBeforeHash,stateVectorChanged,syncRoundId,type","connectionId,from,namespaceId,side,to,type"]
+
+ ✓ packages/ws-replication/test/ws-replication-issue239-repro.test.ts (2 tests) 63ms
+ ✓ packages/ws-replication/test/ws-replication-issue170-r1-r4-red.test.ts (7 tests) 60ms
+ ✓ packages/ws-replication/test/ws-replication-sa4-f1-f2-f3-red.test.ts (3 tests) 59ms
+ ✓ packages/ws-replication/test/ws-replication-issue171-red.test.ts (5 tests) 60ms
+ ✓ packages/ws-replication/test/ws-replication-periodic-reconcile.test.ts (5 tests) 60ms
+ ✓ packages/ws-replication/test/ws-replication-ac4-reconcile.test.ts (5 tests) 55ms
+ ✓ packages/ws-replication/test/ws-replication-sa6-hardening-g1-g2-red.test.ts (5 tests) 52ms
+stdout | packages/ws-replication/test/ws-replication-issue233-repro.test.ts > issue #233 复现：超限 UPDATE 丢弃 + 全量 reconciliation 回退（现状刻画） > R1：单笔 20KB 合法写 → 零 UPDATE / resync 声明 / 同一载荷改走控制帧全量 diff
+[issue233 repro R1] {
+  "scenario": "R1 single 20KB write, maxUpdateBytes=8192",
+  "updateFramesCarryingBigWrite": 0,
+  "resyncRounds": 1,
+  "step2DiffBytesPeerToHub": [
+    2,
+    20029
+  ],
+  "wire": {
+    "peerToHub": {
+      "OPEN_NAMESPACE": {
+        "count": 1,
+        "bytes": 59
+      },
+      "BOOTSTRAP_ACK": {
+        "count": 1,
+        "bytes": 57
+      },
+      "SYNC_STEP1": {
+        "count": 2,
+        "bytes": 136
+      },
+      "SYNC_STEP2": {
+        "count": 2,
+        "bytes": 20151
+      },
+      "SYNC_APPLIED": {
+        "count": 2,
+        "bytes": 116
+      },
+      "RESYNC_REQUIRED": {
+        "count": 1,
+        "bytes": 76
+      }
+    },
+    "hubToPeer": {
+      "OPEN_OK": {
+        "count": 1,
+        "bytes": 91
+      },
+      "BOOTSTRAP_SNAPSHOT": {
+        "count": 1,
+        "bytes": 497
+      },
+      "SYNC_STEP1": {
+        "count": 2,
+        "bytes": 130
+      },
+      "SYNC_STEP2": {
+        "count": 2,
+        "bytes": 122
+      },
+      "SYNC_APPLIED": {
+        "count": 2,
+        "bytes": 116
+      }
+    }
+  }
+}
+
+stdout | packages/ws-replication/test/ws-replication-issue233-repro.test.ts > issue #233 复现：超限 UPDATE 丢弃 + 全量 reconciliation 回退（现状刻画） > R2：连续两笔大写 → 两轮 resync（持续大写重复触发完整 round）
+[issue233 repro R2] {"scenario":"R2 two consecutive 20KB writes","resyncRounds":2,"step2DiffBytesPeerToHub":[2,20029,20037],"wire":{"peerToHub":{"OPEN_NAMESPACE":{"count":1,"bytes":59},"BOOTSTRAP_ACK":{"count":1,"bytes":57},"SYNC_STEP1":{"count":3,"bytes":207},"SYNC_STEP2":{"count":3,"bytes":40249},"SYNC_APPLIED":{"count":3,"bytes":174},"RESYNC_REQUIRED":{"count":2,"bytes":152}},"hubToPeer":{"OPEN_OK":{"count":1,"bytes":91},"BOOTSTRAP_SNAPSHOT":{"count":1,"bytes":497},"SYNC_STEP1":{"count":3,"bytes":201},"SYNC_STEP2":{"count":3,"bytes":191},"SYNC_APPLIED":{"count":3,"bytes":174}}}}
+
+stdout | packages/ws-replication/test/ws-replication-issue233-repro.test.ts > issue #233 复现：超限 UPDATE 丢弃 + 全量 reconciliation 回退（现状刻画） > R3：diff 超 maxSyncDiffBytes → SYNC_DIFF_TOO_LARGE → namespace 终局 failed（大文档致命尾部）
+[issue233 repro R3] {"scenario":"R3 100KB write, maxSyncDiffBytes=32768","namespaceTerminalState":"failed","connectionState":"ready","wire":{"peerToHub":{"OPEN_NAMESPACE":{"count":1,"bytes":59},"BOOTSTRAP_ACK":{"count":1,"bytes":57},"SYNC_STEP1":{"count":2,"bytes":133},"SYNC_STEP2":{"count":1,"bytes":61},"SYNC_APPLIED":{"count":1,"bytes":58},"RESYNC_REQUIRED":{"count":1,"bytes":76},"ERROR":{"count":1,"bytes":117}},"hubToPeer":{"OPEN_OK":{"count":1,"bytes":91},"BOOTSTRAP_SNAPSHOT":{"count":1,"bytes":495},"SYNC_STEP1":{"count":2,"bytes":128},"SYNC_STEP2":{"count":2,"bytes":122},"SYNC_APPLIED":{"count":1,"bytes":58}}}}
+
+ ✓ packages/ws-replication/test/ws-replication-issue233-repro.test.ts (3 tests) 48ms
+stdout | packages/ws-replication/test/ws-replication-issue239-ac-red.test.ts > issue #239 验收契约（红灯）：periodic no-op 与有效同步的可观测性差异 > 场景 1：已收敛副本连续 periodic round —— 观察面必须报 roundId 关联 + 全 noop（SV/ROOT/META 不变，bytes 仍非零）
+[issue239 ac-red] no-op rounds=3 groups=4 periodicGroups=3 全部断言完成
+
+stdout | packages/ws-replication/test/ws-replication-issue239-ac-red.test.ts > issue #239 验收契约（红灯）：periodic no-op 与有效同步的可观测性差异 > 场景 2：hub 静默漂移 → 下一 periodic round 至少一侧 diff-applied 报 changed（与实测 SV 增量一致）并收敛
+[issue239 ac-red] hub-drift 修复 round：delta={"hub":false,"peer":true} changedEvents=1
+
+stdout | packages/ws-replication/test/ws-replication-issue239-ac-red.test.ts > issue #239 验收契约（红灯）：periodic no-op 与有效同步的可观测性差异 > 场景 2：hub 静默漂移 → 下一 periodic round 至少一侧 diff-applied 报 changed（与实测 SV 增量一致）并收敛
+[issue239 ac-red] hub-drift 修复后 no-op round：changedEvents=0
+
+ ✓ packages/ws-replication/test/ws-replication-issue239-ac-red.test.ts (2 tests) 49ms
+ ✓ packages/ws-replication/test/ws-replication-issue300-bulk-edge-ac.test.ts (6 tests) 48ms
+ ✓ packages/ws-replication/test/ws-replication-ac3-bootstrap.test.ts (4 tests) 45ms
+ ✓ packages/ws-replication/test/ws-replication-issue168-hello-timeout-close-peer-red.test.ts (3 tests) 40ms
+ ✓ packages/ws-replication/test/ws-replication-sa7-issue171-dynamic.test.ts (3 tests) 37ms
+ ✓ packages/ws-replication/test/ws-replication-issue238-repro.test.ts (1 test) 37ms
+ ✓ packages/ws-replication/test/ws-replication-issue169-backpressure-accounting-red.test.ts (19 tests) 35ms
+ ✓ packages/ws-replication/test/ws-replication-sa7-issue168-dynamic.test.ts (3 tests) 34ms
+ ✓ packages/ws-replication/test/ws-replication-sa7-issue170-minor3-observation.test.ts (1 test) 35ms
+ ✓ packages/ws-replication/test/ws-replication-sa7-r2-supplement.test.ts (1 test) 33ms
+ ✓ packages/ws-replication/test/ws-replication-issue282-schema-lifecycle.test.ts (1 test) 32ms
+ ✓ packages/ws-replication/test/ws-replication-issue171-blockers.test.ts (1 test) 27ms
+ ✓ packages/ws-replication/test/ws-replication-sa4-r4-1-red.test.ts (1 test) 28ms
+ ✓ packages/ws-replication/test/ws-replication-sa4-issue171-review-red.test.ts (1 test) 29ms
+ ✓ packages/ws-replication/test/ws-replication-issue243-sa7-dynamic.test.ts (17 tests) 24ms
+ ✓ packages/ws-replication/test/ws-replication-issue299-ac-red.test.ts (7 tests) 12ms
+ ✓ packages/ws-replication/test/ws-replication-issue190-red.test.ts (4 tests) 7ms
+ ✓ packages/ws-replication/test/ws-replication-sa7-issue190-dynamic.test.ts (5 tests) 8ms
+ ✓ packages/ws-replication/test/ws-replication-issue190-guard.test.ts (1 test) 3ms
+
+ Test Files  72 passed (72)
+      Tests  507 passed (507)
+   Start at  00:54:13
+   Duration  42.93s (transform 1.43s, setup 0ms, collect 11.40s, tests 21.28s, environment 9ms, prepare 3.28s)

@@ -17,6 +17,17 @@ export class RoundAborted extends Error {
   }
 }
 
+/** Step2 出站结果（issue #295 切片 2，D3 三态 seam）：
+ *  - `single`：单帧 SYNC_STEP2 控制帧已出站（现行为，sequence 已分配）；
+ *  - `chunked`：宿主已 enqueue kind=2 分块载体——帧序在末 chunk 出站时经
+ *    `noteChunkedStep2Outbound` 回填；
+ *  - `refused`：宿主已完成终局收口（SYNC_TRANSFER_TOO_LARGE / SYNC_DIFF_TOO_LARGE + failed）
+ *    → 引擎 throw RoundAborted（既有「宿主已收编」纪律）。 */
+export type Step2SendOutcome =
+  | { readonly mode: 'single'; readonly sequence: number }
+  | { readonly mode: 'chunked' }
+  | { readonly mode: 'refused' };
+
 export interface RoundHost {
   readonly role: 'hub' | 'peer';
   /** 发送帧（连接层序列分配）；返回帧序。编码失败/收编 → throw RoundAborted。 */
@@ -26,14 +37,25 @@ export interface RoundHost {
     kind: 'stateVector' | 'diff',
     remoteStateVector: Uint8Array | undefined,
   ) => Uint8Array;
+  /** Step2 出站（issue #295 切片 2，D3）：宿主按 D0 判据在单帧/分块/拒收三态间裁决；
+   *  分块载荷经 data 路径逐帧出站（惰性切片），末 chunk 帧序经 noteChunkedStep2Outbound 回填。 */
+  readonly sendStep2: (
+    diff: Uint8Array,
+    syncRoundId: number,
+    relatedStep1Sequence: number,
+  ) => Step2SendOutcome;
   /** Step2 diff 应用（含错误映射）。resolve 'ok' 表示已 apply 并已发 SYNC_APPLIED。
    *  第三参 `syncRoundId`（issue #239）：帧携带的 wire roundId 的显式透传投影——
    *  onStep2 已在调用前校验 `message.syncRoundId === currentRound`，纯参数化、零
-   *  状态机逻辑变化。 */
+   *  状态机逻辑变化。第四参 `form`（issue #295 切片 2 M1；issue #301 结构化携
+   *  chunkCount）：`{ form:'syncChunked'; chunkCount }` = 分块 diff 收齐后的**一次**
+   *  apply（普通族 sync-diff-applied 发射窗口内归零；chunkCount = wire 申报投影，
+   *  供给 `chunked-sync-applied` 第五形态）。 */
   readonly applyStep2: (
     update: Uint8Array,
     step2Sequence: number,
     syncRoundId: number,
+    form?: Readonly<{ form: 'syncChunked'; chunkCount: number }>,
   ) => Promise<'ok' | 'aborted'>;
   /** 违例（SYNC_STATE_VIOLATION → ERROR + ns failed 终局）。 */
   readonly onViolation: (detail: string) => void;
@@ -56,6 +78,9 @@ export class RoundEngine {
   private settled = false;
   private liveFlag = false;
   private nsId = '';
+  /** issue #295 切片 2（D3）：本端 kind=2 分块 Step2 的所属 round（admit 时捕获；
+   *  收齐 apply 的结算锚与绑定核对事实源）。 */
+  private chunkedStep2RoundId: number | undefined;
 
   constructor(private readonly host: RoundHost) {}
 
@@ -174,31 +199,86 @@ export class RoundEngine {
     this.checkSettled();
   }
 
+  // ─────────────────── issue #295 切片 2（D3）：kind=2 分块 Step2 接收端 seam ───────────────────
+
+  /** 首 chunk 接纳（接收端）：round 归属核对（绑定块 `syncRoundId` 由调用方透传）——
+   *  `hasActiveRound ∧ syncRoundId === currentRound ∧ ownStep1Seq ≠ undefined ∧ !receivedStep2`。
+   *  通过则置 `receivedStep2`（防重复 Step2 的 chunk 形态）；不通过返回 false，由调用方按
+   *  既有 SYNC_STATE_VIOLATION + failed 语义收口。 */
+  admitChunkedStep2(syncRoundId: number | undefined): boolean {
+    if (
+      syncRoundId === undefined ||
+      !this.hasActiveRound ||
+      syncRoundId !== this.state.currentRound ||
+      this.state.ownStep1Seq === undefined ||
+      this.state.receivedStep2
+    ) {
+      return false;
+    }
+    this.state.receivedStep2 = true;
+    this.chunkedStep2RoundId = syncRoundId;
+    return true;
+  }
+
+  /** 组装收齐后调用 = 既有 `applyStep2Safely` 的暴露形态（结算单点与锚值逻辑不变）：
+   *  apply 成功 → remoteDiffAppliedLocally + checkSettled；SYNC_APPLIED 由宿主
+   *  `applyStep2(..., {form:'syncChunked', chunkCount})` 以 `ackedSequence = lastChunkSequence`
+   *  发出（M1：普通族 sync-diff-applied 在本形态下不发射；issue #301：chunkCount =
+   *  assembler 申报投影，供给 `chunked-sync-applied` 事件字段）。 */
+  async completeChunkedStep2(
+    update: Uint8Array,
+    lastChunkSequence: number,
+    chunkCount: number,
+  ): Promise<void> {
+    const syncRoundId = this.chunkedStep2RoundId ?? this.state.currentRound;
+    this.chunkedStep2RoundId = undefined;
+    await this.applyStep2Safely(update, lastChunkSequence, syncRoundId, {
+      form: 'syncChunked',
+      chunkCount,
+    });
+  }
+
+  /** 本端 kind=2 分块 Step2 的末 chunk 出站（宿主回调，**与末 chunk 出站同一同步栈**——
+   *  严格先于任何合法 SYNC_APPLIED 到达）：ownStep2Seq 锚 = 末 chunk 帧序。 */
+  noteChunkedStep2Outbound(lastChunkSequence: number): void {
+    this.state.ownStep2Seq = lastChunkSequence;
+  }
+
   /** 连接收口（重开/清理）：引擎归零。 */
   teardown(): void {
     this.resetState(0);
     this.lastRound = 0;
     this.liveFlag = false;
+    this.chunkedStep2RoundId = undefined;
   }
 
   private sendStep2(remoteStateVector: Uint8Array, relatedSequence: number): void {
     const diff = this.host.encode('diff', remoteStateVector);
-    const seq = this.host.send({
-      kind: 'SYNC_STEP2',
-      namespaceId: this.nsId,
-      syncRoundId: this.state.currentRound,
-      relatedStep1Sequence: relatedSequence,
-      update: diff,
-    });
-    this.state.ownStep2Seq = seq;
+    // 新 Step2 出站前清锚（bind 到本笔 Step2）：单帧分支随即回填；分块分支由**末 chunk
+    // 出站回调**回填（noteChunkedStep2Outbound——宿主 sendStep2 内可能已同步完成出站，
+    // 故清锚必须在调用之前、不得在返回后覆盖）。
+    this.state.ownStep2Seq = undefined;
+    const outcome = this.host.sendStep2(diff, this.state.currentRound, relatedSequence);
+    if (outcome.mode === 'single') {
+      this.state.ownStep2Seq = outcome.sequence;
+      return;
+    }
+    if (outcome.mode === 'chunked') {
+      // 锚在末 chunk 出站时刻回填（noteChunkedStep2Outbound）；undefined 期间收到合法
+      // SYNC_APPLIED 结构性不可达（ACK 因果上后于末 chunk 落线），防御分支见 onApplied。
+      return;
+    }
+    // refused：宿主已完成终局收口（SYNC_TRANSFER_TOO_LARGE / SYNC_DIFF_TOO_LARGE + failed）
+    throw new RoundAborted();
   }
 
   private async applyStep2Safely(
     update: Uint8Array,
     step2Sequence: number,
     syncRoundId: number,
+    form?: Readonly<{ form: 'syncChunked'; chunkCount: number }>,
   ): Promise<void> {
-    const outcome = await this.host.applyStep2(update, step2Sequence, syncRoundId);
+    const outcome = await this.host.applyStep2(update, step2Sequence, syncRoundId, form);
     if (outcome === 'ok') {
       this.state.remoteDiffAppliedLocally = true;
       this.checkSettled();
@@ -215,6 +295,7 @@ export class RoundEngine {
   }
 
   private resetState(roundId: number): void {
+    this.chunkedStep2RoundId = undefined;
     this.state = {
       currentRound: roundId,
       hubStep1Received: false,

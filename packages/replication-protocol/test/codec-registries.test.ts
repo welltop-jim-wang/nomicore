@@ -2,7 +2,8 @@
  * SA6 红灯测试 — append-only 消息/错误注册表（issue #135）。
  *
  * 契约：docs/protocols/instance-replication-v1.md §5（消息注册表，append-only）、
- * §13.1（连接错误注册表 17 项）、§13.2（namespace 错误注册表 20 项，含同名 INTERNAL_ERROR 双 registry）。
+ * §13.1（连接错误注册表 17 项）、§13.2（namespace 错误注册表 22 项——issue #242 追加
+ * UPDATE_TRANSFER_VIOLATION / UPDATE_TRANSFER_TOO_LARGE，含同名 INTERNAL_ERROR 双 registry）。
  * AC4：错误码从不可变注册表导出 scope/fatal/retryable/terminalState 元数据；
  * 注册表必须 append-only（冻结、不可原地修改）。
  */
@@ -25,7 +26,7 @@ import {
   NAMESPACE_ERROR_TABLE,
 } from './fixtures';
 
-describe('消息注册表（§5）：append-only，恰好 17 个 v1 消息', () => {
+describe('消息注册表（§5）：append-only，恰好 18 个 v1 消息（issue #242 追加 UPDATE_CHUNK）', () => {
   it('MESSAGE_TYPES 与规范表完全一致（name → code）', () => {
     expect(Object.keys(MESSAGE_TYPES).sort()).toEqual(Object.keys(MESSAGE_TABLE).sort());
     for (const [name, code] of Object.entries(MESSAGE_TABLE)) {
@@ -69,14 +70,15 @@ describe('消息注册表（§5）：append-only，恰好 17 个 v1 消息', () 
     }).toThrow();
   });
 
-  it('消息码空间严格：0x00 与 0x05–0x0f、0x14–0x1f、0x23–0x2f、0x34–0x3f、0x42+ 均未注册', () => {
+  it('消息码空间严格：0x00 与 0x05–0x0f、0x14–0x1f、0x23–0x2f、0x34–0x3f、0x43+ 均未注册；0x42 已注册（issue #242 翻转）', () => {
     const registered = new Set(Object.values(MESSAGE_TYPES));
     expect(registered.has(0x00)).toBe(false);
     expect(registered.has(0x05)).toBe(false);
     expect(registered.has(0x0f)).toBe(false);
     expect(registered.has(0x14)).toBe(false);
     expect(registered.has(0x2f)).toBe(false);
-    expect(registered.has(0x42)).toBe(false);
+    expect(registered.has(0x42)).toBe(true); // UPDATE_CHUNK（issue #242）
+    expect(registered.has(0x43)).toBe(false); // 仍空闲样本码
     expect(registered.has(0xff)).toBe(false);
   });
 });
@@ -102,7 +104,7 @@ describe('连接错误注册表（§13.1）：恰 17 项，元数据不可变', 
   });
 });
 
-describe('namespace 错误注册表（§13.2）：恰 20 项，含 terminalState', () => {
+describe('namespace 错误注册表（§13.2）：恰 22 项（issue #242 追加两码），含 terminalState', () => {
   it('全部 namespace 错误 code 及其 fatal/retryable/terminalState 与规范表一致', () => {
     expect(Object.keys(NAMESPACE_ERRORS).sort()).toEqual(Object.keys(NAMESPACE_ERROR_TABLE).sort());
     for (const [code, meta] of Object.entries(NAMESPACE_ERROR_TABLE)) {
