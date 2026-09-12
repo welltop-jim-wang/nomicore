@@ -122,8 +122,30 @@ export type {
 // 结果联合、无顶层 catch）；path 属敌意通道，形状违约经结果联合两枚稳定码结算（path
 // 为调用方数组新鲜副本）。同步、纯函数、零 memo；返回 valueSchema/aliases 与 derived
 // 共享节点（不可变契约），detached 深拷贝属 namespace-runtime 组合边界（ADR-0016）。
-export { resolveSchemaAtPath } from './resolve-schema-at-path.js';
-export type { ReadDataSchemaProjection, ResolveSchemaAtPathResult } from './resolve-schema-at-path.js';
+//
+// Issue #335 / ADR-0024 决策 5：形状预算加法第三参 `options?`——预算在解析递归内生效
+// （valueSchema 同 depth 截断、别名闭包随展开层收缩、docs/aliasDocs 被裁路径省略，三件
+// 事同一次遍历内同步收缩；先裁后收集）。无 options（含显式 `undefined`）时行为逐字节
+// 不变；`depth` ≥0 整数，计层原点 = 路径终点，容器各计一层、optional/union/enum 透明、
+// ref 为终态边界；`maxChildrenPerNode` 合法但对投影零操作（投影类型级、路径键控）。
+// 截断标记为投影层包装联合（`SchemaTruncationMarker`，`kind:'truncated'` + 成员级线索
+// ——ref 名优先、无 ref 名时容器 kind），不扩展 ValueSchema 九 kind 冻结面；预算读的
+// `valueSchema` 与 `aliases` 字段类型经重载加宽为投影包装联合，无预算读恒纯 ValueSchema。
+// options 属敌意通道（封闭形状）：非法 / 未知键 / present-undefined / 抛错 getter/Proxy
+// → 判别联合失败 `SCHEMA_OPTIONS_INVALID`（同步、不抛、path 新鲜副本）；校验次序 =
+// path 形状 → options → derived 可信域 → 游走。预算游走零新增 throw（环经调用内两相
+// 防御透传原引用，不发散、不泄漏裸异常）。
+export { resolveSchemaAtPath, isSchemaTruncationMarker } from './resolve-schema-at-path.js';
+export type {
+  ReadDataSchemaProjection,
+  ResolveSchemaAtPathResult,
+  BudgetedReadDataSchemaProjection,
+  BudgetedResolveSchemaAtPathResult,
+  BudgetedValueSchema,
+  ResolveSchemaBudgetOptions,
+  SchemaTruncationClue,
+  SchemaTruncationMarker,
+} from './resolve-schema-at-path.js';
 
 // issue #25 / F1：SchemaSource 接缝（ADR 0005 §1/§2）——FileSchemaSource 阶段态仓内文件源、
 // 方言断言助手与接缝层结构化错误；消费方（F2 生成器 / G dogfood / CI）经接缝取文本。
