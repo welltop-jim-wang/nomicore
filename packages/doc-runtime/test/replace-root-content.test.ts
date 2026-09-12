@@ -36,7 +36,8 @@
  *   issue（fail-fast）。
  * - AC-1（复用同一 detached builder，不复制 Y.Map/Y.Array/XML/plain 构造规则）：
  *   同一输入分别经 materializeRoot 与 replaceRootContent 安装后，extractYjsSnapshot 读回
- *   全等（等价锚）；同一构造失败输入的失败面（issue message + path）两入口逐条一致。
+ *   全等（等价锚）；同一失败输入（构造失败 / ADR 0021 收窄后的逻辑失败）的失败面
+ *   （issue message + path）两入口逐条一致。
  * - AC-2（detached builder 为包内能力，不作为业务公共 API / 可跨时间执行的 prepared
  *   mutation 暴露）：包公共入口导出面恰为四个已文档化接缝（无 builder/seam 泄漏）；
  *   replaceRootContent 同步完结、返回结算结果联合（无 deferred/prepared 句柄），同参
@@ -483,10 +484,17 @@ describe('replaceRootContent — G3（AC-5/AC-3）：前置失败零写入', () 
     expect(root.get('b')).toBe(1);
   });
 
-  it('detached 构造失败（NaN 通过 ① 逻辑校验、② 构造域拒绝）→ ok:false 恰 1 issue + 0 update + 字节不变 + 旧内容原封不动', () => {
+  it('逻辑校验失败（NaN @ number 叶，ADR 0021 收窄）→ ① 即拒：ok:false 恰 1 issue（收窄消息）+ issues 零损透传直调 + 0 update + 字节不变 + 旧内容原封不动', () => {
     const derived = derivedOf('type ROOT = { title: YLeaf<string>; count: YLeaf<number> };');
     const bad = { title: 't', count: Number.NaN };
-    expect(validateLogicalSnapshot(derived, bad).ok).toBe(true); // 前置：① 通过（NaN 属 number 类型面）
+    // 前置（issue #319/D-H 迁移）：ADR 0021 收窄后 NaN 在 ① 逻辑校验即被拒（旧语义曾过 ①）
+    const direct = validateLogicalSnapshot(derived, bad);
+    expect(direct.ok).toBe(false);
+    let directIssues: ReplaceIssue[] = [];
+    if (!direct.ok) {
+      expect(direct.issues).toHaveLength(1); // 单标量违例
+      directIssues = direct.issues;
+    }
     const doc = new Y.Doc();
     const root = doc.getMap('ROOT');
     root.set('title', 'old');
@@ -496,9 +504,13 @@ describe('replaceRootContent — G3（AC-5/AC-3）：前置失败零写入', () 
     const result = replaceRootContent(derived, bad, doc) as ReplaceResult;
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error('期望失败，实际成功');
-    expect(result.issues).toHaveLength(1); // materialization 失败 fail-fast 单 issue
+    expect(result.issues).toHaveLength(1); // ① 失败面 fail-fast 单 issue
     expect(result.issues[0]?.path).toEqual(['count']);
-    expect(result.issues[0]?.message).toContain('non-finite number'); // 六词同表词（CONTEXT.md 标记类型惯例）
+    // 收窄消息（ADR 0021 决策 3：域短语 + 尾值字面量；-0 经 Object.is 识别）
+    expect(result.issues[0]?.message).toContain('期望 number（有限数且非 -0）');
+    expect(result.issues[0]?.message.startsWith('类型不匹配：')).toBe(false);
+    expect(result.issues[0]?.message).toMatch(/NaN\s*[。.]?$/);
+    expect(result.issues).toEqual(directIssues); // 零损透传（同 G3-1 直调锚型）
     expect(events.count).toBe(0);
     expect(stateBytes(doc)).toEqual(before);
     expect(root.get('title')).toBe('old'); // 0 update + 字节不变：旧内容原封不动
@@ -627,10 +639,12 @@ describe('replaceRootContent — G5（AC-1）：与 materializeRoot 共享同一
     expect(s.audit).toEqual({ createdBy: 'root', createdAt: 999 });
   });
 
-  it('同一构造失败输入 → 两入口 ok:false 的 issues 逐条一致（message + path 全等）——同一失败面的构造规则等价锚', () => {
+  it('同一逻辑失败输入 → 两入口 ok:false 的 issues 逐条一致（message + path 全等）——同一失败面的等价锚', () => {
     const derived = derivedOf('type ROOT = { title: YLeaf<string>; count: YLeaf<number> };');
     const bad = { title: 't', count: Number.NaN };
-    expect(validateLogicalSnapshot(derived, bad).ok).toBe(true); // ① 通过
+    // issue #319/D-H 迁移：ADR 0021 收窄后该输入在 ① 逻辑校验即拒（两入口同在 ① 失败、
+    // 透传同一逻辑 issues——失败面等价锚继续成立；构造规则等价锚由上方成功路径双侧提取用例承担）
+    expect(validateLogicalSnapshot(derived, bad).ok).toBe(false);
     const docMat = new Y.Doc();
     const mat = materializeRoot(derived, bad, docMat) as MaterializeResult;
     const docRep = new Y.Doc();
@@ -638,7 +652,7 @@ describe('replaceRootContent — G5（AC-1）：与 materializeRoot 共享同一
     expect(mat.ok).toBe(false);
     expect(rep.ok).toBe(false);
     if (mat.ok || rep.ok) throw new Error('期望两侧均失败');
-    // 共享构造规则的失败面等价：message + path 逐条一致（独立复制实现任何细节漂移即发散）
+    // 同一逻辑失败面的等价：message + path 逐条一致（独立实现任何漂移即发散）
     expect(rep.issues).toEqual(mat.issues as ReplaceIssue[]);
   });
 });
