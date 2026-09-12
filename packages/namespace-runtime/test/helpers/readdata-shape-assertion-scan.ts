@@ -1,14 +1,14 @@
 /**
  * issue #333（T0 pre-factor）验收仪器 —— readData 成功分支「形状断言」扫描器。
  *
- * 背景：readData 成功分支为恰三键 `{ ok: true, value, schema }`（ADR-0016；
- * T3/ADR-0024 将破坏性修订为恒五键）。该形状的断言在 runtime 与 registry 测试中
- * 散布 20+ 处，T0 要把它们收敛为统一 helper / 集中化形状构造，使 T3 的形状修订只改
- * 一处。本文件提供**可复用的 AST 扫描器**，供
+ * 背景：readData 成功分支为恒五键 `{ ok, value, schema, truncated, truncations }`
+ * （ADR-0024 决策 4——T3 已完成恰三键 → 五键的破坏性修订）。该形状的断言在 runtime 与
+ * registry 测试中散布 20+ 处，T0 已把它们收敛为统一 helper / 集中化形状构造，使 T3 的
+ * 形状修订只改一处。本文件提供**可复用的 AST 扫描器**，供
  * `readdata-shape-assertion-consolidation-gate.test.ts`（收敛门 + 仪器敏感性自控）使用。
  *
  * 仪器语义（AST 级，非文本/正则匹配——本仪器只回答一个问题：**还有多少处断言把成功
- * 分支的恰三键形状字面写死**；运行时行为验证由既有 readData 套件与 SA6 报告的突变
+ * 分支的恒五键形状字面写死**；运行时行为验证由既有 readData 套件与 SA6 报告的突变
  * 探针承担，本仪器不替代行为验证）：
  *
  * family A（`deep-equal-literal`）命中 = 满足全部条件的调用实参对象字面量：
@@ -21,9 +21,10 @@
  *
  * family B（`exact-key-set-literal`）命中 = 成功分支键集的整键集断言：
  *   1. 被调方法 ∈ 深等家族；
- *   2. 实参是恰三元素字符串数组字面量，集合等于 { ok, schema, value }（顺序无关）；
+ *   2. 实参是恰**五**元素字符串数组字面量，集合等于
+ *      { ok, schema, truncated, truncations, value }（顺序无关）；
  *   3. 断言主语的表达式子树里出现 `Object.keys(...)` / `Reflect.ownKeys(...)` 调用
- *      （把「这个读结果恰三键」写死为字面量——T3 五键修订同样必须逐处改）。
+ *      （把「这个读结果恰五键」写死为字面量）。
  *
  * 不命中（刻意的负样本族，见门测试敏感性自控）：
  *   - doc-runtime 成功分支恰两键 `{ ok: true, value }`（ADR-0016 分层：只进 schema 的
@@ -57,8 +58,8 @@ export const SHAPE_ASSERTION_SCOPE = [
 /** 深等家族方法名（全等断言；toMatchObject 等加法兼容断言刻意排除）。 */
 export const DEEP_EQUAL_METHODS = ['toEqual', 'toStrictEqual', 'deepStrictEqual', 'deepEqual'] as const;
 
-/** readData 成功分支恰三键键集（ADR-0016；T3 将修订为五键）。 */
-export const SUCCESS_SHAPE_KEYS = ['ok', 'schema', 'value'] as const;
+/** readData 成功分支恰五键键集（ADR-0024 决策 4——T3 已把恰三键修订为恒五键）。 */
+export const SUCCESS_SHAPE_KEYS = ['ok', 'schema', 'truncated', 'truncations', 'value'] as const;
 
 export type ShapeAssertionKind = 'deep-equal-literal' | 'exact-key-set-literal';
 
@@ -179,7 +180,7 @@ function readDeepEqualCall(node: ts.CallExpression): DeepEqualCall | null {
   return { method, negated, argument: first, call: node };
 }
 
-/** family B：`expect(<含 Object.keys(...) 的表达式>).toEqual(['ok','schema','value'])`。 */
+/** family B：`expect(<含 Object.keys(...) 的表达式>).toEqual([五键字母序])`。 */
 function readExactKeySetArgument(call: DeepEqualCall): readonly string[] | null {
   const argument = unwrap(call.argument);
   if (!ts.isArrayLiteralExpression(argument)) return null;

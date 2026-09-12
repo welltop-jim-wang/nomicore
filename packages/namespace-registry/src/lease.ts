@@ -32,6 +32,7 @@ import type {
   NamespaceLeaseEnableReplicationResult,
   NamespaceLeaseMetadata,
   NamespaceLeaseMutateDataResult,
+  NamespaceLeaseReadDataBudgetResult,
   NamespaceLeaseReadDataResult,
   NamespaceLeaseReleasedIssue,
   NamespaceLeaseReplaceSchemaInput,
@@ -52,6 +53,8 @@ import {
   REPLICATION_SESSION_INPUT_INVALID_MESSAGE,
 } from './types.js';
 import type { NamespaceRuntime } from '@nomicore/namespace-runtime';
+import type { NamespaceRuntimeReadDataBudgetResult } from '@nomicore/namespace-runtime';
+import type { NamespaceRuntimeReadDataOptions } from '@nomicore/namespace-runtime';
 import type { NamespaceRuntimeStatus } from '@nomicore/namespace-runtime';
 import { dispatchObserver, type RegistryObserver } from './observer.js';
 
@@ -270,13 +273,31 @@ export function createLeaseController(
     return Object.freeze(session);
   }
 
+  /**
+   * #336（ADR-0024 决策 6）lease readData 双重载透传：released 短路先于一切透传（冻结
+   * issue 原样）；active 期 raw options 引用**原样直传** entry.runtime.readData（lease 层
+   * 零预算解释、零校验、零敌意触达——canonical 净化是 runtime 接缝职责；差一层就不是
+   * 「原样透传」）。重载序镜像 runtime：legacy 排最后（ReturnType 取末签名）。
+   */
+  function leaseReadData(path: readonly (string | number)[]): NamespaceLeaseReadDataResult;
+  function leaseReadData(
+    path: readonly (string | number)[],
+    options: NamespaceRuntimeReadDataOptions,
+  ): NamespaceLeaseReadDataBudgetResult;
+  function leaseReadData(
+    path: readonly (string | number)[],
+    options?: NamespaceRuntimeReadDataOptions,
+  ): NamespaceLeaseReadDataResult | NamespaceLeaseReadDataBudgetResult {
+    if (released) return RELEASED_ISSUE; // released 短路先于一切透传（冻结 issue 原样）
+    return options === undefined
+      ? entry.runtime.readData(path)
+      : entry.runtime.readData(path, options); // active 期原样透传：raw 引用直传（透传断言锚）
+  }
+
   const lease: NamespaceLease = {
     owner,
     namespaceId,
-    readData(path) {
-      if (released) return RELEASED_ISSUE;
-      return entry.runtime.readData(path);
-    },
+    readData: leaseReadData,
     getSchema() {
       if (released) throw new NamespaceLeaseReleasedError();
       return entry.runtime.getSchema();
@@ -389,6 +410,15 @@ type AssertTrue<T extends true> = T;
 type _readAlias = AssertTrue<
   Equal<NamespaceLeaseReadDataResult, ReturnType<NamespaceRuntime['readData']> | NamespaceLeaseReleasedIssue>
 >;
+// #336（ADR-0024 决策 6）：预算别名跟随（具名组合锁——条件型无法探首个重载，探针 E6）
+// ——预算联合 = runtime 预算联合 | released issue；lease 层零第二形状。
+type _readBudgetAlias = AssertTrue<
+  Equal<NamespaceLeaseReadDataBudgetResult, NamespaceRuntimeReadDataBudgetResult | NamespaceLeaseReleasedIssue>
+>;
+// 重载序稳定锁：legacy 恒为最后（`_readAlias` 取 ReturnType 末签名的前提自锁）。
+type _readOverloadOrder = AssertTrue<
+  Equal<ReturnType<NamespaceLease['readData']>, NamespaceLeaseReadDataResult>
+>;
 type _schemaEnvelopeAlias = AssertTrue<
   Equal<NamespaceLeaseSchema, ReturnType<NamespaceRuntime['getSchema']>>
 >;
@@ -436,6 +466,8 @@ type _sessionOpenCoreAlias = AssertTrue<Equal<ReplicationSessionOpenCore, Replic
 // 声明期证明（仅 typecheck 用，零运行时值）。
 export type LeaseTypeAssertions = {
   readonly read: _readAlias;
+  readonly readBudgetAlias: _readBudgetAlias;
+  readonly readOverloadOrder: _readOverloadOrder;
   readonly schemaEnvelope: _schemaEnvelopeAlias;
   readonly metadata: _metadataAlias;
   readonly activeSchema: _activeSchemaAlias;

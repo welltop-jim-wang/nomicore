@@ -24,6 +24,13 @@
  * schema 键）；成功读的 schema 由本模块产出（状态守卫先于 path 守卫：无 active schema
  * 时不触碰敌意对象）。
  *
+ * 形状预算（issue #336 / ADR-0024 决策 5/6）：加法第三参 `options`（`undefined` ≡ 无预算
+ * ——既有代码路径逐指令运行、逐字节不变）；预算分支把 `ResolveSchemaBudgetOptions` 原样
+ * 交给 `resolveSchemaAtPath` 三参（canonical 净化属 runtime 组合层职责，本模块零校验、
+ * 零净化）。深度拷贝器对投影层截断标记（`kind:'truncated'`，包装联合成员、**非**
+ * ValueSchema 成员——ADR-0003 冻结面）显式分派克隆为全新普通可变副本；无预算读恒纯
+ * `ValueSchema`、形状零变化。
+ *
  * 深拷贝输入 `resolved` 只来自 resolver ok 分支（D3b 已把敌意面收敛在 null），拷贝器
  * 按 `kind` 显式分派；memo 先登记后递归——共享节点保共享同构、假想环不发散（防御性：
  * resolver 自身游走已带身份守卫，但拷贝器是独立遍历，不依赖该实现细节）。docs/aliasDocs
@@ -31,18 +38,40 @@
  * 保证，不依赖 resolver 内部新鲜性实现细节。
  */
 import { resolveSchemaAtPath } from '@nomicore/vfsl';
-import type { ReadDataSchemaProjection, ValueSchema } from '@nomicore/vfsl';
+import type {
+  BudgetedReadDataSchemaProjection,
+  BudgetedValueSchema,
+  ReadDataSchemaProjection,
+  ResolveSchemaBudgetOptions,
+  SchemaTruncationClue,
+  SchemaTruncationMarker,
+  ValueSchema,
+} from '@nomicore/vfsl';
 import type { RuntimeState } from './p0.js';
 
 /**
  * readData 成功分支的 schema 投影入口（D3a + D3b + resolver + D5；runtime.ts readData
  * ready 分支消费）。返回 detached 深拷贝投影，或 null（无 active schema / 敌意或异态
  * path / resolver 两码收敛——null 单义，不细分原因，不是读的失败）。
+ *
+ * 两参重载 = 无预算读（逐字节现行为）；三参重载 = 预算读（canonical 由组合层保证在
+ * resolver 验收集内；`SCHEMA_OPTIONS_INVALID` 对 canonical 结构性不可达，该码的收敛
+ * 面（`!resolved.ok → null`）原样保留给直接调用方）。
  */
 export function projectReadDataSchema(
   state: RuntimeState,
   path: readonly (string | number)[],
-): ReadDataSchemaProjection | null {
+): ReadDataSchemaProjection | null;
+export function projectReadDataSchema(
+  state: RuntimeState,
+  path: readonly (string | number)[],
+  options: ResolveSchemaBudgetOptions,
+): BudgetedReadDataSchemaProjection | null;
+export function projectReadDataSchema(
+  state: RuntimeState,
+  path: readonly (string | number)[],
+  options?: ResolveSchemaBudgetOptions,
+): ReadDataSchemaProjection | BudgetedReadDataSchemaProjection | null {
   const tools = state.activeTools;
   // D3a 情形①：无 active schema（preparing/unavailable；fatal 期 schemaState 停留
   // 'preparing' 且 activeTools 未安装——B5 天然覆盖，不读 state.fatal）。状态守卫先于
@@ -52,9 +81,15 @@ export function projectReadDataSchema(
   const normalized = normalizeReadPath(path);
   if (normalized === null) return null;
   // resolver 只见普通数组副本；可信域畸形 derived 的 InternalError 由此直通逃逸
-  // （D4：不加 catch、不收敛 null、不降级码——唯一逃逸 throw 通道）。
-  const resolved = resolveSchemaAtPath(tools.derived, normalized);
-  if (!resolved.ok) return null; // 情形②/③：路径偏离 schema / 静态解析失败（两码同收敛）
+  // （D4：不加 catch、不收敛 null、不降级码——唯一逃逸 throw 通道）。两分支显式分流
+  // （无 cast 过重载）：无预算走两参（逐指令 legacy 路径）、预算走三参。
+  if (options === undefined) {
+    const resolved = resolveSchemaAtPath(tools.derived, normalized);
+    if (!resolved.ok) return null; // 情形②/③：路径偏离 schema / 静态解析失败（两码同收敛）
+    return detachReadSchemaProjection(resolved);
+  }
+  const resolved = resolveSchemaAtPath(tools.derived, normalized, options);
+  if (!resolved.ok) return null; // 对 canonical 结构性不可达（防御纵深保留给直接调用方）
   return detachReadSchemaProjection(resolved);
 }
 
@@ -102,8 +137,15 @@ type CloneMemo = Map<object, unknown>;
 /**
  * D5：resolver ok 分支四件套整体深拷贝——每次读全新 wrapper + 全新四件套（零缓存）；
  * 可变普通副本（原型 Object.prototype，不冻结——红 #14 `Object.isFrozen` 锚）。
+ * 纯/预算双重载：legacy 调用侧静态纯度由重载保住（预算实参含标记、不命中纯重载）。
  */
-function detachReadSchemaProjection(resolved: ReadDataSchemaProjection): ReadDataSchemaProjection {
+function detachReadSchemaProjection(resolved: ReadDataSchemaProjection): ReadDataSchemaProjection;
+function detachReadSchemaProjection(
+  resolved: BudgetedReadDataSchemaProjection,
+): BudgetedReadDataSchemaProjection;
+function detachReadSchemaProjection(
+  resolved: ReadDataSchemaProjection | BudgetedReadDataSchemaProjection,
+): ReadDataSchemaProjection | BudgetedReadDataSchemaProjection {
   const memo: CloneMemo = new Map<object, unknown>();
   return {
     valueSchema: cloneValueSchema(resolved.valueSchema, memo),
@@ -117,10 +159,18 @@ function detachReadSchemaProjection(resolved: ReadDataSchemaProjection): ReadDat
  * 值语义子树克隆：逐 `kind` 显式分派（普通对象/数组字面量构造，不冻结）。容器节点
  * 先登记后递归（构造外壳 → memo.set → 递归填成员）——共享节点保共享、假想环不发散
  * （防御性；合法 derived 无环，见模块头注）。
+ *
+ * 预算加宽（issue #336 D-3）：参数/返回扩为 `BudgetedValueSchema`，**10-case 显式分派、
+ * 仍无 default**（穷尽性 fail-loud：ValueSchema 未来加 kind 即编译红）；新增
+ * `case 'truncated'` —— 投影层截断标记克隆为全新普通可变对象（clue 全新普通副本、
+ * memo 统一登记、标记为叶节点），**永不**下沉为 ValueSchema 成员（ADR-0003 冻结面）。
+ * 纯/预算双重载保住 legacy 侧静态纯度（标量实参 → 纯重载，返回 ValueSchema）。
  */
-function cloneValueSchema(node: ValueSchema, memo: CloneMemo): ValueSchema {
+function cloneValueSchema(node: ValueSchema, memo: CloneMemo): ValueSchema;
+function cloneValueSchema(node: BudgetedValueSchema, memo: CloneMemo): BudgetedValueSchema;
+function cloneValueSchema(node: BudgetedValueSchema, memo: CloneMemo): BudgetedValueSchema {
   const memoized = memo.get(node);
-  if (memoized !== undefined) return memoized as ValueSchema;
+  if (memoized !== undefined) return memoized as BudgetedValueSchema;
   switch (node.kind) {
     case 'object': {
       const out: Extract<ValueSchema, { kind: 'object' }> = { kind: 'object', fields: [] };
@@ -177,6 +227,16 @@ function cloneValueSchema(node: ValueSchema, memo: CloneMemo): ValueSchema {
       memo.set(node, out);
       return out;
     }
+    case 'truncated': {
+      // 投影层截断标记（包装联合成员，非 ValueSchema 成员）：clue 全新普通副本、
+      // memo 统一登记（防同标记多次出现时重复克隆——保共享同构）；叶节点、零递归。
+      const clue: SchemaTruncationClue = node.clue.via === 'ref'
+        ? { via: 'ref', name: node.clue.name }
+        : { via: 'container', containerKind: node.clue.containerKind };
+      const out: SchemaTruncationMarker = { kind: 'truncated', clue };
+      memo.set(node, out);
+      return out;
+    }
   }
 }
 
@@ -192,17 +252,26 @@ function cloneDiscriminator(discriminator: {
   };
 }
 
-/** 别名表克隆：同 memo 传递——valueSchema 与 aliases 间共享节点产出同副本。 */
+/** 别名表克隆：同 memo 传递——valueSchema 与 aliases 间共享节点产出同副本。
+ *  纯/预算双重载同 `cloneValueSchema`（预算模式闭包体成员值位可含标记）。 */
 function cloneValueSchemaRecord(
   rec: Record<string, ValueSchema>,
   memo: CloneMemo,
-): Record<string, ValueSchema> {
+): Record<string, ValueSchema>;
+function cloneValueSchemaRecord(
+  rec: Record<string, BudgetedValueSchema>,
+  memo: CloneMemo,
+): Record<string, BudgetedValueSchema>;
+function cloneValueSchemaRecord(
+  rec: Record<string, BudgetedValueSchema>,
+  memo: CloneMemo,
+): Record<string, BudgetedValueSchema> {
   // 键写入经 CreateDataPropertyOrThrow 语义（Object.fromEntries 逐键构造）——
   // '__proto__' 类键不触发原型 setter。键域同时结构性排除该键（VFSL tokenizer 标识符
   // 起始限 ASCII 字母，'_' 不可起始 → '__proto__' 不可作别名/语法路径段；SA2 N-5 独立
   // 核验成立）——双层防御，防未来重构退化为裸赋值。
   return Object.fromEntries(
-    Object.keys(rec).map((k) => [k, cloneValueSchema(rec[k] as ValueSchema, memo)]),
+    Object.keys(rec).map((k) => [k, cloneValueSchema(rec[k] as BudgetedValueSchema, memo)]),
   );
 }
 

@@ -1,15 +1,17 @@
 /**
- * issue #333（T0 pre-factor）验收门 —— readData 成功分支「恰三键」形状断言集中化。
+ * issue #333（T0 pre-factor）+ issue #336（T3 五键修订）验收门 —— readData 成功分支
+ * 「恒五键」形状断言集中化。
  *
  * 任务类型 = 纯测试重构（零行为变化、零产品代码/公共类型变化）。因此本文件不是行为
  * 红灯契约，而是**收敛门 + 回归契约的执行面**：
  *
- * - **T0 前（当前 HEAD）本门为红**：runtime/registry 两个测试树里仍有
- *   family A（恰三键深等字面量，24 处）+ family B（恰三键键集字面量，3 处）
- *   把 `{ ok:true, value, schema }` / `['ok','schema','value']` 字面写死；这不是
- *   行为缺陷，而是本票要消除的**结构性缺口**。红的原因即「未集中化」本身
- *   （失败消息给出逐条清单），不是环境/fixture/入口错误。
+ * - **T0 前（历史）本门为红**：runtime/registry 两个测试树里把成功形状
+ *   `{ ok:true, value, schema }` / `['ok','schema','value']` 字面写死的断言（family A/B）
+ *   正是本门要消除的**结构性缺口**。红的原因即「未集中化」本身（失败消息给出逐条清单），
+ *   不是环境/fixture/入口错误。
  * - **T0 后本门转绿**：所有成功形状断言经统一 helper / 集中化形状构造表达。
+ * - **T3（issue #336）**：形状经 T0 单点修订为恒五键（`readdata-ok-shape.ts`），
+ *   family B 判定随 `SUCCESS_SHAPE_KEYS` 常量自动随动；本文件正负样本同步五键化。
  *
  * 行为零变化由既有 readData 套件承担（`runtime-readdata-hostile-path-guard`、
  * `runtime-readdata-schema-projection-red/control`、registry readData 相关套件），
@@ -37,7 +39,7 @@ const scan = scanReadDataShapeAssertions();
 const familyA = scan.assertionSites.filter((site) => site.kind === 'deep-equal-literal');
 const familyB = scan.assertionSites.filter((site) => site.kind === 'exact-key-set-literal');
 
-describe('issue #333 T0 验收门：readData 成功分支恰三键形状断言已集中化', () => {
+describe('issue #333 T0 + issue #336 T3 验收门：readData 成功分支恒五键形状断言已集中化', () => {
   it('作用域覆盖非空且位置正确（防仪器空转）：两个测试树均被扫描、代表性文件在场', () => {
     // 108 个 .ts（HEAD 实测）——阈值取保守下界，避免新增/删除测试文件误伤。
     expect(scan.filesScanned.length).toBeGreaterThanOrEqual(80);
@@ -56,19 +58,19 @@ describe('issue #333 T0 验收门：readData 成功分支恰三键形状断言�
     ]);
   });
 
-  it('family A：恰三键深等字面量断言归零（AC1）', () => {
+  it('family A：成功形状深等字面量断言归零（AC1）', () => {
     expect(
       familyA,
-      `family A（readData 成功分支恰三键深等字面量）仍有 ${familyA.length} 处未集中化：\n${formatShapeAssertionInventory(
+      `family A（readData 成功分支恒五键深等字面量）仍有 ${familyA.length} 处未集中化：\n${formatShapeAssertionInventory(
         familyA,
       )}\n按文件分布：${JSON.stringify(countByFile(familyA))}`,
     ).toEqual([]);
   });
 
-  it('family B：恰三键键集字面量断言归零（与 family A 同属 T3 五键修订半径，见 SA6 报告 §11）', () => {
+  it('family B：恒五键键集字面量断言归零（与 family A 同属形状集中化半径）', () => {
     expect(
       familyB,
-      `family B（readData 成功分支恰三键键集字面量）仍有 ${familyB.length} 处未集中化：\n${formatShapeAssertionInventory(
+      `family B（readData 成功分支恒五键键集字面量）仍有 ${familyB.length} 处未集中化：\n${formatShapeAssertionInventory(
         familyB,
       )}\n按文件分布：${JSON.stringify(countByFile(familyB))}`,
     ).toEqual([]);
@@ -80,7 +82,12 @@ describe('issue #333 T0 验收门：readData 成功分支恰三键形状断言�
 describe('仪器敏感性：正样本（必须命中）', () => {
   const POSITIVE_SAMPLES: readonly { name: string; source: string; kind: string }[] = [
     {
-      name: 'family A：单行恰三键 toEqual',
+      name: 'family A：单行恒五键 toEqual',
+      source: "expect(r).toEqual({ ok: true, value: 3, schema: null, truncated: false, truncations: [] });",
+      kind: 'deep-equal-literal',
+    },
+    {
+      name: 'family A：单行恰三键 toEqual（超集匹配——T3 修订后仍属未集中化形状）',
       source: "expect(r).toEqual({ ok: true, value: 3, schema: null });",
       kind: 'deep-equal-literal',
     },
@@ -106,13 +113,15 @@ describe('仪器敏感性：正样本（必须命中）', () => {
       kind: 'deep-equal-literal',
     },
     {
-      name: 'family B：Object.keys(...).sort() 恰三键',
-      source: "expect(Object.keys(r).sort()).toEqual(['ok', 'schema', 'value']);",
+      name: 'family B：Object.keys(...).sort() 恒五键',
+      source:
+        "expect(Object.keys(r).sort()).toEqual(['ok', 'schema', 'truncated', 'truncations', 'value']);",
       kind: 'exact-key-set-literal',
     },
     {
       name: 'family B：展开写法 + 键序无关',
-      source: "expect([...Object.keys(r)].sort()).toEqual(['value', 'ok', 'schema']);",
+      source:
+        "expect([...Object.keys(r)].sort()).toEqual(['value', 'truncations', 'ok', 'truncated', 'schema']);",
       kind: 'exact-key-set-literal',
     },
   ];
@@ -125,7 +134,7 @@ describe('仪器敏感性：正样本（必须命中）', () => {
     });
   }
 
-  it('形状制造点：readData 测试替身字面量被盘点（报告项）', () => {
+  it('形状制造点：readData 测试替身字面量被盘点（报告项）；五键替身同被盘点', () => {
     const producers = scanSourceForSuccessShapeProducers(
       "const stub = () => ({ ok: true, value: 'marker', schema: null });",
       'producer-sample.ts',
@@ -133,6 +142,12 @@ describe('仪器敏感性：正样本（必须命中）', () => {
     expect(producers).toHaveLength(1);
     expect([...producers[0]!.keys].sort()).toEqual(['ok', 'schema', 'value']);
     expect(producers[0]!.isAssertionArgument).toBe(false);
+    const fiveKey = scanSourceForSuccessShapeProducers(
+      "const stub = () => ({ ok: true, value: 'marker', schema: null, truncated: false, truncations: [] });",
+      'producer-sample.ts',
+    );
+    expect(fiveKey).toHaveLength(1);
+    expect([...fiveKey[0]!.keys].sort()).toEqual(['ok', 'schema', 'truncated', 'truncations', 'value']);
   });
 });
 
@@ -165,6 +180,10 @@ describe('仪器敏感性：负样本（不得误伤）', () => {
     {
       name: 'doc-runtime 恰两键键集断言',
       source: "expect(Object.keys(hit).sort()).toEqual(['ok', 'value']);",
+    },
+    {
+      name: '恰三键键集断言（T3 五键修订后不再是成功形状——仪器不得命中）',
+      source: "expect(Object.keys(r).sort()).toEqual(['ok', 'schema', 'value']);",
     },
     {
       name: 'schema 投影体四键键集（不是成功分支键集）',
