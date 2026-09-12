@@ -17,7 +17,7 @@
 | SA1 设计（评审对象） | `wiki/raw/task_issue-299_design.md` | 在库（iteration 1，含 §14 修订映射） |
 | relevant_decisions / conflict_report | `wiki/raw/task_issue-299_relevant_decisions.md`、`task_issue-299_conflict_report.md` | 不存在（设计抬头与 SA6 §1 已登记；SA8 门禁报告为 dispatch 指定替代——非阻断） |
 | Issue 实时核验 | `gh issue view 299` | OPEN、**comments=0**（与 dispatch「Owner requirements: none; REST comments empty」一致） |
-| 源码/规范独立核验 | payloads.ts（L651–726）、messages.ts、canonical 基座、defaults.ts（14 键实测）、validate.ts（值门/链/门先例实测）、plugin.ts（LIMIT_KEYS 实测）、hub/peer 构造器门、codec-issue242-ac-red.test.ts（全文件 516 行逐行）、codec-issue299-ac-red.test.ts（冻结向量）、fixtures.ts（buildFrameHex/golden）、codec-malformed / codec-roundtrip-truncation / codec-fuzz-property / codec-issue246-doc-contract（锚实测）、协议 §5/§10.3/§17/§22（L701/L707 实测原文）、ADR 0019、`apps/yjs-server/src/config.ts` | 本评审逐点实测（见各节 Evidence） |
+| 源码/规范独立核验 | payloads.ts（L651–726）、messages.ts、canonical 基座、defaults.ts（14 键实测）、validate.ts（值门/链/门先例实测）、plugin.ts（LIMIT_KEYS 实测）、hub/peer 构造器门、codec-issue242-ac-red.test.ts（全文件 516 行逐行）、codec-issue299-ac-red.test.ts（冻结向量）、fixtures.ts（buildFrameHex/golden）、codec-malformed / codec-roundtrip-truncation / codec-fuzz-property / codec-issue246-doc-contract（锚实测）、协议 §5/§10.3/§17/§22（L701/L707 实测原文）、ADR 0022、`apps/yjs-server/src/config.ts` | 本评审逐点实测（见各节 Evidence） |
 
 契约三文件 sha256 本轮复测：`3168f11c…` / `56a2337b…` / `171104c2…` ——与前轮锁定值逐字节一致，「不改一行 26/26」转绿判据对象保持稳定。全仓基线复测（full-suite log）：`Test Files 2 failed | 325 passed (327)`、`Tests 19 failed | 3441 passed (3460)` ——设计 §5「3460 用例」与 §12「3441 用例绿 + 契约 2 文件红」为同一基线的两个切片，**一致非矛盾**（3460 = 3441 绿 + 19 红；19 = R1–R14 中 14 例 + C 面 5 例，2 类型面红在 typecheck 通道）。
 
@@ -119,7 +119,7 @@
 | API or contract | Missing or weak caller handling | Evidence | Required revision |
 |---|---|---|---|
 | `UpdateChunkMsg` + 必填 `transferKind` | 无——构造点矩阵与 grep 重合（本轮重跑）；`toMatchTypeOf` 容忍（api.test-d / ws-replication-api.test-d） | §10 vs grep 实测 | 无 |
-| wire 0x42 形态变化 | 无互通消费方（同版本部署 + v1 pre-parse fatal + 0x23 不相交）；包 AGENTS wire-change 门豁免依据已显式化（§12 全仓回归行） | ADR 0019 部署前提；SA8 C4 | 无 |
+| wire 0x42 形态变化 | 无互通消费方（同版本部署 + v1 pre-parse fatal + 0x23 不相交）；包 AGENTS wire-change 门豁免依据已显式化（§12 全仓回归行） | ADR 0022 部署前提；SA8 C4 | 无 |
 | `codec-issue242-ac-red.test.ts`（#242 契约锚） | **已补全**：三处改动 + PINNED 头部同步覆盖全部受影响面（本轮 516 行逐行核对）；改写后全绿且判别力保持 | D7 改动 ①②③；§11 ALLOW 条目 | 无（O6 注释级残留） |
 | `ReplicationLimits` + 两必填键 | `Partial` 消费方类型不破；app 配置面家族级滞后 + follow-up 登记（§13-2） | config.ts L136–148 先例 | 无 |
 | 插件 `LIMIT_KEYS` | +2 键；`mergeNested` 对象展开保真（plugin.ts L214–217 实测） | probe B/C7 红 | 无 |
@@ -167,7 +167,7 @@
 | F2 encode 侧补测无 ALLOW 落点 | MAJOR | ALLOW 新条目 + §12 冻结清单（负控 ①–⑧ = 前轮钉死 ①–⑤ 全采纳 + D4 分支镜像 ⑥–⑧；正控 P1–P5）+ §10 矩阵行；三处一致、每条 D4 规则线 ≥1 执行面 | **已解决（验证通过；O5 为非阻断增强建议）** |
 | F3 §22 收口措辞声称未实现资产 | MAJOR | D10 二分模板（codec 向量支「已交付 + 指向资产」/ 传输层资产支维持待交付）+ §6 R37 行吸收 R39 + §12 验收判据「§22 内零传输层资产已存在表述」+ §13 风险 6；doc-contract 锚兼容性实测 | **已解决（验证通过）** |
 | O1 D3 收敛机制叙述误差 | MINOR | D3 步 4 五向量逐条精确化；本评审独立字节级推演全部吻合（§6 表） | **已解决** |
-| O2 wire-change 门豁免依据显式化 | MINOR | §12 全仓回归行显式引用（ADR 0019 同版本部署 + 旧形态未发布 + PR #241 OPEN） | **已解决** |
+| O2 wire-change 门豁免依据显式化 | MINOR | §12 全仓回归行显式引用（ADR 0022 同版本部署 + 旧形态未发布 + PR #241 OPEN） | **已解决** |
 | O3/O4 | MINOR | 无需修订（设计声明维持；O3 正向清单本轮多点抽验仍成立） | 闭合 |
 
 **实施就绪判定：可进入实施**。ALLOW/DENY 与正文一致、测试改写面完整且算术验证、补测落点与冻结清单授权、文档收口模板精确、D6 窄门维持——SA4 可直接按 §11 ALLOW 逐文件实施，SA6 契约三文件为不改一行转绿判据。
@@ -175,7 +175,7 @@
 ## 14. Non-blocking observations
 
 - **O5（encode-symmetry 清单的两个原子镜像半例，建议非必须）**：负控 ①–⑧ 覆盖 D4 全部六条规则线，但两处原子方向无执行面：(a) `transferKind=2 ∧ chunkIndex=0` **缺** `syncRoundId`（「必须存在」方向——③/⑧ 为 kind=1 覆盖了该方向，kind=2 无对应；若实现遗漏该检查，错误将延迟到对端 decode 才暴露而非 encode 响亮失败）；(b) `transferKind=1 ∧ chunkIndex=0` **携** `syncRoundId`（跨族污染的另一方向——⑤ 仅为 kind=2 携 `replicationId`）。建议 SA4 建文件时顺手补为 ⑨⑩（各配相近正控），成本极低；不补不阻断——D4 规则文本无歧义、每条规则线已有 ≥1 负控、SA2 前轮钉死清单已全采纳。
-- **O6（codec-issue242 L82 注释残留）**：`ChunkVector.payloadHex` 字段注释「lib0 canonical payload（字段顺序 = ADR 0013 表序）」是文件内唯一未被改动 ③「文件头/用例标题字段序描述行」列名的六字段序描述处。注释级、零断言面、不影响全绿与判别力；建议 SA4 编辑该文件（已在 ALLOW）时同步更正为 ADR 0019 单形态序，避免权威引用残留。
+- **O6（codec-issue242 L82 注释残留）**：`ChunkVector.payloadHex` 字段注释「lib0 canonical payload（字段顺序 = ADR 0013 表序）」是文件内唯一未被改动 ③「文件头/用例标题字段序描述行」列名的六字段序描述处。注释级、零断言面、不影响全绿与判别力；建议 SA4 编辑该文件（已在 ALLOW）时同步更正为 ADR 0022 单形态序，避免权威引用残留。
 - **O7（正向确认，供 SA4 参考，本轮复验维持）**：① 全仓 grep 与调用矩阵重合（本轮重跑）；② `codec-malformed.test.ts` 的 `NS_VSTR` 仅用于非 0x42 消息（零改动声明实测成立）；③ truncation 套件 GOLDEN 驱动自动覆盖；④ fuzz 断言循环 `Object.entries(msg)` 结构性自动扩展；⑤ `PINNED_FRAME_HEX` 仅在自校验/编码比对两处使用，随 ① 同步后自动一致；⑥ 基线数字对账：3460 总用例 = 3441 绿 + 19 红（2 文件），§5/§12 引用互洽。
 
 ## 15. 复核结论

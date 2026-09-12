@@ -2,7 +2,7 @@
  * 红灯验收契约 — issue #242：UPDATE_CHUNK codec 与 CAP_CHUNKED_UPDATE 协商（issue #233 切片 1）。
  *
  * 契约锚点：
- * - ADR 0013（docs/adr/0013-chunked-live-update-transfer.md）+ ADR 0019（issue #295）——UPDATE_CHUNK
+ * - ADR 0013（docs/adr/0013-chunked-live-update-transfer.md）+ ADR 0022（issue #295）——UPDATE_CHUNK
  *   字段顺序唯一权威（issue #295 起单形态，协议 §10.3）：kind(varUint, 0=live-update) →
  *   namespaceId(varString) → transferId(varUint) → chunkIndex(varUint) → chunkCount(varUint)
  *   → totalBytes(varUint) → bytes(varUint8Array)；HELLO 追加 capability bit 0x00000001；
@@ -80,7 +80,7 @@ interface ChunkVector {
   name: string;
   sequence: number;
   message: UpdateChunkMsg;
-  /** lib0 canonical payload（字段顺序 = ADR 0019 / 协议 §10.3 单形态序：kind → ns → …）。 */
+  /** lib0 canonical payload（字段顺序 = ADR 0022 / 协议 §10.3 单形态序：kind → ns → …）。 */
   payloadHex: string;
 }
 
@@ -182,7 +182,7 @@ function hostileFrame(payloadHex: string, sequence = 19): Uint8Array {
 
 // ================================================================ AC1：golden vectors + canonical roundtrip
 
-describe('AC1：UPDATE_CHUNK 全字段 golden 向量锁定 + canonical roundtrip（字段序 = ADR 0019 / §10.3 单形态）', () => {
+describe('AC1：UPDATE_CHUNK 全字段 golden 向量锁定 + canonical roundtrip（字段序 = ADR 0022 / §10.3 单形态）', () => {
   it('注册表：UPDATE_CHUNK=0x42、code→name 逆映射、scope=namespace/direction=either/ack=UPDATE_ACK；CAP_CHUNKED_UPDATE=0x00000001', () => {
     expect(MESSAGE_TYPES.UPDATE_CHUNK).toBe(UPDATE_CHUNK_CODE);
     expect(MESSAGE_NAMES[String(UPDATE_CHUNK_CODE)]).toBe('UPDATE_CHUNK');

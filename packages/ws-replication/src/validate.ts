@@ -234,7 +234,7 @@ export function validateChunkedTransferChain(limits: ReplicationLimits): void {
 }
 
 /**
- * issue #295（slice 1，ADR 0019 配置表 / 协议 §17）：chunked snapshot 聚合上限链②
+ * issue #295（slice 1，ADR 0022 配置表 / 协议 §17）：chunked snapshot 聚合上限链②
  * `maxChunkedBootstrapBytes ≤ maxChunksPerUpdate × maxUpdateBytes`（≤ 含等号；绝不运行时 clamp）。
  *
  * 激活门（D6 裁决，与 `validateChunkedTransferChain` 的 #244 家族门同构但**各自独立**）：
@@ -251,7 +251,7 @@ export function validateChunkedBootstrapChain(limits: ReplicationLimits): void {
 }
 
 /**
- * issue #295（slice 1，ADR 0019 配置表 / 协议 §17）：chunked sync-diff 聚合上限链②
+ * issue #295（slice 1，ADR 0022 配置表 / 协议 §17）：chunked sync-diff 聚合上限链②
  * `maxChunkedSyncDiffBytes ≤ maxChunksPerUpdate × maxUpdateBytes`（同形态、同纪律）。
  * 激活门 = 显式表达 `maxChunkedSyncDiffBytes`（见上）。
  */

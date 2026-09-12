@@ -8,13 +8,13 @@
 
 基准 = `CONTEXT.md` + `docs/adr/`（17 篇）+ 规范协议文档 + 模块 AGENTS 明确收录的决策。分支 `mabf/issue-300`（基点 `605a48f` = #299/PR #321 合并点；origin/main 额外领先一个 VFSL 系 squash 提交 `b158f98`，不在本任务基线内，见冲突报告 N6）。
 
-- **无任何 ADR 处于 ADR 级整体 superseded 状态**；唯一的条款级取代已显式登记：ADR 0013 非目标 #4 被划除并注明「已由 ADR 0019 接替」（`docs/adr/0013-chunked-live-update-transfer.md` L117）。
-- wire 冻结值唯一权威 = `docs/protocols/instance-replication-v1.md`（ADR 0013 L4 / ADR 0019 L4 两层权威边界；root AGENTS.md「Instance replication」节同指）。
+- **无任何 ADR 处于 ADR 级整体 superseded 状态**；唯一的条款级取代已显式登记：ADR 0013 非目标 #4 被划除并注明「已由 ADR 0022 接替」（`docs/adr/0013-chunked-live-update-transfer.md` L117）。
+- wire 冻结值唯一权威 = `docs/protocols/instance-replication-v1.md`（ADR 0013 L4 / ADR 0022 L4 两层权威边界；root AGENTS.md「Instance replication」节同指）。
 - `wiki/raw/`、`artifacts/` 一律为 evidence、非规范契约（docs/AGENTS.md「Authority」节）。
 
-## 1. 主决策：ADR 0019（chunked sync transfer，已接受，2026-09-15 冻结）
+## 1. 主决策：ADR 0022（chunked sync transfer，已接受，2026-09-15 冻结）
 
-`docs/adr/0019-chunked-sync-transfer.md` —— #300 是其**传输层实现票**：
+`docs/adr/0022-chunked-sync-transfer.md` —— #300 是其**传输层实现票**：
 
 | 条款 | 位置 | 与 #300 的关联点 |
 |---|---|---|
@@ -34,14 +34,14 @@
 
 `docs/adr/0013-chunked-live-update-transfer.md`：
 
-- 发送端规则（L48–54）：出队时刻惰性切片、队列持完整 update、每帧独立 sequence/dataGateOpen/RR「每轮每 ns 一帧」、整笔占 1 in-flight 槽、ACK 计时锚 = 末 chunk 出站、中止复用既有机制——ADR 0019 L48 声明「逐字同构」平移到 kind=1/2。
+- 发送端规则（L48–54）：出队时刻惰性切片、队列持完整 update、每帧独立 sequence/dataGateOpen/RR「每轮每 ns 一帧」、整笔占 1 in-flight 槽、ACK 计时锚 = 末 chunk 出站、中止复用既有机制——ADR 0022 L48 声明「逐字同构」平移到 kind=1/2。
 - 接收端规则（L56–63）：assembly 纯易失、作用域 (连接,方向,namespaceId,transferId)；首 chunk 分配前校验（totalBytes ≤ 聚合上限 ∧ chunkCount ≤ maxChunksPerUpdate ∧ totalBytes ≤ chunkCount × maxUpdateBytes ∧ chunkCount ≥ 1）后一次性分配 detached buffer；后续 chunk 严格递增 + 逐字节一致；收齐 Σbytes === totalBytes ⇒ 一次 sequenced apply ⇒ 单 ACK（末 chunk 帧序）；并发上限每 (ns,方向) 1 + 连接级 `maxConcurrentAssembliesPerConnection`；丢弃触发面（断连/close/GOAWAY/epoch fence/RESYNC）。
-- 协商（L20–25）：`CAP_CHUNKED_UPDATE`（bit 0x00000001）协商与 v1 回落**为已实现既有内容**；ADR 0019 非目标 #5（L111）明确不在修订范围——0x42 消息族的既有协商门对三 kind 一体适用（协议 §5 L114、§10.3 L345）。
-- 非目标 #4（SYNC_STEP2/BOOTSTRAP_SNAPSHOT 分块）已划除，由 ADR 0019 接替（L117）——**不再构成约束**。
+- 协商（L20–25）：`CAP_CHUNKED_UPDATE`（bit 0x00000001）协商与 v1 回落**为已实现既有内容**；ADR 0022 非目标 #5（L111）明确不在修订范围——0x42 消息族的既有协商门对三 kind 一体适用（协议 §5 L114、§10.3 L345）。
+- 非目标 #4（SYNC_STEP2/BOOTSTRAP_SNAPSHOT 分块）已划除，由 ADR 0022 接替（L117）——**不再构成约束**。
 
 ## 3. 基线架构：ADR 0010（Hub/Peer WebSocket Y.Doc 复制，已接受）
 
-`docs/adr/0010-hub-peer-websocket-ydoc-replication.md`：ADR 0019 L116 自述「基线架构 ADR 0010 不变」，关系为扩展。相关不变面：ACK = sequenced live apply + dirty notification（非 flush/quorum）；identity fencing（§11）；排他复制导入与受身份前置条件保护的归档 seam（L57、L283）；backpressure 分层与停机顺序。snapshot 传输层的帧级上限（`maxBootstrapBytes`）由协议文档承载，ADR 0010 无单帧冻结条款与 #300 相抵。
+`docs/adr/0010-hub-peer-websocket-ydoc-replication.md`：ADR 0022 L116 自述「基线架构 ADR 0010 不变」，关系为扩展。相关不变面：ACK = sequenced live apply + dirty notification（非 flush/quorum）；identity fencing（§11）；排他复制导入与受身份前置条件保护的归档 seam（L57、L283）；backpressure 分层与停机顺序。snapshot 传输层的帧级上限（`maxBootstrapBytes`）由协议文档承载，ADR 0010 无单帧冻结条款与 #300 相抵。
 
 ## 4. 协议规范（wire 唯一权威）：`docs/protocols/instance-replication-v1.md`
 

@@ -1,7 +1,7 @@
 # SA6 诊断与验收契约 — issue #299（feat：#295 切片 1：0x42 kind 首字段单形态 codec + 聚合上限配置链）
 
 - **dispatch**: sa-9b7c7ad4-62e1-4d61-94f1-5ca7cb2dbe0d（mabf-sa6 / acceptance-contract / iteration 0）
-- **任务类型**: **Feature**（能力缺口证明 + 目标行为验收契约）。非 Bug：ADR 0019 显式声明旧六字段形态「从未发布、无兼容负担」（SA8 C4 前提经实测复核成立），HEAD 六字段行为是**预期的现状**而非缺陷。
+- **任务类型**: **Feature**（能力缺口证明 + 目标行为验收契约）。非 Bug：ADR 0022 显式声明旧六字段形态「从未发布、无兼容负担」（SA8 C4 前提经实测复核成立），HEAD 六字段行为是**预期的现状**而非缺陷。
 - **HEAD**: `eb380d7aed296c15accf8832a45a96b630f0c8ce`（分支 `mabf/issue-299`；工作树诊断前仅含未跟踪 `wiki/raw/task_issue-299.md` 与 `artifacts/sa8-conflict-gate-issue-299.md`）
 - **裁决**: **approve** — 能力缺口稳定复现并定位到源码与 wire 字节；契约 21 条红灯断言在 HEAD 100% 确定性失败（3 次重复）、5 条负控在 HEAD 绿；失败原因唯一指向缺失的 kind 首字段/新配置键，非环境或 fixture 错误。
 
@@ -11,13 +11,13 @@
 |---|---|---|
 | Host 任务简报 | `wiki/raw/task_issue-299.md` | 在库（正文 + AC1–AC4；comments 段为空） |
 | SA8 前置冲突门禁 | `artifacts/sa8-conflict-gate-issue-299.md` | 在库（裁决 clear，R32–R37 就绪注意项） |
-| relevant_decisions | `wiki/raw/task_issue-299_relevant_decisions.md` | **不存在**（未产出）；以 ADR 0019/0013/0010、协议 §5/§10.3/§17/§22、CONTEXT.md 直接为规范依据 |
+| relevant_decisions | `wiki/raw/task_issue-299_relevant_decisions.md` | **不存在**（未产出）；以 ADR 0022/0013/0010、协议 §5/§10.3/§17/§22、CONTEXT.md 直接为规范依据 |
 | conflict_report | `wiki/raw/task_issue-299_conflict_report.md` | **不存在**；冲突面以 SA8 门禁报告为准（dispatch 指定） |
 | Owner 补充要求 | issue comments（REST） | **无**（SA8 实测 `[]`，dispatch 声明一致）→ §2 无映射项 |
 
-规范基线（wire 值唯一权威 = 协议文档；配置语义理据权威 = ADR 0019）：
+规范基线（wire 值唯一权威 = 协议文档；配置语义理据权威 = ADR 0022）：
 
-- `docs/adr/0019-chunked-sync-transfer.md`（消息形态、round/epoch 绑定、资源上限与配置链、明确拒绝的备选方案 #1/#4/#7）
+- `docs/adr/0022-chunked-sync-transfer.md`（消息形态、round/epoch 绑定、资源上限与配置链、明确拒绝的备选方案 #1/#4/#7）
 - `docs/protocols/instance-replication-v1.md`：§5 L116（单形态恒用 + v1 代际否定）、§10.3 L307–345（字段表 + 单形态 + codec 级单帧规则 + 协商门）、§13.2 L448–452、§17 L578–615（配置表 / 启动校验块 / 非追溯性纪律 / control reserve 原样保留）、§22 L701（golden vectors 由实现票交付）
 - `CONTEXT.md` L154–171（分块复制传输 / UPDATE_CHUNK / 同版本部署假设 / 实现代际）
 
@@ -96,7 +96,7 @@ createHubReplicationPlugin({limits:{maxChunkedBootstrapBytes:…}}) → TypeErro
 
 | Step | Fact | Evidence | Confidence |
 |---|---|---|---|
-| 1 | 目标契约冻结：0x42 payload = `kind varUint` 首字段 + 五字段序 + 首 chunk 绑定块；`kind ∈ {0,1,2}`；违者 `MALFORMED_FRAME` | ADR 0019「消息形态」；§5 L116；§10.3 L307–323；CONTEXT.md L157 | 高 |
+| 1 | 目标契约冻结：0x42 payload = `kind varUint` 首字段 + 五字段序 + 首 chunk 绑定块；`kind ∈ {0,1,2}`；违者 `MALFORMED_FRAME` | ADR 0022「消息形态」；§5 L116；§10.3 L307–323；CONTEXT.md L157 | 高 |
 | 2 | HEAD codec 为 ADR 0013 六字段形态：`namespaceId → transferId → chunkIndex → chunkCount → totalBytes → bytes`，无 kind、无绑定块 | `packages/replication-protocol/src/payloads.ts` L651–690（注释 + `decodeUpdateChunk` L663 / `encodeUpdateChunk` L693） | 高 |
 | 3 | 直接故障点：kind 首字节被当作 `namespaceId` varString 长度（0x00 → 空串 / 0x01 → 1 字节串）→ `invalid namespaceId` → `MALFORMED_FRAME` | probe A：`00`+旧 payload 与 `01`+旧 payload 均 `MALFORMED_FRAME: invalid namespaceId` | 高 |
 | 4 | 触发条件：只要对端按单形态发送 0x42（kind=0/1/2 任一、任意 chunk），HEAD 解码必然失败；bindings 无法表达 | R1–R4、R12 红；probe A | 高 |
@@ -159,11 +159,11 @@ DEFAULT_REPLICATION_LIMITS 键面 = 14 键（无两新键）
 | 假设 | 排除依据 |
 |---|---|
 | 环境/依赖损坏导致红 | 同包 194 用例、ws-replication 45 用例全绿；契约 5 条负控同文件同入口绿 |
-| fixture/golden 向量写错（伪红） | probe A 用 HEAD 自证旧向量解码出预期字段值；新向量由规范字段表纯算术构造并与 ADR 0019 示例序逐字核对 |
-| 旧六字段形态需保留（兼容） | ADR 0019 明确单形态恒用 + 旧形态从未发布（PR #241 OPEN、分支 codec 现状六字段，SA8 §3 实测）；协议 §5/§10.3 已冻结单形态 |
-| 该切片刻意移除 0x42 协商门 | 协议 §10.3 L345 + ADR 0019 非目标 #5 + SA8 R34；负控 N1 锁定 |
+| fixture/golden 向量写错（伪红） | probe A 用 HEAD 自证旧向量解码出预期字段值；新向量由规范字段表纯算术构造并与 ADR 0022 示例序逐字核对 |
+| 旧六字段形态需保留（兼容） | ADR 0022 明确单形态恒用 + 旧形态从未发布（PR #241 OPEN、分支 codec 现状六字段，SA8 §3 实测）；协议 §5/§10.3 已冻结单形态 |
+| 该切片刻意移除 0x42 协商门 | 协议 §10.3 L345 + ADR 0022 非目标 #5 + SA8 R34；负控 N1 锁定 |
 | codec 应承载 transferId 计数器/跨帧状态（AC4 误读） | CONTEXT.md UPDATE_CHUNK「codec 只做单帧无状态编解码」+ SA8 R33；契约只锁字段语义 |
-| 新键需要链①（≤ maxQueuedUpdateBytes） | §17 L602–603 与 ADR 0019 配置表只登记链②；契约边界族刻意同时满足「只链②」与「链②+链①式读法」，不预先裁决未登记约束 |
+| 新键需要链①（≤ maxQueuedUpdateBytes） | §17 L602–603 与 ADR 0022 配置表只登记链②；契约边界族刻意同时满足「只链②」与「链②+链①式读法」，不预先裁决未登记约束 |
 | `assemblyTimeoutMs` 应迁到 limits 容器 | AC3「键名不变」；C1 断言 timeouts 键集与缺省不动 |
 | 红是 pytest/vitest 入口或路径问题 | 三条契约文件均由仓库 `vitest.config.ts` 默认 include 收集执行（§14） |
 

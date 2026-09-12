@@ -2,7 +2,7 @@
 
 - **dispatch**: sa-c59dec12-f522-47cc-8e8a-aea6391f5f99（mabf-sa10 / spec-review / iteration 0）
 - **审查对象**: 已提交交付 diff `749de8e8a40a133ec3ed2118deb7efa349307317`（`feat(replication): chunk oversized snapshots and sync diffs`），父提交实测 = `605a48f284c856033761cd2320fa937d1e8c9f0a`（PR #298 head / #299 合并点，与 dispatch 声明一致）
-- **对照基准**: issue #300 正文（`wiki/raw/task_issue-300.md`，What-to-build + AC1–AC5）、SA6 验收契约（`task_issue-300_sa6_contract.md`，approve，8 红 + 4 负控）、ADR 0019（`docs/adr/0019-chunked-sync-transfer.md`）、规范协议（`docs/protocols/instance-replication-v1.md`，wire 冻结值唯一权威）
+- **对照基准**: issue #300 正文（`wiki/raw/task_issue-300.md`，What-to-build + AC1–AC5）、SA6 验收契约（`task_issue-300_sa6_contract.md`，approve，8 红 + 4 负控）、ADR 0022（`docs/adr/0022-chunked-sync-transfer.md`）、规范协议（`docs/protocols/instance-replication-v1.md`，wire 冻结值唯一权威）
 - **Issue comments REST 快照 = `[]`**（dispatch 声明；简报/SA6/SA8/SA2/SA3/SA4/SA7 七方一致）→ 零 owner 评论映射义务
 - **Verdict**: **approve**（1 条需 PR 披露的正文解读项 + 已登记归口项若干；无 partial/unmet/unachievable AC）
 
@@ -11,7 +11,7 @@
 ## 1. 审查方法与证据
 
 - 逐文件实读已提交 diff 全部 16 个仓内文件（git show 逐 hunk）：`errors.ts`、`fixtures.ts`、`codec-issue242-ac-red.test.ts`、`bulk-transfer.ts`（新增 266 行，全文）、`update-transfer.ts`、`update-channel.ts`、`round-engine.ts`、`hub-namespace.ts`、`peer-namespace.ts`、`hub-connection.ts`、`peer-connection.ts`、`driver.ts`、`issue256` 场景 14、`issue300-chunked-sync-ac-red.test.ts`（契约，1085 行全文）、`issue300-bulk-edge-ac.test.ts`（538 行全文）、`instance-replication-v1.md` §22 L701。
-- 规范逐条对照：ADR 0019 L12/L14–18/L20–43/L45–51/L52–64/L66–83/L96–116；协议 §5/§8.1–8.2/§9.2–9.4/§10.3/§13.2（L445–448 四码表逐值）/§16/§17/§18/§22（L701）/§23.3（L814 场景 14 行）。
+- 规范逐条对照：ADR 0022 L12/L14–18/L20–43/L45–51/L52–64/L66–83/L96–116；协议 §5/§8.1–8.2/§9.2–9.4/§10.3/§13.2（L445–448 四码表逐值）/§16/§17/§18/§22（L701）/§23.3（L814 场景 14 行）。
 - 冻结面独立性核对（实测，非引用上游结论）：`git diff 605a48f..749de8e --name-only` 全集 = 设计 ALLOW 清单 16 文件 + 9 个 wiki 产物，零越界；刻画文件 `ws-replication-issue233-repro.test.ts` 与 `issue137-driver.ts` **不在** diff 中（零触碰 ✓）；DENY 面（`frame-io.ts`/`backpressure.ts`/`defaults.ts`/`types.ts`/`validate.ts`/`error-mapping.ts`/`src/index.ts`/codec `messages.ts`/`payloads.ts`）经 `git show --stat -- <paths>` 扫描零命中；`CAP_CHUNKED_SYNC` 全仓零命中；`git diff 605a48f..749de8e --check` exit 0（交付 diff 无 whitespace 缺陷）；契约文件尾随空白扫描零命中。
 - 工作树漂移核对：未提交改动仅 `wiki/raw/task_issue-300_sa3_impl.md`（SA3 iteration-3 报告补记，非业务面）+ untracked SA7 证据日志与 Host 简报——不影响已提交交付的审查结论。
 - 测试运行证据按职责边界**引用** SA3/SA7 产物而不复跑（SA10 不运行测试）：`artifacts/sa7-issue300-post-removal-full.log`（70 文件 499 用例全绿）、`sa7-issue300-typecheck.log`（根 typecheck 全链 exit 0）、`sa7-issue300-probe-transport.log`（16 条真实 TCP 观测行）在库。
@@ -43,16 +43,16 @@
 
 ## 4. 必须在 PR 披露的未达成/解读项
 
-1. **【解读项，MINOR，不阻断】issue 正文「R1 构型（单笔 20KB 合法写 + maxUpdateBytes=8KiB）恢复 diff 经 data 路径分块」的逐字读法在其自身冻结约束下不可实现**：缺省 `maxSyncDiffBytes=2MiB`（`defaults.ts` 实测），R1 构型的 ≈20KB 恢复 diff 不超单帧上限，按同段正文「未超单帧上限的载荷仍走单帧路径（触发条件，非兼容回落）」必须保持单帧；且协商连接下 R1 构型的 20KB 写本身可分块（kind=0，≤ 缺省 4MiB 聚合上限），根本不产生恢复 diff。交付的实际绿灯覆盖 = 同族机制的实质修复：契约 R2/R2b（恢复 diff 超 `maxSyncDiffBytes` → kind=2 经 data 路径，且显式断言「不得出现超 maxSyncDiffBytes 的单帧 SYNC_STEP2（R1 结构性绕行修复）」）、契约 R3（data 闸门关闭时终局不由控制帧判定）、R2 phase A/N4（R1 构型 20KB 载荷本身经 kind=0 data 路径分块、零控制帧绕行）；R3 构型绿灯（100KB 写 + maxSyncDiffBytes=32KiB 收敛、零终局失败）为逐字命中（契约 R2）。该解读与 ADR 0019 L102「以分块构型新增收敛绿灯测试、不改刻画文件」一致，SA6→SA8 全链同解。PR 应如实披露此解读，避免「R1 构型 20KB 恢复 diff 已分块」的字面声明。
+1. **【解读项，MINOR，不阻断】issue 正文「R1 构型（单笔 20KB 合法写 + maxUpdateBytes=8KiB）恢复 diff 经 data 路径分块」的逐字读法在其自身冻结约束下不可实现**：缺省 `maxSyncDiffBytes=2MiB`（`defaults.ts` 实测），R1 构型的 ≈20KB 恢复 diff 不超单帧上限，按同段正文「未超单帧上限的载荷仍走单帧路径（触发条件，非兼容回落）」必须保持单帧；且协商连接下 R1 构型的 20KB 写本身可分块（kind=0，≤ 缺省 4MiB 聚合上限），根本不产生恢复 diff。交付的实际绿灯覆盖 = 同族机制的实质修复：契约 R2/R2b（恢复 diff 超 `maxSyncDiffBytes` → kind=2 经 data 路径，且显式断言「不得出现超 maxSyncDiffBytes 的单帧 SYNC_STEP2（R1 结构性绕行修复）」）、契约 R3（data 闸门关闭时终局不由控制帧判定）、R2 phase A/N4（R1 构型 20KB 载荷本身经 kind=0 data 路径分块、零控制帧绕行）；R3 构型绿灯（100KB 写 + maxSyncDiffBytes=32KiB 收敛、零终局失败）为逐字命中（契约 R2）。该解读与 ADR 0022 L102「以分块构型新增收敛绿灯测试、不改刻画文件」一致，SA6→SA8 全链同解。PR 应如实披露此解读，避免「R1 构型 20KB 恢复 diff 已分块」的字面声明。
 2. **归 #301 的切片边界（计划内中间态，须随 PR 披露）**：observer 8 型（`chunked-snapshot-*`/`chunked-sync-*`）接线未做（R46 边界；当前分块结算点普通族事件经 M1 门控归零、kind=1/2 aborted 零发射）；丢帧/重复/错序/超时/close/GOAWAY/断线/epoch fence 丢弃矩阵、超时两向收口完备覆盖、公平调度回归归 #301。
 3. **R48**：§23.3 cause×failed 矩阵的 `bootstrap-timeout`/`send-failed` 新入口注记（kind=1 停滞终局、M5 出站被拒行）尚未文档同步——纯措辞补记，建议随 #301/doc commit。
 4. **R49**：transferId 耗尽不对称——kind=2 有显式预检（SYNC_TRANSFER_TOO_LARGE 收口），kind=1 无（uint32 域事实不可达，依赖 enqueue 防御性重置）；观察项归 #301 注记。
 5. **SA4 §11-1 遗留**：peer `finalize`→`cleanupResources` 异步间隙残帧未获动态复现（静态结论 = 静默丢弃），归 #301 生命周期矩阵；SA4 观察 1（`completeChunkedStep2` 的 `?? currentRound` 回退）仅协议外注入可达、行为受控（单次幂等 apply + 单 SYNC_APPLIED，round 归属取当前 round），#301 建议改 fail-loud。
 6. **N7**：`types.ts` 过期计数注释（「全 20 码」实为 26）——基线即漂移、文件在 DENY、本票零触碰，已登记转 owner/总控。
-7. **N6**：origin/main 存在 ADR 同号（`0019-vfsl-union-member-docs.md` 与本基线 `0019-chunked-sync-transfer.md` 并存），建议 owner/总控重编号；与本交付零交集。
+7. **N6**：origin/main `0019-vfsl-union-member-docs.md` 曾与本基线原 `0019-chunked-sync-transfer.md` 同号；owner 已裁决本基线篇重编号为 `0022-chunked-sync-transfer.md`，冲突消解；与本交付零交集。
 8. **流程披露（已被 SA3 自披露，复核属实）**：SA3 iteration-3 对 SA6 契约文件执行过单路径 `git add`（索引侧尾随空格格式化修复），与「SA3 不得 git add」通用约束冲突、取 dispatch 具名授权；已提交契约文件复核 = 1085 行/12 用例/零尾随空白/语义零改动，不影响验收效力。
 
-## 5. 规范一致性专项核对（ADR 0019 + 协议冻结面）
+## 5. 规范一致性专项核对（ADR 0022 + 协议冻结面）
 
 - **R42（transferId 单计数器）**：`UpdateChannel.allocateTransferId()` 单点，kind=0 与 bulk 共用（bulk-transfer `host.allocateTransferId` 即 channel 方法）；契约 R2 跨 kind 单调断言。✓
 - **R43（协商门不弱化）**：decode 侧 pre-parse 门零改动；`sendUpdateChunk` 保留 `isChunkedNegotiated()` 纵深防御；v1 未协商组合走既有终局码（刻画文件/互通矩阵保持绿）；负控 N3（伪造 kind=3 首字段 → `UNSUPPORTED_MESSAGE_TYPE` + close 1002 + 零 ns ERROR）在库。✓
@@ -68,4 +68,4 @@
 
 ## 7. 结论
 
-**approve。** 交付 diff 忠实、完整地实现 issue #300 正文与 AC1–AC5、SA6 验收契约（8 红 → 全绿 + 4 负控保持）、ADR 0019 决策与规范协议冻结面；R42–R47 边界约束逐项闭合；刻画文件与 DENY 面零触碰；四新码 append-only 首登逐值 = §13.2 冻结行；文档同步义务兑现。唯一正文解读项（§4-1：R1 构型绿灯的逐字读法在其自身冻结约束下不可实现，实质覆盖已由 R2/R2b/R3-contract + kind=0 数据路径承担）与 §4-2..8 归口/披露项均不阻断本票验收，但必须在 PR 中如实披露。
+**approve。** 交付 diff 忠实、完整地实现 issue #300 正文与 AC1–AC5、SA6 验收契约（8 红 → 全绿 + 4 负控保持）、ADR 0022 决策与规范协议冻结面；R42–R47 边界约束逐项闭合；刻画文件与 DENY 面零触碰；四新码 append-only 首登逐值 = §13.2 冻结行；文档同步义务兑现。唯一正文解读项（§4-1：R1 构型绿灯的逐字读法在其自身冻结约束下不可实现，实质覆盖已由 R2/R2b/R3-contract + kind=0 数据路径承担）与 §4-2..8 归口/披露项均不阻断本票验收，但必须在 PR 中如实披露。

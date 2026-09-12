@@ -151,11 +151,11 @@ Trusted raw Yjs update 已在 sequencer 中提交并登记 dirty，但未执行�
 _Avoid_: validated replication、apply 后校验失败自动 rollback
 
 **分块复制传输（chunked replication transfer）**:
-（ADR 0013 已接受；ADR 0019 扩展）超过单帧上限的复制载荷拆为多个自描述 `UPDATE_CHUNK` wire 帧的易失传输，kind 三态：live-update（ADR 0013，经 `CAP_CHUNKED_UPDATE` 协商）、snapshot（BOOTSTRAP_SNAPSHOT 基线）与 sync-diff（SYNC_STEP2 diff）（ADR 0019，同版本部署假设下的恒用机制、无协商）；以 (连接, 方向, namespaceId, transferId) 为作用域，三种 kind 共用同一 transferId 计数器，接收端在有界 detached buffer 完整重组后执行一次 sequenced trusted apply（snapshot 为排他复制导入）并以单 ACK 结算。partial assembly 绝不写入 live Y.Doc，中断即丢弃并回退 state-vector reconciliation。
+（ADR 0013 已接受；ADR 0022 扩展）超过单帧上限的复制载荷拆为多个自描述 `UPDATE_CHUNK` wire 帧的易失传输，kind 三态：live-update（ADR 0013，经 `CAP_CHUNKED_UPDATE` 协商）、snapshot（BOOTSTRAP_SNAPSHOT 基线）与 sync-diff（SYNC_STEP2 diff）（ADR 0022，同版本部署假设下的恒用机制、无协商）；以 (连接, 方向, namespaceId, transferId) 为作用域，三种 kind 共用同一 transferId 计数器，接收端在有界 detached buffer 完整重组后执行一次 sequenced trusted apply（snapshot 为排他复制导入）并以单 ACK 结算。partial assembly 绝不写入 live Y.Doc，中断即丢弃并回退 state-vector reconciliation。
 _Avoid_: 逐片 apply 到 live Y.Doc、跨重连保留 partial chunks、以提高单帧上限代替分块、把 transferId 当跨连接持久标识
 
 **UPDATE_CHUNK**:
-分块传输的单帧消息（wire 码 `0x42`），payload 恒为 kind 首字段 + namespaceId/transferId/chunkIndex/chunkCount/totalBytes/bytes 五字段 + 首 chunk 绑定块（kind=snapshot 携 replicationId/replicationEpoch，kind=sync-diff 携 syncRoundId，仅 chunkIndex=0）（ADR 0019 单形态；ADR 0013 的六字段旧形态随未发布分支作废）。codec 只做单帧无状态编解码与语义自洽校验，跨帧一致性/顺序/总量与重组属接收端 assembly 状态机——跨帧规则与 assembly 状态机为协议 §10.3 契约（issue #243–#245 落地、issue #246 收口），wire 权威见 `docs/protocols/instance-replication-v1.md`。
+分块传输的单帧消息（wire 码 `0x42`），payload 恒为 kind 首字段 + namespaceId/transferId/chunkIndex/chunkCount/totalBytes/bytes 五字段 + 首 chunk 绑定块（kind=snapshot 携 replicationId/replicationEpoch，kind=sync-diff 携 syncRoundId，仅 chunkIndex=0）（ADR 0022 单形态；ADR 0013 的六字段旧形态随未发布分支作废）。codec 只做单帧无状态编解码与语义自洽校验，跨帧一致性/顺序/总量与重组属接收端 assembly 状态机——跨帧规则与 assembly 状态机为协议 §10.3 契约（issue #243–#245 落地、issue #246 收口），wire 权威见 `docs/protocols/instance-replication-v1.md`。
 _Avoid_: 在 codec 层承载连接级 assembly 状态、把单个 chunk 当独立 UPDATE apply
 
 **CAP_CHUNKED_UPDATE**:
@@ -163,7 +163,7 @@ HELLO 协商 capability bit `0x00000001`（uint32 BE bitset）；双方 optional
 _Avoid_: 把未协商的 0x42 帧当普通帧静默解码、未协商就发送分块
 
 **同版本部署假设（same-version deployment）**:
-Hub 与 Peer 按同版本部署运行、不承诺跨代际 wire 互通的部署前提（ADR 0019）；sync 段分块（kind=snapshot/sync-diff）因此不设 capability 协商、恒用启用，跨版本混跑的非互破译由既有消息码/版本握手响亮拒绝承载。
+Hub 与 Peer 按同版本部署运行、不承诺跨代际 wire 互通的部署前提（ADR 0022）；sync 段分块（kind=snapshot/sync-diff）因此不设 capability 协商、恒用启用，跨版本混跑的非互破译由既有消息码/版本握手响亮拒绝承载。
 _Avoid_: 为历史 wire 形态保留双形态切换或发送端 gating、新旧互通矩阵测试
 
 **实现代际（implementation generation）**:

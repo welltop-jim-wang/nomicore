@@ -1,7 +1,7 @@
 /**
  * SA6 红灯验收契约（类型面）— issue #299（#295 切片 1）：两聚合上限键进入公共类型面。
  *
- * 契约锚点：ADR 0019「资源上限与配置链」+ docs/protocols/instance-replication-v1.md §17。
+ * 契约锚点：ADR 0022「资源上限与配置链」+ docs/protocols/instance-replication-v1.md §17。
  * `ReplicationLimits` 是 `@nomicore/ws-replication` 公共冻结契约面（`Partial<ReplicationLimits>`
  * 是 hub/peer/插件配置的 limits 覆盖类型）——两新键必须以与既有分块键同形的**必填 readonly
  * number** 进入该接口（缺省由 `DEFAULT_REPLICATION_LIMITS` 提供，覆盖经 Partial 合并），

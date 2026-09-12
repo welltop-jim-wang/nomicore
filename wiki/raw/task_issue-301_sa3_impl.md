@@ -18,7 +18,7 @@
 | `wiki/raw/task_issue-301_sa6_contract.md` | 验收契约报告（8 红 R1–R8 + 9 负控 N1–N9；**Revision R1 §17**：R2 末条 wire 计数断言判别式改为 `ackedSequence`；§17.6 修订后证据） |
 | `wiki/raw/task_issue-301_sa2_review.md` | SA2 攻击评审（approve；3 条 MINOR O-1/O-2/O-3，无 BLOCKER/MAJOR） |
 | `wiki/raw/task_issue-301_design_conflict_report.md` | SA8 设计后冲突复查（**clear**；D1–D14；§7 Required action 3 = 实现后复查，输出 `_implementation_conflict_report.md`，归 SA8） |
-| `docs/adr/0019-chunked-sync-transfer.md`、`docs/protocols/instance-replication-v1.md` §9.2/§22/§23.1/§23.3/§23.4 | 字段集/side 信封/改道纪律/判别式规范依据（逐字对照；§9.2 L246 `SYNC_APPLIED.ackedSequence = SYNC_STEP2 sequence（分块 diff 时为末 chunk 帧序）`） |
+| `docs/adr/0022-chunked-sync-transfer.md`、`docs/protocols/instance-replication-v1.md` §9.2/§22/§23.1/§23.3/§23.4 | 字段集/side 信封/改道纪律/判别式规范依据（逐字对照；§9.2 L246 `SYNC_APPLIED.ackedSequence = SYNC_STEP2 sequence（分块 diff 时为末 chunk 帧序）`） |
 | `packages/ws-replication/{src,test}` 当前实现与 516 用例 | 现状锚点与回归面 |
 | `packages/ws-replication/AGENTS.md` | 模块契约与验证门 |
 
@@ -158,7 +158,7 @@
 ```text
 feat(#301): feat(#295 切片 3): 分块 snapshot/sync observer 8 型接线
 
-- types.ts：ReplicationObserverEvent 追加第 29–36 型（ADR 0019 L78–81 + 协议 §23.1）
+- types.ts：ReplicationObserverEvent 追加第 29–36 型（ADR 0022 L78–81 + 协议 §23.1）
 - 发送侧：BulkTransferOutboundSettlement 结算记录；hub/peer sent（末 chunk 恰一）+ acked（单 ACK 结算）
 - 接收侧：kind=1 排他复制导入 → chunked-snapshot-applied（form 参数化）；
   kind=2 完成点 → chunked-sync-applied（chunkCount 经 round-engine 穿线）

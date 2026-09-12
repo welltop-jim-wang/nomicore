@@ -5,7 +5,7 @@
  * - 协议 §10.3「codec 级单帧规则（encode/decode 同一套，违者 MALFORMED_FRAME）」+ 单形态段
  *   （kind ∈ {0,1,2}；绑定块当且仅当 kind≠0 ∧ chunkIndex=0 存在；kind=1 → replicationId
  *   varString + replicationEpoch varUint；kind=2 → syncRoundId varUint）。
- * - ADR 0019：单形态恒用、同版本部署（无归一化/兼容面）。
+ * - ADR 0022：单形态恒用、同版本部署（无归一化/兼容面）。
  * - 设计 D4 裁决：encode 侧违反 iff 规则一律**严格拒绝**（不做 writer 归一化——静默丢弃/补默认
  *   会改写调用方输入并破坏 decode→encode→decode 等价）；值域校验只含结构性规则与
  *   varUint/varString 可编码性（replicationId 文法 / epoch 语义域属 §8.1/§9.2 后续切片，不校验）。

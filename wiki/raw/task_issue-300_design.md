@@ -5,13 +5,13 @@
 - **上游产物**: SA6 验收契约 `wiki/raw/task_issue-300_sa6_contract.md`（approve，8 红 + 4 负控）、SA8 前置门禁 `wiki/raw/task_issue-300_conflict_report.md`（clear，R42–R47 + N6）、SA8 决策摘录 `wiki/raw/task_issue-300_relevant_decisions.md`
 - **评审修订输入**: `wiki/raw/task_issue-300_sa2_review.md`（**reject：1 BLOCKER + 5 MAJOR + 7 条非阻塞观察**）——本版为逐条修订后的 r1；修订映射见 §14
 - **基线**: `mabf/issue-300` @ `605a48f`（#299/PR #321 合并点）；工作树仅含 Host 简报/上游产物快照 + SA6 契约测试文件，零未提交实现漂移
-- **规范权威**: `docs/adr/0019-chunked-sync-transfer.md`（配置语义/设计理据）+ `docs/protocols/instance-replication-v1.md`（wire 冻结值唯一权威）；本设计中「ADR 0019」一律指 `0019-chunked-sync-transfer.md`（N6 消歧）
+- **规范权威**: `docs/adr/0022-chunked-sync-transfer.md`（配置语义/设计理据）+ `docs/protocols/instance-replication-v1.md`（wire 冻结值唯一权威）；本设计中「ADR 0022」一律指 `0022-chunked-sync-transfer.md`（N6 消歧）
 
 ---
 
 ## 1. 任务类型、目标与非目标
 
-**类型 = Feature（能力缺口，非 Bug）**。SA6 已裁决：现实现行为与 #233 刻画一致（预期现状），本票交付 ADR 0019 预设的传输层实现（切片 2/3）。
+**类型 = Feature（能力缺口，非 Bug）**。SA6 已裁决：现实现行为与 #233 刻画一致（预期现状），本票交付 ADR 0022 预设的传输层实现（切片 2/3）。
 
 **目标**：
 
@@ -22,7 +22,7 @@
 5. SA6 红灯契约 8 条全部转绿（`packages/ws-replication/test/ws-replication-issue300-chunked-sync-ac-red.test.ts` 不改），4 条负控与既有 485 条包内断言保持绿；刻画文件 `ws-replication-issue233-repro.test.ts` 不动且保持绿（见 §7 D0 的 v1 门保持）。
 6. R47 文档同步：协议 §22 L701 测试资产措辞收口 + §23.3 场景 14 回归锚改写。
 
-**非目标**（与 ADR 0019 非目标、SA8 R46 切片边界对齐）：
+**非目标**（与 ADR 0022 非目标、SA8 R46 切片边界对齐）：
 
 - 不改 0x42 codec 单形态/字段序/单帧规则（#299 已冻结，本票纯消费）；
 - **零协议外新码**：不新增消息码、capability bit、RESYNC reason 词表项、observer 事件类型；四个 namespace 错误码字面量与元数据为协议 §13.2 L445–448 已冻结登记值，本票做 codec 注册表 append-only **首登**（D12）而非发明新码（SA2-B1 修订后的准确表述——原「不新增错误码」表述在注册表维度为假前提）；
@@ -84,7 +84,7 @@
 
 | Comment ID | Updated at | Requirement | Design section |
 |---|---|---|---|
-| （无 — issue #300 comments REST 快照为空，SA6/SA8/SA2 三方确认） | — | 任务要求唯一来源 = issue 正文 AC1–AC5 + ADR 0019 + 协议冻结文本 | AC1→§7 D4/D5、§8 路线①；AC2→§7 D3/D5、§8 路线②③；AC3→§7 D1/D7、§8；AC4→§7 D6/D10/D12；AC5→§7 D0、§11 验收映射 |
+| （无 — issue #300 comments REST 快照为空，SA6/SA8/SA2 三方确认） | — | 任务要求唯一来源 = issue 正文 AC1–AC5 + ADR 0022 + 协议冻结文本 | AC1→§7 D4/D5、§8 路线①；AC2→§7 D3/D5、§8 路线②③；AC3→§7 D1/D7、§8；AC4→§7 D6/D10/D12；AC5→§7 D0、§11 验收映射 |
 
 本设计不引入任何 issue/AC/ADR/协议之外的行为，不发明错误码/字段/事件（四码为协议冻结值的 codec 首登，D12）。
 
@@ -114,7 +114,7 @@
 | **R45** 发送端聚合超限分支 + §23.3 场景 14 改写 | §7 D3/D4、§11、§12 | kind=1：hub 超 `maxChunkedBootstrapBytes` → `SNAPSHOT_TRANSFER_TOO_LARGE` + `finalize('failed','send-failed')`；kind=2：发送端预检超 `maxChunkedSyncDiffBytes` → `SYNC_TRANSFER_TOO_LARGE` + failed + 零写入。**场景 14 改写含协商前提与 harness 面（SA2-M4）**：改写后场景经 `test/driver.ts` 新增 `chunkedUpdate` 透传建立协商连接（C21——peer 单旋钮决定协商，hub 恒支持），在 `len > maxChunkedBootstrapBytes` 构型断言新码 | 否 |
 | **R46** 切片边界：observer 8 型接线 + 生命周期完备性归 #301；本票须显式声明 chunked 结算点 observer 处置且不使既有锚红 | §7 D8、§13 | chunked 结算点发射零事件；**kind=2 完成点 `sync-diff-applied` 归零经 D3 的 syncChunked 显式门控实现（SA2-M1——非结构性绕过，单帧路径逐字节不变）**；既有 observer 锚全绿 | 否 |
 | **R47** append-only 冻结面零顺手改；kind=0 逐字节等价；落地后文档同步 | §7 D5/D8/D12、§11、§12 | **codec 错误注册表首登 = append-only 首次登记四行协议冻结值（SA2-B1；replication-protocol AGENTS「error codes 为 append-only 兼容注册表」明文允许），非「重复登记」亦非顺手改**——原设计「注册表零触碰」前提为假（C14）。`ChunkedTransferPiece` 扩展为包内私有类型（wire kind=0 字节不变）；`update-channel.ts` 改动 = 只读访问器 + 分配方法 + onAck drain 条件扩展（D7/M3，无 bulk 工作时与现状逐字节同义）；文档同步入 ALLOW LIST | 是（复查焦点扩至注册表面，§15） |
-| **N6** origin/main 同号 ADR | 本文件 header | 「ADR 0019」恒指 `0019-chunked-sync-transfer.md` 全路径 | 否 |
+| **N6** origin/main 同号 ADR（已消解：本基线篇 0019→0022） | 本文件 header | 「ADR 0022」恒指 `0022-chunked-sync-transfer.md` 全路径 | 否 |
 | Frozen surfaces 全表（SA8 §5） | §7 全节、§12 DENY LIST | 逐项保持：单帧路径与触发条件（D0/N1/N2）、BOOTSTRAP_ACK/SYNC_APPLIED payload 字段集不变、`BOOTSTRAP_TOO_LARGE`/`SYNC_DIFF_TOO_LARGE` 保留注册表且 v1 组合仍可达（D0）、assembly 进度对状态机不可见（D5）、配置链零改动。**错误码注册表行的准确读法（SA2-B1 修订）**：冻结的是四码语义/分类（协议 §13.2 值），codec 侧 append-only 首登恰是兑现该冻结面；SA8 报告 L40「四码已注册」与 SA6 同源前提错误，义务本身（append-only、不改既有行、不删死码）不变且被 D12 满足 | 是（同上） |
 
 **设计后 ADR 冲突复查：需要（`requiresConflictRecheck: true`）**。理由：本设计改动 wire 传输路径（0x42 kind=1/2 端到端）、namespace 状态机承载行为（bootstrapping/reconciling 承载分块传输）、失败语义（四新码发射点 + 发送端收口改道 + M5 出站被拒新入口面），并**触碰 codec 错误注册表面（D12 append-only 首登——SA2 §13 验收要求复审重点随之扩展）**——SA8 §10 已预告该面需设计后核对（重点 R42–R45、R47、Frozen surfaces 表与 errors.ts 注册表行）。
@@ -130,7 +130,7 @@
 - **kind=1（hub→peer snapshot）**：`snapshot.byteLength > maxBootstrapBytes` ∧ `chunkedUpdateNegotiated()` ∧ `≤ maxChunkedBootstrapBytes` ∧ transferId 域未耗尽 → 分块；`≤ maxBootstrapBytes` → 既有单帧路径逐字节不变（含 `bootstrap-snapshot-sent` 观测）；`> maxChunkedBootstrapBytes` → R45 收口（D4）；**未协商 ∧ 超限 → 既有 `BOOTSTRAP_TOO_LARGE` 终局路径原样保留**。
 - **kind=2（双向 Step2 diff）**：`diff.byteLength > maxSyncDiffBytes` ∧ `chunkedUpdateNegotiated()` ∧ `≤ maxChunkedSyncDiffBytes` ∧ transferId 域未耗尽 → 分块；`≤ maxSyncDiffBytes` → 既有单帧 SYNC_STEP2 控制帧路径逐字节不变；`> maxChunkedSyncDiffBytes` → 发送端预检收口（D3）；**未协商 ∧ 超限 → 既有 `SYNC_DIFF_TOO_LARGE` 终局路径原样保留**。
 
-「未协商 ∧ 超限 → v1 终局」是 R43 的直接结论（发送端沿既有 selectedCapabilities 面；v1 代际端对 0x42 照旧 connection fatal，向其分块会把 namespace 级失败升级为连接级失败）。该保持同时是 AC5 的成立前提：刻画文件 C12 经未协商连接运行（`issue137-driver.ts`，与 `test/driver.ts` 为不同文件），R3 的 `SYNC_DIFF_TOO_LARGE` 终局因此实现后仍绿、文件零改动。`BOOTSTRAP_TOO_LARGE`/`SYNC_DIFF_TOO_LARGE` 在协商（同版本）路径上不再触发 = ADR 0019 死码语义，但在 v1 组合保留触发面。
+「未协商 ∧ 超限 → v1 终局」是 R43 的直接结论（发送端沿既有 selectedCapabilities 面；v1 代际端对 0x42 照旧 connection fatal，向其分块会把 namespace 级失败升级为连接级失败）。该保持同时是 AC5 的成立前提：刻画文件 C12 经未协商连接运行（`issue137-driver.ts`，与 `test/driver.ts` 为不同文件），R3 的 `SYNC_DIFF_TOO_LARGE` 终局因此实现后仍绿、文件零改动。`BOOTSTRAP_TOO_LARGE`/`SYNC_DIFF_TOO_LARGE` 在协商（同版本）路径上不再触发 = ADR 0022 死码语义，但在 v1 组合保留触发面。
 
 **备选（拒绝）**：恒用分块不看协商位——向 v1 对端发 0x42 致连接 fatal，违反 R43/互通矩阵；对超限载荷回落单帧——违反「触发条件，非兼容回落」。
 
@@ -202,7 +202,7 @@ outcome = host.sendStep2(diff, currentRound, relatedSequence)
 
 **接收端**（`RoundEngine` 新增两个公共方法，复用既有校验/结算体）：
 
-- `admitChunkedStep2(syncRoundId): boolean`——首 chunk 接纳：`hasActiveRound ∧ syncRoundId === currentRound ∧ ownStep1Seq ≠ undefined ∧ !receivedStep2`，通过则 `receivedStep2 = true`（防重复 Step2 的 chunk 形态）；不通过 → `onViolation`（SYNC_STATE_VIOLATION + failed，§9.3 既有语义）。relatedStep1Sequence 无 chunk 携带面，round 归属由绑定块承载（ADR 0019 L41）。
+- `admitChunkedStep2(syncRoundId): boolean`——首 chunk 接纳：`hasActiveRound ∧ syncRoundId === currentRound ∧ ownStep1Seq ≠ undefined ∧ !receivedStep2`，通过则 `receivedStep2 = true`（防重复 Step2 的 chunk 形态）；不通过 → `onViolation`（SYNC_STATE_VIOLATION + failed，§9.3 既有语义）。relatedStep1Sequence 无 chunk 携带面，round 归属由绑定块承载（ADR 0022 L41）。
 - `completeChunkedStep2(update, lastChunkSequence, syncRoundId): Promise<void>`——组装收齐后调用 = 既有 `applyStep2Safely` 的暴露形态：apply 成功 → remoteDiffAppliedLocally + checkSettled；SYNC_APPLIED 由 `applyStep2` 宿主实现以 `ackedSequence = lastChunkSequence` 发出——**结算单点与锚值逻辑不变（原「C3 单点不改」表述按 SA2-M1 修正）**：唯一函数内变化 = 途径的 `applyRemoteUpdate` 第 5 参携带 kind=2 形态标记以抑制普通族 observer 发射（M1 门，见下）。
 
 **M1 · kind=2 完成点普通族 observer 抑制门（SA2-M1）**：现状 `applyRemoteUpdate` 的发射分支序为 `isStep2 → sync-diff-applied`（**无条件、先于 chunked 判别**，C16）——直接复用则 kind=2 分块完成点必然发射普通族 `sync-diff-applied`，违反协议 §23.3 第 33 型冻结改道语义（「该结算点不再发普通族 sync-diff-applied（窗口内归零）」）。设计指定抑制机制：
@@ -386,7 +386,7 @@ UpdateChannel.onAck：
      SYNC_TRANSFER_VIOLATION:     namespaceError('SYNC_TRANSFER_VIOLATION', true, 'no', 'failed'),
      SYNC_TRANSFER_TOO_LARGE:     namespaceError('SYNC_TRANSFER_TOO_LARGE', true, 'config', 'failed'),
      ```
-     附 #242 同款来源注释（issue #295 / ADR 0019 / 协议 §13.2 L445–448；发射点属本切片传输层）；
+     附 #242 同款来源注释（issue #295 / ADR 0022 / 协议 §13.2 L445–448；发射点属本切片传输层）；
    - 注册表计数注释同步：文件头 L5、类型注释 L31、注册表注释 L145 的「22」→「26」（描述性注释，非语义）。
 2. `packages/replication-protocol/test/fixtures.ts`：`NAMESPACE_ERROR_TABLE` 镜像 append 同四行（codec-registries.test.ts L109 键集等价断言要求两表同步）；计数注释 22→26。**golden 向量与消息 fixtures 零触碰**（本文件其余内容不动）。
 3. `packages/replication-protocol/test/codec-issue242-ac-red.test.ts`：注册表 append-only 用例（L461–462）计数 22→26、既有条目抽样锚保持；按该文件既定维护路径补四码断言（`lookupError('namespace', code)` 命中冻结元数据 + ERROR 帧 `encodeMessage`/`decodeMessage` 往返成功）。`codec-registries.test.ts` 为注册表驱动（键集等价 + 逐条元数据 + freeze + lookupError），fixtures 更新后自动覆盖新码，零改动。
@@ -414,7 +414,7 @@ UpdateChannel.onAck：
 
 ## 9. 错误、恢复、并发与幂等
 
-见 §7 D6/D9/D10/D11/D12 汇总。补充恢复语义：kind=1 失败（TOO_LARGE/VIOLATION/绑定块/BOOTSTRAP_FAILED 族/出站被拒）= terminal failed（等待连接重建/配置变化，§16/§18 既有路径）；kind=2 违例/超聚合 = terminal failed；kind=2 停滞 = 非终态 RESYNC（新 round 修复）；kind=2 发送端 ACK 超时/出站被拒/resync 边沿 = needs-resync（§10.4/#243 族——非终态，恢复 round 收敛）。重试面：TOO_LARGE 族 retryable=config（改配置后新连接/重开）；VIOLATION 族 retryable=no。**M2 覆盖后的出站静止性**：任一 resync-declared 边沿后本方向零新增 kind≠0 chunk 出站（残渣 = 真正在途帧，接收端残渣矩阵良性消化，与 kind=0 F3 同构）。回滚：本票无配置/数据迁移面，回滚 = revert 实现 commit（无运行期开关——ADR 0019 未引入也不得引入分块开关）；D12 注册行随 commit 一体回退（append-only，无既有行损伤）。
+见 §7 D6/D9/D10/D11/D12 汇总。补充恢复语义：kind=1 失败（TOO_LARGE/VIOLATION/绑定块/BOOTSTRAP_FAILED 族/出站被拒）= terminal failed（等待连接重建/配置变化，§16/§18 既有路径）；kind=2 违例/超聚合 = terminal failed；kind=2 停滞 = 非终态 RESYNC（新 round 修复）；kind=2 发送端 ACK 超时/出站被拒/resync 边沿 = needs-resync（§10.4/#243 族——非终态，恢复 round 收敛）。重试面：TOO_LARGE 族 retryable=config（改配置后新连接/重开）；VIOLATION 族 retryable=no。**M2 覆盖后的出站静止性**：任一 resync-declared 边沿后本方向零新增 kind≠0 chunk 出站（残渣 = 真正在途帧，接收端残渣矩阵良性消化，与 kind=0 F3 同构）。回滚：本票无配置/数据迁移面，回滚 = revert 实现 commit（无运行期开关——ADR 0022 未引入也不得引入分块开关）；D12 注册行随 commit 一体回退（append-only，无既有行损伤）。
 
 ---
 
@@ -508,14 +508,14 @@ SA1 未运行上述命令（职责边界）；SA6 已提供改动前基线，转
 
 | 路径 | 与任务的关系 | 禁止修改原因 |
 |---|---|---|
-| `packages/ws-replication/test/ws-replication-issue233-repro.test.ts` | 刻画基线 | AC5/ADR 0019 L103 显式「不改刻画文件」；D0 保证实现后仍绿 |
+| `packages/ws-replication/test/ws-replication-issue233-repro.test.ts` | 刻画基线 | AC5/ADR 0022 L103 显式「不改刻画文件」；D0 保证实现后仍绿 |
 | `packages/ws-replication/test/issue137-driver.ts` | 刻画文件驱动（未协商 bootMulti） | 刻画基线的组成部分（C12）；协商前提只经 `test/driver.ts` 透传，不触碰刻画驱动 |
 | `packages/ws-replication/test/ws-replication-issue300-chunked-sync-ac-red.test.ts` | SA6 验收契约 | 契约由实现转绿，不得为绿而改断言 |
 | `packages/replication-protocol/src/payloads.ts`、`packages/replication-protocol/src/messages.ts`、`packages/replication-protocol/src/index.ts`、`packages/replication-protocol/test/codec-messages-golden.test.ts`、`packages/replication-protocol/test/codec-issue299-ac-red.test.ts` | codec 形态面（0x42 单形态/字段序/golden 冻结值/公共导出） | #299 已冻结（R47）；**SA2-B1 修订：DENY 范围从「`packages/replication-protocol/src/**`」收窄为 codec 形态面——`src/errors.ts` 注册表面按 D12 解禁（append-only 首登），其余 codec 面仍禁** |
 | `packages/ws-replication/src/{frame-io,error-mapping,backpressure,defaults,types,validate,plugin,liveness,fence-watchdog,lifecycle-queue,observer,testing,index}.ts` | 解码门/错误映射单点/RR 调度器/配置链/公共导出 | 设计判定零改动（§10；error-mapping 零改动结论以 D12 落地为前提）；防顺手改。backpressure 的 wheel 留轮经 facet 聚合口径自然覆盖，无需改调度器 |
 | `packages/namespace-registry/**`、`packages/namespace-runtime/**`、其余 packages | 排他导入/sequencer/lease seam | 「与单帧路径同一导入语义」——经既有 seam 消费，零改动 |
-| `docs/adr/**`、`CONTEXT.md` | 决策与词汇 | ADR 0019 + 词条已冻结且与本设计一致；无新决策/新术语（D12 为既有冻结值的实现，不构成 ADR 修订） |
-| `docs/adr/0019-vfsl-union-member-docs.md`（若经合并出现） | N6 同号 ADR | 归属 origin/main 提交，非本基线决策集；重编号归 owner/总控 |
+| `docs/adr/**`、`CONTEXT.md` | 决策与词汇 | ADR 0022 + 词条已冻结且与本设计一致；无新决策/新术语（D12 为既有冻结值的实现，不构成 ADR 修订） |
+| `docs/adr/0019-vfsl-union-member-docs.md`（若经合并出现） | N6 同号 ADR（已消解） | 归属 origin/main 提交，非本基线决策集；owner 已裁决本基线篇重编号 0019→0022（0020/0021 已被 #311/#318 占用），VFSL 篇维持 0019 |
 | `apps/**`、`domains/**`、`scripts/**`、根配置 | 无条款交集 | SA8 §3 零交集确认 |
 
 ---

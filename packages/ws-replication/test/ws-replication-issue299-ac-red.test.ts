@@ -2,7 +2,7 @@
  * SA6 红灯验收契约 — issue #299（#295 切片 1）：snapshot / sync-diff 聚合上限配置链。
  *
  * 契约锚点：
- * - ADR 0019「资源上限与配置链」配置表：`maxChunkedBootstrapBytes` / `maxChunkedSyncDiffBytes`
+ * - ADR 0022「资源上限与配置链」配置表：`maxChunkedBootstrapBytes` / `maxChunkedSyncDiffBytes`
  *   缺省各 4 MiB，约束各为 `≤ maxChunksPerUpdate × maxUpdateBytes`；安全缺省、启动期响亮验证、
  *   绝不运行时 clamp；`maxChunksPerUpdate` / `maxConcurrentAssembliesPerConnection` /
  *   `assemblyTimeoutMs` 语义推广为 kind 无关、键名不变；`maxQueuedControlBytes ≥
@@ -56,7 +56,7 @@ import {
 // ---------------------------------------------------------------- 契约常量（规范字面量先行）
 
 const MIB = 1024 * 1024;
-/** ADR 0019 配置表：#295 两新键缺省各 4 MiB。 */
+/** ADR 0022 配置表：#295 两新键缺省各 4 MiB。 */
 const DEFAULT_CHUNKED_BOOTSTRAP_BYTES = 4 * MIB;
 const DEFAULT_CHUNKED_SYNC_DIFF_BYTES = 4 * MIB;
 /** ADR 0013 配置表：#244 三键（键名与缺省不得因 kind 无关推广而变）。 */
@@ -195,7 +195,7 @@ describe('issue #299 切片 1：snapshot/sync-diff 聚合上限配置链（红�
     ).toBe(DEFAULT_CHUNKED_SYNC_DIFF_BYTES);
     expect(Object.isFrozen(DEFAULT_REPLICATION_LIMITS)).toBe(true);
 
-    // 键名不变回归（ADR 0019：语义 kind 无关推广，键名与缺省不动；本切片只许两新键进入 limits）
+    // 键名不变回归（ADR 0022：语义 kind 无关推广，键名与缺省不动；本切片只许两新键进入 limits）
     const expectedLimitKeys = [
       'maxFrameBytes',
       'maxBootstrapBytes',

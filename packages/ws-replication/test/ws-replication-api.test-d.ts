@@ -276,7 +276,7 @@ describe('`@nomicore/ws-replication` observer seam（issue #177）', () => {
       | { readonly type: 'chunked-update-applied'; readonly side: ReplicationObserverSide; readonly connectionId?: string; readonly namespaceId: string; readonly bytes: number; readonly chunkCount: number; readonly applyLatencyMs?: number }
       | { readonly type: 'chunked-update-acked'; readonly side: ReplicationObserverSide; readonly connectionId?: string; readonly namespaceId: string; readonly bytes: number; readonly ackLatencyMs?: number }
 
-      // issue #301（append-only 第 29–36 型；ADR 0019 L78–81 + 协议 §23.1 第 29–36 型行——
+      // issue #301（append-only 第 29–36 型；ADR 0022 L78–81 + 协议 §23.1 第 29–36 型行——
       // 字段集对齐既有 chunked-update-* 四型；side 信封：snapshot 成功三型字面量、
       // sync 四型与两 aborted 型 ReplicationObserverSide；sent 恒无 latency 键、
       // applied 无 transferId/sequence/效果组键、acked 无 sequence/syncRoundId、

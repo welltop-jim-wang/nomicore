@@ -22,7 +22,7 @@
  * 本模块不经 src/index.ts 导出（包内私有）。
  */
 
-/** 分块传输 kind（单形态首字段，ADR 0019；`undefined` 归一为 0——既有 kind=0 生产者等价）。 */
+/** 分块传输 kind（单形态首字段，ADR 0022；`undefined` 归一为 0——既有 kind=0 生产者等价）。 */
 export type ChunkedTransferKind = 0 | 1 | 2;
 
 /** 单帧分块载荷（UPDATE_CHUNK 消息体，minus namespaceId——发送/接收共享形状）。 */

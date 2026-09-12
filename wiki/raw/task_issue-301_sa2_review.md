@@ -19,7 +19,7 @@
 | `packages/ws-replication/test/ws-replication-issue301-chunked-completeness-ac-red.test.ts` | 实读（R1/R2/R5/R7/R8 断言体 + 17 用例清单） | 契约断言与 OD1 字段集逐字段对照 |
 | `packages/ws-replication/test/ws-replication-api.test-d.ts`（L240–279 镜像）、`ws-replication-observer-red.test.ts`（assertSafe/ALLOWED_KEYS/limits）、issue300 两文件（事件断言面） | 实读 | 回归风险面独立核验 |
 | `apps/yjs-server/src/fatal-policy.ts`（外部 `ReplicationObserverEvent` 消费者） | 实读 | 公共联合加性变更的穷尽消费者排查 |
-| `docs/protocols/instance-replication-v1.md` §22/§23.1–23.4/§23.7、`docs/adr/0019-chunked-sync-transfer.md` L72–83 | 实读 | 冻结字段集/side 信封/键集排除/纪律条款逐字比对 |
+| `docs/protocols/instance-replication-v1.md` §22/§23.1–23.4/§23.7、`docs/adr/0022-chunked-sync-transfer.md` L72–83 | 实读 | 冻结字段集/side 信封/键集排除/纪律条款逐字比对 |
 | `packages/ws-replication/AGENTS.md`（dispatch 附带） | 实读 | 模块契约（导出面、observer 隔离、验证门） |
 | `wiki/raw/task_issue-301_relevant_decisions.md` / `_conflict_report.md` | 不存在 | 前置 SA8 门禁缺失——设计 §4 已如实登记替代约束源，且 SA8 设计后报告已补位裁决（clear） |
 
@@ -36,13 +36,13 @@
 | AC3（恶意声明不致无界分配） | §1 非目标 + §12（N5 保持绿） | **覆盖**（负控锁绿即回归门；分配前校验为 slice 2 已交付面） |
 | AC4（多 ns 公平调度 + control reserve） | §1 非目标 + §9.3（N8 零改动）+ §12（N8） | **覆盖**。观测发射不进调度路径（per-controller 内存字段/同步回调） |
 | AC5（observer 8 型：发射点、改道归零、互斥、safe-field/secret-free/throw isolation） | OD1–OD9 + §12（R1–R8 + N6/N7） | **覆盖**。8 型字段集/side 逐字 = §23.1 L749–754/L783–784；发射点接线结构（结算记录/settle 返回值/form 参数化/kind 选路）与源码现状锚点一一对应 |
-| 非目标边界（互通矩阵、kind=0、observer.ts 白名单） | §1 非目标 + §11 DENY | **未扩大**。三处非目标均有 ADR 0019/issue body/#287 复审的显式依据 |
+| 非目标边界（互通矩阵、kind=0、observer.ts 白名单） | §1 非目标 + §11 DENY | **未扩大**。三处非目标均有 ADR 0022/issue body/#287 复审的显式依据 |
 
 ## 4. Owner评论覆盖
 
 | Comment ID | Updated at | Design section | Assessment |
 |---|---|---|---|
-| （无——issue #301 comments 为空；任务简报 §Comments 与 SA6 §2/dispatch 一致） | — | 设计 §2（同一登记） | **一致**。无 owner 补充要求；任务要求唯一来源 = issue 正文 + ADR 0019 + 协议冻结文本，设计未虚构 owner 义务 |
+| （无——issue #301 comments 为空；任务简报 §Comments 与 SA6 §2/dispatch 一致） | — | 设计 §2（同一登记） | **一致**。无 owner 补充要求；任务要求唯一来源 = issue 正文 + ADR 0022 + 协议冻结文本，设计未虚构 owner 义务 |
 
 ## 5. 上游事实与SA8约束
 
@@ -50,7 +50,7 @@
 |---|---|---|
 | SA6 §8 四个直接故障点（类型面止于 28 型 / 发送侧零结算回调面 / 接收侧抑制无替代 + chunkCount 断链 / aborted kind=0 门） | OD1/OD2/OD3/OD4/OD5/OD6 逐点兑付 | **一致且实测相符**：types.ts 联合现止于 `chunked-update-acked`（实测）；`onLastChunkSent: (lastChunkSequence: number) => void`（bulk-transfer.ts L50 实测）；`settle(kind): void`（L198 实测）；`UpdateChunkAcceptResult.complete.chunkCount` 在 hub L942/peer L906 被丢弃（实测）；`clearInboundAssembly` 的 `busyKind === 0` 门与「归 #301」注释（双侧实测） |
 | slice 2 源码 deferral 注释（hub L993–994 / peer L953–954） | §4 登记为本票施工面 | **实测相符**（注释原文在位） |
-| ADR 0019 L78–81 + 协议 §23.1 L749–754/L783–784 字段集冻结 | OD1 逐字落地（含 side 信封：snapshot 成功三型 hub/peer/hub 字面量、sync 四型与两 aborted 为 ReplicationObserverSide；aborted 无 connectionId；sync-acked 无 sequence/syncRoundId/transferId/chunkCount；sent 恒无 latency） | **逐字一致**（本评审逐行比对协议表行；R1/R2 的 required/forbidden 断言与 OD1 键集一一对应） |
+| ADR 0022 L78–81 + 协议 §23.1 L749–754/L783–784 字段集冻结 | OD1 逐字落地（含 side 信封：snapshot 成功三型 hub/peer/hub 字面量、sync 四型与两 aborted 为 ReplicationObserverSide；aborted 无 connectionId；sync-acked 无 sequence/syncRoundId/transferId/chunkCount；sent 恒无 latency） | **逐字一致**（本评审逐行比对协议表行；R1/R2 的 required/forbidden 断言与 OD1 键集一一对应） |
 | §23.1 计数不变量（sent 恰一非逐 chunk / acked 单 ACK 结算恰一 / applied 六选一互斥 / aborted busy 边沿恰一 / 与成功型互斥） | §9.1 不变量表（结构性单点论证） | **成立**（见 §7 攻击表逐条验证） |
 | §23.3/§23.4 纪律（safe-field、secret-free、throw 隔离、决策落定后发射、无 observer 逐字节等价、clock 缺省整键缺失） | OD8 | **落实**：发射全部经 `emitObserver` → `dispatchReplicationObserver`（observer.ts L36–46 实测 try/catch 静默、无 per-type 白名单）；`host.now` 连接层 observer 门控 + safeNow 折叠（hub-connection L554/peer-connection L177 实测）；latency 条件展开两态 |
 | SA6 §12.3 四条解释边界（kind=1 超时 aborted / epoch-fence reason last-writer-wins / GOAWAY 归 connection-teardown / aborted 无 connectionId） | OD7 + §13-1/§13-5 + §5.3 | **一致**：四条边界设计与契约读法逐条对齐；OD7 读法经 SA8 D5 独立裁定为冻结文本唯一相容读法，本评审复核 §23.1 L783 + §18 L628（「snapshot → BOOTSTRAP_FAILED 语义族 terminal failed」）后同意 |
@@ -184,6 +184,6 @@
 
 ## 结论
 
-设计将 ADR 0019/协议 §23.1 已冻结的 29–36 型事件从零发射点接通到既有结算结构上：字段集与冻结行逐字一致（本评审独立逐行比对）、发射点归属正确（控制器层，机制模块零观测面）、计数不变量由结构单点保证、全部 reason/chunkCount/syncRoundId 事实源单点复用、文件范围与 DENY 论证经源码独立核验成立、验收映射与 SA6 契约逐字段对应。SA6（approve）与 SA8 设计后冲突复查（clear）与本评审结论三方一致。可进入实现。
+设计将 ADR 0022/协议 §23.1 已冻结的 29–36 型事件从零发射点接通到既有结算结构上：字段集与冻结行逐字一致（本评审独立逐行比对）、发射点归属正确（控制器层，机制模块零观测面）、计数不变量由结构单点保证、全部 reason/chunkCount/syncRoundId 事实源单点复用、文件范围与 DENY 论证经源码独立核验成立、验收映射与 SA6 契约逐字段对应。SA6（approve）与 SA8 设计后冲突复查（clear）与本评审结论三方一致。可进入实现。
 
 *SA2 只读评审：未修改设计、生产代码或测试；唯一产出为本文件。*

@@ -20,7 +20,7 @@
 > `task_issue-300_sa4_review.md`（approve，0 BLOCKER/MAJOR，5 非阻塞观察 + 4 动态验证项）、
 > `task_issue-300_sa6_contract.md`（approve，8 红 + 4 负控，§13 转绿判据）、
 > `task_issue-300_sa7_report.md`（approve）、SA8 门禁两份（前置 clear；implementation
-> 复查 clear，R48/R49/N7 非阻塞）、规范基线 ADR 0019 全文、ADR 0010/0013 相关节、
+> 复查 clear，R48/R49/N7 非阻塞）、规范基线 ADR 0022 全文、ADR 0010/0013 相关节、
 > 协议 §8.1/§8.2/§9.2/§9.4/§10.3/§13.2/§17/§18/§22/§23 原文、根 `AGENTS.md`、
 > `docs/AGENTS.md`、两包 `AGENTS.md`、`REPORT.md` L229 whitespace 门定义。
 > **审查方式**: 独立取证，非结论复用——交付 diff 全量亲读（生产 9 文件逐行 +
@@ -46,7 +46,7 @@
 - 交付 diff 与设计 r1 §12 ALLOW 台账**逐条一致**（§6 亲证）：16 个代码/测试/文档路径
   全部落 ALLOW；DENY 全清单零触碰（含刻画文件、契约文件、codec 形态面、配置链、
   error-mapping/frame-io/backpressure、registry/runtime、docs/adr、CONTEXT.md）。
-- D0–D12 全部按批准设计落地且与 ADR 0019、协议冻结文本同向；四码注册表首登逐值 =
+- D0–D12 全部按批准设计落地且与 ADR 0022、协议冻结文本同向；四码注册表首登逐值 =
   §13.2 L445–448 冻结行（append-only，既有行零改动）。
 - 流程面合规：SA6 契约 approve → SA8 前置门禁 clear → SA1 设计 → SA2 approve（r1）→
   SA3 实现（含 iteration 3 格式化修复披露）→ SA8 implementation 复查 clear →
@@ -71,9 +71,9 @@
 | docs/AGENTS「code behavior changes → update every normative document whose stated contract changed；wording changes must not invent implementation behavior」 | 规范契约已在父 base 冻结；本票义务面 = §22 L701 一行收口：传输层 kind=1/2 资产支从「后续切片交付…不预设其存在」改写为引用**同提交内在仓**的三资产（契约文件/bulk-edge 探针/场景 14 锚——三路径本轮实测存在）；§13.2/§23.3 表本体零 diff（diff 上下文亲证） | ✅ |
 | docs/AGENTS「Use repository vocabulary exactly」 | 新注释/文档用词（绑定块、单形态、改道、族中性、刻画文件、整笔占 1 个 in-flight 窗口槽、有效占用口径）全部取自 CONTEXT.md 词条与协议既有表述；零新术语发明，CONTEXT.md 同改义务不触发（DENY 与实测一致） | ✅ |
 
-## 2. ADR 保真（交付逐条对照 ADR 0019 决策节）
+## 2. ADR 保真（交付逐条对照 ADR 0022 决策节）
 
-| ADR 0019 / 协议决策 | 交付落点 | 判定 |
+| ADR 0022 / 协议决策 | 交付落点 | 判定 |
 |---|---|---|
 | 恒用机制：超单帧上限的 snapshot/diff 一律分块；未超上限仍走单帧（触发条件，非兼容回落） | hub `startBootstrap` 三分叉（L573–604）与双侧 `sendStep2` 三态裁决：`≤ maxBootstrapBytes`/`≤ maxSyncDiffBytes` 走既有单帧路径（sendChecked + observer 逐字节不变，HB3/PN11 锚原位保留）；超限 ∧ 已协商 ∧ ≤ 聚合上限 → kind=1/2 enqueue；负控 N1/N2 锁定界内零 0x42 | ✅ |
 | 同版本部署：sync 段不新增 capability bit、不协商、不 gating；v1 门保持 | 零新 capability/协商面 diff；未协商 ∧ 超限 → 既有 `BOOTSTRAP_TOO_LARGE`/`SYNC_DIFF_TOO_LARGE` 终局原样（D0）；解码侧 pre-parse 门零改动（frame-io DENY） | ✅ |

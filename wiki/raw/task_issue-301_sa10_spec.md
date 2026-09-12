@@ -2,7 +2,7 @@
 
 - **dispatch**: sa-9d6ea948-8904-400d-b947-c8eb20b42e17（mabf-sa10 / spec-review / iteration 0）
 - **被审对象**: 已提交最终交付 commit `799a6182b818ee0ba6372423c63ea59715a7435d`（`feat(ws-replication): complete chunked observer events`，单提交，parent 实测 = `0f3eca53315574d1ceab823f1e98a648d3bb157a` = dispatch 声明的 Parent PR #298 稳定 head，逐字一致）
-- **裁决**: **approve**——AC1–AC5 全部覆盖；8 型 observer 事件字段集与 ADR 0019 L78–81 / 协议 §23.1 第 29–36 型冻结行逐字一致；范围零越界、零 scope creep；无需 PR 披露的未达成项；2 条 MINOR 观察不阻断
+- **裁决**: **approve**——AC1–AC5 全部覆盖；8 型 observer 事件字段集与 ADR 0022 L78–81 / 协议 §23.1 第 29–36 型冻结行逐字一致；范围零越界、零 scope creep；无需 PR 披露的未达成项；2 条 MINOR 观察不阻断
 - **Owner-feedback 记录**: REST comments endpoint 返回空（与 dispatch / SA6 §2 / SA2 §4 / SA3 / SA4 头部一致）——无适用 owner 要求，无 override 需并入
 - **SA10 纪律声明**: 本审查独立核对 issue 正文/AC、批准验收契约（SA6 含 Revision R1）与规范冻结文本，对提交 diff 逐文件实读、对契约断言体逐条实读、对发射点与类型面源码直读复核；未修改代码/设计/测试，未运行测试，未启动服务。运行时绿灯证据（契约 17/17、全包 516、根 3503、typecheck）引自 SA3/SA6/SA7 并经提交内 `artifacts/sa7-issue301-*.log` 与 md5 跨 SA 指纹互证（本审查实测 5 个实现文件 md5 与 SA3 §2/SA6 §16/SA4 §2 记录逐字相同：`912350fc…`/`2089bfe4…`/`200744a0…`/`935c3fcf…`/`dead8d68…`）——被提交字节 = 被审查/被验证字节，证据链无断裂。
 
@@ -18,7 +18,7 @@
 | `wiki/raw/task_issue-301_design.md` | 实读 | 批准设计（OD1–OD9、ALLOW/DENY、§12 验证映射、非目标） |
 | `wiki/raw/task_issue-301_sa3_impl.md` / `_sa4_review.md` / `_sa7_report.md` / `_sa2_review.md` | 实读 | 实现/静态审查/动态验证/设计攻击评审（全部 approve） |
 | `wiki/raw/task_issue-301_{design,implementation}_conflict_report.md` | 实读 | SA8 双复查（均 clear；`requiresConflictRecheck: false`） |
-| `docs/adr/0019-chunked-sync-transfer.md` L70–83 | 实读 | 规范：超时两向收口 + observer 8 型字段表 + 非目标 |
+| `docs/adr/0022-chunked-sync-transfer.md` L70–83 | 实读 | 规范：超时两向收口 + observer 8 型字段表 + 非目标 |
 | `docs/protocols/instance-replication-v1.md` §9.2 L246、§22、§23.1 L746–755/L783–785、§23.3/§23.4 | 实读 | 规范唯一权威：8 型行、改道子句、键集冻结、safe-field/隔离纪律、ACK 锚定语义 |
 | commit `799a618` 全量 diff（21 文件）+ HEAD 源码/契约断言体 | 逐文件实读 | 被审实体 |
 
@@ -72,7 +72,7 @@ N8（断言体实读）：双 namespace 分块 snapshot 同连接复用，hub da
 
 | 规范条款 | 交付核对（本审查三源比对：types.ts ↔ 协议表行 ↔ api.test-d 镜像） | 结论 |
 |---|---|---|
-| ADR 0019 L78–81 + §23.1 L750–755/L784–785（8 型字段集/side/键集排除） | types.ts L870–983 八成员：字段名/可选性/side 信封（snapshot 成功三型字面量 hub/peer/hub；sync 四型与两 aborted 型 `ReplicationObserverSide`）逐字一致；sent 恒无 latency、applied 无 transferId/sequence/效果组、sync-acked 无 sequence/syncRoundId、aborted 无 connectionId | 一致 |
+| ADR 0022 L78–81 + §23.1 L750–755/L784–785（8 型字段集/side/键集排除） | types.ts L870–983 八成员：字段名/可选性/side 信封（snapshot 成功三型字面量 hub/peer/hub；sync 四型与两 aborted 型 `ReplicationObserverSide`）逐字一致；sent 恒无 latency、applied 无 transferId/sequence/效果组、sync-acked 无 sequence/syncRoundId、aborted 无 connectionId | 一致 |
 | `reason` 复用 `ChunkedUpdateAbortReason` 闭联合零新词 | 两 aborted 型 `reason: ChunkedUpdateAbortReason`（六值既有闭集）；api.test-d L291 镜像同值 | 一致 |
 | §23 头部 append-only / GA 冻结 | `ReplicationObserverEvent` 纯加性第 29–36 型；api.test-d 36 型全联合 `toEqualTypeOf` 镜像 + 8 型逐字段 `Extract` + 3 处负向 keyof 锚同步（types 加成员而镜像不同步即 typecheck 红——自带防漂移）；外部穷尽消费者排查（`apps/yjs-server/src/fatal-policy.ts` 含 default 腿，SA2/SA4/SA8 三层复核） | 一致 |
 | §23.1 第 35 型「终局失败族不发本事件」 | `onAssemblyTimeout` 双侧 kind=1 → reason undefined → 零构造零发射；SA7 P1 行为面确认（aborted=0 + namespace-failed 终局恰一） | 一致 |
@@ -115,6 +115,6 @@ N8（断言体实读）：双 namespace 分块 snapshot 同连接复用，hub da
 
 ## Verdict
 
-**approve。** 交付 commit `799a618`（parent 与 dispatch 声明的 PR #298 稳定 head 逐字一致）忠实满足 issue #301 正文与 AC1–AC5：异常面生命周期矩阵（丢失/重复/错序/超时/close/GOAWAY/断线/epoch fence + 零 durable 残留）、超时两向收口、恶意声明分配前拒绝、多 ns 公平/control reserve 由契约 17 用例（R 系红转绿 + N 系锁绿）与全包回归承载；observer 8 型的发射点、R21 改道归零、成功型互斥、safe-field/secret-free/throw isolation/无 observer 逐字节等价全部落地且字段集与 ADR 0019 / 协议 §23.1 冻结行逐字一致；规范解释边界（终局失败族零 aborted、fence reason 归并、被拒 ACK 零 acked、shed 结构不可达）均按批准契约与 SA8 双复查（clear）收口。范围零越界、零 scope creep；无需 PR 披露的未达成项；2 条 MINOR（M-1/M-2）不阻断。
+**approve。** 交付 commit `799a618`（parent 与 dispatch 声明的 PR #298 稳定 head 逐字一致）忠实满足 issue #301 正文与 AC1–AC5：异常面生命周期矩阵（丢失/重复/错序/超时/close/GOAWAY/断线/epoch fence + 零 durable 残留）、超时两向收口、恶意声明分配前拒绝、多 ns 公平/control reserve 由契约 17 用例（R 系红转绿 + N 系锁绿）与全包回归承载；observer 8 型的发射点、R21 改道归零、成功型互斥、safe-field/secret-free/throw isolation/无 observer 逐字节等价全部落地且字段集与 ADR 0022 / 协议 §23.1 冻结行逐字一致；规范解释边界（终局失败族零 aborted、fence reason 归并、被拒 ACK 零 acked、shed 结构不可达）均按批准契约与 SA8 双复查（clear）收口。范围零越界、零 scope creep；无需 PR 披露的未达成项；2 条 MINOR（M-1/M-2）不阻断。
 
 *SA10 未修改代码/设计/测试，未运行测试，未启动服务，未调度其他 SA，未 commit/push；唯一产出为本文件。*

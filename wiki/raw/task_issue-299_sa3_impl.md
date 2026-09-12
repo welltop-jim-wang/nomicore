@@ -32,17 +32,17 @@
 
 | Path | Design section | Change |
 |---|---|---|
-| `packages/replication-protocol/src/messages.ts` | D1/D2、§8 接口表 | 新增 `UpdateChunkTransferKind = 0 \| 1 \| 2`；`UpdateChunkMsg` + 必填 `transferKind` + 可选 `replicationId?`/`replicationEpoch?`/`syncRoundId?`；注释锚 ADR 0019 / §10.3 |
-| `packages/replication-protocol/src/payloads.ts` | D3/D4、§7 | `decodeUpdateChunk` 单形态重写（kind 首字段先行 + 非法值即拒 + 五字段序 + 绑定块按位读取 + 既有 bytes/限额/全消费纪律不变）；`encodeUpdateChunk` 镜像写序 + kind 值域 + 绑定块 iff 严格拒绝（无归一化）；注释块改写为 ADR 0019 单形态 |
+| `packages/replication-protocol/src/messages.ts` | D1/D2、§8 接口表 | 新增 `UpdateChunkTransferKind = 0 \| 1 \| 2`；`UpdateChunkMsg` + 必填 `transferKind` + 可选 `replicationId?`/`replicationEpoch?`/`syncRoundId?`；注释锚 ADR 0022 / §10.3 |
+| `packages/replication-protocol/src/payloads.ts` | D3/D4、§7 | `decodeUpdateChunk` 单形态重写（kind 首字段先行 + 非法值即拒 + 五字段序 + 绑定块按位读取 + 既有 bytes/限额/全消费纪律不变）；`encodeUpdateChunk` 镜像写序 + kind 值域 + 绑定块 iff 严格拒绝（无归一化）；注释块改写为 ADR 0022 单形态 |
 | `packages/replication-protocol/src/index.ts` | D1 | 导出 `type UpdateChunkTransferKind` |
-| `packages/ws-replication/src/types.ts` | D5.1 | `ReplicationLimits` + 两必填 `readonly number` 键（注释锚 ADR 0019 配置表 + 链②约束） |
+| `packages/ws-replication/src/types.ts` | D5.1 | `ReplicationLimits` + 两必填 `readonly number` 键（注释锚 ADR 0022 配置表 + 链②约束） |
 | `packages/ws-replication/src/defaults.ts` | D5.2 | `DEFAULT_REPLICATION_LIMITS` + `maxChunkedBootstrapBytes: 4 MiB`、`maxChunkedSyncDiffBytes: 4 MiB`（键集 14 → 16） |
 | `packages/ws-replication/src/validate.ts` | D5.3、D6 | `validateLimits` + 两键 `positiveSafeInteger` 值门；新增 `validateChunkedBootstrapChain` / `validateChunkedSyncDiffChain`（各一不等式、错误消息含三操作数、包内导出） |
 | `packages/ws-replication/src/plugin.ts` | D5.4 | `LIMIT_KEYS` + 两键（插件严格 allowlist 接纳；链②经 `apply` 继承生效） |
 | `packages/ws-replication/src/hub-connection.ts` | D6、D8 | 构造器在既有 #244 门块后追加两条 `hasOwnProperty` 守卫（各自新键激活对应链②）；`sendUpdateChunk` 消息字面量 + `transferKind: 0` |
 | `packages/ws-replication/src/peer-connection.ts` | D6、D8 | 同上（与 hub 逐字对称） |
 | `packages/replication-protocol/test/fixtures.ts` | D7 | 本地 `UpdateChunkMsg` interface 单形态对齐；三条 golden 改写（BASIC→kind=0、MULTIBYTE→kind=1、U32_MAX→kind=2；payload 前缀 `00`/`01`/`02`；计数 21 不变） |
-| `packages/replication-protocol/test/codec-issue242-ac-red.test.ts` | D7 改动 ①②③（SA2 F1） | ① 三向量 + `transferKind: 0`、payloadHex 前缀 `'00'`、`PINNED_FRAME_HEX` 头长 `2d→2e`/`32→33`/`3a→3b`；② `hostilePayload` 缺省 `'00'` kind 前缀 + `kindHex` 覆盖键；③ 字段序锁定断言改 `kind → ns → 五字段` 全序 + 文件头/用例标题/`ChunkVector` 注释升级为 ADR 0019（顺带 O6） |
+| `packages/replication-protocol/test/codec-issue242-ac-red.test.ts` | D7 改动 ①②③（SA2 F1） | ① 三向量 + `transferKind: 0`、payloadHex 前缀 `'00'`、`PINNED_FRAME_HEX` 头长 `2d→2e`/`32→33`/`3a→3b`；② `hostilePayload` 缺省 `'00'` kind 前缀 + `kindHex` 覆盖键；③ 字段序锁定断言改 `kind → ns → 五字段` 全序 + 文件头/用例标题/`ChunkVector` 注释升级为 ADR 0022（顺带 O6） |
 | `packages/replication-protocol/test/codec-issue299-encode-symmetry.test.ts`（新增） | D4、§12 AC2（SA2 F2） | encode 侧 iff 严格拒绝冻结清单：负控 ①–⑩（含 O5 建议的 ⑨⑩）+ 正控 P1–P5（P2/P3 以规范算术向量逐字节锁定绑定块位置 + decode→encode 往返） |
 | `packages/replication-protocol/test/codec-messages-golden.test.ts` | D7 | 仅用例标题字段序描述行（断言面不变，GOLDEN=21 锚保持） |
 | `packages/replication-protocol/test/codec-fuzz-property.test.ts` | D9 | case 18 生成器扩展：随机 `transferKind ∈ {0,1,2}` ∧ `chunkIndex ∈ [0, chunkCount)` ∧ 绑定块 presence 由 iff 规则推导 |
@@ -69,7 +69,7 @@
 | **O1** D3 收敛路径叙述（MINOR） | 设计层修订；实现按「无专门尾随检查、仅既有欠载/全消费纪律」落地（decode 未新增任何针对单一向量的代码路径） | 已遵循（五向量契约用例全绿） |
 | **O2** wire-change 门豁免依据（MINOR） | 设计层已显式化；实现侧无动作 | 无动作（§Deferred 登记） |
 | **O5** 两个原子镜像半例（建议） | 顺手采纳为负控 ⑨（kind=2 ∧ idx=0 缺 `syncRoundId`）与 ⑩（kind=1 ∧ idx=0 携 `syncRoundId`） | 已补（补测文件 5 用例含 ⑩/⑨，全绿） |
-| **O6** codec-issue242 L82 注释残留 | `ChunkVector.payloadHex` 注释改为「ADR 0019 / 协议 §10.3 单形态序」 | 已更正 |
+| **O6** codec-issue242 L82 注释残留 | `ChunkVector.payloadHex` 注释改为「ADR 0022 / 协议 §10.3 单形态序」 | 已更正 |
 | **O3/O4**（无需动作） | 无动作（设计声明维持） | 闭合 |
 
 **激活门处置**：D6 窄门裁决原样实现——#244 家族门（含显式 `maxChunksPerUpdate`）零语义变化；两条 #295 链②各由**自身新键**显式激活（`hasOwnProperty` 守卫）；契约 C2–C5 全绿（边界等号接纳 / off-by-one 拒绝 / 显式 `maxChunksPerUpdate=1` 经 #244 链②响亮 TypeError / 零分块族键存量配置不误判）。
@@ -115,7 +115,7 @@
 | `npx vitest run packages/ws-replication/test` | **70 文件 / 500 用例全绿**（含 issue299 契约 7、issue243/244/245/246 传输套件、observer-red、plugin、real-transport、类型面）；`Type Errors no errors` | log §4 |
 | `pnpm typecheck`（根，14 个 tsconfig，含 `apps/yjs-server`） | **退出码 0，Type Errors no errors** | log §5（`typecheck_exit=0`） |
 | `codec-issue246-doc-contract.test.ts`（§22 收口后） | 22/22 绿：D4-1/D4-2 锚（`0x42`/`0x00000001`/四资产名）与 D6-1 新指向 `codec-issue299-ac-red.test.ts` 存在性全部通过；L707 义务句保持 | log §3（协议包套件内） |
-| 过期术语扫描（`双形态`/`CAP_CHUNKED_SYNC` in `docs/protocols`+`CONTEXT.md`） | `docs/protocols` 零命中；`CONTEXT.md` 仅 L167 `_Avoid_` 反例条（词表避免项，非规范正文，HEAD 既有）；ADR 0013/0019 命中属**已拒绝方案/接替登记**（DENY，历史记录，预期保留） | log §7 |
+| 过期术语扫描（`双形态`/`CAP_CHUNKED_SYNC` in `docs/protocols`+`CONTEXT.md`） | `docs/protocols` 零命中；`CONTEXT.md` 仅 L167 `_Avoid_` 反例条（词表避免项，非规范正文，HEAD 既有）；ADR 0013/0022 命中属**已拒绝方案/接替登记**（DENY，历史记录，预期保留） | log §7 |
 | `git diff --check` | 干净（零空白错误） | log §6 |
 | 工作树 changed paths 核对 | 21 个 M + 新增测试/报告/证据；DENY 路径（传输/assembly 五文件、ADR、协议 §5/§10.3/§13.2/§17、CONTEXT、apps/yjs-server、注册表/observer、canonical/envelope）零条目 | log §8 |
 
@@ -126,7 +126,7 @@
 SA3 职责边界外、移交 SA4/SA7（设计 §12 已登记，非本切片缺口）：
 
 1. **全仓 `pnpm test`**（328 文件全绿 + `Type Errors no errors`）——最终动态验证门；本切片已覆盖受影响两包全套件（213 + 500）与根 typecheck。
-2. **wire-change 新旧互通证据门豁免**：`packages/replication-protocol/AGENTS.md`「Wire changes require old/new interoperability evidence」由 ADR 0019 同版本部署假设 + 旧六字段形态从未发布 + PR #241 OPEN（SA8 C4 实测）显式豁免——互操作证据面为空集；同版本自互通由改写后 golden/契约向量/传输层既有套件承载。
+2. **wire-change 新旧互通证据门豁免**：`packages/replication-protocol/AGENTS.md`「Wire changes require old/new interoperability evidence」由 ADR 0022 同版本部署假设 + 旧六字段形态从未发布 + PR #241 OPEN（SA8 C4 实测）显式豁免——互操作证据面为空集；同版本自互通由改写后 golden/契约向量/传输层既有套件承载。
 3. **kind=1/2 传输层**：发送端（含绑定块数据流与共用 `update-channel.ts` `nextTransferId` 计数器）、接收端 kind 分派/按 kind 聚合上限执行/绑定块内容核对三码、assembly kind 无关收口、head-of-line 切片——属 §8.1/§9.2 后续切片（本切片接收层不消费 `transferKind`，部署面结构性不可达，D8/R41 已登记）。
 4. **AC4 计数器本体**：本切片仅 codec/契约层锁定字段语义（R11/R12 绿）；计数器不改代码，复用既有 `nextTransferId` 约束已在报告与设计中登记。
 5. **`apps/yjs-server` 配置文件 allowlist 分块族 catch-up**（含两新键）——家族级 follow-up（设计 §13-2），本切片零改动。

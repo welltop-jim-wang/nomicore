@@ -25,7 +25,7 @@
 | `packages/ws-replication/test/ws-replication-issue301-chunked-completeness-ac-red.test.ts`（HEAD 版 1392 行 / 17 用例） | 断言体实读 | 契约质量与实现断言逐字段对照（含 Revision R1 判别式 L714） |
 | `ws-replication-api.test-d.ts`、`ws-replication-observer-red.test.ts`、`ws-replication-issue300-{chunked-sync-ac-red,bulk-edge-ac}.test.ts` | 实读（关键锚点） | 类型镜像 / DENY 锚可达面 / 回归面独立核验 |
 | `apps/yjs-server/src/fatal-policy.ts` | 实读 | 公共联合加性变更的穷尽消费者排查 |
-| `docs/adr/0019-chunked-sync-transfer.md` L70–83、`docs/protocols/instance-replication-v1.md` §9.2/§22/§23.1/§23.3/§23.4 | 实读 | 冻结字段集/side 信封/键集排除/纪律条款逐字比对 |
+| `docs/adr/0022-chunked-sync-transfer.md` L70–83、`docs/protocols/instance-replication-v1.md` §9.2/§22/§23.1/§23.3/§23.4 | 实读 | 冻结字段集/side 信封/键集排除/纪律条款逐字比对 |
 | `vitest.config.ts`、`packages/ws-replication/tsconfig.json`、`packages/ws-replication/src/index.ts`、`packages/ws-replication/AGENTS.md` | 实读 | runner/typecheck 触发面、导出面、模块契约（observer 隔离、FSM 不变量、验证门） |
 | `wiki/raw/task_issue-301_relevant_decisions.md` / `_conflict_report.md` | 不存在 | 前置 SA8 门禁缺失已由两份 SA8 复查报告补位（design clear + implementation clear） |
 
@@ -34,7 +34,7 @@
 **approve（iteration 1 维持）。** 已提交最终交付（`799a618`）是批准设计的忠实落地：
 
 - **实现字节连续性**：5 个实现文件（types/bulk-transfer/hub-namespace/peer-namespace/round-engine）HEAD md5 与 SA3 §2 / SA6 §16 跨 SA 记录**逐字相同**（`912350fc…`/`2089bfe4…`/`200744a0…`/`935c3fcf…`/`dead8d68…`）——被提交的实现与 SA4 iteration 0 逐 hunk 审过、SA6 Revision R1 复核、SA8 实现后复查、SA7 动态验证的**是同一批字节**，审查链证据全部延续有效；
-- **设计落实**：8 型事件字段集/side 信封/键集排除与协议 §23.1 第 29–36 型行及 ADR 0019 L78–81 逐字一致（本审查在 HEAD 三源独立比对 types.ts ↔ 协议表行 ↔ api.test-d 镜像，成员计数 36/36）；11 处物理发射点（sent 3 / acked 3 / applied 3 / aborted 2）全部落在既有结算结构上、恰一性由结构单点保证；单帧路径与 kind=0 面逐字节不变；
+- **设计落实**：8 型事件字段集/side 信封/键集排除与协议 §23.1 第 29–36 型行及 ADR 0022 L78–81 逐字一致（本审查在 HEAD 三源独立比对 types.ts ↔ 协议表行 ↔ api.test-d 镜像，成员计数 36/36）；11 处物理发射点（sent 3 / acked 3 / applied 3 / aborted 2）全部落在既有结算结构上、恰一性由结构单点保证；单帧路径与 kind=0 面逐字节不变；
 - **commit readiness 空白卫生修正**：5 个被点名文件（4 个 `artifacts/sa7-issue301-*.log` + `wiki/raw/task_issue-301.md`）的修正经 blob 级取证证实为**严格空白等价**（每文件唯一差异 = 删除 EOF 一个空行，正文逐字节不变；行数 202→201 / 11→10 / 58→57 / 14→13 / 39→38 与 SA3 §10 记录一致；HEAD blob id 与 SA3 修后记录逐字相同）；`git show --check HEAD` 与 `git diff --check 0f3eca5..HEAD` 均 **exit 0 零输出**；
 - **范围**：提交 = 7 个 ALLOW 文件（M）+ SA6 契约（A，SA6 所有）+ 4 个 SA7 证据日志（A）+ 9 个 wiki 固定产物（A）——全部为本票交付集，DENY 面在基线↔HEAD 全集 diff 中**零命中**；
 - SA6 契约（含 Revision R1）在 HEAD 断言未被弱化（17 `it(`、零 skip/only/todo/env、判别式 L714 在位）；SA8 实现后复查（clear）的 Frozen surfaces 逐项经本审查独立复核成立；SA7 动态验证（approve）已闭合 SA4 iteration 0 登记的全部后续动态验证项（含 shed 行修正，见 §11）。
@@ -66,7 +66,7 @@
 
 | Design decision | Implementation location（HEAD） | Assessment | Finding |
 |---|---|---|---|
-| OD1 类型面 8 型判别成员（字段集/side 信封/键集冻结逐字） | `types.ts` L860–986：snapshot 成功三型 side 字面量 hub/peer/hub；sync 四型与两 aborted 型 `ReplicationObserverSide`；sent 无 latency、applied 无 transferId/sequence/效果组、sync-acked 无 sequence/syncRoundId、aborted 无 connectionId；`reason` 复用 `ChunkedUpdateAbortReason` 零新词；联合头注释 28→36 型 + issue #301 出处（L365–374） | 与协议 §23.1 L749–754/L783–784 及 ADR 0019 L78–81 **逐字一致**（三源独立比对：types.ts ↔ 协议表行 ↔ api.test-d 镜像，36/36） | 无 |
+| OD1 类型面 8 型判别成员（字段集/side 信封/键集冻结逐字） | `types.ts` L860–986：snapshot 成功三型 side 字面量 hub/peer/hub；sync 四型与两 aborted 型 `ReplicationObserverSide`；sent 无 latency、applied 无 transferId/sequence/效果组、sync-acked 无 sequence/syncRoundId、aborted 无 connectionId；`reason` 复用 `ChunkedUpdateAbortReason` 零新词；联合头注释 28→36 型 + issue #301 出处（L365–374） | 与协议 §23.1 L749–754/L783–784 及 ADR 0022 L78–81 **逐字一致**（三源独立比对：types.ts ↔ 协议表行 ↔ api.test-d 镜像，36/36） | 无 |
 | OD2 发送侧 sent（结算记录 + 三调用点发射，末 chunk 恰一） | `bulk-transfer.ts` L45–53（`BulkTransferOutboundSettlement`）+ L212–219（`pullOne` 末 chunk 分支：`phase='awaiting-ack'` → `lastChunkSequence` 赋值 → 同一同步栈 `onLastChunkSent(seq, settlementOf(state))`——awaiting-ack 后 `pullOne` 早退 L174 ⇒ 单次触发）；hub L596–610（chunked-snapshot-sent）、hub L770–787 / peer L1614–1630（chunked-sync-sent，`syncRoundId` 取 `sendStep2` 闭包实参 = 首 chunk 绑定块同源变量） | **一致**；形态偏差（追加尾参）见 §12 O-4 | 无 |
 | OD3 发送侧 acked（`settle` 返回结算记录 + 三调用点） | `bulk-transfer.ts` L228–238（awaiting-ack ∧ kind 匹配 → 先构造记录再 dispose → 返回；否则 undefined）；hub `onBootstrapAck` L651–685（状态门 + seq 核对 `connectionFatal('ACK_STATE_VIOLATION')` 在 settle 之前 return——零事件；settle → `setState('reconciling')` → 发射 = 决策落定后，本轮直读复核）；hub L712–733 / peer L692–713 `onSyncApplied`（quiet 门：hub `isQuietState()` / peer `isInboundQuiet()`；被拒 ACK 零 acked、载体仍 settle 释放；`RoundAborted` throw 路径 settle 不执行） | **一致**（含被拒 ACK 零 acked 解释决策，SA8 D6 no-conflict + SA7 P2 行为面确认） | 无 |
 | OD4 接收侧 applied（kind=2 第五形态 + chunkCount 穿线 + svBefore 跳过） | `round-engine.ts` L54–60/L228–241/L279–288（`{form:'syncChunked'; chunkCount}` 结构化穿线）；hub L1005 / peer L952（`handleAssemblerResult` 传 `result.chunkCount`——断链接通；事实源 = `update-transfer.ts` L97–99 wire 申报 chunkCount）；hub L1520–1539 / peer L1799–1818（独立字段组不展开 base；`bytes = update.byteLength`；`syncRoundId: syncRoundId!`——isStep2 恒有 roundId（D2），断言安全）；svBefore 捕获门收紧 hub L1472–1475 / peer L1737–1740；单帧 else 腿 `sync-diff-applied ...base` 逐字节不变；peer degraded 判别外层先行（L1776–1792）——R23 胜出保持 | **一致** | 无 |
@@ -229,7 +229,7 @@ iteration 0 登记的 5 行动态验证项已**全部由 SA7（approve）执行�
 已提交最终交付（commit `799a618`，单提交、工作树 clean）对批准设计 OD1–OD9 逐项忠实落地，且 commit-readiness 空白卫生修正经 blob 级取证证实为严格空白等价：
 
 - **实现连续性**：5 个实现文件 HEAD md5 与 SA3 §2/SA6 §16 跨 SA 指纹记录逐字相同——被提交的实现与 SA4 iteration 0 逐 hunk 审查、SA6 Revision R1 双向复跑、SA8 实现后复查（clear）、SA7 动态验证（approve）的对象是**同一批字节**，全链审查证据无断裂；
-- **设计/规范一致性**：8 型事件字段集与 ADR 0019 L78–81 / 协议 §23.1 第 29–36 型冻结行逐字一致（三源独立比对）；11 处发射点全部位于既有结算结构、恰一性由结构单点保证（单载体仲裁 + busy 守卫 + settle 三条件门）；单帧路径、kind=0 面、六类 reason 置位点、FSM/失败语义逐字节不变；
+- **设计/规范一致性**：8 型事件字段集与 ADR 0022 L78–81 / 协议 §23.1 第 29–36 型冻结行逐字一致（三源独立比对）；11 处发射点全部位于既有结算结构、恰一性由结构单点保证（单载体仲裁 + busy 守卫 + settle 三条件门）；单帧路径、kind=0 面、六类 reason 置位点、FSM/失败语义逐字节不变；
 - **范围**：提交 21 文件全部属本票交付集（7 ALLOW M + SA6 契约 A + 4 SA7 日志 A + 9 wiki 固定产物 A）；DENY 面基线↔HEAD 零命中；`git show --check` / `git diff --check` 双绿；
 - **测试与验收**：SA6 契约（含 Revision R1）在 HEAD 未被弱化（17 用例/零 skip/判别式在位）；api 型镜像 36 型同步且双门防漂移；SA7 动态面已闭合 iteration 0 全部待验项（含 shed 行措辞修正）。
 

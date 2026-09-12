@@ -17,7 +17,7 @@
 | `wiki/raw/task_issue-300_sa6_contract.md`（approve，8 红 + 4 负控） | 实读 |
 | `wiki/raw/task_issue-300_conflict_report.md`（clear，R42–R47 + N6） | 实读 |
 | `wiki/raw/task_issue-300_relevant_decisions.md`（SA8 决策摘录） | 实读 |
-| `docs/adr/0019-chunked-sync-transfer.md`（全文 116 行） | 实读 |
+| `docs/adr/0022-chunked-sync-transfer.md`（全文 116 行） | 实读 |
 | `docs/protocols/instance-replication-v1.md`（§5/§8.1/§8.2/§9.2–9.4/§10.3/§13.2/§17/§22/§23.1/§23.3） | 实读 |
 | 源码复核（本轮新增锚点 C14–C21 逐条）：`errors.ts`（全文）、`payloads.ts` decodeError/encodeError、`error-mapping.ts`、`update-channel.ts`（onAck L215 / sendOneChunk L421–427）、`backpressure.ts`（L218/L226）、`peer-namespace.ts`（applyRemoteUpdate L1383–1389/L1466–1490、resync 边沿 L617/L623/L1153–1169/L1192+、teardown L467–470/L1811–1814）、`hub-namespace.ts`（L861/L867/L996/L1037–1038/L1226–1232/L1459–1461、shed L157–158）、`peer-connection.ts` L395–396、`hub-connection.ts` L63–66、`test/driver.ts` L537–552 | 实读 |
 | 测试面复核：`codec-issue242-ac-red.test.ts`（L462 计数）、`test/fixtures.ts`（NAMESPACE_ERROR_TABLE L535–538）、`codec-registries.test.ts`（L109/L127–165）、`codec-fuzz-property.test.ts`（注册表驱动）、`codec-messages-golden.test.ts` / `codec-issue299-ac-red.test.ts`（零注册表引用——DENY 安全性）、`ws-replication-issue256-namespace-failed.test.ts` 场景 14（L752–780）、`ws-replication-issue300-chunked-sync-ac-red.test.ts`（R4/R6/R7 断言面） | 实读 |
@@ -31,14 +31,14 @@ Owner 评论：无（REST 快照空；简报/SA6/SA8 三方一致）——无评
 
 **approve。** r1 对 iteration 0 全部 6 条阻断 finding 的修订均为**机制级落实**而非措辞修补，且每条都经本轮源码独立复核成立：
 
-- **B1 → D12**：errors.ts 入 ALLOW LIST，按协议 §13.2 L445–448 冻结值 append-only 首登四行（本轮逐值核对：VIOLATION=yes/no/failed、TOO_LARGE=yes/config/failed ×2，与协议表及 ADR 0019 L68 三方一致）；类型联合扩展、三处计数注释（L5/L31/L145 实测存在）、fixtures 镜像（codec-registries L109 键集等价断言实测）、issue242 计数用例（L462 `toHaveLength(22)` 实测）同步面完整；**全库扫描确认无任何 DENY LIST 测试持有会因 22→26 转红的注册表枚举/计数断言**（codec-fuzz/codec-registries 为注册表驱动自动覆盖；golden 与 issue299 零注册表引用）；DENY 收窄为 codec 形态面（payloads/messages/index/golden）；#242 先例（errors.ts L136–139）与 AGENTS L11 append-only 明文路径均实测成立。
+- **B1 → D12**：errors.ts 入 ALLOW LIST，按协议 §13.2 L445–448 冻结值 append-only 首登四行（本轮逐值核对：VIOLATION=yes/no/failed、TOO_LARGE=yes/config/failed ×2，与协议表及 ADR 0022 L68 三方一致）；类型联合扩展、三处计数注释（L5/L31/L145 实测存在）、fixtures 镜像（codec-registries L109 键集等价断言实测）、issue242 计数用例（L462 `toHaveLength(22)` 实测）同步面完整；**全库扫描确认无任何 DENY LIST 测试持有会因 22→26 转红的注册表枚举/计数断言**（codec-fuzz/codec-registries 为注册表驱动自动覆盖；golden 与 issue299 零注册表引用）；DENY 收窄为 codec 形态面（payloads/messages/index/golden）；#242 先例（errors.ts L136–139）与 AGENTS L11 append-only 明文路径均实测成立。
 - **M1 → D3 抑制门**：C16 复核确认现状发射序 `isStep2 → sync-diff-applied`（无条件、先于 chunked 判别，双侧同构）；`{syncChunked:true}` 判别联合 + `isStep2 ∧ ¬syncChunked` 门控使单帧/kind=0/else 三路逐字节不变、kind=2 完成点零事件——与 §23.3 L753 第 33 型「该结算点不再发普通族 sync-diff-applied（窗口内归零）」一致；D3/D8 的假论据均已按修订要求改正，§10 补 applyRemoteUpdate 行。
 - **M2 → D1 abort 面 4**：三族 resync-declared 边沿挂点全部实测存在（`onResyncReceived` 内 `markResyncReceived` 同点 peer L617/hub L861；本端声明漏斗 `declareLocalResync` L1192+/`onLocalResyncEdge` L996（channel host L226 接线）；ack-timeout funnel peer L1153–1169/hub L1037–1038）；协议 §10.3 L333「中止复用既有机制（…RESYNC_REQUIRED…）」冻结文本实测在案；边沿后出站静止性 + 残渣矩阵（kind=2 与 kind=0 F3 同构）论证成立。
 - **M3 → D7 唤醒路径**：C17 复核确认 `onAck` 仅 `queued.length>0` 触发 drain（L215 实测）；扩展条件 `∨ host.hasBulkTransferWork()`（channel host seam 只读判据）+ facet 聚合 queuedCount 保持 wheel 留轮（backpressure L218）构成闭合唤醒链；R47 等价论证（无 bulk 工作时条件与现状逐字节同义）成立；§13 首行登记该构型风险。
 - **M4 → §11 场景 14 三要素**：C21 复核确认 peer 单旋钮决定协商（peer-connection L395–396 `optionalCapabilities`）、hub 恒支持（L66）、`test/driver.ts` 现无 `chunkedUpdate`（全文件 grep 零命中）且 `createPeerReplication` 的条件展开惯用法与设计透传方案同构；driver.ts 入 ALLOW（附理由）、issue137-driver.ts 入 DENY 保护；场景 14 现断言面实测（issue256 L752–780，现锚 BOOTSTRAP_TOO_LARGE）与改写三要素（协商 + 超聚合构型 + 新码断言）可执行。
 - **M5 → D1 出站被拒转移**：C18 复核确认 #243 先例形态（seq≤0 → 失败明细先采样 → discardQueued → needsResync → `declareLocalResync('send-failed')`，update-channel L421–427）；kind=2 镜像该族、kind=1 → `BOOTSTRAP_FAILED` + `finalize('failed','send-failed')`——两 cause 字面量均在 §23.3 L780 闭集合内（实测）；§23.3 L814 send-failed 行「出站发送异常族」读法已列入 §15 复查焦点（诚实处置）。
 
-SA6 契约（8 红 4 负控零修改）、SA8 R42–R47/N6、ADR 0019、协议冻结文本与 append-only 范围逐条符合（见 §5–§12）。残余 3 条非阻塞观察见 §14，不构成实现前修订义务。
+SA6 契约（8 红 4 负控零修改）、SA8 R42–R47/N6、ADR 0022、协议冻结文本与 append-only 范围逐条符合（见 §5–§12）。残余 3 条非阻塞观察见 §14，不构成实现前修订义务。
 
 ---
 
@@ -74,7 +74,7 @@ SA6 契约（8 红 4 负控零修改）、SA8 R42–R47/N6、ADR 0019、协议�
 | **SA6 §8/§11「四码已注册」事实错误** | §5 更正行 + D12 按真实状态（C14：文档有、registry 无）承接 | 设计不依赖 SA6 回执、显式更正承接——正确处置；更正建议仍转 SA6/总控（§14 观察 4）✓ |
 | SA8 Frozen surfaces 全表 | §6 逐项 + §12 DENY | 单帧路径/ACK payload/死码保留/v1 组合保持/配置链/observer 注册表/transferId 计数器逐项相容；错误码注册表行的准确读法（首登 = 兑现冻结面）成立 ✓ |
 | R42–R45、N6 | §6 逐行 | 全部落实（R45 场景 14 含协商前提）✓ |
-| ADR 0019 L12/L39–51/L47/L68/L70/L98–103 | D0/D3/D4/D5/D6/D9/D10/D12 | 逐条同源；D9 kind=1 收口对齐 §8.1「BOOTSTRAP_FAILED 语义族终局」（协议 L202 实测）✓ |
+| ADR 0022 L12/L39–51/L47/L68/L70/L98–103 | D0/D3/D4/D5/D6/D9/D10/D12 | 逐条同源；D9 kind=1 收口对齐 §8.1「BOOTSTRAP_FAILED 语义族终局」（协议 L202 实测）✓ |
 | 协议 §10.3 L325–345 / §9.4 L270 / §17 | D1/D6/D9/D7 | 发送端规则/接收端校验/pre-parse 门/SYNC_TRANSFER_EXPIRED 登记/control 边界逐字符合（实测）✓ |
 | docs/AGENTS.md（Authority：wiki/raw 为 evidence 非规范） | 设计引用规范权威 = ADR + 协议 | 一致 ✓ |
 
@@ -225,4 +225,4 @@ SA6 契约（8 红 4 负控零修改）、SA8 R42–R47/N6、ADR 0019、协议�
 
 ## Verdict
 
-**approve。** r1 设计对 iteration 0 全部阻断 finding 的修订均为可实施机制且经源码独立复核成立；SA6 契约、SA8 约束（R42–R47/N6/Frozen surfaces）、ADR 0019、协议冻结文本与 append-only 范围逐条符合；文件范围 ALLOW/DENY 与正文改造点一一对应。`requiresConflictRecheck: true`（维持设计 §15 自报：D12 触碰 codec 注册表面、M5 入口面读法、R5 终态裁定、场景 14 改写等需设计后 ADR 冲突复查确认）。残余 4 条非阻塞观察不构成实现前义务。
+**approve。** r1 设计对 iteration 0 全部阻断 finding 的修订均为可实施机制且经源码独立复核成立；SA6 契约、SA8 约束（R42–R47/N6/Frozen surfaces）、ADR 0022、协议冻结文本与 append-only 范围逐条符合；文件范围 ALLOW/DENY 与正文改造点一一对应。`requiresConflictRecheck: true`（维持设计 §15 自报：D12 触碰 codec 注册表面、M5 入口面读法、R5 终态裁定、场景 14 改写等需设计后 ADR 冲突复查确认）。残余 4 条非阻塞观察不构成实现前义务。

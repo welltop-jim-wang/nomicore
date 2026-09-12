@@ -10,16 +10,16 @@
 
 ## 1. Task type and inputs
 
-**类型 = Feature**：issue #300 是 ADR 0019（已接受、docs 已随 `2ca06f6`/`eb380d7` 冻结）的传输层实现票（切片 2/3）；`#299`（切片 1：0x42 单形态 codec + 两聚合上限配置链）已落地，本票要求把 kind=1（snapshot）/kind=2（sync-diff）端到端接通。
+**类型 = Feature**：issue #300 是 ADR 0022（已接受、docs 已随 `2ca06f6`/`eb380d7` 冻结）的传输层实现票（切片 2/3）；`#299`（切片 1：0x42 单形态 codec + 两聚合上限配置链）已落地，本票要求把 kind=1（snapshot）/kind=2（sync-diff）端到端接通。
 
 输入（全部实读）：
 
 | 输入 | 用途 |
 |---|---|
 | `wiki/raw/task_issue-300.md` | 任务简报（What to build / AC1–AC5 / Blocked by #299） |
-| `wiki/raw/task_issue-300_relevant_decisions.md` | ADR 0019 / ADR 0013 / ADR 0010 / 协议 §5/§8/§9/§10.3/§13.2/§16/§17/§18/§22/§23 摘录 |
+| `wiki/raw/task_issue-300_relevant_decisions.md` | ADR 0022 / ADR 0013 / ADR 0010 / 协议 §5/§8/§9/§10.3/§13.2/§16/§17/§18/§22/§23 摘录 |
 | `wiki/raw/task_issue-300_conflict_report.md` | SA8 前置门禁（clear；R42–R47 + N6） |
-| `docs/adr/0019-chunked-sync-transfer.md`、`docs/protocols/instance-replication-v1.md` | 规范权威（wire 冻结值唯一权威 = 协议） |
+| `docs/adr/0022-chunked-sync-transfer.md`、`docs/protocols/instance-replication-v1.md` | 规范权威（wire 冻结值唯一权威 = 协议） |
 | `packages/ws-replication/src/{hub-namespace,peer-namespace,round-engine,frame-io,update-channel,update-transfer,error-mapping,types,validate}.ts`、`packages/replication-protocol/src/{messages,payloads}.ts` | 现状实现事实（能力缺口定位） |
 | 既有测试：`ws-replication-issue233-repro.test.ts`（刻画基线）、`issue243/244/245/246`（kind=0 先例/回归锚）、`issue299-ac-red`（配置链）、`issue256`（observer 回归锚）、`issue137-driver.ts`/`harness.ts`（确定性驱动） | 契约风格、回归面、运行入口 |
 
@@ -31,7 +31,7 @@
 
 | Owner 输入 | 映射 |
 |---|---|
-| （无 — issue #300 comments 空；owner 未留补充评论） | 任务要求的唯一来源 = issue body/AC1–AC5 + ADR 0019 + 协议冻结文本。本契约不引入任何额外行为、不发明错误码/字段/事件。 |
+| （无 — issue #300 comments 空；owner 未留补充评论） | 任务要求的唯一来源 = issue body/AC1–AC5 + ADR 0022 + 协议冻结文本。本契约不引入任何额外行为、不发明错误码/字段/事件。 |
 
 ---
 
@@ -45,7 +45,7 @@
 | **R45** kind=2 发送端聚合超限分支未逐字冻结（协议只冻结接收端首 chunk 校验 + §23.3 peer `send-failed`） | **R7**：100KB 恢复 diff > `maxChunkedSyncDiffBytes` 32KiB → 断言**冻结错误族码在 wire 可观察**（任向）+ 终局 failed + 零写入 + 不回落 `SYNC_DIFF_TOO_LARGE`；对「发送端预检」与「接收端首 chunk 校验」两种合规落地**同时成立** | 场景 14（hub `send-failed` → `SNAPSHOT_TRANSFER_TOO_LARGE`）的改写义务属实现 ticket；本契约以 R7 + R4 覆盖同类冻结语义，不做文档义务断言 |
 | **R46** 切片边界：observer 8 型接线归 #301 | 契约**零** `chunked-snapshot-*`/`chunked-sync-*` 事件断言；断言面 = wire 帧/namespace 状态/live Y.Doc/持久化 dirty 计数 | 全包回归运行中 `ws-replication-issue256-namespace-failed.test.ts` 等 observer 锚保持绿（§13） |
 | **R47** append-only 冻结面零顺手改；kind=0 逐字节等价 | **N4**：kind=0 可分块 live update（20KB）→ `transferKind=0`、无绑定块、单 `UPDATE_ACK` 锚末 chunk 帧序、收敛；另加全包 #243–#246 锚回归 | 契约不发 `transferKind` 0/1/2 外的任何值；不改 codec/错误码/配置键 |
-| **N6**（环境观察）origin/main `b158f98` 另有一篇 `0019-vfsl-union-member-docs.md` 同号 ADR | 本报告与契约中「ADR 0019」一律指 `0019-chunked-sync-transfer.md`；该 main 提交不在本基线决策集内（非祖先），不阻塞 | 契约 header 显式引用 ADR 文件路径而非仅编号 |
+| **N6**（环境观察）origin/main `b158f98` 另有一篇 `0019-vfsl-union-member-docs.md` 曾同号 ADR（已消解：本基线篇重编号 0022） | 本报告与契约中「ADR 0022」一律指 `0022-chunked-sync-transfer.md`；该 main 提交不在本基线决策集内（非祖先），不阻塞 | 契约 header 显式引用 ADR 文件路径而非仅编号 |
 
 **规范约束保留**（实现不得偏离、契约负责锁住）：单帧路径保留（触发条件非兼容回落，N1/N2）；聚合上限按 kind 取键（`maxChunkedBootstrapBytes`/`maxChunkedSyncDiffBytes`）；首 chunk 绑定块位置/单形态字段序（#299 冻结，不改 codec）；ACK/导入语义不变（`BOOTSTRAP_ACK`/`SYNC_APPLIED` 单 ACK + `ackedSequence = 末 chunk 帧序`）；chunk 走 data 路径、control reserve 零 chunk（R3 闸门观测）；同一 transfer 内 `chunkIndex`/`chunkCount`/`totalBytes` 逐字节一致。
 
@@ -74,7 +74,7 @@ hub→peer: OPEN_OK#2, ERROR:BOOTSTRAP_TOO_LARGE#3
 peerToHub: OPEN_NAMESPACE#2
 peer namespace = failed；kind=1 chunk 数 = 0；peer 无副本
 ```
-→ 单帧 `BOOTSTRAP_TOO_LARGE` 终局，namespace 永久失同步（ADR 0019 L98 要消除的路径）。
+→ 单帧 `BOOTSTRAP_TOO_LARGE` 终局，namespace 永久失同步（ADR 0022 L98 要消除的路径）。
 
 **(b) 超限恢复 diff（R2/R3 构型：`maxUpdateBytes=8KiB`，100KB 写不可分块 → F4 丢弃 → resync）**
 ```
@@ -82,7 +82,7 @@ peerToHub: UPDATE_CHUNK k0/t1/i0..2 (20KB 可分块 live，phase A 收敛)
            RESYNC_REQUIRED#10, SYNC_STEP1#11, ERROR:SYNC_DIFF_TOO_LARGE#12
 peer namespace = failed；hub 停在 20KB 旧值；kind=2 chunk 数 = 0
 ```
-→ 恢复 diff（≈100KB > `maxSyncDiffBytes`）在发送端编码面终局；ADR 0019 要求的 kind=2 改道不存在。
+→ 恢复 diff（≈100KB > `maxSyncDiffBytes`）在发送端编码面终局；ADR 0022 要求的 kind=2 改道不存在。
 
 **(c) 双向镜像（hub→peer 超限 diff）**
 ```
@@ -188,7 +188,7 @@ peer namespace = failed
 | 序列/注入造假 | crafted 帧使用接收端期望 sequence（被丢帧序）并被正确分类；探针逐帧可见 |
 | 「测试预算/超时」伪红 | 红灯断言为状态/码直接断言，非 `settleUntil` 预算耗尽；未推进虚拟时间 |
 | observer 拼接导致红 | 契约零 observer 事件断言（R46）；既有 observer 锚全绿 |
-| 这是 Bug（现实现应有行为） | 现实现行为与 #233 刻画一致（预期现状）；ADR 0019/协议冻结的是**目标契约**，属能力缺口而非缺陷回归 |
+| 这是 Bug（现实现应有行为） | 现实现行为与 #233 刻画一致（预期现状）；ADR 0022/协议冻结的是**目标契约**，属能力缺口而非缺陷回归 |
 
 ---
 
@@ -200,7 +200,7 @@ peer namespace = failed
 
 | 用例 | 锚点 | 最小输入 | 可观察断言（目标实现） |
 |---|---|---|---|
-| **R1** | AC1/AC3；协议 §8.1/§8.2；ADR 0019 L47–48 | hub 100KB 文档，peer 全新；`maxBootstrapBytes=8KiB`、`maxUpdateBytes=8KiB`、`maxChunkedBootstrapBytes=512KiB` | peer→`live` 且副本值逐字等于快照；hub→peer ≥2 个 `transferKind=1` chunk（单 transferId、`chunkIndex` 0..n-1、Σbytes=totalBytes、几何一致、每 chunk ≤8KiB、每帧 ≤maxFrameBytes）；**零** `BOOTSTRAP_SNAPSHOT` 单帧；恰 1 个 `BOOTSTRAP_ACK` 且 `ackedSequence`=末 chunk 帧序；零 ERROR |
+| **R1** | AC1/AC3；协议 §8.1/§8.2；ADR 0022 L47–48 | hub 100KB 文档，peer 全新；`maxBootstrapBytes=8KiB`、`maxUpdateBytes=8KiB`、`maxChunkedBootstrapBytes=512KiB` | peer→`live` 且副本值逐字等于快照；hub→peer ≥2 个 `transferKind=1` chunk（单 transferId、`chunkIndex` 0..n-1、Σbytes=totalBytes、几何一致、每 chunk ≤8KiB、每帧 ≤maxFrameBytes）；**零** `BOOTSTRAP_SNAPSHOT` 单帧；恰 1 个 `BOOTSTRAP_ACK` 且 `ackedSequence`=末 chunk 帧序；零 ERROR |
 | **R2** | AC2/AC3/R42；协议 §9.2/§9.3 | 两 phase：20KB 可分块写（kind=0）→ 100KB 不可分块写（触发 resync → 恢复 diff ≈100KB），`maxSyncDiffBytes=32KiB` | hub 收敛到 100KB 且 peer `live`；≥2 个 `transferKind=2` chunk（同结构断言；`totalBytes>32KiB ∧ ≤512KiB`）；`kind=2 transferId > kind=0 transferId`；首 chunk `syncRoundId`=本 round；恰 1 个 `SYNC_APPLIED` 且 `ackedSequence`=末 chunk 帧序；phase B 无超限 `SYNC_STEP2` 单帧；零 ERROR |
 | **R2b** | AC2 双向；协议 §9.2 | hub 100KB 写（不可分块）→ hub 声明 RESYNC → peer round | peer 收敛到 hub 值且 `live`；hub→peer ≥2 个 `transferKind=2` chunk + 结构断言；首 chunk 绑定 round 一致；恰 1 个 `SYNC_APPLIED` 锚末 chunk 帧序；零 ERROR |
 | **R3** | AC3（control reserve 零 chunk / data 路径记账） | hub 100KB 文档 + hub transport 起始 `bufferedAmount=600KiB` | 闸门关：`OPEN_OK` 已出站、peer ∈{opening,bootstrapping}（**非 failed**）、零 0x42、零单帧 snapshot；释放 → ≥2 个 kind=1 chunk、收敛、连接 `ready` |
@@ -274,7 +274,7 @@ pnpm typecheck
 | chunked 结算点 observer 行为（8 型发射） | 归 #301 | 契约不断言事件；实现可自由选择零事件/维持现状（R46），只需不使既有 observer 锚红 |
 | 「恰一次 apply」无公共计数访问器 | 已知限制 | 以收敛值 + 单 ACK + 违例零写入合取观察（§12.1 说明）；如需直接计数由 #301 提供 |
 | 场景 14（hub `send-failed`）改写义务 | 归实现 ticket | 本契约 R4（kind=1 接收端超限）+ R7（kind=2）覆盖冻结错误族的 wire 可观察性；文档同步（§22 L701/§23.3）属实现票 |
-| origin/main 同号 ADR（N6） | 环境观察，非本票冲突 | 报告/契约引用 `0019-chunked-sync-transfer.md` 全路径消歧 |
+| origin/main 同号 ADR（N6，已消解：本基线篇 0019→0022） | 环境观察，非本票冲突 | 报告/契约引用 `0022-chunked-sync-transfer.md` 全路径消歧 |
 | 阻塞项 | **无** | — |
 
 ---

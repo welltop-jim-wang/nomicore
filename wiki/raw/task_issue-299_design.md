@@ -2,32 +2,32 @@
 
 - **dispatch**: sa-515098b5-d3e1-48ff-a6a5-fcc2800b257c（mabf-sa1 / design / iteration 2；iteration 1 = sa-fd2ae580-4184-4429-a824-431f35f86686；首版 = sa-2fcad09c-f695-4e26-823e-2b716f8b04b3 / design / iteration 0）
 - **输入基线**: 任务简报 `wiki/raw/task_issue-299.md`（issue #299 正文 + AC1–AC4；REST comments 为空）；SA6 验收契约 `wiki/raw/task_issue-299_sa6_contract.md`（裁决 approve，21 红 / 5 绿负控 / 2 类型面红）；SA8 前置冲突门禁 `artifacts/sa8-conflict-gate-issue-299.md`（裁决 clear，R32–R37）；SA8 设计后复审 `artifacts/sa8-conflict-gate-issue-299-design-recheck.md`（iteration 1，裁决 clear，R38–R41）；SA2 设计攻击评审 `wiki/raw/task_issue-299_sa2_review.md`（iteration 0，verdict **reject：0 BLOCKER / 3 MAJOR（F1/F2/F3）+ 非阻塞 O1–O4**；核心设计 D1–D9 经独立攻击全部成立，激活门窄门裁决维持）——iteration 1 为 F1–F3 逐条修订（顺带吸收 O1/O2 叙述精度项）；SA4 实现静态审查 `wiki/raw/task_issue-299_sa4_review.md`（iteration 0，verdict **approve：0 BLOCKER / 0 MAJOR / 1 MINOR（M1，路由 design 的 ALLOW 台账补正）+ 非阻塞 N-Obs1–N-Obs5**）——**iteration 2（本版）为 M1 窄幅台账补正 + N-Obs1 矩阵精度建议顺带采纳**，修订映射见 §14.2
-- **规范权威**: wire 冻结值 = `docs/protocols/instance-replication-v1.md`（§5 L114–116、§10.3 L307–345、§13.2 L448–452、§17 L578–615、§22 L698–701）；配置语义理据 = `docs/adr/0019-chunked-sync-transfer.md`；词汇 = `CONTEXT.md` L154–171
-- **缺失输入**: `wiki/raw/task_issue-299_relevant_decisions.md` 与 `wiki/raw/task_issue-299_conflict_report.md` 不存在（SA6 §1 / SA2 §1 已登记；SA8 门禁报告为 dispatch 指定的冲突面替代）→ 本设计直接以 ADR 0019/0013/0010、协议各节与 CONTEXT.md 为规范依据；设计后冲突复查已由 SA8 执行且 clear（§15）
+- **规范权威**: wire 冻结值 = `docs/protocols/instance-replication-v1.md`（§5 L114–116、§10.3 L307–345、§13.2 L448–452、§17 L578–615、§22 L698–701）；配置语义理据 = `docs/adr/0022-chunked-sync-transfer.md`；词汇 = `CONTEXT.md` L154–171
+- **缺失输入**: `wiki/raw/task_issue-299_relevant_decisions.md` 与 `wiki/raw/task_issue-299_conflict_report.md` 不存在（SA6 §1 / SA2 §1 已登记；SA8 门禁报告为 dispatch 指定的冲突面替代）→ 本设计直接以 ADR 0022/0013/0010、协议各节与 CONTEXT.md 为规范依据；设计后冲突复查已由 SA8 执行且 clear（§15）
 - **HEAD**: `eb380d7aed296c15accf8832a45a96b630f0c8ce`（分支 `mabf/issue-299`）
 
 ---
 
 ## 1. 任务类型、目标与非目标
 
-**任务类型：Feature（能力缺口补齐）**。HEAD 的 0x42 codec 仍是 ADR 0013 六字段形态、limits 容器缺两个聚合上限键——这是 ADR 0019 冻结目标与实现现状之间的缺口，不是缺陷（旧形态从未发布，SA8 C4 前提经实测复核成立）。
+**任务类型：Feature（能力缺口补齐）**。HEAD 的 0x42 codec 仍是 ADR 0013 六字段形态、limits 容器缺两个聚合上限键——这是 ADR 0022 冻结目标与实现现状之间的缺口，不是缺陷（旧形态从未发布，SA8 C4 前提经实测复核成立）。
 
 **目标**：
 
 1. `UPDATE_CHUNK`（0x42）payload 改写为 kind 首字段单形态并正确编解码：`kind varUint ∈ {0,1,2}` 首字段 + 既有五字段序 + 首 chunk 绑定块（kind=1 → `replicationId varString + replicationEpoch varUint`；kind=2 → `syncRoundId varUint`；位置 = `totalBytes` 之后、`bytes` 之前），codec 往返逐字节无损。
 2. codec 单帧规则追加：`kind ∉ {0,1,2}`、绑定块缺失/越位 → `MALFORMED_FRAME`；旧六字段形态首字节（0x23 = varString 长度 35）与合法 kind 集合不相交 → 自动作废。
-3. 仓内 UPDATE_CHUNK golden vectors 在本分支改写为单形态（ADR 0019 L36–37/L100 显式授权）。
+3. 仓内 UPDATE_CHUNK golden vectors 在本分支改写为单形态（ADR 0022 L36–37/L100 显式授权）。
 4. 配置面：`maxChunkedBootstrapBytes` / `maxChunkedSyncDiffBytes` 两键（缺省各 4 MiB）进入 `ReplicationLimits` / `DEFAULT_REPLICATION_LIMITS` / 插件 allowlist；两条链②不等式（`≤ maxChunksPerUpdate × maxUpdateBytes`）进入启动期响亮验证，违例构造期 `TypeError`，绝不运行时 clamp；control reserve 校验原样保留；未表达新键的存量配置不误判（非追溯性）。
 5. transferId 字段语义（uint32、≥ 1、三 kind 同一字段位/同一计数器语义）在 codec/契约层锁定。
 
-**非目标**（全部沿用 SA6 §12 范围边界与 ADR 0019 非目标）：
+**非目标**（全部沿用 SA6 §12 范围边界与 ADR 0022 非目标）：
 
-- 无 `CAP_CHUNKED_SYNC` 协商、无双形态切换、无发送端 gating（ADR 0019 拒绝方案 #1；SA8 R32：issue 标题措辞废弃，正文为准）。
+- 无 `CAP_CHUNKED_SYNC` 协商、无双形态切换、无发送端 gating（ADR 0022 拒绝方案 #1；SA8 R32：issue 标题措辞废弃，正文为准）。
 - 不移除/不改动 0x42 解码侧 `CAP_CHUNKED_UPDATE` 协商门（SA8 R34；负控 N1）。
 - 不实现 kind=1/2 的发送端、绑定块**内容**核对（`REPLICATION_ID_MISMATCH` / `REPLICATION_EPOCH_MISMATCH` / `SYNC_STATE_VIOLATION` 属 §8.1/§9.2 后续切片）、按 kind 的聚合上限运行期执行、assembly 状态机的 kind 分派收口、head-of-line 发送端切片与记账。
 - 不新增/不改动任何错误码、RESYNC reason、observer 事件（append-only 冻结面；SA8 R36）。
 - 不修订 §5/§10.3/§13.2/§17 的规范语义（HEAD 已是目标契约，实现与之对齐；仅收口 §22 L701 措辞，SA8 R37）。
-- 不承诺与历史六字段形态互通（同版本部署假设，ADR 0019 部署前提）。
+- 不承诺与历史六字段形态互通（同版本部署假设，ADR 0022 部署前提）。
 
 ## 2. 当前行为与证据锚点
 
@@ -48,7 +48,7 @@
 
 承接 SA6 §8 根因链（高置信，逐条有源码与 probe 证据）：
 
-1. **Codec 缺口**：目标契约（ADR 0019「消息形态」+ 协议 §10.3 字段表）要求 kind 首字段单形态；HEAD 解析器按六字段读首字节 → 任何单形态帧必然 `MALFORMED_FRAME: invalid namespaceId`；kind=1/2 绑定块无法表达。R1–R4/R12 红、probe A。
+1. **Codec 缺口**：目标契约（ADR 0022「消息形态」+ 协议 §10.3 字段表）要求 kind 首字段单形态；HEAD 解析器按六字段读首字节 → 任何单形态帧必然 `MALFORMED_FRAME: invalid namespaceId`；kind=1/2 绑定块无法表达。R1–R4/R12 红、probe A。
 2. **配置缺口**：两新键不在 limits 类型/缺省/值门/链②/插件 allowlist 五个面 → 显式越界/非法值静默接纳（hub/peer 构造入口），插件路径反而拒绝合法新键（配置链断裂）。C1–C4/C7 红、probe B。
 3. **非根因**（排除，SA6 §11）：解码器入口、协商门、`selectedCapabilities` 校验、既有链机制、装配桩均健全（N1–N3/C5–C6 绿）。
 4. **放大因素**：缺 kind 与绑定块使后续 #295 切片（§8.1/§9.2 分块路径）全部阻塞——本切片是一切后续切片的地基（issue 正文）。
@@ -76,13 +76,13 @@ Issue #299 REST comments 为空（Host dispatch 声明、SA8 §0 与 SA6 §2 三
 
 | SA8 项 | 设计位置 | 处理方式 | 是否需要设计后冲突复查 |
 |---|---|---|---|
-| R32 标题「CAP_CHUNKED_SYNC 协商 / 双形态」废弃，正文为准 | §1 非目标 | 全程单形态恒用；无协商、无 gating、无双形态断言；设计与 ADR 0019 拒绝方案 #1 对齐 | 否（正文与 ADR 同源，无新冲突） |
+| R32 标题「CAP_CHUNKED_SYNC 协商 / 双形态」废弃，正文为准 | §1 非目标 | 全程单形态恒用；无协商、无 gating、无双形态断言；设计与 ADR 0022 拒绝方案 #1 对齐 | 否（正文与 ADR 同源，无新冲突） |
 | R33 codec 无状态边界（AC4 落地方式） | §7 D3/D4、§9 | codec 只锁 transferId 字段语义（≥ 1、uint32、三 kind 同一字段位）；连接域计数器属发送端状态（`update-channel.ts` 既有计数器，本切片不动）；无跨帧状态入 codec | 否 |
 | R34 「无 capability 协商」作用域收窄到 sync 段；解码侧协商门一体适用 | §7 D3、§11 DENY | 协商门（payload 解析前 `UNSUPPORTED_MESSAGE_TYPE`）与 `codec-issue242-ac-red.test.ts` 锚原样保留（负控 N1）；零改动协商面 | 否 |
 | R35 链②触发键作用域须精确落地 | §7 D6 | 显式裁决：#244 家族门原样保留（含 `maxChunksPerUpdate`）；#295 两链②各以**自身新键显式**激活。R35 关切（显式下调 `maxChunksPerUpdate` 须响亮）由 #244 链②承载（推导见 D6） | 已执行并了结：SA8 设计后复审 clear（R38 裁决窄门为唯一一致读法）；SA2 §15 独立三层复核维持——**窄门解释原样保留** |
 | R36 append-only 冻结面不动 | §1 非目标、§11 DENY | 零断言/零实现 4 新错误码、`SYNC_TRANSFER_EXPIRED`、observer 8 型；只使用既有 `MALFORMED_FRAME`/`UPDATE_TOO_LARGE`/`UNSUPPORTED_MESSAGE_TYPE`/`CONNECTION_POLICY_VIOLATION`；`BOOTSTRAP_TOO_LARGE`/`SYNC_DIFF_TOO_LARGE` 死码保留不动 | 否 |
 | R37 文档同步义务 | §7 D10、§11 ALLOW | 收口协议 §22 L701 措辞，按 **R39 精度约束二分**（SA2 F3）：codec 向量支改写为已交付并指向 `codec-issue299-ac-red.test.ts` 冻结向量 + 改写后 golden；传输层资产支维持「由 §8.1/§9.2 后续切片交付，本规范不预设其存在」待交付表述——不声称不存在的传输层资产；保留 D4-1/D4-2 锚（0x42/0x00000001/四个资产文件名）与 L707 义务句；§17/§13.2/§5 零改动；过期术语扫描照例执行 | 否（R39 在 R37 既有框架内收窄，非新冲突面） |
-| 门禁基准：ADR 0019 与任务是义务-履行关系；wire 值唯一权威 = 协议文档 | 全文 | 所有 wire 决策引用协议行号；配置语义引用 ADR 0019 | 否（设计完全在已接受决策内履行） |
+| 门禁基准：ADR 0022 与任务是义务-履行关系；wire 值唯一权威 = 协议文档 | 全文 | 所有 wire 决策引用协议行号；配置语义引用 ADR 0022 | 否（设计完全在已接受决策内履行） |
 
 ## 7. 设计决策与主要备选方案
 
@@ -91,7 +91,7 @@ Issue #299 REST comments 为空（Host dispatch 声明、SA8 §0 与 SA6 §2 三
 `UpdateChunkMsg.kind` 已是判别联合判别键（`'UPDATE_CHUNK'`，messages.ts L237），wire kind 必须异名。裁决：
 
 ```ts
-/** 0x42 UPDATE_CHUNK wire kind 首字段（ADR 0019 / 协议 §10.3）。0=live-update / 1=snapshot / 2=sync-diff。 */
+/** 0x42 UPDATE_CHUNK wire kind 首字段（ADR 0022 / 协议 §10.3）。0=live-update / 1=snapshot / 2=sync-diff。 */
 export type UpdateChunkTransferKind = 0 | 1 | 2;
 
 export interface UpdateChunkMsg {
@@ -112,7 +112,7 @@ export interface UpdateChunkMsg {
 }
 ```
 
-- 命名 `transferKind` 而非 `chunkKind`：kind 是 transfer 的属性（同一 transfer 全部 chunk 同 kind；ADR 0019 通篇「单笔 chunked transfer」），与既有成员 `transferId` 构成自然兄弟命名；§17 配置键语义（`maxChunked*Bytes` 按 kind 分族）同源。
+- 命名 `transferKind` 而非 `chunkKind`：kind 是 transfer 的属性（同一 transfer 全部 chunk 同 kind；ADR 0022 通篇「单笔 chunked transfer」），与既有成员 `transferId` 构成自然兄弟命名；§17 配置键语义（`maxChunked*Bytes` 按 kind 分族）同源。
 - **必填**（非可选 + 缺省 0）：wire 首字段恒在（R1 往返强制），可选+缺省会制造「调用方漏写被静默当 kind=0」的静默 fallback；必填使所有构造点在编译期显式表态。经 `src/index.ts` 导出 `UpdateChunkTransferKind`（公共类型与 codec 行为同步演化，包 AGENTS 纪律）。
 - 备选拒绝：(a) 判别联合三接口（live/snapshot/sync 各一 interface）——绑定块存在性还依赖 `chunkIndex===0`（运行时数据），静态类型无法表达「kind=1 ∧ idx>0 无绑定块」，三接口制造虚假静态保证；(b) `chunkKind`/`wireKind` 命名——语义弱于 transfer 归属；(c) 可选 + encode 缺省 0——静默缺省，拒绝。
 
@@ -124,7 +124,7 @@ export interface UpdateChunkMsg {
 
 `decodeUpdateChunk`（payloads.ts L663）新读取序（协议 §10.3 字段表逐字）：
 
-1. `kind = reader.readVarUint()`（canonical varUint，`canonical.ts` reader 既有原语）；`kind ∉ {0,1,2}` → 立即 `MALFORMED_FRAME`（首字节流入即拒绝——ADR 0019 L37「恶意声明在第一个字节流入前即可拒绝」；kind=3/127 红、旧六字段首字节 0x23=35 自动落入本拒绝 → R5/R7）。
+1. `kind = reader.readVarUint()`（canonical varUint，`canonical.ts` reader 既有原语）；`kind ∉ {0,1,2}` → 立即 `MALFORMED_FRAME`（首字节流入即拒绝——ADR 0022 L37「恶意声明在第一个字节流入前即可拒绝」；kind=3/127 红、旧六字段首字节 0x23=35 自动落入本拒绝 → R5/R7）。
 2. `namespaceId = reader.readVarString()` + `checkNamespaceId`（不变）。
 3. `transferId`（≥ 1）/ `chunkIndex` / `chunkCount`（≥ 1、idx < count）/ `totalBytes`（既有规则逐字不变）。
 4. **绑定块**（`kind≠0 ∧ chunkIndex=0` 时，位置 = totalBytes 之后、bytes 之前）：kind=1 → `replicationId = readVarString()` + `replicationEpoch = readVarUint()`（safe uint）；kind=2 → `syncRoundId = readVarUint()`。仅按 wire 位置读取——契约违例向量（缺块/越位/尾随）经 canonical reader 的定长读尽、缓冲欠载、非 canonical 与全消费检查收敛为 `MALFORMED_FRAME`（R8/R9/R10 各向量已逐条手验收敛路径——SA2 O1 更正后的精确机制：`KIND1_NO_BINDING` 在 replicationEpoch 读取处欠载（replicationId 误吞长度前缀 `03`+`0a0b0c` 后缓冲尽）；`KIND1_BINDING_AFTER_BYTES` 在 bytes 长度声明处欠载（绑定块位先读，RID 首字节 `61` 被当 bytes 长度前缀，声明 97 > 余量 33）；`KIND1_BINDING_ON_LATER` 落入全消费尾随检查（idx=1 不读绑定块，bytes 长度前缀 `20`=32 恰好消费 RID 余量，遗留 `01 0a` 两字节尾随）；`KIND2_BINDING_ON_LATER` 在 bytes 长度声明处欠载（idx=1 不读绑定块，长度前缀 `05` 声明 5 字节仅余 2——**非尾随路径**）；`KIND0_BINDING_BYTES` 落入尾随检查（bytes 长度前缀 `01` 消费 `0a` 后遗留绑定块字节）。五向量分类同为 `MALFORMED_FRAME`、行为无差异，但机制按实测收敛点逐条精确，防 SA4 按错误机制实现「专门」的尾随检查——尾随检查仅是既有全消费纪律，无需为任一向量新增代码路径）。
@@ -151,11 +151,11 @@ export interface UpdateChunkMsg {
 
 ### D5 — 配置五面：类型 / 缺省 / 值门 / 插件 allowlist（链见 D6）
 
-1. `types.ts` `ReplicationLimits` 追加两必填 `readonly number` 键（api.test-d 契约同形；文档注释锚 ADR 0019 配置表）。
+1. `types.ts` `ReplicationLimits` 追加两必填 `readonly number` 键（api.test-d 契约同形；文档注释锚 ADR 0022 配置表）。
 2. `defaults.ts` `DEFAULT_REPLICATION_LIMITS` 追加 `maxChunkedBootstrapBytes: 4 * 1024 * 1024`、`maxChunkedSyncDiffBytes: 4 * 1024 * 1024`（C1 键集恰为 14+2；`resolveLimits` Partial 合并自动携带；timeouts 键集零漂移——`assemblyTimeoutMs` 容器不动，AC3）。
 3. `validate.ts` `validateLimits` 追加两键 `positiveSafeInteger` 值门（合并结果上无条件执行；缺省 4 MiB 恒合法 → 零非追溯性面；C2/C3 非法值 0/1.5/−1 构造期 `TypeError`）。
 4. `plugin.ts` `LIMIT_KEYS` 追加两键（C7：hub/peer 插件配置接纳新键；`mergeNested` 为对象展开（plugin.ts L214–217），显式键的 own-property 在 config→override→构造器链上保真，链②经构造器继承生效；C7(3) 插件 `apply` 路径违例 → `TypeError` 且无 ready 服务）。
-5. control reserve 校验（`maxQueuedControlBytes ≥ maxBootstrapBytes + PROTOCOL_OVERHEAD_BYTES`）与全部既有链**原样不动**（C6；ADR 0019 L63「静态纪律、不条件化」）。
+5. control reserve 校验（`maxQueuedControlBytes ≥ maxBootstrapBytes + PROTOCOL_OVERHEAD_BYTES`）与全部既有链**原样不动**（C6；ADR 0022 L63「静态纪律、不条件化」）。
 
 ### D6 — 链②激活门裁决（R35 / SA6 §15.4 显式裁决）：#295 两链各以自身新键显式激活；#244 家族门原样保留
 
@@ -185,9 +185,9 @@ C2/C3 边界接纳族 = {maxChunksPerUpdate: 4, maxChunkedUpdateBytes: 1MiB, max
 **实现形状**：`validate.ts` 新增两个一不等式函数（各自独立、可独立激活、错误消息含三操作数值）：
 
 ```ts
-/** issue #299（ADR 0019 配置链）：bootstrap 聚合上限链②——仅显式 maxChunkedBootstrapBytes 激活（D6）。 */
+/** issue #299（ADR 0022 配置链）：bootstrap 聚合上限链②——仅显式 maxChunkedBootstrapBytes 激活（D6）。 */
 export function validateChunkedBootstrapChain(limits: ReplicationLimits): void
-/** issue #299（ADR 0019 配置链）：sync-diff 聚合上限链②——仅显式 maxChunkedSyncDiffBytes 激活（D6）。 */
+/** issue #299（ADR 0022 配置链）：sync-diff 聚合上限链②——仅显式 maxChunkedSyncDiffBytes 激活（D6）。 */
 export function validateChunkedSyncDiffChain(limits: ReplicationLimits): void
 ```
 
@@ -212,7 +212,7 @@ hub/peer 构造器在既有 #244 门块之后各加两条 `hasOwnProperty` 守�
 - **改动 ①（向量本体 + 锁定帧字面量）**：VECTOR_A/B/C `message` 各加 `transferKind: 0`、`payloadHex` 各前缀 `'00'`（三向量保持 kind=0 live-update 语义）；`PINNED_FRAME_HEX` 三条锁定字面量的头部 payloadLength 字段随 +1 字节同步（A: 45→46 字节 `2d`→`2e`、B: 50→51 字节 `32`→`33`、C: 58→59 字节 `3a`→`3b`）——否则「golden 向量与规范算术构造一致」用例（`buildFrameHex` 自校验 vs 锁定字面量）必红（`buildFrameHex` 实测按 payloadHex 长度计算头部，fixtures.ts L61–74）。
 - **改动 ②（`hostilePayload` 敌意构造前缀——F1(b) 伪绿修复）**：`hostilePayload` 增加缺省 `'00'` kind 前缀并扩展 `kindHex` 覆盖键——拼接序变为 `(overrides.kindHex ?? '00') + (overrides.nsHex ?? NS_HEX) + …`。缺省前缀使 L247–297 全部敌意向量（非 canonical varUint / 非法 UTF-8 / 超声明 bytes / 单帧自洽 / 尾随）携带合法 kind=0 首字节，字段级规则重新可抵达——单形态解码下无前缀的敌意 payload 首字节 0x23=35 ∉ {0,1,2}，全部在 kind 门被偶然拒绝（断言仍绿但不再测及被测规则）；判别性由前缀存在保证（如 `transferIdHex:'8100'` 非最短编码在 kind 合法前提下仍 `MALFORMED_FRAME`，抵达 canonical 检查）。
 - **改动 ③（L225–232 字段序锁定断言改写——F1(a) 必红修复）**：从「`startsWith(NS_HEX)` + `.slice(NS_HEX.length)`」改写为单形态全序断言——`expect(VECTOR_A.payloadHex.startsWith('00' + NS_HEX)).toBe(true)` + `.slice(2 + NS_HEX.length)` 等值断言（B/C 同步），或等价的全字面量 payloadHex 等值断言；用例标题（L225「字段顺序锁定：varString(ns) → …」）更新为 `kind(varUint) → varString(ns) → …` 单形态序。
-- **注释/标题同步**：文件头契约锚注释（L5–7「字段顺序唯一权威：namespaceId → …」）与 AC1 describe 标题（「字段序 = ADR 0013」）的字段序描述更新为 ADR 0019 / 协议 §10.3 单形态序（权威引用同步升级，ADR 0013 划除登记由 ADR 0019 承载）。
+- **注释/标题同步**：文件头契约锚注释（L5–7「字段顺序唯一权威：namespaceId → …」）与 AC1 describe 标题（「字段序 = ADR 0013」）的字段序描述更新为 ADR 0022 / 协议 §10.3 单形态序（权威引用同步升级，ADR 0013 划除登记由 ADR 0022 承载）。
 
 语义边界澄清：「该文件不引入 kind≠0 变量」**仅指三 golden 向量的语义**（保持 kind=0 live-update，不引入 kind≠0 正控/敌意变量）；敌意构造统一携带缺省合法 kind=0 前缀（改动 ②），kind≠0 的违例面由契约 R8–R10 与 encode-symmetry 补测（D4/F2）承载，不在本文件扩张。
 - 备选拒绝：第四条 golden（如 kind=2 首 chunk + syncRoundId 绑定）——需改 `GOLDEN` 计数锚 21→22，超出已批契约改写面（SA6 §10 明确「3 条 golden 改写」），绑定块已由契约向量锁定；改变某 golden 的 chunkIndex（如 MULTIBYTE idx 63→0）以承载绑定块——破坏其 uint32/多字节原始用途。
@@ -221,7 +221,7 @@ hub/peer 构造器在既有 #244 门块之后各加两条 `hasOwnProperty` 守�
 
 - **发送**：hub-connection.ts L1010–1018 与 peer-connection.ts L797–807 的 `sendUpdateChunk` 消息字面量追加 `transferKind: 0`（live-update 路径本切片唯一 kind；注释锚后续切片）。`ChunkedTransferPiece`（update-transfer.ts L23，「UPDATE_CHUNK 消息体 minus namespaceId」）**不加 kind**——kind=1/2 发送端（含绑定块数据流）属 §8.1/§9.2 后续切片，现在加可选 kind 是投机面。
 - **接收**：`case 'UPDATE_CHUNK'` 经 `{...message, sequence}` 展开转发（hub-connection.ts L857），`transferKind` 与绑定块成员作为额外字段结构兼容地流过 `onUpdateChunk` → `UpdateChunkAssembler`（本切片 kind 无关，不读取）；无新分支、无新拒绝面。
-- **不可达性论证**：同版本部署假设下（ADR 0019 部署前提），本版本端点不发送 kind≠0 帧，故「kind≠0 帧进入 live-update assembly」在本切片部署面结构性不可达；测试亦不构造该形态经传输层。kind 分派/按 kind 聚合上限/绑定块内容核对 = 后续切片（SA6 §12 范围边界「assembly 状态机与 kind 无关收口」）。
+- **不可达性论证**：同版本部署假设下（ADR 0022 部署前提），本版本端点不发送 kind≠0 帧，故「kind≠0 帧进入 live-update assembly」在本切片部署面结构性不可达；测试亦不构造该形态经传输层。kind 分派/按 kind 聚合上限/绑定块内容核对 = 后续切片（SA6 §12 范围边界「assembly 状态机与 kind 无关收口」）。
 - **AC4 计数器约束登记（本切片仅契约锁定，不改代码）**：三种 kind 共用同一 transferId 计数器，作用域 (连接, 方向, namespaceId)，从 1 严格递增、uint32 不回绕；kind=1/2 发送端落地时**复用 `update-channel.ts` L121 既有 `nextTransferId`，不新增第二计数器**。本切片 codec 层锁定字段语义（R11 transferId=0 三 kind 一致拒绝、R12 uint32 上界三 kind 一致接纳；D3/D4 同一字段位）。
 
 ### D9 — fuzz/property 扩展（§22 义务顺带兑现）
@@ -235,7 +235,7 @@ hub/peer 构造器在既有 #244 门块之后各加两条 `hasOwnProperty` 守�
 - **codec 向量支（改写为已交付事实并指向资产）**：「kind 首字段 + 首 chunk 绑定块的 golden vectors 已由实现 ticket 交付」+ 指向 `packages/replication-protocol/test/codec-issue299-ac-red.test.ts` 冻结向量（`KIND1_FIRST`/`KIND2_FIRST` 等）与改写后 golden（`codec-messages-golden.test.ts` / `fixtures.ts`）。
 - **传输层资产支（维持待交付表述，原样保留语义）**：「传输层测试资产由 §8.1/§9.2 后续切片交付，本规范不预设其存在」——收口后 §22 内不得存在任何「传输层资产已交付/已存在」语义的表述。
 
-**保持不变**：§22 内 `0x42`、`0x00000001` 与四个资产文件名锚（`codec-issue246-doc-contract.test.ts` D4-1/D4-2 依赖，`toContain` 断言）；新增指向的 `codec-issue299-ac-red.test.ts` 文件名在仓（doc-contract D6-1 存在性检查可解析）；L707「实现不得改变本文字段顺序和消息语义」义务句零改动。§5/§10.3/§13.2/§17/§1 零改动；CONTEXT.md 零改动（HEAD 词条已是目标语义）；ADR 零改动（ADR 0019 已接受，本设计是履行非修订）。
+**保持不变**：§22 内 `0x42`、`0x00000001` 与四个资产文件名锚（`codec-issue246-doc-contract.test.ts` D4-1/D4-2 依赖，`toContain` 断言）；新增指向的 `codec-issue299-ac-red.test.ts` 文件名在仓（doc-contract D6-1 存在性检查可解析）；L707「实现不得改变本文字段顺序和消息语义」义务句零改动。§5/§10.3/§13.2/§17/§1 零改动；CONTEXT.md 零改动（HEAD 词条已是目标语义）；ADR 零改动（ADR 0022 已接受，本设计是履行非修订）。
 
 ## 8. 接口、状态机和数据流
 
@@ -301,7 +301,7 @@ hub/peer 构造器在既有 #244 门块之后各加两条 `hasOwnProperty` 守�
 | `packages/replication-protocol/src/messages.ts` | `UpdateChunkMsg` + `transferKind`/绑定块成员；新增 `UpdateChunkTransferKind` | D1/D2 |
 | `packages/replication-protocol/src/payloads.ts` | `decodeUpdateChunk`/`encodeUpdateChunk` 单形态重写（注释块同步） | D3/D4 |
 | `packages/replication-protocol/src/index.ts` | 导出 `type UpdateChunkTransferKind` | D1（公共 API 经 index 纪律） |
-| `packages/ws-replication/src/types.ts` | `ReplicationLimits` + 两必填键（注释锚 ADR 0019 配置表） | D5 |
+| `packages/ws-replication/src/types.ts` | `ReplicationLimits` + 两必填键（注释锚 ADR 0022 配置表） | D5 |
 | `packages/ws-replication/src/defaults.ts` | `DEFAULT_REPLICATION_LIMITS` + 两键 4 MiB | D5 |
 | `packages/ws-replication/src/validate.ts` | `validateLimits` + 两值门；新增 `validateChunkedBootstrapChain`/`validateChunkedSyncDiffChain` | D5/D6 |
 | `packages/ws-replication/src/plugin.ts` | `LIMIT_KEYS` + 两键 | D5 |
@@ -331,9 +331,9 @@ hub/peer 构造器在既有 #244 门块之后各加两条 `hasOwnProperty` 守�
 |---|---|---|
 | `packages/replication-protocol/test/codec-issue299-ac-red.test.ts`、`packages/ws-replication/test/ws-replication-issue299-ac-red.test.ts`、`packages/ws-replication/test/ws-replication-issue299-api.test-d.ts` | SA6 验收契约 | 转绿判据「不改一行 26/26」；sha256 锁定（SA6 §13） |
 | `packages/ws-replication/src/update-transfer.ts`、`update-channel.ts`、`hub-namespace.ts`、`peer-namespace.ts`、`frame-io.ts` | 传输/assembly 层 | D8 切片边界：本切片 kind 无关收发，kind 分派/绑定块核对/按 kind 聚合上限属 §8.1/§9.2 后续切片；改动会越出已批契约范围 |
-| `docs/adr/*`（含 0013/0019） | 决策记录 | 本设计是 ADR 0019 的履行非修订；SA8 门禁确认义务-履行关系 |
+| `docs/adr/*`（含 0013/0022） | 决策记录 | 本设计是 ADR 0022 的履行非修订；SA8 门禁确认义务-履行关系 |
 | `docs/protocols/instance-replication-v1.md` 的 §5/§10.3/§13.2/§17 及其他节 | 规范权威 | HEAD 已是目标契约，实现对齐而非再修订（SA8 §1/R37）；仅 §22 L701 在 ALLOW |
-| `CONTEXT.md` | 词汇 | 词条已是 ADR 0019 目标语义（SA8 §1），零新词条 |
+| `CONTEXT.md` | 词汇 | 词条已是 ADR 0022 目标语义（SA8 §1），零新词条 |
 | `apps/yjs-server/**` | 组合根消费方 | 类型面零破（Partial）；app config 文件 allowlist 自 #243/#244 起即不含分块族键（config.ts L136–148 实测先例）——扩展 app 配置文件面是家族级 catch-up（见 §13 follow-up），混入本切片 = 无契约覆盖的范围扩张 |
 | 错误码注册表 / `SYNC_TRANSFER_EXPIRED` / observer 事件（`packages/replication-protocol/src/registry*`、`observer.ts`、协议 §13.2/§18/§23） | append-only 冻结面 | R36：死码保留、不重复登记、不改语义 |
 | `packages/replication-protocol/src/canonical.ts`、envelope/帧层 | 编解码基座 | 单形态只动 payload 字段序，reader/writer 原语（`readVarUint`/`writeVarUint`）已具备；动基座波及全消息域 |
@@ -358,7 +358,7 @@ hub/peer 构造器在既有 #244 门块之后各加两条 `hasOwnProperty` 守�
 | 他域不波及 | N3 绿 | 契约文件 + golden/truncation 套件 | UPDATE 0x40 往返不变；21 golden 计数不变；全 truncation 偏移拒绝分类不变 |
 | 既有传输层回归 | SA6 §4 基线 45 用例绿 | issue243/244/245/246 传输套件（4 个构造点文件 +`transferKind:0`；4 个仅类型提取文件零改动；observer-red T5 夹具 +2 缺省键零行为影响——SA3 日志 §4 两包 500 用例实测全绿） | 全绿（wire 经 encodeMessage 自动单形态，断言为解码面，不受影响） |
 | fuzz/property | 既有 300 轮绿 | D9 扩展后 | 三 kind × 绑定块 presence 组合 encode→decode→字段一致；golden 单字节变异收敛分类不变 |
-| 全仓回归 | `artifacts/sa6-issue299-full-suite.log`（HEAD：327 文件 3441 用例绿 + 契约 2 文件红） | 根 `pnpm typecheck` + `pnpm test` | 328 测试文件全绿（327 既有 + 1 新增 `codec-issue299-encode-symmetry.test.ts`；含 26/26 契约）；`Type Errors no errors`。**wire-change 验证门豁免依据（SA2 O2 显式化）**：`packages/replication-protocol/AGENTS.md`「Wire changes require old/new interoperability evidence」由 ADR 0019 同版本部署假设（部署前提，L14–18）+ 旧六字段形态从未发布 + PR #241 OPEN 未合入（SA8 C4 / 设计后复审 §1 三重实测）显式豁免——无新旧互通消费方，互操作证据面为空集；同版本自互通由改写后 golden/契约向量/传输层既有套件承载 |
+| 全仓回归 | `artifacts/sa6-issue299-full-suite.log`（HEAD：327 文件 3441 用例绿 + 契约 2 文件红） | 根 `pnpm typecheck` + `pnpm test` | 328 测试文件全绿（327 既有 + 1 新增 `codec-issue299-encode-symmetry.test.ts`；含 26/26 契约）；`Type Errors no errors`。**wire-change 验证门豁免依据（SA2 O2 显式化）**：`packages/replication-protocol/AGENTS.md`「Wire changes require old/new interoperability evidence」由 ADR 0022 同版本部署假设（部署前提，L14–18）+ 旧六字段形态从未发布 + PR #241 OPEN 未合入（SA8 C4 / 设计后复审 §1 三重实测）显式豁免——无新旧互通消费方，互操作证据面为空集；同版本自互通由改写后 golden/契约向量/传输层既有套件承载 |
 | 文档一致性 | SA8 R37 + R39 | §22 二分收口后 `codec-issue246-doc-contract.test.ts` + 过期术语扫描 + `git diff --check` | D4-1/D4-2/D6-1 锚全绿（`codec-issue299-ac-red.test.ts` 新指向文件名可解析）；**§22 内零「传输层资产已交付/已存在」语义表述**（SA2 F3 验收）；规范文档零「双形态/CAP_CHUNKED_SYNC」命中；L707 义务句保持 |
 
 ## 13. 风险、回滚和残余问题
@@ -374,7 +374,7 @@ hub/peer 构造器在既有 #244 门块之后各加两条 `hasOwnProperty` 守�
 | 5 | encode 侧绑定块值域校验被过度实现（抢占 §8.1/§9.2） | 低 | D4 显式列出校验集边界（结构性 + 可编码性 only）；补测只断言结构拒绝 |
 | 6 | §22 收口措辞越界声称传输层资产已交付（SA8 R39 / SA2 F3） | 低 | D10 二分模板钉死（codec 向量支 vs 传输层资产支）；§12 文档一致性行验收判据 =「§22 内零传输层资产已存在表述」；doc-contract D4/D6 锚 + L707 义务句保持 |
 
-**回滚**：单分支整体 revert 即恢复六字段 HEAD（旧形态无部署存量、无持久化数据、无 wire 兼容面——ADR 0019 前提）；配置键回滚无数据迁移。
+**回滚**：单分支整体 revert 即恢复六字段 HEAD（旧形态无部署存量、无持久化数据、无 wire 兼容面——ADR 0022 前提）；配置键回滚无数据迁移。
 
 **任务内解决项**：无遗留必要条件（设计可直接实施）。
 
@@ -396,7 +396,7 @@ hub/peer 构造器在既有 #244 门块之后各加两条 `hasOwnProperty` 守�
 | **F2** encode 侧补测无 ALLOW 落点 | MAJOR | §11 ALLOW 增补 `codec-issue299-encode-symmetry.test.ts`（或改列 codec-malformed 并撤「不变」行）；断言清单在 §12 钉死（五例 + 跨族污染建议项），每组前置相近正控 | §11 ALLOW 新增条目（取新文件方案，`codec-malformed.test.ts` 维持零改动声明）；§12 AC2 编码侧对称行冻结清单（负控 ①–⑧：SA2 钉死 ①–⑤ + 设计补足 D4 分支镜像 ⑥–⑧；正控 P1–P5）；§10 新增矩阵行 | **已落实**（SA2 F2 验收判据：ALLOW 与 §12 一致；补测文件在仓、断言全绿、不触契约三文件） |
 | **F3** §22 收口措辞声称未实现的传输层资产 | MAJOR | D10 收口措辞二分：codec 向量「已交付」+ 指向 `codec-issue299-ac-red.test.ts` 冻结向量与改写后 golden；传输层资产维持「由 §8.1/§9.2 后续切片交付」待交付表述；D4-1/D4-2 锚与 L707 义务保持 | §7 D10（二分改写 + 保持项 + 验收判据）；§6 R37 行（吸收 R39 精度约束）；§12 文档一致性行；§13 新增风险 6 | **已落实**（SA2 F3 验收判据：§22 零「传输层资产已存在」表述；doc-contract D4-1/D4-2/D6-1 全绿；过期术语扫描零命中） |
 | O1 D3 收敛路径叙述误差（`KIND2_BINDING_ON_LATER` 实为 bytes 长度声明处欠载） | 非阻塞 | 顺手更正机制叙述 | §7 D3 步 4（五向量逐条精确收敛路径；尾随检查仅 `KIND1_BINDING_ON_LATER`/`KIND0_BINDING_BYTES`） | **已顺带落实** |
-| O2 wire-change 验证门豁免依据显式化 | 非阻塞 | §12 全仓回归行显式引用豁免依据 | §12 全仓回归行（ADR 0019 同版本部署假设 + PR #241 OPEN 实测） | **已顺带落实** |
+| O2 wire-change 验证门豁免依据显式化 | 非阻塞 | §12 全仓回归行显式引用豁免依据 | §12 全仓回归行（ADR 0022 同版本部署假设 + PR #241 OPEN 实测） | **已顺带落实** |
 | O3 正向确认清单（矩阵重合 / `toMatchTypeOf` 容忍 / fuzz 自动覆盖 等） | 非阻塞 | 供 SA4 参考，无需修订 | 无需修订（设计声明维持） | 无动作 |
 | O4 D6 残余语义登记被确认（已批语义非缺口） | 非阻塞 | 无需修订 | §7 D6 上游矛盾记录段维持原样 | 无动作 |
 
@@ -413,7 +413,7 @@ hub/peer 构造器在既有 #244 门块之后各加两条 `hasOwnProperty` 守�
 | N-Obs2 SA3 采纳 O5/O6 已落地 | 观察项 | 无需设计动作 | — | 无动作 |
 | N-Obs3 fuzz 缺失侧断言由 encode-symmetry P4/P5 `toBeUndefined()` 承载，组合覆盖完整 | 观察项 | 无需补测 | §12 fuzz 行维持 | 无动作 |
 | N-Obs4 SA6 §10 对 observer-red 的描述（「构造 0x42 的夹具」）与事实不符（仅类型夹具） | 上游文档精度（已被 SA4 §4-A 事实链替代） | 无需行动 | §10 矩阵 observer-red 行以实测证据（L799–811 字面量）描述该文件，不再沿用 SA6 措辞 | 无动作 |
-| N-Obs5 wire-change 互通证据门豁免依据自洽（ADR 0019 同版本假设 + 旧形态未发布 + PR #241 OPEN） | 观察项 | 无需行动 | §12 全仓回归行豁免依据维持 | 无动作 |
+| N-Obs5 wire-change 互通证据门豁免依据自洽（ADR 0022 同版本假设 + 旧形态未发布 + PR #241 OPEN） | 观察项 | 无需行动 | §12 全仓回归行豁免依据维持 | 无动作 |
 
 **范围纪律（M1 边界条件回写）**：本 ALLOW 补行仅覆盖 SA4 §4-A 裁定的五要素机械跟随（编译期强制 + 语义惰性 + 值等于缺省 + 最小行数 + 完整登记）——任何带断言/行为语义或非强制的 ALLOW 外改动仍按 MAJOR 处置；本条目不是后续切片扩权的先例。D1–D10 设计决策、SA6 契约三文件（sha256 锁定）、DENY 全清单零改动。
 

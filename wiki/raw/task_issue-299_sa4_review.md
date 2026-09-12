@@ -17,7 +17,7 @@
 | SA8 前置门禁 + 设计后复审 | `artifacts/sa8-conflict-gate-issue-299{,-design-recheck}.md`（clear，R32–R41） | 在库 |
 | SA3 实现报告 + 验证日志 | `wiki/raw/task_issue-299_sa3_impl.md`、`artifacts/sa3-issue299-verification.log` | 在库 |
 | 实现源码/测试/文档 diff | `git diff`（21 M + 3 新测试文件 + 证据/报告，全量逐文件审读） | 本轮逐行 |
-| `relevant_decisions` / `conflict_report` | 不存在 | 设计/SA6/SA2 三方已登记；以 ADR 0019/0013/0010 + 协议 + SA8 门禁为规范依据，非阻断 |
+| `relevant_decisions` / `conflict_report` | 不存在 | 设计/SA6/SA2 三方已登记；以 ADR 0022/0013/0010 + 协议 + SA8 门禁为规范依据，非阻断 |
 | Issue 实时核验 | comments = 空（Host dispatch + SA6 §2 + SA2 §4 三方一致） | 无 Owner 评论映射项 |
 
 本轮全部结论基于源码/diff/日志的静态证据；未运行测试、未启动服务（SA4 职责边界），动态结论引用 SA3 日志并列入 §11。
@@ -128,7 +128,7 @@ Owner 评论：无（REST comments 空，三方一致）。验收目标 = issue 
 | `UpdateChunkMsg` + 必填 `transferKind`/可选绑定块 | 仓内全部构造点（本轮全仓 grep 含 apps/domains/root tests）：两包 src 2 + protocol 测试 4 文件 + ws 测试 4 文件——全部已表态或类型级提取；无仓外消费方（workspace 包未发布） | 构造点 +`transferKind: 0`；类型级 Extract 无需改动 | 无遗漏（矩阵与 grep 重合） | — |
 | 解码产物新字段经连接层 | `case 'UPDATE_CHUNK'` `{...message, sequence}` 展开 → `onUpdateChunk` → assembler | 结构兼容流过，本切片不读取（D8/R41 已登记中间态） | 部署面不可达（同版本 + 首字节不相交） | — |
 | `ReplicationLimits` 必填键扩张 | `Partial<ReplicationLimits>` 消费方（app/插件/harness） | Partial 合并自动携带缺省；唯一全量字面量 = observer-red（已处置，M1） | 无 | — |
-| 0x42 wire 形态变化 | 对端（同版本）；v1 代际端 | v1 端照旧 `UNSUPPORTED_MESSAGE_TYPE`（负控 N1 绿）；旧六字段首字节 0x23 ∉ {0,1,2} 自动作废（R5 绿） | wire-change 门豁免依据已登记（ADR 0019 同版本假设 + 旧形态未发布） | — |
+| 0x42 wire 形态变化 | 对端（同版本）；v1 代际端 | v1 端照旧 `UNSUPPORTED_MESSAGE_TYPE`（负控 N1 绿）；旧六字段首字节 0x23 ∉ {0,1,2} 自动作废（R5 绿） | wire-change 门豁免依据已登记（ADR 0022 同版本假设 + 旧形态未发布） | — |
 | `resolved` 链②对插件路径 | plugin `apply` → `mergeNested` 展开保真 → 构造器守卫继承 | C7 绿（allowlist 接纳 + 违例 `TypeError` 且服务不注册） | 无 | — |
 
 ## 8. 错误、恢复与并发
@@ -175,4 +175,4 @@ Owner 评论：无（REST comments 空，三方一致）。验收目标 = issue 
 - **N-Obs2**：SA3 采纳 O5（encode-symmetry ⑨⑩）与 O6（#242 L82 注释升级）——本轮 diff 核实均已落地，超出最低要求且零成本，良好。
 - **N-Obs3**：fuzz 断言循环按 `Object.entries(msg)` 逐字段断言存在侧；缺失侧（绑定成员 absent）由 encode-symmetry P4/P5 的 `toBeUndefined()` 显式锁定——组合覆盖完整，无需补测。
 - **N-Obs4**：SA6 §10 影响面对 observer-red 的描述（「构造 0x42 的夹具」）与事实（无 0x42 构造、仅类型夹具）不符——上游文档精度问题，已被本审查 §4-A 的事实链替代，无需行动。
-- **N-Obs5**：wire-change 互通证据门豁免依据（ADR 0019 同版本部署假设 + 旧形态未发布 + PR #241 OPEN）已在设计 §12/SA3 报告显式登记——本轮复核 `packages/replication-protocol/AGENTS.md`「Wire changes require old/new interoperability evidence」条款与豁免论证自洽，无消费方需要互通证据。
+- **N-Obs5**：wire-change 互通证据门豁免依据（ADR 0022 同版本部署假设 + 旧形态未发布 + PR #241 OPEN）已在设计 §12/SA3 报告显式登记——本轮复核 `packages/replication-protocol/AGENTS.md`「Wire changes require old/new interoperability evidence」条款与豁免论证自洽，无消费方需要互通证据。

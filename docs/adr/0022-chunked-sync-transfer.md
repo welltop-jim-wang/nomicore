@@ -1,4 +1,4 @@
-# ADR 0019：BOOTSTRAP_SNAPSHOT 与 SYNC_STEP2 的有界分块复制传输
+# ADR 0022：BOOTSTRAP_SNAPSHOT 与 SYNC_STEP2 的有界分块复制传输
 
 日期：2026-09-15
 状态：已接受（issue #295 设计冻结；wire 冻结值——0x42 单形态字段序、错误码/reason 词表锁定值——以 `docs/protocols/instance-replication-v1.md` 为唯一权威；配置语义与设计理据权威保留于本文。）

@@ -15,7 +15,7 @@
 | commit `799a618` 全量 diff（21 文件）+ `git show --check` / `git diff --check` / name-status / pathspec 取证 | 逐 hunk 实读 | 被审实体 |
 | `wiki/raw/task_issue-301.md` / `_design.md` / `_sa2_review.md` / `_sa3_impl.md` / `_sa4_review.md` / `_sa6_contract.md` / `_sa7_report.md` / `_design_conflict_report.md` / `_implementation_conflict_report.md` | 实读 | 上游产物链（设计 OD1–OD9、ALLOW/DENY、各 SA 裁决与登记） |
 | 根 `AGENTS.md`、`packages/ws-replication/AGENTS.md`、`docs/AGENTS.md` | 实读 | 仓库与模块标准（边界、observer 隔离、导出面、验证门、文档权威分层） |
-| `docs/adr/0019-chunked-sync-transfer.md`（L60–110 observer seam/错误码/非目标）、ADR 0013/0010 沿用面 | 实读 | 冻结字段集与纪律依据 |
+| `docs/adr/0022-chunked-sync-transfer.md`（L60–110 observer seam/错误码/非目标）、ADR 0013/0010 沿用面 | 实读 | 冻结字段集与纪律依据 |
 | `docs/protocols/instance-replication-v1.md` §22/§23.1（L749–754/L783–785）/§23.3/§23.4 | 实读 | wire 唯一权威与事件词汇冻结行 |
 | `CONTEXT.md`「分块复制传输」「同版本部署假设」词条 | 实读 | 领域词汇边界 |
 | `packages/ws-replication/src/{types,bulk-transfer,hub-namespace,peer-namespace,round-engine,observer,index}.ts`（HEAD） | 实读 | 发射点/结算结构/导出面现状核验 |
@@ -27,7 +27,7 @@
 
 1. **交付身份正确**：HEAD = 点名交付 commit，parent = 点名的稳定 Parent PR head（`git log --format='%H %P'` 实测逐字一致）；单提交、空白检查双绿（`git show --check HEAD` 与 `git diff --check 0f3eca5..HEAD` 均 exit 0 零输出）。
 2. **文件范围**：21 文件 = 设计 ALLOW 七文件（M）+ SA6 契约（A，SA6 固定验收输入）+ 4 个 SA7 证据日志（A，`artifacts/` 既定命名惯例）+ 9 个 wiki/raw 过程产物（A，tracked-wiki 惯例——全仓 1182 个 wiki/raw 跟踪文件）；DENY 面经 pathspec 全集 diff **零命中**（§6 实测）。
-3. **规范一致性**：8 型事件字段集/side 信封/键集排除与 ADR 0019 L78–81 + 协议 §23.1 第 29–36 型行**逐字一致**（本审查在 HEAD 独立三源比对 types.ts ↔ 协议表行 ↔ api.test-d 镜像）；冻结文本在基线已存在（§23.1 行 12 处、ADR 0019 4 处实测）——交付是接线不是决策修订。
+3. **规范一致性**：8 型事件字段集/side 信封/键集排除与 ADR 0022 L78–81 + 协议 §23.1 第 29–36 型行**逐字一致**（本审查在 HEAD 独立三源比对 types.ts ↔ 协议表行 ↔ api.test-d 镜像）；冻结文本在基线已存在（§23.1 行 12 处、ADR 0022 4 处实测）——交付是接线不是决策修订。
 4. **模块责任**：发射点全部位于控制器层（hub/peer namespace），机制模块 `BulkTransferSender` 保持零观测面（仅经 `settlementOf` 单点供给结算记录）——对齐 `onUpdateSent`/`onUpdateAcked` 先例；公共导出面零变化（index.ts 零 diff、零 bulk-transfer 导出实测）。
 5. **架构惯例**：11 处物理发射点（sent 3 / acked 3 / applied 3 / aborted 2）与设计 §10 调用方矩阵逐点对应；「决策落定后发射」次序逐站实测成立；单帧路径与 kind=0 面逐字节不变。
 6. **单一事实源**：结算记录 `settlementOf` 单点构造（pullOne/settle 同源）；事件字段 = wire 申报/assembler snapshot/round 绑定的同源投影；控制器无平行记账。
@@ -43,16 +43,16 @@
 |---|---|---|---|
 | 根 AGENTS「Domain docs」 | 单上下文布局：CONTEXT.md + docs/adr/ | 两者零 diff；8 型事件名 = 协议 §23.1 已冻结词汇（基线实测 12 处命中），非新领域词 ⇒ CONTEXT 无更新义务 | **符合** |
 | 根 AGENTS「Module guidance」 | 改 packages/ 前遵守最近嵌套 AGENTS.md | `packages/ws-replication/AGENTS.md` 边界逐条核验（见 §4） | **符合** |
-| 根 AGENTS「Instance replication」 | 触碰 observer/namespace 面时以 ADR 0010 + 协议为权威 | 交付以 ADR 0019/§23.1 已登记冻结值为唯一字段来源，零发明（SA8 两轮 clear 互证） | **符合** |
+| 根 AGENTS「Instance replication」 | 触碰 observer/namespace 面时以 ADR 0010 + 协议为权威 | 交付以 ADR 0022/§23.1 已登记冻结值为唯一字段来源，零发明（SA8 两轮 clear 互证） | **符合** |
 | 根 AGENTS「Typed Namespace writes」 | 新 mutation 路径须 typed 适配 | **不适用**——零新 Namespace 写入路径（peer 导入复用既有 `registry.importReplica`，该行零 diff） | N/A |
 | 根 AGENTS「diagnostic change log」 | ADR 0011/0014 面 | **不适用**——诊断日志面零触碰 | N/A |
 | 根 AGENTS「Git worktrees」 | worktree 须建于仓内 `.worktrees/` | 本 worktree 位于仓旁（`/home/wangjian/nomicore-fix-issue-301`）——Host 环境布置，**非交付内容**，见 §8 O-3 | 过程观察 |
-| ADR 0019 L72–83 | observer 8 型 append-only、字段集对齐 chunked-update-* 四型、§23.4 纪律沿用 | types.ts 第 29–36 型逐字落地；`reason` 复用 `ChunkedUpdateAbortReason` 六值闭集零新词 | **符合** |
-| ADR 0019 非目标 | 同版本部署假设、无互通矩阵 | 交付零 capability/协商/互通面（replication-protocol/** 零 diff） | **符合** |
+| ADR 0022 L72–83 | observer 8 型 append-only、字段集对齐 chunked-update-* 四型、§23.4 纪律沿用 | types.ts 第 29–36 型逐字落地；`reason` 复用 `ChunkedUpdateAbortReason` 六值闭集零新词 | **符合** |
+| ADR 0022 非目标 | 同版本部署假设、无互通矩阵 | 交付零 capability/协商/互通面（replication-protocol/** 零 diff） | **符合** |
 | 协议 §23 头 L714–715 | 事件词汇 append-only、GA 后字段语义冻结 | 纯加性联合成员；联合头注释 28→36 型 + 出处登记 | **符合** |
 | 协议 §23.1 L749–754/L783–785 | 第 29–36 型字段集/side/键集排除/语义逐字冻结 | 逐行比对一致：sent 恒无 latency；applied 无 transferId/sequence/效果组；sync-acked 无 sequence/syncRoundId；aborted 无 connectionId；snapshot 成功三型 side 字面量 hub/peer/hub，sync 四型与两 aborted 型 `ReplicationObserverSide` | **符合** |
 | 协议 §23.3/§23.4 | safe-field、throw 隔离、决策落定后发射、无 observer 逐字节等价、clock 缺省整键缺失 | 全部发射经 `host.emitObserver` → `dispatchReplicationObserver` 单点（observer.ts 零 diff）；latency 全部条件展开；`sampleAckT0()` observer 门控（无 observer 零时钟调用） | **符合** |
-| docs/AGENTS.md「Editing」 | 用仓库词汇；链接权威源而非复制；行为变化时更新受影响的规范文档 | §22 新行引用 ADR 0019/§23.1 而非重述字段集；唯一受影响规范面（§22 资产登记）已更新，其余规范面（§23.x/wire/FSM）无契约变化故零改动 | **符合** |
+| docs/AGENTS.md「Editing」 | 用仓库词汇；链接权威源而非复制；行为变化时更新受影响的规范文档 | §22 新行引用 ADR 0022/§23.1 而非重述字段集；唯一受影响规范面（§22 资产登记）已更新，其余规范面（§23.x/wire/FSM）无契约变化故零改动 | **符合** |
 
 ## 4. 模块责任（packages/ws-replication/AGENTS.md 逐条）
 
@@ -143,7 +143,7 @@
 
 已提交最终交付（commit `799a618`，单提交、parent = 稳定 Parent PR head、空白检查双绿）在全部标准维度符合仓库与工程标准：
 
-- **规范逐字一致**：8 型事件字段集/side 信封/键集排除与 ADR 0019 L78–81 + 协议 §23.1 第 29–36 型冻结行逐字一致（HEAD 三源独立比对）；冻结文本、ADR、CONTEXT、wire/配置/错误码面全部零 diff——本交付是已登记冻结值的接线，零决策演进；
+- **规范逐字一致**：8 型事件字段集/side 信封/键集排除与 ADR 0022 L78–81 + 协议 §23.1 第 29–36 型冻结行逐字一致（HEAD 三源独立比对）；冻结文本、ADR、CONTEXT、wire/配置/错误码面全部零 diff——本交付是已登记冻结值的接线，零决策演进；
 - **模块责任正确**：发射点全部在控制器层既有结算结构上（11 处实测），机制模块零观测面、公共导出面零变化、observer 隔离单点零触碰、FSM 零新转移；
 - **单一事实源与生命周期对称**：`settlementOf` 单点构造、事件字段全部同源投影、控制器无平行记账；零新增 acquire、覆写单槽无泄漏路径、assembly 易失性与六类收口挂点逐字不变；
 - **文件范围自洽**：21 文件全部属本票交付集，DENY 面 pathspec 全集零命中，无临时文件/debug 残留；

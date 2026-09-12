@@ -2,7 +2,7 @@
  * SA6 红灯验收契约 — issue #299（#295 切片 1）：0x42 UPDATE_CHUNK kind 首字段单形态 codec。
  *
  * 契约锚点：
- * - ADR 0019「消息形态」：0x42 payload 恒为 `kind varUint` 首字段 + namespaceId/transferId/
+ * - ADR 0022「消息形态」：0x42 payload 恒为 `kind varUint` 首字段 + namespaceId/transferId/
  *   chunkIndex/chunkCount/totalBytes/bytes 五字段序不变 + 绑定块（当且仅当 kind≠0 ∧
  *   chunkIndex=0：kind=1 → replicationId varString + replicationEpoch varUint；kind=2 →
  *   syncRoundId varUint）；`kind ∈ {0,1,2}`；ADR 0013 六字段旧形态作废（从未发布，无兼容负担）。
@@ -55,7 +55,7 @@ import { GOLDEN, NS, buildFrameHex, bytesToHex, hexToBytes } from './fixtures';
 const UPDATE_CHUNK_CODE = 0x42;
 /** CAP_CHUNKED_UPDATE 位值（§6.2 协商）。 */
 const CAP_BIT = 0x00000001;
-/** kind 三态（ADR 0019 / §10.3）。 */
+/** kind 三态（ADR 0022 / §10.3）。 */
 const KIND_LIVE_UPDATE = 0;
 const KIND_SNAPSHOT = 1;
 const KIND_SYNC_DIFF = 2;

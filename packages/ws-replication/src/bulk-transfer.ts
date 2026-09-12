@@ -1,5 +1,5 @@
 /**
- * bulk-transfer —— issue #295 切片 2（ADR 0019 / 协议 §8.1/§9.2/§10.3）：kind=1（snapshot）
+ * bulk-transfer —— issue #295 切片 2（ADR 0022 / 协议 §8.1/§9.2/§10.3）：kind=1（snapshot）
  * 与 kind=2（sync-diff）分块载荷的发送端唯一载体。
  *
  * 与 `UpdateChannel`（kind=0 live-update 通道）刻意分离：结算帧（BOOTSTRAP_ACK /

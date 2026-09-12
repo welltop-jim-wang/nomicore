@@ -182,7 +182,7 @@ export interface UpdateAckMsg {
 }
 export interface UpdateChunkMsg {
   kind: 'UPDATE_CHUNK';
-  /** wire kind 首字段（ADR 0019 / 协议 §10.3 单形态）：0=live-update / 1=snapshot / 2=sync-diff。 */
+  /** wire kind 首字段（ADR 0022 / 协议 §10.3 单形态）：0=live-update / 1=snapshot / 2=sync-diff。 */
   transferKind: 0 | 1 | 2;
   namespaceId: string;
   transferId: number;
@@ -362,7 +362,7 @@ export const GOLDEN: GoldenFixture[] = [
     namespaceId: NS,
     ackedSequence: 6,
   }, '236e732d303132333435363738396162636465663031323334353637383961626364656606'),
-  // issue #295 切片 1（ADR 0019 / 协议 §10.3）：UPDATE_CHUNK(0x42) golden 改写为 kind 首字段
+  // issue #295 切片 1（ADR 0022 / 协议 §10.3）：UPDATE_CHUNK(0x42) golden 改写为 kind 首字段
   // 单形态——字段序 kind(varUint) → namespaceId → transferId → chunkIndex → chunkCount →
   // totalBytes → bytes（payload 字面量与红灯契约 codec-issue242-ac-red.test.ts 的三条向量
   // 逐字一致；首 chunk 绑定块形态由 codec-issue299-ac-red.test.ts 冻结向量锁定）。
@@ -559,7 +559,7 @@ export const NAMESPACE_ERROR_TABLE: Record<
   // issue #242（ADR 0013）：分块传输语义错误码
   UPDATE_TRANSFER_VIOLATION: { fatal: true, retryable: 'no', terminalState: 'failed' },
   UPDATE_TRANSFER_TOO_LARGE: { fatal: true, retryable: 'config', terminalState: 'failed' },
-  // issue #295 切片 2（ADR 0019 / 协议 §13.2 L445–448）：snapshot/sync-diff 分块传输四码
+  // issue #295 切片 2（ADR 0022 / 协议 §13.2 L445–448）：snapshot/sync-diff 分块传输四码
   SNAPSHOT_TRANSFER_VIOLATION: { fatal: true, retryable: 'no', terminalState: 'failed' },
   SNAPSHOT_TRANSFER_TOO_LARGE: { fatal: true, retryable: 'config', terminalState: 'failed' },
   SYNC_TRANSFER_VIOLATION: { fatal: true, retryable: 'no', terminalState: 'failed' },

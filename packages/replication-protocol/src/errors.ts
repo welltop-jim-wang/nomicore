@@ -4,7 +4,7 @@
  * 权威来源：docs/protocols/instance-replication-v1.md §13.1（17 条连接错误）、
  * §13.2（26 条 namespace 错误，含双 registry INTERNAL_ERROR，元数据不同；
  * issue #242 追加 UPDATE_TRANSFER_VIOLATION / UPDATE_TRANSFER_TOO_LARGE，ADR 0013 冻结值；
- * issue #295 切片 2 追加 SNAPSHOT_TRANSFER_* / SYNC_TRANSFER_* 四码，ADR 0019 冻结值）。
+ * issue #295 切片 2 追加 SNAPSHOT_TRANSFER_* / SYNC_TRANSFER_* 四码，ADR 0022 冻结值）。
  * 注册表是 codec 一切失败路径的元数据来源：scope/fatal/retryable/wsCloseCode/terminalState
  * 由注册表导出，调用方不可注入（AC4）。注册表条目对象与注册表对象全部 Object.freeze。
  */
@@ -142,7 +142,7 @@ const _namespaceErrors: Record<NamespaceErrorCode, ErrorInfo> = {
   // maxChunkedUpdateBytes 超限）属后续接收端 assembly 切片；本切片只冻结注册与 wire 可编码性。
   UPDATE_TRANSFER_VIOLATION: namespaceError('UPDATE_TRANSFER_VIOLATION', true, 'no', 'failed'),
   UPDATE_TRANSFER_TOO_LARGE: namespaceError('UPDATE_TRANSFER_TOO_LARGE', true, 'config', 'failed'),
-  // issue #295 切片 2（ADR 0019 / 协议 §13.2 L445–448）：snapshot/sync-diff 分块传输语义码。
+  // issue #295 切片 2（ADR 0022 / 协议 §13.2 L445–448）：snapshot/sync-diff 分块传输语义码。
   // append-only 首登（冻结元数据逐字：VIOLATION=yes/no/failed；TOO_LARGE=yes/config/failed）；
   // 发射点 = ws-replication 接收端首 chunk 校验 / 跨帧违例 / 发送端聚合超限收口。
   SNAPSHOT_TRANSFER_VIOLATION: namespaceError('SNAPSHOT_TRANSFER_VIOLATION', true, 'no', 'failed'),

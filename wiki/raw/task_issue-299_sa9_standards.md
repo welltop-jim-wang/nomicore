@@ -9,7 +9,7 @@
 > 15 个测试文件（含 SA6 契约三文件 + 新增 encode-symmetry）、1 行协议文档收口、
 > 6 个 wiki/raw 流水线产物、7 个 artifacts 证据文件。父提交
 > `eb380d7aed296c15accf8832a45a96b630f0c8ce`（`git rev-parse HEAD~1` 亲证一致，= dispatch
-> 声明的 authoritative parent base：#295 docs 分支头，含 ADR 0019 与协议 §5/§10.3/§17
+> 声明的 authoritative parent base：#295 docs 分支头，含 ADR 0022 与协议 §5/§10.3/§17
 > 目标契约冻结）。工作树除未跟踪简报 `task_issue-299.md` 与 SA7/SA6 部分证据日志外干净。
 > **Issue 评论输入**: dispatch 明示 REST comments 读 = `[]`；简报 §Comments、SA6 §2、
 > SA8 §0（双通道实测）、SA2 §4、SA4 §1、SA7 §1 六处同口径——无 Owner 追加要求需并入。
@@ -20,7 +20,7 @@
 > `task_issue-299_sa4_review.md`（approve，0 BLOCKER/MAJOR，1 MINOR=M1 台账路由）、
 > `task_issue-299_sa6_contract.md`（approve，21 红 + 5 负控 + 2 类型面红，§13 sha256
 > 锁定）、`task_issue-299_sa7_report.md`（approve）、SA8 门禁两份（clear，R32–R41）、
-> 规范基线 ADR 0019/0013 全文、协议 §10.3/§17/§22 原文、CONTEXT.md L154–171 词条、
+> 规范基线 ADR 0022/0013 全文、协议 §10.3/§17/§22 原文、CONTEXT.md L154–171 词条、
 > 根 `AGENTS.md`、`docs/AGENTS.md`、两包 `AGENTS.md`。
 > **审查方式**: 独立取证，非结论复用——交付 diff 全量亲读（`git diff eb380d7 f63c2d2`，
 > 生产 9 文件逐行 + 测试 15 文件逐行 + 文档 1 行）；契约三文件 sha256 复跑
@@ -61,18 +61,18 @@
 |---|---|---|
 | 根 AGENTS「Module guidance：读最近嵌套 AGENTS」 | 两包 AGENTS 均亲读并逐条对照（下两行）；docs/AGENTS 对照 §22 改动（§1 末行） | ✅ |
 | replication-protocol AGENTS「strict, fail-closed decoding：validate limits before allocation、fully consume payloads、reject malformed/non-canonical/unknown/trailing with stable classifications」 | `decodeUpdateChunk`（payloads.ts L669–726）：kind 首字段先行读取 + 非法值立即 `throwMalformed`（首字节流入即拒）；绑定块仅按 wire 位置读取（`transferKind !== 0 && chunkIndex === 0`），缺块/越位/尾随经 canonical reader 欠载与既有全消费检查收敛——未新增任何专门分支；`bytes` 限额/非空/≤totalBytes/全消费纪律零改动；分类仅既有 `MALFORMED_FRAME`/`UPDATE_TOO_LARGE` | ✅ |
-| replication-protocol AGENTS「compatibility registries append-only；never renumber or silently reinterpret」 | 消息码 0x42、capability bit 0x00000001、错误码、close 分类注册表零改动（diff 无 registry/observer/canonical 命中）；0x42 payload 形态改写属 ADR 0019 显式授权（「ADR 0013 冻结的六字段形态作废…golden vectors 在本分支内改写为单形态」），非静默 reinterpret | ✅ |
-| replication-protocol AGENTS「Wire changes require old/new interoperability evidence + root typecheck/test」 | 豁免依据在设计 §12 全仓回归行显式登记并经 SA2 O2/SA4 N-Obs5 复核自洽：ADR 0019 同版本部署假设（部署前提节）+ 旧六字段形态从未发布（SA8 C4 实测 PR #241 OPEN）+ v1 代际端照旧 `UNSUPPORTED_MESSAGE_TYPE` 的非互破译由既有机制承载；同版本自互通证据 = 改写后 golden 三向量 + 契约冻结向量 + 既有 interop 矩阵（500 用例套件内绿，SA7 §4 实测）；root `pnpm typecheck` exit 0（SA3/SA7 双轮日志） | ✅（豁免已文档化） |
+| replication-protocol AGENTS「compatibility registries append-only；never renumber or silently reinterpret」 | 消息码 0x42、capability bit 0x00000001、错误码、close 分类注册表零改动（diff 无 registry/observer/canonical 命中）；0x42 payload 形态改写属 ADR 0022 显式授权（「ADR 0013 冻结的六字段形态作废…golden vectors 在本分支内改写为单形态」），非静默 reinterpret | ✅ |
+| replication-protocol AGENTS「Wire changes require old/new interoperability evidence + root typecheck/test」 | 豁免依据在设计 §12 全仓回归行显式登记并经 SA2 O2/SA4 N-Obs5 复核自洽：ADR 0022 同版本部署假设（部署前提节）+ 旧六字段形态从未发布（SA8 C4 实测 PR #241 OPEN）+ v1 代际端照旧 `UNSUPPORTED_MESSAGE_TYPE` 的非互破译由既有机制承载；同版本自互通证据 = 改写后 golden 三向量 + 契约冻结向量 + 既有 interop 矩阵（500 用例套件内绿，SA7 §4 实测）；root `pnpm typecheck` exit 0（SA3/SA7 双轮日志） | ✅（豁免已文档化） |
 | replication-protocol AGENTS「Add public APIs only through `src/index.ts`；exported types and runtime codec behavior must evolve together」 | `UpdateChunkTransferKind` 经 `src/index.ts` 导出（diff 第 1 行）；类型面（messages.ts）与 codec 行为（payloads.ts）同提交同步演化 | ✅ |
 | replication-protocol AGENTS「codec transport- and Registry-independent」 | payloads.ts 零新 import、零跨帧状态；diff 审读无模块级状态新增 | ✅ |
 | ws-replication AGENTS「Preserve protocol ordering and FSM invariants」 | 零状态机改动：连接/namespace/assembly FSM 无 diff（DENY 五文件零触碰亲证）；配置校验 = 构造期一次性纯函数 | ✅ |
 | ws-replication AGENTS「Export production APIs through `src/index.ts`」 | `validateChunkedBootstrapChain`/`validateChunkedSyncDiffChain` 为包内导出但**不经** `src/index.ts`（`grep validate packages/ws-replication/src/index.ts` 零命中亲证）——与 `validateChunkedTransferChain` 既有待遇同构 | ✅ |
-| docs/AGENTS「code behavior changes → update every normative document whose stated contract changed；documentation-only wording changes must not invent implementation behavior」 | 规范契约改动（§5/§10.3/§17/CONTEXT/ADR 0019）已在父 base（`2ca06f6`+`eb380d7`）就位，本票义务面 = §22 L701 一行收口：codec 向量支改写为「已由实现 ticket 交付」并指向**在仓可解析**资产（`codec-issue299-ac-red.test.ts`/`codec-messages-golden.test.ts`/`fixtures.ts` 三路径均实测存在）；传输层 kind=1/2 资产支维持「由 §8.1/§9.2 后续切片交付，本规范不预设其存在」——零虚构 | ✅ |
-| docs/AGENTS「Use repository vocabulary exactly；update CONTEXT.md when introducing/changing a domain term」 | 新注释/文档用词（单形态、绑定块、同版本部署假设、kind 三态）全部取自 CONTEXT.md L154–171 既有词条（亲读：五词条已在父 base 并入 ADR 0019 语义）——零新术语发明，CONTEXT 同改义务不触发（设计 DENY 声明与实测一致） | ✅ |
+| docs/AGENTS「code behavior changes → update every normative document whose stated contract changed；documentation-only wording changes must not invent implementation behavior」 | 规范契约改动（§5/§10.3/§17/CONTEXT/ADR 0022）已在父 base（`2ca06f6`+`eb380d7`）就位，本票义务面 = §22 L701 一行收口：codec 向量支改写为「已由实现 ticket 交付」并指向**在仓可解析**资产（`codec-issue299-ac-red.test.ts`/`codec-messages-golden.test.ts`/`fixtures.ts` 三路径均实测存在）；传输层 kind=1/2 资产支维持「由 §8.1/§9.2 后续切片交付，本规范不预设其存在」——零虚构 | ✅ |
+| docs/AGENTS「Use repository vocabulary exactly；update CONTEXT.md when introducing/changing a domain term」 | 新注释/文档用词（单形态、绑定块、同版本部署假设、kind 三态）全部取自 CONTEXT.md L154–171 既有词条（亲读：五词条已在父 base 并入 ADR 0022 语义）——零新术语发明，CONTEXT 同改义务不触发（设计 DENY 声明与实测一致） | ✅ |
 
-## 2. ADR 保真（交付逐条对照 ADR 0019 决策节）
+## 2. ADR 保真（交付逐条对照 ADR 0022 决策节）
 
-| ADR 0019 决策 | 交付落点 | 判定 |
+| ADR 0022 决策 | 交付落点 | 判定 |
 |---|---|---|
 | 消息形态：kind varUint 首字段 + 五字段序不变 + 绑定块（kind=1 → replicationId varString + replicationEpoch varUint；kind=2 → syncRoundId varUint）位于 totalBytes 之后、bytes 之前 | decode 读序 = kind → ns → transferId → chunkIndex → chunkCount → totalBytes → [绑定块] → bytes；encode 写序逐字镜像（先验证后写）；与协议 §10.3 字段表亲读逐字一致 | ✅ |
 | codec 单帧规则追加 `kind ∈ {0,1,2}`、绑定块当且仅当 `kind≠0 ∧ chunkIndex=0`（违者 MALFORMED_FRAME） | decode 首字节门 + encode iff 八分支严格拒绝（不归一化）；旧六字段首字节 0x23=35 ∉ {0,1,2} 自动作废（契约 R5 覆盖） | ✅ |
@@ -100,7 +100,7 @@
 
 | 事实 | 权威源 | 派生面 | 漂移风险 |
 |---|---|---|---|
-| wire 字段序/单帧规则 | 协议 §10.3（规范） | payloads.ts 注释块锚定 §10.3 + ADR 0019；fixtures 注释同步升级 | 无（注释为指针非副本；契约 R1–R14 + golden 常驻机械门） |
+| wire 字段序/单帧规则 | 协议 §10.3（规范） | payloads.ts 注释块锚定 §10.3 + ADR 0022；fixtures 注释同步升级 | 无（注释为指针非副本；契约 R1–R14 + golden 常驻机械门） |
 | 配置缺省值 | `DEFAULT_REPLICATION_LIMITS` | `resolveLimits` Partial 合并唯一展开点；observer-red 字面量为测试局部夹具且值逐字等于缺省（非第二运行时事实源） | 无 |
 | golden 向量 | `fixtures.ts` GOLDEN（21 锚） | #242 契约三向量与 golden 逐字一致保持（D7 同步改写）；绑定块形态由 SA6 契约冻结向量 `KIND1_FIRST`/`KIND2_FIRST` 锁定（单一权威，不进 fixtures） | 无 |
 | 链②判据与错误消息 | validate.ts 两函数 | hub/peer 仅调用不复制判据 | 无 |
@@ -203,5 +203,5 @@ grep -n "validate" packages/ws-replication/src/index.ts     # 零命中（包内
 grep -n "include" vitest.config.ts                          # L15/L20 收集入口亲读
 sed -n '195,222p' packages/ws-replication/src/hub-connection.ts  # 校验先于字段赋值亲读
 sed -n '300,350p;575,620p' docs/protocols/instance-replication-v1.md  # §10.3/§17 原文对照
-sed -n '150,172p' CONTEXT.md                               # 五词条 ADR 0019 语义已在位
+sed -n '150,172p' CONTEXT.md                               # 五词条 ADR 0022 语义已在位
 ```

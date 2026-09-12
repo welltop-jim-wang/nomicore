@@ -227,13 +227,13 @@ export interface UpdateAckMsg {
 }
 
 /**
- * 0x42 UPDATE_CHUNK wire kind 首字段（ADR 0019 / 协议 §10.3）：
+ * 0x42 UPDATE_CHUNK wire kind 首字段（ADR 0022 / 协议 §10.3）：
  * 0=live-update / 1=snapshot / 2=sync-diff。单形态恒在（编码/解码双向校验 ∈ {0,1,2}）。
  */
 export type UpdateChunkTransferKind = 0 | 1 | 2;
 
 /**
- * 分块 UPDATE 的自描述单帧（ADR 0019 / 协议 §10.3 单形态字段序 = wire 序）。
+ * 分块 UPDATE 的自描述单帧（ADR 0022 / 协议 §10.3 单形态字段序 = wire 序）。
  * 单帧语义自洽规则（kind ∈ {0,1,2}、绑定块当且仅当 kind≠0 ∧ chunkIndex=0、transferId ≥ 1、
  * chunkIndex < chunkCount、非空 bytes、bytes ≤ totalBytes）由 codec 校验（MALFORMED_FRAME）；
  * 跨帧一致性/顺序/总量校验与绑定块内容核对属接收端 assembly / 后续切片，codec 无状态、不承载。
@@ -243,7 +243,7 @@ export interface UpdateChunkMsg {
   /** wire kind 首字段（单形态恒在；与判别键 `kind` 异名）。 */
   transferKind: UpdateChunkTransferKind;
   namespaceId: string;
-  /** uint32，(连接, 方向, namespace) 域内从 1 严格递增，三种 kind 共用同一计数器（ADR 0019）。 */
+  /** uint32，(连接, 方向, namespace) 域内从 1 严格递增，三种 kind 共用同一计数器（ADR 0022）。 */
   transferId: number;
   /** uint32，0-based。 */
   chunkIndex: number;

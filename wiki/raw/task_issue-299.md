@@ -14,7 +14,7 @@ PR #298（docs/issue-295-chunked-sync-design）
 
 ## What to build
 
-0x42 UPDATE_CHUNK 改写为 kind 首字段单形态并被正确编解码，且 snapshot/sync-diff 的聚合上限进入配置链并启动期响亮验证——这是 #295 一切后续切片的地基。冻结契约见 ADR 0019 与协议 §5/§10.3/§17。部署前提：同版本部署假设（ADR 0019），无 capability 协商、无向前兼容面。
+0x42 UPDATE_CHUNK 改写为 kind 首字段单形态并被正确编解码，且 snapshot/sync-diff 的聚合上限进入配置链并启动期响亮验证——这是 #295 一切后续切片的地基。冻结契约见 ADR 0022 与协议 §5/§10.3/§17。部署前提：同版本部署假设（ADR 0022），无 capability 协商、无向前兼容面。
 
 端到端可验证行为：kind ∈ {0=live-update, 1=snapshot, 2=sync-diff} 的 0x42 帧（含 kind=1 首 chunk 的 replicationId/replicationEpoch 绑定块、kind=2 首 chunk 的 syncRoundId 绑定块）codec 往返无损；`kind ∉ {0,1,2}` 或绑定块位置违例（非首 chunk 携带 / kind=0 携带）→ MALFORMED_FRAME；ADR 0013 六字段旧形态的 golden vectors 在本分支内改写为单形态（旧形态从未发布，无兼容负担）。配置面：`maxChunkedBootstrapBytes`/`maxChunkedSyncDiffBytes`（缺省各 4 MiB）生效，`maxChunksPerUpdate`/`maxConcurrentAssembliesPerConnection`/`assemblyTimeoutMs` 语义 kind 无关、键名不变；启动校验链追加 `maxChunkedBootstrapBytes ≤ maxChunksPerUpdate × maxUpdateBytes` 与 `maxChunkedSyncDiffBytes ≤ maxChunksPerUpdate × maxUpdateBytes`，违例响亮拒绝、绝不运行时 clamp；`maxQueuedControlBytes ≥ maxBootstrapBytes + 协议开销` 校验原样保留（单帧路径仍需要）；未表达新键的存量配置不误判（非追溯性）。
 

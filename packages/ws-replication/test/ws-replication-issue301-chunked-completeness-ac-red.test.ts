@@ -1,9 +1,9 @@
 /**
  * SA6 验收契约 — issue #301（#295 切片 3）：分块同步的完备性、observer 与新旧互通矩阵
- * （互通矩阵不在本票范围——ADR 0019 非目标；本文件覆盖 AC1–AC4 与 AC5 observer seam）。
+ * （互通矩阵不在本票范围——ADR 0022 非目标；本文件覆盖 AC1–AC4 与 AC5 observer seam）。
  *
  * 契约来源（规范效力链）：
- * - ADR `docs/adr/0019-chunked-sync-transfer.md`：observer 8 型追加（L72–83，字段集对齐既有
+ * - ADR `docs/adr/0022-chunked-sync-transfer.md`：observer 8 型追加（L72–83，字段集对齐既有
  *   chunked-update-* 四型；safe-field/throw 隔离/无 observer 逐字节等价沿用 §23.4）；
  *   超时两向收口（L70：snapshot → BOOTSTRAP_FAILED 族终局；sync-diff →
  *   RESYNC_REQUIRED{SYNC_TRANSFER_EXPIRED} 非终态）；assembly 纯易失与 epoch fence 丢弃
@@ -139,7 +139,7 @@ const eventTypes = (rec: Rec): string[] => rec.events.map((e) => String(e.type))
 const eventsOf = (rec: Rec, type: string): Array<Record<string, unknown>> =>
   rec.events.filter((e) => e.type === type);
 
-/** §23.1 第 29–36 型键集白名单（ADR 0019 L78–81 + §23.1 行；append-only 冻结面）。 */
+/** §23.1 第 29–36 型键集白名单（ADR 0022 L78–81 + §23.1 行；append-only 冻结面）。 */
 const EVENT_KEYS: Readonly<Record<string, readonly string[]>> = Object.freeze({
   'chunked-snapshot-sent': ['chunkCount', 'connectionId', 'namespaceId', 'side', 'totalBytes', 'transferId', 'type'],
   'chunked-snapshot-applied': ['applyLatencyMs', 'bytes', 'chunkCount', 'connectionId', 'namespaceId', 'side', 'type'],

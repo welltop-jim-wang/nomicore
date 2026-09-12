@@ -3,7 +3,7 @@
  * diff 端到端（R1/R3 收敛绿灯）。
  *
  * 契约来源（规范效力链）：
- * - ADR `docs/adr/0019-chunked-sync-transfer.md`：恒用机制（非协商能力）——超过单帧上限的
+ * - ADR `docs/adr/0022-chunked-sync-transfer.md`：恒用机制（非协商能力）——超过单帧上限的
  *   snapshot/diff 一律分块（L12）；round/epoch 绑定块（L39–43）；ACK/sender/receiver/记账
  *   逐条平移 ADR 0013（L45–51：一次 sequenced apply / 排他复制导入、control reserve 零
  *   chunk、惰性切片、整笔 1 in-flight 槽、独立 sequence/dataGateOpen/RR）；四新错误码

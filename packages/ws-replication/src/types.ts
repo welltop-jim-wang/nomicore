@@ -46,12 +46,12 @@ export interface ReplicationLimits {
    *  4 缺省；约束 ≥ 1；超额 = 到达首 chunk 的 ns 收 `UPDATE_TRANSFER_VIOLATION`（简报显式
    *  裁决），其余并发 assembly 不受影响（ns 级违例、连接保持 ready）。 */
   readonly maxConcurrentAssembliesPerConnection: number; // 4
-  /** issue #295（slice 1，ADR 0019 配置表）：单笔 chunked snapshot transfer 的 `totalBytes`
+  /** issue #295（slice 1，ADR 0022 配置表）：单笔 chunked snapshot transfer 的 `totalBytes`
    *  申报上界（接收端首 chunk 分配前校验，kind=1）。4 MiB 缺省；约束
    *  `≤ maxChunksPerUpdate × maxUpdateBytes`（链②：调用方显式表达本键时启动期响亮校验，
    *  违例构造期 TypeError，零运行时 clamp）。 */
   readonly maxChunkedBootstrapBytes: number; // 4 MiB
-  /** issue #295（slice 1，ADR 0019 配置表）：单笔 chunked sync-diff transfer 的 `totalBytes`
+  /** issue #295（slice 1，ADR 0022 配置表）：单笔 chunked sync-diff transfer 的 `totalBytes`
    *  申报上界（接收端首 chunk 分配前校验，kind=2）。4 MiB 缺省；约束同 bootstrap 链②
    *  （各自新键显式表达时响亮生效）。 */
   readonly maxChunkedSyncDiffBytes: number; // 4 MiB
@@ -374,7 +374,7 @@ export interface ReplicationClock {
  * chunked-update-sent/applied/acked——ADR 0013 L89–91 域键集逐字 + §23 side 信封；
  * 改道裁决（SA8 R21）：分块 transfer 的成功结算从普通族改道至 chunked 族；
  * issue #301 追加第 29–36 型 chunked-snapshot-{sent,applied,acked,aborted} 与
- * chunked-sync-{sent,applied,acked,aborted}——ADR 0019 L78–81 + 协议 §23.1 第 29–36 型行，
+ * chunked-sync-{sent,applied,acked,aborted}——ADR 0022 L78–81 + 协议 §23.1 第 29–36 型行，
  * 字段集对齐既有 chunked-update-* 四型）。
 
  *
@@ -857,7 +857,7 @@ export type ReplicationObserverEvent =
       readonly ackLatencyMs?: number;
 
     }
-  // ── issue #301（#295 切片 3；append-only 第 29–36 型；ADR 0019 L78–81 + 协议 §23.1
+  // ── issue #301（#295 切片 3；append-only 第 29–36 型；ADR 0022 L78–81 + 协议 §23.1
   //    第 29–36 型行。字段集对齐既有 chunked-update-* 四型；side 信封按 §23.1 行取值：
   //    snapshot 成功三型为字面量（snapshot 恒 hub→peer，对齐 bootstrap-snapshot-sent/
   //    bootstrap-imported 先例）；sync 四型与两 aborted 型为 ReplicationObserverSide

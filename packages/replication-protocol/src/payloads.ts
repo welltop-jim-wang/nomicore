@@ -650,7 +650,7 @@ function encodeUpdateAck(writer: PayloadWriter, msg: UpdateAckMsg): void {
 
 // ---------------------------------------------------------------- UPDATE_CHUNK 0x42
 //
-// issue #295 切片 1（ADR 0019 / 协议 §10.3）：kind 首字段单形态。字段序（唯一权威 = 协议
+// issue #295 切片 1（ADR 0022 / 协议 §10.3）：kind 首字段单形态。字段序（唯一权威 = 协议
 // §10.3 字段表 + §10.3「单形态」段）：kind(varUint, 0=live-update/1=snapshot/2=sync-diff)
 // → namespaceId(varString) → transferId(varUint, uint32) → chunkIndex(varUint, uint32)
 // → chunkCount(varUint, uint32) → totalBytes(varUint, uint32) → [绑定块] → bytes(varUint8Array)。
@@ -662,10 +662,10 @@ function encodeUpdateAck(writer: PayloadWriter, msg: UpdateAckMsg): void {
 // totalBytes ≥ bytes.byteLength。字段限额复用 maxUpdateBytes（超限 → UPDATE_TOO_LARGE，
 // kind 无关）。绑定块**内容**核对（REPLICATION_ID_MISMATCH 等）与跨帧规则（transferId
 // 一致性/单调、chunkIndex === 已收数量、实收 == totalBytes）属接收端 assembly 状态机与
-// §8.1/§9.2 后续切片，codec 无状态、不承载（ADR 0019 同版本部署假设，无旧形态兼容面）。
+// §8.1/§9.2 后续切片，codec 无状态、不承载（ADR 0022 同版本部署假设，无旧形态兼容面）。
 
 function decodeUpdateChunk(reader: CanonicalReader, limits: FieldLimits | undefined): UpdateChunkMsg {
-  // kind 首字段先行：非法值在首个字节流入处即拒绝（ADR 0019「恶意声明在第一个字节流入前
+  // kind 首字段先行：非法值在首个字节流入处即拒绝（ADR 0022「恶意声明在第一个字节流入前
   // 即可拒绝」）；ADR 0013 六字段旧形态首字节 0x23=35 与 {0,1,2} 不相交 → 自动作废。
   const transferKind = reader.readVarUint();
   if (transferKind !== 0 && transferKind !== 1 && transferKind !== 2) {

@@ -1,36 +1,36 @@
 # SA1 架构与实现设计 — issue #301（#295 切片 3）：分块 snapshot/sync 的 observer 8 型接线
 
 - **dispatch**: sa-8039a70c-aa6b-40b4-8764-3f022dace9f8（mabf-sa1 / design / iteration 0）
-- **任务类型**: **Feature**（ADR 0019 第三切片的观测面收尾——8 型 `chunked-snapshot-*` / `chunked-sync-*` observer 事件从零发射点接通；非 Bug，无根因修复）
+- **任务类型**: **Feature**（ADR 0022 第三切片的观测面收尾——8 型 `chunked-snapshot-*` / `chunked-sync-*` observer 事件从零发射点接通；非 Bug，无根因修复）
 - **上游产物**: SA6 验收契约 `wiki/raw/task_issue-301_sa6_contract.md`（**approve**，8 红 R1–R8 + 9 负控 N1–N9；契约文件 `packages/ws-replication/test/ws-replication-issue301-chunked-completeness-ac-red.test.ts`，1387 行 / 17 用例）
 - **基线**: `0f3eca5`（`fix(#300): feat(#295 切片 2)`，PR #325 合并点；SA6 实测全包 70 文件 / 499 用例全绿）
-- **SA8 产物**: 本 iteration **缺失**（`task_issue-301_conflict_report.md` / `_relevant_decisions.md` / `_design.md` 均不存在）——按 skill 纪律改由 ADR 0019 + 协议冻结文本 + slice 2 源码 deferral 注释显式登记约束（§4），并标记设计后冲突复查（§15）
+- **SA8 产物**: 本 iteration **缺失**（`task_issue-301_conflict_report.md` / `_relevant_decisions.md` / `_design.md` 均不存在）——按 skill 纪律改由 ADR 0022 + 协议冻结文本 + slice 2 源码 deferral 注释显式登记约束（§4），并标记设计后冲突复查（§15）
 - **Owner comments**: REST comments endpoint 返回空（任务简报 §Comments 与 SA6 §2 一致）——无 owner 补充要求
 
 ---
 
 ## 1. 任务模型（Feature：能力缺口）
 
-**能力缺口**：ADR 0019 / 协议 §23.1 已冻结登记的第 29–36 型 observer 事件（8 型）在实现中**零发射点**——`types.ts` 判别联合止于第 28 型，hub/peer 双侧发送、接收、中止结算点均无对应发射；同时 slice 2 已把分块窗口内普通族（`bootstrap-snapshot-sent` / `bootstrap-imported` / `sync-step2-sent` / `sync-diff-applied`）改道归零 ⇒ 分块 snapshot / sync-diff 传输在 observer 事件流中**完全不可见**。
+**能力缺口**：ADR 0022 / 协议 §23.1 已冻结登记的第 29–36 型 observer 事件（8 型）在实现中**零发射点**——`types.ts` 判别联合止于第 28 型，hub/peer 双侧发送、接收、中止结算点均无对应发射；同时 slice 2 已把分块窗口内普通族（`bootstrap-snapshot-sent` / `bootstrap-imported` / `sync-step2-sent` / `sync-diff-applied`）改道归零 ⇒ 分块 snapshot / sync-diff 传输在 observer 事件流中**完全不可见**。
 
 **目标**（本票范围内、SA6 契约可验收的部分）：
 
-1. `ReplicationObserverEvent` 追加第 29–36 型判别成员（字段集逐字 = ADR 0019 L78–81 + 协议 §23.1 行 + §23 side 信封）；
+1. `ReplicationObserverEvent` 追加第 29–36 型判别成员（字段集逐字 = ADR 0022 L78–81 + 协议 §23.1 行 + §23 side 信封）；
 2. 接通 8 个发射点：发送侧 sent（末 chunk 出站结算恰一）、发送侧 acked（单 ACK 收妥结算恰一）、接收侧 applied（apply 成功结算恰一、互斥六选一的第五/第六形态）、接收侧 aborted（busy→aborted 边沿恰一、kind 门泛化）；
 3. 全部沿用 §23.3 safe-field、§23.4 隔离/时钟/「决策落定后发射」/「无 observer 逐字节等价」纪律。
 
-**非目标**（边界与 SA6 §1/§3、ADR 0019 非目标对齐）：
+**非目标**（边界与 SA6 §1/§3、ADR 0022 非目标对齐）：
 
 - **零 wire 变化**：不动 0x42 codec/字段序、消息码、错误码注册表、RESYNC reason 词表、配置键与校验链（AC1–AC4 的生命周期/调度/恶意声明面已由 slice 2 交付且被 N1–N9 锁绿，本票不触碰）；
 - **零新事件字段发明**：8 型字段集与 `ChunkedUpdateAbortReason` 六值闭集合全部为协议冻结值，本票是**接线**不是设计；
-- 新旧互通矩阵（ADR 0019 非目标，issue body 显式排除）；kind=0 live-update 行为（全包回归锚）；`observer.ts` 白名单（事件型非稳定码，dispatch 无 per-type 白名单——issue #287 复审已明确域分离）；
+- 新旧互通矩阵（ADR 0022 非目标，issue body 显式排除）；kind=0 live-update 行为（全包回归锚）；`observer.ts` 白名单（事件型非稳定码，dispatch 无 per-type 白名单——issue #287 复审已明确域分离）；
 - 不为 hub 侧结构不可达路径发明发射点（hub 无 kind=1 入站合法上下文——见 §7 OD6 注）。
 
 ## 2. Owner要求落实
 
 | Comment ID | Updated at | Requirement | Design section |
 |---|---|---|---|
-| （无——issue #301 comments 为空） | — | 任务要求唯一来源 = issue 正文 AC1–AC5 + ADR 0019 + 协议冻结文本 | AC1–AC4 → §12 负控保持绿（零实现改动）；AC5 → §7 OD1–OD9、§12 R1–R8 转绿映射 |
+| （无——issue #301 comments 为空） | — | 任务要求唯一来源 = issue 正文 AC1–AC5 + ADR 0022 + 协议冻结文本 | AC1–AC4 → §12 负控保持绿（零实现改动）；AC5 → §7 OD1–OD9、§12 R1–R8 转绿映射 |
 
 ## 3. 复现和根因承接（SA6 契约事实 → 设计响应）
 
@@ -49,15 +49,15 @@
 
 | 决议或义务 | 来源 | 设计位置 | 处理方式 | 是否需要设计后冲突复查 |
 |---|---|---|---|---|
-| observer 8 型字段集冻结（sent：`connectionId?/namespaceId/transferId/chunkCount/totalBytes`（sync 另携 `syncRoundId`）；applied：`+bytes/chunkCount/applyLatencyMs?`（sync 另携 `syncRoundId`）；acked：`+bytes/ackLatencyMs?`（无 sequence/syncRoundId）；aborted：`namespaceId/transferId/reason/receivedChunks/receivedBytes`（无 connectionId）） | ADR 0019 L78–81；协议 §23.1 L749–754/L783–784 | OD1/OD2/OD3/OD4/OD5/OD6 | 逐字落地；键集冻结 = 无 sequence/四段差值/效果组/transferId（applied）/latency（sent） | 是（公共导出类型联合的加性变更 + 冻结面解释，§15） |
+| observer 8 型字段集冻结（sent：`connectionId?/namespaceId/transferId/chunkCount/totalBytes`（sync 另携 `syncRoundId`）；applied：`+bytes/chunkCount/applyLatencyMs?`（sync 另携 `syncRoundId`）；acked：`+bytes/ackLatencyMs?`（无 sequence/syncRoundId）；aborted：`namespaceId/transferId/reason/receivedChunks/receivedBytes`（无 connectionId）） | ADR 0022 L78–81；协议 §23.1 L749–754/L783–784 | OD1/OD2/OD3/OD4/OD5/OD6 | 逐字落地；键集冻结 = 无 sequence/四段差值/效果组/transferId（applied）/latency（sent） | 是（公共导出类型联合的加性变更 + 冻结面解释，§15） |
 | sent = transfer 完成出站恰一（末 chunk 结算记账点，非逐 chunk）；applied/acked 每笔恰一；aborted 与成功型互斥 | 协议 §23.1 L746–754（kind=0 先例逐字平移） | OD2/OD3/§9 计数不变量表 | 结构性单点保证 | 否 |
 | R21 改道平移：分块窗口普通族归零（本票只加不改） | §23.1 第 29–34 型「改道」子句 | §5 现状锚点；OD4/OD5 在既有抑制点原位替换 | 抑制点已由 slice 2 落地，本票替换为零事件处发射新族 | 否 |
-| safe-field / secret-free / throw 隔离 / 无 observer 逐字节等价 / clock 缺省整键缺失 | §23.3/§23.4；ADR 0019 L83 | OD8 | 全部事件构造走既有 `emitObserver` + `dispatchReplicationObserver` 单点；latency 键条件展开 | 否 |
+| safe-field / secret-free / throw 隔离 / 无 observer 逐字节等价 / clock 缺省整键缺失 | §23.3/§23.4；ADR 0022 L83 | OD8 | 全部事件构造走既有 `emitObserver` + `dispatchReplicationObserver` 单点；latency 键条件展开 | 否 |
 | 超时两向收口 / assembly 易失 / 恶意声明 / 公平调度 | ADR L49/L70；协议 §9.2/§10.3/§17 | 非本票改动面（§1 非目标） | 负控 N1–N9 保持绿 | 否 |
 | `ChunkedUpdateAbortReason` 闭联合零新词 | §23.1 L783–784 | OD6 复用既有类型 | 零新词 | 否 |
 | slice 2 显式 deferral：「kind=1/2 分块中止的对应事件类型归 #301」 | `hub-namespace.ts` L993–994 / `peer-namespace.ts` L953–954 注释 | OD6/OD7 | 本票兑付该登记 | 否 |
 
-**SA8 门禁缺失处置**：上表约束全部改由 ADR 0019（已接受）+ 协议冻结文本 + 源码 deferral 注释显式登记；未发现相互矛盾。因涉公共 API 类型联合加性变更且存在两处冻结文本解释决策（§13-1/§13-2），按 skill「缺少 SA8 产物时……标记需要冲突复查」提交 `requiresConflictRecheck: true`（§15）。
+**SA8 门禁缺失处置**：上表约束全部改由 ADR 0022（已接受）+ 协议冻结文本 + 源码 deferral 注释显式登记；未发现相互矛盾。因涉公共 API 类型联合加性变更且存在两处冻结文本解释决策（§13-1/§13-2），按 skill「缺少 SA8 产物时……标记需要冲突复查」提交 `requiresConflictRecheck: true`（§15）。
 
 ## 5. 当前行为与证据锚点（基线 `0f3eca5`）
 
@@ -102,7 +102,7 @@
 在 `ReplicationObserverEvent` 联合第 28 型（`chunked-update-acked`）后追加（同步更新联合头部文档注释「28 型 → 36 型」与 issue #295 出处标注）：
 
 ```ts
-// ── issue #301 / #295 切片 3（append-only 第 29–36 型；ADR 0019 L78–81 + 协议 §23.1
+// ── issue #301 / #295 切片 3（append-only 第 29–36 型；ADR 0022 L78–81 + 协议 §23.1
 //    第 29–36 型行；字段集对齐既有 chunked-update-* 四型；side 信封按 §23.1 行取值：
 //    snapshot 成功三型 side 为字面量（snapshot 恒 hub→peer，对齐 bootstrap-snapshot-sent/
 //    bootstrap-imported 先例）；sync 四型与 snapshot-aborted 为 ReplicationObserverSide
@@ -357,7 +357,7 @@ this.clearInboundAssembly(kind === 1 ? undefined : 'timeout');
 | `packages/ws-replication/src/update-channel.ts`、`update-transfer.ts` | kind=0 通道与 assembler | `snapshot()`/`busyKind`/`complete.chunkCount` 事实源已就位；kind=0 逐字节等价面（R47 遗产） |
 | `packages/ws-replication/src/index.ts` | 公共导出面 | 零新导出符号（联合成员经既有 `ReplicationObserverEvent` 加性可见） |
 | `packages/ws-replication/src/{defaults,validate,backpressure,frame-io,lifecycle-queue,...}.ts` 及 `packages/replication-protocol/**` | 配置链/codec/wire | 零 wire/配置/生命周期改动（§1 非目标） |
-| `docs/adr/0019-chunked-sync-transfer.md`、`docs/adr/0013-*` | 冻结决策文本 | 本票是接线不是决策修订；ADR 面零触碰 |
+| `docs/adr/0022-chunked-sync-transfer.md`、`docs/adr/0013-*` | 冻结决策文本 | 本票是接线不是决策修订；ADR 面零触碰 |
 | `CONTEXT.md` | 领域词汇 | 「分块复制传输」词条不枚举事件型；事件词汇权威在协议 §23.1（已登记） |
 | `wiki/raw/task_issue-301.md`、`wiki/raw/task_issue-301_sa6_contract.md` | Host/SA6 固定输入 | 只读上游产物 |
 
@@ -384,7 +384,7 @@ this.clearInboundAssembly(kind === 1 ? undefined : 'timeout');
 1. **解释决策①——kind=1 超时零 aborted（OD7）**：§23.1 第 35 型终局失败族条款的直接读法（SA6 §12.3-1 同读法、§15 指示 SA1 按 §23.1 明文收口）。若 SA8 复审判读法相反（kind=1 超时应发 aborted{timeout}），改动面 = OD7 一行的 reason 选择 + N1 增设计数断言——单点可逆。已列入冲突复查焦点。
 2. **解释决策②——被拒 ACK 零 acked（OD3 quiet 门）**：round 校验失败（SYNC_APPLIED 违例 → failed 终局）时载体仍被 settle 释放但不发 acked。依据 = kind=0 `onUpdateAck` violation 先例（零事件）+「收妥结算」语义；契约不覆盖该组合（SA6 未构造），SA7 动态面可探测。已列入复查焦点。
 3. **api 型镜像同步**：`toEqualTypeOf` 全联合精确断言——types.ts 加成员而镜像不同步 = typecheck 红（build gate 自带防漂移；风险仅为流程顺序，非正确性）。
-4. **t0 单槽依赖单载体仲裁**：若未来放宽 per-(ns,方向) 单载体（无此计划——ADR 0019 冻结），`chunkedAckT0` 需随载体迁移；当前结构性安全（§9.1 不变量）。
+4. **t0 单槽依赖单载体仲裁**：若未来放宽 per-(ns,方向) 单载体（无此计划——ADR 0022 冻结），`chunkedAckT0` 需随载体迁移；当前结构性安全（§9.1 不变量）。
 5. **epoch-fence reason last-writer-wins（peer）**：连接随后收口可把 'epoch-fence' 覆盖为 'connection-teardown'——§23.1 既有裁决（「收口入口置位 + 收口链消费 = last-writer-wins」），N9 只锁丢弃效果；非本票可改变的语义。
 6. **observer-red 矩阵零新事件论证**：该文件分块腿仅压 `maxUpdateBytes`（8KiB，kind=0），`maxBootstrapBytes`/`maxSyncDiffBytes` 保持缺省 4MiB/2MiB，CHUNKED_BIG=20KB 不进入 chunked snapshot/sync 窗口 ⇒ `assertSafe` 白名单不见新型、零回归；若未来该文件构造超限 snapshot/diff 场景，须同步扩其 `ALLOWED_KEYS`（follow-up 性质，非本票必要条件）。
 7. **hub 侧 `chunked-snapshot-aborted` 结构不可达**：hub 无 kind=1 入站合法上下文（接纳门即 `NAMESPACE_STATE_VIOLATION`，assembly 永不 busy）——类型保留双侧仅为与 `chunked-update-aborted` 同构；无死代码发射点需要发明。
@@ -399,8 +399,8 @@ this.clearInboundAssembly(kind === 1 ? undefined : 'timeout');
 
 **需要（`requiresConflictRecheck: true`）。** 理由：
 
-1. **公共 API 类型联合加性变更**：`ReplicationObserverEvent` 为 `@nomicore/ws-replication` 导出面，追加 8 型改变其静态形状（api 型断言面随之扩展）——虽为 ADR 0019/协议 §23.1 预登记值的接线（零新决策），仍属公共契约面变更，按惯例应过 SA8 复核；
-2. **冻结文本两处解释决策**：OD7（kind=1 超时零 aborted——§23.1 第 35 型终局失败族条款的解释）与 OD3（被拒 ACK 零 acked——kind=0 先例平移）均为本设计做出的规范读法固化，SA6 契约显式不锁（§12.3），需要冲突复查确认与 ADR 0019/§23 无潜在冲突；
+1. **公共 API 类型联合加性变更**：`ReplicationObserverEvent` 为 `@nomicore/ws-replication` 导出面，追加 8 型改变其静态形状（api 型断言面随之扩展）——虽为 ADR 0022/协议 §23.1 预登记值的接线（零新决策），仍属公共契约面变更，按惯例应过 SA8 复核；
+2. **冻结文本两处解释决策**：OD7（kind=1 超时零 aborted——§23.1 第 35 型终局失败族条款的解释）与 OD3（被拒 ACK 零 acked——kind=0 先例平移）均为本设计做出的规范读法固化，SA6 契约显式不锁（§12.3），需要冲突复查确认与 ADR 0022/§23 无潜在冲突；
 3. **SA8 前置门禁缺失**：本 iteration 无 `task_issue-301_conflict_report.md`/`_relevant_decisions.md`——按 skill「缺少 SA8 产物时……标记需要冲突复查」明文提交。
 
 复查焦点：OD1 字段集/side 信封与 §23.1 第 29–36 型行逐字一致性；OD7 终局失败族条款读法；OD3 被拒 ACK 语义；R21 改道面（本票只加不改）与 N6/N7 锚的不变性；ALLOW/DENY 边界（尤其 observer-red 与契约文件的不可改性）。

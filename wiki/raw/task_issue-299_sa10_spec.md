@@ -3,7 +3,7 @@
 - **dispatch**: sa-b4bd2bef-7ded-4000-88ed-1b634d428f76（mabf-sa10 / spec-review / iteration 0）
 - **审查对象**: 已提交最终交付 commit `f63c2d2822cc19eb76a64d4a3923f26c3ce18c96`（`feat(replication): add kind-first update chunk codec`，分支 `mabf/issue-299`，父 = `eb380d7` = 设计/契约基线 HEAD）
 - **Owner 要求**: 无（dispatch 声明 + SA8 §0 / SA6 §2 / SA2 §1 三方实测 REST comments = `[]`，一致）
-- **Verdict**: **approve** — issue 正文 What to build 与 AC1–AC4 全部忠实落地；SA6 已批契约三文件 sha256 本轮复测与 §13 锁定值逐字节一致且 26/26 转绿、5 负控保持绿（SA3/SA7 日志）；规范（ADR 0019、协议 §5/§10.3/§17/§22、CONTEXT.md）逐条同源；SA8 R32–R41 全部吸收；无遗漏、无部分实现、无错误实现、无 scope creep。唯一 MINOR 观察项见 §7（不阻断）。
+- **Verdict**: **approve** — issue 正文 What to build 与 AC1–AC4 全部忠实落地；SA6 已批契约三文件 sha256 本轮复测与 §13 锁定值逐字节一致且 26/26 转绿、5 负控保持绿（SA3/SA7 日志）；规范（ADR 0022、协议 §5/§10.3/§17/§22、CONTEXT.md）逐条同源；SA8 R32–R41 全部吸收；无遗漏、无部分实现、无错误实现、无 scope creep。唯一 MINOR 观察项见 §7（不阻断）。
 
 ## 1. 审查输入
 
@@ -15,7 +15,7 @@
 | SA2 / SA3 / SA4 / SA7 产物 | `wiki/raw/task_issue-299_sa{2_review,3_impl,4_review,7_report}.md` | 在库（全部 approve） |
 | SA8 前置门禁 + 设计后复审 | `artifacts/sa8-conflict-gate-issue-299{,-design-recheck}.md` | 在库（clear，R32–R41） |
 | 交付 diff | `git diff eb380d7..f63c2d2`（25 个生产/测试/文档文件 + 证据/报告） | 本轮逐文件审读 |
-| 规范基线 | ADR 0019；协议 §5 L114–116 / §10.3 L307–345 / §17 L578–615 / §22 L698–701；CONTEXT.md L154–171 | 本轮实测原文 |
+| 规范基线 | ADR 0022；协议 §5 L114–116 / §10.3 L307–345 / §17 L578–615 / §22 L698–701；CONTEXT.md L154–171 | 本轮实测原文 |
 | 验证证据 | `artifacts/sa3-issue299-verification.log`、`artifacts/sa7-issue299-{probe-*,transport-suites,post-removal-verify}.log` | 在库（本轮复阅） |
 
 本轮为静态审查（不运行测试、不启动服务）；动态结论引用 SA3/SA7 已提交证据日志并核对契约文件哈希。
@@ -42,7 +42,7 @@
 | AC1 | 0x42 单形态 codec：kind 首字段恒在 + 绑定块（仅 kind≠0 ∧ chunkIndex=0）编解码；全字段 golden vectors 改写并冻结 | B1/B2/B4；契约 R1–R6 绿；`codec-issue299-ac-red.test.ts` 冻结向量 `KIND1_FIRST`/`KIND2_FIRST` 逐字节锁定绑定块形态（协议 §22 交付义务兑现） | 满足 |
 | AC2 | codec 单帧规则：kind 非法值、绑定块缺失/越位 → `MALFORMED_FRAME` | B3；契约 R7–R10（每例前置相近正控防伪绿）+ R14 编码侧对称 + encode-symmetry ①–⑩/P1–P5 绿 | 满足 |
 | AC3 | 两个聚合上限键 + 两条链②进入启动响亮验证；control reserve 校验不变；存量配置非追溯性测试 | B5/B7/B8/B9；契约 C1–C7 + api.test-d 2 类型面全绿 | 满足 |
-| AC4 | 三种 kind 共用同一 transferId 计数器（作用域 (连接,方向,namespace) 严格递增不回绕）的语义在 codec/契约层锁定 | `messages.ts` `transferId` 注释升级为「三种 kind 共用同一计数器（ADR 0019）」；字段语义 codec 层锁定（契约 R11：tid=0 三 kind 一致拒；R12：0xffffffff 三 kind 一致接纳往返无损；同一字段位）。计数器本体（`update-channel.ts` 既有 `nextTransferId`）零改动 = DENY 保持，复用约束（不新增第二计数器）在设计 D8/SA6 §15.3 登记——AC4 措辞为「codec/契约层锁定」，与本切片交付精确一致 | 满足 |
+| AC4 | 三种 kind 共用同一 transferId 计数器（作用域 (连接,方向,namespace) 严格递增不回绕）的语义在 codec/契约层锁定 | `messages.ts` `transferId` 注释升级为「三种 kind 共用同一计数器（ADR 0022）」；字段语义 codec 层锁定（契约 R11：tid=0 三 kind 一致拒；R12：0xffffffff 三 kind 一致接纳往返无损；同一字段位）。计数器本体（`update-channel.ts` 既有 `nextTransferId`）零改动 = DENY 保持，复用约束（不新增第二计数器）在设计 D8/SA6 §15.3 登记——AC4 措辞为「codec/契约层锁定」，与本切片交付精确一致 | 满足 |
 
 ## 4. SA6 契约符合性
 
@@ -51,9 +51,9 @@
 - **契约范围边界遵守**：零新增错误码 / RESYNC reason / observer 事件（SA8 R36 冻结面：registry/observer 零 diff）；绑定块**内容**核对三码未实现（属 §8.1/§9.2，codec 只做 presence/position + 可编码性——与 SA6 §15.6 / 设计 D4 值域边界一致，无越界抢占后续切片语义）。
 - **已知上游文档张力（不影响交付判定）**：SA6 契约 §10/§15.4 散文（宽门）与其可执行断言 C2/C3 边界族（窄门）内部不一致——SA8 R38 三层核实裁决窄门为唯一一致读法，设计 D6 诚实登记，实现按窄门落地且契约 26/26 绿。可执行契约是验收权威，散文偏差属 SA6 文档层记录项，非交付缺陷。
 
-## 5. 规范一致性（ADR 0019 / 协议 / CONTEXT.md）
+## 5. 规范一致性（ADR 0022 / 协议 / CONTEXT.md）
 
-- 字段序 / 绑定块位置 / 单帧规则与协议 §10.3 字段表 + 单形态段**逐字同源**（本轮对照 L307–345 原文）；`kind ∈ {0,1,2}` 首字节即拒符合 ADR 0019「恶意声明在第一个字节流入前即可拒绝」。
+- 字段序 / 绑定块位置 / 单帧规则与协议 §10.3 字段表 + 单形态段**逐字同源**（本轮对照 L307–345 原文）；`kind ∈ {0,1,2}` 首字节即拒符合 ADR 0022「恶意声明在第一个字节流入前即可拒绝」。
 - 配置链与 §17 L578–615 同源：两键缺省 4 MiB、两条链②不等式、「显式配置…时**对应**链式校验响亮生效；未表达新键的存量配置不误判」（窄门字面依据）、control reserve 原样保留、「不得运行时 clamp」。
 - §22 L701 收口按 R39/D10 二分：codec 向量支「已交付」+ 指向在仓资产（`codec-issue299-ac-red.test.ts` + 改写后 golden）；传输层 kind=1/2 资产支维持「由 §8.1/§9.2 后续切片交付，本规范不预设其存在」——§22 内零「传输层资产已存在」表述；`0x42`/`0x00000001`/四资产文件名锚与 L707 义务句零改动；doc-contract 22/22 绿（SA3 日志 §3）。
 - §5/§10.3 其余段 / §13.2 / §17 其余 / CONTEXT.md / ADR 全集零改动（DENY 核对通过）。
@@ -77,7 +77,7 @@
 3. **接收面中间态**：本切片接收层不消费 `transferKind`，kind≠0 帧流经 live 路径——同版本部署假设下结构性不可达（SA8 R41 已登记；测试不构造该形态经传输层）。
 4. **全仓 `pnpm test`（328 文件）**：SA7 技能边界外，按 SA4 §11-1 既定路由移交 Controller 合流前最终动态门；本切片已覆盖受影响两包全套件（protocol 213/213、ws-replication 500/500）+ 根 `pnpm typecheck` exit 0 + 真实 TCP/互通矩阵 41/41。
 5. **`apps/yjs-server` 配置文件 allowlist 分块族 catch-up**（含两新键）：家族级 follow-up（设计 §13-2，先例自 #243 起滞后），本切片零改动。
-6. **wire-change 新旧互通证据门豁免**：依据 = ADR 0019 同版本部署假设 + 旧六字段形态从未发布 + PR #241 OPEN（SA8 C4 三重实测）——互操作证据面为空集，已在设计 §12/SA3 报告登记。
+6. **wire-change 新旧互通证据门豁免**：依据 = ADR 0022 同版本部署假设 + 旧六字段形态从未发布 + PR #241 OPEN（SA8 C4 三重实测）——互操作证据面为空集，已在设计 §12/SA3 报告登记。
 
 ## 9. 结论
 
