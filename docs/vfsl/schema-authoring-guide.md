@@ -143,6 +143,7 @@ type OptionalField = { description?: string };
 注意：
 
 - 数字字面量仅支持无符号十进制整数；
+- `number` 的值域是 JSON 可忠实表示数：NaN、+Infinity、-Infinity、`-0` 四值会被校验拒绝（validate 与 validate-patch 同口径）；数据中的零写 `0`，不写 `-0`（见 [`v1-spec.md`](./v1-spec.md) §3「number 值域」与 ADR 0021）；
 - 字符串只支持 `\"` 和 `\\` 转义，正则里的 `\d` 在 schema 文本中写成 `\\d`；
 - `Pattern` 只写作 `string & Pattern<"...">`，锚定需显式写 `^` 和 `$`；
 - Pattern 的 ECMAScript 正则合法性在运行时语义校验阶段暴露；
