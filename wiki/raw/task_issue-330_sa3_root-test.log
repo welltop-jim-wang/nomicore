@@ -1,0 +1,627 @@
+
+> nomicore@0.1.0 test /home/wangjian/nomicore-fix-issue-330
+> NODE_OPTIONS=--conditions=nomicore-source vitest run --typecheck
+
+Testing types with tsc and vue-tsc is an experimental feature.
+Breaking changes might not follow SemVer, please pin Vitest's version when using it.
+
+ RUN  v3.2.7 /home/wangjian/nomicore-fix-issue-330
+
+ ✓  TS  domains/vfs3-assets/test/vfs3-assets-migration.test-d.ts (6 tests)
+ ✓  TS  domains/vfs3-assets/test/vfs3-assets-projection.test-d.ts (19 tests)
+ ✓  TS  packages/clock/test/clock-contract.test-d.ts (7 tests)
+ ✓  TS  packages/doc-runtime/test/public-surface-type-guard.test-d.ts (2 tests)
+ ✓  TS  packages/doc-runtime/test/read-logical-value-at-path-schema-independent.test-d.ts (4 tests)
+ ✓  TS  packages/instance/test/instance.test-d.ts (1 test)
+ ✓  TS  packages/namespace-diagnostic-log/test/identity.test-d.ts (9 tests)
+ ✓  TS  packages/namespace-registry/test/registry-data-interface.test-d.ts (1 test)
+ ✓  TS  packages/namespace-registry/test/registry-phase5-bootstrap-reset-r2-surface.test-d.ts (4 tests)
+ ✓  TS  packages/namespace-registry/test/registry-phase5-bootstrap-reset-surface.test-d.ts (5 tests)
+ ✓  TS  packages/namespace-registry/test/registry-phase5-identity-surface.test-d.ts (5 tests)
+ ✓  TS  packages/namespace-registry/test/registry-phase5-replication-session-surface.test-d.ts (5 tests)
+ ✓  TS  packages/namespace-registry/test/registry-phase5-replication-surface.test-d.ts (6 tests)
+ ✓  TS  packages/namespace-registry/test/registry-readdata-schema-red.test-d.ts (1 test)
+ ✓  TS  packages/namespace-runtime/test/runtime-close-lifecycle-type-guard.test-d.ts (3 tests)
+ ✓  TS  packages/namespace-runtime/test/runtime-data-interface.test-d.ts (2 tests)
+ ✓  TS  packages/namespace-runtime/test/runtime-readdata-schema-red.test-d.ts (2 tests)
+ ✓  TS  packages/namespace-runtime/test/runtime-registry-internal-type-guard.test-d.ts (3 tests)
+ ✓  TS  packages/namespace-runtime/test/runtime-replace-schema-type-guard.test-d.ts (1 test)
+ ✓  TS  packages/persistence/test/persistence-phase5-archive-surface.test-d.ts (5 tests)
+ ✓  TS  packages/replication-protocol/test/codec-api.test-d.ts (8 tests)
+ ✓  TS  packages/vfsl/test/resolve-schema-at-path.test-d.ts (3 tests)
+ ✓  TS  packages/vfsl-codegen/test/generate-discriminated-narrow.test-d.ts (6 tests)
+ ✓  TS  packages/vfsl-protocol/test/vfsl-protocol-empty-fail-closed.test-d.ts (3 tests)
+ ✓  TS  packages/vfsl-protocol/test/vfsl-protocol-projection.test-d.ts (16 tests)
+ ✓  TS  packages/ws-replication/test/ws-replication-api.test-d.ts (17 tests)
+ ✓  TS  packages/ws-replication/test/ws-replication-issue299-api.test-d.ts (2 tests)
+stdout | apps/yjs-server/test/host-namespace-delete-sa7-dynamic.test.ts > issue #228 — SA7 动态验证：delete-namespace 并发/故障注入/重启/停机/peer 面 > SA7-重点9 SIGTERM 竞态：删除中 SIGTERM → 有界停机 exit 0；重启健康（新 id）；若删除回执先于退出到达则旧树 absent（ack 语义成立）
+[SA7-DV] 重点9 round 0（+30ms）：exit=0；回执先于退出=true（{"event":"reply","op":"delete-namespace","id":"sa7-228-dyn-12","ok":true}）；退出耗时=5591ms
+
+stdout | apps/yjs-server/test/host-namespace-delete-sa7-dynamic.test.ts > issue #228 — SA7 动态验证：delete-namespace 并发/故障注入/重启/停机/peer 面 > SA7-重点9 SIGTERM 竞态：删除中 SIGTERM → 有界停机 exit 0；重启健康（新 id）；若删除回执先于退出到达则旧树 absent（ack 语义成立）
+[SA7-DV] 重点9 round 1（+80ms）：exit=0；回执先于退出=true（{"event":"reply","op":"delete-namespace","id":"sa7-228-dyn-13","ok":true}）；退出耗时=5591ms
+
+stdout | apps/yjs-server/test/host-namespace-delete-sa7-dynamic.test.ts > issue #228 — SA7 动态验证：delete-namespace 并发/故障注入/重启/停机/peer 面 > SA7-重点9 SIGTERM 竞态：删除中 SIGTERM → 有界停机 exit 0；重启健康（新 id）；若删除回执先于退出到达则旧树 absent（ack 语义成立）
+[SA7-DV] 重点9 round 2（+150ms）：exit=0；回执先于退出=true（{"event":"reply","op":"delete-namespace","id":"sa7-228-dyn-14","ok":true}）；退出耗时=5570ms
+
+ ✓ apps/yjs-server/test/host-namespace-delete-sa7-dynamic.test.ts (7 tests) 84544ms
+   ✓ issue #228 — SA7 动态验证：delete-namespace 并发/故障注入/重启/停机/peer 面 > SA7-重点3 G4 并发单飞：同 nsId 并发 delete ×5（stdin 多行不互相等待）→ 全部诚实终态 ok:true、终态清洁、进程存活、后续 op 正常应答  6251ms
+   ✓ issue #228 — SA7 动态验证：delete-namespace 并发/故障注入/重启/停机/peer 面 > SA7-重点4 F5 注入（日志目录只读）：回执 {ok:false,code:"log-delete-failed",step:"marker",errno:"EACCES"} 值域透传；数据段已完成（快照 absent）；同进程 chmod 恢复后重试收敛 ok:true  6061ms
+   ✓ issue #228 — SA7 动态验证：delete-namespace 并发/故障注入/重启/停机/peer 面 > SA7-重点5 F3 注入（数据目录只读）：回执 {ok:false,code:"delete-namespace-failed"}；数据未删（快照仍在）、日志未动；重试（tombstone 二删）收敛 ok:true 且全清  6651ms
+   ✓ issue #228 — SA7 动态验证：delete-namespace 并发/故障注入/重启/停机/peer 面 > SA7-重点8 M4（marker 半态 × 重启 provision）：streams 只读 → log-delete-failed{step:"stream"} 且 deletion.json marker 落盘；重启 provision → 新 CSPRNG id 新流健康，无 stream-init-failed{reason:"namespace-log-deleted"}（marker 门不适用于新 id）  13424ms
+   ✓ issue #228 — SA7 动态验证：delete-namespace 并发/故障注入/重启/停机/peer 面 > SA7-重点9 SIGTERM 竞态：删除中 SIGTERM → 有界停机 exit 0；重启健康（新 id）；若删除回执先于退出到达则旧树 absent（ack 语义成立）  30137ms
+   ✓ issue #228 — SA7 动态验证：delete-namespace 并发/故障注入/重启/停机/peer 面 > SA7-重点2b 删除后重连拒绝：delete ack 后新 peer 以同 target 重连 → authorize 被拒（channel 永不 live）、hub 数据/日志保持 absent、hub 健康  13932ms
+   ✓ issue #228 — SA7 动态验证：delete-namespace 并发/故障注入/重启/停机/peer 面 > SA7-重点10 peer 面：peer 发 delete-namespace → {ok:false,code:"unknown-op"}；之后 status 正常应答（进程继续可用）；hub 侧非法参数后后续 op 正常  8087ms
+ ✓ apps/yjs-server/test/diagnostic-replay-host-lifecycle-red.test.ts (22 tests) 47390ms
+   ✓ issue #155 — Host 生命周期 E2E（AC1/AC3/AC6） > E1 启用从 namespace 创建起：provision create → genesis-baseline + create/replication-enable 记录落地，策略不进数据面与 snapshot  7495ms
+   ✓ issue #155 — Host 生命周期 E2E（AC1/AC3/AC6） > E2 ROOT/SCHEMA 变更链记录：verify-write 与 replace-schema 产生 committed 记录且 sequence 连续  7613ms
+   ✓ issue #155 — Host 生命周期 E2E（AC1/AC3/AC6） > E3 Host 停机有界且日志完好：SIGTERM 干净退出（30s 界），停机后日志 strict 一致  7635ms
+   ✓ issue #155 — Host 生命周期 E2E（AC1/AC3/AC6） > E4 日志故障隔离：diagnostics.rootDir 指向普通文件（stream init 失败）→ 业务不受影响（provision/read 照常）  7519ms
+   ✓ issue #155 — Host 生命周期 E2E（AC1/AC3/AC6） > E5 hub 重启（多 Runtime generation）延续同一 stream；peer 不启用（Hub/Peer 独立本地旁路）且复制数据面无策略  16983ms
+ ✓ apps/yjs-server/test/hub-restart-static-target-red.test.ts (1 test) 30043ms
+   ✓ issue #229：Hub 正常重启后 Peer 自动恢复静态 target > live → Hub SIGTERM → Peer 保持运行并 backoff → 同 endpoint 重启 → 自动 live 且收敛断线期 Hub 写  30042ms
+stdout | apps/yjs-server/test/phase5-mgmt-verbs-sa7.test.ts > Phase-5 SA7 补充：bump-epoch 回执值正确性 + fence 检出延迟实测 > 回执 replicationEpoch=2 与权威代际交叉验证；fence 事件时延记录（<30s 契约余量）
+[SA7] fence detection latency: peer-1=9460ms peer-2=402ms (contract upper bound ackTimeoutMs=10s, assert <30s)
+
+stdout | apps/yjs-server/test/phase5-mgmt-verbs-sa7.test.ts > Phase-5 SA7 补充：file 适配器 reset-replica 全周期 > reset ok + replica-reset 事件 + archive 落盘 + 进程内重引导收敛 + 崩溃重启恢复收敛
+[SA7] file reset 后崩溃重启恢复路径: reconcile/sync（本地副本在档）
+
+ ✓ apps/yjs-server/test/phase5-mgmt-verbs-sa7.test.ts (5 tests) 38951ms
+   ✓ Phase-5 SA7 补充：bump-epoch 回执值正确性 + fence 检出延迟实测 > 回执 replicationEpoch=2 与权威代际交叉验证；fence 事件时延记录（<30s 契约余量）  11444ms
+   ✓ Phase-5 SA7 补充：replace-schema 额外键响亮拒绝 + SCHEMA 未变 + 干净重提传播 > 5 键信封 → write-failed；旧 schema 写行为/读数不变；四键重提 ok；hub 写新字段收敛  1466ms
+   ✓ Phase-5 SA7 补充：file 适配器 reset-replica 全周期 > reset ok + replica-reset 事件 + archive 落盘 + 进程内重引导收敛 + 崩溃重启恢复收敛  3773ms
+   ✓ Phase-5 SA7 F1 回归锁：两轮 bump→fence→reset 运维循环的第二轮重引导 > 第二次成功 reset-replica 后重引导收敛；文档化恢复入口 add-target 有效  11182ms
+   ✓ Phase-5 SA7 O-R3-1：终态通道（conflicted）+ peerOwners 在册 → add-target 放行 → target-added + 重建 > fence 终态下 add-target 不被幂等集短路：target-added 事件 + 通道离开终态 + 重建后 reset 收敛  11085ms
+ ✓ apps/yjs-server/test/stdin-error-chain-red.test.ts (4 tests) 35428ms
+   ✓ T7 stdin error chain + F1 verify-write bounded materialization wait (design §5-T7 / SA7 §2.5) > error chain: malformed-line / unknown-op / namespace-unknown; verify-write on a never-live known ns waits to the bounded deadline then verify-write-timeout (never a ~50ms write-failed)  7436ms
+   ✓ T7 stdin error chain + F1 verify-write bounded materialization wait (design §5-T7 / SA7 §2.5) > F1 race: verify-write fired immediately after peer ready (zero settle) converges for a live namespace — fresh peer per round, concurrent burst  7400ms
+   ✓ T7 stdin error chain + F1 verify-write bounded materialization wait (design §5-T7 / SA7 §2.5) > F1 race (deterministic window): verify-write issued while the hub is down stays in bounded wait (zero fast replies), then converges once the hub restarts  14163ms
+   ✓ T7 stdin error chain + F1 verify-write bounded materialization wait (design §5-T7 / SA7 §2.5) > F1 race under load: verify-write fired immediately after peer ready while CPU burners contend — must converge, not fast write-failed (SA7 loaded repro shape)  6427ms
+ ✓ apps/yjs-server/test/host-namespace-delete-diagnostic-link-red.test.ts (4 tests) 31603ms
+   ✓ issue #228 — Host namespace 数据删除 ⇄ 诊断日志逻辑删除联动（AC1；PROPOSAL op `delete-namespace`） > D1 同步联动：delete-namespace ack(ok:true) 后同一周期内数据快照与诊断日志（locator/manifests/JSONL/BIN/marker/indexes 所在目录树）逻辑删除完成，进程干净停机  5973ms
+   ✓ issue #228 — Host namespace 数据删除 ⇄ 诊断日志逻辑删除联动（AC1；PROPOSAL op `delete-namespace`） > D2 幂等收敛：已删除 namespace 二次 delete-namespace 仍回执 ok:true（重入无失败、目录保持 absent）  6053ms
+   ✓ issue #228 — Host namespace 数据删除 ⇄ 诊断日志逻辑删除联动（AC1；PROPOSAL op `delete-namespace`） > D3 参数门：非法 namespaceId → ok:false/code:invalid-op-args，进程不退出  6064ms
+   ✓ issue #228 — Host namespace 数据删除 ⇄ 诊断日志逻辑删除联动（AC1；PROPOSAL op `delete-namespace`） > D4 重启不复活已删流：delete ack 后进程重启健康 ready；重启重建（provision 语义）只产生全新 generation——已删旧 stream/快照绝不复活（无 stale 复活、无 deletion marker 残留面）  13512ms
+ ✓ apps/yjs-server/test/smoke-skeleton-red.test.ts (4 tests) 31474ms
+   ✓ T3-skeleton real-process smoke (design §5-T3 minimized / AC7/AC2) > deployable hub rejects missing and invalid bearer credentials before WebSocket upgrade  5927ms
+   ✓ T3-skeleton real-process smoke (design §5-T3 minimized / AC7/AC2) > hub emits provisioned→listening(actual port)→ready; peer authenticates static target; verify-write converges to hub read; SIGTERM exits 0  6712ms
+   ✓ T3-skeleton real-process smoke (design §5-T3 minimized / AC7/AC2) > clean shutdown releases the rootDir lock: same rootDir restarts and reads back the durable value  12550ms
+   ✓ T3-skeleton real-process smoke (design §5-T3 minimized / AC7/AC2) > a second instance sharing an active file root is rejected loudly (lock guard, AC2)  6285ms
+ ✓ packages/vfsl/test/validate-patch-sa7.test.ts (22 tests) 27436ms
+   ✓ SA7 补充：WorkBudgetExceeded 穿透 validateSubtree（SA4 动态重点#3） > 预算内对照：100k 键 × 120 成员联合经 validatePatch 新键写 -> 101 条截断输出（不误伤）  2072ms
+   ✓ SA7 补充：WorkBudgetExceeded 穿透 validateSubtree（SA4 动态重点#3） > 超预算 loud fail-closed：900k 键 × 120 成员联合写入 -> 单条预算 issue + rebase 边界前缀 [m]  25348ms
+ ✓ apps/yjs-server/test/phase5-three-instance-acceptance-red.test.ts (6 tests) 25386ms
+   ✓ Phase-5 close AC1/AC6 已交付验收（三实例收敛 / crash recovery 回归锁） > AC1（MemoryPersistence）：hub+p1+p2 并发 ROOT 写 → 三处收敛（独立 rootDir）  1217ms
+   ✓ Phase-5 close AC1/AC6 已交付验收（三实例收敛 / crash recovery 回归锁） > AC1（FilePersistence）：hub+p1+p2 并发 ROOT 写 → 三处收敛（独立 rootDir）  1217ms
+   ✓ Phase-5 close AC1/AC6 已交付验收（三实例收敛 / crash recovery 回归锁） > AC6（FilePersistence）：peer-2 崩溃（SIGKILL 真实 app pid）→ hub 期间写入 → 同 rootDir 重启 → 收敛  3724ms
+   ✓ Phase-5 close AC3 红灯锚（hub SCHEMA 传播 / epoch fencing / guarded reset 管理面） > AC3-①: hub 合法 SCHEMA 替换单向传播到双 peer（replace-schema 动词）  1479ms
+   ✓ Phase-5 close AC3 红灯锚（hub SCHEMA 传播 / epoch fencing / guarded reset 管理面） > AC3-②: hub bump-epoch → 双 peer channel 立即 identity-conflicted（epoch fencing）  16383ms
+   ✓ Phase-5 close AC3 红灯锚（hub SCHEMA 传播 / epoch fencing / guarded reset 管理面） > AC3-③: 受控 reset-replica —— 错误 expected identity 稳定拒绝零破坏；正确 identity 归档重引导后收敛  1365ms
+ ✓ packages/vfsl/test/validate-snapshot-sa7.test.ts (14 tests) 22825ms
+   ✓ SA7 补充：全局工作预算 WorkBudgetExceeded（设计 §3.4——首次动态触发的持久锚定） > 预算内照常完成（WORK_LIMIT 是上界不是配额）：100k 键 × 120 成员联合 → 101 条截断输出  2065ms
+   ✓ SA7 补充：全局工作预算 WorkBudgetExceeded（设计 §3.4——首次动态触发的持久锚定） > 超预算 loud fail-closed：900k 键 × 120 成员联合（≈2.2×10⁸ 单位 > 2×10⁸）→ 单条预算耗尽 issue  19502ms
+   ✓ SA7 补充：崩溃边界 E100 收编（设计 §10 R3——RangeError 触发面） > 深 ref 链（解析后深度 3×10⁴，表达式嵌套每层=2）× 等深快照 → RangeError 收编为单条 E100  498ms
+   ✓ SA7 补充：SA2 R2-1 前瞻攻击构造回归锚（设计 §6.4 包络表 202 行） > lookMemo 稀疏物化：200 条空前瞻 × 10⁷ 码元 → 4M 钳制 loud，无 GB 级内存面（毫秒级返回）  389ms
+ ✓ apps/yjs-server/test/host-namespace-delete-under-replication.test.ts (1 test) 23791ms
+   ✓ issue #228 — T-H5 删除×复制：活跃 peer channel（trusted 复制中）发起 delete-namespace（AD-7/R-2 行为锚） > hub 与 peer channel 达 live 且双向收敛后 delete → ack ok 且数据/日志全清；channel 失败收口（hub 事件终态、进程不崩）；重试/收口窗口内无快照复活、无日志重建；hub 健康直至干净停机  23791ms
+ ✓ apps/yjs-server/test/host-diagnostic-retention-sweep.test.ts (1 test) 15154ms
+   ✓ issue #228 — T-H7 retention 透传：config retention → 构造期 sweep：关闭段（前代 generation）被删、open group 不删（AC2 retention host 级锚） > boot1（provision + 写）干净停机 → 预置前代旧流（真记录拷贝、observedAt 远古化）→ boot2（同根、直引恢复 + retention）续写触发 sweepOnOpen：retention-swept{deletedGroups≥1} 事件、旧流组文件消失、当前流 strict 全绿且 sequence 连续（开组零损伤）、业务读写照常  15153ms
+ ✓ apps/yjs-server/test/host-diagnostic-restart-resume.test.ts (1 test) 15492ms
+   ✓ issue #228 — T-H6 重启续写：正常重启（无删除）→ current.json 续写同一 stream、记录 sequence 连续（AC2 restart 正向 host 级锚） > boot1（provision + 写）干净停机 → boot2（同根、直引恢复）再写：streamId 不变、恰一流、sequence 1..N 跨 boot 连续、数据恢复一致、strict 全绿  15492ms
+ ✓ apps/yjs-server/test/on-fatal-error-process-issue288.test.ts (1 test) 14828ms
+   ✓ issue #288 AC2+AC5 真实进程：fatal 默认 log 后有序终止（exit 1）；重启停降级态不 crashloop > re-arm fatal → NDJSON 先于停机 → 真实 exit 1；同 rootDir 重启 → 降级 live（写禁用/读可用/复制照常），零二次 fatal、进程存活；SIGTERM exit 0  14827ms
+ ✓ apps/yjs-server/test/host-trusted-replication-diagnostics.test.ts (1 test) 8248ms
+   ✓ issue #228 — T-H8 trusted+diag：hub 与 peer 双侧 diagnostics，peer 可信 apply 落 committed 记录，strict replay complete 且与数据一致（AC2 trusted replication host 级锚） > hub 写 → peer trusted 复制收敛：peer 本地诊断流含 committed attempt 记录、strict 读全绿（sequence 连续）；hub 流对 peer 远端写同样落 committed 记录；双侧日志与数据一致  8247ms
+ ✓ apps/yjs-server/test/issue164-slice9-red.test.ts (10 tests) 7540ms
+   ✓ issue #164 切片 9：apps/yjs-server 组合根（真实 WebSocket） > FS7 namespace 权限接线：未经授权 namespace → NAMESPACE_UNAUTHORIZED（连接不杀）  324ms
+   ✓ issue #164 切片 9：apps/yjs-server 组合根（真实 WebSocket） > FS8 活性链路：hub 经真实 adapter 发送 WS ping；回 pong 连接保持（G5.1）  4017ms
+   ✓ issue #164 切片 9：apps/yjs-server 组合根（真实 WebSocket） > FS9 活性链路反向：不回 pong → hub 以 pong-timeout 收口（onPong 面真实接线）  3010ms
+stdout | apps/yjs-server/test/diagnostic-replay-host-lifecycle-sa7.test.ts > SA7 动态重点 1 — C1 并发 create 交错（数据键控归因，跨 namespace 误归因不可达） > Promise.all([create A(挂 gate), create B(createDoc 注入 OperationalError)])：B 以 NS_B 归属落自己的流（attempt transaction/NAMESPACE_CREATE_FAILED/rejected、目录存在）；全程零 unattributed 丢弃；A 流干净（genesis+#17、无 B marker、replay complete/issues=[]）
+[SA7-DV] C1 并发交错：A 流 2 条记录（genesis+#17）；B 流 1 条（NS_B 归属 attempt）；sink 事件 [{"event":"diagnostic-log","namespaceId":"ns-00000000000000000000000000000001","type":"retention-swept","deletedGroups":0,"reclaimedBytes":0,"orphanBinsDeleted":0,"deletingMarkersCompleted":0,"leaseBlockedGroups":0,"failedSteps":0}]
+
+stdout | apps/yjs-server/test/diagnostic-replay-host-lifecycle-sa7.test.ts > SA7 动态重点 3 — issues 镜像双份运行时复核（保守方向：只多不少，不影响三态） > 中段两行垃圾：invalid-json 恰 3 份（镜像 2 + 停止点 1）、partial、lastAppliedSequence 停在停止点前、snapshot 仍在
+[SA7-DV] §六(a) 镜像双份实测：issues=[{"code":"invalid-json"},{"code":"invalid-json"},{"code":"invalid-json"}] status=partial
+
+stdout | apps/yjs-server/test/diagnostic-replay-host-lifecycle-sa7.test.ts > SA7 动态重点 4 — fatal-committed effect:unknown 完整性不可证（#227 AC3：update-unknown + break、不推进） > 健康链中段含 fatal-unknown 记录：partial、issues=[update-unknown]、lastAppliedSequence 停在 fatal-unknown 之前、快照复现前缀态
+[SA7-DV] #227 重点 4 改写后语义实测：status=partial issues=[{"code":"update-unknown"}] lastSeq=2
+
+stdout | apps/yjs-server/test/diagnostic-replay-host-lifecycle-sa7.test.ts > SA7 动态重点 5 — D8 健康事件面 + D1 无泛滥（enabled 态进程级 NDJSON 摘录） > 启用态全生命周期：provision→write→SIGTERM exit 0；停机恰一次 diagnostics-closed；健康运行零 emission-dropped；数据通道记录落地
+[SA7-DV] D8 enabled 态全生命周期 diagnostic* NDJSON 事件流：[{"event":"diagnostic-log","namespaceId":"ns-32d1dcc89c378d68f3f32e7dc5112a32","type":"retention-swept","deletedGroups":0,"reclaimedBytes":0,"orphanBinsDeleted":0,"deletingMarkersCompleted":0,"leaseBlockedGroups":0,"failedSteps":0},{"event":"diagnostics-closed"}]
+
+ ✓ apps/yjs-server/test/diagnostic-replay-host-lifecycle-sa7.test.ts (6 tests) 6199ms
+   ✓ SA7 动态重点 5 — D8 健康事件面 + D1 无泛滥（enabled 态进程级 NDJSON 摘录） > 启用态全生命周期：provision→write→SIGTERM exit 0；停机恰一次 diagnostics-closed；健康运行零 emission-dropped；数据通道记录落地  6080ms
+ ✓ packages/vfsl-codegen/test/generate-cli-check.test.ts (8 tests) 5040ms
+   ✓ AC4 — pnpm generate 存在且幂等（全量重新生成 + 写盘） > pnpm generate 命令存在且成功退出（退出码 0）——被测 CLI 存在的事实锚点  359ms
+   ✓ 单领域自定义输出 > 将指定领域生成到宿主 package 路径，内容与默认 projection 逐字节相同  716ms
+   ✓ 单领域自定义输出参数与 freshness > 自定义输出 --check：fresh=0；stale/missing=1 且不写盘  1457ms
+   ✓ 单领域自定义输出参数与 freshness > 无效参数响亮失败：["generate","--domain","demo"]  370ms
+   ✓ 单领域自定义输出参数与 freshness > 无效参数响亮失败：["generate","--out","x.ts"]  357ms
+   ✓ 单领域自定义输出参数与 freshness > 无效参数响亮失败：["generate","--domain","missing","--out","x.ts"]  361ms
+   ✓ AC4 — generate --check 对过期生成物退出非零，对新鲜生成物退出 0 > generate 后再 --check → diff 为空 → 退出 0（新鲜生成物）  703ms
+   ✓ AC4 — generate --check 对过期生成物退出非零，对新鲜生成物退出 0 > 源漂移后 --check → 退出非零（源改动 → 重新生成后 diff 非空）  715ms
+stderr | packages/namespace-registry/test/registry-surface.test.ts
+Using an object as a third argument is deprecated. Vitest 4 will throw an error if the third argument is not a timeout number. Please use the second argument for options. See more at https://vitest.dev/guide/migration
+Using an object as a third argument is deprecated. Vitest 4 will throw an error if the third argument is not a timeout number. Please use the second argument for options. See more at https://vitest.dev/guide/migration
+Using an object as a third argument is deprecated. Vitest 4 will throw an error if the third argument is not a timeout number. Please use the second argument for options. See more at https://vitest.dev/guide/migration
+
+ ✓ packages/namespace-registry/test/registry-surface.test.ts (12 tests) 4493ms
+   ✓ declaration emit 审计：主入口可达声明图无 Runtime/DocHandle/Y.Doc / internal subpath > 主入口可达声明图文本不包含任何禁用标识符，且审计本身非空（覆盖 wrapper 链，含 #112 plugin.ts）  1786ms
+   ✓ declaration emit 审计：主入口可达声明图无 Runtime/DocHandle/Y.Doc / internal subpath > 主入口 index.d.ts：#112 增量类型/值导出在（ShutdownError/PluginConfig/ShutdownFailure/RegistryTimeoutScheduler/plugin 工厂）；RegistryOperationUnavailableIssue 删除后不在  1214ms
+   ✓ declaration emit 审计：主入口可达声明图无 Runtime/DocHandle/Y.Doc / internal subpath > testing 入口声明允许内部类型 import（Runtime/DocHandle 仅出现在受控子路径）  955ms
+ ✓ packages/vfsl/test/validate-logical-snapshot.test.ts (29 tests) 4429ms
+   ✓ 行为回归 — 资源预算 III：全局工作预算 WORK_LIMIT=2×10⁸ 耗尽 fail-closed > NFA 步数跨多次匹配累计超 2×10⁸ → 单条预算耗尽 issue（非 E100、非截断、非 Pattern），path []  4296ms
+stdout | packages/ws-replication/test/ws-replication-sa7-r1-transport-auth.test.ts > issue #138 SA7 R1：真实 TCP 认证窗口动态验证（SA4 D3/D4/D5） > D3-①条数界：未认证 socket 灌 40×1MiB → 第 17 帧即 close(1008)、零分配、后续帧零驻留（40MiB 上 wire 活外部内存增量 ≤24MiB）
+[SA7-DIAG] D3-① flood40MiB framesParsed=17 extDeltaAfterClose=17.1MiB rssDelta=108.1MiB
+
+stdout | packages/ws-replication/test/ws-replication-sa7-r1-transport-auth.test.ts > issue #138 SA7 R1：真实 TCP 认证窗口动态验证（SA4 D3/D4/D5） > D3-②封顶+回收：认证等待 helloTimeoutMs(2s) 到点 close(1008/upgrade-timeout)；16×1MiB 早到帧活外部内存驻留有界（8–40MiB ≪ 128MiB 结构界）、迟归验证器不复活、放行后驻留释放过半
+[SA7-DIAG] D3-② cap16MiB extHeldDelta=17.0MiB extReleasedDelta=1.0MiB rssRawPeak=31.3MiB rssSteady=30.6MiB rssFinal=-2.0MiB gc=expose-gc
+
+ ✓ packages/ws-replication/test/ws-replication-sa7-r1-transport-auth.test.ts (5 tests) 4143ms
+   ✓ issue #138 SA7 R1：真实 TCP 认证窗口动态验证（SA4 D3/D4/D5） > D3-①条数界：未认证 socket 灌 40×1MiB → 第 17 帧即 close(1008)、零分配、后续帧零驻留（40MiB 上 wire 活外部内存增量 ≤24MiB）  987ms
+   ✓ issue #138 SA7 R1：真实 TCP 认证窗口动态验证（SA4 D3/D4/D5） > D3-②封顶+回收：认证等待 helloTimeoutMs(2s) 到点 close(1008/upgrade-timeout)；16×1MiB 早到帧活外部内存驻留有界（8–40MiB ≪ 128MiB 结构界）、迟归验证器不复活、放行后驻留释放过半  2553ms
+ ✓ packages/ws-replication/test/ws-replication-sa7-issue171-real-transport.test.ts (4 tests) 3658ms
+   ✓ SA7 RT-F1（issue #171，SA4 §4.1）：真实 TCP + 真实 timer 下 GOAWAY drain 窗口 removeTarget——deadline 关 socket 触发本地 onClose 后资源收口恰一次 > RT-F1：live → GOAWAY(RESTARTING) → 窗口内 removeTarget → deadline close(1001) 本地 onClose → lease-released 恰一次 + watchdog 零空转 + 字段清空  1803ms
+   ✓ SA7 RT-F1（issue #171，SA4 §4.1）：真实 TCP + 真实 timer 下 GOAWAY drain 窗口 removeTarget——deadline 关 socket 触发本地 onClose 后资源收口恰一次 > RT-G5：GOAWAY 收帧同步静默——drain 窗口内 peer 业务写零 UPDATE 出站；deadline 才关 transport；deadline 全量层处置 lease 恰一次  1559ms
+ ✓ packages/dsh-persistence/test/dsh-probe-cli.test.ts (7 tests) 3287ms
+   ✓ DSH 探针命令（AC8：可复制的命令 + 输出记录） > memory profile：命令输出完整记录（AC2/AC3 链路标记）并以 0 退出  475ms
+   ✓ DSH 探针命令（AC8：可复制的命令 + 输出记录） > 可复制性：同一命令两次运行 stdout 逐字节一致  598ms
+   ✓ DSH 探针命令（AC8：可复制的命令 + 输出记录） > file profile：命令落盘快照（users/<user>/<doc>.snapshot），记录不携带 rootDir 痕迹；两次运行记录一致  767ms
+   ✓ DSH 探针命令（AC8：可复制的命令 + 输出记录） > AC4 完整性：--fail-first-flushes 1 使记录包含 degraded → save-degraded → recovered 完整序列  508ms
+   ✓ DSH 探针命令（AC8：可复制的命令 + 输出记录） > 异常输入：file adapter 缺 rootDir → 非零退出并报错  461ms
+   ✓ DSH 探针命令（AC8：可复制的命令 + 输出记录） > 异常输入：未知 adapter → 非零退出并报错  476ms
+ ✓ packages/vfsl/test/schema-check-cli.test.ts (6 tests) 2724ms
+   ✓ pnpm schema:check schema validation > accepts a valid schema without requiring a domain layout  470ms
+   ✓ pnpm schema:check schema validation > rejects an invalid schema with line and column diagnostics  413ms
+   ✓ pnpm schema:check ROOT data validation > validates ROOT data read from a JSON file  405ms
+   ✓ pnpm schema:check ROOT data validation > validates ROOT data read from stdin  413ms
+   ✓ pnpm schema:check ROOT data validation > reports JSON-path issues for invalid ROOT data  575ms
+   ✓ pnpm schema:check ROOT data validation > rejects malformed JSON input as a usage error  447ms
+ ✓ packages/namespace-runtime/test/runtime-replace-schema-sa7-dynamic.test.ts (11 tests) 2181ms
+   ✓ SA7 动态验证 — T3.4（rev2）：深 doc × keep-root → E 层吸收为领域失败 + 零写入 + fatal 零置位 + provide-root 修复通道开放 > 深 doc × keep-root replaceSchema({schema: ENV_DEEP}) → resolved ok:false（/DOCRT-E100|VFSL-E100|校验工作预算耗尽/）+ 零写入 + fatal 零置位 + 写位未禁（运行时修复通道开放）；同 runtime provide-root 修复尝试的实测结果按 SA6 偏差锚登记（见注释）  2100ms
+ ✓ packages/vfsl-codegen/test/generate-union-member-docs.test.ts (33 tests) 2273ms
+   ✓ 负控 — 存量 domains：生成物逐字节不变、`pnpm generate --check` 不报过期 > 仓根 `pnpm generate --check` 新鲜退出 0（regenerate 与盘上 diff 为空）  354ms
+   ✓ 端到端 — CLI：成员 doc 写盘 + --check 新鲜闭环（默认格式与 semicolonFree） > 默认格式：generated.ts 含四发射位文案，`--check` 退出 0  697ms
+   ✓ 端到端 — CLI：成员 doc 写盘 + --check 新鲜闭环（默认格式与 semicolonFree） > semicolonFree：同布局零分号、`--check --semicolon-free` 退出 0  705ms
+   ✓ 类型面 — 带成员 doc 的生成物孤立 tsc 零诊断（注释不改变类型形状） > 默认格式：生成物写盘后 pre-emit 诊断为零  310ms
+ ✓ packages/ws-replication/test/ws-replication-sa7-issue169-dynamic.test.ts (2 tests) 2282ms
+   ✓ issue #169 SA7-D2（SA4 动态重点 2）：Δ≡0 write-through-0 悬崖——真实 TCP 长寿命连接饱和签名 > D2：帧间 settle 节奏下累计 data 超过 cap → data 准入恒拒（RESYNC_REQUIRED 恢复环）/ UPDATE 字节平 / 零 1011、零 close（无终局信号）  2276ms
+ ✓ packages/ws-replication/test/ws-replication-sa7-175-dynamic.test.ts (6 tests) 2157ms
+   ✓ issue #175 SA7：主动 reauth 生命周期动态验证（SA4 六项动态重点） > D1（SA4 重点 1）：真实 TCP——requestReauth 后 peer 原始 socket 先收 GOAWAY(REAUTH_REQUIRED, drain>0) 再 socket-close；hub close=(1001,"hub-reauth")；全 wire 字节零 token；收口后 blocked 保持零重拨  2129ms
+ ✓ packages/vfsl-codegen/test/generate-semicolon-free.test.ts (12 tests) 1732ms
+   ✓ issue #222 — CLI --semicolon-free：生成与 --check 同格式闭环 > generate --semicolon-free 写盘产物零分号；--check --semicolon-free 新鲜退出 0（无消费端后处理）  709ms
+   ✓ issue #222 — CLI --semicolon-free：生成与 --check 同格式闭环 > 格式错配必报过期：semicolon-free 产物用默认 --check 比较 → 退出 1（两格式字节互斥，防混用静默）  722ms
+ ✓ packages/namespace-registry/test/registry-phase5-replication-session-red.test.ts (22 tests) 1780ms
+   ✓ AC-5 peer degraded 只允许 hub→peer trusted apply；O-5 补锚 (a)(b) > peer persistence-degraded：业务写禁用（RUNTIME_WRITE_DISABLED）；hub→peer apply 允许（内存生效 + saveDoc 仍登记 + 内存/磁盘可区分）  837ms
+   ✓ AC-5 peer degraded 只允许 hub→peer trusted apply；O-5 补锚 (a)(b) > 补锚 (a)：hub persistence-degraded 拒绝 peer→hub raw apply；读取、身份检查和 state-vector 交换保留  839ms
+stderr | packages/doc-runtime/test/doc-runtime-surface.test.ts
+Using an object as a third argument is deprecated. Vitest 4 will throw an error if the third argument is not a timeout number. Please use the second argument for options. See more at https://vitest.dev/guide/migration
+
+ ✓ packages/doc-runtime/test/doc-runtime-surface.test.ts (2 tests) 2095ms
+   ✓ declaration emit：doc-runtime 主入口合法出现 createInitialDocument 与 Y.Doc（§8 正向 fixture） > 主入口可达声明图包含 createInitialDocument 且合法出现 Y.Doc（正向 fixture）  2093ms
+ ✓ packages/ws-replication/test/ws-replication-sa7-issue170-real-transport.test.ts (2 tests) 1539ms
+   ✓ SA7 issue #170 真实 transport：pong 超时收口 → backoff 重拨 → hub 只留新连接 → 数据收敛（真实 TCP + 真实 timer） > 真实链路：死对端 pong 超时 close(1001) → 重拨后 hub.connections===1、旧传输零僵尸 ping/零 ws 抛错、新代健康、写值收敛  957ms
+   ✓ SA7 issue #170 真实 transport：pong 超时收口 → backoff 重拨 → hub 只留新连接 → 数据收敛（真实 TCP + 真实 timer） > A4 故障注入：适配器 ping() 首调抛错（socket 仍开放）→ liveness catch 吸收 → close(1001,pong-timeout) + backoff → 重连健康收敛（零未捕获异常）  579ms
+ ✓ apps/yjs-server/test/on-fatal-error-issue288.test.ts (9 tests) 1328ms
+   ✓ issue #288 AC3：stay 模式——仅落 NDJSON，进程继续，同进程其他 namespace 不受影响 > ns1 re-arm fatal 仅记录；ns2 复制/写照常；零停机事件  1138ms
+ ✓ packages/namespace-registry/test/registry-issue-226-red.test.ts (13 tests) 1252ms
+   ✓ #226 日志 I/O 与业务关键路径隔离（SA1 复现红灯） > T12 慢同步 append 不得阻塞 create 之后的下一个业务写槽（B3：write-sequencer 窗口隔离——经 Registry 生产装配全链路）  307ms
+ ✓ apps/yjs-server/test/issue164-sa7-dynamic.test.ts (6 tests) 1295ms
+   ✓ issue #164 SA7 动态验证：SA4 §5 动态审核重点 > DV2（A1）：无 alert + 缺面 transportFactory → uncaughtException 捕获 TypeError(含 bufferedAmount)，unhandledRejection 零触达，零 HELLO_ACK + 1011 收口  707ms
+   ✓ issue #164 SA7 动态验证：SA4 §5 动态审核重点 > DV3（A2）：永不 resolve 的 verifier → helloTimeoutMs + slack 内 503 Auth Timeout（pre-auth 封顶），服务存活  308ms
+ ✓ packages/dsh-persistence/test/dsh-file-probe-determinism.test.ts (2 tests) 1284ms
+   ✓ SA7 补充回归锚：file 通道探针确定性（AC8 + 设计 §5 钉死时间线） > CLI 连跑 2 次（各自独立 rootDir）：均以 0 退出、尾行精确 events=28，且 stdout 逐字节一致  1096ms
+ ✓ packages/ws-replication/test/ws-replication-sa7-r2-transport.test.ts (2 tests) 1348ms
+   ✓ issue #137 R2 SA7：真实 transport control 额度边界抽样（真实 TCP + 真实 bufferedAmount） > A（存活侧）：真实暂停段 + 缺省 8MiB 额度内 control 流量（4 ns × 32 ACK = 128 ≈ 7.3KiB）——全部上 wire、零 ERROR、连接 ready  476ms
+   ✓ issue #137 R2 SA7：真实 transport control 额度边界抽样（真实 TCP + 真实 bufferedAmount） > B（耗尽侧）：真实暂停段 + 跨越显式 64KiB 对照额度的 control 流量（40 ns × 32 ACK = 1280 ≈ 73KiB）——恰 1 ERROR(CONNECTION_BACKPRESSURE) + close(1011) + peer backoff  870ms
+ ✓ packages/namespace-registry/test/registry-phase5-replication-red.test.ts (16 tests) 1068ms
+   ✓ AC-6 close/fatal 竞态与 Memory persistence 恢复 > persistence-degraded：gate 通过后降级——enable 成功、后续 bump 被 RUNTIME_WRITE_DISABLED 拒绝零写入；恢复后 retry 覆盖、bump 成功；Memory 恢复可见  919ms
+stdout | packages/namespace-registry/test/registry-sa7-phase5-dynamic.test.ts > SA7 动态验证 #131 — plugin 生产随机链路 / File 持久化 / CSPRNG 抽样 / 真实调度锚 A > D1 真实 cordis host 下 plugin 桥接的生产随机链路：create 产物 namespaceId 锚 ^ns-[0-9a-f]{32}$、两次互异、lease 可读
+[SA7-DYN] D1 plugin 链生成 ID: ns-1c6a286a86b1c986bc1d3bd1d4dc99ed / ns-e92a5fb076c62aff06dc27130441974a
+
+stdout | packages/namespace-registry/test/registry-sa7-phase5-dynamic.test.ts > SA7 动态验证 #131 — plugin 生产随机链路 / File 持久化 / CSPRNG 抽样 / 真实调度锚 A > D2 真实 File Persistence round-trip：生成 ID 按 owner 分区落盘（35 字符文件名）→ 全拆 → 新 host 同 rootDir 恢复；跨 owner NOT_FOUND
+[SA7-DYN] D2 落盘文件: ns-210636a150092075242b741a350b5d2e.snapshot, ns-60a3da4866756d6e193658319d9005e7.snapshot（rootDir=/tmp/nomicore-sa7-131-1XfunT）
+
+stdout | packages/namespace-registry/test/registry-sa7-phase5-dynamic.test.ts > SA7 动态验证 #131 — plugin 生产随机链路 / File 持久化 / CSPRNG 抽样 / 真实调度锚 A > D3 生产 CSPRNG 抽样：plugin host 100 次 create 全唯一 + 桥接形状 60,000 抽样零重复/16 字节/分布 ±6σ
+[SA7-DYN] D3 (a) plugin host 100 create → 100 唯一；(b) 60000 抽样 → 0 重复，字节频率界 [3383, 4117]（期望 3750）
+
+stdout | packages/namespace-registry/test/registry-sa7-phase5-dynamic.test.ts > SA7 动态验证 #131 — plugin 生产随机链路 / File 持久化 / CSPRNG 抽样 / 真实调度锚 A > D4 锚 A 真实调度复跑：事件驱动 6 次（shutdown 构造性落在重试 write 在途窗口）+ real-sleep 抖动 6 次；不变量逐次成立、零 unhandled
+[SA7-DYN] D4 12 次真实调度迭代，shutdown 落点分布: {"in-write":6,"pre-write":0,"post-write":6}
+
+ ✓ packages/namespace-registry/test/registry-sa7-phase5-dynamic.test.ts (4 tests) 899ms
+   ✓ SA7 动态验证 #131 — plugin 生产随机链路 / File 持久化 / CSPRNG 抽样 / 真实调度锚 A > D3 生产 CSPRNG 抽样：plugin host 100 次 create 全唯一 + 桥接形状 60,000 抽样零重复/16 字节/分布 ±6σ  794ms
+ ✓ apps/yjs-server/test/root-lock-atomic-reclaim-red.test.ts (8 tests) 936ms
+   ✓ root lock atomic ownership > real-process stale reclaim race has exactly one live owner  602ms
+ ✓ packages/namespace-runtime/test/runtime-mutate-root-sa7-dynamic.test.ts (4 tests) 921ms
+   ✓ SA7 动态验证 — SA4 重点 1：notifier 挂住双窗口 > DV-1a S6 成功路径挂住：槽停滞、后续写永排队（非 disabled 结算）、read 照常、无 fatal 降级  453ms
+   ✓ SA7 动态验证 — SA4 重点 1：notifier 挂住双窗口 > DV-1b fatal committed:true 路径挂住：status.fatal 先于（永不送达的）rejection 可观测、pA 永 pending、提交值保留、新调用因队列停滞不结算  443ms
+ ✓ packages/namespace-runtime/test/runtime-registry-internal-seam-rev1.test.ts (20 tests) 802ms
+   ✓ RAC1 真实全仓门禁：审计 helper 对仓库生产代码树的既有门禁保持绿 > 防空扫（真实侧）：仓库有生产代码文件被审计（helper 默认 roots = packages/domains/apps）  353ms
+ ✓ packages/vfsl-codegen/test/generate-protocol-import.test.ts (5 tests) 505ms
+ ✓ packages/vfsl/test/parse-vfsl-sa7-supplementary.test.ts (8 tests) 630ms
+ ✓ packages/vfsl-codegen/test/generate-alias-collision-guard.test.ts (4 tests) 388ms
+   ✓ AC-3 — CLI 端到端：碰撞域响亮失败（exit 2 + 结构化 stderr，非 exit 0 静默产出） > pnpm generate 对碰撞域 → exit 2，stderr 含独立错误码与碰撞别名  377ms
+ ✓ packages/namespace-runtime/test/runtime-acceptance-fullchain.test.ts (8 tests) 410ms
+ ✓ packages/vfsl-codegen/test/generate-error-message-tail.test.ts (4 tests) 379ms
+   ✓ AC-4 — CLI 端到端：错误消息尾串经结构化 stderr 可见（exit 2） > 异形 ROOT 域经 pnpm generate → exit 2 且 stderr 消息尾串 = 见 #44  372ms
+ ✓ packages/namespace-diagnostic-log/test/file-adapter-strict-reader.test.ts (70 tests) 271ms
+ ✓ packages/namespace-runtime/test/runtime-root-schema-diagnostic-sa7.test.ts (16 tests) 378ms
+ ✓ packages/namespace-diagnostic-log/test/file-adapter-reopen-roll-repair.test.ts (52 tests) 324ms
+ ✓ packages/ws-replication/test/ws-replication-issue243-real-transport.test.ts (1 test) 371ms
+   ✓ issue #243 AC7：真实 TCP + MemoryPersistence 1 Hub + 2 Peers（协商分块 + fan-out 分块镜像） > A 超限写 → hub 分块收齐 apply + 单 ACK；hub fan-out 分块到 B；回声抑制不回送 A  371ms
+ ✓ packages/ws-replication/test/ws-replication-issue287-real-transport.test.ts (1 test) 371ms
+   ✓ issue #287 real-transport 抽样：真实 TCP 链路的 schema re-arm 全链路 > hub replaceSchema → 真实 wire UPDATE → peer 恰一 schema-rearm-applied（§23.3 字段面）→ 新 tools 业务写收敛；hub 侧零 re-arm 事件  370ms
+ ✓ apps/yjs-server/test/lifecycle-watchdog-red.test.ts (1 test) 355ms
+   ✓ B2: total-timeout watchdog vs configured dirty-flush drain window (SA4 §R-B2) > boot rejects maxDirtyMs above the stop-watchdog budget loudly (config-error + exit 1, never a watchdog-killed flush)  355ms
+ ✓ packages/namespace-runtime/test/runtime-acceptance-degraded-two-adapter.test.ts (4 tests) 354ms
+ ✓ apps/yjs-server/test/ordered-shutdown-red.test.ts (2 tests) 268ms
+ ✓ packages/persistence/test/doc-delete-sa7-realtime.test.ts (2 tests) 330ms
+ ✓ packages/doc-runtime/test/apply-validated-mutation-operations.test.ts (21 tests) 262ms
+ ✓ packages/namespace-runtime/test/runtime-replication-session-round2-red.test.ts (17 tests) 225ms
+ ✓ packages/namespace-runtime/test/runtime-replication-sa7-dynamic.test.ts (4 tests) 106ms
+ ✓ apps/yjs-server/test/diagnostic-replay-lease-completeness-red.test.ts (18 tests) 207ms
+ ✓ packages/ws-replication/test/ws-replication-sa6-hardening-g3-g4-red.test.ts (16 tests) 186ms
+ ✓ packages/namespace-runtime/test/runtime-replication-diagnostic-red.test.ts (15 tests) 291ms
+ ✓ packages/namespace-diagnostic-log/test/strict-reader-lease.test.ts (18 tests) 260ms
+ ✓ packages/namespace-runtime/test/runtime-replace-schema-persistence.test.ts (2 tests) 193ms
+ ✓ packages/ws-replication/test/ws-replication-observer-red.test.ts (32 tests) 192ms
+ ✓ packages/namespace-diagnostic-log/test/file-adapter-retention.test.ts (17 tests) 320ms
+ ✓ apps/yjs-server/test/app-config-red.test.ts (23 tests) 204ms
+ ✓ packages/namespace-diagnostic-log/test/file-adapter-genesis-results.test.ts (9 tests) 129ms
+ ✓ packages/namespace-registry/test/registry-create-diagnostic-red.test.ts (16 tests) 163ms
+ ✓ packages/namespace-runtime/test/runtime-acceptance-production-assembly.test.ts (2 tests) 163ms
+ ✓ packages/namespace-runtime/test/runtime-mutate-issue-237-hot-path-red.test.ts (4 tests) 230ms
+ ✓ packages/ws-replication/test/ws-replication-issue301-chunked-completeness-ac-red.test.ts (17 tests) 193ms
+ ✓ packages/namespace-registry/test/registry-sa7-phase5-bootstrap-reset-dynamic.test.ts (10 tests) 172ms
+ ✓ apps/yjs-server/test/host-diagnostics-retirement-sa7-228.test.ts (2 tests) 134ms
+ ✓ packages/ws-replication/test/ws-replication-spec-b1-b2-red.test.ts (5 tests) 128ms
+ ✓ packages/ws-replication/test/ws-replication-issue244-sa7-dynamic.test.ts (11 tests) 176ms
+ ✓ apps/yjs-server/test/ws-server-upgrade-admission.test.ts (3 tests) 150ms
+ ✓ packages/namespace-diagnostic-log/test/input-capture.test.ts (26 tests) 183ms
+ ✓ packages/ws-replication/test/ws-replication-issue254-timeout-recovery.test.ts (5 tests) 311ms
+ ✓ packages/persistence/test/file-persistence.test.ts (22 tests) 170ms
+ ✓ packages/ws-replication/test/ws-replication-issue243-chunked-live.test.ts (16 tests) 191ms
+ ✓ packages/ws-replication/test/ws-replication-issue172-contract-anchors.test.ts (16 tests) 151ms
+ ✓ packages/ws-replication/test/ws-replication-auth-lifecycle-red.test.ts (20 tests) 144ms
+ ✓ packages/namespace-diagnostic-log/test/file-adapter-r2-policy-continuity.test.ts (13 tests) 112ms
+ ✓ packages/ws-replication/test/ws-replication-issue244-slot-reclaim-regression.test.ts (3 tests) 136ms
+ ✓ packages/ws-replication/test/ws-replication-issue137-r2-red.test.ts (9 tests) 155ms
+ ✓ packages/ws-replication/test/ws-replication-issue231-send-failure.test.ts (10 tests) 167ms
+ ✓ packages/namespace-diagnostic-log/test/file-adapter-sa7-dynamic.test.ts (10 tests) 179ms
+ ✓ packages/ws-replication/test/ws-replication-sa7-hardening-dynamic.test.ts (8 tests) 88ms
+ ✓ packages/namespace-runtime/test/runtime-replication-session.test.ts (30 tests) 82ms
+ ✓ packages/ws-replication/test/ws-replication-issue254-ac-red.test.ts (6 tests) 109ms
+stdout | packages/namespace-registry/test/registry-create-diagnostic-sa7-dynamic.test.ts > SA7 动态重点 2 — File adapter first-slice 同步落盘与同 key FIFO > first-slice 同步证据：initStream 返回前 stream/manifest/genesis 已可严格读回；每 namespace 至多一次（duplicate 不再付 stream 成本）
+[SA7-DV] first-slice initStream（同步 mkdir+manifest('wx')+genesis append+current.json rename）耗时 19.24ms；含日志 create 总耗时 30.41ms
+
+ ✓ packages/namespace-registry/test/registry-create-diagnostic-sa7-dynamic.test.ts (10 tests) 152ms
+ ✓ packages/dsh-persistence/test/dsh-profile-acceptance.test.ts (12 tests) 159ms
+ ✓ packages/namespace-runtime/test/runtime-mutate-root-persistence.test.ts (2 tests) 129ms
+ ✓ packages/namespace-runtime/test/runtime-registry-internal-seam.test.ts (5 tests) 110ms
+ ✓ packages/namespace-registry/test/registry-create.test.ts (47 tests) 79ms
+ ✓ packages/namespace-runtime/test/runtime-schema-lifecycle-metadata.test.ts (15 tests) 122ms
+ ✓ packages/replication-protocol/test/codec-fuzz-property.test.ts (5 tests) 147ms
+ ✓ packages/ws-replication/test/ws-replication-review-revisions-r1-r7-red.test.ts (14 tests) 138ms
+ ✓ packages/ws-replication/test/ws-replication-issue300-chunked-sync-ac-red.test.ts (12 tests) 112ms
+ ✓ packages/ws-replication/test/ws-replication-sa7-issue137-dynamic.test.ts (8 tests) 110ms
+ ✓ packages/namespace-runtime/test/runtime-root-schema-diagnostic-red.test.ts (14 tests) 99ms
+ ✓ packages/ws-replication/test/ws-replication-issue287-schema-rearm.test.ts (13 tests) 109ms
+ ✓ packages/namespace-runtime/test/runtime-replication-session-round2.test.ts (25 tests) 93ms
+ ✓ packages/ws-replication/test/ws-replication-ac7-faults.test.ts (12 tests) 86ms
+ ✓ packages/namespace-diagnostic-log/test/file-adapter-r2-supplemental.test.ts (22 tests) 101ms
+ ✓ packages/namespace-runtime/test/runtime-mutate-root-sequencer.test.ts (12 tests) 90ms
+ ✓ packages/ws-replication/test/ws-replication-issue256-namespace-failed.test.ts (16 tests) 98ms
+ ✓ packages/namespace-diagnostic-log/test/issues-projection.test.ts (23 tests) 100ms
+ ✓ packages/ws-replication/test/ws-replication-issue244-ac-red.test.ts (14 tests) 96ms
+ ✓ packages/ws-replication/test/ws-replication-issue245-ac-red.test.ts (10 tests) 98ms
+ ✓ packages/namespace-registry/test/registry-sa7-rev1.test.ts (6 tests) 96ms
+ ✓ packages/ws-replication/test/ws-replication-ac5-live.test.ts (7 tests) 74ms
+ ✓ packages/ws-replication/test/ws-replication-issue170-r1-r4-red.test.ts (7 tests) 62ms
+ ✓ packages/ws-replication/test/ws-replication-r3-r4-regressions.test.ts (11 tests) 96ms
+ ✓ packages/namespace-diagnostic-log/test/file-adapter-read-session.test.ts (9 tests) 206ms
+ ✓ apps/yjs-server/test/ws-replication-issue190-sa7-real-transport.test.ts (3 tests) 97ms
+ ✓ packages/namespace-diagnostic-log/test/record-vocabulary.test.ts (29 tests) 90ms
+ ✓ packages/namespace-diagnostic-log/test/file-adapter-inline-sidecar.test.ts (9 tests) 94ms
+ ✓ packages/namespace-runtime/test/runtime-replace-schema-sequencer.test.ts (13 tests) 90ms
+ ✓ packages/ws-replication/test/ws-replication-ac1-ac2-open.test.ts (12 tests) 69ms
+ ✓ packages/namespace-diagnostic-log/test/file-adapter-retention-lease-gate.test.ts (8 tests) 74ms
+ ✓ packages/ws-replication/test/ws-replication-issue137-ac1-ac7-red.test.ts (4 tests) 73ms
+ ✓ packages/ws-replication/test/ws-replication-ac6-resync-close.test.ts (7 tests) 74ms
+ ✓ packages/namespace-registry/test/registry-sa7-cordis.test.ts (4 tests) 75ms
+ ✓ packages/ws-replication/test/ws-replication-issue238-segmented-observation.test.ts (8 tests) 88ms
+ ✓ packages/namespace-runtime/test/runtime-replication-schema-rearm.test.ts (10 tests) 51ms
+ ✓ packages/namespace-diagnostic-log/test/schema-freeze.test.ts (13 tests) 81ms
+ ✓ packages/ws-replication/test/ws-replication-sa7-dynamic.test.ts (6 tests) 88ms
+ ✓ packages/namespace-registry/test/registry-phase5-bootstrap-reset-red.test.ts (19 tests) 82ms
+ ✓ packages/ws-replication/test/ws-replication-issue176-red.test.ts (9 tests) 80ms
+ ✓ packages/ws-replication/test/ws-replication-issue230-incremental-mutation.test.ts (2 tests) 82ms
+ ✓ packages/ws-replication/test/ws-replication-reauth-lifecycle-red.test.ts (7 tests) 76ms
+ ✓ apps/yjs-server/test/third-party-composition-red.test.ts (3 tests) 61ms
+ ✓ packages/ws-replication/test/ws-replication-plugin.test.ts (15 tests) 77ms
+stdout | packages/ws-replication/test/ws-replication-issue239-repro.test.ts > issue #239：periodic reconciliation 语义 no-op 可观测（修复后语义，翻转断言） > 场景 1：已收敛副本 7 轮 periodic round —— bytes 恒非零但观察面明确报全 noop（roundId 关联 + 效果组）
+[issue239 repro] no-op round 1: hub sent/applied = [10]/[10] B, peer sent/applied = [10]/[10] B
+
+stdout | packages/ws-replication/test/ws-replication-issue239-repro.test.ts > issue #239：periodic reconciliation 语义 no-op 可观测（修复后语义，翻转断言） > 场景 1：已收敛副本 7 轮 periodic round —— bytes 恒非零但观察面明确报全 noop（roundId 关联 + 效果组）
+[issue239 repro] no-op round 2: hub sent/applied = [10]/[10] B, peer sent/applied = [10]/[10] B
+
+stdout | packages/ws-replication/test/ws-replication-issue239-repro.test.ts > issue #239：periodic reconciliation 语义 no-op 可观测（修复后语义，翻转断言） > 场景 1：已收敛副本 7 轮 periodic round —— bytes 恒非零但观察面明确报全 noop（roundId 关联 + 效果组）
+[issue239 repro] no-op round 3: hub sent/applied = [10]/[10] B, peer sent/applied = [10]/[10] B
+
+stdout | packages/ws-replication/test/ws-replication-issue239-repro.test.ts > issue #239：periodic reconciliation 语义 no-op 可观测（修复后语义，翻转断言） > 场景 1：已收敛副本 7 轮 periodic round —— bytes 恒非零但观察面明确报全 noop（roundId 关联 + 效果组）
+[issue239 repro] no-op round 4: hub sent/applied = [10]/[10] B, peer sent/applied = [10]/[10] B
+
+stdout | packages/ws-replication/test/ws-replication-issue239-repro.test.ts > issue #239：periodic reconciliation 语义 no-op 可观测（修复后语义，翻转断言） > 场景 1：已收敛副本 7 轮 periodic round —— bytes 恒非零但观察面明确报全 noop（roundId 关联 + 效果组）
+[issue239 repro] no-op round 5: hub sent/applied = [10]/[10] B, peer sent/applied = [10]/[10] B
+
+stdout | packages/ws-replication/test/ws-replication-issue239-repro.test.ts > issue #239：periodic reconciliation 语义 no-op 可观测（修复后语义，翻转断言） > 场景 1：已收敛副本 7 轮 periodic round —— bytes 恒非零但观察面明确报全 noop（roundId 关联 + 效果组）
+[issue239 repro] no-op round 6: hub sent/applied = [10]/[10] B, peer sent/applied = [10]/[10] B
+
+stdout | packages/ws-replication/test/ws-replication-issue239-repro.test.ts > issue #239：periodic reconciliation 语义 no-op 可观测（修复后语义，翻转断言） > 场景 1：已收敛副本 7 轮 periodic round —— bytes 恒非零但观察面明确报全 noop（roundId 关联 + 效果组）
+[issue239 repro] no-op round 7: hub sent/applied = [10]/[10] B, peer sent/applied = [10]/[10] B
+[issue239 repro] no-op 事件字段形状（去重）: ["connectionId,from,side,to,type","connectionId,from,namespaceId,side,to,type","bytes,connectionId,encodedUpdateBytes,namespaceId,side,syncRoundId,type","applyEffect,bytes,connectionId,encodedUpdateBytes,namespaceId,sequence,side,stateVectorAfterHash,stateVectorBeforeHash,stateVectorChanged,syncRoundId,type","from,side,to,type"]
+
+stdout | packages/ws-replication/test/ws-replication-issue239-repro.test.ts > issue #239：periodic reconciliation 语义 no-op 可观测（修复后语义，翻转断言） > 场景 2：静默漂移修复 round —— 观察面必须报 changed（与实测 SV 增量一一对应）；修复后 next round 回 noop（非粘滞）
+[issue239 repro] drift-repair round: hub sent/applied = [36]/[10] B, peer sent/applied = [10]/[36] B
+
+stdout | packages/ws-replication/test/ws-replication-issue239-repro.test.ts > issue #239：periodic reconciliation 语义 no-op 可观测（修复后语义，翻转断言） > 场景 2：静默漂移修复 round —— 观察面必须报 changed（与实测 SV 增量一一对应）；修复后 next round 回 noop（非粘滞）
+[issue239 repro] 修复后 no-op 事件字段形状（去重）: ["bytes,connectionId,encodedUpdateBytes,namespaceId,side,syncRoundId,type","applyEffect,bytes,connectionId,encodedUpdateBytes,namespaceId,sequence,side,stateVectorAfterHash,stateVectorBeforeHash,stateVectorChanged,syncRoundId,type","connectionId,from,namespaceId,side,to,type"]
+
+ ✓ packages/ws-replication/test/ws-replication-issue239-repro.test.ts (2 tests) 61ms
+ ✓ packages/namespace-runtime/test/runtime-close-sa7-dynamic.test.ts (4 tests) 78ms
+stdout | packages/ws-replication/test/ws-replication-issue239-ac-red.test.ts > issue #239 验收契约（红灯）：periodic no-op 与有效同步的可观测性差异 > 场景 1：已收敛副本连续 periodic round —— 观察面必须报 roundId 关联 + 全 noop（SV/ROOT/META 不变，bytes 仍非零）
+[issue239 ac-red] no-op rounds=3 groups=4 periodicGroups=3 全部断言完成
+
+stdout | packages/ws-replication/test/ws-replication-issue239-ac-red.test.ts > issue #239 验收契约（红灯）：periodic no-op 与有效同步的可观测性差异 > 场景 2：hub 静默漂移 → 下一 periodic round 至少一侧 diff-applied 报 changed（与实测 SV 增量一致）并收敛
+[issue239 ac-red] hub-drift 修复 round：delta={"hub":false,"peer":true} changedEvents=1
+
+stdout | packages/ws-replication/test/ws-replication-issue239-ac-red.test.ts > issue #239 验收契约（红灯）：periodic no-op 与有效同步的可观测性差异 > 场景 2：hub 静默漂移 → 下一 periodic round 至少一侧 diff-applied 报 changed（与实测 SV 增量一致）并收敛
+[issue239 ac-red] hub-drift 修复后 no-op round：changedEvents=0
+
+ ✓ packages/ws-replication/test/ws-replication-issue239-ac-red.test.ts (2 tests) 48ms
+ ✓ packages/ws-replication/test/ws-replication-ac4-reconcile.test.ts (5 tests) 84ms
+ ✓ packages/persistence/test/persistence-phase5-archive-red.test.ts (23 tests) 67ms
+ ✓ packages/namespace-diagnostic-log/test/file-adapter-mismatch-interference.test.ts (11 tests) 102ms
+ ✓ packages/namespace-diagnostic-log/test/file-adapter-namespace-deletion.test.ts (10 tests) 79ms
+ ✓ packages/namespace-diagnostic-log/test/memory-adapter.test.ts (9 tests) 103ms
+ ✓ packages/doc-runtime/test/materialize-root.test.ts (59 tests) 62ms
+ ✓ packages/namespace-diagnostic-log/test/strict-reader-materialize-unknown.test.ts (4 tests) 110ms
+ ✓ packages/ws-replication/test/ws-replication-sa7-round2-dynamic.test.ts (6 tests) 75ms
+ ✓ packages/namespace-runtime/test/runtime-registry-internal-sa7-dynamic.test.ts (4 tests) 76ms
+ ✓ packages/ws-replication/test/ws-replication-issue171-red.test.ts (5 tests) 82ms
+ ✓ packages/ws-replication/test/ws-replication-periodic-reconcile.test.ts (5 tests) 85ms
+ ✓ packages/doc-runtime/test/issue-237-path-localized-validation-red.test.ts (43 tests) 66ms
+ ✓ packages/namespace-diagnostic-log/test/update-carrier.test.ts (10 tests) 131ms
+ ✓ packages/ws-replication/test/ws-replication-issue300-bulk-edge-ac.test.ts (6 tests) 72ms
+ ✓ packages/replication-protocol/test/codec-roundtrip-truncation.test.ts (8 tests) 54ms
+ ✓ packages/namespace-diagnostic-log/test/file-adapter-retention-deletion-windows.test.ts (5 tests) 89ms
+ ✓ packages/namespace-diagnostic-log/test/file-adapter-sa7-repair-io.test.ts (4 tests) 70ms
+ ✓ packages/vfsl/test/spec-docs-anchor-m4-contract.test.ts (7 tests) 87ms
+ ✓ packages/ws-replication/test/ws-replication-issue246-interop-matrix.test.ts (4 tests) 85ms
+stdout | packages/ws-replication/test/ws-replication-issue233-repro.test.ts > issue #233 复现：超限 UPDATE 丢弃 + 全量 reconciliation 回退（现状刻画） > R1：单笔 20KB 合法写 → 零 UPDATE / resync 声明 / 同一载荷改走控制帧全量 diff
+[issue233 repro R1] {
+  "scenario": "R1 single 20KB write, maxUpdateBytes=8192",
+  "updateFramesCarryingBigWrite": 0,
+  "resyncRounds": 1,
+  "step2DiffBytesPeerToHub": [
+    2,
+    20027
+  ],
+  "wire": {
+    "peerToHub": {
+      "OPEN_NAMESPACE": {
+        "count": 1,
+        "bytes": 59
+      },
+      "BOOTSTRAP_ACK": {
+        "count": 1,
+        "bytes": 57
+      },
+      "SYNC_STEP1": {
+        "count": 2,
+        "bytes": 134
+      },
+      "SYNC_STEP2": {
+        "count": 2,
+        "bytes": 20149
+      },
+      "SYNC_APPLIED": {
+        "count": 2,
+        "bytes": 116
+      },
+      "RESYNC_REQUIRED": {
+        "count": 1,
+        "bytes": 76
+      }
+    },
+    "hubToPeer": {
+      "OPEN_OK": {
+        "count": 1,
+        "bytes": 91
+      },
+      "BOOTSTRAP_SNAPSHOT": {
+        "count": 1,
+        "bytes": 495
+      },
+      "SYNC_STEP1": {
+        "count": 2,
+        "bytes": 128
+      },
+      "SYNC_STEP2": {
+        "count": 2,
+        "bytes": 122
+      },
+      "SYNC_APPLIED": {
+        "count": 2,
+        "bytes": 116
+      }
+    }
+  }
+}
+
+stdout | packages/ws-replication/test/ws-replication-issue233-repro.test.ts > issue #233 复现：超限 UPDATE 丢弃 + 全量 reconciliation 回退（现状刻画） > R2：连续两笔大写 → 两轮 resync（持续大写重复触发完整 round）
+[issue233 repro R2] {"scenario":"R2 two consecutive 20KB writes","resyncRounds":2,"step2DiffBytesPeerToHub":[2,20029,20037],"wire":{"peerToHub":{"OPEN_NAMESPACE":{"count":1,"bytes":59},"BOOTSTRAP_ACK":{"count":1,"bytes":57},"SYNC_STEP1":{"count":3,"bytes":207},"SYNC_STEP2":{"count":3,"bytes":40249},"SYNC_APPLIED":{"count":3,"bytes":174},"RESYNC_REQUIRED":{"count":2,"bytes":152}},"hubToPeer":{"OPEN_OK":{"count":1,"bytes":91},"BOOTSTRAP_SNAPSHOT":{"count":1,"bytes":497},"SYNC_STEP1":{"count":3,"bytes":201},"SYNC_STEP2":{"count":3,"bytes":191},"SYNC_APPLIED":{"count":3,"bytes":174}}}}
+
+stdout | packages/ws-replication/test/ws-replication-issue233-repro.test.ts > issue #233 复现：超限 UPDATE 丢弃 + 全量 reconciliation 回退（现状刻画） > R3：diff 超 maxSyncDiffBytes → SYNC_DIFF_TOO_LARGE → namespace 终局 failed（大文档致命尾部）
+[issue233 repro R3] {"scenario":"R3 100KB write, maxSyncDiffBytes=32768","namespaceTerminalState":"failed","connectionState":"ready","wire":{"peerToHub":{"OPEN_NAMESPACE":{"count":1,"bytes":59},"BOOTSTRAP_ACK":{"count":1,"bytes":57},"SYNC_STEP1":{"count":2,"bytes":136},"SYNC_STEP2":{"count":1,"bytes":61},"SYNC_APPLIED":{"count":1,"bytes":58},"RESYNC_REQUIRED":{"count":1,"bytes":76},"ERROR":{"count":1,"bytes":117}},"hubToPeer":{"OPEN_OK":{"count":1,"bytes":91},"BOOTSTRAP_SNAPSHOT":{"count":1,"bytes":497},"SYNC_STEP1":{"count":2,"bytes":130},"SYNC_STEP2":{"count":2,"bytes":122},"SYNC_APPLIED":{"count":1,"bytes":58}}}}
+
+ ✓ packages/ws-replication/test/ws-replication-issue233-repro.test.ts (3 tests) 52ms
+ ✓ packages/namespace-diagnostic-log/test/file-adapter-retention-history.test.ts (7 tests) 71ms
+ ✓ packages/namespace-diagnostic-log/test/emitter-isolation.test.ts (8 tests) 90ms
+ ✓ packages/namespace-diagnostic-log/test/vfsl-gate.test.ts (16 tests) 72ms
+ ✓ packages/doc-runtime/test/materialize-root-rev2.test.ts (23 tests) 70ms
+ ✓ packages/namespace-registry/test/registry-plugin.test.ts (9 tests) 67ms
+ ✓ packages/namespace-registry/test/registry-sa7-phase5-replication-dynamic.test.ts (4 tests) 57ms
+ ✓ packages/ws-replication/test/ws-replication-issue243-ac-red.test.ts (6 tests) 66ms
+ ✓ packages/namespace-runtime/test/runtime-readdata-schema-projection-control.test.ts (6 tests) 46ms
+ ✓ packages/ws-replication/test/ws-replication-sa4-f1-f2-f3-red.test.ts (3 tests) 81ms
+ ✓ packages/namespace-runtime/test/runtime-readdata-schema-projection-red.test.ts (15 tests) 50ms
+ ✓ packages/vfsl/test/docscope-guards.test.ts (6 tests) 39ms
+ ✓ apps/yjs-server/test/node-hub-peer-live.test.ts (1 test) 55ms
+ ✓ packages/namespace-diagnostic-log/test/file-adapter-layout.test.ts (17 tests) 59ms
+ ✓ packages/ws-replication/test/ws-replication-sa6-hardening-g1-g2-red.test.ts (5 tests) 69ms
+ ✓ packages/doc-runtime/test/read-logical-value-at-path-guards.test.ts (39 tests) 85ms
+ ✓ packages/persistence/test/memory-persistence.test.ts (42 tests) 56ms
+ ✓ packages/namespace-registry/test/registry-phase5-replication-session-round2-red.test.ts (12 tests) 54ms
+ ✓ packages/vfsl/test/validate-snapshot.test.ts (35 tests) 50ms
+ ✓ packages/namespace-diagnostic-log/test/line-budget.test.ts (6 tests) 45ms
+ ✓ packages/ws-replication/test/ws-replication-ac3-bootstrap.test.ts (4 tests) 62ms
+ ✓ packages/persistence/test/persistence-sa7-phase5-bootstrap-dynamic.test.ts (14 tests) 56ms
+ ✓ packages/ws-replication/test/ws-replication-issue168-hello-timeout-close-peer-red.test.ts (3 tests) 45ms
+ ✓ packages/doc-runtime/test/xml-attr-quote-domain.test.ts (26 tests) 32ms
+ ✓ packages/namespace-registry/test/registry-sa7-concurrency.test.ts (4 tests) 79ms
+ ✓ packages/namespace-runtime/test/runtime-p0-sequencer.test.ts (7 tests) 55ms
+ ✓ packages/namespace-runtime/test/runtime-sync-read-face.test.ts (4 tests) 43ms
+ ✓ packages/namespace-registry/test/registry-phase5-identity-red.test.ts (20 tests) 40ms
+ ✓ packages/namespace-registry/test/registry-create-diagnostic-code-source.test.ts (6 tests) 55ms
+ ✓ packages/ws-replication/test/ws-replication-issue238-repro.test.ts (1 test) 45ms
+ ✓ packages/vfsl/test/resolve-schema-at-path.test.ts (34 tests) 72ms
+ ✓ packages/ws-replication/test/ws-replication-sa7-issue171-dynamic.test.ts (3 tests) 45ms
+ ✓ packages/namespace-registry/test/registry-delete-orchestration.test.ts (9 tests) 41ms
+ ✓ packages/ws-replication/test/ws-replication-issue169-backpressure-accounting-red.test.ts (19 tests) 38ms
+ ✓ packages/namespace-diagnostic-log/test/identity.test.ts (10 tests) 37ms
+ ✓ packages/vfsl/test/resolve-schema-at-path-member-docs-control.test.ts (9 tests) 29ms
+ ✓ packages/namespace-registry/test/registry-phase5-bootstrap-reset-r2-internal.test.ts (16 tests) 29ms
+ ✓ packages/namespace-runtime/test/runtime-boundary-supplementary.test.ts (3 tests) 36ms
+ ✓ packages/vfsl/test/vfsl-assets-fullchain-e2e.test.ts (16 tests) 25ms
+ ✓ packages/namespace-runtime/test/runtime-replication-sa4-probe.test.ts (2 tests) 34ms
+ ✓ packages/ws-replication/test/ws-replication-sa7-issue168-dynamic.test.ts (3 tests) 35ms
+ ✓ packages/persistence/test/file-persistence-sa7-dynamic.test.ts (4 tests) 35ms
+ ✓ packages/ws-replication/test/ws-replication-sa7-issue170-minor3-observation.test.ts (1 test) 35ms
+ ✓ packages/namespace-registry/test/registry-idle.test.ts (18 tests) 30ms
+ ✓ packages/namespace-diagnostic-log/test/observer-isolation.test.ts (5 tests) 29ms
+ ✓ packages/ws-replication/test/ws-replication-sa7-r2-supplement.test.ts (1 test) 33ms
+ ✓ packages/ws-replication/test/ws-replication-issue282-schema-lifecycle.test.ts (1 test) 32ms
+ ✓ packages/namespace-runtime/test/runtime-close-lifecycle.test.ts (10 tests) 28ms
+ ✓ packages/namespace-registry/test/registry-phase5-bootstrap-reset-r2-red.test.ts (10 tests) 32ms
+ ✓ packages/vfsl/test/evaluate-derived-schema.test.ts (37 tests) 24ms
+ ✓ packages/namespace-registry/test/registry-open.test.ts (32 tests) 30ms
+ ✓ packages/vfsl/test/validate-patch.test.ts (36 tests) 25ms
+ ✓ packages/doc-runtime/test/schema-replace-lifecycle-meta.test.ts (8 tests) 18ms
+ ✓ packages/doc-runtime/test/replace-root-content.test.ts (13 tests) 29ms
+ ✓ packages/namespace-runtime/test/runtime-replication-write.test.ts (14 tests) 26ms
+ ✓ packages/persistence/test/persistence-phase5-import-red.test.ts (14 tests) 29ms
+ ✓ packages/vfsl/test/parse-vfsl-forbidden-matrix.test.ts (79 tests) 24ms
+ ✓ packages/vfsl/test/resolve-schema-at-path-control.test.ts (11 tests) 26ms
+ ✓ packages/namespace-registry/test/registry-persistence-contract.test.ts (2 tests) 26ms
+ ✓ packages/ws-replication/test/ws-replication-sa4-r4-1-red.test.ts (1 test) 29ms
+ ✓ packages/ws-replication/test/ws-replication-sa4-issue171-review-red.test.ts (1 test) 28ms
+ ✓ packages/doc-runtime/test/read-logical-value-at-path-schema-independent.test.ts (33 tests) 28ms
+ ✓ packages/vfsl/test/resolve-schema-at-path-member-docs.test.ts (16 tests) 28ms
+ ✓ packages/ws-replication/test/ws-replication-issue171-blockers.test.ts (1 test) 27ms
+ ✓ domains/vfs3-assets/test/vfs3-assets-tsdoc.test.ts (6 tests) 26ms
+ ✓ packages/vfsl/test/compile-schema-envelope.test.ts (28 tests) 21ms
+ ✓ packages/namespace-registry/test/registry-phase5-replication-channels.test.ts (14 tests) 25ms
+ ✓ packages/ws-replication/test/ws-replication-issue243-sa7-dynamic.test.ts (17 tests) 24ms
+ ✓ packages/persistence/test/issue-79-file-entry-status.test.ts (2 tests) 25ms
+ ✓ packages/namespace-runtime/test/runtime-replication-schema-lifecycle.test.ts (7 tests) 23ms
+ ✓ packages/namespace-registry/test/readdata-docs-adr0016-sync-control.test.ts (21 tests) 24ms
+ ✓ packages/namespace-registry/test/registry-issue-249-coverage.test.ts (7 tests) 24ms
+ ✓ apps/yjs-server/test/ws-transport-liveness.test.ts (3 tests) 20ms
+ ✓ packages/vfsl/test/parse-vfsl-containers-markers.test.ts (33 tests) 16ms
+ ✓ packages/vfsl/test/schemasource-seam.test.ts (13 tests) 23ms
+ ✓ apps/yjs-server/test/issue164-transport-faces-red.test.ts (3 tests) 21ms
+ ✓ packages/namespace-runtime/test/runtime-readdata-hostile-path-guard.test.ts (4 tests) 18ms
+ ✓ packages/namespace-runtime/test/runtime-schema-carrier-split.test.ts (4 tests) 15ms
+ ✓ packages/namespace-registry/test/registry-shutdown.test.ts (12 tests) 12ms
+ ✓ packages/namespace-runtime/test/runtime-mutate-root-snapshotter-array.test.ts (5 tests) 24ms
+ ✓ packages/replication-protocol/test/codec-issue242-ac-red.test.ts (29 tests) 13ms
+ ✓ packages/doc-runtime/test/extract-yjs-snapshot.test.ts (21 tests) 20ms
+ ✓ packages/namespace-registry/test/registry-sa7-hostile.test.ts (6 tests) 17ms
+ ✓ packages/namespace-registry/test/registry-schema-lifecycle.test.ts (2 tests) 20ms
+ ✓ packages/persistence/test/persistence-phase5-bootstrap-reset-r2.test.ts (11 tests) 18ms
+ ✓ packages/doc-runtime/test/create-initial-document.test.ts (9 tests) 17ms
+ ✓ packages/namespace-registry/test/registry-issue-249-duplicate-red.test.ts (3 tests) 18ms
+ ✓ packages/doc-runtime/test/xml-attr-quote-domain-sa7.test.ts (11 tests) 22ms
+ ✓ packages/vfsl/test/domains-scaffold.test.ts (2 tests) 16ms
+ ✓ packages/instance/test/instance.test.ts (9 tests) 12ms
+ ✓ packages/namespace-runtime/test/metadata-proto-key.test.ts (6 tests) 23ms
+ ✓ packages/namespace-runtime/test/runtime-write-fatal-message-rev1.test.ts (3 tests) 16ms
+ ✓ packages/persistence/test/doc-delete-storage.test.ts (8 tests) 24ms
+ ✓ packages/namespace-runtime/test/runtime-public-surface-ownership.test.ts (6 tests) 18ms
+ ✓ packages/doc-runtime/test/transaction-fatal-materialize-contract.test.ts (16 tests) 23ms
+ ✓ packages/vfsl/test/docscope-getcompiled.test.ts (14 tests) 28ms
+ ✓ packages/vfsl-codegen/test/generate-mapping-table.test.ts (13 tests) 27ms
+ ✓ packages/vfsl/test/docscope-sha256.test.ts (13 tests) 12ms
+ ✓ packages/doc-runtime/test/sa7-fatal-dynamic-verify.test.ts (8 tests) 25ms
+ ✓ packages/vfsl/test/parse-vfsl-union-member-docs.test.ts (13 tests) 15ms
+ ✓ packages/doc-runtime/test/extract-plain-domain.test.ts (9 tests) 24ms
+ ✓ packages/vfsl/test/evaluate-derived-docs-audit.test.ts (15 tests) 20ms
+ ✓ packages/doc-runtime/test/apply-validated-mutation-nested-path-repro.test.ts (2 tests) 15ms
+ ✓ packages/namespace-runtime/test/runtime-phase5-reset-fence-r2.test.ts (7 tests) 16ms
+ ✓ packages/replication-protocol/test/codec-version-interop.test.ts (25 tests) 11ms
+ ✓ packages/doc-runtime/test/extract-union-trial.test.ts (8 tests) 14ms
+ ✓ packages/clock/test/clock-plugin-lifecycle.test.ts (5 tests) 7ms
+ ✓ packages/doc-runtime/test/extract-nonfinite-number.test.ts (8 tests) 14ms
+ ✓ packages/vfsl/test/parse-vfsl-cycle-detection.test.ts (16 tests) 14ms
+ ✓ packages/vfsl/test/parse-schema-envelope.test.ts (13 tests) 14ms
+ ✓ packages/replication-protocol/test/codec-malformed.test.ts (37 tests) 14ms
+ ✓ packages/persistence/test/doc-delete-semantics.test.ts (7 tests) 15ms
+ ✓ packages/vfsl/test/validate-patch-mutation-boundary.test.ts (18 tests) 14ms
+ ✓ packages/vfsl/test/parse-vfsl-root-convention.test.ts (36 tests) 20ms
+ ✓ packages/ws-replication/test/ws-replication-guard-proxy-consumption.test.ts (2 tests) 14ms
+ ✓ packages/namespace-registry/test/registry-guard-proxy-consumption.test.ts (2 tests) 13ms
+ ✓ packages/replication-protocol/test/codec-registries.test.ts (13 tests) 14ms
+ ✓ packages/doc-runtime/test/apply-validated-mutation-fatal-contract.test.ts (4 tests) 15ms
+ ✓ packages/persistence/test/issue-79-entry-status.test.ts (6 tests) 13ms
+ ✓ packages/vfsl-codegen/test/generate-discriminated-emission.test.ts (10 tests) 25ms
+ ✓ packages/ws-replication/test/ws-replication-issue299-ac-red.test.ts (7 tests) 15ms
+ ✓ packages/vfsl/test/evaluate-derived-docs-typecls.test.ts (8 tests) 23ms
+ ✓ packages/namespace-runtime/test/sequencer-slotkind-close-barrier.test.ts (3 tests) 14ms
+ ✓ packages/persistence/test/core-dsh-boundary.test.ts (6 tests) 15ms
+ ✓ packages/replication-protocol/test/codec-messages-golden.test.ts (27 tests) 10ms
+ ✓ packages/vfsl/test/parse-vfsl-errors.test.ts (19 tests) 10ms
+ ✓ packages/vfsl/test/resolve-schema-at-path-pattern-errors.test.ts (4 tests) 10ms
+ ✓ packages/vfsl/test/evaluate-derived-member-docs.test.ts (6 tests) 10ms
+ ✓ packages/persistence/test/persistence-contract.test.ts (6 tests) 10ms
+ ✓ packages/vfsl/test/compile-schema-envelope-sentinel.test.ts (7 tests) 9ms
+ ✓ packages/persistence/test/sa7-supplementary.test.ts (3 tests) 12ms
+ ✓ packages/replication-protocol/test/codec-issue246-doc-contract.test.ts (22 tests) 12ms
+ ✓ packages/persistence/test/persistence-encode-fatal.test.ts (1 test) 9ms
+ ✓ packages/namespace-registry/test/registry-node-dispose.test.ts (2 tests) 10ms
+ ✓ packages/ws-replication/test/ws-replication-sa7-issue190-dynamic.test.ts (5 tests) 8ms
+ ✓ packages/doc-runtime/test/extract-record-keyspace.test.ts (2 tests) 8ms
+ ✓ packages/ws-replication/test/ws-replication-issue190-guard.test.ts (1 test) 4ms
+ ✓ packages/vfsl/test/parse-vfsl.test.ts (11 tests) 12ms
+ ✓ packages/clock/test/clock-guard-proxy-consumption.test.ts (4 tests) 10ms
+ ✓ packages/clock/test/clock-contract.test.ts (17 tests) 8ms
+ ✓ packages/replication-protocol/test/codec-issue299-ac-red.test.ts (17 tests) 12ms
+ ✓ packages/replication-protocol/test/codec-issue299-encode-symmetry.test.ts (5 tests) 6ms
+ ✓ packages/ws-replication/test/ws-replication-issue190-red.test.ts (4 tests) 7ms
+ ✓ packages/vfsl/test/parse-vfsl-jsdoc.test.ts (7 tests) 8ms
+ ✓ packages/replication-protocol/test/codec-package-contract.test.ts (5 tests) 7ms
+ ✓ packages/namespace-registry/test/registry-issue-249-pump-red.test.ts (10 tests) 8ms
+ ✓ packages/vfsl/test/parse-vfsl-r3-regression.test.ts (7 tests) 7ms
+ ✓ packages/persistence/test/module-graph-regression.test.ts (4 tests) 9ms
+ ✓ packages/namespace-registry/test/registry-entry-removal-guard.test.ts (7 tests) 5ms
+ ✓ packages/replication-protocol/test/codec-envelope.test.ts (13 tests) 5ms
+ ✓ packages/namespace-registry/test/readdata-docs-adr0016-sync-red.test.ts (7 tests) 4ms
+ ✓ apps/yjs-server/test/shutdown-watchdog.test.ts (2 tests) 8ms
+ ✓ packages/clock/test/clock-surface.test.ts (5 tests) 5ms
+ ✓ packages/namespace-runtime/test/runtime-acceptance-exports-audit.test.ts (4 tests) 3ms
+ ✓ packages/namespace-registry/test/diag-pump-scheduler-injection.test.ts (2 tests) 4ms
+ ✓ packages/doc-runtime/test/public-surface-guard.test.ts (3 tests) 2ms
+ ✓ packages/vfsl-protocol/test/vfsl-protocol-empty-module.test.ts (1 test) 2ms
+
+ Test Files  341 passed (341)
+      Tests  3596 passed (3596)
+Type Errors  no errors
+   Start at  13:43:57
+   Duration  621.39s (transform 3.74s, setup 0ms, collect 32.79s, tests 543.08s, environment 43ms, prepare 14.83s, typecheck 2.14s)

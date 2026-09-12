@@ -1,0 +1,14 @@
+Testing types with tsc and vue-tsc is an experimental feature.
+Breaking changes might not follow SemVer, please pin Vitest's version when using it.
+
+ RUN  v3.2.7 /home/wangjian/nomicore-fix-issue-330
+
+ ✓ packages/ws-replication/test/ws-replication-guard-proxy-consumption.test.ts (2 tests) 19ms
+ ✓ packages/namespace-registry/test/registry-guard-proxy-consumption.test.ts (2 tests) 13ms
+ ✓ packages/clock/test/clock-guard-proxy-consumption.test.ts (4 tests) 8ms
+
+ Test Files  3 passed (3)
+      Tests  8 passed (8)
+Type Errors  no errors
+   Start at  13:31:31
+   Duration  1.76s (transform 763ms, setup 0ms, collect 1.12s, tests 40ms, environment 0ms, prepare 226ms)
