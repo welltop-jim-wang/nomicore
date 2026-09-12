@@ -42,6 +42,7 @@ export type {
   NamespaceLeaseBumpReplicationEpochResult,
   NamespaceLeaseEnableReplicationResult,
   NamespaceLeaseMutateDataResult,
+  NamespaceLeaseReadDataBudgetResult,
   NamespaceLeaseReadDataResult,
   NamespaceLeaseSchema,
   NamespaceLeaseReleasedIssue,
