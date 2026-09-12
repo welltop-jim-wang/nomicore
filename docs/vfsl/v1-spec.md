@@ -30,8 +30,9 @@ TypeScript 的一个冻结子集书写，用标记类型表达 Yjs 物化语义�
 
 v1 冻结的允许语法：类型别名；封闭对象字面量类型（未声明字段拒绝的语义基础）；
 `?:` 可选属性；原始类型 `string` / `number` / `boolean` / `null` / `unknown`；
-字面量联合；`T[]`；`Record<K, V>`；`string & Pattern<"正则">`（唯一允许的交叉
-类型）；注释。
+字面量联合；`T[]`；`Record<K, V>`；交叉类型白名单四例——`string & Pattern<"正则">`、
+`number & Int`、`number & Int<min, max>`、`number & Range<min, max>`（ADR 0020 决策 2）；
+注释。
 
 ```ebnf
 (* VFSL v1 冻结语法子集；char/digit/letter/eol 为词法元符号，由 tokenizer 直接实现 *)
@@ -41,7 +42,7 @@ TypeExpr      = UnionType ;
 UnionType     = [ "|" ], ArrayType, { "|", ArrayType } ;
 ArrayType     = PrimaryType, { "[", "]" } ;
 PrimaryType   = RecordType | ObjectType | Marker
-              | PatternType | LiteralType | PrimitiveType | TypeRef ;
+              | PatternType | IntType | RangeType | LiteralType | PrimitiveType | TypeRef ;
 RecordType    = "Record", "<", TypeExpr, ",", TypeExpr, ">" ;
 ObjectType    = "{", [ FieldList ], "}" ;
 FieldList     = Field, { ( ";" | "," ), Field }, [ ";" | "," ] ;
@@ -52,6 +53,9 @@ Marker        = "YMap", "<", TypeExpr, ">"
               | "YLeaf", "<", TypeExpr, ">"
               | "YXmlFragment", "<", TypeExpr, ">" ;
 PatternType   = "string", "&", "Pattern", "<", StringLiteral, ">" ;
+IntType       = "number", "&", "Int"
+              | "number", "&", "Int", "<", NumberLiteral, ",", NumberLiteral, ">" ;
+RangeType     = "number", "&", "Range", "<", NumberLiteral, ",", NumberLiteral, ">" ;
 LiteralType   = StringLiteral | NumberLiteral ;
 PrimitiveType = "string" | "number" | "boolean" | "null" | "unknown" ;
 TypeRef       = Ident ;
@@ -60,14 +64,15 @@ LineComment   = "//", { char }, eol ;
 BlockComment  = "/*", { char }, "*/" ;
 DocComment    = "/**", { char }, "*/" ;
 StringLiteral = '"', { char }, '"' ;
-NumberLiteral = digit, { digit } ;
+NumberLiteral = [ "-" ], digit, { digit }, [ ".", digit, { digit } ] ;
 Ident         = letter, { letter | digit | "_" } ;
 ```
 
 语法注记（与文法同等效力）：
 
 1. **优先级与结合**：`|`（联合）最低；`[ ]` 后缀紧贴其前置 PrimaryType——
-   `string & Pattern<"a">[]` 是「约束字符串的数组」，`A | B[]` 是 `A | (B[])`。
+   `string & Pattern<"a">[]` 是「约束字符串的数组」，`number & Int<0, 9>[]` 是
+   「约束整数的数组」（数值约束同样作用于整个交叉类型），`A | B[]` 是 `A | (B[])`。
    同层联合记号自左向右，无结合性歧义。
 2. **前导 `|`**：联合允许 TS 风格前导分隔符（`type T = | A | B;`），文法以
    `[ "|" ]` 冻结。
@@ -80,8 +85,14 @@ Ident         = letter, { letter | digit | "_" } ;
 6. **字符串字面量**：以 `"` 界定，不得跨行（未闭合 → VFSL-E201）；仅认 `\"` 与
    `\\` 两个转义（`\"`→`"`、`\\`→`\`），其余任何 `\x` 序列非法（→ VFSL-E202）。
    正则实参中的反斜杠须按此规则双写（正则 `\d` 写作 `\\d`）。
-7. **数字字面量**：仅无符号十进制整数。负数、小数、其他进制不在 v1 子集
-   （→ VFSL-E100）。
+7. **数字字面量**：可选负号 + 十进制整数 + 可选小数部（`[ "-" ] digit { digit } [ "." digit { digit } ]`）。
+   负号与小数点两侧的数字均必填，且负号须**紧邻**数字：裸 `-`、`- 1`、`-/*c*/1`、`.5`、
+   `1.`、`1..5` 均 → VFSL-E100；指数记号（`1e3`、`1.5E-2`）与其他进制不做（→ VFSL-E100）。
+   字面量按 IEEE-754 双精度解释与归一，精度丢失是 f64 语义而非拒绝条件（如
+   `9007199254740993` ≡ `9007199254740992`、`0.99999999999999999` ≡ `1`；前导零合法，
+   `00.5` ≡ `0.5`）。枚举成员的相等语义为 **f64 严格相等**（零 epsilon）。字面量超出双精度
+   上限（含负值）→ VFSL-E100（实现值域上限，非方言判定）；`-0` 字面量（含值为 -0 的小数
+   下溢形态）→ VFSL-E100，请改写为 `0`（ADR 0020 决策 3 修订句）。
 8. **字面量联合成员种类**：v1 冻结为字符串字面量与数字字面量两类；`true` /
    `false` / `null` 字面量不进入 LiteralType（布尔与空值语义由原始类型
    `boolean` / `null` 表达）。`true` / `false` 词法上是普通 Ident（不在保留名
@@ -104,7 +115,9 @@ Ident         = letter, { letter | digit | "_" } ;
 
 ```ts
 type Port = 80 | 443;
+type Level = -1 | 0.5 | 2;
 type Name = string & Pattern<"^[a-z]+$">;
+type Stock = number & Int<1, 99999>;
 type Pair = { first: string; second?: number };
 type Names = Name[];
 type Index = Record<string, Port>;
@@ -115,7 +128,6 @@ type Index = Record<string, Port>;
 ```ts
 type A = ( string | number )[];    // VFSL-E100：括号分组不在子集
 type B = string & Pattern<"a\d">;  // VFSL-E202：非法转义（须写 \\d）
-type C = -1 | 1;                   // VFSL-E100：负数字面量不在子集
 type D = true | false;             // VFSL-E301：true/false 未声明（布尔字面量不进入 LiteralType，注记 8；按未知名报错）
 ```
 
@@ -137,8 +149,8 @@ type D = true | false;             // VFSL-E301：true/false 未声明（布尔�
 联合成员的形状归类（判定在**别名解析后**进行，沿别名链取最终形状；上表末两行
 由此三分类确定）：
 
-- **全部标量形**（原始类型 / 字面量 / 含 Pattern 约束）→ 原生叶子值（上表
-  第 4 行），如 `keywords: YLeaf<string>[]` 的元素；
+- **全部标量形**（原始类型 / 字面量 / 含 Pattern 约束 / 含 `Int` / `Range`
+  数值约束）→ 原生叶子值（上表第 4 行），如 `keywords: YLeaf<string>[]` 的元素；
 - **全部容器形**（对象 / 数组 / Record）→ 按命中成员的形状物化（上表第 5 行）：
   对象成员 → Y.Map、数组成员 → Y.Array、Record 成员 → Y.Map。附录 fixture 的
   `Record<AssetId, AssetEntity>` 即此——`AssetEntity` 的每个联合成员按其对象
@@ -150,7 +162,8 @@ type D = true | false;             // VFSL-E301：true/false 未声明（布尔�
 
 **标记成员的形状归类**（联合成员是标记、或经别名解析到标记时，按该标记的物化归类，
 判定时机同上——别名解析后）：`YMap` / `YArray` / `YXmlFragment` → **容器形**；
-`YLeaf` / `Pattern`（`string & Pattern<…>` 的约束侧）→ **标量形**；`YPlainArray`
+`YLeaf` / `Pattern`（`string & Pattern<…>` 的约束侧）/ `Int` / `Range`（`number &`
+的数值约束侧）→ **标量形**；`YPlainArray`
 在同步物化上下文按**标量形**（父容器中以单一 JSON 值承载，不可下钻）。三分类由此
 对标记成员闭合，无两可读法：`type M = YMap<{ x: string }>;` 与 `type T = M | { y: number };`
 （别名解析后 M 为标记 → 全容器形 → 多态物化，合法）；
@@ -180,7 +193,7 @@ type D = true | false;             // VFSL-E301：true/false 未声明（布尔�
 | `YXmlFragment` | 同 `YMap` | VFSL-E304 |
 | `YArray` | 任意 TypeExpr | — |
 | `YPlainArray` | 任意 TypeExpr（子树进纯值上下文） | — |
-| `YLeaf` | 标量形：原始类型 / 字面量 / 其联合 / 含 Pattern 约束（`unknown` 允许） | VFSL-E304 |
+| `YLeaf` | 标量形：原始类型 / 字面量 / 其联合 / 含 Pattern 约束 / 含 Int、Range 数值约束（`unknown` 允许） | VFSL-E304 |
 | `Pattern` | 仅 StringLiteral，且仅在 `string & Pattern<...>` 中出现 | 裸 Pattern → VFSL-E100 |
 
 形状解析沿**别名链传递**：`type A = B;` 的形状即 B 解析后的最终形状（链式展开
@@ -245,6 +258,39 @@ type D = true | false;             // VFSL-E301：true/false 未声明（布尔�
 不由方言隐含（须如附录 fixture 显式书写 `^` / `$`）。实参解码后是否为合法正则
 **不在方言层校验**（见 §9）。
 
+### Int / Range（数值约束）
+
+`number` 的两个数值约束形态（ADR 0020 决策 2）：整数性（`Int`）与闭区间
+（`Range<min, max>`）是**正交**的两个维度，可单独或同时表达：
+
+| 写法 | 整数性 | 区间 | 说明 |
+| --- | --- | --- | --- |
+| `number & Int` | 要求 | 无 | 任意整数值（负 / 零 / 正） |
+| `number & Int<min, max>` | 要求 | 闭区间 [min, max] | 两端点须为整数值；`min == max` 即单点区间 |
+| `number & Range<min, max>` | 不要求 | 闭区间 [min, max] | 两端点整数 / 小数皆可；`min == max` 即单点区间 |
+
+- **arity 严格**：`Int` 恰零实参；`Int<min, max>` / `Range<min, max>` 恰两实参。
+  `Int<5>`、`Int<1, 2, 3>`、`Range<0>`、`Int<>` 与无实参的 `Range` → VFSL-E100
+  ——与 Pattern 实参错误同码，锚**构造起点记号**（`Int` / `Range` 记号）。
+- **端点字面量**：`Int` 端点须为整数值，字面量一律按 f64 语义解释（值判定，
+  `Int<1.0, 2>` 与 `Int<1, 2>` 同义；`Int<0.5, 1.5>` → VFSL-E100 锚该小数
+  记号）。端点复用数字字面量全部既有闸门：超双精度 → VFSL-E100；`-0`（含下溢
+  形态）→ VFSL-E100。
+- **闭区间含双端点**：判定为 `min <= v && v <= max`；`min == max` 非空。`min > max`
+  （f64 比较）为空区间 → **解析期** VFSL-E100（锚构造起点记号）——空区间不需要
+  引擎，故早于 `Pattern<"[">` 的延迟判定。
+- **裸用与保留名**：`Int` / `Range` 属保留名（§4 判定顺序第 7 条）：脱离
+  `number &` 语境（裸 `Int` / 裸 `Range`，含带实参形态）→ VFSL-E100 锚该记号；
+  别名声明占用 → VFSL-E303（锚声明名）；字段名位 → VFSL-E100。
+- **值域基线**：三形态同受 §3「number 值域」家族基线（ADR 0021 决策 1）——
+  NaN / +Infinity / -Infinity / `-0` 一律拒绝，无论是否落在区间内。
+- **判定相位**：arity / 端点字面量 / 空区间属解析期（VFSL-E100）；逐值判定属
+  语义层（`validateLogicalSnapshot` 与 validate-patch 同口径），失配消息不属
+  本规格冻结面。
+- **`[]` 后缀**：与 `string & Pattern<…>[]` 同规则——`number & Int<0, 9>[]` 是
+  「约束整数的数组」。
+- **明确不做**：开放 / 半开区间语法、指数记号、品牌类型（ADR 0020 决策 10）。
+
 ### number 值域（JSON 可忠实表示数）
 
 原始类型 `number` 表达的值域是**恰好 JSON 可忠实表示的数**（ADR 0021）：判定式
@@ -263,8 +309,8 @@ NaN / +Infinity / -Infinity / -0 四值；`0`、`0.0` 与一切其他有限数�
 - **文本侧**：数字字面量仅无符号十进制整数（§2 注记 7），`-0` 字面量不可推导 →
   VFSL-E100；数据侧的零应写 `0`，不写 `-0`。
 - **家族基线**：本值域是 number 家族的统一基线（ADR 0021 决策 1）：裸 `number`
-  与后续数值约束形态（ADR 0020 的 `Int` / `Range`，进入方言后）同受此基线——
-  0020 三形态「自闭合排除非有限数」的口径被吸收为本基线，且 -0 一并排除。
+  与数值约束形态（ADR 0020 的 `Int` / `Range`，见上「Int / Range」节）同受此
+  基线——0020 三形态「自闭合排除非有限数」的口径被吸收为本基线，且 -0 一并排除。
 
 ### 命名空间根（ROOT 约定）
 
@@ -275,8 +321,8 @@ NaN / +Infinity / -Infinity / -0 四值；`0`、`0.0` 与一切其他有限数�
 - 重复声明 → VFSL-E302（重复声明名的既有语义）；
 - 非 map 形 → VFSL-E311：仅接受裸对象（默认物化即 YMap）/ 显式 `YMap` / `Record`
   / 全 map 形联合（clsOf = map，三分类经别名解析后判定）；标量形（原始类型 /
-  全标量联合 / `YLeaf` / `YPlainArray` / `Pattern`）与 `YArray` / `YXmlFragment`
-  一律拒绝；锚 ROOT 的类型表达式起点记号。
+  全标量联合 / `YLeaf` / `YPlainArray` / `Pattern` / `Int` / `Range` 数值约束）
+  与 `YArray` / `YXmlFragment` 一律拒绝；锚 ROOT 的类型表达式起点记号。
 
 Yjs 映射为 doc 根的 `getMap('ROOT')`。`ROOT` 可被其他别名引用（既当根又当积木，
 合法）。其余无人引用的别名是**惰性积木**：合法、不进数据面、不参与物化。
@@ -345,8 +391,10 @@ E101~E105 对应的构造在 §2 文法下**不可推导**（形式上会落入 
    - 该标识符为**已声明别名** → **E100**（锚 `<` 记号；v1 无自定义泛型的声明
      与调用，别名带实参使用即越界语法）。
 7. **保留名记号出现在其对应产生式不适用的位置**：裸引用六个标记 / `Record` /
-   `Pattern`（如 `type T = YMap;`，或 `Pattern` 脱离 `string &` 语境——§3「裸
-   Pattern → E100」即本条实例）、保留名（`Record` 与六标记之外）后随 `<`（如
+   `Pattern` / `Int` / `Range`（如 `type T = YMap;`，或 `Pattern` 脱离
+   `string &` 语境、`Int` / `Range` 脱离 `number &` 语境——§3「裸 Pattern →
+   E100」与「Int / Range」节的裸用判定即本条实例）、保留名（`Record` 与六标记
+   之外）后随 `<`（如
    `type T = string<number>;`）、`type` 出现在类型位置（如 `type T = type;`）→
    **E100**（锚该保留名记号）；**声明名位出现保留名 → E303**（锚声明名，解析到
    声明名时即时判定——`type type = string;` 与 `type any = string;` 同归）；
@@ -376,7 +424,7 @@ E301 / E304 / E306 / E307 / E309 / E310 / E311（全部引用 / 语义层错误�
 
 | 错误码 | 条件 | 定位锚 |
 | --- | --- | --- |
-| VFSL-E100 | 越界语法：不可从 §2 文法推导的任何构造（括号分组、负数 / 小数字面量、裸 Pattern、裸标记 / 保留名误用（判定顺序第 7 条）、未知记号等；判定顺序见 §4） | 构造起点记号 |
+| VFSL-E100 | 越界语法：不可从 §2 文法推导的任何构造（括号分组、`-0` 字面量、`.5` / `1.` 形态、指数记号、裸 Pattern、裸 `Int` / `Range`、数值约束 arity（`Int<5>` / `Int<1, 2, 3>` / `Range<0>` / `Int<>` / 无实参 `Range`）、Int 浮点端点（`Int<0.5, 1.5>`）、空区间（`min > max`）、裸标记 / 保留名误用（判定顺序第 7 条）、未知记号等；判定顺序见 §4） | 构造起点记号（数值约束的 arity / 空区间锚 `Int` / `Range` 记号；端点违规锚该端点记号） |
 | VFSL-E101 | `any` 类型 | `any` 记号 |
 | VFSL-E102 | 自定义泛型参数 | 泛型参数表 `<` |
 | VFSL-E103 | 条件类型 | `extends` 记号 |
@@ -398,9 +446,10 @@ E301 / E304 / E306 / E307 / E309 / E310 / E311（全部引用 / 语义层错误�
 | VFSL-E310 | 缺少 ROOT 别名：模块未声明名为 `ROOT` 的命名空间根别名（见 §3「命名空间根」） | 模块起始（1:1） |
 | VFSL-E311 | ROOT 别名非 map 形：ROOT 固定物化为 Y.Map——仅接受裸对象 / `YMap` / `Record` / 全 map 形联合（三分类经别名解析后判定）；标量形与 `YArray` / `YXmlFragment` 拒绝 | ROOT 的类型表达式起点记号 |
 
-保留名集合：`type`、`Record`、`Pattern`、`string`、`number`、`boolean`、`null`、
-`unknown`、`any`、`extends`、`interface`、`YMap`、`YArray`、`YPlainArray`、
-`YLeaf`、`YXmlFragment`。别名声明占用任一保留名 → VFSL-E303（如
+保留名集合（18 名）：`type`、`Record`、`Pattern`、`Int`、`Range`、`string`、
+`number`、`boolean`、`null`、`unknown`、`any`、`extends`、`interface`、`YMap`、
+`YArray`、`YPlainArray`、`YLeaf`、`YXmlFragment`。`Int` / `Range` 为 ADR 0020
+决策 1（规格 §8 保留名增补例外首例）引入的数值约束保留名。别名声明占用任一保留名 → VFSL-E303（如
 `type any = string;` → E303，锚声明名——保留名含 `any` 后，`any` 不再可能成为
 合法别名，消解「合法声明却永不可用」的矛盾；声明名位出现文法关键字亦同，
 `type type = string;` → E303，判定顺序第 7 条给唯一答案）。标识符大小写敏感，由 ASCII 字母

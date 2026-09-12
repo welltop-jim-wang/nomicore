@@ -203,6 +203,56 @@ function scalarRejectMessage(type: ScalarTypeName, value: unknown): string {
   return `类型不匹配：期望 ${type}，实际 ${jsonTypeOf(value)}`;
 }
 
+// —— §3.3c 数值约束判定（issue #315 / ADR 0020 决策 6；判定级联 = 单一事实源）——
+
+/** 数值约束叶失配维（级联恰取首个失配维；每叶至多发 1 条 issue）。 */
+type IntRangeReject = 'ok' | 'type' | 'four-value' | 'integer' | 'range';
+
+/**
+ * `int` / `range` 叶子判定（ADR 0020 决策 6 + ADR 0021 决策 1/3；O(1) 比较、零引擎）：
+ *   ① `typeof value !== 'number'` → 'type'（镜像 pattern 的类型级前置）
+ *   ② 四值基线（NaN / ±Infinity / -0，复用 `isJsonFaithfulNumber` 的否定式）→ 'four-value'
+ *      —— -0 必须是有限数却不是可写值，`Object.is` 识别（ADR 0021 决策 1/3）；
+ *      `Range<-40, 85>` 会放行 -0 的区间比较（-40 <= -0 <= 85 为真），故四值步必须先于区间步。
+ *   ③ `kind === 'int'` 且非整数 → 'integer'（与文本侧端点闸门同口径的运行时对偶，B1）
+ *   ④ **双键同在场**（裸 int 无区间步）且 `!(min <= value && value <= max)` → 'range'（闭区间含双端点）
+ *
+ * 单键手造叶（min/max 恰一在场）文本层构造性不可达（ADR 0020 决策 5 只定义双缺/双在两形，
+ * parser 构造性排除单键）：区间步跳过，有限整数**放行**；与设计 §8.4 伪码对该手造形的
+ * fail-closed 分叉已登记（SA8 F-1，处置 (b)：保持实现 + 注释准确，零文本可达面影响）。
+ *
+ * 与 `contradictsInner` 的分工（B6 冻结）：越界/非整数属**软失配**（联合候选下钻），
+ * 只有 `typeof !== 'number'` 才是硬矛盾——镜像 pattern 叶子的类型级模型。
+ */
+function intRangeReject(kind: 'int' | 'range', min: number | undefined, max: number | undefined, value: unknown): IntRangeReject {
+  if (typeof value !== 'number') return 'type';
+  if (!isJsonFaithfulNumber(value)) return 'four-value';
+  if (kind === 'int' && !Number.isInteger(value)) return 'integer';
+  if (min !== undefined && max !== undefined && !(min <= value && value <= max)) return 'range';
+  return 'ok';
+}
+
+/** 数值约束失配消息（ADR 0021 决策 3：文案不冻结，但实际值一律经 `renderNumberValue`
+ *  渲染——-0 不得显示为 "0"；失配维语义承载：整数性 / 期望区间 / 四值域短语逐字沿用）。
+ *  分支次序 = 判定级联次序（设计 §8.4 冻结模板）：`'integer'` 维**先于**区间后缀判定——
+ *  裸 `number & Int`（双键缺席）恒得 `期望整数，实际 …`，不得渲染 `undefined` 端点
+ *  （SA4 F-SA4-1）；`undefined` 端点只可能出现在单键手造 int 叶（文本层构造性不可达）。 */
+function intRangeRejectMessage(kind: 'int' | 'range', min: number | undefined, max: number | undefined, value: unknown): string {
+  const verdict = intRangeReject(kind, min, max, value);
+  if (verdict === 'type') {
+    return `类型不匹配：期望 number，实际 ${jsonTypeOf(value)}`;
+  }
+  if (verdict === 'four-value') {
+    return `期望 number（有限数且非 -0），实际 ${renderNumberValue(value as number)}`;
+  }
+  if (verdict === 'integer') {
+    // 设计 §8.4 模板：区间后缀仅当 min 在场（裸形无区间维；'integer' 维 kind 恒为 'int'）
+    return `期望整数${kind === 'int' && min !== undefined ? `（${min} ≤ v ≤ ${max}）` : ''}，实际 ${renderNumberValue(value as number)}`;
+  }
+  // 仅 'range' 维可达（该维要求双键同在场）——渲染真实端点，无 undefined 槽
+  return `期望${kind === 'int' ? '整数' : ''}区间 [${min}, ${max}]，实际 ${renderNumberValue(value as number)}`;
+}
+
 /** present(k) = hasOwn 且值非 undefined（undefined 视同缺席——JSON 序列化本就丢弃，冻结）。 */
 function present(obj: Record<string, unknown>, k: string): boolean {
   return Object.hasOwn(obj, k) && obj[k] !== undefined;
@@ -374,6 +424,11 @@ function contradictsInner(value: unknown, node: ValueSchema, ctx: Ctx): boolean 
       return !enumContains(node.values, value);
     case 'pattern':
       return typeof value !== 'string'; // 匹配性属段 2 软判定
+    case 'int':
+    case 'range':
+      // B6 冻结：类型级硬矛盾（镜像 pattern）——越界/非整数属段 2 软判定（候选分支下钻）。
+      // 漏此 case 会让联合候选过滤恒不矛盾（`{v:true}` 从 2 条塌成 1 条），见 C4g。
+      return typeof value !== 'number';
     case 'array':
       return !Array.isArray(value);
     case 'xml':
@@ -530,6 +585,15 @@ function validateValue(node: ValueSchema, value: unknown, path: Array<string | n
         }
       } catch (err) {
         emitPatternError(err, t.regex, [...path], ctx);
+      }
+      break;
+    }
+    case 'int':
+    case 'range': {
+      // #315：数值约束叶判定（与 pattern 同层标量叶；判定级联见 intRangeReject）。
+      // 失配消息 thunk 门控（计数态/截断态不构造消息、不跑 preview）——与 scalar 行同姿势。
+      if (intRangeReject(t.kind, t.min, t.max, value) !== 'ok') {
+        ctx.emit([...path], () => intRangeRejectMessage(t.kind, t.min, t.max, value));
       }
       break;
     }

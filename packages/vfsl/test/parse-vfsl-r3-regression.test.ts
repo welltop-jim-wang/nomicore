@@ -60,13 +60,13 @@ function expectIssueAt(issue: Issue, code: string, line: number, column: number)
 }
 
 describe('R3 R-1 — 注释内星面字符列计数按码点（SA4 REJECT R-1 回归）', () => {
-  it('块注释单星面：`/*😀*/ type A = -1;` 锚 `-` 按码点计 @(1,16)', () => {
-    const issue = expectSingleIssue(parseVfsl('/*😀*/ type A = -1;'));
+  it('块注释单星面：`/*😀*/ type A = - 1;` 锚 `-` 按码点计 @(1,16)', () => {
+    const issue = expectSingleIssue(parseVfsl('/*😀*/ type A = - 1;'));
     expectIssueAt(issue, '100', 1, 16);
   });
 
-  it('块注释双星面：`/*😀😀*/ type A = -1;` 锚 `-` 漂移按码点计 @(1,17)', () => {
-    const issue = expectSingleIssue(parseVfsl('/*😀😀*/ type A = -1;'));
+  it('块注释双星面：`/*😀😀*/ type A = - 1;` 锚 `-` 漂移按码点计 @(1,17)', () => {
+    const issue = expectSingleIssue(parseVfsl('/*😀😀*/ type A = - 1;'));
     expectIssueAt(issue, '100', 1, 17);
   });
 
@@ -75,8 +75,8 @@ describe('R3 R-1 — 注释内星面字符列计数按码点（SA4 REJECT R-1 �
     expectIssueAt(issue, '100', 1, 20);
   });
 
-  it('BMP 对照：`/*中*/ type A = -1;` 中文按码点计 @(1,16)，不触发漂移', () => {
-    const issue = expectSingleIssue(parseVfsl('/*中*/ type A = -1;'));
+  it('BMP 对照：`/*中*/ type A = - 1;` 中文按码点计 @(1,16)，不触发漂移', () => {
+    const issue = expectSingleIssue(parseVfsl('/*中*/ type A = - 1;'));
     expectIssueAt(issue, '100', 1, 16);
   });
 });

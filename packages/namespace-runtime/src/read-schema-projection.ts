@@ -167,6 +167,20 @@ function cloneValueSchema(node: ValueSchema, memo: CloneMemo): ValueSchema {
       memo.set(node, out);
       return out;
     }
+    // 数值约束叶（#315 / ADR 0020 决策 5）：条件键逐键携带——`int` 裸形（min/max 皆缺席）
+    // 不得补 undefined 槽；带参形态两键必在场。detached 纪律由既有 memo 机制继承。
+    case 'int': {
+      const out: Extract<ValueSchema, { kind: 'int' }> = { kind: 'int' };
+      memo.set(node, out);
+      if (node.min !== undefined) out.min = node.min;
+      if (node.max !== undefined) out.max = node.max;
+      return out;
+    }
+    case 'range': {
+      const out: Extract<ValueSchema, { kind: 'range' }> = { kind: 'range', min: node.min, max: node.max };
+      memo.set(node, out);
+      return out;
+    }
     case 'scalar': {
       const out: Extract<ValueSchema, { kind: 'scalar' }> = { kind: 'scalar', type: node.type };
       memo.set(node, out);

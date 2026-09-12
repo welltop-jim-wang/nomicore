@@ -67,7 +67,7 @@ function walkModule(
       walkModule(t.arg, t.marker === 'YPlainArray' ? true : inPV, visit);
       break;
     default:
-      break; // primitive / literal / ref / pattern / generic-diag（无子节点）
+      break; // primitive / literal / ref / pattern / int / range / generic-diag（无子节点）
   }
 }
 
@@ -94,7 +94,7 @@ function collectRefs(t: AstType, out: Set<string>): void {
       collectRefs(t.arg, out);
       return;
     default:
-      return; // primitive / literal / pattern / generic-diag
+      return; // primitive / literal / pattern / int / range / generic-diag
   }
 }
 
@@ -113,6 +113,8 @@ function localCls(t: AstType): Cls {
     case 'primitive':
     case 'literal':
     case 'pattern':
+    case 'int': // #315：数值约束叶与 pattern 同层标量形（E304/E309/E311 路径自动生效）
+    case 'range':
       return 'scalar';
     case 'object':
     case 'record':
@@ -428,7 +430,7 @@ function strFormOf(t: AstType, strCls: Map<string, StrForm>, declared: Set<strin
     case 'generic-diag':
       return null; // §8-14：终判通道独占
     default:
-      return false; // number/unknown/字面量/对象/数组/record/marker/联合（§8-4）
+      return false; // number/unknown/字面量/int/range/对象/数组/record/marker/联合（§8-4）
   }
 }
 
@@ -498,7 +500,7 @@ function containsSyncMarker(t: AstType): boolean {
     case 'record':
       return containsSyncMarker(t.key) || containsSyncMarker(t.value);
     default:
-      return false; // primitive / literal / ref / pattern / generic-diag
+      return false; // primitive / literal / ref / pattern / int / range / generic-diag
   }
 }
 
@@ -539,7 +541,7 @@ function pvCheck(
       for (const m of t.members) pvCheck(m, containsSync, declared, add);
       return;
     default:
-      return; // primitive / literal / pattern
+      return; // primitive / literal / pattern / int / range
   }
 }
 

@@ -136,14 +136,30 @@ VFSL v1 常用值类型：
 type Primitive = string | number | boolean | null | unknown;
 type Status = "draft" | "published";
 type Port = 80 | 443;
+type Level = -1 | 0.5 | 2;
 type Slug = string & Pattern<"^[a-z0-9-]+$">;
 type OptionalField = { description?: string };
 ```
 
+数值约束用 `Int`（整数性）与 `Range<min, max>`（闭区间）表达，两个维度正交：
+
+```vfsl
+type Stock = number & Int<1, 99999>;        // 1..99999 的整数
+type PageSize = number & Int;               // 任意整数（不限定区间）
+type Ratio = number & Range<0, 1>;          // [0, 1] 内的有限数（含双端点）
+type Temperature = number & Range<-40, 85>; // 负端点合法
+```
+
 注意：
 
-- 数字字面量仅支持无符号十进制整数；
+- 数字字面量支持可选负号与十进制小数（负号须紧邻数字）；`.5` / `1.` / 指数记号 / `-0` 均 → VFSL-E100；小数按 IEEE-754 双精度解释，枚举成员相等语义为 f64 严格相等；
 - `number` 的值域是 JSON 可忠实表示数：NaN、+Infinity、-Infinity、`-0` 四值会被校验拒绝（validate 与 validate-patch 同口径）；数据中的零写 `0`，不写 `-0`（见 [`v1-spec.md`](./v1-spec.md) §3「number 值域」与 ADR 0021）；
+- 数值约束只写作 `number & Int` / `number & Int<min, max>` / `number & Range<min, max>` 三形态（交叉类型白名单）；arity 严格——`Int` 恰零实参、带参形态恰两实参，`Int<5>`、`Int<1, 2, 3>`、`Range<0>`、`Int<>`、裸 `Range` 一律 → VFSL-E100，锚 `Int` / `Range` 记号；
+- 区间是**闭区间**（含双端点）；`min == max` 是合法单点区间；`min > max` 为空区间 → 解析期 VFSL-E100；
+- `Int` 端点须为整数值（`Int<0.5, 1.5>` → VFSL-E100）；端点字面量按 f64 语义解释（`Int<1.0, 2>` 与 `Int<1, 2>` 同义）；端点同样不能写 `-0`（写 `0`）；超双精度端点 → VFSL-E100；
+- **无单侧开区间语法**：`> 0` 这类口径写成 `Int<1, 上界>`（上界按领域选取）；开放 / 半开区间明确不做（ADR 0020 决策 10）；
+- `Int` / `Range` 是保留名：不可作别名（E303）或字段名（E100）；三形态的合法值域同裸 `number` 家族基线（ADR 0021）；
+- `[]` 后缀作用于整个约束：`number & Int<0, 9>[]` 是「约束整数的数组」；
 - 字符串只支持 `\"` 和 `\\` 转义，正则里的 `\d` 在 schema 文本中写成 `\\d`；
 - `Pattern` 只写作 `string & Pattern<"...">`，锚定需显式写 `^` 和 `$`；
 - Pattern 的 ECMAScript 正则合法性在运行时语义校验阶段暴露；
@@ -214,9 +230,9 @@ JSDoc 必须紧邻类型别名、对象字段、标记类型或联合成员才�
 
 ## v1 语法护栏
 
-只使用以下构造：类型别名、封闭对象、可选字段、原始类型、字符串或整数文字、联合、数组、`Record`、六个标准标记和注释。
+只使用以下构造：类型别名、封闭对象、可选字段、原始类型、字符串或数字文字（可选负号与十进制小数；负号须紧邻数字）、联合、数组、`Record`、数值约束（`number & Int` / `number & Int<min, max>` / `number & Range<min, max>`）、六个标准标记和注释。
 
-以下 TypeScript 构造不属于 VFSL v1：`interface`、`extends`、泛型别名、函数类型、tuple、enum、索引签名、`readonly`、`keyof`、条件类型、映射类型、交叉类型（Pattern 特例除外）以及括号分组。标记拼写严格区分大小写：`YMap`、`YArray`、`YPlainArray`、`YLeaf`、`YXmlFragment`、`Pattern`。
+以下 TypeScript 构造不属于 VFSL v1：`interface`、`extends`、泛型别名、函数类型、tuple、enum、索引签名、`readonly`、`keyof`、条件类型、映射类型、交叉类型（`string & Pattern<...>`、`number & Int`、`number & Int<min, max>`、`number & Range<min, max>` 四个白名单形态除外）以及括号分组。标记拼写严格区分大小写：`YMap`、`YArray`、`YPlainArray`、`YLeaf`、`YXmlFragment`、`Pattern`。
 
 遇到表达能力不足时，先核对 [`v1-spec.md`](./v1-spec.md)；需要改变方言时走规格和 ADR 修订，而不是把 TypeScript 语法直接写进 schema。
 

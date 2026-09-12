@@ -134,6 +134,8 @@ function localCls(t: VfslType): Cls {
     case 'primitive':
     case 'literal':
     case 'pattern':
+    case 'int': // #315：数值约束叶与 pattern 同层标量形（结构/值两树正交面不变）
+    case 'range':
       return 'scalar';
     case 'object':
     case 'record':

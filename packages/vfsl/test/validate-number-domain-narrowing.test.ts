@@ -400,7 +400,7 @@ describe('AC6 零改动锁定：无新增公共 API / 无新增错误码', () =>
   });
 });
 
-describe('AC7 排除面边界：文本侧 -0 仍 E100、int/range 三形态仍 E301（零扩散）', () => {
+describe('AC7 排除面边界：文本侧 -0 仍 E100、小写 int/range 仍 E301、Int/Range 保留名 E100（#315 翻转）', () => {
   function singleParseIssue(text: string): { message: string; line: number; column: number } {
     const parsed = parseVfsl(text);
     expect(parsed.ok).toBe(false);
@@ -410,18 +410,33 @@ describe('AC7 排除面边界：文本侧 -0 仍 E100、int/range 三形态仍 E
   }
 
   it.each(['type ROOT = { e: -0 };', 'type ROOT = { e: -0 | 1 };', 'type ROOT = { e: -0.0 };'])(
-    '-0 字面量仍 E100「未知记号: -」：%s',
+    '-0 字面量仍 E100 且锚该字面量、消息引导写 0（ADR 0021 决策 2；字面量拓宽后不再走「未知记号: -」）：%s',
     (text) => {
       const issue = singleParseIssue(text);
       expect(issue.message).toMatch(/^VFSL-E100: /);
-      expect(issue.message).toContain('未知记号: -');
+      expect(issue.message).toContain('数字字面量 -0 不在可写值域');
+      expect(issue.message).toContain('请改写为 0');
     },
   );
 
-  it.each(['int', 'Int', 'range', 'Range'])('%s 仍 E301「未知名引用」（int/range 三形态不在本任务）', (name) => {
+  // 【#315 · SA8 Required action 2】语义翻转（非弱化）：`Int`/`Range` 进入保留名集合后，
+  // 裸用从「未知名引用 E301」变为「保留名误用 E100，锚该记号」（ADR 0020 决策 1/2；
+  // 镜像裸 Pattern）。小写 `int`/`range` 与近似名不受保留面影响，保持 E301 负控。
+  // 锚列 = 本文件脚手架 `type ROOT = { n: ${name} };` 中 name 记号的实际列（18）——
+  // SA6 §12.1 的 MODULE 脚手架列（23）不适用于此文件（SA2 评审 N-1）。
+  it.each(['int', 'range'])('%s（小写非保留名）仍 E301「未知名引用」（保留名大小写敏感）', (name) => {
     const issue = singleParseIssue(`type ROOT = { n: ${name} };`);
     expect(issue.message).toMatch(/^VFSL-E301: /);
     expect(issue.message).toContain('未知名引用');
+    expect(issue.line).toBe(1);
+    expect(issue.column).toBe(18);
+  });
+
+  it.each(['Int', 'Range'])('%s（#315 保留名）→ E100 锚该记号（原「三形态不在本任务」断言被 #315 supersede）', (name) => {
+    const issue = singleParseIssue(`type ROOT = { n: ${name} };`);
+    expect(issue.message).toMatch(/^VFSL-E100: /);
+    expect(issue.line).toBe(1);
+    expect(issue.column).toBe(18);
   });
 
   it('number 文本侧正常 parse（收窄是运行时判定，不改文本面）', () => {

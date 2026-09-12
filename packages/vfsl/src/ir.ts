@@ -63,7 +63,17 @@ export type VfslType =
       arg: VfslType;
       docs: string[];
     }
-  | { kind: 'pattern'; regex: string }; // string & Pattern<"正则"> 解码后原文（#6）
+  | { kind: 'pattern'; regex: string } // string & Pattern<"正则"> 解码后原文（#6）
+  | {
+      // 数值约束叶子（ADR 0020 决策 5；镜像 pattern 叶子先例）：`number & Int` 零参形态
+      // 两键皆缺席（**条件键**，整键不存在——不得补 undefined 槽）；`number & Int<min,max>`
+      // 两键必在场。键插入序恒 kind → min → max，f64 原值（值判定，文本形态不进 IR）——
+      // 指纹纪律：新叶子只服务新文本，无 Int/Range 的存量 IR 逐字节不变。
+      kind: 'int';
+      min?: number;
+      max?: number;
+    }
+  | { kind: 'range'; min: number; max: number }; // number & Range<min, max>（两端点必在场）
 
 export type ParseVfslResult =
   | { ok: true; module: VfslModule }

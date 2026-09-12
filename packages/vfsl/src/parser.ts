@@ -46,7 +46,14 @@ export type AstType =
   // 标记类型（EBNF Marker 产生式，§4.3）：pos 保留——E304 锚点是「标记记号」；
   // docs 为 #7 JSDoc 挂载（M3 回收；无 doc 时为空数组，必填）
   | { kind: 'marker'; marker: MarkerName; arg: AstType; pos: Pos; docs: string[] }
-  | { kind: 'pattern'; regex: string; pos: Pos }; // pos = 'string' 记号（PatternType 构造起点）
+  | { kind: 'pattern'; regex: string; pos: Pos } // pos = 'string' 记号（PatternType 构造起点）
+  // 数值约束叶子（ADR 0020 决策 2/4/5；条件键纪律同 pattern 先例）：
+  // - pos = 'number' 记号（构造起点，供 E304/E306/E311 语义相位锚定——与 parser E100 的
+  //   「arity/空区间锚 `Int`/`Range` 记号」分工不同，二者不得混用，§8.1 末注）；
+  // - `number & Int`（零参）两键皆缺席（整键不存在，非 undefined 槽）；带参形态两键必在场
+  //   （由 parseConstraintArgs 构造性保证，不出现单键）。
+  | { kind: 'int'; min?: number; max?: number; pos: Pos }
+  | { kind: 'range'; min: number; max: number; pos: Pos };
 
 export interface AstField {
   name: string;
@@ -75,13 +82,21 @@ export class VfslSyntaxError extends Error {
   }
 }
 
-/** 保留名集合（规格 §4，16 名；`true`/`false` 是普通 Ident，不在集合内——注记 8）。 */
+/** 保留名集合（规格 §4，18 名；`true`/`false` 是普通 Ident，不在集合内——注记 8）。
+ * 【#315 · ADR 0020 决策 1/2】`Int`/`Range` 为数值约束构造的语义必需组成（16→18）：
+ * 声明名位占用 → E303、字段名位 → E100、裸用 → E100（经既有 RESERVED_NAMES 查询点自动
+ * 覆盖，零特判）；大小写敏感——`int`/`range`/`Integer`/`Range2` 不受影响。 */
 const RESERVED_NAMES = new Set([
-  'type', 'Record', 'Pattern',
+  'type', 'Record', 'Pattern', 'Int', 'Range',
   'string', 'number', 'boolean', 'null', 'unknown',
   'any', 'extends', 'interface',
   'YMap', 'YArray', 'YPlainArray', 'YLeaf', 'YXmlFragment',
 ]);
+
+/** 交叉类型白名单 E100 文案（ADR 0020 决策 2：四例；两处生产点共用同一常量——§8.1 B5，
+ * 文案不进冻结面，只保证唯一事实源）。 */
+const CROSS_WHITELIST_MSG =
+  '交叉类型仅允许 string & Pattern<…>、number & Int、number & Int<min, max>、number & Range<min, max>';
 
 /** 六个标记的标准拼写（规格 §6 大小写契约）。 */
 const MARKER_NAMES = new Set(['YMap', 'YArray', 'YPlainArray', 'YLeaf', 'YXmlFragment']);
@@ -381,15 +396,15 @@ class Parser {
 
   /**
    * 类型表达式的续位分派（§4.2/§4.3）：'&' 族与 'extends'（判定顺序第 3 条）。
-   * PatternType 已前移至主层识别（§2.3 注记 1 的必然性论证）——到达此处时 prev
-   * 恒非 primitive-string（string&…已在主层消化或抛错），残留 '&' 一律 E100 锚
-   * '&' 记号（含 pattern 后第二段 '&'，即多段交叉）。
+   * PatternType / IntType / RangeType 已前移至主层识别（§2.3 注记 1 的必然性论证）——
+   * 到达此处时 prev 恒非 primitive-string/number（`string & …` / `number & Int|Range` 已在
+   * 主层消化或抛错），残留 '&' 一律 E100 锚 '&' 记号（含约束类型后第二段 '&'，即多段交叉）。
    */
   private dispatchContinuation(prev: AstType): void {
     const tok = this.peek();
     if (tok === undefined) return;
     if (tok.kind === 'punct' && tok.value === '&') {
-      throw this.err(ErrCode.E100, '交叉类型仅允许 string & Pattern<…>', tok);
+      throw this.err(ErrCode.E100, CROSS_WHITELIST_MSG, tok);
     }
     if (tok.kind === 'ident' && tok.value === 'extends') {
       throw this.err(ErrCode.E103, '条件类型不在 v1 子集（判定顺序第 3 条）', tok);
@@ -417,6 +432,13 @@ class Parser {
         // 【R2 · SA2 #2】超双精度（Number.isFinite 为假）→ E100 锚该数字记号（§7.3）
         if (tok.num === undefined || !Number.isFinite(tok.num)) {
           throw this.err(ErrCode.E100, '数字字面量超出可序列化数值域（双精度上限 ≈1.8e308；实现值域上限，非方言判定）', tok);
+        }
+        // 【#314 · ADR 0020 决策 3 修订句】-0 字面量解析期 E100：**值判定**（Object.is）
+        // 覆盖 `-0`/`-0.0`/`-00` 与小数下溢形态（`-0.` + 323 个 0 + 1 → f64 下溢为 -0）；
+        // 文本判定会漏掉下溢形态，`=== 0` / `Number.isNaN` 会误拒非零次正规（-1e-323）。
+        // 锚恒为该 number 记号起点（`-` 所在列）。防 `JSON.stringify(-0) → "0"` 在 IR/指纹层静默坍缩。
+        if (Object.is(tok.num, -0)) {
+          throw this.err(ErrCode.E100, '数字字面量 -0 不在可写值域（负零解析期拒绝，ADR 0020 决策 3）；请改写为 0', tok);
         }
         return { kind: 'literal', value: tok.num, pos: posOf(tok) };
       case 'ident':
@@ -458,6 +480,15 @@ class Parser {
       }
       throw this.err(ErrCode.E100, `保留名出现在类型位置: ${v}（判定顺序第 7 条）`, tok);
     }
+    // 【#315 · ADR 0020 决策 2】裸 `Int`/`Range`（不论后随 `<` 与否）脱离 `number &` 语境
+    // → E100 锚该记号（镜像裸 Pattern；判定顺序第 7 条）。裸用判定先于 number & 主层识别。
+    if (v === 'Int' || v === 'Range') {
+      throw this.err(
+        ErrCode.E100,
+        `裸 ${v} 脱离 number & ${v}${v === 'Range' ? '<min, max>' : ''} 语境（判定顺序第 7 条）`,
+        tok,
+      );
+    }
     if (PRIMITIVE_NAMES.has(v)) {
       if (v === 'string' && this.peekPunct('&')) {
         // ★ PatternType 主层识别（§2.3）：'[]' 后缀必须作用于整个 PatternType
@@ -470,7 +501,26 @@ class Parser {
           }
           throw this.err(ErrCode.E100, 'Pattern 脱离 string & Pattern<…> 语境（判定顺序第 7 条）', p1);
         }
-        throw this.err(ErrCode.E100, '交叉类型仅允许 string & Pattern<…>', this.peek());
+        throw this.err(ErrCode.E100, CROSS_WHITELIST_MSG, this.peek());
+      }
+      if (v === 'number' && this.peekPunct('&')) {
+        // ★ Int/Range 主层识别（#315；镜像 string & Pattern 块）：'[]' 后缀作用于整个约束
+        // 类型（`number & Int<0, 9>[]` = 约束整数的数组）；左元白名单按左元判定——非
+        // Int/Range 的右元（含 `Pattern`/小写近似名/EOF）一律 E100 锚 '&' 记号（B5/B8）。
+        const p1 = this.peek(1);
+        if (p1 !== undefined && p1.kind === 'ident' && (p1.value === 'Int' || p1.value === 'Range')) {
+          const p2 = this.peek(2);
+          const hasLt = p2 !== undefined && p2.kind === 'punct' && p2.value === '<';
+          if (p1.value === 'Int' && !hasLt) {
+            return this.parseIntType(tok); // 裸 `number & Int`：零参合法
+          }
+          if (hasLt) {
+            return p1.value === 'Int' ? this.parseIntType(tok) : this.parseRangeType(tok);
+          }
+          // `number & Range`（无实参）→ E100 锚 `Range` 记号（A5）
+          throw this.err(ErrCode.E100, '裸 Range 脱离 number & Range<min, max> 语境（判定顺序第 7 条）', p1);
+        }
+        throw this.err(ErrCode.E100, CROSS_WHITELIST_MSG, this.peek()); // 锚 '&'
       }
       if (this.peekPunct('<')) {
         // 保留名后随 '<'（判定顺序第 7 条）：锚该原始类型名记号，非 '<'
@@ -555,6 +605,97 @@ class Parser {
     }
     // regex = tokenizer 已按注记 6 解码的文本（\"→"、\\→\）；合法性不在方言层校验（§9.1）
     return { kind: 'pattern', regex: arg.value, pos: posOf(strTok) };
+  }
+
+  // —— IntType / RangeType（#315；进入时已确认 number 记号 + `&` + `Int`/`Range`；§8.1(e)）——
+  // 不调用 claimDocs——约束位非 doc 锚位，与 Pattern 一致（夹缝 doc 留 dangling → E305 既有语义）。
+  // AST 节点 pos = `number` 记号（构造起点，镜像 pattern pos = `string` 记号）；条件键纪律：
+  // 零参 `number & Int` 两键皆缺席，带参形态两键必在场。
+
+  /** `number & Int`（零参）/ `number & Int<min, max>`（恰两整数端点）。 */
+  private parseIntType(numTok: Token): AstType {
+    this.next(); // 消费 '&'
+    const nameTok = this.next()!; // 消费 'Int'（调用点已前瞻确认 ident）
+    if (!this.peekPunct('<')) {
+      return { kind: 'int', pos: posOf(numTok) }; // 零参：min/max 整键缺席
+    }
+    this.next(); // 消费 '<'
+    const [minTok, maxTok] = this.parseConstraintArgs(nameTok, true);
+    return { kind: 'int', min: minTok.num!, max: maxTok.num!, pos: posOf(numTok) };
+  }
+
+  /** `number & Range<min, max>`（恰两字面量端点：整数/小数皆可）。 */
+  private parseRangeType(numTok: Token): AstType {
+    this.next(); // 消费 '&'
+    const nameTok = this.next()!; // 消费 'Range'（调用点已前瞻确认 ident）
+    this.next(); // 消费 '<'（调用点已确认在场）
+    const [minTok, maxTok] = this.parseConstraintArgs(nameTok, false);
+    return { kind: 'range', min: minTok.num!, max: maxTok.num!, pos: posOf(numTok) };
+  }
+
+  /**
+   * 数值约束实参扫描（`Int<…>` / `Range<…>` 共用；§8.1(f) 冻结序 B3/B4）：
+   * ① 形状扫描（arity 先行：实参数量 / 分隔符 / 记号种类）→ ② 源序端点值闸门
+   * （有限性 → `-0` 值判定 → Int 整数性）→ ③ 空区间（min > max，f64 比较）。
+   *
+   * 锚位：arity 与空区间锚**构造起点记号**（nameTok，ADR 0020 决策 4 明文）；端点违规锚
+   * **该端点记号**（首个违规，源序）；非数字实参锚**该实参记号**（镜像 Pattern 实参锚；
+   * `Int<>` 零实参按 arity 锚构造起点）；EOF 锚经 err() 既有回退 (1,1)。
+   *
+   * 端点闸门复用 #314 既有语义（值判定，不引入第二套文本语义——设计 §7.2 B1）：
+   * 超双精度 → E100；`-0`（含下溢形态）→ E100；Int 端点非整数值 → E100。
+   */
+  private parseConstraintArgs(nameTok: Token, isInt: boolean): [Token, Token] {
+    const args: Token[] = [];
+    for (;;) {
+      const t = this.next();
+      if (t === undefined) {
+        throw this.err(ErrCode.E100, `期望数字字面量，实际 ${this.tokenDesc(t)}`, t);
+      }
+      if (t.kind === 'punct' && t.value === '>' && args.length === 0) {
+        throw this.err(ErrCode.E100, `${nameTok.value} 实参数量不合法：零实参（arity 严格，判定顺序第 7 条）`, nameTok);
+      }
+      if (args.length === 2) {
+        // 计数判定先于种类判定（B3）：`Int<1, 2, "a">` 报 arity 而非实参类型
+        throw this.err(ErrCode.E100, `${nameTok.value} 实参数量不合法：超过 2 个实参（arity 严格，判定顺序第 7 条）`, nameTok);
+      }
+      if (t.kind !== 'number') {
+        throw this.err(ErrCode.E100, `${nameTok.value} 实参须为数字字面量，实际 ${this.tokenDesc(t)}`, t);
+      }
+      args.push(t);
+      const sep = this.next();
+      if (sep !== undefined && sep.kind === 'punct' && sep.value === ',') continue;
+      if (sep !== undefined && sep.kind === 'punct' && sep.value === '>') {
+        if (args.length === 2) break; // 形状完成
+        throw this.err(ErrCode.E100, `${nameTok.value} 实参数量不合法：恰接受 2 个实参（arity 严格，判定顺序第 7 条）`, nameTok);
+      }
+      throw this.err(ErrCode.E100, `期望 ',' 或 '>'，实际 ${this.tokenDesc(sep)}`, sep);
+    }
+    const minTok = args[0]!;
+    const maxTok = args[1]!;
+    for (const tok of [minTok, maxTok]) {
+      if (tok.num === undefined || !Number.isFinite(tok.num)) {
+        throw this.err(
+          ErrCode.E100,
+          '数字字面量超出可序列化数值域（双精度上限 ≈1.8e308；实现值域上限，非方言判定）',
+          tok,
+        );
+      }
+      if (Object.is(tok.num, -0)) {
+        throw this.err(ErrCode.E100, '数字字面量 -0 不在可写值域（负零解析期拒绝，ADR 0020 决策 3）；请改写为 0', tok);
+      }
+      if (isInt && !Number.isInteger(tok.num)) {
+        throw this.err(
+          ErrCode.E100,
+          'Int 端点须为整数值（字面量按 f64 语义解释，ADR 0020 决策 4）；小数端点请改写为整数或改用 Range',
+          tok,
+        );
+      }
+    }
+    if (!(minTok.num! <= maxTok.num!)) {
+      throw this.err(ErrCode.E100, '空区间：min > max 不可推导（闭区间须满足 min <= max，ADR 0020 决策 4）', nameTok);
+    }
+    return [minTok, maxTok];
   }
 
   /**

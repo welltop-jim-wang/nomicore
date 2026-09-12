@@ -55,8 +55,8 @@ describe('parseVfsl — 语法相位错误（E100~E105）', () => {
     expect(issue.column).toBe(10);
   });
 
-  it('E100：负数字面量不在 v1 子集（注记 7），锚 `-` 起点', () => {
-    const issue = expectSingleIssue(parseVfsl('type A = -1;'));
+  it('E100：-0 字面量解析期被拒（v1-spec 注记 7 / ADR 0020 决策 3），锚记号起点', () => {
+    const issue = expectSingleIssue(parseVfsl('type A = -0;'));
     expectCode(issue, '100');
     expect(issue.line).toBe(1);
     expect(issue.column).toBe(10);
