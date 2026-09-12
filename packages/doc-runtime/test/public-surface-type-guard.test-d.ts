@@ -27,7 +27,10 @@ import type {
   MaterializeIssue,
   MaterializeResult,
   MutationIssue,
+  ReadLogicalValueAtPathBudgetResult,
+  ReadLogicalValueAtPathOptions,
   ReadLogicalValueResult,
+  ReadLogicalValueTruncationEntry,
   ReplaceIssue,
   ReplaceResult,
 } from '../src/index.js';
@@ -43,6 +46,10 @@ declare const replaceResult: ReplaceResult;
 declare const phase: DocRuntimeFatalPhase;
 declare const mutationIssue: MutationIssue;
 declare const mutationResult: ApplyValidatedMutationResult;
+// 形状预算（issue #334 / ADR-0024）新名目：任一缺失 → import TS2305 → 红
+declare const readOptions: ReadLogicalValueAtPathOptions;
+declare const readTruncationEntry: ReadLogicalValueTruncationEntry;
+declare const readBudgetResult: ReadLogicalValueAtPathBudgetResult;
 
 describe('@nomicore/doc-runtime 公共入口 — mutation 类型名目恢复导出（issue #90 范围，类型层）', () => {
   it('恢复的名目可经公共入口导入：MutationIssue / ApplyValidatedMutationResult（任意缺失即 TS2305 红）', () => {
@@ -61,5 +68,13 @@ describe('@nomicore/doc-runtime 公共入口 — mutation 类型名目恢复导�
       'observer-cleanup-throw' | 'post-commit-verification' | 'pre-commit-internal'
     >();
     expectTypeOf(extractResult).toMatchTypeOf<{ ok: boolean }>();
+  });
+
+  it('形状预算新名目可经公共入口导入（issue #334 / ADR-0024：options / 截断条目 / 预算结果联合）', () => {
+    // 仅锚"可导入 + 基本投影"（详细类型契约见 read-logical-value-at-path-shape-budget.test-d.ts）。
+    expectTypeOf(readOptions.depth).toEqualTypeOf<number | undefined>();
+    expectTypeOf(readTruncationEntry.kind).toEqualTypeOf<'depth' | 'width'>();
+    expectTypeOf(readTruncationEntry.omitted).toEqualTypeOf<number>();
+    expectTypeOf(readBudgetResult.ok).toEqualTypeOf<boolean>();
   });
 });

@@ -11,6 +11,13 @@ export { extractYjsSnapshot } from './extract.js';
 export type { ExtractIssue, ExtractResult } from './extract.js';
 export { readLogicalValueAtPath } from './read.js';
 export type { ReadLogicalValueResult } from './read.js';
+// 形状预算（issue #334 / ADR-0024 决策 1/3/6）：加法类型导出——三参 read 的 options、
+// 截断条目与预算结果联合。零新增值导出（读入口仍唯一，决策 6「不新增第二条读路径」）。
+export type {
+  ReadLogicalValueAtPathBudgetResult,
+  ReadLogicalValueAtPathOptions,
+  ReadLogicalValueTruncationEntry,
+} from './read.js';
 export { materializeRoot } from './materialize.js';
 export type { MaterializeIssue, MaterializeResult } from './materialize.js';
 export { DocRuntimeFatalError } from './fatal.js';
