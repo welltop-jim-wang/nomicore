@@ -365,14 +365,17 @@ export interface ReplicationClock {
 }
 
 /**
- * 结构化 observer seam 事件（ADR 0010 L167 最小观测面全量映射；28 型，append-only——
+ * 结构化 observer seam 事件（ADR 0010 L167 最小观测面全量映射；36 型，append-only——
  * issue #238 追加第 21 型 event-loop-delay-sampled 及四事件面 sequence/四段字段；
  * issue #256 追加第 22 型 namespace-failed 及 cause/timeoutMs 字段；issue #287 追加
  * 第 23/24 型 schema-rearm-applied / schema-rearm-failed——协议 §23.1 schema re-arm 域，
  * ADR 0018 §4；issue #244 追加第 25 型 chunked-update-aborted 及
  * ChunkedUpdateAbortReason 词表；issue #245 追加第 26–28 型
  * chunked-update-sent/applied/acked——ADR 0013 L89–91 域键集逐字 + §23 side 信封；
- * 改道裁决（SA8 R21）：分块 transfer 的成功结算从普通族改道至 chunked 族）。
+ * 改道裁决（SA8 R21）：分块 transfer 的成功结算从普通族改道至 chunked 族；
+ * issue #301 追加第 29–36 型 chunked-snapshot-{sent,applied,acked,aborted} 与
+ * chunked-sync-{sent,applied,acked,aborted}——ADR 0019 L78–81 + 协议 §23.1 第 29–36 型行，
+ * 字段集对齐既有 chunked-update-* 四型）。
 
  *
  * Safe-field 纪律（协议文档 §23）：字段类别 = 稳定字面量（type/side/direction/via/
@@ -853,6 +856,130 @@ export type ReplicationObserverEvent =
       readonly bytes: number;
       readonly ackLatencyMs?: number;
 
+    }
+  // ── issue #301（#295 切片 3；append-only 第 29–36 型；ADR 0019 L78–81 + 协议 §23.1
+  //    第 29–36 型行。字段集对齐既有 chunked-update-* 四型；side 信封按 §23.1 行取值：
+  //    snapshot 成功三型为字面量（snapshot 恒 hub→peer，对齐 bootstrap-snapshot-sent/
+  //    bootstrap-imported 先例）；sync 四型与两 aborted 型为 ReplicationObserverSide
+  //    （hub/peer 双侧可达，对齐 chunked-update-aborted 先例——hub 侧 kind=1 入站结构
+  //    不可达属防御面，类型不收紧）。键集冻结：sent 恒无任何 latency 键；applied 无
+  //    transferId/sequence/四段差值/效果组键；acked 无 sequence/syncRoundId；aborted 无
+  //    connectionId。reason 复用既有 ChunkedUpdateAbortReason 闭联合（零新词）。计数
+  //    不变量与 kind=0 先例逐字同构：sent/acked 每笔恰一、applied 六选一互斥、aborted
+  //    busy→aborted 边沿恰一且与成功型互斥；发射全部在决策落定后、observer 缺省零构造）──
+  | {
+      /**
+       * 分块 snapshot transfer（`kind=1`）完成出站时恰一（末 chunk 结算记账点），非逐
+       * chunk。改道（R21 平移）：该结算点不再发普通族 `bootstrap-snapshot-sent`（窗口内
+       * 归零）。字段 = wire UPDATE_CHUNK 申报投影（长度/计数 safe-field，非内容）。
+       */
+      readonly type: 'chunked-snapshot-sent';
+      readonly side: 'hub';
+      readonly connectionId?: string;
+      readonly namespaceId: string;
+      readonly transferId: number;
+      readonly chunkCount: number;
+      readonly totalBytes: number;
+    }
+  | {
+      /**
+       * `kind=1` 组装收齐的排他复制导入成功结算（peer 侧）。改道：该结算点不再发普通族
+       * `bootstrap-imported`（窗口内归零）。bytes === wire 声明 totalBytes（assembler
+       * Σbytes 精确核对不变量——长度非内容）；无 transferId/sequence/效果组键。
+       */
+      readonly type: 'chunked-snapshot-applied';
+      readonly side: 'peer';
+      readonly connectionId?: string;
+      readonly namespaceId: string;
+      readonly bytes: number;
+      readonly chunkCount: number;
+      readonly applyLatencyMs?: number;
+    }
+  | {
+      /**
+       * 末 chunk 帧序的单 BOOTSTRAP_ACK 收妥结算（发送侧 hub）；普通族无对应事件——本型
+       * 为分块路径独有观测点，无改道。zombie 迟到 ACK / 单帧路径零事件。bytes = wire
+       * totalBytes；ackLatencyMs = ACK 处理时刻 − 末 chunk 出站时刻（clock 缺省/无
+       * observer 时整键缺失）。键集冻结：无 sequence/transferId/chunkCount 键。
+       */
+      readonly type: 'chunked-snapshot-acked';
+      readonly side: 'hub';
+      readonly connectionId?: string;
+      readonly namespaceId: string;
+      readonly bytes: number;
+      readonly ackLatencyMs?: number;
+    }
+  | {
+      /**
+       * 分块 snapshot transfer（`kind=1`）的 partial assembly 被丢弃（abort 矩阵观测
+       * 投影；纪律与 `chunked-update-aborted` 逐字同构）。终局失败族
+       * （`SNAPSHOT_TRANSFER_*`/`BOOTSTRAP_FAILED`）不发本事件；无 connectionId 键。
+       */
+      readonly type: 'chunked-snapshot-aborted';
+      readonly side: ReplicationObserverSide;
+      readonly namespaceId: string;
+      readonly transferId: number;
+      readonly reason: ChunkedUpdateAbortReason;
+      readonly receivedChunks: number;
+      readonly receivedBytes: number;
+    }
+  | {
+      /**
+       * 分块 sync-diff transfer（`kind=2`）完成出站时恰一。改道：该结算点不再发普通族
+       * `sync-step2-sent`（窗口内归零）。syncRoundId = 本 transfer 所属 round 的 wire
+       * 投影（§9.1–9.3；uint32，issue #239 safe-field 先例）。恒无 latency 键。
+       */
+      readonly type: 'chunked-sync-sent';
+      readonly side: ReplicationObserverSide;
+      readonly connectionId?: string;
+      readonly namespaceId: string;
+      readonly transferId: number;
+      readonly chunkCount: number;
+      readonly totalBytes: number;
+      readonly syncRoundId: number;
+    }
+  | {
+      /**
+       * `kind=2` 组装收齐的 Step2 diff apply 成功结算。改道：该结算点不再发普通族
+       * `sync-diff-applied`（窗口内归零）。bytes === wire totalBytes；syncRoundId =
+       * 被 apply transfer 的 roundId 投影；无 transferId/sequence/效果组键
+       * （degraded 判别先于本型胜出，R23 裁决不变）。
+       */
+      readonly type: 'chunked-sync-applied';
+      readonly side: ReplicationObserverSide;
+      readonly connectionId?: string;
+      readonly namespaceId: string;
+      readonly bytes: number;
+      readonly chunkCount: number;
+      readonly syncRoundId: number;
+      readonly applyLatencyMs?: number;
+    }
+  | {
+      /**
+       * 末 chunk 帧序的单 SYNC_APPLIED 收妥结算（发送侧）；普通族无对应事件——本型为
+       * 分块路径独有观测点，无改道。被拒/迟到 ACK（quiet 域）零事件。键集冻结：无
+       * sequence/syncRoundId/transferId/chunkCount 键。
+       */
+      readonly type: 'chunked-sync-acked';
+      readonly side: ReplicationObserverSide;
+      readonly connectionId?: string;
+      readonly namespaceId: string;
+      readonly bytes: number;
+      readonly ackLatencyMs?: number;
+    }
+  | {
+      /**
+       * 分块 sync-diff transfer（`kind=2`）的 partial assembly 被丢弃（abort 矩阵观测
+       * 投影；纪律与 `chunked-update-aborted` 逐字同构）。终局失败族（`SYNC_TRANSFER_*`）
+       * 不发本事件；无 connectionId 键。
+       */
+      readonly type: 'chunked-sync-aborted';
+      readonly side: ReplicationObserverSide;
+      readonly namespaceId: string;
+      readonly transferId: number;
+      readonly reason: ChunkedUpdateAbortReason;
+      readonly receivedChunks: number;
+      readonly receivedBytes: number;
     };
 
 /**

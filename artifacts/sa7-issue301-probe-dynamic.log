@@ -1,0 +1,57 @@
+
+ RUN  v3.2.7 /home/wangjian/nomicore-fix-issue-301
+
+stdout | packages/ws-replication/test/ws-replication-issue301-sa7-probe.test.ts > issue #301 SA7 动态探针（临时）：deferred 动态面 > P1（OD7）：kind=1 停滞超时 → BOOTSTRAP_FAILED 族终局 + 零 aborted 计数（N1 不锁的计数面）
+[SA7-DATAFLOW] P1 kind=1-timeout {"aborted":0,"failedEvent":[{"cause":"bootstrap-timeout","timeoutMs":30000}],"peerState":"failed","peerCodes":["BOOTSTRAP_FAILED"],"hubSent":1,"hubAcked":0,"partialChunks":12}
+
+stdout | packages/ws-replication/test/ws-replication-issue301-sa7-probe.test.ts > issue #301 SA7 动态探针（临时）：deferred 动态面 > P2（SA8 D6）：被拒 ACK（round 校验失败）→ 零 chunked-sync-acked + 载体结算释放无泄漏
+[SA7-DATAFLOW] P2 rejected-ack {"acked":0,"peerState":"failed","peerCodes":["SYNC_STATE_VIOLATION"],"hubApplied":1,"craftedAck":{"round":2,"ackedSeq":22,"real":21}}
+
+stdout | packages/ws-replication/test/ws-replication-issue301-sa7-probe.test.ts > issue #301 SA7 动态探针（临时）：deferred 动态面 > P2（SA8 D6）：被拒 ACK（round 校验失败）→ 零 chunked-sync-acked + 载体结算释放无泄漏
+[SA7-DATAFLOW] P2 post-settle-leak-check {"newEvents":0,"newFrames":0,"resyncCauses":["send-failed"]}
+
+stdout | packages/ws-replication/test/ws-replication-issue301-sa7-probe.test.ts > issue #301 SA7 动态探针（临时）：deferred 动态面 > P3：resync-declared 行 × hub kind=2 → 恰一 chunked-sync-aborted{resync-declared, side:hub}；重复触发零追加（busy 守卫）
+[SA7-DATAFLOW] P3 resync-declared-hub-k2 {"aborted":[{"reason":"resync-declared","side":"hub","transferId":1,"receivedChunks":1,"receivedBytes":8192}],"hubRoot":"seed"}
+
+stdout | packages/ws-replication/test/ws-replication-issue301-sa7-probe.test.ts > issue #301 SA7 动态探针（临时）：deferred 动态面 > P3：resync-declared 行 × hub kind=2 → 恰一 chunked-sync-aborted{resync-declared, side:hub}；重复触发零追加（busy 守卫）
+[SA7-DATAFLOW] P3 repeat-trigger {"abortedTotal":1}
+
+stdout | packages/ws-replication/test/ws-replication-issue301-sa7-probe.test.ts > issue #301 SA7 动态探针（临时）：deferred 动态面 > P4：resync-declared 行 × peer kind=1（bootstrapping partial）→ 恰一 chunked-snapshot-aborted{resync-declared, side:peer}
+[SA7-DATAFLOW] P4 resync-declared-peer-k1 {"aborted":[{"reason":"resync-declared","side":"peer","transferId":1,"receivedChunks":12,"receivedBytes":98304}],"peerState":"reconciling"}
+
+stdout | packages/ws-replication/test/ws-replication-issue301-sa7-probe.test.ts > issue #301 SA7 动态探针（临时）：deferred 动态面 > P5：shed 行 × hub kind=2（非 live 语境）→ 零 shed 事件 + assembly 不被清除（§244 D5 live 门）+ 后续真实收口 reason 归属正确
+[SA7-DATAFLOW] P5 shed-hub-k2-nonlive {"abortedImmediately":0,"hubRoot":"SHED_WRITE","hubToPeerErrorCodes":[],"k0ChunksOut":0}
+
+stdout | packages/ws-replication/test/ws-replication-issue301-sa7-probe.test.ts > issue #301 SA7 动态探针（临时）：deferred 动态面 > P5：shed 行 × hub kind=2（非 live 语境）→ 零 shed 事件 + assembly 不被清除（§244 D5 live 门）+ 后续真实收口 reason 归属正确
+[SA7-DATAFLOW] P5 assembly-survives-shed {"aborted":[{"reason":"timeout","side":"hub","receivedChunks":1,"receivedBytes":8192}],"transferId":1}
+
+stdout | packages/ws-replication/test/ws-replication-issue301-sa7-probe.test.ts > issue #301 SA7 动态探针（临时）：deferred 动态面 > P6：shed 行 × peer kind=2（非 live 语境）→ 零 shed 事件 + assembly 保持 + timeout 行恰一
+[SA7-DATAFLOW] P6 shed-peer-k2-nonlive {"abortedImmediately":0,"peerRoot":"SHED_WRITE","k0ChunksOut":0}
+
+stdout | packages/ws-replication/test/ws-replication-issue301-sa7-probe.test.ts > issue #301 SA7 动态探针（临时）：deferred 动态面 > P6：shed 行 × peer kind=2（非 live 语境）→ 零 shed 事件 + assembly 保持 + timeout 行恰一
+[SA7-DATAFLOW] P6 assembly-survives-shed {"aborted":[{"reason":"timeout","side":"peer","receivedChunks":1}]}
+
+stdout | packages/ws-replication/test/ws-replication-issue301-sa7-probe.test.ts > issue #301 SA7 动态探针（临时）：deferred 动态面 > P7a：epoch-fence 行 × hub kind=2 → 恰一 chunked-sync-aborted{epoch-fence, side:hub} + conflicted 终局
+[SA7-DATAFLOW] P7a epoch-fence-hub-k2 {"aborted":[{"reason":"epoch-fence","side":"hub","receivedChunks":1}],"hubRoot":"seed","identityChanged":1}
+
+stdout | packages/ws-replication/test/ws-replication-issue301-sa7-probe.test.ts > issue #301 SA7 动态探针（临时）：deferred 动态面 > P7b：epoch-fence 行 × peer kind=2 → 恰一 chunked-sync-aborted{epoch-fence, side:peer}
+[SA7-DATAFLOW] P7b epoch-fence-peer-k2 {"aborted":[{"reason":"epoch-fence","side":"peer","receivedChunks":1}],"peerState":"conflicted","peerRoot":"seed"}
+
+stdout | packages/ws-replication/test/ws-replication-issue301-sa7-probe.test.ts > issue #301 SA7 动态探针（临时）：deferred 动态面 > P7c：epoch-fence 行 × peer kind=1（N9 计数面）→ 恰一 aborted、reason 实测记录（last-writer-wins 归并观察）
+[SA7-DATAFLOW] P7c epoch-fence-peer-k1 {"aborted":[{"reason":"connection-teardown","side":"peer","receivedChunks":12}],"peerState":"disconnected"}
+
+stdout | packages/ws-replication/test/ws-replication-issue301-sa7-probe.test.ts > issue #301 SA7 动态探针（临时）：deferred 动态面 > P8：zombie 迟到 BOOTSTRAP_ACK（bootstrapTimeout 弃置后）→ 零 acked、零状态迁移
+[SA7-DATAFLOW] P8 zombie-bootstrap-ack {"acked":0,"hubFailedStill":1,"hubEventsDelta":0,"newHubErrors":[]}
+
+stdout | packages/ws-replication/test/ws-replication-issue301-sa7-probe.test.ts > issue #301 SA7 动态探针（临时）：deferred 动态面 > P9：hub→peer 分块 sync 方向（side 双侧覆盖）→ hub sent / peer applied / hub acked 各恰一
+[SA7-DATAFLOW] P9 hub-to-peer-sync-direction {"sent":[{"side":"hub","transferId":1,"chunkCount":13,"totalBytes":100029,"syncRoundId":2}],"applied":[{"side":"peer","bytes":100029,"chunkCount":13,"syncRoundId":2,"hasLatency":false}],"acked":[{"side":"hub","bytes":100029}],"wire":{"chunkCount":13,"totalBytes":100029,"bindingRound":2,"wireChunkCount":13}}
+
+stdout | packages/ws-replication/test/ws-replication-issue301-sa7-probe.test.ts > issue #301 SA7 动态探针（临时）：deferred 动态面 > P10：hub 侧 kind=1 入站结构性不可达 → NAMESPACE_STATE_VIOLATION + hub 零 chunked-snapshot-* 事件
+[SA7-DATAFLOW] P10 hub-k1-inbound-unreachable {"hubToPeerCodes":["NAMESPACE_STATE_VIOLATION"],"snapshotEvents":0,"hubEventsDelta":3}
+
+ ✓ packages/ws-replication/test/ws-replication-issue301-sa7-probe.test.ts (12 tests) 110ms
+
+ Test Files  1 passed (1)
+      Tests  12 passed (12)
+   Start at  03:44:08
+   Duration  998ms (transform 535ms, setup 0ms, collect 733ms, tests 110ms, environment 0ms, prepare 47ms)
