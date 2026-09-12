@@ -333,8 +333,17 @@ function emitInner(node: StructureNode, value: ValueSchema, path: string, tables
         .join(' | ');
     }
     case 'leaf': {
-      // scalar / enum / pattern / 标量联合（可空叶 = 值侧标量联合 → T | null）
-      if (value.kind !== 'scalar' && value.kind !== 'enum' && value.kind !== 'pattern' && value.kind !== 'union') {
+      // scalar / enum / pattern / int / range / 标量联合（可空叶 = 值侧标量联合 → T | null）
+      // ★ 非 switch 位点（typecheck 不强制，手改；ADR 0020 决策 7）：int/range 数值约束叶
+      // 与 pattern 同层标量叶，放行后经 projectValue 发射 number；其余未知 kind 仍响亮 desync。
+      if (
+        value.kind !== 'scalar' &&
+        value.kind !== 'enum' &&
+        value.kind !== 'pattern' &&
+        value.kind !== 'int' &&
+        value.kind !== 'range' &&
+        value.kind !== 'union'
+      ) {
         throw desync(node, value, path);
       }
       // #307 发射位 4（ADR 0019 决策 6.4）：内联枚举 / 标量联合成员 doc 同行内前置。

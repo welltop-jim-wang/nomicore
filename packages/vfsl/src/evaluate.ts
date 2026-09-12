@@ -87,6 +87,8 @@ function structureOf(t: VfslType, ctx: Ctx, path: string | null): StructureNode 
     case 'primitive':
     case 'literal':
     case 'pattern':
+    case 'int':
+    case 'range':
       return { kind: 'leaf' };
 
     case 'ref': {
@@ -212,7 +214,9 @@ function isNoChildTerminal(r: VfslType): boolean {
   if (r.kind === 'marker') {
     return r.marker === 'YPlainArray' || r.marker === 'YXmlFragment' || r.marker === 'YLeaf';
   }
-  return r.kind === 'primitive' || r.kind === 'literal' || r.kind === 'pattern';
+  // ★ 非 switch 位点（typecheck 不强制，手改；ADR 0020 决策 5）：int/range 与 primitive/
+  // literal/pattern 同层标量叶——漏改会让别名链字段位的约束叶在结构树被当 ref 终态（两树漂移）。
+  return r.kind === 'primitive' || r.kind === 'literal' || r.kind === 'pattern' || r.kind === 'int' || r.kind === 'range';
 }
 
 /** 无子终态节点产出（O(1) 复制；ref 内联与直接拼写同形）。 */
@@ -222,7 +226,7 @@ function terminalOf(r: VfslType): StructureNode {
     if (r.marker === 'YXmlFragment') return { kind: 'xml-fragment' };
     return { kind: 'leaf' }; // YLeaf
   }
-  return { kind: 'leaf' }; // primitive / literal / pattern
+  return { kind: 'leaf' }; // primitive / literal / pattern / int / range
 }
 
 // —— §5.2 判别式检测（保守附加：全内联对象成员 + 公共非可选字面量字段 + 值两两互异）——
@@ -281,6 +285,13 @@ function valueOf(t: VfslType, ctx: Ctx): ValueSchema {
       return { kind: 'enum', values: [t.value] }; // 单字面量 → 单元枚举（判别一致性断言依赖）
     case 'pattern':
       return { kind: 'pattern', regex: t.regex };
+    case 'int':
+      // 条件键构造（ADR 0020 决策 5）：裸 Int 两键皆缺席；带参形态两键必在场（键序 kind → min → max）
+      return t.min !== undefined && t.max !== undefined
+        ? { kind: 'int', min: t.min, max: t.max }
+        : { kind: 'int' };
+    case 'range':
+      return { kind: 'range', min: t.min, max: t.max };
     case 'ref':
       return { kind: 'ref', name: t.name }; // 永不展开（含 Record 值位、无子终态目标）
     case 'object': {
@@ -390,7 +401,9 @@ function walkDocs(t: VfslType, path: string, tables: DocsTables): void {
     case 'primitive':
     case 'literal':
     case 'pattern':
-      return; // 终态
+    case 'int':
+    case 'range':
+      return; // 终态（新叶子不新增/挪用 doc 锚）
     case 'object':
       for (const f of t.fields) {
         const p = `${path}.${f.name}`;

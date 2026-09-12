@@ -284,7 +284,7 @@ describe('issue #6 — 反例：标记实参形状 / Record 键 / 纯值上下�
   });
 });
 
-describe('issue #6 — 交叉类型契约（AC3：string & Pattern<"…"> 是唯一被接受的交叉形式）', () => {
+describe('issue #6 — 交叉类型契约（AC3：白名单四例——string & Pattern<…>、number & Int、Int<min,max>、Range<min,max>）', () => {
   it('交叉左元非 string：number & string → 结构化错误 E100', () => {
     expectCode(expectSingleIssue(parseVfsl('type A = number & string;')), '100');
   });

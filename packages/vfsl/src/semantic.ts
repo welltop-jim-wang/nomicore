@@ -60,7 +60,7 @@ function walk(t: AstType, visit: (t: AstType) => void): void {
       walk(t.arg, visit);
       break;
     default:
-      break; // primitive / literal / ref / pattern / generic-diag（无子节点）
+      break; // primitive / literal / ref / pattern / int / range / generic-diag（无子节点）
   }
 }
 
@@ -235,6 +235,13 @@ function toIRType(t: AstType): VfslType {
       return { kind: 'marker', marker: t.marker, arg: toIRType(t.arg), docs: t.docs };
     case 'pattern':
       return { kind: 'pattern', regex: t.regex };
+    case 'int':
+      // 条件键纪律（ADR 0020 决策 5）：裸 Int 两键皆缺席；带参形态两键必在场（键序 kind → min → max）
+      return t.min !== undefined && t.max !== undefined
+        ? { kind: 'int', min: t.min, max: t.max }
+        : { kind: 'int' };
+    case 'range':
+      return { kind: 'range', min: t.min, max: t.max };
     case 'generic-diag':
       // 不变量（§5.4）：generic-diag 必产语义相位 issue，不可能到达此处；命中即实现缺陷
       throw new Error('internal: generic-diag 必产语义相位 issue，不应到达 IR 转换');

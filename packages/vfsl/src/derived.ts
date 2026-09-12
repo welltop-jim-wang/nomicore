@@ -48,6 +48,11 @@ export type ValueSchema =
   | { kind: 'union'; members: ValueSchema[]; discriminator?: Discriminator }
   | { kind: 'enum'; values: Array<string | number> } // 字面量（联合）→ 枚举，声明序
   | { kind: 'pattern'; regex: string }
+  // 数值约束叶子（ADR 0020 决策 5；与 IR 同形、条件键纪律同 pattern 先例）：
+  // `int` 零参形态两键皆缺席（整键不存在）；带参形态两键必在场。判定基线见
+  // validate.ts `intRangeReject`——number 家族四值基线（ADR 0021 决策 1）适用。
+  | { kind: 'int'; min?: number; max?: number }
+  | { kind: 'range'; min: number; max: number }
   | { kind: 'scalar'; type: 'string' | 'number' | 'boolean' | 'null' | 'unknown' }
   | { kind: 'optional'; value: ValueSchema } // 仅对象字段 ?: 包装
   | { kind: 'ref'; name: string };

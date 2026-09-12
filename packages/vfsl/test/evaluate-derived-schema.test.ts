@@ -70,6 +70,11 @@ type ValueSchema =
   | { kind: 'union'; members: ValueSchema[]; discriminator?: Discriminator }
   | { kind: 'enum'; values: Array<string | number> } // 字面量联合 → 枚举（声明序）
   | { kind: 'pattern'; regex: string } // string & Pattern<"…">（解码后原文）
+  // 【#315 同步】数值约束叶子（ADR 0020 决策 5）：本文件的值 schema 镜像类型随生产联合的
+  // additive 扩展同步补齐（否则 `EvaluateResult` 赋值断言因联合更宽而失配）。条件键纪律与
+  // 生产一致：裸 `int` 两键皆缺席；带参形态两键必在场。纯类型镜像，零断言变化。
+  | { kind: 'int'; min?: number; max?: number } // number & Int / number & Int<min, max>
+  | { kind: 'range'; min: number; max: number } // number & Range<min, max>
   | { kind: 'scalar'; type: 'string' | 'number' | 'boolean' | 'null' | 'unknown' }
   | { kind: 'optional'; value: ValueSchema } // ?: 可选字段
   | { kind: 'ref'; name: string };

@@ -58,7 +58,7 @@ _Avoid_: 把 M4 成员 doc 当校验或物化规则的输入（无机器标签�
 Yjs 物化语义（kind / storage / opaque），供路径下钻守卫；与值语义正交。
 
 **值 schema（value schema）**:
-值类型语义：封闭对象、判别联合、字面量联合、pattern 约束。
+值类型语义：封闭对象、判别联合、字面量联合、pattern 约束、数值约束（整数性 `Int` / 闭区间 `Range<min, max>`）。
 
 **路径索引（path index）**:
 路径 → 子 schema 的下钻索引，键匹配（exact / pattern）为标准能力。
