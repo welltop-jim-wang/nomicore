@@ -1,0 +1,25 @@
+=== SA6 issue#299 全仓 pnpm test 证据（HEAD eb380d7aed296c15accf8832a45a96b630f0c8ce） ===
+命令: pnpm test   (= NODE_OPTIONS=--conditions=nomicore-source vitest run --typecheck)
+job: bash-8；Start 12:53:28；Duration 614.68s（约 10m15s）
+说明: 本文件为 job 输出尾部的逐字摘录（完整输出未落盘）。本次收集发生在
+      ws-replication-issue299-api.test-d.ts 创建之前，故该类型面文件不在本次收集内，
+      由 artifacts/sa6-issue299-red-evidence.log 的 --typecheck 专项运行覆盖。
+
+--- 逐字摘录（尾部摘要） ---
+ Test Files  2 failed | 325 passed (327)
+      Tests  19 failed | 3441 passed (3460)
+Type Errors  no errors
+   Start at  12:53:28
+   Duration  614.68s (transform 4.83s, setup 0s, collect 34.50s, tests 534.76s, environment 40ms, prepare 14.85s, typecheck 14.27s)
+
+--- 19 条失败 = 本契约两条运行时文件（api.test-d.ts 未参与收集） ---
+packages/replication-protocol/test/codec-issue299-ac-red.test.ts           14 failed（R1–R14）
+packages/ws-replication/test/ws-replication-issue299-ac-red.test.ts         5 failed（C1–C4、C7）
+其余 325 文件 / 3441 用例全绿（含 codec golden、issue242/243/244/245/246 全套、插件与真实传输面）。
+FAIL 明细中的代表行（逐字）：
+  ProtocolError: MALFORMED_FRAME: invalid namespaceId  ×12（单形态向量被旧解析器误读）
+  AssertionError: maxChunkedBootstrapBytes 缺省必须为 4194304 … expected undefined to be 4194304
+  AssertionError: maxChunkedBootstrapBytes=40MiB > 64×512KiB=32MiB（hub 入口）
+  AssertionError: maxChunkedSyncDiffBytes=40MiB > 32MiB（hub 入口）
+  AssertionError: bootstrap=2MiB（界内）∧ sync=2MiB+1（越界）（hub 入口）
+  AssertionError: hub 插件 limits allowlist 必须接纳两新键（当前抛 invalid configuration）

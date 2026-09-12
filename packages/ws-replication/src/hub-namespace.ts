@@ -22,13 +22,16 @@ import {
   type MappingOutcome,
 } from './error-mapping.js';
 import type { NamespaceAuthorization } from './types.js';
-import { RoundAborted, RoundEngine } from './round-engine.js';
+import { RoundAborted, RoundEngine, type Step2SendOutcome } from './round-engine.js';
 import { UpdateChannel } from './update-channel.js';
 import {
   UpdateChunkAssembler,
+  chunkedViolationCode,
   type ChunkedTransferPiece,
+  type ChunkedTransferViolationCode,
   type UpdateChunkAcceptResult,
 } from './update-transfer.js';
+import { BulkTransferSender } from './bulk-transfer.js';
 import type { DataSenderFacet } from './backpressure.js';
 import type {
   ChunkedUpdateAbortReason,
@@ -128,6 +131,9 @@ export class HubNamespaceChannel {
 
   readonly round: RoundEngine;
   readonly channel: UpdateChannel;
+  /** issue #295 切片 2（D1）：本通道 kind=1/2 分块载荷发送器（与 channel 同生命周期；
+   *  hub 侧 kind=1 = snapshot 改道、kind=2 = Step2 diff 改道）。 */
+  readonly bulkTransfer: BulkTransferSender;
   readonly watchdog: FenceWatchdog;
   private readonly onOwnedBound: (bytes: Uint8Array) => void;
   /** 构造期捕获的 observer 在场标记（options 注入后不可变——热路径判空零调用）。 */
@@ -147,15 +153,36 @@ export class HubNamespaceChannel {
    *  归类——CLOSE 在途时连接先断 → 后置位覆盖）。终局失败族（违例/ERROR/revoke → failed）
    *  不置位——该行可观测信号 = namespace-error/namespace-failed（互补不重复）。 */
   private teardownAbortReason: ChunkedUpdateAbortReason | undefined;
+  /** issue #301：末 chunk 出站时刻（`chunked-{snapshot,sync}-acked` 的 ackLatencyMs t0
+   *  锚）。覆写式单槽——per (ns, 方向) 至多 1 个进行中载体（facet D7 仲裁），
+   *  awaiting-ack ⟹ 本载体 onLastChunkSent 已触发（同一转移）⇒ 结算时槽值恒属当前载体。 */
+  private chunkedAckT0: number | undefined;
 
   /** 连接级 data 调度面（§6.1/§6.3）：pull 以 state==='live' 为门槛；shed 按通道
-   *  live 性分派（live → declareHubResync 声明并等待；非 live → pendingResync）。 */
+   *  live 性分派（live → declareHubResync 声明并等待；非 live → pendingResync）。
+   *  issue #295 切片 2（D7）：三段仲裁——① kind=0 在途 transfer 先行（既有 ③a）→
+   *  ② kind=1/2 分块载体（state 门由 enqueue 语境承载；含 awaiting-ack 的整笔占槽）→
+   *  ③ 既有 live + channel 路径。记账口径 = channel + bulk 载体聚合（wheel 留轮/shed 账本）。 */
   readonly sendFacet: DataSenderFacet = {
-    queuedBytes: () => this.channel.queuedBytes,
-    queuedCount: () => this.channel.queuedCount,
-    pullAndSendOne: () => (this.state === 'live' ? this.channel.pullAndSendOne() : false),
+    queuedBytes: () => this.channel.queuedBytes + this.bulkTransfer.queuedBytes(),
+    queuedCount: () => this.channel.queuedCount + this.bulkTransfer.queuedCount(),
+    pullAndSendOne: () => {
+      if (this.channel.hasActiveTransfer()) {
+        return this.state === 'live' ? this.channel.pullAndSendOne() : false;
+      }
+      if (this.bulkTransfer.hasWork()) return this.bulkTransfer.pullOne();
+      return this.state === 'live' ? this.channel.pullAndSendOne() : false;
+    },
     discardForConnectionPressure: () => {
+      // issue #295 切片 2（D1 abort 面 2）：kind=1 → BOOTSTRAP_FAILED 族终局；
+      // kind=2 → resync 边沿族（与既有 live shed 行合流，记忆化不重复声明）。
+      const bulkKind = this.bulkTransfer.discardForConnectionPressure();
       this.channel.discardForConnectionPressure();
+      if (bulkKind === 1) {
+        this.sendNsError('BOOTSTRAP_FAILED');
+        this.finalize('failed', 'send-failed');
+        return;
+      }
       if (this.state === 'live') {
         this.declareHubResync('connection-shed');
       } else {
@@ -174,20 +201,6 @@ export class HubNamespaceChannel {
       role: 'hub',
       send: (message) => {
         const seq = this.sendChecked(message);
-        // HB10：出向 Step2 diff 字节（seq>0 时发射——0 = 帧被否决，未出站）
-        if (seq > 0 && message.kind === 'SYNC_STEP2' && this.observerOn) {
-          const encodedUpdateBytes = message.update.byteLength;
-          this.host.emitObserver({
-            type: 'sync-step2-sent',
-            side: 'hub',
-            ...(cidField(this.host.connectionId())),
-            namespaceId: this.namespaceId,
-            bytes: encodedUpdateBytes,
-            // issue #239 append-only：wire roundId 投影 + 长度澄清（恒 === bytes）
-            syncRoundId: message.syncRoundId,
-            encodedUpdateBytes,
-          });
-        }
         return seq;
       },
       encode: (kind, remoteSV) => {
@@ -204,8 +217,10 @@ export class HubNamespaceChannel {
           throw new RoundAborted();
         }
       },
-      applyStep2: (update, step2Sequence, syncRoundId) =>
-        this.applyStep2(update, step2Sequence, syncRoundId),
+      sendStep2: (diff, syncRoundId, relatedStep1Sequence) =>
+        this.sendStep2(diff, syncRoundId, relatedStep1Sequence),
+      applyStep2: (update, step2Sequence, syncRoundId, form) =>
+        this.applyStep2(update, step2Sequence, syncRoundId, form),
       onViolation: () => {
         this.sendNsError('SYNC_STATE_VIOLATION');
         this.finalize('failed', 'protocol-violation');
@@ -216,6 +231,9 @@ export class HubNamespaceChannel {
     this.inboundAssembler = new UpdateChunkAssembler({
       maxUpdateBytes: host.limits.maxUpdateBytes,
       maxChunkedUpdateBytes: host.limits.maxChunkedUpdateBytes,
+      // issue #295 切片 2（D5/D6）：kind=1/2 聚合上限按 kind 取键（R44 第③条）
+      maxChunkedBootstrapBytes: host.limits.maxChunkedBootstrapBytes,
+      maxChunkedSyncDiffBytes: host.limits.maxChunkedSyncDiffBytes,
     });
     this.channel = new UpdateChannel({
       limits: host.limits,
@@ -237,6 +255,20 @@ export class HubNamespaceChannel {
       dataGateOpen: () => this.host.dataGateOpen(),
       onDataQueued: () => this.host.onDataQueued(this.namespaceId),
       requestDataDrain: () => this.host.requestDataDrain(),
+      // issue #295 切片 2（SA2-M3）：窗口空位唤醒——无 bulk 工作时与现状逐字节同义
+      hasBulkTransferWork: () => this.bulkTransfer.hasQueuedWork(),
+    });
+    this.bulkTransfer = new BulkTransferSender({
+      maxUpdateBytes: host.limits.maxUpdateBytes,
+      ackTimeoutMs: host.timeouts.ackTimeoutMs,
+      allocateTransferId: () => this.channel.allocateTransferId(),
+      transferIdAvailable: () => this.channel.transferIdAvailable(),
+      windowHasRoom: () =>
+        this.channel.effectiveInFlightCount() < host.limits.maxInFlightUpdates,
+      sendChunk: (chunk) => this.sendUpdateChunkFrame(chunk),
+      dataGateOpen: () => this.host.dataGateOpen(),
+      armTimer: (cb, ms) => host.timer.setTimeout(cb, ms),
+      clearTimer: (h) => host.timer.clearTimeout(h),
     });
     this.watchdog = new FenceWatchdog({
       role: 'hub',
@@ -518,16 +550,6 @@ export class HubNamespaceChannel {
         this.applyOutcome(mapEncodeThrow(this.session), 'apply-rejected');
         return;
       }
-      if (snapshot.byteLength > this.host.limits.maxBootstrapBytes) {
-        // §8 step 2：不分块、不 fallback、零 snapshot 帧（OPEN_OK 已答复——本 ERROR
-        // 是 bootstrap 路径的收口信号，直接送达当前连接）
-        this.sendNsError('BOOTSTRAP_TOO_LARGE');
-        // issue #256 评审修订：本地出站快照超 maxBootstrapBytes 是**本端**资源超限
-        // （非对端入站违例）——归 send-failed（编码面/出站超限族），防止把 Hub 自身
-        // 资源问题误聚合为对端 protocol-violation。
-        this.finalize('failed', 'send-failed');
-        return;
-      }
       // §8 step 3（R3/#8）：与 encodeDiff 同一同步段之后从自有 lease status **重读**
       let identity2:
         | Readonly<{ state: 'disabled' }>
@@ -546,6 +568,57 @@ export class HubNamespaceChannel {
         // bootstrap 阶段身份重读检出 replication 未启用——cause 如实记
         // replication-disabled（与 open 阶段检出同值，阶段由状态机上下文区分）。
         this.finishOpenError('INTERNAL_ERROR', 'replication-disabled');
+        return;
+      }
+      // issue #295 切片 2（D4/D0）：三分叉——≤ maxBootstrapBytes 走既有单帧路径（逐字节
+      // 不变）；超限且未协商 → 既有 v1 终局（BOOTSTRAP_TOO_LARGE 保留）；超聚合上限 →
+      // 本端资源超限归 send-failed 族（§23.3 场景 14 改写：SNAPSHOT_TRANSFER_TOO_LARGE）；
+      // 其余 → kind=1 分块改道（惰性切片 + data 路径出站 + 末 chunk 帧序结算锚）。
+      if (snapshot.byteLength > this.host.limits.maxBootstrapBytes) {
+        if (!this.host.chunkedUpdateNegotiated()) {
+          // §8 step 2：v1 代际端对 0x42 照旧 connection fatal——超限走既有终局码
+          this.sendNsError('BOOTSTRAP_TOO_LARGE');
+          this.finalize('failed', 'send-failed');
+          return;
+        }
+        if (snapshot.byteLength > this.host.limits.maxChunkedBootstrapBytes) {
+          this.sendNsError('SNAPSHOT_TRANSFER_TOO_LARGE');
+          this.finalize('failed', 'send-failed');
+          return;
+        }
+        this.bulkTransfer.enqueue({
+          kind: 1,
+          payload: snapshot,
+          binding: {
+            replicationId: identity2.replicationId,
+            replicationEpoch: identity2.replicationEpoch,
+          },
+          onLastChunkSent: (lastChunkSequence, settlement) => {
+            // 结算锚（§8.2：ackedSequence = 末 chunk 帧序）；末 chunk 出站同一同步栈
+            this.bootstrapSnapshotSeq = lastChunkSequence;
+            // issue #301：t0 采样（ackLatencyMs = ACK 处理时刻 − 末 chunk 出站时刻）+
+            // 分块 snapshot sent 事件（末 chunk 结算记账点恰一，非逐 chunk）
+            this.chunkedAckT0 = this.sampleAckT0();
+            if (this.observerOn) {
+              this.host.emitObserver({
+                type: 'chunked-snapshot-sent',
+                side: 'hub',
+                ...cidField(this.host.connectionId()),
+                namespaceId: this.namespaceId,
+                transferId: settlement.transferId,
+                chunkCount: settlement.chunkCount,
+                totalBytes: settlement.totalBytes,
+              });
+            }
+          },
+          onSendRejected: () => this.onBootstrapChunkSendRejected(),
+          onAckTimeout: () => undefined, // kind=1 ACK 等待由 bootstrap timer 覆盖（D9）
+        });
+        // 武装点前移至 enqueue（D1 修订：bootstrapTimeoutMs 覆盖排队等待 + 逐帧传输 + ACK 等待）
+        this.armTimer('bootstrap');
+        // §4.4 同款次序纪律：入队成功后通知连接级（wheel 登记 + 总压检查）再请求 drain
+        this.host.onDataQueued(this.namespaceId);
+        this.host.requestDataDrain();
         return;
       }
       const seq = this.sendChecked({
@@ -591,7 +664,23 @@ export class HubNamespaceChannel {
     }
     this.clearTimer('bootstrap');
     this.bootstrapSnapshotSeq = undefined;
+    // issue #295 切片 2（D1）：kind=1 分块载体结算（单帧路径无载体——undefined 零事件）
+    const settled = this.bulkTransfer.settle(1);
     this.setState('reconciling'); // 等待 peer Step1
+    // issue #301：分块 snapshot acked（决策落定后发射：ACK 已验证、载体已结算、状态已推进）
+    if (settled !== undefined && this.observerOn) {
+      const t1 = this.host.now?.();
+      this.host.emitObserver({
+        type: 'chunked-snapshot-acked',
+        side: 'hub',
+        ...cidField(this.host.connectionId()),
+        namespaceId: this.namespaceId,
+        bytes: settled.totalBytes,
+        ...(t1 !== undefined && this.chunkedAckT0 !== undefined
+          ? { ackLatencyMs: t1 - this.chunkedAckT0 }
+          : {}),
+      });
+    }
   }
 
   // ─────────────────────────────── sync / update / close 帧 ───────────────────────────────
@@ -623,9 +712,121 @@ export class HubNamespaceChannel {
     if (this.isQuietState()) return;
     try {
       this.round.onApplied(message);
+      // issue #295 切片 2（D1）：kind=2 分块载体结算（无载体/未在途 → undefined 零事件）。
+      // issue #301：被拒 ACK（round 校验失败 → quiet 终局）零 acked 事件——载体仍被结算
+      // 释放（既有行为不变），对齐 kind=0 onUpdateAck violation 先例。
+      const settled = this.bulkTransfer.settle(2);
+      if (settled !== undefined && !this.isQuietState() && this.observerOn) {
+        const t1 = this.host.now?.();
+        this.host.emitObserver({
+          type: 'chunked-sync-acked',
+          side: 'hub',
+          ...cidField(this.host.connectionId()),
+          namespaceId: this.namespaceId,
+          bytes: settled.totalBytes,
+          ...(t1 !== undefined && this.chunkedAckT0 !== undefined
+            ? { ackLatencyMs: t1 - this.chunkedAckT0 }
+            : {}),
+        });
+      }
     } catch (err) {
       if (!(err instanceof RoundAborted)) throw err;
     }
+  }
+
+  /**
+   * Step2 出站（issue #295 切片 2，D3）：单帧 / kind=2 分块 / 拒收三态裁决。
+   * D0 判据：`diff > maxSyncDiffBytes ∧ chunkedUpdateNegotiated() ∧ ≤ maxChunkedSyncDiffBytes
+   * ∧ transferId 域未尽` → kind=2 分块；`≤ maxSyncDiffBytes` → 既有单帧控制帧逐字节不变
+   * （含 sync-step2-sent 观测）；未协商 ∧ 超限 → 既有 SYNC_DIFF_TOO_LARGE 终局；
+   * 超聚合上限（发送端预检，R45 设计选择）→ SYNC_TRANSFER_TOO_LARGE + failed。
+   */
+  private sendStep2(
+    diff: Uint8Array,
+    syncRoundId: number,
+    relatedStep1Sequence: number,
+  ): Step2SendOutcome {
+    if (diff.byteLength > this.host.limits.maxSyncDiffBytes) {
+      if (!this.host.chunkedUpdateNegotiated()) {
+        // v1 组合保持（刻画文件/互通矩阵）：既有终局码路径原样
+        this.sendNsError('SYNC_DIFF_TOO_LARGE');
+        this.finalize('failed', 'send-failed');
+        return { mode: 'refused' };
+      }
+      if (diff.byteLength > this.host.limits.maxChunkedSyncDiffBytes) {
+        this.sendNsError('SYNC_TRANSFER_TOO_LARGE');
+        this.finalize('failed', 'send-failed');
+        return { mode: 'refused' };
+      }
+      if (!this.channel.transferIdAvailable()) {
+        this.sendNsError('SYNC_TRANSFER_TOO_LARGE');
+        this.finalize('failed', 'send-failed');
+        return { mode: 'refused' };
+      }
+      this.bulkTransfer.enqueue({
+        kind: 2,
+        payload: diff,
+        binding: { syncRoundId },
+        onLastChunkSent: (lastChunkSequence, settlement) => {
+          this.round.noteChunkedStep2Outbound(lastChunkSequence);
+          // issue #301：t0 采样 + 分块 sync sent 事件（携本 round wire 投影 syncRoundId）
+          this.chunkedAckT0 = this.sampleAckT0();
+          if (this.observerOn) {
+            this.host.emitObserver({
+              type: 'chunked-sync-sent',
+              side: 'hub',
+              ...cidField(this.host.connectionId()),
+              namespaceId: this.namespaceId,
+              transferId: settlement.transferId,
+              chunkCount: settlement.chunkCount,
+              totalBytes: settlement.totalBytes,
+              syncRoundId,
+            });
+          }
+        },
+        onSendRejected: (detail) => this.declareHubResync('send-failed', detail),
+        onAckTimeout: () => this.onBulkTransferAckTimeout(),
+      });
+      this.host.onDataQueued(this.namespaceId);
+      this.host.requestDataDrain();
+      return { mode: 'chunked' };
+    }
+    const seq = this.sendChecked({
+      kind: 'SYNC_STEP2',
+      namespaceId: this.namespaceId,
+      syncRoundId,
+      relatedStep1Sequence,
+      update: diff,
+    });
+    // HB10：出向 Step2 diff 字节（seq>0 时发射——0 = 帧被否决，未出站）
+    if (seq > 0 && this.observerOn) {
+      const encodedUpdateBytes = diff.byteLength;
+      this.host.emitObserver({
+        type: 'sync-step2-sent',
+        side: 'hub',
+        ...(cidField(this.host.connectionId())),
+        namespaceId: this.namespaceId,
+        bytes: encodedUpdateBytes,
+        // issue #239 append-only：wire roundId 投影 + 长度澄清（恒 === bytes）
+        syncRoundId,
+        encodedUpdateBytes,
+      });
+    }
+    return { mode: 'single', sequence: seq };
+  }
+
+  /** issue #295 切片 2（D1 abort 面 2/M5）：kind=1 载体出站被拒 → BOOTSTRAP_FAILED + failed
+   *  （send-failed 族；§23.3 send-failed 行的出站发送异常读法）。 */
+  private onBootstrapChunkSendRejected(): void {
+    if (this.isTerminal()) return;
+    this.sendNsError('BOOTSTRAP_FAILED');
+    this.finalize('failed', 'send-failed');
+  }
+
+  /** issue #295 切片 2（D9）：kind=2 载体 ACK 超时 → 既有 §10.4 处置（hub 声明 RESYNC +
+   *  等待 peer 新 round）；载体已由发送器弃置归 idle。 */
+  private onBulkTransferAckTimeout(): void {
+    this.declareHubResync('ack-timeout');
   }
 
   /** 字段级超限（UPDATE_TOO_LARGE 等；在 decode 成功后由连接层判定移交）。 */
@@ -664,26 +865,41 @@ export class HubNamespaceChannel {
   // ─────────────────────────────── 入站 UPDATE_CHUNK（issue #243 DD-4/DD-5） ───────────────────────────────
 
   /** 连接层 dispatch：peer→hub 方向 chunk 帧（envelope sequence 已附）。接收管线：
-   *  静默门 → busy/残渣/首 chunk 判别 →（首 chunk 状态接纳门 + submit 门镜像 onUpdate）
-   *  → assembler 校验/重组 → 收齐后恰一次 sequenced apply + dirty + UPDATE_ACK。 */
+   *  静默门 → busy/残渣/首 chunk 判别 → kind 分派（issue #295 切片 2：kind=0 既有门；
+   *  kind=1 无合法上下文（hub 不收 snapshot chunk）→ NAMESPACE_STATE_VIOLATION；
+   *  kind=2 → round 归属核对 + 首 chunk 校验序）→ assembler 校验/重组 → 收齐后恰一次
+   *  sequenced apply（kind=0）或 round.completeChunkedStep2（kind=2）。 */
   onUpdateChunk(message: ChunkedTransferPiece & { sequence: number }): void {
     // §11.1 第 1 步：closing/终态静默忽略（零副作用）
     if (this.isQuietState()) return;
-    const { chunkIndex, sequence } = message;
+    const { chunkIndex, sequence, transferKind } = message;
     if (this.inboundAssembler.busy) {
       // busy 路径不做 ns 状态门（仅 quiet 静默前置）——hub 收 STEP1 不迁出 live，
       // 跨 round 的合法 chunk 流量是常态；WS 有序可靠使错序/丢失结构性不可达 ⇒ 响亮。
-      this.afterAssemblyAccept(this.inboundAssembler.accept(message), sequence);
+      // issue #295 切片 2：错误族按在途 assembly 的 kind（busyKind）取——accept 前捕获。
+      const busyKind = this.inboundAssembler.busyKind;
+      this.afterAssemblyAccept(this.inboundAssembler.accept(message), sequence, busyKind);
       return;
     }
     if (chunkIndex !== 0) {
       // idle ∧ chunkIndex>0 = 残渣形态（F3）——needs-resync/reconciling 良性丢弃
       //（合法恢复语义）；live 及其余状态 = 协议内不可达防御（F2/F3/F6/F7 闭合后）→ fail-loud。
       if (this.state === 'needs-resync' || this.state === 'reconciling') return;
-      this.transferViolation('UPDATE_TRANSFER_VIOLATION');
+      this.transferViolation(chunkedViolationCode('transfer-violation', transferKind ?? 0));
       return;
     }
-    // idle 首 chunk：状态接纳门镜像 onUpdate（在首 chunk 时刻判定；busy 后续不再复查）
+    // idle 首 chunk：kind 分派（issue #295 切片 2，D5）
+    if (transferKind === 1) {
+      // hub 侧不存在合法 kind=1 上下文（snapshot 恒 hub→peer）→ 协议内不可达防御
+      this.sendNsError('NAMESPACE_STATE_VIOLATION');
+      this.finalize('failed', 'protocol-violation');
+      return;
+    }
+    if (transferKind === 2) {
+      this.admitHubSyncChunk(message, sequence);
+      return;
+    }
+    // kind=0：状态接纳门镜像 onUpdate（在首 chunk 时刻判定；busy 后续不再复查）
     const accepted =
       this.state === 'live' ||
       this.state === 'needs-resync' ||
@@ -699,42 +915,81 @@ export class HubNamespaceChannel {
       this.finalize('failed', 'protocol-violation');
       return;
     }
-    // issue #244（D2，AC2/AC3）：count 维度声明上界——分配前拒绝（与 totalBytes 维度
-    // 的 assembler validateFirst 封顶合成二维上界；分类 = 声明超资源上限族 TOO_LARGE，
-    // ADR 0013:80——K4 totalBytes 同族先例）。判定用 `>`：chunkCount === 上限恰被接纳
-    // （N2 off-by-one 守卫）。busy 路径不需此门：跨帧 chunkCount 逐字节一致由 assembler
-    // 强制（漂移 → VIOLATION）。
+    this.admitUpdateChunk(message, sequence);
+  }
+
+  /** kind=2 首 chunk 接纳（issue #295 切片 2，D5/D6）：绑定块 round 归属核对（先于一切资源
+   *  判定，R5 同类语义）→ `chunkCount ≤ maxChunksPerUpdate`（TOO_LARGE 族）→ 连接级槽
+   *  （VIOLATION 族）→ assembler 首 chunk 校验（按 kind 聚合上限 + 几何）。 */
+  private admitHubSyncChunk(
+    message: ChunkedTransferPiece & { sequence: number },
+    sequence: number,
+  ): void {
+    if (!this.round.admitChunkedStep2(message.syncRoundId)) {
+      // 无活跃 round / round 不符 / 重复 Step2 → 既有 SYNC_STATE_VIOLATION + failed
+      this.sendNsError('SYNC_STATE_VIOLATION');
+      this.finalize('failed', 'protocol-violation');
+      return;
+    }
+    this.admitUpdateChunk(message, sequence);
+  }
+
+  /** kind=0/2 共用的首 chunk 后段：连接级槽获取 → assembler accept → 结果分派。 */
+  private admitUpdateChunk(
+    message: ChunkedTransferPiece & { sequence: number },
+    sequence: number,
+  ): void {
+    // issue #244（D2，AC2/AC3）：count 维度声明上界——分配前拒绝（与 totalBytes 维度的
+    // assembler validateFirst 封顶合成二维上界；分类 = 声明超资源上限族 TOO_LARGE）。
+    // 判定用 `>`：chunkCount === 上限恰被接纳（N2 off-by-one 守卫）。busy 路径不需此门：
+    // 跨帧 chunkCount 逐字节一致由 assembler 强制（漂移 → VIOLATION）。
+    // issue #295 切片 2（D6）：错误族按帧 kind 取（UPDATE_* / SNAPSHOT_* / SYNC_*）。
     if (message.chunkCount > this.host.limits.maxChunksPerUpdate) {
-      this.transferViolation('UPDATE_TRANSFER_TOO_LARGE');
+      this.transferViolation(
+        chunkedViolationCode('transfer-too-large', message.transferKind ?? 0),
+      );
       return;
     }
     // issue #244（D3，AC3 + R10）：连接级并发槽获取——先于 accept（分配前）；超额 =
     // 第 maxConcurrentAssembliesPerConnection+1 个并发首 chunk → VIOLATION（ns 级违例、
     // 其余并发 assembly 零影响、连接保持 ready）。幂等：同一 ns 已占槽恒 true。
     if (!this.host.tryBeginInboundAssembly(this.namespaceId)) {
-      this.transferViolation('UPDATE_TRANSFER_VIOLATION');
+      this.transferViolation(chunkedViolationCode('transfer-violation', message.transferKind ?? 0));
       return;
     }
     // SA4-1 修复：镜像旗标随槽位获取同步置位（accept 前）——endAssemblyScope 的归还
     // 守卫（assemblySlotHeld）因此可达；单 chunk 即收齐/首 chunk 即违例时 afterAssembly
     // Accept 的 !busy 出口在同一同步段内经 endAssemblyScope 幂等归还（获取-归还闭环）。
     this.assemblySlotHeld = true;
-    this.afterAssemblyAccept(this.inboundAssembler.accept(message), sequence);
+    this.afterAssemblyAccept(
+      this.inboundAssembler.accept(message),
+      sequence,
+      message.transferKind ?? 0,
+    );
   }
 
   /** issue #244（D4）：accept 后收尾 + 结果分派——busy→idle 的槽/timer 唯一收尾点
    *  （complete / 首 chunk 即违例：assembler 未 busy 或已自复位 → 归还槽；more → 武装/
-   *  重置进度滑动 deadline）。busy 路径同样经本方法包装（每收一 chunk 重置滑动窗口）。 */
-  private afterAssemblyAccept(result: UpdateChunkAcceptResult, sequence: number): void {
+   *  重置进度滑动 deadline）。busy 路径同样经本方法包装（每收一 chunk 重置滑动窗口）。
+   *  issue #295 切片 2：`kind` = 本次 accept 所归属的 kind（首 chunk 帧 kind / busyKind）。 */
+  private afterAssemblyAccept(
+    result: UpdateChunkAcceptResult,
+    sequence: number,
+    kind: 0 | 1 | 2 | undefined,
+  ): void {
     if (!this.inboundAssembler.busy) {
       this.endAssemblyScope();
     } else {
       this.armTimer('assembly');
     }
-    this.handleAssemblerResult(result, sequence);
+    this.handleAssemblerResult(result, sequence, kind ?? 0);
   }
 
-  private handleAssemblerResult(result: UpdateChunkAcceptResult, sequence: number): void {
+  private handleAssemblerResult(
+    result: UpdateChunkAcceptResult,
+    sequence: number,
+    kind: 0 | 1 | 2,
+  ): void {
     switch (result.outcome) {
       case 'more':
         return;
@@ -742,10 +997,23 @@ export class HubNamespaceChannel {
         this.transferViolation(result.code);
         return;
       case 'complete': {
-        // 收齐（Σbytes === totalBytes 已在 assembler 精确核对）→ 恰一次 sequenced apply
-        // ——复用既有管线（trusted apply + dirty + update-applied + UPDATE_ACK + 经 session
-        // owned-update fan-out 广播其他 Peer，applyOrigin 回声抑制不回送来源——B7 零新机制）。
-        // 重组失败一律先于 apply：live Y.Doc 零写入（AC3）。
+        if (kind === 2) {
+          // 收齐（Σbytes === totalBytes 已在 assembler 精确核对）→ round 排他结算：
+          // 一次 sequenced apply + dirty + SYNC_APPLIED{ackedSequence = 末 chunk 帧序}。
+          // 重组失败一律先于 apply：live Y.Doc 零写入（AC3）。
+          // issue #301：chunkCount 随 form 穿线（chunked-sync-applied 事件字段）
+          void this.round.completeChunkedStep2(result.bytes, sequence, result.chunkCount);
+          return;
+        }
+        if (kind === 1) {
+          // hub 侧无合法 kind=1 上下文（防御：接纳门已拒绝，此处结构性不可达）
+          this.sendNsError('NAMESPACE_STATE_VIOLATION');
+          this.finalize('failed', 'protocol-violation');
+          return;
+        }
+        // kind=0：收齐 → 恰一次 sequenced apply——复用既有管线（trusted apply + dirty +
+        // update-applied + UPDATE_ACK + 经 session owned-update fan-out 广播其他 Peer，
+        // applyOrigin 回声抑制不回送来源——B7 零新机制）。
         // issue #245（DD5）：第 5 参 chunked 携带 assembler 申报 chunkCount——apply 结算
         // 据此改道发 chunked-update-applied（第四形态；普通 UPDATE/Step2 调用点零改动）。
         void this.applyRemoteUpdate(result.bytes, sequence, false, undefined, {
@@ -764,9 +1032,7 @@ export class HubNamespaceChannel {
   /** 违例动作（镜像 onFieldViolation 先例）：ns 级 ERROR 帧 + 终局 failed；assembly 复位。
    *  失败族不发 chunked-update-aborted（可观测信号 = namespace-error/namespace-failed，
    *  互补不重复）——clear 不带 reason。 */
-  private transferViolation(
-    code: 'UPDATE_TRANSFER_VIOLATION' | 'UPDATE_TRANSFER_TOO_LARGE',
-  ): void {
+  private transferViolation(code: ChunkedTransferViolationCode): void {
     this.clearInboundAssembly();
     this.sendNsError(code);
     this.finalize('failed', 'protocol-violation');
@@ -785,9 +1051,13 @@ export class HubNamespaceChannel {
   /** 入站 assembly 清理挂点（DD-4 挂点表）：对端声明收帧边（onResyncReceived）、本端
    *  wire 声明发射点（declareHubResync 漏斗内、记忆化门后）、恢复 round 结算回 live
    *  （resyncEpisode 标记门控）、通道收口（closeSessionAndRelease）、违例复位。
-   *  issue #244（D5）：reason 在场 → busy 守卫下发射 chunked-update-aborted（快照先于
-   *  reset；决策落定后发射；observer 缺省零快照零构造）；reason 缺省 = 失败族零事件。 */
+   *  issue #244（D5）：reason 在场 → busy 守卫下发射 aborted（快照先于 reset；决策落定后
+   *  发射；observer 缺省零快照零构造）；reason 缺省 = 失败族零事件。
+   *  issue #301（OD6）：事件型按在途 assembly 的 kind 选路——kind=0 既有
+   *  `chunked-update-aborted`、kind=1 → `chunked-snapshot-aborted`、kind=2 →
+   *  `chunked-sync-aborted`（全部 reason 置位点零改动即自动接线）。 */
   private clearInboundAssembly(reason?: ChunkedUpdateAbortReason): void {
+    const kind = this.inboundAssembler.busyKind ?? 0; // reset 前捕获（busyKind 随 reset 消失）
     const snapshot =
       reason !== undefined && this.observerOn && this.inboundAssembler.busy
         ? this.inboundAssembler.snapshot()
@@ -796,7 +1066,12 @@ export class HubNamespaceChannel {
     this.inboundAssembler.reset();
     if (snapshot !== undefined && reason !== undefined) {
       this.host.emitObserver({
-        type: 'chunked-update-aborted',
+        type:
+          kind === 1
+            ? 'chunked-snapshot-aborted'
+            : kind === 2
+              ? 'chunked-sync-aborted'
+              : 'chunked-update-aborted',
         side: 'hub',
         namespaceId: this.namespaceId,
         transferId: snapshot.transferId,
@@ -859,6 +1134,9 @@ export class HubNamespaceChannel {
   onResyncReceived(): void {
     if (this.isQuietState()) return;
     this.channel.markResyncReceived();
+    // issue #295 切片 2（D1 abort 面 4/M2）：resync-declared 边沿与 channel 同点——本方向
+    // kind=1/2 载体弃置归 idle（此后零新增 chunk 出站；残渣只剩真正在途帧）。
+    this.bulkTransfer.abortForResyncDeclared();
     this.setState('needs-resync');
     // issue #243（DD-4 挂点 1/F3）：收 RESYNC_REQUIRED ⇒ 全部丢弃（ADR 0013:58）——
     // 对端发送侧已随其 resync 边弃置在途 transfer，本通道入站 assembly 必残缺：清除 +
@@ -1024,6 +1302,9 @@ export class HubNamespaceChannel {
     // needs-resync/reconciling 期接纳的入站 transfer 是合法跨 round 流量）；其余声明
     //（queue-overflow/send-failed/ack-timeout/session-fanout-overflow）→ 'resync-declared'。
     this.clearInboundAssembly(cause === 'connection-shed' ? 'shed' : 'resync-declared');
+    // issue #295 切片 2（D1 abort 面 4/M2）：本端 wire 声明边与 channel 同点——kind=1/2
+    // 载体弃置归 idle（声明后本方向零新增 chunk 出站）。
+    this.bulkTransfer.abortForResyncDeclared();
     this.resyncEpisode = true;
     this.sendChecked({
       kind: 'RESYNC_REQUIRED',
@@ -1127,8 +1408,15 @@ export class HubNamespaceChannel {
     update: Uint8Array,
     step2Sequence: number,
     syncRoundId: number,
+    form?: Readonly<{ form: 'syncChunked'; chunkCount: number }>,
   ): Promise<'ok' | 'aborted'> {
-    const outcome = await this.applyRemoteUpdate(update, step2Sequence, true, syncRoundId);
+    const outcome = await this.applyRemoteUpdate(
+      update,
+      step2Sequence,
+      true,
+      syncRoundId,
+      form === undefined ? undefined : { syncChunked: true, chunkCount: form.chunkCount },
+    );
     if (outcome === 'ok') {
       // §9.1.4：apply 成功 → 发 SYNC_APPLIED（ackedSequence = 收到的 Step2 帧序）
       // §D5.4（issue #171，R1/SA2 #8 裁决 (a)）：hub 通道无 'disconnected' 态；
@@ -1151,15 +1439,19 @@ export class HubNamespaceChannel {
   /** 统一 apply 管线（§11.1 镜像：UPDATE / Step2 diff / chunked 组装；hub 无 degraded 分支）。
    *  第四参 `syncRoundId`（issue #239）：isStep2 时恒在（帧携带 wire roundId 的显式
    *  透传投影，D2）——UPDATE 路径（isStep2=false）零投影。
-   *  第五参 `chunked`（issue #245，DD5）：唯一调用点 = 双侧 handleAssemblerResult 'complete'
-   *  分支（assembler 收齐的 UPDATE_CHUNK 组装结果——apply 成功路径互斥规则第四形态的
-   *  来源判别；onUpdate/applyStep2 既有调用点不传第 5 参——普通路径逐字节不变）。 */
+   *  第五参 `chunked`（issue #245，DD5；issue #295 切片 2 M1 判别联合扩展；issue #301
+   *  `{syncChunked:true}` 携 chunkCount）：唯一调用点 = 双侧 handleAssemblerResult
+   *  'complete' 分支（kind=0 形态 `{chunkCount}`）与 kind=2 分块完成点
+   *  （`{syncChunked:true, chunkCount}`——普通族 sync-diff-applied 窗口内归零，
+   *  改道发 chunked-sync-applied 第五形态）。 */
   private async applyRemoteUpdate(
     update: Uint8Array,
     sequence: number,
     isStep2 = false,
     syncRoundId?: number,
-    chunked?: Readonly<{ chunkCount: number }>,
+    chunked?:
+      | Readonly<{ chunkCount: number }>
+      | Readonly<{ syncChunked: true; chunkCount: number }>,
   ): Promise<'ok' | 'failed'> {
     const session = this.session;
     if (session === undefined) {
@@ -1173,8 +1465,11 @@ export class HubNamespaceChannel {
     // 同步读面、sequencer 入队前、完整覆盖排队窗口）；门控 isStep2 && observerOn
     // （无 observer / UPDATE 热路径零新增读取）。捕获 throw → safeStateVector 折叠
     // → undefined → 效果字段组整组缺失，绝不外溢协议路径（§23.4）。
+    // issue #301（OD4-4）：syncChunked 形态键集冻结排除效果组键——跳过必然丢弃的捕获。
     const svBefore =
-      isStep2 && this.observerOn ? safeStateVector(() => session.encodeStateVector()) : undefined;
+      isStep2 && this.observerOn && !(chunked !== undefined && 'syncChunked' in chunked)
+        ? safeStateVector(() => session.encodeStateVector())
+        : undefined;
     const pending = session.applyRemoteUpdate(update);
     this.pendingApplies.add(pending);
     try {
@@ -1224,14 +1519,31 @@ export class HubNamespaceChannel {
         } as const;
         if (isStep2) {
           // issue #239 append-only：wire roundId 投影 + 长度澄清 + 效果字段组
-          this.host.emitObserver({
-            type: 'sync-diff-applied',
-            ...base,
-            syncRoundId: syncRoundId!,
-            encodedUpdateBytes: update.byteLength,
-            ...(effect !== undefined ? effect : {}),
-          });
-        } else if (chunked !== undefined) {
+          // issue #295 切片 2（M1）/ issue #301（OD4）：kind=2 分块完成点
+          // `{syncChunked:true, chunkCount}` 改道发 chunked-sync-applied 第五形态
+          // （§23.1 第 33 型；独立字段组不得展开 base——base 含 sequence/stages 排除项；
+          // 单帧路径逐字节不变）。
+          if (chunked !== undefined && 'syncChunked' in chunked) {
+            this.host.emitObserver({
+              type: 'chunked-sync-applied',
+              side: 'hub',
+              ...cidField(this.host.connectionId()),
+              namespaceId: this.namespaceId,
+              bytes: update.byteLength, // = wire 声明 totalBytes（assembler Σbytes 核对不变量）
+              chunkCount: chunked.chunkCount,
+              syncRoundId: syncRoundId!,
+              ...(applyLatencyMs !== undefined ? { applyLatencyMs } : {}),
+            });
+          } else {
+            this.host.emitObserver({
+              type: 'sync-diff-applied',
+              ...base,
+              syncRoundId: syncRoundId!,
+              encodedUpdateBytes: update.byteLength,
+              ...(effect !== undefined ? effect : {}),
+            });
+          }
+        } else if (chunked !== undefined && 'chunkCount' in chunked) {
           // issue #245（R21/DD2 第四形态）：分块组装 apply 成功改道——独立字段组，不得
           // 展开 base（base 含 sequence/stages——DD1 排除项；键集冻结 = ADR L90 + §23
           // 信封）；applyLatencyMs 沿用 t0/t1 既有采样点（时钟折叠两态纪律不变）。
@@ -1436,6 +1748,12 @@ export class HubNamespaceChannel {
     );
   }
 
+  /** issue #301：末 chunk 出站时刻采样（`ackLatencyMs` 的 t0）——observer 缺省零时钟调用
+   *  （`host.now` 连接层已 observer 门控 + safeNow 折叠；clock 缺省 → undefined → 整键缺失）。 */
+  private sampleAckT0(): number | undefined {
+    return this.observerOn ? this.host.now?.() : undefined;
+  }
+
   private async drainPendingApplies(): Promise<void> {
     await Promise.allSettled([...this.pendingApplies]);
   }
@@ -1459,6 +1777,8 @@ export class HubNamespaceChannel {
     this.watchdog.teardown();
     this.round.teardown();
     this.channel.teardown();
+    // issue #295 切片 2（D11）：kind=1/2 载体随通道收口弃置（与 channel.teardown 同点）。
+    this.bulkTransfer.teardown();
     // issue #243（DD-4 清理挂点/终态单点）：通道收口随带释放本代 assembly（纯易失内存）。
     // issue #244（D5）：消费收口入口置位的 teardownAbortReason（一次性——消费即清；
     // busy 守卫保证每 assembly 至多一事件；失败族入口未置位 → 无 reason → 零事件）。
@@ -1605,15 +1925,30 @@ export class HubNamespaceChannel {
    *  弃 partial + 出向 RESYNC_REQUIRED{UPDATE_TRANSFER_EXPIRED}（切片 1 已登记词表；
    *  独立发射点而非并入 resync 漏斗：漏斗 reasonCode 硬编码 send-queue-overflow 且被
    *  resyncDeclared 记忆化——并入即错码或被吞）。不发 resync-required observer 事件
-   *  （ADR 未为该行定义 cause；本行可观测信号 = aborted{timeout} + wire 帧）。 */
+   *  （ADR 未为该行定义 cause；本行可观测信号 = aborted{timeout} + wire 帧）。
+   *  issue #295 切片 2（D9）：收口按 `busyKind` 选路——kind=0 既有语义原样；
+   *  kind=2 → RESYNC_REQUIRED{SYNC_TRANSFER_EXPIRED} + needs-resync（非终态）；
+   *  kind=1（hub 侧结构性不可达防御）→ BOOTSTRAP_FAILED 族终局。
+   *  issue #301（OD7）：kind=1 超时属终局失败族——不发 aborted（§23.1 第 35 型明文；
+   *  可观测信号 = BOOTSTRAP_FAILED ERROR + namespace-failed 终局，互补不重复）；
+   *  kind=0/2 非终态收口 → aborted{timeout} 照发。 */
   private onAssemblyTimeout(): void {
     if (!this.inboundAssembler.busy) return; // clear 后 stale fire 零副作用
-    this.clearInboundAssembly('timeout'); // 弃 partial + 归还槽 + 清 timer + aborted{timeout}
+    const kind = this.inboundAssembler.busyKind ?? 0;
+    // 弃 partial + 归还槽 + 清 timer +（kind=0/2）aborted{timeout}
+    this.clearInboundAssembly(kind === 1 ? undefined : 'timeout');
     if (this.isQuietState()) return; // 防御（closing 已杀 timer，结构性不可达）——零 wire
+    if (kind === 1) {
+      // kind=1 停滞 → BOOTSTRAP_FAILED 语义族终局（§8.1 L202；此时尚无可 reconcile 的 session）
+      this.sendNsError('BOOTSTRAP_FAILED');
+      this.finalize('failed', 'bootstrap-timeout', this.host.timeouts.assemblyTimeoutMs);
+      return;
+    }
     this.sendChecked({
       kind: 'RESYNC_REQUIRED',
       namespaceId: this.namespaceId,
-      reasonCode: 'UPDATE_TRANSFER_EXPIRED', // 切片 1 已登记词表；codec 自由安全字符串
+      // 切片 1 已登记词表；codec 自由安全字符串（kind=2 停滞行 §9.2/SYNC_TRANSFER_EXPIRED）
+      reasonCode: kind === 2 ? 'SYNC_TRANSFER_EXPIRED' : 'UPDATE_TRANSFER_EXPIRED',
     });
     if (this.isQuietState()) return; // sendChecked 失败已 finalize（failed 终态零复活）
     this.setState('needs-resync');

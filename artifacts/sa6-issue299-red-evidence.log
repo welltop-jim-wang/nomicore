@@ -1,0 +1,108 @@
+=== SA6 issue#299 contract red evidence (HEAD eb380d7aed296c15accf8832a45a96b630f0c8ce) 2026-09-11T04:57:49Z ===
+files:
+  packages/replication-protocol/test/codec-issue299-ac-red.test.ts
+  packages/ws-replication/test/ws-replication-issue299-ac-red.test.ts
+  packages/ws-replication/test/ws-replication-issue299-api.test-d.ts
+
+--- run 1/3 ---
+   × issue #299 切片 1：0x42 UPDATE_CHUNK kind 首字段单形态 codec（红灯契约） > 红灯 R1（AC1）：kind=0 live-update 单形态——kind 首字段 + 五字段序 + decode→encode 逐字节无损 12ms
+   × issue #299 切片 1：0x42 UPDATE_CHUNK kind 首字段单形态 codec（红灯契约） > 红灯 R2（AC1）：kind=0 非首 chunk（idx=2）单形态往返无损 1ms
+   × issue #299 切片 1：0x42 UPDATE_CHUNK kind 首字段单形态 codec（红灯契约） > 红灯 R3（AC1）：kind=1 snapshot 首 chunk 携绑定块 replicationId+replicationEpoch 编解码无损 0ms
+   × issue #299 切片 1：0x42 UPDATE_CHUNK kind 首字段单形态 codec（红灯契约） > 红灯 R4（AC1）：kind=2 sync-diff 首 chunk 携绑定块 syncRoundId 编解码无损；非首 chunk 无绑定块 0ms
+   × issue #299 切片 1：0x42 UPDATE_CHUNK kind 首字段单形态 codec（红灯契约） > 红灯 R5（AC1 旧形态作废）：ADR 0013 六字段 payload 必须 MALFORMED_FRAME（kind 首字段恒在，无形态兼容面） 3ms
+   × issue #299 切片 1：0x42 UPDATE_CHUNK kind 首字段单形态 codec（红灯契约） > 红灯 R6（AC1 golden vectors 改写冻结）：仓内 UPDATE_CHUNK golden fixtures 必须全部为单形态且逐字节往返 3ms
+   × issue #299 切片 1：0x42 UPDATE_CHUNK kind 首字段单形态 codec（红灯契约） > 红灯 R7（AC2）：kind ∉ {0,1,2}（3 / 127）→ MALFORMED_FRAME 0ms
+   × issue #299 切片 1：0x42 UPDATE_CHUNK kind 首字段单形态 codec（红灯契约） > 红灯 R8（AC2）：kind=1 首 chunk 缺绑定块 → MALFORMED_FRAME 0ms
+   × issue #299 切片 1：0x42 UPDATE_CHUNK kind 首字段单形态 codec（红灯契约） > 红灯 R9（AC2）：绑定块位置违例——kind=1 首 chunk 绑定块写在 bytes 之后 / 非首 chunk 携带 → MALFORMED_FRAME 1ms
+   × issue #299 切片 1：0x42 UPDATE_CHUNK kind 首字段单形态 codec（红灯契约） > 红灯 R10（AC2）：绑定块越位——kind=2 非首 chunk 携带绑定块、kind=0 携带绑定块字节 → MALFORMED_FRAME 0ms
+   × issue #299 切片 1：0x42 UPDATE_CHUNK kind 首字段单形态 codec（红灯契约） > 红灯 R11（AC4）：transferId=0 在三种 kind 上一致 MALFORMED_FRAME（作用域计数器从 1 严格递增） 0ms
+   × issue #299 切片 1：0x42 UPDATE_CHUNK kind 首字段单形态 codec（红灯契约） > 红灯 R12（AC4）：transferId uint32 上界 0xffffffff 在三种 kind 上一致被接纳且逐字节无损 0ms
+   × issue #299 切片 1：0x42 UPDATE_CHUNK kind 首字段单形态 codec（红灯契约） > 红灯 R13（AC2 kind 无关字段限额）：kind=1/2 chunk 的 bytes 复用 maxUpdateBytes——超限 → UPDATE_TOO_LARGE 1ms
+   × issue #299 切片 1：0x42 UPDATE_CHUNK kind 首字段单形态 codec（红灯契约） > 红灯 R14（AC2 编码侧对称校验 R9）：decode 产物被改写为违例字段后 encode 必须 MALFORMED_FRAME（先验证后写） 0ms
+   ✓ issue #299 切片 1：0x42 UPDATE_CHUNK kind 首字段单形态 codec（红灯契约） > 负控 N1（形态无关·SA8 R34）：未协商 CAP_CHUNKED_UPDATE 的 0x42 帧在 payload 解析前 UNSUPPORTED_MESSAGE_TYPE 1ms
+   ✓ issue #299 切片 1：0x42 UPDATE_CHUNK kind 首字段单形态 codec（红灯契约） > 负控 N2（形态无关）：selectedCapabilities 非法值急切 CONNECTION_POLICY_VIOLATION 0ms
+   ✓ issue #299 切片 1：0x42 UPDATE_CHUNK kind 首字段单形态 codec（红灯契约） > 负控 N3（改写不波及它域）：UPDATE 0x40 逐字节往返回归 1ms
+   × issue #299 切片 1：snapshot/sync-diff 聚合上限配置链（红灯契约） > 红灯 C1（AC3 缺省面）：两聚合上限键缺省各 4 MiB 进入冻结 DEFAULT_REPLICATION_LIMITS；既有三键键名/缺省不变 18ms
+   × issue #299 切片 1：snapshot/sync-diff 聚合上限配置链（红灯契约） > 红灯 C2（AC3 链②·bootstrap 隔离违例）：显式 maxChunkedBootstrapBytes ≤ maxChunksPerUpdate × maxUpdateBytes——越界 TypeError、恰好等号合法、off-by-one 拒绝、非法值拒绝 1ms
+     → maxChunkedBootstrapBytes=40MiB > 64×512KiB=32MiB（hub 入口）
+   × issue #299 切片 1：snapshot/sync-diff 聚合上限配置链（红灯契约） > 红灯 C3（AC3 链②·sync-diff 隔离违例）：显式 maxChunkedSyncDiffBytes 同上——越界 TypeError、恰好等号合法、off-by-one 拒绝、非法值拒绝 1ms
+   × issue #299 切片 1：snapshot/sync-diff 聚合上限配置链（红灯契约） > 红灯 C4（AC3 两键联立）：两新键各自独立生效——同为界内接纳；任一越界即使另一键在界内也 TypeError 2ms
+   ✓ issue #299 切片 1：snapshot/sync-diff 聚合上限配置链（红灯契约） > 负控 C5（AC3 非追溯性 + SA8 R35 门宽）：显式 maxChunksPerUpdate 仍是链激活键；未表达分块族键的存量配置不误判 2ms
+   ✓ issue #299 切片 1：snapshot/sync-diff 聚合上限配置链（红灯契约） > 负控 C6（AC3 control reserve 原样保留）：maxQueuedControlBytes ≥ maxBootstrapBytes + 128 启动期响亮（违例 / 边界合法） 7ms
+   × issue #299 切片 1：snapshot/sync-diff 聚合上限配置链（红灯契约） > 红灯 C7（AC3 配置链接入·插件 allowlist）：两新键必须被 hub/peer 插件配置严格 allowlist 接纳，且链②违例经插件装配路径响亮拒绝 2ms
+   × issue #299 类型面：聚合上限两键进入 ReplicationLimits > 两键为必填 number（与既有分块键同形；缺省值由 DEFAULT_REPLICATION_LIMITS 提供）
+   × issue #299 类型面：聚合上限两键进入 ReplicationLimits > 两键可经 Partial<ReplicationLimits> 覆盖（配置链入口类型不变、无逐 kind 变体键）
+⎯⎯⎯⎯⎯⎯ Failed Tests 21 ⎯⎯⎯⎯⎯⎯⎯
+ FAIL  packages/ws-replication/test/ws-replication-issue299-ac-red.test.ts > issue #299 切片 1：snapshot/sync-diff 聚合上限配置链（红灯契约） > 红灯 C2（AC3 链②·bootstrap 隔离违例）：显式 maxChunkedBootstrapBytes ≤ maxChunksPerUpdate × maxUpdateBytes——越界 TypeError、恰好等号合法、off-by-one 拒绝、非法值拒绝
+AssertionError: maxChunkedBootstrapBytes=40MiB > 64×512KiB=32MiB（hub 入口）
+ Test Files  3 failed (3)
+      Tests  21 failed | 5 passed (26)
+Type Errors  2 failed
+--- run 2/3 ---
+   × issue #299 切片 1：snapshot/sync-diff 聚合上限配置链（红灯契约） > 红灯 C1（AC3 缺省面）：两聚合上限键缺省各 4 MiB 进入冻结 DEFAULT_REPLICATION_LIMITS；既有三键键名/缺省不变 6ms
+   × issue #299 切片 1：snapshot/sync-diff 聚合上限配置链（红灯契约） > 红灯 C2（AC3 链②·bootstrap 隔离违例）：显式 maxChunkedBootstrapBytes ≤ maxChunksPerUpdate × maxUpdateBytes——越界 TypeError、恰好等号合法、off-by-one 拒绝、非法值拒绝 1ms
+     → maxChunkedBootstrapBytes=40MiB > 64×512KiB=32MiB（hub 入口）
+   × issue #299 切片 1：snapshot/sync-diff 聚合上限配置链（红灯契约） > 红灯 C3（AC3 链②·sync-diff 隔离违例）：显式 maxChunkedSyncDiffBytes 同上——越界 TypeError、恰好等号合法、off-by-one 拒绝、非法值拒绝 0ms
+   × issue #299 切片 1：snapshot/sync-diff 聚合上限配置链（红灯契约） > 红灯 C4（AC3 两键联立）：两新键各自独立生效——同为界内接纳；任一越界即使另一键在界内也 TypeError 1ms
+   ✓ issue #299 切片 1：snapshot/sync-diff 聚合上限配置链（红灯契约） > 负控 C5（AC3 非追溯性 + SA8 R35 门宽）：显式 maxChunksPerUpdate 仍是链激活键；未表达分块族键的存量配置不误判 1ms
+   ✓ issue #299 切片 1：snapshot/sync-diff 聚合上限配置链（红灯契约） > 负控 C6（AC3 control reserve 原样保留）：maxQueuedControlBytes ≥ maxBootstrapBytes + 128 启动期响亮（违例 / 边界合法） 5ms
+   × issue #299 切片 1：snapshot/sync-diff 聚合上限配置链（红灯契约） > 红灯 C7（AC3 配置链接入·插件 allowlist）：两新键必须被 hub/peer 插件配置严格 allowlist 接纳，且链②违例经插件装配路径响亮拒绝 2ms
+   × issue #299 切片 1：0x42 UPDATE_CHUNK kind 首字段单形态 codec（红灯契约） > 红灯 R1（AC1）：kind=0 live-update 单形态——kind 首字段 + 五字段序 + decode→encode 逐字节无损 10ms
+   × issue #299 切片 1：0x42 UPDATE_CHUNK kind 首字段单形态 codec（红灯契约） > 红灯 R2（AC1）：kind=0 非首 chunk（idx=2）单形态往返无损 1ms
+   × issue #299 切片 1：0x42 UPDATE_CHUNK kind 首字段单形态 codec（红灯契约） > 红灯 R3（AC1）：kind=1 snapshot 首 chunk 携绑定块 replicationId+replicationEpoch 编解码无损 1ms
+   × issue #299 切片 1：0x42 UPDATE_CHUNK kind 首字段单形态 codec（红灯契约） > 红灯 R4（AC1）：kind=2 sync-diff 首 chunk 携绑定块 syncRoundId 编解码无损；非首 chunk 无绑定块 0ms
+   × issue #299 切片 1：0x42 UPDATE_CHUNK kind 首字段单形态 codec（红灯契约） > 红灯 R5（AC1 旧形态作废）：ADR 0013 六字段 payload 必须 MALFORMED_FRAME（kind 首字段恒在，无形态兼容面） 3ms
+   × issue #299 切片 1：0x42 UPDATE_CHUNK kind 首字段单形态 codec（红灯契约） > 红灯 R6（AC1 golden vectors 改写冻结）：仓内 UPDATE_CHUNK golden fixtures 必须全部为单形态且逐字节往返 5ms
+   × issue #299 切片 1：0x42 UPDATE_CHUNK kind 首字段单形态 codec（红灯契约） > 红灯 R7（AC2）：kind ∉ {0,1,2}（3 / 127）→ MALFORMED_FRAME 0ms
+   × issue #299 切片 1：0x42 UPDATE_CHUNK kind 首字段单形态 codec（红灯契约） > 红灯 R8（AC2）：kind=1 首 chunk 缺绑定块 → MALFORMED_FRAME 0ms
+   × issue #299 切片 1：0x42 UPDATE_CHUNK kind 首字段单形态 codec（红灯契约） > 红灯 R9（AC2）：绑定块位置违例——kind=1 首 chunk 绑定块写在 bytes 之后 / 非首 chunk 携带 → MALFORMED_FRAME 0ms
+   × issue #299 切片 1：0x42 UPDATE_CHUNK kind 首字段单形态 codec（红灯契约） > 红灯 R10（AC2）：绑定块越位——kind=2 非首 chunk 携带绑定块、kind=0 携带绑定块字节 → MALFORMED_FRAME 0ms
+   × issue #299 切片 1：0x42 UPDATE_CHUNK kind 首字段单形态 codec（红灯契约） > 红灯 R11（AC4）：transferId=0 在三种 kind 上一致 MALFORMED_FRAME（作用域计数器从 1 严格递增） 0ms
+   × issue #299 切片 1：0x42 UPDATE_CHUNK kind 首字段单形态 codec（红灯契约） > 红灯 R12（AC4）：transferId uint32 上界 0xffffffff 在三种 kind 上一致被接纳且逐字节无损 0ms
+   × issue #299 切片 1：0x42 UPDATE_CHUNK kind 首字段单形态 codec（红灯契约） > 红灯 R13（AC2 kind 无关字段限额）：kind=1/2 chunk 的 bytes 复用 maxUpdateBytes——超限 → UPDATE_TOO_LARGE 0ms
+   × issue #299 切片 1：0x42 UPDATE_CHUNK kind 首字段单形态 codec（红灯契约） > 红灯 R14（AC2 编码侧对称校验 R9）：decode 产物被改写为违例字段后 encode 必须 MALFORMED_FRAME（先验证后写） 0ms
+   ✓ issue #299 切片 1：0x42 UPDATE_CHUNK kind 首字段单形态 codec（红灯契约） > 负控 N1（形态无关·SA8 R34）：未协商 CAP_CHUNKED_UPDATE 的 0x42 帧在 payload 解析前 UNSUPPORTED_MESSAGE_TYPE 1ms
+   ✓ issue #299 切片 1：0x42 UPDATE_CHUNK kind 首字段单形态 codec（红灯契约） > 负控 N2（形态无关）：selectedCapabilities 非法值急切 CONNECTION_POLICY_VIOLATION 0ms
+   ✓ issue #299 切片 1：0x42 UPDATE_CHUNK kind 首字段单形态 codec（红灯契约） > 负控 N3（改写不波及它域）：UPDATE 0x40 逐字节往返回归 1ms
+   × issue #299 类型面：聚合上限两键进入 ReplicationLimits > 两键为必填 number（与既有分块键同形；缺省值由 DEFAULT_REPLICATION_LIMITS 提供）
+   × issue #299 类型面：聚合上限两键进入 ReplicationLimits > 两键可经 Partial<ReplicationLimits> 覆盖（配置链入口类型不变、无逐 kind 变体键）
+⎯⎯⎯⎯⎯⎯ Failed Tests 21 ⎯⎯⎯⎯⎯⎯⎯
+ FAIL  packages/ws-replication/test/ws-replication-issue299-ac-red.test.ts > issue #299 切片 1：snapshot/sync-diff 聚合上限配置链（红灯契约） > 红灯 C2（AC3 链②·bootstrap 隔离违例）：显式 maxChunkedBootstrapBytes ≤ maxChunksPerUpdate × maxUpdateBytes——越界 TypeError、恰好等号合法、off-by-one 拒绝、非法值拒绝
+AssertionError: maxChunkedBootstrapBytes=40MiB > 64×512KiB=32MiB（hub 入口）
+ Test Files  3 failed (3)
+      Tests  21 failed | 5 passed (26)
+Type Errors  2 failed
+--- run 3/3 ---
+   × issue #299 切片 1：0x42 UPDATE_CHUNK kind 首字段单形态 codec（红灯契约） > 红灯 R1（AC1）：kind=0 live-update 单形态——kind 首字段 + 五字段序 + decode→encode 逐字节无损 10ms
+   × issue #299 切片 1：0x42 UPDATE_CHUNK kind 首字段单形态 codec（红灯契约） > 红灯 R2（AC1）：kind=0 非首 chunk（idx=2）单形态往返无损 1ms
+   × issue #299 切片 1：0x42 UPDATE_CHUNK kind 首字段单形态 codec（红灯契约） > 红灯 R3（AC1）：kind=1 snapshot 首 chunk 携绑定块 replicationId+replicationEpoch 编解码无损 1ms
+   × issue #299 切片 1：0x42 UPDATE_CHUNK kind 首字段单形态 codec（红灯契约） > 红灯 R4（AC1）：kind=2 sync-diff 首 chunk 携绑定块 syncRoundId 编解码无损；非首 chunk 无绑定块 0ms
+   × issue #299 切片 1：0x42 UPDATE_CHUNK kind 首字段单形态 codec（红灯契约） > 红灯 R5（AC1 旧形态作废）：ADR 0013 六字段 payload 必须 MALFORMED_FRAME（kind 首字段恒在，无形态兼容面） 4ms
+   × issue #299 切片 1：0x42 UPDATE_CHUNK kind 首字段单形态 codec（红灯契约） > 红灯 R6（AC1 golden vectors 改写冻结）：仓内 UPDATE_CHUNK golden fixtures 必须全部为单形态且逐字节往返 4ms
+   × issue #299 切片 1：0x42 UPDATE_CHUNK kind 首字段单形态 codec（红灯契约） > 红灯 R7（AC2）：kind ∉ {0,1,2}（3 / 127）→ MALFORMED_FRAME 1ms
+   × issue #299 切片 1：0x42 UPDATE_CHUNK kind 首字段单形态 codec（红灯契约） > 红灯 R8（AC2）：kind=1 首 chunk 缺绑定块 → MALFORMED_FRAME 1ms
+   × issue #299 切片 1：0x42 UPDATE_CHUNK kind 首字段单形态 codec（红灯契约） > 红灯 R9（AC2）：绑定块位置违例——kind=1 首 chunk 绑定块写在 bytes 之后 / 非首 chunk 携带 → MALFORMED_FRAME 1ms
+   × issue #299 切片 1：0x42 UPDATE_CHUNK kind 首字段单形态 codec（红灯契约） > 红灯 R10（AC2）：绑定块越位——kind=2 非首 chunk 携带绑定块、kind=0 携带绑定块字节 → MALFORMED_FRAME 1ms
+   × issue #299 切片 1：0x42 UPDATE_CHUNK kind 首字段单形态 codec（红灯契约） > 红灯 R11（AC4）：transferId=0 在三种 kind 上一致 MALFORMED_FRAME（作用域计数器从 1 严格递增） 0ms
+   × issue #299 切片 1：0x42 UPDATE_CHUNK kind 首字段单形态 codec（红灯契约） > 红灯 R12（AC4）：transferId uint32 上界 0xffffffff 在三种 kind 上一致被接纳且逐字节无损 1ms
+   × issue #299 切片 1：0x42 UPDATE_CHUNK kind 首字段单形态 codec（红灯契约） > 红灯 R13（AC2 kind 无关字段限额）：kind=1/2 chunk 的 bytes 复用 maxUpdateBytes——超限 → UPDATE_TOO_LARGE 1ms
+   × issue #299 切片 1：0x42 UPDATE_CHUNK kind 首字段单形态 codec（红灯契约） > 红灯 R14（AC2 编码侧对称校验 R9）：decode 产物被改写为违例字段后 encode 必须 MALFORMED_FRAME（先验证后写） 1ms
+   ✓ issue #299 切片 1：0x42 UPDATE_CHUNK kind 首字段单形态 codec（红灯契约） > 负控 N1（形态无关·SA8 R34）：未协商 CAP_CHUNKED_UPDATE 的 0x42 帧在 payload 解析前 UNSUPPORTED_MESSAGE_TYPE 1ms
+   ✓ issue #299 切片 1：0x42 UPDATE_CHUNK kind 首字段单形态 codec（红灯契约） > 负控 N2（形态无关）：selectedCapabilities 非法值急切 CONNECTION_POLICY_VIOLATION 0ms
+   ✓ issue #299 切片 1：0x42 UPDATE_CHUNK kind 首字段单形态 codec（红灯契约） > 负控 N3（改写不波及它域）：UPDATE 0x40 逐字节往返回归 1ms
+   × issue #299 切片 1：snapshot/sync-diff 聚合上限配置链（红灯契约） > 红灯 C1（AC3 缺省面）：两聚合上限键缺省各 4 MiB 进入冻结 DEFAULT_REPLICATION_LIMITS；既有三键键名/缺省不变 8ms
+   × issue #299 切片 1：snapshot/sync-diff 聚合上限配置链（红灯契约） > 红灯 C2（AC3 链②·bootstrap 隔离违例）：显式 maxChunkedBootstrapBytes ≤ maxChunksPerUpdate × maxUpdateBytes——越界 TypeError、恰好等号合法、off-by-one 拒绝、非法值拒绝 1ms
+     → maxChunkedBootstrapBytes=40MiB > 64×512KiB=32MiB（hub 入口）
+   × issue #299 切片 1：snapshot/sync-diff 聚合上限配置链（红灯契约） > 红灯 C3（AC3 链②·sync-diff 隔离违例）：显式 maxChunkedSyncDiffBytes 同上——越界 TypeError、恰好等号合法、off-by-one 拒绝、非法值拒绝 1ms
+   × issue #299 切片 1：snapshot/sync-diff 聚合上限配置链（红灯契约） > 红灯 C4（AC3 两键联立）：两新键各自独立生效——同为界内接纳；任一越界即使另一键在界内也 TypeError 2ms
+   ✓ issue #299 切片 1：snapshot/sync-diff 聚合上限配置链（红灯契约） > 负控 C5（AC3 非追溯性 + SA8 R35 门宽）：显式 maxChunksPerUpdate 仍是链激活键；未表达分块族键的存量配置不误判 2ms
+   ✓ issue #299 切片 1：snapshot/sync-diff 聚合上限配置链（红灯契约） > 负控 C6（AC3 control reserve 原样保留）：maxQueuedControlBytes ≥ maxBootstrapBytes + 128 启动期响亮（违例 / 边界合法） 7ms
+   × issue #299 切片 1：snapshot/sync-diff 聚合上限配置链（红灯契约） > 红灯 C7（AC3 配置链接入·插件 allowlist）：两新键必须被 hub/peer 插件配置严格 allowlist 接纳，且链②违例经插件装配路径响亮拒绝 3ms
+   × issue #299 类型面：聚合上限两键进入 ReplicationLimits > 两键为必填 number（与既有分块键同形；缺省值由 DEFAULT_REPLICATION_LIMITS 提供）
+   × issue #299 类型面：聚合上限两键进入 ReplicationLimits > 两键可经 Partial<ReplicationLimits> 覆盖（配置链入口类型不变、无逐 kind 变体键）
+⎯⎯⎯⎯⎯⎯ Failed Tests 21 ⎯⎯⎯⎯⎯⎯⎯
+ FAIL  packages/ws-replication/test/ws-replication-issue299-ac-red.test.ts > issue #299 切片 1：snapshot/sync-diff 聚合上限配置链（红灯契约） > 红灯 C2（AC3 链②·bootstrap 隔离违例）：显式 maxChunkedBootstrapBytes ≤ maxChunksPerUpdate × maxUpdateBytes——越界 TypeError、恰好等号合法、off-by-one 拒绝、非法值拒绝
+AssertionError: maxChunkedBootstrapBytes=40MiB > 64×512KiB=32MiB（hub 入口）
+ Test Files  3 failed (3)
+      Tests  21 failed | 5 passed (26)
+Type Errors  2 failed

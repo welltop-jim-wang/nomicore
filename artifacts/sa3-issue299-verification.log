@@ -1,0 +1,108 @@
+=== SA3 issue #299 verification log (2026-09-11T06:06:14Z) ===
+
+### 1. SA6 contract file hashes (must equal SA6 §13 lock)
+3168f11c135a3840f8beffd4f432f7feb344d17d82aa347a424add362fbbbf0c  packages/replication-protocol/test/codec-issue299-ac-red.test.ts
+56a2337bed6af8340ede7e445d256ef745f6e47b721b4ed0ddac15cfe2516793  packages/ws-replication/test/ws-replication-issue299-ac-red.test.ts
+171104c28be3f77449f864daec0aabecaf5c6d2ff1c2003b60d3abe5ae5a0fe8  packages/ws-replication/test/ws-replication-issue299-api.test-d.ts
+
+### 2. SA6 red contracts (26/26) + new encode-symmetry
+Testing types with tsc and vue-tsc is an experimental feature.
+Breaking changes might not follow SemVer, please pin Vitest's version when using it.
+
+ RUN  v3.2.7 /home/wangjian/nomicore-fix-issue-299
+
+ ✓ packages/ws-replication/test/ws-replication-issue299-ac-red.test.ts (7 tests) 14ms
+ ✓ packages/replication-protocol/test/codec-issue299-ac-red.test.ts (17 tests) 8ms
+ ✓ packages/replication-protocol/test/codec-issue299-encode-symmetry.test.ts (5 tests) 12ms
+ ✓  TS  packages/ws-replication/test/ws-replication-issue299-api.test-d.ts (2 tests)
+
+ Test Files  4 passed (4)
+      Tests  31 passed (31)
+Type Errors  no errors
+   Start at  14:06:14
+   Duration  1.85s (transform 710ms, setup 0ms, collect 1.02s, tests 33ms, environment 0ms, prepare 172ms, typecheck 1.81s)
+
+
+### 3. replication-protocol package suite
+ ✓ packages/replication-protocol/test/codec-version-interop.test.ts (25 tests) 11ms
+ ✓ packages/replication-protocol/test/codec-issue246-doc-contract.test.ts (22 tests) 9ms
+ ✓ packages/replication-protocol/test/codec-package-contract.test.ts (5 tests) 8ms
+ ✓ packages/replication-protocol/test/codec-issue299-ac-red.test.ts (17 tests) 10ms
+ ✓ packages/replication-protocol/test/codec-envelope.test.ts (13 tests) 7ms
+
+ Test Files  13 passed (13)
+      Tests  213 passed (213)
+Type Errors  no errors
+   Start at  14:06:17
+   Duration  2.81s (transform 195ms, setup 0ms, collect 491ms, tests 388ms, environment 2ms, prepare 646ms, typecheck 2.05s)
+
+
+### 4. ws-replication package suite
+ ✓ packages/ws-replication/test/ws-replication-issue243-sa7-dynamic.test.ts (17 tests) 24ms
+ ✓ packages/ws-replication/test/ws-replication-issue299-ac-red.test.ts (7 tests) 12ms
+ ✓ packages/ws-replication/test/ws-replication-sa7-issue190-dynamic.test.ts (5 tests) 8ms
+ ✓ packages/ws-replication/test/ws-replication-issue190-guard.test.ts (1 test) 3ms
+ ✓ packages/ws-replication/test/ws-replication-issue190-red.test.ts (4 tests) 7ms
+
+ Test Files  70 passed (70)
+      Tests  500 passed (500)
+Type Errors  no errors
+   Start at  14:06:20
+   Duration  40.11s (transform 1.27s, setup 0ms, collect 10.27s, tests 20.47s, environment 8ms, prepare 3.02s, typecheck 1.80s)
+
+
+### 5. root pnpm typecheck
+
+> nomicore@0.1.0 typecheck /home/wangjian/nomicore-fix-issue-299
+> tsc -p packages/vfsl/tsconfig.json && tsc -p packages/vfsl-protocol/tsconfig.json && tsc -p packages/vfsl-codegen/tsconfig.json && tsc -p packages/persistence/tsconfig.json && tsc -p packages/dsh-persistence/tsconfig.json && tsc -p packages/doc-runtime/tsconfig.json && tsc -p packages/namespace-runtime/tsconfig.json && tsc -p packages/clock/tsconfig.json && tsc -p packages/instance/tsconfig.json && tsc -p packages/namespace-registry/tsconfig.json && tsc -p packages/namespace-diagnostic-log/tsconfig.json && tsc -p packages/replication-protocol/tsconfig.json && tsc -p packages/ws-replication/tsconfig.json && tsc -p apps/yjs-server/tsconfig.json
+
+typecheck_exit=0
+
+### 6. git diff --check
+diff-check clean
+
+### 7. 过期术语扫描（规范正文 vs ADR/CONTEXT 历史登记）
+CONTEXT.md:167:_Avoid_: 为历史 wire 形态保留双形态切换或发送端 gating、新旧互通矩阵测试
+-- ADR（历史/已拒绝方案登记，DENY，预期命中）--
+docs/adr/0013-chunked-live-update-transfer.md
+docs/adr/0019-chunked-sync-transfer.md
+
+### 8. 工作树 changed paths（DENY 核对）
+ M docs/protocols/instance-replication-v1.md
+ M packages/replication-protocol/src/index.ts
+ M packages/replication-protocol/src/messages.ts
+ M packages/replication-protocol/src/payloads.ts
+ M packages/replication-protocol/test/codec-api.test-d.ts
+ M packages/replication-protocol/test/codec-fuzz-property.test.ts
+ M packages/replication-protocol/test/codec-issue242-ac-red.test.ts
+ M packages/replication-protocol/test/codec-messages-golden.test.ts
+ M packages/replication-protocol/test/fixtures.ts
+ M packages/ws-replication/src/defaults.ts
+ M packages/ws-replication/src/hub-connection.ts
+ M packages/ws-replication/src/peer-connection.ts
+ M packages/ws-replication/src/plugin.ts
+ M packages/ws-replication/src/types.ts
+ M packages/ws-replication/src/validate.ts
+ M packages/ws-replication/test/ws-replication-api.test-d.ts
+ M packages/ws-replication/test/ws-replication-issue243-ac-red.test.ts
+ M packages/ws-replication/test/ws-replication-issue243-chunked-live.test.ts
+ M packages/ws-replication/test/ws-replication-issue244-ac-red.test.ts
+ M packages/ws-replication/test/ws-replication-issue246-interop-matrix.test.ts
+ M packages/ws-replication/test/ws-replication-observer-red.test.ts
+?? artifacts/sa3-issue299-verification.log
+?? artifacts/sa6-issue299-existing-suites.log
+?? artifacts/sa6-issue299-full-suite.log
+?? artifacts/sa6-issue299-probe.log
+?? artifacts/sa6-issue299-red-detail.log
+?? artifacts/sa6-issue299-red-evidence.log
+?? artifacts/sa8-conflict-gate-issue-299-design-recheck.md
+?? artifacts/sa8-conflict-gate-issue-299.md
+?? packages/replication-protocol/test/codec-issue299-ac-red.test.ts
+?? packages/replication-protocol/test/codec-issue299-encode-symmetry.test.ts
+?? packages/ws-replication/test/ws-replication-issue299-ac-red.test.ts
+?? packages/ws-replication/test/ws-replication-issue299-api.test-d.ts
+?? wiki/raw/task_issue-299.md
+?? wiki/raw/task_issue-299_design.md
+?? wiki/raw/task_issue-299_sa2_review.md
+?? wiki/raw/task_issue-299_sa3_impl.md
+?? wiki/raw/task_issue-299_sa6_contract.md

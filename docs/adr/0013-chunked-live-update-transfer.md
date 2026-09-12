@@ -114,7 +114,7 @@ throw 隔离、决策落定后发射、无 observer 逐字节等价——全部�
 - 以提高 `maxUpdateBytes` 代替协议设计；
 - 跨进程重启持久化 partial chunks 或 durable outbox；
 - 逐片 apply 到 live Y.Doc；
-- SYNC_STEP2 diff 与 BOOTSTRAP_SNAPSHOT 分块（R3 揭示的另一半尾部）——同一 transfer 机制可平移，列为后续独立 capability（如 `CAP_CHUNKED_SYNC`），不在本 ADR 冻结；
+- ~~SYNC_STEP2 diff 与 BOOTSTRAP_SNAPSHOT 分块（R3 揭示的另一半尾部）——同一 transfer 机制可平移，列为后续独立 capability（如 `CAP_CHUNKED_SYNC`），不在本 ADR 冻结~~ 【已由 ADR 0022 接替：0x42 kind 单形态恒用分块、同版本部署假设下无 capability 协商，issue #295】；
 - awareness/presence、多 hub、客户端 y-websocket 兼容（沿用 ADR 0010 非目标）。
 
 ## 取代与关联

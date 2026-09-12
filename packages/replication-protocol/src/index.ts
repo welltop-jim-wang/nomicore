@@ -47,6 +47,7 @@ export {
   type SyncStep2Msg,
   type UpdateAckMsg,
   type UpdateChunkMsg,
+  type UpdateChunkTransferKind,
   type UpdateMsg,
 } from './messages.js';
 export { decodeFrame, encodeFrame, type DecodedFrame, type EncodeFrameInput, type FrameHeader, type FrameOptions } from './envelope.js';

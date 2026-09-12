@@ -1,0 +1,55 @@
+
+ RUN  v3.2.7 /home/wangjian/nomicore-fix-issue-300
+
+stdout | packages/ws-replication/test/sa7-300-real-transport-probe.test.ts > SA7 issue #300 真实 TCP 动态探针：kind=1 bootstrap + kind=2 双向恢复 diff > RT：100KB 文档经 kind=1 分块 bootstrap（双 peer）；100KB 恢复写经 kind=2 分块上行收敛 + kind=2 分块下行收敛；单 ACK 锚末 chunk 帧序
+[SA7-DATAFLOW] route=rt-bootstrap-k1 step=observed hubToAK1Chunks=13 hubToBK1Chunks=13 aAcks=[3] aAckedSeq=[15] aLastK1Seq=15 bAckedSeq=[15] bLastK1Seq=15 aBlurbHead=zzzz bBlurbHead=zzzz
+
+stdout | packages/ws-replication/test/sa7-300-real-transport-probe.test.ts > SA7 issue #300 真实 TCP 动态探针：kind=1 bootstrap + kind=2 双向恢复 diff > RT：100KB 文档经 kind=1 分块 bootstrap（双 peer）；100KB 恢复写经 kind=2 分块上行收敛 + kind=2 分块下行收敛；单 ACK 锚末 chunk 帧序
+[SA7-DATAFLOW] route=rt-recovery-k2 step=observed aK2UpChunks=13 aK2UpTotalBytes=100029 hubToBK2Chunks=13 hubToBK2TotalBytes=100029 hubToAApplied=[[1,5],[2,21]] aLastK2Seq=21 bApplied=[[1,17],[2,33]] bLastK2Seq=undefined errorsAll=[] aState=live bState=live
+
+ ✓ packages/ws-replication/test/sa7-300-real-transport-probe.test.ts (1 test) 402ms
+   ✓ SA7 issue #300 真实 TCP 动态探针：kind=1 bootstrap + kind=2 双向恢复 diff > RT：100KB 文档经 kind=1 分块 bootstrap（双 peer）；100KB 恢复写经 kind=2 分块上行收敛 + kind=2 分块下行收敛；单 ACK 锚末 chunk 帧序  401ms
+stdout | packages/ws-replication/test/sa7-300-transport-probe.test.ts > SA7 issue #300 动态探针：ACK/timeout/resync 失败路径 + 协商门 + 计数器 > T1：kind=2 发送端自持 ACK 超时 → 载体弃置 + declareLocalResync(ack-timeout) → RESYNC_REQUIRED；同 transferId 零新增 chunk；非终态
+[SA7-DATAFLOW] route=t1-ack-timeout step=pre-advance transferId=1 chunksBefore=13 droppedApplied=1 peerState=reconciling hubValue=qqqqqq
+
+stdout | packages/ws-replication/test/sa7-300-transport-probe.test.ts > SA7 issue #300 动态探针：ACK/timeout/resync 失败路径 + 协商门 + 计数器 > T1：kind=2 发送端自持 ACK 超时 → 载体弃置 + declareLocalResync(ack-timeout) → RESYNC_REQUIRED；同 transferId 零新增 chunk；非终态
+[SA7-DATAFLOW] route=t1-ack-timeout step=post-advance resyncCount=1 chunksAfter=13 sameTransferIdAfter=13 peerState=reconciling connState=ready errorsP2H=[] errorsH2P=[] tailP2H=["UPDATE_CHUNK","UPDATE_CHUNK","UPDATE_CHUNK","UPDATE_CHUNK","UPDATE_CHUNK","SYNC_APPLIED"]
+[SA7-DATAFLOW] route=t1-ack-timeout step=observer resyncCauses=["send-failed"]
+
+stdout | packages/ws-replication/test/sa7-300-transport-probe.test.ts > SA7 issue #300 动态探针：ACK/timeout/resync 失败路径 + 协商门 + 计数器 > T2：kind=1 接收端 assembly 停滞（后续 chunk 全丢）→ busyKind=1 选路：BOOTSTRAP_FAILED + failed/bootstrap-timeout；零写入
+[SA7-DATAFLOW] route=t2-assembly-timeout-k1 step=pre-advance arrivedChunks=1 peerState=bootstrapping peerDocPresent=false dropped=12
+
+stdout | packages/ws-replication/test/sa7-300-transport-probe.test.ts > SA7 issue #300 动态探针：ACK/timeout/resync 失败路径 + 协商门 + 计数器 > T2：kind=1 接收端 assembly 停滞（后续 chunk 全丢）→ busyKind=1 选路：BOOTSTRAP_FAILED + failed/bootstrap-timeout；零写入
+[SA7-DATAFLOW] route=t2-assembly-timeout-k1 step=post-advance codes=["BOOTSTRAP_FAILED"] peerState=failed peerDocPresent=false hubState=see-hub-ns-state-via-wire hubErrors=[]
+[SA7-DATAFLOW] route=t2-assembly-timeout-k1 step=observer failedCause=bootstrap-timeout failedTimeoutMs=5000
+
+stdout | packages/ws-replication/test/sa7-300-transport-probe.test.ts > SA7 issue #300 动态探针：ACK/timeout/resync 失败路径 + 协商门 + 计数器 > T3：kind=2 接收端 assembly 停滞（data 闸门暂停使 chunk 流中断）→ busyKind=2 选路：RESYNC_REQUIRED{SYNC_TRANSFER_EXPIRED} + needs-resync（非终态、零 ERROR）
+[SA7-DATAFLOW] route=t3-assembly-timeout-k2 step=pre-advance arrivedChunks=1 hubValue=seed peerState=reconciling
+
+stdout | packages/ws-replication/test/sa7-300-transport-probe.test.ts > SA7 issue #300 动态探针：ACK/timeout/resync 失败路径 + 协商门 + 计数器 > T3：kind=2 接收端 assembly 停滞（data 闸门暂停使 chunk 流中断）→ busyKind=2 选路：RESYNC_REQUIRED{SYNC_TRANSFER_EXPIRED} + needs-resync（非终态、零 ERROR）
+[SA7-DATAFLOW] route=t3-assembly-timeout-k2 step=post-advance resyncReasons=["SYNC_TRANSFER_EXPIRED"] peerState=needs-resync connState=ready errorsH2P=[] errorsP2H=[]
+
+stdout | packages/ws-replication/test/sa7-300-transport-probe.test.ts > SA7 issue #300 动态探针：ACK/timeout/resync 失败路径 + 协商门 + 计数器 > T4：completeChunkedStep2 round 回退分支（SA4 §11-4）——busy assembly 期间注入新 round STEP1（无 RESYNC 前驱）后补残 chunk：apply 一次、无数据损坏、结算 round 回退
+[SA7-DATAFLOW] route=t4-round-fallback step=captured-real-transfer bindingRound1=2 realTransferId=1 chunkCount=13 totalBytes=100029
+
+stdout | packages/ws-replication/test/sa7-300-transport-probe.test.ts > SA7 issue #300 动态探针：ACK/timeout/resync 失败路径 + 协商门 + 计数器 > T4：completeChunkedStep2 round 回退分支（SA4 §11-4）——busy assembly 期间注入新 round STEP1（无 RESYNC 前驱）后补残 chunk：apply 一次、无数据损坏、结算 round 回退
+[SA7-DATAFLOW] route=t4-round-fallback step=post-injection hubValue=qqqqqq appliedRounds=[4] appliedAcked=[37] lastCraftChunkSeq=37 bindingRound1=2 round2=3 round3=4 errorsH2P=[] errorsP2H=[] connState=ready peerState=live
+
+stdout | packages/ws-replication/test/sa7-300-transport-probe.test.ts > SA7 issue #300 动态探针：ACK/timeout/resync 失败路径 + 协商门 + 计数器 > T5：协商门（v1 未协商组合保持）——超限 snapshot → BOOTSTRAP_TOO_LARGE；超限恢复 diff → SYNC_DIFF_TOO_LARGE；两构型零 0x42 chunk
+[SA7-DATAFLOW] route=t5-negotiation-gate step=v1-snapshot codesHub=["BOOTSTRAP_TOO_LARGE"] peerState=failed chunksP2H=0 chunksH2P=0
+
+stdout | packages/ws-replication/test/sa7-300-transport-probe.test.ts > SA7 issue #300 动态探针：ACK/timeout/resync 失败路径 + 协商门 + 计数器 > T5：协商门（v1 未协商组合保持）——超限 snapshot → BOOTSTRAP_TOO_LARGE；超限恢复 diff → SYNC_DIFF_TOO_LARGE；两构型零 0x42 chunk
+[SA7-DATAFLOW] route=t5-negotiation-gate step=v1-diff codesPeer=["SYNC_DIFF_TOO_LARGE"] peerState=failed chunksP2H=0
+
+stdout | packages/ws-replication/test/sa7-300-transport-probe.test.ts > SA7 issue #300 动态探针：ACK/timeout/resync 失败路径 + 协商门 + 计数器 > T6：transferId 单计数器（R42）——kind=0 → kind=2 → kind=0 跨 kind 严格 +1 递增、无重复无跳号
+[SA7-DATAFLOW] route=t6-transfer-id-counter step=observed idA=1 idB=2 idC=3 uniqueTransferIds=[1,2,3] totalChunkFrames=19 peerLiveFinal=live
+
+stdout | packages/ws-replication/test/sa7-300-transport-probe.test.ts > SA7 issue #300 动态探针：ACK/timeout/resync 失败路径 + 协商门 + 计数器 > T7：BulkTransferSender 自持 ACK timer 单元动态——kind=2 末 chunk 出站锚武装（kind=1 零武装）；超时弃载体 + 回调恰一次；settle/abort 拆 timer
+[SA7-DATAFLOW] route=t7-bulk-ack-timer step=observed k2ArmedAtLastChunk=true k2DelayMs=5000 kind1Armed=0 settleCleared=1 resyncCleared=1
+
+ ✓ packages/ws-replication/test/sa7-300-transport-probe.test.ts (7 tests) 89ms
+
+ Test Files  2 passed (2)
+      Tests  8 passed (8)
+   Start at  00:54:01
+   Duration  1.60s (transform 511ms, setup 0ms, collect 832ms, tests 491ms, environment 0ms, prepare 85ms)

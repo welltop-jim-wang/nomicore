@@ -756,6 +756,7 @@ describe('issue #243 切片 2 实现轮：协商 CAP_CHUNKED_UPDATE 分块 live 
         encodeMessage(
           {
             kind: 'UPDATE_CHUNK',
+            transferKind: 0, // issue #295：单形态 kind 首字段（live-update 路径）
             namespaceId: ctx.nsId,
             transferId: 1,
             chunkIndex: 0,
@@ -772,6 +773,7 @@ describe('issue #243 切片 2 实现轮：协商 CAP_CHUNKED_UPDATE 分块 live 
         encodeMessage(
           {
             kind: 'UPDATE_CHUNK',
+            transferKind: 0, // issue #295：单形态 kind 首字段（live-update 路径）
             namespaceId: ctx.nsId,
             transferId: 2,
             chunkIndex: 0,
@@ -1066,6 +1068,7 @@ describe('issue #243 切片 2 实现轮：协商 CAP_CHUNKED_UPDATE 分块 live 
         encodeMessage(
           {
             kind: 'UPDATE_CHUNK',
+            transferKind: 0, // issue #295：单形态 kind 首字段（live-update 路径）
             namespaceId: ctx.nsId,
             transferId: 7,
             chunkIndex: 1,
@@ -1105,6 +1108,7 @@ describe('issue #243 切片 2 实现轮：协商 CAP_CHUNKED_UPDATE 分块 live 
         encodeMessage(
           {
             kind: 'UPDATE_CHUNK',
+            transferKind: 0, // issue #295：单形态 kind 首字段（live-update 路径）
             namespaceId: ctx.nsId,
             transferId: 1,
             chunkIndex: 0,
@@ -1139,6 +1143,7 @@ describe('issue #243 切片 2 实现轮：协商 CAP_CHUNKED_UPDATE 分块 live 
         encodeMessage(
           {
             kind: 'UPDATE_CHUNK',
+            transferKind: 0, // issue #295：单形态 kind 首字段（live-update 路径）
             namespaceId: ctx.nsId,
             transferId: 1,
             chunkIndex: 1,

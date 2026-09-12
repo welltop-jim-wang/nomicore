@@ -237,7 +237,7 @@ describe('`@nomicore/ws-replication` observer seam（issue #177）', () => {
     >();
   });
 
-  it('事件 union：26 型字面量精确匹配（判别联合闭集，append-only；issue #238/#256/#244/#245 增补）', () => {
+  it('事件 union：36 型字面量精确匹配（判别联合闭集，append-only；issue #238/#256/#244/#245/#301 增补）', () => {
     expectTypeOf<ReplicationObserverEvent>().toEqualTypeOf<
       | { readonly type: 'connection-state-changed'; readonly side: ReplicationObserverSide; readonly connectionId?: string; readonly from: PeerConnectionState | HubConnectionState; readonly to: PeerConnectionState | HubConnectionState }
       | { readonly type: 'connection-backoff-scheduled'; readonly side: 'peer'; readonly attempt: number; readonly delayMs: number; readonly reason: 'dial-failed' | 'socket-closed' | 'hello-timeout' | 'pong-timeout' | 'connection-backpressure' | 'goaway-closed' | 'goaway-retry-hint' | 'namespace-recovery' }
@@ -275,6 +275,20 @@ describe('`@nomicore/ws-replication` observer seam（issue #177）', () => {
       | { readonly type: 'chunked-update-sent'; readonly side: ReplicationObserverSide; readonly connectionId?: string; readonly namespaceId: string; readonly transferId: number; readonly chunkCount: number; readonly totalBytes: number }
       | { readonly type: 'chunked-update-applied'; readonly side: ReplicationObserverSide; readonly connectionId?: string; readonly namespaceId: string; readonly bytes: number; readonly chunkCount: number; readonly applyLatencyMs?: number }
       | { readonly type: 'chunked-update-acked'; readonly side: ReplicationObserverSide; readonly connectionId?: string; readonly namespaceId: string; readonly bytes: number; readonly ackLatencyMs?: number }
+
+      // issue #301（append-only 第 29–36 型；ADR 0022 L78–81 + 协议 §23.1 第 29–36 型行——
+      // 字段集对齐既有 chunked-update-* 四型；side 信封：snapshot 成功三型字面量、
+      // sync 四型与两 aborted 型 ReplicationObserverSide；sent 恒无 latency 键、
+      // applied 无 transferId/sequence/效果组键、acked 无 sequence/syncRoundId、
+      // aborted 无 connectionId；reason 复用 ChunkedUpdateAbortReason 六值闭集）
+      | { readonly type: 'chunked-snapshot-sent'; readonly side: 'hub'; readonly connectionId?: string; readonly namespaceId: string; readonly transferId: number; readonly chunkCount: number; readonly totalBytes: number }
+      | { readonly type: 'chunked-snapshot-applied'; readonly side: 'peer'; readonly connectionId?: string; readonly namespaceId: string; readonly bytes: number; readonly chunkCount: number; readonly applyLatencyMs?: number }
+      | { readonly type: 'chunked-snapshot-acked'; readonly side: 'hub'; readonly connectionId?: string; readonly namespaceId: string; readonly bytes: number; readonly ackLatencyMs?: number }
+      | { readonly type: 'chunked-snapshot-aborted'; readonly side: ReplicationObserverSide; readonly namespaceId: string; readonly transferId: number; readonly reason: 'timeout' | 'shed' | 'resync-declared' | 'channel-teardown' | 'connection-teardown' | 'epoch-fence'; readonly receivedChunks: number; readonly receivedBytes: number }
+      | { readonly type: 'chunked-sync-sent'; readonly side: ReplicationObserverSide; readonly connectionId?: string; readonly namespaceId: string; readonly transferId: number; readonly chunkCount: number; readonly totalBytes: number; readonly syncRoundId: number }
+      | { readonly type: 'chunked-sync-applied'; readonly side: ReplicationObserverSide; readonly connectionId?: string; readonly namespaceId: string; readonly bytes: number; readonly chunkCount: number; readonly syncRoundId: number; readonly applyLatencyMs?: number }
+      | { readonly type: 'chunked-sync-acked'; readonly side: ReplicationObserverSide; readonly connectionId?: string; readonly namespaceId: string; readonly bytes: number; readonly ackLatencyMs?: number }
+      | { readonly type: 'chunked-sync-aborted'; readonly side: ReplicationObserverSide; readonly namespaceId: string; readonly transferId: number; readonly reason: 'timeout' | 'shed' | 'resync-declared' | 'channel-teardown' | 'connection-teardown' | 'epoch-fence'; readonly receivedChunks: number; readonly receivedBytes: number }
 
     >();
     // issue #256：namespace-failed 字段类型精确性（cause 闭联合；timeoutMs 可选有限数值）
@@ -316,6 +330,57 @@ describe('`@nomicore/ws-replication` observer seam（issue #177）', () => {
     expectTypeOf<Extract<ReplicationObserverEvent, { type: 'chunked-update-applied' }>['applyLatencyMs']>().toEqualTypeOf<number | undefined>();
     expectTypeOf<Extract<ReplicationObserverEvent, { type: 'chunked-update-acked' }>['bytes']>().toEqualTypeOf<number>();
     expectTypeOf<Extract<ReplicationObserverEvent, { type: 'chunked-update-acked' }>['ackLatencyMs']>().toEqualTypeOf<number | undefined>();
+
+    // issue #301：8 型字段类型精确性（OD9-1 全覆盖；side 信封按 §23.1 行取值，
+    // latency 可选 = number | undefined，sync 族 syncRoundId 必填，aborted reason 六值闭集）
+    expectTypeOf<Extract<ReplicationObserverEvent, { type: 'chunked-snapshot-sent' }>['side']>().toEqualTypeOf<'hub'>();
+    expectTypeOf<Extract<ReplicationObserverEvent, { type: 'chunked-snapshot-sent' }>['transferId']>().toEqualTypeOf<number>();
+    expectTypeOf<Extract<ReplicationObserverEvent, { type: 'chunked-snapshot-sent' }>['chunkCount']>().toEqualTypeOf<number>();
+    expectTypeOf<Extract<ReplicationObserverEvent, { type: 'chunked-snapshot-sent' }>['totalBytes']>().toEqualTypeOf<number>();
+    expectTypeOf<Extract<ReplicationObserverEvent, { type: 'chunked-snapshot-applied' }>['side']>().toEqualTypeOf<'peer'>();
+    expectTypeOf<Extract<ReplicationObserverEvent, { type: 'chunked-snapshot-applied' }>['bytes']>().toEqualTypeOf<number>();
+    expectTypeOf<Extract<ReplicationObserverEvent, { type: 'chunked-snapshot-applied' }>['chunkCount']>().toEqualTypeOf<number>();
+    expectTypeOf<Extract<ReplicationObserverEvent, { type: 'chunked-snapshot-applied' }>['applyLatencyMs']>().toEqualTypeOf<number | undefined>();
+    expectTypeOf<Extract<ReplicationObserverEvent, { type: 'chunked-snapshot-acked' }>['side']>().toEqualTypeOf<'hub'>();
+    expectTypeOf<Extract<ReplicationObserverEvent, { type: 'chunked-snapshot-acked' }>['bytes']>().toEqualTypeOf<number>();
+    expectTypeOf<Extract<ReplicationObserverEvent, { type: 'chunked-snapshot-acked' }>['ackLatencyMs']>().toEqualTypeOf<number | undefined>();
+    expectTypeOf<Extract<ReplicationObserverEvent, { type: 'chunked-snapshot-aborted' }>['side']>().toEqualTypeOf<ReplicationObserverSide>();
+    expectTypeOf<Extract<ReplicationObserverEvent, { type: 'chunked-snapshot-aborted' }>['reason']>().toEqualTypeOf<
+      | 'timeout'
+      | 'shed'
+      | 'resync-declared'
+      | 'channel-teardown'
+      | 'connection-teardown'
+      | 'epoch-fence'
+    >();
+    expectTypeOf<Extract<ReplicationObserverEvent, { type: 'chunked-snapshot-aborted' }>['receivedChunks']>().toEqualTypeOf<number>();
+    expectTypeOf<Extract<ReplicationObserverEvent, { type: 'chunked-sync-sent' }>['side']>().toEqualTypeOf<ReplicationObserverSide>();
+    expectTypeOf<Extract<ReplicationObserverEvent, { type: 'chunked-sync-sent' }>['transferId']>().toEqualTypeOf<number>();
+    expectTypeOf<Extract<ReplicationObserverEvent, { type: 'chunked-sync-sent' }>['chunkCount']>().toEqualTypeOf<number>();
+    expectTypeOf<Extract<ReplicationObserverEvent, { type: 'chunked-sync-sent' }>['totalBytes']>().toEqualTypeOf<number>();
+    expectTypeOf<Extract<ReplicationObserverEvent, { type: 'chunked-sync-sent' }>['syncRoundId']>().toEqualTypeOf<number>();
+    expectTypeOf<Extract<ReplicationObserverEvent, { type: 'chunked-sync-applied' }>['bytes']>().toEqualTypeOf<number>();
+    expectTypeOf<Extract<ReplicationObserverEvent, { type: 'chunked-sync-applied' }>['chunkCount']>().toEqualTypeOf<number>();
+    expectTypeOf<Extract<ReplicationObserverEvent, { type: 'chunked-sync-applied' }>['syncRoundId']>().toEqualTypeOf<number>();
+    expectTypeOf<Extract<ReplicationObserverEvent, { type: 'chunked-sync-applied' }>['applyLatencyMs']>().toEqualTypeOf<number | undefined>();
+    // acked 键集冻结：无 syncRoundId 键（OD1/R2 forbidden 断言在类型面的对应物）
+    expectTypeOf<Extract<ReplicationObserverEvent, { type: 'chunked-sync-acked' }>['bytes']>().toEqualTypeOf<number>();
+    expectTypeOf<Extract<ReplicationObserverEvent, { type: 'chunked-sync-acked' }>['ackLatencyMs']>().toEqualTypeOf<number | undefined>();
+    expectTypeOf<'syncRoundId' extends keyof Extract<ReplicationObserverEvent, { type: 'chunked-sync-acked' }> ? true : false>().toEqualTypeOf<false>();
+    expectTypeOf<Extract<ReplicationObserverEvent, { type: 'chunked-sync-aborted' }>['transferId']>().toEqualTypeOf<number>();
+    expectTypeOf<Extract<ReplicationObserverEvent, { type: 'chunked-sync-aborted' }>['reason']>().toEqualTypeOf<
+      | 'timeout'
+      | 'shed'
+      | 'resync-declared'
+      | 'channel-teardown'
+      | 'connection-teardown'
+      | 'epoch-fence'
+    >();
+    expectTypeOf<Extract<ReplicationObserverEvent, { type: 'chunked-sync-aborted' }>['receivedBytes']>().toEqualTypeOf<number>();
+    // 结构排除的静态锚：applied 族无 transferId/sequence 键；aborted 族无 connectionId 键
+    expectTypeOf<'transferId' extends keyof Extract<ReplicationObserverEvent, { type: 'chunked-snapshot-applied' }> ? true : false>().toEqualTypeOf<false>();
+    expectTypeOf<'sequence' extends keyof Extract<ReplicationObserverEvent, { type: 'chunked-sync-applied' }> ? true : false>().toEqualTypeOf<false>();
+    expectTypeOf<'connectionId' extends keyof Extract<ReplicationObserverEvent, { type: 'chunked-snapshot-aborted' }> ? true : false>().toEqualTypeOf<false>();
 
   });
 
@@ -372,6 +437,11 @@ describe('`@nomicore/ws-replication` observer seam（issue #177）', () => {
     // ReplicationLimits.maxChunkedUpdateBytes（必填 number——缺省 4 MiB）
     expectTypeOf<ReplicationLimits['maxChunkedUpdateBytes']>().toEqualTypeOf<number>();
     expectTypeOf<typeof DEFAULT_REPLICATION_LIMITS['maxChunkedUpdateBytes']>().toEqualTypeOf<number>();
+    // issue #295：两聚合上限键进入公共类型面（必填 number；缺省 4 MiB 经 DEFAULT 提供）
+    expectTypeOf<ReplicationLimits['maxChunkedBootstrapBytes']>().toEqualTypeOf<number>();
+    expectTypeOf<ReplicationLimits['maxChunkedSyncDiffBytes']>().toEqualTypeOf<number>();
+    expectTypeOf<typeof DEFAULT_REPLICATION_LIMITS['maxChunkedBootstrapBytes']>().toEqualTypeOf<number>();
+    expectTypeOf<typeof DEFAULT_REPLICATION_LIMITS['maxChunkedSyncDiffBytes']>().toEqualTypeOf<number>();
   });
 
   it('观察面不回传控制能力：回调返回 void；事件对象全部 primitive 字段（无函数/对象引用字段）', () => {

@@ -462,6 +462,7 @@ describe('issue #243 切片 2：协商 CAP_CHUNKED_UPDATE 超限 UPDATE live 分
       const frame = encodeMessage(
         {
           kind: 'UPDATE_CHUNK',
+          transferKind: 0, // issue #295：单形态 kind 首字段（live-update 路径）
           namespaceId: ctx.nsId,
           transferId: 1,
           chunkIndex: 0,

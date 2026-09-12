@@ -29,6 +29,9 @@ export const DEFAULT_REPLICATION_LIMITS: Readonly<ReplicationLimits> = Object.fr
   // issue #244（ADR 0013 配置表值）：分块数申报上界 / 连接级并发 assembly 上界
   maxChunksPerUpdate: 64,
   maxConcurrentAssembliesPerConnection: 4,
+  // issue #295（ADR 0022 配置表值）：snapshot / sync-diff 单笔聚合上限（缺省各 4 MiB）
+  maxChunkedBootstrapBytes: 4 * 1024 * 1024,
+  maxChunkedSyncDiffBytes: 4 * 1024 * 1024,
 });
 
 /** 冻结默认 timeouts（§2 注释值；与 harness CONTRACT_TIMEOUTS 逐值一致）。

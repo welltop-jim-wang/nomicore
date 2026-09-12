@@ -233,7 +233,7 @@ describe('全部 v1 消息 payload 的 byte-level golden vectors（§5–§13；
     expect(d.message.ackedSequence).toBe(6);
   });
 
-  it('UPDATE_CHUNK — ns → transferId → chunkIndex → chunkCount → totalBytes → bytes（issue #242 三向量，已协商解码）', () => {
+  it('UPDATE_CHUNK — kind → ns → transferId → chunkIndex → chunkCount → totalBytes → bytes（issue #242 三向量，已协商解码；issue #295 单形态）', () => {
     for (const name of ['UPDATE_CHUNK_BASIC', 'UPDATE_CHUNK_MULTIBYTE', 'UPDATE_CHUNK_U32_MAX'] as const) {
       const g = GOLDEN_BY_NAME.get(name)!;
       const d = decodeGolden(name);

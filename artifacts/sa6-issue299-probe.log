@@ -1,0 +1,22 @@
+=== SA6 issue#299 probe log (HEAD eb380d7) 2026-09-11T04:54:13Z ===
+
+--- probe A: replication-protocol codec reverse proof ---
+UPDATE_CHUNK goldens（仓内 fixture 形态）: UPDATE_CHUNK_BASIC=payload[0]:0x23 | UPDATE_CHUNK_MULTIBYTE=payload[0]:0x23 | UPDATE_CHUNK_U32_MAX=payload[0]:0x23
+旧六字段形态（HEAD 现行 wire）: OK kind=UPDATE_CHUNK transferId=1 chunkIndex=0 chunkCount=3 totalBytes=600
+单形态 kind=0（同一 payload 前缀 0x00）: REJECT ProtocolError MALFORMED_FRAME — MALFORMED_FRAME: invalid namespaceId
+单形态 kind=1（同一 payload 前缀 0x01）: REJECT ProtocolError MALFORMED_FRAME — MALFORMED_FRAME: invalid namespaceId
+差异定位：旧 payload 首字节 0x23 = NS varString 长度 35；单形态同位置必须是 kind ∈ {0,1,2}，HEAD 解析器把 kind 字节当 namespaceId 长度 → invalid namespaceId / MALFORMED_FRAME。
+
+--- probe B: ws-replication config chain reverse proof ---
+对照 #244 链①（maxChunkedUpdateBytes=6MiB > maxQueuedUpdateBytes 4MiB）: TypeError — limits: maxChunkedUpdateBytes(6291456) 必须 ≤ maxQueuedUpdateBytes(4194304)
+对照 #244 链②（maxChunksPerUpdate=1 → 4MiB > 512KiB）: TypeError — limits: maxChunkedUpdateBytes(4194304) 必须 ≤ maxChunksPerUpdate(1) × maxUpdateBytes(524288)
+#295 bootstrap 链②（maxChunkedBootstrapBytes=40MiB > 32MiB）: ACCEPTED（静默）
+#295 sync 链②（maxChunkedSyncDiffBytes=40MiB > 32MiB）: ACCEPTED（静默）
+#295 新键非法值（maxChunkedBootstrapBytes=0）: ACCEPTED（静默）
+DEFAULT_REPLICATION_LIMITS 键面: maxFrameBytes,maxBootstrapBytes,maxSyncDiffBytes,maxUpdateBytes,maxQueuedUpdateBytes,maxQueuedUpdateCount,maxInFlightUpdates,maxQueuedBytesPerConnection,lowWater,highWater,maxQueuedControlBytes,maxChunkedUpdateBytes,maxChunksPerUpdate,maxConcurrentAssembliesPerConnection
+
+--- probe C: R14 编码侧对称校验机制反证（旧形态下同样可触发） ---
+decoded message frozen? false
+encode transferId=0: ProtocolError MALFORMED_FRAME
+encode chunkIndex=chunkCount: ProtocolError MALFORMED_FRAME
+encode empty bytes: ProtocolError MALFORMED_FRAME
