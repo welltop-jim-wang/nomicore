@@ -38,9 +38,20 @@
 import type * as Y from 'yjs';
 import type { DocHandle, ReplicationIdentityRef } from '@nomicore/persistence';
 import { readLogicalValueAtPath } from '@nomicore/doc-runtime';
-import type { ReadLogicalValueResult } from '@nomicore/doc-runtime';
+import type {
+  ReadLogicalValueAtPathBudgetResult,
+  ReadLogicalValueAtPathOptions,
+  ReadLogicalValueResult,
+  ReadLogicalValueTruncationEntry,
+} from '@nomicore/doc-runtime';
 import { compileSchemaEnvelope } from '@nomicore/vfsl';
-import type { CompileSchemaEnvelopeResult, ReadDataSchemaProjection, SchemaEnvelope } from '@nomicore/vfsl';
+import type {
+  BudgetedReadDataSchemaProjection,
+  CompileSchemaEnvelopeResult,
+  ReadDataSchemaProjection,
+  ResolveSchemaBudgetOptions,
+  SchemaEnvelope,
+} from '@nomicore/vfsl';
 import type { DiagnosticIssue, NamespaceDiagnosticChangeEmitter } from '@nomicore/namespace-diagnostic-log';
 import {
   NamespaceRuntimeConstructionError,
@@ -118,14 +129,46 @@ export interface RuntimeReadDisabledResult {
  *  无关（负控/类型守卫双锚），失败形状以 doc-runtime 为准，不复制第二份（D1）。 */
 type ReadLogicalValueFailure = Extract<ReadLogicalValueResult, { ok: false }>;
 
-/** read 结果联合（issue #273 / ADR-0016）：ready 期成功分支 = { ok:true, value, schema }
- *  ——value 为 doc-runtime 值透传（值缺席显式 undefined，value 键恒在场）、schema 为该
- *  路径语义投影（ReadDataSchemaProjection | null，双域契约见 read-schema-projection.ts
- *  模块头注与 readData JSDoc；ok 成员恰三键）；失败分支 = doc-runtime PATH_NOT_ALLOWED
- *  原样（不带 schema 键）+ closing/closed 期 RuntimeReadDisabledResult（#92，原样）。 */
+/** 预算读失败成员（PATH_NOT_ALLOWED | READ_OPTIONS_INVALID）：T1 预算联合的 Extract
+ *  单源派生（零泄漏 d）——亦是接缝终态成员（seamReadOptionsInvalid）的返回类型注解
+ *  （形状漂移编译锁：T1 为该成员加必填键即在此编译红）。 */
+type ReadLogicalValueBudgetFailure = Extract<ReadLogicalValueAtPathBudgetResult, { ok: false }>;
+
+/** readData options（ADR-0024 决策 1）：doc-runtime 单源类型别名（零复制）。 */
+export type NamespaceRuntimeReadDataOptions = ReadLogicalValueAtPathOptions;
+
+/** read 结果联合（issue #273 / ADR-0016 + #336 ADR-0024 决策 4）：ready 期成功分支恒
+ *  五键 `{ ok, value, schema, truncated, truncations }`——value 为 doc-runtime 值透传
+ *  （值缺席显式 undefined，value 键恒在场）、schema 为该路径语义投影
+ *  （ReadDataSchemaProjection | null，双域契约见 read-schema-projection.ts 模块头注与
+ *  readData JSDoc）；truncated/truncations 恒在场（无预算读 = false / 空数组，形状唯一、
+ *  无「缺席 = 无截断」隐式约定）；失败分支 = doc-runtime PATH_NOT_ALLOWED 原样（不带
+ *  截断键）+ closing/closed 期 RuntimeReadDisabledResult（#92，原样）——该联合**不含**
+ *  READ_OPTIONS_INVALID（零泄漏：无 options 调用结构上不可达该码）。 */
 export type NamespaceRuntimeReadDataResult =
-  | { ok: true; value: unknown; schema: ReadDataSchemaProjection | null }
+  | {
+      ok: true;
+      value: unknown;
+      schema: ReadDataSchemaProjection | null;
+      truncated: boolean;
+      truncations: readonly ReadLogicalValueTruncationEntry[];
+    }
   | ReadLogicalValueFailure
+  | RuntimeReadDisabledResult;
+
+/** 预算 read 结果联合（#336 ADR-0024 决策 1/4/6）：成功面同上（schema 加宽为
+ *  BudgetedReadDataSchemaProjection | null——预算投影成员值位可含截断标记）；失败面追加
+ *  READ_OPTIONS_INVALID（doc-runtime 预算联合 Extract 单源派生；含未知键、同步不抛、
+ *  不借路径/生命周期码）。 */
+export type NamespaceRuntimeReadDataBudgetResult =
+  | {
+      ok: true;
+      value: unknown;
+      schema: BudgetedReadDataSchemaProjection | null;
+      truncated: boolean;
+      truncations: readonly ReadLogicalValueTruncationEntry[];
+    }
+  | ReadLogicalValueBudgetFailure
   | RuntimeReadDisabledResult;
 
 /** Runtime 公共形状（D2 十键协议；键集/形状即公共契约——AC2/AC6/AC8 锚定）。 */
@@ -134,22 +177,47 @@ export interface NamespaceRuntime {
   readonly owner: Readonly<{ userId: string }>;
   /** namespaceId（= handle.docId，string 原始值天然不可变）。 */
   readonly namespaceId: string;
-  /** readData 成功分支组合读（issue #273 / ADR-0016）：`value` 为
-   *  readLogicalValueAtPath 的值透传（读取保持 schema 无关、不进 sequencer、失败通道
-   *  与读取保留不变量不变——ADR-0008 修订节第 3 条），`schema` 为该路径的语义 schema
-   *  投影（值语义子树 + 传递闭包别名表 + docs/aliasDocs 注释切片；每次读 detached
+  /** readData 成功分支组合读（issue #273 / ADR-0016 + issue #336 / ADR-0024 决策 4/6）：
+   *  `value` 为 readLogicalValueAtPath 的值透传（读取保持 schema 无关、不进 sequencer、
+   *  失败通道与读取保留不变量不变——ADR-0008 修订节第 3 条），`schema` 为该路径的语义
+   *  schema 投影（值语义子树 + 传递闭包别名表 + docs/aliasDocs 注释切片；每次读 detached
    *  深拷贝——可变普通副本、不冻结、零缓存，调用方 mutation 绝不交叉污染 runtime 的活
-   *  schema 与后续读数）。always-on：无 opt-in 开关、无新增公共方法/参数。
+   *  schema 与后续读数）。always-on：无 schema opt-in 开关。
+   *  形状（ADR-0024 决策 4，破坏性修订）：成功分支**恒五键**
+   *  `{ ok, value, schema, truncated, truncations }`——预算读与无预算读同形（无截断时空
+   *  清单空数组；truncated === truncations.length > 0）；失败分支形状不动、不带这些键
+   *  （读在到达投影前失败，无值可截）。
    *  `schema: null` 单义（不是读的失败，读的 ok 恒真）覆盖：① 无 active schema
    *  （preparing/unavailable/fatal）；② 路径偏离 schema（raw 复制可产生 schema 外
    *  数据）；③ 静态解析失败。路径合法但值缺席（value 显式 undefined）时 schema 照常
-   *  返回（路径键控）；空路径 [] 返回 ROOT 值 schema 投影。
+   *  返回（路径键控）；空路径 [] 返回 ROOT 值 schema 投影。预算参数不是 schema 开关
+   *  （`schema:null` + `truncated:true` 合法共存）。
+   *  形状预算（ADR-0024 决策 1/6）：第二参 `options`（`{ depth?, maxChildrenPerNode? }`
+   *  封闭形状）在一次读内以**同一预算**贯通值通道（doc-runtime 三参）与投影通道
+   *  （vfsl resolver 三参），两通道截断位置一一对应（ADR-0024 L81，错位即契约违约）；
+   *  不传 options = 完整投影（逐字节现行为）。options 是 schema 无关的投影概念：
+   *  `depth` 自路径终点向下限定可展开容器层数、`maxChildrenPerNode` 限定每容器保留子项
+   *  数（width 对投影无操作）。合法性以 doc-runtime 校验器为**单一权威**：非法 options
+   *  （负数/非整数/非有限数/非对象/含未知多余键/accessor 键）响亮拒绝为新增稳定失败码
+   *  `READ_OPTIONS_INVALID`（同步、不抛；不借用 PATH_NOT_ALLOWED / RUNTIME_READ_DISABLED
+   *  ——预算缺陷不是路径缺陷，亦非生命周期缺陷）；键名的唯一在场位置 = 截断清单 depth
+   *  条目的 path 尾段。敌意 options（Proxy/descriptor-视图不稳定）同样收敛
+   *  `READ_OPTIONS_INVALID`，绝不外抛、绝不静默为 `schema:null`。
    *  错误双域划界（D4；敌意/异态 path → schema:null 收敛、绝不外抛；`InternalError`
    *  ——可信域畸形 derived——→ throw 逃逸，internal-bug-only、生产不可达——唯一逃逸
    *  throw 通道；敌意输入零 throw）。
    *  lifecycle≠ready 期返回 RuntimeReadDisabledResult（同步、非抛、非 Promise——
-   *  D4 lifecycle gate 即时生效，不等待已接纳任务排空）。 */
-  readonly readData: (path: readonly (string | number)[]) => NamespaceRuntimeReadDataResult;
+   *  D4 lifecycle gate 即时生效、先于一切 options 读取与 doc 触碰，不等待已接纳任务
+   *  排空）。
+   *  重载序：预算重载在前、legacy 在后（`ReturnType` 取末签名 → registry lease 的
+   *  `_readAlias` Equal 锚原文保持）。 */
+  readonly readData: {
+    (
+      path: readonly (string | number)[],
+      options: NamespaceRuntimeReadDataOptions,
+    ): NamespaceRuntimeReadDataBudgetResult;
+    (path: readonly (string | number)[]): NamespaceRuntimeReadDataResult;
+  };
   /** SCHEMA 四标准键投影（D4；载体缺席 → null，载体异型 → loud throw NSRT-SCHEMA-E2；
    *  非 primitive 值 → loud throw）。
    *  lifecycle≠ready（closing/closed）期同步 throw RuntimeReadDisabledError（code
@@ -468,23 +536,79 @@ export function createNamespaceRuntimeWithSeam(input: NamespaceRuntimeSeamInput)
   const beginResetFence = createBeginResetFence(sequencer, state, closeAfterFence);
   // V3e 公共面（十二键闭包对象；owner/namespaceId 由 V3a 捕获局部量构造——不再解引用成员）
   const owner = Object.freeze({ userId });
+
+  /**
+   * readData 组合体（#336 ADR-0024 决策 4/6；函数声明 + 双重载——无 cast 落地重载属性的
+   * 唯一常规形态：返回联合的实现闭包不可赋给重载属性，带重载声明的函数类型即重载签名集）。
+   *
+   * 编排（B-1/B-2）：S1 lifecycle gate 先行（closing/closed → RUNTIME_READ_DISABLED，
+   * 零 options 读取、零 doc 触碰）→ S2a 无 options（两参值读 + 两参投影，逐字节现行为；
+   * 新鲜 `[]`，禁共享常量——调用方可变副本纪律）→ S2b 预算（三参值读；T1 权威校验的
+   * G0 → options → N0 定序原样生效；失败成员原样透传）→ C 接缝净化 canonicalReadOptions
+   * （T1 同款读纪律，零 [[Get]]）→ P 投影三参（canonical 恒过 resolver 第二道门）→
+   * 五键组装（truncated/truncations 逐字段透传，零合成——清单源 = 值通道载体计数）。
+   */
+  function readData(path: readonly (string | number)[]): NamespaceRuntimeReadDataResult;
+  function readData(
+    path: readonly (string | number)[],
+    options: NamespaceRuntimeReadDataOptions,
+  ): NamespaceRuntimeReadDataBudgetResult;
+  function readData(
+    path: readonly (string | number)[],
+    options?: NamespaceRuntimeReadDataOptions,
+  ): NamespaceRuntimeReadDataResult | NamespaceRuntimeReadDataBudgetResult {
+    // D4 lifecycle gate 在组合**之前**：closing/closed 期同步结果联合拒绝（非抛、
+    // 非 Promise、零触碰 live Y.Doc——RED 锚 case 2/4 三重锁；#336 B-1：先于一切 options
+    // 触达——停接纳期敌意 trap 零执行）。ready 期 = ADR-0016 组合（D2）：值读先行 →
+    // 失败短路（零 schema 工作，失败对象不带截断键）→ 成功恒五键。
+    const lifecycle = state.lifecycle;
+    if (lifecycle !== 'ready') {
+      return readDisabled(lifecycle, path);
+    }
+    if (options === undefined) {
+      const result = readLogicalValueAtPath(doc, path);
+      if (!result.ok) return result; // 失败短路：PATH_NOT_ALLOWED 原样透传（不带新键）
+      return {
+        ok: true,
+        value: result.value,
+        schema: projectReadDataSchema(state, path),
+        truncated: false,
+        truncations: [], // 每次调用新鲜空数组（禁共享常量：调用方可变副本纪律）
+      };
+    }
+    // 三参：T1 权威校验（G0 → options → N0 → N1 → P1）；PATH_NOT_ALLOWED |
+    // READ_OPTIONS_INVALID 原样透传（零形状复制——D1 单源纪律）。
+    const result = readLogicalValueAtPath(doc, path, options);
+    if (!result.ok) return result;
+    // C 接缝净化（仅值通道成功后；读纪律与 T1 validateReadOptions 逐字对齐：
+    // Object.keys 键空间 + descriptor data-property 取值 + try 收编 + present-undefined
+    // 剥离/-0 归一；零 [[Get]]——get trap 从不执行）。
+    const canonical = canonicalReadOptions(options);
+    if (!canonical.ok) {
+      // A-2b：视图不稳定（敌意 descriptor/Proxy 在读间漂移或抛异常）→ 响亮失败。
+      // 出口①：重派发——T1 权威再校验（状态化 trap 复掷由 T1 内层 try 单源收编为
+      // READ_OPTIONS_INVALID；options 失败于 N0 前短路、零 doc 触碰；重派发全程顶层
+      // try，不可能外抛）。
+      const reDispatch = readLogicalValueAtPath(doc, path, options);
+      if (!reDispatch.ok) return reDispatch;
+      // 出口②：交替视图终态（T1 竟又接受——两通道同预算在该输入上不可判定，唯一诚实
+      // 出路是响亮失败；A-2c D1 登记豁免：由 runtime 构造成员，形状由 Extract 单源
+      // 类型注解锁死）。
+      return seamReadOptionsInvalid(path);
+    }
+    return {
+      ok: true,
+      value: result.value,
+      schema: projectReadDataSchema(state, path, canonical.options), // 投影通道只吃 canonical
+      truncated: result.truncated, // B14 透传：=== truncations.length > 0
+      truncations: result.truncations, // B-4：清单源 = 值通道载体计数（零合成、零合并）
+    };
+  }
+
   const runtime: NamespaceRuntime = {
     owner,
     namespaceId: docId,
-    readData: (path) => {
-      // D4 lifecycle gate 在组合**之前**：closing/closed 期同步结果联合拒绝（非抛、
-      // 非 Promise、零触碰 live Y.Doc——RED 锚 case 2/4 三重锁）。ready 期 = ADR-0016
-      // 组合（D2）：值读先行 → 失败短路（零 schema 工作，失败对象不带 schema 键）→
-      // 成功恰三键 { ok, value, schema }（schema 由 read-schema-projection.ts 产出：
-      // D3a 状态守卫 → D3b 敌意 path 规范化 → resolver → D5 深拷贝；双域处置见模块头注）
-      const lifecycle = state.lifecycle;
-      if (lifecycle !== 'ready') {
-        return readDisabled(lifecycle, path);
-      }
-      const result = readLogicalValueAtPath(doc, path);
-      if (!result.ok) return result; // 失败短路：PATH_NOT_ALLOWED 原样透传
-      return { ok: true, value: result.value, schema: projectReadDataSchema(state, path) };
-    },
+    readData,
     getSchema: () => {
       // D2（#93 rev2，SA8 裁决 B）：数据投影 getter 停接纳——key 仅 lifecycle（裁决 H：
       // 绝不 keyed on fatal/schemaState）；拒绝先于触碰 live Y.Doc（INV 同 read() 分支）
@@ -669,20 +793,97 @@ export function createNamespaceRuntime(
  *  message 插值仅 lifecycle 字面量（'closing'/'closed' 闭集字符串）——稳定；属 close 域
  *  术语，与 fatal 域文案分域（INV-C10）。 */
 function readDisabled(lifecycle: 'closing' | 'closed', path: unknown): RuntimeReadDisabledResult {
-  let echo: readonly (string | number)[] = [];
-  if (Array.isArray(path)) {
-    try {
-      echo = [...path]; // 新鲜副本（不别名调用方数组——沿 notAllowed 纪律）
-    } catch {
-      echo = []; // 敌意 Proxy 数组防御（沿 read.ts safeSpreadPath 纪律）
-    }
-  }
   return {
     ok: false,
     code: RUNTIME_READ_DISABLED_CODE,
-    path: echo,
+    path: echoReadPath(path),
     message: `${RUNTIME_READ_DISABLED_CODE}: Runtime lifecycle 为 ${lifecycle}——` +
       'close 已停止接纳公共读取；本调用不触碰 live Y.Doc',
+  };
+}
+
+/** 包内 path 回显 helper（不导出；readDisabled 既有纪律提取为共用——#336 A-2c）：
+ *  非数组 → []；Array.isArray 守卫 + try/catch spread，敌意 Proxy 数组坍缩 []（沿
+ *  doc-runtime safeSpreadPath 纪律）；恒返回新鲜副本（不别名调用方数组）。 */
+function echoReadPath(path: unknown): readonly (string | number)[] {
+  if (!Array.isArray(path)) return [];
+  try {
+    return [...path];
+  } catch {
+    return []; // 敌意 Proxy 数组防御（沿 read.ts safeSpreadPath 纪律）
+  }
+}
+
+/**
+ * #336 接缝净化（包内，不导出）：仅在 `readLogicalValueAtPath` 三参调用**成功后**执行。
+ * 读纪律与 T1 权威（doc-runtime `validateReadOptions`，read.ts L326–361）逐字对齐：
+ *  (a) 键空间 = `Object.keys(raw)`（own enumerable string 键——与非 enumerable/继承键双盲）；
+ *  (b) 轴值 = `Object.getOwnPropertyDescriptor(raw, key)` 的 data-property `value`——全程零
+ *      `[[Get]]`（零 get trap 执行、零继承链查找），accessor 显形即视图已变；
+ *  (c) 整体 try 收编探测期 trap 异常（与 T1 同一收编面减 getPrototypeOf——canonical 的轴
+ *      只依赖 own-enumerable 键视图，原型视图漂移不可能改变任何轴值；省去即少一次 trap 触达）；
+ *  (d) 仅「键在场（descriptor 存在且非 accessor）∧ 值为 ≥0 有限整数」才写入 canonical
+ *      （present-undefined/ownKeys 谎报键/非 enumerable 一律不写）；-0 归一 0（镜像 T1 H10）。
+ *
+ * T1 已成功 ⟹ 其第一次读到的视图满足接受判据。本函数以同一纪律重读：凡与该判据不一致
+ * （键集漂移 / accessor 显形 / 值非法化 / trap 抛异常）⟹ 对象在两次读之间不稳定（非确定性
+ * 敌意体）→ 返回 ok:false 交组合层响亮失败（A-2b），绝不静默、绝不外抛。净化器**不比权威
+ * 看得更多**（SA2 F1 修订核心）；T1 演进时本 helper 是唯一需同步复查点（注释互指锚定）。
+ */
+function canonicalReadOptions(raw: ReadLogicalValueAtPathOptions): CanonicalReadOptions {
+  try {
+    const out: { depth?: number; maxChildrenPerNode?: number } = {};
+    for (const key of Object.keys(raw)) {
+      // (a) 与 T1 同一键空间
+      if (key !== 'depth' && key !== 'maxChildrenPerNode') {
+        return { ok: false }; // 键集漂移：T1 视角本应拒绝 → 视图不稳定
+      }
+      const desc = Object.getOwnPropertyDescriptor(raw, key); // (b) 与 T1 同一取值通道（零 [[Get]]）
+      if (desc === undefined) continue; // ownKeys 谎报键：与 T1 同处置（≡ 非 own，不写）
+      if (desc.get !== undefined || desc.set !== undefined) {
+        return { ok: false }; // accessor 显形（T1 已拒、如今在场）→ 视图不稳定
+      }
+      const value = desc.value;
+      if (value === undefined) continue; // (d) present-undefined ≡ 缺席（R1）——剥离
+      if (
+        typeof value !== 'number' || !Number.isInteger(value) || !Number.isFinite(value) || value < 0
+      ) {
+        return { ok: false }; // 值非法/已变异：绝不把非法值喂给 resolver 第二道门（ER-1 收口）
+      }
+      if (key === 'depth') out.depth = value === 0 ? 0 : value; // H10：-0 归一（镜像 T1 L353）
+      else out.maxChildrenPerNode = value === 0 ? 0 : value;
+    }
+    return { ok: true, options: out }; // 全新 plain 字面量；键集 ⊆ 两轴、值全合法
+  } catch {
+    return { ok: false }; // (c) 探测期 trap 异常——收编，绝不外抛
+  }
+}
+
+/**
+ * 接缝净化判别结果（#336 A-2/A-2b）：异常不作跨函数控制流（判别联合返回——与 T1
+ * `{ok:false,msg}` 同款）。
+ */
+type CanonicalReadOptions =
+  | { readonly ok: true; readonly options: ResolveSchemaBudgetOptions }
+  | { readonly ok: false };
+
+/**
+ * 接缝终态成员（包内，不导出；#336 A-2c）：唯一构造触发 = 净化视图不稳定 ∧ T1 重派发又接受。
+ *
+ * 豁免登记（对 D1「失败形状以 doc-runtime 为准，不复制第二份」）：本构造点的触发条件是
+ * 接缝级的「读间视图不稳定」，T1 自身的一次校验在结构上无法观察到该条件（它只做一次读）。
+ * 形状漂移风险以返回类型注解锁死——类型 `ReadLogicalValueBudgetFailure` 即
+ * `Extract<T1 预算联合, {ok:false}>`（类型仍单源）：T1 未来为该成员加必填键时，本对象
+ * 字面量在此编译红（fail loud，不静默漂移）。path 回显复用 `echoReadPath`（与
+ * readDisabled 同纪律，非新形状）；message 恒非空。
+ */
+function seamReadOptionsInvalid(path: readonly (string | number)[]): ReadLogicalValueBudgetFailure {
+  return {
+    ok: false,
+    code: 'READ_OPTIONS_INVALID',
+    path: echoReadPath(path),
+    message:
+      'READ_OPTIONS_INVALID: options 视图在读取期间不稳定（敌意 descriptor/Proxy）——接缝拒绝组合同预算读',
   };
 }
 

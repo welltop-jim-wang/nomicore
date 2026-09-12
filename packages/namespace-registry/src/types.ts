@@ -37,6 +37,8 @@ import type {
   BumpReplicationEpochResult,
   EnableReplicationResult,
   MutateDataResult,
+  NamespaceRuntimeReadDataBudgetResult,
+  NamespaceRuntimeReadDataOptions,
   NamespaceRuntimeReadDataResult,
   ReplaceSchemaInput,
   ReplaceSchemaResult,
@@ -449,6 +451,13 @@ export type NamespaceLeaseReadDataResult =
   | NamespaceRuntimeReadDataResult
   | NamespaceLeaseReleasedIssue;
 
+/** lease.read 预算结果（#336 ADR-0024 决策 6「registry lease 原样透传」）= runtime 预算
+ *  联合（五键成功面 + READ_OPTIONS_INVALID）| released issue——别名跟随 runtime（具名组合
+ *  锁在 lease.ts）；lease 层零预算解释/零校验，透传即代理语义的加法扩展。 */
+export type NamespaceLeaseReadDataBudgetResult =
+  | NamespaceRuntimeReadDataBudgetResult
+  | NamespaceLeaseReleasedIssue;
+
 /** lease.getSchema 结果（runtime 同签名：载体缺席 → null）。 */
 export type NamespaceLeaseSchema = SchemaEnvelope | null;
 
@@ -660,6 +669,13 @@ export interface NamespaceLease {
   /** 冻结的独立 owner 投影（仅 userId）。 */
   readonly owner: Readonly<{ readonly userId: string }>;
   readonly namespaceId: string;
+  /** 预算重载在前、legacy 在后（镜像 runtime 重载序；`ReturnType` 取末签名——
+   *  `_readAlias`/`_readOverloadOrder` Equal 锁强制）。active 期 options **原样透传**
+   *  （raw 引用直传 runtime 接缝；lease 层零触达、零解释）；released 短路先于一切透传。 */
+  readData(
+    path: readonly (string | number)[],
+    options: NamespaceRuntimeReadDataOptions,
+  ): NamespaceLeaseReadDataBudgetResult;
   readData(path: readonly (string | number)[]): NamespaceLeaseReadDataResult;
   getSchema(): NamespaceLeaseSchema;
   getMetadata(): NamespaceLeaseMetadata;

@@ -10,6 +10,13 @@
  * always-on 零开关）；失败分支（PATH_NOT_ALLOWED / RUNTIME_READ_DISABLED）与十二键
  * 键集不变；类型导出键集不变（NamespaceRuntimeReadDataResult 形状随组合面演进）。
  *
+ * #336 增量（ADR-0024 决策 4/6，破坏性修订）：readData 成功分支**恒五键**（+#truncated
+ * /+truncations）；新增预算重载 `readData(path, options?)`（同一预算贯通值与投影两通道）
+ * 与预算结果联合 `NamespaceRuntimeReadDataBudgetResult`（追加 READ_OPTIONS_INVALID 失败
+ * 分支；legacy 联合零泄漏）；新增 options 别名 `NamespaceRuntimeReadDataOptions` 与
+ * `ReadLogicalValueTruncationEntry` 转出（全部 type-only——值导出面仍恰
+ * RuntimeWriteFatalError 一键）。
+ *
  * #132 增量：Runtime 十二键（+enableReplication/bumpReplicationEpoch 复制管理操作键）；
  * getStatus 八键（+replication 复制域）；type-only 追加五个复制管理类型（值导出面仍
  * 恰一键——REPLICATION_ID_PATTERN 等值导出不进本入口）。
@@ -29,9 +36,14 @@
 export { RuntimeWriteFatalError } from './errors.js';
 export type {
   NamespaceRuntime,
+  NamespaceRuntimeReadDataBudgetResult,
+  NamespaceRuntimeReadDataOptions,
   NamespaceRuntimeReadDataResult,
   RuntimeReadDisabledResult,
 } from './runtime.js';
+// #336（ADR-0024 T3）：截断清单条目的公共命名面（消费方无需直依 doc-runtime——
+// 单源转出，零复制；doc-runtime 为 runtime 既有 dependency，d.ts 引用可解析）。
+export type { ReadLogicalValueTruncationEntry } from '@nomicore/doc-runtime';
 export type { NamespaceRuntimeStatus } from './status.js';
 export type { ActiveSchemaInfo } from './p0.js';
 export type { RuntimeWriteFatalPhase } from './errors.js';

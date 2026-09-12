@@ -41,6 +41,8 @@ import {
   readRepoDoc,
   staleAnnotationViolations,
 } from './readdata-docs-adr0016-contract-fixture.js';
+// issue #333 T0：readData 成功分支恰三键键集断言的统一面（family B 收敛）。
+import { expectReadDataOkKeys } from '../../namespace-runtime/test/helpers/readdata-ok-shape.js';
 
 // ── 行为锚装配（真实 Registry 组合；形态沿用 registry-sa7-cordis.test.ts）─────────
 
@@ -140,7 +142,7 @@ describe('行为锚：cordis-plugin-hosting 示例的真实输出形状（ADR-00
       if (!r1.ok) throw new Error('unreachable');
       expect(r1.value).toBe('first');
       // 成功分支恰三键（ADR-0016：{ ok, value, schema }）——文档注记少 schema 键即矛盾。
-      expect(Object.keys(r1).sort()).toEqual(['ok', 'schema', 'value']);
+      expectReadDataOkKeys(r1);
       expect(JSON.stringify(r1)).toContain('"schema"');
       // schema 非 null（schemaState=ready + 路径在 schema 内），四键投影体。
       expect(r1.schema).not.toBeNull();
@@ -151,7 +153,7 @@ describe('行为锚：cordis-plugin-hosting 示例的真实输出形状（ADR-00
       if (!r2.ok) throw new Error('unreachable');
       expect(r2.value).toBe(0);
       expect(r2.schema).not.toBeNull();
-      expect(Object.keys(r2).sort()).toEqual(['ok', 'schema', 'value']);
+      expectReadDataOkKeys(r2);
 
       await lease.release();
       await ctx.fiber.dispose();
