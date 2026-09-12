@@ -32,6 +32,7 @@ import type { NamespaceRuntime } from '../src/index.js';
 import { compileSchemaEnvelope, resolveSchemaAtPath } from '@nomicore/vfsl';
 import type { ValueSchema } from '@nomicore/vfsl';
 import { ENV_273, makeHandle, makeReadyRuntime, deferred } from './readdata-schema-projection-fixture.js';
+import { expectReadDataOkKeys } from './helpers/readdata-ok-shape.js';
 
 // ───────────────────────── 目标契约形状（本地声明；运行时翻绿依赖点） ─────────────────────────
 
@@ -99,7 +100,7 @@ describe('issue #273 AC1/AC2：readData 成功分支形状与投影内容（红�
     const runtime = await makeReadyRuntime();
     const r = readOk(runtime, []);
     // 形状纪律：ok 分支恰三键 {ok, value, schema}（先断言键集——红灯原因最干净）
-    expect(Object.keys(r).sort()).toEqual(['ok', 'schema', 'value']);
+    expectReadDataOkKeys(r);
     expect(r.schema).toBeDefined();
     expect(r.value).toEqual({
       count: 3,

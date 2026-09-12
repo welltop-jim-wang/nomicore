@@ -36,6 +36,8 @@ import type { DerivedSchema, SchemaEnvelope } from '@nomicore/vfsl';
 import { NamespaceRegistryFatalError } from '@nomicore/namespace-registry';
 import type { CreateNamespaceInput, NamespaceLease, NamespaceOwner } from '@nomicore/namespace-registry';
 import { createNamespaceRegistryForTesting, createRegistryTestScheduler } from '@nomicore/namespace-registry/testing';
+// issue #333 T0：readData 成功分支恰三键形状的统一断言/构造面。
+import { expectReadDataOk, readDataOk } from '../../namespace-runtime/test/helpers/readdata-ok-shape.js';
 import { createNamespaceRuntimeForRegistry } from '@nomicore/namespace-runtime/internal';
 import { NAMESPACE_ALREADY_EXISTS_MESSAGE } from '../src/types.js';
 import { createInitialDocument } from '@nomicore/doc-runtime';
@@ -378,7 +380,7 @@ function makeMarkerRuntime(marker: string, namespaceId: string): any {
   return {
     owner: { userId: 'u-alice' },
     namespaceId,
-    readData: () => ({ ok: true, value: marker, schema: null }),
+    readData: () => readDataOk(marker, null),
     getSchema: () => null,
     getMetadata: () => ({ marker }),
     getActiveSchema: () => null,
@@ -514,7 +516,7 @@ describe('create 成功全链（§3/§5/§6/§9）：manual Clock 精确 created
     expect(factoryCalls).toBe(1);
     expect(handleDocSeen).toBeInstanceOf(Y.Doc);
     expect(typeof notifyDirtySeen).toBe('function');
-    expect(lease.readData(['a'])).toEqual({ ok: true, value: 'MARKER_FACTORY', schema: null });
+    expectReadDataOk(lease.readData(['a']), { value: 'MARKER_FACTORY', schema: null });
     await lease.release();
   });
 });
@@ -1766,8 +1768,8 @@ describe('ordering/concurrency（§5/§9）：create→open、open→create、ga
     const lease1 = okLease(await registry.create(makeCreateInput()));
     const lease2 = okLease(await registry.open({ userId: 'u-alice' }, src.id(1)));
     expect(factoryCalls).toBe(1); // open 复用 entry 的 Runtime（同一 identity）
-    expect(lease1.readData(['x'])).toEqual({ ok: true, value: 'RUNTIME_MARKER_9f', schema: null });
-    expect(lease2.readData(['x'])).toEqual({ ok: true, value: 'RUNTIME_MARKER_9f', schema: null });
+    expectReadDataOk(lease1.readData(['x']), { value: 'RUNTIME_MARKER_9f', schema: null });
+    expectReadDataOk(lease2.readData(['x']), { value: 'RUNTIME_MARKER_9f', schema: null });
     expect(lease1).not.toBe(lease2);
     expect(persistence.loadCalls.length).toBe(0);
     expect(persistence.createCalls.length).toBe(1);

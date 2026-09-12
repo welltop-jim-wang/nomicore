@@ -21,6 +21,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { makeReadyRuntime } from './readdata-schema-projection-fixture.js';
+import { expectReadDataOk } from './helpers/readdata-ok-shape.js';
 
 describe('issue #273 F-1（D8）：readData schema 通道敌意 path 规范化守卫——收敛 schema:null、零 throw、零敌意函数调用', () => {
   it('T1：重定义 Symbol.iterator 的敌意数组（索引读正常）→ 不抛、恰 {ok:true,value:3,schema:null}，敌意迭代器零调用', async () => {
@@ -35,7 +36,7 @@ describe('issue #273 F-1（D8）：readData schema 通道敌意 path 规范化�
     });
     const r = runtime.readData(arr);
     // ① 调用不抛且结果恰为收敛形状（读恒 ok、值语义与 doc-runtime 一致、schema null）
-    expect(r).toEqual({ ok: true, value: 3, schema: null });
+    expectReadDataOk(r, { value: 3, schema: null });
     // ② 敌意迭代器从未被调用（守卫只做同一性比较，绝不调用迭代协议）
     expect(iteratorCalls).toBe(0);
     await runtime.close();
@@ -50,7 +51,7 @@ describe('issue #273 F-1（D8）：readData schema 通道敌意 path 规范化�
       },
     });
     const r = runtime.readData(proxy as (string | number)[]);
-    expect(r).toEqual({ ok: true, value: 3, schema: null });
+    expectReadDataOk(r, { value: 3, schema: null });
     await runtime.close();
   });
 
@@ -58,7 +59,7 @@ describe('issue #273 F-1（D8）：readData schema 通道敌意 path 规范化�
     const runtime = await makeReadyRuntime();
     const hostile = ['absent-key', Symbol('rogue')] as unknown as readonly (string | number)[];
     const r = runtime.readData(hostile);
-    expect(r).toEqual({ ok: true, value: undefined, schema: null });
+    expectReadDataOk(r, { value: undefined, schema: null });
     expect('schema' in (r as unknown as Record<string, unknown>)).toBe(true);
     await runtime.close();
   });
@@ -66,8 +67,7 @@ describe('issue #273 F-1（D8）：readData schema 通道敌意 path 规范化�
   it('局部负控：合法 path ["count"] 不受守卫影响——schema 非 null 且等于字面量锚（红 #2 投影）', async () => {
     const runtime = await makeReadyRuntime();
     const r = runtime.readData(['count']);
-    expect(r).toEqual({
-      ok: true,
+    expectReadDataOk(r, {
       value: 3,
       schema: {
         valueSchema: { kind: 'scalar', type: 'number' },

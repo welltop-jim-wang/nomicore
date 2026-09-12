@@ -20,6 +20,8 @@ import type { NamespaceLease } from '@nomicore/namespace-registry';
 import { createNamespaceRegistryForTesting, createRegistryTestScheduler } from '@nomicore/namespace-registry/testing';
 import type { RegistryTestScheduler } from '@nomicore/namespace-registry/testing';
 import type { RegistryObserverEvent } from '../src/observer.js';
+// issue #333 T0：readData 成功分支恰三键形状的统一构造面（本文件无断言点，仅替身形状集中化）。
+import { readDataOk } from '../../namespace-runtime/test/helpers/readdata-ok-shape.js';
 
 // ── 确定性并发原语（禁 real sleep）────────────────────────────────────────────
 
@@ -164,8 +166,9 @@ class CountingRuntime implements NamespaceRuntime {
   constructor(readonly marker: string, readonly namespaceId: string) {}
 
   readData() {
-    // typed stub（D7）：无 activeTools → schema:null 是诚实语义（缺键即 TS2322 类型锁）
-    return { ok: true as const, value: this.marker, schema: null };
+    // typed stub（D7）：无 activeTools → schema:null 是诚实语义（缺键即 TS2322 类型锁——
+    // 锁由共享构造 readDataOk 的精确返回类型 ReadDataOkShape 保留）
+    return readDataOk(this.marker, null);
   }
 
   getSchema(): null {

@@ -27,6 +27,8 @@ import type {
   OpenNamespaceResult,
 } from '@nomicore/namespace-registry';
 import { createNamespaceRegistryForTesting, createRegistryTestScheduler } from '@nomicore/namespace-registry/testing';
+// issue #333 T0：readData 成功分支恰三键形状的统一断言/构造面。
+import { expectReadDataOk, readDataOk } from '../../namespace-runtime/test/helpers/readdata-ok-shape.js';
 import type { RegistryObserverEvent } from '../src/observer.js';
 
 // ── 确定性并发原语（禁 real sleep）────────────────────────────────────────────
@@ -181,7 +183,7 @@ function makeRuntime(overrides: {
   return {
     owner: overrides.owner ?? { userId: 'runtime-owner' },
     namespaceId: overrides.namespaceId ?? 'runtime-ns',
-    readData: overrides.readData ?? (() => ({ ok: true, value: 'runtime-value', schema: null })),
+    readData: overrides.readData ?? (() => readDataOk('runtime-value', null)),
     getSchema: () => null,
     getMetadata: () => ({ marker: 'meta' }),
     getActiveSchema: () => null,
@@ -801,7 +803,7 @@ describe('capability：fatal/unavailable/degraded Runtime 均可 open 并透传�
     persistence.queueLoad({ result: new StubHandle({ userId: 'u' }, 'k') });
     const registry = createNamespaceRegistryForTesting(persistence, {
       clock: manualClock(), scheduler: createRegistryTestScheduler(), randomBytes: TEST_RANDOM_BYTES,
-      runtimeFactory: () => makeRuntime({ status: () => runtimeStatus, readData: () => ({ ok: true, value: 'still-readable', schema: null }) }),
+      runtimeFactory: () => makeRuntime({ status: () => runtimeStatus, readData: () => readDataOk('still-readable', null) }),
     });
     const result = await registry.open({ userId: 'u' }, 'k');
     const lease = okLease(result);
@@ -813,7 +815,7 @@ describe('capability：fatal/unavailable/degraded Runtime 均可 open 并透传�
       expect(projected.runtime.schemaWrite.enabled).toBe(false);
       expect(projected.runtime.read.enabled).toBe(true);
     }
-    expect(lease.readData(['x'])).toEqual({ ok: true, value: 'still-readable', schema: null }); // 读取保留
+    expectReadDataOk(lease.readData(['x']), { value: 'still-readable', schema: null }); // 读取保留
     expect(lease.getActiveSchema()).toBeNull();
     await lease.release();
   });
@@ -855,7 +857,7 @@ describe('publish 时机：factory 返回即成功，不等待 P0（§6/AC4）',
       clock: manualClock(), scheduler: createRegistryTestScheduler(), randomBytes: TEST_RANDOM_BYTES,
       runtimeFactory: () =>
         makeRuntime({
-          readData: () => ({ ok: true, value: 'pre-p0-value', schema: null }),
+          readData: () => readDataOk('pre-p0-value', null),
           status: () => ({
             lifecycle: 'ready',
             read: { enabled: true },
@@ -877,7 +879,7 @@ describe('publish 时机：factory 返回即成功，不等待 P0（§6/AC4）',
     if (st.lease === 'active') {
       expect(st.runtime.schema.state).toBe('preparing'); // P0 未结算的忠实投影
     }
-    expect(lease.readData(['a'])).toEqual({ ok: true, value: 'pre-p0-value', schema: null });
+    expectReadDataOk(lease.readData(['a']), { value: 'pre-p0-value', schema: null });
     p0Gate.resolve();
     await lease.release();
   });
