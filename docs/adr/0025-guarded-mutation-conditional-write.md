@@ -69,6 +69,10 @@ await lease.mutateData({
 
 **不 supersede。** ADR 0002 否决的是 authority 规则语言/manifest 进引擎；本 ADR 提供的是无领域语义的条件原语（`equals` / `absent` 两个谓词，词表封闭），策略词表仍留在调用方代码。ADR 0007 的 mutation 信封由此增加一个可选键，双管线（issue #237 局部 / legacy）与零写入承诺不变。
 
+### 与 ADR 0026 的组合（2026-09-12 增补）
+
+ADR 0026（原子变更信封，已接受、先行实现）为 mutation 信封新增批量形态 `{ ops: [...] }`。guard 键适用于**两种形态的顶层**：单操作对象可带 `guard`，批量信封顶层亦可带 `guard`；批内元素永远不得携带 guard——guard 是整批前提，需要逐操作条件时应拆为多次变更尝试（元素携带 guard 键为形状错误）。评估次序在批量下不变：guard 先于逐操作 prepare。本 ADR 其余条款（谓词语义、错误域、边界、原子性归属）原样适用于两种形态。实现顺序：0026 先行，本 ADR 随后——guard 落地时直接同时支持两种形态。
+
 ## Considered Options
 
 - **adapter 层读-验-写（现状）**：TOCTOU + 审计缺口，被否（见背景）。
