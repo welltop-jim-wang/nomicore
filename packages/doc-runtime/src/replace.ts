@@ -117,7 +117,7 @@ function prepareReplace(derived: DerivedSchema, snapshot: unknown, doc: Y.Doc): 
     if (derived.structure.kind !== 'root') {
       throw new DerivedInvariantError('derived.structure 非 root（手造派生物）');
     }
-    // ① 逻辑校验（值域宽域）：失败 → issues 引用零损透传（D9；validateLogicalSnapshot 自身
+    // ① 逻辑校验（number 值域经 ADR 0021 收窄）：失败 → issues 引用零损透传（D9；validateLogicalSnapshot 自身
     //    不抛错，其 E100/预算截断形态原样返回——G3-1 toEqual 直调结果锚的兑现方式）
     const logical = validateLogicalSnapshot(derived, snapshot);
     if (!logical.ok) return { kind: 'fail', issues: logical.issues };

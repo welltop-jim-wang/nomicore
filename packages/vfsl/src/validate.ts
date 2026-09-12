@@ -57,6 +57,17 @@ const WORK_LIMIT = 200_000_000;
 /** countMemo / contraMemo 容量上界（超出清空重建——记忆化是性能优化、非正确性依赖）。 */
 const MEMO_CAP = 65_536;
 
+/** memo 内键消歧哨兵（issue #319 / ADR 0021 决策 1）：Map 键比较为 SameValueZero
+ *  （`-0 ≡ 0` 共键，双向碰撞），收窄后二者判定相反，不得共键。Symbol 身份唯一、永不与
+ *  快照值相等；本常量与 ISSUE_LIMIT/WORK_LIMIT/MEMO_CAP 同类（不可变模块常量，非跨调用
+ *  可变缓存——per-call 中间态调用局部纪律不受影响）。 */
+const NEG_ZERO_MEMO_KEY: unique symbol = Symbol('vfsl:neg-zero-memo-key');
+
+/** memo 内键归一化：仅 -0 需消歧（NaN 只与自身同键；±Infinity 与任何有限数不同键）。 */
+function memoKey(value: unknown): unknown {
+  return typeof value === 'number' && Object.is(value, -0) ? NEG_ZERO_MEMO_KEY : value;
+}
+
 /** 全局工作预算耗尽（调用级终态；与 E100、单次 Pattern 预算三重可区分）。 */
 class WorkBudgetExceeded extends Error {
   constructor(readonly work: number) {
@@ -152,6 +163,44 @@ function jsonTypeOf(v: unknown): string {
 
 function isPlainObject(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v);
+}
+
+// —— §3.3b 裸 number 值域判定（issue #319 / ADR 0021 决策 1：恰好 JSON 可忠实表示的数）——
+
+type ScalarTypeName = Extract<ValueSchema, { kind: 'scalar' }>['type'];
+
+/** ADR 0021 决策 1：number 判定收窄为 JSON 可忠实表示数。
+ *  NaN / +Infinity / -Infinity 由 Number.isFinite 排除；-0 是有限数，须 Object.is 单独排除。 */
+function isJsonFaithfulNumber(v: unknown): boolean {
+  return typeof v === 'number' && Number.isFinite(v) && !Object.is(v, -0);
+}
+
+/** 四值渲染（ADR 0021 决策 3：-0 必须经 Object.is 识别——String(-0) === "0" 误导）。
+ *  全函数：有限非 -0 值防御性回落 String(v)（正常不可达——调用点已过滤）。 */
+function renderNumberValue(v: number): string {
+  if (Number.isNaN(v)) return 'NaN';
+  if (Object.is(v, -0)) return '-0';
+  if (v === Infinity) return 'Infinity';
+  if (v === -Infinity) return '-Infinity';
+  return String(v);
+}
+
+/** 裸标量判定——contradictsInner 与 validateValue 的单一事实源（消除双谓词分叉）：
+ *  unknown 恒真 / null 严格等值 / number 收窄（ADR 0021 决策 1）/ 其余 typeof。 */
+function scalarAccepts(type: ScalarTypeName, value: unknown): boolean {
+  if (type === 'unknown') return true;
+  if (type === 'null') return value === null;
+  if (type === 'number') return isJsonFaithfulNumber(value);
+  return typeof value === type;
+}
+
+/** 标量拒绝消息：typeof 失配（含 number 收非 number 型）逐字节维持既有兼容行为面；
+ *  typeof 是 number 但落四值 → 收窄消息（域短语逐字 + 四值尾字面量；-0 经 Object.is）。 */
+function scalarRejectMessage(type: ScalarTypeName, value: unknown): string {
+  if (type === 'number' && typeof value === 'number') {
+    return `期望 number（有限数且非 -0），实际 ${renderNumberValue(value)}`;
+  }
+  return `类型不匹配：期望 ${type}，实际 ${jsonTypeOf(value)}`;
 }
 
 /** present(k) = hasOwn 且值非 undefined（undefined 视同缺席——JSON 序列化本就丢弃，冻结）。 */
@@ -286,7 +335,7 @@ function countIssues(node: ValueSchema, value: unknown, ctx: Ctx): number {
   charge(ctx, 1); // 进入（含 memo 命中查询本身——§3.4）
   const resolved = resolveValues(node, ctx);
   const inner = ctx.countMemo.get(resolved);
-  const hit = inner?.get(value);
+  const hit = inner?.get(memoKey(value));
   if (hit !== undefined) return hit;
 
   let count = 0;
@@ -309,7 +358,7 @@ function contradicts(value: unknown, node: ValueSchema, ctx: Ctx): boolean {
   charge(ctx, 1); // 进入（含 memo 命中查询本身）
   const resolved = resolveValues(node, ctx);
   const inner = ctx.contraMemo.get(resolved);
-  const hit = inner?.get(value);
+  const hit = inner?.get(memoKey(value));
   if (hit !== undefined) return hit;
 
   const result = contradictsInner(value, resolved, ctx);
@@ -320,9 +369,7 @@ function contradicts(value: unknown, node: ValueSchema, ctx: Ctx): boolean {
 function contradictsInner(value: unknown, node: ValueSchema, ctx: Ctx): boolean {
   switch (node.kind) {
     case 'scalar':
-      if (node.type === 'unknown') return false; // unknown 永不矛盾
-      if (node.type === 'null') return value !== null;
-      return typeof value !== node.type;
+      return !scalarAccepts(node.type, value);
     case 'enum':
       return !enumContains(node.values, value);
     case 'pattern':
@@ -379,7 +426,7 @@ function memoStore<V>(
     inner = new Map();
     map.set(key, inner);
   }
-  inner.set(value, result);
+  inner.set(memoKey(value), result);
   ctx.memoEntries += 1;
 }
 
@@ -456,10 +503,9 @@ function validateValue(node: ValueSchema, value: unknown, path: Array<string | n
   const t = resolveValues(node, ctx);
   switch (t.kind) {
     case 'scalar': {
-      const ok =
-        t.type === 'unknown' ? true : t.type === 'null' ? value === null : typeof value === t.type;
-      if (!ok) {
-        ctx.emit([...path], () => `类型不匹配：期望 ${t.type}，实际 ${jsonTypeOf(value)}`);
+      if (!scalarAccepts(t.type, value)) {
+        // 消息构造留在 thunk 内（R4 门控：计数态/截断态不构造消息、不跑 preview）
+        ctx.emit([...path], () => scalarRejectMessage(t.type, value));
       }
       break;
     }
