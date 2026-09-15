@@ -1,7 +1,7 @@
 # ADR 0027：readData 投影文本化——投影通道的交付换代
 
 日期：2026-09-14（设计敲定：本仓 grill 会话，追踪 issue 见文内）
-状态：已接受（影响包 `@nomicore/vfsl`、`@nomicore/namespace-runtime`、`@nomicore/namespace-registry`）
+状态：已接受（影响包 `@nomicore/vfsl`、`@nomicore/namespace-runtime`、`@nomicore/namespace-registry`）；决策 1 的「options 闭合形状零变化」句由 [ADR-0031](0031-readdata-byte-budget.md) 再修订（+`maxBytes` 预算轴，三键闭合）——头行、✂ 段与渲染器条款不动
 
 ## 背景
 

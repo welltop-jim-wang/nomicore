@@ -1,7 +1,7 @@
 # ADR 0024：readData 形状预算——depth/width 截断省略与截断清单
 
 日期：2026-09-12（设计冻结：tracking issue #331）
-状态：已接受；2026-09-14 amendment（issue #359：决策 2/3 值内形态对账 + 决策 5 切片可见性规则，见文末「ADR 0024 amendment」节）；决策 3/4 的截断清单通道与恒五键形状由 [ADR-0027](0027-readdata-projection-text.md) 再修订（恒四键，截断事实载体 = 投影文本 ✂ 段）。影响包 `@nomicore/doc-runtime`、`@nomicore/namespace-runtime`、`@nomicore/namespace-registry`、`@nomicore/vfsl`、`@nomicore/vfsl-protocol`
+状态：已接受；2026-09-14 amendment（issue #359：决策 2/3 值内形态对账 + 决策 5 切片可见性规则，见文末「ADR 0024 amendment」节）；决策 3/4 的截断清单通道与恒五键形状由 [ADR-0027](0027-readdata-projection-text.md) 再修订（恒四键，截断事实载体 = 投影文本 ✂ 段）；决策 1 的 options 形状与「终态目标的预算是 no-op」条款由 [ADR-0031](0031-readdata-byte-budget.md) 再修订（+`maxBytes` 总量收/拒闸），开放问题「字节级预算」由 ADR-0031 收口。影响包 `@nomicore/doc-runtime`、`@nomicore/namespace-runtime`、`@nomicore/namespace-registry`、`@nomicore/vfsl`、`@nomicore/vfsl-protocol`
 
 ## 背景
 
